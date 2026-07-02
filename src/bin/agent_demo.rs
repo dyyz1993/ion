@@ -1,26 +1,109 @@
+use std::sync::Arc;
+
 use ion::agent::agent_loop::{Agent, AgentConfig};
 use ion::agent::compact::CompactConfig;
-use ion::agent::messages::Role;
-use ion::agent::provider::OpenAIProvider;
 use ion::agent::tool::{CalculatorTool, EchoTool, ToolRegistry};
+use ion_provider::registry::{ApiRegistry, ModelRegistry};
+use ion_provider::types::{
+    AssistantContentBlock, ContentBlock, Cost, Message, Model, StopReason,
+};
+use tracing_subscriber::EnvFilter;
+
 /// Demo: inner Agent Loop with real LLM calls.
-///
-/// This demonstrates the full agent lifecycle:
-/// 1. Provider → streaming LLM call
-/// 2. Tool calls (the agent asks for calculator, we compute)
-/// 3. Retry (try changing the prompt to cause an error)
-/// 4. Steering (inject a message mid-turn)
-/// 5. Pause/resume (send SIGINT or use the handle)
-/// 6. Context compression (if messages grow large)
 ///
 /// Usage:
 ///   cargo run --bin agent-demo
-use std::sync::Arc;
-use tracing_subscriber::EnvFilter;
-
 const API_BASE: &str = "https://opencode.ai/zen/go/v1";
 const API_KEY: &str = "sk-sniMbFE0l8wIGsTAsbfERSGrvcrBv97iBfDuppzN99kg5Wp2a2dMYxntMFBN9lEg";
-const MODEL: &str = "deepseek-v4-flash";
+const MODEL_ID: &str = "deepseek-v4-flash";
+
+fn build_registry_and_model() -> (Arc<ApiRegistry>, Model) {
+    let mut registry = ApiRegistry::new();
+    registry.register_builtins();
+
+    let mut model_registry = ModelRegistry::new();
+    model_registry.register_builtins();
+
+    let model = model_registry
+        .find_model(MODEL_ID)
+        .cloned()
+        .unwrap_or_else(|| Model {
+            id: MODEL_ID.into(),
+            name: MODEL_ID.into(),
+            api: "openai-completions".into(),
+            provider: "opencode".into(),
+            base_url: API_BASE.into(),
+            reasoning: true,
+            input: vec!["text".into()],
+            cost: Cost {
+                input: 0.0,
+                output: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+            context_window: 128000,
+            max_tokens: 8192,
+            compat: None,
+            headers: None,
+        });
+
+    (Arc::new(registry), model)
+}
+
+fn describe_message(msg: &Message) -> Vec<String> {
+    match msg {
+        Message::User(user) => user
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text(text) if !text.text.is_empty() => {
+                    Some(format!("[user] {}", text.text))
+                }
+                _ => None,
+            })
+            .collect(),
+        Message::Assistant(assistant) => {
+            let mut lines = Vec::new();
+            for block in &assistant.content {
+                match block {
+                    AssistantContentBlock::Text(text) if !text.text.is_empty() => {
+                        lines.push(format!("[assistant] {}", text.text));
+                    }
+                    AssistantContentBlock::Thinking(thinking)
+                        if !thinking.thinking.is_empty() =>
+                    {
+                        lines.push(format!("[thinking] {}", thinking.thinking));
+                    }
+                    AssistantContentBlock::ToolCall(tool_call) => {
+                        lines.push(format!(
+                            "[tool_call] {}({})",
+                            tool_call.name, tool_call.arguments
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            if lines.is_empty() {
+                lines.push(format!(
+                    "[assistant] stop_reason={:?}",
+                    assistant.stop_reason
+                ));
+            }
+            lines
+        }
+        Message::ToolResult(result) => result
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text(text) if !text.text.is_empty() => Some(format!(
+                    "[tool_result:{}] {}",
+                    result.tool_name, text.text
+                )),
+                _ => None,
+            })
+            .collect(),
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -29,13 +112,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     tracing::info!("=== Agent Loop Demo ===");
-    tracing::info!("Provider: {MODEL} @ {API_BASE}");
+    tracing::info!("Model: {MODEL_ID} @ {API_BASE}");
 
-    // ---- 1. Create the provider ----
-    let provider = Arc::new(OpenAIProvider::new(API_BASE, API_KEY, MODEL).with_max_tokens(8192))
-        as Arc<dyn ion::agent::provider::Provider + Send + Sync>;
+    let (registry, model) = build_registry_and_model();
 
-    // ---- 2. Register tools ----
     let mut tools = ToolRegistry::new();
     tools.register(Box::new(CalculatorTool));
     tools.register(Box::new(EchoTool));
@@ -45,15 +125,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tools
             .tool_defs()
             .iter()
-            .map(|t| t.function.name.clone())
+            .map(|t| t.name.clone())
             .collect::<Vec<_>>()
             .join(", ")
     );
 
-    // ---- 3. Create the agent ----
     let mut agent = Agent::new(
-        provider,
-        Some("You are a helpful coding assistant. You can use the calculator tool for math, and the echo tool to echo text.".into()),
+        registry,
+        model,
+        Some(
+            "You are a helpful coding assistant. You can use the calculator tool for math, and the echo tool to echo text."
+                .into(),
+        ),
         tools,
         AgentConfig {
             max_turns: 10,
@@ -66,79 +149,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 target: 16000,
                 keep_newest: 4,
             },
+            api_key: Some(API_KEY.into()),
+            response_format: None,
+            thinking: None,
         },
     );
 
-    // ---- 4. Run the agent ----
     let prompt =
         "What is 1234 * 5678? Use the calculator tool to compute it, then tell me the answer.";
 
-    tracing::info!("");
     tracing::info!("=== User ===");
     tracing::info!("{prompt}");
 
-    // ---- 5. Run and observe events ----
     match agent.run(prompt).await {
         Ok(()) => {
-            tracing::info!("");
             tracing::info!("=== Agent completed ===");
-
-            // Print last assistant message
-            for msg in agent.messages().iter().rev().take(3) {
-                if msg.role == Role::Assistant
-                    && let Some(ref content) = msg.content
-                    && !content.is_empty()
-                {
-                    tracing::info!("Assistant: {content}");
-                }
-                // Print tool calls
-                if let Some(ref tcs) = msg.tool_calls {
-                    for tc in tcs {
-                        tracing::info!(
-                            "  Tool call: {}({})",
-                            tc.function.name,
-                            tc.function.arguments
-                        );
-                    }
-                }
+            let messages = agent.messages();
+            for line in messages.iter().flat_map(describe_message) {
+                tracing::info!("{line}");
             }
+            tracing::info!("Total messages: {}", messages.len());
 
-            // ---- 6. Statistics ----
-            tracing::info!("");
-            tracing::info!("=== Stats ===");
-            tracing::info!("Total messages: {}", agent.messages().len());
-            tracing::info!(
-                "Total tokens (approx): {}",
-                agent
-                    .messages()
-                    .iter()
-                    .map(|m| m.approx_tokens())
-                    .sum::<usize>()
-            );
-
-            // ---- 7. Show conversation ----
-            tracing::info!("");
-            tracing::info!("=== Full Conversation ===");
-            for msg in agent.messages() {
-                let role = msg.role.as_str();
-                if let Some(ref content) = msg.content
-                    && !content.is_empty()
-                {
-                    tracing::info!("[{role}] {content}");
-                }
-                if let Some(ref tcs) = msg.tool_calls {
-                    for tc in tcs {
-                        tracing::info!(
-                            "  → Tool call: {}({})",
-                            tc.function.name,
-                            tc.function.arguments
-                        );
-                    }
-                }
+            let final_stop = messages.iter().rev().find_map(|msg| match msg {
+                Message::Assistant(assistant) => Some(&assistant.stop_reason),
+                _ => None,
+            });
+            if let Some(reason) = final_stop {
+                tracing::info!("Final stop reason: {:?}", reason);
             }
         }
         Err(e) => {
             tracing::error!("Agent error: {e}");
+            tracing::info!("Final stop reason: {:?}", StopReason::Error);
         }
     }
 
