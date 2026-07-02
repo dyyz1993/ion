@@ -1,0 +1,315 @@
+use super::agent_loop::AgentContext;
+use super::error::AgentResult;
+use super::messages::{Message, ToolCall};
+use async_trait::async_trait;
+use ion_provider::types::{ToolResult, Usage};
+
+// ---------------------------------------------------------------------------
+// Context objects
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct TurnContext {
+    pub turn_index: u64,
+    pub messages: Vec<Message>,
+    pub has_tool_calls: bool,
+    pub stop_reason: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct InputContext {
+    pub text: String,
+    pub handled: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct BeforeAgentContext {
+    pub system_prompt: Option<String>,
+    pub messages: Vec<Message>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProviderRequestContext {
+    pub model: String,
+    pub provider: String,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProviderResponseContext {
+    pub model: String,
+    pub provider: String,
+    pub status: u16,
+    pub body_preview: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ToolExecutionContext {
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub args: serde_json::Value,
+    pub is_error: bool,
+    pub duration_ms: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct ModelSelectContext {
+    pub old_model: Option<String>,
+    pub old_provider: Option<String>,
+    pub new_model: String,
+    pub new_provider: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct SessionContext {
+    pub reason: String, // "startup" | "reload" | "new" | "resume" | "fork" | "quit"
+}
+
+// ---------------------------------------------------------------------------
+// Extension trait — 29 hook points matching pi spec
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+pub trait Extension: Send + Sync {
+    // ── Session lifecycle (4) ──
+    async fn on_session_start(&self, _ctx: &SessionContext) -> AgentResult<()> { Ok(()) }
+    async fn on_session_shutdown(&self, _ctx: &SessionContext) -> AgentResult<()> { Ok(()) }
+    async fn on_session_before_compact(&self, _msgs: &mut Vec<Message>) -> AgentResult<()> { Ok(()) }
+    async fn on_session_compact(&self, _messages: &mut Vec<Message>) -> AgentResult<()> { Ok(()) }
+
+    // ── Input (1) ──
+    /// Intercept or transform user input before agent processes it.
+    /// Return `handled: true` to skip agent processing.
+    async fn on_input(&self, _ctx: &mut InputContext) -> AgentResult<()> { Ok(()) }
+
+    // ── Agent lifecycle (4) ──
+    async fn before_agent_start(&self, _ctx: &mut BeforeAgentContext) -> AgentResult<()> { Ok(()) }
+    async fn on_agent_start(&self, _ctx: &AgentContext) -> AgentResult<()> { Ok(()) }
+    async fn on_agent_end(&self, _ctx: &AgentContext) -> AgentResult<()> { Ok(()) }
+
+    // ── Turn lifecycle (2) ──
+    async fn on_turn_start(&self, _ctx: &mut TurnContext) -> AgentResult<()> { Ok(()) }
+    async fn on_turn_end(&self, _ctx: &TurnContext) -> AgentResult<()> { Ok(()) }
+
+    // ── Context / Provider (3) ──
+    async fn on_context(&self, _messages: &mut Vec<Message>) -> AgentResult<()> { Ok(()) }
+    async fn before_provider_request(&self, _ctx: &ProviderRequestContext) -> AgentResult<()> { Ok(()) }
+    async fn after_provider_response(&self, _ctx: &ProviderResponseContext) -> AgentResult<()> { Ok(()) }
+
+    // ── Streaming (6) ──
+    async fn on_message_start(&self, _role: &str, _content: &str) -> AgentResult<()> { Ok(()) }
+    async fn on_message_delta(&self, _delta: &str, _role: &str) -> AgentResult<()> { Ok(()) }
+    async fn on_message_end(&self, _role: &str, _full_content: &str, _usage: &Usage) -> AgentResult<()> { Ok(()) }
+    /// Called for each thinking delta during streaming.
+    async fn on_thinking_delta(&self, _delta: &str) -> AgentResult<()> { Ok(()) }
+    /// Called when thinking content is complete.
+    async fn on_thinking_end(&self, _content: &str) -> AgentResult<()> { Ok(()) }
+    /// Called for tool call deltas during streaming (partial tool name/args).
+    async fn on_tool_call_delta(&self, _delta: &str, _name: &str) -> AgentResult<()> { Ok(()) }
+
+    // ── Tool execution (5) ──
+    async fn on_tool_execution_start(&self, _ctx: &ToolExecutionContext) -> AgentResult<()> { Ok(()) }
+    /// Called during tool execution with partial results (e.g., streaming bash output).
+    async fn on_tool_execution_update(&self, _ctx: &ToolExecutionContext, _partial: &str) -> AgentResult<()> { Ok(()) }
+    async fn on_tool_execution_end(&self, _ctx: &ToolExecutionContext) -> AgentResult<()> { Ok(()) }
+    async fn before_tool_call(&self, _call: &ToolCall) -> AgentResult<()> { Ok(()) }
+    async fn after_tool_call(&self, _call: &ToolCall, _result: &ToolResult) -> AgentResult<()> { Ok(()) }
+
+    // ── Model (2) ──
+    async fn on_model_select(&self, _ctx: &ModelSelectContext) -> AgentResult<()> { Ok(()) }
+    async fn on_thinking_level_select(&self, _level: &str, _old: Option<&str>) -> AgentResult<()> { Ok(()) }
+}
+
+// ---------------------------------------------------------------------------
+// ExtensionRegistry
+// ---------------------------------------------------------------------------
+
+pub struct ExtensionRegistry {
+    extensions: Vec<Box<dyn Extension>>,
+}
+
+impl Default for ExtensionRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+impl ExtensionRegistry {
+    pub fn new() -> Self { Self { extensions: Vec::new() } }
+    pub fn register(&mut self, ext: Box<dyn Extension>) { self.extensions.push(ext); }
+    pub fn is_empty(&self) -> bool { self.extensions.is_empty() }
+    pub fn len(&self) -> usize { self.extensions.len() }
+
+    pub async fn on_session_start(&self, ctx: &SessionContext) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_session_start(ctx).await?; } Ok(())
+    }
+    pub async fn on_session_shutdown(&self, ctx: &SessionContext) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_session_shutdown(ctx).await?; } Ok(())
+    }
+    pub async fn on_session_before_compact(&self, msgs: &mut Vec<Message>) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_session_before_compact(msgs).await?; } Ok(())
+    }
+    pub async fn on_session_compact(&self, msgs: &mut Vec<Message>) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_session_compact(msgs).await?; } Ok(())
+    }
+    pub async fn on_input(&self, ctx: &mut InputContext) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_input(ctx).await?; } Ok(())
+    }
+    pub async fn before_agent_start(&self, ctx: &mut BeforeAgentContext) -> AgentResult<()> {
+        for ext in &self.extensions { ext.before_agent_start(ctx).await?; } Ok(())
+    }
+    pub async fn on_agent_start(&self, ctx: &AgentContext) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_agent_start(ctx).await?; } Ok(())
+    }
+    pub async fn on_agent_end(&self, ctx: &AgentContext) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_agent_end(ctx).await?; } Ok(())
+    }
+    pub async fn on_turn_start(&self, ctx: &mut TurnContext) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_turn_start(ctx).await?; } Ok(())
+    }
+    pub async fn on_turn_end(&self, ctx: &TurnContext) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_turn_end(ctx).await?; } Ok(())
+    }
+    pub async fn on_context(&self, msgs: &mut Vec<Message>) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_context(msgs).await?; } Ok(())
+    }
+    pub async fn before_provider_request(&self, ctx: &ProviderRequestContext) -> AgentResult<()> {
+        for ext in &self.extensions { ext.before_provider_request(ctx).await?; } Ok(())
+    }
+    pub async fn after_provider_response(&self, ctx: &ProviderResponseContext) -> AgentResult<()> {
+        for ext in &self.extensions { ext.after_provider_response(ctx).await?; } Ok(())
+    }
+    pub async fn on_message_start(&self, role: &str, content: &str) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_message_start(role, content).await?; } Ok(())
+    }
+    pub async fn on_message_delta(&self, delta: &str, role: &str) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_message_delta(delta, role).await?; } Ok(())
+    }
+    pub async fn on_message_end(&self, role: &str, content: &str, usage: &Usage) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_message_end(role, content, usage).await?; } Ok(())
+    }
+    pub async fn on_thinking_delta(&self, delta: &str) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_thinking_delta(delta).await?; } Ok(())
+    }
+    pub async fn on_thinking_end(&self, content: &str) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_thinking_end(content).await?; } Ok(())
+    }
+    pub async fn on_tool_call_delta(&self, delta: &str, name: &str) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_tool_call_delta(delta, name).await?; } Ok(())
+    }
+    pub async fn on_tool_execution_start(&self, ctx: &ToolExecutionContext) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_tool_execution_start(ctx).await?; } Ok(())
+    }
+    pub async fn on_tool_execution_update(&self, ctx: &ToolExecutionContext, partial: &str) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_tool_execution_update(ctx, partial).await?; } Ok(())
+    }
+    pub async fn on_tool_execution_end(&self, ctx: &ToolExecutionContext) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_tool_execution_end(ctx).await?; } Ok(())
+    }
+    pub async fn before_tool_call(&self, call: &ToolCall) -> AgentResult<()> {
+        for ext in &self.extensions { ext.before_tool_call(call).await?; } Ok(())
+    }
+    pub async fn after_tool_call(&self, call: &ToolCall, result: &ToolResult) -> AgentResult<()> {
+        for ext in &self.extensions { ext.after_tool_call(call, result).await?; } Ok(())
+    }
+    pub async fn on_model_select(&self, ctx: &ModelSelectContext) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_model_select(ctx).await?; } Ok(())
+    }
+    pub async fn on_thinking_level_select(&self, level: &str, old: Option<&str>) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_thinking_level_select(level, old).await?; } Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Extension loader — JSON definition files
+// ---------------------------------------------------------------------------
+
+/// Load extensions from `--extension <path>` arguments.
+/// Expects JSON files with the following structure:
+/// ```json
+/// {
+///   "name": "my-extension",
+///   "description": "...",
+///   "tools": [ ... ],          // Optional: tools to register
+///   "systemPrompt": "...",     // Optional: appended to system prompt
+///   "flags": { ... }           // Optional: CLI flags
+/// }
+/// ```
+pub fn load_extensions(paths: &[String]) -> Vec<Box<dyn Extension>> {
+    let mut exts: Vec<Box<dyn Extension>> = Vec::new();
+    for path in paths {
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                match serde_json::from_str::<ExtensionDef>(&content) {
+                    Ok(def) => {
+                        tracing::info!("loaded extension: {} ({})", def.name, path);
+                        exts.push(Box::new(GenericExtension { def }));
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to parse extension {path}: {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("failed to read extension {path}: {e}");
+            }
+        }
+    }
+    exts
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ExtensionDef {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub tools: Vec<ToolDefEntry>,
+    #[serde(default)]
+    pub flags: std::collections::HashMap<String, FlagDef>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ToolDefEntry {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct FlagDef {
+    pub description: String,
+    #[serde(default)]
+    pub r#type: String,
+    #[serde(default)]
+    pub default: Option<serde_json::Value>,
+}
+
+/// A generic extension loaded from a JSON file.
+/// Injects system prompt and can define tools.
+struct GenericExtension {
+    def: ExtensionDef,
+}
+
+#[async_trait]
+impl Extension for GenericExtension {
+    async fn before_agent_start(&self, ctx: &mut BeforeAgentContext) -> AgentResult<()> {
+        if let Some(ref sp) = self.def.system_prompt {
+            if let Some(ref mut existing) = ctx.system_prompt {
+                existing.push_str("\n");
+                existing.push_str(sp);
+            } else {
+                ctx.system_prompt = Some(sp.clone());
+            }
+        }
+        Ok(())
+    }
+
+    async fn on_input(&self, ctx: &mut InputContext) -> AgentResult<()> {
+        // Handle custom commands from the extension
+        if ctx.text.starts_with('/') && ctx.text[1..].starts_with(&self.def.name) {
+            ctx.handled = true;
+        }
+        Ok(())
+    }
+}

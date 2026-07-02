@@ -1,0 +1,149 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+/// ION configuration stored in ~/.ion/config.json
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct IonConfig {
+    /// Default provider name (e.g. "opencode", "anthropic")
+    #[serde(default)]
+    pub default_provider: Option<String>,
+
+    /// Default model ID (e.g. "deepseek-v4-flash")
+    #[serde(default)]
+    pub default_model: Option<String>,
+
+    /// Default API key (stored in plaintext — in production use keyring)
+    #[serde(default)]
+    pub api_key: Option<String>,
+
+    /// Default base URL override
+    #[serde(default)]
+    pub base_url: Option<String>,
+
+    /// Per-provider API keys (provider_name → key)
+    #[serde(default)]
+    pub provider_api_keys: HashMap<String, String>,
+
+    /// Custom provider definitions (matching ~/.pi/agent/models.json format)
+    #[serde(default)]
+    pub providers: HashMap<String, CustomProvider>,
+}
+
+/// A custom provider definition (matches the pi reference models.json schema)
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct CustomProvider {
+    pub name: String,
+    pub api: String,
+    pub base_url: String,
+    pub api_key: Option<String>,
+    pub headers: Option<HashMap<String, String>>,
+    pub models: Vec<CustomModel>,
+    pub model_overrides: Option<HashMap<String, ModelOverride>>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct CustomModel {
+    pub id: String,
+    pub name: Option<String>,
+    pub reasoning: Option<bool>,
+    pub context_window: Option<u64>,
+    pub max_tokens: Option<u64>,
+    pub cost: Option<CostConfig>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct CostConfig {
+    pub input: f64,
+    pub output: f64,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ModelOverride {
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+}
+
+impl Default for IonConfig {
+    fn default() -> Self {
+        Self {
+            default_provider: Some("opencode".into()),
+            default_model: None,
+            api_key: None,
+            base_url: None,
+            provider_api_keys: HashMap::new(),
+            providers: HashMap::new(),
+        }
+    }
+}
+
+impl IonConfig {
+    /// Path to config file: ~/.ion/config.json
+    pub fn path() -> PathBuf {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".into());
+        PathBuf::from(home).join(".ion").join("config.json")
+    }
+
+    /// Load config from file, or return defaults if not found.
+    pub fn load() -> Self {
+        let path = Self::path();
+        if !path.exists() {
+            return IonConfig::default();
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(content) => serde_json::from_str(&content).unwrap_or_else(|e| {
+                eprintln!("Warning: failed to parse {}: {e}", path.display());
+                IonConfig::default()
+            }),
+            Err(_) => IonConfig::default(),
+        }
+    }
+
+    /// Save config to file.
+    pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let path = Self::path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let content = serde_json::to_string_pretty(self)?;
+        std::fs::write(&path, content)?;
+        Ok(())
+    }
+
+    /// Resolve API key: CLI arg > auth.json > config file > env var.
+    pub fn resolve_api_key(&self, cli_key: Option<&str>, provider: &str) -> Option<String> {
+        // Delegate to AuthStorage which has the full priority chain
+        crate::auth::AuthStorage::resolve_api_key(cli_key, provider)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// defaultModelPerProvider (from pi reference model-resolver.ts)
+// ---------------------------------------------------------------------------
+
+/// Returns the default model ID for a given provider name.
+pub fn default_model_for_provider(provider: &str) -> &'static str {
+    match provider {
+        "anthropic" => "claude-opus-4-8",
+        "openai" => "gpt-5.4",
+        "deepseek" => "deepseek-v4-pro",
+        "google" => "gemini-3.1-pro-preview",
+        "opencode" => "deepseek-v4-flash",
+        "openrouter" => "deepseek-v4-flash",
+        "xai" => "grok-3",
+        "groq" => "deepseek-v4-flash",
+        "mistral" => "mistral-large",
+        "github-copilot" => "gpt-5.4",
+        "amazon-bedrock" => "amazon.nova-pro-v1:0",
+        "azure-openai-responses" => "gpt-5.4",
+        "google-vertex" => "gemini-3.1-pro-preview",
+        "openai-codex" => "gpt-5.5-codex",
+        "zai-coding-cn" => "deepseek-v4-flash",
+        "xiaomi" => "mimo-z1",
+        "fireworks" => "deepseek-v4-flash",
+        "together" => "deepseek-v4-flash",
+        "cerebras" => "cerebras-gpt",
+        _ => "deepseek-v4-flash",
+    }
+}

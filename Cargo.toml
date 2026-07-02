@@ -1,0 +1,49 @@
+[package]
+name = "ion"
+version = "0.1.0"
+edition = "2024"
+description = "ION CLI — Agent orchestration and AI agent loop"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
+futures-util = "0.3"
+ion-provider = { path = "../ion-provider" }
+clap = { version = "4", features = ["derive"] }
+axum = { version = "0.7", features = ["macros"] }
+tower-http = { version = "0.6", features = ["cors"] }
+jsonschema = "0.46.8"
+wasmtime = "44.0.3"
+serde_yaml = "0.9.34"
+
+[[bin]]
+name = "ion"
+path = "src/bin/ion.rs"
+
+[[bin]]
+name = "demo"
+path = "src/bin/demo.rs"
+
+[[bin]]
+name = "mock-worker"
+path = "src/bin/mock_worker.rs"
+
+[[bin]]
+name = "agent-demo"
+path = "src/bin/agent_demo.rs"
+
+[profile.dev]
+opt-level = 1
+debug = true
+
+[profile.release]
+opt-level = 3
+strip = "symbols"
