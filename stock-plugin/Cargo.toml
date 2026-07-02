@@ -1,0 +1,10 @@
+[package]
+name = "stock-plugin"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+# For WASM: build with:
+# cargo build --target wasm32-wasip1 --release
