@@ -4,6 +4,7 @@ use ratatui::{
     Terminal, backend::{CrosstermBackend, Backend},
 };
 use serde_json::Value;
+use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
 
 use crate::tui::{
@@ -108,6 +109,9 @@ pub struct AppState {
     /// 弹出层：None = 不显示，Some = 显示表单
     pub create_modal: Option<CreateModal>,
 
+    /// 键盘事件接收器（专用线程推送）
+    kb_rx: mpsc::UnboundedReceiver<ce::Event>,
+
     // Send queue (buffered sends from keyboard handler)
     pending_sends: Vec<(String, String)>,
     // Create queue (buffered create_session requests from modal)
@@ -151,6 +155,7 @@ impl AppState {
             active_session: None,
             anim_frame: 0,
             create_modal: None,
+            kb_rx: mpsc::unbounded_channel().1, // placeholder, replaced in run()
             pending_sends: vec![],
             pending_creates: vec![],
             tree_items: vec![],
@@ -210,6 +215,22 @@ impl AppState {
         self.term_height = h;
         self.layout_tier = LayoutTier::from_width(w);
 
+        // ── 专用键盘线程（解决 spawn_blocking 泄漏问题）──
+        let (kb_tx, kb_rx) = mpsc::unbounded_channel();
+        std::thread::spawn(move || {
+            loop {
+                match ce::read() {
+                    Ok(event) => {
+                        if kb_tx.send(event).is_err() {
+                            break; // receiver dropped
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        self.kb_rx = kb_rx;
+
         let result = self.run_inner(&mut terminal).await;
 
         // Exit terminal
@@ -239,18 +260,17 @@ impl AppState {
                 _ = tick.tick() => {
                     self.on_tick().await;
                 }
-                result = tokio::task::spawn_blocking(|| ce::read()) => {
-                    match result {
-                        Ok(Ok(Event::Key(key))) if key.kind == KeyEventKind::Press => {
+                Some(event) = self.kb_rx.recv() => {
+                    match event {
+                        ce::Event::Key(key) if key.kind == KeyEventKind::Press => {
                             self.on_key(key);
                         }
-                        Ok(Ok(Event::Resize(w, h))) => {
+                        ce::Event::Resize(w, h) => {
                             self.term_width = w;
                             self.term_height = h;
                             self.layout_tier = LayoutTier::from_width(w);
                         }
-                        Ok(Ok(_)) => {}
-                        _ => { self.should_quit = true; }
+                        _ => {}
                     }
                 }
             }
