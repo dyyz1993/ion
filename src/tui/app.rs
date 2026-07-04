@@ -221,20 +221,26 @@ impl AppState {
 
     async fn on_tick(&mut self) {
         self.anim_frame = (self.anim_frame + 1) % 8;
-        if let Ok(data) = self.conn.poll_overview().await {
-            self.connected = true;
-            let prev_count = self.workers.len();
-            self.apply_overview(data);
-            if self.workers.len() > prev_count {
-                for w in &self.workers {
-                    if let Some(sid) = w.get("session_id").and_then(|v| v.as_str()) {
-                        self.log_buffers.entry(sid.to_string())
-                            .or_insert_with(|| VecDeque::with_capacity(20));
+        match self.conn.poll_overview().await {
+            Ok(data) => {
+                self.connected = true;
+                let prev_count = self.workers.len();
+                self.apply_overview(data);
+                if self.workers.len() > prev_count {
+                    for w in &self.workers {
+                        if let Some(sid) = w.get("session_id").and_then(|v| v.as_str()) {
+                            self.log_buffers.entry(sid.to_string())
+                                .or_insert_with(|| VecDeque::with_capacity(20));
+                        }
                     }
                 }
             }
-        } else {
-            self.connected = false;
+            Err(e) => {
+                // Log the error so we can debug connection issues
+                self.connected = false;
+                // Log error (visible when running in tmux)
+                eprintln!("[tui] poll_overview error: {e}");
+            }
         }
     }
 
