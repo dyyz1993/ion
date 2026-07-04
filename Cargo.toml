@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 description = "ION CLI — Agent orchestration and AI agent loop"
 
+[workspace]
+members = ["todo-plugin"]
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
@@ -22,7 +25,10 @@ axum = { version = "0.7", features = ["macros"] }
 tower-http = { version = "0.6", features = ["cors"] }
 jsonschema = "0.46.8"
 wasmtime = "44.0.3"
+ratatui = "0.29"
+crossterm = "0.28"
 serde_yaml = "0.9.34"
+which = "8.0.4"
 
 [[bin]]
 name = "ion"
@@ -39,6 +45,14 @@ path = "src/bin/mock_worker.rs"
 [[bin]]
 name = "agent-demo"
 path = "src/bin/agent_demo.rs"
+
+[[bin]]
+name = "manager-test"
+path = "src/bin/manager_test.rs"
+
+[[bin]]
+name = "ion-worker"
+path = "src/bin/ion_worker.rs"
 
 [profile.dev]
 opt-level = 1
