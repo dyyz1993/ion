@@ -66,6 +66,12 @@ async fn i02_create_worker_returns_info() {
         channels: None,
         parent: None,
         worktree: None,
+        // 独立 worker：无 creator / 无关系 / 无初始 prompt（沿用默认 Child 语义下的空值）
+        relation: None,
+        creator: None,
+        report_channel: None,
+        report_to: None,
+        initial_prompt: None,
     }).await.expect("create_worker should succeed");
 
     assert!(!info.worker_id.is_empty(), "worker_id should not be empty");

@@ -1,0 +1,15 @@
+{
+  "name": "ion-dashboard",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun --watch run src/index.ts"
+  },
+  "dependencies": {
+    "@opentui/core": "^0.4.3"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

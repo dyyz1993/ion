@@ -25,8 +25,6 @@ axum = { version = "0.7", features = ["macros"] }
 tower-http = { version = "0.6", features = ["cors"] }
 jsonschema = "0.46.8"
 wasmtime = "44.0.3"
-ratatui = "0.29"
-crossterm = "0.28"
 serde_yaml = "0.9.34"
 which = "8.0.4"
 

@@ -18,7 +18,6 @@ pub mod pool;
 pub mod queue;
 pub mod session;
 pub mod session_index;
-pub mod tui;
 pub mod session_jsonl;
 pub mod worker;
 pub mod worker_api;

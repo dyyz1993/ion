@@ -1463,9 +1463,9 @@ async fn main() {
             ConfigAction::Get { key } => cmd_config_get(key).await,
         },
         Some(Commands::Dashboard) => {
-            if let Err(e) = ion::tui::run_dashboard().await {
-                eprintln!("Dashboard error: {e}");
-            }
+            // Dashboard 用 Bun + OpenTUI 实现（dashboard/ 子目录）
+            // 自动启动 Manager（如果没在跑），然后 fork bun 进程
+            launch_dashboard().await;
         }
         Some(Commands::Rpc { session, method, params }) => {
             cmd_rpc(session.as_deref(), method, params).await;
@@ -2514,5 +2514,99 @@ impl Extension for SessionIndexExtension {
             ctx.messages.iter().filter(|m| matches!(m, ion::agent::messages::Message::Assistant(_))).count() as u32,
         );
         Ok(())
+    }
+}
+
+/// 启动 Dashboard：自动起 Manager（如果没在跑），然后 fork bun 进程
+async fn launch_dashboard() {
+    use std::process::Command;
+
+    // 1. 检查 Manager 是否在跑，没在跑就后台启动
+    let sock = ion::paths::manager_socket_path();
+    let need_start = if !sock.exists() {
+        true
+    } else {
+        // socket 文件在，验证能不能连
+        match tokio::net::UnixStream::connect(&sock).await {
+            Ok(_) => false,
+            Err(_) => {
+                // stale socket，删掉
+                let _ = std::fs::remove_file(&sock);
+                true
+            }
+        }
+    };
+
+    if need_start {
+        eprintln!("[ion] Starting Manager...");
+        let ion_bin = std::env::current_exe()
+            .unwrap_or_else(|_| std::path::PathBuf::from("ion"));
+        match Command::new(&ion_bin).arg("manager").arg("start")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(_child) => {
+                // 等待 socket 就绪（最多 5 秒）
+                for _ in 0..25 {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    if sock.exists() {
+                        // 再验证一下能连
+                        if tokio::net::UnixStream::connect(&sock).await.is_ok() {
+                            break;
+                        }
+                    }
+                }
+                if !sock.exists() {
+                    eprintln!("[ion] Manager failed to start");
+                    return;
+                }
+            }
+            Err(e) => {
+                eprintln!("[ion] Failed to start Manager: {e}");
+                return;
+            }
+        }
+    }
+
+    // 2. 找 dashboard 目录（相对可执行文件或当前目录）
+    let candidates = [
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("dashboard"),
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.join("dashboard")))
+            .unwrap_or_default(),
+        std::path::PathBuf::from("dashboard"),
+    ];
+    let dashboard_dir = candidates.iter()
+        .find(|p| p.join("src/index.ts").exists())
+        .cloned()
+        .unwrap_or_else(|| candidates[0].clone());
+
+    if !dashboard_dir.join("src/index.ts").exists() {
+        eprintln!("[ion] Dashboard not found at {}", dashboard_dir.display());
+        return;
+    }
+
+    // 3. 检查 node_modules，没有就 bun install
+    if !dashboard_dir.join("node_modules").exists() {
+        eprintln!("[ion] Installing dashboard dependencies...");
+        let _ = Command::new("bun").arg("install")
+            .current_dir(&dashboard_dir)
+            .status();
+    }
+
+    // 4. fork bun 进程跑 dashboard（前台，继承 TTY）
+    eprintln!("[ion] Launching dashboard...");
+    let status = Command::new("bun")
+        .arg("run")
+        .arg("src/index.ts")
+        .current_dir(&dashboard_dir)
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => eprintln!("[ion] Dashboard exited with code: {:?}", s.code()),
+        Err(e) => eprintln!("[ion] Failed to launch bun (is bun installed?): {e}"),
     }
 }
