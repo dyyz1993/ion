@@ -20,26 +20,28 @@ impl ManagerConn {
         // Try connecting directly first
         match Self::try_connect(&sock).await {
             Ok(conn) => return Ok(conn),
-            Err(e) => {
-                // If Manager not running, auto-start it
-                if !sock.exists() {
-                    eprintln!("[ion] Manager not running — auto-starting...");
-                    if let Err(start_err) = Self::start_manager() {
-                        return Err(format!("Failed to start Manager: {start_err}"));
-                    }
-                    // Wait for socket to appear
-                    for i in 0..25 {
-                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                        if sock.exists() {
-                            return Self::try_connect(&sock).await;
-                        }
-                        if i % 10 == 9 {
-                            eprintln!("[ion] Waiting for Manager... ({})", (i + 1) * 200);
-                        }
-                    }
-                    return Err("Manager did not start within 5 seconds".into());
+            Err(_) => {
+                // Connection failed — either no socket or stale socket from crash.
+                // Remove any stale socket file and auto-start Manager.
+                if sock.exists() {
+                    eprintln!("[ion] Removing stale socket...");
+                    let _ = std::fs::remove_file(&sock);
                 }
-                return Err(e);
+                eprintln!("[ion] Manager not running — auto-starting...");
+                if let Err(start_err) = Self::start_manager() {
+                    return Err(format!("Failed to start Manager: {start_err}"));
+                }
+                // Wait for socket to appear
+                for i in 0..25 {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    if sock.exists() {
+                        return Self::try_connect(&sock).await;
+                    }
+                    if i % 10 == 9 {
+                        eprintln!("[ion] Waiting for Manager... ({})", (i + 1) * 200);
+                    }
+                }
+                return Err("Manager did not start within 5 seconds".into());
             }
         }
     }
