@@ -361,6 +361,12 @@ impl AppState {
                 modal.error = None;
             }
             KeyCode::Char(c) => {
+                // 如果 agent 是默认值且第一次输入，替换而不是追加
+                let is_default = modal.field == CreateField::Agent
+                    && (modal.agent == "build" || modal.agent == "explore" || modal.agent == "plan" || modal.agent == "reviewer");
+                if is_default {
+                    modal.agent.clear();
+                }
                 modal.current_text_mut().push(c);
                 modal.error = None;
             }
