@@ -234,14 +234,20 @@ Agent 启动时自动追加到 system prompt 末尾。
 | 模块 | 用例 | 步骤 | 预期 |
 |------|------|------|------|
 | RPC | ping | `plugin_rpc ping` | `{"status":"pong"}` |
-| RPC | save | `call_tool memory_save(content="A")` → `plugin_rpc list` | list 能查到 |
+| RPC | list 不存在 outline | `list({outline:"missing"})` | 返回 `[]` |
+| RPC | 空 query | `memory_search(query="")` | 返回 `[]`，不报错 |
+| RPC | 非法 outline | `save(outline="../../x")` | 返回结构化错误 |
+| RPC | list entries | `call_tool memory_save(content="A")` → `plugin_rpc list(outline="auto")` | 返回条目 A |
+| RPC | list index | save → `plugin_rpc list({})` | index 中 auto.entry_count 增加 |
 | RPC | search(content) | save(content="喜欢 Rust") → `call_tool memory_search(query="Rust")` | 命中 1 条 |
 | RPC | search(tags) | save(tags=["rust"]) → `call_tool memory_search(query="rust")` | 命中 1 条 |
 | RPC | search(无匹配) | `memory_search(query="不存在的词")` | `[]` |
 | RPC | forget (软删除) | save → forget(id) → list | 条目不在 list 中 |
+| RPC | forget 后 inspect | save → forget(id) → inspect(id) | 返回条目且 archived=true |
 | RPC | inspect | save → inspect(id) → 验证返回完整字段 | 含 id/content/tags/archived |
 | RPC | 错误处理 | save(content="") | 报错 |
 | RPC | 错误处理 | forget(id="不存在") | 报错 |
+| 事件 | debug_emit | subscribe → debug_emit("test") | 收到 memory_debug，data.message="test" |
 | RPC | 错误处理 | inspect(id="不存在") | 报错 |
 | 事件 | subscribe + save | subscribe → save → 等 2s | 收到 `memory_saved` 事件 |
 | 持久化 | 文件写入 | save → cat 对应 outline JSON 文件 | 合法 JSON |
@@ -254,7 +260,6 @@ Agent 启动时自动追加到 system prompt 末尾。
 |------|------|------|------|
 | 事件 | subscribe 过滤 | subscribe `--plugin memory` | 只收到 plugin=memory 事件 |
 | 事件 | save 事件字段 | subscribe → save → 检查事件 | 含 type/plugin/customType/session/data |
-| 事件 | debug_emit | subscribe → `plugin_rpc debug_emit` | 收到 `debug` 事件 |
 | 生命周期 | system prompt | save → 新建 session → 看 system prompt | 末尾有 `<memory_outline>` |
 | 生命周期 | 无记忆不注入 | 清空 memory → 新建 session → 看 system prompt | 没有 `<memory_outline>` |
 | 生命周期 | on_context 注入 | save Rust → prompt 含"Rust" → 验证 messages | `<memory_context>` 在 messages 中 |
@@ -270,7 +275,7 @@ Agent 启动时自动追加到 system prompt 末尾。
 | 模块 | 说明 |
 |------|------|
 | 并发写 | 多 session 同时 save 可能冲突 |
-| hash 精度 | `content_hash` 当前只算条目数量，不算实际内容 |
+| hash 精度 | `content_hash` v0.1 基于内容 JSON 的 djb2 哈希，修改条目内容保证触发 hash 变化 |
 | session 恢复 | Manager 重启后 session 不自动恢复 |
 | consolidation 评分 | 当前只更新 index，不做内容评分 |
 

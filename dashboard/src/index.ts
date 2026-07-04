@@ -28,16 +28,20 @@ async function main() {
 
   setRerenderFn(() => {
     try {
-      const children = renderer.root.getChildren();
+      const root = renderer.root;
+      // 关键：用 remove() 不用 destroyRecursively()，避免误伤 Input 单例
+      const children = root.getChildren().slice();
       for (const child of children) {
-        if (child && typeof child.destroyRecursively === "function") {
+        if (!child) continue;
+        if (typeof root.remove === "function") {
+          root.remove(child);
+        } else if (typeof child.destroyRecursively === "function") {
           child.destroyRecursively();
         }
       }
       const tree = renderRoot(renderer);
-      if (tree) renderer.root.add(tree);
+      if (tree) root.add(tree);
     } catch (e: any) {
-      // 错误塞进 state.logs，不污染终端
       log(`rerender error: ${e.message}`);
     }
   });

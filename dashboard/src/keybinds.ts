@@ -7,6 +7,9 @@ export function setupKeybinds(renderer: any): void {
     const key = keyEvent.name;
     const ctrl = keyEvent.ctrl || false;
 
+    // 阻止默认传播（避免字符同时进 Input 和被 keybinds 处理）
+    // 注意：OpenTUI keyEvent 有 _defaultPrevented/_propagationStopped 字段
+
     // 创建模态打开时，所有键优先给模态
     if (state.createModal) {
       if (key === "escape") {
@@ -76,11 +79,9 @@ export function setupKeybinds(renderer: any): void {
         }
         break;
       case "i":
-        // 进入输入模式
-        if (state.selectedSessionId) {
-          state.focusedPanel = "input";
-          rerender();
-        }
+        // 进入输入模式（不要求先选中 worker，发送时再检查）
+        state.focusedPanel = "input";
+        rerender();
         break;
     }
   });

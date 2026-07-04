@@ -63,6 +63,22 @@
         "htmlSrc": "pages/kanban-v3.html",
         "interactions": []
       }
+    },
+    {
+      "id": "page-kanban-v4",
+      "title": "看板视图 v4",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1752048000000,
+      "canvasData": {
+        "x": 2480,
+        "y": 0,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/kanban-v4.html",
+        "interactions": []
+      }
     }
   ],
   "config": {

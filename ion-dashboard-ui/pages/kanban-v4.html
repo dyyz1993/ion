@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ION 看板视图 v4</title>
+    <style id="theme-vars">
+/* ═══════════════════════════════════════════════════════════════
+   ION Dashboard — TUI Terminal Aesthetic
+   Industrial/Utilitarian · Dark Theme · Monospace
+   ═══════════════════════════════════════════════════════════════ */
+
+:root {
+  /* ── Palette ── */
+  --color-bg-deep:      #0a0e17;
+  --color-bg-primary:   #0d1117;
+  --color-bg-secondary: #161b22;
+  --color-bg-elevated:  #1c2333;
+  --color-bg-surface:   #21283b;
+  --color-bg-hover:     #262f45;
+
+  --color-border:       #30363d;
+  --color-border-accent:#00d4aa;
+  --color-divider:      #21262d;
+
+  --color-text-primary:  #e6edf3;
+  --color-text-secondary:#8b949e;
+  --color-text-muted:    #484f58;
+  --color-text-inverse:  #0d1117;
+
+  --color-accent:        #00d4aa;
+  --color-accent-dim:    #00d4aa33;
+  --color-accent-bright: #00ffcc;
+  --color-warning:      #f0883e;
+  --color-error:         #f85149;
+  --color-success:       #3fb950;
+  --color-info:          #58a6ff;
+
+  --color-cyan:          #79c0ff;
+  --color-orange:       #d29922;
+  --color-purple:        #bc8cff;
+
+  /* ── Typography ── */
+  --font-mono:    'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', 'Consolas', 'Monaco', monospace;
+  --font-display: 'JetBrains Mono', 'Fira Code', monospace;
+
+  --text-xs:   0.6875rem;  /* 11px */
+  --text-sm:   0.75rem;    /* 12px */
+  --text-base: 0.8125rem;  /* 13px */
+  --text-md:   0.875rem;   /* 14px */
+  --text-lg:   1rem;       /* 16px */
+  --text-xl:   1.125rem;   /* 18px */
+  --text-2xl:  1.25rem;    /* 20px */
+
+  --leading-tight:  1.25;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.65;
+
+  /* ── Spacing ── */
+  --space-1:  0.25rem;
+  --space-2:  0.5rem;
+  --space-3:  0.75rem;
+  --space-4:  1rem;
+  --space-5:  1.25rem;
+  --space-6:  1.5rem;
+  --space-8:  2rem;
+
+  /* ── Radius ── */
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+
+  /* ── Shadows ── */
+  --shadow-panel: 0 0 0 1px var(--color-border);
+  --shadow-glow:  0 0 12px var(--color-accent-dim);
+  --shadow-dropdown: 0 4px 12px rgba(0, 0, 0, 0.4);
+
+  /* ── Transitions ── */
+  --transition-fast:   80ms ease;
+  --transition-normal: 150ms ease;
+
+  /* ── Layout ── */
+  --sidebar-width:    220px;
+  --right-panel-width: 300px;
+  --header-height:     40px;
+  --status-bar-height: 28px;
+  --panel-padding:     var(--space-3);
+}
+
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  @theme inline {
+    --color-accent: var(--color-accent);
+    --color-border: var(--color-border);
+  }
+  @layer base {
+    body { background: var(--color-bg-primary); color: var(--color-text-primary); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+</head>
+<body class="min-h-screen font-sans antialiased">
+    <main>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     ION 看板视图 v4 — TUI Kanban Board
+     Layout: 240px sidebar | 1fr center (grid + input)
+     ═══════════════════════════════════════════════════════════════ -->
+<div id="app"
+     style="
+       display: grid;
+       grid-template-rows: var(--header-height) 1fr var(--status-bar-height);
+       height: 100vh;
+       overflow: hidden;
+       background: var(--color-bg-deep);
+       font-family: var(--font-mono);
+       font-size: var(--text-base);
+       color: var(--color-text-primary);
+     ">
+
+  <!-- ── Header Bar (full width, 40px) ── -->
+  <div style="
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 var(--space-4);
+    height: var(--header-height);
+    background: var(--color-bg-secondary);
+    border-bottom: 1px solid var(--color-border);
+    font-size: var(--text-sm);
+    white-space: nowrap;
+    user-select: none;
+  ">
+    <!-- Left -->
+    <div style="display: flex; align-items: center; gap: var(--space-3);">
+      <span style="color: var(--color-accent); font-weight: bold; font-size: var(--text-md);">ION</span>
+      <span style="color: var(--color-text-muted);">v0.1.0</span>
+      <span style="color: var(--color-accent);">4/4</span>
+    </div>
+    <!-- Center -->
+    <div style="color: var(--color-text-secondary); font-size: var(--text-sm);">
+      <span style="color: var(--color-warning);">&#9889;</span> 看板视图 &middot; 6 Workers &middot; 3 活跃
+    </div>
+    <!-- Right -->
+    <div style="display: flex; align-items: center; gap: var(--space-3); font-size: var(--text-xs);">
+      <span style="color: var(--color-text-muted);">[Esc]返回</span>
+      <span style="color: var(--color-text-muted);">[Enter]输入</span>
+      <span style="color: var(--color-text-muted);">[Space]新建</span>
+      <span style="color: var(--color-text-muted);">[N]新建会话</span>
+      <span style="color: var(--color-text-muted);">[P]新建项目</span>
+      <span style="color: var(--color-text-secondary); margin-left: var(--space-2);">20:46:25</span>
+    </div>
+  </div>
+
+  <!-- ── Body: sidebar (full height) + center column ── -->
+  <div style="
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    overflow: hidden;
+  ">
+
+    <!-- ── Left Sidebar (spans header→status bar) ── -->
+    <div style="
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--color-bg-secondary);
+      border-right: 1px solid var(--color-border);
+      font-size: var(--text-xs);
+    ">
+
+      <!-- Section 1: PROJECTS -->
+      <div style="flex: 1 1 auto; overflow-y: auto; padding: var(--space-2) 0;" class="no-scrollbar">
+        <div style="
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: var(--space-1) var(--space-3);
+          color: var(--color-text-muted);
+          font-size: 10px;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          font-weight: bold;
+        ">
+          <span>PROJECTS</span>
+          <span style="color: var(--color-text-muted); font-size: 10px;">[P]新建</span>
+        </div>
+
+        <!-- Project: ion (expanded) -->
+        <div style="margin: 1px var(--space-2);">
+          <div style="
+            display: flex;
+            align-items: center;
+            gap: var(--space-2);
+            padding: var(--space-1) var(--space-2);
+            background: var(--color-bg-elevated);
+            border-left: 2px solid var(--color-cyan);
+          ">
+            <span style="color: var(--color-text-secondary); font-size: 10px;">&#9662;</span>
+            <span style="color: var(--color-cyan); font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">ion</span>
+          </div>
+          <!-- Children -->
+          <div style="margin-left: var(--space-3); border-left: 1px solid var(--color-divider);">
+            <div style="
+              display: flex;
+              align-items: center;
+              gap: var(--space-2);
+              padding: var(--space-1) var(--space-2);
+              background: rgba(121,192,255,0.04);
+              border-left: 2px solid transparent;
+            ">
+              <span style="color: var(--color-cyan); font-size: 8px;">&#9679;</span>
+              <span style="color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">代码审查</span>
+            </div>
+            <div style="
+              display: flex;
+              align-items: center;
+              gap: var(--space-2);
+              padding: var(--space-1) var(--space-2);
+              background: rgba(121,192,255,0.04);
+              border-left: 2px solid transparent;
+            ">
+              <span style="color: var(--color-cyan); font-size: 8px;">&#9679;</span>
+              <span style="color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">日常开发</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Project: research-notes (collapsed) -->
+        <div style="margin: 1px var(--space-2);">
+          <div style="
+            display: flex;
+            align-items: center;
+            gap: var(--space-2);
+            padding: var(--space-1) var(--space-2);
+            background: var(--color-bg-elevated);
+            border-left: 2px solid var(--color-orange);
+          ">
+            <span style="color: var(--color-text-muted); font-size: 10px;">&#9656;</span>
+            <span style="color: var(--color-orange); font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">research-notes</span>
+          </div>
+        </div>
+
+        <!-- Project: opentui-desktop (collapsed) -->
+        <div style="margin: 1px var(--space-2);">
+          <div style="
+            display: flex;
+            align-items: center;
+            gap: var(--space-2);
+            padding: var(--space-1) var(--space-2);
+            background: var(--color-bg-elevated);
+            border-left: 2px solid var(--color-purple);
+          ">
+            <span style="color: var(--color-text-muted); font-size: 10px;">&#9656;</span>
+            <span style="color: var(--color-purple); font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">opentui-desktop</span>
+          </div>
+        </div>
+
+        <div style="padding: var(--space-1) var(--space-3); color: var(--color-text-muted); font-size: 10px;">3 projects</div>
+
+        <!-- Divider -->
+        <div style="border-top: 1px solid var(--color-divider); margin: var(--space-1) var(--space-3);"></div>
+
+        <!-- Section 2: SESSIONS -->
+        <div style="
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: var(--space-1) var(--space-3);
+          color: var(--color-text-muted);
+          font-size: 10px;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          font-weight: bold;
+        ">
+          <span>SESSIONS</span>
+          <span style="color: var(--color-text-muted); font-size: 10px;">[N]新建</span>
+        </div>
+
+        <!-- Session 1 -->
+        <div style="
+          display: flex;
+          align-items: center;
+          gap: var(--space-2);
+          padding: var(--space-1) var(--space-3);
+        ">
+          <span style="color: var(--color-cyan); font-size: 8px;">&#9679;</span>
+          <span style="color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;">代码审查 &middot; ion</span>
+          <span style="color: var(--color-text-muted); font-size: 10px; white-space: nowrap;">2w</span>
+          <span style="font-size: 10px;">&#128994;</span>
+        </div>
+
+        <!-- Session 2 -->
+        <div style="
+          display: flex;
+          align-items: center;
+          gap: var(--space-2);
+          padding: var(--space-1) var(--space-3);
+        ">
+          <span style="color: var(--color-cyan); font-size: 8px;">&#9679;</span>
+          <span style="color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;">日常开发 &middot; ion</span>
+          <span style="color: var(--color-text-muted); font-size: 10px; white-space: nowrap;">1w</span>
+          <span style="font-size: 10px;">&#9898;</span>
+        </div>
+
+        <!-- Session 3 -->
+        <div style="
+          display: flex;
+          align-items: center;
+          gap: var(--space-2);
+          padding: var(--space-1) var(--space-3);
+        ">
+          <span style="color: var(--color-orange); font-size: 8px;">&#9679;</span>
+          <span style="color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;">论文调研 &middot; research-notes</span>
+          <span style="color: var(--color-text-muted); font-size: 10px; white-space: nowrap;">1w</span>
+          <span style="font-size: 10px;">&#128994;</span>
+        </div>
+
+        <!-- Session 4 -->
+        <div style="
+          display: flex;
+          align-items: center;
+          gap: var(--space-2);
+          padding: var(--space-1) var(--space-3);
+        ">
+          <span style="color: var(--color-purple); font-size: 8px;">&#9679;</span>
+          <span style="color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;">TUI 开发 &middot; opentui-desktop</span>
+          <span style="color: var(--color-text-muted); font-size: 10px; white-space: nowrap;">1w</span>
+          <span style="font-size: 10px;">&#128308;</span>
+        </div>
+
+        <div style="padding: var(--space-1) var(--space-3); color: var(--color-text-muted); font-size: 10px;">4 sessions</div>
+      </div>
+    </div>
+
+    <!-- ── Center Column: kanban grid + input area ── -->
+    <div style="
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--color-bg-primary);
+    ">
+      <!-- Kanban Grid -->
+      <div style="
+        flex: 1 1 auto;
+        overflow-y: auto;
+        padding: var(--space-3);
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: var(--space-3);
+        align-content: start;
+      " class="no-scrollbar">
+
+        <!-- ── Card 1 (SELECTED) ── -->
+        <div style="
+          border: 1px solid var(--color-accent);
+          box-shadow: var(--shadow-glow);
+          background: var(--color-bg-secondary);
+          padding: var(--space-3);
+          font-size: var(--text-xs);
+          line-height: var(--leading-tight);
+          cursor: grab;
+        ">
+          <!-- Card header -->
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-2);">
+            <div style="display: flex; align-items: center; gap: var(--space-2);">
+              <span style="color: var(--color-text-muted);">&#8801;</span>
+              <span style="color: var(--color-text-primary); font-weight: bold; font-size: var(--text-sm);">Worker-01</span>
+            </div>
+            <span style="color: var(--color-success); font-size: var(--text-xs);">&#128994; Busy</span>
+          </div>
+          <!-- Card meta -->
+          <div style="color: var(--color-text-secondary); margin-bottom: var(--space-2); display: flex; flex-wrap: wrap; gap: var(--space-1);">
+            <span style="color: var(--color-warning);">&#9889;</span>
+            <span style="color: var(--color-accent);">code-reviewer</span>
+            <span style="color: var(--color-text-muted);">&middot;</span>
+            <span>主代理</span>
+            <span style="color: var(--color-text-muted);">&middot;</span>
+            <span style="color: var(--color-cyan);">&#9679;</span>
+            <span style="color: var(--color-cyan);">ion</span>
+            <span style="color: var(--color-text-muted);">&middot;</span>
+            <span style="color: var(--color-text-muted);">&#9101; ion-w-01</span>
+            <span style="color: var(--color-text-muted);">&middot;</span>
+            <span>&#9201; 9m</span>
+          </div>
+          <!-- Separator -->
+          <div style="border-top: 1px solid var(--color-divider); margin-bottom: var(--space-2);"></div>
+          <!-- Message preview -->
+          <div style="color: var(--color-text-secondary);">
+            <div style="margin-bottom: 2px;"><span style="color: var(--color-text-muted);">T5</span> <span style="color: var(--color-info);">你:</span> 帮我审查一下代码结构</div>
+            <div style="margin-bottom: 2px;"><span style="color: var(--color-text-muted);">T4</span> <span style="color: var(--color-accent);">Agent:</span> 正在分析代码结构，检查 3/5 模块...</div>
+            <div><span style="color: var(--color-text-muted);">T3</span> <span style="color: var(--color-warning);">&#128295;</span> <span style="color: var(--color-text-muted);">read("src/agent/agent_loop.rs")</span> &#9632;</div>
+          </div>
+        </div>
+
+        <!-- ── Card 2 ── -->
+        <div style="
+          border: 1px solid var(--color-border);
+          background: var(--color-bg-secondary);
+          padding: var(--space-3);
+          font-size: var(--text-xs);
+          line-height: var(--leading-tight);
+          cursor: grab;
+          transition: background var(--transition-fast);
+        ">
+          <!-- Card header -->
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-2);">
+            <div style="display: flex; align-items: center; gap: var(--space-2);">
+              <span style="color: var(--color-text-muted);">&#8801;</span>
+              <span style="color: var(--color-text-primary); font-weight: bold; font-size: var(--text-sm);">Worker-02</span>
+            </div>
+            <span style="color: var(--color-text-muted); font-size: var(--text-xs);">&#9898; Idle</span>
+          </div>
+          <!-- Card meta -->
+          <div style="color: var(--color-text-secondary); margin-bottom: var(--space-2); display: flex; flex-wrap: wrap; gap: var(--space-1);">
+            <span style="color: var(--color-info);">&#129504;</span>
+            <span style="color: var(--color-accent);">planner</span>
+            <span style="color: var(--color-text-muted);">&middot;</span>
+            <span>主代理</span>
+            <span style="color: var(--color-text-muted);">&middot;</span>
+            <span style="color: var(--color-cyan);">&#9679;</span>
+            <span style="color: var(--color-cyan);">ion</span>
+            <span style="color: var(--color-text-muted);">&middot;</span>
+            <span style="color: var(--color-text-muted);">&#9101; ion-w-02</span>
+            <span style="color: var(--color-text-muted);">&middot;</span>
+            <span>&#9201; 5m</span>
+          </div>
+          <!-- Separator -->
+          <div style="border-top: 1px solid var(--color-divider); margin-bottom: var(--space-2);"></div>
+          <!-- Message preview -->
+          <div style="color: var(--color-text-secondary);">
+            <div style="margin-bottom: 2px;"><span style="color: var(--color-text-muted);">T3</span> <span style="color: var(--color-info);">你:</span> 制定下一步计划</div>
+            <div style="margin-bottom: 2px;"><span style="color: var(--color-text-muted);">T2</span> <span style="color: var(--color-accent);">Agent:</span> 已生成开发路线图，共 5 个阶段</div>
+            <div><span style="color: var(--color-text-muted);">T1</span> <span style="color: var(--color-accent);">Agent:</span> agent_end — 任务完成</div>
+          </div>
+        </div>
+
+        <!-- ── Card 3 ── -->
+        <div style="
+          border: 1px solid var(--color-border);
+          background: var(--color-bg-secondary);
+          padding: var(--space-3);
+          font-size: var(--text-xs);
+          line-height: var(--leading-tight);
+          cursor: grab;
+          transition: background var(--transition-fast);
+        ">
+          <!-- Card header -->
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-2);">
+            <div style="display: flex; align-items: center; gap: var(--space-2);">
+              <span style="color: var(--color-text-muted);">&#8801;</span>
+              <span style="color: var(--color-text-primary); font-weight: bold; font-size: var(--text-sm);">Worker-03</span>
+            </div>
+            <span style="color: var(--color-success); font-size: var(--text-xs);">&#128994; Busy</span>
+          </div>
+          <!-- Card meta -->
+          <div style="color: var(--color-text-secondary); margin-bottom: var(--space-2); display: flex; flex-wrap: wrap; gap: var(--space-1);">
+            <span style="color: var(--color-warning);">&#128295;</span>
+            <span style="color: var(--color-accent);">executor</span>
+            <span style="color: var(--color-text-muted);">&middot;</span>
+            <span>子代理</span>
+            <span style="color: var(--color-text-muted);">&middot;</span>
+            <span style="color: var(--color-cyan);">&#9679;</span>
+            <span style="color: var(--color-cyan);">ion</span>
+            <span style="color: var(--color-text-muted);">&middot;</span>
+            <span>&#9201; 3m</span>
+          </div>
+          <!-- Separator -->
+          <div style="border-top: 1px solid var(--color-divider); margin-bottom: var(--space-2);"></div>
+          <!-- Message preview -->
+          <div style="color: var(--color-text-secondary);">
+            <div style="margin-bottom: 2px;"><span style="color: var(--color-text-muted);">T2</span> <span style="color: var(--color-accent);">Agent:</span> 执行代码修改任务</div>
+            <div><span style="color: var(--color-text-muted);">T1</span> <span style="color: var(--color-warning);">&#128295;</span> <span style="color: var(--color-text-muted);">edit("src/config.rs")</span> &#9632;</div>
+          </div>
+        </div>
+
+        <!-- ── Card 4 ── -->
+        <div style="
+          border: 1px solid var(--color-border);
+          background: var(--color-bg-secondary);
+          padding: var(--space-3);
+          font-size: var(--text-xs);
+          line-height: var(--leading-tight);
+          cursor: grab;
+          transition: background var(--transition-fast);
+        ">
+          <!-- Card header -->
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-2);">
+            <div style="display: flex; align-items: center; gap: var(--space-2);">
+              <span style="color: var(--color-text-muted);">&#8801;</span>
+              <span style="color: var(--color-text-primary); font-weight: bold; font-size: var(--text-sm);">Worker-04</span>
+            </div>
+            <span style="color: var(--color-success); font-size: var(--text-xs);">&#128994; Busy</span>
+          </div>
+          <!-- Card meta -->
+          <div style="color: var(--color-text-secondary); margin-bottom: var(--space-2); display: flex; flex-wrap: wrap; gap: var(--space-1);">
+            <span style="color: var(--color-info);">&#128269;</span>
+            <span style="color: var(--color-accent);">explorer</span>
+            <span style="color: var(--color-text-muted);">&middot;</span>
+            <span>同级代理</span>
+            <span style="color: var(--color-text-muted);">&middot;</span>
+            <span style="color: var(--color-orange);">&#9679;</span>
+            <span style="color: var(--color-orange);">research-notes</span>
+            <span style="color: var(--color-text-muted);">&middot;</span>
+            <span style="color: var(--color-text-muted);">&#9101; rn-w-01</span>
+            <span style="color: var(--color-text-muted);">&middot;</span>
+            <span>&#9201; 7m</span>
+          </div>
+          <!-- Separator -->
+          <div style="border-top: 1px solid var(--color-divider); margin-bottom: var(--space-2);"></div>
+          <!-- Message preview -->
+          <div style="color: var(--color-text-secondary);">
+            <div style="margin-bottom: 2px;"><span style="color: var(--color-text-muted);">T4</span> <span style="color: var(--color-accent);">Agent:</span> 正在搜索相关论文...</div>
+            <div><span style="color: var(--color-text-muted);">T3</span> <span style="color: var(--color-warning);">&#128295;</span> <span style="color: var(--color-text-muted);">grep("async.*runtime")</span> &#9632;</div>
+          </div>
+        </div>
+
+        <!-- ── Card 5 ── -->
+        <div style="
+          border: 1px solid var(--color-border);
+          background: var(--color-bg-secondary);
+          padding: var(--space-3);
+          font-size: var(--text-xs);
+          line-height: var(--leading-tight);
+          cursor: grab;
+          transition: background var(--transition-fast);
+        ">
+          <!-- Card header -->
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-2);">
+            <div style="display: flex; align-items: center; gap: var(--space-2);">
+              <span style="color: var(--color-text-muted);">&#8801;</span>
+              <span style="color: var(--color-text-primary); font-weight: bold; font-size: var(--text-sm);">Worker-05</span>
+            </div>
+            <span style="color: var(--color-text-muted); font-size: var(--text-xs);">&#9898; Idle</span>
+          </div>
+          <!-- Card meta -->
+          <div style="color: var(--color-text-secondary); margin-bottom: var(--space-2); display: flex; flex-wrap: wrap; gap: var(--space-1);">
+            <span style="color: var(--color-text-secondary);">&#128221;</span>
+            <span style="color: var(--color-accent);">summarizer</span>
+            <span style="color: var(--color-text-muted);">&middot;</span>
+            <span>子代理</span>
+            <span style="color: var(--color-text-muted);">&middot;</span>
+            <span style="color: var(--color-cyan);">&#9679;</span>
+            <span style="color: var(--color-cyan);">ion</span>
+            <span style="color: var(--color-text-muted);">&middot;</span>
+            <span>&#9201; 1m</span>
+          </div>
+          <!-- Separator -->
+          <div style="border-top: 1px solid var(--color-divider); margin-bottom: var(--space-2);"></div>
+          <!-- Message preview -->
+          <div style="color: var(--color-text-secondary);">
+            <div style="margin-bottom: 2px;"><span style="color: var(--color-text-muted);">T2</span> <span style="color: var(--color-accent);">Agent:</span> 摘要已生成完毕</div>
+            <div><span style="color: var(--color-text-muted);">T1</span> <span style="color: var(--color-accent);">Agent:</span> agent_end — 完成</div>
+          </div>
+        </div>
+
+        <!-- ── Card 6 ── -->
+        <div style="
+          border: 1px solid var(--color-border);
+          background: var(--color-bg-secondary);
+          padding: var(--space-3);
+          font-size: var(--text-xs);
+          line-height: var(--leading-tight);
+          cursor: grab;
+          transition: background var(--transition-fast);
+        ">
+          <!-- Card header -->
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-2);">
+            <div style="display: flex; align-items: center; gap: var(--space-2);">
+              <span style="color: var(--color-text-muted);">&#8801;</span>
+              <span style="color: var(--color-text-primary); font-weight: bold; font-size: var(--text-sm);">Worker-06</span>
+            </div>
+            <span style="color: var(--color-error); font-size: var(--text-xs);">&#128308; Dead</span>
+          </div>
+          <!-- Card meta -->
+          <div style="color: var(--color-text-secondary); margin-bottom: var(--space-2); display: flex; flex-wrap: wrap; gap: var(--space-1);">
+            <span style="color: var(--color-purple);">&#128202;</span>
+            <span style="color: var(--color-accent);">monitor</span>
+            <span style="color: var(--color-text-muted);">&middot;</span>
+            <span>同级代理</span>
+            <span style="color: var(--color-text-muted);">&middot;</span>
+            <span style="color: var(--color-purple);">&#9679;</span>
+            <span style="color: var(--color-purple);">opentui-desktop</span>
+            <span style="color: var(--color-text-muted);">&middot;</span>
+            <span>&#9201; 12m</span>
+          </div>
+          <!-- Separator -->
+          <div style="border-top: 1px solid var(--color-divider); margin-bottom: var(--space-2);"></div>
+          <!-- Message preview -->
+          <div style="color: var(--color-text-secondary);">
+            <div style="margin-bottom: 2px;"><span style="color: var(--color-text-muted);">T2</span> <span style="color: var(--color-accent);">Agent:</span> 连接超时</div>
+            <div><span style="color: var(--color-text-muted);">T1</span> <span style="color: var(--color-accent);">Agent:</span> agent_end — 异常退出</div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ── Input Area (center column only, ~60px) ── -->
+      <div style="
+        flex: 0 0 auto;
+        border-top: 1px solid var(--color-border);
+        background: var(--color-bg-secondary);
+      ">
+        <!-- Quick Actions Bar -->
+        <div style="
+          display: flex;
+          align-items: center;
+          padding: var(--space-1) var(--space-3);
+          font-size: 11px;
+          gap: var(--space-3);
+          height: 28px;
+          user-select: none;
+        ">
+          <span style="
+            color: var(--color-cyan);
+            font-weight: bold;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+          ">&#9656; Worker-01 &middot; code-reviewer &middot; <span style="color: var(--color-cyan);">ion</span></span>
+          <span style="color: var(--color-text-muted);">[Enter]发送</span>
+          <span style="color: var(--color-text-muted);">[Shift+Enter]换行</span>
+          <span style="color: var(--color-text-muted);">[Tab]切换Worker</span>
+          <span style="color: var(--color-text-muted);">[Ctrl+K]命令面板</span>
+        </div>
+        <!-- Input Field -->
+        <div style="
+          padding: 0 var(--space-3) var(--space-2) var(--space-3);
+          height: 32px;
+          display: flex;
+          align-items: center;
+        ">
+          <input type="text"
+            placeholder="向 Worker-01 发送消息..."
+            style="
+              width: 100%;
+              height: 28px;
+              background: var(--color-bg-primary);
+              border: 1px solid var(--color-border);
+              color: var(--color-text-primary);
+              font-family: var(--font-mono);
+              font-size: var(--text-base);
+              padding: 0 var(--space-3);
+              outline: none;
+              transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+            "
+          />
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Status Bar (full width, 28px) ── -->
+  <div style="
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 var(--space-4);
+    height: var(--status-bar-height);
+    background: var(--color-bg-elevated);
+    border-top: 1px solid var(--color-border);
+    font-size: 11px;
+    color: var(--color-text-muted);
+    white-space: nowrap;
+    user-select: none;
+  ">
+    <span>&mdash;看板 F1 主面板 &middot; Enter 发送 &middot; Tab 切换 &middot; Space 新建 &middot; N 会话 &middot; P 项目</span>
+    <span>ION v0.1.0</span>
+  </div>
+
+</div>
+
+    </main>
+    <script>lucide.createIcons();</script>
+</body>
+</html>
