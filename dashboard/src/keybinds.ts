@@ -1,5 +1,5 @@
 /** 全局键盘快捷键 */
-import { state, rerender, switchSession } from "./state";
+import { state, rerender, switchSession, log } from "./state";
 import { createSession } from "./manager";
 
 export function setupKeybinds(renderer: any): void {
@@ -37,7 +37,9 @@ export function setupKeybinds(renderer: any): void {
     // 普通模式快捷键
     switch (key) {
       case "q":
-        process.exit(0);
+        log("q pressed, exiting");
+        rerender();
+        setTimeout(() => process.exit(0), 50);
         break;
       case "tab":
         focusNext();

@@ -1,0 +1,850 @@
+<!DOCTYPE html>
+<html lang="en" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Untitled</title>
+    <style id="theme-vars">
+/* ═══════════════════════════════════════════════════════════════
+   ION Dashboard — TUI Terminal Aesthetic
+   Industrial/Utilitarian · Dark Theme · Monospace
+   ═══════════════════════════════════════════════════════════════ */
+
+:root {
+  /* ── Palette ── */
+  --color-bg-deep:      #0a0e17;
+  --color-bg-primary:   #0d1117;
+  --color-bg-secondary: #161b22;
+  --color-bg-elevated:  #1c2333;
+  --color-bg-surface:   #21283b;
+  --color-bg-hover:     #262f45;
+
+  --color-border:       #30363d;
+  --color-border-accent:#00d4aa;
+  --color-divider:      #21262d;
+
+  --color-text-primary:  #e6edf3;
+  --color-text-secondary:#8b949e;
+  --color-text-muted:    #484f58;
+  --color-text-inverse:  #0d1117;
+
+  --color-accent:        #00d4aa;
+  --color-accent-dim:    #00d4aa33;
+  --color-accent-bright: #00ffcc;
+  --color-warning:      #f0883e;
+  --color-error:         #f85149;
+  --color-success:       #3fb950;
+  --color-info:          #58a6ff;
+
+  --color-cyan:          #79c0ff;
+  --color-orange:       #d29922;
+  --color-purple:        #bc8cff;
+
+  /* ── Typography ── */
+  --font-mono:    'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', 'Consolas', 'Monaco', monospace;
+  --font-display: 'JetBrains Mono', 'Fira Code', monospace;
+
+  --text-xs:   0.6875rem;  /* 11px */
+  --text-sm:   0.75rem;    /* 12px */
+  --text-base: 0.8125rem;  /* 13px */
+  --text-md:   0.875rem;   /* 14px */
+  --text-lg:   1rem;       /* 16px */
+  --text-xl:   1.125rem;   /* 18px */
+  --text-2xl:  1.25rem;    /* 20px */
+
+  --leading-tight:  1.25;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.65;
+
+  /* ── Spacing ── */
+  --space-1:  0.25rem;
+  --space-2:  0.5rem;
+  --space-3:  0.75rem;
+  --space-4:  1rem;
+  --space-5:  1.25rem;
+  --space-6:  1.5rem;
+  --space-8:  2rem;
+
+  /* ── Radius ── */
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+
+  /* ── Shadows ── */
+  --shadow-panel: 0 0 0 1px var(--color-border);
+  --shadow-glow:  0 0 12px var(--color-accent-dim);
+  --shadow-dropdown: 0 4px 12px rgba(0, 0, 0, 0.4);
+
+  /* ── Transitions ── */
+  --transition-fast:   80ms ease;
+  --transition-normal: 150ms ease;
+
+  /* ── Layout ── */
+  --sidebar-width:    220px;
+  --right-panel-width: 300px;
+  --header-height:     40px;
+  --status-bar-height: 28px;
+  --panel-padding:     var(--space-3);
+}
+
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  @theme inline {
+    --color-accent: var(--color-accent);
+    --color-border: var(--color-border);
+  }
+  @layer base {
+    body { background: var(--color-bg-primary); color: var(--color-text-primary); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+</head>
+<body class="min-h-screen font-sans antialiased">
+    <main class="tui-root">
+        <!-- ═══════════ HEADER BAR ═══════════ -->
+        <header class="tui-header">
+            <div class="tui-header-left">
+                <span class="tui-logo">ION</span>
+                <span class="tui-version">v0.1.0</span>
+                <span class="tui-page-indicator">2/2</span>
+            </div>
+            <div class="tui-header-center">
+                <span class="tui-agent-context">&#9889; 看板视图 &#183; 6 Workers &#183; 3 活跃</span>
+            </div>
+            <div class="tui-header-right">
+                <span class="tui-keyhint">[Esc]返回</span>
+                <span class="tui-keyhint">[Enter]输入</span>
+                <span class="tui-keyhint">[Space]新建</span>
+                <span class="tui-timestamp">20:46:25</span>
+            </div>
+        </header>
+
+        <!-- ═══════════ MAIN TWO-ZONE LAYOUT ═══════════ -->
+        <div class="tui-body">
+
+            <!-- ── LEFT SIDEBAR ── -->
+            <aside class="tui-sidebar-left">
+                <div class="tui-panel-header">
+                    <span>WORKSPACE</span>
+                    <span class="tui-btn-tiny">[+]新建</span>
+                </div>
+                <div class="tui-tree">
+                    <div class="tui-tree-item tui-tree-active-project">
+                        <span class="tui-tree-toggle">&#9662;</span>
+                        <span class="tui-tree-folder">ion</span>
+                    </div>
+                    <div class="tui-tree-children">
+                        <div class="tui-tree-item">
+                            <span class="tui-tree-line">&#9472;&#9472;</span>
+                            <span class="tui-dot tui-dot-success">&#x1f7e2;</span>
+                            <span class="tui-tree-label">CLI 45+ 参数</span>
+                        </div>
+                        <div class="tui-tree-item">
+                            <span class="tui-tree-line">&#9472;&#9472;</span>
+                            <span class="tui-dot tui-dot-success">&#x1f7e2;</span>
+                            <span class="tui-tree-label">Agent 循环</span>
+                        </div>
+                        <div class="tui-tree-item">
+                            <span class="tui-tree-line">&#9472;&#9472;</span>
+                            <span class="tui-dot tui-dot-pending">&#x26aa;</span>
+                            <span class="tui-tree-label">Runtime 抽象层</span>
+                        </div>
+                        <div class="tui-tree-item">
+                            <span class="tui-tree-line">&#9472;&#9472;</span>
+                            <span class="tui-dot tui-dot-pending">&#x26aa;</span>
+                            <span class="tui-tree-label">沙箱实现</span>
+                        </div>
+                        <div class="tui-tree-item">
+                            <span class="tui-tree-line">&#9472;&#9472;</span>
+                            <span class="tui-dot tui-dot-pending">&#x26aa;</span>
+                            <span class="tui-tree-label">规则配置化</span>
+                        </div>
+                        <div class="tui-tree-item">
+                            <span class="tui-tree-line">&#9472;&#9496;</span>
+                            <span class="tui-dot tui-dot-pending">&#x26aa;</span>
+                            <span class="tui-tree-label">UI 对接</span>
+                        </div>
+                    </div>
+                    <div class="tui-tree-item tui-tree-collapsed">
+                        <span class="tui-tree-toggle">&#9656;</span>
+                        <span class="tui-tree-folder">opentui-desktop</span>
+                    </div>
+                    <div class="tui-tree-item tui-tree-collapsed">
+                        <span class="tui-tree-toggle">&#9656;</span>
+                        <span class="tui-tree-folder">research-notes</span>
+                    </div>
+                </div>
+                <div class="tui-sidebar-footer">
+                    <span class="tui-worker-count">3 projects</span>
+                </div>
+            </aside>
+
+            <!-- ── MAIN CONTENT ZONE ── -->
+            <section class="tui-main-zone">
+
+                <!-- Kanban Grid -->
+                <div class="tui-kanban-grid">
+
+                    <!-- Card 1 — SELECTED -->
+                    <div class="tui-card tui-card-selected">
+                        <div class="tui-card-header">
+                            <span class="tui-drag-handle">&#8801;</span>
+                            <span class="tui-card-id">Worker-01</span>
+                            <span class="tui-card-status tui-status-busy">&#x1f7e2; Busy</span>
+                        </div>
+                        <div class="tui-card-body">
+                            <div class="tui-card-agent">
+                                <span class="tui-card-agent-icon">&#9889;</span>
+                                <span class="tui-card-agent-name">code-reviewer</span>
+                                <span class="tui-hierarchy-badge tui-hierarchy-primary">主代理</span>
+                            </div>
+                            <div class="tui-card-meta">
+                                <span class="tui-card-meta-row"><span class="tui-card-meta-prefix">&#x1f4c1;</span> ion</span>
+                                <span class="tui-card-meta-row"><span class="tui-card-meta-prefix">&#x1f527;</span> <span class="tui-card-branch-icon">&#x2112;</span> ion-w-01</span>
+                                <span class="tui-card-meta-row"><span class="tui-card-meta-prefix">&#x23f1;</span> 已运行 9m</span>
+                            </div>
+                            <div class="tui-card-output">正在分析代码结构...</div>
+                        </div>
+                    </div>
+
+                    <!-- Card 2 -->
+                    <div class="tui-card">
+                        <div class="tui-card-header">
+                            <span class="tui-drag-handle">&#8801;</span>
+                            <span class="tui-card-id">Worker-02</span>
+                            <span class="tui-card-status tui-status-idle">&#x26aa; Idle</span>
+                        </div>
+                        <div class="tui-card-body">
+                            <div class="tui-card-agent">
+                                <span class="tui-card-agent-icon">&#129504;</span>
+                                <span class="tui-card-agent-name">planner</span>
+                                <span class="tui-hierarchy-badge tui-hierarchy-primary">主代理</span>
+                            </div>
+                            <div class="tui-card-meta">
+                                <span class="tui-card-meta-row"><span class="tui-card-meta-prefix">&#x1f4c1;</span> ion</span>
+                                <span class="tui-card-meta-row"><span class="tui-card-meta-prefix">&#x1f527;</span> <span class="tui-card-branch-icon">&#x2112;</span> ion-w-02</span>
+                                <span class="tui-card-meta-row"><span class="tui-card-meta-prefix">&#x23f1;</span> 已运行 5m</span>
+                            </div>
+                            <div class="tui-card-output">等待新任务分配</div>
+                        </div>
+                    </div>
+
+                    <!-- Card 3 -->
+                    <div class="tui-card">
+                        <div class="tui-card-header">
+                            <span class="tui-drag-handle">&#8801;</span>
+                            <span class="tui-card-id">Worker-03</span>
+                            <span class="tui-card-status tui-status-busy">&#x1f7e2; Busy</span>
+                        </div>
+                        <div class="tui-card-body">
+                            <div class="tui-card-agent">
+                                <span class="tui-card-agent-icon">&#128295;</span>
+                                <span class="tui-card-agent-name">executor</span>
+                                <span class="tui-hierarchy-badge tui-hierarchy-secondary">子代理</span>
+                            </div>
+                            <div class="tui-card-meta">
+                                <span class="tui-card-meta-row"><span class="tui-card-meta-prefix">&#x1f4c1;</span> ion</span>
+                                <span class="tui-card-meta-row"><span class="tui-card-meta-prefix">&#x23f1;</span> 已运行 3m</span>
+                            </div>
+                            <div class="tui-card-output">执行 read(Cargo.toml)</div>
+                        </div>
+                    </div>
+
+                    <!-- Card 4 -->
+                    <div class="tui-card">
+                        <div class="tui-card-header">
+                            <span class="tui-drag-handle">&#8801;</span>
+                            <span class="tui-card-id">Worker-04</span>
+                            <span class="tui-card-status tui-status-busy">&#x1f7e2; Busy</span>
+                        </div>
+                        <div class="tui-card-body">
+                            <div class="tui-card-agent">
+                                <span class="tui-card-agent-icon">&#128269;</span>
+                                <span class="tui-card-agent-name">explorer</span>
+                                <span class="tui-hierarchy-badge tui-hierarchy-muted">同级代理</span>
+                            </div>
+                            <div class="tui-card-meta">
+                                <span class="tui-card-meta-row"><span class="tui-card-meta-prefix">&#x1f4c1;</span> research-notes</span>
+                                <span class="tui-card-meta-row"><span class="tui-card-meta-prefix">&#x1f527;</span> <span class="tui-card-branch-icon">&#x2112;</span> rn-w-01</span>
+                                <span class="tui-card-meta-row"><span class="tui-card-meta-prefix">&#x23f1;</span> 已运行 7m</span>
+                            </div>
+                            <div class="tui-card-output">搜索相关论文...</div>
+                        </div>
+                    </div>
+
+                    <!-- Card 5 -->
+                    <div class="tui-card">
+                        <div class="tui-card-header">
+                            <span class="tui-drag-handle">&#8801;</span>
+                            <span class="tui-card-id">Worker-05</span>
+                            <span class="tui-card-status tui-status-idle">&#x26aa; Idle</span>
+                        </div>
+                        <div class="tui-card-body">
+                            <div class="tui-card-agent">
+                                <span class="tui-card-agent-icon">&#128221;</span>
+                                <span class="tui-card-agent-name">summarizer</span>
+                                <span class="tui-hierarchy-badge tui-hierarchy-secondary">子代理</span>
+                            </div>
+                            <div class="tui-card-meta">
+                                <span class="tui-card-meta-row"><span class="tui-card-meta-prefix">&#x1f4c1;</span> ion</span>
+                                <span class="tui-card-meta-row"><span class="tui-card-meta-prefix">&#x23f1;</span> 已运行 1m</span>
+                            </div>
+                            <div class="tui-card-output">已完成摘要生成</div>
+                        </div>
+                    </div>
+
+                    <!-- Card 6 -->
+                    <div class="tui-card">
+                        <div class="tui-card-header">
+                            <span class="tui-drag-handle">&#8801;</span>
+                            <span class="tui-card-id">Worker-06</span>
+                            <span class="tui-card-status tui-status-dead">&#x1f534; Dead</span>
+                        </div>
+                        <div class="tui-card-body">
+                            <div class="tui-card-agent">
+                                <span class="tui-card-agent-icon">&#128202;</span>
+                                <span class="tui-card-agent-name">monitor</span>
+                                <span class="tui-hierarchy-badge tui-hierarchy-muted">同级代理</span>
+                            </div>
+                            <div class="tui-card-meta">
+                                <span class="tui-card-meta-row"><span class="tui-card-meta-prefix">&#x1f4c1;</span> opentui-desktop</span>
+                                <span class="tui-card-meta-row"><span class="tui-card-meta-prefix">&#x23f1;</span> 已运行 12m</span>
+                            </div>
+                            <div class="tui-card-output">连接超时已断开</div>
+                        </div>
+                    </div>
+
+                </div>
+
+                <!-- Bottom Panel -->
+                <div class="tui-bottom-panel">
+                    <div class="tui-bottom-left">
+                        <div class="tui-panel-header">
+                            <span>消息流</span>
+                        </div>
+                        <div class="tui-msg-stream">
+                            <div class="tui-msg-row"><span class="tui-msg-time">20:46:25</span><span class="tui-msg-worker">Worker-01</span><span class="tui-msg-arrow">&#9654;</span><span class="tui-msg-text">正在分析代码结构...</span></div>
+                            <div class="tui-msg-row"><span class="tui-msg-time">20:46:24</span><span class="tui-msg-worker">Worker-03</span><span class="tui-msg-arrow">&#9654;</span><span class="tui-msg-text">tool_call: read("Cargo.toml")</span></div>
+                            <div class="tui-msg-row"><span class="tui-msg-time">20:46:23</span><span class="tui-msg-worker">Manager</span><span class="tui-msg-arrow">&#9654;</span><span class="tui-msg-text">spawn Worker-06</span></div>
+                            <div class="tui-msg-row"><span class="tui-msg-time">20:46:20</span><span class="tui-msg-worker">Worker-04</span><span class="tui-msg-arrow">&#9654;</span><span class="tui-msg-text">找到 3 篇相关论文</span></div>
+                            <div class="tui-msg-row"><span class="tui-msg-time">20:46:18</span><span class="tui-msg-worker">Worker-01</span><span class="tui-msg-arrow">&#9654;</span><span class="tui-msg-text">agent_start</span></div>
+                            <div class="tui-msg-row"><span class="tui-msg-time">20:46:15</span><span class="tui-msg-worker">Manager</span><span class="tui-msg-arrow">&#9654;</span><span class="tui-msg-text">subscribe_overview</span></div>
+                            <div class="tui-msg-row"><span class="tui-msg-time">20:46:10</span><span class="tui-msg-worker">Worker-02</span><span class="tui-msg-arrow">&#9654;</span><span class="tui-msg-text">agent_end (空闲)</span></div>
+                            <div class="tui-msg-row tui-msg-latest"><span class="tui-msg-time">20:46:08</span><span class="tui-msg-worker">Worker-05</span><span class="tui-msg-arrow">&#9654;</span><span class="tui-msg-text">摘要生成完毕</span><span class="tui-cursor">&#x2588;</span></div>
+                        </div>
+                    </div>
+                    <div class="tui-bottom-right">
+                        <div class="tui-panel-header">
+                            <span>快捷输入</span>
+                        </div>
+                        <div class="tui-quick-input">
+                            <div class="tui-quick-input-label">向 [Worker-01] 发送消息:</div>
+                            <div class="tui-quick-input-row">
+                                <input class="tui-quick-input-field" type="text" readonly value="">
+                                <button class="tui-quick-send-btn">&#8594;</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </section>
+        </div>
+
+        <!-- ═══════════ STATUS BAR ═══════════ -->
+        <footer class="tui-status-bar">
+            <div class="tui-status-left">&#x2014;看板 F1 主面板 &#183; Enter 输入 &#183; Space 新建 &#183; D 删除 &#183; R 重启</div>
+            <div class="tui-status-right">ION v0.1.0</div>
+        </footer>
+    </main>
+
+    <!-- ═══════════ TUI-SPECIFIC STYLES ═══════════ -->
+    <style>
+    /* ── Global Reset & Base ── */
+    .tui-root {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        width: 100vw;
+        overflow: hidden;
+        background: var(--color-bg-primary);
+        color: var(--color-text-primary);
+        font-family: var(--font-mono);
+        font-size: var(--text-base);
+        line-height: var(--leading-tight);
+    }
+
+    .tui-root *,
+    .tui-root *::before,
+    .tui-root *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+        border-radius: 0 !important;
+    }
+
+    /* ── Custom Scrollbar ── */
+    .tui-root ::-webkit-scrollbar {
+        width: 4px;
+        height: 4px;
+    }
+    .tui-root ::-webkit-scrollbar-track {
+        background: var(--color-bg-secondary);
+    }
+    .tui-root ::-webkit-scrollbar-thumb {
+        background: var(--color-border);
+        border-radius: 0;
+    }
+    .tui-root {
+        scrollbar-width: thin;
+        scrollbar-color: var(--color-border) var(--color-bg-secondary);
+    }
+
+    /* ═══════════ HEADER BAR ═══════════ */
+    .tui-header {
+        height: var(--header-height);
+        min-height: var(--header-height);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 var(--space-3);
+        background: var(--color-bg-deep);
+        border-bottom: 1px solid var(--color-border);
+        font-size: var(--text-sm);
+        flex-shrink: 0;
+    }
+    .tui-header-left,
+    .tui-header-center,
+    .tui-header-right {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+    }
+    .tui-logo {
+        color: var(--color-accent);
+        font-weight: 700;
+        font-size: var(--text-md);
+    }
+    .tui-version {
+        color: var(--color-text-muted);
+        font-size: var(--text-xs);
+    }
+    .tui-page-indicator {
+        color: var(--color-text-muted);
+        font-size: var(--text-xs);
+    }
+    .tui-agent-context {
+        color: var(--color-text-secondary);
+        font-size: var(--text-sm);
+    }
+    .tui-keyhint {
+        color: var(--color-text-muted);
+        font-size: var(--text-xs);
+    }
+    .tui-timestamp {
+        color: var(--color-text-secondary);
+        font-size: var(--text-xs);
+    }
+
+    /* ═══════════ BODY LAYOUT ═══════════ */
+    .tui-body {
+        flex: 1;
+        display: grid;
+        grid-template-columns: var(--sidebar-width) 1fr;
+        overflow: hidden;
+    }
+
+    /* ═══════════ LEFT SIDEBAR (shared from main-panel) ═══════════ */
+    .tui-sidebar-left {
+        background: var(--color-bg-deep);
+        border-right: 1px solid var(--color-border);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+    .tui-sidebar-footer {
+        padding: var(--space-2) var(--panel-padding);
+        border-top: 1px solid var(--color-divider);
+        font-size: var(--text-xs);
+        color: var(--color-text-muted);
+        flex-shrink: 0;
+    }
+
+    /* ── Panel Header (shared) ── */
+    .tui-panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: var(--space-2) var(--panel-padding);
+        border-bottom: 1px solid var(--color-border);
+        font-size: var(--text-xs);
+        font-weight: 600;
+        color: var(--color-text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        flex-shrink: 0;
+        min-height: 28px;
+    }
+    .tui-btn-tiny {
+        font-size: var(--text-xs);
+        color: var(--color-accent);
+        cursor: default;
+    }
+
+    /* ── Tree (shared) ── */
+    .tui-tree {
+        flex: 1;
+        overflow-y: auto;
+        padding: var(--space-2) 0;
+    }
+    .tui-tree-item {
+        display: flex;
+        align-items: center;
+        gap: var(--space-1);
+        padding: 2px var(--panel-padding);
+        font-size: var(--text-sm);
+        color: var(--color-text-primary);
+        white-space: nowrap;
+    }
+    .tui-tree-children .tui-tree-item {
+        padding-left: calc(var(--panel-padding) + var(--space-4));
+    }
+    .tui-tree-active-project {
+        color: var(--color-accent);
+    }
+    .tui-tree-toggle {
+        font-size: var(--text-xs);
+        width: 1em;
+        text-align: center;
+        flex-shrink: 0;
+        color: var(--color-text-muted);
+    }
+    .tui-tree-folder {
+        font-weight: 600;
+    }
+    .tui-tree-collapsed .tui-tree-folder {
+        color: var(--color-text-secondary);
+    }
+    .tui-tree-line {
+        color: var(--color-text-muted);
+        flex-shrink: 0;
+        font-size: var(--text-sm);
+        user-select: none;
+    }
+    .tui-tree-label {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .tui-dot {
+        font-size: var(--text-xs);
+        flex-shrink: 0;
+    }
+    .tui-dot-success { color: var(--color-success); }
+    .tui-dot-pending { color: var(--color-text-muted); }
+
+    /* ═══════════ MAIN ZONE ═══════════ */
+    .tui-main-zone {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        background: var(--color-bg-primary);
+    }
+
+    /* ═══════════ KANBAN GRID ═══════════ */
+    .tui-kanban-grid {
+        flex: 1;
+        overflow-y: auto;
+        padding: var(--space-4);
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: var(--space-3);
+        align-content: start;
+    }
+
+    /* ── Card ── */
+    .tui-card {
+        background: var(--color-bg-secondary);
+        border: 1px solid var(--color-border);
+        display: flex;
+        flex-direction: column;
+        cursor: grab;
+        transition: background var(--transition-fast);
+    }
+    .tui-card:hover {
+        background: var(--color-bg-hover);
+    }
+    .tui-card-header {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        padding: var(--space-2) var(--space-3);
+        border-bottom: 1px solid var(--color-border);
+        font-size: var(--text-sm);
+    }
+    .tui-drag-handle {
+        color: var(--color-text-muted);
+        font-size: var(--text-sm);
+        cursor: grab;
+        line-height: 1;
+        user-select: none;
+    }
+    .tui-card-id {
+        color: var(--color-text-primary);
+        font-weight: 600;
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+    }
+    .tui-card-status {
+        font-size: var(--text-xs);
+        white-space: nowrap;
+        flex-shrink: 0;
+    }
+    .tui-status-busy { color: var(--color-success); }
+    .tui-status-idle { color: var(--color-text-muted); }
+    .tui-status-dead { color: var(--color-error); }
+
+    .tui-card-body {
+        padding: var(--space-2) var(--space-3);
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-2);
+        font-size: var(--text-xs);
+    }
+
+    /* ── Agent type row ── */
+    .tui-card-agent {
+        display: flex;
+        align-items: center;
+        gap: var(--space-1);
+    }
+    .tui-card-agent-icon {
+        color: var(--color-accent);
+        flex-shrink: 0;
+    }
+    .tui-card-agent-name {
+        color: var(--color-text-primary);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+    }
+
+    /* ── Hierarchy badges ── */
+    .tui-hierarchy-badge {
+        font-size: var(--text-xs);
+        white-space: nowrap;
+        flex-shrink: 0;
+    }
+    .tui-hierarchy-primary {
+        color: var(--color-accent);
+    }
+    .tui-hierarchy-secondary {
+        color: var(--color-text-secondary);
+    }
+    .tui-hierarchy-muted {
+        color: var(--color-text-muted);
+    }
+
+    /* ── Card metadata rows ── */
+    .tui-card-meta {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+    }
+    .tui-card-meta-row {
+        color: var(--color-text-secondary);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .tui-card-meta-prefix {
+        flex-shrink: 0;
+        width: 1.2em;
+        display: inline-block;
+        text-align: center;
+    }
+    .tui-card-branch-icon {
+        color: var(--color-info);
+        font-size: var(--text-xs);
+    }
+
+    /* ── Card latest output ── */
+    .tui-card-output {
+        color: var(--color-text-muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        padding-top: var(--space-1);
+    }
+
+    /* ── Selected card pulsing glow ── */
+    .tui-card-selected {
+        border-color: var(--color-accent);
+        box-shadow: 0 0 12px var(--color-accent-dim);
+        animation: pulse-border 2s ease-in-out infinite;
+    }
+    @keyframes pulse-border {
+        0%, 100% { border-color: var(--color-accent); box-shadow: 0 0 12px var(--color-accent-dim); }
+        50% { border-color: #00d4aa88; box-shadow: 0 0 8px #00d4aa22; }
+    }
+
+    /* ═══════════ BOTTOM PANEL ═══════════ */
+    .tui-bottom-panel {
+        flex-shrink: 0;
+        height: 180px;
+        display: grid;
+        grid-template-columns: 7fr 3fr;
+        border-top: 1px solid var(--color-border);
+        overflow: hidden;
+    }
+    .tui-bottom-left {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        border-right: 1px solid var(--color-border);
+    }
+    .tui-bottom-right {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+
+    /* ── Message stream ── */
+    .tui-msg-stream {
+        flex: 1;
+        overflow-y: auto;
+        padding: var(--space-1) var(--space-3);
+    }
+    .tui-msg-row {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        padding: 1px 0;
+        font-size: var(--text-xs);
+        white-space: nowrap;
+    }
+    .tui-msg-time {
+        color: var(--color-text-muted);
+        flex-shrink: 0;
+    }
+    .tui-msg-worker {
+        color: var(--color-info);
+        flex-shrink: 0;
+        min-width: 72px;
+    }
+    .tui-msg-arrow {
+        color: var(--color-text-muted);
+        flex-shrink: 0;
+    }
+    .tui-msg-text {
+        color: var(--color-text-secondary);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        min-width: 0;
+    }
+
+    /* ── Blinking cursor ── */
+    .tui-cursor {
+        display: inline;
+        color: var(--color-accent);
+        animation: blink 1s step-end infinite;
+    }
+    @keyframes blink {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0; }
+    }
+
+    /* ── Quick input ── */
+    .tui-quick-input {
+        flex: 1;
+        padding: var(--space-2) var(--space-3);
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-2);
+    }
+    .tui-quick-input-label {
+        font-size: var(--text-xs);
+        color: var(--color-text-secondary);
+        white-space: nowrap;
+    }
+    .tui-quick-input-row {
+        display: flex;
+        gap: var(--space-2);
+    }
+    .tui-quick-input-field {
+        flex: 1;
+        min-width: 0;
+        background: var(--color-bg-secondary);
+        border: 1px solid var(--color-border);
+        color: var(--color-text-primary);
+        font-family: var(--font-mono);
+        font-size: var(--text-xs);
+        padding: var(--space-1) var(--space-2);
+        outline: none;
+    }
+    .tui-quick-input-field:focus {
+        border-color: var(--color-accent);
+    }
+    .tui-quick-send-btn {
+        flex-shrink: 0;
+        width: 28px;
+        height: 24px;
+        background: var(--color-bg-secondary);
+        border: 1px solid var(--color-border);
+        color: var(--color-accent);
+        font-family: var(--font-mono);
+        font-size: var(--text-sm);
+        cursor: default;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background var(--transition-fast);
+    }
+    .tui-quick-send-btn:hover {
+        background: var(--color-bg-hover);
+    }
+
+    /* ═══════════ STATUS BAR ═══════════ */
+    .tui-status-bar {
+        height: var(--status-bar-height);
+        min-height: var(--status-bar-height);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 var(--space-3);
+        background: var(--color-bg-deep);
+        border-top: 1px solid var(--color-border);
+        font-size: var(--text-xs);
+        color: var(--color-text-muted);
+        flex-shrink: 0;
+    }
+    .tui-status-left,
+    .tui-status-right {
+        display: flex;
+        align-items: center;
+    }
+    </style>
+</body>
+</html>
