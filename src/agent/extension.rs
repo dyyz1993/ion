@@ -1,4 +1,5 @@
 use super::agent_loop::AgentContext;
+use super::error::AgentError;
 use super::error::AgentResult;
 use super::messages::{Message, ToolCall};
 use async_trait::async_trait;
@@ -96,7 +97,7 @@ pub trait Extension: Send + Sync {
     async fn before_provider_request(&self, _ctx: &ProviderRequestContext) -> AgentResult<()> { Ok(()) }
     async fn after_provider_response(&self, _ctx: &ProviderResponseContext) -> AgentResult<()> { Ok(()) }
 
-    // ── Streaming (6) ──
+    // ── Streaming (8) ──
     async fn on_message_start(&self, _role: &str, _content: &str) -> AgentResult<()> { Ok(()) }
     async fn on_message_delta(&self, _delta: &str, _role: &str) -> AgentResult<()> { Ok(()) }
     async fn on_message_end(&self, _role: &str, _full_content: &str, _usage: &Usage) -> AgentResult<()> { Ok(()) }
@@ -106,6 +107,10 @@ pub trait Extension: Send + Sync {
     async fn on_thinking_end(&self, _content: &str) -> AgentResult<()> { Ok(()) }
     /// Called for tool call deltas during streaming (partial tool name/args).
     async fn on_tool_call_delta(&self, _delta: &str, _name: &str) -> AgentResult<()> { Ok(()) }
+    /// Called when a text block ends (provider's TextEnd event).
+    async fn on_text_end(&self, _content: &str) -> AgentResult<()> { Ok(()) }
+    /// Called when a tool call completes (provider's ToolCallEnd event).
+    async fn on_tool_call_end(&self, _tool_call: &ToolCall) -> AgentResult<()> { Ok(()) }
 
     // ── Tool execution (5) ──
     async fn on_tool_execution_start(&self, _ctx: &ToolExecutionContext) -> AgentResult<()> { Ok(()) }
@@ -115,9 +120,42 @@ pub trait Extension: Send + Sync {
     async fn before_tool_call(&self, _call: &ToolCall) -> AgentResult<()> { Ok(()) }
     async fn after_tool_call(&self, _call: &ToolCall, _result: &ToolResult) -> AgentResult<()> { Ok(()) }
 
-    // ── Model (2) ──
+    // ── Model (3) ──
     async fn on_model_select(&self, _ctx: &ModelSelectContext) -> AgentResult<()> { Ok(()) }
     async fn on_thinking_level_select(&self, _level: &str, _old: Option<&str>) -> AgentResult<()> { Ok(()) }
+
+    // ── Entries ──
+    /// Called when entries are deleted or summarized.
+    async fn on_entries_invalidated(&self, _entry_ids: &[String]) -> AgentResult<()> { Ok(()) }
+
+    // ── Session navigation (stubs - 待对应功能实现后接入) ──
+    /// Called before switching to another session. Can cancel.
+    async fn on_session_before_switch(&self, _target: &str) -> AgentResult<()> { Ok(()) }
+    /// Called before forking a session. Can cancel.
+    async fn on_session_before_fork(&self, _entry_id: &str) -> AgentResult<()> { Ok(()) }
+    /// Called before tree navigation. Can customize summary.
+    async fn on_session_before_tree(&self, _target: &str) -> AgentResult<()> { Ok(()) }
+    /// Called after tree navigation.
+    async fn on_session_tree(&self, _leaf_id: &str) -> AgentResult<()> { Ok(()) }
+
+    // ── Plugin RPC ──
+    /// 插件私有 RPC 方法（给 CLI/外部调试用）。
+    /// 外部通过 `plugin_rpc memory save {...}` 调用此方法。
+    /// 默认返回 method_not_found，插件覆盖需要的分支。
+    async fn on_plugin_rpc(
+        &self,
+        _method: &str,
+        _params: serde_json::Value,
+    ) -> AgentResult<serde_json::Value> {
+        Err(AgentError::Tool("plugin rpc method not found".into()))
+    }
+
+    // ── Permission (stub) ──
+    /// Called when a permission check is needed.
+    async fn on_permission_request(&self, _tool: &str, _args: &serde_json::Value) -> AgentResult<()> { Ok(()) }
+    /// Called before each LLM request to allow extensions to modify the system prompt.
+    /// The `prompt` string starts as the agent's current system prompt.
+    async fn on_system_prompt(&self, _prompt: &mut String) -> AgentResult<()> { Ok(()) }
 }
 
 // ---------------------------------------------------------------------------
@@ -126,6 +164,10 @@ pub trait Extension: Send + Sync {
 
 pub struct ExtensionRegistry {
     extensions: Vec<Box<dyn Extension>>,
+    /// 内核权限引擎（可选，用于工具执行前权限检查）
+    pub permission_engine: Option<crate::kernel::PermissionEngine>,
+    /// UI 事件系统（可选，用于确认弹窗）
+    pub ui_system: Option<crate::kernel::UiSystem>,
 }
 
 impl Default for ExtensionRegistry {
@@ -133,7 +175,26 @@ impl Default for ExtensionRegistry {
 }
 
 impl ExtensionRegistry {
-    pub fn new() -> Self { Self { extensions: Vec::new() } }
+    pub fn new() -> Self {
+        Self {
+            extensions: Vec::new(),
+            permission_engine: None,
+            ui_system: None,
+        }
+    }
+
+    /// 启用权限引擎（带默认规则）
+    pub fn with_permissions(mut self, engine: crate::kernel::PermissionEngine) -> Self {
+        self.permission_engine = Some(engine);
+        self
+    }
+
+    /// 启用 UI 系统
+    pub fn with_ui(mut self, ui: crate::kernel::UiSystem) -> Self {
+        self.ui_system = Some(ui);
+        self
+    }
+
     pub fn register(&mut self, ext: Box<dyn Extension>) { self.extensions.push(ext); }
     pub fn is_empty(&self) -> bool { self.extensions.is_empty() }
     pub fn len(&self) -> usize { self.extensions.len() }
@@ -195,6 +256,12 @@ impl ExtensionRegistry {
     pub async fn on_tool_call_delta(&self, delta: &str, name: &str) -> AgentResult<()> {
         for ext in &self.extensions { ext.on_tool_call_delta(delta, name).await?; } Ok(())
     }
+    pub async fn on_text_end(&self, content: &str) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_text_end(content).await?; } Ok(())
+    }
+    pub async fn on_tool_call_end(&self, tool_call: &ToolCall) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_tool_call_end(tool_call).await?; } Ok(())
+    }
     pub async fn on_tool_execution_start(&self, ctx: &ToolExecutionContext) -> AgentResult<()> {
         for ext in &self.extensions { ext.on_tool_execution_start(ctx).await?; } Ok(())
     }
@@ -215,6 +282,31 @@ impl ExtensionRegistry {
     }
     pub async fn on_thinking_level_select(&self, level: &str, old: Option<&str>) -> AgentResult<()> {
         for ext in &self.extensions { ext.on_thinking_level_select(level, old).await?; } Ok(())
+    }
+    pub async fn on_system_prompt(&self, prompt: &mut String) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_system_prompt(prompt).await?; } Ok(())
+    }
+
+    /// 路由 plugin_rpc 到对应名称的插件。
+    /// 按 `plugin` 名匹配 extension，找到后调 `on_plugin_rpc`。
+    pub async fn plugin_rpc(
+        &self,
+        plugin: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> AgentResult<serde_json::Value> {
+        // 按插件名匹配：extension 可以有自己的名字，这里用类型名作为 fallback
+        // 第一版简单遍历所有 extension
+        for ext in &self.extensions {
+            // 尝试调每个 extension
+            let result = ext.on_plugin_rpc(method, params.clone()).await;
+            match result {
+                Ok(v) => return Ok(v),
+                Err(AgentError::Tool(ref msg)) if msg == "plugin rpc method not found" => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Err(AgentError::Tool(format!("plugin '{plugin}' not found or method '{method}' not implemented")))
     }
 }
 

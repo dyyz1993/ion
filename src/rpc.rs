@@ -195,6 +195,38 @@ impl Extension for RpcExtension {
         Ok(())
     }
 
+    async fn on_text_end(&self, content: &str) -> AgentResult<()> {
+        self.output.write_json(&serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "message_update",
+                "assistantMessageEvent": {
+                    "type": "text_end",
+                    "content": content
+                }
+            }
+        }));
+        Ok(())
+    }
+
+    async fn on_tool_call_end(&self, tool_call: &ToolCall) -> AgentResult<()> {
+        self.output.write_json(&serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "message_update",
+                "assistantMessageEvent": {
+                    "type": "tool_call_end",
+                    "toolCall": {
+                        "id": tool_call.id,
+                        "name": tool_call.name,
+                        "arguments": tool_call.arguments,
+                    }
+                }
+            }
+        }));
+        Ok(())
+    }
+
     async fn on_tool_execution_start(&self, ctx: &ToolExecutionContext) -> AgentResult<()> {
         self.output.write_json(&serde_json::json!({
             "type": "event",
@@ -302,7 +334,7 @@ impl RpcSession {
         let mut agent = Agent::new(
             registry,
             model.clone(),
-            Some("You are a helpful AI assistant with access to tools.".into()),
+            Some("You are a helpful AI assistant with access to tools. When a user asks you to perform an action (read files, run commands, calculate, write files), you MUST use the appropriate tool rather than describing what you would do. Always prefer tool calls over text explanations.".into()),
             tools,
             config,
         );

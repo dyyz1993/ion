@@ -87,13 +87,13 @@ impl AuthStorage {
 
         let auth = Self::load();
 
-        // 2. auth.json api_key
-        if let Some(ref key) = auth.api_key {
+        // 2. auth.json provider_api_keys (provider-specific first)
+        if let Some(key) = auth.provider_api_keys.get(provider) {
             return Some(key.clone());
         }
 
-        // 3. auth.json provider_api_keys
-        if let Some(key) = auth.provider_api_keys.get(provider) {
+        // 3. auth.json api_key (generic fallback)
+        if let Some(ref key) = auth.api_key {
             return Some(key.clone());
         }
 

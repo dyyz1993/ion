@@ -30,7 +30,7 @@ pub struct AgentConfig {
     #[serde(default)]
     pub hooks: Option<HashMap<String, Vec<HookDef>>>,
     /// The system prompt (markdown body, after frontmatter).
-    #[serde(skip)]
+    #[serde(default)]
     pub system_prompt: Option<String>,
     /// Source for discovery priority.
     #[serde(default)]

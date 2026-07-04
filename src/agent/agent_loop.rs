@@ -1,7 +1,7 @@
 use super::compact::{self, CompactConfig};
 use super::error::{AgentError, AgentResult};
 use super::extension::{ExtensionRegistry, TurnContext};
-use super::tool::ToolRegistry;
+use super::tool::{Tool, ToolRegistry};
 use ion_provider::StreamOptions;
 use ion_provider::registry::{self, ApiRegistry};
 use ion_provider::types::*;
@@ -21,6 +21,8 @@ pub struct AgentConfig {
     pub api_key: Option<String>,
     pub response_format: Option<String>,
     pub thinking: Option<String>,
+    /// 高级重试配置（可选，覆盖上面的简单配置）
+    pub retry_config: Option<crate::retry::RetryConfig>,
 }
 
 impl Default for AgentConfig {
@@ -35,6 +37,7 @@ impl Default for AgentConfig {
             api_key: None,
             response_format: None,
             thinking: None,
+            retry_config: None,
         }
     }
 }
@@ -72,10 +75,15 @@ pub struct Agent {
     tools: ToolRegistry,
     extensions: ExtensionRegistry,
     config: AgentConfig,
+    system_prompt: Option<String>,
     turn_index: u64,
     pause_tx: watch::Sender<bool>,
     pause_rx: watch::Receiver<bool>,
     running: bool,
+    /// 对齐 pi abort：设 true 后 check_pause 返回 Aborted 错误，终止 run()
+    stopped: std::sync::atomic::AtomicBool,
+    /// 工具执行运行时（本地/沙箱/远程）
+    pub runtime: Box<dyn crate::runtime::Runtime>,
 }
 
 impl Agent {
@@ -87,21 +95,8 @@ impl Agent {
         config: AgentConfig,
     ) -> Self {
         let (pause_tx, pause_rx) = watch::channel(false);
-        let mut messages = Vec::new();
-        if let Some(sp) = system_prompt {
-            // Add system prompt as a user message with special content
-            // (In the new type system, system prompt goes in Context, not messages)
-            messages.push(Message::User(UserMessage {
-                role: "user".into(),
-                content: vec![ContentBlock::Text(TextContent {
-                    text: sp,
-                    text_signature: None,
-                })],
-                timestamp: 0,
-            }));
-        }
         Self {
-            messages,
+            messages: Vec::new(),
             steering_queue: VecDeque::new(),
             follow_up_queue: VecDeque::new(),
             registry,
@@ -109,15 +104,54 @@ impl Agent {
             tools,
             extensions: ExtensionRegistry::new(),
             config,
+            system_prompt,
             turn_index: 0,
             pause_tx,
             pause_rx,
             running: false,
+            stopped: std::sync::atomic::AtomicBool::new(false),
+            runtime: Box::new(crate::runtime::LocalRuntime::new()),
         }
+    }
+
+    /// 替换运行时（本地/沙箱/远程切换）
+    pub fn with_runtime(mut self, rt: Box<dyn crate::runtime::Runtime>) -> Self {
+        self.runtime = rt;
+        self
+    }
+
+    /// 动态设置系统提示词（switch_agent 时调用）
+    pub fn set_system_prompt(&mut self, prompt: String) {
+        self.system_prompt = Some(prompt);
+    }
+
+    /// 限制可用工具白名单（switch_agent 时调用）
+    pub fn restrict_tools(&mut self, allowed: Vec<String>) {
+        self.tools.restrict_to(&allowed);
+    }
+
+    /// Register a single tool (used by plugin_add / plugin_reload RPC).
+    pub fn register_tool(&mut self, tool: Box<dyn Tool>) {
+        self.tools.register(tool);
+    }
+
+    /// Remove a tool by name (used by plugin_remove RPC).
+    pub fn remove_tool(&mut self, name: &str) {
+        self.tools.remove(name);
+    }
+
+    /// Return the names of all registered tools.
+    pub fn list_tool_names(&self) -> Vec<String> {
+        self.tools.tool_defs().into_iter().map(|td| td.name).collect()
     }
 
     pub fn with_extensions(mut self, ext: ExtensionRegistry) -> Self {
         self.extensions = ext;
+        // Hook: thinking_level_select if thinking is configured
+        if let Some(ref level) = self.config.thinking {
+            let level_str = level.clone();
+            let _ = level_str; // async call below
+        }
         self
     }
 
@@ -137,8 +171,18 @@ impl Agent {
     pub fn resume(&self) {
         let _ = self.pause_tx.send(false);
     }
+    /// 硬停止当前 Agent 循环（对齐 pi abort）。
+    /// 设 stopped=true + 唤醒 check_pause → 返回 AgentError::Aborted → 内循环 break。
+    pub fn stop(&self) {
+        self.stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = self.pause_tx.send(true);
+    }
     pub fn is_running(&self) -> bool {
         self.running
+    }
+    /// 检查是否被硬停止
+    pub fn is_stopped(&self) -> bool {
+        self.stopped.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn steer(&mut self, msg: Message) {
@@ -147,15 +191,76 @@ impl Agent {
     pub fn follow_up(&mut self, msg: Message) {
         self.follow_up_queue.push_back(msg);
     }
+    /// 把 follow_up_queue 里第 index 条消息提升到 steering_queue（对齐 pi promote）。
+    /// index 从 0 计。如果越界则静默忽略。
+    pub fn promote_follow_up(&mut self, index: usize) {
+        // VecDeque 没有按索引移除，所以要全 drain 再 re-insert
+        let mut new_q = std::collections::VecDeque::new();
+        let mut promoted = None;
+        while let Some(msg) = self.follow_up_queue.pop_front() {
+            if promoted.is_none() && new_q.len() == index {
+                promoted = Some(msg);
+            } else {
+                new_q.push_back(msg);
+            }
+        }
+        if let Some(msg) = promoted {
+            self.steering_queue.push_back(msg);
+        }
+        self.follow_up_queue = new_q;
+    }
     pub fn messages(&self) -> &[Message] {
         &self.messages
     }
 
+    /// steer 队列积压数（未消费的高优先级消息）
+    pub fn steering_queue_len(&self) -> usize {
+        self.steering_queue.len()
+    }
+    /// follow_up 队列积压数（未消费的后续消息）
+    pub fn follow_up_queue_len(&self) -> usize {
+        self.follow_up_queue.len()
+    }
+
+    /// 直接调用一个已注册的工具（不经过 LLM）。
+    /// 用于：ion rpc 直接触发 spawn_worker / read / write 等工具，不跑 LLM。
+    pub async fn call_tool(&self, name: &str, args: serde_json::Value) -> AgentResult<String> {
+        let tool = self.tools.get(name)
+            .ok_or_else(|| AgentError::Tool(format!("tool not found: {name}")))?;
+        tool.execute(args, &*self.runtime).await
+    }
+
+    /// 调插件私有 RPC 方法（给 CLI/外部调试用）。
+    pub async fn plugin_rpc(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> AgentResult<serde_json::Value> {
+        self.extensions.plugin_rpc("", method, params).await
+    }
+
     pub async fn run(&mut self, prompt: impl Into<String>) -> AgentResult<()> {
         self.running = true;
+        self.stopped.store(false, std::sync::atomic::Ordering::SeqCst);
         self.turn_index = 0;
 
-        // Hooks: on_input
+        // ── 生命周期顺序 (对齐 pi) ──
+        // 1. session_start (会话启动)
+        self.extensions.on_session_start(&super::extension::SessionContext {
+            reason: "startup".into(),
+        }).await?;
+
+        // 2. model_select (模型选择)
+        self.extensions.on_model_select(
+            &super::extension::ModelSelectContext {
+                old_model: None,
+                old_provider: None,
+                new_model: self.model.id.clone(),
+                new_provider: self.model.provider.clone(),
+            },
+        ).await?;
+
+        // 3. input (用户输入拦截/转换)
         {
             let mut input_ctx = super::extension::InputContext {
                 text: prompt.into(),
@@ -165,7 +270,6 @@ impl Agent {
             if input_ctx.handled {
                 return Ok(());
             }
-            // Add input message (use modified text if changed)
             self.messages.push(Message::User(UserMessage {
                 role: "user".into(),
                 content: vec![ContentBlock::Text(TextContent {
@@ -176,7 +280,7 @@ impl Agent {
             }));
         }
 
-        // Hook: before_agent_start
+        // 4. before_agent_start (注入消息/修改 system prompt)
         {
             let mut before_ctx = super::extension::BeforeAgentContext {
                 system_prompt: None,
@@ -185,21 +289,7 @@ impl Agent {
             self.extensions.before_agent_start(&mut before_ctx).await?;
         }
 
-        // Hook: session_start
-        self.extensions.on_session_start(&super::extension::SessionContext {
-            reason: "startup".into(),
-        }).await?;
-
-        // Hook: model_select
-        self.extensions.on_model_select(
-            &super::extension::ModelSelectContext {
-                old_model: None,
-                old_provider: None,
-                new_model: self.model.id.clone(),
-                new_provider: self.model.provider.clone(),
-            },
-        ).await?;
-
+        // 5. agent_start (Agent 循环开始)
         let ctx = self.build_ctx();
         self.extensions.on_agent_start(&ctx).await?;
 
@@ -256,10 +346,14 @@ impl Agent {
             self.drain_steering().await?;
             self.maybe_compact().await?;
 
-            // Build context for provider
-            let _ctx_messages: Vec<Message> = Vec::new();
-            let ctx = Context::new(None, self.messages.clone());
-            let ctx = ctx.with_tools(self.tools.tool_defs().iter().map(|td| td.clone()).collect());
+            // Build context for provider (clone to avoid borrow issues)
+            let mut sys_prompt = self.system_prompt.clone().unwrap_or_default();
+            self.extensions.on_system_prompt(&mut sys_prompt).await?;
+            let sys_prompt = Some(sys_prompt);
+            let messages_snapshot = self.messages.clone();
+            let tool_defs: Vec<_> = self.tools.tool_defs().iter().cloned().collect();
+            let ctx = Context::new(sys_prompt, messages_snapshot);
+            let ctx = ctx.with_tools(tool_defs);
 
             // Call provider via router
             let options = StreamOptions {
@@ -279,6 +373,15 @@ impl Agent {
                 response_format: self.config.response_format.clone(),
             };
 
+            // Hook: on_system_prompt → on_context (对齐 pi: 先提示词后消息)
+            if let Some(ref sp) = self.system_prompt {
+                let mut sp_mut = sp.clone();
+                self.extensions.on_system_prompt(&mut sp_mut).await?;
+            }
+
+            // Hook: on_context (modify messages before sending to LLM)
+            self.extensions.on_context(&mut self.messages).await?;
+
             let (stop_reason, events) = self.stream_with_retry(&ctx, &options).await?;
 
             match stop_reason {
@@ -289,23 +392,8 @@ impl Agent {
                         _ => None,
                     }).unwrap_or_default();
 
-                    // Hooks: message streaming
-                    for event in &events {
-                        match event {
-                            StreamEvent::TextDelta { delta, .. } => {
-                                self.extensions.on_message_delta(delta, "assistant").await?;
-                            }
-                            StreamEvent::ThinkingDelta { delta, .. } => {
-                                self.extensions.on_thinking_delta(delta).await?;
-                            }
-                            _ => {}
-                        }
-                    }
-                    // Hook: message_start (if there are text deltas)
-                    let has_text = events.iter().any(|e| matches!(e, StreamEvent::TextDelta { .. }));
-                    if has_text {
-                        self.extensions.on_message_start("assistant", "").await?;
-                    }
+                    // Hooks: message streaming (already emitted in real-time in stream_with_retry)
+                    // Just collect the text and emit final message_end here.
 
                     let text: String = events
                         .iter()
@@ -323,9 +411,7 @@ impl Agent {
                         })
                         .collect();
                     let has_thinking = !thinking_text.is_empty();
-                    if has_thinking {
-                        self.extensions.on_thinking_end(&thinking_text).await?;
-                    }
+                    let has_text = !text.is_empty();
 
                     // Hook: message_end
                     if has_text {
@@ -401,6 +487,120 @@ impl Agent {
                     }
 
                     for tc in &tool_calls {
+                        // ── 权限检查 ──
+                        if let Some(ref engine) = self.extensions.permission_engine {
+                            let path = tc.arguments.get("path")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let command = tc.arguments.get("command")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let target = if !path.is_empty() { path } else { command };
+                            let action = crate::kernel::Action::from_tool(&tc.name);
+
+                            match engine.check(target, action) {
+                                crate::kernel::PermissionResult::Allow => {}
+                                crate::kernel::PermissionResult::Deny(reason) => {
+                                    tracing::warn!("[permission] denied: {reason}");
+                                    let deny_result = ToolResultMessage {
+                                        role: "tool".into(),
+                                        tool_call_id: tc.id.clone(),
+                                        tool_name: tc.name.clone(),
+                                        content: vec![ContentBlock::Text(TextContent {
+                                            text: format!("[Permission Denied] {reason}"),
+                                            text_signature: None,
+                                        })],
+                                        details: None,
+                                        is_error: true,
+                                        timestamp: now_ms(),
+                                    };
+                                    self.messages.push(Message::ToolResult(deny_result));
+                                    continue;
+                                }
+                                crate::kernel::PermissionResult::Ask { title, message } => {
+                                    let allowed = self.extensions.ui_system.as_ref()
+                                        .map(|ui| ui.confirm(&title, &message))
+                                        .unwrap_or(true);
+                                    if !allowed {
+                                        let deny_result = ToolResultMessage {
+                                            role: "tool".into(),
+                                            tool_call_id: tc.id.clone(),
+                                            tool_name: tc.name.clone(),
+                                            content: vec![ContentBlock::Text(TextContent {
+                                                text: "[Permission Denied] 用户拒绝了操作".into(),
+                                                text_signature: None,
+                                            })],
+                                            details: None,
+                                            is_error: true,
+                                            timestamp: now_ms(),
+                                        };
+                                        self.messages.push(Message::ToolResult(deny_result));
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+
+                        // ── CommandGuard（bash 命令守卫）──
+                        if tc.name == "bash" {
+                            let command = tc.arguments.get("command")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            if !command.is_empty() {
+                                let guard = crate::command_guard::CommandGuard::default();
+                                match guard.check(command) {
+                                    crate::command_guard::GuardDecision::Allow => {}
+                                    crate::command_guard::GuardDecision::Deny(pattern) => {
+                                        let msg = if let Some(ref sug) = pattern.suggestion {
+                                            format!("[Command Guard] {} 建议: {}", pattern.message, sug)
+                                        } else {
+                                            format!("[Command Guard] {}", pattern.message)
+                                        };
+                                        let deny_result = ToolResultMessage {
+                                            role: "tool".into(),
+                                            tool_call_id: tc.id.clone(),
+                                            tool_name: tc.name.clone(),
+                                            content: vec![ContentBlock::Text(TextContent {
+                                                text: msg,
+                                                text_signature: None,
+                                            })],
+                                            details: None,
+                                            is_error: true,
+                                            timestamp: now_ms(),
+                                        };
+                                        self.messages.push(Message::ToolResult(deny_result));
+                                        continue;
+                                    }
+                                    crate::command_guard::GuardDecision::Ask(pattern) => {
+                                        let allowed = self.extensions.ui_system.as_ref()
+                                            .map(|ui| ui.confirm(
+                                                &format!("高危命令"),
+                                                &format!("{}\n\n命令: `{}`", pattern.message, command),
+                                            ))
+                                            .unwrap_or(true);
+                                        if !allowed {
+                                            if let Some(ref sug) = pattern.suggestion {
+                                                let deny_result = ToolResultMessage {
+                                                    role: "tool".into(),
+                                                    tool_call_id: tc.id.clone(),
+                                                    tool_name: tc.name.clone(),
+                                                    content: vec![ContentBlock::Text(TextContent {
+                                                        text: format!("[Command Guard] 已跳过，建议: {}", sug),
+                                                        text_signature: None,
+                                                    })],
+                                                    details: None,
+                                                    is_error: true,
+                                                    timestamp: now_ms(),
+                                                };
+                                                self.messages.push(Message::ToolResult(deny_result));
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         self.extensions.before_tool_call(tc).await?;
 
                         // Hook: tool_execution_start
@@ -415,25 +615,72 @@ impl Agent {
                             },
                         ).await?;
 
-                        let output = match self.tools.get(&tc.name) {
-                            Some(tool) => match tool.execute(tc.arguments.clone()).await {
-                                Ok(out) => {
-                                    // Hook: tool_execution_update with partial result
-                                    self.extensions.on_tool_execution_update(
-                                        &super::extension::ToolExecutionContext {
-                                            tool_call_id: tc.id.clone(),
-                                            tool_name: tc.name.clone(),
-                                            args: tc.arguments.clone(),
-                                            is_error: false,
-                                            duration_ms: start.elapsed().as_millis() as u64,
-                                        },
-                                        &out,
-                                    ).await?;
-                                    out
+                        let tc_id = tc.id.clone();
+                        let tc_name = tc.name.clone();
+                        let tc_args = tc.arguments.clone();
+
+                        // Execute tool with streaming updates via tokio channel.
+                        // Use select! to forward updates to extensions concurrently while tool runs.
+                        let output = {
+                            let tool_ref = self.tools.get(&tc.name);
+                            match tool_ref {
+                                Some(tool) => {
+                                    let (update_tx, update_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                                    let on_update: super::tool::ToolUpdateFn = std::sync::Arc::new(
+                                        move |partial: String| { let _ = update_tx.send(partial); },
+                                    );
+
+                                    // We need to run execute_stream and drain updates concurrently.
+                                    // But tool borrows self.tools. So we poll manually.
+                                    let exec_future = tool.execute_stream(tc_args.clone(), on_update, &*self.runtime);
+                                    tokio::pin!(exec_future);
+
+                                    let mut rx = update_rx;
+                                    let timeout_duration = std::time::Duration::from_secs(120);
+                                    let result = loop {
+                                        tokio::select! {
+                                            partial = rx.recv() => {
+                                                if let Some(p) = partial {
+                                                    self.extensions.on_tool_execution_update(
+                                                        &super::extension::ToolExecutionContext {
+                                                            tool_call_id: tc_id.clone(),
+                                                            tool_name: tc_name.clone(),
+                                                            args: tc_args.clone(),
+                                                            is_error: false,
+                                                            duration_ms: start.elapsed().as_millis() as u64,
+                                                        },
+                                                        &p,
+                                                    ).await?;
+                                                }
+                                            }
+                                            r = &mut exec_future => {
+                                                while let Ok(p) = rx.try_recv() {
+                                                    self.extensions.on_tool_execution_update(
+                                                        &super::extension::ToolExecutionContext {
+                                                            tool_call_id: tc_id.clone(),
+                                                            tool_name: tc_name.clone(),
+                                                            args: tc_args.clone(),
+                                                            is_error: false,
+                                                            duration_ms: start.elapsed().as_millis() as u64,
+                                                        },
+                                                        &p,
+                                                    ).await?;
+                                                }
+                                                break r;
+                                            }
+                                            _ = tokio::time::sleep(timeout_duration) => {
+                                                break Err(AgentError::Tool("tool execution timeout (120s)".to_string()));
+                                            }
+                                        }
+                                    };
+
+                                    match result {
+                                        Ok(out) => out,
+                                        Err(e) => format!("Error: {e}"),
+                                    }
                                 }
-                                Err(e) => format!("Error: {e}"),
-                            },
-                            None => format!("Error: tool '{}' not found", tc.name),
+                                None => format!("Error: tool '{}' not found", tc.name),
+                            }
                         };
 
                         let duration = start.elapsed().as_millis() as u64;
@@ -535,30 +782,107 @@ impl Agent {
                 Ok(mut event_stream) => {
                     let mut collected = Vec::new();
                     let mut final_reason = StopReason::Stop;
+                    let mut prev_was_thinking = false;
+                    let mut thinking_buf = String::new();
 
                     while let Some(event) = event_stream.recv().await {
+                        // Transparent passthrough — forward each provider event to extensions immediately
                         match &event {
                             StreamEvent::Done { reason, .. } => final_reason = reason.clone(),
                             StreamEvent::Error { reason, .. } => final_reason = reason.clone(),
-                            _ => {}
+
+                            StreamEvent::Start { .. } => {
+                                self.extensions.on_message_start("assistant", "").await?;
+                            }
+
+                            StreamEvent::ThinkingStart { .. } => {
+                                prev_was_thinking = true;
+                            }
+                            StreamEvent::ThinkingDelta { delta, .. } => {
+                                prev_was_thinking = true;
+                                thinking_buf.push_str(delta);
+                                self.extensions.on_thinking_delta(delta).await?;
+                            }
+                            StreamEvent::ThinkingEnd { content, .. } => {
+                                let final_content = if content.is_empty() { &thinking_buf } else { content.as_str() };
+                                self.extensions.on_thinking_end(final_content).await?;
+                                prev_was_thinking = false;
+                                thinking_buf.clear();
+                            }
+
+                            StreamEvent::TextStart { .. } => {
+                                // Some providers skip ThinkingEnd — emit fallback with accumulated content
+                                if prev_was_thinking {
+                                    self.extensions.on_thinking_end(&thinking_buf).await?;
+                                    thinking_buf.clear();
+                                    prev_was_thinking = false;
+                                }
+                                self.extensions.on_message_start("assistant", "").await?;
+                            }
+                            StreamEvent::TextDelta { delta, .. } => {
+                                self.extensions.on_message_delta(delta, "assistant").await?;
+                            }
+                            StreamEvent::TextEnd { content, .. } => {
+                                self.extensions.on_text_end(content).await?;
+                            }
+
+                            StreamEvent::ToolCallStart { .. } => {
+                                if prev_was_thinking {
+                                    self.extensions.on_thinking_end(&thinking_buf).await?;
+                                    thinking_buf.clear();
+                                    prev_was_thinking = false;
+                                }
+                            }
+                            StreamEvent::ToolCallDelta { delta, .. } => {
+                                self.extensions.on_tool_call_delta(delta, "").await?;
+                            }
+                            StreamEvent::ToolCallEnd { tool_call, .. } => {
+                                self.extensions.on_tool_call_end(tool_call).await?;
+                            }
                         }
                         collected.push(event);
+                    }
+                    // If provider ended while still thinking (no explicit End), close it with buffer
+                    if prev_was_thinking && !thinking_buf.is_empty() {
+                        self.extensions.on_thinking_end(&thinking_buf).await?;
+                    } else if prev_was_thinking {
+                        self.extensions.on_thinking_end("").await?;
                     }
                     return Ok((final_reason, collected));
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "{e} — retry {}/{} in {delay}ms",
-                        attempt + 1,
-                        self.config.max_retries,
-                        delay = self.config.retry_base_delay_ms * (1 << attempt)
-                    );
-                    last_error = Some(e);
-                    if attempt < self.config.max_retries {
-                        tokio::time::sleep(Duration::from_millis(
-                            self.config.retry_base_delay_ms * (1 << attempt),
-                        ))
-                        .await;
+                    // 使用 RetryConfig（如果有）或回退到简单配置
+                    let err_str = e.to_string();
+                    let fallback_cfg = crate::retry::RetryConfig {
+                        max_retries: self.config.max_retries,
+                        initial_delay: Duration::from_millis(self.config.retry_base_delay_ms),
+                        ..Default::default()
+                    };
+                    let retry_cfg = self.config.retry_config.as_ref().unwrap_or(&fallback_cfg);
+
+                    match crate::retry::should_retry(&err_str, attempt, retry_cfg) {
+                        crate::retry::RetryDecision::AbortPermanent => {
+                            return Err(AgentError::Provider(format!(
+                                "[permanent] {e}"
+                            )));
+                        }
+                        crate::retry::RetryDecision::TransientExhausted => {
+                            return Err(AgentError::MaxRetries(format!(
+                                "after {} attempts: {e}",
+                                attempt + 1
+                            )));
+                        }
+                        _ => {
+                            let delay = crate::retry::backoff_duration(attempt, retry_cfg);
+                            tracing::warn!(
+                                "[retry] attempt {}/{} failed: {e:.80} — retrying in {:?}",
+                                attempt + 1,
+                                retry_cfg.max_retries + 1,
+                                delay
+                            );
+                            last_error = Some(e);
+                            tokio::time::sleep(delay).await;
+                        }
                     }
                 }
             }
@@ -591,13 +915,15 @@ impl Agent {
     }
 
     async fn check_pause(&self) -> AgentResult<()> {
-        if *self.pause_rx.borrow() {
-            let mut rx = self.pause_rx.clone();
-            loop {
-                rx.changed().await.ok();
-                if !*rx.borrow() {
-                    break;
-                }
+        // 优先检查停止（abort）
+        if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(AgentError::Aborted);
+        }
+        // 再检查暂停（pause）：poll stopped + pause_rx 每 100ms
+        while *self.pause_rx.borrow() {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(AgentError::Aborted);
             }
         }
         Ok(())

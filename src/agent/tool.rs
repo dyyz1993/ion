@@ -2,6 +2,14 @@ use super::error::{AgentError, AgentResult};
 use super::messages::ToolDef;
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+// ---------------------------------------------------------------------------
+// ToolUpdateFn — callback for streaming partial results during tool execution
+// ---------------------------------------------------------------------------
+
+pub type ToolUpdateFn = Arc<dyn Fn(String) + Send + Sync>;
 
 // ---------------------------------------------------------------------------
 // Tool trait
@@ -12,7 +20,22 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> serde_json::Value;
-    async fn execute(&self, args: serde_json::Value) -> AgentResult<String>;
+
+    /// Execute and return final result (non-streaming).
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String>;
+
+    /// Execute with streaming updates. Default: fall back to `execute`, call `on_update` once.
+    /// Override for real-time streaming (e.g. BashTool reading stdout line by line).
+    async fn execute_stream(
+        &self,
+        args: serde_json::Value,
+        on_update: ToolUpdateFn,
+        rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let result = self.execute(args, rt).await?;
+        on_update(result.clone());
+        Ok(result)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -58,6 +81,12 @@ impl ToolRegistry {
             .retain(|name, _| allowed.contains(&name.as_str()));
     }
 
+    /// 限制工具白名单（接受 Vec<String>，switch_agent 时调用）
+    pub fn restrict_to(&mut self, allowed: &[String]) {
+        self.tools
+            .retain(|name, _| allowed.iter().any(|a| a == name));
+    }
+
     pub fn remove(&mut self, name: &str) {
         self.tools.remove(name);
     }
@@ -92,7 +121,7 @@ impl Tool for CalculatorTool {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value) -> AgentResult<String> {
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
         let expr = args
             .get("expression")
             .and_then(|v| v.as_str())
@@ -257,7 +286,7 @@ impl Tool for EchoTool {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value) -> AgentResult<String> {
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
         let text = args
             .get("text")
             .and_then(|v| v.as_str())
@@ -283,12 +312,9 @@ impl Tool for ReadTool {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"file_path":{"type":"string","description":"Path to the file to read"}},"required":["file_path"]})
     }
-    async fn execute(&self, args: serde_json::Value) -> AgentResult<String> {
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
         let path = args.get("file_path").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing file_path".into()))?;
-        match std::fs::read_to_string(path) {
-            Ok(content) => Ok(content),
-            Err(e) => Err(AgentError::Tool(format!("read failed: {e}"))),
-        }
+        rt.read_file(path).await.map_err(|e| AgentError::Tool(format!("read failed: {e}")))
     }
 }
 
@@ -305,13 +331,11 @@ impl Tool for GrepTool {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"pattern":{"type":"string","description":"Search pattern"},"path":{"type":"string","description":"File or directory to search"}},"required":["pattern"]})
     }
-    async fn execute(&self, args: serde_json::Value) -> AgentResult<String> {
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
         let pattern = args.get("pattern").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing pattern".into()))?;
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-        let output = tokio::process::Command::new("sh")
-            .args(["-c", &format!("rg -n --max-count=50 {} {} 2>/dev/null || grep -rn --max-count=50 '{}' {} 2>/dev/null || echo '(no matches)'", shell_quote(pattern), shell_quote(path), shell_quote(pattern), shell_quote(path))])
-            .output().await.map_err(|e| AgentError::Tool(e.to_string()))?;
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let cmd = format!("rg -n --max-count=50 {} {} 2>/dev/null || grep -rn --max-count=50 '{}' {} 2>/dev/null || echo '(no matches)'", shell_quote(pattern), shell_quote(path), shell_quote(pattern), shell_quote(path));
+        let (stdout, _, _) = rt.execute_command(&cmd, 30).await.map_err(|e| AgentError::Tool(e))?;
         Ok(stdout)
     }
 }
@@ -333,13 +357,12 @@ impl Tool for FindTool {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (e.g. **/*.rs)"},"path":{"type":"string","description":"Starting directory"}},"required":["pattern"]})
     }
-    async fn execute(&self, args: serde_json::Value) -> AgentResult<String> {
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
         let pattern = args.get("pattern").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing pattern".into()))?;
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-        let output = tokio::process::Command::new("sh")
-            .args(["-c", &format!("find {} -name '{}' -type f 2>/dev/null | head -50", shell_quote(path), pattern)])
-            .output().await.map_err(|e| AgentError::Tool(e.to_string()))?;
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        let cmd = format!("find {} -name '{}' -type f 2>/dev/null | head -50", shell_quote(path), pattern);
+        let (stdout, _, _) = rt.execute_command(&cmd, 30).await.map_err(|e| AgentError::Tool(e))?;
+        Ok(stdout)
     }
 }
 
@@ -356,12 +379,10 @@ impl Tool for LsTool {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Directory to list"}},"required":[]})
     }
-    async fn execute(&self, args: serde_json::Value) -> AgentResult<String> {
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-        let output = tokio::process::Command::new("ls")
-            .args(["-la", path])
-            .output().await.map_err(|e| AgentError::Tool(e.to_string()))?;
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        let (stdout, _, _) = rt.execute_command(&format!("ls -la '{}'", path.replace("'", "'\''")), 30).await.map_err(|e| AgentError::Tool(e))?;
+        Ok(stdout)
     }
 }
 
@@ -378,21 +399,56 @@ impl Tool for BashTool {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"}},"required":["command"]})
     }
-    async fn execute(&self, args: serde_json::Value) -> AgentResult<String> {
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
         let cmd = args.get("command").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing command".into()))?;
-        let output = tokio::process::Command::new("sh")
-            .args(["-c", cmd])
-            .output().await.map_err(|e| AgentError::Tool(e.to_string()))?;
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let result = if stdout.is_empty() && !stderr.is_empty() {
-            stderr
-        } else if !stderr.is_empty() {
-            format!("{stdout}\n{stderr}")
-        } else {
-            stdout
-        };
+        let (stdout, stderr, _exit_code) = rt.execute_command(cmd, 180).await.map_err(|e| AgentError::Tool(e))?;
+        let result = if stdout.is_empty() && !stderr.is_empty() { stderr }
+            else if !stderr.is_empty() { format!("{stdout}\n{stderr}") }
+            else { stdout };
         Ok(result)
+    }
+
+    /// Stream stdout line by line in real-time. Each line pushes an update immediately.
+    async fn execute_stream(
+        &self,
+        args: serde_json::Value,
+        on_update: ToolUpdateFn,
+        rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        let cmd = args.get("command").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing command".into()))?;
+
+        // Merge stderr into stdout (2>&1) so we get a single stream to read
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", &format!("{cmd} 2>&1")])
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| AgentError::Tool(e.to_string()))?;
+
+        let stdout = child.stdout.take().ok_or_else(|| AgentError::Tool("no stdout".into()))?;
+        let mut reader = BufReader::new(stdout).lines();
+        let mut full_output = String::new();
+
+        // Read stdout line by line — each line is pushed immediately as a partial update
+        while let Ok(Some(line)) = reader.next_line().await {
+            full_output.push_str(&line);
+            full_output.push('\n');
+            on_update(full_output.clone());
+        }
+
+        let status = child.wait().await.map_err(|e| AgentError::Tool(e.to_string()))?;
+
+        // If non-zero exit, append error info
+        if !status.success() {
+            let code = status.code().unwrap_or(-1);
+            let msg = format!("\n[exit code: {code}]");
+            full_output.push_str(&msg);
+            on_update(full_output.clone());
+        }
+
+        Ok(full_output)
     }
 }
 
@@ -409,10 +465,10 @@ impl Tool for WriteTool {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"file_path":{"type":"string","description":"Path to write to"},"content":{"type":"string","description":"Content to write"}},"required":["file_path","content"]})
     }
-    async fn execute(&self, args: serde_json::Value) -> AgentResult<String> {
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
         let path = args.get("file_path").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing file_path".into()))?;
         let content = args.get("content").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing content".into()))?;
-        std::fs::write(path, content).map_err(|e| AgentError::Tool(format!("write failed: {e}")))?;
+        rt.write_file(path, content).await.map_err(|e| AgentError::Tool(format!("write failed: {e}")))?;
         Ok(format!("wrote {} bytes to {}", content.len(), path))
     }
 }
@@ -430,16 +486,12 @@ impl Tool for EditTool {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"file_path":{"type":"string","description":"Path to edit"},"old":{"type":"string","description":"Text to search for"},"new":{"type":"string","description":"Replacement text"}},"required":["file_path","old","new"]})
     }
-    async fn execute(&self, args: serde_json::Value) -> AgentResult<String> {
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
         let path = args.get("file_path").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing file_path".into()))?;
         let old = args.get("old").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing old".into()))?;
         let new = args.get("new").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing new".into()))?;
-        let content = std::fs::read_to_string(path).map_err(|e| AgentError::Tool(format!("read failed: {e}")))?;
-        if !content.contains(old) {
-            return Err(AgentError::Tool(format!("pattern not found in {path}")));
-        }
-        let new_content = content.replacen(old, new, 1);
-        std::fs::write(path, &new_content).map_err(|e| AgentError::Tool(format!("write failed: {e}")))?;
+        // 用 Runtime 的 edit_file（内部调 read + replace + write）
+        rt.edit_file(path, old, new).await.map_err(|e| AgentError::Tool(e))?;
         Ok(format!("replaced 1 occurrence in {path}"))
     }
 }
@@ -459,7 +511,7 @@ impl Tool for GenericTool {
     fn name(&self) -> &str { &self.name }
     fn description(&self) -> &str { &self.description }
     fn parameters(&self) -> serde_json::Value { self.parameters.clone() }
-    async fn execute(&self, args: serde_json::Value) -> AgentResult<String> {
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
         // Return a JSON response showing the tool was called with these args
         Ok(serde_json::json!({
             "tool": self.name,
@@ -485,7 +537,7 @@ mod tests {
 
         for (json, expected) in cases {
             let args: serde_json::Value = serde_json::from_str(json).unwrap();
-            let result = tool.execute(args).await.unwrap();
+            let result = tool.execute(args, &crate::runtime::LocalRuntime::new()).await.unwrap();
             assert_eq!(result, expected, "for {json}");
         }
     }
@@ -494,7 +546,7 @@ mod tests {
     async fn echo_tool_works() {
         let tool = EchoTool;
         let args: serde_json::Value = serde_json::json!({"text": "hello"});
-        let result = tool.execute(args).await.unwrap();
+        let result = tool.execute(args, &crate::runtime::LocalRuntime::new()).await.unwrap();
         assert_eq!(result, "echo: hello");
     }
 
@@ -510,5 +562,447 @@ mod tests {
 
         let defs = reg.tool_defs();
         assert_eq!(defs.len(), 2);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Git tools — 6 个 Git 操作工具
+// ---------------------------------------------------------------------------
+
+/// git_status: 查看工作区状态
+pub struct GitStatusTool;
+
+#[async_trait]
+impl Tool for GitStatusTool {
+    fn name(&self) -> &str { "git_status" }
+    fn description(&self) -> &str { "Show git working tree status (git status --short)." }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Repository path (default: cwd)"}}})
+    }
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+        run_git_with(rt, path, &["status", "--short"]).await
+    }
+}
+
+/// git_diff: 查看 diff
+pub struct GitDiffTool;
+
+#[async_trait]
+impl Tool for GitDiffTool {
+    fn name(&self) -> &str { "git_diff" }
+    fn description(&self) -> &str { "Show git diff (unstaged changes)." }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Repository path"},"staged":{"type":"boolean","description":"Show staged changes (default: false)"}}})
+    }
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+        let staged = args.get("staged").and_then(|v| v.as_bool()).unwrap_or(false);
+        if staged {
+            run_git_with(rt, path, &["diff", "--cached"]).await
+        } else {
+            run_git_with(rt, path, &["diff"]).await
+        }
+    }
+}
+
+/// git_log: 查看提交历史
+pub struct GitLogTool;
+
+#[async_trait]
+impl Tool for GitLogTool {
+    fn name(&self) -> &str { "git_log" }
+    fn description(&self) -> &str { "Show recent git commits (git log --oneline)." }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Repository path"},"count":{"type":"integer","description":"Number of commits (default: 10)"}}})
+    }
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+        let count = args.get("count").and_then(|v| v.as_u64()).unwrap_or(10);
+        run_git_with(rt, path, &["log", "--oneline", "-n", &count.to_string()]).await
+    }
+}
+
+/// git_add: 暂存文件
+pub struct GitAddTool;
+
+#[async_trait]
+impl Tool for GitAddTool {
+    fn name(&self) -> &str { "git_add" }
+    fn description(&self) -> &str { "Stage files for commit (git add)." }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Repository path"},"files":{"type":"string","description":"Files to add (default: '.' for all)"}},"required":[]})
+    }
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+        let files = args.get("files").and_then(|v| v.as_str()).unwrap_or(".");
+        run_git_with(rt, path, &["add", files]).await
+    }
+}
+
+/// git_commit: 提交
+pub struct GitCommitTool;
+
+#[async_trait]
+impl Tool for GitCommitTool {
+    fn name(&self) -> &str { "git_commit" }
+    fn description(&self) -> &str { "Create a git commit." }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Repository path"},"message":{"type":"string","description":"Commit message"}},"required":["message"]})
+    }
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+        let message = args.get("message").and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing message".into()))?;
+        run_git_with(rt, path, &["commit", "-m", message]).await
+    }
+}
+
+/// git_branch: 查看/创建分支
+pub struct GitBranchTool;
+
+#[async_trait]
+impl Tool for GitBranchTool {
+    fn name(&self) -> &str { "git_branch" }
+    fn description(&self) -> &str { "List branches or create a new one." }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Repository path"},"create":{"type":"string","description":"Create a new branch with this name"}}})
+    }
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+        if let Some(branch) = args.get("create").and_then(|v| v.as_str()) {
+            run_git_with(rt, path, &["checkout", "-b", branch]).await
+        } else {
+            run_git_with(rt, path, &["branch", "-a"]).await
+        }
+    }
+}
+
+/// 执行 git 命令的辅助函数
+async fn run_git_with(rt: &dyn crate::runtime::Runtime, path: &str, args: &[&str]) -> AgentResult<String> {
+    let cmd = format!("git -C {} {}", shell_quote(path), args.iter().map(|a| shell_quote(a)).collect::<Vec<_>>().join(" "));
+    let (stdout, stderr, exit_code) = rt.execute_command(&cmd, 60).await.map_err(|e| AgentError::Tool(e))?;
+    if exit_code == 0 {
+        Ok(if stdout.is_empty() && !stderr.is_empty() { stderr } else { stdout })
+    } else {
+        Ok(format!("git exit {exit_code}: {stderr}"))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Worker 编排工具 — spawn_worker / send_to_worker
+// ---------------------------------------------------------------------------
+//
+// 这两个工具把内核的 create_worker / send_to_worker 能力暴露给 LLM。
+// 设计原则对齐 AGENTS.md：能力在内核实现，通过 Runtime（Tool 的把手）暴露。
+//
+// LocalRuntime（ion CLI）不支持这两个工具（Runtime::spawn_worker 默认返回 Err），
+// 只有 WorkerRuntime（ion-worker 子进程）才有真实实现。
+//
+// 关键语义：
+// - spawn_worker(child)  → 阻塞，等子 worker 首轮 agent_end，返回 first_turn_output
+// - spawn_worker(peer)   → 立即返回 worker_id，子任务在后台跑，靠 CHANNEL_SEND 汇报
+// - send_to_worker       → fire-and-forget，给任意 worker 发 prompt（resume/对话）
+
+pub struct SpawnWorkerTool;
+
+#[async_trait]
+impl Tool for SpawnWorkerTool {
+    fn name(&self) -> &str { "spawn_worker" }
+
+    fn description(&self) -> &str {
+        "Spawn a child or peer Worker to execute a task autonomously. Returns a JSON object.\n\
+         - relation='child' + wait=true (default): BLOCKS until the child finishes its first turn, returns {status:'first_turn_completed', first_turn_output}.\n\
+         - relation='child' + wait=false: returns IMMEDIATELY with worker_id, call await_worker(worker_id) later to collect output (use for parallel children).\n\
+         - relation='peer': returns IMMEDIATELY with worker_id, peer auto-reports to creator via follow_up when done (no polling needed).\n\
+         The spawned worker remains alive after first turn — use resume_worker to continue conversation."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "relation": {
+                    "type": "string",
+                    "enum": ["child", "peer"],
+                    "description": "child = parent-owned, synchronous by default; peer = independent, reports via follow_up"
+                },
+                "agent": {
+                    "type": "string",
+                    "description": "Agent role name (must match .ion/agents/<name>.md). e.g. 'developer', 'reviewer', 'coordinator'"
+                },
+                "task": {
+                    "type": "string",
+                    "description": "Detailed task spec for the new worker."
+                },
+                "wait": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "(child only) true = block until first turn done; false = return immediately, use await_worker later"
+                },
+                "report_channel": {
+                    "type": "string",
+                    "default": "main",
+                    "description": "(peer only) Channel name for status broadcasts"
+                }
+            },
+            "required": ["relation", "agent", "task"]
+        })
+    }
+
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        let relation_str = args.get("relation").and_then(|v| v.as_str()).unwrap_or("child");
+        let agent = args.get("agent").and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing required arg: agent".into()))?
+            .to_string();
+        let task = args.get("task").and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing required arg: task".into()))?
+            .to_string();
+        let report_channel = args.get("report_channel").and_then(|v| v.as_str()).map(String::from);
+        let wait = args.get("wait").and_then(|v| v.as_bool()).unwrap_or(true);
+
+        let relation = match relation_str {
+            "peer" => crate::runtime::SpawnRelation::Peer,
+            _ => crate::runtime::SpawnRelation::Child,
+        };
+
+        let req = crate::runtime::SpawnWorkerRequest {
+            relation: relation.clone(),
+            agent,
+            task,
+            name: None,
+            report_channel: report_channel.clone(),
+            wait,
+        };
+
+        let resp = rt.spawn_worker(req).await.map_err(AgentError::Tool)?;
+
+        // 结构化 JSON 返回（LLM 靠 status 字段判断下一步）
+        let truncated_output = resp.first_turn_output.as_ref().map(|out| {
+            let preview: String = out.chars().take(800).collect();
+            if out.chars().count() > 800 {
+                format!("{}... (truncated, {} total chars)", preview, out.chars().count())
+            } else {
+                preview
+            }
+        });
+
+        let result = serde_json::json!({
+            "type": "worker_spawned",
+            "relation": match resp.relation {
+                crate::runtime::SpawnRelation::Child => "child",
+                crate::runtime::SpawnRelation::Peer => "peer",
+            },
+            "worker_id": resp.worker_id,
+            "status": resp.status,
+            "first_turn_output": truncated_output,
+            "report_channel": resp.report_channel,
+        });
+        Ok(result.to_string())
+    }
+}
+
+pub struct SendToWorkerTool;
+
+#[async_trait]
+impl Tool for SendToWorkerTool {
+    fn name(&self) -> &str { "send_to_worker" }
+
+    fn description(&self) -> &str {
+        "Send a message to another Worker (identified by worker_id). Fire-and-forget (async): returns \
+         immediately as {type:'message_sent', status:'delivered_async'}, does NOT wait for target to respond. \
+         Use cases: (1) parent → child additional instructions, (2) peer-to-peer async chat, \
+         (3) coordinator → peer additional task. To SYNCHRONOUSLY continue a child conversation and get \
+         the response, use resume_worker instead."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "worker_id": { "type": "string", "description": "Target worker_id (returned by spawn_worker)" },
+                "text": { "type": "string", "description": "Message content (becomes a new prompt for the target)" }
+            },
+            "required": ["worker_id", "text"]
+        })
+    }
+
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        let worker_id = args.get("worker_id").and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing required arg: worker_id".into()))?.to_string();
+        let text = args.get("text").and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing required arg: text".into()))?.to_string();
+
+        rt.send_to_worker(&worker_id, &text).await.map_err(AgentError::Tool)?;
+        let result = serde_json::json!({
+            "type": "message_sent",
+            "target": worker_id,
+            "status": "delivered_async"
+        });
+        Ok(result.to_string())
+    }
+}
+
+pub struct ResumeWorkerTool;
+
+#[async_trait]
+impl Tool for ResumeWorkerTool {
+    fn name(&self) -> &str { "resume_worker" }
+
+    fn description(&self) -> &str {
+        "Send a message to an existing Worker AND block until its next turn completes (synchronous resume). \
+         Returns {type:'worker_resumed', worker_id, status:'turn_completed', response_output}. \
+         Use this to continue a conversation with a child worker started via spawn_worker(child), \
+         or to follow up with any worker when you need its response."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "worker_id": { "type": "string", "description": "Target worker_id (must already exist)" },
+                "text": { "type": "string", "description": "Message to send (becomes a new prompt for the target)" }
+            },
+            "required": ["worker_id", "text"]
+        })
+    }
+
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        let worker_id = args.get("worker_id").and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing required arg: worker_id".into()))?.to_string();
+        let text = args.get("text").and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing required arg: text".into()))?.to_string();
+
+        let out = rt.resume_worker(&worker_id, &text).await.map_err(AgentError::Tool)?;
+        let truncated: String = out.chars().take(800).collect();
+        let truncated = if out.chars().count() > 800 {
+            format!("{}... (truncated, {} total chars)", truncated, out.chars().count())
+        } else { truncated };
+
+        let result = serde_json::json!({
+            "type": "worker_resumed",
+            "worker_id": worker_id,
+            "status": "turn_completed",
+            "response_output": truncated,
+        });
+        Ok(result.to_string())
+    }
+}
+
+pub struct AwaitWorkerTool;
+
+#[async_trait]
+impl Tool for AwaitWorkerTool {
+    fn name(&self) -> &str { "await_worker" }
+
+    fn description(&self) -> &str {
+        "Block until the target Worker finishes its next turn, returns {type:'worker_awaited', \
+         worker_id, status:'turn_completed', first_turn_output}. Use this to collect results from \
+         children spawned with wait=false. Pair with spawn_worker(child, wait=false) for parallel work: \
+         spawn N children non-blocking, then call await_worker on each."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "worker_id": { "type": "string", "description": "Target worker_id to wait on" }
+            },
+            "required": ["worker_id"]
+        })
+    }
+
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        let worker_id = args.get("worker_id").and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing required arg: worker_id".into()))?.to_string();
+
+        let out = rt.await_worker(&worker_id).await.map_err(AgentError::Tool)?;
+        let truncated: String = out.chars().take(800).collect();
+        let truncated = if out.chars().count() > 800 {
+            format!("{}... (truncated, {} total chars)", truncated, out.chars().count())
+        } else { truncated };
+
+        let result = serde_json::json!({
+            "type": "worker_awaited",
+            "worker_id": worker_id,
+            "status": "turn_completed",
+            "first_turn_output": truncated,
+        });
+        Ok(result.to_string())
+    }
+}
+
+pub struct ChannelSendTool;
+
+#[async_trait]
+impl Tool for ChannelSendTool {
+    fn name(&self) -> &str { "channel_send" }
+
+    fn description(&self) -> &str {
+        "Broadcast a message to all Workers subscribed to a channel. Returns \
+         {type:'channel_sent', channel, status:'broadcast'}. Use for fan-out announcements, \
+         status updates, or coordinating multiple peers. Subscribers receive the message as a \
+         follow_up (auto-processed next turn)."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "channel": { "type": "string", "description": "Channel name (e.g. 'main', 'review')" },
+                "text": { "type": "string", "description": "Message content" }
+            },
+            "required": ["channel", "text"]
+        })
+    }
+
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        let channel = args.get("channel").and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing required arg: channel".into()))?.to_string();
+        let text = args.get("text").and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing required arg: text".into()))?.to_string();
+
+        rt.channel_send(&channel, &text).await.map_err(AgentError::Tool)?;
+        let result = serde_json::json!({
+            "type": "channel_sent",
+            "channel": channel,
+            "status": "broadcast"
+        });
+        Ok(result.to_string())
+    }
+}
+
+pub struct KillWorkerTool;
+
+#[async_trait]
+impl Tool for KillWorkerTool {
+    fn name(&self) -> &str { "kill_worker" }
+
+    fn description(&self) -> &str {
+        "Terminate a Worker. Returns {type:'worker_killed', worker_id, status:'terminated'}. \
+         Use when a worker is stuck, redundant, or its work is no longer needed."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "worker_id": { "type": "string", "description": "Target worker_id to terminate" }
+            },
+            "required": ["worker_id"]
+        })
+    }
+
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        let worker_id = args.get("worker_id").and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing required arg: worker_id".into()))?.to_string();
+
+        rt.kill_worker(&worker_id).await.map_err(AgentError::Tool)?;
+        let result = serde_json::json!({
+            "type": "worker_killed",
+            "worker_id": worker_id,
+            "status": "terminated"
+        });
+        Ok(result.to_string())
     }
 }

@@ -152,6 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             api_key: Some(API_KEY.into()),
             response_format: None,
             thinking: None,
+            retry_config: None,
         },
     );
 
