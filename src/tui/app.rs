@@ -27,6 +27,45 @@ pub enum Panel {
     Input,
 }
 
+/// 创建 Worker 的模态表单字段
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CreateField { Path, Agent }
+
+/// 按 n 键弹出的创建 Worker 模态
+pub struct CreateModal {
+    pub field: CreateField,
+    pub path: String,
+    pub agent: String,
+    pub error: Option<String>,
+}
+
+impl CreateModal {
+    pub fn new() -> Self {
+        Self {
+            field: CreateField::Path,
+            path: std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            agent: "build".to_string(),
+            error: None,
+        }
+    }
+
+    pub fn current_text(&self) -> &str {
+        match self.field {
+            CreateField::Path => &self.path,
+            CreateField::Agent => &self.agent,
+        }
+    }
+
+    pub fn current_text_mut(&mut self) -> &mut String {
+        match self.field {
+            CreateField::Path => &mut self.path,
+            CreateField::Agent => &mut self.agent,
+        }
+    }
+}
+
 pub struct AppState {
     // Data
     pub workers: Vec<Value>,
@@ -65,8 +104,14 @@ pub struct AppState {
     // Animation
     pub anim_frame: u8,
 
+    // ── 创建 Worker 模态 ──
+    /// 弹出层：None = 不显示，Some = 显示表单
+    pub create_modal: Option<CreateModal>,
+
     // Send queue (buffered sends from keyboard handler)
     pending_sends: Vec<(String, String)>,
+    // Create queue (buffered create_session requests from modal)
+    pending_creates: Vec<(String, String)>,
 
     // Tree navigation
     pub tree_items: Vec<NodeId>,  // ordered list of visible tree items
@@ -105,7 +150,9 @@ impl AppState {
             tui_state,
             active_session: None,
             anim_frame: 0,
+            create_modal: None,
             pending_sends: vec![],
+            pending_creates: vec![],
             tree_items: vec![],
             tree_index: 0,
             kanban_selected: None,
@@ -220,6 +267,19 @@ impl AppState {
     }
 
     async fn on_tick(&mut self) {
+        // 处理排队的聊天发送
+        while let Some((sid, text)) = self.pending_sends.pop() {
+            self.drafts.insert(sid.clone(), text.clone());
+            let _ = self.conn.send_prompt(&sid, &text).await;
+        }
+        // 处理排队的创建请求
+        while let Some((path, agent)) = self.pending_creates.pop() {
+            eprintln!("[tui] creating session: path={path} agent={agent}");
+            match self.conn.create_session(&path, &agent).await {
+                Ok(v) => eprintln!("[tui] create_session response: {v}"),
+                Err(e) => eprintln!("[tui] create_session error: {e}"),
+            }
+        }
         self.anim_frame = (self.anim_frame + 1) % 8;
         match self.conn.poll_overview().await {
             Ok(data) => {
@@ -245,6 +305,11 @@ impl AppState {
     }
 
     fn on_key(&mut self, key: crossterm::event::KeyEvent) {
+        // 模态打开时拦截所有键盘事件
+        if self.create_modal.is_some() {
+            self.handle_create_modal_key(key);
+            return;
+        }
         if self.focused_panel == Panel::Input {
             self.handle_input_key(key);
             return;
@@ -260,6 +325,47 @@ impl AppState {
             KeyCode::Down | KeyCode::Char('j') => { self.nav_down(); }
             KeyCode::Char('z') => { self.toggle_collapse(); }
             KeyCode::Char('i') => { self.focused_panel = Panel::Input; } // Enter input mode
+            KeyCode::Char('n') => { self.create_modal = Some(CreateModal::new()); }
+            _ => {}
+        }
+    }
+
+    /// 处理创建模态的键盘事件
+    fn handle_create_modal_key(&mut self, key: crossterm::event::KeyEvent) {
+        let modal = self.create_modal.as_mut().unwrap();
+        match key.code {
+            KeyCode::Esc => {
+                // 关闭模态
+                self.create_modal = None;
+            }
+            KeyCode::Tab => {
+                // 切换字段
+                modal.field = match modal.field {
+                    CreateField::Path => CreateField::Agent,
+                    CreateField::Agent => CreateField::Path,
+                };
+            }
+            KeyCode::Enter => {
+                // 提交创建请求（异步，队列化）
+                let path = modal.path.clone();
+                let agent = modal.agent.clone();
+                if path.is_empty() {
+                    modal.error = Some("项目路径不能为空".into());
+                    return;
+                }
+                // 用 create_session RPC（Manager 会自动 spawn worker）
+                // 入队，等 tick 异步处理
+                self.pending_creates.push((path, agent));
+                self.create_modal = None;
+            }
+            KeyCode::Backspace => {
+                modal.current_text_mut().pop();
+                modal.error = None;
+            }
+            KeyCode::Char(c) => {
+                modal.current_text_mut().push(c);
+                modal.error = None;
+            }
             _ => {}
         }
     }

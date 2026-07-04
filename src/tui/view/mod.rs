@@ -3,6 +3,7 @@ pub mod kanban;
 pub mod detail;
 pub mod input_box;
 pub mod status_bar;
+pub mod create_modal;
 
 use ratatui::Frame;
 use crate::tui::{
@@ -42,4 +43,9 @@ pub fn render(f: &mut Frame, state: &mut AppState, layout: &AppLayout) {
         input_box::render(f, state, bottom_area, theme, state.focused_panel == Panel::Input);
     }
     status_bar::render(f, state, layout.status_bar_rect, theme);
+
+    // 模态层（最上层）
+    if state.create_modal.is_some() {
+        create_modal::render(f, state, f.area(), theme);
+    }
 }

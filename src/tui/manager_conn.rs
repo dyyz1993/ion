@@ -80,25 +80,12 @@ impl ManagerConn {
     /// socket handler is single-request-per-connection for non-subscribe commands.
     /// Returns the inner `data` payload (not the response wrapper).
     pub async fn poll_overview(&mut self) -> Result<Value, String> {
-        match Self::connect().await {
-            Ok(mut fresh) => {
-                let result = fresh.request_inner(
-                    &serde_json::json!({"method":"get_overview","id":"poll"})
-                ).await;
-                // Manager wraps response: {"type":"response","success":true,"data":{...}}
-                // Extract the inner payload
-                let payload = result.and_then(|v| {
-                    v.get("data").cloned()
-                        .ok_or_else(|| "response missing 'data' field".to_string())
-                });
-                self.connected = payload.is_ok();
-                payload
-            }
-            Err(e) => {
-                self.connected = false;
-                Err(e)
-            }
-        }
+        let result = self.request_once(
+            &serde_json::json!({"method":"get_overview","id":"poll"})
+        ).await?;
+        // Manager wraps: {"type":"response","success":true,"data":{...}}
+        result.get("data").cloned()
+            .ok_or_else(|| "response missing 'data' field".to_string())
     }
 
     /// Send a chat message (prompt) to a session.
@@ -110,9 +97,27 @@ impl ManagerConn {
             "session": session,
             "params": {"text": text}
         });
+        self.request_once(&req).await
+    }
+
+    /// Create a new session (auto-spawns a worker).
+    pub async fn create_session(&mut self, project_path: &str, agent: &str) -> Result<Value, String> {
+        let req = serde_json::json!({
+            "id": "tui-create",
+            "method": "create_session",
+            "params": {
+                "project_path": project_path,
+                "agent": agent,
+            }
+        });
+        self.request_once(&req).await
+    }
+
+    /// Generic request via a fresh connection.
+    async fn request_once(&mut self, req: &Value) -> Result<Value, String> {
         match Self::connect().await {
             Ok(mut fresh) => {
-                let result = fresh.request_inner(&req).await;
+                let result = fresh.request_inner(req).await;
                 self.connected = result.is_ok();
                 result
             }

@@ -23,7 +23,7 @@ pub fn render(f: &mut Frame, state: &AppState, area: Rect, theme: Theme) {
         Span::styled(format!(" {} workers | {} live", state.total_workers, live_count), Style::default().fg(theme.subtext)),
         Span::styled(format!(" | {:?}", state.focused_panel), Style::default().fg(theme.subtext)),
         Span::raw(" "),
-        Span::styled("Tab:switch Enter:select i:input q:quit", Style::default().fg(theme.subtext)),
+        Span::styled("Tab:switch Enter:select n:new i:input q:quit", Style::default().fg(theme.subtext)),
     ]);
 
     let p = Paragraph::new(line)
