@@ -9,17 +9,16 @@
  */
 import { createCliRenderer, Box, Text } from "@opentui/core";
 import { pollOverview } from "./manager";
-import { state, setRerenderFn, rerender } from "./state";
+import { state, setRerenderFn, rerender, log } from "./state";
 import { renderRoot } from "./layout/root";
 import { setupKeybinds } from "./keybinds";
 
 async function main() {
-  process.on("uncaughtException", (e) => {
-    process.stderr.write(`[uncaught] ${e.stack || e}\n`);
-    process.exit(1);
+  process.on("uncaughtException", (e: any) => {
+    log(`uncaught: ${e.message}`);
   });
-  process.on("unhandledRejection", (e) => {
-    process.stderr.write(`[unhandled] ${e}\n`);
+  process.on("unhandledRejection", (e: any) => {
+    log(`unhandled: ${e}`);
   });
 
   const renderer = await createCliRenderer({
@@ -27,33 +26,25 @@ async function main() {
     targetFps: 30,
   });
 
-  // 注册 rerender：销毁旧树重建
-  // OpenTUI 的 root 是个 Renderable，不是 VNode。
-  // 销毁旧子树用 getChildren() + destroyRecursively()
   setRerenderFn(() => {
     try {
-      // 销毁所有现有子节点
       const children = renderer.root.getChildren();
       for (const child of children) {
         if (child && typeof child.destroyRecursively === "function") {
           child.destroyRecursively();
-        } else if (child && typeof renderer.root.remove === "function") {
-          renderer.root.remove(child);
         }
       }
       const tree = renderRoot(renderer);
       if (tree) renderer.root.add(tree);
     } catch (e: any) {
-      process.stderr.write(`[rerender] ${e.stack || e}\n`);
+      // 错误塞进 state.logs，不污染终端
+      log(`rerender error: ${e.message}`);
     }
   });
 
-  // 键盘
   setupKeybinds(renderer);
-
-  // 初次渲染（空数据）
   rerender();
-  process.stderr.write("[ion] renderer ready\n");
+  log("renderer ready");
 
   // 首次拉取
   try {
@@ -62,11 +53,11 @@ async function main() {
     state.projects = overview.projects || [];
     state.totalStale = overview.total_stale || 0;
     state.connected = true;
+    log(`loaded ${state.workers.length} workers`);
     rerender();
-    process.stderr.write(`[ion] loaded ${state.workers.length} workers\n`);
   } catch (e: any) {
-    process.stderr.write(`[ion] connect failed: ${e.message}\n`);
     state.connected = false;
+    log(`connect failed: ${e.message}`);
     rerender();
   }
 
@@ -82,6 +73,7 @@ async function main() {
     } catch (e) {
       if (state.connected) {
         state.connected = false;
+        log("disconnected from manager");
         rerender();
       }
     }
@@ -89,6 +81,7 @@ async function main() {
 }
 
 main().catch((e) => {
+  // 致命错误才写 stderr
   process.stderr.write(`[fatal] ${e.stack || e}\n`);
   process.exit(1);
 });

@@ -2538,11 +2538,13 @@ async fn launch_dashboard() {
     };
 
     if need_start {
-        eprintln!("[ion] Starting Manager...");
         let ion_bin = std::env::current_exe()
             .unwrap_or_else(|_| std::path::PathBuf::from("ion"));
+        // Manager 的 stdout/stderr 都重定向到日志文件，不污染 TUI
+        let mgr_log = ion::paths::root().join("manager.log");
+        let mgr_out = std::fs::File::create(&mgr_log).ok();
         match Command::new(&ion_bin).arg("manager").arg("start")
-            .stdout(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(mgr_out.unwrap()))
             .stderr(std::process::Stdio::null())
             .spawn()
         {
@@ -2551,14 +2553,13 @@ async fn launch_dashboard() {
                 for _ in 0..25 {
                     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                     if sock.exists() {
-                        // 再验证一下能连
                         if tokio::net::UnixStream::connect(&sock).await.is_ok() {
                             break;
                         }
                     }
                 }
                 if !sock.exists() {
-                    eprintln!("[ion] Manager failed to start");
+                    eprintln!("[ion] Manager failed to start (see {})", mgr_log.display());
                     return;
                 }
             }
@@ -2597,7 +2598,6 @@ async fn launch_dashboard() {
     }
 
     // 4. fork bun 进程跑 dashboard（前台，继承 TTY）
-    eprintln!("[ion] Launching dashboard...");
     let status = Command::new("bun")
         .arg("run")
         .arg("src/index.ts")

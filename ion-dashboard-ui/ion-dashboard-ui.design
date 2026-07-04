@@ -1,0 +1,26 @@
+{
+  "data": [
+    {
+      "id": "page-main-panel",
+      "title": "主面板",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1751702400000,
+      "canvasData": {
+        "x": 0,
+        "y": 0,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/main-panel.html",
+        "interactions": []
+      }
+    }
+  ],
+  "config": {
+    "autoLayout": true,
+    "deviceType": "desktop",
+    "projectName": "ION TUI 仪表板",
+    "designLibrary": null
+  }
+}

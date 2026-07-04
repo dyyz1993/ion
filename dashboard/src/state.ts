@@ -56,7 +56,17 @@ export const state = {
 
   // 连接
   connected: false,
+
+  // 日志（显示在右侧详情栏底部）
+  logs: [] as string[],
 };
+
+/** 加一条日志（最多保留 50 条） */
+export function log(msg: string) {
+  const ts = new Date().toLocaleTimeString();
+  state.logs.unshift(`[${ts}] ${msg}`);
+  if (state.logs.length > 50) state.logs.length = 50;
+}
 
 /** rerender hook —— 由 index.ts 注册 */
 let rerenderFn: (() => void) | null = null;

@@ -1,0 +1,51 @@
+{
+  "project": {
+    "name": "ION TUI 仪表板",
+    "operation": "create",
+    "operatingMode": "free-explore",
+    "deviceType": "desktop",
+    "dashboardMode": true,
+    "styleDefinitionBrief": "AI Agent 编排平台终端仪表板，深色背景 + 青色强调，等宽字体，工业/实用主义风格，三栏布局模拟 TUI 界面",
+    "designRead": "TUI dashboard / developer engineers / industrial terminal utilitarian / high density / avoid generic web dashboard",
+    "designDials": {
+      "layoutVariance": 1,
+      "motionIntensity": 1,
+      "visualDensity": 5
+    },
+    "styleConstraints": {
+      "radiusMax": 6,
+      "staticShadowAlphaMax": 0.05
+    }
+  },
+  "designSource": {
+    "operatingMode": "free-explore",
+    "styleConstraints": {
+      "radiusMax": 6,
+      "staticShadowAlphaMax": 0.05
+    },
+    "libraryIdentity": null
+  },
+  "pages": [
+    {
+      "nodeId": "page-main-panel",
+      "title": "主面板",
+      "htmlSrc": "pages/main-panel.html",
+      "pageIndex": 1,
+      "pageType": "information-dense",
+      "visualNorthStar": "Three-column TUI terminal layout: left workspace sidebar, center Agent conversation panel, right dashboard with TODO/process monitor/logs. Monospace-only typography. Cyan accent borders. Zero border-radius aesthetic. Status indicators via colored Unicode circles. Keyboard shortcut hints in status bar.",
+      "compositionPattern": "Three-column fixed-grid dashboard. Left sidebar (220px): project tree with expand/collapse. Center panel (flex): header bar + scrollable conversation area + input bar. Right sidebar (300px): stacked panels (TODO, process monitor, logs) with compact headers.",
+      "continuityAnchors": {
+        "typographySystem": "Monospace-only: JetBrains Mono / Fira Code / Consolas fallback. All text rendered in monospace font including labels and UI chrome.",
+        "colorSystem": "Deep navy bg #0d1117, cyan accent #00d4aa, secondary text #8b949e, border #30363d. High-contrast terminal aesthetic.",
+        "densityModel": "Compact: 12-13px base font, tight line-height 1.25-1.5, minimal padding (8-12px panel gaps), max information density.",
+        "shapeLanguage": "Square/rectangular panels with thin 1px borders. No rounded corners on cards/panels. Sharp, precise, utilitarian."
+      },
+      "imagePlan": [],
+      "chartsRequired": false,
+      "componentPlan": []
+    }
+  ],
+  "assets": [],
+  "wiringPlan": [],
+  "hiddenInteractionPlan": []
+}
