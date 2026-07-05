@@ -150,7 +150,7 @@ export function App() {
   const focusMode = S.focusMode && S.selectedSessionId;
 
   return (
-    <Box flexDirection="column" flexGrow={1}>
+    <Box flexDirection="column" flexGrow={1} minHeight={stdout?.rows || 40}>
       {/* 主区域：弹性三栏 */}
       <Box flexGrow={1} flexDirection="row">
         {/* 左：项目列表 */}
