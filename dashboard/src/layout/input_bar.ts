@@ -37,6 +37,10 @@ export function createInputBar(renderer: any): InputRenderable {
       return;
     }
     const sid = state.selectedSessionId;
+    // 把 user 消息加进历史
+    const msgs = state.messages.get(sid) || [];
+    msgs.push({ role: "user", content: text });
+    state.messages.set(sid, msgs);
     log(`发送到 ${sid.slice(0, 8)}: ${text.slice(0, 30)}`);
     sendPrompt(sid, text).catch((e) => log(`发送失败: ${e.message}`));
     state.inputValue = "";

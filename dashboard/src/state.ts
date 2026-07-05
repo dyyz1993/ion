@@ -59,6 +59,17 @@ export const state = {
 
   // 日志（显示在右侧详情栏底部）
   logs: [] as string[],
+
+  // 每个 session 的消息历史（实时流式 + 历史加载）
+  messages: new Map<string, ChatMessage[]>(),
+  // 当前 streaming 的 session（agent_start 后到 agent_end 前）
+  streamingSession: null as string | null,
+};
+
+export type ChatMessage = {
+  role: "user" | "assistant" | "system";
+  content: string;
+  streaming?: boolean;  // assistant 消息是否还在流式接收
 };
 
 /** 加一条日志（最多保留 50 条） */

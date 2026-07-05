@@ -127,6 +127,7 @@ impl WorkerRegistry {
     pub async fn create_worker(
         &mut self,
         config: WorkerCreateConfig,
+        registry_arc: &Arc<Mutex<WorkerRegistry>>,
     ) -> Result<WorkerInfo, String> {
         let worker_id = format!("wkr_{}", &Uuid::new_v4().to_string()[..8]);
         let session_id = config.session.clone().unwrap_or_else(|| {
@@ -317,29 +318,77 @@ impl WorkerRegistry {
 
         self.workers.insert(worker_id.clone(), record);
 
-	        // Start stdout reader task (小助手 + 对讲机)
-	        let wid = worker_id.clone();
-	        let cmd_tx = self.manager_cmd_tx.clone();
-	        tokio::spawn(async move {
-	            let reader = BufReader::new(stdout);
-	            let mut lines = reader.lines();
-	            while let Ok(Some(line)) = lines.next_line().await {
-	                if line.trim().is_empty() { continue; }
-	                match serde_json::from_str::<serde_json::Value>(&line) {
-	                    Ok(msg) => {
-	                        let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-	                        match msg_type {
-	                            // Manager commands are forwarded to the registry's command channel
-	                            "manager_command" => {
-	                                let _ = cmd_tx.send(msg);
-	                            }
-	                            // All other messages (events, responses, etc.) go to stdout_tx
-	                            _ => {
-	                                if stdout_tx.send(msg).await.is_err() {
-	                                    break;
-	                                }
-	                            }
-	                        }
+		        // Start stdout reader task (小助手 + 对讲机)
+		        // 持续读 worker stdout：
+		        // 1. event 消息 → 直接转发给 event_subscribers（subscribe session 流）
+		        // 2. 所有消息 → stdout_tx（给 send_to_worker 等 RPC 消费）
+		        let wid = worker_id.clone();
+		        let cmd_tx = self.manager_cmd_tx.clone();
+		        let sub_registry = Arc::clone(registry_arc);
+		        let sub_wid = worker_id.clone();
+		        tokio::spawn(async move {
+		            let reader = BufReader::new(stdout);
+		            let mut lines = reader.lines();
+		            while let Ok(Some(line)) = lines.next_line().await {
+		                if line.trim().is_empty() { continue; }
+		                match serde_json::from_str::<serde_json::Value>(&line) {
+		                    Ok(msg) => {
+		                        let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+		                        // 关键：event 消息转发给 event_subscribers（实时流）
+		                        if msg_type == "event" {
+		                            let ev_type = msg.get("event")
+		                                .and_then(|e| e.get("type"))
+		                                .and_then(|v| v.as_str())
+		                                .unwrap_or("");
+		                            let reg = sub_registry.lock().await;
+		                            if let Some(record) = reg.workers.get(&sub_wid) {
+		                                for sub in &record.event_subscribers {
+		                                    let _ = sub.try_send(msg.clone());
+		                                }
+		                            }
+		                            // 更新 latest_output / status
+		                            if ev_type == "text_delta" {
+		                                if let Some(delta) = msg.get("event")
+		                                    .and_then(|e| e.get("delta"))
+		                                    .and_then(|v| v.as_str())
+		                                {
+		                                    drop(reg);
+		                                    let mut reg2 = sub_registry.lock().await;
+		                                    if let Some(record) = reg2.workers.get_mut(&sub_wid) {
+		                                        let truncated: String = delta.chars().take(60).collect();
+		                                        record.latest_output.push_back(truncated.clone());
+		                                        while record.latest_output.len() > 5 {
+		                                            record.latest_output.pop_front();
+		                                        }
+		                                        record.log_short = Some(truncated);
+		                                    }
+		                                }
+		                            } else if ev_type == "agent_end" {
+		                                drop(reg);
+		                                let mut reg2 = sub_registry.lock().await;
+		                                if let Some(record) = reg2.workers.get_mut(&sub_wid) {
+		                                    record.status = WorkerStatus::Idle;
+		                                }
+		                                drop(reg2);
+		                                let rc = Arc::clone(&sub_registry);
+		                                let w = sub_wid.clone();
+		                                tokio::spawn(async move {
+		                                    let mut r = rc.lock().await;
+		                                    r.broadcast_overview();
+		                                });
+		                            }
+		                        }
+		                        // 所有消息也转发到 stdout_tx（给 send_to_worker）
+		                        match msg_type {
+		                            "manager_command" => {
+		                                let _ = cmd_tx.send(msg);
+		                            }
+		                            _ => {
+		                                if stdout_tx.send(msg).await.is_err() {
+		                                    break;
+		                                }
+		                            }
+		                        }
 	                    }
 	                    Err(_) => {
 	                        tracing::warn!("[{wid}] non-JSON: {line}");
@@ -535,12 +584,8 @@ impl WorkerRegistry {
             None => {
                 // Worker not running → auto-start
                 tracing::info!("[session] auto-starting for {session_id}");
-                let info = self.create_worker(WorkerCreateConfig {
-                    session: Some(session_id.to_string()),
-                    ..Default::default()
-                }).await?;
-                // Now send to the newly created worker
-                self.send_to_worker(&info.worker_id, method, params).await
+                // 注：send_to_session 不能 auto-start（缺 registry_arc）
+                return Err(format!("worker not found for session {session_id}, please create_worker first"));
             }
         }
     }
@@ -865,7 +910,7 @@ impl WorkerRegistry {
     /// - 持 lock 期间只做"快速"操作（subscribe / send_command / write_response）
     /// - 阻塞等待 agent_end 的命令（create_worker wait=true, resume_worker, await_worker）
     ///   用 wait_then_respond 内部命令 + 独立 tokio::spawn task 处理，避免持 lock await
-    pub async fn process_pending_commands(&mut self) {
+    pub async fn process_pending_commands(&mut self, registry_arc: &Arc<Mutex<WorkerRegistry>>) {
         while let Ok(cmd_msg) = self.manager_cmd_rx.try_recv() {
             let command = cmd_msg.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let params = cmd_msg.get("params").cloned().unwrap_or_default();
@@ -885,7 +930,7 @@ impl WorkerRegistry {
 
                     let config: WorkerCreateConfig = serde_json::from_value(params).unwrap_or_default();
                     let report_channel = config.report_channel.clone().unwrap_or_else(|| "main".to_string());
-                    match self.create_worker(config).await {
+                    match self.create_worker(config, registry_arc).await {
                         Ok(info) => {
                             let child_id = info.worker_id.clone();
                             let session_id = info.session_id.clone();

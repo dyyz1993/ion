@@ -75,6 +75,22 @@ ION 对标 pi 的全部能力。遇到不确定的设计决策时：
 > **状态：暂不开发** — 本文档为设计规划，尚未实现。
 ```
 
+### 插件手册规范
+
+每个插件**必须**在其源码目录下维护一份 `MANUAL.md`，格式参照 [PLUGIN_MANUAL_TEMPLATE.md](./PLUGIN_MANUAL_TEMPLATE.md)。
+
+| 要求 | 说明 |
+|------|------|
+| 文件 | `{plugin}/MANUAL.md`，与 Cargo.toml 同级 |
+| 格式 | 参照模板，覆盖工具/存储/事件/测试四节 |
+| 构建 | `cargo build --target wasm32-wasip1 --release` |
+| 安装 | `.wasm` 放入 `<project>/.ion/extensions/` 自动发现 |
+| 集合 | 用户可通过 `ion plugin list --docs` 浏览所有已安装插件的手册 |
+
+现有插件手册：
+- [todo-plugin/MANUAL.md](./todo-plugin/MANUAL.md) — 待办任务管理 (WASM)
+- MEMORY 插件手册（内核内置，见 [MEMORY_PLUGIN.md](./MEMORY_PLUGIN.md)）
+
 ### 例外
 
 以下内容可以直接写在 AGENTS.md 中：
@@ -95,6 +111,8 @@ ION 对标 pi 的全部能力。遇到不确定的设计决策时：
 | [PLUGIN_WORKFLOW.md](./PLUGIN_WORKFLOW.md) | 插件开发测试工作流：写→build→安装→RPC 直调→LLM 引导→RPC 佐证 (已验证) |
 | [CLI_USAGE.md](./CLI_USAGE.md) | CLI 标准用法：RPC / Subscribe / Plugin RPC / Tool RPC 完整速查 (已验证) |
 | [MEMORY_PLUGIN.md](./MEMORY_PLUGIN.md) | Memory 记忆插件设计：大纲索引、异步检索、XML 注入、4 维存储 (设计稿) |
+| [MEMORY_SPEC.md](./MEMORY_SPEC.md) | Memory 插件测试规格：P0/P1/XFail 分级、完整接口定义、验收标准 (已验证) |
+| [BASH_PLUGIN.md](./BASH_PLUGIN.md) | Bash 进程管理插件设计：后台进程、实时流、退出原因、CLI 测试 (设计稿) |
 | `src/bin/ion.rs` | 主 CLI (45+ 参数) |
 | `src/bin/ion_worker.rs` | Worker 子进程 (75 RPC 命令) |
 | `src/worker_registry.rs` | Manager 内存状态 + Worker 管理 |
@@ -136,7 +154,7 @@ ion-worker --mode rpc    → Worker 子进程 (JSONL over stdin/stdout)
 - CLI 45+ 参数 (对齐 pi 41 核心参数)
 - Provider 抽象层 (`ion-provider` 独立 crate)
 - Agent 循环 (内外两层 + 29 扩展钩子 + 21 已接入)
-- 9 个内置工具 (read/write/edit/bash/grep/find/ls/calculator/echo) + 6 Git 工具 + 真实 bash 执行
+- 21 个内置工具 (read/write/edit/bash/grep/find/ls/calculator/echo + 7 Git + spawn/send/resume/await channel_send/kill) + 真实 bash 执行
 - 会话管理 (JSONL v3 + 实时索引 + fork/continue/resume + cwd-hash 分组)
 - --export HTML (pi 模板)
 - --agent (内置 build/explore/plan + 自定义 .md)
@@ -151,13 +169,41 @@ ion-worker --mode rpc    → Worker 子进程 (JSONL over stdin/stdout)
 - 重试机制 (`RetryConfig` + `retry_async` + `send_to_worker_retry` + Harness)
 - 权限引擎 (`PermissionEngine` + `UiSystem` + Agent 集成)
 - 命令守卫 (`CommandGuard`: 白名单 + 风险模式检测)
+- `ion subscribe` — 实时事件流（Instance + Plugin 两级）
+- Plugin RPC — 插件私有方法调用（`plugin_rpc`）
+- `ExtensionApi::emit_plugin_event()` — 插件发射自定义事件
+- `PluginEventBus` — 事件总线 + broadcast + backpressure
+- `on_plugin_rpc()` — AgentExtension 新增钩子
+- 21 个 Worker 编排工具（spawn_worker / send_to_worker / resume_worker / await_worker / channel_send / kill_worker）
+- 完整 steer/follow_up/abort/promote_follow_up 行为对齐 pi
+- Unix socket IPC（Manager ↔ CLI client）
+- `ion rpc` client — Manager 级 / Instance / Tool / Plugin 四类 RPC
+- `CLI_USAGE.md` — 标准用法文档
+
+### 🧠 Memory 插件 v0.1
+
+- `memory_save` — 主动保存记忆（LLM Tool + Plugin RPC 双入口）
+- `memory_search` — 主动搜索记忆（含 tag/category/description 匹配）
+- `plugin_rpc: save/list/search/forget/inspect` — CLI 调试入口
+- `forget` — 软删除（`archived: true`），list/search 默认过滤
+- `content_hash` — djb2 哈希，内容变化可靠检测
+- `outline` 路径净化（只允许 `[a-zA-Z0-9_-]`）
+- `on_system_prompt` — 自动注入 `<memory_outline>` XML 到 system prompt
+- `on_input` — 关键词匹配 → hash 对比 → 标记待注入
+- `on_context` — 发 LLM 前注入 `<memory_context>` XML 到 messages
+- `injected.json` — 记录注入历史（outline/hash/turn），20 轮去重窗口
+- `Consolidation` — 每 5 轮自动整理 index 计数
+- `Transcript` — 每句话自动记录 `transcript/input.jsonl`
+- `transcript_search` — 按关键词搜索历史输入
+- 6 种事件：`memory_saved` / `memory_injected` / `memory_consolidated` / `memory_debug` / `memory_skipped` / `transcript_appended`
+- `tests/memory_e2e.rs` — 6 个集成测试
 
 ### ✅ 已验证 (真实 LLM + 真实 API)
 
 ```
 ✅ RPC 75 命令全覆盖 (pi 格式对齐)
 ✅ Manager spawn Worker + IO Bridge (小助手 + 对讲机)
-✅ 真实 LLM prompt (DeepSeek API)
+✅ 真实 LLM prompt (DeepSeek API / GLM-4.7)
 ✅ Worker 工具调用 (read Cargo.toml → tokio)
 ✅ 实时事件推送 (agent_start/text_delta/agent_end)
 ✅ 多 Worker LLM 并发 (A=hi B=hey 同时)
@@ -169,6 +215,15 @@ ion-worker --mode rpc    → Worker 子进程 (JSONL over stdin/stdout)
 ✅ 5 并发 worktree 隔离开发
 ✅ 50 轮连续对话无泄漏
 ✅ 20 次快速创建/销毁无僵尸
+✅ ion manager + socket subscribe 实时事件流
+✅ Memory: on_input → on_context → injected.json 注入链路
+✅ Memory: 真实 LLM prompt 触发记忆召回并注入上下文
+✅ Memory: call_tool memory_save/search 直调
+✅ Memory: subscribe 实时收到 memory_saved 事件
+✅ Subscribe: instance 级事件 (agent_start/text_delta/agent_end)
+✅ plugin_rpc: 插件私有方法 CLI 直调
+✅ transcript: 每句话自动记录到 input.jsonl
+✅ WASM todo-plugin: build → load → test 全流程
 ```
 
 ### 🗺 路线图
@@ -328,11 +383,11 @@ let agent = Agent::new(registry, model, system_prompt, tools, config)
 - 会话树导航 (navigate_tree)
 - install/remove/update 包管理子命令
 
-### 测试统计 (2026-07-03)
+### 测试统计 (2026-07-05)
 
 | 套件 | 数量 | 覆盖 |
 |------|------|------|
-| lib tests (核心逻辑) | 84 | Agent/Permission/Retry/CommandGuard/Paths/Session/Worker |
+| lib tests (核心逻辑) | 90 | Agent/Permission/Retry/CommandGuard/Paths/Session/Worker/Memory |
 | unit_rpc_test (Phase 1) | 20 | U1-U20 RPC 协议 + 会话存储 |
 | plugin_tests (Phase 1) | 17 | U21-U25 JSON/WASM/Plan/Todo 插件 |
 | manager_integration (Phase 2-4) | 30 | I1-I32 Manager + Worker + 事件 + UI |
@@ -340,10 +395,13 @@ let agent = Agent::new(registry, model, system_prompt, tools, config)
 | worktree_isolation | 6 | WT1-WT6 worktree 创建/隔离/清洗 |
 | child_worker | 3 | 子进程 Worker 通信 |
 | concurrency | 1 | 并发池 |
-| **总计** | **181** | 全部通过 ✅ |
+| memory_e2e | 6 | Memory 插件存储/搜索/注入/去重/路径净化 |
+| **总计** | **193** | 全部通过 ✅ |
 
 **P5 - 扩展钩子补全:** ✅
-- ~~on_context 接入~~ ✅ (修改消息前调 LLM)
+- ~~on_context 接入~~ ✅ (Memory 插件 on_context 注入)
+- ~~on_input 接入~~ ✅ (Memory 插件 on_input 检索)
+- ~~on_plugin_rpc 接入~~ ✅ (Memory 插件 Plugin RPC)
 - ~~session_before_compact / session_compact 接入~~ ✅
 - ~~thinking_level_select~~ ✅ (已在 run() 中触发)
 - session_before_switch / session_before_fork / session_tree - 后续 (需会话树功能)
@@ -355,6 +413,7 @@ let agent = Agent::new(registry, model, system_prompt, tools, config)
 **P6b - 其他（待定）:**
 - @图片文件支持 (ContentBlock::Image 完整实现)
 - --models 多模型 Ctrl+P 切换 (交互式)
+- Memory 插件 v0.2 (SQLite 存储 / FTS 检索 / Active Memory sub-agent)
 - 真实代码审查 E2E (当前用算术题代替)
 
 ## 文件系统路径 (对齐 pi)

@@ -21,7 +21,7 @@
       "title": "看板视图",
       "type": "page",
       "version": 1,
-      "createdAt": 1751788800000,
+      "createdAt": 1752048000000,
       "canvasData": {
         "x": 620,
         "y": 0,
@@ -29,54 +29,6 @@
       },
       "devMetadata": {
         "htmlSrc": "pages/kanban-view.html",
-        "interactions": []
-      }
-    },
-    {
-      "id": "page-kanban-v2",
-      "title": "看板视图 v2",
-      "type": "page",
-      "version": 1,
-      "createdAt": 1751875200000,
-      "canvasData": {
-        "x": 1240,
-        "y": 0,
-        "group": 0
-      },
-      "devMetadata": {
-        "htmlSrc": "pages/kanban-v2.html",
-        "interactions": []
-      }
-    },
-    {
-      "id": "page-kanban-v3",
-      "title": "看板视图 v3",
-      "type": "page",
-      "version": 1,
-      "createdAt": 1751961600000,
-      "canvasData": {
-        "x": 1860,
-        "y": 0,
-        "group": 0
-      },
-      "devMetadata": {
-        "htmlSrc": "pages/kanban-v3.html",
-        "interactions": []
-      }
-    },
-    {
-      "id": "page-kanban-v4",
-      "title": "看板视图 v4",
-      "type": "page",
-      "version": 1,
-      "createdAt": 1752048000000,
-      "canvasData": {
-        "x": 2480,
-        "y": 0,
-        "group": 0
-      },
-      "devMetadata": {
-        "htmlSrc": "pages/kanban-v4.html",
         "interactions": []
       }
     }

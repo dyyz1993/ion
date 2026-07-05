@@ -1283,16 +1283,15 @@ async fn cmd_submit(eff: &EffectiveConfig, message: &str, _workers: usize, _max_
     let registry = Arc::new(Mutex::new(WorkerRegistry::new()));
     tracing::info!("Submitting: {}", message);
     {
-        let mut reg = registry.lock().await;
-        let w = reg.create_worker(WorkerCreateConfig {
+        let w = registry.lock().await.create_worker(WorkerCreateConfig {
             model: Some(eff.model.clone()),
             provider: Some(eff.provider.clone()),
             ..Default::default()
-        }).await.unwrap_or_else(|e| panic!("{e}"));
+        }, &registry).await.unwrap_or_else(|e| panic!("{e}"));
         tracing::info!("Worker: {}", w.worker_id);
-        
+
         // Send prompt
-        let _ = reg.send_to_worker(&w.worker_id, "prompt",
+        let _ = registry.lock().await.send_to_worker(&w.worker_id, "prompt",
             serde_json::json!({"text": message})).await;
     }
     
@@ -1856,7 +1855,7 @@ async fn cmd_manager_start(
         loop {
             {
                 let mut reg = cmd_registry.lock().await;
-                reg.process_pending_commands().await;
+                reg.process_pending_commands(&cmd_registry).await;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
@@ -1974,7 +1973,8 @@ async fn handle_manager_command(
                 cmd.clone()
             };
             let cfg: WorkerCreateConfig = serde_json::from_value(cfg_source).unwrap_or_default();
-            match reg.create_worker(cfg).await {
+            drop(reg);  // 放锁
+            match registry.lock().await.create_worker(cfg, &registry).await {
                 Ok(info) => Ok(serde_json::json!({
                     "workerId": info.worker_id,
                     "sessionId": info.session_id,
@@ -2028,7 +2028,8 @@ async fn handle_manager_command(
                 .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()));
             cfg.channels = Some(vec!["main".to_string()]);
             cfg.initial_prompt = source.get("initial_prompt").and_then(|v| v.as_str()).map(String::from);
-            match reg.create_worker(cfg).await {
+            drop(reg);
+            match registry.lock().await.create_worker(cfg, &registry).await {
                 Ok(_) => Ok(serde_json::json!({
                     "session_id": session_id,
                     "agent": agent,
@@ -2276,7 +2277,7 @@ async fn cmd_team(project_path: &str, user_message: &str, _max_workers: usize) {
         loop {
             {
                 let mut reg = cmd_registry.lock().await;
-                reg.process_pending_commands().await;
+                reg.process_pending_commands(&cmd_registry).await;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
@@ -2296,7 +2297,7 @@ async fn cmd_team(project_path: &str, user_message: &str, _max_workers: usize) {
     cfg.channels = Some(vec!["main".to_string()]);
     cfg.initial_prompt = Some(initial_prompt);
 
-    let entry = match registry.lock().await.create_worker(cfg).await {
+    let entry = match registry.lock().await.create_worker(cfg, &registry).await {
         Ok(info) => {
             eprintln!("   ✅ coordinator: {}", &info.worker_id[..12]);
             *entry_wid.lock().unwrap() = Some(info.worker_id.clone());

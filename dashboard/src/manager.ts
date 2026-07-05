@@ -1,8 +1,9 @@
 /**
  * ION Manager Unix socket 客户端
  *
- * Manager 是一问一答模式：每个请求新建一个连接。
- * 这个模块封装了 RPC 调用，对上层透明。
+ * 两种模式：
+ * - 一问一答 RPC（每次新建连接）：get_overview, create_session, prompt
+ * - 长连接 subscribe（专用连接）：subscribe session 流式收事件
  */
 import path from "node:path";
 import os from "node:os";
@@ -110,3 +111,84 @@ export async function sendPrompt(session: string, text: string): Promise<any> {
 }
 
 export const SOCKET_PATH = SOCK;
+
+/**
+ * 订阅 session 事件流（长连接）
+ * 返回一个 unsubscribe 函数。
+ *
+ * 事件类型：
+ * - instance_event/response: prompt 命令响应
+ * - instance_event/agent_start: Agent 开始
+ * - instance_event/event(text_delta): 流式文本
+ * - instance_event/event(agent_end): Agent 结束
+ * - instance_event/event(tool_*): 工具调用
+ */
+export function subscribeSession(
+  session: string,
+  handlers: {
+    onEvent?: (event: any) => void;
+    onDisconnect?: () => void;
+  }
+): () => void {
+  let closed = false;
+  let socketRef: any = null;
+  let buf = "";
+
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    try { socketRef?.end?.(); } catch {}
+    handlers.onDisconnect?.();
+  };
+
+  try {
+    Bun.connect({
+      unix: SOCK,
+      socket: {
+        open(socket) {
+          socketRef = socket;
+          socket.write(JSON.stringify({ method: "subscribe", session }) + "\n");
+        },
+        data(socket, chunk) {
+          buf += chunk.toString();
+          // 按行处理
+          let nl;
+          while ((nl = buf.indexOf("\n")) !== -1) {
+            const line = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            if (!line) continue;
+            try {
+              const msg = JSON.parse(line);
+              // 提取嵌套的 event（instance_event 包了一层）
+              let event = msg;
+              if (msg.type === "instance_event" && msg.event) {
+                event = msg.event;
+              }
+              handlers.onEvent?.(event);
+            } catch {}
+          }
+        },
+        error() { cleanup(); },
+        close() { cleanup(); },
+      },
+    }).catch(() => cleanup());
+  } catch {
+    cleanup();
+  }
+
+  return cleanup;
+}
+
+/** 取历史消息（进 Focus 模式时加载） */
+export async function getMessages(session: string): Promise<any[]> {
+  const resp = await rpc({
+    method: "get_messages",
+    session,
+    id: "getmsg",
+  });
+  // 响应格式: {data: {messages: [...]}} 或 {data: [...]}
+  if (resp.success) {
+    return resp.data?.messages || resp.data || [];
+  }
+  return [];
+}

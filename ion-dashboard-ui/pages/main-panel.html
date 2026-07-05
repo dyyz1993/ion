@@ -80,7 +80,7 @@
   --transition-normal: 150ms ease;
 
   /* ── Layout ── */
-  --sidebar-width:    220px;
+  --sidebar-width:    240px;
   --right-panel-width: 300px;
   --header-height:     40px;
   --status-bar-height: 28px;
@@ -125,7 +125,7 @@
             <div class="tui-header-left">
                 <span class="tui-logo">ION</span>
                 <span class="tui-version">v0.1.0</span>
-                <span class="tui-page-indicator">1/1</span>
+                <span class="tui-page-indicator">1/2</span>
             </div>
             <div class="tui-header-center">
                 <span class="tui-agent-context">&#9889;Agent-A CPU &#183; 已工作9分钟</span>
@@ -140,60 +140,120 @@
         <!-- ═══════════ MAIN THREE-COLUMN LAYOUT ═══════════ -->
         <div class="tui-body">
 
-            <!-- ── LEFT SIDEBAR ── -->
+            <!-- ── LEFT SIDEBAR (shared with kanban: PROJECTS + SESSIONS) ── -->
             <aside class="tui-sidebar-left">
-                <div class="tui-panel-header">
-                    <span>WORKSPACE</span>
-                    <span class="tui-btn-tiny">[+]新建</span>
-                </div>
-                <div class="tui-tree">
-                    <div class="tui-tree-item tui-tree-active-project">
-                        <span class="tui-tree-toggle">▼</span>
-                        <span class="tui-tree-folder">ion</span>
+                <!-- Section 1: PROJECTS -->
+                <div class="tui-sidebar-section">
+                    <div class="tui-section-header">
+                        <span>PROJECTS</span>
+                        <span class="tui-btn-tiny">[P]新建</span>
                     </div>
-                    <div class="tui-tree-children">
-                        <div class="tui-tree-item">
-                            <span class="tui-tree-line">├─</span>
-                            <span class="tui-dot tui-dot-success">&#x1f7e2;</span>
-                            <span class="tui-tree-label">CLI 45+ 参数</span>
+                    <div class="tui-sidebar-scroll">
+                        <!-- ion (expanded) -->
+                        <div class="tui-project-row">
+                            <div class="tui-project-item tui-project-expanded" style="border-left: 2px solid var(--color-cyan);">
+                                <span class="tui-tree-toggle">&#9662;</span>
+                                <span class="tui-project-name" style="color: var(--color-cyan);">ion</span>
+                            </div>
+                            <div class="tui-project-children">
+                                <div class="tui-session-child">
+                                    <span class="tui-color-dot" style="color: var(--color-cyan);">&#9679;</span>
+                                    <span>代码审查</span>
+                                </div>
+                                <div class="tui-session-child">
+                                    <span class="tui-color-dot" style="color: var(--color-cyan);">&#9679;</span>
+                                    <span>日常开发</span>
+                                </div>
+                            </div>
                         </div>
-                        <div class="tui-tree-item">
-                            <span class="tui-tree-line">├─</span>
-                            <span class="tui-dot tui-dot-success">&#x1f7e2;</span>
-                            <span class="tui-tree-label">Agent 循环</span>
+                        <!-- research-notes (collapsed) -->
+                        <div class="tui-project-row">
+                            <div class="tui-project-item" style="border-left: 2px solid var(--color-orange);">
+                                <span class="tui-tree-toggle">&#9656;</span>
+                                <span class="tui-project-name" style="color: var(--color-orange);">research-notes</span>
+                            </div>
                         </div>
-                        <div class="tui-tree-item">
-                            <span class="tui-tree-line">├─</span>
-                            <span class="tui-dot tui-dot-pending">&#x26aa;</span>
-                            <span class="tui-tree-label">Runtime 抽象层</span>
+                        <!-- opentui-desktop (collapsed) -->
+                        <div class="tui-project-row">
+                            <div class="tui-project-item" style="border-left: 2px solid var(--color-purple);">
+                                <span class="tui-tree-toggle">&#9656;</span>
+                                <span class="tui-project-name" style="color: var(--color-purple);">opentui-desktop</span>
+                            </div>
                         </div>
-                        <div class="tui-tree-item">
-                            <span class="tui-tree-line">├─</span>
-                            <span class="tui-dot tui-dot-pending">&#x26aa;</span>
-                            <span class="tui-tree-label">沙箱实现</span>
-                        </div>
-                        <div class="tui-tree-item">
-                            <span class="tui-tree-line">├─</span>
-                            <span class="tui-dot tui-dot-pending">&#x26aa;</span>
-                            <span class="tui-tree-label">规则配置化</span>
-                        </div>
-                        <div class="tui-tree-item">
-                            <span class="tui-tree-line">└─</span>
-                            <span class="tui-dot tui-dot-pending">&#x26aa;</span>
-                            <span class="tui-tree-label">UI 对接</span>
-                        </div>
-                    </div>
-                    <div class="tui-tree-item tui-tree-collapsed">
-                        <span class="tui-tree-toggle">▶</span>
-                        <span class="tui-tree-folder">opentui-desktop</span>
-                    </div>
-                    <div class="tui-tree-item tui-tree-collapsed">
-                        <span class="tui-tree-toggle">▶</span>
-                        <span class="tui-tree-folder">research-notes</span>
+                        <div class="tui-sidebar-count">3 projects</div>
                     </div>
                 </div>
-                <div class="tui-sidebar-footer">
-                    <span class="tui-worker-count">3 workers</span>
+
+                <!-- Divider -->
+                <div class="tui-sidebar-divider"></div>
+
+                <!-- Section 2: SESSIONS -->
+                <div class="tui-sidebar-section tui-sidebar-section-sessions">
+                    <div class="tui-section-header">
+                        <span>SESSIONS</span>
+                        <span class="tui-btn-tiny">[N]新建</span>
+                    </div>
+                    <div class="tui-sidebar-scroll">
+                        <div class="tui-session-row">
+                            <span class="tui-color-dot" style="color: var(--color-cyan);">&#9679;</span>
+                            <span class="tui-session-name">代码审查 &#183; ion</span>
+                            <span class="tui-session-meta">2w</span>
+                            <span class="tui-session-status">&#128994;</span>
+                        </div>
+                        <div class="tui-session-row">
+                            <span class="tui-color-dot" style="color: var(--color-cyan);">&#9679;</span>
+                            <span class="tui-session-name">日常开发 &#183; ion</span>
+                            <span class="tui-session-meta">1w</span>
+                            <span class="tui-session-status">&#9898;</span>
+                        </div>
+                        <div class="tui-session-row">
+                            <span class="tui-color-dot" style="color: var(--color-orange);">&#9679;</span>
+                            <span class="tui-session-name">论文调研 &#183; research-notes</span>
+                            <span class="tui-session-meta">1w</span>
+                            <span class="tui-session-status">&#128994;</span>
+                        </div>
+                        <div class="tui-session-row">
+                            <span class="tui-color-dot" style="color: var(--color-purple);">&#9679;</span>
+                            <span class="tui-session-name">TUI 开发 &#183; opentui-desktop</span>
+                            <span class="tui-session-meta">1w</span>
+                            <span class="tui-session-status">&#128308;</span>
+                        </div>
+                        <div class="tui-sidebar-count">4 sessions</div>
+                    </div>
+                </div>
+
+                <!-- Divider -->
+                <div class="tui-sidebar-divider"></div>
+
+                <!-- Section 3: NOTIFY -->
+                <div class="tui-sidebar-section">
+                    <div class="tui-section-header">
+                        <span>&#128276; NOTIFY</span>
+                        <span style="color: var(--color-error); font-size: 10px;">3</span>
+                    </div>
+                    <div style="padding: 0 var(--space-2); margin-bottom: var(--space-2);">
+                        <div class="tui-notify-item" style="background: rgba(248, 81, 73, 0.08); border-left: 2px solid var(--color-error);">
+                            <span class="tui-notify-icon" style="color: var(--color-error);">&#8635;</span>
+                            <div>
+                                <div class="tui-notify-title">Worker-03 retry 2/3</div>
+                                <div class="tui-notify-desc">edit("src/config.rs") timeout</div>
+                            </div>
+                        </div>
+                        <div class="tui-notify-item" style="background: rgba(240, 136, 62, 0.08); border-left: 2px solid var(--color-warning);">
+                            <span class="tui-notify-icon" style="color: var(--color-warning);">&#9888;</span>
+                            <div>
+                                <div class="tui-notify-title">Worker-06 连接超时</div>
+                                <div class="tui-notify-desc">已自动重启，等待恢复</div>
+                            </div>
+                        </div>
+                        <div class="tui-notify-item" style="background: rgba(88, 166, 255, 0.06); border-left: 2px solid var(--color-info);">
+                            <span class="tui-notify-icon" style="color: var(--color-info);">&#9432;</span>
+                            <div>
+                                <div class="tui-notify-title">Memory 注入 3 条</div>
+                                <div class="tui-notify-desc">on_context 自动触发</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </aside>
 
@@ -449,15 +509,149 @@
         flex-direction: column;
         overflow: hidden;
     }
-    .tui-sidebar-footer {
-        padding: var(--space-2) var(--panel-padding);
+
+    /* ── Sidebar Sections ── */
+    .tui-sidebar-section {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+    .tui-sidebar-section-sessions {
+        flex: 1;
+        min-height: 0;
+    }
+    .tui-sidebar-divider {
         border-top: 1px solid var(--color-divider);
-        font-size: var(--text-xs);
+        margin: 0;
+        flex-shrink: 0;
+    }
+    .tui-sidebar-scroll {
+        flex: 1;
+        overflow-y: auto;
+        padding: var(--space-2) 0;
+    }
+    .tui-sidebar-count {
+        padding: var(--space-1) var(--space-3);
         color: var(--color-text-muted);
+        font-size: 10px;
+    }
+
+    /* ── Section Header ── */
+    .tui-section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: var(--space-1) var(--space-3);
+        color: var(--color-text-muted);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: bold;
         flex-shrink: 0;
     }
 
-    /* ── Panel Header (shared) ── */
+    /* ── Project Rows ── */
+    .tui-project-row {
+        margin: 1px var(--space-2);
+    }
+    .tui-project-item {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        padding: var(--space-1) var(--space-2);
+        background: var(--color-bg-elevated);
+    }
+    .tui-project-name {
+        font-weight: bold;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .tui-project-children {
+        margin-left: var(--space-3);
+        border-left: 1px solid var(--color-divider);
+    }
+    .tui-session-child {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        padding: var(--space-1) var(--space-2);
+        background: rgba(121,192,255,0.04);
+        border-left: 2px solid transparent;
+        color: var(--color-text-secondary);
+        font-size: var(--text-xs);
+    }
+    .tui-color-dot {
+        font-size: 8px;
+        flex-shrink: 0;
+    }
+    .tui-tree-toggle {
+        font-size: var(--text-xs);
+        width: 1em;
+        text-align: center;
+        flex-shrink: 0;
+        color: var(--color-text-muted);
+    }
+
+    /* ── Session Rows ── */
+    .tui-session-row {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        padding: var(--space-1) var(--space-3);
+        font-size: var(--text-xs);
+    }
+    .tui-session-name {
+        color: var(--color-text-secondary);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        flex: 1;
+        min-width: 0;
+    }
+    .tui-session-meta {
+        color: var(--color-text-muted);
+        font-size: 10px;
+        white-space: nowrap;
+        flex-shrink: 0;
+    }
+    .tui-session-status {
+        font-size: 10px;
+        flex-shrink: 0;
+    }
+
+    /* ── Notify Items ── */
+    .tui-notify-item {
+        display: flex;
+        gap: var(--space-2);
+        padding: var(--space-1) var(--space-2);
+        margin-bottom: 1px;
+    }
+    .tui-notify-icon {
+        font-size: 10px;
+        flex-shrink: 0;
+    }
+    .tui-notify-title {
+        color: var(--color-text-secondary);
+        font-size: 11px;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        overflow: hidden;
+    }
+    .tui-notify-desc {
+        color: var(--color-text-muted);
+        font-size: 10px;
+    }
+
+    /* ═══════════ MAIN CONTENT ═══════════ */
+    .tui-main-content {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        border-right: 1px solid var(--color-border);
+    }
+
+    /* ── Shared Panel Header (for main content + right panels) ── */
     .tui-panel-header {
         display: flex;
         align-items: center;
@@ -476,66 +670,6 @@
         font-size: var(--text-xs);
         color: var(--color-accent);
         cursor: default;
-    }
-
-    /* ── Tree ── */
-    .tui-tree {
-        flex: 1;
-        overflow-y: auto;
-        padding: var(--space-2) 0;
-    }
-    .tui-tree-item {
-        display: flex;
-        align-items: center;
-        gap: var(--space-1);
-        padding: 2px var(--panel-padding);
-        font-size: var(--text-sm);
-        color: var(--color-text-primary);
-        white-space: nowrap;
-    }
-    .tui-tree-children .tui-tree-item {
-        padding-left: calc(var(--panel-padding) + var(--space-4));
-    }
-    .tui-tree-active-project {
-        color: var(--color-accent);
-    }
-    .tui-tree-toggle {
-        font-size: var(--text-xs);
-        width: 1em;
-        text-align: center;
-        flex-shrink: 0;
-        color: var(--color-text-muted);
-    }
-    .tui-tree-folder {
-        font-weight: 600;
-    }
-    .tui-tree-collapsed .tui-tree-folder {
-        color: var(--color-text-secondary);
-    }
-    .tui-tree-line {
-        color: var(--color-text-muted);
-        flex-shrink: 0;
-        font-size: var(--text-sm);
-        user-select: none;
-    }
-    .tui-tree-label {
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-    .tui-dot {
-        font-size: var(--text-xs);
-        flex-shrink: 0;
-    }
-    .tui-dot-success { color: var(--color-success); }
-    .tui-dot-pending { color: var(--color-text-muted); }
-
-    /* ═══════════ MAIN CONTENT ═══════════ */
-    .tui-main-content {
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;
-        border-right: 1px solid var(--color-border);
     }
     .tui-user-badge {
         color: var(--color-info);

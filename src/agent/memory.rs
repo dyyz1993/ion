@@ -344,6 +344,11 @@ impl MemoryExtension {
         }
     }
 
+    /// 使用已有的 MemoryStore（测试用）
+    pub fn new_with_store(store: Arc<Mutex<MemoryStore>>) -> Self {
+        Self { store, extension_api: None }
+    }
+
     fn emit(&self, custom_type: &str, data: serde_json::Value) {
         // 直接 println! 到 stdout（Manager pump → EventBus → subscriber）
         // 不依赖 extension_api（避免注册时序问题）

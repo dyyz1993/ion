@@ -26,19 +26,30 @@ export function renderDetail(renderer: any, focusMode: boolean): any {
       children.push(
         Text({ content: `${uptime} · ${worker.status.toUpperCase()}`, fg: COLORS.subtext })
       );
-      children.push(Text({ content: "", fg: COLORS.subtext }));
-      children.push(
-        Text({ content: `Session: ${worker.session_id.slice(0, 12)}...`, fg: COLORS.subtext })
-      );
       children.push(Text({ content: `Project: ${worker.project}`, fg: COLORS.subtext }));
       children.push(Text({ content: "", fg: COLORS.subtext }));
-      children.push(Text({ content: "▸ Output", fg: COLORS.accent, bold: true }));
-      if (worker.latest_output && worker.latest_output.length > 0) {
-        for (const line of worker.latest_output.slice(-5)) {
-          children.push(Text({ content: line.slice(0, 80), fg: COLORS.text }));
+
+      // 显示聊天历史（来自 state.messages）
+      const msgs = state.messages.get(worker.session_id) || [];
+      if (msgs.length > 0) {
+        children.push(Text({ content: "▸ Chat", fg: COLORS.accent, bold: true }));
+        // 显示最近 10 条
+        for (const m of msgs.slice(-10)) {
+          const prefix = m.role === "user" ? "你: " : "AI: ";
+          const color = m.role === "user" ? COLORS.accent : COLORS.text;
+          // 截断长消息
+          const lines = m.content.split("\n").slice(0, 4);
+          for (let i = 0; i < lines.length; i++) {
+            const line = (i === 0 ? prefix : "    ") + lines[i].slice(0, 70);
+            children.push(Text({ content: line, fg: color }));
+          }
+          if (m.streaming) {
+            children.push(Text({ content: "▍", fg: COLORS.accent }));
+          }
         }
       } else {
-        children.push(Text({ content: "(no output yet)", fg: COLORS.subtext }));
+        children.push(Text({ content: "▸ Chat (empty)", fg: COLORS.subtext }));
+        children.push(Text({ content: "Type a message below and press Enter", fg: COLORS.subtext }));
       }
     } else {
       const log = worker.log_short || "(no output)";
