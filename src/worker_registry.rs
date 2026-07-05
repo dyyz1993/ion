@@ -218,12 +218,20 @@ impl WorkerRegistry {
             }
         };
 
+        // 从 config.json 读默认 model/provider（避免硬编码 deepseek-v4-flash/opencode）
+        let cfg = crate::config::IonConfig::load();
+        let default_model = cfg.default_model.clone().unwrap_or_else(|| "glm-4.7".to_string());
+        let default_provider = cfg.default_provider.clone().unwrap_or_else(|| "zhipuai".to_string());
+
+        let model = config.model.clone().unwrap_or(default_model);
+        let provider = config.provider.clone().unwrap_or(default_provider);
+
         let mut child = tokio::process::Command::new(&binary)
             .args([
                 "--mode", "rpc",
                 "--session", &session_id,
-                "--model", config.model.as_deref().unwrap_or("deepseek-v4-flash"),
-                "--provider", config.provider.as_deref().unwrap_or("opencode"),
+                "--model", &model,
+                "--provider", &provider,
             ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

@@ -199,12 +199,14 @@ impl MemoryStore {
         for oid in outlines {
             for e in self.read_outline(&oid) {
                 if e.archived { continue; }
-                if q.is_empty()
-                    || e.content.to_lowercase().contains(&q)
-                    || e.description.to_lowercase().contains(&q)
-                    || e.category.to_lowercase().contains(&q)
-                    || e.tags.iter().any(|t| t.to_lowercase() == q || t.to_lowercase().contains(&q))
-                { results.push(e); }
+                // 匹配规则：用户输入包含记忆的关键词（不是记忆内容包含用户输入原文）
+                if q.is_empty() { results.push(e); continue; }
+                let tag_match = e.tags.iter().any(|t| q.contains(&t.to_lowercase()));
+                let cat_match = !e.category.is_empty() && q.contains(&e.category.to_lowercase());
+                let desc_match = !e.description.is_empty() && q.contains(&e.description.to_lowercase());
+                if tag_match || cat_match || desc_match {
+                    results.push(e);
+                }
             }
         }
         results
@@ -345,15 +347,22 @@ impl MemoryExtension {
     fn emit(&self, custom_type: &str, data: serde_json::Value) {
         // 直接 println! 到 stdout（Manager pump → EventBus → subscriber）
         // 不依赖 extension_api（避免注册时序问题）
-        let store = self.store.blocking_lock();
+        // 注意：不能在 async 上下文里调 blocking_lock()，用 try_lock 兜底
+        let session_id = match self.store.try_lock() {
+            Ok(store) => store.session_id.clone(),
+            Err(_) => {
+                // 锁被占，跳过 emit（避免 panic）
+                tracing::debug!("[memory] store lock contention, skip emit: {custom_type}");
+                return;
+            }
+        };
         let ev = serde_json::json!({
             "type": "plugin_event",
             "plugin": "memory",
-            "session": store.session_id,
+            "session": session_id,
             "customType": custom_type,
             "data": data,
         });
-        drop(store);
         println!("{}", serde_json::to_string(&ev).unwrap_or_default());
     }
 }
