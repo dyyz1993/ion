@@ -884,6 +884,44 @@
         box-shadow: 0 0 8px rgba(0, 212, 170, 0.15);
         border-color: var(--color-border-accent);
     }
+
+    /* ═══════════ RESPONSIVE ═══════════ */
+    /* ── Medium screens (900-1199px): right panel hidden, sidebar icon strip ── */
+    @media (max-width: 1199px) and (min-width: 900px) {
+        .tui-body {
+            grid-template-columns: 48px 1fr 0px !important;
+        }
+        .tui-sidebar-left .tui-section-header,
+        .tui-sidebar-left .tui-sidebar-count,
+        .tui-sidebar-left .tui-sidebar-divider,
+        .tui-sidebar-left .tui-sidebar-section:last-child,
+        .tui-sidebar-left .tui-project-children,
+        .tui-project-name,
+        .tui-tree-toggle {
+            display: none !important;
+        }
+        .tui-sidebar-right {
+            display: none !important;
+        }
+        .tui-project-item {
+            padding: var(--space-2) !important;
+            justify-content: center;
+        }
+        .tui-project-row {
+            margin: 0 !important;
+        }
+    }
+
+    /* ── Small screens (<900px): sidebar hidden, single column ── */
+    @media (max-width: 899px) {
+        .tui-body {
+            grid-template-columns: 0px 1fr 0px !important;
+        }
+        .tui-sidebar-left,
+        .tui-sidebar-right {
+            display: none !important;
+        }
+    }
     </style>
 </body>
 </html>

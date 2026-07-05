@@ -162,25 +162,25 @@
       <span style="color: var(--color-warning);">&#9889;</span> 看板视图 &middot; 6 Workers &middot; 3 活跃
     </div>
     <!-- Right -->
-    <div style="display: flex; align-items: center; gap: var(--space-3); font-size: var(--text-xs);">
+    <div class="header-shortcuts" style="display: flex; align-items: center; gap: var(--space-3); font-size: var(--text-xs);">
       <span style="color: var(--color-text-muted);">[Esc]返回</span>
       <span style="color: var(--color-text-muted);">[Enter]输入</span>
-      <span style="color: var(--color-text-muted);">[Space]新建</span>
-      <span style="color: var(--color-text-muted);">[N]新建会话</span>
-      <span style="color: var(--color-text-muted);">[P]新建项目</span>
+      <span class="hk-optional" style="color: var(--color-text-muted);">[Space]新建</span>
+      <span class="hk-optional" style="color: var(--color-text-muted);">[N]新建会话</span>
+      <span class="hk-optional" style="color: var(--color-text-muted);">[P]新建项目</span>
       <span style="color: var(--color-text-secondary); margin-left: var(--space-2);">20:46:25</span>
     </div>
   </div>
 
   <!-- ── Body: sidebar (full height) + center column ── -->
-  <div style="
+  <div class="kanban-body" style="
     display: grid;
     grid-template-columns: 240px 1fr;
     overflow: hidden;
   ">
 
     <!-- ── Left Sidebar (spans header→status bar) ── -->
-    <div style="
+    <div class="kanban-sidebar" style="
       display: flex;
       flex-direction: column;
       overflow: hidden;
@@ -190,8 +190,8 @@
     ">
 
       <!-- Section 1: PROJECTS -->
-      <div style="flex: 1 1 auto; overflow-y: auto; padding: var(--space-2) 0;" class="no-scrollbar">
-        <div style="
+      <div class="kanban-sidebar-labels no-scrollbar" style="flex: 1 1 auto; overflow-y: auto; padding: var(--space-2) 0;">
+        <div class="kanban-sidebar-section-header" style="
           display: flex;
           align-items: center;
           justify-content: space-between;
@@ -207,8 +207,8 @@
         </div>
 
         <!-- Project: ion (expanded) -->
-        <div style="margin: 1px var(--space-2);">
-          <div style="
+        <div class="kanban-project-row" style="margin: 1px var(--space-2);">
+          <div class="kanban-project-item" style="
             display: flex;
             align-items: center;
             gap: var(--space-2);
@@ -216,8 +216,8 @@
             background: var(--color-bg-elevated);
             border-left: 2px solid var(--color-cyan);
           ">
-            <span style="color: var(--color-text-secondary); font-size: 10px;">&#9662;</span>
-            <span style="color: var(--color-cyan); font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">ion</span>
+            <span class="tui-tree-toggle" style="color: var(--color-text-secondary); font-size: 10px;">&#9662;</span>
+            <span class="kanban-project-name" style="color: var(--color-cyan); font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">ion</span>
           </div>
           <!-- Children -->
           <div style="margin-left: var(--space-3); border-left: 1px solid var(--color-divider);">
@@ -247,8 +247,8 @@
         </div>
 
         <!-- Project: research-notes (collapsed) -->
-        <div style="margin: 1px var(--space-2);">
-          <div style="
+        <div class="kanban-project-row" style="margin: 1px var(--space-2);">
+          <div class="kanban-project-item" style="
             display: flex;
             align-items: center;
             gap: var(--space-2);
@@ -257,13 +257,13 @@
             border-left: 2px solid var(--color-orange);
           ">
             <span style="color: var(--color-text-muted); font-size: 10px;">&#9656;</span>
-            <span style="color: var(--color-orange); font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">research-notes</span>
+            <span class="kanban-project-name" style="color: var(--color-orange); font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">research-notes</span>
           </div>
         </div>
 
         <!-- Project: opentui-desktop (collapsed) -->
-        <div style="margin: 1px var(--space-2);">
-          <div style="
+        <div class="kanban-project-row" style="margin: 1px var(--space-2);">
+          <div class="kanban-project-item" style="
             display: flex;
             align-items: center;
             gap: var(--space-2);
@@ -272,17 +272,17 @@
             border-left: 2px solid var(--color-purple);
           ">
             <span style="color: var(--color-text-muted); font-size: 10px;">&#9656;</span>
-            <span style="color: var(--color-purple); font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">opentui-desktop</span>
+            <span class="kanban-project-name" style="color: var(--color-purple); font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">opentui-desktop</span>
           </div>
         </div>
 
-        <div style="padding: var(--space-1) var(--space-3); color: var(--color-text-muted); font-size: 10px;">3 projects</div>
+        <div class="kanban-sidebar-count" style="padding: var(--space-1) var(--space-3); color: var(--color-text-muted); font-size: 10px;">3 projects</div>
 
         <!-- Divider -->
-        <div style="border-top: 1px solid var(--color-divider); margin: var(--space-1) var(--space-3);"></div>
+        <div class="kanban-sidebar-divider" style="border-top: 1px solid var(--color-divider); margin: var(--space-1) var(--space-3);"></div>
 
         <!-- Section 2: SESSIONS -->
-        <div style="
+        <div class="kanban-session-section" style="
           display: flex;
           align-items: center;
           justify-content: space-between;
@@ -349,13 +349,13 @@
           <span style="font-size: 10px;">&#128308;</span>
         </div>
 
-        <div style="padding: var(--space-1) var(--space-3); color: var(--color-text-muted); font-size: 10px;">4 sessions</div>
+        <div class="kanban-sidebar-count" style="padding: var(--space-1) var(--space-3); color: var(--color-text-muted); font-size: 10px;">4 sessions</div>
 
         <!-- Divider -->
-        <div style="border-top: 1px solid var(--color-divider); margin: var(--space-1) var(--space-3);"></div>
+        <div class="kanban-sidebar-divider" style="border-top: 1px solid var(--color-divider); margin: var(--space-1) var(--space-3);"></div>
 
         <!-- Section 3: NOTIFY -->
-        <div style="
+        <div class="kanban-notify-section" style="
           display: flex;
           align-items: center;
           justify-content: space-between;
@@ -427,7 +427,7 @@
       background: var(--color-bg-primary);
     ">
       <!-- Kanban Grid -->
-      <div style="
+      <div class="kanban-grid" style="
         flex: 1 1 auto;
         overflow-y: auto;
         padding: var(--space-3);
@@ -759,6 +759,62 @@
 </div>
 
     </main>
+
+    <!-- ═══════════ Responsive Breakpoints ═══════════ -->
+    <style>
+    /* ── Medium screens (900-1199px): sidebar collapses to icon strip ── */
+    @media (max-width: 1199px) and (min-width: 900px) {
+      .kanban-body {
+        grid-template-columns: 48px 1fr !important;
+      }
+      .kanban-sidebar .kanban-sidebar-labels,
+      .kanban-sidebar .kanban-sidebar-divider,
+      .kanban-sidebar .kanban-sidebar-section-header span:first-child,
+      .kanban-sidebar .kanban-sidebar-count,
+      .kanban-sidebar .kanban-notify-section,
+      .kanban-sidebar .kanban-session-section {
+        display: none !important;
+      }
+      .kanban-sidebar {
+        align-items: center;
+        padding-top: var(--space-2);
+        gap: var(--space-2);
+      }
+      .kanban-sidebar .kanban-project-row {
+        margin: 0 !important;
+      }
+      .kanban-sidebar .kanban-project-item {
+        padding: var(--space-2) !important;
+        justify-content: center;
+      }
+      .kanban-sidebar .kanban-project-name,
+      .kanban-sidebar .tui-tree-toggle {
+        display: none;
+      }
+      .kanban-sidebar .kanban-session-child {
+        display: none;
+      }
+      .kanban-grid {
+        grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)) !important;
+      }
+    }
+
+    /* ── Small screens (<900px): sidebar hidden, cards 2-col ── */
+    @media (max-width: 899px) {
+      .kanban-body {
+        grid-template-columns: 0px 1fr !important;
+      }
+      .kanban-sidebar {
+        display: none !important;
+      }
+      .kanban-grid {
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)) !important;
+      }
+      .header-shortcuts .hk-optional {
+        display: none !important;
+      }
+    }
+    </style>
     <script>lucide.createIcons();</script>
 </body>
 </html>

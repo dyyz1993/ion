@@ -6,9 +6,10 @@
 
 | 角色 | 入口 | 用途 |
 |------|------|------|
-| LLM | Tool RPC | 自主启动/管理/交互后台进程 |
-| CLI / 开发者 | call_tool + plugin_rpc | 调试、手动管理 |
-| 前端 / UI | subscribe | 实时看进程状态和输出流 |
+| LLM | Tool RPC | 启动/后台/交互/杀进程（不自查列表，靠 system prompt 注入） |
+| CLI / 开发者 | plugin_rpc | 调试、手动管理、查列表 |
+| 前端 / UI | subscribe（长连接） | 实时看进程状态变化和输出流 |
+| 同 session | follow_up | 后台进程完成后通知创建者 |
 
 ## 2. 进程生命周期
 
@@ -16,158 +17,361 @@
 bash_run(command, background?, timeout?)
   │
   ├── foreground (background=false, 默认)
-  │   ├── 正常结束 → 返回 stdout/stderr/exit_code
+  │   ├── 正常结束 → 返回 stdout/stderr/exit_code（同步，不 follow_up）
   │   ├── 异常退出 → 返回错误
-  │   ├── 超过 timeout 秒 → 切后台（timeout_reached 原因）
-  │   └── 用户发 bash_background → 切后台（manual 原因）
+  │   ├── 超过 timeout 秒 → 切后台（background_timeout 原因）→ 摘取已有输出
+  │   └── 用户发 bash_background → 切后台（background_manual 原因）
   │
   ├── background (background=true)
   │   ├── 立即返回 {pid, status:"running"}
-  │   ├── 通过 subscribe 看实时输出流
-  │   ├── 通过 bash_send 交互
-  │   ├── 正常结束 → completed 事件 + follow_up creator
-  │   ├── 用户 kill → completed(manual) 事件 + follow_up creator
-  │   └── 超时 → completed(timeout) 事件
+  │   ├── 通过 subscribe 实时看输出流
+  │   ├── 通过 bash_send 交互（LLM tool + plugin RPC 双入口）
+  │   ├── 正常结束 → completed 事件 + follow_up 给 creator
+  │   ├── 用户手动 kill → completed(manual) 事件 + follow_up 给 creator
+  │   ├── 超时 → completed(timeout) 事件 + follow_up 给 creator
+  │   └── 异常退出 → completed(abnormal) 事件 + follow_up 给 creator
   │
   └── 异常
-      ├── bash 不存在 → process_error 事件
+      ├── 命令不存在 → process_error 事件
       └── PID 不存在 → 结构化错误
 ```
+
+### follow_up 规则
+
+| 执行方式 | 结束后 | 示例 |
+|---------|--------|------|
+| 前台同步 | 不 follow_up，直接返回结果 | `bash_run echo ok` → 返回 stdout |
+| 后台异步 | **必须** follow_up 给 creator | `bash_run(background=true)` → 完成后 creator 收到一条 user message |
 
 ## 3. 退出原因
 
 | reason | 说明 | 触发场景 |
 |--------|------|---------|
 | `completed` | 正常结束 exit 0 | 前台/后台进程自然结束 |
-| `abnormal` | 异常退出 exit != 0 | 命令执行失败 |
+| `abnormal` | 异常退出 exit != 0 | 命令失败 |
 | `timeout` | 超时关闭 | `bash_run(timeout=30)` 30s 后没结束 |
-| `manual` | 用户手动关闭 | `bash_kill(pid)` |
+| `manual` | 用户手动关闭 | `bash_kill(pid)` 或 `plugin_rpc kill` |
 | `background_timeout` | 前台超时自动转入后台 | 前台无 timeout 参数，运行超 300s |
 | `background_manual` | 用户手动转入后台 | `bash_background` 调用 |
 | `service_shutdown` | Manager 退出清理 | `ion manager stop` 时清理残留 |
 
-## 4. LLM Tools（5 个）
+## 4. 系统提示词注入（代替 bash_list）
+
+每次 Agent 启动 / 进程状态变化时，system prompt 末尾自动追加：
+
+```xml
+<running_processes>
+  <process pid="12345" command="sleep 600" elapsed="30s"/>
+  <process pid="23456" command="ping 127.0.0.1" elapsed="120s"/>
+</running_processes>
+```
+
+- 只展示正在运行中的进程
+- 已退出/已结束的不展示（通过 follow_up 通知）
+- 实时更新：进程启动/结束/状态变化时重新注入
+
+**因此 `bash_list` 不需要作为 LLM Tool。** LLM 靠 system prompt 知道当前有哪些后台进程。
+
+## 5. 输出存储与查看
+
+每次 `bash_run` 的输出写入 OS 临时目录（被系统自动清理，无需手动回收）：
+
+```
+/var/folders/.../T/ion-bash/     ← macOS（系统自动清理 old files）
+/tmp/ion-bash/                   ← Linux（系统自动清理）
+```
+
+通过 `system_tmp_dir()`（`paths.rs`）获取路径，支持 `ION_TMP_DIR` 环境变量覆盖。
+
+**CLI 查看方法：**
+
+```bash
+# 直接读日志文件
+cat $(ion rpc --session x --method plugin_rpc --params '{"plugin":"bash","method":"inspect","args":{"pid":12345}}' | grep log_path | cut -d'"' -f4)
+# 或通过 inspect 看摘要
+ion rpc --session x --method plugin_rpc \
+  --params '{"plugin":"bash","method":"inspect","args":{"pid":12345}}'
+```
+
+**inspect 响应的 output 处理逻辑：**
+
+| 日志大小 | 展示方式 |
+|---------|---------|
+| ≤ 2000 字符 | 全部返回 |
+| > 2000 字符 | 前 600 字 + 折叠标记 + 后 600 字 |
+| 超长 | 同上 + `log_path` 指向完整文件路径 |
+
+输出文件保留策略：Manager 重启或 `bash_clean` 时清理已退出进程的日志。
+
+### 实时输出查看
+
+执行过程中（同步或异步），用户可通过以下方式看实时输出：
+
+```bash
+# 方式 A：直接 tail 日志文件（最轻量）
+tail -f /tmp/ion-bash/12345.stdout.log
+
+# 方式 B：定期 inspect 拉取最新 N 行
+watch -n 2 ion rpc --session x --method plugin_rpc \
+  --params '{"plugin":"bash","method":"inspect","args":{"pid":12345,"tail":50}}'
+
+# 方式 C：CLI 终端接管（同步执行时另开 terminal）
+# Terminal 1: 执行命令
+ion rpc --session x --method call_tool \
+  --params '{"tool":"bash_run","args":{"command":"long task","description":"run"}}'
+# Terminal 2: 看实时输出
+tail -f /tmp/ion-bash/<pid>.stdout.log
+```
+
+实时输出**不经过 EventBus**，走文件，零事件开销。
+
+## 6. LLM Tools（4 个）
+
+所有工具统一参数：
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `command` | 是 | bash 命令 |
+| `description` | 是 | 描述用途，最长 30 字符（如"install deps""start server"） |
+| `timeout` | 否 | 超时秒数，默认 300 |
+| `background` | 否 | 是否后台运行，默认 false |
+
+Tool 返回给 LLM 的是**自然语言文本**，不是 JSON。结构化数据是 CLI/外层的事。
+
+### 落库格式（session.jsonl）
+
+Tool 执行记录写入 session.jsonl 时，附带 `details` 字段存储结构化元数据（UI 重建展示用，不影响 LLM）：
+
+```json
+{
+  "type": "message",
+  "message": {
+    "role": "tool",
+    "content": [{"ToolResult": {
+      "tool_call_id": "call_xxx",
+      "name": "bash_run",
+      "content": "✅ Process #12345 (install deps) completed\n  Output: added 150 packages...",
+      "details": {
+        "pid": 12345,
+        "command": "npm install",
+        "description": "install deps",
+        "exit_code": 0,
+        "duration_secs": 45,
+        "started_at": 1700000000,
+        "ended_at": 1700000045,
+        "reason": "completed",
+        "killed_by": null,
+        "timeout_secs": 120,
+        "log_path": "/tmp/ion-bash/12345.stdout.log"
+      }
+    }}]
+  }
+}
+```
+
+`details` 字段在各场景下的差异：
+
+| 场景 | exit_code | duration | reason | killed_by | timeout_secs |
+|------|-----------|----------|--------|-----------|-------------|
+| 正常结束 | 0 | 实际值 | completed | null | 传入值 |
+| 异常退出 | 非0 | 实际值 | abnormal | null | 传入值 |
+| 用户 kill | null | 实际值 | manual | "user"/"cli" | 传入值 |
+| 超时 | null | timeout 值 | timeout | null | 传入值 |
+| service shutdown | null | 实际值 | service_shutdown | "manager" | 传入值 |
+| 转后台（超时） | null | 300 | background_timeout | null | 传入值 |
+| 转后台（手动） | null | 实际值 | background_manual | "user" | 传入值 |
 
 ### `bash_run`
 
-前台执行（阻塞等结果）：
-
 ```
-参数: {command: "sleep 5 && echo ok", timeout?: 60, background?: false}
-响应（前台）: {stdout: "ok", stderr: "", exitCode: 0, pid: 12345}
-响应（后台）: {pid: 12345, status: "running", note: "background=true returns immediately"}
-```
+Foreground (sync):
+args: bash_run(command="npm install", description="install deps", timeout=120)
+ok    → ✅ Process #12345 (install deps) completed
+          Output: added 150 packages...
+          Duration: 45s
+          Exit code: 0
 
-- `timeout` 默认 300s。超时后前台进程自动转入后台（原因 `background_timeout`），摘取已有输出。
-- `background=true` 立即返回 PID，进程在后台跑。
+fail  → ❌ Process #12345 (install deps) failed
+          Error: error: permission denied
+          Duration: 5s
+          Exit code: 1
+
+killed → ⛔ Process #12345 (install deps) terminated by user
+           Duration: 18s
+
+timeout→bg → ⏳ Process #12345 (install deps) timeout, moved to background
+               Partial output: npm...
+               Elapsed: 300s
+               PID: 12345 (use bash_kill to stop)
+
+Background (async):
+args: bash_run(command="npm install", description="install deps", background=true)
+started → ✅ Process #12345 (install deps) started in background
+
+timeout  → ⛔ Process #12345 (install deps) timed out and was killed
+             Duration: 120s
+```
 
 ### `bash_background`
 
-将当前前台进程转入后台：
-
 ```
-参数: {}   ← 无参数，只能操作当前 session 正在前台跑的进程
-响应: {pid: 12345, status: "background", partial_output: "已执行的部分输出", reason: "manual"}
+args: bash_background()
+→ ⏳ Process #12345 (install deps) moved to background
+     Partial output: first 10s of output...
+     Elapsed: 10s
+     PID: 12345
 ```
 
 ### `bash_kill`
 
 ```
-参数: {pid: 12345}
-响应: {pid: 12345, status: "killed", reason: "manual"}
-```
+args: bash_kill(pid=12345)
+→ ⛔ Process #12345 (install deps) terminated
+     Duration: <seconds>
 
-注意：kill 时会发送 follow_up 给创建者，告知进程已被关闭。
+Sync processes can also be killed. Return is the same.
+```
 
 ### `bash_send`
 
-向进程发送 stdin（用于交互，如输入 Y/N）：
-
 ```
-参数: {pid: 12345, input: "Y\n"}
-响应: {pid: 12345, sent: "Y\n", status: "delivered"}
+args: bash_send(pid=12345, input="Y\n")
+→ ✅ Sent to process #12345: Y
 ```
 
-### `bash_list`
+## 7. Plugin RPC（CLI 管理）
 
-```
-参数: {status?: "running" | "all"}
-响应: [{pid: 12345, command: "sleep 60", status: "running", started_at: 1700000, elapsed_secs: 30}]
-```
-
-## 5. Plugin RPC（CLI 管理，5 个）
-
-LLM 不可见，通过 `plugin_rpc` 调用：
+Plugin RPC 返回结构化 JSON（给 CLI 解析用）。
 
 | 方法 | 参数 | 响应 | 说明 |
 |------|------|------|------|
-| `list` | `{status?}` | `[{pid, command, status, elapsed}]` | 列进程 |
-| `kill` | `{pid}` | `{status:"killed", reason}` | 杀进程 |
+| `list` | `{status?}` | `[{pid, command, description, status, elapsed}]` | 列进程 |
+| `kill` | `{pid}` | `{status:"killed", reason, duration}` | 杀进程 |
 | `send` | `{pid, input}` | `{status:"delivered"}` | 发 stdin |
-| `inspect` | `{pid}` | `{pid, command, status, stdout_preview, elapsed}` | 查进程详情 |
-| `subscribe` | `{pid}` | 进入 stream mode，持续推 `process_output` 事件 | 实时看输出 |
+| `inspect` | `{pid, tail?:100}` | `{pid, command, description, status, output_preview, log_path, elapsed, exit_code?}` | 查详情。`tail` 控制返回最后 N 行，默认 100 行，防止日志爆炸 |
+| `clean` | `{}` | `{cleaned: N}` | 清理已结束进程 |
 
-## 6. Events（6 种）
+## 8. 事件路由总表
 
-| customType | 触发 | data 字段 |
-|-----------|------|-----------|
-| `process_started` | 任何方式启动 | `{pid, command, background, session}` |
-| `process_completed` | 进程退出 | `{pid, exit_code, reason, output?}` |
-| `process_background` | 前台切后台 | `{pid, reason, partial_output}` |
-| `process_output` | 进程实时输出 | `{pid, data, stream:"stdout"|"stderr"}` |
-| `process_killed` | 被 kill | `{pid, reason, by}` |
-| `process_error` | 启动失败 | `{pid?, error}` |
+### 实际通道（基于代码现状）
 
-## 7. 完整场景流程
+| 通道 | 调用方式 | 数据流 |
+|------|---------|--------|
+| `agent → emit()` | Agent 内置，tool 生命周期自动触发 | Agent loop → `println!` stdout →  Worker stdout reader → pump → event_subscribers → `subscribe --session x` |
+| `extension → emit_plugin_event()` | 插件调 `ExtensionApi::emit_plugin_event()` | `println!` stdout(type=plugin_event) → pump 检测 `plugin_event` → EventBus broadcast → `subscribe --plugin bash` |
+| `extension → notify()` | 插件直接插入 user message | 追加到 agent.messages → 下一轮 LLM 调用自动带上 |
 
-### 场景 A：前台执行（默认）
+### 事件清单
+
+| 事件 | 触发者 | 实际通道 | 接收方 |
+|------|--------|---------|--------|
+| `tool_execution_start` | LLM 调 `bash_run` | `agent → emit()` | `subscribe --session x` |
+| `tool_execution_update` | bash 实时输出 | `agent → emit()` | `subscribe --session x` |
+| `tool_execution_end` | bash 执行完毕 | `agent → emit()` | `subscribe --session x` |
+| `process_started` | bash 进程启动 | `extension → emit_plugin_event()` | `subscribe --plugin bash` |
+| `process_completed` | 后台进程结束 | `extension → emit_plugin_event()` | `subscribe --plugin bash` |
+| `process_killed` | 后台进程被关 | `extension → emit_plugin_event()` | `subscribe --plugin bash` |
+| `process_error` | 进程启动失败 | `extension → emit_plugin_event()` | `subscribe --plugin bash` |
+| `<bash_result>` 通知 | 后台异步完成 | `extension → notify()` | 创建者会话下一轮 |
+
+### 查看方式
 
 ```bash
-# LLM 视角
+# tool_execution 流（LLM 调 bash 时）
+ion subscribe --session x
+# → tool_execution_start → tool_execution_update(逐行) → tool_execution_end
+
+# 进程状态变化
+ion subscribe --session x --plugin bash
+# → process_started / completed / killed / error
+
+# 实时输出（走文件，零事件开销）
+tail -f /tmp/ion-bash/12345.stdout.log
+
+# 查摘要
+ion rpc --session x --method plugin_rpc \
+  --params '{"plugin":"bash","method":"inspect","args":{"pid":12345,"tail":50}}'
+```
+
+## 9. 插件通知（Plugin Notification）
+
+后台进程**异步结束**后，注入一条带 XML 标签的消息到会话中：
+
+```xml
+<bash_result>
+  ✅ Process #12345 (install deps) completed. Output: added 150 packages.
+</bash_result>
+```
+
+- 通过 RPC 插入到 messages（不是 `follow_up`，是直接追加一条 user message）
+- Agent 下一轮自动看到（属于对话上下文的一部分）
+- 前端检测 `<bash_result>` 标签，渲染为卡片样式，不混在普通消息里
+- 详情数据存在 session.jsonl 的 `details` 字段，UI 可通过 call_id 查询
+| `manual` | `[bash:killed] Process #N (desc) terminated by user` |
+| `service_shutdown` | `[bash:shutdown] Process #N (desc) terminated (manager shutdown)` |
+| `background_timeout` | `[bash:background] Process #N (desc) timeout, moved to background` |
+| `background_manual` | `[bash:background] Process #N (desc) moved to background` |
+
+## 10. 完整场景流程
+
+### 事件清单
+
+| customType | 触发 | data 字段 | 推送方式 |
+|-----------|------|-----------|---------|
+| `process_started` | 任何方式启动 | `{pid, command, background, session}` | subscribe + system prompt |
+| `process_completed` | 进程退出 | `{pid, exit_code, reason, output?}` | subscribe + follow_up（异步） |
+| `process_background` | 前台切后台 | `{pid, reason, partial_output}` | subscribe |
+| `process_output` | 进程实时输出 | `{pid, data, stream:`stdout`|`stderr`}` | subscribe（按 PID 过滤） |
+| `process_killed` | 被 kill | `{pid, reason, by}` | subscribe + follow_up |
+| `process_error` | 启动失败 | `{pid?, error}` | subscribe |
+
+## 10. 完整场景流程
+
+### 场景 A：前台执行（同步）
+
+```bash
 ion rpc --session x --method call_tool \
-  --params '{"tool":"bash_run","args":{"command":"echo hello && sleep 2","timeout":30}}'
-# → 阻塞 ~2s，返回：
+  --params '{"tool":"bash_run","args":{"command":"echo hello","timeout":30}}'
+# → 阻塞等待，返回：
 # {"stdout":"hello\n","stderr":"","exitCode":0,"pid":12345}
 ```
 
 ### 场景 B：前台超时自动转后台
 
 ```bash
-# 无 timeout 参数，默认 300s（5min）
+# timeout 默认 300s
 ion rpc --session x --method call_tool \
   --params '{"tool":"bash_run","args":{"command":"sleep 600"}}'
-# → 300s 后超时，切后台：
-# {"pid":12345, "status":"background", "partial_output":"", "reason":"background_timeout"}
+# → 300s 后切后台：
+# {"pid":12345,"status":"background","partial_output":"","reason":"background_timeout"}
+# subscribe 同时收到 process_background 事件
 ```
 
 ### 场景 C：前台手动转后台
 
 ```bash
-# 先跑一个前台命令
+# Terminal 1: 跑一个前台命令
 ion rpc --session x --method call_tool \
-  --params '{"tool":"bash_run","args":{"command":"sleep 300","timeout":600}}'
-# 等待 10 秒后，在另一个 terminal 执行：
+  --params '{"tool":"bash_run","args":{"command":"sleep 300"}}'
+# 10s 后 Terminal 2:
 ion rpc --session x --method call_tool \
   --params '{"tool":"bash_background","args":{}}'
-# → {"pid":12345, "status":"background", "partial_output":"", "reason":"background_manual"}
+# → {"pid":12345,"status":"background","partial_output":"","reason":"background_manual"}
 ```
 
-### 场景 D：后台执行 + 事件流
+### 场景 D：后台执行 + 实时流
 
 ```bash
-# Terminal 1：订阅进程事件
+# Terminal 1: 订阅事件
 ion subscribe --session x --plugin bash
 
-# Terminal 2：后台启动
+# Terminal 2: 后台启动
 ion rpc --session x --method call_tool \
-  --params '{"tool":"bash_run","args":{"command":"ping -c 10 127.0.0.1","background":true,"timeout":60}}'
+  --params '{"tool":"bash_run","args":{"command":"ping -c 5 127.0.0.1","background":true}}
 # → {"pid":23456,"status":"running"}
 
 # Terminal 1 实时收到：
-# {"customType":"process_started","data":{"pid":23456,"command":"ping -c 10 127.0.0.1","background":true}}
-# {"customType":"process_output","data":{"pid":23456,"data":"PING 127.0.0.1 (127.0.0.1): 56 data bytes\n","stream":"stdout"}}
-# ... 每行 ping 输出一条 process_output ...
-# {"customType":"process_completed","data":{"pid":23456,"exit_code":0,"reason":"completed"}}
+# process_started → process_output × 5 → process_completed
 ```
 
 ### 场景 E：后台交互（两种入口）
@@ -175,7 +379,6 @@ ion rpc --session x --method call_tool \
 **入口 1：LLM 通过 Tool 交互**
 
 ```bash
-# LLM 调 bash_send 给进程发输入
 ion rpc --session x --method call_tool \
   --params '{"tool":"bash_send","args":{"pid":23456,"input":"Y\n"}}'
 # → {"pid":23456,"sent":"Y\n","status":"delivered"}
@@ -184,113 +387,99 @@ ion rpc --session x --method call_tool \
 **入口 2：用户/CLI 通过 Plugin RPC 交互**
 
 ```bash
-# 用户手动通过插件跟进程交互
 ion rpc --session x --method plugin_rpc \
-  --params '{"plugin":"bash","method":"send","args":{"pid":23456,"input":"Y\n"}}'
-# → {"pid":23456,"sent":"Y\n","status":"delivered"}
+  --params '{"plugin":"bash","method":"send","args":{"pid":23456,"input":"N\n"}}'
+# → {"pid":23456,"sent":"N\n","status":"delivered"}
 ```
 
-两入口走同一底层逻辑，只是调用方不同（LLM vs CLI）。
-
-### 场景 F：后台超时关闭
+### 场景 F：超时关闭
 
 ```bash
 ion rpc --session x --method call_tool \
-  --params '{"tool":"bash_run","args":{"command":"sleep 600","background":true,"timeout":30}}'
-# → 立即返回 PID，30s 后进程被 kill
-# subscribe 收到：{"customType":"process_completed","data":{"pid":23456,"reason":"timeout"}}
+  --params '{"tool":"bash_run","args":{"command":"sleep 600","background":true,"timeout":30}}
+# → 立即返回 PID，30s 后进程被杀
+# subscribe 收到：process_completed {reason:"timeout"}
+# creator 收到 follow_up："[bash] 进程 12345 已超时关闭"
 ```
 
-### 场景 G：手动杀进程
+### 场景 G：手动杀进程（两种入口）
+
+**入口 1：LLM 通过 Tool**
 
 ```bash
-# 先启动后台
-ion rpc --session x --method call_tool \
-  --params '{"tool":"bash_run","args":{"command":"sleep 600","background":true}}'
-
-# 通过 bash_kill 杀掉
 ion rpc --session x --method call_tool \
   --params '{"tool":"bash_kill","args":{"pid":23456}}'
 # → {"pid":23456,"status":"killed","reason":"manual"}
-
-# 或者通过 plugin_rpc 杀（LLM 不可见）
-ion rpc --session x --method plugin_rpc \
-  --params '{"plugin":"bash","method":"kill","args":{"pid":23456}}'
 ```
 
-### 场景 H：查进程详情
+**入口 2：用户/CLI 通过 Plugin RPC**
 
 ```bash
-# 列所有进程
-ion rpc --session x --method call_tool \
-  --params '{"tool":"bash_list","args":{"status":"all"}}'
-
-# 查单进程详情
 ion rpc --session x --method plugin_rpc \
-  --params '{"plugin":"bash","method":"inspect","args":{"pid":23456}}'
-# → {pid, command, status, stdout_preview, elapsed_secs, started_at}
-
-# 订阅单进程输出流
-ion rpc --session x --method plugin_rpc \
-  --params '{"plugin":"bash","method":"subscribe","args":{"pid":23456}}'
-# → 长连接，持续推 process_output
+  --params '{"plugin":"bash","method":"kill","args":{"pid":23456}}'
+# → {"pid":23456,"status":"killed","reason":"manual"}
 ```
 
-### 场景 I：异常退出
+### 场景 H：查看进程详情 + 日志分页
+
+```bash
+# 列进程
+ion rpc --session x --method plugin_rpc \
+  --params '{"plugin":"bash","method":"list","args":{"status":"all"}}'
+# → [{pid:12345, command:"sleep 600", status:"running", elapsed:30}]
+
+# 查看详情（含输出摘要）
+ion rpc --session x --method plugin_rpc \
+  --params '{"plugin":"bash","method":"inspect","args":{"pid":12345}}
+# → {pid, command, status, output_preview, log_path, elapsed}
+
+# 直接读完整日志文件
+cat ~/.ion/agent/project-data/--hash--name--/bash/logs/12345.stdout.log
+```
+
+### 场景 I：清理已完成进程
+
+```bash
+ion rpc --session x --method plugin_rpc \
+  --params '{"plugin":"bash","method":"clean","args":{}}'
+# → {"cleaned":5}  # 清理了 5 条已结束进程的记录和日志
+```
+
+### 场景 J：异常退出
 
 ```bash
 ion rpc --session x --method call_tool \
   --params '{"tool":"bash_run","args":{"command":"ls /not_exist"}}'
-# → {"stderr":"ls: /not_exist: No such file or directory","exitCode":1,"pid":23456}
+# → {"stderr":"ls: /not_exist: No such file or directory","exitCode":1,"pid":12345}
 ```
 
-### 场景 J：Manager 退出清理
+### 场景 K：Manager 退出清理
 
 ```bash
-# 启动后台进程
-# 直接关 Manager
 kill $(cat ~/.ion/manager.pid)
-# Manager 退出前遍历所有 live pid → kill
-# subscribe 收到：process_completed {reason: "service_shutdown"}
+# Manager 遍历所有 live pid → kill
+# subscribe 收到：process_completed {reason:"service_shutdown"}
 ```
 
-## 8. 设计要点
-
-- **PID 管理**：Bash 进程启动后记录 PID、命令、启动时间、creator session
-- **实时流**：后台进程的 stdout/stderr 读取 reader task → push 到 EventBus → subscribe
-- **交互**：通过进程 stdin 的写入管道发送输入
-- **清理**：Manager 退出时遍历所有进程记录 → kill
-- **follow_up**：后台进程 completed/killed 时，发送 follow_up 给创建者的 session
-- **超时**：每个进程创建时启动 timeout task，到期 kill
-
-## 9. 接口数量汇总
+## 11. 接口数量汇总
 
 | 类型 | 数量 | 列表 |
 |------|------|------|
-| LLM Tools | 5 | `bash_run`, `bash_background`, `bash_kill`, `bash_send`, `bash_list` |
-| Plugin RPC | 5 | `list`, `kill`, `send`, `inspect`, `subscribe` |
+| LLM Tools | 4 | `bash_run`, `bash_background`, `bash_kill`, `bash_send` |
+| Plugin RPC | 5 | `list`, `kill`, `send`, `inspect`, `clean` |
+| Subscribe | 1 | 长连接事件推送（不是方法） |
 | Events | 6 | `process_started`, `process_completed`, `process_background`, `process_output`, `process_killed`, `process_error` |
 
-## 10. 测试流程
+## 12. 文件存储
 
-```bash
-# 前置
-ion manager start
-ion rpc --method create_session --params '{"agent":"developer"}'
+```
+{system_tmp_dir}/ion-bash/                ← OS 临时目录，系统自动清理
+├── {pid}.stdout.log
+├── {pid}.stderr.log
+└── processes.json                        ← 当前 Manager 的进程记录
+```
 
-# 场景 A 前台
-ion rpc --session x --method call_tool --params '{"tool":"bash_run","args":{"command":"echo ok"}}'
-
-# 场景 D 后台 + subscribe
-ion subscribe --session x --plugin bash
-ion rpc --session x --method call_tool --params '{"tool":"bash_run","args":{"command":"sleep 10","background":true}}'
-
-# 场景 E 交互
-ion rpc --session x --method call_tool --params '{"tool":"bash_send","args":{"pid":23456,"input":"Y\n"}}'
-
-# 场景 G 杀进程
-ion rpc --session x --method call_tool --params '{"tool":"bash_kill","args":{"pid":23456}}'
-
-# 场景 H 查进程
-ion rpc --session x --method plugin_rpc --params '{"plugin":"bash","method":"list"}'
-ion rpc --session x --method plugin_rpc --params '{"plugin":"bash","method":"inspect","args":{"pid":23456}}'
+- 路径通过 `paths::system_tmp_dir()` 获取
+- 默认 `/tmp/ion-bash/`（Linux）或 `/var/folders/.../T/ion-bash/`（macOS）
+- 支持 `ION_TMP_DIR` 环境变量覆盖
+- **系统自动清理**，ION 不需要额外做 cleanup
