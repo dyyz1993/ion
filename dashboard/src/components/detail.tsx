@@ -9,7 +9,7 @@ export function Detail({ renderer, focusMode }: { renderer: any; focusMode: bool
   const worker = S.workers.find((w) => w.session_id === S.selectedSessionId);
 
   return (
-    <Box borderStyle="round" borderColor={bc} flexDirection="column" padding={1} flexGrow={1}>
+    <Box borderStyle="round" borderColor={bc} flexDirection="column" paddingX={1} flexGrow={1}>
       <Text color={colors.accent} bold>{" Detail "}</Text>
       {!worker ? (
         <Text color={colors.subtext}>
@@ -21,10 +21,10 @@ export function Detail({ renderer, focusMode }: { renderer: any; focusMode: bool
         <CompactMode worker={worker} />
       )}
 
-      {/* 日志 */}
+      {/* 日志 - 最多 3 条 */}
       <Text color={colors.accent} bold>{"\n"}▸ Logs</Text>
-      {S.logs.slice(0, 6).map((l, i) => (
-        <Text key={i} color={colors.subtext}>{l}</Text>
+      {S.logs.slice(0, 3).map((l, i) => (
+        <Text key={i} color={colors.subtext}>{l.slice(0, 60)}</Text>
       ))}
     </Box>
   );
@@ -54,12 +54,12 @@ function FocusMode({ worker }: { worker: any }) {
       <Text color={colors.subtext}>Project: {worker.project}</Text>
       <Text>{""}</Text>
 
-      {/* 聊天历史 */}
+      {/* 聊天历史 - 最多 6 条 */}
       <Text color={colors.accent} bold>▸ Chat</Text>
       {msgs.length === 0 && (
-        <Text color={colors.subtext}>Type a message below{'\n'}and press Enter</Text>
+        <Text color={colors.subtext}>Type a message below and press Enter</Text>
       )}
-      {msgs.slice(-10).map((m: any, i: number) => {
+      {msgs.slice(-6).map((m: any, i: number) => {
         const prefix = m.role === "user" ? "你: " : "AI: ";
         const color = m.role === "user" ? colors.accent : colors.text;
         const lines = m.content.split("\n").slice(0, 4);

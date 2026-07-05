@@ -3,8 +3,8 @@
  *
  * 所有键盘处理在 useInput 里。Input 字段用纯键盘驱动。
  */
-import React, { useRef, useEffect, useState } from "react";
-import { Box, Text, useInput } from "ink";
+import React, { useRef, useEffect, useState, useMemo } from "react";
+import { Box, Text, useInput, useApp } from "ink";
 import { colors } from "./theme";
 import { S, useRefresh, refresh, log } from "./state";
 import { pollOverview, createSession, sendPrompt } from "./manager";

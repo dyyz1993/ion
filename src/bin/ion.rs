@@ -2581,14 +2581,16 @@ async fn launch_dashboard() {
         std::path::PathBuf::from("dashboard"),
     ];
     let dashboard_dir = candidates.iter()
-        .find(|p| p.join("src/index.ts").exists())
+        .find(|p| p.join("src/index.ts").exists() || p.join("src/index.tsx").exists())
         .cloned()
         .unwrap_or_else(|| candidates[0].clone());
 
-    if !dashboard_dir.join("src/index.ts").exists() {
+    if !dashboard_dir.join("src/index.ts").exists() && !dashboard_dir.join("src/index.tsx").exists() {
         eprintln!("[ion] Dashboard not found at {}", dashboard_dir.display());
         return;
     }
+
+    let entry_file = if dashboard_dir.join("src/index.tsx").exists() { "src/index.tsx" } else { "src/index.ts" };
 
     // 3. 检查 node_modules，没有就 bun install
     if !dashboard_dir.join("node_modules").exists() {
@@ -2601,7 +2603,7 @@ async fn launch_dashboard() {
     // 4. fork bun 进程跑 dashboard（前台，继承 TTY）
     let status = Command::new("bun")
         .arg("run")
-        .arg("src/index.ts")
+        .arg(entry_file)
         .current_dir(&dashboard_dir)
         .status();
 
