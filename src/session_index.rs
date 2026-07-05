@@ -44,6 +44,12 @@ pub struct SessionMeta {
     pub updated_at: i64,
     /// Error count
     pub error_count: u32,
+    /// Last thinking level set (e.g. "off"/"low"/"medium"/"high")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_thinking_level: Option<String>,
+    /// Last active tool names (from append_active_tools_change)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_active_tools: Option<Vec<String>>,
 }
 
 /// Index of all sessions, stored in sessions.index.json
@@ -156,6 +162,8 @@ impl SessionIndex {
             created_at: existing.as_ref().map_or(now, |e| e.created_at),
             updated_at: now,
             error_count: existing.as_ref().map_or(0, |e| e.error_count),
+            last_thinking_level: existing.as_ref().and_then(|e| e.last_thinking_level.clone()),
+            last_active_tools: existing.as_ref().and_then(|e| e.last_active_tools.clone()),
         }
     }
 
@@ -179,5 +187,103 @@ impl SessionIndex {
         let mut index = Self::load();
         index.upsert(id, meta);
         index.save();
+    }
+
+    /// Patch specific fields on an existing session meta without rebuilding the whole entry.
+    /// Used by append_* RPCs to keep the index in sync (e.g. thinking level, active tools, name).
+    /// If the session isn't yet in the index, creates a minimal entry first.
+    pub fn patch_meta<F>(id: &str, patch_fn: F)
+    where
+        F: FnOnce(&mut SessionMeta),
+    {
+        let mut index = Self::load();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
+        // 若 session 不在 index，先建一个最小条目（worker 通过 manager 跑时
+        // 没有 ion CLI 的 update 调用路径，所以这里要兜底）
+        if !index.sessions.contains_key(id) {
+            let cwd = std::env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let project_name = std::path::Path::new(&cwd)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            index.sessions.insert(
+                id.to_string(),
+                SessionMeta {
+                    name: None,
+                    first_name: None,
+                    project: Some(cwd),
+                    project_name: Some(project_name),
+                    worktree: false,
+                    branch: None,
+                    model: String::new(),
+                    agent: "default".to_string(),
+                    provider: String::new(),
+                    token_input: 0,
+                    token_output: 0,
+                    token_cache_read: 0,
+                    token_cache_write: 0,
+                    compress_count: 0,
+                    message_count: 0,
+                    turn_count: 0,
+                    created_at: now,
+                    updated_at: now,
+                    error_count: 0,
+                    last_thinking_level: None,
+                    last_active_tools: None,
+                },
+            );
+        }
+
+        if let Some(meta) = index.sessions.get_mut(id) {
+            patch_fn(meta);
+            meta.updated_at = now;
+            index.save();
+        }
+    }
+
+    /// Convenience: update session name (from append_session_name RPC).
+    pub fn set_name(id: &str, name: &str) {
+        Self::patch_meta(id, |m| {
+            if m.first_name.is_none() {
+                m.first_name = Some(name.to_string());
+            }
+            m.name = Some(name.to_string());
+        });
+    }
+
+    /// Convenience: update thinking level (from append_thinking_level_change RPC).
+    pub fn set_thinking_level(id: &str, level: &str) {
+        Self::patch_meta(id, |m| {
+            m.last_thinking_level = Some(level.to_string());
+        });
+    }
+
+    /// Convenience: update active tools (from append_active_tools_change RPC).
+    pub fn set_active_tools(id: &str, tools: Vec<String>) {
+        Self::patch_meta(id, |m| {
+            m.last_active_tools = Some(tools);
+        });
+    }
+
+    /// Convenience: update model + provider (from append_model_change RPC).
+    pub fn set_model(id: &str, provider: &str, model_id: &str) {
+        Self::patch_meta(id, |m| {
+            m.provider = provider.to_string();
+            m.model = model_id.to_string();
+        });
+    }
+
+    /// Convenience: update agent name (from append_agent_change RPC).
+    pub fn set_agent(id: &str, agent: &str) {
+        Self::patch_meta(id, |m| {
+            m.agent = agent.to_string();
+        });
     }
 }

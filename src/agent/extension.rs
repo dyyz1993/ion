@@ -72,6 +72,9 @@ pub struct SessionContext {
 
 #[async_trait]
 pub trait Extension: Send + Sync {
+    /// Optional name for plugin routing (used by plugin_rpc dispatch).
+    fn name(&self) -> &str { "anonymous" }
+
     // ── Session lifecycle (4) ──
     async fn on_session_start(&self, _ctx: &SessionContext) -> AgentResult<()> { Ok(()) }
     async fn on_session_shutdown(&self, _ctx: &SessionContext) -> AgentResult<()> { Ok(()) }
@@ -295,10 +298,11 @@ impl ExtensionRegistry {
         method: &str,
         params: serde_json::Value,
     ) -> AgentResult<serde_json::Value> {
-        // 按插件名匹配：extension 可以有自己的名字，这里用类型名作为 fallback
-        // 第一版简单遍历所有 extension
         for ext in &self.extensions {
-            // 尝试调每个 extension
+            // 如果指定了插件名，只调匹配的 extension
+            if !plugin.is_empty() && ext.name() != plugin {
+                continue;
+            }
             let result = ext.on_plugin_rpc(method, params.clone()).await;
             match result {
                 Ok(v) => return Ok(v),

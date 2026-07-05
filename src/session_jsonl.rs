@@ -14,6 +14,10 @@
 //! {"type":"compaction","id":"...","parentId":"...","summary":"...","tokensBefore":...}
 //! {"type":"branch_summary","id":"...","parentId":"...","summary":"..."}
 //! {"type":"custom","id":"...","parentId":"...","customType":"...","data":{...}}
+//! {"type":"custom_message","id":"...","parentId":"...","customType":"...","content":"...","display":true}
+//! {"type":"system_event","id":"...","parentId":"...","customType":"...","label":"...","display":true}
+//! {"type":"label","id":"...","parentId":"...","targetId":"...","label":"..."}
+//! {"type":"active_tools_change","id":"...","parentId":"...","activeToolNames":["bash","read"]}
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -138,6 +142,63 @@ pub struct CustomEntry {
     pub timestamp: String,
     pub customType: String,
     pub data: serde_json::Value,
+}
+
+/// CustomMessage entry (LLM 可见的扩展自定义消息).
+/// 对齐 pi CustomMessageEntry.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CustomMessageEntry {
+    #[serde(rename = "type")]
+    pub entry_type: String, // "custom_message"
+    pub id: String,
+    pub parentId: String,
+    pub timestamp: String,
+    pub customType: String,
+    pub content: serde_json::Value, // string | (TextContent | ImageContent)[]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+    pub display: bool,
+}
+
+/// System event entry (ION 原创设计，无 pi 对应).
+/// 模型/agent 切换等系统事件，可选 UI 可见.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SystemEventEntry {
+    #[serde(rename = "type")]
+    pub entry_type: String, // "system_event"
+    pub id: String,
+    pub parentId: String,
+    pub timestamp: String,
+    pub customType: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub display: bool,
+}
+
+/// Label entry (书签标记).
+/// 对齐 pi LabelEntry.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LabelEntry {
+    #[serde(rename = "type")]
+    pub entry_type: String, // "label"
+    pub id: String,
+    pub parentId: String,
+    pub timestamp: String,
+    pub targetId: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// Active tools change entry (工具集变更记录).
+/// 对齐 pi ActiveToolsChangeEntry.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ActiveToolsChangeEntry {
+    #[serde(rename = "type")]
+    pub entry_type: String, // "active_tools_change"
+    pub id: String,
+    pub parentId: String,
+    pub timestamp: String,
+    pub activeToolNames: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------

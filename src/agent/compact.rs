@@ -54,6 +54,19 @@ fn msg_tokens(msg: &Message) -> usize {
                 ContentBlock::Image(_) => 1000,
             })
             .sum(),
+        Message::BashExecution(m) => (m.command.len() + m.output.len()) / 4,
+        Message::Custom(m) => match &m.content {
+            CustomContent::Text(s) => s.len() / 4,
+            CustomContent::Blocks(blocks) => blocks
+                .iter()
+                .map(|b| match b {
+                    ContentBlock::Text(t) => t.text.len() / 4,
+                    ContentBlock::Image(_) => 1000,
+                })
+                .sum(),
+        },
+        Message::BranchSummary(m) => m.summary.len() / 4,
+        Message::CompactionSummary(m) => m.summary.len() / 4,
     }
 }
 
@@ -227,5 +240,57 @@ mod tests {
         let ext = ExtensionRegistry::new();
         compact(&mut msgs, &cfg, &ext, None).await.unwrap();
         assert!(msgs.len() <= 3);
+    }
+
+    #[test]
+    fn test_msg_tokens_new_variants() {
+        // BashExecution
+        let bash = Message::BashExecution(BashExecutionMessage {
+            role: "bashExecution".into(),
+            command: "ls".into(),
+            output: "a.txt".into(),
+            exit_code: Some(0),
+            cancelled: false,
+            truncated: false,
+            full_output_path: None,
+            timestamp: 0,
+            exclude_from_context: None,
+        });
+        let tokens = msg_tokens(&bash);
+        assert!(tokens > 0);
+        // "ls" (2) + "a.txt" (5) = 7 / 4 = 1
+        assert_eq!(tokens, (2 + 5) / 4);
+
+        // Custom (Text)
+        let custom = Message::Custom(CustomMessage {
+            role: "custom".into(),
+            custom_type: "note".into(),
+            content: CustomContent::Text("hello world".into()),
+            display: true,
+            details: None,
+            timestamp: 0,
+        });
+        let tokens = msg_tokens(&custom);
+        assert_eq!(tokens, "hello world".len() / 4);
+
+        // BranchSummary
+        let branch = Message::BranchSummary(BranchSummaryMessage {
+            role: "branchSummary".into(),
+            summary: "summary text".into(),
+            from_id: "sess_x".into(),
+            timestamp: 0,
+        });
+        let tokens = msg_tokens(&branch);
+        assert_eq!(tokens, "summary text".len() / 4);
+
+        // CompactionSummary
+        let comp = Message::CompactionSummary(CompactionSummaryMessage {
+            role: "compactionSummary".into(),
+            summary: "compacted".into(),
+            tokens_before: 100,
+            timestamp: 0,
+        });
+        let tokens = msg_tokens(&comp);
+        assert_eq!(tokens, "compacted".len() / 4);
     }
 }
