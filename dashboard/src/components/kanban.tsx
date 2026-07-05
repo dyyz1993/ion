@@ -10,7 +10,7 @@ export function Kanban() {
   const maxCards = Math.min(S.workers.length, Math.floor(maxHeight / 4));
 
   return (
-    <Box borderStyle="round" borderColor={bc} flexDirection="column" paddingX={1}>
+    <Box borderStyle="round" borderColor={bc} flexDirection="column" paddingX={1} flexGrow={1}>
       <Text color={colors.accent} bold> Workers · {S.workers.length} </Text>
       {S.workers.length === 0 && (
         <Text color={colors.subtext}>No active workers{"\n"}Press 'n' to create one</Text>

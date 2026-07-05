@@ -8,7 +8,7 @@ export function Tree() {
   const bc = focused ? colors.borderFocused : colors.borderInactive;
 
   return (
-    <Box borderStyle="round" borderColor={bc} flexDirection="column" padding={1}>
+    <Box borderStyle="round" borderColor={bc} flexDirection="column" padding={1} flexGrow={1}>
       <Text color={colors.accent} bold> Projects · {S.projects.length} </Text>
       {S.projects.length === 0 && <Text color={colors.subtext}>(no projects)</Text>}
       {S.projects.map((p) => (
