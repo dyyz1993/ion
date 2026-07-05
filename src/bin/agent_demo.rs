@@ -5,7 +5,7 @@ use ion::agent::compact::CompactConfig;
 use ion::agent::tool::{CalculatorTool, EchoTool, ToolRegistry};
 use ion_provider::registry::{ApiRegistry, ModelRegistry};
 use ion_provider::types::{
-    AssistantContentBlock, ContentBlock, Cost, Message, Model, StopReason,
+    AssistantContentBlock, ContentBlock, Cost, CustomContent, Message, Model, StopReason,
 };
 use tracing_subscriber::EnvFilter;
 
@@ -102,6 +102,16 @@ fn describe_message(msg: &Message) -> Vec<String> {
                 _ => None,
             })
             .collect(),
+        Message::BashExecution(b) => vec![format!(
+            "[bashExecution] `{}` exit={:?} cancelled={} truncated={}",
+            b.command, b.exit_code, b.cancelled, b.truncated
+        )],
+        Message::Custom(c) => vec![format!("[custom:{}] {}", c.custom_type, match &c.content {
+            CustomContent::Text(s) => s.clone(),
+            CustomContent::Blocks(_) => "<blocks>".into(),
+        })],
+        Message::BranchSummary(b) => vec![format!("[branchSummary from={}] {}", b.from_id, b.summary)],
+        Message::CompactionSummary(c) => vec![format!("[compactionSummary tokens={}] {}", c.tokens_before, c.summary)],
     }
 }
 

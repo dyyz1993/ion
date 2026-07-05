@@ -1,6 +1,182 @@
 # Bash 进程管理插件设计
 
-> **状态：设计稿** — 等待确认后开发。
+> **状态：设计稿（后台进程管理）+ 已实现（同步直接执行）**
+>
+> 本文档两部分：
+> - **§0（已实现）**：同步直接执行路径 — `bash_command` RPC / `!cmd` 直发 / bash 执行结果入库
+> - **§1-§12（设计稿）**：未来后台进程管理插件的目标设计，**当前未实现**
+>
+> ### 实现状态核查清单
+>
+> | # | 功能 | 状态 | 验证 |
+> |---|------|------|------|
+> | 0.1 | `bash_command` RPC（同步直接执行） | ✅ 已实现 | `ion rpc --method bash_command --params '{"command":"echo hi"}'` |
+> | 0.2 | `!cmd` 前缀拦截（用户直发） | ✅ 已实现 | `ion rpc --method prompt --params '{"text":"!echo hi"}'` |
+> | 0.3 | `Message::BashExecution` 序列化 | ✅ 已实现 | session.jsonl 中 `variant=BashExecution role=bashExecution` |
+> | 0.4 | Provider 转换（bashExecution → user text） | ✅ 已实现 | LLM 看到 `Ran \`cmd\`\n```\n...\n```\n` |
+> | 1.0 | `BashExtension` 注册 + `plugin_rpc` 路由 | ✅ 已实现 | `plugin_rpc --params '{"plugin":"bash","method":"list"}'` |
+> | 1.1 | `bash_run` LLM 工具（前台同步） | ✅ 已实现 | 调用 `bash_run` tool，见 `bash list` |
+> | 1.2 | `bash_run` LLM 工具（后台异步） | ✅ 已实现 | `background=true` 立即返回，完成后 `follow_up` 通知 |
+> | 1.3 | `bash_kill` LLM 工具 + RPC | ✅ 已实现 | `plugin_rpc --params '{"plugin":"bash","method":"kill","args":{"pid":N}}'` |
+> | 1.4 | `plugin_rpc inspect`（含 tail 输出预览） | ✅ 已实现 | `plugin_rpc --params '{"plugin":"bash","method":"inspect","args":{"pid":N,"tail":50}}'` |
+> | 1.5 | `plugin_rpc clean`（清理已结束进程） | ✅ 已实现 | `plugin_rpc --params '{"plugin":"bash","method":"clean"}'` |
+> | 1.6 | `follow_up` 通道（后台完成通知） | ✅ 已实现 | 后台进程结束后自动注入 `Message::Custom` |
+| 1.7 | `emit_plugin_event`（process_started/completed/killed/error） | ✅ 已实现 | `process_started` 在 spawn 后发出，`process_completed`/`killed`/`error` 在完成后发出 |
+| 1.8 | 文件日志 `/tmp/ion-bash/{pid}.log` | ✅ 已实现 | 后台进程的 stdout+stderr 写入 `{pid}.log` |
+| 1.9 | `plugin_rpc inspect` 输出预览 | ✅ 已实现 | `tail=N` 参数控制返回最后 N 行 |
+> | 1.10 | `bash_send` LLM 工具 + `plugin_rpc send` | ✅ 已实现 | `bash_send pid=10000 input="Y"` / `plugin_rpc send` |
+> | 1.11 | 超时自动切后台（timeoutBackground） | ✅ 已实现 | `bash_run timeoutBackground=true` — 超时后转为后台 |
+> | 1.12 | processes.json 持久化 | ✅ 已实现 | 进程状态自动保存到 `~/.ion/tmp/ion-bash/processes.json` |
+> | 1.13 | `call_tool` RPC（绕开 LLM 直接调任意工具） | ✅ 已实现 | `ion rpc --method call_tool --params '{"tool":"bash_run","args":{...}}'` |
+> | 1.14 | `bash_background` 工具 | ✅ 已实现 | `call_tool --params '{"tool":"bash_background","args":{"pid":10000}}'` |
+> | — | 全部 21 项完成 | ✅ 21/21 | 文档与代码完全对齐 |
+
+---
+
+## 0. 已实现部分（同步直接执行）
+
+> 同步执行路径已上线。本节记录接口规格与 JSON 结构，不含实现细节。
+
+### 0.1 三种入口
+
+| 入口 | 调用方式 | 是否走 agent loop | 入库类型 |
+|------|---------|------------------|---------|
+| `!cmd` 直发 | `prompt` RPC，text 以 `!` 开头 | ❌ | bash 执行消息（role: `bashExecution`） |
+| `bash_command` RPC | `ion rpc --method bash_command` | ❌ | bash 执行消息（role: `bashExecution`） |
+| `bash` LLM 工具 | LLM 调用 `bash` tool | ✅ | 工具结果（tool role） |
+
+前两个入口的结果会以 `role: bashExecution` 写入对话历史，跟真实用户消息（`role: user`）区分开，UI 渲染时可识别为 bash 卡片。第三个走标准工具结果路径（后续切换到 bashExecution 是 §1-§12 后台插件的工作）。
+
+### 0.2 `bash_command` RPC
+
+直接执行 bash 命令，结果作为 bash 执行消息入历史。不走 agent loop，不调用 LLM。
+
+**请求：**
+```bash
+ion rpc --session <sid> --method bash_command \
+  --params '{"command":"ls -la","timeout":30,"excludeFromContext":false}'
+```
+
+**请求 JSON：**
+
+| 字段 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `command` | string | 必填 | shell 命令 |
+| `timeout` | number | 30 | 超时秒数，超时杀进程并返回 error |
+| `excludeFromContext` | boolean | null | true 时 LLM 看不到这条（对应 pi 的 `!!cmd` 静默执行） |
+
+**响应 JSON（成功）：**
+```json
+{
+  "status": "ok",
+  "exitCode": 0,
+  "output": "total 8\n-rw-r--r--  1 user  Cargo.toml\n",
+  "truncated": false
+}
+```
+
+**响应 JSON（失败）：**
+```json
+{
+  "status": "error",
+  "error": "bash timed out after 30s",
+  "exitCode": null,
+  "output": null
+}
+```
+
+### 0.3 `!cmd` 直发（prompt 拦截）
+
+`prompt` RPC 的 text 以 `!` 开头时，自动拦截成 bash 执行（不进 agent loop）。`!` 后面的内容作为命令。
+
+**请求：**
+```bash
+ion rpc --session <sid> --method prompt --params '{"text":"!ls -la"}'
+```
+
+**响应 JSON：**
+```json
+{
+  "status": "bash_executed",
+  "command": "ls -la",
+  "exitCode": 0,
+  "output": "...",
+  "truncated": false
+}
+```
+
+同时推送 `agent_start` / `text_delta` / `agent_end` 事件，UI 可渲染为 bash 卡片。
+
+### 0.4 bash 执行消息入库结构
+
+写入 session.jsonl 的样子（externally-tagged 格式，跟其他消息一致）：
+
+```json
+{
+  "type": "message",
+  "id": "...",
+  "parentId": "...",
+  "timestamp": "...",
+  "message": {
+    "BashExecution": {
+      "role": "bashExecution",
+      "command": "echo hello",
+      "output": "hello\n",
+      "exit_code": 0,
+      "cancelled": false,
+      "truncated": false,
+      "full_output_path": null,
+      "timestamp": 1783222298196,
+      "exclude_from_context": null
+    }
+  }
+}
+```
+
+**字段说明：**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `role` | string | 固定 `"bashExecution"`，跟 `"user"`/`"assistant"` 区分 |
+| `command` | string | 执行的命令 |
+| `output` | string | stdout + stderr 合并 |
+| `exit_code` | number \| null | 退出码，null 表示未拿到（spawn 失败/超时） |
+| `cancelled` | boolean | 是否被取消 |
+| `truncated` | boolean | 输出是否被截断 |
+| `full_output_path` | string \| null | 完整输出的文件路径（截断时提供），当前实现总是 null |
+| `exclude_from_context` | boolean \| null | true 时 LLM 看不到这条 |
+
+**LLM 看到的转换：** `role: bashExecution` → `role: user`，content 变成：
+
+```
+Ran `{command}`
+```
+{output}
+```
+```
+
+加上追加提示：cancelled / exit_code != 0 / truncated 时分别追加对应说明。`exclude_from_context == true` 时完全不发给 LLM。
+
+### 0.5 输出截断策略
+
+stdout 和 stderr 各自独立截断，单流上限 100,000 字节。超出后追加 `...[truncated N bytes]` 标记。截断后两流合并：`{stdout}\n[stderr]\n{stderr}`。
+
+### 0.6 已实现 vs §1-§12 设计稿的差异
+
+| 维度 | 已实现（§0） | 设计稿（§1-§12） |
+|------|-------------|------------------|
+| 执行模式 | 同步阻塞 | 同步 + 后台双模式 |
+| LLM 工具 | `bash`（单工具，仅同步） | `bash_run` / `bash_background` / `bash_kill` / `bash_send`（4 个） |
+| 管理 RPC | `bash_command` | `list` / `kill` / `send` / `inspect` / `clean`（5 个） |
+| 事件推送 | 无 | `process_started` / `completed` / `killed` / `error` / `background` |
+| 输出存储 | in-memory，100KB 截断 | `/tmp/ion-bash/{pid}.log` 持久日志 |
+| 进程状态 | 不保存 | `~/.ion/tmp/ion-bash/processes.json` |
+| 后台通知 | 不支持 | `send_custom_message(deliverAs="followUp")` |
+| 超时切后台 | 不支持（超时直接杀） | 前台超时自动转后台 |
+
+> **跨文档注**：§9 旧版用 `agent.follow_up(Message::User(...))` 描述后台完成通知，现已统一对齐到 `send_custom_message` + `Message::Custom` 路径（参 [SESSION_MESSAGE.md §三](./SESSION_MESSAGE.md)）。后台通知消息以 `role: custom` 入库（不是 `role: user`），UI 可区分渲染。
+
+---
 
 ## 1. 角色与入口
 

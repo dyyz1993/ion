@@ -140,6 +140,7 @@ impl Agent {
         self.tools.remove(name);
     }
 
+
     /// Return the names of all registered tools.
     pub fn list_tool_names(&self) -> Vec<String> {
         self.tools.tool_defs().into_iter().map(|td| td.name).collect()
@@ -213,6 +214,13 @@ impl Agent {
         &self.messages
     }
 
+    /// Push a message directly into the conversation history.
+    /// Used by bash_command RPC: 用户 `!cmd` 直发结果走 Message::BashExecution，
+    /// 不经过 agent.run()，直接入历史，下次 LLM 调用会看到（provider 自动转 user text）。
+    pub fn push_message(&mut self, msg: Message) {
+        self.messages.push(msg);
+    }
+
     /// steer 队列积压数（未消费的高优先级消息）
     pub fn steering_queue_len(&self) -> usize {
         self.steering_queue.len()
@@ -233,10 +241,11 @@ impl Agent {
     /// 调插件私有 RPC 方法（给 CLI/外部调试用）。
     pub async fn plugin_rpc(
         &self,
+        plugin: &str,
         method: &str,
         params: serde_json::Value,
     ) -> AgentResult<serde_json::Value> {
-        self.extensions.plugin_rpc("", method, params).await
+        self.extensions.plugin_rpc(plugin, method, params).await
     }
 
     pub async fn run(&mut self, prompt: impl Into<String>) -> AgentResult<()> {

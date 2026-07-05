@@ -220,14 +220,53 @@ async fn main() {
         agent = agent.with_messages(msgs);
     }
 
-    // ── 注册 Memory 插件 ──
+    // ── 注册 Memory + Bash + Streaming 插件 ──
+    // 先创建 follow_up 通道（bash 插件后台进程完成时用来注入消息）
+    let (follow_up_tx, mut follow_up_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
     {
         let mut ext_reg = ion::agent::extension::ExtensionRegistry::new();
         let mut memory_ext = ion::agent::memory::MemoryExtension::new(&worker_cwd, &sid);
         // 复用 tools 的 MemoryStore（同一份数据）
         memory_ext.store = memory_store.clone();
         ext_reg.register(Box::new(memory_ext));
+
+        // ── 注册 Bash 插件（后台进程管理） ──
+        let bash_ext = ion::agent::bash::BashExtension::new(&sid);
+        let process_map = bash_ext.process_map.clone();
+        let stdin_map = bash_ext.stdin_map.clone();
+        let notify_map = bash_ext.notify_map.clone();
+        ext_reg.register(Box::new(bash_ext));
+
+        // ── 注册流式透传 Extension ──
+        // on_message_delta → println text_delta event（实时推到 stdout → Manager → subscriber）
+        ext_reg.register(Box::new(StreamingExtension));
+
         agent = agent.with_extensions(ext_reg);
+
+        // 注册 bash 工具
+        let bash_run_tool = ion::agent::bash::BashRunTool {
+            process_map: process_map.clone(),
+            stdin_map: stdin_map.clone(),
+            notify_map: notify_map.clone(),
+            follow_up_tx: Some(follow_up_tx.clone()),
+            session_id: sid.clone(),
+        };
+        let bash_kill_tool = ion::agent::bash::BashKillTool {
+            process_map: process_map.clone(),
+            follow_up_tx: Some(follow_up_tx),
+            session_id: sid.clone(),
+        };
+        let bash_send_tool = ion::agent::bash::BashSendTool {
+            stdin_map: stdin_map.clone(),
+        };
+        let bash_bg_tool = ion::agent::bash::BashBackgroundTool {
+            notify_map: notify_map.clone(),
+            process_map: process_map.clone(),
+        };
+        agent.register_tool(Box::new(bash_run_tool));
+        agent.register_tool(Box::new(bash_kill_tool));
+        agent.register_tool(Box::new(bash_send_tool));
+        agent.register_tool(Box::new(bash_bg_tool));
     }
 
     // 发 ready 信号
@@ -378,6 +417,67 @@ async fn main() {
                 let pbehavior = params.get("behavior").or_else(|| params.get("streamingBehavior"))
                     .and_then(|v| v.as_str()).unwrap_or("interrupt");
 
+                // !cmd 用户直发：拦截成 bash_command（避免走完整 agent loop，对齐 pi）
+                // 形如 "!ls -la" 或 "! cargo build" → 取 '!' 之后的部分作为命令
+                if let Some(stripped) = text.strip_prefix('!') {
+                    let cmd_text = stripped.trim().to_string();
+                    if !cmd_text.is_empty() {
+                        // 直接执行，不入 agent loop
+                        let timeout_secs = params.get("timeout").and_then(|v| v.as_u64()).unwrap_or(30);
+                        let (stdout, stderr, exit_code) = match execute_bash(&cmd_text, timeout_secs).await {
+                            Ok(t) => t,
+                            Err(e) => {
+                                let bash_msg = BashExecutionMessage {
+                                    role: "bashExecution".into(),
+                                    command: cmd_text.clone(),
+                                    output: format!("error: {e}"),
+                                    exit_code: None,
+                                    cancelled: false,
+                                    truncated: false,
+                                    full_output_path: None,
+                                    timestamp: now_ms(),
+                                    exclude_from_context: None,
+                                };
+                                agent.push_message(Message::BashExecution(bash_msg));
+                                output_response(&id, "prompt", &serde_json::json!({
+                                    "status":"bash_error",
+                                    "command": cmd_text,
+                                    "error": e,
+                                }));
+                                continue;
+                            }
+                        };
+                        let combined = if stderr.is_empty() { stdout }
+                            else if stdout.is_empty() { stderr }
+                            else { format!("{stdout}\n[stderr]\n{stderr}") };
+                        let truncated = combined.contains("[truncated");
+                        let bash_msg = BashExecutionMessage {
+                            role: "bashExecution".into(),
+                            command: cmd_text.clone(),
+                            output: combined.clone(),
+                            exit_code: Some(exit_code),
+                            cancelled: false,
+                            truncated,
+                            full_output_path: None,
+                            timestamp: now_ms(),
+                            exclude_from_context: None,
+                        };
+                        agent.push_message(Message::BashExecution(bash_msg));
+
+                        output(&serde_json::json!({"type":"event","event":{"type":"agent_start","sessionId":sid}}));
+                        output(&serde_json::json!({"type":"event","event":{"type":"text_delta","delta":&combined}}));
+                        output(&serde_json::json!({"type":"event","event":{"type":"agent_end","sessionId":sid}}));
+                        output_response(&id, "prompt", &serde_json::json!({
+                            "status":"bash_executed",
+                            "command": cmd_text,
+                            "exitCode": exit_code,
+                            "output": combined,
+                            "truncated": truncated,
+                        }));
+                        continue;
+                    }
+                }
+
                 let mut skip = false;
                 if agent.is_running() && pbehavior == "steer" {
                     agent.steer(Message::User(UserMessage {
@@ -401,6 +501,8 @@ async fn main() {
 
                 if !skip {
                     output_response(&id, "prompt", &serde_json::Value::Null);
+                    // agent_start / text_delta / agent_end 由 StreamingExtension 实时推送，
+                    // 不需要这里再发（避免重复）
                     output(&serde_json::json!({"type":"event","event":{"type":"agent_start","sessionId":sid}}));
                     {
                         let mut ctx = plugin_registry.ctx.write().unwrap();
@@ -410,21 +512,11 @@ async fn main() {
                     }
                     match agent.run(&text).await {
                         Ok(()) => {
-                            let reply = agent.messages().iter().rev()
-                                .find_map(|m| match m {
-                                    Message::Assistant(a) => a.content.iter().find_map(|b| match b {
-                                        AssistantContentBlock::Text(t) => Some(t.text.clone()),
-                                        _ => None,
-                                    }),
-                                    _ => None,
-                                }).unwrap_or_default();
                             let msgs_json: Vec<serde_json::Value> = agent.messages().iter()
                                 .filter_map(|m| serde_json::to_value(m).ok())
                                 .collect();
                             save_worker_session(&sid, &worker_cwd, &msgs_json);
-                            output(&serde_json::json!({
-                                "type":"event","event":{"type":"text_delta","delta":&reply}
-                            }));
+                            // agent_end 由 StreamingExtension 已经不发了，这里补一条
                             output(&serde_json::json!({
                                 "type":"event","event":{"type":"agent_end","sessionId":sid}
                             }));
@@ -729,15 +821,37 @@ async fn main() {
                 // 调插件私有 RPC 方法（给 CLI/外部调试用）。
                 // 用于：ion rpc --session <id> --method plugin_rpc
                 //   --params '{"method":"ping","args":{}}'
+                //   --params '{"plugin":"bash","method":"list"}'
+                let plugin_name = params.get("plugin").and_then(|v| v.as_str()).unwrap_or("");
                 let rpc_method = params.get("method").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let rpc_args = params.get("args").cloned().unwrap_or_default();
-                match agent.plugin_rpc(&rpc_method, rpc_args).await {
+                match agent.plugin_rpc(plugin_name, &rpc_method, rpc_args).await {
                     Ok(output) => output_response(&id, "plugin_rpc", &serde_json::json!({
                         "method": rpc_method, "output": output,
                     })),
                     Err(e) => output(&serde_json::json!({
                         "type": "response", "id": id, "success": false,
                         "error": format!("plugin_rpc {rpc_method}: {e}"),
+                    })),
+                }
+            }
+            "call_tool" => {
+                // Directly call an LLM-registered tool by name (bypass LLM).
+                // 用于 CLI 测试工具如 bash_run/bash_kill/bash_send。
+                // --params '{"tool":"bash_run","args":{"command":"echo hi","description":"test"}}'
+                let tool_name = params.get("tool").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let tool_args = params.get("args").cloned().unwrap_or_default();
+                if tool_name.is_empty() {
+                    output_error_response(&id, "call_tool", "missing 'tool'");
+                    continue;
+                }
+                match agent.call_tool(&tool_name, tool_args).await {
+                    Ok(result) => output_response(&id, "call_tool", &serde_json::json!({
+                        "tool": tool_name, "output": result,
+                    })),
+                    Err(e) => output(&serde_json::json!({
+                        "type": "response", "id": id, "success": false,
+                        "error": format!("call_tool {tool_name}: {e}"),
                     })),
                 }
             }
@@ -955,8 +1069,191 @@ async fn main() {
             "set_settings" => output_response(&id, "set_settings", &serde_json::Value::Null),
             "rollback_preview" => output_response(&id, "rollback_preview", &serde_json::Value::Null),
             "copy_fork" => output_response(&id, "copy_fork", &serde_json::json!({"sessionId":sid})),
-            "append_system_event" => output_response(&id, "append_system_event", &serde_json::Value::Null),
+            "append_system_event" => {
+                let ctype = params.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                let label = params.get("label").and_then(|v| v.as_str()).unwrap_or("");
+                let display = params.get("display").and_then(|v| v.as_bool()).unwrap_or(true);
+                append_session_entry(&worker_cwd, &sid, "system_event", &serde_json::json!({
+                    "customType": ctype,
+                    "label": label,
+                    "display": display,
+                }));
+                output_response(&id, "append_system_event", &serde_json::json!({"status":"appended"}));
+            }
+            "append_custom_message" => {
+                let ctype = params.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                let content = params.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                let display = params.get("display").and_then(|v| v.as_bool()).unwrap_or(true);
+                let details = params.get("details");
+                append_session_entry(&worker_cwd, &sid, "custom_message", &serde_json::json!({
+                    "customType": ctype,
+                    "content": content,
+                    "display": display,
+                    "details": details,
+                }));
+                output_response(&id, "append_custom_message", &serde_json::json!({"status":"appended"}));
+            }
+            "append_custom_entry" => {
+                let ctype = params.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                let data = params.get("data").cloned().unwrap_or_default();
+                append_session_entry(&worker_cwd, &sid, "custom", &serde_json::json!({
+                    "customType": ctype,
+                    "data": data,
+                }));
+                output_response(&id, "append_custom_entry", &serde_json::json!({"status":"appended"}));
+            }
+            "send_custom_message" => {
+                let ctype: String = params.get("type").and_then(|v| v.as_str()).map(String::from).unwrap_or_default();
+                let content: String = params.get("content").and_then(|v| v.as_str()).map(String::from).unwrap_or_default();
+                let deliver_as = params.get("deliverAs").and_then(|v| v.as_str()).unwrap_or("followUp");
+                // 用 Message::Custom（不是 Message::User），
+                // 确保历史重建时能与真实用户消息区分
+                let msg = Message::Custom(CustomMessage {
+                    role: "custom".into(),
+                    custom_type: ctype,
+                    content: CustomContent::Text(content),
+                    display: true,
+                    details: None,
+                    timestamp: now_ms(),
+                });
+                match deliver_as {
+                    "steer" => agent.steer(msg),
+                    "nextTurn" | _ => agent.follow_up(msg),
+                }
+                output_response(&id, "send_custom_message", &serde_json::json!({"status":"queued","queue":deliver_as}));
+            }
+            "append_model_change" => {
+                let provider = params.get("provider").and_then(|v| v.as_str()).unwrap_or("");
+                let model_id = params.get("modelId").and_then(|v| v.as_str()).unwrap_or("");
+                append_session_entry(&worker_cwd, &sid, "model_change", &serde_json::json!({
+                    "provider": provider,
+                    "modelId": model_id,
+                }));
+                // 同步到 session index（O(1) 查询用）
+                ion::session_index::SessionIndex::set_model(&sid, provider, model_id);
+                output_response(&id, "append_model_change", &serde_json::json!({"status":"appended"}));
+            }
+            "append_thinking_level_change" => {
+                let level = params.get("level").and_then(|v| v.as_str()).unwrap_or("");
+                append_session_entry(&worker_cwd, &sid, "thinking_level_change", &serde_json::json!({
+                    "level": level,
+                }));
+                ion::session_index::SessionIndex::set_thinking_level(&sid, level);
+                output_response(&id, "append_thinking_level_change", &serde_json::json!({"status":"appended"}));
+            }
+            "append_agent_change" => {
+                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let config = params.get("config");
+                let mut entry = serde_json::json!({"name": name});
+                if let Some(c) = config { entry["config"] = c.clone(); }
+                append_session_entry(&worker_cwd, &sid, "agent_change", &entry);
+                ion::session_index::SessionIndex::set_agent(&sid, name);
+                output_response(&id, "append_agent_change", &serde_json::json!({"status":"appended"}));
+            }
+            "append_session_name" => {
+                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                append_session_entry(&worker_cwd, &sid, "session_info", &serde_json::json!({
+                    "name": name,
+                }));
+                ion::session_index::SessionIndex::set_name(&sid, name);
+                output_response(&id, "append_session_name", &serde_json::json!({"status":"appended","name":name}));
+            }
+            "append_label" => {
+                let target_id = params.get("targetId").and_then(|v| v.as_str()).unwrap_or("");
+                let label = params.get("label").and_then(|v| v.as_str()).unwrap_or("");
+                append_session_entry(&worker_cwd, &sid, "label", &serde_json::json!({
+                    "targetId": target_id,
+                    "label": label,
+                }));
+                output_response(&id, "append_label", &serde_json::json!({"status":"appended"}));
+            }
+            "append_active_tools_change" => {
+                let names: Vec<String> = params.get("activeToolNames")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect())
+                    .unwrap_or_default();
+                append_session_entry(&worker_cwd, &sid, "active_tools_change", &serde_json::json!({
+                    "activeToolNames": names,
+                }));
+                ion::session_index::SessionIndex::set_active_tools(&sid, names);
+                output_response(&id, "append_active_tools_change",
+                    &serde_json::json!({"status":"appended"}));
+            }
             "get_process_snapshot" => output_response(&id, "get_process_snapshot", &serde_json::json!({})),
+
+            // ── bash_command：用户 !cmd 直发，结果作为 Message::BashExecution 入历史 ──
+            // 不走 agent.run()，直接执行 + 入库 + 返回。
+            // LLM 下次看到时 provider 自动把 role:bashExecution 转成 user text。
+            "bash_command" => {
+                let command: String = params.get("command").and_then(|v| v.as_str()).map(String::from).unwrap_or_default();
+                let timeout_secs = params.get("timeout").and_then(|v| v.as_u64()).unwrap_or(30);
+                let exclude_from_context = params.get("excludeFromContext").and_then(|v| v.as_bool());
+
+                if command.is_empty() {
+                    output_error_response(&id, "bash_command", "missing 'command'");
+                    continue;
+                }
+
+                // 执行
+                let (stdout, stderr, exit_code) = match execute_bash(&command, timeout_secs).await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        // 失败也入一条 BashExecution，方便 UI 显示错误
+                        let bash_msg = BashExecutionMessage {
+                            role: "bashExecution".into(),
+                            command: command.clone(),
+                            output: format!("error: {e}"),
+                            exit_code: None,
+                            cancelled: false,
+                            truncated: false,
+                            full_output_path: None,
+                            timestamp: now_ms(),
+                            exclude_from_context,
+                        };
+                        agent.push_message(Message::BashExecution(bash_msg.clone()));
+                        output_response(&id, "bash_command", &serde_json::json!({
+                            "status":"error",
+                            "error": e,
+                            "exitCode": null,
+                            "output": null,
+                        }));
+                        continue;
+                    }
+                };
+
+                // 合并 stdout+stderr 作为 output（对齐 pi 的 BashExecutionMessage.output 单字段）
+                let combined = if stderr.is_empty() {
+                    stdout
+                } else if stdout.is_empty() {
+                    stderr
+                } else {
+                    format!("{stdout}\n[stderr]\n{stderr}")
+                };
+                let truncated = combined.contains("[truncated");
+
+                let bash_msg = BashExecutionMessage {
+                    role: "bashExecution".into(),
+                    command: command.clone(),
+                    output: combined.clone(),
+                    exit_code: Some(exit_code),
+                    cancelled: false,
+                    truncated,
+                    full_output_path: None,
+                    timestamp: now_ms(),
+                    exclude_from_context,
+                };
+                // 入 agent.messages（下次 LLM 调用会看到）
+                agent.push_message(Message::BashExecution(bash_msg));
+
+                output_response(&id, "bash_command", &serde_json::json!({
+                    "status":"ok",
+                    "exitCode": exit_code,
+                    "output": combined,
+                    "truncated": truncated,
+                }));
+            }
 
             // ── Manager 回执（worker→manager 命令的结果）──
             // 按 _reply_to 查 pending map，触发对应 oneshot；不再 echo response。
@@ -979,6 +1276,11 @@ async fn main() {
                     "error": format!("Unknown command: {method}")
                 }));
             }
+        }
+
+        // Drain bash follow_up messages (background process completions)
+        while let Ok(msg) = follow_up_rx.try_recv() {
+            agent.follow_up(msg);
         }
     }
 
@@ -1026,6 +1328,65 @@ fn output(msg: &serde_json::Value) {
     let mut stdout = io::stdout().lock();
     let _ = writeln!(stdout, "{line}");
     let _ = stdout.flush();
+}
+
+// ── StreamingExtension: 透传 text_delta + tool_execution 到 stdout ──
+struct StreamingExtension;
+
+#[async_trait::async_trait]
+impl ion::agent::extension::Extension for StreamingExtension {
+    fn name(&self) -> &str { "streaming" }
+
+    async fn on_message_delta(&self, delta: &str, role: &str) -> ion::agent::error::AgentResult<()> {
+        if role == "assistant" && !delta.is_empty() {
+            output(&serde_json::json!({
+                "type": "event",
+                "event": {"type": "text_delta", "delta": delta}
+            }));
+        }
+        Ok(())
+    }
+
+    async fn on_tool_execution_start(&self, ctx: &ion::agent::extension::ToolExecutionContext) -> ion::agent::error::AgentResult<()> {
+        output(&serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "tool_execution_start",
+                "toolCallId": ctx.tool_call_id,
+                "toolName": ctx.tool_name,
+                "args": ctx.args,
+                "timestamp": now_ms(),
+            }
+        }));
+        Ok(())
+    }
+
+    async fn on_tool_execution_update(&self, ctx: &ion::agent::extension::ToolExecutionContext, partial: &str) -> ion::agent::error::AgentResult<()> {
+        output(&serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "tool_execution_update",
+                "toolCallId": ctx.tool_call_id,
+                "toolName": ctx.tool_name,
+                "partialResult": partial,
+            }
+        }));
+        Ok(())
+    }
+
+    async fn on_tool_execution_end(&self, ctx: &ion::agent::extension::ToolExecutionContext) -> ion::agent::error::AgentResult<()> {
+        output(&serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "tool_execution_end",
+                "toolCallId": ctx.tool_call_id,
+                "toolName": ctx.tool_name,
+                "isError": ctx.is_error,
+                "durationMs": ctx.duration_ms,
+            }
+        }));
+        Ok(())
+    }
 }
 
 fn output_response(id: &str, command: &str, data: &serde_json::Value) {
@@ -1154,39 +1515,125 @@ impl ManagerBridge {
     }
 }
 
+/// Append a JSON line to the session.jsonl file (not a message, just a record).
+fn append_session_entry(cwd: &str, sid: &str, entry_type: &str, entry_data: &serde_json::Value) {
+    let path = session_jsonl::session_path(cwd);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // 基础字段
+    let mut line = serde_json::json!({
+        "type": entry_type,
+        "id": session_jsonl::generate_id(),
+        "parentId": sid,
+        "timestamp": session_jsonl::timestamp_iso(),
+    });
+    // 合并 entry_data 的字段到顶层（不嵌套在 data 里），对齐 pi JSONL 格式
+    if let Some(obj) = entry_data.as_object() {
+        if let Some(m) = line.as_object_mut() {
+            for (k, v) in obj {
+                m.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        // 确保文件末尾有换行，防止跟上一行粘在一起
+        let need_sep = f.metadata().ok().map(|m| m.len() > 0).unwrap_or(false);
+        if need_sep {
+            let _ = write!(f, "\n");
+        }
+        let _ = write!(f, "{}", serde_json::to_string(&line).unwrap_or_default());
+    }
+}
+
 fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
     let path = session_jsonl::session_path(cwd);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    let header = serde_json::json!({
-        "type": "session",
-        "version": 3,
-        "id": sid,
-        "timestamp": session_jsonl::timestamp_iso(),
-        "cwd": cwd,
-    });
+    // 读取已有文件，确定已写入的 message entry 数量 + 最后一个 entry 的 id（作为 parentId）
+    let mut existing_lines: Vec<String> = Vec::new();
+    let mut last_id = sid.to_string();
+    let mut saved_msg_count = 0usize;
+    let mut header_existed = false;
 
-    let mut lines = Vec::new();
-    lines.push(serde_json::to_string(&header).unwrap_or_default());
-
-    // Build parent chain: last entry's ID serves as parentId for the next
-    let mut parent_id = sid.to_string();
-    for msg in msgs {
-        let entry_id = session_jsonl::generate_id();
-        let entry = serde_json::json!({
-            "type": "message",
-            "id": entry_id,
-            "parentId": parent_id,
-            "timestamp": session_jsonl::timestamp_iso(),
-            "message": msg,
-        });
-        lines.push(serde_json::to_string(&entry).unwrap_or_default());
-        parent_id = entry_id;
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() { continue; }
+            existing_lines.push(line.to_string());
+            if let Ok(e) = serde_json::from_str::<serde_json::Value>(line) {
+                if e.get("type").and_then(|v| v.as_str()) == Some("session") {
+                    header_existed = true;
+                }
+                if e.get("type").and_then(|v| v.as_str()) == Some("message") {
+                    saved_msg_count += 1;
+                }
+                if let Some(id) = e.get("id").and_then(|v| v.as_str()) {
+                    last_id = id.to_string();
+                }
+            }
+        }
     }
 
-    let _ = std::fs::write(&path, lines.join("\n"));
+    // 若文件不存在或空，先写 header
+    if !header_existed {
+        let header = serde_json::json!({
+            "type": "session",
+            "version": 3,
+            "id": sid,
+            "timestamp": session_jsonl::timestamp_iso(),
+            "cwd": cwd,
+        });
+        let header_line = serde_json::to_string(&header).unwrap_or_default();
+
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            // 文件之前不存在，写 header
+            if existing_lines.is_empty() {
+                let _ = write!(f, "{header_line}\n");
+            }
+        }
+        last_id = sid.to_string();
+        saved_msg_count = 0;
+    }
+
+    // 只 append 新增的 message（saved_msg_count 之后的部分）
+    let new_msgs = if msgs.len() > saved_msg_count {
+        &msgs[saved_msg_count..]
+    } else {
+        &[][..]
+    };
+
+    if new_msgs.is_empty() {
+        return;
+    }
+
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        // 防粘连：若文件非空且末尾不是换行，先补一个换行
+        if let Ok(meta) = f.metadata() {
+            if meta.len() > 0 {
+                let _ = write!(f, "\n");
+            }
+        }
+        // parentId 链：从 last_id 开始
+        let mut parent_id = last_id;
+        for msg in new_msgs {
+            let entry_id = session_jsonl::generate_id();
+            let entry = serde_json::json!({
+                "type": "message",
+                "id": entry_id,
+                "parentId": parent_id,
+                "timestamp": session_jsonl::timestamp_iso(),
+                "message": msg,
+            });
+            let _ = write!(f, "{}\n", serde_json::to_string(&entry).unwrap_or_default());
+            parent_id = entry_id;
+        }
+    }
 }
 
 fn now_ms() -> i64 {

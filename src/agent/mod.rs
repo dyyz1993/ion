@@ -1,4 +1,5 @@
 pub mod agent_loop;
+pub mod bash;
 pub mod compact;
 pub mod error;
 pub mod extension;
