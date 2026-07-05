@@ -45,7 +45,7 @@ pub struct WorkerRecord {
     pub parent_event_tx: Option<mpsc::Sender<serde_json::Value>>,
     pub ready_tx: Option<oneshot::Sender<serde_json::Value>>,
     /// Channel for stdout reader task to send lines back to Manager
-    pub stdout_rx: Option<mpsc::Receiver<serde_json::Value>>,
+    pub stdout_rx: Option<mpsc::UnboundedReceiver<serde_json::Value>>,
     /// Response channel: drain task sends responses here, send_to_worker reads from it
     pub response_rx: Option<mpsc::Receiver<(String, serde_json::Value)>>,
     /// Worktree info if this worker runs in an isolated git worktree
@@ -308,8 +308,9 @@ impl WorkerRegistry {
             children: Vec::new(),
         };
 
-        // Create channels for stdout reader → drain task → Manager
-        let (stdout_tx, stdout_rx) = mpsc::channel::<serde_json::Value>(256);
+        // Create channels for stdout reader → send_command consumer
+        // unbounded: reader task 永远不阻塞，确保 response 能及时到达 send_command
+        let (stdout_tx, stdout_rx) = mpsc::unbounded_channel::<serde_json::Value>();
         let (response_tx, response_rx) = mpsc::channel::<(String, serde_json::Value)>(64);
         
         // Set channels on the record BEFORE inserting
@@ -333,9 +334,21 @@ impl WorkerRegistry {
 		                if line.trim().is_empty() { continue; }
 		                match serde_json::from_str::<serde_json::Value>(&line) {
 		                    Ok(msg) => {
-		                        let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-		                        // 关键：event 消息转发给 event_subscribers（实时流）
-		                        if msg_type == "event" {
+                    let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        let msg_id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+                        // Response with ID → match pending oneshot（不经过 stdout_tx）
+                        if msg_type == "response" && !msg_id.is_empty() {
+                            let mut reg = sub_registry.lock().await;
+                            if let Some(record) = reg.workers.get_mut(&sub_wid) {
+                                if let Some(tx) = record.pending.remove(&msg_id) {
+                                    let _ = tx.send(msg.clone());
+                                }
+                            }
+                        }
+
+                        // 关键：event 消息转发给 event_subscribers（实时流）
+                        if msg_type == "event" {
 		                            let ev_type = msg.get("event")
 		                                .and_then(|e| e.get("type"))
 		                                .and_then(|v| v.as_str())
@@ -384,7 +397,7 @@ impl WorkerRegistry {
 		                                let _ = cmd_tx.send(msg);
 		                            }
 		                            _ => {
-		                                if stdout_tx.send(msg).await.is_err() {
+		                        if stdout_tx.send(msg).is_err() {
 		                                    break;
 		                                }
 		                            }
@@ -395,8 +408,29 @@ impl WorkerRegistry {
 	                    }
 	                }
 	            }
-	            tracing::warn!("[{wid}] stdout closed");
-	        });
+		            // Worker exited — clean up registry
+		            tracing::warn!("[{wid}] stdout closed, cleaning up");
+		            let mut reg = sub_registry.lock().await;
+		            if let Some(mut record) = reg.workers.remove(&sub_wid) {
+		                // Kill child process if still alive
+		                if let Some(ref mut child) = record.child_process {
+		                    let _ = child.start_kill();
+		                }
+		                // Remove from channels
+		                for ch in &record.channels {
+		                    if let Some(subs) = reg.channels.get_mut(ch) {
+		                        subs.retain(|id| id != &sub_wid);
+		                    }
+		                }
+		                // Remove from parent's children
+		                if let Some(ref parent_id) = record.parent {
+		                    if let Some(parent) = reg.workers.get_mut(parent_id) {
+		                        parent.children.retain(|id| id != &sub_wid);
+		                    }
+		                }
+		                reg.broadcast_overview();
+		            }
+		        });
 
 	        // Wait for ready signal
 	        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -434,6 +468,7 @@ impl WorkerRegistry {
 	            let wid_for_prompt = worker_id.clone();
 	            // 直接调用 send_command（同 &mut self 上下文）
 	            if let Err(e) = self.send_command(&wid_for_prompt, "prompt", serde_json::json!({"text": prompt_text})).await {
+            let _rx_ignore = ();
 	                tracing::warn!("[{wid_for_prompt}] failed to inject initial_prompt: {e}");
 	            }
 	        }
@@ -590,36 +625,16 @@ impl WorkerRegistry {
         }
     }
 
-    /// Drain pending events from a worker's stdout_rx, forwarding to subscribers.
-    /// Call this periodically or after prompt to get real-time events.
+    /// Drain pending events from a worker's stdout_rx.
+    /// Note: events are already forwarded to subscribers by the stdout reader task.
+    /// This method only drains the buffer to prevent overflow.
     pub async fn drain_events(&mut self, worker_id: &str, timeout_ms: u64) {
-        let subscribers: Vec<_> = self.workers.get(worker_id)
-            .map(|r| r.event_subscribers.clone())
-            .unwrap_or_default();
-        
-        if subscribers.is_empty() {
-            // No subscribers, but still need to drain to prevent buffer overflow
-            if let Some(record) = self.workers.get_mut(worker_id) {
-                if let Some(rx) = &mut record.stdout_rx {
-                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
-                    while tokio::time::timeout_at(deadline, rx.recv()).await.is_ok() {
-                        // Just drain
-                    }
-                }
-            }
-            return;
-        }
-
-        if let Some(record) = self.workers.get_mut(worker_id) {
+        if let Some(record) = self.workers.get_mut(&worker_id.to_string()) {
             if let Some(rx) = &mut record.stdout_rx {
-                let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
-                loop {
-                    match tokio::time::timeout_at(deadline, rx.recv()).await {
-                        Ok(Some(msg)) => {
-                            for sub in &subscribers {
-                                let _ = sub.try_send(msg.clone());
-                            }
-                        }
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+                while std::time::Instant::now() < deadline {
+                    match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
+                        Ok(Some(_)) => { /* drain — stdout reader already forwards */ }
                         _ => break,
                     }
                 }
@@ -648,52 +663,105 @@ impl WorkerRegistry {
         Ok(rx)
     }
 
-    /// 非阻塞发送命令到 Worker（只写 stdin，不等 response）。
-    /// response 和 event 由 pump task 的 drain_events + subscribers 推送。
+    /// 非阻塞发送命令（只写 stdin，返回 req_id）。
     pub async fn send_command(
         &mut self,
         worker_id: &str,
         method: &str,
         params: serde_json::Value,
-    ) -> Result<(), String> {
+    ) -> Result<String, String> {
         let req_id = Uuid::new_v4().to_string()[..8].to_string();
-        let msg = serde_json::json!({
-            "id": req_id,
-            "method": method,
-            "params": params,
-        });
-        let line = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
+        let line = serde_json::json!({"id": &req_id, "method": method, "params": params}).to_string();
         let record = self.workers.get_mut(worker_id)
             .ok_or_else(|| format!("worker not found: {worker_id}"))?;
         if let Some(stdin) = &mut record.stdin {
             use tokio::io::AsyncWriteExt;
-            stdin.write_all(format!("{line}\n").as_bytes()).await
-                .map_err(|e| format!("write stdin: {e}"))?;
+            stdin.write_all(format!("{line}\n").as_bytes()).await.map_err(|e| format!("write: {e}"))?;
             stdin.flush().await.map_err(|e| format!("flush: {e}"))?;
         }
         record.status = WorkerStatus::Busy;
-        Ok(())
+        Ok(req_id)
     }
 
-    /// Send a command to a Worker via stdin, read response from stdout_rx
+    /// Register a pending oneshot for a req_id.
+    pub fn register_pending(&mut self, worker_id: &str, req_id: &str) -> Option<oneshot::Receiver<serde_json::Value>> {
+        let (tx, rx) = oneshot::channel();
+        let record = self.workers.get_mut(worker_id)?;
+        record.pending.insert(req_id.to_string(), tx);
+        Some(rx)
+    }
+
+    /// Cleanup a pending oneshot (on timeout/error).
+    pub fn cleanup_pending(&mut self, worker_id: &str, req_id: &str) {
+        if let Some(record) = self.workers.get_mut(worker_id) {
+            record.pending.remove(req_id);
+        }
+    }
+
+    /// 线程安全的 send_to_worker：短暂持锁写 stdin + 注册 oneshot，然后放锁等响应。
+    /// reader task 需要在锁外才能匹配 pending response，避免死锁。
+    pub async fn send_async(
+        registry: &Arc<tokio::sync::Mutex<Self>>,
+        worker_id: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let (req_id, rx) = {
+            let mut reg = registry.lock().await;
+            let req_id = reg.send_command(worker_id, method, params).await?;
+            let rx = reg.register_pending(worker_id, &req_id)
+                .ok_or_else(|| format!("worker not found: {worker_id}"))?;
+            (req_id, rx)
+        };
+
+        match tokio::time::timeout(std::time::Duration::from_secs(300), rx).await {
+            Ok(Ok(resp)) => Ok(resp),
+            Ok(Err(_)) => {
+                if let Ok(mut reg) = registry.try_lock() {
+                    reg.cleanup_pending(worker_id, &req_id);
+                }
+                Err("worker dropped response channel".into())
+            }
+            Err(_) => {
+                if let Ok(mut reg) = registry.try_lock() {
+                    reg.cleanup_pending(worker_id, &req_id);
+                }
+                Err("timeout waiting for response".into())
+            }
+        }
+    }
+
+    /// Send a command to a Worker via stdin, wait for response via pending oneshot.
+    /// 
+    /// ⚠️ 注意：此方法在 `timeout(rx).await` 阶段会释放 `&mut self`（Rust NLL 保证），
+    /// 但调用方若持有 `MutexGuard`（如 `reg.lock().await`），锁会持续到 Guard drop。
+    /// → 调用方必须确保 await 期间不持有锁，否则 reader task 无法匹配 response。
+    /// 
+    /// 安全的调用模式（与 socket handler 一致）：
+    /// ```ignore
+    /// let (req_id, rx) = {
+    ///     let mut reg = registry.lock().await;
+    ///     let req_id = reg.send_command(&wid, method, params).await?;
+    ///     let rx = reg.register_pending(&wid, &req_id).unwrap();
+    ///     (req_id, rx)
+    /// }; // 锁在此释放
+    /// let result = WorkerRegistry::await_oneshot(rx).await;
+    /// ```
     pub async fn send_to_worker(
         &mut self,
         worker_id: &str,
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
+        // Step 1: write stdin + register oneshot (holds lock briefly)
         let req_id = Uuid::new_v4().to_string()[..8].to_string();
-        
-        // Write command to stdin
-        let msg = serde_json::json!({
+        let line = serde_json::json!({
             "id": req_id,
             "method": method,
             "params": params,
-        });
-        let line = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
-        
-        // Write to stdin
-        {
+        }).to_string();
+
+        let rx = {
             let record = self.workers.get_mut(worker_id)
                 .ok_or_else(|| format!("worker not found: {worker_id}"))?;
             if let Some(ref mut stdin) = record.stdin {
@@ -702,57 +770,32 @@ impl WorkerRegistry {
                     .map_err(|e| format!("write stdin: {e}"))?;
                 stdin.flush().await.map_err(|e| format!("flush: {e}"))?;
             }
+            record.status = WorkerStatus::Busy;
+            let (tx, rx) = oneshot::channel();
+            record.pending.insert(req_id.clone(), tx);
+            rx
+        };
+        // &mut self 在此被释放（NLL），后面的 await 不需要 self
+        // 但调用方仍持锁（MutexGuard）直到 Guard 被 drop
+
+        // Step 2: wait for oneshot via static method (no &mut self)
+        Self::await_oneshot_timeout(rx).await
+    }
+
+    /// 静待方法，不持有 `&mut self`。用于在锁外等 oneshot。
+    pub async fn await_oneshot(rx: oneshot::Receiver<serde_json::Value>) -> Result<serde_json::Value, String> {
+        match rx.await {
+            Ok(resp) => Ok(resp),
+            Err(_) => Err("worker dropped response channel".into()),
         }
+    }
 
-        // Clone subscriber list before borrowing stdout_rx
-        let subscribers: Vec<_> = self.workers.get(worker_id)
-            .map(|r| r.event_subscribers.clone())
-            .unwrap_or_default();
-
-        // Clone parent info for child_event forwarding (before stdout_rx borrow)
-        let parent_forward: Option<(String, Vec<mpsc::Sender<serde_json::Value>>)> = self.workers.get(worker_id)
-            .and_then(|r| r.parent.as_ref().and_then(|pid| {
-                self.workers.get(pid).map(|p| (pid.clone(), p.event_subscribers.clone()))
-            }));
-
-        // Read response from stdout_rx
-        let stdout_rx = self.workers.get_mut(worker_id)
-            .ok_or("worker gone")?
-            .stdout_rx.as_mut()
-            .ok_or("no stdout_rx")?;
-        
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
-        
-        loop {
-            match tokio::time::timeout_at(deadline, stdout_rx.recv()).await {
-                Ok(Some(msg)) => {
-                    let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                    let msg_id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                    
-                    if msg_type == "response" && msg_id == req_id {
-                        // This is our response
-                        return Ok(msg);
-                    } else {
-                        // Event or other message → forward to subscribers
-                        for sub in &subscribers {
-                            let _ = sub.try_send(msg.clone());
-                        }
-                        // Forward to parent's subscribers (child_event)
-                        if let Some((ref parent_id, ref parent_subs)) = parent_forward {
-                            let child_event = serde_json::json!({
-                                "type": "child_event",
-                                "worker_id": worker_id,
-                                "event": msg.get("event").cloned().unwrap_or(msg),
-                            });
-                            for sub in parent_subs {
-                                let _ = sub.try_send(child_event.clone());
-                            }
-                        }
-                    }
-                }
-                Ok(None) => return Err("stdout channel closed".into()),
-                Err(_) => return Err("timeout waiting for response".into()),
-            }
+    /// 带超时的静待方法，不持有 `&mut self`。
+    pub async fn await_oneshot_timeout(rx: oneshot::Receiver<serde_json::Value>) -> Result<serde_json::Value, String> {
+        match tokio::time::timeout(std::time::Duration::from_secs(300), rx).await {
+            Ok(Ok(resp)) => Ok(resp),
+            Ok(Err(_)) => Err("worker dropped response channel".into()),
+            Err(_) => Err("timeout waiting for response".into()),
         }
     }
 
@@ -1106,7 +1149,7 @@ impl WorkerRegistry {
                     let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
                     let send_result = self.send_command(&target, "prompt", serde_json::json!({"text": text})).await;
                     let resp = match send_result {
-                        Ok(()) => serde_json::json!({
+                        Ok(_) => serde_json::json!({
                             "_reply_to": reply_to, "success": true, "data": {"target": target}
                         }),
                         Err(e) => serde_json::json!({
@@ -1121,7 +1164,7 @@ impl WorkerRegistry {
                     let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
                     let send_result = self.send_command(&target, "prompt", serde_json::json!({"text": text})).await;
                     match send_result {
-                        Ok(()) => {
+                        Ok(_) => {
                             let rx_opt = self.subscribe_for_wait(&target).ok();
                             let tx = self.manager_cmd_tx.clone();
                             let target_clone = target.clone();
@@ -1175,7 +1218,7 @@ impl WorkerRegistry {
                     let target = params.get("target").and_then(|v| v.as_str()).unwrap_or("").to_string();
                     let result = self.kill_worker(&target);
                     let resp = match result {
-                        Ok(()) => serde_json::json!({
+                        Ok(_) => serde_json::json!({
                             "_reply_to": reply_to, "success": true, "data": {"target": target}
                         }),
                         Err(e) => serde_json::json!({

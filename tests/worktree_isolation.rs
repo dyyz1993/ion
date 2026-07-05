@@ -62,7 +62,7 @@ async fn wt01_worktree_creates_isolated_cwd() {
         project_path: Some(repo_str.clone()),
         worktree: Some(WorktreeConfig { branch: "feature-wt01".into(), base: Some("main".into()) }),
         ..Default::default()
-    }).await.unwrap();
+    }, &registry).await.unwrap();
 
     let wt = reg.get_worker(&info.worker_id).unwrap().worktree.as_ref().unwrap().clone();
     assert_eq!(wt.branch, "feature-wt01");
@@ -85,7 +85,7 @@ async fn wt02_reclaim_cleans_worktree_preserves_branch() {
         project_path: Some(repo_str.clone()),
         worktree: Some(WorktreeConfig { branch: "feature-wt02".into(), base: Some("main".into()) }),
         ..Default::default()
-    }).await.unwrap();
+    }, &registry).await.unwrap();
 
     let wt_path = reg.get_worker(&info.worker_id).unwrap().worktree.as_ref().unwrap().path.clone();
     assert!(std::path::Path::new(&wt_path).exists());
@@ -109,12 +109,12 @@ async fn wt03_parallel_workers_isolated() {
         session: Some("wt03-a".into()), project_path: Some(repo_str.clone()),
         worktree: Some(WorktreeConfig { branch: "feature-A".into(), base: Some("main".into()) }),
         ..Default::default()
-    }).await.unwrap();
+    }, &registry).await.unwrap();
     let b = reg.create_worker(WorkerCreateConfig {
         session: Some("wt03-b".into()), project_path: Some(repo_str.clone()),
         worktree: Some(WorktreeConfig { branch: "feature-B".into(), base: Some("main".into()) }),
         ..Default::default()
-    }).await.unwrap();
+    }, &registry).await.unwrap();
 
     let wa = reg.get_worker(&a.worker_id).unwrap().worktree.as_ref().unwrap().path.clone();
     let wb = reg.get_worker(&b.worker_id).unwrap().worktree.as_ref().unwrap().path.clone();
@@ -122,8 +122,12 @@ async fn wt03_parallel_workers_isolated() {
     assert!(std::path::Path::new(&wa).exists() && std::path::Path::new(&wb).exists());
     assert!(branch_exists(&repo_str, "feature-A") && branch_exists(&repo_str, "feature-B"));
 
-    let r1 = reg.send_to_worker(&a.worker_id, "get_state", serde_json::Value::Null).await;
-    let r2 = reg.send_to_worker(&b.worker_id, "get_state", serde_json::Value::Null).await;
+    drop(reg);
+    let r1 = WorkerRegistry::send_async(&registry, &a.worker_id, "get_state", serde_json::Value::Null).await;
+    let mut reg = registry.lock().await;
+    drop(reg);
+    let r2 = WorkerRegistry::send_async(&registry, &b.worker_id, "get_state", serde_json::Value::Null).await;
+    let mut reg = registry.lock().await;
     assert!(r1.is_ok() && r2.is_ok());
 
     reg.reclaim(&a.worker_id).unwrap(); reg.reclaim(&b.worker_id).unwrap();
@@ -143,7 +147,7 @@ async fn wt04_kill_cleans_worktree() {
         session: Some("wt04-session".into()), project_path: Some(repo_str.clone()),
         worktree: Some(WorktreeConfig { branch: "feature-wt04".into(), base: Some("main".into()) }),
         ..Default::default()
-    }).await.unwrap();
+    }, &registry).await.unwrap();
 
     let wt_path = reg.get_worker(&info.worker_id).unwrap().worktree.as_ref().unwrap().path.clone();
     assert!(std::path::Path::new(&wt_path).exists());
@@ -160,9 +164,11 @@ async fn wt05_no_worktree_default_behavior() {
     let mut reg = registry.lock().await;
     let info = reg.create_worker(WorkerCreateConfig {
         session: Some("wt05-plain".into()), worktree: None, ..Default::default()
-    }).await.unwrap();
+    }, &registry).await.unwrap();
     assert!(reg.get_worker(&info.worker_id).unwrap().worktree.is_none());
-    assert!(reg.send_to_worker(&info.worker_id, "get_state", serde_json::Value::Null).await.is_ok());
+    drop(reg);
+    assert!(WorkerRegistry::send_async(&registry, &info.worker_id, "get_state", serde_json::Value::Null).await.is_ok());
+    let mut reg = registry.lock().await;
     reg.kill_worker(&info.worker_id).unwrap();
 }
 
@@ -184,7 +190,7 @@ async fn wt06_concurrent_development() {
             project_path: Some(repo_str.clone()),
             worktree: Some(WorktreeConfig { branch: branch.clone(), base: Some("main".into()) }),
             ..Default::default()
-        }).await.unwrap();
+        }, &registry).await.unwrap();
         let wt_path = reg.get_worker(&info.worker_id).unwrap().worktree.as_ref().unwrap().path.clone();
         infos.push((info.worker_id, branch, wt_path));
     }

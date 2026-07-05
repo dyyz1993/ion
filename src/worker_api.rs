@@ -120,11 +120,29 @@ pub struct ExtensionApi {
     pub session_id: String,
     /// Channel to send commands to Manager
     pub manager_tx: mpsc::Sender<ManagerCommand>,
+    /// Channel to inject follow_up messages back into the current agent
+    /// (used by bash extension for background process completion notification)
+    pub follow_up_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::agent::messages::Message>>,
 }
 
 impl ExtensionApi {
     pub fn new(worker_id: String, session_id: String, manager_tx: mpsc::Sender<ManagerCommand>) -> Self {
-        Self { worker_id, session_id, manager_tx }
+        Self { worker_id, session_id, manager_tx, follow_up_tx: None }
+    }
+
+    /// Set the follow_up channel sender.
+    /// Called by the worker during startup, before the extension is used.
+    pub fn set_follow_up_tx(&mut self, tx: tokio::sync::mpsc::UnboundedSender<crate::agent::messages::Message>) {
+        self.follow_up_tx = Some(tx);
+    }
+
+    /// Inject a message into the agent's follow_up queue.
+    /// Used by background process completion, e.g. bash extension.
+    /// Messages will be processed after the current command completes.
+    pub fn inject_follow_up(&self, msg: crate::agent::messages::Message) {
+        if let Some(ref tx) = self.follow_up_tx {
+            let _ = tx.send(msg);
+        }
     }
 
     /// Create a child Worker. Returns a WorkerHandle.

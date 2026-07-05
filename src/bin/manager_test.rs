@@ -21,7 +21,7 @@ async fn main() {
             project_path: Some(cwd.clone()),
             worktree: Some(ion::worker_registry::WorktreeConfig { branch: "test-branch".into(), base: None }),
             ..Default::default()
-        }).await.unwrap();
+        }, &registry).await.unwrap();
         w.worker_id
     };
 

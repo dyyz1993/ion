@@ -1710,50 +1710,35 @@ async fn cmd_manager_start(
                                                 return;
                                             }
                                         };
-                                        // 发命令
+                                        // Step 1: send command + register oneshot (brief lock)
                                         let params = cmd.get("params").cloned().unwrap_or_default();
-                                        match inner_reg.send_command(&wid, &method, params).await {
-                                            Ok(()) => {
-                                                        drop(inner_reg); // 释放 lock，让 pump 能继续
-                                                        // 等响应（最大 600s，覆盖 spawn_worker 等 long run）
-                                                        let timeout_at = std::time::Instant::now()
-                                                            + std::time::Duration::from_secs(600);
-                                                        let mut resp = None;
-                                                        loop {
-                                                            let remaining = timeout_at
-                                                                .checked_duration_since(std::time::Instant::now())
-                                                                .unwrap_or_default();
-                                                            if remaining.is_zero() { break; }
-                                                        tokio::select! {
-                                                            ev = rx.recv() => {
-                                                                match ev {
-                                                                    Some(msg) => {
-                                                                        let msg_type = msg.get("type")
-                                                                            .and_then(|v| v.as_str()).unwrap_or("");
-                                                                        if msg_type == "response" {
-                                                                            resp = Some(msg);
-                                                                            break;
-                                                                        }
-                                                                    }
-                                                                    None => break,
-                                                                }
-                                                            }
-                                                            _ = tokio::time::sleep(remaining) => {}
-                                                        }
-                                                        }
-                                                let result = resp.unwrap_or_else(|| serde_json::json!({
-                                                    "type":"response","success":false,"error":"timeout waiting for worker response"
-                                                }));
-                                                let _ = write_half.write_all(format!("{result}\n").as_bytes()).await;
+                                        let send_result = inner_reg.send_command(&wid, &method, params).await;
+                                        let rx = send_result.ok()
+                                            .and_then(|rid| inner_reg.register_pending(&wid, &rid));
+                                        drop(inner_reg); // RELEASE LOCK
+
+                                        match rx {
+                                            Some(rx) => {
+                                                // Step 2: wait for oneshot (NO lock held)
+                                                match tokio::time::timeout(std::time::Duration::from_secs(300), rx).await {
+                                                    Ok(Ok(resp)) => {
+                                                        let mut r = resp.clone();
+                                                        if let Some(id) = cmd.get("id") { r["id"] = id.clone(); }
+                                                        let _ = write_half.write_all(format!("{r}\n").as_bytes()).await;
+                                                        let _ = write_half.flush().await;
+                                                    }
+                                                    _ => {
+                                                        let resp = serde_json::json!({"type":"response","id":cmd.get("id"),"success":false,"error":"timeout"});
+                                                        let _ = write_half.write_all(format!("{resp}\n").as_bytes()).await;
+                                                    }
+                                                }
                                             }
-                                            Err(e) => {
-                                                let resp = serde_json::json!({
-                                                    "type":"response","id":cmd.get("id"),
-                                                    "success":false,"error":format!("send_command failed: {e}")
-                                                });
+                                            None => {
+                                                let resp = serde_json::json!({"type":"response","id":cmd.get("id"),"success":false,"error":"send failed"});
                                                 let _ = write_half.write_all(format!("{resp}\n").as_bytes()).await;
                                             }
                                         }
+                                        return;
                                     } else {
                                         // session 不存在？创建？不，让 handle_manager_command 处理
                                         drop(inner_reg);
@@ -1799,8 +1784,8 @@ async fn cmd_manager_start(
                             subs.insert(wid.clone(), (session_id, rx));
                         }
                     }
-                    // 关键：drain_events 把 stdout_rx 的消息转发给 subscribers
-                    reg.drain_events(wid, 10).await;
+                    // 不调 drain_events — reader task 已实时转发 event 给 subscribers
+                    // drain_events 会从 stdout_rx 偷走 send_command 等待的 response
                 }
                 // 清理已死的 worker
                 let dead: Vec<String> = subs.keys()
@@ -1972,8 +1957,21 @@ async fn handle_manager_command(
             } else {
                 cmd.clone()
             };
-            let cfg: WorkerCreateConfig = serde_json::from_value(cfg_source).unwrap_or_default();
-            drop(reg);  // 放锁
+            let mut cfg: WorkerCreateConfig = serde_json::from_value(cfg_source.clone()).unwrap_or_default();
+            // 支持从 params 显式传 session（重建 worker 时保留 SID）
+            if cfg.session.is_none() {
+                cfg.session = cfg_source.get("session").or_else(|| cfg_source.get("session_id"))
+                    .and_then(|v| v.as_str()).map(String::from);
+            }
+            // 兼容旧测试脚本：如果 params 传了 cwd 但没有 project_path，映射过去
+            if cfg.project_path.is_none() {
+                if let Some(cwd_val) = cmd.get("params").and_then(|p| p.get("cwd")).or_else(|| cmd.get("cwd")) {
+                    if let Some(cwd) = cwd_val.as_str() {
+                        cfg.project_path = Some(cwd.to_string());
+                    }
+                }
+            }
+            drop(reg);
             match registry.lock().await.create_worker(cfg, &registry).await {
                 Ok(info) => Ok(serde_json::json!({
                     "workerId": info.worker_id,
@@ -2193,7 +2191,7 @@ async fn cmd_team(project_path: &str, user_message: &str, _max_workers: usize) {
                             subs.insert(wid.clone(), rx);
                         }
                     }
-                    reg.drain_events(wid, 10).await;
+                    // 不调 drain_events — reader task 已实时转发 event 给 subscribers
                 }
             }
             // 排空订阅事件

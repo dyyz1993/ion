@@ -113,6 +113,7 @@ ION 对标 pi 的全部能力。遇到不确定的设计决策时：
 | [MEMORY_PLUGIN.md](./MEMORY_PLUGIN.md) | Memory 记忆插件设计：大纲索引、异步检索、XML 注入、4 维存储 (设计稿) |
 | [MEMORY_SPEC.md](./MEMORY_SPEC.md) | Memory 插件测试规格：P0/P1/XFail 分级、完整接口定义、验收标准 (已验证) |
 | [BASH_PLUGIN.md](./BASH_PLUGIN.md) | Bash 进程管理插件设计：后台进程、实时流、退出原因、CLI 测试 (设计稿) |
+| [SESSION_MESSAGE.md](./SESSION_MESSAGE.md) | Session 消息系统：Entry 类型、推送通道、LLM/UI 消费决策树 (设计稿) |
 | `src/bin/ion.rs` | 主 CLI (45+ 参数) |
 | `src/bin/ion_worker.rs` | Worker 子进程 (75 RPC 命令) |
 | `src/worker_registry.rs` | Manager 内存状态 + Worker 管理 |

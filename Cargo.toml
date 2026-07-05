@@ -5,7 +5,7 @@ edition = "2024"
 description = "ION CLI — Agent orchestration and AI agent loop"
 
 [workspace]
-members = ["todo-plugin"]
+members = ["todo-plugin", "plan-plugin"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

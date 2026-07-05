@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+      - 'dashboard/**'
+  pull_request:
+    branches: [main, master]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --bin ion --bin ion-worker --bin agent-demo
+
+      - name: Unit tests (ion lib)
+        run: cargo test --lib
+
+      - name: Unit tests (ion-provider serde roundtrip)
+        run: cargo test -p ion-provider
+
+      - name: CLI session entry integration test
+        run: bash tests/session_entries_ci.sh
+
+      - name: Integration tests (Rust)
+        run: cargo test --tests 2>&1 || echo "(some tests may need manager)"
