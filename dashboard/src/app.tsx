@@ -15,11 +15,26 @@ import { StatusBar } from "./components/status_bar";
 
 export function App() {
   useRefresh();
+  const { stdout } = useApp();
+  const [readyToExit, setReadyToExit] = useState(false);
+
+  // 退出：让 Ink 清理终端后再退出
+  useEffect(() => {
+    if (readyToExit) process.exit(0);
+  }, [readyToExit]);
+
+  // ── 监听终端 resize，触发渲染 ──
+  const [, setResize] = useState(0);
+  useEffect(() => {
+    const onResize = () => setResize((n) => n + 1);
+    stdout?.on?.("resize", onResize);
+    return () => { stdout?.off?.("resize", onResize); };
+  }, [stdout]);
 
   // ── 键盘 ──
   useInput((input, key) => {
     // q 退出
-    if (input === "q") process.exit(0);
+    if (input === "q") { setReadyToExit(true); return; }
 
     // 创建模态
     if (S.createModal) {
@@ -135,28 +150,29 @@ export function App() {
   const focusMode = S.focusMode && S.selectedSessionId;
 
   return (
-    <Box flexDirection="column">
-      {/* 主区域：三栏布局，两种形态 */}
+    <Box flexDirection="column" flexGrow={1}>
+      {/* 主区域：弹性三栏 */}
       <Box flexGrow={1} flexDirection="row">
-        {/* 左栏：项目列表（两种模式都保留） */}
-        <Box flexGrow={1} minWidth={18}>
+        {/* 左：项目列表 */}
+        <Box flexGrow={1} minWidth={16}>
           <Tree />
         </Box>
 
-        {/* 中栏：看板或聊天 */}
-        <Box flexGrow={3} flexDirection="column">
-          {focusMode ? (
-            <Detail renderer={null as any} focusMode={true} />
-          ) : (
-            <Kanban />
-          )}
-          {/* 输入框永远在中栏底部 */}
+        {/* 中：看板/聊天 + 输入框 */}
+        <Box flexGrow={3} flexDirection="column" minWidth={30}>
+          <Box flexGrow={1}>
+            {focusMode ? (
+              <Detail renderer={null as any} focusMode={true} />
+            ) : (
+              <Kanban />
+            )}
+          </Box>
           <Box height={3}>
             <InputBar />
           </Box>
         </Box>
 
-        {/* 右栏：详情或侧栏面板 */}
+        {/* 右：详情/侧栏 */}
         <Box flexGrow={1} minWidth={20}>
           {focusMode ? (
             <SidePanel />
@@ -167,8 +183,9 @@ export function App() {
       </Box>
 
       {/* 状态栏 */}
-      <StatusBar />
-
+      <Box height={1}>
+        <StatusBar />
+      </Box>
       {/* 创建模态（浮层效果，放在最后渲染） */}
       {S.createModal && <CreateModal />}
     </Box>
