@@ -132,39 +132,44 @@ export function App() {
   }, []);
 
   // ── 渲染 ──
-  const theme = colors;
   const focusMode = S.focusMode && S.selectedSessionId;
 
   return (
     <Box flexDirection="column">
-      {/* 主区域 */}
-      <Box flexGrow={1}>
-        {focusMode ? (
-          <Box flexGrow={4}>
-            <Detail renderer={null as any} focusMode={true} />
-          </Box>
-        ) : (
-          <>
-            <Box flexGrow={1} minWidth={20}>
-              <Tree />
-            </Box>
-            <Box flexGrow={3}>
-              <Kanban />
-            </Box>
-            <Box flexGrow={1} minWidth={25}>
-              <Detail renderer={null as any} focusMode={false} />
-            </Box>
-          </>
-        )}
-      </Box>
+      {/* 主区域：三栏布局，两种形态 */}
+      <Box flexGrow={1} flexDirection="row">
+        {/* 左栏：项目列表（两种模式都保留） */}
+        <Box flexGrow={1} minWidth={18}>
+          <Tree />
+        </Box>
 
-      {/* 输入框 */}
-      <InputBar />
+        {/* 中栏：看板或聊天 */}
+        <Box flexGrow={3} flexDirection="column">
+          {focusMode ? (
+            <Detail renderer={null as any} focusMode={true} />
+          ) : (
+            <Kanban />
+          )}
+          {/* 输入框永远在中栏底部 */}
+          <Box height={3}>
+            <InputBar />
+          </Box>
+        </Box>
+
+        {/* 右栏：详情或侧栏面板 */}
+        <Box flexGrow={1} minWidth={20}>
+          {focusMode ? (
+            <SidePanel />
+          ) : (
+            <Detail renderer={null as any} focusMode={false} />
+          )}
+        </Box>
+      </Box>
 
       {/* 状态栏 */}
       <StatusBar />
 
-      {/* 创建模态（浮层） */}
+      {/* 创建模态（浮层效果，放在最后渲染） */}
       {S.createModal && <CreateModal />}
     </Box>
   );
@@ -189,7 +194,7 @@ function CreateModal() {
   if (!S.createModal) return null;
   const m = S.createModal;
   return (
-    <Box flexDirection="column" marginTop={5} width={60}
+    <Box flexDirection="column" marginTop={4}
       borderStyle="round" borderColor={colors.accent} padding={1}>
       <Text color={colors.accent} bold>✦ Create New Worker</Text>
       <Text color={colors.subtext}>Worker 会在指定项目目录下工作</Text>
@@ -202,6 +207,28 @@ function CreateModal() {
       <Text color={m.error ? colors.warning : colors.subtext}>
         Tab 切字段  Enter 创建  Esc 取消{m.error ? `  ⚠ ${m.error}` : ""}
       </Text>
+    </Box>
+  );
+}
+
+// ── Focus 模式右侧面板 ──
+function SidePanel() {
+  return (
+    <Box flexDirection="column" flexGrow={1}>
+      <Box borderStyle="round" borderColor={colors.borderInactive} paddingX={1} flexShrink={1}>
+        <Text color={colors.subtext} bold>Todo</Text>
+        <Text color={colors.subtext}>(coming soon)</Text>
+      </Box>
+      <Box borderStyle="round" borderColor={colors.borderInactive} paddingX={1} flexShrink={1}>
+        <Text color={colors.subtext} bold>Memory</Text>
+        <Text color={colors.subtext}>(coming soon)</Text>
+      </Box>
+      <Box borderStyle="round" borderColor={colors.borderInactive} paddingX={1} flexGrow={1}>
+        <Text color={colors.subtext} bold>Logs</Text>
+        {S.logs.slice(0, 5).map((l, i) => (
+          <Text key={i} color={colors.subtext}>{l.slice(0, 50)}</Text>
+        ))}
+      </Box>
     </Box>
   );
 }
