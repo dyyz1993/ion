@@ -1259,4 +1259,25 @@ mod tests {
         let secured = SecuredRuntime::new(LocalRuntime::new());
         assert_eq!(secured.runtime_type(), "secured(local)");
     }
+
+    #[test]
+    async fn remote_runtime_ssh_command_format() {
+        let rt = RemoteRuntime::new(LocalRuntime::new(), "admin", "xyz-mac.local", 22, "");
+        let cmd = rt.ssh_cmd("echo hello");
+        assert_eq!(cmd, "ssh admin@xyz-mac.local -p 22 'echo hello'");
+    }
+
+    #[test]
+    async fn remote_runtime_ssh_command_with_key() {
+        let rt = RemoteRuntime::new(LocalRuntime::new(), "deploy", "10.0.0.1", 2222, "~/.ssh/deploy_key");
+        let cmd = rt.ssh_cmd("kubectl get pods");
+        assert_eq!(cmd, "ssh deploy@10.0.0.1 -p 2222 -i ~/.ssh/deploy_key 'kubectl get pods'");
+    }
+
+    #[test]
+    async fn glob_matching_works() {
+        assert!(glob_match("npm *", "npm install"));
+        assert!(!glob_match("npm *", "pip install"));
+        assert!(glob_match("*", "anything"));
+    }
 }

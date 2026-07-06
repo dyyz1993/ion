@@ -186,7 +186,7 @@ ion rpc --session <sid> --method call_tool \
 
 ---
 
-## 场景 3：混合路由（SelectorRuntime）
+## 场景 3：混合路由（RouterRuntime）
 
 **前置配置：**
 ```json
@@ -390,7 +390,7 @@ ion rpc --session <sid> --method call_tool \
 # → 1. PermissionExtension 检查 command.run
 # → 2. SecuredRuntime CommandGuard 检查
 # → 3. 沙箱判断是否需要提权（如果需要 → UI Ask）
-# → 4. SelectorRuntime 路由到 RemoteRuntime
+# → 4. RouterRuntime 路由到 RemoteRuntime
 # → 5. SSH 到 xyz-mac 执行
 ```
 
@@ -402,7 +402,7 @@ ion rpc --session <sid> --method call_tool \
 |------|---------|------|
 | `RemoteRuntime` | SSH/HTTP/gRPC 传输 Runtime | 🔧 待做 |
 | `SandboxRuntime` | macOS sandbox-exec 包装 | 🔧 待做 |
-| `SelectorRuntime` | 命令级路由 Runtime | 🔧 待做 |
+| `RouterRuntime` | 命令级路由 Runtime | 🔧 待做 |
 | 沙箱权限分级 | readonly/workspace/full-access 配置 | ✅ 设计完成 |
 | Agent 提权 | escape_with_approval + Ask | ✅ 架构就绪 |
 | Worker 远程 spawn | Manager SSH 启动远程 Worker | 🔧 待做 |
