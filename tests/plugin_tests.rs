@@ -66,7 +66,7 @@ fn build_wasm_plugin(pkg_dir: &str, wasm_file: &str) -> String {
 #[test]
 fn todo_plugin_loads_and_registers_tools() {
     let wasm_path = build_todo_plugin();
-    let plugin = ion::plugin::WasmPlugin::load(std::path::Path::new(&wasm_path))
+    let plugin = ion::wasm_extension::WasmExtension::load(std::path::Path::new(&wasm_path))
         .expect("todo-plugin should load");
 
     let names: Vec<&str> = plugin.tools.iter().map(|t| t.name.as_str()).collect();
@@ -79,7 +79,7 @@ fn todo_plugin_loads_and_registers_tools() {
 #[test]
 fn todo_plugin_create_and_list() {
     let wasm_path = build_todo_plugin();
-    let mut plugin = ion::plugin::WasmPlugin::load(std::path::Path::new(&wasm_path))
+    let mut plugin = ion::wasm_extension::WasmExtension::load(std::path::Path::new(&wasm_path))
         .expect("todo-plugin should load");
 
     // Create a todo list
@@ -100,7 +100,7 @@ fn todo_plugin_create_and_list() {
 #[test]
 fn todo_plugin_update_status() {
     let wasm_path = build_todo_plugin();
-    let mut plugin = ion::plugin::WasmPlugin::load(std::path::Path::new(&wasm_path))
+    let mut plugin = ion::wasm_extension::WasmExtension::load(std::path::Path::new(&wasm_path))
         .expect("todo-plugin should load");
 
     // Create
@@ -130,7 +130,7 @@ fn todo_plugin_update_status() {
 #[test]
 fn todo_plugin_nonexistent_item() {
     let wasm_path = build_todo_plugin();
-    let mut plugin = ion::plugin::WasmPlugin::load(std::path::Path::new(&wasm_path))
+    let mut plugin = ion::wasm_extension::WasmExtension::load(std::path::Path::new(&wasm_path))
         .expect("todo-plugin should load");
 
     plugin
@@ -150,7 +150,7 @@ fn todo_plugin_nonexistent_item() {
 #[test]
 fn plan_plugin_loads_and_registers_tools() {
     let wasm_path = build_plan_plugin();
-    let plugin = ion::plugin::WasmPlugin::load(std::path::Path::new(&wasm_path))
+    let plugin = ion::wasm_extension::WasmExtension::load(std::path::Path::new(&wasm_path))
         .expect("plan-plugin should load");
 
     let names: Vec<&str> = plugin.tools.iter().map(|t| t.name.as_str()).collect();
@@ -162,7 +162,7 @@ fn plan_plugin_loads_and_registers_tools() {
 #[test]
 fn plan_plugin_enter_and_exit() {
     let wasm_path = build_plan_plugin();
-    let mut plugin = ion::plugin::WasmPlugin::load(std::path::Path::new(&wasm_path))
+    let mut plugin = ion::wasm_extension::WasmExtension::load(std::path::Path::new(&wasm_path))
         .expect("plan-plugin should load");
 
     let enter = plugin
@@ -382,20 +382,20 @@ async fn plan_extension_double_enter_is_idempotent() {
 }
 
 /// Helper: load the todo plugin once (reused by edge tests).
-fn load_todo() -> ion::plugin::WasmPlugin {
+fn load_todo() -> ion::wasm_extension::WasmExtension {
     let wasm_path = build_todo_plugin();
-    ion::plugin::WasmPlugin::load(std::path::Path::new(&wasm_path))
+    ion::wasm_extension::WasmExtension::load(std::path::Path::new(&wasm_path))
         .expect("todo-plugin should load")
 }
 
 // ---------------------------------------------------------------------------
-// PluginRegistry — hot‑pluggable WASM plugin lifecycle  (P1–P4)
+// WasmExtensionRegistry — hot‑pluggable WASM plugin lifecycle  (P1–P4)
 // ---------------------------------------------------------------------------
 
 #[test]
 fn plugin_registry_add_list_remove() {
     let wasm_path = build_todo_plugin();
-    let registry = ion::plugin::PluginRegistry::new();
+    let registry = ion::wasm_extension::WasmExtensionRegistry::new();
 
     // P1: add → should return tool defs
     let tool_defs = registry.add(&wasm_path)
@@ -433,7 +433,7 @@ fn plugin_registry_add_list_remove() {
 #[test]
 fn plugin_registry_reload_replaces_instance() {
     let wasm_path = build_todo_plugin();
-    let registry = ion::plugin::PluginRegistry::new();
+    let registry = ion::wasm_extension::WasmExtensionRegistry::new();
 
     // Load once
     registry.add(&wasm_path).expect("initial load");
@@ -458,7 +458,7 @@ fn plugin_registry_reload_replaces_instance() {
 #[test]
 fn plugin_registry_add_same_path_twice_is_reload() {
     let wasm_path = build_todo_plugin();
-    let registry = ion::plugin::PluginRegistry::new();
+    let registry = ion::wasm_extension::WasmExtensionRegistry::new();
 
     // add twice → second call replaces the first (reload semantics)
     registry.add(&wasm_path).expect("first add");
@@ -471,7 +471,7 @@ fn plugin_registry_add_same_path_twice_is_reload() {
 
 #[test]
 fn plugin_registry_remove_nonexistent_returns_error() {
-    let registry = ion::plugin::PluginRegistry::new();
+    let registry = ion::wasm_extension::WasmExtensionRegistry::new();
     let result = registry.remove("/nonexistent/path.wasm");
     assert!(result.is_err(), "remove of nonexistent path should fail");
 }
@@ -480,7 +480,7 @@ fn plugin_registry_remove_nonexistent_returns_error() {
 fn plugin_registry_can_hold_multiple_plugins() {
     let todo_path = build_todo_plugin();
     let plan_path = build_plan_plugin();
-    let registry = ion::plugin::PluginRegistry::new();
+    let registry = ion::wasm_extension::WasmExtensionRegistry::new();
 
     registry.add(&todo_path).expect("load todo");
     registry.add(&plan_path).expect("load plan");
@@ -508,11 +508,11 @@ fn plugin_registry_can_hold_multiple_plugins() {
 fn plugin_ext_name_from_path() {
     // file stem wins
     assert_eq!(
-        ion::plugin::ext_name_from_path("/home/user/todo-plugin/target/release/todo_plugin.wasm"),
+        ion::wasm_extension::ext_name_from_path("/home/user/todo-plugin/target/release/todo_plugin.wasm"),
         "todo_plugin",
     );
     assert_eq!(
-        ion::plugin::ext_name_from_path("/tmp/my_plugin.wasm"),
+        ion::wasm_extension::ext_name_from_path("/tmp/my_plugin.wasm"),
         "my_plugin",
     );
 }
@@ -521,7 +521,7 @@ fn plugin_ext_name_from_path() {
 fn plugin_data_dimension_paths_are_correct() {
     use ion::paths;
 
-    let ctx = ion::plugin::PluginContext {
+    let ctx = ion::wasm_extension::WasmExtensionContext {
         session_id: "sess-abc".into(),
         cwd: "/tmp/work".into(),
         project_root: "/tmp/work".into(),
@@ -568,10 +568,10 @@ fn plugin_data_dimension_paths_are_correct() {
 #[test]
 fn plugin_context_injected_into_store() {
     let wasm_path = build_todo_plugin();
-    let mut plugin = ion::plugin::WasmPlugin::load(std::path::Path::new(&wasm_path))
+    let mut plugin = ion::wasm_extension::WasmExtension::load(std::path::Path::new(&wasm_path))
         .expect("todo-plugin should load");
 
-    let ctx = ion::plugin::PluginContext {
+    let ctx = ion::wasm_extension::WasmExtensionContext {
         session_id: "sess-test".into(),
         cwd: "/tmp".into(),
         project_root: "/tmp".into(),
@@ -641,14 +641,14 @@ fn plugin_write_read_delete_works_directly() {
 
 #[test]
 fn plugin_make_exec_context_merges_registry_ctx_with_ext_name() {
-    let reg_ctx = ion::plugin::PluginContext {
+    let reg_ctx = ion::wasm_extension::WasmExtensionContext {
         session_id: "sess-1".into(),
         cwd: "/proj".into(),
         project_root: "/proj".into(),
         ext_name: "".into(),
     };
 
-    let exec_ctx = ion::plugin::make_exec_context(&reg_ctx, "my-ext");
+    let exec_ctx = ion::wasm_extension::make_exec_context(&reg_ctx, "my-ext");
     assert_eq!(exec_ctx.session_id, "sess-1");
     assert_eq!(exec_ctx.ext_name, "my-ext", "ext_name should be overridden");
     assert_eq!(exec_ctx.cwd, "/proj");

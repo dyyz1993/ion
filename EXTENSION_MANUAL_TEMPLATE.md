@@ -44,5 +44,5 @@ ion rpc --session sess_xxx --method call_tool \
   --params '{"tool":"{tool_name}","args":{...}}'
 
 # 4. 验证事件（可选）
-ion subscribe --session sess_xxx --plugin {plugin_name}
+ion subscribe --session sess_xxx --extension {plugin_name}
 ```

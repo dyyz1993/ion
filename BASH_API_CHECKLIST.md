@@ -166,7 +166,7 @@ ion rpc --session <sid> --method call_tool \
 ### C1 `list` 列进程
 
 ```bash
-ion rpc --session <sid> --method plugin_rpc \
+ion rpc --session <sid> --method extension_rpc \
   --params '{"plugin":"bash","method":"list"}'
 ```
 
@@ -184,7 +184,7 @@ ion rpc --session <sid> --method plugin_rpc \
 ### C2 `inspect` 查详情
 
 ```bash
-ion rpc --session <sid> --method plugin_rpc \
+ion rpc --session <sid> --method extension_rpc \
   --params '{"plugin":"bash","method":"inspect","args":{"pid":10001,"tail":50}}'
 ```
 
@@ -196,7 +196,7 @@ ion rpc --session <sid> --method plugin_rpc \
 ### C3 `kill`（RPC 版）
 
 ```bash
-ion rpc --session <sid> --method plugin_rpc \
+ion rpc --session <sid> --method extension_rpc \
   --params '{"plugin":"bash","method":"kill","args":{"pid":10001}}'
 ```
 
@@ -208,7 +208,7 @@ ion rpc --session <sid> --method plugin_rpc \
 ### C4 `send`（RPC 版发 stdin）
 
 ```bash
-ion rpc --session <sid> --method plugin_rpc \
+ion rpc --session <sid> --method extension_rpc \
   --params '{"plugin":"bash","method":"send","args":{"pid":10002,"input":"Y"}}'
 ```
 
@@ -220,7 +220,7 @@ ion rpc --session <sid> --method plugin_rpc \
 ### C5 `clean` 清理已结束进程
 
 ```bash
-ion rpc --session <sid> --method plugin_rpc \
+ion rpc --session <sid> --method extension_rpc \
   --params '{"plugin":"bash","method":"clean"}'
 ```
 
@@ -232,19 +232,19 @@ ion rpc --session <sid> --method plugin_rpc \
 ### C6 不存在的 method
 
 ```bash
-ion rpc --session <sid> --method plugin_rpc \
+ion rpc --session <sid> --method extension_rpc \
   --params '{"plugin":"bash","method":"nonexistent"}'
 ```
 
 **预期：** 报错  
-**✅ 实测通过** → `"bash plugin_rpc: unknown method nonexistent"`
+**✅ 实测通过** → `"bash extension_rpc: unknown method nonexistent"`
 
 ---
 
 ### C7 不存在的 plugin
 
 ```bash
-ion rpc --session <sid> --method plugin_rpc \
+ion rpc --session <sid> --method extension_rpc \
   --params '{"plugin":"nonexistent","method":"list"}'
 ```
 
@@ -282,7 +282,7 @@ cat /tmp/ion-bash/10000.log
 通过 `ion subscribe` 实时收到 bash 事件：
 
 ```bash
-ion subscribe --session <sid> --plugin bash
+ion subscribe --session <sid> --extension bash
 ```
 
 收到的事件类型：

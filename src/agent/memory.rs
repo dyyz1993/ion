@@ -1,4 +1,4 @@
-//! Memory 插件 — 项目级记忆管理
+//! Memory 扩展 — 项目级记忆管理
 //!
 //! 存储维度：project（大纲 + 条目）、session（已注入记录）
 //!
@@ -7,7 +7,7 @@
 //! | 方式 | 入口 | 说明 |
 //! |------|------|------|
 //! | LLM Tool | `memory_save` / `memory_search` | LLM 直接调用 |
-//! | Plugin RPC | `plugin_rpc memory save/search/list/forget/inspect` | CLI 调试 |
+//! | Extension RPC | `extension_rpc memory save/search/list/forget/inspect` | CLI 调试 |
 //! | 被动注入 | `on_input` → `on_context` | 自动检索 + 注入上下文 |
 //! | 事件推送 | `emit_plugin_event()` → EventBus | subscribe 实时监听 |
 //!
@@ -287,8 +287,8 @@ impl Tool for MemorySaveTool {
         drop(store);
         // 发射 plugin_event（带 session，EventBus 过滤用）
         let ev = serde_json::json!({
-            "type": "plugin_event",
-            "plugin": "memory",
+            "type": "extension_event",
+            "extension": "memory",
             "session": sess,
             "customType": "memory_saved",
             "data": {"outline":"auto","id":&id}
@@ -362,8 +362,8 @@ impl MemoryExtension {
             }
         };
         let ev = serde_json::json!({
-            "type": "plugin_event",
-            "plugin": "memory",
+            "type": "extension_event",
+            "extension": "memory",
             "session": session_id,
             "customType": custom_type,
             "data": data,
@@ -507,11 +507,11 @@ impl Extension for MemoryExtension {
         Ok(())
     }
 
-    /// 插件私有 RPC 方法
-    async fn on_plugin_rpc(&self, method: &str, params: serde_json::Value) -> AgentResult<serde_json::Value> {
+    /// 扩展私有 RPC 方法
+    async fn on_extension_rpc(&self, method: &str, params: serde_json::Value) -> AgentResult<serde_json::Value> {
         let store = self.store.lock().await;
         match method {
-            "ping" => Ok(serde_json::json!({"status":"pong","plugin":"memory"})),
+            "ping" => Ok(serde_json::json!({"status":"pong","extension":"memory"})),
             "debug_emit" => {
                 drop(store);
                 let msg = params.get("message").and_then(|v| v.as_str()).unwrap_or("test");

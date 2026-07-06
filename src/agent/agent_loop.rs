@@ -130,12 +130,12 @@ impl Agent {
         self.tools.restrict_to(&allowed);
     }
 
-    /// Register a single tool (used by plugin_add / plugin_reload RPC).
+    /// Register a single tool (used by extension_add / extension_reload RPC).
     pub fn register_tool(&mut self, tool: Box<dyn Tool>) {
         self.tools.register(tool);
     }
 
-    /// Remove a tool by name (used by plugin_remove RPC).
+    /// Remove a tool by name (used by extension_remove RPC).
     pub fn remove_tool(&mut self, name: &str) {
         self.tools.remove(name);
     }
@@ -239,13 +239,13 @@ impl Agent {
     }
 
     /// 调插件私有 RPC 方法（给 CLI/外部调试用）。
-    pub async fn plugin_rpc(
+    pub async fn extension_rpc(
         &self,
-        plugin: &str,
+        extension_name: &str,
         method: &str,
         params: serde_json::Value,
     ) -> AgentResult<serde_json::Value> {
-        self.extensions.plugin_rpc(plugin, method, params).await
+        self.extensions.extension_rpc(extension_name, method, params).await
     }
 
     pub async fn run(&mut self, prompt: impl Into<String>) -> AgentResult<()> {

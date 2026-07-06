@@ -77,7 +77,7 @@ ION 对标 pi 的全部能力。遇到不确定的设计决策时：
 
 ### 插件手册规范
 
-每个插件**必须**在其源码目录下维护一份 `MANUAL.md`，格式参照 [PLUGIN_MANUAL_TEMPLATE.md](./PLUGIN_MANUAL_TEMPLATE.md)。
+每个插件**必须**在其源码目录下维护一份 `MANUAL.md`，格式参照 [EXTENSION_MANUAL_TEMPLATE.md](./EXTENSION_MANUAL_TEMPLATE.md)。
 
 | 要求 | 说明 |
 |------|------|
@@ -89,7 +89,7 @@ ION 对标 pi 的全部能力。遇到不确定的设计决策时：
 
 现有插件手册：
 - [todo-plugin/MANUAL.md](./todo-plugin/MANUAL.md) — 待办任务管理 (WASM)
-- MEMORY 插件手册（内核内置，见 [MEMORY_PLUGIN.md](./MEMORY_PLUGIN.md)）
+- MEMORY 插件手册（内核内置，见 [MEMORY_EXTENSION.md](./MEMORY_EXTENSION.md)）
 
 ### 例外
 
@@ -107,12 +107,12 @@ ION 对标 pi 的全部能力。遇到不确定的设计决策时：
 | [TEST_CASES.md](./TEST_CASES.md) | 完整测试 case (25 单元 + 32 集成 + 5 E2E + 5 压力) |
 | [RPC_DIFF_REPORT.md](./RPC_DIFF_REPORT.md) | ion-worker vs pi RPC 格式对比报告 |
 | [HOOK_SYSTEM.md](./HOOK_SYSTEM.md) | Shell Hook 系统设计 (TRAE 兼容, 暂不开发) |
-| [PLUGIN_SYSTEM.md](./PLUGIN_SYSTEM.md) | WASM 插件系统：热更新、4 维数据存储、16 个宿主函数 (已完成) |
-| [PLUGIN_WORKFLOW.md](./PLUGIN_WORKFLOW.md) | 插件开发测试工作流：写→build→安装→RPC 直调→LLM 引导→RPC 佐证 (已验证) |
+| [EXTENSION_SYSTEM.md](./EXTENSION_SYSTEM.md) | WASM 插件系统：热更新、4 维数据存储、16 个宿主函数 (已完成) |
+| [EXTENSION_WORKFLOW.md](./EXTENSION_WORKFLOW.md) | 插件开发测试工作流：写→build→安装→RPC 直调→LLM 引导→RPC 佐证 (已验证) |
 | [CLI_USAGE.md](./CLI_USAGE.md) | CLI 标准用法：RPC / Subscribe / Plugin RPC / Tool RPC 完整速查 (已验证) |
-| [MEMORY_PLUGIN.md](./MEMORY_PLUGIN.md) | Memory 记忆插件设计：大纲索引、异步检索、XML 注入、4 维存储 (设计稿) |
+| [MEMORY_EXTENSION.md](./MEMORY_EXTENSION.md) | Memory 记忆插件设计：大纲索引、异步检索、XML 注入、4 维存储 (设计稿) |
 | [MEMORY_SPEC.md](./MEMORY_SPEC.md) | Memory 插件测试规格：P0/P1/XFail 分级、完整接口定义、验收标准 (已验证) |
-| [BASH_PLUGIN.md](./BASH_PLUGIN.md) | Bash 进程管理插件设计：后台进程、实时流、退出原因、CLI 测试 (设计稿) |
+| [BASH_EXTENSION.md](./BASH_EXTENSION.md) | Bash 进程管理插件设计：后台进程、实时流、退出原因、CLI 测试 (设计稿) |
 | [SESSION_MESSAGE.md](./SESSION_MESSAGE.md) | Session 消息系统：Entry 类型、推送通道、LLM/UI 消费决策树 (设计稿) |
 | `src/bin/ion.rs` | 主 CLI (45+ 参数) |
 | `src/bin/ion_worker.rs` | Worker 子进程 (75 RPC 命令) |
@@ -120,7 +120,7 @@ ION 对标 pi 的全部能力。遇到不确定的设计决策时：
 | `src/worker_api.rs` | WorkerHandle + ExtensionApi (插件 API) |
 | `src/agent/` | Agent 循环 (内层+外层+扩展钩子) |
 | `ion-provider/` | Provider 抽象独立 crate (OpenAI SSE + tool_calls) |
-| `src/plugin.rs` | WASM 插件加载器（[详情](./PLUGIN_SYSTEM.md)） |
+| `src/plugin.rs` | WASM 插件加载器（[详情](./EXTENSION_SYSTEM.md)） |
 | `stock-plugin/` | WASM 插件示例 |
 
 ## 架构
@@ -171,10 +171,10 @@ ion-worker --mode rpc    → Worker 子进程 (JSONL over stdin/stdout)
 - 权限引擎 (`PermissionEngine` + `UiSystem` + Agent 集成)
 - 命令守卫 (`CommandGuard`: 白名单 + 风险模式检测)
 - `ion subscribe` — 实时事件流（Instance + Plugin 两级）
-- Plugin RPC — 插件私有方法调用（`plugin_rpc`）
-- `ExtensionApi::emit_plugin_event()` — 插件发射自定义事件
-- `PluginEventBus` — 事件总线 + broadcast + backpressure
-- `on_plugin_rpc()` — AgentExtension 新增钩子
+- Plugin RPC — 插件私有方法调用（`extension_rpc`）
+- `ExtensionApi::emit_extension_event()` — 插件发射自定义事件
+- `ExtensionEventBus` — 事件总线 + broadcast + backpressure
+- `on_extension_rpc()` — AgentExtension 新增钩子
 - 21 个 Worker 编排工具（spawn_worker / send_to_worker / resume_worker / await_worker / channel_send / kill_worker）
 - 完整 steer/follow_up/abort/promote_follow_up 行为对齐 pi
 - Unix socket IPC（Manager ↔ CLI client）
@@ -185,7 +185,7 @@ ion-worker --mode rpc    → Worker 子进程 (JSONL over stdin/stdout)
 
 - `memory_save` — 主动保存记忆（LLM Tool + Plugin RPC 双入口）
 - `memory_search` — 主动搜索记忆（含 tag/category/description 匹配）
-- `plugin_rpc: save/list/search/forget/inspect` — CLI 调试入口
+- `extension_rpc: save/list/search/forget/inspect` — CLI 调试入口
 - `forget` — 软删除（`archived: true`），list/search 默认过滤
 - `content_hash` — djb2 哈希，内容变化可靠检测
 - `outline` 路径净化（只允许 `[a-zA-Z0-9_-]`）
@@ -222,7 +222,7 @@ ion-worker --mode rpc    → Worker 子进程 (JSONL over stdin/stdout)
 ✅ Memory: call_tool memory_save/search 直调
 ✅ Memory: subscribe 实时收到 memory_saved 事件
 ✅ Subscribe: instance 级事件 (agent_start/text_delta/agent_end)
-✅ plugin_rpc: 插件私有方法 CLI 直调
+✅ extension_rpc: 插件私有方法 CLI 直调
 ✅ transcript: 每句话自动记录到 input.jsonl
 ✅ WASM todo-plugin: build → load → test 全流程
 ```
@@ -402,7 +402,7 @@ let agent = Agent::new(registry, model, system_prompt, tools, config)
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 插件 on_context 注入)
 - ~~on_input 接入~~ ✅ (Memory 插件 on_input 检索)
-- ~~on_plugin_rpc 接入~~ ✅ (Memory 插件 Plugin RPC)
+- ~~on_extension_rpc 接入~~ ✅ (Memory 插件 Plugin RPC)
 - ~~session_before_compact / session_compact 接入~~ ✅
 - ~~thinking_level_select~~ ✅ (已在 run() 中触发)
 - session_before_switch / session_before_fork / session_tree - 后续 (需会话树功能)

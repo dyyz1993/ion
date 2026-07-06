@@ -39,7 +39,7 @@ ion/todo-plugin/                  ← 插件 crate 目录
 **要点：**
 - `#![no_std]` — WASM 环境无标准库
 - `#[panic_handler]` — 必须提供
-- 宿主函数用 `extern "C"` 声明（详见 [PLUGIN_SYSTEM.md](./PLUGIN_SYSTEM.md)）
+- 宿主函数用 `extern "C"` 声明（详见 [EXTENSION_SYSTEM.md](./EXTENSION_SYSTEM.md)）
 - `plugin_version()` / `plugin_init()` / `plugin_execute_tool()` — 三个入口函数
 
 ## 2. Build
@@ -87,7 +87,7 @@ cp target/wasm32-wasip1/release/todo_plugin.wasm <project>/.ion/extensions/
 - global 维度：全局数据，所有项目可见
 - project_local：临时数据，可回收
 
-详见 [PLUGIN_SYSTEM.md](./PLUGIN_SYSTEM.md) 的宿主函数签名。
+详见 [EXTENSION_SYSTEM.md](./EXTENSION_SYSTEM.md) 的宿主函数签名。
 
 ## 5. 测试工作流（核心）
 
@@ -179,6 +179,6 @@ ion rpc --session sess_xxx --method call_tool \
 
 ## 7. 参考
 
-- [PLUGIN_SYSTEM.md](./PLUGIN_SYSTEM.md) — WASM 宿主函数、热更新、4D 存储实现
+- [EXTENSION_SYSTEM.md](./EXTENSION_SYSTEM.md) — WASM 宿主函数、热更新、4D 存储实现
 - [stock-plugin/](./stock-plugin/) — 最小 WASM 插件示例
 - [todo-plugin/](./todo-plugin/) — 完整 TODO 插件（session 维度）

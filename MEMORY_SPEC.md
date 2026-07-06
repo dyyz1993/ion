@@ -7,7 +7,7 @@
 
 ```
 存储维度：project（当前版本只验收 project memory）
-事件推送：PluginEventBus → socket JSONL
+事件推送：ExtensionEventBus → socket JSONL
 生命周期钩子：Extension trait（on_system_prompt / on_input / on_context）
 ```
 
@@ -88,7 +88,7 @@
 - 过滤掉 `archived: true`
 - 返回 JSON 数组字符串
 
-### 3.2 Plugin RPC（通过 `plugin_rpc` 调用）
+### 3.2 Plugin RPC（通过 `extension_rpc` 调用）
 
 返回 JSON 数组或对象（**非字符串**），调用方可直接解析。
 
@@ -105,7 +105,7 @@
 ### 3.3 CLI Subscribe（实时事件流）
 
 ```bash
-ion subscribe --session sess_xxx --plugin memory
+ion subscribe --session sess_xxx --extension memory
 ```
 
 收到的事件格式：
@@ -141,10 +141,10 @@ ion rpc --method create_session --params '{"agent":"developer"}'
 ion rpc --session x --method call_tool --params '{"tool":"memory_save","args":{"content":"...","tags":["..."]}}'
 
 # Plugin RPC（返回 JSON 对象/数组）
-ion rpc --session x --method plugin_rpc --params '{"method":"list","args":{"outline":"auto"}}'
+ion rpc --session x --method extension_rpc --params '{"method":"list","args":{"outline":"auto"}}'
 
 # Subscribe
-ion subscribe --session x --plugin memory
+ion subscribe --session x --extension memory
 
 # 查文件
 find ~/.ion/agent/project-data -path "*/memory/*.json"
@@ -168,8 +168,8 @@ query="" 时返回空数组（不匹配空查询）。
 | 接口 | 返回类型 | 举例 |
 |------|---------|------|
 | `call_tool memory_search` | JSON 字符串（caller 需 `json.loads(output)`） | `"[{\"id\":\"mem_1\"}]"` |
-| `plugin_rpc list/search` | 直接 JSON 数组 | `[{"id":"mem_1"}]` |
-| `plugin_rpc inspect` | 直接 JSON 对象 | `{"id":"mem_1"}` |
+| `extension_rpc list/search` | 直接 JSON 数组 | `[{"id":"mem_1"}]` |
+| `extension_rpc inspect` | 直接 JSON 对象 | `{"id":"mem_1"}` |
 
 ## 6. 生命周期钩子（自动触发）
 
@@ -233,12 +233,12 @@ Agent 启动时自动追加到 system prompt 末尾。
 
 | 模块 | 用例 | 步骤 | 预期 |
 |------|------|------|------|
-| RPC | ping | `plugin_rpc ping` | `{"status":"pong"}` |
+| RPC | ping | `extension_rpc ping` | `{"status":"pong"}` |
 | RPC | list 不存在 outline | `list({outline:"missing"})` | 返回 `[]` |
 | RPC | 空 query | `memory_search(query="")` | 返回 `[]`，不报错 |
 | RPC | 非法 outline | `save(outline="../../x")` | 返回结构化错误 |
-| RPC | list entries | `call_tool memory_save(content="A")` → `plugin_rpc list(outline="auto")` | 返回条目 A |
-| RPC | list index | save → `plugin_rpc list({})` | index 中 auto.entry_count 增加 |
+| RPC | list entries | `call_tool memory_save(content="A")` → `extension_rpc list(outline="auto")` | 返回条目 A |
+| RPC | list index | save → `extension_rpc list({})` | index 中 auto.entry_count 增加 |
 | RPC | search(content) | save(content="喜欢 Rust") → `call_tool memory_search(query="Rust")` | 命中 1 条 |
 | RPC | search(tags) | save(tags=["rust"]) → `call_tool memory_search(query="rust")` | 命中 1 条 |
 | RPC | search(无匹配) | `memory_search(query="不存在的词")` | `[]` |
@@ -258,7 +258,7 @@ Agent 启动时自动追加到 system prompt 末尾。
 
 | 模块 | 用例 | 步骤 | 预期 |
 |------|------|------|------|
-| 事件 | subscribe 过滤 | subscribe `--plugin memory` | 只收到 plugin=memory 事件 |
+| 事件 | subscribe 过滤 | subscribe `--extension memory` | 只收到 plugin=memory 事件 |
 | 事件 | save 事件字段 | subscribe → save → 检查事件 | 含 type/plugin/customType/session/data |
 | 生命周期 | system prompt | save → 新建 session → 看 system prompt | 末尾有 `<memory_outline>` |
 | 生命周期 | 无记忆不注入 | 清空 memory → 新建 session → 看 system prompt | 没有 `<memory_outline>` |

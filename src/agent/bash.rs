@@ -142,7 +142,7 @@ impl Tool for BashRunTool {
         };
         save_process_map_arc(&self.process_map);
 
-        emit_plugin_event("process_started", &serde_json::json!({
+        emit_extension_event("process_started", &serde_json::json!({
             "bid": pid, "command": &command, "description": &description,
             "background": background || timeout_bg, "session": &self.session_id,
         }));
@@ -283,7 +283,7 @@ fn spawn_watcher(
                         // Timeout: flush pending output and continue
                         if !line_buf.is_empty() && last_flush.elapsed().as_secs() >= 1 {
                             let batch = line_buf.join("\n");
-                            emit_plugin_event("process_output", &serde_json::json!({
+                            emit_extension_event("process_output", &serde_json::json!({
                                 "bid": pid, "output": batch, "lines": line_buf.len(),
                             }));
                             line_buf.clear();
@@ -297,7 +297,7 @@ fn spawn_watcher(
         // Flush remaining output
         if !line_buf.is_empty() {
             let batch = line_buf.join("\n");
-            emit_plugin_event("process_output", &serde_json::json!({
+            emit_extension_event("process_output", &serde_json::json!({
                 "bid": pid, "output": batch, "lines": line_buf.len(),
             }));
             line_buf.clear();
@@ -331,7 +331,7 @@ fn spawn_watcher(
         save_process_map_arc(&map);
         nmap.lock().await.remove(&pid);
 
-        emit_plugin_event(event_type, &serde_json::json!({
+        emit_extension_event(event_type, &serde_json::json!({
             "bid": pid, "command": command, "description": description,
             "exit_code": exit_code, "elapsed_secs": elapsed, "log_path": log_path.to_string_lossy(),
             "reason": if exit_code == Some(0) { "completed" } else if exit_code.is_some() { "abnormal" } else { event_type.trim_start_matches("process_") },
@@ -509,7 +509,7 @@ fn parse_pid(params: &serde_json::Value) -> String {
 impl Extension for BashExtension {
     fn name(&self) -> &str { "bash" }
 
-    async fn on_plugin_rpc(&self, method: &str, params: serde_json::Value) -> AgentResult<serde_json::Value> {
+    async fn on_extension_rpc(&self, method: &str, params: serde_json::Value) -> AgentResult<serde_json::Value> {
         match method {
             "list" => {
                 let map = self.process_map.lock().await;
@@ -627,7 +627,7 @@ impl Extension for BashExtension {
                 save_processes(&map);
                 Ok(serde_json::json!({"removed": removed, "bid": bid}))
             }
-            _ => Err(AgentError::Tool(format!("bash plugin_rpc: unknown method {method}"))),
+            _ => Err(AgentError::Tool(format!("bash extension_rpc: unknown method {method}"))),
         }
     }
 }
@@ -640,14 +640,14 @@ fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64
 }
 
-fn emit_plugin_event(event_type: &str, data: &serde_json::Value) {
+fn emit_extension_event(event_type: &str, data: &serde_json::Value) {
     // 注意：Manager 的 stdout 路由只识别 "type":"event"，
     // 所以 plugin_event 需要嵌在 event.type 里才能到达 subscriber
     let msg = serde_json::json!({
         "type": "event",
         "event": {
-            "type": "plugin_event",
-            "plugin": "bash",
+            "type": "extension_event",
+            "extension": "bash",
             "customType": event_type,
             "visibility": "llm_and_ui",
             "data": data,

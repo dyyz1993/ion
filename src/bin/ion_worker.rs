@@ -16,7 +16,7 @@ use tokio::sync::{mpsc, oneshot};
 use ion::agent::agent_loop::{Agent, AgentConfig};
 use ion::agent::compact::CompactConfig;
 use ion::agent::tool::{ReadTool, WriteTool, EditTool, BashTool, GrepTool, FindTool, LsTool, CalculatorTool, EchoTool, GitStatusTool, GitDiffTool, GitLogTool, GitAddTool, GitCommitTool, GitBranchTool, SpawnWorkerTool, SendToWorkerTool, ResumeWorkerTool, AwaitWorkerTool, ChannelSendTool, KillWorkerTool, ToolRegistry};
-use ion::plugin::{PluginRegistry, WasmCallingTool};
+use ion::wasm_extension::{WasmExtensionRegistry, WasmToolAdapter};
 use ion::session_jsonl;
 use ion_provider::registry::ApiRegistry;
 use ion_provider::types::*;
@@ -143,7 +143,7 @@ async fn main() {
     let registry = Arc::new(registry);
 
     // WASM 插件注册表（RPC 热更新用）
-    let plugin_registry = Arc::new(PluginRegistry::new());
+    let wasm_ext_registry = Arc::new(WasmExtensionRegistry::new());
 
     // ── WASM 插件自动发现（Agent 构造前，注册到 tools）──
     // 扫描 ~/.ion/agent/extensions/ 和 {cwd}/.ion/extensions/ 下的 .wasm 文件
@@ -164,17 +164,17 @@ async fn main() {
                         let canonical_str = std::fs::canonicalize(&path)
                             .map(|p| p.to_string_lossy().to_string())
                             .unwrap_or_else(|_| path.to_string_lossy().to_string());
-                        let ext_name = ion::plugin::ext_name_from_path(&canonical_str);
-                        match plugin_registry.add(&canonical_str) {
+                        let ext_name = ion::wasm_extension::ext_name_from_path(&canonical_str);
+                        match wasm_ext_registry.add(&canonical_str) {
                             Ok(tool_defs) => {
                                 for td in &tool_defs {
-                                    tools.register(Box::new(WasmCallingTool {
+                                    tools.register(Box::new(WasmToolAdapter {
                                         name: td.name.clone(),
                                         description: td.description.clone(),
                                         parameters: td.parameters.clone(),
                                         plugin_path: canonical_str.clone(),
                                         ext_name: ext_name.clone(),
-                                        registry: plugin_registry.clone(),
+                                        registry: wasm_ext_registry.clone(),
                                     }));
                                     tracing::info!("[wasm] auto-discovered {ext_name}: {}", td.name);
                                 }
@@ -505,7 +505,7 @@ async fn main() {
                     // 不需要这里再发（避免重复）
                     output(&serde_json::json!({"type":"event","event":{"type":"agent_start","sessionId":sid}}));
                     {
-                        let mut ctx = plugin_registry.ctx.write().unwrap();
+                        let mut ctx = wasm_ext_registry.ctx.write().unwrap();
                         ctx.session_id = sid.clone();
                         ctx.cwd = worker_cwd.clone();
                         ctx.project_root = worker_cwd.clone();
@@ -817,21 +817,21 @@ async fn main() {
                     })),
                 }
             }
-            "plugin_rpc" => {
+            "extension_rpc" => {
                 // 调插件私有 RPC 方法（给 CLI/外部调试用）。
-                // 用于：ion rpc --session <id> --method plugin_rpc
+                // 用于：ion rpc --session <id> --method extension_rpc
                 //   --params '{"method":"ping","args":{}}'
-                //   --params '{"plugin":"bash","method":"list"}'
-                let plugin_name = params.get("plugin").and_then(|v| v.as_str()).unwrap_or("");
+                //   --params '{"extension":"bash","method":"list"}'
+                let extension_name = params.get("extension").and_then(|v| v.as_str()).unwrap_or("");
                 let rpc_method = params.get("method").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let rpc_args = params.get("args").cloned().unwrap_or_default();
-                match agent.plugin_rpc(plugin_name, &rpc_method, rpc_args).await {
-                    Ok(output) => output_response(&id, "plugin_rpc", &serde_json::json!({
+                match agent.extension_rpc(extension_name, &rpc_method, rpc_args).await {
+                    Ok(output) => output_response(&id, "extension_rpc", &serde_json::json!({
                         "method": rpc_method, "output": output,
                     })),
                     Err(e) => output(&serde_json::json!({
                         "type": "response", "id": id, "success": false,
-                        "error": format!("plugin_rpc {rpc_method}: {e}"),
+                        "error": format!("extension_rpc {rpc_method}: {e}"),
                     })),
                 }
             }
@@ -857,28 +857,28 @@ async fn main() {
             }
             "set_follow_up_mode" => output_response(&id, "set_follow_up_mode", &serde_json::Value::Null),
             "reload" => {
-                // Generic reload: reload all loaded plugins
-                let plugins = plugin_registry.list();
-                if plugins.is_empty() {
-                    output_response(&id, "reload", &serde_json::json!({"message": "no plugins loaded"}));
+                // Generic reload: reload all loaded extensions
+                let extensions = wasm_ext_registry.list();
+                if extensions.is_empty() {
+                    output_response(&id, "reload", &serde_json::json!({"message": "no extensions loaded"}));
                 } else {
                     let mut reloaded: Vec<String> = Vec::new();
                     let mut errors: Vec<String> = Vec::new();
-                    for p in &plugins {
-                        match plugin_registry.reload(&p.path) {
+                    for p in &extensions {
+                        match wasm_ext_registry.reload(&p.path) {
                             Ok(tool_defs) => {
                                 // Remove old tools, add new ones
                                 for old_name in &p.tools { agent.remove_tool(old_name); }
                                 let canonical_str = p.path.clone();
-                                let ext_name = ion::plugin::ext_name_from_path(&canonical_str);
+                                let ext_name = ion::wasm_extension::ext_name_from_path(&canonical_str);
                                 for td in &tool_defs {
-                                    agent.register_tool(Box::new(WasmCallingTool {
+                                    agent.register_tool(Box::new(WasmToolAdapter {
                                         name: td.name.clone(),
                                         description: td.description.clone(),
                                         parameters: td.parameters.clone(),
                                         plugin_path: canonical_str.clone(),
                                         ext_name: ext_name.clone(),
-                                        registry: plugin_registry.clone(),
+                                        registry: wasm_ext_registry.clone(),
                                     }));
                                 }
                                 reloaded.push(p.path.clone());
@@ -962,106 +962,106 @@ async fn main() {
             "unregister_remote_tool" => output_response(&id, "unregister_remote_tool", &serde_json::Value::Null),
 
             // ── WASM 插件热更新 ──
-            "plugin_add" => {
+            "extension_add" => {
                 let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
                 if path.is_empty() {
-                    output_error_response(&id, "plugin_add", "missing 'path'");
+                    output_error_response(&id, "extension_add", "missing 'path'");
                     continue;
                 }
                 let canonical = match std::fs::canonicalize(path) {
                     Ok(p) => p,
                     Err(e) => {
-                        output_error_response(&id, "plugin_add", &format!("bad path: {e}"));
+                        output_error_response(&id, "extension_add", &format!("bad path: {e}"));
                         continue;
                     }
                 };
                 let canonical_str = canonical.to_string_lossy().to_string();
 
-                match plugin_registry.add(&canonical_str) {
+                match wasm_ext_registry.add(&canonical_str) {
                     Ok(tool_defs) => {
-                        let ext_name = ion::plugin::ext_name_from_path(&canonical_str);
+                        let ext_name = ion::wasm_extension::ext_name_from_path(&canonical_str);
                         for td in &tool_defs {
-                            agent.register_tool(Box::new(WasmCallingTool {
+                            agent.register_tool(Box::new(WasmToolAdapter {
                                 name: td.name.clone(),
                                 description: td.description.clone(),
                                 parameters: td.parameters.clone(),
                                 plugin_path: canonical_str.clone(),
                                 ext_name: ext_name.clone(),
-                                registry: plugin_registry.clone(),
+                                registry: wasm_ext_registry.clone(),
                             }));
                         }
                         let names: Vec<&str> = tool_defs.iter().map(|t| t.name.as_str()).collect();
-                        output_response(&id, "plugin_add", &serde_json::json!({"tools": names}));
+                        output_response(&id, "extension_add", &serde_json::json!({"tools": names}));
                     }
                     Err(e) => {
-                        output_error_response(&id, "plugin_add", &format!("load failed: {e}"));
+                        output_error_response(&id, "extension_add", &format!("load failed: {e}"));
                     }
                 }
             }
 
-            "plugin_remove" => {
+            "extension_remove" => {
                 let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
                 if path.is_empty() {
-                    output_error_response(&id, "plugin_remove", "missing 'path'");
+                    output_error_response(&id, "extension_remove", "missing 'path'");
                     continue;
                 }
-                match plugin_registry.remove(path) {
+                match wasm_ext_registry.remove(path) {
                     Ok(tool_names) => {
                         for name in &tool_names {
                             agent.remove_tool(name);
                         }
-                        output_response(&id, "plugin_remove", &serde_json::json!({"removed_tools": tool_names}));
+                        output_response(&id, "extension_remove", &serde_json::json!({"removed_tools": tool_names}));
                     }
                     Err(e) => {
-                        output_error_response(&id, "plugin_remove", &e);
+                        output_error_response(&id, "extension_remove", &e);
                     }
                 }
             }
 
-            "plugin_list" => {
-                let plugins = plugin_registry.list();
-                output_response(&id, "plugin_list", &serde_json::json!({"plugins": plugins}));
+            "extension_list" => {
+                let extensions = wasm_ext_registry.list();
+                output_response(&id, "extension_list", &serde_json::json!({"extensions": extensions}));
             }
 
-            "plugin_reload" => {
+            "extension_reload" => {
                 let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
                 if path.is_empty() {
-                    output_error_response(&id, "plugin_reload", "missing 'path'");
+                    output_error_response(&id, "extension_reload", "missing 'path'");
                     continue;
                 }
                 let canonical = match std::fs::canonicalize(path) {
                     Ok(p) => p,
                     Err(e) => {
-                        output_error_response(&id, "plugin_reload", &format!("bad path: {e}"));
+                        output_error_response(&id, "extension_reload", &format!("bad path: {e}"));
                         continue;
                     }
                 };
                 let canonical_str = canonical.to_string_lossy().to_string();
 
                 // 先卸载旧的（如果有）
-                if let Ok(old_tools) = plugin_registry.remove(&canonical_str) {
+                if let Ok(old_tools) = wasm_ext_registry.remove(&canonical_str) {
                     for name in &old_tools { agent.remove_tool(name); }
                 }
 
                 // 重新加载
-                let ext_name = ion::plugin::ext_name_from_path(&canonical_str);
-                match plugin_registry.add(&canonical_str) {
+                let ext_name = ion::wasm_extension::ext_name_from_path(&canonical_str);
+                match wasm_ext_registry.add(&canonical_str) {
                     Ok(tool_defs) => {
                         for td in &tool_defs {
-                            agent.register_tool(Box::new(WasmCallingTool {
+                            agent.register_tool(Box::new(WasmToolAdapter {
                                 name: td.name.clone(),
                                 description: td.description.clone(),
                                 parameters: td.parameters.clone(),
                                 plugin_path: canonical_str.clone(),
                                 ext_name: ext_name.clone(),
-                                registry: plugin_registry.clone(),
+                                registry: wasm_ext_registry.clone(),
                             }));
                         }
                         let names: Vec<&str> = tool_defs.iter().map(|t| t.name.as_str()).collect();
-                        output_response(&id, "plugin_reload", &serde_json::json!({"tools": names}));
+                        output_response(&id, "extension_reload", &serde_json::json!({"tools": names}));
                     }
                     Err(e) => {
-                        output_error_response(&id, "plugin_reload", &format!("reload failed: {e}"));
+                        output_error_response(&id, "extension_reload", &format!("reload failed: {e}"));
                     }
                 }
             }

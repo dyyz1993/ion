@@ -72,7 +72,7 @@ pub struct SessionContext {
 
 #[async_trait]
 pub trait Extension: Send + Sync {
-    /// Optional name for plugin routing (used by plugin_rpc dispatch).
+    /// Optional name for extension routing (used by extension_rpc dispatch).
     fn name(&self) -> &str { "anonymous" }
 
     // ── Session lifecycle (4) ──
@@ -141,16 +141,16 @@ pub trait Extension: Send + Sync {
     /// Called after tree navigation.
     async fn on_session_tree(&self, _leaf_id: &str) -> AgentResult<()> { Ok(()) }
 
-    // ── Plugin RPC ──
+    // ── Extension RPC ──
     /// 插件私有 RPC 方法（给 CLI/外部调试用）。
-    /// 外部通过 `plugin_rpc memory save {...}` 调用此方法。
+    /// 外部通过 `extension_rpc memory save {...}` 调用此方法。
     /// 默认返回 method_not_found，插件覆盖需要的分支。
-    async fn on_plugin_rpc(
+    async fn on_extension_rpc(
         &self,
         _method: &str,
         _params: serde_json::Value,
     ) -> AgentResult<serde_json::Value> {
-        Err(AgentError::Tool("plugin rpc method not found".into()))
+        Err(AgentError::Tool("extension rpc method not found".into()))
     }
 
     // ── Permission (stub) ──
@@ -290,27 +290,27 @@ impl ExtensionRegistry {
         for ext in &self.extensions { ext.on_system_prompt(prompt).await?; } Ok(())
     }
 
-    /// 路由 plugin_rpc 到对应名称的插件。
-    /// 按 `plugin` 名匹配 extension，找到后调 `on_plugin_rpc`。
-    pub async fn plugin_rpc(
+    /// 路由 extension_rpc 到对应名称的扩展。
+    /// 按 `extension` 名匹配 extension，找到后调 `on_extension_rpc`。
+    pub async fn extension_rpc(
         &self,
-        plugin: &str,
+        extension_name: &str,
         method: &str,
         params: serde_json::Value,
     ) -> AgentResult<serde_json::Value> {
         for ext in &self.extensions {
-            // 如果指定了插件名，只调匹配的 extension
-            if !plugin.is_empty() && ext.name() != plugin {
+            // 如果指定了扩展名，只调匹配的 extension
+            if !extension_name.is_empty() && ext.name() != extension_name {
                 continue;
             }
-            let result = ext.on_plugin_rpc(method, params.clone()).await;
+            let result = ext.on_extension_rpc(method, params.clone()).await;
             match result {
                 Ok(v) => return Ok(v),
-                Err(AgentError::Tool(ref msg)) if msg == "plugin rpc method not found" => continue,
+                Err(AgentError::Tool(ref msg)) if msg == "extension rpc method not found" => continue,
                 Err(e) => return Err(e),
             }
         }
-        Err(AgentError::Tool(format!("plugin '{plugin}' not found or method '{method}' not implemented")))
+        Err(AgentError::Tool(format!("extension '{extension_name}' not found or method '{method}' not implemented")))
     }
 }
 

@@ -257,7 +257,7 @@ enum Commands {
         session: Option<String>,
         /// Plugin name to filter (omit for all events)
         #[arg(long)]
-        plugin: Option<String>,
+        extension: Option<String>,
     },
     /// List all sessions with stats
     Sessions,
@@ -656,7 +656,7 @@ async fn cmd_run(
     let mut tools = build_tools(eff);
 
     // WASM plugin registry (hot‑pluggable — used by worker RPC too)
-    let plugin_registry = std::sync::Arc::new(ion::plugin::PluginRegistry::new());
+    let wasm_ext_registry = std::sync::Arc::new(ion::wasm_extension::WasmExtensionRegistry::new());
 
     // ── WASM 插件自动发现（优先于 --extension）──
     // 扫描 ~/.ion/agent/extensions/ 和 {cwd}/.ion/extensions/ 下的 .wasm 文件
@@ -677,17 +677,17 @@ async fn cmd_run(
                         let canonical = std::fs::canonicalize(&path)
                             .unwrap_or_else(|_| path.to_path_buf());
                         let canonical_str = canonical.to_string_lossy().to_string();
-                        let ext_name = ion::plugin::ext_name_from_path(&canonical_str);
-                        match plugin_registry.add(&canonical_str) {
+                        let ext_name = ion::wasm_extension::ext_name_from_path(&canonical_str);
+                        match wasm_ext_registry.add(&canonical_str) {
                             Ok(tool_defs) => {
                                 for td in &tool_defs {
-                                    tools.register(Box::new(ion::plugin::WasmCallingTool {
+                                    tools.register(Box::new(ion::wasm_extension::WasmToolAdapter {
                                         name: td.name.clone(),
                                         description: td.description.clone(),
                                         parameters: td.parameters.clone(),
                                         plugin_path: canonical_str.clone(),
                                         ext_name: ext_name.clone(),
-                                        registry: plugin_registry.clone(),
+                                        registry: wasm_ext_registry.clone(),
                                     }));
                                     tracing::info!("[wasm] auto-discovered {ext_name}: {}", td.name);
                                 }
@@ -706,23 +706,23 @@ async fn cmd_run(
     for ext_path in &eff.extension {
         if ext_path.ends_with(".wasm") {
             let abs = std::path::Path::new(ext_path);
-            // Determine canonical path before calling plugin_registry.add(),
-            // so WasmCallingTool holds the canonicalised path.
+            // Determine canonical path before calling wasm_ext_registry.add(),
+            // so WasmToolAdapter holds the canonicalised path.
             let canonical = std::fs::canonicalize(abs)
                 .unwrap_or_else(|_| abs.to_path_buf());
             let canonical_str = canonical.to_string_lossy().to_string();
 
-            match plugin_registry.add(&canonical_str) {
+            match wasm_ext_registry.add(&canonical_str) {
                 Ok(tool_defs) => {
-                    let ext_name = ion::plugin::ext_name_from_path(&canonical_str);
+                    let ext_name = ion::wasm_extension::ext_name_from_path(&canonical_str);
                     for td in &tool_defs {
-                        tools.register(Box::new(ion::plugin::WasmCallingTool {
+                        tools.register(Box::new(ion::wasm_extension::WasmToolAdapter {
                             name: td.name.clone(),
                             description: td.description.clone(),
                             parameters: td.parameters.clone(),
                             plugin_path: canonical_str.clone(),
                             ext_name: ext_name.clone(),
-                            registry: plugin_registry.clone(),
+                            registry: wasm_ext_registry.clone(),
                         }));
                         tracing::info!("[wasm] registered tool: {} (WASM-backed)", td.name);
                     }
@@ -836,7 +836,7 @@ async fn cmd_run(
     // Inject session context into the plugin registry so WASM plugin data
     // host functions know where to read/write.
     {
-        let mut ctx = plugin_registry.ctx.write().unwrap();
+        let mut ctx = wasm_ext_registry.ctx.write().unwrap();
         ctx.session_id = session_id.to_string();
         ctx.cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
@@ -1125,7 +1125,7 @@ async fn cmd_rpc(session: Option<&str>, method: &str, params: &str) {
 
 /// Subscribe to real-time events from a session or plugin.
 /// Connects to Manager socket, sends subscribe, prints events line by line.
-async fn cmd_subscribe(session: Option<&str>, plugin: Option<&str>) {
+async fn cmd_subscribe(session: Option<&str>, extension: Option<&str>) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     let sock_path = ion::paths::manager_socket_path();
@@ -1139,7 +1139,7 @@ async fn cmd_subscribe(session: Option<&str>, plugin: Option<&str>) {
 
     let mut req = serde_json::json!({"method": "subscribe"});
     if let Some(sid) = session { req["session"] = serde_json::json!(sid); }
-    if let Some(p) = plugin { req["plugin"] = serde_json::json!(p); }
+    if let Some(p) = extension { req["extension"] = serde_json::json!(p); }
 
     let req_line = format!("{req}\n");
     if stream.write_all(req_line.as_bytes()).await.is_err() {
@@ -1470,7 +1470,7 @@ async fn main() {
             cmd_rpc(session.as_deref(), method, params).await;
         }
         Some(Commands::Sessions) => cmd_sessions().await,
-        Some(Commands::Subscribe { session, plugin }) => cmd_subscribe(session.as_deref(), plugin.as_deref()).await,
+        Some(Commands::Subscribe { session, extension }) => cmd_subscribe(session.as_deref(), extension.as_deref()).await,
         Some(Commands::ListAgents) => cmd_list_agents().await,
         Some(Commands::ListModels { search }) => cmd_list_models(search).await,
         None => {
@@ -1496,7 +1496,7 @@ async fn cmd_manager_start(
     use ion::worker_registry::{WorkerCreateConfig, WorkerRegistry};
 
     let registry = Arc::new(Mutex::new(WorkerRegistry::new()));
-    let event_bus = Arc::new(tokio::sync::Mutex::new(ion::event_bus::PluginEventBus::new()));
+    let event_bus = Arc::new(tokio::sync::Mutex::new(ion::event_bus::ExtensionEventBus::new()));
 
     // ── Manager 单例检查 + Unix socket 启动 ──
     // PID 文件防重复启动；Unix socket 让外部 `ion rpc` 能连进来。
@@ -1556,10 +1556,10 @@ async fn cmd_manager_start(
 
                                 // ── Stream mode: subscribe ──
                                 if method == "subscribe" {
-                                    let plugin = cmd.get("plugin").and_then(|v| v.as_str()).unwrap_or("");
+                                    let extension = cmd.get("extension").and_then(|v| v.as_str()).unwrap_or("");
                                     let session = cmd.get("session").and_then(|v| v.as_str()).map(|s| s.to_string());
 
-                                    if plugin.is_empty() && session.is_some() {
+                                    if extension.is_empty() && session.is_some() {
                                         // ── Instance subscribe：订阅 worker 原始事件流 ──
                                         // 无 --plugin 有 --session → 收 text_delta / agent_start / agent_end 等
                                         let sid = session.as_ref().unwrap();
@@ -1603,11 +1603,11 @@ async fn cmd_manager_start(
 
                                     // ── Plugin subscribe：通过 EventBus ──
                                     let mut bus = ev_bus.lock().await;
-                                    let rx = if !plugin.is_empty() {
+                                    let rx = if !extension.is_empty() {
                                         if let Some(ref sid) = session {
-                                            bus.subscribe_with_session(plugin, sid)
+                                            bus.subscribe_with_session(extension, sid)
                                         } else {
-                                            bus.subscribe(plugin)
+                                            bus.subscribe(extension)
                                         }
                                     } else {
                                         bus.subscribe_all()
@@ -1616,7 +1616,7 @@ async fn cmd_manager_start(
                                     // 返回 subscribed ack
                                     let ack = serde_json::json!({
                                         "type":"subscribed",
-                                        "plugin": plugin,
+                                        "extension": extension,
                                         "session": session,
                                     });
                                     let _ = write_half.write_all(format!("{ack}\n").as_bytes()).await;
@@ -1628,8 +1628,8 @@ async fn cmd_manager_start(
                                         match rx.recv().await {
                                             Some(event) => {
                                                 let msg = serde_json::json!({
-                                                    "type": "plugin_event",
-                                                    "plugin": event.plugin,
+                                                    "type": "extension_event",
+                                                    "extension": event.plugin,
                                                     "customType": event.custom_type,
                                                     "session": event.session,
                                                     "persisted": event.persisted,
@@ -1798,17 +1798,17 @@ async fn cmd_manager_start(
             for (wid, (session_id, rx)) in subs.iter_mut() {
 	                while let Ok(msg) = rx.try_recv() {
                         let mtype = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                        // ── PluginEvent → 广播到 EventBus ──
-                        if mtype == "plugin_event" {
+                        // ── ExtensionEvent → 广播到 EventBus ──
+                        if mtype == "extension_event" {
                             let ev = msg.clone();
                             let mut bus = pump_event_bus.lock().await;
-                            let plugin = ev.get("plugin").and_then(|v| v.as_str()).unwrap_or("unknown");
+                            let extension = ev.get("extension").and_then(|v| v.as_str()).unwrap_or("unknown");
                             let ct = ev.get("customType").and_then(|v| v.as_str()).unwrap_or("");
                             let data = ev.get("data").cloned().unwrap_or_default();
                             let ev_session = ev.get("session").and_then(|v| v.as_str());
-                            let mut event = ion::event_bus::PluginEvent::new(plugin, ct).with_data(data);
+                            let mut event = ion::event_bus::ExtensionEvent::new(extension, ct).with_data(data);
                             if let Some(s) = ev_session { event = event.with_session(s); }
-                            eprintln!("[debug] broadcasting plugin_event: {} {} session={:?}", plugin, ct, ev_session);
+                            eprintln!("[debug] broadcasting extension_event: {} {} session={:?}", extension, ct, ev_session);
                             bus.broadcast(&event);
                         }
                         if mtype == "response" {

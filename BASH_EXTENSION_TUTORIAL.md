@@ -164,23 +164,23 @@ Bash 插件是内核内置的进程执行引擎，支持前台同步 / 后台异
 
 ```bash
 # 进程列表
-ion rpc --session <SID> --method plugin_rpc \
+ion rpc --session <SID> --method extension_rpc \
   --params '{"plugin":"bash","method":"list"}'
 
 # 查看进程详情（含 tail 输出）
-ion rpc --session <SID> --method plugin_rpc \
+ion rpc --session <SID> --method extension_rpc \
   --params '{"plugin":"bash","method":"inspect","args":{"bid":"100000","tail":50}}'
 
 # 杀死进程
-ion rpc --session <SID> --method plugin_rpc \
+ion rpc --session <SID> --method extension_rpc \
   --params '{"plugin":"bash","method":"kill","args":{"bid":"100000"}}'
 
 # 发送 stdin
-ion rpc --session <SID> --method plugin_rpc \
+ion rpc --session <SID> --method extension_rpc \
   --params '{"plugin":"bash","method":"send","args":{"bid":"100000","input":"Y"}}'
 
 # 清理已结束进程
-ion rpc --session <SID> --method plugin_rpc \
+ion rpc --session <SID> --method extension_rpc \
   --params '{"plugin":"bash","method":"clean"}'
 ```
 
@@ -378,7 +378,7 @@ ion subscribe --session $SID
 
 # Bash
 ion rpc --session $SID --method call_tool --params '{"tool":"bash_run","args":{"command":"ls","background":true}}'
-ion rpc --session $SID --method plugin_rpc --params '{"plugin":"bash","method":"list"}'
+ion rpc --session $SID --method extension_rpc --params '{"plugin":"bash","method":"list"}'
 
 # Session
 ion rpc --session $SID --method get_messages

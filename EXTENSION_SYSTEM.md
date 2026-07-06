@@ -89,25 +89,25 @@ WasmCallingTool ─→ PluginRegistry ─→ HashMap<path, Arc<Mutex<WasmPlugin>
                                                      LLM 调用时临时持有
 ```
 
-**核心原理：** 当 `plugin_remove` 时，旧的 `Arc<Mutex<WasmPlugin>>` 从 HashMap 移除。如果此时没有 tool 正在执行，Arc 降为 0，`WasmPlugin` 及其 `wasmtime::Store` 立即释放。如有 tool 正在执行，该 tool 的执行闭包持有临时的 Arc.clone()，执行完即释放。
+**核心原理：** 当 `extension_remove` 时，旧的 `Arc<Mutex<WasmPlugin>>` 从 HashMap 移除。如果此时没有 tool 正在执行，Arc 降为 0，`WasmPlugin` 及其 `wasmtime::Store` 立即释放。如有 tool 正在执行，该 tool 的执行闭包持有临时的 Arc.clone()，执行完即释放。
 
 ### 对比 PI
 
 | 方面 | ION | PI |
 |------|-----|----|
 | reload 粒度 | **插件级**（不重建会话） | 全量会话重建（shutdown → reload → session_start） |
-| 注册/反注册 | `registerProvider` / `unregisterProvider`（runner.ts:460） | `plugin_add` / `plugin_remove` |
+| 注册/反注册 | `registerProvider` / `unregisterProvider`（runner.ts:460） | `extension_add` / `extension_remove` |
 | 即时生效 | ✅ 命令间天然串行，修改即时生效 | ✅ same |
 | 状态持久化 | 通过 4 维数据宿主函数（插件自主读写） | 通过 `getSessionDataDir` 等路径 API |
 
 ### RPC 命令
 
 ```
-plugin_add     加载一个 .wasm 文件到注册表
-plugin_remove  卸载并释放插件
-plugin_reload  重新加载（移除旧 + 添加新）
-plugin_list    列出所有已加载的插件及工具
-reload         通用 reload（遍历所有已加载插件执行 plugin_reload）
+extension_add     加载一个 .wasm 文件到注册表
+extension_remove  卸载并释放插件
+extension_reload  重新加载（移除旧 + 添加新）
+extension_list    列出所有已加载的插件及工具
+reload         通用 reload（遍历所有已加载插件执行 extension_reload）
 ```
 
 ---
@@ -307,7 +307,7 @@ cargo build --target wasm32-wasip1 --release
 ion --extension ./target/wasm32-wasip1/release/my_plugin.wasm "帮我执行 my_tool"
 
 # Worker 模式 — 运行中热加载
-echo '{"id":"1","method":"plugin_add","params":{"path":"/abs/to/my_plugin.wasm"}}' |
+echo '{"id":"1","method":"extension_add","params":{"path":"/abs/to/my_plugin.wasm"}}' |
   ion-worker --mode rpc
 ```
 
@@ -324,5 +324,5 @@ echo '{"id":"1","method":"plugin_add","params":{"path":"/abs/to/my_plugin.wasm"}
 | `stock-plugin/src/lib.rs` | 最简单的 WASM 插件示例 |
 | `todo-plugin/src/lib.rs` | 有状态的 WASM 插件示例 |
 | `plan-plugin/src/lib.rs` | PRD 计划模式 WASM 插件 |
-| `src/bin/ion_worker.rs` | RPC 命令 dispatch（含 plugin_add/remove/list/reload） |
+| `src/bin/ion_worker.rs` | RPC 命令 dispatch（含 extension_add/remove/list/reload） |
 | `tests/plugin_tests.rs` | 27 个插件测试 |

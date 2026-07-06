@@ -93,23 +93,23 @@ ion rpc --session x --method call_tool \
 ### Plugin RPC（调插件私有方法）
 
 ```bash
-ion rpc --session x --method plugin_rpc \
+ion rpc --session x --method extension_rpc \
   --params '{"method":"ping"}'
 # → {"status":"pong","plugin":"memory"}
 
-ion rpc --session x --method plugin_rpc \
+ion rpc --session x --method extension_rpc \
   --params '{"method":"save","args":{"content":"...","tags":["a"]}}'
 
-ion rpc --session x --method plugin_rpc \
+ion rpc --session x --method extension_rpc \
   --params '{"method":"list","args":{"outline":"preferences"}}'
 
-ion rpc --session x --method plugin_rpc \
+ion rpc --session x --method extension_rpc \
   --params '{"method":"search","args":{"query":"rust"}}'
 
-ion rpc --session x --method plugin_rpc \
+ion rpc --session x --method extension_rpc \
   --params '{"method":"forget","args":{"id":"mem_1","outline":"auto"}}'
 
-ion rpc --session x --method plugin_rpc \
+ion rpc --session x --method extension_rpc \
   --params '{"method":"inspect","args":{"id":"mem_1"}}'
 ```
 
@@ -177,7 +177,7 @@ ion subscribe --session sess_xxx
 ### Plugin subscribe（看插件事件）
 
 ```bash
-ion subscribe --session sess_xxx --plugin memory
+ion subscribe --session sess_xxx --extension memory
 # Ctrl+C 断开
 ```
 
@@ -213,7 +213,7 @@ ion subscribe --session sess_xxx --plugin memory
 ion manager start
 
 # Terminal 2: 订阅 Memory 事件
-ion subscribe --session sess_xxx --plugin memory
+ion subscribe --session sess_xxx --extension memory
 
 # Terminal 3: 操作
 ion rpc --method create_session --params '{"agent":"developer"}'
@@ -277,7 +277,7 @@ rpcSocket.send({method:'call_tool', session:'sess_xxx', params:{tool:'memory_sav
 | `ion rpc --method create_session` | 建会话 |
 | `ion rpc --session x --method get_messages` | 读消息 |
 | `ion rpc --session x --method call_tool` | 调工具 |
-| `ion rpc --session x --method plugin_rpc` | 调插件 |
+| `ion rpc --session x --method extension_rpc` | 调插件 |
 | `ion rpc --session x --method prompt` | 跑 LLM |
 | `ion subscribe --session x` | 看会话流 |
-| `ion subscribe --session x --plugin memory` | 看插件事件 |
+| `ion subscribe --session x --extension memory` | 看插件事件 |

@@ -3,7 +3,7 @@ use tokio::sync::mpsc;
 
 /// Worker creation config for plugins.
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
-pub struct PluginWorkerConfig {
+pub struct ExtensionWorkerConfig {
     pub session: Option<String>,
     pub model: Option<String>,
     pub provider: Option<String>,
@@ -13,7 +13,7 @@ pub struct PluginWorkerConfig {
 
 /// Worker info returned after creation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PluginWorkerInfo {
+pub struct ExtensionWorkerInfo {
     pub worker_id: String,
     pub session_id: String,
 }
@@ -101,14 +101,14 @@ pub enum ManagerCommand {
         msg: serde_json::Value,
     },
     CreateWorker {
-        config: PluginWorkerConfig,
-        reply: tokio::sync::oneshot::Sender<PluginWorkerInfo>,
+        config: ExtensionWorkerConfig,
+        reply: tokio::sync::oneshot::Sender<ExtensionWorkerInfo>,
     },
 }
 
 /// ExtensionApi — the API available to plugins running inside a Worker.
 ///
-/// Plugins use this to:
+/// Extensions use this to:
 /// - Create child Workers
 /// - Send messages to other Workers
 /// - Subscribe to events
@@ -146,7 +146,7 @@ impl ExtensionApi {
     }
 
     /// Create a child Worker. Returns a WorkerHandle.
-    pub async fn create_worker(&self, config: PluginWorkerConfig) -> Result<WorkerHandle, String> {
+    pub async fn create_worker(&self, config: ExtensionWorkerConfig) -> Result<WorkerHandle, String> {
         let (reply, rx) = tokio::sync::oneshot::channel();
         self.manager_tx.send(ManagerCommand::CreateWorker {
             config, reply,
@@ -185,10 +185,10 @@ impl ExtensionApi {
 
     /// 发射一条插件事件（通过 stdout → Manager EventBus → subscriber）。
     /// 插件只管 emit，不碰传输层。
-    pub fn emit_plugin_event(&self, event: crate::event_bus::PluginEvent) {
+    pub fn emit_extension_event(&self, event: crate::event_bus::ExtensionEvent) {
         let msg = serde_json::json!({
-            "type": "plugin_event",
-            "plugin": event.plugin,
+            "type": "extension_event",
+            "extension": event.plugin,
             "customType": event.custom_type,
             "session": event.session,
             "visibility": match event.visibility {

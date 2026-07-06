@@ -11,7 +11,7 @@ pub mod ids;
 pub mod types;
 
 pub mod manager;
-pub mod plugin;
+pub mod wasm_extension;
 pub mod rpc;
 pub mod runtime;
 pub mod pool;

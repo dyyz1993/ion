@@ -17,7 +17,7 @@ use crate::paths;
 const DATA_OFFSET: u32 = 100_000; // 100 KB — past HEAP, before stack
 
 // ---------------------------------------------------------------------------
-// PluginContext — injected into the WASM store so host functions know where
+// WasmExtensionContext — injected into the WASM store so host functions know where
 // to read/write plugin data files.
 // ---------------------------------------------------------------------------
 
@@ -26,18 +26,18 @@ const DATA_OFFSET: u32 = 100_000; // 100 KB — past HEAP, before stack
 /// Host functions (`host_write_global_data`, etc.) read this from the
 /// `Caller` to determine file paths for the four storage dimensions.
 #[derive(Clone, Debug)]
-pub struct PluginContext {
+pub struct WasmExtensionContext {
     /// Current session ID (used for session-level data paths).
     pub session_id: String,
     /// Current working directory (used for session/project paths).
     pub cwd: String,
     /// Project root directory (used for project-local paths).
     pub project_root: String,
-    /// Plugin extension name (the subdirectory name inside each data dir).
+    /// Extension name (the subdirectory name inside each data dir).
     pub ext_name: String,
 }
 
-impl Default for PluginContext {
+impl Default for WasmExtensionContext {
     fn default() -> Self {
         Self {
             session_id: String::new(),
@@ -49,34 +49,34 @@ impl Default for PluginContext {
 }
 
 // ---------------------------------------------------------------------------
-// WasmPlugin
+// WasmExtension
 // ---------------------------------------------------------------------------
 
 /// A loaded WASM plugin instance with registered tools.
 #[allow(dead_code)]
-pub struct WasmPlugin {
+pub struct WasmExtension {
     engine: Engine,
-    store: Store<PluginContext>,
+    store: Store<WasmExtensionContext>,
     instance: wasmtime::Instance,
     memory: Memory,
     /// Tools registered by the plugin during init.
-    pub tools: Vec<PluginToolDef>,
+    pub tools: Vec<WasmToolDef>,
     /// Version number returned by plugin_version().
     pub version: u32,
 }
 
 #[derive(Clone)]
-pub struct PluginToolDef {
+pub struct WasmToolDef {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
 }
 
-impl WasmPlugin {
+impl WasmExtension {
     pub fn load(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let engine = Engine::default();
         let module = Module::from_file(&engine, path)?;
-        let mut store = Store::new(&engine, PluginContext::default());
+        let mut store = Store::new(&engine, WasmExtensionContext::default());
         let mut linker = Linker::new(&engine);
 
         // Use 16 pages (1 MB) initial memory. The shared data area at
@@ -84,13 +84,13 @@ impl WasmPlugin {
         // (max ~80 KB) and well within the addressable range.
         let memory = Memory::new(&mut store, MemoryType::new(16, None))?;
 
-        let tools_registered: Arc<Mutex<Vec<PluginToolDef>>> =
+        let tools_registered: Arc<Mutex<Vec<WasmToolDef>>> =
             Arc::new(Mutex::new(Vec::new()));
         let tools = tools_registered.clone();
 
     // ── Host: register_tool ──────────────────────────────────────────────
     linker.func_wrap("env", "host_register_tool",
-        move |mut caller: wasmtime::Caller<'_, PluginContext>,
+        move |mut caller: wasmtime::Caller<'_, WasmExtensionContext>,
               name_ptr: u32, name_len: u32,
               desc_ptr: u32, desc_len: u32,
               schema_ptr: u32, schema_len: u32| {
@@ -99,14 +99,14 @@ impl WasmPlugin {
                 let schema_str = mem_read_str(&mut caller, schema_ptr, schema_len);
                 let params = serde_json::from_str(&schema_str).unwrap_or_default();
                 if let Ok(mut t) = tools.lock() {
-                    t.push(PluginToolDef { name, description: desc, parameters: params });
+                    t.push(WasmToolDef { name, description: desc, parameters: params });
                 }
             }
     )?;
 
     // ── Host: send_message ──────────────────────────────────────────────
     linker.func_wrap("env", "host_send_message",
-        |mut caller: wasmtime::Caller<'_, PluginContext>,
+        |mut caller: wasmtime::Caller<'_, WasmExtensionContext>,
          msg_ptr: u32, msg_len: u32| {
             if msg_len == 0 { return; }
             let msg = mem_read_str(&mut caller, msg_ptr, msg_len);
@@ -121,7 +121,7 @@ impl WasmPlugin {
 
     // ── Host: channel_send ──────────────────────────────────────────────
     linker.func_wrap("env", "host_channel_send",
-        |mut caller: wasmtime::Caller<'_, PluginContext>,
+        |mut caller: wasmtime::Caller<'_, WasmExtensionContext>,
          ch_ptr: u32, ch_len: u32,
          msg_ptr: u32, msg_len: u32| {
             let channel = mem_read_str(&mut caller, ch_ptr, ch_len);
@@ -138,7 +138,7 @@ impl WasmPlugin {
 
     // ── Host: create_worker ─────────────────────────────────────────────
     linker.func_wrap("env", "host_create_worker",
-        |mut caller: wasmtime::Caller<'_, PluginContext>,
+        |mut caller: wasmtime::Caller<'_, WasmExtensionContext>,
          cfg_ptr: u32, cfg_len: u32| -> u32 {
             if cfg_len == 0 { return 0; }
             let cfg_str = mem_read_str(&mut caller, cfg_ptr, cfg_len);
@@ -154,7 +154,7 @@ impl WasmPlugin {
 
     // ── Host: memcmp ────────────────────────────────────────────────────
     linker.func_wrap("env", "memcmp",
-        |mut caller: wasmtime::Caller<'_, PluginContext>,
+        |mut caller: wasmtime::Caller<'_, WasmExtensionContext>,
          ptr1: u32, ptr2: u32, n: u32| -> i32 {
                 let mem = match caller.get_export("memory") {
                     Some(wasmtime::Extern::Memory(m)) => m,
@@ -221,7 +221,7 @@ impl WasmPlugin {
     }
 
     /// Inject a new context into the WASM store (called before tool execution).
-    pub fn set_context(&mut self, ctx: &PluginContext) {
+    pub fn set_context(&mut self, ctx: &WasmExtensionContext) {
         *self.store.data_mut() = ctx.clone();
     }
 
@@ -252,12 +252,12 @@ impl WasmPlugin {
 }
 
 // ---------------------------------------------------------------------------
-// PluginContext injection helpers
+// WasmExtensionContext injection helpers
 // ---------------------------------------------------------------------------
 
-/// Return a `PluginContext` with the registry's shared context + the given ext_name.
-/// This is what `WasmCallingTool::execute()` uses before calling the plugin.
-pub fn make_exec_context(registry_ctx: &PluginContext, ext_name: &str) -> PluginContext {
+/// Return a `WasmExtensionContext` with the registry's shared context + the given ext_name.
+/// This is what `WasmToolAdapter::execute()` uses before calling the plugin.
+pub fn make_exec_context(registry_ctx: &WasmExtensionContext, ext_name: &str) -> WasmExtensionContext {
     let mut ctx = registry_ctx.clone();
     ctx.ext_name = ext_name.to_string();
     ctx
@@ -276,19 +276,19 @@ pub fn ext_name_from_path(canonical_path: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// PluginRegistry — central registry for hot-pluggable WASM plugin instances
+// WasmExtensionRegistry — central registry for hot-pluggable WASM plugin instances
 // ---------------------------------------------------------------------------
 
-/// Information about a loaded plugin, returned by [`PluginRegistry::list()`].
+/// Information about a loaded plugin, returned by [`WasmExtensionRegistry::list()`].
 #[derive(Clone, Debug, Serialize)]
-pub struct PluginInfo {
+pub struct WasmExtensionInfo {
     pub path: String,
     pub version: u32,
     pub tools: Vec<String>,
 }
 
-struct PluginEntry {
-    plugin: Arc<Mutex<WasmPlugin>>,
+struct WasmExtensionEntry {
+    plugin: Arc<Mutex<WasmExtension>>,
     version: u32,
     tool_names: Vec<String>,
     canonical_path: String,
@@ -297,21 +297,21 @@ struct PluginEntry {
 
 /// Central registry for WASM plugin instances with hot‑reload support.
 ///
-/// Each loaded plugin is wrapped in `Arc<Mutex<WasmPlugin>>`. `WasmCallingTool`
+/// Each loaded plugin is wrapped in `Arc<Mutex<WasmExtension>>`. `WasmToolAdapter`
 /// holds a reference to the registry + canonical path, so add/remove/reload
 /// swap out the underlying instance without invalidating tool references.
-pub struct PluginRegistry {
-    plugins: RwLock<HashMap<String, PluginEntry>>,
+pub struct WasmExtensionRegistry {
+    plugins: RwLock<HashMap<String, WasmExtensionEntry>>,
     /// Shared session-level context (cwd, session_id, project_root).
     /// Updated from outside (CLI / Worker) before each prompt execution.
-    pub ctx: RwLock<PluginContext>,
+    pub ctx: RwLock<WasmExtensionContext>,
 }
 
-impl PluginRegistry {
+impl WasmExtensionRegistry {
     pub fn new() -> Self {
         Self {
             plugins: RwLock::new(HashMap::new()),
-            ctx: RwLock::new(PluginContext::default()),
+            ctx: RwLock::new(WasmExtensionContext::default()),
         }
     }
 
@@ -319,17 +319,17 @@ impl PluginRegistry {
     ///
     /// If the path was already registered, the old instance is replaced.
     /// Returns the tool definitions that should be registered in `ToolRegistry`.
-    pub fn add(&self, path: &str) -> Result<Vec<PluginToolDef>, Box<dyn std::error::Error>> {
+    pub fn add(&self, path: &str) -> Result<Vec<WasmToolDef>, Box<dyn std::error::Error>> {
         let canonical = std::fs::canonicalize(path)?;
         let canonical_str = canonical.to_string_lossy().to_string();
 
-        let plugin = WasmPlugin::load(&canonical)?;
+        let plugin = WasmExtension::load(&canonical)?;
         let version = plugin.version;
         let tool_defs = plugin.tools.clone();
         let tool_names: Vec<String> = tool_defs.iter().map(|t| t.name.clone()).collect();
         let ext_name = ext_name_from_path(&canonical_str);
 
-        let entry = PluginEntry {
+        let entry = WasmExtensionEntry {
             plugin: Arc::new(Mutex::new(plugin)),
             version,
             tool_names,
@@ -356,7 +356,7 @@ impl PluginRegistry {
     }
 
     /// Reload a plugin from disk (re‑initialize the WASM module).
-    pub fn reload(&self, path: &str) -> Result<Vec<PluginToolDef>, Box<dyn std::error::Error>> {
+    pub fn reload(&self, path: &str) -> Result<Vec<WasmToolDef>, Box<dyn std::error::Error>> {
         let canonical = std::fs::canonicalize(path)?;
         let canonical_str = canonical.to_string_lossy().to_string();
         let _ = self.plugins.write().unwrap().remove(&canonical_str);
@@ -364,10 +364,10 @@ impl PluginRegistry {
     }
 
     /// List all currently loaded plugins.
-    pub fn list(&self) -> Vec<PluginInfo> {
+    pub fn list(&self) -> Vec<WasmExtensionInfo> {
         let map = self.plugins.read().unwrap();
         map.values()
-            .map(|entry| PluginInfo {
+            .map(|entry| WasmExtensionInfo {
                 path: entry.canonical_path.clone(),
                 version: entry.version,
                 tools: entry.tool_names.clone(),
@@ -382,22 +382,22 @@ impl PluginRegistry {
     }
 
     /// Lookup an `Arc` to a plugin by its canonical path.
-    pub fn get_plugin(&self, canonical_path: &str) -> Option<Arc<Mutex<WasmPlugin>>> {
+    pub fn get_plugin(&self, canonical_path: &str) -> Option<Arc<Mutex<WasmExtension>>> {
         let map = self.plugins.read().ok()?;
         map.get(canonical_path).map(|entry| entry.plugin.clone())
     }
 }
 
 // ---------------------------------------------------------------------------
-// WasmCallingTool — routes LLM tool calls to WASM plugin execution
+// WasmToolAdapter — routes LLM tool calls to WASM plugin execution
 // ---------------------------------------------------------------------------
 
-/// A tool whose execution is routed back to a WASM plugin via [`PluginRegistry`].
+/// A tool whose execution is routed back to a WASM plugin via [`WasmExtensionRegistry`].
 ///
 /// Before each execution the shared context (`registry.ctx`) is merged with
 /// the tool‑specific `ext_name` and injected into the WASM store, so that
 /// data‑oriented host functions (write/read/delete/list) can compute paths.
-pub struct WasmCallingTool {
+pub struct WasmToolAdapter {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
@@ -406,11 +406,11 @@ pub struct WasmCallingTool {
     /// Extension name derived from the plugin path (used for data dirs).
     pub ext_name: String,
     /// Shared registry to look up the current plugin instance and context.
-    pub registry: Arc<PluginRegistry>,
+    pub registry: Arc<WasmExtensionRegistry>,
 }
 
 #[async_trait]
-impl Tool for WasmCallingTool {
+impl Tool for WasmToolAdapter {
     fn name(&self) -> &str { &self.name }
     fn description(&self) -> &str { &self.description }
     fn parameters(&self) -> serde_json::Value { self.parameters.clone() }
@@ -436,7 +436,7 @@ impl Tool for WasmCallingTool {
 // WASM memory helpers
 // ---------------------------------------------------------------------------
 
-type WasmCaller<'a> = wasmtime::Caller<'a, PluginContext>;
+type WasmCaller<'a> = wasmtime::Caller<'a, WasmExtensionContext>;
 
 fn mem_get(caller: &mut WasmCaller) -> Option<wasmtime::Memory> {
     match caller.get_export("memory") {
@@ -479,9 +479,9 @@ fn mem_read_bytes(caller: &mut WasmCaller, ptr: u32, len: u32) -> Vec<u8> {
 /// - `host_delete_{dim}_data(key_ptr, key_len) -> u32`
 /// - `host_list_{dim}_data(out_buf, out_capacity) -> u32`
 fn register_dim(
-    linker: &mut Linker<PluginContext>,
+    linker: &mut Linker<WasmExtensionContext>,
     dim_name: String,
-    dir_fn: fn(&PluginContext) -> std::path::PathBuf,
+    dir_fn: fn(&WasmExtensionContext) -> std::path::PathBuf,
 ) -> Result<(), wasmtime::Error> {
     let dim_name_write = dim_name.clone();
     let dim_name_read = dim_name.clone();
