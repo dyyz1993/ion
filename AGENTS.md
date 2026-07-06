@@ -81,38 +81,67 @@ ION 对标 pi 的全部能力。遇到不确定的设计决策时：
 3. **摇摆不定的决策**：
    - 方法签名、字段命名、协议格式 → 参考 pi 的实现
    - 行为预期不清楚 → 看 pi 怎么做的
-   - pi 没有的（如 worktree 隔离、多 Worker 团队）→ ION 原创设计，记录在 [TEAM_ARCH.md](./TEAM_ARCH.md)
+   - pi 没有的（如 worktree 隔离、多 Worker 团队）→ ION 原创设计，记录在 [docs/design/TEAM_ARCH.md](./docs/design/TEAM_ARCH.md)
 
 ## 文档规范
 
-设计文档/功能文档**不要**直接展开在 AGENTS.md 中，而是按以下规范外链：
+### 根目录整洁原则
 
-### 引用格式
+**根目录只保留** `AGENTS.md` + `README.md` + 标准配置文件（Cargo.toml / Makefile / .gitignore / Cargo.lock）。
+
+所有设计文档、指南、模板、测试文档必须放到 `docs/` 子目录：
 
 ```
-| [文档名.md](./文档名.md) | 一句话描述 (状态) |
+docs/
+├── README.md                  ← 文档总导航
+├── templates/                  ← 5 个文档模板
+├── guides/                     ← 使用指南
+├── design/                     ← 功能设计文档
+├── testing/                    ← 测试用例
+└── archive/                    ← 已归档（被合并/被替代）
 ```
 
-状态标注（括号标注在描述末尾）：
+详细导航见 [docs/README.md](./docs/README.md)。
+
+### 文档状态标注
+
+每个文档开头必须标注状态：
 - **已完成** — 功能已实现并通过验证
 - **已验证** — 功能已实现并经过真实场景测试
 - **开发中** — 正在实现
 - **暂不开发** — 已设计但未排期
 - **待定** — 有想法但未形成设计
 
-### 文档自身规范
-
-每个外链文档应在开头标注自身状态，例如：
+格式：
 
 ```markdown
 # 文档标题
 
-> **状态：暂不开发** — 本文档为设计规划，尚未实现。
+> **状态：已验证** — 一句话说明当前进度。
 ```
+
+### 模板触发时机（写新文档前必读）
+
+写新文档前**必须先查模板**。5 个模板对应 5 种触发场景：
+
+| 触发场景 | 用哪个模板 | 模板路径 |
+|---------|----------|---------|
+| 启动新功能开发、或对某个子系统做完整设计 | **DESIGN_TEMPLATE** | [docs/templates/DESIGN_TEMPLATE.md](./docs/templates/DESIGN_TEMPLATE.md) |
+| 功能完成需要写 CLI 验证用例（Group A/B/C/D 格式 + 完整请求/响应 JSON） | **CLI_TEST_TEMPLATE** | [docs/templates/CLI_TEST_TEMPLATE.md](./docs/templates/CLI_TEST_TEMPLATE.md) |
+| 功能需要外部评审 / 给 QA 的验收规格（P0/P1/XFail 分级） | **TEST_SPEC_TEMPLATE** | [docs/templates/TEST_SPEC_TEMPLATE.md](./docs/templates/TEST_SPEC_TEMPLATE.md) |
+| 调研 pi 某项能力并规划对齐方案 | **PI_ALIGNMENT_TEMPLATE** | [docs/templates/PI_ALIGNMENT_TEMPLATE.md](./docs/templates/PI_ALIGNMENT_TEMPLATE.md) |
+| 写新的 WASM 扩展手册 | **EXTENSION_MANUAL_TEMPLATE** | [docs/templates/EXTENSION_MANUAL_TEMPLATE.md](./docs/templates/EXTENSION_MANUAL_TEMPLATE.md) |
+
+**写文档前的自查清单**：
+1. ✅ 这个文档属于哪个子目录？（design / guides / testing / templates）
+2. ✅ 该用哪个模板？
+3. ✅ 状态标注写了吗？
+4. ✅ 术语规范：用 "extension" 不用 "plugin" / "插件"？
+5. ✅ 同主题是否已有文档？（避免新增重复文档，应该合并到已有；旧文档归档到 `docs/archive/`）
 
 ### 扩展手册规范
 
-每个扩展**必须**在其源码目录下维护一份 `MANUAL.md`，格式参照 [EXTENSION_MANUAL_TEMPLATE.md](./EXTENSION_MANUAL_TEMPLATE.md)。
+每个扩展**必须**在其源码目录下维护一份 `MANUAL.md`，格式参照 [EXTENSION_MANUAL_TEMPLATE.md](./docs/templates/EXTENSION_MANUAL_TEMPLATE.md)。
 
 | 要求 | 说明 |
 |------|------|
@@ -124,7 +153,7 @@ ION 对标 pi 的全部能力。遇到不确定的设计决策时：
 
 现有扩展手册：
 - [todo-extension/MANUAL.md](./todo-extension/MANUAL.md) — 待办任务管理 (WASM)
-- MEMORY 扩展手册（内核内置，见 [MEMORY_EXTENSION.md](./MEMORY_EXTENSION.md)）
+- MEMORY 扩展手册（内核内置，见 [docs/design/MEMORY_EXTENSION.md](./docs/design/MEMORY_EXTENSION.md)）
 
 ### 例外
 
@@ -136,29 +165,60 @@ ION 对标 pi 的全部能力。遇到不确定的设计决策时：
 
 ## 快速导航
 
+### 设计文档（docs/design/）
+
+| 文档 | 内容 |
+|------|------|
+| [docs/design/EXTENSION_SYSTEM.md](./docs/design/EXTENSION_SYSTEM.md) | WASM 扩展系统：热更新、4 维数据存储、16 个宿主函数 (已完成) |
+| [docs/design/BASH_EXTENSION.md](./docs/design/BASH_EXTENSION.md) | Bash 扩展：同步执行 + 后台进程 + 综合教程 + CLI 测试 (设计稿+已实现) |
+| [docs/design/MEMORY_EXTENSION.md](./docs/design/MEMORY_EXTENSION.md) | Memory 扩展 v0.1：大纲索引、异步检索、XML 注入、4 维存储 (已验证) |
+| [docs/design/COMPACTION.md](./docs/design/COMPACTION.md) | Compaction 会话压缩：分批并发 + LLM summarizer + emergency fallback + CLI 测试 (已验证) |
+| [docs/design/PROVIDER_PROTOCOL.md](./docs/design/PROVIDER_PROTOCOL.md) | 多 Provider 协议：4 个 provider + transform_messages + detectCompat + CLI 测试 (已验证) |
+| [docs/design/PERMISSION_SYSTEM.md](./docs/design/PERMISSION_SYSTEM.md) | 权限系统：设计 + CLI 用法 + 测试规格 + CLI 测试指南 (设计稿+已验证) |
+| [docs/design/SESSION_MESSAGE.md](./docs/design/SESSION_MESSAGE.md) | Session 消息系统：Entry 类型、推送通道、消息类型扩展 (设计稿+已验证) |
+| [docs/design/HOOK_SYSTEM.md](./docs/design/HOOK_SYSTEM.md) | Shell Hook 系统设计 (TRAE 兼容, 暂不开发) |
+| [docs/design/TEAM_ARCH.md](./docs/design/TEAM_ARCH.md) | 单项目自治 Agent 团队架构 — `ion team` 命令设计 (开发中) |
+| [docs/design/PI_RPC_ALIGNMENT.md](./docs/design/PI_RPC_ALIGNMENT.md) | pi RPC CLI 对齐文档 (开发中) |
+
+### 使用指南（docs/guides/）
+
+| 文档 | 内容 |
+|------|------|
+| [docs/guides/CLI_USAGE.md](./docs/guides/CLI_USAGE.md) | CLI 标准用法：RPC / Subscribe / Extension RPC / Tool RPC 完整速查 (已验证) |
+| [docs/guides/DEPLOY_ARCH.md](./docs/guides/DEPLOY_ARCH.md) | 部署架构 — 场景 + CLI 验证 |
+| [docs/guides/EXTENSION_WORKFLOW.md](./docs/guides/EXTENSION_WORKFLOW.md) | 扩展开发测试工作流：写→build→安装→RPC 直调→LLM 引导→RPC 佐证 (已验证) |
+
+### 测试（docs/testing/）
+
+| 文档 | 内容 |
+|------|------|
+| [docs/testing/TEST_CASES.md](./docs/testing/TEST_CASES.md) | 完整测试 case (25 单元 + 32 集成 + 5 E2E + 5 压力) |
+
+### 模板（docs/templates/）
+
+| 模板 | 触发时机 |
+|------|---------|
+| [docs/templates/DESIGN_TEMPLATE.md](./docs/templates/DESIGN_TEMPLATE.md) | 写新功能设计文档时 |
+| [docs/templates/CLI_TEST_TEMPLATE.md](./docs/templates/CLI_TEST_TEMPLATE.md) | 写 CLI 测试指南（Group A/B/C/D）时 |
+| [docs/templates/TEST_SPEC_TEMPLATE.md](./docs/templates/TEST_SPEC_TEMPLATE.md) | 写测试规格（P0/P1/XFail）给评审方时 |
+| [docs/templates/PI_ALIGNMENT_TEMPLATE.md](./docs/templates/PI_ALIGNMENT_TEMPLATE.md) | 调研 pi 能力并规划对齐时 |
+| [docs/templates/EXTENSION_MANUAL_TEMPLATE.md](./docs/templates/EXTENSION_MANUAL_TEMPLATE.md) | 写 WASM 扩展手册时 |
+
+### 归档（docs/archive/）
+
+被合并或被替代的旧文档，仅供历史查阅。详见 [docs/README.md §归档说明](./docs/README.md)。
+
+### 源码导航
+
 | 文件 | 内容 |
 |------|------|
-| [TEAM_ARCH.md](./TEAM_ARCH.md) | 单项目自治 Agent 团队架构 — `ion team` 命令设计 (开发中) |
-| [TEST_CASES.md](./TEST_CASES.md) | 完整测试 case (25 单元 + 32 集成 + 5 E2E + 5 压力) |
-| [RPC_DIFF_REPORT.md](./RPC_DIFF_REPORT.md) | ion-worker vs pi RPC 格式对比报告 |
-| [HOOK_SYSTEM.md](./HOOK_SYSTEM.md) | Shell Hook 系统设计 (TRAE 兼容, 暂不开发) |
-| [EXTENSION_SYSTEM.md](./EXTENSION_SYSTEM.md) | WASM 扩展系统：热更新、4 维数据存储、16 个宿主函数 (已完成) |
-| [EXTENSION_WORKFLOW.md](./EXTENSION_WORKFLOW.md) | 扩展开发测试工作流：写→build→安装→RPC 直调→LLM 引导→RPC 佐证 (已验证) |
-| [CLI_USAGE.md](./CLI_USAGE.md) | CLI 标准用法：RPC / Subscribe / Extension RPC / Tool RPC 完整速查 (已验证) |
-| [SECURITY_CLI_GUIDE.md](./SECURITY_CLI_GUIDE.md) | Security & Runtime CLI 测试指南：进程管理、权限拦截、异步审批流程 (设计稿) |
-| [MEMORY_EXTENSION.md](./MEMORY_EXTENSION.md) | Memory 记忆扩展设计：大纲索引、异步检索、XML 注入、4 维存储 (设计稿) |
-| [MEMORY_SPEC.md](./MEMORY_SPEC.md) | Memory 扩展测试规格：P0/P1/XFail 分级、完整接口定义、验收标准 (已验证) |
-| [BASH_EXTENSION.md](./BASH_EXTENSION.md) | Bash 进程管理扩展设计：后台进程、实时流、退出原因、CLI 测试 (设计稿) |
-| [PROVIDER_PROTOCOL.md](./PROVIDER_PROTOCOL.md) | 多 Provider 协议实现：4 个 provider + transform_messages + detectCompat + CLI 测试 (已验证) |
-| [COMPACTION.md](./COMPACTION.md) | Compaction 会话压缩系统：分批并发 + LLM summarizer + emergency fallback + CLI 测试 (已验证) |
-| [SESSION_MESSAGE.md](./SESSION_MESSAGE.md) | Session 消息系统：Entry 类型、推送通道、LLM/UI 消费决策树 (设计稿) |
 | `src/bin/ion.rs` | 主 CLI (45+ 参数) |
 | `src/bin/ion_worker.rs` | Worker 子进程 (75 RPC 命令) |
 | `src/worker_registry.rs` | Manager 内存状态 + Worker 管理 |
 | `src/worker_api.rs` | WorkerHandle + ExtensionApi (扩展 API) |
 | `src/agent/` | Agent 循环 (内层+外层+扩展钩子) |
 | `ion-provider/` | Provider 抽象独立 crate (OpenAI SSE + tool_calls) |
-| `src/extension.rs` | WASM 扩展加载器（[详情](./EXTENSION_SYSTEM.md)） |
+| `src/extension.rs` | WASM 扩展加载器（[详情](./docs/design/EXTENSION_SYSTEM.md)） |
 | `stock-extension/` | WASM 扩展示例 |
 
 ## 架构
@@ -217,8 +277,7 @@ ion-worker --mode rpc    → Worker 子进程 (JSONL over stdin/stdout)
 - 完整 steer/follow_up/abort/promote_follow_up 行为对齐 pi
 - Unix socket IPC（Manager ↔ CLI client）
 - `ion rpc` client — Manager 级 / Instance / Tool / Extension 四类 RPC
-- `CLI_USAGE.md` — 标准用法文档
-| [SECURITY_CLI_GUIDE.md](./SECURITY_CLI_GUIDE.md) | Security & Runtime CLI 测试指南：进程管理、权限拦截、异步审批流程 (设计稿) |
+- `CLI_USAGE.md` — 标准用法文档（见 [docs/guides/CLI_USAGE.md](./docs/guides/CLI_USAGE.md)）
 
 ### 🧠 Memory 扩展 v0.1
 
@@ -457,7 +516,7 @@ let agent = Agent::new(registry, model, system_prompt, tools, config)
 - user_bash / project_trust / resources_discover / ui - 后续 (需交互式 UI)
 
 **P6 - Shell Hook 系统 (TRAE 兼容) (暂不开发):**
-- 详细设计文档见 [HOOK_SYSTEM.md](./HOOK_SYSTEM.md)
+- 详细设计文档见 [docs/design/HOOK_SYSTEM.md](./docs/design/HOOK_SYSTEM.md)
 
 **P6b - 其他（待定）:**
 - @图片文件支持 (ContentBlock::Image 完整实现)

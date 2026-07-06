@@ -208,7 +208,19 @@ async fn main() {
 
     // ── 根据配置选择 Runtime ──
     let worker_rt: Box<dyn ion::runtime::Runtime> = {
-        if ion_cfg.runtime.default_mode == "remote" {
+        if !ion_cfg.runtime.routes.is_empty() {
+            // RouterRuntime: 命令级路由
+            let router = ion::runtime::RouterRuntime::new(
+                ion_cfg.runtime.routes.clone(),
+                &ion_cfg.runtime.remote,
+            );
+            let secured = ion::runtime::SecuredRuntime::new(router)
+                .with_profile(ion::kernel::SecurityProfile::default());
+            Box::new(ion::runtime::WorkerRuntime::new(
+                secured,
+                manager_bridge.clone() as Arc<dyn ion::runtime::ManagerBridgeHandle>,
+            ))
+        } else if ion_cfg.runtime.default_mode == "remote" {
             let hostname = &ion_cfg.runtime.remote.default_host;
             if let Some(host_cfg) = ion_cfg.runtime.remote.hosts.get(hostname) {
                 let remote = ion::runtime::RemoteRuntime::from_config(ion::runtime::LocalRuntime::new(), host_cfg);
