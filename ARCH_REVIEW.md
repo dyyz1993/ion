@@ -60,9 +60,21 @@ Phase 3: session_entries_ci.sh (RPC)     21 ✅
 Phase 4: permission_ci.sh (权限规则)       12 ✅
 Phase 5: RemoteRuntime via shanbox       8/8 ✅
 Phase 6: sandbox-exec (macOS)           3/3 ✅
+P0 修复后全量验证                        145 ✅ (2026-07-06)
 ```
 
-## 关键设计决策 & 想求 review 的点
+## 关键设计决策 & 求 review 的点
+
+### P0 已修复（2026-07-06）
+
+| # | 问题 | 修复内容 | 状态 |
+|---|------|---------|------|
+| 1 | RemoteRuntime 透传 inner | spawn_process/kill_process/send_stdin 返回 Err | ✅ |
+| 2 | SandboxRuntime 只包 execute_command | 文档明确说明；文件操作由 PermissionEngine 控制 | ✅ |
+| 3 | SandboxRuntime profile 写 /tmp | 改用 `sandbox-exec -p` 内联 | ✅ |
+| 4 | SSH 字符串拼接 | 路径统一经 `sh_quote()` 处理 | ✅ |
+
+### 待讨论的 P1 设计问题
 
 ### 1. Runtime trait 使用默认实现 + 重写
 

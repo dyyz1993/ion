@@ -3,6 +3,21 @@
 # CI 测试脚本：Runtime 端到端验证
 # ──────────────────────────────────────────────────────────
 set -uo pipefail
+TMPDIR="${TMPDIR:-/tmp}"
+MANAGER_PID_FILE="$TMPDIR/ion-ci-rt.pid"
+
+cleanup() {
+    if [ -f "$MANAGER_PID_FILE" ]; then
+        kill "$(cat "$MANAGER_PID_FILE")" 2>/dev/null || true
+        rm -f "$MANAGER_PID_FILE"
+    fi
+    # 兜底清理残留进程
+    for pid in $(ps aux | grep "target/debug/ion" | grep -v grep | awk '{print $2}' 2>/dev/null || true); do
+        kill "$pid" 2>/dev/null || true
+    done
+    rm -f /tmp/ion-ci-rt-*.log /tmp/ion-rt-*.txt /tmp/ion-rt-*.json
+}
+trap cleanup EXIT
 
 PASS=0; FAIL=0; SKIP=0
 green() { echo -e "\033[32m  ✅ $1\033[0m"; }
@@ -29,10 +44,11 @@ RUST_LOG=error cargo test --lib 2>&1 | grep -q "test result:" && pass "cargo tes
 RUST_LOG=error cargo test --test runtime_tests 2>&1 | grep -q "test result:" && pass "runtime_tests" || fail "runtime_tests"
 
 # ── Phase 2: Manager + Worker ──
-lsof -ti :53293 2>/dev/null | xargs kill -9 2>/dev/null || true
-for pid in $(ps aux | grep "target/debug/ion" | grep -v grep | awk '{print $2}' 2>/dev/null || true); do kill -9 "$pid" 2>/dev/null; done
+cleanup
 sleep 1; rm -f /Users/xuyingzhou/.ion/manager.sock
-"$ION_BIN" manager start > /tmp/ion-rt-manager.log 2>&1 &
+"$ION_BIN" manager start > /tmp/ion-ci-rt-manager.log 2>&1 &
+MANAGER_PID=$!
+echo "$MANAGER_PID" > "$MANAGER_PID_FILE"
 sleep 3
 ps -p $! > /dev/null 2>&1 && pass "manager start" || { fail "manager start"; exit 1; }
 
