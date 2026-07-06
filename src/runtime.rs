@@ -1102,99 +1102,6 @@ pub fn sh_quote(s: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// RouterRuntime — 命令级路由，根据配置选择 Runtime
-// ---------------------------------------------------------------------------
-
-/// 根据 `runtime.routes` 配置将不同命令路由到不同后端 Runtime。
-///
-/// ```json
-/// {"routes": [
-///   {"tool": "bash", "pattern": "kubectl *", "runtime": "remote", "host": "xyz-mac"},
-///   {"tool": "bash", "pattern": "npm install *", "runtime": "sandbox"}
-/// ]}
-/// ```
-pub struct RouterRuntime {
-    default: LocalRuntime,
-    remote_hosts: std::collections::HashMap<String, RemoteRuntime<LocalRuntime>>,
-    routes: Vec<crate::config::RouteRule>,
-}
-
-impl RouterRuntime {
-    pub fn new(routes: Vec<crate::config::RouteRule>, remote_cfg: &crate::config::RemoteConfig) -> Self {
-        let mut remote_hosts = std::collections::HashMap::new();
-        for (name, host_cfg) in &remote_cfg.hosts {
-            let rt = RemoteRuntime::from_config(LocalRuntime::new(), host_cfg);
-            remote_hosts.insert(name.clone(), rt);
-        }
-        Self { default: LocalRuntime::new(), remote_hosts, routes }
-    }
-
-    /// 匹配命令对应的 Runtime（默认返回 &LocalRuntime）
-    fn select<'a>(&'a self, tool: &str, command: &str) -> &'a dyn Runtime {
-        for rule in &self.routes {
-            if !rule.tool.is_empty() && rule.tool != tool && rule.tool != "*" {
-                continue;
-            }
-            if !rule.pattern.is_empty() && !glob_match(&rule.pattern, command) {
-                continue;
-            }
-            match rule.runtime.as_str() {
-                "remote" => {
-                    if let Some(rt) = self.remote_hosts.get(&rule.host) {
-                        return rt as &dyn Runtime;
-                    }
-                    // host not found, try default host
-                    for rt in self.remote_hosts.values() {
-                        return rt as &dyn Runtime;
-                    }
-                }
-                "sandbox" => { /* TODO: SandboxRuntime */ }
-                _ => {} // "local" or unknown → use default
-            }
-            break;
-        }
-        &self.default as &dyn Runtime
-    }
-}
-
-// Simple glob: "*" matches anything, "prefix*" matches prefix, "*suffix" matches suffix
-fn glob_match(pattern: &str, s: &str) -> bool {
-    if pattern == "*" { return true; }
-    if let Some(p) = pattern.strip_suffix('*') { return s.starts_with(p); }
-    if let Some(p) = pattern.strip_prefix('*') { return s.ends_with(p); }
-    pattern == s
-}
-
-#[async_trait]
-impl Runtime for RouterRuntime {
-    fn runtime_type(&self) -> String { "router".into() }
-
-    async fn execute_command(&self, command: &str, timeout_secs: u64) -> Result<(String, String, i32), String> {
-        self.select("bash", command).execute_command(command, timeout_secs).await
-    }
-    async fn read_file(&self, path: &str) -> Result<String, String> {
-        self.select("read", path).read_file(path).await
-    }
-    async fn write_file(&self, path: &str, content: &str) -> Result<(), String> {
-        self.select("write", path).write_file(path, content).await
-    }
-    async fn edit_file(&self, path: &str, old: &str, new: &str) -> Result<(), String> {
-        let rt = self.select("edit", path); rt.edit_file(path, old, new).await
-    }
-    async fn path_exists(&self, path: &str) -> bool { self.select("read", path).path_exists(path).await }
-    async fn list_dir(&self, path: &str) -> Result<Vec<String>, String> { self.select("ls", path).list_dir(path).await }
-    async fn remove_file(&self, path: &str) -> Result<(), String> { self.select("remove_file", path).remove_file(path).await }
-    async fn grep_search(&self, pattern: &str, path: &str) -> Result<Vec<String>, String> { self.select("grep", path).grep_search(pattern, path).await }
-    async fn find_files(&self, path: &str, name: &str) -> Result<Vec<String>, String> { self.select("find", path).find_files(path, name).await }
-    async fn file_info(&self, path: &str) -> Result<Vec<FileEntry>, String> { self.select("ls", path).file_info(path).await }
-
-    async fn check_command(&self, command: &str) -> Result<(), String> { self.default.check_command(command).await }
-    async fn spawn_process(&self, req: SpawnProcessRequest) -> Result<ProcessHandle, String> { self.default.spawn_process(req).await }
-    async fn kill_process(&self, pid: u32) -> Result<(), String> { self.default.kill_process(pid).await }
-    async fn send_stdin(&self, pid: u32, input: &str) -> Result<(), String> { self.default.send_stdin(pid, input).await }
-}
-
-// ---------------------------------------------------------------------------
 // SandboxRuntime — macOS sandbox-exec 隔离
 // ---------------------------------------------------------------------------
 
@@ -1450,13 +1357,6 @@ mod tests {
         let rt = RemoteRuntime::new(LocalRuntime::new(), "deploy", "10.0.0.1", 2222, "~/.ssh/deploy_key", "");
         let cmd = rt.ssh_cmd("kubectl get pods");
         assert_eq!(cmd, "ssh deploy@10.0.0.1 -p 2222 -i ~/.ssh/deploy_key 'kubectl get pods'");
-    }
-
-    #[test]
-    async fn glob_matching_works() {
-        assert!(glob_match("npm *", "npm install"));
-        assert!(!glob_match("npm *", "pip install"));
-        assert!(glob_match("*", "anything"));
     }
 
     // ── PoisonRuntime: 验证 RemoteRuntime 不会回退到本地副作用操作 ──
