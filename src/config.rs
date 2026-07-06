@@ -51,16 +51,23 @@ pub struct IonConfig {
 /// Runtime configuration
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RuntimeConfig {
-    /// Default runtime mode: "local" | "sandbox" | "remote"
+    /// Default runtime mode (legacy): "local" | "sandbox" | "remote"
     #[serde(default = "default_runtime_mode")]
     pub default_mode: String,
-    /// Remote execution hosts
+    /// Default backend name (new style). When set, overrides `default_mode`.
+    /// Must reference a backend in `backends`. Falls back to "local" if missing.
+    #[serde(default)]
+    pub default: String,
+    /// Backend definitions (new style): name → spec
+    #[serde(default)]
+    pub backends: HashMap<String, BackendConfig>,
+    /// Remote execution hosts (legacy, kept for backward compat)
     #[serde(default)]
     pub remote: RemoteConfig,
-    /// Sandbox configuration
+    /// Sandbox configuration (legacy)
     #[serde(default)]
     pub sandbox: SandboxConfig,
-    /// Command-level routing rules
+    /// Routing rules: command/path prefixes → backend name
     #[serde(default)]
     pub routes: Vec<RouteRule>,
 }
@@ -71,9 +78,113 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             default_mode: "local".into(),
+            default: String::new(),
+            backends: HashMap::new(),
             remote: RemoteConfig::default(),
             sandbox: SandboxConfig::default(),
             routes: Vec::new(),
+        }
+    }
+}
+
+impl RuntimeConfig {
+    /// Resolve the effective default backend name.
+    /// Priority: `default` field > `default_mode` field > "local".
+    pub fn effective_default(&self) -> &str {
+        if !self.default.is_empty() {
+            // Verify backend exists; if not, fall back
+            if self.backends.contains_key(&self.default) {
+                return &self.default;
+            }
+            // default references non-existent backend — caller should warn
+        }
+        // Map legacy default_mode to backend-style naming
+        match self.default_mode.as_str() {
+            "remote" => {
+                // Use default_host from remote config if available
+                if !self.remote.default_host.is_empty() {
+                    // Legacy mode — caller handles via compat shim
+                }
+                "remote_default" // sentinel — caller maps to remote host
+            }
+            "sandbox" => "sandbox_default",
+            _ => "local",
+        }
+    }
+
+    /// Returns true if using new-style backends configuration
+    pub fn uses_backends(&self) -> bool {
+        !self.backends.is_empty() || !self.default.is_empty()
+    }
+}
+
+/// A backend definition. Each backend is a named, configurable Runtime instance.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct BackendConfig {
+    /// Backend type: "local" | "remote" | "sandbox" | "container"
+    #[serde(rename = "type")]
+    pub backend_type: String,
+    /// Container driver (only for type="container"): "apple" | "docker" | "podman"
+    #[serde(default)]
+    pub driver: String,
+    // ── remote fields ──
+    #[serde(default)]
+    pub hostname: String,
+    #[serde(default)]
+    pub user: String,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub proxy_jump: String,
+    // ── sandbox fields ──
+    #[serde(default)]
+    pub profile: String,
+    // ── container fields ──
+    /// OCI image (e.g. "docker.io/library/node:22-alpine")
+    #[serde(default)]
+    pub image: String,
+    /// Container exposed port
+    #[serde(default)]
+    pub container_port: Option<u16>,
+    /// Memory limit (e.g. "2G")
+    #[serde(default)]
+    pub memory: String,
+    /// CPU limit (number of CPUs)
+    #[serde(default)]
+    pub cpus: Option<u32>,
+    /// Volume to mount (Apple Container named volume)
+    #[serde(default)]
+    pub volume: String,
+    /// Worktree mount path inside container (default: /workspace)
+    #[serde(default = "default_container_workspace")]
+    pub mount_path: String,
+    /// Host-side worktree path (optional, mounts to mount_path inside container)
+    #[serde(default)]
+    pub workspace: String,
+}
+
+fn default_container_workspace() -> String { "/workspace".into() }
+
+impl Default for BackendConfig {
+    fn default() -> Self {
+        Self {
+            backend_type: "local".into(),
+            driver: String::new(),
+            hostname: String::new(),
+            user: String::new(),
+            port: None,
+            key: String::new(),
+            proxy_jump: String::new(),
+            profile: "workspace".into(),
+            image: String::new(),
+            container_port: None,
+            memory: String::new(),
+            cpus: None,
+            volume: String::new(),
+            mount_path: "/workspace".into(),
+            workspace: String::new(),
         }
     }
 }
@@ -158,20 +269,66 @@ impl Default for SandboxConfig {
     }
 }
 
-/// A routing rule: matches tool + pattern → selects runtime
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+/// A routing rule: matches command or path prefix → selects a named backend.
+///
+/// Either `command` or `path` (or both) must be non-empty.
+/// `target` references a backend name from `backends` map.
+///
+/// ```json
+/// {"command": "npm *",     "target": "local"}
+/// {"path":    "/home/*",   "target": "sh-sandbox"}
+/// {"tool":    "bash",      "pattern": "kubectl *", "target": "cluster"}  // legacy form
+/// ```
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct RouteRule {
-    /// Tool name to match (e.g. "bash", "read", "*")
+    /// Command prefix pattern (e.g. "npm *", "cargo *"). Matched against execute_command input.
+    /// Only the command's leading token(s) + glob are matched, not full shell semantics.
+    #[serde(default)]
+    pub command: String,
+    /// Path prefix pattern (e.g. "/Users/xuyingzhou/.ion/*"). Matched against read/write/edit/... paths.
+    /// Path is canonicalized before matching.
+    #[serde(default)]
+    pub path: String,
+
+    /// Target backend name (new style) — must exist in `backends`.
+    #[serde(default)]
+    pub target: String,
+
+    // ── Legacy fields (kept for backward compatibility with old configs) ──
+    /// Tool name to match (legacy)
     #[serde(default)]
     pub tool: String,
-    /// Command pattern (glob)
+    /// Pattern (legacy, acts like command + path combined)
     #[serde(default)]
     pub pattern: String,
-    /// Target runtime: "local" | "remote" | "sandbox"
+    /// Target runtime (legacy): "local" | "remote" | "sandbox"
+    #[serde(default)]
     pub runtime: String,
-    /// Target host (for remote runtime)
+    /// Target host (legacy, for remote runtime)
     #[serde(default)]
     pub host: String,
+}
+
+impl RouteRule {
+    /// Returns true if this rule has any matching criteria (otherwise it's a no-op).
+    pub fn has_matcher(&self) -> bool {
+        !self.command.is_empty() || !self.path.is_empty() || !self.pattern.is_empty()
+    }
+
+    /// Returns the effective target name (new `target` field preferred over legacy `runtime`/`host`).
+    pub fn effective_target(&self) -> String {
+        if !self.target.is_empty() {
+            return self.target.clone();
+        }
+        // Legacy form: build a target name from runtime + host
+        match self.runtime.as_str() {
+            "remote" if !self.host.is_empty() => self.host.clone(),
+            "remote" => "remote_default".into(),
+            "sandbox" => "sandbox_default".into(),
+            "local" | "" => "local".into(),
+            other => other.into(),
+        }
+    }
 }
 
 /// Per-extension configuration (currently just enable/disable).
