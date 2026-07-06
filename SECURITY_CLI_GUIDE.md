@@ -11,7 +11,8 @@
 | 层 | 能力 | CLI | 状态 |
 |----|------|-----|------|
 | **Runtime 层** | 进程管理、文件操作全部统一走 Runtime trait，经 `SecuredRuntime` 中间件 | `ion rpc --method call_tool` | ✅ 已实现 |
-| **权限层** | PermissionEngine + CommandGuard 检查，Ask 结果走 UI 通道异步审批 | `ion subscribe --events permission` + `ion permission respond` | 🔧 设计稿 |
+| **UI 事件通道** | 通用人类交互推送（Ask/Confirm/Notif/Alert/Prompt） | `ion subscribe --ui` + `ion rpc --method ui_respond` | 🔧 设计稿 |
+| **权限 Extension** | 在 UI 通道之上实现权限策略，支持"记住本次/本会话/全局" | 内置 Extension + 可选 WASM | 🔧 设计稿 |
 
 ---
 
@@ -129,244 +130,54 @@ ion rpc --session <sid> --method call_tool \
 
 ---
 
-## Group C：UI 事件通道（权限审批 — 架构设计）
+---
+
+## 架构：两层设计
+
+### 第 1 层：核心 — 通用 UI 事件通道
+
+核心只提供 5 种通用 UI 事件类型，**不包含任何权限专用的语义**：
+
+| 事件 | 推送时机 | 需要回复 | 回复格式 |
+|------|---------|---------|---------|
+| `Ask` | 需要用户确认/拒绝 | ✅ | `"allow"` / `"deny"` |
+| `Confirm` | 需要用户确认操作 | ✅ | `"confirm"` / `"cancel"` |
+| `Prompt` | 需要用户输入文本 | ✅ | `"input"` + `data:"..."` |
+| `Notif` | 通知/提示 | ❌ | — |
+| `Alert` | 告警 | ❌ | — |
+
+任何 Extension（包括内核的 `SecuredRuntime`、内置 Extension、WASM Extension）都可以通过这 5 种事件与人类用户交互。
+
+### 第 2 层：策略 — 权限 Extension
+
+权限审批是一个**策略层问题**，不内嵌在核心中。权限 Extension 在核心之上实现：
+
+```
+Permission Extension（内置或 WASM）
+├── 通过 before_tool_call 钩子拦截工具调用
+├── 检查自有规则表（支持三种作用域）:
+│   ├── "本次允许"（仅本次生效，不持久化）
+│   ├── "本会话允许"（当前会话内有效）
+│   └── "全局允许"（持久化到文件，永久生效）
+├── 需要用户决策时 → 通过 UI 通道发 Ask
+├── 收到 AskResolved → 存储决策到规则表
+└── 下次同一规则命中 → 从规则表直接 Allow（不触发 Ask）
+```
+
+这样设计的好处：
+
+| 能力 | 没有 Permission Extension | 有内置 Permission Extension |
+|------|--------------------------|----------------------------|
+| 基础 Deny/Allow 规则 | ✅ PermissionEngine 直接处理 | ✅ 一样 |
+| Ask 弹出 | ✅ 通过 UI 通道 | ✅ 通过 UI 通道 |
+| "记住本次选择" | ❌ | ✅ Extension 存会话级规则 |
+| "本会话允许所有读" | ❌ | ✅ |
+| "除非我改，永远允许这个路径" | ❌ | ✅ 持久化规则 |
+| 钉钉/邮件审批 | ❌ | ✅ 写个 WASM Extension 即可 |
 
 ### 三条独立通道
 
-ION 有三条并行的事件通道，每条用途不同：
-
-| 通道 | CLI 参数 | 事件类型 | 方向 |
-|------|----------|---------|------|
-| **Instance** | `--session x` | `text_delta`, `agent_start`, `agent_end`, `tool_call_delta` 等 | 只读推送 |
-| **Extension** | `--extension memory` | 插件自定义事件（`memory_saved`, `process_completed` 等） | 推送 + RPC（`extension_rpc`） |
-| **UI** | `--ui` | `Ask`, `Confirm`, `Notif`, `Alert`, `Prompt` | **推送 + 回复** ← 新增 |
-
-其中 **UI 通道** 是专门为需要用户交互的场景设计的，跟其他两条通道的区别：
-
-| 维度 | Instance/Extension 通道 | UI 通道 |
-|------|------------------------|---------|
-| 消费者 | LLM / Dashboard / 日志 | **人类用户** |
-| 事件类型 | 数据流（文本增量、工具调用） | 交互意图（询问、确认、通知） |
-| 是否需要回复 | ❌ 不需要 | ✅ 通常需要用户回复 |
-| 谁可以发 | Worker / Extension | **内核 + Extension 都可以** |
-| 用途 | 监控 Agent 执行过程 | 用户参与决策流程 |
-
-### UI 事件类型
-
-```json
-{
-  "type": "ui_event",
-  "ui_type": "Ask",           // Ask | Confirm | Notif | Alert | Prompt
-  "source": "kernel",          // "kernel" | "extension:memory" | "extension:bash"
-  "request_id": "req_abc123", // 需要回复的事件有 request_id
-  "title": "权限请求",
-  "message": "工具想要 Read /tmp/secret",
-  "context": { ... },          // 额外上下文（扩展用）
-  "timeout_secs": 60,
-  "correlation_id": "..."     // 关联到原始请求
-}
-```
-
-### 完整审批流程（事件驱动广播模型）
-
-**关键原则：不是点对点，是纯事件广播。**
-
-- `Ask` 事件推给**所有** `--ui` 订阅者（Web UI、TUI、手机端、CLI 终端都收到）
-- 有人用 `ui_respond` 处理后，系统推一条 `AskResolved` 更新事件给所有订阅者
-- 超时没人处理，系统推一条 `AskTimedOut` 事件
-
-```
-Terminal 1（Web UI）                   Terminal 2（CLI 用户）
-─────────────────                      ─────────────────
-ion subscribe --ui                      ion subscribe --ui
-       │                                       │
-       │  (都收到 Ask 事件)                      │
-       │                                       │
-       │  ◄─── Ask(req_abc123) ────            │
-       │                                       │
-       │  ◄─── Ask(req_abc123) ────────────────│
-       │                                       │
-       │  (Web UI 用户点了"允许")               │  (CLI 用户没操作)
-       │                                       │
-       │  ion rpc --method ui_respond \         │
-       │    --params '{"request_id":"req_abc123","response":"allow"}'
-       │                                       │
-       │  ◄─── AskResolved(req_abc123, allow) ──│
-       │                                       │
-       │  ◄─── AskResolved(req_abc123, allow) ──│
-       │                                       │
-       │  (双方都知道：已处理，允许)              │  (双方都知道：已处理，允许)
-```
-
-### 事件类型一览
-
-| 事件 | 推送时机 | 需要回复 |
-|------|---------|---------|
-| `Ask` | 需要用户确认/拒绝 | ✅ `response: "allow"` / `"deny"` |
-| `Confirm` | 需要用户确认操作 | ✅ `response: "confirm"` / `"cancel"` |
-| `Prompt` | 需要用户输入文本 | ✅ `response: "input"` + `data: "..."` |
-| `Notif` | 通知/提示 | ❌ 不需要 |
-| `Alert` | 告警 | ❌ 不需要 |
-
-### 事件推送时序（以 Ask 为例）
-
-```
-时间线
-│
-├── 第 1 条: Ask  ← 需求场景发生（权限命中 Ask 规则 / extension 调用 host_ui_ask）
-│    送往所有 --ui 订阅者
-│
-├── 第 2 条: AskResolved  ← 某个订阅者通过 ui_respond 处理了
-│    送往所有 --ui 订阅者（含 response 字段）
-│    { "request_id":"req_abc123", "response":"allow", "resolved_by":"terminal-1" }
-│
-│   ── 或 ──
-│
-├── 第 3 条: AskTimedOut  ← 超时没人回复
-│    送往所有 --ui 订阅者
-│    { "request_id":"req_abc123", "reason":"timeout" }
-│
-└──
-```
-
-这种设计的好处：
-- Web UI、TUI、手机端都能收到同样的 Ask 事件，谁先响应谁处理
-- 处理结果推送给所有人，状态同步
-- 超时推送让前端知道可以展示"已超时"
-- Extension 通过 `host_ui_*` 推的事件也走同样的广播机制
-
-### Extension 也能用 UI 通道
-
-Extension 通过宿主函数 `host_ui_ask` 等向用户发起交互。流程是：
-
-1. WASM extension 调 `host_ui_ask(title, message)`
-2. 宿主推 `Ask` 事件到所有 `--ui` 订阅者（广播）
-3. 某个订阅者调用 `ui_respond` 回复
-4. 宿主推 `AskResolved` 到所有 `--ui` 订阅者（状态更新）
-5. 宿主将回复结果返回给 WASM extension（`caller` 返回值）
-
-```json
-// 一个 WASM extension 通过 host_ui_ask 宿主函数向用户提问
-// WASM 端调用: host_ui_ask(title_ptr, title_len, msg_ptr, msg_len) -> u32
-// 返回值: 0=拒绝, 1=允许
-
-// 宿主推给所有 --ui 订阅者:
-{
-  "type": "ui_event",
-  "ui_type": "Ask",
-  "source": "extension:todo_plugin",
-  "request_id": "req_def456",
-  "title": "确认删除",
-  "message": "确定要删除任务 xxx 吗？"
-}
-
-// 有人回复后，推给所有 --ui 订阅者（状态同步）:
-{
-  "type": "ui_event",
-  "ui_type": "AskResolved",
-  "source": "extension:todo_plugin",
-  "request_id": "req_def456",
-  "response": "allow",
-  "resolved_by": "terminal-web-dashboard"
-}
-
-// 同时，WASM extension 的 host_ui_ask 返回 1（允许）
-// extension 继续执行后续逻辑
-```
-
-**注意：`ui_respond` 不需要知道回复给哪个 extension —— 只要 `request_id` 对，系统自动路由回对应的 `host_ui_*` 调用方。** 这让多个订阅者之间完全解耦。
-
-### UI 通道的宿主函数
-
-| 宿主函数 | 用途 | WASM 侧调用 |
-|----------|------|-------------|
-| `host_ui_ask(title, message) -> u32` | 询问用户确认 | 0=拒绝, 1=允许 |
-| `host_ui_confirm(title, message) -> u32` | 确认操作 | 同上 |
-| `host_ui_notif(title, message)` | 发通知（不需要回复） | 无返回 |
-| `host_ui_alert(title, message)` | 告警 | 无返回 |
-| `host_ui_prompt(title, message, out_buf, cap) -> u32` | 向用户提问并获取输入 | 返回用户输入的字节数 |
-
-### CLI 回复命令
-
-```bash
-# 回复 Ask/Confirm
-ion rpc --method ui_respond \
-  --params '{"request_id":"req_abc123","response":"allow"}'
-ion rpc --method ui_respond \
-  --params '{"request_id":"req_abc123","response":"deny"}'
-
-# 回复 Prompt（带输入内容）
-ion rpc --method ui_respond \
-  --params '{"request_id":"req_def456","response":"input","data":"用户输入的内容"}'
-```
-
----
-
-## Group D：E2E 安全测试清单
-
-### D1 Runtime 进程管理
-
-| # | 测试 | CLI | 预期 |
-|---|------|-----|------|
-| D1.1 | 前台 spawn 收集输出 | `call_tool bash "echo ok"` | stdout=ok, exit_code=0 |
-| D1.2 | 前台 spawn 非零退出 | `call_tool bash "exit 42"` | exit_code=42 |
-| D1.3 | 后台 spawn + kill | `bash_run background=true` + `bash_kill` | os_pid>0, kill 成功 |
-| D1.4 | send_stdin | `bash_run cat background=true` + `bash_send` | stdin 写入成功 |
-| D1.5 | 超时兜底 | `bash_run timeoutBackground=true` | 超时后转为后台 |
-
-### D2 权限拦截
-
-| # | 测试 | CLI | 预期 |
-|---|------|-----|------|
-| D2.1 | Deny 规则拦截读取 | `call_tool read "~/.ssh/id_rsa"` | Err [Permission] Deny |
-| D2.2 | Deny 规则拦截写入 | `call_tool write "~/.ssh/test"` | Err [Permission] Deny |
-| D2.3 | CommandGuard 拦截高危 | `call_tool bash "rm -rf /"` | Err "spawn rejected" |
-| D2.4 | 白名单命令放行 | `call_tool bash "echo safe"` | Ok |
-| D2.5 | 权限规则放行安全路径 | `call_tool read "/tmp/test"` | Ok（无规则匹配） |
-
-### D3 权限审批（异步 Ask）
-
-| # | 测试 | 步骤 | 预期 |
-|---|------|------|------|
-| D3.1 | 订阅权限事件 | `subscribe --events permission` | 连接保持 |
-| D3.2 | 触发 Ask 规则 | 另一终端调工具匹配 Ask 规则 | 订阅收到 permission_request |
-| D3.3 | 回复 Allow | `permission respond --allow` | 原命令继续执行 |
-| D3.4 | 回复 Deny | `permission respond --deny` | 原命令返回 Err |
-| D3.5 | 超时不回复 | 不回复，等待超时 | 原命令超时取消 |
-
-### D4 混合场景
-
-| # | 测试 | 说明 |
-|---|------|------|
-| D4.1 | 权限 + 进程管理 | 后台进程也要过 CommandGuard |
-| D4.2 | Worker 编排 + 权限 | 子 Worker 工具调用也走 SecuredRuntime |
-| D4.3 | WASM Extension + 权限 | WASM 宿主函数走 Runtime，过权限检查 |
-
----
-
-## 通道架构总览
-
-```
-ION 事件系统
-│
-├── Instance 通道 (--session x)
-│   ├── 推送: text_delta / agent_start / agent_end / tool_call_*
-│   ├── 消费者: LLM / Dashboard / 日志
-│   └── 无需回复
-│
-├── Extension 通道 (--extension memory)
-│   ├── 推送: 插件自定义事件 (memory_saved, process_completed)
-│   ├── 交互: extension_rpc (一问一答)
-│   └── 消费者: Dashboard / CLI 调试
-│
-└── UI 通道 (--ui) ← 新增
-    ├── 推送: Ask / Confirm / Notif / Alert / Prompt
-    ├── 交互: ui_respond (异步回复)
-    ├── 消费者: 人类用户（需要做决策）
-    └── 谁可以发: 内核 (SecuredRuntime) + 所有 Extension (WASM/Rust)
-```
-
-## CLI 命令总览
+ION 有三条并行的事件通道：
 
 ```
 命令                             状态         通道

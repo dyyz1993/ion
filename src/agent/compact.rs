@@ -13,7 +13,7 @@
 //!   - 总 tokens > 2x window：emergency truncation（纯文本，不调 LLM）
 //!   - 批次数 > 10：emergency truncation（太复杂）
 
-use super::error::AgentResult;
+use super::error::{AgentError, AgentResult};
 use crate::agent::extension::ExtensionRegistry;
 use crate::retry::RetryConfig;
 use ion_provider::types::*;
@@ -218,7 +218,7 @@ pub fn plan_batches(messages: &[Message], config: &CompactConfig) -> Vec<Batch> 
             .iter()
             .find_map(|m| match m {
                 Message::User(u) => u.content.iter().find_map(|b| match b {
-                    ContentBlock::Text(t) => Some(t.chars().take(80).collect::<String>()),
+                    ContentBlock::Text(t) => Some(t.text.chars().take(80).collect::<String>()),
                     _ => None,
                 }),
                 _ => None,
@@ -831,10 +831,12 @@ mod tests {
             make_user_msg("system"),
             make_user_msg(&"x".repeat(1000)),
             make_assistant_msg("response"),
+            make_user_msg("more"),
+            make_assistant_msg("more response"),
         ];
         let cfg = CompactConfig {
             threshold: 100,
-            keep_recent_tokens: 100,
+            keep_recent_tokens: 4, // 只保留 1 条消息，留出空间给 summarizer
             ..Default::default()
         };
         let ext = ExtensionRegistry::new();

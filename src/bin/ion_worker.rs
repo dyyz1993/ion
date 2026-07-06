@@ -858,25 +858,32 @@ async fn main() {
             },
             "compact" => {
                 let before_msgs = agent.messages().len();
-                let before_tokens: usize = agent.messages().iter()
-                    .map(|m| match m {
-                        ion::agent::messages::Message::User(u) => u.content.iter().map(|b| match b {
-                            ion::agent::messages::ContentBlock::Text(t) => t.text.len() / 4,
-                            _ => 0,
-                        }).sum::<usize>(),
-                        ion::agent::messages::Message::Assistant(a) => a.content.iter().map(|b| match b {
-                            ion::agent::messages::AssistantContentBlock::Text(t) => t.text.len() / 4,
-                            _ => 0,
-                        }).sum::<usize>(),
-                        _ => 0,
-                    }).sum();
-                output_response(&id, "compact", &serde_json::json!({
-                    "compacted": before_tokens > 1000,
-                    "beforeMessages": before_msgs,
-                    "beforeTokens": before_tokens,
-                    "afterMessages": agent.messages().len(),
-                    "afterTokens": before_tokens,
-                }));
+                let before_tokens = ion::agent::compact::total_tokens(agent.messages());
+                match agent.compact_now().await {
+                    Ok(result) => {
+                        let after_tokens = ion::agent::compact::total_tokens(agent.messages());
+                        output_response(&id, "compact", &serde_json::json!({
+                            "compacted": true,
+                            "beforeMessages": before_msgs,
+                            "beforeTokens": before_tokens,
+                            "afterMessages": agent.messages().len(),
+                            "afterTokens": after_tokens,
+                            "stage": result.stage,
+                            "batchCount": result.batch_count,
+                            "batchSummaries": result.batch_summaries.len(),
+                            "hasMergedSummary": result.merged_summary.is_some(),
+                            "summaryPreview": result.summary.chars().take(200).collect::<String>(),
+                        }));
+                    }
+                    Err(e) => {
+                        output_response(&id, "compact", &serde_json::json!({
+                            "compacted": false,
+                            "error": e.to_string(),
+                            "beforeMessages": before_msgs,
+                            "beforeTokens": before_tokens,
+                        }));
+                    }
+                }
             }
             "new_session" => output_response(&id, "new_session", &serde_json::json!({"sessionId":sid})),
             "export_html" => output_response(&id, "export_html", &serde_json::json!({"path":""})),

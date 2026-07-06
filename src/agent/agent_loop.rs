@@ -1,4 +1,5 @@
 use super::compact::{self, CompactConfig};
+use crate::retry::RetryConfig;
 use super::error::{AgentError, AgentResult};
 use super::extension::{ExtensionRegistry, TurnContext};
 use super::tool::{Tool, ToolRegistry};
@@ -956,6 +957,21 @@ impl Agent {
             self.messages.push(msg);
         }
         Ok(())
+    }
+
+    /// 手动触发压缩（compact RPC 用），返回压缩详情
+    pub async fn compact_now(&mut self) -> AgentResult<compact::CompactionResult> {
+        let mut config = self.config.compact_config.clone();
+        config.context_window = self.model.context_window;
+        let retry_config = RetryConfig::default();
+        compact::compact_batched(
+            &mut self.messages,
+            &config,
+            &self.extensions,
+            None,
+            retry_config,
+        )
+        .await
     }
 
     async fn maybe_compact(&mut self) -> AgentResult<()> {
