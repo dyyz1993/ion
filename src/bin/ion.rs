@@ -657,6 +657,7 @@ async fn cmd_run(
 
     // WASM plugin registry (hot‑pluggable — used by worker RPC too)
     let wasm_ext_registry = std::sync::Arc::new(ion::wasm_extension::Registry::new());
+    let mut loaded_wasm_paths: Vec<String> = Vec::new();
 
     // ── WASM 插件自动发现（优先于 --extension）──
     // 扫描 ~/.ion/agent/extensions/ 和 {cwd}/.ion/extensions/ 下的 .wasm 文件
@@ -680,6 +681,7 @@ async fn cmd_run(
                         let ext_name = ion::wasm_extension::ext_name_from_path(&canonical_str);
                         match wasm_ext_registry.add(&canonical_str) {
                             Ok(tool_defs) => {
+                                loaded_wasm_paths.push(canonical_str.clone());
                                 for td in &tool_defs {
                                     tools.register(Box::new(ion::wasm_extension::ToolAdapter {
                                         name: td.name.clone(),
@@ -715,6 +717,7 @@ async fn cmd_run(
             match wasm_ext_registry.add(&canonical_str) {
                 Ok(tool_defs) => {
                     let ext_name = ion::wasm_extension::ext_name_from_path(&canonical_str);
+                    loaded_wasm_paths.push(canonical_str.clone());
                     for td in &tool_defs {
                         tools.register(Box::new(ion::wasm_extension::ToolAdapter {
                             name: td.name.clone(),
@@ -819,6 +822,14 @@ async fn cmd_run(
     if has_plan_tools {
         ext_reg.register(Box::new(ion::agent::plan_extension::PlanExtension::new()));
         tracing::info!("[plan] PlanExtension auto-registered (plan tools detected)");
+    }
+
+    // ── 注册 WASM Extension 的 HookAdapter（让 WASM 也能实现 29 个钩子）──
+    for wasm_path in &loaded_wasm_paths {
+        if let Some(hook_adapter) = wasm_ext_registry.create_hook_adapter(wasm_path) {
+            ext_reg.register(Box::new(hook_adapter));
+            tracing::info!("[wasm] registered HookAdapter for {}", wasm_path);
+        }
     }
 
     agent = agent.with_extensions(ext_reg);

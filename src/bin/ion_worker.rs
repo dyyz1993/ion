@@ -145,6 +145,9 @@ async fn main() {
     // WASM 插件注册表（RPC 热更新用）
     let wasm_ext_registry = Arc::new(Registry::new());
 
+    // 记录已加载的 WASM 路径（用于后续创建 HookAdapter）
+    let mut loaded_wasm_paths: Vec<String> = Vec::new();
+
     // ── WASM 插件自动发现（Agent 构造前，注册到 tools）──
     // 扫描 ~/.ion/agent/extensions/ 和 {cwd}/.ion/extensions/ 下的 .wasm 文件
     {
@@ -178,6 +181,7 @@ async fn main() {
                                     }));
                                     tracing::info!("[wasm] auto-discovered {ext_name}: {}", td.name);
                                 }
+                                loaded_wasm_paths.push(canonical_str);
                             }
                             Err(e) => {
                                 tracing::warn!("[wasm] failed to load {}: {e}", path.display());
@@ -240,6 +244,14 @@ async fn main() {
         // ── 注册流式透传 Extension ──
         // on_message_delta → println text_delta event（实时推到 stdout → Manager → subscriber）
         ext_reg.register(Box::new(StreamingExtension));
+
+        // ── 注册 WASM Extension 的 HookAdapter（让 WASM 也能实现 29 个钩子）──
+        for wasm_path in &loaded_wasm_paths {
+            if let Some(hook_adapter) = wasm_ext_registry.create_hook_adapter(wasm_path) {
+                ext_reg.register(Box::new(hook_adapter));
+                tracing::info!("[wasm] registered HookAdapter for {}", wasm_path);
+            }
+        }
 
         agent = agent.with_extensions(ext_reg);
 

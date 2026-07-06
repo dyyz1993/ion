@@ -249,6 +249,121 @@ impl Extension {
         self.memory.read(&mut self.store, out_offset as usize, &mut buf)?;
         Ok(String::from_utf8_lossy(&buf).to_string())
     }
+
+    /// Call a B-class hook: one-way notification, no return data.
+    /// WASM export: `plugin_on_<hook>(json_ptr: u32, json_len: u32)`.
+    /// Returns Ok(false) if the hook is not exported (extension chose not to implement it).
+    pub fn call_hook_notify(&mut self, hook: &str, ctx_json: &str) -> Result<bool, String> {
+        let func_name = format!("plugin_on_{}", hook);
+        let func = match self.instance.get_typed_func::<(u32, u32), ()>(&mut self.store, &func_name) {
+            Ok(f) => f,
+            Err(_) => return Ok(false), // hook not exported
+        };
+        let json_bytes = ctx_json.as_bytes();
+        let json_len = json_bytes.len() as u32;
+        self.memory
+            .write(&mut self.store, DATA_OFFSET as usize, json_bytes)
+            .map_err(|e| format!("mem write: {e}"))?;
+        func.call(&mut self.store, (DATA_OFFSET, json_len))
+            .map_err(|e| format!("wasm {}: {e}", hook))?;
+        Ok(true)
+    }
+
+    /// Call an A-class hook: mutable context, WASM returns modified JSON.
+    /// WASM export: `plugin_on_<hook>(json_ptr, json_len, out_buf, out_cap) -> u32`.
+    /// Returns None if hook not exported or WASM returned 0 bytes.
+    pub fn call_hook_mut(&mut self, hook: &str, ctx_json: &str) -> Result<Option<String>, String> {
+        let func_name = format!("plugin_on_{}", hook);
+        let func = match self.instance.get_typed_func::<(u32, u32, u32, u32), u32>(
+            &mut self.store, &func_name,
+        ) {
+            Ok(f) => f,
+            Err(_) => return Ok(None),
+        };
+        let json_bytes = ctx_json.as_bytes();
+        let json_len = json_bytes.len() as u32;
+        let out_offset = DATA_OFFSET + json_len + 4;
+        let out_capacity: u32 = 65_536;
+
+        self.memory
+            .write(&mut self.store, DATA_OFFSET as usize, json_bytes)
+            .map_err(|e| format!("mem write: {e}"))?;
+
+        let result_len = func
+            .call(&mut self.store, (DATA_OFFSET, json_len, out_offset, out_capacity))
+            .map_err(|e| format!("wasm {}: {e}", hook))?;
+
+        if result_len == 0 {
+            return Ok(None);
+        }
+        let mut buf = vec![0u8; result_len as usize];
+        self.memory
+            .read(&mut self.store, out_offset as usize, &mut buf)
+            .map_err(|e| format!("mem read: {e}"))?;
+        Ok(Some(String::from_utf8_lossy(&buf).to_string()))
+    }
+
+    /// Call a C-class hook: returns a status code (0 or non-zero).
+    /// Used by `before_tool_call` where 0=allow, non-zero=block.
+    /// WASM export: `plugin_<hook>(json_ptr, json_len) -> u32`.
+    /// Returns false if hook not exported (don't block).
+    pub fn call_hook_status(&mut self, hook: &str, ctx_json: &str) -> Result<bool, String> {
+        let func_name = format!("plugin_{}", hook);
+        let func = match self.instance.get_typed_func::<(u32, u32), u32>(&mut self.store, &func_name) {
+            Ok(f) => f,
+            Err(_) => return Ok(false),
+        };
+        let json_bytes = ctx_json.as_bytes();
+        let json_len = json_bytes.len() as u32;
+        self.memory
+            .write(&mut self.store, DATA_OFFSET as usize, json_bytes)
+            .map_err(|e| format!("mem write: {e}"))?;
+        let code = func
+            .call(&mut self.store, (DATA_OFFSET, json_len))
+            .map_err(|e| format!("wasm {}: {e}", hook))?;
+        Ok(code != 0)
+    }
+
+    /// Call extension_rpc hook.
+    /// WASM export: `plugin_on_extension_rpc(method_ptr, method_len, params_ptr, params_len, out_buf, out_cap) -> u32`.
+    /// Returns Err if hook not exported or returned 0.
+    pub fn call_hook_rpc(
+        &mut self,
+        method: &str,
+        params_json: &str,
+    ) -> Result<String, String> {
+        let func = match self.instance.get_typed_func::<(u32, u32, u32, u32, u32, u32), u32>(
+            &mut self.store, "plugin_on_extension_rpc",
+        ) {
+            Ok(f) => f,
+            Err(_) => return Err("extension rpc method not found".into()),
+        };
+        let method_bytes = method.as_bytes();
+        let params_bytes = params_json.as_bytes();
+        let method_offset = DATA_OFFSET;
+        let method_len = method_bytes.len() as u32;
+        let params_offset = method_offset + method_len;
+        let params_len = params_bytes.len() as u32;
+        let out_offset = params_offset + params_len + 4;
+        let out_capacity: u32 = 65_536;
+
+        self.memory.write(&mut self.store, method_offset as usize, method_bytes)
+            .map_err(|e| format!("mem write: {e}"))?;
+        self.memory.write(&mut self.store, params_offset as usize, params_bytes)
+            .map_err(|e| format!("mem write: {e}"))?;
+
+        let result_len = func.call(&mut self.store,
+            (method_offset, method_len, params_offset, params_len, out_offset, out_capacity))
+            .map_err(|e| format!("wasm rpc: {e}"))?;
+
+        if result_len == 0 {
+            return Err("extension rpc method not found".into());
+        }
+        let mut buf = vec![0u8; result_len as usize];
+        self.memory.read(&mut self.store, out_offset as usize, &mut buf)
+            .map_err(|e| format!("mem read: {e}"))?;
+        Ok(String::from_utf8_lossy(&buf).to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -385,6 +500,21 @@ impl Registry {
     pub fn get_plugin(&self, canonical_path: &str) -> Option<Arc<Mutex<Extension>>> {
         let map = self.plugins.read().ok()?;
         map.get(canonical_path).map(|entry| entry.plugin.clone())
+    }
+
+    /// Create a HookAdapter for a loaded WASM extension.
+    ///
+    /// The adapter implements the `Extension` trait, forwarding all 29 hooks
+    /// to optional WASM exports (`plugin_on_*`). Hooks not exported by the
+    /// WASM module are silently skipped.
+    pub fn create_hook_adapter(self: &Arc<Self>, canonical_path: &str) -> Option<HookAdapter> {
+        let map = self.plugins.read().ok()?;
+        let entry = map.get(canonical_path)?;
+        Some(HookAdapter {
+            name: entry.ext_name.clone(),
+            canonical_path: canonical_path.to_string(),
+            registry: self.clone(),
+        })
     }
 }
 
@@ -576,4 +706,395 @@ fn register_dim(
     )?;
 
     Ok(())
+}
+
+// ===========================================================================
+// HookAdapter — adapts a WASM Extension into the Extension trait (29 hooks)
+// ===========================================================================
+
+use crate::agent::agent_loop::AgentContext;
+use crate::agent::extension::{
+    Extension as ExtTrait, BeforeAgentContext, InputContext,
+    ModelSelectContext, ProviderRequestContext, ProviderResponseContext,
+    SessionContext, ToolExecutionContext, TurnContext,
+};
+use crate::agent::messages::Message;
+use ion_provider::types::{ToolCall, ToolResult, Usage};
+
+/// Adapts a loaded WASM Extension into the `Extension` trait.
+///
+/// Each hook checks whether the WASM module exports the corresponding
+/// `plugin_on_<hook>` function. If it does, the hook serializes its context
+/// to JSON, writes it into WASM linear memory, calls the export, and (for
+/// mutable hooks) reads back the modified JSON.
+///
+/// Hooks that the WASM module does NOT export are silently skipped
+/// (return `Ok(())`), so a WASM extension only needs to export the hooks
+/// it cares about.
+pub struct HookAdapter {
+    /// Extension name (used for extension_rpc routing + data dirs).
+    pub name: String,
+    /// Canonical path of the `.wasm` file (registry key).
+    pub canonical_path: String,
+    /// Shared registry (for context lookup).
+    pub registry: Arc<Registry>,
+}
+
+impl HookAdapter {
+    /// Lock the WASM Extension and inject the current session context.
+    fn with_plugin<F, R>(&self, f: F) -> AgentResult<R>
+    where
+        F: FnOnce(&mut Extension) -> R,
+    {
+        let plugin_arc = self.registry
+            .get_plugin(&self.canonical_path)
+            .ok_or_else(|| AgentError::Tool(format!("extension no longer loaded: {}", self.canonical_path)))?;
+        let mut plugin = plugin_arc
+            .lock()
+            .map_err(|e| AgentError::Tool(e.to_string()))?;
+        // Inject context
+        let reg_ctx = self
+            .registry
+            .ctx
+            .read()
+            .map_err(|e| AgentError::Tool(e.to_string()))?;
+        let exec_ctx = make_exec_context(&reg_ctx, &self.name);
+        drop(reg_ctx);
+        plugin.set_context(&exec_ctx);
+        Ok(f(&mut plugin))
+    }
+
+    /// B-class: one-way notification. No-op if hook not exported.
+    fn notify(&self, hook: &str, ctx_json: &serde_json::Value) -> AgentResult<()> {
+        let json_str = serde_json::to_string(ctx_json).unwrap_or_default();
+        let result: Result<bool, String> = self.with_plugin(|p| p.call_hook_notify(hook, &json_str))?;
+        result.map_err(AgentError::Tool)?;
+        Ok(())
+    }
+
+    /// A-class: mutable context. Returns modified JSON or None.
+    fn call_mut(&self, hook: &str, ctx_json: &serde_json::Value) -> AgentResult<Option<serde_json::Value>> {
+        let json_str = serde_json::to_string(ctx_json).unwrap_or_default();
+        let result: Result<Option<String>, String> = self.with_plugin(|p| p.call_hook_mut(hook, &json_str))?;
+        match result.map_err(AgentError::Tool)? {
+            None => Ok(None),
+            Some(s) => {
+                let v = serde_json::from_str(&s)
+                    .map_err(|e| AgentError::Tool(format!("wasm {} bad json: {e}", hook)))?;
+                Ok(Some(v))
+            }
+        }
+    }
+
+    /// C-class: boolean status. Returns false if hook not exported.
+    fn call_status(&self, hook: &str, ctx_json: &serde_json::Value) -> AgentResult<bool> {
+        let json_str = serde_json::to_string(ctx_json).unwrap_or_default();
+        let result: Result<bool, String> = self.with_plugin(|p| p.call_hook_status(hook, &json_str))?;
+        result.map_err(AgentError::Tool)
+    }
+}
+
+#[async_trait]
+impl ExtTrait for HookAdapter {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    // ── Session lifecycle ──
+    async fn on_session_start(&self, ctx: &SessionContext) -> AgentResult<()> {
+        self.notify("on_session_start", &serde_json::json!({"reason": &ctx.reason}))
+    }
+
+    async fn on_session_shutdown(&self, ctx: &SessionContext) -> AgentResult<()> {
+        self.notify("on_session_shutdown", &serde_json::json!({"reason": &ctx.reason}))
+    }
+
+    async fn on_session_before_compact(&self, msgs: &mut Vec<Message>) -> AgentResult<()> {
+        let result = self.call_mut("on_session_before_compact", &serde_json::json!({"messages": msgs}))?;
+        if let Some(v) = result {
+            if let Some(m) = v.get("messages") {
+                if let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok() {
+                    *msgs = new_msgs;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn on_session_compact(&self, msgs: &mut Vec<Message>) -> AgentResult<()> {
+        let result = self.call_mut("on_session_compact", &serde_json::json!({"messages": msgs}))?;
+        if let Some(v) = result {
+            if let Some(m) = v.get("messages") {
+                if let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok() {
+                    *msgs = new_msgs;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // ── Input ──
+    async fn on_input(&self, ctx: &mut InputContext) -> AgentResult<()> {
+        let input = serde_json::json!({"text": &ctx.text, "handled": ctx.handled});
+        let result = self.call_mut("on_input", &input)?;
+        if let Some(v) = result {
+            if let Some(h) = v.get("handled").and_then(|v| v.as_bool()) {
+                ctx.handled = h;
+            }
+            if let Some(t) = v.get("text").and_then(|v| v.as_str()) {
+                ctx.text = t.to_string();
+            }
+        }
+        Ok(())
+    }
+
+    // ── Agent lifecycle ──
+    async fn before_agent_start(&self, ctx: &mut BeforeAgentContext) -> AgentResult<()> {
+        let payload = serde_json::json!({
+            "system_prompt": &ctx.system_prompt,
+            "messages": &ctx.messages,
+        });
+        let result = self.call_mut("before_agent_start", &payload)?;
+        if let Some(v) = result {
+            if let Some(sp) = v.get("system_prompt").and_then(|v| v.as_str()) {
+                ctx.system_prompt = Some(sp.to_string());
+            }
+            if let Some(m) = v.get("messages") {
+                if let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok() {
+                    ctx.messages = new_msgs;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn on_agent_start(&self, ctx: &AgentContext) -> AgentResult<()> {
+        self.notify("on_agent_start", &serde_json::json!({
+            "turn_index": ctx.turn_index,
+            "message_count": ctx.message_count,
+            "tool_call_count": ctx.tool_call_count,
+        }))
+    }
+
+    async fn on_agent_end(&self, ctx: &AgentContext) -> AgentResult<()> {
+        self.notify("on_agent_end", &serde_json::json!({
+            "turn_index": ctx.turn_index,
+            "message_count": ctx.message_count,
+            "tool_call_count": ctx.tool_call_count,
+        }))
+    }
+
+    // ── Turn lifecycle ──
+    async fn on_turn_start(&self, ctx: &mut TurnContext) -> AgentResult<()> {
+        let payload = serde_json::json!({
+            "turn_index": ctx.turn_index,
+            "messages": &ctx.messages,
+            "has_tool_calls": ctx.has_tool_calls,
+            "stop_reason": &ctx.stop_reason,
+        });
+        let result = self.call_mut("on_turn_start", &payload)?;
+        if let Some(v) = result {
+            if let Some(m) = v.get("messages") {
+                if let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok() {
+                    ctx.messages = new_msgs;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn on_turn_end(&self, ctx: &TurnContext) -> AgentResult<()> {
+        self.notify("on_turn_end", &serde_json::json!({
+            "turn_index": ctx.turn_index,
+            "has_tool_calls": ctx.has_tool_calls,
+            "stop_reason": &ctx.stop_reason,
+        }))
+    }
+
+    // ── Context / Provider ──
+    async fn on_context(&self, messages: &mut Vec<Message>) -> AgentResult<()> {
+        let result = self.call_mut("on_context", &serde_json::json!({"messages": messages}))?;
+        if let Some(v) = result {
+            if let Some(m) = v.get("messages") {
+                if let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok() {
+                    *messages = new_msgs;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn before_provider_request(&self, ctx: &ProviderRequestContext) -> AgentResult<()> {
+        self.notify("before_provider_request", &serde_json::json!({
+            "model": &ctx.model,
+            "provider": &ctx.provider,
+        }))
+    }
+
+    async fn after_provider_response(&self, ctx: &ProviderResponseContext) -> AgentResult<()> {
+        self.notify("after_provider_response", &serde_json::json!({
+            "model": &ctx.model,
+            "provider": &ctx.provider,
+            "status": ctx.status,
+        }))
+    }
+
+    // ── Streaming ──
+    async fn on_message_start(&self, role: &str, content: &str) -> AgentResult<()> {
+        self.notify("on_message_start", &serde_json::json!({"role": role, "content": content}))
+    }
+
+    async fn on_message_delta(&self, delta: &str, role: &str) -> AgentResult<()> {
+        self.notify("on_message_delta", &serde_json::json!({"delta": delta, "role": role}))
+    }
+
+    async fn on_message_end(&self, role: &str, full_content: &str, usage: &Usage) -> AgentResult<()> {
+        self.notify("on_message_end", &serde_json::json!({
+            "role": role,
+            "content": full_content,
+            "usage": {"input": usage.input, "output": usage.output, "total_tokens": usage.total_tokens},
+        }))
+    }
+
+    async fn on_thinking_delta(&self, delta: &str) -> AgentResult<()> {
+        self.notify("on_thinking_delta", &serde_json::json!({"delta": delta}))
+    }
+
+    async fn on_thinking_end(&self, content: &str) -> AgentResult<()> {
+        self.notify("on_thinking_end", &serde_json::json!({"content": content}))
+    }
+
+    async fn on_tool_call_delta(&self, delta: &str, name: &str) -> AgentResult<()> {
+        self.notify("on_tool_call_delta", &serde_json::json!({"delta": delta, "name": name}))
+    }
+
+    async fn on_text_end(&self, content: &str) -> AgentResult<()> {
+        self.notify("on_text_end", &serde_json::json!({"content": content}))
+    }
+
+    async fn on_tool_call_end(&self, tool_call: &ToolCall) -> AgentResult<()> {
+        self.notify("on_tool_call_end", &serde_json::json!({
+            "id": &tool_call.id,
+            "name": &tool_call.name,
+            "arguments": &tool_call.arguments,
+        }))
+    }
+
+    // ── Tool execution ──
+    async fn on_tool_execution_start(&self, ctx: &ToolExecutionContext) -> AgentResult<()> {
+        self.notify("on_tool_execution_start", &serde_json::json!({
+            "tool_call_id": &ctx.tool_call_id,
+            "tool_name": &ctx.tool_name,
+            "is_error": ctx.is_error,
+        }))
+    }
+
+    async fn on_tool_execution_update(&self, ctx: &ToolExecutionContext, partial: &str) -> AgentResult<()> {
+        self.notify("on_tool_execution_update", &serde_json::json!({
+            "tool_call_id": &ctx.tool_call_id,
+            "tool_name": &ctx.tool_name,
+            "partial": partial,
+        }))
+    }
+
+    async fn on_tool_execution_end(&self, ctx: &ToolExecutionContext) -> AgentResult<()> {
+        self.notify("on_tool_execution_end", &serde_json::json!({
+            "tool_call_id": &ctx.tool_call_id,
+            "tool_name": &ctx.tool_name,
+            "is_error": ctx.is_error,
+            "duration_ms": ctx.duration_ms,
+        }))
+    }
+
+    async fn before_tool_call(&self, call: &ToolCall) -> AgentResult<()> {
+        let blocked = self.call_status("before_tool_call", &serde_json::json!({
+            "id": &call.id,
+            "name": &call.name,
+            "arguments": &call.arguments,
+        }))?;
+        if blocked {
+            return Err(AgentError::Tool(format!(
+                "blocked by extension '{}'",
+                self.name
+            )));
+        }
+        Ok(())
+    }
+
+    async fn after_tool_call(&self, call: &ToolCall, result: &ToolResult) -> AgentResult<()> {
+        self.notify("after_tool_call", &serde_json::json!({
+            "id": &call.id,
+            "name": &call.name,
+            "result": &result.output,
+        }))
+    }
+
+    // ── Model ──
+    async fn on_model_select(&self, ctx: &ModelSelectContext) -> AgentResult<()> {
+        self.notify("on_model_select", &serde_json::json!({
+            "old_model": &ctx.old_model,
+            "new_model": &ctx.new_model,
+            "new_provider": &ctx.new_provider,
+        }))
+    }
+
+    async fn on_thinking_level_select(&self, level: &str, old: Option<&str>) -> AgentResult<()> {
+        self.notify("on_thinking_level_select", &serde_json::json!({
+            "level": level,
+            "old": old,
+        }))
+    }
+
+    // ── Entries ──
+    async fn on_entries_invalidated(&self, entry_ids: &[String]) -> AgentResult<()> {
+        self.notify("on_entries_invalidated", &serde_json::json!({"entry_ids": entry_ids}))
+    }
+
+    // ── Session navigation ──
+    async fn on_session_before_switch(&self, target: &str) -> AgentResult<()> {
+        self.notify("on_session_before_switch", &serde_json::json!({"target": target}))
+    }
+
+    async fn on_session_before_fork(&self, entry_id: &str) -> AgentResult<()> {
+        self.notify("on_session_before_fork", &serde_json::json!({"entry_id": entry_id}))
+    }
+
+    async fn on_session_before_tree(&self, target: &str) -> AgentResult<()> {
+        self.notify("on_session_before_tree", &serde_json::json!({"target": target}))
+    }
+
+    async fn on_session_tree(&self, leaf_id: &str) -> AgentResult<()> {
+        self.notify("on_session_tree", &serde_json::json!({"leaf_id": leaf_id}))
+    }
+
+    // ── Extension RPC ──
+    async fn on_extension_rpc(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> AgentResult<serde_json::Value> {
+        let params_str = serde_json::to_string(&params).unwrap_or_default();
+        let result: Result<String, String> = self.with_plugin(|p| {
+            p.call_hook_rpc(method, &params_str)
+        })?;
+        let result_str = result.map_err(AgentError::Tool)?;
+        let result_json = serde_json::from_str(&result_str)
+            .map_err(|e| AgentError::Tool(format!("wasm rpc bad json: {e}")))?;
+        Ok(result_json)
+    }
+
+    // ── Permission ──
+    async fn on_permission_request(&self, tool: &str, args: &serde_json::Value) -> AgentResult<()> {
+        self.notify("on_permission_request", &serde_json::json!({"tool": tool, "args": args}))
+    }
+
+    async fn on_system_prompt(&self, prompt: &mut String) -> AgentResult<()> {
+        let result = self.call_mut("on_system_prompt", &serde_json::json!({"prompt": &*prompt}))?;
+        if let Some(v) = result {
+            if let Some(p) = v.get("prompt").and_then(|v| v.as_str()) {
+                *prompt = p.to_string();
+            }
+        }
+        Ok(())
+    }
 }
