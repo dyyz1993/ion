@@ -176,6 +176,9 @@ docs/
 | [docs/design/PROVIDER_PROTOCOL.md](./docs/design/PROVIDER_PROTOCOL.md) | 多 Provider 协议：4 个 provider + transform_messages + detectCompat + CLI 测试 (已验证) |
 | [docs/design/PERMISSION_SYSTEM.md](./docs/design/PERMISSION_SYSTEM.md) | 权限系统：设计 + CLI 用法 + 测试规格 + CLI 测试指南 (设计稿+已验证) |
 | [docs/design/SESSION_MESSAGE.md](./docs/design/SESSION_MESSAGE.md) | Session 消息系统：Entry 类型、推送通道、消息类型扩展 (设计稿+已验证) |
+| [docs/design/APPLE_CONTAINER_EXTENSION.md](./docs/design/APPLE_CONTAINER_EXTENSION.md) | Apple Container Backend：Group A-J 26 条测试用例 (已验证) |
+| [BACKEND_TYPES.md](./BACKEND_TYPES.md) | Backend 类型分类：Local/Sandbox/Remote/Container + 5 种配置场景 (已完成) |
+| [ROUTER_TEST_SPEC.md](./ROUTER_TEST_SPEC.md) | 路由层测试规格：68 条用例覆盖路由/路径/安全/配置错误 (已完成) |
 | [docs/design/HOOK_SYSTEM.md](./docs/design/HOOK_SYSTEM.md) | Shell Hook 系统设计 (TRAE 兼容, 暂不开发) |
 | [docs/design/TEAM_ARCH.md](./docs/design/TEAM_ARCH.md) | 单项目自治 Agent 团队架构 — `ion team` 命令设计 (开发中) |
 | [docs/design/PI_RPC_ALIGNMENT.md](./docs/design/PI_RPC_ALIGNMENT.md) | pi RPC CLI 对齐文档 (开发中) |
@@ -277,7 +280,18 @@ ion-worker --mode rpc    → Worker 子进程 (JSONL over stdin/stdout)
 - 完整 steer/follow_up/abort/promote_follow_up 行为对齐 pi
 - Unix socket IPC（Manager ↔ CLI client）
 - `ion rpc` client — Manager 级 / Instance / Tool / Extension 四类 RPC
-- `CLI_USAGE.md` — 标准用法文档（见 [docs/guides/CLI_USAGE.md](./docs/guides/CLI_USAGE.md)）
+- `cli_usage.md` — 标准用法文档（见 [docs/guides/CLI_USAGE.md](./docs/guides/CLI_USAGE.md)）
+- 路由层 (`BackendRegistry`: 命令前缀+路径前缀路由，替代 RouterRuntime)
+- Apple Container 后端 (`AppleContainerRuntime`: 真隔离 Linux VM，同端口并行)
+- 命令守卫三模式 (`CommandGuard`: whitelist/blacklist/open，50+ 风险模式)
+- 跨平台安全框架 (`build_secured`: PermissionEngine + CommandGuard 配置驱动)
+- WASM 数据 host functions 路径穿越检查 (`safe_join`: 防 ../../../ 逃逸)
+- Sandbox profile 白名单化 (`deny default` + 白名单，替换旧黑名单)
+- 配置驱动沙箱权限 (`CommandGuardConfig` 接入 config.json)
+- `BACKEND_TYPES.md` — Backend 类型分类与安全防御层级文档
+- `ROUTER_TEST_SPEC.md` — 路由层 68 条测试规格
+- `tests/apple_container_ci.sh` — 26 条 Apple Container E2E 自动化测试
+- 总计 269 个测试（243 单元 + 26 E2E）全部通过 ✅
 
 ### 🧠 Memory 扩展 v0.1
 
@@ -331,61 +345,41 @@ ion-worker --mode rpc    → Worker 子进程 (JSONL over stdin/stdout)
 - ~~CommandGuard 白名单 + 风险检测~~ ✅ 已完成
 - ~~权限引擎 Agent 集成~~ ✅ 已完成
 
-**P1 - Runtime 抽象层（沙箱/远程/本地三模式切换）:**
+**P1 - Runtime 抽象层（沙箱/远程/本地三模式切换）:** ✅ 已完成
 
-设计目标：所有工具执行走统一 trait，换模式只需改一行配置。
+四种 Runtime 实现 + 路由层全部完成，支持统一 `Runtime` trait + 配置驱动切换。
 
-```rust
-/// ──────────────────────────────────────────────────────────────
-/// Runtime trait — 所有工具执行的底层抽象
-/// 切换模式只需替换 Agent 初始化时传入的 Runtime 实现
-/// ──────────────────────────────────────────────────────────────
+| Runtime | 类型 | 隔离 |
+|---------|------|------|
+| `LocalRuntime` | 直接执行 | 无 |
+| `SandboxRuntime` | 权限过滤（sandbox-exec） | 弱（共享 fs） |
+| `RemoteRuntime` | SSH 远程执行 | 强 |
+| `AppleContainerRuntime` | 容器 VM 隔离 | 强 |
+| `BackendRegistry` | 路由层（替代 RouterRuntime） | — |
 
-#[async_trait]
-pub trait Runtime: Send + Sync {
-    /// 执行命令（bash）
-    async fn execute(&self, command: &str, timeout_secs: u64)
-        -> Result<(String, String, i32), String>;
+详细文档见 [BACKEND_TYPES.md](./BACKEND_TYPES.md)、[APPLE_CONTAINER_EXTENSION.md](./docs/design/APPLE_CONTAINER_EXTENSION.md)。
 
-    /// 读文件
-    async fn read_file(&self, path: &str) -> Result<String, String>;
+**配置示例：**
 
-    /// 写文件
-    async fn write_file(&self, path: &str, content: &str) -> Result<(), String>;
-
-    /// 编辑文件（sed 式替换）
-    async fn edit_file(&self, path: &str, old: &str, new: &str) -> Result<(), String>;
-
-    /// 文件是否存在
-    async fn path_exists(&self, path: &str) -> bool;
-
-    /// 列出目录
-    async fn list_dir(&self, path: &str) -> Result<Vec<String>, String>;
-
-    /// 删除文件
-    async fn remove_file(&self, path: &str) -> Result<(), String>;
-
-    /// Runtime 类型名（调试用）
-    fn runtime_type(&self) -> &str;
+```json
+{
+  "runtime": {
+    "default": "shanbox",
+    "backends": {
+      "local":   {"type": "local"},
+      "shanbox": {"type": "remote", "hostname": "shanbox"}
+    },
+    "routes": [
+      {"path": "/Users/xuyingzhou/.ion/*", "target": "local"}
+    ]
+  }
 }
 ```
 
-三种预置实现（已规划，未实现）：
-
-```rust
-// ── 模式 1: 本地直接执行（当前行为，无沙箱）──
-pub struct LocalRuntime;
-// execute  → tokio::process::Command::new("sh")
-// read     → tokio::fs::read_to_string
-// write    → tokio::fs::write
-// 权限检查 + 命令守卫通过中间件包装实现
-
-// ── 模式 2: macOS sandbox-exec（沙箱隔离）──
-pub struct MacOSSandboxRuntime {
-    profile: SandboxProfile,  // 读写/只读/禁止目录
-}
-// execute  → sandbox-exec -f profile.sb sh -c "cmd"
-// read     → sandbox-exec -f profile.sb cat path
+**P1b - 沙箱实现（后续）:**
+- ~~macOS sandbox-exec profile 生成~~ ✅ 已完成（白名单模式）
+- Docker 容器 Runtime
+- Windows WSL2 兜底
 // 自动生成 .sb 配置文件控制文件访问权限
 
 // ── 模式 3: 远程执行（RPC 到另一台机器）──
@@ -491,11 +485,14 @@ let agent = Agent::new(registry, model, system_prompt, tools, config)
 - 会话树导航 (navigate_tree)
 - install/remove/update 包管理子命令
 
-### 测试统计 (2026-07-05)
+### 测试统计 (2026-07-07)
 
 | 套件 | 数量 | 覆盖 |
 |------|------|------|
 | lib tests (核心逻辑) | 90 | Agent/Permission/Retry/CommandGuard/Paths/Session/Worker/Memory |
+| backend_registry (路由层) | 20 | BackendRegistry/AppleContainerRuntime/路径规范化/glob |
+| command_guard (命令守卫) | 20 | whitelist/blacklist/open 三种模式 + 50+ 风险模式 |
+| wasm_extension (安全) | 10 | 路径穿越检查/safe_join/规范化 |
 | unit_rpc_test (Phase 1) | 20 | U1-U20 RPC 协议 + 会话存储 |
 | plugin_tests (Phase 1) | 17 | U21-U25 JSON/WASM/Plan/Todo 扩展 |
 | manager_integration (Phase 2-4) | 30 | I1-I32 Manager + Worker + 事件 + UI |
@@ -504,7 +501,9 @@ let agent = Agent::new(registry, model, system_prompt, tools, config)
 | child_worker | 3 | 子进程 Worker 通信 |
 | concurrency | 1 | 并发池 |
 | memory_e2e | 6 | Memory 扩展存储/搜索/注入/去重/路径净化 |
-| **总计** | **193** | 全部通过 ✅ |
+| **小计 lib 单元测试** | **243** | 全部通过 ✅ |
+| apple_container_ci (CLI E2E) | 26 | 容器生命周期/命令/文件/IP/路由/多容器并行 |
+| **测试覆盖合计** | **269** | 全部通过 ✅ |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)

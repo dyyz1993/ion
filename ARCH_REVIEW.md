@@ -76,41 +76,41 @@ P0 修复后全量验证                        145 ✅ (2026-07-06)
 
 ### 待讨论的 P1 设计问题
 
-### 1. Runtime trait 使用默认实现 + 重写
+### 1. Runtime trait 使用默认实现 + 重写 ✅ 已定
 
 Runtime trait 有约 20 个方法。RemoteRuntime 重写了 execute_command/read_file/write_file 等 15 个方法，其余通过 `self.inner.xxx()` 透传。SandboxRuntime 只重写了 execute_command（用 sandbox-exec 包装），其他透传。
 
-**问：** 这样"只重写需要的"模式是否合适？SandboxRuntime 的 read/write 透传给 inner 是否会在沙箱外执行？
+**状态：已接受当前模式。** read/write 透传给 inner 是预期行为——砂箱只约束 `execute_command`（bash 命令），`read_file`/`write_file` 等工具调用走 SecuredRuntime 的 PermissionEngine 控制。两者分属不同防御层级。
 
-### 2. Arc<Mutex<ExtensionEventBus>> 作为全局共享状态
+### 2. Arc<Mutex<ExtensionEventBus>> 作为全局共享状态 🟡 待优化
 
 SecuredRuntime 持有 `Option<Arc<Mutex<ExtensionEventBus>>>`，resolve_ask 时通过它推送 Ask 事件。Manager 的 socket handler 也持有同一个 EventBus，用于 subscribe --ui。
 
-**问：** 这种 Arc+Mutex 共享 EventBus 的方式在大并发下有没有问题？有没有更好的选择（比如 broadcast channel）？
+**状态：暂缓。** 当前并发量下 Arc+Mutex 足够。未来如果出现高并发 Ask 推送可改为 tokio broadcast channel。
 
-### 3. RemoteRuntime 的 ProxyJump 实现
+### 3. RemoteRuntime 的 ProxyJump 实现 🟡 暂维持
 
 ProxyJump 直接在 SSH 命令字符串里拼 `-J proxy_host`。没有用 libssh 或 ssh2 crate。
 
-**问：** 字符串拼凑的方式够用吗？是否应该用专门的 SSH crate？
+**状态：暂维持。** 字符串拼凑方式经实测可用（RemoteRuntime E2E 测试通过）。若未来需要更复杂的 SSH 管理（多 hop、密钥管理）再考虑 libssh。
 
-### 4. SandboxRuntime 的 profile 文件写 /tmp
+### 4. SandboxRuntime 的 profile 文件写 /tmp ✅ 已修复
 
-每次 execute_command 都生成一个 `.sb` 文件到 `/tmp/`，不主动清理。
+之前每次 execute_command 生成 `.sb` 文件到 `/tmp/` 不清理。
 
-**问：** 是否有更好的方式（比如 sandbox-exec -p 内联 profile）？不清理文件是否可接受？
+**状态：已修复（2026-07-07）。** 改用 sandbox-exec `-p` 内联 profile，不写任何临时文件。
 
-### 5. SecuredRuntime 和 PermissionExtension 双重检查
+### 5. SecuredRuntime 和 PermissionExtension 双重检查 🟡 待设计
 
 PermissionExtension（before_tool_call 钩子）先检查自有规则表 → 放行给 SecuredRuntime（PermissionEngine + CommandGuard）。两条路径可能重复检查。
 
-**问：** 这种分层是否合理？有没有更好的方式让 Extension 直接绕过 SecuredRuntime？
+**状态：待设计。** PermissionExtension 是 Extension 钩子层，SecuredRuntime 是内核层，职责明确。但双重检查可能影响性能。后续当有真实用例时再优化。
 
-### 6. 测试脚本依赖 Manager 进程
+### 6. 测试脚本依赖 Manager 进程 🟡 待优化
 
 3 个 CI 脚本（runtime_ci / permission_ci / session_ci）都需要 `ion manager start` + `create_worker`，启动慢（~15s），且可能残留进程。
 
-**问：** 有没有更好的测试方式？比如 mock Worker 来加速？
+**状态：待优化。** 当前 apple_container_ci.sh 用了相同模式，但加了更完善的 cleanup trap。后续可考虑 mock Worker 加速单测。
 
 ## 快速开始
 

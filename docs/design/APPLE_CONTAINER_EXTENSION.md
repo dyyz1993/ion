@@ -636,7 +636,7 @@ IP2=$(/usr/local/bin/container inspect ion-ac-test | python3 -c "import sys,json
 | A3 | 停止容器（Drop / stop） | ✅ 实测通过 |
 | B1 | bash echo 简单命令 | ✅ 实测通过 |
 | B2 | bash 多条命令 | ✅ 实测通过 |
-| B3 | bash 编译运行 | 🟡 待实测（需镜像） |
+| B3 | 编译运行（python:alpine） | ✅ 实测通过 |
 | C1 | write 写文件 | ✅ 实测通过 |
 | C2 | read 读文件 | ✅ 实测通过 |
 | C3 | edit 编辑文件 | ✅ 实测通过 |
