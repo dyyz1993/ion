@@ -668,9 +668,15 @@ pub fn make_llm_summarizer(
         let m = model.clone();
         let msgs = old_messages.to_vec();
         Box::pin(async move {
+            // 跨 provider 消息规范化（压缩时历史也可能混合多 provider）
+            let transformed = ion_provider::transform_messages::transform_messages(
+                msgs,
+                &m,
+                None,
+            );
             let ctx = ion_provider::Context::new(
                 Some("Summarize key information from these conversation messages.".into()),
-                msgs,
+                transformed,
             );
             let msg = ion_provider::registry::complete(&p, &m, &ctx, None).await?;
             Ok(msg

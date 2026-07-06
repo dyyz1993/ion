@@ -891,14 +891,16 @@ async fn i21_subscribe_worker_events() {
     }, &registry).await.unwrap();
 
     let mut events = reg.subscribe(&info.worker_id).unwrap();
-    drop(reg);
-    let _ = WorkerRegistry::send_async(&registry, 
-        &info.worker_id, "prompt",
+    // 用 send_command（非阻塞）而非 send_async（等 response）：
+    // 测试只需观察事件流，不等 prompt 的 response 回来。
+    // send_async 会阻塞到 agent loop 跑完，LLM 慢时 25s deadline 不够。
+    reg.send_command(&info.worker_id, "prompt",
         serde_json::json!({"text": "Hi"}),
-    ).await;
-    let mut reg = registry.lock().await;
+    ).await.unwrap();
+    drop(reg);
 
     // Poll: drain and then read from events channel repeatedly
+    // ⚠️ 关键：recv 期间不能持锁，否则 reader task 无法拿锁转发 event
     let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
     let mut saw_agent_start = false;
     let mut saw_text_delta = false;
@@ -906,14 +908,16 @@ async fn i21_subscribe_worker_events() {
 
     loop {
         if tokio::time::Instant::now() > deadline { break; }
-        // Drain any pending events from stdout_rx into subscribers
-        reg.drain_events(&info.worker_id, 500).await;
-        // Read from subscriber channel
+        // 持锁 drain（短暂），然后释放锁
+        {
+            let mut reg = registry.lock().await;
+            reg.drain_events(&info.worker_id, 200).await;
+        }
+        // 不持锁 recv — reader task 能拿锁转发 event
         match tokio::time::timeout(Duration::from_millis(1000), events.recv()).await {
             Ok(Some(event)) => {
                 if event.get("type").and_then(|v| v.as_str()) == Some("event") {
-                    let inner_type = event["event"]["type"].as_str().unwrap_or("");
-                    match inner_type {
+                    match event["event"]["type"].as_str().unwrap_or("") {
                         "agent_start" => saw_agent_start = true,
                         "text_delta" => saw_text_delta = true,
                         "agent_end" => saw_agent_end = true,
@@ -923,9 +927,7 @@ async fn i21_subscribe_worker_events() {
                 if saw_agent_end { break; }
             }
             _ => {
-                // No more events right now; drain again
                 if saw_agent_start && saw_text_delta {
-                    // If we saw start and text but not end, wait for LLM
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
             }
@@ -936,6 +938,7 @@ async fn i21_subscribe_worker_events() {
     assert!(saw_text_delta, "should receive text_delta");
     assert!(saw_agent_end, "should receive agent_end");
 
+    let mut reg = registry.lock().await;
     let _ = reg.kill_worker(&info.worker_id);
 }
 
@@ -955,18 +958,21 @@ async fn i22_event_ordering() {
     }, &registry).await.unwrap();
 
     let mut events = reg.subscribe(&info.worker_id).unwrap();
-    drop(reg);
-    let _ = WorkerRegistry::send_async(&registry, 
-        &info.worker_id, "prompt",
+    // 用 send_command（非阻塞）：只观察事件流，不等 prompt response。
+    let _ = reg.send_command(&info.worker_id, "prompt",
         serde_json::json!({"text": "Hello"}),
-    ).await;
-    let mut reg = registry.lock().await;
+    ).await.unwrap();
+    drop(reg);
 
+    // ⚠️ recv 期间不能持锁，否则 reader task 无法拿锁转发 event
     let mut collected: Vec<String> = Vec::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
     loop {
         if tokio::time::Instant::now() > deadline { break; }
-        reg.drain_events(&info.worker_id, 500).await;
+        {
+            let mut reg = registry.lock().await;
+            reg.drain_events(&info.worker_id, 200).await;
+        }
         match tokio::time::timeout(Duration::from_millis(1000), events.recv()).await {
             Ok(Some(event)) => {
                 if event.get("type").and_then(|v| v.as_str()) == Some("event") {
@@ -988,6 +994,7 @@ async fn i22_event_ordering() {
         assert!(sp < ep, "agent_start before agent_end");
     }
 
+    let mut reg = registry.lock().await;
     let _ = reg.kill_worker(&info.worker_id);
 }
 
@@ -1173,25 +1180,25 @@ async fn i30_multiple_subscriptions() {
     let mut ea = reg.subscribe(&a.worker_id).unwrap();
     let mut eb = reg.subscribe(&b.worker_id).unwrap();
 
+    // 用 send_command（非阻塞）发两个 prompt，不等 response
+    let _ = reg.send_command(&a.worker_id, "prompt",
+        serde_json::json!({"text": "Hi A"})).await.unwrap();
+    let _ = reg.send_command(&b.worker_id, "prompt",
+        serde_json::json!({"text": "Hi B"})).await.unwrap();
     drop(reg);
-    let _ = WorkerRegistry::send_async(&registry, &a.worker_id, "prompt",
-        serde_json::json!({"text": "Hi A"})).await;
-    let mut reg = registry.lock().await;
-    reg.drain_events(&a.worker_id, 3000).await;
-    drop(reg);
-    let _ = WorkerRegistry::send_async(&registry, &b.worker_id, "prompt",
-        serde_json::json!({"text": "Hi B"})).await;
-    let mut reg = registry.lock().await;
-    reg.drain_events(&b.worker_id, 3000).await;
 
+    // ⚠️ recv 期间不能持锁，否则 reader task 无法拿锁转发 event
     let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
     let mut ac = 0usize;
     let mut bc = 0usize;
 
     loop {
         if tokio::time::Instant::now() > deadline { break; }
-        reg.drain_events(&a.worker_id, 500).await;
-        reg.drain_events(&b.worker_id, 500).await;
+        {
+            let mut reg = registry.lock().await;
+            reg.drain_events(&a.worker_id, 100).await;
+            reg.drain_events(&b.worker_id, 100).await;
+        }
         match tokio::time::timeout(Duration::from_millis(1000), ea.recv()).await {
             Ok(Some(ev)) => { if ev.get("type").and_then(|v| v.as_str()) == Some("event") { ac += 1; } }
             _ => {}
@@ -1206,6 +1213,7 @@ async fn i30_multiple_subscriptions() {
     assert!(ac > 0, "A should receive events");
     assert!(bc > 0, "B should receive events");
 
+    let mut reg = registry.lock().await;
     let _ = reg.kill_worker(&a.worker_id);
     let _ = reg.kill_worker(&b.worker_id);
 }

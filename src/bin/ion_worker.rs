@@ -203,9 +203,14 @@ async fn main() {
     let stdout = Arc::new(Mutex::new(io::stdout()));
     let manager_bridge: Arc<ManagerBridge> = Arc::new(ManagerBridge::new(sid.clone(), stdout.clone()));
 
-    // ── Agent 用 WorkerRuntime 包装 LocalRuntime，从而获得 spawn_worker / send_to_worker ──
+    // ── Agent 用 SecuredRuntime<WorkerRuntime<LocalRuntime>> ──
+    // SecuredRuntime 在最外层拦截 CommandGuard + PermissionEngine
+    // WorkerRuntime 中间层提供 spawn_worker / send_to_worker 编排能力
+    // LocalRuntime 底层执行
+    let secured_inner = ion::runtime::SecuredRuntime::new(ion::runtime::LocalRuntime::new())
+        .with_profile(ion::kernel::SecurityProfile::default());
     let worker_rt = ion::runtime::WorkerRuntime::new(
-        ion::runtime::LocalRuntime::new(),
+        secured_inner,
         manager_bridge.clone() as Arc<dyn ion::runtime::ManagerBridgeHandle>,
     );
 

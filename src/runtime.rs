@@ -34,6 +34,24 @@ pub trait Runtime: Send + Sync {
     async fn execute_command(&self, command: &str, timeout_secs: u64)
         -> Result<(String, String, i32), String>;
 
+    /// 流式执行 shell 命令（逐行回调 on_update）
+    /// 默认实现：调 execute_command 后一次性回调
+    async fn execute_command_stream(
+        &self,
+        command: &str,
+        timeout_secs: u64,
+        on_update: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<String, String> {
+        let (stdout, stderr, exit_code) = self.execute_command(command, timeout_secs).await?;
+        let output = if stderr.is_empty() { stdout } else { format!("{stdout}{stderr}") };
+        on_update(output.clone());
+        if exit_code != 0 {
+            Err(format!("exit code {exit_code}: {output}"))
+        } else {
+            Ok(output)
+        }
+    }
+
     /// 读文件
     async fn read_file(&self, path: &str) -> Result<String, String>;
 
@@ -255,6 +273,13 @@ impl<R: Runtime + 'static> Runtime for WorkerRuntime<R> {
         -> Result<(String, String, i32), String>
     { self.inner.execute_command(command, timeout_secs).await }
 
+    async fn execute_command_stream(
+        &self, command: &str, timeout_secs: u64,
+        on_update: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<String, String> {
+        self.inner.execute_command_stream(command, timeout_secs, on_update).await
+    }
+
     async fn read_file(&self, path: &str) -> Result<String, String> {
         self.inner.read_file(path).await
     }
@@ -430,6 +455,45 @@ impl Runtime for LocalRuntime {
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         Ok((stdout, stderr, output.status.code().unwrap_or(-1)))
+    }
+
+    /// 流式执行：逐行读到 stdout，每行调 on_update
+    async fn execute_command_stream(
+        &self,
+        command: &str,
+        timeout_secs: u64,
+        on_update: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<String, String> {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", &format!("{command} 2>&1")])
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| format!("spawn failed: {e}"))?;
+        let stdout = child.stdout.take().ok_or("no stdout")?;
+        let mut reader = BufReader::new(stdout).lines();
+        let mut full = String::new();
+        loop {
+            tokio::select! {
+                line = reader.next_line() => {
+                    match line {
+                        Ok(Some(l)) => { full.push_str(&l); full.push('\n'); on_update(full.clone()); }
+                        Ok(None) => break,
+                        Err(e) => return Err(format!("read: {e}")),
+                    }
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_secs(timeout_secs)) => {
+                    let _ = child.start_kill();
+                    return Err(format!("timeout after {timeout_secs}s"));
+                }
+            }
+        }
+        let status = child.wait().await.map_err(|e| format!("wait: {e}"))?;
+        if !status.success() {
+            return Err(format!("exit code {}: {}", status.code().unwrap_or(-1), full));
+        }
+        Ok(full)
     }
 
     async fn read_file(&self, path: &str) -> Result<String, String> {
@@ -719,7 +783,7 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
                 crate::command_guard::GuardDecision::Ask(p) => {
                     let msg = format!("{}\n\n命令: `{}`", p.message, command);
                     if !self.resolve_ask("高危命令", &msg).await {
-                        let hint = p.suggestion.map(|s| format!(" 建议: {}", s)).unwrap_or_default();
+                        let hint = p.suggestion.as_ref().map(|s| format!(" 建议: {}", s)).unwrap_or_default();
                         return Err(format!("[CommandGuard] 用户拒绝了高危命令: {}{}", p.message, hint));
                     }
                     // 用户允许 → 放行
@@ -728,6 +792,34 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
             }
         }
         self.inner.execute_command(command, timeout_secs).await
+    }
+
+    /// 流式执行也走 CommandGuard 检查
+    async fn execute_command_stream(
+        &self, command: &str, timeout_secs: u64,
+        on_update: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<String, String> {
+        if let Some(ref guard) = self.command_guard {
+            match guard.check(command) {
+                crate::command_guard::GuardDecision::Deny(p) => {
+                    let msg = if let Some(ref sug) = p.suggestion {
+                        format!("[CommandGuard] 高危命令被拦截: {} 建议: {}", p.message, sug)
+                    } else {
+                        format!("[CommandGuard] 高危命令被拦截: {}", p.message)
+                    };
+                    return Err(msg);
+                }
+                crate::command_guard::GuardDecision::Ask(p) => {
+                    let msg = format!("{}\n\n命令: `{}`", p.message, command);
+                    if !self.resolve_ask("高危命令", &msg).await {
+                        let hint = p.suggestion.as_ref().map(|s| format!(" 建议: {}", s)).unwrap_or_default();
+                        return Err(format!("[CommandGuard] 用户拒绝了高危命令: {}{}", p.message, hint));
+                    }
+                }
+                crate::command_guard::GuardDecision::Allow => {}
+            }
+        }
+        self.inner.execute_command_stream(command, timeout_secs, on_update).await
     }
 
     async fn read_file(&self, path: &str) -> Result<String, String> {

@@ -814,7 +814,10 @@ async fn cmd_run(
     // Check if plan tools are loaded (before tools is moved into Agent)
     let has_plan_tools = tools.get("plan_enter").is_some();
 
-    let mut agent = Agent::new(registry, model, Some(sys_prompt), tools, config);
+    let secured = ion::runtime::SecuredRuntime::new(ion::runtime::LocalRuntime::new())
+        .with_profile(ion::kernel::SecurityProfile::default());
+    let mut agent = Agent::new(registry, model, Some(sys_prompt), tools, config)
+        .with_runtime(Box::new(secured));
     if let Some(msgs) = preloaded {
         agent = agent.with_messages(msgs);
     }

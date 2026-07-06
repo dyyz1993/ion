@@ -408,47 +408,19 @@ impl Tool for BashTool {
         Ok(result)
     }
 
-    /// Stream stdout line by line in real-time. Each line pushes an update immediately.
+    /// Stream stdout line by line via Runtime (goes through SecuredRuntime CommandGuard).
     async fn execute_stream(
         &self,
         args: serde_json::Value,
         on_update: ToolUpdateFn,
         rt: &dyn crate::runtime::Runtime,
     ) -> AgentResult<String> {
-        use tokio::io::{AsyncBufReadExt, BufReader};
-
         let cmd = args.get("command").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing command".into()))?;
-
-        // Merge stderr into stdout (2>&1) so we get a single stream to read
-        let mut child = tokio::process::Command::new("sh")
-            .args(["-c", &format!("{cmd} 2>&1")])
-            .stdout(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| AgentError::Tool(e.to_string()))?;
-
-        let stdout = child.stdout.take().ok_or_else(|| AgentError::Tool("no stdout".into()))?;
-        let mut reader = BufReader::new(stdout).lines();
-        let mut full_output = String::new();
-
-        // Read stdout line by line — each line is pushed immediately as a partial update
-        while let Ok(Some(line)) = reader.next_line().await {
-            full_output.push_str(&line);
-            full_output.push('\n');
-            on_update(full_output.clone());
-        }
-
-        let status = child.wait().await.map_err(|e| AgentError::Tool(e.to_string()))?;
-
-        // If non-zero exit, append error info
-        if !status.success() {
-            let code = status.code().unwrap_or(-1);
-            let msg = format!("\n[exit code: {code}]");
-            full_output.push_str(&msg);
-            on_update(full_output.clone());
-        }
-
-        Ok(full_output)
+        // 走 Runtime 的流式执行（经过 SecuredRuntime CommandGuard 检查）
+        let update_fn = |s: String| { on_update(s); };
+        rt.execute_command_stream(cmd, 180, &update_fn)
+            .await
+            .map_err(|e| AgentError::Tool(e))
     }
 }
 

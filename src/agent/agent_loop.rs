@@ -410,7 +410,16 @@ impl Agent {
             let sys_prompt = Some(sys_prompt);
             let messages_snapshot = self.messages.clone();
             let tool_defs: Vec<_> = self.tools.tool_defs().iter().cloned().collect();
-            let ctx = Context::new(sys_prompt, messages_snapshot);
+
+            // 跨 provider 消息规范化：当对话历史混合多个 provider 的消息时，
+            // 降级 thinking block / 规范化 tool call ID / 补合成孤儿 tool result
+            // 对齐 pi packages/ai/src/providers/transform-messages.ts
+            let transformed_messages = ion_provider::transform_messages::transform_messages(
+                messages_snapshot,
+                &self.model,
+                None,
+            );
+            let ctx = Context::new(sys_prompt, transformed_messages);
             let ctx = ctx.with_tools(tool_defs);
 
             // Call provider via router
@@ -545,119 +554,10 @@ impl Agent {
                     }
 
                     for tc in &tool_calls {
-                        // ── 权限检查 ──
-                        if let Some(ref engine) = self.extensions.permission_engine {
-                            let path = tc.arguments.get("path")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
-                            let command = tc.arguments.get("command")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
-                            let target = if !path.is_empty() { path } else { command };
-                            let action = crate::kernel::Action::from_tool(&tc.name);
-
-                            match engine.check(target, action) {
-                                crate::kernel::PermissionResult::Allow => {}
-                                crate::kernel::PermissionResult::Deny(reason) => {
-                                    tracing::warn!("[permission] denied: {reason}");
-                                    let deny_result = ToolResultMessage {
-                                        role: "tool".into(),
-                                        tool_call_id: tc.id.clone(),
-                                        tool_name: tc.name.clone(),
-                                        content: vec![ContentBlock::Text(TextContent {
-                                            text: format!("[Permission Denied] {reason}"),
-                                            text_signature: None,
-                                        })],
-                                        details: None,
-                                        is_error: true,
-                                        timestamp: now_ms(),
-                                    };
-                                    self.messages.push(Message::ToolResult(deny_result));
-                                    continue;
-                                }
-                                crate::kernel::PermissionResult::Ask { title, message } => {
-                                    let allowed = self.extensions.ui_system.as_ref()
-                                        .map(|ui| ui.confirm(&title, &message))
-                                        .unwrap_or(true);
-                                    if !allowed {
-                                        let deny_result = ToolResultMessage {
-                                            role: "tool".into(),
-                                            tool_call_id: tc.id.clone(),
-                                            tool_name: tc.name.clone(),
-                                            content: vec![ContentBlock::Text(TextContent {
-                                                text: "[Permission Denied] 用户拒绝了操作".into(),
-                                                text_signature: None,
-                                            })],
-                                            details: None,
-                                            is_error: true,
-                                            timestamp: now_ms(),
-                                        };
-                                        self.messages.push(Message::ToolResult(deny_result));
-                                        continue;
-                                    }
-                                }
-                            }
-                        }
-
-                        // ── CommandGuard（bash 命令守卫）──
-                        if tc.name == "bash" {
-                            let command = tc.arguments.get("command")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
-                            if !command.is_empty() {
-                                let guard = crate::command_guard::CommandGuard::default();
-                                match guard.check(command) {
-                                    crate::command_guard::GuardDecision::Allow => {}
-                                    crate::command_guard::GuardDecision::Deny(pattern) => {
-                                        let msg = if let Some(ref sug) = pattern.suggestion {
-                                            format!("[Command Guard] {} 建议: {}", pattern.message, sug)
-                                        } else {
-                                            format!("[Command Guard] {}", pattern.message)
-                                        };
-                                        let deny_result = ToolResultMessage {
-                                            role: "tool".into(),
-                                            tool_call_id: tc.id.clone(),
-                                            tool_name: tc.name.clone(),
-                                            content: vec![ContentBlock::Text(TextContent {
-                                                text: msg,
-                                                text_signature: None,
-                                            })],
-                                            details: None,
-                                            is_error: true,
-                                            timestamp: now_ms(),
-                                        };
-                                        self.messages.push(Message::ToolResult(deny_result));
-                                        continue;
-                                    }
-                                    crate::command_guard::GuardDecision::Ask(pattern) => {
-                                        let allowed = self.extensions.ui_system.as_ref()
-                                            .map(|ui| ui.confirm(
-                                                &format!("高危命令"),
-                                                &format!("{}\n\n命令: `{}`", pattern.message, command),
-                                            ))
-                                            .unwrap_or(true);
-                                        if !allowed {
-                                            if let Some(ref sug) = pattern.suggestion {
-                                                let deny_result = ToolResultMessage {
-                                                    role: "tool".into(),
-                                                    tool_call_id: tc.id.clone(),
-                                                    tool_name: tc.name.clone(),
-                                                    content: vec![ContentBlock::Text(TextContent {
-                                                        text: format!("[Command Guard] 已跳过，建议: {}", sug),
-                                                        text_signature: None,
-                                                    })],
-                                                    details: None,
-                                                    is_error: true,
-                                                    timestamp: now_ms(),
-                                                };
-                                                self.messages.push(Message::ToolResult(deny_result));
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        // ── 权限检查已移至 SecuredRuntime ──
+                        // PermissionEngine + CommandGuard 现在在 Runtime trait 方法里拦截
+                        // （execute_command / read_file / write_file / spawn_process 等）
+                        // agent_loop 只负责调用 Extension 钩子和工具执行
 
                         self.extensions.before_tool_call(tc).await?;
 
@@ -981,12 +881,20 @@ impl Agent {
         // 动态注入 context_window 到 compact_config（用于快/慢路径决策）
         let mut config = self.config.compact_config.clone();
         config.context_window = self.model.context_window;
+
+        // 先检查是否需要压缩（低于 threshold 不压缩）
+        if !compact::needs_compact(&self.messages, &config) {
+            return Ok(());
+        }
+
         let retry_config = RetryConfig::default();
+        // 接 LLM summarizer（用当前 provider + model 做压缩）
+        let summarizer = compact::make_llm_summarizer(self.registry.clone(), self.model.clone());
         compact::compact_batched(
             &mut self.messages,
             &config,
             &self.extensions,
-            None, // 暂不接 LLM summarizer，走 emergency truncation 兜底
+            Some(summarizer),
             retry_config,
         )
         .await
