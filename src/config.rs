@@ -27,6 +27,43 @@ pub struct IonConfig {
     /// Custom provider definitions (matching ~/.pi/agent/models.json format)
     #[serde(default)]
     pub providers: HashMap<String, CustomProvider>,
+
+    /// Built-in extension control — disable specific built-in extensions.
+    ///
+    /// Example config.json:
+    /// ```json
+    /// {
+    ///   "extensions": {
+    ///     "memory": { "enabled": false },
+    ///     "bash":   { "enabled": true }
+    ///   }
+    /// }
+    /// ```
+    /// Omitted extensions default to enabled.
+    #[serde(default)]
+    pub extensions: HashMap<String, ExtensionConfig>,
+}
+
+/// Per-extension configuration (currently just enable/disable).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ExtensionConfig {
+    /// Whether this extension is enabled. Defaults to true.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+impl IonConfig {
+    /// Check if a built-in extension is enabled (defaults to true if not configured).
+    pub fn is_extension_enabled(&self, name: &str) -> bool {
+        self.extensions
+            .get(name)
+            .map(|c| c.enabled)
+            .unwrap_or(true)
+    }
 }
 
 /// A custom provider definition (matches the pi reference models.json schema)
@@ -72,6 +109,7 @@ impl Default for IonConfig {
             base_url: None,
             provider_api_keys: HashMap::new(),
             providers: HashMap::new(),
+            extensions: HashMap::new(),
         }
     }
 }

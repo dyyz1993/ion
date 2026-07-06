@@ -196,16 +196,16 @@ impl Extension {
             version: 0,
         };
 
-        // Call plugin_version
-        if let Ok(func) = plugin.instance.get_typed_func::<(), u32>(&mut plugin.store, "plugin_version") {
+        // Call version (extension_version or legacy plugin_version)
+        if let Ok(func) = plugin.get_export_func::<(), u32>("version") {
             if let Ok(ver) = func.call(&mut plugin.store, ()) {
                 plugin.version = ver;
-                tracing::info!("[wasm] plugin v{ver}");
+                tracing::info!("[wasm] extension v{ver}");
             }
         }
 
-        // Call plugin_init — this triggers host_register_tool callbacks
-        if let Ok(func) = plugin.instance.get_typed_func::<(), ()>(&mut plugin.store, "plugin_init") {
+        // Call init (extension_init or legacy plugin_init) — triggers host_register_tool
+        if let Ok(func) = plugin.get_export_func::<(), ()>("init") {
             func.call(&mut plugin.store, ())?;
         }
 
@@ -225,10 +225,31 @@ impl Extension {
         *self.store.data_mut() = ctx.clone();
     }
 
+    /// Look up a typed export by name, trying `extension_<name>` first,
+    /// then falling back to `plugin_<name>` for backward compatibility with
+    /// older `.wasm` files that use the legacy symbol names.
+    fn get_export_func<Params, Results>(
+        &mut self,
+        short_name: &str,
+    ) -> Result<wasmtime::TypedFunc<Params, Results>, wasmtime::Error>
+    where
+        Params: wasmtime::WasmParams,
+        Results: wasmtime::WasmResults,
+    {
+        // Try extension_* first (new convention)
+        let new_name = format!("extension_{}", short_name);
+        match self.instance.get_typed_func::<Params, Results>(&mut self.store, &new_name) {
+            Ok(f) => Ok(f),
+            Err(_) => {
+                // Fallback to plugin_* (legacy convention)
+                let old_name = format!("plugin_{}", short_name);
+                self.instance.get_typed_func::<Params, Results>(&mut self.store, &old_name)
+            }
+        }
+    }
+
     pub fn execute_tool(&mut self, name: &str, args: &str) -> Result<String, Box<dyn std::error::Error>> {
-        let func = self.instance.get_typed_func::<(u32, u32, u32, u32, u32, u32), u32>(
-            &mut self.store, "plugin_execute_tool"
-        )?;
+        let func = self.get_export_func::<(u32, u32, u32, u32, u32, u32), u32>("execute_tool")?;
 
         let name_bytes = name.as_bytes();
         let args_bytes = args.as_bytes();
@@ -251,11 +272,11 @@ impl Extension {
     }
 
     /// Call a B-class hook: one-way notification, no return data.
-    /// WASM export: `plugin_on_<hook>(json_ptr: u32, json_len: u32)`.
+    /// WASM export: `extension_on_<hook>` (legacy: `plugin_on_<hook>`).
     /// Returns Ok(false) if the hook is not exported (extension chose not to implement it).
     pub fn call_hook_notify(&mut self, hook: &str, ctx_json: &str) -> Result<bool, String> {
-        let func_name = format!("plugin_on_{}", hook);
-        let func = match self.instance.get_typed_func::<(u32, u32), ()>(&mut self.store, &func_name) {
+        let short = format!("on_{}", hook);
+        let func = match self.get_export_func::<(u32, u32), ()>(&short) {
             Ok(f) => f,
             Err(_) => return Ok(false), // hook not exported
         };
@@ -270,13 +291,11 @@ impl Extension {
     }
 
     /// Call an A-class hook: mutable context, WASM returns modified JSON.
-    /// WASM export: `plugin_on_<hook>(json_ptr, json_len, out_buf, out_cap) -> u32`.
+    /// WASM export: `extension_on_<hook>(json_ptr, json_len, out_buf, out_cap) -> u32`.
     /// Returns None if hook not exported or WASM returned 0 bytes.
     pub fn call_hook_mut(&mut self, hook: &str, ctx_json: &str) -> Result<Option<String>, String> {
-        let func_name = format!("plugin_on_{}", hook);
-        let func = match self.instance.get_typed_func::<(u32, u32, u32, u32), u32>(
-            &mut self.store, &func_name,
-        ) {
+        let short = format!("on_{}", hook);
+        let func = match self.get_export_func::<(u32, u32, u32, u32), u32>(&short) {
             Ok(f) => f,
             Err(_) => return Ok(None),
         };
@@ -305,11 +324,10 @@ impl Extension {
 
     /// Call a C-class hook: returns a status code (0 or non-zero).
     /// Used by `before_tool_call` where 0=allow, non-zero=block.
-    /// WASM export: `plugin_<hook>(json_ptr, json_len) -> u32`.
+    /// WASM export: `extension_<hook>` (legacy: `plugin_<hook>`).
     /// Returns false if hook not exported (don't block).
     pub fn call_hook_status(&mut self, hook: &str, ctx_json: &str) -> Result<bool, String> {
-        let func_name = format!("plugin_{}", hook);
-        let func = match self.instance.get_typed_func::<(u32, u32), u32>(&mut self.store, &func_name) {
+        let func = match self.get_export_func::<(u32, u32), u32>(hook) {
             Ok(f) => f,
             Err(_) => return Ok(false),
         };
@@ -325,16 +343,14 @@ impl Extension {
     }
 
     /// Call extension_rpc hook.
-    /// WASM export: `plugin_on_extension_rpc(method_ptr, method_len, params_ptr, params_len, out_buf, out_cap) -> u32`.
+    /// WASM export: `extension_on_rpc` (legacy: `plugin_on_extension_rpc`).
     /// Returns Err if hook not exported or returned 0.
     pub fn call_hook_rpc(
         &mut self,
         method: &str,
         params_json: &str,
     ) -> Result<String, String> {
-        let func = match self.instance.get_typed_func::<(u32, u32, u32, u32, u32, u32), u32>(
-            &mut self.store, "plugin_on_extension_rpc",
-        ) {
+        let func = match self.get_export_func::<(u32, u32, u32, u32, u32, u32), u32>("on_rpc") {
             Ok(f) => f,
             Err(_) => return Err("extension rpc method not found".into()),
         };

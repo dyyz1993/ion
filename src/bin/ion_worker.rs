@@ -224,26 +224,43 @@ async fn main() {
         agent = agent.with_messages(msgs);
     }
 
-    // ── 注册 Memory + Bash + Streaming 插件 ──
+    // ── 注册内置 Extension（Memory / Bash / Streaming），可通过 config.json 关闭 ──
+    let ion_cfg = ion::config::IonConfig::load();
     // 先创建 follow_up 通道（bash 插件后台进程完成时用来注入消息）
     let (follow_up_tx, mut follow_up_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
+    let mut process_map = None;
+    let mut stdin_map = None;
+    let mut notify_map = None;
     {
         let mut ext_reg = ion::agent::extension::ExtensionRegistry::new();
-        let mut memory_ext = ion::agent::memory::MemoryExtension::new(&worker_cwd, &sid);
-        // 复用 tools 的 MemoryStore（同一份数据）
-        memory_ext.store = memory_store.clone();
-        ext_reg.register(Box::new(memory_ext));
 
-        // ── 注册 Bash 插件（后台进程管理） ──
-        let bash_ext = ion::agent::bash::BashExtension::new(&sid);
-        let process_map = bash_ext.process_map.clone();
-        let stdin_map = bash_ext.stdin_map.clone();
-        let notify_map = bash_ext.notify_map.clone();
-        ext_reg.register(Box::new(bash_ext));
+        // Memory Extension
+        if ion_cfg.is_extension_enabled("memory") {
+            let mut memory_ext = ion::agent::memory::MemoryExtension::new(&worker_cwd, &sid);
+            // 复用 tools 的 MemoryStore（同一份数据）
+            memory_ext.store = memory_store.clone();
+            ext_reg.register(Box::new(memory_ext));
+        } else {
+            tracing::info!("[extension] memory disabled by config");
+        }
 
-        // ── 注册流式透传 Extension ──
-        // on_message_delta → println text_delta event（实时推到 stdout → Manager → subscriber）
-        ext_reg.register(Box::new(StreamingExtension));
+        // Bash Extension（后台进程管理）
+        if ion_cfg.is_extension_enabled("bash") {
+            let bash_ext = ion::agent::bash::BashExtension::new(&sid);
+            process_map = Some(bash_ext.process_map.clone());
+            stdin_map = Some(bash_ext.stdin_map.clone());
+            notify_map = Some(bash_ext.notify_map.clone());
+            ext_reg.register(Box::new(bash_ext));
+        } else {
+            tracing::info!("[extension] bash disabled by config");
+        }
+
+        // Streaming Extension（流式透传）
+        if ion_cfg.is_extension_enabled("streaming") {
+            ext_reg.register(Box::new(StreamingExtension));
+        } else {
+            tracing::info!("[extension] streaming disabled by config");
+        }
 
         // ── 注册 WASM Extension 的 HookAdapter（让 WASM 也能实现 29 个钩子）──
         for wasm_path in &loaded_wasm_paths {
@@ -255,30 +272,32 @@ async fn main() {
 
         agent = agent.with_extensions(ext_reg);
 
-        // 注册 bash 工具
-        let bash_run_tool = ion::agent::bash::BashRunTool {
-            process_map: process_map.clone(),
-            stdin_map: stdin_map.clone(),
-            notify_map: notify_map.clone(),
-            follow_up_tx: Some(follow_up_tx.clone()),
-            session_id: sid.clone(),
-        };
-        let bash_kill_tool = ion::agent::bash::BashKillTool {
-            process_map: process_map.clone(),
-            follow_up_tx: Some(follow_up_tx),
-            session_id: sid.clone(),
-        };
-        let bash_send_tool = ion::agent::bash::BashSendTool {
-            stdin_map: stdin_map.clone(),
-        };
-        let bash_bg_tool = ion::agent::bash::BashBackgroundTool {
-            notify_map: notify_map.clone(),
-            process_map: process_map.clone(),
-        };
-        agent.register_tool(Box::new(bash_run_tool));
-        agent.register_tool(Box::new(bash_kill_tool));
-        agent.register_tool(Box::new(bash_send_tool));
-        agent.register_tool(Box::new(bash_bg_tool));
+        // 注册 bash 工具（仅当 bash extension 启用时）
+        if let (Some(pm), Some(sm), Some(nm)) = (&process_map, &stdin_map, &notify_map) {
+            let bash_run_tool = ion::agent::bash::BashRunTool {
+                process_map: pm.clone(),
+                stdin_map: sm.clone(),
+                notify_map: nm.clone(),
+                follow_up_tx: Some(follow_up_tx.clone()),
+                session_id: sid.clone(),
+            };
+            let bash_kill_tool = ion::agent::bash::BashKillTool {
+                process_map: pm.clone(),
+                follow_up_tx: Some(follow_up_tx.clone()),
+                session_id: sid.clone(),
+            };
+            let bash_send_tool = ion::agent::bash::BashSendTool {
+                stdin_map: sm.clone(),
+            };
+            let bash_bg_tool = ion::agent::bash::BashBackgroundTool {
+                notify_map: nm.clone(),
+                process_map: pm.clone(),
+            };
+            agent.register_tool(Box::new(bash_run_tool));
+            agent.register_tool(Box::new(bash_kill_tool));
+            agent.register_tool(Box::new(bash_send_tool));
+            agent.register_tool(Box::new(bash_bg_tool));
+        }
     }
 
     // 发 ready 信号
