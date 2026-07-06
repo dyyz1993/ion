@@ -145,6 +145,7 @@ ION 对标 pi 的全部能力。遇到不确定的设计决策时：
 | [EXTENSION_SYSTEM.md](./EXTENSION_SYSTEM.md) | WASM 扩展系统：热更新、4 维数据存储、16 个宿主函数 (已完成) |
 | [EXTENSION_WORKFLOW.md](./EXTENSION_WORKFLOW.md) | 扩展开发测试工作流：写→build→安装→RPC 直调→LLM 引导→RPC 佐证 (已验证) |
 | [CLI_USAGE.md](./CLI_USAGE.md) | CLI 标准用法：RPC / Subscribe / Extension RPC / Tool RPC 完整速查 (已验证) |
+| [SECURITY_CLI_GUIDE.md](./SECURITY_CLI_GUIDE.md) | Security & Runtime CLI 测试指南：进程管理、权限拦截、异步审批流程 (设计稿) |
 | [MEMORY_EXTENSION.md](./MEMORY_EXTENSION.md) | Memory 记忆扩展设计：大纲索引、异步检索、XML 注入、4 维存储 (设计稿) |
 | [MEMORY_SPEC.md](./MEMORY_SPEC.md) | Memory 扩展测试规格：P0/P1/XFail 分级、完整接口定义、验收标准 (已验证) |
 | [BASH_EXTENSION.md](./BASH_EXTENSION.md) | Bash 进程管理扩展设计：后台进程、实时流、退出原因、CLI 测试 (设计稿) |
@@ -215,6 +216,7 @@ ion-worker --mode rpc    → Worker 子进程 (JSONL over stdin/stdout)
 - Unix socket IPC（Manager ↔ CLI client）
 - `ion rpc` client — Manager 级 / Instance / Tool / Extension 四类 RPC
 - `CLI_USAGE.md` — 标准用法文档
+| [SECURITY_CLI_GUIDE.md](./SECURITY_CLI_GUIDE.md) | Security & Runtime CLI 测试指南：进程管理、权限拦截、异步审批流程 (设计稿) |
 
 ### 🧠 Memory 扩展 v0.1
 

@@ -962,13 +962,19 @@ impl Agent {
         if !self.config.enable_compact {
             return Ok(());
         }
-        compact::compact(
+        // 动态注入 context_window 到 compact_config（用于快/慢路径决策）
+        let mut config = self.config.compact_config.clone();
+        config.context_window = self.model.context_window;
+        let retry_config = RetryConfig::default();
+        compact::compact_batched(
             &mut self.messages,
-            &self.config.compact_config,
+            &config,
             &self.extensions,
-            None,
+            None, // 暂不接 LLM summarizer，走 emergency truncation 兜底
+            retry_config,
         )
         .await
+        .map(|_| ())
     }
 
     async fn check_pause(&self) -> AgentResult<()> {

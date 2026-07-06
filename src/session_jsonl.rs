@@ -119,6 +119,18 @@ pub struct CompactionEntry {
     pub timestamp: String,
     pub summary: String,
     pub tokensBefore: u64,
+    /// 分批压缩：批次数（0 = emergency / single）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batchCount: Option<usize>,
+    /// 分批压缩阶段：single / batched_merged / batched_three_step / emergency
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    /// 各批次 partial summary（审计用）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batchSummaries: Option<Vec<String>>,
+    /// Step 2 输出的合并 summary（仅 batched_three_step 阶段有）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mergedSummary: Option<String>,
 }
 
 /// Branch summary entry.

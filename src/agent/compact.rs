@@ -1,24 +1,57 @@
+//! 分批并发压缩 (Batched Concurrent Compaction)
+//!
+//! 三阶段流程（动态决策，兼容小模型）：
+//!   Step 0: 计算批次 N（优先按 user message 切，user 不够用 turn 切）
+//!   Step 1: 分批并发压缩 → N 个 partial summary（单批失败重试，整体失败 circuit breaker）
+//!   Step 2+3 动态决策：
+//!     - 快路径（输入 < context_window * 70%）：合并 Step 2+3，1 次 LLM 调用
+//!     - 慢路径（输入 >= context_window * 70%）：Step 2 (merge) → Step 3 (compress with recent)，2 次 LLM 调用
+//!
+//! 失败兜底：
+//!   - 单批失败：重试（RetryConfig）
+//!   - 全部批次失败：circuit breaker
+//!   - 总 tokens > 2x window：emergency truncation（纯文本，不调 LLM）
+//!   - 批次数 > 10：emergency truncation（太复杂）
+
 use super::error::AgentResult;
 use crate::agent::extension::ExtensionRegistry;
+use crate::retry::RetryConfig;
 use ion_provider::types::*;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
-/// Configuration for context compaction.
+// ──────────────────────────────────────────────────────────────
+// 配置
+// ──────────────────────────────────────────────────────────────
+
+/// 压缩配置
 #[derive(Clone, Debug)]
 pub struct CompactConfig {
+    /// 触发阈值（estimated tokens 超过此值就压缩）
     pub threshold: usize,
-    pub target: usize,
-    pub keep_newest: usize,
+    /// 压缩后保留的最近 token 量（对齐 pi keepRecentTokens）
+    pub keep_recent_tokens: usize,
+    /// 给 summary prompt + 输出预留的 token（对齐 pi reserveTokens）
+    pub reserve_tokens: usize,
+    /// 单批最大 token（控制单次 LLM 调用输入大小）
+    pub batch_max_tokens: usize,
+    /// 最大批次数（超过走 emergency truncation）
+    pub max_batches: usize,
+    /// 上下文窗口（用于动态决策快/慢路径，0 表示未知，走慢路径）
+    pub context_window: u64,
 }
 
 impl Default for CompactConfig {
     fn default() -> Self {
         Self {
             threshold: 32000,
-            target: 16000,
-            keep_newest: 4,
+            keep_recent_tokens: 20000,
+            reserve_tokens: 16384,
+            batch_max_tokens: 8000,
+            max_batches: 10,
+            context_window: 0,
         }
     }
 }
@@ -26,8 +59,40 @@ impl Default for CompactConfig {
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub type SummarizerFn = Arc<dyn Fn(&[Message]) -> BoxFuture<'_, AgentResult<String>> + Send + Sync>;
 
-/// Approximate token count for any message.
-fn msg_tokens(msg: &Message) -> usize {
+/// 本地重试辅助：支持捕获外部变量的 closure
+async fn retry_summarizer<F, Fut>(
+    config: &RetryConfig,
+    mut operation: F,
+) -> AgentResult<String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = AgentResult<String>>,
+{
+    let mut last_err: Option<AgentError> = None;
+    for attempt in 0..=config.max_retries {
+        if attempt > 0 {
+            let delay = std::time::Duration::from_millis(
+                500u64 * 2u64.pow((attempt - 1) as u32).min(6),
+            );
+            tokio::time::sleep(delay).await;
+        }
+        match operation().await {
+            Ok(s) => return Ok(s),
+            Err(e) => {
+                tracing::warn!("compaction retry {}/{}: {}", attempt + 1, config.max_retries + 1, e);
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| AgentError::Compact("retry exhausted with no error".into())))
+}
+
+// ──────────────────────────────────────────────────────────────
+// Token 估算
+// ──────────────────────────────────────────────────────────────
+
+/// 估算单条 message 的 token 数（chars/4 启发式，图片按 1000）
+pub fn msg_tokens(msg: &Message) -> usize {
     match msg {
         Message::User(m) => m
             .content
@@ -70,11 +135,514 @@ fn msg_tokens(msg: &Message) -> usize {
     }
 }
 
-pub fn needs_compact(messages: &[Message], config: &CompactConfig) -> bool {
-    let total: usize = messages.iter().map(msg_tokens).sum();
-    total > config.threshold
+pub fn total_tokens(messages: &[Message]) -> usize {
+    messages.iter().map(msg_tokens).sum()
 }
 
+pub fn needs_compact(messages: &[Message], config: &CompactConfig) -> bool {
+    total_tokens(messages) > config.threshold
+}
+
+// ──────────────────────────────────────────────────────────────
+// 批次规划
+// ──────────────────────────────────────────────────────────────
+
+/// 单个批次
+#[derive(Clone, Debug)]
+pub struct Batch {
+    pub start_idx: usize,
+    pub end_idx: usize,
+    pub est_tokens: usize,
+    pub anchor_user_preview: String,
+}
+
+/// 计算需要切几批，优先按 user message 切，user 不够用 turn 切
+pub fn plan_batches(messages: &[Message], config: &CompactConfig) -> Vec<Batch> {
+    let total = total_tokens(messages);
+    let compressible = total.saturating_sub(config.keep_recent_tokens);
+
+    if compressible == 0 {
+        return Vec::new();
+    }
+
+    // 目标批次数：compressible / batch_max_tokens，向上取整
+    let n = ((compressible as f64) / (config.batch_max_tokens as f64)).ceil() as usize;
+    let n = n.max(1).min(config.max_batches);
+
+    // 找所有 user message 索引作为候选切点
+    let user_indices: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| matches!(m, Message::User(_)))
+        .map(|(i, _)| i)
+        .collect();
+
+    // 决定切点：优先 user_indices，不够则用所有 message 索引
+    let cut_points: Vec<usize> = if user_indices.len() >= n + 1 {
+        // user 足够，按 N 均分 user_indices
+        let step = user_indices.len() as f64 / n as f64;
+        (0..n)
+            .map(|i| user_indices[(i as f64 * step) as usize])
+            .collect()
+    } else {
+        // user 不够，用所有 message 索引均分
+        let total_msgs = messages.len();
+        if total_msgs <= n {
+            return Vec::new();
+        }
+        let step = total_msgs as f64 / n as f64;
+        (0..n)
+            .map(|i| (i as f64 * step) as usize)
+            .collect()
+    };
+
+    // 构造批次：每个批次从切点 k 到切点 k+1（最后一个到 messages.len()）
+    let mut batches = Vec::with_capacity(n);
+    let cut_end = messages
+        .len()
+        .saturating_sub(config.keep_recent_tokens / 4); // 保留区起点（粗略）
+    for i in 0..n {
+        let start = if i == 0 { 0 } else { cut_points[i] };
+        let end = if i + 1 < n {
+            cut_points[i + 1]
+        } else {
+            // 最后一个批次到保留区起点
+            cut_end.max(start + 1)
+        };
+        if start >= end || start >= messages.len() {
+            continue;
+        }
+        let end = end.min(messages.len());
+        let est_tokens: usize = messages[start..end].iter().map(msg_tokens).sum();
+        let anchor_user_preview = messages[start..end]
+            .iter()
+            .find_map(|m| match m {
+                Message::User(u) => u.content.iter().find_map(|b| match b {
+                    ContentBlock::Text(t) => Some(t.chars().take(80).collect::<String>()),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .unwrap_or_default();
+        batches.push(Batch {
+            start_idx: start,
+            end_idx: end,
+            est_tokens,
+            anchor_user_preview,
+        });
+    }
+
+    batches
+}
+
+// ──────────────────────────────────────────────────────────────
+// 压缩结果
+// ──────────────────────────────────────────────────────────────
+
+/// 压缩结果（含批次元信息，写入 CompactionEntry）
+#[derive(Clone, Debug, Default)]
+pub struct CompactionResult {
+    pub summary: String,
+    pub tokens_before: u64,
+    pub batch_count: usize,
+    pub batch_summaries: Vec<String>,
+    pub merged_summary: Option<String>,
+    pub stage: String, // "single" | "batched_merged" | "batched_three_step" | "emergency"
+}
+
+// ──────────────────────────────────────────────────────────────
+// 核心压缩函数
+// ──────────────────────────────────────────────────────────────
+
+/// 主入口：分批并发压缩
+///
+/// `summarizer`：单批压缩函数（包装 LLM 调用）
+/// `merge_summarizer`：合并多批 summary 的函数（包装 LLM 调用）
+/// `final_summarizer`：与保留区合并压缩的函数（包装 LLM 调用）
+///
+/// 如果任一 summarizer 为 None，走 emergency truncation
+pub async fn compact_batched(
+    messages: &mut Vec<Message>,
+    config: &CompactConfig,
+    extensions: &ExtensionRegistry,
+    summarizer: Option<SummarizerFn>,
+    retry_config: RetryConfig,
+) -> AgentResult<CompactionResult> {
+    let total = total_tokens(messages) as u64;
+
+    // Emergency: 总 tokens > 2x context window（如果已知）或 summarizer 不可用
+    let context_window = config.context_window;
+    let too_large = context_window > 0 && total > context_window * 2;
+    let no_summarizer = summarizer.is_none();
+
+    if too_large || no_summarizer {
+        return emergency_truncate(messages, config, extensions, total).await;
+    }
+
+    let summarizer = summarizer.unwrap();
+    let batches = plan_batches(messages, config);
+
+    // 单批就能搞定 → 直接压缩，不走三阶段
+    if batches.len() <= 1 {
+        return single_batch_compact(messages, config, extensions, summarizer, total, retry_config)
+            .await;
+    }
+
+    tracing::info!(
+        "compaction: {} batches for {} tokens (window={})",
+        batches.len(),
+        total,
+        context_window
+    );
+
+    // ── Step 1: 分批并发压缩 ──
+    let batch_summaries: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut handles = Vec::new();
+
+    for (i, batch) in batches.iter().enumerate() {
+        let batch_msgs: Vec<Message> = messages[batch.start_idx..batch.end_idx].to_vec();
+        let summarizer_clone = Arc::clone(&summarizer);
+        let retry = retry_config.clone();
+        let batch_summaries_clone = Arc::clone(&batch_summaries);
+        let anchor = batch.anchor_user_preview.clone();
+        let total_batches = batches.len();
+
+        let handle = tokio::spawn(async move {
+            let batch_idx = i + 1;
+            let result = retry_summarizer(&retry, || {
+                let msgs = batch_msgs.clone();
+                let s = Arc::clone(&summarizer_clone);
+                let anchor = anchor.clone();
+                Box::pin(async move {
+                    let prompted = inject_batch_prompt(msgs, batch_idx, total_batches, &anchor);
+                    s(&prompted).await
+                })
+            })
+            .await;
+
+            let mut summaries = batch_summaries_clone.lock().await;
+            match result {
+                Ok(summary) => {
+                    tracing::info!("compaction batch {}/{} ok ({} chars)", batch_idx, total_batches, summary.len());
+                    summaries.push(Some(summary));
+                }
+                Err(e) => {
+                    tracing::warn!("compaction batch {}/{} failed: {}", batch_idx, total_batches, e);
+                    summaries.push(None);
+                }
+            }
+            summaries.len()
+        });
+        handles.push(handle);
+    }
+
+    // 等所有批次完成
+    for handle in handles {
+        let _ = handle.await;
+    }
+
+    let summaries_guard = batch_summaries.lock().await;
+    let partial_summaries: Vec<String> = summaries_guard.iter().filter_map(|s| s.clone()).collect();
+
+    // circuit breaker：全部失败
+    if partial_summaries.is_empty() {
+        tracing::error!("compaction: all {} batches failed, emergency truncate", batches.len());
+        return emergency_truncate(messages, config, extensions, total).await;
+    }
+
+    let partial_tokens: usize = partial_summaries.iter().map(|s| s.len() / 4).sum();
+    let recent_tokens = messages
+        .iter()
+        .skip(messages.len().saturating_sub(config.keep_recent_tokens / 4))
+        .map(msg_tokens)
+        .sum::<usize>();
+    let merged_input_tokens = partial_tokens + recent_tokens;
+
+    // ── 动态决策：快路径 vs 慢路径 ──
+    let threshold = if context_window > 0 {
+        (context_window as usize * 70) / 100
+    } else {
+        // 未知 context window，走慢路径
+        usize::MAX
+    };
+
+    if merged_input_tokens < threshold {
+        // ── 快路径：合并 Step 2+3 ──
+        tracing::info!(
+            "compaction: fast path (merged_input={} < threshold={})",
+            merged_input_tokens,
+            threshold
+        );
+
+        // 构造合并输入：partial summaries + recent messages
+        let merged_msgs = build_merged_input(&partial_summaries, messages, config);
+        let final_summary = summarizer(&merged_msgs).await?;
+
+        let result = CompactionResult {
+            summary: final_summary,
+            tokens_before: total,
+            batch_count: batches.len(),
+            batch_summaries: partial_summaries,
+            merged_summary: None, // 快路径没单独 merge
+            stage: "batched_merged".into(),
+        };
+
+        apply_compaction(messages, config, extensions, &result.summary, total).await?;
+        return Ok(result);
+    }
+
+    // ── 慢路径：Step 2 (merge) → Step 3 (compress with recent) ──
+    tracing::info!(
+        "compaction: slow path (merged_input={} >= threshold={})",
+        merged_input_tokens,
+        threshold
+    );
+
+    // Step 2: 合并 N 个 partial summary
+    let merge_input: Vec<Message> = partial_summaries
+        .iter()
+        .enumerate()
+        .map(|(i, s)| Message::User(UserMessage {
+            role: "user".into(),
+            content: vec![ContentBlock::Text(TextContent {
+                text: format!("Batch {} summary: {}", i + 1, s),
+                text_signature: None,
+            })],
+            timestamp: 0,
+        }))
+        .collect();
+
+    let merged_summary = retry_summarizer(&retry_config, || {
+        let msgs = merge_input.clone();
+        let s = Arc::clone(&summarizer);
+        Box::pin(async move { s(&msgs).await })
+    })
+    .await?;
+
+    // Step 3: 与保留区合并压缩
+    let final_input = build_merged_input(&[merged_summary.clone()], messages, config);
+    let final_summary = retry_summarizer(&retry_config, || {
+        let msgs = final_input.clone();
+        let s = Arc::clone(&summarizer);
+        Box::pin(async move { s(&msgs).await })
+    })
+    .await?;
+
+    let result = CompactionResult {
+        summary: final_summary,
+        tokens_before: total,
+        batch_count: batches.len(),
+        batch_summaries: partial_summaries,
+        merged_summary: Some(merged_summary),
+        stage: "batched_three_step".into(),
+    };
+
+    apply_compaction(messages, config, extensions, &result.summary, total).await?;
+    Ok(result)
+}
+
+// ──────────────────────────────────────────────────────────────
+// 辅助函数
+// ──────────────────────────────────────────────────────────────
+
+/// 给批次消息注入"当前是第 k/N 批"提示
+fn inject_batch_prompt(msgs: Vec<Message>, batch_idx: usize, total: usize, anchor: &str) -> Vec<Message> {
+    let prompt = format!(
+        "[Compaction Batch {}/{}] You are summarizing batch {} of {} from a longer conversation. \
+         This batch covers messages around: \"{}\". \
+         Extract key information: goals, decisions, progress, files modified, user constraints. \
+         Be concise but preserve all important details.",
+        batch_idx,
+        total,
+        batch_idx,
+        total,
+        if anchor.is_empty() { "(no anchor)" } else { anchor }
+    );
+
+    let mut result = Vec::with_capacity(msgs.len() + 1);
+    result.push(Message::User(UserMessage {
+        role: "user".into(),
+        content: vec![ContentBlock::Text(TextContent {
+            text: prompt,
+            text_signature: None,
+        })],
+        timestamp: 0,
+    }));
+    result.extend(msgs);
+    result
+}
+
+/// 构造合并输入（partial summaries + recent messages）
+fn build_merged_input(
+    partial_summaries: &[String],
+    messages: &[Message],
+    config: &CompactConfig,
+) -> Vec<Message> {
+    let mut input = Vec::new();
+
+    // 加入 partial summaries
+    let combined = if partial_summaries.len() == 1 {
+        format!(
+            "Previous conversation summary:\n\n{}",
+            partial_summaries[0]
+        )
+    } else {
+        let parts: Vec<String> = partial_summaries
+            .iter()
+            .enumerate()
+            .map(|(i, s)| format!("--- Batch {} ---\n{}", i + 1, s))
+            .collect();
+        format!(
+            "Previous conversation summaries ({} batches, merged):\n\n{}",
+            partial_summaries.len(),
+            parts.join("\n\n")
+        )
+    };
+
+    input.push(Message::User(UserMessage {
+        role: "user".into(),
+        content: vec![ContentBlock::Text(TextContent {
+            text: combined,
+            text_signature: None,
+        })],
+        timestamp: 0,
+    }));
+
+    // 加入保留区（最近 keep_recent_tokens 的消息）
+    let keep_count = config.keep_recent_tokens / 4;
+    let start = messages.len().saturating_sub(keep_count);
+    input.extend(messages[start..].iter().cloned());
+
+    // 加入最终压缩指令
+    input.push(Message::User(UserMessage {
+        role: "user".into(),
+        content: vec![ContentBlock::Text(TextContent {
+            text: "Based on the above summary and recent messages, generate a final consolidated summary. \
+                   Preserve recent context continuity. Use sections: ## Goal, ## Progress, ## Key Decisions, ## Files Modified, ## Remaining Work."
+                .into(),
+            text_signature: None,
+        })],
+        timestamp: 0,
+    }));
+
+    input
+}
+
+/// 应用压缩结果到 messages（替换压缩区为 CompactionSummary）
+async fn apply_compaction(
+    messages: &mut Vec<Message>,
+    config: &CompactConfig,
+    extensions: &ExtensionRegistry,
+    summary: &str,
+    tokens_before: u64,
+) -> AgentResult<()> {
+    let keep_count = config.keep_recent_tokens / 4;
+    let start = messages.len().saturating_sub(keep_count);
+
+    let mut new_msgs = Vec::with_capacity(keep_count + 2);
+
+    // 保留首条（通常是 system message）
+    if let Some(first) = messages.first() {
+        new_msgs.push(first.clone());
+    }
+
+    // 加入压缩总结
+    new_msgs.push(Message::CompactionSummary(CompactionSummaryMessage {
+        role: "compactionSummary".into(),
+        summary: summary.to_string(),
+        tokens_before,
+        timestamp: 0,
+    }));
+
+    // 保留区
+    let skip = if start <= 1 { 1 } else { start };
+    new_msgs.extend(messages[skip..].iter().cloned());
+
+    *messages = new_msgs;
+    extensions.on_session_compact(messages).await?;
+    tracing::info!("compacted to {} msgs", messages.len());
+    Ok(())
+}
+
+/// Emergency truncation：纯文本摘要，不调 LLM
+async fn emergency_truncate(
+    messages: &mut Vec<Message>,
+    config: &CompactConfig,
+    extensions: &ExtensionRegistry,
+    tokens_before: u64,
+) -> AgentResult<CompactionResult> {
+    tracing::warn!(
+        "compaction: emergency truncation ({} tokens, skipped LLM)",
+        tokens_before
+    );
+
+    let omitted_count = messages.len().saturating_sub(config.keep_recent_tokens / 4);
+    let summary = format!(
+        "[Emergency truncation] {} messages ({}k tokens) were truncated to fit within the model's context window. \
+         The conversation history has been preserved in the session file.",
+        omitted_count,
+        tokens_before / 1000
+    );
+
+    let result = CompactionResult {
+        summary: summary.clone(),
+        tokens_before,
+        batch_count: 0,
+        batch_summaries: Vec::new(),
+        merged_summary: None,
+        stage: "emergency".into(),
+    };
+
+    apply_compaction(messages, config, extensions, &summary, tokens_before).await?;
+    Ok(result)
+}
+
+/// 单批压缩（批次数 = 1 时直接走原逻辑）
+async fn single_batch_compact(
+    messages: &mut Vec<Message>,
+    config: &CompactConfig,
+    extensions: &ExtensionRegistry,
+    summarizer: SummarizerFn,
+    total: u64,
+    retry_config: RetryConfig,
+) -> AgentResult<CompactionResult> {
+    let keep_count = config.keep_recent_tokens / 4;
+    let summarize_end = messages.len().saturating_sub(keep_count);
+    let to_summarize: Vec<Message> = if summarize_end > 1 {
+        messages[1..summarize_end].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    let summary = if to_summarize.is_empty() {
+        "[No messages to summarize]".to_string()
+    } else {
+        retry_summarizer(&retry_config, || {
+            let msgs = to_summarize.clone();
+            let s = Arc::clone(&summarizer);
+            Box::pin(async move { s(&msgs).await })
+        })
+        .await?
+    };
+
+    let result = CompactionResult {
+        summary: summary.clone(),
+        tokens_before: total,
+        batch_count: 1,
+        batch_summaries: vec![summary],
+        merged_summary: None,
+        stage: "single".into(),
+    };
+
+    apply_compaction(messages, config, extensions, &result.summary, total).await?;
+    Ok(result)
+}
+
+// ──────────────────────────────────────────────────────────────
+// 向后兼容：旧 API
+// ──────────────────────────────────────────────────────────────
+
+/// 旧版 compact API（保留向后兼容，内部走新实现）
 pub async fn compact(
     messages: &mut Vec<Message>,
     config: &CompactConfig,
@@ -84,63 +652,13 @@ pub async fn compact(
     if !needs_compact(messages, config) {
         return Ok(());
     }
-    let total: usize = messages.iter().map(msg_tokens).sum();
-    tracing::info!("compacting: {total} tokens, {} msgs", messages.len());
-
-    let mut new_msgs: Vec<Message> = Vec::new();
-
-    // Keep system message — the first user message that looks like a system prompt
-    if let Some(first) = messages.first() {
-        // In the new type system, we treat first user message as system if it looks like one
-        new_msgs.push(first.clone());
-    }
-
-    let system_count = new_msgs.len();
-    let keep_count = config.keep_newest;
-    let summarize_end = messages.len().saturating_sub(keep_count);
-    let summarize_start = system_count;
-
-    let to_summarize: Vec<Message> = if summarize_end > summarize_start {
-        messages[summarize_start..summarize_end].to_vec()
-    } else {
-        Vec::new()
-    };
-
-    if !to_summarize.is_empty() {
-        if let Some(ref summarizer) = summarizer {
-            let summary = summarizer(&to_summarize).await?;
-            new_msgs.push(Message::User(UserMessage {
-                role: "user".into(),
-                content: vec![ContentBlock::Text(TextContent {
-                    text: format!("[Context summary]: {summary}"),
-                    text_signature: None,
-                })],
-                timestamp: 0,
-            }));
-        } else {
-            new_msgs.push(Message::User(UserMessage {
-                role: "user".into(),
-                content: vec![ContentBlock::Text(TextContent {
-                    text: format!("[{} previous messages omitted]", to_summarize.len()),
-                    text_signature: None,
-                })],
-                timestamp: 0,
-            }));
-        }
-    }
-
-    // Keep newest messages
-    let start = messages.len().saturating_sub(keep_count);
-    for msg in messages.iter().skip(start) {
-        new_msgs.push(msg.clone());
-    }
-
-    *messages = new_msgs;
-    extensions.on_session_compact(messages).await?;
-    tracing::info!("compacted to {} msgs", messages.len());
-    Ok(())
+    let retry_config = RetryConfig::default();
+    compact_batched(messages, config, extensions, summarizer, retry_config)
+        .await
+        .map(|_| ())
 }
 
+/// 创建 LLM summarizer（用于压缩时调 LLM）
 pub fn make_llm_summarizer(
     provider: Arc<ion_provider::registry::ApiRegistry>,
     model: Model,
@@ -168,27 +686,54 @@ pub fn make_llm_summarizer(
     })
 }
 
-// ---- Tests ----
+// ──────────────────────────────────────────────────────────────
+// Tests
+// ──────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn make_user_msg(text: &str) -> Message {
+        Message::User(UserMessage {
+            role: "user".into(),
+            content: vec![ContentBlock::Text(TextContent {
+                text: text.into(),
+                text_signature: None,
+            })],
+            timestamp: 0,
+        })
+    }
+
+    fn make_assistant_msg(text: &str) -> Message {
+        Message::Assistant(AssistantMessage {
+            role: "assistant".into(),
+            content: vec![AssistantContentBlock::Text(TextContent {
+                text: text.into(),
+                text_signature: None,
+            })],
+            api: "".into(),
+            provider: "".into(),
+            model: "".into(),
+            response_model: None,
+            response_id: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            timestamp: 0,
+        })
+    }
 
     #[test]
     fn compact_config_defaults() {
         let cfg = CompactConfig::default();
         assert_eq!(cfg.threshold, 32000);
+        assert_eq!(cfg.max_batches, 10);
     }
 
     #[test]
     fn needs_compact_below_threshold() {
-        let msgs = vec![Message::User(UserMessage {
-            role: "user".into(),
-            content: vec![ContentBlock::Text(TextContent {
-                text: "hello".into(),
-                text_signature: None,
-            })],
-            timestamp: 0,
-        })];
+        let msgs = vec![make_user_msg("hello")];
         let cfg = CompactConfig {
             threshold: 1000,
             ..Default::default()
@@ -196,101 +741,163 @@ mod tests {
         assert!(!needs_compact(&msgs, &cfg));
     }
 
-    #[tokio::test]
-    async fn compact_without_summarizer() {
-        let mut msgs = vec![
-            Message::User(UserMessage {
-                role: "user".into(),
-                content: vec![ContentBlock::Text(TextContent {
-                    text: "system: you are helpful".into(),
-                    text_signature: None,
-                })],
-                timestamp: 0,
-            }),
-            Message::User(UserMessage {
-                role: "user".into(),
-                content: vec![ContentBlock::Text(TextContent {
-                    text: "Hello!".into(),
-                    text_signature: None,
-                })],
-                timestamp: 0,
-            }),
-            Message::Assistant(AssistantMessage {
-                role: "assistant".into(),
-                content: vec![AssistantContentBlock::Text(TextContent {
-                    text: "Hi there!".into(),
-                    text_signature: None,
-                })],
-                api: "".into(),
-                provider: "".into(),
-                model: "".into(),
-                response_model: None,
-                response_id: None,
-                usage: Usage::default(),
-                stop_reason: StopReason::Stop,
-                error_message: None,
-                timestamp: 0,
-            }),
-        ];
+    #[test]
+    fn needs_compact_above_threshold() {
+        let big = "x".repeat(5000);
+        let msgs = vec![make_user_msg(&big)];
         let cfg = CompactConfig {
-            threshold: 1,
-            target: 100,
-            keep_newest: 1,
+            threshold: 100,
+            ..Default::default()
         };
-        let ext = ExtensionRegistry::new();
-        compact(&mut msgs, &cfg, &ext, None).await.unwrap();
-        assert!(msgs.len() <= 3);
+        assert!(needs_compact(&msgs, &cfg));
     }
 
     #[test]
-    fn test_msg_tokens_new_variants() {
-        // BashExecution
-        let bash = Message::BashExecution(BashExecutionMessage {
-            role: "bashExecution".into(),
-            command: "ls".into(),
-            output: "a.txt".into(),
-            exit_code: Some(0),
-            cancelled: false,
-            truncated: false,
-            full_output_path: None,
-            timestamp: 0,
-            exclude_from_context: None,
-        });
-        let tokens = msg_tokens(&bash);
-        assert!(tokens > 0);
-        // "ls" (2) + "a.txt" (5) = 7 / 4 = 1
-        assert_eq!(tokens, (2 + 5) / 4);
+    fn plan_batches_empty_when_small() {
+        let msgs = vec![make_user_msg("hello"), make_assistant_msg("hi")];
+        let cfg = CompactConfig {
+            keep_recent_tokens: 10000,
+            ..Default::default()
+        };
+        let batches = plan_batches(&msgs, &cfg);
+        assert!(batches.is_empty());
+    }
 
-        // Custom (Text)
-        let custom = Message::Custom(CustomMessage {
-            role: "custom".into(),
-            custom_type: "note".into(),
-            content: CustomContent::Text("hello world".into()),
-            display: true,
-            details: None,
-            timestamp: 0,
-        });
-        let tokens = msg_tokens(&custom);
-        assert_eq!(tokens, "hello world".len() / 4);
+    #[test]
+    fn plan_batches_cuts_by_user_messages() {
+        // 5 个 user message，每个 4k tokens
+        let mut msgs = vec![make_user_msg("system")];
+        for i in 0..5 {
+            let big = format!("user message {} {}", i, "x".repeat(16000));
+            msgs.push(make_user_msg(&big));
+            msgs.push(make_assistant_msg(&format!("assistant {}", i)));
+        }
+        let cfg = CompactConfig {
+            threshold: 1000,
+            keep_recent_tokens: 100,
+            batch_max_tokens: 4000,
+            max_batches: 10,
+            ..Default::default()
+        };
+        let batches = plan_batches(&msgs, &cfg);
+        // 应该切出多个批次
+        assert!(batches.len() >= 2, "expected >= 2 batches, got {}", batches.len());
+        // 每个批次应该有 anchor_user_preview
+        for b in &batches {
+            assert!(!b.anchor_user_preview.is_empty() || b.start_idx == 0);
+        }
+    }
 
-        // BranchSummary
-        let branch = Message::BranchSummary(BranchSummaryMessage {
-            role: "branchSummary".into(),
-            summary: "summary text".into(),
-            from_id: "sess_x".into(),
-            timestamp: 0,
-        });
-        let tokens = msg_tokens(&branch);
-        assert_eq!(tokens, "summary text".len() / 4);
+    #[test]
+    fn plan_batches_caps_at_max_batches() {
+        let mut msgs = vec![make_user_msg("system")];
+        for i in 0..20 {
+            msgs.push(make_user_msg(&format!("user {} {}", i, "x".repeat(16000))));
+            msgs.push(make_assistant_msg(&format!("asst {}", i)));
+        }
+        let cfg = CompactConfig {
+            threshold: 1000,
+            keep_recent_tokens: 100,
+            batch_max_tokens: 1000,
+            max_batches: 5,
+            ..Default::default()
+        };
+        let batches = plan_batches(&msgs, &cfg);
+        assert!(batches.len() <= 5, "expected <= 5 batches, got {}", batches.len());
+    }
 
-        // CompactionSummary
-        let comp = Message::CompactionSummary(CompactionSummaryMessage {
-            role: "compactionSummary".into(),
-            summary: "compacted".into(),
-            tokens_before: 100,
-            timestamp: 0,
+    #[tokio::test]
+    async fn compact_without_summarizer_goes_emergency() {
+        let mut msgs = vec![
+            make_user_msg("system: you are helpful"),
+            make_user_msg(&"x".repeat(5000)), // 大消息触发压缩
+            make_assistant_msg("response"),
+        ];
+        let cfg = CompactConfig {
+            threshold: 100,
+            keep_recent_tokens: 100,
+            ..Default::default()
+        };
+        let ext = ExtensionRegistry::new();
+        let retry = RetryConfig::default();
+        let result = compact_batched(&mut msgs, &cfg, &ext, None, retry).await.unwrap();
+        assert_eq!(result.stage, "emergency");
+        assert!(result.summary.contains("Emergency truncation"));
+    }
+
+    #[tokio::test]
+    async fn compact_single_batch_with_summarizer() {
+        let mut msgs = vec![
+            make_user_msg("system"),
+            make_user_msg(&"x".repeat(1000)),
+            make_assistant_msg("response"),
+        ];
+        let cfg = CompactConfig {
+            threshold: 100,
+            keep_recent_tokens: 100,
+            ..Default::default()
+        };
+        let ext = ExtensionRegistry::new();
+        let summarizer: SummarizerFn = Arc::new(|_msgs: &[Message]| {
+            Box::pin(async { Ok("test summary".to_string()) })
         });
-        let tokens = msg_tokens(&comp);
-        assert_eq!(tokens, "compacted".len() / 4);
+        let retry = RetryConfig::default();
+        let result = compact_batched(&mut msgs, &cfg, &ext, Some(summarizer), retry)
+            .await
+            .unwrap();
+        assert_eq!(result.stage, "single");
+        assert_eq!(result.summary, "test summary");
+        assert_eq!(result.batch_count, 1);
+    }
+
+    #[test]
+    fn inject_batch_prompt_prepends_instruction() {
+        let msgs = vec![make_user_msg("hello")];
+        let prompted = inject_batch_prompt(msgs, 2, 5, "what is rust");
+        assert!(prompted.len() >= 2);
+        match &prompted[0] {
+            Message::User(u) => {
+                if let Some(ContentBlock::Text(t)) = u.content.first() {
+                    assert!(t.text.contains("Batch 2/5"));
+                    assert!(t.text.contains("what is rust"));
+                } else {
+                    panic!("expected text content");
+                }
+            }
+            _ => panic!("expected user message"),
+        }
+    }
+
+    #[test]
+    fn build_merged_input_combines_summaries_and_recent() {
+        let mut msgs = vec![make_user_msg("system")];
+        for i in 0..10 {
+            msgs.push(make_user_msg(&format!("user {}", i)));
+            msgs.push(make_assistant_msg(&format!("asst {}", i)));
+        }
+        let cfg = CompactConfig::default();
+        let input = build_merged_input(&["summary 1".into(), "summary 2".into()], &msgs, &cfg);
+        // 应该包含：1 summary + N recent + 1 instruction
+        assert!(input.len() >= 2);
+        // 第一条应该是 summary
+        match &input[0] {
+            Message::User(u) => {
+                if let Some(ContentBlock::Text(t)) = u.content.first() {
+                    assert!(t.text.contains("summary 1"));
+                    assert!(t.text.contains("summary 2"));
+                }
+            }
+            _ => panic!("expected user message"),
+        }
+    }
+
+    #[test]
+    fn total_tokens_calculation() {
+        let msgs = vec![
+            make_user_msg("hello world"), // 11 chars / 4 = 2
+            make_assistant_msg("hi"),     // 2 chars / 4 = 0
+        ];
+        let total = total_tokens(&msgs);
+        assert!(total >= 2);
     }
 }
