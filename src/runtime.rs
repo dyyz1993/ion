@@ -1000,8 +1000,90 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
 }
 
 // ---------------------------------------------------------------------------
-// Tests
+// RemoteRuntime — 远程执行（SSH / HTTP / gRPC）
 // ---------------------------------------------------------------------------
+
+/// 远程执行 Runtime：将命令通过 SSH 转发到远程主机执行。
+pub struct RemoteRuntime<R: Runtime> {
+    inner: R,
+    host_user: String,
+    host_hostname: String,
+    host_port: u16,
+    host_key: String,
+}
+
+impl<R: Runtime> RemoteRuntime<R> {
+    pub fn new(inner: R, user: &str, hostname: &str, port: u16, key: &str) -> Self {
+        Self { inner, host_user: user.to_string(), host_hostname: hostname.to_string(), host_port: port, host_key: key.to_string() }
+    }
+    pub fn from_config(inner: R, cfg: &crate::config::RemoteHost) -> Self {
+        Self::new(inner, &cfg.user, &cfg.hostname, cfg.port, &cfg.key)
+    }
+    fn ssh_base(&self) -> String {
+        let mut b = format!("ssh {}@{} -p {}", self.host_user, self.host_hostname, self.host_port);
+        if !self.host_key.is_empty() { b.push_str(&format!(" -i {}", self.host_key)); }
+        b
+    }
+    fn ssh_cmd(&self, remote_cmd: &str) -> String {
+        format!("{} '{}'", self.ssh_base(), remote_cmd.replace('\'', "'\\''"))
+    }
+}
+
+#[async_trait]
+impl<R: Runtime + 'static> Runtime for RemoteRuntime<R> {
+    fn runtime_type(&self) -> String { format!("remote({}@{})", self.host_user, self.host_hostname) }
+
+    async fn execute_command(&self, command: &str, timeout_secs: u64) -> Result<(String, String, i32), String> {
+        self.inner.execute_command(&self.ssh_cmd(command), timeout_secs).await
+    }
+    async fn read_file(&self, path: &str) -> Result<String, String> {
+        let (o, e, c) = self.inner.execute_command(&self.ssh_cmd(&format!("cat \"{path}\"")), 30).await?;
+        if c != 0 { Err(format!("remote read: {e}")) } else { Ok(o) }
+    }
+    async fn write_file(&self, path: &str, content: &str) -> Result<(), String> {
+        let e = content.replace('\'', "'\\''");
+        let (_, s, c) = self.inner.execute_command(&self.ssh_cmd(&format!("cat > \"{path}\" << 'EOF'\n{e}\nEOF")), 30).await?;
+        if c != 0 { Err(format!("remote write: {s}")) } else { Ok(()) }
+    }
+    async fn edit_file(&self, path: &str, old: &str, new: &str) -> Result<(), String> {
+        let c = self.read_file(path).await?; self.write_file(path, &c.replace(old, new)).await
+    }
+    async fn path_exists(&self, path: &str) -> bool {
+        self.inner.execute_command(&self.ssh_cmd(&format!("test -e \"{path}\"")), 10).await.is_ok()
+    }
+    async fn list_dir(&self, path: &str) -> Result<Vec<String>, String> {
+        let (o, _, _) = self.inner.execute_command(&self.ssh_cmd(&format!("ls -1 \"{path}\"")), 15).await?;
+        Ok(o.lines().map(String::from).collect())
+    }
+    async fn remove_file(&self, path: &str) -> Result<(), String> {
+        let (_, s, c) = self.inner.execute_command(&self.ssh_cmd(&format!("rm -f \"{path}\"")), 15).await?;
+        if c != 0 { Err(format!("remote rm: {s}")) } else { Ok(()) }
+    }
+    async fn grep_search(&self, pattern: &str, path: &str) -> Result<Vec<String>, String> {
+        let (o, _, _) = self.inner.execute_command(&self.ssh_cmd(&format!("grep -rn '{pattern}' '{path}' 2>/dev/null || true")), 30).await?;
+        Ok(o.lines().map(String::from).collect())
+    }
+    async fn find_files(&self, path: &str, name: &str) -> Result<Vec<String>, String> {
+        let (o, _, _) = self.inner.execute_command(&self.ssh_cmd(&format!("find '{path}' -name '{name}' 2>/dev/null || true")), 30).await?;
+        Ok(o.lines().map(String::from).filter(|l| !l.is_empty()).collect())
+    }
+    async fn file_info(&self, path: &str) -> Result<Vec<FileEntry>, String> {
+        let (o, _, _) = self.inner.execute_command(&self.ssh_cmd(&format!("ls -la '{path}' 2>/dev/null || true")), 15).await?;
+        let mut v = Vec::new();
+        for line in o.lines().skip(1) { if !line.is_empty() { let p: Vec<&str> = line.split_whitespace().collect(); if p.len() >= 9 { v.push(FileEntry { name: p[8..].join(" "), is_dir: line.starts_with('d'), size: p[4].parse().unwrap_or(0), modified: p[5..8].join(" ") }); } } }
+        Ok(v)
+    }
+    async fn check_command(&self, cmd: &str) -> Result<(), String> { self.inner.check_command(cmd).await }
+    async fn spawn_process(&self, req: SpawnProcessRequest) -> Result<ProcessHandle, String> { self.inner.spawn_process(req).await }
+    async fn kill_process(&self, pid: u32) -> Result<(), String> { self.inner.kill_process(pid).await }
+    async fn send_stdin(&self, pid: u32, input: &str) -> Result<(), String> { self.inner.send_stdin(pid, input).await }
+    async fn spawn_worker(&self, req: SpawnWorkerRequest) -> Result<SpawnWorkerResponse, String> { self.inner.spawn_worker(req).await }
+    async fn send_to_worker(&self, wid: &str, text: &str) -> Result<(), String> { self.inner.send_to_worker(wid, text).await }
+    async fn resume_worker(&self, wid: &str, text: &str) -> Result<String, String> { self.inner.resume_worker(wid, text).await }
+    async fn await_worker(&self, wid: &str) -> Result<String, String> { self.inner.await_worker(wid).await }
+    async fn channel_send(&self, ch: &str, text: &str) -> Result<(), String> { self.inner.channel_send(ch, text).await }
+    async fn kill_worker(&self, wid: &str) -> Result<(), String> { self.inner.kill_worker(wid).await }
+}
 
 #[cfg(test)]
 mod tests {

@@ -1,0 +1,689 @@
+# Session 消息系统（对齐 pi）
+
+> **状态：设计稿 + 已验证（消息类型扩展已完成）**
+>
+> 本文档描述 ION 会话消息的 Entry 类型、推送通道、消费方归类。
+> 扩展开发者和内核贡献者应以此为准，判断某条消息该走哪个通道。
+>
+> - 第一部分（§1–§8）为消息系统设计稿，描述三大发送方式（prompt/steer/followUp）+ 通道决策树。
+> - 第二部分（§9–§14）为消息类型扩展（已验证），描述 4 个新 Message 变体 + 1 个新 SessionEntry + `append_session_entry` 字段平铺 bug 修复。
+
+---
+
+# 第一部分：消息系统设计
+
+## 一、三大"显式"发送方式
+
+这三种走完整 agent loop，最终都是 `role: "user"` 的消息被 LLM 看到：
+
+| 方式 | API | role | 消费时机 | 备注 |
+|------|-----|------|---------|------|
+| **prompt** | `session.prompt()` | `user` | 空闲时立即；流式时需指定 behavior | 最标准的用户消息 |
+| **steer** | `session.steer()` | `user` | 入 steering 队列，下轮 turn 开始前注入 | 高优先级，可带 `immediate` 打断 |
+| **followUp** | `session.followUp()` | `user` | 入 follow-up 队列，内循环结束后注入 | 低优先级 |
+
+**特点：** 都会走完整流程（扩展事件→模板展开→模型校验→agent loop→持久化到 jsonl）。全部 **LLM 可见 + UI 可见**。
+
+## 二、直接往 jsonl 插数据的 Entry 类型
+
+由扩展或内部逻辑直接调用 session 的 append 方法，不走完整 prompt 流程。
+
+### （A）LLM 可见 + UI 有特殊呈现
+
+| 方法 | Entry type | role（给 LLM ） | UI 呈现 | 用途举例 |
+|------|-----------|----------------|---------|---------|
+| `appendMessage(msg)` 且 `role=bashExecution` | `SessionMessageEntry` | `bashExecution` → 转 `user` | bash 执行卡片 | 用户 `!ls` 的结果 |
+| `appendCompaction(summary)` | `CompactionEntry` | `compactionSummary` → 转 `user` | 折叠摘要卡片 | compaction 后 |
+| `appendBranchSummary(fromId, summary)` | `BranchSummaryEntry` | `branchSummary` → 转 `user` | 分支摘要卡片 | 树形导航时 |
+| `appendCustomMessageEntry(type, content, display=true)` | `CustomMessageEntry` | `custom` → 转 `user` | 按 customType 渲染 | 扩展注入 |
+| `appendSystemEvent(type, label, data, display=true)` | `SystemEventEntry` | `custom` → 转 `user` | 系统事件条 | 模型/agent 切换 |
+
+**LLM 看到的转换：**
+
+```
+bashExecution → user: `command`\n```\noutput\n```
+compactionSummary → user: <summary>...</summary>
+branchSummary → user: <summary>...</summary>
+custom → user: 原样 content
+```
+
+### （B）LLM 可见 + UI 不可见（纯上下文注入）
+
+| 方法 | Entry type | 用途 |
+|------|-----------|------|
+| `appendSystemEvent(type, label, data, display=false)` | `SystemEventEntry` | 系统变更通知，LLM 需要知道但 UI 不展示 |
+| `appendCustomMessageEntry(type, content, display=false)` | `CustomMessageEntry` | 扩展想喂给 LLM 但不想污染 UI |
+
+### （C）LLM 完全不可见（纯记录/状态持久化）
+
+| 方法 | Entry type | 用途 |
+|------|-----------|------|
+| `appendCustomEntry(type, data)` | `CustomEntry` | 扩展状态持久化，LLM 和 UI 都看不到，仅存在 jsonl |
+| `appendThinkingLevelChange(level)` | `ThinkingLevelChangeEntry` | 记录 thinking level 变更史 |
+| `appendModelChange(provider, modelId)` | `ModelChangeEntry` | 记录模型变更史 |
+| `appendAgentChange(name, config)` | `AgentChangeEntry` | 记录 agent 切换史 |
+| `appendSessionName(name)` | `SessionInfoEntry` | 记录 session 名称 |
+| `appendLabel(targetId, label)` | `LabelEntry` | 书签标记 |
+
+## 三、sendCustomMessage 的三种投递模式
+
+扩展通过 `context.sendMessage()` / `session.sendCustomMessage()` 注入时，有 `deliverAs` 选项：
+
+| deliverAs | 流式中 | 空闲时 + triggerTurn | 空闲时 + 无 trigger |
+|-----------|--------|---------------------|-------------------|
+| `"steer"` | 入 steering 队列 | 触发新 turn | — |
+| `"followUp"` | 入 follow-up 队列 | 触发新 turn | — |
+| `"nextTurn"` | 入 `_pendingNextTurnMessages`，等下次 prompt 注入 | 同上 | — |
+
+## 四、选择决策树
+
+```
+要发给 LLM？
+  ├── 要走完整 prompt 流程（模板展开/模型校验）？
+  │     ├── 是 → prompt / steer / followUp
+  │     └── 否：
+  │           ├── 是 bash 执行结果？ → appendMessage(role=bashExecution)
+  │           ├── 是 compaction 摘要？ → appendCompaction()
+  │           ├── 是分支摘要？ → appendBranchSummary()
+  │           ├── 是扩展自定义消息？ → appendCustomMessageEntry()
+  │           └── 是系统事件（模型切换等）？ → appendSystemEvent()
+  │
+  ├── UI 要特殊渲染？
+  │     ├── 是 → display=true
+  │     └── 否 → display=false（LLM 可见，UI 不可见）
+  │
+  └── 不发给 LLM？
+        ├── 是扩展状态持久化？ → appendCustomEntry()
+        ├── 是模型/thinkingLevel/agent 变更记录？ → appendModelChange/appendThinkingLevelChange/appendAgentChange()
+        └── 是 session 名称/书签？ → appendSessionName() / appendLabel()
+```
+
+## 五、对照：现有 ION Entry 类型
+
+| ION type | 对应 pi Entry | 当前状态 |
+|----------|-------------|---------|
+| `session` | SessionHeader | ✅ 有 |
+| `message` | SessionMessageEntry | ✅ 有（User/Assistant/Tool） |
+| `model_change` | ModelChangeEntry | ✅ 有 |
+| `thinking_level_change` | ThinkingLevelChangeEntry | ✅ 有 |
+| `agent_change` | AgentChangeEntry | ✅ 有 |
+| `session_info` | SessionInfoEntry | ✅ 有 |
+| `compaction` | CompactionEntry | ✅ 有 |
+| `branch_summary` | BranchSummaryEntry | ✅ 有 |
+| `custom` | CustomEntry | ✅ 有 |
+| `bash_execution` | 无独立 type（走 message+bashExecution role） | ✅ 有 Message::BashExecution 变体 |
+| `custom_message` | CustomMessageEntry | ✅ 有 |
+| `system_event` | SystemEventEntry | ✅ 有 |
+| `label` | LabelEntry | ✅ 有 |
+| `active_tools_change` | ActiveToolsChangeEntry | ✅ 有（新增） |
+
+## 六、对齐 pi 需要的改动
+
+| 改动 | 原因 | 状态 |
+|------|------|------|
+| `message.role` 加 `bashExecution`、`custom`、`compactionSummary`、`branchSummary` | 对齐 pi messages.ts | ✅ 已完成（4 个新 Message 变体，详见 §9–§12） |
+| 新增 `CustomMessageEntry`（带 `display` + `details` 字段） | 扩展自定义消息 | ✅ 已完成（`append_custom_message` RPC） |
+| 新增 `SystemEventEntry`（带 `display` + `label` 字段） | 系统事件通知 | ✅ 已完成（`append_system_event` RPC） |
+| 新增 `LabelEntry` | 书签 | ✅ 已完成（`append_label` RPC） |
+| `appendCustomMessageEntry()` / `appendSystemEvent()` / `appendLabel()` | 对应的 append 方法 | ✅ 已完成 |
+| `sendCustomMessage(deliverAs)` | 扩展投递消息的入口 | ✅ 已完成 |
+
+## 七、CLI 测试清单
+
+实现后，每个 RPC 都可以通过 `ion rpc --session x` 直接验证。
+
+### （A）消息类（LLM 可见 + UI 可见/特殊渲染）
+
+| RPC | 测试命令 | 预期结果 |
+|-----|---------|---------|
+| `prompt` | `ion rpc --session x --method prompt --params '{"text":"hello"}'` | 消息出现在 get_messages 中 |
+| `steer` | `ion rpc --session x --method steer --params '{"text":"steer msg"}'` | steering 队列 + 下轮注入 |
+| `follow_up` | `ion rpc --session x --method follow_up --params '{"text":"follow msg"}'` | follow_up 队列 + 内循环结束注入 |
+| `append_custom_message` | `ion rpc --session x --method append_custom_message --params '{"type":"bash_result","content":"<bash_result>✅ done</bash_result>","display":true}'` | `get_messages` 中多一条 custom role 消息，UI 按 type 渲染 |
+| `append_system_event` (display=true) | `ion rpc --session x --method append_system_event --params '{"type":"model_change","label":"切换模型","display":true}'` | `get_messages` 中多一条，UI 显示系统事件条 |
+| `append_system_event` (display=false) | `ion rpc --session x --method append_system_event --params '{"type":"internal","label":"后台状态变更","display":false}'` | `get_messages` 中多一条，UI 不可见 |
+
+### （B）纯持久化类（LLM 不可见）
+
+| RPC | 测试命令 | 预期结果 |
+|-----|---------|---------|
+| `append_custom_entry` | `ion rpc --session x --method append_custom_entry --params '{"type":"file_snapshot","data":{"path":"a.rs","hash":"abc"}}'` | session.jsonl 中多一条 custom entry，`get_messages` 不显示 |
+| `append_model_change` | `ion rpc --session x --method append_model_change --params '{"provider":"zhipuai","modelId":"glm-4.7"}'` | session.jsonl 中多一条 model_change |
+| `append_thinking_level_change` | `ion rpc --session x --method append_thinking_level_change --params '{"level":"off"}'` | session.jsonl 中多一条 thinking_level_change |
+| `append_agent_change` | `ion rpc --session x --method append_agent_change --params '{"name":"coordinator"}'` | session.jsonl 中多一条 agent_change |
+| `append_session_name` | `ion rpc --session x --method append_session_name --params '{"name":"我的会话"}'` | session.jsonl 中 session_info 更新 |
+| `append_label` | `ion rpc --session x --method append_label --params '{"targetId":"msg_xxx","label":"重要节点"}'` | session.jsonl 中多一条 label entry |
+
+### （C）扩展投递类
+
+| RPC | 测试命令 | 预期结果 |
+|-----|---------|---------|
+| `send_custom_message` (deliverAs=followUp) | `ion rpc --session x --method send_custom_message --params '{"type":"bash_result","content":"<bash_result>✅ done</bash_result>","deliverAs":"followUp"}'` | 进入 follow_up 队列，当前 agent 停止后注入 |
+| `send_custom_message` (deliverAs=steer) | `ion rpc --session x --method send_custom_message --params '{"type":"alert","content":"立即处理","deliverAs":"steer"}'` | 进入 steering 队列，下轮 turn 前注入 |
+| `send_custom_message` (deliverAs=nextTurn) | `ion rpc --session x --method send_custom_message --params '{"type":"note","content":"稍后处理","deliverAs":"nextTurn"}'` | 入 `_pendingNextTurnMessages`，下次 prompt 时注入 |
+
+### （D）验证命令
+
+```bash
+# 读所有消息
+ion rpc --session x --method get_messages
+
+# 直接查 session.jsonl
+cat ~/.ion/agent/sessions/--hash--name--/session.jsonl
+
+# 订阅实时事件
+ion subscribe --session x
+```
+
+### （E）当前实现状态
+
+| RPC | ion_worker.rs | 状态 |
+|-----|--------------|------|
+| `get_messages` | `"get_messages"` | ✅ 已实现 |
+| `append_system_event` | `"append_system_event"` | ✅ 已实现 |
+| `append_custom_message` | `"append_custom_message"` | ✅ 已实现 |
+| `append_custom_entry` | `"append_custom_entry"` | ✅ 已实现 |
+| `send_custom_message` | `"send_custom_message"` | ✅ 已实现 |
+| `append_model_change` | `"append_model_change"` | ✅ 已实现 |
+| `append_thinking_level_change` | `"append_thinking_level_change"` | ✅ 已实现 |
+| `append_agent_change` | `"append_agent_change"` | ✅ 已实现 |
+| `append_session_name` | `"append_session_name"` | ✅ 已实现 |
+| `append_label` | `"append_label"` | ✅ 已实现 |
+| `append_active_tools_change` | `"append_active_tools_change"` | ✅ 已实现 |
+
+## 八、核查清单（CLI + 数据获取 + JSONL 结构）
+
+全部 14 个 case 按三大类汇总。每个 case 列出 CLI 命令、如何获取数据验证、预期 JSONL 结构。
+
+### （A）消息类 — LLM 可见 + UI 可见/特殊渲染
+
+| # | Case | CLI 命令 | 数据获取 | 预期 JSONL 结构 |
+|---|------|---------|---------|----------------|
+| A1 | `prompt` 发消息 | `ion rpc --session x --method prompt --params '{"text":"hello"}'` | `ion rpc --session x --method get_messages` | `{"type":"message","message":{"role":"user",...}}` |
+| A2 | `steer` 高优注入 | `ion rpc --session x --method steer --params '{"text":"steer msg"}'` | 同 session get_messages，下轮 turn 前出现 | 同 A1 |
+| A3 | `follow_up` 低优注入 | `ion rpc --session x --method follow_up --params '{"text":"follow msg"}'` | 同 session get_messages，内循环结束后出现 | 同 A1 |
+| A4 | `append_custom_message` | `ion rpc --session x --method append_custom_message --params '{"type":"bash_result","content":"<result>ok</result>","display":true}'` | `cat ~/.ion/agent/sessions/--*--/session.jsonl \| grep custom_message` | `{"type":"custom_message","customType":"bash_result","content":"<result>ok</result>","display":true}` |
+| A5 | `append_system_event`(display=true) | `ion rpc --session x --method append_system_event --params '{"type":"model_change","label":"切换","display":true}'` | `cat session.jsonl \| grep system_event` | `{"type":"system_event","customType":"model_change","label":"切换","display":true}` |
+| A6 | `append_system_event`(display=false) | `ion rpc --session x --method append_system_event --params '{"type":"internal","label":"后台","display":false}'` | 同上 | 同上，`display:false` |
+
+### （B）纯持久化类 — LLM 不可见
+
+| # | Case | CLI 命令 | 数据获取 | 预期 JSONL 结构 |
+|---|------|---------|---------|----------------|
+| B1 | `append_custom_entry` | `ion rpc --session x --method append_custom_entry --params '{"type":"file_snapshot","data":{"path":"a.rs","hash":"abc"}}'` | `cat session.jsonl \| grep "type":"custom"` | `{"type":"custom","customType":"file_snapshot","data":{...}}` |
+| B2 | `append_model_change` | `ion rpc --session x --method append_model_change --params '{"provider":"zhipuai","modelId":"glm-4.7"}'` | `cat session.jsonl \| grep model_change` | `{"type":"model_change","provider":"zhipuai","modelId":"glm-4.7"}` |
+| B3 | `append_thinking_level_change` | `ion rpc --session x --method append_thinking_level_change --params '{"level":"off"}'` | `cat session.jsonl \| grep thinking_level_change` | `{"type":"thinking_level_change","level":"off"}` |
+| B4 | `append_agent_change` | `ion rpc --session x --method append_agent_change --params '{"name":"coordinator"}'` | `cat session.jsonl \| grep agent_change` | `{"type":"agent_change","name":"coordinator"}` |
+| B5 | `append_session_name` | `ion rpc --session x --method append_session_name --params '{"name":"我的会话"}'` | `cat session.jsonl \| grep session_info` | `{"type":"session_info","name":"我的会话"}` |
+| B6 | `append_label` | `ion rpc --session x --method append_label --params '{"targetId":"msg_x","label":"重要"}'` | `cat session.jsonl \| grep "type":"label"` | `{"type":"label","targetId":"msg_x","label":"重要"}` |
+| B7 | `append_active_tools_change` | `ion rpc --session x --method append_active_tools_change --params '{"activeToolNames":["bash","read"]}'` | `cat session.jsonl \| grep active_tools_change` | `{"type":"active_tools_change","activeToolNames":["bash","read"]}` |
+
+### （C）扩展投递类 — 通过 agent follow_up/steer 队列注入
+
+| # | Case | CLI 命令 | 数据获取 | 预期行为 |
+|---|------|---------|---------|---------|
+| C1 | `send_custom_message`(followUp) | `ion rpc --session x --method send_custom_message --params '{"type":"note","content":"hi","deliverAs":"followUp"}'` | 执行 prompt 后 g`et_messages` 中出现该消息 | 入 follow_up 队列，agent 空闲后注入 |
+| C2 | `send_custom_message`(steer) | `ion rpc --session x --method send_custom_message --params '{"type":"alert","content":"urgent","deliverAs":"steer"}'` | 同 C1 | 入 steering 队列，下轮 turn 前注入 |
+| C3 | `send_custom_message`(nextTurn) | `ion rpc --session x --method send_custom_message --params '{"type":"note","content":"later","deliverAs":"nextTurn"}'` | 同 C1 | 入 pending 队列，下次 prompt 时注入 |
+
+### （D）验证辅助命令
+
+```bash
+# 查看会话所有消息（LLM 可见的完整消息列表）
+ion rpc --session <sid> --method get_messages
+
+# 查看 session.jsonl 原始数据（所有 entry 类型）
+cat ~/.ion/agent/sessions/--*/session.jsonl
+
+# 只看某种 entry 类型
+grep '"type":"custom_message"' ~/.ion/agent/sessions/--*/session.jsonl
+
+# 订阅实时事件（包括 append 操作的通知）
+ion subscribe --session <sid>
+
+# CI 一键执行全部 14 个 case
+bash tests/session_entries_ci.sh
+```
+
+### （E）字段平铺验证（修复后的格式要求）
+
+以下 entry 类型的字段必须平铺在 JSON 顶层，不能嵌套在 `data` 里：
+
+| Entry 类型 | 必须平铺的字段 | 验证命令 |
+|-----------|--------------|---------|
+| `custom_message` | `customType`, `content`, `display`, `details` | `grep custom_message session.jsonl \| python3 -c "import sys,json; e=json.loads(sys.stdin.read()); assert 'data' not in e"` |
+| `system_event` | `customType`, `label`, `display` | `grep system_event session.jsonl \| python3 -c ...` |
+| `label` | `targetId`, `label` | `grep "type":"label" session.jsonl \| python3 -c ...` |
+| `active_tools_change` | `activeToolNames` | `grep active_tools_change session.jsonl \| python3 -c ...` |
+
+---
+
+# 第二部分：消息类型扩展（对齐 pi AgentMessage + SessionTreeEntry）
+
+> 本部分原为 SESSION_MESSAGE_TYPES.md。状态：已验证 — 4 个新 Message 变体 + 1 个新 SessionEntry + `append_session_entry` 字段平铺 bug 修复全部完成。90 个 lib 测试通过，真实 LLM 调用验证 provider 不 panic。
+
+## 九、目标
+
+把 ION 的 Message enum 从 3 变体扩到 7 变体，对齐 pi 的 `AgentMessage` 联合类型；同时补齐 `active_tools_change` 这一项 SessionEntry，对齐 pi 的 `SessionTreeEntry` 联合。
+
+完成后，ION 与 pi 在「对话消息」和「会话条目」两个维度完全对齐，迁移任何 pi 上层功能（bash 卡片渲染、压缩摘要展示、工具切换记录等）都不再需要补类型。
+
+## 十、pi 参考
+
+| pi 类型 | pi 文件 | 用途 |
+|---------|---------|------|
+| `BashExecutionMessage` | `packages/agent/src/harness/messages.ts:19` | `!ls` 这类用户直发 bash 的执行结果 |
+| `CustomMessage<T>` | `packages/agent/src/harness/messages.ts:31` | 扩展自定义消息（content + display + details） |
+| `BranchSummaryMessage` | `packages/agent/src/harness/messages.ts:40` | 分支回到主线时的摘要 |
+| `CompactionSummaryMessage` | `packages/agent/src/harness/messages.ts:47` | 压缩后的摘要 |
+| `ActiveToolsChangeEntry` | `packages/agent/src/harness/types.ts:357` | 工具集变更记录（独立 entry type） |
+| `convertToLlm()` | `packages/agent/src/harness/messages.ts:120` | 自定义 role → user 的转换中心 |
+| `SessionTreeEntry` 联合 | `packages/agent/src/harness/types.ts:409` | 全部 11 种 entry 类型 |
+
+## 十一、ION 现状 vs 目标
+
+### Message enum（对话消息）
+
+| 变体 | ION 现状 | pi 对应 | 改动 |
+|------|---------|---------|------|
+| `User` | ✅ | `UserMessage` | 无 |
+| `Assistant` | ✅ | `AssistantMessage` | 无 |
+| `ToolResult` | ✅ | `ToolResultMessage` | 无 |
+| `BashExecution` | ❌ | `BashExecutionMessage` | **新增** |
+| `Custom` | ❌ | `CustomMessage` | **新增** |
+| `BranchSummary` | ❌ | `BranchSummaryMessage` | **新增** |
+| `CompactionSummary` | ❌ | `CompactionSummaryMessage` | **新增** |
+
+### SessionEntry（会话条目）
+
+| Entry type | ION 现状 | pi 对应 | 改动 |
+|-----------|---------|---------|------|
+| `message` | ✅ struct | `MessageEntry` | 无 |
+| `model_change` | ✅ struct | `ModelChangeEntry` | 无 |
+| `thinking_level_change` | ✅ struct | `ThinkingLevelChangeEntry` | 无 |
+| `agent_change` | ✅ struct | `AgentChangeEntry` | 无 |
+| `session_info` | ✅ struct | `SessionInfoEntry` | 无 |
+| `compaction` | ✅ struct | `CompactionEntry` | 无 |
+| `branch_summary` | ✅ struct | `BranchSummaryEntry` | 无 |
+| `custom` | ✅ struct | `CustomEntry` | 无 |
+| `custom_message` | ⚠️ 仅 RPC | `CustomMessageEntry` | **加 struct** |
+| `system_event` | ⚠️ 仅 RPC | `SystemEventEntry`（ION 原创） | **加 struct** |
+| `label` | ⚠️ 仅 RPC | `LabelEntry` | **加 struct** |
+| `active_tools_change` | ❌ | `ActiveToolsChangeEntry` | **加 struct + RPC** |
+
+> 注：`custom_message`/`system_event`/`label` 三个 RPC 已经能写 JSONL（数据落盘正常），只是没对应的 Rust struct —— 加 struct 是为了 `SessionFile::load` 时能反序列化回强类型。
+
+## 十二、改动清单
+
+按依赖顺序排，前面的不改完后面的编译不过。
+
+> ✅ 全部完成。下面保留原始计划，每节末尾标注实际改动结果。
+
+### 阶段 1：Message enum 扩展（核心）
+
+#### 1.1 加 4 个新 Message struct
+
+**文件：`ion-provider/src/types.rs`**，在 `ToolResultMessage` 之后、`Message` enum 之前插入：
+
+```rust
+/// Bash execution result (用户 `!cmd` 直发，或 bash 工具结果)
+/// 对齐 pi BashExecutionMessage
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BashExecutionMessage {
+    pub role: String, // "bashExecution"
+    pub command: String,
+    pub output: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    pub cancelled: bool,
+    pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub full_output_path: Option<String>,
+    pub timestamp: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exclude_from_context: Option<bool>,
+}
+
+/// 扩展自定义消息（content + display + details）
+/// 对齐 pi CustomMessage<T>
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CustomMessage {
+    pub role: String, // "custom"
+    pub custom_type: String,  // 序列化为 "customType"
+    pub content: CustomContent,
+    pub display: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+    pub timestamp: i64,
+}
+
+/// CustomMessage.content 可以是字符串或 ContentBlock 数组
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum CustomContent {
+    Text(String),
+    Blocks(Vec<ContentBlock>),
+}
+
+/// 分支摘要（回到主线时插入）
+/// 对齐 pi BranchSummaryMessage
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BranchSummaryMessage {
+    pub role: String, // "branchSummary"
+    pub summary: String,
+    pub from_id: String,
+    pub timestamp: i64,
+}
+
+/// 压缩摘要（compaction 后插入）
+/// 对齐 pi CompactionSummaryMessage
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CompactionSummaryMessage {
+    pub role: String, // "compactionSummary"
+    pub summary: String,
+    pub tokens_before: u64,
+    pub timestamp: i64,
+}
+```
+
+> 注意：所有 struct 的 `role` 字段保持 `String` 类型（跟现有 UserMessage/AssistantMessage 一致），而不是用 enum —— 这样跟 pi 的弱类型对齐，序列化兼容性好。
+
+#### 1.2 扩展 Message enum
+
+**文件：`ion-provider/src/types.rs`**，改 `Message` enum：
+
+```rust
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "role", rename_all = "camelCase")]
+pub enum Message {
+    User(UserMessage),
+    Assistant(AssistantMessage),
+    ToolResult(ToolResultMessage),
+    BashExecution(BashExecutionMessage),
+    Custom(CustomMessage),
+    BranchSummary(BranchSummaryMessage),
+    CompactionSummary(CompactionSummaryMessage),
+}
+```
+
+> **关键决策**：是否加 `#[serde(tag = "role")]`？
+> - 加了：序列化变成 `{"role":"user", "content":[...]}`（扁平），跟 pi 一致
+> - 不加：序列化变成 `{"User":{"role":"user","content":[...]}}`（嵌套），跟现状一致
+>
+> 现状是不加（ externally tagged，serde 默认）—— **保持现状，先不动序列化格式**，避免破坏现有 session.jsonl。新变体也用同样规则。后续如果要跟 pi 完全对齐 JSON 格式，再单独做一个迁移。
+
+### 阶段 2：Provider 转换（让 LLM 看见）
+
+#### 2.1 OpenAI provider 加 4 个 match arm
+
+**文件：`ion-provider/src/provider/openai.rs:55-119`**
+
+在 `Message::ToolResult` 之后加 4 个 arm，全部转成 `role: "user"`：
+
+```rust
+Message::BashExecution(b) => {
+    if b.exclude_from_context == Some(true) {
+        // `!cmd` 排除型不发给 LLM
+        continue;
+    }
+    let mut text = format!("Ran `{}`\n```\n{}\n```", b.command, b.output);
+    if b.cancelled {
+        text.push_str("\n\n(command cancelled)");
+    } else if let Some(code) = b.exit_code {
+        if code != 0 { text.push_str(&format!("\n\nCommand exited with code {code}")); }
+    }
+    if b.truncated {
+        if let Some(ref p) = b.full_output_path {
+            text.push_str(&format!("\n\n[Output truncated. Full output: {p}]"));
+        }
+    }
+    openai_messages.push(OpenAIMessage {
+        role: "user".into(), content: text,
+        tool_call_id: None, tool_calls: None,
+    });
+}
+Message::Custom(c) => {
+    let text = match &c.content {
+        CustomContent::Text(s) => s.clone(),
+        CustomContent::Blocks(blocks) => blocks.iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text(t) => Some(t.text.clone()),
+                _ => None,
+            }).collect::<Vec<_>>().join("\n"),
+    };
+    openai_messages.push(OpenAIMessage {
+        role: "user".into(), content: text,
+        tool_call_id: None, tool_calls: None,
+    });
+}
+Message::BranchSummary(b) => {
+    let text = format!(
+        "The following is a summary of a branch that this conversation came back from:\n\n<summary>\n{}\n</summary>",
+        b.summary
+    );
+    openai_messages.push(OpenAIMessage {
+        role: "user".into(), content: text,
+        tool_call_id: None, tool_calls: None,
+    });
+}
+Message::CompactionSummary(c) => {
+    let text = format!(
+        "The conversation history before this point was compacted into the following summary:\n\n<summary>\n{}\n</summary>",
+        c.summary
+    );
+    openai_messages.push(OpenAIMessage {
+        role: "user".into(), content: text,
+        tool_call_id: None, tool_calls: None,
+    });
+}
+```
+
+### 阶段 3：compact.rs token 计数
+
+#### 3.1 加 4 个 match arm
+
+**文件：`ion/src/agent/compact.rs:30-57`**
+
+`msg_tokens` 是 exhaustive match，必须补：
+
+```rust
+Message::BashExecution(m) => (m.command.len() + m.output.len()) / 4,
+Message::Custom(m) => match &m.content {
+    CustomContent::Text(s) => s.len() / 4,
+    CustomContent::Blocks(blocks) => blocks.iter()
+        .map(|b| match b {
+            ContentBlock::Text(t) => t.text.len() / 4,
+            ContentBlock::Image(_) => 1000,
+        }).sum(),
+},
+Message::BranchSummary(m) => m.summary.len() / 4,
+Message::CompactionSummary(m) => m.summary.len() / 4,
+```
+
+### 阶段 4：非破坏性 match 位置（wildcard 已盖）
+
+下面这些位置有 `_ =>` 通配符，**不会编译报错**，但新 variant 会被静默忽略。需要按场景判断是否补：
+
+| 文件 | 行 | 用途 | 处理 |
+|------|----|------|------|
+| `src/bin/ion_worker.rs` | 300-309 | `get_session_stats` 统计 user/assistant/tool 数量 | 加 arm：bash/custom 计入 user 类 |
+| `src/bin/ion_worker.rs` | 326, 415 | 取最后一条 assistant 文本 | 不变（新 variant 不是 assistant） |
+| `src/bin/ion_worker.rs` | 562, 618, 622 | compact 时 token 统计 | 已在阶段 3 处理 |
+| `src/bin/ion.rs` | 887-1044 | session 摘要统计 | 同上，加 arm |
+| `src/bin/agent_demo.rs` | 54-105 | `describe_message` | 加 arm 以正确显示 |
+| `src/worker/agent_worker.rs` | 80 | 取 assistant 文本 | 不变 |
+| `src/rpc.rs` | 707 | 取 assistant 文本 | 不变 |
+
+### 阶段 5：SessionEntry struct 补全
+
+#### 5.1 加 4 个新 entry struct
+
+**文件：`ion/src/session_jsonl.rs`**，在 `CustomEntry` 之后加：
+
+```rust
+/// CustomMessage entry (LLM 可见的扩展自定义消息)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CustomMessageEntry {
+    #[serde(rename = "type")]
+    pub entry_type: String, // "custom_message"
+    pub id: String,
+    pub parentId: String,
+    pub timestamp: String,
+    pub customType: String,
+    pub content: serde_json::Value, // string | (TextContent | ImageContent)[]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+    pub display: bool,
+}
+
+/// System event entry (ION 原创设计)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SystemEventEntry {
+    #[serde(rename = "type")]
+    pub entry_type: String, // "system_event"
+    pub id: String,
+    pub parentId: String,
+    pub timestamp: String,
+    pub customType: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub display: bool,
+}
+
+/// Label entry (书签)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LabelEntry {
+    #[serde(rename = "type")]
+    pub entry_type: String, // "label"
+    pub id: String,
+    pub parentId: String,
+    pub timestamp: String,
+    pub targetId: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// Active tools change entry (工具集变更记录)
+/// 对齐 pi ActiveToolsChangeEntry
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ActiveToolsChangeEntry {
+    #[serde(rename = "type")]
+    pub entry_type: String, // "active_tools_change"
+    pub id: String,
+    pub parentId: String,
+    pub timestamp: String,
+    pub activeToolNames: Vec<String>,
+}
+```
+
+#### 5.2 SessionFile::load 加 entry 分发
+
+**文件：`ion/src/session_jsonl.rs:260-276`**
+
+现状只识别 `"message"` 一种 entry type，其他都堆到 `entries: Vec<Value>`。**保持现状** —— 这些 entry 不需要回到 `messages: Vec<Message>` 里（它们不是对话消息）。struct 只是给将来 typed-access 用。
+
+### 阶段 6：修复 `append_session_entry` 字段嵌套 bug
+
+#### 6.1 问题
+
+**文件：`ion/src/bin/ion_worker.rs:1248`**
+
+当前实现：
+```rust
+let line = serde_json::json!({
+    "type": entry_type,
+    "id": ...,
+    "parentId": sid,
+    "timestamp": ...,
+    "data": entry_data,   // ❌ 嵌套在 data 里
+});
+```
+
+但 pi 的 JSONL 和 `session_jsonl.rs` 的 struct 都是**平铺字段**：
+```json
+{"type":"custom_message","customType":"...","content":"...","display":true,...}
+```
+
+#### 6.2 修复
+
+把 `entry_data` 的字段合并到顶层：
+
+```rust
+fn append_session_entry(cwd: &str, sid: &str, entry_type: &str, entry_data: &serde_json::Value) {
+    let path = session_jsonl::session_path(cwd);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    // 基础字段
+    let mut line = serde_json::json!({
+        "type": entry_type,
+        "id": session_jsonl::generate_id(),
+        "parentId": sid,
+        "timestamp": session_jsonl::timestamp_iso(),
+    });
+    // 合并 entry_data 的字段到顶层（不嵌套）
+    if let Some(obj) = entry_data.as_object() {
+        if let Some(m) = line.as_object_mut() {
+            for (k, v) in obj {
+                m.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "{}", serde_json::to_string(&line).unwrap_or_default());
+    }
+}
+```
+
+### 阶段 7：补 `append_active_tools_change` RPC
+
+**文件：`ion/src/bin/ion_worker.rs`**，在 `append_label` 之后：
+
+```rust
+"append_active_tools_change" => {
+    let names: Vec<String> = params.get("activeToolNames")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter()
+            .filter_map(|x| x.as_str().map(String::from))
+            .collect())
+        .unwrap_or_default();
+    append_session_entry(&worker_cwd, &sid, "active_tools_change", &serde_json::json!({
+        "activeToolNames": names,
+    }));
+    output_response(&id, "append_active_tools_change",
+        &serde_json::json!({"status":"appended","count":names.len()}));
+}
+```
+
+### 阶段 8：测试
+
+每个改动对应一条 CLI 测试命令。
+
+| Test | 命令 | 期望 |
+|------|------|------|
+| T1 append_active_tools_change | `ion rpc --session x --method append_active_tools_change --params '{"activeToolNames":["bash","read"]}'` | JSONL 多一条 `active_tools_change`，字段平铺 |
+| T2 字段平铺验证 | `cat session.jsonl \| grep active_tools_change` | 顶层有 `activeToolNames`，不在 `data` 里 |
+| T3 custom_message 平铺 | `cat session.jsonl \| grep custom_message` | `customType/content/display` 在顶层 |
+| T4 Message::BashExecution 序列化 | 构造一条 push 进 messages，get_messages | JSON 形如 `{"BashExecution":{...}}` |
+| T5 provider 不报错 | 给 agent 喂 BashExecution 消息后 prompt | LLM 收到转换后的 user text，无 panic |
+| T6 compact token 计数 | 给 agent 喂 4 种新消息，触发 compact | 不 panic，token 数合理 |
+| T7 cargo build | `cargo build --bin ion-worker --bin ion` | 0 error |
+| T8 cargo test --lib | `cargo test --lib` | 全部通过 |
+
+## 十三、后续工作（部分已完成）
+
+- **不改 Message 序列化格式**：保持 externally-tagged（`{"User":{...}}`），不做 pi 风格的 internally-tagged 迁移。这是后续大改动。
+- **✅ BashExecution 生产路径已部分实现**：`bash_command` RPC + `!cmd` 拦截已上线（参 [BASH_EXTENSION.md](../../BASH_EXTENSION.md) Part 1），用户直发 bash 走 `Message::BashExecution`。LLM 调用的 `bash` 工具仍走 `ToolResult` 路径，后续切到 `BashExecution` 是 P3 工作。
+- **✅ send_custom_message 已用 Message::Custom**：之前用 `Message::User` 的 bug 已修，现在扩展异步通知走 `Message::Custom{role:"custom"}`，跟真实用户消息区分。
+- **✅ save_worker_session 覆盖写 bug 已修**：之前 append 的 entry 在 worker 退出时被全量覆盖写冲掉，现在改成增量 append。
+- **✅ Session Index 同步**：5 个 `append_*` RPC 现在同步更新 `sessions.index.json`，UI 可 O(1) 查询 last_thinking_level / last_active_tools / name / model / agent。
+- **不动 dashboard 的 ChatMessage 类型**：那是独立 TS 类型，等内核稳定后再迁。
+- **不加 `convert_to_llm` 集中函数**：ION 的 provider 边界（openai.rs）就是转换点，不引入额外抽象层。
+- **CompactionSummary / BranchSummary 生产路径未接**：类型就绪，等 compact 改造 / 分支功能上线时再接入。
+
+## 十四、回滚策略
+
+- 阶段 1-3 是核心，编译失败立即回滚
+- 阶段 6（字段平铺）改变了 JSONL 写入格式，旧数据仍可读（`SessionFile::load` 用 `val["type"]` 取字段，对嵌套/平铺都兼容读取 message，其他 entry 当 raw Value 处理）
+- 新增 RPC 不会破坏现有调用

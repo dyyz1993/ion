@@ -42,6 +42,132 @@ pub struct IonConfig {
     /// Omitted extensions default to enabled.
     #[serde(default)]
     pub extensions: HashMap<String, ExtensionConfig>,
+
+    /// Runtime configuration (remote hosts, sandbox, routes)
+    #[serde(default)]
+    pub runtime: RuntimeConfig,
+}
+
+/// Runtime configuration
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeConfig {
+    /// Default runtime mode: "local" | "sandbox" | "remote"
+    #[serde(default = "default_runtime_mode")]
+    pub default_mode: String,
+    /// Remote execution hosts
+    #[serde(default)]
+    pub remote: RemoteConfig,
+    /// Sandbox configuration
+    #[serde(default)]
+    pub sandbox: SandboxConfig,
+    /// Command-level routing rules
+    #[serde(default)]
+    pub routes: Vec<RouteRule>,
+}
+
+fn default_runtime_mode() -> String { "local".into() }
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            default_mode: "local".into(),
+            remote: RemoteConfig::default(),
+            sandbox: SandboxConfig::default(),
+            routes: Vec::new(),
+        }
+    }
+}
+
+/// Remote execution configuration
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RemoteConfig {
+    /// Default host name
+    #[serde(default)]
+    pub default_host: String,
+    /// Host definitions
+    #[serde(default)]
+    pub hosts: HashMap<String, RemoteHost>,
+}
+
+impl Default for RemoteConfig {
+    fn default() -> Self { Self { default_host: String::new(), hosts: HashMap::new() } }
+}
+
+/// A single remote host definition
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RemoteHost {
+    /// SSH user
+    #[serde(default)]
+    pub user: String,
+    /// Hostname or IP
+    #[serde(default)]
+    pub hostname: String,
+    /// SSH port
+    #[serde(default = "default_ssh_port")]
+    pub port: u16,
+    /// SSH key path (optional, uses default if empty)
+    #[serde(default)]
+    pub key: String,
+    /// Transport protocol: "ssh" | "http" | "grpc"
+    #[serde(default = "default_transport")]
+    pub transport: String,
+}
+
+fn default_ssh_port() -> u16 { 22 }
+fn default_transport() -> String { "ssh".into() }
+
+impl Default for RemoteHost {
+    fn default() -> Self {
+        Self {
+            user: String::new(),
+            hostname: String::new(),
+            port: 22,
+            key: String::new(),
+            transport: "ssh".into(),
+        }
+    }
+}
+
+/// Sandbox configuration
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SandboxConfig {
+    /// Sandbox profile: "readonly" | "workspace" | "full-access"
+    #[serde(default)]
+    pub profile: String,
+    /// Allow agent to request execution outside sandbox
+    #[serde(default)]
+    pub allow_escape_with_approval: bool,
+    /// Escape approval mode: "ask" | "auto_approve" | "deny"
+    #[serde(default = "default_escape_mode")]
+    pub escape_approval_mode: String,
+}
+
+fn default_escape_mode() -> String { "ask".into() }
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            profile: "workspace".into(),
+            allow_escape_with_approval: true,
+            escape_approval_mode: "ask".into(),
+        }
+    }
+}
+
+/// A routing rule: matches tool + pattern → selects runtime
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RouteRule {
+    /// Tool name to match (e.g. "bash", "read", "*")
+    #[serde(default)]
+    pub tool: String,
+    /// Command pattern (glob)
+    #[serde(default)]
+    pub pattern: String,
+    /// Target runtime: "local" | "remote" | "sandbox"
+    pub runtime: String,
+    /// Target host (for remote runtime)
+    #[serde(default)]
+    pub host: String,
 }
 
 /// Per-extension configuration (currently just enable/disable).
@@ -110,6 +236,7 @@ impl Default for IonConfig {
             provider_api_keys: HashMap::new(),
             providers: HashMap::new(),
             extensions: HashMap::new(),
+            runtime: RuntimeConfig::default(),
         }
     }
 }

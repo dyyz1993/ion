@@ -199,20 +199,31 @@ async fn main() {
         .unwrap_or_default();
     let preloaded = session_jsonl::SessionFile::load(&worker_cwd).map(|f| f.messages);
 
+    // ── 加载配置（在 Runtime 和 Extension 初始化之前）──
+    let ion_cfg = ion::config::IonConfig::load();
+
     // ── ManagerBridge 必须在 Agent 构造前创建，因为 WorkerRuntime 包装它注入到 Agent ──
     let stdout = Arc::new(Mutex::new(io::stdout()));
     let manager_bridge: Arc<ManagerBridge> = Arc::new(ManagerBridge::new(sid.clone(), stdout.clone()));
 
-    // ── Agent 用 SecuredRuntime<WorkerRuntime<LocalRuntime>> ──
-    // SecuredRuntime 在最外层拦截 CommandGuard + PermissionEngine
-    // WorkerRuntime 中间层提供 spawn_worker / send_to_worker 编排能力
-    // LocalRuntime 底层执行
-    let secured_inner = ion::runtime::SecuredRuntime::new(ion::runtime::LocalRuntime::new())
-        .with_profile(ion::kernel::SecurityProfile::default());
-    let worker_rt = ion::runtime::WorkerRuntime::new(
-        secured_inner,
-        manager_bridge.clone() as Arc<dyn ion::runtime::ManagerBridgeHandle>,
-    );
+    // ── 根据配置选择 Runtime ──
+    let worker_rt: Box<dyn ion::runtime::Runtime> = {
+        if ion_cfg.runtime.default_mode == "remote" {
+            let hostname = &ion_cfg.runtime.remote.default_host;
+            if let Some(host_cfg) = ion_cfg.runtime.remote.hosts.get(hostname) {
+                let remote = ion::runtime::RemoteRuntime::from_config(ion::runtime::LocalRuntime::new(), host_cfg);
+                let secured = ion::runtime::SecuredRuntime::new(remote).with_profile(ion::kernel::SecurityProfile::default());
+                Box::new(ion::runtime::WorkerRuntime::new(secured, manager_bridge.clone() as Arc<dyn ion::runtime::ManagerBridgeHandle>))
+            } else {
+                tracing::warn!("[runtime] remote host '{}' not configured, falling back to local", hostname);
+                let secured = ion::runtime::SecuredRuntime::new(ion::runtime::LocalRuntime::new()).with_profile(ion::kernel::SecurityProfile::default());
+                Box::new(ion::runtime::WorkerRuntime::new(secured, manager_bridge.clone() as Arc<dyn ion::runtime::ManagerBridgeHandle>))
+            }
+        } else {
+            let secured = ion::runtime::SecuredRuntime::new(ion::runtime::LocalRuntime::new()).with_profile(ion::kernel::SecurityProfile::default());
+            Box::new(ion::runtime::WorkerRuntime::new(secured, manager_bridge.clone() as Arc<dyn ion::runtime::ManagerBridgeHandle>))
+        }
+    };
 
     let mut agent = Agent::new(
         Arc::clone(&registry),
@@ -221,7 +232,7 @@ async fn main() {
         tools,
         config,
     )
-    .with_runtime(Box::new(worker_rt));
+        .with_runtime(worker_rt);
 
     // 当前 agent 名称（支持 switch_agent 动态切换）
     let mut current_agent_name: String = "build".into();
@@ -230,7 +241,6 @@ async fn main() {
     }
 
     // ── 注册内置 Extension（Memory / Bash / Streaming），可通过 config.json 关闭 ──
-    let ion_cfg = ion::config::IonConfig::load();
     // 先创建 follow_up 通道（bash 插件后台进程完成时用来注入消息）
     let (follow_up_tx, mut follow_up_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
     let mut process_map = None;
