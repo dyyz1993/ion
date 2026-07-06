@@ -687,7 +687,7 @@ async fn cmd_run(
                                         name: td.name.clone(),
                                         description: td.description.clone(),
                                         parameters: td.parameters.clone(),
-                                        plugin_path: canonical_str.clone(),
+                                        extension_path: canonical_str.clone(),
                                         ext_name: ext_name.clone(),
                                         registry: wasm_ext_registry.clone(),
                                     }));
@@ -723,7 +723,7 @@ async fn cmd_run(
                             name: td.name.clone(),
                             description: td.description.clone(),
                             parameters: td.parameters.clone(),
-                            plugin_path: canonical_str.clone(),
+                            extension_path: canonical_str.clone(),
                             ext_name: ext_name.clone(),
                             registry: wasm_ext_registry.clone(),
                         }));
@@ -1640,7 +1640,7 @@ async fn cmd_manager_start(
                                             Some(event) => {
                                                 let msg = serde_json::json!({
                                                     "type": "extension_event",
-                                                    "extension": event.plugin,
+                                                    "extension": event.extension,
                                                     "customType": event.custom_type,
                                                     "session": event.session,
                                                     "persisted": event.persisted,

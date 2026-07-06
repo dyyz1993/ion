@@ -70,10 +70,10 @@ fn host_register(name: &str, desc: &str, schema: &str) {
 // ── Plugin exports ────────────────────────────────────────────────────────────
 
 #[no_mangle]
-pub extern "C" fn plugin_version() -> u32 { 1 }
+pub extern "C" fn extension_version() -> u32 { 1 }
 
 #[no_mangle]
-pub extern "C" fn plugin_init() {
+pub extern "C" fn extension_init() {
     host_register(
         "plan_enter",
         "Enter planning mode. Provide a plan_path where the plan will be saved.",
@@ -89,7 +89,7 @@ pub extern "C" fn plugin_init() {
 // ── Tool execution ────────────────────────────────────────────────────────────
 
 #[no_mangle]
-pub extern "C" fn plugin_execute_tool(
+pub extern "C" fn extension_execute_tool(
     name_ptr: *const u8, name_len: u32,
     _args_ptr: *const u8, _args_len: u32,
     out_buf: *mut u8, out_capacity: u32,

@@ -1,12 +1,12 @@
-# {插件名} 插件手册
+# {扩展名} 扩展手册
 
-> 插件类型：WASM / Rust Extension
+> 扩展类型：WASM / Rust Extension
 > 构建命令：`cargo build --target wasm32-wasip1 --release`
 > 安装路径：`<project>/.ion/extensions/{name}.wasm`
 
 ## 能力
 
-一句话描述这个插件做什么。列表式说明核心能力。
+一句话描述这个扩展做什么。列表式说明核心能力。
 
 ## 工具
 

@@ -25,7 +25,7 @@ pub enum EventVisibility {
 #[derive(Clone, Debug)]
 pub struct ExtensionEvent {
     /// 来源插件名（"memory", "todo" 等）
-    pub plugin: String,
+    pub extension: String,
     /// 自定义类型（"memory_saved", "memory_injected" 等）
     pub custom_type: String,
     /// 可选的 session 作用域
@@ -41,9 +41,9 @@ pub struct ExtensionEvent {
 }
 
 impl ExtensionEvent {
-    pub fn new(plugin: &str, custom_type: &str) -> Self {
+    pub fn new(extension: &str, custom_type: &str) -> Self {
         Self {
-            plugin: plugin.to_string(),
+            extension: extension.to_string(),
             custom_type: custom_type.to_string(),
             session: None,
             data: serde_json::Value::Null,
@@ -63,7 +63,7 @@ impl ExtensionEvent {
 /// Subscriber 过滤器
 #[derive(Clone, Debug)]
 struct SubFilter {
-    plugin: Option<String>,
+    extension: Option<String>,
     session: Option<String>,
 }
 
@@ -83,24 +83,24 @@ impl ExtensionEventBus {
     pub fn new() -> Self { Self { subscribers: Vec::new() } }
 
     /// 订阅指定插件的所有事件（不限制 session）
-    pub fn subscribe(&mut self, plugin: &str) -> mpsc::Receiver<ExtensionEvent> {
+    pub fn subscribe(&mut self, extension: &str) -> mpsc::Receiver<ExtensionEvent> {
         self.subscribe_with_filter(SubFilter {
-            plugin: Some(plugin.to_string()),
+            extension: Some(extension.to_string()),
             session: None,
         })
     }
 
     /// 订阅指定插件 + session 的事件
-    pub fn subscribe_with_session(&mut self, plugin: &str, session: &str) -> mpsc::Receiver<ExtensionEvent> {
+    pub fn subscribe_with_session(&mut self, extension: &str, session: &str) -> mpsc::Receiver<ExtensionEvent> {
         self.subscribe_with_filter(SubFilter {
-            plugin: Some(plugin.to_string()),
+            extension: Some(extension.to_string()),
             session: Some(session.to_string()),
         })
     }
 
     /// 订阅全部事件（插件 + session 都不限制）
     pub fn subscribe_all(&mut self) -> mpsc::Receiver<ExtensionEvent> {
-        self.subscribe_with_filter(SubFilter { plugin: None, session: None })
+        self.subscribe_with_filter(SubFilter { extension: None, session: None })
     }
 
     fn subscribe_with_filter(&mut self, filter: SubFilter) -> mpsc::Receiver<ExtensionEvent> {
@@ -114,8 +114,8 @@ impl ExtensionEventBus {
     pub fn broadcast(&mut self, event: &ExtensionEvent) {
         self.subscribers.retain(|sub| {
             // 过滤
-            if let Some(ref plugin) = sub.filter.plugin {
-                if plugin != &event.plugin { return true; }
+            if let Some(ref extension) = sub.filter.extension {
+                if extension != &event.extension { return true; }
             }
             if let Some(ref session) = sub.filter.session {
                 if let Some(ref ev_sess) = event.session {
@@ -128,8 +128,8 @@ impl ExtensionEventBus {
             match sub.tx.try_send(event.clone()) {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    tracing::warn!("[eventbus] subscriber too slow, disconnecting (plugin={:?}, session={:?})",
-                        sub.filter.plugin, sub.filter.session);
+                    tracing::warn!("[eventbus] subscriber too slow, disconnecting (extension={:?}, session={:?})",
+                        sub.filter.extension, sub.filter.session);
                     false
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => false,
@@ -138,8 +138,8 @@ impl ExtensionEventBus {
     }
 
     /// 广播事件 JSON 值（构造 ExtensionEvent）
-    pub fn broadcast_raw(&mut self, plugin: &str, custom_type: &str, data: serde_json::Value) {
-        let event = ExtensionEvent::new(plugin, custom_type).with_data(data);
+    pub fn broadcast_raw(&mut self, extension: &str, custom_type: &str, data: serde_json::Value) {
+        let event = ExtensionEvent::new(extension, custom_type).with_data(data);
         self.broadcast(&event);
     }
 

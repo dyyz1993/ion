@@ -157,10 +157,10 @@ impl Buf<'_> {
 // ── 插件入口 ──────────────────────────────────────────────────────────────
 
 #[no_mangle]
-pub extern "C" fn plugin_version() -> u32 { 1 }
+pub extern "C" fn extension_version() -> u32 { 1 }
 
 #[no_mangle]
-pub extern "C" fn plugin_init() {
+pub extern "C" fn extension_init() {
     host_register(
         "todo_add", "Create a new task.\nArgs: {text: string}. Returns: {id, text, status}",
         r#"{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}"#,
@@ -194,7 +194,7 @@ const STORAGE_BUF: usize = 16384;
 const OUT_BUF: usize = 4096;
 
 #[no_mangle]
-pub extern "C" fn plugin_execute_tool(
+pub extern "C" fn extension_execute_tool(
     name_ptr: *const u8, name_len: u32,
     args_ptr: *const u8, args_len: u32,
     out_buf: *mut u8, out_capacity: u32,

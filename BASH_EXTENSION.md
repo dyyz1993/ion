@@ -1,10 +1,10 @@
-# Bash 进程管理插件设计
+# Bash 进程管理扩展设计
 
 > **状态：设计稿（后台进程管理）+ 已实现（同步直接执行）**
 >
 > 本文档两部分：
 > - **§0（已实现）**：同步直接执行路径 — `bash_command` RPC / `!cmd` 直发 / bash 执行结果入库
-> - **§1-§12（设计稿）**：未来后台进程管理插件的目标设计，**当前未实现**
+> - **§1-§12（设计稿）**：未来后台进程管理扩展的目标设计，**当前未实现**
 >
 > ### 实现状态核查清单
 >
@@ -45,7 +45,7 @@
 | `bash_command` RPC | `ion rpc --method bash_command` | ❌ | bash 执行消息（role: `bashExecution`） |
 | `bash` LLM 工具 | LLM 调用 `bash` tool | ✅ | 工具结果（tool role） |
 
-前两个入口的结果会以 `role: bashExecution` 写入对话历史，跟真实用户消息（`role: user`）区分开，UI 渲染时可识别为 bash 卡片。第三个走标准工具结果路径（后续切换到 bashExecution 是 §1-§12 后台插件的工作）。
+前两个入口的结果会以 `role: bashExecution` 写入对话历史，跟真实用户消息（`role: user`）区分开，UI 渲染时可识别为 bash 卡片。第三个走标准工具结果路径（后续切换到 bashExecution 是 §1-§12 后台扩展的工作）。
 
 ### 0.2 `bash_command` RPC
 
@@ -434,8 +434,8 @@ Plugin RPC 返回结构化 JSON（给 CLI 解析用）。
 | 通道 | 调用方式 | 数据流 |
 |------|---------|--------|
 | `agent → emit()` | Agent 内置，tool 生命周期自动触发 | Agent loop → `println!` stdout →  Worker stdout reader → pump → event_subscribers → `subscribe --session x` |
-| `extension → emit_extension_event()` | 插件调 `ExtensionApi::emit_extension_event()` | `println!` stdout(type=plugin_event) → pump 检测 `plugin_event` → EventBus broadcast → `subscribe --extension bash` |
-| `extension → notify()` | 插件直接插入 user message | 追加到 agent.messages → 下一轮 LLM 调用自动带上 |
+| `extension → emit_extension_event()` | 扩展调 `ExtensionApi::emit_extension_event()` | `println!` stdout(type=extension_event) → pump 检测 `extension_event` → EventBus broadcast → `subscribe --extension bash` |
+| `extension → notify()` | 扩展直接插入 user message | 追加到 agent.messages → 下一轮 LLM 调用自动带上 |
 
 ### 事件清单
 
@@ -469,7 +469,7 @@ ion rpc --session x --method extension_rpc \
   --params '{"plugin":"bash","method":"inspect","args":{"pid":12345,"tail":50}}'
 ```
 
-## 9. 插件通知（Plugin Notification）
+## 9. 扩展通知（Plugin Notification）
 
 后台进程**异步结束**后，注入一条带 XML 标签的消息到会话中：
 

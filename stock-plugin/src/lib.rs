@@ -39,10 +39,10 @@ fn host_ch_send(channel: &str, msg: &str) {
 }
 
 #[no_mangle]
-pub extern "C" fn plugin_version() -> u32 { 1 }
+pub extern "C" fn extension_version() -> u32 { 1 }
 
 #[no_mangle]
-pub extern "C" fn plugin_init() {
+pub extern "C" fn extension_init() {
     host_register(
         "get_stock_price",
         "Get current stock price for a ticker symbol (e.g. AAPL)",
@@ -53,7 +53,7 @@ pub extern "C" fn plugin_init() {
 }
 
 #[no_mangle]
-pub extern "C" fn plugin_execute_tool(
+pub extern "C" fn extension_execute_tool(
     _name_ptr: *const u8, _name_len: u32,
     _args_ptr: *const u8, _args_len: u32,
     out_buf: *mut u8, out_capacity: u32,

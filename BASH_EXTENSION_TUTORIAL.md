@@ -1,4 +1,4 @@
-# Bash 插件 + 会话消息系统 — 完整教程
+# Bash 扩展 + 会话消息系统 — 完整教程
 
 > **状态：已验证** — 所有功能已在真实 LLM 和真实 API 上通过测试
 
@@ -8,7 +8,7 @@
 3. [Worker 管理](#3-worker-管理)
 4. [会话基础](#4-会话基础)
 5. [消息类型](#5-消息类型)
-6. [Bash 插件](#6-bash-插件)
+6. [Bash 扩展](#6-bash-扩展)
 7. [实时流式](#7-实时流式)
 8. [三个核心场景](#8-三个核心场景)
 9. [Web UI](#9-web-ui)
@@ -144,9 +144,9 @@ BashExecution 对象结构：
 }
 ```
 
-## 6. Bash 插件
+## 6. Bash 扩展
 
-Bash 插件是内核内置的进程执行引擎，支持前台同步 / 后台异步 / 超时自动切后台三种模式。
+Bash 扩展是内核内置的进程执行引擎，支持前台同步 / 后台异步 / 超时自动切后台三种模式。
 
 ### BID（Bash ID）
 
@@ -220,10 +220,10 @@ ion subscribe --session <SID>
 {"type":"event","event":{"type":"tool_execution_end","toolCallId":"call_xxx","isError":false}}
 
 # Bash 进程事件
-{"type":"event","event":{"type":"plugin_event","plugin":"bash","customType":"process_started","data":{"bid":"100000","command":"ls"}}}
-{"type":"event","event":{"type":"plugin_event","plugin":"bash","customType":"process_output","data":{"bid":"100000","output":"file1.txt"}}}
-{"type":"event","event":{"type":"plugin_event","plugin":"bash","customType":"process_completed","data":{"bid":"100000","exit_code":0,"elapsed_secs":0.3}}}
-{"type":"event","event":{"type":"plugin_event","plugin":"bash","customType":"process_killed","data":{"bid":"100000"}}}
+{"type":"event","event":{"type":"extension_event","plugin":"bash","customType":"process_started","data":{"bid":"100000","command":"ls"}}}
+{"type":"event","event":{"type":"extension_event","plugin":"bash","customType":"process_output","data":{"bid":"100000","output":"file1.txt"}}}
+{"type":"event","event":{"type":"extension_event","plugin":"bash","customType":"process_completed","data":{"bid":"100000","exit_code":0,"elapsed_secs":0.3}}}
+{"type":"event","event":{"type":"extension_event","plugin":"bash","customType":"process_killed","data":{"bid":"100000"}}}
 ```
 
 ## 8. 三个核心场景
@@ -346,7 +346,7 @@ cd /tmp && python3 verify_all.py
 
 | 文件 | 行数 | 功能 |
 |------|------|------|
-| `src/agent/bash.rs` | 644 | Bash 插件完整实现 |
+| `src/agent/bash.rs` | 644 | Bash 扩展完整实现 |
 | `src/worker_registry.rs` | 1595 | Worker 管理 + 死锁修复（oneshot 模式） |
 | `src/bin/ion_worker.rs` | 1644 | StreamingExtension + 11 个 append_* RPC |
 | `src/bin/ion.rs` | 2600 | Manager socket handler + create_worker 注入 |

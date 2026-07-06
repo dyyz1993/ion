@@ -83,14 +83,14 @@ ion rpc --session x --method call_tool \
 ion rpc --session x --method call_tool \
   --params '{"tool":"resume_worker","args":{"worker_id":"wkr_xxx","text":"继续"}}'
 
-# Memory 插件
+# Memory 扩展
 ion rpc --session x --method call_tool \
   --params '{"tool":"memory_save","args":{"content":"偏好 Rust","tags":["rust"]}}'
 ion rpc --session x --method call_tool \
   --params '{"tool":"memory_search","args":{"query":"rust"}}'
 ```
 
-### Plugin RPC（调插件私有方法）
+### Plugin RPC（调扩展私有方法）
 
 ```bash
 ion rpc --session x --method extension_rpc \
@@ -174,7 +174,7 @@ ion subscribe --session sess_xxx
 
 **用途**：实时看 LLM 输出、调试 Agent 行为、前端聊天面板。
 
-### Plugin subscribe（看插件事件）
+### Plugin subscribe（看扩展事件）
 
 ```bash
 ion subscribe --session sess_xxx --extension memory
@@ -185,20 +185,20 @@ ion subscribe --session sess_xxx --extension memory
 
 ```json
 {"type":"subscribed","plugin":"memory","session":"sess_xxx"}
-{"type":"plugin_event","plugin":"memory","customType":"memory_saved","data":{"id":"mem_1"}}
-{"type":"plugin_event","plugin":"memory","customType":"memory_injected","data":{...}}
+{"type":"extension_event","plugin":"memory","customType":"memory_saved","data":{"id":"mem_1"}}
+{"type":"extension_event","plugin":"memory","customType":"memory_injected","data":{...}}
 ```
 
-**用途**：前端记忆面板实时刷新、调试插件行为。
+**用途**：前端记忆面板实时刷新、调试扩展行为。
 
 ### 通用字段
 
-所有 plugin_event 包含：
+所有 extension_event 包含：
 
 | 字段 | 说明 |
 |------|------|
-| `plugin` | 来源插件 |
-| `customType` | 事件类型（插件自定义） |
+| `plugin` | 来源扩展 |
+| `customType` | 事件类型（扩展自定义） |
 | `session` | 关联 session |
 | `visibility` | `"llm_and_ui"` 或 `"ui_only"` |
 | `correlation_id` | 追踪用 |
@@ -206,7 +206,7 @@ ion subscribe --session sess_xxx --extension memory
 
 ## 完整调试场景
 
-### 场景 1：开发 + 调试 Memory 插件
+### 场景 1：开发 + 调试 Memory 扩展
 
 ```bash
 # Terminal 1: Manager
@@ -277,7 +277,7 @@ rpcSocket.send({method:'call_tool', session:'sess_xxx', params:{tool:'memory_sav
 | `ion rpc --method create_session` | 建会话 |
 | `ion rpc --session x --method get_messages` | 读消息 |
 | `ion rpc --session x --method call_tool` | 调工具 |
-| `ion rpc --session x --method extension_rpc` | 调插件 |
+| `ion rpc --session x --method extension_rpc` | 调扩展 |
 | `ion rpc --session x --method prompt` | 跑 LLM |
 | `ion subscribe --session x` | 看会话流 |
-| `ion subscribe --session x --extension memory` | 看插件事件 |
+| `ion subscribe --session x --extension memory` | 看扩展事件 |

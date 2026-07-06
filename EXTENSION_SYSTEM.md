@@ -1,10 +1,10 @@
-# ION 插件系统
+# ION 扩展系统
 
-> **状态：已完成** — WASM 插件加载、热更新、数据存储四大维度已实现并验证。
+> **状态：已完成** — WASM 扩展加载、热更新、数据存储四大维度已实现并验证。
 
 ## 概述
 
-ION 的插件系统分两层：
+ION 的扩展系统分两层：
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -13,18 +13,18 @@ ION 的插件系统分两层：
 │  语言：Rust 原生                                     │
 │  文件：src/agent/extension.rs                        │
 ├─────────────────────────────────────────────────────┤
-│  第二层：WASM 插件                                    │
+│  第二层：WASM 扩展                                    │
 │  wasmtime 沙箱隔离，多语言（编译到 wasm32-wasip1）     │
 │  注册工具 + 热更新 + 4 维数据存储                      │
 │  文件：src/plugin.rs                                  │
 └─────────────────────────────────────────────────────┘
 ```
 
-本文档聚焦第二层（WASM 插件）。Rust 扩展层见 `src/agent/extension.rs` 及 `Extension` trait 的 29 个方法签名。
+本文档聚焦第二层（WASM 扩展）。Rust 扩展层见 `src/agent/extension.rs` 及 `Extension` trait 的 29 个方法签名。
 
 ---
 
-## WASM 插件生命周期
+## WASM 扩展生命周期
 
 ```
 ┌─────────┐    ┌──────────┐    ┌──────────────┐    ┌──────────┐
@@ -34,7 +34,7 @@ ION 的插件系统分两层：
 └─────────┘    └──────────┘    └──────────────┘    └──────────┘
 ```
 
-### 插件导出的 3 个 C 函数
+### 扩展导出的 3 个 C 函数
 
 ```rust
 // 必须导出
@@ -69,45 +69,45 @@ pub extern "C" fn plugin_execute_tool(
 
 ---
 
-## 热更新（PluginRegistry）
+## 热更新（ExtensionRegistry）
 
 ### 架构
 
 ```rust
 // src/plugin.rs
-pub struct PluginRegistry {
+pub struct ExtensionRegistry {
     plugins: RwLock<HashMap<String, PluginEntry>>,
-    pub ctx: RwLock<PluginContext>,
+    pub ctx: RwLock<ExtensionContext>,
 }
 ```
 
-每个 `WasmCallingTool` 持有 `registry + plugin_path` 引用，不直接持有 `WasmPlugin` 实例：
+每个 `WasmCallingTool` 持有 `registry + plugin_path` 引用，不直接持有 `WasmExtension` 实例：
 
 ```
-WasmCallingTool ─→ PluginRegistry ─→ HashMap<path, Arc<Mutex<WasmPlugin>>>
+WasmCallingTool ─→ ExtensionRegistry ─→ HashMap<path, Arc<Mutex<WasmExtension>>>
                                                             ↕
                                                      LLM 调用时临时持有
 ```
 
-**核心原理：** 当 `extension_remove` 时，旧的 `Arc<Mutex<WasmPlugin>>` 从 HashMap 移除。如果此时没有 tool 正在执行，Arc 降为 0，`WasmPlugin` 及其 `wasmtime::Store` 立即释放。如有 tool 正在执行，该 tool 的执行闭包持有临时的 Arc.clone()，执行完即释放。
+**核心原理：** 当 `extension_remove` 时，旧的 `Arc<Mutex<WasmExtension>>` 从 HashMap 移除。如果此时没有 tool 正在执行，Arc 降为 0，`WasmExtension` 及其 `wasmtime::Store` 立即释放。如有 tool 正在执行，该 tool 的执行闭包持有临时的 Arc.clone()，执行完即释放。
 
 ### 对比 PI
 
 | 方面 | ION | PI |
 |------|-----|----|
-| reload 粒度 | **插件级**（不重建会话） | 全量会话重建（shutdown → reload → session_start） |
+| reload 粒度 | **扩展级**（不重建会话） | 全量会话重建（shutdown → reload → session_start） |
 | 注册/反注册 | `registerProvider` / `unregisterProvider`（runner.ts:460） | `extension_add` / `extension_remove` |
 | 即时生效 | ✅ 命令间天然串行，修改即时生效 | ✅ same |
-| 状态持久化 | 通过 4 维数据宿主函数（插件自主读写） | 通过 `getSessionDataDir` 等路径 API |
+| 状态持久化 | 通过 4 维数据宿主函数（扩展自主读写） | 通过 `getSessionDataDir` 等路径 API |
 
 ### RPC 命令
 
 ```
 extension_add     加载一个 .wasm 文件到注册表
-extension_remove  卸载并释放插件
+extension_remove  卸载并释放扩展
 extension_reload  重新加载（移除旧 + 添加新）
-extension_list    列出所有已加载的插件及工具
-reload         通用 reload（遍历所有已加载插件执行 extension_reload）
+extension_list    列出所有已加载的扩展及工具
+reload         通用 reload（遍历所有已加载扩展执行 extension_reload）
 ```
 
 ---
@@ -157,9 +157,9 @@ u32 host_list_global_data(out_buf: u32, out_capacity: u32);
 
 - **原子写入：** 写入先写 `.tmp` 文件，再 `rename` 到目标路径。读取永远读不到半截数据。
 - **冲突策略：** last write wins。多个 Worker 同时写同一 key，最后写入者生效。
-- **不需要文件锁：** `Mutex<WasmPlugin>` 保证同一进程内串行化；跨进程的 `rename` 是 POSIX 原子操作。
+- **不需要文件锁：** `Mutex<WasmExtension>` 保证同一进程内串行化；跨进程的 `rename` 是 POSIX 原子操作。
 
-### WASM 插件的典型用法
+### WASM 扩展的典型用法
 
 ```rust
 // todo-plugin 的伪代码：带持久化的 todo 工具
@@ -187,16 +187,16 @@ fn save_state() {
 
 ---
 
-## 上下文注入（PluginContext）
+## 上下文注入（ExtensionContext）
 
-工具执行前，宿主读取 `PluginRegistry.ctx` + `WasmCallingTool.ext_name`，合并为 `PluginContext` 注入到 WASM Store。
+工具执行前，宿主读取 `ExtensionRegistry.ctx` + `WasmCallingTool.ext_name`，合并为 `ExtensionContext` 注入到 WASM Store。
 
 ```rust
-pub struct PluginContext {
+pub struct ExtensionContext {
     pub session_id: String,    // 当前会话 ID
     pub cwd: String,           // 当前工作目录
     pub project_root: String,  // 项目根目录
-    pub ext_name: String,      // 插件扩展名
+    pub ext_name: String,      // 扩展扩展名
 }
 ```
 
@@ -206,9 +206,9 @@ pub struct PluginContext {
 
 ---
 
-## 现有插件
+## 现有扩展
 
-| 插件 | 目录 | 工具 | 特点 |
+| 扩展 | 目录 | 工具 | 特点 |
 |------|------|------|------|
 | **stock-plugin** | `stock-plugin/` | `get_stock_price` | `#![no_std]` 教学示例，演示 channel_send |
 | **plan-plugin** | `plan-plugin/` | `plan_enter`, `plan_exit` | 配合 Rust 端 `PlanExtension` 使用 |
@@ -216,7 +216,7 @@ pub struct PluginContext {
 
 ---
 
-## 如何写一个 WASM 插件
+## 如何写一个 WASM 扩展
 
 ### 1. 创建项目
 
@@ -235,7 +235,7 @@ crate-type = ["cdylib"]
 # serde_json = { version = "1", default-features = false, features = ["alloc"] }
 ```
 
-### 2. 编写插件
+### 2. 编写扩展
 
 ```rust
 #![no_std]
@@ -317,12 +317,12 @@ echo '{"id":"1","method":"extension_add","params":{"path":"/abs/to/my_plugin.was
 
 | 文件 | 说明 |
 |------|------|
-| `src/plugin.rs` | WASM 插件加载器、PluginRegistry、16 个宿主函数 |
+| `src/plugin.rs` | WASM 扩展加载器、ExtensionRegistry、16 个宿主函数 |
 | `src/agent/extension.rs` | Rust 扩展 Extension trait（29 钩子） |
 | `src/worker_api.rs` | ExtensionApi（create_worker、channel_send 等） |
 | `src/paths.rs` | 数据存储路径定义（global/project/session/project_local） |
-| `stock-plugin/src/lib.rs` | 最简单的 WASM 插件示例 |
-| `todo-plugin/src/lib.rs` | 有状态的 WASM 插件示例 |
-| `plan-plugin/src/lib.rs` | PRD 计划模式 WASM 插件 |
+| `stock-plugin/src/lib.rs` | 最简单的 WASM 扩展示例 |
+| `todo-plugin/src/lib.rs` | 有状态的 WASM 扩展示例 |
+| `plan-plugin/src/lib.rs` | PRD 计划模式 WASM 扩展 |
 | `src/bin/ion_worker.rs` | RPC 命令 dispatch（含 extension_add/remove/list/reload） |
-| `tests/plugin_tests.rs` | 27 个插件测试 |
+| `tests/plugin_tests.rs` | 27 个扩展测试 |

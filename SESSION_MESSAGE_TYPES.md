@@ -415,7 +415,7 @@ fn append_session_entry(cwd: &str, sid: &str, entry_type: &str, entry_data: &ser
 
 - **不改 Message 序列化格式**：保持 externally-tagged（`{"User":{...}}`），不做 pi 风格的 internally-tagged 迁移。这是后续大改动。
 - **✅ BashExecution 生产路径已部分实现**：`bash_command` RPC + `!cmd` 拦截已上线（参 [BASH_EXTENSION.md Part 1](./BASH_EXTENSION.md)），用户直发 bash 走 `Message::BashExecution`。LLM 调用的 `bash` 工具仍走 `ToolResult` 路径，后续切到 `BashExecution` 是 P3 工作。
-- **✅ send_custom_message 已用 Message::Custom**：之前用 `Message::User` 的 bug 已修，现在插件异步通知走 `Message::Custom{role:"custom"}`，跟真实用户消息区分。
+- **✅ send_custom_message 已用 Message::Custom**：之前用 `Message::User` 的 bug 已修，现在扩展异步通知走 `Message::Custom{role:"custom"}`，跟真实用户消息区分。
 - **✅ save_worker_session 覆盖写 bug 已修**：之前 append 的 entry 在 worker 退出时被全量覆盖写冲掉，现在改成增量 append。
 - **✅ Session Index 同步**：5 个 `append_*` RPC 现在同步更新 `sessions.index.json`，UI 可 O(1) 查询 last_thinking_level / last_active_tools / name / model / agent。
 - **不动 dashboard 的 ChatMessage 类型**：那是独立 TS 类型，等内核稳定后再迁。

@@ -188,7 +188,7 @@ impl ExtensionApi {
     pub fn emit_extension_event(&self, event: crate::event_bus::ExtensionEvent) {
         let msg = serde_json::json!({
             "type": "extension_event",
-            "extension": event.plugin,
+            "extension": event.extension,
             "customType": event.custom_type,
             "session": event.session,
             "visibility": match event.visibility {

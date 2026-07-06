@@ -37,12 +37,12 @@
 | U19 | 会话索引实时更新 | sessions.index.json 有记录 |
 | U20 | Token 统计准确 | token_input/output 非零 |
 
-### 1.4 插件测试
+### 1.4 扩展测试
 
 | # | Case | 验证点 |
 |---|------|--------|
 | U21 | JSON 扩展加载 | system_prompt 注入成功 |
-| U22 | WASM 插件加载 | plugin_version/plugin_init 调用 |
+| U22 | WASM 扩展加载 | plugin_version/plugin_init 调用 |
 | U23 | WASM 工具注册 | Agent 可见 get_stock_price |
 | U24 | Skill 加载 | markdown body 注入 system_prompt |
 | U25 | --agent explore | 只读工具，无 edit/write |
@@ -101,13 +101,13 @@
 | I24 | 项目变化事件 | Worker 创建/销毁 | 推送 project_changed |
 | I25 | 会话变化事件 | Worker 启动 | 推送 session_changed (含 createdBy) |
 
-### 2.6 插件通信
+### 2.6 扩展通信
 
 | # | Case | 步骤 | 验证点 |
 |---|------|------|--------|
-| I26 | 插件 emit 事件 | 插件 api.emit("todo_update",{...}) | 订阅者收到 custom 事件 |
-| I27 | 外部调插件方法 | UI → rpc("s1","custom",{"customMethod":"todo_list"}) | 插件处理，返回数据 |
-| I28 | 插件创建子 Worker | 插件 api.create_worker() | Manager spawn，返回 workerId |
+| I26 | 扩展 emit 事件 | 扩展 api.emit("todo_update",{...}) | 订阅者收到 custom 事件 |
+| I27 | 外部调扩展方法 | UI → rpc("s1","custom",{"customMethod":"todo_list"}) | 扩展处理，返回数据 |
+| I28 | 扩展创建子 Worker | 扩展 api.create_worker() | Manager spawn，返回 workerId |
 
 ### 2.7 UI 对接
 
@@ -133,7 +133,7 @@ Step 1: 创建协调者 Worker
 
 Step 2: 协调者分析项目，创建审查子 Worker
   → wkr_coord 执行 prompt("分析项目结构，为每个模块创建审查子任务")
-  → 插件自动创建:
+  → 扩展自动创建:
      create_worker({session:"review-auth", parent:"coordinator", channel:"review"})
      create_worker({session:"review-api", parent:"coordinator", channel:"review"})
 
@@ -191,7 +191,7 @@ Step 1: 创建 3 个 Worker 都订阅 "deploy" channel
   → create_worker({session:"deployer", channel:"deploy"})
 
 Step 2: builder 完成后通知
-  → builder 的插件: channel_send("deploy", {type:"build_complete"})
+  → builder 的扩展: channel_send("deploy", {type:"build_complete"})
 
 Step 3: tester 收到通知，开始测试
   → tester 收到 channel_msg
@@ -278,7 +278,7 @@ Step 5: 切换到另一个 Worker
 ## 执行顺序
 
 ```
-Phase 1: 单元测试 U1-U25 (RPC + 存储 + 插件)
+Phase 1: 单元测试 U1-U25 (RPC + 存储 + 扩展)
 Phase 2: 集成测试 I1-I8 (Manager 基础)
 Phase 3: 集成测试 I9-I20 (Worker 通信 + 自动启动)
 Phase 4: 集成测试 I21-I32 (事件 + UI)

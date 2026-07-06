@@ -1,4 +1,4 @@
-# 插件开发与测试工作流
+# 扩展开发与测试工作流
 
 > **状态：已验证** — todo-plugin 已完整走通此流程。
 
@@ -27,10 +27,10 @@
 └──────────────────────────────────────────────────────────────┘
 ```
 
-## 1. 插件源码结构
+## 1. 扩展源码结构
 
 ```
-ion/todo-plugin/                  ← 插件 crate 目录
+ion/todo-plugin/                  ← 扩展 crate 目录
 ├── Cargo.toml                    ← crate-type = ["cdylib"]
 └── src/
     └── lib.rs                    ← #![no_std], WASM 入口
@@ -70,7 +70,7 @@ cp target/wasm32-wasip1/release/todo_plugin.wasm <project>/.ion/extensions/
 # 重启 Manager 或 reload 即可加载
 ```
 
-## 4. 插件数据存储（4 维）
+## 4. 扩展数据存储（4 维）
 
 数据通过宿主函数读写，路径由内核管理：
 
@@ -180,5 +180,5 @@ ion rpc --session sess_xxx --method call_tool \
 ## 7. 参考
 
 - [EXTENSION_SYSTEM.md](./EXTENSION_SYSTEM.md) — WASM 宿主函数、热更新、4D 存储实现
-- [stock-plugin/](./stock-plugin/) — 最小 WASM 插件示例
-- [todo-plugin/](./todo-plugin/) — 完整 TODO 插件（session 维度）
+- [stock-plugin/](./stock-plugin/) — 最小 WASM 扩展示例
+- [todo-plugin/](./todo-plugin/) — 完整 TODO 扩展（session 维度）

@@ -8,7 +8,7 @@
 
 ### A1 `bash_command` RPC
 
-**用途：** CLI/插件直接执行 bash，结果入对话历史（`role: bashExecution`）。
+**用途：** CLI/扩展直接执行 bash，结果入对话历史（`role: bashExecution`）。
 
 ```bash
 ion rpc --session <sid> --method bash_command \

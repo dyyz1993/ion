@@ -2,30 +2,65 @@
 
 > 一个用 Rust 实现的 AI Agent 编排平台，对齐 pi (pi-coding-agent) 的全部能力。
 
-## 内核 vs 插件：功能设计指导方针
+## ⚠️ 术语规范：统一使用 Extension，禁止使用 Plugin
+
+**本项目所有可扩展能力统称为 Extension。禁止使用 "plugin"、"插件" 这两个词。**
+
+### 两类 Extension（API 完全一致，29 个生命周期钩子）
+
+| 类型 | 加载方式 | 可关闭 | 例子 |
+|------|---------|--------|------|
+| **内置 Extension** | Rust 编译进内核 | ✅ config.json `extensions.X.enabled = false` | Memory / Bash / Streaming |
+| **运行时 Extension** | WASM 动态加载 (`.wasm`) | ✅ 不加载即可 | todo / stock / plan / 任何第三方 |
+
+两者唯一的区别是"代码住哪"——编译进二进制 vs 运行时从文件加载。拿到的 `Extension` trait 接口、钩子、数据访问权限完全相同。
+
+### WASM Extension ABI 符号约定
+
+WASM 模块导出的 C 函数必须使用 `extension_` 前缀：
+- `extension_version()` / `extension_init()` / `extension_execute_tool(...)`
+- `extension_on_input(...)` / `extension_on_context(...)` / `extension_on_system_prompt(...)` 等 29 个钩子
+- `extension_on_rpc(...)` — extension_rpc 入口
+
+**不要使用 `plugin_*` 前缀，已废弃。**
+
+### 检查清单
+
+写代码/文档时自查：
+- ❌ `PluginRegistry` → ✅ `ExtensionRegistry` / `Registry`
+- ❌ `plugin_rpc` → ✅ `extension_rpc`
+- ❌ `--plugin <name>` → ✅ `--extension <name>`
+- ❌ `PluginEvent` / `PluginEventBus` → ✅ `ExtensionEvent` / `ExtensionEventBus`
+- ❌ `emit_plugin_event` → ✅ `emit_extension_event`
+- ❌ "插件" → ✅ "扩展"
+- ❌ `plugin_init` / `plugin_version` (WASM ABI) → ✅ `extension_init` / `extension_version`
+
+---
+
+## 内核 vs 扩展：功能设计指导方针
 
 当讨论一个新功能放在哪时，按这个顺序思考：
 
 1. **这个功能是基础设施还是策略？**
    - 基础设施（进程管理、通信、文件系统、安全模型）→ **内核**
-   - 策略/行为定制（Agent 怎么回答、用什么语气、审查规则）→ **插件**
+   - 策略/行为定制（Agent 怎么回答、用什么语气、审查规则）→ **扩展**
 
-2. **如果答案是插件，先检查内核是否提供了足够的扩展点。**
+2. **如果答案是扩展，先检查内核是否提供了足够的扩展点。**
    - 缺钩子？加钩子（Extension trait 加方法）
    - 缺数据？加数据结构
    - 缺通信能力？补 Manager command 管道
-   - **永远不要因为内核不满足条件就把功能推到插件端。先补齐内核，再让插件用。**
+   - **永远不要因为内核不满足条件就把功能推到扩展端。先补齐内核，再让扩展用。**
 
 3. **如果答案是内核，直接做。**
 
-4. **如果一个能力可能被多个插件共用，它应该在内核实现，通过 ExtensionApi 暴露给插件。**
-   - 比如 `create_worker`、`channel_send`、`emit` 都是内核能力，不是某个插件的私有逻辑
-   - 每个插件拿到的是 `ExtensionApi`（内核给的把手），不是自己造轮子
-   - 判断标准：**如果两个无关的插件都想做同一件事，这件事就该进内核**
+4. **如果一个能力可能被多个扩展共用，它应该在内核实现，通过 ExtensionApi 暴露给扩展。**
+   - 比如 `create_worker`、`channel_send`、`emit` 都是内核能力，不是某个扩展的私有逻辑
+   - 每个扩展拿到的是 `ExtensionApi`（内核给的把手），不是自己造轮子
+   - 判断标准：**如果两个无关的扩展都想做同一件事，这件事就该进内核**
 
-5. **例外：如果功能涉及用户自定义逻辑、运行时热加载、第三方集成，优先考虑做成扩展钩子 + 默认插件实现**——内核提供钩子和默认值，插件覆盖行为。
+5. **例外：如果功能涉及用户自定义逻辑、运行时热加载、第三方集成，优先考虑做成扩展钩子 + 默认扩展实现**——内核提供钩子和默认值，扩展覆盖行为。
 
-**一句话：内核要足够强大，让插件只做策略层的事。内核提供能力，插件编排能力。**
+**一句话：内核要足够强大，让扩展只做策略层的事。内核提供能力，扩展编排能力。**
 
 ## 参考实现：pi (pi-coding-agent)
 
@@ -75,21 +110,21 @@ ION 对标 pi 的全部能力。遇到不确定的设计决策时：
 > **状态：暂不开发** — 本文档为设计规划，尚未实现。
 ```
 
-### 插件手册规范
+### 扩展手册规范
 
-每个插件**必须**在其源码目录下维护一份 `MANUAL.md`，格式参照 [EXTENSION_MANUAL_TEMPLATE.md](./EXTENSION_MANUAL_TEMPLATE.md)。
+每个扩展**必须**在其源码目录下维护一份 `MANUAL.md`，格式参照 [EXTENSION_MANUAL_TEMPLATE.md](./EXTENSION_MANUAL_TEMPLATE.md)。
 
 | 要求 | 说明 |
 |------|------|
-| 文件 | `{plugin}/MANUAL.md`，与 Cargo.toml 同级 |
+| 文件 | `{extension}/MANUAL.md`，与 Cargo.toml 同级 |
 | 格式 | 参照模板，覆盖工具/存储/事件/测试四节 |
 | 构建 | `cargo build --target wasm32-wasip1 --release` |
 | 安装 | `.wasm` 放入 `<project>/.ion/extensions/` 自动发现 |
-| 集合 | 用户可通过 `ion plugin list --docs` 浏览所有已安装插件的手册 |
+| 集合 | 用户可通过 `ion extension list --docs` 浏览所有已安装扩展的手册 |
 
-现有插件手册：
-- [todo-plugin/MANUAL.md](./todo-plugin/MANUAL.md) — 待办任务管理 (WASM)
-- MEMORY 插件手册（内核内置，见 [MEMORY_EXTENSION.md](./MEMORY_EXTENSION.md)）
+现有扩展手册：
+- [todo-extension/MANUAL.md](./todo-extension/MANUAL.md) — 待办任务管理 (WASM)
+- MEMORY 扩展手册（内核内置，见 [MEMORY_EXTENSION.md](./MEMORY_EXTENSION.md)）
 
 ### 例外
 
@@ -107,21 +142,21 @@ ION 对标 pi 的全部能力。遇到不确定的设计决策时：
 | [TEST_CASES.md](./TEST_CASES.md) | 完整测试 case (25 单元 + 32 集成 + 5 E2E + 5 压力) |
 | [RPC_DIFF_REPORT.md](./RPC_DIFF_REPORT.md) | ion-worker vs pi RPC 格式对比报告 |
 | [HOOK_SYSTEM.md](./HOOK_SYSTEM.md) | Shell Hook 系统设计 (TRAE 兼容, 暂不开发) |
-| [EXTENSION_SYSTEM.md](./EXTENSION_SYSTEM.md) | WASM 插件系统：热更新、4 维数据存储、16 个宿主函数 (已完成) |
-| [EXTENSION_WORKFLOW.md](./EXTENSION_WORKFLOW.md) | 插件开发测试工作流：写→build→安装→RPC 直调→LLM 引导→RPC 佐证 (已验证) |
-| [CLI_USAGE.md](./CLI_USAGE.md) | CLI 标准用法：RPC / Subscribe / Plugin RPC / Tool RPC 完整速查 (已验证) |
-| [MEMORY_EXTENSION.md](./MEMORY_EXTENSION.md) | Memory 记忆插件设计：大纲索引、异步检索、XML 注入、4 维存储 (设计稿) |
-| [MEMORY_SPEC.md](./MEMORY_SPEC.md) | Memory 插件测试规格：P0/P1/XFail 分级、完整接口定义、验收标准 (已验证) |
-| [BASH_EXTENSION.md](./BASH_EXTENSION.md) | Bash 进程管理插件设计：后台进程、实时流、退出原因、CLI 测试 (设计稿) |
+| [EXTENSION_SYSTEM.md](./EXTENSION_SYSTEM.md) | WASM 扩展系统：热更新、4 维数据存储、16 个宿主函数 (已完成) |
+| [EXTENSION_WORKFLOW.md](./EXTENSION_WORKFLOW.md) | 扩展开发测试工作流：写→build→安装→RPC 直调→LLM 引导→RPC 佐证 (已验证) |
+| [CLI_USAGE.md](./CLI_USAGE.md) | CLI 标准用法：RPC / Subscribe / Extension RPC / Tool RPC 完整速查 (已验证) |
+| [MEMORY_EXTENSION.md](./MEMORY_EXTENSION.md) | Memory 记忆扩展设计：大纲索引、异步检索、XML 注入、4 维存储 (设计稿) |
+| [MEMORY_SPEC.md](./MEMORY_SPEC.md) | Memory 扩展测试规格：P0/P1/XFail 分级、完整接口定义、验收标准 (已验证) |
+| [BASH_EXTENSION.md](./BASH_EXTENSION.md) | Bash 进程管理扩展设计：后台进程、实时流、退出原因、CLI 测试 (设计稿) |
 | [SESSION_MESSAGE.md](./SESSION_MESSAGE.md) | Session 消息系统：Entry 类型、推送通道、LLM/UI 消费决策树 (设计稿) |
 | `src/bin/ion.rs` | 主 CLI (45+ 参数) |
 | `src/bin/ion_worker.rs` | Worker 子进程 (75 RPC 命令) |
 | `src/worker_registry.rs` | Manager 内存状态 + Worker 管理 |
-| `src/worker_api.rs` | WorkerHandle + ExtensionApi (插件 API) |
+| `src/worker_api.rs` | WorkerHandle + ExtensionApi (扩展 API) |
 | `src/agent/` | Agent 循环 (内层+外层+扩展钩子) |
 | `ion-provider/` | Provider 抽象独立 crate (OpenAI SSE + tool_calls) |
-| `src/plugin.rs` | WASM 插件加载器（[详情](./EXTENSION_SYSTEM.md)） |
-| `stock-plugin/` | WASM 插件示例 |
+| `src/extension.rs` | WASM 扩展加载器（[详情](./EXTENSION_SYSTEM.md)） |
+| `stock-extension/` | WASM 扩展示例 |
 
 ## 架构
 
@@ -159,31 +194,31 @@ ion-worker --mode rpc    → Worker 子进程 (JSONL over stdin/stdout)
 - 会话管理 (JSONL v3 + 实时索引 + fork/continue/resume + cwd-hash 分组)
 - --export HTML (pi 模板)
 - --agent (内置 build/explore/plan + 自定义 .md)
-- --skill / --extension (JSON + WASM 插件)
+- --skill / --extension (JSON + WASM 扩展)
 - config.json + auth.json 配置系统
 - Manager 守护进程 (spawn Worker + IO Bridge + 事件转发)
 - Worker 子进程 (75 RPC 命令 + 真实 LLM + 工具调用)
-- WorkerHandle + ExtensionApi (插件能 create_worker/send/channel_send/emit)
-- WASM 插件完整链路 (注册工具 + 内存读取 + WASM-backed 执行)
+- WorkerHandle + ExtensionApi (扩展能 create_worker/send/channel_send/emit)
+- WASM 扩展完整链路 (注册工具 + 内存读取 + WASM-backed 执行)
 - Worktree 隔离 (创建/清理/分支保留, `reclaim()`, `ION_WORKTREE_ROOT` 生效)
 - Manager command 管道 (Worker → Manager 命令回传, 子 Worker 创建)
 - 重试机制 (`RetryConfig` + `retry_async` + `send_to_worker_retry` + Harness)
 - 权限引擎 (`PermissionEngine` + `UiSystem` + Agent 集成)
 - 命令守卫 (`CommandGuard`: 白名单 + 风险模式检测)
-- `ion subscribe` — 实时事件流（Instance + Plugin 两级）
-- Plugin RPC — 插件私有方法调用（`extension_rpc`）
-- `ExtensionApi::emit_extension_event()` — 插件发射自定义事件
+- `ion subscribe` — 实时事件流（Instance + Extension 两级）
+- Extension RPC — 扩展私有方法调用（`extension_rpc`）
+- `ExtensionApi::emit_extension_event()` — 扩展发射自定义事件
 - `ExtensionEventBus` — 事件总线 + broadcast + backpressure
 - `on_extension_rpc()` — AgentExtension 新增钩子
 - 21 个 Worker 编排工具（spawn_worker / send_to_worker / resume_worker / await_worker / channel_send / kill_worker）
 - 完整 steer/follow_up/abort/promote_follow_up 行为对齐 pi
 - Unix socket IPC（Manager ↔ CLI client）
-- `ion rpc` client — Manager 级 / Instance / Tool / Plugin 四类 RPC
+- `ion rpc` client — Manager 级 / Instance / Tool / Extension 四类 RPC
 - `CLI_USAGE.md` — 标准用法文档
 
-### 🧠 Memory 插件 v0.1
+### 🧠 Memory 扩展 v0.1
 
-- `memory_save` — 主动保存记忆（LLM Tool + Plugin RPC 双入口）
+- `memory_save` — 主动保存记忆（LLM Tool + Extension RPC 双入口）
 - `memory_search` — 主动搜索记忆（含 tag/category/description 匹配）
 - `extension_rpc: save/list/search/forget/inspect` — CLI 调试入口
 - `forget` — 软删除（`archived: true`），list/search 默认过滤
@@ -222,9 +257,9 @@ ion-worker --mode rpc    → Worker 子进程 (JSONL over stdin/stdout)
 ✅ Memory: call_tool memory_save/search 直调
 ✅ Memory: subscribe 实时收到 memory_saved 事件
 ✅ Subscribe: instance 级事件 (agent_start/text_delta/agent_end)
-✅ extension_rpc: 插件私有方法 CLI 直调
+✅ extension_rpc: 扩展私有方法 CLI 直调
 ✅ transcript: 每句话自动记录到 input.jsonl
-✅ WASM todo-plugin: build → load → test 全流程
+✅ WASM todo-extension: build → load → test 全流程
 ```
 
 ### 🗺 路线图
@@ -375,9 +410,9 @@ let agent = Agent::new(registry, model, system_prompt, tools, config)
 - 审计日志：谁在什么时候执行了什么命令
 
 **P4 - 扩展生态:**
-- 插件通过 ExtensionApi 创建子 Worker 的端到端验证
-- WASM 插件在 Agent 钩子中全面可用
-- 插件 emit 自定义事件 + 外部调用插件 custom method
+- 扩展通过 ExtensionApi 创建子 Worker 的端到端验证
+- WASM 扩展在 Agent 钩子中全面可用
+- 扩展 emit 自定义事件 + 外部调用扩展 custom method
 
 **P5 - 稳定性:**
 - 修复 i21/i22 偶发 LLM 超时测试
@@ -390,19 +425,19 @@ let agent = Agent::new(registry, model, system_prompt, tools, config)
 |------|------|------|
 | lib tests (核心逻辑) | 90 | Agent/Permission/Retry/CommandGuard/Paths/Session/Worker/Memory |
 | unit_rpc_test (Phase 1) | 20 | U1-U20 RPC 协议 + 会话存储 |
-| plugin_tests (Phase 1) | 17 | U21-U25 JSON/WASM/Plan/Todo 插件 |
+| plugin_tests (Phase 1) | 17 | U21-U25 JSON/WASM/Plan/Todo 扩展 |
 | manager_integration (Phase 2-4) | 30 | I1-I32 Manager + Worker + 事件 + UI |
 | e2e_stress (Phase 5-6) | 20 | E1-E4 E2E + S1-S4 压力 + RT/Perm/Bash |
 | worktree_isolation | 6 | WT1-WT6 worktree 创建/隔离/清洗 |
 | child_worker | 3 | 子进程 Worker 通信 |
 | concurrency | 1 | 并发池 |
-| memory_e2e | 6 | Memory 插件存储/搜索/注入/去重/路径净化 |
+| memory_e2e | 6 | Memory 扩展存储/搜索/注入/去重/路径净化 |
 | **总计** | **193** | 全部通过 ✅ |
 
 **P5 - 扩展钩子补全:** ✅
-- ~~on_context 接入~~ ✅ (Memory 插件 on_context 注入)
-- ~~on_input 接入~~ ✅ (Memory 插件 on_input 检索)
-- ~~on_extension_rpc 接入~~ ✅ (Memory 插件 Plugin RPC)
+- ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
+- ~~on_input 接入~~ ✅ (Memory 扩展 on_input 检索)
+- ~~on_extension_rpc 接入~~ ✅ (Memory 扩展 Extension RPC)
 - ~~session_before_compact / session_compact 接入~~ ✅
 - ~~thinking_level_select~~ ✅ (已在 run() 中触发)
 - session_before_switch / session_before_fork / session_tree - 后续 (需会话树功能)
@@ -414,7 +449,7 @@ let agent = Agent::new(registry, model, system_prompt, tools, config)
 **P6b - 其他（待定）:**
 - @图片文件支持 (ContentBlock::Image 完整实现)
 - --models 多模型 Ctrl+P 切换 (交互式)
-- Memory 插件 v0.2 (SQLite 存储 / FTS 检索 / Active Memory sub-agent)
+- Memory 扩展 v0.2 (SQLite 存储 / FTS 检索 / Active Memory sub-agent)
 - 真实代码审查 E2E (当前用算术题代替)
 
 ## 文件系统路径 (对齐 pi)
@@ -486,13 +521,13 @@ ion "hello"                        # 直接运行
 ion/                          # 主项目
 ├── src/agent/                # Agent 循环 + 扩展 + 工具
 ├── src/worker_registry.rs    # Manager Worker 管理
-├── src/worker_api.rs         # 插件 API (WorkerHandle + ExtensionApi)
-├── src/plugin.rs             # WASM 插件加载器
+├── src/worker_api.rs         # 扩展 API (WorkerHandle + ExtensionApi)
+├── src/extension.rs             # WASM 扩展加载器
 ├── src/session_jsonl.rs      # JSONL v3 会话格式
 ├── src/session_index.rs      # 实时索引 (O(1) 统计)
 ├── src/bin/ion.rs            # 主 CLI
 ├── src/bin/ion_worker.rs     # Worker 子进程
-├── stock-plugin/             # WASM 插件示例
+├── stock-extension/             # WASM 扩展示例
 ├── AGENTS.md                 # 本文件
 ├── TEST_CASES.md             # 测试 case 文档
 └── RPC_DIFF_REPORT.md        # RPC 对比报告

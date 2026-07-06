@@ -1,4 +1,4 @@
-# Memory 插件测试规格
+# Memory 扩展测试规格
 
 > 版本：v0.1
 > 本文档给独立评审方阅读。评审方可据此编写 E2E 测试用例，验证功能完整性，发现缺陷。
@@ -111,7 +111,7 @@ ion subscribe --session sess_xxx --extension memory
 收到的事件格式：
 
 ```json
-{"type":"plugin_event","plugin":"memory","customType":"memory_saved","session":"sess_xxx","data":{"id":"mem_1","outline":"auto"}}
+{"type":"extension_event","plugin":"memory","customType":"memory_saved","session":"sess_xxx","data":{"id":"mem_1","outline":"auto"}}
 ```
 
 | customType | 触发时机 | data 字段 |

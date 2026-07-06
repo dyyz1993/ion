@@ -112,7 +112,7 @@ impl Extension {
             let msg = mem_read_str(&mut caller, msg_ptr, msg_len);
             let event = serde_json::json!({
                 "type": "event",
-                "event": {"type": "custom", "customType": "plugin_message",
+                "event": {"type": "custom", "customType": "extension_message",
                           "data": {"text": msg}}
             });
             eprintln!("{}", serde_json::to_string(&event).unwrap_or_default());
@@ -187,7 +187,7 @@ impl Extension {
             .get_memory(&mut store, "memory")
             .ok_or("module does not export 'memory'")?;
 
-        let mut plugin = Self {
+        let mut ext = Self {
             engine,
             store,
             instance,
@@ -197,27 +197,27 @@ impl Extension {
         };
 
         // Call version (extension_version or legacy plugin_version)
-        if let Ok(func) = plugin.get_export_func::<(), u32>("version") {
-            if let Ok(ver) = func.call(&mut plugin.store, ()) {
-                plugin.version = ver;
+        if let Ok(func) =  ext.get_export_func::<(), u32>("version") {
+            if let Ok(ver) = func.call(&mut ext.store, ()) {
+                ext.version = ver;
                 tracing::info!("[wasm] extension v{ver}");
             }
         }
 
         // Call init (extension_init or legacy plugin_init) — triggers host_register_tool
-        if let Ok(func) = plugin.get_export_func::<(), ()>("init") {
-            func.call(&mut plugin.store, ())?;
+        if let Ok(func) =  ext.get_export_func::<(), ()>("init") {
+            func.call(&mut ext.store, ())?;
         }
 
         drop(linker);
 
         // Collect registered tools
         if let Ok(t) = tools_registered.lock() {
-            plugin.tools = t.clone();
+            ext.tools = t.clone();
         }
-        tracing::info!("[wasm] plugin registered {} tools", plugin.tools.len());
+        tracing::info!("[wasm] plugin registered {} tools", ext.tools.len());
 
-        Ok(plugin)
+        Ok(ext)
     }
 
     /// Inject a new context into the WASM store (called before tool execution).
@@ -225,9 +225,9 @@ impl Extension {
         *self.store.data_mut() = ctx.clone();
     }
 
-    /// Look up a typed export by name, trying `extension_<name>` first,
-    /// then falling back to `plugin_<name>` for backward compatibility with
-    /// older `.wasm` files that use the legacy symbol names.
+    /// Look up a typed export by short name.
+    /// Resolves to `extension_<short_name>` — WASM modules must export with
+    /// the `extension_` prefix.
     fn get_export_func<Params, Results>(
         &mut self,
         short_name: &str,
@@ -236,16 +236,8 @@ impl Extension {
         Params: wasmtime::WasmParams,
         Results: wasmtime::WasmResults,
     {
-        // Try extension_* first (new convention)
-        let new_name = format!("extension_{}", short_name);
-        match self.instance.get_typed_func::<Params, Results>(&mut self.store, &new_name) {
-            Ok(f) => Ok(f),
-            Err(_) => {
-                // Fallback to plugin_* (legacy convention)
-                let old_name = format!("plugin_{}", short_name);
-                self.instance.get_typed_func::<Params, Results>(&mut self.store, &old_name)
-            }
-        }
+        let name = format!("extension_{}", short_name);
+        self.instance.get_typed_func::<Params, Results>(&mut self.store, &name)
     }
 
     pub fn execute_tool(&mut self, name: &str, args: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -403,7 +395,7 @@ pub fn ext_name_from_path(canonical_path: &str) -> String {
     Path::new(canonical_path)
         .file_stem()
         .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "plugin".into())
+        .unwrap_or_else(|| "extension".into())
 }
 
 // ---------------------------------------------------------------------------
@@ -419,7 +411,7 @@ pub struct Info {
 }
 
 struct Entry {
-    plugin: Arc<Mutex<Extension>>,
+    extension: Arc<Mutex<Extension>>,
     version: u32,
     tool_names: Vec<String>,
     canonical_path: String,
@@ -454,14 +446,14 @@ impl Registry {
         let canonical = std::fs::canonicalize(path)?;
         let canonical_str = canonical.to_string_lossy().to_string();
 
-        let plugin = Extension::load(&canonical)?;
-        let version = plugin.version;
-        let tool_defs = plugin.tools.clone();
+        let ext = Extension::load(&canonical)?;
+        let version = ext.version;
+        let tool_defs = ext.tools.clone();
         let tool_names: Vec<String> = tool_defs.iter().map(|t| t.name.clone()).collect();
         let ext_name = ext_name_from_path(&canonical_str);
 
         let entry = Entry {
-            plugin: Arc::new(Mutex::new(plugin)),
+            extension: Arc::new(Mutex::new(ext)),
             version,
             tool_names,
             canonical_path: canonical_str.clone(),
@@ -472,17 +464,17 @@ impl Registry {
         Ok(tool_defs)
     }
 
-    /// Remove a plugin by path. Returns the names of tools that were unregistered.
+    /// Remessagea plugin by path. Returns the names of tools that were unregistered.
     pub fn remove(&self, path: &str) -> Result<Vec<String>, String> {
         let canonical = std::fs::canonicalize(path)
-            .map_err(|e| format!("bad plugin path: {e}"))?
+            .map_err(|e| format!("bad extension path: {e}"))?
             .to_string_lossy()
             .to_string();
 
         let mut map = self.plugins.write().map_err(|e| e.to_string())?;
         match map.remove(&canonical) {
             Some(entry) => Ok(entry.tool_names),
-            None => Err(format!("plugin not found: {canonical}")),
+            None => Err(format!("extension not found: {canonical}")),
         }
     }
 
@@ -513,9 +505,9 @@ impl Registry {
     }
 
     /// Lookup an `Arc` to a plugin by its canonical path.
-    pub fn get_plugin(&self, canonical_path: &str) -> Option<Arc<Mutex<Extension>>> {
+    pub fn get_extension(&self, canonical_path: &str) -> Option<Arc<Mutex<Extension>>> {
         let map = self.plugins.read().ok()?;
-        map.get(canonical_path).map(|entry| entry.plugin.clone())
+        map.get(canonical_path).map(|entry| entry.extension.clone())
     }
 
     /// Create a HookAdapter for a loaded WASM extension.
@@ -548,7 +540,7 @@ pub struct ToolAdapter {
     pub description: String,
     pub parameters: serde_json::Value,
     /// Canonical path of the `.wasm` file (used as the registry key).
-    pub plugin_path: String,
+    pub extension_path: String,
     /// Extension name derived from the plugin path (used for data dirs).
     pub ext_name: String,
     /// Shared registry to look up the current plugin instance and context.
@@ -562,18 +554,18 @@ impl Tool for ToolAdapter {
     fn parameters(&self) -> serde_json::Value { self.parameters.clone() }
 
     async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let plugin_arc = self.registry.get_plugin(&self.plugin_path)
-            .ok_or_else(|| AgentError::Tool("plugin no longer loaded".into()))?;
+        let ext_arc = self.registry.get_extension(&self.extension_path)
+            .ok_or_else(|| AgentError::Tool("extension no longer loaded".into()))?;
 
-        let mut plugin = plugin_arc.lock().map_err(|e| AgentError::Tool(e.to_string()))?;
+        let mut ext = ext_arc.lock().map_err(|e| AgentError::Tool(e.to_string()))?;
 
         // Inject context into the WASM store so data host functions can path‑resolve
         let reg_ctx = self.registry.ctx.read().map_err(|e| AgentError::Tool(e.to_string()))?;
         let exec_ctx = make_exec_context(&reg_ctx, &self.ext_name);
         drop(reg_ctx);
-        plugin.set_context(&exec_ctx);
+        ext.set_context(&exec_ctx);
 
-        plugin.execute_tool(&self.name, &args.to_string())
+        ext.execute_tool(&self.name, &args.to_string())
             .map_err(|e| AgentError::Tool(e.to_string()))
     }
 }
@@ -646,7 +638,7 @@ fn register_dim(
             let data = mem_read_bytes(&mut caller, data_ptr, data_len);
             if !dir.exists() {
                 if let Err(e) = std::fs::create_dir_all(&dir) {
-                    tracing::warn!("[plugin] write:{dim_name_write} mkdir failed: {e}");
+                    tracing::warn!("[extension] write:{dim_name_write} mkdir failed: {e}");
                     return 1;
                 }
             }
@@ -762,10 +754,10 @@ impl HookAdapter {
     where
         F: FnOnce(&mut Extension) -> R,
     {
-        let plugin_arc = self.registry
-            .get_plugin(&self.canonical_path)
+        let ext_arc = self.registry
+            .get_extension(&self.canonical_path)
             .ok_or_else(|| AgentError::Tool(format!("extension no longer loaded: {}", self.canonical_path)))?;
-        let mut plugin = plugin_arc
+        let mut ext = ext_arc
             .lock()
             .map_err(|e| AgentError::Tool(e.to_string()))?;
         // Inject context
@@ -776,8 +768,8 @@ impl HookAdapter {
             .map_err(|e| AgentError::Tool(e.to_string()))?;
         let exec_ctx = make_exec_context(&reg_ctx, &self.name);
         drop(reg_ctx);
-        plugin.set_context(&exec_ctx);
-        Ok(f(&mut plugin))
+        ext.set_context(&exec_ctx);
+        Ok(f(&mut ext))
     }
 
     /// B-class: one-way notification. No-op if hook not exported.
