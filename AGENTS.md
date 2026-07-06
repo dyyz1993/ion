@@ -149,6 +149,8 @@ ION 对标 pi 的全部能力。遇到不确定的设计决策时：
 | [MEMORY_EXTENSION.md](./MEMORY_EXTENSION.md) | Memory 记忆扩展设计：大纲索引、异步检索、XML 注入、4 维存储 (设计稿) |
 | [MEMORY_SPEC.md](./MEMORY_SPEC.md) | Memory 扩展测试规格：P0/P1/XFail 分级、完整接口定义、验收标准 (已验证) |
 | [BASH_EXTENSION.md](./BASH_EXTENSION.md) | Bash 进程管理扩展设计：后台进程、实时流、退出原因、CLI 测试 (设计稿) |
+| [PROVIDER_PROTOCOL.md](./PROVIDER_PROTOCOL.md) | 多 Provider 协议实现：4 个 provider + transform_messages + detectCompat + CLI 测试 (已验证) |
+| [COMPACTION.md](./COMPACTION.md) | Compaction 会话压缩系统：分批并发 + LLM summarizer + emergency fallback + CLI 测试 (已验证) |
 | [SESSION_MESSAGE.md](./SESSION_MESSAGE.md) | Session 消息系统：Entry 类型、推送通道、LLM/UI 消费决策树 (设计稿) |
 | `src/bin/ion.rs` | 主 CLI (45+ 参数) |
 | `src/bin/ion_worker.rs` | Worker 子进程 (75 RPC 命令) |
@@ -417,7 +419,16 @@ let agent = Agent::new(registry, model, system_prompt, tools, config)
 - 扩展 emit 自定义事件 + 外部调用扩展 custom method
 
 **P5 - 稳定性:**
-- 修复 i21/i22 偶发 LLM 超时测试
+- ~~修复 i21/i22 偶发 LLM 超时测试~~ ✅ 已完成
+  - 根因 1：`send_async(...).await` 阻塞等 prompt response，LLM 慢时 25s deadline 不够 → 改用非阻塞 `send_command`
+  - 根因 2：测试循环持有 registry 锁，reader task 无法拿锁转发 event → drain 后释放锁，recv 期间不持锁
+  - 同步修复 i30（同样模式，且默认跑无 `#[ignore]`）
+- ~~compact 空 messages panic~~ ✅ 已完成
+  - `apply_compaction` 在空 messages 上 `messages[skip..]` 越界 → 加空检查直接返回
+- ~~maybe_compact LLM 失败崩溃~~ ✅ 已完成
+  - LLM summarizer 调用失败时 fallback 到 emergency truncate（不调 LLM）
+- ~~runtime.rs `&dyn Fn + Send + Sync` 语法错误~~ ✅ 已完成
+  - 改为 `&(dyn Fn + Send + Sync)`（4 处）
 - 会话树导航 (navigate_tree)
 - install/remove/update 包管理子命令
 

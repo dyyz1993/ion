@@ -117,7 +117,7 @@ impl Tool for BashRunTool {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
         let command = args.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let description = args.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let timeout = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(30);
@@ -150,65 +150,87 @@ impl Tool for BashRunTool {
         let (stdin_tx, mut stdin_rx) = tokio::sync::mpsc::channel::<String>(64);
         { let mut sm = self.stdin_map.lock().await; sm.insert(pid.clone(), stdin_tx); }
 
-        let child = match tokio::process::Command::new("sh")
-            .args(["-c", &command])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped()).spawn()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                let mut map = self.process_map.lock().await; map.remove(&pid);
-                return Err(AgentError::Tool(format!("spawn error: {e}")));
-            }
-        };
-        let os_pid = child.id().unwrap_or(0);
-        { let mut map = self.process_map.lock().await;
-          if let Some(entry) = map.get_mut(&pid) { entry.os_pid = os_pid; } }
-        save_process_map_arc(&self.process_map);
+        // ── 后台模式：用 spawn_watcher（保持流式输出和 stdin 转发）──
+        if background || timeout_bg {
+            let child = match tokio::process::Command::new("sh")
+                .args(["-c", &command])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped()).spawn()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    let mut map = self.process_map.lock().await; map.remove(&pid);
+                    return Err(AgentError::Tool(format!("spawn error: {e}")));
+                }
+            };
+            let os_pid = child.id().unwrap_or(0);
+            { let mut map = self.process_map.lock().await;
+              if let Some(entry) = map.get_mut(&pid) { entry.os_pid = os_pid; } }
+            save_process_map_arc(&self.process_map);
 
-        let (notify_tx, notify_rx) = tokio::sync::oneshot::channel::<()>();
-        { let mut nm = self.notify_map.lock().await; nm.insert(pid.clone(), notify_tx); }
+            let (notify_tx, notify_rx) = tokio::sync::oneshot::channel::<()>();
+            { let mut nm = self.notify_map.lock().await; nm.insert(pid.clone(), notify_tx); }
 
-        // ── Mode split ──
-        if background {
-            tokio::spawn(spawn_watcher(
-                self.process_map.clone(), self.stdin_map.clone(),
-                self.notify_map.clone(), self.follow_up_tx.clone(),
-                pid.clone(), command.clone(), description.clone(), child, stdin_rx, timeout,
-            ));
-            Ok(format!("✅ Process #{pid} started in background: {description}"))
-        } else {
             tokio::spawn(spawn_watcher(
                 self.process_map.clone(), self.stdin_map.clone(),
                 self.notify_map.clone(), self.follow_up_tx.clone(),
                 pid.clone(), command.clone(), description.clone(), child, stdin_rx, timeout,
             ));
 
-            let result = tokio::select! {
-                result = notify_rx => {
-                    match result {
-                        Ok(()) => Ok(format!("⏱️ Process #{pid} moved to background. You'll be notified when it completes.")),
+            if background {
+                Ok(format!("✅ Process #{pid} started in background: {description}"))
+            } else {
+                // timeoutBackground: 等超时或完成
+                let result = tokio::select! {
+                    result = notify_rx => match result {
+                        Ok(()) => Ok(format!("⏱️ Process #{pid} moved to background.")),
                         Err(_) => {
                             let map = self.process_map.lock().await;
                             match map.get(&pid) {
                                 Some(info) if info.exit_code == Some(0) => Ok(info.output.clone()),
-                                Some(info) => Err(AgentError::Tool(format!("Command failed (exit={:?}, {}s):\n{}", info.exit_code, info.elapsed_secs, info.output))),
+                                Some(info) => Err(AgentError::Tool(format!("failed (exit={:?}): {}", info.exit_code, info.output))),
                                 None => Ok(String::new()),
                             }
                         }
+                    },
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(timeout)) => {
+                        Ok(format!("⏱️ Process #{pid} moved to background."))
                     }
-                }
-                _ = tokio::time::sleep(std::time::Duration::from_secs(timeout)) => {
-                    if timeout_bg {
-                        Ok(format!("⏱️ Process #{pid} moved to background. You'll be notified when it completes."))
-                    } else {
-                        Err(AgentError::Tool(format!("timeout after {timeout}s")))
-                    }
-                }
-            };
-            { let mut nm = self.notify_map.lock().await; nm.remove(&pid); }
-            result
+                };
+                { let mut nm = self.notify_map.lock().await; nm.remove(&pid); }
+                result
+            }
+        } else {
+            // ── 前台模式：走 Runtime（经过 SecuredRuntime CommandGuard 检查）──
+            let (stdout, stderr, exit_code) = rt.execute_command(&command, timeout)
+                .await
+                .map_err(|e| AgentError::Tool(format!("bash_run: {e}")))?;
+            let os_pid = 0; // execute_command 不返回 pid
+
+            // 更新进程状态
+            let mut map = self.process_map.lock().await;
+            if let Some(entry) = map.get_mut(&pid) {
+                entry.os_pid = os_pid;
+                entry.status = if exit_code == 0 { "completed".into() } else { "error".into() };
+                entry.exit_code = Some(exit_code);
+                let output = if stderr.is_empty() { stdout.clone() } else { format!("{stdout}\n{stderr}") };
+                entry.output = output.clone();
+                entry.elapsed_secs = ((now_ms() - now) / 1000) as u64;
+            }
+            drop(map);
+            save_process_map_arc(&self.process_map);
+
+            emit_extension_event("process_completed", &serde_json::json!({
+                "bid": pid, "exit_code": exit_code, "session": &self.session_id,
+            }));
+
+            if exit_code != 0 {
+                let output = if stderr.is_empty() { stdout } else { format!("{stdout}\n{stderr}") };
+                Err(AgentError::Tool(format!("exit code {exit_code}:\n{output}")))
+            } else {
+                Ok(stdout)
+            }
         }
     }
 }
@@ -366,7 +388,7 @@ impl Tool for BashKillTool {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"bid":{"type":"string","description":"Process bash ID (bid)"}},"required":["pid"]})
     }
-    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
         let pid = args.get("bid").and_then(|v| v.as_str()).unwrap_or("").to_string();
         if pid.is_empty() { return Err(AgentError::Tool("bash_kill: missing 'pid'".into())); }
         // 先标记为 killed（防止 watcher 竞争覆盖成 completed）
@@ -378,8 +400,8 @@ impl Tool for BashKillTool {
             } else { 0 }
         };
         if os_pid == 0 { return Err(AgentError::Tool(format!("Process #{pid} has no OS PID"))); }
-        let killed = std::process::Command::new("kill").args([&os_pid.to_string()]).output()
-            .map(|o| o.status.success()).unwrap_or(false);
+        // 走 Runtime 的 kill_process（经过 SecuredRuntime 检查）
+        let killed = rt.kill_process(os_pid).await.is_ok();
         if killed {
             let mut map = self.process_map.lock().await;
             if let Some(info) = map.get_mut(&pid) { info.status = "killed".into(); }

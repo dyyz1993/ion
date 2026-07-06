@@ -536,6 +536,10 @@ async fn apply_compaction(
     summary: &str,
     tokens_before: u64,
 ) -> AgentResult<()> {
+    // 空 messages 无需压缩（避免 messages[skip..] 越界 panic）
+    if messages.is_empty() {
+        return Ok(());
+    }
     let keep_count = config.keep_recent_tokens / 4;
     let start = messages.len().saturating_sub(keep_count);
 

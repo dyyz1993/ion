@@ -890,7 +890,9 @@ impl Agent {
         let retry_config = RetryConfig::default();
         // 接 LLM summarizer（用当前 provider + model 做压缩）
         let summarizer = compact::make_llm_summarizer(self.registry.clone(), self.model.clone());
-        compact::compact_batched(
+        // 尝试用 LLM summarizer 压缩，失败则 fallback 到 emergency truncate
+        // （LLM 不可用 / 没 API key / 网络错 时保证 compaction 不阻塞 agent）
+        match compact::compact_batched(
             &mut self.messages,
             &config,
             &self.extensions,
@@ -898,7 +900,21 @@ impl Agent {
             retry_config,
         )
         .await
-        .map(|_| ())
+        {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                tracing::warn!("LLM compaction failed, falling back to emergency truncate: {e}");
+                compact::compact_batched(
+                    &mut self.messages,
+                    &config,
+                    &self.extensions,
+                    None,
+                    RetryConfig::default(),
+                )
+                .await
+                .map(|_| ())
+            }
+        }
     }
 
     async fn check_pause(&self) -> AgentResult<()> {
