@@ -167,44 +167,90 @@ ION 有三条并行的事件通道，每条用途不同：
 }
 ```
 
-### 完整审批流程
+### 完整审批流程（事件驱动广播模型）
+
+**关键原则：不是点对点，是纯事件广播。**
+
+- `Ask` 事件推给**所有** `--ui` 订阅者（Web UI、TUI、手机端、CLI 终端都收到）
+- 有人用 `ui_respond` 处理后，系统推一条 `AskResolved` 更新事件给所有订阅者
+- 超时没人处理，系统推一条 `AskTimedOut` 事件
 
 ```
-Terminal 1（UI 订阅者）                    Terminal 2（触发者）
+Terminal 1（Web UI）                   Terminal 2（CLI 用户）
 ─────────────────                      ─────────────────
-ion subscribe --ui
-       │
-       │  (等待 UI 事件)
-       │
-       │                              ion rpc --method call_tool \
-       │                                --params '{"tool":"read","args":{"path":"/tmp/secret"}}'
+ion subscribe --ui                      ion subscribe --ui
        │                                       │
-       │                              SecuredRuntime.check → Ask
+       │  (都收到 Ask 事件)                      │
        │                                       │
-       │  ◄─── Ask ─────────────────            │
-       │  {                                    │
-       │    "type":"ui_event",                  │
-       │    "ui_type":"Ask",                    │
-       │    "source":"kernel",                  │
-       │    "request_id":"req_abc123",          │
-       │    "title":"权限请求: ask-tmp",         │
-       │    "message":"工具想要 read 路径: /tmp/secret"  │
-       │  }                                     │
+       │  ◄─── Ask(req_abc123) ────            │
        │                                       │
-       │  ion rpc --method ui_respond \         │  (阻塞等待)
-       │    --params '{"request_id":"req_abc123","response":"allow"}'  │
+       │  ◄─── Ask(req_abc123) ────────────────│
        │                                       │
-       │                             命令继续执行完成
-       │                             返回结果
+       │  (Web UI 用户点了"允许")               │  (CLI 用户没操作)
+       │                                       │
+       │  ion rpc --method ui_respond \         │
+       │    --params '{"request_id":"req_abc123","response":"allow"}'
+       │                                       │
+       │  ◄─── AskResolved(req_abc123, allow) ──│
+       │                                       │
+       │  ◄─── AskResolved(req_abc123, allow) ──│
+       │                                       │
+       │  (双方都知道：已处理，允许)              │  (双方都知道：已处理，允许)
 ```
+
+### 事件类型一览
+
+| 事件 | 推送时机 | 需要回复 |
+|------|---------|---------|
+| `Ask` | 需要用户确认/拒绝 | ✅ `response: "allow"` / `"deny"` |
+| `Confirm` | 需要用户确认操作 | ✅ `response: "confirm"` / `"cancel"` |
+| `Prompt` | 需要用户输入文本 | ✅ `response: "input"` + `data: "..."` |
+| `Notif` | 通知/提示 | ❌ 不需要 |
+| `Alert` | 告警 | ❌ 不需要 |
+
+### 事件推送时序（以 Ask 为例）
+
+```
+时间线
+│
+├── 第 1 条: Ask  ← 需求场景发生（权限命中 Ask 规则 / extension 调用 host_ui_ask）
+│    送往所有 --ui 订阅者
+│
+├── 第 2 条: AskResolved  ← 某个订阅者通过 ui_respond 处理了
+│    送往所有 --ui 订阅者（含 response 字段）
+│    { "request_id":"req_abc123", "response":"allow", "resolved_by":"terminal-1" }
+│
+│   ── 或 ──
+│
+├── 第 3 条: AskTimedOut  ← 超时没人回复
+│    送往所有 --ui 订阅者
+│    { "request_id":"req_abc123", "reason":"timeout" }
+│
+└──
+```
+
+这种设计的好处：
+- Web UI、TUI、手机端都能收到同样的 Ask 事件，谁先响应谁处理
+- 处理结果推送给所有人，状态同步
+- 超时推送让前端知道可以展示"已超时"
+- Extension 通过 `host_ui_*` 推的事件也走同样的广播机制
 
 ### Extension 也能用 UI 通道
 
+Extension 通过宿主函数 `host_ui_ask` 等向用户发起交互。流程是：
+
+1. WASM extension 调 `host_ui_ask(title, message)`
+2. 宿主推 `Ask` 事件到所有 `--ui` 订阅者（广播）
+3. 某个订阅者调用 `ui_respond` 回复
+4. 宿主推 `AskResolved` 到所有 `--ui` 订阅者（状态更新）
+5. 宿主将回复结果返回给 WASM extension（`caller` 返回值）
+
 ```json
 // 一个 WASM extension 通过 host_ui_ask 宿主函数向用户提问
-// WASM 端调用: host_ui_ask("确认删除?", "确定要删除任务 xxx 吗？")
-// 宿主端收到后通过 UI 通道推送:
+// WASM 端调用: host_ui_ask(title_ptr, title_len, msg_ptr, msg_len) -> u32
+// 返回值: 0=拒绝, 1=允许
 
+// 宿主推给所有 --ui 订阅者:
 {
   "type": "ui_event",
   "ui_type": "Ask",
@@ -214,9 +260,21 @@ ion subscribe --ui
   "message": "确定要删除任务 xxx 吗？"
 }
 
-// 用户回复后，结果返回给 WASM extension
-// 回复: {"request_id":"req_def456","response":"allow"}
+// 有人回复后，推给所有 --ui 订阅者（状态同步）:
+{
+  "type": "ui_event",
+  "ui_type": "AskResolved",
+  "source": "extension:todo_plugin",
+  "request_id": "req_def456",
+  "response": "allow",
+  "resolved_by": "terminal-web-dashboard"
+}
+
+// 同时，WASM extension 的 host_ui_ask 返回 1（允许）
+// extension 继续执行后续逻辑
 ```
+
+**注意：`ui_respond` 不需要知道回复给哪个 extension —— 只要 `request_id` 对，系统自动路由回对应的 `host_ui_*` 调用方。** 这让多个订阅者之间完全解耦。
 
 ### UI 通道的宿主函数
 
