@@ -129,119 +129,117 @@ ion rpc --session <sid> --method call_tool \
 
 ---
 
-## Group C：权限审批流程（订阅模型 — 架构设计）
+## Group C：UI 事件通道（权限审批 — 架构设计）
 
-### 核心流程
+### 三条独立通道
 
-权限审批是**异步**的，不走一问一答的 RPC，而是走 **订阅 + 事件 + 回复** 模型：
+ION 有三条并行的事件通道，每条用途不同：
+
+| 通道 | CLI 参数 | 事件类型 | 方向 |
+|------|----------|---------|------|
+| **Instance** | `--session x` | `text_delta`, `agent_start`, `agent_end`, `tool_call_delta` 等 | 只读推送 |
+| **Extension** | `--extension memory` | 插件自定义事件（`memory_saved`, `process_completed` 等） | 推送 + RPC（`extension_rpc`） |
+| **UI** | `--ui` | `Ask`, `Confirm`, `Notif`, `Alert`, `Prompt` | **推送 + 回复** ← 新增 |
+
+其中 **UI 通道** 是专门为需要用户交互的场景设计的，跟其他两条通道的区别：
+
+| 维度 | Instance/Extension 通道 | UI 通道 |
+|------|------------------------|---------|
+| 消费者 | LLM / Dashboard / 日志 | **人类用户** |
+| 事件类型 | 数据流（文本增量、工具调用） | 交互意图（询问、确认、通知） |
+| 是否需要回复 | ❌ 不需要 | ✅ 通常需要用户回复 |
+| 谁可以发 | Worker / Extension | **内核 + Extension 都可以** |
+| 用途 | 监控 Agent 执行过程 | 用户参与决策流程 |
+
+### UI 事件类型
+
+```json
+{
+  "type": "ui_event",
+  "ui_type": "Ask",           // Ask | Confirm | Notif | Alert | Prompt
+  "source": "kernel",          // "kernel" | "extension:memory" | "extension:bash"
+  "request_id": "req_abc123", // 需要回复的事件有 request_id
+  "title": "权限请求",
+  "message": "工具想要 Read /tmp/secret",
+  "context": { ... },          // 额外上下文（扩展用）
+  "timeout_secs": 60,
+  "correlation_id": "..."     // 关联到原始请求
+}
+```
+
+### 完整审批流程
 
 ```
-Terminal 1（订阅者）                    Terminal 2（触发者）
+Terminal 1（UI 订阅者）                    Terminal 2（触发者）
 ─────────────────                      ─────────────────
-ion subscribe --events permission
+ion subscribe --ui
        │
-       │  (等待事件)
+       │  (等待 UI 事件)
        │
        │                              ion rpc --method call_tool \
        │                                --params '{"tool":"read","args":{"path":"/tmp/secret"}}'
        │                                       │
        │                              SecuredRuntime.check → Ask
        │                                       │
-       │  ◄─── permission_request ────          │
+       │  ◄─── Ask ─────────────────            │
        │  {                                    │
-       │    "type":"permission_request",        │
+       │    "type":"ui_event",                  │
+       │    "ui_type":"Ask",                    │
+       │    "source":"kernel",                  │
        │    "request_id":"req_abc123",          │
        │    "title":"权限请求: ask-tmp",         │
-       │    "message":"工具想要 read 路径: /tmp/secret", │
-       │    "tool":"read",                      │
-       │    "action":"Read"                     │
+       │    "message":"工具想要 read 路径: /tmp/secret"  │
        │  }                                     │
        │                                       │
-       │  (用户决定)                             │  (阻塞等待)
-       │                                       │
-ion permission respond \
-  --request-id req_abc123 \
-  --allow
-       │                                       │
-       │  ◄─── permission_response ──          │
+       │  ion rpc --method ui_respond \         │  (阻塞等待)
+       │    --params '{"request_id":"req_abc123","response":"allow"}'  │
        │                                       │
        │                             命令继续执行完成
        │                             返回结果
 ```
 
-### 关键设计点
+### Extension 也能用 UI 通道
 
-**1. Permission Event 通道**
+```json
+// 一个 WASM extension 通过 host_ui_ask 宿主函数向用户提问
+// WASM 端调用: host_ui_ask("确认删除?", "确定要删除任务 xxx 吗？")
+// 宿主端收到后通过 UI 通道推送:
 
-不同于 Instance subscribe（worker 事件流）和 Plugin subscribe（插件事件），权限事件走独立的 `--events permission` 通道：
-
-```bash
-# 订阅权限事件
-ion subscribe --events permission
-
-# 权限事件的 JSON 格式：
-# {
-#   "type": "permission_request",
-#   "request_id": "req_<8位hex>",
-#   "title": "权限请求: <rule名>",
-#   "message": "工具想要 <action> 路径: <path>",
-#   "tool": "<工具名>",
-#   "action": "Read|Write|Execute|Edit|Delete"
-# }
-```
-
-**2. 回复通道**
-
-通过 `ion permission respond` CLI 回复：
-
-```bash
-# 允许
-ion permission respond --request-id req_abc123 --allow
-
-# 拒绝（带可选原因）
-ion permission respond --request-id req_abc123 --deny --reason "我不信任这个操作"
-```
-
-**3. SecuredRuntime 的异步化改造**
-
-当前 `resolve_ask` 是同步阻塞的，需要改为：
-
-```rust
-fn resolve_ask(&self, title: &str, message: &str) -> bool {
-    // 如果 UiSystem 有 confirm_handler → 同步确认
-    // 否则 → 发 PermissionEvent + 等 response（异步）
-    //   1. 生成 request_id
-    //   2. emit PermissionEvent 到 EventBus
-    //   3. 等待 permission_response（有超时）
-    //   4. 返回 allow/deny
-    if let Some(ref ui) = self.ui_system {
-        if ui.has_confirm_handler() {
-            return ui.confirm(title, message);
-        }
-    }
-    // 异步路径：发事件 → 等回复
-    self.emit_permission_request(request_id, title, message);
-    self.wait_for_permission_response(request_id, timeout_secs)
+{
+  "type": "ui_event",
+  "ui_type": "Ask",
+  "source": "extension:todo_plugin",
+  "request_id": "req_def456",
+  "title": "确认删除",
+  "message": "确定要删除任务 xxx 吗？"
 }
+
+// 用户回复后，结果返回给 WASM extension
+// 回复: {"request_id":"req_def456","response":"allow"}
 ```
 
-**4. Permission EventBus 路由**
+### UI 通道的宿主函数
 
-```rust
-// 现有 EventBus 扩展一个 route 类型
-pub enum EventRoute {
-    Instance,      // text_delta / agent_start / agent_end
-    Extension,     // 插件自定义事件
-    Permission,    // 权限请求事件 ← 新增
-}
-```
+| 宿主函数 | 用途 | WASM 侧调用 |
+|----------|------|-------------|
+| `host_ui_ask(title, message) -> u32` | 询问用户确认 | 0=拒绝, 1=允许 |
+| `host_ui_confirm(title, message) -> u32` | 确认操作 | 同上 |
+| `host_ui_notif(title, message)` | 发通知（不需要回复） | 无返回 |
+| `host_ui_alert(title, message)` | 告警 | 无返回 |
+| `host_ui_prompt(title, message, out_buf, cap) -> u32` | 向用户提问并获取输入 | 返回用户输入的字节数 |
 
-CLI subscribe 扩展：
+### CLI 回复命令
 
 ```bash
-ion subscribe --session x              # Instance 事件（现有）
-ion subscribe --extension memory       # Extension 事件（现有）
-ion subscribe --events permission      # Permission 事件（新增）
+# 回复 Ask/Confirm
+ion rpc --method ui_respond \
+  --params '{"request_id":"req_abc123","response":"allow"}'
+ion rpc --method ui_respond \
+  --params '{"request_id":"req_abc123","response":"deny"}'
+
+# 回复 Prompt（带输入内容）
+ion rpc --method ui_respond \
+  --params '{"request_id":"req_def456","response":"input","data":"用户输入的内容"}'
 ```
 
 ---
@@ -288,16 +286,39 @@ ion subscribe --events permission      # Permission 事件（新增）
 
 ---
 
-## 实现总览
+## 通道架构总览
 
 ```
-CLI 命令                     状态         说明
-──────────────────────────    ─────       ──────────────────────
-ion rpc --method call_tool    ✅ 已实现    工具调用（经 Runtime）
-ion subscribe --session       ✅ 已实现    订阅 worker 事件流
-ion subscribe --extension     ✅ 已实现    订阅扩展事件
-ion subscribe --events perm   🔧 设计稿    订阅权限事件
-ion permission respond        🔧 设计稿    回复权限确认
+ION 事件系统
+│
+├── Instance 通道 (--session x)
+│   ├── 推送: text_delta / agent_start / agent_end / tool_call_*
+│   ├── 消费者: LLM / Dashboard / 日志
+│   └── 无需回复
+│
+├── Extension 通道 (--extension memory)
+│   ├── 推送: 插件自定义事件 (memory_saved, process_completed)
+│   ├── 交互: extension_rpc (一问一答)
+│   └── 消费者: Dashboard / CLI 调试
+│
+└── UI 通道 (--ui) ← 新增
+    ├── 推送: Ask / Confirm / Notif / Alert / Prompt
+    ├── 交互: ui_respond (异步回复)
+    ├── 消费者: 人类用户（需要做决策）
+    └── 谁可以发: 内核 (SecuredRuntime) + 所有 Extension (WASM/Rust)
+```
+
+## CLI 命令总览
+
+```
+命令                             状态         通道
+────                              ─────       ────────
+ion rpc --method call_tool         ✅ 已实现    RPC（工具经 Runtime）
+ion subscribe --session x           ✅ 已实现    Instance 通道
+ion subscribe --extension memory    ✅ 已实现    Extension 通道
+ion subscribe --ui                  🔧 设计稿    UI 通道 ← 第三通道
+ion rpc --method ui_respond         🔧 设计稿    UI 通道（回复）
+host_ui_ask / host_ui_confirm       🔧 设计稿    WASM Extension → UI 通道
 ```
 
 | 组件 | 状态 | 说明 |
