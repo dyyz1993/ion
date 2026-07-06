@@ -13,8 +13,16 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::io::AsyncWriteExt;
+use tokio::sync::oneshot;
+
+/// 全局待处理的 UI 确认请求（request_id → 回复通道）
+/// SecuredRuntime 写入，ion Manager 的 ui_respond handler 读取并回复。
+static PENDING_UI: OnceLock<Mutex<HashMap<String, oneshot::Sender<String>>>> = OnceLock::new();
+fn pending_ui() -> &'static Mutex<HashMap<String, oneshot::Sender<String>>> {
+    PENDING_UI.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 // ---------------------------------------------------------------------------
 // Runtime trait
@@ -592,11 +600,13 @@ pub struct SecuredRuntime<R: Runtime> {
     permission_engine: Option<std::sync::Arc<crate::kernel::PermissionEngine>>,
     command_guard: Option<crate::command_guard::CommandGuard>,
     ui_system: Option<std::sync::Arc<crate::kernel::UiSystem>>,
+    /// EventBus，用于异步 Ask 推送 UI 事件
+    event_bus: Option<std::sync::Arc<tokio::sync::Mutex<crate::event_bus::ExtensionEventBus>>>,
 }
 
 impl<R: Runtime> SecuredRuntime<R> {
     pub fn new(inner: R) -> Self {
-        Self { inner, permission_engine: None, command_guard: None, ui_system: None }
+        Self { inner, permission_engine: None, command_guard: None, ui_system: None, event_bus: None }
     }
 
     pub fn with_permissions(mut self, engine: std::sync::Arc<crate::kernel::PermissionEngine>) -> Self {
@@ -611,6 +621,11 @@ impl<R: Runtime> SecuredRuntime<R> {
 
     pub fn with_ui(mut self, ui: std::sync::Arc<crate::kernel::UiSystem>) -> Self {
         self.ui_system = Some(ui);
+        self
+    }
+
+    pub fn with_event_bus(mut self, bus: std::sync::Arc<tokio::sync::Mutex<crate::event_bus::ExtensionEventBus>>) -> Self {
+        self.event_bus = Some(bus);
         self
     }
 
@@ -631,13 +646,55 @@ impl<R: Runtime> SecuredRuntime<R> {
     /// 获取内部 Runtime 引用
     pub fn inner(&self) -> &R { &self.inner }
 
-    /// 处理 Ask 结果：有 UI 就弹窗确认，没有就拒绝
-    fn resolve_ask(&self, title: &str, message: &str) -> bool {
+    /// 处理 Ask 结果：
+    /// 1. 有 UiSystem 且有 confirm_handler → 同步确认（现有路径）
+    /// 2. 有 EventBus → 异步 Ask（发 UI 事件 → 等回复 → 推 AskResolved）
+    /// 3. 都没有 → 安全优先，拒绝
+    async fn resolve_ask(&self, title: &str, message: &str) -> bool {
+        // 路径 1：同步确认
         if let Some(ref ui) = self.ui_system {
-            ui.confirm(title, message)
-        } else {
-            false // 没有 UI → 安全优先，拒绝
+            if ui.has_confirm_handler() {
+                return ui.confirm(title, message);
+            }
         }
+        // 路径 2：异步 Ask 走 UI 通道
+        if let Some(ref bus_arc) = self.event_bus {
+            let request_id = format!("req_{}", &uuid::Uuid::new_v4().to_string()[..8]);
+            
+            // 注册 pending request
+            let (tx, rx) = oneshot::channel();
+            pending_ui().lock().unwrap().insert(request_id.clone(), tx);
+
+            // 推 Ask 事件
+            let ask_event = crate::event_bus::ExtensionEvent::new_ui("Ask", title, message)
+                .with_data(serde_json::json!({"request_id": request_id, "title": title, "message": message}));
+            {
+                let mut bus = bus_arc.lock().await;
+                bus.broadcast(&ask_event);
+            }
+
+            // 等待回复（带超时）
+            let timeout = std::time::Duration::from_secs(120);
+            let result = tokio::time::timeout(timeout, rx).await;
+
+            let (allowed, response_str) = match result {
+                Ok(Ok(resp)) => (resp == "allow", resp),
+                _ => (false, "timeout".into()),
+            };
+
+            // 推 AskResolved / AskTimedOut 事件
+            let resolved_type = if response_str == "timeout" { "AskTimedOut" } else { "AskResolved" };
+            let resolved_event = crate::event_bus::ExtensionEvent::new_ui(resolved_type, title, message)
+                .with_data(serde_json::json!({"request_id": request_id, "response": response_str}));
+            {
+                let mut bus = bus_arc.lock().await;
+                bus.broadcast(&resolved_event);
+            }
+
+            return allowed;
+        }
+        // 路径 3：都没有 → 拒绝
+        false
     }
 }
 
@@ -661,7 +718,7 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
                 }
                 crate::command_guard::GuardDecision::Ask(p) => {
                     let msg = format!("{}\n\n命令: `{}`", p.message, command);
-                    if !self.resolve_ask("高危命令", &msg) {
+                    if !self.resolve_ask("高危命令", &msg).await {
                         let hint = p.suggestion.map(|s| format!(" 建议: {}", s)).unwrap_or_default();
                         return Err(format!("[CommandGuard] 用户拒绝了高危命令: {}{}", p.message, hint));
                     }
@@ -679,7 +736,7 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
                 crate::kernel::PermissionResult::Allow => {}
                 crate::kernel::PermissionResult::Deny(reason) => return Err(format!("[Permission] {reason}")),
                 crate::kernel::PermissionResult::Ask { title, message } => {
-                    if !self.resolve_ask(&title, &message) {
+                    if !self.resolve_ask(&title, &message).await {
                         return Err(format!("[Permission] 用户拒绝了读文件: {path}"));
                     }
                 }
@@ -694,7 +751,7 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
                 crate::kernel::PermissionResult::Allow => {}
                 crate::kernel::PermissionResult::Deny(reason) => return Err(format!("[Permission] {reason}")),
                 crate::kernel::PermissionResult::Ask { title, message } => {
-                    if !self.resolve_ask(&title, &message) {
+                    if !self.resolve_ask(&title, &message).await {
                         return Err(format!("[Permission] 用户拒绝了写文件: {path}"));
                     }
                 }
@@ -709,7 +766,7 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
                 crate::kernel::PermissionResult::Allow => {}
                 crate::kernel::PermissionResult::Deny(reason) => return Err(format!("[Permission] {reason}")),
                 crate::kernel::PermissionResult::Ask { title, message } => {
-                    if !self.resolve_ask(&title, &message) {
+                    if !self.resolve_ask(&title, &message).await {
                         return Err(format!("[Permission] 用户拒绝了编辑文件: {path}"));
                     }
                 }
@@ -726,7 +783,7 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
                 crate::kernel::PermissionResult::Allow => {}
                 crate::kernel::PermissionResult::Deny(reason) => return Err(format!("[Permission] {reason}")),
                 crate::kernel::PermissionResult::Ask { title, message } => {
-                    if !self.resolve_ask(&title, &message) {
+                    if !self.resolve_ask(&title, &message).await {
                         return Err(format!("[Permission] 用户拒绝了: {path}"));
                     }
                 }
@@ -741,7 +798,7 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
                 crate::kernel::PermissionResult::Allow => {}
                 crate::kernel::PermissionResult::Deny(reason) => return Err(format!("[Permission] {reason}")),
                 crate::kernel::PermissionResult::Ask { title, message } => {
-                    if !self.resolve_ask(&title, &message) {
+                    if !self.resolve_ask(&title, &message).await {
                         return Err(format!("[Permission] 用户拒绝了删除: {path}"));
                     }
                 }
@@ -756,7 +813,7 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
                 crate::kernel::PermissionResult::Allow => {}
                 crate::kernel::PermissionResult::Deny(reason) => return Err(format!("[Permission] {reason}")),
                 crate::kernel::PermissionResult::Ask { title, message } => {
-                    if !self.resolve_ask(&title, &message) {
+                    if !self.resolve_ask(&title, &message).await {
                         return Err(format!("[Permission] 用户拒绝了搜索: {path}"));
                     }
                 }
@@ -782,7 +839,7 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
                     return Err(format!("spawn rejected: {} ({})", p.message, sug));
                 }
                 crate::command_guard::GuardDecision::Ask(p) => {
-                    let allowed = self.resolve_ask("command", &p.message);
+                    let allowed = self.resolve_ask("command", &p.message).await;
                     if !allowed {
                         let sug = p.suggestion.as_deref().unwrap_or("");
                         return Err(format!("spawn denied by user: {} ({})", p.message, sug));
@@ -803,7 +860,7 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
                     return Err(format!("kill denied: {reason}"));
                 }
                 crate::kernel::PermissionResult::Ask { title, message } => {
-                    let allowed = self.resolve_ask(&title, &message);
+                    let allowed = self.resolve_ask(&title, &message).await;
                     if !allowed {
                         return Err(format!("kill denied by user: {message}"));
                     }

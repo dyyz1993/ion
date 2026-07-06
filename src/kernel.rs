@@ -333,6 +333,11 @@ impl UiSystem {
         *self.confirm_handler.write().unwrap() = Some(handler);
     }
 
+    /// 是否已设置确认回调
+    pub fn has_confirm_handler(&self) -> bool {
+        self.confirm_handler.read().unwrap().is_some()
+    }
+
     /// 订阅 UI 事件（UI 层调这个）
     pub fn subscribe(&self) -> tokio::sync::mpsc::Receiver<UiEvent> {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
