@@ -18,6 +18,7 @@ use clap::{Parser, Subcommand};
 use ion::agent::agent_loop::{Agent, AgentConfig};
 use ion::agent::compact::CompactConfig;
 use ion::agent::tool::{ReadTool, GrepTool, FindTool, LsTool, BashTool, WriteTool, EditTool, CalculatorTool, EchoTool, GitStatusTool, GitDiffTool, GitLogTool, GitAddTool, GitCommitTool, GitBranchTool, ToolRegistry};
+use ion::backend_registry::BackendRegistry;
 use ion::config::{IonConfig, default_model_for_provider};
 use ion::event_bus::ExtensionEvent;
 use ion::manager::AgentManager;
@@ -814,10 +815,16 @@ async fn cmd_run(
     // Check if plan tools are loaded (before tools is moved into Agent)
     let has_plan_tools = tools.get("plan_enter").is_some();
 
-    let secured = ion::runtime::SecuredRuntime::new(ion::runtime::LocalRuntime::new())
+    // Build runtime from config (aligned with ion_worker.rs)
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let runtime_cfg = ion::config::IonConfig::load().runtime;
+    let backend_registry = BackendRegistry::from_config(&runtime_cfg, &cwd);
+    let rt = ion::runtime::SecuredRuntime::new(backend_registry)
         .with_profile(ion::kernel::SecurityProfile::default());
     let mut agent = Agent::new(registry, model, Some(sys_prompt), tools, config)
-        .with_runtime(Box::new(secured));
+        .with_runtime(Box::new(rt));
     if let Some(msgs) = preloaded {
         agent = agent.with_messages(msgs);
     }

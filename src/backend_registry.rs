@@ -777,9 +777,14 @@ mod tests {
 
     #[test]
     fn test_canonicalize_tilde() {
-        // SAFETY: this is a single-threaded test; env mutation is fine.
+        // SAFETY: save and restore HOME to avoid test pollution
+        let original_home = std::env::var("HOME").ok();
         unsafe { std::env::set_var("HOME", "/Users/test"); }
         assert_eq!(canonicalize_path("~/.ion/skill.md"), "/Users/test/.ion/skill.md");
+        match original_home {
+            Some(h) => unsafe { std::env::set_var("HOME", h); },
+            None => unsafe { std::env::remove_var("HOME"); },
+        }
     }
 
     #[test]

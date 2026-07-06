@@ -338,9 +338,11 @@ async fn main() {
     // - 同步 `for line in stdin.lock().lines()` 改成 tokio async 读，spawn 独立 task。
     //   原因：agent.run().await 期间同步读会阻塞 stdin，导致 Manager 写回的
     //   manager_response 卡管道缓冲里读不到 → spawn_worker 工具无法同步等待。
+    // 修复：在 stdin 任务中提前拦截 _reply_to 消息，绕过主循环死锁。
     // - ManagerBridge 持有 pending map（_reply_to → oneshot），让工具调用能 await 响应。
 
     let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<serde_json::Value>();
+    let bridge_for_reader = Arc::clone(&manager_bridge);
     tokio::spawn(async move {
         let mut reader = tokio::io::BufReader::new(tokio::io::stdin());
         use tokio::io::AsyncBufReadExt;
@@ -350,7 +352,16 @@ async fn main() {
                 Ok(Some(line)) => {
                     if line.trim().is_empty() { continue; }
                     match serde_json::from_str::<serde_json::Value>(&line) {
-                        Ok(v) => { let _ = stdin_tx.send(v); }
+                        Ok(v) => {
+                            // 关键：_reply_to 消息是 manager_response，直接投递避免死锁
+                            let has_reply_to = v.get("_reply_to").and_then(|r| r.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
+                            if has_reply_to {
+                                let reply_to = v["_reply_to"].as_str().unwrap_or("").to_string();
+                                bridge_for_reader.deliver_response(&reply_to, v).await;
+                            } else {
+                                let _ = stdin_tx.send(v);
+                            }
+                        }
                         Err(e) => {
                             output(&serde_json::json!({
                                 "type": "error",
@@ -1448,13 +1459,22 @@ async fn main() {
 
             // ── 真正未知 ──
             _ => {
-                output(&serde_json::json!({
-                    "id": id,
-                    "type": "response",
-                    "command": method,
-                    "success": false,
-                    "error": format!("Unknown command: {method}")
-                }));
+                // 兜底：检查是否有 _reply_to（Manager 写回 manager_response 可能不带 type）
+                let reply_to = cmd.get("_reply_to")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if !reply_to.is_empty() {
+                    manager_bridge.deliver_response(&reply_to, cmd).await;
+                } else {
+                    output(&serde_json::json!({
+                        "id": id,
+                        "type": "response",
+                        "command": method,
+                        "success": false,
+                        "error": format!("Unknown command: {method}")
+                    }));
+                }
             }
         }
 
@@ -1612,6 +1632,17 @@ pub struct ManagerBridge {
 
 #[async_trait::async_trait]
 impl ion::runtime::ManagerBridgeHandle for ManagerBridge {
+    async fn send_command(
+        &self,
+        command: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        ManagerBridge::send_command(self, command, params).await
+    }
+}
+
+#[async_trait::async_trait]
+impl ion::worker_api::BridgeHandle for ManagerBridge {
     async fn send_command(
         &self,
         command: &str,

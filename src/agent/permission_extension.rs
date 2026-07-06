@@ -77,6 +77,8 @@ pub struct PermissionExtension {
     project_rules: RwLock<Vec<PermissionRule>>,
     /// 会话级规则（内存）
     session_rules: Mutex<Vec<PermissionRule>>,
+    /// 全局 settings.json 路径
+    global_path: PathBuf,
     /// 项目 settings.json 路径
     project_settings_path: PathBuf,
     /// Extension 名
@@ -86,29 +88,51 @@ pub struct PermissionExtension {
 impl PermissionExtension {
     pub fn new(session_id: &str, project_root: &str) -> Self {
         let project_settings = PathBuf::from(project_root).join(".ion").join("settings.json");
+        let global_path = std::env::var("HOME")
+            .map(|h| PathBuf::from(h).join(".ion").join("settings.json"))
+            .unwrap_or_else(|_| PathBuf::from("/nonexistent"));
 
-        // 加载规则
-        let mut project_rules = Vec::new();
+        let mut ext = Self {
+            project_rules: RwLock::new(Vec::new()),
+            session_rules: Mutex::new(Vec::new()),
+            global_path,
+            project_settings_path: project_settings,
+            name: "permission".into(),
+        };
+        ext.reload_internal();
+        ext
+    }
+
+    /// 重新加载规则（热重载）：重新读取全局 + 项目 settings.json
+    /// 不修改会话级规则，不清空。
+    pub fn reload(&self) -> Result<String, String> {
+        let (count_global, count_project) = self.reload_internal();
+        Ok(format!("reloaded: {} global rules, {} project rules", count_global, count_project))
+    }
+
+    /// 内部重载实现
+    fn reload_internal(&self) -> (usize, usize) {
+        let mut new_rules: Vec<PermissionRule> = Vec::new();
 
         // 1. 全局配置 ~/.ion/settings.json → permissions.rules
-        let global_path = std::env::var("HOME").map(|h| PathBuf::from(h).join(".ion").join("settings.json")).ok();
-        if let Some(ref gp) = global_path {
-            if let Some(rules) = Self::load_rules_from_file(&Some(gp.clone())) {
-                project_rules.extend(rules);
-            }
+        let mut global_count = 0;
+        if let Some(rules) = Self::load_rules_from_file(&Some(self.global_path.clone())) {
+            global_count = rules.len();
+            new_rules.extend(rules);
         }
 
         // 2. 项目配置 <project>/.ion/settings.json → permissions.rules（覆盖同名规则）
-        if let Some(proj_rules) = Self::load_rules_from_file(&Some(project_settings.clone())) {
-            project_rules.extend(proj_rules);
+        let mut project_count = 0;
+        if let Some(rules) = Self::load_rules_from_file(&Some(self.project_settings_path.clone())) {
+            project_count = rules.len();
+            new_rules.extend(rules);
         }
 
-        Self {
-            project_rules: RwLock::new(project_rules),
-            session_rules: Mutex::new(Vec::new()),
-            project_settings_path: project_settings,
-            name: "permission".into(),
+        if let Ok(mut rules) = self.project_rules.write() {
+            *rules = new_rules;
         }
+
+        (global_count, project_count)
     }
 
     /// 从 settings.json 加载 rules
@@ -311,6 +335,10 @@ impl Extension for PermissionExtension {
             "list_rules" => {
                 let rules = self.list_rules();
                 Ok(serde_json::json!({"rules": rules, "count": rules.len()}))
+            }
+            "reload" => {
+                let msg = self.reload().map_err(|e| AgentError::Tool(e))?;
+                Ok(serde_json::json!({"status": "ok", "message": msg}))
             }
             _ => Err(AgentError::Tool(format!("permission: unknown method '{method}'"))),
         }

@@ -205,16 +205,17 @@ async fn i06_worker_events_forwarded() {
     let mut events = reg.subscribe(&info.worker_id)
         .expect("subscribe should work");
 
-    // Send a prompt (triggers events)
+    // Send a prompt (triggers events). Drop reg before awaiting to avoid 
+    // locking the registry during event forwarding.
     drop(reg);
     let _resp = WorkerRegistry::send_async(&registry, 
         &info.worker_id,
         "prompt",
         serde_json::json!({"text": "Say hello"}),
     ).await;
-    let mut reg = registry.lock().await;
 
-    // Wait for events (agent_start, text_delta, agent_end)
+    // Wait for events WITHOUT holding the registry lock, so the reader 
+    // task can forward events to our subscriber channel.
     let mut event_count = 0;
     loop {
         match tokio::time::timeout(Duration::from_secs(20), events.recv()).await {
@@ -235,6 +236,8 @@ async fn i06_worker_events_forwarded() {
 
     assert!(event_count > 0, "should have received events");
 
+    // Re-acquire lock only for cleanup
+    let mut reg = registry.lock().await;
     let _ = reg.kill_worker(&info.worker_id);
 }
 

@@ -1,5 +1,16 @@
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tokio::sync::mpsc;
+
+/// BridgeHandle — 让 ExtensionApi 通过 JSON stdout 协议与 Manager 通信。
+///
+/// 由 ion_worker 中的 ManagerBridge 实现，替代 dead mpsc ManagerCommand 路径。
+#[async_trait]
+pub trait BridgeHandle: Send + Sync {
+    /// 发送一个 manager_command 到 Manager，等待响应（阻塞等待）。
+    async fn send_command(&self, command: &str, params: serde_json::Value) -> Result<serde_json::Value, String>;
+}
 
 /// Worker creation config for plugins.
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -123,11 +134,21 @@ pub struct ExtensionApi {
     /// Channel to inject follow_up messages back into the current agent
     /// (used by bash extension for background process completion notification)
     pub follow_up_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::agent::messages::Message>>,
+    /// Bridge to Manager via JSON stdout protocol.
+    /// When set, create_worker() uses this instead of the dead mpsc path.
+    pub bridge: Option<Arc<dyn BridgeHandle>>,
 }
 
 impl ExtensionApi {
     pub fn new(worker_id: String, session_id: String, manager_tx: mpsc::Sender<ManagerCommand>) -> Self {
-        Self { worker_id, session_id, manager_tx, follow_up_tx: None }
+        Self { worker_id, session_id, manager_tx, follow_up_tx: None, bridge: None }
+    }
+
+    /// Set the bridge to Manager (JSON stdout protocol).
+    /// When set, create_worker() uses this instead of the dead mpsc path.
+    pub fn with_bridge(mut self, bridge: Arc<dyn BridgeHandle>) -> Self {
+        self.bridge = Some(bridge);
+        self
     }
 
     /// Set the follow_up channel sender.
@@ -146,13 +167,30 @@ impl ExtensionApi {
     }
 
     /// Create a child Worker. Returns a WorkerHandle.
+    /// Uses BridgeHandle when available, falls back to mpsc (dead code path).
     pub async fn create_worker(&self, config: ExtensionWorkerConfig) -> Result<WorkerHandle, String> {
-        let (reply, rx) = tokio::sync::oneshot::channel();
-        self.manager_tx.send(ManagerCommand::CreateWorker {
-            config, reply,
-        }).await.map_err(|e| e.to_string())?;
-        let info = rx.await.map_err(|e| e.to_string())?;
-        Ok(WorkerHandle::new(info.worker_id, info.session_id, self.manager_tx.clone()))
+        if let Some(ref bridge) = self.bridge {
+            // Live path: JSON stdout → Manager
+            let params = serde_json::json!({
+                "session": config.session,
+                "model": config.model,
+                "provider": config.provider,
+                "channels": config.channels,
+                "parent": config.parent,
+            });
+            let resp = bridge.send_command("create_worker", params).await?;
+            let worker_id = resp.get("workerId").and_then(|v| v.as_str()).ok_or("create_worker: missing workerId in response")?.to_string();
+            let session_id = resp.get("sessionId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            Ok(WorkerHandle::new(worker_id, session_id.clone(), self.manager_tx.clone()))
+        } else {
+            // Dead code path: mpsc ManagerCommand (no receiver exists!)
+            let (reply, rx) = tokio::sync::oneshot::channel();
+            self.manager_tx.send(ManagerCommand::CreateWorker {
+                config, reply,
+            }).await.map_err(|e| e.to_string())?;
+            let info = rx.await.map_err(|e| e.to_string())?;
+            Ok(WorkerHandle::new(info.worker_id, info.session_id, self.manager_tx.clone()))
+        }
     }
 
     /// Get a handle to self.

@@ -11,11 +11,70 @@
 //! 3. 审计日志
 
 use async_trait::async_trait;
+use serde::Serialize;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
+
+/// 审计日志路径 ~/.ion/agent/audit.jsonl
+fn audit_log_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    PathBuf::from(home).join(".ion").join("agent").join("audit.jsonl")
+}
+
+/// 审计日志条目
+#[derive(Serialize)]
+struct AuditEntry {
+    timestamp: String,
+    command: String,
+    decision: String,
+    mode: String,
+    risk_pattern: Option<String>,
+    user_action: Option<String>,
+}
+
+/// 写入一条审计日志到 ~/.ion/agent/audit.jsonl（JSONL 格式）
+fn audit_log(decision: &str, command: &str, mode: &str, risk: Option<&str>, user_action: Option<&str>) {
+    let path = audit_log_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let entry = AuditEntry {
+        timestamp: chrono_now(),
+        command: command.to_string(),
+        decision: decision.to_string(),
+        mode: mode.to_string(),
+        risk_pattern: risk.map(|s| s.to_string()),
+        user_action: user_action.map(|s| s.to_string()),
+    };
+    if let Ok(line) = serde_json::to_string(&entry) {
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map(|mut f| {
+                use std::io::Write;
+                let _ = writeln!(f, "{line}");
+            });
+    }
+}
+
+fn chrono_now() -> String {
+    let dur = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = dur.as_secs();
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        2026u64 + secs / 31536000,
+        (secs / 2592000 % 12) + 1,
+        (secs / 86400 % 30) + 1,
+        (secs / 3600 % 24),
+        (secs / 60 % 60),
+        (secs % 60))
+}
 
 /// 全局待处理的 UI 确认请求（request_id → 回复通道）
 /// SecuredRuntime 写入，ion Manager 的 ui_respond handler 读取并回复。
@@ -777,6 +836,7 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
     async fn execute_command(&self, command: &str, timeout_secs: u64) -> Result<(String, String, i32), String> {
         // CommandGuard 检查
         if let Some(ref guard) = self.command_guard {
+            let mode = format!("{}", guard.mode);
             match guard.check(command) {
                 crate::command_guard::GuardDecision::Deny(p) => {
                     let msg = if let Some(ref sug) = p.suggestion {
@@ -784,17 +844,22 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
                     } else {
                         format!("[CommandGuard] 高危命令被拦截: {}", p.message)
                     };
+                    audit_log("deny", command, &mode, Some(&p.message), None);
                     return Err(msg);
                 }
                 crate::command_guard::GuardDecision::Ask(p) => {
                     let msg = format!("{}\n\n命令: `{}`", p.message, command);
-                    if !self.resolve_ask("高危命令", &msg).await {
+                    let allowed = self.resolve_ask("高危命令", &msg).await;
+                    audit_log("ask", command, &mode, Some(&p.message), Some(if allowed { "accepted" } else { "rejected" }));
+                    if !allowed {
                         let hint = p.suggestion.as_ref().map(|s| format!(" 建议: {}", s)).unwrap_or_default();
                         return Err(format!("[CommandGuard] 用户拒绝了高危命令: {}{}", p.message, hint));
                     }
                     // 用户允许 → 放行
                 }
-                crate::command_guard::GuardDecision::Allow => {}
+                crate::command_guard::GuardDecision::Allow => {
+                    audit_log("allow", command, &mode, None, None);
+                }
             }
         }
         self.inner.execute_command(command, timeout_secs).await
@@ -806,6 +871,7 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
         on_update: &(dyn Fn(String) + Send + Sync),
     ) -> Result<String, String> {
         if let Some(ref guard) = self.command_guard {
+            let mode = format!("{}", guard.mode);
             match guard.check(command) {
                 crate::command_guard::GuardDecision::Deny(p) => {
                     let msg = if let Some(ref sug) = p.suggestion {
@@ -813,16 +879,21 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
                     } else {
                         format!("[CommandGuard] 高危命令被拦截: {}", p.message)
                     };
+                    audit_log("deny", command, &mode, Some(&p.message), None);
                     return Err(msg);
                 }
                 crate::command_guard::GuardDecision::Ask(p) => {
                     let msg = format!("{}\n\n命令: `{}`", p.message, command);
-                    if !self.resolve_ask("高危命令", &msg).await {
+                    let allowed = self.resolve_ask("高危命令", &msg).await;
+                    audit_log("ask", command, &mode, Some(&p.message), Some(if allowed { "accepted" } else { "rejected" }));
+                    if !allowed {
                         let hint = p.suggestion.as_ref().map(|s| format!(" 建议: {}", s)).unwrap_or_default();
                         return Err(format!("[CommandGuard] 用户拒绝了高危命令: {}{}", p.message, hint));
                     }
                 }
-                crate::command_guard::GuardDecision::Allow => {}
+                crate::command_guard::GuardDecision::Allow => {
+                    audit_log("allow", command, &mode, None, None);
+                }
             }
         }
         self.inner.execute_command_stream(command, timeout_secs, on_update).await
@@ -831,6 +902,7 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
     /// 安全预检：检查命令是否允许（CommandGuard）
     async fn check_command(&self, command: &str) -> Result<(), String> {
         if let Some(ref guard) = self.command_guard {
+            let mode = format!("{}", guard.mode);
             match guard.check(command) {
                 crate::command_guard::GuardDecision::Deny(p) => {
                     let msg = if let Some(ref sug) = p.suggestion {
@@ -838,16 +910,21 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
                     } else {
                         format!("[CommandGuard] 高危命令被拦截: {}", p.message)
                     };
+                    audit_log("deny", command, &mode, Some(&p.message), None);
                     return Err(msg);
                 }
                 crate::command_guard::GuardDecision::Ask(p) => {
                     let msg = format!("{}\n\n命令: `{}`", p.message, command);
-                    if !self.resolve_ask("高危命令", &msg).await {
+                    let allowed = self.resolve_ask("高危命令", &msg).await;
+                    audit_log("ask", command, &mode, Some(&p.message), Some(if allowed { "accepted" } else { "rejected" }));
+                    if !allowed {
                         let hint = p.suggestion.as_ref().map(|s| format!(" 建议: {}", s)).unwrap_or_default();
                         return Err(format!("[CommandGuard] 用户拒绝了高危命令: {}{}", p.message, hint));
                     }
                 }
-                crate::command_guard::GuardDecision::Allow => {}
+                crate::command_guard::GuardDecision::Allow => {
+                    audit_log("allow", command, &mode, None, None);
+                }
             }
         }
         Ok(())
@@ -956,19 +1033,24 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
     async fn spawn_process(&self, req: SpawnProcessRequest) -> Result<ProcessHandle, String> {
         // CommandGuard 检查命令
         if let Some(ref guard) = self.command_guard {
+            let mode = format!("{}", guard.mode);
             match guard.check(&req.command) {
                 crate::command_guard::GuardDecision::Deny(p) => {
                     let sug = p.suggestion.as_deref().unwrap_or("");
+                    audit_log("deny", &req.command, &mode, Some(&p.message), None);
                     return Err(format!("spawn rejected: {} ({})", p.message, sug));
                 }
                 crate::command_guard::GuardDecision::Ask(p) => {
                     let allowed = self.resolve_ask("command", &p.message).await;
+                    audit_log("ask", &req.command, &mode, Some(&p.message), Some(if allowed { "accepted" } else { "rejected" }));
                     if !allowed {
                         let sug = p.suggestion.as_deref().unwrap_or("");
                         return Err(format!("spawn denied by user: {} ({})", p.message, sug));
                     }
                 }
-                crate::command_guard::GuardDecision::Allow => {}
+                crate::command_guard::GuardDecision::Allow => {
+                    audit_log("allow", &req.command, &mode, None, None);
+                }
             }
         }
         self.inner.spawn_process(req).await

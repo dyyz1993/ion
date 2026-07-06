@@ -1242,16 +1242,33 @@ impl WorkerRegistry {
     }
 
     /// Write a manager_response back to the requesting worker's stdin.
-    async fn write_manager_response(&mut self, worker_id: &str, resp: serde_json::Value) {
+    /// Write a response JSON line to a worker's stdin.
+    /// Resolves worker by worker_id first, then by session_id.
+    /// （ManagerBridge 的 _from_worker 传的是 session_id，但 registry 按 worker_id 索引）
+    async fn write_manager_response(&mut self, worker_or_session: &str, resp: serde_json::Value) {
         use tokio::io::AsyncWriteExt;
         let line = format!("{}\n", serde_json::to_string(&resp).unwrap_or_default());
-        if let Some(record) = self.workers.get_mut(worker_id) {
-            if let Some(ref mut stdin) = record.stdin {
-                let _ = stdin.write_all(line.as_bytes()).await;
-                let _ = stdin.flush().await;
-            }
+
+        let target = if self.workers.contains_key(worker_or_session) {
+            Some(worker_or_session.to_string())
         } else {
-            tracing::warn!("[manager] cannot write response: worker {worker_id} not found");
+            self.workers.iter()
+                .find(|(_, w)| w.session_id == worker_or_session)
+                .map(|(id, _)| id.clone())
+        };
+
+        match target {
+            Some(wid) => {
+                if let Some(record) = self.workers.get_mut(&wid) {
+                    if let Some(ref mut stdin) = record.stdin {
+                        let _ = stdin.write_all(line.as_bytes()).await;
+                        let _ = stdin.flush().await;
+                    }
+                }
+            }
+            None => {
+                tracing::warn!("[manager] cannot write response: worker/session {worker_or_session} not found");
+            }
         }
     }
 

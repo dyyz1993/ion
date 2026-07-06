@@ -179,6 +179,7 @@ docs/
 | [docs/design/APPLE_CONTAINER_EXTENSION.md](./docs/design/APPLE_CONTAINER_EXTENSION.md) | Apple Container Backend：Group A-J 26 条测试用例 (已验证) |
 | [BACKEND_TYPES.md](./BACKEND_TYPES.md) | Backend 类型分类：Local/Sandbox/Remote/Container + 5 种配置场景 (已完成) |
 | [ROUTER_TEST_SPEC.md](./ROUTER_TEST_SPEC.md) | 路由层测试规格：68 条用例覆盖路由/路径/安全/配置错误 (已完成) |
+| [docs/design/EXTENSION_ECOSYSTEM.md](./docs/design/EXTENSION_ECOSYSTEM.md) | Extension 生态验证：子 Worker 创建 + 事件发射 + CLI 验证 (已验证) |
 | [docs/design/HOOK_SYSTEM.md](./docs/design/HOOK_SYSTEM.md) | Shell Hook 系统设计 (TRAE 兼容, 暂不开发) |
 | [docs/design/TEAM_ARCH.md](./docs/design/TEAM_ARCH.md) | 单项目自治 Agent 团队架构 — `ion team` 命令设计 (开发中) |
 | [docs/design/PI_RPC_ALIGNMENT.md](./docs/design/PI_RPC_ALIGNMENT.md) | pi RPC CLI 对齐文档 (开发中) |
@@ -376,114 +377,31 @@ ion-worker --mode rpc    → Worker 子进程 (JSONL over stdin/stdout)
 }
 ```
 
-**P1b - 沙箱实现（后续）:**
-- ~~macOS sandbox-exec profile 生成~~ ✅ 已完成（白名单模式）
-- Docker 容器 Runtime
-- Windows WSL2 兜底
-// 自动生成 .sb 配置文件控制文件访问权限
+**P2 - 路径权限配置（对齐 pi path-permissions.json）:** ✅ 两大类已完成
 
-// ── 模式 3: 远程执行（RPC 到另一台机器）──
-pub struct RemoteRuntime {
-    endpoint: String,   // "http://remote-host:8080/runtime"
-    api_key: String,
-}
-// 所有操作通过 HTTP/RPC 转发到远程 Runtime 服务
-// 远程 Runtime 服务可以运行在 Docker/VM 中
-```
+| 层级 | 类型 | 配置来源 | 作用范围 |
+|------|------|---------|---------|
+| **命令级** | CommandGuard | `config.json` 的 `command_guard` | 命令黑/白名单 + 风险模式 |
+| **路径级** | PermissionRule | `~/.ion/settings.json` 的 `permissions.rules`（全局）+ `<project>/.ion/settings.json`（项目） | 文件读/写/删 + 命令路径 |
 
-配置切换（`~/.ion/config.json`）：
+已完成：
+- CommadGuard 三模式（whitelist/blacklist/open）+ 50+ 风险模式 ✅
+- PermissionRule 热重载（CLI: `extension_rpc reload`，保留会话规则）✅ 已验证
+- ~~风险模式可配置化~~（CmdGuard 三模式已在 config.json 中）✅
 
-```json
-{
-  "runtime": {
-    "mode": "local"
-    // 或 "sandbox"
-    // 或 "remote"
-  },
-  "sandbox": {
-    "profile": "default",  // 从 ~/.ion/sandbox/ 加载
-    "whitelist": ["npm", "git", "cargo"],
-    "writable_dirs": ["/tmp", "/var/folders"],
-    "readonly_dirs": ["/usr", "/etc"],
-    "blocked_dirs": ["~/.ssh", "~/.aws"]
-  },
-  "remote": {
-    "endpoint": "https://runtime.example.com",
-    "api_key": "sk-xxx"
-  }
-}
-```
+**P3 - UI 对接:** ✅ 已完成
+- ~~HTTP/WS 对外接口~~（用户确认不做）
+- ~~UiSystem 通知/确认/弹窗~~ ✅ CLI `subscribe --ui` + `ui_respond` 验证通过
+- ~~审计日志~~ ✅ CommandGuard 决策持久化到 `~/.ion/agent/audit.jsonl`（JSONL 格式，CLI 验证通过）
 
-Agent 初始化时的切换逻辑：
+**P4 - 扩展生态:** ✅ 已验证
+- ~~扩展通过 ExtensionApi 创建子 Worker 的端到端验证~~ ✅ 已完成（含 2 个生产级 Bug 修复）
+- ~~WASM 扩展在 Agent 钩子中全面可用~~ ✅ 已完成
+- ~~扩展 emit 自定义事件 + 外部调用扩展 custom method~~ ✅ 已完成（事件发射 CLI 验证通过）
+- 验证文档：[docs/design/EXTENSION_ECOSYSTEM.md](./docs/design/EXTENSION_ECOSYSTEM.md)
 
-```rust
-let runtime: Box<dyn Runtime> = match config.runtime_mode {
-    "local"   => Box::new(LocalRuntime::new()),
-    "sandbox" => Box::new(MacOSSandboxRuntime::new(profile)),
-    "remote"  => Box::new(RemoteRuntime::new(endpoint, api_key)),
-    _         => Box::new(LocalRuntime::new()),  // 默认本地
-};
-
-// Runtime 自动包装中间件：
-//   PermissionEngine.check() → CommandGuard.check() → Runtime.execute()
-//   三者串联，切换模式不影响安全策略
-let secured = SecuredRuntime::new(
-    runtime,
-    permission_engine,
-    command_guard,
-    audit_logger,
-);
-
-let agent = Agent::new(registry, model, system_prompt, tools, config)
-    .with_runtime(secured);
-```
-
-工具链的改造量：
-- Tool trait 的 `execute()` 改成 `execute(runtime: &dyn Runtime)`
-- 所有工具内部调用 `runtime.read_file()` / `runtime.execute_command()` 等
-- Agent 初始化时创建 `Runtime`，传入 `ToolRegistry`
-- 约 15 个工具需要改，但每个改动很小（`std::fs` → `runtime.xxx`）
-
-- `Runtime trait` 定义
-- `LocalRuntime` 实现（现有行为封装）
-- `SecuredRuntime` 中间件包装（权限+守卫+审计）
-- Tool trait 签名改为接收 `&dyn Runtime`
-- 15 个工具逐一迁移
-
-**P1b - 沙箱实现（后续）:**
-- macOS sandbox-exec profile 生成
-- Docker 容器 Runtime
-- Windows WSL2 兜底
-
-**P2 - 规则配置化:**
-- 规则从 `~/.ion/rules/` 目录加载 JSON/YAML
-- 项目级规则 `<project>/.ion/rules/`
-- PermissionRule 热加载（文件变化自动重载）
-- 风险模式可配置化
-
-**P3 - UI 对接:**
-- HTTP/WS 对外接口 (subscribe_overview / subscribe_session / subscribe_channel)
-- UiSystem 全面接入通知/确认弹窗
-- 审计日志：谁在什么时候执行了什么命令
-
-**P4 - 扩展生态:**
-- 扩展通过 ExtensionApi 创建子 Worker 的端到端验证
-- WASM 扩展在 Agent 钩子中全面可用
-- 扩展 emit 自定义事件 + 外部调用扩展 custom method
-
-**P5 - 稳定性:**
-- ~~修复 i21/i22 偶发 LLM 超时测试~~ ✅ 已完成
-  - 根因 1：`send_async(...).await` 阻塞等 prompt response，LLM 慢时 25s deadline 不够 → 改用非阻塞 `send_command`
-  - 根因 2：测试循环持有 registry 锁，reader task 无法拿锁转发 event → drain 后释放锁，recv 期间不持锁
-  - 同步修复 i30（同样模式，且默认跑无 `#[ignore]`）
-- ~~compact 空 messages panic~~ ✅ 已完成
-  - `apply_compaction` 在空 messages 上 `messages[skip..]` 越界 → 加空检查直接返回
-- ~~maybe_compact LLM 失败崩溃~~ ✅ 已完成
-  - LLM summarizer 调用失败时 fallback 到 emergency truncate（不调 LLM）
-- ~~runtime.rs `&dyn Fn + Send + Sync` 语法错误~~ ✅ 已完成
-  - 改为 `&(dyn Fn + Send + Sync)`（4 处）
-- 会话树导航 (navigate_tree)
-- install/remove/update 包管理子命令
+**P5 - 包管理（低优先级）:**
+- install/remove/update 子命令
 
 ### 测试统计 (2026-07-07)
 
@@ -503,7 +421,12 @@ let agent = Agent::new(registry, model, system_prompt, tools, config)
 | memory_e2e | 6 | Memory 扩展存储/搜索/注入/去重/路径净化 |
 | **小计 lib 单元测试** | **243** | 全部通过 ✅ |
 | apple_container_ci (CLI E2E) | 26 | 容器生命周期/命令/文件/IP/路由/多容器并行 |
-| **测试覆盖合计** | **269** | 全部通过 ✅ |
+| p4_extension_ci (CLI E2E) | 9 | Extension 子 Worker 创建 + 通信 |
+| p4_events_ci (CLI E2E) | 7 | Extension 事件发射 + EventBus |
+| p2_hotreload_ci (CLI E2E) | 9 | PermissionExtension 热重载 |
+| p3_audit_ci (CLI E2E) | 7 | 审计日志持久化 |
+| p3_ui_ci (CLI E2E) | 6 | UI 系统 subscribe --ui + ui_respond |
+| **测试覆盖合计** | **307** | 全部通过 ✅ |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
@@ -586,7 +509,7 @@ cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture
 ├── settings.json                 ← 项目设置 (与全局深度合并)
 ├── agents/                       ← 项目级 Agent
 ├── skills/                       ← 项目级技能
-└── rules/                        ← 规则文件
+└── path-permissions.json          ← 路径权限
 ```
 
 关键路径说明:

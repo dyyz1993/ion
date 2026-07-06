@@ -26,6 +26,16 @@ pub enum GuardMode {
     Whitelist,
 }
 
+impl std::fmt::Display for GuardMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GuardMode::Open => write!(f, "open"),
+            GuardMode::Blacklist => write!(f, "blacklist"),
+            GuardMode::Whitelist => write!(f, "whitelist"),
+        }
+    }
+}
+
 impl Default for GuardMode {
     fn default() -> Self {
         // 默认半信任模式 — 真正的白名单
