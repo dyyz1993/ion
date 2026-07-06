@@ -1021,7 +1021,13 @@ impl<R: Runtime> RemoteRuntime<R> {
         Self::new(inner, &cfg.user, &cfg.hostname, cfg.port, &cfg.key, &cfg.proxy_jump)
     }
     fn ssh_base(&self) -> String {
-        let mut b = format!("ssh {}@{} -p {}", self.host_user, self.host_hostname, self.host_port);
+        let mut b = if self.host_user.is_empty() {
+            format!("ssh {}", self.host_hostname)
+        } else {
+            format!("ssh {}@{}", self.host_user, self.host_hostname)
+        };
+        // Only add -p if port is non-default (SSH config may specify a different port)
+        if self.host_port != 22 { b.push_str(&format!(" -p {}", self.host_port)); }
         if !self.host_key.is_empty() { b.push_str(&format!(" -i {}", self.host_key)); }
         if !self.host_proxy_jump.is_empty() { b.push_str(&format!(" -J {}", self.host_proxy_jump)); }
         b
@@ -1036,7 +1042,8 @@ impl<R: Runtime + 'static> Runtime for RemoteRuntime<R> {
     fn runtime_type(&self) -> String { format!("remote({}@{})", self.host_user, self.host_hostname) }
 
     async fn execute_command(&self, command: &str, timeout_secs: u64) -> Result<(String, String, i32), String> {
-        self.inner.execute_command(&self.ssh_cmd(command), timeout_secs).await
+        let ssh = self.ssh_cmd(command);
+        self.inner.execute_command(&ssh, timeout_secs).await
     }
     async fn read_file(&self, path: &str) -> Result<String, String> {
         let (o, e, c) = self.inner.execute_command(&self.ssh_cmd(&format!("cat {}", sh_quote(path))), 30).await?;
@@ -1358,7 +1365,7 @@ mod tests {
     async fn remote_runtime_ssh_command_format() {
         let rt = RemoteRuntime::new(LocalRuntime::new(), "admin", "xyz-mac.local", 22, "", "");
         let cmd = rt.ssh_cmd("echo hello");
-        assert_eq!(cmd, "ssh admin@xyz-mac.local -p 22 'echo hello'");
+        assert_eq!(cmd, "ssh admin@xyz-mac.local 'echo hello'");
     }
 
     #[test]

@@ -208,44 +208,20 @@ async fn main() {
 
     // ── 根据配置选择 Runtime ──
     let worker_rt: Box<dyn ion::runtime::Runtime> = {
-        if !ion_cfg.runtime.routes.is_empty() {
-            // RouterRuntime: 命令级路由
-            let router = ion::runtime::RouterRuntime::new(
-                ion_cfg.runtime.routes.clone(),
-                &ion_cfg.runtime.remote,
-            );
-            let secured = ion::runtime::SecuredRuntime::new(router)
-                .with_profile(ion::kernel::SecurityProfile::default());
-            Box::new(ion::runtime::WorkerRuntime::new(
-                secured,
-                manager_bridge.clone() as Arc<dyn ion::runtime::ManagerBridgeHandle>,
-            ))
-        } else if ion_cfg.runtime.default_mode == "sandbox" {
-            let cwd = std::env::current_dir()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let sandbox = ion::runtime::SandboxRuntime::new(
-                ion::runtime::LocalRuntime::new(),
-                &ion_cfg.runtime.sandbox.profile,
-                &cwd,
-            );
-            let secured = ion::runtime::SecuredRuntime::new(sandbox).with_profile(ion::kernel::SecurityProfile::default());
-            Box::new(ion::runtime::WorkerRuntime::new(secured, manager_bridge.clone() as Arc<dyn ion::runtime::ManagerBridgeHandle>))
-        } else if ion_cfg.runtime.default_mode == "remote" {
-            let hostname = &ion_cfg.runtime.remote.default_host;
-            if let Some(host_cfg) = ion_cfg.runtime.remote.hosts.get(hostname) {
-                let remote = ion::runtime::RemoteRuntime::from_config(ion::runtime::LocalRuntime::new(), host_cfg);
-                let secured = ion::runtime::SecuredRuntime::new(remote).with_profile(ion::kernel::SecurityProfile::default());
-                Box::new(ion::runtime::WorkerRuntime::new(secured, manager_bridge.clone() as Arc<dyn ion::runtime::ManagerBridgeHandle>))
-            } else {
-                tracing::warn!("[runtime] remote host '{}' not configured, falling back to local", hostname);
-                let secured = ion::runtime::SecuredRuntime::new(ion::runtime::LocalRuntime::new()).with_profile(ion::kernel::SecurityProfile::default());
-                Box::new(ion::runtime::WorkerRuntime::new(secured, manager_bridge.clone() as Arc<dyn ion::runtime::ManagerBridgeHandle>))
-            }
-        } else {
-            let secured = ion::runtime::SecuredRuntime::new(ion::runtime::LocalRuntime::new()).with_profile(ion::kernel::SecurityProfile::default());
-            Box::new(ion::runtime::WorkerRuntime::new(secured, manager_bridge.clone() as Arc<dyn ion::runtime::ManagerBridgeHandle>))
-        }
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        // 统一走 BackendRegistry（新风格 + 旧风格兼容）
+        let registry = ion::backend_registry::BackendRegistry::from_config(&ion_cfg.runtime, &cwd);
+        tracing::info!(
+            "[runtime] BackendRegistry 初始化: backends={:?}",
+            registry.list_backends(),
+        );
+        let worker_inner = ion::runtime::WorkerRuntime::new(
+            registry,
+            manager_bridge.clone() as Arc<dyn ion::runtime::ManagerBridgeHandle>,
+        );
+        Box::new(worker_inner)
     };
 
     let mut agent = Agent::new(
