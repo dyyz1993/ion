@@ -5,6 +5,7 @@ pub mod error;
 pub mod extension;
 pub mod memory;
 pub mod messages;
+pub mod permission_extension;
 pub mod plan_extension;
 pub mod provider;
 pub mod tool;

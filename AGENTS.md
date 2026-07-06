@@ -454,6 +454,39 @@ let agent = Agent::new(registry, model, system_prompt, tools, config)
 - Memory 扩展 v0.2 (SQLite 存储 / FTS 检索 / Active Memory sub-agent)
 - 真实代码审查 E2E (当前用算术题代替)
 
+**P7 - 多 Provider 协议测试待办:**
+
+已实现 4 个 provider + transform_messages，单元测试 37 个全过，e2e 真实 API 测试 4 个全过（Anthropic z.ai/glm-4.6 + OpenAI OpenCODE/deepseek-v4-flash）。
+
+待测试（需要对应 API key）：
+- `openai-responses` 真实 API（GPT-5 / o1 / o3 系列）— 验证 reasoning + tool_call + ID 回放
+- `google-generative-ai` 真实 API（Gemini 2.5 Pro / Flash）— 验证 thinking + thoughtSignature
+- `transform_messages` 跨 provider 切换 e2e（同一会话先用 openai-completions，再切 anthropic-messages，验证 thinking block 降级 + tool call ID 规范化）
+- `detectCompat` 各 thinkingFormat 真实 API 验证（deepseek/zai/qwen/openrouter/together/ant-ling）
+- `anthropic-messages` Claude 真实 API（非 z.ai 代理）— 验证 thinking signature + redacted thinking
+
+测试方式：
+```bash
+# 单 provider 烟测
+ION_E2E_ANTHROPIC=1 ION_ANTHROPIC_API_KEY="sk-xxx" \
+cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture
+
+ION_E2E_OPENAI=1 ION_OPENAI_API_KEY="sk-xxx" \
+cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture
+
+# Google (待添加 ION_E2E_GOOGLE 配置)
+ION_E2E_GOOGLE=1 ION_GOOGLE_API_KEY="xxx" \
+cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture
+```
+
+剩余 provider 暂不实现（按用户要求，常见够用即可）：
+- `azure-openai-responses` — Azure 部署的 OpenAI Responses API
+- `openai-codex-responses` — Codex 专用
+- `google-vertex` — Vertex AI
+- `mistral-conversations` — Mistral
+- `bedrock-converse-stream` — AWS Bedrock
+- `cloudflare-workers-ai` — Cloudflare
+
 ## 文件系统路径 (对齐 pi)
 
 ```

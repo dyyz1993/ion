@@ -262,6 +262,14 @@ async fn main() {
             tracing::info!("[extension] streaming disabled by config");
         }
 
+        // Permission Extension（权限策略层）
+        if ion_cfg.is_extension_enabled("permission") {
+            let perm_ext = ion::agent::permission_extension::PermissionExtension::new(&sid, &worker_cwd);
+            ext_reg.register(Box::new(perm_ext));
+        } else {
+            tracing::info!("[extension] permission disabled by config");
+        }
+
         // ── 注册 WASM Extension 的 HookAdapter（让 WASM 也能实现 29 个钩子）──
         for wasm_path in &loaded_wasm_paths {
             if let Some(hook_adapter) = wasm_ext_registry.create_hook_adapter(wasm_path) {
