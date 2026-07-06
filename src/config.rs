@@ -70,6 +70,9 @@ pub struct RuntimeConfig {
     /// Routing rules: command/path prefixes → backend name
     #[serde(default)]
     pub routes: Vec<RouteRule>,
+    /// CommandGuard configuration
+    #[serde(default)]
+    pub command_guard: CommandGuardConfig,
 }
 
 fn default_runtime_mode() -> String { "local".into() }
@@ -83,8 +86,60 @@ impl Default for RuntimeConfig {
             remote: RemoteConfig::default(),
             sandbox: SandboxConfig::default(),
             routes: Vec::new(),
+            command_guard: CommandGuardConfig::default(),
         }
     }
+}
+
+/// CommandGuard config — 控制命令安全检查的行为。
+///
+/// 示例配置：
+/// ```json
+/// {
+///   "runtime": {
+///     "command_guard": {
+///       "mode": "whitelist",
+///       "whitelist": ["npm", "cargo", "git", "node", "python3"],
+///       "risk_patterns": [
+///         {"pattern": "rm -rf /", "message": "删除根", "level": "high"}
+///       ]
+///     }
+///   }
+/// }
+/// ```
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct CommandGuardConfig {
+    /// Guard mode: "whitelist" (默认) | "blacklist" | "open"
+    #[serde(default = "default_guard_mode")]
+    pub mode: String,
+    /// Command whitelist (prefix match)
+    #[serde(default)]
+    pub whitelist: Vec<String>,
+    /// Custom risk patterns (merged with defaults)
+    #[serde(default)]
+    pub risk_patterns: Vec<GuardPatternConfig>,
+}
+
+fn default_guard_mode() -> String { "whitelist".into() }
+
+impl Default for CommandGuardConfig {
+    fn default() -> Self {
+        Self {
+            mode: "whitelist".into(),
+            whitelist: Vec::new(),
+            risk_patterns: Vec::new(),
+        }
+    }
+}
+
+/// A single risk pattern (JSON config)
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct GuardPatternConfig {
+    pub pattern: String,
+    pub message: String,
+    pub level: String,
+    #[serde(default)]
+    pub suggestion: Option<String>,
 }
 
 impl RuntimeConfig {

@@ -12,7 +12,7 @@
 //!
 //! 所有 backend 通过名字引用。新加 backend 类型 = 在 from_config 里加一行构造分支。
 
-use crate::config::{BackendConfig, RouteRule, RuntimeConfig};
+use crate::config::{BackendConfig, CommandGuardConfig, RouteRule, RuntimeConfig};
 use crate::runtime::{
     LocalRuntime, RemoteRuntime, Runtime, SandboxRuntime, SecuredRuntime,
     sh_quote,
@@ -22,6 +22,71 @@ use std::collections::HashMap;
 
 // NOTE: SecuredRuntime<R: Runtime> requires R to be a concrete Runtime type.
 // Box<dyn Runtime> does not implement Runtime, so we must wrap *before* boxing.
+
+/// 用 SecurityProfile 默认值 + CommandGuardConfig 配置驱动创建 SecuredRuntime
+fn build_secured<R: crate::runtime::Runtime + 'static>(
+    inner: R,
+    guard_cfg: Option<&CommandGuardConfig>,
+) -> Box<dyn Runtime> {
+    let mut secured = SecuredRuntime::new(inner).with_profile(SecurityProfile::default());
+
+    // 如果用户配置了 command_guard，覆盖默认值
+    if let Some(cfg) = guard_cfg {
+        if !cfg.mode.is_empty() && cfg.mode != "whitelist" {
+            // 非默认模式 → 重建 CommandGuard
+            let mode_override = match cfg.mode.as_str() {
+                "blacklist" => crate::command_guard::GuardMode::Blacklist,
+                "open" => crate::command_guard::GuardMode::Open,
+                "whitelist" | _ => crate::command_guard::GuardMode::Whitelist,
+            };
+            let mut guard = crate::command_guard::CommandGuard::with_mode(mode_override);
+
+            // 用户 whitelist 覆盖默认
+            if !cfg.whitelist.is_empty() {
+                guard.whitelist = cfg.whitelist.clone();
+            }
+
+            // 追加用户自定义风险模式
+            for rp in &cfg.risk_patterns {
+                let level = match rp.level.as_str() {
+                    "high" => crate::command_guard::RiskLevel::High,
+                    "medium" => crate::command_guard::RiskLevel::Medium,
+                    "low" | _ => crate::command_guard::RiskLevel::Low,
+                };
+                guard.risk_patterns.push(crate::command_guard::RiskPattern {
+                    pattern: rp.pattern.clone(),
+                    message: rp.message.clone(),
+                    level,
+                    suggestion: rp.suggestion.clone(),
+                });
+            }
+
+            secured = secured.with_command_guard(guard);
+        } else if !cfg.whitelist.is_empty() || !cfg.risk_patterns.is_empty() {
+            // whitelist 模式，但修改了 whitelist/risk_patterns
+            let mut guard = crate::command_guard::CommandGuard::with_mode(crate::command_guard::GuardMode::Whitelist);
+            if !cfg.whitelist.is_empty() {
+                guard.whitelist = cfg.whitelist.clone();
+            }
+            for rp in &cfg.risk_patterns {
+                let level = match rp.level.as_str() {
+                    "high" => crate::command_guard::RiskLevel::High,
+                    "medium" => crate::command_guard::RiskLevel::Medium,
+                    "low" | _ => crate::command_guard::RiskLevel::Low,
+                };
+                guard.risk_patterns.push(crate::command_guard::RiskPattern {
+                    pattern: rp.pattern.clone(),
+                    message: rp.message.clone(),
+                    level,
+                    suggestion: rp.suggestion.clone(),
+                });
+            }
+            secured = secured.with_command_guard(guard);
+        }
+    }
+
+    Box::new(secured)
+}
 // The `wrap_*` helpers below each take a concrete runtime and return a secured Box.
 
 // ---------------------------------------------------------------------------
@@ -59,12 +124,12 @@ impl BackendRegistry {
         if !cfg.backends.contains_key("local") {
             backends.insert(
                 "local".into(),
-                Box::new(SecuredRuntime::new(LocalRuntime::new()).with_profile(SecurityProfile::default())),
+                build_secured(LocalRuntime::new(), Some(&cfg.command_guard)),
             );
         }
 
         for (name, spec) in &cfg.backends {
-            match Self::build_backend(name, spec, &cfg.remote, workspace) {
+            match Self::build_backend(name, spec, &cfg.remote, workspace, Some(&cfg.command_guard)) {
                 Ok(rt) => { backends.insert(name.clone(), rt); }
                 Err(e) => {
                     tracing::warn!("[backend-registry] backend '{}' 创建失败: {} — 引用时回退 default", name, e);
@@ -94,7 +159,7 @@ impl BackendRegistry {
         let mut backends: HashMap<String, Box<dyn Runtime>> = HashMap::new();
         backends.insert(
             "local".into(),
-            Box::new(SecuredRuntime::new(LocalRuntime::new()).with_profile(SecurityProfile::default())),
+            build_secured(LocalRuntime::new(), Some(&cfg.command_guard)),
         );
 
         let default_name = match cfg.default_mode.as_str() {
@@ -108,7 +173,7 @@ impl BackendRegistry {
                     let remote = RemoteRuntime::from_config(LocalRuntime::new(), host_cfg);
                     backends.insert(
                         host_name.into(),
-                        Box::new(SecuredRuntime::new(remote).with_profile(SecurityProfile::default())),
+                        build_secured(remote, Some(&cfg.command_guard)),
                     );
                     host_name.into()
                 } else {
@@ -120,7 +185,7 @@ impl BackendRegistry {
                 let sandbox = SandboxRuntime::new(LocalRuntime::new(), &cfg.sandbox.profile, workspace);
                 backends.insert(
                     "sandbox_default".into(),
-                    Box::new(SecuredRuntime::new(sandbox).with_profile(SecurityProfile::default())),
+                    build_secured(sandbox, Some(&cfg.command_guard)),
                 );
                 "sandbox_default".into()
             }
@@ -150,9 +215,9 @@ impl BackendRegistry {
     }
 
     /// 根据 BackendConfig 构造单个 Runtime 实例
-    fn build_backend(name: &str, spec: &BackendConfig, remote_pool: &crate::config::RemoteConfig, workspace: &str) -> Result<Box<dyn Runtime>, String> {
+    fn build_backend(name: &str, spec: &BackendConfig, remote_pool: &crate::config::RemoteConfig, workspace: &str, guard_cfg: Option<&CommandGuardConfig>) -> Result<Box<dyn Runtime>, String> {
         match spec.backend_type.as_str() {
-            "local" => Ok(Box::new(SecuredRuntime::new(LocalRuntime::new()).with_profile(SecurityProfile::default()))),
+            "local" => Ok(build_secured(LocalRuntime::new(), guard_cfg)),
             "remote" => {
                 let host = if spec.hostname.is_empty() {
                     return Err("remote backend 缺少 hostname".into());
@@ -164,12 +229,12 @@ impl BackendRegistry {
                 let key = spec.key.clone();
                 let proxy = spec.proxy_jump.clone();
                 let remote = RemoteRuntime::new(LocalRuntime::new(), &user, &host, port, &key, &proxy);
-                Ok(Box::new(SecuredRuntime::new(remote).with_profile(SecurityProfile::default())))
+                Ok(build_secured(remote, guard_cfg))
             }
             "sandbox" => {
                 let profile = if spec.profile.is_empty() { "workspace" } else { &spec.profile };
                 let sandbox = SandboxRuntime::new(LocalRuntime::new(), profile, workspace);
-                Ok(Box::new(SecuredRuntime::new(sandbox).with_profile(SecurityProfile::default())))
+                Ok(build_secured(sandbox, guard_cfg))
             }
             "container" => {
                 let driver = if spec.driver.is_empty() { "apple" } else { &spec.driver };
@@ -189,7 +254,7 @@ impl BackendRegistry {
                             spec.cpus,
                             spec.volume.clone(),
                         );
-                        Ok(Box::new(SecuredRuntime::new(container).with_profile(SecurityProfile::default())))
+                        Ok(build_secured(container, guard_cfg))
                     }
                     "docker" | "podman" => Err(format!("{} driver 暂未实现", driver)),
                     other => Err(format!("未知 container driver: {}", other)),
