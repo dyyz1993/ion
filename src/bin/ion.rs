@@ -8,7 +8,10 @@
 //!   ion manager start --port 8080    HTTP server
 //!   ion help
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
@@ -16,11 +19,19 @@ use ion::agent::agent_loop::{Agent, AgentConfig};
 use ion::agent::compact::CompactConfig;
 use ion::agent::tool::{ReadTool, GrepTool, FindTool, LsTool, BashTool, WriteTool, EditTool, CalculatorTool, EchoTool, GitStatusTool, GitDiffTool, GitLogTool, GitAddTool, GitCommitTool, GitBranchTool, ToolRegistry};
 use ion::config::{IonConfig, default_model_for_provider};
+use ion::event_bus::ExtensionEvent;
 use ion::manager::AgentManager;
 use ion::types::{PoolOptions, TaskConfig, TaskPayload};
 use ion::worker::agent_worker::AgentWorker;
 use ion_provider::registry::{ApiRegistry, ModelRegistry};
 use ion_provider::types::*;
+use tokio::sync::oneshot;
+
+/// 待处理的 UI 确认请求（request_id → 回复通道）
+static PENDING_UI: OnceLock<Mutex<HashMap<String, oneshot::Sender<String>>>> = OnceLock::new();
+fn pending_ui() -> &'static Mutex<HashMap<String, oneshot::Sender<String>>> {
+    PENDING_UI.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 // ---------------------------------------------------------------------------
 // CLI arguments
@@ -246,18 +257,22 @@ enum Commands {
         #[arg(long, default_value = "{}")]
         params: String,
     },
-    /// Subscribe to real-time events from a session or plugin.
+    /// Subscribe to real-time events.
     ///   ion subscribe --session sess_xxx
-    ///   ion subscribe --session sess_xxx --plugin memory
-    ///   ion subscribe --plugin memory
+    ///   ion subscribe --session sess_xxx --extension memory
+    ///   ion subscribe --extension memory
+    ///   ion subscribe --ui              (UI events: Ask/Confirm/Notif/Alert/Prompt)
     /// Ctrl+C to disconnect.
     Subscribe {
         /// Session to subscribe to
         #[arg(long)]
         session: Option<String>,
-        /// Plugin name to filter (omit for all events)
+        /// Plugin/extension name to filter (omit for all events)
         #[arg(long)]
         extension: Option<String>,
+        /// Subscribe to UI events (Ask/Confirm/Notif/Alert/Prompt)
+        #[arg(long)]
+        ui: bool,
     },
     /// List all sessions with stats
     Sessions,
@@ -1136,7 +1151,7 @@ async fn cmd_rpc(session: Option<&str>, method: &str, params: &str) {
 
 /// Subscribe to real-time events from a session or plugin.
 /// Connects to Manager socket, sends subscribe, prints events line by line.
-async fn cmd_subscribe(session: Option<&str>, extension: Option<&str>) {
+async fn cmd_subscribe(session: Option<&str>, extension: Option<&str>, ui: bool) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     let sock_path = ion::paths::manager_socket_path();
@@ -1151,6 +1166,7 @@ async fn cmd_subscribe(session: Option<&str>, extension: Option<&str>) {
     let mut req = serde_json::json!({"method": "subscribe"});
     if let Some(sid) = session { req["session"] = serde_json::json!(sid); }
     if let Some(p) = extension { req["extension"] = serde_json::json!(p); }
+    if ui { req["ui"] = serde_json::json!(true); }
 
     let req_line = format!("{req}\n");
     if stream.write_all(req_line.as_bytes()).await.is_err() {
@@ -1481,7 +1497,7 @@ async fn main() {
             cmd_rpc(session.as_deref(), method, params).await;
         }
         Some(Commands::Sessions) => cmd_sessions().await,
-        Some(Commands::Subscribe { session, extension }) => cmd_subscribe(session.as_deref(), extension.as_deref()).await,
+        Some(Commands::Subscribe { session, extension, ui }) => cmd_subscribe(session.as_deref(), extension.as_deref(), *ui).await,
         Some(Commands::ListAgents) => cmd_list_agents().await,
         Some(Commands::ListModels { search }) => cmd_list_models(search).await,
         None => {
@@ -1612,6 +1628,35 @@ async fn cmd_manager_start(
                                         return;
                                     }
 
+                                    // ── UI subscribe：订阅 UI 事件（Ask/Confirm/Prompt/Notif/Alert）──
+                                    let is_ui = cmd.get("ui").and_then(|v| v.as_bool()).unwrap_or(false);
+                                    if is_ui {
+                                        let mut bus = ev_bus.lock().await;
+                                        let mut rx = bus.subscribe_ui();
+                                        drop(bus);
+                                        let ack = serde_json::json!({"type":"subscribed","stream":"ui"});
+                                        let _ = write_half.write_all(format!("{ack}\n").as_bytes()).await;
+                                        let _ = write_half.flush().await;
+                                        loop {
+                                            match rx.recv().await {
+                                                Some(event) => {
+                                                    let msg = serde_json::json!({
+                                                        "type": "ui_event",
+                                                        "ui_type": event.custom_type,
+                                                        "extension": event.extension,
+                                                        "session": event.session,
+                                                        "data": event.data,
+                                                        "route": event.route,
+                                                    });
+                                                    if write_half.write_all(format!("{msg}\n").as_bytes()).await.is_err() { break; }
+                                                    let _ = write_half.flush().await;
+                                                }
+                                                None => break,
+                                            }
+                                        }
+                                        return;
+                                    }
+
                                     // ── Plugin subscribe：通过 EventBus ──
                                     let mut bus = ev_bus.lock().await;
                                     let rx = if !extension.is_empty() {
@@ -1658,6 +1703,34 @@ async fn cmd_manager_start(
                                             }
                                             None => break, // channel closed
                                         }
+                                    }
+                                    return;
+                                }
+
+                                // ── UI respond: 回复 Ask/Confirm/Prompt ──
+                                if method == "ui_respond" {
+                                    let request_id = cmd.get("params").and_then(|p| p.get("request_id"))
+                                        .and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                    let response = cmd.get("params").and_then(|p| p.get("response"))
+                                        .and_then(|v| v.as_str()).unwrap_or("deny").to_string();
+                                    // 取出发送者，立即释放锁
+                                    let sender = {
+                                        let mut map = pending_ui().lock().unwrap();
+                                        map.remove(&request_id)
+                                    };
+                                    if let Some(tx) = sender {
+                                        let _ = tx.send(response.clone());
+                                        // 推 AskResolved 到 UI 事件通道（锁已释放）
+                                        let resolved = ExtensionEvent::new_ui("AskResolved", &request_id, &response)
+                                            .with_data(serde_json::json!({"response": response, "resolved_by": "cli"}));
+                                        let mut bus = ev_bus.lock().await;
+                                        bus.broadcast(&resolved);
+                                        drop(bus);
+                                        let resp = serde_json::json!({"type":"response","id":cmd.get("id"),"success":true,"data":{"request_id":request_id,"response":response}});
+                                        let _ = write_half.write_all(format!("{resp}\n").as_bytes()).await;
+                                    } else {
+                                        let resp = serde_json::json!({"type":"response","id":cmd.get("id"),"success":false,"error":"request not found or already expired"});
+                                        let _ = write_half.write_all(format!("{resp}\n").as_bytes()).await;
                                     }
                                     return;
                                 }
