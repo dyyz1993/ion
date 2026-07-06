@@ -34,6 +34,12 @@ pub trait Runtime: Send + Sync {
     async fn execute_command(&self, command: &str, timeout_secs: u64)
         -> Result<(String, String, i32), String>;
 
+    /// 安全预检：检查命令是否允许执行（不实际执行）
+    /// 默认：放行。SecuredRuntime 重写此方法以检查 CommandGuard。
+    async fn check_command(&self, _command: &str) -> Result<(), String> {
+        Ok(())
+    }
+
     /// 流式执行 shell 命令（逐行回调 on_update）
     /// 默认实现：调 execute_command 后一次性回调
     async fn execute_command_stream(
@@ -820,6 +826,31 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
             }
         }
         self.inner.execute_command_stream(command, timeout_secs, on_update).await
+    }
+
+    /// 安全预检：检查命令是否允许（CommandGuard）
+    async fn check_command(&self, command: &str) -> Result<(), String> {
+        if let Some(ref guard) = self.command_guard {
+            match guard.check(command) {
+                crate::command_guard::GuardDecision::Deny(p) => {
+                    let msg = if let Some(ref sug) = p.suggestion {
+                        format!("[CommandGuard] 高危命令被拦截: {} 建议: {}", p.message, sug)
+                    } else {
+                        format!("[CommandGuard] 高危命令被拦截: {}", p.message)
+                    };
+                    return Err(msg);
+                }
+                crate::command_guard::GuardDecision::Ask(p) => {
+                    let msg = format!("{}\n\n命令: `{}`", p.message, command);
+                    if !self.resolve_ask("高危命令", &msg).await {
+                        let hint = p.suggestion.as_ref().map(|s| format!(" 建议: {}", s)).unwrap_or_default();
+                        return Err(format!("[CommandGuard] 用户拒绝了高危命令: {}{}", p.message, hint));
+                    }
+                }
+                crate::command_guard::GuardDecision::Allow => {}
+            }
+        }
+        Ok(())
     }
 
     async fn read_file(&self, path: &str) -> Result<String, String> {

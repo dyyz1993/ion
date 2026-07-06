@@ -150,8 +150,11 @@ impl Tool for BashRunTool {
         let (stdin_tx, mut stdin_rx) = tokio::sync::mpsc::channel::<String>(64);
         { let mut sm = self.stdin_map.lock().await; sm.insert(pid.clone(), stdin_tx); }
 
-        // ── 后台模式：用 spawn_watcher（保持流式输出和 stdin 转发）──
+        // ── 后台模式：先安全预检，再用 spawn_watcher（保持流式输出和 stdin 转发）──
         if background || timeout_bg {
+            // 安全预检：走 Runtime check_command（经过 SecuredRuntime CommandGuard）
+            rt.check_command(&command).await.map_err(|e| AgentError::Tool(e))?;
+
             let child = match tokio::process::Command::new("sh")
                 .args(["-c", &command])
                 .stdin(std::process::Stdio::piped())

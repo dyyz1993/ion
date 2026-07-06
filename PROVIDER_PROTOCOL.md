@@ -295,13 +295,146 @@ let ctx = Context::new(sys_prompt, transformed_messages);
 
 ---
 
-## 7. CLI 测试方法
+## 7. CLI 测试指南
 
-### 7.1 单 Provider 烟测
+本文档的 CLI 测试分 5 组，对齐 [SECURITY_CLI_GUIDE.md](./SECURITY_CLI_GUIDE.md) 与 [BASH_EXTENSION.md](./BASH_EXTENSION.md) §0.2 的格式：每组测试给完整的 `ion rpc` 命令 + 请求/响应 JSON 规格 + 字段说明表。
 
-#### Anthropic（z.ai 代理 + glm-4.6）
+### prompt RPC 接口规格
 
-**前置**：在 `~/.ion/config.json` 配置 anthropic provider：
+**请求：**
+
+```bash
+ion rpc --session <sid> --method prompt \
+  --params '{"text":"<用户输入>","behavior":"interrupt"}'
+```
+
+**请求参数：**
+
+| 字段 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `text` | string | 必填 | 用户输入；以 `!` 开头时拦截为 bash_command |
+| `behavior` | string | `"interrupt"` | `interrupt` / `steer` / `followUp`（Agent 忙时策略） |
+| `streamingBehavior` | string | 同 `behavior` | 别名（pi 兼容） |
+| `timeout` | number | 30 | 仅 `!cmd` 直发时生效，普通 prompt 走 agent loop |
+
+**响应 JSON（成功）：**
+
+```json
+{
+  "type": "response",
+  "id": "1",
+  "command": "prompt",
+  "success": true,
+  "data": {
+    "ok": true,
+    "stopped": false,
+    "aborted": false
+  }
+}
+```
+
+> 响应只表示"prompt 已被 Agent 接收/处理"。LLM 输出文本通过 `agent_start` / `text_delta` / `agent_end` 事件流推送，需用 `ion subscribe --session <sid>` 监听。
+
+**响应 JSON（失败）：**
+
+```json
+{
+  "type": "response",
+  "id": "1",
+  "command": "prompt",
+  "success": false,
+  "error": "agent prompt failed: provider error: 401 Unauthorized"
+}
+```
+
+### set_model RPC 接口规格（运行时切 provider/model）
+
+**请求：**
+
+```bash
+ion rpc --session <sid> --method set_model \
+  --params '{"modelId":"glm-4.6","provider":"anthropic"}'
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `modelId` | string | 是 | 新模型 id（如 `glm-4.6` / `deepseek-v4-flash`） |
+| `provider` | string | 否 | 新 provider 名；不传则保留原值 |
+
+**响应 JSON：**
+
+```json
+{
+  "type": "response",
+  "id": "1",
+  "command": "get_state",
+  "success": true,
+  "data": {"model": "glm-4.6", "provider": "anthropic"}
+}
+```
+
+### set_thinking_level RPC 接口规格
+
+**请求：**
+
+```bash
+ion rpc --session <sid> --method set_thinking_level \
+  --params '{"level":"medium"}'
+```
+
+| 字段 | 类型 | 必填 | 取值 |
+|------|------|------|------|
+| `level` | string | 是 | `off` / `minimal` / `low` / `medium` / `high` / `xhigh` |
+
+**响应 JSON：**
+
+```json
+{
+  "type": "response",
+  "id": "1",
+  "command": "set_thinking_level",
+  "success": true,
+  "data": {"thinkingLevel": "medium"}
+}
+```
+
+### get_state RPC（验证当前 provider/model）
+
+**请求：**
+
+```bash
+ion rpc --session <sid> --method get_state
+```
+
+**响应 JSON：**
+
+```json
+{
+  "type": "response",
+  "id": "1",
+  "command": "get_state",
+  "success": true,
+  "data": {
+    "model": "glm-4.6",
+    "provider": "anthropic",
+    "session_id": "sess_xxx",
+    "message_count": 2,
+    "is_running": false,
+    "steering_queue": 0,
+    "follow_up_queue": 0
+  }
+}
+```
+
+---
+
+### Group A：单 Provider 烟测（Anthropic / OpenAI）
+
+> 通过 `ion rpc` + `ion subscribe` 验证每个 provider 的基础流式 + tool_call 链路。所有测试需先启动 Manager：`ion manager start`，并 `ion rpc --method create_session --params '{"agent":"developer"}'` 创建 session。
+
+#### A1 Anthropic 基础聊天（z.ai 代理 + glm-4.6）
+
+**前置** — `~/.ion/config.json`：
 
 ```json
 {
@@ -316,107 +449,369 @@ let ctx = Context::new(sys_prompt, transformed_messages);
 }
 ```
 
-`~/.ion/auth.json`：
+`~/.ion/auth.json`（权限 600）：
+
 ```json
 {"keys": {"anthropic": "任意值（z.ai 代理不校验）"}}
 ```
 
-**测试**：
+**测试：**
 
 ```bash
-# 基础聊天
-ion "用一句话介绍你自己" --provider anthropic --model glm-4.6
-# 预期：打印 LLM 回答，无 "emergency truncation" warning
+# Terminal 1：订阅事件流
+ion subscribe --session sess_xxx
 
-# tool_call
-ion "用 bash 工具执行 echo hello-world" --provider anthropic --model glm-4.6
-# 预期：触发 bash 工具调用，输出 "hello-world"
+# Terminal 2：发 prompt
+ion rpc --session sess_xxx --method prompt \
+  --params '{"text":"用一句话介绍你自己","behavior":"interrupt"}'
 ```
 
-#### OpenAI（OpenCODE + deepseek-v4-flash）
+**预期事件流（Terminal 1）：**
 
-```bash
-# 基础聊天
-ion "用一句话介绍你自己" --provider opencode --model deepseek-v4-flash
-
-# thinking
-ion "证明根号2是无理数" --provider opencode --model deepseek-v4-flash --thinking medium
-# 预期：触发 reasoning，detectCompat 推断为 opencode 格式
+```
+{"type":"event","event":{"type":"agent_start", ...}}
+{"type":"event","event":{"type":"text_delta","delta":"我是"}}
+{"type":"event","event":{"type":"text_delta","delta":"GLM"}}
+{"type":"event","event":{"type":"agent_end", ...}}
 ```
 
-### 7.2 Provider 切换测试
+**预期响应（Terminal 2）：**
 
-```bash
-# 同一会话先 OpenAI 后 Anthropic
-ion "你好" --provider opencode --model deepseek-v4-flash
-# 记下 session_id
-
-ion --resume <session_id> "继续" --provider anthropic --model glm-4.6
-# 预期：transform_messages 自动降级 thinking block（OpenAI → Anthropic）
-#       tool call ID 规范化（若历史有 tool_call）
+```json
+{"type":"response","id":"1","command":"prompt","success":true,"data":{"ok":true,"stopped":false,"aborted":false}}
 ```
 
-### 7.3 thinking 等级测试
+**验证点：**
+- ✅ 无 `emergency truncation` warning（needs_compact 检查通过）
+- ✅ Agent 不崩溃
+- ✅ SSE 正确解析 `message_start` / `content_block_delta` / `message_stop`
+
+#### A2 Anthropic tool_call（bash 工具）
 
 ```bash
-# Off
-ion "1+1=?" --provider opencode --model deepseek-v4-flash --thinking off
-
-# High
-ion "证明费马大定理" --provider opencode --model deepseek-v4-flash --thinking high
-# 预期：apply_thinking_format 注入 thinking 字段，LLM 返回 reasoning_content
+ion rpc --session sess_xxx --method prompt \
+  --params '{"text":"用 bash 工具执行 echo hello-world"}'
 ```
 
-### 7.4 单元测试
+**预期事件流：**
+
+```
+{"type":"event","event":{"type":"tool_call","name":"bash","args":{"command":"echo hello-world"}}}
+{"type":"event","event":{"type":"tool_result","content":"hello-world\n"}}
+{"type":"event","event":{"type":"agent_end"}}
+```
+
+**验证点：**
+- ✅ Anthropic `tool_use` block 正确解析
+- ✅ `parse_json_rerepair` 处理流式 JSON
+- ✅ 工具结果回填后 LLM 继续生成
+
+#### A3 OpenAI 基础聊天（OpenCODE + deepseek-v4-flash）
+
+**前置** — `~/.ion/config.json`：
+
+```json
+{
+  "providers": {
+    "opencode": {
+      "name": "opencode",
+      "api": "openai-completions",
+      "base_url": "https://opencode.ai/zen/go/v1",
+      "models": [{"id": "deepseek-v4-flash", "reasoning": true}]
+    }
+  }
+}
+```
 
 ```bash
-# 全部 provider 单元测试
-cargo test -p ion-provider
+ion rpc --session sess_xxx --method set_model \
+  --params '{"modelId":"deepseek-v4-flash","provider":"opencode"}'
 
-# 单个 provider
+ion rpc --session sess_xxx --method prompt \
+  --params '{"text":"用一句话介绍你自己"}'
+```
+
+**预期：**
+- ✅ detectCompat 推断为 `openai` thinkingFormat
+- ✅ SSE 解析 `data: {"choices":[{"delta":{"content":"..."}}]}`
+- ✅ 响应 success=true
+
+#### A4 OpenAI tool_call
+
+```bash
+ion rpc --session sess_xxx --method prompt \
+  --params '{"text":"用 bash 工具执行 pwd"}'
+```
+
+**验证点：**
+- ✅ OpenAI `tool_calls` 数组正确解析
+- ✅ `tool_call_id` 回放格式正确
+
+---
+
+### Group B：Provider 切换测试（transform_messages）
+
+> 验证同一 session 切换 provider 时，`transform_messages` 正确规范化历史消息。
+
+#### B1 OpenAI → Anthropic 切换
+
+```bash
+# 1. 用 OpenAI provider 累积对话
+ion rpc --session sess_xxx --method set_model \
+  --params '{"modelId":"deepseek-v4-flash","provider":"opencode"}'
+
+ion rpc --session sess_xxx --method prompt --params '{"text":"你好，我是 Alice"}'
+# 等 agent_end
+
+ion rpc --session sess_xxx --method prompt --params '{"text":"用 bash 执行 echo hi"}'
+# 等 agent_end（产生 tool_call 历史）
+
+# 2. 切到 Anthropic provider
+ion rpc --session sess_xxx --method set_model \
+  --params '{"modelId":"glm-4.6","provider":"anthropic"}'
+
+# 3. 验证 get_state
+ion rpc --session sess_xxx --method get_state
+# 预期：{"model":"glm-4.6","provider":"anthropic",...}
+
+# 4. 继续对话（transform_messages 自动处理历史）
+ion rpc --session sess_xxx --method prompt --params '{"text":"我刚才叫什么名字？"}'
+```
+
+**验证点：**
+- ✅ Agent 不崩溃（thinking block 跨模型降级成功）
+- ✅ LLM 能正确回答 "Alice"（历史消息保留）
+- ✅ tool call ID 规范化（OpenAI `call_xxx` → Anthropic 兼容格式）
+- ✅ 孤儿 tool call 自动补合成 result
+
+#### B2 Anthropic → OpenAI 切换
+
+```bash
+# 1. 用 Anthropic 累积 thinking + tool_use 历史
+ion rpc --session sess_xxx --method set_model \
+  --params '{"modelId":"glm-4.6","provider":"anthropic"}'
+
+ion rpc --session sess_xxx --method prompt \
+  --params '{"text":"证明根号2是无理数"}'
+# 等 agent_end（产生 thinking block + signature）
+
+# 2. 切到 OpenAI
+ion rpc --session sess_xxx --method set_model \
+  --params '{"modelId":"deepseek-v4-flash","provider":"opencode"}'
+
+# 3. 继续对话
+ion rpc --session sess_xxx --method prompt --params '{"text":"继续上面的证明"}'
+```
+
+**验证点：**
+- ✅ Anthropic thinking block（带 signature）→ OpenAI 转纯文本
+- ✅ redacted thinking 被丢弃
+- ✅ 空 thinking 被丢弃
+
+#### B3 查看历史消息确认转换
+
+```bash
+# 查看原始消息（Agent 内部存储格式）
+ion rpc --session sess_xxx --method get_messages | jq '.data[-4:]'
+```
+
+**预期：**
+- 历史中的 `AssistantContentBlock::Thinking` 节点存在（带 signature 字段）
+- 切换 provider 后，发往 LLM 的请求体经过 `transform_messages` 处理（不修改存储）
+
+---
+
+### Group C：thinking 等级测试
+
+> 验证 `apply_thinking_format` 根据 `ThinkingLevel` 注入正确的请求字段。
+
+#### C1 thinking off（默认）
+
+```bash
+ion rpc --session sess_xxx --method set_thinking_level --params '{"level":"off"}'
+
+ion rpc --session sess_xxx --method prompt --params '{"text":"1+1=?"}'
+```
+
+**验证点：**
+- ✅ OpenAI provider: 请求 body 无 `reasoning_effort` 字段
+- ✅ Anthropic provider: 请求 body 无 `thinking` 字段
+- ✅ 响应无 `reasoning_content` / `thinking` block
+
+#### C2 thinking medium
+
+```bash
+ion rpc --session sess_xxx --method set_thinking_level --params '{"level":"medium"}'
+
+ion rpc --session sess_xxx --method prompt --params '{"text":"证明根号2是无理数"}'
+```
+
+**验证点（按 provider）：**
+
+| Provider | 请求字段 | 响应字段 |
+|----------|---------|---------|
+| opencode (openai) | `reasoning_effort: "medium"` | `choices[].delta.reasoning_content` |
+| anthropic (z.ai) | `thinking: {"type":"enabled","budget_tokens":8192}` | `content_block_delta.thinking_delta` |
+| google (gemini) | `generationConfig.thinkingConfig: {thinkingBudget:8192,includeThoughts:true}` | `parts[].thought: true` |
+
+#### C3 thinking high + tool_call
+
+```bash
+ion rpc --session sess_xxx --method set_thinking_level --params '{"level":"high"}'
+
+ion rpc --session sess_xxx --method prompt \
+  --params '{"text":"计算 123 * 456，用 calculator 工具"}'
+```
+
+**验证点：**
+- ✅ thinking block 在 tool_use 之前生成
+- ✅ thinking signature 正确回放（同模型继续对话时）
+
+#### C4 OpenAI Responses reasoning
+
+```bash
+# 需配置 openai-responses provider（待真实 API 验证）
+ion rpc --session sess_xxx --method set_model \
+  --params '{"modelId":"o3-mini","provider":"openai-responses"}'
+
+ion rpc --session sess_xxx --method set_thinking_level --params '{"level":"high"}'
+
+ion rpc --session sess_xxx --method prompt --params '{"text":"解释量子纠缠"}'
+```
+
+**验证点：**
+- ✅ 请求 body: `reasoning: {effort:"high", summary:"auto"}`
+- ✅ SSE 事件: `response.reasoning_text.delta` / `response.reasoning_summary_text.delta`
+- ✅ Tool call ID 回放格式: `{call_id}|{item_id}`
+
+---
+
+### Group D：单元测试
+
+> 验证各 provider 的 SSE 解析、请求体构造、JSON 容错。
+
+#### D1 全部 provider 单元测试
+
+```bash
+cargo test -p ion-provider --lib
+```
+
+**预期：**
+
+```
+running 21 tests
+test anthropic::tests::test_sse_message_start ... ok
+test anthropic::tests::test_sse_thinking_delta ... ok
+test anthropic::tests::test_tool_use_partial_json ... ok
+...
+test result: ok. 21 passed; 0 failed
+```
+
+#### D2 单 provider 单元测试
+
+```bash
+# Anthropic（9 tests）
 cargo test -p ion-provider --lib anthropic
-cargo test -p ion-provider --lib openai_responses
-cargo test -p ion-provider --lib google
-cargo test -p ion-provider --lib transform_messages
+# 预期: 9 passed
 
-# 预期：
-# anthropic: 9 tests passed
-# openai_responses: 4 tests passed
-# google: 4 tests passed
-# transform_messages: 10 tests passed
+# OpenAI Completions
+cargo test -p ion-provider --lib openai::tests
+# 预期: detectCompat + thinkingFormat 测试通过
+
+# OpenAI Responses（4 tests）
+cargo test -p ion-provider --lib openai_responses
+# 预期: 4 passed
+
+# Google（4 tests）
+cargo test -p ion-provider --lib google
+# 预期: 4 passed
+
+# transform_messages（10 tests）
+cargo test -p ion-provider --lib transform_messages
+# 预期: 10 passed
 ```
 
-### 7.5 e2e 真实 API 测试
+#### D3 transform_messages 单元测试细节
+
+```bash
+cargo test -p ion-provider --lib transform_messages -- --nocapture
+```
+
+**覆盖用例：**
+
+| 测试 | 验证 |
+|------|------|
+| `test_downgrade_unsupported_images` | 不支持 image 的模型，image block 降级为文本 |
+| `test_thinking_block_cross_model` | 跨模型 thinking → 纯文本 |
+| `test_thinking_block_with_signature` | 同模型 thinking + signature 保留 |
+| `test_redacted_thinking_dropped` | redacted thinking 被丢弃 |
+| `test_tool_call_id_normalize` | `call_xxx\|item_yyy` → `call_xxx` |
+| `test_synthetic_tool_result` | 孤儿 tool_call 补合成 result |
+| `test_skip_error_assistant` | error/aborted assistant 被跳过 |
+| ... | （共 10 个） |
+
+#### D4 detectCompat 单元测试
+
+```bash
+cargo test -p ion-provider --lib detect_compat
+```
+
+**覆盖 8 种 thinkingFormat：**
+
+| 测试 | provider | 预期 thinkingFormat |
+|------|---------|-------------------|
+| `test_detect_deepseek` | deepseek.com | `deepseek` |
+| `test_detect_zai` | z.ai / zhipuai | `zai` |
+| `test_detect_qwen` | qwen | `qwen` |
+| `test_detect_openrouter` | openrouter.com | `openrouter` |
+| `test_detect_together` | together.ai | `together` |
+| `test_detect_ant_ling` | ant-ling | `ant-ling` |
+| `test_detect_opencode` | opencode.ai | `openai` |
+| `test_detect_string_thinking` | 通用 fallback | `string-thinking` |
+
+---
+
+### Group E：e2e 真实 API 测试
+
+> 验证各 provider 对真实 LLM API 的完整调用链路。测试标记为 `#[ignore]`，需显式启用环境变量。
 
 **文件**：[ion-provider/tests/e2e_real_api.rs](file:///Users/xuyingzhou/Project/study-rust/ion-provider/tests/e2e_real_api.rs)（306 行，4 个 `#[ignore]` 测试）
 
-#### Anthropic（z.ai 代理 + glm-4.6）
+#### E1 Anthropic 真实 API（z.ai 代理 + glm-4.6）
 
 ```bash
 ION_E2E_ANTHROPIC=1 \
 ION_ANTHROPIC_API_KEY="任意值" \
 cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture
-
-# 测试用例：
-# - anthropic_basic_stream（基础流式）
-# - anthropic_tool_call（工具调用）
-# 预期：2 tests passed
 ```
 
-#### OpenAI（OpenCODE + deepseek-v4-flash）
+**测试用例：**
+
+| 用例 | 验证 |
+|------|------|
+| `anthropic_basic_stream` | 基础流式：message_start → content_block_delta → message_stop |
+| `anthropic_tool_call` | tool_use block + partial JSON 容错 |
+
+**预期：** `2 passed`
+
+#### E2 OpenAI 真实 API（OpenCODE + deepseek-v4-flash）
 
 ```bash
 ION_E2E_OPENAI=1 \
 ION_OPENAI_API_KEY="sk-xxx" \
 cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture
-
-# 测试用例：
-# - openai_reasoning_stream（reasoning_content 流式）
-# - openai_tool_call（工具调用）
-# 预期：2 tests passed
 ```
 
-#### 环境变量
+**测试用例：**
+
+| 用例 | 验证 |
+|------|------|
+| `openai_reasoning_stream` | reasoning_content 流式 + apply_thinking_format |
+| `openai_tool_call` | tool_calls 数组 + tool_call_id 回放 |
+
+**预期：** `2 passed`
+
+#### E3 环境变量参考
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
@@ -429,15 +824,31 @@ cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture
 | `ION_OPENAI_API_KEY` | 空 | API key |
 | `ION_OPENAI_MODEL` | `deepseek-v4-flash` | 模型 id |
 
-### 7.6 待补充测试
+#### E4 待补充真实 API 测试
 
-| # | 测试 | 触发条件 |
-|---|------|---------|
-| 1 | Claude 真实 API（非 z.ai 代理） | 拿到 Claude API key |
-| 2 | OpenAI Responses API（GPT-5/o1/o3） | 拿到 OpenAI Responses 权限 |
-| 3 | Google Gemini API | 拿到 Google API key |
-| 4 | transform_messages 跨 provider e2e | 同一会话切 provider |
-| 5 | detectCompat 各 thinkingFormat | deepseek/zai/qwen/openrouter/together/ant-ling 各跑一次 |
+| # | 测试 | 触发条件 | 验证点 |
+|---|------|---------|--------|
+| E4.1 | Claude 真实 API（非 z.ai 代理） | 拿到 Claude API key | thinking signature + redacted thinking |
+| E4.2 | OpenAI Responses API（GPT-5/o1/o3） | 拿到 OpenAI Responses 权限 | reasoning + tool_call + `{call_id}\|{item_id}` 回放 |
+| E4.3 | Google Gemini API | 拿到 Google API key | thoughtSignature + thinking_budget 映射 |
+| E4.4 | transform_messages 跨 provider e2e | 同一会话切 provider | thinking 降级 + tool call ID 规范化 |
+| E4.5 | detectCompat 各 thinkingFormat e2e | 各 provider 真实 API key | deepseek/zai/qwen/openrouter/together/ant-ling 各跑一次 |
+
+测试方法（拿到 key 后）：
+
+```bash
+# Claude 真实 API
+ION_E2E_CLAUDE=1 ION_CLAUDE_API_KEY="sk-ant-xxx" \
+cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture
+
+# OpenAI Responses
+ION_E2E_OPENAI_RESPONSES=1 ION_OPENAI_RESPONSES_API_KEY="sk-xxx" \
+cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture
+
+# Google Gemini
+ION_E2E_GOOGLE=1 ION_GOOGLE_API_KEY="xxx" \
+cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture
+```
 
 ---
 
