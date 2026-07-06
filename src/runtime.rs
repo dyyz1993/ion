@@ -1010,18 +1010,20 @@ pub struct RemoteRuntime<R: Runtime> {
     host_hostname: String,
     host_port: u16,
     host_key: String,
+    host_proxy_jump: String,
 }
 
 impl<R: Runtime> RemoteRuntime<R> {
-    pub fn new(inner: R, user: &str, hostname: &str, port: u16, key: &str) -> Self {
-        Self { inner, host_user: user.to_string(), host_hostname: hostname.to_string(), host_port: port, host_key: key.to_string() }
+    pub fn new(inner: R, user: &str, hostname: &str, port: u16, key: &str, proxy_jump: &str) -> Self {
+        Self { inner, host_user: user.to_string(), host_hostname: hostname.to_string(), host_port: port, host_key: key.to_string(), host_proxy_jump: proxy_jump.to_string() }
     }
     pub fn from_config(inner: R, cfg: &crate::config::RemoteHost) -> Self {
-        Self::new(inner, &cfg.user, &cfg.hostname, cfg.port, &cfg.key)
+        Self::new(inner, &cfg.user, &cfg.hostname, cfg.port, &cfg.key, &cfg.proxy_jump)
     }
     fn ssh_base(&self) -> String {
         let mut b = format!("ssh {}@{} -p {}", self.host_user, self.host_hostname, self.host_port);
         if !self.host_key.is_empty() { b.push_str(&format!(" -i {}", self.host_key)); }
+        if !self.host_proxy_jump.is_empty() { b.push_str(&format!(" -J {}", self.host_proxy_jump)); }
         b
     }
     fn ssh_cmd(&self, remote_cmd: &str) -> String {

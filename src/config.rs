@@ -111,6 +111,9 @@ pub struct RemoteHost {
     /// Transport protocol: "ssh" | "http" | "grpc"
     #[serde(default = "default_transport")]
     pub transport: String,
+    /// SSH proxy jump host (e.g. "shanbox")
+    #[serde(default)]
+    pub proxy_jump: String,
 }
 
 fn default_ssh_port() -> u16 { 22 }
@@ -124,6 +127,7 @@ impl Default for RemoteHost {
             port: 22,
             key: String::new(),
             transport: "ssh".into(),
+            proxy_jump: String::new(),
         }
     }
 }
