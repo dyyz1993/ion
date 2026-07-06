@@ -16,7 +16,7 @@ use tokio::sync::{mpsc, oneshot};
 use ion::agent::agent_loop::{Agent, AgentConfig};
 use ion::agent::compact::CompactConfig;
 use ion::agent::tool::{ReadTool, WriteTool, EditTool, BashTool, GrepTool, FindTool, LsTool, CalculatorTool, EchoTool, GitStatusTool, GitDiffTool, GitLogTool, GitAddTool, GitCommitTool, GitBranchTool, SpawnWorkerTool, SendToWorkerTool, ResumeWorkerTool, AwaitWorkerTool, ChannelSendTool, KillWorkerTool, ToolRegistry};
-use ion::wasm_extension::{WasmExtensionRegistry, WasmToolAdapter};
+use ion::wasm_extension::{Registry, ToolAdapter};
 use ion::session_jsonl;
 use ion_provider::registry::ApiRegistry;
 use ion_provider::types::*;
@@ -143,7 +143,7 @@ async fn main() {
     let registry = Arc::new(registry);
 
     // WASM 插件注册表（RPC 热更新用）
-    let wasm_ext_registry = Arc::new(WasmExtensionRegistry::new());
+    let wasm_ext_registry = Arc::new(Registry::new());
 
     // ── WASM 插件自动发现（Agent 构造前，注册到 tools）──
     // 扫描 ~/.ion/agent/extensions/ 和 {cwd}/.ion/extensions/ 下的 .wasm 文件
@@ -168,7 +168,7 @@ async fn main() {
                         match wasm_ext_registry.add(&canonical_str) {
                             Ok(tool_defs) => {
                                 for td in &tool_defs {
-                                    tools.register(Box::new(WasmToolAdapter {
+                                    tools.register(Box::new(ToolAdapter {
                                         name: td.name.clone(),
                                         description: td.description.clone(),
                                         parameters: td.parameters.clone(),
@@ -872,7 +872,7 @@ async fn main() {
                                 let canonical_str = p.path.clone();
                                 let ext_name = ion::wasm_extension::ext_name_from_path(&canonical_str);
                                 for td in &tool_defs {
-                                    agent.register_tool(Box::new(WasmToolAdapter {
+                                    agent.register_tool(Box::new(ToolAdapter {
                                         name: td.name.clone(),
                                         description: td.description.clone(),
                                         parameters: td.parameters.clone(),
@@ -981,7 +981,7 @@ async fn main() {
                     Ok(tool_defs) => {
                         let ext_name = ion::wasm_extension::ext_name_from_path(&canonical_str);
                         for td in &tool_defs {
-                            agent.register_tool(Box::new(WasmToolAdapter {
+                            agent.register_tool(Box::new(ToolAdapter {
                                 name: td.name.clone(),
                                 description: td.description.clone(),
                                 parameters: td.parameters.clone(),
@@ -1048,7 +1048,7 @@ async fn main() {
                 match wasm_ext_registry.add(&canonical_str) {
                     Ok(tool_defs) => {
                         for td in &tool_defs {
-                            agent.register_tool(Box::new(WasmToolAdapter {
+                            agent.register_tool(Box::new(ToolAdapter {
                                 name: td.name.clone(),
                                 description: td.description.clone(),
                                 parameters: td.parameters.clone(),

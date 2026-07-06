@@ -656,7 +656,7 @@ async fn cmd_run(
     let mut tools = build_tools(eff);
 
     // WASM plugin registry (hot‑pluggable — used by worker RPC too)
-    let wasm_ext_registry = std::sync::Arc::new(ion::wasm_extension::WasmExtensionRegistry::new());
+    let wasm_ext_registry = std::sync::Arc::new(ion::wasm_extension::Registry::new());
 
     // ── WASM 插件自动发现（优先于 --extension）──
     // 扫描 ~/.ion/agent/extensions/ 和 {cwd}/.ion/extensions/ 下的 .wasm 文件
@@ -681,7 +681,7 @@ async fn cmd_run(
                         match wasm_ext_registry.add(&canonical_str) {
                             Ok(tool_defs) => {
                                 for td in &tool_defs {
-                                    tools.register(Box::new(ion::wasm_extension::WasmToolAdapter {
+                                    tools.register(Box::new(ion::wasm_extension::ToolAdapter {
                                         name: td.name.clone(),
                                         description: td.description.clone(),
                                         parameters: td.parameters.clone(),
@@ -707,7 +707,7 @@ async fn cmd_run(
         if ext_path.ends_with(".wasm") {
             let abs = std::path::Path::new(ext_path);
             // Determine canonical path before calling wasm_ext_registry.add(),
-            // so WasmToolAdapter holds the canonicalised path.
+            // so ToolAdapter holds the canonicalised path.
             let canonical = std::fs::canonicalize(abs)
                 .unwrap_or_else(|_| abs.to_path_buf());
             let canonical_str = canonical.to_string_lossy().to_string();
@@ -716,7 +716,7 @@ async fn cmd_run(
                 Ok(tool_defs) => {
                     let ext_name = ion::wasm_extension::ext_name_from_path(&canonical_str);
                     for td in &tool_defs {
-                        tools.register(Box::new(ion::wasm_extension::WasmToolAdapter {
+                        tools.register(Box::new(ion::wasm_extension::ToolAdapter {
                             name: td.name.clone(),
                             description: td.description.clone(),
                             parameters: td.parameters.clone(),
