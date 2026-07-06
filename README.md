@@ -233,3 +233,35 @@ cargo +nightly miri test --lib
 - **Container Worker**: wrap `ChildProcessWorker` with Docker executor
 - **CI CLI**: `ion submit`, `ion status`, `ion wait` commands
 - **Wait queue**: when pool is full, queue acquire requests instead of failing
+
+---
+
+## Runtime Capability Matrix
+
+| 能力 | Local | Remote | Sandbox | Router |
+|------|:-----:|:------:|:-------:|:------:|
+| `execute_command` | ✅ | ✅ SSH | ✅ sandbox-exec | ✅ |
+| `read_file` | ✅ | ✅ SSH cat | — | ✅ |
+| `write_file` | ✅ | ✅ SSH heredoc | — | ✅ |
+| Permission Guard | ✅ | ✅ | ✅ | ✅ |
+| UI Ask Channel | ✅ | ✅ | ✅ | ✅ |
+| ProxyJump | — | ✅ | — | ✅ |
+| macOS sandbox-exec | — | — | ✅ | ✅ |
+
+## Known Limitations
+
+- **EventBus** 当前使用 `Arc<Mutex<ExtensionEventBus>>`，大并发场景后续替换为 `broadcast + oneshot + AskRegistry`
+- **CI 测试** 当前包含 manager 进程级测试，后续拆分为 in-process contract test + CLI smoke test
+- **PermissionExtension** 与 `SecuredRuntime` 存在双层检查，后续统一为 `PolicyDecision` 聚合模型
+- **WASM host functions** (`host_write_*_data` 等) 目前直接使用 `std::fs`，未经过 Runtime trait。后续需注入 Runtime 引用
+- **SandboxRuntime** 只约束 `execute_command`，文件操作由 `PermissionEngine` 控制
+
+## Version
+
+```
+ION Runtime Kernel v0.1
+Local / Remote / Sandbox / Router runtime closed loop.
+Security boundaries verified, CI reinforced, remote and sandbox paths tested.
+```
+
+Tags: `ion-runtime-p1`

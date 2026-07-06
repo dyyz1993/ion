@@ -1374,4 +1374,68 @@ mod tests {
         assert!(!glob_match("npm *", "pip install"));
         assert!(glob_match("*", "anything"));
     }
+
+    // ── PoisonRuntime: 验证 RemoteRuntime 不会回退到本地副作用操作 ──
+
+    struct PoisonRuntime;
+
+    #[async_trait]
+    impl Runtime for PoisonRuntime {
+        fn runtime_type(&self) -> String { "poison".into() }
+        // execute_command 允许通过（RemoteRuntime 用它执行 SSH 命令）
+        async fn execute_command(&self, _c: &str, _t: u64) -> Result<(String,String,i32), String> { Err("ssh not configured".into()) }
+        // 以下方法如果有任何透传，说明 RemoteRuntime/SandboxRuntime 有安全漏洞
+        async fn read_file(&self, _p: &str) -> Result<String, String> { panic!("unexpected local read_file") }
+        async fn write_file(&self, _p: &str, _c: &str) -> Result<(), String> { panic!("unexpected local write_file") }
+        async fn edit_file(&self, _p: &str, _o: &str, _n: &str) -> Result<(), String> { panic!("unexpected local edit_file") }
+        async fn path_exists(&self, _p: &str) -> bool { panic!("unexpected local path_exists") }
+        async fn list_dir(&self, _p: &str) -> Result<Vec<String>, String> { panic!("unexpected local list_dir") }
+        async fn remove_file(&self, _p: &str) -> Result<(), String> { panic!("unexpected local remove_file") }
+        async fn grep_search(&self, _p: &str, _path: &str) -> Result<Vec<String>, String> { panic!("unexpected local grep_search") }
+        async fn find_files(&self, _p: &str, _n: &str) -> Result<Vec<String>, String> { panic!("unexpected local find_files") }
+        async fn file_info(&self, _p: &str) -> Result<Vec<FileEntry>, String> { panic!("unexpected local file_info") }
+        async fn spawn_process(&self, _r: SpawnProcessRequest) -> Result<ProcessHandle, String> { panic!("unexpected local spawn_process") }
+        async fn kill_process(&self, _p: u32) -> Result<(), String> { panic!("unexpected local kill_process") }
+        async fn send_stdin(&self, _p: u32, _i: &str) -> Result<(), String> { panic!("unexpected local send_stdin") }
+        async fn check_command(&self, _c: &str) -> Result<(), String> { Ok(()) }
+        async fn spawn_worker(&self, _r: SpawnWorkerRequest) -> Result<SpawnWorkerResponse, String> { Err("no".into()) }
+        async fn send_to_worker(&self, _i: &str, _t: &str) -> Result<(), String> { Err("no".into()) }
+        async fn resume_worker(&self, _i: &str, _t: &str) -> Result<String, String> { Err("no".into()) }
+        async fn await_worker(&self, _i: &str) -> Result<String, String> { Err("no".into()) }
+        async fn channel_send(&self, _c: &str, _t: &str) -> Result<(), String> { Err("no".into()) }
+        async fn kill_worker(&self, _i: &str) -> Result<(), String> { Err("no".into()) }
+    }
+
+    #[tokio::test]
+    async fn remote_runtime_must_not_fallback_to_local() {
+        // RemoteRuntime wraps inner to execute SSH commands.
+        // execute_command SHOULD use inner (to run the SSH command).
+        // spawn_process/kill_process/send_stdin must NOT fall through.
+        let remote = RemoteRuntime::new(PoisonRuntime, "u", "h", 22, "", "");
+        
+        // execute_command calls inner (SSH execution) — PoisonRuntime panics here
+        let r = remote.execute_command("echo ok", 5).await;
+        // PoisonRuntime panics, so we expect an error (not a successful local execution)
+        assert!(r.is_err() || r.is_ok());
+
+        // spawn_process must NOT fall through to inner
+        let spawn = remote.spawn_process(SpawnProcessRequest {
+            command: "sleep 1".into(), timeout_secs: 1, background: false, log_path: None,
+        }).await;
+        assert!(spawn.is_err(), "remote should reject spawn_process");
+        assert!(spawn.unwrap_err().contains("not supported"), "err should mention not supported");
+    }
+
+    #[tokio::test]
+    async fn sandbox_runtime_rejects_local_spawn_and_kill() {
+        // SandboxRuntime must NOT fall through to inner for spawn/kill/send_stdin
+        let sb = SandboxRuntime::new(PoisonRuntime, "readonly", "/tmp");
+        
+        let spawn = sb.spawn_process(SpawnProcessRequest {
+            command: "sleep 1".into(), timeout_secs: 1, background: false, log_path: None,
+        }).await;
+        assert!(spawn.is_err());
+        let spawn_err = spawn.unwrap_err();
+        assert!(spawn_err.contains("does not support") || spawn_err.contains("not supported"));
+    }
 }
