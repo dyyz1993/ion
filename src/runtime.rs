@@ -1178,7 +1178,97 @@ impl Runtime for RouterRuntime {
     async fn send_stdin(&self, pid: u32, input: &str) -> Result<(), String> { self.default.send_stdin(pid, input).await }
 }
 
-#[cfg(test)]
+// ---------------------------------------------------------------------------
+// SandboxRuntime — macOS sandbox-exec 隔离
+// ---------------------------------------------------------------------------
+
+/// 通过 macOS `sandbox-exec` 在沙箱内执行命令。
+///
+/// 根据配置生成 Seatbelt `.sb` profile，控制文件系统和网络访问。
+/// 支持三种内置 profile: readonly / workspace / full-access
+///
+/// ```json
+/// {"runtime": {"sandbox": {"profile": "workspace"}}}
+/// ```
+pub struct SandboxRuntime<R: Runtime> {
+    inner: R,
+    profile: String,        // "readonly" | "workspace" | "full-access"
+    workspace: String,      // 工作区根路径
+}
+
+impl<R: Runtime> SandboxRuntime<R> {
+    pub fn new(inner: R, profile: &str, workspace: &str) -> Self {
+        Self { inner, profile: profile.to_string(), workspace: workspace.to_string() }
+    }
+
+    /// 生成 Seatbelt .sb profile 内容
+    fn generate_profile(&self) -> String {
+        let mut sb = String::from("(version 1)\n(allow default)\n");
+        match self.profile.as_str() {
+            "readonly" => {
+                sb.push_str(&format!("(allow file-read* (subpath \"/\"))\n"));
+                sb.push_str("(deny file-write* (subpath \"/\"))\n");
+                sb.push_str("(allow file-write* (subpath \"/tmp\"))\n");
+                sb.push_str("(allow file-write* (subpath \"/private/tmp\"))\n");
+                sb.push_str("(deny network*)\n");
+            }
+            "workspace" => {
+                sb.push_str(&format!("(allow file-read* (subpath \"/\"))\n"));
+                sb.push_str(&format!("(allow file-write* (subpath \"{}\"))\n", self.workspace));
+                sb.push_str("(allow file-write* (subpath \"/tmp\"))\n");
+                sb.push_str("(allow file-write* (subpath \"/private/tmp\"))\n");
+                sb.push_str("(deny file-write* (subpath \"/etc\"))\n");
+                sb.push_str("(deny file-write* (subpath \"/usr\"))\n");
+                // 网络默认允许（实际由 network.domains 控制）
+            }
+            _ => {} // "full-access" 或未知 → 全部允许
+        }
+        sb
+    }
+
+    /// 写入 profile 到临时文件，返回路径
+    fn write_profile(&self) -> Result<String, String> {
+        let content = self.generate_profile();
+        let path = format!("/tmp/ion-sandbox-{}.sb", std::process::id());
+        std::fs::write(&path, &content).map_err(|e| format!("write sb profile: {e}"))?;
+        Ok(path)
+    }
+
+    /// 用 sandbox-exec 包装命令
+    fn sandbox_cmd(&self, cmd: &str) -> String {
+        let profile_path = self.write_profile().unwrap_or_default();
+        format!("sandbox-exec -f {} /bin/sh -c '{}'", profile_path, cmd.replace('\'', "'\\''"))
+    }
+}
+
+#[async_trait]
+impl<R: Runtime + 'static> Runtime for SandboxRuntime<R> {
+    fn runtime_type(&self) -> String { format!("sandbox({})", self.profile) }
+
+    async fn execute_command(&self, command: &str, timeout_secs: u64) -> Result<(String, String, i32), String> {
+        let sb_cmd = self.sandbox_cmd(command);
+        self.inner.execute_command(&sb_cmd, timeout_secs).await
+    }
+    async fn read_file(&self, path: &str) -> Result<String, String> { self.inner.read_file(path).await }
+    async fn write_file(&self, path: &str, content: &str) -> Result<(), String> { self.inner.write_file(path, content).await }
+    async fn edit_file(&self, path: &str, old: &str, new: &str) -> Result<(), String> { self.inner.edit_file(path, old, new).await }
+    async fn path_exists(&self, path: &str) -> bool { self.inner.path_exists(path).await }
+    async fn list_dir(&self, path: &str) -> Result<Vec<String>, String> { self.inner.list_dir(path).await }
+    async fn remove_file(&self, path: &str) -> Result<(), String> { self.inner.remove_file(path).await }
+    async fn grep_search(&self, pattern: &str, path: &str) -> Result<Vec<String>, String> { self.inner.grep_search(pattern, path).await }
+    async fn find_files(&self, path: &str, name: &str) -> Result<Vec<String>, String> { self.inner.find_files(path, name).await }
+    async fn file_info(&self, path: &str) -> Result<Vec<FileEntry>, String> { self.inner.file_info(path).await }
+    async fn check_command(&self, cmd: &str) -> Result<(), String> { self.inner.check_command(cmd).await }
+    async fn spawn_process(&self, req: SpawnProcessRequest) -> Result<ProcessHandle, String> { self.inner.spawn_process(req).await }
+    async fn kill_process(&self, pid: u32) -> Result<(), String> { self.inner.kill_process(pid).await }
+    async fn send_stdin(&self, pid: u32, input: &str) -> Result<(), String> { self.inner.send_stdin(pid, input).await }
+    async fn spawn_worker(&self, req: SpawnWorkerRequest) -> Result<SpawnWorkerResponse, String> { self.inner.spawn_worker(req).await }
+    async fn send_to_worker(&self, wid: &str, text: &str) -> Result<(), String> { self.inner.send_to_worker(wid, text).await }
+    async fn resume_worker(&self, wid: &str, text: &str) -> Result<String, String> { self.inner.resume_worker(wid, text).await }
+    async fn await_worker(&self, wid: &str) -> Result<String, String> { self.inner.await_worker(wid).await }
+    async fn channel_send(&self, ch: &str, text: &str) -> Result<(), String> { self.inner.channel_send(ch, text).await }
+    async fn kill_worker(&self, wid: &str) -> Result<(), String> { self.inner.kill_worker(wid).await }
+}
 mod tests {
     use super::*;
     use tokio::test;

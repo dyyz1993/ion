@@ -220,6 +220,17 @@ async fn main() {
                 secured,
                 manager_bridge.clone() as Arc<dyn ion::runtime::ManagerBridgeHandle>,
             ))
+        } else if ion_cfg.runtime.default_mode == "sandbox" {
+            let cwd = std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let sandbox = ion::runtime::SandboxRuntime::new(
+                ion::runtime::LocalRuntime::new(),
+                &ion_cfg.runtime.sandbox.profile,
+                &cwd,
+            );
+            let secured = ion::runtime::SecuredRuntime::new(sandbox).with_profile(ion::kernel::SecurityProfile::default());
+            Box::new(ion::runtime::WorkerRuntime::new(secured, manager_bridge.clone() as Arc<dyn ion::runtime::ManagerBridgeHandle>))
         } else if ion_cfg.runtime.default_mode == "remote" {
             let hostname = &ion_cfg.runtime.remote.default_host;
             if let Some(host_cfg) = ion_cfg.runtime.remote.hosts.get(hostname) {
