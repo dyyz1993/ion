@@ -649,3 +649,12 @@ IP2=$(/usr/local/bin/container inspect ion-ac-test | python3 -c "import sys,json
 | F1 | container 服务未启动自动恢复 | 🟡 待实测 |
 | F2 | 镜像拉取失败错误处理 | 🟡 待实测 |
 | F3 | 容器名冲突复用 | ✅ 实测通过 |
+| G1 | hostname 确认（bash 在容器内执行） | ✅ 实测通过 |
+| G2 | /etc/hostname 验证 | ✅ 实测通过 |
+| G3 | PID 1 进程隔离 | ✅ 实测通过 |
+| G4 | uname 确认 Linux 架构 | ✅ 实测通过 |
+| H1 | 容器 IP 查询（192.168.64.x） | ✅ 实测通过 |
+| H2 | 同一容器 IP 不变 | ✅ 实测通过 |
+| I1 | 进程隔离（容器内 5 vs 本机 660） | ✅ 实测通过 |
+| J1 | worktree 挂载可见（本机→容器） | ✅ 实测通过 |
+| J2 | 容器写文件本机可见（容器→本机） | ✅ 实测通过 |
