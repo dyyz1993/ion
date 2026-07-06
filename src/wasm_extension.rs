@@ -764,6 +764,145 @@ fn mem_read_bytes(caller: &mut WasmCaller, ptr: u32, len: u32) -> Vec<u8> {
 // Host data dimension registration
 // ---------------------------------------------------------------------------
 
+/// 路径安全检查：确保 key 解析后仍在 dir 内（防穿越）。
+///
+/// 4 维数据存储 (global/project/project_local/session) 是本机内部数据，
+/// 不走 Runtime trait（因为这些数据本来就只存在本机）。
+/// 但必须防止 WASM 扩展用 `../` 路径穿越到 dir 之外。
+///
+/// 返回 Some(安全路径) 或 None(检测到穿越)。
+///
+/// 检查规则:
+/// 1. 拒绝绝对路径 key（如 "/etc/passwd"）
+/// 2. join 后规范化，必须仍在 dir 内
+/// 3. 不依赖文件系统状态（用字符串级规范化，避免 TOCTOU）
+fn safe_join(dir: &std::path::Path, key: &str) -> Option<std::path::PathBuf> {
+    // 拒绝绝对路径
+    if std::path::Path::new(key).is_absolute() {
+        tracing::warn!("[extension] path traversal blocked (absolute): {}", key);
+        return None;
+    }
+    // 拒绝含 null byte 的 key
+    if key.contains('\0') {
+        tracing::warn!("[extension] path traversal blocked (null byte): {}", key);
+        return None;
+    }
+    let joined = dir.join(key);
+    // 字符串级规范化（不访问 fs）：解析 . 和 ..
+    let canon = canonicalize_path_str(&joined);
+    // 必须以 dir 开头（dir 本身也规范化一下）
+    let dir_canon = canonicalize_path_str(dir);
+    if canon.starts_with(&dir_canon) {
+        Some(canon)
+    } else {
+        tracing::warn!("[extension] path traversal blocked: {} → {} (outside {})", key, canon.display(), dir_canon.display());
+        None
+    }
+}
+
+/// 字符串级路径规范化（不访问文件系统）
+fn canonicalize_path_str(p: &std::path::Path) -> std::path::PathBuf {
+    let mut parts: Vec<std::ffi::OsString> = Vec::new();
+    for comp in p.components() {
+        use std::path::Component;
+        match comp {
+            Component::CurDir => {} // 跳过 .
+            Component::ParentDir => {
+                // .. 弹出最后一个（除非已经在根）
+                if !parts.is_empty() {
+                    parts.pop();
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => parts.push(comp.as_os_str().to_owned()),
+            Component::Normal(s) => parts.push(s.to_owned()),
+        }
+    }
+    parts.iter().collect()
+}
+
+#[cfg(test)]
+mod path_safety_tests {
+    use super::*;
+
+    #[test]
+    fn normal_key_is_allowed() {
+        let dir = std::path::Path::new("/home/user/.ion/data");
+        assert_eq!(
+            safe_join(dir, "mykey"),
+            Some(std::path::PathBuf::from("/home/user/.ion/data/mykey"))
+        );
+    }
+
+    #[test]
+    fn nested_key_is_allowed() {
+        let dir = std::path::Path::new("/home/user/.ion/data");
+        assert_eq!(
+            safe_join(dir, "subdir/mykey"),
+            Some(std::path::PathBuf::from("/home/user/.ion/data/subdir/mykey"))
+        );
+    }
+
+    #[test]
+    fn parent_dir_traversal_is_blocked() {
+        let dir = std::path::Path::new("/home/user/.ion/data");
+        assert_eq!(safe_join(dir, "../../../etc/passwd"), None);
+    }
+
+    #[test]
+    fn double_dot_traversal_is_blocked() {
+        let dir = std::path::Path::new("/home/user/.ion/data");
+        assert_eq!(safe_join(dir, "../secret"), None);
+    }
+
+    #[test]
+    fn absolute_path_is_blocked() {
+        let dir = std::path::Path::new("/home/user/.ion/data");
+        assert_eq!(safe_join(dir, "/etc/passwd"), None);
+    }
+
+    #[test]
+    fn null_byte_is_blocked() {
+        let dir = std::path::Path::new("/home/user/.ion/data");
+        assert_eq!(safe_join(dir, "key\0/etc/passwd"), None);
+    }
+
+    #[test]
+    fn dot_only_key_is_allowed() {
+        // 单个 . 被规范化掉，等于 dir 本身
+        let dir = std::path::Path::new("/home/user/.ion/data");
+        assert_eq!(
+            safe_join(dir, "./mykey"),
+            Some(std::path::PathBuf::from("/home/user/.ion/data/mykey"))
+        );
+    }
+
+    #[test]
+    fn traversal_with_subdir_is_blocked() {
+        // subdir/../../etc 仍穿越
+        let dir = std::path::Path::new("/home/user/.ion/data");
+        assert_eq!(safe_join(dir, "subdir/../../etc/passwd"), None);
+    }
+
+    #[test]
+    fn key_with_dotdot_inside_dir_stays_in_dir() {
+        // a/../b → b，仍在 dir 内
+        let dir = std::path::Path::new("/home/user/.ion/data");
+        assert_eq!(
+            safe_join(dir, "a/../b"),
+            Some(std::path::PathBuf::from("/home/user/.ion/data/b"))
+        );
+    }
+
+    #[test]
+    fn canonicalize_path_str_resolves_dots() {
+        let p = std::path::Path::new("/a/b/../c/./d");
+        assert_eq!(
+            canonicalize_path_str(p),
+            std::path::PathBuf::from("/a/c/d")
+        );
+    }
+}
+
 /// Register the four data‑oriented host functions for a single dimension.
 ///
 /// Each dimension (global / project / project_local / session) gets:
@@ -791,14 +930,20 @@ fn register_dim(
             let dir = dir_fn(&ctx);
             let key = mem_read_str(&mut caller, key_ptr, key_len);
             let data = mem_read_bytes(&mut caller, data_ptr, data_len);
+
+            // 路径穿越检查
+            let final_path = match safe_join(&dir, &key) {
+                Some(p) => p,
+                None => return 1, // blocked
+            };
+            let tmp = final_path.with_extension("tmp");
+
             if !dir.exists() {
                 if let Err(e) = std::fs::create_dir_all(&dir) {
                     tracing::warn!("[extension] write:{dim_name_write} mkdir failed: {e}");
                     return 1;
                 }
             }
-            let tmp = dir.join(format!("{key}.tmp"));
-            let final_path = dir.join(&key);
             if std::fs::write(&tmp, &data).is_err() { return 1; }
             if std::fs::rename(&tmp, &final_path).is_err() { return 1; }
             0 // success
@@ -814,7 +959,13 @@ fn register_dim(
             let ctx = caller.data().clone();
             let dir = dir_fn(&ctx);
             let key = mem_read_str(&mut caller, key_ptr, key_len);
-            let data = match std::fs::read(dir.join(&key)) {
+
+            // 路径穿越检查
+            let path = match safe_join(&dir, &key) {
+                Some(p) => p,
+                None => return 0, // blocked, treat as not found
+            };
+            let data = match std::fs::read(&path) {
                 Ok(d) => d,
                 Err(_) => return 0, // not found
             };
@@ -834,7 +985,13 @@ fn register_dim(
             let ctx = caller.data().clone();
             let dir = dir_fn(&ctx);
             let key = mem_read_str(&mut caller, key_ptr, key_len);
-            match std::fs::remove_file(dir.join(&key)) {
+
+            // 路径穿越检查
+            let path = match safe_join(&dir, &key) {
+                Some(p) => p,
+                None => return 1, // blocked
+            };
+            match std::fs::remove_file(&path) {
                 Ok(_) => 0,
                 Err(_) => 1,
             }
