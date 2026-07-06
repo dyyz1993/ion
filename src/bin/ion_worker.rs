@@ -723,17 +723,139 @@ async fn main() {
             "get_commands" => output_response(&id, "get_commands", &serde_json::json!([])),
             "get_skills" => output_response(&id, "get_skills", &serde_json::json!([])),
             "get_extensions" => output_response(&id, "get_extensions", &serde_json::json!([])),
-            "get_available_models" => output_response(&id, "get_available_models", &serde_json::json!([{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash"},{"id":"deepseek-v4-pro","name":"DeepSeek V4 Pro"},{"id":"gpt-4o","name":"GPT-4o"}])),
+            "get_available_models" => {
+                let models: Vec<serde_json::Value> = model_reg.list_models().iter()
+                    .map(|m| serde_json::json!({
+                        "id": m.id, "name": m.name, "provider": m.provider,
+                        "reasoning": m.reasoning, "contextWindow": m.context_window,
+                    }))
+                    .collect();
+                output_response(&id, "get_available_models", &serde_json::json!(models));
+            },
             "get_tier_models" => output_response(&id, "get_tier_models", &serde_json::json!({"fast":"deepseek-v4-flash","pro":"deepseek-v4-pro","max":"deepseek-v4-pro"})),
             "get_tree" => output_response(&id, "get_tree", &serde_json::json!([])),
             "get_modified_files" => output_response(&id, "get_modified_files", &serde_json::json!([])),
-            "get_queue" => output_response(&id, "get_queue", &serde_json::json!([])),
+            "get_queue" => {
+                let steering: Vec<serde_json::Value> = agent.steering_queue_snapshot().iter()
+                    .filter_map(|m| serde_json::to_value(m).ok()).collect();
+                let follow_up: Vec<serde_json::Value> = agent.follow_up_queue_snapshot().iter()
+                    .filter_map(|m| serde_json::to_value(m).ok()).collect();
+                output_response(&id, "get_queue", &serde_json::json!({
+                    "steering": steering, "followUp": follow_up,
+                    "steeringCount": agent.steering_queue_len(),
+                    "followUpCount": agent.follow_up_queue_len(),
+                }));
+            },
+            "clear_queue" => {
+                agent.clear_queues();
+                output_response(&id, "clear_queue", &serde_json::json!({
+                    "cleared": true,
+                    "steeringCleared": agent.steering_queue_len(),
+                    "followUpCleared": agent.follow_up_queue_len(),
+                }));
+            },
+            "get_context_usage" => {
+                let msgs = agent.messages();
+                let input_tokens: u64 = msgs.iter()
+                    .filter_map(|m| match m { Message::Assistant(a) => Some(a.usage.input), _ => None })
+                    .sum();
+                let output_tokens: u64 = msgs.iter()
+                    .filter_map(|m| match m { Message::Assistant(a) => Some(a.usage.output), _ => None })
+                    .sum();
+                let ctx_chars: usize = msgs.iter()
+                    .map(|m| match m {
+                        Message::User(u) => u.content.iter().map(|b| match b {
+                            ion::agent::messages::ContentBlock::Text(t) => t.text.len(),
+                            _ => 0,
+                        }).sum::<usize>(),
+                        Message::Assistant(a) => a.content.iter().map(|b| match b {
+                            ion::agent::messages::AssistantContentBlock::Text(t) => t.text.len(),
+                            _ => 0,
+                        }).sum::<usize>(),
+                        _ => 0,
+                    }).sum();
+                let context_window = agent.model().context_window;
+                let estimated_tokens = (ctx_chars / 4) as u64;
+                output_response(&id, "get_context_usage", &serde_json::json!({
+                    "messageCount": msgs.len(),
+                    "estimatedTokens": estimated_tokens,
+                    "contextWindow": context_window,
+                    "usagePercent": if context_window > 0 { (estimated_tokens * 100 / context_window as u64) as u32 } else { 0 },
+                    "totalInputTokens": input_tokens,
+                    "totalOutputTokens": output_tokens,
+                    "autoCompaction": agent.auto_compact_enabled(),
+                }));
+            },
             "get_flags" => output_response(&id, "get_flags", &serde_json::json!({})),
 
-            "set_active_tools" => output_response(&id, "set_active_tools", &serde_json::Value::Null),
+            "get_active_tools" => {
+                let tools: Vec<String> = agent.list_tool_names();
+                output_response(&id, "get_active_tools", &serde_json::json!({"tools": tools, "count": tools.len()}));
+            },
+            "set_active_tools" => {
+                let tools_arr: Vec<String> = params.get("tools")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+                    .unwrap_or_default();
+                agent.restrict_tools(tools_arr.clone());
+                output_response(&id, "set_active_tools", &serde_json::json!({
+                    "activeTools": tools_arr, "count": tools_arr.len(),
+                }));
+            },
+            "get_full_messages" => {
+                let msgs: Vec<serde_json::Value> = agent.messages().iter()
+                    .filter_map(|m| serde_json::to_value(m).ok())
+                    .collect();
+                output_response(&id, "get_full_messages", &serde_json::json!({
+                    "messages": msgs, "count": msgs.len(),
+                    "note": "Includes thinking blocks and all content types",
+                }));
+            },
+            "set_auto_compaction" => {
+                let enabled = params.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+                agent.set_auto_compact(enabled);
+                output_response(&id, "set_auto_compaction", &serde_json::json!({
+                    "autoCompaction": enabled,
+                }));
+            },
             "set_cwd" => output_response(&id, "set_cwd", &serde_json::Value::Null),
-            "cycle_model" => output_response(&id, "cycle_model", &serde_json::json!({"modelId":model_id})),
-            "cycle_thinking_level" => output_response(&id, "cycle_thinking_level", &serde_json::json!({"thinkingLevel":"medium"})),
+            "cycle_model" => {
+                let current_id = agent.model().id.clone();
+                let current_provider = agent.model().provider.clone();
+                let mut models = model_reg.models_by_provider(&current_provider);
+                models.sort_by(|a, b| a.id.cmp(&b.id));
+                if models.len() < 2 {
+                    output_response(&id, "cycle_model", &serde_json::json!({
+                        "modelId": current_id, "provider": current_provider,
+                        "note": "Only one model available, no cycle",
+                    }));
+                } else {
+                    let next_idx = models.iter().position(|m| m.id == current_id)
+                        .map(|i| (i + 1) % models.len())
+                        .unwrap_or(0);
+                    let next_model = models[next_idx].clone();
+                    let next_id = next_model.id.clone();
+                    agent.set_model(next_model);
+                    model_id = next_id.clone();
+                    ion::session_index::SessionIndex::set_model(&sid, &provider, &next_id);
+                    output_response(&id, "cycle_model", &serde_json::json!({
+                        "modelId": next_id, "provider": current_provider,
+                        "previousModel": current_id,
+                    }));
+                }
+            },
+            "cycle_thinking_level" => {
+                let levels = ["off", "minimal", "low", "medium", "high", "xhigh"];
+                let current = agent.thinking_level().unwrap_or("off").to_string();
+                let next = levels.iter().position(|&l| l == current)
+                    .map(|i| levels[(i + 1) % levels.len()])
+                    .unwrap_or("medium");
+                agent.set_thinking_level(Some(next.to_string()));
+                ion::session_index::SessionIndex::set_thinking_level(&sid, next);
+                output_response(&id, "cycle_thinking_level", &serde_json::json!({
+                    "thinkingLevel": next, "previousLevel": current,
+                }));
+            },
             "compact" => {
                 let before_msgs = agent.messages().len();
                 let before_tokens: usize = agent.messages().iter()
@@ -801,7 +923,6 @@ async fn main() {
                 }
             },
             "set_permission_mode" => output_response(&id, "set_permission_mode", &serde_json::Value::Null),
-            "set_auto_compaction" => output_response(&id, "set_auto_compaction", &serde_json::Value::Null),
             "set_auto_retry" => output_response(&id, "set_auto_retry", &serde_json::Value::Null),
             "bash" => {
                 // 真正执行 bash 命令（不再是空桩）
@@ -967,7 +1088,6 @@ async fn main() {
             "get_all_tools" => output_response(&id, "get_all_tools", &serde_json::json!([])),
             "get_flag_values" => output_response(&id, "get_flag_values", &serde_json::json!({})),
             "set_flag" => output_response(&id, "set_flag", &serde_json::Value::Null),
-            "clear_queue" => output_response(&id, "clear_queue", &serde_json::Value::Null),
             "get_mcp_servers" => output_response(&id, "get_mcp_servers", &serde_json::json!([])),
             "mcp_toggle_server" => output_response(&id, "mcp_toggle_server", &serde_json::Value::Null),
             "mcp_restart_server" => output_response(&id, "mcp_restart_server", &serde_json::Value::Null),

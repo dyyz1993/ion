@@ -230,6 +230,54 @@ impl Agent {
         self.follow_up_queue.len()
     }
 
+    // ── P0 调试 RPC 支持方法 ──
+
+    /// 当前模型引用（get_state / cycle_model 用）
+    pub fn model(&self) -> &Model {
+        &self.model
+    }
+
+    /// 设置模型（set_model / cycle_model 用）
+    pub fn set_model(&mut self, model: Model) {
+        self.model = model;
+    }
+
+    /// 当前 thinking level（get_state 用）
+    pub fn thinking_level(&self) -> Option<&str> {
+        self.config.thinking.as_deref()
+    }
+
+    /// 设置 thinking level（set_thinking_level / cycle_thinking_level 用）
+    pub fn set_thinking_level(&mut self, level: Option<String>) {
+        self.config.thinking = level;
+    }
+
+    /// 自动压缩开关（set_auto_compaction 用）
+    pub fn set_auto_compact(&mut self, enabled: bool) {
+        self.config.enable_compact = enabled;
+    }
+
+    /// 读取自动压缩开关（get_context_usage 用）
+    pub fn auto_compact_enabled(&self) -> bool {
+        self.config.enable_compact
+    }
+
+    /// steering 队列内容快照（get_queue 用）
+    pub fn steering_queue_snapshot(&self) -> Vec<Message> {
+        self.steering_queue.iter().cloned().collect()
+    }
+
+    /// follow_up 队列内容快照（get_queue 用）
+    pub fn follow_up_queue_snapshot(&self) -> Vec<Message> {
+        self.follow_up_queue.iter().cloned().collect()
+    }
+
+    /// 清空 steering + follow_up 队列（clear_queue 用）
+    pub fn clear_queues(&mut self) {
+        self.steering_queue.clear();
+        self.follow_up_queue.clear();
+    }
+
     /// 直接调用一个已注册的工具（不经过 LLM）。
     /// 用于：ion rpc 直接触发 spawn_worker / read / write 等工具，不跑 LLM。
     pub async fn call_tool(&self, name: &str, args: serde_json::Value) -> AgentResult<String> {

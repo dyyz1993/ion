@@ -45,7 +45,7 @@ async fn secured_runtime_checks_file_permission() {
     engine.register_rule(PermissionRule {
         name: "block-ssh".into(),
         actions: vec![Action::Read],
-        pattern: "*/.ssh/*".into(),
+        pattern: "**/.ssh/*".into(),
         policy: Policy::Deny,
         priority: 100,
     });
@@ -65,7 +65,7 @@ async fn secured_runtime_allows_safe_read() {
     engine.register_rule(PermissionRule {
         name: "block-ssh".into(),
         actions: vec![Action::Read],
-        pattern: "*/.ssh/*".into(),
+        pattern: "**/.ssh/*".into(),
         policy: Policy::Deny,
         priority: 100,
     });
@@ -86,7 +86,7 @@ async fn secured_runtime_checks_grep_search() {
     engine.register_rule(PermissionRule {
         name: "block-secret".into(),
         actions: vec![Action::Read],
-        pattern: "*/secret/*".into(),
+        pattern: "**/secret/*".into(),
         policy: Policy::Deny,
         priority: 100,
     });

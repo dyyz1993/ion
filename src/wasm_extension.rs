@@ -207,6 +207,7 @@ impl Extension {
         // Call init (extension_init or legacy plugin_init) — triggers host_register_tool
         if let Ok(func) =  ext.get_export_func::<(), ()>("init") {
             func.call(&mut ext.store, ())?;
+        } else {
         }
 
         drop(linker);
@@ -214,8 +215,10 @@ impl Extension {
         // Collect registered tools
         if let Ok(t) = tools_registered.lock() {
             ext.tools = t.clone();
+        } else {
         }
-        tracing::info!("[wasm] plugin registered {} tools", ext.tools.len());
+        let tool_names: Vec<&str> = ext.tools.iter().map(|t| t.name.as_str()).collect();
+        tracing::info!("[wasm] extension v{} registered {} tools: {:?}", ext.version, ext.tools.len(), tool_names);
 
         Ok(ext)
     }

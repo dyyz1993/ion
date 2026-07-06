@@ -3,6 +3,8 @@
 > **状态：开发中** — 本文记录 pi 当前 RPC 调试能力现状，以及 ion 的对齐方案。
 > 关联 issue：https://github.com/dyyz1993/pi-mono/issues/53
 >
+> **P0 调试 RPC 已完成 (2026-07-05)**：11 个 RPC 全部实现，ion-worker 编译通过，91 个 lib 测试全过。
+>
 > **术语约定**：pi 的扩展系统叫 Extension（不叫 Plugin）。本文统一使用 extension 术语。
 > ion 代码里的方法名 `extension_rpc` / flag `--extension` 是历史命名，对应 pi 的 extension channel。
 
@@ -173,21 +175,25 @@ ion subscribe --session x --extension memory
 
 ## 四、ion 这边需要对齐的 RPC（按优先级）
 
-### 🔴 P0 — 调试必备，实现简单
+### 🔴 P0 — 调试必备，实现简单 ✅ 已完成 (2026-07-05)
 
-| 缺失 RPC | 调试用途 | 实现位置 | ~行数 |
-|---|---|---|---|
-| `get_queue` | 看 steering/follow_up 队列状态 | `ion_worker.rs` 新增分支 | 20 |
-| `clear_queue` | 清空队列 | 同上 | 15 |
-| `get_context_usage` | 看 context token 用量 | 新增 token 估算 | 40 |
-| `get_active_tools` / `set_active_tools` | 看和改工具集 | `ToolRegistry` 加 getter | 30 |
-| `get_full_messages` | 拿完整消息（含 thinking） | 复用 get_messages 不过滤 | 10 |
-| `get_available_models` | 列出可用模型 | 复用 ModelRegistry | 20 |
-| `cycle_model` | 循环切模型 | 复用 set_model | 25 |
-| `cycle_thinking_level` | 循环切 thinking | 复用 set_thinking_level | 25 |
-| `set_auto_compaction` | 自动压缩开关 | 配合 Compaction 实现 | 15 |
+| RPC | 调试用途 | 实现状态 |
+|---|---|---|
+| `get_queue` | 看 steering/follow_up 队列状态 | ✅ 真实实现（返回队列内容快照） |
+| `clear_queue` | 清空队列 | ✅ 新增（清空 steering + follow_up） |
+| `get_context_usage` | 看 context token 用量 | ✅ 新增（估算 tokens + usagePercent + autoCompaction 状态） |
+| `get_active_tools` | 看当前工具集 | ✅ 新增（调 agent.list_tool_names()） |
+| `set_active_tools` | 改工具集 | ✅ 真实实现（调 agent.restrict_tools()） |
+| `get_full_messages` | 拿完整消息（含 thinking） | ✅ 新增（返回 messages + count + note） |
+| `get_available_models` | 列出可用模型 | ✅ 真实实现（从 ModelRegistry.list_models() 读） |
+| `cycle_model` | 循环切模型 | ✅ 真实实现（同 provider 内循环 + 写 session_index） |
+| `cycle_thinking_level` | 循环切 thinking | ✅ 真实实现（6 档循环 + 写 session_index） |
+| `set_auto_compaction` | 自动压缩开关 | ✅ 新增（调 agent.set_auto_compact()） |
 
-**合计 ~200 行**，完成后调试能力对齐 pi 80%。
+**改动文件**：
+- [src/agent/agent_loop.rs](./src/agent/agent_loop.rs) — Agent 加 9 个 getter/setter
+- [ion-provider/src/registry.rs](../ion-provider/src/registry.rs) — ModelRegistry 加 list_models + models_by_provider
+- [src/bin/ion_worker.rs](./src/bin/ion_worker.rs) — 11 个 RPC 实现 + 删除 2 个重复 stub
 
 ### 🟡 P1 — 重要，实现中等
 

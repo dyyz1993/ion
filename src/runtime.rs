@@ -11,6 +11,10 @@
 //! 3. 审计日志
 
 use async_trait::async_trait;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
+use tokio::io::AsyncWriteExt;
 
 // ---------------------------------------------------------------------------
 // Runtime trait
@@ -384,10 +388,23 @@ impl<R: Runtime + 'static> Runtime for WorkerRuntime<R> {
 // LocalRuntime — 本地直接执行（当前行为封装）
 // ---------------------------------------------------------------------------
 
-pub struct LocalRuntime;
+pub struct LocalRuntime {
+    /// 追踪后台进程：os_pid → (child, stdin, log_path)
+    processes: Arc<Mutex<HashMap<u32, ProcessEntry>>>,
+}
+
+struct ProcessEntry {
+    child: tokio::process::Child,
+    stdin: Option<tokio::process::ChildStdin>,
+    log_path: Option<String>,
+}
 
 impl LocalRuntime {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self {
+            processes: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
 }
 
 impl Default for LocalRuntime { fn default() -> Self { Self::new() } }
@@ -471,16 +488,98 @@ impl Runtime for LocalRuntime {
         Ok(entries)
     }
 
-    async fn spawn_process(&self, _req: SpawnProcessRequest) -> Result<ProcessHandle, String> {
-        Err("LocalRuntime does not support process spawning yet".into())
+    async fn spawn_process(&self, req: SpawnProcessRequest) -> Result<ProcessHandle, String> {
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", &req.command])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("spawn failed: {e}"))?;
+
+        let os_pid = child.id().ok_or("no pid assigned")?;
+        // 生成 bid（单调递增，6 位 hex）
+        static NEXT_BID: AtomicU32 = AtomicU32::new(1);
+        let bid = format!("{:06x}", NEXT_BID.fetch_add(1, Ordering::Relaxed) & 0xFFFFFF);
+
+        if req.background {
+            // ── 后台模式：立即返回，存储 child 供后续 kill/send_stdin ──
+            let stdin = child.stdin.take();
+            let log_path = req.log_path.clone();
+            let mut map = self.processes.lock().map_err(|e| e.to_string())?;
+            map.insert(os_pid, ProcessEntry { child, stdin, log_path });
+            Ok(ProcessHandle {
+                bid,
+                os_pid,
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: None,
+            })
+        } else {
+            // ── 前台模式：等待进程退出，收集完整输出 ──
+            let timeout = std::time::Duration::from_secs(req.timeout_secs);
+            let output = tokio::time::timeout(timeout, child.wait_with_output())
+                .await
+                .map_err(|_| format!("timeout after {}s", req.timeout_secs))?
+                .map_err(|e| format!("wait failed: {e}"))?;
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            Ok(ProcessHandle {
+                bid,
+                os_pid,
+                stdout,
+                stderr,
+                exit_code: output.status.code(),
+            })
+        }
     }
 
-    async fn kill_process(&self, _os_pid: u32) -> Result<(), String> {
-        Err("LocalRuntime does not support kill_process yet".into())
+    async fn kill_process(&self, os_pid: u32) -> Result<(), String> {
+        // 先从进程表查，有托管进程则优雅终止
+        let should_remove = {
+            let mut map = self.processes.lock().map_err(|e| e.to_string())?;
+            if let Some(entry) = map.get_mut(&os_pid) {
+                let _ = entry.child.start_kill();
+                true
+            } else {
+                false
+            }
+        };
+        if should_remove {
+            self.processes.lock().map_err(|e| e.to_string())?.remove(&os_pid);
+        }
+        // fallback: 用系统 kill 命令确保终止
+        let output = std::process::Command::new("kill")
+            .args([&os_pid.to_string()])
+            .output()
+            .map_err(|e| format!("kill failed: {e}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // 如果进程已不存在也算成功
+            if stderr.contains("No such process") {
+                Ok(())
+            } else {
+                Err(format!("kill failed: {stderr}"))
+            }
+        }
     }
 
-    async fn send_stdin(&self, _os_pid: u32, _input: &str) -> Result<(), String> {
-        Err("LocalRuntime does not support send_stdin yet".into())
+    async fn send_stdin(&self, os_pid: u32, input: &str) -> Result<(), String> {
+        let mut stdin = {
+            let mut map = self.processes.lock().map_err(|e| e.to_string())?;
+            let entry = map.get_mut(&os_pid).ok_or_else(|| format!("process {os_pid} not found"))?;
+            entry.stdin.take().ok_or_else(|| format!("process {os_pid} has no stdin"))?
+        };
+        stdin.write_all(input.as_bytes()).await.map_err(|e| format!("stdin write: {e}"))?;
+        stdin.flush().await.map_err(|e| format!("stdin flush: {e}"))?;
+        // 把 stdin 放回去（cat 需要多次写入）
+        let mut map = self.processes.lock().map_err(|e| e.to_string())?;
+        if let Some(entry) = map.get_mut(&os_pid) {
+            entry.stdin = Some(stdin);
+        }
+        Ok(())
     }
 }
 
@@ -652,6 +751,17 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
     }
 
     async fn grep_search(&self, pattern: &str, path: &str) -> Result<Vec<String>, String> {
+        if let Some(ref engine) = self.permission_engine {
+            match engine.check(path, crate::kernel::Action::Read) {
+                crate::kernel::PermissionResult::Allow => {}
+                crate::kernel::PermissionResult::Deny(reason) => return Err(format!("[Permission] {reason}")),
+                crate::kernel::PermissionResult::Ask { title, message } => {
+                    if !self.resolve_ask(&title, &message) {
+                        return Err(format!("[Permission] 用户拒绝了搜索: {path}"));
+                    }
+                }
+            }
+        }
         self.inner.grep_search(pattern, path).await
     }
 
