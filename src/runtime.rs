@@ -52,6 +52,23 @@ pub trait Runtime: Send + Sync {
     /// Runtime 类型名
     fn runtime_type(&self) -> String;
 
+    // ── 进程管理能力（bash 工具的后台进程管理通过这里走，而不是直接 tokio::process）──
+
+    /// 启动一个进程（前台同步或后台异步）。
+    async fn spawn_process(&self, _req: SpawnProcessRequest) -> Result<ProcessHandle, String> {
+        Err("runtime does not support process spawning".into())
+    }
+
+    /// 终止一个进程。
+    async fn kill_process(&self, _os_pid: u32) -> Result<(), String> {
+        Err("runtime does not support kill_process".into())
+    }
+
+    /// 向进程 stdin 写入。
+    async fn send_stdin(&self, _os_pid: u32, _input: &str) -> Result<(), String> {
+        Err("runtime does not support send_stdin".into())
+    }
+
     // ── Worker 编排能力（默认返回 Err，保持 LocalRuntime 单进程行为）──
     //
     // 这两个方法把"内核能力"暴露给 Tool（进而暴露给 LLM）。
@@ -148,6 +165,38 @@ pub struct SpawnWorkerResponse {
     pub first_turn_output: Option<String>,
     /// Peer 模式下汇报频道。
     pub report_channel: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// 进程管理类型 — spawn_process 工具的请求/响应
+// ---------------------------------------------------------------------------
+
+/// spawn_process 工具的请求参数。
+#[derive(Clone, Debug)]
+pub struct SpawnProcessRequest {
+    /// shell 命令
+    pub command: String,
+    /// 超时秒数（仅 background=false 时生效）
+    pub timeout_secs: u64,
+    /// true=后台立即返回；false=前台等待完成
+    pub background: bool,
+    /// 日志文件路径（如 /tmp/ion-bash/{bid}.log），None 表示不写日志
+    pub log_path: Option<String>,
+}
+
+/// spawn_process 的响应 / 进程句柄。
+#[derive(Clone, Debug)]
+pub struct ProcessHandle {
+    /// 分配的进程 ID（bash.rs 的 bid，6 位 hex）
+    pub bid: String,
+    /// 真实的 OS PID（用于 kill 信号）
+    pub os_pid: u32,
+    /// 前台模式下的 stdout（background=false）
+    pub stdout: String,
+    /// 前台模式下的 stderr
+    pub stderr: String,
+    /// 退出码（前台模式填充；后台模式为 None 直到进程结束）
+    pub exit_code: Option<i32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +366,18 @@ impl<R: Runtime + 'static> Runtime for WorkerRuntime<R> {
         }
         Ok(())
     }
+
+    async fn spawn_process(&self, req: SpawnProcessRequest) -> Result<ProcessHandle, String> {
+        self.inner.spawn_process(req).await
+    }
+
+    async fn kill_process(&self, os_pid: u32) -> Result<(), String> {
+        self.inner.kill_process(os_pid).await
+    }
+
+    async fn send_stdin(&self, os_pid: u32, input: &str) -> Result<(), String> {
+        self.inner.send_stdin(os_pid, input).await
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -408,6 +469,18 @@ impl Runtime for LocalRuntime {
             }
         }
         Ok(entries)
+    }
+
+    async fn spawn_process(&self, _req: SpawnProcessRequest) -> Result<ProcessHandle, String> {
+        Err("LocalRuntime does not support process spawning yet".into())
+    }
+
+    async fn kill_process(&self, _os_pid: u32) -> Result<(), String> {
+        Err("LocalRuntime does not support kill_process yet".into())
+    }
+
+    async fn send_stdin(&self, _os_pid: u32, _input: &str) -> Result<(), String> {
+        Err("LocalRuntime does not support send_stdin yet".into())
     }
 }
 
@@ -588,6 +661,51 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
 
     async fn file_info(&self, path: &str) -> Result<Vec<FileEntry>, String> {
         self.inner.file_info(path).await
+    }
+
+    async fn spawn_process(&self, req: SpawnProcessRequest) -> Result<ProcessHandle, String> {
+        // CommandGuard 检查命令
+        if let Some(ref guard) = self.command_guard {
+            match guard.check(&req.command) {
+                crate::command_guard::GuardDecision::Deny(p) => {
+                    let sug = p.suggestion.as_deref().unwrap_or("");
+                    return Err(format!("spawn rejected: {} ({})", p.message, sug));
+                }
+                crate::command_guard::GuardDecision::Ask(p) => {
+                    let allowed = self.resolve_ask("command", &p.message);
+                    if !allowed {
+                        let sug = p.suggestion.as_deref().unwrap_or("");
+                        return Err(format!("spawn denied by user: {} ({})", p.message, sug));
+                    }
+                }
+                crate::command_guard::GuardDecision::Allow => {}
+            }
+        }
+        self.inner.spawn_process(req).await
+    }
+
+    async fn kill_process(&self, os_pid: u32) -> Result<(), String> {
+        // PermissionEngine 检查 kill 操作
+        if let Some(ref engine) = self.permission_engine {
+            let path = format!("/proc/{}", os_pid);
+            match engine.check(&path, crate::kernel::Action::Execute) {
+                crate::kernel::PermissionResult::Deny(reason) => {
+                    return Err(format!("kill denied: {reason}"));
+                }
+                crate::kernel::PermissionResult::Ask { title, message } => {
+                    let allowed = self.resolve_ask(&title, &message);
+                    if !allowed {
+                        return Err(format!("kill denied by user: {message}"));
+                    }
+                }
+                crate::kernel::PermissionResult::Allow => {}
+            }
+        }
+        self.inner.kill_process(os_pid).await
+    }
+
+    async fn send_stdin(&self, os_pid: u32, input: &str) -> Result<(), String> {
+        self.inner.send_stdin(os_pid, input).await
     }
 }
 
