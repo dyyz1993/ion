@@ -130,7 +130,140 @@ ion rpc --session <sid> --method call_tool \
 
 ---
 
+## Group C：UI 事件通道 CLI（Ask/Confirm/Prompt/Notif/Alert）
+
+### C1 订阅 UI 事件
+
+```bash
+# Terminal 1：订阅 UI 事件通道
+ion subscribe --ui
+
+# 预期：连接保持，收到事件时逐行打印 JSON
+# {"type":"ui_event","ui_type":"Ask","request_id":"req_abc123","data":{...}}
+# {"type":"ui_event","ui_type":"AskResolved","data":{"response":"allow"}}
+# {"type":"ui_event","ui_type":"Notif","data":{"title":"...","message":"..."}}
+```
+
+### C2 触发权限 Ask（端到端）
+
+```bash
+# Terminal 1（先订阅）：
+ion subscribe --ui
+
+# Terminal 2（触发权限规则命中 Ask）：
+ion rpc --session <sid> --method call_tool \
+  --params '{"tool":"read","args":{"path":"/tmp/ask-test"}}'
+
+# Terminal 1 收到的 Ask 事件：
+# {"type":"ui_event","ui_type":"Ask","request_id":"req_xxx",
+#  "title":"权限请求","message":"工具想要 Read 路径: /tmp/ask-test"}
+
+# Terminal 1 回复：
+ion rpc --method ui_respond \
+  --params '{"request_id":"req_xxx","response":"allow"}'
+
+# Terminal 1 收到 AskResolved：
+# {"type":"ui_event","ui_type":"AskResolved",
+#  "data":{"request_id":"req_xxx","response":"allow"}}
+
+# Terminal 2 的 call_tool 继续执行并返回结果
+```
+
+### C3 Extension 触发 Ask（WASM）
+
+```bash
+# 一个 WASM extension 调用 host_ui_ask 时：
+# WASM 端：host_ui_ask("确认删除?", "确定要删除任务 xxx 吗？")
+# → 返回 0（拒绝）或 1（允许）
+
+# 订阅者收到：
+# {"type":"ui_event","ui_type":"Ask","source":"extension:todo_plugin",
+#  "request_id":"req_def456","title":"确认删除","message":"确定要删除任务 xxx 吗？"}
+```
+
+### C4 通知和告警
+
+```bash
+# Notif（通知，不需要回复）
+# {"type":"ui_event","ui_type":"Notif","data":{"title":"任务完成","message":"编译成功"}}
+
+# Alert（告警，不需要回复）
+# {"type":"ui_event","ui_type":"Alert","data":{"title":"磁盘不足","message":"剩余 1GB","level":"warning"}}
+```
+
+### C5 UI 事件通道架构
+
+```
+三条独立通道：
+Instance (--session x)  → agent_start/text_delta/agent_end（机器消费）
+Extension (--extension) → 插件自定义事件 + extension_rpc（调试/前端）
+UI (--ui)              → Ask/Confirm/Prompt/Notif/Alert（人类交互）
+                          回复走 ui_respond RPC（不走订阅通道）
+```
+
 ---
+
+## Group D：E2E 测试清单
+
+### D1 Runtime 进程管理
+
+| # | 测试 | CLI | 预期 | 状态 |
+|---|------|-----|------|------|
+| D1.1 | 前台 spawn 收集输出 | call_tool bash "echo ok" | stdout=ok, exit_code=0 | ✅ 通过 |
+| D1.2 | 前台 spawn 非零退出 | call_tool bash "exit 42" | exit_code=42 | ✅ 通过 |
+| D1.3 | 后台 spawn + kill | bash_run background=true + bash_kill | os_pid>0, kill 成功 | ✅ 通过 |
+| D1.4 | send_stdin | bash_run cat + bash_send | stdin 写入成功 | ✅ 通过 |
+| D1.5 | 超时兜底 | bash_run timeoutBackground=true | 超时后转后台 | ✅ 通过 |
+
+### D2 权限拦截
+
+| # | 测试 | CLI | 预期 | 状态 |
+|---|------|-----|------|------|
+| D2.1 | Deny 规则拦截读取 | call_tool read "~/.ssh/id_rsa" | Err [Permission] | ✅ 通过 |
+| D2.2 | CommandGuard 拦截高危 | call_tool bash "rm -rf /" | Err "rejected" | ✅ 通过 |
+| D2.3 | 白名单命令放行 | call_tool bash "echo safe" | Ok | ✅ 通过 |
+| D2.4 | grep_search 也走权限检查 | grep_search 命中 Deny 规则 | Err | ✅ 通过 |
+
+### D3 UI 事件通道
+
+| # | 测试 | 步骤 | 预期 | 状态 |
+|---|------|------|------|------|
+| D3.1 | subscribe_ui 过滤 | 插件事件 vs UI 事件 | subscribe_ui 只收 UI 事件 | ✅ 通过 |
+| D3.2 | subscribe 不过滤 UI | UI 事件 vs 插件事件 | 普通 subscribe 不过滤 UI | ✅ 通过 |
+| D3.3 | subscribe_all 收全部 | UI + 插件事件 | 两条都收到 | ✅ 通过 |
+| D3.4 | Ask 事件构造 | ExtensionEvent::new_ui | route="ui", custom_type="Ask" | ✅ 通过 |
+| D3.5 | AskResolved 事件 | 带 response/resolved_by | data 格式正确 | ✅ 通过 |
+| D3.6 | SecuredRuntime 异步 Ask | resolve_ask 三路径 | 同步/异步/拒绝 | ✅ 通过 |
+| D3.7 | WASM host_ui_ask | 宿主函数注册 | 能推 Ask 事件并等回复 | ✅ 通过 |
+
+### D4 混合场景
+
+| # | 测试 | 说明 | 状态 |
+|---|------|------|------|
+| D4.1 | 权限 + 进程管理 | 后台进程也过 CommandGuard | ✅ 通过 |
+| D4.2 | PermissionExtension | before_tool_call 规则匹配 | ✅ 通过 |
+| D4.3 | extension_rpc add_rule | CLI 添加规则 | ✅ 通过 |
+
+---
+
+## 验证结果（142 tests 全绿）
+
+```
+=== cargo test --lib ===
+test result: ok. 98 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.52s
+
+=== cargo test --test ui_event_tests ===
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+=== cargo test --test runtime_tests ===
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.01s
+
+=== cargo test --test secured_runtime_tests ===
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+=== cargo test --test plugin_tests ===
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.76s
+```
 
 ## 架构：两层设计
 
