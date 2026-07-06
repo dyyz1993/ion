@@ -1271,6 +1271,7 @@ impl<R: Runtime + 'static> Runtime for SandboxRuntime<R> {
     async fn channel_send(&self, ch: &str, text: &str) -> Result<(), String> { self.inner.channel_send(ch, text).await }
     async fn kill_worker(&self, wid: &str) -> Result<(), String> { self.inner.kill_worker(wid).await }
 }
+#[cfg(test)]
 mod tests {
     use super::*;
     use tokio::test;
@@ -1354,14 +1355,14 @@ mod tests {
 
     #[test]
     async fn remote_runtime_ssh_command_format() {
-        let rt = RemoteRuntime::new(LocalRuntime::new(), "admin", "xyz-mac.local", 22, "");
+        let rt = RemoteRuntime::new(LocalRuntime::new(), "admin", "xyz-mac.local", 22, "", "");
         let cmd = rt.ssh_cmd("echo hello");
         assert_eq!(cmd, "ssh admin@xyz-mac.local -p 22 'echo hello'");
     }
 
     #[test]
     async fn remote_runtime_ssh_command_with_key() {
-        let rt = RemoteRuntime::new(LocalRuntime::new(), "deploy", "10.0.0.1", 2222, "~/.ssh/deploy_key");
+        let rt = RemoteRuntime::new(LocalRuntime::new(), "deploy", "10.0.0.1", 2222, "~/.ssh/deploy_key", "");
         let cmd = rt.ssh_cmd("kubectl get pods");
         assert_eq!(cmd, "ssh deploy@10.0.0.1 -p 2222 -i ~/.ssh/deploy_key 'kubectl get pods'");
     }
