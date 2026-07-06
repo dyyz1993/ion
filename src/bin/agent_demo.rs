@@ -156,8 +156,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             enable_compact: true,
             compact_config: CompactConfig {
                 threshold: 32000,
-                target: 16000,
-                keep_newest: 4,
+                keep_recent_tokens: 16000,
+                reserve_tokens: 2000,
+                batch_max_tokens: 8000,
+                max_batches: 10,
+                context_window: 128000,
             },
             api_key: Some(API_KEY.into()),
             response_format: None,

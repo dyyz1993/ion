@@ -24,9 +24,11 @@ pub enum EventVisibility {
 /// 一条插件事件
 #[derive(Clone, Debug)]
 pub struct ExtensionEvent {
+    /// 事件路由: "extension" | "ui"
+    pub route: String,
     /// 来源插件名（"memory", "todo" 等）
     pub extension: String,
-    /// 自定义类型（"memory_saved", "memory_injected" 等）
+    /// 自定义类型（"memory_saved", "Ask", "Confirm" 等）
     pub custom_type: String,
     /// 可选的 session 作用域
     pub session: Option<String>,
@@ -43,10 +45,24 @@ pub struct ExtensionEvent {
 impl ExtensionEvent {
     pub fn new(extension: &str, custom_type: &str) -> Self {
         Self {
+            route: "extension".into(),
             extension: extension.to_string(),
             custom_type: custom_type.to_string(),
             session: None,
             data: serde_json::Value::Null,
+            persisted: false,
+            visibility: EventVisibility::UiOnly,
+            correlation_id: String::new(),
+        }
+    }
+
+    pub fn new_ui(ui_type: &str, title: &str, message: &str) -> Self {
+        Self {
+            route: "ui".into(),
+            extension: "ui".into(),
+            custom_type: ui_type.to_string(),
+            session: None,
+            data: serde_json::json!({"title": title, "message": message}),
             persisted: false,
             visibility: EventVisibility::UiOnly,
             correlation_id: String::new(),
@@ -58,11 +74,13 @@ impl ExtensionEvent {
     pub fn with_persisted(mut self, p: bool) -> Self { self.persisted = p; self }
     pub fn with_visibility(mut self, v: EventVisibility) -> Self { self.visibility = v; self }
     pub fn with_correlation(mut self, cid: &str) -> Self { self.correlation_id = cid.to_string(); self }
+    pub fn with_route(mut self, r: &str) -> Self { self.route = r.to_string(); self }
 }
 
 /// Subscriber 过滤器
 #[derive(Clone, Debug)]
 struct SubFilter {
+    route: Option<String>,    // "ui" | "extension" | None(不限)
     extension: Option<String>,
     session: Option<String>,
 }
@@ -85,6 +103,7 @@ impl ExtensionEventBus {
     /// 订阅指定插件的所有事件（不限制 session）
     pub fn subscribe(&mut self, extension: &str) -> mpsc::Receiver<ExtensionEvent> {
         self.subscribe_with_filter(SubFilter {
+            route: Some("extension".into()),
             extension: Some(extension.to_string()),
             session: None,
         })
@@ -93,14 +112,20 @@ impl ExtensionEventBus {
     /// 订阅指定插件 + session 的事件
     pub fn subscribe_with_session(&mut self, extension: &str, session: &str) -> mpsc::Receiver<ExtensionEvent> {
         self.subscribe_with_filter(SubFilter {
+            route: Some("extension".into()),
             extension: Some(extension.to_string()),
             session: Some(session.to_string()),
         })
     }
 
-    /// 订阅全部事件（插件 + session 都不限制）
+    /// 订阅全部事件（不限 route、extension、session）
     pub fn subscribe_all(&mut self) -> mpsc::Receiver<ExtensionEvent> {
-        self.subscribe_with_filter(SubFilter { extension: None, session: None })
+        self.subscribe_with_filter(SubFilter { route: None, extension: None, session: None })
+    }
+
+    /// 订阅 UI 事件（Ask/Confirm/Prompt/Notif/Alert）
+    pub fn subscribe_ui(&mut self) -> mpsc::Receiver<ExtensionEvent> {
+        self.subscribe_with_filter(SubFilter { route: Some("ui".into()), extension: None, session: None })
     }
 
     fn subscribe_with_filter(&mut self, filter: SubFilter) -> mpsc::Receiver<ExtensionEvent> {
@@ -113,10 +138,15 @@ impl ExtensionEventBus {
     /// 广播事件给所有匹配的 subscriber
     pub fn broadcast(&mut self, event: &ExtensionEvent) {
         self.subscribers.retain(|sub| {
-            // 过滤
+            // 按 route 过滤
+            if let Some(ref route) = sub.filter.route {
+                if route != &event.route { return true; }
+            }
+            // 按 extension 过滤
             if let Some(ref extension) = sub.filter.extension {
                 if extension != &event.extension { return true; }
             }
+            // 按 session 过滤
             if let Some(ref session) = sub.filter.session {
                 if let Some(ref ev_sess) = event.session {
                     if session != ev_sess { return true; }
@@ -128,8 +158,8 @@ impl ExtensionEventBus {
             match sub.tx.try_send(event.clone()) {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    tracing::warn!("[eventbus] subscriber too slow, disconnecting (extension={:?}, session={:?})",
-                        sub.filter.extension, sub.filter.session);
+                    tracing::warn!("[eventbus] subscriber too slow, disconnecting (route={:?}, ext={:?}, session={:?})",
+                        sub.filter.route, sub.filter.extension, sub.filter.session);
                     false
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => false,
