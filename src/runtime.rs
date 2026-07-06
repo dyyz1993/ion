@@ -1220,21 +1220,98 @@ impl<R: Runtime> SandboxRuntime<R> {
     }
 
     fn generate_profile(&self) -> String {
-        let mut sb = String::from("(version 1)\n(allow default)\n");
+        // ── 白名单思路（先全拒，再放行）──
+        // 跟旧的 (allow default) 黑名单相反，这里默认拒绝一切，然后只放行必要的。
+        //
+        // 三个 profile 的差异仅在"允许写的路径"和"是否允许网络"。
+        // 命令执行（process-exec）一律放行系统 bin 目录——文件写入控制才是核心防御。
+        let mut sb = String::from("(version 1)\n(deny default)\n");
+
+        // ── 放行命令执行（系统 bin 目录 + 常见版本管理器路径）──
+        // 这些目录包含 node/npm/cargo/git/cat/ls/rm 等常见二进制
+        sb.push_str("(allow process-fork)\n");
+        sb.push_str("(allow process-exec (subpath \"/bin\"))\n");
+        sb.push_str("(allow process-exec (subpath \"/usr/bin\"))\n");
+        sb.push_str("(allow process-exec (subpath \"/usr/local/bin\"))\n");
+        sb.push_str("(allow process-exec (subpath \"/usr/sbin\"))\n");
+        sb.push_str("(allow process-exec (subpath \"/sbin\"))\n");
+        sb.push_str("(allow process-exec (subpath \"/opt/homebrew/bin\"))\n"); // Apple Silicon Homebrew
+        // 版本管理器路径（nvm、cargo、go、pyenv 等用户级安装）
+        if let Ok(home) = std::env::var("HOME") {
+            // nvm: ~/.nvm/versions/node/*/bin
+            sb.push_str(&format!("(allow process-exec (subpath \"{}/.nvm/versions\"))\n", home));
+            // cargo: ~/.cargo/bin + ~/.rustup（rustup shim 调用 ~/.rustup/toolchains/*/bin）
+            sb.push_str(&format!("(allow process-exec (subpath \"{}/.cargo/bin\"))\n", home));
+            sb.push_str(&format!("(allow process-exec (subpath \"{}/.rustup\"))\n", home));
+            // rustup 的 toolchain 可能装在别处，让 ~/.rustup 可读
+            sb.push_str(&format!("(allow file-read* (subpath \"{}/.rustup\"))\n", home));
+            // go: ~/go/bin
+            sb.push_str(&format!("(allow process-exec (subpath \"{}/go/bin\"))\n", home));
+            // pyenv: ~/.pyenv/versions, ~/.pyenv/shims
+            sb.push_str(&format!("(allow process-exec (subpath \"{}/.pyenv\"))\n", home));
+            // volta: ~/.volta/bin
+            sb.push_str(&format!("(allow process-exec (subpath \"{}/.volta/bin\"))\n", home));
+            // fnm: ~/Library/Application Support/fnm
+            sb.push_str(&format!("(allow process-exec (subpath \"{}/Library/Application Support/fnm\"))\n", home));
+        }
+
+        // ── 放行全局只读 ──
+        sb.push_str("(allow file-read* (subpath \"/\"))\n");
+        sb.push_str("(allow file-read-data (subpath \"/\"))\n");
+        sb.push_str("(allow file-read-metadata (subpath \"/\"))\n");
+        // /dev/null 写入（命令重定向 stderr/stdout 必需）
+        sb.push_str("(allow file-write* (literal \"/dev/null\"))\n");
+        sb.push_str("(allow file-write-data (literal \"/dev/null\"))\n");
+        // /dev/dtracehelper（动态链接器需要）
+        sb.push_str("(allow file-read* (literal \"/dev/dtracehelper\"))\n");
+
+        // ── 必要的 syscall ──
+        sb.push_str("(allow sysctl*)\n");
+        sb.push_str("(allow signal)\n");
+        sb.push_str("(allow ipc-posix*)\n");
+        sb.push_str("(allow system*)\n");
+        sb.push_str("(allow mach*)\n");
+        sb.push_str("(allow process-info*)\n");
+        // macOS 进程缓存目录（$TMPDIR 指向这里，bash 子进程需要）
+        // 注意：不放行 /private/var/tmp（那是 /var/tmp 的实体，对外开放写不安全）
+        if let Ok(tmpdir) = std::env::var("TMPDIR") {
+            // TMPDIR 通常形如 /var/folders/xx/yyy/T/
+            // 它的实体是 /private/var/folders/...，要放行写
+            let private = if tmpdir.starts_with("/var/") {
+                format!("/private{}", tmpdir)
+            } else {
+                tmpdir.clone()
+            };
+            let private_trim = private.trim_end_matches('/').to_string();
+            sb.push_str(&format!("(allow file-write* (subpath \"{}\"))\n", private_trim));
+        }
+
+        // ── 按 profile 配置写权限和网络 ──
         match self.profile.as_str() {
             "readonly" => {
-                sb.push_str("(deny file-write* (subpath \"/\"))\n");
+                // 全局只读 + /tmp 可写 + 禁网络
                 sb.push_str("(allow file-write* (subpath \"/tmp\"))\n");
                 sb.push_str("(allow file-write* (subpath \"/private/tmp\"))\n");
-                sb.push_str("(deny network*)\n");
+                // 不加 network* → 默认 deny（已在 deny default 里）
             }
             "workspace" => {
-                sb.push_str(&format!("(allow file-write* (subpath \"{}\"))\n", self.workspace));
+                // workspace + /tmp 可写 + 网络允许
+                if !self.workspace.is_empty() {
+                    sb.push_str(&format!("(allow file-write* (subpath \"{}\"))\n", self.workspace));
+                }
                 sb.push_str("(allow file-write* (subpath \"/tmp\"))\n");
-                sb.push_str("(deny file-write* (subpath \"/etc\"))\n");
-                sb.push_str("(deny file-write* (subpath \"/usr\"))\n");
+                sb.push_str("(allow file-write* (subpath \"/private/tmp\"))\n");
+                sb.push_str("(allow network*)\n");
             }
-            _ => {} // "full-access" — 全部允许
+            "full-access" => {
+                // 全部允许（等同无沙箱）
+                return String::from("(version 1)\n(allow default)\n");
+            }
+            _ => {
+                // 未知 profile → 默认按 readonly 处理（最安全）
+                sb.push_str("(allow file-write* (subpath \"/tmp\"))\n");
+                sb.push_str("(allow file-write* (subpath \"/private/tmp\"))\n");
+            }
         }
         sb
     }
