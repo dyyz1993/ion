@@ -5,10 +5,13 @@ use wasmtime::{Engine, Linker, Memory, MemoryType, Module, Store};
 
 use async_trait::async_trait;
 use serde::Serialize;
+use tokio::sync::oneshot;
 
 use crate::agent::error::{AgentError, AgentResult};
 use crate::agent::tool::Tool;
+use crate::event_bus::ExtensionEvent;
 use crate::paths;
+use crate::runtime::{pending_ui, PENDING_UI};
 
 /// Offset into linear memory where the host places tool name / args / output
 /// for the WASM plugin. Must be high enough to avoid the WASM module's data
@@ -25,7 +28,7 @@ const DATA_OFFSET: u32 = 100_000; // 100 KB — past HEAP, before stack
 ///
 /// Host functions (`host_write_global_data`, etc.) read this from the
 /// `Caller` to determine file paths for the four storage dimensions.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Context {
     /// Current session ID (used for session-level data paths).
     pub session_id: String,
@@ -35,6 +38,19 @@ pub struct Context {
     pub project_root: String,
     /// Extension name (the subdirectory name inside each data dir).
     pub ext_name: String,
+    /// EventBus for UI events (host_ui_ask/confirm/notif/alert/prompt).
+    pub event_bus: Option<std::sync::Arc<tokio::sync::Mutex<crate::event_bus::ExtensionEventBus>>>,
+}
+
+impl std::fmt::Debug for Context {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Context")
+            .field("session_id", &self.session_id)
+            .field("cwd", &self.cwd)
+            .field("project_root", &self.project_root)
+            .field("ext_name", &self.ext_name)
+            .finish()
+    }
 }
 
 impl Default for Context {
@@ -44,6 +60,7 @@ impl Default for Context {
             cwd: String::new(),
             project_root: String::new(),
             ext_name: String::new(),
+            event_bus: None,
         }
     }
 }
@@ -171,7 +188,142 @@ impl Extension {
                 }
                 0
             }
-    )?;
+	    )?;
+
+	    // ── Host: ui_ask ──────────────────────────────────────────────────
+	    linker.func_wrap("env", "host_ui_ask",
+	        move |mut caller: wasmtime::Caller<'_, Context>,
+	              title_ptr: u32, title_len: u32,
+	              msg_ptr: u32, msg_len: u32| -> u32 {
+	            let title = mem_read_str(&mut caller, title_ptr, title_len);
+	            let message = mem_read_str(&mut caller, msg_ptr, msg_len);
+	            let ctx = caller.data().clone();
+	            let bus = match ctx.event_bus {
+				Some(ref b) => b.clone(),
+				None => return 0, // no event bus — deny
+			    };
+	            let request_id = format!("req_{}", &uuid::Uuid::new_v4().to_string()[..8]);
+
+	            // register pending
+	            let (tx, rx) = oneshot::channel();
+	            pending_ui().lock().unwrap().insert(request_id.clone(), tx);
+
+	            // push Ask event
+	            let event = ExtensionEvent::new_ui("Ask", &title, &message)
+	                .with_data(serde_json::json!({"request_id": request_id, "title": title, "message": message}));
+	            {
+	                let mut b = bus.blocking_lock();
+	                b.broadcast(&event);
+	            }
+
+	            // wait for response (blocking — we're in a sync closure)
+	            match rx.blocking_recv() {
+	                Ok(resp) if resp == "allow" => 1,
+	                _ => 0,
+	            }
+	        }
+	    )?;
+
+	    // ── Host: ui_confirm ───────────────────────────────────────────────
+	    linker.func_wrap("env", "host_ui_confirm",
+	        move |mut caller: wasmtime::Caller<'_, Context>,
+	              title_ptr: u32, title_len: u32,
+	              msg_ptr: u32, msg_len: u32| -> u32 {
+	            let title = mem_read_str(&mut caller, title_ptr, title_len);
+	            let message = mem_read_str(&mut caller, msg_ptr, msg_len);
+	            let ctx = caller.data().clone();
+	            let bus = match ctx.event_bus {
+				Some(ref b) => b.clone(),
+				None => return 0,
+			    };
+	            let request_id = format!("req_{}", &uuid::Uuid::new_v4().to_string()[..8]);
+
+	            let (tx, rx) = oneshot::channel();
+	            pending_ui().lock().unwrap().insert(request_id.clone(), tx);
+
+	            let event = ExtensionEvent::new_ui("Confirm", &title, &message)
+	                .with_data(serde_json::json!({"request_id": request_id, "title": title, "message": message}));
+	            {
+	                let mut b = bus.blocking_lock();
+	                b.broadcast(&event);
+	            }
+
+	            match rx.blocking_recv() {
+	                Ok(resp) if resp == "confirm" => 1,
+	                _ => 0,
+	            }
+	        }
+	    )?;
+
+	    // ── Host: ui_notif ────────────────────────────────────────────────
+	    linker.func_wrap("env", "host_ui_notif",
+	        move |mut caller: wasmtime::Caller<'_, Context>,
+	              title_ptr: u32, title_len: u32,
+	              msg_ptr: u32, msg_len: u32| {
+	            let title = mem_read_str(&mut caller, title_ptr, title_len);
+	            let message = mem_read_str(&mut caller, msg_ptr, msg_len);
+	            if let Some(ref bus) = caller.data().event_bus {
+	                let event = ExtensionEvent::new_ui("Notif", &title, &message);
+	                let mut b = bus.blocking_lock();
+	                b.broadcast(&event);
+	            }
+	        }
+	    )?;
+
+	    // ── Host: ui_alert ────────────────────────────────────────────────
+	    linker.func_wrap("env", "host_ui_alert",
+	        move |mut caller: wasmtime::Caller<'_, Context>,
+	              title_ptr: u32, title_len: u32,
+	              msg_ptr: u32, msg_len: u32| {
+	            let title = mem_read_str(&mut caller, title_ptr, title_len);
+	            let message = mem_read_str(&mut caller, msg_ptr, msg_len);
+	            if let Some(ref bus) = caller.data().event_bus {
+	                let event = ExtensionEvent::new_ui("Alert", &title, &message)
+	                    .with_data(serde_json::json!({"level": "warning"}));
+	                let mut b = bus.blocking_lock();
+	                b.broadcast(&event);
+	            }
+	        }
+	    )?;
+
+	    // ── Host: ui_prompt ───────────────────────────────────────────────
+	    linker.func_wrap("env", "host_ui_prompt",
+	        move |mut caller: wasmtime::Caller<'_, Context>,
+	              title_ptr: u32, title_len: u32,
+	              msg_ptr: u32, msg_len: u32,
+	              out_buf: u32, out_capacity: u32| -> u32 {
+	            let title = mem_read_str(&mut caller, title_ptr, title_len);
+	            let message = mem_read_str(&mut caller, msg_ptr, msg_len);
+	            let ctx = caller.data().clone();
+	            let bus = match ctx.event_bus {
+				Some(ref b) => b.clone(),
+				None => return 0,
+			    };
+	            let request_id = format!("req_{}", &uuid::Uuid::new_v4().to_string()[..8]);
+
+	            let (tx, rx) = oneshot::channel();
+	            pending_ui().lock().unwrap().insert(request_id.clone(), tx);
+
+	            let event = ExtensionEvent::new_ui("Prompt", &title, &message)
+	                .with_data(serde_json::json!({"request_id": request_id, "title": title, "message": message}));
+	            {
+	                let mut b = bus.blocking_lock();
+	                b.broadcast(&event);
+	            }
+
+	            match rx.blocking_recv() {
+	                Ok(resp) => {
+	                    let bytes = resp.as_bytes();
+	                    let len = bytes.len().min(out_capacity as usize);
+	                    if let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+	                        mem.write(&mut caller, out_buf as usize, &bytes[..len]).ok();
+	                    }
+	                    len as u32
+	                }
+	                _ => 0,
+	            }
+	        }
+	    )?;
 
         // ── Register data dimension host functions (4 dims × 4 ops = 16) ───
         register_dim(&mut linker, "global".into(), |ctx| paths::global_data_dir(&ctx.ext_name))?;

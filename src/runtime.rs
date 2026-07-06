@@ -19,8 +19,8 @@ use tokio::sync::oneshot;
 
 /// 全局待处理的 UI 确认请求（request_id → 回复通道）
 /// SecuredRuntime 写入，ion Manager 的 ui_respond handler 读取并回复。
-static PENDING_UI: OnceLock<Mutex<HashMap<String, oneshot::Sender<String>>>> = OnceLock::new();
-fn pending_ui() -> &'static Mutex<HashMap<String, oneshot::Sender<String>>> {
+pub static PENDING_UI: OnceLock<Mutex<HashMap<String, oneshot::Sender<String>>>> = OnceLock::new();
+pub fn pending_ui() -> &'static Mutex<HashMap<String, oneshot::Sender<String>>> {
     PENDING_UI.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
