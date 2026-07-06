@@ -1039,52 +1039,59 @@ impl<R: Runtime + 'static> Runtime for RemoteRuntime<R> {
         self.inner.execute_command(&self.ssh_cmd(command), timeout_secs).await
     }
     async fn read_file(&self, path: &str) -> Result<String, String> {
-        let (o, e, c) = self.inner.execute_command(&self.ssh_cmd(&format!("cat \"{path}\"")), 30).await?;
+        let (o, e, c) = self.inner.execute_command(&self.ssh_cmd(&format!("cat {}", sh_quote(path))), 30).await?;
         if c != 0 { Err(format!("remote read: {e}")) } else { Ok(o) }
     }
     async fn write_file(&self, path: &str, content: &str) -> Result<(), String> {
         let e = content.replace('\'', "'\\''");
-        let (_, s, c) = self.inner.execute_command(&self.ssh_cmd(&format!("cat > \"{path}\" << 'EOF'\n{e}\nEOF")), 30).await?;
+        let (_, s, c) = self.inner.execute_command(&self.ssh_cmd(&format!("cat > {} << 'IONEOF'\n{e}\nIONEOF", sh_quote(path))), 30).await?;
         if c != 0 { Err(format!("remote write: {s}")) } else { Ok(()) }
     }
     async fn edit_file(&self, path: &str, old: &str, new: &str) -> Result<(), String> {
         let c = self.read_file(path).await?; self.write_file(path, &c.replace(old, new)).await
     }
     async fn path_exists(&self, path: &str) -> bool {
-        self.inner.execute_command(&self.ssh_cmd(&format!("test -e \"{path}\"")), 10).await.is_ok()
+        self.inner.execute_command(&self.ssh_cmd(&format!("test -e {}", sh_quote(path))), 10).await.is_ok()
     }
     async fn list_dir(&self, path: &str) -> Result<Vec<String>, String> {
-        let (o, _, _) = self.inner.execute_command(&self.ssh_cmd(&format!("ls -1 \"{path}\"")), 15).await?;
+        let (o, _, _) = self.inner.execute_command(&self.ssh_cmd(&format!("ls -1 {}", sh_quote(path))), 15).await?;
         Ok(o.lines().map(String::from).collect())
     }
     async fn remove_file(&self, path: &str) -> Result<(), String> {
-        let (_, s, c) = self.inner.execute_command(&self.ssh_cmd(&format!("rm -f \"{path}\"")), 15).await?;
+        let (_, s, c) = self.inner.execute_command(&self.ssh_cmd(&format!("rm -f {}", sh_quote(path))), 15).await?;
         if c != 0 { Err(format!("remote rm: {s}")) } else { Ok(()) }
     }
     async fn grep_search(&self, pattern: &str, path: &str) -> Result<Vec<String>, String> {
-        let (o, _, _) = self.inner.execute_command(&self.ssh_cmd(&format!("grep -rn '{pattern}' '{path}' 2>/dev/null || true")), 30).await?;
+        let (o, _, _) = self.inner.execute_command(&self.ssh_cmd(&format!("grep -rn {} {} 2>/dev/null || true", sh_quote(pattern), sh_quote(path))), 30).await?;
         Ok(o.lines().map(String::from).collect())
     }
     async fn find_files(&self, path: &str, name: &str) -> Result<Vec<String>, String> {
-        let (o, _, _) = self.inner.execute_command(&self.ssh_cmd(&format!("find '{path}' -name '{name}' 2>/dev/null || true")), 30).await?;
+        let (o, _, _) = self.inner.execute_command(&self.ssh_cmd(&format!("find {} -name {} 2>/dev/null || true", sh_quote(path), sh_quote(name))), 30).await?;
         Ok(o.lines().map(String::from).filter(|l| !l.is_empty()).collect())
     }
     async fn file_info(&self, path: &str) -> Result<Vec<FileEntry>, String> {
-        let (o, _, _) = self.inner.execute_command(&self.ssh_cmd(&format!("ls -la '{path}' 2>/dev/null || true")), 15).await?;
+        let (o, _, _) = self.inner.execute_command(&self.ssh_cmd(&format!("ls -la {} 2>/dev/null || true", sh_quote(path))), 15).await?;
         let mut v = Vec::new();
         for line in o.lines().skip(1) { if !line.is_empty() { let p: Vec<&str> = line.split_whitespace().collect(); if p.len() >= 9 { v.push(FileEntry { name: p[8..].join(" "), is_dir: line.starts_with('d'), size: p[4].parse().unwrap_or(0), modified: p[5..8].join(" ") }); } } }
         Ok(v)
     }
     async fn check_command(&self, cmd: &str) -> Result<(), String> { self.inner.check_command(cmd).await }
-    async fn spawn_process(&self, req: SpawnProcessRequest) -> Result<ProcessHandle, String> { self.inner.spawn_process(req).await }
-    async fn kill_process(&self, pid: u32) -> Result<(), String> { self.inner.kill_process(pid).await }
-    async fn send_stdin(&self, pid: u32, input: &str) -> Result<(), String> { self.inner.send_stdin(pid, input).await }
+    // 进程管理方法：远程不支持，防止意外在本地执行
+    async fn spawn_process(&self, _req: SpawnProcessRequest) -> Result<ProcessHandle, String> { Err("RemoteRuntime: spawn_process not supported remotely".into()) }
+    async fn kill_process(&self, _pid: u32) -> Result<(), String> { Err("RemoteRuntime: kill_process not supported remotely".into()) }
+    async fn send_stdin(&self, _pid: u32, _input: &str) -> Result<(), String> { Err("RemoteRuntime: send_stdin not supported remotely".into()) }
+    // Worker 编排：透传给 WorkerRuntime（上层处理）
     async fn spawn_worker(&self, req: SpawnWorkerRequest) -> Result<SpawnWorkerResponse, String> { self.inner.spawn_worker(req).await }
     async fn send_to_worker(&self, wid: &str, text: &str) -> Result<(), String> { self.inner.send_to_worker(wid, text).await }
     async fn resume_worker(&self, wid: &str, text: &str) -> Result<String, String> { self.inner.resume_worker(wid, text).await }
     async fn await_worker(&self, wid: &str) -> Result<String, String> { self.inner.await_worker(wid).await }
     async fn channel_send(&self, ch: &str, text: &str) -> Result<(), String> { self.inner.channel_send(ch, text).await }
     async fn kill_worker(&self, wid: &str) -> Result<(), String> { self.inner.kill_worker(wid).await }
+}
+
+/// 远端 shell 参数安全引用 — 防止注入
+pub fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1186,16 +1193,18 @@ impl Runtime for RouterRuntime {
 
 /// 通过 macOS `sandbox-exec` 在沙箱内执行命令。
 ///
-/// 根据配置生成 Seatbelt `.sb` profile，控制文件系统和网络访问。
-/// 支持三种内置 profile: readonly / workspace / full-access
+/// **注意：** 当前只约束 `execute_command`（bash 命令执行）。
+/// 文件操作（read/write/edit/list_dir 等）透传给 inner Runtime，
+/// 由上层 `SecuredRuntime` 的 `PermissionEngine` 控制访问策略。
 ///
-/// ```json
-/// {"runtime": {"sandbox": {"profile": "workspace"}}}
-/// ```
+/// 三种内置 profile:
+/// - readonly: 全局只读 + /tmp 可写 + 禁止网络
+/// - workspace: 工作区可写 + 系统路径只读
+/// - full-access: 全部允许（等同无沙箱）
 pub struct SandboxRuntime<R: Runtime> {
     inner: R,
-    profile: String,        // "readonly" | "workspace" | "full-access"
-    workspace: String,      // 工作区根路径
+    profile: String,
+    workspace: String,
 }
 
 impl<R: Runtime> SandboxRuntime<R> {
@@ -1203,43 +1212,32 @@ impl<R: Runtime> SandboxRuntime<R> {
         Self { inner, profile: profile.to_string(), workspace: workspace.to_string() }
     }
 
-    /// 生成 Seatbelt .sb profile 内容
     fn generate_profile(&self) -> String {
         let mut sb = String::from("(version 1)\n(allow default)\n");
         match self.profile.as_str() {
             "readonly" => {
-                sb.push_str(&format!("(allow file-read* (subpath \"/\"))\n"));
                 sb.push_str("(deny file-write* (subpath \"/\"))\n");
                 sb.push_str("(allow file-write* (subpath \"/tmp\"))\n");
                 sb.push_str("(allow file-write* (subpath \"/private/tmp\"))\n");
                 sb.push_str("(deny network*)\n");
             }
             "workspace" => {
-                sb.push_str(&format!("(allow file-read* (subpath \"/\"))\n"));
                 sb.push_str(&format!("(allow file-write* (subpath \"{}\"))\n", self.workspace));
                 sb.push_str("(allow file-write* (subpath \"/tmp\"))\n");
-                sb.push_str("(allow file-write* (subpath \"/private/tmp\"))\n");
                 sb.push_str("(deny file-write* (subpath \"/etc\"))\n");
                 sb.push_str("(deny file-write* (subpath \"/usr\"))\n");
-                // 网络默认允许（实际由 network.domains 控制）
             }
-            _ => {} // "full-access" 或未知 → 全部允许
+            _ => {} // "full-access" — 全部允许
         }
         sb
     }
 
-    /// 写入 profile 到临时文件，返回路径
-    fn write_profile(&self) -> Result<String, String> {
-        let content = self.generate_profile();
-        let path = format!("/tmp/ion-sandbox-{}.sb", std::process::id());
-        std::fs::write(&path, &content).map_err(|e| format!("write sb profile: {e}"))?;
-        Ok(path)
-    }
-
-    /// 用 sandbox-exec 包装命令
+    /// 用 sandbox-exec -p 内联 profile 包装命令（不写临时文件）
     fn sandbox_cmd(&self, cmd: &str) -> String {
-        let profile_path = self.write_profile().unwrap_or_default();
-        format!("sandbox-exec -f {} /bin/sh -c '{}'", profile_path, cmd.replace('\'', "'\\''"))
+        let profile = self.generate_profile();
+        // 内联 profile 中的特殊字符需要转义
+        let escaped_profile = profile.replace('\n', " ");
+        format!("sandbox-exec -p '{}' /bin/sh -c '{}'", escaped_profile, cmd.replace('\'', "'\\''"))
     }
 }
 
@@ -1247,10 +1245,12 @@ impl<R: Runtime> SandboxRuntime<R> {
 impl<R: Runtime + 'static> Runtime for SandboxRuntime<R> {
     fn runtime_type(&self) -> String { format!("sandbox({})", self.profile) }
 
+    /// execute_command 在 sandbox-exec 沙箱内执行
     async fn execute_command(&self, command: &str, timeout_secs: u64) -> Result<(String, String, i32), String> {
         let sb_cmd = self.sandbox_cmd(command);
         self.inner.execute_command(&sb_cmd, timeout_secs).await
     }
+    // 文件操作透传给 inner（由 SecuredRuntime.PermissionEngine 控制）
     async fn read_file(&self, path: &str) -> Result<String, String> { self.inner.read_file(path).await }
     async fn write_file(&self, path: &str, content: &str) -> Result<(), String> { self.inner.write_file(path, content).await }
     async fn edit_file(&self, path: &str, old: &str, new: &str) -> Result<(), String> { self.inner.edit_file(path, old, new).await }
@@ -1260,10 +1260,11 @@ impl<R: Runtime + 'static> Runtime for SandboxRuntime<R> {
     async fn grep_search(&self, pattern: &str, path: &str) -> Result<Vec<String>, String> { self.inner.grep_search(pattern, path).await }
     async fn find_files(&self, path: &str, name: &str) -> Result<Vec<String>, String> { self.inner.find_files(path, name).await }
     async fn file_info(&self, path: &str) -> Result<Vec<FileEntry>, String> { self.inner.file_info(path).await }
+    // 安全预检和进程管理：透传或明确拒绝
     async fn check_command(&self, cmd: &str) -> Result<(), String> { self.inner.check_command(cmd).await }
-    async fn spawn_process(&self, req: SpawnProcessRequest) -> Result<ProcessHandle, String> { self.inner.spawn_process(req).await }
-    async fn kill_process(&self, pid: u32) -> Result<(), String> { self.inner.kill_process(pid).await }
-    async fn send_stdin(&self, pid: u32, input: &str) -> Result<(), String> { self.inner.send_stdin(pid, input).await }
+    async fn spawn_process(&self, _req: SpawnProcessRequest) -> Result<ProcessHandle, String> { Err("SandboxRuntime does not support spawn_process".into()) }
+    async fn kill_process(&self, _pid: u32) -> Result<(), String> { Err("SandboxRuntime does not support kill_process".into()) }
+    async fn send_stdin(&self, _pid: u32, _input: &str) -> Result<(), String> { Err("SandboxRuntime does not support send_stdin".into()) }
     async fn spawn_worker(&self, req: SpawnWorkerRequest) -> Result<SpawnWorkerResponse, String> { self.inner.spawn_worker(req).await }
     async fn send_to_worker(&self, wid: &str, text: &str) -> Result<(), String> { self.inner.send_to_worker(wid, text).await }
     async fn resume_worker(&self, wid: &str, text: &str) -> Result<String, String> { self.inner.resume_worker(wid, text).await }
