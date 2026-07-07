@@ -715,6 +715,11 @@ impl Tool for SpawnWorkerTool {
                     "type": "string",
                     "default": "main",
                     "description": "(peer only) Channel name for status broadcasts"
+                },
+                "worktree": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "If true, run this worker in an isolated git worktree (new branch). Useful for developers so they don't pollute the main branch."
                 }
             },
             "required": ["relation", "agent", "task"]
@@ -731,6 +736,7 @@ impl Tool for SpawnWorkerTool {
             .to_string();
         let report_channel = args.get("report_channel").and_then(|v| v.as_str()).map(String::from);
         let wait = args.get("wait").and_then(|v| v.as_bool()).unwrap_or(true);
+        let worktree = args.get("worktree").and_then(|v| v.as_bool());
 
         let relation = match relation_str {
             "peer" => crate::runtime::SpawnRelation::Peer,
@@ -744,6 +750,7 @@ impl Tool for SpawnWorkerTool {
             name: None,
             report_channel: report_channel.clone(),
             wait,
+            worktree,
         };
 
         let resp = rt.spawn_worker(req).await.map_err(AgentError::Tool)?;

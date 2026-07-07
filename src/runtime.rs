@@ -247,6 +247,9 @@ pub struct SpawnWorkerRequest {
     /// - true（默认）：阻塞，返回 first_turn_output
     /// - false：立即返回 worker_id，后续用 await_worker 收结果（支持并行）
     pub wait: bool,
+    /// 是否在独立 git worktree 中运行（隔离文件改动）。
+    /// true = 创建新分支 + worktree，developer 在隔离目录工作。
+    pub worktree: Option<bool>,
 }
 
 /// spawn_worker 工具的响应。
@@ -379,6 +382,20 @@ impl<R: Runtime + 'static> Runtime for WorkerRuntime<R> {
             SpawnRelation::Child => "child",
             SpawnRelation::Peer => "peer",
         };
+        // 如果请求了 worktree 隔离，附加 worktree config
+        let worktree_json = if req.worktree.unwrap_or(false) {
+            // 用 worker_id 后 8 位作为分支名后缀（id 在 manager 侧分配，这里用时间戳兜底）
+            let suffix = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                & 0xFFFFFFFF;
+            serde_json::json!({
+                "branch": format!("ion-worker-{suffix:08x}"),
+            })
+        } else {
+            serde_json::Value::Null
+        };
         let params = serde_json::json!({
             "relation": relation_str,
             "agent": req.agent,
@@ -387,6 +404,7 @@ impl<R: Runtime + 'static> Runtime for WorkerRuntime<R> {
             "report_channel": req.report_channel,
             "wait": req.wait,           // Child 模式下：true=阻塞, false=立即返回
             "creator": null,            // Manager 会用 _from_worker 填充
+            "worktree": worktree_json,
         });
         let resp = self.bridge.send_command("create_worker", params).await?;
 
