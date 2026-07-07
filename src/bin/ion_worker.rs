@@ -9,7 +9,6 @@
 
 use std::io::{self, Write};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::HashMap;
 use tokio::sync::Mutex;
 use tokio::sync::{mpsc, oneshot};
@@ -132,12 +131,13 @@ async fn main() {
     });
 
 	    let config = AgentConfig {
-	        max_turns: 20, max_outer_iterations: 5, max_retries: 30,
+	        max_turns: Some(20), max_outer_iterations: 5, max_retries: 30,
 	        retry_base_delay_ms: 1000, enable_compact: true,
 	        compact_config: CompactConfig::default(),
 	        api_key: Some(api_key.clone()),
-	        response_format: None, thinking: None,
-	    retry_config: Some(ion::retry::RetryConfig::default()),
+		        response_format: None, thinking: None,
+		    compact_model_id: None,
+		    retry_config: Some(ion::retry::RetryConfig::default()),
 	    };
 
     let registry = Arc::new(registry);
@@ -344,7 +344,7 @@ async fn main() {
     let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<serde_json::Value>();
     let bridge_for_reader = Arc::clone(&manager_bridge);
     tokio::spawn(async move {
-        let mut reader = tokio::io::BufReader::new(tokio::io::stdin());
+        let reader = tokio::io::BufReader::new(tokio::io::stdin());
         use tokio::io::AsyncBufReadExt;
         let mut lines = reader.lines();
         loop {
@@ -710,7 +710,6 @@ async fn main() {
             }
 
             // ── 未实现的命令（返回空/默认值，格式对齐 pi）──
-            "get_active_tools" => output_response(&id, "get_active_tools", &serde_json::json!(["read","write","edit","bash","grep","find","ls","calculator","echo"])),
             "get_system_prompt" => {
                 // Return the first user message (system prompt)
                 let sp = agent.messages().iter()
@@ -723,7 +722,6 @@ async fn main() {
                     }).unwrap_or_default();
                 output_response(&id, "get_system_prompt", &serde_json::json!(sp));
             },
-            "get_context_usage" => output_response(&id, "get_context_usage", &serde_json::json!({"tokens":0,"contextWindow":128000,"percent":0.0})),
             "get_agents" => {
                 // 真实实现：列出所有内置 + 自定义 agent
                 let agents = ion::agent_config::builtin_agents();
@@ -992,23 +990,6 @@ async fn main() {
                 }
             }
             "set_steering_mode" => output_response(&id, "set_steering_mode", &serde_json::Value::Null),
-            "set_follow_up_mode" => output_response(&id, "set_follow_up_mode", &serde_json::Value::Null),
-            "call_tool" => {
-                // 直接调用 LLM 工具，不经过 Agent 循环。
-                // 用于：ion rpc --session <id> --method call_tool
-                //   --params '{"tool":"spawn_worker","args":{"relation":"child","agent":"developer","task":"..."}}'
-                let tool_name = params.get("tool").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let tool_args = params.get("args").cloned().unwrap_or_default();
-                match agent.call_tool(&tool_name, tool_args).await {
-                    Ok(output) => output_response(&id, "call_tool", &serde_json::json!({
-                        "tool": tool_name, "output": output,
-                    })),
-                    Err(e) => output(&serde_json::json!({
-                        "type": "response", "id": id, "success": false,
-                        "error": format!("call_tool {tool_name}: {e}"),
-                    })),
-                }
-            }
             "extension_rpc" => {
                 // 调插件私有 RPC 方法（给 CLI/外部调试用）。
                 // 用于：ion rpc --session <id> --method extension_rpc
@@ -1085,7 +1066,6 @@ async fn main() {
             }
             "abort_retry" => output_response(&id, "abort_retry", &serde_json::Value::Null),
             "set_tier_models" => output_response(&id, "set_tier_models", &serde_json::Value::Null),
-            "get_full_messages" => output_response(&id, "get_full_messages", &serde_json::json!([])),
             "get_tree_with_leaf" => output_response(&id, "get_tree_with_leaf", &serde_json::json!([])),
             "get_file_diff" => output_response(&id, "get_file_diff", &serde_json::json!([])),
             "get_batch_diffs" => output_response(&id, "get_batch_diffs", &serde_json::json!([])),

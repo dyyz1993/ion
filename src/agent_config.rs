@@ -205,10 +205,10 @@ pub fn find_agent(name_or_path: &str) -> Option<AgentConfig> {
 
 impl AgentConfig {
     /// Apply this agent's settings to overridable parameters.
-    pub fn apply(&self, model: &mut String, thinking: &mut Option<String>, max_turns: &mut u64, prompt: &mut Option<String>) {
+    pub fn apply(&self, model: &mut String, thinking: &mut Option<String>, max_turns: &mut Option<u64>, prompt: &mut Option<String>) {
         if let Some(ref m) = self.model { *model = m.clone(); }
         if let Some(ref tl) = self.thinking_level { *thinking = Some(tl.clone()); }
-        if let Some(mt) = self.max_turns { *max_turns = mt; }
+        if let Some(mt) = self.max_turns { *max_turns = Some(mt); }
         if let Some(ref sp) = self.system_prompt { *prompt = Some(sp.clone()); }
     }
 }

@@ -13,7 +13,7 @@ use tokio::sync::watch;
 
 #[derive(Clone, Debug)]
 pub struct AgentConfig {
-    pub max_turns: u64,
+    pub max_turns: Option<u64>,
     pub max_outer_iterations: u64,
     pub max_retries: u32,
     pub retry_base_delay_ms: u64,
@@ -22,6 +22,8 @@ pub struct AgentConfig {
     pub api_key: Option<String>,
     pub response_format: Option<String>,
     pub thinking: Option<String>,
+    /// Model ID to use for compaction summarization (defaults to main model)
+    pub compact_model_id: Option<String>,
     /// 高级重试配置（可选，覆盖上面的简单配置）
     pub retry_config: Option<crate::retry::RetryConfig>,
 }
@@ -29,7 +31,7 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            max_turns: 20,
+            max_turns: None,
             max_outer_iterations: 5,
             max_retries: 3,
             retry_base_delay_ms: 1000,
@@ -38,6 +40,7 @@ impl Default for AgentConfig {
             api_key: None,
             response_format: None,
             thinking: None,
+            compact_model_id: None,
             retry_config: None,
         }
     }
@@ -85,6 +88,8 @@ pub struct Agent {
     stopped: std::sync::atomic::AtomicBool,
     /// 工具执行运行时（本地/沙箱/远程）
     pub runtime: Box<dyn crate::runtime::Runtime>,
+    /// 独立压缩模型（可选，默认使用主模型）
+    compact_model: Option<Model>,
 }
 
 impl Agent {
@@ -112,12 +117,19 @@ impl Agent {
             running: false,
             stopped: std::sync::atomic::AtomicBool::new(false),
             runtime: Box::new(crate::runtime::LocalRuntime::new()),
+            compact_model: None,
         }
     }
 
     /// 替换运行时（本地/沙箱/远程切换）
     pub fn with_runtime(mut self, rt: Box<dyn crate::runtime::Runtime>) -> Self {
         self.runtime = rt;
+        self
+    }
+
+    /// Set a separate model for compaction summarization (smaller/cheaper model).
+    pub fn with_compact_model(mut self, model: Option<Model>) -> Self {
+        self.compact_model = model;
         self
     }
 
@@ -388,7 +400,8 @@ impl Agent {
     }
 
     async fn inner_loop(&mut self) -> AgentResult<StopReason> {
-        for turn in 0..self.config.max_turns {
+        let max_turns = self.config.max_turns.unwrap_or(u64::MAX);
+        for turn in 0..max_turns {
             self.turn_index = turn;
             self.check_pause().await?;
 
@@ -700,7 +713,7 @@ impl Agent {
                 StopReason::Aborted => return Ok(StopReason::Aborted),
             }
         }
-        tracing::warn!("inner: max turns ({})", self.config.max_turns);
+        tracing::warn!("inner: max turns ({})", max_turns);
         Ok(StopReason::Stop)
     }
 
@@ -888,8 +901,9 @@ impl Agent {
         }
 
         let retry_config = RetryConfig::default();
-        // 接 LLM summarizer（用当前 provider + model 做压缩）
-        let summarizer = compact::make_llm_summarizer(self.registry.clone(), self.model.clone());
+        // Use compact model if specified, otherwise use main model
+        let summarizer_model = self.compact_model.as_ref().unwrap_or(&self.model);
+        let summarizer = compact::make_llm_summarizer(self.registry.clone(), summarizer_model.clone());
         // 尝试用 LLM summarizer 压缩，失败则 fallback 到 emergency truncate
         // （LLM 不可用 / 没 API key / 网络错 时保证 compaction 不阻塞 agent）
         match compact::compact_batched(

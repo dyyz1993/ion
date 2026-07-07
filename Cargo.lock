@@ -1218,6 +1218,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "base64",
  "clap",
  "futures-util",
  "ion-provider",

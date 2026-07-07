@@ -35,7 +35,7 @@ pub struct RpcConfig {
     pub model: Model,
     pub agent_config: crate::agent::agent_loop::AgentConfig,
     pub thinking: Option<String>,
-    pub max_turns: u64,
+    pub max_turns: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -133,7 +133,7 @@ impl Extension for RpcExtension {
         Ok(())
     }
 
-    async fn on_message_end(&self, role: &str, content: &str, usage: &Usage) -> AgentResult<()> {
+    async fn on_message_end(&self, role: &str, _content: &str, usage: &Usage) -> AgentResult<()> {
         self.output.write_json(&serde_json::json!({
             "type": "event",
             "event": {
@@ -299,6 +299,7 @@ impl Extension for RpcExtension {
 
 struct RpcSession {
     agent: Agent,
+    #[allow(dead_code)]
     output: Arc<RpcOutput>,
     current_provider: String,
     current_model: String,
@@ -312,7 +313,7 @@ impl RpcSession {
         config: crate::agent::agent_loop::AgentConfig,
         output: Arc<RpcOutput>,
         thinking: Option<String>,
-        max_turns: u64,
+        _max_turns: Option<u64>,
     ) -> Self {
         let mut tools = ToolRegistry::new();
         tools.register(Box::new(CalculatorTool));
@@ -722,8 +723,8 @@ fn cmd_get_last_assistant_text(
 // ---------------------------------------------------------------------------
 
 fn cmd_get_tools(
-    sessions: &HashMap<String, RpcSession>,
-    req: &serde_json::Value,
+    _sessions: &HashMap<String, RpcSession>,
+    _req: &serde_json::Value,
     cmd_id: &str,
 ) -> Result<(), String> {
     let output = RpcOutput::new();
@@ -818,7 +819,7 @@ fn cmd_cycle_thinking_level(
         let idx = levels.iter().position(|l| *l == current).unwrap_or(2);
         let next = levels[(idx + 1) % levels.len()];
         session.thinking_level = Some(next.to_string());
-        ok_data(&output, cmd_id, serde_json::json!({
+        let _ = ok_data(&output, cmd_id, serde_json::json!({
             "thinkingLevel": next,
             "previous": current,
         }));
@@ -857,7 +858,7 @@ async fn cmd_fork(
     req: &serde_json::Value,
     cmd_id: &str,
 ) -> Result<(), String> {
-    let sid = get_sid(req);
+    let _sid = get_sid(req);
     let target_sid = req.get("fromSession").and_then(|s| s.as_str()).unwrap_or("default");
     let new_sid = format!("{}-fork-{}", target_sid, now_ms());
 
@@ -911,7 +912,7 @@ async fn cmd_fork(
 // ---------------------------------------------------------------------------
 
 fn cmd_set_session_name(
-    req: &serde_json::Value,
+    _req: &serde_json::Value,
     cmd_id: &str,
 ) -> Result<(), String> {
     let output = RpcOutput::new();
@@ -993,8 +994,8 @@ fn cmd_set_settings(
 // ---------------------------------------------------------------------------
 
 fn cmd_get_system_prompt(
-    sessions: &HashMap<String, RpcSession>,
-    req: &serde_json::Value,
+    _sessions: &HashMap<String, RpcSession>,
+    _req: &serde_json::Value,
     cmd_id: &str,
 ) -> Result<(), String> {
     let output = RpcOutput::new();

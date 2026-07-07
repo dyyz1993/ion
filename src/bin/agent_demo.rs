@@ -149,7 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         tools,
         AgentConfig {
-            max_turns: 10,
+            max_turns: Some(10),
             max_outer_iterations: 3,
             max_retries: 2,
             retry_base_delay_ms: 1000,
@@ -165,6 +165,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             api_key: Some(API_KEY.into()),
             response_format: None,
             thinking: None,
+            compact_model_id: None,
             retry_config: None,
         },
     );

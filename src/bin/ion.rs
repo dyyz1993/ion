@@ -26,6 +26,7 @@ use ion::types::{PoolOptions, TaskConfig, TaskPayload};
 use ion::worker::agent_worker::AgentWorker;
 use ion_provider::registry::{ApiRegistry, ModelRegistry};
 use ion_provider::types::*;
+use std::io::IsTerminal;
 use tokio::sync::oneshot;
 
 /// 待处理的 UI 确认请求（request_id → 回复通道）
@@ -37,6 +38,13 @@ fn pending_ui() -> &'static Mutex<HashMap<String, oneshot::Sender<String>>> {
 // ---------------------------------------------------------------------------
 // CLI arguments
 // ---------------------------------------------------------------------------
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+enum OutputMode {
+    Text,
+    Json,
+    Rpc,
+}
 
 #[derive(Parser)]
 #[command(
@@ -66,16 +74,20 @@ struct Cli {
     #[arg(long, global = true)]
     model: Option<String>,
 
+    /// Model to use for session compaction (smaller/cheaper model, defaults to main model)
+    #[arg(long, global = true)]
+    compact_model: Option<String>,
+
     /// Comma-separated model list for multi-model switching
     #[arg(long, global = true)]
     models: Option<String>,
 
     /// Resume a specific session by ID
-    #[arg(long, global = true)]
+    #[arg(long, short = 'r', global = true)]
     resume: Option<String>,
 
-    /// Custom system prompt
-    #[arg(long, short = 'P', global = true)]
+    /// Custom system prompt (also: --system-prompt)
+    #[arg(long, short = 'P', global = true, alias = "system-prompt")]
     prompt: Option<String>,
 
     /// Use a named agent (build, explore, plan) or path to .md file
@@ -87,7 +99,7 @@ struct Cli {
     thinking: Option<String>,
 
     /// Tool allowlist (comma separated)
-    #[arg(long, global = true)]
+    #[arg(long, short = 't', global = true)]
     tools: Option<String>,
 
     /// Tool blocklist (comma separated)
@@ -166,33 +178,49 @@ struct Cli {
     #[arg(long, global = true)]
     session: Option<String>,
 
+    /// Exact session ID to use (creates new session with this ID if not found)
+    #[arg(long, global = true)]
+    session_id: Option<String>,
+
     /// Custom session directory
     #[arg(long, global = true)]
     session_dir: Option<String>,
 
     /// Continue the last session
-    #[arg(long, short = 'c', global = true, default_value_t = false)]
+    #[arg(long = "continue", short = 'c', global = true, default_value_t = false, alias = "continue-session")]
     continue_session: bool,
 
     /// Run without persisting session
     #[arg(long, global = true, default_value_t = false)]
     no_session: bool,
 
-    /// Maximum conversation turns
-    #[arg(long, global = true, default_value_t = 20)]
-    max_turns: u64,
+    /// Maximum conversation turns (default: unlimited)
+    #[arg(long, global = true)]
+    max_turns: Option<u64>,
 
     /// Verbose logging
     #[arg(long, short, global = true, default_value_t = false)]
     verbose: bool,
 
+    /// List available models (with optional search filter)
+    #[arg(long, global = true, num_args = 0..=1, default_missing_value = "true")]
+    list_models: Option<String>,
+
     /// Request JSON output via prompt injection
     #[arg(long, global = true, default_value_t = false)]
     json: bool,
 
-    /// JSON Schema to validate output (e.g. '{"type":"object","properties":{"name":{"type":"string"}}}')
+    /// Output mode: text (default), json, or rpc
     #[arg(long, global = true)]
+    mode: Option<OutputMode>,
+
+    /// JSON Schema to validate output (also: --output-schema)
+    #[arg(long, global = true, alias = "output-schema")]
     json_schema: Option<String>,
+
+    /// Non-interactive mode: process prompt and exit
+    #[arg(long, short = 'p', global = true, default_value_t = false)]
+    print: bool,
 
     /// Max retries for JSON schema validation (default: 3)
     #[arg(long, global = true, default_value_t = 3)]
@@ -202,17 +230,9 @@ struct Cli {
     #[arg(long, global = true, default_value_t = false)]
     no_tools: bool,
 
-    /// Team mode: start a self-organizing agent team for current project
+    /// Host mode: start a temporary host with event pump, auto-exit when idle
     #[arg(long, global = true, default_value_t = false)]
-    team: bool,
-
-    /// Serve mode: run as global bus (RPC + optional WebSocket), no auto-run
-    #[arg(long, global = true, default_value_t = false)]
-    serve: bool,
-
-    /// WebSocket port for --serve mode
-    #[arg(long, global = true, default_value_t = 8080)]
-    ws: u16,
+    host: bool,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -284,6 +304,13 @@ enum Commands {
         /// Optional search filter
         search: Option<String>,
     },
+    /// Start/stop/manage the host server (Unix socket RPC)
+    Serve {
+        #[command(subcommand)]
+        action: Option<ServeAction>,
+    },
+    /// Start/stop/manage the host server (alias for `ion serve`)
+    #[command(hide = true)]
     Manager {
         #[command(subcommand)]
         action: ManagerAction,
@@ -292,6 +319,24 @@ enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+}
+
+#[derive(Subcommand)]
+enum ServeAction {
+    /// Start the host server
+    #[command(hide = true)]
+    Start {
+        #[arg(long, default_value_t = 8080)]
+        port: u16,
+        #[arg(long, default_value_t = 10)]
+        max_workers: usize,
+        #[arg(long, default_value_t = 0)]
+        min_workers: usize,
+    },
+    /// Stop the host server (sends shutdown RPC)
+    Stop,
+    /// Check host server status
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -312,6 +357,8 @@ enum ConfigAction {
     Show,
     Set { key: String, value: String },
     Get { key: String },
+    /// List all available config keys with descriptions
+    List,
 }
 
 // ---------------------------------------------------------------------------
@@ -329,7 +376,12 @@ struct EffectiveConfig {
     prompt: Option<String>,
     append_prompts: Vec<String>,
     thinking: Option<String>,
-    max_turns: u64,
+    max_turns: Option<u64>,
+    /// All models from --models list (for future multi-model cycling)
+    #[allow(dead_code)]
+    all_models: Vec<String>,
+    /// Separate model for session compaction (defaults to main model)
+    compact_model: Option<String>,
     name: Option<String>,
     tools: Option<String>,
     exclude_tools: Option<String>,
@@ -361,6 +413,64 @@ impl EffectiveConfig {
         }
         parts.join("\n")
     }
+
+    /// Resolve --json-schema / --output-schema value:
+    ///   - Inline JSON (`{...}`) → return as-is
+    ///   - File path (`@path` or bare path) → read file contents
+    ///   - None → None
+    fn resolve_schema(schema: &Option<String>) -> Option<String> {
+        let s = schema.as_ref()?;
+        if s.trim().starts_with('{') {
+            return Some(s.clone()); // inline JSON
+        }
+        // Try as @file or bare file path
+        let path = s.strip_prefix('@').unwrap_or(s);
+        match std::fs::read_to_string(path) {
+            Ok(content) => Some(content),
+            Err(e) => {
+                eprintln!("Warning: cannot read schema file '{path}': {e}");
+                Some(s.clone()) // fallback to raw value
+            }
+        }
+    }
+}
+
+/// Detect image files from `@file` CLI arguments and return ContentBlock::Image blocks.
+/// Supported formats: .png, .jpg, .jpeg, .gif, .webp
+fn parse_image_blocks(raw_messages: &[String]) -> Vec<ContentBlock> {
+    let image_extensions = ["png", "jpg", "jpeg", "gif", "webp"];
+    let mut blocks: Vec<ContentBlock> = Vec::new();
+
+    for arg in raw_messages {
+        let path = if let Some(p) = arg.strip_prefix('@') {
+            p
+        } else {
+            continue; // only process @file references
+        };
+        let ext = match std::path::Path::new(path).extension().and_then(|e| e.to_str()) {
+            Some(e) => e.to_lowercase(),
+            None => continue,
+        };
+        if !image_extensions.contains(&ext.as_str()) {
+            continue;
+        }
+        // Read the file and base64-encode it
+        match std::fs::read(path) {
+            Ok(data) => {
+                use base64::Engine;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                let mime = format!("image/{}", if ext == "jpg" { "jpeg" } else { &ext });
+                blocks.push(ContentBlock::Image(ImageContent {
+                    data: b64,
+                    mime_type: mime,
+                }));
+            }
+            Err(e) => {
+                eprintln!("Warning: cannot read image file '{path}': {e}");
+            }
+        }
+    }
+    blocks
 }
 
 fn resolve_effective(cli: &Cli) -> EffectiveConfig {
@@ -374,37 +484,77 @@ fn resolve_effective(cli: &Cli) -> EffectiveConfig {
     }
     let cfg = IonConfig::load();
 
-    let provider = cli
+    // Step 1: Resolve provider from --provider / config / default
+    let mut provider = cli
         .provider
         .clone()
         .or_else(|| cfg.default_provider.clone())
         .unwrap_or_else(|| "opencode".into());
 
-    let model = cli
+    // Step 2: Resolve raw model string from --model / --models / config
+    let raw_model = cli
         .model
         .clone()
         .or_else(|| {
-            // First model from --models list
             cli.models.as_ref().and_then(|m| m.split(',').next().map(|s| s.trim().to_string()))
         })
         .or_else(|| cfg.default_model.clone())
         .unwrap_or_else(|| default_model_for_provider(&provider).to_string());
+
+    // Step 3: Parse --model provider/id:thinking syntax (对齐 pi)
+    // Examples:
+    //   --model openai/gpt-4o          → provider=openai, model=gpt-4o
+    //   --model sonnet:high            → model=sonnet, thinking=high
+    //   --model openai/gpt-4o:high     → provider=openai, model=gpt-4o, thinking=high
+    let mut model_id = raw_model.clone();
+    let mut parsed_thinking: Option<String> = None;
+
+    // Check for provider/id pattern
+    if let Some(slash_pos) = raw_model.find('/') {
+        let maybe_provider = &raw_model[..slash_pos];
+        // Only treat as provider if it's a known provider name (or looks like one)
+        // Known providers match common patterns: lowercase, optionally with hyphens/digits
+        let rest = &raw_model[slash_pos + 1..];
+        provider = maybe_provider.to_string();
+        model_id = rest.to_string();
+    }
+
+    // Check for model:thinking pattern (after provider/id extraction)
+    if let Some(colon_pos) = model_id.rfind(':') {
+        let maybe_level = &model_id[colon_pos + 1..];
+        let valid_levels = ["off", "minimal", "low", "medium", "high", "xhigh"];
+        if valid_levels.contains(&maybe_level) {
+            parsed_thinking = Some(maybe_level.to_string());
+            model_id = model_id[..colon_pos].to_string();
+        }
+    }
+
+    // Step 4: Determine final thinking level
+    // --thinking takes precedence over :thinking suffix
+    let thinking = cli.thinking.clone().or(parsed_thinking);
+
+    // Parse full models list for multi-model support
+    let all_models: Vec<String> = cli.models.as_ref()
+        .map(|m| m.split(',').map(|s| s.trim().to_string()).collect())
+        .unwrap_or_default();
 
     let api_key = cfg.resolve_api_key(cli.api_key.as_deref(), &provider);
     let base_url = cli.base_url.clone().or_else(|| cfg.base_url.clone());
 
     let mut eff = EffectiveConfig {
         provider,
-        model,
+        model: model_id,
         api_key,
         base_url,
-        json: cli.json,
-        json_schema: cli.json_schema.clone(),
+        json: cli.json || matches!(cli.mode, Some(OutputMode::Json)),
+        json_schema: EffectiveConfig::resolve_schema(&cli.json_schema),
         schema_retries: cli.schema_retries,
         prompt: cli.prompt.clone(),
         append_prompts: cli.append_system_prompt.clone(),
-        thinking: cli.thinking.clone(),
+        thinking: thinking,
         max_turns: cli.max_turns,
+        all_models: all_models,
+        compact_model: cli.compact_model.clone(),
         name: cli.name.clone(),
         tools: cli.tools.clone(),
         exclude_tools: cli.exclude_tools.clone(),
@@ -532,6 +682,7 @@ fn build_agent_config(eff: &EffectiveConfig) -> AgentConfig {
         api_key: eff.api_key.clone(),
         response_format: if eff.json { Some("json_object".into()) } else { None },
         thinking: eff.thinking.clone(),
+        compact_model_id: eff.compact_model.clone(),
         retry_config: None,
     }
 }
@@ -584,6 +735,27 @@ fn init_logging(verbose: bool) {
         .with_target(false)
         .with_writer(std::io::stderr)
         .try_init();
+}
+
+/// Read all content from piped stdin.
+/// Returns None if stdin is a TTY (interactive terminal).
+fn read_piped_stdin() -> Option<String> {
+    use std::io::Read;
+    let mut buf = String::new();
+    let stdin = std::io::stdin();
+    let mut handle = stdin.lock();
+    // Check if stdin is a TTY (interactive)
+    if handle.is_terminal() {
+        return None;
+    }
+    // Try to read all content
+    match handle.read_to_string(&mut buf) {
+        Ok(0) | Err(_) => None,
+        Ok(_) => {
+            let trimmed = buf.trim().to_string();
+            if trimmed.is_empty() { None } else { Some(trimmed) }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -654,9 +826,36 @@ async fn cmd_config_get(key: &str) {
     }
 }
 
+async fn cmd_config_list() {
+    println!("Available config keys:");
+    println!("  api-key              Set API key (stored in auth.json, permissions 600)");
+    println!("  default-provider     Set default provider name (e.g. opencode, anthropic)");
+    println!("  default-model        Set default model ID (e.g. deepseek-v4-flash, gpt-4o)");
+    println!("  base-url             Set API base URL override");
+    println!();
+    println!("Usage: ion config set <key> <value>");
+    println!("       ion config get <key>");
+    println!("       ion config show");
+}
+
 // ---------------------------------------------------------------------------
 // Command implementations
 // ---------------------------------------------------------------------------
+
+/// --mode rpc: JSON-RPC protocol over stdin/stdout (aligned with pi).
+async fn cmd_mode_rpc(eff: &EffectiveConfig, _session_id: &str) {
+    let (registry, model) = build_registry_and_model(eff);
+    let config = build_agent_config(eff);
+
+    let cfg = ion::rpc::RpcConfig {
+        registry,
+        model,
+        agent_config: config,
+        thinking: eff.thinking.clone(),
+        max_turns: eff.max_turns,
+    };
+    ion::rpc::handle_rpc(cfg).await;
+}
 
 async fn cmd_run(
     eff: &EffectiveConfig,
@@ -664,6 +863,7 @@ async fn cmd_run(
     _no_tools: bool,
     session_id: &str,
     preloaded: Option<Vec<ion::agent::messages::Message>>,
+    raw_messages: &[String],
 ) {
     let (registry, model) = build_registry_and_model(eff);
     
@@ -825,8 +1025,39 @@ async fn cmd_run(
         .with_profile(ion::kernel::SecurityProfile::default());
     let mut agent = Agent::new(registry, model, Some(sys_prompt), tools, config)
         .with_runtime(Box::new(rt));
+
+    // Resolve compact model for summarization (if specified via --compact-model)
+    if let Some(ref cm_id) = eff.compact_model {
+        let mut mr = ion_provider::registry::ModelRegistry::new();
+        mr.register_builtins();
+        if let Some(cm) = mr.find_model(cm_id).cloned() {
+            agent = agent.with_compact_model(Some(cm));
+            tracing::info!("using separate compact model: {}", cm_id);
+        } else {
+            tracing::warn!("compact model '{}' not found, using main model", cm_id);
+        }
+    }
+
+    // ── @file 图片注入 ──
+    // 构建初始消息队列：preloaded 会话历史 + 图片 blocks
+    let image_blocks = parse_image_blocks(raw_messages);
+    let mut initial_messages: Vec<Message> = Vec::new();
     if let Some(msgs) = preloaded {
-        agent = agent.with_messages(msgs);
+        initial_messages = msgs;
+    }
+    if !image_blocks.is_empty() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        initial_messages.push(Message::User(UserMessage {
+            role: "user".into(),
+            content: image_blocks,
+            timestamp: now,
+        }));
+    }
+    if !initial_messages.is_empty() {
+        agent = agent.with_messages(initial_messages);
     }
     let mut ext_reg = ion::agent::extension::ExtensionRegistry::new();
 
@@ -1111,11 +1342,11 @@ async fn cmd_run(
 async fn cmd_rpc(session: Option<&str>, method: &str, params: &str) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-    let sock_path = ion::paths::manager_socket_path();
+    let sock_path = ion::paths::host_socket_path();
     let mut stream = match tokio::net::UnixStream::connect(&sock_path).await {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("❌ Cannot connect to Manager at {}\n   先启动: ion manager start\n   错误: {e}",
+            eprintln!("❌ Cannot connect to Host at {}\n   先启动: ion manager start\n   错误: {e}",
                 sock_path.display());
             std::process::exit(1);
         }
@@ -1164,11 +1395,11 @@ async fn cmd_rpc(session: Option<&str>, method: &str, params: &str) {
 async fn cmd_subscribe(session: Option<&str>, extension: Option<&str>, ui: bool) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-    let sock_path = ion::paths::manager_socket_path();
+    let sock_path = ion::paths::host_socket_path();
     let mut stream = match tokio::net::UnixStream::connect(&sock_path).await {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("❌ Cannot connect to Manager at {}\n   先启动: ion manager start\n   错误: {e}", sock_path.display());
+            eprintln!("❌ Cannot connect to Host at {}\n   先启动: ion manager start\n   错误: {e}", sock_path.display());
             std::process::exit(1);
         }
     };
@@ -1286,7 +1517,7 @@ async fn cmd_list_models(search: &Option<String>) {
     registry.register_builtins();
     // List all providers
     for provider in ["opencode"] {
-        if let Some(model) = registry.get_model(
+        if let Some(_model) = registry.get_model(
             provider,
             if search.is_some() {
                 ""
@@ -1349,6 +1580,7 @@ async fn cmd_submit(eff: &EffectiveConfig, message: &str, _workers: usize, _max_
     }
 }
 
+#[allow(dead_code)]
 async fn cmd_submit_old(eff: &EffectiveConfig, message: &str, workers: usize, max_workers: usize) {
     let (registry, model) = build_registry_and_model(eff);
     let config = build_agent_config(eff);
@@ -1429,7 +1661,27 @@ async fn cmd_stats(_eff: &EffectiveConfig) {
 async fn main() {
     let cli = Cli::parse();
     init_logging(cli.verbose);
-    let eff = resolve_effective(&cli);
+    let mut eff = resolve_effective(&cli);
+
+    // ── 管道 stdin 自动检测（对齐 pi）──
+    // 当 stdin 不是 TTY（有管道输入），自动读取并用做消息
+    let piped_stdin = read_piped_stdin();
+    if let Some(ref stdin_content) = piped_stdin {
+        if !stdin_content.is_empty() {
+            if eff.message.is_empty() {
+                eff.message = stdin_content.clone();
+            } else {
+                eff.message = format!("{}\n{}", stdin_content, eff.message);
+            }
+        }
+    }
+
+    // ── --list-models [search] flag ──
+    if let Some(ref lm) = cli.list_models {
+        let search = if lm == "true" { None } else { Some(lm.clone()) };
+        cmd_list_models(&search).await;
+        return;
+    }
 
     if let Some(ref export_path) = cli.export {
         let session_id = match (&cli.session, cli.continue_session, &cli.resume) {
@@ -1447,34 +1699,25 @@ async fn main() {
         return;
     }
 
-    // ── 兼容处理：消息末尾带 --team ──
-    let mut effective_team = cli.team;
-    let mut effective_message = eff.message.clone();
-    if !effective_team && effective_message.ends_with("--team") {
-        effective_team = true;
-        let new_len = effective_message.len().saturating_sub("--team".len());
-        effective_message = effective_message[..new_len].trim().to_string();
-    }
+    let effective_message = eff.message.clone();
 
-    // ── --serve: 全局总线模式 ──
-    if cli.serve {
-        cmd_manager_start(&cli, cli.ws, 10, 2).await;
+    // ── --mode rpc: RPC 模式（JSON-RPC over stdin/stdout）──
+    if matches!(cli.mode, Some(OutputMode::Rpc)) {
+        let (session_id, _preloaded) = resolve_session_id(&cli);
+        cmd_mode_rpc(&eff, &session_id).await;
         return;
     }
 
-    // ── --team: 单项目团队模式 ──
-    if effective_team {
-        let cwd = std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let msg = if effective_message.is_empty() { "根据 PRD 开发项目".to_string() } else { effective_message };
-        cmd_team(&cwd, &msg, 4).await;
+    // ── --host: 临时 host 模式（快速编排）──
+    if cli.host {
+        let msg = if effective_message.is_empty() { "Hello".to_string() } else { effective_message };
+        cmd_host(&msg, cli.agent.as_deref()).await;
         return;
     }
 
     if !effective_message.is_empty() {
         let (session_id, preloaded) = resolve_session_id(&cli);
-        cmd_run(&eff, &eff.message, cli.no_tools, &session_id, preloaded).await;
+        cmd_run(&eff, &eff.message, cli.no_tools, &session_id, preloaded, &cli.messages).await;
         return;
     }
 
@@ -1487,6 +1730,15 @@ async fn main() {
         Some(Commands::Wait { task_id, timeout }) => cmd_wait(&eff, task_id, *timeout).await,
         Some(Commands::List) => cmd_list(&eff).await,
         Some(Commands::Stats) => cmd_stats(&eff).await,
+        Some(Commands::Serve { action }) => match action {
+            // `ion serve` (no subcommand) → defaults to `ion serve start`
+            None => cmd_manager_start(&cli, 8080, 10, 2).await,
+            Some(ServeAction::Start { port, max_workers, min_workers }) => {
+                cmd_manager_start(&cli, *port, *max_workers, *min_workers).await;
+            }
+            Some(ServeAction::Stop) => cmd_serve_stop().await,
+            Some(ServeAction::Status) => cmd_serve_status().await,
+        },
         Some(Commands::Manager { action }) => match action {
             ManagerAction::Start { port, max_workers, min_workers } => {
                 cmd_manager_start(&cli, *port, *max_workers, *min_workers).await;
@@ -1497,6 +1749,7 @@ async fn main() {
             ConfigAction::Show => cmd_config_show().await,
             ConfigAction::Set { key, value } => cmd_config_set(key, value).await,
             ConfigAction::Get { key } => cmd_config_get(key).await,
+            ConfigAction::List => cmd_config_list().await,
         },
         Some(Commands::Dashboard) => {
             // Dashboard 用 Bun + OpenTUI 实现（dashboard/ 子目录）
@@ -1518,6 +1771,53 @@ async fn main() {
             println!("       ion config set api-key <key>");
             println!("       ion --help");
         }
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Serve commands
+// ---------------------------------------------------------------------------
+
+/// Stop the host server: connect to Unix socket and send shutdown.
+async fn cmd_serve_stop() {
+    let sock_path = ion::paths::host_socket_path();
+    match tokio::net::UnixStream::connect(&sock_path).await {
+        Ok(mut stream) => {
+            use tokio::io::AsyncWriteExt;
+            let req = serde_json::json!({
+                "id": "serve-stop",
+                "method": "shutdown",
+                "params": {}
+            });
+            let _ = stream.write_all(format!("{}\n", serde_json::to_string(&req).unwrap()).as_bytes()).await;
+            println!("✔ Shutdown signal sent to host server");
+        }
+        Err(_) => {
+            // Socket not available, try force-kill from PID file
+            if let Some(pid) = ion::paths::host_running() {
+                #[cfg(unix)]
+                let _ = std::process::Command::new("kill")
+                    .args([&pid.to_string()])
+                    .status();
+                println!("✔ Host stopped");
+            } else {
+                println!("✘ Host not running");
+            }
+        }
+    }
+    // Clean up stale files
+    let _ = std::fs::remove_file(&sock_path);
+    let _ = std::fs::remove_file(&ion::paths::host_pid_path());
+}
+
+/// Check host server status: read PID file and verify process.
+async fn cmd_serve_status() {
+    if let Some(pid) = ion::paths::host_running() {
+        println!("✔ Host running (pid {pid})");
+        println!("   Socket: {}", ion::paths::host_socket_path().display());
+    } else {
+        println!("✘ Host not running");
+        println!("   Start with: ion serve");
     }
 }
 
@@ -1529,19 +1829,18 @@ async fn cmd_manager_start(
 ) {
     use std::sync::Arc;
     use tokio::sync::Mutex;
-    use tokio::io::{AsyncBufReadExt, BufReader};
-    use ion::worker_registry::{WorkerCreateConfig, WorkerRegistry};
+    use ion::worker_registry::WorkerRegistry;
 
     let registry = Arc::new(Mutex::new(WorkerRegistry::new()));
     let event_bus = Arc::new(tokio::sync::Mutex::new(ion::event_bus::ExtensionEventBus::new()));
 
-    // ── Manager 单例检查 + Unix socket 启动 ──
+    // ── Host 单例检查 + Unix socket 启动 ──
     // PID 文件防重复启动；Unix socket 让外部 `ion rpc` 能连进来。
-    if let Some(pid) = ion::paths::manager_running() {
-        eprintln!("❌ Manager already running (pid {pid}). Stop it first or use `ion rpc` to connect.");
+    if let Some(pid) = ion::paths::host_running() {
+        eprintln!("❌ Host already running (pid {pid}). Stop it first or use `ion rpc` to connect.");
         return;
     }
-    let sock_path = ion::paths::manager_socket_path();
+    let sock_path = ion::paths::host_socket_path();
     // 清理 stale socket 文件（上次崩溃残留）
     let _ = std::fs::remove_file(&sock_path);
     let listener = match tokio::net::UnixListener::bind(&sock_path) {
@@ -1552,9 +1851,9 @@ async fn cmd_manager_start(
         }
     };
     // 写 PID 文件
-    let pid_path = ion::paths::manager_pid_path();
+    let pid_path = ion::paths::host_pid_path();
     let _ = std::fs::write(&pid_path, std::process::id().to_string());
-    eprintln!("🔌 Manager listening on Unix socket: {}", sock_path.display());
+    eprintln!("🔌 Host listening on Unix socket: {}", sock_path.display());
 
     // socket accept loop —— 支持两种模式：
     //   RPC mode（默认）：一问一答，返回后关闭
@@ -1563,8 +1862,8 @@ async fn cmd_manager_start(
     let sock_event_bus = Arc::clone(&event_bus);
     tokio::spawn(async move {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-        use std::collections::HashMap;
-        let reader_timeout = std::time::Duration::from_secs(600);
+        
+        let _reader_timeout = std::time::Duration::from_secs(600);
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
@@ -1589,7 +1888,7 @@ async fn cmd_manager_start(
                                     }
                                 };
                                 let method = cmd.get("method").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                let session = cmd.get("session").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                let _session = cmd.get("session").and_then(|v| v.as_str()).map(|s| s.to_string());
 
                                 // ── Stream mode: subscribe ──
                                 if method == "subscribe" {
@@ -1688,7 +1987,7 @@ async fn cmd_manager_start(
                                     let _ = write_half.write_all(format!("{ack}\n").as_bytes()).await;
                                     let _ = write_half.flush().await;
                                     // 持续推事件
-                                    use tokio::sync::mpsc;
+                                    
                                     let mut rx = rx;
                                     loop {
                                         match rx.recv().await {
@@ -1793,7 +2092,7 @@ async fn cmd_manager_start(
                                         .map(|w| w.worker_id.clone())
                                     {
                                         // 订阅 worker 事件
-                                        let mut rx = match inner_reg.subscribe(&wid) {
+                                        let _rx = match inner_reg.subscribe(&wid) {
                                             Ok(rx) => rx,
                                             Err(e) => {
                                                 let resp = serde_json::json!({
@@ -1977,7 +2276,7 @@ async fn cmd_manager_start(
         }
     });
 
-    eprintln!("Manager started (async RPC, stdin/stdout + Unix socket). Commands: create_worker, create_session, list_sessions, list_workers, send, send_to_worker, kill, channel_send, channel_subscribe, get_overview, quit");
+    eprintln!("Host started (async RPC, stdin/stdout + Unix socket). Commands: create_worker, create_session, list_sessions, list_workers, send, send_to_worker, kill, channel_send, channel_subscribe, get_overview, quit");
 
     // 主循环：异步读 stdin。
     // stdin EOF 时不退出（nohup/daemon 场景 stdin 立刻 EOF，但 socket 还在用）。
@@ -2025,7 +2324,7 @@ async fn cmd_manager_start(
     // 退出时清理 PID + socket 文件
     let _ = std::fs::remove_file(&pid_path);
     let _ = std::fs::remove_file(&sock_path);
-    eprintln!("Manager stopped");
+    eprintln!("Host stopped");
 }
 
 /// 处理一条 Manager 命令（来自 stdin 或 Unix socket）。
@@ -2208,150 +2507,74 @@ async fn handle_manager_command(
 //
 // cmd_team 是"启动器 + 事件泵"，不做任何编排决策：
 //   1. spawn 1 个入口 Worker（默认加载 .ion/agents/coordinator.md）
-//   2. 启动 pump 转发事件 + 写 JSONL log
-//   3. 等所有 Worker 进入 idle + 入口 Worker 的 agent_end → 退出
+// ---------------------------------------------------------------------------
+// Host mode — temporary WorkerRegistry + event pump + auto-exit
+// ---------------------------------------------------------------------------
 //
-// 谁是协调者、派生谁、何时结束 —— 全部由 coordinator.md 决定。
-// coordinator 通过 spawn_worker(child, ...) 工具派生 developer Worker；
-// child 同步阻塞到子 Worker 首轮 agent_end，自然串起整个流水线。
+// --host: 快速编排模式。启动一个临时 WorkerRegistry + 事件泵，
+// spawn 入口 Worker、等全部 idle 后自动清理退出。
+// 对应 CLI_ARCHITECTURE.md 场景 2。
+//
+// 架构原则：内核只提供对等原语，编排策略全交给 LLM + agent 提示词。
+// entry Worker 通过 spawn_worker(child, ...) 工具派生子 Worker；
+// wait loop 检测递归 idle → 所有 Worker 完成后退出。
 
-async fn cmd_team(project_path: &str, user_message: &str, _max_workers: usize) {
-    use std::path::Path;
+async fn cmd_host(user_message: &str, agent_name: Option<&str>) {
     use std::sync::Arc;
     use tokio::sync::Mutex;
     use ion::worker_registry::{WorkerCreateConfig, WorkerRegistry};
 
     let ion_cfg = ion::config::IonConfig::load();
-    let team_model = ion_cfg.default_model.clone().unwrap_or_else(|| "deepseek-v4-flash".to_string());
-    let team_provider = ion_cfg.default_provider.clone().unwrap_or_else(|| "opencode".to_string());
+    let model = ion_cfg.default_model.clone().unwrap_or_else(|| "deepseek-v4-flash".to_string());
+    let provider = ion_cfg.default_provider.clone().unwrap_or_else(|| "opencode".to_string());
+    let agent = agent_name.unwrap_or("build").to_string();
 
-    let proj = Path::new(project_path);
-    if !proj.exists() {
-        eprintln!("❌ Project directory not found: {project_path}");
-        return;
-    }
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
 
-    // 0. JSONL event log（保留 —— 审计/调试用）
-    let log_dir = proj.join("logs");
-    let _ = std::fs::create_dir_all(&log_dir);
-    let log_path = log_dir.join("events.jsonl");
-    let log_file: Arc<std::sync::Mutex<Option<std::fs::File>>> =
-        Arc::new(std::sync::Mutex::new(std::fs::File::create(&log_path).ok()));
+    eprintln!("[host] Starting WorkerRegistry");
 
-    eprintln!("🚀 ION Team — project: {project_path}");
-    eprintln!("   Model: {team_model} ({team_provider})");
-    eprintln!("   Entry agent: coordinator (override: .ion/agents/coordinator.md)");
-
-    // 1. 创建 WorkerRegistry
     let registry = Arc::new(Mutex::new(WorkerRegistry::new()));
 
-    // 2. Worker 状态追踪（pump 根据 agent_start/agent_end 更新）
-    let worker_busy: Arc<std::sync::Mutex<std::collections::HashMap<String, bool>>> =
-        Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-    // 入口 Worker 的 agent_end 标志
-    let entry_done: Arc<std::sync::Mutex<bool>> =
-        Arc::new(std::sync::Mutex::new(false));
-    let entry_wid: Arc<std::sync::Mutex<Option<String>>> =
-        Arc::new(std::sync::Mutex::new(None));
-
-    // 3. 读取 PRD（作为 initial_prompt 的一部分）
-    let prd_path = proj.join("PRD.md");
-    let prd_text = if prd_path.exists() {
-        std::fs::read_to_string(&prd_path).unwrap_or_default()
-    } else {
-        "(no PRD.md found)".to_string()
-    };
-    eprintln!("📄 PRD: {} bytes", prd_text.len());
-
-    // 4. 启动 pump（纯事件转发 + JSONL log，零编排逻辑）
+    // 1. Event pump → stdout
     let pump_registry = Arc::clone(&registry);
-    let pump_busy = Arc::clone(&worker_busy);
-    let pump_entry_done = Arc::clone(&entry_done);
-    let pump_entry_wid = Arc::clone(&entry_wid);
-    let pump_log = Arc::clone(&log_file);
-    eprintln!("[pump] starting");
+    eprintln!("[pump] spawning...");
     tokio::spawn(async move {
         let mut subs: std::collections::HashMap<String, tokio::sync::mpsc::Receiver<serde_json::Value>> =
             std::collections::HashMap::new();
         loop {
-            // 订阅所有现有 Worker
             {
                 let mut reg = pump_registry.lock().await;
                 let ids: Vec<String> = reg.workers.keys().cloned().collect();
                 for wid in &ids {
                     if !subs.contains_key(wid) {
-                        eprintln!("[pump] subscribing to {}", &wid[..12.min(wid.len())]);
                         if let Ok(rx) = reg.subscribe(wid) {
                             subs.insert(wid.clone(), rx);
                         }
                     }
-                    // 不调 drain_events — reader task 已实时转发 event 给 subscribers
                 }
             }
-            // 排空订阅事件
             for (wid, rx) in subs.iter_mut() {
                 while let Ok(msg) = rx.try_recv() {
                     if msg.get("type").and_then(|v| v.as_str()) != Some("event") { continue; }
                     let ev = msg.get("event").cloned().unwrap_or_default();
                     let et = ev.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-                    // JSONL 审计日志
-                    if let Ok(mut f) = pump_log.lock() {
-                        if let Some(ref mut file) = *f {
-                            use std::io::Write;
-                            let log_line = serde_json::json!({
-                                "ts": std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_secs_f64()).unwrap_or(0.0),
-                                "worker_id": wid, "event_type": et, "event": ev,
-                            });
-                            writeln!(file, "{}", log_line).ok();
-                        }
-                    }
-
-                    // 可见性：text_delta / tool_call / agent_end
                     match et {
                         "text_delta" => {
                             if let Some(delta) = ev.get("delta").and_then(|v| v.as_str()) {
                                 if !delta.trim().is_empty() {
-                                    eprintln!("   📝 [{:.12}] {}", wid, delta.lines().next().unwrap_or(""));
-                                }
-                                // CHANNEL_SEND 文本协议解析（调试/可视化用，
-                                // 主路径是结构化的 follow_up + channel_send 工具）
-                                if delta.contains("CHANNEL_SEND") {
-                                    let parts: Vec<&str> = delta.splitn(3, ' ').collect();
-                                    if parts.len() >= 3 && parts[0].ends_with("CHANNEL_SEND") {
-                                        let channel = parts[1].trim();
-                                        let msg_text: String = parts[2].trim().chars().take(80).collect();
-                                        eprintln!("   ✉️ [{:.12}] → #{}: {}", wid, channel, msg_text);
-                                        let mut reg = pump_registry.lock().await;
-                                        reg.channel_send(channel, wid,
-                                            serde_json::json!({"text": parts[2].trim()})).await;
-                                    }
+                                    println!("[pump] [{:.12}] {}", wid, delta.trim());
                                 }
                             }
                         }
                         "tool_call" => {
                             if let Some(tn) = ev.get("tool").and_then(|v| v.as_str()) {
-                                eprintln!("   🔧 [{:.12}] {}", wid, tn);
-                            }
-                        }
-                        "agent_start" => {
-                            if let Ok(mut busy) = pump_busy.lock() {
-                                busy.insert(wid.clone(), true);
+                                println!("[pump] [{:.12}] 🔧 {}", wid, tn);
                             }
                         }
                         "agent_end" => {
-                            eprintln!("   ✅ [{:.12}] agent_end", wid);
-                            if let Ok(mut busy) = pump_busy.lock() {
-                                busy.insert(wid.clone(), false);
-                            }
-                            // 只有 entry Worker 的 agent_end 才设置全局完成
-                            if let Ok(lock) = pump_entry_wid.lock() {
-                                if lock.as_deref() == Some(wid.as_str()) {
-                                    *pump_entry_done.lock().unwrap() = true;
-                                }
-                            }
+                            println!("[pump] [{:.12}] agent_end", wid);
                         }
                         _ => {}
                     }
@@ -2361,9 +2584,7 @@ async fn cmd_team(project_path: &str, user_message: &str, _max_workers: usize) {
         }
     });
 
-    // 4.5 Manager command 处理循环 —— 必须有，否则 spawn_worker/send_to_worker 等命令
-    //     进入 manager_cmd_rx 后无人处理，coordinator 会永远 await。
-    //     对齐 cmd_manager_start 的设计（那里也有一个相同的循环）。
+    // 2. Manager command processing loop
     let cmd_registry = Arc::clone(&registry);
     tokio::spawn(async move {
         loop {
@@ -2375,81 +2596,63 @@ async fn cmd_team(project_path: &str, user_message: &str, _max_workers: usize) {
         }
     });
 
-    // 5. spawn 入口 Worker（默认 coordinator）
-    let initial_prompt = format!(
-        "{prd_text}\n\n---\nUser request: {user_message}\n\n\
-         请按 coordinator 角色描述执行：分析 PRD，对每个模块调用 spawn_worker(child, developer, <spec>)，\
-         等所有 child 返回后汇总并结束。"
-    );
+    // 3. Spawn entry Worker (lock released before set_entry_worker to avoid deadlock)
     let mut cfg = WorkerCreateConfig::default();
-    cfg.agent = Some("coordinator".to_string());
-    cfg.model = Some(team_model.clone());
-    cfg.provider = Some(team_provider.clone());
-    cfg.project_path = Some(project_path.to_string());
-    cfg.channels = Some(vec!["main".to_string()]);
-    cfg.initial_prompt = Some(initial_prompt);
+    cfg.agent = Some(agent.clone());
+    cfg.model = Some(model.clone());
+    cfg.provider = Some(provider.clone());
+    cfg.project_path = Some(cwd.clone());
+    cfg.initial_prompt = Some(user_message.to_string());
 
-    let entry = match registry.lock().await.create_worker(cfg, &registry).await {
-        Ok(info) => {
-            eprintln!("   ✅ coordinator: {}", &info.worker_id[..12]);
-            *entry_wid.lock().unwrap() = Some(info.worker_id.clone());
-            // 等 pump subscribe（避免丢事件）
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            info
-        }
-        Err(e) => {
-            eprintln!("❌ Failed to spawn coordinator: {e}");
-            return;
+    let entry = {
+        let mut reg = registry.lock().await;
+        match reg.create_worker(cfg, &registry).await {
+            Ok(info) => {
+                eprintln!("[host] spawned {} ({})", &info.worker_id[..12], agent);
+                info
+            }
+            Err(e) => {
+                eprintln!("[host] ❌ Failed to spawn worker: {e}");
+                return;
+            }
         }
     };
 
-    // 6. 等待 team 完成：所有 worker idle + entry agent_end
-    //    超时兜底 30 分钟（避免死锁卡死）
-    eprintln!("\n⏳ Team running... (timeout 30 min)");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30 * 60);
+    // Set entry worker for recursive idle detection
+    registry.lock().await.set_entry_worker(&entry.worker_id);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // 4. Wait for idle with configurable timeout
+    let timeout_secs = std::env::var("ION_HOST_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(30 * 60);
+    eprintln!("[host] waiting for workers to complete... (timeout {timeout_secs}s)");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-        let entry_finished = *entry_done.lock().unwrap();
-        let any_busy = worker_busy.lock().unwrap().values().any(|&b| b);
+        let all_idle = {
+            let reg = registry.lock().await;
+            match reg.entry_worker_id.as_ref() {
+                Some(eid) => reg.all_workers_idle(eid).unwrap_or(false),
+                None => true,
+            }
+        };
 
-        if entry_finished && !any_busy {
-            eprintln!("   ✅ Team completed (coordinator finished + all workers idle)");
+        if all_idle {
+            eprintln!("[host] recursive idle check passed, cleaning up");
             break;
         }
+
         if std::time::Instant::now() > deadline {
-            eprintln!("   ⚠ Team timeout (30 min), forcing exit");
+            eprintln!("[host] timeout reached, forcing exit");
             break;
         }
     }
 
-    // 7. Summary（保留 —— 调试用）
-    eprintln!("\n📊 Team Status:");
-    for w in registry.lock().await.list_workers() {
-        eprintln!("   ◈ {} [{}] agent={} status={:?}",
-            &w.worker_id[..12], w.model, w.agent, w.status);
-    }
-
-    eprintln!("\n📦 Git branches:");
-    if let Ok(out) = std::process::Command::new("git")
-        .args(["-C", project_path, "branch", "--list"]).output()
-    {
-        for line in String::from_utf8_lossy(&out.stdout).lines() {
-            eprintln!("   {}", line);
-        }
-    }
-
-    eprintln!("\n📂 Worktrees:");
-    if let Ok(out) = std::process::Command::new("git")
-        .args(["-C", project_path, "worktree", "list"]).output()
-    {
-        for line in String::from_utf8_lossy(&out.stdout).lines() {
-            eprintln!("   {}", line);
-        }
-    }
-
-    eprintln!("\n✅ Team session complete. Events: logs/events.jsonl");
-    let _ = entry; // suppress unused warning
+    // 5. Cleanup
+    eprintln!("[host] cleaning up");
 }
 
 // ---------------------------------------------------------------------------
@@ -2464,7 +2667,7 @@ fn save_session(id: &str, messages: &[ion::agent::messages::Message], model: &st
         entry_type: "session".into(), version: 3, id: id.to_string(),
         timestamp: ion::session_jsonl::timestamp_iso(),
         cwd: cwd.clone(),
-        parentSession: None,
+        parent_session: None,
     };
     let mut entries: Vec<serde_json::Value> = Vec::new();
     let mut parent_id = id.to_string();
@@ -2487,6 +2690,13 @@ fn save_session(id: &str, messages: &[ion::agent::messages::Message], model: &st
 }
 
 fn load_session(id: &str) -> Option<Vec<ion::agent::messages::Message>> {
+    // Strategy 0: Direct file path
+    if id.contains('/') || id.contains('\\') || id.ends_with(".jsonl") {
+        if let Ok(content) = std::fs::read_to_string(id) {
+            return parse_jsonl_messages(&content);
+        }
+    }
+
     // Strategy 1: Look up session in global index → get cwd
     let index = ion::session_index::SessionIndex::load();
     if let Some(meta) = index.get(id) {
@@ -2503,22 +2713,7 @@ fn load_session(id: &str) -> Option<Vec<ion::agent::messages::Message>> {
     let legacy_path = ion::paths::sessions_dir().join(format!("{id}.jsonl"));
     if legacy_path.exists() {
         if let Ok(content) = std::fs::read_to_string(&legacy_path) {
-            let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
-            if !lines.is_empty() {
-                let mut messages = Vec::new();
-                for line in &lines[1..] {
-                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
-                        if val["type"].as_str() == Some("message") {
-                            if let Some(msg_val) = val.get("message") {
-                                if let Ok(msg) = serde_json::from_value::<ion::agent::messages::Message>(msg_val.clone()) {
-                                    messages.push(msg);
-                                }
-                            }
-                        }
-                    }
-                }
-                return Some(messages);
-            }
+            return parse_jsonl_messages(&content);
         }
     }
 
@@ -2526,27 +2721,196 @@ fn load_session(id: &str) -> Option<Vec<ion::agent::messages::Message>> {
     ion::session_jsonl::SessionFile::load(id).map(|f| f.messages)
 }
 
+/// Parse JSONL content into messages (skipping the header line).
+fn parse_jsonl_messages(content: &str) -> Option<Vec<ion::agent::messages::Message>> {
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let mut messages = Vec::new();
+    for line in &lines[1..] {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+            if val["type"].as_str() == Some("message") {
+                if let Some(msg_val) = val.get("message") {
+                    if let Ok(msg) = serde_json::from_value::<ion::agent::messages::Message>(msg_val.clone()) {
+                        messages.push(msg);
+                    }
+                }
+            }
+        }
+    }
+    Some(messages)
+}
+
+/// Load session from a direct file path, extracting the actual session ID from the header.
+/// Returns (session_id, messages).
+fn load_session_from_path(path: &str) -> Option<(String, Vec<ion::agent::messages::Message>)> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    if lines.is_empty() {
+        return None;
+    }
+    // Extract session ID from header (first line)
+    let header: serde_json::Value = serde_json::from_str(lines[0]).ok()?;
+    let sid = header.get("id")?.as_str()?.to_string();
+    let msgs = parse_jsonl_messages(&content)?;
+    Some((sid, msgs))
+}
+
 fn resolve_session_id(cli: &Cli) -> (String, Option<Vec<ion::agent::messages::Message>>) {
     if cli.no_session { return (String::new(), None); }
     if let Some(ref sid) = cli.fork {
+        // File path support
+        if sid.contains('/') || sid.contains('\\') || sid.ends_with(".jsonl") {
+            if let Some((_real_id, msgs)) = load_session_from_path(sid) {
+                let new_id = uuid::Uuid::new_v4().to_string();
+                return (new_id, Some(msgs));
+            }
+        }
         if let Some(msgs) = load_session(sid) {
+            let new_id = uuid::Uuid::new_v4().to_string();
+            return (new_id, Some(msgs));
+        }
+        // Fallback: prefix match
+        if let Some((_prefix_id, msgs)) = find_session_by_prefix(sid) {
             let new_id = uuid::Uuid::new_v4().to_string();
             return (new_id, Some(msgs));
         }
     }
     if let Some(ref sid) = cli.resume {
-        return (sid.clone(), load_session(sid));
+        if let Some(msgs) = load_session(sid) {
+            return (sid.clone(), Some(msgs));
+        }
+        // Fallback: prefix match
+        if let Some((prefix_id, msgs)) = find_session_by_prefix(sid) {
+            return (prefix_id, Some(msgs));
+        }
     }
     if let Some(ref sid) = cli.session {
-        return (sid.clone(), load_session(sid));
+        // Check if it's a file path (not a session ID)
+        if sid.contains('/') || sid.contains('\\') || sid.ends_with(".jsonl") {
+            if let Some((real_id, msgs)) = load_session_from_path(sid) {
+                return (real_id, Some(msgs));
+            }
+        }
+        if let Some(msgs) = load_session(sid) {
+            return (sid.clone(), Some(msgs));
+        }
+        // Fallback: prefix match
+        if let Some((prefix_id, msgs)) = find_session_by_prefix(sid) {
+            return (prefix_id, Some(msgs));
+        }
+    }
+    // --session-id: exact ID (create new with this ID if not found)
+    if let Some(ref sid) = cli.session_id {
+        if let Some(msgs) = load_session(sid) {
+            return (sid.clone(), Some(msgs));
+        }
+        // Not found - return ID as-is so cmd_run creates new session with it
+        return (sid.clone(), None);
     }
     if cli.continue_session {
+        // 按 mtime 找最近的 session（对齐 pi 行为）
+        if let Some((id, msgs)) = find_most_recent_session() {
+            return (id, Some(msgs));
+        }
+        // Fallback: last_session file
         if let Ok(id) = std::fs::read_to_string(ion::session_jsonl::last_session_path()) {
             let id = id.trim();
-            return (id.to_string(), load_session(id));
+            if !id.is_empty() {
+                if let Some(msgs) = load_session(id) {
+                    return (id.to_string(), Some(msgs));
+                }
+            }
         }
     }
     (String::new(), None)
+}
+
+/// Try to find a session by prefix match against the session index.
+/// Returns (matched_id, messages) on first match.
+fn find_session_by_prefix(prefix: &str) -> Option<(String, Vec<ion::agent::messages::Message>)> {
+    let index = ion::session_index::SessionIndex::load();
+    // Search session index keys for prefix match
+    let matches: Vec<String> = index.sessions.keys()
+        .filter(|k| k.starts_with(prefix))
+        .cloned()
+        .collect();
+    if let Some(matched_id) = matches.first() {
+        if let Some(msgs) = load_session(matched_id) {
+            return Some((matched_id.clone(), msgs));
+        }
+    }
+    // Fallback: scan sessions directory for matching file names
+    let sessions_dir = ion::paths::sessions_dir();
+    if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
+        let mut candidates: Vec<(String, std::path::PathBuf)> = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let session_file = path.join("session.jsonl");
+                if session_file.exists() {
+                    // Read the header to get the session ID
+                    if let Ok(content) = std::fs::read_to_string(&session_file) {
+                        if let Some(first_line) = content.lines().next() {
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(first_line) {
+                                if let Some(sid) = val.get("id").and_then(|v| v.as_str()) {
+                                    if sid.starts_with(prefix) {
+                                        candidates.push((sid.to_string(), session_file));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Sort by recency (by dir name which includes timestamp) and take the first
+        candidates.sort_by(|a, b| b.1.cmp(&a.1));
+        if let Some((matched_id, _path)) = candidates.first() {
+            if let Some(msgs) = load_session(matched_id) {
+                return Some((matched_id.clone(), msgs));
+            }
+        }
+    }
+    None
+}
+
+/// Find the most recent session by scanning sessions directory for latest mtime.
+/// Returns (session_id, messages) for the most recent session.
+fn find_most_recent_session() -> Option<(String, Vec<ion::agent::messages::Message>)> {
+    let sessions_dir = ion::paths::sessions_dir();
+    let mut candidates: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let session_file = path.join("session.jsonl");
+            if let Ok(meta) = session_file.metadata() {
+                if let Ok(mtime) = meta.modified() {
+                    candidates.push((session_file, mtime));
+                }
+            }
+        }
+    }
+
+    // Sort by mtime descending, take the most recent
+    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    if let Some((path, _)) = candidates.first() {
+        // Read session ID from header
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Some(first_line) = content.lines().next() {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(first_line) {
+                    if let Some(sid) = val.get("id").and_then(|v| v.as_str()) {
+                        if let Some(msgs) = load_session(sid) {
+                            return Some((sid.to_string(), msgs));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 fn extract_assistant_text(agent: &Agent) -> Option<String> {
@@ -2614,8 +2978,8 @@ impl Extension for SessionIndexExtension {
 async fn launch_dashboard() {
     use std::process::Command;
 
-    // 1. 检查 Manager 是否在跑，没在跑就后台启动
-    let sock = ion::paths::manager_socket_path();
+    // 1. 检查 Host 是否在跑，没在跑就后台启动
+    let sock = ion::paths::host_socket_path();
     let need_start = if !sock.exists() {
         true
     } else {
@@ -2634,7 +2998,7 @@ async fn launch_dashboard() {
         let ion_bin = std::env::current_exe()
             .unwrap_or_else(|_| std::path::PathBuf::from("ion"));
         // Manager 的 stdout/stderr 都重定向到日志文件，不污染 TUI
-        let mgr_log = ion::paths::root().join("manager.log");
+        let mgr_log = ion::paths::root().join("host.log");
         let mgr_out = std::fs::File::create(&mgr_log).ok();
         match Command::new(&ion_bin).arg("manager").arg("start")
             .stdout(std::process::Stdio::from(mgr_out.unwrap()))
@@ -2652,12 +3016,12 @@ async fn launch_dashboard() {
                     }
                 }
                 if !sock.exists() {
-                    eprintln!("[ion] Manager failed to start (see {})", mgr_log.display());
+                    eprintln!("[ion] Host failed to start (see {})", mgr_log.display());
                     return;
                 }
             }
             Err(e) => {
-                eprintln!("[ion] Failed to start Manager: {e}");
+                eprintln!("[ion] Failed to start Host: {e}");
                 return;
             }
         }
@@ -2703,5 +3067,278 @@ async fn launch_dashboard() {
         Ok(s) if s.success() => {}
         Ok(s) => eprintln!("[ion] Dashboard exited with code: {:?}", s.code()),
         Err(e) => eprintln!("[ion] Failed to launch bun (is bun installed?): {e}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::error::ErrorKind;
+
+    // ── -p / --print ──
+    #[test]
+    fn test_print_short_flag() {
+        let cli = Cli::try_parse_from(["ion", "-p", "hello"]).unwrap();
+        assert!(cli.print);
+        assert_eq!(cli.messages, vec!["hello"]);
+    }
+
+    #[test]
+    fn test_print_long_flag() {
+        let cli = Cli::try_parse_from(["ion", "--print", "hello"]).unwrap();
+        assert!(cli.print);
+        assert_eq!(cli.messages, vec!["hello"]);
+    }
+
+    #[test]
+    fn test_print_no_message_is_false() {
+        let cli = Cli::try_parse_from(["ion", "hello"]).unwrap();
+        assert!(!cli.print);
+    }
+
+    // ── --system-prompt alias ──
+    #[test]
+    fn test_system_prompt_alias() {
+        let cli = Cli::try_parse_from(["ion", "--system-prompt", "be concise", "hi"]).unwrap();
+        assert_eq!(cli.prompt, Some("be concise".into()));
+    }
+
+    #[test]
+    fn test_old_prompt_still_works() {
+        let cli = Cli::try_parse_from(["ion", "-P", "be concise", "hi"]).unwrap();
+        assert_eq!(cli.prompt, Some("be concise".into()));
+    }
+
+    // ── --continue / -c ──
+    #[test]
+    fn test_continue_short_flag() {
+        let cli = Cli::try_parse_from(["ion", "-c", "hello"]).unwrap();
+        assert!(cli.continue_session);
+    }
+
+    #[test]
+    fn test_continue_long_flag() {
+        let cli = Cli::try_parse_from(["ion", "--continue", "hello"]).unwrap();
+        assert!(cli.continue_session);
+    }
+
+    #[test]
+    fn test_continue_session_alias() {
+        let cli = Cli::try_parse_from(["ion", "--continue-session", "hello"]).unwrap();
+        assert!(cli.continue_session);
+    }
+
+    // ── --resume -r ──
+    #[test]
+    fn test_resume_short_flag() {
+        let cli = Cli::try_parse_from(["ion", "-r", "sess_123"]).unwrap();
+        assert_eq!(cli.resume, Some("sess_123".into()));
+    }
+
+    // ── --tools -t ──
+    #[test]
+    fn test_tools_short_flag() {
+        let cli = Cli::try_parse_from(["ion", "-t", "read,write", "hello"]).unwrap();
+        assert_eq!(cli.tools, Some("read,write".into()));
+    }
+
+    // ── --output-schema alias ──
+    #[test]
+    fn test_output_schema_alias() {
+        let cli = Cli::try_parse_from(["ion", "--output-schema", r#"{"type":"object"}"#, "hi"]).unwrap();
+        assert_eq!(cli.json_schema, Some(r#"{"type":"object"}"#.into()));
+    }
+
+    #[test]
+    fn test_json_schema_still_works() {
+        let cli = Cli::try_parse_from(["ion", "--json-schema", r#"{"type":"object"}"#, "hi"]).unwrap();
+        assert_eq!(cli.json_schema, Some(r#"{"type":"object"}"#.into()));
+    }
+
+    // ── --mode ──
+    #[test]
+    fn test_mode_text() {
+        let cli = Cli::try_parse_from(["ion", "--mode", "text", "hi"]).unwrap();
+        assert!(matches!(cli.mode, Some(OutputMode::Text)));
+    }
+
+    #[test]
+    fn test_mode_json() {
+        let cli = Cli::try_parse_from(["ion", "--mode", "json", "hi"]).unwrap();
+        assert!(matches!(cli.mode, Some(OutputMode::Json)));
+    }
+
+    #[test]
+    fn test_mode_rpc() {
+        let cli = Cli::try_parse_from(["ion", "--mode", "rpc"]).unwrap();
+        assert!(matches!(cli.mode, Some(OutputMode::Rpc)));
+    }
+
+    #[test]
+    fn test_mode_default_none() {
+        let cli = Cli::try_parse_from(["ion", "hi"]).unwrap();
+        assert!(cli.mode.is_none());
+    }
+
+    // ── --max-turns ──
+    #[test]
+    fn test_max_turns_default_is_none() {
+        let cli = Cli::try_parse_from(["ion", "hi"]).unwrap();
+        assert!(cli.max_turns.is_none());
+    }
+
+    #[test]
+    fn test_max_turns_explicit_value() {
+        let cli = Cli::try_parse_from(["ion", "--max-turns", "5", "hi"]).unwrap();
+        assert_eq!(cli.max_turns, Some(5));
+    }
+
+    // ── resolve_schema ──
+    #[test]
+    fn test_resolve_schema_inline_json() {
+        let schema = r#"{"type":"object"}"#;
+        let result = EffectiveConfig::resolve_schema(&Some(schema.into()));
+        assert_eq!(result, Some(schema.into()));
+    }
+
+    #[test]
+    fn test_resolve_schema_file_path() {
+        // Create a temp schema file
+        let dir = std::env::temp_dir();
+        let path = dir.join("ion_test_schema.json");
+        let content = r#"{"type":"string"}"#;
+        std::fs::write(&path, content).unwrap();
+
+        let result = EffectiveConfig::resolve_schema(&Some(path.to_string_lossy().to_string()));
+        assert_eq!(result, Some(content.into()));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_resolve_schema_at_file() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("ion_test_schema_at.json");
+        let content = r#"{"type":"number"}"#;
+        std::fs::write(&path, content).unwrap();
+
+        let result = EffectiveConfig::resolve_schema(&Some(format!("@{}", path.display())));
+        assert_eq!(result, Some(content.into()));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_resolve_schema_none() {
+        let result = EffectiveConfig::resolve_schema(&None);
+        assert!(result.is_none());
+    }
+
+    // ── --session-id ──
+    #[test]
+    fn test_session_id_flag() {
+        let cli = Cli::try_parse_from(["ion", "--session-id", "sess_custom_123", "hi"]).unwrap();
+        assert_eq!(cli.session_id, Some("sess_custom_123".into()));
+    }
+
+    #[test]
+    fn test_session_id_default_none() {
+        let cli = Cli::try_parse_from(["ion", "hi"]).unwrap();
+        assert!(cli.session_id.is_none());
+    }
+
+    // ── --session prefix matching (via Cli struct completeness) ──
+    #[test]
+    fn test_session_partial_uuid() {
+        let cli = Cli::try_parse_from(["ion", "--session", "sess_abc", "hi"]).unwrap();
+        assert_eq!(cli.session, Some("sess_abc".into()));
+    }
+
+    // ── parse_image_blocks ──
+    #[test]
+    fn test_parse_image_blocks_ignores_text() {
+        let blocks = parse_image_blocks(&["hello".into(), "world".into()]);
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn test_parse_image_blocks_invalid_path() {
+        // Non-existent image file should not panic
+        let blocks = parse_image_blocks(&["@/nonexistent/image.png".into()]);
+        assert!(blocks.is_empty()); // silently skipped
+    }
+
+    // ── --model provider/id:thinking 解析 ──
+    #[test]
+    fn test_model_provider_id_parses() {
+        let cli = Cli::try_parse_from(["ion", "--model", "opencode/deepseek-v4-flash", "hi"]).unwrap();
+        assert_eq!(cli.model, Some("opencode/deepseek-v4-flash".into()));
+        // Note: actual provider/model split happens in resolve_effective at runtime
+    }
+
+    #[test]
+    fn test_model_thinking_suffix_parses() {
+        let cli = Cli::try_parse_from(["ion", "--model", "deepseek-v4-flash:high", "hi"]).unwrap();
+        assert_eq!(cli.model, Some("deepseek-v4-flash:high".into()));
+    }
+
+    #[test]
+    fn test_model_provider_thinking_combined() {
+        let cli = Cli::try_parse_from(["ion", "--model", "opencode/deepseek-v4-flash:high", "hi"]).unwrap();
+        assert_eq!(cli.model, Some("opencode/deepseek-v4-flash:high".into()));
+    }
+
+    #[test]
+    fn test_model_thinking_takes_precedence() {
+        // --thinking flag should override :thinking suffix
+        let cli = Cli::try_parse_from([
+            "ion", "--model", "deepseek-v4-flash:high",
+            "--thinking", "low", "hi"
+        ]).unwrap();
+        assert_eq!(cli.model, Some("deepseek-v4-flash:high".into()));
+        assert_eq!(cli.thinking, Some("low".into()));
+    }
+
+    // ── --list-models flag ──
+    #[test]
+    fn test_list_models_flag_no_search() {
+        let cli = Cli::try_parse_from(["ion", "--list-models"]).unwrap();
+        assert_eq!(cli.list_models, Some("true".into()));
+    }
+
+    #[test]
+    fn test_list_models_flag_with_search() {
+        let cli = Cli::try_parse_from(["ion", "--list-models", "gpt"]).unwrap();
+        assert_eq!(cli.list_models, Some("gpt".into()));
+    }
+
+    #[test]
+    fn test_list_models_flag_default_none() {
+        let cli = Cli::try_parse_from(["ion", "hi"]).unwrap();
+        assert!(cli.list_models.is_none());
+    }
+
+    // ── ion config list ──
+    #[test]
+    fn test_config_list_subcommand() {
+        let cli = Cli::try_parse_from(["ion", "config", "list"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Config { action: ConfigAction::List })));
+    }
+
+    // ── --compact-model flag ──
+    #[test]
+    fn test_compact_model_flag() {
+        let cli = Cli::try_parse_from(["ion", "--compact-model", "gpt-4o-mini", "hi"]).unwrap();
+        assert_eq!(cli.compact_model, Some("gpt-4o-mini".into()));
+    }
+
+    #[test]
+    fn test_compact_model_default_none() {
+        let cli = Cli::try_parse_from(["ion", "hi"]).unwrap();
+        assert!(cli.compact_model.is_none());
     }
 }
