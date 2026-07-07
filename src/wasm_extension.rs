@@ -11,7 +11,7 @@ use crate::agent::error::{AgentError, AgentResult};
 use crate::agent::tool::Tool;
 use crate::event_bus::ExtensionEvent;
 use crate::paths;
-use crate::runtime::{pending_ui, PENDING_UI};
+use crate::runtime::pending_ui;
 
 /// Offset into linear memory where the host places tool name / args / output
 /// for the WASM plugin. Must be high enough to avoid the WASM module's data

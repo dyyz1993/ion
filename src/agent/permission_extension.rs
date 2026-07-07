@@ -22,7 +22,6 @@ use super::extension::Extension;
 use super::messages::ToolCall;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, RwLock};
 
@@ -86,13 +85,13 @@ pub struct PermissionExtension {
 }
 
 impl PermissionExtension {
-    pub fn new(session_id: &str, project_root: &str) -> Self {
+    pub fn new(_session_id: &str, project_root: &str) -> Self {
         let project_settings = PathBuf::from(project_root).join(".ion").join("settings.json");
         let global_path = std::env::var("HOME")
             .map(|h| PathBuf::from(h).join(".ion").join("settings.json"))
             .unwrap_or_else(|_| PathBuf::from("/nonexistent"));
 
-        let mut ext = Self {
+        let ext = Self {
             project_rules: RwLock::new(Vec::new()),
             session_rules: Mutex::new(Vec::new()),
             global_path,

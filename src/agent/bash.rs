@@ -147,7 +147,7 @@ impl Tool for BashRunTool {
             "background": background || timeout_bg, "session": &self.session_id,
         }));
 
-        let (stdin_tx, mut stdin_rx) = tokio::sync::mpsc::channel::<String>(64);
+        let (stdin_tx, stdin_rx) = tokio::sync::mpsc::channel::<String>(64);
         { let mut sm = self.stdin_map.lock().await; sm.insert(pid.clone(), stdin_tx); }
 
         // ── 后台模式：先安全预检，再用 spawn_watcher（保持流式输出和 stdin 转发）──
@@ -273,9 +273,7 @@ fn spawn_watcher(
         let mut last_flush = std::time::Instant::now();
         let mut log_f = std::fs::OpenOptions::new().create(true).append(true).open(&log_path).ok();
 
-        let mut line_count: u64 = 0;
-
-        if let Some(stdout) = child.stdout.take() {
+	        if let Some(stdout) = child.stdout.take() {
             let mut reader = BufReader::new(stdout).lines();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
 
@@ -299,8 +297,7 @@ fn spawn_watcher(
                             let _ = writeln!(f, "{text}");
                         }
                         line_buf.push(text);
-                        line_count += 1;
-                        last_flush = std::time::Instant::now();
+	                        last_flush = std::time::Instant::now();
                     }
                     Ok(Ok(None)) => break, // EOF
                     Ok(Err(_)) => break,    // read error

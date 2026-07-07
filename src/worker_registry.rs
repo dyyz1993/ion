@@ -16,6 +16,8 @@ pub struct WorkerRegistry {
     pub channels: HashMap<String, Vec<String>>, // channel → worker_ids
     /// Path to the ion-worker binary. If None, auto-discover.
     pub worker_bin: Option<String>,
+    /// Entry worker ID for recursive idle detection (set by --host mode)
+    pub entry_worker_id: Option<String>,
     /// Global event subscribers (worker_created, worker_destroyed, project_changed)
     pub global_subscribers: Vec<mpsc::Sender<serde_json::Value>>,
     /// Overview snapshot subscribers (unbounded, no backpressure)
@@ -102,6 +104,7 @@ impl WorkerRegistry {
             workers: HashMap::new(),
             channels: HashMap::new(),
             worker_bin: None,
+            entry_worker_id: None,
             global_subscribers: Vec::new(),
             overview_subscribers: Vec::new(),
             manager_cmd_tx,
@@ -116,6 +119,7 @@ impl WorkerRegistry {
             workers: HashMap::new(),
             channels: HashMap::new(),
             worker_bin: Some(bin.to_string()),
+            entry_worker_id: None,
             global_subscribers: Vec::new(),
             overview_subscribers: Vec::new(),
             manager_cmd_tx,
@@ -159,11 +163,11 @@ impl WorkerRegistry {
                     return Err(format!("git init failed: {stderr}"));
                 }
                 // 初始提交
-                let add = std::process::Command::new("git")
+                let _add = std::process::Command::new("git")
                     .args(["-C", &project_path, "add", "."])
                     .output()
                     .map_err(|e| format!("git add failed: {e}"))?;
-                let commit = std::process::Command::new("git")
+                let _commit = std::process::Command::new("git")
                     .args(["-C", &project_path, "commit", "-m", "ion: initial commit"])
                     .output()
                     .map_err(|e| format!("git commit failed: {e}"))?;
@@ -311,7 +315,7 @@ impl WorkerRegistry {
         // Create channels for stdout reader → send_command consumer
         // unbounded: reader task 永远不阻塞，确保 response 能及时到达 send_command
         let (stdout_tx, stdout_rx) = mpsc::unbounded_channel::<serde_json::Value>();
-        let (response_tx, response_rx) = mpsc::channel::<(String, serde_json::Value)>(64);
+        let (_response_tx, response_rx) = mpsc::channel::<(String, serde_json::Value)>(64);
         
         // Set channels on the record BEFORE inserting
         record.stdout_rx = Some(stdout_rx);
@@ -384,7 +388,7 @@ impl WorkerRegistry {
 		                                }
 		                                drop(reg2);
 		                                let rc = Arc::clone(&sub_registry);
-		                                let w = sub_wid.clone();
+		                                let _w = sub_wid.clone();
 		                                tokio::spawn(async move {
 		                                    let mut r = rc.lock().await;
 		                                    r.broadcast_overview();
@@ -1348,12 +1352,38 @@ impl WorkerRegistry {
             "sessions": sessions,
         })
     }
+
+    /// Set the entry worker for recursive idle detection.
+    pub fn set_entry_worker(&mut self, worker_id: &str) {
+        self.entry_worker_id = Some(worker_id.to_string());
+    }
+
+    /// Check if a worker and all its descendants are idle (DFS recursive).
+    pub fn all_workers_idle(&self, entry_worker_id: &str) -> Result<bool, String> {
+        let mut stack = vec![entry_worker_id.to_string()];
+        let mut visited = std::collections::HashSet::new();
+        while let Some(wid) = stack.pop() {
+            if !visited.insert(wid.clone()) { continue; }
+            let record = self.workers.get(&wid).ok_or_else(|| {
+                format!("worker {wid} not found in registry")
+            })?;
+            match record.status {
+                WorkerStatus::Idle => {}
+                _ => return Ok(false),
+            }
+            for child_id in &record.children {
+                stack.push(child_id.clone());
+            }
+        }
+        Ok(true)
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Worker stdout reader — 解析响应和事件
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 async fn read_worker_stdout(
     worker_id: String,
     stdout: ChildStdout,
@@ -1415,7 +1445,7 @@ async fn read_worker_stdout(
                         }
                         // Broadcast overview without holding lock
                         let reg_clone = Arc::clone(&registry);
-                        let wid = worker_id.clone();
+                        let _wid = worker_id.clone();
                         tokio::spawn(async move {
                             let mut r = reg_clone.lock().await;
                             r.broadcast_overview();

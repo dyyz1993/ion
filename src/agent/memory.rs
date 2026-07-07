@@ -32,7 +32,7 @@
 
 use super::error::{AgentError, AgentResult};
 use super::extension::Extension;
-use super::tool::{Tool, ToolRegistry};
+use super::tool::Tool;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

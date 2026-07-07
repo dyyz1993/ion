@@ -34,7 +34,8 @@ pub struct SessionEntryBase {
     pub entry_type: String,
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub parentId: Option<String>,
+    #[serde(rename = "parentId")]
+    pub parent_id: Option<String>,
     pub timestamp: String,
 }
 
@@ -48,7 +49,8 @@ pub struct SessionHeader {
     pub timestamp: String,
     pub cwd: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub parentSession: Option<String>,
+    #[serde(rename = "parentSession")]
+    pub parent_session: Option<String>,
 }
 
 /// Message entry (the core conversation data).
@@ -57,7 +59,8 @@ pub struct MessageEntry {
     #[serde(rename = "type")]
     pub entry_type: String, // "message"
     pub id: String,
-    pub parentId: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: String,
     pub timestamp: String,
     pub message: serde_json::Value,
 }
@@ -68,10 +71,12 @@ pub struct ModelChangeEntry {
     #[serde(rename = "type")]
     pub entry_type: String, // "model_change"
     pub id: String,
-    pub parentId: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: String,
     pub timestamp: String,
     pub provider: String,
-    pub modelId: String,
+    #[serde(rename = "modelId")]
+    pub model_id: String,
 }
 
 /// Thinking level change entry.
@@ -80,10 +85,12 @@ pub struct ThinkingLevelChangeEntry {
     #[serde(rename = "type")]
     pub entry_type: String, // "thinking_level_change"
     pub id: String,
-    pub parentId: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: String,
     pub timestamp: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub thinkingLevel: Option<String>,
+    #[serde(rename = "thinkingLevel")]
+    pub thinking_level: Option<String>,
 }
 
 /// Agent change entry.
@@ -92,9 +99,11 @@ pub struct AgentChangeEntry {
     #[serde(rename = "type")]
     pub entry_type: String, // "agent_change"
     pub id: String,
-    pub parentId: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: String,
     pub timestamp: String,
-    pub agentName: String,
+    #[serde(rename = "agentName")]
+    pub agent_name: String,
 }
 
 /// Session info entry (name changes).
@@ -103,7 +112,8 @@ pub struct SessionInfoEntry {
     #[serde(rename = "type")]
     pub entry_type: String, // "session_info"
     pub id: String,
-    pub parentId: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: String,
     pub timestamp: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -115,22 +125,27 @@ pub struct CompactionEntry {
     #[serde(rename = "type")]
     pub entry_type: String, // "compaction"
     pub id: String,
-    pub parentId: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: String,
     pub timestamp: String,
     pub summary: String,
-    pub tokensBefore: u64,
+    #[serde(rename = "tokensBefore")]
+    pub tokens_before: u64,
     /// 分批压缩：批次数（0 = emergency / single）
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub batchCount: Option<usize>,
+    #[serde(rename = "batchCount")]
+    pub batch_count: Option<usize>,
     /// 分批压缩阶段：single / batched_merged / batched_three_step / emergency
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
     /// 各批次 partial summary（审计用）
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub batchSummaries: Option<Vec<String>>,
+    #[serde(rename = "batchSummaries")]
+    pub batch_summaries: Option<Vec<String>>,
     /// Step 2 输出的合并 summary（仅 batched_three_step 阶段有）
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub mergedSummary: Option<String>,
+    #[serde(rename = "mergedSummary")]
+    pub merged_summary: Option<String>,
 }
 
 /// Branch summary entry.
@@ -139,7 +154,8 @@ pub struct BranchSummaryEntry {
     #[serde(rename = "type")]
     pub entry_type: String, // "branch_summary"
     pub id: String,
-    pub parentId: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: String,
     pub timestamp: String,
     pub summary: String,
 }
@@ -150,9 +166,11 @@ pub struct CustomEntry {
     #[serde(rename = "type")]
     pub entry_type: String, // "custom"
     pub id: String,
-    pub parentId: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: String,
     pub timestamp: String,
-    pub customType: String,
+    #[serde(rename = "customType")]
+    pub custom_type: String,
     pub data: serde_json::Value,
 }
 
@@ -163,9 +181,11 @@ pub struct CustomMessageEntry {
     #[serde(rename = "type")]
     pub entry_type: String, // "custom_message"
     pub id: String,
-    pub parentId: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: String,
     pub timestamp: String,
-    pub customType: String,
+    #[serde(rename = "customType")]
+    pub custom_type: String,
     pub content: serde_json::Value, // string | (TextContent | ImageContent)[]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
@@ -179,9 +199,11 @@ pub struct SystemEventEntry {
     #[serde(rename = "type")]
     pub entry_type: String, // "system_event"
     pub id: String,
-    pub parentId: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: String,
     pub timestamp: String,
-    pub customType: String,
+    #[serde(rename = "customType")]
+    pub custom_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     pub display: bool,
@@ -194,9 +216,11 @@ pub struct LabelEntry {
     #[serde(rename = "type")]
     pub entry_type: String, // "label"
     pub id: String,
-    pub parentId: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: String,
     pub timestamp: String,
-    pub targetId: String,
+    #[serde(rename = "targetId")]
+    pub target_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }
@@ -208,9 +232,11 @@ pub struct ActiveToolsChangeEntry {
     #[serde(rename = "type")]
     pub entry_type: String, // "active_tools_change"
     pub id: String,
-    pub parentId: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: String,
     pub timestamp: String,
-    pub activeToolNames: Vec<String>,
+    #[serde(rename = "activeToolNames")]
+    pub active_tool_names: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -320,7 +346,7 @@ impl SessionFile {
             return None;
         }
         let content = std::fs::read_to_string(path).ok()?;
-        let mut lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+        let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
         if lines.is_empty() {
             return None;
         }

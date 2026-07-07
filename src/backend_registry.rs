@@ -215,7 +215,7 @@ impl BackendRegistry {
     }
 
     /// 根据 BackendConfig 构造单个 Runtime 实例
-    fn build_backend(name: &str, spec: &BackendConfig, remote_pool: &crate::config::RemoteConfig, workspace: &str, guard_cfg: Option<&CommandGuardConfig>) -> Result<Box<dyn Runtime>, String> {
+    fn build_backend(name: &str, spec: &BackendConfig, _remote_pool: &crate::config::RemoteConfig, workspace: &str, guard_cfg: Option<&CommandGuardConfig>) -> Result<Box<dyn Runtime>, String> {
         match spec.backend_type.as_str() {
             "local" => Ok(build_secured(LocalRuntime::new(), guard_cfg)),
             "remote" => {
@@ -496,6 +496,7 @@ pub struct AppleContainerRuntime {
     /// 容器内挂载点（如 /workspace）
     mount_path: String,
     /// 提示用端口号，不传给 container run（Apple Container 用 IP 暴露端口）
+    #[allow(dead_code)]
     port: u16,
     memory: String,
     cpus: Option<u32>,

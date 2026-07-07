@@ -3,7 +3,6 @@ use super::messages::ToolDef;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
 // ToolUpdateFn — callback for streaming partial results during tool execution
@@ -121,7 +120,7 @@ impl Tool for CalculatorTool {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
         let expr = args
             .get("expression")
             .and_then(|v| v.as_str())
@@ -286,7 +285,7 @@ impl Tool for EchoTool {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
         let text = args
             .get("text")
             .and_then(|v| v.as_str())
@@ -483,7 +482,7 @@ impl Tool for GenericTool {
     fn name(&self) -> &str { &self.name }
     fn description(&self) -> &str { &self.description }
     fn parameters(&self) -> serde_json::Value { self.parameters.clone() }
-    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
         // Return a JSON response showing the tool was called with these args
         Ok(serde_json::json!({
             "tool": self.name,

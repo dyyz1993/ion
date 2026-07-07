@@ -494,6 +494,7 @@ pub struct LocalRuntime {
 struct ProcessEntry {
     child: tokio::process::Child,
     stdin: Option<tokio::process::ChildStdin>,
+    #[allow(dead_code)]
     log_path: Option<String>,
 }
 
