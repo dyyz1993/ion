@@ -82,30 +82,40 @@ pub fn root() -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
-// Manager 运行时文件（Unix socket / PID）
+// Host 运行时文件（Unix socket / PID）
 // ---------------------------------------------------------------------------
 
-/// ~/.ion/manager.sock — Manager 的 Unix socket 入口
-pub fn manager_socket_path() -> PathBuf {
-    root().join("manager.sock")
+/// ~/.ion/host.sock — Host 的 Unix socket 入口
+pub fn host_socket_path() -> PathBuf {
+    root().join("host.sock")
 }
 
-/// ~/.ion/manager.pid — Manager 的 PID 文件（防重复启动）
-pub fn manager_pid_path() -> PathBuf {
-    root().join("manager.pid")
+/// ~/.ion/host.pid — Host 的 PID 文件（防重复启动）
+pub fn host_pid_path() -> PathBuf {
+    root().join("host.pid")
 }
 
-/// 检查 Manager 是否在运行：读 PID 文件 + 验证进程存活
-pub fn manager_running() -> Option<u32> {
-    let pid_path = manager_pid_path();
-    let content = std::fs::read_to_string(&pid_path).ok()?;
-    let pid: u32 = content.trim().parse().ok()?;
-    // 检查进程是否还活着：signal(0)
-    let rc = unsafe { libc_kill(pid, 0) };
-    if rc == 0 { Some(pid) } else {
-        // 进程已死，清理 stale pid 文件
-        let _ = std::fs::remove_file(&pid_path);
-        None
+/// 检查 Host 是否在运行：读 PID 文件 + 验证进程存活
+pub fn host_running() -> Option<u32> {
+    let pid_path = host_pid_path();
+    // Fallback: check old manager.pid path for migration
+    let old_pid_path = root().join("manager.pid");
+    if !pid_path.exists() && old_pid_path.exists() {
+        let content = std::fs::read_to_string(&old_pid_path).ok()?;
+        let pid: u32 = content.trim().parse().ok()?;
+        let rc = libc_kill(pid, 0);
+        if rc == 0 { Some(pid) } else {
+            let _ = std::fs::remove_file(&old_pid_path);
+            None
+        }
+    } else {
+        let content = std::fs::read_to_string(&pid_path).ok()?;
+        let pid: u32 = content.trim().parse().ok()?;
+        let rc = libc_kill(pid, 0);
+        if rc == 0 { Some(pid) } else {
+            let _ = std::fs::remove_file(&pid_path);
+            None
+        }
     }
 }
 
@@ -128,8 +138,11 @@ fn libc_kill(_pid: u32, _sig: i32) -> i32 { -1 }
 // Agent 目录（核心配置）
 // ---------------------------------------------------------------------------
 
-/// ~/.ion/agent/  (对应 pi 的 getAgentDir())
+/// ~/.ion/agent/ — 可通过 ION_AGENT_DIR 环境变量覆盖
 pub fn agent_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("ION_AGENT_DIR") {
+        return PathBuf::from(dir);
+    }
     root().join("agent")
 }
 
@@ -152,8 +165,11 @@ pub fn models_path() -> PathBuf {
 // 会话存储（按 cwd 分组）
 // ---------------------------------------------------------------------------
 
-/// ~/.ion/agent/sessions/
+/// ~/.ion/agent/sessions/ — 可通过 ION_SESSION_DIR 环境变量覆盖
 pub fn sessions_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("ION_SESSION_DIR") {
+        return PathBuf::from(dir);
+    }
     agent_dir().join("sessions")
 }
 
