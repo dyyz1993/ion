@@ -83,7 +83,7 @@
 |---|------|--------|
 | 5.1 | 更新 CLI_ARCHITECTURE.md 验证用例为真实 CLI | ~30min |
 | 5.2 | 更新 AGENTS.md 路线图状态 | ~15min |
-| 5.3 | 更新 TEAM_ARCH.md → 标记为已被 CLI_ARCHITECTURE 取代 | ~15min |
+| 5.3 | ✅ 已完成：TEAM_ARCH.md 归档，新方案 TEAM_ORCHESTRATION.md | done |
 
 ---
 

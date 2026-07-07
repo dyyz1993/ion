@@ -32,7 +32,7 @@ docs/
 │   ├── PERMISSION_SYSTEM.md           ← 权限系统（合并自 4 个文档）
 │   ├── SESSION_MESSAGE.md             ← Session 消息系统（合并自 2 个文档）
 │   ├── HOOK_SYSTEM.md                 ← Shell Hook 系统（暂不开发）
-│   ├── TEAM_ARCH.md                   ← Team 架构
+│   ├── TEAM_ORCHESTRATION.md          ← Team 编排（agent.md 驱动）
 │   └── PI_RPC_ALIGNMENT.md            ← pi RPC 对齐
 │
 ├── testing/                            ← 测试相关
@@ -70,7 +70,7 @@ docs/
 | 权限系统 | [design/PERMISSION_SYSTEM.md](design/PERMISSION_SYSTEM.md) |
 | Session 消息系统 | [design/SESSION_MESSAGE.md](design/SESSION_MESSAGE.md) |
 | Shell Hook 系统 | [design/HOOK_SYSTEM.md](design/HOOK_SYSTEM.md) |
-| Team 多 Agent 架构 | [design/TEAM_ARCH.md](design/TEAM_ARCH.md) |
+| Team 编排（agent.md 驱动） | [design/TEAM_ORCHESTRATION.md](design/TEAM_ORCHESTRATION.md) |
 | pi RPC 对齐 | [design/PI_RPC_ALIGNMENT.md](design/PI_RPC_ALIGNMENT.md) |
 
 ### 我想查 CLI 命令怎么用

@@ -115,4 +115,4 @@
 |------|---------|------|
 | {能力 1} | {设计描述} | {为什么 pi 没有 / ION 为什么需要} |
 
-参考：[TEAM_ARCH.md](../design/TEAM_ARCH.md)（多 Worker 团队架构，pi 没有）
+参考：[TEAM_ORCHESTRATION.md](../design/TEAM_ORCHESTRATION.md)（多 Worker 团队编排，pi 没有）

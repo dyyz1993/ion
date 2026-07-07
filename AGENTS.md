@@ -81,7 +81,7 @@ ION 对标 pi 的全部能力。遇到不确定的设计决策时：
 3. **摇摆不定的决策**：
    - 方法签名、字段命名、协议格式 → 参考 pi 的实现
    - 行为预期不清楚 → 看 pi 怎么做的
-   - pi 没有的（如 worktree 隔离、多 Worker 团队）→ ION 原创设计，记录在 [docs/design/TEAM_ARCH.md](./docs/design/TEAM_ARCH.md)
+   - pi 没有的（如 worktree 隔离、多 Worker 团队）→ ION 原创设计，记录在 [docs/design/TEAM_ORCHESTRATION.md](./docs/design/TEAM_ORCHESTRATION.md)
 
 ## 文档规范
 
@@ -181,7 +181,7 @@ docs/
 | [ROUTER_TEST_SPEC.md](./ROUTER_TEST_SPEC.md) | 路由层测试规格：68 条用例覆盖路由/路径/安全/配置错误 (已完成) |
 | [docs/design/EXTENSION_ECOSYSTEM.md](./docs/design/EXTENSION_ECOSYSTEM.md) | Extension 生态验证：子 Worker 创建 + 事件发射 + CLI 验证 (已验证) |
 | [docs/design/HOOK_SYSTEM.md](./docs/design/HOOK_SYSTEM.md) | Shell Hook 系统设计 (TRAE 兼容, 暂不开发) |
-| [docs/design/TEAM_ARCH.md](./docs/design/TEAM_ARCH.md) | 单项目自治 Agent 团队 — `ion --host --agent coordinator` 拆任务开发 (设计稿+已实现核心) |
+| [docs/design/TEAM_ORCHESTRATION.md](./docs/design/TEAM_ORCHESTRATION.md) | Team 编排（agent.md 驱动）— `ion --host --agent coordinator` 拆任务开发 (已验证) |
 | [docs/design/PI_RPC_ALIGNMENT.md](./docs/design/PI_RPC_ALIGNMENT.md) | pi RPC CLI 对齐文档 (开发中) |
 | [docs/design/CLI_ARCHITECTURE.md](./docs/design/CLI_ARCHITECTURE.md) | CLI 三种执行场景设计：三场景分组验证用例 (设计稿，已被 CLI_PLAN 合并) |
 | [docs/design/CLI_ROADMAP.md](./docs/design/CLI_ROADMAP.md) | CLI 落地路线图 (排期中，已被 CLI_PLAN 合并) |

@@ -2514,17 +2514,15 @@ async fn handle_manager_command(
 // ---------------------------------------------------------------------------
 // Team mode — single-project self-organizing agent team
 // ---------------------------------------------------------------------------
-//
-// 架构原则（AGENTS.md）：内核只提供对等原语，编排策略全交给 .md 提示词。
-//
-// cmd_team 是"启动器 + 事件泵"，不做任何编排决策：
-//   1. spawn 1 个入口 Worker（默认加载 .ion/agents/coordinator.md）
-// ---------------------------------------------------------------------------
 // Host mode — temporary WorkerRegistry + event pump + auto-exit
 // ---------------------------------------------------------------------------
 //
+// 架构原则（AGENTS.md）：内核只提供对等原语，编排策略全交给 .md 提示词。
+// 详见 docs/design/TEAM_ORCHESTRATION.md
+//
 // --host: 快速编排模式。启动一个临时 WorkerRegistry + 事件泵，
-// spawn 入口 Worker、等全部 idle 后自动清理退出。
+// spawn 入口 Worker（agent 通过 --agent 参数指定，加载对应 .md）、
+// 等全部 idle 后自动清理退出。
 // 对应 CLI_ARCHITECTURE.md 场景 2。
 //
 // 架构原则：内核只提供对等原语，编排策略全交给 LLM + agent 提示词。
