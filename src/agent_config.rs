@@ -175,10 +175,11 @@ pub fn find_agent(name_or_path: &str) -> Option<AgentConfig> {
         return parse_agent_file(&path);
     }
 
-    // 2. Built-in agents
-    for agent in builtin_agents() {
-        if agent.name == name_or_path {
-            return Some(agent);
+    // 2. Project .ion/agents/ (highest priority — most specific to current project)
+    if let Some(proj) = project_agents_dir() {
+        let proj_path = proj.join(format!("{name_or_path}.md"));
+        if proj_path.exists() {
+            return parse_agent_file(&proj_path);
         }
     }
 
@@ -188,11 +189,10 @@ pub fn find_agent(name_or_path: &str) -> Option<AgentConfig> {
         return parse_agent_file(&global);
     }
 
-    // 4. Project .ion/agents/
-    if let Some(proj) = project_agents_dir() {
-        let proj_path = proj.join(format!("{name_or_path}.md"));
-        if proj_path.exists() {
-            return parse_agent_file(&proj_path);
+    // 4. Built-in agents (lowest priority — fallback)
+    for agent in builtin_agents() {
+        if agent.name == name_or_path {
+            return Some(agent);
         }
     }
 

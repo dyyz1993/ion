@@ -472,12 +472,47 @@ impl IonConfig {
         if !path.exists() {
             return IonConfig::default();
         }
-        match std::fs::read_to_string(&path) {
+        let mut cfg = match std::fs::read_to_string(&path) {
             Ok(content) => serde_json::from_str(&content).unwrap_or_else(|e| {
                 eprintln!("Warning: failed to parse {}: {e}", path.display());
                 IonConfig::default()
             }),
             Err(_) => IonConfig::default(),
+        };
+        // Merge project-level config from <cwd>/.ion/config.json (deep merge on runtime)
+        if let Some(project_cfg) = Self::load_project() {
+            cfg.merge_project(project_cfg);
+        }
+        cfg
+    }
+
+    /// Load project-level config from `<cwd>/.ion/config.json`.
+    /// Returns None if not present.
+    fn load_project() -> Option<IonConfig> {
+        let cwd = std::env::current_dir().ok()?;
+        let proj_path = cwd.join(".ion").join("config.json");
+        if !proj_path.exists() { return None; }
+        let content = std::fs::read_to_string(&proj_path).ok()?;
+        serde_json::from_str(&content).ok()
+    }
+
+    /// Merge project-level config into self. Project overrides global for set fields.
+    /// Currently only `runtime` is deep-merged; other fields take project value if set.
+    fn merge_project(&mut self, project: IonConfig) {
+        // Runtime: project's default_mode overrides global if it's different from "local" default
+        if !project.runtime.default_mode.is_empty()
+            && project.runtime.default_mode != self.runtime.default_mode {
+            self.runtime.default_mode = project.runtime.default_mode;
+        }
+        // Other top-level fields: project takes precedence if Some
+        if project.default_provider.is_some() {
+            self.default_provider = project.default_provider;
+        }
+        if project.default_model.is_some() {
+            self.default_model = project.default_model;
+        }
+        if project.base_url.is_some() {
+            self.base_url = project.base_url;
         }
     }
 

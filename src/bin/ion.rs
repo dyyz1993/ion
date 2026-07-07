@@ -2555,6 +2555,9 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>) {
     tokio::spawn(async move {
         let mut subs: std::collections::HashMap<String, tokio::sync::mpsc::Receiver<serde_json::Value>> =
             std::collections::HashMap::new();
+        // Per-worker line buffer: accumulate text_delta, flush on newline / agent_end
+        let mut line_bufs: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         loop {
             {
                 let mut reg = pump_registry.lock().await;
@@ -2563,6 +2566,7 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>) {
                     if !subs.contains_key(wid) {
                         if let Ok(rx) = reg.subscribe(wid) {
                             subs.insert(wid.clone(), rx);
+                            line_bufs.insert(wid.clone(), String::new());
                         }
                     }
                 }
@@ -2575,18 +2579,43 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>) {
                     match et {
                         "text_delta" => {
                             if let Some(delta) = ev.get("delta").and_then(|v| v.as_str()) {
-                                if !delta.trim().is_empty() {
-                                    println!("[pump] [{:.12}] {}", wid, delta.trim());
+                                if delta.is_empty() { continue; }
+                                let buf = line_bufs.entry(wid.clone()).or_default();
+                                buf.push_str(delta);
+                                // Flush complete lines
+                                while let Some(nl) = buf.find('\n') {
+                                    let line: String = buf.drain(..=nl).collect();
+                                    let trimmed = line.trim_end();
+                                    if !trimmed.is_empty() {
+                                        println!("[{}] {}", &wid[..12.min(wid.len())], trimmed);
+                                    }
                                 }
                             }
                         }
                         "tool_call" => {
+                            // Flush any pending buffer first
+                            if let Some(buf) = line_bufs.get_mut(wid) {
+                                if !buf.trim().is_empty() {
+                                    println!("[{}] {}", &wid[..12.min(wid.len())], buf.trim());
+                                    buf.clear();
+                                }
+                            }
                             if let Some(tn) = ev.get("tool").and_then(|v| v.as_str()) {
-                                println!("[pump] [{:.12}] 🔧 {}", wid, tn);
+                                println!("[{}] 🔧 {}", &wid[..12.min(wid.len())], tn);
                             }
                         }
                         "agent_end" => {
-                            println!("[pump] [{:.12}] agent_end", wid);
+                            // Flush any remaining buffered text
+                            if let Some(buf) = line_bufs.get_mut(wid) {
+                                if !buf.trim().is_empty() {
+                                    println!("[{}] {}", &wid[..12.min(wid.len())], buf.trim());
+                                    buf.clear();
+                                }
+                            }
+                            println!("[{}] ✓ done", &wid[..12.min(wid.len())]);
+                        }
+                        "agent_start" => {
+                            println!("[{}] ▶ start", &wid[..12.min(wid.len())]);
                         }
                         _ => {}
                     }

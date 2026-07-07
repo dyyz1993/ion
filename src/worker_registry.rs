@@ -230,14 +230,21 @@ impl WorkerRegistry {
 
         let model = config.model.clone().unwrap_or(default_model);
         let provider = config.provider.clone().unwrap_or(default_provider);
+        let agent_name = config.agent.clone().unwrap_or_default();
+
+        let mut cmd_args = vec![
+            "--mode".to_string(), "rpc".to_string(),
+            "--session".to_string(), session_id.clone(),
+            "--model".to_string(), model.clone(),
+            "--provider".to_string(), provider.clone(),
+        ];
+        if !agent_name.is_empty() {
+            cmd_args.push("--agent".to_string());
+            cmd_args.push(agent_name.clone());
+        }
 
         let mut child = tokio::process::Command::new(&binary)
-            .args([
-                "--mode", "rpc",
-                "--session", &session_id,
-                "--model", &model,
-                "--provider", &provider,
-            ])
+            .args(&cmd_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

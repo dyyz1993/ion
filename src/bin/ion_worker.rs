@@ -39,6 +39,7 @@ async fn main() {
     let mut model_id = "deepseek-v4-flash".to_string();
     let mut provider = "opencode".to_string();
     let mut channels: Vec<String> = Vec::new();
+    let mut initial_agent: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -47,6 +48,7 @@ async fn main() {
             "--model" => { model_id = args.get(i + 1).cloned().unwrap_or(model_id); i += 2; continue; }
             "--provider" => { provider = args.get(i + 1).cloned().unwrap_or(provider); i += 2; continue; }
             "--channel" => { if let Some(ch) = args.get(i + 1) { channels.push(ch.clone()); } i += 2; continue; }
+            "--agent" => { initial_agent = args.get(i + 1).cloned(); i += 2; continue; }
             "--mode" => { i += 2; continue; } // 已知是 rpc
             _ => { i += 1; }
         }
@@ -224,17 +226,42 @@ async fn main() {
         Box::new(worker_inner)
     };
 
+    let default_prompt = "You are a helpful AI assistant with access to tools.".to_string();
+    // 启动时应用 --agent 配置（如果指定）
+    let mut initial_system_prompt = default_prompt.clone();
+    let mut current_agent_name: String = "build".into();
+    if let Some(ref agent_name) = initial_agent {
+        if let Some(agent_cfg) = ion::agent_config::find_agent(agent_name) {
+            current_agent_name = agent_cfg.name.clone();
+            if let Some(ref sp) = agent_cfg.system_prompt {
+                initial_system_prompt = sp.clone();
+            }
+            tracing::info!("[worker] loaded agent '{}' from config", agent_cfg.name);
+            // Note: tool restriction is applied below after `agent` is built
+            // We stash the config to apply post-construction
+        } else {
+            tracing::warn!("[worker] agent '{}' not found, using defaults", agent_name);
+        }
+    }
+
     let mut agent = Agent::new(
         Arc::clone(&registry),
         model.clone(),
-        Some("You are a helpful AI assistant with access to tools.".into()),
+        Some(initial_system_prompt),
         tools,
         config,
     )
         .with_runtime(worker_rt);
 
-    // 当前 agent 名称（支持 switch_agent 动态切换）
-    let mut current_agent_name: String = "build".into();
+    // 应用初始 agent 的工具限制（必须在 Agent 构造后调用 restrict_tools）
+    if let Some(ref agent_name) = initial_agent {
+        if let Some(agent_cfg) = ion::agent_config::find_agent(agent_name) {
+            if let Some(ref allowed) = agent_cfg.tools {
+                agent.restrict_tools(allowed.clone());
+            }
+        }
+    }
+
     if let Some(msgs) = preloaded {
         agent = agent.with_messages(msgs);
     }
