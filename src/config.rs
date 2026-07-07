@@ -479,12 +479,25 @@ impl IonConfig {
             }),
             Err(_) => IonConfig::default(),
         };
-        // Merge project-level config from <cwd>/.ion/config.json (deep merge on runtime)
+
+        // runtime.default_mode 是项目级设置，不从全局继承。
+        // 默认 local，只有项目级 .ion/config.json 显式设置或 --remote flag 才能改。
+        // 这里先重置为 local，后面让项目级 config 或 flag 来覆盖。
+        cfg.runtime.default_mode = "local".into();
+
+        // 项目级 config（cwd 或 ION_PROJECT_ROOT）可以设置 runtime mode
         if let Some(project_cfg) = Self::load_project() {
+            // runtime.default_mode 只在项目级显式设置（非空且非默认 local）时覆盖
+            if !project_cfg.runtime.default_mode.is_empty()
+                && project_cfg.runtime.default_mode != "local" {
+                cfg.runtime.default_mode = project_cfg.runtime.default_mode.clone();
+            }
+            // 其他字段（provider/model 等）走通用 merge
             cfg.merge_project(project_cfg);
         }
+
         // CLI override via env var (set by main() when --local/--remote is passed)
-        // Highest priority: beats both global and project config.
+        // 最高优先级
         match std::env::var("ION_RUNTIME_OVERRIDE").as_deref() {
             Ok("local") => cfg.runtime.default_mode = "local".into(),
             Ok("remote") => cfg.runtime.default_mode = "remote".into(),
@@ -494,24 +507,24 @@ impl IonConfig {
     }
 
     /// Load project-level config from `<cwd>/.ion/config.json`.
+    /// If `ION_PROJECT_ROOT` env var is set (worker in worktree), use that instead of cwd.
     /// Returns None if not present.
     fn load_project() -> Option<IonConfig> {
-        let cwd = std::env::current_dir().ok()?;
-        let proj_path = cwd.join(".ion").join("config.json");
+        // 优先用 ION_PROJECT_ROOT（worktree 场景下 cwd 是 worktree 目录，没有 .ion/）
+        let base_dir = std::env::var("ION_PROJECT_ROOT")
+            .map(std::path::PathBuf::from)
+            .or_else(|_| std::env::current_dir())
+            .ok()?;
+        let proj_path = base_dir.join(".ion").join("config.json");
         if !proj_path.exists() { return None; }
         let content = std::fs::read_to_string(&proj_path).ok()?;
         serde_json::from_str(&content).ok()
     }
 
-    /// Merge project-level config into self. Project overrides global for set fields.
-    /// Currently only `runtime` is deep-merged; other fields take project value if set.
+    /// Merge project-level config into self for non-runtime fields.
+    /// runtime.default_mode 已在 load() 中单独处理（不从全局继承）。
     fn merge_project(&mut self, project: IonConfig) {
-        // Runtime: project's default_mode overrides global if it's different from "local" default
-        if !project.runtime.default_mode.is_empty()
-            && project.runtime.default_mode != self.runtime.default_mode {
-            self.runtime.default_mode = project.runtime.default_mode;
-        }
-        // Other top-level fields: project takes precedence if Some
+        // 其他 top-level 字段：项目优先
         if project.default_provider.is_some() {
             self.default_provider = project.default_provider;
         }

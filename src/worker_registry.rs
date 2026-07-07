@@ -243,12 +243,24 @@ impl WorkerRegistry {
             cmd_args.push(agent_name.clone());
         }
 
-        let mut child = tokio::process::Command::new(&binary)
+        let mut child_cmd = tokio::process::Command::new(&binary);
+        child_cmd
             .args(&cmd_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .current_dir(&worktree_path)
+            .current_dir(&worktree_path);
+
+        // 传 ION_PROJECT_ROOT 让子进程能找到项目级 .ion/config.json
+        // （worktree 目录没有 .ion/，子进程需要知道原始项目路径来读 config）
+        child_cmd.env("ION_PROJECT_ROOT", &project_path);
+
+        // 同步主进程的 runtime override 到子进程（如果主进程设了 --local/--remote）
+        if let Ok(rt_override) = std::env::var("ION_RUNTIME_OVERRIDE") {
+            child_cmd.env("ION_RUNTIME_OVERRIDE", &rt_override);
+        }
+
+        let mut child = child_cmd
             .spawn()
             .map_err(|e| format!("failed to spawn worker: {e}"))?;
 
