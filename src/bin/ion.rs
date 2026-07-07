@@ -234,6 +234,14 @@ struct Cli {
     #[arg(long, global = true, default_value_t = false)]
     host: bool,
 
+    /// Force local runtime (overrides config's runtime.default_mode)
+    #[arg(long, global = true, conflicts_with = "remote")]
+    local: bool,
+
+    /// Force remote runtime (overrides config's runtime.default_mode)
+    #[arg(long, global = true, conflicts_with = "local")]
+    remote: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -1654,6 +1662,16 @@ async fn cmd_stats(_eff: &EffectiveConfig) {
 async fn main() {
     let cli = Cli::parse();
     init_logging(cli.verbose);
+
+    // --local / --remote override: set env var before any config load
+    // (IonConfig::load reads this to override runtime.default_mode)
+    // Safety: this runs at the very start of main(), before any other threads exist.
+    if cli.local {
+        unsafe { std::env::set_var("ION_RUNTIME_OVERRIDE", "local"); }
+    } else if cli.remote {
+        unsafe { std::env::set_var("ION_RUNTIME_OVERRIDE", "remote"); }
+    }
+
     let mut eff = resolve_effective(&cli);
 
     // ── 管道 stdin 自动检测（对齐 pi）──

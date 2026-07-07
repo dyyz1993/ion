@@ -483,6 +483,13 @@ impl IonConfig {
         if let Some(project_cfg) = Self::load_project() {
             cfg.merge_project(project_cfg);
         }
+        // CLI override via env var (set by main() when --local/--remote is passed)
+        // Highest priority: beats both global and project config.
+        match std::env::var("ION_RUNTIME_OVERRIDE").as_deref() {
+            Ok("local") => cfg.runtime.default_mode = "local".into(),
+            Ok("remote") => cfg.runtime.default_mode = "remote".into(),
+            _ => {}
+        }
         cfg
     }
 
