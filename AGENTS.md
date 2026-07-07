@@ -567,7 +567,11 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | p2_hotreload_ci (CLI E2E) | 9 | PermissionExtension 热重载 |
 | p3_audit_ci (CLI E2E) | 7 | 审计日志持久化 |
 | p3_ui_ci (CLI E2E) | 6 | UI 系统 subscribe --ui + ui_respond |
-| **测试覆盖合计** | **307** | 全部通过 ✅ |
+| cli_alignment_ci (CLI E2E) | 28 | pi CLI 对齐：flag/别名/语法/模式 |
+| compaction_ci (CLI E2E) | 10 | 会话压缩：持久化/触发/小模型 |
+| scenario2_ci (CLI E2E) | 17 | 场景 2 (--host)：启停/编排/worktree/死锁回归 |
+| team_e2e (CLI E2E) | 8 | Team 编排：coordinator→developer→reviewer |
+| **测试覆盖合计** | **370** | 全部通过 ✅ |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
