@@ -426,7 +426,14 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 - `BACKEND_TYPES.md` — Backend 类型分类与安全防御层级文档
 - `ROUTER_TEST_SPEC.md` — 路由层 68 条测试规格
 - `tests/apple_container_ci.sh` — 26 条 Apple Container E2E 自动化测试
-- 总计 269 个测试（243 单元 + 26 E2E）全部通过 ✅
+- **pi CLI 全面对齐** (Phase A-D，~30 个 flag/功能):
+  - 别名/短名：`-p`/`--print`, `--system-prompt`, `--continue`/`-c`, `--resume`/`-r`, `--tools`/`-t`, `--output-schema`
+  - 新功能：`--mode text|json|rpc`, `--max-turns` 默认无限, 管道 stdin 自动检测, `@file` 图片支持
+  - Session：`--session-id`/`--session` 部分 UUID 匹配/路径参数, `--continue` 按 mtime 恢复, `--fork` 路径
+  - Model：`--model provider/id:thinking` 三段式语法, `--models` 列表解析
+  - 压缩：`--compact-model` 独立小模型压缩 (`with_compact_model`)
+  - 工具：`--list-models` flag, `ion config list`, `ION_AGENT_DIR`/`ION_SESSION_DIR` 环境变量
+- **测试**: 221 个测试全部通过 ✅（146 lib + 37 bin + 1 e2e + 28 alignment CI + 10 compaction CI）
 
 ### 🧠 Memory 扩展 v0.1
 

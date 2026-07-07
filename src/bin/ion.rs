@@ -599,7 +599,14 @@ fn build_registry_and_model(eff: &EffectiveConfig) -> (Arc<ApiRegistry>, Model) 
         .unwrap_or_else(|| match eff.provider.as_str() {
             "opencode" => "https://opencode.ai/zen/go/v1".to_string(),
             other => {
-                eprintln!("Unknown provider '{other}'. Use --base-url or set base_url in config.");
+                eprintln!("❌ Unknown provider '{other}'");
+                eprintln!();
+                eprintln!("Available builtin providers: opencode");
+                eprintln!();
+                eprintln!("To fix this, you can:");
+                eprintln!("  1. Use a builtin provider:  ion --provider opencode --model deepseek-v4-flash \"hi\"");
+                eprintln!("  2. Set custom base URL:     ion --provider {other} --base-url https://your-api.com/v1 \"hi\"");
+                eprintln!("  3. Define in config.json:   ion config set base-url https://your-api.com/v1");
                 std::process::exit(1);
             }
         });
@@ -638,7 +645,12 @@ fn build_registry_and_model(eff: &EffectiveConfig) -> (Arc<ApiRegistry>, Model) 
                     };
                 }
             }
-            // Fallback: construct from effective config
+            // Fallback: construct from effective config + show hint
+            tracing::warn!(
+                "model '{}' not in registry, using fallback (api=openai-completions, context=128k). \
+                 Use --list-models to see available models, or define it in ~/.ion/models.json.",
+                eff.model
+            );
             Model {
                 id: eff.model.clone(),
                 name: eff.model.clone(),
