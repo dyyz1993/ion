@@ -205,7 +205,7 @@ echo "── Cleanup ──"
 for pid in $(ps aux | grep "target/debug/ion" | grep -v grep | awk '{print $2}' 2>/dev/null || true); do
     kill "$pid" 2>/dev/null || true
 done
-rm -f /tmp/ion-manager.pid /tmp/ion-ci-manager.log
+rm -f /tmp/ion-host.pid /tmp/ion-ci-manager.log
 echo "  Cleaned up"
 
 # ── 总结 ──

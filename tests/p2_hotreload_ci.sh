@@ -15,7 +15,7 @@ MANAGER_PID_FILE="$TMPDIR/ion-ci-p2h.pid"
 
 cleanup() {
     [ -f "$MANAGER_PID_FILE" ] && kill "$(cat "$MANAGER_PID_FILE")" 2>/dev/null || true
-    rm -f "$MANAGER_PID_FILE" ~/.ion/manager.sock /tmp/ion-ci-p2h-*.json
+    rm -f "$MANAGER_PID_FILE" ~/.ion/host.sock /tmp/ion-ci-p2h-*.json
 }
 trap cleanup EXIT
 
@@ -43,10 +43,10 @@ cleanup; sleep 0.5
 "$ION_BIN" manager start > /tmp/ion-ci-p2h-manager.log 2>&1 &
 echo $! > "$MANAGER_PID_FILE"
 for i in $(seq 1 10); do
-    [ -S ~/.ion/manager.sock ] && { pass "manager started"; break; }
+    [ -S ~/.ion/host.sock ] && { pass "manager started"; break; }
     sleep 0.5
 done
-[ ! -S ~/.ion/manager.sock ] && { fail "manager not started"; exit 1; }
+[ ! -S ~/.ion/host.sock ] && { fail "manager not started"; exit 1; }
 
 SID=$($RPC --method create_worker --params '{"session":"p2-hotreload"}' 2>/dev/null | \
     python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('sessionId',''))" 2>/dev/null)

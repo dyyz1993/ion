@@ -23,7 +23,7 @@ cleanup() {
     # 恢复 config
     [ -f /tmp/ion-ac-config.bak ] && cp /tmp/ion-ac-config.bak ~/.ion/config.json 2>/dev/null || true
     rm -f /tmp/ion-ac-*.log /tmp/ion-ac-*.json /tmp/ion-ac-config.bak
-    rm -f /Users/xuyingzhou/.ion/manager.sock
+    rm -f /Users/xuyingzhou/.ion/host.sock
 }
 trap cleanup EXIT
 
@@ -116,7 +116,7 @@ pass "config written (runtime.default=ac-test, backends: local + ac-test)"
 # ── Phase 2: Manager + Worker ──
 echo "--- Phase 2: Manager + Worker ---"
 cleanup
-sleep 1; rm -f /Users/xuyingzhou/.ion/manager.sock
+sleep 1; rm -f /Users/xuyingzhou/.ion/host.sock
 
 "$ION_BIN" manager start > /tmp/ion-ac-manager.log 2>&1 &
 MANAGER_PID=$!
@@ -342,7 +342,7 @@ echo "--- Group F: Error Handling ---"
 "$CONTAINER_BIN" run --name ion-ac-test --detach --rm --network default docker.io/library/alpine:latest sh -lc "sleep infinity" > /tmp/ion-ac-precreate.log 2>&1
 if [ $? -eq 0 ]; then
     # 启动 Manager + Worker → 应 inspect 到已有容器
-    sleep 1; rm -f /Users/xuyingzhou/.ion/manager.sock
+    sleep 1; rm -f /Users/xuyingzhou/.ion/host.sock
     "$ION_BIN" manager start > /tmp/ion-ac-manager2.log 2>&1 &
     MANAGER_PID=$!
     echo $MANAGER_PID > "$MANAGER_PID_FILE"

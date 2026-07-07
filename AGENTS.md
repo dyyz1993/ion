@@ -181,8 +181,11 @@ docs/
 | [ROUTER_TEST_SPEC.md](./ROUTER_TEST_SPEC.md) | 路由层测试规格：68 条用例覆盖路由/路径/安全/配置错误 (已完成) |
 | [docs/design/EXTENSION_ECOSYSTEM.md](./docs/design/EXTENSION_ECOSYSTEM.md) | Extension 生态验证：子 Worker 创建 + 事件发射 + CLI 验证 (已验证) |
 | [docs/design/HOOK_SYSTEM.md](./docs/design/HOOK_SYSTEM.md) | Shell Hook 系统设计 (TRAE 兼容, 暂不开发) |
-| [docs/design/TEAM_ARCH.md](./docs/design/TEAM_ARCH.md) | 单项目自治 Agent 团队架构 — `ion team` 命令设计 (开发中) |
+| [docs/design/TEAM_ARCH.md](./docs/design/TEAM_ARCH.md) | 单项目自治 Agent 团队 — `ion --host --agent coordinator` 拆任务开发 (设计稿+已实现核心) |
 | [docs/design/PI_RPC_ALIGNMENT.md](./docs/design/PI_RPC_ALIGNMENT.md) | pi RPC CLI 对齐文档 (开发中) |
+| [docs/design/CLI_ARCHITECTURE.md](./docs/design/CLI_ARCHITECTURE.md) | CLI 三种执行场景设计：三场景分组验证用例 (设计稿，已被 CLI_PLAN 合并) |
+| [docs/design/CLI_ROADMAP.md](./docs/design/CLI_ROADMAP.md) | CLI 落地路线图 (排期中，已被 CLI_PLAN 合并) |
+| [docs/design/CLI_PLAN.md](./docs/design/CLI_PLAN.md) | **CLI 完整落地方案（唯一入口）**：架构 + 路线图 + 验证用例 + checklist 合并，~11h 6 Phase (待执行) |
 
 ### 使用指南（docs/guides/）
 
@@ -227,10 +230,141 @@ docs/
 
 ## 架构
 
+### 三场景归属：两套引擎
+
+场景 1 是**直接执行**（没有 host）。场景 2 和场景 3 共享同一套**host 引擎**（WorkerRegistry + 事件转发 + spawn_worker），区别只在对外暴露方式不同：
+
 ```
-ion "hello"              → 单实例 CLI (Agent + LLM)
-ion manager start        → Manager 守护进程 (管理多个 Worker)
-ion-worker --mode rpc    → Worker 子进程 (JSONL over stdin/stdout)
+              ┌─ 场景 1：直接 spawn 子进程，不经过 host
+              │   跑完即退，没有事件转发
+              │
+    同一套     ├─ 场景 2：临时 host + 事件泵 → stdout
+    底层 API  │   递归 idle 自动关
+    (spawn、   │
+     await、  └─ 场景 3：常驻 host + Unix socket → 外部 UI
+    channel)      不自动退，外部可全程接入
+```
+
+| 场景 | CLI | 引擎 | 事件出口 | 同步子任务 | 异步任务 | 退出方式 |
+|------|-----|------|---------|-----------|---------|---------|
+| **1. 快速执行** | `ion "做这个"` | 直接 spawn（无 host） | ❌ 无 | ✅ spawn→await | ❌ 进程退出子 Worker 被干掉 | 跑完即退 |
+| **2. 快速编排** | `ion --host "做这个"` | host 引擎 | 事件泵 → stdout | ✅ | ✅ host 兜着 | 递归 idle 自动关 |
+| **3. 常驻服务** | `ion serve` | host 引擎 + socket | socket → 外部 UI | ✅ | ✅ host 兜着 | 手动 shutdown |
+
+> "manager" 是内部实现细节（管理 Worker 生命周期的组件），永远不出现在 CLI 中。用户不会看见或输入这个词。
+
+`ion-team` 不存在——它的功能完全被 `ion --host --agent coordinator "做这个"` 覆盖（coordinator agent 通过 spawn_worker 工具自己拆任务，不需要任何硬编码编排逻辑）。
+
+### 场景 1 流程图
+
+```
+终端                   进程内
+┌──────┐   ┌──────────────────────────┐
+│      │   │  cmd_run()               │
+│ ion  │──→│  建工具集 + Agent        │
+│      │   │  agent.run(message)      │
+│      │   │    ├─ LLM 循环            │
+│      │   │    ├─ 调 tool (read/write)│
+│      │   │    ├─ spawn_worker(同步)  │
+│      │   │    │    └─ spawn 子进程    │
+│      │   │    │        await 等完    │
+│      │   │    └─ 返回               │
+│      │   └─ 进程退出                  │
+└──────┘                              │
+    ❌ 没有 host，不能异步              │
+    ❌ 没有事件转发                     │
+    ✅ 同步子任务能用                    │
+```
+
+### 场景 2 流程图
+
+```
+终端                              临时 host
+┌──────┐  ┌──────────────────────────────────────────────┐
+│      │  │  WorkerRegistry + 命令循环 + 事件泵           │
+│ ion  │──│                                              │
+│      │  │  spawn coordinator Worker (子进程)            │
+│--host│  │    │                                          │
+│      │  │    ├─ spawn_worker(dev, 同步)                 │
+│      │  │    │    └─ host 创建子 Worker → await 完成   │
+│      │  │    ├─ spawn_worker(dev, 异步)                 │
+│      │  │    │    └─ host 创建子 Worker                 │
+│      │  │    │       └─ 子 Worker 执行 → agent_end      │
+│      │  │    └─ channel_send ← 子 Worker 过程通信      │
+│      │  │                                              │
+│      │  │  事件泵 → stdout (实时打印 text_delta)        │
+│      │  │  ...全部 idle → 清理退出                      │
+└──────┘  └──────────────────────────────────────────────┘
+
+    ✅ 有 host，同步异步都行
+    ✅ 事件泵 → stdout
+    ❌ 没有 socket，外部工具接不了
+```
+
+### 场景 3 流程图
+
+```
+外部 UI / TUI / IDE 插件               常驻 host
+┌─────────────────┐   ┌───────────────────────────────────────┐
+│        socket    │   │  WorkerRegistry + 命令循环            │
+│  Web UI          │   │  Unix socket → ~/.ion/host.sock      │
+│  ┌───────────┐   │   │                                       │
+│  │进度条     │   │   │  spawn Worker(子进程)                  │
+│  │卡片       │◄──│───│  ├─ 同步：spawn → await （UI 可见）   │
+│  │步骤状态   │   │   │  │  └─ 通过 socket 推 text_delta      │
+│  │实时日志   │   │   │  ├─ 异步：spawn → agent_end（UI 可见）│
+│  └───────────┘   │   │  │  └─ 通过 socket 推 agent_start    │
+│                  │   │  │        → text_delta → agent_end    │
+│  ion rpc 命令行  │   │  ├─ channel_send ← 过程通信          │
+│  ┌───────────┐   │   │  ├─ subscribe → 事件流推给 socket    │
+│  │create_   │───│───│  └─ 一直运行（不自动退）               │
+│  │worker     │   │   │                                       │
+│  └───────────┘   │   │                                       │
+└─────────────────┘   └───────────────────────────────────────┘
+
+    ✅ 有 host，同步异步都行
+    ✅ 事件通过 socket 推给外部工具 ── UI 可渲染成卡片/进度条
+    ❌ 不自动退出，需要手动 shutdown
+```
+
+### 同步子任务 vs 异步任务
+
+```
+同步子任务 (spawn + await)         异步任务 (spawn + agent_end)
+───────────────────────────       ───────────────────────────
+Agent: spawn_worker(dev,         Agent: spawn_worker(dev,
+       "查文档")                       "监控日志")
+Agent: await_worker(id)          Agent: 继续聊别的
+       ────干活────                       ──子 Worker 发消息──
+Agent: ← 拿结果                          channel_send 实时收
+                                       ──子 Worker agent_end──
+                                        host 检测到 → UI 更新
+```
+
+> `channel_send` 是**工作过程中**的通信（子 Worker 还在跑时跟 coordinator 交流进度、问问题），不是完成通知。完成通知通过 `agent_end` 事件检测。
+
+### 退出条件（场景 2）
+
+递归 idle 检测：
+
+```
+入口 Worker (coordinator) idle？
+├─ 它 spawn 的子 Worker 1 idle？
+│   └─ 子 Worker 的子 Worker idle？
+├─ 子 Worker 2 idle？
+└─ ...全部 idle
+  → 没有后台进程在跑 → 清理退出
+```
+
+> 如果需要反复执行（loop），外面套一个 shell while 即可，底层该退出退出，该启动启动。
+
+### 基础组件
+
+```
+ion "hello"              → 用户入口
+ion --host "hello"       → 带 host 能力的入口
+ion serve                → 常驻服务入口
+ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 ```
 
 ### 通信协议: JSONL over stdin/stdout (对齐 pi)

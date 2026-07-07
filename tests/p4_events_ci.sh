@@ -17,7 +17,7 @@ MANAGER_PID_FILE="$TMPDIR/ion-ci-p4e.pid"
 
 cleanup() {
     [ -f "$MANAGER_PID_FILE" ] && kill "$(cat "$MANAGER_PID_FILE")" 2>/dev/null || true
-    rm -f "$MANAGER_PID_FILE" ~/.ion/manager.sock /tmp/ion-ci-p4e-event.log /tmp/ion-ci-p4e-sub.log
+    rm -f "$MANAGER_PID_FILE" ~/.ion/host.sock /tmp/ion-ci-p4e-event.log /tmp/ion-ci-p4e-sub.log
 }
 trap cleanup EXIT
 
@@ -47,10 +47,10 @@ cleanup; sleep 0.5
 MANAGER_PID=$!
 echo "$MANAGER_PID" > "$MANAGER_PID_FILE"
 for i in $(seq 1 10); do
-    [ -S ~/.ion/manager.sock ] && { pass "manager started"; break; }
+    [ -S ~/.ion/host.sock ] && { pass "manager started"; break; }
     sleep 0.5
 done
-[ ! -S ~/.ion/manager.sock ] && { cat /tmp/ion-ci-p4e-manager.log; fail "manager not started"; exit 1; }
+[ ! -S ~/.ion/host.sock ] && { cat /tmp/ion-ci-p4e-manager.log; fail "manager not started"; exit 1; }
 
 # ── Phase 2: Subscribe to extension events in background ──
 "$ION_BIN" subscribe --extension bash > /tmp/ion-ci-p4e-sub.log 2>&1 &

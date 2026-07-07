@@ -68,7 +68,7 @@ for pid in $(ps aux | grep "target/debug/ion" | grep -v grep | awk '{print $2}' 
     kill -9 "$pid" 2>/dev/null || true
 done
 sleep 2
-rm -f /Users/xuyingzhou/.ion/manager.sock
+rm -f /Users/xuyingzhou/.ion/host.sock
 
 cargo run --bin ion -- manager start > /tmp/ion-ci-perm-manager.log 2>&1 &
 MANAGER_CMD_PID=$!

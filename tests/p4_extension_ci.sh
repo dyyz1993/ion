@@ -22,7 +22,7 @@ CHILD_SID_FILE="$TMPDIR/ion-ci-p4-child.sid"
 cleanup() {
     # 先杀已知 PID
     [ -f "$MANAGER_PID_FILE" ] && kill "$(cat "$MANAGER_PID_FILE")" 2>/dev/null || true
-    rm -f "$MANAGER_PID_FILE" "$PARENT_SID_FILE" "$CHILD_SID_FILE" ~/.ion/manager.sock
+    rm -f "$MANAGER_PID_FILE" "$PARENT_SID_FILE" "$CHILD_SID_FILE" ~/.ion/host.sock
 }
 trap cleanup EXIT
 
@@ -61,13 +61,13 @@ echo "$MANAGER_PID" > "$MANAGER_PID_FILE"
 
 # 轮询等待 socket（最长 5s）
 for i in $(seq 1 10); do
-    if [ -S ~/.ion/manager.sock ]; then
+    if [ -S ~/.ion/host.sock ]; then
         pass "manager started"
         break
     fi
     sleep 0.5
 done
-if [ ! -S ~/.ion/manager.sock ]; then
+if [ ! -S ~/.ion/host.sock ]; then
     cat /tmp/ion-ci-p4-manager.log
     fail "manager socket not found after 5s"
     exit 1
