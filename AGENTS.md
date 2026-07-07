@@ -186,6 +186,8 @@ docs/
 | [docs/design/CLI_ARCHITECTURE.md](./docs/design/CLI_ARCHITECTURE.md) | CLI 三种执行场景设计：三场景分组验证用例 (设计稿，已被 CLI_PLAN 合并) |
 | [docs/design/CLI_ROADMAP.md](./docs/design/CLI_ROADMAP.md) | CLI 落地路线图 (排期中，已被 CLI_PLAN 合并) |
 | [docs/design/CLI_PLAN.md](./docs/design/CLI_PLAN.md) | **CLI 完整落地方案（唯一入口）**：架构 + 路线图 + 验证用例 + checklist 合并，~11h 6 Phase (待执行) |
+| [docs/design/FAUX_PROVIDER.md](./docs/design/FAUX_PROVIDER.md) | FauxProvider 架构级 LLM Mock：FIFO 队列 + 工厂响应 + 流式分块，对标 pi (已实现 Phase 1) |
+| [docs/design/SESSION_TREE.md](./docs/design/SESSION_TREE.md) | Session Tree（会话分支）：文件内分支 + leaf 指针 + only-append 回滚 (设计稿) |
 
 ### 使用指南（docs/guides/）
 
@@ -200,6 +202,7 @@ docs/
 | 文档 | 内容 |
 |------|------|
 | [docs/testing/TEST_CASES.md](./docs/testing/TEST_CASES.md) | 完整测试 case (25 单元 + 32 集成 + 5 E2E + 5 压力) |
+| [docs/testing/SESSION_TREE_SPEC.md](./docs/testing/SESSION_TREE_SPEC.md) | Session Tree 验收规格：harness（基于 FauxProvider）+ P0/P1/XFail 分级 |
 
 ### 模板（docs/templates/）
 
@@ -434,6 +437,17 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - 压缩：`--compact-model` 独立小模型压缩 (`with_compact_model`)
   - 工具：`--list-models` flag, `ion config list`, `ION_AGENT_DIR`/`ION_SESSION_DIR` 环境变量
 - **测试**: 221 个测试全部通过 ✅（146 lib + 37 bin + 1 e2e + 28 alignment CI + 10 compaction CI）
+
+### 🎭 FauxProvider（架构级 LLM Mock，对标 pi）
+
+- `FauxProvider` — 注册成 `"faux"` ApiProvider，FIFO 队列回放预设响应
+- 工厂函数响应 — `(context, options, state, model) -> AssistantMessage`，能根据 agent 发来的 context 动态返回
+- 流式分块 — `faux_stream_blocks` 把响应切成 token 粒度的 TextDelta/ThinkingDelta/ToolCallDelta
+- loud failure — 队列空时报错 `"No more faux responses queued"`，不静默通过
+- Builder 函数 — `faux_text`/`faux_thinking`/`faux_tool_call`/`faux_assistant_message`
+- `register_faux(&mut registry)` — 一行注册，返回 `Arc<FauxProvider>` 控制柄
+- 免 API key、走完整 agent 链路、不污染真实 provider
+- **测试**: 20 个测试全部通过 ✅（faux_test）
 
 ### 🧠 Memory 扩展 v0.1
 
