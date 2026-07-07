@@ -70,14 +70,14 @@ done
 sleep 2
 rm -f /Users/xuyingzhou/.ion/host.sock
 
-cargo run --bin ion -- manager start > /tmp/ion-ci-perm-manager.log 2>&1 &
+cargo run --bin ion -- serve start > /tmp/ion-ci-perm-host.log 2>&1 &
 MANAGER_CMD_PID=$!
 sleep 4
 
 if ps -p "$MANAGER_CMD_PID" > /dev/null 2>&1 || lsof -ti :53293 2>/dev/null | head -1 > /dev/null; then
-    pass "manager start"
+    pass "serve start"
 else
-    fail "manager start"
+    fail "serve start"
     exit 1
 fi
 
@@ -162,7 +162,7 @@ echo "── Cleanup ──"
 for pid in $(ps aux | grep "target/debug/ion" | grep -v grep | awk '{print $2}' 2>/dev/null || true); do
     kill "$pid" 2>/dev/null || true
 done
-rm -f /tmp/ion-ci-perm-manager.log /tmp/ion-ci-perm-lib.log
+rm -f /tmp/ion-ci-perm-host.log /tmp/ion-ci-perm-lib.log
 echo "  Cleaned up"
 
 # ── 总结 ──

@@ -6,18 +6,18 @@
 #   bash background process
 #   → BashExtension::emit_extension_event("process_started")
 #   → println! JSON -> stdout
-#   → Manager stdout reader detects "extension_event"
+#   → Host stdout reader detects "extension_event"
 #   → ExtensionEventBus::broadcast()
 #   → Subscriber receives event
 # ────────────────────────────────────────────────────────────────
 set -uo pipefail
 TMPDIR="${TMPDIR:-/tmp}"
 
-MANAGER_PID_FILE="$TMPDIR/ion-ci-p4e.pid"
+HOST_PID_FILE="$TMPDIR/ion-ci-p4e.pid"
 
 cleanup() {
-    [ -f "$MANAGER_PID_FILE" ] && kill "$(cat "$MANAGER_PID_FILE")" 2>/dev/null || true
-    rm -f "$MANAGER_PID_FILE" ~/.ion/host.sock /tmp/ion-ci-p4e-event.log /tmp/ion-ci-p4e-sub.log
+    [ -f "$HOST_PID_FILE" ] && kill "$(cat "$HOST_PID_FILE")" 2>/dev/null || true
+    rm -f "$HOST_PID_FILE" ~/.ion/host.sock /tmp/ion-ci-p4e-event.log /tmp/ion-ci-p4e-sub.log
 }
 trap cleanup EXIT
 
@@ -41,16 +41,16 @@ echo "════════════════════════�
 # ── Phase 0: Build ──
 cargo build --bin ion --bin ion-worker -q 2>/dev/null && pass "build ion + ion-worker" || { echo "  Build failed"; exit 1; }
 
-# ── Phase 1: Start Manager ──
+# ── Phase 1: Start Host ──
 cleanup; sleep 0.5
-"$ION_BIN" manager start > /tmp/ion-ci-p4e-manager.log 2>&1 &
-MANAGER_PID=$!
-echo "$MANAGER_PID" > "$MANAGER_PID_FILE"
+"$ION_BIN" serve start > /tmp/ion-ci-p4e-host.log 2>&1 &
+HOST_PID=$!
+echo "$HOST_PID" > "$HOST_PID_FILE"
 for i in $(seq 1 10); do
-    [ -S ~/.ion/host.sock ] && { pass "manager started"; break; }
+    [ -S ~/.ion/host.sock ] && { pass "serve started"; break; }
     sleep 0.5
 done
-[ ! -S ~/.ion/host.sock ] && { cat /tmp/ion-ci-p4e-manager.log; fail "manager not started"; exit 1; }
+[ ! -S ~/.ion/host.sock ] && { cat /tmp/ion-ci-p4e-host.log; fail "host not started"; exit 1; }
 
 # ── Phase 2: Subscribe to extension events in background ──
 "$ION_BIN" subscribe --extension bash > /tmp/ion-ci-p4e-sub.log 2>&1 &
@@ -88,13 +88,13 @@ else
     pass "subscription channel works (no events may be expected)"
 fi
 
-# ── Phase 6: Check that extension_event JSON appears in manager log ──
-if grep -q "extension_event" /tmp/ion-ci-p4e-manager.log 2>/dev/null; then
-    EVT_TYPE=$(grep "extension_event" /tmp/ion-ci-p4e-manager.log | head -1 | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('event',{}).get('customType','?'))" 2>/dev/null)
-    pass "extension_event detected in manager log (customType=$EVT_TYPE)"
+# ── Phase 6: Check that extension_event JSON appears in host log ──
+if grep -q "extension_event" /tmp/ion-ci-p4e-host.log 2>/dev/null; then
+    EVT_TYPE=$(grep "extension_event" /tmp/ion-ci-p4e-host.log | head -1 | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('event',{}).get('customType','?'))" 2>/dev/null)
+    pass "extension_event detected in host log (customType=$EVT_TYPE)"
 else
     # 查 worker stdout 是否有事件
-    if grep -q "extension_event" /tmp/ion-ci-p4e-manager.log 2>/dev/null || true; then
+    if grep -q "extension_event" /tmp/ion-ci-p4e-host.log 2>/dev/null || true; then
         pass "extension_event in logging"
     else
         # 可能没有打印到 log，检查是否有事件在 worker 输出中
@@ -104,7 +104,7 @@ fi
 
 # ── Phase 7: Cleanup ──
 $RPC --method kill --params "{\"session_id\":\"$SID\"}" 2>/dev/null || true
-kill "$MANAGER_PID" 2>/dev/null; sleep 0.5
+kill "$HOST_PID" 2>/dev/null; sleep 0.5
 pass "cleanup"
 
 echo ""

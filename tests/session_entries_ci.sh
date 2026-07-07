@@ -96,17 +96,17 @@ for pid in $(ps aux | grep "target/debug/ion" | grep -v grep | awk '{print $2}' 
 done
 sleep 2
 
-cargo run --bin ion -- manager start > /tmp/ion-ci-manager.log 2>&1 &
+cargo run --bin ion -- serve start > /tmp/ion-ci-host.log 2>&1 &
 # 等编译完成后，后续 rpc 调用用 $ION_BIN（指向 target/debug/ion）
 MANAGER_CMD_PID=$!
 sleep 4
 
 # 验证 manager 进程活着
 if ps -p "$MANAGER_CMD_PID" > /dev/null 2>&1 || lsof -ti :53293 2>/dev/null | head -1 > /dev/null; then
-    pass "manager start"
+    pass "serve start"
 else
-    fail "manager start (check /tmp/ion-ci-manager.log)"
-    cat /tmp/ion-ci-manager.log
+    fail "serve start (check /tmp/ion-ci-host.log)"
+    cat /tmp/ion-ci-host.log
     exit 1
 fi
 
@@ -205,7 +205,7 @@ echo "── Cleanup ──"
 for pid in $(ps aux | grep "target/debug/ion" | grep -v grep | awk '{print $2}' 2>/dev/null || true); do
     kill "$pid" 2>/dev/null || true
 done
-rm -f /tmp/ion-host.pid /tmp/ion-ci-manager.log
+rm -f /tmp/ion-host.pid /tmp/ion-ci-host.log
 echo "  Cleaned up"
 
 # ── 总结 ──

@@ -5,7 +5,7 @@
 //!   ion config set <key> <value>     Set config
 //!   ion config show                  Show config
 //!   ion submit <message>             Submit task to manager
-//!   ion manager start --port 8080    HTTP server
+//!   ion serve --port 8080    HTTP server
 //!   ion help
 
 use std::collections::HashMap;
@@ -309,12 +309,6 @@ enum Commands {
         #[command(subcommand)]
         action: Option<ServeAction>,
     },
-    /// Start/stop/manage the host server (alias for `ion serve`)
-    #[command(hide = true)]
-    Manager {
-        #[command(subcommand)]
-        action: ManagerAction,
-    },
     Config {
         #[command(subcommand)]
         action: ConfigAction,
@@ -336,19 +330,6 @@ enum ServeAction {
     /// Stop the host server (sends shutdown RPC)
     Stop,
     /// Check host server status
-    Status,
-}
-
-#[derive(Subcommand)]
-enum ManagerAction {
-    Start {
-        #[arg(long, default_value_t = 8080)]
-        port: u16,
-        #[arg(long, default_value_t = 10)]
-        max_workers: usize,
-        #[arg(long, default_value_t = 0)]
-        min_workers: usize,
-    },
     Status,
 }
 
@@ -1358,7 +1339,7 @@ async fn cmd_rpc(session: Option<&str>, method: &str, params: &str) {
     let mut stream = match tokio::net::UnixStream::connect(&sock_path).await {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("❌ Cannot connect to Host at {}\n   先启动: ion manager start\n   错误: {e}",
+            eprintln!("❌ Cannot connect to Host at {}\n   先启动: ion serve\n   错误: {e}",
                 sock_path.display());
             std::process::exit(1);
         }
@@ -1411,7 +1392,7 @@ async fn cmd_subscribe(session: Option<&str>, extension: Option<&str>, ui: bool)
     let mut stream = match tokio::net::UnixStream::connect(&sock_path).await {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("❌ Cannot connect to Host at {}\n   先启动: ion manager start\n   错误: {e}", sock_path.display());
+            eprintln!("❌ Cannot connect to Host at {}\n   先启动: ion serve\n   错误: {e}", sock_path.display());
             std::process::exit(1);
         }
     };
@@ -1744,18 +1725,12 @@ async fn main() {
         Some(Commands::Stats) => cmd_stats(&eff).await,
         Some(Commands::Serve { action }) => match action {
             // `ion serve` (no subcommand) → defaults to `ion serve start`
-            None => cmd_manager_start(&cli, 8080, 10, 2).await,
+            None => cmd_serve_start(&cli, 8080, 10, 2).await,
             Some(ServeAction::Start { port, max_workers, min_workers }) => {
-                cmd_manager_start(&cli, *port, *max_workers, *min_workers).await;
+                cmd_serve_start(&cli, *port, *max_workers, *min_workers).await;
             }
             Some(ServeAction::Stop) => cmd_serve_stop().await,
             Some(ServeAction::Status) => cmd_serve_status().await,
-        },
-        Some(Commands::Manager { action }) => match action {
-            ManagerAction::Start { port, max_workers, min_workers } => {
-                cmd_manager_start(&cli, *port, *max_workers, *min_workers).await;
-            }
-            ManagerAction::Status => println!("Manager status: use `manager start` first"),
         },
         Some(Commands::Config { action }) => match action {
             ConfigAction::Show => cmd_config_show().await,
@@ -1779,7 +1754,7 @@ async fn main() {
             println!("ion: AI Agent orchestration CLI");
             println!("Usage: ion <message>");
             println!("       ion submit <message>");
-            println!("       ion manager start");
+            println!("       ion serve");
             println!("       ion config set api-key <key>");
             println!("       ion --help");
         }
@@ -1833,7 +1808,7 @@ async fn cmd_serve_status() {
     }
 }
 
-async fn cmd_manager_start(
+async fn cmd_serve_start(
     _cli: &Cli,
     _port: u16,
     _max_workers: usize,
@@ -2341,7 +2316,7 @@ async fn cmd_manager_start(
 
 /// 处理一条 Manager 命令（来自 stdin 或 Unix socket）。
 /// 返回完整的 JSON response（含 id/success/data 字段）。
-/// 被 cmd_manager_start 的 stdin 主循环和 socket accept loop 共用。
+/// 被 cmd_serve_start 的 stdin 主循环和 socket accept loop 共用。
 async fn handle_manager_command(
     registry: &Arc<tokio::sync::Mutex<ion::worker_registry::WorkerRegistry>>,
     cmd: serde_json::Value,
@@ -3036,10 +3011,10 @@ async fn launch_dashboard() {
     if need_start {
         let ion_bin = std::env::current_exe()
             .unwrap_or_else(|_| std::path::PathBuf::from("ion"));
-        // Manager 的 stdout/stderr 都重定向到日志文件，不污染 TUI
+        // Host 的 stdout/stderr 都重定向到日志文件，不污染 TUI
         let mgr_log = ion::paths::root().join("host.log");
         let mgr_out = std::fs::File::create(&mgr_log).ok();
-        match Command::new(&ion_bin).arg("manager").arg("start")
+        match Command::new(&ion_bin).arg("serve").arg("start")
             .stdout(std::process::Stdio::from(mgr_out.unwrap()))
             .stderr(std::process::Stdio::null())
             .spawn()

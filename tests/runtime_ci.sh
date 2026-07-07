@@ -4,12 +4,12 @@
 # ──────────────────────────────────────────────────────────
 set -uo pipefail
 TMPDIR="${TMPDIR:-/tmp}"
-MANAGER_PID_FILE="$TMPDIR/ion-ci-rt.pid"
+HOST_PID_FILE="$TMPDIR/ion-ci-rt.pid"
 
 cleanup() {
-    if [ -f "$MANAGER_PID_FILE" ]; then
-        kill "$(cat "$MANAGER_PID_FILE")" 2>/dev/null || true
-        rm -f "$MANAGER_PID_FILE"
+    if [ -f "$HOST_PID_FILE" ]; then
+        kill "$(cat "$HOST_PID_FILE")" 2>/dev/null || true
+        rm -f "$HOST_PID_FILE"
     fi
     # 兜底清理残留进程
     for pid in $(ps aux | grep "target/debug/ion" | grep -v grep | awk '{print $2}' 2>/dev/null || true); do
@@ -46,11 +46,11 @@ RUST_LOG=error cargo test --test runtime_tests 2>&1 | grep -q "test result:" && 
 # ── Phase 2: Manager + Worker ──
 cleanup
 sleep 1; rm -f /Users/xuyingzhou/.ion/host.sock
-"$ION_BIN" manager start > /tmp/ion-ci-rt-manager.log 2>&1 &
+"$ION_BIN" serve start > /tmp/ion-ci-rt-host.log 2>&1 &
 MANAGER_PID=$!
-echo "$MANAGER_PID" > "$MANAGER_PID_FILE"
+echo "$MANAGER_PID" > "$HOST_PID_FILE"
 sleep 3
-ps -p $! > /dev/null 2>&1 && pass "manager start" || { fail "manager start"; exit 1; }
+ps -p $! > /dev/null 2>&1 && pass "serve start" || { fail "serve start"; exit 1; }
 
 OUT=$("$ION_BIN" rpc --session x --method create_worker --params '{"cwd":"'"$PROJECT_DIR"'"}' 2>/dev/null)
 SID=$(echo "$OUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('sessionId',''))" 2>/dev/null)

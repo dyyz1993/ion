@@ -5,12 +5,12 @@
 # ──────────────────────────────────────────────────────────
 set -uo pipefail
 TMPDIR="${TMPDIR:-/tmp}"
-MANAGER_PID_FILE="$TMPDIR/ion-ac-pid"
+HOST_PID_FILE="$TMPDIR/ion-ac-pid"
 
 cleanup() {
-    if [ -f "$MANAGER_PID_FILE" ]; then
-        kill "$(cat "$MANAGER_PID_FILE")" 2>/dev/null || true
-        rm -f "$MANAGER_PID_FILE"
+    if [ -f "$HOST_PID_FILE" ]; then
+        kill "$(cat "$HOST_PID_FILE")" 2>/dev/null || true
+        rm -f "$HOST_PID_FILE"
     fi
     # 清理容器（容忍失败）
     for c in ion-ac-test ion-ac-d1 ion-ac-d2 ion-ac-ipcheck; do
@@ -113,20 +113,20 @@ with open('/tmp/ion-ac-config.json', 'w') as f: json.dump(new, f, indent=2)
 cp /tmp/ion-ac-config.json ~/.ion/config.json
 pass "config written (runtime.default=ac-test, backends: local + ac-test)"
 
-# ── Phase 2: Manager + Worker ──
-echo "--- Phase 2: Manager + Worker ---"
+# ── Phase 2: Host + Worker ──
+echo "--- Phase 2: Host + Worker ---"
 cleanup
 sleep 1; rm -f /Users/xuyingzhou/.ion/host.sock
 
-"$ION_BIN" manager start > /tmp/ion-ac-manager.log 2>&1 &
-MANAGER_PID=$!
-echo $MANAGER_PID > "$MANAGER_PID_FILE"
+"$ION_BIN" serve start > /tmp/ion-ac-host.log 2>&1 &
+HOST_PID=$!
+echo $HOST_PID > "$HOST_PID_FILE"
 sleep 3
 
 SID=$($RPC --method create_worker --params '{"cwd":"/tmp"}' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('sessionId',''))")
 if [ -z "$SID" ]; then
     fail "create_worker"
-    echo "  manager log: $(tail -3 /tmp/ion-ac-manager.log)"
+    echo "  host log: $(tail -3 /tmp/ion-ac-host.log)"
 else
     pass "create_worker (SID=$SID)"
 fi
@@ -322,10 +322,10 @@ fi
 
 # ── Group A3: 停止容器 ──
 echo "--- Group A3: Stop Container ---"
-# 停止 Manager → Worker Drop → container stop
-kill "$(cat "$MANAGER_PID_FILE")" 2>/dev/null
+# 停止 Host → Worker Drop → container stop
+kill "$(cat "$HOST_PID_FILE")" 2>/dev/null
 sleep 2
-rm -f "$MANAGER_PID_FILE"
+rm -f "$HOST_PID_FILE"
 
 # 检查容器是否已停止
 if "$CONTAINER_BIN" ls 2>/dev/null | grep -q "ion-ac-test"; then
@@ -341,11 +341,11 @@ echo "--- Group F: Error Handling ---"
 # F3: 容器名冲突 — 先手动创建同名容器
 "$CONTAINER_BIN" run --name ion-ac-test --detach --rm --network default docker.io/library/alpine:latest sh -lc "sleep infinity" > /tmp/ion-ac-precreate.log 2>&1
 if [ $? -eq 0 ]; then
-    # 启动 Manager + Worker → 应 inspect 到已有容器
+    # 启动 Host + Worker → 应 inspect 到已有容器
     sleep 1; rm -f /Users/xuyingzhou/.ion/host.sock
-    "$ION_BIN" manager start > /tmp/ion-ac-manager2.log 2>&1 &
-    MANAGER_PID=$!
-    echo $MANAGER_PID > "$MANAGER_PID_FILE"
+    "$ION_BIN" serve start > /tmp/ion-ac-host2.log 2>&1 &
+    HOST_PID=$!
+    echo $HOST_PID > "$HOST_PID_FILE"
     sleep 3
 
     SID2=$($RPC --method create_worker --params '{"cwd":"/tmp"}' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('sessionId',''))" 2>/dev/null)
@@ -361,7 +361,7 @@ if [ $? -eq 0 ]; then
 
     # 清理冲突容器
     "$CONTAINER_BIN" stop ion-ac-test 2>/dev/null || true
-    kill "$MANAGER_PID" 2>/dev/null || true
+    kill "$HOST_PID" 2>/dev/null || true
     sleep 1
 fi
 

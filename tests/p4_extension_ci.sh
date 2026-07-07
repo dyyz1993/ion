@@ -15,14 +15,14 @@
 set -uo pipefail
 TMPDIR="${TMPDIR:-/tmp}"
 
-MANAGER_PID_FILE="$TMPDIR/ion-ci-p4.pid"
+HOST_PID_FILE="$TMPDIR/ion-ci-p4.pid"
 PARENT_SID_FILE="$TMPDIR/ion-ci-p4-parent.sid"
 CHILD_SID_FILE="$TMPDIR/ion-ci-p4-child.sid"
 
 cleanup() {
     # 先杀已知 PID
-    [ -f "$MANAGER_PID_FILE" ] && kill "$(cat "$MANAGER_PID_FILE")" 2>/dev/null || true
-    rm -f "$MANAGER_PID_FILE" "$PARENT_SID_FILE" "$CHILD_SID_FILE" ~/.ion/host.sock
+    [ -f "$HOST_PID_FILE" ] && kill "$(cat "$HOST_PID_FILE")" 2>/dev/null || true
+    rm -f "$HOST_PID_FILE" "$PARENT_SID_FILE" "$CHILD_SID_FILE" ~/.ion/host.sock
 }
 trap cleanup EXIT
 
@@ -52,24 +52,24 @@ if [ $? -ne 0 ]; then
 fi
 pass "build ion + ion-worker"
 
-# ── Phase 1: Start Manager ──
+# ── Phase 1: Start Host ──
 cleanup
 sleep 0.5
-"$ION_BIN" manager start > /tmp/ion-ci-p4-manager.log 2>&1 &
+"$ION_BIN" serve start > /tmp/ion-ci-p4-host.log 2>&1 &
 MANAGER_PID=$!
-echo "$MANAGER_PID" > "$MANAGER_PID_FILE"
+echo "$MANAGER_PID" > "$HOST_PID_FILE"
 
 # 轮询等待 socket（最长 5s）
 for i in $(seq 1 10); do
     if [ -S ~/.ion/host.sock ]; then
-        pass "manager started"
+        pass "serve started"
         break
     fi
     sleep 0.5
 done
 if [ ! -S ~/.ion/host.sock ]; then
-    cat /tmp/ion-ci-p4-manager.log
-    fail "manager socket not found after 5s"
+    cat /tmp/ion-ci-p4-host.log
+    fail "host socket not found after 5s"
     exit 1
 fi
 
@@ -168,7 +168,7 @@ fi
 # ── Phase 8: Stop Manager ──
 kill "$MANAGER_PID" 2>/dev/null
 sleep 0.5
-pass "manager stopped"
+pass "host stopped"
 
 # ── Summary ──
 echo ""

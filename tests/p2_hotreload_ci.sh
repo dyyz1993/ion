@@ -11,11 +11,11 @@
 # ────────────────────────────────────────────────────────────────
 set -uo pipefail
 TMPDIR="${TMPDIR:-/tmp}"
-MANAGER_PID_FILE="$TMPDIR/ion-ci-p2h.pid"
+HOST_PID_FILE="$TMPDIR/ion-ci-p2h.pid"
 
 cleanup() {
-    [ -f "$MANAGER_PID_FILE" ] && kill "$(cat "$MANAGER_PID_FILE")" 2>/dev/null || true
-    rm -f "$MANAGER_PID_FILE" ~/.ion/host.sock /tmp/ion-ci-p2h-*.json
+    [ -f "$HOST_PID_FILE" ] && kill "$(cat "$HOST_PID_FILE")" 2>/dev/null || true
+    rm -f "$HOST_PID_FILE" ~/.ion/host.sock /tmp/ion-ci-p2h-*.json
 }
 trap cleanup EXIT
 
@@ -40,13 +40,13 @@ cargo build --bin ion --bin ion-worker -q 2>/dev/null && pass "build" || { echo 
 
 # ── Round 1: 热重载命令 ──
 cleanup; sleep 0.5
-"$ION_BIN" manager start > /tmp/ion-ci-p2h-manager.log 2>&1 &
-echo $! > "$MANAGER_PID_FILE"
+"$ION_BIN" serve start > /tmp/ion-ci-p2h-host.log 2>&1 &
+echo $! > "$HOST_PID_FILE"
 for i in $(seq 1 10); do
-    [ -S ~/.ion/host.sock ] && { pass "manager started"; break; }
+    [ -S ~/.ion/host.sock ] && { pass "serve started"; break; }
     sleep 0.5
 done
-[ ! -S ~/.ion/host.sock ] && { fail "manager not started"; exit 1; }
+[ ! -S ~/.ion/host.sock ] && { fail "host not started"; exit 1; }
 
 SID=$($RPC --method create_worker --params '{"session":"p2-hotreload"}' 2>/dev/null | \
     python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('sessionId',''))" 2>/dev/null)
@@ -101,7 +101,7 @@ fi
 
 # ── Cleanup ──
 $RPC --method kill --params "{\"session_id\":\"$SID\"}" 2>/dev/null || true
-kill "$(cat "$MANAGER_PID_FILE")" 2>/dev/null; sleep 0.5
+kill "$(cat "$HOST_PID_FILE")" 2>/dev/null; sleep 0.5
 pass "cleanup"
 
 echo ""
