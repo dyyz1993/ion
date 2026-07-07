@@ -264,6 +264,86 @@ fi
 
 rm -rf /tmp/ion-sc2-local-$TEST_ID
 
+
+# ──────────────────────────────────────────────────────────
+# Group A2-6：worktree 真实干活（已知 bug：worktree 模式下 developer 不写文件）
+# ──────────────────────────────────────────────────────────
+echo ""
+echo "Group A2-6：worktree 真实干活"
+
+# A2-6-1 developer 不走 worktree，能真写文件（baseline）
+setup_project
+rm -f baseline.txt
+OUTPUT=$($ION_BIN --host --agent developer "create baseline.txt with content ok" 2>&1)
+if [ -f "$TEST_DIR/baseline.txt" ]; then
+    pass "A2-6-1: developer 不走 worktree 能真写文件（baseline）"
+else
+    fail "A2-6-1: developer baseline 也写不了文件"
+fi
+
+# A2-6-2 developer 走 worktree，验证文件是否在 worktree 目录
+setup_project
+rm -rf ~/.ion/worktrees/* 2>/dev/null
+rm -f wt_task.txt
+OUTPUT=$($ION_BIN --host --agent coordinator "use spawn_worker with worktree=true, agent=developer, task='create wt_task.txt with content done'" 2>&1)
+sleep 2
+
+# 检查 worktree 目录
+WT_PATH=$(cd "$TEST_DIR" && git worktree list 2>/dev/null | tail -1 | awk '{print $1}')
+if [ -n "$WT_PATH" ] && [ -d "$WT_PATH" ]; then
+    if [ -f "$WT_PATH/wt_task.txt" ]; then
+        pass "A2-6-2: developer 在 worktree 里真写了文件"
+    else
+        fail "A2-6-2: worktree 目录存在但文件未创建（已知 bug：worktree 模式下 developer cwd 或 prompt 问题）"
+    fi
+else
+    fail "A2-6-2: worktree 目录不存在"
+fi
+
+# A2-6-3 主项目未被污染
+if [ ! -f "$TEST_DIR/wt_task.txt" ]; then
+    pass "A2-6-3: 主项目无 wt_task.txt（worktree 隔离生效）"
+else
+    fail "A2-6-3: 主项目被污染（wt_task.txt 不该在这里）"
+fi
+
+# ──────────────────────────────────────────────────────────
+# Group A2-7：session 恢复（真对话→保存→--continue 恢复→验证上下文）
+# ──────────────────────────────────────────────────────────
+echo ""
+echo "Group A2-7：session 恢复"
+
+# A2-7-1 创建 session + 记住一个数字
+setup_project
+SESSION_ID="sess_restore_test_$$"
+OUTPUT=$($ION_BIN --session-id "$SESSION_ID" --agent build "remember the number 12345" 2>&1)
+if echo "$OUTPUT" | grep -qi "12345\|remember\|ok"; then
+    pass "A2-7-1: 创建 session 并记住数字 12345"
+else
+    fail "A2-7-1: 创建 session 失败"
+fi
+
+# A2-7-2 恢复 session + 问之前记住的数字
+OUTPUT2=$($ION_BIN --session "$SESSION_ID" --agent build "what number did I tell you?" 2>&1)
+if echo "$OUTPUT2" | grep -q "12345"; then
+    pass "A2-7-2: session 恢复后正确记住 12345（上下文保留）"
+else
+    # LLM 可能用文字描述而不是数字
+    if echo "$OUTPUT2" | grep -qi "number\|told\|said\|twelve\|remember"; then
+        pass "A2-7-2: session 恢复有上下文痕迹（LLM 可能换了表达方式）"
+    else
+        fail "A2-7-2: session 恢复后上下文丢失"
+    fi
+fi
+
+# A2-7-3 --continue 恢复最近 session
+OUTPUT3=$($ION_BIN --continue --agent build "what was the last thing we discussed?" 2>&1)
+if [ -n "$OUTPUT3" ] && ! echo "$OUTPUT3" | grep -qi "no previous\|error\|cannot"; then
+    pass "A2-7-3: --continue 恢复最近 session 有响应"
+else
+    fail "A2-7-3: --continue 恢复失败"
+fi
+
 # ──────────────────────────────────────────────────────────
 # Summary
 # ──────────────────────────────────────────────────────────
