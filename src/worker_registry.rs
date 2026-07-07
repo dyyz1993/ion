@@ -443,44 +443,28 @@ impl WorkerRegistry {
 		            }
 		        });
 
-	        // Wait for ready signal
-	        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-	        // ── Peer 模式：内核自动追加"汇报指令段"到 initial_prompt ──
-	        // 这是内核职责，不依赖 .md 自己写汇报格式。
-	        let mut effective_prompt = config.initial_prompt.clone();
-	        let is_peer = matches!(config.relation, Some(WorkerRelation::Peer));
-	        if is_peer {
-	            let creator_id = config.creator.as_deref()
-	                .or(config.report_to.as_deref())
-	                .unwrap_or("(unknown)");
-	            let ch = config.report_channel.as_deref().unwrap_or("main");
-            let report_seg = format!(
-                "\n\n---\n## 通信约定（内核自动注入，请严格遵守）\n\
-                 你是被 {creator} 创建的同级 Worker。\n\
-                 - 任务完成后必须输出（单独一行）：`CHANNEL_SEND {ch} DONE <简短摘要>`\n\
-                 - 需要帮助时输出：`CHANNEL_SEND {ch} HELP <问题描述>`\n\
-                 - 你的创建者 worker_id：{creator}\n\
-                 - 汇报频道：{ch}\n",
-                creator = creator_id,
-                ch = ch,
-            );
-            match &mut effective_prompt {
-                Some(p) => p.push_str(&report_seg),
-                None => effective_prompt = Some(report_seg),
-            }
-        }
-
-	        // ── 注入 initial_prompt（如果有）──
-	        // 通过 prompt RPC 把初始任务（peer 模式含汇报指令段）发给子进程。
-	        // 注意：这是 fire-and-forget，不等 agent_end —— agent_end 等待逻辑在
-	        // process_pending_commands 里按 relation=Child 单独处理。
-	        if let Some(prompt_text) = effective_prompt {
-	            let wid_for_prompt = worker_id.clone();
-	            // 直接调用 send_command（同 &mut self 上下文）
-	            if let Err(e) = self.send_command(&wid_for_prompt, "prompt", serde_json::json!({"text": prompt_text})).await {
-            let _rx_ignore = ();
-	                tracing::warn!("[{wid_for_prompt}] failed to inject initial_prompt: {e}");
+		        // ── Peer 模式：内核自动追加"汇报指令段"到 initial_prompt ──
+		        // 这是内核职责，不依赖 .md 自己写汇报格式。
+		        let mut effective_prompt = config.initial_prompt.clone();
+		        let is_peer = matches!(config.relation, Some(WorkerRelation::Peer));
+		        if is_peer {
+		            let creator_id = config.creator.as_deref()
+		                .or(config.report_to.as_deref())
+		                .unwrap_or("(unknown)");
+		            let ch = config.report_channel.as_deref().unwrap_or("main");
+	            let report_seg = format!(
+	                "\n\n---\n## 通信约定（内核自动注入，请严格遵守）\n\
+	                 你是被 {creator} 创建的同级 Worker。\n\
+	                 - 任务完成后必须输出（单独一行）：`CHANNEL_SEND {ch} DONE <简短摘要>`\n\
+	                 - 需要帮助时输出：`CHANNEL_SEND {ch} HELP <问题描述>`\n\
+	                 - 你的创建者 worker_id：{creator}\n\
+	                 - 汇报频道：{ch}\n",
+	                creator = creator_id,
+	                ch = ch,
+	            );
+	            match &mut effective_prompt {
+	                Some(p) => p.push_str(&report_seg),
+	                None => effective_prompt = Some(report_seg),
 	            }
 	        }
 
@@ -498,6 +482,24 @@ impl WorkerRegistry {
             "worker_id": info.worker_id,
             "change": "created",
         }));
+
+        // ── 注入 initial_prompt（延迟到 spawn task，避免持锁等子进程 ready 导致死锁）──
+        // 之前在持锁状态下 sleep(500ms) + send_command(prompt)，
+        // 导致 reader task 无法拿锁转发事件 → 子进程 stdout buffer 满 → 死锁。
+        // 现在改为：创建 worker record 后立即返回（释放锁），prompt 注入放到 spawn task。
+        if let Some(prompt_text) = effective_prompt {
+            let wid_for_prompt = worker_id.clone();
+            let prompt_registry = Arc::clone(registry_arc);
+            tokio::spawn(async move {
+                // 等子进程 ready（不持锁，不阻塞 reader task）
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                // 短暂持锁写 stdin（fire-and-forget，不等响应）
+                let mut reg = prompt_registry.lock().await;
+                if let Err(e) = reg.send_command(&wid_for_prompt, "prompt", serde_json::json!({"text": prompt_text})).await {
+                    tracing::warn!("[{wid_for_prompt}] failed to inject initial_prompt: {e}");
+                }
+            });
+        }
 
         // Notify overview subscribers
         self.broadcast_overview();
