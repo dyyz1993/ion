@@ -231,7 +231,7 @@ bash_run(command, background?, timeout?)
 | `manual` | 用户手动关闭 | `bash_kill(pid)` 或 `extension_rpc kill` |
 | `background_timeout` | 前台超时自动转入后台 | 前台无 timeout 参数，运行超 300s |
 | `background_manual` | 用户手动转入后台 | `bash_background` 调用 |
-| `service_shutdown` | Manager 退出清理 | `ion manager stop` 时清理残留 |
+| `service_shutdown` | Manager 退出清理 | `ion serve stop` 时清理残留 |
 
 ## 4. 系统提示词注入（代替 bash_list）
 
@@ -978,7 +978,7 @@ ION 是一个 Rust 实现的 AI Agent 编排平台。核心架构：
 
 ```
 ion "hello"           — 单实例 CLI
-ion manager start     — Manager 守护进程 (管理多个 Worker)
+ion serve start     — Host 守护进程 (管理多个 Worker)
 ion-worker --mode rpc — Worker 子进程 (JSONL over stdin/stdout)
 ```
 
@@ -994,11 +994,11 @@ cargo build --bin ion --bin ion-worker
 cp target/debug/ion ~/.cargo/bin/
 cp target/debug/ion-worker ~/.cargo/bin/
 
-# 启动 Manager 守护进程
-ion manager start &
+# 启动 Host 守护进程
+ion serve start &
 ```
 
-Manager 启动后，会在 Unix socket `~/.ion/manager.sock` 上监听。
+Host 启动后，会在 Unix socket `~/.ion/host.sock` 上监听。
 
 ### A.3 Worker 管理
 
@@ -1207,7 +1207,7 @@ python3 /tmp/chat_ui.py
 
 ```bash
 # 确保 Manager 在运行
-ion manager start &
+ion serve start &
 
 # 运行验证
 cd /tmp && python3 verify_all.py
@@ -1253,7 +1253,7 @@ cargo test --lib              # 91 个核心测试
 cargo test                    # 全部测试
 
 # Manager
-ion manager start &           # 启动
+ion serve start &           # 启动
 
 # Worker
 SID=$(ion rpc --session x --method create_worker --params '{"cwd":"/tmp"}' | ...)

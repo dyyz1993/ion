@@ -1,7 +1,10 @@
-# ION — Agent Manager Orchestration Layer (Rust Study)
+# ION — AI Agent Orchestration CLI (Rust)
 
-A Rust implementation of an Agent Manager / Worker-Pool orchestration layer,
+A Rust implementation of an AI Agent orchestration CLI (对齐 pi),
 built to study **lifetimes, ownership, async actors, and supervision** in Rust.
+
+> 本文件是早期 Rust 学习阶段的 demo 说明，保留作历史记录。
+> 当前项目的权威文档是 [AGENTS.md](./AGENTS.md)。
 
 ---
 

@@ -470,7 +470,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 ✅ 5 并发 worktree 隔离开发
 ✅ 50 轮连续对话无泄漏
 ✅ 20 次快速创建/销毁无僵尸
-✅ ion manager + socket subscribe 实时事件流
+✅ ion serve + socket subscribe 实时事件流
 ✅ Memory: on_input → on_context → injected.json 注入链路
 ✅ Memory: 真实 LLM prompt 触发记忆召回并注入上下文
 ✅ Memory: call_tool memory_save/search 直调

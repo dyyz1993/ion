@@ -96,8 +96,8 @@ cp target/wasm32-wasip1/release/todo_plugin.wasm <project>/.ion/extensions/
 不经过 LLM，直接触发工具，验证返回值：
 
 ```bash
-# 启动 Manager
-ion manager start
+# 启动 Host
+ion serve start
 
 # 创建 session
 ion rpc --method create_session --params '{"agent":"developer"}'
@@ -158,7 +158,7 @@ ion rpc --session sess_xxx --method call_tool \
 kill $(cat ~/.ion/manager.pid)
 
 # 重启
-ion manager start
+ion serve start
 
 # 数据还在
 ion rpc --session sess_xxx --method call_tool \

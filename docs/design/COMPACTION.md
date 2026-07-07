@@ -441,8 +441,8 @@ ion "用一句话介绍你自己" --provider anthropic --model glm-4.6
 #### B2 长对话自动压缩（LLM summarizer）
 
 ```bash
-# 1. 启动 Manager + session
-ion manager start
+# 1. 启动 Host + session
+ion serve start
 ion rpc --method create_session --params '{"agent":"developer"}'
 
 # 2. 累积超过 32000 tokens 的对话

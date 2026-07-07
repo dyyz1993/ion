@@ -260,7 +260,7 @@ ion subscribe --session x --extension memory
 ### 6.1 验证 RPC 链路
 
 ```bash
-ion manager start
+ion serve start
 ion rpc --method create_session --params '{"agent":"developer"}'
 # → {"session_id":"sess_xxx",...}
 

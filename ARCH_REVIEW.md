@@ -108,7 +108,7 @@ PermissionExtension（before_tool_call 钩子）先检查自有规则表 → 放
 
 ### 6. 测试脚本依赖 Manager 进程 🟡 待优化
 
-3 个 CI 脚本（runtime_ci / permission_ci / session_ci）都需要 `ion manager start` + `create_worker`，启动慢（~15s），且可能残留进程。
+3 个 CI 脚本（runtime_ci / permission_ci / session_ci）都需要 `ion serve start` + `create_worker`，启动慢（~15s），且可能残留进程。
 
 **状态：待优化。** 当前 apple_container_ci.sh 用了相同模式，但加了更完善的 cleanup trap。后续可考虑 mock Worker 加速单测。
 
@@ -127,7 +127,7 @@ bash tests/session_entries_ci.sh
 # 远程执行（需要 SSH 跳板）
 # ~/.ion/config.json:
 # { "runtime": { "default_mode": "remote", "remote": { "default_host": "host", "hosts": {"host":{}} } } }
-ion manager start
+ion serve start
 ion rpc --method create_worker --params '{"cwd":"/tmp"}'
 ion rpc --session <sid> --method call_tool --params '{"tool":"bash","args":{"command":"echo hello"}}'
 ```

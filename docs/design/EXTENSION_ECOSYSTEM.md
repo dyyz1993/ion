@@ -87,8 +87,8 @@ bash_run background process
 ## CLI 验证命令速查
 
 ```bash
-# 启动 Manager
-ion manager start
+# 启动 Host
+ion serve start
 
 # 创建 Worker
 ion rpc --method create_worker --params '{"session":"test"}'

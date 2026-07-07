@@ -297,7 +297,7 @@ RouterRuntime 三层结构：
 
 | # | 步骤 | 预期 |
 |---|------|------|
-| 45 | Manager 启动 | ✅ |
+| 45 | Host 启动 | ✅ |
 | 46 | 创建 Worker | ✅ |
 | 47 | `bash "hostname"` | 返回远程主机名（shanbox） |
 | 48 | `read /Users/xuyingzhou/.ion/agent/skills/build.md` | 返回本地内容 |

@@ -5,25 +5,25 @@
 ## 三大命令
 
 ```bash
-ion manager start                     # 启动守护进程
+ion serve start                     # 启动守护进程
 ion rpc --method xxx                  # 一问一答（RPC）
 ion subscribe --session x             # 实时事件流
 ```
 
-## 启动 Manager
+## 启动 Host
 
 ```bash
 # 前台启动（调试用）
-ion manager start
+ion serve start
 
 # 后台启动
-nohup ion manager start > mgr.log 2>&1 &
+nohup ion serve start > mgr.log 2>&1 &
 
 # 检查是否在跑
 ls ~/.ion/manager.pid
 ```
 
-- Socket：`~/.ion/manager.sock`
+- Socket：`~/.ion/host.sock`
 - PID：`~/.ion/manager.pid`（防重复启动）
 - 关闭：`kill $(cat ~/.ion/manager.pid)`
 
@@ -210,7 +210,7 @@ ion subscribe --session sess_xxx --extension memory
 
 ```bash
 # Terminal 1: Manager
-ion manager start
+ion serve start
 
 # Terminal 2: 订阅 Memory 事件
 ion subscribe --session sess_xxx --extension memory
@@ -251,7 +251,7 @@ ion rpc --session sess_xxx --method call_tool \
 
 ```javascript
 // 连接 Manager socket（伪代码）
-const socket = connect('unix:' + home + '/.ion/manager.sock');
+const socket = connect('unix:' + home + '/.ion/host.sock');
 
 // 订阅两个流（开两个连接）
 const chatStream = connect();
@@ -272,7 +272,7 @@ rpcSocket.send({method:'call_tool', session:'sess_xxx', params:{tool:'memory_sav
 
 | 命令 | 一句话 |
 |------|--------|
-| `ion manager start` | 启动 Manager |
+| `ion serve start` | 启动 Host |
 | `ion rpc --method list_sessions` | 列会话 |
 | `ion rpc --method create_session` | 建会话 |
 | `ion rpc --session x --method get_messages` | 读消息 |

@@ -16,7 +16,7 @@ check() {
 cleanup() {
   pkill -9 -f "target/debug/ion" 2>/dev/null
   pkill -9 -f "bun run src/index.ts" 2>/dev/null
-  rm -f ~/.ion/manager.sock ~/.ion/manager.pid ~/.ion/tui-state.json
+  rm -f ~/.ion/host.sock ~/.ion/host.pid ~/.ion/tui-state.json
   tmux kill-session -t ion_e2e 2>/dev/null
   sleep 1
 }
@@ -42,8 +42,8 @@ sleep 2
 check "Case 4: 自动连接 Manager" 'PANE | grep -qi "connected"'
 
 # ── Worker 显示 ──
-echo '{"id":"c1","method":"create_worker","session":"sess_a","agent":"builder","model":"deepseek-v4"}' | nc -U ~/.ion/manager.sock > /dev/null 2>&1
-echo '{"id":"c2","method":"create_worker","session":"sess_b","agent":"reviewer","model":"claude-opus-4"}' | nc -U ~/.ion/manager.sock > /dev/null 2>&1
+echo '{"id":"c1","method":"create_worker","session":"sess_a","agent":"builder","model":"deepseek-v4"}' | nc -U ~/.ion/host.sock > /dev/null 2>&1
+echo '{"id":"c2","method":"create_worker","session":"sess_b","agent":"reviewer","model":"claude-opus-4"}' | nc -U ~/.ion/host.sock > /dev/null 2>&1
 sleep 2
 check "Case 5: 看板显示 worker" 'PANE | grep -qE "Workers · [1-9]"'
 check "Case 6: 项目树显示" 'PANE | grep -qE "ion|proj"'

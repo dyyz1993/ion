@@ -286,7 +286,7 @@ cat > ~/.ion/settings.json << 'EOF'
 }
 EOF
 
-# 验证：启动 Manager 后规则自动加载
+# 验证：启动 Host 后规则自动加载
 ion rpc --session <sid> --method extension_rpc \
   --params '{"extension":"permission","method":"list_rules"}'
 # → {"rules": [{"subject":"command.run","pattern":"echo *","decision":"allow",...},
@@ -588,7 +588,7 @@ ion rpc --session <sid> --method call_tool \
 ### Group G：验证结果
 
 ```bash
-# 启动 Manager + 创建 Worker
+# 启动 Host + 创建 Worker
 cargo run --bin ion -- manager start
 cargo run --bin ion rpc --method create_worker --params '{"cwd":"/tmp"}'
 
@@ -643,7 +643,7 @@ cat > ~/.ion/settings.json << 'EOF'
 }
 EOF
 
-# 验证：启动 Manager → 创建 Worker → echo 应放行
+# 验证：启动 Host → 创建 Worker → echo 应放行
 ion rpc --method call_tool --params '{"tool":"bash","args":{"command":"echo ok"}}'
 # 预期：success=true, output="ok\n"
 ```

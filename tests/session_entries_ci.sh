@@ -90,7 +90,7 @@ echo "── Phase 2: Manager & Worker ──"
 # 严厉清理残留 manager
 # 方式 1: 端口占用进程
 lsof -ti :53293 2>/dev/null | xargs kill -9 2>/dev/null || true
-# 方式 2: target/debug/ion manager 进程
+# 方式 2: target/debug/ion serve 进程
 for pid in $(ps aux | grep "target/debug/ion" | grep -v grep | awk '{print $2}' 2>/dev/null || true); do
     kill -9 "$pid" 2>/dev/null || true
 done

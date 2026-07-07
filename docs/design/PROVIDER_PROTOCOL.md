@@ -430,7 +430,7 @@ ion rpc --session <sid> --method get_state
 
 ### Group A：单 Provider 烟测（Anthropic / OpenAI）
 
-> 通过 `ion rpc` + `ion subscribe` 验证每个 provider 的基础流式 + tool_call 链路。所有测试需先启动 Manager：`ion manager start`，并 `ion rpc --method create_session --params '{"agent":"developer"}'` 创建 session。
+> 通过 `ion rpc` + `ion subscribe` 验证每个 provider 的基础流式 + tool_call 链路。所有测试需先启动 Host：`ion serve start`，并 `ion rpc --method create_session --params '{"agent":"developer"}'` 创建 session。
 
 #### A1 Anthropic 基础聊天（z.ai 代理 + glm-4.6）
 

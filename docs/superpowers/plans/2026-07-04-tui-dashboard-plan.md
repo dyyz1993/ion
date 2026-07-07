@@ -300,7 +300,7 @@ if method == "subscribe_overview" {
 cargo build --bin ion
 ```
 
-然后 `ion manager start` 再 `echo '{"method":"subscribe_overview","id":"test1"}' | nc -U ~/.ion/manager.sock` 测试。
+然后 `ion serve start` 再 `echo '{"method":"subscribe_overview","id":"test1"}' | nc -U ~/.ion/host.sock` 测试。
 
 - [ ] **Step 7: Commit**
 
@@ -1410,7 +1410,7 @@ if method == "subscribe_overview" {
 cargo build --bin ion
 ```
 
-测试：`ion manager start` 然后在另一个终端 `echo '{"method":"subscribe_overview","id":"test"}' | nc -U ~/.ion/manager.sock`。
+测试：`ion serve start` 然后在另一个终端 `echo '{"method":"subscribe_overview","id":"test"}' | nc -U ~/.ion/host.sock`。
 
 - [ ] **Step 6: Commit**
 
@@ -2688,7 +2688,7 @@ cargo build --bin ion
 
 ```bash
 # 终端 1
-ion manager start
+ion serve start
 
 # 终端 2
 ion dashboard

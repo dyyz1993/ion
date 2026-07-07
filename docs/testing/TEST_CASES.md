@@ -55,7 +55,7 @@
 
 | # | Case | 步骤 | 验证点 |
 |---|------|------|--------|
-| I1 | Manager 启动 | `ion manager start` | 守护进程运行，0 个 Worker |
+| I1 | Host 启动 | `ion serve start` | 守护进程运行，0 个 Worker |
 | I2 | 创建 Worker | `create_worker({session:"s1"})` | 返回 workerId + sessionId |
 | I3 | 列出 Worker | `list_workers()` | 返回 1 个 Worker |
 | I4 | 列出项目 | `list_projects()` | 返回当前项目 |

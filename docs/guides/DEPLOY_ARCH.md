@@ -122,7 +122,7 @@ Agent 需要写 /etc/hosts
 
 **CLI 验证：**
 ```bash
-ion manager start
+ion serve start
 ion rpc --method create_worker --params '{"cwd":"/Users/me/project"}'
 
 ion rpc --session <sid> --method call_tool \

@@ -32,8 +32,8 @@
 ## 测试
 
 ```bash
-# 1. 启动 Manager
-ion manager start
+# 1. 启动 Host
+ion serve start
 
 # 2. 创建 session
 ion rpc --method create_session --params '{"agent":"developer"}"
