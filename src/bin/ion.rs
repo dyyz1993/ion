@@ -24,7 +24,7 @@ use ion::event_bus::ExtensionEvent;
 use ion::manager::AgentManager;
 use ion::types::{PoolOptions, TaskConfig, TaskPayload};
 use ion::worker::agent_worker::AgentWorker;
-use ion_provider::registry::{ApiRegistry, ModelRegistry};
+use ion_provider::registry::{ApiRegistry, ModelRegistry, ProviderFactory};
 use ion_provider::types::*;
 use std::io::IsTerminal;
 use tokio::sync::oneshot;
@@ -305,6 +305,8 @@ enum Commands {
     },
     /// List all sessions with stats
     Sessions,
+    /// List all LLM recordings (Record/Replay)
+    Recordings,
     /// List available agents
     ListAgents,
     /// List available models
@@ -587,6 +589,8 @@ fn build_registry_and_model(eff: &EffectiveConfig) -> (Arc<ApiRegistry>, Model) 
         })
         .unwrap_or_else(|| match eff.provider.as_str() {
             "opencode" => "https://opencode.ai/zen/go/v1".to_string(),
+            // internal/mock providers — no base_url needed
+            "faux" | "replay" => String::new(),
             other => {
                 eprintln!("❌ Unknown provider '{other}'");
                 eprintln!();
@@ -615,7 +619,7 @@ fn build_registry_and_model(eff: &EffectiveConfig) -> (Arc<ApiRegistry>, Model) 
         } else {
             vec![ion_provider::faux::FauxResponseStep::Static(
                 ion_provider::faux::faux_assistant_message(
-                    ion_provider::faux::FauxContent::Text(faux_reply.unwrap_or_default()),
+                    ion_provider::faux::FauxContent::Text(faux_reply.clone().unwrap_or_default()),
                     ion_provider::faux::FauxMessageOptions::default(),
                 ),
             )]
@@ -657,14 +661,20 @@ fn build_registry_and_model(eff: &EffectiveConfig) -> (Arc<ApiRegistry>, Model) 
             }
             // Fallback: construct from effective config + show hint
             tracing::warn!(
-                "model '{}' not in registry, using fallback (api=openai-completions, context=128k). \
+                "model '{}' not in registry, using fallback (context=128k). \
                  Use --list-models to see available models, or define it in ~/.ion/models.json.",
                 eff.model
             );
+            // Internal/mock providers route to themselves; others default to openai-completions
+            let fallback_api = match eff.provider.as_str() {
+                "faux" => "faux",
+                "replay" => "replay",
+                _ => "openai-completions",
+            };
             Model {
                 id: eff.model.clone(),
                 name: eff.model.clone(),
-                api: "openai-completions".into(),
+                api: fallback_api.into(),
                 provider: eff.provider.clone(),
                 base_url,
                 reasoning: false,
@@ -696,7 +706,84 @@ fn build_registry_and_model(eff: &EffectiveConfig) -> (Arc<ApiRegistry>, Model) 
         eprintln!("[faux] model.api forced to 'faux'");
     }
 
+    // ── ReplayProvider（始终注册；通过 --model replay/<id> 激活）──
+    registry.register("replay", Box::new(ion_provider::replay::ReplayProvider));
+
+    // ── RecordingProvider（通过 ION_RECORD 环境变量激活）──
+    // 捕获真实 provider（含 faux）的输出，写入 trace.jsonl。
+    if let Ok(rec_id) = std::env::var("ION_RECORD") {
+        let overwrite = std::env::var("ION_RECORD_OVERWRITE").is_ok();
+        match ion_provider::replay::recording_trace_path(&rec_id) {
+            Ok(trace_path) => {
+                let rec_dir = trace_path.parent().unwrap().to_path_buf();
+                match ion_provider::replay::acquire_recording_lock(&rec_dir, overwrite) {
+                    Ok(lock_opt) => {
+                        // 构造被包裹的内层 provider：
+                        //  - 若 faux 激活，用共享同一份队列的 faux 句柄；
+                        //  - 否则用 builtin factory 按 model.api 创建真实 provider。
+                        let inner: Option<Box<dyn ion_provider::registry::ApiProvider>> = if using_faux {
+                            // 重新注册一个共享同一份队列的 faux（队列已在上面填充）
+                            // 这里直接拿一个新的 FauxProvider，复用相同的 responses。
+                            let new_faux = std::sync::Arc::new(ion_provider::faux::FauxProvider::new());
+                            // 复用之前已注册的 faux 队列：从 env 重新构造一份
+                            let responses = if let Some(path) = &faux_script {
+                                ion_provider::faux::load_script(std::path::Path::new(path)).ok()
+                            } else {
+                                Some(vec![ion_provider::faux::FauxResponseStep::Static(
+                                    ion_provider::faux::faux_assistant_message(
+                                        ion_provider::faux::FauxContent::Text(faux_reply.as_deref().unwrap_or_default().to_string()),
+                                        ion_provider::faux::FauxMessageOptions::default(),
+                                    ),
+                                )])
+                            };
+                            if let Some(rsps) = responses {
+                                new_faux.set_responses(rsps);
+                            }
+                            Some(Box::new(ArcFauxProvider(new_faux)))
+                        } else {
+                            let factory = ion_provider::registry::BuiltinProviderFactory;
+                            factory.create(&model.api)
+                        };
+
+                        match inner {
+                            Some(real) => {
+                                let meta_path = ion_provider::replay::recording_meta_path(&rec_id).unwrap();
+                                let recording = ion_provider::record::RecordingProvider::new(
+                                    real, trace_path, meta_path,
+                                );
+                                registry.register(&model.api, Box::new(recording));
+                                eprintln!("[record] recording to {} (model: {})", rec_dir.display(), model.id);
+                                // 持有锁到进程退出（故意泄漏，保持文件锁）
+                                if let Some(l) = lock_opt { std::mem::forget(l); }
+                            }
+                            None => {
+                                eprintln!("[record] ⚠️  no builtin provider for api '{}', recording disabled", model.api);
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("[record] ⚠️  {}", e),
+                }
+            }
+            Err(e) => eprintln!("[record] ⚠️  invalid recording id: {}", e),
+        }
+    }
+
     (Arc::new(registry), model)
+}
+
+/// Adapter: box an `Arc<FauxProvider>` so it can be used as the inner
+/// provider of a `RecordingProvider` (sharing the same response queue).
+struct ArcFauxProvider(std::sync::Arc<ion_provider::faux::FauxProvider>);
+#[async_trait::async_trait]
+impl ion_provider::registry::ApiProvider for ArcFauxProvider {
+    async fn stream(
+        &self,
+        model: &ion_provider::types::Model,
+        context: &ion_provider::types::Context,
+        options: Option<&ion_provider::types::StreamOptions>,
+    ) -> ion_provider::error::ProviderResult<ion_provider::event_stream::EventStream> {
+        self.0.stream(model, context, options).await
+    }
 }
 
 fn build_agent_config(eff: &EffectiveConfig) -> AgentConfig {
@@ -1494,6 +1581,37 @@ async fn cmd_sessions() {
     );
 }
 
+async fn cmd_recordings() {
+    let dir = ion_provider::replay::recordings_dir();
+    if !dir.exists() {
+        println!("No recordings ({} doesn't exist)", dir.display());
+        return;
+    }
+    println!("{:<30} {:<20} {:<10} {:<20}", "ID", "MODEL", "RESPONSES", "CREATED");
+    println!("{}", "-".repeat(80));
+    let mut entries: Vec<_> = std::fs::read_dir(&dir).into_iter().flatten()
+        .filter_map(|e| e.ok()).collect();
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let id = entry.file_name().to_string_lossy().to_string();
+        let meta_path = entry.path().join("meta.json");
+        if let Ok(content) = std::fs::read_to_string(&meta_path) {
+            if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&content) {
+                println!(
+                    "{:<30} {:<20} {:<10} {:<20}",
+                    id,
+                    meta.get("model").and_then(|v| v.as_str()).unwrap_or("?"),
+                    meta.get("response_count").and_then(|v| v.as_u64()).unwrap_or(0),
+                    meta.get("created_at").and_then(|v| v.as_i64())
+                        .map(|t| format!("{}s", t / 1000)).unwrap_or_else(|| "?".into()),
+                );
+                continue;
+            }
+        }
+        println!("{:<30} {:<20} {:<10} {:<20}", id, "?", "?", "(no meta)");
+    }
+}
+
 async fn cmd_list_agents() {
     let agents = ion::agent_config::builtin_agents();
     println!("{:<16} {:<12} {:<8}  {}", "NAME", "TIER", "TOOLS", "DESCRIPTION");
@@ -1793,6 +1911,7 @@ async fn main() {
             cmd_rpc(session.as_deref(), method, params).await;
         }
         Some(Commands::Sessions) => cmd_sessions().await,
+        Some(Commands::Recordings) => cmd_recordings().await,
         Some(Commands::Subscribe { session, extension, ui }) => cmd_subscribe(session.as_deref(), extension.as_deref(), *ui).await,
         Some(Commands::ListAgents) => cmd_list_agents().await,
         Some(Commands::ListModels { search }) => cmd_list_models(search).await,

@@ -267,6 +267,13 @@ impl WorkerRegistry {
             }
         }
 
+        // 传递录制相关环境变量到子 Worker（录制模式自动传播到子进程）
+        for var in &["ION_RECORD", "ION_RECORD_OVERWRITE"] {
+            if let Ok(val) = std::env::var(var) {
+                child_cmd.env(var, &val);
+            }
+        }
+
         let mut child = child_cmd
             .spawn()
             .map_err(|e| format!("failed to spawn worker: {e}"))?;

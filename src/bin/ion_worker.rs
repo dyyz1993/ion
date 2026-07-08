@@ -17,7 +17,7 @@ use ion::agent::compact::CompactConfig;
 use ion::agent::tool::{ReadTool, WriteTool, EditTool, BashTool, GrepTool, FindTool, LsTool, CalculatorTool, EchoTool, GitStatusTool, GitDiffTool, GitLogTool, GitAddTool, GitCommitTool, GitBranchTool, SpawnWorkerTool, SendToWorkerTool, ResumeWorkerTool, AwaitWorkerTool, ChannelSendTool, KillWorkerTool, ToolRegistry};
 use ion::wasm_extension::{Registry, ToolAdapter};
 use ion::session_jsonl;
-use ion_provider::registry::ApiRegistry;
+use ion_provider::registry::{ApiRegistry, ProviderFactory};
 use ion_provider::types::*;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -73,7 +73,7 @@ async fn main() {
         } else {
             vec![ion_provider::faux::FauxResponseStep::Static(
                 ion_provider::faux::faux_assistant_message(
-                    ion_provider::faux::FauxContent::Text(faux_reply.unwrap_or_default()),
+                    ion_provider::faux::FauxContent::Text(faux_reply.clone().unwrap_or_default()),
                     ion_provider::faux::FauxMessageOptions::default(),
                 ),
             )]
@@ -108,6 +108,59 @@ async fn main() {
     if using_faux {
         model.api = "faux".into();
         eprintln!("[faux] model.api forced to 'faux'");
+    }
+
+    // ── ReplayProvider（始终注册；通过 --model replay/<id> 激活）──
+    registry.register("replay", Box::new(ion_provider::replay::ReplayProvider));
+
+    // ── RecordingProvider（通过 ION_RECORD 环境变量激活）──
+    if let Ok(rec_id) = std::env::var("ION_RECORD") {
+        let overwrite = std::env::var("ION_RECORD_OVERWRITE").is_ok();
+        match ion_provider::replay::recording_trace_path(&rec_id) {
+            Ok(trace_path) => {
+                let rec_dir = trace_path.parent().unwrap().to_path_buf();
+                match ion_provider::replay::acquire_recording_lock(&rec_dir, overwrite) {
+                    Ok(lock_opt) => {
+                        let inner: Option<Box<dyn ion_provider::registry::ApiProvider>> = if using_faux {
+                            let new_faux = std::sync::Arc::new(ion_provider::faux::FauxProvider::new());
+                            let responses = if let Some(path) = &faux_script {
+                                ion_provider::faux::load_script(std::path::Path::new(path)).ok()
+                            } else {
+                                Some(vec![ion_provider::faux::FauxResponseStep::Static(
+                                    ion_provider::faux::faux_assistant_message(
+                                        ion_provider::faux::FauxContent::Text(faux_reply.as_deref().unwrap_or_default().to_string()),
+                                        ion_provider::faux::FauxMessageOptions::default(),
+                                    ),
+                                )])
+                            };
+                            if let Some(rsps) = responses {
+                                new_faux.set_responses(rsps);
+                            }
+                            Some(Box::new(ArcFauxProvider(new_faux)))
+                        } else {
+                            let factory = ion_provider::registry::BuiltinProviderFactory;
+                            factory.create(&model.api)
+                        };
+                        match inner {
+                            Some(real) => {
+                                let meta_path = ion_provider::replay::recording_meta_path(&rec_id).unwrap();
+                                let recording = ion_provider::record::RecordingProvider::new(
+                                    real, trace_path, meta_path,
+                                );
+                                registry.register(&model.api, Box::new(recording));
+                                eprintln!("[record] recording to {} (model: {})", rec_dir.display(), model.id);
+                                if let Some(l) = lock_opt { std::mem::forget(l); }
+                            }
+                            None => {
+                                eprintln!("[record] ⚠️  no builtin provider for api '{}', recording disabled", model.api);
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("[record] ⚠️  {}", e),
+                }
+            }
+            Err(e) => eprintln!("[record] ⚠️  invalid recording id: {}", e),
+        }
     }
 
     let mut tools = ToolRegistry::new();
@@ -1901,4 +1954,19 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+/// Adapter: box an `Arc<FauxProvider>` so it can be used as the inner
+/// provider of a `RecordingProvider` (sharing the same response queue).
+struct ArcFauxProvider(std::sync::Arc<ion_provider::faux::FauxProvider>);
+#[async_trait::async_trait]
+impl ion_provider::registry::ApiProvider for ArcFauxProvider {
+    async fn stream(
+        &self,
+        model: &ion_provider::types::Model,
+        context: &ion_provider::types::Context,
+        options: Option<&ion_provider::types::StreamOptions>,
+    ) -> ion_provider::error::ProviderResult<ion_provider::event_stream::EventStream> {
+        self.0.stream(model, context, options).await
+    }
 }
