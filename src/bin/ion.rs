@@ -2472,6 +2472,13 @@ async fn cmd_serve_start(
     let registry = Arc::new(Mutex::new(WorkerRegistry::new()));
     let event_bus = Arc::new(tokio::sync::Mutex::new(ion::event_bus::ExtensionEventBus::new()));
 
+    // ── 注册单例扩展（host 级，只在 serve 模式）──
+    {
+        let mut reg = registry.lock().await;
+        reg.register_singleton(Box::new(ion::global_memory_ext::GlobalMemoryExtension::new()));
+        reg.init_singletons().await;
+    }
+
     // ── Host 单例检查 + Unix socket 启动 ──
     // PID 文件防重复启动；Unix socket 让外部 `ion rpc` 能连进来。
     if let Some(pid) = ion::paths::host_running() {
