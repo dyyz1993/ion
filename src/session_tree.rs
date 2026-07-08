@@ -1,0 +1,605 @@
+//! Session Tree — 会话内分支树的核心数据层。
+//!
+//! 纯函数操作 `&[serde_json::Value]`（session entries），不涉及 IO。
+//! 所有"分支/回滚/切换"操作返回要追加的新 entries（调用方负责写盘），
+//! 严格遵守 only-append 不变量：永不修改/删除已有 entry。
+//!
+//! 对齐 pi `session-manager.ts` 的 getTree / branch / leaf 恢复算法。
+//! 设计文档：docs/design/SESSION_TREE.md
+
+use serde_json::Value;
+use std::collections::{HashMap, HashSet};
+
+/// 树节点：一个 entry + 它的子节点。
+#[derive(Clone, Debug)]
+pub struct TreeNode {
+    pub entry: Value,
+    pub children: Vec<TreeNode>,
+    /// 命名分支（来自 LabelEntry），若有。
+    pub label: Option<String>,
+}
+
+/// 判断一个 entry 是否是 header（session 行）。
+fn is_header(e: &Value) -> bool {
+    e.get("type").and_then(|v| v.as_str()) == Some("session")
+}
+
+/// 判断一个 entry 是否是 leaf_pointer。
+fn is_leaf_pointer(e: &Value) -> bool {
+    e.get("type").and_then(|v| v.as_str()) == Some("leaf_pointer")
+}
+
+/// 取 entry 的 id。
+fn entry_id(e: &Value) -> Option<&str> {
+    e.get("id").and_then(|v| v.as_str())
+}
+
+/// 取 entry 的 parentId。
+fn entry_parent_id(e: &Value) -> Option<&str> {
+    e.get("parentId").and_then(|v| v.as_str())
+}
+
+/// 取 leaf_pointer 的 leafId（指向的真实 entry）。
+fn leaf_pointer_target(e: &Value) -> Option<&str> {
+    e.get("leafId").and_then(|v| v.as_str())
+}
+
+/// 沿 parentId 链回溯，判断 `id` 是否是 `target` 的后代（含自身）。
+/// 带环保护。
+fn is_descendant_of(id: &str, target: &str, by_id: &HashMap<&str, &Value>) -> bool {
+    let mut cur = Some(id);
+    let mut visited = HashSet::new();
+    while let Some(cid) = cur {
+        if !visited.insert(cid) {
+            return false; // 环保护
+        }
+        if cid == target {
+            return true;
+        }
+        cur = by_id.get(cid).and_then(|e| entry_parent_id(e));
+    }
+    false
+}
+
+/// 沿 parentId 链数 depth（到 root 的跳数）。带环保护。
+fn entry_depth(id: &str, by_id: &HashMap<&str, &Value>) -> usize {
+    let mut depth = 0;
+    let mut cur = Some(id);
+    let mut visited = HashSet::new();
+    while let Some(cid) = cur {
+        if !visited.insert(cid) {
+            break;
+        }
+        depth += 1;
+        cur = by_id.get(cid).and_then(|e| entry_parent_id(e));
+    }
+    depth
+}
+
+/// 解析当前 leaf（光标位置）。
+///
+/// 对齐 pi `_buildIndex` Phase B/C：
+/// 1. 从后往前找最后一个 leaf_pointer
+/// 2. 若找到且 leafId 非空：在其后的后代中找 depth 最深的非-parent entry
+/// 3. 若 leafId 为空（reset）：在其后找 depth 最深的非-parent entry
+/// 4. 无 leaf_pointer：全局找 depth 最深的非-parent entry
+pub fn resolve_current_leaf(entries: &[Value]) -> Option<String> {
+    // 收集所有"作为别人 parent"的 id（这些不是 leaf 候选）
+    let mut parent_ids: HashSet<String> = HashSet::new();
+    for e in entries {
+        if !is_header(e) && !is_leaf_pointer(e) {
+            if let Some(p) = entry_parent_id(e) {
+                parent_ids.insert(p.to_string());
+            }
+        }
+    }
+    // id -> entry 索引
+    let by_id: HashMap<&str, &Value> = entries
+        .iter()
+        .filter_map(|e| entry_id(e).map(|id| (id, e)))
+        .collect();
+
+    // Phase B：从后往前找最后一个 leaf_pointer
+    let lp_pos = entries.iter().rposition(|e| is_leaf_pointer(e));
+
+    match lp_pos {
+        Some(i) => {
+            let lp = &entries[i];
+            match leaf_pointer_target(lp) {
+                Some(target_id) if !target_id.is_empty() => {
+                    // leafId 非空：先在 i 之后找 target 的后代中 depth 最深的非-parent entry。
+                    // 若无后代，target 本身就是 leaf（用户显式指向它，不管它是不是别人的 parent）。
+                    deepest_descendant_after(entries, target_id, &parent_ids, &by_id, i, false)
+                        .or_else(|| Some(target_id.to_string()))
+                }
+                _ => {
+                    // leafId 为空（reset）：在 i 之后找 depth 最深的非-parent entry
+                    deepest_descendant_after(entries, "", &parent_ids, &by_id, i, true)
+                }
+            }
+        }
+        // Phase C：无 leaf_pointer —— 全局找 depth 最深的非-parent entry
+        None => deepest_non_parent(entries, &parent_ids, &by_id),
+    }
+}
+
+/// 在 pos 之后找目标的后代（或任意 entry）中 depth 最深且非-parent 的。
+fn deepest_descendant_after(
+    entries: &[Value],
+    target: &str,
+    parent_ids: &HashSet<String>,
+    by_id: &HashMap<&str, &Value>,
+    pos: usize,
+    allow_any: bool,
+) -> Option<String> {
+    let mut best: Option<(String, usize)> = None;
+    for e in entries.iter().skip(pos + 1) {
+        let id = match entry_id(e) {
+            Some(id) => id,
+            None => continue,
+        };
+        if is_header(e) || is_leaf_pointer(e) {
+            continue;
+        }
+        if parent_ids.contains(id) {
+            continue; // 是别人的 parent，不是 leaf 候选
+        }
+        let ok = if allow_any {
+            true
+        } else {
+            is_descendant_of(id, target, by_id)
+        };
+        if ok {
+            let depth = entry_depth(id, by_id);
+            match &best {
+                None => best = Some((id.to_string(), depth)),
+                Some((_, d)) if depth > *d => best = Some((id.to_string(), depth)),
+                _ => {}
+            }
+        }
+    }
+    best.map(|(id, _)| id)
+}
+
+/// 无 leaf_pointer 时：全局找 depth 最深的非-parent entry。
+fn deepest_non_parent(
+    entries: &[Value],
+    parent_ids: &HashSet<String>,
+    by_id: &HashMap<&str, &Value>,
+) -> Option<String> {
+    let mut best: Option<(String, usize)> = None;
+    for e in entries {
+        let id = match entry_id(e) {
+            Some(id) => id,
+            None => continue,
+        };
+        if is_header(e) || is_leaf_pointer(e) {
+            continue;
+        }
+        if parent_ids.contains(id) {
+            continue;
+        }
+        let depth = entry_depth(id, by_id);
+        match &best {
+            None => best = Some((id.to_string(), depth)),
+            Some((_, d)) if depth > *d => best = Some((id.to_string(), depth)),
+            _ => {}
+        }
+    }
+    best.map(|(id, _)| id)
+}
+
+/// 找最后一个 leaf_pointer 指向的 target（用于判断当前分支点）。
+pub fn find_leaf_pointer_target(entries: &[Value]) -> Option<String> {
+    entries
+        .iter()
+        .rev()
+        .find(|e| is_leaf_pointer(e))
+        .and_then(|lp| leaf_pointer_target(lp).map(|s| s.to_string()))
+}
+
+/// 按 parentId 建树。过滤 header 和 leaf_pointer（它们不是树节点）。
+/// 对齐 pi `getTree()`。
+pub fn get_tree(entries: &[Value]) -> Vec<TreeNode> {
+    // 建 label 映射（LabelEntry.targetId -> label）
+    let labels: HashMap<String, String> = entries
+        .iter()
+        .filter_map(|e| {
+            if e.get("type").and_then(|v| v.as_str()) == Some("label") {
+                let target = e.get("targetId").and_then(|v| v.as_str())?;
+                let label = e.get("label").and_then(|v| v.as_str())?;
+                Some((target.to_string(), label.to_string()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // 只保留树节点（非 header、非 leaf_pointer）
+    let tree_entries: Vec<&Value> = entries
+        .iter()
+        .filter(|e| !is_header(e) && !is_leaf_pointer(e))
+        .collect();
+
+    // id -> node（先建空 children）
+    let mut node_map: HashMap<String, TreeNode> = HashMap::new();
+    for e in &tree_entries {
+        if let Some(id) = entry_id(e) {
+            node_map.insert(
+                id.to_string(),
+                TreeNode {
+                    entry: (*e).clone(),
+                    children: vec![],
+                    label: labels.get(id).cloned(),
+                },
+            );
+        }
+    }
+
+    // 按 parentId 挂载；找不到 parent 的当 root
+    let mut roots = vec![];
+    for e in &tree_entries {
+        let id = match entry_id(e) {
+            Some(id) => id,
+            None => continue,
+        };
+        let parent_id = entry_parent_id(e);
+        match parent_id {
+            None => {
+                roots.push(id.to_string());
+            }
+            Some(p) if p == id => {
+                roots.push(id.to_string());
+            }
+            Some(p) => {
+                if node_map.contains_key(p) {
+                    if let Some(child) = node_map.get(id).cloned() {
+                        if let Some(parent) = node_map.get_mut(p) {
+                            parent.children.push(child);
+                        }
+                    }
+                } else {
+                    // parent 不在 node_map（可能是 session id）→ 当 root
+                    roots.push(id.to_string());
+                }
+            }
+        }
+    }
+
+    // 按 timestamp 升序排每个节点的 children（oldest first）
+    let result: Vec<TreeNode> = roots
+        .into_iter()
+        .filter_map(|id| node_map.remove(&id))
+        .map(|mut n| {
+            sort_children(&mut n);
+            n
+        })
+        .collect();
+    result
+}
+
+/// 递归按 timestamp 升序排 children。
+fn sort_children(node: &mut TreeNode) {
+    node.children.sort_by(|a, b| {
+        let ta = a
+            .entry
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let tb = b
+            .entry
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        ta.cmp(tb)
+    });
+    for c in &mut node.children {
+        sort_children(c);
+    }
+}
+
+/// 沿 parentId 回溯，返回 root→leaf 顺序的 entries。
+/// 跳过 header（session 行）——它不是对话内容。
+pub fn get_branch_path(entries: &[Value], leaf_id: &str) -> Vec<Value> {
+    let by_id: HashMap<&str, &Value> = entries
+        .iter()
+        .filter_map(|e| entry_id(e).map(|id| (id, e)))
+        .collect();
+    let mut path = vec![];
+    let mut cur = Some(leaf_id);
+    let mut visited = HashSet::new();
+    while let Some(id) = cur {
+        if !visited.insert(id) {
+            break; // 环保护
+        }
+        if let Some(e) = by_id.get(id) {
+            // 跳过 header（session 行）和 leaf_pointer
+            if !is_header(e) && !is_leaf_pointer(e) {
+                path.push((*e).clone());
+            }
+            cur = entry_parent_id(e);
+        } else {
+            break;
+        }
+    }
+    path.reverse();
+    path
+}
+
+/// compaction 截断：从路径末尾往前找第一个 compaction entry，slice 到那里。
+/// 用于 fork-from-leaf 时丢弃被压缩的前缀。
+pub fn truncate_at_compaction(path: Vec<Value>) -> Vec<Value> {
+    for i in (0..path.len()).rev() {
+        if path[i]
+            .get("type")
+            .and_then(|v| v.as_str())
+            == Some("compaction")
+        {
+            return path[i..].to_vec();
+        }
+    }
+    path
+}
+
+/// 找所有命名分支（LabelEntry）。
+/// 返回 (label, targetId) 列表。
+pub fn named_branches(entries: &[Value]) -> Vec<(String, String)> {
+    entries
+        .iter()
+        .filter_map(|e| {
+            if e.get("type").and_then(|v| v.as_str()) == Some("label") {
+                let target = e.get("targetId").and_then(|v| v.as_str())?;
+                let label = e.get("label").and_then(|v| v.as_str())?;
+                Some((label.to_string(), target.to_string()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 单元测试
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 辅助：构造一条 message entry。
+    fn msg(id: &str, parent: &str, text: &str) -> Value {
+        json!({
+            "type": "message",
+            "id": id,
+            "parentId": parent,
+            "timestamp": "2026-07-08T10:00:00Z",
+            "message": {"role": "user", "content": text}
+        })
+    }
+
+    /// 辅助：构造一条 leaf_pointer entry。
+    fn leaf_ptr(id: &str, target: Option<&str>) -> Value {
+        json!({
+            "type": "leaf_pointer",
+            "id": id,
+            "parentId": null,
+            "timestamp": "2026-07-08T10:00:00Z",
+            "leafId": target
+        })
+    }
+
+    /// 辅助：构造 session header。
+    fn header(id: &str) -> Value {
+        json!({"type": "session", "version": 3, "id": id, "timestamp": "x", "cwd": "/x"})
+    }
+
+    #[test]
+    fn resolve_leaf_no_pointer_returns_deepest() {
+        // 线性链：h → m1 → m2 → m3
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            msg("m2", "m1", "b"),
+            msg("m3", "m2", "c"),
+        ];
+        assert_eq!(resolve_current_leaf(&entries), Some("m3".into()));
+    }
+
+    #[test]
+    fn resolve_leaf_with_pointer_returns_target() {
+        // 链：h → m1 → m2 → m3，末尾 leaf_pointer 指向 m1（m1 非 parent? m2 是 m1 的 child，m1 是 parent）
+        // 所以 m1 是 parent，应回退到 target 本身？不，m1 被引用为 parent → 在 parent_ids 里。
+        // 此时 deepest_descendant_after 找 m1 的后代在 pointer 之后 → 无（pointer 是最后）。
+        // 回退：target(m1) 是 parent → 返回 None... 这不对。
+        // 实际语义：leaf_pointer 指向 m1 表示"光标回到 m1，下条新消息接 m1"。
+        // 此时 current_leaf 应该是 m1（即使它是别人的 parent）。
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            msg("m2", "m1", "b"),
+            msg("m3", "m2", "c"),
+            leaf_ptr("lp1", Some("m1")),
+        ];
+        // m1 是 parent（m2 的 parent），但 leaf_pointer 显式指向它 → current_leaf = m1
+        assert_eq!(resolve_current_leaf(&entries), Some("m1".into()));
+    }
+
+    #[test]
+    fn resolve_leaf_pointer_then_append_descendants() {
+        // 链：h → m1 → m2，leaf_pointer 指向 m1，之后又 append 了 m3（parent=m1）
+        // 此时 m3 是 m1 的后代，在 pointer 之后，depth=2（h→m1→m3），应返回 m3
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            msg("m2", "m1", "b"),
+            leaf_ptr("lp1", Some("m1")),
+            msg("m3", "m1", "c"), // 新分支接 m1
+        ];
+        assert_eq!(resolve_current_leaf(&entries), Some("m3".into()));
+    }
+
+    #[test]
+    fn resolve_leaf_empty_entries() {
+        assert_eq!(resolve_current_leaf(&[]), None);
+    }
+
+    #[test]
+    fn resolve_leaf_only_header() {
+        let entries = vec![header("h")];
+        assert_eq!(resolve_current_leaf(&entries), None);
+    }
+
+    #[test]
+    fn resolve_leaf_multiple_pointers_last_wins() {
+        // 两个 leaf_pointer，最后一个（指向 m2）生效
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            msg("m2", "m1", "b"),
+            leaf_ptr("lp1", Some("m1")),
+            leaf_ptr("lp2", Some("m2")),
+        ];
+        assert_eq!(resolve_current_leaf(&entries), Some("m2".into()));
+    }
+
+    #[test]
+    fn get_tree_linear_chain() {
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            msg("m2", "m1", "b"),
+        ];
+        let tree = get_tree(&entries);
+        assert_eq!(tree.len(), 1, "single root");
+        assert_eq!(entry_id(&tree[0].entry), Some("m1"));
+        assert_eq!(tree[0].children.len(), 1);
+        assert_eq!(entry_id(&tree[0].children[0].entry), Some("m2"));
+    }
+
+    #[test]
+    fn get_tree_branch_two_children() {
+        // m2 和 m3 都以 m1 为 parent → 分叉
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            msg("m2", "m1", "b"),
+            msg("m3", "m1", "c"),
+        ];
+        let tree = get_tree(&entries);
+        assert_eq!(tree.len(), 1);
+        let root = &tree[0];
+        assert_eq!(entry_id(&root.entry), Some("m1"));
+        assert_eq!(root.children.len(), 2, "m1 has two children (branch)");
+    }
+
+    #[test]
+    fn get_tree_filters_leaf_pointer() {
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            leaf_ptr("lp1", Some("m1")),
+            msg("m2", "m1", "b"),
+        ];
+        let tree = get_tree(&entries);
+        // leaf_pointer 不应出现在树里
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].children.len(), 1); // m2 是 m1 的子节点，lp 不是
+    }
+
+    #[test]
+    fn get_tree_orphan_as_root() {
+        // parentId 指向不存在的 entry → 当 root
+        let entries = vec![
+            header("h"),
+            msg("m1", "nonexistent", "a"),
+        ];
+        let tree = get_tree(&entries);
+        assert_eq!(tree.len(), 1, "orphan treated as root");
+    }
+
+    #[test]
+    fn get_branch_path_linear() {
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            msg("m2", "m1", "b"),
+            msg("m3", "m2", "c"),
+        ];
+        let path = get_branch_path(&entries, "m3");
+        assert_eq!(path.len(), 3);
+        assert_eq!(entry_id(&path[0]), Some("m1"));
+        assert_eq!(entry_id(&path[1]), Some("m2"));
+        assert_eq!(entry_id(&path[2]), Some("m3"));
+    }
+
+    #[test]
+    fn get_branch_path_partial() {
+        // 从分支中间取路径（m2 那条分支）
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            msg("m2", "m1", "b"),
+            msg("m3", "m1", "c"),
+            msg("m4", "m3", "d"),
+        ];
+        let path = get_branch_path(&entries, "m4");
+        // m4 → m3 → m1（不含 m2）
+        assert_eq!(path.len(), 3);
+        let ids: Vec<_> = path.iter().filter_map(|e| entry_id(e)).collect();
+        assert_eq!(ids, vec!["m1", "m3", "m4"]);
+    }
+
+    #[test]
+    fn truncate_at_compaction_no_compaction() {
+        let path = vec![msg("m1", "h", "a"), msg("m2", "m1", "b")];
+        let result = truncate_at_compaction(path);
+        assert_eq!(result.len(), 2, "no compaction → unchanged");
+    }
+
+    #[test]
+    fn truncate_at_compaction_with_compaction() {
+        let compaction = json!({"type": "compaction", "id": "c1", "parentId": "h", "summary": "..."});
+        let path = vec![
+            msg("m1", "h", "a"),
+            compaction,
+            msg("m2", "c1", "b"),
+        ];
+        let result = truncate_at_compaction(path);
+        assert_eq!(result.len(), 2, "truncated from compaction onward");
+        assert_eq!(entry_id(&result[0]), Some("c1"));
+        assert_eq!(entry_id(&result[1]), Some("m2"));
+    }
+
+    #[test]
+    fn named_branches_finds_labels() {
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            json!({"type": "label", "id": "l1", "parentId": "h", "targetId": "m1", "label": "try-a", "timestamp": "x"}),
+            json!({"type": "label", "id": "l2", "parentId": "h", "targetId": "m2", "label": "try-b", "timestamp": "x"}),
+        ];
+        let branches = named_branches(&entries);
+        assert_eq!(branches.len(), 2);
+        assert!(branches.contains(&("try-a".into(), "m1".into())));
+        assert!(branches.contains(&("try-b".into(), "m2".into())));
+    }
+
+    #[test]
+    fn find_leaf_pointer_target_returns_last() {
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            leaf_ptr("lp1", Some("m1")),
+            leaf_ptr("lp2", Some("m1")),
+        ];
+        // 两个 leaf_pointer，find 返回最后一个的 target（都是 m1）
+        assert_eq!(find_leaf_pointer_target(&entries), Some("m1".into()));
+    }
+
+    #[test]
+    fn find_leaf_pointer_target_none_when_absent() {
+        let entries = vec![header("h"), msg("m1", "h", "a")];
+        assert_eq!(find_leaf_pointer_target(&entries), None);
+    }
+}

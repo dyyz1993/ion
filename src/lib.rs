@@ -20,6 +20,7 @@ pub mod queue;
 pub mod session;
 pub mod session_index;
 pub mod session_jsonl;
+pub mod session_tree;
 pub mod worker;
 pub mod worker_api;
 pub mod worker_registry;
