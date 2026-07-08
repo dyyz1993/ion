@@ -253,11 +253,18 @@ async fn main() {
     )
         .with_runtime(worker_rt);
 
-    // 应用初始 agent 的工具限制（必须在 Agent 构造后调用 restrict_tools）
+    // 应用初始 agent 的工具限制（必须在 Agent 构造后调用）
     if let Some(ref agent_name) = initial_agent {
         if let Some(agent_cfg) = ion::agent_config::find_agent(agent_name) {
+            // 1. 白名单优先：如果 agent 定义了 tools，只保留这些工具
             if let Some(ref allowed) = agent_cfg.tools {
                 agent.restrict_tools(allowed.clone());
+            }
+            // 2. 黑名单：移除 disallowed_tools 里的工具
+            if let Some(ref disallowed) = agent_cfg.disallowed_tools {
+                for tool_name in disallowed {
+                    agent.remove_tool(tool_name);
+                }
             }
         }
     }
@@ -972,9 +979,15 @@ async fn main() {
                     if let Some(ref sp) = agent_cfg.system_prompt {
                         agent.set_system_prompt(sp.clone());
                     }
-                    // 应用工具限制（如果有）
+                    // 应用工具白名单（如果有）
                     if let Some(ref allowed) = agent_cfg.tools {
                         agent.restrict_tools(allowed.clone());
+                    }
+                    // 应用工具黑名单（如果有）
+                    if let Some(ref disallowed) = agent_cfg.disallowed_tools {
+                        for tool_name in disallowed {
+                            agent.remove_tool(tool_name);
+                        }
                     }
                     output_response(&id, "switch_agent", &serde_json::json!({
                         "agent": agent_cfg.name,
