@@ -1,6 +1,6 @@
 # Memory V0.2 设计文档 — 跨项目记忆 Agent
 
-> **状态：设计稿** — 独立的系统级 Agent，随 `ion serve` 启动，跨项目检索记忆。不是 V0.1 的升级，是不同的功能——V0.1 是项目级 Extension（被动注入），V0.2 是跨项目 Agent（主动检索）。
+> **状态：Phase 1-8 已实现** — 独立的系统级 Agent，随 `ion serve` 启动，跨项目检索记忆。不是 V0.1 的升级，是不同的功能——V0.1 是项目级 Extension（被动注入），V0.2 是跨项目 Agent（主动检索）。
 >
 > **配套**：V0.1（项目级插件）已修复可用，见 [MEMORY_EXTENSION.md](./MEMORY_EXTENSION.md)。
 

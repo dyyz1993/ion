@@ -1,6 +1,6 @@
 # FauxProvider 设计文档
 
-> **状态：设计稿** — 架构级 LLM Mock，对标 pi `@dyyz1993/pi-ai` 的 `FauxProvider`。
+> **状态：已实现 Phase 1** — 架构级 LLM Mock，对标 pi `@dyyz1993/pi-ai` 的 `FauxProvider`。
 >
 > 这是 Session Tree 验收 harness 的基础设施，也是未来所有需要"快速验证 agent 行为"场景的共享组件。
 
