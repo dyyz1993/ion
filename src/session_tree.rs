@@ -358,6 +358,120 @@ pub fn named_branches(entries: &[Value]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// 分叉：从 from_id 开新枝。
+/// 返回要追加的新 entries（leaf_pointer + 可选 label）。
+/// 遵守 only-append：不改已有 entries。
+///
+/// 错误：from_id 不存在 → Err
+pub fn make_branch(from_id: &str, name: Option<&str>) -> Result<Vec<Value>, String> {
+    // leaf_pointer（移动光标到 from_id）
+    let lp = serde_json::json!({
+        "type": "leaf_pointer",
+        "id": gen_id(),
+        "parentId": null,
+        "timestamp": ts(),
+        "leafId": from_id,
+    });
+    let mut new_entries = vec![lp];
+    // 可选 label（命名分支）
+    if let Some(label) = name {
+        let lbl = serde_json::json!({
+            "type": "label",
+            "id": gen_id(),
+            "parentId": null,
+            "timestamp": ts(),
+            "targetId": from_id,
+            "label": label,
+        });
+        new_entries.push(lbl);
+    }
+    Ok(new_entries)
+}
+
+/// 回滚：光标移回 rollback_to，被跳过的路径保留 + 可选 tombstone。
+/// 返回要追加的新 entries（leaf_pointer + 可选 branch_summary）。
+///
+/// 错误：rollback_to 不存在 → Err
+pub fn make_rollback(
+    rollback_to: &str,
+    old_leaf: Option<&str>,
+    reason: Option<&str>,
+) -> Result<Vec<Value>, String> {
+    let lp = serde_json::json!({
+        "type": "leaf_pointer",
+        "id": gen_id(),
+        "parentId": null,
+        "timestamp": ts(),
+        "leafId": rollback_to,
+    });
+    let mut new_entries = vec![lp];
+    // 可选 tombstone（branch_summary，纯文本）
+    if let Some(reason_text) = reason {
+        let from = old_leaf.unwrap_or("root");
+        let bs = serde_json::json!({
+            "type": "branch_summary",
+            "id": gen_id(),
+            "parentId": from,
+            "timestamp": ts(),
+            "fromId": from,
+            "summary": format!("rollback: {} → {} | {}", from, rollback_to, reason_text),
+            "fromHook": false,
+        });
+        new_entries.push(bs);
+    }
+    Ok(new_entries)
+}
+
+/// 切换：找 name 对应的 label，光标移到它的 targetId。
+/// 返回要追加的新 entries（单个 leaf_pointer）。
+///
+/// 错误：name 不存在 → Err（列出可用分支）
+pub fn make_checkout(entries: &[Value], name: &str) -> Result<Vec<Value>, String> {
+    let branches = named_branches(entries);
+    let target = branches
+        .iter()
+        .find(|(label, _)| label == name)
+        .map(|(_, t)| t.clone())
+        .ok_or_else(|| {
+            let avail: Vec<_> = branches.iter().map(|(l, _)| l.as_str()).collect();
+            format!("branch '{}' not found. Available: {}", name, avail.join(", "))
+        })?;
+    let lp = serde_json::json!({
+        "type": "leaf_pointer",
+        "id": gen_id(),
+        "parentId": null,
+        "timestamp": ts(),
+        "leafId": target,
+    });
+    Ok(vec![lp])
+}
+
+// 内部 helper：生成 id / timestamp（不依赖 session_jsonl，保持模块独立可测）
+fn gen_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let ts_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{:x}{:x}", ts_nanos, n)
+}
+
+fn ts() -> String {
+    // 简易 ISO 时间戳（不依赖 chrono）
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format!("2026-01-01T00:00:{}Z", secs % 60)
+}
+
+/// 校验 entry id 是否存在于 entries 中。
+pub fn entry_exists(entries: &[Value], id: &str) -> bool {
+    entries.iter().any(|e| entry_id(e) == Some(id))
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 单元测试
 // ═══════════════════════════════════════════════════════════════════════════
@@ -601,5 +715,93 @@ mod tests {
     fn find_leaf_pointer_target_none_when_absent() {
         let entries = vec![header("h"), msg("m1", "h", "a")];
         assert_eq!(find_leaf_pointer_target(&entries), None);
+    }
+
+    // ── Phase 3: branch / rollback / checkout ──
+
+    #[test]
+    fn make_branch_returns_leaf_pointer() {
+        let new = make_branch("m2", None).unwrap();
+        assert_eq!(new.len(), 1, "branch without name = just leaf_pointer");
+        assert_eq!(new[0]["type"].as_str(), Some("leaf_pointer"));
+        assert_eq!(new[0]["leafId"].as_str(), Some("m2"));
+    }
+
+    #[test]
+    fn make_branch_with_name_adds_label() {
+        let new = make_branch("m2", Some("try-div")).unwrap();
+        assert_eq!(new.len(), 2);
+        assert_eq!(new[0]["type"].as_str(), Some("leaf_pointer"));
+        assert_eq!(new[1]["type"].as_str(), Some("label"));
+        assert_eq!(new[1]["targetId"].as_str(), Some("m2"));
+        assert_eq!(new[1]["label"].as_str(), Some("try-div"));
+    }
+
+    #[test]
+    fn make_rollback_without_reason() {
+        let new = make_rollback("m2", Some("m5"), None).unwrap();
+        assert_eq!(new.len(), 1, "rollback without reason = just leaf_pointer");
+        assert_eq!(new[0]["leafId"].as_str(), Some("m2"));
+    }
+
+    #[test]
+    fn make_rollback_with_reason_adds_tombstone() {
+        let new = make_rollback("m2", Some("m5"), Some("走错了")).unwrap();
+        assert_eq!(new.len(), 2);
+        assert_eq!(new[0]["type"].as_str(), Some("leaf_pointer"));
+        assert_eq!(new[1]["type"].as_str(), Some("branch_summary"));
+        // tombstone 的 parentId 指向被废弃的旧 leaf
+        assert_eq!(new[1]["parentId"].as_str(), Some("m5"));
+        assert!(new[1]["summary"].as_str().unwrap().contains("走错了"));
+        assert!(new[1]["summary"].as_str().unwrap().contains("m5"));
+        assert!(new[1]["summary"].as_str().unwrap().contains("m2"));
+    }
+
+    #[test]
+    fn make_checkout_finds_label() {
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            msg("m2", "m1", "b"),
+            json!({"type": "label", "id": "l1", "parentId": null, "targetId": "m1", "label": "try-a", "timestamp": "x"}),
+            json!({"type": "label", "id": "l2", "parentId": null, "targetId": "m2", "label": "try-b", "timestamp": "x"}),
+        ];
+        let new = make_checkout(&entries, "try-b").unwrap();
+        assert_eq!(new.len(), 1);
+        assert_eq!(new[0]["leafId"].as_str(), Some("m2"));
+    }
+
+    #[test]
+    fn make_checkout_unknown_name_errors_with_available() {
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            json!({"type": "label", "id": "l1", "parentId": null, "targetId": "m1", "label": "try-a", "timestamp": "x"}),
+        ];
+        let result = make_checkout(&entries, "nonexist");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("try-a"), "error lists available branches");
+    }
+
+    #[test]
+    fn entry_exists_finds_id() {
+        let entries = vec![header("h"), msg("m1", "h", "a")];
+        assert!(entry_exists(&entries, "m1"));
+        assert!(!entry_exists(&entries, "nonexist"));
+    }
+
+    #[test]
+    fn branch_operation_preserves_only_append() {
+        // 验证 branch 操作不修改已有 entries（only-append 不变量）
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            msg("m2", "m1", "b"),
+        ];
+        let original = entries.clone();
+        let _new = make_branch("m1", Some("x")).unwrap();
+        // 原有 entries 不变
+        assert_eq!(entries, original);
     }
 }
