@@ -3122,6 +3122,23 @@ async fn handle_manager_command(
         "stats" => {
             Ok(serde_json::json!({"workers": reg.list_workers().len()}))
         }
+        "extension_rpc" => {
+            // 单例扩展的 extension_rpc：直接从 SingletonRegistry 调
+            let params = cmd.get("params").cloned().unwrap_or_default();
+            let extension = params.get("extension").and_then(|v| v.as_str()).unwrap_or("");
+            let method = params.get("method").and_then(|v| v.as_str()).unwrap_or("");
+            let args = params.get("args").cloned().unwrap_or_default();
+            drop(reg); // 释放锁，让扩展能工作
+            let mut reg2 = registry.lock().await;
+            if let Some(entry) = reg2.singletons.get_mut(extension) {
+                match entry.instance.on_extension_rpc(method, args).await {
+                    Ok(val) => Ok(val),
+                    Err(e) => Err(format!("{:?}", e)),
+                }
+            } else {
+                Err(format!("singleton extension '{}' not found", extension))
+            }
+        }
         _ => {
             // 默认分支：如果 cmd 里有 session 字段，转发到对应 worker
             // 让 `ion rpc --session <id> --method spawn_worker` 这种用法走通
