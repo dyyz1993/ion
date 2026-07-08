@@ -472,6 +472,40 @@ pub fn entry_exists(entries: &[Value], id: &str) -> bool {
     entries.iter().any(|e| entry_id(e) == Some(id))
 }
 
+/// compaction 安全检查：判断 target_id 是否在某个 compaction entry 之前。
+/// 如果是，分支/回滚到该点会穿越已压缩的上下文（丢失摘要），应拒绝。
+///
+/// 返回 Some(compaction_id) 表示不安全（target 在该 compaction 之前）；
+/// 返回 None 表示安全。
+///
+/// 算法：找所有 compaction entry，若 target 在任一 compaction 的"祖先链"里
+/// （即 compaction 是 target 的后代），则 target 在该 compaction 之前。
+pub fn check_compaction_safety(entries: &[Value], target_id: &str) -> Option<String> {
+    let by_id: HashMap<&str, &Value> = entries
+        .iter()
+        .filter_map(|e| entry_id(e).map(|id| (id, e)))
+        .collect();
+
+    for e in entries {
+        if e.get("type").and_then(|v| v.as_str()) != Some("compaction") {
+            continue;
+        }
+        let compaction_id = match entry_id(e) {
+            Some(id) => id,
+            None => continue,
+        };
+        // target 自身就是这个 compaction → 安全（分支到 compaction 点本身 OK）
+        if compaction_id == target_id {
+            continue;
+        }
+        // 若 compaction 是 target 的后代（target 在 compaction 之前），不安全
+        if is_descendant_of(compaction_id, target_id, &by_id) {
+            return Some(compaction_id.to_string());
+        }
+    }
+    None
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 单元测试
 // ═══════════════════════════════════════════════════════════════════════════
@@ -803,5 +837,51 @@ mod tests {
         let _new = make_branch("m1", Some("x")).unwrap();
         // 原有 entries 不变
         assert_eq!(entries, original);
+    }
+
+    // ── Phase 8: compaction 安全检查 ──
+
+    /// 辅助：构造 compaction entry
+    fn compaction(id: &str, parent: &str) -> Value {
+        json!({
+            "type": "compaction", "id": id, "parentId": parent,
+            "timestamp": "x", "summary": "...", "tokensBefore": 1000
+        })
+    }
+
+    #[test]
+    fn compaction_safe_when_no_compaction() {
+        let entries = vec![header("h"), msg("m1", "h", "a"), msg("m2", "m1", "b")];
+        assert!(check_compaction_safety(&entries, "m1").is_none());
+        assert!(check_compaction_safety(&entries, "m2").is_none());
+    }
+
+    #[test]
+    fn compaction_unsafe_when_target_before_compaction() {
+        // h → m1 → m2 → compaction(c1, parent=m2) → m3
+        // branch 到 m1：m1 在 c1 之前（c1 是 m1 的后代）→ 不安全
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            msg("m2", "m1", "b"),
+            compaction("c1", "m2"),
+            msg("m3", "c1", "c"),
+        ];
+        let result = check_compaction_safety(&entries, "m1");
+        assert!(result.is_some(), "branch to m1 (before compaction) must be flagged");
+        assert_eq!(result.unwrap(), "c1");
+    }
+
+    #[test]
+    fn compaction_safe_when_target_after_compaction() {
+        // branch 到 m3（compaction 之后）→ 安全
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            compaction("c1", "m1"),
+            msg("m2", "c1", "b"),
+        ];
+        assert!(check_compaction_safety(&entries, "m2").is_none(), "branch to m2 (after compaction) is safe");
+        assert!(check_compaction_safety(&entries, "c1").is_none(), "branch to compaction itself is safe");
     }
 }

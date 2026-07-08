@@ -1667,6 +1667,13 @@ fn apply_session_tree_ops(cli: &Cli, session_id: &str) {
             eprintln!("❌ entry '{}' not found in session {}", rollback_to, session_id);
             std::process::exit(1);
         }
+        // compaction 安全检查
+        if let Some(c_id) = ion::session_tree::check_compaction_safety(&ents, rollback_to) {
+            eprintln!("❌ Cannot rollback to {}: it is before a compaction point ({}).", rollback_to, c_id);
+            eprintln!("   Branching across compaction loses summarized context.");
+            eprintln!("   Hint: use `ion --fork-from-leaf {}/{}` instead.", session_id, rollback_to);
+            std::process::exit(1);
+        }
         let old_leaf = ion::session_tree::resolve_current_leaf(&ents);
         let new_entries = ion::session_tree::make_rollback(
             rollback_to,
@@ -1689,6 +1696,13 @@ fn apply_session_tree_ops(cli: &Cli, session_id: &str) {
         let ents = entries.unwrap_or_default();
         if !ion::session_tree::entry_exists(&ents, from_id) {
             eprintln!("❌ entry '{}' not found in session {}", from_id, session_id);
+            std::process::exit(1);
+        }
+        // compaction 安全检查
+        if let Some(c_id) = ion::session_tree::check_compaction_safety(&ents, from_id) {
+            eprintln!("❌ Cannot branch at {}: it is before a compaction point ({}).", from_id, c_id);
+            eprintln!("   Branching across compaction loses summarized context.");
+            eprintln!("   Hint: use `ion --fork-from-leaf {}/{}` instead.", session_id, from_id);
             std::process::exit(1);
         }
         let new_entries = ion::session_tree::make_branch(from_id, cli.branch_name.as_deref()).unwrap();
