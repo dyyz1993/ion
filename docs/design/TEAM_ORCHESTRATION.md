@@ -1,7 +1,9 @@
 # Team 编排 — Agent.md 驱动方案
 
-> **状态：已验证** — coordinator + developer 链路在本地 runtime 端到端跑通。
-> 8 个 CI 测试全部通过（`tests/team_e2e.sh`）。
+> **状态：已验证** — 5 任务串行 converge 全部通过（a/b/c/d/e.py 真实可用）。
+> - `tests/scenario2_ci.sh` — 27 用例（场景 2 全覆盖）
+> - `tests/team_e2e.sh` — 8 用例（Team 编排）
+> - 修了 3 个真实 bug：disallowed_tools 不生效 / worktree config 丢失 / 反幻觉重试
 
 ---
 
@@ -268,3 +270,69 @@ bash tests/team_e2e.sh
 - B3: 文件内容正确
 - B4: 递归 idle 退出
 - C1: 不存在的 agent 错误处理
+
+---
+
+## 十、调度策略（三种模式灵活混用）
+
+### 策略 A：串行（最稳定，推荐）
+任务有依赖或不需要并行时，用同步 child：
+```
+spawn_worker(relation='child', agent='developer', task='...', worktree=true, wait=true)
+```
+一次只跑 1 个 developer，干完再 spawn 下一个。**5 个任务串行全部成功。**
+
+### 策略 B：小批量并行（2-3 个独立任务）
+任务互相独立、文件不重叠时，批量异步派发：
+```
+spawn_worker(relation='child', wait=false) × 2-3
+await_worker(worker_id) × N
+```
+**最多 3 个并行**。超过 3 个时分批跑。
+
+### 策略 C：后台同级（长任务/监控）
+```
+spawn_worker(relation='peer', report_channel='main')
+```
+peer 自动通过 follow_up 汇报完成。
+
+---
+
+## 十一、Bug 修复记录
+
+### Bug 1: disallowed_tools 不生效
+- **现象**: coordinator 的 `disallowed_tools: [edit, write, bash]` 被忽略，coordinator 能直接写文件
+- **根因**: `ion_worker.rs` 只应用了 `tools`（白名单），完全忽略 `disallowed_tools`（黑名单）
+- **修复**: 加载 agent 和 switch_agent 时，遍历 disallowed_tools 逐个 `remove_tool`
+- **commit**: `a66d0e9`
+
+### Bug 2: worktree worker 找不到项目 config
+- **现象**: worktree worker 在远程 `/root` 跑而不是本地 worktree 目录
+- **根因**: worktree 目录没有 `.ion/config.json`，worker 子进程回退到全局 remote 配置
+- **修复**: spawn worker 时传 `ION_PROJECT_ROOT` 环境变量；config.rs 的 runtime default 改为 local（不从全局继承）
+- **commit**: `ad3b02b`
+
+### Bug 3: developer 幻觉（说创建了但没调 write）
+- **现象**: developer 说"文件已创建"但实际没调 write 工具
+- **修复**: 反幻觉重试机制 — 检测到 StopReason::Stop 且无 ToolCallEnd 事件时自动重试并注入 WARNING
+- **commit**: `5d83aef`
+
+### Bug 4: developer 写了文件但不 commit
+- **现象**: worktree 里有文件但 git status 显示 untracked，merger 找不到可合并的 commit
+- **修复**: merger.md 增加处理未提交文件的能力（`git add -A && git commit` 再 merge）
+- **说明**: 这是提示词层修复，不需要改内核
+
+---
+
+## 十二、Agent 模板
+
+开箱即用的 4 个 agent .md 文件在 `examples/agents/`：
+
+| 文件 | 角色 |
+|------|------|
+| `coordinator.md` | 拆任务、调度、收敛 |
+| `developer.md` | 写代码、提交 |
+| `merger.md` | 合并分支、清理 worktree |
+| `reviewer.md` | 代码审查（只读） |
+
+使用方法见 [examples/README.md](../../examples/README.md)。

@@ -231,6 +231,7 @@ docs/
 | `ion-provider/` | Provider 抽象独立 crate (OpenAI SSE + tool_calls) |
 | `src/extension.rs` | WASM 扩展加载器（[详情](./docs/design/EXTENSION_SYSTEM.md)） |
 | `stock-extension/` | WASM 扩展示例 |
+| `examples/agents/` | Team agent 模板（coordinator/developer/merger/reviewer） |
 
 ## 架构
 
@@ -584,9 +585,9 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | p3_ui_ci (CLI E2E) | 6 | UI 系统 subscribe --ui + ui_respond |
 | cli_alignment_ci (CLI E2E) | 28 | pi CLI 对齐：flag/别名/语法/模式 |
 | compaction_ci (CLI E2E) | 10 | 会话压缩：持久化/触发/小模型 |
-| scenario2_ci (CLI E2E) | 17 | 场景 2 (--host)：启停/编排/worktree/死锁回归 |
+| scenario2_ci (CLI E2E) | 27 | 场景 2 (--host)：启停/编排/worktree/converge/session恢复 |
 | team_e2e (CLI E2E) | 8 | Team 编排：coordinator→developer→reviewer |
-| **测试覆盖合计** | **370** | 全部通过 ✅ |
+| **测试覆盖合计** | **380** | 全部通过 ✅ |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
