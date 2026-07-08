@@ -717,6 +717,23 @@ cargo run --bin demo               # CLI demo
 cargo run --bin agent-demo         # Agent Loop demo (真实 LLM)
 ```
 
+### target 目录及时清理
+
+Rust 编译产物（`target/`）体积增长很快，几次 `cargo build --release` 后轻松超过 10GB。**建议定期清理，不要积压。**
+
+```bash
+# 查看 target 大小
+du -sh target/          # 通常 2-10GB
+
+# 按需清理
+cargo clean             # 全部删除（下次 build 全量编译）
+cargo clean -p <crate>  # 只清理指定 crate
+rm -rf target/debug/    # 只删 debug 产物（保留 release）
+
+# 建议：每次大版本切换（更新 Rust toolchain / 切分支）后跑一次
+cargo clean
+```
+
 ## 环境配置
 
 ```bash
