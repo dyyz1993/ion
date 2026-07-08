@@ -29,6 +29,9 @@ pub struct AgentConfig {
     pub variables: Option<HashMap<String, String>>,
     #[serde(default)]
     pub hooks: Option<HashMap<String, Vec<HookDef>>>,
+    /// Workflow gate 配置（内核级 gate 校验）
+    #[serde(default)]
+    pub workflow: Option<crate::agent::workflow_extension::WorkflowGateConfig>,
     /// The system prompt (markdown body, after frontmatter).
     #[serde(default)]
     pub system_prompt: Option<String>,
@@ -87,6 +90,7 @@ pub fn builtin_agents() -> Vec<AgentConfig> {
             variables: None,
             hooks: None,
             system_prompt: None,
+            workflow: None,
             source: "builtin".into(),
         },
         AgentConfig {
@@ -104,6 +108,7 @@ pub fn builtin_agents() -> Vec<AgentConfig> {
             variables: None,
             hooks: None,
             system_prompt: Some("You are in read-only exploration mode. You can read, search, and list files, but you must NOT edit or write any files.".into()),
+            workflow: None,
             source: "builtin".into(),
         },
         AgentConfig {
@@ -121,6 +126,7 @@ pub fn builtin_agents() -> Vec<AgentConfig> {
             variables: None,
             hooks: None,
             system_prompt: Some("You are in planning mode. Output analysis, architecture decisions, and implementation plans. Do NOT edit any files.".into()),
+            workflow: None,
             source: "builtin".into(),
         },
     ]

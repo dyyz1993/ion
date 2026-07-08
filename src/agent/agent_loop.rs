@@ -547,10 +547,15 @@ impl Agent {
                     // LLM 可能说"已创建文件"但实际没调 write 工具。
                     // 检测：stop_reason=Stop（不是 ToolUse）+ 没有任何 ToolCallEnd 事件
                     let tool_calls_present = events.iter().any(|e| matches!(e, StreamEvent::ToolCallEnd { .. }));
+                    // faux/测试模式禁用反幻觉重试（避免耗尽 faux 队列）
+                    let faux_mode = std::env::var("ION_FAUX_REPLY").is_ok()
+                        || std::env::var("ION_FAUX_SCRIPT").is_ok()
+                        || std::env::var("ION_RECORD").is_ok();
                     if stop_reason == StopReason::Stop
                         && !tool_calls_present
                         && self.config.retry_on_no_tool_use > 0
                         && no_tool_retries < self.config.retry_on_no_tool_use
+                        && !faux_mode
                     {
                         no_tool_retries += 1;
                         tracing::warn!(
@@ -569,6 +574,32 @@ impl Agent {
                             timestamp: now_ms(),
                         }));
                         continue;
+                    }
+
+                    // ── Workflow gate 校验：内核强制检查 ──
+                    // 当 LLM 决定 Stop 时，检查所有 extension 的 gate。
+                    // 如果 gate 失败 → 注入失败原因 + 强制继续循环。
+                    // 这和 retry_on_no_tool_use 一样的机制，只是条件可插拔。
+                    let gate_ctx = TurnContext {
+                        turn_index: turn as u64,
+                        messages: self.messages.clone(),
+                        has_tool_calls: false,
+                        stop_reason: Some(format!("{stop_reason:?}")),
+                    };
+                    match self.extensions.check_gates(&gate_ctx).await? {
+                        super::extension::GateDecision::RetryWith(msg) => {
+                            tracing::warn!("Gate check failed, forcing retry: {}", &msg[..msg.len().min(100)]);
+                            self.messages.push(Message::User(UserMessage {
+                                role: "user".into(),
+                                content: vec![ContentBlock::Text(TextContent {
+                                    text: msg,
+                                    text_signature: None,
+                                })],
+                                timestamp: now_ms(),
+                            }));
+                            continue;
+                        }
+                        super::extension::GateDecision::Allow => {}
                     }
 
                     return Ok(stop_reason);
