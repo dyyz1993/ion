@@ -90,12 +90,12 @@ ion rpc --session x --method call_tool \
   --params '{"tool":"memory_search","args":{"query":"rust"}}'
 ```
 
-### Plugin RPC（调扩展私有方法）
+### Extension RPC（调扩展私有方法）
 
 ```bash
 ion rpc --session x --method extension_rpc \
   --params '{"method":"ping"}'
-# → {"status":"pong","plugin":"memory"}
+# → {"status":"pong","extension":"memory"}
 
 ion rpc --session x --method extension_rpc \
   --params '{"method":"save","args":{"content":"...","tags":["a"]}}'
@@ -174,7 +174,7 @@ ion subscribe --session sess_xxx
 
 **用途**：实时看 LLM 输出、调试 Agent 行为、前端聊天面板。
 
-### Plugin subscribe（看扩展事件）
+### Extension subscribe（看扩展事件）
 
 ```bash
 ion subscribe --session sess_xxx --extension memory
@@ -184,9 +184,9 @@ ion subscribe --session sess_xxx --extension memory
 收到的事件：
 
 ```json
-{"type":"subscribed","plugin":"memory","session":"sess_xxx"}
-{"type":"extension_event","plugin":"memory","customType":"memory_saved","data":{"id":"mem_1"}}
-{"type":"extension_event","plugin":"memory","customType":"memory_injected","data":{...}}
+{"type":"subscribed","extension":"memory","session":"sess_xxx"}
+{"type":"extension_event","extension":"memory","customType":"memory_saved","data":{"id":"mem_1"}}
+{"type":"extension_event","extension":"memory","customType":"memory_injected","data":{...}}
 ```
 
 **用途**：前端记忆面板实时刷新、调试扩展行为。
@@ -197,7 +197,7 @@ ion subscribe --session sess_xxx --extension memory
 
 | 字段 | 说明 |
 |------|------|
-| `plugin` | 来源扩展 |
+| `extension` | 来源扩展 |
 | `customType` | 事件类型（扩展自定义） |
 | `session` | 关联 session |
 | `visibility` | `"llm_and_ui"` 或 `"ui_only"` |
@@ -259,7 +259,7 @@ chatStream.send({method:'subscribe', session:'sess_xxx'});
 // → 更新聊天面板
 
 const memoryStream = connect();
-memoryStream.send({method:'subscribe', plugin:'memory', session:'sess_xxx'});
+memoryStream.send({method:'subscribe', extension:'memory', session:'sess_xxx'});
 // → 更新记忆面板
 
 // RPC 调用
@@ -281,3 +281,97 @@ rpcSocket.send({method:'call_tool', session:'sess_xxx', params:{tool:'memory_sav
 | `ion rpc --session x --method prompt` | 跑 LLM |
 | `ion subscribe --session x` | 看会话流 |
 | `ion subscribe --session x --extension memory` | 看扩展事件 |
+
+## Session Tree（会话分支）
+
+> 让一个会话内部能形成树——回退到任意消息分叉，原路径保留。
+
+### 分叉
+
+```bash
+# 从某条消息分叉
+ion --resume <sid> --branch <entry-id> "新指令"
+
+# 分叉并命名
+ion --resume <sid> --branch <entry-id> --branch-name try-async "用 async 重写"
+```
+
+### 回滚
+
+```bash
+# 回滚（被回滚的路径保留）
+ion --resume <sid> --rollback <entry-id> "回滚后继续"
+
+# 带 tombstone（记录原因）
+ion --resume <sid> --rollback <entry-id> --rollback-reason "方案走错了" "继续"
+```
+
+### 切换分支
+
+```bash
+ion --resume <sid> --checkout try-async "切到 async 分支"
+```
+
+### 从分支点提取新 session
+
+```bash
+ion --fork-from-leaf <sid>/<entry-id> "在新 session 继续"
+```
+
+### 查看树/分支
+
+```bash
+ion session tree <sid>        # ASCII 树展示
+ion session branches <sid>    # 命名分支列表
+```
+
+### Agent 工具
+
+Agent 自主调用 `branch_session` 工具分叉/回滚（参数：from_entry / name / is_rollback / reason）。
+
+## FauxProvider & Record/Replay（LLM Mock + 录制回放）
+
+> 不调真实 LLM 的测试/开发工具。
+
+### FauxProvider（手写响应）
+
+```bash
+# 单条预设回复
+ION_FAUX_REPLY="hello from faux" ion "say hi"
+
+# 脚本文件（多步响应）
+cat > /tmp/script.jsonl <<'EOF'
+{"text":"我先读文件"}
+{"tool_call":{"name":"read","input":{"path":"Cargo.toml"}}}
+{"text":"读完了"}
+EOF
+ION_FAUX_SCRIPT=/tmp/script.jsonl ion "分析项目"
+
+# host 模式同样适用
+ION_FAUX_REPLY="host reply" ion --host "编排任务"
+```
+
+### Record/Replay（录制真实会话 + 回放）
+
+```bash
+# 录制（正常用，自动存到 ~/.ion/recordings/<id>/）
+ION_RECORD=fix-bug-2026 ion --model glm-4.6 "修复 bug"
+
+# 回放（不联网，免 API key）
+ion --model replay/fix-bug-2026 "修复 bug"
+
+# 覆盖已有录制
+ION_RECORD=fix-bug-2026 ION_RECORD_OVERWRITE=1 ion --model glm-4.6 "重录"
+
+# 列出所有录制
+ion recordings
+```
+
+### 录制脚本格式
+
+```jsonl
+{"text":"纯文本回复"}
+{"tool_call":{"name":"read","input":{"path":"x"}}}
+{"thinking":"先想想","text":"然后回答"}
+{"text":"","stop_reason":"error","error_message":"模拟错误"}
+```
