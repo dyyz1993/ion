@@ -44,6 +44,12 @@ impl Extension for GlobalMemoryExtension {
         tracing::info!("[global-memory] opening db at {}", db_path.display());
         let store = GlobalMemoryStore::open(&db_path)
             .map_err(|e| AgentError::Tool(format!("global memory db: {}", e)))?;
+        // V0.1 → V0.2 自动迁移（DB 空时执行）
+        match store.migrate_from_v01() {
+            Ok(n) if n > 0 => tracing::info!("[global-memory] migrated {} entries from V0.1", n),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("[global-memory] migration failed: {}", e),
+        }
         let mut guard = self.store.lock().unwrap();
         *guard = Some(store);
         tracing::info!("[global-memory] db opened, singleton initialized");

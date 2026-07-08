@@ -162,6 +162,65 @@ impl GlobalMemoryStore {
             .unwrap_or_else(|_| ".".into());
         PathBuf::from(home).join(".ion").join("agent").join("global-memory.db")
     }
+
+    /// 从 V0.1 JSON 文件自动迁移到 SQLite。
+    /// 扫描所有 project-data/*/memory/outlines/*.json，导入到全局库。
+    /// 只在 DB 空时执行（避免重复导入）。
+    pub fn migrate_from_v01(&self) -> Result<usize, String> {
+        // 如果 DB 已有数据，跳过
+        if !self.list(None)?.is_empty() {
+            tracing::info!("[global-memory] db has data, skip migration");
+            return Ok(0);
+        }
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".into());
+        let project_data_root = PathBuf::from(&home).join(".ion").join("agent").join("project-data");
+        if !project_data_root.exists() {
+            tracing::info!("[global-memory] no project-data dir, skip migration");
+            return Ok(0);
+        }
+        let mut count = 0;
+        // 遍历每个项目目录
+        for project_dir in std::fs::read_dir(&project_data_root).map_err(|e| format!("read project-data: {}", e))? {
+            let project_dir = match project_dir { Ok(d) => d, Err(_) => continue };
+            let memory_dir = project_dir.path().join("memory").join("outlines");
+            if !memory_dir.exists() { continue; }
+            // 从目录名提取项目名（格式：--hash--name--）
+            let dir_name = project_dir.file_name().to_string_lossy().to_string();
+            let project_name = dir_name.split("--").last().unwrap_or("unknown").trim_end_matches("--").to_string();
+            let project_name = if project_name.is_empty() { "unknown".into() } else { project_name };
+
+            // 遍历每个 outline 文件
+            for outline_file in std::fs::read_dir(&memory_dir).into_iter().flatten().flatten() {
+                let content = match std::fs::read_to_string(outline_file.path()) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                let entries: Vec<serde_json::Value> = match serde_json::from_str(&content) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                for entry in entries {
+                    let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let mem_content = entry.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let category = entry.get("category").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let tags_arr = entry.get("tags").and_then(|v| v.as_array());
+                    let tags = tags_arr.map(|a| a.iter().filter_map(|t| t.as_str()).collect::<Vec<_>>().join(",")).unwrap_or_default();
+                    let archived = entry.get("archived").and_then(|v| v.as_bool()).unwrap_or(false);
+                    if mem_content.is_empty() || archived { continue; }
+                    // 导入
+                    if let Err(e) = self.save(&mem_content, &category, &tags, &project_name, 5) {
+                        tracing::warn!("[global-memory] migrate entry {} failed: {}", id, e);
+                        continue;
+                    }
+                    count += 1;
+                }
+            }
+        }
+        tracing::info!("[global-memory] migrated {} entries from V0.1", count);
+        Ok(count)
+    }
 }
 
 fn map_entry(row: &rusqlite::Row) -> rusqlite::Result<GlobalMemoryEntry> {
