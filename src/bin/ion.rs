@@ -2842,20 +2842,72 @@ fn save_session(id: &str, messages: &[ion::agent::messages::Message], model: &st
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
-    let header = ion::session_jsonl::SessionHeader {
-        entry_type: "session".into(), version: 3, id: id.to_string(),
-        timestamp: ion::session_jsonl::timestamp_iso(),
-        cwd: cwd.clone(),
-        parent_session: None,
-    };
-    let mut entries: Vec<serde_json::Value> = Vec::new();
-    let mut parent_id = id.to_string();
-    for msg in messages {
-        let entry = ion::session_jsonl::message_to_entry(msg, &parent_id);
-        if let Some(eid) = entry["id"].as_str() { parent_id = eid.to_string(); }
-        entries.push(entry);
+
+    // 读已有文件，判断已写入的 message 数量 + 当前 leaf（光标）
+    let path = ion::session_jsonl::session_path(&cwd);
+    let mut existing_entries: Vec<serde_json::Value> = Vec::new();
+    let mut header_existed = false;
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() { continue; }
+            if let Ok(e) = serde_json::from_str::<serde_json::Value>(line) {
+                if e.get("type").and_then(|v| v.as_str()) == Some("session") {
+                    header_existed = true;
+                }
+                existing_entries.push(e);
+            }
+        }
     }
-    ion::session_jsonl::SessionFile::save(&cwd, &header, &entries);
+
+    // 文件不存在 → 先写 header
+    if !header_existed {
+        let header = ion::session_jsonl::SessionHeader {
+            entry_type: "session".into(), version: 3, id: id.to_string(),
+            timestamp: ion::session_jsonl::timestamp_iso(),
+            cwd: cwd.clone(),
+            parent_session: None,
+        };
+        if let Ok(h) = serde_json::to_string(&header) {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(&path) {
+                let _ = writeln!(f, "{}", h);
+            }
+        }
+    }
+
+    // 统计已有 message 数（用 saved_msg_count 判断哪些是新增的）
+    let saved_msg_count = existing_entries.iter()
+        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("message"))
+        .count();
+
+    // 只 append 新增的 message（saved_msg_count 之后的部分）
+    let new_msgs = if messages.len() > saved_msg_count {
+        &messages[saved_msg_count..]
+    } else {
+        &[][..]
+    };
+
+    if !new_msgs.is_empty() {
+        // parentId 从 resolve_current_leaf 取（leaf 感知，对齐 Session Tree）
+        let parent_id = ion::session_tree::resolve_current_leaf(&existing_entries)
+            .unwrap_or_else(|| id.to_string());
+        let mut parent_id = parent_id;
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            if let Ok(meta) = f.metadata() {
+                if meta.len() > 0 {
+                    let _ = write!(f, "\n");
+                }
+            }
+            for msg in new_msgs {
+                let entry = ion::session_jsonl::message_to_entry(msg, &parent_id);
+                if let Some(eid) = entry["id"].as_str() { parent_id = eid.to_string(); }
+                let _ = writeln!(f, "{}", serde_json::to_string(&entry).unwrap_or_default());
+            }
+        }
+    }
+
     let _ = std::fs::write(ion::session_jsonl::last_session_path(), id);
     let total_input: u64 = messages.iter().filter_map(|m| match m {
         ion::agent::messages::Message::Assistant(a) => Some(a.usage.input), _ => None

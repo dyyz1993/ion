@@ -1834,11 +1834,20 @@ fn append_session_entry(cwd: &str, sid: &str, entry_type: &str, entry_data: &ser
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    // 基础字段
+    // parentId：从文件现有 entries 解析当前 leaf（修 bug：原来硬编码 sid）
+    let parent_id = (|| {
+        let content = std::fs::read_to_string(&path).ok()?;
+        let entries: Vec<serde_json::Value> = content.lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+        ion::session_tree::resolve_current_leaf(&entries)
+    })().unwrap_or_else(|| sid.to_string());
+
     let mut line = serde_json::json!({
         "type": entry_type,
         "id": session_jsonl::generate_id(),
-        "parentId": sid,
+        "parentId": parent_id,
         "timestamp": session_jsonl::timestamp_iso(),
     });
     // 合并 entry_data 的字段到顶层（不嵌套在 data 里），对齐 pi JSONL 格式
@@ -1851,7 +1860,6 @@ fn append_session_entry(cwd: &str, sid: &str, entry_type: &str, entry_data: &ser
     }
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        // 确保文件末尾有换行，防止跟上一行粘在一起
         let need_sep = f.metadata().ok().map(|m| m.len() > 0).unwrap_or(false);
         if need_sep {
             let _ = write!(f, "\n");
@@ -1866,11 +1874,12 @@ fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    // 读取已有文件，确定已写入的 message entry 数量 + 最后一个 entry 的 id（作为 parentId）
+    // 读取已有文件，确定已写入的 message entry 数量 + 当前 leaf（光标，parentId 来源）
     let mut existing_lines: Vec<String> = Vec::new();
-    let mut last_id = sid.to_string();
     let mut saved_msg_count = 0usize;
     let mut header_existed = false;
+    // 收集所有 entries 用于 leaf 解析
+    let mut all_entries: Vec<serde_json::Value> = Vec::new();
 
     if let Ok(content) = std::fs::read_to_string(&path) {
         for line in content.lines() {
@@ -1884,12 +1893,14 @@ fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
                 if e.get("type").and_then(|v| v.as_str()) == Some("message") {
                     saved_msg_count += 1;
                 }
-                if let Some(id) = e.get("id").and_then(|v| v.as_str()) {
-                    last_id = id.to_string();
-                }
+                all_entries.push(e);
             }
         }
     }
+
+    // leaf 感知：用 resolve_current_leaf 算 parentId（对齐 Session Tree，感知 leaf_pointer）
+    let last_id = ion::session_tree::resolve_current_leaf(&all_entries)
+        .unwrap_or_else(|| sid.to_string());
 
     // 若文件不存在或空，先写 header
     if !header_existed {
@@ -1909,8 +1920,8 @@ fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
                 let _ = write!(f, "{header_line}\n");
             }
         }
-        last_id = sid.to_string();
-        saved_msg_count = 0;
+        // 全新会话：leaf 就是 session id（resolve_current_leaf 此时返回 None，
+        // 已被 unwrap_or_else(sid) 处理；saved_msg_count 本就是 0）
     }
 
     // 只 append 新增的 message（saved_msg_count 之后的部分）

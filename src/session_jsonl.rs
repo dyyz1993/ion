@@ -412,6 +412,68 @@ impl SessionFile {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Append helpers（only-append 不变量：只追加，不改/删旧行）
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// 通用：往 session 文件追加一行 JSON entry。
+/// 自动处理文件末尾换行防粘连。
+pub fn append_raw_entry(cwd: &str, entry: &serde_json::Value) {
+    let path = session_path(cwd);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        // 防粘连
+        if let Ok(meta) = f.metadata() {
+            if meta.len() > 0 {
+                let _ = write!(f, "\n");
+            }
+        }
+        let _ = write!(f, "{}", serde_json::to_string(entry).unwrap_or_default());
+    }
+}
+
+/// 追加一条 leaf_pointer entry（移动光标到 leaf_id）。
+pub fn append_leaf_pointer(cwd: &str, leaf_id: Option<&str>) {
+    let entry = serde_json::json!({
+        "type": "leaf_pointer",
+        "id": generate_id(),
+        "parentId": null,
+        "timestamp": timestamp_iso(),
+        "leafId": leaf_id,
+    });
+    append_raw_entry(cwd, &entry);
+}
+
+/// 追加一条 label entry（给 entry 命名）。
+pub fn append_label(cwd: &str, target_id: &str, label: &str) {
+    let entry = serde_json::json!({
+        "type": "label",
+        "id": generate_id(),
+        "parentId": null,
+        "timestamp": timestamp_iso(),
+        "targetId": target_id,
+        "label": label,
+    });
+    append_raw_entry(cwd, &entry);
+}
+
+/// 追加一条 branch_summary entry（tombstone，纯文本，不调 LLM）。
+pub fn append_branch_summary(cwd: &str, from_id: &str, summary: &str) {
+    let entry = serde_json::json!({
+        "type": "branch_summary",
+        "id": generate_id(),
+        "parentId": from_id,
+        "timestamp": timestamp_iso(),
+        "fromId": from_id,
+        "summary": summary,
+        "fromHook": false,
+    });
+    append_raw_entry(cwd, &entry);
+}
+
 // ---------------------------------------------------------------------------
 // Helper: convert Message → JSONL entry
 // ---------------------------------------------------------------------------
