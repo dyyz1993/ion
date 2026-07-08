@@ -2,7 +2,7 @@
 
 > **状态：Phase 1-8 已实现** — 独立的系统级 Agent，随 `ion serve` 启动，跨项目检索记忆。不是 V0.1 的升级，是不同的功能——V0.1 是项目级 Extension（被动注入），V0.2 是跨项目 Agent（主动检索）。
 >
-> **配套**：V0.1（项目级插件）已修复可用，见 [MEMORY_EXTENSION.md](./MEMORY_EXTENSION.md)。
+> **配套**：V0.1（项目级扩展）已修复可用，见 [MEMORY_EXTENSION.md](./MEMORY_EXTENSION.md)。
 
 ---
 
@@ -12,7 +12,7 @@
 
 ### 0.1 和 V0.1 的关系
 
-| 维度 | V0.1（插件） | V0.2（Agent） |
+| 维度 | V0.1（扩展） | V0.2（Agent） |
 |------|------------|--------------|
 | **形态** | Extension（钩子） | Agent（系统级 Worker） |
 | **范围** | per-project | 跨项目（全局） |
@@ -634,7 +634,7 @@ cargo test --test global_memory_e2e -- --nocapture
 
 | 功能 | 关系 |
 |------|------|
-| **V0.1（项目级插件）** | 数据隔离（V0.1 在 project-data/，V0.2 在 global-memory.db）。可同时启用。迁移是一次性的。 |
+| **V0.1（项目级扩展）** | 数据隔离（V0.1 在 project-data/，V0.2 在 global-memory.db）。可同时启用。迁移是一次性的。 |
 | **Session Tree** | Memory Agent 可被 Session Tree 的分支 Worker 查询（send_to_worker 跨 Worker） |
 | **FauxProvider** | Memory Agent 测试时用 faux 驱动（不调真实 LLM） |
 | **Record/Replay** | Memory Agent 的查询可录制回放 |
