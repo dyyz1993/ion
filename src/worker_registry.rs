@@ -290,7 +290,7 @@ impl WorkerRegistry {
 
         // ── stderr 捕获（崩溃诊断用）──
         let stderr_path = std::env::temp_dir().join(format!("ion-worker-{}.stderr", worker_id));
-        let stderr_wid = worker_id.clone();
+        let _stderr_wid = worker_id.clone();
         let stderr_path_c = stderr_path.clone();
         tokio::spawn(async move {
             use tokio::io::AsyncBufReadExt;
@@ -514,62 +514,66 @@ impl WorkerRegistry {
 			                }
 			            } else {
 			                // 非零退出 → 崩溃！标 Dead，保留 record
-			                if let Some(record) = reg.workers.get_mut(&sub_wid) {
-			                    record.status = WorkerStatus::Dead;
-			                    // 读 stderr 日志最后几行作为 exit_reason
-			                    if let Some(ref stderr_path) = record.stderr_path {
-			                        if let Ok(content) = std::fs::read_to_string(stderr_path) {
-			                            let tail: Vec<&str> = content.lines().rev().take(10).collect::<Vec<_>>();
-			                            let tail: Vec<&str> = tail.into_iter().rev().collect();
-			                            let snippet = tail.join("\n");
-			                            if !snippet.is_empty() {
-			                                record.exit_reason = Some(format!("exit={}: {}", exit_code.unwrap_or(-1), snippet));
+			                let (crash_parent, crash_session, crash_reason, crash_channels) = {
+			                    if let Some(record) = reg.workers.get_mut(&sub_wid) {
+			                        record.status = WorkerStatus::Dead;
+			                        // 读 stderr 日志最后几行作为 exit_reason
+			                        if let Some(ref stderr_path) = record.stderr_path {
+			                            if let Ok(content) = std::fs::read_to_string(stderr_path) {
+			                                let tail: Vec<&str> = content.lines().rev().take(10).collect::<Vec<_>>();
+			                                let tail: Vec<&str> = tail.into_iter().rev().collect();
+			                                let snippet = tail.join("\n");
+			                                if !snippet.is_empty() {
+			                                    record.exit_reason = Some(format!("exit={}: {}", exit_code.unwrap_or(-1), snippet));
+			                                } else {
+			                                    record.exit_reason = Some(format!("exit={}", exit_code.unwrap_or(-1)));
+			                                }
 			                            } else {
 			                                record.exit_reason = Some(format!("exit={}", exit_code.unwrap_or(-1)));
 			                            }
 			                        } else {
 			                            record.exit_reason = Some(format!("exit={}", exit_code.unwrap_or(-1)));
 			                        }
-			                    } else {
-			                        record.exit_reason = Some(format!("exit={}", exit_code.unwrap_or(-1)));
+			                        (
+			                            record.parent.clone(),
+			                            record.session_id.clone(),
+			                            record.exit_reason.clone(),
+			                            record.channels.clone(),
+			                        )
+			                    } else { (None, String::new(), None, Vec::new()) }
+			                }; // record mutable borrow ends here
+
+			                // 推送 child_crashed 事件到 event_subscribers
+			                let crash_event = serde_json::json!({
+			                    "type": "child_crashed",
+			                    "worker_id": sub_wid,
+			                    "session_id": crash_session,
+			                    "exit_code": exit_code,
+			                    "exit_reason": crash_reason,
+			                });
+			                // 推给 event_subscribers（需要重新 get 记录）
+			                if let Some(record) = reg.workers.get(&sub_wid) {
+			                    for sub in &record.event_subscribers {
+			                        let _ = sub.try_send(crash_event.clone());
 			                    }
-				                    // 通知父 Worker + 推送 crash 事件到 event_subscribers
-				                    let crash_parent = record.parent.clone();
-				                    let crash_session = record.session_id.clone();
-				                    let crash_reason = record.exit_reason.clone();
-				                    let crash_channels = record.channels.clone();
-				                    // 推送 child_crashed 事件到 event_subscribers（让 drain_until_agent_end 能收到）
-				                    let crash_event = serde_json::json!({
-				                        "type": "child_crashed",
-				                        "worker_id": sub_wid,
-				                        "session_id": crash_session,
-				                        "exit_code": exit_code,
-				                        "exit_reason": crash_reason,
-				                    });
-				                    // 先推给所有 event_subscribers
-				                    let subs: Vec<_> = record.event_subscribers.iter().map(|s| s.clone()).collect();
-				                    for sub in &subs {
-				                        let _ = sub.try_send(crash_event.clone());
-				                    }
-				                    drop(record); // 释放 mutable borrow
-				                    // 也通过 parent_event_tx 通知父（如果它在等）
-				                    if let Some(ref parent_id) = crash_parent {
-				                        if let Some(parent) = reg.workers.get(parent_id.as_str()) {
-				                            if let Some(ref tx) = parent.parent_event_tx {
-				                                let _ = tx.try_send(crash_event.clone());
-				                            }
-				                        }
-				                        // 从父的 children 列表中移除（子已死）
-				                        if let Some(parent) = reg.workers.get_mut(parent_id.as_str()) {
-				                            parent.children.retain(|id| id != &sub_wid);
-				                        }
-				                    }
-				                    // 从 channels 移除
-				                    for ch in &crash_channels {
-				                        if let Some(subs) = reg.channels.get_mut(ch.as_str()) {
-				                            subs.retain(|id| id != &sub_wid);
-				                        }
-				                    }
+			                }
+			                // 也通过 parent_event_tx 通知父
+			                if let Some(ref parent_id) = crash_parent {
+			                    if let Some(parent) = reg.workers.get(parent_id.as_str()) {
+			                        if let Some(ref tx) = parent.parent_event_tx {
+			                            let _ = tx.try_send(crash_event.clone());
+			                        }
+			                    }
+			                    // 从父的 children 列表中移除
+			                    if let Some(parent) = reg.workers.get_mut(parent_id.as_str()) {
+			                        parent.children.retain(|id| id != &sub_wid);
+			                    }
+			                }
+			                // 从 channels 移除
+			                for ch in &crash_channels {
+			                    if let Some(subs) = reg.channels.get_mut(ch.as_str()) {
+			                        subs.retain(|id| id != &sub_wid);
+			                    }
 			                }
 			            }
 			            reg.broadcast_overview();
@@ -1466,6 +1470,8 @@ impl WorkerRegistry {
                 "session_id": w.session_id,
                 "project": w.project,
                 "status": w.status,
+                "exit_code": w.exit_code,
+                "exit_reason": w.exit_reason,
                 "model": w.model,
                 "agent": w.agent,
                 "channels": w.channels,
@@ -1498,11 +1504,24 @@ impl WorkerRegistry {
         serde_json::json!({
             "workers": workers,
             "projects": projects,
-            "total_workers": workers.len(),
+            "total_workers": self.workers.values().filter(|w| w.status != WorkerStatus::Dead).count(),
             "total_projects": projects.len(),
             "total_stale": self.workers.values().filter(|w| w.status == WorkerStatus::Stale).count(),
+            "total_dead": self.workers.values().filter(|w| w.status == WorkerStatus::Dead).count(),
             "sessions": sessions,
         })
+    }
+
+    /// Remove dead workers older than max_age_secs.
+    pub fn gc_dead_workers(&mut self, max_age_secs: u64) {
+        let now = now_ms();
+        let deadline = now - (max_age_secs * 1000) as i64;
+        self.workers.retain(|_id, record| {
+            if record.status == WorkerStatus::Dead {
+                return record.started_at >= deadline;
+            }
+            true
+        });
     }
 
     /// Set the entry worker for recursive idle detection.
@@ -1519,8 +1538,8 @@ impl WorkerRegistry {
             let record = self.workers.get(&wid).ok_or_else(|| {
                 format!("worker {wid} not found in registry")
             })?;
-            match record.status {
-                WorkerStatus::Idle => {}
+	            match record.status {
+	                WorkerStatus::Idle | WorkerStatus::Dead => {}
                 _ => return Ok(false),
             }
             for child_id in &record.children {
