@@ -413,6 +413,11 @@ enum WorkflowAction {
         /// Path to workflow.yaml
         path: String,
     },
+    /// Run a workflow (spawns wf agent to execute stages)
+    Run {
+        /// Path to workflow.yaml
+        path: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -1069,6 +1074,32 @@ async fn cmd_workflow_status(path: &str) {
             std::process::exit(1);
         }
     }
+}
+
+async fn cmd_workflow_run(path: &str) {
+    // 先校验
+    if let Err(e) = ion::workflow::WorkflowConfig::load(path) {
+        eprintln!("❌ {}", e);
+        std::process::exit(1);
+    }
+
+    // 用绝对路径（wf agent 需要读这个文件）
+    let abs_path = std::fs::canonicalize(path)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| path.to_string());
+
+    eprintln!("🚀 Starting workflow: {}", abs_path);
+
+    // 启动 wf agent（--host 模式）
+    // wf agent 读取 yaml 文件，执行 stages
+    let message = format!(
+        "Read the workflow file at {} and execute all pending stages. \
+         Follow the instructions in your system prompt exactly.",
+        abs_path
+    );
+
+    // 复用 cmd_host 的逻辑
+    cmd_host(&message, Some("wf")).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -2354,6 +2385,7 @@ async fn main() {
         Some(Commands::Workflow { action }) => match action {
             WorkflowAction::Validate { path } => cmd_workflow_validate(path).await,
             WorkflowAction::Status { path } => cmd_workflow_status(path).await,
+            WorkflowAction::Run { path } => cmd_workflow_run(path).await,
         },
         Some(Commands::Dashboard) => {
             // Dashboard 用 Bun + OpenTUI 实现（dashboard/ 子目录）
