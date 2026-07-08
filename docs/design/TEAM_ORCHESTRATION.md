@@ -326,13 +326,54 @@ peer 自动通过 follow_up 汇报完成。
 
 ## 十二、Agent 模板
 
-开箱即用的 4 个 agent .md 文件在 `examples/agents/`：
+开箱即用的 6 个 agent .md 文件在 `examples/agents/`：
 
-| 文件 | 角色 |
-|------|------|
-| `coordinator.md` | 拆任务、调度、收敛 |
-| `developer.md` | 写代码、提交 |
-| `merger.md` | 合并分支、清理 worktree |
-| `reviewer.md` | 代码审查（只读） |
+| 文件 | 角色 | 工具 |
+|------|------|------|
+| `orchestrator.md` | 分阶段 pipeline 引擎（DEVELOP→MERGE→PUBLISH + gate 校验） | spawn_worker / bash |
+| `coordinator.md` | 简单编排（无 gate，3 种调度策略） | spawn_worker / await_worker |
+| `developer.md` | 写代码 + 强制 commit + 自验证 | write / edit / bash |
+| `merger.md` | 合并分支 + 处理未提交文件 + cleanup worktree | bash |
+| `reviewer.md` | 代码审查（只读） | read / grep / bash |
+| `publisher.md` | GitHub push / issue / PR（调 gh CLI） | bash |
 
 使用方法见 [examples/README.md](../../examples/README.md)。
+
+---
+
+## 十三、Orchestrator 分阶段 Pipeline
+
+### 概念
+
+Orchestrator 是一个**分阶段工作流引擎**。它不是内核功能——纯 `.md` 提示词驱动。
+每个 stage 做 3 件事：**SPAWN agent → CHECK GATE → REPORT**。
+
+### 流程
+
+```
+orchestrator
+├── Stage 1: DEVELOP
+│   ├── spawn developer (worktree=true, wait=true)
+│   └── gate: ls <file>  → PASS / FAIL (重试 max 2)
+│
+├── Stage 2: MERGE
+│   ├── spawn merger (wait=true)
+│   └── gate: git log | grep merge  → PASS / FAIL
+│
+└── Stage 3: PUBLISH
+    ├── spawn publisher (wait=true)
+    └── gate: git remote -v | grep origin  → PASS / FAIL
+```
+
+### Gate 校验
+
+Gate 用 `bash` 执行检查命令，输出包含预期字符串则 PASS。
+失败自动重试（max 2 次），超限报 `PIPELINE ABORTED`。
+
+### 真实验证
+
+3 阶段 pipeline 全部跑通：
+- DEVELOP: developer 创建 square.py（worktree 隔离）✅
+- MERGE: merger 合并到 master + cleanup ✅
+- PUBLISH: publisher 创建 GitHub repo + push ✅
+- GitHub 验证: square.py 内容正确 ✅

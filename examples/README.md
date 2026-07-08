@@ -16,14 +16,16 @@ echo '{"runtime":{"default_mode":"local"}}' > .ion/config.json
 ion --host --agent coordinator "创建 hello.py 打印 hello world"
 ```
 
-## 4 个角色
+## 6 个角色
 
 | Agent | 职责 | 工具 | 禁用 |
 |-------|------|------|------|
-| **coordinator** | 拆任务、调度、收敛 | spawn_worker / await_worker / read / ls | edit / write / bash |
+| **orchestrator** | 分阶段 pipeline（DEVELOP→MERGE→PUBLISH + gate） | spawn_worker / bash / read | edit / write |
+| **coordinator** | 简单编排（3 种调度策略） | spawn_worker / await_worker / read / ls | edit / write / bash |
 | **developer** | 写代码、提交 | write / edit / bash / read / ls | spawn_worker |
 | **merger** | 合并分支、清理 worktree | bash / ls / read | edit / write / spawn_worker |
 | **reviewer** | 代码审查（只读） | read / grep / bash / git_diff | edit / write / spawn_worker |
+| **publisher** | GitHub push / issue / PR | bash / ls / read | edit / write / spawn_worker |
 
 ## 三种调度策略
 

@@ -438,7 +438,17 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - Model：`--model provider/id:thinking` 三段式语法, `--models` 列表解析
   - 压缩：`--compact-model` 独立小模型压缩 (`with_compact_model`)
   - 工具：`--list-models` flag, `ion config list`, `ION_AGENT_DIR`/`ION_SESSION_DIR` 环境变量
-- **测试**: 221 个测试全部通过 ✅（146 lib + 37 bin + 1 e2e + 28 alignment CI + 10 compaction CI）
+- **Team 编排（agent.md 驱动，零内核策略）**:
+  - 6 个 agent 模板（`examples/agents/`）：orchestrator / coordinator / developer / merger / reviewer / publisher
+  - 3 种调度策略：串行 `wait=true` / 小批量并行 `wait=false` + `await_worker` / 后台同级 `peer`
+  - worktree 隔离：`spawn_worker(worktree=true)` 让 developer 在独立分支干活
+  - converge 闭环：developer 写代码 → merger 合并+cleanup → publisher 推送 GitHub
+  - orchestrator 分阶段 pipeline：DEVELOP → MERGE → PUBLISH，gate 校验 + 自动重试
+  - 反幻觉重试：LLM 没调工具时自动重试并注入 WARNING（`retry_on_no_tool_use`）
+  - `disallowed_tools` 黑名单生效（之前被忽略的 bug 已修）
+  - runtime 默认 local（不从全局继承），`--local`/`--remote` flag 即时切换
+  - **验证**: 5 任务串行 converge + 3 阶段 pipeline（develop→merge→publish GitHub）全部通过
+- **测试**: 380 个测试全部通过 ✅
 
 ### 🎭 FauxProvider（架构级 LLM Mock，对标 pi）
 
