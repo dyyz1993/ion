@@ -22,6 +22,8 @@ pub struct WorkerRegistry {
     pub global_subscribers: Vec<mpsc::Sender<serde_json::Value>>,
     /// Overview snapshot subscribers (unbounded, no backpressure)
     pub overview_subscribers: Vec<mpsc::UnboundedSender<serde_json::Value>>,
+    /// Singleton extensions registry（host 级单例，引用计数）
+    pub singletons: std::collections::HashMap<String, SingletonEntry>,
     /// Channel for workers to send manager commands (create_worker, channel_send, etc.)
     pub manager_cmd_tx: mpsc::UnboundedSender<serde_json::Value>,
     pub manager_cmd_rx: mpsc::UnboundedReceiver<serde_json::Value>,
@@ -103,6 +105,18 @@ impl std::fmt::Display for WorkerStatus {
     }
 }
 
+/// 单例扩展条目（host 级，引用计数）
+pub struct SingletonEntry {
+    /// 唯一标识（singleton_key）
+    pub key: String,
+    /// 扩展实例
+    pub instance: Box<dyn crate::agent::extension::Extension>,
+    /// 正在使用此单例的 Worker ID 集合（引用计数）
+    pub users: std::collections::HashSet<String>,
+    /// 是否已初始化（on_singleton_init 是否已调用）
+    pub initialized: bool,
+}
+
 impl WorkerRegistry {
     pub fn new() -> Self {
         let (manager_cmd_tx, manager_cmd_rx) = mpsc::unbounded_channel();
@@ -113,6 +127,7 @@ impl WorkerRegistry {
             entry_worker_id: None,
             global_subscribers: Vec::new(),
             overview_subscribers: Vec::new(),
+            singletons: std::collections::HashMap::new(),
             manager_cmd_tx,
             manager_cmd_rx,
         }
@@ -128,6 +143,7 @@ impl WorkerRegistry {
             entry_worker_id: None,
             global_subscribers: Vec::new(),
             overview_subscribers: Vec::new(),
+            singletons: std::collections::HashMap::new(),
             manager_cmd_tx,
             manager_cmd_rx,
         }
@@ -576,8 +592,12 @@ impl WorkerRegistry {
 			                    }
 			                }
 			            }
-			            reg.broadcast_overview();
-		        });
+				            reg.broadcast_overview();
+			            drop(reg); // 释放 lock，让 singleton_user_leave 能重新获取
+			            // 通知单例扩展：这个 Worker 不再使用它们（引用计数-1）
+			            let mut reg2 = sub_registry.lock().await;
+			            reg2.singleton_user_leave(&sub_wid).await;
+			        });
 
 		        // ── Peer 模式：内核自动追加"汇报指令段"到 initial_prompt ──
 		        // 这是内核职责，不依赖 .md 自己写汇报格式。
@@ -1522,6 +1542,97 @@ impl WorkerRegistry {
             }
             true
         });
+    }
+
+    // ── Singleton management（host 级单例扩展，引用计数）──
+
+    /// 注册一个单例扩展。如果 key 已存在，返回 false（不重复创建）。
+    pub fn register_singleton(&mut self, ext: Box<dyn crate::agent::extension::Extension>) -> bool {
+        let key = ext.singleton_key().to_string();
+        if key.is_empty() || self.singletons.contains_key(&key) {
+            return false;
+        }
+        tracing::info!("[singleton] registered: {}", key);
+        self.singletons.insert(key, SingletonEntry {
+            key: ext.singleton_key().to_string(),
+            instance: ext,
+            users: std::collections::HashSet::new(),
+            initialized: false,
+        });
+        true
+    }
+
+    /// 初始化所有未初始化的单例（调用 on_singleton_init）。
+    /// 在 host 启动后、用户 Worker 创建前调用。
+    pub async fn init_singletons(&mut self) {
+        let keys: Vec<String> = self.singletons.keys().cloned().collect();
+        for key in keys {
+            let entry = self.singletons.get_mut(&key).unwrap();
+            if !entry.initialized {
+                if let Err(e) = entry.instance.on_singleton_init().await {
+                    tracing::error!("[singleton:{}] init failed: {:?}", key, e);
+                } else {
+                    entry.initialized = true;
+                    tracing::info!("[singleton:{}] initialized", key);
+                }
+            }
+        }
+    }
+
+    /// Worker 开始使用单例（引用计数 +1）。
+    /// 在 create_worker 成功后调用。
+    pub async fn singleton_user_join(&mut self, worker_id: &str) {
+        let keys: Vec<String> = self.singletons.keys().cloned().collect();
+        for key in keys {
+            let entry = self.singletons.get_mut(&key).unwrap();
+            if entry.users.insert(worker_id.to_string()) {
+                // 新用户
+                if let Err(e) = entry.instance.on_user_join(worker_id).await {
+                    tracing::warn!("[singleton:{}] user_join {} failed: {:?}", key, worker_id, e);
+                }
+            }
+        }
+    }
+
+    /// Worker 停止使用单例（引用计数 -1）。
+    /// 在 Worker 清理（正常退出/崩溃）时调用。
+    /// 崩溃不干掉单例——只有引用计数 == 0 才触发 on_last_user_gone。
+    pub async fn singleton_user_leave(&mut self, worker_id: &str) {
+        let keys: Vec<String> = self.singletons.keys().cloned().collect();
+        for key in keys {
+            let was_last = {
+                let entry = self.singletons.get_mut(&key).unwrap();
+                if entry.users.remove(worker_id) {
+                    if let Err(e) = entry.instance.on_user_leave(worker_id).await {
+                        tracing::warn!("[singleton:{}] user_leave {} failed: {:?}", key, worker_id, e);
+                    }
+                    entry.users.is_empty()
+                } else {
+                    false
+                }
+            };
+            // 在 entry 的 mutable borrow 释放后才能再 borrow 调 on_last_user_gone
+            if was_last {
+                let entry = self.singletons.get_mut(&key).unwrap();
+                if let Err(e) = entry.instance.on_last_user_gone().await {
+                    tracing::warn!("[singleton:{}] last_user_gone failed: {:?}", key, e);
+                }
+                tracing::info!("[singleton:{}] last user gone ({})", key, worker_id);
+            }
+        }
+    }
+
+    /// 关闭所有单例（host shutdown 时调用）。
+    pub async fn shutdown_singletons(&mut self) {
+        let keys: Vec<String> = self.singletons.keys().cloned().collect();
+        for key in keys {
+            let entry = self.singletons.get_mut(&key).unwrap();
+            if let Err(e) = entry.instance.on_singleton_shutdown().await {
+                tracing::warn!("[singleton:{}] shutdown failed: {:?}", key, e);
+            }
+            tracing::info!("[singleton:{}] shutdown", key);
+        }
+        self.singletons.clear();
     }
 
     /// Set the entry worker for recursive idle detection.
