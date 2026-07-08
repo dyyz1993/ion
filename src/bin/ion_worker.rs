@@ -60,6 +60,28 @@ async fn main() {
     let mut registry = ApiRegistry::new();
     registry.register_builtins();
 
+    // ── FauxProvider 接入（测试/开发用，不调真实 LLM）──
+    let faux_script = std::env::var("ION_FAUX_SCRIPT").ok();
+    let faux_reply = std::env::var("ION_FAUX_REPLY").ok();
+    let using_faux = faux_script.is_some() || faux_reply.is_some();
+    if using_faux {
+        let faux = ion_provider::faux::register_faux(&mut registry);
+        // Build responses from env var
+        let responses = if let Some(path) = &faux_script {
+            ion_provider::faux::load_script(std::path::Path::new(path))
+                .expect("failed to load ION_FAUX_SCRIPT")
+        } else {
+            vec![ion_provider::faux::FauxResponseStep::Static(
+                ion_provider::faux::faux_assistant_message(
+                    ion_provider::faux::FauxContent::Text(faux_reply.unwrap_or_default()),
+                    ion_provider::faux::FauxMessageOptions::default(),
+                ),
+            )]
+        };
+        faux.set_responses(responses);
+        eprintln!("[faux] enabled: {} responses queued", faux.pending_count());
+    }
+
     let mut model_reg = ion_provider::registry::ModelRegistry::new();
     model_reg.register_builtins();
     let mut model = model_reg.find_model(&model_id).cloned().unwrap_or_else(|| {
@@ -80,6 +102,12 @@ async fn main() {
         if !override_url.is_empty() {
             model.base_url = override_url.clone();
         }
+    }
+
+    // faux 模式：强制 model.api 指向 faux provider（覆盖任何真实 API 路由）
+    if using_faux {
+        model.api = "faux".into();
+        eprintln!("[faux] model.api forced to 'faux'");
     }
 
     let mut tools = ToolRegistry::new();

@@ -603,6 +603,27 @@ fn build_registry_and_model(eff: &EffectiveConfig) -> (Arc<ApiRegistry>, Model) 
     let mut registry = ApiRegistry::new();
     registry.register_builtins();
 
+    // ── FauxProvider 接入（场景 1 直接执行也支持）──
+    let faux_script = std::env::var("ION_FAUX_SCRIPT").ok();
+    let faux_reply = std::env::var("ION_FAUX_REPLY").ok();
+    let using_faux = faux_script.is_some() || faux_reply.is_some();
+    if using_faux {
+        let faux = ion_provider::faux::register_faux(&mut registry);
+        let responses = if let Some(path) = &faux_script {
+            ion_provider::faux::load_script(std::path::Path::new(path))
+                .expect("failed to load ION_FAUX_SCRIPT")
+        } else {
+            vec![ion_provider::faux::FauxResponseStep::Static(
+                ion_provider::faux::faux_assistant_message(
+                    ion_provider::faux::FauxContent::Text(faux_reply.unwrap_or_default()),
+                    ion_provider::faux::FauxMessageOptions::default(),
+                ),
+            )]
+        };
+        faux.set_responses(responses);
+        eprintln!("[faux] enabled: {} responses queued", faux.pending_count());
+    }
+
     let mut model_registry = ModelRegistry::new();
     model_registry.register_builtins();
 
@@ -667,6 +688,12 @@ fn build_registry_and_model(eff: &EffectiveConfig) -> (Arc<ApiRegistry>, Model) 
         if !override_url.is_empty() {
             model.base_url = override_url.clone();
         }
+    }
+
+    // faux 模式：强制 model.api 指向 faux provider（覆盖任何真实 API 路由）
+    if using_faux {
+        model.api = "faux".into();
+        eprintln!("[faux] model.api forced to 'faux'");
     }
 
     (Arc::new(registry), model)
