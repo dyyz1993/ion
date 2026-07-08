@@ -66,14 +66,24 @@ docs/
 | WASM 扩展系统 | [design/EXTENSION_SYSTEM.md](design/EXTENSION_SYSTEM.md) |
 | Bash 进程管理 | [design/BASH_EXTENSION.md](design/BASH_EXTENSION.md) |
 | Memory 记忆扩展 | [design/MEMORY_EXTENSION.md](design/MEMORY_EXTENSION.md) |
+| Memory Agent (SQLite) | [design/MEMORY_AGENT.md](design/MEMORY_AGENT.md) |
 | Compaction 会话压缩 | [design/COMPACTION.md](design/COMPACTION.md) |
 | 多 Provider 协议 | [design/PROVIDER_PROTOCOL.md](design/PROVIDER_PROTOCOL.md) |
 | 权限系统 | [design/PERMISSION_SYSTEM.md](design/PERMISSION_SYSTEM.md) |
 | Session 消息系统 | [design/SESSION_MESSAGE.md](design/SESSION_MESSAGE.md) |
+| Session Tree（会话分支） | [design/SESSION_TREE.md](design/SESSION_TREE.md) |
 | Shell Hook 系统 | [design/HOOK_SYSTEM.md](design/HOOK_SYSTEM.md) |
+| Apple Container | [design/APPLE_CONTAINER_EXTENSION.md](design/APPLE_CONTAINER_EXTENSION.md) |
+| Extension 生态 | [design/EXTENSION_ECOSYSTEM.md](design/EXTENSION_ECOSYSTEM.md) |
+| FauxProvider (LLM Mock) | [design/FAUX_PROVIDER.md](design/FAUX_PROVIDER.md) |
+| Record/Replay | [design/RECORD_REPLAY.md](design/RECORD_REPLAY.md) |
+| Crash Recovery | [design/CRASH_RECOVERY.md](design/CRASH_RECOVERY.md) |
 | Team 编排（agent.md 驱动） | [design/TEAM_ORCHESTRATION.md](design/TEAM_ORCHESTRATION.md) |
 | Workflow Gate（内核交付校验） | [design/WORKFLOW_GATE.md](design/WORKFLOW_GATE.md) |
 | Workflow Engine（结构化交付流水线） | [design/WORKFLOW_ENGINE.md](design/WORKFLOW_ENGINE.md) |
+| CLI 完整方案 | [design/CLI_PLAN.md](design/CLI_PLAN.md) |
+| CLI 架构设计 | [design/CLI_ARCHITECTURE.md](design/CLI_ARCHITECTURE.md) |
+| CLI 路线图 | [design/CLI_ROADMAP.md](design/CLI_ROADMAP.md) |
 | pi RPC 对齐 | [design/PI_RPC_ALIGNMENT.md](design/PI_RPC_ALIGNMENT.md) |
 
 ### 我想查 CLI 命令怎么用
