@@ -1633,9 +1633,29 @@ fn apply_session_tree_ops(cli: &Cli, session_id: &str) {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
 
+    // session_id 为空时，从当前 cwd 的 session 文件加载 entries
+    let load_entries = |sid: &str| -> Option<Vec<serde_json::Value>> {
+        if sid.is_empty() {
+            // fallback: 直接从 cwd 读 session 文件
+            let path = ion::session_jsonl::session_path(&cwd);
+            let content = std::fs::read_to_string(&path).ok()?;
+            let mut entries = Vec::new();
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() { continue; }
+                if let Ok(e) = serde_json::from_str::<serde_json::Value>(line) {
+                    entries.push(e);
+                }
+            }
+            if entries.is_empty() { None } else { Some(entries) }
+        } else {
+            load_session_entries(sid)
+        }
+    };
+
     // --checkout <name>
     if let Some(name) = &cli.checkout {
-        let entries = load_session_entries(session_id);
+        let entries = load_entries(session_id);
         match entries {
             Some(ents) => {
                 match ion::session_tree::make_checkout(&ents, name) {
@@ -1661,7 +1681,7 @@ fn apply_session_tree_ops(cli: &Cli, session_id: &str) {
 
     // --rollback <id> [--rollback-reason <text>]
     if let Some(rollback_to) = &cli.rollback {
-        let entries = load_session_entries(session_id);
+        let entries = load_entries(session_id);
         let ents = entries.unwrap_or_default();
         if !ion::session_tree::entry_exists(&ents, rollback_to) {
             eprintln!("❌ entry '{}' not found in session {}", rollback_to, session_id);
@@ -1692,7 +1712,7 @@ fn apply_session_tree_ops(cli: &Cli, session_id: &str) {
 
     // --branch <id> [--branch-name <name>]
     if let Some(from_id) = &cli.branch {
-        let entries = load_session_entries(session_id);
+        let entries = load_entries(session_id);
         let ents = entries.unwrap_or_default();
         if !ion::session_tree::entry_exists(&ents, from_id) {
             eprintln!("❌ entry '{}' not found in session {}", from_id, session_id);
@@ -2214,7 +2234,7 @@ async fn main() {
         let (session_id, preloaded) = resolve_session_id(&cli);
 
         // ── Session Tree 操作：branch / checkout / rollback（在 agent.run 之前追加 leaf_pointer）──
-        if !cli.no_session && !session_id.is_empty() {
+        if !cli.no_session && (cli.branch.is_some() || cli.checkout.is_some() || cli.rollback.is_some()) {
             apply_session_tree_ops(&cli, &session_id);
         }
 
