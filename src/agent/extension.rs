@@ -159,6 +159,29 @@ pub trait Extension: Send + Sync {
     /// Called before each LLM request to allow extensions to modify the system prompt.
     /// The `prompt` string starts as the agent's current system prompt.
     async fn on_system_prompt(&self, _prompt: &mut String) -> AgentResult<()> { Ok(()) }
+
+    // ── Workflow gate (1) ──
+    /// Called when the LLM decides to Stop (no more tool calls).
+    /// Return `RetryWith(msg)` to force the loop to continue with an injected message.
+    /// Return `Allow` to let the agent stop normally.
+    /// This is the kernel-enforced gate check — the LLM cannot skip it.
+    async fn on_gate_check(&self, _ctx: &TurnContext) -> AgentResult<GateDecision> {
+        Ok(GateDecision::Allow)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GateDecision — workflow gate result
+// ---------------------------------------------------------------------------
+
+/// Result of a workflow gate check.
+#[derive(Clone, Debug)]
+pub enum GateDecision {
+    /// Gate passed — allow the agent to stop.
+    Allow,
+    /// Gate failed — inject `msg` as a user message and force another loop iteration.
+    /// The LLM will see this message and must fix the issue before it can stop.
+    RetryWith(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +334,18 @@ impl ExtensionRegistry {
             }
         }
         Err(AgentError::Tool(format!("extension '{extension_name}' not found or method '{method}' not implemented")))
+    }
+
+    /// Check all registered extensions' gates. Returns the first RetryWith (failure),
+    /// or Allow if all gates pass. Called by agent_loop when the LLM decides to Stop.
+    pub async fn check_gates(&self, ctx: &TurnContext) -> AgentResult<GateDecision> {
+        for ext in &self.extensions {
+            let decision = ext.on_gate_check(ctx).await?;
+            if matches!(decision, GateDecision::RetryWith(_)) {
+                return Ok(decision);
+            }
+        }
+        Ok(GateDecision::Allow)
     }
 }
 

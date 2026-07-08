@@ -409,6 +409,19 @@ async fn main() {
             }
         }
 
+        // ── 注册 WorkflowExtension（如果 agent .md 定义了 workflow gate）──
+        if let Some(ref agent_name) = initial_agent {
+            if let Some(agent_cfg) = ion::agent_config::find_agent(agent_name) {
+                if let Some(ref wf_config) = agent_cfg.workflow {
+                    tracing::info!("[workflow] gate registered: cmd='{}', expected='{}'",
+                        wf_config.gate_command, wf_config.gate_expected);
+                    ext_reg.register(Box::new(
+                        ion::agent::workflow_extension::WorkflowExtension::new(wf_config.clone())
+                    ));
+                }
+            }
+        }
+
         agent = agent.with_extensions(ext_reg);
 
         // 注册 bash 工具（仅当 bash extension 启用时）
