@@ -409,15 +409,18 @@ async fn main() {
             }
         }
 
-        // ── 注册 WorkflowExtension（如果 agent .md 定义了 workflow gate）──
-        if let Some(ref agent_name) = initial_agent {
-            if let Some(agent_cfg) = ion::agent_config::find_agent(agent_name) {
-                if let Some(ref wf_config) = agent_cfg.workflow {
-                    tracing::info!("[workflow] gate registered: cmd='{}', expected='{}'",
-                        wf_config.gate_command, wf_config.gate_expected);
-                    ext_reg.register(Box::new(
-                        ion::agent::workflow_extension::WorkflowExtension::new(wf_config.clone())
-                    ));
+        // ── 注册 WorkflowExtension（可配置，默认启用）──
+        // 当 agent .md 定义了 workflow: gate_command 时才生效。
+        if ion_cfg.is_extension_enabled("workflow_gate") {
+            if let Some(ref agent_name) = initial_agent {
+                if let Some(agent_cfg) = ion::agent_config::find_agent(agent_name) {
+                    if let Some(ref wf_config) = agent_cfg.workflow {
+                        tracing::info!("[workflow] gate registered: cmd='{}', expected='{}'",
+                            wf_config.gate_command, wf_config.gate_expected);
+                        ext_reg.register(Box::new(
+                            ion::agent::workflow_extension::WorkflowExtension::new(wf_config.clone())
+                        ));
+                    }
                 }
             }
         }

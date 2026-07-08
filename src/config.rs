@@ -34,12 +34,14 @@ pub struct IonConfig {
     /// ```json
     /// {
     ///   "extensions": {
-    ///     "memory": { "enabled": false },
-    ///     "bash":   { "enabled": true }
+    ///     "memory":       { "enabled": false },
+    ///     "bash":         { "enabled": true },
+    ///     "workflow_gate": { "enabled": false }
     ///   }
     /// }
     /// ```
     /// Omitted extensions default to enabled.
+    /// Available: memory, bash, streaming, permission, workflow_gate
     #[serde(default)]
     pub extensions: HashMap<String, ExtensionConfig>,
 
