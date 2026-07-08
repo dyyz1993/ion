@@ -27,3 +27,4 @@ pub mod worker_registry;
 pub mod kernel;
 pub mod paths;
 pub mod retry;
+pub mod workflow;

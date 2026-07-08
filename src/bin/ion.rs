@@ -352,6 +352,11 @@ enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Workflow operations (validate / run / status)
+    Workflow {
+        #[command(subcommand)]
+        action: WorkflowAction,
+    },
 }
 
 /// Session Tree 子命令
@@ -394,6 +399,20 @@ enum ConfigAction {
     Get { key: String },
     /// List all available config keys with descriptions
     List,
+}
+
+#[derive(Subcommand)]
+enum WorkflowAction {
+    /// Validate a workflow YAML file
+    Validate {
+        /// Path to workflow.yaml
+        path: String,
+    },
+    /// Show workflow status (which stages are done/pending/failed)
+    Status {
+        /// Path to workflow.yaml
+        path: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -996,6 +1015,60 @@ async fn cmd_config_list() {
     println!("Usage: ion config set <key> <value>");
     println!("       ion config get <key>");
     println!("       ion config show");
+}
+
+// ---------------------------------------------------------------------------
+// Workflow commands
+// ---------------------------------------------------------------------------
+
+async fn cmd_workflow_validate(path: &str) {
+    match ion::workflow::WorkflowConfig::load(path) {
+        Ok(wf) => {
+            let gate_count = wf.stages.iter().filter(|s| s.gate.is_some()).count();
+            let loop_count = wf.stages.iter().filter(|s| s.on_fail.is_some()).count();
+            println!("✅ Valid workflow: {}", wf.name);
+            println!("   {} stages, {} gates, {} loop_backs", wf.stages.len(), gate_count, loop_count);
+            for stage in &wf.stages {
+                let gate_str = if stage.gate.is_some() { " 🔒gate" } else { "" };
+                let wt_str = if stage.worktree { " 🌳worktree" } else { "" };
+                let lb_str = stage.on_fail.as_ref()
+                    .map(|f| format!(" ↩︎loop_back→{}", f.loop_back))
+                    .unwrap_or_default();
+                println!("   • {} [{}]{}{}{}", stage.id, stage.status, gate_str, wt_str, lb_str);
+            }
+        }
+        Err(e) => {
+            eprintln!("❌ {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn cmd_workflow_status(path: &str) {
+    match ion::workflow::WorkflowConfig::load(path) {
+        Ok(wf) => {
+            println!("Workflow: {}", wf.name);
+            for stage in &wf.stages {
+                let icon = match stage.status.as_str() {
+                    "done" => "✅",
+                    "failed" => "❌",
+                    "running" => "🔄",
+                    "skipped" => "⏭️",
+                    _ => "⏳",
+                };
+                println!("  {}: {} {}", stage.id, icon, stage.status);
+            }
+            if wf.is_complete() {
+                println!("\nPIPELINE COMPLETE ✅");
+            } else if let Some(next) = wf.next_pending_stage() {
+                println!("\nNext: {} ({})", next.id, next.status);
+            }
+        }
+        Err(e) => {
+            eprintln!("❌ {}", e);
+            std::process::exit(1);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2277,6 +2350,10 @@ async fn main() {
             ConfigAction::Set { key, value } => cmd_config_set(key, value).await,
             ConfigAction::Get { key } => cmd_config_get(key).await,
             ConfigAction::List => cmd_config_list().await,
+        },
+        Some(Commands::Workflow { action }) => match action {
+            WorkflowAction::Validate { path } => cmd_workflow_validate(path).await,
+            WorkflowAction::Status { path } => cmd_workflow_status(path).await,
         },
         Some(Commands::Dashboard) => {
             // Dashboard 用 Bun + OpenTUI 实现（dashboard/ 子目录）
