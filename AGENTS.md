@@ -173,6 +173,7 @@ docs/
 | [docs/design/BASH_EXTENSION.md](./docs/design/BASH_EXTENSION.md) | Bash 扩展：同步执行 + 后台进程 + 综合教程 + CLI 测试 (设计稿+已实现) |
 | [docs/design/MEMORY_EXTENSION.md](./docs/design/MEMORY_EXTENSION.md) | Memory 扩展 v0.1：大纲索引、异步检索、XML 注入、4 维存储 (已验证，搜索 bug 已修) |
 | [docs/design/MEMORY_AGENT.md](./docs/design/MEMORY_AGENT.md) | Memory V0.2 跨项目记忆 Agent：单例扩展 + SQLite/FTS5 + 引用计数 (Phase 1-8 已实现) |
+| [docs/design/CRASH_RECOVERY.md](./docs/design/CRASH_RECOVERY.md) | Worker 崩溃恢复：stderr 捕获 + exit code + Dead 保留 + 父通知 (已实现) |
 | [docs/design/COMPACTION.md](./docs/design/COMPACTION.md) | Compaction 会话压缩：分批并发 + LLM summarizer + emergency fallback + CLI 测试 (已验证) |
 | [docs/design/PROVIDER_PROTOCOL.md](./docs/design/PROVIDER_PROTOCOL.md) | 多 Provider 协议：4 个 provider + transform_messages + detectCompat + CLI 测试 (已验证) |
 | [docs/design/PERMISSION_SYSTEM.md](./docs/design/PERMISSION_SYSTEM.md) | 权限系统：设计 + CLI 用法 + 测试规格 + CLI 测试指南 (设计稿+已验证) |
@@ -191,7 +192,7 @@ docs/
 | [docs/design/CLI_PLAN.md](./docs/design/CLI_PLAN.md) | **CLI 完整落地方案（唯一入口）**：架构 + 路线图 + 验证用例 + checklist 合并，~11h 6 Phase (待执行) |
 | [docs/design/FAUX_PROVIDER.md](./docs/design/FAUX_PROVIDER.md) | FauxProvider 架构级 LLM Mock：FIFO 队列 + 工厂响应 + 流式分块，对标 pi (已实现 Phase 1) |
 | [docs/design/RECORD_REPLAY.md](./docs/design/RECORD_REPLAY.md) | Record/Replay 录制回放：环境变量录制 + `--model replay/id` 回放，复用 FauxProvider (已实现 Phase 1) |
-| [docs/design/SESSION_TREE.md](./docs/design/SESSION_TREE.md) | Session Tree（会话分支）：文件内分支 + leaf 指针 + only-append 回滚 (设计稿) |
+| [docs/design/SESSION_TREE.md](./docs/design/SESSION_TREE.md) | Session Tree（会话分支）：文件内分支 + leaf 指针 + only-append 回滚 (已实现) |
 
 ### 使用指南（docs/guides/）
 
@@ -236,6 +237,9 @@ docs/
 | `stock-extension/` | WASM 扩展示例 |
 | `examples/agents/` | Agent 模板（wf/orchestrator/coordinator/developer/merger/reviewer/publisher） |
 | `examples/workflows/` | Workflow YAML 示例（delivery.wf.yaml） |
+| `src/session_tree.rs` | Session Tree 核心数据层（leaf 指针/树构建/branch/rollback/checkout） |
+| `src/global_memory.rs` | 全局记忆库（SQLite + FTS5，跨项目检索） |
+| `src/global_memory_ext.rs` | GlobalMemoryExtension（单例扩展，on_singleton_init + extension_rpc） |
 
 ## 架构
 
@@ -465,6 +469,54 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 - 免 API key、走完整 agent 链路、不污染真实 provider
 - **测试**: 20 个测试全部通过 ✅（faux_test）
 
+### 🌳 Session Tree（会话内分支）
+
+- `LeafPointerEntry` — leaf 指针持久化（移动光标不删旧路径）
+- `get_tree()` / `resolve_current_leaf()` — 按 parentId 建树 + 光标解析（对齐 pi）
+- `--branch <id>` / `--branch-name <name>` — 从某条消息分叉
+- `--checkout <name>` — 切换命名分支
+- `--rollback <id>` / `--rollback-reason <text>` — 回滚（路径保留 + tombstone）
+- `--fork-from-leaf <sid>/<entry-id>` — 从分支点提取新 session（记 parentSession）
+- `ion session tree <sid>` / `ion session branches <sid>` — 树展示
+- `branch_session` Agent 工具 — LLM 自主分叉
+- only-append 不变量 — 所有操作只追加 entry，永不改/删旧行
+- compaction 安全检查 — branch 穿越压缩点时拒绝
+- **测试**: 28 单元 + 4 集成测试 ✅
+
+### 🔄 Worker 崩溃恢复
+
+- stderr 捕获 — `Stdio::piped()` 写到 `~/.ion/tmp/ion-worker-{id}.stderr`
+- exit code 读取 — cleanup 路径调 `child.try_wait()`
+- 崩溃识别 — `exit_code ≠ 0` → `WorkerStatus::Dead` + 保留 record
+- exit_reason — stderr 最后 10 行 + 退出码
+- 父通知 — `child_crashed` 事件推送到 event_subscribers + parent_event_tx
+- `drain_until_agent_end` — 崩溃后立即返回错误（不干等 300s）
+- GC — Dead record 超时自动清理
+- **测试**: 6 E2E 用例 ✅
+
+### 🎬 Record/Replay（LLM 决策录制回放）
+
+- `ION_RECORD=<id>` 环境变量 — 录制真实 LLM 响应到 `~/.ion/recordings/<id>/trace.jsonl`
+- `--model replay/<id>` — 回放（不联网，免 API key）
+- `ion recordings` — 列出所有录制
+- 复用 FauxProvider 作为回放引擎（`load_script` + FIFO 队列）
+- 路径穿越防御 + 并发 lock + 文件权限（0600/0700）
+- request_hash 记录（Phase 2 strict 校验铺路）
+- **测试**: 11 单元 + 11 E2E ✅
+
+### 🧠 Memory V0.2（跨项目记忆 Agent）
+
+- **单例扩展机制** — `is_singleton()` + `singleton_key()` + 5 个生命周期钩子
+  - `on_singleton_init` / `on_user_join` / `on_user_leave` / `on_last_user_gone` / `on_singleton_shutdown`
+  - 引用计数由内核维护（Worker 崩溃不干掉单例）
+  - 只在 `ion serve` 加载（场景 3，选择 A）
+- `global-memory.db` — SQLite + FTS5 全文检索（跨项目）
+- `GlobalMemoryExtension` — 单例扩展（`singleton_key = "global-memory"`）
+- `global_memory_search` / `global_memory_save` — LLM 工具（用户 Worker 直接查全局库）
+- V0.1 → V0.2 自动迁移（JSON → SQLite）
+- extension_rpc 路由 — Manager 级直接调单例扩展
+- **测试**: 6 单元 + 8 E2E ✅
+
 ### 🧠 Memory 扩展 v0.1
 
 - `memory_save` — 主动保存记忆（LLM Tool + Extension RPC 双入口）
@@ -578,31 +630,19 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 
 | 套件 | 数量 | 覆盖 |
 |------|------|------|
-| lib tests (核心逻辑) | 90 | Agent/Permission/Retry/CommandGuard/Paths/Session/Worker/Memory |
-| backend_registry (路由层) | 20 | BackendRegistry/AppleContainerRuntime/路径规范化/glob |
-| command_guard (命令守卫) | 20 | whitelist/blacklist/open 三种模式 + 50+ 风险模式 |
-| wasm_extension (安全) | 10 | 路径穿越检查/safe_join/规范化 |
-| unit_rpc_test (Phase 1) | 20 | U1-U20 RPC 协议 + 会话存储 |
-| plugin_tests (Phase 1) | 17 | U21-U25 JSON/WASM/Plan/Todo 扩展 |
-| manager_integration (Phase 2-4) | 30 | I1-I32 Manager + Worker + 事件 + UI |
-| e2e_stress (Phase 5-6) | 20 | E1-E4 E2E + S1-S4 压力 + RT/Perm/Bash |
-| worktree_isolation | 6 | WT1-WT6 worktree 创建/隔离/清洗 |
-| child_worker | 3 | 子进程 Worker 通信 |
-| concurrency | 1 | 并发池 |
-| memory_e2e | 6 | Memory 扩展存储/搜索/注入/去重/路径净化 |
-| **小计 lib 单元测试** | **243** | 全部通过 ✅ |
-| apple_container_ci (CLI E2E) | 26 | 容器生命周期/命令/文件/IP/路由/多容器并行 |
-| p4_extension_ci (CLI E2E) | 9 | Extension 子 Worker 创建 + 通信 |
-| p4_events_ci (CLI E2E) | 7 | Extension 事件发射 + EventBus |
-| p2_hotreload_ci (CLI E2E) | 9 | PermissionExtension 热重载 |
-| p3_audit_ci (CLI E2E) | 7 | 审计日志持久化 |
-| p3_ui_ci (CLI E2E) | 6 | UI 系统 subscribe --ui + ui_respond |
-| cli_alignment_ci (CLI E2E) | 28 | pi CLI 对齐：flag/别名/语法/模式 |
-| compaction_ci (CLI E2E) | 10 | 会话压缩：持久化/触发/小模型 |
-| scenario2_ci (CLI E2E) | 27 | 场景 2 (--host)：启停/编排/worktree/converge/session恢复 |
-| team_e2e (CLI E2E) | 8 | Team 编排：coordinator→developer→reviewer |
-| workflow_ci (CLI E2E) | 15 | Workflow Engine：DSL校验/单stage/条件分支/上下文/多stage/断点恢复 |
-| **测试覆盖合计** | **395** | 全部通过 ✅ |
+| lib tests (核心逻辑) | 199 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker |
+| session_tree (单元) | 28 | resolve_current_leaf/get_tree/branch/rollback/checkout/compaction_safety |
+| session_tree (集成) | 4 | only-append 审计/branch 接 leaf/全操作序列 |
+| global_memory (单元) | 6 | FTS5 搜索/跨项目/重要性排序/软删除/ID 唯一 |
+| faux_test (ion-provider) | 22 | FauxProvider FIFO/工厂响应/流式/builder/complete/error |
+| record_replay_test (ion-provider) | 11 | RecordingProvider/ReplayProvider/load_script/lock/路径穿越 |
+| **小计 Rust 测试** | **270** | 全部通过 ✅ |
+| faux_scenarios_ci (CLI E2E) | 4 | 三场景 faux（直接执行/host/serve） |
+| record_replay_ci (CLI E2E) | 11 | 录制/回放/路径穿越/冲突/OVERWRITE/权限 |
+| crash_recovery_ci (CLI E2E) | 6 | stderr/exit_code/Dead/父通知 |
+| global_memory_ci (CLI E2E) | 8 | 单例生命周期/save/search/跨项目/软删除 |
+| session_tree_ci (CLI E2E) | 8 | 树展示/branch/rollback/only-append 审计 |
+| **测试覆盖合计** | **307** | 全部通过 ✅ |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
@@ -685,8 +725,14 @@ cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture
 │   ├── project-data/             ← 扩展项目级数据
 │   │   └── {hash}--{name}/
 │   └── cache/                    ← 缓存
+├── global-memory.db              ← 全局记忆库 (SQLite + FTS5, 跨项目)
 ├── worktree/                     ← Git worktree 隔离
 │   └── {session_id}/{project}/
+├── recordings/                   ← Record/Replay 录制
+│   └── {recording-id}/
+│       ├── trace.jsonl           ← LLM 响应序列
+│       ├── meta.json             ← 元信息
+│       └── .lock                 ← 录制锁
 └── tmp/                          ← 临时文件 (重启可回收)
     ├── ion-bash-{id}.log
     └── ion-tool-results/{slug}/
