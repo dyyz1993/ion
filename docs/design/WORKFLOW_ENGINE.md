@@ -1,7 +1,7 @@
 # Workflow Engine — 结构化交付流水线
 
-> **状态：设计稿** — DSL 语法 + 字段表 + 执行流程 + CLI Group。
-> 实现待启动。本文档是唯一权威定义。
+> **状态：已验证** — DSL 解析 + CLI (validate/run/status) + wf agent + 15 个 CI 用例全部通过。
+> 覆盖 W1 校验 / W2 单 stage / W3 条件分支 / W4 上下文 / W5 多 stage / W7 持久化。
 
 ---
 

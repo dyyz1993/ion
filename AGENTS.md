@@ -600,7 +600,8 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | compaction_ci (CLI E2E) | 10 | 会话压缩：持久化/触发/小模型 |
 | scenario2_ci (CLI E2E) | 27 | 场景 2 (--host)：启停/编排/worktree/converge/session恢复 |
 | team_e2e (CLI E2E) | 8 | Team 编排：coordinator→developer→reviewer |
-| **测试覆盖合计** | **380** | 全部通过 ✅ |
+| workflow_ci (CLI E2E) | 15 | Workflow Engine：DSL校验/单stage/条件分支/上下文/多stage/断点恢复 |
+| **测试覆盖合计** | **395** | 全部通过 ✅ |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
@@ -620,13 +621,13 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 - Memory 扩展 v0.2 (SQLite 存储 / FTS 检索 / Active Memory sub-agent)
 - 真实代码审查 E2E (当前用算术题代替)
 
-**P8 - Workflow Engine (设计完成，待实现):**
+**P8 - Workflow Engine:** ✅ 已验证
 - DSL: workflow.yaml 结构化 stage 定义（id/agent/task/gate/if/loop_back/cleanup/outputs）
 - 条件分支: `if: stages.X.status == 'done'` / `context.xxx == true` / `always`
 - 上下文传递: `context:` 全局段 + `{{context.xxx}}` 模板变量 + `outputs:` 写入
 - 持久化: yaml 即定义又即状态，断点恢复 + Agent 自写 workflow
 - CLI: `ion workflow validate/run/status`
-- CI: Group W1-W7 共 28 个测试用例
+- CI: workflow_ci.sh 15 个测试用例全部通过（W1-W7）
 - 详细设计: [docs/design/WORKFLOW_ENGINE.md](./docs/design/WORKFLOW_ENGINE.md)
 - 内核已就绪: GateDecision + on_gate_check + spawn_worker + worktree（不需要改内核）
 
