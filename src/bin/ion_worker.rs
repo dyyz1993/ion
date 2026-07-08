@@ -166,8 +166,9 @@ async fn main() {
 	        compact_config: CompactConfig::default(),
 	        api_key: Some(api_key.clone()),
 		        response_format: None, thinking: None,
-		    compact_model_id: None,
-		    retry_config: Some(ion::retry::RetryConfig::default()),
+			    compact_model_id: None,
+		    retry_on_no_tool_use: 1,
+			    retry_config: Some(ion::retry::RetryConfig::default()),
 	    };
 
     let registry = Arc::new(registry);

@@ -711,6 +711,7 @@ fn build_agent_config(eff: &EffectiveConfig) -> AgentConfig {
         response_format: if eff.json { Some("json_object".into()) } else { None },
         thinking: eff.thinking.clone(),
         compact_model_id: eff.compact_model.clone(),
+        retry_on_no_tool_use: 1,
         retry_config: None,
     }
 }

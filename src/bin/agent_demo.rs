@@ -166,6 +166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             response_format: None,
             thinking: None,
             compact_model_id: None,
+            retry_on_no_tool_use: 0,
             retry_config: None,
         },
     );

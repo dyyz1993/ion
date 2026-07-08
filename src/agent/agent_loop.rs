@@ -24,6 +24,10 @@ pub struct AgentConfig {
     pub thinking: Option<String>,
     /// Model ID to use for compaction summarization (defaults to main model)
     pub compact_model_id: Option<String>,
+    /// Max consecutive turns that the LLM can reply without calling any tools
+    /// before the system forces a retry with a warning (0 = disabled).
+    /// Helps reduce hallucinations where the LLM says "file created" without calling write.
+    pub retry_on_no_tool_use: u32,
     /// 高级重试配置（可选，覆盖上面的简单配置）
     pub retry_config: Option<crate::retry::RetryConfig>,
 }
@@ -41,6 +45,7 @@ impl Default for AgentConfig {
             response_format: None,
             thinking: None,
             compact_model_id: None,
+            retry_on_no_tool_use: 1,
             retry_config: None,
         }
     }
@@ -401,6 +406,7 @@ impl Agent {
 
     async fn inner_loop(&mut self) -> AgentResult<StopReason> {
         let max_turns = self.config.max_turns.unwrap_or(u64::MAX);
+        let mut no_tool_retries = 0u32;
         for turn in 0..max_turns {
             self.turn_index = turn;
             self.check_pause().await?;
@@ -536,6 +542,34 @@ impl Agent {
                             stop_reason: Some(format!("{stop_reason:?}")),
                         })
                         .await?;
+
+                    // ── 反幻觉重试：如果 LLM 没调任何工具就返回 → 重试 ──
+                    // LLM 可能说"已创建文件"但实际没调 write 工具。
+                    // 检测：stop_reason=Stop（不是 ToolUse）+ 没有任何 ToolCallEnd 事件
+                    let tool_calls_present = events.iter().any(|e| matches!(e, StreamEvent::ToolCallEnd { .. }));
+                    if stop_reason == StopReason::Stop
+                        && !tool_calls_present
+                        && self.config.retry_on_no_tool_use > 0
+                        && no_tool_retries < self.config.retry_on_no_tool_use
+                    {
+                        no_tool_retries += 1;
+                        tracing::warn!(
+                            "LLM responded without tool calls (retry {}/{})",
+                            no_tool_retries, self.config.retry_on_no_tool_use
+                        );
+                        self.messages.push(Message::User(UserMessage {
+                            role: "user".into(),
+                            content: vec![ContentBlock::Text(TextContent {
+                                text: "WARNING: Your previous response did not call any tools! \
+                                      You MUST use the write/edit tools to create or modify files. \
+                                      Do not just describe what you would do — actually execute the tools.\n\
+                                      Try again now.".into(),
+                                text_signature: None,
+                            })],
+                            timestamp: now_ms(),
+                        }));
+                        continue;
+                    }
 
                     return Ok(stop_reason);
                 }
