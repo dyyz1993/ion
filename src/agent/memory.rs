@@ -165,7 +165,12 @@ impl MemoryStore {
         let outline = if sanitized.is_empty() { "auto" } else { &sanitized };
         self.ensure_dirs();
         let mut entries = self.read_outline(outline);
-        let next_id = format!("mem_{}", entries.len() + 1);
+        // ID 生成：基于已有 mem_N 的最大 N + 1（修 bug：原来用 len+1，删除后再加会重复）
+        let max_n = entries.iter()
+            .filter_map(|e| e.id.strip_prefix("mem_").and_then(|n| n.parse::<usize>().ok()))
+            .max()
+            .unwrap_or(0);
+        let next_id = format!("mem_{}", max_n + 1);
         let entry = MemoryEntry {
             id: next_id.clone(),
             content: content.to_string(),
@@ -199,12 +204,19 @@ impl MemoryStore {
         for oid in outlines {
             for e in self.read_outline(&oid) {
                 if e.archived { continue; }
-                // 匹配规则：用户输入包含记忆的关键词（不是记忆内容包含用户输入原文）
                 if q.is_empty() { results.push(e); continue; }
-                let tag_match = e.tags.iter().any(|t| q.contains(&t.to_lowercase()));
-                let cat_match = !e.category.is_empty() && q.contains(&e.category.to_lowercase());
-                let desc_match = !e.description.is_empty() && q.contains(&e.description.to_lowercase());
-                if tag_match || cat_match || desc_match {
+                // 匹配规则：双向匹配（query 包含字段值 OR 字段值包含 query）
+                // 覆盖两种场景：
+                //   1. 用户输入长文本含关键词（如"用 Rust 写代码"命中 tag "rust"）
+                //   2. 用户精确搜索（如搜"rust"命中含"rust"的 content）
+                let content_match = e.content.to_lowercase().contains(&q) || q.contains(&e.content.to_lowercase());
+                let desc_match = !e.description.is_empty() && (e.description.to_lowercase().contains(&q) || q.contains(&e.description.to_lowercase()));
+                let cat_match = !e.category.is_empty() && (e.category.to_lowercase().contains(&q) || q.contains(&e.category.to_lowercase()));
+                let tag_match = e.tags.iter().any(|t| {
+                    let tl = t.to_lowercase();
+                    tl.contains(&q) || q.contains(&tl)
+                });
+                if content_match || desc_match || cat_match || tag_match {
                     results.push(e);
                 }
             }
