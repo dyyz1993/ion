@@ -295,6 +295,119 @@ impl Tool for EchoTool {
 }
 
 // ---------------------------------------------------------------------------
+// BranchSession tool — Session Tree 分支/回滚（Agent 自主调用）
+// ---------------------------------------------------------------------------
+
+pub struct BranchSessionTool;
+
+#[async_trait]
+impl Tool for BranchSessionTool {
+    fn name(&self) -> &str {
+        "branch_session"
+    }
+
+    fn description(&self) -> &str {
+        "Branch or rollback within the current session's message tree. \
+         The original path is preserved (only-append). \
+         Use this to explore alternative approaches or undo a wrong direction."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "from_entry": {
+                    "type": "string",
+                    "description": "Entry ID to branch from (defaults to current leaf)"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Optional name for the branch"
+                },
+                "is_rollback": {
+                    "type": "boolean",
+                    "description": "If true, treat as rollback (records a tombstone). Default false."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Reason for rollback (only used when is_rollback=true, plain text)"
+                }
+            },
+            "required": []
+        })
+    }
+
+    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .map_err(|e| AgentError::Tool(format!("cwd error: {}", e)))?;
+
+        // 读当前 session 文件
+        let path = crate::session_jsonl::session_path(&cwd);
+        let entries: Vec<serde_json::Value> = match std::fs::read_to_string(&path) {
+            Ok(content) => content.lines()
+                .filter(|l| !l.trim().is_empty())
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .collect(),
+            Err(_) => {
+                return Ok("❌ no session file found in current directory".into());
+            }
+        };
+
+        let is_rollback = args.get("is_rollback").and_then(|v| v.as_bool()).unwrap_or(false);
+        let current_leaf = crate::session_tree::resolve_current_leaf(&entries);
+
+        // 目标 entry：from_entry 参数，或当前 leaf
+        let target = args.get("from_entry")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| current_leaf.clone())
+            .ok_or_else(|| AgentError::Tool(
+                "no from_entry specified and no current leaf found".into()
+            ))?;
+
+        // 验证 entry 存在
+        if !crate::session_tree::entry_exists(&entries, &target) {
+            return Ok(format!("❌ entry '{}' not found in session", target));
+        }
+
+        // compaction 安全检查
+        if let Some(c_id) = crate::session_tree::check_compaction_safety(&entries, &target) {
+            return Ok(format!(
+                "❌ Cannot branch at {}: it is before a compaction point ({}). \
+                 Branching across compaction loses summarized context.",
+                target, c_id
+            ));
+        }
+
+        // 执行 branch 或 rollback
+        let new_entries = if is_rollback {
+            let reason = args.get("reason").and_then(|v| v.as_str());
+            crate::session_tree::make_rollback(&target, current_leaf.as_deref(), reason)
+                .map_err(|e| AgentError::Tool(e))?
+        } else {
+            let name = args.get("name").and_then(|v| v.as_str());
+            crate::session_tree::make_branch(&target, name)
+                .map_err(|e| AgentError::Tool(e))?
+        };
+
+        // 追加到文件（only-append）
+        for e in &new_entries {
+            crate::session_jsonl::append_raw_entry(&cwd, e);
+        }
+
+        // 构造反馈
+        let label = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let op = if is_rollback { "rollback" } else { "branch" };
+        let label_info = if label.is_empty() { String::new() } else { format!(", labeled: {}", label) };
+        Ok(format!(
+            "✅ {}: moved leaf to {}{}\nNext message will continue from this branch point.",
+            op, target, label_info
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
