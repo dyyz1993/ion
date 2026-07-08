@@ -619,6 +619,16 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 - Memory 扩展 v0.2 (SQLite 存储 / FTS 检索 / Active Memory sub-agent)
 - 真实代码审查 E2E (当前用算术题代替)
 
+**P8 - Workflow Engine (设计完成，待实现):**
+- DSL: workflow.yaml 结构化 stage 定义（id/agent/task/gate/if/loop_back/cleanup/outputs）
+- 条件分支: `if: stages.X.status == 'done'` / `context.xxx == true` / `always`
+- 上下文传递: `context:` 全局段 + `{{context.xxx}}` 模板变量 + `outputs:` 写入
+- 持久化: yaml 即定义又即状态，断点恢复 + Agent 自写 workflow
+- CLI: `ion workflow validate/run/status`
+- CI: Group W1-W7 共 28 个测试用例
+- 详细设计: [docs/design/WORKFLOW_ENGINE.md](./docs/design/WORKFLOW_ENGINE.md)
+- 内核已就绪: GateDecision + on_gate_check + spawn_worker + worktree（不需要改内核）
+
 **P7 - 多 Provider 协议测试待办:**
 
 已实现 4 个 provider + transform_messages，单元测试 37 个全过，e2e 真实 API 测试 4 个全过（Anthropic z.ai/glm-4.6 + OpenAI OpenCODE/deepseek-v4-flash）。
