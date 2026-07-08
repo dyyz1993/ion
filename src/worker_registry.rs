@@ -58,6 +58,12 @@ pub struct WorkerRecord {
     pub log_short: Option<String>,
     /// Model size / context window info
     pub model_size: Option<String>,
+    /// Worker 退出码（0 = 正常, 非0 = 异常退出, None = 尚未退出）
+    pub exit_code: Option<i32>,
+    /// 退出原因文本（stderr 最后几行摘要）
+    pub exit_reason: Option<String>,
+    /// stderr 日志文件路径
+    pub stderr_path: Option<String>,
 }
 
 /// Worktree isolation config (specified at worker creation).
@@ -248,7 +254,7 @@ impl WorkerRegistry {
             .args(&cmd_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .current_dir(&worktree_path);
 
         // 传 ION_PROJECT_ROOT 让子进程能找到项目级 .ion/config.json
@@ -280,6 +286,28 @@ impl WorkerRegistry {
 
         let stdin = child.stdin.take().ok_or("no stdin")?;
         let stdout = child.stdout.take().ok_or("no stdout")?;
+        let stderr = child.stderr.take().ok_or("no stderr")?;
+
+        // ── stderr 捕获（崩溃诊断用）──
+        let stderr_path = std::env::temp_dir().join(format!("ion-worker-{}.stderr", worker_id));
+        let stderr_wid = worker_id.clone();
+        let stderr_path_c = stderr_path.clone();
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            use std::io::Write;
+            let reader = tokio::io::BufReader::new(stderr);
+            let mut lines = reader.lines();
+            if let Some(parent) = stderr_path_c.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            while let Ok(Some(line)) = lines.next_line().await {
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true).append(true).open(&stderr_path_c)
+                {
+                    let _ = writeln!(f, "{}", line);
+                }
+            }
+        });
 
         let parent_tx = config.parent.as_ref().and_then(|pid| {
             self.workers.get(pid).and_then(|w| {
@@ -313,6 +341,9 @@ impl WorkerRegistry {
             latest_output: VecDeque::with_capacity(5),
             log_short: None,
             model_size: None,
+            exit_code: None,
+            exit_reason: None,
+            stderr_path: None,
         };
 
         // Register in parent's children list
@@ -356,7 +387,12 @@ impl WorkerRegistry {
 
         self.workers.insert(worker_id.clone(), record);
 
-		        // Start stdout reader task (小助手 + 对讲机)
+        // 存 stderr 日志路径到 record
+        if let Some(record) = self.workers.get_mut(&worker_id) {
+            record.stderr_path = Some(stderr_path.to_string_lossy().to_string());
+        }
+
+			        // Start stdout reader task (小助手 + 对讲机)
 		        // 持续读 worker stdout：
 		        // 1. event 消息 → 直接转发给 event_subscribers（subscribe session 流）
 		        // 2. 所有消息 → stdout_tx（给 send_to_worker 等 RPC 消费）
@@ -446,27 +482,91 @@ impl WorkerRegistry {
 	                }
 	            }
 		            // Worker exited — clean up registry
-		            tracing::warn!("[{wid}] stdout closed, cleaning up");
-		            let mut reg = sub_registry.lock().await;
-		            if let Some(mut record) = reg.workers.remove(&sub_wid) {
-		                // Kill child process if still alive
-		                if let Some(ref mut child) = record.child_process {
-		                    let _ = child.start_kill();
-		                }
-		                // Remove from channels
-		                for ch in &record.channels {
-		                    if let Some(subs) = reg.channels.get_mut(ch) {
-		                        subs.retain(|id| id != &sub_wid);
-		                    }
-		                }
-		                // Remove from parent's children
-		                if let Some(ref parent_id) = record.parent {
-		                    if let Some(parent) = reg.workers.get_mut(parent_id) {
-		                        parent.children.retain(|id| id != &sub_wid);
-		                    }
-		                }
-		                reg.broadcast_overview();
-		            }
+			            tracing::warn!("[{wid}] stdout closed, cleaning up");
+			            let mut reg = sub_registry.lock().await;
+			            // 先读 exit code
+			            let exit_code = reg.workers.get_mut(&sub_wid)
+			                .and_then(|r| r.child_process.as_mut())
+			                .and_then(|c| c.try_wait().ok().flatten())
+			                .and_then(|s| s.code());
+			            if let Some(record) = reg.workers.get_mut(&sub_wid) {
+			                record.exit_code = exit_code;
+			            }
+
+			            // exit_code == 0/None → 正常退出，清理（同现状）
+			            // exit_code != 0 → 崩溃，标 Dead + 保留 + 通知父
+			            if exit_code == Some(0) || exit_code.is_none() {
+			                // 正常退出或未知 → 清理
+			                if let Some(mut record) = reg.workers.remove(&sub_wid) {
+			                    if let Some(ref mut child) = record.child_process {
+			                        let _ = child.start_kill();
+			                    }
+			                    for ch in &record.channels {
+			                        if let Some(subs) = reg.channels.get_mut(ch) {
+			                            subs.retain(|id| id != &sub_wid);
+			                        }
+			                    }
+			                    if let Some(ref parent_id) = record.parent {
+			                        if let Some(parent) = reg.workers.get_mut(parent_id) {
+			                            parent.children.retain(|id| id != &sub_wid);
+			                        }
+			                    }
+			                }
+			            } else {
+			                // 非零退出 → 崩溃！标 Dead，保留 record
+			                if let Some(record) = reg.workers.get_mut(&sub_wid) {
+			                    record.status = WorkerStatus::Dead;
+			                    // 读 stderr 日志最后几行作为 exit_reason
+			                    if let Some(ref stderr_path) = record.stderr_path {
+			                        if let Ok(content) = std::fs::read_to_string(stderr_path) {
+			                            let tail: Vec<&str> = content.lines().rev().take(10).collect::<Vec<_>>();
+			                            let tail: Vec<&str> = tail.into_iter().rev().collect();
+			                            let snippet = tail.join("\n");
+			                            if !snippet.is_empty() {
+			                                record.exit_reason = Some(format!("exit={}: {}", exit_code.unwrap_or(-1), snippet));
+			                            } else {
+			                                record.exit_reason = Some(format!("exit={}", exit_code.unwrap_or(-1)));
+			                            }
+			                        } else {
+			                            record.exit_reason = Some(format!("exit={}", exit_code.unwrap_or(-1)));
+			                        }
+			                    } else {
+			                        record.exit_reason = Some(format!("exit={}", exit_code.unwrap_or(-1)));
+			                    }
+				                    // 通知父 Worker（先 clone 需要的数据，释放 borrow）
+				                    let crash_parent = record.parent.clone();
+				                    let crash_session = record.session_id.clone();
+				                    let crash_reason = record.exit_reason.clone();
+				                    let crash_channels = record.channels.clone();
+				                    drop(record); // 释放 mutable borrow
+				                    if let Some(ref parent_id) = crash_parent {
+				                        let crash_event = serde_json::json!({
+				                            "type": "child_crashed",
+				                            "worker_id": sub_wid,
+				                            "session_id": crash_session,
+				                            "exit_code": exit_code,
+				                            "exit_reason": crash_reason,
+				                        });
+				                        // 发到父的 parent_event_tx
+				                        if let Some(parent) = reg.workers.get(parent_id.as_str()) {
+				                            if let Some(ref tx) = parent.parent_event_tx {
+				                                let _ = tx.try_send(crash_event);
+				                            }
+				                        }
+				                        // 从父的 children 列表中移除（子已死）
+				                        if let Some(parent) = reg.workers.get_mut(parent_id.as_str()) {
+				                            parent.children.retain(|id| id != &sub_wid);
+				                        }
+				                    }
+				                    // 从 channels 移除
+				                    for ch in &crash_channels {
+				                        if let Some(subs) = reg.channels.get_mut(ch.as_str()) {
+				                            subs.retain(|id| id != &sub_wid);
+				                        }
+				                    }
+			                }
+			            }
+			            reg.broadcast_overview();
 		        });
 
 		        // ── Peer 模式：内核自动追加"汇报指令段"到 initial_prompt ──
