@@ -574,7 +574,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 **P5 - 包管理（低优先级）:**
 - install/remove/update 子命令
 
-### 测试统计 (2026-07-07)
+### 测试统计 (2026-07-09)
 
 | 套件 | 数量 | 覆盖 |
 |------|------|------|

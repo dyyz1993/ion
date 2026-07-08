@@ -1,6 +1,6 @@
 # CLI 落地路线图
 
-> **状态：排期中** — 基于 CLI_ARCHITECTURE.md 设计，按相位划分落地顺序。
+> **状态：已完成** — Phase 0-5 全部落地。`ion serve` / `ion --host` / 场景 2 编排 / 递归 idle 全部可用。
 
 ---
 
