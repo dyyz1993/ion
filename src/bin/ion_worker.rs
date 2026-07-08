@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use ion::agent::agent_loop::{Agent, AgentConfig};
 use ion::agent::compact::CompactConfig;
-use ion::agent::tool::{ReadTool, WriteTool, EditTool, BashTool, GrepTool, FindTool, LsTool, CalculatorTool, EchoTool, GitStatusTool, GitDiffTool, GitLogTool, GitAddTool, GitCommitTool, GitBranchTool, SpawnWorkerTool, SendToWorkerTool, ResumeWorkerTool, AwaitWorkerTool, ChannelSendTool, KillWorkerTool, BranchSessionTool, ToolRegistry};
+use ion::agent::tool::{ReadTool, WriteTool, EditTool, BashTool, GrepTool, FindTool, LsTool, CalculatorTool, EchoTool, GitStatusTool, GitDiffTool, GitLogTool, GitAddTool, GitCommitTool, GitBranchTool, SpawnWorkerTool, SendToWorkerTool, ResumeWorkerTool, AwaitWorkerTool, ChannelSendTool, KillWorkerTool, BranchSessionTool, GlobalMemorySearchTool, GlobalMemorySaveTool, ToolRegistry};
 use ion::wasm_extension::{Registry, ToolAdapter};
 use ion::session_jsonl;
 use ion_provider::registry::{ApiRegistry, ProviderFactory};
@@ -174,6 +174,8 @@ async fn main() {
     tools.register(Box::new(CalculatorTool));
     tools.register(Box::new(EchoTool));
     tools.register(Box::new(BranchSessionTool));
+    tools.register(Box::new(GlobalMemorySearchTool));
+    tools.register(Box::new(GlobalMemorySaveTool));
     tools.register(Box::new(GitStatusTool));
     tools.register(Box::new(GitDiffTool));
     tools.register(Box::new(GitLogTool));

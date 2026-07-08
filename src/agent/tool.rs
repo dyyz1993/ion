@@ -1097,3 +1097,95 @@ impl Tool for KillWorkerTool {
         Ok(result.to_string())
     }
 }
+
+// ---------------------------------------------------------------------------
+// GlobalMemory tools — 跨项目记忆检索（V0.2，serve 模式可用）
+// ---------------------------------------------------------------------------
+
+pub struct GlobalMemorySearchTool;
+
+#[async_trait]
+impl Tool for GlobalMemorySearchTool {
+    fn name(&self) -> &str { "global_memory_search" }
+
+    fn description(&self) -> &str {
+        "Search the global cross-project memory database using FTS5 full-text search. \
+         Available in serve mode (ion serve). Returns matching entries from all projects."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Full-text search query"},
+                "project": {"type": "string", "description": "Optional: limit to a specific project"}
+            },
+            "required": ["query"]
+        })
+    }
+
+    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        let query = args.get("query").and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing 'query'".into()))?;
+        let project = args.get("project").and_then(|v| v.as_str());
+        let db_path = crate::global_memory::GlobalMemoryStore::db_path();
+        let store = crate::global_memory::GlobalMemoryStore::open(&db_path)
+            .map_err(|e| AgentError::Tool(format!("open global memory: {}", e)))?;
+        let results = store.search(query, project)
+            .map_err(|e| AgentError::Tool(e))?;
+        if results.is_empty() {
+            return Ok("No matching memories found.".into());
+        }
+        let mut out = format!("Found {} memories:\n", results.len());
+        for (i, e) in results.iter().enumerate() {
+            out.push_str(&format!(
+                "{}. [{}] {} (importance:{}, category:{})\n",
+                i + 1, e.project, e.content.chars().take(80).collect::<String>(),
+                e.importance, e.category
+            ));
+        }
+        Ok(out)
+    }
+}
+
+pub struct GlobalMemorySaveTool;
+
+#[async_trait]
+impl Tool for GlobalMemorySaveTool {
+    fn name(&self) -> &str { "global_memory_save" }
+
+    fn description(&self) -> &str {
+        "Save a memory to the global cross-project database. \
+         Use for cross-session/cross-project knowledge that should persist."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "Memory content"},
+                "category": {"type": "string", "description": "Category: preference/decision/note"},
+                "tags": {"type": "string", "description": "Comma-separated tags"},
+                "project": {"type": "string", "description": "Project name"},
+                "importance": {"type": "integer", "description": "1-10 (default 5)"}
+            },
+            "required": ["content", "project"]
+        })
+    }
+
+    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        let content = args.get("content").and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing 'content'".into()))?;
+        let project = args.get("project").and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing 'project'".into()))?;
+        let category = args.get("category").and_then(|v| v.as_str()).unwrap_or("");
+        let tags = args.get("tags").and_then(|v| v.as_str()).unwrap_or("");
+        let importance = args.get("importance").and_then(|v| v.as_i64()).unwrap_or(5) as i32;
+        let db_path = crate::global_memory::GlobalMemoryStore::db_path();
+        let store = crate::global_memory::GlobalMemoryStore::open(&db_path)
+            .map_err(|e| AgentError::Tool(format!("open global memory: {}", e)))?;
+        let id = store.save(content, category, tags, project, importance)
+            .map_err(|e| AgentError::Tool(e))?;
+        Ok(format!("✅ Saved to global memory: {}", id))
+    }
+}
