@@ -174,6 +174,30 @@ struct Cli {
     #[arg(long, global = true)]
     fork: Option<String>,
 
+    /// Branch from a specific entry in the current session (Session Tree)
+    #[arg(long, global = true, value_name = "ENTRY_ID")]
+    branch: Option<String>,
+
+    /// Name the branch created by --branch
+    #[arg(long, global = true, value_name = "NAME", requires = "branch")]
+    branch_name: Option<String>,
+
+    /// Switch to a named branch (Session Tree)
+    #[arg(long, global = true, value_name = "NAME")]
+    checkout: Option<String>,
+
+    /// Rollback to a specific entry (path preserved, Session Tree)
+    #[arg(long, global = true, value_name = "ENTRY_ID")]
+    rollback: Option<String>,
+
+    /// Reason for rollback (recorded as tombstone, plain text)
+    #[arg(long, global = true, requires = "rollback")]
+    rollback_reason: Option<String>,
+
+    /// Fork a new session from a specific leaf: <SESSION_ID>/<ENTRY_ID>
+    #[arg(long, global = true, value_name = "SID/ENTRY_ID")]
+    fork_from_leaf: Option<String>,
+
     /// Session ID to resume or continue
     #[arg(long, global = true)]
     session: Option<String>,
@@ -305,6 +329,11 @@ enum Commands {
     },
     /// List all sessions with stats
     Sessions,
+    /// Session Tree operations (branch tree / named branches / path)
+    Session {
+        #[command(subcommand)]
+        action: SessionAction,
+    },
     /// List all LLM recordings (Record/Replay)
     Recordings,
     /// List available agents
@@ -322,6 +351,21 @@ enum Commands {
     Config {
         #[command(subcommand)]
         action: ConfigAction,
+    },
+}
+
+/// Session Tree 子命令
+#[derive(Subcommand, Clone)]
+enum SessionAction {
+    /// Show the message tree of a session
+    Tree {
+        /// Session ID (or prefix)
+        session: String,
+    },
+    /// List named branches of a session
+    Branches {
+        /// Session ID (or prefix)
+        session: String,
     },
 }
 
@@ -1581,6 +1625,286 @@ async fn cmd_sessions() {
     );
 }
 
+/// 应用 Session Tree 操作（branch/checkout/rollback）。
+/// 在 agent.run 之前调用：往 session 文件追加 leaf_pointer（+可选 label/tombstone）。
+/// 后续消息通过 leaf 感知的 append 正确接在新分支上。
+fn apply_session_tree_ops(cli: &Cli, session_id: &str) {
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    // --checkout <name>
+    if let Some(name) = &cli.checkout {
+        let entries = load_session_entries(session_id);
+        match entries {
+            Some(ents) => {
+                match ion::session_tree::make_checkout(&ents, name) {
+                    Ok(new_entries) => {
+                        for e in &new_entries {
+                            ion::session_jsonl::append_raw_entry(&cwd, e);
+                        }
+                        eprintln!("[checkout] switched to branch '{}'", name);
+                    }
+                    Err(e) => {
+                        eprintln!("❌ {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            None => {
+                eprintln!("❌ cannot checkout: session {} not found", session_id);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    // --rollback <id> [--rollback-reason <text>]
+    if let Some(rollback_to) = &cli.rollback {
+        let entries = load_session_entries(session_id);
+        let ents = entries.unwrap_or_default();
+        if !ion::session_tree::entry_exists(&ents, rollback_to) {
+            eprintln!("❌ entry '{}' not found in session {}", rollback_to, session_id);
+            std::process::exit(1);
+        }
+        let old_leaf = ion::session_tree::resolve_current_leaf(&ents);
+        let new_entries = ion::session_tree::make_rollback(
+            rollback_to,
+            old_leaf.as_deref(),
+            cli.rollback_reason.as_deref(),
+        ).unwrap();
+        for e in &new_entries {
+            ion::session_jsonl::append_raw_entry(&cwd, e);
+        }
+        eprintln!("[rollback] moved leaf to {}", rollback_to);
+        if cli.rollback_reason.is_some() {
+            eprintln!("[rollback] tombstone recorded");
+        }
+        return;
+    }
+
+    // --branch <id> [--branch-name <name>]
+    if let Some(from_id) = &cli.branch {
+        let entries = load_session_entries(session_id);
+        let ents = entries.unwrap_or_default();
+        if !ion::session_tree::entry_exists(&ents, from_id) {
+            eprintln!("❌ entry '{}' not found in session {}", from_id, session_id);
+            std::process::exit(1);
+        }
+        let new_entries = ion::session_tree::make_branch(from_id, cli.branch_name.as_deref()).unwrap();
+        for e in &new_entries {
+            ion::session_jsonl::append_raw_entry(&cwd, e);
+        }
+        eprintln!("[branch] moved leaf to {}", from_id);
+        if let Some(name) = &cli.branch_name {
+            eprintln!("[branch] labeled: {} → {}", name, from_id);
+        }
+        return;
+    }
+}
+
+/// 执行 fork-from-leaf：<SESSION_ID>/<ENTRY_ID>
+/// 提取 root→entry 的路径，写入新 session 文件（parentSession 记录源）。
+/// 返回新 session id。
+fn do_fork_from_leaf(spec: &str) -> Option<String> {
+    let (src_sid, leaf_id) = spec.split_once('/')?;
+    let src_sid = resolve_session_id_simple(src_sid);
+    let entries = load_session_entries(&src_sid)?;
+    // 提取 root→leaf 路径
+    let path = ion::session_tree::get_branch_path(&entries, leaf_id);
+    if path.is_empty() {
+        eprintln!("❌ leaf '{}' not found in session {}", leaf_id, src_sid);
+        return None;
+    }
+    // 生成新 session
+    let new_id = uuid::Uuid::new_v4().to_string();
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    // 找源文件路径（用于 parentSession）
+    let src_path = find_session_file(&src_sid);
+    // 写新文件
+    let new_path = ion::session_jsonl::session_path(&cwd);
+    if let Some(parent) = new_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(&new_path) {
+        // header
+        let header = serde_json::json!({
+            "type": "session", "version": 3, "id": new_id,
+            "timestamp": ion::session_jsonl::timestamp_iso(),
+            "cwd": cwd,
+            "parentSession": src_path,
+        });
+        let _ = writeln!(f, "{}", serde_json::to_string(&header).unwrap_or_default());
+        // path entries（保留原 id 和 parentId）
+        for e in &path {
+            let _ = writeln!(f, "{}", serde_json::to_string(e).unwrap_or_default());
+        }
+    }
+    let _ = std::fs::write(ion::session_jsonl::last_session_path(), &new_id);
+    eprintln!("[fork-from-leaf] new session: {} (parent: {}, path: {} entries)", new_id, src_sid, path.len());
+    Some(new_id)
+}
+
+/// 找 session 文件的绝对路径
+fn find_session_file(sid: &str) -> Option<String> {
+    let index = ion::session_index::SessionIndex::load();
+    let meta = index.get(sid)?;
+    let cwd = meta.project.as_deref()?;
+    ion::session_jsonl::session_path(cwd).to_str().map(|s| s.to_string())
+}
+
+async fn cmd_session(action: SessionAction) {
+    match action {
+        SessionAction::Tree { session } => {
+            // Resolve session id (prefix match)
+            let sid = resolve_session_id_simple(&session);
+            let entries = load_session_entries(&sid);
+            match entries {
+                None => {
+                    eprintln!("❌ session '{}' not found or empty", sid);
+                }
+                Some(ents) => {
+                    print_session_tree(&ents, &sid);
+                }
+            }
+        }
+        SessionAction::Branches { session } => {
+            let sid = resolve_session_id_simple(&session);
+            let entries = load_session_entries(&sid);
+            match entries {
+                None => eprintln!("❌ session '{}' not found or empty", sid),
+                Some(ents) => {
+                    let branches = ion::session_tree::named_branches(&ents);
+                    let current = ion::session_tree::resolve_current_leaf(&ents);
+                    if branches.is_empty() {
+                        println!("No named branches in session {}", sid);
+                    } else {
+                        println!("{:<25} {:<15} {}", "NAME", "TARGET", "CURRENT");
+                        println!("{}", "-".repeat(50));
+                        for (name, target) in &branches {
+                            let is_current = current.as_deref() == Some(target.as_str());
+                            println!("{:<25} {:<15} {}",
+                                name, target,
+                                if is_current { "*" } else { "" });
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 简单解析 session id（支持前缀匹配）
+fn resolve_session_id_simple(input: &str) -> String {
+    if let Some((id, _)) = find_session_by_prefix(input) {
+        return id;
+    }
+    input.to_string()
+}
+
+/// 加载 session 的所有 entries（裸 JSON）
+fn load_session_entries(sid: &str) -> Option<Vec<serde_json::Value>> {
+    let content = load_session_raw_content(sid)?;
+    let mut entries = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        if let Ok(e) = serde_json::from_str::<serde_json::Value>(line) {
+            entries.push(e);
+        }
+    }
+    if entries.is_empty() { None } else { Some(entries) }
+}
+
+/// 读取 session 文件原始内容
+fn load_session_raw_content(sid: &str) -> Option<String> {
+    // 尝试直接路径
+    if sid.contains('/') || sid.ends_with(".jsonl") {
+        return std::fs::read_to_string(sid).ok();
+    }
+    // 通过 index 查 cwd，再算 session_path
+    let index = ion::session_index::SessionIndex::load();
+    let meta = index.get(sid)?;
+    let cwd = meta.project.as_deref()?;
+    let path = ion::session_jsonl::session_path(cwd);
+    if path.exists() {
+        return std::fs::read_to_string(&path).ok();
+    }
+    None
+}
+
+/// 打印 session 的消息树（ASCII）
+fn print_session_tree(entries: &[serde_json::Value], sid: &str) {
+    let tree = ion::session_tree::get_tree(entries);
+    let current_leaf = ion::session_tree::resolve_current_leaf(entries);
+    let cwd = entries.iter()
+        .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("session"))
+        .and_then(|h| h.get("cwd").and_then(|v| v.as_str()))
+        .unwrap_or("?");
+    println!("Session: {}", sid);
+    println!("cwd: {}", cwd);
+    println!();
+    if tree.is_empty() {
+        println!("(no messages)");
+        return;
+    }
+    for root in &tree {
+        print_tree_node(root, "", true, &current_leaf);
+    }
+    // 命名分支
+    let branches = ion::session_tree::named_branches(entries);
+    if !branches.is_empty() {
+        println!();
+        println!("命名分支:");
+        for (name, target) in &branches {
+            let is_current = current_leaf.as_deref() == Some(target.as_str());
+            println!("  {} → {} {}",
+                name, target,
+                if is_current { "[当前 leaf]" } else { "" });
+        }
+    }
+}
+
+fn print_tree_node(node: &ion::session_tree::TreeNode, prefix: &str, is_last: bool, current_leaf: &Option<String>) {
+    let entry = &node.entry;
+    let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+    let entry_type = entry.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+    // 消息摘要
+    let summary = if entry_type == "message" {
+        let role = entry.get("message")
+            .and_then(|m| m.get("role"))
+            .and_then(|r| r.as_str())
+            .unwrap_or("?");
+        let text = entry.get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_str())
+            .unwrap_or("");
+        let text = if text.len() > 40 { &text[..40] } else { text };
+        format!("[{}] \"{}\"", role, text)
+    } else {
+        format!("[{}]", entry_type)
+    };
+    let label = node.label.as_ref().map(|l| format!(" ← {}", l)).unwrap_or_default();
+    let is_current = current_leaf.as_deref() == Some(id);
+    let current_mark = if is_current { " ← [当前 leaf]" } else { "" };
+
+    let connector = if is_last { "└─ " } else { "├─ " };
+    println!("{}{}{} {}{}{}", prefix, connector, id, summary, label, current_mark);
+
+    let child_prefix = if is_last {
+        format!("{}   ", prefix)
+    } else {
+        format!("{}│  ", prefix)
+    };
+    let n = node.children.len();
+    for (i, child) in node.children.iter().enumerate() {
+        print_tree_node(child, &child_prefix, i == n - 1, current_leaf);
+    }
+}
+
 async fn cmd_recordings() {
     let dir = ion_provider::replay::recordings_dir();
     if !dir.exists() {
@@ -1874,6 +2198,24 @@ async fn main() {
 
     if !effective_message.is_empty() {
         let (session_id, preloaded) = resolve_session_id(&cli);
+
+        // ── Session Tree 操作：branch / checkout / rollback（在 agent.run 之前追加 leaf_pointer）──
+        if !cli.no_session && !session_id.is_empty() {
+            apply_session_tree_ops(&cli, &session_id);
+        }
+
+        // ── fork-from-leaf：从某 leaf 提取新 session ──
+        if let Some(spec) = &cli.fork_from_leaf {
+            if let Some(new_sid) = do_fork_from_leaf(spec) {
+                // 用新 session 继续
+                cmd_run(&eff, &eff.message, cli.no_tools, &new_sid, None, &cli.messages).await;
+                return;
+            } else {
+                eprintln!("❌ --fork-from-leaf '{}' failed", spec);
+                std::process::exit(1);
+            }
+        }
+
         cmd_run(&eff, &eff.message, cli.no_tools, &session_id, preloaded, &cli.messages).await;
         return;
     }
@@ -1911,6 +2253,7 @@ async fn main() {
             cmd_rpc(session.as_deref(), method, params).await;
         }
         Some(Commands::Sessions) => cmd_sessions().await,
+        Some(Commands::Session { action }) => cmd_session(action.clone()).await,
         Some(Commands::Recordings) => cmd_recordings().await,
         Some(Commands::Subscribe { session, extension, ui }) => cmd_subscribe(session.as_deref(), extension.as_deref(), *ui).await,
         Some(Commands::ListAgents) => cmd_list_agents().await,
