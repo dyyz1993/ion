@@ -16,7 +16,7 @@ ION 的扩展系统分两层：
 │  第二层：WASM 扩展                                    │
 │  wasmtime 沙箱隔离，多语言（编译到 wasm32-wasip1）     │
 │  注册工具 + 热更新 + 4 维数据存储                      │
-│  文件：src/plugin.rs                                  │
+│  文件：src/wasm_extension.rs                                  │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -40,16 +40,16 @@ ION 的扩展系统分两层：
 // 必须导出
 
 #[no_mangle]
-pub extern "C" fn plugin_version() -> u32
+pub extern "C" fn extension_version() -> u32
     // 返回版本号，目前仅做日志记录
 
 #[no_mangle]
-pub extern "C" fn plugin_init()
+pub extern "C" fn extension_init()
     // 在这里注册工具、恢复状态
     // 可调用宿主函数：host_register_tool、host_read_*_data
 
 #[no_mangle]
-pub extern "C" fn plugin_execute_tool(
+pub extern "C" fn extension_execute_tool(
     name_ptr: *const u8,  name_len: u32,      // 工具名
     args_ptr: *const u8,  args_len: u32,       // JSON 参数
     out_buf: *mut u8,     out_capacity: u32,    // 输出缓冲区
@@ -74,14 +74,14 @@ pub extern "C" fn plugin_execute_tool(
 ### 架构
 
 ```rust
-// src/plugin.rs
+// src/wasm_extension.rs
 pub struct ExtensionRegistry {
-    plugins: RwLock<HashMap<String, PluginEntry>>,
+    extensions: RwLock<HashMap<String, ExtensionEntry>>,
     pub ctx: RwLock<ExtensionContext>,
 }
 ```
 
-每个 `WasmCallingTool` 持有 `registry + plugin_path` 引用，不直接持有 `WasmExtension` 实例：
+每个 `WasmCallingTool` 持有 `registry + extension_path` 引用，不直接持有 `WasmExtension` 实例：
 
 ```
 WasmCallingTool ─→ ExtensionRegistry ─→ HashMap<path, Arc<Mutex<WasmExtension>>>
@@ -165,7 +165,7 @@ u32 host_list_global_data(out_buf: u32, out_capacity: u32);
 // todo-plugin 的伪代码：带持久化的 todo 工具
 
 #[no_mangle]
-pub extern "C" fn plugin_init() {
+pub extern "C" fn extension_init() {
     // 注册工具（同前）
     host_register_tool(...);
 
@@ -201,8 +201,8 @@ pub struct ExtensionContext {
 ```
 
 注入时机：
-- **CLI 模式：** `agent.run()` 前设置 `plugin_registry.ctx`
-- **Worker 模式：** `prompt` RPC 命令处理时设置 `plugin_registry.ctx`
+- **CLI 模式：** `agent.run()` 前设置 `registry.ctx`
+- **Worker 模式：** `prompt` RPC 命令处理时设置 `registry.ctx`
 
 ---
 
@@ -223,7 +223,7 @@ pub struct ExtensionContext {
 ```toml
 # Cargo.toml
 [package]
-name = "my-plugin"
+name = "my-extension"
 version = "0.1.0"
 edition = "2021"
 
@@ -267,10 +267,10 @@ fn host_register(name: &str, desc: &str, schema: &str) {
 }
 
 #[no_mangle]
-pub extern "C" fn plugin_version() -> u32 { 1 }
+pub extern "C" fn extension_version() -> u32 { 1 }
 
 #[no_mangle]
-pub extern "C" fn plugin_init() {
+pub extern "C" fn extension_init() {
     host_register(
         "my_tool",
         "Description of the tool",
@@ -279,7 +279,7 @@ pub extern "C" fn plugin_init() {
 }
 
 #[no_mangle]
-pub extern "C" fn plugin_execute_tool(
+pub extern "C" fn extension_execute_tool(
     _name_ptr: *const u8, _name_len: u32,
     _args_ptr: *const u8, _args_len: u32,
     out_buf: *mut u8, out_capacity: u32,
@@ -304,10 +304,10 @@ cargo build --target wasm32-wasip1 --release
 
 ```bash
 # CLI 模式
-ion --extension ./target/wasm32-wasip1/release/my_plugin.wasm "帮我执行 my_tool"
+ion --extension ./target/wasm32-wasip1/release/my_extension.wasm "帮我执行 my_tool"
 
 # Worker 模式 — 运行中热加载
-echo '{"id":"1","method":"extension_add","params":{"path":"/abs/to/my_plugin.wasm"}}' |
+echo '{"id":"1","method":"extension_add","params":{"path":"/abs/to/my_extension.wasm"}}' |
   ion-worker --mode rpc
 ```
 
@@ -317,7 +317,7 @@ echo '{"id":"1","method":"extension_add","params":{"path":"/abs/to/my_plugin.was
 
 | 文件 | 说明 |
 |------|------|
-| `src/plugin.rs` | WASM 扩展加载器、ExtensionRegistry、16 个宿主函数 |
+| `src/wasm_extension.rs` | WASM 扩展加载器、ExtensionRegistry、16 个宿主函数 |
 | `src/agent/extension.rs` | Rust 扩展 Extension trait（29 钩子） |
 | `src/worker_api.rs` | ExtensionApi（create_worker、channel_send 等） |
 | `src/paths.rs` | 数据存储路径定义（global/project/session/project_local） |
