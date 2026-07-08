@@ -8,6 +8,7 @@ pub mod error;
 pub mod event;
 pub mod event_bus;
 pub mod export;
+pub mod global_memory;
 pub mod ids;
 pub mod types;
 
