@@ -698,6 +698,42 @@ cat .ion/workflow.yaml  # 所有 status=done
 
 ---
 
+## 十A CI 测试 Group 补充（W2+/W3+/W4+/W6）
+
+以下 Group 在 `tests/workflow_ci.sh` 中实现，覆盖原有 Group 的边界场景。
+
+### Group W2+: gate 失败 + loop_back
+
+| # | 测试 | 验证点 |
+|---|------|--------|
+| W2-2a | retry workflow 校验通过 | gate max_retries + on_fail.loop_back 结构合法 |
+| W2-3a | abort workflow 校验通过 | gate 永远失败 + loop_back 结构合法 |
+| W2-3b | loop_back 配置可见 | validate 输出显示 loop_back 指向 |
+
+### Group W3+: if 条件分支扩展
+
+| # | 测试 | 验证点 |
+|---|------|--------|
+| W3-1 | if=true → 两 stage 都执行 | 真实 LLM：a.py + b.py 都创建 |
+| W3-3 | if:always workflow 校验 | commands stage + always 条件结构合法 |
+
+### Group W4+: 上下文 outputs 传递
+
+| # | 测试 | 验证点 |
+|---|------|--------|
+| W4-1 | context 初始值 → 文件内容 | `{{context.greeting}}` 在文件内容中可见 |
+| W4-2 | 多 context 值 → 多文件 | `{{context.file_a}}` + `{{context.file_b}}` 各创建一个文件 |
+
+### Group W6: cleanup
+
+| # | 测试 | 验证点 |
+|---|------|--------|
+| W6-1a | cleanup workflow 校验 | 含 `if: always` + `commands` 的 stage 合法 |
+| W6-2 | cleanup stage 可见 | validate 输出显示 cleanup stage |
+| W6-3 | worktree + cleanup 配置 | `worktree: true` + `cleanup.on_success: true` 结构合法 |
+
+---
+
 ## 十一、模板与速查
 
 ### 最小 workflow
