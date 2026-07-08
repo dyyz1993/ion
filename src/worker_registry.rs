@@ -533,24 +533,30 @@ impl WorkerRegistry {
 			                    } else {
 			                        record.exit_reason = Some(format!("exit={}", exit_code.unwrap_or(-1)));
 			                    }
-				                    // 通知父 Worker（先 clone 需要的数据，释放 borrow）
+				                    // 通知父 Worker + 推送 crash 事件到 event_subscribers
 				                    let crash_parent = record.parent.clone();
 				                    let crash_session = record.session_id.clone();
 				                    let crash_reason = record.exit_reason.clone();
 				                    let crash_channels = record.channels.clone();
+				                    // 推送 child_crashed 事件到 event_subscribers（让 drain_until_agent_end 能收到）
+				                    let crash_event = serde_json::json!({
+				                        "type": "child_crashed",
+				                        "worker_id": sub_wid,
+				                        "session_id": crash_session,
+				                        "exit_code": exit_code,
+				                        "exit_reason": crash_reason,
+				                    });
+				                    // 先推给所有 event_subscribers
+				                    let subs: Vec<_> = record.event_subscribers.iter().map(|s| s.clone()).collect();
+				                    for sub in &subs {
+				                        let _ = sub.try_send(crash_event.clone());
+				                    }
 				                    drop(record); // 释放 mutable borrow
+				                    // 也通过 parent_event_tx 通知父（如果它在等）
 				                    if let Some(ref parent_id) = crash_parent {
-				                        let crash_event = serde_json::json!({
-				                            "type": "child_crashed",
-				                            "worker_id": sub_wid,
-				                            "session_id": crash_session,
-				                            "exit_code": exit_code,
-				                            "exit_reason": crash_reason,
-				                        });
-				                        // 发到父的 parent_event_tx
 				                        if let Some(parent) = reg.workers.get(parent_id.as_str()) {
 				                            if let Some(ref tx) = parent.parent_event_tx {
-				                                let _ = tx.try_send(crash_event);
+				                                let _ = tx.try_send(crash_event.clone());
 				                            }
 				                        }
 				                        // 从父的 children 列表中移除（子已死）
@@ -1061,11 +1067,22 @@ impl WorkerRegistry {
                 ev = rx.recv() => {
                     match ev {
                         Some(msg) => {
-                            let et = msg.get("event")
-                                .and_then(|e| e.get("type"))
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
-                            if et == "text_delta" {
+			                    let et = msg.get("event")
+			                        .and_then(|e| e.get("type"))
+			                        .and_then(|v| v.as_str())
+			                        .unwrap_or("");
+			                    if et == "child_crashed" {
+			                        let exit = msg.get("event")
+			                            .and_then(|e| e.get("exit_code"))
+			                            .and_then(|v| v.as_i64())
+			                            .unwrap_or(-1);
+			                        let reason = msg.get("event")
+			                            .and_then(|e| e.get("exit_reason"))
+			                            .and_then(|v| v.as_str())
+			                            .unwrap_or("unknown");
+			                        return format!("❌ Worker crashed (exit={}):\n{}", exit, reason);
+			                    }
+			                    if et == "text_delta" {
                                 if let Some(d) = msg.get("event")
                                     .and_then(|e| e.get("delta"))
                                     .and_then(|v| v.as_str())
