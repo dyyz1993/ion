@@ -168,6 +168,41 @@ pub trait Extension: Send + Sync {
     async fn on_gate_check(&self, _ctx: &TurnContext) -> AgentResult<GateDecision> {
         Ok(GateDecision::Allow)
     }
+
+    // ── Singleton lifecycle（host 级单例扩展，场景 3）──
+    // 这些钩子仅对 is_singleton()=true 的扩展生效。
+    // 内核通过 singleton_key() 聚合相同单例，保证整个 host 只创建一份。
+    // 引用计数由内核维护（SingletonRegistry），扩展不用自己数。
+    // 某个 Worker 崩溃 → on_user_leave 触发，但单例不关（还有别的 Worker 在用）。
+    // 最后一个 Worker 离开 → on_last_user_gone 触发，单例可决定是否关闭。
+    // host 确定性关闭 → on_singleton_shutdown 触发。
+
+    /// 是否单例。true = 整个 host 只创建一份（host 级）。
+    /// false = 每个 Worker 创建一份（会话级，默认）。
+    fn is_singleton(&self) -> bool { false }
+
+    /// 单例的唯一标识。is_singleton()=true 时必须返回非空。
+    /// 相同 key = 同一个单例（只创建一份，多 Worker 共享）。
+    /// 不同 key = 不同的单例（各创建一份）。
+    fn singleton_key(&self) -> &str { "" }
+
+    /// 单例创建时调用（host 启动，只一次）。
+    /// 在此创建 Memory Agent / 打开 DB / 注册服务等。
+    async fn on_singleton_init(&self) -> AgentResult<()> { Ok(()) }
+
+    /// 有 Worker 开始使用此单例时调用（引用计数 +1）。
+    async fn on_user_join(&self, _worker_id: &str) -> AgentResult<()> { Ok(()) }
+
+    /// 有 Worker 停止使用此单例时调用（引用计数 -1）。
+    /// 某个 Worker 崩溃/退出 → 触发此钩子，但单例不关。
+    async fn on_user_leave(&self, _worker_id: &str) -> AgentResult<()> { Ok(()) }
+
+    /// 最后一个用户离开时调用（引用计数 == 0）。
+    /// 单例可在此决定是否关闭自己。
+    async fn on_last_user_gone(&self) -> AgentResult<()> { Ok(()) }
+
+    /// host 确定性关闭时调用（ion serve shutdown）。
+    async fn on_singleton_shutdown(&self) -> AgentResult<()> { Ok(()) }
 }
 
 // ---------------------------------------------------------------------------
