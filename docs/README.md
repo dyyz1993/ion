@@ -73,6 +73,7 @@ docs/
 | Shell Hook 系统 | [design/HOOK_SYSTEM.md](design/HOOK_SYSTEM.md) |
 | Team 编排（agent.md 驱动） | [design/TEAM_ORCHESTRATION.md](design/TEAM_ORCHESTRATION.md) |
 | Workflow Gate（内核交付校验） | [design/WORKFLOW_GATE.md](design/WORKFLOW_GATE.md) |
+| Workflow Engine（结构化交付流水线） | [design/WORKFLOW_ENGINE.md](design/WORKFLOW_ENGINE.md) |
 | pi RPC 对齐 | [design/PI_RPC_ALIGNMENT.md](design/PI_RPC_ALIGNMENT.md) |
 
 ### 我想查 CLI 命令怎么用

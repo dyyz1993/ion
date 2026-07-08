@@ -1,0 +1,103 @@
+# Delivery Pipeline — 从需求到 GitHub 的完整交付闭环
+#
+# 用法:
+#   cp examples/workflows/delivery.wf.yaml .ion/workflow.yaml
+#   ion workflow run .ion/workflow.yaml
+#
+# 或让 wf agent 自动发现:
+#   ion --host --agent wf "创建项目推送到 GitHub"
+
+name: delivery
+
+# ── 全局上下文 ──
+context:
+  spec: ""
+  files: ""
+  review_verdict: ""
+  needs_publish: true
+  github_repo: ""
+
+# ── 默认值 ──
+defaults:
+  max_retries: 3
+  max_loops: 3
+  cleanup_on_success: true
+  cleanup_on_failure: false
+
+# ── Stages ──
+stages:
+  # Stage 1: 需求分析
+  - id: spec
+    agent: coordinator
+    task: "分析用户需求，输出要创建的文件清单和验收标准"
+    outputs:
+      files: "stage_output"
+      spec: "stage_output"
+    gate:
+      command: "echo '{{context.files}}' | grep -q '.' && echo HAS_SPEC || echo EMPTY"
+      expected: HAS_SPEC
+
+  # Stage 2: 开发实现
+  - id: develop
+    agent: developer
+    task: "创建以下文件：{{context.files}}"
+    worktree: true
+    if: "stages.spec.status == 'done'"
+    gate:
+      command: "ls {{context.files}} 2>/dev/null && echo EXISTS || echo MISSING"
+      expected: EXISTS
+      max_retries: 3
+    on_fail:
+      loop_back: develop
+      max_loops: 3
+    cleanup:
+      on_success: true
+      on_failure: false
+
+  # Stage 3: 代码审查
+  - id: review
+    agent: reviewer
+    task: "审查这些文件的代码质量：{{context.files}}"
+    if: "stages.develop.status == 'done'"
+    outputs:
+      review_verdict: "stage_output"
+    gate:
+      command: "echo '{{context.review_verdict}}' | grep -qi 'APPROVE' && echo APPROVED || echo CHANGES_NEEDED"
+      expected: APPROVED
+    on_fail:
+      loop_back: develop
+      max_loops: 3
+
+  # Stage 4: 合并
+  - id: merge
+    agent: merger
+    task: "合并所有 worktree 分支到 master 并清理"
+    if: "stages.review.status == 'done'"
+    gate:
+      command: "git log --oneline -1 | grep -qi 'merge\\|add' && echo HAS_COMMIT || echo NO_COMMIT"
+      expected: HAS_COMMIT
+
+  # Stage 5: 推送 GitHub
+  - id: publish
+    agent: publisher
+    task: "创建 GitHub repo 并推送代码"
+    if: "stages.merge.status == 'done' && context.needs_publish == true"
+    gate:
+      command: "git remote -v | grep -q origin && echo HAS_REMOTE || echo NO_REMOTE"
+      expected: HAS_REMOTE
+
+  # Stage 6: 最终验证
+  - id: verify
+    agent: coordinator
+    task: "验证所有验收标准"
+    if: "stages.publish.status == 'done'"
+    gate:
+      command: "echo 'verify' && echo PASS"
+      expected: PASS
+
+  # Stage 7: 清理（无论成败都跑）
+  - id: cleanup
+    if: "always"
+    commands:
+      - "git worktree prune"
+      - "git branch --list 'ion-worker-*' | xargs -r git branch -D 2>/dev/null || true"
