@@ -20,6 +20,7 @@ pub mod runtime;
 pub mod pool;
 pub mod queue;
 pub mod session;
+pub mod message_retrieval;
 pub mod session_index;
 pub mod session_jsonl;
 pub mod session_tree;

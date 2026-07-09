@@ -329,6 +329,18 @@ enum Commands {
     },
     /// List all sessions with stats
     Sessions,
+    /// View session message history (paginated)
+    ///   ion history <session_id> [--limit 20] [--view live|full|since_compaction]
+    History {
+        /// Session ID or path
+        session: String,
+        /// Max messages to show
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// View: live (default) / since_compaction / full
+        #[arg(long, default_value = "live")]
+        view: String,
+    },
     /// Session Tree operations (branch tree / named branches / path)
     Session {
         #[command(subcommand)]
@@ -1729,6 +1741,91 @@ async fn cmd_sessions() {
     );
 }
 
+/// `ion history <session_id>` — 查看会话消息历史（分页拉取）。
+async fn cmd_history(session: &str, limit: usize, view: &str) {
+    // 加载 entries（load_session_entries 已支持 session id 和文件路径两种）
+    let entries = match load_session_entries(session) {
+        Some(e) => e,
+        None => {
+            eprintln!("Session not found: {session}");
+            std::process::exit(1);
+        }
+    };
+
+    // 解析 view
+    let v = match view {
+        "since_compaction" => ion::message_retrieval::View::SinceCompaction,
+        "full" => ion::message_retrieval::View::Full,
+        s if s.starts_with("branch:") => ion::message_retrieval::View::Branch(s[7..].to_string()),
+        _ => ion::message_retrieval::View::Live,
+    };
+
+    let params = ion::message_retrieval::RetrievalParams {
+        view: v,
+        limit,
+        ..Default::default()
+    };
+    let result = ion::message_retrieval::retrieve_messages(&entries, &params);
+
+    // 打印
+    println!("═══ Session History: {} ═══", session);
+    println!("View: {} | Showing {} of {} messages", result.view, result.messages.len(), result.total_count);
+    if !result.compaction_points.is_empty() {
+        println!("⚡ Compaction points: {}", result.compaction_points.len());
+    }
+    println!();
+
+    for msg in &result.messages {
+        let entry_id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+        let role = msg
+            .get("message")
+            .and_then(|m| m.get("role"))
+            .and_then(|r| r.as_str())
+            .unwrap_or("?");
+        let content = msg
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .map(|c| {
+                if let Some(s) = c.as_str() {
+                    s.to_string()
+                } else if let Some(arr) = c.as_array() {
+                    arr.iter()
+                        .filter_map(|b| {
+                            if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                b.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("")
+                } else {
+                    String::new()
+                }
+            })
+            .unwrap_or_default();
+
+        // 截断长内容
+        let display: String = content.chars().take(200).collect();
+        let suffix = if content.chars().count() > 200 { "..." } else { "" };
+
+        let role_icon = match role {
+            "user" => "👤",
+            "assistant" => "🤖",
+            "toolResult" => "📄",
+            _ => "  ",
+        };
+        println!("{} [{}] {}", role_icon, entry_id, display);
+        if !suffix.is_empty() {
+            println!("      {}", suffix);
+        }
+    }
+
+    if result.has_more {
+        println!("\n--- {} more messages (use --limit to load more) ---", result.total_count - result.messages.len());
+    }
+}
+
 /// 应用 Session Tree 操作（branch/checkout/rollback）。
 /// 在 agent.run 之前调用：往 session 文件追加 leaf_pointer（+可选 label/tombstone）。
 /// 后续消息通过 leaf 感知的 append 正确接在新分支上。
@@ -2396,6 +2493,9 @@ async fn main() {
             cmd_rpc(session.as_deref(), method, params).await;
         }
         Some(Commands::Sessions) => cmd_sessions().await,
+        Some(Commands::History { session, limit, view }) => {
+            cmd_history(session, *limit, view).await
+        }
         Some(Commands::Session { action }) => cmd_session(action.clone()).await,
         Some(Commands::Recordings) => cmd_recordings().await,
         Some(Commands::Subscribe { session, extension, ui }) => cmd_subscribe(session.as_deref(), extension.as_deref(), *ui).await,
@@ -3044,6 +3144,28 @@ async fn handle_manager_command(
                 "model_size": w.model_size,
             })).collect();
             Ok(serde_json::json!({"sessions": sessions}))
+        }
+        // 对外 API：列出所有磁盘 session（带血缘字段，从 index 读）
+        "list_all_sessions" => {
+            let index = ion::session_index::SessionIndex::load();
+            let sessions: Vec<_> = index.sessions.iter().map(|(id, m)| {
+                serde_json::json!({
+                    "id": id,
+                    "name": m.name,
+                    "firstMessage": m.first_name,
+                    "model": m.model,
+                    "messageCount": m.message_count,
+                    "turnCount": m.turn_count,
+                    "updatedAt": m.updated_at,
+                    "project": m.project,
+                    "lastEntryId": m.last_entry_id,
+                    "parentSession": m.parent_session,
+                    "parentType": m.parent_type,
+                    "hasChildren": index.has_children(id),
+                    "childCount": index.child_count(id),
+                })
+            }).collect();
+            Ok(serde_json::json!({"sessions": sessions, "totalCount": sessions.len()}))
         }
         // 对外 API：创建 session（自动 spawn worker，返回 session_id）
         "create_session" => {

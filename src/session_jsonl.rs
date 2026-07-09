@@ -146,6 +146,10 @@ pub struct CompactionEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "mergedSummary")]
     pub merged_summary: Option<String>,
+    /// 压缩后保留的第一条 entry 的 id（对齐 pi firstKeptEntryId）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "firstKeptEntryId")]
+    pub first_kept_entry_id: Option<String>,
 }
 
 /// Branch summary entry.
@@ -474,9 +478,66 @@ pub fn append_branch_summary(cwd: &str, from_id: &str, summary: &str) {
     append_raw_entry(cwd, &entry);
 }
 
-// ---------------------------------------------------------------------------
-// Helper: convert Message → JSONL entry
-// ---------------------------------------------------------------------------
+/// 追加一条 compaction entry（压缩锚点，记录 firstKeptEntryId 供 since_compaction 视点用）。
+pub fn append_compaction(
+    cwd: &str,
+    summary: &str,
+    tokens_before: u64,
+    first_kept_entry_id: Option<&str>,
+    stage: Option<&str>,
+    batch_count: Option<usize>,
+) {
+    let mut entry = serde_json::json!({
+        "type": "compaction",
+        "id": generate_id(),
+        "parentId": null,
+        "timestamp": timestamp_iso(),
+        "summary": summary,
+        "tokensBefore": tokens_before,
+    });
+    if let Some(id) = first_kept_entry_id {
+        entry["firstKeptEntryId"] = serde_json::json!(id);
+    }
+    if let Some(s) = stage {
+        entry["stage"] = serde_json::json!(s);
+    }
+    if let Some(bc) = batch_count {
+        entry["batchCount"] = serde_json::json!(bc);
+    }
+    append_raw_entry(cwd, &entry);
+}
+
+/// 追加一条 turn_summary entry（每轮 turn 结束时的结构化摘要）。
+pub fn append_turn_summary(
+    cwd: &str,
+    turn_id: u64,
+    user_entry_id: &str,
+    summary: &str,
+    key_steps: &[String],
+    tool_call_count: u32,
+    tokens_input: u64,
+    tokens_output: u64,
+    duration_ms: u64,
+    entry_range: &[String],
+    status: &str,
+) {
+    let entry = serde_json::json!({
+        "type": "turn_summary",
+        "id": generate_id(),
+        "parentId": null,
+        "timestamp": timestamp_iso(),
+        "turnId": turn_id,
+        "userEntryId": user_entry_id,
+        "summary": summary,
+        "keySteps": key_steps,
+        "toolCallCount": tool_call_count,
+        "tokens": { "input": tokens_input, "output": tokens_output },
+        "durationMs": duration_ms,
+        "entryRange": entry_range,
+        "status": status,
+    });
+    append_raw_entry(cwd, &entry);
+}
 
 /// Convert a Message to a JSONL entry value with id/parentId chain.
 pub fn message_to_entry(
@@ -491,4 +552,147 @@ pub fn message_to_entry(
         "timestamp": timestamp_iso(),
         "message": msg_val
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 造一个临时 cwd（用 tmpdir + 子目录隔离）
+    fn test_cwd(name: &str) -> String {
+        let dir = std::env::temp_dir().join(format!("ion_test_jsonl_{}_{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        format!("{}", dir.display())
+    }
+
+    fn cleanup(cwd: &str) {
+        let _ = std::fs::remove_dir_all(cwd);
+    }
+
+    fn write_header(cwd: &str) {
+        let header = SessionHeader {
+            entry_type: "session".into(),
+            version: 3,
+            id: "test_session".into(),
+            timestamp: timestamp_iso(),
+            cwd: cwd.into(),
+            parent_session: None,
+        };
+        SessionFile::save(cwd, &header, &[]);
+    }
+
+    #[test]
+    fn test_append_compaction_writes_entry() {
+        let cwd = test_cwd("compaction");
+        write_header(&cwd);
+
+        append_compaction(&cwd, "压缩摘要", 32000, Some("msg_011"), Some("batched_merged"), Some(3));
+
+        let file = SessionFile::load(&cwd).expect("file should exist");
+        let compaction_entry = file.entries.iter().find(|e| {
+            e.get("type").and_then(|v| v.as_str()) == Some("compaction")
+        });
+        assert!(compaction_entry.is_some(), "compaction entry should exist");
+        let entry = compaction_entry.unwrap();
+        assert_eq!(entry["summary"].as_str(), Some("压缩摘要"));
+        assert_eq!(entry["tokensBefore"].as_u64(), Some(32000));
+        assert_eq!(entry["firstKeptEntryId"].as_str(), Some("msg_011"));
+        assert_eq!(entry["stage"].as_str(), Some("batched_merged"));
+        assert_eq!(entry["batchCount"].as_u64(), Some(3));
+
+        cleanup(&cwd);
+    }
+
+    #[test]
+    fn test_append_compaction_without_optional_fields() {
+        let cwd = test_cwd("compaction_min");
+        write_header(&cwd);
+
+        append_compaction(&cwd, "emergency", 50000, None, None, None);
+
+        let file = SessionFile::load(&cwd).expect("file should exist");
+        let entry = file.entries.iter().find(|e| {
+            e.get("type").and_then(|v| v.as_str()) == Some("compaction")
+        }).unwrap();
+        assert_eq!(entry["summary"].as_str(), Some("emergency"));
+        // firstKeptEntryId / stage / batchCount 应该不存在（skip_serializing_if）
+        assert!(entry.get("firstKeptEntryId").is_none() || entry["firstKeptEntryId"].is_null());
+        assert!(entry.get("stage").is_none() || entry["stage"].is_null());
+
+        cleanup(&cwd);
+    }
+
+    #[test]
+    fn test_append_turn_summary_writes_entry() {
+        let cwd = test_cwd("turn_summary");
+        write_header(&cwd);
+
+        append_turn_summary(
+            &cwd,
+            3,
+            "msg_007",
+            "重构了消息拉取接口",
+            &["read".into(), "edit".into(), "bash".into()],
+            3,
+            1200,
+            800,
+            5200,
+            &["msg_007".into(), "msg_008".into()],
+            "completed",
+        );
+
+        let file = SessionFile::load(&cwd).expect("file should exist");
+        let entry = file.entries.iter().find(|e| {
+            e.get("type").and_then(|v| v.as_str()) == Some("turn_summary")
+        });
+        assert!(entry.is_some(), "turn_summary entry should exist");
+        let entry = entry.unwrap();
+        assert_eq!(entry["turnId"].as_u64(), Some(3));
+        assert_eq!(entry["userEntryId"].as_str(), Some("msg_007"));
+        assert_eq!(entry["summary"].as_str(), Some("重构了消息拉取接口"));
+        assert_eq!(entry["toolCallCount"].as_u64(), Some(3));
+        assert_eq!(entry["tokens"]["input"].as_u64(), Some(1200));
+        assert_eq!(entry["tokens"]["output"].as_u64(), Some(800));
+        assert_eq!(entry["status"].as_str(), Some("completed"));
+        let steps = entry["keySteps"].as_array().unwrap();
+        assert_eq!(steps.len(), 3);
+        assert_eq!(steps[0].as_str(), Some("read"));
+
+        cleanup(&cwd);
+    }
+
+    #[test]
+    fn test_append_turn_summary_aborted_status() {
+        let cwd = test_cwd("turn_abort");
+        write_header(&cwd);
+
+        append_turn_summary(&cwd, 8, "msg_015", "好的我来重构这", &[], 0, 340, 0, 100, &[], "aborted");
+
+        let file = SessionFile::load(&cwd).expect("file should exist");
+        let entry = file.entries.iter().find(|e| {
+            e.get("type").and_then(|v| v.as_str()) == Some("turn_summary")
+        }).unwrap();
+        assert_eq!(entry["status"].as_str(), Some("aborted"));
+
+        cleanup(&cwd);
+    }
+
+    #[test]
+    fn test_compaction_entry_first_kept_entry_id_field() {
+        // 验证 CompactionEntry 结构体可正确反序列化带 firstKeptEntryId 的 JSON
+        let json_str = r#"{
+            "type": "compaction",
+            "id": "cmp_005",
+            "parentId": "msg_009",
+            "timestamp": "2026-07-08T10:00:00Z",
+            "summary": "测试摘要",
+            "tokensBefore": 32000,
+            "firstKeptEntryId": "msg_042"
+        }"#;
+        let entry: CompactionEntry = serde_json::from_str(json_str).expect("should deserialize");
+        assert_eq!(entry.summary, "测试摘要");
+        assert_eq!(entry.tokens_before, 32000);
+        assert_eq!(entry.first_kept_entry_id, Some("msg_042".to_string()));
+    }
 }
