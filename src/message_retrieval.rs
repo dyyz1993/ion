@@ -8,6 +8,64 @@
 //! 每条 entry 是 JSONL 的一行（含 header 之外的 entry）。
 
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::SystemTime;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SessionFile 缓存（进程级，mtime 校验）
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// 缓存条目：cwd → (mtime, entries)
+static SESSION_CACHE: Mutex<Option<HashMap<String, (SystemTime, Vec<Value>)>>> = Mutex::new(None);
+
+/// 从缓存加载 session entries（带 mtime 校验）。
+/// 文件没变化时 O(1) 返回缓存，变化时才重新读盘+解析。
+/// worker 进程内多次调用 get_messages/list_turns 等时复用，避免每次整盘读。
+pub fn load_entries_cached(cwd: &str) -> Vec<Value> {
+    let path = crate::session_jsonl::session_path(cwd);
+
+    // 获取文件 mtime
+    let mtime = std::fs::metadata(&path)
+        .ok()
+        .and_then(|m| m.modified().ok());
+
+    // 检查缓存
+    if let Ok(mut cache_guard) = SESSION_CACHE.lock() {
+        let cache = cache_guard.get_or_insert_with(HashMap::new);
+        if let Some(mtime) = mtime {
+            if let Some((cached_mtime, entries)) = cache.get(cwd) {
+                if *cached_mtime == mtime {
+                    return entries.clone();
+                }
+            }
+        }
+    }
+
+    // 缓存未命中或文件已变，重新加载
+    let entries = crate::session_jsonl::SessionFile::load(cwd)
+        .map(|f| f.entries)
+        .unwrap_or_default();
+
+    // 更新缓存
+    if let Ok(mut cache_guard) = SESSION_CACHE.lock() {
+        let cache = cache_guard.get_or_insert_with(HashMap::new);
+        if let Some(mtime) = mtime {
+            cache.insert(cwd.to_string(), (mtime, entries.clone()));
+        }
+    }
+
+    entries
+}
+
+/// 使缓存失效（外部修改了 session 文件后调用，比如 append 操作后）。
+pub fn invalidate_cache(cwd: &str) {
+    if let Ok(mut cache_guard) = SESSION_CACHE.lock() {
+        if let Some(cache) = cache_guard.as_mut() {
+            cache.remove(cwd);
+        }
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 参数类型

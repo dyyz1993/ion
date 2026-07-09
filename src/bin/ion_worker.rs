@@ -612,9 +612,7 @@ async fn main() {
 
                 // 从磁盘读 entries（含 turn_summary/compaction 等非 message entry）
                 let entries: Vec<serde_json::Value> =
-                    ion::session_jsonl::SessionFile::load(&worker_cwd)
-                        .map(|f| f.entries)
-                        .unwrap_or_default();
+                    ion::message_retrieval::load_entries_cached(&worker_cwd);
 
                 let retrieval_params = ion::message_retrieval::RetrievalParams {
                     view,
@@ -640,9 +638,7 @@ async fn main() {
                 let full_content = params.get("full_content").and_then(|v| v.as_bool()).unwrap_or(false);
                 let limit = params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(50);
                 let entries: Vec<serde_json::Value> =
-                    ion::session_jsonl::SessionFile::load(&worker_cwd)
-                        .map(|f| f.entries)
-                        .unwrap_or_default();
+                    ion::message_retrieval::load_entries_cached(&worker_cwd);
                 let params = ion::message_retrieval::RetrievalParams {
                     limit,
                     ..Default::default()
@@ -667,9 +663,7 @@ async fn main() {
 
             "list_inputs" => {
                 let entries: Vec<serde_json::Value> =
-                    ion::session_jsonl::SessionFile::load(&worker_cwd)
-                        .map(|f| f.entries)
-                        .unwrap_or_default();
+                    ion::message_retrieval::load_entries_cached(&worker_cwd);
                 let result = ion::message_retrieval::retrieve_inputs(
                     &entries,
                     &ion::message_retrieval::RetrievalParams::default(),
@@ -689,9 +683,7 @@ async fn main() {
             "get_turn_detail" => {
                 let turn_id = params.get("turnId").and_then(|v| v.as_u64()).unwrap_or(0);
                 let entries: Vec<serde_json::Value> =
-                    ion::session_jsonl::SessionFile::load(&worker_cwd)
-                        .map(|f| f.entries)
-                        .unwrap_or_default();
+                    ion::message_retrieval::load_entries_cached(&worker_cwd);
                 match ion::message_retrieval::retrieve_turn_detail(
                     &entries,
                     turn_id,
@@ -1059,9 +1051,7 @@ async fn main() {
             "get_tree" => {
                 let mode = params.get("mode").and_then(|v| v.as_str()).unwrap_or("structure");
                 let entries: Vec<serde_json::Value> =
-                    ion::session_jsonl::SessionFile::load(&worker_cwd)
-                        .map(|f| f.entries)
-                        .unwrap_or_default();
+                    ion::message_retrieval::load_entries_cached(&worker_cwd);
 
                 if entries.is_empty() {
                     output_response(&id, "get_tree", &serde_json::json!({

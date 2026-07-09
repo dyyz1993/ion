@@ -1591,6 +1591,60 @@ fork 点 = msg_035
 
 ---
 
+## Group M:性能验证（缓存 + O(n) 优化）
+
+> **场景**:验证 SessionFile mtime 缓存 + resolve_current_leaf O(n) 优化生效。
+
+### M1 SessionFile 缓存命中（mtime 未变）
+
+**场景**:连续两次 `ion history` 读同一个会话，第二次应该命中缓存（不重读磁盘）。
+
+```bash
+# 第一次读（缓存未命中，读盘+解析）
+time ion history "$SESSION_FILE" --limit 10 > /dev/null
+
+# 第二次读（缓存命中，跳过读盘）
+time ion history "$SESSION_FILE" --limit 10 > /dev/null
+```
+
+**验证点**:
+- ✅ 两次结果一致（缓存不能改变数据）
+- ✅ 第二次明显更快（mtime 未变，跳过 SessionFile::load）
+- ✅ 修改文件后缓存自动失效（mtime 变化触发重读）
+
+### M2 resolve_current_leaf O(n) 优化
+
+**场景**:长链 session（100+ 条 entry），resolve_current_leaf 不应退化到 O(n²)。
+
+```bash
+# 造一个 100 条 message 的长链 session（用脚本生成）
+# 连续调用 get_messages（默认 view:live 走 resolve_current_leaf）
+time ion history "$LONG_SESSION" --limit 5 > /dev/null
+```
+
+**验证点**:
+- ✅ resolve_current_leaf 用 compute_depths 单趟 DP（O(n)），不再逐个 entry_depth 回溯（O(n²)）
+- ✅ 28 个 session_tree 单元测试全过（不回归）
+
+### M3 RPC 缓存复用（worker 内多次调用）
+
+**场景**:worker 进程内连续调 get_messages / list_turns / get_turn_detail，共享同一份缓存 entries。
+
+```bash
+# worker 模式下连续 RPC（模拟前端打开会话后切换视图）
+ion rpc --session "$SID" --method get_messages --params '{"limit":10}'
+ion rpc --session "$SID" --method list_turns
+ion rpc --session "$SID" --method list_inputs
+# 三次调用共享 load_entries_cached，只有第一次读盘
+```
+
+**验证点**:
+- ✅ 三次调用结果一致（同一份 entries）
+- ✅ 只有第一次触发 SessionFile::load，后两次缓存命中
+- ✅ 新消息写入后（append 操作）缓存自动失效
+
+---
+
 ## 用例与接口映射总表
 
 | Group | Case | 接口 | view | 分页 | 粒度 | 旁路 |
