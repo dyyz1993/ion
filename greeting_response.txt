@@ -1,0 +1,2 @@
+Hello - system greeting response
+The system is ready to assist you.

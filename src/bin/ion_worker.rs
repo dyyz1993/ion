@@ -1219,10 +1219,26 @@ async fn main() {
                 }
             }
             "get_modified_files" => {
-                let from_turn = params.get("fromTurn").and_then(|v| v.as_u64()).map(|v| v as u32);
-                let to_turn = params.get("toTurn").and_then(|v| v.as_u64()).map(|v| v as u32);
+                let from_turn = params.get("fromTurn").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let to_turn = params.get("toTurn").and_then(|v| v.as_str()).map(|s| s.to_string());
                 if let Some(ref store) = snapshot_store {
-                    let snaps = store.load_tool_snapshots_range(from_turn, to_turn);
+                    let all_snaps = store.load_all_tool_snapshots();
+                    // 按 turnId 范围过滤（from/to 是 turnId 字符串，按 timestamp 比较）
+                    let snaps: Vec<_> = if from_turn.is_some() || to_turn.is_some() {
+                        let from_ts = from_turn.as_ref()
+                            .and_then(|ft| all_snaps.iter().find(|s| &s.turn_id == ft))
+                            .map(|s| s.timestamp.clone());
+                        let to_ts = to_turn.as_ref()
+                            .and_then(|tt| all_snaps.iter().find(|s| &s.turn_id == tt))
+                            .map(|s| s.timestamp.clone());
+                        all_snaps.into_iter().filter(|s| {
+                            let after_from = from_ts.as_ref().map_or(true, |ft| &s.timestamp >= ft);
+                            let before_to = to_ts.as_ref().map_or(true, |tt| &s.timestamp <= tt);
+                            after_from && before_to
+                        }).collect()
+                    } else {
+                        all_snaps
+                    };
                     let files: Vec<serde_json::Value> = snaps.iter().map(|s| {
                         let status = match (&s.before_hash, &s.after_hash) {
                             (None, Some(_)) => "added",
@@ -1828,15 +1844,24 @@ async fn main() {
             }
             "get_file_diff" => {
                 let file_path = params.get("filePath").and_then(|v| v.as_str()).unwrap_or("");
-                let from_turn = params.get("fromTurn").and_then(|v| v.as_u64()).map(|v| v as u32);
-                let to_turn = params.get("toTurn").and_then(|v| v.as_u64()).map(|v| v as u32);
+                let from_turn = params.get("fromTurn").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let to_turn = params.get("toTurn").and_then(|v| v.as_str()).map(|s| s.to_string());
                 if file_path.is_empty() {
                     output_response(&id, "get_file_diff", &serde_json::json!({"error": "missing 'filePath'"}));
                 } else if let Some(ref store) = snapshot_store {
                     let history = store.load_file_history(file_path);
+                    // 按 turnId 字符串过滤（timestamp 比较）
+                    let from_ts = from_turn.as_ref()
+                        .and_then(|ft| history.iter().find(|s| &s.turn_id == ft))
+                        .map(|s| s.timestamp.clone());
+                    let to_ts = to_turn.as_ref()
+                        .and_then(|tt| history.iter().find(|s| &s.turn_id == tt))
+                        .map(|s| s.timestamp.clone());
                     let relevant: Vec<_> = history.iter()
-                        .filter(|s| from_turn.map_or(true, |f| s.turn_id >= f)
-                            && to_turn.map_or(true, |t| s.turn_id <= t))
+                        .filter(|s| {
+                            from_ts.as_ref().map_or(true, |ft| &s.timestamp >= ft)
+                                && to_ts.as_ref().map_or(true, |tt| &s.timestamp <= tt)
+                        })
                         .collect();
                     if relevant.is_empty() {
                         output_response(&id, "get_file_diff", &serde_json::json!({
@@ -1887,10 +1912,25 @@ async fn main() {
                 }
             }
             "get_batch_diffs" => {
-                let from_turn = params.get("fromTurn").and_then(|v| v.as_u64()).map(|v| v as u32);
-                let to_turn = params.get("toTurn").and_then(|v| v.as_u64()).map(|v| v as u32);
+                let from_turn = params.get("fromTurn").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let to_turn = params.get("toTurn").and_then(|v| v.as_str()).map(|s| s.to_string());
                 if let Some(ref store) = snapshot_store {
-                    let snaps = store.load_tool_snapshots_range(from_turn, to_turn);
+                    let all_snaps = store.load_all_tool_snapshots();
+                    let snaps: Vec<_> = if from_turn.is_some() || to_turn.is_some() {
+                        let from_ts = from_turn.as_ref()
+                            .and_then(|ft| all_snaps.iter().find(|s| &s.turn_id == ft))
+                            .map(|s| s.timestamp.clone());
+                        let to_ts = to_turn.as_ref()
+                            .and_then(|tt| all_snaps.iter().find(|s| &s.turn_id == tt))
+                            .map(|s| s.timestamp.clone());
+                        all_snaps.into_iter().filter(|s| {
+                            let after_from = from_ts.as_ref().map_or(true, |ft| &s.timestamp >= ft);
+                            let before_to = to_ts.as_ref().map_or(true, |tt| &s.timestamp <= tt);
+                            after_from && before_to
+                        }).collect()
+                    } else {
+                        all_snaps
+                    };
                     // 按 path 分组，取每个 path 的首尾
                     use std::collections::HashMap;
                     let mut grouped: HashMap<String, Vec<&ion::file_snapshot::ToolSnapshot>> = HashMap::new();

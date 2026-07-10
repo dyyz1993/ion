@@ -474,6 +474,8 @@ impl Agent {
     pub async fn run(&mut self, prompt: impl Into<String>) -> AgentResult<()> {
         self.running = true;
         self.stopped.store(false, std::sync::atomic::Ordering::SeqCst);
+        // turn_index 是 agent loop 内部计数器（每次 run 从 0 开始，用于 max_turns 限制）
+        // 快照用独立的全局唯一 turnId（ts_xxxxxx），不依赖 turn_index
         self.turn_index = 0;
 
         // ── 生命周期顺序 (对齐 pi) ──
@@ -569,7 +571,7 @@ impl Agent {
             self.check_pause().await?;
 
             let turn_ctx = TurnContext {
-                turn_index: turn as u64,
+                turn_index: turn,
                 messages: vec![],
                 has_tool_calls: false,
                 stop_reason: None,

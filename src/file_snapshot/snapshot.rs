@@ -10,7 +10,7 @@ use super::object_store::{ObjectStore, WriteResult};
 /// 路线 1：write/edit 的 before/after 记录
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ToolSnapshot {
-    pub turn_id: u32,
+    pub turn_id: String,           // 全局唯一 ID（如 "ts_a3f8b2"），不依赖下标
     pub tool_call_id: String,
     pub tool_name: String,         // "write" | "edit"
     pub path: String,              // 文件路径（可能 cwd 外）
@@ -39,7 +39,7 @@ pub enum ChangeStatus {
 /// 目录扫描快照（路线 2）
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DirSnapshot {
-    pub turn_id: u32,
+    pub turn_id: String,
     pub tool_call_id: String,
     pub changed_files: Vec<DirFileChange>,
     pub truncated: bool,
@@ -89,7 +89,9 @@ impl SnapshotStore {
 
     /// 存储工具级快照（路线 1）
     pub fn save_tool_snapshot(&self, snap: &ToolSnapshot) {
-        let path = self.snapshots_dir.join("tool").join(format!("{}.jsonl", snap.turn_id));
+        // 文件名用 turn_id（如 ts_a3f8b2.jsonl），同一 turn 的多个改动追加到同一文件
+        let safe_name = snap.turn_id.replace('/', "_");
+        let path = self.snapshots_dir.join("tool").join(format!("{}.jsonl", safe_name));
         let line = serde_json::to_string(snap).unwrap_or_default();
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
@@ -98,51 +100,48 @@ impl SnapshotStore {
     }
 
     /// 读取指定 turn 的所有工具级快照
-    pub fn load_tool_snapshots(&self, turn_id: u32) -> Vec<ToolSnapshot> {
-        let path = self.snapshots_dir.join("tool").join(format!("{}.jsonl", turn_id));
+    pub fn load_tool_snapshots(&self, turn_id: &str) -> Vec<ToolSnapshot> {
+        let safe_name = turn_id.replace('/', "_");
+        let path = self.snapshots_dir.join("tool").join(format!("{}.jsonl", safe_name));
         read_jsonl(&path)
     }
 
-    /// 读取 turn 范围内的所有工具级快照
-    pub fn load_tool_snapshots_range(&self, from: Option<u32>, to: Option<u32>) -> Vec<ToolSnapshot> {
+    /// 读取全部工具级快照（按 timestamp 排序）
+    pub fn load_all_tool_snapshots(&self) -> Vec<ToolSnapshot> {
         let mut all = Vec::new();
-        // 扫描 tool/ 目录下所有 .jsonl 文件
         let dir = self.snapshots_dir.join("tool");
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let fname = entry.file_name().to_string_lossy().to_string();
-                if let Some(turn_str) = fname.strip_suffix(".jsonl") {
-                    if let Ok(turn) = turn_str.parse::<u32>() {
-                        let in_range = from.map_or(true, |f| turn >= f)
-                            && to.map_or(true, |t| turn <= t);
-                        if in_range {
-                            all.extend(self.load_tool_snapshots(turn));
-                        }
-                    }
-                }
-            }
-        }
-        all.sort_by_key(|s| s.turn_id);
-        all
-    }
-
-    /// 读取某文件的全部历史（按 turn 排序）
-    pub fn load_file_history(&self, file_path: &str) -> Vec<ToolSnapshot> {
-        // 扫描所有 turn 的 tool snapshots，过滤出指定 path
-        let dir = self.snapshots_dir.join("tool");
-        let mut history = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 let snaps: Vec<ToolSnapshot> = read_jsonl(&entry.path());
-                for snap in snaps {
-                    if snap.path == file_path {
-                        history.push(snap);
-                    }
-                }
+                all.extend(snaps);
             }
         }
-        history.sort_by_key(|s| s.turn_id);
-        history
+        all.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        all
+    }
+
+    /// 读取指定 turn 之后的所有工具级快照（restore 用）
+    /// after_turn_id 的快照不包含在内
+    pub fn load_tool_snapshots_after(&self, after_turn_id: &str) -> Vec<ToolSnapshot> {
+        let all = self.load_all_tool_snapshots();
+        // 找到 after_turn_id 对应的 timestamp，返回之后的所有快照
+        let cutoff_ts = all.iter()
+            .find(|s| s.turn_id == after_turn_id)
+            .map(|s| s.timestamp.clone());
+        match cutoff_ts {
+            Some(cutoff) => all.into_iter()
+                .filter(|s| s.timestamp > cutoff)
+                .collect(),
+            None => all, // 找不到 → 返回全部（安全降级）
+        }
+    }
+
+    /// 读取某文件的全部历史（按 timestamp 排序）
+    pub fn load_file_history(&self, file_path: &str) -> Vec<ToolSnapshot> {
+        let all = self.load_all_tool_snapshots();
+        all.into_iter()
+            .filter(|s| s.path == file_path)
+            .collect()
     }
 }
 
@@ -195,7 +194,7 @@ pub fn capture_before(
 pub fn capture_after(
     before: &BeforeState,
     store: &ObjectStore,
-    turn_id: u32,
+    turn_id: &str,
     tool_call_id: &str,
     tool_name: &str,
 ) -> Option<ToolSnapshot> {
@@ -216,7 +215,7 @@ pub fn capture_after(
     }
 
     Some(ToolSnapshot {
-        turn_id,
+        turn_id: turn_id.to_string(),
         tool_call_id: tool_call_id.to_string(),
         tool_name: tool_name.to_string(),
         path,
@@ -232,7 +231,7 @@ pub fn capture_after_dir(
     before: &BeforeState,
     store: &ObjectStore,
     cwd: &str,
-    turn_id: u32,
+    turn_id: &str,
     tool_call_id: &str,
 ) -> Vec<ToolSnapshot> {
     let before_scan = match before {
@@ -253,7 +252,7 @@ pub fn capture_after_dir(
                     .map(|c| store.write_object(&c).hash);
                 if let Some(h) = after_hash {
                     snapshots.push(ToolSnapshot {
-                        turn_id,
+                        turn_id: turn_id.to_string(),
                         tool_call_id: tool_call_id.to_string(),
                         tool_name: "bash".into(),
                         path: path.clone(),
@@ -270,7 +269,7 @@ pub fn capture_after_dir(
                     .map(|c| store.write_object(&c).hash);
                 if let Some(h) = after_hash {
                     snapshots.push(ToolSnapshot {
-                        turn_id,
+                        turn_id: turn_id.to_string(),
                         tool_call_id: tool_call_id.to_string(),
                         tool_name: "bash".into(),
                         path: path.clone(),
@@ -288,7 +287,7 @@ pub fn capture_after_dir(
     for (path, _) in &before_scan.files {
         if !after_scan.files.contains_key(path) {
             snapshots.push(ToolSnapshot {
-                turn_id,
+                turn_id: turn_id.to_string(),
                 tool_call_id: tool_call_id.to_string(),
                 tool_name: "bash".into(),
                 path: path.clone(),
@@ -329,7 +328,7 @@ mod tests {
         std::fs::write(&test_file, "new content").unwrap();
 
         // after
-        let snap = capture_after(&before, &store, 1, "tc_test", "write");
+        let snap = capture_after(&before, &store, "ts_test01", "tc_test", "write");
         assert!(snap.is_some(), "应生成 snapshot");
         let snap = snap.unwrap();
         assert_eq!(snap.status_or_default(), "added");

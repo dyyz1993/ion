@@ -37,13 +37,22 @@ pub struct FileSnapshotExtension {
     store: std::sync::Arc<SnapshotStore>,
     /// 当前 turn 的 before 状态（tool_call_id → BeforeState）
     before_states: Mutex<HashMap<String, BeforeState>>,
-    /// 当前 turn id
-    current_turn: Mutex<u32>,
+    /// 当前 turn 的唯一 ID（如 "ts_a3f8b2"，on_turn_start 时生成）
+    current_turn_id: Mutex<String>,
+}
+
+/// 生成 6 位随机 hex turn ID（如 "ts_a3f8b2"）
+fn gen_turn_id() -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    std::time::SystemTime::now().hash(&mut hasher);
+    std::process::id().hash(&mut hasher);
+    format!("ts_{:06x}", hasher.finish() & 0xFFFFFF)
 }
 
 impl FileSnapshotExtension {
     /// 创建并返回 (extension, store_arc)
-    /// store_arc 给 worker RPC 层用，extension 给 ExtensionRegistry 用
     pub fn new_pair(cwd: &str) -> (Self, std::sync::Arc<SnapshotStore>) {
         let pk = project_key(cwd);
         let store = std::sync::Arc::new(SnapshotStore::new(&pk));
@@ -52,7 +61,7 @@ impl FileSnapshotExtension {
             project_key: pk,
             store: store.clone(),
             before_states: Mutex::new(HashMap::new()),
-            current_turn: Mutex::new(0),
+            current_turn_id: Mutex::new(String::new()),
         };
         (ext, store)
     }
@@ -71,8 +80,8 @@ impl Extension for FileSnapshotExtension {
         &self,
         _ctx: &mut crate::agent::extension::TurnContext,
     ) -> AgentResult<()> {
-        let mut turn = self.current_turn.lock().unwrap();
-        *turn += 1;
+        // 每轮 turn 生成唯一 ID（不依赖下标递增）
+        *self.current_turn_id.lock().unwrap() = gen_turn_id();
         Ok(())
     }
 
@@ -91,25 +100,23 @@ impl Extension for FileSnapshotExtension {
         &self,
         ctx: &crate::agent::extension::ToolExecutionContext,
     ) -> AgentResult<()> {
-        let turn = *self.current_turn.lock().unwrap();
+        let turn_id = self.current_turn_id.lock().unwrap().clone();
         let before = self.before_states.lock().unwrap().remove(&ctx.tool_call_id);
 
         if let Some(before_state) = before {
             match &before_state {
                 BeforeState::FileCapture { .. } => {
-                    // 路线 1：write/edit
                     if let Some(snap) = capture_after(
                         &before_state, self.store.objects(),
-                        turn, &ctx.tool_call_id, &ctx.tool_name,
+                        &turn_id, &ctx.tool_call_id, &ctx.tool_name,
                     ) {
                         self.store.save_tool_snapshot(&snap);
                     }
                 }
                 BeforeState::DirCapture { .. } => {
-                    // 路线 2：bash 目录扫描对比
                     let snaps = capture_after_dir(
                         &before_state, self.store.objects(), &self.cwd,
-                        turn, &ctx.tool_call_id,
+                        &turn_id, &ctx.tool_call_id,
                     );
                     for snap in snaps {
                         self.store.save_tool_snapshot(&snap);
