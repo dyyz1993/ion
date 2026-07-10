@@ -256,8 +256,10 @@ fn u03_get_messages() {
     let mut wp = WorkerProc::spawn();
     let data = wp.send_and_get_data("get_messages", None);
 
-    assert!(data.is_array(), "get_messages should return an array");
-    assert_eq!(data.as_array().unwrap().len(), 0, "fresh session: empty array");
+    // 消息拉取改造后返回 {messages: [...], hasMore, totalCount, ...}
+    assert!(data.get("messages").is_some(), "get_messages should return object with 'messages' array");
+    let msgs = data["messages"].as_array().expect("messages should be array");
+    assert_eq!(msgs.len(), 0, "fresh session: empty messages");
 }
 
 #[test]
@@ -298,8 +300,9 @@ fn u06_get_active_tools() {
     let mut wp = WorkerProc::spawn();
     let data = wp.send_and_get_data("get_active_tools", None);
 
-    assert!(data.is_array(), "get_active_tools should return an array");
-    let tools = data.as_array().unwrap();
+    // 改造后返回 {tools: [...], count}
+    assert!(data.get("tools").is_some(), "get_active_tools should return object with 'tools' array");
+    let tools = data["tools"].as_array().expect("tools should be array");
     assert!(!tools.is_empty(), "should have at least some active tools");
     for t in tools {
         assert!(t.is_string(), "each active tool should be a string name");
@@ -352,9 +355,10 @@ fn u10_get_context_usage() {
     let mut wp = WorkerProc::spawn();
     let data = wp.send_and_get_data("get_context_usage", None);
 
-    assert!(data.get("tokens").is_some(), "should include 'tokens'");
-    assert!(data.get("contextWindow").is_some(), "should include 'contextWindow'");
-    assert!(data.get("percent").is_some(), "should include 'percent'");
+    // 改造后返回 usagePercent/totalInputTokens/totalOutputTokens/autoCompaction
+    assert!(data.get("totalInputTokens").is_some(), "should include 'totalInputTokens'");
+    assert!(data.get("totalOutputTokens").is_some(), "should include 'totalOutputTokens'");
+    assert!(data.get("usagePercent").is_some(), "should include 'usagePercent'");
 }
 
 #[test]
@@ -693,7 +697,7 @@ fn u17_create_session_writes_jsonl() {
         id: sid.clone(),
         timestamp: ion::session_jsonl::timestamp_iso(),
         cwd: cwd.clone(),
-        parentSession: None,
+        parent_session: None,
     };
     ion::session_jsonl::SessionFile::save(&cwd, &header, &[]);
 
@@ -723,7 +727,7 @@ fn u18_load_session_restores_messages() {
         id: sid.clone(),
         timestamp: ion::session_jsonl::timestamp_iso(),
         cwd: cwd.clone(),
-        parentSession: None,
+        parent_session: None,
     };
 
     // Build entries with parent chain
@@ -795,7 +799,7 @@ fn u19_session_index_updates() {
         id: sid.clone(),
         timestamp: ion::session_jsonl::timestamp_iso(),
         cwd: cwd.clone(),
-        parentSession: None,
+        parent_session: None,
     };
     ion::session_jsonl::SessionFile::save(&cwd, &header, &[]);
 
@@ -846,7 +850,7 @@ fn u20_token_stats_are_accurate() {
         id: sid.clone(),
         timestamp: ion::session_jsonl::timestamp_iso(),
         cwd: cwd.clone(),
-        parentSession: None,
+        parent_session: None,
     };
 
     let mut entries: Vec<serde_json::Value> = Vec::new();

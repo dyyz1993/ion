@@ -1241,7 +1241,9 @@ async fn i31_session_history() {
     ).await.unwrap();
     let mut reg = registry.lock().await;
     assert_eq!(resp["success"], true);
-    assert!(resp["data"].is_array(), "get_messages should return array");
+    // 消息拉取改造后 get_messages 返回 {messages: [...], hasMore, totalCount, ...}
+    assert!(resp["data"].get("messages").is_some(), "get_messages should return object with 'messages'");
+    assert!(resp["data"]["messages"].is_array(), "'messages' should be array");
 
     let _ = reg.kill_worker(&info.worker_id);
 }
