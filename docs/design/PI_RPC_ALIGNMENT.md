@@ -144,13 +144,13 @@ ion subscribe --session x --extension memory
 | `get_messages` | `get_messages` | ✅ |
 | `get_full_messages` | ❌ | ❌ 缺 |
 | `get_tree` / `get_tree_with_leaf` | ✅ / ✅ | ✅ 全部（structure/full 双模式 + pathToLeaf + branches） |
-| `get_modified_files` / `get_file_diff` | ❌ | ❌ 缺 |
+| `get_modified_files` / `get_file_diff` | ✅ | ✅ 已实现（File Snapshot 双路快照） |
 | `switch_session` / `fork` / `clone` | Manager 级 | ⚠️ 分级不同 |
 | `navigate_tree` | ✅ | ✅ 已实现（线性节点列表 + onLeafPath/isCurrentLeaf 标记） |
 | `delete_entries` / `summarize_entries` | `delete_entries` / `summarize_entries` | ✅ |
 | `get_session_stats` | `get_session_stats` | ✅ |
 | `get_commands` / `get_skills` / `get_extensions` / `get_tools` | ✅ / ✅ / ✅ / ✅ | ✅ 全部 |
-| `get_settings` / `set_settings` | `ion config show/set` | ⚠️ 模式不同 |
+| `get_settings` / `set_settings` | ✅ | ✅ 已实现（IonConfig load/save + api_key 脱敏） |
 | `get_context_usage` | ❌ | ❌ 缺 |
 | `get_system_prompt` | `get_system_prompt` | ✅ |
 | `get_active_tools` / `set_active_tools` | ❌ | ❌ 缺 |
@@ -204,7 +204,8 @@ ion subscribe --session x --extension memory
 | ~~`set_auto_retry`~~ / ~~`abort_retry`~~ | 重试控制 | ✅ 已实现（set_max_retries + agent.stop()） |
 | ~~`abort_bash`~~ | 中断 bash 执行 | ✅ 已实现（process_map kill SIGTERM） |
 | ~~`get_settings`~~ / ~~`set_settings`~~ | 统一设置管理 | ✅ 已实现（IonConfig load/save + api_key 脱敏） |
-| `get_modified_files` / `get_file_diff` | 看本次 session 改了哪些文件 | ❌ 待实现（需 file snapshot） |
+| ~~`get_modified_files`~~ / ~~`get_file_diff`~~ | 看本次 session 改了哪些文件 | ✅ 已实现（File Snapshot 双路快照） |
+| ~~`get_batch_diffs`~~ / ~~`get_file_history`~~ | 批量 diff + 单文件历史 | ✅ 已实现（按 path 分组聚合 + 按 turn 时间线） |
 
 ### 🟢 P2 — 依赖底层能力
 

@@ -195,7 +195,7 @@ docs/
 | [docs/design/FAUX_PROVIDER.md](./docs/design/FAUX_PROVIDER.md) | FauxProvider 架构级 LLM Mock：FIFO 队列 + 工厂响应 + 流式分块，对标 pi (已实现 Phase 1) |
 | [docs/design/RECORD_REPLAY.md](./docs/design/RECORD_REPLAY.md) | Record/Replay 录制回放：环境变量录制 + `--model replay/id` 回放，复用 FauxProvider (已实现 Phase 1) |
 | [docs/design/SESSION_TREE.md](./docs/design/SESSION_TREE.md) | Session Tree（会话分支）：文件内分支 + leaf 指针 + only-append 回滚 (已实现) |
-| [docs/design/FILE_SNAPSHOT.md](./docs/design/FILE_SNAPSHOT.md) | File Snapshot：双路快照（工具级 before/after + 目录扫描兜底），100MB GC 封顶 (开发中) |
+| [docs/design/FILE_SNAPSHOT.md](./docs/design/FILE_SNAPSHOT.md) | File Snapshot：双路快照（工具级 before/after + 目录扫描兜底），100MB GC 封顶 (已实现 Phase 1-7) |
 | [docs/testing/MESSAGE_RETRIEVAL_CASES.md](./docs/testing/MESSAGE_RETRIEVAL_CASES.md) | 消息拉取 CLI 用例集：9 接口 + 12 Group A-L + 分页/视点/过滤/血缘 (设计定稿+已实现) |
 
 ### 使用指南（docs/guides/）
@@ -646,7 +646,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 
 | 套件 | 数量 | 覆盖 |
 |------|------|------|
-| lib tests (核心逻辑) | 269 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact |
+| lib tests (核心逻辑) | 288 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact/FileSnapshot |
 | unit_rpc_test (RPC 协议) | 20 | U1-U20 RPC 命令覆盖 + 接口格式兼容 |
 | manager_integration (集成) | 25 | Manager + Worker + 事件 + UI + 消息拉取 |
 | session_tree_test (集成) | 4 | only-append 审计/branch 接 leaf/全操作序列 |
@@ -657,7 +657,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | child_worker / concurrency | 4 | 子进程通信/并发池 |
 | memory_e2e | 6 | Memory 扩展存储/搜索/注入/去重 |
 | ion-provider 单元 | 70 | OpenAI/Anthropic/Google/FauxProvider/RecordReplay/transform_messages |
-| **小计 Rust 测试** | **442** | 全部通过 ✅ |
+| **小计 Rust 测试** | **461** | 全部通过 ✅ |
 | faux_scenarios_ci (CLI E2E) | 4 | 三场景 faux（直接执行/host/serve） |
 | record_replay_ci (CLI E2E) | 11 | 录制/回放/路径穿越/冲突/OVERWRITE/权限 |
 | crash_recovery_ci (CLI E2E) | 6 | stderr/exit_code/Dead/父通知 |
@@ -666,7 +666,8 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | message_retrieval_ci (CLI E2E) | 55 | 消息拉取主验证（脚本 Group A-N 对应文档 A-M 场景）：ion history/分页/视点/turn_summary/compaction/turn 完整性/中断态/统计聚合/旁路数据/customType 两维属性/性能缓存/O(n)/血缘 |
 | session_tree_verify (CLI E2E) | 15 | 树展示 + branch/rollback 单元测试 + 分支视点(live/full/since_compaction) + only-append 红线 + SESSION_TREE_SPEC P0 验收映射 |
 | realtime_stitch_ci (CLI E2E) | 10 | Group I：host + create_session + subscribe + prompt + 事件流(agent_start/text_delta/agent_end) + 历史补齐 |
-| **测试覆盖合计** | **551** | 全部通过 ✅（session_tree_ci 废弃不计入） |
+| file_snapshot_ci (CLI E2E) | 12 | Group A-G：object_store 去重/scanner 目录扫描/diff 生成/GC/4 RPC 端到端 |
+| **测试覆盖合计** | **582** | 全部通过 ✅（session_tree_ci 废弃不计入） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
