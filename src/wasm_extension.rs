@@ -1350,7 +1350,7 @@ impl ExtTrait for HookAdapter {
     }
 
     // ── Model ──
-    async fn on_model_select(&self, ctx: &ModelSelectContext) -> AgentResult<()> {
+    async fn on_model_select(&self, ctx: &mut ModelSelectContext) -> AgentResult<()> {
         self.notify("on_model_select", &serde_json::json!({
             "old_model": &ctx.old_model,
             "new_model": &ctx.new_model,

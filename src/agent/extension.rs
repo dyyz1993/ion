@@ -141,7 +141,8 @@ pub trait Extension: Send + Sync {
     async fn after_tool_call(&self, _call: &ToolCall, _result: &ToolResult) -> AgentResult<()> { Ok(()) }
 
     // ── Model (3) ──
-    async fn on_model_select(&self, _ctx: &ModelSelectContext) -> AgentResult<()> { Ok(()) }
+    /// 模型选择钩子。ctx 可变 → 扩展能覆盖模型选择（自定义策略）。
+    async fn on_model_select(&self, _ctx: &mut ModelSelectContext) -> AgentResult<()> { Ok(()) }
     async fn on_thinking_level_select(&self, _level: &str, _old: Option<&str>) -> AgentResult<()> { Ok(()) }
 
     // ── Entries ──
@@ -362,7 +363,7 @@ impl ExtensionRegistry {
     pub async fn after_tool_call(&self, call: &ToolCall, result: &ToolResult) -> AgentResult<()> {
         for ext in &self.extensions { ext.after_tool_call(call, result).await?; } Ok(())
     }
-    pub async fn on_model_select(&self, ctx: &ModelSelectContext) -> AgentResult<()> {
+    pub async fn on_model_select(&self, ctx: &mut ModelSelectContext) -> AgentResult<()> {
         for ext in &self.extensions { ext.on_model_select(ctx).await?; } Ok(())
     }
     pub async fn on_thinking_level_select(&self, level: &str, old: Option<&str>) -> AgentResult<()> {

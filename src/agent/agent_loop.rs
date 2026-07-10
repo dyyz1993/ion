@@ -484,15 +484,24 @@ impl Agent {
             reason: "startup".into(),
         }).await?;
 
-        // 2. model_select (模型选择)
-        self.extensions.on_model_select(
-            &super::extension::ModelSelectContext {
-                old_model: None,
-                old_provider: None,
-                new_model: self.model.id.clone(),
-                new_provider: self.model.provider.clone(),
-            },
-        ).await?;
+        // 2. model_select (模型选择，扩展可覆盖)
+        let mut model_ctx = super::extension::ModelSelectContext {
+            old_model: None,
+            old_provider: None,
+            new_model: self.model.id.clone(),
+            new_provider: self.model.provider.clone(),
+        };
+        self.extensions.on_model_select(&mut model_ctx).await?;
+
+        // 如果扩展改了模型，重新解析
+        if model_ctx.new_model != self.model.id || model_ctx.new_provider != self.model.provider {
+            let registry = ion_provider::registry::ModelRegistry::new();
+            if let Some(new_model) = registry.find_model(&model_ctx.new_model) {
+                eprintln!("[model] extension changed model: {} → {}",
+                    self.model.id, new_model.id);
+                self.model = new_model.clone();
+            }
+        }
 
         // 3. input (用户输入拦截/转换)
         {

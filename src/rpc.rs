@@ -268,7 +268,7 @@ impl Extension for RpcExtension {
         Ok(())
     }
 
-    async fn on_model_select(&self, ctx: &ModelSelectContext) -> AgentResult<()> {
+    async fn on_model_select(&self, ctx: &mut ModelSelectContext) -> AgentResult<()> {
         self.output.write_json(&serde_json::json!({
             "type": "event",
             "event": {
