@@ -507,9 +507,10 @@ fi
 
 # N7: 默认拉取只含 message（不含 custom/system_event）
 # ion history 默认 include_custom=none，只显示 message
-MSG_IN_OUTPUT=$(echo "$CUSTOM_OUTPUT" | grep -c "正常对话\|正常回复" || echo 0)
+# 注意：c1 被 segment_summary 折叠，c2 被 deletion 删除，c3（"继续"）应可见
+MSG_IN_OUTPUT=$(echo "$CUSTOM_OUTPUT" | grep -c "继续" || echo 0)
 if [ "$MSG_IN_OUTPUT" -ge 1 ]; then
-    pass "N7: 默认拉取含正常消息内容"
+    pass "N7: 默认拉取含正常消息内容（c3 可见，c1/c2 被折叠/删除）"
 else
     fail "N7: 默认拉取缺正常消息"
 fi
