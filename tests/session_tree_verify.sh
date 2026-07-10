@@ -177,6 +177,39 @@ else
     echo -e "\033[33m  ⏭️  F3: ion session tree 对不存在的文件行为待确认\033[0m"
 fi
 
+echo ""
+echo "── Group G: SESSION_TREE_SPEC P0 验收映射（单元测试覆盖）──"
+echo "  （branch/rollback 是写操作，CLI 需要 message+session_path 匹配，"
+echo "   P0 端到端通过 session_tree_test.rs 单元测试覆盖）"
+
+# G_P0: 跑 session_tree_test.rs，确认 P0.1-P0.5 的核心逻辑全过
+P0_UNIT=$(cd "$PROJECT_DIR" && cargo test --test session_tree_test 2>&1)
+if echo "$P0_UNIT" | grep -q "test result: ok"; then
+    P0_COUNT=$(echo "$P0_UNIT" | grep 'passed' | sed 's/.*\([0-9]\+ passed\).*/\1/' | head -1)
+    pass "G1: session_tree_test 全过（$P0_COUNT）— 覆盖 P0.1 分叉/P0.2 回滚/P0.3 only-append"
+else
+    fail "G1: session_tree_test 有失败"
+    echo "$P0_UNIT" | tail -5
+fi
+
+# G2: 跑 session_tree.rs 内联单元测试（resolve_current_leaf / get_tree / make_branch 等）
+INLINE_UNIT=$(cd "$PROJECT_DIR" && cargo test --lib session_tree 2>&1)
+if echo "$INLINE_UNIT" | grep -q "test result: ok"; then
+    INLINE_COUNT=$(echo "$INLINE_UNIT" | grep 'passed' | sed 's/.*\([0-9]\+ passed\).*/\1/' | head -1)
+    pass "G2: session_tree 内联单元测试全过（$INLINE_COUNT）— 覆盖 resolve_current_leaf/get_tree/compaction_safety"
+else
+    fail "G2: session_tree 内联单元测试有失败"
+    echo "$INLINE_UNIT" | tail -5
+fi
+
+echo ""
+echo "  P0 验收点映射："
+echo "    P0.1 分叉后原路径保留     → branch_appends_leaf_pointer_and_preserves_old_entries"
+echo "    P0.2 回滚后被回滚消息不丢 → rollback_appends_tombstone_and_preserves_old_entries"
+echo "    P0.3 完整操作序列 only-append → full_branch_rollback_checkout_sequence_preserves_only_append"
+echo "    P0.4 branch 后新消息接 leaf  → branch_then_new_message_parents_off_leaf"
+echo "    P0.5 resolve_current_leaf    → session_tree 内联单元测试（compute_depths O(n)）"
+
 # ──────────────────────────────────────────────────────────
 echo ""
 echo "════════════════════════════════════════"

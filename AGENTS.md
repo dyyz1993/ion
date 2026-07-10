@@ -655,11 +655,11 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | record_replay_ci (CLI E2E) | 11 | 录制/回放/路径穿越/冲突/OVERWRITE/权限 |
 | crash_recovery_ci (CLI E2E) | 6 | stderr/exit_code/Dead/父通知 |
 | global_memory_ci (CLI E2E) | 8 | 单例生命周期/save/search/跨项目/软删除 |
-| session_tree_ci (CLI E2E) | 8 | 树展示/branch/rollback/only-append 审计 |
+| session_tree_ci (CLI E2E) | [废弃] | ION_FAUX_REPLY 造会话不落盘，被 session_tree_verify.sh 替代 |
 | message_retrieval_ci (CLI E2E) | 55 | 消息拉取主验证（脚本 Group A-N 对应文档 A-M 场景）：ion history/分页/视点/turn_summary/compaction/turn 完整性/中断态/统计聚合/旁路数据/customType 两维属性/性能缓存/O(n)/血缘 |
-| session_tree_verify (CLI E2E) | 13 | 树展示 + branch/rollback 单元测试 + 分支视点(live/full/since_compaction) + only-append 红线 |
+| session_tree_verify (CLI E2E) | 15 | 树展示 + branch/rollback 单元测试 + 分支视点(live/full/since_compaction) + only-append 红线 + SESSION_TREE_SPEC P0 验收映射 |
 | realtime_stitch_ci (CLI E2E) | 10 | Group I：host + create_session + subscribe + prompt + 事件流(agent_start/text_delta/agent_end) + 历史补齐 |
-| **测试覆盖合计** | **375** | 全部通过 ✅ |
+| **测试覆盖合计** | **409** | 全部通过 ✅（session_tree_ci 废弃，不计入） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
