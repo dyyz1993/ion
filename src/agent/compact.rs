@@ -541,7 +541,8 @@ async fn apply_compaction(
         return Ok(());
     }
     let keep_count = config.keep_recent_tokens / 4;
-    let mut start = messages.len().saturating_sub(keep_count);
+    let original_start = messages.len().saturating_sub(keep_count);
+    let mut start = original_start;
 
     // Split-turn 调整（对齐 pi findCutPoint）：
     // 如果切点落在 turn 中间（保留区首条不是 User 消息），
@@ -549,6 +550,11 @@ async fn apply_compaction(
     if start > 1 && start < messages.len() {
         while start < messages.len() && !is_turn_boundary(&messages[start]) {
             start += 1;
+        }
+        // 边界保护：如果整个保留区都没有 turn boundary（全是 Assistant/ToolResult），
+        // 回退到原始切点，容忍孤儿消息（比丢弃整个保留区好）
+        if start >= messages.len() {
+            start = original_start;
         }
     }
 
@@ -1009,5 +1015,35 @@ mod tests {
         assert!(is_turn_boundary(&make_user_msg("hello")));
         assert!(is_turn_boundary(&make_compaction_summary("summary")));
         assert!(!is_turn_boundary(&make_assistant_msg("reply")));
+    }
+
+    #[tokio::test]
+    async fn split_turn_keeps_region_when_no_user_in_keep() {
+        // 保留区全是 Assistant 消息——split-turn 调整不应丢弃它们
+        let mut msgs = vec![
+            make_user_msg("start"),           // 0
+            make_assistant_msg("a1"),         // 1
+            make_assistant_msg("a2"),         // 2
+            make_assistant_msg("a3"),         // 3
+            make_assistant_msg("a4"),         // 4
+        ];
+        let config = CompactConfig {
+            threshold: 1,
+            keep_recent_tokens: 8, // keep_count = 8/4 = 2 → 保留区从 index 3 开始
+            ..Default::default()
+        };
+        let ext = ExtensionRegistry::new();
+
+        // 用 emergency truncate（summarizer=None），直接测 apply_compaction 逻辑
+        let result = emergency_truncate(&mut msgs, &config, &ext, 100).await;
+        assert!(result.is_ok());
+
+        // 验证：messages 不能只剩首条+摘要（保留区不该被全丢）
+        assert!(msgs.len() > 2, "keep region should be preserved, got {} msgs", msgs.len());
+        // 至少有一条原始 Assistant 消息保留
+        let has_assistant = msgs.iter().any(|m| matches!(m, Message::Assistant(a) if a.content.iter().any(|b| {
+            matches!(b, AssistantContentBlock::Text(t) if t.text.starts_with("a"))
+        })));
+        assert!(has_assistant, "at least one assistant message should survive");
     }
 }

@@ -680,7 +680,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 - 详细设计文档见 [docs/design/HOOK_SYSTEM.md](./docs/design/HOOK_SYSTEM.md)
 
 **P6b - 其他（待定）:**
-- @图片文件支持 (ContentBlock::Image 完整实现)
+- ~~@图片文件支持 (ContentBlock::Image 完整实现)~~ ✅ 已完成 — 3 provider 全部支持图片(OpenAI image_url / Anthropic source / Google inline_data)
 - --models 多模型 Ctrl+P 切换 (交互式)
 - Memory 扩展 v0.2 (SQLite 存储 / FTS 检索 / Active Memory sub-agent)
 - 真实代码审查 E2E (当前用算术题代替)
