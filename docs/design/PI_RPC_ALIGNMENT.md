@@ -149,7 +149,7 @@ ion subscribe --session x --extension memory
 | `navigate_tree` | ✅ | ✅ 已实现（线性节点列表 + onLeafPath/isCurrentLeaf 标记） |
 | `delete_entries` / `summarize_entries` | `delete_entries` / `summarize_entries` | ✅ |
 | `get_session_stats` | `get_session_stats` | ✅ |
-| `get_commands` / `get_skills` / `get_extensions` / `get_tools` | `get_tools` / `get_agents` | ⚠️ 部分 |
+| `get_commands` / `get_skills` / `get_extensions` / `get_tools` | ✅ / ✅ / ✅ / ✅ | ✅ 全部 |
 | `get_settings` / `set_settings` | `ion config show/set` | ⚠️ 模式不同 |
 | `get_context_usage` | ❌ | ❌ 缺 |
 | `get_system_prompt` | `get_system_prompt` | ✅ |
@@ -213,7 +213,7 @@ ion subscribe --session x --extension memory
 | ~~`get_tree`~~ / ~~`get_tree_with_leaf`~~ | Session Tree | ✅ 已实现 |
 | ~~`navigate_tree`~~ | Session Tree | ✅ 已实现 |
 | `get_flags` / `set_flag` | 扩展 flag 系统 | ❌ 待实现 |
-| `get_commands` / `get_skills` | slash 命令 + skill 系统 | ❌ 待实现 |
+| ~~`get_commands`~~ / ~~`get_skills`~~ | slash 命令 + skill 系统 | ✅ 已实现（RPC 命令列表 + skill 文件扫描） |
 | MCP 三件套 | MCP client | ❌ 待实现 |
 | Remote tools 三件套 | 远程工具协议 | ❌ 待实现 |
 |---|---|

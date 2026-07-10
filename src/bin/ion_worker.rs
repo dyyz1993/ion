@@ -1064,8 +1064,88 @@ async fn main() {
                     output_response(&id, "get_settings", &cfg_json);
                 }
             }
-            "get_commands" => output_response(&id, "get_commands", &serde_json::json!([])),
-            "get_skills" => output_response(&id, "get_skills", &serde_json::json!([])),
+            "get_commands" => {
+                // 列出内置命令（worker 支持的 RPC 方法）
+                let commands = serde_json::json!([
+                    {"name": "prompt", "desc": "发送消息给 agent"},
+                    {"name": "steer", "desc": "插队消息（不中断当前轮）"},
+                    {"name": "follow_up", "desc": "追加消息（当前轮结束后处理）"},
+                    {"name": "abort", "desc": "中断当前 agent 循环"},
+                    {"name": "compact", "desc": "手动触发压缩"},
+                    {"name": "get_messages", "desc": "拉取消息（分页/视点）"},
+                    {"name": "list_turns", "desc": "逐轮概览"},
+                    {"name": "list_inputs", "desc": "用户输入列表"},
+                    {"name": "get_turn_detail", "desc": "单轮明细"},
+                    {"name": "get_tree", "desc": "会话树结构"},
+                    {"name": "get_tree_with_leaf", "desc": "会话树 + leaf 路径"},
+                    {"name": "navigate_tree", "desc": "树线性导航"},
+                    {"name": "get_session_stats", "desc": "会话统计"},
+                    {"name": "get_settings", "desc": "读取配置"},
+                    {"name": "set_settings", "desc": "写入配置"},
+                    {"name": "set_permission_mode", "desc": "切命令守卫模式"},
+                    {"name": "set_cwd", "desc": "切工作目录"},
+                    {"name": "set_auto_retry", "desc": "设置重试次数"},
+                    {"name": "abort_retry", "desc": "中断重试"},
+                    {"name": "abort_bash", "desc": "中断后台 bash"},
+                    {"name": "call_tool", "desc": "直接调工具"},
+                    {"name": "extension_rpc", "desc": "调扩展方法"},
+                    {"name": "set_model", "desc": "切模型"},
+                    {"name": "set_thinking_level", "desc": "切思考级别"},
+                    {"name": "cycle_model", "desc": "循环切模型"},
+                    {"name": "cycle_thinking_level", "desc": "循环切思考级别"},
+                    {"name": "get_skills", "desc": "列出可用 skills"},
+                ]);
+                output_response(&id, "get_commands", &commands);
+            }
+            "get_skills" => {
+                // 列出全局 + 项目级 skills
+                let mut skills: Vec<serde_json::Value> = Vec::new();
+
+                // 全局 skills (~/.ion/skills/)
+                let global_dir = ion::paths::skills_dir();
+                if let Ok(entries) = std::fs::read_dir(&global_dir) {
+                    for entry in entries.flatten() {
+                        if let Some(name) = entry.file_name().to_str() {
+                            let path = entry.path();
+                            if path.is_file() {
+                                let content = std::fs::read_to_string(&path).unwrap_or_default();
+                                let brief = content.lines().take(3).collect::<Vec<_>>().join(" ");
+                                skills.push(serde_json::json!({
+                                    "name": name.trim_end_matches(".md"),
+                                    "source": "global",
+                                    "path": path.to_string_lossy(),
+                                    "brief": if brief.len() > 80 { format!("{}...", &brief[..80]) } else { brief },
+                                }));
+                            }
+                        }
+                    }
+                }
+
+                // 项目级 skills (<project>/.ion/skills/)
+                let proj_dir = ion::paths::project_skills_dir(&worker_cwd);
+                if let Ok(entries) = std::fs::read_dir(&proj_dir) {
+                    for entry in entries.flatten() {
+                        if let Some(name) = entry.file_name().to_str() {
+                            let path = entry.path();
+                            if path.is_file() {
+                                let content = std::fs::read_to_string(&path).unwrap_or_default();
+                                let brief = content.lines().take(3).collect::<Vec<_>>().join(" ");
+                                skills.push(serde_json::json!({
+                                    "name": name.trim_end_matches(".md"),
+                                    "source": "project",
+                                    "path": path.to_string_lossy(),
+                                    "brief": if brief.len() > 80 { format!("{}...", &brief[..80]) } else { brief },
+                                }));
+                            }
+                        }
+                    }
+                }
+
+                output_response(&id, "get_skills", &serde_json::json!({
+                    "skills": skills,
+                    "count": skills.len(),
+                }));
+            }
             "get_extensions" => output_response(&id, "get_extensions", &serde_json::json!([])),
             "get_available_models" => {
                 let models: Vec<serde_json::Value> = model_reg.list_models().iter()
