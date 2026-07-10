@@ -383,11 +383,13 @@ fn truncate_after_last_compaction(entries: &[Value]) -> Vec<Value> {
     }
 }
 
-/// 可见性过滤：排除被 deletion 标记的 entry，替换 segment_summary 覆盖的 entry
-/// （deletion / segment_summary 当前生产路径未写入，这里做预留过滤）
+/// 可见性过滤：排除被 deletion 标记的 entry，替换 segment_summary 覆盖的 entry。
+/// 同时隐藏 deletion/segment_summary 元数据 entry 本身（它们不该展示给用户）。
 fn apply_visibility_filter(entries: &[Value]) -> Vec<Value> {
-    // 收集所有 deletion 的 targetIds
-    let deleted_ids: std::collections::HashSet<String> = entries
+    use std::collections::{HashMap, HashSet};
+
+    // 1. 收集所有 deletion 的 targetIds
+    let deleted_ids: HashSet<String> = entries
         .iter()
         .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("deletion"))
         .filter_map(|e| e.get("targetIds").and_then(|v| v.as_array()))
@@ -395,14 +397,67 @@ fn apply_visibility_filter(entries: &[Value]) -> Vec<Value> {
         .filter_map(|v| v.as_str().map(|s| s.to_string()))
         .collect();
 
-    // 过滤掉被删除的
+    // 2. 收集所有 segment_summary 的 targetIds（这些消息被折叠了）
+    let segment_targets: HashSet<String> = entries
+        .iter()
+        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("segment_summary"))
+        .filter_map(|e| e.get("targetIds").and_then(|v| v.as_array()))
+        .flatten()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+
+    // 3. 构建 segment_summary id → summary 映射（用于在折叠位置插入 BranchSummary）
+    let segment_summaries: HashMap<String, String> = entries
+        .iter()
+        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("segment_summary"))
+        .filter_map(|e| {
+            let summary = e.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            // 第一个 targetId → summary（折叠位置标记）
+            let first_target = e
+                .get("targetIds")
+                .and_then(|v| v.as_array())
+                .and_then(|a| a.first())
+                .and_then(|v| v.as_str())?;
+            Some((first_target.to_string(), summary))
+        })
+        .collect();
+
+    // 4. 过滤 + 替换
     entries
         .iter()
-        .filter(|e| {
+        .filter_map(|e| {
+            let etype = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
             let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            !deleted_ids.contains(id)
+
+            // deletion/segment_summary 元数据 entry 本身不展示
+            if etype == "deletion" || etype == "segment_summary" {
+                return None;
+            }
+
+            // 被删除的 → 排除
+            if deleted_ids.contains(id) {
+                return None;
+            }
+
+            // segment_summary 的第一个 target → 替换成 BranchSummary
+            if let Some(summary) = segment_summaries.get(id) {
+                return Some(serde_json::json!({
+                    "type": "branch_summary",
+                    "id": format!("{}_fold", id),
+                    "parentId": id,
+                    "timestamp": e.get("timestamp").cloned().unwrap_or_default(),
+                    "summary": summary,
+                    "fromHook": false,
+                }));
+            }
+
+            // segment_summary 的其余 target → 跳过
+            if segment_targets.contains(id) {
+                return None;
+            }
+
+            Some(e.clone())
         })
-        .cloned()
         .collect()
 }
 
@@ -1111,5 +1166,113 @@ mod tests {
     fn test_truncate_content() {
         assert_eq!(truncate_content("hello", 10), "hello");
         assert_eq!(truncate_content("hello world", 5), "hello...");
+    }
+
+    // ── 软删除 / 软压缩 apply_visibility_filter 测试 ──────────────────
+
+    fn deletion_entry(id: &str, target_ids: &[&str]) -> Value {
+        let targets: Vec<Value> = target_ids.iter().map(|t| json!(t)).collect();
+        json!({
+            "type": "deletion",
+            "id": id,
+            "parentId": null,
+            "timestamp": "2026-07-10T10:00:00Z",
+            "targetIds": targets,
+        })
+    }
+
+    fn segment_summary_entry(id: &str, target_ids: &[&str], summary: &str) -> Value {
+        let targets: Vec<Value> = target_ids.iter().map(|t| json!(t)).collect();
+        json!({
+            "type": "segment_summary",
+            "id": id,
+            "parentId": null,
+            "timestamp": "2026-07-10T10:00:00Z",
+            "targetIds": targets,
+            "summary": summary,
+        })
+    }
+
+    #[test]
+    fn visibility_filter_deletion_removes_targets() {
+        let entries = vec![
+            msg("m1", "root", "user", "hello"),
+            msg("m2", "m1", "assistant", "hi"),
+            deletion_entry("del1", &["m2"]),   // 删 m2
+            msg("m3", "m2", "user", "bye"),
+        ];
+        let filtered = apply_visibility_filter(&entries);
+        // m2 被删，deletion entry 本身也被隐藏
+        let ids: Vec<&str> = filtered.iter()
+            .filter_map(|e| e.get("id").and_then(|v| v.as_str()))
+            .collect();
+        assert!(!ids.contains(&"m2"), "m2 should be deleted, got: {:?}", ids);
+        assert!(ids.contains(&"m1"), "m1 should remain");
+        assert!(ids.contains(&"m3"), "m3 should remain");
+        // deletion 元数据不展示
+        assert!(!ids.iter().any(|id| id.starts_with("del")), "deletion entry should be hidden");
+    }
+
+    #[test]
+    fn visibility_filter_segment_summary_replaces_targets() {
+        let entries = vec![
+            msg("m1", "root", "user", "讨论开始"),
+            msg("m2", "m1", "assistant", "回复1"),
+            msg("m3", "m2", "user", "回复2"),
+            msg("m4", "m3", "assistant", "回复3"),
+            segment_summary_entry("ss1", &["m2", "m3", "m4"], "这三条被折叠了"),
+        ];
+        let filtered = apply_visibility_filter(&entries);
+        let ids: Vec<&str> = filtered.iter()
+            .filter_map(|e| e.get("id").and_then(|v| v.as_str()))
+            .collect();
+
+        // m2/m3/m4 被折叠掉（不直接展示）
+        assert!(!ids.contains(&"m2"), "m2 should be folded");
+        assert!(!ids.contains(&"m3"), "m3 should be folded");
+        assert!(!ids.contains(&"m4"), "m4 should be folded");
+        // m1 保留
+        assert!(ids.contains(&"m1"), "m1 should remain");
+        // segment_summary entry 本身不展示（元数据隐藏）
+        assert!(!ids.iter().any(|id| id.starts_with("ss")), "segment_summary entry should be hidden");
+
+        // 应该有一个 branch_summary 替换项
+        let has_branch_summary = filtered.iter().any(|e| {
+            e.get("type").and_then(|v| v.as_str()) == Some("branch_summary")
+        });
+        assert!(has_branch_summary, "should have a BranchSummary replacement");
+    }
+
+    #[test]
+    fn visibility_filter_no_metadata_keeps_all() {
+        let entries = vec![
+            msg("m1", "root", "user", "a"),
+            msg("m2", "m1", "assistant", "b"),
+        ];
+        let filtered = apply_visibility_filter(&entries);
+        assert_eq!(filtered.len(), 2, "no deletion/summary → all kept");
+    }
+
+    #[test]
+    fn visibility_filter_both_deletion_and_summary() {
+        let entries = vec![
+            msg("m1", "root", "user", "1"),
+            msg("m2", "m1", "assistant", "2"),    // → 被 delete
+            msg("m3", "m2", "user", "3"),          // → 被 summarize
+            msg("m4", "m3", "assistant", "4"),     // → 被 summarize
+            msg("m5", "m4", "user", "5"),
+            deletion_entry("del1", &["m2"]),
+            segment_summary_entry("ss1", &["m3", "m4"], "中间两段折叠"),
+        ];
+        let filtered = apply_visibility_filter(&entries);
+        let ids: Vec<&str> = filtered.iter()
+            .filter_map(|e| e.get("id").and_then(|v| v.as_str()))
+            .collect();
+
+        assert!(ids.contains(&"m1"), "m1 kept");
+        assert!(!ids.contains(&"m2"), "m2 deleted");
+        assert!(!ids.contains(&"m3"), "m3 folded");
+        assert!(!ids.contains(&"m4"), "m4 folded");
+        assert!(ids.contains(&"m5"), "m5 kept");
     }
 }

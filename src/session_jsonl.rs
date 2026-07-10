@@ -164,6 +164,45 @@ pub struct BranchSummaryEntry {
     pub summary: String,
 }
 
+/// Deletion entry (软删除标记).
+/// 标记一批 message entry 为已删除，拉取层和 LLM context 层过滤掉它们。
+/// JSONL 留痕（only-append 不变量），可通过删除此 entry 恢复。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeletionEntry {
+    #[serde(rename = "type")]
+    pub entry_type: String, // "deletion"
+    pub id: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: String,
+    pub timestamp: String,
+    /// 被删除的 message entry id 列表
+    #[serde(rename = "targetIds")]
+    pub target_ids: Vec<String>,
+    /// 删除原因（审计用）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Segment summary entry (软压缩/折叠标记).
+/// 将一批 message entry 替换成一条摘要（BranchSummary），原文在 JSONL 留痕。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SegmentSummaryEntry {
+    #[serde(rename = "type")]
+    pub entry_type: String, // "segment_summary"
+    pub id: String,
+    #[serde(rename = "parentId")]
+    pub parent_id: String,
+    pub timestamp: String,
+    /// 被折叠的 message entry id 列表
+    #[serde(rename = "targetIds")]
+    pub target_ids: Vec<String>,
+    /// LLM 生成或用户提供的摘要文本
+    pub summary: String,
+    /// 替换后的 BranchSummary entry id
+    #[serde(rename = "summaryEntryId", skip_serializing_if = "Option::is_none")]
+    pub summary_entry_id: Option<String>,
+}
+
 /// Custom entry.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CustomEntry {
@@ -474,6 +513,38 @@ pub fn append_branch_summary(cwd: &str, from_id: &str, summary: &str) {
         "fromId": from_id,
         "summary": summary,
         "fromHook": false,
+    });
+    append_raw_entry(cwd, &entry);
+}
+
+/// 追加一条 deletion entry（软删除标记）。
+/// target_ids: 被删除的 message entry id 列表。
+/// reason: 删除原因（审计用，可选）。
+pub fn append_deletion(cwd: &str, target_ids: &[String], reason: Option<&str>) {
+    let mut entry = serde_json::json!({
+        "type": "deletion",
+        "id": generate_id(),
+        "parentId": null,
+        "timestamp": timestamp_iso(),
+        "targetIds": target_ids,
+    });
+    if let Some(r) = reason {
+        entry["reason"] = serde_json::Value::String(r.into());
+    }
+    append_raw_entry(cwd, &entry);
+}
+
+/// 追加一条 segment_summary entry（软压缩/折叠标记）。
+/// target_ids: 被折叠的 message entry id 列表。
+/// summary: 摘要文本（LLM 生成或用户提供）。
+pub fn append_segment_summary(cwd: &str, target_ids: &[String], summary: &str) {
+    let entry = serde_json::json!({
+        "type": "segment_summary",
+        "id": generate_id(),
+        "parentId": null,
+        "timestamp": timestamp_iso(),
+        "targetIds": target_ids,
+        "summary": summary,
     });
     append_raw_entry(cwd, &entry);
 }

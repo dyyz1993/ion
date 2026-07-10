@@ -99,6 +99,10 @@ pub struct Agent {
     session_cwd: Option<String>,
     /// 溢出恢复已尝试次数（达 MAX_OVERFLOW_ROUNDS 后放弃，对齐 pi）
     overflow_recovery_attempts: u32,
+    /// 软删除状态：被软删的 entry ID 集合（快速查询）
+    deleted_entry_ids: std::collections::HashSet<String>,
+    /// 软压缩状态：被折叠的 entry ID → 替换后的 BranchSummary 摘要
+    summarized_entry_ids: std::collections::HashMap<String, String>,
 }
 
 /// 上下文溢出恢复的最大 compact-and-retry 轮次（对齐 pi MAX_OVERFLOW_RECOVERY_ROUNDS = 5）
@@ -132,6 +136,8 @@ impl Agent {
             compact_model: None,
             session_cwd: None,
             overflow_recovery_attempts: 0,
+            deleted_entry_ids: std::collections::HashSet::new(),
+            summarized_entry_ids: std::collections::HashMap::new(),
         }
     }
 
@@ -257,6 +263,60 @@ impl Agent {
     /// 不经过 agent.run()，直接入历史，下次 LLM 调用会看到（provider 自动转 user text）。
     pub fn push_message(&mut self, msg: Message) {
         self.messages.push(msg);
+    }
+
+    /// 软删除：从 self.messages 按索引移除消息，记录 entry_id 到 deleted_entry_ids。
+    /// indices 必须是消息数组中的合法下标，由 worker 通过 JSONL entry↔index 映射算出。
+    /// 直接改 self.messages → token 统计/compaction 自动正确。
+    pub fn mark_deleted(&mut self, indices: &[usize], entry_ids: &[String]) {
+        // 从后往前删，避免索引偏移
+        let mut sorted = indices.to_vec();
+        sorted.sort_unstable_by(|a, b| b.cmp(a));
+        for idx in sorted {
+            if idx < self.messages.len() {
+                self.messages.remove(idx);
+            }
+        }
+        for eid in entry_ids {
+            self.deleted_entry_ids.insert(eid.clone());
+        }
+    }
+
+    /// 软压缩：把 self.messages 里 indices 对应的消息替换成一条 BranchSummary。
+    /// 第一个 index 的位置放 BranchSummary，其余移除。
+    /// 直接改 self.messages → token 统计/compaction 自动正确。
+    pub fn mark_summarized(&mut self, indices: &[usize], entry_ids: &[String], summary: &str) {
+        if indices.is_empty() {
+            return;
+        }
+        let mut sorted = indices.to_vec();
+        sorted.sort_unstable();
+        let first_pos = sorted[0];
+
+        // 移除所有目标消息
+        for &idx in sorted.iter().rev() {
+            if idx < self.messages.len() {
+                self.messages.remove(idx);
+            }
+        }
+
+        // 在原第一个位置插入 BranchSummary
+        let insert_pos = first_pos.min(self.messages.len());
+        self.messages.insert(insert_pos, Message::BranchSummary(BranchSummaryMessage {
+            role: "branchSummary".into(),
+            summary: summary.into(),
+            from_id: entry_ids.first().cloned().unwrap_or_default(),
+            timestamp: now_ms(),
+        }));
+
+        for eid in entry_ids {
+            self.summarized_entry_ids.insert(eid.clone(), summary.into());
+        }
+    }
+
+    /// 获取软删除的 entry ID 集合（用于调试/展示）
+    pub fn deleted_ids(&self) -> &std::collections::HashSet<String> {
+        &self.deleted_entry_ids
     }
 
     /// steer 队列积压数（未消费的高优先级消息）

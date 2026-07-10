@@ -1244,16 +1244,122 @@ async fn main() {
             "fork" => output_response(&id, "fork", &serde_json::json!({"sessionId":sid})),
             "navigate_tree" => output_response(&id, "navigate_tree", &serde_json::Value::Null),
             "delete_entries" => {
-                // Delete messages by index (simplified: clear all tool results)
+                // 软删除：从 self.messages 移除 + 落 DeletionEntry 到 JSONL
+                let target_ids: Vec<String> = params.get("targetIds")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                let reason = params.get("reason").and_then(|v| v.as_str());
                 let before = agent.messages().len();
-                output_response(&id, "delete_entries", &serde_json::json!({"deleted": 0, "before": before, "after": agent.messages().len()}));
+
+                if target_ids.is_empty() {
+                    output_response(&id, "delete_entries", &serde_json::json!({
+                        "deleted": 0, "before": before, "after": before, "error": "no targetIds"
+                    }));
+                    continue;
+                }
+
+                // 从 JSONL 构建消息 entry id → 数组索引的映射
+                let entries = ion::message_retrieval::load_entries_cached(&worker_cwd);
+                let msg_entry_ids: Vec<String> = entries.iter()
+                    .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("message"))
+                    .map(|e| e.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string())
+                    .collect();
+
+                // 验证：JSONL 消息数应与 agent 内存消息数一致（否则映射失效）
+                if msg_entry_ids.len() != agent.messages().len() {
+                    output_response(&id, "delete_entries", &serde_json::json!({
+                        "deleted": 0, "before": before, "after": before,
+                        "error": format!("entry/index mismatch: jsonl={} agent={}", msg_entry_ids.len(), agent.messages().len())
+                    }));
+                    continue;
+                }
+
+                // 找到 target_ids 对应的消息索引
+                let indices: Vec<usize> = target_ids.iter()
+                    .filter_map(|tid| msg_entry_ids.iter().position(|eid| eid == tid))
+                    .collect();
+
+                if indices.is_empty() {
+                    output_response(&id, "delete_entries", &serde_json::json!({
+                        "deleted": 0, "before": before, "after": before,
+                        "error": "no matching entries found"
+                    }));
+                    continue;
+                }
+
+                // 执行删除
+                agent.mark_deleted(&indices, &target_ids);
+                // 落 DeletionEntry
+                ion::session_jsonl::append_deletion(&worker_cwd, &target_ids, reason);
+                // 失效缓存（下次 load_entries_cached 会重新读盘）
+                ion::message_retrieval::invalidate_cache(&worker_cwd);
+
+                output_response(&id, "delete_entries", &serde_json::json!({
+                    "deleted": indices.len(), "before": before, "after": agent.messages().len()
+                }));
             }
             "summarize_entries" => {
-                let summary_text = params.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+                // 软压缩：把一批消息替换成 BranchSummary + 落 SegmentSummaryEntry
+                let target_ids: Vec<String> = params.get("targetIds")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                let summary_text = params.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let before = agent.messages().len();
+
+                if target_ids.is_empty() {
+                    output_response(&id, "summarize_entries", &serde_json::json!({
+                        "summarized": 0, "before": before, "after": before, "error": "no targetIds"
+                    }));
+                    continue;
+                }
+
+                // 从 JSONL 构建索引映射
+                let entries = ion::message_retrieval::load_entries_cached(&worker_cwd);
+                let msg_entry_ids: Vec<String> = entries.iter()
+                    .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("message"))
+                    .map(|e| e.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string())
+                    .collect();
+
+                if msg_entry_ids.len() != agent.messages().len() {
+                    output_response(&id, "summarize_entries", &serde_json::json!({
+                        "summarized": 0, "before": before, "after": before,
+                        "error": format!("entry/index mismatch: jsonl={} agent={}", msg_entry_ids.len(), agent.messages().len())
+                    }));
+                    continue;
+                }
+
+                let indices: Vec<usize> = target_ids.iter()
+                    .filter_map(|tid| msg_entry_ids.iter().position(|eid| eid == tid))
+                    .collect();
+
+                if indices.is_empty() {
+                    output_response(&id, "summarize_entries", &serde_json::json!({
+                        "summarized": 0, "before": before, "after": before,
+                        "error": "no matching entries found"
+                    }));
+                    continue;
+                }
+
+                // 摘要：未提供时用占位文案（未来可接 LLM 生成）
+                let summary = if summary_text.is_empty() {
+                    format!("（{} 条消息已折叠）", indices.len())
+                } else {
+                    summary_text
+                };
+
+                // 执行折叠
+                agent.mark_summarized(&indices, &target_ids, &summary);
+                // 落 SegmentSummaryEntry
+                ion::session_jsonl::append_segment_summary(&worker_cwd, &target_ids, &summary);
+                ion::message_retrieval::invalidate_cache(&worker_cwd);
+
                 output_response(&id, "summarize_entries", &serde_json::json!({
-                    "summarized": true,
-                    "summary": summary_text,
-                    "messageCount": agent.messages().len()
+                    "summarized": indices.len(),
+                    "before": before,
+                    "after": agent.messages().len(),
+                    "summary": summary,
                 }));
             }
             "clone" => output_response(&id, "clone", &serde_json::json!({"sessionId":sid})),
