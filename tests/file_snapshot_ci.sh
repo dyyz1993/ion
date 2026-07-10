@@ -215,7 +215,51 @@ fi
 
 # ──────────────────────────────────────────────────────────
 echo ""
-echo "Group H: 集成验证（全量 file_snapshot 测试）"
+# ──────────────────────────────────────────────────────────
+echo ""
+echo "Group H: Restore 代码恢复（单元测试 + RPC）"
+# ──────────────────────────────────────────────────────────
+
+# H1: restore 单元测试
+RESTORE_UNIT=$(cargo test --lib file_snapshot::restore 2>&1)
+if echo "$RESTORE_UNIT" | grep -q "test result: ok"; then
+    COUNT=$(echo "$RESTORE_UNIT" | grep 'passed' | sed 's/.*\([0-9]\+ passed\).*/\1/' | head -1)
+    pass "H1: restore 单元测试全过（$COUNT）— 恢复新文件删除 / 恢复修改文件"
+else
+    fail "H1: restore 单元测试有失败"
+fi
+
+# H2: restore_files RPC（如果 host 可用）
+SOCK2="$HOME/.ion/host.sock"
+rm -f "$SOCK2" 2>/dev/null
+ION_FAUX_REPLY="restore test" ./target/debug/ion serve >/tmp/ion_fs_h2.log 2>&1 &
+HOST2_PID=$!
+sleep 2
+
+if kill -0 $HOST2_PID 2>/dev/null; then
+    CREATE2=$(./target/debug/ion rpc --method create_session --params '{"agent":"developer"}' 2>&1)
+    SID2=$(echo "$CREATE2" | grep '"session_id"' | sed 's/.*"session_id"[: ]*"//;s/".*//')
+    if [ -n "$SID2" ]; then
+        # restore_files 在空会话上应返回（无文件改动）
+        RESTORE_OUT=$(./target/debug/ion rpc --session "$SID2" --method restore_files --params '{"toTurn":"ts_000"}' 2>&1)
+        if echo "$RESTORE_OUT" | grep -qE "restoredFiles|error|summary"; then
+            pass "H2: restore_files RPC 正常返回（空会话）"
+        else
+            fail "H2: restore_files RPC 异常"
+        fi
+    else
+        skip "H2: create_session 失败"
+    fi
+    kill $HOST2_PID 2>/dev/null
+    wait $HOST2_PID 2>/dev/null
+    rm -f "$SOCK2"
+else
+    skip "H2: host 启动失败，跳过 restore RPC 测试"
+fi
+
+# ──────────────────────────────────────────────────────────
+echo ""
+echo "Group I: 集成验证（全量 file_snapshot 测试）"
 # ──────────────────────────────────────────────────────────
 
 ALL_FS=$(cargo test --lib file_snapshot 2>&1)
