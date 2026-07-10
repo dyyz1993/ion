@@ -76,10 +76,29 @@ impl SnapshotStore {
         let snapshots_dir = store_dir.join("snapshots");
         std::fs::create_dir_all(snapshots_dir.join("tool")).ok();
         std::fs::create_dir_all(snapshots_dir.join("turn")).ok();
+        std::fs::create_dir_all(snapshots_dir.join("restore")).ok();
         Self {
             snapshots_dir,
             objects: std::sync::Arc::new(ObjectStore::for_project(project_key)),
         }
+    }
+
+    /// 测试用：直接指定存储目录
+    #[cfg(test)]
+    pub fn new_at(store_dir: PathBuf) -> Self {
+        let snapshots_dir = store_dir.join("snapshots");
+        std::fs::create_dir_all(snapshots_dir.join("tool")).ok();
+        std::fs::create_dir_all(snapshots_dir.join("restore")).ok();
+        let objects = ObjectStore::new_at(store_dir);
+        Self {
+            snapshots_dir,
+            objects: std::sync::Arc::new(objects),
+        }
+    }
+
+    /// 快照目录路径（restore_point 存储用）
+    pub fn snapshots_dir(&self) -> &std::path::Path {
+        &self.snapshots_dir
     }
 
     /// 获取 object store（用于读写文件内容）

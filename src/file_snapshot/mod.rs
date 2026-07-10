@@ -11,6 +11,7 @@ pub mod snapshot;
 pub mod scanner;
 pub mod diff;
 pub mod gc;
+pub mod restore;
 
 pub use object_store::{ObjectStore, project_key, content_hash};
 pub use snapshot::{

@@ -1998,6 +1998,31 @@ async fn main() {
                     output_response(&id, "get_file_history", &serde_json::json!({"error": "file-snapshot not enabled"}));
                 }
             }
+            "restore_files" => {
+                let to_turn = params.get("toTurn").and_then(|v| v.as_str()).unwrap_or("");
+                if to_turn.is_empty() {
+                    output_response(&id, "restore_files", &serde_json::json!({"error": "missing 'toTurn' (turnId)"}));
+                } else if let Some(ref store) = snapshot_store {
+                    let result = ion::file_snapshot::restore::restore_code_to_turn(store, to_turn);
+                    output_response(&id, "restore_files", &serde_json::json!({
+                        "restoredFiles": result.restored_files.iter().map(|f| serde_json::json!({
+                            "path": f.path,
+                            "action": f.action,
+                            "fromHash": f.from_hash,
+                            "toHash": f.to_hash,
+                            "reason": f.reason,
+                        })).collect::<Vec<_>>(),
+                        "restorePoint": result.restore_point_id,
+                        "summary": {
+                            "restored": result.summary.restored,
+                            "deleted": result.summary.deleted,
+                            "skipped": result.summary.skipped,
+                        },
+                    }));
+                } else {
+                    output_response(&id, "restore_files", &serde_json::json!({"error": "file-snapshot not enabled"}));
+                }
+            }
             "get_fork_messages" => {
                 // 复用 retrieve_inputs（只返回 user 消息，用于 fork 选择）
                 let entries: Vec<serde_json::Value> =

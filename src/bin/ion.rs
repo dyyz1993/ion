@@ -194,6 +194,10 @@ struct Cli {
     #[arg(long, global = true, requires = "rollback")]
     rollback_reason: Option<String>,
 
+    /// Restore code files when rolling back (requires file-snapshot extension)
+    #[arg(long, global = true, requires = "rollback")]
+    restore_code: bool,
+
     /// Fork a new session from a specific leaf: <SESSION_ID>/<ENTRY_ID>
     #[arg(long, global = true, value_name = "SID/ENTRY_ID")]
     fork_from_leaf: Option<String>,
@@ -1896,6 +1900,36 @@ fn apply_session_tree_ops(cli: &Cli, session_id: &str) {
             std::process::exit(1);
         }
         let old_leaf = ion::session_tree::resolve_current_leaf(&ents);
+
+        // --restore-code：先恢复代码文件，再回滚消息
+        if cli.restore_code {
+            // 找到 rollback_to 所属的 turn_summary → 得到 turnId
+            let target_turn_id: Option<&str> = ents.iter()
+                .find(|e| {
+                    if e.get("type").and_then(|v| v.as_str()) != Some("turn_summary") {
+                        return false;
+                    }
+                    // turn_summary 的 entryRange 包含 rollback_to
+                    e.get("entryRange").and_then(|v| v.as_array())
+                        .map_or(false, |arr| arr.iter().any(|a| a.as_str() == Some(rollback_to)))
+                })
+                .and_then(|ts| ts.get("turnId").and_then(|v| v.as_str()));
+
+            match target_turn_id {
+                Some(turn_id) => {
+                    let pk = ion::file_snapshot::project_key(&cwd);
+                    let store = ion::file_snapshot::SnapshotStore::new(&pk);
+                    let result = ion::file_snapshot::restore::restore_code_to_turn(&store, turn_id);
+                    eprintln!("[restore-code] restored {} files (deleted {}, skipped {})",
+                        result.summary.restored, result.summary.deleted, result.summary.skipped);
+                    eprintln!("[restore-code] restore_point: {}", result.restore_point_id);
+                }
+                None => {
+                    eprintln!("[restore-code] ⚠️  cannot find turnId for entry '{}' — skipping code restore", rollback_to);
+                }
+            }
+        }
+
         let new_entries = ion::session_tree::make_rollback(
             rollback_to,
             old_leaf.as_deref(),
