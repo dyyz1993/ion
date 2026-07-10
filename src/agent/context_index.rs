@@ -151,6 +151,9 @@ impl ContextIndex {
         });
     }
 
+    /// system prompt 注入的最大文件数（超出时只显示最近的 + 汇总）
+    const MAX_TREE_FILES: usize = 50;
+
     /// 构建 tree 视图（注入 system prompt 用）
     pub fn build_tree(&self) -> String {
         if self.files.is_empty() {
@@ -161,8 +164,11 @@ impl ContextIndex {
         let mut paths: Vec<&String> = self.files.keys().collect();
         paths.sort();
 
-        for path in paths {
-            let record = &self.files[path];
+        let total = paths.len();
+        let shown = total.min(Self::MAX_TREE_FILES);
+
+        for path in paths.iter().take(shown) {
+            let record = &self.files[*path];
             // 找最新的 read 状态
             let latest_read = record.reads.last();
             let status_str = match latest_read {
@@ -178,6 +184,22 @@ impl ContextIndex {
             };
             lines.push(format!("  {} [{}]", path, status_str));
         }
+
+        // 超出限制时汇总
+        if total > shown {
+            let stale_count = paths.iter().take(shown)
+                .filter(|p| {
+                    self.files[*p].reads.last()
+                        .map(|r| r.status != Freshness::Current)
+                        .unwrap_or(false)
+                })
+                .count();
+            lines.push(format!(
+                "  ... ({} more files, {} shown of {})",
+                total - shown, shown, total
+            ));
+        }
+
         if !self.untracked_sources.is_empty() {
             lines.push(format!(
                 "\n注: {} 读取的内容不在索引内",

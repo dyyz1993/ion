@@ -2361,6 +2361,11 @@ fn resolve_target_indices(
             // 在 agent 内存里找第一条内容匹配的
             agent_contents.iter().position(|c| c == target_content)
         })
+        .collect::<Vec<usize>>()
+        // 去重：避免两条 target 解析到同一索引，导致 mark_deleted 删错消息
+        .into_iter()
+        .collect::<std::collections::HashSet<usize>>()
+        .into_iter()
         .collect()
 }
 

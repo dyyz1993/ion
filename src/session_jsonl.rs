@@ -461,6 +461,7 @@ impl SessionFile {
 
 /// 通用：往 session 文件追加一行 JSON entry。
 /// 自动处理文件末尾换行防粘连。
+/// 使用单次 write_all 避免 \n 和 JSON 之间的交错（并发安全）。
 pub fn append_raw_entry(cwd: &str, entry: &serde_json::Value) {
     let path = session_path(cwd);
     if let Some(parent) = path.parent() {
@@ -468,13 +469,15 @@ pub fn append_raw_entry(cwd: &str, entry: &serde_json::Value) {
     }
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        // 防粘连
-        if let Ok(meta) = f.metadata() {
-            if meta.len() > 0 {
-                let _ = write!(f, "\n");
-            }
-        }
-        let _ = write!(f, "{}", serde_json::to_string(entry).unwrap_or_default());
+        let json = serde_json::to_string(entry).unwrap_or_default();
+        // 合并 \n + JSON 为单次 write_all，避免两阶段写入的交错窗口
+        let needs_newline = f.metadata().map(|m| m.len() > 0).unwrap_or(false);
+        let payload = if needs_newline {
+            format!("\n{}", json)
+        } else {
+            json
+        };
+        let _ = f.write_all(payload.as_bytes());
     }
 }
 
