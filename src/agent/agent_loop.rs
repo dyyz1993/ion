@@ -268,7 +268,8 @@ impl Agent {
     /// 软删除：从 self.messages 按索引移除消息，记录 entry_id 到 deleted_entry_ids。
     /// indices 必须是消息数组中的合法下标，由 worker 通过 JSONL entry↔index 映射算出。
     /// 直接改 self.messages → token 统计/compaction 自动正确。
-    pub fn mark_deleted(&mut self, indices: &[usize], entry_ids: &[String]) {
+    /// 触发 on_entries_invalidated 钩子通知扩展。
+    pub async fn mark_deleted(&mut self, indices: &[usize], entry_ids: &[String]) {
         // 从后往前删，避免索引偏移
         let mut sorted = indices.to_vec();
         sorted.sort_unstable_by(|a, b| b.cmp(a));
@@ -280,12 +281,15 @@ impl Agent {
         for eid in entry_ids {
             self.deleted_entry_ids.insert(eid.clone());
         }
+        // 通知扩展
+        let _ = self.extensions.on_entries_invalidated(entry_ids).await;
     }
 
     /// 软压缩：把 self.messages 里 indices 对应的消息替换成一条 BranchSummary。
     /// 第一个 index 的位置放 BranchSummary，其余移除。
     /// 直接改 self.messages → token 统计/compaction 自动正确。
-    pub fn mark_summarized(&mut self, indices: &[usize], entry_ids: &[String], summary: &str) {
+    /// 触发 on_entries_invalidated 钩子通知扩展。
+    pub async fn mark_summarized(&mut self, indices: &[usize], entry_ids: &[String], summary: &str) {
         if indices.is_empty() {
             return;
         }
@@ -312,11 +316,59 @@ impl Agent {
         for eid in entry_ids {
             self.summarized_entry_ids.insert(eid.clone(), summary.into());
         }
+        // 通知扩展
+        let _ = self.extensions.on_entries_invalidated(entry_ids).await;
     }
 
     /// 获取软删除的 entry ID 集合（用于调试/展示）
     pub fn deleted_ids(&self) -> &std::collections::HashSet<String> {
         &self.deleted_entry_ids
+    }
+
+    /// 恢复软删除/折叠：从 deleted_entry_ids / summarized_entry_ids 移除指定 entry。
+    /// 调用方需在之后重新从 JSONL 加载完整消息到 self.messages。
+    pub fn restore_entries(&mut self, entry_ids: &[String]) {
+        for eid in entry_ids {
+            self.deleted_entry_ids.remove(eid);
+            self.summarized_entry_ids.remove(eid);
+        }
+    }
+
+    /// 从 JSONL 重新加载消息到 self.messages（恢复时用）。
+    pub fn reload_messages_from_session(&mut self, cwd: &str) -> usize {
+        let msgs = crate::session_jsonl::SessionFile::load(cwd)
+            .map(|f| f.messages)
+            .unwrap_or_default();
+        let count = msgs.len();
+        self.messages = msgs;
+        count
+    }
+
+    /// 用 LLM 生成一批消息的摘要（供 summarize_entries RPC 在未传 summary 时调用）。
+    /// 复用 compact::make_llm_summarizer 的 LLM 调用链路。
+    pub async fn summarize_messages_llm(&self, indices: &[usize]) -> AgentResult<String> {
+        let messages_to_summarize: Vec<Message> = indices.iter()
+            .filter(|&&i| i < self.messages.len())
+            .map(|&i| self.messages[i].clone())
+            .collect();
+
+        if messages_to_summarize.is_empty() {
+            return Ok("（空消息）".into());
+        }
+
+        let summarizer_model = self.compact_model.as_ref().unwrap_or(&self.model);
+        let summarizer = compact::make_llm_summarizer(self.registry.clone(), summarizer_model.clone());
+        summarizer(&messages_to_summarize).await
+    }
+
+    /// 获取 Agent 的 registry 引用（供 worker 构造 summarizer 用）
+    pub fn registry(&self) -> &Arc<ApiRegistry> {
+        &self.registry
+    }
+
+    /// 获取 compact_model 引用
+    pub fn compact_model(&self) -> Option<&Model> {
+        self.compact_model.as_ref()
     }
 
     /// steer 队列积压数（未消费的高优先级消息）

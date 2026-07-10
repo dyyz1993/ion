@@ -389,7 +389,7 @@ fn apply_visibility_filter(entries: &[Value]) -> Vec<Value> {
     use std::collections::{HashMap, HashSet};
 
     // 1. 收集所有 deletion 的 targetIds
-    let deleted_ids: HashSet<String> = entries
+    let mut deleted_ids: HashSet<String> = entries
         .iter()
         .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("deletion"))
         .filter_map(|e| e.get("targetIds").and_then(|v| v.as_array()))
@@ -398,13 +398,24 @@ fn apply_visibility_filter(entries: &[Value]) -> Vec<Value> {
         .collect();
 
     // 2. 收集所有 segment_summary 的 targetIds（这些消息被折叠了）
-    let segment_targets: HashSet<String> = entries
+    let mut segment_targets: HashSet<String> = entries
         .iter()
         .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("segment_summary"))
         .filter_map(|e| e.get("targetIds").and_then(|v| v.as_array()))
         .flatten()
         .filter_map(|v| v.as_str().map(|s| s.to_string()))
         .collect();
+
+    // 2b. restoration 撤销 deletion/segment_summary：移除被恢复的 targetIds
+    let restored_ids: HashSet<String> = entries
+        .iter()
+        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("restoration"))
+        .filter_map(|e| e.get("targetIds").and_then(|v| v.as_array()))
+        .flatten()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+    deleted_ids.retain(|id| !restored_ids.contains(id));
+    segment_targets.retain(|id| !restored_ids.contains(id));
 
     // 3. 构建 segment_summary id → summary 映射（用于在折叠位置插入 BranchSummary）
     let segment_summaries: HashMap<String, String> = entries
@@ -429,8 +440,8 @@ fn apply_visibility_filter(entries: &[Value]) -> Vec<Value> {
             let etype = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
             let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
 
-            // deletion/segment_summary 元数据 entry 本身不展示
-            if etype == "deletion" || etype == "segment_summary" {
+            // deletion/segment_summary/restoration 元数据 entry 本身不展示
+            if etype == "deletion" || etype == "segment_summary" || etype == "restoration" {
                 return None;
             }
 

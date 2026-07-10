@@ -348,6 +348,11 @@ impl ExtensionRegistry {
         for ext in &self.extensions { ext.on_system_prompt(prompt).await?; } Ok(())
     }
 
+    /// 通知扩展：消息数组被软删除/折叠操作修改了。
+    pub async fn on_entries_invalidated(&self, entry_ids: &[String]) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_entries_invalidated(entry_ids).await?; } Ok(())
+    }
+
     /// 路由 extension_rpc 到对应名称的扩展。
     /// 按 `extension` 名匹配 extension，找到后调 `on_extension_rpc`。
     pub async fn extension_rpc(

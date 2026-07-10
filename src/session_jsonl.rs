@@ -549,6 +549,20 @@ pub fn append_segment_summary(cwd: &str, target_ids: &[String], summary: &str) {
     append_raw_entry(cwd, &entry);
 }
 
+/// 追加一条 restoration entry（恢复标记）。
+/// 撤销 deletion/segment_summary：拉取层和 context 层不再过滤这些 entry。
+/// 对齐 only-append 不变量：不物理删除 entry，而是追加 restoration。
+pub fn append_restoration(cwd: &str, target_ids: &[String]) {
+    let entry = serde_json::json!({
+        "type": "restoration",
+        "id": generate_id(),
+        "parentId": null,
+        "timestamp": timestamp_iso(),
+        "targetIds": target_ids,
+    });
+    append_raw_entry(cwd, &entry);
+}
+
 /// 追加一条 compaction entry（压缩锚点，记录 firstKeptEntryId 供 since_compaction 视点用）。
 pub fn append_compaction(
     cwd: &str,

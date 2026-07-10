@@ -404,6 +404,14 @@ async fn main() {
             tracing::info!("[extension] permission disabled by config");
         }
 
+        // Context Index Extension（上下文索引 + 快照折叠）
+        if ion_cfg.is_extension_enabled("context-index") {
+            let ctx_ext = ion::agent::context_index::ContextIndexExtension::new();
+            ext_reg.register(Box::new(ctx_ext));
+        } else {
+            tracing::info!("[extension] context-index disabled by config");
+        }
+
         // ── 注册 WASM Extension 的 HookAdapter（让 WASM 也能实现 29 个钩子）──
         for wasm_path in &loaded_wasm_paths {
             if let Some(hook_adapter) = wasm_ext_registry.create_hook_adapter(wasm_path) {
@@ -1289,7 +1297,7 @@ async fn main() {
                 }
 
                 // 执行删除
-                agent.mark_deleted(&indices, &target_ids);
+                agent.mark_deleted(&indices, &target_ids).await;
                 // 落 DeletionEntry
                 ion::session_jsonl::append_deletion(&worker_cwd, &target_ids, reason);
                 // 失效缓存（下次 load_entries_cached 会重新读盘）
@@ -1342,15 +1350,18 @@ async fn main() {
                     continue;
                 }
 
-                // 摘要：未提供时用占位文案（未来可接 LLM 生成）
+                // 摘要：未提供时调 LLM 自动生成
                 let summary = if summary_text.is_empty() {
-                    format!("（{} 条消息已折叠）", indices.len())
+                    match agent.summarize_messages_llm(&indices).await {
+                        Ok(s) if !s.is_empty() => s,
+                        _ => format!("（{} 条消息已折叠）", indices.len()),
+                    }
                 } else {
                     summary_text
                 };
 
                 // 执行折叠
-                agent.mark_summarized(&indices, &target_ids, &summary);
+                agent.mark_summarized(&indices, &target_ids, &summary).await;
                 // 落 SegmentSummaryEntry
                 ion::session_jsonl::append_segment_summary(&worker_cwd, &target_ids, &summary);
                 ion::message_retrieval::invalidate_cache(&worker_cwd);
@@ -1360,6 +1371,36 @@ async fn main() {
                     "before": before,
                     "after": agent.messages().len(),
                     "summary": summary,
+                }));
+            }
+            "restore_entries" => {
+                // 恢复软删除/折叠：追加 restoration entry + 从 JSONL 重载消息
+                let target_ids: Vec<String> = params.get("targetIds")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                let before = agent.messages().len();
+
+                if target_ids.is_empty() {
+                    output_response(&id, "restore_entries", &serde_json::json!({
+                        "restored": 0, "before": before, "after": before, "error": "no targetIds"
+                    }));
+                    continue;
+                }
+
+                // 1. 从 Agent 状态移除
+                agent.restore_entries(&target_ids);
+                // 2. 追加 restoration entry 到 JSONL（拉取层会撤销过滤）
+                ion::session_jsonl::append_restoration(&worker_cwd, &target_ids);
+                // 3. 失效缓存
+                ion::message_retrieval::invalidate_cache(&worker_cwd);
+                // 4. 从 JSONL 重载消息到 Agent（恢复被删/折叠的原始消息）
+                let new_count = agent.reload_messages_from_session(&worker_cwd);
+
+                output_response(&id, "restore_entries", &serde_json::json!({
+                    "restored": target_ids.len(),
+                    "before": before,
+                    "after": new_count,
                 }));
             }
             "clone" => output_response(&id, "clone", &serde_json::json!({"sessionId":sid})),
