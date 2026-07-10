@@ -273,6 +273,11 @@ impl ExtensionRegistry {
     pub fn is_empty(&self) -> bool { self.extensions.is_empty() }
     pub fn len(&self) -> usize { self.extensions.len() }
 
+    /// 列出所有扩展名（get_extensions RPC 用）
+    pub fn names(&self) -> Vec<String> {
+        self.extensions.iter().map(|e| e.name().to_string()).collect()
+    }
+
     pub async fn on_session_start(&self, ctx: &SessionContext) -> AgentResult<()> {
         for ext in &self.extensions { ext.on_session_start(ctx).await?; } Ok(())
     }

@@ -392,6 +392,11 @@ impl Agent {
         self.model = model;
     }
 
+    /// 访问 extensions（get_extensions RPC 用）
+    pub fn extensions(&self) -> &ExtensionRegistry {
+        &self.extensions
+    }
+
     /// 访问 runtime（set_guard_mode 等 RPC 用）
     pub fn runtime(&self) -> &dyn crate::runtime::Runtime {
         self.runtime.as_ref()

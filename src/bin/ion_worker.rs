@@ -1146,7 +1146,14 @@ async fn main() {
                     "count": skills.len(),
                 }));
             }
-            "get_extensions" => output_response(&id, "get_extensions", &serde_json::json!([])),
+            "get_extensions" => {
+                // 列出已加载的扩展（从 ExtensionRegistry）
+                let exts: Vec<_> = agent.extensions().names();
+                output_response(&id, "get_extensions", &serde_json::json!({
+                    "extensions": exts.iter().map(|n| serde_json::json!({"name": n})).collect::<Vec<_>>(),
+                    "count": exts.len(),
+                }));
+            }
             "get_available_models" => {
                 let models: Vec<serde_json::Value> = model_reg.list_models().iter()
                     .map(|m| serde_json::json!({
@@ -1764,7 +1771,21 @@ async fn main() {
             "get_file_diff" => output_response(&id, "get_file_diff", &serde_json::json!([])),
             "get_batch_diffs" => output_response(&id, "get_batch_diffs", &serde_json::json!([])),
             "get_file_history" => output_response(&id, "get_file_history", &serde_json::json!([])),
-            "get_fork_messages" => output_response(&id, "get_fork_messages", &serde_json::json!([])),
+            "get_fork_messages" => {
+                // 复用 retrieve_inputs（只返回 user 消息，用于 fork 选择）
+                let entries: Vec<serde_json::Value> =
+                    ion::message_retrieval::load_entries_cached(&worker_cwd);
+                let params = ion::message_retrieval::RetrievalParams::default();
+                let result = ion::message_retrieval::retrieve_inputs(&entries, &params);
+                output_response(&id, "get_fork_messages", &serde_json::json!({
+                    "inputs": result.inputs.iter().map(|i| serde_json::json!({
+                        "entryId": i.entry_id,
+                        "turnId": i.turn_id,
+                        "text": i.text,
+                    })).collect::<Vec<_>>(),
+                    "count": result.inputs.len(),
+                }));
+            }
             "get_agents_files" => output_response(&id, "get_agents_files", &serde_json::json!([])),
             "get_latest_agent_change" => output_response(&id, "get_latest_agent_change", &serde_json::Value::Null),
             "get_agent_detail" => {
