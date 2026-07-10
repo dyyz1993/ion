@@ -394,13 +394,28 @@ impl SessionFile {
             return None;
         }
 
-        // First line is the header
-        let header: SessionHeader = serde_json::from_str(lines[0]).ok()?;
+        // First line is the header（损坏时用空 header 继续，不丢弃会话）
+        let header: SessionHeader = serde_json::from_str(lines[0]).unwrap_or_else(|_| SessionHeader {
+            entry_type: "session".into(),
+            version: 3,
+            id: "recovered".into(),
+            timestamp: String::new(),
+            cwd: cwd.into(),
+            parent_session: None,
+        });
         let mut entries: Vec<serde_json::Value> = Vec::new();
         let mut messages: Vec<crate::agent::messages::Message> = Vec::new();
 
         for line in &lines[1..] {
-            let val: serde_json::Value = serde_json::from_str(line).ok()?;
+            // 容错：跳过损坏的 JSON 行（半行写入/竞态交错），不丢弃整个会话
+            let val: serde_json::Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!("[session_jsonl] skipping corrupted line: {} ({})", 
+                        &line[..line.len().min(80)], e);
+                    continue;
+                }
+            };
             let entry_type = val["type"].as_str().unwrap_or("").to_string();
 
             // Extract messages

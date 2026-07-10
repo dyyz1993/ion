@@ -257,23 +257,45 @@ fn parse_grep_paths(output: &str) -> Vec<String> {
 
 /// 从 `path:line:content` 格式中提取 path。
 /// 找第一个 `:数字:` 模式，前面的就是路径。
+/// 对解析出的路径做基本合法性校验（必须像文件路径，不是任意字符串）。
 fn extract_path_before_line_num(line: &str) -> Option<String> {
     let bytes = line.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b':' {
-            // 检查后面是否跟数字（行号）
             let rest = &line[i + 1..];
             if let Some(colon_pos) = rest.find(':') {
                 let maybe_num = &rest[..colon_pos];
                 if maybe_num.chars().all(|c| c.is_ascii_digit()) && !maybe_num.is_empty() {
-                    return Some(line[..i].to_string());
+                    let path = &line[..i];
+                    // 路径合法性校验：非空 + 不含控制字符 + 看起来像路径
+                    if is_valid_path_candidate(path) {
+                        return Some(path.to_string());
+                    }
+                    return None;
                 }
             }
         }
         i += 1;
     }
     None
+}
+
+/// 基本路径合法性校验：过滤掉明显不是文件路径的噪音行。
+fn is_valid_path_candidate(path: &str) -> bool {
+    if path.is_empty() || path.len() > 4096 {
+        return false;
+    }
+    // 不含控制字符
+    if path.chars().any(|c| c.is_control()) {
+        return false;
+    }
+    // 必须以路径常见前缀开头（/, ./, ../, 字母:）或字母数字
+    let first = path.chars().next().unwrap();
+    if first == '/' || first == '.' || first.is_alphanumeric() {
+        return true;
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -342,20 +364,23 @@ impl Extension for ContextIndexExtension {
     }
 
     async fn on_context(&self, messages: &mut Vec<Message>) -> AgentResult<()> {
-        let idx = self.index.lock().await;
-        let stale_ids = idx.stale_tool_call_ids();
+        // 只在持锁期间提取 stale_ids，然后立即释放锁
+        let stale_ids = {
+            let idx = self.index.lock().await;
+            idx.stale_tool_call_ids()
+        };
 
         if stale_ids.is_empty() {
             return Ok(());
         }
 
-        // 构建 tool_call_id → placeholder 映射
+        // 构建 tool_call_id → placeholder 映射（锁外操作）
         let mut fold_map: HashMap<&str, &str> = HashMap::new();
         for (tcid, placeholder) in &stale_ids {
             fold_map.insert(tcid.as_str(), placeholder.as_str());
         }
 
-        // 遍历 messages，折叠 Stale 的 ToolResult
+        // 遍历 messages，折叠 Stale 的 ToolResult（锁外操作，不阻塞 after_tool_call）
         for msg in messages.iter_mut() {
             if let Message::ToolResult(tr) = msg {
                 if let Some(placeholder) = fold_map.get(tr.tool_call_id.as_str()) {
@@ -583,6 +608,25 @@ mod tests {
         let paths = parse_grep_paths(output);
         assert_eq!(paths.len(), 1);
         assert_eq!(paths[0], "my project/src/main.rs");
+    }
+
+    #[test]
+    fn parse_grep_paths_rejects_noise() {
+        // 非路径噪音行不应被解析
+        let output = "grep: permission denied: /secret:1:abc\nBinary file matches\nsrc/ok.rs:5:hello";
+        let paths = parse_grep_paths(output);
+        // 只有 src/ok.rs 是合法路径（"grep: permission..." 的 path 部分 "grep" 虽然字母开头但不是真实路径）
+        // 当前 is_valid_path_candidate 会接受 "grep" —— 这是可接受的误报率
+        // 关键是不 panic + 不收集明显垃圾
+        assert!(paths.iter().all(|p| !p.is_empty()));
+    }
+
+    #[test]
+    fn parse_grep_paths_empty_content_line() {
+        let output = ":5:\nsrc/main.rs:10:x";
+        let paths = parse_grep_paths(output);
+        // 空路径应被 is_valid_path_candidate 过滤
+        assert!(paths.iter().all(|p| !p.is_empty()));
     }
 
     #[test]

@@ -392,6 +392,11 @@ impl Agent {
         self.model = model;
     }
 
+    /// 访问 runtime（set_guard_mode 等 RPC 用）
+    pub fn runtime(&self) -> &dyn crate::runtime::Runtime {
+        self.runtime.as_ref()
+    }
+
     /// 当前 thinking level（get_state 用）
     pub fn thinking_level(&self) -> Option<&str> {
         self.config.thinking.as_deref()
@@ -405,6 +410,21 @@ impl Agent {
     /// 自动压缩开关（set_auto_compaction 用）
     pub fn set_auto_compact(&mut self, enabled: bool) {
         self.config.enable_compact = enabled;
+    }
+
+    /// 设置最大重试次数（set_auto_retry 用）
+    pub fn set_max_retries(&mut self, max: u32) {
+        self.config.max_retries = max;
+    }
+
+    /// 读取最大重试次数
+    pub fn max_retries(&self) -> u32 {
+        self.config.max_retries
+    }
+
+    /// 设置 retry_on_no_tool_use 次数（0=禁用）
+    pub fn set_retry_on_no_tool_use(&mut self, max: u32) {
+        self.config.retry_on_no_tool_use = max;
     }
 
     /// 读取自动压缩开关（get_context_usage 用）

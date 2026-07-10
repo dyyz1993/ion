@@ -1179,7 +1179,25 @@ async fn main() {
                     "autoCompaction": enabled,
                 }));
             },
-            "set_cwd" => output_response(&id, "set_cwd", &serde_json::Value::Null),
+            "set_cwd" => {
+                let cwd = params.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+                if cwd.is_empty() {
+                    output_response(&id, "set_cwd", &serde_json::json!({"error": "missing 'cwd' parameter"}));
+                } else {
+                    // 验证路径存在
+                    if std::path::Path::new(cwd).exists() {
+                        agent.set_session_cwd(Some(cwd.to_string()));
+                        output_response(&id, "set_cwd", &serde_json::json!({
+                            "cwd": cwd,
+                            "success": true,
+                        }));
+                    } else {
+                        output_response(&id, "set_cwd", &serde_json::json!({
+                            "error": format!("path '{}' does not exist", cwd),
+                        }));
+                    }
+                }
+            }
             "cycle_model" => {
                 let current_id = agent.model().id.clone();
                 let current_provider = agent.model().provider.clone();
@@ -1422,8 +1440,42 @@ async fn main() {
                     }));
                 }
             },
-            "set_permission_mode" => output_response(&id, "set_permission_mode", &serde_json::Value::Null),
-            "set_auto_retry" => output_response(&id, "set_auto_retry", &serde_json::Value::Null),
+            "set_permission_mode" => {
+                let mode = params.get("mode").and_then(|v| v.as_str()).unwrap_or("");
+                if mode.is_empty() {
+                    output_response(&id, "set_permission_mode", &serde_json::json!({
+                        "error": "missing 'mode' parameter (open/blacklist/whitelist)",
+                    }));
+                } else {
+                    match agent.runtime().set_guard_mode(mode) {
+                        Ok(()) => output_response(&id, "set_permission_mode", &serde_json::json!({
+                            "mode": mode,
+                            "success": true,
+                        })),
+                        Err(e) => output_response(&id, "set_permission_mode", &serde_json::json!({
+                            "error": e,
+                        })),
+                    }
+                }
+            }
+            "set_auto_retry" => {
+                let enabled = params.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+                let max_retries = params.get("max_retries").and_then(|v| v.as_u64()).map(|v| v as u32);
+                if enabled {
+                    let max = max_retries.unwrap_or(3);
+                    agent.set_max_retries(max);
+                    output_response(&id, "set_auto_retry", &serde_json::json!({
+                        "enabled": true,
+                        "max_retries": max,
+                    }));
+                } else {
+                    agent.set_max_retries(0);
+                    output_response(&id, "set_auto_retry", &serde_json::json!({
+                        "enabled": false,
+                        "max_retries": 0,
+                    }));
+                }
+            }
             "bash" => {
                 // 真正执行 bash 命令（不再是空桩）
                 let command = params.get("command").and_then(|v| v.as_str()).unwrap_or("");
@@ -1526,7 +1578,14 @@ async fn main() {
                     output_response(&id, "reload", &serde_json::json!({"reloaded": reloaded, "errors": errors}));
                 }
             }
-            "abort_retry" => output_response(&id, "abort_retry", &serde_json::Value::Null),
+            "abort_retry" => {
+                // 中断当前重试循环（复用 abort 机制）
+                agent.stop();
+                output_response(&id, "abort_retry", &serde_json::json!({
+                    "aborted": true,
+                    "message": "retry loop interrupted",
+                }));
+            }
             "set_tier_models" => output_response(&id, "set_tier_models", &serde_json::Value::Null),
             "get_tree_with_leaf" => output_response(&id, "get_tree_with_leaf", &serde_json::json!([])),
             "get_file_diff" => output_response(&id, "get_file_diff", &serde_json::json!([])),
@@ -1590,7 +1649,41 @@ async fn main() {
                 ));
                 output_response(&id, "follow_up", &serde_json::Value::Null);
             }
-            "abort_bash" => output_response(&id, "abort_bash", &serde_json::Value::Null),
+            "abort_bash" => {
+                // 通过 process_map 找到 pid 并 kill
+                let bid = params.get("bid").and_then(|v| v.as_str()).unwrap_or("");
+                if bid.is_empty() {
+                    output_response(&id, "abort_bash", &serde_json::json!({"error": "missing 'bid' parameter"}));
+                } else if let Some(ref pm) = process_map {
+                    let map = pm.blocking_lock();
+                    if let Some(info) = map.get(bid) {
+                        let pid = info.os_pid;
+                        let cmd = info.command.clone();
+                        drop(map);
+                        // 发 kill 信号（用 kill 命令，避免加 libc 依赖）
+                        let kill_result = std::process::Command::new("kill")
+                            .arg("-TERM")
+                            .arg(pid.to_string())
+                            .output()
+                            .map(|o| o.status.success())
+                            .unwrap_or(false);
+                        output_response(&id, "abort_bash", &serde_json::json!({
+                            "bid": bid,
+                            "pid": pid,
+                            "command": cmd,
+                            "signal": "SIGTERM",
+                            "success": kill_result,
+                        }));
+                    } else {
+                        output_response(&id, "abort_bash", &serde_json::json!({
+                            "error": format!("process '{}' not found", bid),
+                            "available": map.keys().cloned().collect::<Vec<_>>(),
+                        }));
+                    }
+                } else {
+                    output_response(&id, "abort_bash", &serde_json::json!({"error": "bash extension not enabled"}));
+                }
+            }
             "register_remote_tool" => output_response(&id, "register_remote_tool", &serde_json::Value::Null),
             "unregister_remote_tool" => output_response(&id, "unregister_remote_tool", &serde_json::Value::Null),
 
@@ -2277,14 +2370,10 @@ fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
 
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        // 防粘连：若文件非空且末尾不是换行，先补一个换行
-        if let Ok(meta) = f.metadata() {
-            if meta.len() > 0 {
-                let _ = write!(f, "\n");
-            }
-        }
+        let need_sep = f.metadata().ok().map(|m| m.len() > 0).unwrap_or(false);
         // parentId 链：从 last_id 开始
         let mut parent_id = last_id;
+        let mut is_first = true;
         for msg in new_msgs {
             let entry_id = session_jsonl::generate_id();
             let entry = serde_json::json!({
@@ -2294,7 +2383,16 @@ fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
                 "timestamp": session_jsonl::timestamp_iso(),
                 "message": msg,
             });
-            let _ = write!(f, "{}\n", serde_json::to_string(&entry).unwrap_or_default());
+            let json = serde_json::to_string(&entry).unwrap_or_default();
+            // 合并 \n + JSON 为单次 write_all（第一条消息在 need_sep 时加前导换行）
+            let payload = if is_first && need_sep {
+                is_first = false;
+                format!("\n{}\n", json)
+            } else {
+                is_first = false;
+                format!("{}\n", json)
+            };
+            let _ = f.write_all(payload.as_bytes());
             parent_id = entry_id;
         }
     }

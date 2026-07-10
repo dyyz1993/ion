@@ -99,6 +99,12 @@ pub trait Runtime: Send + Sync {
         Ok(())
     }
 
+    /// 运行时切换命令守卫模式（open/blacklist/whitelist）
+    /// 默认：空操作。SecuredRuntime 重写此方法。
+    fn set_guard_mode(&self, _mode: &str) -> Result<(), String> {
+        Ok(())
+    }
+
     /// 流式执行 shell 命令（逐行回调 on_update）
     /// 默认实现：调 execute_command 后一次性回调
     async fn execute_command_stream(
@@ -746,7 +752,7 @@ impl Runtime for LocalRuntime {
 pub struct SecuredRuntime<R: Runtime> {
     inner: R,
     permission_engine: Option<std::sync::Arc<crate::kernel::PermissionEngine>>,
-    command_guard: Option<crate::command_guard::CommandGuard>,
+    command_guard: Option<std::sync::Arc<std::sync::RwLock<crate::command_guard::CommandGuard>>>,
     ui_system: Option<std::sync::Arc<crate::kernel::UiSystem>>,
     /// EventBus，用于异步 Ask 推送 UI 事件
     event_bus: Option<std::sync::Arc<tokio::sync::Mutex<crate::event_bus::ExtensionEventBus>>>,
@@ -763,7 +769,7 @@ impl<R: Runtime> SecuredRuntime<R> {
     }
 
     pub fn with_command_guard(mut self, guard: crate::command_guard::CommandGuard) -> Self {
-        self.command_guard = Some(guard);
+        self.command_guard = Some(std::sync::Arc::new(std::sync::RwLock::new(guard)));
         self
     }
 
@@ -783,7 +789,7 @@ impl<R: Runtime> SecuredRuntime<R> {
         let mut guard = crate::command_guard::CommandGuard::default();
         profile.setup(&engine, &mut guard);
         self.permission_engine = Some(engine);
-        self.command_guard = Some(guard);
+        self.command_guard = Some(std::sync::Arc::new(std::sync::RwLock::new(guard)));
         // 如果还没设置 UI，建一个默认的
         if self.ui_system.is_none() {
             self.ui_system = Some(std::sync::Arc::new(crate::kernel::UiSystem::new()));
@@ -854,9 +860,12 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
 
     async fn execute_command(&self, command: &str, timeout_secs: u64) -> Result<(String, String, i32), String> {
         // CommandGuard 检查
-        if let Some(ref guard) = self.command_guard {
-            let mode = format!("{}", guard.mode);
-            match guard.check(command) {
+        if let Some(ref guard_arc) = self.command_guard {
+            let (decision, mode) = {
+                let guard = guard_arc.read().unwrap();
+                (guard.check(command), format!("{}", guard.mode))
+            };
+            match decision {
                 crate::command_guard::GuardDecision::Deny(p) => {
                     let msg = if let Some(ref sug) = p.suggestion {
                         format!("[CommandGuard] 高危命令被拦截: {} 建议: {}", p.message, sug)
@@ -889,9 +898,12 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
         &self, command: &str, timeout_secs: u64,
         on_update: &(dyn Fn(String) + Send + Sync),
     ) -> Result<String, String> {
-        if let Some(ref guard) = self.command_guard {
-            let mode = format!("{}", guard.mode);
-            match guard.check(command) {
+        if let Some(ref guard_arc) = self.command_guard {
+            let (decision, mode) = {
+                let guard = guard_arc.read().unwrap();
+                (guard.check(command), format!("{}", guard.mode))
+            };
+            match decision {
                 crate::command_guard::GuardDecision::Deny(p) => {
                     let msg = if let Some(ref sug) = p.suggestion {
                         format!("[CommandGuard] 高危命令被拦截: {} 建议: {}", p.message, sug)
@@ -920,9 +932,12 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
 
     /// 安全预检：检查命令是否允许（CommandGuard）
     async fn check_command(&self, command: &str) -> Result<(), String> {
-        if let Some(ref guard) = self.command_guard {
-            let mode = format!("{}", guard.mode);
-            match guard.check(command) {
+        if let Some(ref guard_arc) = self.command_guard {
+            let (decision, mode) = {
+                let guard = guard_arc.read().unwrap();
+                (guard.check(command), format!("{}", guard.mode))
+            };
+            match decision {
                 crate::command_guard::GuardDecision::Deny(p) => {
                     let msg = if let Some(ref sug) = p.suggestion {
                         format!("[CommandGuard] 高危命令被拦截: {} 建议: {}", p.message, sug)
@@ -947,6 +962,22 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
             }
         }
         Ok(())
+    }
+
+    fn set_guard_mode(&self, mode: &str) -> Result<(), String> {
+        if let Some(ref guard_arc) = self.command_guard {
+            let new_mode = match mode {
+                "open" => crate::command_guard::GuardMode::Open,
+                "blacklist" => crate::command_guard::GuardMode::Blacklist,
+                "whitelist" => crate::command_guard::GuardMode::Whitelist,
+                _ => return Err(format!("unknown guard mode: {} (expected: open/blacklist/whitelist)", mode)),
+            };
+            let mut guard = guard_arc.write().unwrap();
+            guard.mode = new_mode;
+            Ok(())
+        } else {
+            Err("no command guard configured".into())
+        }
     }
 
     async fn read_file(&self, path: &str) -> Result<String, String> {
@@ -1051,9 +1082,12 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
 
     async fn spawn_process(&self, req: SpawnProcessRequest) -> Result<ProcessHandle, String> {
         // CommandGuard 检查命令
-        if let Some(ref guard) = self.command_guard {
-            let mode = format!("{}", guard.mode);
-            match guard.check(&req.command) {
+        if let Some(ref guard_arc) = self.command_guard {
+            let (decision, mode) = {
+                let guard = guard_arc.read().unwrap();
+                (guard.check(&req.command), format!("{}", guard.mode))
+            };
+            match decision {
                 crate::command_guard::GuardDecision::Deny(p) => {
                     let sug = p.suggestion.as_deref().unwrap_or("");
                     audit_log("deny", &req.command, &mode, Some(&p.message), None);
@@ -1522,5 +1556,31 @@ mod tests {
         assert!(spawn.is_err());
         let spawn_err = spawn.unwrap_err();
         assert!(spawn_err.contains("does not support") || spawn_err.contains("not supported"));
+    }
+
+    #[tokio::test]
+    async fn secured_runtime_set_guard_mode() {
+        let inner = LocalRuntime::new();
+        let guard = crate::command_guard::CommandGuard::with_mode(
+            crate::command_guard::GuardMode::Whitelist
+        );
+        let rt = SecuredRuntime::new(inner).with_command_guard(guard);
+
+        // 切换到 open
+        assert!(rt.set_guard_mode("open").is_ok());
+        // 验证 open 模式下高危命令也能过 check_command（open 只 deny 绝对高危）
+        // 这里只验证 set_guard_mode 不报错 + 未知 mode 报错
+        assert!(rt.set_guard_mode("invalid_mode").is_err());
+    }
+
+    #[tokio::test]
+    async fn secured_runtime_set_guard_mode_no_guard() {
+        let inner = LocalRuntime::new();
+        let rt = SecuredRuntime::new(inner); // 没 with_command_guard
+
+        // 没 guard 时应报错
+        let result = rt.set_guard_mode("open");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no command guard"));
     }
 }
