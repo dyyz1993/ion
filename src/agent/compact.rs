@@ -541,7 +541,16 @@ async fn apply_compaction(
         return Ok(());
     }
     let keep_count = config.keep_recent_tokens / 4;
-    let start = messages.len().saturating_sub(keep_count);
+    let mut start = messages.len().saturating_sub(keep_count);
+
+    // Split-turn 调整（对齐 pi findCutPoint）：
+    // 如果切点落在 turn 中间（保留区首条不是 User 消息），
+    // 向前找到下一个 User 消息，避免保留区以孤儿 Assistant/ToolResult 开头。
+    if start > 1 && start < messages.len() {
+        while start < messages.len() && !is_turn_boundary(&messages[start]) {
+            start += 1;
+        }
+    }
 
     let mut new_msgs = Vec::with_capacity(keep_count + 2);
 
@@ -566,6 +575,15 @@ async fn apply_compaction(
     extensions.on_session_compact(messages).await?;
     tracing::info!("compacted to {} msgs", messages.len());
     Ok(())
+}
+
+/// 判断一条消息是否是一个 turn 的合法起始（User 消息或 CompactionSummary/BranchSummary）。
+/// 用于 split-turn 调整：保留区不应该以孤儿 Assistant/ToolResult 开头。
+fn is_turn_boundary(msg: &Message) -> bool {
+    matches!(
+        msg,
+        Message::User(_) | Message::CompactionSummary(_) | Message::BranchSummary(_)
+    )
 }
 
 /// Emergency truncation：纯文本摘要，不调 LLM
@@ -672,16 +690,31 @@ pub fn make_llm_summarizer(
         let m = model.clone();
         let msgs = old_messages.to_vec();
         Box::pin(async move {
+            // 检测已有的 CompactionSummary（增量更新模式，对齐 pi UPDATE_SUMMARIZATION_PROMPT）
+            let existing_summary = extract_existing_summary(&msgs);
+            let system_prompt = if let Some(ref prev) = existing_summary {
+                format!(
+                    "You are updating an existing conversation summary with new information.\n\n\
+                     PREVIOUS SUMMARY:\n{}\n\n\
+                     Update the summary to incorporate the new messages below. \
+                     Preserve all important details from the previous summary, \
+                     add new progress/decisions/files, and remove outdated information. \
+                     Use sections: ## Goal, ## Progress, ## Key Decisions, ## Files Modified, ## Remaining Work.",
+                    prev
+                )
+            } else {
+                "Summarize key information from these conversation messages. \
+                 Use sections: ## Goal, ## Progress, ## Key Decisions, ## Files Modified, ## Remaining Work."
+                    .to_string()
+            };
+
             // 跨 provider 消息规范化（压缩时历史也可能混合多 provider）
             let transformed = ion_provider::transform_messages::transform_messages(
                 msgs,
                 &m,
                 None,
             );
-            let ctx = ion_provider::Context::new(
-                Some("Summarize key information from these conversation messages.".into()),
-                transformed,
-            );
+            let ctx = ion_provider::Context::new(Some(system_prompt), transformed);
             let msg = ion_provider::registry::complete(&p, &m, &ctx, None).await?;
             Ok(msg
                 .content
@@ -694,6 +727,26 @@ pub fn make_llm_summarizer(
                 .join(""))
         })
     })
+}
+
+/// 从 messages 里提取已有的 CompactionSummary 文本（增量更新用）。
+/// 如果有多个，合并成一个。
+fn extract_existing_summary(messages: &[Message]) -> Option<String> {
+    let summaries: Vec<&str> = messages.iter().filter_map(|m| {
+        if let Message::CompactionSummary(cs) = m {
+            Some(cs.summary.as_str())
+        } else {
+            None
+        }
+    }).collect();
+
+    if summaries.is_empty() {
+        None
+    } else if summaries.len() == 1 {
+        Some(summaries[0].to_string())
+    } else {
+        Some(summaries.join("\n\n---\n\n"))
+    }
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -911,5 +964,50 @@ mod tests {
         ];
         let total = total_tokens(&msgs);
         assert!(total >= 2);
+    }
+
+    fn make_compaction_summary(summary: &str) -> Message {
+        Message::CompactionSummary(CompactionSummaryMessage {
+            role: "compactionSummary".into(),
+            summary: summary.into(),
+            tokens_before: 1000,
+            timestamp: 0,
+        })
+    }
+
+    #[test]
+    fn extract_existing_summary_none() {
+        let msgs = vec![make_user_msg("hello"), make_assistant_msg("hi")];
+        assert!(extract_existing_summary(&msgs).is_none());
+    }
+
+    #[test]
+    fn extract_existing_summary_single() {
+        let msgs = vec![
+            make_compaction_summary("Previous goal: implement auth"),
+            make_user_msg("new message"),
+        ];
+        let summary = extract_existing_summary(&msgs).unwrap();
+        assert!(summary.contains("implement auth"));
+    }
+
+    #[test]
+    fn extract_existing_summary_multiple_merged() {
+        let msgs = vec![
+            make_compaction_summary("Summary 1"),
+            make_user_msg("msg"),
+            make_compaction_summary("Summary 2"),
+        ];
+        let summary = extract_existing_summary(&msgs).unwrap();
+        assert!(summary.contains("Summary 1"));
+        assert!(summary.contains("Summary 2"));
+        assert!(summary.contains("---")); // merged separator
+    }
+
+    #[test]
+    fn is_turn_boundary_correct() {
+        assert!(is_turn_boundary(&make_user_msg("hello")));
+        assert!(is_turn_boundary(&make_compaction_summary("summary")));
+        assert!(!is_turn_boundary(&make_assistant_msg("reply")));
     }
 }
