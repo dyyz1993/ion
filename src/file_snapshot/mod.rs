@@ -10,11 +10,12 @@ pub mod object_store;
 pub mod snapshot;
 pub mod scanner;
 pub mod diff;
+pub mod gc;
 
 pub use object_store::{ObjectStore, project_key, content_hash};
 pub use snapshot::{
     ToolSnapshot, DirSnapshot, DirFileChange, ChangeStatus,
-    BeforeState, SnapshotStore, capture_before, capture_after,
+    BeforeState, SnapshotStore, capture_before, capture_after, capture_after_dir,
 };
 pub use scanner::{scan_dir_fast, is_binary, DirScanResult};
 pub use diff::{unified_diff, count_diff};
@@ -79,7 +80,7 @@ impl Extension for FileSnapshotExtension {
         &self,
         ctx: &crate::agent::extension::ToolExecutionContext,
     ) -> AgentResult<()> {
-        let before = capture_before(&ctx.tool_name, &ctx.args, self.store.objects());
+        let before = capture_before(&ctx.tool_name, &ctx.args, self.store.objects(), &self.cwd);
         if !matches!(before, BeforeState::Skip) {
             self.before_states.lock().unwrap().insert(ctx.tool_call_id.clone(), before);
         }
@@ -94,14 +95,27 @@ impl Extension for FileSnapshotExtension {
         let before = self.before_states.lock().unwrap().remove(&ctx.tool_call_id);
 
         if let Some(before_state) = before {
-            if let Some(snap) = capture_after(
-                &before_state,
-                self.store.objects(),
-                turn,
-                &ctx.tool_call_id,
-                &ctx.tool_name,
-            ) {
-                self.store.save_tool_snapshot(&snap);
+            match &before_state {
+                BeforeState::FileCapture { .. } => {
+                    // 路线 1：write/edit
+                    if let Some(snap) = capture_after(
+                        &before_state, self.store.objects(),
+                        turn, &ctx.tool_call_id, &ctx.tool_name,
+                    ) {
+                        self.store.save_tool_snapshot(&snap);
+                    }
+                }
+                BeforeState::DirCapture { .. } => {
+                    // 路线 2：bash 目录扫描对比
+                    let snaps = capture_after_dir(
+                        &before_state, self.store.objects(), &self.cwd,
+                        turn, &ctx.tool_call_id,
+                    );
+                    for snap in snaps {
+                        self.store.save_tool_snapshot(&snap);
+                    }
+                }
+                BeforeState::Skip => {}
             }
         }
         Ok(())

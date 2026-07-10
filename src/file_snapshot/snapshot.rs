@@ -168,6 +168,7 @@ pub fn capture_before(
     tool_name: &str,
     args: &serde_json::Value,
     store: &ObjectStore,
+    cwd: &str,
 ) -> BeforeState {
     match tool_name {
         "write" | "edit" => {
@@ -181,11 +182,16 @@ pub fn capture_before(
                 .map(|content| store.write_object(&content).hash);
             BeforeState::FileCapture { path: path.to_string(), before_hash }
         }
+        "bash" => {
+            // 路线 2：bash 前扫目录（只 stat mtime+size，不读内容）
+            let scan = super::scanner::scan_dir_fast(cwd);
+            BeforeState::DirCapture { scan }
+        }
         _ => BeforeState::Skip,
     }
 }
 
-/// 在工具执行后采集 after 状态，生成 ToolSnapshot
+/// 在工具执行后采集 after 状态，生成 ToolSnapshot（路线 1：write/edit）
 pub fn capture_after(
     before: &BeforeState,
     store: &ObjectStore,
@@ -220,6 +226,82 @@ pub fn capture_after(
     })
 }
 
+/// 在 bash 工具执行后对比目录扫描，生成多个 ToolSnapshot（路线 2）
+/// 返回 Vec 是因为一个 bash 命令可能改多个文件
+pub fn capture_after_dir(
+    before: &BeforeState,
+    store: &ObjectStore,
+    cwd: &str,
+    turn_id: u32,
+    tool_call_id: &str,
+) -> Vec<ToolSnapshot> {
+    let before_scan = match before {
+        BeforeState::DirCapture { scan } => scan,
+        _ => return vec![],
+    };
+
+    let after_scan = super::scanner::scan_dir_fast(cwd);
+    let mut snapshots = Vec::new();
+
+    // 检查新增 + 修改
+    for (path, (mtime, size)) in &after_scan.files {
+        match before_scan.files.get(path) {
+            None => {
+                // 新文件
+                let abs_path = std::path::Path::new(cwd).join(path);
+                let after_hash = std::fs::read(&abs_path).ok()
+                    .map(|c| store.write_object(&c).hash);
+                if let Some(h) = after_hash {
+                    snapshots.push(ToolSnapshot {
+                        turn_id,
+                        tool_call_id: tool_call_id.to_string(),
+                        tool_name: "bash".into(),
+                        path: path.clone(),
+                        before_hash: None,
+                        after_hash: Some(h),
+                        timestamp: crate::session_jsonl::timestamp_iso(),
+                    });
+                }
+            }
+            Some((b_mtime, b_size)) if mtime != b_mtime || size != b_size => {
+                // 修改了
+                let abs_path = std::path::Path::new(cwd).join(path);
+                let after_hash = std::fs::read(&abs_path).ok()
+                    .map(|c| store.write_object(&c).hash);
+                if let Some(h) = after_hash {
+                    snapshots.push(ToolSnapshot {
+                        turn_id,
+                        tool_call_id: tool_call_id.to_string(),
+                        tool_name: "bash".into(),
+                        path: path.clone(),
+                        before_hash: None, // bash 路线没存 before 内容
+                        after_hash: Some(h),
+                        timestamp: crate::session_jsonl::timestamp_iso(),
+                    });
+                }
+            }
+            _ => {} // 没变
+        }
+    }
+
+    // 检查删除
+    for (path, _) in &before_scan.files {
+        if !after_scan.files.contains_key(path) {
+            snapshots.push(ToolSnapshot {
+                turn_id,
+                tool_call_id: tool_call_id.to_string(),
+                tool_name: "bash".into(),
+                path: path.clone(),
+                before_hash: None,
+                after_hash: None,
+                timestamp: crate::session_jsonl::timestamp_iso(),
+            });
+        }
+    }
+
+    snapshots
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,7 +317,7 @@ mod tests {
 
         // before: 文件不存在
         let args = serde_json::json!({"file_path": test_file.to_string_lossy()});
-        let before = capture_before("write", &args, &store);
+        let before = capture_before("write", &args, &store, tmp.to_string_lossy().as_ref());
         match &before {
             BeforeState::FileCapture { before_hash, .. } => {
                 assert!(before_hash.is_none(), "新文件 before_hash 应为 None");
