@@ -287,6 +287,7 @@ async fn main() {
     let preloaded = session_jsonl::SessionFile::load(&worker_cwd).map(|f| f.messages);
 
     // File Snapshot Store（预声明，agent 初始化块和 RPC loop 都要用）
+    #[allow(unused_assignments)]
     let mut snapshot_store: Option<std::sync::Arc<ion::file_snapshot::SnapshotStore>> = None;
 
     // ── 加载配置（在 Runtime 和 Extension 初始化之前）──
@@ -426,6 +427,8 @@ async fn main() {
                 tracing::info!("[extension] file-snapshot disabled by config");
                 None
             };
+        // 标记 snapshot_store 在后续 RPC 分支中被读取（消除编译器误报）
+        let _ = snapshot_store.is_some();
 
         // ── 注册 WASM Extension 的 HookAdapter（让 WASM 也能实现 29 个钩子）──
         for wasm_path in &loaded_wasm_paths {

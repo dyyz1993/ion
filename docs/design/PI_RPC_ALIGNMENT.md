@@ -132,17 +132,17 @@ ion subscribe --session x --extension memory
 | `new_session` | Manager 级 `create_session` | ⚠️ 分级不同 |
 | `get_state` | `get_state` | ✅ |
 | `set_model` | `set_model` | ✅ |
-| `cycle_model` | ❌ | ❌ 缺 |
-| `get_available_models` | ❌ | ❌ 缺 |
-| `get_tier_models` / `set_tier_models` | ❌ | ❌ 缺 |
+| `cycle_model` | ✅ | ✅ 已实现（同 provider 内循环 + 写 session_index） |
+| `get_available_models` | ✅ | ✅ 已实现（从 ModelRegistry.list_models() 读） |
+| `get_tier_models` / `set_tier_models` | ❌ | ❌ 空桩（待实现 tier 模型系统） |
 | `set_thinking_level` | `set_thinking_level` | ✅ |
-| `cycle_thinking_level` | ❌ | ❌ 缺 |
+| `cycle_thinking_level` | ✅ | ✅ 已实现（6 档循环 + 写 session_index） |
 | `compact` | `compact` | ✅ |
-| `set_auto_compaction` | ❌ | ❌ 缺 |
+| `set_auto_compaction` | ✅ | ✅ 已实现（调 agent.set_auto_compact()） |
 | `set_auto_retry` / `abort_retry` | ✅ | ✅ 已实现（set_max_retries + agent.stop()） |
 | `bash` / `abort_bash` | `bash` / ✅ | ✅ 全部（abort_bash 通过 process_map kill SIGTERM） |
 | `get_messages` | `get_messages` | ✅ |
-| `get_full_messages` | ❌ | ❌ 缺 |
+| `get_full_messages` | ✅ | ✅ 已实现（返回 messages + count + note） |
 | `get_tree` / `get_tree_with_leaf` | ✅ / ✅ | ✅ 全部（structure/full 双模式 + pathToLeaf + branches） |
 | `get_modified_files` / `get_file_diff` | ✅ | ✅ 已实现（File Snapshot 双路快照） |
 | `switch_session` / `fork` / `clone` | Manager 级 | ⚠️ 分级不同 |
@@ -151,10 +151,10 @@ ion subscribe --session x --extension memory
 | `get_session_stats` | `get_session_stats` | ✅ |
 | `get_commands` / `get_skills` / `get_extensions` / `get_tools` | ✅ / ✅ / ✅ / ✅ | ✅ 全部 |
 | `get_settings` / `set_settings` | ✅ | ✅ 已实现（IonConfig load/save + api_key 脱敏） |
-| `get_context_usage` | ❌ | ❌ 缺 |
+| `get_context_usage` | ✅ | ✅ 已实现（估算 tokens + usagePercent + autoCompaction） |
 | `get_system_prompt` | `get_system_prompt` | ✅ |
-| `get_active_tools` / `set_active_tools` | ❌ | ❌ 缺 |
-| `get_queue` / `clear_queue` | ❌ | ❌ 缺 |
+| `get_active_tools` / `set_active_tools` | ✅ | ✅ 已实现（agent.list_tool_names / restrict_tools） |
+| `get_queue` / `clear_queue` | ✅ | ✅ 已实现（队列内容快照 / 清空 steering+follow_up） |
 | `promote_follow_up` | `promote_follow_up` | ✅ |
 | `get_flags` / `set_flag` | ❌ | ❌ 缺 |
 | `reload` | `reload` | ✅ |
