@@ -841,79 +841,99 @@ du -sh ~/.ion/file-store/<project_key>/
 
 ---
 
-## 19. turn_id 全局唯一性（多次交替操作的前提）
+## 19. turn_id 全局唯一性 + ID 关联（多次交替操作的前提）
 
-### 19.1 问题
+### 19.1 问题：两个层面的 turnId 都会重复
 
-`FileSnapshotExtension.current_turn` 是内存 `Mutex<u32>`，每次 `on_turn_start` +1。但 Agent 的 turn 循环 `for turn in 0..max_turns` **每次 run 都从 0 开始**。
+| 层面 | turnId 来源 | 问题 |
+|------|-----------|------|
+| `turn_summary` entry | agent loop 的 `for turn in 0..N` | 每次 run 从 0 开始 |
+| `ToolSnapshot` | FileSnapshotExtension 的 `current_turn` | 每次 run 从 0 开始 |
 
-导致：回滚后继续聊 / `--continue` 继续聊 / 回滚再回滚，**turn_id 从 0 重来 → 磁盘快照文件名冲突 → 覆盖历史**。
+导致：回滚后继续 / `--continue` / 回滚再回滚 → **turnId 重复 → 快照文件名冲突 → 覆盖历史**。
 
-```
-第一次 run: Turn 0,1,2 → snapshots/tool/{0,1,2}.jsonl
-回滚到 Turn 0
-第二次 run: Turn 0,1   → snapshots/tool/{0,1}.jsonl  ← 覆盖！
-```
+### 19.2 解决方案：全局递增 turnId + ID 关联（不用下标）
 
-### 19.2 解决方案：全局递增 turn_id（不每次从 0 开始）
-
-```rust
-impl FileSnapshotExtension {
-    fn new_pair(cwd: &str) -> (Self, Arc<SnapshotStore>) {
-        let store = Arc::new(SnapshotStore::new(&pk));
-        // 从磁盘读取已有的最大 turn_id，新 turn 从 max+1 开始
-        let max_turn = store.max_turn_id();
-        Self {
-            current_turn: Mutex::new(max_turn + 1),
-            store: store.clone(),
-            ..
-        }
-    }
-}
-```
-
-`SnapshotStore` 加方法：
-```rust
-fn max_turn_id(&self) -> u32 {
-    // 扫描 snapshots/tool/ 目录，找最大的 N
-    read_dir(snapshots/tool/)
-        .filter_map(|e| e.file_name().parse::<u32>().ok())
-        .max()
-        .unwrap_or(0)
-}
-```
-
-### 19.3 修复后的交替操作流转
+**核心思路（用户提出）：每一轮 turn 插入一个 turn_summary entry，它带全局唯一的 turnId；快照用同一个 turnId 存。回滚时通过 entry_id → turn_summary → turnId 查快照，纯 ID 驱动。**
 
 ```
-第一次 run: Turn 0,1,2,3,4
+session.jsonl（消息层）
+════════════════════════════════════════
+msg_001  user "帮我重构"
+msg_002  assistant "好的..."
+ts_001   turn_summary {
+           id: "ts_001",           ← entry 唯一 ID
+           turnId: 0,              ← 全局递增（改后）
+           userEntryId: "msg_001", ← 消息关联
+           entryRange: ["msg_001","msg_002"]
+         }
+                                         ↑ turnId
+                                         │ = 关联桥梁
+snapshots/tool/0.jsonl（快照层） ◄──────┘
+════════════════════════════════════════
+{ turnId: 0, path: "src/main.rs", beforeHash: null, afterHash: "abc" }
+```
+
+### 19.3 回滚时的查找链（纯 ID 驱动，不用下标）
+
+```
+用户：回滚到 msg_001（entry_id）
+
+  ① msg_001 → 查 session.jsonl 找所属 turn_summary
+     ts_001.userEntryId == "msg_001" → 命中
+     ts_001.turnId = 0
+
+  ② turnId=0 → 查快照层
+     读 snapshots/tool/ 找所有 turnId > 0 的 ToolSnapshot
+     逐个恢复（restore_code）
+
+  ③ 追加 leaf_pointer（消息层回滚）
+```
+
+**全程通过 ID 关联，不依赖 0,1,2,3 下标。**
+
+### 19.4 实现改动
+
+1. **Agent.turn_index 改全局递增**：
+   - run() 开始时不重置为 0，而是从 session.jsonl 里读最大的 turnId + 1
+   - `for turn in global_start..global_start + max_turns`
+
+2. **turn_summary.turnId 跟着全局递增**：
+   - `persist_turn_summary(turn, ...)` 的 turn 参数已是全局值
+
+3. **FileSnapshotExtension.current_turn 同步全局递增**：
+   - `new_pair()` 时从 `SnapshotStore.max_turn_id()` 读最大值 + 1
+
+4. **SnapshotStore.max_turn_id()**：
+   ```rust
+   fn max_turn_id(&self) -> u32 {
+       read_dir(snapshots/tool/)
+           .filter_map(|e| e.file_name().parse::<u32>().ok())
+           .max()
+           .unwrap_or(0)
+   }
+   ```
+
+### 19.5 修复后的交替操作流转
+
+```
+第一次 run:  turnId 0,1,2,3,4（全局递增）
+  session.jsonl: ts_001..ts_005（turnId=0..4）
   snapshots/tool/{0,1,2,3,4}.jsonl
 
-回滚到 Turn 2（消息层 leaf_pointer 移动，快照不动）
+回滚到 msg_003（对应 ts_003.turnId=2）
 
-第二次 run: Turn 5,6,7（从磁盘 max=4 +1 开始）
+第二次 run:  turnId 5,6,7（从全局 max=4 +1 开始）
+  session.jsonl: ts_006..ts_008（turnId=5..7）
   snapshots/tool/{5,6,7}.jsonl  ← 不覆盖！
 
-回滚到 Turn 5
+回滚到 ts_006（turnId=5）
 
-第三次 run: Turn 8,9（从磁盘 max=7 +1 开始）
+第三次 run:  turnId 8,9（从全局 max=7 +1 开始）
   snapshots/tool/{8,9}.jsonl  ← 不覆盖！
 ```
 
-**快照的 turn_id 永远全局递增，不会被覆盖。** 消息层的 turn 概念（agent loop 的 `for turn in 0..N`）和快照的 turn_id 是**两套编号**——快照用全局递增 ID，消息用 per-run 局部 ID。
-
-### 19.4 restore 时如何映射 entry → turn_id
-
-消息回滚用的是 `entry_id`（如 msg_005），但快照用的是全局 `turn_id`。需要在 restore 时建立映射：
-
-```
-回滚到 msg_005：
-  1. 从 session entries 找 msg_005 所属的 turn（消息层的 turn 概念）
-  2. 找到该 turn 对应的 turn_summary entry → 得到全局 turnId
-  3. restore_code_to_turn(全局 turnId)
-```
-
-`turn_summary` entry 已经存了 `turnId`（全局递增），正好作为映射桥梁。
+**两套 ID 永远全局递增，不会冲突。**
 
 ---
 
