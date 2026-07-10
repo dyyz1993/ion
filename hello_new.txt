@@ -1,2 +1,0 @@
-Hello - new greeting message!
-This file has been updated.
