@@ -31,3 +31,4 @@ pub mod kernel;
 pub mod paths;
 pub mod retry;
 pub mod workflow;
+pub mod file_snapshot;

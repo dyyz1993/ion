@@ -146,6 +146,16 @@ pub fn agent_dir() -> PathBuf {
     root().join("agent")
 }
 
+/// ~/.ion/file-store/ — File Snapshot content-addressed 存储
+pub fn file_store_root() -> PathBuf {
+    root().join("file-store")
+}
+
+/// ~/.ion/file-store/<project_key>/ — 按项目隔离
+pub fn file_store_dir(project_key: &str) -> PathBuf {
+    file_store_root().join(project_key)
+}
+
 /// ~/.ion/agent/settings.json
 pub fn settings_path() -> PathBuf {
     agent_dir().join("settings.json")

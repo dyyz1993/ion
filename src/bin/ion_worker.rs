@@ -286,6 +286,9 @@ async fn main() {
         .unwrap_or_default();
     let preloaded = session_jsonl::SessionFile::load(&worker_cwd).map(|f| f.messages);
 
+    // File Snapshot Store（预声明，agent 初始化块和 RPC loop 都要用）
+    let mut snapshot_store: Option<std::sync::Arc<ion::file_snapshot::SnapshotStore>> = None;
+
     // ── 加载配置（在 Runtime 和 Extension 初始化之前）──
     let ion_cfg = ion::config::IonConfig::load();
 
@@ -411,6 +414,18 @@ async fn main() {
         } else {
             tracing::info!("[extension] context-index disabled by config");
         }
+
+        // File Snapshot Extension（文件快照 + diff 追踪）
+        snapshot_store =
+            if ion_cfg.is_extension_enabled("file-snapshot") {
+                let (fs_ext, store) = ion::file_snapshot::FileSnapshotExtension::new_pair(&worker_cwd);
+                ext_reg.register(Box::new(fs_ext));
+                tracing::info!("[extension] file-snapshot enabled");
+                Some(store)
+            } else {
+                tracing::info!("[extension] file-snapshot disabled by config");
+                None
+            };
 
         // ── 注册 WASM Extension 的 HookAdapter（让 WASM 也能实现 29 个钩子）──
         for wasm_path in &loaded_wasm_paths {
@@ -1203,7 +1218,40 @@ async fn main() {
                     }));
                 }
             }
-            "get_modified_files" => output_response(&id, "get_modified_files", &serde_json::json!([])),
+            "get_modified_files" => {
+                let from_turn = params.get("fromTurn").and_then(|v| v.as_u64()).map(|v| v as u32);
+                let to_turn = params.get("toTurn").and_then(|v| v.as_u64()).map(|v| v as u32);
+                if let Some(ref store) = snapshot_store {
+                    let snaps = store.load_tool_snapshots_range(from_turn, to_turn);
+                    let files: Vec<serde_json::Value> = snaps.iter().map(|s| {
+                        let status = match (&s.before_hash, &s.after_hash) {
+                            (None, Some(_)) => "added",
+                            (Some(_), None) => "deleted",
+                            (Some(_), Some(_)) => "modified",
+                            _ => "unchanged",
+                        };
+                        serde_json::json!({
+                            "path": s.path,
+                            "status": status,
+                            "source": "tool",
+                            "turnId": s.turn_id,
+                            "toolCallId": s.tool_call_id,
+                            "hasDiff": s.before_hash.is_some() || s.after_hash.is_some(),
+                        })
+                    }).collect();
+                    let added = files.iter().filter(|f| f["status"] == "added").count();
+                    let modified = files.iter().filter(|f| f["status"] == "modified").count();
+                    let deleted = files.iter().filter(|f| f["status"] == "deleted").count();
+                    output_response(&id, "get_modified_files", &serde_json::json!({
+                        "files": files,
+                        "summary": { "added": added, "modified": modified, "deleted": deleted },
+                    }));
+                } else {
+                    output_response(&id, "get_modified_files", &serde_json::json!({
+                        "error": "file-snapshot extension not enabled",
+                    }));
+                }
+            }
             "get_queue" => {
                 let steering: Vec<serde_json::Value> = agent.steering_queue_snapshot().iter()
                     .filter_map(|m| serde_json::to_value(m).ok()).collect();
@@ -1768,9 +1816,122 @@ async fn main() {
                     }).collect::<Vec<_>>(),
                 }));
             }
-            "get_file_diff" => output_response(&id, "get_file_diff", &serde_json::json!([])),
-            "get_batch_diffs" => output_response(&id, "get_batch_diffs", &serde_json::json!([])),
-            "get_file_history" => output_response(&id, "get_file_history", &serde_json::json!([])),
+            "get_file_diff" => {
+                let file_path = params.get("filePath").and_then(|v| v.as_str()).unwrap_or("");
+                let from_turn = params.get("fromTurn").and_then(|v| v.as_u64()).map(|v| v as u32);
+                let to_turn = params.get("toTurn").and_then(|v| v.as_u64()).map(|v| v as u32);
+                if file_path.is_empty() {
+                    output_response(&id, "get_file_diff", &serde_json::json!({"error": "missing 'filePath'"}));
+                } else if let Some(ref store) = snapshot_store {
+                    let history = store.load_file_history(file_path);
+                    let relevant: Vec<_> = history.iter()
+                        .filter(|s| from_turn.map_or(true, |f| s.turn_id >= f)
+                            && to_turn.map_or(true, |t| s.turn_id <= t))
+                        .collect();
+                    if relevant.is_empty() {
+                        output_response(&id, "get_file_diff", &serde_json::json!({
+                            "path": file_path, "diff": null, "hasContent": false,
+                        }));
+                    } else {
+                        let first = relevant.first().unwrap();
+                        let last = relevant.last().unwrap();
+                        let before_content = first.before_hash.as_ref()
+                            .and_then(|h| store.objects().read_object_text(h));
+                        let after_content = last.after_hash.as_ref()
+                            .and_then(|h| store.objects().read_object_text(h));
+                        let diff = match (&before_content, &after_content) {
+                            (Some(b), Some(a)) => ion::file_snapshot::unified_diff(b, a, file_path),
+                            (None, Some(a)) => format!("+++ new file\n{}", a),
+                            (Some(b), None) => format!("--- deleted file\n{}", b),
+                            _ => String::new(),
+                        };
+                        let (added, removed) = ion::file_snapshot::count_diff(&diff);
+                        output_response(&id, "get_file_diff", &serde_json::json!({
+                            "path": file_path,
+                            "diff": diff,
+                            "beforeHash": first.before_hash,
+                            "afterHash": last.after_hash,
+                            "hasContent": before_content.is_some() || after_content.is_some(),
+                            "added": added,
+                            "removed": removed,
+                        }));
+                    }
+                } else {
+                    output_response(&id, "get_file_diff", &serde_json::json!({"error": "file-snapshot not enabled"}));
+                }
+            }
+            "get_batch_diffs" => {
+                let from_turn = params.get("fromTurn").and_then(|v| v.as_u64()).map(|v| v as u32);
+                let to_turn = params.get("toTurn").and_then(|v| v.as_u64()).map(|v| v as u32);
+                if let Some(ref store) = snapshot_store {
+                    let snaps = store.load_tool_snapshots_range(from_turn, to_turn);
+                    // 按 path 分组，取每个 path 的首尾
+                    use std::collections::HashMap;
+                    let mut grouped: HashMap<String, Vec<&ion::file_snapshot::ToolSnapshot>> = HashMap::new();
+                    for s in &snaps {
+                        grouped.entry(s.path.clone()).or_default().push(s);
+                    }
+                    let mut files = Vec::new();
+                    let mut total_added = 0usize;
+                    let mut total_removed = 0usize;
+                    for (path, group) in &grouped {
+                        let first = group.first().unwrap();
+                        let last = group.last().unwrap();
+                        let before_content = first.before_hash.as_ref()
+                            .and_then(|h| store.objects().read_object_text(h));
+                        let after_content = last.after_hash.as_ref()
+                            .and_then(|h| store.objects().read_object_text(h));
+                        let diff = match (&before_content, &after_content) {
+                            (Some(b), Some(a)) => ion::file_snapshot::unified_diff(b, a, path),
+                            (None, Some(a)) => format!("+++ new file\n{}", a),
+                            (Some(b), None) => format!("--- deleted\n{}", b),
+                            _ => String::new(),
+                        };
+                        let (added, removed) = ion::file_snapshot::count_diff(&diff);
+                        total_added += added;
+                        total_removed += removed;
+                        files.push(serde_json::json!({
+                            "path": path, "diff": diff, "added": added, "removed": removed,
+                        }));
+                    }
+                    output_response(&id, "get_batch_diffs", &serde_json::json!({
+                        "files": files,
+                        "summary": { "files": grouped.len(), "added": total_added, "removed": total_removed },
+                    }));
+                } else {
+                    output_response(&id, "get_batch_diffs", &serde_json::json!({"error": "file-snapshot not enabled"}));
+                }
+            }
+            "get_file_history" => {
+                let file_path = params.get("filePath").and_then(|v| v.as_str()).unwrap_or("");
+                if file_path.is_empty() {
+                    output_response(&id, "get_file_history", &serde_json::json!({"error": "missing 'filePath'"}));
+                } else if let Some(ref store) = snapshot_store {
+                    let history = store.load_file_history(file_path);
+                    let entries: Vec<serde_json::Value> = history.iter().map(|s| {
+                        let action = match (&s.before_hash, &s.after_hash) {
+                            (None, Some(_)) => "added",
+                            (Some(_), None) => "deleted",
+                            (Some(_), Some(_)) => "modified",
+                            _ => "unchanged",
+                        };
+                        serde_json::json!({
+                            "turnId": s.turn_id,
+                            "action": action,
+                            "toolCallId": s.tool_call_id,
+                            "tool": s.tool_name,
+                            "hash": s.after_hash,
+                        })
+                    }).collect();
+                    output_response(&id, "get_file_history", &serde_json::json!({
+                        "path": file_path,
+                        "history": entries,
+                        "count": entries.len(),
+                    }));
+                } else {
+                    output_response(&id, "get_file_history", &serde_json::json!({"error": "file-snapshot not enabled"}));
+                }
+            }
             "get_fork_messages" => {
                 // 复用 retrieve_inputs（只返回 user 消息，用于 fork 选择）
                 let entries: Vec<serde_json::Value> =
