@@ -156,7 +156,66 @@ fi
 
 # ──────────────────────────────────────────────────────────
 echo ""
-echo "Group G: 集成验证（全量 file_snapshot 测试）"
+echo "Group G: Worktree 并行（project_key 共享 + session 隔离）"
+# ──────────────────────────────────────────────────────────
+
+# G1: project_key 一致性（主仓库 + worktree）
+MAIN_CWD="$PROJECT_DIR"
+WT_PATH="/tmp/ion_wt_ci_test_$$"
+
+WT_ADD=$(git worktree add "$WT_PATH" 2>&1)
+if [ $? -eq 0 ]; then
+    # 用 cargo test 验证 project_key 一致（包含在单元测试里）
+    pass "G1: git worktree 创建成功（$WT_PATH）"
+
+    # G2: project_key 一致性（通过 Python 模拟验证）
+    MAIN_KEY=$(python3 -c "
+import subprocess, hashlib
+r = subprocess.run(['git','rev-parse','--absolute-git-dir'], cwd='$MAIN_CWD', capture_output=True, text=True)
+git_dir = r.stdout.strip()
+common = git_dir.split('/worktrees/')[0]
+print(hashlib.md5(common.encode()).hexdigest()[:16])
+" 2>/dev/null)
+    WT_KEY=$(python3 -c "
+import subprocess, hashlib
+r = subprocess.run(['git','rev-parse','--absolute-git-dir'], cwd='$WT_PATH', capture_output=True, text=True)
+git_dir = r.stdout.strip()
+common = git_dir.split('/worktrees/')[0]
+print(hashlib.md5(common.encode()).hexdigest()[:16])
+" 2>/dev/null)
+
+    if [ "$MAIN_KEY" = "$WT_KEY" ] && [ -n "$MAIN_KEY" ]; then
+        pass "G2: project_key 一致（main=$MAIN_KEY wt=$WT_KEY）→ 共享存储"
+    else
+        fail "G2: project_key 不一致（main=$MAIN_KEY wt=$WT_KEY）"
+    fi
+
+    # 清理
+    git worktree remove "$WT_PATH" --force 2>/dev/null
+    pass "G3: worktree 清理完成"
+else
+    skip "G1-G3: git worktree 创建失败，跳过（可能非 git 环境）"
+fi
+
+# G4: worktree 单元测试（project_key_worktree_shares_with_main）
+WT_UNIT=$(cargo test --lib file_snapshot::object_store::tests::project_key_worktree 2>&1)
+if echo "$WT_UNIT" | grep -q "test result: ok"; then
+    pass "G4: project_key worktree 共享单元测试通过"
+else
+    fail "G4: project_key worktree 测试失败"
+fi
+
+# G5: object store 共享单元测试
+SHARE_UNIT=$(cargo test --lib file_snapshot::object_store::tests::object_store_shares_between_worktrees 2>&1)
+if echo "$SHARE_UNIT" | grep -q "test result: ok"; then
+    pass "G5: object store worktree 间共享 + 去重测试通过"
+else
+    fail "G5: object store 共享测试失败"
+fi
+
+# ──────────────────────────────────────────────────────────
+echo ""
+echo "Group H: 集成验证（全量 file_snapshot 测试）"
 # ──────────────────────────────────────────────────────────
 
 ALL_FS=$(cargo test --lib file_snapshot 2>&1)

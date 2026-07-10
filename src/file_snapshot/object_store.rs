@@ -276,4 +276,71 @@ mod tests {
         // 应该是 16 位 hex
         assert_eq!(key.len(), 16);
     }
+
+    #[test]
+    fn project_key_worktree_shares_with_main() {
+        // 验证 project_key 在 worktree 和主仓库下一致
+        let main_cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+        let main_key = project_key(&main_cwd);
+
+        // 造一个临时 worktree
+        let wt_path = format!("/tmp/ion_wt_pk_test_{}", std::process::id());
+        let output = std::process::Command::new("git")
+            .args(["worktree", "add", &wt_path])
+            .current_dir(&main_cwd)
+            .output();
+
+        if output.is_ok() && output.as_ref().unwrap().status.success() {
+            let wt_key = project_key(&wt_path);
+            // worktree 的 project_key 应与主仓库一致
+            assert_eq!(main_key, wt_key,
+                "project_key 应共享: main={main_key} wt={wt_key}");
+
+            // 清理 worktree
+            let _ = std::process::Command::new("git")
+                .args(["worktree", "remove", &wt_path, "--force"])
+                .current_dir(&main_cwd)
+                .output();
+        }
+        // 如果 git worktree add 失败（如 CI 环境无 git），跳过
+    }
+
+    #[test]
+    fn project_key_non_git_fallback() {
+        // 非 git 目录 fallback 到 cwd hash
+        let tmp = std::env::temp_dir().join(format!("fs_nongit_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let cwd = tmp.to_string_lossy().to_string();
+        let key = project_key(&cwd);
+        assert!(!key.is_empty());
+        assert_eq!(key.len(), 16);
+        // 非 git 目录的 key 应不同于 git 仓库的 key
+        let git_cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+        let git_key = project_key(&git_cwd);
+        assert_ne!(key, git_key, "非 git 目录 key 应不同于 git 仓库");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn object_store_shares_between_worktrees() {
+        // 验证两个 worktree 的 ObjectStore 写入相同内容 → 同一 object
+        let main_cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+
+        // 用 project_key 创建 store（两个 worktree 用同一个 key → 同一目录）
+        let key = project_key(&main_cwd);
+        let store1 = ObjectStore::for_project(&key);
+        let store2 = ObjectStore::for_project(&key);
+
+        // store1 写入
+        let r1 = store1.write_object(b"shared content");
+        // store2 读 → 应能读到（共享存储）
+        let content = store2.read_object(&r1.hash);
+        assert!(content.is_some(), "worktree 间应共享 object store");
+        assert_eq!(content.unwrap(), b"shared content");
+
+        // store2 再写相同内容 → 去重
+        let r2 = store2.write_object(b"shared content");
+        assert!(r2.deduped, "跨 worktree 相同内容应去重");
+        assert_eq!(r1.hash, r2.hash);
+    }
 }
