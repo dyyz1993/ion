@@ -1,6 +1,6 @@
 # 软删除与软压缩设计文档
 
-> **状态：设计稿** — 基于现有钩子链路分析 + pi 对标，待评审。
+> **状态：已实现** — deletion + segment_summary + restoration + 双层过滤 + LLM 摘要 + on_entries_invalidated 钩子全部实现,6 E2E 测试通过。
 >
 > 覆盖：deletion entry / segment_summary entry / 双层过滤 / LLM context 构建 / token 统计 / 钩子连锁。
 
@@ -508,16 +508,16 @@ self.extensions.on_entries_invalidated(&self.messages).await?;
 
 ## 十、实现优先级
 
-| 优先级 | 任务 | 工作量 |
-|--------|------|--------|
-| **P0** | Agent 加 `soft_delete_state`（deleted_ids + segment_map）| 小 |
-| **P0** | append_deletion / append_segment_summary（session_jsonl.rs）| 小 |
-| **P0** | apply_context_visibility_filter（agent_loop.rs snapshot 后）| 中 |
-| **P0** | delete_entries RPC（从 self.messages 移除 + 落 DeletionEntry）| 中 |
-| **P1** | summarize_entries RPC（LLM 生成摘要 + 替换成 BranchSummary）| 中 |
-| **P1** | apply_visibility_filter 补完 segment_summary 折叠（拉取层）| 小 |
-| **P1** | on_entries_invalidated 触发 | 小 |
-| **P2** | 软删除/折叠可逆（删除 SegmentSummaryEntry 恢复）| 中 |
+| 优先级 | 任务 | 状态 |
+|--------|------|------|
+| **P0** | Agent 加 `deleted_entry_ids` + `summarized_entry_ids` | ✅ 已完成 |
+| **P0** | append_deletion / append_segment_summary / append_restoration | ✅ 已完成 |
+| **P0** | mark_deleted / mark_summarized 直接改 self.messages | ✅ 已完成 |
+| **P0** | delete_entries RPC（entryId 映射 + 落 DeletionEntry）| ✅ 已完成 |
+| **P1** | summarize_entries RPC（LLM 生成摘要 + 替换成 BranchSummary）| ✅ 已完成 |
+| **P1** | apply_visibility_filter 补完 segment_summary + restoration 过滤 | ✅ 已完成 |
+| **P1** | on_entries_invalidated 触发（ExtensionRegistry fan-out）| ✅ 已完成 |
+| **P2** | 软删除/折叠可逆（restore_entries RPC + restoration entry）| ✅ 已完成 |
 
 ---
 

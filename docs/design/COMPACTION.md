@@ -17,6 +17,9 @@ ION 的 Compaction 系统在对话超过阈值时自动压缩历史，对齐 pi 
 | 分批并发压缩 | `compact_batched` | ✅ |
 | 动态快/慢路径决策 | `compact_batched` | ✅ |
 | **溢出恢复（LLM 返回上下文溢出错误时自动 compaction 重试）** | `StopReason::Error` 分支 | ✅ |
+| **增量摘要（有旧摘要时 UPDATE 不重建）** | `make_llm_summarizer` + `extract_existing_summary` | ✅ |
+| **Split-turn 调整（切点不落在 turn 中间）** | `apply_compaction` + `is_turn_boundary` | ✅ |
+| **工具输出截断（超 2000 行/50KB 截头尾）** | `truncate_tool_output` | ✅ |
 
 ### 实现状态核查清单
 
