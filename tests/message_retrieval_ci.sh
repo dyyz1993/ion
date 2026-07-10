@@ -1,7 +1,20 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────
-# CI 测试脚本：消息拉取验证
-# 覆盖 get_messages 分页/视点 + ion history CLI + turn_summary/compaction 落盘
+# CI 测试脚本：消息拉取验证（55 个用例）
+#
+# 注意：本脚本的 Group A-N 是「测试分组」编号，
+# 与 docs/testing/MESSAGE_RETRIEVAL_CASES.md 文档的
+# Group A-M「场景分组」是两套独立编号，内容交叉覆盖：
+#
+#   脚本 Group A-G  → 文档 A/B/D（CLI 基础 + 分页 + turn_summary + compaction + 字段）
+#   脚本 Group H    → 文档 H（turn 完整性）
+#   脚本 Group J    → 文档 J（中断态/错误态）
+#   脚本 Group K    → 文档 K（统计聚合）
+#   脚本 Group N    → 文档 G（旁路数据 customType 两维属性）
+#   脚本 Group M    → 文档 M（性能缓存/O(n)）
+#   脚本 Group L    → 文档 L（血缘字段）
+#
+# 另见：session_tree_verify.sh（文档 E 分支树）+ realtime_stitch_ci.sh（文档 I 历史+实时）
 # ──────────────────────────────────────────────────────────
 set -o pipefail
 TMPDIR="${TMPDIR:-/tmp}"

@@ -656,7 +656,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | crash_recovery_ci (CLI E2E) | 6 | stderr/exit_code/Dead/父通知 |
 | global_memory_ci (CLI E2E) | 8 | 单例生命周期/save/search/跨项目/软删除 |
 | session_tree_ci (CLI E2E) | 8 | 树展示/branch/rollback/only-append 审计 |
-| message_retrieval_ci (CLI E2E) | 55 | Group A-N：ion history/分页/视点/turn_summary/compaction/turn 完整性/中断态/统计聚合/旁路数据/customType 两维属性/性能缓存/O(n)/血缘 |
+| message_retrieval_ci (CLI E2E) | 55 | 消息拉取主验证（脚本 Group A-N 对应文档 A-M 场景）：ion history/分页/视点/turn_summary/compaction/turn 完整性/中断态/统计聚合/旁路数据/customType 两维属性/性能缓存/O(n)/血缘 |
 | session_tree_verify (CLI E2E) | 13 | 树展示 + branch/rollback 单元测试 + 分支视点(live/full/since_compaction) + only-append 红线 |
 | realtime_stitch_ci (CLI E2E) | 10 | Group I：host + create_session + subscribe + prompt + 事件流(agent_start/text_delta/agent_end) + 历史补齐 |
 | **测试覆盖合计** | **375** | 全部通过 ✅ |
