@@ -139,8 +139,8 @@ ion subscribe --session x --extension memory
 | `cycle_thinking_level` | ❌ | ❌ 缺 |
 | `compact` | `compact` | ✅ |
 | `set_auto_compaction` | ❌ | ❌ 缺 |
-| `set_auto_retry` / `abort_retry` | ❌ | ❌ 缺（有 RetryConfig 但无 RPC） |
-| `bash` / `abort_bash` | `bash` / ❌ | ⚠️ 部分 |
+| `set_auto_retry` / `abort_retry` | ✅ | ✅ 已实现（set_max_retries + agent.stop()） |
+| `bash` / `abort_bash` | `bash` / ✅ | ✅ 全部（abort_bash 通过 process_map kill SIGTERM） |
 | `get_messages` | `get_messages` | ✅ |
 | `get_full_messages` | ❌ | ❌ 缺 |
 | `get_tree` / `get_tree_with_leaf` | ❌ | ❌ 缺（依赖 leaf entry） |
@@ -158,9 +158,9 @@ ion subscribe --session x --extension memory
 | `promote_follow_up` | `promote_follow_up` | ✅ |
 | `get_flags` / `set_flag` | ❌ | ❌ 缺 |
 | `reload` | `reload` | ✅ |
-| `set_cwd` | ❌ | ❌ 缺 |
+| `set_cwd` | ✅ | ✅ 已实现（agent.set_session_cwd + 路径验证） |
 | `get_agents` / `switch_agent` / `get_current_agent` / `get_agent_detail` | 全部对应 | ✅ |
-| `set_permission_mode` | ❌ | ❌ 缺（有 PermissionEngine 但无 RPC） |
+| `set_permission_mode` | ✅ | ✅ 已实现（Runtime::set_guard_mode，CommandGuard 改 Arc<RwLock>） |
 | `get_mcp_servers` / `mcp_toggle_server` / `mcp_restart_server` | ❌ | ❌ 缺 |
 | `register_remote_tool` / `unregister_remote_tool` | ❌ | ❌ 缺 |
 | — | `call_tool`（Tool 级直调） | ion 原创 |
@@ -197,14 +197,14 @@ ion subscribe --session x --extension memory
 
 ### 🟡 P1 — 重要，实现中等
 
-| 缺失 RPC | 调试用途 | 难度 |
+| RPC | 调试用途 | 状态 |
 |---|---|---|
-| `get_settings` / `set_settings` | 统一设置管理 | 中 |
-| `set_permission_mode` | 切权限模式 | 小 |
-| `get_modified_files` / `get_file_diff` | 看本次 session 改了哪些文件 | 中（需 file snapshot） |
-| `set_cwd` | 切工作目录 | 小 |
-| `set_auto_retry` / `abort_retry` | 重试控制 | 小 |
-| `abort_bash` | 中断 bash 执行 | 小 |
+| ~~`set_permission_mode`~~ | 切权限模式 | ✅ 已实现（Runtime::set_guard_mode） |
+| ~~`set_cwd`~~ | 切工作目录 | ✅ 已实现（agent.set_session_cwd + 路径验证） |
+| ~~`set_auto_retry`~~ / ~~`abort_retry`~~ | 重试控制 | ✅ 已实现（set_max_retries + agent.stop()） |
+| ~~`abort_bash`~~ | 中断 bash 执行 | ✅ 已实现（process_map kill SIGTERM） |
+| `get_settings` / `set_settings` | 统一设置管理 | ❌ 待实现 |
+| `get_modified_files` / `get_file_diff` | 看本次 session 改了哪些文件 | ❌ 待实现（需 file snapshot） |
 
 ### 🟢 P2 — 依赖底层能力，暂缓
 
