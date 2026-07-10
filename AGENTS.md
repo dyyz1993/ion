@@ -6,7 +6,7 @@
 
 **本项目所有可扩展能力统称为 Extension。禁止使用 "plugin"、"插件" 这两个词。**
 
-### 两类 Extension（API 完全一致，29 个生命周期钩子）
+### 两类 Extension（API 完全一致，31 个生命周期钩子）
 
 | 类型 | 加载方式 | 可关闭 | 例子 |
 |------|---------|--------|------|
@@ -19,7 +19,7 @@
 
 WASM 模块导出的 C 函数必须使用 `extension_` 前缀：
 - `extension_version()` / `extension_init()` / `extension_execute_tool(...)`
-- `extension_on_input(...)` / `extension_on_context(...)` / `extension_on_system_prompt(...)` 等 29 个钩子
+- `extension_on_input(...)` / `extension_on_context(...)` / `extension_on_system_prompt(...)` 等 31 个钩子
 - `extension_on_rpc(...)` — extension_rpc 入口
 
 **不要使用 `plugin_*` 前缀，已废弃。**
@@ -406,7 +406,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 
 - CLI 45+ 参数 (对齐 pi 41 核心参数)
 - Provider 抽象层 (`ion-provider` 独立 crate)
-- Agent 循环 (内外两层 + 29 扩展钩子 + 21 已接入)
+- Agent 循环 (内外两层 + 31 扩展钩子 + 23 已接入)
 - 21 个内置工具 (read/write/edit/bash/grep/find/ls/calculator/echo + 7 Git + spawn/send/resume/await channel_send/kill) + 真实 bash 执行
 - 会话管理 (JSONL v3 + 实时索引 + fork/continue/resume + cwd-hash 分组)
 - --export HTML (pi 模板)
@@ -644,13 +644,13 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 
 | 套件 | 数量 | 覆盖 |
 |------|------|------|
-| lib tests (核心逻辑) | 229 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex |
+| lib tests (核心逻辑) | 252 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex |
 | session_tree (单元) | 28 | resolve_current_leaf/get_tree/branch/rollback/checkout/compaction_safety |
 | session_tree (集成) | 4 | only-append 审计/branch 接 leaf/全操作序列 |
 | global_memory (单元) | 6 | FTS5 搜索/跨项目/重要性排序/软删除/ID 唯一 |
 | faux_test (ion-provider) | 22 | FauxProvider FIFO/工厂响应/流式/builder/complete/error |
 | record_replay_test (ion-provider) | 11 | RecordingProvider/ReplayProvider/load_script/lock/路径穿越 |
-| **小计 Rust 测试** | **300** | 全部通过 ✅ |
+| **小计 Rust 测试** | **323** | 全部通过 ✅ |
 | faux_scenarios_ci (CLI E2E) | 4 | 三场景 faux（直接执行/host/serve） |
 | record_replay_ci (CLI E2E) | 11 | 录制/回放/路径穿越/冲突/OVERWRITE/权限 |
 | crash_recovery_ci (CLI E2E) | 6 | stderr/exit_code/Dead/父通知 |
@@ -659,7 +659,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | message_retrieval_ci (CLI E2E) | 55 | 消息拉取主验证（脚本 Group A-N 对应文档 A-M 场景）：ion history/分页/视点/turn_summary/compaction/turn 完整性/中断态/统计聚合/旁路数据/customType 两维属性/性能缓存/O(n)/血缘 |
 | session_tree_verify (CLI E2E) | 15 | 树展示 + branch/rollback 单元测试 + 分支视点(live/full/since_compaction) + only-append 红线 + SESSION_TREE_SPEC P0 验收映射 |
 | realtime_stitch_ci (CLI E2E) | 10 | Group I：host + create_session + subscribe + prompt + 事件流(agent_start/text_delta/agent_end) + 历史补齐 |
-| **测试覆盖合计** | **409** | 全部通过 ✅（session_tree_ci 废弃，不计入） |
+| **测试覆盖合计** | **432** | 全部通过 ✅（session_tree_ci 废弃，不计入） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
@@ -667,7 +667,8 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 - ~~on_extension_rpc 接入~~ ✅ (Memory 扩展 Extension RPC)
 - ~~session_before_compact / session_compact 接入~~ ✅
 - ~~thinking_level_select~~ ✅ (已在 run() 中触发)
-- session_before_switch / session_before_fork / session_tree - 后续 (需会话树功能)
+- session_before_switch / session_before_fork - 钩子已定义（trait + ExtensionRegistry），触发点待接（需 Runtime trait 扩展）
+- session_tree - ✅ (SessionTree 已实现)
 - user_bash / project_trust / resources_discover / ui - 后续 (需交互式 UI)
 
 **P6 - Shell Hook 系统 (TRAE 兼容) (暂不开发):**

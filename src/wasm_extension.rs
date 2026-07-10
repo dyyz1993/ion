@@ -1371,12 +1371,12 @@ impl ExtTrait for HookAdapter {
     }
 
     // ── Session navigation ──
-    async fn on_session_before_switch(&self, target: &str) -> AgentResult<()> {
-        self.notify("on_session_before_switch", &serde_json::json!({"target": target}))
+    async fn on_session_before_switch(&self, ctx: &super::agent::extension::SessionSwitchContext) -> AgentResult<()> {
+        self.notify("on_session_before_switch", &serde_json::json!({"target_leaf_id": ctx.target_leaf_id, "source_leaf_id": ctx.source_leaf_id, "branch_name": ctx.branch_name}))
     }
 
-    async fn on_session_before_fork(&self, entry_id: &str) -> AgentResult<()> {
-        self.notify("on_session_before_fork", &serde_json::json!({"entry_id": entry_id}))
+    async fn on_session_before_fork(&self, ctx: &super::agent::extension::SessionSwitchContext) -> AgentResult<()> {
+        self.notify("on_session_before_fork", &serde_json::json!({"target_leaf_id": ctx.target_leaf_id, "source_leaf_id": ctx.source_leaf_id, "branch_name": ctx.branch_name}))
     }
 
     async fn on_session_before_tree(&self, target: &str) -> AgentResult<()> {

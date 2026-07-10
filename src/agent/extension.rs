@@ -66,8 +66,21 @@ pub struct SessionContext {
     pub reason: String, // "startup" | "reload" | "new" | "resume" | "fork" | "quit"
 }
 
+/// Context for session_before_switch / session_before_fork hooks.
+#[derive(Clone, Debug)]
+pub struct SessionSwitchContext {
+    /// "switch" (checkout) | "fork" (fork-from-leaf) | "branch" (in-file branch)
+    pub action: String,
+    /// Target leaf entry id being switched/forked to.
+    pub target_leaf_id: Option<String>,
+    /// Source leaf entry id being switched from (if known).
+    pub source_leaf_id: Option<String>,
+    /// Branch name (for named branch operations).
+    pub branch_name: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
-// Extension trait — 29 hook points matching pi spec
+// Extension trait — 31 hook points matching pi spec
 // ---------------------------------------------------------------------------
 
 #[async_trait]
@@ -75,11 +88,15 @@ pub trait Extension: Send + Sync {
     /// Optional name for extension routing (used by extension_rpc dispatch).
     fn name(&self) -> &str { "anonymous" }
 
-    // ── Session lifecycle (4) ──
+    // ── Session lifecycle (6) ──
     async fn on_session_start(&self, _ctx: &SessionContext) -> AgentResult<()> { Ok(()) }
     async fn on_session_shutdown(&self, _ctx: &SessionContext) -> AgentResult<()> { Ok(()) }
     async fn on_session_before_compact(&self, _msgs: &mut Vec<Message>) -> AgentResult<()> { Ok(()) }
     async fn on_session_compact(&self, _messages: &mut Vec<Message>) -> AgentResult<()> { Ok(()) }
+    /// Fired before a session branch/checkout (in-file switch). Return Err to veto.
+    async fn on_session_before_switch(&self, _ctx: &SessionSwitchContext) -> AgentResult<()> { Ok(()) }
+    /// Fired before a fork-from-leaf (cross-file). Return Err to veto.
+    async fn on_session_before_fork(&self, _ctx: &SessionSwitchContext) -> AgentResult<()> { Ok(()) }
 
     // ── Input (1) ──
     /// Intercept or transform user input before agent processes it.
@@ -131,11 +148,7 @@ pub trait Extension: Send + Sync {
     /// Called when entries are deleted or summarized.
     async fn on_entries_invalidated(&self, _entry_ids: &[String]) -> AgentResult<()> { Ok(()) }
 
-    // ── Session navigation (stubs - 待对应功能实现后接入) ──
-    /// Called before switching to another session. Can cancel.
-    async fn on_session_before_switch(&self, _target: &str) -> AgentResult<()> { Ok(()) }
-    /// Called before forking a session. Can cancel.
-    async fn on_session_before_fork(&self, _entry_id: &str) -> AgentResult<()> { Ok(()) }
+    // ── Session navigation (stubs - 已在上面定义 on_session_before_switch/fork) ──
     /// Called before tree navigation. Can customize summary.
     async fn on_session_before_tree(&self, _target: &str) -> AgentResult<()> { Ok(()) }
     /// Called after tree navigation.
@@ -271,6 +284,12 @@ impl ExtensionRegistry {
     }
     pub async fn on_session_compact(&self, msgs: &mut Vec<Message>) -> AgentResult<()> {
         for ext in &self.extensions { ext.on_session_compact(msgs).await?; } Ok(())
+    }
+    pub async fn on_session_before_switch(&self, ctx: &SessionSwitchContext) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_session_before_switch(ctx).await?; } Ok(())
+    }
+    pub async fn on_session_before_fork(&self, ctx: &SessionSwitchContext) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_session_before_fork(ctx).await?; } Ok(())
     }
     pub async fn on_input(&self, ctx: &mut InputContext) -> AgentResult<()> {
         for ext in &self.extensions { ext.on_input(ctx).await?; } Ok(())

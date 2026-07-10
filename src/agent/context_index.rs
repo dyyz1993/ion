@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 use super::error::AgentResult;
 use super::extension::{Extension, TurnContext};
 use super::messages::{Message, ToolCall};
-use ion_provider::types::{ToolResult, ToolResultMessage, ContentBlock, TextContent};
+use ion_provider::types::{ToolResult, ContentBlock, TextContent};
 
 // ---------------------------------------------------------------------------
 // 数据结构
@@ -352,6 +352,7 @@ impl Extension for ContextIndexExtension {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ion_provider::types::ToolResultMessage;
 
     #[test]
     fn record_read_creates_entry() {
