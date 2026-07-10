@@ -837,6 +837,111 @@ du -sh ~/.ion/file-store/<project_key>/
 | X5 | chmod 只改权限 | 不记录（正确行为） | 只追踪内容 | 不需修复 |
 | X6 | 符号链接逃逸 | 存的是 symlink 路径不是 resolved | 无 resolve 逻辑 | 后续加 resolvedPath |
 | X7 | 路线 2 的 before 内容缺失 | bash 路线没存 before content，diff 只有 after | 设计限制 | 后续从上一轮快照取 |
+| X8 | turn_id 重复（多次 run / 回滚后继续） | 内存计数器每次 run 从 0 开始 → 覆盖磁盘旧快照 | **必须修复**（见 §19） | **实现 restore 前修** |
+
+---
+
+## 19. turn_id 全局唯一性（多次交替操作的前提）
+
+### 19.1 问题
+
+`FileSnapshotExtension.current_turn` 是内存 `Mutex<u32>`，每次 `on_turn_start` +1。但 Agent 的 turn 循环 `for turn in 0..max_turns` **每次 run 都从 0 开始**。
+
+导致：回滚后继续聊 / `--continue` 继续聊 / 回滚再回滚，**turn_id 从 0 重来 → 磁盘快照文件名冲突 → 覆盖历史**。
+
+```
+第一次 run: Turn 0,1,2 → snapshots/tool/{0,1,2}.jsonl
+回滚到 Turn 0
+第二次 run: Turn 0,1   → snapshots/tool/{0,1}.jsonl  ← 覆盖！
+```
+
+### 19.2 解决方案：全局递增 turn_id（不每次从 0 开始）
+
+```rust
+impl FileSnapshotExtension {
+    fn new_pair(cwd: &str) -> (Self, Arc<SnapshotStore>) {
+        let store = Arc::new(SnapshotStore::new(&pk));
+        // 从磁盘读取已有的最大 turn_id，新 turn 从 max+1 开始
+        let max_turn = store.max_turn_id();
+        Self {
+            current_turn: Mutex::new(max_turn + 1),
+            store: store.clone(),
+            ..
+        }
+    }
+}
+```
+
+`SnapshotStore` 加方法：
+```rust
+fn max_turn_id(&self) -> u32 {
+    // 扫描 snapshots/tool/ 目录，找最大的 N
+    read_dir(snapshots/tool/)
+        .filter_map(|e| e.file_name().parse::<u32>().ok())
+        .max()
+        .unwrap_or(0)
+}
+```
+
+### 19.3 修复后的交替操作流转
+
+```
+第一次 run: Turn 0,1,2,3,4
+  snapshots/tool/{0,1,2,3,4}.jsonl
+
+回滚到 Turn 2（消息层 leaf_pointer 移动，快照不动）
+
+第二次 run: Turn 5,6,7（从磁盘 max=4 +1 开始）
+  snapshots/tool/{5,6,7}.jsonl  ← 不覆盖！
+
+回滚到 Turn 5
+
+第三次 run: Turn 8,9（从磁盘 max=7 +1 开始）
+  snapshots/tool/{8,9}.jsonl  ← 不覆盖！
+```
+
+**快照的 turn_id 永远全局递增，不会被覆盖。** 消息层的 turn 概念（agent loop 的 `for turn in 0..N`）和快照的 turn_id 是**两套编号**——快照用全局递增 ID，消息用 per-run 局部 ID。
+
+### 19.4 restore 时如何映射 entry → turn_id
+
+消息回滚用的是 `entry_id`（如 msg_005），但快照用的是全局 `turn_id`。需要在 restore 时建立映射：
+
+```
+回滚到 msg_005：
+  1. 从 session entries 找 msg_005 所属的 turn（消息层的 turn 概念）
+  2. 找到该 turn 对应的 turn_summary entry → 得到全局 turnId
+  3. restore_code_to_turn(全局 turnId)
+```
+
+`turn_summary` entry 已经存了 `turnId`（全局递增），正好作为映射桥梁。
+
+---
+
+## 20. 多次交替操作的完整 case（回滚→聊→回滚→聊...）
+
+### 20.1 通用交替模式
+
+| # | 场景 | 操作序列 | 预期 |
+|---|------|---------|------|
+| M1 | 回滚→聊→回滚 | Turn 0-4 → 回滚 2 → Turn 5-6 → 回滚 5 | turn_id 全局递增不覆盖，两次回滚都正确恢复 |
+| M2 | 回滚→聊→回滚→聊→回滚 | 交替 3 次 | 每次 run 的 turn_id 接续前一次最大值 |
+| M3 | 无限交替 | 交替 N 次 | turn_id 持续递增，磁盘快照不丢 |
+| M4 | 回滚到不同点 | Turn 0-4 → 回滚 2 → Turn 5-6 → 回滚 0 | 第二次恢复到 Turn 0（代码全删/还原） |
+
+### 20.2 回滚 + continue 混合
+
+| # | 场景 | 操作序列 | 预期 |
+|---|------|---------|------|
+| M5 | 回滚后 continue | Turn 0-4 → 回滚 2 → `ion -c "继续"` | continue 也从 max+1 开始，不覆盖 |
+| M6 | continue 后回滚 | Turn 0-4 → continue Turn 5-6 → 回滚 5 | 同 M5 |
+| M7 | 多次 continue | Turn 0-4 → continue → continue → continue | 每次 continue 的 turn 接续 |
+
+### 20.3 回滚 + 分支 + 交替
+
+| # | 场景 | 操作序列 | 预期 |
+|---|------|---------|------|
+| M8 | 分支后各自交替 | 主分支 Turn 0-4 → branch Turn 5-6 → 主分支继续 Turn 7-8 | 两条分支各自递增 turn_id |
+| M9 | fork 后交替 | Turn 0-4 → fork 新会话 → 新会话 Turn 5-6 | fork 继承父会话的 max turn_id |
 
 ---
 
