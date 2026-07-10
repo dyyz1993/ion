@@ -143,10 +143,10 @@ ion subscribe --session x --extension memory
 | `bash` / `abort_bash` | `bash` / ✅ | ✅ 全部（abort_bash 通过 process_map kill SIGTERM） |
 | `get_messages` | `get_messages` | ✅ |
 | `get_full_messages` | ❌ | ❌ 缺 |
-| `get_tree` / `get_tree_with_leaf` | ❌ | ❌ 缺（依赖 leaf entry） |
+| `get_tree` / `get_tree_with_leaf` | ✅ / ✅ | ✅ 全部（structure/full 双模式 + pathToLeaf + branches） |
 | `get_modified_files` / `get_file_diff` | ❌ | ❌ 缺 |
 | `switch_session` / `fork` / `clone` | Manager 级 | ⚠️ 分级不同 |
-| `navigate_tree` | ❌ | ❌ 缺 |
+| `navigate_tree` | ✅ | ✅ 已实现（线性节点列表 + onLeafPath/isCurrentLeaf 标记） |
 | `delete_entries` / `summarize_entries` | `delete_entries` / `summarize_entries` | ✅ |
 | `get_session_stats` | `get_session_stats` | ✅ |
 | `get_commands` / `get_skills` / `get_extensions` / `get_tools` | `get_tools` / `get_agents` | ⚠️ 部分 |
@@ -206,9 +206,16 @@ ion subscribe --session x --extension memory
 | ~~`get_settings`~~ / ~~`set_settings`~~ | 统一设置管理 | ✅ 已实现（IonConfig load/save + api_key 脱敏） |
 | `get_modified_files` / `get_file_diff` | 看本次 session 改了哪些文件 | ❌ 待实现（需 file snapshot） |
 
-### 🟢 P2 — 依赖底层能力，暂缓
+### 🟢 P2 — 依赖底层能力
 
-| 缺失 RPC | 依赖 |
+| RPC | 依赖 | 状态 |
+|---|---|---|
+| ~~`get_tree`~~ / ~~`get_tree_with_leaf`~~ | Session Tree | ✅ 已实现 |
+| ~~`navigate_tree`~~ | Session Tree | ✅ 已实现 |
+| `get_flags` / `set_flag` | 扩展 flag 系统 | ❌ 待实现 |
+| `get_commands` / `get_skills` | slash 命令 + skill 系统 | ❌ 待实现 |
+| MCP 三件套 | MCP client | ❌ 待实现 |
+| Remote tools 三件套 | 远程工具协议 | ❌ 待实现 |
 |---|---|
 | `navigate_tree` / `get_tree` / `get_tree_with_leaf` | 依赖 `leaf` entry + 会话树 |
 | `get_flags` / `set_flag` | 依赖扩展 flag 系统 |

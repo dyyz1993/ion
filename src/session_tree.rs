@@ -11,7 +11,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
 /// 树节点：一个 entry + 它的子节点。
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct TreeNode {
     pub entry: Value,
     pub children: Vec<TreeNode>,

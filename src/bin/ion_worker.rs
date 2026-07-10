@@ -1289,7 +1289,53 @@ async fn main() {
             "export_html" => output_response(&id, "export_html", &serde_json::json!({"path":""})),
             "switch_session" => output_response(&id, "switch_session", &serde_json::Value::Null),
             "fork" => output_response(&id, "fork", &serde_json::json!({"sessionId":sid})),
-            "navigate_tree" => output_response(&id, "navigate_tree", &serde_json::Value::Null),
+            "navigate_tree" => {
+                // 返回树的可导航线性结构（id/parentId/role/content 截断/leaf 标记）
+                let entries: Vec<serde_json::Value> =
+                    ion::message_retrieval::load_entries_cached(&worker_cwd);
+                let current_leaf = ion::session_tree::resolve_current_leaf(&entries);
+
+                let nodes: Vec<_> = entries.iter().filter_map(|e| {
+                    let etype = e.get("type").and_then(|v| v.as_str())?;
+                    let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    let parent_id = e.get("parentId").and_then(|v| v.as_str()).unwrap_or("");
+                    let is_on_leaf_path = current_leaf.as_ref().map(|leaf| {
+                        // 简单判断：id 在 leaf path 里
+                        ion::session_tree::get_branch_path(&entries, leaf)
+                            .iter()
+                            .any(|pe| pe.get("id").and_then(|v| v.as_str()) == Some(id))
+                    }).unwrap_or(false);
+
+                    let role = e.get("message")
+                        .and_then(|m| m.get("role"))
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("");
+
+                    // content 截断到 50 字
+                    let content = e.get("message")
+                        .and_then(|m| m.get("content"))
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("");
+                    let brief = if content.len() > 50 { format!("{}...", &content[..50]) } else { content.to_string() };
+
+                    Some(serde_json::json!({
+                        "id": id,
+                        "parentId": parent_id,
+                        "type": etype,
+                        "role": role,
+                        "brief": brief,
+                        "turnId": e.get("turnId").and_then(|v| v.as_u64()),
+                        "onLeafPath": is_on_leaf_path,
+                        "isCurrentLeaf": current_leaf.as_deref() == Some(id),
+                    }))
+                }).collect();
+
+                output_response(&id, "navigate_tree", &serde_json::json!({
+                    "nodes": nodes,
+                    "currentLeaf": current_leaf,
+                    "totalNodes": nodes.len(),
+                }));
+            }
             "delete_entries" => {
                 // 软删除：从 self.messages 移除 + 落 DeletionEntry 到 JSONL
                 let target_ids: Vec<String> = params.get("targetIds")
@@ -1608,7 +1654,33 @@ async fn main() {
                 }));
             }
             "set_tier_models" => output_response(&id, "set_tier_models", &serde_json::Value::Null),
-            "get_tree_with_leaf" => output_response(&id, "get_tree_with_leaf", &serde_json::json!([])),
+            "get_tree_with_leaf" => {
+                // get_tree + 带 pathToLeaf（root → current leaf 的路径）
+                let entries: Vec<serde_json::Value> =
+                    ion::message_retrieval::load_entries_cached(&worker_cwd);
+                let current_leaf = ion::session_tree::resolve_current_leaf(&entries);
+                let tree_nodes = ion::session_tree::get_tree(&entries);
+
+                // 计算 root → leaf 路径
+                let path_to_leaf = if let Some(ref leaf_id) = current_leaf {
+                    ion::session_tree::get_branch_path(&entries, leaf_id)
+                        .iter()
+                        .filter_map(|e| e.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![]
+                };
+
+                let branches = ion::session_tree::named_branches(&entries);
+                output_response(&id, "get_tree_with_leaf", &serde_json::json!({
+                    "tree": tree_nodes,
+                    "currentLeaf": current_leaf,
+                    "pathToLeaf": path_to_leaf,
+                    "branches": branches.iter().map(|(name, target)| {
+                        serde_json::json!({"name": name, "target": target})
+                    }).collect::<Vec<_>>(),
+                }));
+            }
             "get_file_diff" => output_response(&id, "get_file_diff", &serde_json::json!([])),
             "get_batch_diffs" => output_response(&id, "get_batch_diffs", &serde_json::json!([])),
             "get_file_history" => output_response(&id, "get_file_history", &serde_json::json!([])),
