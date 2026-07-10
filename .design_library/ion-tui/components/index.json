@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 2,
+  "libraryName": "ion-tui",
+  "sourceKind": "structured-spec",
+  "components": [
+    { "slug": "status-badge", "name": "Status Badge", "category": "indicator" },
+    { "slug": "panel", "name": "TUI Panel", "category": "container" },
+    { "slug": "log-stream", "name": "Log Stream", "category": "data-display" },
+    { "slug": "worker-card", "name": "Worker Card", "category": "card" },
+    { "slug": "key-hint", "name": "Key Hint", "category": "inline" },
+    { "slug": "input-prompt", "name": "Input Prompt", "category": "input" }
+  ]
+}

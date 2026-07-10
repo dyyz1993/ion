@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Key Hint · ion-tui</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  body { margin: 0; padding: 12px; background: var(--color-bg-primary); font-family: var(--font-mono); color: var(--color-text-primary); font-size: var(--text-base); }
+  .row { display: flex; gap: var(--space-3); align-items: center; margin-bottom: var(--space-2); flex-wrap: wrap; }
+  .label { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.05em; width: 92px; flex-shrink: 0; }
+  hr.divider { border: none; border-top: 1px solid var(--color-divider); margin: var(--space-4) 0; }
+
+  /* @component-css-start */
+  /* Component definitions — extracted to components.css by deterministic script */
+  .kh { display: inline-flex; align-items: center; font-family: var(--font-mono); font-size: var(--text-xs); white-space: nowrap; }
+  .kh-primary { color: var(--color-text-secondary); }
+  .kh-optional { color: var(--color-text-muted); }
+  .kh .bracket { color: var(--color-text-muted); }
+  .kh-optional .bracket { color: var(--color-text-muted); }
+
+  .header-bar { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-3); height: var(--header-height); background: var(--color-bg-secondary); border-bottom: 1px solid var(--color-border); padding: 0 var(--space-4); margin-bottom: var(--space-4); font-family: var(--font-mono); font-size: var(--text-xs); }
+  .header-timestamp { color: var(--color-text-secondary); font-family: var(--font-mono); font-size: var(--text-xs); margin-left: var(--space-3); }
+
+  .panel-row { display: flex; align-items: center; gap: var(--space-3); font-family: var(--font-mono); font-size: var(--text-xs); padding: var(--space-1) 0; }
+  .panel-label { color: var(--color-text-primary); font-weight: 600; min-width: 80px; }
+  .panel-count { color: var(--color-warning); }
+
+  .legend { display: flex; gap: var(--space-6); margin-top: var(--space-4); padding-top: var(--space-3); border-top: 1px dashed var(--color-divider); font-family: var(--font-mono); font-size: var(--text-xs); flex-wrap: wrap; }
+  .legend-item { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--color-text-muted); }
+  /* @component-css-end */
+</style>
+</head>
+<body>
+
+<div class="row">
+  <span class="label">Header Bar</span>
+  <div class="header-bar" style="flex: 1; min-width: 0;">
+    <span class="kh kh-primary"><span class="bracket">[</span>Esc<span class="bracket">]</span>返回</span>
+    <span class="kh kh-primary"><span class="bracket">[</span>Enter<span class="bracket">]</span>输入</span>
+    <span class="kh kh-optional"><span class="bracket">[</span>Space<span class="bracket">]</span>新建</span>
+    <span class="kh kh-optional"><span class="bracket">[</span>N<span class="bracket">]</span>新建会话</span>
+    <span class="kh kh-primary"><span class="bracket">[</span>Ctrl+P<span class="bracket">]</span>命令面板</span>
+    <span class="header-timestamp">20:46:25</span>
+  </div>
+</div>
+
+<hr class="divider">
+
+<div class="row">
+  <span class="label">Panel Actions</span>
+  <div style="flex: 1; min-width: 0;">
+    <div class="panel-row">
+      <span class="panel-label">PROJECTS</span>
+      <span class="kh kh-primary"><span class="bracket">[</span>P<span class="bracket">]</span>新建</span>
+    </div>
+    <div class="panel-row">
+      <span class="panel-label">SESSIONS</span>
+      <span class="kh kh-primary"><span class="bracket">[</span>N<span class="bracket">]</span>新建</span>
+    </div>
+    <div class="panel-row">
+      <span class="panel-label">NOTIFY</span>
+      <span class="panel-count">3</span>
+    </div>
+  </div>
+</div>
+
+<div class="legend">
+  <span class="legend-item"><span class="kh kh-primary"><span class="bracket">[</span>Esc<span class="bracket">]</span>返回</span> — 主要提示（var(--color-text-secondary)）</span>
+  <span class="legend-item"><span class="kh kh-optional"><span class="bracket">[</span>N<span class="bracket">]</span>新建</span> — 次要提示（var(--color-text-muted)，额外淡化）</span>
+</div>
+
+</body>
+</html>

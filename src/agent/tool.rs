@@ -417,16 +417,60 @@ impl Tool for BranchSessionTool {
 
 pub struct ReadTool;
 
+/// 对文件内容按行切片并加上 `cat -n` 风格行号。
+///
+/// - `offset`: 1-based 起始行号，默认 1
+/// - `limit`:  返回行数，默认全部
+///
+/// 行号右对齐，宽度按文件总行数计算，后接 `\t`：
+/// ```text
+///    101\tfn process(data: &[u8]) {
+///    102\t    let decoded = decode(data)?;
+/// ```
+fn format_lines(content: &str, offset: usize, limit: Option<usize>) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let total = lines.len();
+    if total == 0 {
+        return "(empty file)".into();
+    }
+    if offset > total {
+        return format!("(file has {total} lines, offset {offset} is out of range)");
+    }
+
+    let start = offset.saturating_sub(1); // 0-based
+    let end = match limit {
+        Some(l) => (start + l).min(total),
+        None => total,
+    };
+    let selected = &lines[start..end];
+    let width = total.to_string().len();
+
+    let mut result = String::with_capacity(selected.len() * 80);
+    for (i, line) in selected.iter().enumerate() {
+        let line_num = start + i + 1; // 1-based
+        result.push_str(&format!("{:>width$}\t{line}\n", line_num, width = width));
+    }
+
+    // 切片时追加范围提示
+    if start > 0 || end < total {
+        result.push_str(&format!("(showing lines {}-{} of {})\n", start + 1, end, total));
+    }
+    result
+}
+
 #[async_trait]
 impl Tool for ReadTool {
     fn name(&self) -> &str { "read" }
-    fn description(&self) -> &str { "Read the contents of a file at the given path." }
+    fn description(&self) -> &str { "Read the contents of a file. Supports offset (1-based start line) and limit (number of lines) to read a specific range. Output includes line numbers." }
     fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{"file_path":{"type":"string","description":"Path to the file to read"}},"required":["file_path"]})
+        serde_json::json!({"type":"object","properties":{"file_path":{"type":"string","description":"Path to the file to read"},"offset":{"type":"integer","description":"1-based line number to start reading from (default: 1)"},"limit":{"type":"integer","description":"Maximum number of lines to read (default: all)"}},"required":["file_path"]})
     }
     async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
         let path = args.get("file_path").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing file_path".into()))?;
-        rt.read_file(path).await.map_err(|e| AgentError::Tool(format!("read failed: {e}")))
+        let content = rt.read_file(path).await.map_err(|e| AgentError::Tool(format!("read failed: {e}")))?;
+        let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+        let limit = args.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
+        Ok(format_lines(&content, offset, limit))
     }
 }
 
@@ -646,6 +690,101 @@ mod tests {
 
         let defs = reg.tool_defs();
         assert_eq!(defs.len(), 2);
+    }
+
+    // ── format_lines / ReadTool offset+limit ──────────────────────────
+
+    #[test]
+    fn format_lines_full() {
+        let content = "alpha\nbeta\ngamma\n";
+        let out = format_lines(content, 1, None);
+        // 应包含 3 行，行号右对齐宽度 1
+        assert!(out.contains("1\talpha"), "got: {out}");
+        assert!(out.contains("2\tbeta"));
+        assert!(out.contains("3\tgamma"));
+        // 全文读不需要范围提示
+        assert!(!out.contains("showing lines"));
+    }
+
+    #[test]
+    fn format_lines_offset_limit() {
+        let content: String = (1..=20).map(|i| format!("line{i}\n")).collect();
+        let out = format_lines(&content, 10, Some(5));
+        // 行 10~14
+        assert!(out.contains("10\tline10"), "got: {out}");
+        assert!(out.contains("14\tline14"));
+        assert!(!out.contains("line9"));
+        assert!(!out.contains("line15"));
+        // 应有范围提示
+        assert!(out.contains("showing lines 10-14 of 20"));
+    }
+
+    #[test]
+    fn format_lines_offset_out_of_range() {
+        let content = "only\none\nline\n";
+        let out = format_lines(content, 50, None);
+        assert!(out.contains("out of range"), "got: {out}");
+    }
+
+    #[test]
+    fn format_lines_limit_exceeds_end() {
+        let content = "a\nb\nc\n";
+        let out = format_lines(content, 2, Some(100));
+        // 行 2~3
+        assert!(out.contains("2\tb"), "got: {out}");
+        assert!(out.contains("3\tc"));
+        assert!(!out.contains("1\ta"));
+    }
+
+    #[test]
+    fn format_lines_empty_file() {
+        let out = format_lines("", 1, None);
+        assert_eq!(out, "(empty file)");
+    }
+
+    #[tokio::test]
+    async fn read_tool_offset_limit_via_file() {
+        use std::io::Write;
+        let dir = std::env::temp_dir();
+        let path = dir.join("ion_read_test_offset.txt");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            for i in 1..=30 {
+                writeln!(f, "row{i}").unwrap();
+            }
+        }
+        let tool = ReadTool;
+        let args = serde_json::json!({"file_path": path.to_str().unwrap(), "offset": 10, "limit": 5});
+        let rt = crate::runtime::LocalRuntime::new();
+        let result = tool.execute(args, &rt).await.unwrap();
+        assert!(result.contains("10\trow10"), "got: {result}");
+        assert!(result.contains("14\trow14"));
+        assert!(!result.contains("row9"));
+        assert!(!result.contains("row15"));
+        assert!(result.contains("showing lines 10-14 of 30"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn read_tool_full_file_compatible() {
+        use std::io::Write;
+        let dir = std::env::temp_dir();
+        let path = dir.join("ion_read_test_full.txt");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            writeln!(f, "hello").unwrap();
+            writeln!(f, "world").unwrap();
+        }
+        let tool = ReadTool;
+        let args = serde_json::json!({"file_path": path.to_str().unwrap()});
+        let rt = crate::runtime::LocalRuntime::new();
+        let result = tool.execute(args, &rt).await.unwrap();
+        // 不传 offset/limit，仍返回全文且带行号
+        assert!(result.contains("1\thello"), "got: {result}");
+        assert!(result.contains("2\tworld"));
+        // 全文读不附加范围提示
+        assert!(!result.contains("showing lines"));
+        let _ = std::fs::remove_file(&path);
     }
 }
 

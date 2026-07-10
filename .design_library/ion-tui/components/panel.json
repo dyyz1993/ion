@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 2,
+  "sourceKind": "structured-spec",
+  "slug": "panel",
+  "name": "TUI Panel",
+  "category": "container",
+  "confidence": "high",
+  "description": "The fundamental structural unit of the ION TUI dashboard. A square-cornered rectangular region with a 1px solid border, a compact uppercase header strip, and a body content area. Panels stack vertically in sidebars and form the three-column grid skeleton. No drop shadows on static panels — depth is conveyed by border + background elevation only.",
+  "semanticTypeCandidates": ["card", "panel", "surface", "section"],
+  "variantDimensions": [
+    { "axis": "elevation", "values": ["secondary", "elevated", "surface"] },
+    { "axis": "headerStyle", "values": ["plain", "with-count", "with-action"] },
+    { "axis": "state", "values": ["default", "active"] }
+  ],
+  "representativeVariants": [
+    { "elevation": "secondary", "headerStyle": "plain", "title": "WORKERS" },
+    { "elevation": "secondary", "headerStyle": "with-action", "title": "PROJECTS", "action": "[P]新建" },
+    { "elevation": "elevated", "headerStyle": "with-count", "title": "NOTIFY", "count": "3" },
+    { "elevation": "surface", "headerStyle": "plain", "title": "LOGS", "state": "active" }
+  ],
+  "anatomy": [
+    { "part": "container", "description": "1px solid var(--color-border) rectangle, no border-radius (sharp corners). Background var(--color-bg-secondary) default" },
+    { "part": "header", "description": "Top strip: uppercase label, var(--text-xs), color var(--color-text-muted), letter-spacing 0.08em, padding var(--space-1) var(--space-3). Optional right-aligned count or action hint" },
+    { "part": "body", "description": "Content area below header, padding var(--space-2), scrollable when content overflows" },
+    { "part": "active-glow", "description": "When state=active, box-shadow var(--shadow-glow) + border-color var(--color-border-accent)" }
+  ],
+  "structurePatterns": [
+    "display: flex; flex-direction: column",
+    "border: 1px solid var(--color-border)",
+    "border-radius: 0 (sharp corners are mandatory for TUI aesthetic)",
+    "Header: justify-content: space-between, text-transform: uppercase",
+    "Body: flex: 1, overflow-y: auto"
+  ],
+  "usageHints": [
+    "Primary building block for sidebar sections, right-panel widgets, and main content regions",
+    "Nest panels vertically with a 1px var(--color-divider) separator, not a gap",
+    "Active/focused panel uses border-accent + glow shadow; all others stay flat"
+  ],
+  "doNotInvent": [
+    "Never add border-radius — this breaks the terminal aesthetic",
+    "Never use drop shadows on static panels; glow shadow is reserved for active/focused state only",
+    "Do not add gradient backgrounds; flat solid colors only"
+  ],
+  "unknowns": [],
+  "cssVariables": [
+    "--color-border", "--color-border-accent", "--color-divider",
+    "--color-bg-secondary", "--color-bg-elevated", "--color-bg-surface",
+    "--color-text-muted", "--color-text-secondary",
+    "--shadow-glow", "--font-mono", "--text-xs", "--space-1", "--space-2", "--space-3"
+  ]
+}

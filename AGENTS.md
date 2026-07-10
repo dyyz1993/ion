@@ -175,6 +175,7 @@ docs/
 | [docs/design/MEMORY_AGENT.md](./docs/design/MEMORY_AGENT.md) | Memory V0.2 跨项目记忆 Agent：单例扩展 + SQLite/FTS5 + 引用计数 (Phase 1-8 已实现) |
 | [docs/design/CRASH_RECOVERY.md](./docs/design/CRASH_RECOVERY.md) | Worker 崩溃恢复：stderr 捕获 + exit code + Dead 保留 + 父通知 (已实现) |
 | [docs/design/COMPACTION.md](./docs/design/COMPACTION.md) | Compaction 会话压缩：分批并发 + LLM summarizer + emergency fallback + CLI 测试 (已验证) |
+| [docs/design/CONTEXT_INDEX.md](./docs/design/CONTEXT_INDEX.md) | Context Index — 上下文索引与快照折叠：read 追踪 + 过期快照折叠 + pi 对标 (待定) |
 | [docs/design/PROVIDER_PROTOCOL.md](./docs/design/PROVIDER_PROTOCOL.md) | 多 Provider 协议：4 个 provider + transform_messages + detectCompat + CLI 测试 (已验证) |
 | [docs/design/PERMISSION_SYSTEM.md](./docs/design/PERMISSION_SYSTEM.md) | 权限系统：设计 + CLI 用法 + 测试规格 + CLI 测试指南 (设计稿+已验证) |
 | [docs/design/SESSION_MESSAGE.md](./docs/design/SESSION_MESSAGE.md) | Session 消息系统：Entry 类型、推送通道、消息类型扩展 (设计稿+已验证) |
@@ -639,7 +640,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 **P5 - 包管理（低优先级）:**
 - install/remove/update 子命令
 
-### 测试统计 (2026-07-09)
+### 测试统计 (2026-07-10)
 
 | 套件 | 数量 | 覆盖 |
 |------|------|------|
@@ -655,8 +656,10 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | crash_recovery_ci (CLI E2E) | 6 | stderr/exit_code/Dead/父通知 |
 | global_memory_ci (CLI E2E) | 8 | 单例生命周期/save/search/跨项目/软删除 |
 | session_tree_ci (CLI E2E) | 8 | 树展示/branch/rollback/only-append 审计 |
-| message_retrieval_ci (CLI E2E) | 24 | ion history/分页/视点/turn_summary/compaction 落盘/字段完整性 |
-| **测试覆盖合计** | **331** | 全部通过 ✅ |
+| message_retrieval_ci (CLI E2E) | 55 | Group A-N：ion history/分页/视点/turn_summary/compaction/turn 完整性/中断态/统计聚合/旁路数据/customType 两维属性/性能缓存/O(n)/血缘 |
+| session_tree_verify (CLI E2E) | 13 | 树展示 + branch/rollback 单元测试 + 分支视点(live/full/since_compaction) + only-append 红线 |
+| realtime_stitch_ci (CLI E2E) | 10 | Group I：host + create_session + subscribe + prompt + 事件流(agent_start/text_delta/agent_end) + 历史补齐 |
+| **测试覆盖合计** | **375** | 全部通过 ✅ |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)

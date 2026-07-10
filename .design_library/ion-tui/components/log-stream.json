@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 2,
+  "sourceKind": "structured-spec",
+  "slug": "log-stream",
+  "name": "Log Stream",
+  "category": "data-display",
+  "confidence": "high",
+  "description": "Monospace-aligned vertical stream of timestamped log/event lines, the right-panel LOGS content. Each line: dim timestamp → level-colored prefix (INFO/WARN/ERR/DEBUG) → message text. The most recent line may show a blinking block cursor █ to indicate active streaming. Lines are dense (var(--leading-tight)) with no inter-line gaps.",
+  "semanticTypeCandidates": ["log-viewer", "event-stream", "terminal-output", "list"],
+  "variantDimensions": [
+    { "axis": "level", "values": ["info", "warn", "error", "debug", "success"] },
+    { "axis": "streamState", "values": ["live", "paused", "ended"] }
+  ],
+  "representativeVariants": [
+    { "level": "info", "ts": "20:46:25", "prefix": "INFO", "msg": "Worker-01 prompt → deepseek-v4" },
+    { "level": "warn", "ts": "20:46:24", "prefix": "WARN", "msg": "Worker-06 连接超时，自动重启" },
+    { "level": "error", "ts": "20:46:20", "prefix": "ERR ", "msg": "edit(src/config.rs) timeout" },
+    { "level": "debug", "ts": "20:46:18", "prefix": "DBG ", "msg": "memory_search → 3 matches" },
+    { "level": "success", "ts": "20:46:15", "prefix": " OK ", "msg": "Worker-02 agent_end (2.3s)" }
+  ],
+  "anatomy": [
+    { "part": "timestamp", "description": "Leading HH:MM:SS, var(--text-xs), color var(--color-text-muted), fixed-width" },
+    { "part": "level-prefix", "description": "4-char padded prefix aligned in a fixed column. Color: info→var(--color-info), warn→var(--color-warning), error→var(--color-error), debug→var(--color-text-muted), success→var(--color-success)" },
+    { "part": "message", "description": "Rest of line, color var(--color-text-primary), wraps with hanging indent" },
+    { "part": "stream-cursor", "description": "Blinking █ at the end of the latest line when streamState=live. Color var(--color-accent-bright)" }
+  ],
+  "structurePatterns": [
+    "display: flex; flex-direction: column; gap: 0 (no inter-line gap)",
+    "font-family: var(--font-mono); font-size: var(--text-xs); line-height: var(--leading-tight)",
+    "Each line: display: grid; grid-template-columns: auto auto 1fr; align-items: baseline",
+    "Timestamp + prefix use white-space: pre to preserve alignment"
+  ],
+  "usageHints": [
+    "Auto-scroll to bottom when new entries arrive (streamState=live)",
+    "Pause on user scroll-up; show a '↓ resume' hint at the bottom edge",
+    "Cap visible history to ~500 lines for performance; older entries evicted from top"
+  ],
+  "doNotInvent": [
+    "Do not add zebra striping — terminal logs are uniformly dense",
+    "Do not add hover background to individual lines unless a click-to-inspect action exists"
+  ],
+  "unknowns": [],
+  "cssVariables": [
+    "--color-text-muted", "--color-text-primary", "--color-text-secondary",
+    "--color-info", "--color-warning", "--color-error", "--color-success",
+    "--color-accent-bright", "--font-mono", "--text-xs", "--leading-tight"
+  ]
+}

@@ -1,6 +1,6 @@
 # Compaction 会话压缩系统
 
-> **状态：已验证** — 分批并发压缩 + LLM summarizer + emergency fallback 全部实现并通过测试。
+> **状态：已验证** — 分批并发压缩 + LLM summarizer + emergency fallback + 溢出恢复全部实现并通过测试。
 
 ---
 
@@ -16,6 +16,7 @@ ION 的 Compaction 系统在对话超过阈值时自动压缩历史，对齐 pi 
 | Emergency truncate（LLM 不可用时兜底） | `emergency_truncate` | ✅ |
 | 分批并发压缩 | `compact_batched` | ✅ |
 | 动态快/慢路径决策 | `compact_batched` | ✅ |
+| **溢出恢复（LLM 返回上下文溢出错误时自动 compaction 重试）** | `StopReason::Error` 分支 | ✅ |
 
 ### 实现状态核查清单
 
@@ -644,3 +645,73 @@ loop {
 | 同上 | 703+ | send_async（阻塞） |
 | 同上 | 322-389 | reader task 转发 |
 | [runtime.rs](file:///Users/xuyingzhou/Project/study-rust/ion/src/runtime.rs) | 43, 278, 465, 800 | 语法修复 4 处 |
+
+---
+
+## 12. 溢出恢复（Overflow Recovery）
+
+> 对齐 pi 的 `isContextOverflow` + `_checkCompaction` + `_runAutoCompaction("overflow")`。
+
+### 12.1 触发场景
+
+当 LLM 返回"上下文溢出"错误时（如 Anthropic 的 `"prompt is too long"`、OpenAI 的 `"maximum context length exceeded"`），ION 自动触发 compaction 并重试。
+
+**两种溢出错误路径**：
+- **HTTP 错误**（400/413）：provider 返回 `Err(ProviderError::HttpError { status, body })` → `stream_with_retry` 的 `Err` 分支
+- **流内错误**：provider 返回 `StreamEvent::Error { message: { error_message: "..." } }` → `stream_with_retry` 的 `Ok` 路径
+
+两者最终都汇聚到 `inner_loop` 的 `StopReason::Error` 分支。
+
+### 12.2 溢出检测
+
+**文件**：[ion-provider/src/error.rs](file:///Users/xuyingzhou/Project/study-rust/ion-provider/src/error.rs)
+
+```rust
+pub fn is_overflow_message(msg: &str) -> bool { /* 14 条正则 + 3 条排除 */ }
+
+impl ProviderError {
+    pub fn is_context_overflow(&self) -> bool { /* 匹配 Provider/Stream/HttpError */ }
+}
+```
+
+移植 pi 的 `OVERFLOW_PATTERNS`（14 条覆盖 Anthropic / OpenAI / Google / xAI / Groq / Mistral / Ollama 等）+ `NON_OVERFLOW_PATTERNS`（3 条排除限流/服务不可用）。
+
+### 12.3 恢复流程
+
+**文件**：[src/agent/agent_loop.rs](file:///Users/xuyingzhou/Project/study-rust/ion/src/agent/agent_loop.rs)
+
+```
+StopReason::Error
+  │
+  ├── 提取 error_message
+  ├── is_overflow? && attempts < MAX_OVERFLOW_ROUNDS(5)?
+  │     ├── YES → overflow_recovery_attempts++
+  │     │        pop 尾部 error assistant 消息
+  │     │        maybe_compact()（复用现有 compaction）
+  │     │        continue（重试当前 turn）
+  │     └── NO  → return StopReason::Error（放弃）
+```
+
+### 12.4 关键设计决策
+
+| 决策 | 选择 | 理由 |
+|------|------|------|
+| 溢出错误是否重试？ | ❌ 不重试（`retry.rs` 返回 `AbortPermanent`） | 重试不会让上下文变小 |
+| 最多恢复几次？ | 5 次（`MAX_OVERFLOW_ROUNDS`） | 对齐 pi |
+| compaction 用哪种？ | LLM summarizer（有 emergency fallback） | 复用 `maybe_compact` |
+| 恢复后重试用什么上下文？ | compaction 后的精简上下文 | compaction 已缩小历史 |
+| 尾部 error 消息怎么处理？ | pop 掉 | 不让错误消息污染重试上下文 |
+| 成功后重置计数器？ | ✅ 每次 Stop/Length 成功后 reset | 对齐 pi |
+
+### 12.5 测试
+
+```bash
+# 单元测试：溢出检测
+cd ../ion-provider && cargo test --lib error::tests
+
+# 单元测试：retry 拦截
+cargo test --lib should_retry_aborts_on_context_overflow
+
+# E2E：FauxProvider 注入溢出错误
+bash tests/overflow_recovery_ci.sh
+```

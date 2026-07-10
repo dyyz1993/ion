@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ION TUI — Input Prompt</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  /* Page scaffold — NOT extracted */
+  body { margin: 0; padding: 12px; background: var(--color-bg-primary); font-family: var(--font-mono); color: var(--color-text-primary); }
+  .specimen { display: flex; flex-direction: column; gap: 12px; max-width: 640px; }
+  .stage { display: flex; flex-direction: column; gap: 8px; }
+  .story { display: flex; flex-direction: column; gap: 6px; }
+  .story-label { font-family: var(--font-mono); font-size: var(--text-xs); font-weight: 400; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.05em; line-height: var(--leading-tight); }
+
+  /* @component-css-start */
+  /* Component definitions — Input Prompt */
+  .ion-input-panel { border: 1px solid var(--color-border); background: var(--color-bg-primary); padding: var(--space-3); display: flex; flex-direction: column; gap: 0; }
+  .ion-input-panel .conv { padding: var(--space-2) var(--space-3); display: flex; flex-direction: column; gap: 2px; }
+  .ion-input-panel .conv-line { font-family: var(--font-mono); font-size: var(--text-sm); color: var(--color-text-primary); line-height: var(--leading-normal); }
+  .ion-input-panel .conv-status { color: var(--color-success); }
+  .ion-input-panel .conv-status.busy { color: var(--color-warning); }
+
+  .ion-input-prompt { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-top: 1px solid var(--color-divider); font-family: var(--font-mono); font-size: var(--text-base); background: transparent; border-left: none; border-right: none; border-bottom: none; }
+  .ion-input-prompt .placeholder { color: var(--color-text-muted); }
+  .ion-input-prompt .typed { color: var(--color-text-primary); }
+  .ion-input-prompt .prefix { color: var(--color-accent); }
+  .ion-input-prompt .cursor { color: var(--color-accent-bright); animation: blink 1s steps(1) infinite; }
+  .ion-input-prompt.focused .placeholder { color: var(--color-text-secondary); }
+  .ion-input-prompt.focused .cursor { animation: blink 0.5s steps(1) infinite; }
+  .ion-input-prompt.disabled { position: relative; }
+  .ion-input-prompt.disabled::after { content: ""; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.2); pointer-events: none; }
+  .ion-input-prompt.disabled .cursor { display: none; }
+
+  @keyframes blink { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+  /* @component-css-end */
+</style>
+</head>
+<body>
+<div class="specimen">
+  <div class="stage">
+    <div class="story">
+      <span class="story-label">IDLE</span>
+      <div class="ion-input-panel" data-evidence-sample="idle">
+        <div class="conv">
+          <span class="conv-line">正在分析 Worker 状态...</span>
+          <span class="conv-line conv-status busy">● Worker-01: Busy</span>
+        </div>
+        <div class="ion-input-prompt">
+          <span class="placeholder">向 ION 提问...</span><span class="cursor">█</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="story">
+      <span class="story-label">FOCUSED</span>
+      <div class="ion-input-panel" data-evidence-sample="focused">
+        <div class="conv">
+          <span class="conv-line">已读取 Cargo.toml</span>
+          <span class="conv-line conv-status">● Worker-02: Idle</span>
+        </div>
+        <div class="ion-input-prompt focused">
+          <span class="typed">分析 W</span><span class="cursor">█</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="story">
+      <span class="story-label">DISABLED</span>
+      <div class="ion-input-panel" data-evidence-sample="disabled">
+        <div class="conv">
+          <span class="conv-line">Worker 执行中，输入已锁定</span>
+          <span class="conv-line conv-status busy">● Worker-01: Busy</span>
+        </div>
+        <div class="ion-input-prompt disabled">
+          <span class="placeholder">Worker 处理中，请等待...</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="story">
+      <span class="story-label">COMMAND</span>
+      <div class="ion-input-panel" data-evidence-sample="command">
+        <div class="conv">
+          <span class="conv-line">切换至命令模式</span>
+          <span class="conv-line conv-status">● Worker-01: Idle</span>
+        </div>
+        <div class="ion-input-prompt focused">
+          <span class="prefix">/</span><span class="placeholder">/help · 输入命令</span><span class="cursor">█</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

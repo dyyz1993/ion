@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ion-tui · Status Badge</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  /* Page scaffold — NOT extracted */
+  body { margin: 0; padding: 12px; background: var(--color-bg-primary); font-family: var(--font-mono); color: var(--color-text-primary); }
+  .row { display: flex; gap: var(--space-3); align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+  .label { display: inline-block; width: 92px; flex-shrink: 0; font-family: var(--font-mono); font-size: var(--text-xs); font-weight: 600; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  hr.divider { border: none; border-top: 1px solid var(--color-divider); margin: 8px 0; }
+
+  /* @component-css-start */
+  /* Component definitions — extracted to components.css */
+  .badge { display: inline-flex; align-items: center; gap: var(--space-1); font-family: var(--font-mono); font-size: var(--text-xs); font-weight: 600; line-height: var(--leading-tight); white-space: nowrap; border-radius: 0; flex-shrink: 0; }
+  .badge .dot { font-size: var(--text-xs); line-height: 1; }
+  .badge .txt { text-transform: uppercase; letter-spacing: 0.05em; }
+
+  .badge--busy .dot { color: var(--color-success); }
+  .badge--busy .txt { color: var(--color-success); }
+
+  .badge--idle .dot { color: var(--color-text-secondary); }
+  .badge--idle .txt { color: var(--color-text-secondary); }
+
+  .badge--error .dot { color: var(--color-error); }
+  .badge--error .txt { color: var(--color-error); }
+
+  .badge--warning .dot { color: var(--color-warning); }
+  .badge--warning .txt { color: var(--color-warning); }
+
+  .badge--info .dot { color: var(--color-info); }
+  .badge--info .txt { color: var(--color-info); }
+
+  .badge--solid { padding: var(--space-1) var(--space-2); border-left: 2px solid; }
+  .badge--solid .txt { color: var(--color-text-primary); }
+  .badge--solid.badge--busy { border-left-color: var(--color-success); background: rgba(63, 185, 80, 0.08); }
+  .badge--solid.badge--idle { border-left-color: var(--color-text-secondary); background: rgba(139, 148, 158, 0.08); }
+  .badge--solid.badge--error { border-left-color: var(--color-error); background: rgba(248, 81, 73, 0.08); }
+  .badge--solid.badge--warning { border-left-color: var(--color-warning); background: rgba(240, 136, 62, 0.08); }
+  .badge--solid.badge--info { border-left-color: var(--color-info); background: rgba(88, 166, 255, 0.08); }
+  /* @component-css-end */
+</style>
+</head>
+<body>
+  <div class="row">
+    <span class="label">default</span>
+    <span class="badge badge--busy" data-evidence-sample="busy"><span class="dot">●</span><span class="txt">Busy</span></span>
+    <span class="badge badge--idle" data-evidence-sample="idle"><span class="dot">●</span><span class="txt">Idle</span></span>
+    <span class="badge badge--error" data-evidence-sample="error"><span class="dot">●</span><span class="txt">Error</span></span>
+    <span class="badge badge--warning" data-evidence-sample="warning"><span class="dot">●</span><span class="txt">Warn</span></span>
+    <span class="badge badge--info" data-evidence-sample="info"><span class="dot">●</span><span class="txt">Info</span></span>
+  </div>
+  <hr class="divider">
+  <div class="row">
+    <span class="label">solid</span>
+    <span class="badge badge--solid badge--busy" data-evidence-sample="busy"><span class="dot">●</span><span class="txt">Busy</span></span>
+    <span class="badge badge--solid badge--idle" data-evidence-sample="idle"><span class="dot">●</span><span class="txt">Idle</span></span>
+    <span class="badge badge--solid badge--error" data-evidence-sample="error"><span class="dot">●</span><span class="txt">Error</span></span>
+    <span class="badge badge--solid badge--warning" data-evidence-sample="warning"><span class="dot">●</span><span class="txt">Warn</span></span>
+    <span class="badge badge--solid badge--info" data-evidence-sample="info"><span class="dot">●</span><span class="txt">Info</span></span>
+  </div>
+</body>
+</html>

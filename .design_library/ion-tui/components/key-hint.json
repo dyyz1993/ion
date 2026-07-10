@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 2,
+  "sourceKind": "structured-spec",
+  "slug": "key-hint",
+  "name": "Key Hint",
+  "category": "inline",
+  "confidence": "high",
+  "description": "Inline keyboard shortcut indicator shown in the header bar and panel action slots. Renders a key name inside square brackets in a dim monospace style. Optional hints fade further (var(--color-text-muted)) when not universally relevant. Conveys the keyboard-driven ethos of the TUI without clutter.",
+  "semanticTypeCandidates": ["kbd", "shortcut", "keycap"],
+  "variantDimensions": [
+    { "axis": "prominence", "values": ["primary", "optional"] },
+    { "axis": "format", "values": ["bracketed", "plus-chain"] }
+  ],
+  "representativeVariants": [
+    { "key": "Esc", "label": "返回", "prominence": "primary" },
+    { "key": "Enter", "label": "输入", "prominence": "primary" },
+    { "key": "Space", "label": "新建", "prominence": "optional" },
+    { "key": "N", "label": "新建会话", "prominence": "optional" },
+    { "key": "Ctrl+P", "label": "命令面板", "format": "plus-chain", "prominence": "primary" }
+  ],
+  "anatomy": [
+    { "part": "bracket", "description": "Square brackets [ ] wrapping the key name. Color var(--color-text-muted)" },
+    { "part": "key-name", "description": "The key itself, var(--text-xs), color var(--color-text-secondary) for primary / var(--color-text-muted) for optional" },
+    { "part": "label", "description": "Optional trailing action word in the user's language, same color as key-name, no brackets" }
+  ],
+  "structurePatterns": [
+    "display: inline-flex; align-items: center; gap: var(--space-1)",
+    "font-family: var(--font-mono); font-size: var(--text-xs)",
+    "white-space: nowrap",
+    "Bracket + key rendered as literal text '[Esc]', not separate DOM elements (simpler, preserves TUI feel)"
+  ],
+  "usageHints": [
+    "Cluster hints right-aligned in the header bar, separated by var(--space-3)",
+    "Optional hints can be hidden behind a toggle on narrow viewports",
+    "Plus-chain format (Ctrl+P) uses literal + inside the brackets"
+  ],
+  "doNotInvent": [
+    "Do not add keycap-shaped backgrounds or borders — this is not a GUI keycap component",
+    "Do not color the key with the accent color; it must stay muted to avoid visual noise"
+  ],
+  "unknowns": [],
+  "cssVariables": [
+    "--color-text-secondary", "--color-text-muted", "--font-mono", "--text-xs", "--space-1", "--space-3"
+  ]
+}

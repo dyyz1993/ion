@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ION TUI · 主控台</title>
+<link rel="stylesheet" href="../../colors_and_type.css">
+<link rel="stylesheet" href="../../components.css">
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  /* ── Page-level layout only (tokens + components.css carry styling) ── */
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--color-bg-deep);
+    color: var(--color-text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--text-base);
+    line-height: var(--leading-normal);
+    min-height: 100vh;
+    border-radius: 0;
+  }
+  /* app shell — validator requires max-width:1184px guard */
+  .uikit-shell {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 100%;
+    margin: 0 auto;
+    min-height: 100vh;
+    overflow: hidden;
+  }
+  [data-component] { min-width: 0; max-width: 100%; overflow: hidden; }
+  .uikit-truncate { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .uikit-nowrap { white-space: nowrap; flex-shrink: 0; }
+  /* ── Layout overflow guards (validator-required) ── */
+  .uikit-main { min-width: 0; }
+  .uikit-toolbar { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+  .uikit-responsive-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2); }
+  .uikit-table-wrap { max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
+  .uikit-action-cell { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 160px; overflow: hidden; }
+  .uikit-action { min-width: 0; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  @media (max-width: 900px) {
+    .uikit-responsive-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .ws-sidebar { display: none; }
+  }
+  @media (max-width: 640px) {
+    .uikit-responsive-grid { grid-template-columns: minmax(0, 1fr); }
+    .uikit-toolbar { flex-direction: column; align-items: stretch; }
+  }
+
+  /* ── App header bar ── */
+  .app-header {
+    display: flex; align-items: center; gap: var(--space-3);
+    height: var(--header-height);
+    padding: 0 var(--space-3);
+    background: var(--color-bg-secondary);
+    border-bottom: 1px solid var(--color-border);
+    flex-shrink: 0;
+  }
+  .app-logo {
+    font-weight: 700; font-size: var(--text-md);
+    letter-spacing: 0.1em; color: var(--color-accent);
+  }
+  .app-logo .ver { color: var(--color-text-muted); font-weight: 400; font-size: var(--text-xs); margin-left: var(--space-2); }
+  .app-sep { color: var(--color-text-muted); }
+  .app-context { color: var(--color-text-secondary); font-size: var(--text-xs); }
+  .app-context .ctx-accent { color: var(--color-accent); }
+  .app-spacer { flex: 1; }
+  .app-timestamp { color: var(--color-text-secondary); font-size: var(--text-xs); }
+
+  /* ── View tabs ── */
+  .view-tabs {
+    display: flex; align-items: center; gap: 0;
+    background: var(--color-bg-secondary);
+    border-bottom: 1px solid var(--color-border);
+    flex-shrink: 0;
+    padding-left: var(--space-3);
+  }
+  .view-tab {
+    font-family: var(--font-mono); font-size: var(--text-xs);
+    padding: var(--space-2) var(--space-3);
+    background: transparent; border: none; border-bottom: 2px solid transparent;
+    color: var(--color-text-secondary);
+    cursor: pointer; white-space: nowrap;
+    transition: color var(--transition-normal), border-color var(--transition-normal);
+  }
+  .view-tab:hover { color: var(--color-text-primary); background: var(--color-bg-elevated); }
+  .view-tab.active { color: var(--color-accent); border-bottom-color: var(--color-accent); background: var(--color-bg-primary); }
+  .view-tab .ti { color: var(--color-text-muted); margin-right: var(--space-1); }
+
+  /* ── 3-column workspace ── */
+  .workspace {
+    flex: 1; display: grid;
+    grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--right-panel-width);
+    gap: 0; min-height: 0; overflow: hidden;
+  }
+  .ws-col { display: flex; flex-direction: column; gap: 0; min-width: 0; overflow: hidden; background: var(--color-bg-primary); border-right: 1px solid var(--color-border); }
+  .ws-col:last-child { border-right: none; border-left: 1px solid var(--color-border); }
+  .ws-col.col-center { background: var(--color-bg-deep); }
+  .ws-pad { padding: var(--space-2); display: flex; flex-direction: column; gap: var(--space-2); min-height: 0; overflow-y: auto; }
+
+  /* ── Conversation panel (center) ── */
+  .conv-scroll {
+    flex: 1; overflow-y: auto; padding: var(--space-3);
+    display: flex; flex-direction: column; gap: var(--space-2);
+    min-height: 0;
+  }
+  .conv-user, .conv-assistant {
+    font-family: var(--font-mono); font-size: var(--text-sm);
+    line-height: var(--leading-normal);
+    padding: var(--space-2) var(--space-3);
+    border-left: 2px solid var(--color-divider);
+    color: var(--color-text-primary);
+  }
+  .conv-user { border-left-color: var(--color-info); background: rgba(88,166,255,0.04); }
+  .conv-assistant { border-left-color: var(--color-accent); background: rgba(0,212,170,0.04); }
+  .conv-role { font-size: var(--text-xs); color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: var(--space-1); display: block; }
+  .conv-role.accent { color: var(--color-accent); }
+  .conv-tool { color: var(--color-warning); font-size: var(--text-xs); }
+  .conv-stream-cursor {
+    display: inline-block; width: 7px; height: 12px;
+    background: var(--color-accent-bright); vertical-align: text-bottom;
+    margin-left: 2px; animation: blink 0.5s steps(1) infinite;
+  }
+  @keyframes blink { 0%,50%{opacity:1;} 50.01%,100%{opacity:0;} }
+
+  /* ── Kanban grid ── */
+  .kanban-grid {
+    display: grid; grid-template-columns: repeat(3, minmax(0,1fr));
+    gap: var(--space-2); padding: var(--space-3);
+    min-height: 0; overflow-y: auto;
+    align-content: start;
+  }
+  .kanban-msg {
+    padding: var(--space-3); border-top: 1px solid var(--color-border);
+    display: flex; flex-direction: column; gap: var(--space-1);
+    background: var(--color-bg-primary); min-height: 0; flex-shrink: 0;
+    max-height: 180px; overflow-y: auto;
+  }
+
+  /* ── Logs focused view ── */
+  .logs-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: var(--space-3); gap: var(--space-2); }
+  .filter-bar {
+    display: flex; align-items: center; gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    background: var(--color-bg-secondary);
+    border: 1px solid var(--color-border);
+    flex-shrink: 0; overflow-x: auto;
+  }
+  .filter-bar .filter-label { color: var(--color-text-muted); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.08em; white-space: nowrap; }
+  .filter-bar .badge { cursor: pointer; opacity: 0.6; }
+  .filter-bar .badge:hover { opacity: 1; }
+  .filter-bar .badge.active { opacity: 1; }
+  .logs-flex { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+  /* ── Status bar (bottom) ── */
+  .status-bar {
+    display: flex; align-items: center; gap: var(--space-4);
+    height: var(--status-bar-height);
+    padding: 0 var(--space-3);
+    background: var(--color-bg-secondary);
+    border-top: 1px solid var(--color-border);
+    font-size: var(--text-xs); color: var(--color-text-secondary);
+    flex-shrink: 0;
+  }
+  .status-bar .sb-item { display: inline-flex; align-items: center; gap: var(--space-1); white-space: nowrap; }
+  .status-bar .sb-item.acc { color: var(--color-accent); }
+  .status-bar .sb-sep { color: var(--color-text-muted); }
+
+  /* ── Responsive ── */
+  @media (max-width: 1100px) {
+    .workspace { grid-template-columns: var(--sidebar-width) minmax(0,1fr); }
+    .ws-col.col-right { display: none; }
+    .kanban-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  }
+  @media (max-width: 720px) {
+    .workspace { grid-template-columns: minmax(0,1fr); }
+    .ws-col.col-left { display: none; }
+    .kanban-grid { grid-template-columns: minmax(0,1fr); }
+    .view-tab { padding: var(--space-2); }
+    .app-context { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState } = React;
+
+// ── Mock data: ION orchestration story ──
+const projects = [
+  { name: "ion", dot: "ok", tag: "main", tagCls: "acc" },
+  { name: "research-notes", dot: "ok", tag: "v0.3", tagCls: "" },
+  { name: "opentui-desktop", dot: "run", tag: "wip", tagCls: "warn" },
+  { name: "ion-provider", dot: "idle", tag: "idle", tagCls: "" },
+];
+
+const sessions = [
+  { name: "feat/team-orch", time: "12:04", dot: "run" },
+  { name: "fix/compact-bug", time: "11:51", dot: "ok" },
+  { name: "refactor/rpc", time: "11:30", dot: "idle" },
+  { name: "docs/extension", time: "10:18", dot: "ok" },
+];
+
+const notify = [
+  { dot: "run", val: "Worker-03 spawned", tag: "now", tagCls: "warn" },
+  { dot: "ok", val: "Memory saved · outline", tag: "2m", tagCls: "" },
+  { dot: "err", val: "edit('config.rs') timeout", tag: "5m", tagCls: "err" },
+];
+
+const workersRight = [
+  { dot: "run", val: "Worker-01 · build", tag: "BUSY", tagCls: "warn" },
+  { dot: "run", val: "Worker-02 · explore", tag: "BUSY", tagCls: "warn" },
+  { dot: "idle", val: "Worker-03 · plan", tag: "IDLE", tagCls: "" },
+  { dot: "ok", val: "Worker-04 · review", tag: "DONE", tagCls: "acc" },
+];
+
+const todoList = [
+  { dot: "ok", val: "实现 spawn_worker 同步", tag: "done", tagCls: "acc" },
+  { dot: "run", val: "Channel 广播测试", tag: "wip", tagCls: "warn" },
+  { dot: "idle", val: "Worktree 隔离验证", tag: "todo", tagCls: "" },
+  { dot: "idle", val: "Memory 扩展 v0.2", tag: "todo", tagCls: "" },
+];
+
+const logsLive = [
+  { ts: "12:04:33", lvl: "success", msg: "spawn_worker(dev) → ok (pid 8821)" },
+  { ts: "12:04:31", lvl: "info",     msg: "Worker-01: tool=read('Cargo.toml')" },
+  { ts: "12:04:29", lvl: "info",     msg: "agent_start · Worker-01 build" },
+  { ts: "12:04:28", lvl: "warn",     msg: "retry send_to_worker(2) attempt 1/3" },
+  { ts: "12:04:25", lvl: "success",  msg: "channel_send(progress) → 3 subs" },
+  { ts: "12:04:21", lvl: "debug",    msg: "ExtensionApi::emit memory_saved" },
+];
+
+const conversation = [
+  { role: "user", roleLabel: "YOU", text: "启动 team 编排：分析 Cargo.toml 并列出所有 crate 依赖。" },
+  { role: "assistant", roleLabel: "ION · coordinator", accent: true, text: "已 spawn 3 个子 Worker 并行处理。Worker-01 读取 Cargo.toml，Worker-02 索引 ion-provider，Worker-03 审查依赖图。" },
+  { role: "tool", roleLabel: "tool", text: "read('Cargo.toml') → tokio 1.38, serde 1.0, wasmtime 18.0" },
+  { role: "assistant", roleLabel: "ION · streaming", accent: true, text: "核心依赖已识别：tokio（异步运行时）、serde（序列化）、wasmtime（WASM 扩展引擎）。当前正在汇总子 Worker 结果", streaming: true },
+];
+
+const kanbanWorkers = [
+  { type: "build", mainType: true, badge: "busy", badgeText: "● busy", pid: "8821", task: "编译 ion-worker", agent: "Worker-01", elapsed: "3m04s", tool: "cargo build" },
+  { type: "explore", mainType: false, badge: "busy", badgeText: "● busy", pid: "8822", task: "索引 src/agent/", agent: "Worker-02", elapsed: "2m51s", tool: "grep -r spawn" },
+  { type: "plan", mainType: false, badge: "done", badgeText: "● done", pid: "8820", task: "拆分 P0 任务", agent: "Worker-03", elapsed: "1m22s", tool: "memory_save" },
+  { type: "reviewer", mainType: false, badge: "error", badgeText: "● error", pid: "8819", task: "审查 PR #42", agent: "Worker-04", elapsed: "0m48s", tool: "edit timeout" },
+  { type: "build", mainType: false, badge: "busy", badgeText: "● busy", pid: "8823", task: "wasm 扩展编译", agent: "Worker-05", elapsed: "4m17s", tool: "wasmtime run" },
+  { type: "explore", mainType: false, badge: "idle", badgeText: "⚪ idle", pid: "—", task: "等待分配", agent: "Worker-06", elapsed: "—", tool: "—" },
+];
+
+const logLevels = [
+  { cls: "info", dot: "●", label: "INFO", count: 42 },
+  { cls: "warn", dot: "●", label: "WARN", count: 7 },
+  { cls: "error", dot: "●", label: "ERROR", count: 3 },
+  { cls: "debug", dot: "●", label: "DEBUG", count: 18 },
+  { cls: "success", dot: "●", label: "OK", count: 31 },
+];
+
+const fullLogs = [
+  { ts: "12:04:33", lvl: "success", msg: "spawn_worker(dev) → ok (pid 8821)" },
+  { ts: "12:04:31", lvl: "info",     msg: "Worker-01: tool=read('Cargo.toml')" },
+  { ts: "12:04:29", lvl: "info",     msg: "agent_start · Worker-01 build" },
+  { ts: "12:04:28", lvl: "warn",     msg: "retry send_to_worker(2) attempt 1/3" },
+  { ts: "12:04:25", lvl: "success",  msg: "channel_send(progress) → 3 subs" },
+  { ts: "12:04:21", lvl: "debug",    msg: "ExtensionApi::emit memory_saved" },
+  { ts: "12:04:18", lvl: "info",     msg: "memory_search('spawn_worker') → 2 hits" },
+  { ts: "12:04:15", lvl: "error",    msg: "edit('src/config.rs') timeout after 30s" },
+  { ts: "12:04:12", lvl: "info",     msg: "worker_registry: allocated slot[3]" },
+  { ts: "12:04:09", lvl: "success",  msg: "bash('cargo test --lib') → 243 passed" },
+  { ts: "12:04:05", lvl: "debug",    msg: "session_index update · turn=14" },
+  { ts: "12:04:01", lvl: "warn",     msg: "compact_model retry · deepseek-v4" },
+  { ts: "12:03:58", lvl: "info",     msg: "Worker-02: tool=grep('spawn_worker')" },
+  { ts: "12:03:55", lvl: "success",  msg: "permission_engine: allow read Cargo.toml" },
+  { ts: "12:03:51", lvl: "info",     msg: "agent_start · coordinator main" },
+];
+
+// ── Reusable subcomponents (component-class fidelity from components.css) ──
+
+function PanelCol({ title, children, action, count }) {
+  return (
+    <div className="panel elev-secondary" data-component="panel">
+      <div className="panel-header">
+        <span>{title}</span>
+        {action && <span className="panel-action">{action}</span>}
+        {count !== undefined && <span className="panel-count">{count}</span>}
+      </div>
+      <div className="panel-body">{children}</div>
+    </div>
+  );
+}
+
+function PanelRow({ dot, val, tag, tagCls }) {
+  return (
+    <div className="panel-row">
+      {dot && <span className={"dot " + dot}></span>}
+      {val && <span className="panel-val uikit-truncate">{val}</span>}
+      {tag && <span className={"panel-tag " + (tagCls || "")}>{tag}</span>}
+    </div>
+  );
+}
+
+function InputPromptBar({ prefix, typed, placeholder, focused, disabled, mode }) {
+  const cls = "ion-input-prompt" + (focused ? " focused" : "") + (disabled ? " disabled" : "");
+  return (
+    <div className="ion-input-panel" data-component="input-prompt">
+      <div className="ion-input-prompt" className={cls}>
+        <span className="prefix">{prefix}</span>
+        {typed ? <span className="typed">{typed}</span> : <span className="placeholder">{placeholder}</span>}
+        {!disabled && <span className="cursor">█</span>}
+      </div>
+    </div>
+  );
+}
+
+function KeyHints({ hints }) {
+  return (
+    <span data-component="key-hint">
+      {hints.map((h, i) => (
+        <span key={i} className={"kh " + (h.opt ? "kh-optional" : "kh-primary")}>
+          <span className="bracket">[</span>{h.key}<span className="bracket">]</span>{h.label}
+          {i < hints.length - 1 ? "  " : ""}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+// ── SCREEN 1: 主控台 ──
+function ScreenConsole() {
+  return (
+    <div className="workspace">
+      {/* Left sidebar */}
+      <div className="ws-col col-left">
+        <div className="ws-pad">
+          <PanelCol title="Projects" action="▾" count={4}>
+            {projects.map((p,i)=>(<PanelRow key={i} dot={p.dot} val={p.name} tag={p.tag} tagCls={p.tagCls} />))}
+          </PanelCol>
+          <PanelCol title="Sessions" count={4}>
+            {sessions.map((s,i)=>(<PanelRow key={i} dot={s.dot} val={s.name} tag={s.time} />))}
+          </PanelCol>
+          <PanelCol title="Notify" count={3}>
+            {notify.map((n,i)=>(<PanelRow key={i} dot={n.dot} val={n.val} tag={n.tag} tagCls={n.tagCls} />))}
+          </PanelCol>
+        </div>
+      </div>
+
+      {/* Center conversation */}
+      <div className="ws-col col-center">
+        <div className="conv-scroll">
+          {conversation.map((c,i)=>(
+            <div key={i} className={c.role === "tool" ? "conv-user" : (c.role === "user" ? "conv-user" : "conv-assistant")}>
+              <span className={"conv-role" + (c.accent ? " accent" : "")}>{c.roleLabel}</span>
+              <span>{c.text}</span>
+              {c.streaming && <span className="conv-stream-cursor"></span>}
+            </div>
+          ))}
+        </div>
+        <InputPromptBar prefix=">" placeholder="向 ION 提问..." focused={true} />
+      </div>
+
+      {/* Right panel */}
+      <div className="ws-col col-right">
+        <div className="ws-pad">
+          <div className="panel state-active elev-secondary" data-component="panel">
+            <div className="panel-header"><span>Workers</span><span className="panel-action">● live</span><span className="panel-count">2</span></div>
+            <div className="panel-body">
+              {workersRight.map((w,i)=>(<PanelRow key={i} dot={w.dot} val={w.val} tag={w.tag} tagCls={w.tagCls} />))}
+            </div>
+          </div>
+          <PanelCol title="Todo" count={2}>
+            {todoList.map((t,i)=>(<PanelRow key={i} dot={t.dot} val={t.val} tag={t.tag} tagCls={t.tagCls} />))}
+          </PanelCol>
+          <div data-component="log-stream">
+            <div className="log-panel">
+              <div className="log-panel-header">
+                <span className="log-panel-title">LOGS <span className="dim">·</span> live</span>
+                <span className="log-panel-live">streaming</span>
+              </div>
+              <div className="log-stream">
+                {logsLive.map((l,i)=>(
+                  <div key={i} className="log-line">
+                    <span className="log-ts">{l.ts}</span>
+                    <span className={"log-level " + l.lvl}>{l.lvl.toUpperCase()}</span>
+                    <span className="log-msg">{l.msg}</span>
+                  </div>
+                ))}
+                <span className="log-cursor"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── SCREEN 2: Worker 看板 ──
+function ScreenKanban() {
+  const [selected, setSelected] = useState(0);
+  return (
+    <div className="workspace">
+      <div className="ws-col col-left">
+        <div className="ws-pad">
+          <PanelCol title="Projects" count={4}>
+            {projects.map((p,i)=>(<PanelRow key={i} dot={p.dot} val={p.name} tag={p.tag} tagCls={p.tagCls} />))}
+          </PanelCol>
+          <PanelCol title="Filter" action="▾">
+            <div className="panel-row"><span className="dot ok"></span><span className="panel-val">build · 2</span></div>
+            <div className="panel-row"><span className="dot run"></span><span className="panel-val">explore · 2</span></div>
+            <div className="panel-row"><span className="dot idle"></span><span className="panel-val">plan · 1</span></div>
+            <div className="panel-row"><span className="dot err"></span><span className="panel-val">error · 1</span></div>
+          </PanelCol>
+        </div>
+      </div>
+
+      <div className="ws-col col-center">
+        <div className="kanban-grid">
+          {kanbanWorkers.map((w,i)=>(
+            <article
+              key={i}
+              className={"wcard" + (selected === i ? " selected" : "")}
+              data-component="worker-card"
+              data-evidence-sample={w.badge + "-" + (w.mainType ? "main" : "sub")}
+              onClick={()=>setSelected(i)}
+            >
+              <div className="wcard-head">
+                <span className={"wcard-type" + (w.mainType ? " main" : "")}>{w.type}</span>
+                <span className={"wcard-badge " + w.badge}>{w.badgeText}</span>
+              </div>
+              <div className="wcard-meta">
+                <span className="wcard-k">agent</span><span className={"wcard-v" + (w.mainType ? " main" : "")}>{w.agent}</span>
+                <span className="wcard-k">pid</span><span className="wcard-v">{w.pid}</span>
+                <span className="wcard-k">task</span><span className="wcard-v">{w.task}</span>
+                <span className="wcard-k">tool</span><span className="wcard-v">{w.tool}</span>
+                <span className="wcard-k">elapsed</span><span className="wcard-v">{w.elapsed}</span>
+              </div>
+            </article>
+          ))}
+        </div>
+        <div className="kanban-msg" data-component="log-stream">
+          <div className="log-panel">
+            <div className="log-panel-header">
+              <span className="log-panel-title">CHANNEL <span className="dim">·</span> {kanbanWorkers[selected].agent}</span>
+              <span className="log-panel-live">live</span>
+            </div>
+            <div className="log-stream">
+              <div className="log-line"><span className="log-ts">12:04:33</span><span className="log-level info">INFO</span><span className="log-msg">{kanbanWorkers[selected].agent}: tool={kanbanWorkers[selected].tool}</span></div>
+              <div className="log-line"><span className="log-ts">12:04:30</span><span className="log-level success">OK</span><span className="log-msg">channel_send(progress) → coordinator</span></div>
+              <div className="log-line"><span className="log-ts">12:04:28</span><span className="log-level debug">DBG</span><span className="log-msg">await_worker({kanbanWorkers[selected].pid})</span></div>
+              <span className="log-cursor"></span>
+            </div>
+          </div>
+        </div>
+        <InputPromptBar prefix=">" placeholder={"发送消息到 " + kanbanWorkers[selected].agent + "..."} focused={true} />
+      </div>
+
+      <div className="ws-col col-right">
+        <div className="ws-pad">
+          <PanelCol title="Hierarchy" count={3}>
+            <div className="panel-row"><span className="dot ok"></span><span className="panel-val">main · coordinator</span><span className="panel-tag acc">root</span></div>
+            <div className="panel-row"><span className="dot run"></span><span className="panel-val">sub · Worker-01/02/05</span><span className="panel-tag warn">child</span></div>
+            <div className="panel-row"><span className="dot idle"></span><span className="panel-val">peer · Worker-06</span><span className="panel-tag">idle</span></div>
+          </PanelCol>
+          <PanelCol title="Stats">
+            <div className="panel-row"><span className="panel-label">active</span><span className="panel-val">3 / 6</span></div>
+            <div className="panel-row"><span className="panel-label">errors</span><span className="panel-val" style={{color:"var(--color-error)"}}>1</span></div>
+            <div className="panel-row"><span className="panel-label">avg elapsed</span><span className="panel-val">2m04s</span></div>
+          </PanelCol>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── SCREEN 3: 实时日志 ──
+function ScreenLogs() {
+  const [activeFilter, setActiveFilter] = useState(null);
+  const [paused, setPaused] = useState(false);
+  const visible = activeFilter ? fullLogs.filter(l => l.lvl === activeFilter) : fullLogs;
+  return (
+    <div className="workspace">
+      <div className="ws-col col-left">
+        <div className="ws-pad">
+          <PanelCol title="Projects" count={4}>
+            {projects.map((p,i)=>(<PanelRow key={i} dot={p.dot} val={p.name} tag={p.tag} tagCls={p.tagCls} />))}
+          </PanelCol>
+          <PanelCol title="Sources">
+            <div className="panel-row"><span className="dot ok"></span><span className="panel-val">ion-worker</span><span className="panel-tag acc">live</span></div>
+            <div className="panel-row"><span className="dot ok"></span><span className="panel-val">memory-ext</span><span className="panel-tag acc">live</span></div>
+            <div className="panel-row"><span className="dot idle"></span><span className="panel-val">bash-ext</span><span className="panel-tag">idle</span></div>
+          </PanelCol>
+        </div>
+      </div>
+
+      <div className="ws-col col-center">
+        <div className="logs-wrap">
+          <div className="filter-bar">
+            <span className="filter-label">FILTER</span>
+            {logLevels.map((lv,i)=>(
+              <span
+                key={i}
+                className={"badge badge--" + lv.cls + (activeFilter === lv.cls ? " active" : "")}
+                data-component="status-badge"
+                onClick={()=>setActiveFilter(activeFilter === lv.cls ? null : lv.cls)}
+              >
+                <span className="dot">●</span><span className="txt">{lv.label} {lv.count}</span>
+              </span>
+            ))}
+            <span style={{flex:1}}></span>
+            <span className="filter-label" style={{color: paused ? "var(--color-warning)" : "var(--color-success)"}}>
+              {paused ? "⏸ paused" : "▶ streaming"}
+            </span>
+          </div>
+
+          <div className="logs-flex" data-component="log-stream">
+            <div className="log-panel" style={{flex:1, display:"flex", flexDirection:"column"}}>
+              <div className="log-panel-header">
+                <span className="log-panel-title">LOGS <span className="dim">·</span> all sources</span>
+                <span className="log-panel-live">streaming</span>
+              </div>
+              <div className="log-stream" style={{flex:1, overflowY:"auto"}}>
+                {visible.map((l,i)=>(
+                  <div key={i} className="log-line">
+                    <span className="log-ts">{l.ts}</span>
+                    <span className={"log-level " + l.lvl}>{l.lvl === "success" ? "OK" : l.lvl.toUpperCase()}</span>
+                    <span className="log-msg">{l.msg}</span>
+                  </div>
+                ))}
+                {!paused && <span className="log-cursor"></span>}
+              </div>
+              {paused && <div className="log-resume-hint">↓ resume · [Space]</div>}
+            </div>
+          </div>
+
+          <InputPromptBar prefix="/" typed="filter error" focused={true} />
+        </div>
+      </div>
+
+      <div className="ws-col col-right">
+        <div className="ws-pad">
+          <PanelCol title="Workers" count={2}>
+            {workersRight.map((w,i)=>(<PanelRow key={i} dot={w.dot} val={w.val} tag={w.tag} tagCls={w.tagCls} />))}
+          </PanelCol>
+          <PanelCol title="Errors" count={1}>
+            <div className="panel-row"><span className="dot err"></span><span className="panel-val">edit timeout</span><span className="panel-tag err">x1</span></div>
+            <div className="panel-row"><span className="dot ok"></span><span className="panel-val">retry recovered</span><span className="panel-tag acc">ok</span></div>
+          </PanelCol>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── App shell with view navigation ──
+function App() {
+  const [view, setView] = useState("console");
+  return (
+    <div className="uikit-shell" data-layout-guard="uikit-v1">
+      <header className="app-header">
+        <span className="app-logo">ION<span className="ver">v0.4.2</span></span>
+        <span className="app-sep">·</span>
+        <span className="app-context">agent: <span className="ctx-accent">coordinator</span> · model: deepseek-v4-flash · project: ion</span>
+        <span className="app-spacer"></span>
+        <KeyHints hints={[
+          { key: "Esc", label: "退出" },
+          { key: "Tab", label: "切换", opt: true },
+          { key: "Enter", label: "发送" }
+        ]} />
+        <span className="app-sep">·</span>
+        <span className="app-timestamp">12:04:33</span>
+      </header>
+
+      <nav className="view-tabs uikit-toolbar">
+        <button className={"view-tab" + (view === "console" ? " active" : "")} onClick={()=>setView("console")}>
+          <span className="ti">▸</span>主控台
+        </button>
+        <button className={"view-tab" + (view === "kanban" ? " active" : "")} onClick={()=>setView("kanban")}>
+          <span className="ti">▸</span>Worker 看板
+        </button>
+        <button className={"view-tab" + (view === "logs" ? " active" : "")} onClick={()=>setView("logs")}>
+          <span className="ti">▸</span>实时日志
+        </button>
+      </nav>
+
+      <main className="uikit-main">
+        {view === "console" && <ScreenConsole />}
+        {view === "kanban" && <ScreenKanban />}
+        {view === "logs" && <ScreenLogs />}
+      </main>
+
+      <footer className="status-bar">
+        <span className="sb-item acc">● connected</span>
+        <span className="sb-sep">|</span>
+        <span className="sb-item">workers: 4/8</span>
+        <span className="sb-sep">|</span>
+        <span className="sb-item">mem: 128MB</span>
+        <span className="sb-sep">|</span>
+        <span className="sb-item">uptime: 2h14m</span>
+        <span style={{flex:1}}></span>
+        <span className="sb-item">session: a3f9c1</span>
+        <span className="sb-sep">|</span>
+        <KeyHints hints={[{ key: "?", label: "help", opt: true }]} />
+      </footer>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Worker Card · ION TUI</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  body { margin: 0; padding: var(--space-3); background: var(--color-bg-deep); font-family: var(--font-mono); color: var(--color-text-primary); }
+  .stage { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--space-2); }
+
+  /* @component-css-start */
+  .wcard {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-2) var(--space-3) var(--space-2) calc(var(--space-3) + 2px);
+    background: var(--color-bg-secondary);
+    border: 1px solid var(--color-border);
+    border-radius: 0;
+    cursor: grab;
+    transition: background var(--transition-normal), border-color var(--transition-normal);
+  }
+  .wcard::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 2px;
+    background: var(--color-divider);
+  }
+  .wcard:hover { background: var(--color-bg-elevated); }
+  .wcard.selected {
+    border: 1px solid var(--color-border-accent);
+    box-shadow: var(--shadow-glow);
+  }
+  .wcard-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+  .wcard-type {
+    font-family: var(--font-mono);
+    font-size: var(--text-md);
+    font-weight: 700;
+    color: var(--color-text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .wcard-type.main { color: var(--color-accent); }
+  .wcard-badge {
+    flex-shrink: 0;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: 400;
+    line-height: var(--leading-tight);
+    color: var(--color-text-secondary);
+    white-space: nowrap;
+  }
+  .wcard-badge.busy   { color: var(--color-success); }
+  .wcard-badge.error  { color: var(--color-error); }
+  .wcard-badge.done   { color: var(--color-accent); }
+  .wcard-meta {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+    line-height: var(--leading-tight);
+  }
+  .wcard-k { color: var(--color-text-muted); white-space: nowrap; }
+  .wcard-v {
+    color: var(--color-text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .wcard-v.main { color: var(--color-accent); }
+  /* @component-css-end */
+</style>
+</head>
+<body>
+  <div class="stage">
+
+    <article class="wcard" data-evidence-sample="busy-main">
+      <div class="wcard-head">
+        <span class="wcard-type main">build</span>
+        <span class="wcard-badge busy">● busy</span>
+      </div>
+      <div class="wcard-meta">
+        <span class="wcard-k">uptime</span><span class="wcard-v">9m</span>
+        <span class="wcard-k">worktree</span><span class="wcard-v">ion/src/agent</span>
+        <span class="wcard-k">project</span><span class="wcard-v">ion</span>
+        <span class="wcard-k">role</span><span class="wcard-v main">main</span>
+      </div>
+    </article>
+
+    <article class="wcard" data-evidence-sample="idle-sub">
+      <div class="wcard-head">
+        <span class="wcard-type">explore</span>
+        <span class="wcard-badge">○ idle</span>
+      </div>
+      <div class="wcard-meta">
+        <span class="wcard-k">uptime</span><span class="wcard-v">2m</span>
+        <span class="wcard-k">worktree</span><span class="wcard-v">ion/docs</span>
+        <span class="wcard-k">project</span><span class="wcard-v">ion</span>
+        <span class="wcard-k">role</span><span class="wcard-v">sub</span>
+      </div>
+    </article>
+
+    <article class="wcard" data-evidence-sample="error-peer">
+      <div class="wcard-head">
+        <span class="wcard-type">plan</span>
+        <span class="wcard-badge error">✕ error</span>
+      </div>
+      <div class="wcard-meta">
+        <span class="wcard-k">uptime</span><span class="wcard-v">5m</span>
+        <span class="wcard-k">worktree</span><span class="wcard-v">research-notes</span>
+        <span class="wcard-k">project</span><span class="wcard-v">research-notes</span>
+        <span class="wcard-k">role</span><span class="wcard-v">peer</span>
+      </div>
+    </article>
+
+    <article class="wcard selected" data-evidence-sample="done-sub-selected">
+      <div class="wcard-head">
+        <span class="wcard-type">reviewer</span>
+        <span class="wcard-badge done">✓ done</span>
+      </div>
+      <div class="wcard-meta">
+        <span class="wcard-k">uptime</span><span class="wcard-v">12m</span>
+        <span class="wcard-k">worktree</span><span class="wcard-v">ion/Cargo.toml</span>
+        <span class="wcard-k">project</span><span class="wcard-v">ion</span>
+        <span class="wcard-k">role</span><span class="wcard-v">sub</span>
+      </div>
+    </article>
+
+    <article class="wcard" data-evidence-sample="busy-sub-2">
+      <div class="wcard-head">
+        <span class="wcard-type">build</span>
+        <span class="wcard-badge busy">● busy</span>
+      </div>
+      <div class="wcard-meta">
+        <span class="wcard-k">uptime</span><span class="wcard-v">1m</span>
+        <span class="wcard-k">worktree</span><span class="wcard-v">ion/tests</span>
+        <span class="wcard-k">project</span><span class="wcard-v">ion</span>
+        <span class="wcard-k">role</span><span class="wcard-v">sub</span>
+      </div>
+    </article>
+
+    <article class="wcard" data-evidence-sample="idle-peer-2">
+      <div class="wcard-head">
+        <span class="wcard-type">explore</span>
+        <span class="wcard-badge">○ idle</span>
+      </div>
+      <div class="wcard-meta">
+        <span class="wcard-k">uptime</span><span class="wcard-v">15m</span>
+        <span class="wcard-k">worktree</span><span class="wcard-v">opentui-desktop</span>
+        <span class="wcard-k">project</span><span class="wcard-v">opentui-desktop</span>
+        <span class="wcard-k">role</span><span class="wcard-v">peer</span>
+      </div>
+    </article>
+
+  </div>
+</body>
+</html>

@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 2,
+  "sourceKind": "structured-spec",
+  "slug": "worker-card",
+  "name": "Worker Card",
+  "category": "card",
+  "confidence": "high",
+  "description": "Equal-sized draggable card used in the kanban grid view. A dense information block representing one Worker process: agent type, current status, uptime, worktree path, project ownership, and hierarchy role (main/sub/peer). Selected card shows accent border + glow. Drag handle indicated by a subtle grip texture on the left edge.",
+  "semanticTypeCandidates": ["card", "tile", "kanban-item"],
+  "variantDimensions": [
+    { "axis": "status", "values": ["busy", "idle", "error", "done"] },
+    { "axis": "hierarchy", "values": ["main", "sub", "peer"] },
+    { "axis": "selectionState", "values": ["default", "selected", "hover"] }
+  ],
+  "representativeVariants": [
+    { "agentType": "build", "status": "busy", "uptime": "9m", "worktree": "ion/src/agent", "project": "ion", "hierarchy": "main" },
+    { "agentType": "explore", "status": "idle", "uptime": "2m", "worktree": "ion/docs", "project": "ion", "hierarchy": "sub" },
+    { "agentType": "plan", "status": "error", "uptime": "5m", "worktree": "research-notes", "project": "research-notes", "hierarchy": "peer" },
+    { "agentType": "reviewer", "status": "done", "uptime": "12m", "worktree": "ion/Cargo.toml", "project": "ion", "hierarchy": "sub", "selectionState": "selected" }
+  ],
+  "anatomy": [
+    { "part": "container", "description": "1px solid var(--color-border) rectangle, no border-radius. Background var(--color-bg-secondary) default; var(--color-bg-elevated) on hover" },
+    { "part": "header-row", "description": "Agent type label (var(--text-md), weight 700, color var(--color-accent) for main / var(--color-text-primary) for others) + Status Badge on the right" },
+    { "part": "meta-grid", "description": "Dense rows: uptime · worktree path · project · hierarchy tag. var(--text-xs), color var(--color-text-secondary). Keys in var(--color-text-muted)" },
+    { "part": "selection-ring", "description": "When selected: border 1px var(--color-border-accent) + box-shadow var(--shadow-glow). Cursor becomes grabbing during drag" },
+    { "part": "drag-handle", "description": "Left 2px wide strip, background var(--color-divider); on hover shows a ⋮⋮ grip pattern in var(--color-text-muted)" }
+  ],
+  "structurePatterns": [
+    "display: flex; flex-direction: column; gap: var(--space-1)",
+    "padding: var(--space-2) var(--space-3)",
+    "CSS Grid in kanban: grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--space-2)",
+    "Meta rows: display: grid; grid-template-columns: auto 1fr; gap: var(--space-2)"
+  ],
+  "usageHints": [
+    "Cards in the same column MUST be equal-sized (grid enforces this)",
+    "Double-click opens detail view (separate page)",
+    "Hierarchy tag color-codes: main=accent, sub=text-secondary, peer=text-muted"
+  ],
+  "doNotInvent": [
+    "Never round corners — sharp 0px radius is mandatory",
+    "Never add card lift shadow on hover — only border color + bg elevation change",
+    "Do not show avatars or images; TUI cards are text-only"
+  ],
+  "unknowns": [],
+  "cssVariables": [
+    "--color-border", "--color-border-accent", "--color-divider",
+    "--color-bg-secondary", "--color-bg-elevated",
+    "--color-accent", "--color-text-primary", "--color-text-secondary", "--color-text-muted",
+    "--shadow-glow", "--font-mono",
+    "--text-md", "--text-xs", "--space-1", "--space-2", "--space-3"
+  ]
+}

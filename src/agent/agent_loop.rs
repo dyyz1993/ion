@@ -97,7 +97,12 @@ pub struct Agent {
     compact_model: Option<Model>,
     /// 会话文件所在 cwd（用于 compaction/turn_summary 落盘，None = 不落盘）
     session_cwd: Option<String>,
+    /// 溢出恢复已尝试次数（达 MAX_OVERFLOW_ROUNDS 后放弃，对齐 pi）
+    overflow_recovery_attempts: u32,
 }
+
+/// 上下文溢出恢复的最大 compact-and-retry 轮次（对齐 pi MAX_OVERFLOW_RECOVERY_ROUNDS = 5）
+const MAX_OVERFLOW_ROUNDS: u32 = 5;
 
 impl Agent {
     pub fn new(
@@ -126,6 +131,7 @@ impl Agent {
             runtime: Box::new(crate::runtime::LocalRuntime::new()),
             compact_model: None,
             session_cwd: None,
+            overflow_recovery_attempts: 0,
         }
     }
 
@@ -548,6 +554,9 @@ impl Agent {
                         }));
                     }
 
+                    // 溢出恢复计数器：成功响应后重置（对齐 pi 的 reset 时机）
+                    self.overflow_recovery_attempts = 0;
+
                     self.extensions
                         .on_turn_end(&TurnContext {
                             turn_index: turn as u64,
@@ -795,6 +804,49 @@ impl Agent {
                 StopReason::Error => {
                     // ── turn_summary 落盘（Error 路径，强制记录中断 turn）──
                     self.persist_turn_summary(turn as u64, &events, &ion_provider::StopReason::Error);
+
+                    // ── 溢出恢复：检测到上下文溢出时，触发 compaction 然后重试该 turn ──
+                    // 对齐 pi 的 overflow recovery：最多 compact-and-retry MAX_OVERFLOW_ROUNDS 次
+                    let error_msg = events.iter().rev().find_map(|e| match e {
+                        StreamEvent::Error { message, .. } => message.error_message.clone(),
+                        _ => None,
+                    }).unwrap_or_default();
+
+                    let is_overflow = ion_provider::is_overflow_message(&error_msg);
+                    let can_recover = is_overflow && self.overflow_recovery_attempts < MAX_OVERFLOW_ROUNDS;
+
+                    if can_recover {
+                        self.overflow_recovery_attempts += 1;
+                        let attempt = self.overflow_recovery_attempts;
+                        tracing::warn!(
+                            "[overflow recovery] attempt {}/{} — triggering compaction then retry",
+                            attempt, MAX_OVERFLOW_ROUNDS
+                        );
+
+                        // pop 掉尾部的 error assistant 消息（如果有），不让错误消息污染重试上下文
+                        // 对齐 pi: while messages.last is assistant with stop_reason=error: pop
+                        while let Some(Message::Assistant(am)) = self.messages.last() {
+                            if am.stop_reason == StopReason::Error {
+                                self.messages.pop();
+                            } else {
+                                break;
+                            }
+                        }
+
+                        // 触发 compaction（复用 maybe_compact，已有 emergency fallback）
+                        self.maybe_compact().await?;
+
+                        // 重试当前 turn（不递增 turn counter）
+                        continue;
+                    }
+
+                    if is_overflow && !can_recover {
+                        tracing::error!(
+                            "[overflow recovery] exhausted after {} attempts, giving up",
+                            MAX_OVERFLOW_ROUNDS
+                        );
+                    }
+
                     return Ok(StopReason::Error);
                 }
                 StopReason::Aborted => {
@@ -913,6 +965,30 @@ impl Agent {
                     return Ok((final_reason, collected));
                 }
                 Err(e) => {
+                    // 上下文溢出 → 不重试，返回 StopReason::Error 让 inner_loop 做溢出恢复（compaction）
+                    if e.is_context_overflow() {
+                        tracing::warn!("[overflow] context overflow detected, returning Error for recovery: {e:.120}");
+                        let error_msg = format!("{e}");
+                        // 构造一条 Error 事件供 inner_loop 提取错误文案
+                        let events = vec![StreamEvent::Error {
+                            reason: StopReason::Error,
+                            message: AssistantMessage {
+                                role: "assistant".into(),
+                                content: vec![],
+                                api: self.model.api.clone(),
+                                provider: self.model.provider.clone(),
+                                model: self.model.id.clone(),
+                                response_model: None,
+                                response_id: None,
+                                usage: Usage::default(),
+                                stop_reason: StopReason::Error,
+                                error_message: Some(error_msg),
+                                timestamp: now_ms(),
+                            },
+                        }];
+                        return Ok((StopReason::Error, events));
+                    }
+
                     // 使用 RetryConfig（如果有）或回退到简单配置
                     let err_str = e.to_string();
                     let fallback_cfg = crate::retry::RetryConfig {
