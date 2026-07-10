@@ -644,13 +644,18 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 
 | 套件 | 数量 | 覆盖 |
 |------|------|------|
-| lib tests (核心逻辑) | 252 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex |
-| session_tree (单元) | 28 | resolve_current_leaf/get_tree/branch/rollback/checkout/compaction_safety |
-| session_tree (集成) | 4 | only-append 审计/branch 接 leaf/全操作序列 |
-| global_memory (单元) | 6 | FTS5 搜索/跨项目/重要性排序/软删除/ID 唯一 |
-| faux_test (ion-provider) | 22 | FauxProvider FIFO/工厂响应/流式/builder/complete/error |
-| record_replay_test (ion-provider) | 11 | RecordingProvider/ReplayProvider/load_script/lock/路径穿越 |
-| **小计 Rust 测试** | **323** | 全部通过 ✅ |
+| lib tests (核心逻辑) | 269 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact |
+| unit_rpc_test (RPC 协议) | 20 | U1-U20 RPC 命令覆盖 + 接口格式兼容 |
+| manager_integration (集成) | 25 | Manager + Worker + 事件 + UI + 消息拉取 |
+| session_tree_test (集成) | 4 | only-append 审计/branch 接 leaf/全操作序列 |
+| context_index_e2e (集成) | 3 | read→write 折叠/on_context 时序 |
+| e2e_stress (E2E + 压力) | 18 | E1-E4 E2E + S1-S4 压力 + 各种边界 |
+| plugin_tests (扩展) | 17 | JSON/WASM/Plan/Todo 扩展 |
+| worktree_isolation | 6 | worktree 创建/隔离/清洗 |
+| child_worker / concurrency | 4 | 子进程通信/并发池 |
+| memory_e2e | 6 | Memory 扩展存储/搜索/注入/去重 |
+| ion-provider 单元 | 70 | OpenAI/Anthropic/Google/FauxProvider/RecordReplay/transform_messages |
+| **小计 Rust 测试** | **442** | 全部通过 ✅ |
 | faux_scenarios_ci (CLI E2E) | 4 | 三场景 faux（直接执行/host/serve） |
 | record_replay_ci (CLI E2E) | 11 | 录制/回放/路径穿越/冲突/OVERWRITE/权限 |
 | crash_recovery_ci (CLI E2E) | 6 | stderr/exit_code/Dead/父通知 |
@@ -659,7 +664,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | message_retrieval_ci (CLI E2E) | 55 | 消息拉取主验证（脚本 Group A-N 对应文档 A-M 场景）：ion history/分页/视点/turn_summary/compaction/turn 完整性/中断态/统计聚合/旁路数据/customType 两维属性/性能缓存/O(n)/血缘 |
 | session_tree_verify (CLI E2E) | 15 | 树展示 + branch/rollback 单元测试 + 分支视点(live/full/since_compaction) + only-append 红线 + SESSION_TREE_SPEC P0 验收映射 |
 | realtime_stitch_ci (CLI E2E) | 10 | Group I：host + create_session + subscribe + prompt + 事件流(agent_start/text_delta/agent_end) + 历史补齐 |
-| **测试覆盖合计** | **432** | 全部通过 ✅（session_tree_ci 废弃，不计入） |
+| **测试覆盖合计** | **551** | 全部通过 ✅（session_tree_ci 废弃不计入） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
