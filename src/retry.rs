@@ -439,6 +439,7 @@ mod tests {
     use std::sync::Arc;
 
     #[derive(Debug, Clone)]
+    #[allow(dead_code)]
     struct AttemptRecord {
         pub attempt: u32,
         pub error: String,

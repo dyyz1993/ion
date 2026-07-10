@@ -129,7 +129,6 @@ impl Extension for WorkflowExtension {
 mod tests {
     use super::*;
     use crate::agent::extension::TurnContext;
-    use crate::agent::messages::Message;
 
     fn make_turn_ctx() -> TurnContext {
         TurnContext {

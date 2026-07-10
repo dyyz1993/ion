@@ -1384,13 +1384,20 @@ const TOOL_OUTPUT_MAX_BYTES: usize = 50_000;
 /// 对齐 pi packages/coding-agent/src/core/tools/truncate.ts 的 truncateHead/Tail 逻辑。
 fn truncate_tool_output(output: &str) -> String {
     let byte_len = output.len();
-    let line_count = output.lines().count();
 
-    if byte_len <= TOOL_OUTPUT_MAX_BYTES && line_count <= TOOL_OUTPUT_MAX_LINES {
-        return output.to_string();
+    // 快速路径：字节和行数都在限制内，直接返回
+    if byte_len <= TOOL_OUTPUT_MAX_BYTES {
+        let line_count = output.lines().count();
+        if line_count <= TOOL_OUTPUT_MAX_LINES {
+            return output.to_string();
+        }
     }
 
+    // 单次遍历收集行（避免 lines().count() + lines().collect() 双遍历）
     let lines: Vec<&str> = output.lines().collect();
+    let line_count = lines.len();
+    let byte_len_actual = output.len();
+
     // 保留头部 80% + 尾部 20%（头比尾重要——文件通常从头开始看）
     let head_lines = (TOOL_OUTPUT_MAX_LINES as f64 * 0.8) as usize;
     let tail_lines = TOOL_OUTPUT_MAX_LINES - head_lines;
@@ -1401,14 +1408,19 @@ fn truncate_tool_output(output: &str) -> String {
     let mut result = head.join("\n");
     result.push_str(&format!(
         "\n\n... (truncated: {} lines total, {} bytes; showing first {} + last {} lines) ...\n\n",
-        line_count, byte_len, head_lines, tail_lines
+        line_count, byte_len_actual, head_lines, tail_lines
     ));
     result.push_str(&tail.join("\n"));
 
-    // 字节级兜底：如果截断后仍超 50KB，暴力截到 50KB
+    // 字节级兜底：如果截断后仍超 50KB，截到 50KB（UTF-8 安全）
     if result.len() > TOOL_OUTPUT_MAX_BYTES {
-        let truncated = &result[..TOOL_OUTPUT_MAX_BYTES.saturating_sub(50)];
-        return format!("{}\n... (byte truncation at 50KB)", truncated);
+        let target = TOOL_OUTPUT_MAX_BYTES.saturating_sub(50);
+        // floor_char_boundary: 找到 target 位置之前最近的 UTF-8 字符边界
+        let mut safe_end = target;
+        while safe_end > 0 && !result.is_char_boundary(safe_end) {
+            safe_end -= 1;
+        }
+        return format!("{}\n... (byte truncation at ~50KB)", &result[..safe_end]);
     }
     result
 }
@@ -1450,6 +1462,30 @@ mod tests {
         let input: String = (1..=2000).map(|i| format!("l{}", i)).collect::<Vec<_>>().join("\n");
         let result = truncate_tool_output(&input);
         assert_eq!(result, input, "should not truncate at exact limit");
+    }
+
+    #[test]
+    fn truncate_utf8_safe_no_panic() {
+        // 生成含中文的超大输出——字节截断必须不 panic
+        let mut input = String::new();
+        for _ in 0..20000 {
+            input.push_str("你好世界这是测试行\n"); // 每行多字节 UTF-8
+        }
+        let result = truncate_tool_output(&input);
+        // 验证不 panic + 结果是有效字符串 + 有截断标记
+        assert!(result.contains("truncation"), "should have truncation marker");
+        assert!(result.len() <= TOOL_OUTPUT_MAX_BYTES + 100, "should be near 50KB");
+    }
+
+    #[test]
+    fn truncate_emoji_safe_no_panic() {
+        // 含 emoji 的输出
+        let mut input = String::new();
+        for _ in 0..20000 {
+            input.push_str("😀😁😂🤣😃😄😅😆😉😊😋😎😍😘🥳\n");
+        }
+        let result = truncate_tool_output(&input);
+        assert!(result.contains("truncation"));
     }
 }
 

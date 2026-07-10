@@ -79,6 +79,11 @@ impl ContextIndex {
         }
     }
 
+    /// 每个文件保留的最大 read 记录数（含 Stale）。
+    /// Stale 记录在 on_context 折叠后就不再需要（tool_call_id 已被替换），
+    /// 但保留少量历史用于调试。超出时丢弃最旧的 Stale 记录。
+    const MAX_READS_PER_FILE: usize = 10;
+
     /// 记录一次 read 操作
     pub fn record_read(&mut self, path: &str, tool_call_id: &str, content: &str) {
         let hash = djb2(content);
@@ -89,19 +94,20 @@ impl ContextIndex {
             tool_call_id: tool_call_id.to_string(),
             status: Freshness::Current,
         });
+        Self::trim_reads(&mut record.reads);
     }
 
     /// 记录一次 grep 操作：解析 ripgrep 输出（`路径:行号:内容`）提取命中的文件。
-    /// grep 的内容是片段（非全文），用 confidence: Grep 标注。
     pub fn record_grep(&mut self, tool_call_id: &str, output: &str) {
         for path in parse_grep_paths(output) {
             let record = self.files.entry(path).or_default();
             record.reads.push(ReadRecord {
                 turn: self.current_turn,
-                content_hash: 0, // grep 不存全文 hash
+                content_hash: 0,
                 tool_call_id: tool_call_id.to_string(),
                 status: Freshness::Current,
             });
+            Self::trim_reads(&mut record.reads);
         }
     }
 
@@ -120,6 +126,28 @@ impl ContextIndex {
         record.writes.push(WriteRecord {
             turn: self.current_turn,
             kind,
+        });
+        Self::trim_reads(&mut record.reads);
+    }
+
+    /// 压缩 read 记录：丢弃最旧的 Stale 记录，保持每文件不超过 MAX_READS_PER_FILE 条。
+    /// Current 记录永远保留（它们可能还没被折叠）。
+    fn trim_reads(reads: &mut Vec<ReadRecord>) {
+        if reads.len() <= Self::MAX_READS_PER_FILE {
+            return;
+        }
+        // 保留所有 Current + 最近的 Stale（到上限）
+        let current_count = reads.iter().filter(|r| r.status == Freshness::Current).count();
+        let max_stale = Self::MAX_READS_PER_FILE.saturating_sub(current_count);
+        // 收集要保留的 Stale tool_call_id（clone 避免 borrow 冲突）
+        let kept_ids: std::collections::HashSet<String> = reads.iter()
+            .filter(|r| r.status != Freshness::Current)
+            .map(|r| r.tool_call_id.clone())
+            .rev()
+            .take(max_stale)
+            .collect();
+        reads.retain(|r| {
+            r.status == Freshness::Current || kept_ids.contains(&r.tool_call_id)
         });
     }
 
@@ -557,6 +585,35 @@ mod tests {
     fn grep_not_in_untracked_sources() {
         let idx = ContextIndex::new();
         assert!(!idx.untracked_sources.contains(&"grep".to_string()), "grep should be tracked now");
+    }
+
+    #[test]
+    fn trim_reads_limits_growth() {
+        let mut idx = ContextIndex::new();
+        // 模拟 15 次 read + write 循环（每次 write 标记旧 read 为 Stale）
+        for i in 0..15 {
+            idx.current_turn = i;
+            idx.record_read("big.rs", &format!("tc_{}", i), "content");
+            idx.record_write("big.rs", WriteKind::Edit);
+        }
+        let reads = &idx.files["big.rs"].reads;
+        // 不应超过 MAX_READS_PER_FILE (10)
+        assert!(reads.len() <= ContextIndex::MAX_READS_PER_FILE,
+            "reads should be trimmed, got {}", reads.len());
+    }
+
+    #[test]
+    fn trim_keeps_current_reads() {
+        let mut idx = ContextIndex::new();
+        // 多次 read 不 write（都是 Current）
+        for i in 0..20 {
+            idx.current_turn = i;
+            idx.record_read("fresh.rs", &format!("tc_{}", i), "content");
+        }
+        let reads = &idx.files["fresh.rs"].reads;
+        // 所有 Current 都应该保留（不受 trim 影响）
+        let current_count = reads.iter().filter(|r| r.status == Freshness::Current).count();
+        assert_eq!(current_count, 20, "all Current reads should be kept");
     }
 
     #[tokio::test]

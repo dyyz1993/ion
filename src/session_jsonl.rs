@@ -642,7 +642,6 @@ pub fn message_to_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     /// 造一个临时 cwd（用 tmpdir + 子目录隔离）
     fn test_cwd(name: &str) -> String {
