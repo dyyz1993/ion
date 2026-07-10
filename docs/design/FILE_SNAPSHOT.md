@@ -769,3 +769,120 @@ du -sh ~/.ion/file-store/<project_key>/
 | 100MB 硬上限 + 分级 GC | 硬封顶防爆炸 |
 | 按磁盘存（JSONL + object），不全加载内存 | 1000 轮不爆内存 |
 | GC 仅启动时跑 | 不阻塞 agent 执行 |
+
+---
+
+## 14. 行为契约（测试前必须固定）
+
+以下契约经过评审确认，测试必须按此断言，禁止自行猜测语义。
+
+### 14.1 Turn 范围语义
+
+- `fromTurn` 和 `toTurn` 均为**包含边界**（inclusive）
+- 未传 `fromTurn` 时，从会话第一个 turn 开始
+- 未传 `toTurn` 时，查询到当前最新 turn
+- `fromTurn > toTurn` 时返回参数错误
+
+### 14.2 路径表示
+
+- **cwd 内文件**：规范化相对路径（去 `..`、去 `.`）
+- **cwd 外文件**：规范化绝对路径
+- 路径禁止包含未处理的 `..`
+- Unicode、空格、括号、emoji 路径必须正常工作
+
+### 14.3 快照来源（source 字段）
+
+每条变更记录的 `source` 字段区分来源：
+
+| source | 来源 |
+|--------|------|
+| `tool_write` | write 工具的 before/after |
+| `tool_edit` | edit 工具的 before/after |
+| `turn_scan` | bash 目录扫描对比 |
+
+### 14.4 GC 后的 RPC 行为
+
+当 object 被 GC 删除但元数据还在时：
+
+```json
+{
+  "diffAvailable": false,
+  "error": { "code": "SNAPSHOT_OBJECT_MISSING" }
+}
+```
+
+- **不崩溃**，不返回伪造的空 diff
+- 批量查询返回部分成功 + `partialErrors`
+
+### 14.5 Worktree 隔离
+
+- 主仓库和 worktree **共享** object store（同一个 project_key）
+- 但**变更记录按 session 隔离**（各自独立的 ToolSnapshot）
+- 用主仓库 session 查询时，**看不到** worktree session 的修改
+- 相同内容在主仓库和 worktree 中只存**一个 object**
+- worktree 删除后，只要 session 历史仍引用 object，可达性 GC **不得删除**
+
+---
+
+## 15. 已知限制（XFail）
+
+以下场景是当前系统的能力边界，测试应标记为 XFail（预期失败/已知限制）：
+
+| # | 场景 | 当前行为 | 限制原因 | 何时修复 |
+|---|------|---------|---------|---------|
+| X1 | 编辑器原子保存（tmp + rename） | 路线 2 捕获 tmp 的 added+deleted 噪声 | 无 rename 检测 | 后续加 rename 检测 |
+| X2 | bash 修改后恢复原内容 | mtime 变了会误报 modified | 路线 2 只比 mtime+size | 后续加内容 hash 对比 |
+| X3 | mtime 碰撞（cp --preserve） | 漏检（mtime+size 不变但内容变了） | 同 X2 | 同 X2 |
+| X4 | touch 只改 mtime | 误报 modified | 同 X2 | 同 X2 |
+| X5 | chmod 只改权限 | 不记录（正确行为） | 只追踪内容 | 不需修复 |
+| X6 | 符号链接逃逸 | 存的是 symlink 路径不是 resolved | 无 resolve 逻辑 | 后续加 resolvedPath |
+| X7 | 路线 2 的 before 内容缺失 | bash 路线没存 before content，diff 只有 after | 设计限制 | 后续从上一轮快照取 |
+
+---
+
+## 16. 补充 CLI 测试 case（评审后新增）
+
+### P0 — 真实端到端 + 关键边界
+
+| # | 场景 | 验证点 |
+|---|------|--------|
+| H1 | write 新文件 → get_modified_files | status=added, source=tool_write |
+| H2 | edit 已有文件 → get_file_diff | 精确 diff, source=tool_edit |
+| H3 | write 到 /tmp（项目外）→ get_modified_files | 绝对路径, source=tool_write |
+| H4 | bash sed 改文件 → get_modified_files | source=turn_scan |
+| H5 | 按 turn 范围查（Turn 2-3） | 只返回范围内 |
+| H6 | 同文件多轮改动 → get_file_history | 完整时间线 |
+| H7 | 编辑器原子保存（tmp+rename） | XFail：tmp 噪声（X1） |
+| H8 | bash 修改后恢复原内容 | XFail：误报 modified（X2） |
+| H9 | 工具失败但文件已改 | 快照仍捕获 |
+| H10 | 同文件 added→modified→deleted | 聚合语义固定 |
+| H11 | 符号链接逃逸 | XFail：路径语义（X6） |
+| H12 | 文件 rename | old=deleted + new=added，object 去重 |
+
+### P1 — 边界场景
+
+| # | 场景 | 验证点 |
+|---|------|--------|
+| I1 | 空文件（0 字节）write | 正常记录 |
+| I2 | 大文件（> 1MB） | 跳过 + skipReason |
+| I3 | write 相同内容 | 不记录（无变化） |
+| I4 | 文件被删除（bash rm） | status=deleted |
+| I5 | .env（git ignore 文本） | **保留**在结果 |
+| I6 | target/ 下文件（git ignore 文件夹） | **不出现** |
+| I7 | 中文/Unicode 文件名 | 正常 |
+| I8 | touch 只改 mtime | XFail：误报（X4） |
+| I9 | chmod 只改权限 | 不记录（正确） |
+| I10 | 非法 UTF-8 文本 | 按二进制跳过 |
+| I11 | 嵌套 .gitignore + !negation | 正确解析 |
+| I12 | 两个不同路径写相同内容 | 两个事件 + 一个 object |
+| I13 | 非 Git 项目 | project_key = hash(cwd) |
+
+### P2 — 压力和性能
+
+| # | 场景 | 验证点 |
+|---|------|--------|
+| J1 | 一轮 bash 改 100 个文件 | 全部捕获，宽松超时 |
+| J2 | 超过 5000 文件 | truncated=true |
+| J3 | 1000 轮会话查询 | 实际耗时记录（不断言 O(1)） |
+| J4 | GC 后查历史 | diffAvailable=false + SNAPSHOT_OBJECT_MISSING |
+| J5 | mtime 碰撞 | XFail：漏检（X3） |

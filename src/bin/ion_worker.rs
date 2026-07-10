@@ -1230,12 +1230,22 @@ async fn main() {
                             (Some(_), Some(_)) => "modified",
                             _ => "unchanged",
                         };
+                        // source 区分：write/edit 工具 vs bash 目录扫描
+                        let source = match s.tool_name.as_str() {
+                            "write" => "tool_write",
+                            "edit" => "tool_edit",
+                            "bash" => "turn_scan",
+                            _ => "tool",
+                        };
+                        // 路径规范化：cwd 内相对化，cwd 外绝对化
+                        let normalized = normalize_path(&s.path, &worker_cwd);
                         serde_json::json!({
-                            "path": s.path,
+                            "path": normalized,
                             "status": status,
-                            "source": "tool",
+                            "source": source,
                             "turnId": s.turn_id,
                             "toolCallId": s.tool_call_id,
+                            "tool": s.tool_name,
                             "hasDiff": s.before_hash.is_some() || s.after_hash.is_some(),
                         })
                     }).collect();
@@ -1839,6 +1849,21 @@ async fn main() {
                             .and_then(|h| store.objects().read_object_text(h));
                         let after_content = last.after_hash.as_ref()
                             .and_then(|h| store.objects().read_object_text(h));
+
+                        // GC 降级：hash 存在但 object 不可读
+                        let before_missing = first.before_hash.is_some() && before_content.is_none();
+                        let after_missing = last.after_hash.is_some() && after_content.is_none();
+                        if before_missing || after_missing {
+                            output_response(&id, "get_file_diff", &serde_json::json!({
+                                "path": file_path,
+                                "diffAvailable": false,
+                                "error": { "code": "SNAPSHOT_OBJECT_MISSING" },
+                                "beforeHash": first.before_hash,
+                                "afterHash": last.after_hash,
+                            }));
+                            return;
+                        }
+
                         let diff = match (&before_content, &after_content) {
                             (Some(b), Some(a)) => ion::file_snapshot::unified_diff(b, a, file_path),
                             (None, Some(a)) => format!("+++ new file\n{}", a),
@@ -1849,6 +1874,7 @@ async fn main() {
                         output_response(&id, "get_file_diff", &serde_json::json!({
                             "path": file_path,
                             "diff": diff,
+                            "diffAvailable": true,
                             "beforeHash": first.before_hash,
                             "afterHash": last.after_hash,
                             "hasContent": before_content.is_some() || after_content.is_some(),
@@ -2794,6 +2820,27 @@ fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
             let _ = f.write_all(payload.as_bytes());
             parent_id = entry_id;
         }
+    }
+}
+
+/// 路径规范化：cwd 内返回相对路径，cwd 外返回规范化的绝对路径
+fn normalize_path(path: &str, cwd: &str) -> String {
+    let abs = if std::path::Path::new(path).is_absolute() {
+        path.to_string()
+    } else {
+        format!("{}/{}", cwd.trim_end_matches('/'), path)
+    };
+    // 规范化（去 ..）
+    let canonical = std::path::Path::new(&abs)
+        .components()
+        .filter(|c| c.as_os_str() != ".")
+        .collect::<std::path::PathBuf>();
+    let canonical_str = canonical.to_string_lossy().to_string();
+    // cwd 内 → 相对化
+    if let Some(rel) = canonical_str.strip_prefix(cwd) {
+        rel.trim_start_matches('/').to_string()
+    } else {
+        canonical_str
     }
 }
 
