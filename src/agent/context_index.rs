@@ -73,7 +73,8 @@ impl ContextIndex {
     pub fn new() -> Self {
         Self {
             files: HashMap::new(),
-            untracked_sources: vec!["grep".into(), "bash".into(), "find".into()],
+            // grep 现在已索引（解析输出），bash/find 仍未索引
+            untracked_sources: vec!["bash".into(), "find".into()],
             current_turn: 0,
         }
     }
@@ -88,6 +89,20 @@ impl ContextIndex {
             tool_call_id: tool_call_id.to_string(),
             status: Freshness::Current,
         });
+    }
+
+    /// 记录一次 grep 操作：解析 ripgrep 输出（`路径:行号:内容`）提取命中的文件。
+    /// grep 的内容是片段（非全文），用 confidence: Grep 标注。
+    pub fn record_grep(&mut self, tool_call_id: &str, output: &str) {
+        for path in parse_grep_paths(output) {
+            let record = self.files.entry(path).or_default();
+            record.reads.push(ReadRecord {
+                turn: self.current_turn,
+                content_hash: 0, // grep 不存全文 hash
+                tool_call_id: tool_call_id.to_string(),
+                status: Freshness::Current,
+            });
+        }
     }
 
     /// 记录一次 write/edit 操作，标记旧 read 为 Stale
@@ -173,6 +188,51 @@ fn djb2(s: &str) -> u64 {
     hash
 }
 
+/// 解析 ripgrep 输出，提取命中的文件路径。
+///
+/// ripgrep 默认输出格式：`路径:行号:匹配行内容` 或 `路径:行号:匹配行内容`
+/// 路径可能含冒号（Windows），从行尾的 `:数字:` 往前切分更可靠。
+/// 空行、`(no matches)` 等噪音会被跳过。
+fn parse_grep_paths(output: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("(no matches)") {
+            continue;
+        }
+        // ripgrep 格式: path:line_num:content 或 path:line_num:content
+        // 策略：从左找第一个 `:` 后面跟数字的位置
+        if let Some(path) = extract_path_before_line_num(line) {
+            if seen.insert(path.clone()) {
+                paths.push(path);
+            }
+        }
+    }
+    paths
+}
+
+/// 从 `path:line:content` 格式中提取 path。
+/// 找第一个 `:数字:` 模式，前面的就是路径。
+fn extract_path_before_line_num(line: &str) -> Option<String> {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b':' {
+            // 检查后面是否跟数字（行号）
+            let rest = &line[i + 1..];
+            if let Some(colon_pos) = rest.find(':') {
+                let maybe_num = &rest[..colon_pos];
+                if maybe_num.chars().all(|c| c.is_ascii_digit()) && !maybe_num.is_empty() {
+                    return Some(line[..i].to_string());
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
@@ -218,6 +278,10 @@ impl Extension for ContextIndexExtension {
                 if let Some(path) = call.arguments.get("file_path").and_then(|v| v.as_str()) {
                     idx.record_read(path, &call.id, &result.output);
                 }
+            }
+            "grep" => {
+                // 解析 ripgrep 输出，提取命中的文件加入索引
+                idx.record_grep(&call.id, &result.output);
             }
             "write" => {
                 if let Some(path) = call.arguments.get("file_path").and_then(|v| v.as_str()) {
@@ -419,7 +483,7 @@ mod tests {
         let tree = idx.build_tree();
         assert!(tree.contains("src/main.rs"));
         assert!(tree.contains("STALE"));
-        assert!(tree.contains("grep/bash/find")); // untracked sources
+        assert!(tree.contains("bash/find")); // grep now tracked, only bash/find untracked
     }
 
     #[test]
@@ -452,6 +516,47 @@ mod tests {
     fn djb2_consistent() {
         assert_eq!(djb2("hello"), djb2("hello"));
         assert_ne!(djb2("hello"), djb2("world"));
+    }
+
+    #[test]
+    fn parse_grep_paths_basic() {
+        let output = "src/main.rs:10:fn main() {\nsrc/lib.rs:5:pub mod test;\nsrc/main.rs:25:    println!()";
+        let paths = parse_grep_paths(output);
+        assert_eq!(paths.len(), 2); // 去重后只有 main.rs 和 lib.rs
+        assert!(paths.contains(&"src/main.rs".to_string()));
+        assert!(paths.contains(&"src/lib.rs".to_string()));
+    }
+
+    #[test]
+    fn parse_grep_paths_empty_and_noise() {
+        let output = "\n(no matches)\n\n";
+        let paths = parse_grep_paths(output);
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn parse_grep_paths_path_with_spaces() {
+        let output = "my project/src/main.rs:10:fn main() {";
+        let paths = parse_grep_paths(output);
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0], "my project/src/main.rs");
+    }
+
+    #[test]
+    fn record_grep_adds_files() {
+        let mut idx = ContextIndex::new();
+        let output = "src/a.rs:1:x\nsrc/b.rs:2:y";
+        idx.record_grep("tc_grep", output);
+        assert!(idx.files.contains_key("src/a.rs"));
+        assert!(idx.files.contains_key("src/b.rs"));
+        // grep 记录应该是 Current
+        assert_eq!(idx.files["src/a.rs"].reads[0].status, Freshness::Current);
+    }
+
+    #[test]
+    fn grep_not_in_untracked_sources() {
+        let idx = ContextIndex::new();
+        assert!(!idx.untracked_sources.contains(&"grep".to_string()), "grep should be tracked now");
     }
 
     #[tokio::test]

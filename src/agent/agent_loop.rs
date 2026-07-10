@@ -859,6 +859,10 @@ impl Agent {
 
                         let duration = start.elapsed().as_millis() as u64;
 
+                        // 工具输出截断：防止大文件/长输出爆掉 LLM 上下文（对齐 pi A6）
+                        // 默认 2000 行 / 50KB，超了截头尾
+                        let output = truncate_tool_output(&output);
+
                         // Hook: tool_execution_end
                         let exec_ctx = super::extension::ToolExecutionContext {
                             tool_call_id: tc.id.clone(),
@@ -1370,6 +1374,83 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+/// 工具输出截断阈值（对齐 pi: 2000 行 / 50KB）
+const TOOL_OUTPUT_MAX_LINES: usize = 2000;
+const TOOL_OUTPUT_MAX_BYTES: usize = 50_000;
+
+/// 截断工具输出：超限时保留头部 + 尾部，中间用省略标记替换。
+/// 对齐 pi packages/coding-agent/src/core/tools/truncate.ts 的 truncateHead/Tail 逻辑。
+fn truncate_tool_output(output: &str) -> String {
+    let byte_len = output.len();
+    let line_count = output.lines().count();
+
+    if byte_len <= TOOL_OUTPUT_MAX_BYTES && line_count <= TOOL_OUTPUT_MAX_LINES {
+        return output.to_string();
+    }
+
+    let lines: Vec<&str> = output.lines().collect();
+    // 保留头部 80% + 尾部 20%（头比尾重要——文件通常从头开始看）
+    let head_lines = (TOOL_OUTPUT_MAX_LINES as f64 * 0.8) as usize;
+    let tail_lines = TOOL_OUTPUT_MAX_LINES - head_lines;
+
+    let head: Vec<&str> = lines.iter().take(head_lines).copied().collect();
+    let tail: Vec<&str> = lines.iter().skip(line_count.saturating_sub(tail_lines)).copied().collect();
+
+    let mut result = head.join("\n");
+    result.push_str(&format!(
+        "\n\n... (truncated: {} lines total, {} bytes; showing first {} + last {} lines) ...\n\n",
+        line_count, byte_len, head_lines, tail_lines
+    ));
+    result.push_str(&tail.join("\n"));
+
+    // 字节级兜底：如果截断后仍超 50KB，暴力截到 50KB
+    if result.len() > TOOL_OUTPUT_MAX_BYTES {
+        let truncated = &result[..TOOL_OUTPUT_MAX_BYTES.saturating_sub(50)];
+        return format!("{}\n... (byte truncation at 50KB)", truncated);
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_short_output_unchanged() {
+        let output = "line1\nline2\nline3";
+        assert_eq!(truncate_tool_output(output), output);
+    }
+
+    #[test]
+    fn truncate_long_lines() {
+        // 生成 3000 行
+        let input: String = (1..=3000).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        let result = truncate_tool_output(&input);
+        assert!(result.contains("truncated"), "should have truncation marker");
+        assert!(result.contains("line 1\n") || result.contains("line 1\r"), "should keep head");
+        assert!(result.contains("line 3000"), "should keep tail");
+        // head 保留 1600 行，tail 保留 400 行 → 中间 1601~2600 被截断
+        assert!(!result.contains("line 2000\n"), "should drop middle (line 2000)");
+    }
+
+    #[test]
+    fn truncate_long_bytes() {
+        // 生成一个 60KB 的单行
+        let input = "x".repeat(60_000);
+        let result = truncate_tool_output(&input);
+        assert!(result.len() <= TOOL_OUTPUT_MAX_BYTES + 100, "should be under ~50KB");
+        assert!(result.contains("truncation"), "should have truncation marker");
+    }
+
+    #[test]
+    fn truncate_exactly_at_limit() {
+        // 刚好 2000 行——不截断
+        let input: String = (1..=2000).map(|i| format!("l{}", i)).collect::<Vec<_>>().join("\n");
+        let result = truncate_tool_output(&input);
+        assert_eq!(result, input, "should not truncate at exact limit");
+    }
 }
 
 // Import needed types for the compact module
