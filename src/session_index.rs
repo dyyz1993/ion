@@ -50,6 +50,15 @@ pub struct SessionMeta {
     /// Last active tool names (from append_active_tools_change)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_active_tools: Option<Vec<String>>,
+    /// 最后一条 entry 的 id（增量拉取锚点）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_entry_id: Option<String>,
+    /// 父会话 id（fork 来源，null = 根会话）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session: Option<String>,
+    /// 父会话关系类型（fork）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_type: Option<String>,
 }
 
 /// Index of all sessions, stored in sessions.index.json
@@ -89,6 +98,30 @@ impl SessionIndex {
 
     pub fn get(&self, id: &str) -> Option<&SessionMeta> {
         self.sessions.get(id)
+    }
+
+    /// 查直接子会话（反向索引，O(n) 单次内存扫描，不持久化）。
+    /// 血缘只一层——要看整棵血缘树前端递归调用。
+    pub fn get_children(&self, parent_id: &str) -> Vec<&SessionMeta> {
+        self.sessions
+            .values()
+            .filter(|m| m.parent_session.as_deref() == Some(parent_id))
+            .collect()
+    }
+
+    /// 该会话是否有子会话
+    pub fn has_children(&self, id: &str) -> bool {
+        self.sessions
+            .values()
+            .any(|m| m.parent_session.as_deref() == Some(id))
+    }
+
+    /// 该会话的子会话数量
+    pub fn child_count(&self, id: &str) -> usize {
+        self.sessions
+            .values()
+            .filter(|m| m.parent_session.as_deref() == Some(id))
+            .count()
     }
 
     pub fn upsert(&mut self, id: &str, meta: SessionMeta) {
@@ -164,6 +197,9 @@ impl SessionIndex {
             error_count: existing.as_ref().map_or(0, |e| e.error_count),
             last_thinking_level: existing.as_ref().and_then(|e| e.last_thinking_level.clone()),
             last_active_tools: existing.as_ref().and_then(|e| e.last_active_tools.clone()),
+            last_entry_id: existing.as_ref().and_then(|e| e.last_entry_id.clone()),
+            parent_session: existing.as_ref().and_then(|e| e.parent_session.clone()),
+            parent_type: existing.as_ref().and_then(|e| e.parent_type.clone()),
         }
     }
 
@@ -237,6 +273,9 @@ impl SessionIndex {
                     error_count: 0,
                     last_thinking_level: None,
                     last_active_tools: None,
+                    last_entry_id: None,
+                    parent_session: None,
+                    parent_type: None,
                 },
             );
         }
@@ -285,5 +324,92 @@ impl SessionIndex {
         Self::patch_meta(id, |m| {
             m.agent = agent.to_string();
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_meta(parent: Option<&str>) -> SessionMeta {
+        SessionMeta {
+            name: None,
+            first_name: None,
+            project: None,
+            project_name: None,
+            worktree: false,
+            branch: None,
+            model: "test".into(),
+            agent: "default".into(),
+            provider: "test".into(),
+            token_input: 0,
+            token_output: 0,
+            token_cache_read: 0,
+            token_cache_write: 0,
+            compress_count: 0,
+            message_count: 0,
+            turn_count: 0,
+            created_at: 0,
+            updated_at: 0,
+            error_count: 0,
+            last_thinking_level: None,
+            last_active_tools: None,
+            last_entry_id: None,
+            parent_session: parent.map(|s| s.to_string()),
+            parent_type: parent.map(|_| "fork".to_string()),
+        }
+    }
+
+    #[test]
+    fn test_get_children() {
+        let mut idx = SessionIndex::default();
+        idx.sessions.insert("root".into(), make_meta(None));
+        idx.sessions.insert("child1".into(), make_meta(Some("root")));
+        idx.sessions.insert("child2".into(), make_meta(Some("root")));
+        idx.sessions.insert("other".into(), make_meta(Some("different")));
+
+        let children = idx.get_children("root");
+        assert_eq!(children.len(), 2);
+    }
+
+    #[test]
+    fn test_has_children() {
+        let mut idx = SessionIndex::default();
+        idx.sessions.insert("root".into(), make_meta(None));
+        assert!(!idx.has_children("root"));
+
+        idx.sessions.insert("child".into(), make_meta(Some("root")));
+        assert!(idx.has_children("root"));
+    }
+
+    #[test]
+    fn test_child_count() {
+        let mut idx = SessionIndex::default();
+        idx.sessions.insert("root".into(), make_meta(None));
+        idx.sessions.insert("c1".into(), make_meta(Some("root")));
+        idx.sessions.insert("c2".into(), make_meta(Some("root")));
+        idx.sessions.insert("c3".into(), make_meta(Some("root")));
+        assert_eq!(idx.child_count("root"), 3);
+        assert_eq!(idx.child_count("nonexistent"), 0);
+    }
+
+    #[test]
+    fn test_root_session_has_no_parent() {
+        let idx = SessionIndex::default();
+        let mut sessions = idx.sessions.clone();
+        sessions.insert("root".into(), make_meta(None));
+        let idx2 = SessionIndex { sessions };
+        let root = idx2.get("root").unwrap();
+        assert!(root.parent_session.is_none());
+    }
+
+    #[test]
+    fn test_forked_session_has_parent() {
+        let mut sessions = std::collections::HashMap::new();
+        sessions.insert("fork".into(), make_meta(Some("parent_sess")));
+        let idx = SessionIndex { sessions };
+        let fork = idx.get("fork").unwrap();
+        assert_eq!(fork.parent_session.as_deref(), Some("parent_sess"));
+        assert_eq!(fork.parent_type.as_deref(), Some("fork"));
     }
 }

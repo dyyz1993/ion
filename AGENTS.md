@@ -175,6 +175,7 @@ docs/
 | [docs/design/MEMORY_AGENT.md](./docs/design/MEMORY_AGENT.md) | Memory V0.2 跨项目记忆 Agent：单例扩展 + SQLite/FTS5 + 引用计数 (Phase 1-8 已实现) |
 | [docs/design/CRASH_RECOVERY.md](./docs/design/CRASH_RECOVERY.md) | Worker 崩溃恢复：stderr 捕获 + exit code + Dead 保留 + 父通知 (已实现) |
 | [docs/design/COMPACTION.md](./docs/design/COMPACTION.md) | Compaction 会话压缩：分批并发 + LLM summarizer + emergency fallback + CLI 测试 (已验证) |
+| [docs/design/CONTEXT_INDEX.md](./docs/design/CONTEXT_INDEX.md) | Context Index — 上下文索引与快照折叠：read 追踪 + 过期快照折叠 + pi 对标 (待定) |
 | [docs/design/PROVIDER_PROTOCOL.md](./docs/design/PROVIDER_PROTOCOL.md) | 多 Provider 协议：4 个 provider + transform_messages + detectCompat + CLI 测试 (已验证) |
 | [docs/design/PERMISSION_SYSTEM.md](./docs/design/PERMISSION_SYSTEM.md) | 权限系统：设计 + CLI 用法 + 测试规格 + CLI 测试指南 (设计稿+已验证) |
 | [docs/design/SESSION_MESSAGE.md](./docs/design/SESSION_MESSAGE.md) | Session 消息系统：Entry 类型、推送通道、消息类型扩展 (设计稿+已验证) |
@@ -193,6 +194,7 @@ docs/
 | [docs/design/FAUX_PROVIDER.md](./docs/design/FAUX_PROVIDER.md) | FauxProvider 架构级 LLM Mock：FIFO 队列 + 工厂响应 + 流式分块，对标 pi (已实现 Phase 1) |
 | [docs/design/RECORD_REPLAY.md](./docs/design/RECORD_REPLAY.md) | Record/Replay 录制回放：环境变量录制 + `--model replay/id` 回放，复用 FauxProvider (已实现 Phase 1) |
 | [docs/design/SESSION_TREE.md](./docs/design/SESSION_TREE.md) | Session Tree（会话分支）：文件内分支 + leaf 指针 + only-append 回滚 (已实现) |
+| [docs/testing/MESSAGE_RETRIEVAL_CASES.md](./docs/testing/MESSAGE_RETRIEVAL_CASES.md) | 消息拉取 CLI 用例集：9 接口 + 12 Group A-L + 分页/视点/过滤/血缘 (设计定稿+已实现) |
 
 ### 使用指南（docs/guides/）
 
@@ -238,6 +240,7 @@ docs/
 | `examples/agents/` | Agent 模板（wf/orchestrator/coordinator/developer/merger/reviewer/publisher） |
 | `examples/workflows/` | Workflow YAML 示例（delivery.wf.yaml） |
 | `src/session_tree.rs` | Session Tree 核心数据层（leaf 指针/树构建/branch/rollback/checkout） |
+| `src/message_retrieval.rs` | 消息拉取核心逻辑（retrieve_messages/turns/inputs/turn_detail + view/过滤/分页） |
 | `src/global_memory.rs` | 全局记忆库（SQLite + FTS5，跨项目检索） |
 | `src/global_memory_ext.rs` | GlobalMemoryExtension（单例扩展，on_singleton_init + extension_rpc） |
 
@@ -457,6 +460,17 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - runtime 默认 local（不从全局继承），`--local`/`--remote` flag 即时切换
   - **验证**: 5 任务串行 converge + 3 阶段 pipeline（develop→merge→publish GitHub）全部通过
 - **测试**: 380 个测试全部通过 ✅
+- **消息拉取（Message Retrieval）** — 9 接口 + 分页/视点/过滤/turn 聚合（已验证）
+  - `message_retrieval.rs` 纯函数模块（~1000 行）— retrieve_messages/turns/inputs/turn_detail
+  - turn_summary entry — 每轮 turn 结束自动落盘（含 abort/error turn）
+  - CompactionEntry 加 firstKeptEntryId + compaction 落盘
+  - view 视点（live/since_compaction/branch/full）+ 可见性过滤层（deletion/segment_summary/回滚）
+  - 游标分页（after/before/limit）+ complete_turn 补齐 + include_custom 三档
+  - list_turns content 默认截断 200 字 + full_content 参数
+  - get_tree 双模式（structure 骨架 / full 全部）
+  - get_children 反向索引 + SessionMeta 血缘字段（parent_session/last_entry_id）
+  - `ion history <sid>` CLI 命令
+  - **验证**: 229 单元 + 24 CLI harness = 253 测试全过 ✅
 
 ### 🎭 FauxProvider（架构级 LLM Mock，对标 pi）
 
@@ -626,23 +640,26 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 **P5 - 包管理（低优先级）:**
 - install/remove/update 子命令
 
-### 测试统计 (2026-07-09)
+### 测试统计 (2026-07-10)
 
 | 套件 | 数量 | 覆盖 |
 |------|------|------|
-| lib tests (核心逻辑) | 199 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker |
+| lib tests (核心逻辑) | 229 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex |
 | session_tree (单元) | 28 | resolve_current_leaf/get_tree/branch/rollback/checkout/compaction_safety |
 | session_tree (集成) | 4 | only-append 审计/branch 接 leaf/全操作序列 |
 | global_memory (单元) | 6 | FTS5 搜索/跨项目/重要性排序/软删除/ID 唯一 |
 | faux_test (ion-provider) | 22 | FauxProvider FIFO/工厂响应/流式/builder/complete/error |
 | record_replay_test (ion-provider) | 11 | RecordingProvider/ReplayProvider/load_script/lock/路径穿越 |
-| **小计 Rust 测试** | **270** | 全部通过 ✅ |
+| **小计 Rust 测试** | **300** | 全部通过 ✅ |
 | faux_scenarios_ci (CLI E2E) | 4 | 三场景 faux（直接执行/host/serve） |
 | record_replay_ci (CLI E2E) | 11 | 录制/回放/路径穿越/冲突/OVERWRITE/权限 |
 | crash_recovery_ci (CLI E2E) | 6 | stderr/exit_code/Dead/父通知 |
 | global_memory_ci (CLI E2E) | 8 | 单例生命周期/save/search/跨项目/软删除 |
 | session_tree_ci (CLI E2E) | 8 | 树展示/branch/rollback/only-append 审计 |
-| **测试覆盖合计** | **307** | 全部通过 ✅ |
+| message_retrieval_ci (CLI E2E) | 55 | 消息拉取主验证（脚本 Group A-N 对应文档 A-M 场景）：ion history/分页/视点/turn_summary/compaction/turn 完整性/中断态/统计聚合/旁路数据/customType 两维属性/性能缓存/O(n)/血缘 |
+| session_tree_verify (CLI E2E) | 13 | 树展示 + branch/rollback 单元测试 + 分支视点(live/full/since_compaction) + only-append 红线 |
+| realtime_stitch_ci (CLI E2E) | 10 | Group I：host + create_session + subscribe + prompt + 事件流(agent_start/text_delta/agent_end) + 历史补齐 |
+| **测试覆盖合计** | **375** | 全部通过 ✅ |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)

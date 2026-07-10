@@ -439,6 +439,9 @@ pub async fn handle_rpc(cfg: RpcConfig) {
 
             // ── Messages ──
             "get_messages" => cmd_get_messages(&sessions, &req, &cmd_id),
+            "list_turns" => cmd_list_turns(&sessions, &req, &cmd_id),
+            "list_inputs" => cmd_list_inputs(&sessions, &req, &cmd_id),
+            "get_turn_detail" => cmd_get_turn_detail(&sessions, &req, &cmd_id),
             "get_last_assistant_text" => cmd_get_last_assistant_text(&sessions, &req, &cmd_id),
 
             // ── Tools ──
@@ -676,15 +679,187 @@ fn cmd_get_messages(
     let sid = get_sid(req);
     let output = RpcOutput::new();
     if let Some(session) = sessions.get(&sid) {
-        let msgs: Vec<&Message> = session.messages().iter().collect();
-        let msgs_json: Vec<serde_json::Value> = msgs.iter().map(|m| serde_json::to_value(m).unwrap_or_default()).collect();
+        // 解析分页参数
+        let params = req.get("params").unwrap_or(&serde_json::Value::Null);
+        let view_str = params.get("view").and_then(|v| v.as_str()).unwrap_or("live");
+        let view = match view_str {
+            "since_compaction" => crate::message_retrieval::View::SinceCompaction,
+            "full" => crate::message_retrieval::View::Full,
+            s if s.starts_with("branch:") => {
+                crate::message_retrieval::View::Branch(s[7..].to_string())
+            }
+            _ => crate::message_retrieval::View::Live,
+        };
+        let after = params.get("after").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let before = params.get("before").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let limit = params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(50);
+        let complete_turn = params.get("complete_turn").and_then(|v| v.as_bool()).unwrap_or(true);
+        let custom_str = params.get("include_custom").and_then(|v| v.as_str()).unwrap_or("none");
+        let include_custom = match custom_str {
+            "display_only" => crate::message_retrieval::CustomFilter::DisplayOnly,
+            "all" => crate::message_retrieval::CustomFilter::All,
+            _ => crate::message_retrieval::CustomFilter::None,
+        };
+
+        // 把内存 messages 转成 entries 格式（standalone 无磁盘文件）
+        let entries = messages_to_entries(session.messages());
+
+        let retrieval_params = crate::message_retrieval::RetrievalParams {
+            view,
+            after,
+            before,
+            limit,
+            complete_turn,
+            include_custom,
+        };
+        let result = crate::message_retrieval::retrieve_messages(&entries, &retrieval_params);
+
         ok_data(&output, cmd_id, serde_json::json!({
-            "messages": msgs_json
+            "messages": result.messages,
+            "hasMore": result.has_more,
+            "totalCount": result.total_count,
+            "nextCursor": result.next_cursor,
+            "view": result.view,
+            "compactionPoints": result.compaction_points,
         }))
     } else {
         ok_data(&output, cmd_id, serde_json::json!({
             "messages": []
         }))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Command: list_turns
+// ---------------------------------------------------------------------------
+
+/// 把内存 messages 转成 entries 格式（standalone 无磁盘文件）
+fn messages_to_entries(messages: &[Message]) -> Vec<serde_json::Value> {
+    let mut entries = Vec::new();
+    let mut parent_id = String::new();
+    for (i, msg) in messages.iter().enumerate() {
+        let entry_id = format!("msg_{:03}", i + 1);
+        let mut entry = serde_json::to_value(msg).unwrap_or_default();
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert("type".into(), serde_json::json!("message"));
+            obj.insert("id".into(), serde_json::json!(entry_id));
+            obj.insert("parentId".into(), serde_json::json!(parent_id));
+            let inner = obj.remove("role").unwrap_or(serde_json::json!("user"));
+            let mut message_obj = serde_json::Map::new();
+            message_obj.insert("role".into(), inner);
+            let keys: Vec<String> = obj.keys().filter(|k| !matches!(k.as_str(), "type"|"id"|"parentId")).cloned().collect();
+            for k in keys {
+                if let Some(v) = obj.remove(&k) {
+                    message_obj.insert(k, v);
+                }
+            }
+            obj.insert("message".into(), serde_json::Value::Object(message_obj));
+        }
+        parent_id = entry_id;
+        entries.push(entry);
+    }
+    entries
+}
+
+fn cmd_list_turns(
+    sessions: &HashMap<String, RpcSession>,
+    req: &serde_json::Value,
+    cmd_id: &str,
+) -> Result<(), String> {
+    let sid = get_sid(req);
+    let output = RpcOutput::new();
+    let params = req.get("params").unwrap_or(&serde_json::Value::Null);
+    let full_content = params.get("full_content").and_then(|v| v.as_bool()).unwrap_or(false);
+    let limit = params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(50);
+
+    if let Some(session) = sessions.get(&sid) {
+        let entries = messages_to_entries(session.messages());
+        let rp = crate::message_retrieval::RetrievalParams { limit, ..Default::default() };
+        let result = crate::message_retrieval::retrieve_turns(&entries, &rp, full_content);
+        ok_data(&output, cmd_id, serde_json::json!({
+            "turns": result.turns.iter().map(|t| serde_json::json!({
+                "turnId": t.turn_id,
+                "userContent": t.user_content,
+                "assistantContent": t.assistant_content,
+                "keySteps": t.key_steps,
+                "toolCallCount": t.tool_call_count,
+                "tokens": {"input": t.tokens_input, "output": t.tokens_output},
+                "status": t.status,
+                "summary": t.summary,
+            })).collect::<Vec<_>>(),
+            "hasMore": result.has_more,
+            "totalCount": result.total_count,
+        }))
+    } else {
+        ok_data(&output, cmd_id, serde_json::json!({ "turns": [] }))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Command: list_inputs
+// ---------------------------------------------------------------------------
+
+fn cmd_list_inputs(
+    sessions: &HashMap<String, RpcSession>,
+    req: &serde_json::Value,
+    cmd_id: &str,
+) -> Result<(), String> {
+    let sid = get_sid(req);
+    let output = RpcOutput::new();
+    if let Some(session) = sessions.get(&sid) {
+        let entries = messages_to_entries(session.messages());
+        let result = crate::message_retrieval::retrieve_inputs(
+            &entries,
+            &crate::message_retrieval::RetrievalParams::default(),
+        );
+        ok_data(&output, cmd_id, serde_json::json!({
+            "inputs": result.inputs.iter().map(|i| serde_json::json!({
+                "turnId": i.turn_id,
+                "entryId": i.entry_id,
+                "text": i.text,
+            })).collect::<Vec<_>>(),
+            "totalCount": result.total_count,
+        }))
+    } else {
+        ok_data(&output, cmd_id, serde_json::json!({ "inputs": [] }))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Command: get_turn_detail
+// ---------------------------------------------------------------------------
+
+fn cmd_get_turn_detail(
+    sessions: &HashMap<String, RpcSession>,
+    req: &serde_json::Value,
+    cmd_id: &str,
+) -> Result<(), String> {
+    let sid = get_sid(req);
+    let output = RpcOutput::new();
+    let params = req.get("params").unwrap_or(&serde_json::Value::Null);
+    let turn_id = params.get("turnId").and_then(|v| v.as_u64()).unwrap_or(0);
+
+    if let Some(session) = sessions.get(&sid) {
+        let entries = messages_to_entries(session.messages());
+        match crate::message_retrieval::retrieve_turn_detail(
+            &entries, turn_id,
+            &crate::message_retrieval::CustomFilter::None,
+        ) {
+            Some(detail) => ok_data(&output, cmd_id, serde_json::json!({
+                "turnId": detail.turn_id,
+                "entries": detail.entries,
+                "overview": {
+                    "userContent": detail.overview.user_content,
+                    "assistantContent": detail.overview.assistant_content,
+                    "keySteps": detail.overview.key_steps,
+                    "toolCallCount": detail.overview.tool_call_count,
+                    "status": detail.overview.status,
+                }
+            })),
+            None => ok_data(&output, cmd_id, serde_json::json!({ "error": "turn not found" })),
+        }
+    } else {
+        ok_data(&output, cmd_id, serde_json::json!({ "error": "session not found" }))
     }
 }
 

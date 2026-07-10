@@ -1,0 +1,77 @@
+{
+  "project": {
+    "name": "ION TUI 仪表板",
+    "operation": "edit",
+    "operatingMode": "free-explore",
+    "deviceType": "desktop",
+    "dashboardMode": true,
+    "styleDefinitionBrief": "AI Agent 编排平台终端仪表板，深色背景 + 青色强调，等宽字体，工业/实用主义风格，三栏布局模拟 TUI 界面",
+    "designRead": "TUI dashboard / developer engineers / industrial terminal utilitarian / high density / avoid generic web dashboard",
+    "designDials": {
+      "layoutVariance": 1,
+      "motionIntensity": 1,
+      "visualDensity": 5
+    },
+    "styleConstraints": {
+      "radiusMax": 6,
+      "staticShadowAlphaMax": 0.05
+    },
+    "styleContinuityAnchors": {
+      "typographySystem": "Monospace-only: JetBrains Mono / Fira Code / Consolas fallback. All text rendered in monospace font including labels and UI chrome.",
+      "colorSystem": "Deep navy bg #0d1117, cyan accent #00d4aa, secondary text #8b949e, border #30363d. High-contrast terminal aesthetic.",
+      "densityModel": "Compact: 12-13px base font, tight line-height 1.25-1.5, minimal padding (8-12px panel gaps), max information density.",
+      "shapeLanguage": "Square/rectangular panels with thin 1px borders. No rounded corners on cards/panels. Sharp, precise, utilitarian.",
+      "surfaceAndDepth": "Panel borders only (1px solid), no shadows on static surfaces. Box-shadow glow only on focused/active elements (accent color, low alpha).",
+      "interactionTone": "Keyboard-driven, minimal mouse interaction. Status indicators via Unicode symbols. Streaming cursor for active agents."
+    }
+  },
+  "designSource": {
+    "operatingMode": "free-explore",
+    "styleConstraints": {
+      "radiusMax": 6,
+      "staticShadowAlphaMax": 0.05
+    },
+    "libraryIdentity": null
+  },
+  "pages": [
+    {
+      "nodeId": "page-main-panel",
+      "title": "主面板",
+      "htmlSrc": "pages/main-panel.html",
+      "pageIndex": 1,
+      "pageType": "information-dense",
+      "visualNorthStar": "Three-column TUI terminal layout: left workspace sidebar, center Agent conversation panel, right dashboard with TODO/process monitor/logs.",
+      "compositionPattern": "Three-column fixed-grid dashboard.",
+      "continuityAnchors": {
+        "typographySystem": "Monospace-only: JetBrains Mono / Fira Code / Consolas fallback.",
+        "colorSystem": "Deep navy bg #0d1117, cyan accent #00d4aa, secondary text #8b949e, border #30363d.",
+        "densityModel": "Compact: 12-13px base font, tight line-height, minimal padding.",
+        "shapeLanguage": "Square/rectangular panels with thin 1px borders."
+      },
+      "imagePlan": [],
+      "chartsRequired": false,
+      "componentPlan": []
+    },
+    {
+      "nodeId": "page-kanban-view",
+      "title": "看板视图",
+      "htmlSrc": "pages/kanban-view.html",
+      "pageIndex": 2,
+      "pageType": "information-dense",
+      "visualNorthStar": "Kanban board with equal-sized draggable Worker cards in a grid. Left sidebar preserved, right sidebar hidden. Bottom message stream + input bar. Cards show Agent type, status, uptime, worktree info, project ownership, and hierarchy (main/sub/peer agent). Selected card highlights with accent border + glow. Double-click hint for detail view.",
+      "compositionPattern": "Two-zone layout: top area = left sidebar (220px, same as main-panel) + kanban grid (fill remaining); bottom area = message stream + input bar (fixed height ~200px). Cards in CSS Grid with 3-4 columns, equal size, draggable appearance (grab cursor, subtle lift shadow on hover).",
+      "continuityAnchors": {
+        "typographySystem": "Monospace-only: JetBrains Mono / Fira Code / Consolas fallback. All text rendered in monospace font.",
+        "colorSystem": "Deep navy bg #0d1117, cyan accent #00d4aa, secondary text #8b949e, border #30363d.",
+        "densityModel": "Compact: 12-13px base font. Cards packed with info labels (agent type, status, uptime, worktree, project, hierarchy) in tight rows.",
+        "shapeLanguage": "Square/rectangular cards with thin 1px borders. No rounded corners. Drag handle indicators."
+      },
+      "imagePlan": [],
+      "chartsRequired": false,
+      "componentPlan": []
+    }
+  ],
+  "assets": [],
+  "wiringPlan": [],
+  "hiddenInteractionPlan": []
+}

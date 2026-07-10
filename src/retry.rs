@@ -83,6 +83,11 @@ pub fn should_retry(error: &str, attempt: u32, config: &RetryConfig) -> RetryDec
         return RetryDecision::AbortPermanent;
     }
 
+    // 上下文溢出 → 不重试（重试也不会变小），交给 compaction 溢出恢复处理
+    if ion_provider::is_overflow_message(error) {
+        return RetryDecision::AbortPermanent;
+    }
+
     // 其余情况都重试（超时、5xx、连接失败等）
     let delay = backoff_duration(attempt, config);
     RetryDecision::Retry(delay)
@@ -266,6 +271,29 @@ mod tests {
         assert_eq!(should_retry("402 Payment Required", 0, &c), RetryDecision::AbortPermanent);
         assert_eq!(should_retry("quota exceeded", 0, &c), RetryDecision::AbortPermanent);
         assert_eq!(should_retry("rate limit exceeded", 0, &c), RetryDecision::AbortPermanent);
+    }
+
+    #[test]
+    fn should_retry_aborts_on_context_overflow() {
+        // 溢出不重试 — 交给 compaction 溢出恢复处理
+        let c = RetryConfig::default();
+        assert_eq!(
+            should_retry("prompt is too long: 213462 tokens", 0, &c),
+            RetryDecision::AbortPermanent
+        );
+        assert_eq!(
+            should_retry("context_length_exceeded", 0, &c),
+            RetryDecision::AbortPermanent
+        );
+        assert_eq!(
+            should_retry("maximum context length is 128000 tokens", 0, &c),
+            RetryDecision::AbortPermanent
+        );
+        // 但限流不是溢出，仍然重试
+        assert!(matches!(
+            should_retry("too many requests", 0, &c),
+            RetryDecision::Retry(_)
+        ));
     }
 
     #[test]

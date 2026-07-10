@@ -61,19 +61,42 @@ fn is_descendant_of(id: &str, target: &str, by_id: &HashMap<&str, &Value>) -> bo
     false
 }
 
-/// 沿 parentId 链数 depth（到 root 的跳数）。带环保护。
-fn entry_depth(id: &str, by_id: &HashMap<&str, &Value>) -> usize {
-    let mut depth = 0;
-    let mut cur = Some(id);
-    let mut visited = HashSet::new();
-    while let Some(cid) = cur {
-        if !visited.insert(cid) {
-            break;
+/// 批量预计算所有 entry 的 depth（单趟 DP，O(n) 总体）。
+/// 返回 id → depth 的 HashMap，后续查询 O(1)。
+/// 替代逐个调 entry_depth（最坏 O(n²)）。
+fn compute_depths<'a>(by_id: &HashMap<&'a str, &'a Value>) -> HashMap<&'a str, usize> {
+    let mut depths: HashMap<&str, usize> = HashMap::with_capacity(by_id.len());
+    for &id in by_id.keys() {
+        if depths.contains_key(id) {
+            continue; // 已算过
         }
-        depth += 1;
-        cur = by_id.get(cid).and_then(|e| entry_parent_id(e));
+        // 沿 parentId 链走，记录路径
+        let mut path: Vec<&str> = Vec::new();
+        let mut cur = Some(id);
+        let mut visited = HashSet::new();
+        while let Some(cid) = cur {
+            if !visited.insert(cid) {
+                break; // 环保护
+            }
+            if let Some(&d) = depths.get(cid) {
+                // 链上某点已算过，回填路径
+                for (i, p) in path.iter().rev().enumerate() {
+                    depths.insert(p, d + i + 1);
+                }
+                path.clear();
+                break;
+            }
+            path.push(cid);
+            cur = by_id.get(cid).and_then(|e| entry_parent_id(e));
+        }
+        // 如果没遇到已算的点，整条链从 root(depth=0) 开始回填
+        if !path.is_empty() {
+            for (i, p) in path.iter().rev().enumerate() {
+                depths.insert(p, i + 1);
+            }
+        }
     }
-    depth
+    depths
 }
 
 /// 解析当前 leaf（光标位置）。
@@ -99,6 +122,9 @@ pub fn resolve_current_leaf(entries: &[Value]) -> Option<String> {
         .filter_map(|e| entry_id(e).map(|id| (id, e)))
         .collect();
 
+    // 预计算所有 depth（O(n) 单趟 DP），替代逐个 entry_depth（最坏 O(n²)）
+    let depths = compute_depths(&by_id);
+
     // Phase B：从后往前找最后一个 leaf_pointer
     let lp_pos = entries.iter().rposition(|e| is_leaf_pointer(e));
 
@@ -109,17 +135,17 @@ pub fn resolve_current_leaf(entries: &[Value]) -> Option<String> {
                 Some(target_id) if !target_id.is_empty() => {
                     // leafId 非空：先在 i 之后找 target 的后代中 depth 最深的非-parent entry。
                     // 若无后代，target 本身就是 leaf（用户显式指向它，不管它是不是别人的 parent）。
-                    deepest_descendant_after(entries, target_id, &parent_ids, &by_id, i, false)
+                    deepest_descendant_after(entries, target_id, &parent_ids, &by_id, &depths, i, false)
                         .or_else(|| Some(target_id.to_string()))
                 }
                 _ => {
                     // leafId 为空（reset）：在 i 之后找 depth 最深的非-parent entry
-                    deepest_descendant_after(entries, "", &parent_ids, &by_id, i, true)
+                    deepest_descendant_after(entries, "", &parent_ids, &by_id, &depths, i, true)
                 }
             }
         }
         // Phase C：无 leaf_pointer —— 全局找 depth 最深的非-parent entry
-        None => deepest_non_parent(entries, &parent_ids, &by_id),
+        None => deepest_non_parent(entries, &parent_ids, &depths),
     }
 }
 
@@ -129,6 +155,7 @@ fn deepest_descendant_after(
     target: &str,
     parent_ids: &HashSet<String>,
     by_id: &HashMap<&str, &Value>,
+    depths: &HashMap<&str, usize>,
     pos: usize,
     allow_any: bool,
 ) -> Option<String> {
@@ -150,7 +177,8 @@ fn deepest_descendant_after(
             is_descendant_of(id, target, by_id)
         };
         if ok {
-            let depth = entry_depth(id, by_id);
+            // O(1) 查预计算 depth，替代 O(depth) 的 entry_depth
+            let depth = *depths.get(id).unwrap_or(&0);
             match &best {
                 None => best = Some((id.to_string(), depth)),
                 Some((_, d)) if depth > *d => best = Some((id.to_string(), depth)),
@@ -165,7 +193,7 @@ fn deepest_descendant_after(
 fn deepest_non_parent(
     entries: &[Value],
     parent_ids: &HashSet<String>,
-    by_id: &HashMap<&str, &Value>,
+    depths: &HashMap<&str, usize>,
 ) -> Option<String> {
     let mut best: Option<(String, usize)> = None;
     for e in entries {
@@ -179,7 +207,7 @@ fn deepest_non_parent(
         if parent_ids.contains(id) {
             continue;
         }
-        let depth = entry_depth(id, by_id);
+        let depth = *depths.get(id).unwrap_or(&0);
         match &best {
             None => best = Some((id.to_string(), depth)),
             Some((_, d)) if depth > *d => best = Some((id.to_string(), depth)),

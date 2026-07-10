@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ION TUI — Panel</title>
+<link rel="stylesheet" href="../colors_and_type.css">
+<style>
+  body { margin: 0; padding: var(--space-2); background: var(--color-bg-primary); font-family: var(--font-mono); color: var(--color-text-primary); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
+
+  /* @component-css-start */
+  /* Component definitions — extracted to components.css by deterministic script */
+  .panel { display: flex; flex-direction: column; border: 1px solid var(--color-border); border-radius: 0; overflow: hidden; }
+  .panel.elev-secondary { background: var(--color-bg-secondary); }
+  .panel.elev-elevated { background: var(--color-bg-elevated); }
+  .panel.elev-surface { background: var(--color-bg-surface); }
+  .panel.state-active { border-color: var(--color-border-accent); box-shadow: var(--shadow-glow); }
+  .panel-header { display: flex; justify-content: space-between; align-items: center; padding: var(--space-1) var(--space-3); text-transform: uppercase; font-size: var(--text-xs); letter-spacing: 0.08em; color: var(--color-text-muted); border-bottom: 1px solid var(--color-divider); }
+  .panel-action { color: var(--color-accent); text-transform: none; letter-spacing: 0; }
+  .panel-count { color: var(--color-error); font-weight: 700; min-width: 1ch; text-align: right; }
+  .panel-body { padding: var(--space-2); flex: 1; font-size: var(--text-sm); line-height: var(--leading-normal); overflow-y: auto; }
+  .panel-row { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) 0; border-bottom: 1px solid var(--color-divider); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .panel-row:last-child { border-bottom: none; }
+  .dot { flex-shrink: 0; width: 6px; height: 6px; border-radius: 0; }
+  .dot.ok { background: var(--color-success); }
+  .dot.run { background: var(--color-warning); }
+  .dot.err { background: var(--color-error); }
+  .dot.idle { background: var(--color-text-muted); }
+  .panel-label { color: var(--color-text-secondary); flex-shrink: 0; }
+  .panel-val { color: var(--color-text-primary); overflow: hidden; text-overflow: ellipsis; }
+  .panel-tag { flex-shrink: 0; margin-left: auto; color: var(--color-text-muted); font-size: var(--text-xs); }
+  .panel-tag.acc { color: var(--color-accent); }
+  .panel-tag.warn { color: var(--color-warning); }
+  .panel-tag.err { color: var(--color-error); }
+  /* @component-css-end */
+</style>
+</head>
+<body>
+<div class="grid">
+
+  <!-- WORKERS — elevation=secondary, headerStyle=plain -->
+  <section class="panel elev-secondary" data-evidence-sample="representative-0">
+    <div class="panel-header"><span>WORKERS</span></div>
+    <div class="panel-body">
+      <div class="panel-row"><span class="dot run"></span><span class="panel-val">dev-01</span><span class="panel-tag warn">running</span></div>
+      <div class="panel-row"><span class="dot ok"></span><span class="panel-val">review-02</span><span class="panel-tag acc">done</span></div>
+      <div class="panel-row"><span class="dot idle"></span><span class="panel-val">idle-03</span><span class="panel-tag">idle</span></div>
+    </div>
+  </section>
+
+  <!-- PROJECTS — elevation=secondary, headerStyle=with-action -->
+  <section class="panel elev-secondary" data-evidence-sample="representative-1">
+    <div class="panel-header"><span>PROJECTS</span><span class="panel-action">[P]新建</span></div>
+    <div class="panel-body">
+      <div class="panel-row"><span class="panel-label">ion/</span><span class="panel-val">src/agent</span><span class="panel-tag">12f</span></div>
+      <div class="panel-row"><span class="panel-label">ion/</span><span class="panel-val">ion-provider</span><span class="panel-tag">8f</span></div>
+      <div class="panel-row"><span class="panel-label">ion/</span><span class="panel-val">todo-extension</span><span class="panel-tag">3f</span></div>
+    </div>
+  </section>
+
+  <!-- NOTIFY — elevation=elevated, headerStyle=with-count -->
+  <section class="panel elev-elevated" data-evidence-sample="representative-2">
+    <div class="panel-header"><span>NOTIFY</span><span class="panel-count">3</span></div>
+    <div class="panel-body">
+      <div class="panel-row"><span class="dot err"></span><span class="panel-val">build failed: wasm32</span><span class="panel-tag err">err</span></div>
+      <div class="panel-row"><span class="dot run"></span><span class="panel-val">e2e test running</span><span class="panel-tag warn">warn</span></div>
+      <div class="panel-row"><span class="dot ok"></span><span class="panel-val">commit merged #142</span><span class="panel-tag acc">ok</span></div>
+    </div>
+  </section>
+
+  <!-- LOGS — elevation=surface, state=active -->
+  <section class="panel elev-surface state-active" data-evidence-sample="representative-3">
+    <div class="panel-header"><span>LOGS</span></div>
+    <div class="panel-body">
+      <div class="panel-row"><span class="panel-tag">12:04:01</span><span class="panel-val">spawn worker dev-01</span></div>
+      <div class="panel-row"><span class="panel-tag">12:04:03</span><span class="panel-val">text_delta received</span></div>
+      <div class="panel-row"><span class="panel-tag acc">12:04:05</span><span class="panel-val">agent_end dev-01</span></div>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>

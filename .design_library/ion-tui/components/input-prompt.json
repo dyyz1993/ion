@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 2,
+  "sourceKind": "structured-spec",
+  "slug": "input-prompt",
+  "name": "Input Prompt",
+  "category": "input",
+  "confidence": "high",
+  "description": "The bottom-anchored message input bar of the main conversation panel. Borderless single-line input with a dim placeholder prompt and a blinking block cursor █. No visible input box chrome — the prompt reads as a continuation of the terminal surface. On focus the cursor blink accelerates; on submit the line clears and the message moves into the conversation stream above.",
+  "semanticTypeCandidates": ["input", "prompt", "command-line"],
+  "variantDimensions": [
+    { "axis": "state", "values": ["idle", "focused", "disabled"] },
+    { "axis": "mode", "values": ["chat", "command"] }
+  ],
+  "representativeVariants": [
+    { "state": "idle", "placeholder": "向 ION 提问..." },
+    { "state": "focused", "placeholder": "向 ION 提问...", "cursor": "█" },
+    { "state": "disabled", "placeholder": "Worker 处理中，请等待..." },
+    { "mode": "command", "placeholder": "/help · 输入命令", "prefix": "/" }
+  ],
+  "anatomy": [
+    { "part": "container", "description": "Full-width row, padding var(--space-2) var(--space-3). Top border 1px var(--color-divider) separating from conversation area above. Background var(--color-bg-primary)" },
+    { "part": "placeholder", "description": "Dim prompt text, var(--text-base), color var(--color-text-muted)" },
+    { "part": "cursor", "description": "Blinking █ block, color var(--color-accent-bright). CSS animation: opacity 1→0 over 1s, steps(2). Accelerates to 0.5s on focus" },
+    { "part": "command-prefix", "description": "When mode=command, a leading '/' in var(--color-accent) precedes the input" }
+  ],
+  "structurePatterns": [
+    "display: flex; align-items: center; gap: var(--space-2)",
+    "border-top: 1px solid var(--color-divider)",
+    "font-family: var(--font-mono); font-size: var(--text-base)",
+    "Input element: background transparent; border: none; outline: none; color var(--color-text-primary); flex: 1"
+  ],
+  "usageHints": [
+    "Anchor to the bottom of the conversation panel with position: sticky",
+    "Enter submits; Shift+Enter inserts newline (rare in pure TUI mode)",
+    "Up-arrow recalls previous inputs from session history"
+  ],
+  "doNotInvent": [
+    "Never add a visible input border or focus ring — the cursor blink IS the focus indicator",
+    "Never add a send button; submission is keyboard-only (Enter)",
+    "Do not add placeholder icons or microphones; text-only TUI"
+  ],
+  "unknowns": [],
+  "cssVariables": [
+    "--color-bg-primary", "--color-text-primary", "--color-text-muted",
+    "--color-divider", "--color-accent-bright",
+    "--font-mono", "--text-base", "--space-2", "--space-3"
+  ]
+}

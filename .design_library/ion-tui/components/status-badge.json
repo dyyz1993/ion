@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 2,
+  "sourceKind": "structured-spec",
+  "slug": "status-badge",
+  "name": "Status Badge",
+  "category": "indicator",
+  "confidence": "high",
+  "description": "Compact monospace status pill used in Worker rows, session lists, and notification items. Combines a Unicode emoji dot (🟢/⚪/🔴/🟡) with a short uppercase label. Conveys Worker lifecycle state, task health, or notification severity in a single glance.",
+  "semanticTypeCandidates": ["badge", "status-indicator", "chip"],
+  "variantDimensions": [
+    { "axis": "state", "values": ["busy", "idle", "error", "warning", "info", "success"] },
+    { "axis": "size", "values": ["sm", "xs"] }
+  ],
+  "representativeVariants": [
+    { "state": "busy", "label": "Busy", "dot": "🟢", "color": "var(--color-success)" },
+    { "state": "idle", "label": "Idle", "dot": "⚪", "color": "var(--color-text-secondary)" },
+    { "state": "error", "label": "Error", "dot": "🔴", "color": "var(--color-error)" },
+    { "state": "warning", "label": "Warn", "dot": "🟡", "color": "var(--color-warning)" },
+    { "state": "info", "label": "Info", "dot": "🔵", "color": "var(--color-info)" }
+  ],
+  "anatomy": [
+    { "part": "dot", "description": "Leading Unicode emoji circle, colored to match state semantics" },
+    { "part": "label", "description": "Short uppercase state word, e.g. BUSY / IDLE / ERROR" }
+  ],
+  "structurePatterns": [
+    "Inline-flex row, gap var(--space-1), align center",
+    "Font: var(--font-mono), size var(--text-xs), weight 600",
+    "No background fill (transparent) — relies on the colored dot for encoding",
+    "Alternative solid variant: bg = state-color at 8% alpha, border-left 2px solid state-color, padding var(--space-1) var(--space-2)"
+  ],
+  "usageHints": [
+    "Use in Worker rows, session rows, notification items, and panel headers",
+    "Keep labels to ≤5 characters when in tight columns",
+    "The dot color carries the semantic meaning — label is reinforcement only"
+  ],
+  "doNotInvent": [
+    "Do not add icons beyond the Unicode emoji dot pattern",
+    "Do not use rounded pill backgrounds — TUI aesthetic favors flat or left-border-accent"
+  ],
+  "unknowns": [],
+  "cssVariables": [
+    "--color-success", "--color-error", "--color-warning", "--color-info",
+    "--color-text-secondary", "--color-text-muted", "--font-mono", "--text-xs"
+  ]
+}

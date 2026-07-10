@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "headBoilerplate": "<link rel=\"stylesheet\" href=\"../../colors_and_type.css\">",
+  "corePreviewComponents": [
+    {
+      "slug": "panel",
+      "reason": "fixed slot \"card\"; semantic=card:0.75; policy=fixed-slots-first",
+      "evidenceFile": "components/panel.json",
+      "priority": 1,
+      "slot": "card"
+    },
+    {
+      "slug": "status-badge",
+      "reason": "fixed slot \"tag\"; semantic=tag:0.75; policy=fixed-slots-first",
+      "evidenceFile": "components/status-badge.json",
+      "priority": 2,
+      "slot": "tag"
+    },
+    {
+      "slug": "input-prompt",
+      "reason": "fallback after fixed slots; semantic=input:0.75; policy=fixed-slots-first",
+      "evidenceFile": "components/input-prompt.json",
+      "priority": 3
+    },
+    {
+      "slug": "key-hint",
+      "reason": "fallback after fixed slots; semantic=key-hint:0.75; policy=fixed-slots-first",
+      "evidenceFile": "components/key-hint.json",
+      "priority": 4
+    },
+    {
+      "slug": "log-stream",
+      "reason": "fallback after fixed slots; semantic=log-stream:0.75; policy=fixed-slots-first",
+      "evidenceFile": "components/log-stream.json",
+      "priority": 5
+    },
+    {
+      "slug": "worker-card",
+      "reason": "fallback after fixed slots; semantic=card:0.75; policy=fixed-slots-first",
+      "evidenceFile": "components/worker-card.json",
+      "priority": 6
+    }
+  ],
+  "supportEvidenceComponents": [],
+  "allowedComponents": [
+    "panel",
+    "status-badge",
+    "input-prompt",
+    "key-hint",
+    "log-stream",
+    "worker-card"
+  ],
+  "screenBlueprints": [
+    {
+      "name": null,
+      "componentSlugs": [],
+      "role": "primary"
+    },
+    {
+      "name": null,
+      "componentSlugs": [],
+      "role": "secondary"
+    },
+    {
+      "name": null,
+      "componentSlugs": [],
+      "role": "secondary"
+    }
+  ],
+  "productContext": {
+    "kitType": null,
+    "productType": null,
+    "dominantCopy": [],
+    "pageNames": [],
+    "selectedFrameNames": []
+  },
+  "selectionPolicy": "fixed-slots-first",
+  "slotAssignments": [
+    {
+      "slot": "card",
+      "slug": "panel",
+      "reason": "semantic"
+    },
+    {
+      "slot": "tag",
+      "slug": "status-badge",
+      "reason": "semantic"
+    }
+  ],
+  "missingFixedSlots": [
+    "button",
+    "navigation",
+    "menu",
+    "table"
+  ],
+  "fallbackComponents": [
+    "input-prompt",
+    "key-hint",
+    "log-stream",
+    "worker-card"
+  ],
+  "needsNarrative": false,
+  "forbiddenInventedComponents": [],
+  "lowConfidence": false,
+  "warnings": [
+    "missing-fixed-slot:button",
+    "missing-fixed-slot:navigation",
+    "missing-fixed-slot:menu",
+    "missing-fixed-slot:table"
+  ]
+}

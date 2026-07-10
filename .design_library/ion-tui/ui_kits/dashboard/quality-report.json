@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "screensGenerated": 3,
+  "coreComponentsUsed": ["panel", "status-badge"],
+  "supportComponentsUsed": ["input-prompt", "key-hint", "log-stream", "worker-card"],
+  "previewClassReuseRate": 0.85,
+  "hasProductContext": true,
+  "inventedComponents": [],
+  "renderedFromEvidence": [],
+  "interactiveStatesRendered": {
+    "hover": [".view-tab:hover", ".wcard:hover", ".btn-tiny:hover"],
+    "disabled": [".ion-input-prompt.disabled"],
+    "selectedActive": [".view-tab.active", ".wcard.selected", ".log-panel-live"]
+  },
+  "primaryActionPerScreen": {
+    "主控台": "input-prompt (send message)",
+    "Worker 看板": "worker-card (select/drag)",
+    "实时日志": "input-prompt (command mode /filter)"
+  },
+  "warnings": [],
+  "screenInventory": [
+    {
+      "name": "主控台",
+      "role": "primary",
+      "components": ["panel", "status-badge", "input-prompt", "key-hint", "log-stream"],
+      "instanceCount": 9
+    },
+    {
+      "name": "Worker 看板",
+      "role": "secondary",
+      "components": ["panel", "worker-card", "input-prompt", "log-stream"],
+      "instanceCount": 11
+    },
+    {
+      "name": "实时日志",
+      "role": "secondary",
+      "components": ["panel", "status-badge", "log-stream", "input-prompt"],
+      "instanceCount": 8
+    }
+  ],
+  "componentFidelity": {
+    "panel": { "classReuse": ["panel", "panel-header", "panel-body", "panel-row", "dot", "panel-val", "panel-tag", "state-active", "elev-secondary"], "redefined": false },
+    "status-badge": { "classReuse": ["badge", "badge--busy", "badge--idle", "badge--error", "badge--warning", "badge--info", "dot", "txt"], "redefined": false },
+    "input-prompt": { "classReuse": ["ion-input-panel", "ion-input-prompt", "prefix", "typed", "placeholder", "cursor", "focused"], "redefined": false },
+    "key-hint": { "classReuse": ["kh", "kh-primary", "kh-optional", "bracket"], "redefined": false },
+    "log-stream": { "classReuse": ["log-panel", "log-panel-header", "log-panel-title", "log-panel-live", "log-stream", "log-line", "log-ts", "log-level", "log-msg", "log-cursor", "log-resume-hint"], "redefined": false },
+    "worker-card": { "classReuse": ["wcard", "wcard.selected", "wcard-head", "wcard-type", "wcard-type.main", "wcard-badge", "wcard-meta", "wcard-k", "wcard-v"], "redefined": false }
+  },
+  "tokenCoverage": {
+    "coreTokens": ["--color-bg-deep", "--color-bg-primary", "--color-bg-secondary", "--color-bg-elevated", "--color-text-primary", "--color-text-secondary", "--color-text-muted", "--color-border", "--color-accent", "--color-accent-bright", "--color-divider"],
+    "statusTokens": ["--color-success", "--color-warning", "--color-error", "--color-info"],
+    "hardcodedHex": []
+  }
+}

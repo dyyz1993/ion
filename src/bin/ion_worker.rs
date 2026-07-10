@@ -336,7 +336,8 @@ async fn main() {
         tools,
         config,
     )
-        .with_runtime(worker_rt);
+        .with_runtime(worker_rt)
+        .with_session_cwd(Some(worker_cwd.clone()));
 
     // 应用初始 agent 的工具限制（必须在 Agent 构造后调用）
     if let Some(ref agent_name) = initial_agent {
@@ -540,6 +541,20 @@ async fn main() {
                 let total_output: u64 = agent.messages().iter()
                     .filter_map(|m| match m { Message::Assistant(a) => Some(a.usage.output), _ => None })
                     .sum();
+
+                // 从 SessionIndex 读血缘 + lastEntryId
+                let index = ion::session_index::SessionIndex::load();
+                let meta = index.get(&sid);
+                let parent_session = meta.and_then(|m| m.parent_session.clone());
+                let parent_type = meta.and_then(|m| m.parent_type.clone());
+                let last_entry_id = meta.and_then(|m| m.last_entry_id.clone());
+
+                // 从磁盘读 lastEntryId（如果 index 里没有）
+                let last_entry_id = last_entry_id.or_else(|| {
+                    ion::session_jsonl::SessionFile::load(&worker_cwd)
+                        .and_then(|f| f.last_id)
+                });
+
                 output_response(&id, "get_session_stats", &serde_json::json!({
                     "sessionId": sid,
                     "userMessages": agent.messages().iter().filter(|m| matches!(m, Message::User(_))).count(),
@@ -548,14 +563,148 @@ async fn main() {
                     "totalMessages": agent.messages().len(),
                     "tokens": {"input": total_input, "output": total_output, "cacheRead": 0, "cacheWrite": 0, "total": total_input + total_output},
                     "cost": 0,
+                    "lastEntryId": last_entry_id,
+                    "parentSession": parent_session,
+                    "parentType": parent_type,
+                }));
+            }
+
+            "get_children" => {
+                let target_session = params.get("session").and_then(|v| v.as_str()).unwrap_or(&sid);
+                let index = ion::session_index::SessionIndex::load();
+                let children: Vec<_> = index.get_children(target_session).iter().map(|m| {
+                    serde_json::json!({
+                        "id": m.name,
+                        "name": m.name,
+                        "turnCount": m.turn_count,
+                        "updatedAt": m.updated_at,
+                        "parentSession": m.parent_session,
+                        "parentType": m.parent_type,
+                    })
+                }).collect();
+                output_response(&id, "get_children", &serde_json::json!({
+                    "children": children,
+                    "count": children.len(),
                 }));
             }
 
             "get_messages" => {
-                let msgs: Vec<serde_json::Value> = agent.messages().iter()
-                    .filter_map(|m| serde_json::to_value(m).ok())
-                    .collect();
-                output_response(&id, "get_messages", &serde_json::json!(msgs));
+                // 解析分页参数
+                let view_str = params.get("view").and_then(|v| v.as_str()).unwrap_or("live");
+                let view = match view_str {
+                    "since_compaction" => ion::message_retrieval::View::SinceCompaction,
+                    "full" => ion::message_retrieval::View::Full,
+                    s if s.starts_with("branch:") => {
+                        ion::message_retrieval::View::Branch(s[7..].to_string())
+                    }
+                    _ => ion::message_retrieval::View::Live,
+                };
+                let after = params.get("after").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let before = params.get("before").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let limit = params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(50);
+                let complete_turn = params.get("complete_turn").and_then(|v| v.as_bool()).unwrap_or(true);
+                let custom_str = params.get("include_custom").and_then(|v| v.as_str()).unwrap_or("none");
+                let include_custom = match custom_str {
+                    "display_only" => ion::message_retrieval::CustomFilter::DisplayOnly,
+                    "all" => ion::message_retrieval::CustomFilter::All,
+                    _ => ion::message_retrieval::CustomFilter::None,
+                };
+
+                // 从磁盘读 entries（含 turn_summary/compaction 等非 message entry）
+                let entries: Vec<serde_json::Value> =
+                    ion::message_retrieval::load_entries_cached(&worker_cwd);
+
+                let retrieval_params = ion::message_retrieval::RetrievalParams {
+                    view,
+                    after,
+                    before,
+                    limit,
+                    complete_turn,
+                    include_custom,
+                };
+                let result = ion::message_retrieval::retrieve_messages(&entries, &retrieval_params);
+
+                output_response(&id, "get_messages", &serde_json::json!({
+                    "messages": result.messages,
+                    "hasMore": result.has_more,
+                    "totalCount": result.total_count,
+                    "nextCursor": result.next_cursor,
+                    "view": result.view,
+                    "compactionPoints": result.compaction_points,
+                }));
+            }
+
+            "list_turns" => {
+                let full_content = params.get("full_content").and_then(|v| v.as_bool()).unwrap_or(false);
+                let limit = params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(50);
+                let entries: Vec<serde_json::Value> =
+                    ion::message_retrieval::load_entries_cached(&worker_cwd);
+                let params = ion::message_retrieval::RetrievalParams {
+                    limit,
+                    ..Default::default()
+                };
+                let result = ion::message_retrieval::retrieve_turns(&entries, &params, full_content);
+                output_response(&id, "list_turns", &serde_json::json!({
+                    "turns": result.turns.iter().map(|t| serde_json::json!({
+                        "turnId": t.turn_id,
+                        "userContent": t.user_content,
+                        "assistantContent": t.assistant_content,
+                        "keySteps": t.key_steps,
+                        "toolCallCount": t.tool_call_count,
+                        "tokens": {"input": t.tokens_input, "output": t.tokens_output},
+                        "status": t.status,
+                        "summary": t.summary,
+                    })).collect::<Vec<_>>(),
+                    "hasMore": result.has_more,
+                    "totalCount": result.total_count,
+                    "nextCursor": result.next_cursor,
+                }));
+            }
+
+            "list_inputs" => {
+                let entries: Vec<serde_json::Value> =
+                    ion::message_retrieval::load_entries_cached(&worker_cwd);
+                let result = ion::message_retrieval::retrieve_inputs(
+                    &entries,
+                    &ion::message_retrieval::RetrievalParams::default(),
+                );
+                output_response(&id, "list_inputs", &serde_json::json!({
+                    "inputs": result.inputs.iter().map(|i| serde_json::json!({
+                        "turnId": i.turn_id,
+                        "entryId": i.entry_id,
+                        "text": i.text,
+                    })).collect::<Vec<_>>(),
+                    "hasMore": result.has_more,
+                    "totalCount": result.total_count,
+                    "nextCursor": result.next_cursor,
+                }));
+            }
+
+            "get_turn_detail" => {
+                let turn_id = params.get("turnId").and_then(|v| v.as_u64()).unwrap_or(0);
+                let entries: Vec<serde_json::Value> =
+                    ion::message_retrieval::load_entries_cached(&worker_cwd);
+                match ion::message_retrieval::retrieve_turn_detail(
+                    &entries,
+                    turn_id,
+                    &ion::message_retrieval::CustomFilter::None,
+                ) {
+                    Some(detail) => output_response(&id, "get_turn_detail", &serde_json::json!({
+                        "turnId": detail.turn_id,
+                        "entries": detail.entries,
+                        "overview": {
+                            "userContent": detail.overview.user_content,
+                            "assistantContent": detail.overview.assistant_content,
+                            "keySteps": detail.overview.key_steps,
+                            "toolCallCount": detail.overview.tool_call_count,
+                            "tokens": {"input": detail.overview.tokens_input, "output": detail.overview.tokens_output},
+                            "status": detail.overview.status,
+                        }
+                    })),
+                    None => output_response(&id, "get_turn_detail", &serde_json::json!({
+                        "error": "turn not found", "turnId": turn_id
+                    })),
+                }
             }
 
             "get_last_assistant_text" => {
@@ -899,7 +1048,45 @@ async fn main() {
                 output_response(&id, "get_available_models", &serde_json::json!(models));
             },
             "get_tier_models" => output_response(&id, "get_tier_models", &serde_json::json!({"fast":"deepseek-v4-flash","pro":"deepseek-v4-pro","max":"deepseek-v4-pro"})),
-            "get_tree" => output_response(&id, "get_tree", &serde_json::json!([])),
+            "get_tree" => {
+                let mode = params.get("mode").and_then(|v| v.as_str()).unwrap_or("structure");
+                let entries: Vec<serde_json::Value> =
+                    ion::message_retrieval::load_entries_cached(&worker_cwd);
+
+                if entries.is_empty() {
+                    output_response(&id, "get_tree", &serde_json::json!({
+                        "nodes": [], "currentLeaf": null, "branches": [], "compactionPoints": []
+                    }));
+                } else if mode == "full" {
+                    // full 模式：返回全部 entry 骨架
+                    let nodes: Vec<_> = entries.iter().map(|e| serde_json::json!({
+                        "id": e.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                        "parentId": e.get("parentId").and_then(|v| v.as_str()),
+                        "type": e.get("type").and_then(|v| v.as_str()).unwrap_or(""),
+                        "turnId": e.get("turnId").and_then(|v| v.as_u64()),
+                    })).collect();
+                    output_response(&id, "get_tree", &serde_json::json!({
+                        "nodes": nodes, "mode": "full"
+                    }));
+                } else {
+                    // structure 模式：只返回 compaction + leaf_pointer + 分支末端
+                    let struct_nodes: Vec<_> = entries.iter().filter(|e| {
+                        let t = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        t == "compaction" || t == "leaf_pointer" || t == "turn_summary"
+                    }).cloned().collect();
+                    let current_leaf = ion::session_tree::resolve_current_leaf(&entries);
+                    let compaction_points: Vec<_> = entries.iter()
+                        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("compaction"))
+                        .filter_map(|e| e.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                        .collect();
+                    output_response(&id, "get_tree", &serde_json::json!({
+                        "nodes": struct_nodes,
+                        "currentLeaf": current_leaf,
+                        "compactionPoints": compaction_points,
+                        "mode": "structure"
+                    }));
+                }
+            }
             "get_modified_files" => output_response(&id, "get_modified_files", &serde_json::json!([])),
             "get_queue" => {
                 let steering: Vec<serde_json::Value> = agent.steering_queue_snapshot().iter()

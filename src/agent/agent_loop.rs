@@ -95,7 +95,14 @@ pub struct Agent {
     pub runtime: Box<dyn crate::runtime::Runtime>,
     /// 独立压缩模型（可选，默认使用主模型）
     compact_model: Option<Model>,
+    /// 会话文件所在 cwd（用于 compaction/turn_summary 落盘，None = 不落盘）
+    session_cwd: Option<String>,
+    /// 溢出恢复已尝试次数（达 MAX_OVERFLOW_ROUNDS 后放弃，对齐 pi）
+    overflow_recovery_attempts: u32,
 }
+
+/// 上下文溢出恢复的最大 compact-and-retry 轮次（对齐 pi MAX_OVERFLOW_RECOVERY_ROUNDS = 5）
+const MAX_OVERFLOW_ROUNDS: u32 = 5;
 
 impl Agent {
     pub fn new(
@@ -123,6 +130,8 @@ impl Agent {
             stopped: std::sync::atomic::AtomicBool::new(false),
             runtime: Box::new(crate::runtime::LocalRuntime::new()),
             compact_model: None,
+            session_cwd: None,
+            overflow_recovery_attempts: 0,
         }
     }
 
@@ -136,6 +145,17 @@ impl Agent {
     pub fn with_compact_model(mut self, model: Option<Model>) -> Self {
         self.compact_model = model;
         self
+    }
+
+    /// 设置会话文件所在 cwd（用于 compaction/turn_summary 落盘到 JSONL）。
+    pub fn with_session_cwd(mut self, cwd: Option<String>) -> Self {
+        self.session_cwd = cwd;
+        self
+    }
+
+    /// 动态设置 session cwd（worker 启动后设置）。
+    pub fn set_session_cwd(&mut self, cwd: Option<String>) {
+        self.session_cwd = cwd;
     }
 
     /// 动态设置系统提示词（switch_agent 时调用）
@@ -534,6 +554,9 @@ impl Agent {
                         }));
                     }
 
+                    // 溢出恢复计数器：成功响应后重置（对齐 pi 的 reset 时机）
+                    self.overflow_recovery_attempts = 0;
+
                     self.extensions
                         .on_turn_end(&TurnContext {
                             turn_index: turn as u64,
@@ -542,6 +565,9 @@ impl Agent {
                             stop_reason: Some(format!("{stop_reason:?}")),
                         })
                         .await?;
+
+                    // ── turn_summary 落盘：每一轮 turn 结束时追加结构化摘要 ──
+                    self.persist_turn_summary(turn as u64, &events, &stop_reason);
 
                     // ── 反幻觉重试：如果 LLM 没调任何工具就返回 → 重试 ──
                     // LLM 可能说"已创建文件"但实际没调 write 工具。
@@ -770,12 +796,64 @@ impl Agent {
                         })
                         .await?;
 
+                    // ── turn_summary 落盘（ToolUse 路径）──
+                    self.persist_turn_summary(turn as u64, &events, &ion_provider::StopReason::ToolUse);
+
                     continue;
                 }
                 StopReason::Error => {
+                    // ── turn_summary 落盘（Error 路径，强制记录中断 turn）──
+                    self.persist_turn_summary(turn as u64, &events, &ion_provider::StopReason::Error);
+
+                    // ── 溢出恢复：检测到上下文溢出时，触发 compaction 然后重试该 turn ──
+                    // 对齐 pi 的 overflow recovery：最多 compact-and-retry MAX_OVERFLOW_ROUNDS 次
+                    let error_msg = events.iter().rev().find_map(|e| match e {
+                        StreamEvent::Error { message, .. } => message.error_message.clone(),
+                        _ => None,
+                    }).unwrap_or_default();
+
+                    let is_overflow = ion_provider::is_overflow_message(&error_msg);
+                    let can_recover = is_overflow && self.overflow_recovery_attempts < MAX_OVERFLOW_ROUNDS;
+
+                    if can_recover {
+                        self.overflow_recovery_attempts += 1;
+                        let attempt = self.overflow_recovery_attempts;
+                        tracing::warn!(
+                            "[overflow recovery] attempt {}/{} — triggering compaction then retry",
+                            attempt, MAX_OVERFLOW_ROUNDS
+                        );
+
+                        // pop 掉尾部的 error assistant 消息（如果有），不让错误消息污染重试上下文
+                        // 对齐 pi: while messages.last is assistant with stop_reason=error: pop
+                        while let Some(Message::Assistant(am)) = self.messages.last() {
+                            if am.stop_reason == StopReason::Error {
+                                self.messages.pop();
+                            } else {
+                                break;
+                            }
+                        }
+
+                        // 触发 compaction（复用 maybe_compact，已有 emergency fallback）
+                        self.maybe_compact().await?;
+
+                        // 重试当前 turn（不递增 turn counter）
+                        continue;
+                    }
+
+                    if is_overflow && !can_recover {
+                        tracing::error!(
+                            "[overflow recovery] exhausted after {} attempts, giving up",
+                            MAX_OVERFLOW_ROUNDS
+                        );
+                    }
+
                     return Ok(StopReason::Error);
                 }
-                StopReason::Aborted => return Ok(StopReason::Aborted),
+                StopReason::Aborted => {
+                    // ── turn_summary 落盘（Aborted 路径）──
+                    self.persist_turn_summary(turn as u64, &events, &ion_provider::StopReason::Error);
+                    return Ok(StopReason::Aborted);
+                }
             }
         }
         tracing::warn!("inner: max turns ({})", max_turns);
@@ -887,6 +965,30 @@ impl Agent {
                     return Ok((final_reason, collected));
                 }
                 Err(e) => {
+                    // 上下文溢出 → 不重试，返回 StopReason::Error 让 inner_loop 做溢出恢复（compaction）
+                    if e.is_context_overflow() {
+                        tracing::warn!("[overflow] context overflow detected, returning Error for recovery: {e:.120}");
+                        let error_msg = format!("{e}");
+                        // 构造一条 Error 事件供 inner_loop 提取错误文案
+                        let events = vec![StreamEvent::Error {
+                            reason: StopReason::Error,
+                            message: AssistantMessage {
+                                role: "assistant".into(),
+                                content: vec![],
+                                api: self.model.api.clone(),
+                                provider: self.model.provider.clone(),
+                                model: self.model.id.clone(),
+                                response_model: None,
+                                response_id: None,
+                                usage: Usage::default(),
+                                stop_reason: StopReason::Error,
+                                error_message: Some(error_msg),
+                                timestamp: now_ms(),
+                            },
+                        }];
+                        return Ok((StopReason::Error, events));
+                    }
+
                     // 使用 RetryConfig（如果有）或回退到简单配置
                     let err_str = e.to_string();
                     let fallback_cfg = crate::retry::RetryConfig {
@@ -980,10 +1082,13 @@ impl Agent {
         )
         .await
         {
-            Ok(_) => Ok(()),
+            Ok(result) => {
+                self.persist_compaction(&result);
+                Ok(())
+            }
             Err(e) => {
                 tracing::warn!("LLM compaction failed, falling back to emergency truncate: {e}");
-                compact::compact_batched(
+                match compact::compact_batched(
                     &mut self.messages,
                     &config,
                     &self.extensions,
@@ -991,9 +1096,136 @@ impl Agent {
                     RetryConfig::default(),
                 )
                 .await
-                .map(|_| ())
+                {
+                    Ok(result) => {
+                        self.persist_compaction(&result);
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
             }
         }
+    }
+
+    /// 将 compaction 结果落盘到 session JSONL（compaction entry）。
+    /// firstKeptEntryId 暂为 None（内存 Message 无 entryId），拉取层通过扫描
+    /// 最后一个 compaction entry 定位 since_compaction 视点。
+    fn persist_compaction(&self, result: &compact::CompactionResult) {
+        if let Some(ref cwd) = self.session_cwd {
+            crate::session_jsonl::append_compaction(
+                cwd,
+                &result.summary,
+                result.tokens_before,
+                None, // firstKeptEntryId 暂不填（内存 Message 无 id）
+                Some(&result.stage),
+                if result.batch_count > 0 { Some(result.batch_count) } else { None },
+            );
+            tracing::info!("compaction entry persisted to session JSONL (stage={})", result.stage);
+        }
+    }
+
+    /// 将本轮 turn 的结构化摘要落盘到 session JSONL（turn_summary entry）。
+    /// 纯结构化提取，不调 LLM。含 abort/error turn 也调用此方法。
+    fn persist_turn_summary(
+        &self,
+        turn: u64,
+        events: &[ion_provider::StreamEvent],
+        stop_reason: &ion_provider::StopReason,
+    ) {
+        let Some(ref cwd) = self.session_cwd else {
+            return;
+        };
+
+        // 提取本轮 tool_calls
+        let tool_calls: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                ion_provider::StreamEvent::ToolCallEnd { tool_call, .. } => {
+                    Some(tool_call.name.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        let tool_call_count = tool_calls.len() as u32;
+
+        // 从 messages 找最后一条 user（本轮用户提问）和 assistant（本轮回复）
+        let last_user = self.messages.iter().rev().find_map(|m| match m {
+            Message::User(u) => Some(u.clone()),
+            _ => None,
+        });
+        let last_asst = self.messages.iter().rev().find_map(|m| match m {
+            Message::Assistant(a) => Some(a.clone()),
+            _ => None,
+        });
+
+        // userContent（截断到 200 字符，对齐 list_turns 的 full_content=false 语义）
+        let _user_content = last_user
+            .as_ref()
+            .map(|u| {
+                u.content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ion_provider::ContentBlock::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .unwrap_or_default();
+
+        // assistantContent（截断到 200 字符）
+        let asst_content = last_asst
+            .as_ref()
+            .map(|a| {
+                a.content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ion_provider::AssistantContentBlock::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .unwrap_or_default();
+
+        // summary = assistantContent 前 200 字（纯结构化，不调 LLM）
+        let summary = if asst_content.chars().count() > 200 {
+            asst_content.chars().take(200).collect::<String>() + "..."
+        } else {
+            asst_content.clone()
+        };
+
+        // userEntryId：内存 Message 无 entryId，暂用 turn 序号占位
+        let user_entry_id = format!("turn_{}", turn);
+
+        // tokens
+        let (tok_in, tok_out) = last_asst
+            .as_ref()
+            .map(|a| (a.usage.input, a.usage.output))
+            .unwrap_or((0, 0));
+
+        // status
+        let status = match stop_reason {
+            ion_provider::StopReason::Stop => "completed",
+            ion_provider::StopReason::ToolUse => "tool_use",
+            ion_provider::StopReason::Length => "max_turns",
+            ion_provider::StopReason::Error => "error",
+            ion_provider::StopReason::Aborted => "aborted",
+        };
+
+        crate::session_jsonl::append_turn_summary(
+            cwd,
+            turn,
+            &user_entry_id,
+            &summary,
+            &tool_calls,
+            tool_call_count,
+            tok_in,
+            tok_out,
+            0, // durationMs 暂不测（需 turn 开始时间戳）
+            &[], // entryRange 暂空（内存 Message 无 entryId）
+            status,
+        );
     }
 
     async fn check_pause(&self) -> AgentResult<()> {

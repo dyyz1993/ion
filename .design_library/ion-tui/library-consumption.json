@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "tokenSource": "css.json",
+  "componentIndex": "components/index.json",
+  "recommendedReadOrder": ["SKILL.md", "README.md", "css.json", "components/index.json", "components/{slug}.json", "preview/component-{slug}.html"],
+  "coreComponents": ["status-badge", "panel", "worker-card"],
+  "supportComponents": ["log-stream", "key-hint", "input-prompt"]
+}

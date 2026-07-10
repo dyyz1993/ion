@@ -1,0 +1,245 @@
+/* @dark-only */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+/* ═══════════════════════════════════════════════════════════════
+   ION TUI — Terminal Aesthetic Design System
+   Industrial · Utilitarian · Keyboard-Driven · High-Density
+   Theme: dark-only (no light counterpart)
+   Typography: Monospace-only (JetBrains Mono)
+   Source: structured-spec
+   ═══════════════════════════════════════════════════════════════ */
+
+/* @group-priority: accent, status, palette, bg, text, border */
+
+:root {
+  /* ───────────────────────────────────────────────────────────
+     COLOR TOKENS (source: structured-spec)
+     ─────────────────────────────────────────────────────────── */
+
+  /* accent */ /* Source: structured-spec */
+  --color-accent:        #00d4aa;
+  --color-accent-dim:    #00d4aa33;
+  --color-accent-bright: #00ffcc;
+
+  /* status */ /* Source: structured-spec */
+  --color-warning: #f0883e;
+  --color-error:   #f85149;
+  --color-success: #3fb950;
+  --color-info:    #58a6ff;
+
+  /* palette */ /* Source: structured-spec */
+  --color-cyan:   #79c0ff;
+  --color-orange: #d29922;
+  --color-purple: #bc8cff;
+
+  /* bg */ /* Source: structured-spec */
+  --color-bg-deep:      #0a0e17;
+  --color-bg-primary:   #0d1117;
+  --color-bg-secondary: #161b22;
+  --color-bg-elevated:  #1c2333;
+  --color-bg-surface:   #21283b;
+  --color-bg-hover:     #262f45;
+
+  /* text */ /* Source: structured-spec */
+  --color-text-primary:   #e6edf3;
+  --color-text-secondary: #8b949e;
+  --color-text-muted:     #484f58;
+  --color-text-inverse:   #0d1117;
+
+  /* border */ /* Source: structured-spec */
+  --color-border:        #30363d;
+  --color-border-accent: #00d4aa;
+  --color-divider:       #21262d;
+
+  /* ───────────────────────────────────────────────────────────
+     TYPOGRAPHY (source: structured-spec)
+     ─────────────────────────────────────────────────────────── */
+  --font-mono:    'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', 'Consolas', 'Monaco', monospace;
+  --font-display: 'JetBrains Mono', 'Fira Code', monospace;
+
+  --text-xs:   0.6875rem;  /* 11px */
+  --text-sm:   0.75rem;    /* 12px */
+  --text-base: 0.8125rem;  /* 13px */
+  --text-md:   0.875rem;   /* 14px */
+  --text-lg:   1rem;       /* 16px */
+  --text-xl:   1.125rem;   /* 18px */
+  --text-2xl:  1.25rem;    /* 20px */
+
+  --leading-tight:   1.25;
+  --leading-normal:  1.5;
+  --leading-relaxed: 1.65;
+
+  /* ───────────────────────────────────────────────────────────
+     SPACING (source: structured-spec)
+     ─────────────────────────────────────────────────────────── */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+
+  /* ───────────────────────────────────────────────────────────
+     RADIUS (source: structured-spec)
+     ─────────────────────────────────────────────────────────── */
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+
+  /* ───────────────────────────────────────────────────────────
+     SHADOWS (source: structured-spec)
+     ─────────────────────────────────────────────────────────── */
+  --shadow-panel:    0 0 0 1px var(--color-border);
+  --shadow-glow:     0 0 12px var(--color-accent-dim);
+  --shadow-dropdown: 0 4px 12px rgba(0, 0, 0, 0.4);
+
+  /* ───────────────────────────────────────────────────────────
+     TRANSITIONS (source: structured-spec)
+     ─────────────────────────────────────────────────────────── */
+  --transition-fast:   80ms ease;
+  --transition-normal: 150ms ease;
+
+  /* ───────────────────────────────────────────────────────────
+     LAYOUT (source: structured-spec; sidebar 240px = dominant)
+     ─────────────────────────────────────────────────────────── */
+  --sidebar-width:    240px;
+  --right-panel-width: 300px;
+  --header-height:     40px;
+  --status-bar-height: 28px;
+  --panel-padding:     var(--space-3);
+
+  /* ═══════════════════════════════════════════════════════════
+     PORTABLE ALIAS LAYER
+     Consumer-facing semantic tokens — reference source tokens.
+     ═══════════════════════════════════════════════════════════ */
+
+  /* ── Surface aliases ── */
+  --color-background:      var(--color-bg-primary);
+  --color-foreground:      var(--color-text-primary);
+  --color-surface:         var(--color-bg-secondary);
+  --color-surface-elevated: var(--color-bg-elevated);
+  --color-surface-hover:   var(--color-bg-hover);
+  --color-on-surface:      var(--color-text-primary);
+  --color-on-surface-variant: var(--color-text-secondary);
+  --color-muted-foreground: var(--color-text-muted);
+
+  /* ── Brand/primary aliases (accent cyan = brand hero) ── */
+  --color-primary:        var(--color-accent);
+  --color-primary-hover:  var(--color-accent-bright);
+  --color-on-primary:     var(--color-text-inverse);
+
+  /* ── Status aliases ── */
+  --color-error:   var(--color-error);
+  --color-warning: var(--color-warning);
+  --color-success: var(--color-success);
+  --color-info:    var(--color-info);
+
+  /* ── Outline aliases ── */
+  --color-outline:         var(--color-border);
+  --color-outline-variant: var(--color-border-accent);
+  --color-divider:         var(--color-divider);
+
+  /* ── Radius aliases ── */
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+
+  /* ── Font family aliases ── */
+  --font-family-base:    var(--font-mono);
+  --font-family-display: var(--font-display);
+
+  /* ── Font size aliases (px per css-tokens.md § font.size) ── */
+  --font-size-display: 20px;   /* maps from --text-2xl */
+  --font-size-h1:      18px;   /* maps from --text-xl */
+  --font-size-h2:      16px;   /* maps from --text-lg */
+  --font-size-h3:      14px;   /* maps from --text-md */
+  --font-size-body:    13px;   /* maps from --text-base */
+  --font-size-mono:    12px;   /* maps from --text-sm */
+  --font-size-caption: 11px;   /* maps from --text-xs */
+
+  /* ── Font weight aliases ── */
+  --font-weight-body:    400;
+  --font-weight-heading: 700;
+  --font-weight-mono:    400;
+
+  /* ── Line height aliases ── */
+  --line-height-body:    1.5;
+  --line-height-heading: 1.25;
+
+  /* ── Type scale aliases (rem per css-tokens.md utility classes) ── */
+  --type-display: var(--text-2xl);
+  --type-h1:      var(--text-xl);
+  --type-h2:      var(--text-lg);
+  --type-body:    var(--text-base);
+  --type-mono:    var(--text-sm);
+  --type-caption: var(--text-xs);
+  --type-micro:   var(--text-xs);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   TYPOGRAPHY UTILITY CLASSES (ion- prefix)
+   Monospace-only. Sizes in rem per css-tokens.md.
+   ═══════════════════════════════════════════════════════════════ */
+
+.ion-display {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xl);
+  font-weight: 700;
+  line-height: var(--leading-tight);
+  letter-spacing: -0.01em;
+}
+
+.ion-h1 {
+  font-family: var(--font-mono);
+  font-size: var(--text-xl);
+  font-weight: 700;
+  line-height: var(--leading-tight);
+  letter-spacing: -0.01em;
+}
+
+.ion-h2 {
+  font-family: var(--font-mono);
+  font-size: var(--text-lg);
+  font-weight: 700;
+  line-height: var(--leading-tight);
+}
+
+.ion-h3 {
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  font-weight: 600;
+  line-height: var(--leading-normal);
+}
+
+.ion-body {
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+  font-weight: 400;
+  line-height: var(--leading-normal);
+}
+
+.ion-mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 400;
+  line-height: var(--leading-normal);
+}
+
+.ion-caption {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 400;
+  line-height: var(--leading-normal);
+  color: var(--color-text-secondary);
+}
+
+.ion-micro {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 400;
+  line-height: var(--leading-tight);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
