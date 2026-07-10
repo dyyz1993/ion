@@ -241,19 +241,65 @@ pub fn retrieve_turns(entries: &[Value], params: &RetrievalParams, full_content:
     // 按 turn_summary entry 或 user→assistant 边界分组
     let groups = group_into_turns(&visible);
 
-    let turns: Vec<TurnOverview> = groups
+    let all_turns: Vec<TurnOverview> = groups
         .iter()
         .map(|g| extract_turn_overview(g, full_content))
         .collect();
 
-    let total_count = turns.len();
+    let total_count = all_turns.len();
 
-    // TODO: 分页（按 turnId 游标），第 2 期实现
+    // 分页（按 turnId 游标）
+    let limit = if params.limit == 0 { total_count } else { params.limit };
+
+    // 正向分页（after）
+    let start = if let Some(ref after) = params.after {
+        let after_id: u64 = after.parse().unwrap_or(0);
+        all_turns.iter().position(|t| t.turn_id > after_id).unwrap_or(all_turns.len())
+    } else {
+        0
+    };
+
+    // 反向分页（before）
+    let (start, end) = if let Some(ref before) = params.before {
+        let before_id: u64 = before.parse().unwrap_or(0);
+        let before_idx = all_turns.iter().position(|t| t.turn_id == before_id).unwrap_or(all_turns.len());
+        let s = before_idx.saturating_sub(limit);
+        (s, before_idx)
+    } else {
+        let e = (start + limit).min(all_turns.len());
+        (start, e)
+    };
+
+    let page: Vec<TurnOverview> = if start < end {
+        all_turns[start..end].to_vec()
+    } else if start < all_turns.len() {
+        all_turns[start..(start + limit).min(all_turns.len())].to_vec()
+    } else {
+        vec![]
+    };
+
+    let has_more = if params.before.is_some() {
+        start > 0
+    } else {
+        end < total_count
+    };
+
+    let next_cursor = if has_more && !page.is_empty() {
+        if params.before.is_some() {
+            // 反向分页的 nextCursor 是上一页起点（向前加载）
+            Some(page.first().map(|t| t.turn_id.to_string()).unwrap_or_default())
+        } else {
+            Some(page.last().map(|t| t.turn_id.to_string()).unwrap_or_default())
+        }
+    } else {
+        None
+    };
+
     TurnsResult {
-        turns,
-        has_more: false,
+        turns: page,
+        has_more,
         total_count,
-        next_cursor: None,
+        next_cursor,
     }
 }
 
@@ -265,6 +311,19 @@ pub fn retrieve_turns(entries: &[Value], params: &RetrievalParams, full_content:
 pub fn retrieve_inputs(entries: &[Value], _params: &RetrievalParams) -> InputsResult {
     let view_filtered = apply_view_filter(entries, &View::Live);
     let visible = apply_visibility_filter(&view_filtered);
+
+    // 从 turn_summary 建立 userEntryId → turnId 映射
+    let mut user_to_turn: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    let mut auto_turn: u64 = 0;
+    for entry in &visible {
+        if entry.get("type").and_then(|v| v.as_str()) == Some("turn_summary") {
+            let turn_id = entry.get("turnId").and_then(|v| v.as_u64());
+            let user_eid = entry.get("userEntryId").and_then(|v| v.as_str());
+            if let (Some(tid), Some(uid)) = (turn_id, user_eid) {
+                user_to_turn.insert(uid.to_string(), tid);
+            }
+        }
+    }
 
     let mut inputs = Vec::new();
     for entry in &visible {
@@ -286,8 +345,15 @@ pub fn retrieve_inputs(entries: &[Value], _params: &RetrievalParams) -> InputsRe
             .unwrap_or("")
             .to_string();
         let text = extract_message_text(entry);
+        // 关联 turn_id：优先从 turn_summary 查，查不到自动递增
+        let turn_id = if let Some(tid) = user_to_turn.get(&entry_id) {
+            Some(*tid)
+        } else {
+            auto_turn += 1;
+            Some(auto_turn - 1)
+        };
         inputs.push(InputItem {
-            turn_id: None, // TODO: 从 turn_summary 关联
+            turn_id,
             entry_id,
             text,
         });
@@ -384,63 +450,69 @@ fn truncate_after_last_compaction(entries: &[Value]) -> Vec<Value> {
 }
 
 /// 可见性过滤：排除被 deletion 标记的 entry，替换 segment_summary 覆盖的 entry。
-/// 同时隐藏 deletion/segment_summary 元数据 entry 本身（它们不该展示给用户）。
+/// 同时隐藏 deletion/segment_summary/restoration 元数据 entry 本身。
+///
+/// 单次遍历构建元数据，单次遍历过滤（原 5 次遍历优化为 2 次）。
 fn apply_visibility_filter(entries: &[Value]) -> Vec<Value> {
     use std::collections::{HashMap, HashSet};
 
-    // 1. 收集所有 deletion 的 targetIds
-    let mut deleted_ids: HashSet<String> = entries
-        .iter()
-        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("deletion"))
-        .filter_map(|e| e.get("targetIds").and_then(|v| v.as_array()))
-        .flatten()
-        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-        .collect();
+    // ── 第 1 次遍历：构建所有元数据集合 ──
+    let mut deleted_ids: HashSet<String> = HashSet::new();
+    let mut segment_targets: HashSet<String> = HashSet::new();
+    let mut restored_ids: HashSet<String> = HashSet::new();
+    let mut segment_summaries: HashMap<String, String> = HashMap::new();
 
-    // 2. 收集所有 segment_summary 的 targetIds（这些消息被折叠了）
-    let mut segment_targets: HashSet<String> = entries
-        .iter()
-        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("segment_summary"))
-        .filter_map(|e| e.get("targetIds").and_then(|v| v.as_array()))
-        .flatten()
-        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-        .collect();
+    for e in entries {
+        let etype = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        match etype {
+            "deletion" => {
+                if let Some(arr) = e.get("targetIds").and_then(|v| v.as_array()) {
+                    for v in arr {
+                        if let Some(s) = v.as_str() {
+                            deleted_ids.insert(s.to_string());
+                        }
+                    }
+                }
+            }
+            "segment_summary" => {
+                if let Some(arr) = e.get("targetIds").and_then(|v| v.as_array()) {
+                    for v in arr {
+                        if let Some(s) = v.as_str() {
+                            segment_targets.insert(s.to_string());
+                        }
+                    }
+                    // 第一个 targetId → summary（折叠位置标记）
+                    if let Some(first) = arr.first().and_then(|v| v.as_str()) {
+                        let summary = e.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+                        segment_summaries.insert(first.to_string(), summary.to_string());
+                    }
+                }
+            }
+            "restoration" => {
+                if let Some(arr) = e.get("targetIds").and_then(|v| v.as_array()) {
+                    for v in arr {
+                        if let Some(s) = v.as_str() {
+                            restored_ids.insert(s.to_string());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 
-    // 2b. restoration 撤销 deletion/segment_summary：移除被恢复的 targetIds
-    let restored_ids: HashSet<String> = entries
-        .iter()
-        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("restoration"))
-        .filter_map(|e| e.get("targetIds").and_then(|v| v.as_array()))
-        .flatten()
-        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-        .collect();
+    // restoration 撤销 deleted/segment 的 target
     deleted_ids.retain(|id| !restored_ids.contains(id));
     segment_targets.retain(|id| !restored_ids.contains(id));
 
-    // 3. 构建 segment_summary id → summary 映射（用于在折叠位置插入 BranchSummary）
-    let segment_summaries: HashMap<String, String> = entries
-        .iter()
-        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("segment_summary"))
-        .filter_map(|e| {
-            let summary = e.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            // 第一个 targetId → summary（折叠位置标记）
-            let first_target = e
-                .get("targetIds")
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_str())?;
-            Some((first_target.to_string(), summary))
-        })
-        .collect();
-
-    // 4. 过滤 + 替换
+    // ── 第 2 次遍历：过滤 + 替换 ──
     entries
         .iter()
         .filter_map(|e| {
             let etype = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
             let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
 
-            // deletion/segment_summary/restoration 元数据 entry 本身不展示
+            // 元数据 entry 本身不展示
             if etype == "deletion" || etype == "segment_summary" || etype == "restoration" {
                 return None;
             }

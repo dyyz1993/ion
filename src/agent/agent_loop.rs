@@ -555,6 +555,11 @@ impl Agent {
             self.drain_steering().await?;
             self.maybe_compact().await?;
 
+            // Hook: on_context (modify messages before cloning snapshot)
+            // 对齐 pi transformContext：扩展在 snapshot 前修改 self.messages，
+            // 这样折叠/注入效果本轮就生效，不会延迟一轮。
+            self.extensions.on_context(&mut self.messages).await?;
+
             // Build context for provider (clone to avoid borrow issues)
             let mut sys_prompt = self.system_prompt.clone().unwrap_or_default();
             self.extensions.on_system_prompt(&mut sys_prompt).await?;
@@ -590,15 +595,6 @@ impl Agent {
                 max_retries: Some(self.config.max_retries),
                 response_format: self.config.response_format.clone(),
             };
-
-            // Hook: on_system_prompt → on_context (对齐 pi: 先提示词后消息)
-            if let Some(ref sp) = self.system_prompt {
-                let mut sp_mut = sp.clone();
-                self.extensions.on_system_prompt(&mut sp_mut).await?;
-            }
-
-            // Hook: on_context (modify messages before sending to LLM)
-            self.extensions.on_context(&mut self.messages).await?;
 
             let (stop_reason, events) = self.stream_with_retry(&ctx, &options).await?;
 

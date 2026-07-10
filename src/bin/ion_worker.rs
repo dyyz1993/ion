@@ -1269,24 +1269,21 @@ async fn main() {
 
                 // 从 JSONL 构建消息 entry id → 数组索引的映射
                 let entries = ion::message_retrieval::load_entries_cached(&worker_cwd);
-                let msg_entry_ids: Vec<String> = entries.iter()
-                    .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("message"))
-                    .map(|e| e.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string())
-                    .collect();
 
-                // 验证：JSONL 消息数应与 agent 内存消息数一致（否则映射失效）
-                if msg_entry_ids.len() != agent.messages().len() {
+                // 尝试精确索引映射（compaction 前的快速路径）
+                let indices = resolve_target_indices(
+                    &entries,
+                    agent.messages(),
+                    &target_ids,
+                );
+
+                if indices.is_empty() {
                     output_response(&id, "delete_entries", &serde_json::json!({
                         "deleted": 0, "before": before, "after": before,
-                        "error": format!("entry/index mismatch: jsonl={} agent={}", msg_entry_ids.len(), agent.messages().len())
+                        "error": "no matching entries found (possibly after compaction)"
                     }));
                     continue;
                 }
-
-                // 找到 target_ids 对应的消息索引
-                let indices: Vec<usize> = target_ids.iter()
-                    .filter_map(|tid| msg_entry_ids.iter().position(|eid| eid == tid))
-                    .collect();
 
                 if indices.is_empty() {
                     output_response(&id, "delete_entries", &serde_json::json!({
@@ -1323,29 +1320,19 @@ async fn main() {
                     continue;
                 }
 
-                // 从 JSONL 构建索引映射
+                // 从 JSONL 构建索引映射（支持 compaction 后的降级匹配）
                 let entries = ion::message_retrieval::load_entries_cached(&worker_cwd);
-                let msg_entry_ids: Vec<String> = entries.iter()
-                    .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("message"))
-                    .map(|e| e.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string())
-                    .collect();
 
-                if msg_entry_ids.len() != agent.messages().len() {
-                    output_response(&id, "summarize_entries", &serde_json::json!({
-                        "summarized": 0, "before": before, "after": before,
-                        "error": format!("entry/index mismatch: jsonl={} agent={}", msg_entry_ids.len(), agent.messages().len())
-                    }));
-                    continue;
-                }
-
-                let indices: Vec<usize> = target_ids.iter()
-                    .filter_map(|tid| msg_entry_ids.iter().position(|eid| eid == tid))
-                    .collect();
+                let indices = resolve_target_indices(
+                    &entries,
+                    agent.messages(),
+                    &target_ids,
+                );
 
                 if indices.is_empty() {
                     output_response(&id, "summarize_entries", &serde_json::json!({
                         "summarized": 0, "before": before, "after": before,
-                        "error": "no matching entries found"
+                        "error": "no matching entries found (possibly after compaction)"
                     }));
                     continue;
                 }
@@ -2318,6 +2305,63 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+/// 将 JSONL entry IDs 解析为 agent 内存消息数组的索引。
+///
+/// 两条路径：
+/// 1. **精确映射**（compaction 前）：JSONL message entry 与 self.messages 一一对应
+/// 2. **内容匹配降级**（compaction 后）：JSONL 消息数 > 内存消息数，
+///    用 entry 里的 message 序列化内容在 self.messages 中查找匹配
+fn resolve_target_indices(
+    entries: &[serde_json::Value],
+    agent_messages: &[ion::agent::messages::Message],
+    target_ids: &[String],
+) -> Vec<usize> {
+    let msg_entries: Vec<&serde_json::Value> = entries.iter()
+        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("message"))
+        .collect();
+
+    // 路径 1：精确索引映射（计数一致时）
+    if msg_entries.len() == agent_messages.len() {
+        let entry_ids: Vec<&str> = msg_entries.iter()
+            .filter_map(|e| e.get("id").and_then(|v| v.as_str()))
+            .collect();
+        return target_ids.iter()
+            .filter_map(|tid| entry_ids.iter().position(|eid| *eid == tid))
+            .collect();
+    }
+
+    // 路径 2：内容匹配降级（compaction 后，计数不一致）
+    // 用 target_id 从 JSONL 找到对应的 message 内容，
+    // 然后在 agent 的内存消息里按序列化内容查找
+    tracing::info!(
+        "[soft-delete] entry/index mismatch (jsonl={} agent={}), falling back to content matching",
+        msg_entries.len(), agent_messages.len()
+    );
+
+    // 构建 entry_id → 序列化 message 文本 的映射
+    let id_to_content: std::collections::HashMap<&str, String> = msg_entries.iter()
+        .filter_map(|e| {
+            let id = e.get("id").and_then(|v| v.as_str())?;
+            let msg_val = e.get("message")?;
+            // 用 message 的 JSON 序列化做内容指纹
+            Some((id, serde_json::to_string(msg_val).unwrap_or_default()))
+        })
+        .collect();
+
+    // 构建 agent 内存消息的序列化文本列表
+    let agent_contents: Vec<String> = agent_messages.iter()
+        .map(|m| serde_json::to_string(m).unwrap_or_default())
+        .collect();
+
+    target_ids.iter()
+        .filter_map(|tid| {
+            let target_content = id_to_content.get(tid.as_str())?;
+            // 在 agent 内存里找第一条内容匹配的
+            agent_contents.iter().position(|c| c == target_content)
+        })
+        .collect()
 }
 
 /// Adapter: box an `Arc<FauxProvider>` so it can be used as the inner
