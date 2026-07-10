@@ -1042,7 +1042,28 @@ async fn main() {
                     "tier": cur.tier,
                 }));
             },
-            "get_settings" => output_response(&id, "get_settings", &serde_json::json!({})),
+            "get_settings" => {
+                let cfg = ion::config::IonConfig::load();
+                let key = params.get("key").and_then(|v| v.as_str());
+                if let Some(k) = key {
+                    let val = match k {
+                        "default_provider" | "default-provider" => serde_json::json!(cfg.default_provider),
+                        "default_model" | "default-model" => serde_json::json!(cfg.default_model),
+                        "api_key" | "api-key" => serde_json::json!(if cfg.api_key.is_some() { "***" } else { "" }),
+                        "base_url" | "base-url" => serde_json::json!(cfg.base_url),
+                        "runtime" => serde_json::json!(cfg.runtime),
+                        "extensions" => serde_json::json!(cfg.extensions),
+                        _ => serde_json::Value::Null,
+                    };
+                    output_response(&id, "get_settings", &serde_json::json!({ "key": k, "value": val }));
+                } else {
+                    let mut cfg_json = serde_json::to_value(&cfg).unwrap_or_default();
+                    if cfg_json.get("api_key").is_some() {
+                        cfg_json["api_key"] = serde_json::json!(if cfg.api_key.is_some() { "***" } else { "" });
+                    }
+                    output_response(&id, "get_settings", &cfg_json);
+                }
+            }
             "get_commands" => output_response(&id, "get_commands", &serde_json::json!([])),
             "get_skills" => output_response(&id, "get_skills", &serde_json::json!([])),
             "get_extensions" => output_response(&id, "get_extensions", &serde_json::json!([])),
@@ -1792,7 +1813,51 @@ async fn main() {
                 }
             }
 
-            "set_settings" => output_response(&id, "set_settings", &serde_json::Value::Null),
+            "set_settings" => {
+                let key = params.get("key").and_then(|v| v.as_str()).unwrap_or("");
+                let value = params.get("value").cloned().unwrap_or(serde_json::Value::Null);
+                if key.is_empty() {
+                    output_response(&id, "set_settings", &serde_json::json!({"error": "missing 'key' parameter"}));
+                } else {
+                    let mut cfg = ion::config::IonConfig::load();
+                    let old_val: serde_json::Value;
+                    match key {
+                        "default_provider" | "default-provider" => {
+                            old_val = serde_json::json!(cfg.default_provider);
+                            cfg.default_provider = value.as_str().map(|s| s.to_string());
+                        }
+                        "default_model" | "default-model" => {
+                            old_val = serde_json::json!(cfg.default_model);
+                            cfg.default_model = value.as_str().map(|s| s.to_string());
+                        }
+                        "api_key" | "api-key" => {
+                            old_val = serde_json::json!("***");
+                            cfg.api_key = value.as_str().map(|s| s.to_string());
+                        }
+                        "base_url" | "base-url" => {
+                            old_val = serde_json::json!(cfg.base_url);
+                            cfg.base_url = value.as_str().map(|s| s.to_string());
+                        }
+                        _ => {
+                            output_response(&id, "set_settings", &serde_json::json!({
+                                "error": format!("unknown key '{}' (supported: default_provider, default_model, api_key, base_url)", key),
+                            }));
+                            return;
+                        }
+                    }
+                    match cfg.save() {
+                        Ok(()) => output_response(&id, "set_settings", &serde_json::json!({
+                            "key": key,
+                            "old_value": old_val,
+                            "new_value": if key.contains("api_key") { serde_json::json!("***") } else { value },
+                            "saved": true,
+                        })),
+                        Err(e) => output_response(&id, "set_settings", &serde_json::json!({
+                            "error": format!("save failed: {}", e),
+                        })),
+                    }
+                }
+            }
             "rollback_preview" => output_response(&id, "rollback_preview", &serde_json::Value::Null),
             "copy_fork" => output_response(&id, "copy_fork", &serde_json::json!({"sessionId":sid})),
             "append_system_event" => {

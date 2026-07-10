@@ -203,7 +203,7 @@ ion subscribe --session x --extension memory
 | ~~`set_cwd`~~ | 切工作目录 | ✅ 已实现（agent.set_session_cwd + 路径验证） |
 | ~~`set_auto_retry`~~ / ~~`abort_retry`~~ | 重试控制 | ✅ 已实现（set_max_retries + agent.stop()） |
 | ~~`abort_bash`~~ | 中断 bash 执行 | ✅ 已实现（process_map kill SIGTERM） |
-| `get_settings` / `set_settings` | 统一设置管理 | ❌ 待实现 |
+| ~~`get_settings`~~ / ~~`set_settings`~~ | 统一设置管理 | ✅ 已实现（IonConfig load/save + api_key 脱敏） |
 | `get_modified_files` / `get_file_diff` | 看本次 session 改了哪些文件 | ❌ 待实现（需 file snapshot） |
 
 ### 🟢 P2 — 依赖底层能力，暂缓
