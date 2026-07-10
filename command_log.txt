@@ -1,2 +1,0 @@
-Hello! Command executed successfully.
-System responding normally.
