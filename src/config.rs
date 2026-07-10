@@ -45,9 +45,23 @@ pub struct IonConfig {
     #[serde(default)]
     pub extensions: HashMap<String, ExtensionConfig>,
 
+    /// Model tier aliases (fast/pro/max → provider/model-id)
+    /// 用户可以用 --model fast 代替 --model deepseek/deepseek-v4-flash
+    #[serde(default = "default_tier_models")]
+    pub tier_models: HashMap<String, String>,
+
     /// Runtime configuration (remote hosts, sandbox, routes)
     #[serde(default)]
     pub runtime: RuntimeConfig,
+}
+
+/// 默认 tier aliases（对齐 pi DEFAULT_TIER_ALIASES）
+fn default_tier_models() -> HashMap<String, String> {
+    let mut m = HashMap::new();
+    m.insert("fast".into(), "deepseek/deepseek-v4-flash".into());
+    m.insert("pro".into(), "deepseek/deepseek-v4-pro".into());
+    m.insert("max".into(), "zai/glm-4.6".into());
+    m
 }
 
 /// Runtime configuration
@@ -457,6 +471,7 @@ impl Default for IonConfig {
             provider_api_keys: HashMap::new(),
             providers: HashMap::new(),
             extensions: HashMap::new(),
+            tier_models: default_tier_models(),
             runtime: RuntimeConfig::default(),
         }
     }

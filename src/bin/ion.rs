@@ -576,6 +576,15 @@ fn resolve_effective(cli: &Cli) -> EffectiveConfig {
         .or_else(|| cfg.default_model.clone())
         .unwrap_or_else(|| default_model_for_provider(&provider).to_string());
 
+    // Step 2.5: Resolve tier alias (fast/pro/max → provider/model-id)
+    // 用户可以 --model fast，底层解析成具体模型；也支持直接指定模型
+    let raw_model = if let Some(resolved) = cfg.tier_models.get(raw_model.trim()) {
+        eprintln!("[model] tier alias '{}' → '{}'", raw_model.trim(), resolved);
+        resolved.clone()
+    } else {
+        raw_model
+    };
+
     // Step 3: Parse --model provider/id:thinking syntax (对齐 pi)
     // Examples:
     //   --model openai/gpt-4o          → provider=openai, model=gpt-4o

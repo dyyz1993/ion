@@ -1181,7 +1181,10 @@ async fn main() {
                     .collect();
                 output_response(&id, "get_available_models", &serde_json::json!(models));
             },
-            "get_tier_models" => output_response(&id, "get_tier_models", &serde_json::json!({"fast":"deepseek-v4-flash","pro":"deepseek-v4-pro","max":"deepseek-v4-pro"})),
+            "get_tier_models" => {
+                let cfg = ion::config::IonConfig::load();
+                output_response(&id, "get_tier_models", &serde_json::json!(cfg.tier_models));
+            }
             "get_tree" => {
                 let mode = params.get("mode").and_then(|v| v.as_str()).unwrap_or("structure");
                 let entries: Vec<serde_json::Value> =
@@ -1817,7 +1820,23 @@ async fn main() {
                     "message": "retry loop interrupted",
                 }));
             }
-            "set_tier_models" => output_response(&id, "set_tier_models", &serde_json::Value::Null),
+            "set_tier_models" => {
+                let tier = params.get("tier").and_then(|v| v.as_str()).unwrap_or("");
+                let model = params.get("model").and_then(|v| v.as_str()).unwrap_or("");
+                if tier.is_empty() || model.is_empty() {
+                    output_response(&id, "set_tier_models", &serde_json::json!({"error": "missing 'tier' or 'model'"}));
+                } else {
+                    let mut cfg = ion::config::IonConfig::load();
+                    let old = cfg.tier_models.get(tier).cloned();
+                    cfg.tier_models.insert(tier.to_string(), model.to_string());
+                    match cfg.save() {
+                        Ok(()) => output_response(&id, "set_tier_models", &serde_json::json!({
+                            "tier": tier, "oldModel": old, "newModel": model, "saved": true,
+                        })),
+                        Err(e) => output_response(&id, "set_tier_models", &serde_json::json!({"error": format!("save failed: {}", e)})),
+                    }
+                }
+            }
             "get_tree_with_leaf" => {
                 // get_tree + 带 pathToLeaf（root → current leaf 的路径）
                 let entries: Vec<serde_json::Value> =
