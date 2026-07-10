@@ -187,13 +187,6 @@ impl ContextIndex {
 
         // 超出限制时汇总
         if total > shown {
-            let stale_count = paths.iter().take(shown)
-                .filter(|p| {
-                    self.files[*p].reads.last()
-                        .map(|r| r.status != Freshness::Current)
-                        .unwrap_or(false)
-                })
-                .count();
             lines.push(format!(
                 "  ... ({} more files, {} shown of {})",
                 total - shown, shown, total
