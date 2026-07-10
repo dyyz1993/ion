@@ -886,3 +886,188 @@ du -sh ~/.ion/file-store/<project_key>/
 | J3 | 1000 轮会话查询 | 实际耗时记录（不断言 O(1)） |
 | J4 | GC 后查历史 | diffAvailable=false + SNAPSHOT_OBJECT_MISSING |
 | J5 | mtime 碰撞 | XFail：漏检（X3） |
+
+---
+
+## 17. restore_files — 代码恢复（消息+代码联动回滚）
+
+### 17.1 核心思路
+
+用户回滚到某条消息时，可选"连代码一起恢复"：
+
+```bash
+# ① 只回滚消息（当前行为，代码不动）
+ion --resume <sid> --rollback msg_005
+
+# ② 回滚消息 + 恢复代码（磁盘文件恢复到 Turn 5 时的状态）
+ion --resume <sid> --rollback msg_005 --restore-code
+```
+
+### 17.2 恢复算法
+
+```
+restore_code_to_turn(target_turn):
+  1. 收集 target_turn 之后所有 ToolSnapshot（turn > target_turn）
+  2. 按文件路径分组
+  3. 对每个文件，找到它在 ≤ target_turn 时的最后状态：
+     ├─ 有 before_hash → 恢复成 before 内容（回到改之前）
+     ├─ before_hash = None（文件原本不存在）→ 删除文件
+     └─ 文件在 ≤ target_turn 没有快照 → 不动（不是本次会话改的）
+  4. 写入一个 restore_point 快照（记录恢复前的磁盘状态，方便再"撤销恢复"）
+```
+
+**关键**：不是"恢复到第 N 轮的快照"，而是"**撤销第 N 轮之后的所有改动**"。
+
+### 17.3 原子性保证
+
+- 恢复前先写 `restore_point` 快照（记录当前磁盘状态到 object store）
+- 如果恢复中途失败（文件锁、权限等），已恢复的文件不回滚（best-effort）
+- restore_point 存在 snapshots/restore/ 目录，可用于"撤销恢复"
+
+### 17.4 RPC 接口
+
+```bash
+# 独立调用（不配合消息回滚）
+ion rpc --session <sid> --method restore_files \
+  --params '{"toTurn": 5}'
+```
+
+**响应：**
+
+```json
+{
+  "restoredFiles": [
+    { "path": "src/main.rs", "action": "restored", "fromHash": "abc...", "toHash": "def..." },
+    { "path": "src/new.txt", "action": "deleted", "wasHash": "ghi..." },
+    { "path": "Cargo.toml", "action": "skipped", "reason": "not_modified_after_turn_5" }
+  ],
+  "restorePoint": "rp_001",
+  "summary": { "restored": 3, "deleted": 1, "skipped": 5 }
+}
+```
+
+---
+
+## 18. 消息+代码联动回滚 — 完整 case 矩阵
+
+### 18.1 联动模式
+
+```bash
+# CLI flag
+ion --resume <sid> --rollback <entry_id> [--restore-code] [--rollback-reason "..."]
+
+# RPC
+ion rpc --session <sid> --method rollback \
+  --params '{"targetEntryId":"msg_005","restoreCode":true,"reason":"方向错了"}'
+```
+
+执行顺序：
+```
+--restore-code 触发时：
+  1. 解析 target_entry_id → 得到 target_turn
+  2. restore_code_to_turn(target_turn)    ← 先恢复代码
+  3. make_rollback(target_entry_id)       ← 再回滚消息（追加 leaf_pointer）
+  4. 记录 restore_point + tombstone
+```
+
+### 18.2 场景 case（按复杂度递增）
+
+#### 基础场景
+
+| # | 场景 | 操作 | 预期 |
+|---|------|------|------|
+| K1 | 只回滚消息（无代码） | `--rollback msg_005` | leaf 移动，磁盘文件不变 |
+| K2 | 回滚消息 + 代码 | `--rollback msg_005 --restore-code` | leaf 移动 + 磁盘恢复 |
+| K3 | 回滚到 Turn 1（回到起点） | `--rollback msg_001 --restore-code` | 所有文件恢复到会话开始前 |
+| K4 | 回滚后继续对话 | 回滚到 Turn 5，然后 Turn 6 新 write | 新快照 turn_id=6，before_hash 是恢复后的内容 |
+
+#### 压缩 + 回滚
+
+| # | 场景 | 操作 | 预期 |
+|---|------|------|------|
+| K5 | 回滚穿越压缩点 | Turn 10 压缩了 Turn 1-5，回滚到 Turn 3 | **拒绝**（check_compaction_safety），提示用 fork |
+| K6 | 回滚到压缩点之后 | Turn 10 压缩了 Turn 1-5，回滚到 Turn 8 | ✅ 正常，代码恢复 Turn 8 之后的部分 |
+| K7 | 回滚后触发新压缩 | 回滚到 Turn 5，新对话到 Turn 15 触发压缩 | 压缩只影响消息层，快照不受影响（快照按 turn 存） |
+| K8 | 压缩点之前的快照查询 | 压缩后查 get_file_diff(toTurn=3) | 快照仍在，diff 可查（快照不受压缩影响） |
+
+#### 回滚再回滚（多次回滚）
+
+| # | 场景 | 操作 | 预期 |
+|---|------|------|------|
+| K9 | 二次回滚（回滚后再次回滚） | Turn 5→回滚到 Turn 3→再回滚到 Turn 1 | 两次都追加 leaf_pointer，代码恢复到 Turn 1 |
+| K10 | 回滚后撤销回滚（恢复到回滚前） | Turn 5→回滚到 Turn 3→恢复到 Turn 5 | 用 restore_point 恢复代码 + checkout 回 Turn 5 分支 |
+| K11 | 回滚→恢复→回滚（三次操作） | Turn 5→回滚 3→恢复 5→回滚 1 | 每次 restore 都存 restore_point，可追溯 |
+| K12 | 回滚后的新改动被再次回滚 | Turn 5→回滚 3→Turn 6 新 write→回滚 3 | Turn 6 的快照被恢复（代码撤销），msg 回到 Turn 3 |
+
+#### 回滚 + 分支
+
+| # | 场景 | 操作 | 预期 |
+|---|------|------|------|
+| K13 | 回滚后在分叉点开新分支 | 回滚到 Turn 3→`--branch msg_003` | 分支从 Turn 3 开始，代码已是 Turn 3 状态 |
+| K14 | 切换分支时恢复代码 | 从分支 A（Turn 8）checkout 到分支 B（Turn 5） | 代码恢复到分支 B 的 Turn 5 状态 |
+| K15 | fork-from-leaf + 代码 | `--fork-from-leaf sid/msg_005` | 新会话继承 Turn 5 的代码状态 |
+
+#### 边界和异常
+
+| # | 场景 | 操作 | 预期 |
+|---|------|------|------|
+| K16 | 恢复代码时文件被外部锁定 | restore_code 写 a.txt 但文件锁 | best-effort：跳过锁定文件，记录 error |
+| K17 | 恢复时文件已被用户手动改 | Turn 5 改了 a.txt，用户手改 a.txt，回滚到 Turn 3 | **覆盖用户手动改动**（恢复优先），restore_point 保留了手动版本 |
+| K18 | 回滚到一个文件不存在的 turn | Turn 1 没有写任何文件，回滚到 Turn 1 | 所有会话期间创建的文件被删除 |
+| K19 | restore_point 缺失（GC 删了） | restore_point 的 object 被 GC | 返回 SNAPSHOT_OBJECT_MISSING，不可撤销恢复 |
+| K20 | 回滚跨多个 worktree | 主仓库 Turn 5 → worktree 回滚到 Turn 3 | worktree 的代码恢复，主仓库不受影响（session 隔离） |
+
+#### 性能场景
+
+| # | 场景 | 操作 | 预期 |
+|---|------|------|------|
+| K21 | 回滚 100 轮的改动 | Turn 100 回滚到 Turn 1，恢复 50 个文件 | < 1s（从 object store 读+写，不扫目录） |
+| K22 | 回滚后查 diff | 回滚后 get_file_diff | diff 反映回滚前的历史（快照不丢） |
+
+### 18.3 回滚 + 恢复的状态流转图
+
+```
+Turn 1: write a.txt "v1"
+Turn 2: write b.txt "v2"
+Turn 3: edit a.txt "v1→v1b"
+Turn 4: write c.txt "v3"
+  │
+  ├─ 回滚到 Turn 2 + restore-code ──────────────────────┐
+  │   磁盘恢复：                                        │
+  │     a.txt → "v1"（撤销 Turn 3 的 edit）              │
+  │     c.txt → 删除（Turn 4 创建的）                    │
+  │     b.txt → 不动（Turn 2 之后没改过）                 │
+  │   消息：leaf → msg_002                              │
+  │   快照：restore_point 记录了恢复前磁盘状态            │
+  │                                                     │
+  ├─ Turn 5（新对话）：write a.txt "v4"                  │
+  │   before_hash = hash("v1")（磁盘是恢复后的 v1）       │
+  │                                                     │
+  ├─ 再次回滚到 Turn 2 + restore-code ─────────────────┐│
+  │   磁盘恢复：                                       ││
+  │     a.txt → "v1"（撤销 Turn 5 的 write）             ││
+  │   消息：leaf → msg_002（追加新 leaf_pointer）        ││
+  │   快照：新 restore_point                             ││
+  │                                                     ││
+  └─ 撤销恢复（用 restore_point 回到 Turn 5 状态）────────┘│
+      磁盘：a.txt → "v4"                                ││
+      消息：checkout 回 Turn 5 分支                      ││
+                                                        ││
+  历史完整保留：                                         ││
+    snapshots/tool/1.jsonl: a.txt null→v1               ││
+    snapshots/tool/2.jsonl: b.txt null→v2               ││
+    snapshots/tool/3.jsonl: a.txt v1→v1b                ││
+    snapshots/tool/4.jsonl: c.txt null→v3               ││
+    snapshots/restore/rp_001.json: 恢复前磁盘状态        ││
+    snapshots/tool/5.jsonl: a.txt v1→v4                 ││
+    snapshots/restore/rp_002.json: 第二次恢复前状态      ││
+```
+
+### 18.4 不支持的联动场景（XFail）
+
+| # | 场景 | 为什么不支持 |
+|---|------|------------|
+| XL1 | 回滚穿越压缩点 + 代码恢复 | 压缩点之前的消息已丢失，代码恢复没参照 |
+| XL2 | 恢复 bash 间接改的项目外文件 | 路线 2 只扫 cwd，项目外 bash 改动没快照 |
+| XL3 | 精确恢复到某个 turn 的"完整磁盘状态" | 只恢复被快照追踪的文件，未追踪文件不动 |
+| XL4 | 跨 session 恢复代码 | 快照按 session 存，不能从 session A 恢复到 session B |
