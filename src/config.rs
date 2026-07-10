@@ -402,11 +402,14 @@ fn default_enabled() -> bool {
 
 impl IonConfig {
     /// Check if a built-in extension is enabled (defaults to true if not configured).
+    /// 默认关闭的扩展（不在 config 里声明时，这些扩展默认不启用）
+    const DEFAULT_DISABLED: &'static [&'static str] = &["file-snapshot"];
+
     pub fn is_extension_enabled(&self, name: &str) -> bool {
         self.extensions
             .get(name)
             .map(|c| c.enabled)
-            .unwrap_or(true)
+            .unwrap_or(!Self::DEFAULT_DISABLED.contains(&name))
     }
 }
 
