@@ -373,38 +373,6 @@ async fn main() {
         }
     }
 
-    // ── MCP 代理工具注册（方案 C：从 host 拉工具列表，注册 McpProxyTool）──
-    // Worker 不直连 MCP server，所有调用通过 bridge 代理到 host
-    {
-        match manager_bridge.send_command("mcp_list_tools", serde_json::json!({})).await {
-            Ok(resp) => {
-                if resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
-                    let tools_list = resp
-                        .get("data")
-                        .and_then(|d| d.get("tools"))
-                        .cloned()
-                        .unwrap_or(serde_json::json!([]));
-                    if let Some(arr) = tools_list.as_array() {
-                        for tool in arr {
-                            let full_name = tool.get("full_name").and_then(|v| v.as_str()).unwrap_or("");
-                            let desc = tool.get("description").and_then(|v| v.as_str()).unwrap_or("");
-                            let params = tool.get("input_schema").cloned().unwrap_or(serde_json::json!({}));
-                            if !full_name.is_empty() {
-                                agent.register_tool(Box::new(McpProxyTool::new(
-                                    full_name, desc, &params, manager_bridge.clone(),
-                                )));
-                            }
-                        }
-                        tracing::info!("[mcp] {} proxy tools registered from host", arr.len());
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("[mcp] failed to fetch tools from host: {e}");
-            }
-        }
-    }
-
     if let Some(msgs) = preloaded {
         agent = agent.with_messages(msgs);
     }
@@ -600,6 +568,38 @@ async fn main() {
             }
         }
     });
+
+    // ── MCP 代理工具注册（方案 C：从 host 拉工具列表，注册 McpProxyTool）──
+    // 必须在 stdin reader task 启动后执行——send_command 需要 stdin reader 拦截 _reply_to 响应
+    {
+        match manager_bridge.send_command("mcp_list_tools", serde_json::json!({})).await {
+            Ok(resp) => {
+                if resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    let tools_list = resp
+                        .get("data")
+                        .and_then(|d| d.get("tools"))
+                        .cloned()
+                        .unwrap_or(serde_json::json!([]));
+                    if let Some(arr) = tools_list.as_array() {
+                        for tool in arr {
+                            let full_name = tool.get("full_name").and_then(|v| v.as_str()).unwrap_or("");
+                            let desc = tool.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                            let params = tool.get("input_schema").cloned().unwrap_or(serde_json::json!({}));
+                            if !full_name.is_empty() {
+                                agent.register_tool(Box::new(McpProxyTool::new(
+                                    full_name, desc, &params, manager_bridge.clone(),
+                                )));
+                            }
+                        }
+                        tracing::info!("[mcp] {} proxy tools registered from host", arr.len());
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("[mcp] failed to fetch tools from host: {e}");
+            }
+        }
+    }
 
     while let Some(cmd) = stdin_rx.recv().await {
         let id = cmd.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -2346,12 +2346,19 @@ async fn main() {
                         continue;
                     }
                 };
-                // toggle/restart 需要新的 host 命令（后续添加），暂时返回提示
-                output_response(&id, "mcp_toggle_server", &serde_json::json!({
-                    "name": name,
-                    "enabled": enabled,
-                    "note": "toggle via host (Phase 4 pending)",
-                }));
+                match manager_bridge.send_command("mcp_toggle_server", serde_json::json!({
+                    "name": name, "enabled": enabled
+                })).await {
+                    Ok(resp) => {
+                        if resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            output_response(&id, "mcp_toggle_server", resp.get("data").unwrap_or(&serde_json::Value::Null));
+                        } else {
+                            output_error_response(&id, "mcp_toggle_server",
+                                resp.get("error").and_then(|v| v.as_str()).unwrap_or("unknown"));
+                        }
+                    }
+                    Err(e) => output_error_response(&id, "mcp_toggle_server", &format!("proxy: {e}")),
+                }
             }
             "mcp_restart_server" => {
                 let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -2359,10 +2366,19 @@ async fn main() {
                     output_error_response(&id, "mcp_restart_server", "missing 'name'");
                     continue;
                 }
-                output_response(&id, "mcp_restart_server", &serde_json::json!({
-                    "name": name,
-                    "status": "note: restart via host (Phase 4 pending)",
-                }));
+                match manager_bridge.send_command("mcp_restart_server", serde_json::json!({
+                    "name": name
+                })).await {
+                    Ok(resp) => {
+                        if resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            output_response(&id, "mcp_restart_server", resp.get("data").unwrap_or(&serde_json::Value::Null));
+                        } else {
+                            output_error_response(&id, "mcp_restart_server",
+                                resp.get("error").and_then(|v| v.as_str()).unwrap_or("unknown"));
+                        }
+                    }
+                    Err(e) => output_error_response(&id, "mcp_restart_server", &format!("proxy: {e}")),
+                }
             }
             "continue" => {
                 // Continue last session

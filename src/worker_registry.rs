@@ -1487,6 +1487,55 @@ impl WorkerRegistry {
                     };
                     self.write_manager_response(&from_worker, resp).await;
                 }
+                "mcp_toggle_server" => {
+                    let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let enabled = params.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+                    let resp = if let Some(ref mgr) = self.mcp_manager {
+                        match mgr.toggle_server(&name, enabled).await {
+                            Ok(()) => serde_json::json!({
+                                "_reply_to": reply_to,
+                                "success": true,
+                                "data": {"name": name, "enabled": enabled}
+                            }),
+                            Err(e) => serde_json::json!({
+                                "_reply_to": reply_to,
+                                "success": false,
+                                "error": e
+                            }),
+                        }
+                    } else {
+                        serde_json::json!({
+                            "_reply_to": reply_to,
+                            "success": false,
+                            "error": "mcp not available"
+                        })
+                    };
+                    self.write_manager_response(&from_worker, resp).await;
+                }
+                "mcp_restart_server" => {
+                    let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let resp = if let Some(ref mgr) = self.mcp_manager {
+                        match mgr.restart_server(&name).await {
+                            Ok(()) => serde_json::json!({
+                                "_reply_to": reply_to,
+                                "success": true,
+                                "data": {"name": name, "status": "connected"}
+                            }),
+                            Err(e) => serde_json::json!({
+                                "_reply_to": reply_to,
+                                "success": false,
+                                "error": e
+                            }),
+                        }
+                    } else {
+                        serde_json::json!({
+                            "_reply_to": reply_to,
+                            "success": false,
+                            "error": "mcp not available"
+                        })
+                    };
+                    self.write_manager_response(&from_worker, resp).await;
+                }
                 _ => {
                     tracing::warn!("[manager] unknown command: {command}");
                     if !reply_to.is_empty() {
