@@ -2,3 +2,8 @@
 target/
 .DS_Store
 .ion/
+
+# 测试副作用文件（测试在根目录写的临时文件）
+current_greeting.txt
+hello_test.txt
+system_response.txt

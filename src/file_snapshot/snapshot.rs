@@ -59,8 +59,7 @@ pub enum BeforeState {
         path: String,
         before_hash: Option<String>,
     },
-    /// bash 工具：记录目录快照（路线 2，后续实现）
-    #[allow(dead_code)]
+    /// bash 工具：记录目录快照（路线 2）
     DirCapture {
         scan: super::scanner::DirScanResult,
     },
@@ -71,7 +70,6 @@ pub struct SnapshotStore {
     /// 存储目录（snapshots/ 子目录）
     snapshots_dir: PathBuf,
     /// object store 引用（用于存内容）
-    #[allow(dead_code)]
     objects: std::sync::Arc<ObjectStore>,
 }
 
