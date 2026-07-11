@@ -145,7 +145,7 @@ ion subscribe --session x --extension memory
 | `get_full_messages` | ✅ | ✅ 已实现（返回 messages + count + note） |
 | `get_tree` / `get_tree_with_leaf` | ✅ / ✅ | ✅ 全部（structure/full 双模式 + pathToLeaf + branches） |
 | `get_modified_files` / `get_file_diff` | ✅ | ✅ 已实现（File Snapshot 双路快照） |
-| `switch_session` / `fork` / `clone` | Manager 级 | ⚠️ 分级不同 |
+| `switch_session` / `fork` / `clone` | Manager 级 | ✅ 已实现（Instance 级 RPC，非 Manager 级） |
 | `navigate_tree` | ✅ | ✅ 已实现（线性节点列表 + onLeafPath/isCurrentLeaf 标记） |
 | `delete_entries` / `summarize_entries` | `delete_entries` / `summarize_entries` | ✅ |
 | `get_session_stats` | `get_session_stats` | ✅ |
@@ -155,6 +155,7 @@ ion subscribe --session x --extension memory
 | `get_system_prompt` | `get_system_prompt` | ✅ |
 | `get_active_tools` / `set_active_tools` | ✅ | ✅ 已实现（agent.list_tool_names / restrict_tools） |
 | `get_queue` / `clear_queue` | ✅ | ✅ 已实现（队列内容快照 / 清空 steering+follow_up） |
+| `set_steering_mode` / `set_follow_up_mode` | ✅ | ✅ 已实现（steering/follow_up 队列模式切换） |
 | `promote_follow_up` | `promote_follow_up` | ✅ |
 | `get_flags` / `set_flag` | ✅ | ✅ 已实现（ExtensionRegistry 运行时 flag 存储 + 所有 JSON 类型） |
 | `reload` | `reload` | ✅ |
@@ -216,9 +217,7 @@ ion subscribe --session x --extension memory
 | ~~`get_flags`~~ / ~~`set_flag`~~ | 扩展 flag 系统 | ✅ 已实现（ExtensionRegistry 运行时存储） |
 | ~~`get_commands`~~ / ~~`get_skills`~~ | slash 命令 + skill 系统 | ✅ 已实现（RPC 命令列表 + skill 文件扫描） |
 | ~~MCP 三件套~~ | MCP client | ✅ 已实现（Phase 1-3：配置 + rmcp 真实连接 + 自动重连 + HTTP 多 Worker，[MCP_SYSTEM.md](./MCP_SYSTEM.md)） |
-| Remote tools 三件套 | 远程工具协议 | ❌ 待实现 |
-| MCP 三件套 | 依赖 MCP client 实现 |
-| Remote tools 三件套 | 依赖远程工具协议 |
+| Remote tools 三件套 | 远程工具协议 | ❌ 待实现（用户明确推迟：P2 优先级低） |
 
 ## 五、ion 这边的改造方案
 
