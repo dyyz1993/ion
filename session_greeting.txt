@@ -1,2 +1,0 @@
-Hello! New session greeting file.
-Session active and ready.
