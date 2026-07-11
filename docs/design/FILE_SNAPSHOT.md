@@ -6,17 +6,62 @@
 
 ## 概览
 
-追踪 agent 在会话中改了哪些文件，提供精确 diff 和变更历史查询。对标 pi 的 `file-snapshot-manager.ts`，但简化存储——不做完整的 mini-git，而用**双路混合**方案。
+追踪 agent 在会话中改了哪些文件，提供精确 diff、变更历史查询、tree 快照、per-file 审批和回滚。对标 pi 的 `file-snapshot-manager.ts` + `file-review` extension。
+
+### 能力清单
+
+**快照与变更检测**
 
 | 能力 | 入口 | 状态 |
 |------|------|------|
-| write/edit 精确 diff | `on_tool_execution_start/end` | 🔧 待实现 |
-| bash 目录扫描兜底 | `on_tool_execution_start/end` | 🔧 待实现 |
-| get_modified_files | RPC | 🔧 待实现 |
-| get_file_diff | RPC | 🔧 待实现 |
-| get_batch_diffs | RPC | 🔧 待实现 |
-| get_file_history | RPC | 🔧 待实现 |
-| restore_files（回滚） | RPC | 🔧 后续 |
+| write/edit 精确 diff（工具拦截） | `on_tool_execution_start/end` | ✅ 已实现 |
+| bash 目录扫描兜底 | `on_tool_execution_start/end` | ✅ 已实现 |
+| turn_end 仓库内扫描兜底 | `on_turn_end` | ✅ 已实现 |
+| tree 快照模型（path→hash 完整状态） | `tree_store.rs` | ✅ 已实现 |
+| step-snapshot（有变更才写） | `on_turn_end` | ✅ 已实现 |
+| 不遵守 .gitignore（独立忽略清单） | `scanner.rs DEFAULT_IGNORE` | ✅ 已实现 |
+
+**查询 RPC**
+
+| 能力 | 入口 | 状态 |
+|------|------|------|
+| get_modified_files | RPC | ✅ 已实现 |
+| get_file_diff | RPC | ✅ 已实现 |
+| get_batch_diffs | RPC | ✅ 已实现 |
+| get_file_history | RPC | ✅ 已实现 |
+
+**回滚**
+
+| 能力 | 入口 | 状态 |
+|------|------|------|
+| restore_files（整体回滚，delta 流） | RPC + `--restore-code` | ✅ 已实现 |
+| restore_to_tree（整体回滚，tree O(1)） | `restore.rs` | ✅ 已实现 |
+| restore_single_file（单文件回滚） | `restore.rs` | ✅ 已实现 |
+| undo_restore（消费 restore_point） | `restore.rs` | ✅ 已实现 |
+| 回滚预览（preview 不写盘） | `restore.rs` | ✅ 已实现 |
+
+**审批（per-file，对标 pi file-review）**
+
+| 能力 | 入口 | 状态 |
+|------|------|------|
+| review_pending（列出待审批 + diff） | RPC + `ApprovalManager` | ✅ 已实现 |
+| review_approve（单文件批准，锚定 baseline） | RPC | ✅ 已实现 |
+| review_reject（单文件拒绝 + 自动回滚） | RPC | ✅ 已实现 |
+| review_approve_all / review_reject_all | RPC | ✅ 已实现 |
+| review_approvals（查询审批状态） | RPC | ✅ 已实现 |
+| on_gate_check（Stop 时推审批请求） | `ApprovalExtension` | ✅ 已实现 |
+| 审批状态持久化 + 恢复 | session.jsonl file-approval entry | ✅ 已实现 |
+| deny 消息注入（agent 下一轮可见） | session.jsonl approval_deny entry | ✅ 已实现 |
+| 事件推送（ApprovalRequest/Resolved/Reset） | stdout JSON → EventBus → subscribe | ✅ 已实现 |
+| subscribe --ui 路由 | event-pump customType 白名单 | ✅ 已实现 |
+
+**GC 与存储**
+
+| 能力 | 入口 | 状态 |
+|------|------|------|
+| content-addressable 去重 | `object_store.rs` | ✅ 已实现 |
+| 分级 GC（7天→24h→可达性）+ 100MB 配额 | `gc.rs` + `on_session_start` | ✅ 已实现 |
+| 空间线性增长验证（100轮×10文件→605 objects） | `tree_store.rs` 测试 | ✅ 已验证 |
 
 ### 两大核心约束（贯穿全设计）
 
