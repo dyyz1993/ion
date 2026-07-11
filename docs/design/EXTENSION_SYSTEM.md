@@ -326,3 +326,210 @@ echo '{"id":"1","method":"extension_add","params":{"path":"/abs/to/my_extension.
 | `plan-plugin/src/lib.rs` | PRD 计划模式 WASM 扩展 |
 | `src/bin/ion_worker.rs` | RPC 命令 dispatch（含 extension_add/remove/list/reload） |
 | `tests/plugin_tests.rs` | 27 个扩展测试 |
+
+---
+
+## 11. Flags 系统（运行时扩展 flag 读写）
+
+### 11.1 概述
+
+扩展可以在 JSON 配置里声明 flag（`FlagDef`），用户运行时通过 RPC 读写 flag 值来调整扩展行为。
+
+| 能力 | 入口 | 说明 |
+|------|------|------|
+| 声明 flag（静态） | 扩展 JSON 配置 | `flags: { verbose: { description, type, default } }` |
+| 读 flag（运行时） | `get_flags` RPC | 返回运行时值（优先）或 default |
+| 写 flag（运行时） | `set_flag` RPC | 修改运行时值（session 内存） |
+| 扩展内读 flag | `ExtensionRegistry::get_flag()` | 扩展代码内部查当前值 |
+
+### 11.2 `get_flags` RPC 接口规格
+
+**请求：**
+
+```bash
+# 查所有扩展的 flag
+ion rpc --session <sid> --method get_flags
+
+# 查指定扩展的 flag
+ion rpc --session <sid> --method get_flags \
+  --params '{"extension":"my-ext"}'
+```
+
+**请求参数：**
+
+| 字段 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `extension` | string | 可选 | 扩展名。省略 = 返回所有扩展 |
+
+**响应 JSON（成功，指定扩展）：**
+
+```json
+{
+  "type": "response",
+  "id": "1",
+  "command": "get_flags",
+  "success": true,
+  "data": {
+    "extension": "my-ext",
+    "flags": {
+      "verbose": false,
+      "max_items": 100
+    }
+  }
+}
+```
+
+**响应 JSON（成功，全部扩展）：**
+
+```json
+{
+  "type": "response",
+  "id": "1",
+  "command": "get_flags",
+  "success": true,
+  "data": {
+    "memory": {},
+    "bash": {}
+  }
+}
+```
+
+**响应 JSON（失败）：**
+
+```json
+{
+  "type": "response",
+  "id": "1",
+  "command": "get_flags",
+  "success": true,
+  "data": {
+    "extension": "nonexistent",
+    "flags": {}
+  }
+}
+```
+
+> 未设值的扩展返回空 `{}`（无运行时 flag 时为空对象）。
+
+### 11.3 `set_flag` RPC 接口规格
+
+**请求：**
+
+```bash
+ion rpc --session <sid> --method set_flag \
+  --params '{"extension":"my-ext","flag":"verbose","value":true}'
+```
+
+**请求参数：**
+
+| 字段 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `extension` | string | 必填 | 扩展名 |
+| `flag` | string | 必填 | flag 名 |
+| `value` | any | 必填 | flag 值（bool/number/string/object/array） |
+
+**响应 JSON（成功）：**
+
+```json
+{
+  "type": "response",
+  "id": "1",
+  "command": "set_flag",
+  "success": true,
+  "data": {
+    "extension": "my-ext",
+    "flag": "verbose",
+    "value": true,
+    "set": true
+  }
+}
+```
+
+**响应 JSON（失败，缺参数）：**
+
+```json
+{
+  "type": "response",
+  "id": "1",
+  "command": "set_flag",
+  "success": true,
+  "data": {
+    "error": "missing 'extension' or 'flag' parameter"
+  }
+}
+```
+
+### 11.4 CLI 测试指南
+
+#### Group F: Flags 系统
+
+##### F1 查询所有扩展的 flag
+
+```bash
+ion rpc --session sess_xxx --method get_flags
+```
+
+**验证点：**
+- ✅ 返回所有已加载扩展的 flag（可能为空对象）
+- ✅ 不崩溃
+
+##### F2 设置 flag
+
+```bash
+ion rpc --session sess_xxx --method set_flag \
+  --params '{"extension":"memory","flag":"debug","value":true}'
+```
+
+**验证点：**
+- ✅ 返回 `set: true`
+- ✅ value 反映设置的值
+
+##### F3 设置后查询
+
+```bash
+# 先 set
+ion rpc --session sess_xxx --method set_flag \
+  --params '{"extension":"memory","flag":"debug","value":true}'
+
+# 再 get
+ion rpc --session sess_xxx --method get_flags \
+  --params '{"extension":"memory"}'
+```
+
+**验证点：**
+- ✅ get 返回的 flags 含 `debug: true`
+- ✅ 值与 set 的一致
+
+##### F4 缺参数报错
+
+```bash
+ion rpc --session sess_xxx --method set_flag \
+  --params '{"flag":"debug","value":true}'
+```
+
+**验证点：**
+- ✅ 返回 error "missing 'extension' or 'flag'"
+
+##### F5 查不存在的扩展
+
+```bash
+ion rpc --session sess_xxx --method get_flags \
+  --params '{"extension":"nonexistent"}'
+```
+
+**验证点：**
+- ✅ 返回空 `flags: {}`，不崩溃
+
+##### F6 设置不同类型的 flag 值
+
+```bash
+ion rpc --session sess_xxx --method set_flag \
+  --params '{"extension":"memory","flag":"limit","value":42}'
+
+ion rpc --session sess_xxx --method set_flag \
+  --params '{"extension":"memory","flag":"mode","value":"strict"}'
+```
+
+**验证点：**
+- ✅ number 类型正常
+- ✅ string 类型正常

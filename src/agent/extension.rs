@@ -243,6 +243,9 @@ pub struct ExtensionRegistry {
     pub permission_engine: Option<crate::kernel::PermissionEngine>,
     /// UI 事件系统（可选，用于确认弹窗）
     pub ui_system: Option<crate::kernel::UiSystem>,
+    /// 运行时 flag 值（extension_name → flag_name → value）
+    /// 静态定义在 ExtensionDef.flags，运行时值覆盖 default
+    runtime_flags: std::sync::Mutex<std::collections::HashMap<String, std::collections::HashMap<String, serde_json::Value>>>,
 }
 
 impl Default for ExtensionRegistry {
@@ -255,6 +258,7 @@ impl ExtensionRegistry {
             extensions: Vec::new(),
             permission_engine: None,
             ui_system: None,
+            runtime_flags: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -272,6 +276,34 @@ impl ExtensionRegistry {
 
     pub fn register(&mut self, ext: Box<dyn Extension>) { self.extensions.push(ext); }
     pub fn is_empty(&self) -> bool { self.extensions.is_empty() }
+
+    /// 获取扩展的 flag 值（运行时值优先，否则 default）
+    pub fn get_flags(&self, extension_name: &str) -> serde_json::Value {
+        // 先从运行时存储取
+        let runtime = self.runtime_flags.lock().unwrap();
+        if let Some(ext_flags) = runtime.get(extension_name) {
+            return serde_json::Value::Object(
+                ext_flags.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+            );
+        }
+        // 没有 → 返回空对象（静态定义在 ExtensionDef 里，运行时不一定能拿到）
+        serde_json::json!({})
+    }
+
+    /// 设置扩展的运行时 flag 值
+    pub fn set_flag(&self, extension_name: &str, flag_name: &str, value: serde_json::Value) {
+        let mut runtime = self.runtime_flags.lock().unwrap();
+        runtime
+            .entry(extension_name.to_string())
+            .or_default()
+            .insert(flag_name.to_string(), value);
+    }
+
+    /// 读取单个 flag 的运行时值（扩展内部用）
+    pub fn get_flag(&self, extension_name: &str, flag_name: &str) -> Option<serde_json::Value> {
+        let runtime = self.runtime_flags.lock().unwrap();
+        runtime.get(extension_name)?.get(flag_name).cloned()
+    }
     pub fn len(&self) -> usize { self.extensions.len() }
 
     /// 列出所有扩展名（get_extensions RPC 用）

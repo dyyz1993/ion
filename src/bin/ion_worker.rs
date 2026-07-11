@@ -1335,7 +1335,24 @@ async fn main() {
                     "autoCompaction": agent.auto_compact_enabled(),
                 }));
             },
-            "get_flags" => output_response(&id, "get_flags", &serde_json::json!({})),
+            "get_flags" => {
+                let ext_name = params.get("extension").and_then(|v| v.as_str()).unwrap_or("");
+                if ext_name.is_empty() {
+                    // 无参数 → 返回所有扩展的 flag
+                    let names = agent.extensions().names();
+                    let mut all_flags = serde_json::Map::new();
+                    for name in &names {
+                        all_flags.insert(name.clone(), agent.extensions().get_flags(name));
+                    }
+                    output_response(&id, "get_flags", &serde_json::Value::Object(all_flags));
+                } else {
+                    let flags = agent.extensions().get_flags(ext_name);
+                    output_response(&id, "get_flags", &serde_json::json!({
+                        "extension": ext_name,
+                        "flags": flags,
+                    }));
+                }
+            }
 
             "get_active_tools" => {
                 let tools: Vec<String> = agent.list_tool_names();
@@ -2096,7 +2113,24 @@ async fn main() {
             },
             "get_all_tools" => output_response(&id, "get_all_tools", &serde_json::json!([])),
             "get_flag_values" => output_response(&id, "get_flag_values", &serde_json::json!({})),
-            "set_flag" => output_response(&id, "set_flag", &serde_json::Value::Null),
+            "set_flag" => {
+                let ext_name = params.get("extension").and_then(|v| v.as_str()).unwrap_or("");
+                let flag_name = params.get("flag").and_then(|v| v.as_str()).unwrap_or("");
+                let value = params.get("value").cloned().unwrap_or(serde_json::Value::Null);
+                if ext_name.is_empty() || flag_name.is_empty() {
+                    output_response(&id, "set_flag", &serde_json::json!({
+                        "error": "missing 'extension' or 'flag' parameter",
+                    }));
+                } else {
+                    agent.extensions().set_flag(ext_name, flag_name, value.clone());
+                    output_response(&id, "set_flag", &serde_json::json!({
+                        "extension": ext_name,
+                        "flag": flag_name,
+                        "value": value,
+                        "set": true,
+                    }));
+                }
+            }
             "get_mcp_servers" => output_response(&id, "get_mcp_servers", &serde_json::json!([])),
             "mcp_toggle_server" => output_response(&id, "mcp_toggle_server", &serde_json::Value::Null),
             "mcp_restart_server" => output_response(&id, "mcp_restart_server", &serde_json::Value::Null),

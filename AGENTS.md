@@ -589,6 +589,11 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - 兜底链：tier_models → DEFAULT_TIER_ALIASES → default_model
   - `on_model_select(&mut ctx)` 钩子改可变 — 扩展能覆盖模型选择（自定义策略）
   - **验证**: 9 CI 测试全过 ✅
+- **Extension Flags（运行时扩展 flag 读写）**:
+  - `get_flags` / `set_flag` RPC（ExtensionRegistry 运行时 flag 存储）
+  - 支持所有 JSON 类型（bool/number/string/object/array）
+  - 扩展内通过 `ExtensionRegistry::get_flag()` 读取
+  - **验证**: 10 CI 测试全过 ✅
 
 ### 🎭 FauxProvider（架构级 LLM Mock，对标 pi）
 
@@ -784,10 +789,11 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | realtime_stitch_ci (CLI E2E) | 10 | Group I：host + create_session + subscribe + prompt + 事件流(agent_start/text_delta/agent_end) + 历史补齐 |
 | file_snapshot_ci (CLI E2E) | 19 | Group A-H：object_store 去重/scanner 目录扫描/diff 生成/GC/4 RPC 端到端/worktree 并行/restore 恢复 |
 | tier_models_ci (CLI E2E) | 9 | Group T：get/set_tier_models RPC + --model fast/pro 别名解析 + 兜底 |
+| extension_flags_ci (CLI E2E) | 10 | Group F：get_flags/set_flag RPC + 类型支持 + 缺参数报错 |
 | soft_delete_ci (CLI E2E) | 7 | 软删除/软压缩：mark_deleted/summarized/restore |
 | overflow_recovery_ci (CLI E2E) | 5 | 上下文溢出恢复 |
 | workflow_ci (CLI E2E) | 15 | Workflow Engine W1-W7 |
-| **测试覆盖合计** | **606** | 全部通过 ✅（session_tree_ci 废弃不计入） |
+| **测试覆盖合计** | **616** | 全部通过 ✅（session_tree_ci 废弃不计入） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)

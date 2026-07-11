@@ -156,7 +156,7 @@ ion subscribe --session x --extension memory
 | `get_active_tools` / `set_active_tools` | ✅ | ✅ 已实现（agent.list_tool_names / restrict_tools） |
 | `get_queue` / `clear_queue` | ✅ | ✅ 已实现（队列内容快照 / 清空 steering+follow_up） |
 | `promote_follow_up` | `promote_follow_up` | ✅ |
-| `get_flags` / `set_flag` | ❌ | ❌ 缺 |
+| `get_flags` / `set_flag` | ✅ | ✅ 已实现（ExtensionRegistry 运行时 flag 存储 + 所有 JSON 类型） |
 | `reload` | `reload` | ✅ |
 | `set_cwd` | ✅ | ✅ 已实现（agent.set_session_cwd + 路径验证） |
 | `get_agents` / `switch_agent` / `get_current_agent` / `get_agent_detail` | 全部对应 | ✅ |
@@ -213,14 +213,10 @@ ion subscribe --session x --extension memory
 |---|---|---|
 | ~~`get_tree`~~ / ~~`get_tree_with_leaf`~~ | Session Tree | ✅ 已实现 |
 | ~~`navigate_tree`~~ | Session Tree | ✅ 已实现 |
-| `get_flags` / `set_flag` | 扩展 flag 系统 | ❌ 待实现 |
+| ~~`get_flags`~~ / ~~`set_flag`~~ | 扩展 flag 系统 | ✅ 已实现（ExtensionRegistry 运行时存储） |
 | ~~`get_commands`~~ / ~~`get_skills`~~ | slash 命令 + skill 系统 | ✅ 已实现（RPC 命令列表 + skill 文件扫描） |
 | MCP 三件套 | MCP client | ❌ 待实现 |
 | Remote tools 三件套 | 远程工具协议 | ❌ 待实现 |
-|---|---|
-| `navigate_tree` / `get_tree` / `get_tree_with_leaf` | 依赖 `leaf` entry + 会话树 |
-| `get_flags` / `set_flag` | 依赖扩展 flag 系统 |
-| `get_commands` / `get_skills` | 依赖 slash 命令 + skill 系统 |
 | MCP 三件套 | 依赖 MCP client 实现 |
 | Remote tools 三件套 | 依赖远程工具协议 |
 
