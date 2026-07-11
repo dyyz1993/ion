@@ -139,6 +139,53 @@ docs/
 4. ✅ 术语规范：用 "extension" 不用 "plugin" / "插件"？
 5. ✅ 同主题是否已有文档？（避免新增重复文档，应该合并到已有；旧文档归档到 `docs/archive/`）
 
+### 形成新功能时的文档操作规范（必读）
+
+每开始一个新功能或扩展功能时，**必须按以下顺序操作**：
+
+**第一步：判断内核还是扩展**
+
+按 [内核 vs 扩展方针](#内核-vs-扩展功能设计指导方针) 判断：
+- 基础设施（进程/通信/存储/安全/模型选择）→ **内核** → 文档放 `docs/design/`
+- 策略/行为定制（回答风格/审查规则/工具）→ **扩展** → 文档放 `{extension}/MANUAL.md`
+- 两者都可能用到的能力 → **内核实现 + 扩展消费** → 设计文档放 `docs/design/`，扩展手册放 `{extension}/MANUAL.md`
+
+**第二步：先查有没有已有文档要更新**
+
+> **禁止对已有功能新开文档。** 如果新功能是对已有功能的补充/增强，必须**读已有文档**，然后在原文档上更新。
+
+| 情况 | 操作 |
+|------|------|
+| 新功能属于全新子系统 | 新建 `docs/design/XXX.md`（用 DESIGN_TEMPLATE） |
+| 新功能是已有功能的补充（如 restore 是 File Snapshot 的延伸）| **更新已有文档**（FILE_SNAPSHOT.md 加新章节），不新建 |
+| 新功能是 RPC 对齐（如 tier_models）| 更新 `docs/design/PI_RPC_ALIGNMENT.md`，不新建 |
+| 新功能是扩展能力（如 on_model_select &mut）| 更新 `docs/design/EXTENSION_SYSTEM.md` + AGENTS.md 已完成段 |
+
+**第三步：选模板 + 写文档**
+
+| 文档类型 | 模板 | 放哪 |
+|---------|------|------|
+| 内核功能设计 | DESIGN_TEMPLATE | `docs/design/` |
+| CLI 验证用例 | CLI_TEST_TEMPLATE | `docs/testing/` 或附在设计文档里 |
+| 验收规格（给评审方）| TEST_SPEC_TEMPLATE | `docs/testing/` |
+| WASM 扩展手册 | EXTENSION_MANUAL_TEMPLATE | `{extension}/MANUAL.md` |
+| pi 对齐调研 | PI_ALIGNMENT_TEMPLATE | `docs/design/` |
+
+**第四步：写 CLI 验证（Group A/B/C 格式）**
+
+每个功能**必须有 CLI 验证**，参照 BASH_EXTENSION.md / COMPACTION.md 的 Group 格式：
+- 放在 `tests/xxx_ci.sh`（自动化脚本）
+- 或附在设计文档的"CLI 测试指南"章节
+- 验证脚本登记到 AGENTS.md 测试统计表
+
+**第五步：更新 AGENTS.md**
+
+功能做完后，**必须更新 AGENTS.md**：
+- 已完成段加描述 + 验证方法
+- 测试统计表加新测试的数量
+- 源码导航加新模块（如果有）
+- 路线图标 ✅
+
 ### 扩展手册规范
 
 每个扩展**必须**在其源码目录下维护一份 `MANUAL.md`，格式参照 [EXTENSION_MANUAL_TEMPLATE.md](./docs/templates/EXTENSION_MANUAL_TEMPLATE.md)。
