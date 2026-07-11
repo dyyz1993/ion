@@ -32,3 +32,4 @@ pub mod paths;
 pub mod retry;
 pub mod workflow;
 pub mod file_snapshot;
+pub mod mcp;

@@ -30,6 +30,7 @@ serde_yaml = "0.9.34"
 which = "8.0.4"
 base64 = "0.22"
 similar = "2"
+rmcp = { version = "1", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 
 [[bin]]
 name = "ion"

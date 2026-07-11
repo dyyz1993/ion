@@ -161,7 +161,7 @@ ion subscribe --session x --extension memory
 | `set_cwd` | ✅ | ✅ 已实现（agent.set_session_cwd + 路径验证） |
 | `get_agents` / `switch_agent` / `get_current_agent` / `get_agent_detail` | 全部对应 | ✅ |
 | `set_permission_mode` | ✅ | ✅ 已实现（Runtime::set_guard_mode，CommandGuard 改 Arc<RwLock>） |
-| `get_mcp_servers` / `mcp_toggle_server` / `mcp_restart_server` | ❌ | ❌ 缺 |
+| `get_mcp_servers` / `mcp_toggle_server` / `mcp_restart_server` | ✅ | ✅ 已实现（Phase 1-3：rmcp 真实连接 + 自动重连 + HTTP 多 Worker） |
 | `register_remote_tool` / `unregister_remote_tool` | ❌ | ❌ 缺 |
 | — | `call_tool`（Tool 级直调） | ion 原创 |
 | — | `extension_rpc`（Extension 级直调） | ion 原创 |
@@ -215,7 +215,7 @@ ion subscribe --session x --extension memory
 | ~~`navigate_tree`~~ | Session Tree | ✅ 已实现 |
 | ~~`get_flags`~~ / ~~`set_flag`~~ | 扩展 flag 系统 | ✅ 已实现（ExtensionRegistry 运行时存储） |
 | ~~`get_commands`~~ / ~~`get_skills`~~ | slash 命令 + skill 系统 | ✅ 已实现（RPC 命令列表 + skill 文件扫描） |
-| MCP 三件套 | MCP client | ❌ 待实现 |
+| ~~MCP 三件套~~ | MCP client | ✅ 已实现（Phase 1-3：配置 + rmcp 真实连接 + 自动重连 + HTTP 多 Worker，[MCP_SYSTEM.md](./MCP_SYSTEM.md)） |
 | Remote tools 三件套 | 远程工具协议 | ❌ 待实现 |
 | MCP 三件套 | 依赖 MCP client 实现 |
 | Remote tools 三件套 | 依赖远程工具协议 |

@@ -277,6 +277,16 @@ impl WorkerRegistry {
         // （worktree 目录没有 .ion/，子进程需要知道原始项目路径来读 config）
         child_cmd.env("ION_PROJECT_ROOT", &project_path);
 
+        // 子 Worker 跳过 MCP 连接（方案 A：防止多 Worker 抢同一个 stdio MCP server 死锁）
+        // 只有 LLM 通过 spawn_worker 工具创建的子 worker 才跳过（config.skip_mcp=true）。
+        // host 创建的第一个入口 worker 不跳过（它持有 MCP 连接）。
+        // 子 Worker 通过 spawn_worker 工具创建时设 skip_mcp=Some("stdio")（方案 B）。
+        if let Some(ref mode) = config.skip_mcp {
+            if !mode.is_empty() {
+                child_cmd.env("ION_SKIP_MCP", mode);
+            }
+        }
+
         // 同步主进程的 runtime override 到子进程（如果主进程设了 --local/--remote）
         if let Ok(rt_override) = std::env::var("ION_RUNTIME_OVERRIDE") {
             child_cmd.env("ION_RUNTIME_OVERRIDE", &rt_override);
@@ -1863,6 +1873,12 @@ pub struct WorkerCreateConfig {
     /// Peer 模式下，汇报指令段会被追加到这个 prompt 末尾。
     #[serde(default)]
     pub initial_prompt: Option<String>,
+    /// 子 Worker 的 MCP 跳过模式：
+    /// - None / ""  → 不跳过（入口 Worker 持有全部 MCP 连接）
+    /// - "1"        → 跳过全部 MCP（完全跳过）
+    /// - "stdio"    → 只跳过 stdio，HTTP 照连（方案 B：HTTP 天然多客户端）
+    #[serde(default)]
+    pub skip_mcp: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

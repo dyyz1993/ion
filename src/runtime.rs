@@ -411,6 +411,7 @@ impl<R: Runtime + 'static> Runtime for WorkerRuntime<R> {
             "wait": req.wait,           // Child 模式下：true=阻塞, false=立即返回
             "creator": null,            // Manager 会用 _from_worker 填充
             "worktree": worktree_json,
+            "skip_mcp": "stdio",        // 子 Worker 跳过 stdio MCP（方案 B，HTTP 照连）
         });
         let resp = self.bridge.send_command("create_worker", params).await?;
 
