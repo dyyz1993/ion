@@ -8,8 +8,15 @@ use tokio::sync::Mutex;
 use ion::agent::memory::{MemoryStore, MemoryExtension, MemoryEntry};
 use ion::agent::extension::Extension;
 
+/// 测试用 JSON 文件存储（不走全局 SQLite，避免测试间数据污染）
+fn ensure_test_mode() {
+    // SAFETY: 测试单线程运行
+    unsafe { std::env::set_var("ION_MEMORY_NO_GLOBAL", "1"); }
+}
+
 /// 测试用临时目录（同时清理 ~/.ion/agent/project-data 下对应的测试数据）
 fn tmp_dir(name: &str) -> String {
+    ensure_test_mode();
     let p = std::env::temp_dir().join(format!("ion_mem_test_{name}"));
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).unwrap();

@@ -88,6 +88,10 @@ pub struct MemoryStore {
     pub turn_count: u64,
     /// 待注入队列（on_input 写入，on_context 消费）
     pub pending: Vec<PendingInject>,
+    /// V0.2 全局存储句柄（统一存储层：有则走 SQLite，无则 fallback JSON）
+    pub global_store: Option<crate::global_memory::GlobalMemoryStore>,
+    /// 项目名（用于 V0.2 的 project 字段）
+    pub project_name: String,
 }
 
 /// 一条待注入的记忆
@@ -98,11 +102,27 @@ pub struct PendingInject {
 
 impl MemoryStore {
     pub fn new(project_root: &str, session_id: &str) -> Self {
+        let project_name = std::path::Path::new(project_root)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        // 尝试打开全局 SQLite 存储（统一存储层）
+        // 测试可通过 ION_MEMORY_NO_GLOBAL=1 禁用（回退到 JSON 文件存储）
+        let global_store = if std::env::var("ION_MEMORY_NO_GLOBAL").is_err() {
+            crate::global_memory::GlobalMemoryStore::open(
+                &crate::global_memory::GlobalMemoryStore::db_path(),
+            ).ok()
+        } else {
+            None
+        };
         Self {
             project_root: project_root.to_string(),
             session_id: session_id.to_string(),
             turn_count: 0,
             pending: Vec::new(),
+            global_store,
+            project_name,
         }
     }
 
@@ -157,7 +177,23 @@ impl MemoryStore {
     }
 
     pub fn save_entry(&self, content: &str, desc: &str, cat: &str, tags: &[String], outline: &str) -> String {
-        // outline 路径净化：只允许字母、数字、下划线、连字符
+        // 统一存储：优先走 V0.2 全局 SQLite
+        if let Some(ref gstore) = self.global_store {
+            let tags_str = tags.join(",");
+            // content 拼上 description（V0.2 没有 description 字段）
+            let full_content = if desc.is_empty() {
+                content.to_string()
+            } else {
+                format!("{content}\n\nDescription: {desc}")
+            };
+            match gstore.save(&full_content, cat, &tags_str, &self.project_name, 5) {
+                Ok(id) => return id,
+                Err(e) => {
+                    tracing::warn!("[memory] global save failed, fallback to JSON: {e}");
+                }
+            }
+        }
+        // Fallback: JSON 文件存储（v0.1 原始逻辑）
         let sanitized: String = outline.chars()
             .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
             .take(64)
@@ -165,7 +201,6 @@ impl MemoryStore {
         let outline = if sanitized.is_empty() { "auto" } else { &sanitized };
         self.ensure_dirs();
         let mut entries = self.read_outline(outline);
-        // ID 生成：基于已有 mem_N 的最大 N + 1（修 bug：原来用 len+1，删除后再加会重复）
         let max_n = entries.iter()
             .filter_map(|e| e.id.strip_prefix("mem_").and_then(|n| n.parse::<usize>().ok()))
             .max()
@@ -182,7 +217,6 @@ impl MemoryStore {
         };
         entries.push(entry);
         self.write_outline(outline, &entries);
-        // 更新 index
         let mut index = self.read_index();
         if let Some(i) = index.iter_mut().find(|i| i.id == outline) {
             i.entry_count += 1;
@@ -194,6 +228,31 @@ impl MemoryStore {
     }
 
     pub fn search(&self, query: &str, outline: Option<&str>) -> Vec<MemoryEntry> {
+        // 统一存储：优先走 V0.2 FTS5 搜索
+        if let Some(ref gstore) = self.global_store {
+            // FTS5 搜索当前项目（outline 参数忽略——V0.2 用 project 维度）
+            let results = gstore.search(query, Some(&self.project_name))
+                .unwrap_or_default();
+            // 转成 MemoryEntry 格式（保持注入链路兼容）
+            return results.into_iter().map(|g| {
+                // 从 content 里拆出 description（save 时拼进去的）
+                let (content, desc) = if let Some(idx) = g.content.find("\n\nDescription: ") {
+                    (g.content[..idx].to_string(), g.content[idx+14..].to_string())
+                } else {
+                    (g.content.clone(), String::new())
+                };
+                MemoryEntry {
+                    id: g.id,
+                    content,
+                    description: desc,
+                    category: g.category,
+                    tags: if g.tags.is_empty() { vec![] } else { g.tags.split(',').map(|s| s.to_string()).collect() },
+                    outline: g.project.clone(),
+                    archived: g.archived,
+                }
+            }).collect();
+        }
+        // Fallback: v0.1 关键词双向匹配
         let q = query.to_lowercase();
         let mut results = Vec::new();
         let outlines: Vec<String> = if let Some(oid) = outline {
@@ -205,10 +264,6 @@ impl MemoryStore {
             for e in self.read_outline(&oid) {
                 if e.archived { continue; }
                 if q.is_empty() { results.push(e); continue; }
-                // 匹配规则：双向匹配（query 包含字段值 OR 字段值包含 query）
-                // 覆盖两种场景：
-                //   1. 用户输入长文本含关键词（如"用 Rust 写代码"命中 tag "rust"）
-                //   2. 用户精确搜索（如搜"rust"命中含"rust"的 content）
                 let content_match = e.content.to_lowercase().contains(&q) || q.contains(&e.content.to_lowercase());
                 let desc_match = !e.description.is_empty() && (e.description.to_lowercase().contains(&q) || q.contains(&e.description.to_lowercase()));
                 let cat_match = !e.category.is_empty() && (e.category.to_lowercase().contains(&q) || q.contains(&e.category.to_lowercase()));
