@@ -44,7 +44,7 @@
 //! │   │       └── <slug>/
 //! │   └── last_session           ← 上次会话 ID（纯文本）
 //! ├── worktrees/                 ← Git worktree 隔离
-//! │   └── <repoName>-<safeBranch>/
+//! │   └── <rand8hex>/<projectName>/  ← 实际结构（worker_registry.rs:create_worktree_advanced）
 //! └── pi-debug.log               ← 调试日志（兼容 pi 命名）
 //! ```
 //!
@@ -156,9 +156,28 @@ pub fn file_store_dir(project_key: &str) -> PathBuf {
     file_store_root().join(project_key)
 }
 
+/// ~/.ion/projects/ — 项目维度配置根目录（② 项目维度，worktree 共享）
+pub fn projects_root() -> PathBuf {
+    root().join("projects")
+}
+
+/// ~/.ion/projects/<project_key>/ — 单个项目的维度配置目录
+/// project_key 用 git common dir hash（主仓库和 worktree 一致）
+pub fn project_dimension_dir(project_key: &str) -> PathBuf {
+    projects_root().join(project_key)
+}
+
+/// ~/.ion/projects/<project_key>/config.json — 项目维度配置文件
+/// 存放含本地路径/密钥的项目级配置（MCP server、本地 tier models 等）
+pub fn project_dimension_config_path(project_key: &str) -> PathBuf {
+    project_dimension_dir(project_key).join("config.json")
+}
+
 /// ~/.ion/agent/settings.json
+/// ~/.ion/settings.json — 全局权限设置（permissions.rules）
+/// 注意：直接在 ~/.ion/ 下，不是 ~/.ion/agent/ 下（与 permission_extension 实际使用一致）
 pub fn settings_path() -> PathBuf {
-    agent_dir().join("settings.json")
+    root().join("settings.json")
 }
 
 /// ~/.ion/auth.json  (直接在 ~/.ion/ 下，权限 600)
@@ -344,6 +363,77 @@ pub fn tool_results_dir(slug: &str) -> PathBuf {
     tmp_dir()
         .join("ion-tool-results")
         .join(slug)
+}
+
+// ---------------------------------------------------------------------------
+// 项目根解析（worktree 回源 + git common dir 统一）
+// ---------------------------------------------------------------------------
+
+/// 从 cwd 反推 git 主仓库根路径（worktree → 主仓库）。
+///
+/// 算法：调 `git rev-parse --absolute-git-dir` 得到 `.git` 或 `.git/worktrees/<name>`，
+/// 裁剪掉 `/worktrees/<name>` 后缀得到 common dir（主仓库的 `.git`），其父目录即仓库根。
+///
+/// - 主仓库 `/A/ion` → git-dir `/A/ion/.git` → 仓库根 `/A/ion`
+/// - worktree `/B/wt` → git-dir `/A/ion/.git/worktrees/wt` → common `/A/ion/.git` → 仓库根 `/A/ion`
+///
+/// 非 git 目录返回 None。
+pub fn git_project_root(cwd: &str) -> Option<PathBuf> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--absolute-git-dir"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let git_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // 裁剪 worktree 后缀：/A/.git/worktrees/wt → /A/.git
+    let common = git_dir.split("/worktrees/").next().unwrap_or(&git_dir);
+    // common dir 的父目录就是仓库根（.git 的父目录）
+    let common_path = PathBuf::from(common);
+    common_path.parent().map(PathBuf::from)
+}
+
+/// 计算 git common dir 的 hash（16 位 hex），用于 project_key。
+/// 主仓库和所有 worktree 算出同一个 key → 共享 `~/.ion/projects/<key>/` 存储。
+/// 非 git 目录 fallback 到 cwd hash。
+pub fn project_key_git(cwd: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let key_source = std::process::Command::new("git")
+        .args(["rev-parse", "--absolute-git-dir"])
+        .current_dir(cwd)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            let git_dir = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            // 裁剪 worktree 后缀，使主仓库和 worktree 一致
+            Some(git_dir.split("/worktrees/").next().unwrap_or(&git_dir).to_string())
+        })
+        .unwrap_or_else(|| cwd.to_string());
+
+    let mut hasher = DefaultHasher::new();
+    key_source.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+/// 解析"项目根路径"——用于所有需要读项目级 `.ion/` 资源的配置加载点。
+///
+/// 优先级（修复缺口 #2：worktree 回源）：
+/// 1. `ION_PROJECT_ROOT` 环境变量（worker_registry spawn 子 worker 时注入主仓库根，精确）
+/// 2. `current_dir()`（非 worktree 场景，cwd 就是项目根）
+/// 3. 回退到 current_dir（上面的 or_else 分支保证不返回 None）
+///
+/// 注意：此函数返回的是"应该去哪读 `.ion/` 配置"的路径。
+/// 在 worktree 场景下，cwd 是 worktree 目录（无 `.ion/`），但 `ION_PROJECT_ROOT` 指向主仓库。
+pub fn project_root_for_config() -> PathBuf {
+    std::env::var("ION_PROJECT_ROOT")
+        .map(PathBuf::from)
+        .or_else(|_| std::env::current_dir())
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
 
 // ---------------------------------------------------------------------------
@@ -627,5 +717,104 @@ mod tests {
         assert!(themes_dir().exists());
         assert!(tools_dir().exists());
         assert!(bin_dir().exists());
+    }
+
+    // ── 缺口 #2/#3：git_project_root + project_key_git + project_root_for_config ──
+
+    #[test]
+    fn git_project_root_returns_main_repo() {
+        // 当前目录（ion 项目本身）是 git 仓库
+        let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+        let root = git_project_root(&cwd);
+        assert!(root.is_some(), "git_project_root 应返回 Some");
+        let root = root.unwrap();
+        // 主仓库根应该包含 Cargo.toml（ion 项目根）
+        assert!(
+            root.join("Cargo.toml").exists(),
+            "git_project_root 应指向仓库根（含 Cargo.toml），实际: {:?}",
+            root
+        );
+    }
+
+    #[test]
+    fn git_project_root_worktree_shares_main() {
+        // 创建临时 worktree，验证 git_project_root 返回主仓库根
+        let main_cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+        let main_root = git_project_root(&main_cwd).expect("主仓库应有 root");
+
+        let wt_path = format!("/tmp/ion_wt_root_test_{}", std::process::id());
+        let output = std::process::Command::new("git")
+            .args(["worktree", "add", &wt_path])
+            .current_dir(&main_cwd)
+            .output();
+
+        if output.is_ok() && output.as_ref().unwrap().status.success() {
+            let wt_root = git_project_root(&wt_path);
+            assert!(
+                wt_root.is_some(),
+                "worktree 的 git_project_root 应返回 Some"
+            );
+            assert_eq!(
+                wt_root.unwrap(),
+                main_root,
+                "worktree 和主仓库的 git_project_root 应相同"
+            );
+            // 清理
+            let _ = std::process::Command::new("git")
+                .args(["worktree", "remove", "--force", &wt_path])
+                .current_dir(&main_cwd)
+                .output();
+        }
+    }
+
+    #[test]
+    fn project_key_git_worktree_consistency() {
+        // project_key_git 在主仓库和 worktree 下应返回相同 hash
+        let main_cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+        let main_key = project_key_git(&main_cwd);
+        assert_eq!(main_key.len(), 16, "project_key_git 应返回 16 位 hex");
+
+        let wt_path = format!("/tmp/ion_wt_key_test_{}", std::process::id());
+        let output = std::process::Command::new("git")
+            .args(["worktree", "add", &wt_path])
+            .current_dir(&main_cwd)
+            .output();
+
+        if output.is_ok() && output.as_ref().unwrap().status.success() {
+            let wt_key = project_key_git(&wt_path);
+            assert_eq!(
+                main_key, wt_key,
+                "主仓库和 worktree 的 project_key_git 应一致"
+            );
+            let _ = std::process::Command::new("git")
+                .args(["worktree", "remove", "--force", &wt_path])
+                .current_dir(&main_cwd)
+                .output();
+        }
+    }
+
+    #[test]
+    fn project_root_for_config_env_and_cwd_fallback() {
+        // 合并成一个测试避免并行竞态（两个测试操作同一个 env var）
+        // 步骤 1：未设置 ION_PROJECT_ROOT 时，回退到 current_dir
+        // SAFETY: 测试单线程内顺序操作 env var
+        unsafe { std::env::remove_var("ION_PROJECT_ROOT"); }
+        let root = project_root_for_config();
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(
+            root, cwd,
+            "未设 ION_PROJECT_ROOT 时应回退到 current_dir"
+        );
+
+        // 步骤 2：设置 ION_PROJECT_ROOT 后，优先用它
+        let test_path = "/tmp/ion_config_root_test_xyz";
+        unsafe { std::env::set_var("ION_PROJECT_ROOT", test_path); }
+        let root = project_root_for_config();
+        assert_eq!(
+            root, PathBuf::from(test_path),
+            "设置 ION_PROJECT_ROOT 后应优先用它"
+        );
+        // 清理
+        unsafe { std::env::remove_var("ION_PROJECT_ROOT"); }
     }
 }

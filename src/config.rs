@@ -50,6 +50,11 @@ pub struct IonConfig {
     #[serde(default = "default_tier_models")]
     pub tier_models: HashMap<String, String>,
 
+    /// MCP server 配置（详见 docs/design/MCP_SYSTEM.md）
+    /// 放 ② 项目维度（含本地路径/密钥，不依赖 git 同步）
+    #[serde(default)]
+    pub mcp_servers: HashMap<String, McpServerConfig>,
+
     /// Runtime configuration (remote hosts, sandbox, routes)
     #[serde(default)]
     pub runtime: RuntimeConfig,
@@ -62,6 +67,56 @@ fn default_tier_models() -> HashMap<String, String> {
     m.insert("pro".into(), "deepseek/deepseek-v4-pro".into());
     m.insert("max".into(), "zai/glm-4.6".into());
     m
+}
+
+/// 单个 MCP server 的配置。
+/// 两种传输方式用 untagged enum 区分（兼容 pi 配置格式）：
+/// - 有 `command` 字段 → stdio（spawn 子进程）
+/// - 有 `type: "streamable-http"` → HTTP 远程 server
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum McpServerConfig {
+    /// stdio 传输：spawn 子进程（最常用）
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: HashMap<String, String>,
+        #[serde(default)]
+        cwd: Option<String>,
+        #[serde(default)]
+        disabled: bool,
+    },
+    /// Streamable HTTP 传输：远程 server
+    Http {
+        /// 必须是 "streamable-http"
+        #[serde(rename = "type")]
+        kind: String,
+        url: String,
+        #[serde(default)]
+        headers: HashMap<String, String>,
+        #[serde(default)]
+        disabled: bool,
+    },
+}
+
+impl McpServerConfig {
+    /// 是否被禁用
+    pub fn is_disabled(&self) -> bool {
+        match self {
+            McpServerConfig::Stdio { disabled, .. } => *disabled,
+            McpServerConfig::Http { disabled, .. } => *disabled,
+        }
+    }
+
+    /// 传输方式（"stdio" / "streamable-http"），用于 get_mcp_servers 展示
+    pub fn transport(&self) -> &'static str {
+        match self {
+            McpServerConfig::Stdio { .. } => "stdio",
+            McpServerConfig::Http { .. } => "streamable-http",
+        }
+    }
 }
 
 /// Runtime configuration
@@ -472,6 +527,7 @@ impl Default for IonConfig {
             providers: HashMap::new(),
             extensions: HashMap::new(),
             tier_models: default_tier_models(),
+            mcp_servers: HashMap::new(),
             runtime: RuntimeConfig::default(),
         }
     }
@@ -516,6 +572,17 @@ impl IonConfig {
             cfg.merge_project(project_cfg);
         }
 
+        // ② 项目维度配置（~/.ion/projects/<key>/config.json）—— 优先级高于 ③ 仓库内
+        // 含本地路径/密钥的配置（MCP server 等），worktree 共享，不依赖 git 同步
+        if let Some(dim_cfg) = Self::load_project_dimension() {
+            // runtime.default_mode 同样处理
+            if !dim_cfg.runtime.default_mode.is_empty()
+                && dim_cfg.runtime.default_mode != "local" {
+                cfg.runtime.default_mode = dim_cfg.runtime.default_mode.clone();
+            }
+            cfg.merge_project(dim_cfg);
+        }
+
         // CLI override via env var (set by main() when --local/--remote is passed)
         // 最高优先级
         match std::env::var("ION_RUNTIME_OVERRIDE").as_deref() {
@@ -541,10 +608,31 @@ impl IonConfig {
         serde_json::from_str(&content).ok()
     }
 
-    /// Merge project-level config into self for non-runtime fields.
-    /// runtime.default_mode 已在 load() 中单独处理（不从全局继承）。
+    /// 加载 ② 项目维度配置（`~/.ion/projects/<project_key>/config.json`）。
+    /// project_key 用 git common dir hash，主仓库和 worktree 算出同一个 key → 天然共享。
+    /// 存放含本地路径/密钥的配置（MCP server 等），不依赖 git 同步。
+    fn load_project_dimension() -> Option<IonConfig> {
+        // 用 config_root（ION_PROJECT_ROOT 优先）算 project_key
+        let config_root = crate::paths::project_root_for_config()
+            .to_string_lossy().to_string();
+        let pkey = crate::paths::project_key_git(&config_root);
+        let dim_path = crate::paths::project_dimension_config_path(&pkey);
+        if !dim_path.exists() { return None; }
+        let content = std::fs::read_to_string(&dim_path).ok()?;
+        serde_json::from_str(&content).ok()
+    }
+
+    /// Merge project-level config into self.
+    ///
+    /// 合并策略（修复缺口 #1）：
+    /// - `Option<T>` 字段：项目级 `Some` 时覆盖全局
+    /// - `HashMap` 字段：按 key 深度合并（项目级 key 覆盖同名，全局的其他 key 保留）
+    /// - `Vec` 字段：项目级非空时整体替换（避免半合并歧义）
+    /// - `runtime`：default_mode 不在此处理（load 里单独处理，不从全局继承），
+    ///   其余子字段（backends/routes/command_guard/default/remote/sandbox）走合并
+    /// - `api_key`：走 auth.json 链，不在 config 合并里污染
     fn merge_project(&mut self, project: IonConfig) {
-        // 其他 top-level 字段：项目优先
+        // Option 字段：项目级 Some 时覆盖
         if project.default_provider.is_some() {
             self.default_provider = project.default_provider;
         }
@@ -553,6 +641,69 @@ impl IonConfig {
         }
         if project.base_url.is_some() {
             self.base_url = project.base_url;
+        }
+        // api_key 不在 config 合并（走 auth.json）；但项目级显式写了也尊重
+        if project.api_key.is_some() {
+            self.api_key = project.api_key;
+        }
+
+        // HashMap 字段：按 key 合并（项目级覆盖同名 key，全局的其他 key 保留）
+        for (k, v) in project.provider_api_keys {
+            self.provider_api_keys.insert(k, v);
+        }
+        for (k, v) in project.providers {
+            self.providers.insert(k, v);
+        }
+        for (k, v) in project.extensions {
+            self.extensions.insert(k, v);
+        }
+        for (k, v) in project.tier_models {
+            self.tier_models.insert(k, v);
+        }
+        // mcp_servers：按 server name 合并（项目维度覆盖全局同名）
+        for (k, v) in project.mcp_servers {
+            self.mcp_servers.insert(k, v);
+        }
+
+        // runtime 字段：default_mode 已在 load() 单独处理（不从全局继承），其余合并
+        // default（新式默认 backend 名）：项目级非空时覆盖
+        if !project.runtime.default.is_empty() {
+            self.runtime.default = project.runtime.default;
+        }
+        // backends：按 name 合并
+        for (k, v) in project.runtime.backends {
+            self.runtime.backends.insert(k, v);
+        }
+        // routes：项目级非空时整体替换（避免两条前缀相同的规则冲突）
+        if !project.runtime.routes.is_empty() {
+            self.runtime.routes = project.runtime.routes;
+        }
+        // command_guard：mode/whitelist/risk_patterns 分别处理
+        // （mode 项目级非默认值时覆盖；whitelist/risk_patterns 非空时替换）
+        if project.runtime.command_guard.mode != default_guard_mode() {
+            self.runtime.command_guard.mode = project.runtime.command_guard.mode;
+        }
+        if !project.runtime.command_guard.whitelist.is_empty() {
+            self.runtime.command_guard.whitelist = project.runtime.command_guard.whitelist;
+        }
+        if !project.runtime.command_guard.risk_patterns.is_empty() {
+            self.runtime.command_guard.risk_patterns = project.runtime.command_guard.risk_patterns;
+        }
+        // remote/sandbox：项目级显式配置时覆盖（向后兼容旧式配置）
+        // remote.hosts 按 name 合并；default_host 非空时覆盖
+        for (k, v) in project.runtime.remote.hosts {
+            self.runtime.remote.hosts.insert(k, v);
+        }
+        if !project.runtime.remote.default_host.is_empty() {
+            self.runtime.remote.default_host = project.runtime.remote.default_host;
+        }
+        // sandbox：profile 非默认时覆盖
+        if project.runtime.sandbox.profile != SandboxConfig::default().profile {
+            self.runtime.sandbox.profile = project.runtime.sandbox.profile;
+        }
+        self.runtime.sandbox.allow_escape_with_approval = project.runtime.sandbox.allow_escape_with_approval;
+        if project.runtime.sandbox.escape_approval_mode != SandboxConfig::default().escape_approval_mode {
+            self.runtime.sandbox.escape_approval_mode = project.runtime.sandbox.escape_approval_mode;
         }
     }
 
@@ -601,5 +752,200 @@ pub fn default_model_for_provider(provider: &str) -> &'static str {
         "together" => "deepseek-v4-flash",
         "cerebras" => "cerebras-gpt",
         _ => "deepseek-v4-flash",
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    /// 构造一个带各种字段的全局 config 作为合并基准
+    fn global_config() -> IonConfig {
+        let mut cfg = IonConfig::default();
+        cfg.default_provider = Some("global-prov".into());
+        cfg.default_model = Some("global-model".into());
+        cfg.api_key = Some("global-key".into());
+        cfg.tier_models.insert("fast".into(), "global/fast".into());
+        cfg.tier_models.insert("pro".into(), "global/pro".into());
+        cfg.extensions.insert(
+            "memory".into(),
+            ExtensionConfig { enabled: true },
+        );
+        cfg.runtime.backends.insert(
+            "local".into(),
+            BackendConfig {
+                backend_type: "local".into(),
+                ..Default::default()
+            },
+        );
+        cfg.runtime.command_guard.mode = "whitelist".into();
+        cfg.runtime.command_guard.whitelist = vec!["npm".into(), "cargo".into()];
+        cfg
+    }
+
+    #[test]
+    fn a1_extensions_merge_enables_default_disabled() {
+        // 全局不配 file-snapshot（默认 disabled）；项目级显式启用
+        let mut g = IonConfig::default();
+        let mut p = IonConfig::default();
+        p.extensions.insert(
+            "file-snapshot".into(),
+            ExtensionConfig { enabled: true },
+        );
+        g.merge_project(p);
+        // 合并后 file-snapshot 应该 enabled=true
+        assert_eq!(
+            g.extensions.get("file-snapshot").map(|c| c.enabled),
+            Some(true),
+            "项目级 file-snapshot.enabled=true 应该合并进来"
+        );
+    }
+
+    #[test]
+    fn a2_extensions_override_disables_memory() {
+        // 全局 memory.enabled=true；项目级覆盖为 false
+        let mut g = global_config();
+        let mut p = IonConfig::default();
+        p.extensions.insert(
+            "memory".into(),
+            ExtensionConfig { enabled: false },
+        );
+        g.merge_project(p);
+        assert_eq!(
+            g.extensions.get("memory").map(|c| c.enabled),
+            Some(false),
+            "项目级覆盖全局 extensions.memory.enabled=false"
+        );
+    }
+
+    #[test]
+    fn a3_tier_models_merge_preserves_global_keys() {
+        // 全局只配 fast+pro；项目级补 max
+        // 注意：IonConfig::default() 会给 tier_models 填默认值（fast/pro/max），
+        // 所以测试时需要 clear 掉项目级的默认值，模拟"用户项目级只写了 max"的场景
+        let mut g = IonConfig::default();
+        g.tier_models.clear();
+        g.tier_models.insert("fast".into(), "global/fast".into());
+        g.tier_models.insert("pro".into(), "global/pro".into());
+
+        let mut p = IonConfig::default();
+        p.tier_models.clear();
+        p.tier_models.insert("max".into(), "proj/max".into());
+        g.merge_project(p);
+        // 全局的 fast+pro 保留，项目级 max 合入
+        assert_eq!(g.tier_models.get("fast"), Some(&"global/fast".to_string()));
+        assert_eq!(g.tier_models.get("pro"), Some(&"global/pro".to_string()));
+        assert_eq!(g.tier_models.get("max"), Some(&"proj/max".to_string()));
+    }
+
+    #[test]
+    fn a4_tier_models_override_same_key() {
+        // 全局 fast→global/flash；项目级 fast→proj/pro
+        let mut g = IonConfig::default();
+        g.tier_models.clear();
+        g.tier_models.insert("fast".into(), "global/fast".into());
+
+        let mut p = IonConfig::default();
+        p.tier_models.clear();
+        p.tier_models.insert("fast".into(), "proj/pro".into());
+        g.merge_project(p);
+        assert_eq!(
+            g.tier_models.get("fast"),
+            Some(&"proj/pro".to_string()),
+            "项目级 tier_models.fast 覆盖全局"
+        );
+    }
+
+    #[test]
+    fn a5_runtime_backends_merge() {
+        // 全局配 local；项目级补 remote-a
+        let mut g = global_config();
+        let mut p = IonConfig::default();
+        p.runtime.backends.insert(
+            "remote-a".into(),
+            BackendConfig {
+                backend_type: "remote".into(),
+                hostname: "host-a".into(),
+                ..Default::default()
+            },
+        );
+        g.merge_project(p);
+        assert!(g.runtime.backends.contains_key("local"), "全局 backend 保留");
+        assert!(
+            g.runtime.backends.contains_key("remote-a"),
+            "项目级 backend 合入"
+        );
+    }
+
+    #[test]
+    fn a6_command_guard_mode_override() {
+        // 全局 mode=whitelist；项目级 mode=open
+        let mut g = global_config();
+        let mut p = IonConfig::default();
+        p.runtime.command_guard.mode = "open".into();
+        g.merge_project(p);
+        assert_eq!(g.runtime.command_guard.mode, "open");
+        // 全局 whitelist 不该被清空（项目级没配 whitelist）
+        assert!(
+            !g.runtime.command_guard.whitelist.is_empty(),
+            "全局 whitelist 应保留"
+        );
+    }
+
+    #[test]
+    fn a7_providers_merge() {
+        // 全局配 zai；项目级补 anthropic
+        let mut g = IonConfig::default();
+        g.providers.insert(
+            "zai".into(),
+            CustomProvider {
+                name: "zai".into(),
+                api: "anthropic-messages".into(),
+                base_url: "https://zai".into(),
+                api_key: None,
+                headers: None,
+                models: vec![],
+                model_overrides: None,
+            },
+        );
+        let mut p = IonConfig::default();
+        p.providers.insert(
+            "anthropic".into(),
+            CustomProvider {
+                name: "anthropic".into(),
+                api: "anthropic-messages".into(),
+                base_url: "https://anthropic".into(),
+                api_key: None,
+                headers: None,
+                models: vec![],
+                model_overrides: None,
+            },
+        );
+        g.merge_project(p);
+        assert!(g.providers.contains_key("zai"), "全局 provider 保留");
+        assert!(g.providers.contains_key("anthropic"), "项目级 provider 合入");
+    }
+
+    #[test]
+    fn a8_api_key_not_cleared_by_empty_project() {
+        // 全局 api_key=global-key；项目级不写 api_key
+        let mut g = global_config();
+        let p = IonConfig::default();
+        g.merge_project(p);
+        assert_eq!(
+            g.api_key,
+            Some("global-key".into()),
+            "项目级没配 api_key 时，全局的不该被清空"
+        );
+    }
+
+    #[test]
+    fn a8b_api_key_override_when_project_specifies() {
+        // 项目级显式写了 api_key → 覆盖
+        let mut g = global_config();
+        let mut p = IonConfig::default();
+        p.api_key = Some("proj-key".into());
+        g.merge_project(p);
+        assert_eq!(g.api_key, Some("proj-key".into()));
     }
 }

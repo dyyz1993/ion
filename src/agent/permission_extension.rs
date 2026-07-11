@@ -87,9 +87,7 @@ pub struct PermissionExtension {
 impl PermissionExtension {
     pub fn new(_session_id: &str, project_root: &str) -> Self {
         let project_settings = PathBuf::from(project_root).join(".ion").join("settings.json");
-        let global_path = std::env::var("HOME")
-            .map(|h| PathBuf::from(h).join(".ion").join("settings.json"))
-            .unwrap_or_else(|_| PathBuf::from("/nonexistent"));
+        let global_path = crate::paths::settings_path();
 
         let ext = Self {
             project_rules: RwLock::new(Vec::new()),

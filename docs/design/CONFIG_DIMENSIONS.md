@@ -207,43 +207,51 @@ grep -rn "ION_PROJECT_ROOT" src/
 
 **遗留问题（serde 默认值陷阱）**：`tier_models` 字段标了 `#[serde(default = "default_tier_models")]`，项目级 config 从文件反序列化时，**即使用户没写 tier_models，serde 也会填上默认值**（fast/pro/max）。merge 时这些"默认值"会覆盖全局的显式配置。影响：如果全局配了 `tier_models.fast = "custom/model"`，项目级 config 文件完全没提 tier_models，merge 后 fast 会被项目级的默认值 `deepseek/deepseek-v4-flash` 覆盖。后续需考虑用 `Option<HashMap>` 或自定义反序列化区分"未设置"和"显式空"。
 
-### 缺口 #2：`ION_PROJECT_ROOT` 只被 config 消费（HIGH）
+### 缺口 #2：`ION_PROJECT_ROOT` 只被 config 消费（HIGH）— ✅ 已修复
 
 **现象**：WASM 发现、Agent、Skill、Permission、Memory 都用 `current_dir()` 而非 `ION_PROJECT_ROOT`，worktree 场景下项目级资源全部丢失。
 
 **影响**：worktree 里用不到项目级 Agent/Skill/WASM/Permission rules。
 
-**修复方向**：
-- 短期：上述 5 处读取点优先用 `ION_PROJECT_ROOT`（与 `config.rs:534` 对齐）
-- 长期：抽出 `git_project_root(cwd) -> Option<PathBuf>`（见缺口 #3），让所有项目级读取都能自动回源
+**修复**：
+- 新增 `paths::project_root_for_config()` —— 统一解析项目根（优先 `ION_PROJECT_ROOT`，回退 `current_dir()`）
+- 5 处消费点改用 `config_root`（区别于 session 用的 `worker_cwd`）：
+  - WASM 扩展发现（`ion_worker.rs` 原 241 行）
+  - Memory Store + MemoryExtension（`ion_worker.rs` 原 195/386 行）—— worktree 共享记忆
+  - PermissionExtension（`ion_worker.rs` 原 409 行）—— 读主仓库 `.ion/settings.json`
+  - 项目级 Skills（`get_skills` RPC）—— 读主仓库 `.ion/skills/`
+  - 项目级 Agent（`agent_config.rs::project_agents_dir()`）—— 读主仓库 `.ion/agents/`
+- **保持不变**：session 文件、file-snapshot 用 `worker_cwd`（session 按 cwd 隔离是设计意图，file-snapshot 的 project_key 已自愈）
 
-### 缺口 #3：两套 project_key 体系不统一（MEDIUM）
+### 缺口 #3：两套 project_key 体系不统一（MEDIUM）— ✅ 已修复（核心抽取）
 
 **现象**：
 - file-snapshot 用 **git common dir hash**（`object_store.rs:216`）→ worktree 共享 ✅
 - project-data / session / WASM project data 用 **cwd 路径 hash**（`paths.rs:encode_path`）→ worktree 独立 ❌
 
-**影响**：worktree 的 Memory、WASM project data 与主仓库割裂。
+**修复**：
+- 抽出 `paths::git_project_root(cwd) -> Option<PathBuf>` —— 从 git-dir 反推主仓库根（worktree → 主仓库）
+- 抽出 `paths::project_key_git(cwd) -> String` —— git common dir hash，主仓库和 worktree 一致
+- `file_snapshot::object_store::project_key` 委托给 `paths::project_key_git`（行为不变，统一入口）
+- 4 个新单元测试验证（`git_project_root_returns_main_repo` / `git_project_root_worktree_shares_main` / `project_key_git_worktree_consistency` / `project_root_for_config_env_and_cwd_fallback`）
 
-**修复方向**：统一用 git common dir hash 作为 project_key（cwd hash 仅用于 session 维度）。
+**遗留**：project-data / WASM project data 的 `encode_path`（cwd hash）尚未改成 `project_key_git`。这些通过缺口 #2 的 `config_root` 回源已部分缓解（Memory 现在用 config_root），但彻底统一需后续把 `project_data_dir` 的 key 源也切换。
 
-### 缺口 #4：settings.json 全局路径不一致（LOW）
+### 缺口 #4：settings.json 全局路径不一致（LOW）— ✅ 已修复
 
 **现象**：
 - `permission_extension.rs:90` 用 `~/.ion/settings.json`（硬编码）
-- `paths.rs:159` 的 `settings_path()` 返回 `~/.ion/agent/settings.json`
+- `paths.rs:159` 的 `settings_path()` 返回 `~/.ion/agent/settings.json`（死代码，无调用者）
 
-**影响**：两个路径指向不同文件，容易混淆。
+**修复**：`settings_path()` 改为返回正确的 `~/.ion/settings.json`（与 permission_extension 实际使用一致）；`permission_extension` 改用 `paths::settings_path()` 取代硬编码。
 
-**修复方向**：统一用 `paths::settings_path()`。
-
-### 缺口 #5：worktree 路径文档与实现不一致（LOW）
+### 缺口 #5：worktree 路径文档与实现不一致（LOW）— ✅ 已修复
 
 **现象**：
 - `paths.rs:46` 注释写 `~/.ion/worktrees/<repoName>-<safeBranch>/`
 - 实际 `worker_registry.rs:1933` 用 `~/.ion/worktrees/<rand8>/<project_name>/`
 
-**修复方向**：更新注释，或改用文档描述的结构。
+**修复**：更新 `paths.rs:46` 注释为 `<rand8hex>/<projectName>/`，与实现一致。
 
 ---
 

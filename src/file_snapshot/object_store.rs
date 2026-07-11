@@ -156,22 +156,10 @@ pub fn content_hash(content: &[u8]) -> String {
 /// 计算 project key
 /// git 仓库：用 git-common-dir（主仓库和 worktree 一致）
 /// 非 git：fallback 到 cwd 的 hash
+///
+/// 委托给 `paths::project_key_git`（缺口 #3：统一 project_key 体系）
 pub fn project_key(cwd: &str) -> String {
-    if let Ok(output) = std::process::Command::new("git")
-        .args(["rev-parse", "--absolute-git-dir"])
-        .current_dir(cwd)
-        .output()
-    {
-        if output.status.success() {
-            let git_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            // /ion/.git → 主仓库；/ion/.git/worktrees/xxx → worktree
-            // 取 common dir（去掉 worktrees/xxx 后缀）
-            let common = git_dir.split("/worktrees/").next().unwrap_or(&git_dir);
-            return content_hash(common.as_bytes());
-        }
-    }
-    // 非 git：fallback 到 cwd
-    content_hash(cwd.as_bytes())
+    crate::paths::project_key_git(cwd)
 }
 
 #[cfg(test)]

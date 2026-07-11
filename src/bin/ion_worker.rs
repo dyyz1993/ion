@@ -192,9 +192,9 @@ async fn main() {
     tools.register(Box::new(KillWorkerTool));
 
     // ── Memory 工具 + 共享 Store ──
-    let cwd_for_memory = std::env::current_dir()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
+    // Memory 用 config_root（worktree 场景回源主仓库，缺口 #2：worktree 共享记忆）
+    let cwd_for_memory = ion::paths::project_root_for_config()
+        .to_string_lossy().to_string();
     let memory_store = std::sync::Arc::new(tokio::sync::Mutex::new(
         ion::agent::memory::MemoryStore::new(&cwd_for_memory, &sid)
     ));
@@ -236,14 +236,14 @@ async fn main() {
     let mut loaded_wasm_paths: Vec<String> = Vec::new();
 
     // ── WASM 插件自动发现（Agent 构造前，注册到 tools）──
-    // 扫描 ~/.ion/agent/extensions/ 和 {cwd}/.ion/extensions/ 下的 .wasm 文件
+    // 扫描 ~/.ion/agent/extensions/ 和 {project_root}/.ion/extensions/ 下的 .wasm 文件
+    // project_root 用 project_root_for_config()（worktree 场景回源到主仓库，缺口 #2）
     {
-        let worker_cwd = std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let config_root = ion::paths::project_root_for_config()
+            .to_string_lossy().to_string();
         let extensions_dirs: Vec<std::path::PathBuf> = vec![
             ion::paths::extensions_dir(),
-            ion::paths::project_extensions_dir(&worker_cwd),
+            ion::paths::project_extensions_dir(&config_root),
         ];
         for dir in &extensions_dirs {
             if !dir.exists() { continue; }
@@ -280,10 +280,15 @@ async fn main() {
         }
     }
 
-    // 加载已有会话（按 cwd 查找）
+    // 加载已有会话（按 cwd 查找）—— session 按 cwd 隔离，worktree 各自独立会话（设计意图）
     let worker_cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
+    // config_root：用于读项目级 .ion/ 配置资源（worktree 场景回源主仓库，缺口 #2）
+    // 与 worker_cwd 区分：worker_cwd 是 session/file-snapshot 用的（保持隔离），
+    // config_root 是 Agent/Skill/Permission/Memory 用的（worktree 共享主仓库配置）
+    let config_root = ion::paths::project_root_for_config()
+        .to_string_lossy().to_string();
     let preloaded = session_jsonl::SessionFile::load(&worker_cwd).map(|f| f.messages);
 
     // File Snapshot Store（预声明，agent 初始化块和 RPC loop 都要用）
@@ -296,6 +301,72 @@ async fn main() {
 
     // ── 加载配置（在 Runtime 和 Extension 初始化之前）──
     let ion_cfg = ion::config::IonConfig::load();
+
+    // ── MCP Manager（Phase 2+3：真实连接 + 工具发现 + HTTP 多 Worker 直连）──
+    // ION_SKIP_MCP 值：
+    //   "1"     → 跳过全部 MCP（旧模式，完全跳过）
+    //   "stdio" → 只跳过 stdio server（方案 B：HTTP server 天然多客户端，子 Worker 可直连）
+    //   未设    → 连全部（入口 Worker）
+    let skip_mcp_mode = std::env::var("ION_SKIP_MCP").ok();
+    let skip_all = skip_mcp_mode.as_deref() == Some("1");
+    let skip_stdio_only = skip_mcp_mode.as_deref() == Some("stdio");
+    let mcp_manager: Arc<ion::mcp::McpManager> = {
+        let mcp_config = if skip_all {
+            std::collections::HashMap::new() // 完全跳过：空配置
+        } else if skip_stdio_only {
+            // 方案 B：只保留 HTTP server，过滤掉 stdio（防多 Worker stdio 竞争）
+            ion_cfg.mcp_servers.iter()
+                .filter(|(_, c)| c.transport() == "streamable-http")
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        } else {
+            ion_cfg.mcp_servers.clone()
+        };
+        Arc::new(ion::mcp::McpManager::new(mcp_config))
+    };
+
+    // ── MCP 连接 + 工具注册（Phase 2）──
+    // 非 skip-all 且有配置时，连接所有 server，注册发现的工具
+    if !skip_all && !mcp_manager.is_empty() {
+        tracing::info!("[mcp] connecting {} server(s)...", mcp_manager.server_count());
+        // 连接（超时 30s 总体）
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            mcp_manager.connect_all(),
+        ).await;
+
+        // 注册发现的工具到 ToolRegistry
+        let mcp_tools = mcp_manager.all_discovered_tools().await;
+        for tool in &mcp_tools {
+            tools.register(Box::new(ion::mcp::tool::McpTool::new(tool, mcp_manager.clone())));
+        }
+        tracing::info!("[mcp] {} tools registered from {} server(s)",
+            mcp_tools.len(),
+            mcp_manager.connected_count().await);
+
+        // 启动自动重连监控（Phase 3：连接断开时指数退避重连）
+        mcp_manager.spawn_reconnect_monitor();
+
+        // 设置连接变更事件回调（Phase 3c：推送 mcp_connection_change 事件到 stdout）
+        let sid_for_mcp = sid.clone();
+        mcp_manager.set_on_status_change(move |server_name, status| {
+            let status_str = match status {
+                ion::mcp::ServerStatus::Connected => "connected",
+                ion::mcp::ServerStatus::Connecting => "connecting",
+                ion::mcp::ServerStatus::Disconnected => "disconnected",
+                ion::mcp::ServerStatus::Error => "error",
+            };
+            output(&serde_json::json!({
+                "type": "event",
+                "event": {
+                    "type": "mcp_connection_change",
+                    "sessionId": &sid_for_mcp,
+                    "server": server_name,
+                    "status": status_str,
+                }
+            }));
+        }).await;
+    }
 
     // ── ManagerBridge 必须在 Agent 构造前创建，因为 WorkerRuntime 包装它注入到 Agent ──
     let stdout = Arc::new(Mutex::new(io::stdout()));
@@ -378,7 +449,7 @@ async fn main() {
 
         // Memory Extension
         if ion_cfg.is_extension_enabled("memory") {
-            let mut memory_ext = ion::agent::memory::MemoryExtension::new(&worker_cwd, &sid);
+            let mut memory_ext = ion::agent::memory::MemoryExtension::new(&config_root, &sid);
             // 复用 tools 的 MemoryStore（同一份数据）
             memory_ext.store = memory_store.clone();
             ext_reg.register(Box::new(memory_ext));
@@ -405,8 +476,9 @@ async fn main() {
         }
 
         // Permission Extension（权限策略层）
+        // 用 config_root（worktree 回源主仓库，读主仓库 .ion/settings.json）
         if ion_cfg.is_extension_enabled("permission") {
-            let perm_ext = ion::agent::permission_extension::PermissionExtension::new(&sid, &worker_cwd);
+            let perm_ext = ion::agent::permission_extension::PermissionExtension::new(&sid, &config_root);
             ext_reg.register(Box::new(perm_ext));
         } else {
             tracing::info!("[extension] permission disabled by config");
@@ -1159,8 +1231,8 @@ async fn main() {
                     }
                 }
 
-                // 项目级 skills (<project>/.ion/skills/)
-                let proj_dir = ion::paths::project_skills_dir(&worker_cwd);
+                // 项目级 skills (<config_root>/.ion/skills/)——worktree 回源主仓库（缺口 #2）
+                let proj_dir = ion::paths::project_skills_dir(&config_root);
                 if let Ok(entries) = std::fs::read_dir(&proj_dir) {
                     for entry in entries.flatten() {
                         if let Some(name) = entry.file_name().to_str() {
@@ -2278,9 +2350,53 @@ async fn main() {
                     }));
                 }
             }
-            "get_mcp_servers" => output_response(&id, "get_mcp_servers", &serde_json::json!([])),
-            "mcp_toggle_server" => output_response(&id, "mcp_toggle_server", &serde_json::Value::Null),
-            "mcp_restart_server" => output_response(&id, "mcp_restart_server", &serde_json::Value::Null),
+            "get_mcp_servers" => {
+                // 列出所有 MCP server（真实连接状态 + 工具列表）
+                let servers = mcp_manager.server_list_json().await;
+                output_response(&id, "get_mcp_servers", &serde_json::Value::Array(servers));
+            }
+            "mcp_toggle_server" => {
+                // 启用/禁用某个 server（运行时，触发连接/断开）
+                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let enabled = params.get("enabled").and_then(|v| v.as_bool());
+                if name.is_empty() {
+                    output_error_response(&id, "mcp_toggle_server", "missing 'name'");
+                    continue;
+                }
+                let enabled = match enabled {
+                    Some(e) => e,
+                    None => {
+                        output_error_response(&id, "mcp_toggle_server", "missing 'enabled'");
+                        continue;
+                    }
+                };
+                match mcp_manager.toggle_server(&name, enabled).await {
+                    Ok(()) => output_response(&id, "mcp_toggle_server", &serde_json::json!({
+                        "name": name,
+                        "enabled": enabled,
+                    })),
+                    Err(e) => output_error_response(&id, "mcp_toggle_server", &e),
+                }
+            }
+            "mcp_restart_server" => {
+                // 重启某个 server（disconnect → reconnect）
+                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if name.is_empty() {
+                    output_error_response(&id, "mcp_restart_server", "missing 'name'");
+                    continue;
+                }
+                match mcp_manager.restart_server(&name).await {
+                    Ok(()) => output_response(&id, "mcp_restart_server", &serde_json::json!({
+                        "name": name,
+                        "status": "connected",
+                    })),
+                    Err(e) => output_response(&id, "mcp_restart_server", &serde_json::json!({
+                        "name": name,
+                        "status": "error",
+                        "error": e,
+                    })),
+                }
+            }
             "continue" => {
                 // Continue last session
                 output_response(&id, "continue", &serde_json::Value::Null);

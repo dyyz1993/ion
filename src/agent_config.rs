@@ -144,7 +144,12 @@ pub fn global_agents_dir() -> PathBuf {
 }
 
 pub fn project_agents_dir() -> Option<PathBuf> {
-    std::env::current_dir().ok().map(|p| p.join(".ion").join("agents"))
+    // 优先用 ION_PROJECT_ROOT（worktree 场景回源主仓库，缺口 #2）
+    let base = std::env::var("ION_PROJECT_ROOT")
+        .map(PathBuf::from)
+        .or_else(|_| std::env::current_dir())
+        .ok()?;
+    Some(base.join(".ion").join("agents"))
 }
 
 // ---------------------------------------------------------------------------
