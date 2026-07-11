@@ -72,6 +72,7 @@ async fn i02_create_worker_returns_info() {
         report_channel: None,
         report_to: None,
         initial_prompt: None,
+        skip_mcp: None,
     }, &registry).await.expect("create_worker should succeed");
 
     assert!(!info.worker_id.is_empty(), "worker_id should not be empty");
