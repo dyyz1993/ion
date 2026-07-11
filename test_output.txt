@@ -1,0 +1,10 @@
+Test Configuration
+==================
+Model: deepseek-v4-flash
+Provider: opencode
+API Key: your_api_key_here
+Temperature: 0.7
+Max Tokens: 2048
+Timeout: 30
+
+Test completed successfully!

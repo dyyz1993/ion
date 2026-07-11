@@ -607,6 +607,21 @@ impl McpManager {
             .collect()
     }
 
+    /// 所有已发现的工具序列化为 JSON（方案 C：host → 子 Worker 传工具列表）
+    pub async fn all_discovered_tools_serialized(&self) -> Vec<serde_json::Value> {
+        let servers = self.servers.lock().await;
+        servers
+            .values()
+            .flat_map(|e| e.tools.iter())
+            .map(|t| serde_json::json!({
+                "full_name": t.full_name,
+                "original_name": t.original_name,
+                "description": t.description,
+                "input_schema": t.input_schema,
+            }))
+            .collect()
+    }
+
     /// 生成 get_mcp_servers RPC 的响应数据
     pub async fn server_list_json(&self) -> Vec<serde_json::Value> {
         let servers = self.servers.lock().await;

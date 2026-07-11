@@ -302,71 +302,10 @@ async fn main() {
     // ── 加载配置（在 Runtime 和 Extension 初始化之前）──
     let ion_cfg = ion::config::IonConfig::load();
 
-    // ── MCP Manager（Phase 2+3：真实连接 + 工具发现 + HTTP 多 Worker 直连）──
-    // ION_SKIP_MCP 值：
-    //   "1"     → 跳过全部 MCP（旧模式，完全跳过）
-    //   "stdio" → 只跳过 stdio server（方案 B：HTTP server 天然多客户端，子 Worker 可直连）
-    //   未设    → 连全部（入口 Worker）
-    let skip_mcp_mode = std::env::var("ION_SKIP_MCP").ok();
-    let skip_all = skip_mcp_mode.as_deref() == Some("1");
-    let skip_stdio_only = skip_mcp_mode.as_deref() == Some("stdio");
-    let mcp_manager: Arc<ion::mcp::McpManager> = {
-        let mcp_config = if skip_all {
-            std::collections::HashMap::new() // 完全跳过：空配置
-        } else if skip_stdio_only {
-            // 方案 B：只保留 HTTP server，过滤掉 stdio（防多 Worker stdio 竞争）
-            ion_cfg.mcp_servers.iter()
-                .filter(|(_, c)| c.transport() == "streamable-http")
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect()
-        } else {
-            ion_cfg.mcp_servers.clone()
-        };
-        Arc::new(ion::mcp::McpManager::new(mcp_config))
-    };
-
-    // ── MCP 连接 + 工具注册（Phase 2）──
-    // 非 skip-all 且有配置时，连接所有 server，注册发现的工具
-    if !skip_all && !mcp_manager.is_empty() {
-        tracing::info!("[mcp] connecting {} server(s)...", mcp_manager.server_count());
-        // 连接（超时 30s 总体）
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            mcp_manager.connect_all(),
-        ).await;
-
-        // 注册发现的工具到 ToolRegistry
-        let mcp_tools = mcp_manager.all_discovered_tools().await;
-        for tool in &mcp_tools {
-            tools.register(Box::new(ion::mcp::tool::McpTool::new(tool, mcp_manager.clone())));
-        }
-        tracing::info!("[mcp] {} tools registered from {} server(s)",
-            mcp_tools.len(),
-            mcp_manager.connected_count().await);
-
-        // 启动自动重连监控（Phase 3：连接断开时指数退避重连）
-        mcp_manager.spawn_reconnect_monitor();
-
-        // 设置连接变更事件回调（Phase 3c：推送 mcp_connection_change 事件到 stdout）
-        let sid_for_mcp = sid.clone();
-        mcp_manager.set_on_status_change(move |server_name, status| {
-            let status_str = match status {
-                ion::mcp::ServerStatus::Connected => "connected",
-                ion::mcp::ServerStatus::Connecting => "connecting",
-                ion::mcp::ServerStatus::Disconnected => "disconnected",
-                ion::mcp::ServerStatus::Error => "error",
-            };
-            output(&serde_json::json!({
-                "type": "event",
-                "event": {
-                    "type": "mcp_connection_change",
-                    "sessionId": &sid_for_mcp,
-                    "server": server_name,
-                    "status": status_str,
-                }
-            }));
-        }).await;
-    }
+    // ── MCP（方案 C：所有 Worker 通过 bridge 代理调 host 的 MCP 连接）──
+    // Worker 进程不自己 connect_all，而是从 host 拉工具列表注册 McpProxyTool。
+    // 所有 Worker（入口 + 子）都是代理模式，host 持有唯一的 MCP 连接。
+    // 场景 1（cmd_run）不走 worker，直接用 McpManager + McpTool（在 ion.rs 里处理）。
 
     // ── ManagerBridge 必须在 Agent 构造前创建，因为 WorkerRuntime 包装它注入到 Agent ──
     let stdout = Arc::new(Mutex::new(io::stdout()));
@@ -430,6 +369,38 @@ async fn main() {
                 for tool_name in disallowed {
                     agent.remove_tool(tool_name);
                 }
+            }
+        }
+    }
+
+    // ── MCP 代理工具注册（方案 C：从 host 拉工具列表，注册 McpProxyTool）──
+    // Worker 不直连 MCP server，所有调用通过 bridge 代理到 host
+    {
+        match manager_bridge.send_command("mcp_list_tools", serde_json::json!({})).await {
+            Ok(resp) => {
+                if resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    let tools_list = resp
+                        .get("data")
+                        .and_then(|d| d.get("tools"))
+                        .cloned()
+                        .unwrap_or(serde_json::json!([]));
+                    if let Some(arr) = tools_list.as_array() {
+                        for tool in arr {
+                            let full_name = tool.get("full_name").and_then(|v| v.as_str()).unwrap_or("");
+                            let desc = tool.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                            let params = tool.get("input_schema").cloned().unwrap_or(serde_json::json!({}));
+                            if !full_name.is_empty() {
+                                agent.register_tool(Box::new(McpProxyTool::new(
+                                    full_name, desc, &params, manager_bridge.clone(),
+                                )));
+                            }
+                        }
+                        tracing::info!("[mcp] {} proxy tools registered from host", arr.len());
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("[mcp] failed to fetch tools from host: {e}");
             }
         }
     }
@@ -2351,12 +2322,17 @@ async fn main() {
                 }
             }
             "get_mcp_servers" => {
-                // 列出所有 MCP server（真实连接状态 + 工具列表）
-                let servers = mcp_manager.server_list_json().await;
-                output_response(&id, "get_mcp_servers", &serde_json::Value::Array(servers));
+                // 方案 C：转发给 host 查真实状态
+                match manager_bridge.send_command("mcp_get_servers", serde_json::json!({})).await {
+                    Ok(resp) => {
+                        let servers = resp.get("data").cloned().unwrap_or(serde_json::Value::Array(vec![]));
+                        output_response(&id, "get_mcp_servers", &servers);
+                    }
+                    Err(e) => output_error_response(&id, "get_mcp_servers", &format!("host proxy error: {e}")),
+                }
             }
             "mcp_toggle_server" => {
-                // 启用/禁用某个 server（运行时，触发连接/断开）
+                // 方案 C：转发给 host（host 的 McpManager 执行 toggle）
                 let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let enabled = params.get("enabled").and_then(|v| v.as_bool());
                 if name.is_empty() {
@@ -2370,32 +2346,23 @@ async fn main() {
                         continue;
                     }
                 };
-                match mcp_manager.toggle_server(&name, enabled).await {
-                    Ok(()) => output_response(&id, "mcp_toggle_server", &serde_json::json!({
-                        "name": name,
-                        "enabled": enabled,
-                    })),
-                    Err(e) => output_error_response(&id, "mcp_toggle_server", &e),
-                }
+                // toggle/restart 需要新的 host 命令（后续添加），暂时返回提示
+                output_response(&id, "mcp_toggle_server", &serde_json::json!({
+                    "name": name,
+                    "enabled": enabled,
+                    "note": "toggle via host (Phase 4 pending)",
+                }));
             }
             "mcp_restart_server" => {
-                // 重启某个 server（disconnect → reconnect）
                 let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 if name.is_empty() {
                     output_error_response(&id, "mcp_restart_server", "missing 'name'");
                     continue;
                 }
-                match mcp_manager.restart_server(&name).await {
-                    Ok(()) => output_response(&id, "mcp_restart_server", &serde_json::json!({
-                        "name": name,
-                        "status": "connected",
-                    })),
-                    Err(e) => output_response(&id, "mcp_restart_server", &serde_json::json!({
-                        "name": name,
-                        "status": "error",
-                        "error": e,
-                    })),
-                }
+                output_response(&id, "mcp_restart_server", &serde_json::json!({
+                    "name": name,
+                    "status": "note: restart via host (Phase 4 pending)",
+                }));
             }
             "continue" => {
                 // Continue last session
@@ -2872,6 +2839,75 @@ fn output(msg: &serde_json::Value) {
     let mut stdout = io::stdout().lock();
     let _ = writeln!(stdout, "{line}");
     let _ = stdout.flush();
+}
+
+// ── McpProxyTool: 方案 C 子 Worker 的 MCP 工具代理（走 bridge 调 host）──
+use async_trait::async_trait as mcp_async_trait;
+
+struct McpProxyTool {
+    full_name: String,
+    description: String,
+    parameters: serde_json::Value,
+    server_name: String,
+    tool_name: String,
+    bridge: Arc<ManagerBridge>,
+}
+
+impl McpProxyTool {
+    fn new(
+        full_name: &str,
+        description: &str,
+        parameters: &serde_json::Value,
+        bridge: Arc<ManagerBridge>,
+    ) -> Self {
+        let parts: Vec<&str> = full_name.splitn(3, "__").collect();
+        Self {
+            full_name: full_name.to_string(),
+            description: description.to_string(),
+            parameters: parameters.clone(),
+            server_name: parts.get(1).copied().unwrap_or("").to_string(),
+            tool_name: parts.get(2).copied().unwrap_or("").to_string(),
+            bridge,
+        }
+    }
+}
+
+#[mcp_async_trait]
+impl ion::agent::tool::Tool for McpProxyTool {
+    fn name(&self) -> &str { &self.full_name }
+    fn description(&self) -> &str { &self.description }
+    fn parameters(&self) -> serde_json::Value { self.parameters.clone() }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn ion::runtime::Runtime,
+    ) -> ion::agent::error::AgentResult<String> {
+        let resp = self.bridge
+            .send_command("mcp_call_tool", serde_json::json!({
+                "server": self.server_name,
+                "tool": self.tool_name,
+                "args": args,
+            }))
+            .await
+            .map_err(|e| ion::agent::error::AgentError::Tool(e))?;
+
+        if resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+            Ok(resp
+                .get("data")
+                .and_then(|d| d.get("output"))
+                .and_then(|o| o.as_str())
+                .unwrap_or("")
+                .to_string())
+        } else {
+            Err(ion::agent::error::AgentError::Tool(
+                resp.get("error")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("mcp proxy error")
+                    .into(),
+            ))
+        }
+    }
 }
 
 // ── StreamingExtension: 透传 text_delta + tool_execution 到 stdout ──

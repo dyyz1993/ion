@@ -27,6 +27,8 @@ pub struct WorkerRegistry {
     /// Channel for workers to send manager commands (create_worker, channel_send, etc.)
     pub manager_cmd_tx: mpsc::UnboundedSender<serde_json::Value>,
     pub manager_cmd_rx: mpsc::UnboundedReceiver<serde_json::Value>,
+    /// Host 级 MCP 管理器（方案 C：所有 Worker 通过 bridge 代理调用）
+    pub mcp_manager: Option<std::sync::Arc<crate::mcp::McpManager>>,
 }
 
 pub struct WorkerRecord {
@@ -130,7 +132,13 @@ impl WorkerRegistry {
             singletons: std::collections::HashMap::new(),
             manager_cmd_tx,
             manager_cmd_rx,
+            mcp_manager: None,
         }
+    }
+
+    /// 设置 host 级 MCP 管理器（方案 C：host 持有连接，Worker 代理调用）
+    pub fn set_mcp_manager(&mut self, mgr: std::sync::Arc<crate::mcp::McpManager>) {
+        self.mcp_manager = Some(mgr);
     }
 
     /// Create a new WorkerRegistry with a pre-configured worker binary path.
@@ -146,6 +154,7 @@ impl WorkerRegistry {
             singletons: std::collections::HashMap::new(),
             manager_cmd_tx,
             manager_cmd_rx,
+            mcp_manager: None,
         }
     }
 
@@ -1414,6 +1423,67 @@ impl WorkerRegistry {
                         Err(e) => serde_json::json!({
                             "_reply_to": reply_to, "success": false, "error": e,
                         }),
+                    };
+                    self.write_manager_response(&from_worker, resp).await;
+                }
+                // ── MCP 命令（方案 C：子 Worker → host 代理调用）──
+                "mcp_call_tool" => {
+                    let server = params.get("server").and_then(|v| v.as_str()).unwrap_or("");
+                    let tool = params.get("tool").and_then(|v| v.as_str()).unwrap_or("");
+                    let args = params.get("args").cloned().unwrap_or_default();
+                    let resp = if let Some(ref mgr) = self.mcp_manager {
+                        match mgr.call_tool(server, tool, args).await {
+                            Ok(output) => serde_json::json!({
+                                "_reply_to": reply_to,
+                                "success": true,
+                                "data": {"output": output}
+                            }),
+                            Err(e) => serde_json::json!({
+                                "_reply_to": reply_to,
+                                "success": false,
+                                "error": e
+                            }),
+                        }
+                    } else {
+                        serde_json::json!({
+                            "_reply_to": reply_to,
+                            "success": false,
+                            "error": "mcp not available on host"
+                        })
+                    };
+                    self.write_manager_response(&from_worker, resp).await;
+                }
+                "mcp_list_tools" => {
+                    let resp = if let Some(ref mgr) = self.mcp_manager {
+                        let tools = mgr.all_discovered_tools_serialized().await;
+                        serde_json::json!({
+                            "_reply_to": reply_to,
+                            "success": true,
+                            "data": {"tools": tools}
+                        })
+                    } else {
+                        serde_json::json!({
+                            "_reply_to": reply_to,
+                            "success": true,
+                            "data": {"tools": []}
+                        })
+                    };
+                    self.write_manager_response(&from_worker, resp).await;
+                }
+                "mcp_get_servers" => {
+                    let resp = if let Some(ref mgr) = self.mcp_manager {
+                        let servers = mgr.server_list_json().await;
+                        serde_json::json!({
+                            "_reply_to": reply_to,
+                            "success": true,
+                            "data": servers
+                        })
+                    } else {
+                        serde_json::json!({
+                            "_reply_to": reply_to,
+                            "success": true,
+                            "data": []
+                        })
                     };
                     self.write_manager_response(&from_worker, resp).await;
                 }

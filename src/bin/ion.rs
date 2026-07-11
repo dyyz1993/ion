@@ -2622,6 +2622,23 @@ async fn cmd_serve_start(
         reg.init_singletons().await;
     }
 
+    // ── Host 级 MCP 管理器（方案 C：host 持有连接，所有 Worker 代理调用）──
+    {
+        let ion_cfg = ion::config::IonConfig::load();
+        let mcp_config = ion_cfg.mcp_servers.clone();
+        if !mcp_config.is_empty() {
+            let mcp_manager = std::sync::Arc::new(ion::mcp::McpManager::new(mcp_config));
+            eprintln!("[mcp] host connecting {} server(s)...", mcp_manager.server_count());
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                mcp_manager.connect_all(),
+            ).await;
+            eprintln!("[mcp] {} server(s) connected", mcp_manager.connected_count().await);
+            mcp_manager.spawn_reconnect_monitor();
+            registry.lock().await.set_mcp_manager(mcp_manager);
+        }
+    }
+
     // ── Host 单例检查 + Unix socket 启动 ──
     // PID 文件防重复启动；Unix socket 让外部 `ion rpc` 能连进来。
     if let Some(pid) = ion::paths::host_running() {
