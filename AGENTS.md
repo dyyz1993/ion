@@ -414,6 +414,7 @@ ion rpc --session sess_xxx --method get_flags \
 | `examples/workflows/` | Workflow YAML 示例（delivery.wf.yaml） |
 | `src/session_tree.rs` | Session Tree 核心数据层（leaf 指针/树构建/branch/rollback/checkout） |
 | `src/file_snapshot/` | File Snapshot 双路快照（object_store/scanner/snapshot/diff/gc，[详情](./docs/design/FILE_SNAPSHOT.md)） |
+| `src/mcp/` | MCP 客户端（McpManager + McpTool + rmcp 连接 + 自动重连，[详情](./docs/design/MCP_SYSTEM.md)） |
 | `src/message_retrieval.rs` | 消息拉取核心逻辑（retrieve_messages/turns/inputs/turn_detail + view/过滤/分页） |
 | `src/global_memory.rs` | 全局记忆库（SQLite + FTS5，跨项目检索） |
 | `src/global_memory_ext.rs` | GlobalMemoryExtension（单例扩展，on_singleton_init + extension_rpc） |
@@ -667,6 +668,33 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - 支持所有 JSON 类型（bool/number/string/object/array）
   - 扩展内通过 `ExtensionRegistry::get_flag()` 读取
   - **验证**: 10 CI 测试全过 ✅
+
+### 🔌 MCP 系统（Model Context Protocol，Phase 1-3 已实现）
+
+- **Phase 1（配置 + RPC）**：
+  - `McpServerConfig`（Stdio/Http untagged enum）+ `IonConfig.mcp_servers`
+  - 项目维度配置 `~/.ion/projects/<key>/config.json`（worktree 共享，不依赖 git）
+  - 3 RPC：`get_mcp_servers` / `mcp_toggle_server` / `mcp_restart_server`
+- **Phase 2（rmcp 真实连接）**：
+  - rmcp 1.x 接入（`client` + `transport-child-process` + `transport-streamable-http-client-reqwest`）
+  - `McpManager`（connect_all/connect_one/call_tool/toggle/restart）
+  - `McpTool: Tool` 适配器（mcp__server__tool 命名，60s 调用超时）
+  - 进程共享方案 A：入口 Worker 持有 MCP，`spawn_worker` 子 Worker `skip_mcp=stdio`
+  - 真实 E2E 验证：`mcp-server-everything` 13 工具发现 + echo/get-sum 调用成功
+- **Phase 3（自动重连 + HTTP 多 Worker + 事件推送）**：
+  - 自动重连（指数退避：base 1s → max 30s，最多 3 次，`check_and_reconnect` 后台 task）
+  - HTTP 多 Worker 直连（方案 B：`ION_SKIP_MCP=stdio` 只跳过 stdio，HTTP 照连）
+  - `mcp_connection_change` 事件推送（`on_status_change` 回调 → stdout）
+- **验证**: 334 lib + 14 MCP CI 测试全过 ✅ + 真实 MCP server E2E
+
+### ⚙️ 配置维度缺口修复（5 项）
+
+- **缺口 #1**：`merge_project` 深度合并（从 3 字段 → 全字段 HashMap/Option/Vec 分类合并）+ 9 单元测试
+- **缺口 #2**：`project_root_for_config()` 统一回源（WASM/Agent/Skill/Permission/Memory 5 处 worktree 消费点）
+- **缺口 #3**：`git_project_root()` + `project_key_git()` 抽取（file-snapshot project_key 委托统一入口）
+- **缺口 #4**：`settings_path()` 路径统一（~/.ion/settings.json）
+- **缺口 #5**：worktree 路径注释修正
+- 详细分析：[docs/design/CONFIG_DIMENSIONS.md](./docs/design/CONFIG_DIMENSIONS.md)（5 类存储 + 组件归属全表 + 31 条验收用例）
 
 ### 🎭 FauxProvider（架构级 LLM Mock，对标 pi）
 
