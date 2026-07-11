@@ -649,6 +649,67 @@ impl Tool for GenericTool {
     }
 }
 
+/// 远程工具 — 把 HTTP API 端点注册为 ION 工具。
+/// LLM 调用时走 HTTP POST 到指定 URL，参数作为 JSON body 发送。
+pub struct RemoteTool {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+    pub url: String,
+    pub method: String,
+    pub headers: HashMap<String, String>,
+}
+
+#[async_trait]
+impl Tool for RemoteTool {
+    fn name(&self) -> &str { &self.name }
+    fn description(&self) -> &str { &self.description }
+    fn parameters(&self) -> serde_json::Value { self.parameters.clone() }
+
+    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        let client = reqwest::Client::new();
+        let method = match self.method.to_uppercase().as_str() {
+            "GET" => reqwest::Method::GET,
+            "PUT" => reqwest::Method::PUT,
+            "DELETE" => reqwest::Method::DELETE,
+            _ => reqwest::Method::POST,
+        };
+
+        let is_get_or_delete = matches!(method, reqwest::Method::GET | reqwest::Method::DELETE);
+        let mut req = client.request(method, &self.url);
+        for (k, v) in &self.headers {
+            req = req.header(k, v);
+        }
+        // GET/DELETE: 参数作为 query string；POST/PUT: 参数作为 JSON body
+        let resp = if is_get_or_delete {
+            // 把 args 的字段作为 query 参数
+            let query_pairs: Vec<(String, String)> = args.as_object()
+                .map(|obj| obj.iter().filter_map(|(k, v)| {
+                    v.as_str().map(|s| (k.clone(), s.to_string()))
+                }).collect())
+                .unwrap_or_default();
+            req.query(&query_pairs).send().await
+        } else {
+            req.header("Content-Type", "application/json")
+                .body(args.to_string())
+                .send().await
+        };
+
+        match resp {
+            Ok(r) => {
+                let status = r.status();
+                let text = r.text().await.unwrap_or_default();
+                if status.is_success() {
+                    Ok(text)
+                } else {
+                    Ok(format!("HTTP {} {}: {}", status.as_u16(), status.canonical_reason().unwrap_or(""), text))
+                }
+            }
+            Err(e) => Err(AgentError::Tool(format!("remote tool '{}' request failed: {e}", self.name))),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

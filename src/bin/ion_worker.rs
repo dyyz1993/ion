@@ -2432,8 +2432,47 @@ async fn main() {
                     output_response(&id, "abort_bash", &serde_json::json!({"error": "bash extension not enabled"}));
                 }
             }
-            "register_remote_tool" => output_response(&id, "register_remote_tool", &serde_json::Value::Null),
-            "unregister_remote_tool" => output_response(&id, "unregister_remote_tool", &serde_json::Value::Null),
+            "register_remote_tool" => {
+                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let url = params.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let description = params.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let method = params.get("method").and_then(|v| v.as_str()).unwrap_or("POST").to_string();
+                let parameters = params.get("parameters").cloned().unwrap_or(serde_json::json!({}));
+                let headers: std::collections::HashMap<String, String> = params.get("headers")
+                    .and_then(|v| v.as_object())
+                    .map(|obj| obj.iter().filter_map(|(k, v)| {
+                        v.as_str().map(|s| (k.clone(), s.to_string()))
+                    }).collect())
+                    .unwrap_or_default();
+                if name.is_empty() || url.is_empty() {
+                    output_error_response(&id, "register_remote_tool", "missing 'name' or 'url'");
+                    continue;
+                }
+                agent.register_tool(Box::new(ion::agent::tool::RemoteTool {
+                    name: name.clone(),
+                    description,
+                    parameters,
+                    url,
+                    method,
+                    headers,
+                }));
+                output_response(&id, "register_remote_tool", &serde_json::json!({
+                    "name": name,
+                    "status": "registered"
+                }));
+            }
+            "unregister_remote_tool" => {
+                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if name.is_empty() {
+                    output_error_response(&id, "unregister_remote_tool", "missing 'name'");
+                    continue;
+                }
+                agent.remove_tool(&name);
+                output_response(&id, "unregister_remote_tool", &serde_json::json!({
+                    "name": name,
+                    "status": "removed"
+                }));
+            }
 
             // ── WASM 插件热更新 ──
             "extension_add" => {
