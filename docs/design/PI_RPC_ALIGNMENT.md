@@ -134,7 +134,7 @@ ion subscribe --session x --extension memory
 | `set_model` | `set_model` | ✅ |
 | `cycle_model` | ✅ | ✅ 已实现（同 provider 内循环 + 写 session_index） |
 | `get_available_models` | ✅ | ✅ 已实现（从 ModelRegistry.list_models() 读） |
-| `get_tier_models` / `set_tier_models` | ❌ | ❌ 空桩（待实现 tier 模型系统） |
+| `get_tier_models` / `set_tier_models` | ✅ | ✅ 已实现（config.json tier_models + fast/pro/max 别名解析） |
 | `set_thinking_level` | `set_thinking_level` | ✅ |
 | `cycle_thinking_level` | ✅ | ✅ 已实现（6 档循环 + 写 session_index） |
 | `compact` | `compact` | ✅ |
