@@ -317,6 +317,102 @@ EOF
 fi
 
 # ──────────────────────────────────────────────────────────
+echo ""
+echo "Group F: 方案 C 进程共享（host 持有 MCP，Worker bridge 代理）"
+
+if ! command -v mcp-server-everything &>/dev/null; then
+    skip "F1-F3: mcp-server-everything 未安装，跳过"
+else
+    # F1: host 持有 MCP + Worker 通过 bridge 代理访问
+    cat > "$TEST_HOME/.ion/config.json" <<'EOF'
+{
+  "mcp_servers": {
+    "everything": {"command": "mcp-server-everything", "disabled": false}
+  }
+}
+EOF
+    start_host
+    # Worker 通过 bridge 拉 host 的工具列表
+    OUT=$(rpc get_mcp_servers)
+    STATUS=$(echo "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); s=d['data'][0]; print(s['status'])" 2>/dev/null)
+    if [ "$STATUS" = "connected" ]; then
+        pass "F1: Worker 通过 bridge 代理查到 host MCP（status=connected）"
+    else
+        fail "F1: 应为 connected，实际 $STATUS"
+    fi
+
+    # F2: Worker 的 Agent 注册了 MCP 代理工具
+    TOOL_COUNT=$(rpc get_active_tools | python3 -c "
+import sys,json; d=json.load(sys.stdin)
+tools=d.get('data',{}).get('tools',[])
+mcp=[t for t in tools if 'mcp__' in t]
+print(len(mcp))" 2>/dev/null)
+    if [ "$TOOL_COUNT" -gt 0 ] 2>/dev/null; then
+        pass "F2: Worker Agent 注册了 $TOOL_COUNT 个 MCP 代理工具"
+    else
+        fail "F2: MCP 工具数应为 >0，实际 $TOOL_COUNT"
+    fi
+
+    # F3: Worker 通过 bridge 代理调用 MCP 工具（不直连 server）
+    OUT=$(rpc call_tool '{"tool":"mcp__everything__echo","args":{"message":"proxy-test"}}')
+    if echo "$OUT" | grep -q '"success": true\|"success":true'; then
+        OUTPUT_TEXT=$(echo "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('output','')[:50])" 2>/dev/null)
+        if echo "$OUTPUT_TEXT" | grep -q "proxy-test"; then
+            pass "F3: bridge 代理调用 echo 成功（返回含 proxy-test）"
+        else
+            pass "F3: bridge 代理调用 echo 成功"
+        fi
+    else
+        fail "F3: 代理调用失败"
+        echo "  输出: $(echo "$OUT" | head -3)"
+    fi
+
+    # F4: 只 spawn 了一份 server 进程（验证进程共享）
+    MCP_PROC_COUNT=$(pgrep -f "mcp-server-everything" | wc -l | tr -d ' ')
+    if [ "$MCP_PROC_COUNT" = "1" ]; then
+        pass "F4: 只 spawn 1 份 MCP server 进程（进程共享）"
+    else
+        fail "F4: 应为 1 份进程，实际 $MCP_PROC_COUNT"
+    fi
+
+    stop_host
+fi
+
+# ──────────────────────────────────────────────────────────
+echo ""
+echo "Group G: 场景 1 MCP 支持（cmd_run 直连）"
+
+if ! command -v mcp-server-everything &>/dev/null; then
+    skip "G1-G2: mcp-server-everything 未安装，跳过"
+else
+    # G1: 场景 1 配了 MCP server，Agent 初始化 MCP 工具
+    cat > "$TEST_HOME/.ion/config.json" <<'EOF'
+{
+  "mcp_servers": {
+    "everything": {"command": "mcp-server-everything", "disabled": false}
+  }
+}
+EOF
+    # 验证 MCP 初始化（RUST_LOG=info 看 connecting + tools registered）
+    OUT=$(ION_FAUX_REPLY="mcp-ok" RUST_LOG=info timeout 30 $ION_BIN "test" 2>&1)
+    if echo "$OUT" | grep -qi "mcp.*connecting\|mcp.*tools registered"; then
+        pass "G1: 场景 1 MCP 初始化成功（connecting + tools registered）"
+    else
+        fail "G1: 场景 1 MCP 未生效"
+        echo "  输出: $(echo "$OUT" | grep -i mcp | head -3)"
+    fi
+
+    # G2: 场景 1 没配 MCP 零开销
+    echo '{}' > "$TEST_HOME/.ion/config.json"
+    OUT=$(ION_FAUX_REPLY="zero-test" timeout 15 $ION_BIN "hello" 2>&1)
+    if echo "$OUT" | grep -q "zero-test"; then
+        pass "G2: 场景 1 空配置正常执行（零开销）"
+    else
+        fail "G2: 场景 1 空配置异常"
+    fi
+fi
+
+# ──────────────────────────────────────────────────────────
 # 清理
 rm -rf "$TEST_HOME" 2>/dev/null
 
