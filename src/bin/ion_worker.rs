@@ -434,11 +434,15 @@ async fn main() {
         // 标记 snapshot_store 在后续 RPC 分支中被读取（消除编译器误报）
         let _ = snapshot_store.is_some();
 
-        // Approval Manager（审批，依赖 snapshot_store）
+        // Approval Manager + Extension（审批，依赖 snapshot_store）
         approval_mgr = if let Some(ref store) = snapshot_store {
             let mgr = std::sync::Arc::new(
                 ion::file_snapshot::approval::ApprovalManager::new(store.clone(), &worker_cwd)
             );
+            // 注册 ApprovalExtension（on_gate_check + on_turn_end re-approval 重置）
+            ext_reg.register(Box::new(
+                ion::file_snapshot::approval::ApprovalExtension::new(mgr.clone())
+            ));
             tracing::info!("[extension] file-approval enabled");
             Some(mgr)
         } else {
@@ -2127,10 +2131,30 @@ async fn main() {
                     output_response(&id, "review_reject", &serde_json::json!({"error": "missing 'path'"}));
                 } else if let Some(ref mgr) = approval_mgr {
                     match mgr.reject(path) {
-                        Ok(rf) => output_response(&id, "review_reject", &serde_json::json!({
-                            "path": rf.path, "status": "rejected",
-                            "action": rf.action, "rolledBack": true,
-                        })),
+                        Ok(rf) => {
+                            // deny 消息注入 session.jsonl（下一轮 agent 可见）
+                            let deny_msg = format!(
+                                "📋 审批拒绝：文件 {} 已回滚（action: {}）。用户不认可这次改动，请重新处理。",
+                                path, rf.action
+                            );
+                            let entry = serde_json::json!({
+                                "type": "message",
+                                "id": format!("approval_deny_{}", std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)),
+                                "parentId": null,
+                                "timestamp": ion::session_jsonl::timestamp_iso(),
+                                "role": "user",
+                                "content": [{"type": "text", "text": deny_msg}],
+                                "customType": "approval_deny",
+                            });
+                            ion::session_jsonl::append_raw_entry(&worker_cwd, &entry);
+
+                            output_response(&id, "review_reject", &serde_json::json!({
+                                "path": rf.path, "status": "rejected",
+                                "action": rf.action, "rolledBack": true,
+                                "denyMessageInjected": true,
+                            }));
+                        }
                         Err(e) => output_response(&id, "review_reject", &serde_json::json!({"error": e})),
                     }
                 } else {

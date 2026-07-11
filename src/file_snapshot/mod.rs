@@ -29,7 +29,7 @@ pub use tree_store::{
     TreeEntries, TreeDiff, TreeChangeStatus, StepSnapshot,
     serialize_tree, deserialize_tree, write_tree, read_tree, compute_diff, get_file_hash,
 };
-pub use approval::{ApprovalManager, ApprovalStatus, FileApproval, PendingFile};
+pub use approval::{ApprovalManager, ApprovalExtension, ApprovalStatus, FileApproval, PendingFile};
 pub use diff::{unified_diff, count_diff};
 
 use crate::agent::extension::{Extension, SessionContext, TurnContext};

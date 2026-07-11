@@ -338,6 +338,11 @@ impl ApprovalManager {
         }
     }
 
+    /// 暴露 step-snapshot 给 Extension 用（re-approval 重置）
+    pub fn store_load_step_snapshots(&self) -> Vec<tree_store::StepSnapshot> {
+        self.store.load_all_step_snapshots()
+    }
+
     /// 序列化当前审批状态为 entries（持久化用）
     pub fn to_entries(&self) -> Vec<serde_json::Value> {
         let approvals = self.approvals.lock().unwrap();
@@ -360,6 +365,73 @@ fn now_ts() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// ApprovalExtension — 实现 Extension trait，挂 on_gate_check
+// ────────────────────────────────────────────────────────────────────────────
+
+use crate::agent::extension::{Extension, TurnContext, GateDecision};
+use crate::agent::error::AgentResult;
+
+/// 审批 Extension — agent Stop 时自动检查 pending 变更
+///
+/// 设计：
+/// - 有 pending 变更 + 有 pending 文件 → 返回 RetryWith（注入消息告诉 agent 有待审批文件）
+/// - 无 pending 或全部已处理 → 返回 Allow
+///
+/// 注意：这是"通知"不是"阻塞"——无 UI 订阅时不阻塞 agent（返回 Allow）
+pub struct ApprovalExtension {
+    mgr: std::sync::Arc<ApprovalManager>,
+}
+
+impl ApprovalExtension {
+    pub fn new(mgr: std::sync::Arc<ApprovalManager>) -> Self {
+        Self { mgr }
+    }
+}
+
+#[async_trait::async_trait]
+impl Extension for ApprovalExtension {
+    fn name(&self) -> &str { "file-approval" }
+
+    async fn on_gate_check(&self, _ctx: &TurnContext) -> AgentResult<GateDecision> {
+        let pending = self.mgr.compute_pending();
+        if pending.is_empty() {
+            return Ok(GateDecision::Allow);
+        }
+
+        // 有待审批文件 → 记录日志（审批是 post-hoc 的，不阻塞 agent 停止）
+        let file_list: Vec<String> = pending.iter()
+            .map(|p| format!("  - {} ({})", p.path, p.status))
+            .collect();
+        tracing::info!(
+            "[file-approval] {} files pending review:\n{}",
+            pending.len(),
+            file_list.join("\n")
+        );
+
+        // 返回 Allow——审批是 post-hoc 的，不阻塞 agent 停止
+        // agent 停止后用户通过 RPC 审批（approve/reject）
+        Ok(GateDecision::Allow)
+    }
+
+    async fn on_turn_end(&self, _ctx: &TurnContext) -> AgentResult<()> {
+        // re-approval 重置：turn 结束时检查 step-snapshot 的 diff，
+        // 把变更涉及的已批准/已拒绝文件重置为 pending
+        let steps = self.mgr.store_load_step_snapshots();
+        if let Some(last_step) = steps.last() {
+            let changed: Vec<String> = last_step.diff.added.iter()
+                .chain(last_step.diff.modified.iter())
+                .chain(last_step.diff.deleted.iter())
+                .cloned()
+                .collect();
+            if !changed.is_empty() {
+                self.mgr.check_re_approval(&changed);
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
