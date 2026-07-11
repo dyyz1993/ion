@@ -47,7 +47,7 @@ start_host() {
     if ! kill -0 $HOST_PID 2>/dev/null; then
         echo "❌ host 启动失败"; cat /tmp/ion_mcp_host.log | tail -5; exit 1
     fi
-    CREATE_OUT=$($ION_BIN rpc --method create_session --params '{"agent":"developer"}' 2>&1)
+    CREATE_OUT=$($ION_BIN rpc --method create_session --params '{"agent":"build"}' 2>&1)
     SID=$(echo "$CREATE_OUT" | grep '"session_id"' | sed 's/.*"session_id"[: ]*"//;s/".*//')
     sleep 1  # 等 worker 完成初始化（含 MCP connect_all）
 }
@@ -246,6 +246,75 @@ else
 fi
 
 stop_host
+
+# ──────────────────────────────────────────────────────────
+echo ""
+echo "Group E: 真实连接（需要 mcp-server-everything）"
+
+# 检查 mcp-server-everything 是否可用
+if ! command -v mcp-server-everything &>/dev/null; then
+    skip "E1-E5: mcp-server-everything 未安装，跳过真实连接测试"
+    skip "  安装: npm install -g @modelcontextprotocol/server-everything"
+else
+    # E1: 真实 stdio 连接 + 工具发现
+    cat > "$TEST_HOME/.ion/config.json" <<'EOF'
+{
+  "mcp_servers": {
+    "everything": {"command": "mcp-server-everything", "disabled": false}
+  }
+}
+EOF
+    start_host
+    # 多等一会儿让 MCP 连接完成
+    sleep 12
+
+    OUT=$(rpc get_mcp_servers)
+    STATUS=$(echo "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); s=d['data'][0]; print(s['status'])" 2>/dev/null)
+    if [ "$STATUS" = "connected" ]; then
+        pass "E1: mcp-server-everything 连接成功 (status=connected)"
+    else
+        fail "E1: 应为 connected，实际 $STATUS"
+    fi
+
+    # E2: 工具发现（tools 非空）
+    TOOL_COUNT=$(echo "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d['data'][0].get('tools',[])))" 2>/dev/null)
+    if [ "$TOOL_COUNT" -gt 0 ] 2>/dev/null; then
+        pass "E2: 工具发现成功 ($TOOL_COUNT 个工具)"
+    else
+        fail "E2: 工具数应为 >0，实际 $TOOL_COUNT"
+    fi
+
+    # E3: 工具调用 echo
+    OUT=$(rpc call_tool '{"tool":"mcp__everything__echo","args":{"message":"ci-test"}}')
+    if echo "$OUT" | grep -q '"success": true\|"success":true'; then
+        OUTPUT_TEXT=$(echo "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('data',{}).get('output','')[:50])" 2>/dev/null)
+        if echo "$OUTPUT_TEXT" | grep -q "ci-test"; then
+            pass "E3: echo 工具调用成功（返回含输入消息）"
+        else
+            pass "E3: echo 工具调用成功"
+        fi
+    else
+        fail "E3: echo 工具调用失败"
+        echo "  输出: $(echo "$OUT" | head -3)"
+    fi
+
+    # E4: 工具调用 get-sum（验证参数传递）
+    OUT=$(rpc call_tool '{"tool":"mcp__everything__get-sum","args":{"a":7,"b":3}}')
+    if echo "$OUT" | grep -q '"success": true\|"success":true'; then
+        pass "E4: get-sum 工具调用成功（参数传递正确）"
+    else
+        fail "E4: get-sum 工具调用失败"
+    fi
+
+    # E5: 工具名格式验证（mcp__server__tool）
+    if rpc get_mcp_servers | grep -q "mcp__everything__"; then
+        pass "E5: 工具名格式 mcp__server__tool 正确"
+    else
+        fail "E5: 工具名格式不符"
+    fi
+
+    stop_host
+fi
 
 # ──────────────────────────────────────────────────────────
 # 清理

@@ -631,7 +631,7 @@ impl IonConfig {
     /// - `runtime`：default_mode 不在此处理（load 里单独处理，不从全局继承），
     ///   其余子字段（backends/routes/command_guard/default/remote/sandbox）走合并
     /// - `api_key`：走 auth.json 链，不在 config 合并里污染
-    fn merge_project(&mut self, project: IonConfig) {
+    fn merge_project(&mut self, mut project: IonConfig) {
         // Option 字段：项目级 Some 时覆盖
         if project.default_provider.is_some() {
             self.default_provider = project.default_provider;
@@ -645,6 +645,19 @@ impl IonConfig {
         // api_key 不在 config 合并（走 auth.json）；但项目级显式写了也尊重
         if project.api_key.is_some() {
             self.api_key = project.api_key;
+        }
+
+        // tier_models：serde 默认值陷阱修复
+        // 项目级 config 文件不写 tier_models 时，serde 会填默认值（fast/pro/max）。
+        // 如果项目级的 tier_models 和默认值完全相同，说明用户没自定义，跳过合并。
+        let default_tm = default_tier_models();
+        let project_tm = std::mem::take(&mut project.tier_models);
+        let project_tm_is_default = project_tm.len() == default_tm.len()
+            && project_tm.iter().all(|(k, v)| default_tm.get(k) == Some(v));
+        if !project_tm_is_default {
+            for (k, v) in project_tm {
+                self.tier_models.insert(k, v);
+            }
         }
 
         // HashMap 字段：按 key 合并（项目级覆盖同名 key，全局的其他 key 保留）
@@ -947,5 +960,28 @@ mod merge_tests {
         p.api_key = Some("proj-key".into());
         g.merge_project(p);
         assert_eq!(g.api_key, Some("proj-key".into()));
+    }
+
+    #[test]
+    fn a9_tier_models_serde_default_trap() {
+        // serde 默认值陷阱修复：
+        // 全局配了 tier_models.fast = "custom/model"
+        // 项目级 config 文件没写 tier_models，但 serde 会填默认值（fast/pro/max）
+        // merge 后全局的 fast 不该被项目级的默认值覆盖
+        let mut g = IonConfig::default();
+        g.tier_models.clear();
+        g.tier_models.insert("fast".into(), "custom/model".into());
+
+        // 项目级：IonConfig::default() 会给 tier_models 填默认值（模拟从文件反序列化）
+        let p = IonConfig::default(); // tier_models = 默认的 fast/pro/max
+
+        g.merge_project(p);
+
+        // 全局的 fast 应该保留（项目级的 tier_models 是默认值，不该覆盖）
+        assert_eq!(
+            g.tier_models.get("fast"),
+            Some(&"custom/model".to_string()),
+            "项目级 serde 默认值不该覆盖全局的显式 tier_models"
+        );
     }
 }

@@ -468,49 +468,133 @@ impl McpManager {
     ) -> Result<String, String> {
         use rmcp::model::CallToolRequestParams;
 
-        let client = {
-            let servers = self.servers.lock().await;
-            let entry = servers
-                .get(server_name)
-                .ok_or_else(|| format!("mcp server '{server_name}' not found"))?;
-            entry
-                .client
-                .clone()
-                .ok_or_else(|| format!("mcp server '{server_name}' not connected"))?
-        };
+        // 尝试调用（含一次自动重连重试）
+        for attempt in 0..2 {
+            let client = {
+                let servers = self.servers.lock().await;
+                let entry = servers
+                    .get(server_name)
+                    .ok_or_else(|| format!("mcp server '{server_name}' not found"))?;
+                let client = entry
+                    .client
+                    .clone()
+                    .ok_or_else(|| format!("mcp server '{server_name}' not connected"))?;
+                // 检查连接是否已断开（is_closed 检测 JoinHandle + cancellation_token）
+                if client.is_closed() {
+                    drop(servers); // 释放锁
+                    tracing::warn!("[mcp] '{}' connection detected as closed (attempt {})", server_name, attempt + 1);
+                    // 尝试重连
+                    if let Err(e) = self.reconnect_if_needed(server_name).await {
+                        return Err(format!("mcp server '{server_name}' reconnect failed: {e}"));
+                    }
+                    continue; // 重连后重试
+                }
+                client
+            };
 
-        let mut params = CallToolRequestParams::new(tool_name.to_string());
-        if let serde_json::Value::Object(map) = args {
-            params = params.with_arguments(map);
+            let mut params = CallToolRequestParams::new(tool_name.to_string());
+            if let serde_json::Value::Object(map) = &args {
+                params = params.with_arguments(map.clone());
+            }
+
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(60),
+                client.call_tool(params),
+            ).await {
+                Ok(Ok(result)) => {
+                    // 成功：格式化结果
+                    use rmcp::model::RawContent;
+                    let text: String = result
+                        .content
+                        .iter()
+                        .map(|content| match &content.raw {
+                            RawContent::Text(t) => t.text.clone(),
+                            RawContent::Image(_) => "[image]".to_string(),
+                            RawContent::Audio(_) => "[audio]".to_string(),
+                            RawContent::Resource(_) => "[resource]".to_string(),
+                            _ => "[unknown]".to_string(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+
+                    if result.is_error == Some(true) {
+                        return Ok(format!("MCP error: {text}"));
+                    }
+                    return Ok(text);
+                }
+                Ok(Err(e)) => {
+                    // call_tool 返回错误：检查是否连接断开
+                    let err_str = format!("{e}");
+                    tracing::warn!("[mcp] '{}' call_tool error: {err_str}", server_name);
+                    // 如果是连接类错误且第一次尝试，标记断开并重连重试
+                    if attempt == 0 && Self::is_connection_error(&err_str) {
+                        tracing::warn!("[mcp] '{}' connection error, attempting reconnect", server_name);
+                        if let Ok(()) = self.reconnect_if_needed(server_name).await {
+                            continue; // 重连成功，重试
+                        }
+                    }
+                    return Err(format!("mcp call_tool error: {err_str}"));
+                }
+                Err(_) => {
+                    return Err(format!("mcp tool '{server_name}__{tool_name}' timeout (60s)"));
+                }
+            }
         }
+        Err(format!("mcp tool '{server_name}__{tool_name}' failed after reconnect retry"))
+    }
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            client.call_tool(params),
-        )
-        .await
-        .map_err(|_| format!("mcp tool '{server_name}__{tool_name}' timeout (60s)"))?
-        .map_err(|e| format!("mcp call_tool error: {e}"))?;
+    /// 判断错误是否是连接类错误（需要重连）
+    fn is_connection_error(err: &str) -> bool {
+        err.contains("connection")
+            || err.contains("channel closed")
+            || err.contains("transport")
+            || err.contains("broken pipe")
+            || err.contains("EOF")
+            || err.contains("reset")
+    }
 
-        // 格式化结果（rmcp 1.8: Content = Annotated<RawContent>）
-        use rmcp::model::RawContent;
-        let text: String = result
-            .content
-            .iter()
-            .map(|content| match &content.raw {
-                RawContent::Text(t) => t.text.clone(),
-                RawContent::Image(_) => "[image]".to_string(),
-                RawContent::Audio(_) => "[audio]".to_string(),
-                RawContent::Resource(_) => "[resource]".to_string(),
-                _ => "[unknown]".to_string(),
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+    /// 检查并重连（如果连接已断开）
+    async fn reconnect_if_needed(&self, name: &str) -> Result<(), String> {
+        let cfg = self
+            .config
+            .get(name)
+            .ok_or_else(|| format!("unknown mcp server: {name}"))?
+            .clone();
 
-        if result.is_error == Some(true) {
-            Ok(format!("MCP error: {text}"))
-        } else {
-            Ok(text)
+        // 标记 connecting
+        {
+            let mut servers = self.servers.lock().await;
+            if let Some(entry) = servers.get_mut(name) {
+                entry.status = ServerStatus::Connecting;
+                entry.client = None; // 清除旧 client
+            }
+        }
+        self.notify_status(name, &ServerStatus::Connecting).await;
+
+        // 尝试重连
+        match Self::connect_one(name, &cfg).await {
+            Ok((client, tools)) => {
+                let mut servers = self.servers.lock().await;
+                if let Some(entry) = servers.get_mut(name) {
+                    entry.status = ServerStatus::Connected;
+                    entry.tools = tools;
+                    entry.error = None;
+                    entry.client = Some(Arc::new(client));
+                    entry.reconnect_attempts = 0;
+                }
+                tracing::info!("[mcp] '{}' reconnected successfully (lazy)", name);
+                self.notify_status(name, &ServerStatus::Connected).await;
+                Ok(())
+            }
+            Err(e) => {
+                let mut servers = self.servers.lock().await;
+                if let Some(entry) = servers.get_mut(name) {
+                    entry.status = ServerStatus::Error;
+                    entry.error = Some(format!("{e}"));
+                }
+                self.notify_status(name, &ServerStatus::Error).await;
+                Err(format!("{e}"))
+            }
         }
     }
 
