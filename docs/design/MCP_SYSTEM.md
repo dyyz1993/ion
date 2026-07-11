@@ -1204,63 +1204,209 @@ ion rpc --session <sid> --method mcp_restart_server --params '{"name":"echo"}'
 - ✅ restart 清除重连计数，重新连接
 - ✅ `status` 回到 `"connected"`
 
-### Group F — 进程共享（Phase 2/3）
+### Group F — 进程共享：入口 Worker 持有共享池（方案 C，Phase 4）
 
-> 验证多 Worker 场景下的 MCP 进程共享（详见 §2.7）。
+> 验证方案 C：入口 Worker 持有一份 MCP 连接（所有协议），所有子 Worker 通过共享池代理调用。
+> 不再有"子 Worker 跳过 stdio"的概念——所有 Worker 都能看到全部 `mcp__*` 工具。
 
-#### F1 子 Worker 跳过 MCP（方案 A，Phase 2）
+#### F1 入口 Worker 持有 MCP 连接
 
 ```bash
-# 1. ion --host "做这个"（主进程 coordinator）
-# 2. coordinator spawn developer worker
-# 3. 查 developer worker 的 MCP 状态
+# config.json 配了 stdio + http 两种 server
+# ion --host "做这个" → 入口 Worker 启动 → connect_all
+ion rpc --session <entry_sid> --method get_mcp_servers
+```
+
+**预期响应：**
+```json
+{
+  "data": [
+    {"name":"filesystem","transport":"stdio","status":"connected","tools":[...]},
+    {"name":"remote-api","transport":"streamable-http","status":"connected","tools":[...]}
+  ]
+}
+```
+
+**验证点：**
+- ✅ 入口 Worker 的所有 server（含 stdio + http）都 `status: connected`
+- ✅ 每个 server 只 spawn 了 **1 份进程**（不重复）
+
+#### F2 子 Worker 共享 MCP 连接（不自己 spawn）
+
+```bash
+# 入口 Worker 调 spawn_worker → 创建 developer Worker
+# developer Worker 不自己 connect_all，而是共享入口 Worker 的 MCP 池
 ion rpc --session <developer_sid> --method get_mcp_servers
 ```
 
-**验证点：**
-- ✅ developer worker 返回 `[]`（`ION_SKIP_MCP=1` 生效，不连接）
-- ✅ 只有主进程 coordinator 持有 MCP 连接
-
-#### F2 主进程持有全部 MCP 连接
-
-```bash
-ion rpc --session <coordinator_sid> --method get_mcp_servers
+**预期响应：**
+```json
+{
+  "data": [
+    {"name":"filesystem","transport":"stdio","status":"connected","tools":[...]},
+    {"name":"remote-api","transport":"streamable-http","status":"connected","tools":[...]}
+  ]
+}
 ```
 
 **验证点：**
-- ✅ coordinator 的 server 列表正常（status: connected）
-- ✅ coordinator 只 spawn 了一份 stdio server 进程（不重复）
+- ✅ developer Worker 看到**全部 server**（含 stdio！不再是方案 A/B 的"只有 http"）
+- ✅ developer Worker **没有 spawn 新的 server 进程**（进程数不变）
+- ✅ status 全部 `connected`（共享入口 Worker 的连接状态）
 
-#### F3 HTTP server 多 Worker 直连（方案 B，Phase 3）
+#### F3 子 Worker 的 LLM 能调 MCP 工具
 
 ```bash
-# stdio server: 只 coordinator 连
-# HTTP server: coordinator + developer 各自连
-ion rpc --session <coordinator_sid> --method get_mcp_servers  # 有 stdio + http
-ion rpc --session <developer_sid> --method get_mcp_servers   # 只有 http
+# developer Worker 的 LLM 调用 stdio MCP 工具
+ion rpc --session <developer_sid> --method call_tool \
+  --params '{"tool":"mcp__filesystem__echo","args":{"message":"from developer"}}'
+```
+
+**预期响应：**
+```json
+{
+  "success": true,
+  "data": {"tool": "mcp__filesystem__echo", "output": "Echo: from developer"}
+}
 ```
 
 **验证点：**
-- ✅ coordinator 看到 stdio + http 两种 server
-- ✅ developer 只看到 http server（stdio 被 skip）
-- ✅ HTTP server 进程只有一份（多 client 共享同一 server 进程）
+- ✅ developer Worker 能调 **stdio** MCP 工具（方案 A/B 下做不到）
+- ✅ 调用走共享池代理（不直连 server 进程）
+- ✅ 返回结果正确
 
-#### F4 host 级 MCP 池（方案 C，Phase 3+）
+#### F4 agent.md 过滤 MCP 工具
 
-> 待 Phase 3+ 实现后补充。验证点：所有 Worker 都能看到全部 `mcp__*` 工具（含 stdio），连接复用。
+```bash
+# developer.md 配了 disallowed_tools: ["mcp__filesystem__delete_file"]
+# developer Worker 的 LLM 不应看到 delete_file 工具
+ion rpc --session <developer_sid> --method get_active_tools
+```
+
+**验证点：**
+- ✅ 工具列表**不含** `mcp__filesystem__delete_file`（被 agent.md 过滤）
+- ✅ 其他 MCP 工具仍在（`mcp__filesystem__echo` 等）
+- ✅ `call_tool mcp__filesystem__delete_file` 返回 `tool not found`
+
+#### F5 场景 2 退出时 MCP 连接关闭
+
+```bash
+# ion --host "做这个" → 任务完成 → 递归 idle → host 关闭
+# 验证 MCP server 子进程被清理
+ps aux | grep mcp-server   # 应无残留进程
+```
+
+**验证点：**
+- ✅ host 退出后，MCP server 子进程**已终止**（无残留）
+- ✅ 场景 2 是临时性的，MCP 连接随 host 退出自动断开
+
+#### F6 场景 3 常驻时 MCP 连接保持
+
+```bash
+# ion serve → create_session → Worker 持有 MCP 连接
+# session 销毁后，MCP 连接是否保持取决于是否还有其他 session
+ion rpc --session <sid1> --method get_mcp_servers  # connected
+# 销毁 sid1（最后一个 session）
+# 再创建 sid2
+ion rpc --session <sid2> --method get_mcp_servers   # 仍 connected（连接保持）
+```
+
+**验证点：**
+- ✅ 场景 3 下 MCP 连接**常驻**（不随单个 session 销毁而断）
+- ✅ 新 session 能看到已连接的 MCP server
+
+#### F7 多 Worker 并发调用同一 MCP 工具
+
+```bash
+# coordinator 和 developer 同时调 mcp__filesystem__echo
+# Terminal 1: ion rpc --session <coord_sid> --method call_tool --params '{"tool":"mcp__filesystem__echo",...}'
+# Terminal 2: ion rpc --session <dev_sid> --method call_tool --params '{"tool":"mcp__filesystem__echo",...}'
+```
+
+**验证点：**
+- ✅ 两个 Worker 并发调用同一 MCP 工具，**不冲突**（rmcp Peer 支持并发）
+- ✅ 各自返回正确结果（不串号）
+
+### Group G — 场景 1 MCP 支持（Phase 4）
+
+> 验证场景 1（`ion "xxx"` 直接执行）也能用 MCP。当前缺口：cmd_run 没有 McpManager 初始化。
+
+#### G1 场景 1 配了 MCP server 能用
+
+```bash
+# config.json 配了 mcp server
+ion "用 mcp__filesystem__echo 工具回复 hello"
+```
+
+**验证点：**
+- ✅ 场景 1 的 Agent 能看到 `mcp__*` 工具
+- ✅ LLM 调用 MCP 工具成功
+
+#### G2 场景 1 没配 MCP 零开销
+
+```bash
+# config.json 不含 mcp_servers
+ion "hello"
+```
+
+**验证点：**
+- ✅ 正常执行，无 MCP 初始化开销
+- ✅ `is_empty()` 检查跳过
+
+### Group H — MCP 工具权限控制（Phase 4）
+
+> 验证 permission rules 能控制 MCP 工具调用（HOOK_SYSTEM.md 已预留 `mcp__.*` 匹配规则）。
+
+#### H1 全局禁用某 MCP 工具
+
+```bash
+# ~/.ion/settings.json permissions.rules 加：
+# {"subject":"*","pattern":"mcp__filesystem__delete_file","decision":"Deny"}
+ion rpc --session <sid> --method call_tool \
+  --params '{"tool":"mcp__filesystem__delete_file","args":{...}}'
+```
+
+**验证点：**
+- ✅ 调用被 Deny（permission 扩展拦截）
+- ✅ 返回权限拒绝错误，不执行
+
+#### H2 项目级规则覆盖
+
+```bash
+# 项目级 settings.json 允许某个被全局禁用的工具
+# 全局: Deny mcp__filesystem__delete_file
+# 项目: Allow mcp__filesystem__delete_file
+```
+
+**验证点：**
+- ✅ 项目级 Allow 覆盖全局 Deny
+
+#### H3 通配符匹配
+
+```bash
+# 规则: {"pattern":"mcp__filesystem__*","decision":"Deny"}
+# 禁止 filesystem server 的所有工具
+```
+
+**验证点：**
+- ✅ 所有 `mcp__filesystem__*` 工具被禁用
+- ✅ 其他 server 的工具不受影响
 
 ### 用例覆盖矩阵
 
-| 你的要求 | 覆盖 Group | case 数 | Phase |
-|---------|-----------|--------|-------|
-| **① 重连重启** | E1-E3（自动重连+耗尽+手动恢复）/ D4（toggle/restart） | 7 | 2-3 |
-| **② 文件加载配置（项目级+全局级）** | A2-1~A2-7（合并/覆盖/隔离/gitignore/worktree） | 7 | 1 ✅ |
-| **③ 不同类型全覆盖** | D/D2/D3（stdio / HTTP / disabled / 混合） | 9 | 2 |
-| **④ 进程共享** | F1-F4（主进程独占 / HTTP 共享 / host 池） | 4 | 2-3+ |
-| 配置加载基础 | A1-A5（空/stdio/http/disabled/多 server） | 5 | 1 ✅ |
-| 运行时 toggle | B1-B4（开关/不存在/缺参数） | 4 | 1 ✅ |
-| restart | C1-C2（正常/不存在） | 2 | 1 ✅ |
-| **合计** | | **38** | |
+| 维度 | 覆盖 Group | case 数 | Phase | CI 脚本 |
+|------|-----------|--------|-------|---------|
+| **配置加载** | A (5) + A2 (7) | 12 | 1 ✅ | 7/12 已写 |
+| **运行时 toggle** | B (4) | 4 | 1 ✅ | 3/4 已写 |
+| **restart** | C (2) | 2 | 1 ✅ | 2/2 已写 |
+| **stdio 真实连接** | D (5) | 5 | 2 ✅ | 5/5 已写（E1-E5） |
+| **HTTP 真实连接** | D2 (3) | 3 | 2 ✅ | 未写 |
+| **混合类型** | D3 (2) | 2 | 2 ✅ | 部分 |
+| **重连恢复** | E (3) | 3 | 3 ✅ | 未写 |
+| **进程共享（方案 C）** | F (7) | 7 | 4 待做 | 未写 |
+| **场景 1 MCP** | G (2) | 2 | 4 待做 | 未写 |
+| **权限控制** | H (3) | 3 | 4 待做 | 未写 |
+| **合计** | | **43** | | **19/43 已写** |
 
 ---
 
