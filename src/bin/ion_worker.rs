@@ -571,9 +571,14 @@ async fn main() {
 
     // ── MCP 代理工具注册（方案 C：从 host 拉工具列表，注册 McpProxyTool）──
     // 必须在 stdin reader task 启动后执行——send_command 需要 stdin reader 拦截 _reply_to 响应
+    // 加 3s 超时：集成测试场景直接 spawn worker 无 host，send_command 会永远等
     {
-        match manager_bridge.send_command("mcp_list_tools", serde_json::json!({})).await {
-            Ok(resp) => {
+        let mcp_result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            manager_bridge.send_command("mcp_list_tools", serde_json::json!({})),
+        ).await;
+        match mcp_result {
+            Ok(Ok(resp)) => {
                 if resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
                     let tools_list = resp
                         .get("data")
@@ -595,8 +600,11 @@ async fn main() {
                     }
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::warn!("[mcp] failed to fetch tools from host: {e}");
+            }
+            Err(_) => {
+                tracing::info!("[mcp] mcp_list_tools timeout (no host or 3s limit), skip MCP proxy");
             }
         }
     }
@@ -2378,6 +2386,42 @@ async fn main() {
                         }
                     }
                     Err(e) => output_error_response(&id, "mcp_restart_server", &format!("proxy: {e}")),
+                }
+            }
+            "mcp_reload" => {
+                // 方案 C：转发给 host 重新加载 MCP 配置
+                match manager_bridge.send_command("mcp_reload", serde_json::json!({})).await {
+                    Ok(resp) => {
+                        if resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            output_response(&id, "mcp_reload", resp.get("data").unwrap_or(&serde_json::Value::Null));
+                        } else {
+                            output_error_response(&id, "mcp_reload",
+                                resp.get("error").and_then(|v| v.as_str()).unwrap_or("unknown"));
+                        }
+                    }
+                    Err(e) => output_error_response(&id, "mcp_reload", &format!("proxy: {e}")),
+                }
+            }
+            "mcp_read_resource" => {
+                // 方案 C：转发给 host 读 MCP 资源
+                let server = params.get("server").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if server.is_empty() || uri.is_empty() {
+                    output_error_response(&id, "mcp_read_resource", "missing 'server' or 'uri'");
+                    continue;
+                }
+                match manager_bridge.send_command("mcp_read_resource", serde_json::json!({
+                    "server": server, "uri": uri
+                })).await {
+                    Ok(resp) => {
+                        if resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            output_response(&id, "mcp_read_resource", resp.get("data").unwrap_or(&serde_json::Value::Null));
+                        } else {
+                            output_error_response(&id, "mcp_read_resource",
+                                resp.get("error").and_then(|v| v.as_str()).unwrap_or("unknown"));
+                        }
+                    }
+                    Err(e) => output_error_response(&id, "mcp_read_resource", &format!("proxy: {e}")),
                 }
             }
             "continue" => {

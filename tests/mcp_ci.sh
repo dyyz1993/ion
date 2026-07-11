@@ -500,6 +500,179 @@ EOF
 fi
 
 # ──────────────────────────────────────────────────────────
+echo ""
+echo "Group I: resources/prompts 发现 + read_resource 调用"
+
+if ! command -v mcp-server-everything &>/dev/null; then
+    skip "I1-I4: mcp-server-everything 未安装，跳过"
+else
+    cat > "$TEST_HOME/.ion/config.json" <<'EOF'
+{
+  "mcp_servers": {
+    "everything": {"command": "mcp-server-everything", "disabled": false}
+  }
+}
+EOF
+    # 清理 Group H 可能残留的权限规则
+    rm -f "$TEST_HOME/.ion/settings.json"
+    start_host
+    sleep 12
+
+    # I1: resources 发现（get_mcp_servers 含 resources 列表）
+    OUT=$(rpc get_mcp_servers)
+    RES_COUNT=$(echo "$OUT" | python3 -c "
+import sys,json; d=json.load(sys.stdin)
+s=d['data'][0]
+print(len(s.get('resources',[])))" 2>/dev/null)
+    if [ "$RES_COUNT" -gt 0 ] 2>/dev/null; then
+        pass "I1: resources 发现成功（$RES_COUNT 个）"
+    else
+        fail "I1: resources 应 >0，实际 $RES_COUNT"
+    fi
+
+    # I2: prompts 发现
+    PROMPT_COUNT=$(echo "$OUT" | python3 -c "
+import sys,json; d=json.load(sys.stdin)
+s=d['data'][0]
+print(len(s.get('prompts',[])))" 2>/dev/null)
+    if [ "$PROMPT_COUNT" -gt 0 ] 2>/dev/null; then
+        pass "I2: prompts 发现成功（$PROMPT_COUNT 个）"
+    else
+        fail "I2: prompts 应 >0，实际 $PROMPT_COUNT"
+    fi
+
+    # I3: read_resource 调用（读 server-everything 的静态文档 resource）
+    # server-everything 有 demo://resource/static/document/architecture
+    # 但 read_resource 需要一个 RPC 入口。当前 ion_worker 没有 mcp_read_resource RPC
+    # 检查 host 的 process_pending_commands 有 mcp_read_resource 命令（间接验证）
+    # 通过 call_tool 的 bridge 代理验证 MCP 连接仍然工作
+    OUT=$(rpc call_tool '{"tool":"mcp__everything__echo","args":{"message":"res-test"}}')
+    if echo "$OUT" | grep -q '"success": true\|"success":true'; then
+        pass "I3: resources 发现后 MCP 工具调用仍正常"
+    else
+        fail "I3: MCP 工具调用异常"
+    fi
+
+    # I4: resource URI 格式验证
+    OUT=$(rpc get_mcp_servers)
+    if echo "$OUT" | python3 -c "
+import sys,json; d=json.load(sys.stdin)
+s=d['data'][0]
+res=s.get('resources',[])
+has_uri = any(r.get('uri','') for r in res)
+print('ok' if has_uri else 'no_uri')" 2>/dev/null | grep -q "ok"; then
+        pass "I4: resources 含有效 URI"
+    else
+        fail "I4: resources URI 无效"
+    fi
+
+    stop_host
+fi
+
+# ──────────────────────────────────────────────────────────
+echo ""
+echo "Group J: mcp_reload 配置热更新"
+
+if ! command -v mcp-server-everything &>/dev/null; then
+    skip "J1-J3: mcp-server-everything 未安装，跳过"
+else
+    # J1: 启动时无 MCP server，reload 后加上
+    echo '{}' > "$TEST_HOME/.ion/config.json"
+    rm -f "$TEST_HOME/.ion/settings.json"
+    start_host
+
+    # 确认初始无 server
+    OUT=$(rpc get_mcp_servers)
+    INITIAL_COUNT=$(echo "$OUT" | python3 -c "
+import sys,json; d=json.load(sys.stdin)
+print(len(d.get('data',[])))" 2>/dev/null)
+    if [ "$INITIAL_COUNT" = "0" ]; then
+        pass "J1a: 初始无 MCP server"
+    else
+        fail "J1a: 初始应为 0，实际 $INITIAL_COUNT"
+    fi
+
+    # 改 config.json 加 server
+    cat > "$TEST_HOME/.ion/config.json" <<'EOF'
+{
+  "mcp_servers": {
+    "everything": {"command": "mcp-server-everything", "disabled": false}
+  }
+}
+EOF
+
+    # 调 mcp_reload（Worker → bridge → host 重新加载）
+    OUT=$(rpc mcp_reload)
+    RELOAD_OK=$(echo "$OUT" | python3 -c "
+import sys,json; d=json.load(sys.stdin)
+data=d.get('data',{})
+print(data.get('servers_loaded',0))" 2>/dev/null)
+    if [ "$RELOAD_OK" = "1" ]; then
+        pass "J1b: mcp_reload 加载 1 个 server"
+    else
+        fail "J1b: reload 应加载 1 个，实际 $RELOAD_OK"
+    fi
+
+    # 等连接完成
+    sleep 12
+
+    # 验证 server 出现了
+    OUT=$(rpc get_mcp_servers)
+    STATUS=$(echo "$OUT" | python3 -c "
+import sys,json; d=json.load(sys.stdin)
+s=d['data'][0] if d.get('data') else {}
+print(s.get('status','none'))" 2>/dev/null)
+    if [ "$STATUS" = "connected" ] || [ "$STATUS" = "connecting" ]; then
+        pass "J1c: reload 后 MCP server 出现并连接（status=$STATUS）"
+    else
+        fail "J1c: reload 后应 connected/connecting，实际 $STATUS"
+    fi
+
+    stop_host
+
+    # J2: mcp_read_resource（通过 bridge 代理读 MCP 资源）
+    cat > "$TEST_HOME/.ion/config.json" <<'EOF'
+{
+  "mcp_servers": {
+    "everything": {"command": "mcp-server-everything", "disabled": false}
+  }
+}
+EOF
+    start_host
+    sleep 12
+
+    # 读一个 resource（server-everything 有 demo://resource/static/document/architecture）
+    OUT=$(rpc mcp_read_resource '{"server":"everything","uri":"demo://resource/static/document/architecture.md"}')
+    if echo "$OUT" | grep -q '"success": true\|"success":true'; then
+        CONTENT=$(echo "$OUT" | python3 -c "
+import sys,json; d=json.load(sys.stdin)
+print(d.get('data',{}).get('content','')[:30])" 2>/dev/null)
+        if [ -n "$CONTENT" ]; then
+            pass "J2: mcp_read_resource 成功（content 前30字符: $CONTENT）"
+        else
+            pass "J2: mcp_read_resource 成功（content 为空或 blob）"
+        fi
+    else
+        fail "J2: read_resource 失败"
+        echo "  输出: $(echo "$OUT" | head -3)"
+    fi
+
+    stop_host
+
+    # J3: 验证 mcp_reload 不崩溃（即使没有初始 mcp_manager）
+    echo '{}' > "$TEST_HOME/.ion/config.json"
+    start_host
+    OUT=$(rpc mcp_reload)
+    if echo "$OUT" | grep -q '"success": true\|"success":true'; then
+        pass "J3: mcp_reload 不崩溃（host 无 mcp_manager 时自动创建）"
+    else
+        fail "J3: mcp_reload 崩溃"
+        echo "  输出: $(echo "$OUT" | head -3)"
+    fi
+    stop_host
+fi
+
+# ──────────────────────────────────────────────────────────
 # 清理
 rm -rf "$TEST_HOME" 2>/dev/null
 
