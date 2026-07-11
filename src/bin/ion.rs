@@ -1301,6 +1301,24 @@ async fn cmd_run(
         }
     }
 
+    // ── MCP（场景 1：直接持有 McpManager + 直连 McpTool，不走 bridge）──
+    let mcp_config = ion::config::IonConfig::load().mcp_servers;
+    if !mcp_config.is_empty() && !eff.no_extensions {
+        let mcp_manager = std::sync::Arc::new(ion::mcp::McpManager::new(mcp_config));
+        tracing::info!("[mcp] connecting {} server(s)...", mcp_manager.server_count());
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            mcp_manager.connect_all(),
+        ).await;
+        let mcp_tools = mcp_manager.all_discovered_tools().await;
+        for tool in &mcp_tools {
+            tools.register(Box::new(ion::mcp::tool::McpTool::new(tool, mcp_manager.clone())));
+        }
+        tracing::info!("[mcp] {} tools registered from {} server(s)",
+            mcp_tools.len(), mcp_manager.connected_count().await);
+        mcp_manager.spawn_reconnect_monitor();
+    }
+
     // Check if plan tools are loaded (before tools is moved into Agent)
     let has_plan_tools = tools.get("plan_enter").is_some();
 
