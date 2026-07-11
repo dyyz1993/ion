@@ -75,14 +75,10 @@ fn gc_unreachable(store: &ObjectStore, active_hashes: &[String]) {
     }
 }
 
-/// 读取 object 的 createdAt（Unix 时间戳）
+/// 读取 object 的创建时间（Unix 时间戳），用 object 文件本身的 mtime
 fn get_object_created_at(store: &ObjectStore, hash: &str) -> Option<u64> {
-    // 从 metadata 读 createdAt，解析 ISO 8601 → Unix 时间戳
-    // 简化：用 metadata 文件的 mtime 作为近似值
-    let store_dir = store.store_dir();
-    let (prefix, rest) = if hash.len() >= 2 { hash.split_at(2) } else { (hash, "") };
-    let meta_path = store_dir.join("metadata").join(prefix).join(rest);
-    let metadata = std::fs::metadata(&meta_path).ok()?;
+    let object_path = store.object_path(hash);
+    let metadata = std::fs::metadata(&object_path).ok()?;
     let mtime = metadata.modified().ok()?;
     mtime.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
 }

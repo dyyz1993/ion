@@ -120,6 +120,27 @@ docs/
 > **状态：已验证** — 一句话说明当前进度。
 ```
 
+### 测试验证规范（每个功能必须遵守）
+
+每个功能（无论是新建还是重构）**必须**配套以下两层验证，缺一不可：
+
+| 层 | 要求 | 机制 | 何时用 |
+|----|------|------|--------|
+| **Harness 验证** | 必须有 | FauxProvider Factory 集成测试（`cargo test --test`）| 验证 agent 真实行为（工具调用、hook 触发、多轮交互），不调真 LLM |
+| **真实 case** | 必须补 | `#[ignore]` e2e 测试 + `ION_E2E=1` 环境变量 | 最后补，验证真实 LLM 场景 |
+
+**Harness 优先原则**：先用 FauxProvider 写 harness 测试把闭环跑通（零 API 成本、确定性），验证通过后再补真实 case。
+
+**FauxProvider 的两种模式**：
+- **Static**（`ION_FAUX_REPLY` / `ION_FAUX_SCRIPT`）：固定响应序列，适合 CLI 冒烟、RPC 连通性测试
+- **Factory**（Rust 闭包，`FauxResponseStep::Factory`）：根据 context 动态返回，适合审批/多轮交互等需要"根据上下文决定行为"的场景
+
+**自查清单**（功能完成前必查）：
+1. ✅ 有 harness 测试吗？（FauxProvider 驱动，不调真 LLM）
+2. ✅ Factory 用在需要动态分支的场景了吗？（审批、多轮交互必须用 Factory）
+3. ✅ 有 `#[ignore]` 真实 case 吗？（标 `ION_E2E=1` 触发）
+4. ✅ 测试文档里有 harness 章节 + 真实 case 章节吗？
+
 ### 模板触发时机（写新文档前必读）
 
 写新文档前**必须先查模板**。5 个模板对应 5 种触发场景：
@@ -287,7 +308,10 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/design/FAUX_PROVIDER.md](./docs/design/FAUX_PROVIDER.md) | FauxProvider 架构级 LLM Mock：FIFO 队列 + 工厂响应 + 流式分块，对标 pi (已实现 Phase 1) |
 | [docs/design/RECORD_REPLAY.md](./docs/design/RECORD_REPLAY.md) | Record/Replay 录制回放：环境变量录制 + `--model replay/id` 回放，复用 FauxProvider (已实现 Phase 1) |
 | [docs/design/SESSION_TREE.md](./docs/design/SESSION_TREE.md) | Session Tree（会话分支）：文件内分支 + leaf 指针 + only-append 回滚 (已实现) |
-| [docs/design/FILE_SNAPSHOT.md](./docs/design/FILE_SNAPSHOT.md) | File Snapshot：双路快照（工具级 before/after + 目录扫描兜底），restore_files + --restore-code 联动回滚 (已实现 Phase 1-7 + restore) |
+| [docs/design/MCP_SYSTEM.md](./docs/design/MCP_SYSTEM.md) | MCP 系统（Model Context Protocol）：rmcp 接入 + stdio/HTTP 双传输 + mcp__server__tool 命名 + 3 个管理 RPC (设计稿，Phase 1 待实现) |
+| [docs/design/CONFIG_DIMENSIONS.md](./docs/design/CONFIG_DIMENSIONS.md) | 配置与数据维度分析：5 类存储划分 + 组件归属全表 + worktree 副本预期 + 5 个设计缺口 (设计稿) |
+| [docs/design/FILE_SNAPSHOT.md](./docs/design/FILE_SNAPSHOT.md) | File Snapshot：双路快照（工具级 before/after + 目录扫描 + turn_end 兜底），restore_files + --restore-code 联动回滚，不遵守 .gitignore (已实现 + 2026-07-11 修复 5 个正确性问题) |
+| [docs/design/FILE_SNAPSHOT_REVIEW_ALIGNMENT.md](./docs/design/FILE_SNAPSHOT_REVIEW_ALIGNMENT.md) | File Snapshot & Review 对齐清单：ION vs pi 全维度对比 + tree 快照模型升级路线 + per-file 审批 + 4 步执行计划 (开发中) |
 | [docs/design/MESSAGE_RETRIEVAL_DESIGN.md](./docs/design/MESSAGE_RETRIEVAL_DESIGN.md) | 消息拉取 UI 设计规格：TypeScript 接口定义 + 6 种 UI 风格 + 3 层数据架构 (设计定稿) |
 | [docs/design/SOFT_DELETE_COMPACT.md](./docs/design/SOFT_DELETE_COMPACT.md) | 软删除/软压缩内核机制：mark_deleted/summarized/restore + on_context 时序 (已实现) |
 | [docs/testing/MESSAGE_RETRIEVAL_CASES.md](./docs/testing/MESSAGE_RETRIEVAL_CASES.md) | 消息拉取 CLI 用例集：9 接口 + 12 Group A-L + 分页/视点/过滤/血缘 (设计定稿+已实现) |
@@ -878,6 +902,9 @@ cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture
 │   │   └── {hash}--{name}/
 │   └── cache/                    ← 缓存
 ├── global-memory.db              ← 全局记忆库 (SQLite + FTS5, 跨项目)
+├── projects/                     ← 项目维度配置 (② 不依赖 git 同步, worktree 共享)
+│   └── <project_key>/            ← project_key = git common dir 的 hash, 主仓库与 worktree 一致
+│       └── config.json           ← 项目维度配置 (MCP server / 本地 tier models)
 ├── worktree/                     ← Git worktree 隔离
 │   └── {session_id}/{project}/
 ├── recordings/                   ← Record/Replay 录制
@@ -900,9 +927,32 @@ cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture
 - 会话按 session_id 平铺存储, 不像 pi 按 cwd hash 分组 (简化)
 - worktree 路径: `~/.ion/worktree/{session_id}/{project_name}/`, 自动创建 git 分支 `ion-{session_id}`
 - auth.json 权限 600, config.json 权限 644
-- `ION_WORKTREE_ROOT` 环境变量可覆盖 worktree 根目录
+- `ION_WORKTREE_ROOT` 环境变量可覆盖 worktree 物理存储根目录
 - `ION_SESSION_DIR` 环境变量可覆盖会话目录
 - `ION_API_KEY` 环境变量可覆盖 API key
+
+### 「项目级」存储维度（速查）
+
+> **详细分析与论证见 [docs/design/CONFIG_DIMENSIONS.md](./docs/design/CONFIG_DIMENSIONS.md)**（含组件归属全表、worktree 副本预期、5 个设计缺口）。
+
+**核心规则**：git worktree 与其主仓库视为同一个项目。按"是否适合 git 追踪"分 5 类：
+
+| 维度 | 存放目录 | 适合 git 追踪 | worktree 行为 | 典型内容 |
+|------|---------|--------------|--------------|---------|
+| **① 全局** | `~/.ion/config.json` | — | 天然全局 | provider/auth/全局 MCP |
+| **② 项目维度** | `~/.ion/projects/<project_key>/` | ❌ | **共享**（同 key） | MCP server、本地 tier models（含本地路径/密钥） |
+| **③ 仓库内** | `<project>/.ion/` | ✅ | 靠 git checkout | agent .md、skill .md、permissions rules |
+| **④ Session** | `~/.ion/agent/sessions/<cwd_hash>/` | ❌ | 独立 | 会话历史、注入记录 |
+| **⑤ 单例** | `~/.ion/agent/global-memory.db` | ❌ | 跨 worker 共享 | 全局记忆 DB、session 索引 |
+
+**`<project_key>`**：复用 file-snapshot 的 git common dir hash 算法（`object_store.rs:213-232`），主仓库和所有 worktree 算出同一个 key。
+
+**合并优先级**：环境变量 > ② 项目维度 > ③ 仓库内 > ① 全局 > 默认值
+
+**⚠️ 已知缺口**（详见 CONFIG_DIMENSIONS.md §5）：
+- `merge_project()` 只合并 3 个字段，`extensions`/`tier_models`/`runtime` 项目级写了无效
+- `ION_PROJECT_ROOT` 只被 config.rs 消费，WASM/Agent/Skill/Permission 在 worktree 里读不到项目级资源
+- project-data 用 cwd hash（worktree 独立），file-snapshot 用 git common dir hash（worktree 共享），两套不统一
 
 ## 开发命令
 

@@ -12,11 +12,16 @@ use super::object_store::{ObjectStore, WriteResult};
 pub struct ToolSnapshot {
     pub turn_id: String,           // 全局唯一 ID（如 "ts_a3f8b2"），不依赖下标
     pub tool_call_id: String,
-    pub tool_name: String,         // "write" | "edit"
+    pub tool_name: String,         // "write" | "edit" | "bash"
     pub path: String,              // 文件路径（可能 cwd 外）
-    pub before_hash: Option<String>, // 执行前内容 hash（None = 文件不存在）
+    pub before_hash: Option<String>, // 执行前内容 hash（None = 文件不存在 OR 未知）
     pub after_hash: Option<String>,  // 执行后内容 hash（None = 文件被删除）
     pub timestamp: String,
+    /// before_hash=None 时，区分两种情况：
+    /// - false = 文件原本不存在（write 新建）→ restore 时应删除
+    /// - true  = bash/扫描路线，文件原本存在但没存旧内容 → restore 时应跳过（不可误删）
+    #[serde(default)]
+    pub before_unknown: bool,
 }
 
 /// 路线 2：目录扫描的文件变更
@@ -75,7 +80,6 @@ impl SnapshotStore {
         let store_dir = crate::paths::file_store_dir(project_key);
         let snapshots_dir = store_dir.join("snapshots");
         std::fs::create_dir_all(snapshots_dir.join("tool")).ok();
-        std::fs::create_dir_all(snapshots_dir.join("turn")).ok();
         std::fs::create_dir_all(snapshots_dir.join("restore")).ok();
         Self {
             snapshots_dir,
@@ -162,6 +166,47 @@ impl SnapshotStore {
             .filter(|s| s.path == file_path)
             .collect()
     }
+
+    // ── tree 快照方法（步骤 2 新增）──
+
+    /// 存储 step-snapshot（每 turn 有变更时写一条）
+    pub fn save_step_snapshot(&self, snap: &super::tree_store::StepSnapshot) {
+        let safe_name = snap.turn_id.replace('/', "_");
+        let path = self.snapshots_dir.join("tree").join(format!("{}.json", safe_name));
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        let json = serde_json::to_string_pretty(snap).unwrap_or_default();
+        let _ = std::fs::write(&path, json);
+    }
+
+    /// 读取全部 step-snapshot（按 timestamp 排序，timestamp 相同按 turn_id）
+    pub fn load_all_step_snapshots(&self) -> Vec<super::tree_store::StepSnapshot> {
+        let dir = self.snapshots_dir.join("tree");
+        let mut all = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                    if let Ok(snap) = serde_json::from_str::<super::tree_store::StepSnapshot>(&content) {
+                        all.push(snap);
+                    }
+                }
+            }
+        }
+        // timestamp 相同（同秒写入）时用 turn_id 做次要排序键，保证顺序稳定
+        all.sort_by(|a, b| a.timestamp.cmp(&b.timestamp).then_with(|| a.turn_id.cmp(&b.turn_id)));
+        all
+    }
+
+    /// 获取最新的 step-snapshot（当前 tree 状态）
+    pub fn latest_step_snapshot(&self) -> Option<super::tree_store::StepSnapshot> {
+        self.load_all_step_snapshots().into_iter().last()
+    }
+
+    /// 获取最新的 snapshot_tree_hash（当前完整状态）
+    pub fn current_tree_hash(&self) -> Option<String> {
+        self.latest_step_snapshot().map(|s| s.snapshot_tree_hash)
+    }
 }
 
 /// 读 JSONL 文件反序列化
@@ -241,6 +286,7 @@ pub fn capture_after(
         before_hash,
         after_hash,
         timestamp: crate::session_jsonl::timestamp_iso(),
+        before_unknown: false, // write/edit 路线：before_hash=None 确实是新建
     })
 }
 
@@ -265,7 +311,7 @@ pub fn capture_after_dir(
     for (path, (mtime, size)) in &after_scan.files {
         match before_scan.files.get(path) {
             None => {
-                // 新文件
+                // 新文件（bash 扫描到的，但 before_scan 没有 → 要么真新建，要么在 before 时已存在但未被扫到）
                 let abs_path = std::path::Path::new(cwd).join(path);
                 let after_hash = std::fs::read(&abs_path).ok()
                     .map(|c| store.write_object(&c).hash);
@@ -278,6 +324,7 @@ pub fn capture_after_dir(
                         before_hash: None,
                         after_hash: Some(h),
                         timestamp: crate::session_jsonl::timestamp_iso(),
+                        before_unknown: true, // bash 路线没存 before 内容
                     });
                 }
             }
@@ -295,6 +342,7 @@ pub fn capture_after_dir(
                         before_hash: None, // bash 路线没存 before 内容
                         after_hash: Some(h),
                         timestamp: crate::session_jsonl::timestamp_iso(),
+                        before_unknown: true, // bash 路线没存 before 内容
                     });
                 }
             }
@@ -313,6 +361,7 @@ pub fn capture_after_dir(
                 before_hash: None,
                 after_hash: None,
                 timestamp: crate::session_jsonl::timestamp_iso(),
+                before_unknown: true, // bash 路线没存删前内容，restore 不可误删
             });
         }
     }

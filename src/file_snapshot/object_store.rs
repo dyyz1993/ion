@@ -1,21 +1,18 @@
 //! Content-addressed object store — 文件内容按 hash 去重存储
 //!
 //! 设计：类似 mini-git 的 object store
-//! - 内容 → sha256 → 路径 objects/<前2位>/<剩余hash>
-//! - 相同内容只存一次（existsSync 判断）
-//! - 元数据（createdAt/accessedAt）单独存 metadata/
+//! - 内容 → SipHash → 路径 objects/<前2位>/<剩余hash>
+//! - 相同内容只存一次（exists 判断）
+//!
+//! 注：当前用 std DefaultHasher（SipHash-1-3，64bit）。
+//! 对小项目够用；文件量到百万级时有碰撞风险，届时升级 sha256。
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 /// Content-addressed object store
 pub struct ObjectStore {
     /// 存储根目录（~/.ion/file-store/<project_key>/）
     store_dir: PathBuf,
-    /// 内存缓存：hash → 是否存在（避免频繁 existsSync）
-    #[allow(dead_code)]
-    cache: Mutex<HashMap<String, bool>>,
 }
 
 /// 写入 object 的结果
@@ -29,11 +26,7 @@ impl ObjectStore {
     pub fn for_project(project_key: &str) -> Self {
         let store_dir = crate::paths::file_store_dir(project_key);
         std::fs::create_dir_all(store_dir.join("objects")).ok();
-        std::fs::create_dir_all(store_dir.join("metadata")).ok();
-        Self {
-            store_dir,
-            cache: Mutex::new(HashMap::new()),
-        }
+        Self { store_dir }
     }
 
     /// 从 cwd 创建（自动算 project_key）
@@ -45,11 +38,7 @@ impl ObjectStore {
     #[cfg(test)]
     pub fn new_at(store_dir: PathBuf) -> Self {
         std::fs::create_dir_all(store_dir.join("objects")).ok();
-        std::fs::create_dir_all(store_dir.join("metadata")).ok();
-        Self {
-            store_dir,
-            cache: Mutex::new(HashMap::new()),
-        }
+        Self { store_dir }
     }
 
     /// 存储根目录
@@ -63,8 +52,7 @@ impl ObjectStore {
         let path = self.object_path(&hash);
 
         if path.exists() {
-            // 去重：已存在，更新 accessedAt
-            self.touch_accessed(&hash);
+            // 去重：已存在，直接返回
             return WriteResult {
                 hash,
                 deduped: true,
@@ -75,12 +63,7 @@ impl ObjectStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        std::hash::Hash::hash(&content.len(), &mut hasher); // 确保使用内容
         std::fs::write(&path, content).ok();
-
-        // 写入元数据
-        self.write_metadata(&hash, content.len() as u64);
 
         WriteResult {
             hash,
@@ -92,7 +75,6 @@ impl ObjectStore {
     pub fn read_object(&self, hash: &str) -> Option<Vec<u8>> {
         let path = self.object_path(hash);
         let content = std::fs::read(&path).ok()?;
-        self.touch_accessed(hash);
         Some(content)
     }
 
@@ -106,51 +88,14 @@ impl ObjectStore {
         self.object_path(hash).exists()
     }
 
-    /// object 文件路径
-    fn object_path(&self, hash: &str) -> PathBuf {
+    /// object 文件路径（pub：GC 需要拿 object 路径算 mtime）
+    pub fn object_path(&self, hash: &str) -> PathBuf {
         let (prefix, rest) = if hash.len() >= 2 {
             hash.split_at(2)
         } else {
             (hash, "")
         };
         self.store_dir.join("objects").join(prefix).join(rest)
-    }
-
-    /// 元数据文件路径
-    fn metadata_path(&self, hash: &str) -> PathBuf {
-        let (prefix, rest) = if hash.len() >= 2 {
-            hash.split_at(2)
-        } else {
-            (hash, "")
-        };
-        self.store_dir.join("metadata").join(prefix).join(rest)
-    }
-
-    /// 写入元数据
-    fn write_metadata(&self, hash: &str, size: u64) {
-        let path = self.metadata_path(hash);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        let now = crate::session_jsonl::timestamp_iso();
-        let meta = serde_json::json!({
-            "hash": hash,
-            "size": size,
-            "createdAt": now,
-            "accessedAt": now,
-        });
-        std::fs::write(&path, serde_json::to_string(&meta).unwrap_or_default()).ok();
-    }
-
-    /// 更新 accessedAt
-    fn touch_accessed(&self, hash: &str) {
-        let path = self.metadata_path(hash);
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(mut meta) = serde_json::from_str::<serde_json::Value>(&content) {
-                meta["accessedAt"] = serde_json::json!(crate::session_jsonl::timestamp_iso());
-                std::fs::write(&path, serde_json::to_string(&meta).unwrap_or_default()).ok();
-            }
-        }
     }
 
     /// 获取存储总大小（bytes）
@@ -180,7 +125,6 @@ impl ObjectStore {
     /// 删除 object（GC 用）
     pub fn delete_object(&self, hash: &str) {
         let _ = std::fs::remove_file(self.object_path(hash));
-        let _ = std::fs::remove_file(self.metadata_path(hash));
     }
 }
 
@@ -200,7 +144,7 @@ fn dir_size(path: &Path) -> u64 {
     total
 }
 
-/// 计算内容的 sha256 hash（返回 hex 字符串）
+/// 计算内容的 SipHash hash（64bit，16 位 hex 字符串）
 pub fn content_hash(content: &[u8]) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};

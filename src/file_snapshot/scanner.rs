@@ -1,7 +1,11 @@
-//! 目录扫描（路线 2：bash 兜底）
+//! 目录扫描（路线 2：bash 兜底 + turn_end 兜底）
 //!
 //! 快速扫描 cwd 目录树，用 mtime+size 识别变化文件。
-//! git ignore 智能过滤：文件夹跳过 / 文件查二进制。
+//! 独立忽略清单过滤（文件夹跳过 / 文件查二进制）。
+//!
+//! **关键原则：不遵守 .gitignore。** agent 可能改了 .gitignore 忽略的文件
+//! （.env、本地配置等），这些改动同样需要被追踪和回滚。
+//! 只用内置 DEFAULT_IGNORE 清单跳过体积大、可重建的产物目录。
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -24,7 +28,8 @@ pub fn scan_dir_fast(cwd: &str) -> DirScanResult {
     let mut truncated = false;
     let mut total_size = 0u64;
 
-    let ignore_patterns = load_gitignore(cwd);
+    // 只用内置 DEFAULT_IGNORE，不读 .gitignore（见模块注释）
+    let ignore_patterns: Vec<String> = DEFAULT_IGNORE.iter().map(|s| s.to_string()).collect();
     scan_recursive(
         Path::new(cwd),
         Path::new(cwd),
@@ -100,34 +105,29 @@ fn scan_recursive(
     }
 }
 
-/// 加载 .gitignore
-fn load_gitignore(cwd: &str) -> Vec<String> {
-    let mut patterns = Vec::new();
-    // 默认忽略
-    patterns.extend(DEFAULT_IGNORE.iter().map(|s| s.to_string()));
-    // 项目的 .gitignore
-    let gitignore_path = Path::new(cwd).join(".gitignore");
-    if let Ok(content) = std::fs::read_to_string(&gitignore_path) {
-        for line in content.lines() {
-            let line = line.trim();
-            if !line.is_empty() && !line.starts_with('#') {
-                patterns.push(line.to_string());
-            }
-        }
-    }
-    patterns
-}
-
+/// 内置忽略清单：体积大、可重建的产物目录与二进制文件。
+/// **不读 .gitignore** —— agent 改的 .env / 本地配置等同样需要追踪。
 const DEFAULT_IGNORE: &[&str] = &[
-    ".git", "node_modules", "target", "__pycache__", ".cache",
-    "*.pyc", "*.o", "*.so", "*.dylib", "*.dll",
+    // VCS
+    ".git",
+    // 语言生态产物目录
+    "node_modules", "target", "__pycache__", ".cache",
+    ".venv", "venv", "build", "dist", "out",
+    ".next", ".nuxt", ".gradle", ".m2", "Pods",
+    // 编译产物（按扩展名）
+    "*.pyc", "*.o", "*.so", "*.dylib", "*.dll", "*.a",
+    // 图片（二进制，diff 无意义）
     "*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp", "*.ico",
+    // 日志/锁/交换文件
+    "*.lock", "*.log", "*.swp",
+    // 压缩包
     "*.zip", "*.tar", "*.gz", "*.bz2", "*.7z",
-    "*.wasm", "*.dylib",
+    // WASM 二进制
+    "*.wasm",
 ];
 
-/// 检查路径是否被忽略
-/// 规则：git ignore 文件夹 → 跳过；git ignore 文件 → 查二进制
+/// 检查路径是否被忽略（仅按 DEFAULT_IGNORE，不读 .gitignore）
+/// 规则：命中清单的文件夹 → 跳过；命中清单的文件 → 查二进制，文本保留
 fn is_ignored(rel_path: &str, full_path: &Path, patterns: &[String]) -> bool {
     for pattern in patterns {
         if matches_pattern(rel_path, pattern) {
@@ -231,6 +231,34 @@ mod tests {
         let bin_file = tmp.join("data.bin");
         std::fs::write(&bin_file, [0u8, 1, 0, 255, 0, 2]).unwrap();
         assert!(is_binary(&bin_file), "含 null byte 应判为二进制");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn scan_does_not_respect_gitignore() {
+        // 红线测试：.gitignore 里写的文本文件仍应被扫描
+        let tmp = std::env::temp_dir().join(format!("fs_scan_gi_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // 写一个 .gitignore，忽略 .env 和 local.conf
+        std::fs::write(tmp.join(".gitignore"), ".env\nlocal.conf\n").unwrap();
+        // 这两个文件是文本，即使 .gitignore 忽略也应被扫到
+        std::fs::write(tmp.join(".env"), "SECRET=hello").unwrap();
+        std::fs::write(tmp.join("local.conf"), "debug=true").unwrap();
+        // target/ 在 DEFAULT_IGNORE 里，应被跳过
+        std::fs::create_dir_all(tmp.join("target")).unwrap();
+        std::fs::write(tmp.join("target/out"), "x").unwrap();
+
+        let result = scan_dir_fast(tmp.to_string_lossy().as_ref());
+
+        // .gitignore 忽略的文本文件 —— 仍被扫到（不遵守 .gitignore）
+        assert!(result.files.contains_key(".env"), ".env 应被扫到（不遵守 gitignore）");
+        assert!(result.files.contains_key("local.conf"), "local.conf 应被扫到");
+        // DEFAULT_IGNORE 里的目录 —— 被跳过
+        assert!(!result.files.contains_key("target/out"), "target/ 应被忽略");
+        // .gitignore 文件本身也该被扫到（它是文本文件）
+        assert!(result.files.contains_key(".gitignore"), ".gitignore 应被扫到");
 
         std::fs::remove_dir_all(&tmp).ok();
     }

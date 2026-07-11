@@ -1,6 +1,6 @@
 # File Snapshot 设计文档
 
-> **状态：开发中** — 双路快照系统（工具级 before/after + 目录扫描兜底），内核模块。
+> **状态：已实现** — 双路快照系统（工具级 before/after + 目录扫描兜底 + turn_end 兜底），内核模块。22 个单元测试通过。2026-07-11 修复 5 个正确性问题（见 §21 修复记录）。
 
 ---
 
@@ -128,20 +128,34 @@ fn project_key(cwd: &str) -> String {
 
 ---
 
-## 3. git ignore 智能过滤
+## 3. 独立忽略清单（不遵守 .gitignore）
 
-### 3.1 规则（你的方案）
+### 3.1 规则
+
+> **关键原则：不遵守 .gitignore。** agent 可能改了 .gitignore 忽略的文件（.env、本地配置等），这些改动同样需要被追踪和回滚。只用内置 `DEFAULT_IGNORE` 清单跳过体积大、可重建的产物目录。
 
 ```
-扫描 cwd 目录树时，遇到 git ignore 条目：
+扫描 cwd 目录树时，遇到 DEFAULT_IGNORE 清单条目：
 
-git ignore 条目 → 是文件夹吗？
-  ├─ 是文件夹（target/、node_modules/、.cache/）→ 跳过整个文件夹
+DEFAULT_IGNORE 条目 → 是文件夹吗？
+  ├─ 是文件夹（target/、node_modules/、.cache/、dist/、build/...）→ 跳过整个文件夹
   │
-  └─ 是文件（.env、*.log、secret.key）
+  └─ 是文件（*.lock、*.log、*.so...）
       └─ 检查是否二进制？
           ├─ 二进制 → 跳过
           └─ 文本 → 记录！（.env 等被改了也要追踪）
+```
+
+### 3.1.1 DEFAULT_IGNORE 清单（`scanner.rs`）
+
+```
+.git, node_modules, target, __pycache__, .cache, .venv, venv,
+build, dist, out, .next, .nuxt, .gradle, .m2, Pods,
+*.pyc, *.o, *.so, *.dylib, *.dll, *.a,
+*.png, *.jpg, *.jpeg, *.gif, *.webp, *.ico,
+*.lock, *.log, *.swp,
+*.zip, *.tar, *.gz, *.bz2, *.7z,
+*.wasm
 ```
 
 ### 3.2 二进制检测
@@ -1187,6 +1201,55 @@ Turn 4: write c.txt "v3"
     snapshots/tool/5.jsonl: a.txt v1→v4                 ││
     snapshots/restore/rp_002.json: 第二次恢复前状态      ││
 ```
+
+---
+
+## 21. 修复记录（2026-07-11）
+
+> 对实现做了一轮正确性审查，修复 5 个问题。存储模型（turn-based delta 流）保持不变，manifest 重构成独立 Phase 后续再议。
+
+### 修复 1：不遵守 .gitignore（🔴 红线）
+
+**问题**：`scanner.rs` 的 `load_gitignore` 主动读 `.gitignore` 并叠加到忽略清单。违反设计原则"不遵守 .gitignore"——`.env` 等被忽略的文件改动不会被追踪，回滚时也回不去。
+
+**修复**：删掉 `load_gitignore`，`scan_dir_fast` 只用内置 `DEFAULT_IGNORE` 清单（扩充到含 dist/build/.venv/.next/.gradle/Pods 等）。文本文件命中清单仍保留（二进制检查），`.env` 不会被误跳。
+
+**测试**：`scan_does_not_respect_gitignore` — 在含 .gitignore（写 .env）的项目里扫描，验证 .env 仍被扫到。
+
+### 修复 2：bash restore 误删文件（🔴 数据丢失）
+
+**问题**：bash 扫描路线的 `ToolSnapshot.before_hash` 恒为 `None`（没存旧内容），restore 时 `None` 分支 = 删除文件。agent 用 bash 改了文件后回滚，文件被**删除**而非回退。
+
+**修复**：`ToolSnapshot` 加 `before_unknown: bool` 字段（`#[serde(default)]` 向后兼容）。bash 路线设 `true`，write/edit 路线设 `false`。restore 的 None 分支：
+- `before_unknown=true` → 跳过（reason="before_content_not_captured"），不误删
+- `before_unknown=false` → 删除（write 新建的文件，回滚到不存在）
+
+**测试**：`restore_bash_modified_file_not_deleted` — bash 改过的文件 restore 后仍存在。
+
+### 修复 3：GC 接线（🟡 死代码）
+
+**问题**：`enforce_limit` / `run_gc_async` 从未被调用，object 存储会无限增长，100MB 阈值形同虚设。
+
+**修复**：`FileSnapshotExtension` 实现 `on_session_start` 钩子，session 启动时收集 active_hashes（所有 ToolSnapshot 的 before/after hash）→ 异步调 `run_gc_async`，不阻塞 agent。
+
+### 修复 4：turn_end 仓库内扫描兜底（🟡 漏外部改动）
+
+**问题**：扫描只在 bash 前后触发，turn_end 不兜底。外部工具/手动改的文件（不经 bash 也不经 write/edit）不会被捕获。
+
+**修复**：`FileSnapshotExtension` 实现 `on_turn_end` 钩子，每轮结束后扫描 cwd（仓库内），与上一轮扫描对比记录变化。仓库外仍只靠工具拦截（write/edit 的绝对路径）。
+
+### 修复 5：diff 换真行级（🟢 过报）
+
+**问题**：`diff.rs` 用"前后缀夹中间块"近似算法，分散修改（如第 2 行和第 8 行各改）会把整段中间全标 `-/+`，严重过报。
+
+**修复**：引入 `similar` crate（v2，Myers 算法），重写 `unified_diff` 为真行级 diff。输出格式兼容（`--- a/path` / `+++ b/path` / `@@ hunk`），RPC 消费方不用改。另加 `count_changes` 直接从内容统计行数（不生成 diff 文本时更高效）。
+
+**测试**：`diff_scattered_changes_not_overreported` — 分散修改只报 2 处删除 + 2 处新增，不过报。
+
+### 附：注释修正
+
+`object_store.rs` 的注释声称 "sha256"，实际用的是 `DefaultHasher`（SipHash-1-3，64bit）。修正注释为真实算法名，并标注"文件量到百万级时有碰撞风险，届时升级 sha256"。同时删掉 `write_object` 里一段无意义的 dead code hasher。
+
 
 ### 18.4 不支持的联动场景（XFail）
 

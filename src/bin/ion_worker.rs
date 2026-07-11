@@ -290,6 +290,10 @@ async fn main() {
     #[allow(unused_assignments)]
     let mut snapshot_store: Option<std::sync::Arc<ion::file_snapshot::SnapshotStore>> = None;
 
+    // Approval Manager（预声明，审批 RPC 用，依赖 snapshot_store）
+    #[allow(unused_assignments)]
+    let mut approval_mgr: Option<std::sync::Arc<ion::file_snapshot::approval::ApprovalManager>> = None;
+
     // ── 加载配置（在 Runtime 和 Extension 初始化之前）──
     let ion_cfg = ion::config::IonConfig::load();
 
@@ -429,6 +433,18 @@ async fn main() {
             };
         // 标记 snapshot_store 在后续 RPC 分支中被读取（消除编译器误报）
         let _ = snapshot_store.is_some();
+
+        // Approval Manager（审批，依赖 snapshot_store）
+        approval_mgr = if let Some(ref store) = snapshot_store {
+            let mgr = std::sync::Arc::new(
+                ion::file_snapshot::approval::ApprovalManager::new(store.clone(), &worker_cwd)
+            );
+            tracing::info!("[extension] file-approval enabled");
+            Some(mgr)
+        } else {
+            tracing::info!("[extension] file-approval disabled (requires file-snapshot)");
+            None
+        };
 
         // ── 注册 WASM Extension 的 HookAdapter（让 WASM 也能实现 29 个钩子）──
         for wasm_path in &loaded_wasm_paths {
@@ -2060,6 +2076,111 @@ async fn main() {
                     }));
                 } else {
                     output_response(&id, "restore_files", &serde_json::json!({"error": "file-snapshot not enabled"}));
+                }
+            }
+            // ── 审批 RPC（review_pending / approve / reject / approve_all / reject_all / approvals）──
+            "review_pending" => {
+                if let Some(ref mgr) = approval_mgr {
+                    let pending = mgr.compute_pending();
+                    let added = pending.iter().filter(|p| p.status == "added").count();
+                    let modified = pending.iter().filter(|p| p.status == "modified").count();
+                    let deleted = pending.iter().filter(|p| p.status == "deleted").count();
+                    let pending_json: Vec<_> = pending.iter().map(|p| serde_json::json!({
+                        "path": p.path,
+                        "status": p.status,
+                        "diffStat": p.diff_stat,
+                        "oldContent": p.old_content,
+                        "newContent": p.new_content,
+                    })).collect();
+                    output_response(&id, "review_pending", &serde_json::json!({
+                        "pending": pending_json,
+                        "summary": {
+                            "total": pending.len(),
+                            "added": added,
+                            "modified": modified,
+                            "deleted": deleted,
+                        },
+                    }));
+                } else {
+                    output_response(&id, "review_pending", &serde_json::json!({"error": "approval not enabled (requires file-snapshot)"}));
+                }
+            }
+            "review_approve" => {
+                let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                if path.is_empty() {
+                    output_response(&id, "review_approve", &serde_json::json!({"error": "missing 'path'"}));
+                } else if let Some(ref mgr) = approval_mgr {
+                    match mgr.approve(path) {
+                        Ok(appr) => output_response(&id, "review_approve", &serde_json::json!({
+                            "path": appr.path, "status": "approved",
+                            "approvedTreeHash": appr.approved_tree_hash,
+                        })),
+                        Err(e) => output_response(&id, "review_approve", &serde_json::json!({"error": e})),
+                    }
+                } else {
+                    output_response(&id, "review_approve", &serde_json::json!({"error": "approval not enabled"}));
+                }
+            }
+            "review_reject" => {
+                let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                if path.is_empty() {
+                    output_response(&id, "review_reject", &serde_json::json!({"error": "missing 'path'"}));
+                } else if let Some(ref mgr) = approval_mgr {
+                    match mgr.reject(path) {
+                        Ok(rf) => output_response(&id, "review_reject", &serde_json::json!({
+                            "path": rf.path, "status": "rejected",
+                            "action": rf.action, "rolledBack": true,
+                        })),
+                        Err(e) => output_response(&id, "review_reject", &serde_json::json!({"error": e})),
+                    }
+                } else {
+                    output_response(&id, "review_reject", &serde_json::json!({"error": "approval not enabled"}));
+                }
+            }
+            "review_approve_all" => {
+                if let Some(ref mgr) = approval_mgr {
+                    let results = mgr.approve_all();
+                    let ok_count = results.iter().filter(|r| r.is_ok()).count();
+                    let err_count = results.len() - ok_count;
+                    output_response(&id, "review_approve_all", &serde_json::json!({
+                        "approved": ok_count, "errors": err_count, "total": results.len(),
+                    }));
+                } else {
+                    output_response(&id, "review_approve_all", &serde_json::json!({"error": "approval not enabled"}));
+                }
+            }
+            "review_reject_all" => {
+                if let Some(ref mgr) = approval_mgr {
+                    let results = mgr.reject_all();
+                    let ok_count = results.iter().filter(|r| r.is_ok()).count();
+                    let err_count = results.len() - ok_count;
+                    output_response(&id, "review_reject_all", &serde_json::json!({
+                        "rejected": ok_count, "errors": err_count, "total": results.len(),
+                    }));
+                } else {
+                    output_response(&id, "review_reject_all", &serde_json::json!({"error": "approval not enabled"}));
+                }
+            }
+            "review_approvals" => {
+                if let Some(ref mgr) = approval_mgr {
+                    let filter = params.get("status").and_then(|v| v.as_str());
+                    let status_filter = filter.and_then(|s| match s {
+                        "pending" => Some(ion::file_snapshot::ApprovalStatus::Pending),
+                        "approved" => Some(ion::file_snapshot::ApprovalStatus::Approved),
+                        "rejected" => Some(ion::file_snapshot::ApprovalStatus::Rejected),
+                        _ => None,
+                    });
+                    let list = mgr.approvals_list(status_filter.as_ref());
+                    output_response(&id, "review_approvals", &serde_json::json!({
+                        "approvals": list.iter().map(|a| serde_json::json!({
+                            "path": a.path,
+                            "status": serde_json::to_string(&a.status).unwrap_or_default().trim_matches('"'),
+                            "timestamp": a.timestamp,
+                            "approvedTreeHash": a.approved_tree_hash,
+                        })).collect::<Vec<_>>(),
+                    }));
+                } else {
+                    output_response(&id, "review_approvals", &serde_json::json!({"error": "approval not enabled"}));
                 }
             }
             "get_fork_messages" => {
