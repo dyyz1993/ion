@@ -2143,8 +2143,10 @@ async fn main() {
                                     .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)),
                                 "parentId": null,
                                 "timestamp": ion::session_jsonl::timestamp_iso(),
-                                "role": "user",
-                                "content": [{"type": "text", "text": deny_msg}],
+                                "message": {
+                                    "role": "user",
+                                    "content": [{"type": "text", "text": deny_msg}],
+                                },
                                 "customType": "approval_deny",
                             });
                             ion::session_jsonl::append_raw_entry(&worker_cwd, &entry);

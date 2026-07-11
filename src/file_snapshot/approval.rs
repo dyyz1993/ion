@@ -206,7 +206,7 @@ impl ApprovalManager {
         pending
     }
 
-    /// approve 单个文件（锚定 baseline）
+    /// approve 单个文件（锚定 baseline + 持久化到 session.jsonl）
     pub fn approve(&self, path: &str) -> Result<FileApproval, String> {
         let current_hash = self.current_tree_hash()
             .ok_or("No current tree snapshot available")?;
@@ -225,6 +225,10 @@ impl ApprovalManager {
         };
         approvals.insert(path.to_string(), approval.clone());
         drop(approvals);
+        drop(ever_approved);
+
+        // 持久化到 session.jsonl
+        self.persist_approval(&approval);
 
         // 推送 ApprovalResolved 事件（UI 收到后更新状态）
         emit_approval_event("ApprovalResolved", &serde_json::json!({
@@ -236,7 +240,7 @@ impl ApprovalManager {
         Ok(approval)
     }
 
-    /// reject 单个文件（回滚到 baseline + 更新状态）
+    /// reject 单个文件（回滚到 baseline + 更新状态 + 持久化）
     pub fn reject(&self, path: &str) -> Result<super::restore::RestoredFile, String> {
         let baseline_hash = {
             let approvals = self.approvals.lock().unwrap();
@@ -254,15 +258,19 @@ impl ApprovalManager {
         );
 
         // 标记 rejected
-        let mut approvals = self.approvals.lock().unwrap();
-        approvals.insert(path.to_string(), FileApproval {
+        let approval = FileApproval {
             path: path.to_string(),
             status: ApprovalStatus::Rejected,
             timestamp: now_ts(),
             approved_tree_hash: None,
             approved_turn_id: None,
-        });
+        };
+        let mut approvals = self.approvals.lock().unwrap();
+        approvals.insert(path.to_string(), approval.clone());
         drop(approvals);
+
+        // 持久化到 session.jsonl
+        self.persist_approval(&approval);
 
         // 推送 ApprovalResolved 事件（UI 收到后更新状态）
         emit_approval_event("ApprovalResolved", &serde_json::json!({
@@ -371,6 +379,40 @@ impl ApprovalManager {
         self.store.load_all_step_snapshots()
     }
 
+    /// 持久化单个审批决策到 session.jsonl
+    fn persist_approval(&self, approval: &FileApproval) {
+        let status_str = match approval.status {
+            ApprovalStatus::Pending => "pending",
+            ApprovalStatus::Approved => "approved",
+            ApprovalStatus::Rejected => "rejected",
+        };
+        let entry = serde_json::json!({
+            "type": "custom",
+            "id": format!("fa_{}", now_ts()),
+            "parentId": null,
+            "timestamp": crate::session_jsonl::timestamp_iso(),
+            "customType": "file-approval",
+            "data": {
+                "path": approval.path,
+                "status": status_str,
+                "timestamp": approval.timestamp,
+                "approved_tree_hash": approval.approved_tree_hash,
+            },
+        });
+        crate::session_jsonl::append_raw_entry(&self.cwd, &entry);
+    }
+
+    /// 从 session.jsonl 恢复审批状态（session_start 调）
+    pub fn restore_from_session(&self) {
+        let entries = crate::message_retrieval::load_entries_cached(&self.cwd);
+        let approval_entries: Vec<serde_json::Value> = entries.into_iter()
+            .filter(|e| e.get("customType").and_then(|v| v.as_str()) == Some("file-approval"))
+            .collect();
+        if !approval_entries.is_empty() {
+            self.restore_from_entries(&approval_entries);
+        }
+    }
+
     /// 序列化当前审批状态为 entries（持久化用）
     pub fn to_entries(&self) -> Vec<serde_json::Value> {
         let approvals = self.approvals.lock().unwrap();
@@ -440,6 +482,12 @@ impl ApprovalExtension {
 #[async_trait::async_trait]
 impl Extension for ApprovalExtension {
     fn name(&self) -> &str { "file-approval" }
+
+    async fn on_session_start(&self, _ctx: &crate::agent::extension::SessionContext) -> AgentResult<()> {
+        // 从 session.jsonl 恢复审批状态
+        self.mgr.restore_from_session();
+        Ok(())
+    }
 
     async fn on_gate_check(&self, _ctx: &TurnContext) -> AgentResult<GateDecision> {
         let pending = self.mgr.compute_pending();

@@ -2988,6 +2988,15 @@ async fn cmd_serve_start(
                             let data = ev.get("data").cloned().unwrap_or_default();
                             let ev_session = ev.get("session").and_then(|v| v.as_str());
                             let mut event = ion::event_bus::ExtensionEvent::new(extension, ct).with_data(data);
+                            // 审批类事件路由到 ui（让 subscribe --ui 也能收到）
+                            let ui_custom_types = [
+                                "ApprovalRequest", "ApprovalResolved", "ApprovalReset",
+                                "Ask", "AskResolved", "AskTimedOut",
+                                "Confirm", "Prompt", "Alert", "Notif",
+                            ];
+                            if ui_custom_types.contains(&ct) {
+                                event = event.with_route("ui");
+                            }
                             if let Some(s) = ev_session { event = event.with_session(s); }
                             eprintln!("[debug] broadcasting extension_event: {} {} session={:?}", extension, ct, ev_session);
                             bus.broadcast(&event);
