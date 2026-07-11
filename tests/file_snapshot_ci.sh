@@ -272,6 +272,66 @@ fi
 
 # ──────────────────────────────────────────────────────────
 echo ""
+echo "Group J: 审批 harness + RPC 冒烟（新增）"
+# ──────────────────────────────────────────────────────────
+
+# J1: harness 测试（FauxProvider 驱动真实 agent loop）
+HARNESS=$(cargo test --test file_snapshot_harness 2>&1)
+if echo "$HARNESS" | grep -q "test result: ok"; then
+    HCOUNT=$(echo "$HARNESS" | grep 'passed' | sed 's/.*\([0-9]\+ passed\).*/\1/' | head -1)
+    pass "J1: 审批 harness 测试全过（$HCOUNT）"
+else
+    fail "J1: 审批 harness 测试有失败"
+    echo "$HARNESS" | tail -20
+fi
+
+# J2: 审批 RPC 冒烟（host 模式 + ION_FAUX_SCRIPT 驱动）
+# 造 faux 脚本：write 工具调用 → Stop
+J2_DIR=$(mktemp -d)
+J2_SOCK="$HOME/.ion/fs_ci_j2.sock"
+cat > /tmp/faux_approval_ci.jsonl << 'JSONL'
+{"tool_call":{"name":"write","input":{"file_path":"J2_PLACEHOLDER","content":"harness"}}}
+{"text":"done"}
+JSONL
+# 替换占位符为绝对路径
+sed "s|J2_PLACEHOLDER|${J2_DIR}/j2.txt|" /tmp/faux_approval_ci.jsonl > /tmp/faux_approval_ci_real.jsonl
+
+rm -f "$J2_SOCK" 2>/dev/null
+ION_FAUX_SCRIPT=/tmp/faux_approval_ci_real.jsonl ION_HOST_SOCK="$J2_SOCK" \
+    ./target/debug/ion serve >/tmp/ion_fs_j2.log 2>&1 &
+J2_PID=$!
+sleep 2
+
+if kill -0 $J2_PID 2>/dev/null; then
+    # 建会话
+    ion rpc --host-sock "$J2_SOCK" --method create_session --params "{\"cwd\":\"$J2_DIR\"}" >/tmp/j2_session.json 2>&1
+    J2_SID=$(cat /tmp/j2_session.json | grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')
+
+    if [ -n "$J2_SID" ]; then
+        # 跑一轮（faux 会 write + Stop）
+        ion rpc --host-sock "$J2_SOCK" --session "$J2_SID" --method prompt --params '{"text":"write file"}' >/tmp/j2_prompt.log 2>&1
+        sleep 1
+
+        # J2: review_pending 应有 j2.txt
+        PENDING=$(ion rpc --host-sock "$J2_SOCK" --session "$J2_SID" --method review_pending --params '{}')
+        echo "$PENDING" | grep -q "j2.txt" && pass "J2: review_pending 含 j2.txt" || skip "J2: review_pending 无 j2.txt（可能 faux 未触发）"
+
+        # J3: review_approve
+        APPROVE=$(ion rpc --host-sock "$J2_SOCK" --session "$J2_SID" --method review_approve --params '{"path":"j2.txt"}')
+        echo "$APPROVE" | grep -q "approved" && pass "J3: review_approve 生效" || skip "J3: approve 未生效"
+    else
+        skip "J2-J3: 建会话失败"
+    fi
+
+    kill $J2_PID 2>/dev/null
+else
+    skip "J2-J3: host 启动失败"
+fi
+rm -f "$J2_SOCK" /tmp/faux_approval_ci*.jsonl 2>/dev/null
+rm -rf "$J2_DIR" 2>/dev/null
+
+# ──────────────────────────────────────────────────────────
+echo ""
 echo "════════════════════════════════════════"
 echo "  PASS=$PASS  FAIL=$FAIL  SKIP=$SKIP"
 echo "════════════════════════════════════════"

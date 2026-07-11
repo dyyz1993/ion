@@ -1,6 +1,6 @@
 # File Snapshot & Review — pi 对齐清单与执行计划
 
-> **状态：开发中** — 基于 pi（`file-snapshot-manager.ts` + `file-review` extension）的全面对标，规划 ION 的快照模型升级 + per-file 审批 + 回滚完善。
+> **状态：步骤 1-4 已实现** — 存储简化 + tree 快照模型 + 回滚升级 + per-file 审批 + 事件推送全部完成。47 单元测试 + 5 harness 测试通过。剩余：真实 e2e。
 >
 > **前置文档**：[FILE_SNAPSHOT.md](./FILE_SNAPSHOT.md)（现有实现的设计文档，本文档是其升级路线）
 

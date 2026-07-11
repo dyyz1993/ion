@@ -135,7 +135,21 @@ impl Extension for FileSnapshotExtension {
         // 建立 baseline tree（session start 时的完整文件状态）
         let files = self.scan_to_file_contents();
         let (tree_hash, _) = tree_store::write_tree(self.store.objects(), &files);
-        *self.baseline_tree_hash.lock().unwrap() = Some(tree_hash);
+        *self.baseline_tree_hash.lock().unwrap() = Some(tree_hash.clone());
+
+        // 写 baseline step-snapshot（让 current_tree_hash 从一开始就有值）
+        let step = tree_store::StepSnapshot {
+            turn_id: "ts_session_start".to_string(),
+            baseline_tree_hash: tree_hash.clone(),
+            snapshot_tree_hash: tree_hash,
+            diff: tree_store::TreeDiff {
+                added: vec![],
+                modified: vec![],
+                deleted: vec![],
+            },
+            timestamp: crate::session_jsonl::timestamp_iso(),
+        };
+        self.store.save_step_snapshot(&step);
 
         // 异步 GC（不阻塞 agent）
         let active_hashes = self.collect_active_hashes();
