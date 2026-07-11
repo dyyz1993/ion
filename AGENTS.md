@@ -171,11 +171,57 @@ docs/
 | WASM 扩展手册 | EXTENSION_MANUAL_TEMPLATE | `{extension}/MANUAL.md` |
 | pi 对齐调研 | PI_ALIGNMENT_TEMPLATE | `docs/design/` |
 
-**第四步：写 CLI 验证（Group A/B/C 格式）**
+**第四步：写 CLI 验证（Group A/B/C 格式 + 完整命令 + 响应 JSON）**
 
 每个功能**必须有 CLI 验证**，参照 BASH_EXTENSION.md / COMPACTION.md 的 Group 格式：
-- 放在 `tests/xxx_ci.sh`（自动化脚本）
-- 或附在设计文档的"CLI 测试指南"章节
+
+文档中**每个 RPC 必须给出**：
+1. **完整的 `ion rpc` / `ion` 命令**（不能只写"调用 xxx 方法"）
+2. **请求参数表**（字段/类型/默认/说明）
+3. **完整响应 JSON**（成功 + 失败两种）
+4. **验证点清单**（✅ 标记）
+
+**格式示例**（参照 [CLI_TEST_TEMPLATE](./docs/templates/CLI_TEST_TEMPLATE.md)）：
+
+```markdown
+### RPC 接口规格
+
+**请求：**
+```bash
+ion rpc --session <sid> --method get_flags \
+  --params '{"extension":"my-ext"}'
+```
+
+**请求参数：**
+| 字段 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `extension` | string | 必填 | 扩展名 |
+
+**响应 JSON（成功）：**
+```json
+{"success":true,"data":{"verbose":false,"max_items":100}}
+```
+
+**响应 JSON（失败）：**
+```json
+{"success":false,"error":"extension 'my-ext' not found"}
+```
+
+### Group A: 基础功能
+
+#### A1 查询 flag
+```bash
+ion rpc --session sess_xxx --method get_flags \
+  --params '{"extension":"my-ext"}'
+```
+**验证点：**
+- ✅ 返回所有 flag 的当前值
+- ✅ 包含 default 值
+```
+
+同时放在：
+- 设计文档的"CLI 测试指南"章节（如 BASH_EXTENSION.md §0.2 的格式）
+- `tests/xxx_ci.sh`（自动化脚本，可一键验证）
 - 验证脚本登记到 AGENTS.md 测试统计表
 
 **第五步：更新 AGENTS.md**
