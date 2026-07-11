@@ -141,6 +141,55 @@ docs/
 3. ✅ 有 `#[ignore]` 真实 case 吗？（标 `ION_E2E=1` 触发）
 4. ✅ 测试文档里有 harness 章节 + 真实 case 章节吗？
 
+### UI 交互架构规范（每个对外功能必须遵守）
+
+ION 支持多终端（CLI / Web UI / IDE 插件）同时连接同一个 host。每个对外功能（审批、回滚、文件快照等）**必须**同时提供以下三种能力，缺一不可：
+
+| 能力 | 要求 | 实现方式 |
+|------|------|---------|
+| **被动通知（Push）** | 状态变化时主动推送事件，UI 不需要轮询 | Worker stdout → Manager event-pump → EventBus broadcast → CLI `subscribe` |
+| **多窗口实时同步** | 一个终端的操作，其他终端自动刷新 | 同一个 EventBus broadcast，所有 subscriber 都收到 |
+| **数据拉取（Pull）** | 新连接/刷新时能获取当前完整状态 | RPC 查询接口（如 `review_pending` / `review_approvals`） |
+
+**三能力缺一不可的原因**：
+- 只有 Push 没 Pull → 新终端连上时看不到已有状态（空白）
+- 只有 Pull 没 Push → 用户必须手动刷新，体验差且多窗口不同步
+- Push + Pull 但没同步 → 多终端看到不一致的状态
+
+**自查清单**（功能完成前必查）：
+1. ✅ 状态变化时有推送事件吗？（stdout JSON → Manager 转发 → subscribe）
+2. ✅ 有 RPC 拉取接口吗？（新终端能获取当前状态）
+3. ✅ 推送事件的 customType 统一了吗？（如 `ApprovalRequest` / `ApprovalResolved` / `ApprovalReset`）
+4. ✅ 事件 data 包含足够信息让 UI 渲染吗？（文件列表、diff 摘要、操作结果）
+
+**推送事件模式（仿 BashExtension）**：
+```rust
+// Worker Extension 通过 stdout 输出事件 JSON
+// 注意：必须包 "type":"event" 外壳，否则 Manager 路由不转发
+fn emit_event(custom_type: &str, data: &serde_json::Value) {
+    let msg = serde_json::json!({
+        "type": "event",
+        "event": {
+            "type": "extension_event",
+            "extension": "<extension_name>",
+            "customType": custom_type,
+            "visibility": "llm_and_ui",
+            "data": data,
+        },
+    });
+    println!("{}", serde_json::to_string(&msg).unwrap_or_default());
+}
+```
+
+**事件转发链路**：
+```
+Worker Extension (stdout JSON)
+    ↓ Manager stdout-reader（识别 "type":"event"）
+Manager event-pump（重建 ExtensionEvent）
+    ↓ ExtensionEventBus.broadcast()
+CLI subscribe / Web UI / IDE（所有 subscriber 都收到）
+```
+
 ### 模板触发时机（写新文档前必读）
 
 写新文档前**必须先查模板**。5 个模板对应 5 种触发场景：

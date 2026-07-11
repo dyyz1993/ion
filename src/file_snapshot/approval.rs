@@ -224,6 +224,14 @@ impl ApprovalManager {
             approved_turn_id: None,
         };
         approvals.insert(path.to_string(), approval.clone());
+        drop(approvals);
+
+        // 推送 ApprovalResolved 事件（UI 收到后更新状态）
+        emit_approval_event("ApprovalResolved", &serde_json::json!({
+            "path": path,
+            "decision": "approved",
+            "approvedTreeHash": current_hash,
+        }));
 
         Ok(approval)
     }
@@ -254,6 +262,15 @@ impl ApprovalManager {
             approved_tree_hash: None,
             approved_turn_id: None,
         });
+        drop(approvals);
+
+        // 推送 ApprovalResolved 事件（UI 收到后更新状态）
+        emit_approval_event("ApprovalResolved", &serde_json::json!({
+            "path": path,
+            "decision": "rejected",
+            "action": result.action,
+            "rolledBack": true,
+        }));
 
         Ok(result)
     }
@@ -287,16 +304,27 @@ impl ApprovalManager {
     /// re-approval 重置：已批准/拒绝的文件被新改动修改 → 回 pending
     /// 在 on_turn_end 时调用
     pub fn check_re_approval(&self, changed_paths: &[String]) {
-        let mut approvals = self.approvals.lock().unwrap();
-        for path in changed_paths {
-            if let Some(appr) = approvals.get_mut(path) {
-                if appr.status == ApprovalStatus::Approved || appr.status == ApprovalStatus::Rejected {
-                    appr.status = ApprovalStatus::Pending;
-                    appr.timestamp = now_ts();
-                    // 注意：approved_tree_hash 不删（保持 baseline 锚定）
-                    // 这样 diff 仍从上次 approved 位置算
+        let mut reset_paths = Vec::new();
+        {
+            let mut approvals = self.approvals.lock().unwrap();
+            for path in changed_paths {
+                if let Some(appr) = approvals.get_mut(path) {
+                    if appr.status == ApprovalStatus::Approved || appr.status == ApprovalStatus::Rejected {
+                        appr.status = ApprovalStatus::Pending;
+                        appr.timestamp = now_ts();
+                        reset_paths.push(path.clone());
+                        // 注意：approved_tree_hash 不删（保持 baseline 锚定）
+                        // 这样 diff 仍从上次 approved 位置算
+                    }
                 }
             }
+        }
+        // 推送 ApprovalReset 事件（UI 收到后刷新审批状态）
+        if !reset_paths.is_empty() {
+            emit_approval_event("ApprovalReset", &serde_json::json!({
+                "paths": reset_paths,
+                "reason": "file_changed_after_approval",
+            }));
         }
     }
 
@@ -367,6 +395,24 @@ fn now_ts() -> u64 {
         .unwrap_or(0)
 }
 
+/// 推送审批事件到 Manager（仿 BashExtension stdout JSON 模式）
+///
+/// 事件经 Worker stdout → Manager event-pump → ExtensionEventBus → CLI subscribe
+/// customType: ApprovalRequest（有待审批）/ ApprovalResolved（审批完成）/ ApprovalReset（re-approval 重置）
+fn emit_approval_event(custom_type: &str, data: &serde_json::Value) {
+    let msg = serde_json::json!({
+        "type": "event",
+        "event": {
+            "type": "extension_event",
+            "extension": "file-approval",
+            "customType": custom_type,
+            "visibility": "llm_and_ui",
+            "data": data,
+        },
+    });
+    println!("{}", serde_json::to_string(&msg).unwrap_or_default());
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // ApprovalExtension — 实现 Extension trait，挂 on_gate_check
 // ────────────────────────────────────────────────────────────────────────────
@@ -401,14 +447,27 @@ impl Extension for ApprovalExtension {
             return Ok(GateDecision::Allow);
         }
 
-        // 有待审批文件 → 记录日志（审批是 post-hoc 的，不阻塞 agent 停止）
+        // 有待审批文件 → 推送事件 + 记录日志
         let file_list: Vec<String> = pending.iter()
             .map(|p| format!("  - {} ({})", p.path, p.status))
             .collect();
+
+        // 推送 ApprovalRequest 事件（UI 收到后可展示审批界面）
+        let request_id = format!("appr_{}", now_ts());
+        let pending_json: Vec<serde_json::Value> = pending.iter().map(|p| serde_json::json!({
+            "path": p.path,
+            "status": p.status,
+            "diffStat": p.diff_stat,
+        })).collect();
+        emit_approval_event("ApprovalRequest", &serde_json::json!({
+            "requestId": request_id,
+            "total": pending.len(),
+            "files": pending_json,
+        }));
+
         tracing::info!(
-            "[file-approval] {} files pending review:\n{}",
-            pending.len(),
-            file_list.join("\n")
+            "[file-approval] {} files pending review (requestId={}):\n{}",
+            pending.len(), request_id, file_list.join("\n")
         );
 
         // 返回 Allow——审批是 post-hoc 的，不阻塞 agent 停止
