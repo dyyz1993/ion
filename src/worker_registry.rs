@@ -1427,6 +1427,31 @@ impl WorkerRegistry {
                     self.write_manager_response(&from_worker, resp).await;
                 }
                 // ── MCP 命令（方案 C：子 Worker → host 代理调用）──
+                "mcp_read_resource" => {
+                    let server = params.get("server").and_then(|v| v.as_str()).unwrap_or("");
+                    let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+                    let resp = if let Some(ref mgr) = self.mcp_manager {
+                        match mgr.read_resource(server, uri).await {
+                            Ok(content) => serde_json::json!({
+                                "_reply_to": reply_to,
+                                "success": true,
+                                "data": {"content": content}
+                            }),
+                            Err(e) => serde_json::json!({
+                                "_reply_to": reply_to,
+                                "success": false,
+                                "error": e
+                            }),
+                        }
+                    } else {
+                        serde_json::json!({
+                            "_reply_to": reply_to,
+                            "success": false,
+                            "error": "mcp not available"
+                        })
+                    };
+                    self.write_manager_response(&from_worker, resp).await;
+                }
                 "mcp_call_tool" => {
                     let server = params.get("server").and_then(|v| v.as_str()).unwrap_or("");
                     let tool = params.get("tool").and_then(|v| v.as_str()).unwrap_or("");

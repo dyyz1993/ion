@@ -18,6 +18,10 @@ struct ServerEntry {
     status: ServerStatus,
     /// 发现到的工具（连接成功后填充）
     tools: Vec<DiscoveredTool>,
+    /// 发现到的资源（连接成功后填充）
+    resources: Vec<DiscoveredResource>,
+    /// 发现到的提示模板（连接成功后填充）
+    prompts: Vec<DiscoveredPrompt>,
     /// 连接/调用错误（status=Error 时填充）
     error: Option<String>,
     /// rmcp 客户端句柄（连接成功后填充）
@@ -33,6 +37,8 @@ impl ServerEntry {
         Self {
             status: ServerStatus::Disconnected,
             tools: Vec::new(),
+            resources: Vec::new(),
+            prompts: Vec::new(),
             error: None,
             client: None,
             runtime_disabled: None,
@@ -64,6 +70,28 @@ pub struct DiscoveredTool {
     pub description: String,
     /// 工具参数 JSON Schema（原样保留）
     pub input_schema: serde_json::Value,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct DiscoveredResource {
+    pub uri: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub mime_type: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct DiscoveredPrompt {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+/// connect_one 的返回值
+struct ConnectResult {
+    client: McpClient,
+    tools: Vec<DiscoveredTool>,
+    resources: Vec<DiscoveredResource>,
+    prompts: Vec<DiscoveredPrompt>,
 }
 
 /// MCP 连接管理器。负责连接 server、发现工具、代理工具调用。
@@ -199,13 +227,15 @@ impl McpManager {
 
             // 尝试重连
             match Self::connect_one(&name, &cfg).await {
-                Ok((client, tools)) => {
+                Ok(result) => {
                     let mut servers = self.servers.lock().await;
                     if let Some(entry) = servers.get_mut(&name) {
                         entry.status = ServerStatus::Connected;
-                        entry.tools = tools;
+                        entry.tools = result.tools;
+                        entry.resources = result.resources;
+                        entry.prompts = result.prompts;
                         entry.error = None;
-                        entry.client = Some(Arc::new(client));
+                        entry.client = Some(Arc::new(result.client));
                         entry.reconnect_attempts = 0; // 重置计数
                     }
                     tracing::info!("[mcp] '{}' reconnected successfully", name);
@@ -267,11 +297,13 @@ impl McpManager {
             let mut servers = self.servers.lock().await;
             if let Some(entry) = servers.get_mut(name) {
                 match result {
-                    Ok((client, tools)) => {
+                    Ok(cr) => {
                         entry.status = ServerStatus::Connected;
-                        entry.tools = tools;
+                        entry.tools = cr.tools;
+                        entry.resources = cr.resources;
+                        entry.prompts = cr.prompts;
                         entry.error = None;
-                        entry.client = Some(Arc::new(client));
+                        entry.client = Some(Arc::new(cr.client));
                     }
                     Err(e) => {
                         entry.status = ServerStatus::Error;
@@ -287,7 +319,7 @@ impl McpManager {
         name: &str,
         cfg: &McpServerConfig,
     ) -> Result<
-        (McpClient, Vec<DiscoveredTool>),
+        ConnectResult,
         Box<dyn std::error::Error + Send + Sync>,
     > {
         use rmcp::ServiceExt;
@@ -354,7 +386,45 @@ impl McpManager {
             })
             .collect();
 
-        Ok((client, tools))
+        // 发现资源（超时 5s，失败不阻断——不是所有 server 都有 resources）
+        let resources: Vec<DiscoveredResource> = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client.list_all_resources(),
+        )
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .map(|rs| {
+            rs.into_iter()
+                .map(|r| DiscoveredResource {
+                    uri: r.raw.uri.clone(),
+                    name: r.raw.name.clone(),
+                    description: r.raw.description.clone(),
+                    mime_type: r.raw.mime_type.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+        // 发现提示模板（超时 5s，失败不阻断）
+        let prompts: Vec<DiscoveredPrompt> = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client.list_all_prompts(),
+        )
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .map(|ps| {
+            ps.into_iter()
+                .map(|p| DiscoveredPrompt {
+                    name: p.name.clone(),
+                    description: p.description.clone().map(|d| d.to_string()),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+        Ok(ConnectResult { client, tools, resources, prompts })
     }
 
     /// 断开单个 server（用于 toggle 关闭 / restart）
@@ -385,14 +455,16 @@ impl McpManager {
 
         // 重新连接
         match Self::connect_one(name, &cfg).await {
-            Ok((client, tools)) => {
+            Ok(cr) => {
                 let mut servers = self.servers.lock().await;
                 if let Some(entry) = servers.get_mut(name) {
                     entry.status = ServerStatus::Connected;
-                    entry.tools = tools;
+                    entry.tools = cr.tools;
+                    entry.resources = cr.resources;
+                    entry.prompts = cr.prompts;
                     entry.error = None;
-                    entry.client = Some(Arc::new(client));
-                    entry.reconnect_attempts = 0; // 手动 restart 重置重连计数
+                    entry.client = Some(Arc::new(cr.client));
+                    entry.reconnect_attempts = 0;
                 }
                 Ok(())
             }
@@ -436,14 +508,16 @@ impl McpManager {
             if need_connect {
                 let cfg = cfg.clone();
                 match Self::connect_one(name, &cfg).await {
-                    Ok((client, tools)) => {
+                    Ok(cr) => {
                         let mut servers = self.servers.lock().await;
                         if let Some(entry) = servers.get_mut(name) {
                             entry.status = ServerStatus::Connected;
-                            entry.tools = tools;
+                            entry.tools = cr.tools;
+                            entry.resources = cr.resources;
+                            entry.prompts = cr.prompts;
                             entry.error = None;
-                            entry.client = Some(Arc::new(client));
-                            entry.reconnect_attempts = 0; // toggle 开启重置重连计数
+                            entry.client = Some(Arc::new(cr.client));
+                            entry.reconnect_attempts = 0;
                         }
                     }
                     Err(e) => {
@@ -573,13 +647,15 @@ impl McpManager {
 
         // 尝试重连
         match Self::connect_one(name, &cfg).await {
-            Ok((client, tools)) => {
+            Ok(cr) => {
                 let mut servers = self.servers.lock().await;
                 if let Some(entry) = servers.get_mut(name) {
                     entry.status = ServerStatus::Connected;
-                    entry.tools = tools;
+                    entry.tools = cr.tools;
+                    entry.resources = cr.resources;
+                    entry.prompts = cr.prompts;
                     entry.error = None;
-                    entry.client = Some(Arc::new(client));
+                    entry.client = Some(Arc::new(cr.client));
                     entry.reconnect_attempts = 0;
                 }
                 tracing::info!("[mcp] '{}' reconnected successfully (lazy)", name);
@@ -644,9 +720,53 @@ impl McpManager {
                         "original_name": t.original_name,
                         "description": t.description,
                     })).collect::<Vec<_>>(),
+                    "resources": entry.resources,
+                    "prompts": entry.prompts,
                     "error": entry.error,
                 })
             })
             .collect()
+    }
+
+    /// 读取 MCP 资源内容（通过 rmcp read_resource）
+    pub async fn read_resource(
+        &self,
+        server_name: &str,
+        uri: &str,
+    ) -> Result<String, String> {
+        use rmcp::model::ReadResourceRequestParams;
+
+        let client = {
+            let servers = self.servers.lock().await;
+            let entry = servers
+                .get(server_name)
+                .ok_or_else(|| format!("mcp server '{server_name}' not found"))?;
+            entry
+                .client
+                .clone()
+                .ok_or_else(|| format!("mcp server '{server_name}' not connected"))?
+        };
+
+        let params = ReadResourceRequestParams::new(uri.to_string());
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            client.read_resource(params),
+        )
+        .await
+        .map_err(|_| format!("mcp read_resource timeout (30s)"))?
+        .map_err(|e| format!("mcp read_resource error: {e}"))?;
+
+        // 提取文本内容
+        let text: String = result
+            .contents
+            .iter()
+            .map(|c| match c {
+                rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
+                rmcp::model::ResourceContents::BlobResourceContents { .. } => "[blob]".to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        Ok(text)
     }
 }
