@@ -456,6 +456,15 @@ impl Agent {
     /// 直接调用一个已注册的工具（不经过 LLM）。
     /// 用于：ion rpc 直接触发 spawn_worker / read / write 等工具，不跑 LLM。
     pub async fn call_tool(&self, name: &str, args: serde_json::Value) -> AgentResult<String> {
+        // 权限检查（与 agent.run() 循环里的 before_tool_call 一致）
+        let tc = crate::agent::messages::ToolCall {
+            call_type: "function".into(),
+            id: "cli_call".into(),
+            name: name.to_string(),
+            arguments: args.clone(),
+            thought_signature: None,
+        };
+        self.extensions.before_tool_call(&tc).await?;
         let tool = self.tools.get(name)
             .ok_or_else(|| AgentError::Tool(format!("tool not found: {name}")))?;
         tool.execute(args, &*self.runtime).await

@@ -66,6 +66,7 @@ fn tool_to_subject(tool: &str) -> &str {
         "read" | "grep" | "find" | "ls" => "file.read",
         "write" | "edit" => "file.write",
         "remove_file" => "file.delete",
+        _ if tool.starts_with("mcp__") => "mcp_tool",
         _ => "",
     }
 }
@@ -161,16 +162,23 @@ impl PermissionExtension {
         if subject.is_empty() {
             return None; // 不认识的工具，放行
         }
-        let path = call.arguments.get("path")
-            .or_else(|| call.arguments.get("command"))
-            .or_else(|| call.arguments.get("file_path"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+
+        // MCP 工具：pattern 匹配工具名（mcp__server__tool）
+        // 其他工具：pattern 匹配路径/命令
+        let match_value = if subject == "mcp_tool" {
+            call.name.as_str()
+        } else {
+            call.arguments.get("path")
+                .or_else(|| call.arguments.get("command"))
+                .or_else(|| call.arguments.get("file_path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+        };
 
         // 1. 先查会话级规则（优先级最高）
         if let Ok(rules) = self.session_rules.lock() {
             for rule in rules.iter() {
-                if Self::matches(rule, subject, path) {
+                if Self::matches(rule, subject, match_value) {
                     return Some(rule.decision.clone());
                 }
             }
@@ -179,7 +187,7 @@ impl PermissionExtension {
         // 2. 再查项目级规则
         if let Ok(rules) = self.project_rules.read() {
             for rule in rules.iter() {
-                if Self::matches(rule, subject, path) {
+                if Self::matches(rule, subject, match_value) {
                     return Some(rule.decision.clone());
                 }
             }

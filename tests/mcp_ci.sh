@@ -413,6 +413,93 @@ EOF
 fi
 
 # ──────────────────────────────────────────────────────────
+echo ""
+echo "Group H: MCP 工具权限控制（permission rules 管 mcp__*）"
+
+if ! command -v mcp-server-everything &>/dev/null; then
+    skip "H1-H3: mcp-server-everything 未安装，跳过"
+else
+    # 准备：配 MCP server + 权限规则（禁用 echo 工具）
+    cat > "$TEST_HOME/.ion/config.json" <<'EOF'
+{
+  "mcp_servers": {
+    "everything": {"command": "mcp-server-everything", "disabled": false}
+  }
+}
+EOF
+    # 全局权限规则：禁用 mcp__everything__echo
+    cat > "$TEST_HOME/.ion/settings.json" <<'EOF'
+{
+  "permissions": {
+    "rules": [
+      {
+        "id": "perm_mcp_echo_deny",
+        "provider": "user",
+        "subject": "mcp_tool",
+        "pattern": "mcp__everything__echo",
+        "decision": "Deny",
+        "scope": "Project"
+      }
+    ]
+  }
+}
+EOF
+
+    start_host
+    sleep 12  # 等 MCP 连接
+
+    # H1: 被禁用的工具调不了
+    OUT=$(rpc call_tool '{"tool":"mcp__everything__echo","args":{"message":"blocked"}}')
+    if echo "$OUT" | grep -q "denied\|Permission\|permission"; then
+        pass "H1: mcp__everything__echo 被 permission Deny 拦截"
+    elif echo "$OUT" | grep -q '"success": false\|"success":false'; then
+        pass "H1: echo 被拦截（success=false）"
+    else
+        fail "H1: echo 应被权限拦截"
+        echo "  输出: $(echo "$OUT" | head -3)"
+    fi
+
+    # H2: 未禁用的工具正常（get-sum）
+    OUT=$(rpc call_tool '{"tool":"mcp__everything__get-sum","args":{"a":1,"b":2}}')
+    if echo "$OUT" | grep -q '"success": true\|"success":true'; then
+        pass "H2: mcp__everything__get-sum 不受影响（未禁用）"
+    else
+        fail "H2: get-sum 应正常"
+    fi
+
+    # H3: 通配符禁用整个 server
+    cat > "$TEST_HOME/.ion/settings.json" <<'EOF'
+{
+  "permissions": {
+    "rules": [
+      {
+        "id": "perm_mcp_all_deny",
+        "provider": "user",
+        "subject": "mcp_tool",
+        "pattern": "mcp__everything__*",
+        "decision": "Deny",
+        "scope": "Project"
+      }
+    ]
+  }
+}
+EOF
+    # 热重载权限
+    rpc extension_rpc '{"extension":"permission","method":"reload"}' >/dev/null 2>&1
+    sleep 1
+
+    # get-sum 也应被禁了
+    OUT=$(rpc call_tool '{"tool":"mcp__everything__get-sum","args":{"a":1,"b":2}}')
+    if echo "$OUT" | grep -q "denied\|Permission\|permission\|\"success\": false\|\"success\":false"; then
+        pass "H3: 通配符 mcp__everything__* 禁用全部工具"
+    else
+        fail "H3: 通配符应禁用 get-sum"
+    fi
+
+    stop_host
+fi
+
+# ──────────────────────────────────────────────────────────
 # 清理
 rm -rf "$TEST_HOME" 2>/dev/null
 
