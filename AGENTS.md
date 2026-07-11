@@ -914,7 +914,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 **P6b - 其他（待定）:**
 - ~~@图片文件支持 (ContentBlock::Image 完整实现)~~ ✅ 已完成 — 3 provider 全部支持图片(OpenAI image_url / Anthropic source / Google inline_data)
 - --models 多模型 Ctrl+P 切换 (交互式)
-- Memory 扩展 v0.2 (~~SQLite 存储~~ ✅ GlobalMemory Phase 7 / ~~FTS 检索~~ ✅ / Active Memory sub-agent — 待定)
+- Memory 扩展 v0.2 (~~SQLite 存储~~ ✅ / ~~FTS 检索~~ ✅ / ~~v0.1 统一~~ ✅ memory_save/search 走 GlobalMemoryStore / Active Memory sub-agent — 待定)
 - ~~真实代码审查 E2E (当前用算术题代替)~~ ✅ 已完成 — E1 代码审查流水线(coordinator→reviewer 子 worker + channel)
 
 **P8 - Workflow Engine:** ✅ 已验证
