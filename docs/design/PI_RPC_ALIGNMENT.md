@@ -21,7 +21,7 @@ ion 的 `ion rpc` / `ion subscribe` / `ion rpc --method extension_rpc` 三件套
 | 调实例级 RPC 方法 | ❌ 必须写 Node 脚本用 `RpcClient` | ✅ `ion rpc --method xxx` |
 | 调 extension channel 方法 | ❌ 必须写 `ClientChannel<T>` 类型化客户端 | ✅ `ion rpc --method extension_rpc` |
 | 订阅事件流 | ❌ 必须写脚本用 `client.onEvent()` | ✅ `ion subscribe --session x` |
-| 列出所有 RPC 命令 | ❌ 翻 8 个文档文件 | ❌ 也缺（见对齐项） |
+| 列出所有 RPC 命令 | ❌ 翻 8 个文档文件 | ✅ `ion rpc --method get_commands` |
 
 ### 2.2 pi 的 RPC 协议（ion 已对齐部分）
 
@@ -163,7 +163,7 @@ ion subscribe --session x --extension memory
 | `get_agents` / `switch_agent` / `get_current_agent` / `get_agent_detail` | 全部对应 | ✅ |
 | `set_permission_mode` | ✅ | ✅ 已实现（Runtime::set_guard_mode，CommandGuard 改 Arc<RwLock>） |
 | `get_mcp_servers` / `mcp_toggle_server` / `mcp_restart_server` | ✅ | ✅ 已实现（Phase 1-3：rmcp 真实连接 + 自动重连 + HTTP 多 Worker） |
-| `register_remote_tool` / `unregister_remote_tool` | ❌ | ❌ 缺 |
+| `register_remote_tool` / `unregister_remote_tool` | ✅ | ✅ 已实现（RemoteTool + register/unregister RPC，HTTP API 端点注册为工具） |
 | — | `call_tool`（Tool 级直调） | ion 原创 |
 | — | `extension_rpc`（Extension 级直调） | ion 原创 |
 | — | `extension_add/remove/list/reload` | ion 原创 |
