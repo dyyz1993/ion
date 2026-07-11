@@ -350,14 +350,14 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/design/TEAM_ORCHESTRATION.md](./docs/design/TEAM_ORCHESTRATION.md) | Team 编排（agent.md 驱动）— `ion --host --agent coordinator` 拆任务开发 (已验证) |
 | [docs/design/WORKFLOW_GATE.md](./docs/design/WORKFLOW_GATE.md) | Workflow Gate — 内核级交付校验 (已完成) |
 | [docs/design/WORKFLOW_ENGINE.md](./docs/design/WORKFLOW_ENGINE.md) | Workflow Engine — 结构化交付流水线 DSL + 执行流程 + CI Group (已验证) |
-| [docs/design/PI_RPC_ALIGNMENT.md](./docs/design/PI_RPC_ALIGNMENT.md) | pi RPC CLI 对齐文档 (65 ✅ / 1 ❌ 仅 Remote tools 待做) |
+| [docs/design/PI_RPC_ALIGNMENT.md](./docs/design/PI_RPC_ALIGNMENT.md) | pi RPC CLI 对齐文档 (66 ✅ / 0 ❌ 全部对齐) |
 | [docs/design/CLI_ARCHITECTURE.md](./docs/design/CLI_ARCHITECTURE.md) | CLI 三种执行场景设计：三场景分组验证用例 (设计稿，已被 CLI_PLAN 合并) |
 | [docs/design/CLI_ROADMAP.md](./docs/design/CLI_ROADMAP.md) | CLI 落地路线图 (排期中，已被 CLI_PLAN 合并) |
 | [docs/design/CLI_PLAN.md](./docs/design/CLI_PLAN.md) | **CLI 完整落地方案（唯一入口）**：架构 + 路线图 + 验证用例 + checklist 合并 (已完成) |
 | [docs/design/FAUX_PROVIDER.md](./docs/design/FAUX_PROVIDER.md) | FauxProvider 架构级 LLM Mock：FIFO 队列 + 工厂响应 + 流式分块，对标 pi (已实现 Phase 1) |
 | [docs/design/RECORD_REPLAY.md](./docs/design/RECORD_REPLAY.md) | Record/Replay 录制回放：环境变量录制 + `--model replay/id` 回放，复用 FauxProvider (已实现 Phase 1) |
 | [docs/design/SESSION_TREE.md](./docs/design/SESSION_TREE.md) | Session Tree（会话分支）：文件内分支 + leaf 指针 + only-append 回滚 (已实现) |
-| [docs/design/MCP_SYSTEM.md](./docs/design/MCP_SYSTEM.md) | MCP 系统（Model Context Protocol）：rmcp 1.x 接入 + stdio/HTTP 双传输 + 自动重连 + HTTP 多 Worker 直连 + 3 RPC (Phase 1-3 已实现并 E2E 验证) |
+| [docs/design/MCP_SYSTEM.md](./docs/design/MCP_SYSTEM.md) | MCP 系统：rmcp 1.x + 方案 C 共享池 + 权限控制 + resources/prompts + 热更新 (Phase 1-4 全部实现) |
 | [docs/design/CONFIG_DIMENSIONS.md](./docs/design/CONFIG_DIMENSIONS.md) | 配置与数据维度分析：5 类存储划分 + 组件归属全表 + worktree 副本预期 + 5 个设计缺口 (设计稿) |
 | [docs/design/FILE_SNAPSHOT.md](./docs/design/FILE_SNAPSHOT.md) | File Snapshot：双路快照（工具级 before/after + 目录扫描 + turn_end 兜底），restore_files + --restore-code 联动回滚，不遵守 .gitignore (已实现 + 2026-07-11 修复 5 个正确性问题) |
 | [docs/design/FILE_SNAPSHOT_REVIEW_ALIGNMENT.md](./docs/design/FILE_SNAPSHOT_REVIEW_ALIGNMENT.md) | File Snapshot & Review 对齐清单：ION vs pi 全维度对比 + tree 快照模型升级路线 + per-file 审批 + 4 步执行计划 (开发中) |
@@ -669,23 +669,27 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - 扩展内通过 `ExtensionRegistry::get_flag()` 读取
   - **验证**: 10 CI 测试全过 ✅
 
-### 🔌 MCP 系统（Model Context Protocol，Phase 1-3 已实现）
+### 🔌 MCP 系统（Model Context Protocol，Phase 1-4 全部实现）
 
 - **Phase 1（配置 + RPC）**：
   - `McpServerConfig`（Stdio/Http untagged enum）+ `IonConfig.mcp_servers`
   - 项目维度配置 `~/.ion/projects/<key>/config.json`（worktree 共享，不依赖 git）
   - 3 RPC：`get_mcp_servers` / `mcp_toggle_server` / `mcp_restart_server`
-- **Phase 2（rmcp 真实连接）**：
+- **Phase 2（rmcp 真实连接 + 方案 C 共享池）**：
   - rmcp 1.x 接入（`client` + `transport-child-process` + `transport-streamable-http-client-reqwest`）
-  - `McpManager`（connect_all/connect_one/call_tool/toggle/restart）
-  - `McpTool: Tool` 适配器（mcp__server__tool 命名，60s 调用超时）
-  - 进程共享方案 A：入口 Worker 持有 MCP，`spawn_worker` 子 Worker `skip_mcp=stdio`
-  - 真实 E2E 验证：`mcp-server-everything` 13 工具发现 + echo/get-sum 调用成功
-- **Phase 3（自动重连 + HTTP 多 Worker + 事件推送）**：
-  - 自动重连（指数退避：base 1s → max 30s，最多 3 次，`check_and_reconnect` 后台 task）
-  - HTTP 多 Worker 直连（方案 B：`ION_SKIP_MCP=stdio` 只跳过 stdio，HTTP 照连）
-  - `mcp_connection_change` 事件推送（`on_status_change` 回调 → stdout）
-- **验证**: 334 lib + 14 MCP CI 测试全过 ✅ + 真实 MCP server E2E
+  - `McpManager`（connect_all/connect_one/call_tool/toggle/restart/read_resource）
+  - 方案 C：host 持有 MCP 连接，所有 Worker 通过 bridge 代理（McpProxyTool）
+  - `McpTool: Tool`（场景 1 直连版）+ `McpProxyTool`（场景 2/3 bridge 代理版）
+  - 真实 E2E：`mcp-server-everything` 13 工具 + 7 resources + 4 prompts 发现
+- **Phase 3（自动重连 + 事件推送）**：
+  - lazy 重连（call_tool 失败时检测 is_closed + 连接错误重试）
+  - 后台重连监控（指数退避：base 1s → max 30s，最多 3 次）
+  - `mcp_connection_change` 事件推送
+- **Phase 4（安全 + 协议覆盖 + 运维）**：
+  - MCP 权限控制（permission rules 管 `mcp__*` 工具，通配符 `mcp__server__*`）
+  - resources/prompts 发现 + `read_resource`（rmcp list_resources/list_prompts/read_resource）
+  - 配置热更新（`mcp_reload` RPC，改 config.json 后不用重启 worker）
+- **验证**: 28 MCP CI 全过 ✅（Group A-H: 配置/toggle/restart/错误/真实连接/共享池/场景1/权限）
 
 ### ⚙️ 配置维度缺口修复（5 项）
 
@@ -892,11 +896,11 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | file_snapshot_ci (CLI E2E) | 22 | Group A-J：object_store 去重/scanner 目录扫描/diff 生成/GC/4 RPC 端到端/worktree 并行/restore 恢复/审批 harness+RPC 冒烟 |
 | tier_models_ci (CLI E2E) | 9 | Group T：get/set_tier_models RPC + --model fast/pro 别名解析 + 兜底 |
 | extension_flags_ci (CLI E2E) | 10 | Group F：get_flags/set_flag RPC + 类型支持 + 缺参数报错 |
-| mcp_ci (CLI E2E) | 19 | Group A-E：MCP 配置加载(stdio/http/disabled) + toggle + restart + 错误处理 + 真实连接(server-everything 13 工具 + echo/get-sum 调用) |
+| mcp_ci (CLI E2E) | 28 | Group A-H：MCP 配置 + toggle + restart + 错误 + 真实连接(server-everything) + 方案 C 共享池 + 场景 1 + 权限控制 |
 | soft_delete_ci (CLI E2E) | 7 | 软删除/软压缩：mark_deleted/summarized/restore |
 | overflow_recovery_ci (CLI E2E) | 5 | 上下文溢出恢复 |
 | workflow_ci (CLI E2E) | 15 | Workflow Engine W1-W7 |
-| **测试覆盖合计** | **698** | 全部通过 ✅（session_tree_ci 废弃不计入） |
+| **测试覆盖合计** | **707** | 全部通过 ✅（session_tree_ci 废弃不计入） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
