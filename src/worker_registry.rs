@@ -1452,6 +1452,40 @@ impl WorkerRegistry {
                     };
                     self.write_manager_response(&from_worker, resp).await;
                 }
+                "mcp_reload" => {
+                    // 热重载 MCP 配置（重新读 config.json 的 mcp_servers）
+                    let new_config = crate::config::IonConfig::load().mcp_servers;
+                    let resp = if let Some(ref mgr) = self.mcp_manager {
+                        mgr.reload_config(new_config.clone()).await;
+                        let count = mgr.connected_count().await;
+                        serde_json::json!({
+                            "_reply_to": reply_to,
+                            "success": true,
+                            "data": {"servers_loaded": new_config.len(), "connected": count}
+                        })
+                    } else {
+                        // host 没有 mcp_manager，创建一个
+                        if !new_config.is_empty() {
+                            let mgr = std::sync::Arc::new(crate::mcp::McpManager::new(new_config.clone()));
+                            mgr.connect_all().await;
+                            mgr.spawn_reconnect_monitor();
+                            let count = mgr.connected_count().await;
+                            self.mcp_manager = Some(mgr);
+                            serde_json::json!({
+                                "_reply_to": reply_to,
+                                "success": true,
+                                "data": {"servers_loaded": new_config.len(), "connected": count}
+                            })
+                        } else {
+                            serde_json::json!({
+                                "_reply_to": reply_to,
+                                "success": true,
+                                "data": {"servers_loaded": 0, "connected": 0}
+                            })
+                        }
+                    };
+                    self.write_manager_response(&from_worker, resp).await;
+                }
                 "mcp_call_tool" => {
                     let server = params.get("server").and_then(|v| v.as_str()).unwrap_or("");
                     let tool = params.get("tool").and_then(|v| v.as_str()).unwrap_or("");

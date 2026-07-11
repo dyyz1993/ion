@@ -769,4 +769,70 @@ impl McpManager {
 
         Ok(text)
     }
+
+    /// 热重载配置（disconnect 旧的 + connect 新的）
+    /// 场景：用户改了 config.json 的 mcp_servers，不想重启 worker
+    pub async fn reload_config(&self, new_config: HashMap<String, McpServerConfig>) {
+        // 找出要移除的 server（旧有新无）
+        let old_names: Vec<String> = {
+            let servers = self.servers.lock().await;
+            servers.keys().cloned().collect()
+        };
+        for name in &old_names {
+            if !new_config.contains_key(name) {
+                self.disconnect_one(name).await;
+                let mut servers = self.servers.lock().await;
+                servers.remove(name);
+            }
+        }
+
+        // 找出新增的 server（新有旧无）+ 更新已有 server 的配置
+        {
+            let mut servers = self.servers.lock().await;
+            for (name, cfg) in &new_config {
+                if !servers.contains_key(name) {
+                    servers.insert(name.clone(), ServerEntry::new());
+                }
+            }
+        }
+
+        // 更新配置（需要 &mut self.config，但 McpManager 用 Arc，所以用内部可变性）
+        // 注意：config 是 HashMap（非 Mutex），reload 只能通过替换整个 McpManager 实现
+        // 这里改为：逐个连接新 config 里的 enabled server
+        for (name, cfg) in &new_config {
+            let need_connect = {
+                let servers = self.servers.lock().await;
+                servers.get(name).map(|e| e.client.is_none() && !e.effective_disabled(cfg)).unwrap_or(false)
+            };
+            if need_connect {
+                // 标记 connecting
+                {
+                    let mut servers = self.servers.lock().await;
+                    if let Some(entry) = servers.get_mut(name) {
+                        entry.status = ServerStatus::Connecting;
+                    }
+                }
+                match Self::connect_one(name, cfg).await {
+                    Ok(cr) => {
+                        let mut servers = self.servers.lock().await;
+                        if let Some(entry) = servers.get_mut(name) {
+                            entry.status = ServerStatus::Connected;
+                            entry.tools = cr.tools;
+                            entry.resources = cr.resources;
+                            entry.prompts = cr.prompts;
+                            entry.error = None;
+                            entry.client = Some(Arc::new(cr.client));
+                        }
+                    }
+                    Err(e) => {
+                        let mut servers = self.servers.lock().await;
+                        if let Some(entry) = servers.get_mut(name) {
+                            entry.status = ServerStatus::Error;
+                            entry.error = Some(format!("{e}"));
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
