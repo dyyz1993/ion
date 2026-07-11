@@ -892,11 +892,11 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | file_snapshot_ci (CLI E2E) | 22 | Group A-J：object_store 去重/scanner 目录扫描/diff 生成/GC/4 RPC 端到端/worktree 并行/restore 恢复/审批 harness+RPC 冒烟 |
 | tier_models_ci (CLI E2E) | 9 | Group T：get/set_tier_models RPC + --model fast/pro 别名解析 + 兜底 |
 | extension_flags_ci (CLI E2E) | 10 | Group F：get_flags/set_flag RPC + 类型支持 + 缺参数报错 |
-| mcp_ci (CLI E2E) | 15 | Group A/B/C：MCP 配置加载(stdio/http/disabled) + toggle + restart + 缺参数报错 |
+| mcp_ci (CLI E2E) | 19 | Group A-E：MCP 配置加载(stdio/http/disabled) + toggle + restart + 错误处理 + 真实连接(server-everything 13 工具 + echo/get-sum 调用) |
 | soft_delete_ci (CLI E2E) | 7 | 软删除/软压缩：mark_deleted/summarized/restore |
 | overflow_recovery_ci (CLI E2E) | 5 | 上下文溢出恢复 |
 | workflow_ci (CLI E2E) | 15 | Workflow Engine W1-W7 |
-| **测试覆盖合计** | **694** | 全部通过 ✅（session_tree_ci 废弃不计入） |
+| **测试覆盖合计** | **698** | 全部通过 ✅（session_tree_ci 废弃不计入） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
