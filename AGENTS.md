@@ -414,7 +414,7 @@ ion rpc --session sess_xxx --method get_flags \
 | `examples/workflows/` | Workflow YAML 示例（delivery.wf.yaml） |
 | `src/session_tree.rs` | Session Tree 核心数据层（leaf 指针/树构建/branch/rollback/checkout） |
 | `src/file_snapshot/` | File Snapshot 双路快照（object_store/scanner/snapshot/diff/gc，[详情](./docs/design/FILE_SNAPSHOT.md)） |
-| `src/mcp/` | MCP 客户端（McpManager + McpTool + rmcp 连接 + 自动重连，[详情](./docs/design/MCP_SYSTEM.md)） |
+| `src/mcp/` | MCP 客户端（McpManager + McpTool/McpProxyTool + rmcp 连接 + 自动重连 + resources/prompts，[详情](./docs/design/MCP_SYSTEM.md)） |
 | `src/message_retrieval.rs` | 消息拉取核心逻辑（retrieve_messages/turns/inputs/turn_detail + view/过滤/分页） |
 | `src/global_memory.rs` | 全局记忆库（SQLite + FTS5，跨项目检索） |
 | `src/global_memory_ext.rs` | GlobalMemoryExtension（单例扩展，on_singleton_init + extension_rpc） |
@@ -634,7 +634,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - `disallowed_tools` 黑名单生效（之前被忽略的 bug 已修）
   - runtime 默认 local（不从全局继承），`--local`/`--remote` flag 即时切换
   - **验证**: 5 任务串行 converge + 3 阶段 pipeline（develop→merge→publish GitHub）全部通过
-- **测试**: 380 个测试全部通过 ✅
+- **测试**: 514 个 Rust 测试 + 37 MCP CI 全部通过 ✅（截至 2026-07-12）
 - **消息拉取（Message Retrieval）** — 9 接口 + 分页/视点/过滤/turn 聚合（已验证）
   - `message_retrieval.rs` 纯函数模块（~1000 行）— retrieve_messages/turns/inputs/turn_detail
   - turn_summary entry — 每轮 turn 结束自动落盘（含 abort/error turn）
@@ -803,6 +803,14 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 ✅ extension_rpc: 扩展私有方法 CLI 直调
 ✅ transcript: 每句话自动记录到 input.jsonl
 ✅ WASM todo-extension: build → load → test 全流程
+✅ MCP: mcp-server-everything 连接 + 13 工具发现 + echo/get-sum 调用成功
+✅ MCP: 方案 C 共享池 — host 持有连接，Worker bridge 代理（进程只 1 份）
+✅ MCP: 7 resources + 4 prompts 发现 + read_resource 读取成功
+✅ MCP: permission rules Deny 拦截 mcp__* 工具（精确 + 通配符）
+✅ MCP: mcp_reload 热更新（改 config 不重启）
+✅ MCP: 场景 1（cmd_run）MCP 初始化 + 工具注册
+✅ Memory: v0.1 统一到 V0.2 SQLite（memory_save 存的 global_memory_search 能搜到）
+✅ 远程工具: register_remote_tool + unregister_remote_tool
 ```
 
 ### 🗺 路线图
@@ -914,6 +922,12 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 
 **P6 - Shell Hook 系统 (TRAE 兼容) (暂不开发):**
 - 详细设计文档见 [docs/design/HOOK_SYSTEM.md](./docs/design/HOOK_SYSTEM.md)
+
+**P6c - MCP 生产化:** ✅ 已完成
+- MCP Phase 1-4 全部实现（配置 + rmcp 连接 + 方案 C 共享池 + 自动重连 + 权限控制 + resources/prompts + 热更新）
+- 详见 [docs/design/MCP_SYSTEM.md](./docs/design/MCP_SYSTEM.md) + [docs/design/MCP_PLAN_C.md](./docs/design/MCP_PLAN_C.md)
+- Memory v0.1 统一到 V0.2 SQLite（两套不再割裂）
+- 37 个 MCP CI 测试全过（Group A-J）
 
 **P6b - 其他（待定）:**
 - ~~@图片文件支持 (ContentBlock::Image 完整实现)~~ ✅ 已完成 — 3 provider 全部支持图片(OpenAI image_url / Anthropic source / Google inline_data)
