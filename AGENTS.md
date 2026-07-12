@@ -918,7 +918,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | overflow_recovery_ci (CLI E2E) | 5 | 上下文溢出恢复 |
 | workflow_ci (CLI E2E) | 15 | Workflow Engine W1-W7 |
 | sessions_ci (CLI E2E) | 20 | Group A-D：ion sessions 主仓库过滤/--all/JSON 字段完整性(含cache)/worktree 聚合/表格格式/非git降级 |
-| **测试覆盖合计** | **736** | 全部通过 ✅（session_tree_ci 废弃不计入） |
+| **测试覆盖合计** | **892** | 全部通过 ✅（含 E2E 12 Group 156 case） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
