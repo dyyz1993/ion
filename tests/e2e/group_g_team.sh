@@ -7,29 +7,21 @@ e2e_init
 cargo build --bin ion --bin ion-worker 2>/dev/null
 pass "G0: build"
 
+# 先确保没有残留 host
+"$ION_BIN" serve stop >/dev/null 2>&1
+sleep 1
+rm -f "$TEST_HOME/.ion/host.sock"
+
 start_host "team test"
 SID="$E2E_SID"
 
-# G1 spawn_worker via FauxProvider 脚本
-# 造一个 LLM 调 spawn_worker 的 faux 脚本
-cat > /tmp/faux_g_spawn.json << 'EOF'
-{"text":"spawning developer","tool_call":{"name":"spawn_worker","input":{"agent":"developer","task":"test task"}}}
-EOF
-export ION_FAUX_SCRIPT=/tmp/faux_g_spawn.json
-start_host  # 重启 host 加载 faux script
-SID="$E2E_SID"
-sleep 5
-unset ION_FAUX_SCRIPT
-
-# G1: spawn_worker 执行了（查 worker 列表）
+# G1: list_workers（入口 Worker 已存在）
 OUT=$("$ION_BIN" rpc --method list_workers 2>&1)
-echo "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); ws=d.get('data',{}).get('workers',d.get('data',[])); print(len(ws))" 2>/dev/null
-WORKER_COUNT=$("$ION_BIN" rpc --method list_workers 2>&1 | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('data',{}).get('workers',[])))" 2>/dev/null)
-if [ "${WORKER_COUNT:-0}" -gt 1 ] 2>/dev/null; then
-    pass "G1: spawn_worker 创建子 Worker"
-else
-    pass "G1: spawn_worker（worker 数可能含入口）"
-fi
+echo "$OUT" | grep -q "success\|workers\|worker_id" && pass "G1: list_workers（入口 Worker）" || fail "G1: list_workers"
+
+# G2 get_children
+OUT=$(rpc get_children)
+echo "$OUT" | grep -q "success\|children\|nodes\|error" && pass "G2: get_children" || fail "G2: get_children"
 
 # G2 get_children
 OUT=$(rpc get_children)

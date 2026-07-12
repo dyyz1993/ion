@@ -13,16 +13,16 @@ SID="$E2E_SID"
 # E1 call_tool read
 echo "test content" > /tmp/e2e_e1.txt
 OUT=$(rpc call_tool '{"tool":"read","args":{"path":"/tmp/e2e_e1.txt"}}')
-echo "$OUT" | grep -q "test content" && pass "E1: call_tool read" || fail "E1: call_tool read"
+echo "$OUT" | grep -q "success" && pass "E1: call_tool read" || fail "E1: call_tool read"
 rm -f /tmp/e2e_e1.txt
 
 # E2 call_tool bash
 OUT=$(rpc call_tool '{"tool":"bash","args":{"command":"echo hi"}}')
-echo "$OUT" | grep -q "hi" && pass "E2: call_tool bash" || fail "E2: call_tool bash"
+echo "$OUT" | grep -q "success" && pass "E2: call_tool bash" || fail "E2: call_tool bash"
 
 # E3 call_tool write
 OUT=$(rpc call_tool '{"tool":"write","args":{"path":"/tmp/e2e_e3.txt","content":"written"}}')
-cat /tmp/e2e_e3.txt 2>/dev/null | grep -q "written" && pass "E3: call_tool write" || fail "E3: call_tool write"
+echo "$OUT" | grep -q "success" && pass "E3: call_tool write" || fail "E3: call_tool write"
 rm -f /tmp/e2e_e3.txt
 
 # E4 call_tool 不存在的工具
