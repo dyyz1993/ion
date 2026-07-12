@@ -85,6 +85,22 @@ docs/
 | CLI 架构设计 | [design/CLI_ARCHITECTURE.md](design/CLI_ARCHITECTURE.md) |
 | CLI 路线图 | [design/CLI_ROADMAP.md](design/CLI_ROADMAP.md) |
 | pi RPC 对齐 | [design/PI_RPC_ALIGNMENT.md](design/PI_RPC_ALIGNMENT.md) |
+| MCP 系统（Model Context Protocol） | [design/MCP_SYSTEM.md](design/MCP_SYSTEM.md) |
+| MCP 方案 C 共享池 | [design/MCP_PLAN_C.md](design/MCP_PLAN_C.md) |
+| 配置维度分析 | [design/CONFIG_DIMENSIONS.md](design/CONFIG_DIMENSIONS.md) |
+| File Snapshot 双路快照 | [design/FILE_SNAPSHOT.md](design/FILE_SNAPSHOT.md) |
+| File Snapshot 对齐 | [design/FILE_SNAPSHOT_REVIEW_ALIGNMENT.md](design/FILE_SNAPSHOT_REVIEW_ALIGNMENT.md) |
+| Context Index（上下文索引） | [design/CONTEXT_INDEX.md](design/CONTEXT_INDEX.md) |
+| 软删除/软压缩 | [design/SOFT_DELETE_COMPACT.md](design/SOFT_DELETE_COMPACT.md) |
+| 消息拉取设计 | [design/MESSAGE_RETRIEVAL_DESIGN.md](design/MESSAGE_RETRIEVAL_DESIGN.md) |
+
+### 我想查测试用例
+
+| 测试 | 文档 |
+|------|------|
+| 完整测试用例 | [testing/TEST_CASES.md](testing/TEST_CASES.md) |
+| Session Tree 验收规格 | [testing/SESSION_TREE_SPEC.md](testing/SESSION_TREE_SPEC.md) |
+| 消息拉取 CLI 用例 | [testing/MESSAGE_RETRIEVAL_CASES.md](testing/MESSAGE_RETRIEVAL_CASES.md) |
 
 ### 我想查 CLI 命令怎么用
 
