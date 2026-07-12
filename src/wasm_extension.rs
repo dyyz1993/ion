@@ -327,7 +327,7 @@ impl Extension {
 
         // ── Register data dimension host functions (4 dims × 4 ops = 16) ───
         register_dim(&mut linker, "global".into(), |ctx| paths::global_data_dir(&ctx.ext_name))?;
-        register_dim(&mut linker, "project".into(), |ctx| paths::project_data_dir(&ctx.project_root, &ctx.ext_name))?;
+        register_dim(&mut linker, "project".into(), |ctx| paths::project_data_dir(&ctx.cwd, &ctx.ext_name))?;
         register_dim(&mut linker, "project_local".into(), |ctx| paths::project_local_data_dir(&ctx.project_root, &ctx.ext_name))?;
         register_dim(&mut linker, "session".into(), |ctx| paths::session_data_dir(&ctx.cwd, &ctx.session_id, &ctx.ext_name))?;
 

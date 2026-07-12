@@ -241,24 +241,56 @@ pub fn last_session_path() -> PathBuf {
     agent_dir().join("last_session")
 }
 
+/// session 级 bash 进程存储路径 — ④ Session 维度
+///
+/// `sessions/<cwd_hash>/data/<sessionId>/bash/processes.json`
+/// 每个 session 独立存储后台进程，不同 session 不互相覆盖。
+pub fn bash_processes_path(cwd: &str, session_id: &str) -> PathBuf {
+    session_data_dir(cwd, session_id, "bash").join("processes.json")
+}
+
 // ---------------------------------------------------------------------------
 // 扩展数据目录
 // ---------------------------------------------------------------------------
+//
+// ION 存储维度约定（5 维）：
+//
+// ┌──────────┬────────────────────────────┬───────────────────────────────────┐
+// │ 维度     │ 路径函数                   │ worktree 行为                     │
+// ├──────────┼────────────────────────────┼───────────────────────────────────┤
+// │ ① 全局   │ global_data_dir(ext)       │ 共享（固定路径）                   │
+// │ ② 项目   │ project_data_dir(cwd,ext)  │ 共享（git common dir hash）       │
+// │ ③ 仓库内 │ project_local_data_dir()   │ 各自（走 git checkout）           │
+// │ ④ Session│ session_data_dir(cwd,sid)  │ 隔离（session_id 分桶）           │
+// │ ⑤ 单例   │ global-memory.db           │ 共享（全局唯一）                   │
+// ├──────────┼────────────────────────────┼───────────────────────────────────┤
+// │ 特殊约定  │                            │                                   │
+// │ Bash 进程│ bash_processes_path()      │ ④ session 级                      │
+// │ File Store│ file_store_dir()          │ ② 项目级（git_key）               │
+// │ 项目配置  │ project_dimension_dir()   │ ② 项目级（git_key）               │
+// └──────────┴────────────────────────────┴───────────────────────────────────┘
+//
+// 关键：调用方只管选维度（传 cwd/session_id/ext_name），
+//       路径函数内部处理 worktree 回源（project_key_git）。
+//       worktree 对调用方透明。
 
 /// ~/.ion/agent/extensions-data/<extName>/
-/// 扩展的全局数据（globalDataDir）
+/// 扩展的全局数据（globalDataDir）— ① 全局维度
 pub fn global_data_dir(ext_name: &str) -> PathBuf {
     agent_dir()
         .join("extensions-data")
         .join(ext_name)
 }
 
-/// ~/.ion/agent/project-data/<hash>--<name>/<extName>/
-/// 扩展的项目级数据（projectDataDir）
-pub fn project_data_dir(project_path: &str, ext_name: &str) -> PathBuf {
+/// ~/.ion/agent/project-data/<git_key>/<extName>/
+/// 扩展的项目级数据（projectDataDir）— ② 项目维度
+///
+/// 用 `project_key_git(cwd)` 做 key：主仓库和 worktree 算出同一个 key → 共享存储。
+/// 非 git 目录 fallback 到 cwd hash（不共享，但没有 worktree 概念所以不影响）。
+pub fn project_data_dir(cwd: &str, ext_name: &str) -> PathBuf {
     agent_dir()
         .join("project-data")
-        .join(encode_path(project_path))
+        .join(project_key_git(cwd))
         .join(ext_name)
 }
 
@@ -688,6 +720,25 @@ mod tests {
     fn project_data_dir_format() {
         let d = project_data_dir("/root/proj", "ext1");
         assert!(d.to_str().unwrap().contains("ext1"));
+        // 应含 project-data（② 项目维度）
+        assert!(d.to_str().unwrap().contains("project-data"));
+    }
+
+    #[test]
+    fn bash_processes_path_is_session_level() {
+        // bash 进程存储应在 session 维度下（④ Session 级别隔离）
+        let p = bash_processes_path("/tmp/proj", "sess_001");
+        assert!(p.to_str().unwrap().ends_with("processes.json"));
+        assert!(p.to_str().unwrap().contains("sess_001"), "应含 session_id 做隔离");
+        assert!(p.to_str().unwrap().contains("bash"));
+    }
+
+    #[test]
+    fn bash_processes_path_different_sessions_isolated() {
+        // 不同 session 的 bash 进程路径不同
+        let p1 = bash_processes_path("/tmp/proj", "sess_001");
+        let p2 = bash_processes_path("/tmp/proj", "sess_002");
+        assert_ne!(p1, p2, "不同 session 的进程存储应隔离");
     }
 
     #[test]

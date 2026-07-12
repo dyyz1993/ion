@@ -398,7 +398,7 @@ async fn main() {
 
         // Bash Extension（后台进程管理）
         if ion_cfg.is_extension_enabled("bash") {
-            let bash_ext = ion::agent::bash::BashExtension::new(&sid);
+            let bash_ext = ion::agent::bash::BashExtension::new(&sid, &worker_cwd);
             process_map = Some(bash_ext.process_map.clone());
             stdin_map = Some(bash_ext.stdin_map.clone());
             notify_map = Some(bash_ext.notify_map.clone());
@@ -495,11 +495,13 @@ async fn main() {
                 notify_map: nm.clone(),
                 follow_up_tx: Some(follow_up_tx.clone()),
                 session_id: sid.clone(),
+                cwd: worker_cwd.clone(),
             };
             let bash_kill_tool = ion::agent::bash::BashKillTool {
                 process_map: pm.clone(),
                 follow_up_tx: Some(follow_up_tx.clone()),
                 session_id: sid.clone(),
+                cwd: worker_cwd.clone(),
             };
             let bash_send_tool = ion::agent::bash::BashSendTool {
                 stdin_map: sm.clone(),
@@ -507,6 +509,8 @@ async fn main() {
             let bash_bg_tool = ion::agent::bash::BashBackgroundTool {
                 notify_map: nm.clone(),
                 process_map: pm.clone(),
+                session_id: sid.clone(),
+                cwd: worker_cwd.clone(),
             };
             agent.register_tool(Box::new(bash_run_tool));
             agent.register_tool(Box::new(bash_kill_tool));
