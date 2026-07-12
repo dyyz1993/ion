@@ -90,18 +90,20 @@ MCP 配置常含：
 
 如果放进 ③，一旦 `.ion/` 被 gitignore（实测主仓库的 `.gitignore` 就含 `.ion/`），worktree 就彻底读不到。放 ② 后，`<project_key>` 用 git common dir 求解，**主仓库和所有 worktree 算出同一个 key → 天然共享**。
 
-### 2.4 `<project_key>` 算法（复用 file-snapshot 已有实现）
+### 2.4 `<project_key>` 算法（统一入口 `paths::project_key_git`）
 
 ```
-git rev-parse --absolute-git-dir
-    → /ion/.git                 （主仓库，直接用）
-    → /ion/.git/worktrees/xxx   （worktree，裁剪成 /ion/.git）
-取裁剪后路径的 hash → <project_key>
+git rev-parse --git-common-dir
+    → /ion/.git                 （主仓库：相对路径，canonicalize 后归一）
+    → /ion/.git                 （worktree：git 直接返回主仓库共享目录）
+取 canonicalize 后路径的 hash → <project_key>
 ```
 
-实现位置：`file:///Users/xuyingzhou/Project/study-rust/ion/src/file_snapshot/object_store.rs#L213-L232`
+> **实现位置**：`src/paths.rs::project_key_git()` + 辅助函数 `main_git_dir()`。
+>
+> **2026-07-12 重构**：从 `--absolute-git-dir` + 手动裁剪 `/worktrees/` 字符串约定，改为 `--git-common-dir`（git 官方维护的共享目录）。canonicalize 是因为 `--git-common-dir` 在主仓库返回相对 `.git`、在 worktree 返回绝对路径，必须归一才能保证 hash 一致。4 个单元测试全过（含 worktree 一致性）。
 
-⚠️ **当前这个函数只输出 hash，丢弃了原始路径**。要做 ② 配置定位，需要抽成 `git_project_root(cwd) -> Option<PathBuf>` 同时返回路径和 hash（见 §6 缺口 #2）。
+⚠️ **当前 `project_key_git` 只输出 hash，丢弃了原始路径**。要做 ② 配置定位，需要抽成 `git_project_root(cwd) -> Option<PathBuf>` 同时返回路径和 hash（见 §6 缺口 #2）。
 
 ---
 
@@ -234,6 +236,7 @@ grep -rn "ION_PROJECT_ROOT" src/
 - 抽出 `paths::project_key_git(cwd) -> String` —— git common dir hash，主仓库和 worktree 一致
 - `file_snapshot::object_store::project_key` 委托给 `paths::project_key_git`（行为不变，统一入口）
 - 4 个新单元测试验证（`git_project_root_returns_main_repo` / `git_project_root_worktree_shares_main` / `project_key_git_worktree_consistency` / `project_root_for_config_env_and_cwd_fallback`）
+- **2026-07-12 算法升级**：`project_key_git` 内部从 `--absolute-git-dir` + 手动裁剪 `/worktrees/` 改为 `--git-common-dir`（git 官方共享目录，不依赖路径字符串约定）+ `canonicalize` 归一。新增辅助函数 `main_git_dir(cwd) -> Option<String>`。
 
 **遗留**：project-data / WASM project data 的 `encode_path`（cwd hash）尚未改成 `project_key_git`。这些通过缺口 #2 的 `config_root` 回源已部分缓解（Memory 现在用 config_root），但彻底统一需后续把 `project_data_dir` 的 key 源也切换。
 

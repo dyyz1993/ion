@@ -402,22 +402,52 @@ pub fn project_key_git(cwd: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let key_source = std::process::Command::new("git")
-        .args(["rev-parse", "--absolute-git-dir"])
-        .current_dir(cwd)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| {
-            let git_dir = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            // 裁剪 worktree 后缀，使主仓库和 worktree 一致
-            Some(git_dir.split("/worktrees/").next().unwrap_or(&git_dir).to_string())
-        })
-        .unwrap_or_else(|| cwd.to_string());
+    let key_source = main_git_dir(cwd).unwrap_or_else(|| cwd.to_string());
 
     let mut hasher = DefaultHasher::new();
     key_source.hash(&mut hasher);
     format!("{:016x}", hasher.finish())
+}
+
+/// 获取主仓库的 .git 目录绝对路径（规范化）。
+///
+/// 使用 `git rev-parse --git-common-dir` —— 这是 git 官方维护的
+/// "主仓库共享目录"：在 worktree 中也直接指向主仓库的 .git，
+/// 不依赖任何路径字符串约定。
+///
+/// - 主仓库：返回 `/path/to/repo/.git`
+/// - worktree：返回 `/path/to/repo/.git`（同一个）
+/// - 非 git 目录：返回 None（调用方自行 fallback）
+///
+/// 规范化（canonicalize）是因为 `--git-common-dir` 在主仓库返回相对
+/// 路径 `.git`、在 worktree 返回绝对路径，必须统一成绝对路径才能保证
+/// 主仓库和 worktree 算出相同的 hash。
+fn main_git_dir(cwd: &str) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if raw.is_empty() {
+        return None;
+    }
+    // --git-common-dir 可能返回相对路径（如主仓库里的 ".git"），
+    // 需要相对于 cwd 解析成绝对路径，再 canonicalize 消除符号链接等差异。
+    let resolved = if std::path::Path::new(&raw).is_absolute() {
+        std::path::PathBuf::from(&raw)
+    } else {
+        std::path::Path::new(cwd).join(&raw)
+    };
+    // canonicalize 可能失败（路径不存在），失败时退回到 resolved 的绝对路径
+    let canonical = std::fs::canonicalize(&resolved)
+        .unwrap_or(resolved)
+        .to_string_lossy()
+        .to_string();
+    Some(canonical)
 }
 
 /// 解析"项目根路径"——用于所有需要读项目级 `.ion/` 资源的配置加载点。

@@ -282,6 +282,107 @@ rpcSocket.send({method:'call_tool', session:'sess_xxx', params:{tool:'memory_sav
 | `ion subscribe --session x` | 看会话流 |
 | `ion subscribe --session x --extension memory` | 看扩展事件 |
 
+## 会话列表（ion sessions）
+
+> 按主仓库维度查询会话——当前 cwd 所在 git 仓库的所有会话（含 worktree）。
+
+### 基本用法
+
+```bash
+# 当前主仓库的会话（默认行为，自动聚合 worktree）
+ion sessions
+
+# 所有项目的会话（关闭过滤）
+ion sessions --all
+
+# 限制显示条数（表格模式，默认 20）
+ion sessions --limit 5
+
+# JSON 输出（脚本/UI 消费）
+ion sessions --json
+
+# 组合
+ion sessions --json --limit 10
+ion sessions --all --json
+```
+
+### 表格输出字段
+
+| 列 | 说明 |
+|---|---|
+| ID | 会话 ID（截断显示）|
+| AGENT | Agent 名称（build/developer/coordinator…）|
+| MODEL | 模型 ID |
+| BRANCH | 创建时的 git 分支 |
+| MSGS | 消息数 |
+| TOKENS(IN/OUT/CA) | 输入/输出/缓存 token（缓存 = cache_read + cache_write）|
+| CREATED | 创建时间（相对，如 `2d ago`）|
+| UPDATED | 最后更新时间 |
+| WT | `🌿` = worktree 会话 |
+
+### JSON 输出字段
+
+```json
+{
+  "project": {"cwd": "...", "projectKey": "ee768d6fc5459315"},
+  "sessions": [{
+    "id": "sess_xxx",
+    "name": null,
+    "project": "/abs/path",
+    "projectName": "ion",
+    "worktree": true,
+    "branch": "master",
+    "model": "glm-4.7",
+    "agent": "default",
+    "provider": "zhipuai",
+    "createdAt": 1783771530267,
+    "updatedAt": 1783771535442,
+    "messageCount": 19,
+    "turnCount": 9,
+    "tokenInput": 8670,
+    "tokenOutput": 302,
+    "tokenCacheRead": 0,
+    "tokenCacheWrite": 0,
+    "parentSession": null,
+    "thinkingLevel": null
+  }],
+  "totalCount": 25
+}
+```
+
+> `--all` 时 `project` 为 `null`。
+
+### 主仓库聚合原理
+
+过滤逻辑：对当前 cwd 和每个历史会话的 `project` 路径分别调 `paths::project_key_git()`（基于 `git rev-parse --git-common-dir`），**key 相同的会话才显示**。
+
+- 主仓库 cwd 和 worktree cwd 算出同一个 key → worktree 会话被正确归入主仓库
+- 非 git 目录的旧会话（key 退化成 cwd hash）→ 与当前主仓库 key 不同 → 自动过滤
+- `project` 目录已删除的会话 → git 调用失败 → 自动过滤
+
+> 相关设计：[CONFIG_DIMENSIONS.md §2.4](../design/CONFIG_DIMENSIONS.md) project_key 算法。
+
+### 脚本示例
+
+```bash
+# 统计当前项目总 token 消耗
+ion sessions --json | jq '[.sessions[].tokenInput] | add'
+
+# 列出所有 worktree 会话
+ion sessions --json | jq '.sessions[] | select(.worktree) | {id, branch}'
+
+# 全局 token 消耗（所有项目）
+ion sessions --all --json | jq '[.sessions[] | .tokenInput + .tokenOutput] | add'
+```
+
+### 与 RPC 的区别
+
+| 命令 | 数据源 | 范围 |
+|---|---|---|
+| `ion sessions` | 磁盘索引 `sessions.index.json` | 当前主仓库（或 `--all` 全部）|
+| `ion rpc --method list_sessions` | 内存 Worker | 当前运行中的 Worker |
+| `ion rpc --method list_all_sessions` | 磁盘索引 | 全部会话（无过滤，含血缘字段）|
+
 ## Session Tree（会话分支）
 
 > 让一个会话内部能形成树——回退到任意消息分叉，原路径保留。

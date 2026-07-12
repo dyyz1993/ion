@@ -378,6 +378,7 @@ ion rpc --session sess_xxx --method get_flags \
 | 文档 | 内容 |
 |------|------|
 | [docs/testing/TEST_CASES.md](./docs/testing/TEST_CASES.md) | 完整测试 case (25 单元 + 32 集成 + 5 E2E + 5 压力) |
+| [docs/testing/E2E_TEST_SPEC.md](./docs/testing/E2E_TEST_SPEC.md) | **全功能 E2E 测试规格**：12 Group 133 case，覆盖全部功能模块（基础执行/会话/树/RPC/工具/MCP/Team/Memory/Snapshot/权限/Compaction/Workflow） |
 | [docs/testing/SESSION_TREE_SPEC.md](./docs/testing/SESSION_TREE_SPEC.md) | Session Tree 验收规格：harness（基于 FauxProvider）+ P0/P1/XFail 分级 |
 
 ### 模板（docs/templates/）
@@ -646,6 +647,14 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - get_children 反向索引 + SessionMeta 血缘字段（parent_session/last_entry_id）
   - `ion history <sid>` CLI 命令
   - **验证**: 229 单元 + 24 CLI harness = 253 测试全过 ✅
+- **会话列表（ion sessions）—— 按主仓库维度查询**（已验证）
+  - `ion sessions` 默认过滤当前主仓库（自动聚合 worktree 会话）
+  - `--all` 关闭过滤列全部项目；`--json` 脚本/UI 消费；`--limit N` 表格条数
+  - 主仓库聚合：复用 `paths::project_key_git`（`--git-common-dir`），主仓库和 worktree 算出同一 key
+  - 表格字段：ID/AGENT/MODEL/BRANCH/MSGS/TOKENS(IN/OUT/CA)/CREATED/UPDATED/WT(🌿)
+  - JSON 含 tokenCacheRead/tokenCacheWrite + 全部 SessionMeta 字段
+  - 旧实现（仅全量、无项目过滤、无 cache 列）已升级
+  - 详见 [docs/guides/CLI_USAGE.md](./docs/guides/CLI_USAGE.md) §会话列表
 - **File Snapshot（双路文件快照系统）**:
   - 路线 1：write/edit 工具级 before/after（100% 精确 diff，含 cwd 外文件）
   - 路线 2：bash 目录扫描兜底（mtime+size 快速过滤 + git ignore 智能过滤）
@@ -908,7 +917,8 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | soft_delete_ci (CLI E2E) | 7 | 软删除/软压缩：mark_deleted/summarized/restore |
 | overflow_recovery_ci (CLI E2E) | 5 | 上下文溢出恢复 |
 | workflow_ci (CLI E2E) | 15 | Workflow Engine W1-W7 |
-| **测试覆盖合计** | **716** | 全部通过 ✅（session_tree_ci 废弃不计入） |
+| sessions_ci (CLI E2E) | 20 | Group A-D：ion sessions 主仓库过滤/--all/JSON 字段完整性(含cache)/worktree 聚合/表格格式/非git降级 |
+| **测试覆盖合计** | **736** | 全部通过 ✅（session_tree_ci 废弃不计入） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)

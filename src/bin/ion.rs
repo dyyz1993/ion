@@ -331,8 +331,22 @@ enum Commands {
         #[arg(long)]
         ui: bool,
     },
-    /// List all sessions with stats
-    Sessions,
+    /// List sessions for the current project (or all projects with --all)
+    ///   ion sessions                  当前主仓库的会话（含 worktree）
+    ///   ion sessions --json           JSON 输出（供脚本/UI 消费）
+    ///   ion sessions --all            所有项目（不过滤）
+    ///   ion sessions --limit 50       最多显示条数
+    Sessions {
+        /// Output as JSON (full fields, for scripts/UI)
+        #[arg(long)]
+        json: bool,
+        /// Show sessions from ALL projects (disable project filtering)
+        #[arg(long)]
+        all: bool,
+        /// Max sessions to display (table mode only)
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
     /// View session message history (paginated)
     ///   ion history <session_id> [--limit 20] [--view live|full|since_compaction]
     History {
@@ -1737,38 +1751,155 @@ async fn cmd_subscribe(session: Option<&str>, extension: Option<&str>, ui: bool)
     eprintln!("(disconnected)");
 }
 
-async fn cmd_sessions() {
+/// 格式化 Unix-ms 时间戳为可读的相对时间（如 "2h ago" / "3d ago"）。
+/// 避免手写日历/时区转换（跨平台易错），用相对时间给人看最直观。
+fn fmt_ts(ms: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let diff_secs = (now - ms).max(0) / 1000;
+    if diff_secs < 60 {
+        return format!("{}s ago", diff_secs);
+    }
+    if diff_secs < 3600 {
+        return format!("{}m ago", diff_secs / 60);
+    }
+    if diff_secs < 86400 {
+        return format!("{}h ago", diff_secs / 3600);
+    }
+    format!("{}d ago", diff_secs / 86400)
+}
+
+async fn cmd_sessions(json: bool, all: bool, limit: usize) {
     let index = ion::session_index::SessionIndex::load();
     if index.sessions.is_empty() {
-        println!("No sessions found.");
+        if json {
+            println!("{{\"project\":null,\"sessions\":[],\"totalCount\":0}}");
+        } else {
+            println!("No sessions found.");
+        }
         return;
     }
-    println!("{:<12} {:<24} {:<10} {:<10} {:<8} {:<8} {}", 
-        "ID", "NAME", "MODEL", "TOKENS_IN", "TOKENS_OUT", "MSGS", "UPDATED");
-    println!("{}", "-".repeat(100));
-    let mut entries: Vec<_> = index.sessions.iter().collect();
+
+    // 算当前主仓库的 project_key（用于过滤）。
+    // 缓存每个 project 路径的 key，避免重复 fork git 子进程。
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let current_key = ion::paths::project_key_git(&cwd);
+    let mut key_cache: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    key_cache.insert(cwd.clone(), current_key.clone());
+
+    // 过滤：--all 时不过滤；否则只保留 project_key == 当前主仓库的会话
+    let mut entries: Vec<(&String, &ion::session_index::SessionMeta)> =
+        index.sessions.iter().collect();
+    if !all {
+        entries.retain(|(_, meta)| {
+            let proj = meta.project.as_deref().unwrap_or("");
+            let key = key_cache
+                .entry(proj.to_string())
+                .or_insert_with(|| ion::paths::project_key_git(proj))
+                .clone();
+            key == current_key
+        });
+    }
     entries.sort_by(|a, b| b.1.updated_at.cmp(&a.1.updated_at));
-    for (id, meta) in entries.iter().take(20) {
-        let short_id = if id.len() > 10 { &id[..10] } else { id.as_str() };
-        let name = meta.name.as_deref().unwrap_or("-");
-        let ts = {
-            let secs = meta.updated_at / 1000;
-            let days = secs / 86400;
-            let h = (secs % 86400) / 3600;
-            let m = (secs % 3600) / 60;
-            format!("{}-{} {:02}:{:02}", days / 30 + 1, days % 30 + 1, h, m)
+
+    // ── JSON 输出 ──
+    if json {
+        let sessions_json: Vec<_> = entries.iter().map(|(id, m)| {
+            serde_json::json!({
+                "id": id,
+                "name": m.name,
+                "project": m.project,
+                "projectName": m.project_name,
+                "worktree": m.worktree,
+                "branch": m.branch,
+                "model": m.model,
+                "agent": m.agent,
+                "provider": m.provider,
+                "createdAt": m.created_at,
+                "updatedAt": m.updated_at,
+                "messageCount": m.message_count,
+                "turnCount": m.turn_count,
+                "tokenInput": m.token_input,
+                "tokenOutput": m.token_output,
+                "tokenCacheRead": m.token_cache_read,
+                "tokenCacheWrite": m.token_cache_write,
+                "parentSession": m.parent_session,
+                "thinkingLevel": m.last_thinking_level,
+            })
+        }).collect();
+        let project_label = if all {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!({
+                "cwd": cwd,
+                "projectKey": current_key,
+            })
         };
-        println!("{:<12} {:<24} {:<10} {:<10} {:<8} {:<8} {}",
-            short_id, name, meta.model,
-            meta.token_input, meta.token_output,
-            meta.message_count, ts,
+        println!("{}", serde_json::json!({
+            "project": project_label,
+            "sessions": sessions_json,
+            "totalCount": entries.len(),
+        }).to_string());
+        return;
+    }
+
+    // ── 表格输出 ──
+    if entries.is_empty() {
+        if all {
+            println!("No sessions found.");
+        } else {
+            println!("No sessions found for current project: {}", cwd);
+            println!("(use 'ion sessions --all' to list all projects)");
+        }
+        return;
+    }
+
+    if !all {
+        println!("📦 Project: {}  (key: {})", cwd, &current_key[..8]);
+        println!();
+    }
+    // ID  AGENT  MODEL  BRANCH  MSGS  TOKENS(IN/OUT/CACHE)  CREATED  UPDATED  WT
+    println!(
+        "{:<12} {:<12} {:<22} {:<16} {:<5} {:<19} {:<13} {:<13} {}",
+        "ID", "AGENT", "MODEL", "BRANCH", "MSGS", "TOKENS(IN/OUT/CA)", "CREATED", "UPDATED", "WT"
+    );
+    println!("{}", "-".repeat(130));
+    for (id, meta) in entries.iter().take(limit) {
+        let short_id = if id.len() > 10 { &id[..10] } else { id.as_str() };
+        let name = meta.name.as_deref().unwrap_or("");
+        let branch = meta.branch.as_deref().unwrap_or("");
+        let wt = if meta.worktree { "🌿" } else { "" };
+        let cache = meta.token_cache_read + meta.token_cache_write;
+        let _ = name;
+        println!(
+            "{:<12} {:<12} {:<22} {:<16} {:<5} {:<19} {:<13} {:<13} {}",
+            short_id,
+            meta.agent,
+            meta.model,
+            branch,
+            meta.message_count,
+            format!("{}/{}/{}", meta.token_input, meta.token_output, cache),
+            fmt_ts(meta.created_at),
+            fmt_ts(meta.updated_at),
+            wt,
         );
     }
+    let total_in: u64 = entries.iter().map(|(_, s)| s.token_input).sum();
+    let total_out: u64 = entries.iter().map(|(_, s)| s.token_output).sum();
+    let total_cache: u64 = entries.iter().map(|(_, s)| s.token_cache_read + s.token_cache_write).sum();
     println!();
-    println!("Total sessions: {} | Total tokens: {} in / {} out",
-        index.sessions.len(),
-        index.sessions.values().map(|s| s.token_input).sum::<u64>(),
-        index.sessions.values().map(|s| s.token_output).sum::<u64>(),
+    println!(
+        "Total: {} sessions | {} tokens ({} in / {} out / {} cache)",
+        entries.len(),
+        total_in + total_out + total_cache,
+        total_in,
+        total_out,
+        total_cache,
     );
 }
 
@@ -2553,7 +2684,9 @@ async fn main() {
         Some(Commands::Rpc { session, method, params }) => {
             cmd_rpc(session.as_deref(), method, params).await;
         }
-        Some(Commands::Sessions) => cmd_sessions().await,
+        Some(Commands::Sessions { json, all, limit }) => {
+            cmd_sessions(*json, *all, *limit).await
+        }
         Some(Commands::History { session, limit, view }) => {
             cmd_history(session, *limit, view).await
         }
