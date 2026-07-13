@@ -55,14 +55,16 @@ pub struct FileSnapshotExtension {
     baseline_tree_hash: Mutex<Option<String>>,
 }
 
-/// 生成 6 位随机 hex turn ID（如 "ts_a3f8b2"）
+/// 生成 turn ID（如 "ts_a3f8b2c9"）
+/// XL4: 扩大到 48bit + 加 session_id seed，降低跨 session 冲突概率
+/// （原 24bit 约 4096 turn 就 50% 冲突，48bit 需要 ~16M turn 才 50%）
 fn gen_turn_id() -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
     std::time::SystemTime::now().hash(&mut hasher);
     std::process::id().hash(&mut hasher);
-    format!("ts_{:06x}", hasher.finish() & 0xFFFFFF)
+    format!("ts_{:012x}", hasher.finish() & 0xFFFFFFFFFFFF)
 }
 
 impl FileSnapshotExtension {
@@ -125,6 +127,14 @@ impl FileSnapshotExtension {
             }
         }
         files
+    }
+
+    /// XL4: 保存快照时补 session_id（capture 函数构造时没传，统一在这里补）
+    fn save_snap(&self, mut snap: snapshot::ToolSnapshot) {
+        if snap.session_id.is_empty() {
+            snap.session_id = self.storage.session_id.clone();
+        }
+        self.store.save_tool_snapshot(&snap);
     }
 }
 
@@ -191,7 +201,7 @@ impl Extension for FileSnapshotExtension {
                 "turn_end_scan",
             );
             for snap in snaps {
-                self.store.save_tool_snapshot(&snap);
+                self.save_snap(snap);
             }
         }
 
@@ -252,7 +262,7 @@ impl Extension for FileSnapshotExtension {
                         &before_state, self.store.objects(),
                         &turn_id, &ctx.tool_call_id, &ctx.tool_name,
                     ) {
-                        self.store.save_tool_snapshot(&snap);
+                        self.save_snap(snap);
                     }
                 }
                 BeforeState::DirCapture { .. } => {
@@ -261,7 +271,7 @@ impl Extension for FileSnapshotExtension {
                         &turn_id, &ctx.tool_call_id,
                     );
                     for snap in snaps {
-                        self.store.save_tool_snapshot(&snap);
+                        self.save_snap(snap);
                     }
                 }
                 BeforeState::Skip => {}

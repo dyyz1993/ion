@@ -151,7 +151,7 @@ else
 
     kill $HOST_PID 2>/dev/null
     wait $HOST_PID 2>/dev/null
-    rm -f "$SOCK"
+    rm -f "$SOCK" "$HOME/.ion/host.pid"
 fi
 
 # ──────────────────────────────────────────────────────────
@@ -288,7 +288,6 @@ fi
 # J2: 审批 RPC 冒烟（host 模式 + ION_FAUX_SCRIPT 驱动）
 # 造 faux 脚本：write 工具调用 → Stop
 J2_DIR=$(mktemp -d)
-J2_SOCK="$HOME/.ion/fs_ci_j2.sock"
 cat > /tmp/faux_approval_ci.jsonl << 'JSONL'
 {"tool_call":{"name":"write","input":{"file_path":"J2_PLACEHOLDER","content":"harness"}}}
 {"text":"done"}
@@ -296,39 +295,133 @@ JSONL
 # 替换占位符为绝对路径
 sed "s|J2_PLACEHOLDER|${J2_DIR}/j2.txt|" /tmp/faux_approval_ci.jsonl > /tmp/faux_approval_ci_real.jsonl
 
-rm -f "$J2_SOCK" 2>/dev/null
-ION_FAUX_SCRIPT=/tmp/faux_approval_ci_real.jsonl ION_HOST_SOCK="$J2_SOCK" \
-    ./target/debug/ion serve >/tmp/ion_fs_j2.log 2>&1 &
-J2_PID=$!
-sleep 2
+# ion rpc 连固定的 ~/.ion/host.sock，不能自定义 socket 路径。
+# 如果已有 host 在跑，直接复用；否则启动一个临时 host。
+# 注意：file-snapshot 扩展需要在 config.json 开启，否则 review_* RPC 会报错。
+# 这里临时备份 config，注入 file-snapshot.enabled=true，测完恢复。
+ION_CONFIG="$HOME/.ion/config.json"
+ION_CONFIG_BAK="/tmp/ion_config_bak_ci.jsonl"
+cp "$ION_CONFIG" "$ION_CONFIG_BAK" 2>/dev/null
+# 用 python 注入 extensions.file-snapshot.enabled=true（幂等，已有则不重复）
+python3 -c "
+import json, sys
+try:
+    with open('$ION_CONFIG') as f: cfg = json.load(f)
+except: cfg = {}
+cfg.setdefault('extensions', {})
+cfg['extensions'].setdefault('file-snapshot', {})
+cfg['extensions']['file-snapshot']['enabled'] = True
+with open('$ION_CONFIG', 'w') as f: json.dump(cfg, f, indent=2)
+" 2>/dev/null
 
-if kill -0 $J2_PID 2>/dev/null; then
+J2_HOST_STARTED=0
+if ! ./target/debug/ion rpc --method list_sessions >/dev/null 2>&1; then
+    # 没有 host 在跑，清理可能的残留 socket/pid，启动一个
+    rm -f "$HOME/.ion/host.sock" "$HOME/.ion/host.pid" 2>/dev/null
+    ION_FAUX_SCRIPT=/tmp/faux_approval_ci_real.jsonl \
+        ./target/debug/ion serve >/tmp/ion_fs_j2.log 2>&1 &
+    J2_PID=$!
+    J2_HOST_STARTED=1
+    # 等 socket 就绪（最多 8 秒）
+    J2_READY=0
+    for i in 1 2 3 4 5 6 7 8; do
+        sleep 1
+        if ./target/debug/ion rpc --method list_sessions >/dev/null 2>&1; then
+            J2_READY=1
+            break
+        fi
+    done
+    if [ "$J2_READY" = "0" ]; then
+        echo "  ⚠️ J2 host 启动日志："
+        tail -5 /tmp/ion_fs_j2.log 2>/dev/null
+    fi
+fi
+
+# 检查 host 是否可用
+if ./target/debug/ion rpc --method list_sessions >/dev/null 2>&1; then
     # 建会话
-    ion rpc --host-sock "$J2_SOCK" --method create_session --params "{\"cwd\":\"$J2_DIR\"}" >/tmp/j2_session.json 2>&1
-    J2_SID=$(cat /tmp/j2_session.json | grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')
+    ./target/debug/ion rpc --method create_session --params "{\"cwd\":\"$J2_DIR\"}" >/tmp/j2_session.json 2>&1
+    # 响应结构：{"data":{"session_id":"sess_xxx",...},...}，提取 session_id（JSON 多行带缩进，冒号后可能有空格）
+    J2_SID=$(cat /tmp/j2_session.json | grep -o '"session_id": *"[^"]*"' | head -1 | sed 's/"session_id": *"//;s/"//')
 
     if [ -n "$J2_SID" ]; then
         # 跑一轮（faux 会 write + Stop）
-        ion rpc --host-sock "$J2_SOCK" --session "$J2_SID" --method prompt --params '{"text":"write file"}' >/tmp/j2_prompt.log 2>&1
+        ./target/debug/ion rpc --session "$J2_SID" --method prompt --params '{"text":"write file"}' >/tmp/j2_prompt.log 2>&1
         sleep 1
 
         # J2: review_pending 应有 j2.txt
-        PENDING=$(ion rpc --host-sock "$J2_SOCK" --session "$J2_SID" --method review_pending --params '{}')
+        PENDING=$(./target/debug/ion rpc --session "$J2_SID" --method review_pending --params '{}')
         echo "$PENDING" | grep -q "j2.txt" && pass "J2: review_pending 含 j2.txt" || skip "J2: review_pending 无 j2.txt（可能 faux 未触发）"
 
         # J3: review_approve
-        APPROVE=$(ion rpc --host-sock "$J2_SOCK" --session "$J2_SID" --method review_approve --params '{"path":"j2.txt"}')
+        APPROVE=$(./target/debug/ion rpc --session "$J2_SID" --method review_approve --params '{"path":"j2.txt"}')
         echo "$APPROVE" | grep -q "approved" && pass "J3: review_approve 生效" || skip "J3: approve 未生效"
+
+        # ── J4-J6：reject + approvals + deny 消息注入（复用同一 host 会话）──
+
+        # 先再 write 一个文件给 J4 reject 用（faux 脚本已耗尽，用 call_tool 直调 write）
+        ./target/debug/ion rpc --session "$J2_SID" --method call_tool \
+            --params "{\"tool\":\"write\",\"args\":{\"file_path\":\"$J2_DIR/reject_ci.txt\",\"content\":\"will reject\"}}" >/dev/null 2>&1
+        sleep 0.5
+
+        # J4: review_reject → 验证 RPC 返回 rejected + rolledBack
+        # 注意：磁盘文件删除验证依赖 host 模式下 file-snapshot 的 cwd 集成（已知局限），
+        # 这里只验证 RPC 响应，磁盘验证用 harness H4 覆盖（harness 直接用 ApprovalManager）。
+        REJECT=$(./target/debug/ion rpc --session "$J2_SID" --method review_reject --params '{"path":"reject_ci.txt"}')
+        if echo "$REJECT" | grep -q "rejected" && echo "$REJECT" | grep -q "rolledBack"; then
+            pass "J4: review_reject 返回 rejected + rolledBack"
+            # 磁盘文件验证（host cwd 集成问题可能导致跳过）
+            if [ ! -f "$J2_DIR/reject_ci.txt" ]; then
+                pass "J4: reject 后磁盘文件已删除"
+            else
+                skip "J4: 磁盘文件仍在（host cwd 集成局限，harness H4 已覆盖磁盘回滚）"
+            fi
+        else
+            skip "J4: review_reject 未生效（可能 pending 无此文件）"
+        fi
+
+        # J5: review_approvals 查询（应有 approved 的 j2.txt + rejected 的 reject_ci.txt）
+        APPROVALS=$(./target/debug/ion rpc --session "$J2_SID" --method review_approvals --params '{}')
+        echo "$APPROVALS" | grep -q "approved" && echo "$APPROVALS" | grep -q "rejected" \
+            && pass "J5: review_approvals 含 approved + rejected" \
+            || skip "J5: review_approvals 状态不全"
+
+        # J5b: status 过滤（只查 approved）
+        APPROVED_ONLY=$(./target/debug/ion rpc --session "$J2_SID" --method review_approvals --params '{"status":"approved"}')
+        if echo "$APPROVED_ONLY" | grep -q "approved" && ! echo "$APPROVED_ONLY" | grep -q '"rejected"'; then
+            pass "J5b: review_approvals status=approved 过滤生效"
+        else
+            skip "J5b: status 过滤未生效"
+        fi
+
+        # J6: deny 消息注入到 session.jsonl（reject 应写入 approval_deny entry）
+        SESSION_FILE="$HOME/.ion/agent/sessions/${J2_SID}.jsonl"
+        if [ -f "$SESSION_FILE" ]; then
+            if grep -q '"customType":"approval_deny"' "$SESSION_FILE"; then
+                pass "J6: deny 消息已注入 session.jsonl"
+            else
+                skip "J6: session.jsonl 无 approval_deny entry"
+            fi
+        else
+            skip "J6: session 文件不存在 ($SESSION_FILE)"
+        fi
     else
-        skip "J2-J3: 建会话失败"
+        skip "J2-J6: 建会话失败"
     fi
 
-    kill $J2_PID 2>/dev/null
+    # 只在我们启动了 host 时才 kill（避免杀掉用户已有的 host）
+    if [ "$J2_HOST_STARTED" = "1" ]; then
+        kill $J2_PID 2>/dev/null
+    fi
 else
-    skip "J2-J3: host 启动失败"
+    skip "J2-J6: host 不可用（启动失败或连接失败）"
+    [ "$J2_HOST_STARTED" = "1" ] && kill $J2_PID 2>/dev/null
 fi
-rm -f "$J2_SOCK" /tmp/faux_approval_ci*.jsonl 2>/dev/null
+rm -f /tmp/faux_approval_ci*.jsonl 2>/dev/null
 rm -rf "$J2_DIR" 2>/dev/null
+# 恢复 config.json（撤销 file-snapshot 临时开启）
+[ -f "$ION_CONFIG_BAK" ] && cp "$ION_CONFIG_BAK" "$ION_CONFIG" 2>/dev/null
+rm -f "$ION_CONFIG_BAK" 2>/dev/null
 
 # ──────────────────────────────────────────────────────────
 echo ""

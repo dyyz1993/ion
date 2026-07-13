@@ -1326,6 +1326,7 @@ dependencies = [
  "uuid",
  "wasmtime",
  "which",
+ "zstd",
 ]
 
 [[package]]

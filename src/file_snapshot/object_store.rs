@@ -3,11 +3,24 @@
 //! 设计：类似 mini-git 的 object store
 //! - 内容 → SipHash → 路径 objects/<前2位>/<剩余hash>
 //! - 相同内容只存一次（exists 判断）
+//! - 内容用 zstd 压缩存储（hash 算原始内容，压缩在 hash 之后）
+//! - 旧明文数据通过 magic bytes 检测自动兼容（read 时区分压缩/明文）
 //!
 //! 注：当前用 std DefaultHasher（SipHash-1-3，64bit）。
 //! 对小项目够用；文件量到百万级时有碰撞风险，届时升级 sha256。
 
 use std::path::{Path, PathBuf};
+
+/// zstd 压缩数据的 magic number（前 4 字节）
+/// 用于 read_object 区分压缩数据（新写入）和明文数据（旧数据兼容）
+const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
+
+/// zstd 压缩级别（1-22，默认 3 = 速度/压缩比平衡）
+const ZSTD_LEVEL: i32 = 3;
+
+/// 小于此字节数的文件不压缩（zstd 头开销 ~10-15 bytes，小文件压缩反而变大）
+/// 阈值 64：实测 45 bytes 文件压缩后变 124%，64 bytes 以上压缩开始有收益
+const MIN_COMPRESS_SIZE: usize = 64;
 
 /// Content-addressed object store
 pub struct ObjectStore {
@@ -47,6 +60,7 @@ impl ObjectStore {
     }
 
     /// 写入内容，返回 hash + 去重标记
+    /// hash 算原始内容（保证去重逻辑不变），压缩后写盘
     pub fn write_object(&self, content: &[u8]) -> WriteResult {
         let hash = content_hash(content);
         let path = self.object_path(&hash);
@@ -59,11 +73,21 @@ impl ObjectStore {
             };
         }
 
-        // 写入内容
+        // zstd 压缩后写盘（降低存储，hash 仍基于原始内容）
+        // 小文件（< MIN_COMPRESS_SIZE）不压缩，因为 zstd 头开销会让压缩后更大
+        let to_write: Vec<u8> = if content.len() >= MIN_COMPRESS_SIZE {
+            match zstd::encode_all(content, ZSTD_LEVEL) {
+                Ok(c) => c,
+                Err(_) => content.to_vec(), // 压缩失败 → 回退明文
+            }
+        } else {
+            content.to_vec() // 小文件 → 明文
+        };
+
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        std::fs::write(&path, content).ok();
+        std::fs::write(&path, &to_write).ok();
 
         WriteResult {
             hash,
@@ -72,10 +96,19 @@ impl ObjectStore {
     }
 
     /// 读取内容
+    /// 自动检测压缩（zstd magic bytes）和明文格式，兼容旧数据
     pub fn read_object(&self, hash: &str) -> Option<Vec<u8>> {
         let path = self.object_path(hash);
-        let content = std::fs::read(&path).ok()?;
-        Some(content)
+        let bytes = std::fs::read(&path).ok()?;
+
+        // 检测 zstd 压缩（magic bytes）
+        if bytes.starts_with(&ZSTD_MAGIC) {
+            if let Ok(decompressed) = zstd::decode_all(&bytes[..]) {
+                return Some(decompressed);
+            }
+            // 解压失败 → 可能是碰巧以 magic 开头的明文 → fallthrough 到明文返回
+        }
+        Some(bytes)
     }
 
     /// 读取为 UTF-8 字符串（diff 用）
@@ -274,5 +307,87 @@ mod tests {
         let r2 = store2.write_object(b"shared content");
         assert!(r2.deduped, "跨 worktree 相同内容应去重");
         assert_eq!(r1.hash, r2.hash);
+    }
+
+    #[test]
+    fn compression_roundtrip_large_text() {
+        // 大文本压缩 → 读回内容一致
+        let tmp = std::env::temp_dir().join(format!("fs_zstd_rt_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let store = ObjectStore::new_at(tmp.join("store"));
+
+        let big = "a".repeat(10000);
+        let r = store.write_object(big.as_bytes());
+        assert!(!r.deduped, "首次写入不应去重");
+
+        let read = store.read_object(&r.hash).unwrap();
+        assert_eq!(read, big.as_bytes(), "压缩后读回应与原始一致");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn small_file_not_compressed() {
+        // 小文件（< MIN_COMPRESS_SIZE）不压缩，避免 zstd 头开销导致变大
+        let tmp = std::env::temp_dir().join(format!("fs_zstd_small_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let store = ObjectStore::new_at(tmp.join("store"));
+
+        let small = b"tiny"; // 4 bytes，远小于 MIN_COMPRESS_SIZE(64)
+        let r = store.write_object(small);
+
+        // 验证存储的是明文（不是 zstd 压缩格式）
+        let path = store.object_path(&r.hash);
+        let on_disk = std::fs::read(&path).unwrap();
+        assert_eq!(on_disk, small, "小文件应明文存储（无压缩）");
+        assert!(!on_disk.starts_with(&ZSTD_MAGIC), "小文件不应有 zstd magic");
+
+        // 读回正确
+        let read = store.read_object(&r.hash).unwrap();
+        assert_eq!(read, small);
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn reads_uncompressed_legacy_data() {
+        // 模拟旧明文数据：手写明文 object → read_object 应能读（magic bytes 兼容）
+        let tmp = std::env::temp_dir().join(format!("fs_zstd_legacy_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let store = ObjectStore::new_at(tmp.join("store"));
+
+        // 手写明文（绕过 write_object 的压缩，模拟升级前的旧数据）
+        let hash = content_hash(b"legacy plaintext data");
+        let path = store.object_path(&hash);
+        std::fs::create_dir_all(path.parent().unwrap()).ok();
+        std::fs::write(&path, b"legacy plaintext data").unwrap();
+
+        // read_object 应能读明文
+        let read = store.read_object(&hash).unwrap();
+        assert_eq!(read, b"legacy plaintext data", "旧明文数据应能被读取（向后兼容）");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn compression_reduces_storage_size() {
+        // 验证压缩确实减小存储（重复内容压缩比高）
+        let tmp = std::env::temp_dir().join(format!("fs_zstd_size_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let store = ObjectStore::new_at(tmp.join("store"));
+
+        // 7000 字节的重复内容（"repeat " × 1000）
+        let big = "repeat ".repeat(1000);
+        store.write_object(big.as_bytes());
+
+        let stored_size = store.store_size();
+        let original_size = big.len() as u64;
+        assert!(
+            stored_size < original_size,
+            "压缩后存储（{} bytes）应小于原始（{} bytes）",
+            stored_size, original_size
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

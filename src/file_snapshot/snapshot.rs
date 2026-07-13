@@ -22,6 +22,10 @@ pub struct ToolSnapshot {
     /// - true  = bash/扫描路线，文件原本存在但没存旧内容 → restore 时应跳过（不可误删）
     #[serde(default)]
     pub before_unknown: bool,
+    /// 所属 session_id（XL4：跨 session 恢复 + 隔离用）
+    /// 旧数据无此字段 → 反序列化为空字符串 → loader 视为"未知 session"（向后兼容）
+    #[serde(default)]
+    pub session_id: String,
 }
 
 /// 路线 2：目录扫描的文件变更
@@ -109,10 +113,18 @@ impl SnapshotStore {
     }
 
     /// 存储工具级快照（路线 1）
+    /// XL4: 路径加 session 维度（tool/<session_id>/<turn_id>.jsonl），避免跨 session turn_id 冲突
     pub fn save_tool_snapshot(&self, snap: &ToolSnapshot) {
-        // 文件名用 turn_id（如 ts_a3f8b2.jsonl），同一 turn 的多个改动追加到同一文件
-        let safe_name = snap.turn_id.replace('/', "_");
-        let path = self.snapshots_dir.join("tool").join(format!("{}.jsonl", safe_name));
+        let safe_turn = snap.turn_id.replace('/', "_");
+        let safe_sess = if snap.session_id.is_empty() {
+            "_legacy".to_string() // 旧数据兜底
+        } else {
+            snap.session_id.replace('/', "_")
+        };
+        // 新路径：tool/<session_id>/<turn_id>.jsonl
+        let dir = self.snapshots_dir.join("tool").join(&safe_sess);
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(format!("{}.jsonl", safe_turn));
         let line = serde_json::to_string(snap).unwrap_or_default();
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
@@ -123,15 +135,66 @@ impl SnapshotStore {
     /// 读取指定 turn 的所有工具级快照
     pub fn load_tool_snapshots(&self, turn_id: &str) -> Vec<ToolSnapshot> {
         let safe_name = turn_id.replace('/', "_");
-        let path = self.snapshots_dir.join("tool").join(format!("{}.jsonl", safe_name));
-        read_jsonl(&path)
+        // 兼容：先找新路径（tool/*/<turn_id>.jsonl），再找老路径（tool/<turn_id>.jsonl）
+        let mut all = Vec::new();
+        let tool_dir = self.snapshots_dir.join("tool");
+        // 新路径：遍历 session 子目录
+        if let Ok(sess_dirs) = std::fs::read_dir(&tool_dir) {
+            for sess_entry in sess_dirs.flatten() {
+                if sess_entry.path().is_dir() {
+                    let p = sess_entry.path().join(format!("{}.jsonl", safe_name));
+                    if p.exists() {
+                        let snaps: Vec<ToolSnapshot> = read_jsonl(&p);
+                        all.extend(snaps);
+                    }
+                }
+            }
+        }
+        // 老路径（兼容旧数据）
+        let legacy_path = tool_dir.join(format!("{}.jsonl", safe_name));
+        if legacy_path.exists() {
+            all.extend(read_jsonl(&legacy_path));
+        }
+        all
     }
 
     /// 读取全部工具级快照（按 timestamp 排序）
+    /// XL4: 遍历 tool/ 和 tool/<session_id>/ 两层路径（兼容新旧）
     pub fn load_all_tool_snapshots(&self) -> Vec<ToolSnapshot> {
         let mut all = Vec::new();
-        let dir = self.snapshots_dir.join("tool");
-        if let Ok(entries) = std::fs::read_dir(&dir) {
+        let tool_dir = self.snapshots_dir.join("tool");
+        if let Ok(entries) = std::fs::read_dir(&tool_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    // 新路径：session 子目录 → 读里面的 .jsonl
+                    if let Ok(sub) = std::fs::read_dir(&path) {
+                        for f in sub.flatten() {
+                            let snaps: Vec<ToolSnapshot> = read_jsonl(&f.path());
+                            all.extend(snaps);
+                        }
+                    }
+                } else {
+                    // 老路径：直接的 .jsonl 文件
+                    let snaps: Vec<ToolSnapshot> = read_jsonl(&path);
+                    all.extend(snaps);
+                }
+            }
+        }
+        all.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        all
+    }
+
+    /// 读取指定 session 的全部工具级快照（XL4 跨 session 恢复用）
+    /// session_id 为空 → 返回全部（兼容旧调用方）
+    pub fn load_tool_snapshots_by_session(&self, session_id: &str) -> Vec<ToolSnapshot> {
+        if session_id.is_empty() {
+            return self.load_all_tool_snapshots();
+        }
+        let safe_sess = session_id.replace('/', "_");
+        let sess_dir = self.snapshots_dir.join("tool").join(&safe_sess);
+        let mut all = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&sess_dir) {
             for entry in entries.flatten() {
                 let snaps: Vec<ToolSnapshot> = read_jsonl(&entry.path());
                 all.extend(snaps);
@@ -143,6 +206,7 @@ impl SnapshotStore {
 
     /// 读取指定 turn 之后的所有工具级快照（restore 用）
     /// after_turn_id 的快照不包含在内
+    /// XL4: 优先按 session_id 过滤（减少跨 session 干扰），无 session_id 时回退全量
     pub fn load_tool_snapshots_after(&self, after_turn_id: &str) -> Vec<ToolSnapshot> {
         let all = self.load_all_tool_snapshots();
         // 找到 after_turn_id 对应的 timestamp，返回之后的所有快照
@@ -154,6 +218,24 @@ impl SnapshotStore {
                 .filter(|s| s.timestamp > cutoff)
                 .collect(),
             None => all, // 找不到 → 返回全部（安全降级）
+        }
+    }
+
+    /// XL4: 按 session_id 过滤的版本——只返回该 session 中 after_turn_id 之后的快照
+    pub fn load_tool_snapshots_after_by_session(
+        &self,
+        after_turn_id: &str,
+        session_id: &str,
+    ) -> Vec<ToolSnapshot> {
+        let all = self.load_tool_snapshots_by_session(session_id);
+        let cutoff_ts = all.iter()
+            .find(|s| s.turn_id == after_turn_id)
+            .map(|s| s.timestamp.clone());
+        match cutoff_ts {
+            Some(cutoff) => all.into_iter()
+                .filter(|s| s.timestamp > cutoff)
+                .collect(),
+            None => all,
         }
     }
 
@@ -204,6 +286,29 @@ impl SnapshotStore {
     /// 获取最新的 snapshot_tree_hash（当前完整状态）
     pub fn current_tree_hash(&self) -> Option<String> {
         self.latest_step_snapshot().map(|s| s.snapshot_tree_hash)
+    }
+
+    /// 按 turn_id 查找对应的 snapshot_tree_hash（XL3 full restore 用）
+    /// 从 step-snapshot 序列里找该 turn 的完整磁盘状态 tree
+    pub fn find_tree_hash_by_turn_id(&self, turn_id: &str) -> Option<String> {
+        let steps = self.load_all_step_snapshots();
+        // 精确匹配 turn_id
+        if let Some(s) = steps.iter().find(|s| s.turn_id == turn_id) {
+            return Some(s.snapshot_tree_hash.clone());
+        }
+        // fallback：找 turn_id 最接近但不超过的 step-snapshot（该 turn 之后最近一次建树）
+        // 按 timestamp 排序已保证，找最后一个 timestamp <= target 的
+        let target_ts = steps.iter()
+            .find(|s| s.turn_id == turn_id)
+            .map(|s| s.timestamp.as_str());
+        if let Some(ts) = target_ts {
+            return steps.iter()
+                .filter(|s| s.timestamp.as_str() <= ts)
+                .last()
+                .map(|s| s.snapshot_tree_hash.clone());
+        }
+        // 都找不到 → 返回最新的
+        self.current_tree_hash()
     }
 }
 
@@ -285,6 +390,7 @@ pub fn capture_after(
         after_hash,
         timestamp: crate::session_jsonl::timestamp_iso(),
         before_unknown: false, // write/edit 路线：before_hash=None 确实是新建
+        session_id: String::new(), // XL4: capture 不设，由 save_snap 补
     })
 }
 
@@ -323,6 +429,7 @@ pub fn capture_after_dir(
                         after_hash: Some(h),
                         timestamp: crate::session_jsonl::timestamp_iso(),
                         before_unknown: true, // bash 路线没存 before 内容
+                        session_id: String::new(), // XL4: 由 save_snap 补
                     });
                 }
             }
@@ -341,6 +448,7 @@ pub fn capture_after_dir(
                         after_hash: Some(h),
                         timestamp: crate::session_jsonl::timestamp_iso(),
                         before_unknown: true, // bash 路线没存 before 内容
+                        session_id: String::new(), // XL4: 由 save_snap 补
                     });
                 }
             }
@@ -360,6 +468,7 @@ pub fn capture_after_dir(
                 after_hash: None,
                 timestamp: crate::session_jsonl::timestamp_iso(),
                 before_unknown: true, // bash 路线没存删前内容，restore 不可误删
+                session_id: String::new(), // XL4: 由 save_snap 补
             });
         }
     }
@@ -413,5 +522,127 @@ mod tests {
                 _ => "unchanged",
             }
         }
+    }
+
+    /// XL4: 跨 session 隔离 — 不同 session 的快照存到不同子目录
+    #[test]
+    fn xl4_snapshots_isolated_by_session() {
+        let tmp = std::env::temp_dir().join(format!(
+            "fs_xl4_iso_{}_{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let store = SnapshotStore::new_at(tmp.clone());
+
+        // session A 的快照
+        store.save_tool_snapshot(&ToolSnapshot {
+            turn_id: "ts_001".into(),
+            tool_call_id: "tc_a".into(),
+            tool_name: "write".into(),
+            path: "a.rs".into(),
+            before_hash: None,
+            after_hash: Some("hash_a".into()),
+            timestamp: "2026-07-13T10:00:01Z".into(),
+            before_unknown: false,
+            session_id: "sess_A".into(),
+        });
+
+        // session B 的快照（同 turn_id "ts_001"，但不同 session）
+        store.save_tool_snapshot(&ToolSnapshot {
+            turn_id: "ts_001".into(),
+            tool_call_id: "tc_b".into(),
+            tool_name: "write".into(),
+            path: "b.rs".into(),
+            before_hash: None,
+            after_hash: Some("hash_b".into()),
+            timestamp: "2026-07-13T10:00:02Z".into(),
+            before_unknown: false,
+            session_id: "sess_B".into(),
+        });
+
+        // load_by_session("sess_A") 只返回 A 的快照
+        let sess_a = store.load_tool_snapshots_by_session("sess_A");
+        assert_eq!(sess_a.len(), 1, "sess_A 应只有 1 条快照");
+        assert_eq!(sess_a[0].path, "a.rs", "应该是 a.rs");
+        assert_eq!(sess_a[0].session_id, "sess_A");
+
+        // load_by_session("sess_B") 只返回 B 的快照
+        let sess_b = store.load_tool_snapshots_by_session("sess_B");
+        assert_eq!(sess_b.len(), 1, "sess_B 应只有 1 条快照");
+        assert_eq!(sess_b[0].path, "b.rs", "应该是 b.rs");
+        assert_eq!(sess_b[0].session_id, "sess_B");
+
+        // load_all 返回全部（2 条，跨 session）
+        let all = store.load_all_tool_snapshots();
+        assert_eq!(all.len(), 2, "全量应返回 2 条（跨 session）");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// XL4: turn_id 冲突不混淆（不同 session 同 turn_id 存到不同子目录）
+    #[test]
+    fn xl4_turn_id_collision_no_corruption() {
+        let tmp = std::env::temp_dir().join(format!(
+            "fs_xl4_coll_{}_{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let store = SnapshotStore::new_at(tmp.clone());
+
+        // 两个 session 都用 turn_id="ts_collision"，但内容不同
+        for sess in &["sess_X", "sess_Y"] {
+            store.save_tool_snapshot(&ToolSnapshot {
+                turn_id: "ts_collision".into(),
+                tool_call_id: "tc".into(),
+                tool_name: "write".into(),
+                path: format!("file_{}.rs", sess),
+                before_hash: None,
+                after_hash: Some(format!("hash_{}", sess)),
+                timestamp: "2026-07-13T10:00:00Z".into(),
+                before_unknown: false,
+                session_id: sess.to_string(),
+            });
+        }
+
+        // 验证文件存在在各自子目录（没 append 到同一文件）
+        let sess_x_snaps = store.load_tool_snapshots_by_session("sess_X");
+        let sess_y_snaps = store.load_tool_snapshots_by_session("sess_Y");
+        assert_eq!(sess_x_snaps.len(), 1);
+        assert_eq!(sess_y_snaps.len(), 1);
+        assert_ne!(sess_x_snaps[0].path, sess_y_snaps[0].path,
+            "不同 session 同 turn_id 的快照不应混淆");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// XL4: 旧数据兼容（session_id 为空的快照存在 _legacy 子目录，load_all 仍能读）
+    #[test]
+    fn xl4_legacy_data_compatible() {
+        let tmp = std::env::temp_dir().join(format!(
+            "fs_xl4_leg_{}_{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let store = SnapshotStore::new_at(tmp.clone());
+
+        // 模拟旧数据：session_id 为空
+        store.save_tool_snapshot(&ToolSnapshot {
+            turn_id: "ts_old".into(),
+            tool_call_id: "tc".into(),
+            tool_name: "write".into(),
+            path: "old.rs".into(),
+            before_hash: None,
+            after_hash: Some("old_hash".into()),
+            timestamp: "2026-07-13T09:00:00Z".into(),
+            before_unknown: false,
+            session_id: String::new(), // 旧数据无 session_id
+        });
+
+        // load_all 应能读到旧数据
+        let all = store.load_all_tool_snapshots();
+        assert_eq!(all.len(), 1, "旧数据应被 load_all 读到");
+        assert_eq!(all[0].path, "old.rs");
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

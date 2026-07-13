@@ -346,7 +346,8 @@ ion rpc --session sess_xxx --method get_flags \
 | [BACKEND_TYPES.md](./BACKEND_TYPES.md) | Backend 类型分类：Local/Sandbox/Remote/Container + 5 种配置场景 (已完成) |
 | [ROUTER_TEST_SPEC.md](./ROUTER_TEST_SPEC.md) | 路由层测试规格：68 条用例覆盖路由/路径/安全/配置错误 (已完成) |
 | [docs/design/EXTENSION_ECOSYSTEM.md](./docs/design/EXTENSION_ECOSYSTEM.md) | Extension 生态验证：子 Worker 创建 + 事件发射 + CLI 验证 (已验证) |
-| [docs/design/HOOK_SYSTEM.md](./docs/design/HOOK_SYSTEM.md) | Shell Hook 系统设计 (TRAE 兼容, 暂不开发) |
+| [docs/design/HOOK_SYSTEM.md](./docs/design/HOOK_SYSTEM.md) | Shell Hook 系统设计 (TRAE 兼容, 已被 HOOKS_AND_OUTLINE_SYNC 取代) |
+| [docs/design/HOOKS_AND_OUTLINE_SYNC.md](./docs/design/HOOKS_AND_OUTLINE_SYNC.md) | Hooks 系统（12 事件 + 5 handler，含真能调工具的 agent handler）+ create_worker 增强 + MD↔outline 大纲同步用例 (开发中) |
 | [docs/design/TEAM_ORCHESTRATION.md](./docs/design/TEAM_ORCHESTRATION.md) | Team 编排（agent.md 驱动）— `ion --host --agent coordinator` 拆任务开发 (已验证) |
 | [docs/design/WORKFLOW_GATE.md](./docs/design/WORKFLOW_GATE.md) | Workflow Gate — 内核级交付校验 (已完成) |
 | [docs/design/WORKFLOW_ENGINE.md](./docs/design/WORKFLOW_ENGINE.md) | Workflow Engine — 结构化交付流水线 DSL + 执行流程 + CI Group (已验证) |
@@ -420,6 +421,7 @@ ion rpc --session sess_xxx --method get_flags \
 | `src/message_retrieval.rs` | 消息拉取核心逻辑（retrieve_messages/turns/inputs/turn_detail + view/过滤/分页） |
 | `src/global_memory.rs` | 全局记忆库（SQLite + FTS5，跨项目检索） |
 | `src/global_memory_ext.rs` | GlobalMemoryExtension（单例扩展，on_singleton_init + extension_rpc） |
+| `src/hooks/`（规划中） | Hooks 系统：HooksConfig + HookExtension + 5 handler 执行引擎（command/http/prompt/agent/mcp_tool），[详情](./docs/design/HOOKS_AND_OUTLINE_SYNC.md) |
 
 ## 架构
 
@@ -660,13 +662,17 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - 路线 1：write/edit 工具级 before/after（100% 精确 diff，含 cwd 外文件）
   - 路线 2：bash 目录扫描兜底（mtime+size 快速过滤 + git ignore 智能过滤）
   - content-addressed object store（去重存储，100MB GC 封顶）
+  - **zstd 压缩存储**（>64B 文件压缩，小文件明文，magic bytes 兼容旧数据；10MB 改动→实际存储 100KB-1MB）
   - project_key 用 git-common-dir（主仓库和 worktree 共享存储）
-  - turnId 用随机 ID（`ts_xxxxxx`），不依赖下标，多次交替操作不覆盖
+  - turnId 用随机 ID（`ts_xxxxxxxxxxxx`，48bit），不依赖下标，多次交替操作不覆盖
+  - **快照按 session 隔离**（`session_id` 字段 + 路径 `tool/<session_id>/<turnId>.jsonl`，跨 session 不混淆）
   - 5 个 RPC：`get_modified_files` / `get_file_diff` / `get_batch_diffs` / `get_file_history` / `restore_files`
   - `restore_files` + `--restore-code`：消息+代码联动回滚（先恢复磁盘 → 再回滚消息 → 记录 restore_point）
+  - **`--restore-code --restore-mode full`**：精确恢复完整磁盘状态（含删除 target 之后新增的文件，scan 截断时自动跳过删除防误删）
+  - **`--restore-code` 穿越压缩点**：只恢复代码不回滚消息（快照层独立于压缩）+ 修复了 parentId=null 拦截失效 bug
   - GC：启动时分级清理（7天→1天→可达性分析）
   - **默认关闭**（config `"file-snapshot": {"enabled": true}` 开启）
-  - **验证**: 19 单元 + 19 CI = 38 测试全过 ✅
+  - **验证**: 56 单元 + 9 harness + 25 CI = 90 测试全过 ✅
 - **Tier Models（模型分层别名）**:
   - `--model fast/pro/max` 别名解析（底层统一处理，混用具体模型）
   - `get_tier_models` / `set_tier_models` RPC（持久化到 config.json）
@@ -890,12 +896,12 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 
 | 套件 | 数量 | 覆盖 |
 |------|------|------|
-| lib tests (核心逻辑) | 340 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact/FileSnapshot(object_store/scanner/snapshot/diff/gc/restore/tree_store/approval)/TierModels |
+| lib tests (核心逻辑) | 348 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact/FileSnapshot(object_store[+zstd压缩]/scanner/snapshot[+session_id]/diff/gc/restore[+XL3截断安全]/tree_store/approval)/TierModels |
 | unit_rpc_test (RPC 协议) | 20 | U1-U20 RPC 命令覆盖 + 接口格式兼容 |
 | manager_integration (集成) | 25 | Manager + Worker + 事件 + UI + 消息拉取 |
 | session_tree_test (集成) | 4 | only-append 审计/branch 接 leaf/全操作序列 |
 | context_index_e2e (集成) | 3 | read→write 折叠/on_context 时序 |
-| file_snapshot_harness (集成) | 5 | H1-H5：FauxProvider 驱动 agent loop 验证快照采集/on_gate_check/approve/reject/approve_all |
+| file_snapshot_harness (集成) | 9 | H1-H9：FauxProvider 驱动 agent loop 验证快照采集/on_gate_check/approve/reject/approve_all/**reject_all**/**approvals过滤**/**reject已有文件restored**/**re-approval重置** |
 | e2e_stress (E2E + 压力) | 18 | E1-E4 E2E + S1-S4 压力 + 各种边界 |
 | plugin_tests (扩展) | 17 | JSON/WASM/Plan/Todo 扩展 |
 | worktree_isolation | 6 | worktree 创建/隔离/清洗 |
@@ -911,7 +917,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | message_retrieval_ci (CLI E2E) | 55 | 消息拉取主验证（脚本 Group A-N 对应文档 A-M 场景）：ion history/分页/视点/turn_summary/compaction/turn 完整性/中断态/统计聚合/旁路数据/customType 两维属性/性能缓存/O(n)/血缘 |
 | session_tree_verify (CLI E2E) | 15 | 树展示 + branch/rollback 单元测试 + 分支视点(live/full/since_compaction) + only-append 红线 + SESSION_TREE_SPEC P0 验收映射 |
 | realtime_stitch_ci (CLI E2E) | 10 | Group I：host + create_session + subscribe + prompt + 事件流(agent_start/text_delta/agent_end) + 历史补齐 |
-| file_snapshot_ci (CLI E2E) | 22 | Group A-J：object_store 去重/scanner 目录扫描/diff 生成/GC/4 RPC 端到端/worktree 并行/restore 恢复/审批 harness+RPC 冒烟 |
+| file_snapshot_ci (CLI E2E) | 25 | Group A-J：object_store 去重[+zstd]/scanner 目录扫描/diff 生成/GC/4 RPC 端到端/worktree 并行/restore 恢复[+XL3 full mode]/审批 harness+RPC 冒烟[+J4 reject/J5 approvals/J6 deny] |
 | tier_models_ci (CLI E2E) | 9 | Group T：get/set_tier_models RPC + --model fast/pro 别名解析 + 兜底 |
 | extension_flags_ci (CLI E2E) | 10 | Group F：get_flags/set_flag RPC + 类型支持 + 缺参数报错 |
 | mcp_ci (CLI E2E) | 37 | Group A-J：MCP 配置 + toggle + restart + 错误 + 真实连接 + 方案 C 共享池 + 场景 1 + 权限控制 + resources/prompts + read_resource + mcp_reload 热更新 |
@@ -919,7 +925,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | overflow_recovery_ci (CLI E2E) | 5 | 上下文溢出恢复 |
 | workflow_ci (CLI E2E) | 15 | Workflow Engine W1-W7 |
 | sessions_ci (CLI E2E) | 20 | Group A-D：ion sessions 主仓库过滤/--all/JSON 字段完整性(含cache)/worktree 聚合/表格格式/非git降级 |
-| **测试覆盖合计** | **892** | 全部通过 ✅（含 E2E 12 Group 156 case） |
+| **测试覆盖合计** | **907** | 全部通过 ✅（含 E2E 12 Group 156 case + zstd 压缩 + XL1/XL3/XL4 跨 session/穿越压缩点/精确恢复） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
@@ -931,8 +937,11 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 - session_tree - ✅ (SessionTree 已实现)
 - user_bash / project_trust / resources_discover / ui - 后续 (需交互式 UI)
 
-**P6 - Shell Hook 系统 (TRAE 兼容) (暂不开发):**
-- 详细设计文档见 [docs/design/HOOK_SYSTEM.md](./docs/design/HOOK_SYSTEM.md)
+**P6 - Shell Hook 系统 (TRAE 兼容) (开发中):**
+- 详细设计文档见 [docs/design/HOOKS_AND_OUTLINE_SYNC.md](./docs/design/HOOKS_AND_OUTLINE_SYNC.md)（取代早期 HOOK_SYSTEM.md）
+- 内核补 2 块能力：(1) `ExtensionWorkerConfig` 字段补齐（agent/initial_prompt/worktree/allowed_tools/max_turns）；(2) Hooks 系统（HooksConfig + HookExtension + 5 种 handler 执行引擎）
+- 对齐 pi 的 `extensions/pi-hooks/`（12 事件 + 5 handler），修 pi 的两个坑：agent handler 真传 tools（不退化成单轮 LLM）、mcp_tool handler 真实现（不留 no-op）
+- 大纲同步（MD ↔ outline.json）作为第一个配置式用例，0 行内核扩展代码（纯 hooks.json + shell 脚本）
 
 **P6c - MCP 生产化:** ✅ 已完成
 - MCP Phase 1-4 全部实现（配置 + rmcp 连接 + 方案 C 共享池 + 自动重连 + 权限控制 + resources/prompts + 热更新）

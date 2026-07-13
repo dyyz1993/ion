@@ -590,10 +590,13 @@ pub fn append_compaction(
     stage: Option<&str>,
     batch_count: Option<usize>,
 ) {
+    // parentId 指向压缩前最后一个 entry（修复 check_compaction_safety 拦截失效 bug）
+    // 之前 parentId=null 导致 is_descendant_of 第一步就断了 → 穿越压缩点的回滚拦不住
+    let parent_id = last_entry_id(cwd);
     let mut entry = serde_json::json!({
         "type": "compaction",
         "id": generate_id(),
-        "parentId": null,
+        "parentId": parent_id,
         "timestamp": timestamp_iso(),
         "summary": summary,
         "tokensBefore": tokens_before,
@@ -608,6 +611,17 @@ pub fn append_compaction(
         entry["batchCount"] = serde_json::json!(bc);
     }
     append_raw_entry(cwd, &entry);
+}
+
+/// 读取 session.jsonl 最后一个 entry 的 id（用于 compaction 的 parentId）
+fn last_entry_id(cwd: &str) -> Option<String> {
+    let path = session_path(cwd);
+    let content = std::fs::read_to_string(&path).ok()?;
+    content.lines()
+        .filter(|l| !l.trim().is_empty())
+        .last()
+        .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .and_then(|e| e.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
 }
 
 /// 追加一条 turn_summary entry（每轮 turn 结束时的结构化摘要）。
@@ -721,6 +735,36 @@ mod tests {
         // firstKeptEntryId / stage / batchCount 应该不存在（skip_serializing_if）
         assert!(entry.get("firstKeptEntryId").is_none() || entry["firstKeptEntryId"].is_null());
         assert!(entry.get("stage").is_none() || entry["stage"].is_null());
+
+        cleanup(&cwd);
+    }
+
+    #[test]
+    fn test_append_compaction_parentid_links_to_last_entry() {
+        // XL1 修复：compaction 的 parentId 应指向压缩前最后一个 entry（不是 null）
+        // 这样 check_compaction_safety 才能拦住穿越压缩点的回滚
+        let cwd = test_cwd("compaction_parentid");
+        write_header(&cwd);
+
+        // 先写几条普通 entry（模拟压缩前的对话）
+        let msg1 = serde_json::json!({"type":"user", "id":"msg_001", "parentId":null, "message":{"role":"user","content":"hi"}});
+        let msg2 = serde_json::json!({"type":"assistant", "id":"msg_002", "parentId":"msg_001", "message":{"role":"assistant","content":"hello"}});
+        append_raw_entry(&cwd, &msg1);
+        append_raw_entry(&cwd, &msg2);
+
+        // 触发压缩
+        append_compaction(&cwd, "压缩了 msg_001/msg_002", 5000, Some("msg_003"), None, None);
+
+        let file = SessionFile::load(&cwd).expect("file should exist");
+        let compaction = file.entries.iter().find(|e| {
+            e.get("type").and_then(|v| v.as_str()) == Some("compaction")
+        }).expect("compaction entry should exist");
+
+        // parentId 应指向 msg_002（压缩前最后一个 entry），不是 null
+        assert_eq!(
+            compaction["parentId"].as_str(), Some("msg_002"),
+            "compaction parentId 应指向压缩前最后一个 entry（修复 check_compaction_safety 拦截 bug）"
+        );
 
         cleanup(&cwd);
     }

@@ -36,8 +36,10 @@
 |------|------|------|
 | restore_files（整体回滚，delta 流） | RPC + `--restore-code` | ✅ 已实现 |
 | restore_to_tree（整体回滚，tree O(1)） | `restore.rs` | ✅ 已实现 |
+| **restore_to_tree + `--restore-mode full`**（精确恢复完整磁盘，含删除） | CLI `--restore-code --restore-mode full` | ✅ 已实现 |
 | restore_single_file（单文件回滚） | `restore.rs` | ✅ 已实现 |
 | undo_restore（消费 restore_point） | `restore.rs` | ✅ 已实现 |
+| **穿越压缩点 + 代码恢复**（`--restore-code` 只恢复代码不回滚消息） | CLI `--restore-code` | ✅ 已实现 |
 | 回滚预览（preview 不写盘） | `restore.rs` | ✅ 已实现 |
 
 **审批（per-file，对标 pi file-review）**
@@ -60,6 +62,7 @@
 | 能力 | 入口 | 状态 |
 |------|------|------|
 | content-addressable 去重 | `object_store.rs` | ✅ 已实现 |
+| **zstd 压缩存储**（>64B 压缩，小文件明文，magic bytes 兼容旧数据） | `object_store.rs` | ✅ 已实现 |
 | 分级 GC（7天→24h→可达性）+ 100MB 配额 | `gc.rs` + `on_session_start` | ✅ 已实现 |
 | 空间线性增长验证（100轮×10文件→605 objects） | `tree_store.rs` 测试 | ✅ 已验证 |
 
@@ -1296,11 +1299,50 @@ Turn 4: write c.txt "v3"
 `object_store.rs` 的注释声称 "sha256"，实际用的是 `DefaultHasher`（SipHash-1-3，64bit）。修正注释为真实算法名，并标注"文件量到百万级时有碰撞风险，届时升级 sha256"。同时删掉 `write_object` 里一段无意义的 dead code hasher。
 
 
-### 18.4 不支持的联动场景（XFail）
+### 18.4 联动场景状态（2026-07-13 更新）
 
-| # | 场景 | 为什么不支持 |
-|---|------|------------|
-| XL1 | 回滚穿越压缩点 + 代码恢复 | 压缩点之前的消息已丢失，代码恢复没参照 |
-| XL2 | 恢复 bash 间接改的项目外文件 | 路线 2 只扫 cwd，项目外 bash 改动没快照 |
-| XL3 | 精确恢复到某个 turn 的"完整磁盘状态" | 只恢复被快照追踪的文件，未追踪文件不动 |
-| XL4 | 跨 session 恢复代码 | 快照按 session 存，不能从 session A 恢复到 session B |
+| # | 场景 | 状态 | 说明 |
+|---|------|------|------|
+| **XL1** | 回滚穿越压缩点 + 代码恢复 | ✅ **已支持** | `--restore-code` 穿越压缩点时只恢复代码不回滚消息（快照层独立于压缩）。同时修复了 `append_compaction` parentId=null 导致拦截失效的生产 bug |
+| **XL2** | 恢复 bash 间接改的项目外文件 | ❌ **不支持**（架构限制） | 当前无 fs watcher / 沙箱，bash 执行后无法知道改了哪些外部文件。需引入 notify crate + 白名单路径才能支持 |
+| **XL3** | 精确恢复完整磁盘状态 | ✅ **已支持** | `--restore-mode full` 走 `restore_to_tree`（含删除 target 之后新增的文件）。scan 截断时自动跳过删除阶段防误删 |
+| **XL4** | 跨 session 恢复代码 | ✅ **已支持** | 快照加 `session_id` 字段 + 存储路径加 session 维度 + turn_id 扩大到 48bit。loader 按 session 过滤，新旧数据兼容 |
+
+#### XL1 详情：穿越压缩点 + 代码恢复
+
+**核心机制**：快照层（`snapshots/tool/`）完全独立于消息层（session.jsonl），compaction 不删快照文件。所以即使消息无法回滚到压缩点之前，代码仍能恢复。
+
+**用法**：
+```bash
+# 穿越压缩点时，只恢复代码（消息不动）
+ion --resume <sid> --rollback <压缩点之前的entry> --restore-code
+# → ⚠️ Cannot rollback messages... only restoring code files, skipping message rollback.
+# → [restore-code] restored N files...
+```
+
+**附带修复的 bug**：`append_compaction` 之前写 `parentId=null`，导致 `check_compaction_safety` 的 `is_descendant_of` 第一步就断（parent 链断了）→ 穿越压缩点的回滚完全拦不住。现在 parentId 指向压缩前最后一个 entry，拦截恢复生效。
+
+#### XL3 详情：精确恢复完整磁盘状态
+
+**两种 restore 模式**：
+```bash
+# delta（默认）：只恢复被快照追踪的文件改动（restore_code_to_turn）
+ion --resume <sid> --rollback <id> --restore-code
+
+# full：恢复完整磁盘状态（restore_to_tree），含删除 target 之后新增的文件
+ion --resume <sid> --rollback <id> --restore-code --restore-mode full
+```
+
+**截断安全**：`scan_dir_fast` 超过 5000 文件 / 50MB / 深度 10 时 `truncated=true`，`restore_to_tree` 自动跳过删除阶段（避免误删漏扫文件），只恢复 target_tree 中有的文件。
+
+#### XL4 详情：跨 session 恢复 + 隔离
+
+**数据模型升级**：
+- `ToolSnapshot` 加 `session_id: String` 字段（`#[serde(default)]` 向后兼容旧数据）
+- `gen_turn_id` 从 24bit 扩大到 **48bit**（`ts_` + 12 位 hex），冲突概率从 ~4096 turn 50% → ~16M turn 50%
+- 存储路径：`snapshots/tool/<session_id>/<turn_id>.jsonl`（新数据），兼容老路径 `snapshots/tool/<turn_id>.jsonl`
+
+**新增 API**：
+- `load_tool_snapshots_by_session(session_id)` — 按 session 过滤加载
+- `load_tool_snapshots_after_by_session(turn_id, session_id)` — 按 session 过滤的 restore 查询
+

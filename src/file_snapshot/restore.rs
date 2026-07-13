@@ -388,46 +388,60 @@ pub fn restore_to_tree(
     }
 
     // 2. 当前磁盘有但 target_tree 没有的文件 → 删除（target 之后新增的）
-    for current_path in current_paths {
-        if !target_tree.contains_key(current_path) {
-            let abs_path = std::path::Path::new(cwd).join(current_path);
-            let abs_str = abs_path.to_string_lossy().to_string();
+    //    XL3 安全检查：如果 scan 截断了（超 5000 文件 / 50MB / 深度 10），
+    //    current_paths 不完整，删除会误删漏扫的文件 → 跳过整个删除阶段
+    if current_scan.truncated {
+        // 扫描被截断，无法安全判断哪些文件该删 → 只恢复不删除
+        restored_files.push(RestoredFile {
+            path: cwd.to_string(),
+            action: "skipped".into(),
+            from_hash: None,
+            to_hash: None,
+            reason: Some("scan_truncated_skip_delete".into()),
+        });
+        // 不进删除循环，直接到 restore_point 生成
+    } else {
+        for current_path in current_paths {
+            if !target_tree.contains_key(current_path) {
+                let abs_path = std::path::Path::new(cwd).join(current_path);
+                let abs_str = abs_path.to_string_lossy().to_string();
 
-            if !preview {
-                let cur_hash = std::fs::read(&abs_path).ok()
-                    .map(|c| objects.write_object(&c).hash);
-                restore_point_files.push(RestorePointFile {
-                    path: abs_str.clone(),
-                    hash: cur_hash,
-                });
-            }
+                if !preview {
+                    let cur_hash = std::fs::read(&abs_path).ok()
+                        .map(|c| objects.write_object(&c).hash);
+                    restore_point_files.push(RestorePointFile {
+                        path: abs_str.clone(),
+                        hash: cur_hash,
+                    });
+                }
 
-            if preview {
-                restored_files.push(RestoredFile {
-                    path: abs_str,
-                    action: "would_delete".into(),
-                    from_hash: None,
-                    to_hash: None,
-                    reason: None,
-                });
-            } else if std::fs::remove_file(&abs_path).is_ok() {
-                restored_files.push(RestoredFile {
-                    path: abs_str,
-                    action: "deleted".into(),
-                    from_hash: None,
-                    to_hash: None,
-                    reason: None,
-                });
-                summary.deleted += 1;
-            } else {
-                restored_files.push(RestoredFile {
-                    path: abs_str,
-                    action: "skipped".into(),
-                    from_hash: None,
-                    to_hash: None,
-                    reason: Some("delete_failed".into()),
-                });
-                summary.skipped += 1;
+                if preview {
+                    restored_files.push(RestoredFile {
+                        path: abs_str,
+                        action: "would_delete".into(),
+                        from_hash: None,
+                        to_hash: None,
+                        reason: None,
+                    });
+                } else if std::fs::remove_file(&abs_path).is_ok() {
+                    restored_files.push(RestoredFile {
+                        path: abs_str,
+                        action: "deleted".into(),
+                        from_hash: None,
+                        to_hash: None,
+                        reason: None,
+                    });
+                    summary.deleted += 1;
+                } else {
+                    restored_files.push(RestoredFile {
+                        path: abs_str,
+                        action: "skipped".into(),
+                        from_hash: None,
+                        to_hash: None,
+                        reason: Some("delete_failed".into()),
+                    });
+                    summary.skipped += 1;
+                }
             }
         }
     }
@@ -558,10 +572,21 @@ pub fn undo_restore(store: &SnapshotStore, restore_point_id: &str) -> RestoreRes
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// 全局原子计数器，保证并发测试的临时目录唯一（避免 cargo test 多线程下 process::id 相同导致冲突）
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_id(label: &str) -> String {
+        let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        format!("{}_{}_{}_{n}", label, std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos())
+    }
 
     #[test]
     fn restore_deletes_new_file() {
-        let tmp = std::env::temp_dir().join(format!("fs_restore_del_{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(unique_id("fs_restore_del"));
         std::fs::create_dir_all(&tmp).unwrap();
         let store_dir = tmp.join("store");
         let store = SnapshotStore::new_at(store_dir);
@@ -579,6 +604,7 @@ mod tests {
             after_hash: Some(after_hash),
             timestamp: "2026-07-11T10:00:01Z".into(),
             before_unknown: false, // write 路线：before_hash=None = 新建，restore 应删除
+            session_id: String::new(),
         });
 
         // 模拟一个更早的 turn（空，作为回滚目标）
@@ -595,7 +621,7 @@ mod tests {
 
     #[test]
     fn restore_reverts_modified_file() {
-        let tmp = std::env::temp_dir().join(format!("fs_restore_mod_{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(unique_id("fs_restore_mod"));
         std::fs::create_dir_all(&tmp).unwrap();
         let store_dir = tmp.join("store");
         let store = SnapshotStore::new_at(store_dir);
@@ -616,6 +642,7 @@ mod tests {
             after_hash: Some(after_hash),
             timestamp: "2026-07-11T10:00:02Z".into(),
             before_unknown: false,
+            session_id: String::new(),
         });
 
         // restore 到 ts_000（不存在 → 恢复全部）
@@ -632,7 +659,7 @@ mod tests {
     #[test]
     fn restore_bash_modified_file_not_deleted() {
         // 回归测试：bash 路线 before_unknown=true 的文件，restore 时不应被删除
-        let tmp = std::env::temp_dir().join(format!("fs_restore_bash_{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(unique_id("fs_restore_bash"));
         std::fs::create_dir_all(&tmp).unwrap();
         let store_dir = tmp.join("store");
         let store = SnapshotStore::new_at(store_dir);
@@ -651,6 +678,7 @@ mod tests {
             after_hash: Some(after_hash),
             timestamp: "2026-07-11T10:00:03Z".into(),
             before_unknown: true, // bash 路线：没存旧内容
+            session_id: String::new(),
         });
 
         let result = restore_code_to_turn(&store, "ts_000");
@@ -671,12 +699,7 @@ mod tests {
     fn setup_tree_test() -> (std::path::PathBuf, SnapshotStore, String) {
         // 返回 (work_dir, store, baseline_tree_hash)
         // work_dir 和 store 分开存放，避免 scan_dir_fast 扫到 store 文件
-        let id = format!(
-            "fs_tree_restore_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos()
-        );
+        let id = unique_id("fs_tree_restore");
         let base = std::env::temp_dir().join(&id);
         let work_dir = base.join("work");
         std::fs::create_dir_all(&work_dir).unwrap();
@@ -820,6 +843,55 @@ mod tests {
         // 验证磁盘恢复
         assert_eq!(std::fs::read_to_string(work_dir.join("a.rs")).unwrap(), "changed");
         assert!(work_dir.join("c.rs").exists(), "c.rs 应恢复");
+
+        std::fs::remove_dir_all(work_dir.parent().unwrap()).ok();
+    }
+
+    /// XL3: full restore 删除手动创建的文件（target_tree 没有但磁盘有的文件）
+    #[test]
+    fn xl3_full_restore_deletes_manual_files() {
+        let (work_dir, store, baseline_hash) = setup_tree_test();
+
+        // 用户手动创建 manual.txt（不经任何工具，target_tree 里没有）
+        std::fs::write(work_dir.join("manual.txt"), "user created").unwrap();
+        assert!(work_dir.join("manual.txt").exists());
+
+        // full restore 到 baseline（只有 a.rs + b.rs）
+        let result = restore_to_tree(&store, &baseline_hash, work_dir.to_string_lossy().as_ref(), false);
+
+        // manual.txt 应被删除（target_tree 没有它）
+        assert!(!work_dir.join("manual.txt").exists(),
+            "XL3: full restore 应删除 target_tree 没有的手动文件");
+        assert!(result.summary.deleted >= 1, "应至少删除 1 个文件（manual.txt）");
+
+        // a.rs / b.rs 恢复成 baseline 内容
+        assert_eq!(std::fs::read_to_string(work_dir.join("a.rs")).unwrap(), "original_a");
+        assert_eq!(std::fs::read_to_string(work_dir.join("b.rs")).unwrap(), "original_b");
+
+        std::fs::remove_dir_all(work_dir.parent().unwrap()).ok();
+    }
+
+    /// XL3: scan 截断时跳过删除阶段（防误删漏扫文件）
+    /// 这个测试验证 reason="scan_truncated_skip_delete" 的逻辑路径
+    /// （不真的造 5000 文件触发截断，而是验证非截断时删除正常工作）
+    #[test]
+    fn xl3_restore_to_tree_preserves_target_files() {
+        let (work_dir, store, baseline_hash) = setup_tree_test();
+
+        // 改 a.rs + 新建 c.rs（c.rs 不在 baseline）
+        std::fs::write(work_dir.join("a.rs"), "changed").unwrap();
+        std::fs::write(work_dir.join("c.rs"), "extra").unwrap();
+
+        // restore 到 baseline
+        let result = restore_to_tree(&store, &baseline_hash, work_dir.to_string_lossy().as_ref(), false);
+
+        // c.rs 应被删除（不在 baseline）
+        assert!(!work_dir.join("c.rs").exists(), "c.rs 不在 baseline 应被删除");
+        // a.rs 恢复成 original_a
+        assert_eq!(std::fs::read_to_string(work_dir.join("a.rs")).unwrap(), "original_a");
+        // 不应有截断跳过标记（文件少，不会截断）
+        assert!(!result.restored_files.iter().any(|f| f.reason.as_deref() == Some("scan_truncated_skip_delete")),
+            "小文件量不应触发截断跳过");
 
         std::fs::remove_dir_all(work_dir.parent().unwrap()).ok();
     }

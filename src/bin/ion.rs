@@ -198,6 +198,12 @@ struct Cli {
     #[arg(long, global = true, requires = "rollback")]
     restore_code: bool,
 
+    /// Restore mode for --restore-code: "delta" (default, only tracked files) or "full" (complete disk state via tree)
+    /// full mode = restore_to_tree（恢复完整磁盘状态，含删除 target 之后新增的文件）
+    /// delta mode = restore_code_to_turn（只恢复被快照追踪的文件改动）
+    #[arg(long, global = true, requires = "restore_code", value_name = "delta|full", default_value = "delta")]
+    restore_mode: Option<String>,
+
     /// Fork a new session from a specific leaf: <SESSION_ID>/<ENTRY_ID>
     #[arg(long, global = true, value_name = "SID/ENTRY_ID")]
     fork_from_leaf: Option<String>,
@@ -2052,9 +2058,40 @@ fn apply_session_tree_ops(cli: &Cli, session_id: &str) {
         }
         // compaction 安全检查
         if let Some(c_id) = ion::session_tree::check_compaction_safety(&ents, rollback_to) {
+            // XL1: --restore-code 穿越压缩点时，只恢复代码不回滚消息（消息层的压缩上下文已丢失）
+            if cli.restore_code {
+                eprintln!("⚠️  Cannot rollback messages to {}: it is before a compaction point ({}).", rollback_to, c_id);
+                eprintln!("   --restore-code: only restoring code files, skipping message rollback.");
+                eprintln!("   (快照层独立于压缩，代码可以恢复；但消息无法回滚到压缩点之前)");
+                // 只走代码恢复，不走消息回滚
+                let target_turn_id: Option<&str> = ents.iter()
+                    .find(|e| {
+                        if e.get("type").and_then(|v| v.as_str()) != Some("turn_summary") {
+                            return false;
+                        }
+                        e.get("entryRange").and_then(|v| v.as_array())
+                            .map_or(false, |arr| arr.iter().any(|a| a.as_str() == Some(rollback_to)))
+                    })
+                    .and_then(|ts| ts.get("turnId").and_then(|v| v.as_str()));
+                match target_turn_id {
+                    Some(turn_id) => {
+                        let pk = ion::file_snapshot::project_key(&cwd);
+                        let store = ion::file_snapshot::SnapshotStore::new(&pk);
+                        let result = ion::file_snapshot::restore::restore_code_to_turn(&store, turn_id);
+                        eprintln!("[restore-code] restored {} files (deleted {}, skipped {})",
+                            result.summary.restored, result.summary.deleted, result.summary.skipped);
+                        eprintln!("[restore-code] restore_point: {}", result.restore_point_id);
+                    }
+                    None => {
+                        eprintln!("[restore-code] ⚠️  cannot find turnId for entry '{}' — skipping code restore", rollback_to);
+                    }
+                }
+                return; // 不走消息回滚，直接返回
+            }
+            // 非 --restore-code：普通回滚穿越压缩点 → 拒绝（消息上下文会丢失）
             eprintln!("❌ Cannot rollback to {}: it is before a compaction point ({}).", rollback_to, c_id);
             eprintln!("   Branching across compaction loses summarized context.");
-            eprintln!("   Hint: use `ion --fork-from-leaf {}/{}` instead.", session_id, rollback_to);
+            eprintln!("   Hint: use `ion --fork-from-leaf {}/{}` instead, or add --restore-code to only restore files.", session_id, rollback_to);
             std::process::exit(1);
         }
         let old_leaf = ion::session_tree::resolve_current_leaf(&ents);
@@ -2077,10 +2114,37 @@ fn apply_session_tree_ops(cli: &Cli, session_id: &str) {
                 Some(turn_id) => {
                     let pk = ion::file_snapshot::project_key(&cwd);
                     let store = ion::file_snapshot::SnapshotStore::new(&pk);
-                    let result = ion::file_snapshot::restore::restore_code_to_turn(&store, turn_id);
-                    eprintln!("[restore-code] restored {} files (deleted {}, skipped {})",
-                        result.summary.restored, result.summary.deleted, result.summary.skipped);
-                    eprintln!("[restore-code] restore_point: {}", result.restore_point_id);
+                    // XL3: --restore-mode full 走 restore_to_tree（完整磁盘状态），否则走 delta
+                    let is_full = cli.restore_mode.as_deref() == Some("full");
+                    if is_full {
+                        // full mode：按 turn_id 找 tree_hash → restore_to_tree
+                        match store.find_tree_hash_by_turn_id(turn_id) {
+                            Some(tree_hash) => {
+                                let result = ion::file_snapshot::restore::restore_to_tree(
+                                    &store, &tree_hash, &cwd, false,
+                                );
+                                eprintln!("[restore-code:full] restored {} files (deleted {}, skipped {})",
+                                    result.summary.restored, result.summary.deleted, result.summary.skipped);
+                                eprintln!("[restore-code:full] restore_point: {}", result.restore_point_id);
+                                // 检查是否有截断跳过
+                                if result.restored_files.iter().any(|f| f.reason.as_deref() == Some("scan_truncated_skip_delete")) {
+                                    eprintln!("[restore-code:full] ⚠️  scan truncated — deletion phase skipped to avoid data loss");
+                                }
+                            }
+                            None => {
+                                eprintln!("[restore-code:full] ⚠️  cannot find tree for turn '{}' — falling back to delta mode", turn_id);
+                                let result = ion::file_snapshot::restore::restore_code_to_turn(&store, turn_id);
+                                eprintln!("[restore-code:delta] restored {} files (deleted {}, skipped {})",
+                                    result.summary.restored, result.summary.deleted, result.summary.skipped);
+                            }
+                        }
+                    } else {
+                        // delta mode（默认）：只恢复被快照追踪的文件改动
+                        let result = ion::file_snapshot::restore::restore_code_to_turn(&store, turn_id);
+                        eprintln!("[restore-code] restored {} files (deleted {}, skipped {})",
+                            result.summary.restored, result.summary.deleted, result.summary.skipped);
+                        eprintln!("[restore-code] restore_point: {}", result.restore_point_id);
+                    }
                 }
                 None => {
                     eprintln!("[restore-code] ⚠️  cannot find turnId for entry '{}' — skipping code restore", rollback_to);
