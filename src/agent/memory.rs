@@ -129,6 +129,27 @@ impl MemoryStore {
         Self::new(crate::storage_context::StorageContext::new(project_root, session_id, project_root))
     }
 
+    /// 测试专用：不打开全局 SQLite（避免测试间数据污染，不依赖环境变量）
+    pub fn new_no_global(storage: crate::storage_context::StorageContext) -> Self {
+        let project_name = std::path::Path::new(&storage.config_root)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        Self {
+            storage,
+            turn_count: 0,
+            pending: Vec::new(),
+            global_store: None,
+            project_name,
+        }
+    }
+
+    /// 测试专用兼容签名
+    pub fn new_with_root_no_global(project_root: &str, session_id: &str) -> Self {
+        Self::new_no_global(crate::storage_context::StorageContext::new(project_root, session_id, project_root))
+    }
+
     fn project_dir(&self) -> PathBuf {
         self.storage.project_dir("memory")
     }
@@ -417,6 +438,14 @@ impl MemoryExtension {
     /// 兼容旧签名（测试用）
     pub fn new_with_root(project_root: &str, session_id: &str) -> Self {
         Self::new(crate::storage_context::StorageContext::new(project_root, session_id, project_root))
+    }
+
+    /// 测试专用：不打开全局 SQLite（避免测试间数据污染）
+    pub fn new_with_root_no_global(project_root: &str, session_id: &str) -> Self {
+        Self {
+            store: Arc::new(Mutex::new(MemoryStore::new_with_root_no_global(project_root, session_id))),
+            extension_api: None,
+        }
     }
 
     /// 使用已有的 MemoryStore（测试用）

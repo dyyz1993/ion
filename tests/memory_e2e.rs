@@ -2,37 +2,26 @@
 //!
 //! 直接测试 MemoryStore 数据层 + MemoryExtension 生命周期钩子，
 //! 不依赖 Manager 进程（通过 Rust API 直接调用）。
+//! 使用 new_with_root_no_global 避免全局 SQLite 污染（不依赖环境变量）。
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use ion::agent::memory::{MemoryStore, MemoryExtension, MemoryEntry};
 use ion::agent::extension::Extension;
 
-/// 测试用 JSON 文件存储（不走全局 SQLite，避免测试间数据污染）
-fn ensure_test_mode() {
-    // SAFETY: 测试单线程运行
-    unsafe { std::env::set_var("ION_MEMORY_NO_GLOBAL", "1"); }
-}
-
-/// 测试用临时目录（同时清理 ~/.ion/agent/project-data 下对应的测试数据）
+/// 测试用临时目录（每次创建全新的，不残留）
 fn tmp_dir(name: &str) -> String {
-    ensure_test_mode();
-    let p = std::env::temp_dir().join(format!("ion_mem_test_{name}"));
-    let _ = std::fs::remove_dir_all(&p);
+    let id = format!(
+        "{}_{}_{}",
+        name,
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos()
+    );
+    let p = std::env::temp_dir().join(format!("ion_mem_test_{id}"));
     std::fs::create_dir_all(&p).unwrap();
-    // 清理之前测试可能留下的 project data
-    let ion_home = std::path::Path::new(&std::env::var("HOME").unwrap_or_default())
-        .join(".ion").join("agent").join("project-data");
-    if ion_home.exists() {
-        if let Ok(entries) = std::fs::read_dir(&ion_home) {
-            for entry in entries.flatten() {
-                let dir_name = entry.file_name().to_string_lossy().to_string();
-                if dir_name.contains(name) {
-                    let _ = std::fs::remove_dir_all(entry.path());
-                }
-            }
-        }
-    }
     p.to_string_lossy().to_string()
 }
 
@@ -42,7 +31,7 @@ fn sess_id() -> String { "test_sess_001".to_string() }
 #[tokio::test]
 async fn test_store_save_and_search() {
     let root = tmp_dir("save_search");
-    let store = MemoryStore::new_with_root(&root, &sess_id());
+    let store = MemoryStore::new_with_root_no_global(&root, &sess_id());
 
     // 保存 3 条记忆
     let id1 = store.save_entry("用户喜欢 Rust", "语言偏好", "编程", &["rust".into(), "lang".into()], "auto");
@@ -78,7 +67,7 @@ async fn test_store_save_and_search() {
 #[tokio::test]
 async fn test_store_forget_soft_delete() {
     let root = tmp_dir("forget");
-    let store = MemoryStore::new_with_root(&root, &sess_id());
+    let store = MemoryStore::new_with_root_no_global(&root, &sess_id());
 
     store.save_entry("用户喜欢 Rust", "", "", &["rust".into()], "auto");
     store.save_entry("用户喜欢 TS", "", "", &["ts".into()], "auto");
@@ -106,7 +95,7 @@ async fn test_store_forget_soft_delete() {
 #[tokio::test]
 async fn test_store_content_hash() {
     let root = tmp_dir("hash");
-    let store = MemoryStore::new_with_root(&root, &sess_id());
+    let store = MemoryStore::new_with_root_no_global(&root, &sess_id());
 
     // 初始 hash
     store.save_entry("内容 A", "", "", &["a".into()], "auto");
@@ -125,7 +114,7 @@ async fn test_store_content_hash() {
 #[tokio::test]
 async fn test_extension_on_system_prompt() {
     let root = tmp_dir("sysprompt");
-    let ext = MemoryExtension::new_with_root(&root, &sess_id());
+    let ext = MemoryExtension::new_with_root_no_global(&root, &sess_id());
 
     // 无记忆 → 不注入
     let mut prompt = "你是助手。".to_string();
@@ -149,7 +138,7 @@ async fn test_extension_on_system_prompt() {
 #[tokio::test]
 async fn test_store_pending_and_inject() {
     let root = tmp_dir("inject");
-    let store = MemoryStore::new_with_root(&root, &sess_id());
+    let store = MemoryStore::new_with_root_no_global(&root, &sess_id());
     let store = Arc::new(Mutex::new(store));
 
     // 保存记忆
@@ -202,7 +191,7 @@ async fn test_store_pending_and_inject() {
 #[tokio::test]
 async fn test_outline_sanitization() {
     let root = tmp_dir("sanitize");
-    let store = MemoryStore::new_with_root(&root, &sess_id());
+    let store = MemoryStore::new_with_root_no_global(&root, &sess_id());
 
     // 合法 outline
     store.save_entry("内容", "", "", &[], "valid-outline_123");
