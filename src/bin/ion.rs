@@ -3466,7 +3466,9 @@ async fn handle_manager_command(
             let mut cfg = WorkerCreateConfig::default();
             cfg.session = Some(session_id.clone());
             cfg.agent = Some(agent.clone());
+            // project_path 优先用 project_path 参数，fallback 到 cwd 参数（常见别名），最后才用 host cwd
             cfg.project_path = source.get("project_path").and_then(|v| v.as_str()).map(String::from)
+                .or_else(|| source.get("cwd").and_then(|v| v.as_str()).map(String::from))
                 .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()));
             cfg.channels = Some(vec!["main".to_string()]);
             cfg.initial_prompt = source.get("initial_prompt").and_then(|v| v.as_str()).map(String::from);

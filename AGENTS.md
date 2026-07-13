@@ -917,7 +917,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | message_retrieval_ci (CLI E2E) | 55 | 消息拉取主验证（脚本 Group A-N 对应文档 A-M 场景）：ion history/分页/视点/turn_summary/compaction/turn 完整性/中断态/统计聚合/旁路数据/customType 两维属性/性能缓存/O(n)/血缘 |
 | session_tree_verify (CLI E2E) | 15 | 树展示 + branch/rollback 单元测试 + 分支视点(live/full/since_compaction) + only-append 红线 + SESSION_TREE_SPEC P0 验收映射 |
 | realtime_stitch_ci (CLI E2E) | 10 | Group I：host + create_session + subscribe + prompt + 事件流(agent_start/text_delta/agent_end) + 历史补齐 |
-| file_snapshot_ci (CLI E2E) | 25 | Group A-J：object_store 去重[+zstd]/scanner 目录扫描/diff 生成/GC/4 RPC 端到端/worktree 并行/restore 恢复[+XL3 full mode]/审批 harness+RPC 冒烟[+J4 reject/J5 approvals/J6 deny] |
+| file_snapshot_ci (CLI E2E) | 27 | Group A-J 全过（0 skip）：object_store 去重[+zstd]/scanner 目录扫描/diff 生成/GC/4 RPC 端到端/worktree 并行/restore 恢复[+XL3 full mode]/审批 harness+RPC[+J2 pending/J3 approve/J4 reject+磁盘删除/J5 approvals过滤/J6 deny注入] |
 | tier_models_ci (CLI E2E) | 9 | Group T：get/set_tier_models RPC + --model fast/pro 别名解析 + 兜底 |
 | extension_flags_ci (CLI E2E) | 10 | Group F：get_flags/set_flag RPC + 类型支持 + 缺参数报错 |
 | mcp_ci (CLI E2E) | 37 | Group A-J：MCP 配置 + toggle + restart + 错误 + 真实连接 + 方案 C 共享池 + 场景 1 + 权限控制 + resources/prompts + read_resource + mcp_reload 热更新 |
@@ -925,7 +925,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | overflow_recovery_ci (CLI E2E) | 5 | 上下文溢出恢复 |
 | workflow_ci (CLI E2E) | 15 | Workflow Engine W1-W7 |
 | sessions_ci (CLI E2E) | 20 | Group A-D：ion sessions 主仓库过滤/--all/JSON 字段完整性(含cache)/worktree 聚合/表格格式/非git降级 |
-| **测试覆盖合计** | **907** | 全部通过 ✅（含 E2E 12 Group 156 case + zstd 压缩 + XL1/XL3/XL4 跨 session/穿越压缩点/精确恢复） |
+| **测试覆盖合计** | **909** | 全部通过 ✅（含 E2E 12 Group 156 case + file_snapshot CI 27 case 全 0 skip + zstd 压缩 + XL1/XL3/XL4） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)

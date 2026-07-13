@@ -1,6 +1,6 @@
 # File Snapshot 审批与回滚 — CLI 用例集
 
-> **状态：实测态（2026-07-13）** — 基于 code + harness H1-H5 + CI Group J 真实行为编写。每个 case 标注验证来源（✅ 实测 / ⚠️ 代码依据待 CI）。
+> **状态：实测态（2026-07-13 更新）** — 基于 code + harness H1-H9 + CI Group J（27 case 全 0 skip）真实行为编写。大部分 case 已 ✅ 实测，少数事件推送/真实 LLM 场景标 ⚠️ 待补。
 >
 > **前置文档**：
 > - [FILE_SNAPSHOT.md](../design/FILE_SNAPSHOT.md) — 设计文档（双路快照架构 + Group A-F + restore_files §17 + K 矩阵 §18）
@@ -1038,14 +1038,16 @@ ion rpc --session sess_xxx --method review_reject --params '{"path":"x.rs"}'
 
 ## 未覆盖场景（诚实标注）
 
-以下场景当前**无 harness 或 CI 测试**，文档基于代码依据编写，标 ⚠️：
+以下场景在 2026-07-13 更新后的覆盖状态：
 
-| 场景 | 现状 | 建议 |
+| 场景 | 现状 | 说明 |
 |------|------|------|
-| `review_reject_all` 批量拒绝 | 无 harness/CI（只有 approve_all 的 H5） | 补 harness H6 |
-| `review_approvals` 独立测试 | 无 harness/CI | 补 harness H7 |
-| reject 已有文件（action=restored） | harness H4 只覆盖新文件删除 | 补 harness H4b |
-| 事件推送 CLI 断言 | 无（harness 不断言事件） | 补 CI K1-K4（subscribe + grep customType） |
-| deny 消息 agent 可见性 | 无端到端断言 | 补 harness：reject → 下一轮 context 含 deny 文本 |
-| 真实 LLM 审批闭环 | `e1_real_agent_approval_workflow` 是 `#[ignore]` 空壳 | 补实现（需 ION_E2E=1 + API key） |
-| re-approval 重置端到端 | 无 harness/CI | 补 harness H8 |
+| ~~`review_reject_all` 批量拒绝~~ | ✅ **已覆盖** | harness H6 实测 |
+| ~~`review_approvals` 独立测试~~ | ✅ **已覆盖** | harness H7 + CI J5/J5b 实测 |
+| ~~reject 已有文件（action=restored）~~ | ✅ **已覆盖** | harness H8 实测 |
+| ~~deny 消息注入到 session.jsonl~~ | ✅ **已覆盖** | CI J6 实测（grep approval_deny entry） |
+| ~~re-approval 重置端到端~~ | ✅ **已覆盖** | harness H9 实测 |
+| ~~reject 后磁盘文件删除~~ | ✅ **已覆盖** | CI J4 实测（worker cwd 修复后） |
+| 事件推送 CLI 断言（subscribe --ui） | ⚠️ 待补 | harness 不断言事件；harness 日志可见事件触发但无 subscribe 端到端断言 |
+| deny 消息 agent 下一轮可见性 | ⚠️ 待补 | deny entry 已写入 session.jsonl（J6 验证），但 agent 下一轮是否读到未端到端断言 |
+| 真实 LLM 审批闭环 | ⚠️ 待补 | `e1_real_agent_approval_workflow` 仍是 `#[ignore]` 空壳（需 ION_E2E=1 + API key） |

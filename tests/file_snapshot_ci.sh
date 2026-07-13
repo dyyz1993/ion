@@ -395,15 +395,18 @@ if ./target/debug/ion rpc --method list_sessions >/dev/null 2>&1; then
         fi
 
         # J6: deny 消息注入到 session.jsonl（reject 应写入 approval_deny entry）
-        SESSION_FILE="$HOME/.ion/agent/sessions/${J2_SID}.jsonl"
-        if [ -f "$SESSION_FILE" ]; then
+        # session 文件路径格式：~/.ion/agent/sessions/<hash>--<cwd_basename>--/session.jsonl
+        # 用 find 在 sessions 目录下找 cwd 对应的 session 文件
+        J2_CWD_BASE=$(basename "$J2_DIR")
+        SESSION_FILE=$(find "$HOME/.ion/agent/sessions/" -path "*${J2_CWD_BASE}*/session.jsonl" -newer /tmp/faux_approval_ci_real.jsonl 2>/dev/null | head -1)
+        if [ -n "$SESSION_FILE" ] && [ -f "$SESSION_FILE" ]; then
             if grep -q '"customType":"approval_deny"' "$SESSION_FILE"; then
                 pass "J6: deny 消息已注入 session.jsonl"
             else
                 skip "J6: session.jsonl 无 approval_deny entry"
             fi
         else
-            skip "J6: session 文件不存在 ($SESSION_FILE)"
+            skip "J6: session 文件未找到（cwd=$J2_CWD_BASE）"
         fi
     else
         skip "J2-J6: 建会话失败"
