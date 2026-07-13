@@ -442,19 +442,21 @@ async fn h9_re_approval_resets_to_pending_keeps_baseline() {
     let _ = std::fs::remove_dir_all(&cwd);
 }
 
-/// E1：真实 LLM 审批闭环（标 #[ignore]，需 ION_E2E=1 + API key）
+/// E1：真实 LLM 审批闭环（标 #[ignore]）
+///
+/// **已由 CI Group L 覆盖**（tests/file_snapshot_ci.sh 的 Group L）。
+/// Group L 用 `ion serve` + 真实 host 走完整 RPC 链路，比 harness 更真实。
+///
+/// 运行方式：
+/// ```bash
+/// ION_E2E=1 bash tests/file_snapshot_ci.sh   # 跑 Group L（L1-L5）
+/// ```
+///
+/// 这个 Rust 测试保留作为占位，未来如果需要在 harness 层（不走 host）
+/// 验证真实 LLM，可以在这里实现。当前 Group L 已足够。
 #[tokio::test]
 #[ignore]
 async fn e1_real_agent_approval_workflow() {
-    // 运行方式：
-    // ION_E2E=1 ION_API_KEY="sk-xxx" \
-    //   cargo test --test file_snapshot_harness -- --ignored --nocapture
-    //
-    // 1. 给 agent 一个真实任务："在当前目录创建一个 hello.rs"
-    // 2. agent 真的 write 文件 → Stop → on_gate_check 触发
-    // 3. 验证 review_pending 有 hello.rs
-    // 4. approve → 验证文件保留
-    // 5. reject → 验证回滚
-    //
-    // TODO: 实现时需要从 config 加载真实 provider/model
+    // 已由 CI Group L 覆盖（tests/file_snapshot_ci.sh）
+    // ION_E2E=1 bash tests/file_snapshot_ci.sh → 跑 L1-L5
 }

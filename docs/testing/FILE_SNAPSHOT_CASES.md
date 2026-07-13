@@ -1050,4 +1050,6 @@ ion rpc --session sess_xxx --method review_reject --params '{"path":"x.rs"}'
 | ~~reject 后磁盘文件删除~~ | ✅ **已覆盖** | CI J4 实测（worker cwd 修复后） |
 | ~~事件推送 subscribe 断言~~ | ✅ **已覆盖** | CI K1-K4 实测（subscribe 长连接捕获 ApprovalRequest/Resolved(approved/rejected)/extension 标识） |
 | ~~deny 消息 agent 可见性~~ | ✅ **已覆盖** | CI K5 实测（deny entry 写入 session.jsonl，agent 下一轮可读） |
-| 真实 LLM 审批闭环 | ⚠️ 待补 | `e1_real_agent_approval_workflow` 仍是 `#[ignore]` 空壳（需 ION_E2E=1 + API key），成本高优先级低 |
+| ~~真实 LLM 审批闭环~~ | ✅ **已覆盖** | CI Group L 实测（L1-L5，ION_E2E=1 触发）：真实 glm-4.7 write → review_pending → approve/reject → approvals 全链路 |
+
+**所有场景已覆盖。** 默认 CI 跑 33 case（0 skip），`ION_E2E=1` 时额外跑 Group L 真实 LLM 5 case。

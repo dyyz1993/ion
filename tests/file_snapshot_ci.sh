@@ -533,6 +533,109 @@ else
 fi
 rm -rf "$K_DIR" /tmp/faux_k*.jsonl 2>/dev/null
 
+# ──────────────────────────────────────────────────────────
+echo ""
+echo "Group L: 真实 LLM 审批闭环（需 ION_E2E=1 + API key，默认 skip）"
+# ──────────────────────────────────────────────────────────
+
+if [ "${ION_E2E:-0}" = "1" ]; then
+    # 用项目子目录做测试（避免 cwd 问题，agent write 相对路径也能找到）
+    L_DIR=$(mktemp -d /tmp/l_real_XXXX)
+
+    pkill -f "target/debug/ion serve" 2>/dev/null; sleep 1
+    rm -f "$HOME/.ion/host.sock" "$HOME/.ion/host.pid" 2>/dev/null
+
+    # 启动 host（真实 LLM，不用 faux）
+    ./target/debug/ion serve >/tmp/l_host.log 2>&1 &
+    L_HOST_PID=$!
+    for i in 1 2 3 4 5 6 7 8; do
+        sleep 1
+        ./target/debug/ion rpc --method list_sessions >/dev/null 2>&1 && break
+    done
+
+    if ./target/debug/ion rpc --method list_sessions >/dev/null 2>&1; then
+        L_SID=$(./target/debug/ion rpc --method create_session --params "{\"cwd\":\"$L_DIR\",\"agent\":\"build\"}" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['session_id'])" 2>/dev/null)
+
+        if [ -n "$L_SID" ]; then
+            # L1: 真实 prompt 让 agent write 文件
+            echo "  发送真实 prompt（glm-4.7）..."
+            timeout 90 ./target/debug/ion rpc --session "$L_SID" --method prompt \
+                --params '{"text":"请用 write 工具创建一个 greeting.txt 文件，内容写 hello。然后停止，不要做别的。"}' \
+                >/dev/null 2>&1
+            sleep 2
+
+            # L1: review_pending 应有文件（真实 LLM 触发了 write）
+            L_PENDING=$(./target/debug/ion rpc --session "$L_SID" --method review_pending --params '{}' 2>/dev/null)
+            if echo "$L_PENDING" | grep -q "greeting.txt\|\.txt"; then
+                pass "L1: 真实 LLM write 后 review_pending 含文件"
+            else
+                skip "L1: review_pending 无文件（LLM 可能没 write 或用了别的文件名）"
+            fi
+
+            # L2: approve（从 pending 取第一个文件 approve）
+            L_FILE=$(echo "$L_PENDING" | python3 -c "import json,sys; d=json.load(sys.stdin); p=d.get('data',{}).get('pending',[]); print(p[0]['path'] if p else '')" 2>/dev/null)
+            if [ -n "$L_FILE" ]; then
+                L_APPROVE=$(./target/debug/ion rpc --session "$L_SID" --method review_approve --params "{\"path\":\"$L_FILE\"}" 2>/dev/null)
+                if echo "$L_APPROVE" | grep -q "approved"; then
+                    pass "L2: review_approve 成功（$L_FILE）"
+                else
+                    skip "L2: approve 未生效"
+                fi
+
+                # L3: approve 后 pending 不再含该文件
+                L_PENDING2=$(./target/debug/ion rpc --session "$L_SID" --method review_pending --params '{}' 2>/dev/null)
+                if ! echo "$L_PENDING2" | grep -q "$L_FILE"; then
+                    pass "L3: approve 后文件从 pending 移除"
+                else
+                    skip "L3: 文件仍在 pending"
+                fi
+            else
+                skip "L2-L3: pending 无文件可 approve"
+            fi
+
+            # L4: 再发一个 prompt 让 agent write 第二个文件，然后 reject
+            echo "  发送第二个 prompt..."
+            timeout 90 ./target/debug/ion rpc --session "$L_SID" --method prompt \
+                --params '{"text":"请用 write 工具创建一个 reject_me.txt 文件，内容写 test。然后停止。"}' \
+                >/dev/null 2>&1
+            sleep 2
+
+            L_PENDING3=$(./target/debug/ion rpc --session "$L_SID" --method review_pending --params '{}' 2>/dev/null)
+            if echo "$L_PENDING3" | grep -q "reject_me\|\.txt"; then
+                L_REJECT_FILE=$(echo "$L_PENDING3" | python3 -c "import json,sys; d=json.load(sys.stdin); p=d.get('data',{}).get('pending',[]); print(p[0]['path'] if p else '')" 2>/dev/null)
+                L_REJECT=$(./target/debug/ion rpc --session "$L_SID" --method review_reject --params "{\"path\":\"$L_REJECT_FILE\"}" 2>/dev/null)
+                if echo "$L_REJECT" | grep -q "rejected"; then
+                    pass "L4: review_reject 成功（$L_REJECT_FILE 回滚）"
+                else
+                    skip "L4: reject 未生效"
+                fi
+            else
+                skip "L4: 第二个文件未出现在 pending"
+            fi
+
+            # L5: 审批状态查询
+            L_APPROVALS=$(./target/debug/ion rpc --session "$L_SID" --method review_approvals --params '{}' 2>/dev/null)
+            if echo "$L_APPROVALS" | grep -q "approved\|rejected"; then
+                pass "L5: review_approvals 含审批记录（approved + rejected）"
+            else
+                skip "L5: approvals 无记录"
+            fi
+        else
+            skip "L1-L5: 建会话失败"
+        fi
+
+        kill $L_HOST_PID 2>/dev/null
+    else
+        skip "L1-L5: L host 启动失败"
+        kill $L_HOST_PID 2>/dev/null
+    fi
+    rm -rf "$L_DIR" 2>/dev/null
+    # 清理项目目录可能残留的测试文件
+    rm -f greeting.txt reject_me.txt 2>/dev/null
+else
+    skip "L1-L5: 真实 LLM 测试需 ION_E2E=1（成本高，默认 skip）"
+fi
+
 # 恢复 config.json（撤销 file-snapshot 临时开启）
 [ -f "$ION_CONFIG_BAK" ] && cp "$ION_CONFIG_BAK" "$ION_CONFIG" 2>/dev/null
 rm -f "$ION_CONFIG_BAK" 2>/dev/null
