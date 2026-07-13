@@ -191,12 +191,20 @@ async fn main() {
     tools.register(Box::new(ChannelSendTool));
     tools.register(Box::new(KillWorkerTool));
 
+    // ── 基础路径变量（Memory/Extension 构造前需要）──
+    let worker_cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let config_root = ion::paths::project_root_for_config()
+        .to_string_lossy().to_string();
+    let storage_ctx = ion::storage_context::StorageContext::new(
+        &worker_cwd, &sid, &config_root,
+    );
+
     // ── Memory 工具 + 共享 Store ──
     // Memory 用 config_root（worktree 场景回源主仓库，缺口 #2：worktree 共享记忆）
-    let cwd_for_memory = ion::paths::project_root_for_config()
-        .to_string_lossy().to_string();
     let memory_store = std::sync::Arc::new(tokio::sync::Mutex::new(
-        ion::agent::memory::MemoryStore::new(&cwd_for_memory, &sid)
+        ion::agent::memory::MemoryStore::new(storage_ctx.clone())
     ));
     tools.register(Box::new(ion::agent::memory::MemorySaveTool { store: memory_store.clone() }));
     tools.register(Box::new(ion::agent::memory::MemorySearchTool { store: memory_store.clone() }));
@@ -281,14 +289,7 @@ async fn main() {
     }
 
     // 加载已有会话（按 cwd 查找）—— session 按 cwd 隔离，worktree 各自独立会话（设计意图）
-    let worker_cwd = std::env::current_dir()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
-    // config_root：用于读项目级 .ion/ 配置资源（worktree 场景回源主仓库，缺口 #2）
-    // 与 worker_cwd 区分：worker_cwd 是 session/file-snapshot 用的（保持隔离），
-    // config_root 是 Agent/Skill/Permission/Memory 用的（worktree 共享主仓库配置）
-    let config_root = ion::paths::project_root_for_config()
-        .to_string_lossy().to_string();
+    // worker_cwd / config_root / storage_ctx 已在前面定义（Memory 构造前）
     let preloaded = session_jsonl::SessionFile::load(&worker_cwd).map(|f| f.messages);
 
     // File Snapshot Store（预声明，agent 初始化块和 RPC loop 都要用）
@@ -388,7 +389,7 @@ async fn main() {
 
         // Memory Extension
         if ion_cfg.is_extension_enabled("memory") {
-            let mut memory_ext = ion::agent::memory::MemoryExtension::new(&config_root, &sid);
+            let mut memory_ext = ion::agent::memory::MemoryExtension::new(storage_ctx.clone());
             // 复用 tools 的 MemoryStore（同一份数据）
             memory_ext.store = memory_store.clone();
             ext_reg.register(Box::new(memory_ext));
@@ -398,7 +399,7 @@ async fn main() {
 
         // Bash Extension（后台进程管理）
         if ion_cfg.is_extension_enabled("bash") {
-            let bash_ext = ion::agent::bash::BashExtension::new(&sid, &worker_cwd);
+            let bash_ext = ion::agent::bash::BashExtension::new(storage_ctx.clone());
             process_map = Some(bash_ext.process_map.clone());
             stdin_map = Some(bash_ext.stdin_map.clone());
             notify_map = Some(bash_ext.notify_map.clone());
@@ -417,7 +418,7 @@ async fn main() {
         // Permission Extension（权限策略层）
         // 用 config_root（worktree 回源主仓库，读主仓库 .ion/settings.json）
         if ion_cfg.is_extension_enabled("permission") {
-            let perm_ext = ion::agent::permission_extension::PermissionExtension::new(&sid, &config_root);
+            let perm_ext = ion::agent::permission_extension::PermissionExtension::new(storage_ctx.clone());
             ext_reg.register(Box::new(perm_ext));
         } else {
             tracing::info!("[extension] permission disabled by config");
@@ -434,7 +435,7 @@ async fn main() {
         // File Snapshot Extension（文件快照 + diff 追踪）
         snapshot_store =
             if ion_cfg.is_extension_enabled("file-snapshot") {
-                let (fs_ext, store) = ion::file_snapshot::FileSnapshotExtension::new_pair(&worker_cwd);
+                let (fs_ext, store) = ion::file_snapshot::FileSnapshotExtension::new_pair(storage_ctx.clone());
                 ext_reg.register(Box::new(fs_ext));
                 tracing::info!("[extension] file-snapshot enabled");
                 Some(store)
@@ -448,7 +449,7 @@ async fn main() {
         // Approval Manager + Extension（审批，依赖 snapshot_store）
         approval_mgr = if let Some(ref store) = snapshot_store {
             let mgr = std::sync::Arc::new(
-                ion::file_snapshot::approval::ApprovalManager::new(store.clone(), &worker_cwd)
+                ion::file_snapshot::approval::ApprovalManager::new(store.clone(), storage_ctx.clone())
             );
             // 注册 ApprovalExtension（on_gate_check + on_turn_end re-approval 重置）
             ext_reg.register(Box::new(
@@ -494,14 +495,12 @@ async fn main() {
                 stdin_map: sm.clone(),
                 notify_map: nm.clone(),
                 follow_up_tx: Some(follow_up_tx.clone()),
-                session_id: sid.clone(),
-                cwd: worker_cwd.clone(),
+                storage: storage_ctx.clone(),
             };
             let bash_kill_tool = ion::agent::bash::BashKillTool {
                 process_map: pm.clone(),
                 follow_up_tx: Some(follow_up_tx.clone()),
-                session_id: sid.clone(),
-                cwd: worker_cwd.clone(),
+                storage: storage_ctx.clone(),
             };
             let bash_send_tool = ion::agent::bash::BashSendTool {
                 stdin_map: sm.clone(),
@@ -509,8 +508,7 @@ async fn main() {
             let bash_bg_tool = ion::agent::bash::BashBackgroundTool {
                 notify_map: nm.clone(),
                 process_map: pm.clone(),
-                session_id: sid.clone(),
-                cwd: worker_cwd.clone(),
+                storage: storage_ctx.clone(),
             };
             agent.register_tool(Box::new(bash_run_tool));
             agent.register_tool(Box::new(bash_kill_tool));

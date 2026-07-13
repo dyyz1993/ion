@@ -83,8 +83,7 @@ fn atomic_write(path: &std::path::Path, data: &[u8]) {
 }
 
 pub struct MemoryStore {
-    pub project_root: String,
-    pub session_id: String,
+    pub storage: crate::storage_context::StorageContext,
     pub turn_count: u64,
     /// 待注入队列（on_input 写入，on_context 消费）
     pub pending: Vec<PendingInject>,
@@ -101,8 +100,8 @@ pub struct PendingInject {
 }
 
 impl MemoryStore {
-    pub fn new(project_root: &str, session_id: &str) -> Self {
-        let project_name = std::path::Path::new(project_root)
+    pub fn new(storage: crate::storage_context::StorageContext) -> Self {
+        let project_name = std::path::Path::new(&storage.config_root)
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
@@ -117,8 +116,7 @@ impl MemoryStore {
             None
         };
         Self {
-            project_root: project_root.to_string(),
-            session_id: session_id.to_string(),
+            storage,
             turn_count: 0,
             pending: Vec::new(),
             global_store,
@@ -126,8 +124,13 @@ impl MemoryStore {
         }
     }
 
+    /// 兼容旧签名（测试用）
+    pub fn new_with_root(project_root: &str, session_id: &str) -> Self {
+        Self::new(crate::storage_context::StorageContext::new(project_root, session_id, project_root))
+    }
+
     fn project_dir(&self) -> PathBuf {
-        crate::paths::project_data_dir(&self.project_root, "memory")
+        self.storage.project_dir("memory")
     }
     fn outlines_dir(&self) -> PathBuf {
         self.project_dir().join("outlines")
@@ -139,7 +142,7 @@ impl MemoryStore {
         self.outlines_dir().join(format!("{oid}.json"))
     }
     fn session_dir(&self) -> PathBuf {
-        crate::paths::session_data_dir(&self.project_root, &self.session_id, "memory")
+        crate::paths::session_data_dir(&self.storage.config_root, &self.storage.session_id, "memory")
     }
     fn injected_path(&self) -> PathBuf {
         self.session_dir().join("injected.json")
@@ -350,7 +353,7 @@ impl Tool for MemorySaveTool {
             .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
         let store = self.store.lock().await;
         let id = store.save_entry(content, desc, cat, &tags, "auto");
-        let sess = store.session_id.clone();
+        let sess = store.storage.session_id.clone();
         drop(store);
         // 发射 plugin_event（带 session，EventBus 过滤用）
         let ev = serde_json::json!({
@@ -404,11 +407,16 @@ pub struct MemoryExtension {
 }
 
 impl MemoryExtension {
-    pub fn new(project_root: &str, session_id: &str) -> Self {
+    pub fn new(storage: crate::storage_context::StorageContext) -> Self {
         Self {
-            store: Arc::new(Mutex::new(MemoryStore::new(project_root, session_id))),
+            store: Arc::new(Mutex::new(MemoryStore::new(storage))),
             extension_api: None,
         }
+    }
+
+    /// 兼容旧签名（测试用）
+    pub fn new_with_root(project_root: &str, session_id: &str) -> Self {
+        Self::new(crate::storage_context::StorageContext::new(project_root, session_id, project_root))
     }
 
     /// 使用已有的 MemoryStore（测试用）
@@ -421,7 +429,7 @@ impl MemoryExtension {
         // 不依赖 extension_api（避免注册时序问题）
         // 注意：不能在 async 上下文里调 blocking_lock()，用 try_lock 兜底
         let session_id = match self.store.try_lock() {
-            Ok(store) => store.session_id.clone(),
+            Ok(store) => store.storage.session_id.clone(),
             Err(_) => {
                 // 锁被占，跳过 emit（避免 panic）
                 tracing::debug!("[memory] store lock contention, skip emit: {custom_type}");

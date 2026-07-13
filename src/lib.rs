@@ -29,6 +29,7 @@ pub mod worker_api;
 pub mod worker_registry;
 pub mod kernel;
 pub mod paths;
+pub mod storage_context;
 pub mod retry;
 pub mod workflow;
 pub mod file_snapshot;

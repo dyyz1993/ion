@@ -94,8 +94,7 @@ pub struct BashRunTool {
     pub stdin_map: StdinMap,
     pub notify_map: NotifyMap,
     pub follow_up_tx: Option<tokio::sync::mpsc::UnboundedSender<Message>>,
-    pub session_id: String,
-    pub cwd: String,
+    pub storage: crate::storage_context::StorageContext,
 }
 
 #[async_trait]
@@ -141,11 +140,11 @@ impl Tool for BashRunTool {
             });
             pid
         };
-        save_process_map_arc(&self.process_map, &self.cwd, &self.session_id);
+        save_process_map_arc(&self.process_map, &self.storage.cwd, &self.storage.session_id);
 
         emit_extension_event("process_started", &serde_json::json!({
             "bid": pid, "command": &command, "description": &description,
-            "background": background || timeout_bg, "session": &self.session_id,
+            "background": background || timeout_bg, "session": &self.storage.session_id,
         }));
 
         let (stdin_tx, stdin_rx) = tokio::sync::mpsc::channel::<String>(64);
@@ -171,7 +170,7 @@ impl Tool for BashRunTool {
             let os_pid = child.id().unwrap_or(0);
             { let mut map = self.process_map.lock().await;
               if let Some(entry) = map.get_mut(&pid) { entry.os_pid = os_pid; } }
-            save_process_map_arc(&self.process_map, &self.cwd, &self.session_id);
+            save_process_map_arc(&self.process_map, &self.storage.cwd, &self.storage.session_id);
 
             let (notify_tx, notify_rx) = tokio::sync::oneshot::channel::<()>();
             { let mut nm = self.notify_map.lock().await; nm.insert(pid.clone(), notify_tx); }
@@ -180,7 +179,7 @@ impl Tool for BashRunTool {
                 self.process_map.clone(), self.stdin_map.clone(),
                 self.notify_map.clone(), self.follow_up_tx.clone(),
                 pid.clone(), command.clone(), description.clone(), child, stdin_rx, timeout,
-                self.cwd.clone(), self.session_id.clone(),
+                self.storage.cwd.clone(), self.storage.session_id.clone(),
             ));
 
             if background {
@@ -224,10 +223,10 @@ impl Tool for BashRunTool {
                 entry.elapsed_secs = ((now_ms() - now) / 1000) as u64;
             }
             drop(map);
-            save_process_map_arc(&self.process_map, &self.cwd, &self.session_id);
+            save_process_map_arc(&self.process_map, &self.storage.cwd, &self.storage.session_id);
 
             emit_extension_event("process_completed", &serde_json::json!({
-                "bid": pid, "exit_code": exit_code, "session": &self.session_id,
+                "bid": pid, "exit_code": exit_code, "session": &self.storage.session_id,
             }));
 
             if exit_code != 0 {
@@ -381,8 +380,7 @@ fn spawn_watcher(
 pub struct BashKillTool {
     pub process_map: ProcessMap,
     pub follow_up_tx: Option<tokio::sync::mpsc::UnboundedSender<Message>>,
-    pub session_id: String,
-    pub cwd: String,
+    pub storage: crate::storage_context::StorageContext,
 }
 
 #[async_trait]
@@ -469,8 +467,7 @@ impl Tool for BashSendTool {
 pub struct BashBackgroundTool {
     pub notify_map: NotifyMap,
     pub process_map: ProcessMap,
-    pub session_id: String,
-    pub cwd: String,
+    pub storage: crate::storage_context::StorageContext,
 }
 
 #[async_trait]
@@ -489,7 +486,7 @@ impl Tool for BashBackgroundTool {
                 let _ = tx.send(());
                 let mut map = self.process_map.lock().await;
                 if let Some(info) = map.get_mut(&pid) { info.background = true; }
-                save_processes(&map, &self.cwd, &self.session_id);
+                save_processes(&map, &self.storage.cwd, &self.storage.session_id);
                 Ok(format!("✅ Process #{pid} moved to background"))
             }
             None => {
@@ -513,21 +510,24 @@ pub struct BashExtension {
     pub stdin_map: StdinMap,
     pub notify_map: NotifyMap,
     pub follow_up_tx: Option<tokio::sync::mpsc::UnboundedSender<Message>>,
-    pub session_id: String,
-    pub cwd: String,
+    pub storage: crate::storage_context::StorageContext,
 }
 
 impl BashExtension {
-    pub fn new(session_id: &str, cwd: &str) -> Self {
-        let processes = load_processes(cwd, session_id);
+    pub fn new(storage: crate::storage_context::StorageContext) -> Self {
+        let processes = load_processes(&storage.cwd, &storage.session_id);
         Self {
             process_map: Arc::new(Mutex::new(processes)),
             stdin_map: new_stdin_map(),
             notify_map: Arc::new(Mutex::new(HashMap::new())),
             follow_up_tx: None,
-            session_id: session_id.to_string(),
-            cwd: cwd.to_string(),
+            storage,
         }
+    }
+
+    /// 兼容旧签名（测试用）
+    pub fn new_with_cwd(session_id: &str, cwd: &str) -> Self {
+        Self::new(crate::storage_context::StorageContext::new(cwd, session_id, cwd))
     }
 }
 
@@ -600,7 +600,7 @@ impl Extension for BashExtension {
                 if killed {
                     let mut map = self.process_map.lock().await;
                     if let Some(info) = map.get_mut(&pid) { info.status = "killed".into(); }
-                    save_processes(&map, &self.cwd, &self.session_id);
+                    save_processes(&map, &self.storage.cwd, &self.storage.session_id);
                     let mut sm = self.stdin_map.lock().await; sm.remove(&pid);
                     // Notify LLM
                     if let Some(ref tx) = self.follow_up_tx {
@@ -641,7 +641,7 @@ impl Extension for BashExtension {
                 map.retain(|_, p| p.status == "running");
                 sm.retain(|pid, _| map.contains_key(pid));
                 let cleaned = before - map.len();
-                save_processes(&map, &self.cwd, &self.session_id);
+                save_processes(&map, &self.storage.cwd, &self.storage.session_id);
                 Ok(serde_json::json!({"cleaned": cleaned}))
             }
             "remove" => {
@@ -654,7 +654,7 @@ impl Extension for BashExtension {
                 let mut sm = self.stdin_map.lock().await;
                 let removed = map.remove(&bid).is_some();
                 sm.remove(&bid);
-                save_processes(&map, &self.cwd, &self.session_id);
+                save_processes(&map, &self.storage.cwd, &self.storage.session_id);
                 Ok(serde_json::json!({"removed": removed, "bid": bid}))
             }
             _ => Err(AgentError::Tool(format!("bash extension_rpc: unknown method {method}"))),

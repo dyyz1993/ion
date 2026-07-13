@@ -13,6 +13,7 @@ use ion::agent::extension::ExtensionRegistry;
 use ion::agent::tool::{ToolRegistry, WriteTool};
 use ion::agent::messages::Message;
 use ion::file_snapshot::{FileSnapshotExtension, ApprovalExtension, ApprovalManager, ApprovalStatus};
+use ion::storage_context::StorageContext;
 use ion_provider::registry::ApiRegistry;
 use ion_provider::types::*;
 use ion_provider::faux;
@@ -91,8 +92,9 @@ fn build_agent(
     let mut tools = ToolRegistry::new();
     tools.register(Box::new(WriteTool));
 
-    let (fs_ext, store) = FileSnapshotExtension::new_pair(cwd);
-    let mgr = Arc::new(ApprovalManager::new(store.clone(), cwd));
+    let (fs_ext, store) = FileSnapshotExtension::new_pair_with_cwd(cwd);
+    let storage = StorageContext::new(cwd, "fs_harness_sess", cwd);
+    let mgr = Arc::new(ApprovalManager::new(store.clone(), storage));
     let mut ext_reg = ExtensionRegistry::new();
     ext_reg.register(Box::new(fs_ext));
     ext_reg.register(Box::new(ApprovalExtension::new(mgr.clone())));

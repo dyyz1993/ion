@@ -42,7 +42,7 @@ fn sess_id() -> String { "test_sess_001".to_string() }
 #[tokio::test]
 async fn test_store_save_and_search() {
     let root = tmp_dir("save_search");
-    let store = MemoryStore::new(&root, &sess_id());
+    let store = MemoryStore::new_with_root(&root, &sess_id());
 
     // 保存 3 条记忆
     let id1 = store.save_entry("用户喜欢 Rust", "语言偏好", "编程", &["rust".into(), "lang".into()], "auto");
@@ -78,7 +78,7 @@ async fn test_store_save_and_search() {
 #[tokio::test]
 async fn test_store_forget_soft_delete() {
     let root = tmp_dir("forget");
-    let store = MemoryStore::new(&root, &sess_id());
+    let store = MemoryStore::new_with_root(&root, &sess_id());
 
     store.save_entry("用户喜欢 Rust", "", "", &["rust".into()], "auto");
     store.save_entry("用户喜欢 TS", "", "", &["ts".into()], "auto");
@@ -106,7 +106,7 @@ async fn test_store_forget_soft_delete() {
 #[tokio::test]
 async fn test_store_content_hash() {
     let root = tmp_dir("hash");
-    let store = MemoryStore::new(&root, &sess_id());
+    let store = MemoryStore::new_with_root(&root, &sess_id());
 
     // 初始 hash
     store.save_entry("内容 A", "", "", &["a".into()], "auto");
@@ -125,7 +125,7 @@ async fn test_store_content_hash() {
 #[tokio::test]
 async fn test_extension_on_system_prompt() {
     let root = tmp_dir("sysprompt");
-    let ext = MemoryExtension::new(&root, &sess_id());
+    let ext = MemoryExtension::new_with_root(&root, &sess_id());
 
     // 无记忆 → 不注入
     let mut prompt = "你是助手。".to_string();
@@ -149,7 +149,7 @@ async fn test_extension_on_system_prompt() {
 #[tokio::test]
 async fn test_store_pending_and_inject() {
     let root = tmp_dir("inject");
-    let store = MemoryStore::new(&root, &sess_id());
+    let store = MemoryStore::new_with_root(&root, &sess_id());
     let store = Arc::new(Mutex::new(store));
 
     // 保存记忆
@@ -202,7 +202,7 @@ async fn test_store_pending_and_inject() {
 #[tokio::test]
 async fn test_outline_sanitization() {
     let root = tmp_dir("sanitize");
-    let store = MemoryStore::new(&root, &sess_id());
+    let store = MemoryStore::new_with_root(&root, &sess_id());
 
     // 合法 outline
     store.save_entry("内容", "", "", &[], "valid-outline_123");

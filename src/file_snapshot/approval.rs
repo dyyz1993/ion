@@ -62,15 +62,18 @@ pub struct ApprovalManager {
     store: std::sync::Arc<SnapshotStore>,
     /// session cwd（用于 restore 和文件操作）
     cwd: String,
+    /// 统一存储上下文（持久化审批 entry 到 session.jsonl 用）
+    storage: crate::storage_context::StorageContext,
 }
 
 impl ApprovalManager {
-    pub fn new(store: std::sync::Arc<SnapshotStore>, cwd: &str) -> Self {
+    pub fn new(store: std::sync::Arc<SnapshotStore>, storage: crate::storage_context::StorageContext) -> Self {
         Self {
             approvals: Mutex::new(HashMap::new()),
             ever_approved: Mutex::new(HashSet::new()),
             store,
-            cwd: cwd.to_string(),
+            cwd: storage.cwd.clone(),
+            storage,
         }
     }
 
@@ -577,7 +580,12 @@ mod tests {
         };
         store.save_step_snapshot(&step);
 
-        let mgr = ApprovalManager::new(store.clone(), work_dir.to_string_lossy().as_ref());
+        let storage = crate::storage_context::StorageContext::new(
+            work_dir.to_string_lossy().as_ref(),
+            "approval_test",
+            work_dir.to_string_lossy().as_ref(),
+        );
+        let mgr = ApprovalManager::new(store.clone(), storage);
         (work_dir, store, mgr)
     }
 
@@ -747,7 +755,12 @@ mod tests {
         assert_eq!(entries.len(), 1);
 
         // 新 manager 恢复
-        let mgr2 = ApprovalManager::new(store.clone(), work_dir.to_string_lossy().as_ref());
+        let storage2 = crate::storage_context::StorageContext::new(
+            work_dir.to_string_lossy().as_ref(),
+            "approval_test",
+            work_dir.to_string_lossy().as_ref(),
+        );
+        let mgr2 = ApprovalManager::new(store.clone(), storage2);
         mgr2.restore_from_entries(&entries);
 
         let approved = mgr2.approvals_list(Some(&ApprovalStatus::Approved));

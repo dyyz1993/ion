@@ -39,9 +39,9 @@ use std::sync::Mutex;
 
 /// File Snapshot 扩展 — 通过 on_tool_execution_start/end + on_turn_end 钩子采集
 pub struct FileSnapshotExtension {
-    /// session 的 cwd（仓库根目录）
-    cwd: String,
-    /// project key
+    /// 统一存储上下文（拿 cwd / config_root / session_id）
+    storage: crate::storage_context::StorageContext,
+    /// project key（缓存，从 storage.cwd 算）
     project_key: String,
     /// 快照存储（Arc 共享，RPC 层也能访问）
     store: std::sync::Arc<SnapshotStore>,
@@ -67,11 +67,11 @@ fn gen_turn_id() -> String {
 
 impl FileSnapshotExtension {
     /// 创建并返回 (extension, store_arc)
-    pub fn new_pair(cwd: &str) -> (Self, std::sync::Arc<SnapshotStore>) {
-        let pk = project_key(cwd);
+    pub fn new_pair(storage: crate::storage_context::StorageContext) -> (Self, std::sync::Arc<SnapshotStore>) {
+        let pk = project_key(&storage.cwd);
         let store = std::sync::Arc::new(SnapshotStore::new(&pk));
         let ext = Self {
-            cwd: cwd.to_string(),
+            storage,
             project_key: pk,
             store: store.clone(),
             before_states: Mutex::new(HashMap::new()),
@@ -80,6 +80,11 @@ impl FileSnapshotExtension {
             baseline_tree_hash: Mutex::new(None),
         };
         (ext, store)
+    }
+
+    /// 兼容旧签名（测试用）
+    pub fn new_pair_with_cwd(cwd: &str) -> (Self, std::sync::Arc<SnapshotStore>) {
+        Self::new_pair(crate::storage_context::StorageContext::new(cwd, "test", cwd))
     }
 
     /// 获取快照存储（RPC 查询用）
@@ -111,10 +116,10 @@ impl FileSnapshotExtension {
 
     /// 扫描 cwd → 读文件内容 → path → Vec<u8>（供 write_tree 用）
     fn scan_to_file_contents(&self) -> HashMap<String, Vec<u8>> {
-        let scan = scan_dir_fast(&self.cwd);
+        let scan = scan_dir_fast(&self.storage.cwd);
         let mut files = HashMap::new();
         for (rel_path, _) in &scan.files {
-            let abs_path = std::path::Path::new(&self.cwd).join(rel_path);
+            let abs_path = std::path::Path::new(&self.storage.cwd).join(rel_path);
             if let Ok(content) = std::fs::read(&abs_path) {
                 files.insert(rel_path.clone(), content);
             }
@@ -129,7 +134,7 @@ impl Extension for FileSnapshotExtension {
 
     async fn on_session_start(&self, _ctx: &SessionContext) -> AgentResult<()> {
         // session start：建立初始扫描 baseline + baseline tree + 异步触发 GC
-        let scan = scan_dir_fast(&self.cwd);
+        let scan = scan_dir_fast(&self.storage.cwd);
         *self.last_scan.lock().unwrap() = Some(scan);
 
         // 建立 baseline tree（session start 时的完整文件状态）
@@ -173,7 +178,7 @@ impl Extension for FileSnapshotExtension {
         let turn_id = self.current_turn_id.lock().unwrap().clone();
         let prev_scan = self.last_scan.lock().unwrap().take();
 
-        let current_scan = scan_dir_fast(&self.cwd);
+        let current_scan = scan_dir_fast(&self.storage.cwd);
 
         if let Some(before) = prev_scan {
             // 路线 2 delta 采集（保持现有兼容）
@@ -181,7 +186,7 @@ impl Extension for FileSnapshotExtension {
             let snaps = capture_after_dir(
                 &before_state,
                 self.store.objects(),
-                &self.cwd,
+                &self.storage.cwd,
                 &turn_id,
                 "turn_end_scan",
             );
@@ -226,7 +231,7 @@ impl Extension for FileSnapshotExtension {
         &self,
         ctx: &crate::agent::extension::ToolExecutionContext,
     ) -> AgentResult<()> {
-        let before = capture_before(&ctx.tool_name, &ctx.args, self.store.objects(), &self.cwd);
+        let before = capture_before(&ctx.tool_name, &ctx.args, self.store.objects(), &self.storage.cwd);
         if !matches!(before, BeforeState::Skip) {
             self.before_states.lock().unwrap().insert(ctx.tool_call_id.clone(), before);
         }
@@ -252,7 +257,7 @@ impl Extension for FileSnapshotExtension {
                 }
                 BeforeState::DirCapture { .. } => {
                     let snaps = capture_after_dir(
-                        &before_state, self.store.objects(), &self.cwd,
+                        &before_state, self.store.objects(), &self.storage.cwd,
                         &turn_id, &ctx.tool_call_id,
                     );
                     for snap in snaps {

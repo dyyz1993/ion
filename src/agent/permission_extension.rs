@@ -77,28 +77,37 @@ pub struct PermissionExtension {
     project_rules: RwLock<Vec<PermissionRule>>,
     /// 会话级规则（内存）
     session_rules: Mutex<Vec<PermissionRule>>,
-    /// 全局 settings.json 路径
-    global_path: PathBuf,
-    /// 项目 settings.json 路径
-    project_settings_path: PathBuf,
+    /// 统一存储上下文（拿 settings.json 路径）
+    storage: crate::storage_context::StorageContext,
     /// Extension 名
     name: String,
 }
 
 impl PermissionExtension {
-    pub fn new(_session_id: &str, project_root: &str) -> Self {
-        let project_settings = PathBuf::from(project_root).join(".ion").join("settings.json");
-        let global_path = crate::paths::settings_path();
-
+    pub fn new(storage: crate::storage_context::StorageContext) -> Self {
         let ext = Self {
             project_rules: RwLock::new(Vec::new()),
             session_rules: Mutex::new(Vec::new()),
-            global_path,
-            project_settings_path: project_settings,
+            storage,
             name: "permission".into(),
         };
         ext.reload_internal();
         ext
+    }
+
+    /// 兼容旧签名（测试用）
+    pub fn new_with_root(_session_id: &str, project_root: &str) -> Self {
+        Self::new(crate::storage_context::StorageContext::new(project_root, "test", project_root))
+    }
+
+    /// 全局 settings.json 路径
+    fn global_path(&self) -> PathBuf {
+        self.storage.global_settings_path()
+    }
+
+    /// 项目 settings.json 路径
+    fn project_settings_path(&self) -> PathBuf {
+        self.storage.project_settings_path()
     }
 
     /// 重新加载规则（热重载）：重新读取全局 + 项目 settings.json
@@ -114,14 +123,14 @@ impl PermissionExtension {
 
         // 1. 全局配置 ~/.ion/settings.json → permissions.rules
         let mut global_count = 0;
-        if let Some(rules) = Self::load_rules_from_file(&Some(self.global_path.clone())) {
+        if let Some(rules) = Self::load_rules_from_file(&Some(self.global_path())) {
             global_count = rules.len();
             new_rules.extend(rules);
         }
 
         // 2. 项目配置 <project>/.ion/settings.json → permissions.rules（覆盖同名规则）
         let mut project_count = 0;
-        if let Some(rules) = Self::load_rules_from_file(&Some(self.project_settings_path.clone())) {
+        if let Some(rules) = Self::load_rules_from_file(&Some(self.project_settings_path())) {
             project_count = rules.len();
             new_rules.extend(rules);
         }
@@ -148,10 +157,11 @@ impl PermissionExtension {
             if let Ok(json) = serde_json::to_string_pretty(&serde_json::json!({
                 "permissions": { "rules": &*rules }
             })) {
-                if let Some(parent) = self.project_settings_path.parent() {
+                let psp = self.project_settings_path();
+                if let Some(parent) = psp.parent() {
                     std::fs::create_dir_all(parent).ok();
                 }
-                std::fs::write(&self.project_settings_path, json).ok();
+                std::fs::write(&psp, json).ok();
             }
         }
     }

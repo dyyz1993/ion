@@ -455,6 +455,13 @@ pub fn project_key_git(cwd: &str) -> String {
 /// 路径 `.git`、在 worktree 返回绝对路径，必须统一成绝对路径才能保证
 /// 主仓库和 worktree 算出相同的 hash。
 fn main_git_dir(cwd: &str) -> Option<String> {
+    // 先检查 cwd 本身是否是 git 仓库（有 .git 目录或文件），
+    // 避免 git rev-parse 向上递归找到父级仓库（测试临时目录在项目仓库内时会误中）
+    let dot_git = std::path::Path::new(cwd).join(".git");
+    if !dot_git.exists() {
+        return None; // 不是 git 仓库（不向上查找）
+    }
+
     let output = std::process::Command::new("git")
         .args(["rev-parse", "--git-common-dir"])
         .current_dir(cwd)
