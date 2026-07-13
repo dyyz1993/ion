@@ -10,6 +10,41 @@ ion rpc --method xxx                  # 一问一答（RPC）
 ion subscribe --session x             # 实时事件流
 ```
 
+## 快速执行（直接跑 prompt）
+
+最常用的入口——不走 host，直接 spawn 子进程跑完即退：
+
+```bash
+# 基本用法（用 config.json 的 default-model）
+ion "帮我读一下 Cargo.toml"
+
+# 非交互模式（-p/--print）：跑完直接输出结果，适合脚本/CI
+ion -p "say hello in 3 words"
+
+# 指定 provider + model（临时覆盖，不改 config）
+ion -p "写一个 hello world" --provider opencode --model deepseek-v4-flash
+
+# 用 anthropic 的 claude
+ion -p "分析这段代码" --provider anthropic --model claude-opus-4-8
+
+# 多行输入（stdin 管道自动检测）
+echo "解释这个错误" | ion -p
+
+# 指定 agent（build/explore/plan 或自定义 .md）
+ion -p "重构这个模块" --agent explore
+```
+
+**flag 说明**：
+
+| flag | 说明 | 示例 |
+|------|------|------|
+| `-p` / `--print` | 非交互模式，跑完即退（对齐 pi） | `ion -p "hello"` |
+| `--provider` | Provider 名（opencode/anthropic/openai/zhipuai/deepseek…） | `--provider opencode` |
+| `--model` | 模型 ID（deepseek-v4-flash/glm-4.7/claude-opus-4-8…） | `--model deepseek-v4-flash` |
+| `--agent` | 使用命名 agent（build/explore/plan 或 .md 路径） | `--agent build` |
+
+> **测试/开发推荐**：`--provider opencode --model deepseek-v4-flash`——便宜、快速、够用。真实 LLM 测试时优先用这个组合，避免用昂贵的模型。
+
 ## 启动 Host
 
 ```bash

@@ -141,6 +141,18 @@ docs/
 3. ✅ 有 `#[ignore]` 真实 case 吗？（标 `ION_E2E=1` 触发）
 4. ✅ 测试文档里有 harness 章节 + 真实 case 章节吗？
 
+**真实 LLM 测试推荐模型**：写真实 case（`ION_E2E=1`）或手动验证时，**优先用 `deepseek-v4-flash`**（便宜、快速、够用），不要用昂贵的旗舰模型。
+
+```bash
+# 手动快速验证（非交互，跑完即退）
+ion -p "帮我创建一个 hello.txt" --provider opencode --model deepseek-v4-flash
+
+# CI 真实 LLM 测试（Group L 用 default config 的 glm-4.7，也可临时切）
+ION_E2E=1 bash tests/file_snapshot_ci.sh
+```
+
+> 避免用 claude-opus / gpt-4o 等昂贵模型做日常测试——成本高且没必要。`deepseek-v4-flash` 足以验证工具调用、审批闭环、多轮交互等场景。
+
 ### UI 交互架构规范（每个对外功能必须遵守）
 
 ION 支持多终端（CLI / Web UI / IDE 插件）同时连接同一个 host。每个对外功能（审批、回滚、文件快照等）**必须**同时提供以下三种能力，缺一不可：
@@ -347,7 +359,9 @@ ion rpc --session sess_xxx --method get_flags \
 | [ROUTER_TEST_SPEC.md](./ROUTER_TEST_SPEC.md) | 路由层测试规格：68 条用例覆盖路由/路径/安全/配置错误 (已完成) |
 | [docs/design/EXTENSION_ECOSYSTEM.md](./docs/design/EXTENSION_ECOSYSTEM.md) | Extension 生态验证：子 Worker 创建 + 事件发射 + CLI 验证 (已验证) |
 | [docs/design/HOOK_SYSTEM.md](./docs/design/HOOK_SYSTEM.md) | Shell Hook 系统设计 (TRAE 兼容, 已被 HOOKS_AND_OUTLINE_SYNC 取代) |
-| [docs/design/HOOKS_AND_OUTLINE_SYNC.md](./docs/design/HOOKS_AND_OUTLINE_SYNC.md) | Hooks 系统（12 事件 + 5 handler，含真能调工具的 agent handler）+ create_worker 增强 + MD↔outline 大纲同步用例 (开发中) |
+| [docs/design/HOOKS_GUIDE.md](./docs/design/HOOKS_GUIDE.md) | **Hooks 使用指南**（内容文档，0 代码）：是什么/怎么配/CLI 怎么调/数据链路/大纲同步用例/FAQ (开发中) |
+| [docs/design/HOOKS_AND_OUTLINE_SYNC.md](./docs/design/HOOKS_AND_OUTLINE_SYNC.md) | **Hooks 实现规格**（给写代码的人）：Rust 数据结构 + handler 执行引擎 + 补丁 1/2 改动清单 + bug fix (补丁 1 ✅ / 补丁 2 🔧) |
+| [docs/testing/HOOKS_CLI_TEST.md](./docs/testing/HOOKS_CLI_TEST.md) | **Hooks CLI 测试指南**：RPC 接口规格 + Group A-H 验证用例 + 完整请求/响应 JSON (Group A ✅) |
 | [docs/design/TEAM_ORCHESTRATION.md](./docs/design/TEAM_ORCHESTRATION.md) | Team 编排（agent.md 驱动）— `ion --host --agent coordinator` 拆任务开发 (已验证) |
 | [docs/design/WORKFLOW_GATE.md](./docs/design/WORKFLOW_GATE.md) | Workflow Gate — 内核级交付校验 (已完成) |
 | [docs/design/WORKFLOW_ENGINE.md](./docs/design/WORKFLOW_ENGINE.md) | Workflow Engine — 结构化交付流水线 DSL + 执行流程 + CI Group (已验证) |
