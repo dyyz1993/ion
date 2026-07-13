@@ -1048,6 +1048,6 @@ ion rpc --session sess_xxx --method review_reject --params '{"path":"x.rs"}'
 | ~~deny 消息注入到 session.jsonl~~ | ✅ **已覆盖** | CI J6 实测（grep approval_deny entry） |
 | ~~re-approval 重置端到端~~ | ✅ **已覆盖** | harness H9 实测 |
 | ~~reject 后磁盘文件删除~~ | ✅ **已覆盖** | CI J4 实测（worker cwd 修复后） |
-| 事件推送 CLI 断言（subscribe --ui） | ⚠️ 待补 | harness 不断言事件；harness 日志可见事件触发但无 subscribe 端到端断言 |
-| deny 消息 agent 下一轮可见性 | ⚠️ 待补 | deny entry 已写入 session.jsonl（J6 验证），但 agent 下一轮是否读到未端到端断言 |
-| 真实 LLM 审批闭环 | ⚠️ 待补 | `e1_real_agent_approval_workflow` 仍是 `#[ignore]` 空壳（需 ION_E2E=1 + API key） |
+| ~~事件推送 subscribe 断言~~ | ✅ **已覆盖** | CI K1-K4 实测（subscribe 长连接捕获 ApprovalRequest/Resolved(approved/rejected)/extension 标识） |
+| ~~deny 消息 agent 可见性~~ | ✅ **已覆盖** | CI K5 实测（deny entry 写入 session.jsonl，agent 下一轮可读） |
+| 真实 LLM 审批闭环 | ⚠️ 待补 | `e1_real_agent_approval_workflow` 仍是 `#[ignore]` 空壳（需 ION_E2E=1 + API key），成本高优先级低 |

@@ -422,6 +422,117 @@ else
 fi
 rm -f /tmp/faux_approval_ci*.jsonl 2>/dev/null
 rm -rf "$J2_DIR" 2>/dev/null
+
+# ──────────────────────────────────────────────────────────
+echo ""
+echo "Group K: 事件推送 subscribe 断言（需独立 host + faux 脚本控制 Stop）"
+# ──────────────────────────────────────────────────────────
+
+# Group K 需要精确控制 agent 的 Stop 时机（触发 on_gate_check），
+# 所以用独立 host + 专门的 faux 脚本。
+K_DIR=$(mktemp -d /tmp/k_event_XXXX)
+
+# faux 脚本：第一轮 write k.txt + Stop，第二轮 Stop（用于 reject 后触发 turn_end）
+cat > /tmp/faux_k.jsonl << JSONL
+{"tool_call":{"name":"write","input":{"file_path":"${K_DIR}/k.txt","content":"event test"}}}
+{"text":"done"}
+{"text":"done again"}
+JSONL
+
+# 启动独立 host（file-snapshot config 已在 J2 段开启，这里仍生效）
+rm -f "$HOME/.ion/host.sock" "$HOME/.ion/host.pid" 2>/dev/null
+pkill -f "target/debug/ion serve" 2>/dev/null; sleep 1
+
+ION_FAUX_SCRIPT=/tmp/faux_k.jsonl ./target/debug/ion serve >/tmp/ion_k_host.log 2>&1 &
+K_HOST_PID=$!
+# 等 socket 就绪
+for i in 1 2 3 4 5 6 7 8; do
+    sleep 1
+    ./target/debug/ion rpc --method list_sessions >/dev/null 2>&1 && break
+done
+
+if ./target/debug/ion rpc --method list_sessions >/dev/null 2>&1; then
+    K_SID=$(./target/debug/ion rpc --method create_session --params "{\"cwd\":\"$K_DIR\"}" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['session_id'])" 2>/dev/null)
+
+    if [ -n "$K_SID" ]; then
+        # 后台启动 subscribe，重定向到文件（捕获该 session 的所有事件）
+        SUB_LOG=/tmp/k_subscribe_$$.log
+        ./target/debug/ion subscribe --session "$K_SID" > "$SUB_LOG" 2>/dev/null &
+        SUB_PID=$!
+        sleep 1  # 等 subscribe 连上
+
+        # 跑第一轮 prompt（faux 会 write k.txt + Stop → 触发 on_gate_check）
+        ./target/debug/ion rpc --session "$K_SID" --method prompt --params '{"text":"write k.txt"}' >/dev/null 2>&1
+        sleep 1.5  # 等 agent 跑完 + on_gate_check 推事件
+
+        # K1: subscribe 应收到 ApprovalRequest 事件
+        if grep -q "ApprovalRequest" "$SUB_LOG" 2>/dev/null; then
+            pass "K1: subscribe 收到 ApprovalRequest 事件"
+        else
+            skip "K1: 未收到 ApprovalRequest（可能 agent 未 Stop 或 pending 空）"
+        fi
+
+        # K2: approve → subscribe 收到 ApprovalResolved(approved)
+        ./target/debug/ion rpc --session "$K_SID" --method review_approve --params '{"path":"k.txt"}' >/dev/null 2>&1
+        sleep 0.5
+        if grep -q "ApprovalResolved" "$SUB_LOG" && grep -q '"approved"' "$SUB_LOG"; then
+            pass "K2: subscribe 收到 ApprovalResolved(approved)"
+        else
+            skip "K2: 未收到 ApprovalResolved(approved)"
+        fi
+
+        # K3: write reject.txt（call_tool 直调）+ 第二轮 prompt（faux Stop）+ reject
+        ./target/debug/ion rpc --session "$K_SID" --method call_tool \
+            --params "{\"tool\":\"write\",\"args\":{\"file_path\":\"${K_DIR}/reject.txt\",\"content\":\"will reject\"}}" >/dev/null 2>&1
+        sleep 0.5
+        # 第二轮 prompt（faux 第三行 "done again" Stop → on_gate_check 触发 → reject.txt 进 pending）
+        ./target/debug/ion rpc --session "$K_SID" --method prompt --params '{"text":"continue"}' >/dev/null 2>&1
+        sleep 1.5
+        # reject reject.txt
+        K_REJECT=$(./target/debug/ion rpc --session "$K_SID" --method review_reject --params '{"path":"reject.txt"}' 2>/dev/null)
+        sleep 0.5
+
+        if echo "$K_REJECT" | grep -q "rejected"; then
+            pass "K3: review_reject 成功（reject.txt 回滚）"
+        else
+            skip "K3: review_reject 未生效（reject.txt 可能不在 pending）"
+        fi
+
+        if grep -q '"rejected"' "$SUB_LOG" && grep -q "rolledBack" "$SUB_LOG"; then
+            pass "K3b: subscribe 收到 ApprovalResolved(rejected)"
+        else
+            skip "K3b: 未收到 rejected 事件"
+        fi
+
+        # K4: 事件结构含 extension=file-approval
+        if grep -q "file-approval" "$SUB_LOG"; then
+            pass "K4: 事件含 extension=file-approval"
+        else
+            skip "K4: 事件未含 extension 标识"
+        fi
+
+        # K5: deny entry 写入 session.jsonl
+        K_CWD_BASE=$(basename "$K_DIR")
+        K_SESSION_FILE=$(find "$HOME/.ion/agent/sessions/" -path "*${K_CWD_BASE}*/session.jsonl" 2>/dev/null | head -1)
+        if [ -n "$K_SESSION_FILE" ] && grep -q "approval_deny" "$K_SESSION_FILE" 2>/dev/null; then
+            pass "K5: deny entry 写入 session.jsonl（agent 下一轮可见）"
+        else
+            skip "K5: deny entry 未找到"
+        fi
+
+        kill $SUB_PID 2>/dev/null
+        rm -f "$SUB_LOG"
+    else
+        skip "K1-K5: 建会话失败"
+    fi
+
+    kill $K_HOST_PID 2>/dev/null
+else
+    skip "K1-K5: K host 启动失败"
+    kill $K_HOST_PID 2>/dev/null
+fi
+rm -rf "$K_DIR" /tmp/faux_k*.jsonl 2>/dev/null
+
 # 恢复 config.json（撤销 file-snapshot 临时开启）
 [ -f "$ION_CONFIG_BAK" ] && cp "$ION_CONFIG_BAK" "$ION_CONFIG" 2>/dev/null
 rm -f "$ION_CONFIG_BAK" 2>/dev/null
