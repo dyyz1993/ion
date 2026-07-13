@@ -7,3 +7,5 @@ target/
 current_greeting.txt
 hello_test.txt
 system_response.txt
+*.txt
+!Cargo.toml

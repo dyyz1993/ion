@@ -380,6 +380,7 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/testing/TEST_CASES.md](./docs/testing/TEST_CASES.md) | 完整测试 case (25 单元 + 32 集成 + 5 E2E + 5 压力) |
 | [docs/testing/E2E_TEST_SPEC.md](./docs/testing/E2E_TEST_SPEC.md) | **全功能 E2E 测试规格**：12 Group 133 case，覆盖全部功能模块（基础执行/会话/树/RPC/工具/MCP/Team/Memory/Snapshot/权限/Compaction/Workflow） |
 | [docs/testing/SESSION_TREE_SPEC.md](./docs/testing/SESSION_TREE_SPEC.md) | Session Tree 验收规格：harness（基于 FauxProvider）+ P0/P1/XFail 分级 |
+| [docs/testing/FILE_SNAPSHOT_CASES.md](./docs/testing/FILE_SNAPSHOT_CASES.md) | File Snapshot 审批与回滚 CLI 用例集：5 Group 27 case（Group R 回滚 / V 审批 / L 联动 / E 事件 / X 边界）+ 9 接口完整请求/响应 JSON (实测态，2026-07-13) |
 
 ### 模板（docs/templates/）
 
