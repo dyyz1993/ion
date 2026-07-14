@@ -373,7 +373,7 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/design/RECORD_REPLAY.md](./docs/design/RECORD_REPLAY.md) | Record/Replay 录制回放：环境变量录制 + `--model replay/id` 回放，复用 FauxProvider (已实现 Phase 1) |
 | [docs/design/SESSION_TREE.md](./docs/design/SESSION_TREE.md) | Session Tree（会话分支）：文件内分支 + leaf 指针 + only-append 回滚 (已实现) |
 | [docs/design/MCP_SYSTEM.md](./docs/design/MCP_SYSTEM.md) | MCP 系统：rmcp 1.x + 方案 C 共享池 + 权限控制 + resources/prompts + 热更新 (Phase 1-4 全部实现) |
-| [docs/design/CONFIG_DIMENSIONS.md](./docs/design/CONFIG_DIMENSIONS.md) | 配置与数据维度分析：5 类存储划分 + 组件归属全表 + worktree 副本预期 + 5 个设计缺口 (设计稿) |
+| [docs/design/CONFIG_DIMENSIONS.md](./docs/design/CONFIG_DIMENSIONS.md) | 配置与数据维度分析：5 类存储划分 + 组件归属全表 + worktree 副本预期 + StorageContext 统一抽象 + 新扩展开发指南 (已实现) |
 | [docs/design/FILE_SNAPSHOT.md](./docs/design/FILE_SNAPSHOT.md) | File Snapshot：双路快照（工具级 before/after + 目录扫描 + turn_end 兜底），restore_files + --restore-code 联动回滚，不遵守 .gitignore (已实现 + 2026-07-11 修复 5 个正确性问题) |
 | [docs/design/FILE_SNAPSHOT_REVIEW_ALIGNMENT.md](./docs/design/FILE_SNAPSHOT_REVIEW_ALIGNMENT.md) | File Snapshot & Review 对齐清单：ION vs pi 全维度对比 + tree 快照模型升级路线 + per-file 审批 + 4 步执行计划 (开发中) |
 | [docs/design/MESSAGE_RETRIEVAL_DESIGN.md](./docs/design/MESSAGE_RETRIEVAL_DESIGN.md) | 消息拉取 UI 设计规格：TypeScript 接口定义 + 6 种 UI 风格 + 3 层数据架构 (设计定稿) |
@@ -430,6 +430,7 @@ ion rpc --session sess_xxx --method get_flags \
 | `examples/agents/` | Agent 模板（wf/orchestrator/coordinator/developer/merger/reviewer/publisher） |
 | `examples/workflows/` | Workflow YAML 示例（delivery.wf.yaml） |
 | `src/session_tree.rs` | Session Tree 核心数据层（leaf 指针/树构建/branch/rollback/checkout） |
+| `src/storage_context.rs` | **StorageContext**：统一存储路径访问（5 维 + worktree 透明），所有扩展用它拿路径（[约定](./docs/design/CONFIG_DIMENSIONS.md#9-storagecontext)） |
 | `src/file_snapshot/` | File Snapshot 双路快照（object_store/scanner/snapshot/diff/gc，[详情](./docs/design/FILE_SNAPSHOT.md)） |
 | `src/mcp/` | MCP 客户端（McpManager + McpTool/McpProxyTool + rmcp 连接 + 自动重连 + resources/prompts，[详情](./docs/design/MCP_SYSTEM.md)） |
 | `src/message_retrieval.rs` | 消息拉取核心逻辑（retrieve_messages/turns/inputs/turn_detail + view/过滤/分页） |

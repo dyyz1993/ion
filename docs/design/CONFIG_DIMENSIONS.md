@@ -1,6 +1,6 @@
 # 配置与数据维度分析（CONFIG_DIMENSIONS）
 
-> **状态：设计稿** — 架构级梳理，发现 5 个设计缺口待修复
+> **状态：已实现** — 5 维存储约定落地 + 5 个设计缺口全修复 + StorageContext 统一抽象。详见 §5 缺口状态 + §9 StorageContext。
 
 ## 何时使用这个文档
 
@@ -398,6 +398,73 @@ grep -rn "ION_PROJECT_ROOT" src/
 | 配置分几类 | §2 | 5 类（全局/项目维度/仓库内/Session/单例） |
 | MCP 配置放哪 | §6 | ② 项目维度（`~/.ion/projects/<key>/`） |
 | 为什么不放仓库内 | §2.3 | 含本地路径/密钥，不该 git 追踪；worktree 读不到 |
-| worktree 副本预期 | §1 | 应与主仓库功能一致，当前 3 项丢失 |
-| project_key 用哪个 | §4.2 | git common dir hash（file-snapshot 已用，其余待统一） |
-| 最大的缺口 | §5 | #2：ION_PROJECT_ROOT 只被 config 消费 |
+| worktree 副本预期 | §1 | 应与主仓库功能一致（5 缺口全修复 ✅） |
+| project_key 用哪个 | §4.2 | git common dir hash（全部统一 ✅） |
+| 最大的缺口 | §5 | #2：ION_PROJECT_ROOT（全消费 ✅） |
+| 扩展怎么拿路径 | §9 | StorageContext 统一抽象（✅） |
+
+---
+
+## 9. StorageContext — 统一存储路径访问抽象（已实现）
+
+> **代码位置**：`src/storage_context.rs`
+
+### 解决的问题
+
+扩展各自 `import paths` 现算路径，容易调错维度。构造参数混乱（有的传 project_root、有的传 cwd、有的传 session_id）。
+
+### 设计
+
+`StorageContext` 包含 3 个字段 + 5 维路径快捷方法。**不认识任何具体扩展**——它只是路径计算器，扩展自己传 ext_name。
+
+```rust
+pub struct StorageContext {
+    pub cwd: String,         // worker cwd（worktree = worktree 路径）
+    pub session_id: String,  // session ID（④ session 隔离 key）
+    pub config_root: String, // 项目根（ION_PROJECT_ROOT，worktree 回源主仓库）
+}
+```
+
+### 使用方式
+
+```rust
+// ion_worker.rs 构造时创建一次
+let storage = StorageContext::new(&worker_cwd, &sid, &config_root);
+
+// 传给每个扩展
+let bash_ext = BashExtension::new(storage.clone());
+let mem_ext = MemoryExtension::new(storage.clone());
+
+// 扩展内部使用
+let path = self.storage.project_dir("memory");   // ② 项目维度
+let path = self.storage.session_dir("bash");     // ④ Session 维度
+```
+
+### 5 维方法对照表
+
+| 方法 | 维度 | 路径 | worktree 行为 |
+|------|------|------|--------------|
+| `global_dir(ext)` | ① 全局 | `~/.ion/agent/extensions-data/<ext>/` | 共享 |
+| `project_dir(ext)` | ② 项目 | `~/.ion/agent/project-data/<git_key>/<ext>/` | 共享（git common dir hash） |
+| `project_local_dir(ext)` | ③ 仓库内 | `<config_root>/.ion/<ext>/` | 回源主仓库（ION_PROJECT_ROOT） |
+| `session_dir(ext)` | ④ Session | `sessions/<hash>/data/<sid>/<ext>/` | 隔离 |
+| 特殊：`bash_processes_path()` | ④ | `sessions/.../bash/processes.json` | 隔离 |
+
+### 已适配的扩展
+
+| 扩展 | 构造签名 | 用的维度 |
+|------|---------|---------|
+| BashExtension | `new(storage)` | ④ Session（bash_processes_path） |
+| MemoryStore | `new(storage)` | ② 项目 + ④ Session |
+| MemoryExtension | `new(storage)` | 同上 |
+| PermissionExtension | `new(storage)` | ③ 仓库内（settings.json） |
+| FileSnapshotExtension | `new_pair(storage)` | ② 项目（file_store，git_key） |
+| ApprovalManager | `new(store, storage)` | ④ Session（session.jsonl） |
+
+### 新扩展开发指南
+
+加新扩展时：
+1. 构造方法接收 `StorageContext`：`pub fn new(storage: StorageContext) -> Self`
+2. 选维度：`self.storage.project_dir("my-ext")` 或 `self.storage.session_dir("my-ext")`
+3. **不要**直接 `import paths` 现算（除非是底层存储引擎如 ObjectStore）
+4. 测试用 `StorageContext::new(tmp_dir, "test_sess", tmp_dir)` 构造
