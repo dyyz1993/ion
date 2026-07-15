@@ -115,33 +115,77 @@ impl GlobalMemoryStore {
         Ok(id)
     }
 
-    /// FTS5 全文搜索。
+    /// FTS5 全文搜索（含中文 LIKE fallback）。
+    ///
+    /// 先用 FTS5 MATCH（英文/分词语言效果好），如果结果为空则用 LIKE 模糊匹配
+    /// （中文场景 fallback，因为 FTS5 默认 tokenizer 对中文不友好）。
     pub fn search(&self, query: &str, project: Option<&str>) -> Result<Vec<GlobalMemoryEntry>, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        let sql = if project.is_some() {
+
+        // 1. 先用 FTS5 MATCH
+        let fts_sql = if project.is_some() {
             "SELECT e.id, e.project, e.content, e.category, e.tags, e.importance, e.archived, e.created_at, e.updated_at
-             FROM entries e
-             JOIN entries_fts f ON e.rowid = f.rowid
+             FROM entries e JOIN entries_fts f ON e.rowid = f.rowid
              WHERE entries_fts MATCH ?1 AND e.archived = 0 AND e.project = ?2
              ORDER BY e.importance DESC, e.updated_at DESC"
         } else {
             "SELECT e.id, e.project, e.content, e.category, e.tags, e.importance, e.archived, e.created_at, e.updated_at
-             FROM entries e
-             JOIN entries_fts f ON e.rowid = f.rowid
+             FROM entries e JOIN entries_fts f ON e.rowid = f.rowid
              WHERE entries_fts MATCH ?1 AND e.archived = 0
              ORDER BY e.importance DESC, e.updated_at DESC"
         };
-        let mut stmt = conn.prepare(sql).map_err(|e| format!("prepare: {}", e))?;
-        let rows = if let Some(p) = project {
-            stmt.query_map(params![query, p], map_entry).map_err(|e| format!("query: {}", e))?
+        let mut stmt = conn.prepare(fts_sql).map_err(|e| format!("prepare fts: {}", e))?;
+        let fts_rows = if let Some(p) = project {
+            stmt.query_map(params![query, p], map_entry).map_err(|e| format!("query fts: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| format!("row: {}", e))?
+                .map_err(|e| format!("row fts: {}", e))?
         } else {
-            stmt.query_map(params![query], map_entry).map_err(|e| format!("query: {}", e))?
+            stmt.query_map(params![query], map_entry).map_err(|e| format!("query fts: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| format!("row: {}", e))?
+                .map_err(|e| format!("row fts: {}", e))?
         };
-        Ok(rows)
+        drop(stmt);
+
+        // FTS5 有结果就直接返回
+        if !fts_rows.is_empty() {
+            return Ok(fts_rows);
+        }
+
+        // 2. FTS5 无结果 → LIKE 模糊匹配（中文 fallback）
+        //    把 query 拆成词（空格/标点分隔），每个词分别 LIKE，命中任一词即匹配
+        let words: Vec<&str> = query.split(|c: char| c.is_whitespace() || "，。、！？".contains(c))
+            .filter(|s| !s.is_empty())
+            .collect();
+        let words = if words.is_empty() { vec![query] } else { words };
+
+        let mut like_rows = Vec::new();
+        for word in &words {
+            if word.len() < 2 { continue; }  // 跳过单字（噪音太大）
+            let like_pattern = format!("%{}%", word);
+            let like_sql = if project.is_some() {
+                "SELECT id, project, content, category, tags, importance, archived, created_at, updated_at
+                 FROM entries WHERE archived = 0 AND project = ?2 AND (content LIKE ?1 OR category LIKE ?1 OR tags LIKE ?1)"
+            } else {
+                "SELECT id, project, content, category, tags, importance, archived, created_at, updated_at
+                 FROM entries WHERE archived = 0 AND (content LIKE ?1 OR category LIKE ?1 OR tags LIKE ?1)"
+            };
+            let mut stmt2 = conn.prepare(like_sql).map_err(|e| format!("prepare like: {}", e))?;
+            let rows = if let Some(p) = project {
+                stmt2.query_map(params![like_pattern, p], map_entry).map_err(|e| format!("query like: {}", e))?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| format!("row like: {}", e))?
+            } else {
+                stmt2.query_map(params![like_pattern], map_entry).map_err(|e| format!("query like: {}", e))?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| format!("row like: {}", e))?
+            };
+            like_rows.extend(rows);
+        }
+        // 去重（同一条可能被多个词命中）+ 按 importance 排序
+        let mut seen = std::collections::HashSet::new();
+        like_rows.retain(|e| seen.insert(e.id.clone()));
+        like_rows.sort_by(|a, b| b.importance.cmp(&a.importance).then(b.updated_at.cmp(&a.updated_at)));
+        Ok(like_rows)
     }
 
     /// 软删除（archived = 1）

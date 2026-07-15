@@ -111,8 +111,31 @@ impl Extension for GlobalMemoryExtension {
                 Ok(serde_json::json!({"ok": true}))
             }
 
+            "list_outlines" => {
+                let outlines = store.list_outlines()
+                    .map_err(|e| AgentError::Tool(e))?;
+                Ok(serde_json::json!({"outlines": outlines}))
+            }
+
+            "consolidate" => {
+                let stats = store.consolidate()
+                    .map_err(|e| AgentError::Tool(e))?;
+                Ok(serde_json::json!({"stats": stats}))
+            }
+
+            "clear_stored" => {
+                // 清空所有记忆（测试用）
+                let entries = store.list(None).map_err(|e| AgentError::Tool(e))?;
+                let mut removed = 0;
+                for e in &entries {
+                    let _ = store.forget(&e.id);
+                    removed += 1;
+                }
+                Ok(serde_json::json!({"removed": removed}))
+            }
+
             _ => Err(AgentError::Tool(format!(
-                "unknown method '{}'. Available: save, search, list, forget", method
+                "unknown method '{}'. Available: save, search, list, forget, list_outlines, consolidate, clear_stored", method
             ))),
         }
     }
