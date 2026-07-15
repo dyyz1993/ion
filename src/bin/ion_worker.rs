@@ -432,6 +432,31 @@ async fn main() {
     {
         let mut ext_reg = ion::agent::extension::ExtensionRegistry::new();
 
+        // ── 注入 ctx.fs 统一文件访问能力（RuntimeFileSystem）──
+        // 内置扩展通过 registry.filesystem() 拿到，WASM 扩展通过 host_read_file / host_list_dir 拿到。
+        // allowed_roots = 项目根目录 + ~/.ion/（默认白名单，防路径逃逸）。
+        {
+            let fs_allowed_roots =
+                ion::agent::extension::RuntimeFileSystem::default_allowed_roots(
+                    std::path::Path::new(&worker_cwd),
+                );
+            let runtime_fs = std::sync::Arc::new(
+                ion::agent::extension::RuntimeFileSystem::new(
+                    worker_rt.clone(),
+                    fs_allowed_roots,
+                ),
+            );
+            // 内置扩展用
+            ext_reg = ext_reg.with_filesystem(runtime_fs.clone());
+            // WASM 扩展用（注入到 WASM registry 的共享 Context）
+            {
+                let mut ctx = wasm_ext_registry.ctx.write().unwrap();
+                ctx.fs = Some(runtime_fs);
+                ctx.tokio_handle = Some(tokio::runtime::Handle::current());
+            }
+            tracing::info!("[extension] ctx.fs (RuntimeFileSystem) injected");
+        }
+
         // Memory Extension
         if ion_cfg.is_extension_enabled("memory") {
             let mut memory_ext = ion::agent::memory::MemoryExtension::new(storage_ctx.clone());

@@ -704,6 +704,17 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - 扩展内通过 `ExtensionRegistry::get_flag()` 读取
   - **验证**: 10 CI 测试全过 ✅
 
+- **Stored-Decision 权限记忆（对齐 pi stored-decision.ts）**:
+  - 用户选"always allow"后持久化决策，下次自动放行，不用反复确认
+  - `DecisionSource` 枚举（Config vs Stored）+ `PermissionRule.source/created_at` 字段
+  - `store_decision` / `list_stored` / `remove_stored` / `clear_stored` 4 个方法
+  - `UiPermissionResult` 枚举（Allow/Deny/AlwaysAllowProject/AlwaysDenyProject）+ `store_from_ui_result` 便捷方法
+  - 顶层 RPC（`permission_store_decision` 等）+ `extension_rpc` 双路径
+  - source 隔离：clear/remove 只动 Stored 规则，Config 规则不受影响
+  - serde rename_all 修复（Decision/Scope/DecisionSource 统一小写，磁盘格式一致）
+  - 详见 [docs/design/PERMISSION_STORE.md](./docs/design/PERMISSION_STORE.md)
+  - **验证**: 18 单元 + 23 CI 测试全过 ✅
+
 - **Hooks 系统（配置式生命周期触发器，对齐 pi）**:
   - 5 模块 ~800 行：`src/hooks/{mod,handler_runner,matcher,stdin_builder,extension}.rs`
   - `hooks.json` 配置（全局 + 项目级合并，每次事件触发动态读 = 热重载）
