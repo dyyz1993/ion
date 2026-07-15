@@ -524,7 +524,9 @@ async fn main() {
             if ion::hooks::extension::HookExtension::has_hooks(&proj_dir) {
                 let hook_ext = ion::hooks::extension::HookExtension::new(
                     proj_dir,
-                    Some(worker_rt.clone()), // agent handler 需要 runtime 来 spawn 子 Worker
+                    Some(worker_rt.clone()),     // agent handler 需要 runtime 来 spawn 子 Worker
+                    Some(Arc::clone(&registry)), // prompt handler 需要 ApiRegistry 来调 LLM
+                    Some(model.clone()),         // prompt handler 需要当前会话模型
                     Some(follow_up_tx.clone()),
                 );
                 ext_reg.register(Box::new(hook_ext));

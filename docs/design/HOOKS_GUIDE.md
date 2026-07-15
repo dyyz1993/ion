@@ -207,9 +207,8 @@ bash scripts/hooks_test.sh test UserPromptSubmit --stdin '{"prompt":"你好"}'
 
 **机制**：POST stdin JSON 到 url，按 HTTP 状态码解释（200 正常 / 403 阻断）。**强制 HTTPS，拒绝私网 IP**。
 
-#### `prompt` — 单轮 LLM 判断（无工具）🔧 暂未实现
+#### `prompt` — 单轮 LLM 判断（无工具）✅ 已实现
 
-> ⚠️ **stub 状态**：当前 `run_prompt` 记录日志后返回默认值（不阻断）。需要 Extension trait 暴露 `call_llm` 能力后才能完整实现。**暂时用 `command` handler + 脚本调 LLM API 替代**。
 
 ```json
 {
@@ -220,7 +219,7 @@ bash scripts/hooks_test.sh test UserPromptSubmit --stdin '{"prompt":"你好"}'
 }
 ```
 
-**机制**（实现后）：调一次 LLM（maxTokens 1024，**不给工具**），让它返回 JSON 决策。适合"简单判断"，不适合需要多轮工具调用的任务。
+**机制**：调一次 LLM（maxTokens 1024，**不给工具**），让它返回 JSON 决策。适合"简单判断"，不适合需要多轮工具调用的任务。
 
 #### `agent` — 起一个带工具的子 Agent ⭐
 

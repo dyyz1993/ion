@@ -117,6 +117,8 @@ async fn e2e_command_handler_blocks_no_verify() {
         project_dir: dir.to_string_lossy().to_string(),
         event_name: "PreToolUse".into(),
         runtime: None, // 用 spawn fallback
+        registry: None,
+        model: None,
     };
 
     let outcome = handler_runner::run_handler(handler, stdin, &ctx).await;
@@ -151,6 +153,8 @@ async fn e2e_command_handler_allows_normal_commit() {
         project_dir: dir.to_string_lossy().to_string(),
         event_name: "PreToolUse".into(),
         runtime: None,
+            registry: None,
+            model: None,
     };
 
     let outcome = handler_runner::run_handler(handler, stdin, &ctx).await;
@@ -179,6 +183,8 @@ async fn e2e_user_prompt_submit_injects_context() {
         project_dir: dir.to_string_lossy().to_string(),
         event_name: "UserPromptSubmit".into(),
         runtime: None,
+            registry: None,
+            model: None,
     };
 
     let outcome = handler_runner::run_handler(handler, stdin, &ctx).await;
@@ -275,6 +281,8 @@ exit 0
         project_dir: dir.to_string_lossy().to_string(),
         event_name: "Stop".into(),
         runtime: None,
+            registry: None,
+            model: None,
     };
 
     let outcome = handler_runner::run_handler(handler, stdin, &ctx).await;
@@ -326,7 +334,7 @@ exit 0
 
     let stdin = serde_json::json!({"last_assistant_message":"done","session_id":"sess","cwd":dir.to_string_lossy().to_string(),"hook_event_name":"Stop"});
     std::env::set_current_dir(&dir).ok();
-    let ctx = HookExecContext { project_dir: dir.to_string_lossy().to_string(), event_name: "Stop".into(), runtime: None };
+    let ctx = HookExecContext { project_dir: dir.to_string_lossy().to_string(), event_name: "Stop".into(), runtime: None, registry: None, model: None };
 
     let outcome = handler_runner::run_handler(handler, stdin, &ctx).await;
     assert!(!outcome.block, "测试通过时 Stop 不应该 block");
@@ -369,6 +377,8 @@ async fn e2e_agent_handler_with_runtime_does_not_panic() {
         project_dir: "/tmp".into(),
         event_name: "SubagentStop".into(),
         runtime: Some(rt),
+            registry: None,
+            model: None,
     };
 
     // ⭐ 核心验证：不 panic，返回默认 outcome（不 block）
@@ -400,6 +410,8 @@ async fn e2e_agent_handler_no_prompt_returns_default() {
         project_dir: "/tmp".into(),
         event_name: "Stop".into(),
         runtime: Some(rt),
+            registry: None,
+            model: None,
     };
 
     let outcome = handler_runner::run_handler(&handler, serde_json::json!({}), &ctx).await;

@@ -18,6 +18,10 @@ pub struct HookExecContext {
     pub event_name: String,
     /// Runtime（command + agent handler 用）
     pub runtime: Option<std::sync::Arc<dyn crate::runtime::Runtime>>,
+    /// ApiRegistry（prompt handler 调 LLM 用）
+    pub registry: Option<std::sync::Arc<ion_provider::registry::ApiRegistry>>,
+    /// 当前会话模型（prompt handler 用）
+    pub model: Option<ion_provider::types::Model>,
 }
 
 /// 执行单个 handler，返回 outcome
@@ -49,7 +53,7 @@ async fn run_handler_inner(
     match handler.handler_type {
         HandlerType::Command => run_command(handler, stdin_data, ctx).await,
         HandlerType::Http => run_http(handler, stdin_data).await,
-        HandlerType::Prompt => run_prompt(handler, stdin_data).await,
+        HandlerType::Prompt => run_prompt(handler, stdin_data, ctx).await,
         HandlerType::Agent => run_agent(handler, stdin_data, ctx).await,
         HandlerType::McpTool => run_mcp_tool(handler, stdin_data).await,
     }
@@ -211,15 +215,85 @@ fn validate_url(url: &str) -> Result<(), String> {
 // prompt handler — callLLM 单轮（stub，待接入 ExtensionApi.call_llm）
 // ---------------------------------------------------------------------------
 
-async fn run_prompt(handler: &HookHandler, stdin_data: serde_json::Value) -> HookOutcome {
-    let _prompt = match &handler.prompt {
+async fn run_prompt(handler: &HookHandler, stdin_data: serde_json::Value, ctx: &HookExecContext) -> HookOutcome {
+    let prompt = match &handler.prompt {
         Some(p) => p.clone(),
         None => return HookOutcome::default(),
     };
-    // TODO: 需要接入 ExtensionApi.call_llm（Extension trait 当前未暴露此能力）
-    // 暂时记录日志，返回默认（不阻断）
-    tracing::info!("[hooks] prompt handler (stub, needs call_llm): event stdin={}", stdin_data);
-    HookOutcome::default()
+    let registry = match &ctx.registry {
+        Some(r) => r.clone(),
+        None => {
+            tracing::warn!("[hooks] prompt handler needs ApiRegistry, none available");
+            return HookOutcome::default();
+        }
+    };
+    // 用当前会话模型（简化：不查 handler.model，用户要换模型用 command handler + 脚本调 API）
+    let model = match &ctx.model {
+        Some(m) => m.clone(),
+        None => {
+            tracing::warn!("[hooks] prompt handler needs a model, none available");
+            return HookOutcome::default();
+        }
+    };
+
+    // 构造 context：system prompt = handler.prompt，user message = stdin 上下文
+    let system = format!(
+        "{prompt}\n\n---\nHook context ({ }):\n{}",
+        ctx.event_name,
+        serde_json::to_string_pretty(&stdin_data).unwrap_or_default()
+    );
+    let context = ion_provider::types::Context {
+        system_prompt: Some(system),
+        messages: vec![ion_provider::types::Message::User(ion_provider::types::UserMessage {
+            role: "user".into(),
+            content: vec![ion_provider::types::ContentBlock::Text(ion_provider::types::TextContent {
+                text: "Respond with JSON: {\"block\": false} or {\"block\": true, \"reason\": \"...\"}".into(),
+                text_signature: None,
+            })],
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+        })],
+        tools: None,
+    };
+
+    let options = ion_provider::StreamOptions {
+        max_tokens: Some(1024),
+        api_key: None,
+        reasoning: None,
+        timeout_ms: Some((handler.timeout.unwrap_or(30) as u64) * 1000),
+        max_retries: None,
+        response_format: None,
+    };
+
+    // 调 LLM
+    match ion_provider::registry::complete(&registry, &model, &context, Some(&options)).await {
+        Ok(assistant_msg) => {
+            // 提取文本
+            let text: String = assistant_msg.content.iter()
+                .filter_map(|c| if let ion_provider::types::AssistantContentBlock::Text(t) = c {
+                    Some(t.text.clone())
+                } else {
+                    None
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            // 解析 JSON 决策
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                if json.get("block").and_then(|v| v.as_bool()) == Some(true) {
+                    let reason = json.get("reason").and_then(|v| v.as_str()).unwrap_or("blocked by prompt hook");
+                    return HookOutcome { block: true, block_reason: Some(reason.into()), ..Default::default() };
+                }
+            }
+            // 不是 block 就看有没有 additionalContext
+            interpret_stdout(&text)
+        }
+        Err(e) => {
+            tracing::warn!("[hooks] prompt handler LLM call failed: {e}");
+            HookOutcome::default()
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
