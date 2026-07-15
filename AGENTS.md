@@ -19,7 +19,7 @@
 
 WASM 模块导出的 C 函数必须使用 `extension_` 前缀：
 - `extension_version()` / `extension_init()` / `extension_execute_tool(...)`
-- `extension_on_input(...)` / `extension_on_context(...)` / `extension_on_system_prompt(...)` 等 31 个钩子
+- `extension_on_input(...)` / `extension_on_context(...)` / `extension_on_system_prompt(...)` 等约 30 个生命周期钩子 + 单例管理 + RPC + Gate
 - `extension_on_rpc(...)` — extension_rpc 入口
 
 **不要使用 `plugin_*` 前缀，已废弃。**
@@ -360,7 +360,7 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/design/EXTENSION_ECOSYSTEM.md](./docs/design/EXTENSION_ECOSYSTEM.md) | Extension 生态验证：子 Worker 创建 + 事件发射 + CLI 验证 (已验证) |
 | [docs/design/HOOK_SYSTEM.md](./docs/design/HOOK_SYSTEM.md) | Shell Hook 系统设计 (TRAE 兼容, 已被 HOOKS_AND_OUTLINE_SYNC 取代) |
 | [docs/design/HOOKS_GUIDE.md](./docs/design/HOOKS_GUIDE.md) | **Hooks 使用指南**（内容文档，0 代码）：是什么/怎么配/CLI 怎么调/数据链路/大纲同步用例/FAQ (开发中) |
-| [docs/design/HOOKS_AND_OUTLINE_SYNC.md](./docs/design/HOOKS_AND_OUTLINE_SYNC.md) | **Hooks 实现规格**（给写代码的人）：Rust 数据结构 + handler 执行引擎 + 补丁 1/2 改动清单 + bug fix (补丁 1 ✅ / 补丁 2 🔧) |
+| [docs/design/HOOKS_AND_OUTLINE_SYNC.md](./docs/design/HOOKS_AND_OUTLINE_SYNC.md) | **Hooks 实现规格**（给写代码的人）：Rust 数据结构 + handler 执行引擎 + 补丁 1/2 改动清单 + bug fix (补丁 1 ✅ / 补丁 2 ✅) |
 | [docs/testing/HOOKS_CLI_TEST.md](./docs/testing/HOOKS_CLI_TEST.md) | **Hooks CLI 测试指南**：RPC 接口规格 + Group A-H 验证用例 + 完整请求/响应 JSON (Group A ✅) |
 | [docs/design/TEAM_ORCHESTRATION.md](./docs/design/TEAM_ORCHESTRATION.md) | Team 编排（agent.md 驱动）— `ion --host --agent coordinator` 拆任务开发 (已验证) |
 | [docs/design/WORKFLOW_GATE.md](./docs/design/WORKFLOW_GATE.md) | Workflow Gate — 内核级交付校验 (已完成) |
@@ -600,15 +600,15 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 
 - CLI 45+ 参数 (对齐 pi 41 核心参数)
 - Provider 抽象层 (`ion-provider` 独立 crate)
-- Agent 循环 (内外两层 + 31 扩展钩子 + 23 已接入)
-- 21 个内置工具 (read/write/edit/bash/grep/find/ls/calculator/echo + 7 Git + spawn/send/resume/await channel_send/kill) + 真实 bash 执行
+- Agent 循环 (内外两层 + 约 45 个 Extension trait 方法 + 23 已接入)
+- 约 27 个内置工具 (read/write/edit/bash/grep/find/ls/calculator/echo + 7 Git + spawn/send/resume/await channel_send/kill + global_memory_search/save + branch_session + remote tool) + 真实 bash 执行
 - 会话管理 (JSONL v3 + 实时索引 + fork/continue/resume + cwd-hash 分组)
 - --export HTML (pi 模板)
 - --agent (内置 build/explore/plan + 自定义 .md)
 - --skill / --extension (JSON + WASM 扩展)
 - config.json + auth.json 配置系统
 - Manager 守护进程 (spawn Worker + IO Bridge + 事件转发)
-- Worker 子进程 (75 RPC 命令 + 真实 LLM + 工具调用)
+- Worker 子进程 (约 124 个 RPC 命令 + 真实 LLM + 工具调用)
 - WorkerHandle + ExtensionApi (扩展能 create_worker/send/channel_send/emit)
 - WASM 扩展完整链路 (注册工具 + 内存读取 + WASM-backed 执行)
 - Worktree 隔离 (创建/清理/分支保留, `reclaim()`, `ION_WORKTREE_ROOT` 生效)
@@ -621,7 +621,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 - `ExtensionApi::emit_extension_event()` — 扩展发射自定义事件
 - `ExtensionEventBus` — 事件总线 + broadcast + backpressure
 - `on_extension_rpc()` — AgentExtension 新增钩子
-- 21 个 Worker 编排工具（spawn_worker / send_to_worker / resume_worker / await_worker / channel_send / kill_worker）
+- 6 个 Worker 编排工具（spawn_worker / send_to_worker / resume_worker / await_worker / channel_send / kill_worker）
 - 完整 steer/follow_up/abort/promote_follow_up 行为对齐 pi
 - Unix socket IPC（Manager ↔ CLI client）
 - `ion rpc` client — Manager 级 / Instance / Tool / Extension 四类 RPC
@@ -653,7 +653,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - `disallowed_tools` 黑名单生效（之前被忽略的 bug 已修）
   - runtime 默认 local（不从全局继承），`--local`/`--remote` flag 即时切换
   - **验证**: 5 任务串行 converge + 3 阶段 pipeline（develop→merge→publish GitHub）全部通过
-- **测试**: 514 个 Rust 测试 + 37 MCP CI 全部通过 ✅（截至 2026-07-12）
+- **测试**: 488 个 Rust 测试 + 37 MCP CI + 30 hooks CI 全部通过 ✅（截至 2026-07-15）
 - **消息拉取（Message Retrieval）** — 9 接口 + 分页/视点/过滤/turn 聚合（已验证）
   - `message_retrieval.rs` 纯函数模块（~1000 行）— retrieve_messages/turns/inputs/turn_detail
   - turn_summary entry — 每轮 turn 结束自动落盘（含 abort/error turn）
@@ -704,12 +704,12 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - 5 模块 ~800 行：`src/hooks/{mod,handler_runner,matcher,stdin_builder,extension}.rs`
   - `hooks.json` 配置（全局 + 项目级合并，每次事件触发动态读 = 热重载）
   - 12 事件映射 → Extension trait（SessionStart/End/PreCompact/UserPromptSubmit/PreToolUse/PostToolUse/PostToolUseFailure/PermissionRequest/SubagentStart/SubagentStop/Stop/Notification）
-  - 5 种 handler：command ✅（spawn bash + 退出码 0/2/3 协议）/ http ✅（POST + HTTPS 校验）/ agent ✅（Runtime::spawn_worker，真能调工具）/ prompt 🔧 stub / mcp_tool 🔧 stub
-  - Agent handler 递归保护：`ION_HOOK_DEPTH` 跨进程传递（入口 depth=0 → 子 depth=1 → 子子 depth=2 跳过），防 Stop 事件配 agent handler 死循环
+  - 5 种 handler：command ✅（spawn bash + 退出码 0/2/3 协议）/ http ✅（POST + HTTPS 校验）/ prompt ✅（调 ApiRegistry 做 LLM 判断）/ agent ✅（Runtime::spawn_worker，真能调工具）/ mcp_tool 🔧 stub（方案 C 架构限制，用 command 替代）
+  - Agent handler 递归保护：`ION_HOOK_DEPTH` 跨进程传递（入口 depth=0 能 spawn → 子 depth>=1 跳过），防 Stop 事件配 agent handler 死循环
   - `scripts/hooks_test.sh`（纯 bash 验证工具，不依赖 Rust）
   - 补丁 1：`ExtensionWorkerConfig` 字段补齐（agent/initial_prompt/worktree/allowed_tools/disallowed_tools/max_turns）
   - `Agent.runtime` 从 `Box<dyn>` 改 `Arc<dyn>`（让 HookExtension clone 共享）
-  - **验证**: hooks_ci 8 + hooks_agent_ci 4 + hooks_e2e 10 + patch1 5 = 27 测试全过 ✅
+  - **验证**: hooks_ci 8 + hooks_agent_ci 4 + hooks_e2e 10 + patch1 5 + hooks_agent_real 3（真实 LLM DeepSeek）= 30 测试全过 ✅
 
 ### 🔌 MCP 系统（Model Context Protocol，Phase 1-4 全部实现）
 
@@ -918,11 +918,11 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 **P5 - 包管理（低优先级）:**
 - install/remove/update 子命令
 
-### 测试统计 (2026-07-12)
+### 测试统计 (2026-07-15)
 
 | 套件 | 数量 | 覆盖 |
 |------|------|------|
-| lib tests (核心逻辑) | 348 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact/FileSnapshot(object_store[+zstd压缩]/scanner/snapshot[+session_id]/diff/gc/restore[+XL3截断安全]/tree_store/approval)/TierModels |
+| lib tests (核心逻辑) | 361 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact/FileSnapshot(object_store[+zstd压缩]/scanner/snapshot[+session_id]/diff/gc/restore[+XL3截断安全]/tree_store/approval)/TierModels/Hooks |
 | unit_rpc_test (RPC 协议) | 20 | U1-U20 RPC 命令覆盖 + 接口格式兼容 |
 | manager_integration (集成) | 25 | Manager + Worker + 事件 + UI + 消息拉取 |
 | session_tree_test (集成) | 4 | only-append 审计/branch 接 leaf/全操作序列 |
@@ -934,7 +934,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | child_worker / concurrency | 4 | 子进程通信/并发池 |
 | memory_e2e | 6 | Memory 扩展存储/搜索/注入/去重 |
 | ion-provider 单元 | 70 | OpenAI/Anthropic/Google/FauxProvider/RecordReplay/transform_messages |
-| **小计 Rust 测试** | **518** | 全部通过 ✅ |
+| **小计 Rust 测试** | **488** | 全部通过 ✅ |
 | faux_scenarios_ci (CLI E2E) | 4 | 三场景 faux（直接执行/host/serve） |
 | record_replay_ci (CLI E2E) | 11 | 录制/回放/路径穿越/冲突/OVERWRITE/权限 |
 | crash_recovery_ci (CLI E2E) | 6 | stderr/exit_code/Dead/父通知 |
@@ -953,9 +953,10 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | sessions_ci (CLI E2E) | 20 | Group A-D：ion sessions 主仓库过滤/--all/JSON 字段完整性(含cache)/worktree 聚合/表格格式/非git降级 |
 | hooks_ci (CLI E2E) | 8 | Group A-D：hooks 配置加载/热重载/validate/list + B.1 拦截--no-verify(command) + B.2 注入约定(command) + B.3 Stop检查测试(command) |
 | hooks_agent_ci (CLI E2E) | 4 | Group E：agent handler 真能 spawn 子 Worker（FauxProvider 驱动）+ 死循环防护(hook_depth) + 子 Worker 跑完 |
+| hooks_agent_real (CLI E2E, ION_E2E=1) | 3 | 真实 LLM (DeepSeek) 验证 agent handler 子 Worker 真能用 read 工具读文件 + 死循环防护 |
 | hooks_e2e (集成) | 10 | 内核引擎：HooksConfig加载/handler_count/热重载/command block/no-verify/正常放行/注入上下文/Stop block+放行/agent handler不panic |
 | patch1_worker_config (集成) | 5 | ExtensionWorkerConfig 字段序列化/透传/默认值/边界值 |
-| **测试覆盖合计** | **937** | 全部通过 ✅（含 hooks 27 case：hooks_ci 8 + hooks_agent_ci 4 + hooks_e2e 10 + patch1 5） |
+| **测试覆盖合计** | **748** | 全部通过 ✅（Rust 488 + CLI E2E 260，含 hooks 30 case + 真实 LLM 3 case） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
@@ -970,9 +971,9 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 **P6 - Shell Hook 系统 (TRAE 兼容) ✅ 已完成:**
 - 详细设计文档见 [docs/design/HOOKS_GUIDE.md](./docs/design/HOOKS_GUIDE.md)（使用指南）+ [docs/design/HOOKS_AND_OUTLINE_SYNC.md](./docs/design/HOOKS_AND_OUTLINE_SYNC.md)（实现规格）+ [docs/testing/HOOKS_CLI_TEST.md](./docs/testing/HOOKS_CLI_TEST.md)（CLI 测试）
 - 内核补 2 块能力：(1) `ExtensionWorkerConfig` 字段补齐（agent/initial_prompt/worktree/allowed_tools/max_turns/hook_depth）；(2) Hooks 系统（HooksConfig + HookExtension + 5 种 handler 执行引擎，~800 行）
-- handler 完成度：command ✅ / http ✅ / agent ✅（真能调工具，修 pi 的坑）/ prompt 🔧 stub / mcp_tool 🔧 stub
+- handler 完成度：command ✅ / http ✅ / prompt ✅ / agent ✅（真能调工具，修 pi 的坑）/ mcp_tool 🔧 stub（方案 C 架构限制）
 - 对齐 pi 的 `extensions/pi-hooks/`（12 事件 + 5 handler），修 pi 的坑：agent handler 真传 tools（不退化成单轮 LLM）
-- hook_depth 跨进程递归保护（防 agent handler 死循环）：入口 Worker depth=0 → 子 Worker depth=1 → 子子 depth=2 跳过
+- hook_depth 跨进程递归保护（防 agent handler 死循环）：入口 Worker depth=0 能 spawn → 子 Worker depth>=1 跳过
 - 热重载（每次事件触发动态读 hooks.json，改完即生效）
 - 大纲同步（MD ↔ outline.json）作为配置式用例（纯 hooks.json + shell 脚本，0 行内核扩展代码）
 - **验证**: hooks_ci 8 + hooks_agent_ci 4 + hooks_e2e 10 + patch1 5 = 27 测试全过

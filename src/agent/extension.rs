@@ -80,7 +80,7 @@ pub struct SessionSwitchContext {
 }
 
 // ---------------------------------------------------------------------------
-// Extension trait — 31 hook points matching pi spec
+// Extension trait — ~30 lifecycle hooks + singleton management + RPC + gate (matching pi spec)
 // ---------------------------------------------------------------------------
 
 #[async_trait]
