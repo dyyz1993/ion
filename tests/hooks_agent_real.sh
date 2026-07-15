@@ -88,11 +88,12 @@ else
     fail "R2 子 Worker 用了 read 工具（没检测到 read/test.md）"
 fi
 
-# 验证 3：没有死循环
-if [ "$WKR_COUNT" -le 4 ]; then
-    pass "R3 没有死循环（worker 数=$WKR_COUNT <= 4）"
+# 验证 3：没有死循环（入口 Worker 可能因 retry 触发多次 Stop，
+# 但 hook_depth >= 1 保护让子 Worker 不再 spawn，所以总数应该 <= 3）
+if [ "$WKR_COUNT" -le 3 ]; then
+    pass "R3 没有死循环（worker 数=$WKR_COUNT <= 3）"
 else
-    fail "R3 没有死循环（worker 数=$WKR_COUNT > 4）"
+    fail "R3 没有死循环（worker 数=$WKR_COUNT > 3）"
 fi
 
 rm -rf "$TEST_DIR"

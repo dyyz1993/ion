@@ -121,10 +121,10 @@ impl HookExtension {
 
         for (matcher_str, handler) in handlers {
             // ── agent handler 递归保护 ──
-            // depth >= 2 说明当前 Worker 是 hooks spawn 的子 Worker
-            // 入口 Worker depth=1，能 spawn（这是用户要的）
-            // 子 Worker depth=2+，跳过 agent handler 阻断递归
-            if handler.handler_type == super::HandlerType::Agent && hook_depth >= 2 {
+            // depth >= 1 说明当前 Worker 是 hooks spawn 的子 Worker
+            // 入口 Worker depth=0，能 spawn（这是用户要的）
+            // 子 Worker depth=1+，跳过 agent handler 阻断递归
+            if handler.handler_type == super::HandlerType::Agent && hook_depth >= 1 {
                 tracing::info!(
                     "[hooks] 跳过 agent handler（递归深度 {} >= 2，防死循环）",
                     hook_depth
