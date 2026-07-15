@@ -362,6 +362,10 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/design/HOOKS_GUIDE.md](./docs/design/HOOKS_GUIDE.md) | **Hooks 使用指南**（内容文档，0 代码）：是什么/怎么配/CLI 怎么调/数据链路/大纲同步用例/FAQ (开发中) |
 | [docs/design/HOOKS_AND_OUTLINE_SYNC.md](./docs/design/HOOKS_AND_OUTLINE_SYNC.md) | **Hooks 实现规格**（给写代码的人）：Rust 数据结构 + handler 执行引擎 + 补丁 1/2 改动清单 + bug fix (补丁 1 ✅ / 补丁 2 ✅) |
 | [docs/testing/HOOKS_CLI_TEST.md](./docs/testing/HOOKS_CLI_TEST.md) | **Hooks CLI 测试指南**：RPC 接口规格 + Group A-H 验证用例 + 完整请求/响应 JSON (Group A ✅) |
+| [docs/design/PERMISSION_STORE.md](./docs/design/PERMISSION_STORE.md) | Stored-Decision 权限记忆：用户选"always allow"后持久化，下次自动放行 (待定) |
+| [docs/design/SKILL_TOOL.md](./docs/design/SKILL_TOOL.md) | Skill 工具：让 LLM 按需调用 skill（不是启动时注入）+ list/inject/fork 模式 (待定) |
+| [docs/design/PROVIDER_PROTOCOLS_TODO.md](./docs/design/PROVIDER_PROTOCOLS_TODO.md) | 缺失 Provider 协议规划：Mistral/Azure/Codex/Vertex/Bedrock 5 个协议补齐方案 (待定) |
+| [docs/design/EXTENSION_HOST_API.md](./docs/design/EXTENSION_HOST_API.md) | Extension Host API：ctx.fs 统一文件访问 + WASM 文件读取 + 4 级数据目录 (待定) |
 | [docs/design/TEAM_ORCHESTRATION.md](./docs/design/TEAM_ORCHESTRATION.md) | Team 编排（agent.md 驱动）— `ion --host --agent coordinator` 拆任务开发 (已验证) |
 | [docs/design/WORKFLOW_GATE.md](./docs/design/WORKFLOW_GATE.md) | Workflow Gate — 内核级交付校验 (已完成) |
 | [docs/design/WORKFLOW_ENGINE.md](./docs/design/WORKFLOW_ENGINE.md) | Workflow Engine — 结构化交付流水线 DSL + 执行流程 + CI Group (已验证) |
