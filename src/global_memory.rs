@@ -152,11 +152,23 @@ impl GlobalMemoryStore {
         }
 
         // 2. FTS5 无结果 → LIKE 模糊匹配（中文 fallback）
-        //    把 query 拆成词（空格/标点分隔），每个词分别 LIKE，命中任一词即匹配
-        let words: Vec<&str> = query.split(|c: char| c.is_whitespace() || "，。、！？".contains(c))
-            .filter(|s| !s.is_empty())
-            .collect();
-        let words = if words.is_empty() { vec![query] } else { words };
+        //    先按空格/标点拆词，再把连续中文段按 2 字滑动窗口拆（中文无空格分词）
+        let mut words: Vec<String> = Vec::new();
+        for part in query.split(|c: char| c.is_whitespace() || "，。、！？".contains(c)) {
+            if part.is_empty() { continue; }
+            // 检查是否含中文字符
+            let has_cjk = part.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
+            if has_cjk && part.chars().count() > 2 {
+                // 连续中文：2 字滑动窗口（bigram）
+                let chars: Vec<char> = part.chars().collect();
+                for i in 0..chars.len().saturating_sub(1) {
+                    words.push(chars[i..i+2].iter().collect());
+                }
+            } else {
+                words.push(part.to_string());
+            }
+        }
+        let words: Vec<&str> = if words.is_empty() { vec![query] } else { words.iter().map(|s| s.as_str()).collect() };
 
         let mut like_rows = Vec::new();
         for word in &words {
