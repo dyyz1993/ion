@@ -24,6 +24,24 @@ pub struct GlobalMemoryEntry {
     pub updated_at: i64,
 }
 
+/// 大纲索引条目（outlines 表）
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OutlineEntry {
+    pub id: String,
+    pub summary: String,
+    pub project: String,
+    pub entry_count: i64,
+    pub updated_at: i64,
+}
+
+/// consolidate 结果统计
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ConsolidationStats {
+    pub deduplicated: usize,
+    pub archived: usize,
+    pub total: usize,
+}
+
 /// 全局记忆库（线程安全，Arc<Mutex<Connection>>）
 pub struct GlobalMemoryStore {
     conn: Arc<Mutex<Connection>>,
@@ -153,6 +171,94 @@ impl GlobalMemoryStore {
                 .collect::<Result<Vec<_>, _>>().map_err(|e| format!("row: {}", e))?
         };
         Ok(rows)
+    }
+
+    /// 列出所有项目的大纲索引（outlines 表）
+    pub fn list_outlines(&self) -> Result<Vec<OutlineEntry>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, summary, project, entry_count, updated_at FROM outlines ORDER BY entry_count DESC"
+        ).map_err(|e| format!("prepare: {}", e))?;
+        let rows = stmt.query_map([], |row| {
+            Ok(OutlineEntry {
+                id: row.get(0)?,
+                summary: row.get(1)?,
+                project: row.get(2)?,
+                entry_count: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        }).map_err(|e| format!("query: {}", e))?;
+        let mut result = Vec::new();
+        for r in rows {
+            result.push(r.map_err(|e| format!("row: {}", e))?);
+        }
+        Ok(result)
+    }
+
+    /// 整理全局记忆库：去重 + 归档 + 更新大纲索引
+    pub fn consolidate(&self) -> Result<ConsolidationStats, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let mut stats = ConsolidationStats::default();
+
+        // 1. 去重：内容完全相同的记忆，保留 importance 最高的，其余 archived
+        let dupes: Vec<(String, usize)> = {
+            let mut stmt = conn.prepare(
+                "SELECT content FROM entries WHERE archived=0 GROUP BY content HAVING COUNT(*) > 1"
+            ).map_err(|e| format!("prepare dupes: {}", e))?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))
+                .map_err(|e| format!("query dupes: {}", e))?;
+            let mut dups = Vec::new();
+            for r in rows {
+                let content = r.map_err(|e| format!("row: {}", e))?;
+                // 找这个 content 里 importance 最高的 id
+                let max_id: Option<String> = conn.query_row(
+                    "SELECT id FROM entries WHERE content=?1 AND archived=0 ORDER BY importance DESC LIMIT 1",
+                    rusqlite::params![content],
+                    |row| row.get(0)
+                ).ok();
+                if let Some(keep_id) = max_id {
+                    let changed = conn.execute(
+                        "UPDATE entries SET archived=1 WHERE content=?1 AND archived=0 AND id != ?2",
+                        rusqlite::params![content, keep_id],
+                    ).map_err(|e| format!("dedup update: {}", e))?;
+                    stats.deduplicated += changed;
+                    dups.push((keep_id, changed));
+                }
+            }
+            dups
+        };
+
+        // 2. 归档：importance=0 且超过 30 天的 → archived=1
+        let thirty_days_ago = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64 - 30 * 86400)
+            .unwrap_or(0);
+        stats.archived = conn.execute(
+            "UPDATE entries SET archived=1 WHERE importance=0 AND created_at < ?1 AND archived=0",
+            rusqlite::params![thirty_days_ago],
+        ).map_err(|e| format!("archive update: {}", e))?;
+
+        // 3. 更新大纲索引（outlines 表）
+        conn.execute("DELETE FROM outlines", []).map_err(|e| format!("clear outlines: {}", e))?;
+        conn.execute(
+            "INSERT INTO outlines (id, summary, project, entry_count, updated_at)
+             SELECT
+                project,
+                COALESCE(GROUP_CONCAT(SUBSTR(content, 1, 80), ' | '), ''),
+                project,
+                COUNT(*),
+                unixepoch()
+             FROM entries WHERE archived = 0
+             GROUP BY project",
+            [],
+        ).map_err(|e| format!("update outlines: {}", e))?;
+
+        // 统计剩余活跃条数
+        stats.total = conn.query_row(
+            "SELECT COUNT(*) FROM entries WHERE archived=0", [], |row| row.get(0)
+        ).unwrap_or(0);
+
+        Ok(stats)
     }
 
     /// 获取全局记忆库路径

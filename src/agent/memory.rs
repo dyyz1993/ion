@@ -87,6 +87,10 @@ pub struct MemoryStore {
     pub turn_count: u64,
     /// 待注入队列（on_input 写入，on_context 消费）
     pub pending: Vec<PendingInject>,
+    /// 全局记忆待注入队列（on_input 搜全局库写入，on_context 消费）
+    pub pending_global: Vec<String>,
+    /// 全局记忆去重 hash（最近注入过的 content hash，20 轮窗口）
+    pub global_injected_hashes: Vec<(String, u64)>,  // (hash, turn_when_injected)
     /// V0.2 全局存储句柄（统一存储层：有则走 SQLite，无则 fallback JSON）
     pub global_store: Option<crate::global_memory::GlobalMemoryStore>,
     /// 项目名（用于 V0.2 的 project 字段）
@@ -119,6 +123,8 @@ impl MemoryStore {
             storage,
             turn_count: 0,
             pending: Vec::new(),
+            pending_global: Vec::new(),
+            global_injected_hashes: Vec::new(),
             global_store,
             project_name,
         }
@@ -140,6 +146,8 @@ impl MemoryStore {
             storage,
             turn_count: 0,
             pending: Vec::new(),
+            pending_global: Vec::new(),
+            global_injected_hashes: Vec::new(),
             global_store: None,
             project_name,
         }
@@ -482,13 +490,30 @@ impl Extension for MemoryExtension {
     async fn on_system_prompt(&self, prompt: &mut String) -> AgentResult<()> {
         let store = self.store.lock().await;
         let index = store.read_index();
-        if index.is_empty() { return Ok(()); }
-        let mut xml = String::from("\n<memory_outline>\n");
-        for i in &index {
-            xml.push_str(&format!("  <category id=\"{}\" summary=\"{}\"/>\n", i.id, i.summary));
+        // ── 项目级大纲（V0.1）──
+        if !index.is_empty() {
+            let mut xml = String::from("\n<memory_outline>\n");
+            for i in &index {
+                xml.push_str(&format!("  <category id=\"{}\" summary=\"{}\"/>\n", i.id, i.summary));
+            }
+            xml.push_str("</memory_outline>");
+            prompt.push_str(&xml);
         }
-        xml.push_str("</memory_outline>");
-        prompt.push_str(&xml);
+
+        // ── 全局记忆大纲（V0.2 Active Memory）──
+        if let Some(ref global) = store.global_store {
+            if let Ok(outlines) = global.list_outlines() {
+                if !outlines.is_empty() {
+                    let mut xml = String::from("\n<global_memory_outline>\n");
+                    for o in &outlines {
+                        let summary_preview: String = o.summary.chars().take(100).collect();
+                        xml.push_str(&format!("  {} ({} entries): {}\n", o.project, o.entry_count, summary_preview));
+                    }
+                    xml.push_str("</global_memory_outline>");
+                    prompt.push_str(&xml);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -520,7 +545,7 @@ impl Extension for MemoryExtension {
         self.emit("transcript_appended", serde_json::json!({"turn_id": text.len()}));
         let mut store = self.store.lock().await;
 
-        // ── Consolidation：每 5 轮触发一次 ──
+        // ── Consolidation：每 5 轮触发一次（项目级）──
         if store.turn_count % 5 == 0 {
             let index = store.read_index();
             let mut total = 0usize;
@@ -528,16 +553,27 @@ impl Extension for MemoryExtension {
                 let entries = store.read_outline(&i.id);
                 let active_count = entries.iter().filter(|e| !e.archived).count();
                 total += entries.len();
-                // 只更新 index.entry_count，不物理删除 archived 条目
                 let mut new_idx = store.read_index();
                 if let Some(idx_entry) = new_idx.iter_mut().find(|x| x.id == i.id) {
                     idx_entry.entry_count = active_count;
                 }
                 store.write_index(&new_idx);
             }
-            drop(store);
+            // emit 不需要 drop store（emit 是 &self 方法，不需要 store）
             self.emit("memory_consolidated", serde_json::json!({"reviewed": total}));
-            return Ok(());
+        }
+
+        // ── 全局整理（V0.2 Active Memory）：每 10 轮触发一次 ──
+        if store.turn_count % 10 == 0 {
+            if let Some(ref global) = store.global_store {
+                if let Ok(stats) = global.consolidate() {
+                    self.emit("global_memory_consolidated", serde_json::json!({
+                        "deduplicated": stats.deduplicated,
+                        "archived": stats.archived,
+                        "total_remaining": stats.total,
+                    }));
+                }
+            }
         }
 
         // 搜索匹配的记忆
@@ -571,13 +607,64 @@ impl Extension for MemoryExtension {
                 });
             }
         }
+
+        // ── 全局记忆检索（V0.2 Active Memory）──
+        // 用 FTS5 搜全局库，命中则标记待注入（on_context 消费）
+        if let Some(ref global) = store.global_store {
+            let t0 = std::time::Instant::now();
+            let global_results = global.search(text, None).unwrap_or_default();
+            let search_ms = t0.elapsed().as_millis();
+
+            // 去重：跳过最近 20 轮注入过的（content hash 对比）
+            let turn = store.turn_count;
+            store.global_injected_hashes.retain(|(_, t)| *t + 20 > turn);
+
+            let to_inject: Vec<_> = global_results.into_iter()
+                .take(5)  // 最多注入 5 条
+                .filter(|e| {
+                    let hash = simple_hash(&e.content);
+                    !store.global_injected_hashes.iter().any(|(h, _)| *h == hash)
+                })
+                .collect();
+
+            if !to_inject.is_empty() {
+                let xml = to_inject.iter()
+                    .map(|e| format!("[{}] {} (project: {})", e.category, e.content, e.project))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                store.pending_global.push(xml);
+                // 记录 hash 用于去重
+                for e in &to_inject {
+                    let hash = simple_hash(&e.content);
+                    store.global_injected_hashes.push((hash, turn));
+                }
+                let inject_chars: usize = to_inject.iter().map(|e| e.content.chars().count()).sum();
+                drop(store);
+                self.emit("memory_search_stat", serde_json::json!({
+                    "search_ms": search_ms, "hits": to_inject.len(), "inject_chars": inject_chars
+                }));
+            }
+        }
+
         Ok(())
     }
 
     /// 发 LLM 前 → 检查待注入队列 → push 到 messages
     async fn on_context(&self, messages: &mut Vec<super::messages::Message>) -> AgentResult<()> {
         let mut store = self.store.lock().await;
-        if store.pending.is_empty() { return Ok(()); }
+        if store.pending.is_empty() && store.pending_global.is_empty() { return Ok(()); }
+
+        use super::messages::*;
+
+        // ── 全局记忆注入（V0.2 Active Memory）──
+        while let Some(xml) = store.pending_global.pop() {
+            let inject_text = format!("<global_memory>\n以下是跨项目相关记忆：\n{xml}\n</global_memory>");
+            messages.push(Message::User(UserMessage {
+                role: "user".into(),
+                content: vec![ContentBlock::Text(TextContent { text: inject_text, text_signature: None })],
+                timestamp: 0,
+            }));
+        }
 
         use super::messages::*;
         while let Some(pending) = store.pending.pop() {
@@ -693,4 +780,13 @@ impl Extension for MemoryExtension {
             _ => Err(AgentError::Tool(format!("unknown memory rpc: {method}"))),
         }
     }
+}
+
+/// 简单 djb2 hash（用于全局记忆去重，跟 content_hash 同算法）
+fn simple_hash(s: &str) -> String {
+    let mut hash: u64 = 5381;
+    for b in s.bytes() {
+        hash = hash.wrapping_mul(33).wrapping_add(b as u64);
+    }
+    format!("{:x}", hash)
 }
