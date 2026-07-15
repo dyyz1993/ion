@@ -39,12 +39,14 @@ mkdir -p "$TEST_DIR/.ion"
 echo "# Test Document" > "$TEST_DIR/test.md"
 
 # hooks.json：Stop → agent handler，让子 Worker 读 test.md 并报告内容
+# once: true + loop_limit: 1 防止入口 Worker 多次 Stop 重复 spawn
 cat > "$TEST_DIR/.ion/hooks.json" <<'EOF'
 {
   "version": 1,
   "hooks": {
     "Stop": [
       {
+        "loop_limit": 1,
         "hooks": [
           {
             "type": "agent",
@@ -52,7 +54,8 @@ cat > "$TEST_DIR/.ion/hooks.json" <<'EOF'
             "prompt": "读 test.md 文件，报告它的内容。用 read 工具。",
             "max_turns": 5,
             "allowed_tools": ["read"],
-            "timeout": 60
+            "timeout": 60,
+            "once": true
           }
         ]
       }
@@ -81,11 +84,11 @@ else
     fail "R1 agent handler spawn 了子 Worker（只有 $WKR_COUNT 个）"
 fi
 
-# 验证 2：子 Worker 真的用了 read 工具（输出里有 read 工具调用或 test.md 内容）
-if echo "$OUTPUT" | grep -qiE "read|test\.md|Test Document"; then
-    pass "R2 子 Worker 用了 read 工具（检测到文件内容）"
+# 验证 2：子 Worker 真的读了文件（检测到文件内容 "Test Document" 被报告）
+if echo "$OUTPUT" | grep -q "Test Document"; then
+    pass "R2 子 Worker 用 read 工具读到文件内容（检测到 Test Document）"
 else
-    fail "R2 子 Worker 用了 read 工具（没检测到 read/test.md）"
+    fail "R2 子 Worker 用 read 工具读到文件内容（没检测到 Test Document）"
 fi
 
 # 验证 3：没有死循环（入口 Worker 可能因 retry 触发多次 Stop，
