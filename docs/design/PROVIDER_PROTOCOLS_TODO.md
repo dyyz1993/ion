@@ -1,6 +1,6 @@
 # 缺失 Provider 协议 规划文档
 
-> **状态：待定** — pi 支持 9 种 API 协议，ION 实现 4 种。本文档规划剩余 5 种的补齐方案。
+> **状态：开发中** — pi 支持 9 种 API 协议，ION 实现 5 种（mistral-conversations 已完成）。本文档规划剩余 4 种的补齐方案。
 >
 > 对标 pi 的 `packages/ai/src/providers/`。
 
@@ -17,7 +17,7 @@
 
 ## 1. 现状
 
-### ION 已实现（4 + 2 内部）
+### ION 已实现（5 + 2 内部）
 
 | 协议 | 文件 | 状态 |
 |------|------|------|
@@ -25,14 +25,14 @@
 | `anthropic-messages` | `ion-provider/src/provider/anthropic.rs` | ✅ |
 | `google-generative-ai` | `ion-provider/src/provider/google.rs` | ✅ |
 | `openai-responses` | `ion-provider/src/provider/openai_responses.rs` | ✅ |
+| `mistral-conversations` | `ion-provider/src/provider/mistral.rs` | ✅ 已实现（待真实 API 验证） |
 | `faux`（测试 mock） | `ion-provider/src/faux.rs` | ✅ 内部 |
 | `replay`（录制回放） | `ion-provider/src/replay.rs` | ✅ 内部 |
 
-### pi 有但 ION 缺（5 种）
+### pi 有但 ION 缺（4 种）
 
 | 协议 | 用途 | 严重程度 | 需要 API key |
 |------|------|---------|-------------|
-| `mistral-conversations` | Mistral AI（Codestral / Large 等） | 🔴 | Mistral API key |
 | `azure-openai-responses` | Azure 部署的 OpenAI Responses API | 🔴 | Azure endpoint + key |
 | `openai-codex-responses` | OpenAI Codex 专用（gpt-5.5-codex） | 🔴 | OpenAI Codex key |
 | `google-vertex` | Google Vertex AI（区别于 Generative AI） | 🟡 | GCP service account |
@@ -40,41 +40,68 @@
 
 ## 2. 每个协议的实现规划
 
-### 2.1 `mistral-conversations`
+### 2.1 `mistral-conversations` ✅ 已实现
 
-**Mistral Conversations API** — 类似 OpenAI 但有差异。
+**Mistral Conversations API** — 已完成实现，对齐 pi `packages/ai/src/providers/mistral.ts`。
 
-**关键差异**：
-- endpoint: `https://api.mistral.ai/v1/chat/completions`
-- 认证：`Authorization: Bearer <api_key>`
-- 消息格式：基本兼容 OpenAI，但 `system` role 处理不同（Mistral 用特定前缀）
-- tool_call 格式：与 OpenAI 略有差异
-- thinking/reasoning：Codestral 支持 `thinking` 参数
+> **状态：已实现（单元测试全过，真实 API 待验证）** — `ion-provider/src/provider/mistral.rs`（~580 行）
 
-**实现文件**：`ion-provider/src/provider/mistral.rs`（新建）
+**实现文件**：`ion-provider/src/provider/mistral.rs`
 
-**参照**：`openai.rs`（Mistral 大部分兼容 OpenAI，可继承复用 SSE 解析逻辑）
+**参照**：`openai.rs`（SSE 解析骨架）+ pi `mistral.ts`（差异处理）
 
-**改动**：
+**已处理的关键差异**（6 处）：
+
+| # | 差异 | 处理方式 |
+|---|------|---------|
+| 1 | **`delta.content` 可为字符串或数组** | `process_delta_content()` 分支处理：字符串→纯文本 delta；数组→按 `{type:"thinking"/"text"}` 拆分 |
+| 2 | **assistant thinking 作为 content part 回传** | assistant 消息序列化时把 `ThinkingContent` 转成 `{type:"thinking",thinking:[{type:"text",text:"..."}]}` |
+| 3 | **tool result 带 `name` 字段** | `MistralMessage` 加 `name: Option<String>`，tool 消息填 `tool_name` |
+| 4 | **reasoning 参数双模式** | `uses_reasoning_effort()`（mistral-small/medium → `reasoning_effort`）vs `uses_prompt_mode_reasoning()`（Codestral/Magistral → `prompt_mode:"reasoning"`） |
+| 5 | **stop reason `model_length`** | `map_stop_reason()` 把 `model_length` 映射到 `StopReason::Length` |
+| 6 | **字段 snake_case 发送** | 与 openai.rs 一致发 snake_case（Mistral HTTP 同时接受 snake/camel，snake 兼容性最广） |
+
+**额外实现**：
+- system role 直传（Mistral 支持 system role，不需前缀注入）
+- 图片支持（content parts 数组，`image_url` data URI）
+- `response_format` 400 降级重试（同 openai.rs）
+- `model.headers`（用户自定义 header，如 `x-affinity` KV-cache 复用）
+- `response_id` 提取（首个非空 chunk.id）
+
+**注册**：
 ```rust
-// ion-provider/src/provider/mod.rs 注册
-registry.register("mistral-conversations", Box::new(MistralProvider));
-
-// ion-provider/src/provider/mistral.rs
-pub struct MistralProvider;
-
-#[async_trait]
-impl ApiProvider for MistralProvider {
-    async fn stream(&self, registry, model, context, options) -> ProviderResult<EventStream> {
-        // 1. transform_messages：OpenAI 格式 + Mistral 的 system 处理
-        // 2. 构造请求 body（基本同 OpenAI，加 Mistral 专属参数）
-        // 3. POST https://api.mistral.ai/v1/chat/completions
-        // 4. 解析 SSE 流（复用 openai.rs 的 SSE 解析）
-    }
-}
+// registry.rs — BuiltinProviderFactory + ApiRegistry::register_builtins
+"mistral-conversations" => Some(Box::new(super::mistral::MistralProvider)),
 ```
 
-**估计**：~250 行（大部分复用 openai.rs）
+**认证**：`MISTRAL_API_KEY` 环境变量（已在 `env_keys.rs` 映射 `"mistral" => "MISTRAL_API_KEY"`）
+
+**测试**：
+- ✅ **15 个单元测试**（`cargo test -p ion-provider --lib mistral`）：stop reason 映射、reasoning 参数路由（effort/prompt_mode/off/非 reasoning 模型）、system role 序列化、tool result name 字段、assistant thinking content part、delta.content 字符串/数组解析、tool_call chunk 解析、process_delta_content 两条路径、build_content 顺序、provider 注册验证
+- 🔧 **2 个 `#[ignore]` 真实 API 测试**（`ION_E2E_MISTRAL=1` 触发）：`mistral_basic_stream`（文本流式）+ `mistral_tool_call`（工具调用 + system role + tool result name）
+
+**真实 API 验证命令**：
+```bash
+ION_E2E_MISTRAL=1 ION_MISTRAL_API_KEY="xxx" \
+cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture mistral
+```
+
+**models.json 配置示例**：
+```json
+{
+  "providers": {
+    "mistral": {
+      "baseUrl": "https://api.mistral.ai/v1",
+      "api": "mistral-conversations",
+      "models": {
+        "mistral-large-latest": { "id": "mistral-large-latest", "name": "Mistral Large", "maxTokens": 4096 },
+        "codestral-latest": { "id": "codestral-latest", "name": "Codestral", "reasoning": true, "maxTokens": 8192 },
+        "mistral-small-latest": { "id": "mistral-small-latest", "name": "Mistral Small", "reasoning": true, "maxTokens": 8192 }
+      }
+    }
+  }
+}
+```
 
 ### 2.2 `azure-openai-responses`
 
@@ -146,23 +173,25 @@ impl ApiProvider for MistralProvider {
 
 ## 3. 注册 + models.json 配置
 
-每个协议在 `ion-provider/src/provider/mod.rs` 的 `register_builtins` 里注册：
+每个协议在 `ion-provider/src/registry.rs` 的 `register_builtins` 里注册（mistral 已完成）：
 
 ```rust
 pub fn register_builtins(registry: &mut ModelRegistry) {
-    // 现有
+    // 现有（含 mistral）
     registry.register("openai-completions", ...);
     registry.register("anthropic-messages", ...);
     registry.register("google-generative-ai", ...);
     registry.register("openai-responses", ...);
-    // 新增
-    registry.register("mistral-conversations", Box::new(MistralProvider));
+    registry.register("mistral-conversations", Box::new(MistralProvider));  // ✅ 已完成
+    // 待新增
     registry.register("azure-openai-responses", Box::new(AzureOpenAIProvider));
     registry.register("openai-codex-responses", Box::new(CodexProvider));
     registry.register("google-vertex", Box::new(GoogleVertexProvider));
     registry.register("bedrock-converse-stream", Box::new(BedrockProvider));
 }
 ```
+
+> 注意：实际注册分两处——`ApiRegistry::register_builtins()`（运行时 provider 实例）+ `BuiltinProviderFactory::create()`（RecordingProvider 包装用）。`mod.rs` 也要加 `pub mod <name>;`。
 
 用户在 `~/.pi/agent/models.json`（ION 兼容读取）里配 provider + model：
 
@@ -194,19 +223,19 @@ pub fn register_builtins(registry: &mut ModelRegistry) {
 
 | 优先级 | 协议 | 理由 |
 |--------|------|------|
-| 1 | `mistral-conversations` | 最简单（复用 OpenAI），Codestral 是热门代码模型 |
-| 2 | `azure-openai-responses` | 简单（复用 openai_responses），Azure 企业用户多 |
-| 3 | `openai-codex-responses` | 简单（复用 openai_responses），Codex 用户 |
-| 4 | `bedrock-converse-stream` | 复杂但重要（AWS 用户多，多模型统一接口） |
-| 5 | `google-vertex` | 复杂（JWT），用户少于 Generative AI |
+| ✅ 已完成 | `mistral-conversations` | 最简单（复用 OpenAI），Codestral 是热门代码模型 |
+| 1 | `azure-openai-responses` | 简单（复用 openai_responses），Azure 企业用户多 |
+| 2 | `openai-codex-responses` | 简单（复用 openai_responses），Codex 用户 |
+| 3 | `bedrock-converse-stream` | 复杂但重要（AWS 用户多，多模型统一接口） |
+| 4 | `google-vertex` | 复杂（JWT），用户少于 Generative AI |
 
 ## 6. 并行开发注意事项
 
-- **5 个协议互相独立**，可 5 个会话并行
+- **剩余 4 个协议互相独立**，可 4 个会话并行
 - 都改 `ion-provider/src/provider/` 目录，但文件不同（各自新建一个 .rs）
-- 注册在 `mod.rs` 的 `register_builtins`——**并行时注意 git merge**，各自加一行 `registry.register(...)` 不会冲突
+- 注册在 `registry.rs` 的 `register_builtins` + `BuiltinProviderFactory::create`，`mod.rs` 加 `pub mod`——**并行时注意 git merge**，各自加几行不会冲突
 - 每个协议需要对应的 API key 才能做真实 e2e 测试（标 `ION_E2E_<PROVIDER>=1`）
-- 单元测试用 FauxProvider 验证消息转换逻辑，不调真实 API
+- 单元测试不调真实 API，验证消息转换 / body 构造逻辑
 
 ## 7. 改动文件清单（每个协议）
 

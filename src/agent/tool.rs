@@ -2,6 +2,7 @@ use super::error::{AgentError, AgentResult};
 use super::messages::ToolDef;
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -1388,5 +1389,235 @@ impl Tool for GlobalMemorySaveTool {
         let id = store.save(content, category, tags, project, importance)
             .map_err(|e| AgentError::Tool(e))?;
         Ok(format!("✅ Saved to global memory: {}", id))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Skill tool — let the LLM load a skill on demand (inject mode)
+// ---------------------------------------------------------------------------
+
+/// Skill 工具 — 让 LLM 按需加载 skill（inject 模式）
+///
+/// 对齐 pi 的 `core/tools/skill.ts`。扫描 `skill_dirs` 下的 `.md` 文件，
+/// 文件名（不含 .md）即 skill 名。`inject` 模式返回 skill 正文作为工具结果，
+/// LLM 下一轮即可看到。`fork` 模式（隔离 subtask）尚未实现，返回提示文本。
+pub struct SkillTool {
+    /// skill 根目录（全局 `~/.ion/agent/skills/` + 项目级 `<project>/.ion/skills/`）
+    pub skill_dirs: Vec<PathBuf>,
+}
+
+impl SkillTool {
+    /// 列出所有可用 skill（扫描 skill_dirs 下的 .md 文件）
+    fn list_skills(&self) -> String {
+        let mut entries: Vec<(String, String, String)> = Vec::new(); // (name, source, description)
+        for dir in &self.skill_dirs {
+            let source = dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("skills");
+            let Ok(read) = std::fs::read_dir(dir) else { continue };
+            for entry in read.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let Some(fname) = path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                if !fname.ends_with(".md") {
+                    continue;
+                }
+                let name = fname.trim_end_matches(".md").to_string();
+                let content = std::fs::read_to_string(&path).unwrap_or_default();
+                let desc = parse_skill_description(&content);
+                entries.push((name, source.to_string(), desc));
+            }
+        }
+
+        if entries.is_empty() {
+            return "No skills available.".to_string();
+        }
+
+        // 按名字去重（全局 + 项目可能同名，保留先出现的）
+        entries.dedup_by(|a, b| a.0 == b.0);
+
+        let mut out = String::from("Available skills:\n");
+        for (name, source, desc) in &entries {
+            if desc.is_empty() {
+                out.push_str(&format!("  - {name} [{source}]\n"));
+            } else {
+                out.push_str(&format!("  - {name} [{source}]: {desc}\n"));
+            }
+        }
+        out.push_str("\nUse skill_name='<name>' to load a skill.");
+        out
+    }
+
+    /// 按名字查找 skill 文件，返回其路径
+    fn find_skill(&self, name: &str) -> Option<PathBuf> {
+        for dir in &self.skill_dirs {
+            let candidate = dir.join(format!("{name}.md"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+}
+
+#[async_trait]
+impl Tool for SkillTool {
+    fn name(&self) -> &str {
+        "skill"
+    }
+
+    fn description(&self) -> &str {
+        "Load a skill by name. Skills provide specialized instructions and capabilities.\n\
+         Use this when you need domain-specific guidance (e.g., code-review, testing, deployment).\n\
+         Pass skill_name='list' to see all available skills."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "skill_name": {
+                    "type": "string",
+                    "description": "Name of the skill to load (e.g., 'code-review', 'testing'). Use 'list' to see available skills."
+                },
+                "context": {
+                    "type": "string",
+                    "enum": ["inject", "fork"],
+                    "description": "How to apply the skill. 'inject' = add to current context (default). 'fork' = run in isolated subtask (not yet implemented)."
+                }
+            },
+            "required": ["skill_name"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let name = args
+            .get("skill_name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing 'skill_name'".into()))?;
+        let context_mode = args
+            .get("context")
+            .and_then(|v| v.as_str())
+            .unwrap_or("inject");
+
+        // fork 模式：尚未实现，返回提示文本（不报错）
+        if context_mode == "fork" {
+            return Ok(format!(
+                "Skill '{name}': 'fork' mode is not yet implemented (requires a subtask primitive). \
+                 Use context='inject' (default) to load the skill into the current context."
+            ));
+        }
+
+        // list 模式：列出可用 skill
+        if name == "list" {
+            return Ok(self.list_skills());
+        }
+
+        // 查找 skill 文件
+        let skill_path = self.find_skill(name).ok_or_else(|| {
+            AgentError::Tool(format!("skill '{name}' not found in {:?}", self.skill_dirs))
+        })?;
+        let content = std::fs::read_to_string(&skill_path)?;
+
+        // 解析 frontmatter + body
+        let (_frontmatter, body) = parse_skill_content(&content);
+
+        // inject 模式：返回 skill 正文（agent loop 把它当作工具结果，LLM 下一轮可见）
+        Ok(format!("Skill '{name}' loaded:\n\n{body}"))
+    }
+}
+
+/// 解析 skill 文件：返回 (frontmatter 原始文本, body 正文)
+///
+/// 支持 YAML frontmatter（`---` 包裹）。如果没有 frontmatter，frontmatter 为空，
+/// body 为全部内容。
+fn parse_skill_content(content: &str) -> (String, String) {
+    let trimmed = content.trim_start();
+    if let Some(rest) = trimmed.strip_prefix("---") {
+        // 找闭合的 ---
+        if let Some(end) = rest.find("\n---") {
+            let frontmatter = rest[..end].to_string();
+            // 跳过闭合的 "---" 和它后面的换行
+            let after = &rest[end + 4..];
+            let body = after.trim_start_matches('\n').to_string();
+            return (frontmatter, body);
+        }
+    }
+    (String::new(), content.to_string())
+}
+
+/// 从 frontmatter 提取 description 字段（用于 list 输出）
+fn parse_skill_description(content: &str) -> String {
+    let (frontmatter, _) = parse_skill_content(content);
+    for line in frontmatter.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("description:") {
+            let val = rest.trim().trim_matches(|c| c == '"' || c == '\'');
+            if !val.is_empty() {
+                return val.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+#[cfg(test)]
+mod skill_tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_skill_content_with_frontmatter() {
+        let content = "---\nname: test\ndescription: A test skill\n---\n# Test\nDo the thing.";
+        let (fm, body) = parse_skill_content(content);
+        assert!(fm.contains("name: test"));
+        assert!(fm.contains("description: A test skill"));
+        assert!(body.starts_with("# Test"));
+        assert!(body.contains("Do the thing."));
+    }
+
+    #[test]
+    fn test_parse_skill_content_without_frontmatter() {
+        let content = "# Plain Skill\nJust text.";
+        let (fm, body) = parse_skill_content(content);
+        assert!(fm.is_empty());
+        assert_eq!(body, content);
+    }
+
+    #[test]
+    fn test_parse_skill_description() {
+        let content = "---\nname: review\ndescription: Code review guidance\n---\nbody";
+        assert_eq!(parse_skill_description(content), "Code review guidance");
+    }
+
+    #[test]
+    fn test_parse_skill_description_missing() {
+        let content = "# No frontmatter here";
+        assert_eq!(parse_skill_description(content), "");
+    }
+
+    #[test]
+    fn test_skill_tool_list_empty() {
+        let tool = SkillTool {
+            skill_dirs: vec![PathBuf::from("/nonexistent/path")],
+        };
+        let out = tool.list_skills();
+        assert!(out.contains("No skills available"));
+    }
+
+    #[test]
+    fn test_skill_tool_find_not_found() {
+        let tool = SkillTool {
+            skill_dirs: vec![PathBuf::from("/nonexistent/path")],
+        };
+        assert!(tool.find_skill("ghost").is_none());
     }
 }

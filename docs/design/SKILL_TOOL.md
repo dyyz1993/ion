@@ -1,6 +1,6 @@
 # Skill 工具 — LLM 按需调用 设计文档
 
-> **状态：待定** — 让 LLM 在对话过程中主动调用 skill，而不是只在启动时 `--skill` 注入。
+> **状态：已完成** — SkillTool 已实现（inject 模式），list / inject / fork(未实现提示) 全部验证通过。fork 模式待后续实现（需 subtask 内核原语）。
 >
 > 对齐 pi 的 `core/tools/skill.ts`。
 
@@ -141,49 +141,114 @@ Use skill_name='list' to see all available skills.
 
 | 文件 | 改动 | 行数 |
 |------|------|------|
-| `src/agent/tool.rs` | 新增 SkillTool struct + impl Tool | ~100 |
-| `src/bin/ion_worker.rs` | 注册 SkillTool（扫描 skill 目录） | ~15 |
-| `src/bin/ion.rs` | system prompt 加 skill 提示 | ~10 |
-| `tests/skill_tool_ci.sh` | CLI 测试 | ~50 |
-| **总计** | | **~175** |
+| `src/agent/tool.rs` | 新增 SkillTool struct + impl Tool + frontmatter 解析 + 6 单元测试 | ~230 |
+| `src/bin/ion_worker.rs` | 注册 SkillTool + system prompt 加 skill 提示（`build_skill_hint`） | ~55 |
+| `tests/skill_tool_ci.sh` | CLI 测试（Group S + Group E，13 case） | ~200 |
+| **总计** | | **~485** |
+
+> system prompt 提示在 `ion_worker.rs` 的 `build_skill_hint()` 函数实现（不是 `ion.rs`），因为 Worker 启动时扫描 skill 目录拼提示更合适。
 
 ## 4. CLI 测试指南
 
-### Group A：skill 工具基本流程
+### RPC 接口
+
+skill 是一个 LLM 工具，通过 `call_tool` RPC 直接调用（不依赖 LLM 决策，确定性验证）：
+
+**请求：**
+```bash
+ion rpc --session <sid> --method call_tool \
+  --params '{"tool":"skill","args":{"skill_name":"code-review"}}'
+```
+
+**请求参数（args 内）：**
+| 字段 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `skill_name` | string | 必填 | skill 名字，`list` 列出全部 |
+| `context` | string | `"inject"` | `inject` 注入当前上下文 / `fork` 隔离 subtask（未实现） |
+
+**响应 JSON（成功 - inject）：**
+```json
+{"success":true,"data":{"tool":"skill","output":"Skill 'code-review' loaded:\n\n# Code Review Skill\n..."}}
+```
+
+**响应 JSON（成功 - fork 未实现）：**
+```json
+{"success":true,"data":{"tool":"skill","output":"Skill 'code-review': 'fork' mode is not yet implemented..."}}
+```
+
+**响应 JSON（失败 - skill 不存在）：**
+```json
+{"success":false,"error":"call_tool skill: Tool call failed: skill 'ghost' not found in [...]"}
+```
+
+### Group S：skill 工具基本流程
+
+#### S1 列出可用 skill
+```bash
+ion rpc --session <sid> --method call_tool \
+  --params '{"tool":"skill","args":{"skill_name":"list"}}'
+```
+**验证点：**
+- ✅ 列出全局（`~/.ion/agent/skills/`）+ 项目级（`<project>/.ion/skills/`）skill
+- ✅ 每条含 name、source、description
+
+#### S3 加载 skill（inject 模式）
+```bash
+ion rpc --session <sid> --method call_tool \
+  --params '{"tool":"skill","args":{"skill_name":"code-review"}}'
+```
+**验证点：**
+- ✅ 返回 `Skill 'code-review' loaded:` + 正文
+- ✅ frontmatter 被剥离（只返回 body）
+
+#### S5 fork 模式（未实现）
+```bash
+ion rpc --session <sid> --method call_tool \
+  --params '{"tool":"skill","args":{"skill_name":"code-review","context":"fork"}}'
+```
+**验证点：**
+- ✅ 返回 `not yet implemented` 提示，`success=true`（不报错）
+
+### Group E：边界场景
+
+#### E1 无 skill 时
+```bash
+ion rpc --session <sid> --method call_tool \
+  --params '{"tool":"skill","args":{"skill_name":"list"}}'
+```
+**验证点：**
+- ✅ 返回 `No skills available.`
+
+### 自动化脚本
 
 ```bash
-# 准备测试 skill
-mkdir -p .ion/skills
-echo '---
-name: test-skill
-description: A test skill
----
-# Test Skill
-Do the thing.' > .ion/skills/test-skill.md
-
-# A1 列出可用 skill（FauxProvider 驱动）
-# 配 FauxProvider 让 LLM 调 skill list
-ion rpc --session <sid> --method prompt --params '{"text":"列出可用的 skill"}'
-# 验证输出包含 test-skill
-
-# A2 加载 skill
-ion rpc --session <sid> --method prompt --params '{"text":"加载 test-skill"}'
-# 验证 skill 内容被注入
+bash tests/skill_tool_ci.sh    # 13 case，FauxProvider 驱动，隔离 HOME + ION_AGENT_DIR
 ```
 
 ## 5. 并行开发注意事项
 
 - **不依赖**其他 3 份文档，可独立并行开发
-- 改动集中在 `tool.rs`（加一个 Tool） + `ion_worker.rs`（注册）+ `ion.rs`（prompt）
+- 改动集中在 `tool.rs`（加一个 Tool） + `ion_worker.rs`（注册 + prompt）
 - 不改 Extension trait，不影响 hooks/权限系统
 - 与 PERMISSION_STORE.md 互不干扰（改的文件不重叠）
+- ✅ 验证：与 PERMISSION_STORE 并行开发同时存在工作区时，SkillTool 的 6 单元测试 + 13 CLI 测试全过
 
 ## 6. 对标 pi
 
 | 对比项 | pi | ION |
 |--------|-----|-----|
-| skill 工具 | ✅ `core/tools/skill.ts` | 🔧 本文档新增 |
-| 发现目录 | ~/.pi/skills + project | ~/.ion/skills + project（对齐） |
+| skill 工具 | ✅ `core/tools/skill.ts` | ✅ `src/agent/tool.rs` SkillTool |
+| 发现目录 | ~/.pi/skills + project | `~/.ion/agent/skills/` + `<project>/.ion/skills/`（对齐） |
 | inject 模式 | ✅ | ✅ |
-| fork 模式 | ✅（subtask） | 🔧 后续（需 subtask 原语） |
+| fork 模式 | ✅（subtask） | 🔧 后续（需 subtask 原语，返回提示不报错） |
+| frontmatter | name/description/trigger | name/description（trigger 解析但暂不用） |
+| system prompt 提示 | ✅ | ✅ `build_skill_hint()`（列出名字，不预加载内容省 token） |
+
+## 7. 验证结果（2026-07-15）
+
+| 测试 | 数量 | 状态 |
+|------|------|------|
+| 单元测试（`skill_tests`，frontmatter 解析 + list/find 边界） | 6 | ✅ 全过 |
+| CLI 测试（`skill_tool_ci.sh`，Group S 9 + Group E 1 + build/host/create 3） | 13 | ✅ 全过 |
+| 全量 lib 测试（临时排除并行开发的 permission_extension） | 367 | ✅ 全过（361 baseline + 6 skill） |
 | frontmatter | name/description/trigger | 对齐 |

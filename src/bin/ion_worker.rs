@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use ion::agent::agent_loop::{Agent, AgentConfig};
 use ion::agent::compact::CompactConfig;
-use ion::agent::tool::{ReadTool, WriteTool, EditTool, BashTool, GrepTool, FindTool, LsTool, CalculatorTool, EchoTool, GitStatusTool, GitDiffTool, GitLogTool, GitAddTool, GitCommitTool, GitBranchTool, SpawnWorkerTool, SendToWorkerTool, ResumeWorkerTool, AwaitWorkerTool, ChannelSendTool, KillWorkerTool, BranchSessionTool, GlobalMemorySearchTool, GlobalMemorySaveTool, ToolRegistry};
+use ion::agent::tool::{ReadTool, WriteTool, EditTool, BashTool, GrepTool, FindTool, LsTool, CalculatorTool, EchoTool, GitStatusTool, GitDiffTool, GitLogTool, GitAddTool, GitCommitTool, GitBranchTool, SpawnWorkerTool, SendToWorkerTool, ResumeWorkerTool, AwaitWorkerTool, ChannelSendTool, KillWorkerTool, BranchSessionTool, GlobalMemorySearchTool, GlobalMemorySaveTool, SkillTool, ToolRegistry};
 use ion::wasm_extension::{Registry, ToolAdapter};
 use ion::session_jsonl;
 use ion_provider::registry::{ApiRegistry, ProviderFactory};
@@ -209,6 +209,14 @@ async fn main() {
     tools.register(Box::new(ion::agent::memory::MemorySaveTool { store: memory_store.clone() }));
     tools.register(Box::new(ion::agent::memory::MemorySearchTool { store: memory_store.clone() }));
 
+    // ── Skill 工具（让 LLM 按需加载 skill，inject 模式）──
+    // 扫描全局 ~/.ion/agent/skills/ + 项目级 <config_root>/.ion/skills/
+    let skill_dirs = vec![
+        ion::paths::skills_dir(),
+        ion::paths::project_skills_dir(&config_root),
+    ];
+    tools.register(Box::new(SkillTool { skill_dirs }));
+
     // 加载 API key
     let api_key = ion::auth::AuthStorage::resolve_api_key(None, &provider);
     if api_key.is_none() {
@@ -352,6 +360,13 @@ async fn main() {
         } else {
             tracing::warn!("[worker] agent '{}' not found, using defaults", agent_name);
         }
+    }
+
+    // ── Skill 可用性提示（让 LLM 知道有 skill 工具，但不预加载内容省 token）──
+    let skill_hint = build_skill_hint(&config_root);
+    if !skill_hint.is_empty() {
+        initial_system_prompt.push_str("\n\n");
+        initial_system_prompt.push_str(&skill_hint);
     }
 
     let mut agent = Agent::new(
@@ -1226,6 +1241,10 @@ async fn main() {
                     {"name": "get_settings", "desc": "读取配置"},
                     {"name": "set_settings", "desc": "写入配置"},
                     {"name": "set_permission_mode", "desc": "切命令守卫模式"},
+                    {"name": "permission_store_decision", "desc": "存储权限决策（always allow）"},
+                    {"name": "permission_list_stored", "desc": "列出已存储决策"},
+                    {"name": "permission_remove_stored", "desc": "删除某条存储决策"},
+                    {"name": "permission_clear_stored", "desc": "清空所有存储决策"},
                     {"name": "set_cwd", "desc": "切工作目录"},
                     {"name": "set_auto_retry", "desc": "设置重试次数"},
                     {"name": "abort_retry", "desc": "中断重试"},
@@ -1832,6 +1851,53 @@ async fn main() {
                             "error": e,
                         })),
                     }
+                }
+            }
+            // ── Stored-Decision（权限记忆）顶层 RPC ──
+            // 对齐 docs/design/PERMISSION_STORE.md §2.4，转发给 permission 扩展。
+            // 用户选"always allow"后持久化决策，下次自动放行，不用反复确认。
+            "permission_store_decision" => {
+                match agent.extension_rpc("permission", "store_decision", params).await {
+                    Ok(output) => output_response(&id, "permission_store_decision", &serde_json::json!({
+                        "success": true, "data": output,
+                    })),
+                    Err(e) => output(&serde_json::json!({
+                        "type": "response", "id": id, "success": false,
+                        "error": format!("permission_store_decision: {e}"),
+                    })),
+                }
+            }
+            "permission_list_stored" => {
+                match agent.extension_rpc("permission", "list_stored", serde_json::Value::Null).await {
+                    Ok(output) => output_response(&id, "permission_list_stored", &serde_json::json!({
+                        "success": true, "data": output,
+                    })),
+                    Err(e) => output(&serde_json::json!({
+                        "type": "response", "id": id, "success": false,
+                        "error": format!("permission_list_stored: {e}"),
+                    })),
+                }
+            }
+            "permission_remove_stored" => {
+                match agent.extension_rpc("permission", "remove_stored", params).await {
+                    Ok(output) => output_response(&id, "permission_remove_stored", &serde_json::json!({
+                        "success": true, "data": output,
+                    })),
+                    Err(e) => output(&serde_json::json!({
+                        "type": "response", "id": id, "success": false,
+                        "error": format!("permission_remove_stored: {e}"),
+                    })),
+                }
+            }
+            "permission_clear_stored" => {
+                match agent.extension_rpc("permission", "clear_stored", serde_json::Value::Null).await {
+                    Ok(output) => output_response(&id, "permission_clear_stored", &serde_json::json!({
+                        "success": true, "data": output,
+                    })),
+                    Err(e) => output(&serde_json::json!({
+                        "type": "response", "id": id, "success": false,
+                        "error": format!("permission_clear_stored: {e}"),
+                    })),
                 }
             }
             "set_auto_retry" => {
@@ -2992,6 +3058,45 @@ fn output(msg: &serde_json::Value) {
     let mut stdout = io::stdout().lock();
     let _ = writeln!(stdout, "{line}");
     let _ = stdout.flush();
+}
+
+/// 构建 skill 可用性提示（扫描全局 + 项目级 skill 目录）。
+///
+/// 返回空字符串表示没有可用 skill（不往 system prompt 加无用提示）。
+/// 对齐 docs/design/SKILL_TOOL.md §2.5：让 LLM 知道有哪些 skill 可选，但不预加载内容。
+fn build_skill_hint(config_root: &str) -> String {
+    let dirs = [
+        ion::paths::skills_dir(),
+        ion::paths::project_skills_dir(config_root),
+    ];
+    let mut names: Vec<String> = Vec::new();
+    for dir in &dirs {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
+                    if let Some(name) = fname.strip_suffix(".md") {
+                        if !names.contains(&name.to_string()) {
+                            names.push(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if names.is_empty() {
+        return String::new();
+    }
+    names.sort();
+    let names_csv = names.join(", ");
+    format!(
+        "You have access to a `skill` tool. Use it to load specialized capabilities when needed.\n\
+         Available skills: {names_csv}\n\
+         Use skill_name='list' to see all available skills."
+    )
 }
 
 // ── McpProxyTool: 方案 C 子 Worker 的 MCP 工具代理（走 bridge 调 host）──
