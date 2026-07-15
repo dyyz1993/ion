@@ -140,6 +140,8 @@ docs/
 2. ✅ Factory 用在需要动态分支的场景了吗？（审批、多轮交互必须用 Factory）
 3. ✅ 有 `#[ignore]` 真实 case 吗？（标 `ION_E2E=1` 触发）
 4. ✅ 测试文档里有 harness 章节 + 真实 case 章节吗？
+5. ✅ CLI 测试组按**用户场景**分 Group（不按技术维度）？核心链路全覆盖？（见 [CLI_TEST_TEMPLATE §测试组设计方法论](./docs/templates/CLI_TEST_TEMPLATE.md)）
+6. ✅ 测试数据模拟真实场景？case 输入用用户自然语言？有性能/成本可测量指标？
 
 **真实 LLM 测试推荐模型**：写真实 case（`ION_E2E=1`）或手动验证时，**优先用 `deepseek-v4-flash`**（便宜、快速、够用），不要用昂贵的旗舰模型。
 
