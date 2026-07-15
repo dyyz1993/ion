@@ -187,45 +187,179 @@ GROUP BY project;
 | `tests/memory_active_ci.sh` | CLI 测试 | ~80 |
 | **总计** | | **~240** |
 
-## 4. CLI 测试指南
+## 4. 验证方案（5 维度）
 
-### Group A：被动注入
+> Memory 的核心价值不是"能存能搜"（那是数据库的事），而是"搜出来的东西相不相关、注入的开销值不值、延迟会不会卡用户"。以下 5 个维度必须全部覆盖。
 
-```bash
-# A1 存一条跨项目记忆
-ion rpc --session <sid> --method extension_rpc --params \
-  '{"extension":"global-memory","method":"save","params":{"content":"认证用 DeepSeek API","category":"设计决策","project":"ion"}}'
+### Group A：检索精度（Recall + Precision）
 
-# A2 在新会话里输入相关关键词，验证自动注入
-ion rpc --session <sid2> --method prompt --params '{"text":"认证怎么做的"}'
-# 验证：FauxProvider 收到的 messages 里应有 <global_memory> 认证用 DeepSeek API </global_memory>
-```
+**目标**：验证 FTS5 搜出来的记忆跟用户输入**真正相关**，不相关的不会误注入。
 
-### Group B：自动整理
+**测试数据**（存入全局库）：
 
-```bash
-# B1 存 20 条记忆（含重复）
-for i in $(seq 1 20); do
-  ion rpc --session <sid> --method extension_rpc --params \
-    "{\"extension\":\"global-memory\",\"method\":\"save\",\"params\":{\"content\":\"test memory $i\",\"category\":\"test\",\"project\":\"test-proj\"}}"
-done
+| ID | content | category | project |
+|----|---------|----------|---------|
+| m1 | "认证用 DeepSeek API，key 在 auth.json" | 设计决策 | ion |
+| m2 | "文件快照用 content-addressed object store" | 架构 | ion |
+| m3 | "React 组件用 useState + useEffect 封装" | 前端 | web-app |
+| m4 | "Rust 命令行解析用 clap derive" | 工具链 | cli-tool |
+| m5 | "认证 token 过期后自动刷新" | bug 修复 | web-app |
 
-# B2 存重复内容
-ion rpc --session <sid> --method extension_rpc --params \
-  '{"extension":"global-memory","method":"save","params":{"content":"test memory 1","category":"test","project":"test-proj"}}'
-
-# B3 触发整理（跑 10 轮 on_input）
-# 验证：deduplicated >= 1（重复的被归档）
-```
-
-### Group C：大纲索引
+**测试用例**：
 
 ```bash
-# C1 存几条记忆后，查 outlines 表
-ion rpc --session <sid> --method extension_rpc --params \
-  '{"extension":"global-memory","method":"list_outlines","params":{}}'
-# 验证：每个 project 有 summary + entry_count
+# A1 高精度：搜"认证"应命中 m1 + m5（都跟认证相关），不命中 m2/m3/m4
+RESULT=$(ion rpc ... --method extension_rpc --params \
+  '{"extension":"global-memory","method":"search","params":{"query":"认证 API key"}}')
+# 验证：结果包含 m1 和 m5，不包含 m2/m3/m4
+
+# A2 跨项目召回：搜"认证"能召回不同项目（ion 的 m1 + web-app 的 m5）
+# 验证：结果的 project 字段有 "ion" 和 "web-app"
+
+# A3 无关查询不误注入：搜"天气"应返回空
+RESULT=$(ion rpc ... --method extension_rpc --params \
+  '{"extension":"global-memory","method":"search","params":{"query":"今天天气怎么样"}}')
+# 验证：结果为空（FTS5 不匹配）
+
+# A4 importance 排序：m1 importance=5，m5 importance=1，搜"认证"时 m1 应排前面
+# 验证：m1 在 m5 前面（ORDER BY bm25 + importance DESC）
+
+# A5 中文分词：搜"密钥"能命中 m1（"key" → "密钥"语义关联）
+# 注意：FTS5 默认不分词中文，可能需要 unicode61 或自定义 tokenizer
+# 这个 case 可能 XFail（取决于 FTS5 中文支持），记录基线
 ```
+
+**验证点**：
+- ✅ 相关查询命中最相关的记忆（recall > 80%）
+- ✅ 无关查询不误命中（precision > 90%）
+- ✅ 跨项目召回正常
+- ✅ importance 影响排序
+
+### Group B：注入延迟（Latency）
+
+**目标**：on_input 里搜全局库 + on_context 里注入，**不能让用户感知到卡顿**。
+
+**测试方法**：在 on_input 前后打时间戳，测量全局检索耗时。
+
+```rust
+// memory.rs on_input 里
+let t0 = std::time::Instant::now();
+let global_results = global_store.search(&ctx.text, None)?;
+let search_ms = t0.elapsed().as_millis();
+tracing::info!("[memory] global search took {search_ms}ms, found {} results", global_results.len());
+```
+
+**测试用例**：
+
+```bash
+# B1 小库延迟：100 条记忆，检索应 < 5ms
+# 存 100 条 → on_input → 测量 search 耗时
+# 验证：search_ms < 5
+
+# B2 中库延迟：1000 条记忆，检索应 < 20ms
+# 存 1000 条 → on_input → 测量 search 耗时
+# 验证：search_ms < 20
+
+# B3 大库延迟：5000 条记忆，检索应 < 50ms
+# 存 5000 条 → on_input → 测量 search 耗时
+# 验证：search_ms < 50（FTS5 索引查询是 O(log N)）
+
+# B4 注入总延迟：search + format + inject 的完整链路
+# 验证：on_input + on_context 总增量 < 10ms（不含 LLM 调用）
+```
+
+**验证点**：
+- ✅ 100 条 < 5ms，1000 条 < 20ms，5000 条 < 50ms
+- ✅ 用户无感知（< 100ms 是人类感知阈值）
+
+### Group C：Token 开销（Context Size）
+
+**目标**：注入的记忆内容**不能撑爆上下文窗口**。每轮注入的 token 量要有上限。
+
+**测试方法**：统计注入前后的 message token 数差异。
+
+```bash
+# C1 单次注入 token 数
+# 存 10 条各 200 字的记忆 → 搜"测试" → 注入
+# 统计：注入的 <global_memory> 块占多少 token
+# 验证：注入 token < 500（约 350 中文字 / 750 英文字符）
+
+# C2 大纲注入 token 数
+# 5 个项目各 20 条记忆 → on_system_prompt 注入 <global_memory_outline>
+# 验证：outline token < 200（每个项目一行摘要）
+
+# C3 累计注入：连续 5 轮对话的注入总量
+# 验证：5 轮累计注入 < 2000 token（去重机制生效，不重复注入同一条）
+
+# C4 注入上限：即使搜出 20 条相关记忆，最多只注入 5 条
+# 验证：注入条数 <= 5（代码里的 take(5) 限制）
+```
+
+**验证点**：
+- ✅ 单次注入 < 500 token
+- ✅ 大纲注入 < 200 token
+- ✅ 5 轮累计 < 2000 token（去重生效）
+- ✅ 最多注入 5 条（硬上限）
+
+### Group D：去重 + 整理效果
+
+**目标**：自动整理真正减少了噪音——重复的被去掉、低价值的被归档。
+
+```bash
+# D1 去重：存 5 条内容完全相同的记忆（不同 importance）
+# consolidate 后：保留 importance 最高的 1 条，其余 archived
+# 验证：active 条数从 5 → 1
+
+# D2 近似去重：存内容 90% 相似的两条（只差几个字）
+# 注意：当前用 content 完全匹配，近似去重可能不支持
+# 这个 case 可能 XFail，记录基线
+
+# D3 归档：存 10 条 importance=0 的记忆，created_at 设为 31 天前
+# consolidate 后：全部 archived
+# 验证：active 条数从 10 → 0
+
+# D4 整理后搜索更干净：整理前搜出 15 条（含重复），整理后搜出 8 条
+# 验证：整理后搜索结果条数减少，精度提升
+
+# D5 outlines 更新：整理后 outlines 表的 entry_count 减少
+# 验证：entry_count 反映 archived 后的真实活跃数
+```
+
+**验证点**：
+- ✅ 完全重复去重有效
+- ✅ importance=0 + 过期 → 归档
+- ✅ 整理后搜索结果更少更精
+- ✅ outlines 表同步更新
+
+### Group E：压力 + 边界
+
+**目标**：极端场景不崩溃。
+
+```bash
+# E1 空库搜索：全局库为空时 on_input 搜全局 → 返回空，不 panic
+# E2 超长输入：用户输入 10000 字 → FTS5 搜索不报错（可能截断 query）
+# E3 并发写入：两个 Worker 同时 save → SQLite 锁不冲突（已有 Mutex）
+# E4 consolidate 幂等：连续跑两次 consolidate → 第二次 deduplicated=0 archived=0
+# E5 注入格式安全：记忆内容含 XML 特殊字符（< > &）→ 注入的 <global_memory> 块不被破坏
+```
+
+**验证点**：
+- ✅ 空库 / 超长输入 / 并发 / 幂等 / XML 安全
+
+### 验证脚 本结构
+
+```
+tests/memory_active_ci.sh
+├── Group A：检索精度（5 case，recall + precision + 排序 + 中文）
+├── Group B：注入延迟（4 case，100/1000/5000 条 + 总链路）
+├── Group C：Token 开销（4 case，单次/大纲/累计/上限）
+├── Group D：去重整理（5 case，完全去重/归档/整理后精度/outlines）
+└── Group E：压力边界（5 case，空库/超长/并发/幂等/XML安全）
+```
+
+**总计 23 case**，覆盖精度/延迟/token/整理/边界五个维度。
+
+**注意**：Group B（延迟）和 Group C（token）需要在测试里有可测量的指标输出——on_input 记录 `search_ms`，on_context 记录 `injected_tokens`。这些指标通过 tracing 或 RPC 返回值暴露给 CI 脚本断言。
 
 ## 5. 并行开发注意事项
 
