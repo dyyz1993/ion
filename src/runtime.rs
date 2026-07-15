@@ -256,6 +256,10 @@ pub struct SpawnWorkerRequest {
     /// 是否在独立 git worktree 中运行（隔离文件改动）。
     /// true = 创建新分支 + worktree，developer 在隔离目录工作。
     pub worktree: Option<bool>,
+    /// hooks 递归深度（防 agent handler 死循环）。
+    /// hooks 的 run_agent spawn 时设为当前 depth+1，Manager 传给子进程 ION_HOOK_DEPTH。
+    /// 默认 None = 不设（普通 spawn_worker 工具调用不设）。
+    pub hook_depth: Option<u32>,
 }
 
 /// spawn_worker 工具的响应。
@@ -411,6 +415,7 @@ impl<R: Runtime + 'static> Runtime for WorkerRuntime<R> {
             "wait": req.wait,           // Child 模式下：true=阻塞, false=立即返回
             "creator": null,            // Manager 会用 _from_worker 填充
             "worktree": worktree_json,
+            "hook_depth": req.hook_depth,  // hooks 递归深度传递
             // 方案 C：所有 Worker 都通过 bridge 代理，不需要 skip_mcp
         });
         let resp = self.bridge.send_command("create_worker", params).await?;

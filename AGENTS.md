@@ -700,6 +700,17 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - 扩展内通过 `ExtensionRegistry::get_flag()` 读取
   - **验证**: 10 CI 测试全过 ✅
 
+- **Hooks 系统（配置式生命周期触发器，对齐 pi）**:
+  - 5 模块 ~800 行：`src/hooks/{mod,handler_runner,matcher,stdin_builder,extension}.rs`
+  - `hooks.json` 配置（全局 + 项目级合并，每次事件触发动态读 = 热重载）
+  - 12 事件映射 → Extension trait（SessionStart/End/PreCompact/UserPromptSubmit/PreToolUse/PostToolUse/PostToolUseFailure/PermissionRequest/SubagentStart/SubagentStop/Stop/Notification）
+  - 5 种 handler：command ✅（spawn bash + 退出码 0/2/3 协议）/ http ✅（POST + HTTPS 校验）/ agent ✅（Runtime::spawn_worker，真能调工具）/ prompt 🔧 stub / mcp_tool 🔧 stub
+  - Agent handler 递归保护：`ION_HOOK_DEPTH` 跨进程传递（入口 depth=0 → 子 depth=1 → 子子 depth=2 跳过），防 Stop 事件配 agent handler 死循环
+  - `scripts/hooks_test.sh`（纯 bash 验证工具，不依赖 Rust）
+  - 补丁 1：`ExtensionWorkerConfig` 字段补齐（agent/initial_prompt/worktree/allowed_tools/disallowed_tools/max_turns）
+  - `Agent.runtime` 从 `Box<dyn>` 改 `Arc<dyn>`（让 HookExtension clone 共享）
+  - **验证**: hooks_ci 8 + hooks_agent_ci 4 + hooks_e2e 10 + patch1 5 = 27 测试全过 ✅
+
 ### 🔌 MCP 系统（Model Context Protocol，Phase 1-4 全部实现）
 
 - **Phase 1（配置 + RPC）**：
@@ -940,7 +951,11 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | overflow_recovery_ci (CLI E2E) | 5 | 上下文溢出恢复 |
 | workflow_ci (CLI E2E) | 15 | Workflow Engine W1-W7 |
 | sessions_ci (CLI E2E) | 20 | Group A-D：ion sessions 主仓库过滤/--all/JSON 字段完整性(含cache)/worktree 聚合/表格格式/非git降级 |
-| **测试覆盖合计** | **915** | 全部通过 ✅（file_snapshot CI 33 case 默认全 0 skip + ION_E2E=1 时 +5 真实 LLM case + 事件推送 subscribe + zstd + XL1/XL3/XL4） |
+| hooks_ci (CLI E2E) | 8 | Group A-D：hooks 配置加载/热重载/validate/list + B.1 拦截--no-verify(command) + B.2 注入约定(command) + B.3 Stop检查测试(command) |
+| hooks_agent_ci (CLI E2E) | 4 | Group E：agent handler 真能 spawn 子 Worker（FauxProvider 驱动）+ 死循环防护(hook_depth) + 子 Worker 跑完 |
+| hooks_e2e (集成) | 10 | 内核引擎：HooksConfig加载/handler_count/热重载/command block/no-verify/正常放行/注入上下文/Stop block+放行/agent handler不panic |
+| patch1_worker_config (集成) | 5 | ExtensionWorkerConfig 字段序列化/透传/默认值/边界值 |
+| **测试覆盖合计** | **937** | 全部通过 ✅（含 hooks 27 case：hooks_ci 8 + hooks_agent_ci 4 + hooks_e2e 10 + patch1 5） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
@@ -952,11 +967,15 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 - session_tree - ✅ (SessionTree 已实现)
 - user_bash / project_trust / resources_discover / ui - 后续 (需交互式 UI)
 
-**P6 - Shell Hook 系统 (TRAE 兼容) (开发中):**
-- 详细设计文档见 [docs/design/HOOKS_AND_OUTLINE_SYNC.md](./docs/design/HOOKS_AND_OUTLINE_SYNC.md)（取代早期 HOOK_SYSTEM.md）
-- 内核补 2 块能力：(1) `ExtensionWorkerConfig` 字段补齐（agent/initial_prompt/worktree/allowed_tools/max_turns）；(2) Hooks 系统（HooksConfig + HookExtension + 5 种 handler 执行引擎）
-- 对齐 pi 的 `extensions/pi-hooks/`（12 事件 + 5 handler），修 pi 的两个坑：agent handler 真传 tools（不退化成单轮 LLM）、mcp_tool handler 真实现（不留 no-op）
-- 大纲同步（MD ↔ outline.json）作为第一个配置式用例，0 行内核扩展代码（纯 hooks.json + shell 脚本）
+**P6 - Shell Hook 系统 (TRAE 兼容) ✅ 已完成:**
+- 详细设计文档见 [docs/design/HOOKS_GUIDE.md](./docs/design/HOOKS_GUIDE.md)（使用指南）+ [docs/design/HOOKS_AND_OUTLINE_SYNC.md](./docs/design/HOOKS_AND_OUTLINE_SYNC.md)（实现规格）+ [docs/testing/HOOKS_CLI_TEST.md](./docs/testing/HOOKS_CLI_TEST.md)（CLI 测试）
+- 内核补 2 块能力：(1) `ExtensionWorkerConfig` 字段补齐（agent/initial_prompt/worktree/allowed_tools/max_turns/hook_depth）；(2) Hooks 系统（HooksConfig + HookExtension + 5 种 handler 执行引擎，~800 行）
+- handler 完成度：command ✅ / http ✅ / agent ✅（真能调工具，修 pi 的坑）/ prompt 🔧 stub / mcp_tool 🔧 stub
+- 对齐 pi 的 `extensions/pi-hooks/`（12 事件 + 5 handler），修 pi 的坑：agent handler 真传 tools（不退化成单轮 LLM）
+- hook_depth 跨进程递归保护（防 agent handler 死循环）：入口 Worker depth=0 → 子 Worker depth=1 → 子子 depth=2 跳过
+- 热重载（每次事件触发动态读 hooks.json，改完即生效）
+- 大纲同步（MD ↔ outline.json）作为配置式用例（纯 hooks.json + shell 脚本，0 行内核扩展代码）
+- **验证**: hooks_ci 8 + hooks_agent_ci 4 + hooks_e2e 10 + patch1 5 = 27 测试全过
 
 **P6c - MCP 生产化:** ✅ 已完成
 - MCP Phase 1-4 全部实现（配置 + rmcp 连接 + 方案 C 共享池 + 自动重连 + 权限控制 + resources/prompts + 热更新）

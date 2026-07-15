@@ -1064,6 +1064,7 @@ impl Tool for SpawnWorkerTool {
             report_channel: report_channel.clone(),
             wait,
             worktree,
+            hook_depth: None,  // LLM 的 spawn_worker 不设（只有 hooks agent handler 才设）
         };
 
         let resp = rt.spawn_worker(req).await.map_err(AgentError::Tool)?;

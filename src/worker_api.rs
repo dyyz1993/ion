@@ -12,7 +12,11 @@ pub trait BridgeHandle: Send + Sync {
     async fn send_command(&self, command: &str, params: serde_json::Value) -> Result<serde_json::Value, String>;
 }
 
-/// Worker creation config for plugins.
+/// Worker creation config for extensions.
+///
+/// 与 Manager 端 `WorkerCreateConfig` 对齐，字段透传。
+/// 补丁 1（HOOKS_AND_OUTLINE_SYNC）补齐了 agent/initial_prompt/worktree/allowed_tools/max_turns
+/// 等字段——这是 hooks 的 agent handler 能"真调工具"的前提。
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct ExtensionWorkerConfig {
     pub session: Option<String>,
@@ -20,6 +24,22 @@ pub struct ExtensionWorkerConfig {
     pub provider: Option<String>,
     pub channels: Option<Vec<String>>,
     pub parent: Option<String>,
+
+    // ── 补丁 1 新增字段（与 WorkerCreateConfig 对齐）──
+    /// Agent 角色（对应 .ion/agents/<name>.md）。设了子 Worker 才有 agent 定义。
+    pub agent: Option<String>,
+    /// 子 Worker 的初始 prompt（任务描述）。由内核通过 prompt RPC 发给子进程。
+    pub initial_prompt: Option<String>,
+    /// Worktree 隔离配置。Some → 在独立 git worktree 里跑。
+    pub worktree: Option<crate::worker_registry::WorktreeConfig>,
+    /// 与创建者的关系。默认 Child。
+    pub relation: Option<String>,
+    /// 允许的工具白名单（None = 继承全部）。子 Worker 启动时通过 ION_ALLOWED_TOOLS 环境变量传入。
+    pub allowed_tools: Option<Vec<String>>,
+    /// 禁用的工具黑名单。通过 ION_DISALLOWED_TOOLS 环境变量传入。
+    pub disallowed_tools: Option<Vec<String>>,
+    /// 最大 turn 数（None = 继承 host 默认）。通过 ION_MAX_TURNS 环境变量传入。
+    pub max_turns: Option<u64>,
 }
 
 /// Worker info returned after creation.
@@ -171,12 +191,22 @@ impl ExtensionApi {
     pub async fn create_worker(&self, config: ExtensionWorkerConfig) -> Result<WorkerHandle, String> {
         if let Some(ref bridge) = self.bridge {
             // Live path: JSON stdout → Manager
+            // 透传所有字段（含补丁 1 新增的 agent/initial_prompt/worktree/allowed_tools/max_turns）
+            // Manager 端 WorkerCreateConfig 用 serde_json::from_value 反序列化，字段自动消费
             let params = serde_json::json!({
                 "session": config.session,
                 "model": config.model,
                 "provider": config.provider,
                 "channels": config.channels,
                 "parent": config.parent,
+                // ── 补丁 1 新增透传 ──
+                "agent": config.agent,
+                "initial_prompt": config.initial_prompt,
+                "worktree": config.worktree,
+                "relation": config.relation,
+                "allowed_tools": config.allowed_tools,
+                "disallowed_tools": config.disallowed_tools,
+                "max_turns": config.max_turns,
             });
             let resp = bridge.send_command("create_worker", params).await?;
             let worker_id = resp.get("workerId").and_then(|v| v.as_str()).ok_or("create_worker: missing workerId in response")?.to_string();
