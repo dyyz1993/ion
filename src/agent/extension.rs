@@ -279,15 +279,20 @@ pub struct RuntimeFileSystem {
 }
 
 impl RuntimeFileSystem {
-    /// 构造。`allowed_roots` 原样保存（不做 fs canonicalize）。
+    /// 构造。`allowed_roots` 会被 fs-canonicalize（解析符号链接成 realpath）。
     ///
-    /// 路径安全检查（`safe_join`）对 root 和目标都用同一套字符串级规范化，
-    /// 避免 fs-canonicalize 解析符号链接后与目标路径不一致（如 macOS /var↔/private/var），
-    /// 也避免 TOCTOU。
+    /// 注意：`safe_join` 对目标路径也用同一套 fs-canonicalize（resolve_symlinks），
+    /// 保证 root 和目标在同一坐标系（如 macOS /var ↔ /private/var 不会误判逃逸）。
+    /// 路径逃逸（`../`）的拦截在 fs-canonicalize 之前的字符串级规范化阶段完成，
+    /// 避免 TOCTOU：先字符串规范化去掉 `..`，再做 fs-canonicalize。
     pub fn new(
         runtime: std::sync::Arc<dyn crate::runtime::Runtime>,
         allowed_roots: Vec<std::path::PathBuf>,
     ) -> Self {
+        let allowed_roots = allowed_roots
+            .into_iter()
+            .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+            .collect();
         Self { runtime, allowed_roots }
     }
 
@@ -301,9 +306,11 @@ impl RuntimeFileSystem {
 
     /// 路径安全检查：确保 `path` 解析后仍在某个 allowed_root 之内（防 `../../../` 逃逸）。
     ///
-    /// - 绝对路径：规范化后检查是否在任一 root 下。
-    /// - 相对路径：相对第一个 root 解析，再检查。
-    /// - null byte：拒绝。
+    /// 步骤：
+    /// 1. null byte 拒绝
+    /// 2. 字符串级规范化（解析 `.` / `..`，不访问文件系统）—— 拦截 `../` 逃逸
+    /// 3. fs-canonicalize（解析符号链接成 realpath）—— 与 canonicalize 过的 root 对齐坐标系
+    /// 4. 检查是否落在某个 root 之下
     ///
     /// 返回规范化后的绝对路径字符串，或逃逸错误。
     pub fn safe_join(&self, path: &str) -> Result<String, String> {
@@ -321,8 +328,12 @@ impl RuntimeFileSystem {
                 .ok_or_else(|| "no allowed_roots configured".to_string())?;
             base.join(p)
         };
-        // 字符串级规范化（不访问文件系统，避免 TOCTOU），解析 . 和 ..
+        // 1) 字符串级规范化（不访问文件系统）：解析 . 和 .. —— 这一步拦截 ../../../ 逃逸
         let canon = canonicalize_path_buf(&resolved);
+        // 2) 解析符号链接成 realpath（与 fs-canonicalize 过的 root 对齐）。
+        //    安全性：上一步已去掉 `..`，这里 canonicalize 不会引入逃逸（符号链接若指向
+        //    root 外，仍会被下面的 starts_with 检查拦住）。
+        let canon = resolve_symlinks(&canon);
         for root in &self.allowed_roots {
             let root_canon = canonicalize_path_buf(root);
             if canon.starts_with(&root_canon) {
@@ -330,6 +341,42 @@ impl RuntimeFileSystem {
             }
         }
         Err(format!("path '{}' outside allowed roots", path))
+    }
+}
+
+/// 解析符号链接成 realpath，但不要求整条路径都存在。
+///
+/// 找到最长存在的祖先前缀，canonicalize 它（解析符号链接），
+/// 再把不存在的尾部拼回去。这样 macOS `/var` ↔ `/private/var` 能对齐，
+/// 而读一个还不存在的文件（write_file）也不会因为 canonicalize 失败而报错。
+fn resolve_symlinks(p: &std::path::Path) -> std::path::PathBuf {
+    // 整条都存在 → 直接 canonicalize
+    if let Ok(c) = std::fs::canonicalize(p) {
+        return c;
+    }
+    // 否则：从尾向前找最长存在的祖先，canonicalize 它，拼回不存在的尾部
+    let mut existing = p.to_path_buf();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    while !existing.exists() {
+        let fname = existing.file_name().map(|s| s.to_owned());
+        match fname {
+            Some(f) => {
+                tail.push(f);
+                if !existing.pop() {
+                    break;
+                }
+            }
+            None => break,
+        }
+    }
+    match std::fs::canonicalize(&existing) {
+        Ok(mut c) => {
+            for t in tail.into_iter().rev() {
+                c.push(t);
+            }
+            c
+        }
+        Err(_) => p.to_path_buf(),
     }
 }
 
@@ -941,7 +988,9 @@ mod fs_tests {
     fn safe_join_relative_resolves_against_first_root() {
         let (dir, fs) = make_fs();
         let resolved = fs.safe_join("foo/bar.txt").unwrap();
-        assert_eq!(resolved, dir.join("foo/bar.txt").to_string_lossy().to_string());
+        // root 在 new() 里被 fs-canonicalize，对比也用 canonicalize
+        let expected = std::fs::canonicalize(&dir).unwrap().join("foo/bar.txt");
+        assert_eq!(resolved, expected.to_string_lossy().to_string());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -950,7 +999,8 @@ mod fs_tests {
         let (dir, fs) = make_fs();
         // a/../b → b，仍在 root 内
         let resolved = fs.safe_join("a/../b").unwrap();
-        assert_eq!(resolved, dir.join("b").to_string_lossy().to_string());
+        let expected = std::fs::canonicalize(&dir).unwrap().join("b");
+        assert_eq!(resolved, expected.to_string_lossy().to_string());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

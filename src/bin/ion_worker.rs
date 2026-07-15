@@ -451,10 +451,14 @@ async fn main() {
             // WASM 扩展用（注入到 WASM registry 的共享 Context）
             {
                 let mut ctx = wasm_ext_registry.ctx.write().unwrap();
-                ctx.fs = Some(runtime_fs);
+                ctx.fs = Some(runtime_fs.clone());
                 ctx.tokio_handle = Some(tokio::runtime::Handle::current());
             }
-            tracing::info!("[extension] ctx.fs (RuntimeFileSystem) injected");
+            // FsProbeExtension（给 CLI 测试用，通过 extension_rpc 暴露 ctx.fs）
+            ext_reg.register(Box::new(FsProbeExtension {
+                fs: runtime_fs,
+            }));
+            tracing::info!("[extension] ctx.fs (RuntimeFileSystem) injected + fs_probe registered");
         }
 
         // Memory Extension
@@ -3249,6 +3253,63 @@ impl ion::agent::extension::Extension for StreamingExtension {
             }
         }));
         Ok(())
+    }
+}
+
+// ── FsProbeExtension: ctx.fs 探针扩展（给 CLI 测试用）──────────────────────
+// 通过 extension_rpc 暴露 ctx.fs 的 read_file / list_dir / path_exists，
+// 让 tests/extension_fs_ci.sh 能验证 ctx.fs 注入 + 路径逃逸防护。
+// 持有 Arc<RuntimeFileSystem>（构造时注入），on_extension_rpc 里调对应方法。
+struct FsProbeExtension {
+    fs: std::sync::Arc<ion::agent::extension::RuntimeFileSystem>,
+}
+
+#[async_trait::async_trait]
+impl ion::agent::extension::Extension for FsProbeExtension {
+    fn name(&self) -> &str { "fs_probe" }
+
+    async fn on_extension_rpc(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> ion::agent::error::AgentResult<serde_json::Value> {
+        use ion::agent::error::AgentError;
+        use ion::agent::extension::FileSystemCapability;
+        let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        match method {
+            "read_file" => {
+                let content = self.fs.read_file(path).await
+                    .map_err(AgentError::Tool)?;
+                Ok(serde_json::json!({"content": content}))
+            }
+            "write_file" => {
+                let content = params.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                self.fs.write_file(path, content).await
+                    .map_err(AgentError::Tool)?;
+                Ok(serde_json::json!({"written": true}))
+            }
+            "list_dir" => {
+                let entries = self.fs.list_dir(path).await
+                    .map_err(AgentError::Tool)?;
+                let arr: Vec<serde_json::Value> = entries.iter().map(|e| serde_json::json!({
+                    "name": e.name, "is_dir": e.is_dir, "size": e.size,
+                })).collect();
+                Ok(serde_json::json!({"entries": arr}))
+            }
+            "path_exists" => {
+                // path_exists 内部要 block_on（RuntimeFileSystem 是 async），
+                // 这里直接调（我们已经在 async 上下文里）
+                let exists = self.fs.path_exists(path).await;
+                Ok(serde_json::json!({"exists": exists}))
+            }
+            "glob" => {
+                let pattern = params.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+                let matches = self.fs.glob(pattern).await
+                    .map_err(AgentError::Tool)?;
+                Ok(serde_json::json!({"matches": matches}))
+            }
+            _ => Err(AgentError::Tool("extension rpc method not found".into())),
+        }
     }
 }
 

@@ -512,6 +512,8 @@ fn plugin_data_dimension_paths_are_correct() {
         project_root: "/tmp/work".into(),
         ext_name: "test-ext".into(),
                 event_bus: None,
+        fs: None,
+        tokio_handle: None,
     };
 
     // global: ~/.ion/agent/extensions-data/<ext>/
@@ -563,6 +565,8 @@ fn plugin_context_injected_into_store() {
         project_root: "/tmp".into(),
         ext_name: "todo-plugin".into(),
                 event_bus: None,
+        fs: None,
+        tokio_handle: None,
     };
 
     // Inject context and execute — the store should have context available
@@ -632,6 +636,8 @@ fn plugin_make_exec_context_merges_registry_ctx_with_ext_name() {
         project_root: "/proj".into(),
         ext_name: "".into(),
                 event_bus: None,
+        fs: None,
+        tokio_handle: None,
     };
 
     let exec_ctx = ion::wasm_extension::make_exec_context(&reg_ctx, "my-ext");

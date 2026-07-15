@@ -1388,6 +1388,29 @@ async fn cmd_run(
     }
     let mut ext_reg = ion::agent::extension::ExtensionRegistry::new();
 
+    // ── 注入 ctx.fs 统一文件访问能力（RuntimeFileSystem）──
+    // 场景 1（直接执行）：用 LocalRuntime（本地 fs）+ allowed_roots 白名单。
+    // 内置扩展通过 registry.filesystem() 拿到，WASM 扩展通过 host_read_file 拿到。
+    {
+        let fs_rt: std::sync::Arc<dyn ion::runtime::Runtime> =
+            std::sync::Arc::new(ion::runtime::LocalRuntime::new());
+        let fs_allowed_roots =
+            ion::agent::extension::RuntimeFileSystem::default_allowed_roots(
+                std::path::Path::new(&cwd),
+            );
+        let runtime_fs = std::sync::Arc::new(
+            ion::agent::extension::RuntimeFileSystem::new(fs_rt, fs_allowed_roots),
+        );
+        ext_reg = ext_reg.with_filesystem(runtime_fs.clone());
+        // WASM 扩展用（注入到 WASM registry 的共享 Context）
+        {
+            let mut ctx = wasm_ext_registry.ctx.write().unwrap();
+            ctx.fs = Some(runtime_fs);
+            ctx.tokio_handle = Some(tokio::runtime::Handle::current());
+        }
+        tracing::info!("[extension] ctx.fs (RuntimeFileSystem) injected");
+    }
+
     // Register per-turn session index extension if session is active
     if !session_id.is_empty() {
         ext_reg.register(Box::new(SessionIndexExtension::new(

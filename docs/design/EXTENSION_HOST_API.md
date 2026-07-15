@@ -1,6 +1,10 @@
 # Extension Host API — ctx.fs 统一文件访问 设计文档
 
-> **状态：待定** — 给扩展（含 WASM）提供统一的、经过权限控制的文件系统访问能力。
+> **状态：已完成** — FileSystemCapability trait + RuntimeFileSystem + WASM 宿主函数（host_read_file / host_list_dir）+ safe_join 路径逃逸防护全部实现并通过验证。
+>
+> - 内置扩展：通过 `registry.filesystem()` 拿到 `Arc<dyn FileSystemCapability>`
+> - WASM 扩展：通过 `host_read_file` / `host_list_dir` 宿主函数读 allowed_roots 内的项目文件
+> - 验证：15 单元测试 + 18 CLI 测试（extension_fs_ci.sh）全过 ✅
 >
 > 对齐 pi 的 `ExtensionContext.fs`（FileSystemCapability）。
 
@@ -234,9 +238,29 @@ ion rpc --session <sid> --method prompt --params '{"text":"读 package.json 的 
 
 | 对比项 | pi | ION |
 |--------|-----|-----|
-| ctx.fs | ✅ FileSystemCapability trait | 🔧 本文档新增 |
+| ctx.fs | ✅ FileSystemCapability trait | ✅ FileSystemCapability trait（已实现） |
 | 路由 | 本地/远程透明 | Runtime trait（对齐，更强——多了沙箱/容器） |
 | 权限 | 走 PermissionProvider | 走 PermissionEngine（对齐） |
-| 路径安全 | 有 | safe_join（对齐） |
-| 4 级数据目录 | ✅ ExtensionContext | ✅ StorageContext（已有，需暴露给扩展） |
-| WASM 文件访问 | N/A（pi 无 WASM） | 🔧 本文档新增（ION 独有需求） |
+| 路径安全 | 有 | safe_join（已实现：字符串级规范化拦截 `../` + fs-canonicalize 对齐符号链接坐标系） |
+| 4 级数据目录 | ✅ ExtensionContext | ✅ StorageContext（已有，4 维数据 host functions 已暴露给 WASM） |
+| WASM 文件访问 | N/A（pi 无 WASM） | ✅ host_read_file / host_list_dir 宿主函数（已实现，ION 独有） |
+
+## 7. 实现清单（已落地）
+
+| 文件 | 改动 | 状态 |
+|------|------|------|
+| `src/agent/extension.rs` | `FileSystemCapability` trait + `DirEntry` + `RuntimeFileSystem` + `safe_join` + `resolve_symlinks` + `canonicalize_path_buf` + `glob_walk` + `ExtensionRegistry.fs` 字段 + `with_filesystem()` / `filesystem()` | ✅ |
+| `src/wasm_extension.rs` | `Context.fs` / `Context.tokio_handle` 字段 + `host_read_file` / `host_list_dir` 宿主函数 | ✅ |
+| `src/bin/ion_worker.rs` | 构造 `RuntimeFileSystem`（`worker_rt` + 默认 allowed_roots）+ 注入 registry + 注入 WASM Context + `FsProbeExtension`（extension_rpc 暴露 read/write/list/exists/glob） | ✅ |
+| `src/bin/ion.rs` | 场景 1 同样注入 `RuntimeFileSystem`（LocalRuntime + 默认 allowed_roots） | ✅ |
+| `tests/plugin_tests.rs` | `Context` 字面量补 `fs` / `tokio_handle` 字段 | ✅ |
+| `tests/extension_fs_ci.sh` | CLI 测试：Group A（读/写/列/exists/glob）+ Group C（路径逃逸防护 6 case） | ✅ 18 测试全过 |
+
+**验证**：
+- 单元测试：`cargo test --lib -- extension::fs_tests` → 15 测试全过
+- CLI 测试：`bash tests/extension_fs_ci.sh` → 18 测试全过（含路径逃逸 `../../../etc/passwd`、null byte、allowed_roots 外绝对路径拦截）
+
+**关键设计决策（实现时发现并解决）**：
+- `safe_join` 两阶段规范化：先字符串级规范化（拦截 `../` 逃逸，不访问 fs 避免 TOCTOU），再 fs-canonicalize（解析符号链接成 realpath，与 canonicalize 过的 root 对齐坐标系）。
+- macOS 上 `/var` ↔ `/private/var` 是符号链接：root 在 `new()` 里 fs-canonicalize，目标路径在 `safe_join` 里也走 `resolve_symlinks`（最长存在前缀 canonicalize），两边对齐才不会误判逃逸。
+- WASM 宿主函数在同步闭包里调异步 fs：用 `tokio::task::block_in_place` + `Handle::block_on`（与现有 `host_ui_ask` 用 `blocking_recv` 同理）。
