@@ -296,6 +296,24 @@ impl WorkerRegistry {
             }
         }
 
+        // ── 补丁 1（HOOKS_AND_OUTLINE_SYNC）：工具白/黑名单 + max_turns 传给子进程 ──
+        // 子 Worker 启动时读这些环境变量，应用到 ToolRegistry 过滤和 Agent 循环退出条件。
+        // 这让扩展/hooks 的 agent handler 能 spawn "限定工具 + 限定步数"的子 Worker，
+        // 是 ION 的 agent handler 比 pi 更强的关键（pi 的 agent handler 不传 tools，退化成单轮 LLM）。
+        if let Some(ref tools) = config.allowed_tools {
+            if !tools.is_empty() {
+                child_cmd.env("ION_ALLOWED_TOOLS", tools.join(","));
+            }
+        }
+        if let Some(ref tools) = config.disallowed_tools {
+            if !tools.is_empty() {
+                child_cmd.env("ION_DISALLOWED_TOOLS", tools.join(","));
+            }
+        }
+        if let Some(turns) = config.max_turns {
+            child_cmd.env("ION_MAX_TURNS", turns.to_string());
+        }
+
         // 同步主进程的 runtime override 到子进程（如果主进程设了 --local/--remote）
         if let Ok(rt_override) = std::env::var("ION_RUNTIME_OVERRIDE") {
             child_cmd.env("ION_RUNTIME_OVERRIDE", &rt_override);
@@ -313,6 +331,14 @@ impl WorkerRegistry {
             if let Ok(val) = std::env::var(var) {
                 child_cmd.env(var, &val);
             }
+        }
+
+        // ── hooks 递归深度传递（防 agent handler 死循环）──
+        // 从 WorkerCreateConfig.hook_depth 读（hooks agent handler spawn 时设）。
+        // 设了就传给子进程 ION_HOOK_DEPTH，HookExtension 读到 >= 2 就跳过 agent handler。
+        // 入口 Worker（普通 spawn_worker）不设 hook_depth → 子进程没有此变量 → depth=0 → agent handler 正常。
+        if let Some(depth) = config.hook_depth {
+            child_cmd.env("ION_HOOK_DEPTH", depth.to_string());
         }
 
         let mut child = child_cmd
@@ -2057,6 +2083,20 @@ pub struct WorkerCreateConfig {
     /// - "stdio"    → 只跳过 stdio，HTTP 照连（方案 B：HTTP 天然多客户端）
     #[serde(default)]
     pub skip_mcp: Option<String>,
+    // ── 补丁 1 新增（HOOKS_AND_OUTLINE_SYNC）：让扩展 spawn 的子 Worker 也能限定工具/步数 ──
+    /// 允许的工具白名单（None = 继承全部）。通过 ION_ALLOWED_TOOLS 环境变量传给子进程。
+    #[serde(default)]
+    pub allowed_tools: Option<Vec<String>>,
+    /// 禁用的工具黑名单。通过 ION_DISALLOWED_TOOLS 环境变量传给子进程。
+    #[serde(default)]
+    pub disallowed_tools: Option<Vec<String>>,
+    /// 最大 turn 数（None = 继承 host 默认）。通过 ION_MAX_TURNS 环境变量传给子进程。
+    #[serde(default)]
+    pub max_turns: Option<u64>,
+    /// hooks 递归深度（防 agent handler 死循环）。hooks agent handler spawn 时设。
+    /// Manager 传给子进程 ION_HOOK_DEPTH，HookExtension 读到 >= 2 跳过 agent handler。
+    #[serde(default)]
+    pub hook_depth: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

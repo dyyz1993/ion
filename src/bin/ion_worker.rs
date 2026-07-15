@@ -225,7 +225,13 @@ async fn main() {
     });
 
 	    let config = AgentConfig {
-	        max_turns: Some(20), max_outer_iterations: 5, max_retries: 30,
+	        // max_turns：优先读 ION_MAX_TURNS 环境变量（补丁 1：hooks/扩展 spawn 子 Worker 时限定步数）
+	        // 没设则默认 20（对齐 pi）。0 = 无限。
+	        max_turns: std::env::var("ION_MAX_TURNS").ok()
+	            .and_then(|s| s.parse::<u64>().ok())
+	            .map(|n| if n == 0 { None } else { Some(n) })
+	            .unwrap_or(Some(20)),
+	        max_outer_iterations: 5, max_retries: 30,
 	        retry_base_delay_ms: 1000, enable_compact: true,
 	        compact_config: CompactConfig::default(),
 	        api_key: Some(api_key.clone()),
@@ -313,11 +319,11 @@ async fn main() {
     let manager_bridge: Arc<ManagerBridge> = Arc::new(ManagerBridge::new(sid.clone(), stdout.clone()));
 
     // ── 根据配置选择 Runtime ──
-    let worker_rt: Box<dyn ion::runtime::Runtime> = {
+    // 用 Arc 保存，这样 HookExtension 能 clone 一份（agent handler 需要 runtime 来 spawn 子 Worker）
+    let worker_rt: Arc<dyn ion::runtime::Runtime> = {
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        // 统一走 BackendRegistry（新风格 + 旧风格兼容）
         let registry = ion::backend_registry::BackendRegistry::from_config(&ion_cfg.runtime, &cwd);
         tracing::info!(
             "[runtime] BackendRegistry 初始化: backends={:?}",
@@ -327,7 +333,7 @@ async fn main() {
             registry,
             manager_bridge.clone() as Arc<dyn ion::runtime::ManagerBridgeHandle>,
         );
-        Box::new(worker_inner)
+        Arc::new(worker_inner)
     };
 
     let default_prompt = "You are a helpful AI assistant with access to tools.".to_string();
@@ -355,7 +361,7 @@ async fn main() {
         tools,
         config,
     )
-        .with_runtime(worker_rt)
+        .with_runtime_arc(worker_rt.clone())
         .with_session_cwd(Some(worker_cwd.clone()));
 
     // 应用初始 agent 的工具限制（必须在 Agent 构造后调用）
@@ -372,6 +378,30 @@ async fn main() {
                 }
             }
         }
+    }
+
+    // ── 补丁 1（HOOKS_AND_OUTLINE_SYNC）：环境变量来源的工具限制 ──
+    // Manager spawn 子 Worker 时通过 ION_ALLOWED_TOOLS / ION_DISALLOWED_TOOLS 环境变量传入。
+    // 叠加在 agent.md 定义的限制之后（进一步收紧，不能放宽）：
+    //   - 白名单：与 agent.md 的白名单取交集（agent.md 没设白名单则直接用环境变量的）
+    //   - 黑名单：并集（两边都禁的都禁）
+    // 这让扩展/hooks 的 agent handler 能 spawn "限定工具"的子 Worker，
+    // 是 ION 的 agent handler 比 pi 更强的关键。
+    if let Ok(allowed_str) = std::env::var("ION_ALLOWED_TOOLS") {
+        let allowed: Vec<String> = allowed_str.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !allowed.is_empty() {
+            agent.restrict_tools(allowed);
+            tracing::info!("[worker] applied ION_ALLOWED_TOOLS from env");
+        }
+    }
+    if let Ok(disallowed_str) = std::env::var("ION_DISALLOWED_TOOLS") {
+        for tool_name in disallowed_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            agent.remove_tool(tool_name);
+        }
+        tracing::info!("[worker] applied ION_DISALLOWED_TOOLS from env");
     }
 
     if let Some(msgs) = preloaded {
@@ -484,6 +514,26 @@ async fn main() {
                     }
                 }
             }
+        }
+
+        // ── 注册 HookExtension（hooks.json 配置式钩子，热重载）──
+        // 每次 on_session_start 等钩子触发时动态读 hooks.json，改完即生效。
+        // runtime=None：command handler 用 tokio::spawn fallback；agent handler 待后续接入 runtime
+        if ion_cfg.is_extension_enabled("hooks") {
+            let proj_dir = std::path::PathBuf::from(&worker_cwd);
+            if ion::hooks::extension::HookExtension::has_hooks(&proj_dir) {
+                let hook_ext = ion::hooks::extension::HookExtension::new(
+                    proj_dir,
+                    Some(worker_rt.clone()), // agent handler 需要 runtime 来 spawn 子 Worker
+                    Some(follow_up_tx.clone()),
+                );
+                ext_reg.register(Box::new(hook_ext));
+                tracing::info!("[extension] hooks enabled");
+            } else {
+                tracing::info!("[extension] hooks: no hooks.json found or empty, skipping");
+            }
+        } else {
+            tracing::info!("[extension] hooks disabled by config");
         }
 
         agent = agent.with_extensions(ext_reg);

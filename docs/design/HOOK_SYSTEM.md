@@ -1,8 +1,10 @@
 # Shell Hook 系统 (TRAE 兼容)
 
-> **状态：暂不开发** — 本文档为设计规划，尚未实现。
+> **状态：已被取代** — 本文档为早期设计稿（6 事件 + 仅 command handler）。
 >
-> 相关：AGENTS.md 路线图 P6 条目。
+> **已被 [HOOKS_AND_OUTLINE_SYNC.md](./HOOKS_AND_OUTLINE_SYNC.md) 取代**——新文档对齐 pi 的 12 事件 + 5 handler 类型（含真能调工具的 agent handler），并包含大纲同步参考用例。
+>
+> 本文档保留作历史查阅，不再更新。
 
 ---
 

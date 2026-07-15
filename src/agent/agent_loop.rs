@@ -92,7 +92,8 @@ pub struct Agent {
     /// 对齐 pi abort：设 true 后 check_pause 返回 Aborted 错误，终止 run()
     stopped: std::sync::atomic::AtomicBool,
     /// 工具执行运行时（本地/沙箱/远程）
-    pub runtime: Box<dyn crate::runtime::Runtime>,
+    /// 用 Arc 以便 HookExtension 等 clone 共享（agent handler 需要 runtime 来 spawn 子 Worker）
+    pub runtime: Arc<dyn crate::runtime::Runtime>,
     /// 独立压缩模型（可选，默认使用主模型）
     compact_model: Option<Model>,
     /// 会话文件所在 cwd（用于 compaction/turn_summary 落盘，None = 不落盘）
@@ -132,7 +133,7 @@ impl Agent {
             pause_rx,
             running: false,
             stopped: std::sync::atomic::AtomicBool::new(false),
-            runtime: Box::new(crate::runtime::LocalRuntime::new()),
+            runtime: Arc::new(crate::runtime::LocalRuntime::new()),
             compact_model: None,
             session_cwd: None,
             overflow_recovery_attempts: 0,
@@ -142,7 +143,13 @@ impl Agent {
     }
 
     /// 替换运行时（本地/沙箱/远程切换）
-    pub fn with_runtime(mut self, rt: Box<dyn crate::runtime::Runtime>) -> Self {
+    /// 接受 Box，内部转 Arc（向后兼容）
+    pub fn with_runtime(self, rt: Box<dyn crate::runtime::Runtime>) -> Self {
+        self.with_runtime_arc(Arc::from(rt))
+    }
+
+    /// 替换运行时（Arc 版，给 HookExtension 等 clone 共享用）
+    pub fn with_runtime_arc(mut self, rt: Arc<dyn crate::runtime::Runtime>) -> Self {
         self.runtime = rt;
         self
     }
