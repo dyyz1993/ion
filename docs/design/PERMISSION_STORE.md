@@ -1,6 +1,6 @@
 # Stored-Decision 权限记忆 设计文档
 
-> **状态：待定** — 用户选"always allow"后持久化，下次自动放行，不用反复确认。
+> **状态：已完成** — store/list/remove/clear 四个 RPC + source 隔离（Config vs Stored）+ 18 单元 + 23 CLI 测试全过。
 >
 > 对齐 pi 的 `permissions/providers/stored-decision.ts`。
 
@@ -159,3 +159,75 @@ ion rpc --session <sid> --method permission_remove_stored \
 | scope | session/project/global | project/global（session 不持久化） |
 | 撤销方式 | slash `/permissions` 命令 | RPC `permission_remove_stored` |
 | 自动过期 | 无 | 无（对齐） |
+
+---
+
+## 7. 实现记录（已完成）
+
+### 实际改动文件
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `src/agent/permission_extension.rs` | +520 行 | `DecisionSource` 枚举 + `PermissionRule.source/created_at` 字段 + `UiPermissionResult` 枚举 + `store_decision`/`list_stored`/`remove_stored`/`clear_stored`/`store_from_ui_result` 5 个方法 + `on_extension_rpc` 4 个新路由 + 18 个单元测试 |
+| `src/bin/ion_worker.rs` | +107 行 | 4 个顶层 RPC 命令（`permission_store_decision` / `permission_list_stored` / `permission_remove_stored` / `permission_clear_stored`）转发给 permission 扩展 + `get_commands` 列表登记 |
+| `tests/permission_store_ci.sh` | 新建 ~350 行 | Group A 23 条 CLI E2E 测试 |
+
+### 设计文档 vs 实际实现的偏差
+
+1. **`src/agent/ui_system.rs` 不存在**：UI 类型实际在 `src/kernel.rs`（`UiSystem`/`UiEvent`/`PermissionResult`）。`UiPermissionResult` 枚举直接定义在 `permission_extension.rs`（与权限逻辑同文件），避免改 `kernel.rs`（超出本功能范围）。
+2. **顶层 RPC + extension_rpc 双路径**：除了文档设计的顶层 `permission_*` RPC，还通过 `extension_rpc`（`{"extension":"permission","method":"store_decision"}`）提供等价路径，与现有 `add_rule`/`list_rules` 一致。
+3. **serde rename_all 修复**：`Decision`/`Scope`/`DecisionSource` 加了 `#[serde(rename_all = "snake_case")]`，让磁盘 settings.json 格式（`"allow"`/`"deny"`/`"stored"`）与 `decision_str()`/`source_str()` 输出统一。这是实现过程中发现并修复的既有不一致。
+
+### RPC 接口规格（实测）
+
+**store_decision（顶层 RPC）：**
+```bash
+ion rpc --session <sid> --method permission_store_decision \
+  --params '{"subject":"command.run","pattern":"git status","decision":"allow","scope":"project"}'
+```
+响应：
+```json
+{"success":true,"data":{"status":"ok","message":"stored: command.run git status allow project (perm_stored_xxx)"}}
+```
+
+**list_stored：**
+```bash
+ion rpc --session <sid> --method permission_list_stored --params '{}'
+```
+响应：
+```json
+{"success":true,"data":{"rules":[{"id":"perm_stored_xxx","subject":"command.run","pattern":"git status","decision":"allow","scope":"project","source":"stored",...}],"count":1}}
+```
+
+**remove_stored：**
+```bash
+ion rpc --session <sid> --method permission_remove_stored --params '{"id":"perm_stored_xxx"}'
+```
+响应（成功）：`{"success":true,"data":{"status":"ok","removed":{...}}}`
+响应（不存在）：`{"success":false,"error":"permission_remove_stored: no stored decision with id '...'"}`
+
+**clear_stored：**
+```bash
+ion rpc --session <sid> --method permission_clear_stored --params '{}'
+```
+响应：`{"success":true,"data":{"status":"ok","removed":2}}`
+
+### 验证结果
+
+- **18 个单元测试**（`permission_extension::tests`）全过 ✅
+- **23 个 CLI E2E 测试**（`tests/permission_store_ci.sh` Group A）全过 ✅
+  - A1/A1b store_decision + settings.json 持久化
+  - A2 list_stored
+  - A3 自动放行（stored allow 命中 → before_tool_call 放行）
+  - A4/A4b/A4c remove_stored（删单条 + 不存在 id 报错）
+  - A5/A5b clear_stored（清空 + 计数）
+  - A6/A6b/A6c source 隔离（clear 只删 Stored，Config 保留）
+  - A7/A7b session scope stored
+  - A8/A8b/A8c extension_rpc 等价路径
+  - A9/A9b/A9c 错误处理（非法 decision/scope + 缺 id）
+
+```bash
+# 运行验证
+cargo test --lib permission_extension     # 18 单元测试
+bash tests/permission_store_ci.sh         # 23 CLI E2E 测试
+```

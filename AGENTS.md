@@ -362,7 +362,7 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/design/HOOKS_GUIDE.md](./docs/design/HOOKS_GUIDE.md) | **Hooks 使用指南**（内容文档，0 代码）：是什么/怎么配/CLI 怎么调/数据链路/大纲同步用例/FAQ (开发中) |
 | [docs/design/HOOKS_AND_OUTLINE_SYNC.md](./docs/design/HOOKS_AND_OUTLINE_SYNC.md) | **Hooks 实现规格**（给写代码的人）：Rust 数据结构 + handler 执行引擎 + 补丁 1/2 改动清单 + bug fix (补丁 1 ✅ / 补丁 2 ✅) |
 | [docs/testing/HOOKS_CLI_TEST.md](./docs/testing/HOOKS_CLI_TEST.md) | **Hooks CLI 测试指南**：RPC 接口规格 + Group A-H 验证用例 + 完整请求/响应 JSON (Group A ✅) |
-| [docs/design/PERMISSION_STORE.md](./docs/design/PERMISSION_STORE.md) | Stored-Decision 权限记忆：用户选"always allow"后持久化，下次自动放行 (待定) |
+| [docs/design/PERMISSION_STORE.md](./docs/design/PERMISSION_STORE.md) | Stored-Decision 权限记忆：用户选"always allow"后持久化，下次自动放行 (已完成) |
 | [docs/design/SKILL_TOOL.md](./docs/design/SKILL_TOOL.md) | Skill 工具：让 LLM 按需调用 skill（不是启动时注入）+ list/inject/fork 模式 (待定) |
 | [docs/design/PROVIDER_PROTOCOLS_TODO.md](./docs/design/PROVIDER_PROTOCOLS_TODO.md) | 缺失 Provider 协议规划：Mistral/Azure/Codex/Vertex/Bedrock 5 个协议补齐方案 (待定) |
 | [docs/design/EXTENSION_HOST_API.md](./docs/design/EXTENSION_HOST_API.md) | Extension Host API：ctx.fs 统一文件访问 + WASM 文件读取 + 4 级数据目录 (待定) |
@@ -926,7 +926,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 
 | 套件 | 数量 | 覆盖 |
 |------|------|------|
-| lib tests (核心逻辑) | 361 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact/FileSnapshot(object_store[+zstd压缩]/scanner/snapshot[+session_id]/diff/gc/restore[+XL3截断安全]/tree_store/approval)/TierModels/Hooks |
+| lib tests (核心逻辑) | 379 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact/FileSnapshot(object_store[+zstd压缩]/scanner/snapshot[+session_id]/diff/gc/restore[+XL3截断安全]/tree_store/approval)/TierModels/Hooks/StoredDecision |
 | unit_rpc_test (RPC 协议) | 20 | U1-U20 RPC 命令覆盖 + 接口格式兼容 |
 | manager_integration (集成) | 25 | Manager + Worker + 事件 + UI + 消息拉取 |
 | session_tree_test (集成) | 4 | only-append 审计/branch 接 leaf/全操作序列 |
@@ -960,7 +960,8 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | hooks_agent_real (CLI E2E, ION_E2E=1) | 3 | 真实 LLM (DeepSeek) 验证 agent handler 子 Worker 真能用 read 工具读文件 + 死循环防护 |
 | hooks_e2e (集成) | 10 | 内核引擎：HooksConfig加载/handler_count/热重载/command block/no-verify/正常放行/注入上下文/Stop block+放行/agent handler不panic |
 | patch1_worker_config (集成) | 5 | ExtensionWorkerConfig 字段序列化/透传/默认值/边界值 |
-| **测试覆盖合计** | **748** | 全部通过 ✅（Rust 488 + CLI E2E 260，含 hooks 30 case + 真实 LLM 3 case） |
+| permission_store_ci (CLI E2E) | 23 | Group A：stored-decision store/list/remove/clear + source 隔离(Config vs Stored) + session/project scope + extension_rpc 等价路径 + 错误处理 |
+| **测试覆盖合计** | **771** | 全部通过 ✅（Rust 506 + CLI E2E 283，含 hooks 30 case + 真实 LLM 3 case） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)

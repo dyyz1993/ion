@@ -40,6 +40,11 @@ pub struct Context {
     pub ext_name: String,
     /// EventBus for UI events (host_ui_ask/confirm/notif/alert/prompt).
     pub event_bus: Option<std::sync::Arc<tokio::sync::Mutex<crate::event_bus::ExtensionEventBus>>>,
+    /// ctx.fs 统一文件访问能力（host_read_file / host_list_dir 用）。
+    /// 注入后 WASM 扩展就能读 allowed_roots 内的项目文件。
+    pub fs: Option<std::sync::Arc<dyn crate::agent::extension::FileSystemCapability>>,
+    /// Tokio runtime handle（用于在同步 host 函数里 block_on 异步 fs 调用）。
+    pub tokio_handle: Option<tokio::runtime::Handle>,
 }
 
 impl std::fmt::Debug for Context {
@@ -61,6 +66,8 @@ impl Default for Context {
             project_root: String::new(),
             ext_name: String::new(),
             event_bus: None,
+            fs: None,
+            tokio_handle: None,
         }
     }
 }
@@ -323,7 +330,91 @@ impl Extension {
 	                _ => 0,
 	            }
 	        }
-	    )?;
+            )?;
+
+    // ── Host: read_file (ctx.fs 统一文件访问) ─────────────────────────────
+    // 让 WASM 扩展能读 allowed_roots 内的项目文件。
+    // 签名: host_read_file(path_ptr, path_len, out_buf, out_capacity) -> u32
+    //   返回写入的字节数；0 = 出错或文件不存在（逃逸也算不存在）。
+    linker.func_wrap("env", "host_read_file",
+        move |mut caller: WasmCaller,
+              path_ptr: u32, path_len: u32,
+              out_buf: u32, out_capacity: u32| -> u32 {
+            let path = mem_read_str(&mut caller, path_ptr, path_len);
+            if path.is_empty() { return 0; }
+            let ctx = caller.data().clone();
+
+            // 没注入 fs 或没有 tokio handle → 拒绝（返回 0 = 读不到）
+            let (fs, handle) = match (ctx.fs.as_ref(), ctx.tokio_handle.as_ref()) {
+                (Some(fs), Some(h)) => (fs.clone(), h.clone()),
+                _ => {
+                    tracing::warn!("[wasm] host_read_file: no fs capability injected");
+                    return 0;
+                }
+            };
+
+            // 在同步 host 函数里 block_on 异步 fs.read_file
+            // （与 host_ui_ask 用 blocking_recv 同理）
+            let result = tokio::task::block_in_place(|| handle.block_on(fs.read_file(&path)));
+            let content = match result {
+                Ok(c) => c,
+                Err(e) => {
+                    // 路径逃逸 / 不存在 / 权限拒绝 都当作读不到
+                    tracing::info!("[wasm] host_read_file('{}'): {e}", path);
+                    return 0;
+                }
+            };
+            let bytes = content.as_bytes();
+            let len = bytes.len().min(out_capacity as usize);
+            if let Some(mem) = mem_get(&mut caller) {
+                mem.write(&mut caller, out_buf as usize, &bytes[..len]).ok();
+            }
+            len as u32
+        }
+    )?;
+
+    // ── Host: list_dir (ctx.fs 统一文件访问) ──────────────────────────────
+    // 让 WASM 扩展能列 allowed_roots 内的目录。
+    // 签名: host_list_dir(path_ptr, path_len, out_buf, out_capacity) -> u32
+    //   返回写入的 JSON 字节数；0 = 出错或目录不存在。
+    //   JSON 格式: [{"name":"x","is_dir":false,"size":123}, ...]
+    linker.func_wrap("env", "host_list_dir",
+        move |mut caller: WasmCaller,
+              path_ptr: u32, path_len: u32,
+              out_buf: u32, out_capacity: u32| -> u32 {
+            let path = mem_read_str(&mut caller, path_ptr, path_len);
+            if path.is_empty() { return 0; }
+            let ctx = caller.data().clone();
+
+            let (fs, handle) = match (ctx.fs.as_ref(), ctx.tokio_handle.as_ref()) {
+                (Some(fs), Some(h)) => (fs.clone(), h.clone()),
+                _ => {
+                    tracing::warn!("[wasm] host_list_dir: no fs capability injected");
+                    return 0;
+                }
+            };
+
+            let result = tokio::task::block_in_place(|| handle.block_on(fs.list_dir(&path)));
+            let entries = match result {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::info!("[wasm] host_list_dir('{}'): {e}", path);
+                    return 0;
+                }
+            };
+            // 序列化成 JSON 数组
+            let json: Vec<serde_json::Value> = entries.iter().map(|e| serde_json::json!({
+                "name": e.name, "is_dir": e.is_dir, "size": e.size,
+            })).collect();
+            let json_str = serde_json::to_string(&json).unwrap_or_else(|_| "[]".into());
+            let bytes = json_str.as_bytes();
+            let len = bytes.len().min(out_capacity as usize);
+            if let Some(mem) = mem_get(&mut caller) {
+                mem.write(&mut caller, out_buf as usize, &bytes[..len]).ok();
+            }
+            len as u32
+        }
+    )?;
 
         // ── Register data dimension host functions (4 dims × 4 ops = 16) ───
         register_dim(&mut linker, "global".into(), |ctx| paths::global_data_dir(&ctx.ext_name))?;

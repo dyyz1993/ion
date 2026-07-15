@@ -234,6 +234,237 @@ pub enum GateDecision {
 }
 
 // ---------------------------------------------------------------------------
+// FileSystemCapability — ctx.fs 统一文件访问（给扩展用，不走裸 std::fs）
+// ---------------------------------------------------------------------------
+
+/// 目录条目（list_dir 返回）
+#[derive(Clone, Debug)]
+pub struct DirEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
+}
+
+/// 文件系统能力——扩展通过它访问文件（而不是裸 std::fs）。
+///
+/// 走 Runtime 路由（本地/沙箱/远程透明），受 allowed_roots 白名单管控。
+/// 对齐 pi 的 `ExtensionContext.fs`（FileSystemCapability）。
+#[async_trait::async_trait]
+pub trait FileSystemCapability: Send + Sync {
+    /// 读文件全文。路径必须在 allowed_roots 之内（否则报错）。
+    async fn read_file(&self, path: &str) -> Result<String, String>;
+
+    /// 写文件。路径必须在 allowed_roots 之内。
+    async fn write_file(&self, path: &str, content: &str) -> Result<(), String>;
+
+    /// 列目录，返回每个条目的 name/is_dir/size。
+    async fn list_dir(&self, path: &str) -> Result<Vec<DirEntry>, String>;
+
+    /// 文件是否存在。
+    async fn path_exists(&self, path: &str) -> bool;
+
+    /// 简化版 glob：在 allowed_roots[0] 下按 `*` 通配符匹配相对路径。
+    /// 不引入 regex/glob crate，只支持 `*`（单段）和 `**`（多段）。
+    async fn glob(&self, pattern: &str) -> Result<Vec<String>, String>;
+}
+
+/// 基于 Runtime 的 FileSystemCapability 实现。
+///
+/// 把文件操作委托给 Runtime（走本地/沙箱/远程路由），
+/// 同时用 allowed_roots 白名单 + safe_join 防 `../../../` 逃逸。
+pub struct RuntimeFileSystem {
+    runtime: std::sync::Arc<dyn crate::runtime::Runtime>,
+    /// 允许访问的根目录白名单（canonicalized）。路径必须落在其中之一下面。
+    allowed_roots: Vec<std::path::PathBuf>,
+}
+
+impl RuntimeFileSystem {
+    /// 构造。`allowed_roots` 原样保存（不做 fs canonicalize）。
+    ///
+    /// 路径安全检查（`safe_join`）对 root 和目标都用同一套字符串级规范化，
+    /// 避免 fs-canonicalize 解析符号链接后与目标路径不一致（如 macOS /var↔/private/var），
+    /// 也避免 TOCTOU。
+    pub fn new(
+        runtime: std::sync::Arc<dyn crate::runtime::Runtime>,
+        allowed_roots: Vec<std::path::PathBuf>,
+    ) -> Self {
+        Self { runtime, allowed_roots }
+    }
+
+    /// 默认 allowed_roots：项目根目录 + ~/.ion/
+    pub fn default_allowed_roots(project_root: &std::path::Path) -> Vec<std::path::PathBuf> {
+        vec![
+            project_root.to_path_buf(),
+            crate::paths::root(),
+        ]
+    }
+
+    /// 路径安全检查：确保 `path` 解析后仍在某个 allowed_root 之内（防 `../../../` 逃逸）。
+    ///
+    /// - 绝对路径：规范化后检查是否在任一 root 下。
+    /// - 相对路径：相对第一个 root 解析，再检查。
+    /// - null byte：拒绝。
+    ///
+    /// 返回规范化后的绝对路径字符串，或逃逸错误。
+    pub fn safe_join(&self, path: &str) -> Result<String, String> {
+        if path.contains('\0') {
+            return Err(format!("path contains null byte: {path}"));
+        }
+        let p = std::path::Path::new(path);
+        let resolved = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            // 相对路径相对第一个 root 解析（无 root 报错）
+            let base = self
+                .allowed_roots
+                .first()
+                .ok_or_else(|| "no allowed_roots configured".to_string())?;
+            base.join(p)
+        };
+        // 字符串级规范化（不访问文件系统，避免 TOCTOU），解析 . 和 ..
+        let canon = canonicalize_path_buf(&resolved);
+        for root in &self.allowed_roots {
+            let root_canon = canonicalize_path_buf(root);
+            if canon.starts_with(&root_canon) {
+                return Ok(canon.to_string_lossy().to_string());
+            }
+        }
+        Err(format!("path '{}' outside allowed roots", path))
+    }
+}
+
+#[async_trait::async_trait]
+impl FileSystemCapability for RuntimeFileSystem {
+    async fn read_file(&self, path: &str) -> Result<String, String> {
+        let safe_path = self.safe_join(path)?;
+        self.runtime.read_file(&safe_path).await
+    }
+
+    async fn write_file(&self, path: &str, content: &str) -> Result<(), String> {
+        let safe_path = self.safe_join(path)?;
+        self.runtime.write_file(&safe_path, content).await
+    }
+
+    async fn list_dir(&self, path: &str) -> Result<Vec<DirEntry>, String> {
+        let safe_path = self.safe_join(path)?;
+        let entries = self.runtime.list_dir(&safe_path).await?;
+        // 把字符串条目转成 DirEntry（补 is_dir/size 元数据）
+        let mut out = Vec::with_capacity(entries.len());
+        for name in entries {
+            let full = std::path::Path::new(&safe_path).join(&name);
+            let meta = std::fs::metadata(&full).ok();
+            out.push(DirEntry {
+                name,
+                is_dir: meta.as_ref().map(|m| m.is_dir()).unwrap_or(false),
+                size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
+            });
+        }
+        Ok(out)
+    }
+
+    async fn path_exists(&self, path: &str) -> bool {
+        let Ok(safe_path) = self.safe_join(path) else {
+            return false;
+        };
+        self.runtime.path_exists(&safe_path).await
+    }
+
+    async fn glob(&self, pattern: &str) -> Result<Vec<String>, String> {
+        // 简化 glob：相对 allowed_roots[0] 遍历，按 * / ** 匹配。
+        // 不引入外部 crate；只支持 *（单段非分隔符）和 **（跨段）。
+        let root = self
+            .allowed_roots
+            .first()
+            .ok_or_else(|| "no allowed_roots configured".to_string())?;
+        let root_canon = canonicalize_path_buf(root);
+        let matches = glob_walk(&root_canon, pattern);
+        Ok(matches)
+    }
+}
+
+/// 字符串级路径规范化（不访问文件系统）：解析 . 和 ..，保留其余分量。
+fn canonicalize_path_buf(p: &std::path::Path) -> std::path::PathBuf {
+    let mut parts: Vec<std::ffi::OsString> = Vec::new();
+    for comp in p.components() {
+        use std::path::Component;
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !parts.is_empty() {
+                    parts.pop();
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => parts.push(comp.as_os_str().to_owned()),
+            Component::Normal(s) => parts.push(s.to_owned()),
+        }
+    }
+    parts.iter().collect()
+}
+
+/// 简化 glob：递归遍历 `base`，返回匹配 `pattern`（相对 base）的路径。
+/// 支持 `*`（单段，不含路径分隔符）和 `**`（匹配任意层级）。
+fn glob_walk(base: &std::path::Path, pattern: &str) -> Vec<String> {
+    let segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+    let mut out = Vec::new();
+    glob_rec(base, base, &segs, 0, &mut out);
+    out.sort();
+    out
+}
+
+fn glob_rec(
+    base: &std::path::Path,
+    cur: &std::path::Path,
+    segs: &[&str],
+    idx: usize,
+    out: &mut Vec<String>,
+) {
+    if idx >= segs.len() {
+        // 匹配到末尾，记录（相对 base 的路径）
+        if let Ok(rel) = cur.strip_prefix(base) {
+            if !rel.as_os_str().is_empty() {
+                out.push(rel.to_string_lossy().to_string());
+            }
+        }
+        return;
+    }
+    let seg = segs[idx];
+    let rd = match std::fs::read_dir(cur) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    for entry in rd.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if seg == "**" {
+            // ** 匹配任意层级：递归进子目录，并尝试匹配当前段之后的剩余段
+            let child = entry.path();
+            // 1. ** 继续吃（跨层）
+            glob_rec(base, &child, segs, idx, out);
+            // 2. ** 结束，匹配下一段
+            glob_rec(base, &child, segs, idx + 1, out);
+        } else if wildcard_match(seg, &name_str) {
+            let child = entry.path();
+            glob_rec(base, &child, segs, idx + 1, out);
+        }
+    }
+}
+
+/// `*` 通配符匹配（单段，不含 /）。`?` 匹配单个字符。
+fn wildcard_match(pattern: &str, text: &str) -> bool {
+    fn rec(p: &[u8], t: &[u8]) -> bool {
+        match (p.first(), t.first()) {
+            (None, None) => true,
+            (None, Some(_)) => false,
+            (Some(b'*'), _) => rec(&p[1..], t) || (!t.is_empty() && rec(p, &t[1..])),
+            (Some(b'?'), Some(_)) => rec(&p[1..], &t[1..]),
+            (Some(&pc), Some(&tc)) if pc == tc => rec(&p[1..], &t[1..]),
+            _ => false,
+        }
+    }
+    rec(pattern.as_bytes(), text.as_bytes())
+}
+
+// ---------------------------------------------------------------------------
 // ExtensionRegistry
 // ---------------------------------------------------------------------------
 
@@ -243,6 +474,8 @@ pub struct ExtensionRegistry {
     pub permission_engine: Option<crate::kernel::PermissionEngine>,
     /// UI 事件系统（可选，用于确认弹窗）
     pub ui_system: Option<crate::kernel::UiSystem>,
+    /// ctx.fs 统一文件访问能力（可选）。扩展通过 registry.filesystem() 拿到。
+    pub fs: Option<std::sync::Arc<dyn FileSystemCapability>>,
     /// 运行时 flag 值（extension_name → flag_name → value）
     /// 静态定义在 ExtensionDef.flags，运行时值覆盖 default
     runtime_flags: std::sync::Mutex<std::collections::HashMap<String, std::collections::HashMap<String, serde_json::Value>>>,
@@ -258,6 +491,7 @@ impl ExtensionRegistry {
             extensions: Vec::new(),
             permission_engine: None,
             ui_system: None,
+            fs: None,
             runtime_flags: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
@@ -272,6 +506,18 @@ impl ExtensionRegistry {
     pub fn with_ui(mut self, ui: crate::kernel::UiSystem) -> Self {
         self.ui_system = Some(ui);
         self
+    }
+
+    /// 注入 ctx.fs 统一文件访问能力（RuntimeFileSystem）。
+    /// 扩展通过 `registry.filesystem()` 拿到 `Arc<dyn FileSystemCapability>`。
+    pub fn with_filesystem(mut self, fs: std::sync::Arc<dyn FileSystemCapability>) -> Self {
+        self.fs = Some(fs);
+        self
+    }
+
+    /// 获取 ctx.fs（扩展在钩子里调用）。
+    pub fn filesystem(&self) -> Option<&std::sync::Arc<dyn FileSystemCapability>> {
+        self.fs.as_ref()
     }
 
     pub fn register(&mut self, ext: Box<dyn Extension>) { self.extensions.push(ext); }
@@ -539,5 +785,205 @@ impl Extension for GenericExtension {
             ctx.handled = true;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod fs_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// 测试用 Runtime：直接 std::fs，不走路由。
+    struct TestRuntime;
+
+    #[async_trait::async_trait]
+    impl crate::runtime::Runtime for TestRuntime {
+        async fn execute_command(&self, _c: &str, _t: u64) -> Result<(String, String, i32), String> {
+            Err("not supported".into())
+        }
+        async fn read_file(&self, path: &str) -> Result<String, String> {
+            std::fs::read_to_string(path).map_err(|e| e.to_string())
+        }
+        async fn write_file(&self, path: &str, content: &str) -> Result<(), String> {
+            std::fs::write(path, content).map_err(|e| e.to_string())
+        }
+        async fn edit_file(&self, _path: &str, _old: &str, _new: &str) -> Result<(), String> {
+            Err("not supported".into())
+        }
+        async fn path_exists(&self, path: &str) -> bool {
+            std::path::Path::new(path).exists()
+        }
+        async fn list_dir(&self, path: &str) -> Result<Vec<String>, String> {
+            std::fs::read_dir(path)
+                .map_err(|e| e.to_string())?
+                .filter_map(|e| e.ok())
+                .map(|e| Ok(e.file_name().to_string_lossy().to_string()))
+                .collect()
+        }
+        async fn remove_file(&self, _p: &str) -> Result<(), String> { Err("not supported".into()) }
+        async fn grep_search(&self, _p: &str, _path: &str) -> Result<Vec<String>, String> { Err("no".into()) }
+        async fn find_files(&self, _p: &str, _n: &str) -> Result<Vec<String>, String> { Err("no".into()) }
+        async fn file_info(&self, _p: &str) -> Result<Vec<crate::runtime::FileEntry>, String> { Err("no".into()) }
+        fn runtime_type(&self) -> String { "test".into() }
+    }
+
+    /// 创建唯一临时目录，返回路径。测试结束手动清理。
+    fn make_tmp_root() -> std::path::PathBuf {
+        let id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+        let dir = std::env::temp_dir().join(format!("ion_fs_test_{id}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn make_fs() -> (std::path::PathBuf, RuntimeFileSystem) {
+        let dir = make_tmp_root();
+        let rt: Arc<dyn crate::runtime::Runtime> = Arc::new(TestRuntime);
+        let fs = RuntimeFileSystem::new(rt, vec![dir.clone()]);
+        (dir, fs)
+    }
+
+    #[tokio::test]
+    async fn read_file_in_root_works() {
+        let (dir, fs) = make_fs();
+        let f = dir.join("hello.txt");
+        std::fs::write(&f, "hi there").unwrap();
+        let content = fs.read_file("hello.txt").await.unwrap();
+        assert_eq!(content, "hi there");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn read_file_absolute_in_root_works() {
+        let (dir, fs) = make_fs();
+        let f = dir.join("notes.md");
+        std::fs::write(&f, "# Notes").unwrap();
+        let abs = f.to_string_lossy().to_string();
+        let content = fs.read_file(&abs).await.unwrap();
+        assert_eq!(content, "# Notes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn read_file_outside_root_blocked() {
+        let (dir, fs) = make_fs();
+        // /etc/passwd 不在临时 root 下
+        let err = fs.read_file("/etc/passwd").await.unwrap_err();
+        assert!(err.contains("outside allowed roots"), "got: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn parent_dir_traversal_blocked() {
+        let (dir, fs) = make_fs();
+        let err = fs.read_file("../../../etc/passwd").await.unwrap_err();
+        assert!(err.contains("outside allowed roots"), "got: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn traversal_with_subdir_blocked() {
+        let (dir, fs) = make_fs();
+        let err = fs.read_file("subdir/../../etc/passwd").await.unwrap_err();
+        assert!(err.contains("outside allowed roots"), "got: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn null_byte_in_path_blocked() {
+        let (dir, fs) = make_fs();
+        let err = fs.read_file("key\0/etc/passwd").await.unwrap_err();
+        assert!(err.contains("null byte"), "got: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn write_then_read_roundtrip() {
+        let (dir, fs) = make_fs();
+        fs.write_file("out.txt", "payload").await.unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("out.txt")).unwrap(), "payload");
+        let back = fs.read_file("out.txt").await.unwrap();
+        assert_eq!(back, "payload");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn list_dir_returns_entries() {
+        let (dir, fs) = make_fs();
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        let entries = fs.list_dir(".").await.unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"a.txt"));
+        assert!(names.contains(&"sub"));
+        let sub = entries.iter().find(|e| e.name == "sub").unwrap();
+        assert!(sub.is_dir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn path_exists_in_root_true() {
+        let (dir, fs) = make_fs();
+        std::fs::write(dir.join("x"), "1").unwrap();
+        assert!(fs.path_exists("x").await);
+        assert!(!fs.path_exists("nope").await);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn path_exists_outside_root_false() {
+        let (dir, fs) = make_fs();
+        // 路径逃逸 → exists 返回 false（而不是报错）
+        assert!(!fs.path_exists("/etc/passwd").await);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn safe_join_relative_resolves_against_first_root() {
+        let (dir, fs) = make_fs();
+        let resolved = fs.safe_join("foo/bar.txt").unwrap();
+        assert_eq!(resolved, dir.join("foo/bar.txt").to_string_lossy().to_string());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn safe_join_dotdot_inside_stays_in_root() {
+        let (dir, fs) = make_fs();
+        // a/../b → b，仍在 root 内
+        let resolved = fs.safe_join("a/../b").unwrap();
+        assert_eq!(resolved, dir.join("b").to_string_lossy().to_string());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn safe_join_traversal_outside_blocked() {
+        let (dir, fs) = make_fs();
+        assert!(fs.safe_join("../escape").is_err());
+        assert!(fs.safe_join("/etc/passwd").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn glob_matches_simple_pattern() {
+        let (dir, fs) = make_fs();
+        std::fs::write(dir.join("a.txt"), "1").unwrap();
+        std::fs::write(dir.join("b.txt"), "2").unwrap();
+        std::fs::write(dir.join("c.md"), "3").unwrap();
+        let matches = fs.glob("*.txt").await.unwrap();
+        assert!(matches.contains(&"a.txt".to_string()));
+        assert!(matches.contains(&"b.txt".to_string()));
+        assert!(!matches.iter().any(|m| m == "c.md"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn glob_double_star_recursive() {
+        let (dir, fs) = make_fs();
+        std::fs::create_dir_all(dir.join("src/nested")).unwrap();
+        std::fs::write(dir.join("src/nested/deep.rs"), "").unwrap();
+        std::fs::write(dir.join("src/top.rs"), "").unwrap();
+        let matches = fs.glob("**/*.rs").await.unwrap();
+        assert!(matches.iter().any(|m| m.contains("top.rs")), "matches: {matches:?}");
+        assert!(matches.iter().any(|m| m.contains("deep.rs")), "matches: {matches:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
