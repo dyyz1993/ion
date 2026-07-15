@@ -203,9 +203,27 @@ impl GlobalMemoryStore {
     /// 软删除（archived = 1）
     pub fn forget(&self, id: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        conn.execute("UPDATE entries SET archived = 1 WHERE id = ?1", params![id])
-            .map_err(|e| format!("update: {}", e))?;
+        conn.execute("UPDATE entries SET archived=1 WHERE id=?1", params![id])
+            .map_err(|e| format!("forget: {}", e))?;
         Ok(())
+    }
+
+    /// 批量清空（测试用，DELETE + 清 FTS5 索引 + 清 outlines）
+    pub fn clear_all(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        conn.execute("DELETE FROM entries", []).map_err(|e| format!("clear entries: {}", e))?;
+        conn.execute("DELETE FROM entries_fts", []).map_err(|e| format!("clear fts: {}", e))?;
+        conn.execute("DELETE FROM outlines", []).map_err(|e| format!("clear outlines: {}", e))?;
+        Ok(())
+    }
+
+    /// 活跃条目数
+    pub fn count(&self) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM entries WHERE archived=0", [], |row| row.get(0)
+        ).unwrap_or(0);
+        Ok(count)
     }
 
     /// 列出所有记忆（不含 archived）

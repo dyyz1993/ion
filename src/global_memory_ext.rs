@@ -124,14 +124,10 @@ impl Extension for GlobalMemoryExtension {
             }
 
             "clear_stored" => {
-                // 清空所有记忆（测试用）
-                let entries = store.list(None).map_err(|e| AgentError::Tool(e))?;
-                let mut removed = 0;
-                for e in &entries {
-                    let _ = store.forget(&e.id);
-                    removed += 1;
-                }
-                Ok(serde_json::json!({"removed": removed}))
+                // 清空所有记忆（测试用）——SQL 批量删，不走逐条 forget
+                let count = store.count().unwrap_or(0);
+                store.clear_all().map_err(|e| AgentError::Tool(e))?;
+                Ok(serde_json::json!({"removed": count}))
             }
 
             _ => Err(AgentError::Tool(format!(
