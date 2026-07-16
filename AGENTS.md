@@ -375,7 +375,7 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/design/PERMISSION_STORE.md](./docs/design/PERMISSION_STORE.md) | Stored-Decision 权限记忆：用户选"always allow"后持久化，下次自动放行 (已完成) |
 | [docs/design/SKILL_TOOL.md](./docs/design/SKILL_TOOL.md) | Skill 工具：让 LLM 按需调用 skill（不是启动时注入）+ list/inject/fork 模式 (待定) |
 | [docs/design/PROVIDER_PROTOCOLS_TODO.md](./docs/design/PROVIDER_PROTOCOLS_TODO.md) | 缺失 Provider 协议规划：Mistral/Azure/Codex/Vertex/Bedrock 5 个协议补齐方案 (待定) |
-| [docs/design/EXTENSION_HOST_API.md](./docs/design/EXTENSION_HOST_API.md) | Extension Host API：ctx.fs 统一文件访问 + WASM 文件读取 + 4 级数据目录 (待定) |
+| [docs/design/EXTENSION_HOST_API.md](./docs/design/EXTENSION_HOST_API.md) | Extension Host API：ctx.fs 统一文件访问 + WASM 文件读取 + 4 级数据目录 (已完成) |
 | [docs/design/TEAM_ORCHESTRATION.md](./docs/design/TEAM_ORCHESTRATION.md) | Team 编排（agent.md 驱动）— `ion --host --agent coordinator` 拆任务开发 (已验证) |
 | [docs/design/WORKFLOW_GATE.md](./docs/design/WORKFLOW_GATE.md) | Workflow Gate — 内核级交付校验 (已完成) |
 | [docs/design/WORKFLOW_ENGINE.md](./docs/design/WORKFLOW_ENGINE.md) | Workflow Engine — 结构化交付流水线 DSL + 执行流程 + CI Group (已验证) |
@@ -716,6 +716,16 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - 扩展内通过 `ExtensionRegistry::get_flag()` 读取
   - **验证**: 10 CI 测试全过 ✅
 
+- **Extension Host API（ctx.fs 统一文件访问，对齐 pi ExtensionContext.fs）**:
+  - `FileSystemCapability` trait（read_file/write_file/list_dir/path_exists/glob）+ `RuntimeFileSystem` 实现
+  - `ExtensionRegistry.fs` 字段 + `with_filesystem()` / `filesystem()` 访问器（向后兼容，Option 字段）
+  - WASM 宿主函数 `host_read_file` / `host_list_dir`（WASM 扩展能读 allowed_roots 内项目文件）
+  - `safe_join` 路径逃逸防护：两阶段规范化（字符串级拦截 `../` + fs-canonicalize 对齐符号链接坐标系），null byte 拦截
+  - 场景 1（LocalRuntime）+ 场景 2/3（worker Runtime）都注入
+  - `FsProbeExtension`（fs_probe）通过 extension_rpc 暴露 read/write/list/exists/glob，供 CLI 测试
+  - 详见 [docs/design/EXTENSION_HOST_API.md](./docs/design/EXTENSION_HOST_API.md)
+  - **验证**: 15 单元 + 18 CI 测试全过 ✅
+
 - **Stored-Decision 权限记忆（对齐 pi stored-decision.ts）**:
   - 用户选"always allow"后持久化决策，下次自动放行，不用反复确认
   - `DecisionSource` 枚举（Config vs Stored）+ `PermissionRule.source/created_at` 字段
@@ -736,7 +746,8 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - `scripts/hooks_test.sh`（纯 bash 验证工具，不依赖 Rust）
   - 补丁 1：`ExtensionWorkerConfig` 字段补齐（agent/initial_prompt/worktree/allowed_tools/disallowed_tools/max_turns）
   - `Agent.runtime` 从 `Box<dyn>` 改 `Arc<dyn>`（让 HookExtension clone 共享）
-  - **验证**: hooks_ci 8 + hooks_agent_ci 4 + hooks_e2e 10 + patch1 5 + hooks_agent_real 3（真实 LLM DeepSeek）= 30 测试全过 ✅
+  - command handler 并发安全修复：`spawn_command_with_stdin` 透传 `ctx.project_dir` 作为 bash `current_dir`（不再依赖进程级 cwd，消除并行 hook/测试互相踩的隐患）
+  - **验证**: hooks_ci 8 + hooks_agent_ci 4 + hooks_e2e 10（并发模式稳定）+ patch1 5 + hooks_agent_real 3（真实 LLM DeepSeek）= 30 测试全过 ✅
 
 ### 🔌 MCP 系统（Model Context Protocol，Phase 1-4 全部实现）
 
@@ -984,7 +995,8 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | hooks_e2e (集成) | 10 | 内核引擎：HooksConfig加载/handler_count/热重载/command block/no-verify/正常放行/注入上下文/Stop block+放行/agent handler不panic |
 | patch1_worker_config (集成) | 5 | ExtensionWorkerConfig 字段序列化/透传/默认值/边界值 |
 | permission_store_ci (CLI E2E) | 23 | Group A：stored-decision store/list/remove/clear + source 隔离(Config vs Stored) + session/project scope + extension_rpc 等价路径 + 错误处理 |
-| **测试覆盖合计** | **771** | 全部通过 ✅（Rust 506 + CLI E2E 283，含 hooks 30 case + 真实 LLM 3 case） |
+| extension_fs_ci (CLI E2E) | 18 | Group A：ctx.fs read/write/list/exists/glob（fs_probe extension_rpc）+ Group C：路径逃逸防护（../../../etc/passwd / null byte / allowed_roots 外绝对路径）|
+| **测试覆盖合计** | **789** | 全部通过 ✅（Rust 506 + CLI E2E 301，含 hooks 30 case + 真实 LLM 3 case） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
