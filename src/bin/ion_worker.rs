@@ -469,6 +469,10 @@ async fn main() {
             let mut memory_ext = ion::agent::memory::MemoryExtension::new(storage_ctx.clone());
             // 复用 tools 的 MemoryStore（同一份数据）
             memory_ext.store = memory_store.clone();
+            // V0.2 会话加工：注入 registry + model（SessionEnd 时 LLM 提炼记忆）
+            memory_ext.registry = Some(Arc::clone(&registry));
+            memory_ext.model = Some(model.clone());
+            memory_ext.processing_enabled = ion_cfg.is_extension_enabled("global-memory");
             ext_reg.register(Box::new(memory_ext));
         } else {
             tracing::info!("[extension] memory disabled by config");

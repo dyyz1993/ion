@@ -433,6 +433,12 @@ impl Tool for MemorySearchTool {
 pub struct MemoryExtension {
     pub store: Arc<Mutex<MemoryStore>>,
     pub extension_api: Option<crate::worker_api::ExtensionApi>,
+    /// ApiRegistry（SessionEnd 加工用 LLM 提炼记忆）
+    pub registry: Option<Arc<ion_provider::registry::ApiRegistry>>,
+    /// 当前会话模型（加工用）
+    pub model: Option<ion_provider::types::Model>,
+    /// 加工开关（config.json extensions.memory.processing.enabled）
+    pub processing_enabled: bool,
 }
 
 impl MemoryExtension {
@@ -440,6 +446,9 @@ impl MemoryExtension {
         Self {
             store: Arc::new(Mutex::new(MemoryStore::new(storage))),
             extension_api: None,
+            registry: None,
+            model: None,
+            processing_enabled: true,
         }
     }
 
@@ -453,12 +462,15 @@ impl MemoryExtension {
         Self {
             store: Arc::new(Mutex::new(MemoryStore::new_with_root_no_global(project_root, session_id))),
             extension_api: None,
+            registry: None,
+            model: None,
+            processing_enabled: true,
         }
     }
 
     /// 使用已有的 MemoryStore（测试用）
     pub fn new_with_store(store: Arc<Mutex<MemoryStore>>) -> Self {
-        Self { store, extension_api: None }
+        Self { store, extension_api: None, registry: None, model: None, processing_enabled: false }
     }
 
     fn emit(&self, custom_type: &str, data: serde_json::Value) {
@@ -486,6 +498,27 @@ impl MemoryExtension {
 
 #[async_trait]
 impl Extension for MemoryExtension {
+    /// 会话结束时触发 V0.2 记忆加工（LLM 提炼精华 → 去重 → 存全局库）
+    async fn on_session_shutdown(&self, _ctx: &super::extension::SessionContext) -> AgentResult<()> {
+        if !self.processing_enabled { return Ok(()); }
+        let registry = match &self.registry { Some(r) => r.clone(), None => return Ok(()) };
+        let model = match &self.model { Some(m) => m.clone(), None => return Ok(()) };
+        let (session_id, project_name, global_store) = {
+            let store = self.store.lock().await;
+            (store.storage.session_id.clone(), store.project_name.clone(), store.global_store.clone())
+        };
+        let global = match global_store { Some(g) => g, None => return Ok(()) };
+
+        // 异步 spawn 加工，不阻塞退出
+        let self_store = self.store.clone();
+        tokio::spawn(async move {
+            if let Err(e) = run_memory_processing(&session_id, &project_name, &global, &registry, &model, &self_store).await {
+                tracing::warn!("[memory-v2] processing failed: {e}");
+            }
+        });
+        Ok(())
+    }
+
     /// 注入 <memory_outline> 到 system prompt
     async fn on_system_prompt(&self, prompt: &mut String) -> AgentResult<()> {
         let store = self.store.lock().await;
@@ -789,4 +822,130 @@ fn simple_hash(s: &str) -> String {
         hash = hash.wrapping_mul(33).wrapping_add(b as u64);
     }
     format!("{:x}", hash)
+}
+
+// ── V0.2 会话加工 Pipeline ──
+
+/// LLM 加工后提取的记忆条目
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ExtractedMemory {
+    pub content: String,
+    pub category: String,
+    pub importance: i32,
+    #[serde(default)]
+    pub entities: Vec<String>,
+}
+
+/// 会话结束后加工 Pipeline（4 步：读会话→LLM提炼→去重→存储）
+async fn run_memory_processing(
+    session_id: &str,
+    project_name: &str,
+    global: &crate::global_memory::GlobalMemoryStore,
+    registry: &Arc<ion_provider::registry::ApiRegistry>,
+    model: &ion_provider::types::Model,
+    _store: &Arc<Mutex<MemoryStore>>,
+) -> Result<(), String> {
+    tracing::info!("[memory-v2] processing session {} for project {}", session_id, project_name);
+
+    // Step 1: 读取会话 JSONL
+    let session_file = crate::paths::sessions_dir().join(format!("{}.jsonl", session_id));
+    let content = std::fs::read_to_string(&session_file)
+        .map_err(|e| format!("read session file: {e}"))?;
+    let messages: Vec<String> = content.lines()
+        .filter(|l| !l.is_empty())
+        .take(200) // 最多 200 条
+        .map(|l| {
+            // 提取每条消息的文本内容（简化解析）
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(l) {
+                let role = v.get("role").and_then(|r| r.as_str()).unwrap_or("?");
+                let text = v.get("text").and_then(|t| t.as_str())
+                    .or_else(|| v.get("content").and_then(|c| c.as_str()))
+                    .unwrap_or("");
+                format!("{role}: {text}")
+            } else {
+                String::new()
+            }
+        })
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if messages.is_empty() {
+        tracing::info!("[memory-v2] no messages in session, skipping");
+        return Ok(());
+    }
+
+    let conversation_text = messages.join("\n");
+
+    // Step 2: LLM 提炼
+    let system_prompt = r#"你是记忆加工 Agent。从会话中提取值得长期记住的关键信息。
+
+规则：
+1. 只提取跨会话有价值的信息（设计决策/用户偏好/bug修复/重要配置/架构选择）
+2. 忽略闲聊、问候、临时调试、无意义内容
+3. 每条记忆不超过 100 字
+4. 最多提取 5 条
+5. 输出 JSON 数组
+
+输出格式：
+[{"content":"精简内容","category":"设计决策|用户偏好|bug修复|配置|架构|其他","importance":1-5,"entities":["关键概念"]}]
+
+如果会话内容不值得记住，返回空数组 []"#;
+
+    let context = ion_provider::types::Context {
+        system_prompt: Some(system_prompt.into()),
+        messages: vec![ion_provider::types::Message::User(ion_provider::types::UserMessage {
+            role: "user".into(),
+            content: vec![ion_provider::types::ContentBlock::Text(ion_provider::types::TextContent {
+                text: format!("会话内容：\n{conversation_text}"),
+                text_signature: None,
+            })],
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64).unwrap_or(0),
+        })],
+        tools: None,
+    };
+
+    let options = ion_provider::StreamOptions {
+        max_tokens: Some(1024),
+        api_key: None, reasoning: None, timeout_ms: Some(60000),
+        max_retries: None, response_format: None,
+    };
+
+    let response = ion_provider::registry::complete(registry, model, &context, Some(&options))
+        .await
+        .map_err(|e| format!("LLM call failed: {e}"))?;
+
+    // 提取文本
+    let text: String = response.content.iter()
+        .filter_map(|c| if let ion_provider::types::AssistantContentBlock::Text(t) = c {
+            Some(t.text.clone())
+        } else { None })
+        .collect();
+
+    let extracted: Vec<ExtractedMemory> = serde_json::from_str(&text).unwrap_or_default();
+    if extracted.is_empty() {
+        tracing::info!("[memory-v2] nothing worth remembering");
+        return Ok(());
+    }
+
+    // Step 3 + 4: 去重 + 存储
+    let mut saved = 0;
+    for m in &extracted {
+        if global.has_content(&m.content).unwrap_or(false) {
+            continue; // 跳过重复
+        }
+        let _ = global.save(
+            &m.content,
+            &m.category,
+            &m.entities.join(","),
+            project_name,
+            m.importance,
+        );
+        saved += 1;
+    }
+
+    tracing::info!("[memory-v2] processed session {}: extracted {}, saved {} (after dedup)",
+        session_id, extracted.len(), saved);
+    Ok(())
 }

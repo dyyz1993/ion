@@ -42,7 +42,8 @@ pub struct ConsolidationStats {
     pub total: usize,
 }
 
-/// 全局记忆库（线程安全，Arc<Mutex<Connection>>）
+/// 全局记忆库（线程安全，Arc<Mutex<Connection>>，可 Clone 因为 Arc）
+#[derive(Clone)]
 pub struct GlobalMemoryStore {
     conn: Arc<Mutex<Connection>>,
 }
@@ -224,6 +225,17 @@ impl GlobalMemoryStore {
             "SELECT COUNT(*) FROM entries WHERE archived=0", [], |row| row.get(0)
         ).unwrap_or(0);
         Ok(count)
+    }
+
+    /// 检查是否已有相同 content 的活跃记忆（去重用）
+    pub fn has_content(&self, content: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM entries WHERE content = ?1 AND archived = 0",
+            params![content],
+            |row| row.get(0),
+        ).unwrap_or(0);
+        Ok(count > 0)
     }
 
     /// 列出所有记忆（不含 archived）
