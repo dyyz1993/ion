@@ -2099,20 +2099,12 @@ fn apply_session_tree_ops(cli: &Cli, session_id: &str) {
                 eprintln!("   --restore-code: only restoring code files, skipping message rollback.");
                 eprintln!("   (快照层独立于压缩，代码可以恢复；但消息无法回滚到压缩点之前)");
                 // 只走代码恢复，不走消息回滚
-                let target_turn_id: Option<&str> = ents.iter()
-                    .find(|e| {
-                        if e.get("type").and_then(|v| v.as_str()) != Some("turn_summary") {
-                            return false;
-                        }
-                        e.get("entryRange").and_then(|v| v.as_array())
-                            .map_or(false, |arr| arr.iter().any(|a| a.as_str() == Some(rollback_to)))
-                    })
-                    .and_then(|ts| ts.get("turnId").and_then(|v| v.as_str()));
+                let target_turn_id: Option<String> = ion::session_jsonl::find_turn_id_for_entry(&cwd, rollback_to);
                 match target_turn_id {
                     Some(turn_id) => {
                         let pk = ion::file_snapshot::project_key(&cwd);
                         let store = ion::file_snapshot::SnapshotStore::new(&pk);
-                        let result = ion::file_snapshot::restore::restore_code_to_turn(&store, turn_id);
+                        let result = ion::file_snapshot::restore::restore_code_to_turn(&store, &turn_id);
                         eprintln!("[restore-code] restored {} files (deleted {}, skipped {})",
                             result.summary.restored, result.summary.deleted, result.summary.skipped);
                         eprintln!("[restore-code] restore_point: {}", result.restore_point_id);
@@ -2133,17 +2125,8 @@ fn apply_session_tree_ops(cli: &Cli, session_id: &str) {
 
         // --restore-code：先恢复代码文件，再回滚消息
         if cli.restore_code {
-            // 找到 rollback_to 所属的 turn_summary → 得到 turnId
-            let target_turn_id: Option<&str> = ents.iter()
-                .find(|e| {
-                    if e.get("type").and_then(|v| v.as_str()) != Some("turn_summary") {
-                        return false;
-                    }
-                    // turn_summary 的 entryRange 包含 rollback_to
-                    e.get("entryRange").and_then(|v| v.as_array())
-                        .map_or(false, |arr| arr.iter().any(|a| a.as_str() == Some(rollback_to)))
-                })
-                .and_then(|ts| ts.get("turnId").and_then(|v| v.as_str()));
+            // 找到 rollback_to 所属的 turn_summary → 得到 turnId（不靠 entryRange，用位置回溯）
+            let target_turn_id: Option<String> = ion::session_jsonl::find_turn_id_for_entry(&cwd, rollback_to);
 
             match target_turn_id {
                 Some(turn_id) => {
@@ -2153,7 +2136,7 @@ fn apply_session_tree_ops(cli: &Cli, session_id: &str) {
                     let is_full = cli.restore_mode.as_deref() == Some("full");
                     if is_full {
                         // full mode：按 turn_id 找 tree_hash → restore_to_tree
-                        match store.find_tree_hash_by_turn_id(turn_id) {
+                        match store.find_tree_hash_by_turn_id(&turn_id) {
                             Some(tree_hash) => {
                                 let result = ion::file_snapshot::restore::restore_to_tree(
                                     &store, &tree_hash, &cwd, false,
@@ -2168,14 +2151,14 @@ fn apply_session_tree_ops(cli: &Cli, session_id: &str) {
                             }
                             None => {
                                 eprintln!("[restore-code:full] ⚠️  cannot find tree for turn '{}' — falling back to delta mode", turn_id);
-                                let result = ion::file_snapshot::restore::restore_code_to_turn(&store, turn_id);
+                                let result = ion::file_snapshot::restore::restore_code_to_turn(&store, &turn_id);
                                 eprintln!("[restore-code:delta] restored {} files (deleted {}, skipped {})",
                                     result.summary.restored, result.summary.deleted, result.summary.skipped);
                             }
                         }
                     } else {
                         // delta mode（默认）：只恢复被快照追踪的文件改动
-                        let result = ion::file_snapshot::restore::restore_code_to_turn(&store, turn_id);
+                        let result = ion::file_snapshot::restore::restore_code_to_turn(&store, &turn_id);
                         eprintln!("[restore-code] restored {} files (deleted {}, skipped {})",
                             result.summary.restored, result.summary.deleted, result.summary.skipped);
                         eprintln!("[restore-code] restore_point: {}", result.restore_point_id);

@@ -883,7 +883,7 @@ async fn main() {
             }
 
             "get_turn_detail" => {
-                let turn_id = params.get("turnId").and_then(|v| v.as_u64()).unwrap_or(0);
+                let turn_id = params.get("turnId").and_then(|v| v.as_str()).unwrap_or("");
                 let entries: Vec<serde_json::Value> =
                     ion::message_retrieval::load_entries_cached(&worker_cwd);
                 match ion::message_retrieval::retrieve_turn_detail(

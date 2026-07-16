@@ -713,6 +713,86 @@ pub fn append_turn_summary(
     append_raw_entry(cwd, &entry);
 }
 
+/// 读取上一条 turn_summary 之后所有 message entry 的 id（即本轮新增的消息 entry）。
+///
+/// 用于 persist_turn_summary 填 entryRange。
+pub fn read_last_turn_entry_range(cwd: &str) -> Option<Vec<String>> {
+    let path = session_path(cwd);
+    let content = std::fs::read_to_string(&path).ok()?;
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+
+    // 从后往前找最后一个 turn_summary
+    let last_ts_index = lines.iter().enumerate().rev()
+        .find_map(|(i, line)| {
+            serde_json::from_str::<serde_json::Value>(line).ok().and_then(|val| {
+                if val.get("type").and_then(|v| v.as_str()) == Some("turn_summary") {
+                    Some(i)
+                } else { None }
+            })
+        });
+
+    let start = last_ts_index.map(|i| i + 1).unwrap_or(0);
+    let mut ids = Vec::new();
+    for line in &lines[start..] {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+            if val.get("type").and_then(|v| v.as_str()) == Some("message") {
+                if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
+                    ids.push(id.to_string());
+                }
+            }
+        }
+    }
+    if ids.is_empty() { None } else { Some(ids) }
+}
+
+/// 给定 entry_id，找到它所属 turn_summary 的 turnId。
+///
+/// 策略 1：entryRange 包含 entry_id → 直接返回
+/// 策略 2：entry_id 在文件中的位置之后，第一个 turn_summary 就是它所属的 turn
+pub fn find_turn_id_for_entry(cwd: &str, entry_id: &str) -> Option<String> {
+    let path = session_path(cwd);
+    let content = std::fs::read_to_string(&path).ok()?;
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+
+    // 策略 1：entryRange 包含
+    for line in &lines {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+            if val.get("type").and_then(|v| v.as_str()) == Some("turn_summary") {
+                let in_range = val.get("entryRange")
+                    .and_then(|v| v.as_array())
+                    .map_or(false, |arr| arr.iter().any(|a| a.as_str() == Some(entry_id)));
+                if in_range {
+                    return val.get("turnId").and_then(|v| v.as_str()).map(|s| s.to_string());
+                }
+            }
+        }
+    }
+
+    // 策略 2：位置回溯
+    let entry_pos = lines.iter().position(|line| {
+        serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .and_then(|v| {
+                if v.get("type").and_then(|t| t.as_str()) == Some("message") {
+                    v.get("id").and_then(|v| v.as_str()).map(|id| id == entry_id)
+                } else { None }
+            })
+            .unwrap_or(false)
+    });
+
+    if let Some(pos) = entry_pos {
+        for line in &lines[pos..] {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                if val.get("type").and_then(|v| v.as_str()) == Some("turn_summary") {
+                    return val.get("turnId").and_then(|v| v.as_str()).map(|s| s.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// Convert a Message to a JSONL entry value with id/parentId chain.
 pub fn message_to_entry(
     msg: &crate::agent::messages::Message,

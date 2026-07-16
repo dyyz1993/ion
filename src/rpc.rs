@@ -837,7 +837,7 @@ fn cmd_get_turn_detail(
     let sid = get_sid(req);
     let output = RpcOutput::new();
     let params = req.get("params").unwrap_or(&serde_json::Value::Null);
-    let turn_id = params.get("turnId").and_then(|v| v.as_u64()).unwrap_or(0);
+    let turn_id = params.get("turnId").and_then(|v| v.as_str()).unwrap_or("");
 
     if let Some(session) = sessions.get(&sid) {
         let entries = messages_to_entries(session.messages());

@@ -149,7 +149,7 @@ pub struct TurnsResult {
 /// 单轮概览（list_turns 返回）
 #[derive(Clone, Debug, Default)]
 pub struct TurnOverview {
-    pub turn_id: u64,
+    pub turn_id: String,
     pub user_entry_id: Option<String>,
     pub user_content: String,
     pub assistant_content: String,
@@ -172,7 +172,7 @@ pub struct InputsResult {
 
 #[derive(Clone, Debug, Default)]
 pub struct InputItem {
-    pub turn_id: Option<u64>,
+    pub turn_id: Option<String>,
     pub entry_id: String,
     pub text: String,
 }
@@ -253,16 +253,14 @@ pub fn retrieve_turns(entries: &[Value], params: &RetrievalParams, full_content:
 
     // 正向分页（after）
     let start = if let Some(ref after) = params.after {
-        let after_id: u64 = after.parse().unwrap_or(0);
-        all_turns.iter().position(|t| t.turn_id > after_id).unwrap_or(all_turns.len())
+        all_turns.iter().position(|t| t.turn_id.as_str() > after.as_str()).unwrap_or(all_turns.len())
     } else {
         0
     };
 
     // 反向分页（before）
     let (start, end) = if let Some(ref before) = params.before {
-        let before_id: u64 = before.parse().unwrap_or(0);
-        let before_idx = all_turns.iter().position(|t| t.turn_id == before_id).unwrap_or(all_turns.len());
+        let before_idx = all_turns.iter().position(|t| t.turn_id.as_str() == before.as_str()).unwrap_or(all_turns.len());
         let s = before_idx.saturating_sub(limit);
         (s, before_idx)
     } else {
@@ -313,14 +311,14 @@ pub fn retrieve_inputs(entries: &[Value], _params: &RetrievalParams) -> InputsRe
     let visible = apply_visibility_filter(&view_filtered);
 
     // 从 turn_summary 建立 userEntryId → turnId 映射
-    let mut user_to_turn: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-    let mut auto_turn: u64 = 0;
+    let mut user_to_turn: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut auto_count: u32 = 0;
     for entry in &visible {
         if entry.get("type").and_then(|v| v.as_str()) == Some("turn_summary") {
-            let turn_id = entry.get("turnId").and_then(|v| v.as_u64());
+            let turn_id = entry.get("turnId").and_then(|v| v.as_str());
             let user_eid = entry.get("userEntryId").and_then(|v| v.as_str());
             if let (Some(tid), Some(uid)) = (turn_id, user_eid) {
-                user_to_turn.insert(uid.to_string(), tid);
+                user_to_turn.insert(uid.to_string(), tid.to_string());
             }
         }
     }
@@ -345,12 +343,12 @@ pub fn retrieve_inputs(entries: &[Value], _params: &RetrievalParams) -> InputsRe
             .unwrap_or("")
             .to_string();
         let text = extract_message_text(entry);
-        // 关联 turn_id：优先从 turn_summary 查，查不到自动递增
+        // 关联 turn_id：优先从 turn_summary 查，查不到用 fallback
         let turn_id = if let Some(tid) = user_to_turn.get(&entry_id) {
-            Some(*tid)
+            Some(tid.clone())
         } else {
-            auto_turn += 1;
-            Some(auto_turn - 1)
+            auto_count += 1;
+            Some(format!("auto_{}", auto_count))
         };
         inputs.push(InputItem {
             turn_id,
@@ -371,26 +369,26 @@ pub fn retrieve_inputs(entries: &[Value], _params: &RetrievalParams) -> InputsRe
 /// 单轮明细结果（get_turn_detail 返回）
 #[derive(Clone, Debug, Default)]
 pub struct TurnDetail {
-    pub turn_id: u64,
+    pub turn_id: String,
     pub entries: Vec<Value>,
     pub overview: TurnOverview,
 }
 
 /// 拉取单轮明细（get_turn_detail 的核心逻辑）
 /// 不分页——单 turn 数据量有上限。
-pub fn retrieve_turn_detail(entries: &[Value], turn_id: u64, _include_custom: &CustomFilter) -> Option<TurnDetail> {
+pub fn retrieve_turn_detail(entries: &[Value], turn_id: &str, _include_custom: &CustomFilter) -> Option<TurnDetail> {
     let groups = group_into_turns(entries);
     let group = groups.into_iter().find(|g| {
         g.iter()
             .rev()
             .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("turn_summary"))
-            .and_then(|ts| ts.get("turnId").and_then(|v| v.as_u64()))
+            .and_then(|ts| ts.get("turnId").and_then(|v| v.as_str()))
             == Some(turn_id)
     })?;
 
     let overview = extract_turn_overview(&group, true); // get_turn_detail 始终 full_content
     Some(TurnDetail {
-        turn_id,
+        turn_id: turn_id.to_string(),
         entries: group,
         overview,
     })
@@ -805,7 +803,7 @@ fn extract_from_turn_summary(
     full_content: bool,
 ) -> TurnOverview {
     let mut overview = TurnOverview {
-        turn_id: ts.get("turnId").and_then(|v| v.as_u64()).unwrap_or(0),
+        turn_id: ts.get("turnId").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         status: ts
             .get("status")
             .and_then(|v| v.as_str())
@@ -937,7 +935,7 @@ mod tests {
         })
     }
 
-    fn turn_summary(turn_id: u64, summary: &str, status: &str) -> Value {
+    fn turn_summary(turn_id: &str, summary: &str, status: &str) -> Value {
         json!({
             "type": "turn_summary",
             "id": format!("ts_{turn_id}"),
@@ -965,13 +963,13 @@ mod tests {
         vec![
             msg("msg_001", "", "user", "帮我重构接口"),
             msg("msg_002", "msg_001", "assistant", "好的我来分析"),
-            turn_summary(0, "分析了现有代码", "completed"),
+            turn_summary("ts_0", "分析了现有代码", "completed"),
             msg("msg_003", "msg_002", "user", "设计方案"),
             msg("msg_004", "msg_003", "assistant", "用游标分页"),
-            turn_summary(1, "设计了游标分页方案", "completed"),
+            turn_summary("ts_1", "设计了游标分页方案", "completed"),
             msg("msg_005", "msg_004", "user", "写测试"),
             msg("msg_006", "msg_005", "assistant", "测试写好了"),
-            turn_summary(2, "写了单元测试", "completed"),
+            turn_summary("ts_2", "写了单元测试", "completed"),
         ]
     }
 
@@ -1105,7 +1103,7 @@ mod tests {
         let entries = vec![
             msg("msg_001", "", "user", &long_text),
             msg("msg_002", "msg_001", "assistant", "ok"),
-            turn_summary(0, "summary", "completed"),
+            turn_summary("ts_0", "summary", "completed"),
         ];
         let result = retrieve_turns(&entries, &RetrievalParams::default(), false);
         assert!(result.turns[0].user_content.ends_with("..."));
@@ -1121,7 +1119,7 @@ mod tests {
         let entries = make_3_turn_session();
         let result = retrieve_turns(&entries, &RetrievalParams::default(), false);
         // turn_summary 的字段应该被提取
-        assert_eq!(result.turns[0].turn_id, 0);
+        assert_eq!(result.turns[0].turn_id, "ts_0");
         assert!(result.turns[0].summary.contains("分析了现有代码"));
         assert_eq!(result.turns[0].tool_call_count, 2);
         assert_eq!(result.turns[0].tokens_input, 100);
@@ -1150,10 +1148,10 @@ mod tests {
     #[test]
     fn test_retrieve_turn_detail_found() {
         let entries = make_3_turn_session();
-        let detail = retrieve_turn_detail(&entries, 1, &CustomFilter::None);
+        let detail = retrieve_turn_detail(&entries, "ts_1", &CustomFilter::None);
         assert!(detail.is_some());
         let d = detail.unwrap();
-        assert_eq!(d.turn_id, 1);
+        assert_eq!(d.turn_id, "ts_1");
         assert!(d.overview.user_content.contains("设计方案"));
         assert!(d.overview.summary.contains("设计了游标分页方案"));
         assert_eq!(d.overview.tool_call_count, 2);
@@ -1162,7 +1160,7 @@ mod tests {
     #[test]
     fn test_retrieve_turn_detail_not_found() {
         let entries = make_3_turn_session();
-        let detail = retrieve_turn_detail(&entries, 99, &CustomFilter::None);
+        let detail = retrieve_turn_detail(&entries, "ts_99", &CustomFilter::None);
         assert!(detail.is_none());
     }
 
