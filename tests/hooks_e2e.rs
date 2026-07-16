@@ -11,11 +11,20 @@ use ion::hooks::handler_runner::{self, HookExecContext};
 use ion::hooks::matcher;
 use ion::hooks::HooksConfig;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-/// 创建临时测试目录 + hooks.json + 脚本
+/// 全局计数器：每次调用拿到唯一临时目录，避免并行测试互相踩同一个目录。
+static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// 创建唯一临时测试目录 + hooks.json + 脚本。
+///
+/// 用进程内原子计数器生成唯一路径，保证并行测试彼此隔离——不再共享
+/// `/tmp/ion_hooks_e2e_test`。配合 handler_runner 透传 current_dir，
+/// 测试完全不需要改进程级 cwd，并发安全。
 fn setup_test_dir() -> PathBuf {
-    let dir = PathBuf::from("/tmp/ion_hooks_e2e_test");
+    let seq = DIR_SEQ.fetch_add(1, Ordering::SeqCst);
+    let dir = PathBuf::from(format!("/tmp/ion_hooks_e2e_{}_{}", std::process::id(), seq));
     let ion_dir = dir.join(".ion");
     let scripts_dir = ion_dir.join("scripts");
     std::fs::create_dir_all(&scripts_dir);
@@ -112,7 +121,8 @@ async fn e2e_command_handler_blocks_no_verify() {
     });
 
     // 在测试目录里执行（脚本用相对路径）
-    std::env::set_current_dir(&dir).ok();
+    // current_dir 由 handler_runner 透传（ctx.project_dir → spawn bash），
+    // 不再需要进程级 set_current_dir（并发安全）。
     let ctx = HookExecContext {
         project_dir: dir.to_string_lossy().to_string(),
         event_name: "PreToolUse".into(),
@@ -148,7 +158,8 @@ async fn e2e_command_handler_allows_normal_commit() {
         "hook_event_name": "PreToolUse",
     });
 
-    std::env::set_current_dir(&dir).ok();
+    // current_dir 由 handler_runner 透传（ctx.project_dir → spawn bash），
+    // 不再需要进程级 set_current_dir（并发安全）。
     let ctx = HookExecContext {
         project_dir: dir.to_string_lossy().to_string(),
         event_name: "PreToolUse".into(),
@@ -178,7 +189,8 @@ async fn e2e_user_prompt_submit_injects_context() {
         "hook_event_name": "UserPromptSubmit",
     });
 
-    std::env::set_current_dir(&dir).ok();
+    // current_dir 由 handler_runner 透传（ctx.project_dir → spawn bash），
+    // 不再需要进程级 set_current_dir（并发安全）。
     let ctx = HookExecContext {
         project_dir: dir.to_string_lossy().to_string(),
         event_name: "UserPromptSubmit".into(),
@@ -227,7 +239,7 @@ async fn e2e_hot_reload_picks_up_changes() {
 /// Stop 事件：脚本 exit 2 → block + reason（模拟测试失败）
 #[tokio::test]
 async fn e2e_stop_event_blocks_with_reason() {
-    let dir = PathBuf::from("/tmp/ion_hooks_b3_test");
+    let dir = PathBuf::from(format!("/tmp/ion_hooks_b3_block_{}_{}", std::process::id(), DIR_SEQ.fetch_add(1, Ordering::SeqCst)));
     let ion_dir = dir.join(".ion");
     let scripts_dir = ion_dir.join("scripts");
     std::fs::create_dir_all(&scripts_dir);
@@ -276,7 +288,8 @@ exit 0
         "hook_event_name": "Stop",
     });
 
-    std::env::set_current_dir(&dir).ok();
+    // current_dir 由 handler_runner 透传（ctx.project_dir → spawn bash），
+    // 不再需要进程级 set_current_dir（并发安全）。
     let ctx = HookExecContext {
         project_dir: dir.to_string_lossy().to_string(),
         event_name: "Stop".into(),
@@ -302,7 +315,7 @@ exit 0
 /// Stop 事件：测试通过时不 block（exit 0）
 #[tokio::test]
 async fn e2e_stop_event_passes_when_tests_ok() {
-    let dir = PathBuf::from("/tmp/ion_hooks_b3_pass");
+    let dir = PathBuf::from(format!("/tmp/ion_hooks_b3_pass_{}_{}", std::process::id(), DIR_SEQ.fetch_add(1, Ordering::SeqCst)));
     let ion_dir = dir.join(".ion");
     let scripts_dir = ion_dir.join("scripts");
     std::fs::create_dir_all(&scripts_dir);
@@ -333,7 +346,8 @@ exit 0
     let handler = config.handlers_for_event("Stop")[0].1;
 
     let stdin = serde_json::json!({"last_assistant_message":"done","session_id":"sess","cwd":dir.to_string_lossy().to_string(),"hook_event_name":"Stop"});
-    std::env::set_current_dir(&dir).ok();
+    // current_dir 由 handler_runner 透传（ctx.project_dir → spawn bash），
+    // 不再需要进程级 set_current_dir（并发安全）。
     let ctx = HookExecContext { project_dir: dir.to_string_lossy().to_string(), event_name: "Stop".into(), runtime: None, registry: None, model: None };
 
     let outcome = handler_runner::run_handler(handler, stdin, &ctx).await;

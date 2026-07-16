@@ -475,6 +475,63 @@ impl SessionFile {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// 通用：往 session 文件追加一行 JSON entry。
+/// 确保 session 文件有 header（第一行 type=="session"）。
+///
+/// 如果文件不存在或第一行不是 session header，在文件开头插入 header。
+/// 这防止 turn_summary / message 在 header 之前被追加（worker 启动时调用）。
+///
+/// 返回 true 如果新建了 header（之前不存在），false 如果已存在。
+pub fn ensure_session_header(cwd: &str, sid: &str) -> bool {
+    let path = session_path(cwd);
+
+    // 文件不存在 → 创建 header
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let header = serde_json::json!({
+            "type": "session",
+            "version": 3,
+            "id": sid,
+            "timestamp": timestamp_iso(),
+            "cwd": cwd,
+            "parentSession": null,
+        });
+        let json = serde_json::to_string(&header).unwrap_or_default();
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(&path) {
+            let _ = f.write_all(format!("{}\n", json).as_bytes());
+        }
+        return true;
+    }
+
+    // 文件存在 → 检查第一行是否是 session header
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        let first_line = content.lines().next().unwrap_or("");
+        if let Ok(first_val) = serde_json::from_str::<serde_json::Value>(first_line) {
+            if first_val.get("type").and_then(|v| v.as_str()) == Some("session") {
+                return false; // header 已存在
+            }
+        }
+        // 第一行不是 session header → 需要在开头插入
+        // 读取全部内容，prepend header，重写文件
+        let header = serde_json::json!({
+            "type": "session",
+            "version": 3,
+            "id": sid,
+            "timestamp": timestamp_iso(),
+            "cwd": cwd,
+            "parentSession": null,
+        });
+        let header_json = serde_json::to_string(&header).unwrap_or_default();
+        let new_content = format!("{}\n{}", header_json, content);
+        let _ = std::fs::write(&path, new_content);
+        return true;
+    }
+
+    false
+}
+
 /// 自动处理文件末尾换行防粘连。
 /// 使用单次 write_all 避免 \n 和 JSON 之间的交错（并发安全）。
 pub fn append_raw_entry(cwd: &str, entry: &serde_json::Value) {

@@ -453,6 +453,46 @@ impl WorkerRegistry {
             record.stderr_path = Some(stderr_path.to_string_lossy().to_string());
         }
 
+        // ── 写 SessionIndex（让 ion --resume / --rollback 能通过 SID 找到 session 文件）──
+        // serve 模式的 create_session → create_worker 之前不写 index，
+        // 导致 CLI 层的 --resume/--rollback 找不到 session（依赖 index 查 cwd）。
+        {
+            use crate::session_index::{SessionIndex, SessionMeta};
+            let now = now_ms();
+            let mut idx = SessionIndex::load();
+            idx.upsert(
+                &session_id,
+                SessionMeta {
+                    name: Some(session_id.clone()),
+                    first_name: Some(session_id.clone()),
+                    project: Some(worktree_path.clone()),
+                    project_name: Some(project_name.clone()),
+                    worktree: config.worktree.is_some(),
+                    branch: None,
+                    model: model.clone(),
+                    agent: agent_name.clone(),
+                    provider: provider.clone(),
+                    token_input: 0,
+                    token_output: 0,
+                    token_cache_read: 0,
+                    token_cache_write: 0,
+                    compress_count: 0,
+                    message_count: 0,
+                    turn_count: 0,
+                    created_at: now,
+                    updated_at: now,
+                    error_count: 0,
+                    last_thinking_level: None,
+                    last_active_tools: None,
+                    last_entry_id: None,
+                    parent_session: None,
+                    parent_type: None,
+                },
+            );
+            idx.save();
+            tracing::info!("[worker] SessionIndex 写入: {} → {}", session_id, worktree_path);
+        }
+
 			        // Start stdout reader task (小助手 + 对讲机)
 		        // 持续读 worker stdout：
 		        // 1. event 消息 → 直接转发给 event_subscribers（subscribe session 流）

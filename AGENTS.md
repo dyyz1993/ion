@@ -386,6 +386,7 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/design/SOFT_DELETE_COMPACT.md](./docs/design/SOFT_DELETE_COMPACT.md) | 软删除/软压缩内核机制：mark_deleted/summarized/restore + on_context 时序 (已实现) |
 | [docs/testing/MESSAGE_RETRIEVAL_CASES.md](./docs/testing/MESSAGE_RETRIEVAL_CASES.md) | 消息拉取 CLI 用例集：9 接口 + 12 Group A-L + 分页/视点/过滤/血缘 (设计定稿+已实现) |
 | [docs/design/MEMORY_ACTIVE.md](./docs/design/MEMORY_ACTIVE.md) | Memory Active — V0.2 主动注入（on_input→on_context 自动检索全局库）+ 自动整理（去重/归档/大纲索引）(待定) |
+| [docs/design/MEMORY_V2_PROCESSING.md](./docs/design/MEMORY_V2_PROCESSING.md) | Memory V0.2 会话加工 — SessionEnd 自动 LLM 提炼精华（替代原样存）+ 去重 + entities 铺路（待定） |
 
 ### 使用指南（docs/guides/）
 

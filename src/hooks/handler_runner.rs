@@ -91,7 +91,9 @@ async fn run_command(
         }
     } else {
         // Fallback: 直接 spawn（开发/测试用）
-        match spawn_command_with_stdin(&cmd, &stdin_data, handler.timeout.unwrap_or(30) as u64).await {
+        // current_dir 透传 ctx.project_dir，让 bash 在项目目录里跑（命令常用相对路径
+        // 如 `bash .ion/scripts/x.sh`）。这样不依赖进程级 cwd，并发安全。
+        match spawn_command_with_stdin(&cmd, &stdin_data, handler.timeout.unwrap_or(30) as u64, &ctx.project_dir).await {
             Ok(result) => result,
             Err(e) => {
                 tracing::warn!("[hooks] command spawn failed: {e}");
@@ -104,19 +106,28 @@ async fn run_command(
 }
 
 /// 直接 spawn bash + stdin（fallback，不走 Runtime）
+///
+/// `current_dir` 设为 `ctx.project_dir`：hook 命令常用相对路径（如
+/// `bash .ion/scripts/x.sh`），显式指定 cwd 后不再依赖进程级 current_dir，
+/// 并发执行（多个 hook / 测试并行）时不会互相踩进程 cwd。
 async fn spawn_command_with_stdin(
     cmd: &str,
     stdin_data: &serde_json::Value,
     timeout_secs: u64,
+    current_dir: &str,
 ) -> Result<(String, String, i32), String> {
     use tokio::io::AsyncWriteExt;
 
-    let mut child = tokio::process::Command::new("bash")
-        .arg("-c").arg(cmd)
+    let mut command = tokio::process::Command::new("bash");
+    command.arg("-c").arg(cmd)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
+        .stderr(std::process::Stdio::piped());
+    // 显式指定工作目录（非空时）。空字符串则继承进程 cwd（向后兼容）。
+    if !current_dir.is_empty() {
+        command.current_dir(current_dir);
+    }
+    let mut child = command.spawn()
         .map_err(|e| format!("spawn failed: {e}"))?;
 
     // 写 stdin

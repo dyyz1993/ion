@@ -2021,9 +2021,21 @@ async fn cmd_history(session: &str, limit: usize, view: &str) {
 /// 在 agent.run 之前调用：往 session 文件追加 leaf_pointer（+可选 label/tombstone）。
 /// 后续消息通过 leaf 感知的 append 正确接在新分支上。
 fn apply_session_tree_ops(cli: &Cli, session_id: &str) {
-    let cwd = std::env::current_dir()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
+    // 解析 session 的真实 cwd：优先从 index 查，fallback 到 CLI 进程 cwd
+    let cwd = if !session_id.is_empty() {
+        ion::session_index::SessionIndex::load()
+            .get(session_id)
+            .and_then(|m| m.project.clone())
+            .unwrap_or_else(|| {
+                std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            })
+    } else {
+        std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default()
+    };
 
     // session_id 为空时，从当前 cwd 的 session 文件加载 entries
     let load_entries = |sid: &str| -> Option<Vec<serde_json::Value>> {

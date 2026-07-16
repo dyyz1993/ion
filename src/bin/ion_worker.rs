@@ -304,6 +304,9 @@ async fn main() {
 
     // 加载已有会话（按 cwd 查找）—— session 按 cwd 隔离，worktree 各自独立会话（设计意图）
     // worker_cwd / config_root / storage_ctx 已在前面定义（Memory 构造前）
+    //
+    // 先确保 session header 存在（防 turn_summary 在 header 之前被追加，导致文件第一行不是 header）
+    session_jsonl::ensure_session_header(&worker_cwd, &sid);
     let preloaded = session_jsonl::SessionFile::load(&worker_cwd).map(|f| f.messages);
 
     // File Snapshot Store（预声明，agent 初始化块和 RPC loop 都要用）
