@@ -1,10 +1,10 @@
 # Extension Host API — ctx.fs 统一文件访问 设计文档
 
-> **状态：已完成** — FileSystemCapability trait + RuntimeFileSystem + WASM 宿主函数（host_read_file / host_list_dir）+ safe_join 路径逃逸防护全部实现并通过验证。
+> **状态：已完成** — FileSystemCapability trait + RuntimeFileSystem + WASM 宿主函数（host_read_file / host_list_dir）+ safe_join 路径逃逸防护 + ExtensionDataDirs（4 级数据目录）全部实现并通过验证。
 >
-> - 内置扩展：通过 `registry.filesystem()` 拿到 `Arc<dyn FileSystemCapability>`
+> - 内置扩展：通过 `registry.filesystem()` 拿到 `Arc<dyn FileSystemCapability>`，通过 `registry.data_dirs(name)` 拿到 4 级数据目录
 > - WASM 扩展：通过 `host_read_file` / `host_list_dir` 宿主函数读 allowed_roots 内的项目文件
-> - 验证：15 单元测试 + 18 CLI 测试（extension_fs_ci.sh）全过 ✅
+> - 验证：18 单元测试（15 fs + 3 data_dirs）+ 23 CLI 测试（extension_fs_ci.sh）全过 ✅
 >
 > 对齐 pi 的 `ExtensionContext.fs`（FileSystemCapability）。
 
@@ -242,23 +242,24 @@ ion rpc --session <sid> --method prompt --params '{"text":"读 package.json 的 
 | 路由 | 本地/远程透明 | Runtime trait（对齐，更强——多了沙箱/容器） |
 | 权限 | 走 PermissionProvider | 走 PermissionEngine（对齐） |
 | 路径安全 | 有 | safe_join（已实现：字符串级规范化拦截 `../` + fs-canonicalize 对齐符号链接坐标系） |
-| 4 级数据目录 | ✅ ExtensionContext | ✅ StorageContext（已有，4 维数据 host functions 已暴露给 WASM） |
+| 4 级数据目录 | ✅ ExtensionContext | ✅ `ExtensionDataDirs` struct + `ExtensionRegistry.data_dirs()`（已实现，内置扩展可拿 4 级目录） |
 | WASM 文件访问 | N/A（pi 无 WASM） | ✅ host_read_file / host_list_dir 宿主函数（已实现，ION 独有） |
 
 ## 7. 实现清单（已落地）
 
 | 文件 | 改动 | 状态 |
 |------|------|------|
-| `src/agent/extension.rs` | `FileSystemCapability` trait + `DirEntry` + `RuntimeFileSystem` + `safe_join` + `resolve_symlinks` + `canonicalize_path_buf` + `glob_walk` + `ExtensionRegistry.fs` 字段 + `with_filesystem()` / `filesystem()` | ✅ |
+| `src/agent/extension.rs` | `FileSystemCapability` trait + `DirEntry` + `RuntimeFileSystem` + `safe_join` + `resolve_symlinks` + `canonicalize_path_buf` + `glob_walk` + `ExtensionRegistry.fs` 字段 + `with_filesystem()` / `filesystem()` + `ExtensionDataDirs` struct + `ExtensionRegistry.storage` 字段 + `with_storage()` / `data_dirs()` | ✅ |
 | `src/wasm_extension.rs` | `Context.fs` / `Context.tokio_handle` 字段 + `host_read_file` / `host_list_dir` 宿主函数 | ✅ |
-| `src/bin/ion_worker.rs` | 构造 `RuntimeFileSystem`（`worker_rt` + 默认 allowed_roots）+ 注入 registry + 注入 WASM Context + `FsProbeExtension`（extension_rpc 暴露 read/write/list/exists/glob） | ✅ |
-| `src/bin/ion.rs` | 场景 1 同样注入 `RuntimeFileSystem`（LocalRuntime + 默认 allowed_roots） | ✅ |
+| `src/storage_context.rs` | 补 `cwd_dir()` 方法（之前缺 CWD 级，只有 global/project/project_local/session） | ✅ |
+| `src/bin/ion_worker.rs` | 构造 `RuntimeFileSystem` + 注入 registry + 注入 WASM Context + `FsProbeExtension`（extension_rpc 暴露 read/write/list/exists/glob/data_dirs）+ 注入 `StorageContext` | ✅ |
+| `src/bin/ion.rs` | 场景 1 同样注入 `RuntimeFileSystem` + `StorageContext` | ✅ |
 | `tests/plugin_tests.rs` | `Context` 字面量补 `fs` / `tokio_handle` 字段 | ✅ |
-| `tests/extension_fs_ci.sh` | CLI 测试：Group A（读/写/列/exists/glob）+ Group C（路径逃逸防护 6 case） | ✅ 18 测试全过 |
+| `tests/extension_fs_ci.sh` | CLI 测试：Group A（读/写/列/exists/glob）+ Group C（路径逃逸防护 6 case）+ Group D（ExtensionDataDirs 4 级目录 5 case） | ✅ 23 测试全过 |
 
 **验证**：
-- 单元测试：`cargo test --lib -- extension::fs_tests` → 15 测试全过
-- CLI 测试：`bash tests/extension_fs_ci.sh` → 18 测试全过（含路径逃逸 `../../../etc/passwd`、null byte、allowed_roots 外绝对路径拦截）
+- 单元测试：`cargo test --lib -- extension::fs_tests` → 15 测试全过；`extension::data_dirs_tests` → 3 测试全过
+- CLI 测试：`bash tests/extension_fs_ci.sh` → 23 测试全过（含路径逃逸 `../../../etc/passwd`、null byte、allowed_roots 外绝对路径拦截、4 级数据目录）
 
 **关键设计决策（实现时发现并解决）**：
 - `safe_join` 两阶段规范化：先字符串级规范化（拦截 `../` 逃逸，不访问 fs 避免 TOCTOU），再 fs-canonicalize（解析符号链接成 realpath，与 canonicalize 过的 root 对齐坐标系）。

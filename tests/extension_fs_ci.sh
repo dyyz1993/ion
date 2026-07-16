@@ -8,6 +8,7 @@
 # 覆盖文档：docs/design/EXTENSION_HOST_API.md
 #   Group A：内置扩展通过 ctx.fs 读文件
 #   Group C：路径安全（逃逸防护）
+#   Group D：ExtensionDataDirs（4 级数据目录）
 # ──────────────────────────────────────────────────────────
 set -o pipefail
 
@@ -222,6 +223,57 @@ if echo "$OUT" | grep -qi "outside allowed roots"; then
 else
     fail "C6: list_dir(逃逸) 未拦截"
     echo "    OUT: $OUT"
+fi
+
+# ════════════════════════════════════════════════════════
+# Group D：ExtensionDataDirs（4 级数据目录）
+# ════════════════════════════════════════════════════════
+echo ""
+echo "── Group D：ExtensionDataDirs（4 级数据目录）──"
+
+# D1 data_dirs 返回 4 级目录
+OUT=$(fs_rpc data_dirs '{"ext_name":"my-ext"}')
+if echo "$OUT" | grep -q "global" && echo "$OUT" | grep -q "project" && echo "$OUT" | grep -q "cwd" && echo "$OUT" | grep -q "session"; then
+    pass "D1: data_dirs 返回 4 级目录（global/project/cwd/session）"
+else
+    fail "D1: data_dirs 未返回 4 级"
+    echo "    OUT: $OUT"
+fi
+
+# D2 每级路径含 ext_name
+if echo "$OUT" | grep -o '"global"[^,]*' | grep -q "my-ext" && echo "$OUT" | grep -o '"session"[^}]*' | grep -q "my-ext"; then
+    pass "D2: 各级目录路径含 ext_name（my-ext）"
+else
+    fail "D2: 路径未含 ext_name"
+    echo "    OUT: $OUT"
+fi
+
+# D3 global 在 extensions-data 下
+if echo "$OUT" | grep -q "extensions-data"; then
+    pass "D3: global 目录在 extensions-data 下"
+else
+    fail "D3: global 路径异常"
+    echo "    OUT: $OUT"
+fi
+
+# D4 session 含 session_id
+SID_SHORT=$(echo "$SID" | sed 's/sess_//')
+if echo "$OUT" | grep -q "$SID_SHORT"; then
+    pass "D4: session 目录含当前 session_id（$SID_SHORT）"
+else
+    fail "D4: session 目录未含 session_id"
+    echo "    OUT: $OUT"
+fi
+
+# D5 不同 ext_name 隔离
+OUT2=$(fs_rpc data_dirs '{"ext_name":"other-ext"}')
+G1=$(echo "$OUT" | grep -o '"global"[^,]*' | head -1)
+G2=$(echo "$OUT2" | grep -o '"global"[^,]*' | head -1)
+if [ "$G1" != "$G2" ]; then
+    pass "D5: 不同 ext_name 目录隔离（my-ext ≠ other-ext）"
+else
+    fail "D5: ext_name 未隔离"
+    echo "    G1: $G1  G2: $G2"
 fi
 
 # ════════════════════════════════════════════════════════

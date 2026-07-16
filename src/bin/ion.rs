@@ -1411,6 +1411,12 @@ async fn cmd_run(
         tracing::info!("[extension] ctx.fs (RuntimeFileSystem) injected");
     }
 
+    // ── 注入 StorageContext（扩展通过 registry.data_dirs(name) 拿 4 级数据目录）──
+    ext_reg = ext_reg.with_storage(ion::storage_context::StorageContext::new(
+        &cwd, &session_id, &cwd,
+    ));
+    tracing::info!("[extension] StorageContext injected (data_dirs available)");
+
     // Register per-turn session index extension if session is active
     if !session_id.is_empty() {
         ext_reg.register(Box::new(SessionIndexExtension::new(

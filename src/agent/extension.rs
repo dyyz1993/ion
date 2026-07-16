@@ -237,6 +237,29 @@ pub enum GateDecision {
 // FileSystemCapability — ctx.fs 统一文件访问（给扩展用，不走裸 std::fs）
 // ---------------------------------------------------------------------------
 
+/// 扩展的 4 级数据目录（对齐 pi ExtensionContext，EXTENSION_HOST_API.md §2.5）。
+///
+/// 内置 Rust 扩展通过 `registry.data_dirs(self.name())` 拿到自己的 4 级目录。
+/// 每一级按 ext_name 隔离，互不干扰。WASM 扩展走散装 host 函数（host_read_global_data 等）。
+///
+/// | 级别 | 路径 | 隔离维度 |
+/// |------|------|---------|
+/// | global | `~/.ion/agent/extensions-data/<ext>/` | 全局（所有项目共享） |
+/// | project | `~/.ion/agent/project-data/<git_key>/<ext>/` | 项目（worktree 共享） |
+/// | cwd | `~/.ion/agent/cwd-data/<encoded-cwd>/<ext>/` | cwd（worktree 独立） |
+/// | session | `sessions/<hash>/data/<sid>/<ext>/` | 会话级 |
+#[derive(Clone, Debug)]
+pub struct ExtensionDataDirs {
+    /// 会话级：每会话独立，会话结束可清理
+    pub session: std::path::PathBuf,
+    /// CWD 级：按工作目录隔离（worktree 各自独立）
+    pub cwd: std::path::PathBuf,
+    /// 项目级：按 git common dir 隔离（主仓库 + worktree 共享）
+    pub project: std::path::PathBuf,
+    /// 全局级：所有项目共享
+    pub global: std::path::PathBuf,
+}
+
 /// 目录条目（list_dir 返回）
 #[derive(Clone, Debug)]
 pub struct DirEntry {
@@ -523,6 +546,8 @@ pub struct ExtensionRegistry {
     pub ui_system: Option<crate::kernel::UiSystem>,
     /// ctx.fs 统一文件访问能力（可选）。扩展通过 registry.filesystem() 拿到。
     pub fs: Option<std::sync::Arc<dyn FileSystemCapability>>,
+    /// 存储上下文（可选）。扩展通过 registry.data_dirs(name) 拿 4 级数据目录。
+    pub storage: Option<crate::storage_context::StorageContext>,
     /// 运行时 flag 值（extension_name → flag_name → value）
     /// 静态定义在 ExtensionDef.flags，运行时值覆盖 default
     runtime_flags: std::sync::Mutex<std::collections::HashMap<String, std::collections::HashMap<String, serde_json::Value>>>,
@@ -539,6 +564,7 @@ impl ExtensionRegistry {
             permission_engine: None,
             ui_system: None,
             fs: None,
+            storage: None,
             runtime_flags: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
@@ -565,6 +591,26 @@ impl ExtensionRegistry {
     /// 获取 ctx.fs（扩展在钩子里调用）。
     pub fn filesystem(&self) -> Option<&std::sync::Arc<dyn FileSystemCapability>> {
         self.fs.as_ref()
+    }
+
+    /// 注入存储上下文（StorageContext）。扩展通过 `registry.data_dirs(name)` 拿 4 级数据目录。
+    pub fn with_storage(mut self, ctx: crate::storage_context::StorageContext) -> Self {
+        self.storage = Some(ctx);
+        self
+    }
+
+    /// 按 ext_name 计算扩展的 4 级数据目录（global/project/cwd/session）。
+    ///
+    /// 复用 StorageContext 已有的 4 个目录方法（委托 paths.rs）。
+    /// 没注入 storage 时返回 None（调用方安全降级）。
+    pub fn data_dirs(&self, ext_name: &str) -> Option<ExtensionDataDirs> {
+        let s = self.storage.as_ref()?;
+        Some(ExtensionDataDirs {
+            global: s.global_dir(ext_name),
+            project: s.project_dir(ext_name),
+            cwd: s.cwd_dir(ext_name),
+            session: s.session_dir(ext_name),
+        })
     }
 
     pub fn register(&mut self, ext: Box<dyn Extension>) { self.extensions.push(ext); }
@@ -1035,5 +1081,55 @@ mod fs_tests {
         assert!(matches.iter().any(|m| m.contains("top.rs")), "matches: {matches:?}");
         assert!(matches.iter().any(|m| m.contains("deep.rs")), "matches: {matches:?}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod data_dirs_tests {
+    use super::*;
+
+    #[test]
+    fn data_dirs_returns_none_without_storage() {
+        let reg = ExtensionRegistry::new();
+        assert!(reg.data_dirs("my-ext").is_none());
+    }
+
+    #[test]
+    fn data_dirs_returns_four_levels_with_ext_name() {
+        let storage = crate::storage_context::StorageContext::new(
+            "/proj/myapp", "sess_abc", "/proj/myapp",
+        );
+        let reg = ExtensionRegistry::new().with_storage(storage);
+        let dirs = reg.data_dirs("my-ext").expect("data_dirs should return Some");
+
+        // 4 级都非空
+        assert!(!dirs.global.as_os_str().is_empty(), "global empty");
+        assert!(!dirs.project.as_os_str().is_empty(), "project empty");
+        assert!(!dirs.cwd.as_os_str().is_empty(), "cwd empty");
+        assert!(!dirs.session.as_os_str().is_empty(), "session empty");
+
+        // 每级路径都含 ext_name
+        let g = dirs.global.to_string_lossy();
+        let p = dirs.project.to_string_lossy();
+        let c = dirs.cwd.to_string_lossy();
+        let s = dirs.session.to_string_lossy();
+        assert!(g.contains("my-ext"), "global should contain ext name: {g}");
+        assert!(p.contains("my-ext"), "project should contain ext name: {p}");
+        assert!(c.contains("my-ext"), "cwd should contain ext name: {c}");
+        assert!(s.contains("my-ext"), "session should contain ext name: {s}");
+
+        // global 在 extensions-data 下，session 在 data 下
+        assert!(g.contains("extensions-data"), "global path: {g}");
+        assert!(s.contains("sess_abc"), "session should contain session_id: {s}");
+    }
+
+    #[test]
+    fn data_dirs_different_ext_names_isolate() {
+        let storage = crate::storage_context::StorageContext::new("/p", "s1", "/p");
+        let reg = ExtensionRegistry::new().with_storage(storage);
+        let a = reg.data_dirs("ext-a").unwrap();
+        let b = reg.data_dirs("ext-b").unwrap();
+        assert_ne!(a.global, b.global, "different exts must have different dirs");
+        assert_ne!(a.session, b.session);
     }
 }

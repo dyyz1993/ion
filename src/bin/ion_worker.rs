@@ -457,12 +457,17 @@ async fn main() {
                 ctx.fs = Some(runtime_fs.clone());
                 ctx.tokio_handle = Some(tokio::runtime::Handle::current());
             }
-            // FsProbeExtension（给 CLI 测试用，通过 extension_rpc 暴露 ctx.fs）
+            // FsProbeExtension（给 CLI 测试用，通过 extension_rpc 暴露 ctx.fs + data_dirs）
             ext_reg.register(Box::new(FsProbeExtension {
                 fs: runtime_fs,
+                storage: storage_ctx.clone(),
             }));
             tracing::info!("[extension] ctx.fs (RuntimeFileSystem) injected + fs_probe registered");
         }
+
+        // ── 注入 StorageContext（扩展通过 registry.data_dirs(name) 拿 4 级数据目录）──
+        ext_reg = ext_reg.with_storage(storage_ctx.clone());
+        tracing::info!("[extension] StorageContext injected (data_dirs available)");
 
         // Memory Extension
         if ion_cfg.is_extension_enabled("memory") {
@@ -3264,11 +3269,11 @@ impl ion::agent::extension::Extension for StreamingExtension {
 }
 
 // ── FsProbeExtension: ctx.fs 探针扩展（给 CLI 测试用）──────────────────────
-// 通过 extension_rpc 暴露 ctx.fs 的 read_file / list_dir / path_exists，
-// 让 tests/extension_fs_ci.sh 能验证 ctx.fs 注入 + 路径逃逸防护。
-// 持有 Arc<RuntimeFileSystem>（构造时注入），on_extension_rpc 里调对应方法。
+// 通过 extension_rpc 暴露 ctx.fs 的 read_file / list_dir / path_exists / glob，
+// 以及 data_dirs（4 级数据目录），让 tests/extension_fs_ci.sh 能验证注入。
 struct FsProbeExtension {
     fs: std::sync::Arc<ion::agent::extension::RuntimeFileSystem>,
+    storage: ion::storage_context::StorageContext,
 }
 
 #[async_trait::async_trait]
@@ -3314,6 +3319,22 @@ impl ion::agent::extension::Extension for FsProbeExtension {
                 let matches = self.fs.glob(pattern).await
                     .map_err(AgentError::Tool)?;
                 Ok(serde_json::json!({"matches": matches}))
+            }
+            "data_dirs" => {
+                // 返回 4 级数据目录（验证 StorageContext 注入）
+                let ext_name = params.get("ext_name").and_then(|v| v.as_str()).unwrap_or("fs_probe");
+                let dirs = ion::agent::extension::ExtensionDataDirs {
+                    global: self.storage.global_dir(ext_name),
+                    project: self.storage.project_dir(ext_name),
+                    cwd: self.storage.cwd_dir(ext_name),
+                    session: self.storage.session_dir(ext_name),
+                };
+                Ok(serde_json::json!({
+                    "global": dirs.global.to_string_lossy(),
+                    "project": dirs.project.to_string_lossy(),
+                    "cwd": dirs.cwd.to_string_lossy(),
+                    "session": dirs.session.to_string_lossy(),
+                }))
             }
             _ => Err(AgentError::Tool("extension rpc method not found".into())),
         }

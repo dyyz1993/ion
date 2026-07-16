@@ -63,6 +63,11 @@ impl StorageContext {
         crate::paths::project_local_data_dir(&self.config_root, ext_name)
     }
 
+    /// CWD 级：`~/.ion/agent/cwd-data/<encoded-cwd>/<ext>/`（worktree 独立）
+    pub fn cwd_dir(&self, ext_name: &str) -> PathBuf {
+        crate::paths::cwd_data_dir(&self.cwd, ext_name)
+    }
+
     // ── ④ Session 维度：session 隔离 ──
 
     /// ④ Session：`sessions/<hash>/data/<sid>/<ext>/`
