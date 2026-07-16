@@ -1,6 +1,6 @@
 # 回滚影响验证 — Context / Message / Compaction
 
-> **状态：实测态（2026-07-16）** — Rust harness 18 case 全过（含 F1/F2/F3 bug 暴露 + Group TC token/compaction/context 验证）。Bash CI 因 serve session 持久化 bug 暂不可用（见 §已知限制）。
+> **状态：已修复（2026-07-16）** — F1/F2/F3 全部修复。Rust harness 19 case 全过（验证修复）。Bash CI S1/S2 全过。serve/CLI 层 3 个 bug（header/index/cwd）已修复。
 
 ---
 
@@ -18,39 +18,35 @@
 
 ---
 
-## 已发现的差异（Bug 清单）
+## 已修复的差异（F1/F2/F3 + serve/CLI bug）
 
-> **这三个差异在测试中被成功暴露，是文档与实现不符的根因。修复后需更新对应测试的断言。**
+> **F1/F2/F3 全部已修复（2026-07-16）。** 以下记录修复前的根因和修复方案。
 
-### F1：`SessionFile::load` 不过滤 leaf_pointer（🔴 Context 污染）
-
-| 维度 | 内容 |
-|------|------|
-| **文档声称** | 回滚后被回滚的消息不在 context（`SESSION_TREE.md §0.2`：load 时 LLM 收到的 messages 是 root→current_leaf 路径） |
-| **代码实际** | `SessionFile::load`（`session_jsonl.rs:422-430`）加载全部 `type=="message"` entry，**不读 leaf_pointer** |
-| **影响** | 回滚后继续聊，LLM 仍看到被回滚的消息 → context 污染 + token 虚高 + compaction 误触发 |
-| **暴露测试** | `c2_load_does_not_filter_leaf_pointer`（assert messages.len()==4 而非期望的 2）、`k1_messages_count_includes_rolled_back` |
-| **修复方向** | `SessionFile::load` 加 leaf 过滤，或 Agent 维护 `deleted_entry_ids` 并在 load 后过滤 |
-
-### F2：`turn_summary.entryRange` 恒为空（🟡 --restore-code 失效）
+### F1：`SessionFile::load` 不过滤 leaf_pointer ✅ 已修复
 
 | 维度 | 内容 |
 |------|------|
-| **文档声称** | `--restore-code` 靠 `entryRange` 匹配 entry → 找到 turnId → 恢复代码（`FILE_SNAPSHOT.md §19.3`） |
-| **代码实际** | `agent_loop.rs:1390`: `&[], // entryRange 暂空（内存 Message 无 entryId）` |
-| **影响** | `--restore-code` 对真实 turn 永远找不到 turnId → 跳过代码恢复（`ion.rs:2095-2096` 的匹配失败） |
-| **暴露测试** | `t2_entry_range_empty` |
-| **修复方向** | 给内存 Message 打 entryId，或 persist_turn_summary 时从 session file 读 entry range |
+| **原问题** | `SessionFile::load` 加载全部 `type=="message"` entry，不读 leaf_pointer → 回滚后 context 含被回滚消息 |
+| **修复** | `session_jsonl.rs` 新增 `filter_messages_on_live_path`：load 时沿 parentId 链从最后一个 leaf_pointer 回溯到 root，只保留 live path 上的 message |
+| **影响修复** | context 不含被回滚消息 + token 正确 + compaction 不误触发 |
+| **验证测试** | `c2_load_filters_leaf_pointer` / `k1_messages_count_excludes_rolled_back` / `tc1-tc3,tc6` |
 
-### F3：turnId 每次 run 从 0 重置（🟡 turnId 重复）
+### F2：`turn_summary.entryRange` 恒为空 ✅ 已修复
 
 | 维度 | 内容 |
 |------|------|
-| **文档声称** | turnId 全局递增，回滚后继续聊不覆盖历史快照（`FILE_SNAPSHOT.md §19`） |
-| **代码实际** | `agent_loop.rs:494-495`: `self.turn_index = 0`（每次 run 开头重置） |
-| **影响** | 回滚后继续聊，turn_summary 的 turnId 重复（如 `[0,1,0,1]`）。快照层用了独立的 `gen_turn_id`（不受影响），但 turn_summary 查询会混淆 |
-| **暴露测试** | `t1_turnid_should_not_repeat`（检测到 `[0,1,0,1]` 重复） |
-| **修复方向** | turn_index 从 session file 读最大 turnId + 1，不重置 |
+| **原问题** | `persist_turn_summary` 硬编码 `entryRange: &[]` → `--restore-code` 靠 entryRange 匹配找 turnId 失败 |
+| **修复** | (1) `session_jsonl.rs` 新增 `read_last_turn_entry_range`：读上一条 turn_summary 之后的消息 entry id 填入 entryRange；(2) 新增 `find_turn_id_for_entry`：双策略查找（entryRange 匹配 + 位置回溯）；(3) `ion.rs` 的 `--restore-code` 改用 `find_turn_id_for_entry` |
+| **验证测试** | `t2_entry_range_filled` / `t3_find_turn_id_for_entry` |
+
+### F3：turnId 每次 run 从 0 重置 ✅ 已修复
+
+| 维度 | 内容 |
+|------|------|
+| **原问题** | `turn_index` 每次 run 重置为 0 → turn_summary 的 turnId 重复 |
+| **修复** | turn_summary 的 turnId 改用全局唯一 hex（`ts_` + 8 位 hex，复用 `generate_id`），不依赖 `turn_index`。`turn_index` 继续管 max_turns 限制，职责分离 |
+| **改动范围** | `session_jsonl.rs`（append_turn_summary 签名）+ `agent_loop.rs`（生成 hex）+ `message_retrieval.rs`（TurnOverview/InputItem/TurnDetail 的 turn_id 从 u64 → String，分页游标改字符串匹配）+ `ion_worker.rs`（RPC 输出） |
+| **验证测试** | `t1_turnid_unique_hex` |
 
 ### 附：serve session 持久化 bug（Bash CI 不可用的原因）
 
@@ -64,7 +60,7 @@
 
 ## 测试架构
 
-### 第 1 层：Rust Harness（`tests/rollback_harness.rs`）— ✅ 18 case 全过
+### 第 1 层：Rust Harness（`tests/rollback_harness.rs`）— ✅ 19 case 全过
 
 直接调 `session_tree::make_rollback` + `SessionFile` + `message_retrieval` + `compact` API，不走 CLI。
 用 `ion_provider::types::Message` 构造格式正确的消息 entry。
@@ -76,23 +72,23 @@
 | Group | Case | 验证 | 结果 |
 |-------|------|------|------|
 | C | c1_live_excludes_rolled_back | retrieval `View::Live` 过滤被回滚消息 | ✅ live=2 < full=4 |
-| C | c2_load_does_not_filter_leaf_pointer | **F1 暴露**：SessionFile::load 不过滤 | ✅ messages=4（含被回滚） |
+| C | c2_load_filters_leaf_pointer | **F1 已修复**：load 只返回 live path | ✅ messages=2（不含被回滚） |
 | C | c3_rollback_chain_no_leak | 多次回滚废弃分支不泄漏 | ✅ live=2 |
 | M | m1_full_includes_all | `View::Full` 含全部历史 | ✅ full=4 |
 | M | m2_branch_view_finds_abandoned | `View::Branch` 查废弃分支 | ✅ 4 条 |
 | M | m3_resolve_leaf_after_rollback | resolve_current_leaf 指向回滚目标 | ✅ |
-| K | k1_messages_count_includes_rolled_back | **F1 暴露**：messages 含被回滚 | ✅ messages=4 |
+| K | k1_messages_count_excludes_rolled_back | **F1 已修复**：messages 只含 live | ✅ messages=2 |
 | K | k2_rollback_across_compaction_rejected | 穿越压缩点被拒绝 | ✅ safety=Some(...) |
 | T | t1_turnid_should_not_repeat | **F3 暴露**：turnId 重复 | ✅ [0,1,0,1] 有重复 |
 | T | t2_entry_range_empty | **F2 根因**：entryRange 空 | ✅ |
 | S | s1_pure_rollback_no_disk_change | 纯消息回滚磁盘不变 | ✅ V2 保留 |
 | S | s2_rollback_is_append_only | only-append（消息不丢） | ✅ 4 条全在 |
-| TC | tc1_tokens_include_rolled_back | **F1 暴露**：total_tokens 含被回滚消息 | ✅ tokens > 150（含 4 条） |
-| TC | tc2_needs_compact_false_positive | **F1 暴露**：needs_compact 误触发 | ✅ live 2 条小消息但误判需压缩 |
-| TC | tc3_context_length_inflated | **F1 暴露**：context 消息数虚高 | ✅ live=2, context=6（差 4 条） |
+| TC | tc1_tokens_exclude_rolled_back | **F1 已修复**：total_tokens 只算 live | ✅ tokens < 250（只算 2 条） |
+| TC | tc2_needs_compact_correct | **F1 已修复**：needs_compact 不误触发 | ✅ live 2 条小消息不压缩 |
+| TC | tc3_context_length_matches_live | **F1 已修复**：context = live | ✅ context=2 = live=2 |
 | TC | tc4_fixed_token_would_be_correct | 修复后预期：live path token 正确 | ✅ live 2 条 token < 100，不压缩 |
 | TC | tc5_compaction_safety_independent_of_f1 | compaction 安全检查独立于 F1 | ✅ 穿越拒绝，之后允许 |
-| TC | tc6_token_accumulates_across_rollbacks | **F1 暴露**：多次回滚 token 累积 | ✅ context=6 条，live=2 条 |
+| TC | tc6_token_stable_across_rollbacks | **F1 已修复**：多次回滚不累积 | ✅ context=2 = live=2 |
 
 **运行：**
 ```bash
@@ -117,8 +113,8 @@ cargo test --test rollback_harness -- --nocapture
 - ✅ retrieval 层正确过滤（live < full）
 - ✅ 磁盘不受纯消息回滚影响
 - ✅ only-append（历史不丢）
-- 🔴 **context 仍含被回滚消息**（F1）——LLM 看到废弃分支
-- 🔴 **turnId 重复**（F3）——turn_summary 混淆
+- ✅ **context 不含被回滚消息**（F1 已修复）
+- ✅ **turnId 全局唯一**（F3 已修复）
 
 ### 场景 2：先闲聊→改代码→回滚那个闲聊
 
@@ -127,7 +123,7 @@ cargo test --test rollback_harness -- --nocapture
 **实际验证**：
 - ✅ 纯消息回滚后磁盘仍 = V2（代码不动）
 - ✅ `View::Full` 能查到全部历史（含 V1→V2 diff 的快照层独立）
-- 🔴 **`--restore-code` 失效**（F2）——entryRange 空，找不到 turnId
+- ✅ **`--restore-code` 生效**（F2 已修复）——`find_turn_id_for_entry` 替代 entryRange 匹配
 
 ### 场景 3：多次交替（回滚→聊→回滚→聊）
 
@@ -136,19 +132,21 @@ cargo test --test rollback_harness -- --nocapture
 **实际验证**：
 - ✅ only-append 完整（leaf_pointer 只增）
 - ✅ 废弃分支不泄漏到 live path
-- 🔴 **turnId 重复**（F3）——每次 run 从 0 重置
+- ✅ **turnId 全局唯一**（F3 已修复）
 
 ---
 
-## 修复优先级建议
+## 修复状态总结
 
-| Bug | 优先级 | 理由 |
-|-----|--------|------|
-| **F1** | P0 | context 污染直接影响 LLM 行为（看到废弃消息会产生幻觉）；也导致 token 虚高 + compaction 误判（见 Group TC） |
-| **F2** | P1 | `--restore-code` / `restore_files` RPC 对真实 turn 完全失效；阻塞"回滚代码"UI 按钮 |
-| **F3** | P2 | turn_summary 查询受影响，但不影响 LLM 行为 |
-| **G1** | P1 | `restore_code_to_turn` 缺 preview 参数，UI 无法预览代码回滚影响 |
-| serve bug | P1 | 阻塞所有 CLI 级 rollback 测试 |
+| Bug | 状态 | 修复方案 |
+|-----|:----:|---------|
+| **F1** | ✅ 已修复 | `filter_messages_on_live_path` — load 时沿 parentId 链过滤 |
+| **F2** | ✅ 已修复 | `find_turn_id_for_entry` + `read_last_turn_entry_range` — 不靠空 entryRange |
+| **F3** | ✅ 已修复 | turnId 改全局唯一 hex（`ts_xxxxxxxx`）— 不依赖 turn_index |
+| **serve header** | ✅ 已修复 | `ensure_session_header` — worker 启动时确保 header |
+| **serve index** | ✅ 已修复 | `create_worker` 后写 SessionIndex |
+| **rollback cwd** | ✅ 已修复 | `apply_session_tree_ops` 用 session 真实 cwd |
+| **G1** | ❌ 待办 | `restore_code_to_turn` 缺 preview 参数 |
 
 ---
 

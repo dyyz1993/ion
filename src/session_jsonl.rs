@@ -404,33 +404,23 @@ impl SessionFile {
             parent_session: None,
         });
         let mut entries: Vec<serde_json::Value> = Vec::new();
-        let mut messages: Vec<crate::agent::messages::Message> = Vec::new();
 
         for line in &lines[1..] {
             // 容错：跳过损坏的 JSON 行（半行写入/竞态交错），不丢弃整个会话
             let val: serde_json::Value = match serde_json::from_str(line) {
                 Ok(v) => v,
                 Err(e) => {
-                    tracing::warn!("[session_jsonl] skipping corrupted line: {} ({})", 
+                    tracing::warn!("[session_jsonl] skipping corrupted line: {} ({})",
                         &line[..line.len().min(80)], e);
                     continue;
                 }
             };
-            let entry_type = val["type"].as_str().unwrap_or("").to_string();
-
-            // Extract messages
-            if entry_type == "message" {
-                if let Some(msg_val) = val.get("message") {
-                    if let Ok(msg) =
-                        serde_json::from_value::<crate::agent::messages::Message>(msg_val.clone())
-                    {
-                        messages.push(msg);
-                    }
-                }
-            }
-
             entries.push(val);
         }
+
+        // ── 计算 live path（只保留 root → current_leaf 路径上的 message）──
+        // 如果有 leaf_pointer，被回滚的消息不在 live path 上，不加入 messages。
+        let messages = filter_messages_on_live_path(&entries, &header.id);
 
         let last_id = entries
             .last()
@@ -477,6 +467,72 @@ impl SessionFile {
 /// 通用：往 session 文件追加一行 JSON entry。
 /// 确保 session 文件有 header（第一行 type=="session"）。
 ///
+/// 过滤出 live path 上的 message（F1 修复）。
+///
+/// 如果 entries 里有 leaf_pointer，用最后一个 leaf_pointer 的 leafId 作为起点，
+/// 沿 parentId 链回溯到 root，收集这条路径上的所有 entry id。
+/// 只反序列化 id 在这个集合里的 message entry。
+///
+/// 如果没有 leaf_pointer，所有 message 都在 live path 上（线性会话）。
+fn filter_messages_on_live_path(
+    entries: &[serde_json::Value],
+    session_id: &str,
+) -> Vec<crate::agent::messages::Message> {
+    use std::collections::HashSet;
+
+    // 找最后一个 leaf_pointer
+    let leaf_id: Option<&str> = entries.iter().rev()
+        .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("leaf_pointer"))
+        .and_then(|lp| lp.get("leafId").and_then(|v| v.as_str()));
+
+    // 如果没有 leaf_pointer，所有 message 都加载
+    let live_ids: Option<HashSet<String>> = if let Some(leaf) = leaf_id {
+        // 沿 parentId 链从 leaf 回溯到 root
+        let by_id: std::collections::HashMap<&str, &serde_json::Value> = entries.iter()
+            .filter_map(|e| e.get("id").and_then(|v| v.as_str()).map(|id| (id, e)))
+            .collect();
+
+        let mut live = HashSet::new();
+        let mut cur: Option<&str> = Some(leaf);
+        let mut visited = HashSet::new();
+        while let Some(id) = cur {
+            if !visited.insert(id) { break; } // 环保护
+            live.insert(id.to_string());
+            cur = by_id.get(id)
+                .and_then(|e| e.get("parentId").and_then(|v| v.as_str()));
+            // parentId == session_id 或 null 时停（root 已加入）
+            if cur == Some(session_id) || cur.is_none() {
+                if let Some(sid) = cur { live.insert(sid.to_string()); }
+                break;
+            }
+        }
+        Some(live)
+    } else {
+        None
+    };
+
+    // 反序列化 live path 上的 message
+    let mut messages = Vec::new();
+    for val in entries {
+        if val.get("type").and_then(|v| v.as_str()) != Some("message") {
+            continue;
+        }
+        // 如果有 live_ids 过滤集，检查 entry id 是否在集合里
+        if let Some(ref ids) = live_ids {
+            let eid = val.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if !ids.contains(eid) {
+                continue; // 不在 live path 上，跳过
+            }
+        }
+        if let Some(msg_val) = val.get("message") {
+            if let Ok(msg) = serde_json::from_value::<crate::agent::messages::Message>(msg_val.clone()) {
+                messages.push(msg);
+            }
+        }
+    }
+    messages
+}
+
 /// 如果文件不存在或第一行不是 session header，在文件开头插入 header。
 /// 这防止 turn_summary / message 在 header 之前被追加（worker 启动时调用）。
 ///
