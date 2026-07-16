@@ -1,6 +1,6 @@
 # 多 Provider 协议实现
 
-> **状态：已验证** — 4 个 provider + transform_messages 全部实现并通过真实 API e2e 测试。
+> **状态：已验证** — 5 个 provider + transform_messages 全部实现，3 家通过真实 API e2e 测试。
 
 ---
 
@@ -10,12 +10,13 @@ ION 通过 `ion-provider` 独立 crate 抽象多家 LLM API 协议，对齐 pi `
 
 | Provider | 端点 | 协议特点 | 单元测试 | e2e |
 |----------|------|---------|---------|-----|
-| `openai-completions` | `POST /chat/completions` | OpenAI Chat Completions + 8 种 thinkingFormat | 0 | ✅ |
+| `openai-completions` | `POST /chat/completions` | OpenAI Chat Completions + 9 种 thinkingFormat | 2 | ✅ |
 | `anthropic-messages` | `POST /v1/messages` | Claude Messages + thinking signature | 9 | ✅ |
 | `openai-responses` | `POST /v1/responses` | OpenAI Responses API + reasoning | 4 | 待测 |
 | `google-generative-ai` | `POST /v1beta/models/{m}:streamGenerateContent?alt=sse` | Gemini + thought signatures | 4 | 待测 |
+| `mistral-conversations` | `POST /v1/chat/completions`（Mistral Conversations） | Mistral + reasoning + tool calling | 15 | ✅ |
 
-**总计**：21 单元测试 + 4 e2e 真实 API 测试。
+**总计**：34 provider 单元测试 + 10 transform_messages 单元测试 = 44 单元测试；3 家（anthropic/openai/mistral）有真实 API e2e 测试，openai-responses / google 待补。
 
 ### 实现状态核查清单
 
@@ -896,13 +897,12 @@ pub struct CustomProvider {
 
 ## 9. 暂不实现的 Provider
 
-按用户要求，常见够用即可：
+按用户要求，常见够用即可（`mistral-conversations` 已实现，见上方概览表）：
 
 | Provider | 用途 |
 |----------|------|
 | `azure-openai-responses` | Azure 部署的 OpenAI Responses |
 | `openai-codex-responses` | Codex 专用 |
 | `google-vertex` | Vertex AI |
-| `mistral-conversations` | Mistral |
 | `bedrock-converse-stream` | AWS Bedrock |
 | `cloudflare-workers-ai` | Cloudflare |

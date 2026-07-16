@@ -25,7 +25,7 @@
 | `anthropic-messages` | `ion-provider/src/provider/anthropic.rs` | ✅ |
 | `google-generative-ai` | `ion-provider/src/provider/google.rs` | ✅ |
 | `openai-responses` | `ion-provider/src/provider/openai_responses.rs` | ✅ |
-| `mistral-conversations` | `ion-provider/src/provider/mistral.rs` | ✅ 已实现（待真实 API 验证） |
+| `mistral-conversations` | `ion-provider/src/provider/mistral.rs` | ✅ 已实现（真实 API e2e 已验证） |
 | `faux`（测试 mock） | `ion-provider/src/faux.rs` | ✅ 内部 |
 | `replay`（录制回放） | `ion-provider/src/replay.rs` | ✅ 内部 |
 
@@ -44,7 +44,7 @@
 
 **Mistral Conversations API** — 已完成实现，对齐 pi `packages/ai/src/providers/mistral.ts`。
 
-> **状态：已实现（单元测试全过，真实 API 待验证）** — `ion-provider/src/provider/mistral.rs`（~580 行）
+> **状态：已实现（单元测试 + 真实 API e2e 全过）** — `ion-provider/src/provider/mistral.rs`（~580 行）
 
 **实现文件**：`ion-provider/src/provider/mistral.rs`
 

@@ -1042,7 +1042,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 
 **P7 - 多 Provider 协议测试待办:**
 
-已实现 4 个 provider + transform_messages，单元测试 37 个全过，e2e 真实 API 测试 4 个全过（Anthropic z.ai/glm-4.6 + OpenAI OpenCODE/deepseek-v4-flash）。
+已实现 5 个 provider + transform_messages，单元测试 44 个全过（34 provider + 10 transform_messages），e2e 真实 API 测试 6 个全过（Anthropic z.ai/glm-4.6 + OpenAI OpenCODE/deepseek-v4-flash + Mistral 各 2 个）。
 
 待测试（需要对应 API key）：
 - `openai-responses` 真实 API（GPT-5 / o1 / o3 系列）— 验证 reasoning + tool_call + ID 回放
@@ -1060,16 +1060,19 @@ cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture
 ION_E2E_OPENAI=1 ION_OPENAI_API_KEY="sk-xxx" \
 cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture
 
+# Mistral
+ION_E2E_MISTRAL=1 ION_MISTRAL_API_KEY="xxx" \
+cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture
+
 # Google (待添加 ION_E2E_GOOGLE 配置)
 ION_E2E_GOOGLE=1 ION_GOOGLE_API_KEY="xxx" \
 cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture
 ```
 
-剩余 provider 暂不实现（按用户要求，常见够用即可）：
+剩余 provider 暂不实现（按用户要求，常见够用即可；`mistral-conversations` 已实现见上方）：
 - `azure-openai-responses` — Azure 部署的 OpenAI Responses API
 - `openai-codex-responses` — Codex 专用
 - `google-vertex` — Vertex AI
-- `mistral-conversations` — Mistral
 - `bedrock-converse-stream` — AWS Bedrock
 - `cloudflare-workers-ai` — Cloudflare
 
