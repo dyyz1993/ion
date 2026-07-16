@@ -1,6 +1,6 @@
 # Memory Active — V0.2 主动注入 + 自动整理 设计文档
 
-> **状态：待定** — 给 GlobalMemory（V0.2）补两个能力：(1) 被动注入（on_input → on_context 自动检索）；(2) 自动整理（去重/归档/更新大纲索引）。
+> **状态：已完成** — V0.2 被动注入（on_input→on_context 搜全局库）+ 自动整理（去重/归档/大纲索引）已实现并验证。
 >
 > 对齐 V0.1 已有的 consolidation + injection 机制，但作用于跨项目的全局记忆库。
 

@@ -2,6 +2,14 @@
 
 > 一个用 Rust 实现的 AI Agent 编排平台，对齐 pi (pi-coding-agent) 的全部能力。
 
+## ⚠️ 项目状态：未上线，无需兼容旧数据
+
+**本项目当前处于开发阶段，尚未上线。** 所有数据格式变更**无需兼容旧数据**：
+
+- session JSONL、SessionIndex、file-snapshot 等存储格式的 breaking change 可直接做，不需要写迁移逻辑
+- 测试或开发产生的旧 session 文件可直接清理（`rm -rf ~/.ion/agent/sessions/`）
+- 如果旧数据导致反序列化失败，直接删除重建即可，不需要 fallback 容错
+
 ## ⚠️ 术语规范：统一使用 Extension，禁止使用 Plugin
 
 **本项目所有可扩展能力统称为 Extension。禁止使用 "plugin"、"插件" 这两个词。**
@@ -385,8 +393,8 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/design/MESSAGE_RETRIEVAL_DESIGN.md](./docs/design/MESSAGE_RETRIEVAL_DESIGN.md) | 消息拉取 UI 设计规格：TypeScript 接口定义 + 6 种 UI 风格 + 3 层数据架构 (设计定稿) |
 | [docs/design/SOFT_DELETE_COMPACT.md](./docs/design/SOFT_DELETE_COMPACT.md) | 软删除/软压缩内核机制：mark_deleted/summarized/restore + on_context 时序 (已实现) |
 | [docs/testing/MESSAGE_RETRIEVAL_CASES.md](./docs/testing/MESSAGE_RETRIEVAL_CASES.md) | 消息拉取 CLI 用例集：9 接口 + 12 Group A-L + 分页/视点/过滤/血缘 (设计定稿+已实现) |
-| [docs/design/MEMORY_ACTIVE.md](./docs/design/MEMORY_ACTIVE.md) | Memory Active — V0.2 主动注入（on_input→on_context 自动检索全局库）+ 自动整理（去重/归档/大纲索引）(待定) |
-| [docs/design/MEMORY_V2_PROCESSING.md](./docs/design/MEMORY_V2_PROCESSING.md) | Memory V0.2 会话加工 — SessionEnd 自动 LLM 提炼精华（替代原样存）+ 去重 + entities 铺路（待定） |
+| [docs/design/MEMORY_ACTIVE.md](./docs/design/MEMORY_ACTIVE.md) | Memory Active — V0.2 主动注入（on_input→on_context 自动检索全局库）+ 自动整理（去重/归档/大纲索引）+ bigram 中文分词 (已完成) |
+| [docs/design/MEMORY_V2_PROCESSING.md](./docs/design/MEMORY_V2_PROCESSING.md) | Memory V0.2 会话加工 — SessionEnd 自动 LLM 提炼精华（替代原样存）+ 去重 + entities 铺路 (已完成) |
 
 ### 使用指南（docs/guides/）
 
@@ -1007,7 +1015,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 **P6b - 其他（待定）:**
 - ~~@图片文件支持 (ContentBlock::Image 完整实现)~~ ✅ 已完成 — 3 provider 全部支持图片(OpenAI image_url / Anthropic source / Google inline_data)
 - --models 多模型 Ctrl+P 切换 (交互式)
-- Memory 扩展 v0.2 (~~SQLite 存储~~ ✅ / ~~FTS 检索~~ ✅ / ~~v0.1 统一~~ ✅ memory_save/search 走 GlobalMemoryStore / Active Memory — 主动注入+自动整理，见 [docs/design/MEMORY_ACTIVE.md](./docs/design/MEMORY_ACTIVE.md) (待定))
+- Memory 扩展 v0.2 (~~SQLite 存储~~ ✅ / ~~FTS 检索~~ ✅ / ~~v0.1 统一~~ ✅ / ~~主动注入+自动整理~~ ✅ / ~~会话加工~~ ✅ SessionEnd LLM 提炼精华，entities 铺路 Graph)
 - ~~真实代码审查 E2E (当前用算术题代替)~~ ✅ 已完成 — E1 代码审查流水线(coordinator→reviewer 子 worker + channel)
 
 **P8 - Workflow Engine:** ✅ 已验证

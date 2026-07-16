@@ -1,6 +1,6 @@
 # Memory V0.2 会话加工 — SessionEnd LLM 提炼 设计文档
 
-> **状态：待定** — 会话结束后自动用 LLM 提炼精华存到全局库，替代当前"原样存"。
+> **状态：已完成** — SessionEnd 自动 LLM 提炼精华（4 步 Pipeline）已实现并验证。
 >
 > 配套：[MEMORY_AGENT.md](./MEMORY_AGENT.md)（V0.2 基础设施）、[MEMORY_ACTIVE.md](./MEMORY_ACTIVE.md)（被动注入+整理）、[MEMORY_EXTENSION.md](./MEMORY_EXTENSION.md)（V0.1）
 
