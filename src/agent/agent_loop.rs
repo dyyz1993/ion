@@ -551,6 +551,7 @@ impl Agent {
                     text_signature: None,
                 })],
                 timestamp: now_ms(),
+                source: ion_provider::types::MessageSource::Prompt,
             }));
         }
 
@@ -774,6 +775,7 @@ impl Agent {
                                 text_signature: None,
                             })],
                             timestamp: now_ms(),
+                            source: ion_provider::types::MessageSource::Prompt,
                         }));
                         continue;
                     }
@@ -798,6 +800,7 @@ impl Agent {
                                     text_signature: None,
                                 })],
                                 timestamp: now_ms(),
+                                source: ion_provider::types::MessageSource::Prompt,
                             }));
                             continue;
                         }

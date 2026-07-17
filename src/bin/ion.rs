@@ -1403,6 +1403,7 @@ async fn cmd_run(
             role: "user".into(),
             content: image_blocks,
             timestamp: now,
+            source: ion_provider::types::MessageSource::Prompt,
         }));
     }
     if !initial_messages.is_empty() {

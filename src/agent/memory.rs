@@ -702,6 +702,7 @@ impl Extension for MemoryExtension {
                 role: "user".into(),
                 content: vec![ContentBlock::Text(TextContent { text: inject_text, text_signature: None })],
                 timestamp: 0,
+                source: ion_provider::types::MessageSource::Prompt,
             }));
         }
 
@@ -711,6 +712,7 @@ impl Extension for MemoryExtension {
                 role: "user".into(),
                 content: vec![ContentBlock::Text(TextContent { text: pending.xml, text_signature: None })],
                 timestamp: 0,
+                source: ion_provider::types::MessageSource::Prompt,
             }));
 
             // 更新 injected.json（只更新这个 outline）
@@ -908,6 +910,7 @@ async fn run_memory_processing(
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64).unwrap_or(0),
+            source: ion_provider::types::MessageSource::Prompt,
         })],
         tools: None,
     };

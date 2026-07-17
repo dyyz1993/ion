@@ -96,6 +96,7 @@ impl Worker for AgentWorker {
                     text_signature: None,
                 })],
                 timestamp: now_ms(),
+                source: ion_provider::types::MessageSource::Prompt,
             }));
         }
         Ok(())

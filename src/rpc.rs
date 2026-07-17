@@ -371,6 +371,7 @@ impl RpcSession {
                 text_signature: None,
             })],
             timestamp: now_ms(),
+            source: ion_provider::types::MessageSource::Steer,
         }));
     }
 
@@ -382,6 +383,7 @@ impl RpcSession {
                 text_signature: None,
             })],
             timestamp: now_ms(),
+            source: ion_provider::types::MessageSource::FollowUp,
         }));
     }
 }
@@ -787,6 +789,7 @@ fn cmd_list_turns(
                 "status": t.status,
                 "summary": t.summary,
                 "durationMs": t.duration_ms,
+                "source": t.source,
             })).collect::<Vec<_>>(),
             "hasMore": result.has_more,
             "totalCount": result.total_count,
@@ -856,6 +859,7 @@ fn cmd_get_turn_detail(
                     "toolCallCount": detail.overview.tool_call_count,
                     "status": detail.overview.status,
                     "durationMs": detail.overview.duration_ms,
+                    "source": detail.overview.source,
                 }
             })),
             None => ok_data(&output, cmd_id, serde_json::json!({ "error": "turn not found" })),

@@ -192,6 +192,7 @@ impl HookExtension {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as i64)
                     .unwrap_or(0),
+                source: ion_provider::types::MessageSource::Prompt,
             });
             let _ = tx.send(msg);
         }

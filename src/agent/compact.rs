@@ -409,6 +409,7 @@ pub async fn compact_batched(
                 text_signature: None,
             })],
             timestamp: 0,
+            source: ion_provider::types::MessageSource::Prompt,
         }))
         .collect();
 
@@ -467,6 +468,7 @@ fn inject_batch_prompt(msgs: Vec<Message>, batch_idx: usize, total: usize, ancho
             text_signature: None,
         })],
         timestamp: 0,
+        source: ion_provider::types::MessageSource::Prompt,
     }));
     result.extend(msgs);
     result
@@ -506,6 +508,7 @@ fn build_merged_input(
             text_signature: None,
         })],
         timestamp: 0,
+        source: ion_provider::types::MessageSource::Prompt,
     }));
 
     // 加入保留区（最近 keep_recent_tokens 的消息）
@@ -523,6 +526,7 @@ fn build_merged_input(
             text_signature: None,
         })],
         timestamp: 0,
+        source: ion_provider::types::MessageSource::Prompt,
     }));
 
     input
@@ -771,6 +775,7 @@ mod tests {
                 text_signature: None,
             })],
             timestamp: 0,
+            source: ion_provider::types::MessageSource::Prompt,
         })
     }
 

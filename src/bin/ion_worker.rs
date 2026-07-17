@@ -878,6 +878,7 @@ async fn main() {
                         "status": t.status,
                         "summary": t.summary,
                         "durationMs": t.duration_ms,
+                        "source": t.source,
                     })).collect::<Vec<_>>(),
                     "hasMore": result.has_more,
                     "totalCount": result.total_count,
@@ -924,6 +925,7 @@ async fn main() {
                             "tokens": {"input": detail.overview.tokens_input, "output": detail.overview.tokens_output},
                             "status": detail.overview.status,
                             "durationMs": detail.overview.duration_ms,
+                            "source": detail.overview.source,
                         }
                     })),
                     None => output_response(&id, "get_turn_detail", &serde_json::json!({
@@ -1057,6 +1059,7 @@ async fn main() {
                         role: "user".into(),
                         content: vec![ContentBlock::Text(TextContent { text: text.clone(), text_signature: None })],
                         timestamp: now_ms(),
+                        source: ion_provider::types::MessageSource::Steer,
                     }));
                     output_response(&id, "prompt", &serde_json::json!({"status":"queued","queue":"steering"}));
                     skip = true;
@@ -1065,6 +1068,7 @@ async fn main() {
                         role: "user".into(),
                         content: vec![ContentBlock::Text(TextContent { text: text.clone(), text_signature: None })],
                         timestamp: now_ms(),
+                        source: ion_provider::types::MessageSource::FollowUp,
                     }));
                     output_response(&id, "prompt", &serde_json::json!({"status":"queued","queue":"followUp"}));
                     skip = true;
@@ -1120,6 +1124,7 @@ async fn main() {
                         role: "user".into(),
                         content: vec![ContentBlock::Text(TextContent { text: text.clone(), text_signature: None })],
                         timestamp: now_ms(),
+                        source: ion_provider::types::MessageSource::Steer,
                     }));
                 }
                 output_response(&id, "steer", &serde_json::Value::Null);
@@ -1139,6 +1144,7 @@ async fn main() {
                         role: "user".into(),
                         content: vec![ContentBlock::Text(TextContent { text: text.clone(), text_signature: None })],
                         timestamp: now_ms(),
+                        source: ion_provider::types::MessageSource::Steer,
                     }));
                 }
                 output_response(&id, "promote_follow_up", &serde_json::Value::Null);
@@ -1169,6 +1175,7 @@ async fn main() {
                             ion::agent::messages::TextContent { text: user_text, text_signature: None }
                         )],
                         timestamp: now_ms(),
+                        source: ion_provider::types::MessageSource::FollowUp,
                     }
                 ));
                 tracing::info!("[channel] {channel} from {from}: {msg_text} (queued as follow_up)");
@@ -2616,6 +2623,7 @@ async fn main() {
                             ion::agent::messages::TextContent { text, text_signature: None }
                         )],
                         timestamp: now_ms(),
+                        source: ion_provider::types::MessageSource::FollowUp,
                     }
                 ));
                 output_response(&id, "follow_up", &serde_json::Value::Null);

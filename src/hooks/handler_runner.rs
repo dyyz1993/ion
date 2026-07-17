@@ -267,6 +267,7 @@ async fn run_prompt(handler: &HookHandler, stdin_data: serde_json::Value, ctx: &
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0),
+            source: ion_provider::types::MessageSource::Prompt,
         })],
         tools: None,
     };

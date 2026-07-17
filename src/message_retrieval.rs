@@ -160,6 +160,7 @@ pub struct TurnOverview {
     pub status: String,
     pub summary: String,
     pub duration_ms: u64,
+    pub source: String,
 }
 
 /// 用户输入结果
@@ -859,13 +860,16 @@ fn extract_from_turn_summary(
         // message 可能是扁平结构 {"role":"assistant","content":[...]}
         // 或 enum tag 结构 {"Assistant":{"role":"assistant","content":[...]}}
         let msg = entry.get("message").cloned().unwrap_or_default();
-        let (role, content) = if let Some(inner) = msg.get("Assistant").cloned() {
-            ("assistant".to_string(), inner.get("content").cloned().unwrap_or_default())
+        let (role, content, source_val) = if let Some(inner) = msg.get("Assistant").cloned() {
+            ("assistant".to_string(), inner.get("content").cloned().unwrap_or_default(), None)
         } else if let Some(inner) = msg.get("User").cloned() {
-            ("user".to_string(), inner.get("content").cloned().unwrap_or_default())
+            let s = inner.get("source").and_then(|v| v.as_str()).unwrap_or("prompt").to_string();
+            ("user".to_string(), inner.get("content").cloned().unwrap_or_default(), Some(s))
         } else {
+            let s = msg.get("source").and_then(|v| v.as_str()).unwrap_or("prompt").to_string();
             (msg.get("role").and_then(|r| r.as_str()).unwrap_or("").to_string(),
-             msg.get("content").cloned().unwrap_or_default())
+             msg.get("content").cloned().unwrap_or_default(),
+             Some(s))
         };
         let text = extract_text_from_content(&content);
         match role.as_str() {
@@ -875,6 +879,7 @@ fn extract_from_turn_summary(
                 } else {
                     truncate_content(&text, 200)
                 };
+                if let Some(s) = &source_val { overview.source = s.clone(); }
             }
             "assistant" if overview.assistant_content.is_empty() => {
                 overview.assistant_content = if full_content {
@@ -896,6 +901,11 @@ fn extract_from_turn_summary(
         } else {
             truncate_content(&overview.summary, 200)
         };
+    }
+
+    // source 兜底：如果 group 里没找到 user message，默认 prompt
+    if overview.source.is_empty() {
+        overview.source = "prompt".to_string();
     }
 
     overview
