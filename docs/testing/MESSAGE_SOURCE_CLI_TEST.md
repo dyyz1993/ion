@@ -67,7 +67,7 @@ ion rpc --session <sid> --method list_turns
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `source` | string? | `prompt` / `steer` / `followUp` / `interrupt`；旧数据可能无此字段 |
+| `source` | string | `prompt` / `steer` / `followUp` / `interrupt`（必填） |
 
 ### 1.3 get_messages（查看 message 内的 source）
 
@@ -299,43 +299,11 @@ ion rpc --session "$SID" --method list_turns
 
 ---
 
-## 7. Group E：向后兼容（旧数据）
-
-> 验证旧 session（无 source 字段）不报错。
-
-#### E1 旧 jsonl 无 source 字段
-
-```bash
-# 1. 手动构造旧格式 jsonl（无 source）
-OLD_DIR=$(mktemp -d)
-OLD_SESSION="$OLD_DIR/.ion/sessions/old_sess.jsonl"
-mkdir -p "$(dirname "$OLD_SESSION")"
-cat > "$OLD_SESSION" <<'JSONL'
-{"type":"session","version":3,"id":"old_sess","cwd":"/tmp"}
-{"type":"message","id":"m1","message":{"User":{"role":"user","content":[{"Text":{"text":"旧消息"}}]}}}
-JSONL
-
-# 2. 用 ion history 读（不应报错）
-ion history "$OLD_SESSION"
-```
-
-**验证点：**
-- ✅ 不崩溃
-- ✅ 旧消息正常显示（source 当作 prompt 处理）
-
-#### E2 list_turns 读旧数据 source 为空/默认
-
-**验证点：**
-- ✅ `source` 字段不存在或为 `null`（旧数据）
-- ✅ UI 兼容处理（当作 prompt）
-
----
-
-## 8. Group F：jsonl 落盘验证
+## 7. Group E：jsonl 落盘验证
 
 > 验证 source 字段正确写入磁盘 jsonl。
 
-#### F1 steer 消息落盘含 source
+#### E1 steer 消息落盘含 source
 
 ```bash
 # 执行 B1 的 steer 操作后，查 jsonl 文件
@@ -346,7 +314,7 @@ grep '"source":"steer"' "$SESS_FILE"
 **验证点：**
 - ✅ jsonl 里有 `"source":"steer"` 的 message entry
 
-#### F2 prompt 消息落盘含 source
+#### E2 prompt 消息落盘含 source
 
 ```bash
 grep '"source":"prompt"' "$SESS_FILE"
@@ -355,21 +323,18 @@ grep '"source":"prompt"' "$SESS_FILE"
 **验证点：**
 - ✅ 正常 prompt 的 source 也落盘
 
-#### F3 source=None 时不序列化（skip_serializing_if）
+#### E3 interrupt 消息落盘含 source
 
 ```bash
-# 旧数据或特殊场景下 source 可能不输出
-# 验证：message entry 要么有 "source":"xxx"，要么完全没有 source 字段
-# 不应该出现 "source":null
-grep '"source":null' "$SESS_FILE"
+grep '"source":"interrupt"' "$SESS_FILE"
 ```
 
 **验证点：**
-- ✅ 无 `"source":null`（skip_serializing_if 生效）
+- ✅ 打断消息的 source 也落盘
 
 ---
 
-## 9. 清理
+## 8. 清理
 
 ```bash
 kill "$HOST_PID" 2>/dev/null || true
@@ -389,6 +354,5 @@ rm -rf "$OLD_DIR" /tmp/faux_slow.jsonl
 | B steer 插队 | 2 | behavior=steer + steer RPC |
 | C followUp 追加 | 2 | behavior=followUp + follow_up RPC |
 | D interrupt 打断 | 2 | behavior=interrupt + 默认 behavior |
-| E 向后兼容 | 2 | 旧数据无 source 不报错 |
-| F jsonl 落盘 | 3 | source 写入磁盘 + skip_serializing_if |
-| **合计** | **13** | 四种 source 全覆盖 |
+| E jsonl 落盘 | 3 | source 写入磁盘（prompt/steer/interrupt） |
+| **合计** | **11** | 四种 source 全覆盖 |

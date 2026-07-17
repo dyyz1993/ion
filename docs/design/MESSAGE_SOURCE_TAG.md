@@ -80,8 +80,7 @@ pub struct UserMessage {
     pub role: String,
     pub content: Vec<ContentBlock>,
     pub timestamp: i64,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub source: Option<MessageSource>,   // ← 新增
+    pub source: MessageSource,   // ← 新增（必填，非 Option）
 }
 ```
 
@@ -104,15 +103,19 @@ pub enum MessageSource {
 
 序列化为驼峰：`"prompt"` / `"steer"` / `"followUp"` / `"interrupt"`。
 
-### 2.3 为什么用 Option
+### 2.3 不做向后兼容（项目未上线）
 
-- `Option::None` 时 `skip_serializing_if` 不序列化 → **向后兼容旧数据**（旧 jsonl 无 source 字段，反序列化时默认 None）
-- 旧 session 读出来 `source=None`，UI 当作 `prompt` 处理（合理默认）
+按 AGENTS.md 规范："本项目当前处于开发阶段，尚未上线。所有数据格式变更无需兼容旧数据"。
+
+- source 是**必填字段**，非 Option
+- 旧 jsonl 反序列化会失败 → 直接 `rm -rf ~/.ion/agent/sessions/` 重建
+- 不需要 `skip_serializing_if`、不需要 `default`、不需要 fallback 逻辑
 
 ### 2.4 不做什么（明确边界）
 
 | 不做 | 原因 |
 |------|------|
+| ~~向后兼容 / Option~~ | 项目未上线（AGENTS.md 明确），source 必填，旧数据直接删重建 |
 | ~~agent_run_id 归组字段~~ | UI 用 `userContent` 非空的 turn 切分 agent run 即可，不需要额外字段 |
 | ~~静默注入的 display 机制~~ | 已有 `custom` entry + `display:false`（见 `message_retrieval.rs:560`），记忆注入走那条路，与 message source 无关 |
 | ~~给 AssistantMessage 加 source~~ | assistant 回复不需要区分来源（都是 agent 产生的） |
@@ -200,7 +203,6 @@ pub enum MessageSource {
 | 忙时 behavior=interrupt | `source=Interrupt`（abort + 新 run） |
 | 忙时 behavior=steer | `source=Steer`（入 steering_queue） |
 | 忙时 behavior=followUp | `source=FollowUp`（入 follow_up_queue） |
-| 旧 session 无 source 字段 | 反序列化 `source=None`，UI 当 Prompt 处理 |
 
 ---
 
@@ -251,7 +253,7 @@ pub enum MessageSource {
 {"type":"message","id":"...","message":{"User":{"role":"user","content":[{"Text":{"text":"先看 src/"}}],"source":"steer"}}}
 ```
 
-`source` 为 `None` 时（旧数据或 Prompt）`skip_serializing_if` 不输出，保持 jsonl 紧凑。
+source 是必填字段，每条 User message 都会带上。
 
 ---
 
@@ -259,10 +261,12 @@ pub enum MessageSource {
 
 | source | 样式建议 | 说明 |
 |--------|---------|------|
-| `prompt` | 正常用户气泡 | 默认样式 |
+| `prompt` | 正常用户气泡 | 正常对话 |
 | `steer` | 🟡 黄色左边框 + "插队" 小标签 | turn 间插入 |
 | `followUp` | 🔵 蓝色左边框 + "追加" 小标签 | agent 结束后追加 |
 | `interrupt` | 🔴 红色左边框 + "打断" 小标签 | 强行打断 |
+
+> 不会有"无 source"的情况——每条 User message 必填 source。
 
 ---
 
