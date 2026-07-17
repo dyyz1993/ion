@@ -493,6 +493,13 @@ impl WorkerRegistry {
             tracing::info!("[worker] SessionIndex 写入: {} → {}", session_id, worktree_path);
         }
 
+        // ── singleton 引用计数：新 Worker 创建后通知所有单例 ──
+        // System Worker（如 memory-agent）不触发 user_join（它本身就是单例的提供者，不是用户）。
+        // 只有普通用户 Worker（Child/Peer）才 join。
+        if config.relation != Some(WorkerRelation::System) {
+            self.singleton_user_join(&worker_id).await;
+        }
+
 			        // Start stdout reader task (小助手 + 对讲机)
 		        // 持续读 worker stdout：
 		        // 1. event 消息 → 直接转发给 event_subscribers（subscribe session 流）
