@@ -341,6 +341,12 @@ impl WorkerRegistry {
             child_cmd.env("ION_HOOK_DEPTH", depth.to_string());
         }
 
+        // ── system prompt 覆盖（skill fork 模式用）──
+        // 把 skill 内容注入 system prompt，避免被 compaction 压缩。
+        if let Some(ref sp) = config.system_prompt_override {
+            child_cmd.env("ION_SYSTEM_PROMPT", sp);
+        }
+
         let mut child = child_cmd
             .spawn()
             .map_err(|e| format!("failed to spawn worker: {e}"))?;
@@ -2180,6 +2186,10 @@ pub struct WorkerCreateConfig {
     /// Manager 传给子进程 ION_HOOK_DEPTH，HookExtension 读到 >= 2 跳过 agent handler。
     #[serde(default)]
     pub hook_depth: Option<u32>,
+    /// 可选：覆盖子 Worker 的 system prompt。通过 ION_SYSTEM_PROMPT 环境变量传给子进程。
+    /// 用于 skill fork 模式——把 skill 内容注入 system prompt（不被 compaction 压缩）。
+    #[serde(default)]
+    pub system_prompt_override: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -372,6 +372,17 @@ async fn main() {
         initial_system_prompt.push_str(&skill_hint);
     }
 
+    // ── system prompt 覆盖（skill fork 模式用）──
+    // ION_SYSTEM_PROMPT 环境变量由 create_worker 设置（config.system_prompt_override），
+    // 覆盖 agent.md 的 system prompt。用于 skill fork——把 skill 内容注入 system prompt，
+    // 避免被 compaction 压缩（compaction 只处理 messages，不碰 system prompt）。
+    if let Ok(sp_override) = std::env::var("ION_SYSTEM_PROMPT") {
+        if !sp_override.is_empty() {
+            tracing::info!("[worker] system prompt overridden by ION_SYSTEM_PROMPT ({} bytes)", sp_override.len());
+            initial_system_prompt = sp_override;
+        }
+    }
+
     let mut agent = Agent::new(
         Arc::clone(&registry),
         model.clone(),

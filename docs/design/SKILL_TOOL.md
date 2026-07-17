@@ -1,6 +1,6 @@
 # Skill 工具 — LLM 按需调用 设计文档
 
-> **状态：已完成** — SkillTool 已实现（inject 模式），list / inject / fork(未实现提示) 全部验证通过。fork 模式待后续实现（需 subtask 内核原语）。
+> **状态：已完成** — SkillTool 已实现（list / inject / fork 三种模式全部可用）。fork 模式通过 spawn_worker 起子任务，skill 内容注入 system prompt（不被 compaction 压缩）。
 >
 > 对齐 pi 的 `core/tools/skill.ts`。
 
@@ -121,7 +121,7 @@ frontmatter 的 `description` 用于 `list` 输出，`trigger` 提示 LLM 什么
 | 模式 | 行为 | 实现状态 |
 |------|------|---------|
 | `inject`（默认） | skill 内容注入当前会话上下文 | ✅ 本文档实现 |
-| `fork` | skill 在隔离 subtask 中跑（不污染主会话） | 🔧 后续（需 subtask 内核原语） |
+| `fork` | skill 在隔离 subtask 中跑（不污染主会话） | ✅ 通过 spawn_worker 起子任务，skill 注入 system prompt（不被 compaction 压缩） |
 
 `inject` 模式下，SkillTool 的返回值（skill body 文本）会被 agent 当作工具结果，LLM 下一轮就能看到它。
 
@@ -240,7 +240,7 @@ bash tests/skill_tool_ci.sh    # 13 case，FauxProvider 驱动，隔离 HOME + I
 | skill 工具 | ✅ `core/tools/skill.ts` | ✅ `src/agent/tool.rs` SkillTool |
 | 发现目录 | ~/.pi/skills + project | `~/.ion/agent/skills/` + `<project>/.ion/skills/`（对齐） |
 | inject 模式 | ✅ | ✅ |
-| fork 模式 | ✅（subtask） | 🔧 后续（需 subtask 原语，返回提示不报错） |
+| fork 模式 | ✅ | ✅ spawn_worker 起子任务，skill 注入 system prompt（不被 compaction 压缩） |
 | frontmatter | name/description/trigger | name/description（trigger 解析但暂不用） |
 | system prompt 提示 | ✅ | ✅ `build_skill_hint()`（列出名字，不预加载内容省 token） |
 

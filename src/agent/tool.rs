@@ -1066,6 +1066,7 @@ impl Tool for SpawnWorkerTool {
             wait,
             worktree,
             hook_depth: None,  // LLM 的 spawn_worker 不设（只有 hooks agent handler 才设）
+            system_prompt_override: None,  // 普通 spawn_worker 不覆盖
         };
 
         let resp = rt.spawn_worker(req).await.map_err(AgentError::Tool)?;
@@ -1499,7 +1500,7 @@ impl Tool for SkillTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _rt: &dyn crate::runtime::Runtime,
+        rt: &dyn crate::runtime::Runtime,
     ) -> AgentResult<String> {
         let name = args
             .get("skill_name")
@@ -1510,12 +1511,41 @@ impl Tool for SkillTool {
             .and_then(|v| v.as_str())
             .unwrap_or("inject");
 
-        // fork 模式：尚未实现，返回提示文本（不报错）
+        // fork 模式：读 skill 内容 → spawn_worker 起子任务 → skill 注入 system prompt（不被压缩）
         if context_mode == "fork" {
-            return Ok(format!(
-                "Skill '{name}': 'fork' mode is not yet implemented (requires a subtask primitive). \
-                 Use context='inject' (default) to load the skill into the current context."
-            ));
+            // 查找 skill 文件
+            let skill_path = self.find_skill(name).ok_or_else(|| {
+                AgentError::Tool(format!("skill '{name}' not found in {:?}", self.skill_dirs))
+            })?;
+            let content = std::fs::read_to_string(&skill_path)?;
+            let (_frontmatter, body) = parse_skill_content(&content);
+
+            // 构造 system prompt：skill 内容 + 角色说明
+            // system prompt 不参与 compaction，skill 内容在整个执行过程中不会丢失
+            let system_prompt = format!(
+                "You are executing a skill. Follow the instructions below precisely.\n\n\
+                 ---\nSkill: {name}\n---\n\n{body}"
+            );
+
+            // spawn 子 Worker 执行 skill
+            let req = crate::runtime::SpawnWorkerRequest {
+                relation: crate::runtime::SpawnRelation::Child,
+                agent: "default".into(),
+                task: format!("Execute the '{name}' skill as described in your system prompt. \
+                               When done, summarize what you accomplished."),
+                name: Some(format!("skill-{name}")),
+                report_channel: None,
+                wait: true,  // 同步等结果
+                worktree: None,
+                hook_depth: None,
+                system_prompt_override: Some(system_prompt),
+            };
+
+            let resp = rt.spawn_worker(req).await
+                .map_err(|e| AgentError::Tool(format!("skill fork spawn_worker failed: {e}")))?;
+
+            let output = resp.first_turn_output.unwrap_or_default();
+            return Ok(format!("Skill '{name}' executed in fork mode:\n\n{output}"));
         }
 
         // list 模式：列出可用 skill
