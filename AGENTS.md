@@ -1025,7 +1025,8 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | session_hook_ci (CLI E2E) | 8 | Group A：call_tool branch_session → subscribe 收到 session_switch_seen 事件（action=branch + branch_name 透传）+ Group B：rollback action=rollback + Group C：其他工具不触发 |
 | hooks_handler_ci (CLI E2E) | 6 | Group A：command handler 执行 → subscribe 收到 hook_handler_executed + Group B：http handler 安全校验（非HTTPS→block / localhost→block）+ Group C：prompt handler 触发 |
 | extension_cli_ci (CLI E2E) | 11 | Group A：install（成功/文件拷到位/不存在报错/非wasm拒绝）+ Group B：list（列两个+总数）+ Group C：remove（不带后缀/不存在报错/带后缀）+ Group D：install 覆盖更新 |
-| **测试覆盖合计** | **819** | 全部通过 ✅（Rust 509 + CLI E2E 331，含 hooks 36 case + 真实 LLM 3 case） |
+| memory_agent_ci (CLI E2E) | 10 | Group A：memory-agent 自动 spawn（日志+list_workers+状态）+ Group B：session/model 有效 + Group C：global-memory extension_rpc save/search/clear |
+| **测试覆盖合计** | **829** | 全部通过 ✅（Rust 509 + CLI E2E 341，含 hooks 36 case + 真实 LLM 3 case） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
