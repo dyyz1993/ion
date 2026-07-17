@@ -2,7 +2,7 @@
 # ──────────────────────────────────────────────────────────
 # Skill Tool CI — LLM 按需调用 skill 验证
 #
-# 验证：skill 工具 list / inject / fork(未实现提示) / get_skills RPC
+# 验证：skill 工具 list / inject / fork（spawn_worker 起子任务）/ get_skills RPC
 # 方式：FauxProvider 驱动（host + call_tool RPC 直调，不依赖真实 LLM）
 # 隔离：HOME=临时目录（socket 隔离）+ ION_AGENT_DIR（全局 skill 隔离）
 # ──────────────────────────────────────────────────────────
@@ -137,13 +137,13 @@ else
     fail "S4: skill inject 默认模式失败"
 fi
 
-# S5: fork 模式 — 应返回"未实现"提示，不报错（success=true）
+# S5: fork 模式 — spawn_worker 起子任务，skill 注入 system prompt，返回执行结果
 FORK_OUT=$($ION_BIN rpc --session "$SID" --method call_tool \
   --params '{"tool":"skill","args":{"skill_name":"code-review","context":"fork"}}' 2>&1)
-if echo "$FORK_OUT" | grep -qi "not yet implemented" && echo "$FORK_OUT" | grep -qi '"success": true\|"success":true'; then
-    pass "S5: skill fork 返回未实现提示（不报错，success=true）"
+if echo "$FORK_OUT" | grep -qi "executed in fork mode" && echo "$FORK_OUT" | grep -qi '"success": true\|"success":true'; then
+    pass "S5: skill fork 执行成功（spawn_worker 起子任务，返回结果）"
 else
-    fail "S5: skill fork 未正确返回提示"
+    fail "S5: skill fork 执行失败"
     echo "  输出: $(echo "$FORK_OUT" | head -5)"
 fi
 
