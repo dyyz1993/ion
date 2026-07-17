@@ -383,8 +383,11 @@ pub fn retrieve_turn_detail(entries: &[Value], turn_id: &str, _include_custom: &
         g.iter()
             .rev()
             .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("turn_summary"))
-            .and_then(|ts| ts.get("turnId").and_then(|v| v.as_str()))
-            == Some(turn_id)
+            .and_then(|ts| ts.get("turnId").map(|v| {
+                v.as_str().map(|s| s.to_string())
+                    .unwrap_or_else(|| v.as_u64().map(|n| n.to_string()).unwrap_or_default())
+            }))
+            == Some(turn_id.to_string())
     })?;
 
     let overview = extract_turn_overview(&group, true); // get_turn_detail 始终 full_content
@@ -804,7 +807,10 @@ fn extract_from_turn_summary(
     full_content: bool,
 ) -> TurnOverview {
     let mut overview = TurnOverview {
-        turn_id: ts.get("turnId").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        turn_id: ts.get("turnId").map(|v| {
+            v.as_str().map(|s| s.to_string())
+                .unwrap_or_else(|| v.as_u64().map(|n| n.to_string()).unwrap_or_default())
+        }).unwrap_or_default(),
         status: ts
             .get("status")
             .and_then(|v| v.as_str())
@@ -850,13 +856,19 @@ fn extract_from_turn_summary(
         if entry.get("type").and_then(|v| v.as_str()) != Some("message") {
             continue;
         }
-        let role = entry
-            .get("message")
-            .and_then(|m| m.get("role"))
-            .and_then(|r| r.as_str())
-            .unwrap_or("");
-        let text = extract_message_text(entry);
-        match role {
+        // message 可能是扁平结构 {"role":"assistant","content":[...]}
+        // 或 enum tag 结构 {"Assistant":{"role":"assistant","content":[...]}}
+        let msg = entry.get("message").cloned().unwrap_or_default();
+        let (role, content) = if let Some(inner) = msg.get("Assistant").cloned() {
+            ("assistant".to_string(), inner.get("content").cloned().unwrap_or_default())
+        } else if let Some(inner) = msg.get("User").cloned() {
+            ("user".to_string(), inner.get("content").cloned().unwrap_or_default())
+        } else {
+            (msg.get("role").and_then(|r| r.as_str()).unwrap_or("").to_string(),
+             msg.get("content").cloned().unwrap_or_default())
+        };
+        let text = extract_text_from_content(&content);
+        match role.as_str() {
             "user" if overview.user_content.is_empty() => {
                 overview.user_content = if full_content {
                     text
@@ -875,38 +887,69 @@ fn extract_from_turn_summary(
         }
     }
 
+    // Fallback：如果 group 里没找到 message（serve 模式下 turn_summary 先于 message 落盘，
+    // 导致 group 里只有 turn_summary），用 summary 字段填充 assistant_content。
+    // summary 本身就是 assistant 回复的摘要（前 200 字），语义一致。
+    if overview.assistant_content.is_empty() && !overview.summary.is_empty() {
+        overview.assistant_content = if full_content {
+            overview.summary.clone()
+        } else {
+            truncate_content(&overview.summary, 200)
+        };
+    }
+
     overview
 }
 
-/// 从 message entry 提取文本
+/// 从 content(可能是字符串、扁平数组、或 enum tag 数组)提取文本
+/// 支持三种格式：
+///   1. 纯字符串 "hello"
+///   2. 扁平数组 [{"type":"text","text":"hello"}, ...]
+///   3. enum tag 数组 [{"Text":{"text":"hello"}}, {"Thinking":{"thinking":"..."}}, ...]
+fn extract_text_from_content(content: &Value) -> String {
+    // 格式 1：纯字符串
+    if let Some(s) = content.as_str() {
+        return s.to_string();
+    }
+    // 格式 2/3：数组
+    let arr = match content.as_array() {
+        Some(a) => a,
+        None => return String::new(),
+    };
+    arr.iter()
+        .filter_map(|b| {
+            // 扁平：{"type":"text","text":"..."}
+            if b.get("text").and_then(|t| t.as_str()).is_some() {
+                return b.get("text").and_then(|t| t.as_str()).map(|s| s.to_string());
+            }
+            // enum tag：{"Text":{"text":"..."}} / {"Thinking":{"thinking":"..."}}
+            if let Some(obj) = b.as_object() {
+                for (_, inner) in obj {
+                    if let Some(t) = inner.get("text").and_then(|t| t.as_str()) {
+                        return Some(t.to_string());
+                    }
+                }
+            }
+            None
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// 从 message entry 提取文本（兼容旧调用点）
 fn extract_message_text(entry: &Value) -> String {
     entry
         .get("message")
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            // content 可能是数组（ContentBlock[]）
-            entry
-                .get("message")
-                .and_then(|m| m.get("content"))
-                .and_then(|c| c.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|b| {
-                            if b.get("type").and_then(|t| t.as_str()) == Some("text")
-                                || b.get("text").is_some()
-                            {
-                                b.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("")
-                })
-                .unwrap_or_default()
+        .and_then(|m| {
+            // enum tag 结构：message.Assistant.content / message.User.content
+            if let Some(inner) = m.get("Assistant").or_else(|| m.get("User")) {
+                Some(inner.get("content").cloned().unwrap_or_default())
+            } else {
+                m.get("content").cloned()
+            }
         })
+        .map(|c| extract_text_from_content(&c))
+        .unwrap_or_default()
 }
 
 /// 截断内容到指定字符数

@@ -639,6 +639,69 @@ else
 fi
 
 # ──────────────────────────────────────────────────────────
+# Group P: list_turns / get_turn_detail RPC 响应含 durationMs
+# 用 FauxProvider 跑真实 agent loop 产生 turn_summary，再调 RPC 验证响应字段
+# ──────────────────────────────────────────────────────────
+echo ""
+echo "Group P: list_turns / get_turn_detail RPC durationMs"
+echo "  注：FauxProvider 不走网络，turn 常 <1ms，durationMs 可能为 0；"
+echo "  本组验证「字段存在 + 类型正确」，真实耗时由真实 LLM 场景验证。"
+
+# P1: 起 host + faux + prompt 产生 turn_summary
+P_DIR=$(mktemp -d)
+P_HOST_LOG="/tmp/ion_mr_p_host.log"
+# 清理可能残留的 host（前面 Group 的 host 或手动测试残留）
+pkill -f "target/debug/ion serve" 2>/dev/null || true
+rm -f "$HOME/.ion/host.sock"
+sleep 1
+# 不用 timeout（会被递归 idle 关或脚本末尾手动 kill）
+ION_FAUX_REPLY="P group faux reply" "$ION_BIN" serve >"$P_HOST_LOG" 2>&1 &
+P_HOST_PID=$!
+sleep 4
+
+P_SID=$(timeout 15 "$ION_BIN" rpc --method create_session --params "{\"cwd\":\"$P_DIR\"}" 2>&1 | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['session_id'])" 2>/dev/null)
+
+if [ -n "$P_SID" ]; then
+    pass "P1: serve + create_session ($P_SID)"
+    # 发 prompt 触发 agent loop（会产生 turn_summary entry）
+    timeout 30 "$ION_BIN" rpc --session "$P_SID" --method prompt --params '{"text":"hello"}' >/dev/null 2>&1 || true
+    sleep 3
+
+    # P2: list_turns 响应含 durationMs 字段
+    LT_OUTPUT=$(timeout 15 "$ION_BIN" rpc --session "$P_SID" --method list_turns 2>&1 || true)
+    if echo "$LT_OUTPUT" | python3 -c "import json,sys;d=json.load(sys.stdin);ts=d['data']['turns'];print('has_durationMs' if ts and all('durationMs' in t for t in ts) else 'missing')" 2>/dev/null | grep -q "has_durationMs"; then
+        pass "P2: list_turns 响应每条 turn 含 durationMs"
+    else
+        fail "P2: list_turns 响应缺 durationMs (output: $LT_OUTPUT)"
+    fi
+
+    # P3: durationMs 是数值类型（不是 null/字符串）；faux 模式下可能为 0
+    if echo "$LT_OUTPUT" | python3 -c "import json,sys;d=json.load(sys.stdin);ts=d['data']['turns'];print('numeric' if ts and all(isinstance(t.get('durationMs'),(int,float)) for t in ts) else 'non_numeric')" 2>/dev/null | grep -q "numeric"; then
+        pass "P3: durationMs 是数值类型"
+    else
+        fail "P3: durationMs 类型异常"
+    fi
+
+    # P4: get_turn_detail 响应含 durationMs（取第一条 turn 的 turnId）
+    TURN_ID=$(echo "$LT_OUTPUT" | python3 -c "import json,sys;d=json.load(sys.stdin);ts=d['data']['turns'];print(ts[0]['turnId'] if ts else '')" 2>/dev/null)
+    TD_OUTPUT=$(timeout 15 "$ION_BIN" rpc --session "$P_SID" --method get_turn_detail --params "{\"turnId\":\"$TURN_ID\"}" 2>&1 || true)
+    if echo "$TD_OUTPUT" | python3 -c "import json,sys;d=json.load(sys.stdin);print('has_durationMs' if 'durationMs' in d.get('data',{}).get('overview',{}) else 'missing')" 2>/dev/null | grep -q "has_durationMs"; then
+        pass "P4: get_turn_detail overview 含 durationMs"
+    else
+        fail "P4: get_turn_detail overview 缺 durationMs (output: $TD_OUTPUT)"
+    fi
+else
+    fail "P1: serve + create_session 失败（host log: $(tail -3 $P_HOST_LOG 2>/dev/null)）"
+fi
+
+# 清理 host（精确 PID 优先 + 完整路径兜底，按 AGENTS.md 规范）
+kill "$P_HOST_PID" 2>/dev/null || true
+wait "$P_HOST_PID" 2>/dev/null || true
+pkill -f "target/debug/ion serve" 2>/dev/null || true
+rm -f "$HOME/.ion/host.sock"
+rm -rf "$P_DIR"
+
+# ──────────────────────────────────────────────────────────
 # 清理
 # ──────────────────────────────────────────────────────────
 cd "$PROJECT_DIR"
