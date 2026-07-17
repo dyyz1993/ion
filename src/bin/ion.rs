@@ -2983,6 +2983,8 @@ async fn cmd_serve_start(
         reg.register_singleton(Box::new(ion::global_memory_ext::GlobalMemoryExtension::new()));
         reg.init_singletons().await;
     }
+    // post_init（释放 lock 后调，让单例能 create_worker spawn 系统级 agent）
+    ion::worker_registry::WorkerRegistry::post_init_singletons(&registry).await;
 
     // ── Host 级 MCP 管理器（方案 C：host 持有连接，所有 Worker 代理调用）──
     {

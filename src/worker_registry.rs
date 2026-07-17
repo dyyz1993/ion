@@ -111,8 +111,8 @@ impl std::fmt::Display for WorkerStatus {
 pub struct SingletonEntry {
     /// 唯一标识（singleton_key）
     pub key: String,
-    /// 扩展实例
-    pub instance: Box<dyn crate::agent::extension::Extension>,
+    /// 扩展实例（Arc 让 post_init 能 clone 出去在释放 lock 后调用）
+    pub instance: std::sync::Arc<dyn crate::agent::extension::Extension>,
     /// 正在使用此单例的 Worker ID 集合（引用计数）
     pub users: std::collections::HashSet<String>,
     /// 是否已初始化（on_singleton_init 是否已调用）
@@ -1231,6 +1231,7 @@ impl WorkerRegistry {
                         .and_then(|v| v.as_str())
                         .map(|s| match s {
                             "peer" => WorkerRelation::Peer,
+                            "system" => WorkerRelation::System,
                             _ => WorkerRelation::Child,
                         })
                         .unwrap_or(WorkerRelation::Child);
@@ -1304,6 +1305,20 @@ impl WorkerRegistry {
                                             "report_channel": report_channel,
                                         }
                                     }));
+                                }
+                                (WorkerRelation::System, _) => {
+                                    // ── system：host 创建的系统级 Worker（如 memory-agent），无 creator ──
+                                    // 立即返回 worker_id，不注入汇报指令，不 follow_up
+                                    self.write_manager_response(&from_worker, serde_json::json!({
+                                        "_reply_to": reply_to,
+                                        "success": true,
+                                        "data": {
+                                            "worker_id": child_id,
+                                            "session_id": session_id,
+                                            "relation": "system",
+                                            "status": "running_in_background",
+                                        }
+                                    })).await;
                                 }
                             }
                         }
@@ -1809,7 +1824,7 @@ impl WorkerRegistry {
         tracing::info!("[singleton] registered: {}", key);
         self.singletons.insert(key, SingletonEntry {
             key: ext.singleton_key().to_string(),
-            instance: ext,
+            instance: std::sync::Arc::from(ext),
             users: std::collections::HashSet::new(),
             initialized: false,
         });
@@ -1829,6 +1844,24 @@ impl WorkerRegistry {
                     entry.initialized = true;
                     tracing::info!("[singleton:{}] initialized", key);
                 }
+            }
+        }
+    }
+
+    /// init 之后的第二步：调用每个单例的 on_singleton_post_init。
+    ///
+    /// post_init 拿到 registry Arc，能在其中 spawn 系统级 Worker（如 memory-agent）。
+    /// **必须**在 init_singletons 释放 lock 之后调（post_init 内部会 lock registry 来 create_worker，
+    /// 持 lock 调会死锁）。
+    pub async fn post_init_singletons(registry: &Arc<Mutex<WorkerRegistry>>) {
+        // 持 lock 时快速 clone 所有 instance 的 Arc，释放 lock 后调 post_init（避免死锁）
+        let instances: Vec<Arc<dyn crate::agent::extension::Extension>> = {
+            let reg = registry.lock().await;
+            reg.singletons.values().map(|e| e.instance.clone()).collect()
+        };
+        for ext in instances {
+            if let Err(e) = ext.on_singleton_post_init(registry).await {
+                tracing::error!("[singleton] post_init failed: {:?}", e);
             }
         }
     }
@@ -2081,12 +2114,15 @@ async fn read_worker_stdout(
 ///   `parent` 字段会被设为 creator（沿用现有父子路径）。
 /// - `Peer`：creator→peer，异步语义。peer 不是 creator 的下属，只记一个"来源"。
 ///   `parent = None`，但 `creator` 字段被保留，内核会自动注入"汇报指令段"。
+/// - `System`：host 启动时创建的系统级 Worker（如 memory-agent），无 creator。
+///   parent=None，不注入汇报指令，立即返回 worker_id。
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum WorkerRelation {
     #[default]
     Child,
     Peer,
+    System,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]

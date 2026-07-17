@@ -1085,6 +1085,7 @@ impl Tool for SpawnWorkerTool {
             "relation": match resp.relation {
                 crate::runtime::SpawnRelation::Child => "child",
                 crate::runtime::SpawnRelation::Peer => "peer",
+                crate::runtime::SpawnRelation::System => "system",
             },
             "worker_id": resp.worker_id,
             "status": resp.status,

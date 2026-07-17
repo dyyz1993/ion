@@ -1,8 +1,12 @@
 # Memory V0.2 设计文档 — 跨项目记忆 Agent
 
-> **状态：Phase 1-8 已实现** — 独立的系统级 Agent，随 `ion serve` 启动，跨项目检索记忆。不是 V0.1 的升级，是不同的功能——V0.1 是项目级 Extension（被动注入），V0.2 是跨项目 Agent（主动检索）。
+> **状态：已实现** — Active Memory sub-agent 已落地：`ion serve` 启动时 GlobalMemoryExtension 通过 `on_singleton_post_init` spawn 一个系统级 memory-agent Worker（WorkerRelation::System），带 LLM + global_memory_search 工具。其他 Worker 可通过 `send_to_worker` 查询它。
 >
-> **配套**：V0.1（项目级扩展）已修复可用，见 [MEMORY_EXTENSION.md](./MEMORY_EXTENSION.md)。
+> - Phase 1-2（数据层 + 迁移）：✅ `global_memory.rs`（SQLite + FTS5 + CRUD）
+> - Phase 3-6（agent 化）：✅ `on_singleton_post_init` + `WorkerRelation::System` + memory-agent.md
+> - Phase 7（测试）：🔧 待补 CI（memory_agent_ci.sh）
+>
+> **配套**：V0.1（项目级扩展）已修复可用，见 [MEMORY_EXTENSION.md](./MEMORY_EXTENSION.md)。被动注入路线见 [MEMORY_ACTIVE.md](./MEMORY_ACTIVE.md)。
 
 ---
 

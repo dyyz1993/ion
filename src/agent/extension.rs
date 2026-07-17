@@ -201,8 +201,20 @@ pub trait Extension: Send + Sync {
     fn singleton_key(&self) -> &str { "" }
 
     /// 单例创建时调用（host 启动，只一次）。
-    /// 在此创建 Memory Agent / 打开 DB / 注册服务等。
+    /// 在此打开 DB / 注册服务等轻量初始化。
     async fn on_singleton_init(&self) -> AgentResult<()> { Ok(()) }
+
+    /// 单例 init 之后调用，拿到 WorkerRegistry 句柄。
+    /// 在此 spawn 系统级 Worker（如 Active Memory sub-agent）——
+    /// host 端直接操作 registry（不走 bridge），比 Worker 内 create_worker 更简单。
+    /// 默认空实现（向后兼容，不影响现有单例）。
+    async fn on_singleton_post_init(
+        &self,
+        _registry: &std::sync::Arc<tokio::sync::Mutex<crate::worker_registry::WorkerRegistry>>,
+    ) -> AgentResult<()> {
+        let _ = _registry; // 避免 unused warning
+        Ok(())
+    }
 
     /// 有 Worker 开始使用此单例时调用（引用计数 +1）。
     async fn on_user_join(&self, _worker_id: &str) -> AgentResult<()> { Ok(()) }

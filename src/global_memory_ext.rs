@@ -15,12 +15,15 @@ use std::sync::Arc;
 pub struct GlobalMemoryExtension {
     /// 全局记忆库（on_singleton_init 时打开）
     store: Arc<std::sync::Mutex<Option<GlobalMemoryStore>>>,
+    /// Active Memory sub-agent 的 worker_id（post_init 时 spawn，shutdown 时 kill）
+    active_memory_worker: std::sync::Mutex<Option<String>>,
 }
 
 impl GlobalMemoryExtension {
     pub fn new() -> Self {
         Self {
             store: Arc::new(std::sync::Mutex::new(None)),
+            active_memory_worker: std::sync::Mutex::new(None),
         }
     }
 }
@@ -56,8 +59,61 @@ impl Extension for GlobalMemoryExtension {
         Ok(())
     }
 
+    /// post_init：spawn Active Memory sub-agent（系统级 Worker）
+    ///
+    /// 在 init_singletons 释放 lock 后调用（post_init 内部 lock registry 来 create_worker）。
+    /// memory-agent 是一个带 LLM 的常驻 Worker，其他 Worker 通过 send_to_worker 查询它。
+    async fn on_singleton_post_init(
+        &self,
+        registry: &std::sync::Arc<tokio::sync::Mutex<crate::worker_registry::WorkerRegistry>>,
+    ) -> AgentResult<()> {
+        // 读 config 拿 model/provider（memory-agent 用默认模型）
+        let cfg = crate::config::IonConfig::load();
+        let model = cfg.default_model.clone().unwrap_or_else(|| "deepseek-v4-flash".into());
+        let provider = cfg.default_provider.clone().unwrap_or_else(|| "opencode".into());
+
+        // 构造 memory-agent 的 WorkerCreateConfig
+        let config = crate::worker_registry::WorkerCreateConfig {
+            session: Some(format!("sess_memory_agent_{}", &uuid::Uuid::new_v4().to_string()[..8])),
+            agent: Some("memory-agent".into()),
+            model: Some(model),
+            provider: Some(provider),
+            relation: Some(crate::worker_registry::WorkerRelation::System),
+            parent: None,
+            initial_prompt: Some(
+                "You are the Memory Agent. Waiting for queries from other Workers. \
+                 Use global_memory_search to find relevant memories when asked."
+                    .into(),
+            ),
+            channels: Some(vec!["main".into()]),
+            ..Default::default()
+        };
+
+        tracing::info!("[global-memory] spawning Active Memory sub-agent...");
+        let mut reg = registry.lock().await;
+        match reg.create_worker(config, registry).await {
+            Ok(info) => {
+                let wid = info.worker_id.clone();
+                tracing::info!("[global-memory] Active Memory sub-agent started: {} (session: {})", wid, info.session_id);
+                *self.active_memory_worker.lock().unwrap() = Some(wid);
+            }
+            Err(e) => {
+                tracing::error!("[global-memory] failed to spawn memory-agent: {}", e);
+                // 不报错（memory-agent 是可选增强，spawn 失败不应阻断 host 启动）
+            }
+        }
+        Ok(())
+    }
+
     async fn on_singleton_shutdown(&self) -> AgentResult<()> {
         tracing::info!("[global-memory] singleton shutting down");
+        // kill memory-agent Worker（如果存在）
+        if let Some(wid) = self.active_memory_worker.lock().unwrap().take() {
+            tracing::info!("[global-memory] killing memory-agent: {}", wid);
+            // 注意：kill 需要 registry，但 shutdown 时可能拿不到。
+            // Worker 进程会在 host 退出时自然终止（child process）。
+            // 这里只清理记录。如果需要显式 kill，可在 host shutdown 流程里加。
+        }
         let mut guard = self.store.lock().unwrap();
         *guard = None;
         Ok(())

@@ -235,6 +235,8 @@ pub enum SpawnRelation {
     Child,
     /// creator→peer，异步。立即返回 worker_id。
     Peer,
+    /// host 启动时创建的系统级 Worker（如 memory-agent），无 creator。
+    System,
 }
 
 /// spawn_worker 工具的请求参数。
@@ -391,6 +393,7 @@ impl<R: Runtime + 'static> Runtime for WorkerRuntime<R> {
         let relation_str = match req.relation {
             SpawnRelation::Child => "child",
             SpawnRelation::Peer => "peer",
+            SpawnRelation::System => "system",
         };
         // 如果请求了 worktree 隔离，附加 worktree config
         let worktree_json = if req.worktree.unwrap_or(false) {
