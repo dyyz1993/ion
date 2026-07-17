@@ -472,6 +472,21 @@ impl Agent {
             thought_signature: None,
         };
         self.extensions.before_tool_call(&tc).await?;
+
+        // session 分支/回滚钩子（与 run() 循环里一致，CLI call_tool 直调时也触发）
+        if name == "branch_session" {
+            let is_rollback = args.get("is_rollback").and_then(|v| v.as_bool()).unwrap_or(false);
+            let target_leaf = args.get("from_entry").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let branch_name = args.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let switch_ctx = super::extension::SessionSwitchContext {
+                action: if is_rollback { "rollback".into() } else { "branch".into() },
+                target_leaf_id: target_leaf,
+                source_leaf_id: None,
+                branch_name,
+            };
+            self.extensions.on_session_before_switch(&switch_ctx).await?;
+        }
+
         let tool = self.tools.get(name)
             .ok_or_else(|| AgentError::Tool(format!("tool not found: {name}")))?;
         tool.execute(args, &*self.runtime).await
@@ -824,6 +839,26 @@ impl Agent {
                         // agent_loop 只负责调用 Extension 钩子和工具执行
 
                         self.extensions.before_tool_call(tc).await?;
+
+                        // ── session 分支/回滚钩子（branch_session 工具）──
+                        // LLM 调 branch_session 时，在执行前触发 on_session_before_switch，
+                        // 让扩展有机会 veto（返回 Err 则中止，工具不执行）。
+                        // action 由 is_rollback 参数决定：rollback / branch。
+                        if tc.name == "branch_session" {
+                            let is_rollback = tc.arguments.get("is_rollback")
+                                .and_then(|v| v.as_bool()).unwrap_or(false);
+                            let target_leaf = tc.arguments.get("from_entry")
+                                .and_then(|v| v.as_str()).map(|s| s.to_string());
+                            let branch_name = tc.arguments.get("name")
+                                .and_then(|v| v.as_str()).map(|s| s.to_string());
+                            let switch_ctx = super::extension::SessionSwitchContext {
+                                action: if is_rollback { "rollback".into() } else { "branch".into() },
+                                target_leaf_id: target_leaf,
+                                source_leaf_id: None,
+                                branch_name,
+                            };
+                            self.extensions.on_session_before_switch(&switch_ctx).await?;
+                        }
 
                         // Hook: tool_execution_start
                         let start = std::time::Instant::now();

@@ -1005,7 +1005,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 - ~~on_extension_rpc 接入~~ ✅ (Memory 扩展 Extension RPC)
 - ~~session_before_compact / session_compact 接入~~ ✅
 - ~~thinking_level_select~~ ✅ (已在 run() 中触发)
-- session_before_switch / session_before_fork - 钩子已定义（trait + ExtensionRegistry），触发点待接（需 Runtime trait 扩展）
+- ~~session_before_switch / session_before_fork~~ ✅ 钩子已定义 + **触发点已接**（agent_loop.rs：LLM 调 branch_session 工具时触发 on_session_before_switch，action=branch/rollback；扩展返回 Err 可 veto。fork-from-leaf 的 CLI 路径待接）
 - session_tree - ✅ (SessionTree 已实现)
 - user_bash / project_trust / resources_discover / ui - 后续 (需交互式 UI)
 
