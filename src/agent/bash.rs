@@ -680,6 +680,7 @@ fn emit_extension_event(event_type: &str, data: &serde_json::Value) {
             "extension": "bash",
             "customType": event_type,
             "visibility": "llm_and_ui",
+            "timestamp": now_ms(),
             "data": data,
         },
     });

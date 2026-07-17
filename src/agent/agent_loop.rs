@@ -607,6 +607,7 @@ impl Agent {
         let max_turns = self.config.max_turns.unwrap_or(u64::MAX);
         let mut no_tool_retries = 0u32;
         for turn in 0..max_turns {
+            let turn_start = std::time::Instant::now();
             self.turn_index = turn;
             self.check_pause().await?;
 
@@ -742,7 +743,7 @@ impl Agent {
                         .await?;
 
                     // ── turn_summary 落盘：每一轮 turn 结束时追加结构化摘要 ──
-                    self.persist_turn_summary(turn as u64, &events, &stop_reason);
+                    self.persist_turn_summary(turn as u64, &events, &stop_reason, turn_start.elapsed().as_millis() as u64);
 
                     // ── 反幻觉重试：如果 LLM 没调任何工具就返回 → 重试 ──
                     // LLM 可能说"已创建文件"但实际没调 write 工具。
@@ -996,13 +997,13 @@ impl Agent {
                         .await?;
 
                     // ── turn_summary 落盘（ToolUse 路径）──
-                    self.persist_turn_summary(turn as u64, &events, &ion_provider::StopReason::ToolUse);
+                    self.persist_turn_summary(turn as u64, &events, &ion_provider::StopReason::ToolUse, turn_start.elapsed().as_millis() as u64);
 
                     continue;
                 }
                 StopReason::Error => {
                     // ── turn_summary 落盘（Error 路径，强制记录中断 turn）──
-                    self.persist_turn_summary(turn as u64, &events, &ion_provider::StopReason::Error);
+                    self.persist_turn_summary(turn as u64, &events, &ion_provider::StopReason::Error, turn_start.elapsed().as_millis() as u64);
 
                     // ── 溢出恢复：检测到上下文溢出时，触发 compaction 然后重试该 turn ──
                     // 对齐 pi 的 overflow recovery：最多 compact-and-retry MAX_OVERFLOW_ROUNDS 次
@@ -1050,7 +1051,7 @@ impl Agent {
                 }
                 StopReason::Aborted => {
                     // ── turn_summary 落盘（Aborted 路径）──
-                    self.persist_turn_summary(turn as u64, &events, &ion_provider::StopReason::Error);
+                    self.persist_turn_summary(turn as u64, &events, &ion_provider::StopReason::Error, turn_start.elapsed().as_millis() as u64);
                     return Ok(StopReason::Aborted);
                 }
             }
@@ -1330,6 +1331,7 @@ impl Agent {
         turn: u64,
         events: &[ion_provider::StreamEvent],
         stop_reason: &ion_provider::StopReason,
+        duration_ms: u64,
     ) {
         let Some(ref cwd) = self.session_cwd else {
             return;
@@ -1421,7 +1423,7 @@ impl Agent {
             tool_call_count,
             tok_in,
             tok_out,
-            0, // durationMs 暂不测（需 turn 开始时间戳）
+            duration_ms,
             &[], // entryRange 暂空（内存 Message 无 entryId）
             status,
         );

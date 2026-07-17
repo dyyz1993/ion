@@ -866,6 +866,7 @@ async fn main() {
                         "tokens": {"input": t.tokens_input, "output": t.tokens_output},
                         "status": t.status,
                         "summary": t.summary,
+                        "durationMs": t.duration_ms,
                     })).collect::<Vec<_>>(),
                     "hasMore": result.has_more,
                     "totalCount": result.total_count,
@@ -911,6 +912,7 @@ async fn main() {
                             "toolCallCount": detail.overview.tool_call_count,
                             "tokens": {"input": detail.overview.tokens_input, "output": detail.overview.tokens_output},
                             "status": detail.overview.status,
+                            "durationMs": detail.overview.duration_ms,
                         }
                     })),
                     None => output_response(&id, "get_turn_detail", &serde_json::json!({
@@ -1024,9 +1026,9 @@ async fn main() {
                         };
                         agent.push_message(Message::BashExecution(bash_msg));
 
-                        output(&serde_json::json!({"type":"event","event":{"type":"agent_start","sessionId":sid}}));
+                        output(&serde_json::json!({"type":"event","event":{"type":"agent_start","sessionId":sid,"timestamp":now_ms()}}));
                         output(&serde_json::json!({"type":"event","event":{"type":"text_delta","delta":&combined}}));
-                        output(&serde_json::json!({"type":"event","event":{"type":"agent_end","sessionId":sid}}));
+                        output(&serde_json::json!({"type":"event","event":{"type":"agent_end","sessionId":sid,"timestamp":now_ms()}}));
                         output_response(&id, "prompt", &serde_json::json!({
                             "status":"bash_executed",
                             "command": cmd_text,
@@ -1063,7 +1065,7 @@ async fn main() {
                     output_response(&id, "prompt", &serde_json::Value::Null);
                     // agent_start / text_delta / agent_end 由 StreamingExtension 实时推送，
                     // 不需要这里再发（避免重复）
-                    output(&serde_json::json!({"type":"event","event":{"type":"agent_start","sessionId":sid}}));
+                    output(&serde_json::json!({"type":"event","event":{"type":"agent_start","sessionId":sid,"timestamp":now_ms()}}));
                     {
                         let mut ctx = wasm_ext_registry.ctx.write().unwrap();
                         ctx.session_id = sid.clone();
@@ -1078,12 +1080,12 @@ async fn main() {
                             save_worker_session(&sid, &worker_cwd, &msgs_json);
                             // agent_end 由 StreamingExtension 已经不发了，这里补一条
                             output(&serde_json::json!({
-                                "type":"event","event":{"type":"agent_end","sessionId":sid}
+                                "type":"event","event":{"type":"agent_end","sessionId":sid,"timestamp":now_ms()}
                             }));
                         }
                         Err(e) => {
                             output(&serde_json::json!({
-                                "type":"event","event":{"type":"error","message":e.to_string()}
+                                "type":"event","event":{"type":"error","message":e.to_string(),"timestamp":now_ms()}
                             }));
                         }
                     }
@@ -3267,6 +3269,7 @@ impl ion::agent::extension::Extension for StreamingExtension {
                 "toolName": ctx.tool_name,
                 "isError": ctx.is_error,
                 "durationMs": ctx.duration_ms,
+                "timestamp": now_ms(),
             }
         }));
         Ok(())

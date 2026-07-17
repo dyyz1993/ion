@@ -452,6 +452,7 @@ fn emit_approval_event(custom_type: &str, data: &serde_json::Value) {
             "extension": "file-approval",
             "customType": custom_type,
             "visibility": "llm_and_ui",
+            "timestamp": now_ts(),
             "data": data,
         },
     });

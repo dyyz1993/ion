@@ -975,8 +975,12 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 - ~~扩展 emit 自定义事件 + 外部调用扩展 custom method~~ ✅ 已完成（事件发射 CLI 验证通过）
 - 验证文档：[docs/design/EXTENSION_ECOSYSTEM.md](./docs/design/EXTENSION_ECOSYSTEM.md)
 
-**P5 - 包管理（低优先级）:**
-- install/remove/update 子命令
+**P5 - 包管理:** ✅ 已完成
+- `ion extension install <path>` — 装 .wasm 到 `~/.ion/agent/extensions/`
+- `ion extension remove <name>` — 删（带/不带 .wasm 后缀都行）
+- `ion extension list` — 列已装扩展（文件名 + 大小 + 总数）
+- install 覆盖（同名文件更新）/ 非 .wasm 拒绝 / 不存在报错
+- **验证**: extension_cli_ci 11 测试全过 ✅
 
 ### 测试统计 (2026-07-15)
 
@@ -1020,7 +1024,8 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | extension_fs_ci (CLI E2E) | 23 | Group A：ctx.fs read/write/list/exists/glob（fs_probe extension_rpc）+ Group C：路径逃逸防护（../../../etc/passwd / null byte / allowed_roots 外绝对路径）+ Group D：ExtensionDataDirs 4 级目录（ext_name 隔连）|
 | session_hook_ci (CLI E2E) | 8 | Group A：call_tool branch_session → subscribe 收到 session_switch_seen 事件（action=branch + branch_name 透传）+ Group B：rollback action=rollback + Group C：其他工具不触发 |
 | hooks_handler_ci (CLI E2E) | 6 | Group A：command handler 执行 → subscribe 收到 hook_handler_executed + Group B：http handler 安全校验（非HTTPS→block / localhost→block）+ Group C：prompt handler 触发 |
-| **测试覆盖合计** | **808** | 全部通过 ✅（Rust 509 + CLI E2E 320，含 hooks 36 case + 真实 LLM 3 case） |
+| extension_cli_ci (CLI E2E) | 11 | Group A：install（成功/文件拷到位/不存在报错/非wasm拒绝）+ Group B：list（列两个+总数）+ Group C：remove（不带后缀/不存在报错/带后缀）+ Group D：install 覆盖更新 |
+| **测试覆盖合计** | **819** | 全部通过 ✅（Rust 509 + CLI E2E 331，含 hooks 36 case + 真实 LLM 3 case） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)

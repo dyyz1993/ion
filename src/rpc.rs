@@ -786,6 +786,7 @@ fn cmd_list_turns(
                 "tokens": {"input": t.tokens_input, "output": t.tokens_output},
                 "status": t.status,
                 "summary": t.summary,
+                "durationMs": t.duration_ms,
             })).collect::<Vec<_>>(),
             "hasMore": result.has_more,
             "totalCount": result.total_count,
@@ -854,6 +855,7 @@ fn cmd_get_turn_detail(
                     "keySteps": detail.overview.key_steps,
                     "toolCallCount": detail.overview.tool_call_count,
                     "status": detail.overview.status,
+                    "durationMs": detail.overview.duration_ms,
                 }
             })),
             None => ok_data(&output, cmd_id, serde_json::json!({ "error": "turn not found" })),

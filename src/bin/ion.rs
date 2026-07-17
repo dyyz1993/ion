@@ -393,6 +393,11 @@ enum Commands {
         #[command(subcommand)]
         action: WorkflowAction,
     },
+    /// Extension management (install / remove / list WASM extensions)
+    Extension {
+        #[command(subcommand)]
+        action: ExtensionAction,
+    },
 }
 
 /// Session Tree 子命令
@@ -454,6 +459,23 @@ enum WorkflowAction {
         /// Path to workflow.yaml
         path: String,
     },
+}
+
+/// Extension 子命令（install / remove / list）
+#[derive(Subcommand, Clone)]
+enum ExtensionAction {
+    /// Install a WASM extension (.wasm) to the global extensions directory
+    Install {
+        /// Path to the .wasm file to install
+        path: String,
+    },
+    /// Remove an installed WASM extension by name (filename without .wasm)
+    Remove {
+        /// Extension name (filename without .wasm)
+        name: String,
+    },
+    /// List installed WASM extensions
+    List,
 }
 
 // ---------------------------------------------------------------------------
@@ -2529,6 +2551,106 @@ async fn cmd_list_models(search: &Option<String>) {
     println!("Use --provider <name> to select a provider.");
 }
 
+/// Extension management: install / remove / list WASM extensions.
+///
+/// 扩展安装到全局目录 `~/.ion/agent/extensions/`，启动时自动发现。
+/// 对齐 AGENTS.md「命令行可验证原则」：每个功能都能从 CLI 操作。
+async fn cmd_extension(action: ExtensionAction) {
+    let ext_dir = ion::paths::extensions_dir();
+
+    match action {
+        ExtensionAction::Install { path } => {
+            let src = std::path::Path::new(&path);
+            if !src.exists() {
+                eprintln!("❌ file not found: {path}");
+                std::process::exit(1);
+            }
+            // 只允许 .wasm 文件
+            if src.extension().and_then(|e| e.to_str()) != Some("wasm") {
+                eprintln!("❌ only .wasm files can be installed as extensions");
+                std::process::exit(1);
+            }
+            let filename = src.file_name().unwrap_or_default();
+            let dest = ext_dir.join(filename);
+            // 确保目录存在
+            if let Err(e) = std::fs::create_dir_all(&ext_dir) {
+                eprintln!("❌ failed to create extensions dir: {e}");
+                std::process::exit(1);
+            }
+            match std::fs::copy(src, &dest) {
+                Ok(_) => {
+                    let name = filename.to_string_lossy();
+                    println!("✅ installed extension: {name}");
+                    println!("   → {}", dest.display());
+                    println!("   restart ion to load it (or use extension_reload RPC)");
+                }
+                Err(e) => {
+                    eprintln!("❌ install failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        ExtensionAction::Remove { name } => {
+            // name 可以带或不带 .wasm 后缀
+            let filename = if name.ends_with(".wasm") {
+                name.clone()
+            } else {
+                format!("{name}.wasm")
+            };
+            let target = ext_dir.join(&filename);
+            if !target.exists() {
+                eprintln!("❌ extension '{name}' not found in {}", ext_dir.display());
+                std::process::exit(1);
+            }
+            match std::fs::remove_file(&target) {
+                Ok(_) => {
+                    println!("✅ removed extension: {filename}");
+                    println!("   restart ion to unload it");
+                }
+                Err(e) => {
+                    eprintln!("❌ remove failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        ExtensionAction::List => {
+            if !ext_dir.exists() {
+                println!("(no extensions installed — {} does not exist)", ext_dir.display());
+                return;
+            }
+            let mut entries: Vec<String> = match std::fs::read_dir(&ext_dir) {
+                Ok(rd) => rd
+                    .filter_map(|e| e.ok())
+                    .filter(|e| {
+                        e.file_type().map(|t| t.is_file()).unwrap_or(false)
+                            && e.path().extension().and_then(|x| x.to_str()) == Some("wasm")
+                    })
+                    .map(|e| {
+                        let name = e.file_name().to_string_lossy().to_string();
+                        let size = e.metadata().map(|m| m.len()).unwrap_or(0);
+                        format!("{name:<30} {:>8} bytes", size)
+                    })
+                    .collect(),
+                Err(e) => {
+                    eprintln!("❌ failed to read extensions dir: {e}");
+                    std::process::exit(1);
+                }
+            };
+            if entries.is_empty() {
+                println!("(no .wasm extensions in {})", ext_dir.display());
+                return;
+            }
+            entries.sort();
+            println!("Installed extensions ({}):", ext_dir.display());
+            for e in &entries {
+                println!("  {e}");
+            }
+            println!();
+            println!("Total: {} extension(s)", entries.len());
+        }
+    }
+}
+
 async fn cmd_submit(eff: &EffectiveConfig, message: &str, _workers: usize, _max_workers: usize) {
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -2783,6 +2905,7 @@ async fn main() {
         Some(Commands::Subscribe { session, extension, ui }) => cmd_subscribe(session.as_deref(), extension.as_deref(), *ui).await,
         Some(Commands::ListAgents) => cmd_list_agents().await,
         Some(Commands::ListModels { search }) => cmd_list_models(search).await,
+        Some(Commands::Extension { action }) => cmd_extension(action.clone()).await,
         None => {
             println!("ion: AI Agent orchestration CLI");
             println!("Usage: ion <message>");

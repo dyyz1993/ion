@@ -390,6 +390,7 @@ impl Tool for MemorySaveTool {
             "extension": "memory",
             "session": sess,
             "customType": "memory_saved",
+            "timestamp": now_ms(),
             "data": {"outline":"auto","id":&id}
         });
         println!("{}", serde_json::to_string(&ev).unwrap_or_default());
@@ -490,10 +491,15 @@ impl MemoryExtension {
             "extension": "memory",
             "session": session_id,
             "customType": custom_type,
+            "timestamp": now_ms(),
             "data": data,
         });
         println!("{}", serde_json::to_string(&ev).unwrap_or_default());
     }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64
 }
 
 #[async_trait]

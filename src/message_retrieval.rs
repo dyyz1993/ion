@@ -159,6 +159,7 @@ pub struct TurnOverview {
     pub tokens_output: u64,
     pub status: String,
     pub summary: String,
+    pub duration_ms: u64,
 }
 
 /// 用户输入结果
@@ -835,6 +836,10 @@ fn extract_from_turn_summary(
         tokens_output: ts
             .get("tokens")
             .and_then(|t| t.get("output"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        duration_ms: ts
+            .get("durationMs")
             .and_then(|v| v.as_u64())
             .unwrap_or(0),
         ..Default::default()
