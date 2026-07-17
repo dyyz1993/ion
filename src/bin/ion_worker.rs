@@ -469,6 +469,10 @@ async fn main() {
         ext_reg = ext_reg.with_storage(storage_ctx.clone());
         tracing::info!("[extension] StorageContext injected (data_dirs available)");
 
+        // ── SessionProbeExtension（给 CLI 测试用，让 session hook 可通过 subscribe 观察）──
+        ext_reg.register(Box::new(SessionProbeExtension { veto: false }));
+        tracing::info!("[extension] session_probe registered (session hook observable via subscribe)");
+
         // Memory Extension
         if ion_cfg.is_extension_enabled("memory") {
             let mut memory_ext = ion::agent::memory::MemoryExtension::new(storage_ctx.clone());
@@ -3337,6 +3341,54 @@ impl ion::agent::extension::Extension for FsProbeExtension {
                 }))
             }
             _ => Err(AgentError::Tool("extension rpc method not found".into())),
+        }
+    }
+}
+
+// ── SessionProbeExtension: session hook 探针扩展（给 CLI 测试用）──────────
+// on_session_before_switch 被触发时 emit 一个 session_switch_seen 事件，
+// 让 tests/session_hook_ci.sh 能通过 ion subscribe 观察 hook 是否真的触发。
+// veto_mode=true 时返回 Err（测试 veto 能力）。
+struct SessionProbeExtension {
+    veto: bool,
+}
+
+impl SessionProbeExtension {
+    fn emit_seen(&self, action: &str, target: &Option<String>, branch_name: &Option<String>) {
+        // 必须包 "type":"event" 外壳，否则 Manager stdout-reader 不转发给 subscriber。
+        // （参照 AGENTS.md「推送事件模式（仿 BashExtension）」）
+        let msg = serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "extension_event",
+                "extension": "session_probe",
+                "customType": "session_switch_seen",
+                "visibility": "llm_and_ui",
+                "data": {
+                    "action": action,
+                    "target_leaf_id": target,
+                    "branch_name": branch_name,
+                    "veto": self.veto,
+                },
+            },
+        });
+        println!("{}", serde_json::to_string(&msg).unwrap_or_default());
+    }
+}
+
+#[async_trait::async_trait]
+impl ion::agent::extension::Extension for SessionProbeExtension {
+    fn name(&self) -> &str { "session_probe" }
+
+    async fn on_session_before_switch(
+        &self,
+        ctx: &ion::agent::extension::SessionSwitchContext,
+    ) -> ion::agent::error::AgentResult<()> {
+        self.emit_seen(&ctx.action, &ctx.target_leaf_id, &ctx.branch_name);
+        if self.veto {
+            Err(ion::agent::error::AgentError::Tool("vetoed by session_probe".into()))
+        } else {
+            Ok(())
         }
     }
 }

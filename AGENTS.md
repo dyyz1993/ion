@@ -137,6 +137,16 @@ docs/
 | **Harness 验证** | 必须有 | FauxProvider Factory 集成测试（`cargo test --test`）| 验证 agent 真实行为（工具调用、hook 触发、多轮交互），不调真 LLM |
 | **真实 case** | 必须补 | `#[ignore]` e2e 测试 + `ION_E2E=1` 环境变量 | 最后补，验证真实 LLM 场景 |
 
+> **🔴 命令行可验证原则（硬性要求）**
+>
+> **每个功能都必须能用命令行（`ion rpc` / shell 脚本 / `ion subscribe`）从外部验证它真的工作——不只是 Rust 单元测试。** 这意味着：
+>
+> - 功能的行为必须**可观察**：要么有 RPC 能查结果（如 `extension_rpc`、`call_tool`），要么能通过 `subscribe` 看到事件（扩展在关键行为时 `emit` 事件）
+> - 必须有配套的 `tests/<feature>_ci.sh` 脚本，起 host + 敲命令 + 断言结果
+> - 如果一个功能只能用 Rust 测、命令行根本碰不到，说明它的**可观测性有缺陷**，要先补观察口（RPC/事件），再写 CI 脚本
+>
+> 参照 `tests/extension_fs_ci.sh`（ctx.fs 的命令行验证：起 host → `ion rpc extension_rpc fs_probe ...` → 断言）。
+
 **Harness 优先原则**：先用 FauxProvider 写 harness 测试把闭环跑通（零 API 成本、确定性），验证通过后再补真实 case。
 
 **FauxProvider 的两种模式**：
@@ -996,8 +1006,9 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | hooks_e2e (集成) | 10 | 内核引擎：HooksConfig加载/handler_count/热重载/command block/no-verify/正常放行/注入上下文/Stop block+放行/agent handler不panic |
 | patch1_worker_config (集成) | 5 | ExtensionWorkerConfig 字段序列化/透传/默认值/边界值 |
 | permission_store_ci (CLI E2E) | 23 | Group A：stored-decision store/list/remove/clear + source 隔离(Config vs Stored) + session/project scope + extension_rpc 等价路径 + 错误处理 |
-| extension_fs_ci (CLI E2E) | 23 | Group A：ctx.fs read/write/list/exists/glob（fs_probe extension_rpc）+ Group C：路径逃逸防护（../../../etc/passwd / null byte / allowed_roots 外绝对路径）+ Group D：ExtensionDataDirs 4 级目录（ext_name 隔离）|
-| **测试覆盖合计** | **794** | 全部通过 ✅（Rust 509 + CLI E2E 306，含 hooks 30 case + 真实 LLM 3 case） |
+| extension_fs_ci (CLI E2E) | 23 | Group A：ctx.fs read/write/list/exists/glob（fs_probe extension_rpc）+ Group C：路径逃逸防护（../../../etc/passwd / null byte / allowed_roots 外绝对路径）+ Group D：ExtensionDataDirs 4 级目录（ext_name 隔连）|
+| session_hook_ci (CLI E2E) | 8 | Group A：call_tool branch_session → subscribe 收到 session_switch_seen 事件（action=branch + branch_name 透传）+ Group B：rollback action=rollback + Group C：其他工具不触发 |
+| **测试覆盖合计** | **802** | 全部通过 ✅（Rust 509 + CLI E2E 314，含 hooks 30 case + 真实 LLM 3 case） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
