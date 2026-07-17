@@ -29,8 +29,9 @@ pass "build ion + ion-worker"
 
 # ── 启动 host ──
 SOCK="$HOME/.ion/host.sock"
+# 清理：按 socket 杀占用者（不用 pkill，避免误杀系统进程）
 rm -f "$SOCK" 2>/dev/null
-pkill -9 -f "ion serve" 2>/dev/null; sleep 1
+lsof -ti "$SOCK" 2>/dev/null | xargs kill 2>/dev/null; sleep 1
 
 target/debug/ion serve >/tmp/ion_session_hook_host.log 2>&1 &
 HOST_PID=$!
@@ -41,7 +42,8 @@ if ! kill -0 "$HOST_PID" 2>/dev/null; then
 fi
 pass "SH0: host 启动成功"
 
-cleanup() { kill "$HOST_PID" 2>/dev/null; pkill -9 -f "ion serve" 2>/dev/null; rm -f "$SOCK"; }
+# cleanup 用精确 PID（不 pkill，避免误杀名字含 ion 的系统进程）
+cleanup() { kill "$HOST_PID" 2>/dev/null; wait "$HOST_PID" 2>/dev/null; rm -f "$SOCK"; }
 trap cleanup EXIT
 
 CREATE_OUT=$($ION_BIN rpc --method create_session --params '{"agent":"build"}' 2>&1)

@@ -45,7 +45,7 @@ except: print(0)
 }
 
 start_serve() {
-    pkill -f "target/debug/ion serve" 2>/dev/null || true
+    lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null || true
     sleep 1
     rm -f ~/.ion/host.sock ~/.ion/host.pid 2>/dev/null
     ION_FAUX_REPLY="ok" "$ION_BIN" serve >/tmp/ion_rb_serve.log 2>&1 &

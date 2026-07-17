@@ -20,7 +20,7 @@ cargo build --bin ion 2>&1 | tail -2
 # 清理旧数据
 rm -f ~/.ion/agent/global-memory.db
 # 确保 serve 没在跑
-pkill -f "ion.*serve" 2>/dev/null; sleep 1
+lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null; sleep 1
 
 echo ""
 echo "── Group A: 单例生命周期 ──"

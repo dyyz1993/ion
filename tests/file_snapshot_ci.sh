@@ -441,7 +441,7 @@ JSONL
 
 # 启动独立 host（file-snapshot config 已在 J2 段开启，这里仍生效）
 rm -f "$HOME/.ion/host.sock" "$HOME/.ion/host.pid" 2>/dev/null
-pkill -f "target/debug/ion serve" 2>/dev/null; sleep 1
+lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null; sleep 1
 
 ION_FAUX_SCRIPT=/tmp/faux_k.jsonl ./target/debug/ion serve >/tmp/ion_k_host.log 2>&1 &
 K_HOST_PID=$!
@@ -542,7 +542,7 @@ if [ "${ION_E2E:-0}" = "1" ]; then
     # 用项目子目录做测试（避免 cwd 问题，agent write 相对路径也能找到）
     L_DIR=$(mktemp -d /tmp/l_real_XXXX)
 
-    pkill -f "target/debug/ion serve" 2>/dev/null; sleep 1
+    lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null; sleep 1
     rm -f "$HOME/.ion/host.sock" "$HOME/.ion/host.pid" 2>/dev/null
 
     # 启动 host（真实 LLM，不用 faux）

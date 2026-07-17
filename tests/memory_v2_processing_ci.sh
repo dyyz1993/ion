@@ -34,7 +34,7 @@ cargo build --bin ion --bin ion-worker 2>&1 | tail -2
 
 # 清理
 rm -f "$DB_PATH" "$DB_PATH"-*
-pkill -f "ion.*serve" 2>/dev/null; sleep 1
+lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null; sleep 1
 
 # 启动 serve（用 FauxProvider）
 # FauxProvider 返回固定的提炼 JSON
@@ -181,8 +181,8 @@ echo "════════════════════════�
 echo "  结果: $PASS passed, $FAIL failed"
 echo "══════════════════════════════════════════════════════"
 
-# 清理
-pkill -f "ion.*serve" 2>/dev/null
+# 清理（按 socket 杀，不用 pkill 避免误杀系统进程）
+lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null
 rm -f "$DB_PATH" "$DB_PATH"-*
 
 [ "$FAIL" -eq 0 ] || exit 1

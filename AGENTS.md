@@ -161,6 +161,17 @@ docs/
 5. ✅ CLI 测试组按**用户场景**分 Group（不按技术维度）？核心链路全覆盖？（见 [CLI_TEST_TEMPLATE §测试组设计方法论](./docs/templates/CLI_TEST_TEMPLATE.md)）
 6. ✅ 测试数据模拟真实场景？case 输入用用户自然语言？有性能/成本可测量指标？
 
+> **🔴 CI 脚本进程清理规范（硬性要求）**
+>
+> 测试脚本清理 host 进程时**禁止用宽泛的 `pkill -f "ion"` 或 `pkill -f "ion.*serve"`**——系统里很多进程名含 "ion"（如 LogiOptionsPlus 罗技驱动），会被误杀。
+>
+> 正确做法（按优先级）：
+> 1. **精确 PID**（最安全）：脚本启动 host 时 `HOST_PID=$!`，cleanup 时 `kill "$HOST_PID"`
+> 2. **按 socket**：`ion serve` 绑定 `~/.ion/host.sock`，可查占用者：`lsof -ti "$HOME/.ion/host.sock" | xargs kill`
+> 3. **完整路径匹配**（如果必须 pkill）：`pkill -f "target/debug/ion serve"`（路径够具体）
+>
+> 禁止的模式：`pkill -f "ion"` / `pkill -f "ion serve"` / `pkill -f "ion.*serve"`。
+
 **真实 LLM 测试推荐模型**：写真实 case（`ION_E2E=1`）或手动验证时，**优先用 `deepseek-v4-flash`**（便宜、快速、够用），不要用昂贵的旗舰模型。
 
 ```bash
