@@ -769,7 +769,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - 补丁 1：`ExtensionWorkerConfig` 字段补齐（agent/initial_prompt/worktree/allowed_tools/disallowed_tools/max_turns）
   - `Agent.runtime` 从 `Box<dyn>` 改 `Arc<dyn>`（让 HookExtension clone 共享）
   - command handler 并发安全修复：`spawn_command_with_stdin` 透传 `ctx.project_dir` 作为 bash `current_dir`（不再依赖进程级 cwd，消除并行 hook/测试互相踩的隐患）
-  - **验证**: hooks_ci 8 + hooks_agent_ci 4 + hooks_e2e 10（并发模式稳定）+ patch1 5 + hooks_agent_real 3（真实 LLM DeepSeek）= 30 测试全过 ✅
+  - **验证**: hooks_ci 8 + hooks_agent_ci 4 + hooks_handler_ci 6（command/http/prompt handler 可观测）+ hooks_e2e 10（并发模式稳定）+ patch1 5 + hooks_agent_real 3（真实 LLM DeepSeek）= 36 测试全过 ✅
 
 ### 🔌 MCP 系统（Model Context Protocol，Phase 1-4 全部实现）
 
@@ -1019,7 +1019,8 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | permission_store_ci (CLI E2E) | 23 | Group A：stored-decision store/list/remove/clear + source 隔离(Config vs Stored) + session/project scope + extension_rpc 等价路径 + 错误处理 |
 | extension_fs_ci (CLI E2E) | 23 | Group A：ctx.fs read/write/list/exists/glob（fs_probe extension_rpc）+ Group C：路径逃逸防护（../../../etc/passwd / null byte / allowed_roots 外绝对路径）+ Group D：ExtensionDataDirs 4 级目录（ext_name 隔连）|
 | session_hook_ci (CLI E2E) | 8 | Group A：call_tool branch_session → subscribe 收到 session_switch_seen 事件（action=branch + branch_name 透传）+ Group B：rollback action=rollback + Group C：其他工具不触发 |
-| **测试覆盖合计** | **802** | 全部通过 ✅（Rust 509 + CLI E2E 314，含 hooks 30 case + 真实 LLM 3 case） |
+| hooks_handler_ci (CLI E2E) | 6 | Group A：command handler 执行 → subscribe 收到 hook_handler_executed + Group B：http handler 安全校验（非HTTPS→block / localhost→block）+ Group C：prompt handler 触发 |
+| **测试覆盖合计** | **808** | 全部通过 ✅（Rust 509 + CLI E2E 320，含 hooks 36 case + 真实 LLM 3 case） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
@@ -1039,7 +1040,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 - hook_depth 跨进程递归保护（防 agent handler 死循环）：入口 Worker depth=0 能 spawn → 子 Worker depth>=1 跳过
 - 热重载（每次事件触发动态读 hooks.json，改完即生效）
 - 大纲同步（MD ↔ outline.json）作为配置式用例（纯 hooks.json + shell 脚本，0 行内核扩展代码）
-- **验证**: hooks_ci 8 + hooks_agent_ci 4 + hooks_e2e 10 + patch1 5 = 27 测试全过
+- **验证**: hooks_ci 8 + hooks_agent_ci 4 + hooks_handler_ci 6 + hooks_e2e 10 + patch1 5 = 33 测试全过
 
 **P6c - MCP 生产化:** ✅ 已完成
 - MCP Phase 1-4 全部实现（配置 + rmcp 连接 + 方案 C 共享池 + 自动重连 + 权限控制 + resources/prompts + 热更新）

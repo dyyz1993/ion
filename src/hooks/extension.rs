@@ -161,6 +161,12 @@ impl HookExtension {
 
             // 执行 handler
             let outcome = handler_runner::run_handler(handler, stdin.clone(), &exec_ctx).await;
+
+            // ── 可观测性：emit hook_handler_executed 事件（让 CI 能通过 subscribe 观察）──
+            // 不管哪种 handler（command/http/prompt/agent），执行后都发一个事件，
+            // 包含 handler 类型 + event + outcome（block/allow/reason）。
+            self.emit_handler_executed(event, handler, &outcome);
+
             combined = combined.merge(outcome);
 
             if combined.is_terminal() {
@@ -184,6 +190,43 @@ impl HookExtension {
             });
             let _ = tx.send(msg);
         }
+    }
+
+    /// 可观测性：handler 执行后 emit 一个 hook_handler_executed 事件。
+    ///
+    /// 让 CI 脚本能通过 `ion subscribe` 观察到 hook 是否真的触发了、
+    /// 哪种 handler、block 还是 allow。对齐 AGENTS.md「命令行可验证原则」。
+    ///
+    /// 事件格式（包 type:event 外壳，Manager stdout-reader 才转发）：
+    /// ```json
+    /// {"type":"event","event":{"type":"extension_event","extension":"hooks",
+    ///   "customType":"hook_handler_executed",
+    ///   "data":{"event":"UserPromptSubmit","handler_type":"prompt","block":true,"reason":"..."}}}
+    /// ```
+    fn emit_handler_executed(&self, event: &str, handler: &super::HookHandler, outcome: &HookOutcome) {
+        let handler_type = match handler.handler_type {
+            super::HandlerType::Command => "command",
+            super::HandlerType::Http => "http",
+            super::HandlerType::Prompt => "prompt",
+            super::HandlerType::Agent => "agent",
+            super::HandlerType::McpTool => "mcp_tool",
+        };
+        let msg = serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "extension_event",
+                "extension": "hooks",
+                "customType": "hook_handler_executed",
+                "visibility": "llm_and_ui",
+                "data": {
+                    "event": event,
+                    "handler_type": handler_type,
+                    "block": outcome.block,
+                    "reason": outcome.block_reason,
+                },
+            },
+        });
+        println!("{}", serde_json::to_string(&msg).unwrap_or_default());
     }
 }
 

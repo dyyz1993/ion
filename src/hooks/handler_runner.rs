@@ -2,7 +2,7 @@
 //!
 //! - command: Runtime::execute_command（复用沙箱/权限）
 //! - http: reqwest POST（强制 HTTPS，拒绝私网 IP）
-//! - prompt: callLLM 单轮（stub，待接入）
+//! - prompt: callLLM 单轮（调 ApiRegistry.complete，解析 {block,reason} JSON）
 //! - agent: Runtime::spawn_worker（带工具循环的子 Worker）
 //! - mcp_tool: McpManager.call_tool（stub，待接入）
 
@@ -223,7 +223,7 @@ fn validate_url(url: &str) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
-// prompt handler — callLLM 单轮（stub，待接入 ExtensionApi.call_llm）
+// prompt handler — callLLM 单轮（调 ApiRegistry.complete，解析 {block,reason} JSON 决策）
 // ---------------------------------------------------------------------------
 
 async fn run_prompt(handler: &HookHandler, stdin_data: serde_json::Value, ctx: &HookExecContext) -> HookOutcome {
