@@ -4,7 +4,7 @@
 //! - http: reqwest POST（强制 HTTPS，拒绝私网 IP）
 //! - prompt: callLLM 单轮（调 ApiRegistry.complete，解析 {block,reason} JSON）
 //! - agent: Runtime::spawn_worker（带工具循环的子 Worker）
-//! - mcp_tool: McpManager.call_tool（stub，待接入）
+//! - mcp_tool: 走 ManagerBridge 转发 host McpManager.call_tool（方案 C）
 
 use std::time::Duration;
 
@@ -22,6 +22,8 @@ pub struct HookExecContext {
     pub registry: Option<std::sync::Arc<ion_provider::registry::ApiRegistry>>,
     /// 当前会话模型（prompt handler 用）
     pub model: Option<ion_provider::types::Model>,
+    /// ManagerBridge（mcp_tool handler 转发 MCP 调用到 host 用）
+    pub manager_bridge: Option<std::sync::Arc<dyn crate::runtime::ManagerBridgeHandle>>,
 }
 
 /// 执行单个 handler，返回 outcome
@@ -55,7 +57,7 @@ async fn run_handler_inner(
         HandlerType::Http => run_http(handler, stdin_data).await,
         HandlerType::Prompt => run_prompt(handler, stdin_data, ctx).await,
         HandlerType::Agent => run_agent(handler, stdin_data, ctx).await,
-        HandlerType::McpTool => run_mcp_tool(handler, stdin_data).await,
+        HandlerType::McpTool => run_mcp_tool(handler, stdin_data, ctx).await,
     }
 }
 
@@ -379,22 +381,79 @@ async fn run_agent(
 }
 
 // ---------------------------------------------------------------------------
-// mcp_tool handler — McpManager.call_tool（stub，待接入）
+// mcp_tool handler — 走 ManagerBridge 转发 host McpManager.call_tool（方案 C）
 // ---------------------------------------------------------------------------
 
-async fn run_mcp_tool(handler: &HookHandler, stdin_data: serde_json::Value) -> HookOutcome {
-    let _server = match &handler.server {
+async fn run_mcp_tool(
+    handler: &HookHandler,
+    stdin_data: serde_json::Value,
+    ctx: &HookExecContext,
+) -> HookOutcome {
+    let server = match &handler.server {
         Some(s) => s.clone(),
-        None => return HookOutcome::default(),
+        None => {
+            tracing::warn!("[hooks] mcp_tool handler missing 'server' field");
+            return HookOutcome::default();
+        }
     };
-    let _tool = match &handler.tool {
+    let tool = match &handler.tool {
         Some(t) => t.clone(),
-        None => return HookOutcome::default(),
+        None => {
+            tracing::warn!("[hooks] mcp_tool handler missing 'tool' field");
+            return HookOutcome::default();
+        }
     };
-    // TODO: 需要接入 McpManager（Extension trait 当前未暴露此能力）
-    tracing::info!("[hooks] mcp_tool handler (stub, needs mcp_manager): server={:?} tool={:?}", handler.server, handler.tool);
-    let _ = stdin_data;
-    HookOutcome::default()
+
+    // args 合并：handler.input 为底 + stdin.tool_input 覆盖
+    // （不 merge 整个 stdin_data，避免 session_id / hook_event_name 污染 MCP 工具参数）
+    let mut args = handler.input.clone().unwrap_or(serde_json::json!({}));
+    if let Some(tool_input) = stdin_data.get("tool_input") {
+        if let (Some(obj), Some(input_obj)) = (args.as_object_mut(), tool_input.as_object()) {
+            for (k, v) in input_obj {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+    }
+
+    let bridge = match &ctx.manager_bridge {
+        Some(b) => b.clone(),
+        None => {
+            tracing::warn!("[hooks] mcp_tool handler needs manager_bridge, none available (scene 1?)");
+            return HookOutcome::default();
+        }
+    };
+
+    // 通过 bridge 转发给 host 的 McpManager（方案 C：host 持有唯一 MCP 连接）
+    match bridge
+        .send_command("mcp_call_tool", serde_json::json!({
+            "server": server,
+            "tool": tool,
+            "args": args,
+        }))
+        .await
+    {
+        Ok(resp) => {
+            if resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+                let output = resp
+                    .get("data")
+                    .and_then(|d| d.get("output"))
+                    .and_then(|o| o.as_str())
+                    .unwrap_or("");
+                interpret_stdout(output)
+            } else {
+                let err = resp
+                    .get("error")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("mcp_tool call failed");
+                tracing::warn!("[hooks] mcp_tool handler error: {err}");
+                HookOutcome::default()
+            }
+        }
+        Err(e) => {
+            tracing::warn!("[hooks] mcp_tool handler bridge error: {e}");
+            HookOutcome::default()
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -496,6 +555,7 @@ fn parse_json(s: &str) -> Option<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn test_interpret_exit_0_text() {
@@ -564,5 +624,120 @@ mod tests {
         assert!(validate_url("http://example.com/hook").is_err()); // 非 https
         assert!(validate_url("https://127.0.0.1/hook").is_err()); // 私网
         assert!(validate_url("https://192.168.1.1/hook").is_err()); // 私网
+    }
+
+    // ── mcp_tool handler 测试（mock bridge）──
+
+    /// Mock bridge：记录收到的 command + params，返回预设响应
+    struct MockBridge {
+        captured: std::sync::Mutex<Option<(String, serde_json::Value)>>,
+        response: serde_json::Value,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::runtime::ManagerBridgeHandle for MockBridge {
+        async fn send_command(
+            &self,
+            command: &str,
+            params: serde_json::Value,
+        ) -> Result<serde_json::Value, String> {
+            *self.captured.lock().unwrap() = Some((command.to_string(), params.clone()));
+            Ok(self.response.clone())
+        }
+    }
+
+    fn mcp_handler(server: &str, tool: &str, input: Option<serde_json::Value>) -> HookHandler {
+        HookHandler {
+            handler_type: HandlerType::McpTool,
+            agent: None,
+            command: None, url: None, prompt: None,
+            server: Some(server.into()), tool: Some(tool.into()),
+            input, model: None, timeout: Some(10), if_clause: None,
+            r#async: false, async_rewake: false, once: false,
+            status_message: None, allowed_tools: None, max_turns: None,
+        }
+    }
+
+    fn mcp_ctx(bridge: Option<Arc<dyn crate::runtime::ManagerBridgeHandle>>) -> HookExecContext {
+        HookExecContext {
+            project_dir: "/test".into(),
+            event_name: "PreToolUse".into(),
+            runtime: None, registry: None, model: None,
+            manager_bridge: bridge,
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_missing_server_returns_default() {
+        let handler = mcp_handler("", "tool", None);
+        let ctx = mcp_ctx(None);
+        let outcome = run_mcp_tool(&handler, serde_json::json!({}), &ctx).await;
+        assert!(!outcome.block, "missing server should return default (no block)");
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_no_bridge_returns_default() {
+        let handler = mcp_handler("kb", "search", None);
+        let ctx = mcp_ctx(None); // 无 bridge（场景 1）
+        let outcome = run_mcp_tool(&handler, serde_json::json!({}), &ctx).await;
+        assert!(!outcome.block, "no bridge should gracefully return default");
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_success_returns_output_as_context() {
+        let bridge = Arc::new(MockBridge {
+            captured: std::sync::Mutex::new(None),
+            response: serde_json::json!({"success": true, "data": {"output": "search results here"}}),
+        });
+        let handler = mcp_handler("kb", "search", Some(serde_json::json!({"limit": 5})));
+        let ctx = mcp_ctx(Some(bridge.clone() as Arc<dyn crate::runtime::ManagerBridgeHandle>));
+
+        let outcome = run_mcp_tool(&handler, serde_json::json!({}), &ctx).await;
+
+        // 验证 bridge 收到了正确的 command + params
+        let captured = bridge.captured.lock().unwrap().clone();
+        let (cmd, params) = captured.expect("bridge should have been called");
+        assert_eq!(cmd, "mcp_call_tool");
+        assert_eq!(params["server"], "kb");
+        assert_eq!(params["tool"], "search");
+        assert_eq!(params["args"]["limit"], 5, "handler.input 应该传给 args");
+
+        // 验证 output 被解析成 additional_context
+        assert!(outcome.additional_context.as_deref().unwrap_or("").contains("search results"));
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_merges_tool_input_into_args() {
+        let bridge = Arc::new(MockBridge {
+            captured: std::sync::Mutex::new(None),
+            response: serde_json::json!({"success": true, "data": {"output": "ok"}}),
+        });
+        // handler.input 有 limit=5；stdin 的 tool_input 有 query="rust"
+        let handler = mcp_handler("kb", "search", Some(serde_json::json!({"limit": 5})));
+        let stdin = serde_json::json!({"tool_input": {"query": "rust"}, "session_id": "s1"});
+        let ctx = mcp_ctx(Some(bridge.clone() as Arc<dyn crate::runtime::ManagerBridgeHandle>));
+
+        let _ = run_mcp_tool(&handler, stdin, &ctx).await;
+
+        let captured = bridge.captured.lock().unwrap().clone();
+        let (_, params) = captured.unwrap();
+        assert_eq!(params["args"]["limit"], 5, "handler.input 的 limit 应保留");
+        assert_eq!(params["args"]["query"], "rust", "stdin.tool_input 的 query 应合并进来");
+        // session_id 不应该污染 args
+        assert!(params["args"].get("session_id").is_none(), "session_id 不应进入 args");
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_failure_returns_default() {
+        let bridge = Arc::new(MockBridge {
+            captured: std::sync::Mutex::new(None),
+            response: serde_json::json!({"success": false, "error": "server not connected"}),
+        });
+        let handler = mcp_handler("kb", "search", None);
+        let ctx = mcp_ctx(Some(bridge as Arc<dyn crate::runtime::ManagerBridgeHandle>));
+
+        let outcome = run_mcp_tool(&handler, serde_json::json!({}), &ctx).await;
+        assert!(!outcome.block, "MCP 调用失败应返回 default（不 block）");
+        assert!(outcome.additional_context.is_none(), "失败时不应注入 context");
     }
 }

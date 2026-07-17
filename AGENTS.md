@@ -763,7 +763,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - 5 模块 ~800 行：`src/hooks/{mod,handler_runner,matcher,stdin_builder,extension}.rs`
   - `hooks.json` 配置（全局 + 项目级合并，每次事件触发动态读 = 热重载）
   - 12 事件映射 → Extension trait（SessionStart/End/PreCompact/UserPromptSubmit/PreToolUse/PostToolUse/PostToolUseFailure/PermissionRequest/SubagentStart/SubagentStop/Stop/Notification）
-  - 5 种 handler：command ✅（spawn bash + 退出码 0/2/3 协议）/ http ✅（POST + HTTPS 校验）/ prompt ✅（调 ApiRegistry 做 LLM 判断）/ agent ✅（Runtime::spawn_worker，真能调工具）/ mcp_tool 🔧 stub（方案 C 架构限制，用 command 替代）
+  - 5 种 handler：command ✅（spawn bash + 退出码 0/2/3 协议）/ http ✅（POST + HTTPS 校验）/ prompt ✅（调 ApiRegistry 做 LLM 判断）/ agent ✅（Runtime::spawn_worker，真能调工具）/ mcp_tool ✅（走 bridge 转发 host McpManager，方案 C）
   - Agent handler 递归保护：`ION_HOOK_DEPTH` 跨进程传递（入口 depth=0 能 spawn → 子 depth>=1 跳过），防 Stop 事件配 agent handler 死循环
   - `scripts/hooks_test.sh`（纯 bash 验证工具，不依赖 Rust）
   - 补丁 1：`ExtensionWorkerConfig` 字段补齐（agent/initial_prompt/worktree/allowed_tools/disallowed_tools/max_turns）
@@ -1035,7 +1035,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 **P6 - Shell Hook 系统 (TRAE 兼容) ✅ 已完成:**
 - 详细设计文档见 [docs/design/HOOKS_GUIDE.md](./docs/design/HOOKS_GUIDE.md)（使用指南）+ [docs/design/HOOKS_AND_OUTLINE_SYNC.md](./docs/design/HOOKS_AND_OUTLINE_SYNC.md)（实现规格）+ [docs/testing/HOOKS_CLI_TEST.md](./docs/testing/HOOKS_CLI_TEST.md)（CLI 测试）
 - 内核补 2 块能力：(1) `ExtensionWorkerConfig` 字段补齐（agent/initial_prompt/worktree/allowed_tools/max_turns/hook_depth）；(2) Hooks 系统（HooksConfig + HookExtension + 5 种 handler 执行引擎，~800 行）
-- handler 完成度：command ✅ / http ✅ / prompt ✅ / agent ✅（真能调工具，修 pi 的坑）/ mcp_tool 🔧 stub（方案 C 架构限制）
+- handler 完成度：command ✅ / http ✅ / prompt ✅ / agent ✅（真能调工具，修 pi 的坑）/ mcp_tool ✅（走 bridge 转发 host McpManager）
 - 对齐 pi 的 `extensions/pi-hooks/`（12 事件 + 5 handler），修 pi 的坑：agent handler 真传 tools（不退化成单轮 LLM）
 - hook_depth 跨进程递归保护（防 agent handler 死循环）：入口 Worker depth=0 能 spawn → 子 Worker depth>=1 跳过
 - 热重载（每次事件触发动态读 hooks.json，改完即生效）

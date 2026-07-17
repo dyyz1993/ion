@@ -31,6 +31,8 @@ pub struct HookExtension {
     registry: Option<Arc<ion_provider::registry::ApiRegistry>>,
     /// 当前会话模型（prompt handler 用，不查 handler.model，简化实现）
     model: Option<ion_provider::types::Model>,
+    /// ManagerBridge（mcp_tool handler 转发 MCP 调用到 host 用）
+    manager_bridge: Option<Arc<dyn crate::runtime::ManagerBridgeHandle>>,
     /// Stop 循环计数（per session，防死循环）
     /// key = session_id + event，value = loop_count
     loop_counts: std::sync::Mutex<std::collections::HashMap<String, u32>>,
@@ -46,6 +48,7 @@ impl HookExtension {
         runtime: Option<Arc<dyn crate::runtime::Runtime>>,
         registry: Option<Arc<ion_provider::registry::ApiRegistry>>,
         model: Option<ion_provider::types::Model>,
+        manager_bridge: Option<Arc<dyn crate::runtime::ManagerBridgeHandle>>,
         follow_up_tx: Option<tokio::sync::mpsc::UnboundedSender<Message>>,
     ) -> Self {
         Self {
@@ -53,6 +56,7 @@ impl HookExtension {
             runtime,
             registry,
             model,
+            manager_bridge,
             loop_counts: std::sync::Mutex::new(std::collections::HashMap::new()),
             once_fired: std::sync::Mutex::new(std::collections::HashSet::new()),
             follow_up_tx,
@@ -115,6 +119,7 @@ impl HookExtension {
             runtime: self.runtime.clone(),
             registry: self.registry.clone(),
             model: self.model.clone(),
+            manager_bridge: self.manager_bridge.clone(),
         };
 
         let mut combined = HookOutcome::default();
