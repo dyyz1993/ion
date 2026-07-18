@@ -1065,6 +1065,33 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 - Memory v0.1 统一到 V0.2 SQLite（两套不再割裂）
 - 37 个 MCP CI 测试全过（Group A-J）
 
+**P7 - Worker RPC 并发改造:** ✅ 已完成（2026-07-19）
+- **根因**：`agent.run().await` 持有 `&mut agent`，独占整个 RPC 循环，导致 list_turns / get_messages 等只读 RPC 在 agent 执行期间被阻塞 **20 秒**
+- **改造**：prompt handler 的 `agent.run().await` 改成 `tokio::select!` 循环——agent.run 期间，新来的 RPC 命令也能处理：
+  - 只读磁盘 RPC（list_turns / get_messages / list_inputs / get_turn_detail）→ 照常处理（不碰 agent）
+  - abort → 通过 `stopped_handle` (Arc&lt;AtomicBool&gt;) + `pause_tx_clone` 中断
+  - steer / follow_up → 缓存到 pending queue，run 结束后 drain 到 agent
+  - prompt / 其他写类 → 返回 busy
+- **关键设计决策**：
+  - 不把 Agent 包成 Arc&lt;RwLock&gt;（太重，易死锁）
+  - 不 tokio::spawn agent.run（Agent 不是 Send）
+  - 只用 select!——单 task 内并发，无 Send 约束
+  - `stopped` 从 AtomicBool 改成 `Arc<AtomicBool>`，新增 `stopped_handle()` 返回 Arc clone
+- **验证**（真实 LLM + GLM-4.7）：
+  - agent 跑时 list_turns：**36ms**（之前 20 秒）
+  - agent 跑时 get_messages：**39ms**（之前 20 秒）
+  - agent 跑时 abort：**103ms**（之前返回 busy）
+  - agent 跑时 steer：**107ms** queued（之前返回 busy）
+  - 多屏一致性：3 屏同时订阅，都收到 39 个 text_delta ✅
+  - 刷新屏 A、屏 B 不刷新：两屏都 33 个 text_delta ✅
+  - 结束后刷新：156ms ✅
+  - 运行中刷新：4032ms（之前 20 秒，大幅改善）
+  - cargo test --lib：420 全过
+- **遗留问题（需 agent_loop 深度改造）**：
+  - abort 在 LLM 响应中不能立即生效——`check_pause` 只在 turn 边界检查，`stream_with_retry` 期间不检查。要等当前 LLM 响应回来后下一个 check_pause 才生效。修复需要在流式响应的每个 chunk 之间检查 stopped。
+  - 运行中刷新 4 秒延迟——工具执行（写文件等）期间 select! 没机会 yield 到 stdin 分支。修复需要工具执行也用 select! 包裹。
+  - 这两个都是 `agent.run` 内部的 async 限制，不是 RPC 循环层能解决的，需要后续专门做。
+
 **P6b - 其他（待定）:**
 - ~~@图片文件支持 (ContentBlock::Image 完整实现)~~ ✅ 已完成 — 3 provider 全部支持图片(OpenAI image_url / Anthropic source / Google inline_data)
 - --models 多模型 Ctrl+P 切换 (交互式)
