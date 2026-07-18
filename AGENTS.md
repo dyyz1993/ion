@@ -165,12 +165,21 @@ docs/
 >
 > 测试脚本清理 host 进程时**禁止用宽泛的 `pkill -f "ion"` 或 `pkill -f "ion.*serve"`**——系统里很多进程名含 "ion"（如 LogiOptionsPlus 罗技驱动），会被误杀。
 >
+> **系统里常见的 ion 相关进程（全部要排除，不能误杀）**：
+> - `LogiOptionsPlus`（罗技鼠标/键盘驱动,名字含 "ion"）
+> - `regiond` / `regions-daemon`(macOS 系统服务)
+> - `notifications` / `UserNotif`(macOS 通知服务,含 "ion")
+> - `Google Chrome Helper`（Chrome 渲染进程,命令行可能含 "ion"）
+> - 任何 `/Applications/*.app/` 下的进程（都是用户应用,不是我们的 ion）
+>
+> 用 `ps aux | grep ion` 看到的进程,**绝大多数不是我们的 ion**——只有路径包含 `target/debug/ion` 或 `study-rust/ion` 的才是。
+>
 > 正确做法（按优先级）：
 > 1. **精确 PID**（最安全）：脚本启动 host 时 `HOST_PID=$!`，cleanup 时 `kill "$HOST_PID"`
 > 2. **按 socket**：`ion serve` 绑定 `~/.ion/host.sock`，可查占用者：`lsof -ti "$HOME/.ion/host.sock" | xargs kill`
 > 3. **完整路径匹配**（如果必须 pkill）：`pkill -f "target/debug/ion serve"`（路径够具体）
 >
-> 禁止的模式：`pkill -f "ion"` / `pkill -f "ion serve"` / `pkill -f "ion.*serve"`。
+> 禁止的模式：`pkill -f "ion"` / `pkill -f "ion serve"` / `pkill -f "ion.*serve"` / `pkill -f "ion_sse_proxy"`(单独写可以,但不能跟宽泛模式组合)。
 
 **真实 LLM 测试推荐模型**：写真实 case（`ION_E2E=1`）或手动验证时，**优先用 `deepseek-v4-flash`**（便宜、快速、够用），不要用昂贵的旗舰模型。
 
@@ -1026,7 +1035,9 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | hooks_handler_ci (CLI E2E) | 6 | Group A：command handler 执行 → subscribe 收到 hook_handler_executed + Group B：http handler 安全校验（非HTTPS→block / localhost→block）+ Group C：prompt handler 触发 |
 | extension_cli_ci (CLI E2E) | 11 | Group A：install（成功/文件拷到位/不存在报错/非wasm拒绝）+ Group B：list（列两个+总数）+ Group C：remove（不带后缀/不存在报错/带后缀）+ Group D：install 覆盖更新 |
 | memory_agent_ci (CLI E2E) | 10 | Group A：memory-agent 自动 spawn（日志+list_workers+状态）+ Group B：session/model 有效 + Group C：global-memory extension_rpc save/search/clear |
-| **测试覆盖合计** | **829** | 全部通过 ✅（Rust 509 + CLI E2E 341，含 hooks 36 case + 真实 LLM 3 case） |
+| export_ci (CLI E2E) | 18 | Group A：真实对话导出（FauxProvider → 验证 message flatten + role/content 转换 + leafId）+ Group B：现有 session 导出（turn_summary → custom_message）+ Group C：边界场景（不存在 session 报错 / 自动选 last_session）+ Group D：export-after-run 工具面板（28 工具 + bash/read 必在 + schema 完整）|
+| skill_tool_ci (CLI E2E) | 27 | Group S：skill 工具 list/inject/fork（9 case）+ Group E：边界 + Group R：SkillTool 注册可见性 + Group F：fork 模式完整链路（spawn 子 Worker + 独立 <sid>.jsonl + parentSession 血缘关联 + spawnMeta relation/spawnedBy + systemPrompt skill 内容 + export HTML 可见，8 case）|
+| **测试覆盖合计** | **886** | 全部通过 ✅（Rust 521，CLI E2E 377，含 hooks 36 case + 真实 LLM 5 case） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
