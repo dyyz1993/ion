@@ -1088,7 +1088,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - 运行中刷新：**&lt; 100ms**（连续 15 次测试，稳态 68-79ms；首次 prompt 时因 session 初始化可能稍慢）
   - cargo test --lib：420 全过
 - **遗留问题（需 agent_loop 深度改造）**：
-  - abort 在 LLM 响应中不能立即生效——`check_pause` 只在 turn 边界检查，`stream_with_retry` 期间不检查。要等当前 LLM 响应回来后下一个 check_pause 才生效。修复需要在流式响应的每个 chunk 之间检查 stopped。
+  - ~~abort 在 LLM 响应中不能立即生效~~ ✅ **已修复**(2026-07-19)：在 LLM 流式循环的每个 chunk 之间 + 工具执行循环的每个工具前检查 `stopped`(Arc&lt;AtomicBool&gt;)。abort 后 agent 在 &lt; 1 秒内停止。
 
 **P6b - 其他（待定）:**
 - ~~@图片文件支持 (ContentBlock::Image 完整实现)~~ ✅ 已完成 — 3 provider 全部支持图片(OpenAI image_url / Anthropic source / Google inline_data)
