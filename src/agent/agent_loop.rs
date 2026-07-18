@@ -1157,8 +1157,25 @@ impl Agent {
                     let mut prev_was_thinking = false;
                     let mut thinking_buf = String::new();
 
-                    while let Some(event) = event_stream.recv().await {
-                        // 每个 chunk 之间检查 abort(stopped 是 Arc<AtomicBool>,不需要 &self)
+                    loop {
+                        // 用 select! 让 stopped 检查不被 recv().await 阻塞
+                        // 每 200ms 检查一次 stopped,确保 abort < 1 秒生效
+                        let event_opt = tokio::select! {
+                            ev = event_stream.recv() => ev,
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {
+                                if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                                    tracing::info!("[abort] LLM 流式等待中检测到 stopped");
+                                    final_reason = StopReason::Aborted;
+                                    break;
+                                }
+                                continue; // 没收到 chunk,也没 abort,继续等
+                            }
+                        };
+                        let event = match event_opt {
+                            Some(event) => event,
+                            None => break, // stream 结束
+                        };
+                        // 每个 chunk 处理前也检查 stopped
                         if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
                             tracing::info!("[abort] LLM 流式中检测到 stopped，立即终止");
                             final_reason = StopReason::Aborted;
