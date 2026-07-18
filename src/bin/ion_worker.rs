@@ -17,6 +17,16 @@ use ion::agent::compact::CompactConfig;
 use ion::agent::tool::{ReadTool, WriteTool, EditTool, BashTool, GrepTool, FindTool, LsTool, CalculatorTool, EchoTool, GitStatusTool, GitDiffTool, GitLogTool, GitAddTool, GitCommitTool, GitBranchTool, SpawnWorkerTool, SendToWorkerTool, ResumeWorkerTool, AwaitWorkerTool, ChannelSendTool, KillWorkerTool, BranchSessionTool, GlobalMemorySearchTool, GlobalMemorySaveTool, SkillTool, ToolRegistry};
 use ion::wasm_extension::{Registry, ToolAdapter};
 use ion::session_jsonl;
+
+/// 全局：当前 Worker 的 session 文件路径。
+/// 主 Worker = session.jsonl；fork 子 Worker = <session_id>.jsonl（独立文件）。
+/// save_worker_session 读这个路径决定往哪写。
+static SESSION_FILE_PATH: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+/// 全局：当前 Worker 的 session_id + cwd。
+/// on_before_tool_execute 钩子用（它拿不到 sid/cwd，只能从全局读）。
+static SESSION_SID: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static SESSION_CWD: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 use ion_provider::registry::{ApiRegistry, ProviderFactory};
 use ion_provider::types::*;
 
@@ -305,9 +315,37 @@ async fn main() {
     // 加载已有会话（按 cwd 查找）—— session 按 cwd 隔离，worktree 各自独立会话（设计意图）
     // worker_cwd / config_root / storage_ctx 已在前面定义（Memory 构造前）
     //
+    // ── fork 子 Worker 用独立 session 文件 ──
+    // 主 Worker 用 session.jsonl（共享，所有同一 cwd 的主会话共用）。
+    // fork 子 Worker（ION_FORK_CHILD=1）用 <session_id>.jsonl，避免跟主 Worker 写同一文件
+    // 导致数据混乱。这样 export 可以按 session_id 精确找到 fork 子 Worker 的对话历史。
+    let is_fork_child = std::env::var("ION_FORK_CHILD").map(|v| v == "1").unwrap_or(false);
+    let session_file_path: std::path::PathBuf = if is_fork_child {
+        ion::paths::session_jsonl_path_by_id(&worker_cwd, &sid)
+    } else {
+        ion::paths::session_jsonl_path(&worker_cwd)
+    };
+    // 存到全局，save_worker_session 用同一个路径
+    {
+        let mut p = SESSION_FILE_PATH.lock().unwrap();
+        *p = Some(session_file_path.clone());
+    }
+    // 存 sid + cwd 到全局，on_before_tool_execute 钩子用
+    {
+        *SESSION_SID.lock().unwrap() = Some(sid.clone());
+        *SESSION_CWD.lock().unwrap() = Some(worker_cwd.clone());
+    }
     // 先确保 session header 存在（防 turn_summary 在 header 之前被追加，导致文件第一行不是 header）
-    session_jsonl::ensure_session_header(&worker_cwd, &sid);
-    let preloaded = session_jsonl::SessionFile::load(&worker_cwd).map(|f| f.messages);
+    if is_fork_child {
+        ensure_fork_session_header(&session_file_path, &worker_cwd, &sid);
+    } else {
+        session_jsonl::ensure_session_header(&worker_cwd, &sid);
+    }
+    let preloaded = if is_fork_child {
+        load_fork_session_messages(&session_file_path)
+    } else {
+        session_jsonl::SessionFile::load(&worker_cwd).map(|f| f.messages)
+    };
 
     // File Snapshot Store（预声明，agent 初始化块和 RPC loop 都要用）
     #[allow(unused_assignments)]
@@ -1087,7 +1125,131 @@ async fn main() {
                         ctx.cwd = worker_cwd.clone();
                         ctx.project_root = worker_cwd.clone();
                     }
-                    match agent.run(&text).await {
+                    // agent.run 跑完整 turn 后一次性 save。
+                    // 用 select! 让 agent.run 期间能响应只读 RPC(不碰 agent 的命令)
+                    // 避免 list_turns/get_messages 等磁盘读 RPC 被阻塞 20 秒
+                    let run_result = {
+                        let mut run_fut = std::pin::pin!(agent.run(&text));
+                        loop {
+                            tokio::select! {
+                                result = &mut run_fut => {
+                                    break result;
+                                }
+                                Some(bg_cmd) = stdin_rx.recv() => {
+                                    // agent.run 期间收到命令:处理只读的,拒绝写类的
+                                    let bg_id = bg_cmd.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                    let bg_method = bg_cmd.get("method").and_then(|v| v.as_str())
+                                        .or_else(|| bg_cmd.get("type").and_then(|v| v.as_str()))
+                                        .unwrap_or("").to_string();
+                                    let bg_params = bg_cmd.get("params").cloned().unwrap_or(serde_json::Value::Null);
+                                    match bg_method.as_str() {
+                                        // 只读磁盘的 RPC → 照常处理(agent.run 期间安全)
+                                        "list_turns" => {
+                                            let full_content = bg_params.get("full_content").and_then(|v| v.as_bool()).unwrap_or(false);
+                                            let limit = bg_params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(50);
+                                            let entries: Vec<serde_json::Value> = ion::message_retrieval::load_entries_cached(&worker_cwd);
+                                            let rp = ion::message_retrieval::RetrievalParams { limit, ..Default::default() };
+                                            let result = ion::message_retrieval::retrieve_turns(&entries, &rp, full_content);
+                                            output_response(&bg_id, "list_turns", &serde_json::json!({
+                                                "turns": result.turns.iter().map(|t| serde_json::json!({
+                                                    "turnId": t.turn_id,
+                                                    "userContent": t.user_content,
+                                                    "assistantContent": t.assistant_content,
+                                                    "keySteps": t.key_steps,
+                                                    "toolCallCount": t.tool_call_count,
+                                                    "tokens": {"input": t.tokens_input, "output": t.tokens_output},
+                                                    "status": t.status,
+                                                    "summary": t.summary,
+                                                    "durationMs": t.duration_ms,
+                                                    "source": t.source,
+                                                })).collect::<Vec<_>>(),
+                                                "hasMore": result.has_more,
+                                                "totalCount": result.total_count,
+                                                "nextCursor": result.next_cursor,
+                                            }));
+                                        }
+                                        "get_messages" => {
+                                            let view_str = bg_params.get("view").and_then(|v| v.as_str()).unwrap_or("live");
+                                            let view = match view_str {
+                                                "since_compaction" => ion::message_retrieval::View::SinceCompaction,
+                                                "full" => ion::message_retrieval::View::Full,
+                                                s if s.starts_with("branch:") => ion::message_retrieval::View::Branch(s[7..].to_string()),
+                                                _ => ion::message_retrieval::View::Live,
+                                            };
+                                            let limit = bg_params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(0);
+                                            let after = bg_params.get("after").and_then(|v| v.as_str()).map(String::from);
+                                            let before = bg_params.get("before").and_then(|v| v.as_str()).map(String::from);
+                                            let complete_turn = bg_params.get("complete_turn").and_then(|v| v.as_bool()).unwrap_or(false);
+                                            let inc_custom = bg_params.get("include_custom").and_then(|v| v.as_str()).unwrap_or("none");
+                                            let include_custom = match inc_custom {
+                                                "display_only" => ion::message_retrieval::CustomFilter::DisplayOnly,
+                                                "all" => ion::message_retrieval::CustomFilter::All,
+                                                _ => ion::message_retrieval::CustomFilter::None,
+                                            };
+                                            let entries: Vec<serde_json::Value> = ion::message_retrieval::load_entries_cached(&worker_cwd);
+                                            let rp = ion::message_retrieval::RetrievalParams {
+                                                view, after, before, limit, complete_turn, include_custom,
+                                            };
+                                            let result = ion::message_retrieval::retrieve_messages(&entries, &rp);
+                                            output_response(&bg_id, "get_messages", &serde_json::json!({
+                                                "messages": result.messages,
+                                                "hasMore": result.has_more,
+                                                "totalCount": result.total_count,
+                                                "nextCursor": result.next_cursor,
+                                                "view": view_str,
+                                            }));
+                                        }
+                                        "list_inputs" => {
+                                            let entries: Vec<serde_json::Value> = ion::message_retrieval::load_entries_cached(&worker_cwd);
+                                            let rp = ion::message_retrieval::RetrievalParams::default();
+                                            let result = ion::message_retrieval::retrieve_inputs(&entries, &rp);
+                                            output_response(&bg_id, "list_inputs", &serde_json::json!({
+                                                "inputs": result.inputs.iter().map(|i| serde_json::json!({
+                                                    "turnId": i.turn_id, "entryId": i.entry_id, "text": i.text,
+                                                })).collect::<Vec<_>>(),
+                                                "hasMore": result.has_more, "totalCount": result.total_count,
+                                                "nextCursor": result.next_cursor,
+                                            }));
+                                        }
+                                        "get_turn_detail" => {
+                                            let turn_id = bg_params.get("turnId").and_then(|v| v.as_str()).unwrap_or("");
+                                            let entries: Vec<serde_json::Value> = ion::message_retrieval::load_entries_cached(&worker_cwd);
+                                            match ion::message_retrieval::retrieve_turn_detail(&entries, turn_id, &ion::message_retrieval::CustomFilter::None) {
+                                                Some(detail) => output_response(&bg_id, "get_turn_detail", &serde_json::json!({
+                                                    "turnId": detail.turn_id,
+                                                    "entries": detail.entries,
+                                                    "overview": {
+                                                        "userContent": detail.overview.user_content,
+                                                        "assistantContent": detail.overview.assistant_content,
+                                                        "keySteps": detail.overview.key_steps,
+                                                        "toolCallCount": detail.overview.tool_call_count,
+                                                        "tokens": {"input": detail.overview.tokens_input, "output": detail.overview.tokens_output},
+                                                        "status": detail.overview.status,
+                                                        "durationMs": detail.overview.duration_ms,
+                                                        "source": detail.overview.source,
+                                                    }
+                                                })),
+                                                None => output_response(&bg_id, "get_turn_detail", &serde_json::json!({"error": "turn not found", "turnId": turn_id})),
+                                            }
+                                        }
+                                        // abort → stop()(AtomicBool,&self 方法不修改 agent 内存,但 select! 期间 &mut 被 run 持有)
+                                        // 所以 abort 在这里只能记录,不能调 agent.stop()
+                                        // 等待:agent.run 内部会 check stopped 标志,通过外部设置不行
+                                        // 实际上 stop() 是 &self(AtomicBool),理论上安全,但 borrow checker 不允许
+                                        // → 暂时返回 busy
+                                        // steer/follow_up/prompt → 返回 busy(agent 正在跑)
+                                        _ => {
+                                            output_response(&bg_id, &bg_method, &serde_json::json!({
+                                                "error": "agent is running, please wait",
+                                                "status": "busy",
+                                            }));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    match run_result {
                         Ok(()) => {
                             let msgs_json: Vec<serde_json::Value> = agent.messages().iter()
                                 .filter_map(|m| serde_json::to_value(m).ok())
@@ -3136,7 +3298,8 @@ fn build_skill_hint(config_root: &str) -> String {
         ion::paths::skills_dir(),
         ion::paths::project_skills_dir(config_root),
     ];
-    let mut names: Vec<String> = Vec::new();
+    // 收集 (name, description) 对
+    let mut skills: Vec<(String, String)> = Vec::new();
     for dir in &dirs {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
@@ -3146,24 +3309,69 @@ fn build_skill_hint(config_root: &str) -> String {
                 }
                 if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
                     if let Some(name) = fname.strip_suffix(".md") {
-                        if !names.contains(&name.to_string()) {
-                            names.push(name.to_string());
+                        if !skills.iter().any(|(n, _)| n == name) {
+                            let content = std::fs::read_to_string(&path).unwrap_or_default();
+                            let desc = parse_skill_description_inline(&content);
+                            skills.push((name.to_string(), desc));
                         }
                     }
                 }
             }
         }
     }
-    if names.is_empty() {
+    if skills.is_empty() {
         return String::new();
     }
-    names.sort();
-    let names_csv = names.join(", ");
-    format!(
-        "You have access to a `skill` tool. Use it to load specialized capabilities when needed.\n\
-         Available skills: {names_csv}\n\
-         Use skill_name='list' to see all available skills."
-    )
+    skills.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut out = String::from(
+        "## Skill 工具\n\
+         你有 `skill` 工具可以加载专门的 skill（结构化工作流）。\n\
+         **当用户请求匹配某个 skill 时，优先调用 skill 工具，而不是手动用 bash/read/write。**\n\
+         Skill 提供经过验证的工作流，比临时工具调用更可靠。\n\n\
+         ### 可用 skills:\n",
+    );
+    for (name, desc) in &skills {
+        if desc.is_empty() {
+            out.push_str(&format!("  - `{name}`\n"));
+        } else {
+            out.push_str(&format!("  - `{name}`: {desc}\n"));
+        }
+    }
+    out.push_str(
+        "\n### 用法:\n\
+         - `skill(skill_name=\"code-audit\", context=\"inject\")` — 加载到当前上下文，你自己执行\n\
+         - `skill(skill_name=\"code-audit\", context=\"fork\")` — 隔离子 Worker 执行（主上下文干净）\n\
+         - `skill(skill_name=\"list\")` — 列出所有 skill 详情\n",
+    );
+    out
+}
+
+/// 从 skill 文件 frontmatter 提取 description（build_skill_hint 用，避免跟 tool.rs 的私有函数冲突）
+fn parse_skill_description_inline(content: &str) -> String {
+    let trimmed = content.trim_start();
+    if let Some(rest) = trimmed.strip_prefix("---") {
+        if let Some(end) = rest.find("\n---") {
+            let frontmatter = &rest[..end];
+            for line in frontmatter.lines() {
+                let line = line.trim();
+                if let Some(rest) = line.strip_prefix("description:") {
+                    let val = rest.trim().trim_matches(|c| c == '"' || c == '\'');
+                    if !val.is_empty() {
+                        return val.to_string();
+                    }
+                }
+            }
+        }
+    }
+    // 没有 frontmatter，取第一行 # 标题作为描述
+    for line in content.lines() {
+        let line = line.trim();
+        if let Some(title) = line.strip_prefix("# ") {
+            return title.to_string();
+        }
+    }
+    String::new()
 }
 
 // ── McpProxyTool: 方案 C 子 Worker 的 MCP 工具代理（走 bridge 调 host）──
@@ -3263,6 +3471,30 @@ impl ion::agent::extension::Extension for StreamingExtension {
                 "timestamp": now_ms(),
             }
         }));
+        Ok(())
+    }
+
+    /// 工具执行前增量 save（解决 fork 阻塞丢 message 问题）。
+    /// 每次工具执行前都 save 当前 messages，这样即使 fork 阻塞 / 进程被杀，
+    /// 主 session 也有 user prompt + assistant tool call decision。
+    async fn on_before_tool_execute(
+        &self,
+        _tool_name: &str,
+        _args: &serde_json::Value,
+        messages: &[ion::agent::messages::Message],
+    ) -> ion::agent::error::AgentResult<()> {
+        let msgs_json: Vec<serde_json::Value> = messages.iter()
+            .filter_map(|m| serde_json::to_value(m).ok())
+            .collect();
+        if !msgs_json.is_empty() {
+            // save_worker_session 内部有去重（按文件已有 message 数），不会重复写
+            // 但我们需要 sid + cwd —— 从全局拿
+            let sid = SESSION_SID.lock().unwrap().clone();
+            let cwd = SESSION_CWD.lock().unwrap().clone();
+            if let (Some(sid), Some(cwd)) = (sid, cwd) {
+                save_worker_session(&sid, &cwd, &msgs_json);
+            }
+        }
         Ok(())
     }
 
@@ -3555,7 +3787,10 @@ impl ManagerBridge {
 
 /// Append a JSON line to the session.jsonl file (not a message, just a record).
 fn append_session_entry(cwd: &str, sid: &str, entry_type: &str, entry_data: &serde_json::Value) {
-    let path = session_jsonl::session_path(cwd);
+    // 优先用全局 SESSION_FILE_PATH（fork 子 Worker 的 <session_id>.jsonl）
+    let path = SESSION_FILE_PATH.lock().unwrap()
+        .clone()
+        .unwrap_or_else(|| session_jsonl::session_path(cwd));
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -3593,8 +3828,92 @@ fn append_session_entry(cwd: &str, sid: &str, entry_type: &str, entry_data: &ser
     }
 }
 
+/// Ensure the fork sub-worker session header exists at the given path.
+/// Unlike ensure_session_header (which writes to session.jsonl shared by cwd),
+/// this writes to <session_id>.jsonl — a fork sub-worker's private session file.
+fn ensure_fork_session_header(path: &std::path::Path, cwd: &str, sid: &str) {
+    if path.exists() {
+        return; // 已存在，不覆盖
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    // ── 读 parent 关联信息（ION_FORK_CHILD 子 Worker 都会设这些 env）──
+    let parent_session = std::env::var("ION_PARENT_SESSION").ok().filter(|s| !s.is_empty());
+    let parent_worker = std::env::var("ION_PARENT_WORKER").ok().filter(|s| !s.is_empty());
+    let spawn_relation = std::env::var("ION_SPAWN_RELATION").ok().filter(|s| !s.is_empty());
+    let spawned_by = std::env::var("ION_SPAWNED_BY").ok().filter(|s| !s.is_empty());
+
+    // 构造 spawnMeta（ION 扩展，详细血缘信息）
+    let has_spawn_meta = parent_worker.is_some() || spawn_relation.is_some() || spawned_by.is_some();
+    let mut header = serde_json::json!({
+        "type": "session",
+        "version": 3,
+        "id": sid,
+        "timestamp": session_jsonl::timestamp_iso(),
+        "cwd": cwd,
+        "parentSession": parent_session.clone(),
+    });
+    if has_spawn_meta {
+        let mut spawn_meta = serde_json::json!({});
+        if let Some(ref pw) = parent_worker { spawn_meta["parentWorker"] = serde_json::Value::String(pw.clone()); }
+        if let Some(ref rel) = spawn_relation { spawn_meta["relation"] = serde_json::Value::String(rel.clone()); }
+        if let Some(ref sb) = spawned_by { spawn_meta["spawnedBy"] = serde_json::Value::String(sb.clone()); }
+        if let Some(ref ps) = parent_session { spawn_meta["parentSession"] = serde_json::Value::String(ps.clone()); }
+        header["spawnMeta"] = spawn_meta;
+    }
+
+    let json = serde_json::to_string(&header).unwrap_or_default();
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(path) {
+        let _ = f.write_all(format!("{json}\n").as_bytes());
+    }
+
+    // fork 子 Worker：把 system_prompt（含 skill 内容）作为 custom entry 写到第二行
+    // 这样 export HTML 时能恢复 systemPrompt 字段，让用户看到 skill 注入的内容
+    if let Ok(sp) = std::env::var("ION_SYSTEM_PROMPT") {
+        if !sp.is_empty() {
+            let sp_entry = serde_json::json!({
+                "type": "custom",
+                "id": session_jsonl::generate_id(),
+                "parentId": sid,
+                "timestamp": session_jsonl::timestamp_iso(),
+                "customType": "system_prompt",
+                "data": { "systemPrompt": sp },
+            });
+            let sp_json = serde_json::to_string(&sp_entry).unwrap_or_default();
+            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(path) {
+                let _ = f.write_all(format!("{sp_json}\n").as_bytes());
+            }
+        }
+    }
+}
+
+/// Load messages from a fork sub-worker's session file.
+fn load_fork_session_messages(path: &std::path::Path) -> Option<Vec<ion::agent::messages::Message>> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut messages = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        if let Ok(e) = serde_json::from_str::<serde_json::Value>(line) {
+            if e.get("type").and_then(|v| v.as_str()) == Some("message") {
+                if let Some(m) = e.get("message").and_then(|m| serde_json::from_value(m.clone()).ok()) {
+                    messages.push(m);
+                }
+            }
+        }
+    }
+    Some(messages)
+}
+
 fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
-    let path = session_jsonl::session_path(cwd);
+    // 优先用全局 SESSION_FILE_PATH（fork 子 Worker 设的 <session_id>.jsonl）
+    // fallback 到 session_path(cwd)（主 Worker 的 session.jsonl）
+    let path = SESSION_FILE_PATH.lock().unwrap()
+        .clone()
+        .unwrap_or_else(|| session_jsonl::session_path(cwd));
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -3651,6 +3970,7 @@ fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
 
     // 只 append 新增的 message（saved_msg_count 之后的部分）
     let new_msgs = if msgs.len() > saved_msg_count {
+        eprintln!("[save-debug] msgs={} saved={} new={}", msgs.len(), saved_msg_count, msgs.len() - saved_msg_count);
         &msgs[saved_msg_count..]
     } else {
         &[][..]
