@@ -507,6 +507,7 @@ struct EffectiveConfig {
     no_tools: bool,
     no_builtin_tools: bool,
     no_extensions: bool,
+    no_skills: bool,
     message: String,
 }
 
@@ -689,6 +690,7 @@ fn resolve_effective(cli: &Cli) -> EffectiveConfig {
         no_tools: cli.no_tools,
         no_builtin_tools: cli.no_builtin_tools,
         no_extensions: cli.no_extensions,
+        no_skills: cli.no_skills,
         message: EffectiveConfig::parse_messages(&cli.messages),
     };
 
@@ -960,6 +962,30 @@ fn build_tools(eff: &EffectiveConfig) -> ToolRegistry {
         tools.register(Box::new(GitAddTool));
         tools.register(Box::new(GitCommitTool));
         tools.register(Box::new(GitBranchTool));
+
+        // Skill tool — lets the LLM autonomously load skills by name.
+        // Scans global (~/.ion/agent/skills/) and project (<cwd>/.ion/skills/) dirs.
+        // Without this registration the LLM cannot invoke skills on its own;
+        // only the --skill <path> CLI flag works (which injects into system_prompt).
+        if !eff.no_skills {
+            let cwd_str = std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            // 扫描三个位置：
+            // 1. ~/.ion/agent/skills/（ION 全局 skill）
+            // 2. <project>/.ion/skills/（项目级 skill）
+            // 3. ~/.agents/skills/（全局 skill 库，跟 ZCode 共享，111 个）
+            let agents_skills = std::env::var("HOME")
+                .ok()
+                .map(|h| std::path::PathBuf::from(h).join(".agents").join("skills"))
+                .unwrap_or_else(|| std::path::PathBuf::from("~/.agents/skills"));
+            let skill_dirs: Vec<std::path::PathBuf> = vec![
+                ion::paths::skills_dir(),
+                ion::paths::project_skills_dir(&cwd_str),
+                agents_skills,
+            ];
+            tools.register(Box::new(ion::agent::tool::SkillTool { skill_dirs }));
+        }
     }
     // Apply tool filtering (--tools allowlist)
     if let Some(ref allow) = eff.tools {
@@ -1192,10 +1218,42 @@ async fn cmd_run(
     eff: &EffectiveConfig,
     message: &str,
     _no_tools: bool,
-    session_id: &str,
+    session_id_in: &str,
     preloaded: Option<Vec<ion::agent::messages::Message>>,
     raw_messages: &[String],
+    export_after: Option<&str>,
 ) {
+    // Generate a stable session id up-front if none was provided.
+    // This id is used for: session header, save_session, --export resolution.
+    // Avoids the "empty id" problem when exporting after a new-session run.
+    // Resolve the session id we'll use for this run.
+    // - If caller passed one in (resume/fork), use it.
+    // - Else if a session file already exists for this cwd, reuse its header id
+    //   (so we append to the same session instead of inventing a mismatched id).
+    // - Else generate a fresh sess_<8-char> id for the new session.
+    let owned_sid = if !session_id_in.is_empty() {
+        session_id_in.to_string()
+    } else {
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let existing_path = ion::session_jsonl::session_path(&cwd);
+        std::fs::read_to_string(&existing_path)
+            .ok()
+            .and_then(|c| c.lines().next().map(|s| s.to_string()))
+            .and_then(|h| serde_json::from_str::<serde_json::Value>(&h).ok())
+            .and_then(|v| {
+                v.get("id")
+                    .and_then(|i| i.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_else(|| format!("sess_{}", &uuid::Uuid::new_v4().to_string()[..8]))
+    };
+    let session_id: &str = &owned_sid;
+    // Persist to last_session so --continue / --export can find it later.
+    let _ = std::fs::write(ion::session_jsonl::last_session_path(), session_id);
+
     let (registry, model) = build_registry_and_model(eff);
     
     let config = build_agent_config(eff);
@@ -1372,6 +1430,19 @@ async fn cmd_run(
     let backend_registry = BackendRegistry::from_config(&runtime_cfg, &cwd);
     let rt = ion::runtime::SecuredRuntime::new(backend_registry)
         .with_profile(ion::kernel::SecurityProfile::default());
+
+    // Snapshot tool definitions before passing ownership to Agent.
+    // Used for --export-after-run: HTML export shows the tools panel.
+    let tool_defs_snapshot: Vec<ion::export::ExportToolInfo> = tools
+        .tool_defs()
+        .into_iter()
+        .map(|td| ion::export::ExportToolInfo {
+            name: td.name,
+            description: td.description,
+            parameters: td.parameters,
+        })
+        .collect();
+
     let mut agent = Agent::new(registry, model, Some(sys_prompt), tools, config)
         .with_runtime(Box::new(rt));
 
@@ -1543,7 +1614,7 @@ async fn cmd_run(
                                                 );
                                             }
                                             save_session(session_id, agent.messages(), &eff.model, &eff.provider, eff.name.as_deref());
-                                            return;
+                                            break;
                                         }
                                     } else {
                                         print_output(&output, true);
@@ -1565,7 +1636,7 @@ async fn cmd_run(
                                             );
                                         }
                                         save_session(session_id, agent.messages(), &eff.model, &eff.provider, eff.name.as_deref());
-                                        return;
+                                        break;
                                     }
                                 }
                                 Err(e) => {
@@ -1589,7 +1660,7 @@ async fn cmd_run(
                                         );
                                     }
                                     save_session(session_id, agent.messages(), &eff.model, &eff.provider, eff.name.as_deref());
-                                    return;
+                                    break;
                                 }
                             }
                         }
@@ -1620,7 +1691,7 @@ async fn cmd_run(
                                     );
                                 }
                                 save_session(session_id, agent.messages(), &eff.model, &eff.provider, eff.name.as_deref());
-                                return;
+                                break;
                             }
                         }
                     }
@@ -1642,7 +1713,7 @@ async fn cmd_run(
                         eprintln!("  msgs={mc} assistant={ac} tools={tc} attempts={max_attempts}");
                     }
                     save_session(session_id, agent.messages(), &eff.model, &eff.provider, eff.name.as_deref());
-                    return;
+                    break;
                 } else {
                     println!("{output}");
                     if eff.json_schema.is_some() {
@@ -1661,7 +1732,7 @@ async fn cmd_run(
                         eprintln!("  msgs={mc} assistant={ac} tools={tc} attempts={max_attempts}");
                     }
                     save_session(session_id, agent.messages(), &eff.model, &eff.provider, eff.name.as_deref());
-                    return;
+                    break;
                 }
             }
             Err(e) => {
@@ -1714,6 +1785,26 @@ async fn cmd_run(
         eprintln!("  Schema attempts:  {max_attempts} total");
         eprintln!("  Token usage:  {total_input} in / {total_output} out");
     }
+
+    // ── Export after run (if --export was given alongside a prompt) ──
+    // Produces HTML with the agent's actual tool registry populated, so the
+    // "Available Tools" panel renders. Standalone `--export` (no prompt) goes
+    // through the earlier branch and has no tools — matching pi's exportFromFile.
+    if let Some(export_path) = export_after {
+        let tools_opt = if tool_defs_snapshot.is_empty() {
+            None
+        } else {
+            Some(tool_defs_snapshot.clone())
+        };
+        match ion::export::export_session_with_tools(
+            session_id,
+            std::path::Path::new(export_path),
+            tools_opt,
+        ) {
+            Ok(()) => println!("Exported to {export_path}"),
+            Err(e) => eprintln!("Export failed: {e}"),
+        }
+    }
 }
 
 /// RPC client: 连 Manager 的 Unix socket，发一条命令，打印响应，退出。
@@ -1752,20 +1843,44 @@ async fn cmd_rpc(session: Option<&str>, method: &str, params: &str) {
     }
     let _ = stream.flush().await;
 
-    // 读一行响应（一问一答协议）
+    // 读响应——host 可能先推事件（worker_created/project_changed 等），
+    // 我们要跳过事件，找到带 `id` 字段的真正响应（rpc-client 标记）。
     let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    match reader.read_line(&mut line).await {
-        Ok(0) => eprintln!("(Manager closed connection without response)"),
-        Ok(_) => {
-            // 美化输出
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) {
-                println!("{}", serde_json::to_string_pretty(&v).unwrap_or(line));
-            } else {
+    let mut attempts = 0;
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line).await {
+            Ok(0) => {
+                eprintln!("(Manager closed connection without response)");
+                break;
+            }
+            Ok(_) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() { continue; }
+                // 尝试解析
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    // 跳过事件（type:event / type:worker_created 等没有 id 字段）
+                    if v.get("id").is_some() {
+                        // 这是真正的 RPC 响应
+                        println!("{}", serde_json::to_string_pretty(&v).unwrap_or(line));
+                        break;
+                    }
+                    // 是事件，跳过（不打印，避免污染 stdout）
+                    continue;
+                }
+                // 非 JSON 行，打印 + 继续
                 print!("{line}");
             }
+            Err(e) => {
+                eprintln!("❌ read socket failed: {e}");
+                break;
+            }
         }
-        Err(e) => eprintln!("❌ read socket failed: {e}"),
+        attempts += 1;
+        if attempts > 100 {
+            eprintln!("❌ rpc 超时：读了 100 行还没找到响应");
+            break;
+        }
     }
 }
 
@@ -2802,21 +2917,35 @@ async fn main() {
         return;
     }
 
-    if let Some(ref export_path) = cli.export {
-        let session_id = match (&cli.session, cli.continue_session, &cli.resume) {
-            (Some(sid), _, _) => sid.clone(),
-            (_, _, Some(sid)) => sid.clone(),
-            (_, true, _) => std::fs::read_to_string(ion::session_jsonl::last_session_path()).unwrap_or_default().trim().to_string(),
-            _ => { eprintln!("No session. Use --session or --continue-session"); return; }
-        };
-        if !session_id.is_empty() {
-            match ion::export::export_session(&session_id, std::path::Path::new(export_path)) {
-                Ok(()) => println!("Exported to {export_path}"),
-                Err(e) => eprintln!("Export failed: {e}"),
+    // ── --export: 决定是 standalone 还是 export-after-run ──
+    // - 有 prompt/agent 任务 → 跑完 agent 后再 export（带 tools 面板）
+    // - 无 prompt（纯 --export）→ 直接 export 现有 session（无 tools，对齐 pi exportFromFile）
+    let export_after_run: Option<String> = if let Some(ref export_path) = cli.export {
+        // 检查后面有没有 prompt / agent 任务（cmd_run 路径）
+        let has_run_intent = !eff.message.is_empty() || cli.host;
+        if has_run_intent {
+            Some(export_path.clone())
+        } else {
+            // Standalone export: no agent run, just dump existing session
+            let session_id = match (&cli.session, cli.continue_session, &cli.resume) {
+                (Some(sid), _, _) => sid.clone(),
+                (_, _, Some(sid)) => sid.clone(),
+                (_, true, _) => std::fs::read_to_string(ion::session_jsonl::last_session_path()).unwrap_or_default().trim().to_string(),
+                _ => std::fs::read_to_string(ion::session_jsonl::last_session_path()).unwrap_or_default().trim().to_string(),
+            };
+            if session_id.is_empty() {
+                eprintln!("No session to export. Run a prompt first, or use --session <id>.");
+            } else {
+                match ion::export::export_session(&session_id, std::path::Path::new(export_path)) {
+                    Ok(()) => println!("Exported to {export_path}"),
+                    Err(e) => eprintln!("Export failed: {e}"),
+                }
             }
+            return;
         }
-        return;
-    }
+    } else {
+        None
+    };
 
     let effective_message = eff.message.clone();
 
@@ -2846,7 +2975,7 @@ async fn main() {
         if let Some(spec) = &cli.fork_from_leaf {
             if let Some(new_sid) = do_fork_from_leaf(spec) {
                 // 用新 session 继续
-                cmd_run(&eff, &eff.message, cli.no_tools, &new_sid, None, &cli.messages).await;
+                cmd_run(&eff, &eff.message, cli.no_tools, &new_sid, None, &cli.messages, export_after_run.as_deref()).await;
                 return;
             } else {
                 eprintln!("❌ --fork-from-leaf '{}' failed", spec);
@@ -2854,7 +2983,7 @@ async fn main() {
             }
         }
 
-        cmd_run(&eff, &eff.message, cli.no_tools, &session_id, preloaded, &cli.messages).await;
+        cmd_run(&eff, &eff.message, cli.no_tools, &session_id, preloaded, &cli.messages, export_after_run.as_deref()).await;
         return;
     }
 
@@ -3699,13 +3828,32 @@ async fn handle_manager_command(
         }
         _ => {
             // 默认分支：如果 cmd 里有 session 字段，转发到对应 worker
-            // 让 `ion rpc --session <id> --method spawn_worker` 这种用法走通
             let session_id = cmd.get("session").and_then(|v| v.as_str());
             if let Some(sid) = session_id {
                 let params = cmd.get("params").cloned().unwrap_or_default();
-                match reg.send_to_session(sid, method, params).await {
-                    Ok(_) => Ok(serde_json::json!({"status": "forwarded", "session": sid})),
-                    Err(e) => Err(e),
+
+                // prompt 用 fire-and-forget(不等 oneshot)——
+                // agent.run 会阻塞 worker 主循环很久,如果等 oneshot,
+                // Manager 锁不释放,后续命令(如 abort)进不来。
+                // prompt 的 worker handler 会在 agent.run 前立刻 output_response(null)
+                if method == "prompt" {
+                    // 找 worker_id,用 send_command(fire-and-forget)
+                    let wid = reg.workers.iter()
+                        .find(|(_, w)| w.session_id == sid)
+                        .map(|(id, _)| id.clone());
+                    match wid {
+                        Some(wid) => {
+                            reg.send_command(&wid, &method, params).await
+                                .map(|_| serde_json::json!({"status": "forwarded", "session": sid}))
+                        }
+                        None => Err(format!("worker not found for session: {sid}")),
+                    }
+                } else {
+                    // 其他命令等响应(list_turns/get_messages/abort 等)
+                    match reg.send_to_session(sid, method, params).await {
+                        Ok(_) => Ok(serde_json::json!({"status": "forwarded", "session": sid})),
+                        Err(e) => Err(e),
+                    }
                 }
             } else {
                 Err(format!("unknown method: {method} (and no `session` field for forwarding)"))
@@ -3898,8 +4046,19 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>) {
         }
     }
 
-    // 5. Cleanup
-    eprintln!("[host] cleaning up");
+    // 5. Cleanup — 通知所有 Worker shutdown（让它们执行退出前 save_worker_session）
+    eprintln!("[host] cleaning up, notifying workers to save & exit");
+    {
+        let mut reg = registry.lock().await;
+        let wids: Vec<String> = reg.workers.keys().cloned().collect();
+        for wid in &wids {
+            // 发 shutdown 命令（ion_worker 收到后 break 主循环 → 执行退出前 save）
+            let _ = reg.send_command(wid, "shutdown", serde_json::json!({})).await;
+        }
+    }
+    // 给 Worker 时间执行退出前 save_worker_session
+    tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+    eprintln!("[host] cleanup complete");
 }
 
 // ---------------------------------------------------------------------------
@@ -3930,6 +4089,10 @@ fn save_session(id: &str, messages: &[ion::agent::messages::Message], model: &st
 
     // 文件不存在 → 先写 header
     if !header_existed {
+        // 确保父目录存在
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         let header = ion::session_jsonl::SessionHeader {
             entry_type: "session".into(), version: 3, id: id.to_string(),
             timestamp: ion::session_jsonl::timestamp_iso(),

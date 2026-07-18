@@ -1136,7 +1136,22 @@ impl Agent {
                 },
             ).await?;
 
-            let stream_result = registry::stream(&self.registry, &self.model, context, Some(options)).await;
+            // 用 select! 让 registry::stream 期间也能响应 abort
+            // 200ms 超时检查 stopped,不重新发 HTTP(用 pin + loop 保持同一个 future)
+            let stream_fut = registry::stream(&self.registry, &self.model, context, Some(options));
+            tokio::pin!(stream_fut);
+            let stream_result = loop {
+                tokio::select! {
+                    r = &mut stream_fut => break r,
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {
+                        if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                            tracing::info!("[abort] HTTP 请求期间检测到 stopped");
+                            return Ok((StopReason::Aborted, Vec::new()));
+                        }
+                        // 继续 select!(stream_fut 保留,不重新发 HTTP)
+                    }
+                }
+            };
 
             // Hook: after_provider_response
             if let Ok(ref _ev) = stream_result {

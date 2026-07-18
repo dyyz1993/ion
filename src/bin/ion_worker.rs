@@ -1149,7 +1149,6 @@ async fn main() {
                                     break result;
                                 }
                                 Some(bg_cmd) = stdin_rx.recv() => {
-                                    // agent.run 期间收到命令:处理只读的,拒绝写类的
                                     let bg_id = bg_cmd.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                                     let bg_method = bg_cmd.get("method").and_then(|v| v.as_str())
                                         .or_else(|| bg_cmd.get("type").and_then(|v| v.as_str()))
@@ -3571,6 +3570,7 @@ impl ion::agent::extension::Extension for StreamingExtension {
         let msgs_json: Vec<serde_json::Value> = messages.iter()
             .filter_map(|m| serde_json::to_value(m).ok())
             .collect();
+        eprintln!("[before-tool] tool={_tool_name} msgs={}", msgs_json.len());
         if !msgs_json.is_empty() {
             // save_worker_session 内部有去重（按文件已有 message 数），不会重复写
             // 但我们需要 sid + cwd —— 从全局拿
