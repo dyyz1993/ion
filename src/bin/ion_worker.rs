@@ -1128,6 +1128,10 @@ async fn main() {
                     // agent.run 跑完整 turn 后一次性 save。
                     // 用 select! 让 agent.run 期间能响应只读 RPC(不碰 agent 的命令)
                     // 避免 list_turns/get_messages 等磁盘读 RPC 被阻塞 20 秒
+                    // 同时支持 abort(pause_tx clone + 设 stopped)
+                    let pause_tx_clone = agent.pause_handle();
+                    let pending_steer_queue: std::sync::Arc<tokio::sync::Mutex<std::collections::VecDeque<(ion_provider::types::MessageSource, ion_provider::types::Message)>>> =
+                        std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::VecDeque::new()));
                     let run_result = {
                         let mut run_fut = std::pin::pin!(agent.run(&text));
                         loop {
@@ -1232,12 +1236,44 @@ async fn main() {
                                                 None => output_response(&bg_id, "get_turn_detail", &serde_json::json!({"error": "turn not found", "turnId": turn_id})),
                                             }
                                         }
-                                        // abort → stop()(AtomicBool,&self 方法不修改 agent 内存,但 select! 期间 &mut 被 run 持有)
-                                        // 所以 abort 在这里只能记录,不能调 agent.stop()
-                                        // 等待:agent.run 内部会 check stopped 标志,通过外部设置不行
-                                        // 实际上 stop() 是 &self(AtomicBool),理论上安全,但 borrow checker 不允许
-                                        // → 暂时返回 busy
-                                        // steer/follow_up/prompt → 返回 busy(agent 正在跑)
+                                        // abort → 通过外部句柄中断(不用 agent.stop(),避免 borrow 冲突)
+                                        // pause_tx clone + agent.run 内部的 check_pause 会读到 true → 返回 Aborted
+                                        "abort" => {
+                                            let _ = pause_tx_clone.send(true);
+                                            output_response(&bg_id, "abort", &serde_json::Value::Null);
+                                        }
+                                        // steer/follow_up → 缓存到外部 queue,run 结束后 drain 进 agent
+                                        "steer" => {
+                                            let steer_text = bg_params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                            if !steer_text.is_empty() {
+                                                pending_steer_queue.lock().await.push_back((
+                                                    ion_provider::types::MessageSource::Steer,
+                                                    Message::User(UserMessage {
+                                                        role: "user".into(),
+                                                        content: vec![ContentBlock::Text(TextContent { text: steer_text, text_signature: None })],
+                                                        timestamp: now_ms(),
+                                                        source: ion_provider::types::MessageSource::Steer,
+                                                    }),
+                                                ));
+                                            }
+                                            output_response(&bg_id, "steer", &serde_json::json!({"status":"queued","queue":"steering"}));
+                                        }
+                                        "follow_up" => {
+                                            let fu_text = bg_params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                            if !fu_text.is_empty() {
+                                                pending_steer_queue.lock().await.push_back((
+                                                    ion_provider::types::MessageSource::FollowUp,
+                                                    Message::User(UserMessage {
+                                                        role: "user".into(),
+                                                        content: vec![ContentBlock::Text(TextContent { text: fu_text, text_signature: None })],
+                                                        timestamp: now_ms(),
+                                                        source: ion_provider::types::MessageSource::FollowUp,
+                                                    }),
+                                                ));
+                                            }
+                                            output_response(&bg_id, "follow_up", &serde_json::json!({"status":"queued","queue":"followUp"}));
+                                        }
+                                        // prompt / 其他写类 → 返回 busy(agent 正在跑)
                                         _ => {
                                             output_response(&bg_id, &bg_method, &serde_json::json!({
                                                 "error": "agent is running, please wait",
@@ -1255,7 +1291,6 @@ async fn main() {
                                 .filter_map(|m| serde_json::to_value(m).ok())
                                 .collect();
                             save_worker_session(&sid, &worker_cwd, &msgs_json);
-                            // agent_end 由 StreamingExtension 已经不发了，这里补一条
                             output(&serde_json::json!({
                                 "type":"event","event":{"type":"agent_end","sessionId":sid,"timestamp":now_ms()}
                             }));
@@ -1264,6 +1299,17 @@ async fn main() {
                             output(&serde_json::json!({
                                 "type":"event","event":{"type":"error","message":e.to_string(),"timestamp":now_ms()}
                             }));
+                        }
+                    }
+                    // drain pending steer/follow_up queue → 注入 agent
+                    {
+                        let mut pq = pending_steer_queue.lock().await;
+                        while let Some((source, msg)) = pq.pop_front() {
+                            match source {
+                                ion_provider::types::MessageSource::Steer => agent.steer(msg),
+                                ion_provider::types::MessageSource::FollowUp => agent.follow_up(msg),
+                                _ => agent.follow_up(msg),
+                            }
                         }
                     }
                 }
