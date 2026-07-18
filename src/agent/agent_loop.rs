@@ -90,7 +90,7 @@ pub struct Agent {
     pause_rx: watch::Receiver<bool>,
     running: bool,
     /// 对齐 pi abort：设 true 后 check_pause 返回 Aborted 错误，终止 run()
-    stopped: std::sync::atomic::AtomicBool,
+    stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// 工具执行运行时（本地/沙箱/远程）
     /// 用 Arc 以便 HookExtension 等 clone 共享（agent handler 需要 runtime 来 spawn 子 Worker）
     pub runtime: Arc<dyn crate::runtime::Runtime>,
@@ -132,7 +132,7 @@ impl Agent {
             pause_tx,
             pause_rx,
             running: false,
-            stopped: std::sync::atomic::AtomicBool::new(false),
+            stopped: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             runtime: Arc::new(crate::runtime::LocalRuntime::new()),
             compact_model: None,
             session_cwd: None,
@@ -215,6 +215,11 @@ impl Agent {
 
     pub fn pause_handle(&self) -> watch::Sender<bool> {
         self.pause_tx.clone()
+    }
+
+    /// 返回 stopped Arc 的 clone(让外部能在 agent.run 期间设 stopped)
+    pub fn stopped_handle(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.stopped.clone()
     }
 
     pub fn pause(&self) {
@@ -489,6 +494,13 @@ impl Agent {
 
         let tool = self.tools.get(name)
             .ok_or_else(|| AgentError::Tool(format!("tool not found: {name}")))?;
+
+        // 增量 save 钩子：工具执行前，让扩展有机会 save 当前 messages。
+        // 解决 fork 阻塞问题：LLM 调 skill(fork) → spawn_worker 阻塞 → agent.run 不返回 →
+        // 进程被杀时 messages 全丢。这个钩子在 tool.execute 前触发，至少把 user prompt +
+        // assistant tool call decision 落盘。
+        self.extensions.on_before_tool_execute(name, &args, &self.messages).await?;
+
         tool.execute(args, &*self.runtime).await
     }
 
@@ -729,6 +741,12 @@ impl Agent {
                             error_message: None,
                             timestamp: now_ms(),
                         }));
+                        // 增量 save：assistant message 加到 messages 后立即落盘。
+                        // 确保最终总结（没有后续工具调用的 assistant message）也会 save。
+                        // 解决 fork 子 Worker 被杀时最终总结丢失的问题。
+                        self.extensions
+                            .on_before_tool_execute("___assistant_message_saved", &serde_json::Value::Null, &self.messages)
+                            .await?;
                     }
 
                     // 溢出恢复计数器：成功响应后重置（对齐 pi 的 reset 时机）
@@ -883,6 +901,13 @@ impl Agent {
                         // Execute tool with streaming updates via tokio channel.
                         // Use select! to forward updates to extensions concurrently while tool runs.
                         let output = {
+                            // 增量 save 钩子：工具执行前 save 当前 messages。
+                            // 解决 fork 阻塞问题——LLM 调 skill(fork) → spawn_worker 阻塞 →
+                            // agent.run 不返回 → 进程被杀时 messages 全丢。
+                            // 这个钩子在 tool.execute_stream 前触发，把 user prompt +
+                            // assistant tool call decision 落盘。
+                            self.extensions.on_before_tool_execute(&tc_name, &tc_args, &self.messages).await?;
+
                             let tool_ref = self.tools.get(&tc.name);
                             match tool_ref {
                                 Some(tool) => {
@@ -897,7 +922,16 @@ impl Agent {
                                     tokio::pin!(exec_future);
 
                                     let mut rx = update_rx;
-                                    let timeout_duration = std::time::Duration::from_secs(120);
+                                    // 工具执行超时：默认 120s，但 skill fork 等长任务需要更久。
+                                    // skill 工具的 context=fork 会 spawn 子 Worker 执行完整 skill 流程，
+                                    // 可能要几分钟（audit 要读很多文件）。给它 600s（10 分钟）。
+                                    // 其他工具保持 120s。
+                                    let timeout_duration = if tc_name == "skill" {
+                                        std::time::Duration::from_secs(600)
+                                    } else {
+                                        std::time::Duration::from_secs(120)
+                                    };
+                                    let timeout_secs = timeout_duration.as_secs();
                                     let result = loop {
                                         tokio::select! {
                                             partial = rx.recv() => {
@@ -930,7 +964,7 @@ impl Agent {
                                                 break r;
                                             }
                                             _ = tokio::time::sleep(timeout_duration) => {
-                                                break Err(AgentError::Tool("tool execution timeout (120s)".to_string()));
+                                                break Err(AgentError::Tool(format!("tool execution timeout ({}s)", timeout_secs)));
                                             }
                                         }
                                     };
@@ -988,6 +1022,13 @@ impl Agent {
 
                         self.extensions.after_tool_call(tc, &tool_result).await?;
                         self.messages.push(Message::ToolResult(tr));
+
+                        // 增量 save：toolResult 加到 messages 后立即落盘。
+                        // 确保 skill fork 的返回值（toolResult）也会 save，
+                        // 即使后续 agent.run 阻塞 / 被杀。
+                        self.extensions
+                            .on_before_tool_execute("___tool_result_saved", &serde_json::Value::Null, &self.messages)
+                            .await?;
                     }
 
                     self.extensions

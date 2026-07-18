@@ -219,11 +219,19 @@ async fn main() {
     tools.register(Box::new(ion::agent::memory::MemorySaveTool { store: memory_store.clone() }));
     tools.register(Box::new(ion::agent::memory::MemorySearchTool { store: memory_store.clone() }));
 
-    // ── Skill 工具（让 LLM 按需加载 skill，inject 模式）──
-    // 扫描全局 ~/.ion/agent/skills/ + 项目级 <config_root>/.ion/skills/
+    // ── Skill 工具（让 LLM 按需加载 skill）──
+    // 扫描三个位置：
+    // 1. ~/.ion/agent/skills/（ION 全局）
+    // 2. <config_root>/.ion/skills/（项目级）
+    // 3. ~/.agents/skills/（全局 skill 库，111 个）
+    let agents_skills = std::env::var("HOME")
+        .ok()
+        .map(|h| std::path::PathBuf::from(h).join(".agents").join("skills"))
+        .unwrap_or_else(|| std::path::PathBuf::from("~/.agents/skills"));
     let skill_dirs = vec![
         ion::paths::skills_dir(),
         ion::paths::project_skills_dir(&config_root),
+        agents_skills,
     ];
     tools.register(Box::new(SkillTool { skill_dirs }));
 
@@ -1130,6 +1138,7 @@ async fn main() {
                     // 避免 list_turns/get_messages 等磁盘读 RPC 被阻塞 20 秒
                     // 同时支持 abort(pause_tx clone + 设 stopped)
                     let pause_tx_clone = agent.pause_handle();
+                    let stopped_handle = agent.stopped_handle();
                     let pending_steer_queue: std::sync::Arc<tokio::sync::Mutex<std::collections::VecDeque<(ion_provider::types::MessageSource, ion_provider::types::Message)>>> =
                         std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::VecDeque::new()));
                     let run_result = {
@@ -1237,8 +1246,9 @@ async fn main() {
                                             }
                                         }
                                         // abort → 通过外部句柄中断(不用 agent.stop(),避免 borrow 冲突)
-                                        // pause_tx clone + agent.run 内部的 check_pause 会读到 true → 返回 Aborted
+                                        // 设 stopped=true(AtomicBool)+ 发 pause 信号唤醒 check_pause
                                         "abort" => {
+                                            stopped_handle.store(true, std::sync::atomic::Ordering::SeqCst);
                                             let _ = pause_tx_clone.send(true);
                                             output_response(&bg_id, "abort", &serde_json::Value::Null);
                                         }
@@ -3340,9 +3350,14 @@ fn output(msg: &serde_json::Value) {
 /// 返回空字符串表示没有可用 skill（不往 system prompt 加无用提示）。
 /// 对齐 docs/design/SKILL_TOOL.md §2.5：让 LLM 知道有哪些 skill 可选，但不预加载内容。
 fn build_skill_hint(config_root: &str) -> String {
+    let agents_skills = std::env::var("HOME")
+        .ok()
+        .map(|h| std::path::PathBuf::from(h).join(".agents").join("skills"))
+        .unwrap_or_else(|| std::path::PathBuf::from("~/.agents/skills"));
     let dirs = [
         ion::paths::skills_dir(),
         ion::paths::project_skills_dir(config_root),
+        agents_skills,
     ];
     // 收集 (name, description) 对
     let mut skills: Vec<(String, String)> = Vec::new();
@@ -3350,17 +3365,30 @@ fn build_skill_hint(config_root: &str) -> String {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if !path.is_file() {
-                    continue;
-                }
-                if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
-                    if let Some(name) = fname.strip_suffix(".md") {
-                        if !skills.iter().any(|(n, _)| n == name) {
-                            let content = std::fs::read_to_string(&path).unwrap_or_default();
-                            let desc = parse_skill_description_inline(&content);
-                            skills.push((name.to_string(), desc));
+                let (name, content_path) = if path.is_file() {
+                    // 格式 1：<dir>/<name>.md
+                    match path.file_name().and_then(|n| n.to_str()) {
+                        Some(fname) if fname.ends_with(".md") => {
+                            (fname.trim_end_matches(".md").to_string(), path.clone())
                         }
+                        _ => continue,
                     }
+                } else if path.is_dir() {
+                    // 格式 2：<dir>/<name>/SKILL.md
+                    let skill_md = path.join("SKILL.md");
+                    if !skill_md.is_file() { continue; }
+                    let dir_name = match path.file_name().and_then(|n| n.to_str()) {
+                        Some(n) => n,
+                        None => continue,
+                    };
+                    (strip_version_suffix_inline(dir_name), skill_md)
+                } else {
+                    continue;
+                };
+                if !skills.iter().any(|(n, _)| n == &name) {
+                    let content = std::fs::read_to_string(&content_path).unwrap_or_default();
+                    let desc = parse_skill_description_inline(&content);
+                    skills.push((name, desc));
                 }
             }
         }
@@ -3391,6 +3419,17 @@ fn build_skill_hint(config_root: &str) -> String {
          - `skill(skill_name=\"list\")` — 列出所有 skill 详情\n",
     );
     out
+}
+
+/// 去掉版本后缀（如 "debug-pro-1.0.0" → "debug-pro"）
+fn strip_version_suffix_inline(name: &str) -> String {
+    if let Some(pos) = name.rfind('-') {
+        let suffix = &name[pos + 1..];
+        if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit() || c == '.') {
+            return name[..pos].to_string();
+        }
+    }
+    name.to_string()
 }
 
 /// 从 skill 文件 frontmatter 提取 description（build_skill_hint 用，避免跟 tool.rs 的私有函数冲突）
