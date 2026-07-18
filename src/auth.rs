@@ -92,6 +92,15 @@ impl AuthStorage {
             return Some(key.clone());
         }
 
+        // 2b. 前缀匹配 fallback:zhipuai-2 → zhipuai,openai-3 → openai
+        // 模型配置里 provider 可能带后缀(如 zhipuai-2),但 auth.json 里只有基础名
+        if let Some(dash_pos) = provider.rfind('-') {
+            let base = &provider[..dash_pos];
+            if let Some(key) = auth.provider_api_keys.get(base) {
+                return Some(key.clone());
+            }
+        }
+
         // 3. auth.json api_key (generic fallback)
         if let Some(ref key) = auth.api_key {
             return Some(key.clone());
@@ -104,6 +113,13 @@ impl AuthStorage {
         }
         if let Some(key) = cfg.provider_api_keys.get(provider) {
             return Some(key.clone());
+        }
+        // 前缀匹配 fallback(config.json)
+        if let Some(dash_pos) = provider.rfind('-') {
+            let base = &provider[..dash_pos];
+            if let Some(key) = cfg.provider_api_keys.get(base) {
+                return Some(key.clone());
+            }
         }
 
         // 5. Environment var (PROVIDER_API_KEY)
