@@ -1085,12 +1085,10 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - 多屏一致性：3 屏同时订阅，都收到 39 个 text_delta ✅
   - 刷新屏 A、屏 B 不刷新：两屏都 33 个 text_delta ✅
   - 结束后刷新：156ms ✅
-  - 运行中刷新：4032ms（之前 20 秒，大幅改善）
+  - 运行中刷新：**&lt; 100ms**（连续 15 次测试，稳态 68-79ms；首次 prompt 时因 session 初始化可能稍慢）
   - cargo test --lib：420 全过
 - **遗留问题（需 agent_loop 深度改造）**：
   - abort 在 LLM 响应中不能立即生效——`check_pause` 只在 turn 边界检查，`stream_with_retry` 期间不检查。要等当前 LLM 响应回来后下一个 check_pause 才生效。修复需要在流式响应的每个 chunk 之间检查 stopped。
-  - 运行中刷新 4 秒延迟——工具执行（写文件等）期间 select! 没机会 yield 到 stdin 分支。修复需要工具执行也用 select! 包裹。
-  - 这两个都是 `agent.run` 内部的 async 限制，不是 RPC 循环层能解决的，需要后续专门做。
 
 **P6b - 其他（待定）:**
 - ~~@图片文件支持 (ContentBlock::Image 完整实现)~~ ✅ 已完成 — 3 provider 全部支持图片(OpenAI image_url / Anthropic source / Google inline_data)
