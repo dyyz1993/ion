@@ -645,7 +645,15 @@ impl Agent {
             let mut sys_prompt = self.system_prompt.clone().unwrap_or_default();
             self.extensions.on_system_prompt(&mut sys_prompt).await?;
             let sys_prompt = Some(sys_prompt);
-            let messages_snapshot = self.messages.clone();
+
+            // Skill 自动卸载：skill 内容（tool result）在加载后的下一轮 turn 就被"消化"了。
+            // 后续 turn 不需要完整的 skill 内容——只保留标记（"skill xxx was loaded, content unloaded"）。
+            // 这样大 skill（如 security-auditor 10KB）不会一直占 context。
+            //
+            // 策略：skill tool result 后面如果有 assistant message（说明 LLM 已基于 skill 回复了），
+            // 就把 skill tool result 的内容替换成简短占位符。
+            // 保留最近一次 skill 加载的完整内容（当前 turn 可能还需要）。
+            let messages_snapshot = unload_consumed_skills(&self.messages, turn as usize);
             let tool_defs: Vec<_> = self.tools.tool_defs().iter().cloned().collect();
 
             // 跨 provider 消息规范化：当对话历史混合多个 provider 的消息时，
@@ -855,6 +863,12 @@ impl Agent {
                     }
 
                     for tc in &tool_calls {
+                        // 工具执行前检查 abort(stopped 是 Arc<AtomicBool>)
+                        if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                            tracing::info!("[abort] 工具执行循环中检测到 stopped，终止");
+                            break;
+                        }
+
                         // ── 权限检查已移至 SecuredRuntime ──
                         // PermissionEngine + CommandGuard 现在在 Runtime trait 方法里拦截
                         // （execute_command / read_file / write_file / spawn_process 等）
@@ -1144,6 +1158,12 @@ impl Agent {
                     let mut thinking_buf = String::new();
 
                     while let Some(event) = event_stream.recv().await {
+                        // 每个 chunk 之间检查 abort(stopped 是 Arc<AtomicBool>,不需要 &self)
+                        if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                            tracing::info!("[abort] LLM 流式中检测到 stopped，立即终止");
+                            final_reason = StopReason::Aborted;
+                            break;
+                        }
                         // Transparent passthrough — forward each provider event to extensions immediately
                         match &event {
                             StreamEvent::Done { reason, .. } => final_reason = reason.clone(),
@@ -1496,6 +1516,79 @@ impl Agent {
             last_stop_reason: None,
         }
     }
+}
+
+/// Skill 自动卸载：把已"消费"的 skill tool result 内容替换成占位符。
+///
+/// 当 LLM 基于 skill 内容做了回复（assistant message）后，skill 内容就不需要了。
+/// 把旧 skill tool result 替换成 "[skill 'xxx' content unloaded to save context]"。
+/// 保留最近一次 skill 加载的完整内容（当前 turn 可能还用得到）。
+///
+/// 判断"已消费"：skill tool result 后面跟着 assistant message（turn > skill 加载的 turn）。
+fn unload_consumed_skills(messages: &[Message], current_turn: usize) -> Vec<Message> {
+    use ion_provider::types::{Message as ProviderMessage, ContentBlock, TextContent};
+
+    // 找所有 skill tool result 的位置 + 对应的 skill 名字
+    // skill tool result 的内容以 "Skill '" 开头（SkillTool inject 模式的返回值格式）
+    let mut skill_positions: Vec<(usize, String)> = Vec::new(); // (index, skill_name)
+    for (i, msg) in messages.iter().enumerate() {
+        if let Message::ToolResult(tr) = msg {
+            if tr.content.iter().any(|c| {
+                if let ContentBlock::Text(TextContent { text, .. }) = c {
+                    text.starts_with("Skill '") && text.contains("' loaded:")
+                } else {
+                    false
+                }
+            }) {
+                // 提取 skill 名字
+                let skill_name = tr.content.iter().find_map(|c| {
+                    if let ContentBlock::Text(TextContent { text, .. }) = c {
+                        // "Skill 'code-audit' loaded:" → "code-audit"
+                        if text.starts_with("Skill '") {
+                            let rest = &text[7..];
+                            if let Some(end) = rest.find('\'') {
+                                return Some(rest[..end].to_string());
+                            }
+                        }
+                    }
+                    None
+                }).unwrap_or_default();
+                skill_positions.push((i, skill_name));
+            }
+        }
+    }
+
+    if skill_positions.is_empty() {
+        return messages.to_vec();
+    }
+
+    // 保留最后一次 skill 加载的完整内容（当前 turn 可能还需要）
+    let last_skill_pos = skill_positions.last().map(|(pos, _)| *pos).unwrap_or(usize::MAX);
+
+    // 对每个 skill tool result（除了最后一次的），检查它后面是否有 assistant message
+    let mut result = messages.to_vec();
+    for (pos, skill_name) in &skill_positions {
+        if *pos >= last_skill_pos {
+            continue; // 保留最后一次的完整内容
+        }
+        // 检查这个 skill result 后面是否有 assistant message
+        let has_following_assistant = messages[*pos + 1..].iter().any(|m| {
+            matches!(m, Message::Assistant(_))
+        });
+        if has_following_assistant {
+            // 替换成占位符
+            if let Some(Message::ToolResult(tr)) = result.get_mut(*pos) {
+                let placeholder = format!(
+                    "[Skill '{}' was loaded and used. Content unloaded to save context. \
+                     Use skill(skill_name='{}') to reload if needed.]",
+                    skill_name, skill_name
+                );
+                tr.content = vec![ContentBlock::Text(TextContent { text: placeholder, text_signature: None })];
+            }
+        }
+    }
+
+    result
 }
 
 fn now_ms() -> i64 {
