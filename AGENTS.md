@@ -425,6 +425,7 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/testing/MESSAGE_RETRIEVAL_CASES.md](./docs/testing/MESSAGE_RETRIEVAL_CASES.md) | 消息拉取 CLI 用例集：9 接口 + 12 Group A-L + 分页/视点/过滤/血缘 (设计定稿+已实现) |
 | [docs/design/MEMORY_ACTIVE.md](./docs/design/MEMORY_ACTIVE.md) | Memory Active — V0.2 主动注入（on_input→on_context 自动检索全局库）+ 自动整理（去重/归档/大纲索引）+ bigram 中文分词 (已完成) |
 | [docs/design/MEMORY_V2_PROCESSING.md](./docs/design/MEMORY_V2_PROCESSING.md) | Memory V0.2 会话加工 — SessionEnd 自动 LLM 提炼精华（替代原样存）+ 去重 + entities 铺路 (已完成) |
+| [docs/design/SELF_EVOLUTION.md](./docs/design/SELF_EVOLUTION.md) | **自我进化闭环** — evolver agent + worktree + Apple Container 双重隔离 + ION 子实例改代码 + 测试 + 开 PR（开发中） |
 
 ### 使用指南（docs/guides/）
 
@@ -1253,6 +1254,26 @@ ion config set api-key "sk-xxx"    # 存到 ~/.ion/auth.json (权限 600)
 ion config set default-model deepseek-v4-flash
 ion "hello"                        # 直接运行
 ```
+
+### 自我进化 Container 环境
+
+自我进化功能需要 Apple Container 提供隔离的 Rust 编译环境。
+
+```bash
+# 一键初始化（创建 container + 安装 Rust + 复制 ion binary）
+bash scripts/init-evolve-container.sh /path/to/worktree
+
+# 输出 CONTAINER_NAME，后续 container exec 用
+```
+
+详细设计见 [docs/design/SELF_EVOLUTION.md](./docs/design/SELF_EVOLUTION.md)。
+
+Container 内包含：
+- `rust:latest` 镜像（rustc + cargo + git）
+- ion binary（从 host 复制，或在 container 内 `cargo build`）
+- gh CLI（开 PR 用）
+
+资源限制：4G 内存 + 4 CPU（Rust 编译需要足够资源）。
 
 ## 项目结构
 

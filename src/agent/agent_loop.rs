@@ -974,7 +974,7 @@ impl Agent {
                                     // skill 工具的 context=fork 会 spawn 子 Worker 执行完整 skill 流程，
                                     // 可能要几分钟（audit 要读很多文件）。给它 600s（10 分钟）。
                                     // 其他工具保持 120s。
-                                    let timeout_duration = if tc_name == "skill" {
+                                    let timeout_duration = if tc_name == "skill" || tc_name == "bash" || tc_name == "bash_run" {
                                         std::time::Duration::from_secs(600)
                                     } else {
                                         std::time::Duration::from_secs(120)
