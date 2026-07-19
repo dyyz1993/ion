@@ -1274,6 +1274,13 @@ async fn cmd_workflow_run(path: &str, set: &[String]) {
         std::env::set_var("ION_MAX_TURNS", "0");
     }
 
+    // 同步更新 last_session，让 export_report stage 的 ion --export 能找到 wf 的 session
+    // （ION_FORK_CHILD=1 让 wf 用 <sid>.jsonl 独立文件，但 last_session 不自动更新）
+    let _ = std::fs::write(
+        ion::session_jsonl::last_session_path(),
+        &wf_session_id,
+    );
+
     // 启动 wf agent（--host 模式）
     // wf agent 读取 yaml 文件，执行 stages
     //

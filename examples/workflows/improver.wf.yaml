@@ -178,12 +178,14 @@ stages:
   # ═══════════════════════════════════════════════════════
   # Stage 8: 导出 HTML 报告 + 自动打开（两类都要）
   # ═══════════════════════════════════════════════════════
+  # 找 wf agent 自己的 session：ION_FORK_CHILD=1 让 wf 用 <sid>.jsonl 独立文件，
+  # 不更新 last_session，所以要直接找最新的 sess_wf_*.jsonl
   - id: export_report
     if: "always"
     commands:
-      - "LAST_SID=$(cat ~/.ion/agent/last_session 2>/dev/null) && REPORT=/tmp/improver_$(date +%Y%m%d_%H%M%S).html && ion --export \"$REPORT\" --session \"$LAST_SID\" && echo \"REPORT_PATH=$REPORT\" >> .ion/.improver-state && open \"$REPORT\""
+      - "WF_SID=$(ls -t ~/.ion/agent/sessions/*/sess_wf_*.jsonl 2>/dev/null | head -1 | xargs basename | sed 's/.jsonl//') && REPORT=/tmp/improver_$(date +%Y%m%d_%H%M%S).html && ion --export \"$REPORT\" --session \"$WF_SID\" && echo \"REPORT_PATH=$REPORT\" >> .ion/.improver-state && open \"$REPORT\""
     gate:
-      command: "grep -q 'REPORT_PATH=' .ion/.improver-state && echo OK || echo FAIL"
+      command: "grep -q 'REPORT_PATH=/tmp/improver' .ion/.improver-state && echo OK || echo FAIL"
       expected: OK
 
   # ═══════════════════════════════════════════════════════
