@@ -336,6 +336,9 @@ enum Commands {
         /// Subscribe to UI events (Ask/Confirm/Notif/Alert/Prompt)
         #[arg(long)]
         ui: bool,
+        /// Replay last N events on connect (refresh recovery)
+        #[arg(long)]
+        replay: Option<usize>,
     },
     /// List sessions for the current project (or all projects with --all)
     ///   ion sessions                  当前主仓库的会话（含 worktree）
@@ -935,7 +938,7 @@ fn build_agent_config(eff: &EffectiveConfig) -> AgentConfig {
         response_format: if eff.json { Some("json_object".into()) } else { None },
         thinking: eff.thinking.clone(),
         compact_model_id: eff.compact_model.clone(),
-        retry_on_no_tool_use: 1,
+        retry_on_no_tool_use: 0,
         retry_config: None,
     }
 }
@@ -1886,7 +1889,7 @@ async fn cmd_rpc(session: Option<&str>, method: &str, params: &str) {
 
 /// Subscribe to real-time events from a session or plugin.
 /// Connects to Manager socket, sends subscribe, prints events line by line.
-async fn cmd_subscribe(session: Option<&str>, extension: Option<&str>, ui: bool) {
+async fn cmd_subscribe(session: Option<&str>, extension: Option<&str>, ui: bool, replay: Option<usize>) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     let sock_path = ion::paths::host_socket_path();
@@ -1902,6 +1905,7 @@ async fn cmd_subscribe(session: Option<&str>, extension: Option<&str>, ui: bool)
     if let Some(sid) = session { req["session"] = serde_json::json!(sid); }
     if let Some(p) = extension { req["extension"] = serde_json::json!(p); }
     if ui { req["ui"] = serde_json::json!(true); }
+    if let Some(n) = replay { req["replay"] = serde_json::json!(n); }
 
     let req_line = format!("{req}\n");
     if stream.write_all(req_line.as_bytes()).await.is_err() {
@@ -3032,7 +3036,7 @@ async fn main() {
         }
         Some(Commands::Session { action }) => cmd_session(action.clone()).await,
         Some(Commands::Recordings) => cmd_recordings().await,
-        Some(Commands::Subscribe { session, extension, ui }) => cmd_subscribe(session.as_deref(), extension.as_deref(), *ui).await,
+        Some(Commands::Subscribe { session, extension, ui, replay }) => cmd_subscribe(session.as_deref(), extension.as_deref(), *ui, *replay).await,
         Some(Commands::ListAgents) => cmd_list_agents().await,
         Some(Commands::ListModels { search }) => cmd_list_models(search).await,
         Some(Commands::Extension { action }) => cmd_extension(action.clone()).await,
@@ -3203,7 +3207,11 @@ async fn cmd_serve_start(
                                             .find(|w| w.session_id == *sid)
                                             .map(|w| w.worker_id.clone());
                                         if let Some(wid) = worker_opt {
-                                            let mut rx = match inner_reg.subscribe(&wid) {
+                                            // 支持 replay 参数(刷新时恢复之前的事件)
+                                            let replay = cmd.get("replay")
+                                                .and_then(|v| v.as_u64())
+                                                .unwrap_or(0) as usize;
+                                            let (mut rx, replay_events) = match inner_reg.subscribe_with_replay(&wid, replay) {
                                                 Ok(r) => r,
                                                 Err(e) => {
                                                     let resp = serde_json::json!({"type":"error","error":e});
@@ -3212,9 +3220,20 @@ async fn cmd_serve_start(
                                                 }
                                             };
                                             drop(inner_reg);
-                                            let ack = serde_json::json!({"type":"subscribed","session":sid,"stream":"instance"});
+                                            let ack = serde_json::json!({"type":"subscribed","session":sid,"stream":"instance","replayed":replay_events.len()});
                                             let _ = write_half.write_all(format!("{ack}\n").as_bytes()).await;
+                                            // 先发送回放的历史事件
+                                            for evt in &replay_events {
+                                                let out = serde_json::json!({
+                                                    "type": "instance_event",
+                                                    "session": sid,
+                                                    "event": evt.get("event").cloned().unwrap_or(evt.clone()),
+                                                    "replayed": true,
+                                                });
+                                                if write_half.write_all(format!("{out}\n").as_bytes()).await.is_err() { return; }
+                                            }
                                             let _ = write_half.flush().await;
+                                            // 然后转发实时事件
                                             loop {
                                                 match rx.recv().await {
                                                     Some(msg) => {

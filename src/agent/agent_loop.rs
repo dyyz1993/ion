@@ -45,7 +45,7 @@ impl Default for AgentConfig {
             response_format: None,
             thinking: None,
             compact_model_id: None,
-            retry_on_no_tool_use: 1,
+            retry_on_no_tool_use: 0,
             retry_config: None,
         }
     }
@@ -463,6 +463,40 @@ impl Agent {
     pub fn clear_queues(&mut self) {
         self.steering_queue.clear();
         self.follow_up_queue.clear();
+    }
+
+    /// 删除 follow_up 队列里第 index 条消息
+    pub fn remove_follow_up(&mut self, index: usize) -> Option<ion_provider::types::Message> {
+        let mut new_q = VecDeque::new();
+        let mut removed = None;
+        let mut i = 0;
+        while let Some(msg) = self.follow_up_queue.pop_front() {
+            if i == index {
+                removed = Some(msg);
+            } else {
+                new_q.push_back(msg);
+            }
+            i += 1;
+        }
+        self.follow_up_queue = new_q;
+        removed
+    }
+
+    /// 删除 steering 队列里第 index 条消息
+    pub fn remove_steering(&mut self, index: usize) -> Option<ion_provider::types::Message> {
+        let mut new_q = VecDeque::new();
+        let mut removed = None;
+        let mut i = 0;
+        while let Some(msg) = self.steering_queue.pop_front() {
+            if i == index {
+                removed = Some(msg);
+            } else {
+                new_q.push_back(msg);
+            }
+            i += 1;
+        }
+        self.steering_queue = new_q;
+        removed
     }
 
     /// 直接调用一个已注册的工具（不经过 LLM）。

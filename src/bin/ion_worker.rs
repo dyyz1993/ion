@@ -263,7 +263,7 @@ async fn main() {
 	        api_key: Some(api_key.clone()),
 		        response_format: None, thinking: None,
 			    compact_model_id: None,
-		    retry_on_no_tool_use: 1,
+		    retry_on_no_tool_use: 0,
 			    retry_config: Some(ion::retry::RetryConfig::default()),
 	    };
 
@@ -338,6 +338,9 @@ async fn main() {
         let mut p = SESSION_FILE_PATH.lock().unwrap();
         *p = Some(session_file_path.clone());
     }
+    // 设置 lib 层全局覆盖（让 append_raw_entry / append_turn_summary 也用正确路径）
+    // 这样 fork 子 Worker 的 turn_summary 不会写到主 session.jsonl
+    ion::session_jsonl::set_session_file_override(Some(session_file_path.clone()));
     // 存 sid + cwd 到全局，on_before_tool_execute 钩子用
     {
         *SESSION_SID.lock().unwrap() = Some(sid.clone());
@@ -803,6 +806,43 @@ async fn main() {
                 }));
             }
 
+            "get_session_info" => {
+                // 统一状态接口（合并 get_state + get_session_stats + token 统计）
+                let total_input: u64 = agent.messages().iter()
+                    .filter_map(|m| match m { Message::Assistant(a) => Some(a.usage.input), _ => None })
+                    .sum();
+                let total_output: u64 = agent.messages().iter()
+                    .filter_map(|m| match m { Message::Assistant(a) => Some(a.usage.output), _ => None })
+                    .sum();
+                let user_count = agent.messages().iter()
+                    .filter(|m| matches!(m, Message::User(_))).count();
+                let assistant_count = agent.messages().iter()
+                    .filter(|m| matches!(m, Message::Assistant(_))).count();
+                let tool_result_count = agent.messages().iter()
+                    .filter(|m| matches!(m, Message::ToolResult(_))).count();
+                output_response(&id, "get_session_info", &serde_json::json!({
+                    "session_id": sid,
+                    "model": model_id,
+                    "provider": provider,
+                    "agent": current_agent_name,
+                    "is_running": agent.is_running(),
+                    "is_stopped": agent.is_stopped(),
+                    "message_count": agent.messages().len(),
+                    "user_messages": user_count,
+                    "assistant_messages": assistant_count,
+                    "tool_results": tool_result_count,
+                    "tokens": {
+                        "input": total_input,
+                        "output": total_output,
+                        "total": total_input + total_output,
+                    },
+                    "steering_queue": agent.steering_queue_len(),
+                    "follow_up_queue": agent.follow_up_queue_len(),
+                    "context_window": agent.model().context_window,
+                    "max_tokens": agent.model().max_tokens,
+                }));
+            }
+
             "get_session_stats" => {
                 let total_input: u64 = agent.messages().iter()
                     .filter_map(|m| match m { Message::Assistant(a) => Some(a.usage.input), _ => None })
@@ -1244,6 +1284,18 @@ async fn main() {
                                                 None => output_response(&bg_id, "get_turn_detail", &serde_json::json!({"error": "turn not found", "turnId": turn_id})),
                                             }
                                         }
+                                        // get_session_info / get_state → agent.run 期间不能读 messages(&mut 冲突)
+                                        // 返回简化版(只有 model/provider/is_running)
+                                        "get_session_info" | "get_state" => {
+                                            output_response(&bg_id, "get_session_info", &serde_json::json!({
+                                                "session_id": sid,
+                                                "model": model_id, "provider": provider,
+                                                "is_running": true,  // agent.run 期间一定 running
+                                                "is_stopped": stopped_handle.load(std::sync::atomic::Ordering::SeqCst),
+                                                "message_count": null,  // agent.run 期间不能读
+                                                "note": "agent is running, use list_turns for disk data",
+                                            }));
+                                        }
                                         // abort → 通过外部句柄中断(不用 agent.stop(),避免 borrow 冲突)
                                         // 设 stopped=true(AtomicBool)+ 发 pause 信号唤醒 check_pause
                                         "abort" => {
@@ -1300,8 +1352,20 @@ async fn main() {
                                 .filter_map(|m| serde_json::to_value(m).ok())
                                 .collect();
                             save_worker_session(&sid, &worker_cwd, &msgs_json);
+                            // 区分正常完成 vs 被中止
+                            let was_stopped = stopped_handle.load(std::sync::atomic::Ordering::SeqCst);
+                            let (evt_type, reason) = if was_stopped {
+                                ("agent_stopped", "user_abort")
+                            } else {
+                                ("agent_end", "completed")
+                            };
                             output(&serde_json::json!({
-                                "type":"event","event":{"type":"agent_end","sessionId":sid,"timestamp":now_ms()}
+                                "type":"event","event":{
+                                    "type":evt_type,
+                                    "sessionId":sid,
+                                    "timestamp":now_ms(),
+                                    "reason":reason
+                                }
                             }));
                         }
                         Err(e) => {
@@ -1365,6 +1429,22 @@ async fn main() {
                     }));
                 }
                 output_response(&id, "promote_follow_up", &serde_json::Value::Null);
+            }
+            "remove_follow_up" => {
+                let index = params.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let removed = agent.remove_follow_up(index);
+                output_response(&id, "remove_follow_up", &serde_json::json!({
+                    "removed": removed.is_some(),
+                    "follow_up_queue": agent.follow_up_queue_len(),
+                }));
+            }
+            "remove_steering" => {
+                let index = params.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let removed = agent.remove_steering(index);
+                output_response(&id, "remove_steering", &serde_json::json!({
+                    "removed": removed.is_some(),
+                    "steering_queue": agent.steering_queue_len(),
+                }));
             }
 // ── Channel 消息 (从其他 Worker 转发过来) ──
             // 把消息作为 follow_up 注入 Agent，让 Agent 下一轮消化（不抢当前轮次）。

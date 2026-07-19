@@ -68,6 +68,10 @@ pub struct WorkerRecord {
     pub exit_reason: Option<String>,
     /// stderr 日志文件路径
     pub stderr_path: Option<String>,
+    /// 事件回放 ring buffer（缓存最近 N 条事件，subscribe --replay 时返回）
+    pub event_history: std::collections::VecDeque<serde_json::Value>,
+    /// ring buffer 容量（默认 200）
+    pub event_history_cap: usize,
 }
 
 /// Worktree isolation config (specified at worker creation).
@@ -333,6 +337,35 @@ impl WorkerRegistry {
             }
         }
 
+        // ── 传递 parent 关联信息给子进程（让子 Worker session header 能记录血缘）──
+        // 从 self.workers 查 config.creator（spawn 调用者的 worker_id），
+        // 拿到 parent_session_id + parent_worker_id。
+        // ion_worker 读这些 env，写到 session header 的 parentSession + spawnMeta 字段。
+        // 入口 Worker（无 creator）不设这些 env → parentSession=null（兼容旧行为）。
+        if let Some(ref creator_wid) = config.creator {
+            // config.creator 可能是 worker_id 或 session_id（ManagerBridge 传的是 session_id）。
+            // 先按 worker_id 查，找不到再按 session_id 查。
+            let parent_record = self.workers.get(creator_wid)
+                .or_else(|| self.workers.values().find(|w| &w.session_id == creator_wid));
+            if let Some(parent_record) = parent_record {
+                child_cmd.env("ION_PARENT_SESSION", &parent_record.session_id);
+                child_cmd.env("ION_PARENT_WORKER", &parent_record.worker_id);
+            }
+        }
+        // 关系类型（fork/system/peer/child）— 用 config.relation
+        let relation_str = match config.relation {
+            Some(WorkerRelation::System) => "system",
+            Some(WorkerRelation::Peer) => "peer",
+            _ => "child",  // fork 也是 Child 关系
+        };
+        child_cmd.env("ION_SPAWN_RELATION", relation_str);
+        // skill fork 标记（spawnedBy）：system_prompt_override 非空 → skill_tool fork
+        if config.system_prompt_override.is_some() {
+            child_cmd.env("ION_SPAWNED_BY", "skill_fork");
+        } else if config.relation == Some(WorkerRelation::System) {
+            child_cmd.env("ION_SPAWNED_BY", "singleton_init");
+        }
+
         // ── hooks 递归深度传递（防 agent handler 死循环）──
         // 从 WorkerCreateConfig.hook_depth 读（hooks agent handler spawn 时设）。
         // 设了就传给子进程 ION_HOOK_DEPTH，HookExtension 读到 >= 2 就跳过 agent handler。
@@ -345,6 +378,17 @@ impl WorkerRegistry {
         // 把 skill 内容注入 system prompt，避免被 compaction 压缩。
         if let Some(ref sp) = config.system_prompt_override {
             child_cmd.env("ION_SYSTEM_PROMPT", sp);
+        }
+
+        // ── 独立 session 文件标记 ──
+        // 以下两类 Worker 用 <session_id>.jsonl 而不是共享 session.jsonl：
+        // 1. fork 子 Worker（system_prompt_override 非空）：skill fork spawn 的隔离子任务
+        // 2. System 关系 Worker（memory-agent 等）：常驻后台 Agent，不应污染主会话
+        // 主 Worker（入口 Worker）继续用 session.jsonl（兼容现有 export/list 行为）
+        let is_independent_session = config.system_prompt_override.is_some()
+            || config.relation == Some(WorkerRelation::System);
+        if is_independent_session {
+            child_cmd.env("ION_FORK_CHILD", "1");
         }
 
         let mut child = child_cmd
@@ -411,6 +455,8 @@ impl WorkerRegistry {
             exit_code: None,
             exit_reason: None,
             stderr_path: None,
+            event_history: std::collections::VecDeque::with_capacity(200),
+            event_history_cap: 200,
         };
 
         // Register in parent's children list
@@ -536,17 +582,23 @@ impl WorkerRegistry {
 
                         // 关键：event 消息转发给 event_subscribers（实时流）
                         if msg_type == "event" {
-		                            let ev_type = msg.get("event")
-		                                .and_then(|e| e.get("type"))
-		                                .and_then(|v| v.as_str())
-		                                .unwrap_or("");
-		                            let reg = sub_registry.lock().await;
-		                            if let Some(record) = reg.workers.get(&sub_wid) {
-		                                for sub in &record.event_subscribers {
-		                                    let _ = sub.try_send(msg.clone());
-		                                }
-		                            }
-		                            // 更新 latest_output / status
+			                            let ev_type = msg.get("event")
+			                                .and_then(|e| e.get("type"))
+			                                .and_then(|v| v.as_str())
+			                                .unwrap_or("");
+			                            let mut reg = sub_registry.lock().await;
+			                            if let Some(record) = reg.workers.get_mut(&sub_wid) {
+			                                // 转发给实时订阅者
+			                                for sub in &record.event_subscribers {
+			                                    let _ = sub.try_send(msg.clone());
+			                                }
+			                                // 写入 ring buffer（用于 subscribe --replay）
+			                                record.event_history.push_back(msg.clone());
+			                                while record.event_history.len() > record.event_history_cap {
+			                                    record.event_history.pop_front();
+			                                }
+			                            }
+			                            // 更新 latest_output / status
 		                            if ev_type == "text_delta" {
 		                                if let Some(delta) = msg.get("event")
 		                                    .and_then(|e| e.get("delta"))
@@ -563,7 +615,7 @@ impl WorkerRegistry {
 		                                        record.log_short = Some(truncated);
 		                                    }
 		                                }
-		                            } else if ev_type == "agent_end" {
+		                            } else if ev_type == "agent_end" || ev_type == "agent_stopped" {
 		                                drop(reg);
 		                                let mut reg2 = sub_registry.lock().await;
 		                                if let Some(record) = reg2.workers.get_mut(&sub_wid) {
@@ -930,6 +982,28 @@ impl WorkerRegistry {
         Ok(rx)
     }
 
+    /// 订阅 worker 事件 + 回放最近 N 条历史事件
+    /// 返回 (receiver, replay_events)
+    pub fn subscribe_with_replay(
+        &mut self,
+        worker_id: &str,
+        replay_count: usize,
+    ) -> Result<(mpsc::Receiver<serde_json::Value>, Vec<serde_json::Value>), String> {
+        let record = self.workers.get_mut(worker_id)
+            .ok_or_else(|| format!("worker not found: {worker_id}"))?;
+        let (tx, rx) = mpsc::channel(256);
+        record.event_subscribers.push(tx);
+        // 取最近 N 条历史事件
+        let history: Vec<serde_json::Value> = if replay_count > 0 {
+            let total = record.event_history.len();
+            let start = total.saturating_sub(replay_count);
+            record.event_history.iter().skip(start).cloned().collect()
+        } else {
+            Vec::new()
+        };
+        Ok((rx, history))
+    }
+
     /// 非阻塞发送命令（只写 stdin，返回 req_id）。
     pub async fn send_command(
         &mut self,
@@ -1173,6 +1247,8 @@ impl WorkerRegistry {
     }
 
     /// 排空 rx 直到 agent_end 或超时。不持任何 lock。
+    /// agent_end 在 agent.run() 完全结束后触发（不是每轮 turn_end），
+    /// 所以这里返回的是子 Worker 最终的完整输出。
     async fn drain_until_agent_end(
         rx: &mut mpsc::Receiver<serde_json::Value>,
         timeout_secs: u64,
@@ -1189,22 +1265,22 @@ impl WorkerRegistry {
                 ev = rx.recv() => {
                     match ev {
                         Some(msg) => {
-			                    let et = msg.get("event")
-			                        .and_then(|e| e.get("type"))
-			                        .and_then(|v| v.as_str())
-			                        .unwrap_or("");
-			                    if et == "child_crashed" {
-			                        let exit = msg.get("event")
-			                            .and_then(|e| e.get("exit_code"))
-			                            .and_then(|v| v.as_i64())
-			                            .unwrap_or(-1);
-			                        let reason = msg.get("event")
-			                            .and_then(|e| e.get("exit_reason"))
-			                            .and_then(|v| v.as_str())
-			                            .unwrap_or("unknown");
-			                        return format!("❌ Worker crashed (exit={}):\n{}", exit, reason);
-			                    }
-			                    if et == "text_delta" {
+                            let et = msg.get("event")
+                                .and_then(|e| e.get("type"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            if et == "child_crashed" {
+                                let exit = msg.get("event")
+                                    .and_then(|e| e.get("exit_code"))
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(-1);
+                                let reason = msg.get("event")
+                                    .and_then(|e| e.get("exit_reason"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown");
+                                return format!("Worker crashed (exit={}):\n{}", exit, reason);
+                            }
+                            if et == "text_delta" {
                                 if let Some(d) = msg.get("event")
                                     .and_then(|e| e.get("delta"))
                                     .and_then(|v| v.as_str())
@@ -1250,7 +1326,13 @@ impl WorkerRegistry {
                         .unwrap_or(WorkerRelation::Child);
                     let wait = params.get("wait").and_then(|v| v.as_bool()).unwrap_or(true);
 
-                    let config: WorkerCreateConfig = serde_json::from_value(params).unwrap_or_default();
+                    let mut config: WorkerCreateConfig = serde_json::from_value(params).unwrap_or_default();
+                    // 把 from_worker（spawn 调用者）注入 config.creator，
+                    // 让 create_worker 内部能查到 parent_session_id 并传给子进程环境变量。
+                    // 入口 Worker（host 直接 create_session 创建的）没有 from_worker → creator 保持 None。
+                    if !from_worker.is_empty() && config.creator.is_none() {
+                        config.creator = Some(from_worker.clone());
+                    }
                     let report_channel = config.report_channel.clone().unwrap_or_else(|| "main".to_string());
                     match self.create_worker(config, registry_arc).await {
                         Ok(info) => {
