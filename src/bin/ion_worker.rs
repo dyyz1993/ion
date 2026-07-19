@@ -843,6 +843,24 @@ async fn main() {
                 }));
             }
 
+            "get_inflight_messages" => {
+                // 获取内存中的消息（还没落盘的）
+                // 返回最后 N 条 + 总数,让前端跟磁盘 list_turns 拼接
+                let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+                let msgs = agent.messages();
+                let total = msgs.len();
+                let start = total.saturating_sub(limit);
+                let recent: Vec<serde_json::Value> = msgs[start..].iter()
+                    .map(|m| serde_json::to_value(m).unwrap_or(serde_json::json!(null)))
+                    .collect();
+                output_response(&id, "get_inflight_messages", &serde_json::json!({
+                    "total": total,
+                    "returned": recent.len(),
+                    "is_running": agent.is_running(),
+                    "messages": recent,
+                }));
+            }
+
             "get_session_stats" => {
                 let total_input: u64 = agent.messages().iter()
                     .filter_map(|m| match m { Message::Assistant(a) => Some(a.usage.input), _ => None })
