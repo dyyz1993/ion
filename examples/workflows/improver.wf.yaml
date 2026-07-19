@@ -182,7 +182,7 @@ stages:
       expected: OK
 
   # ═══════════════════════════════════════════════════════
-  # Stage 8: 导出 HTML 报告（两类都要）
+  # Stage 8: 导出 HTML 报告 + 自动打开（两类都要）
   # ═══════════════════════════════════════════════════════
   - id: export_report
     if: "always"
@@ -190,9 +190,13 @@ stages:
       - |
         LAST_SID=$(cat ~/.ion/agent/last_session 2>/dev/null || echo "")
         REPORT=/tmp/improver_$(date +%Y%m%d_%H%M%S).html
+        # ion --export 会自动把 fork 出去的子 worker session（developer/researcher）
+        # 作为可点击链接嵌入主 HTML（fork_link 机制）
         ion --export "$REPORT" --session "$LAST_SID" 2>&1 | tail -2
         echo "REPORT_PATH=$REPORT" >> .ion/.improver-state
         echo "✅ 报告: $REPORT"
+        # macOS 自动打开浏览器
+        open "$REPORT" 2>/dev/null && echo "✅ 已在浏览器打开" || echo "(非 macOS 环境，手动 open $REPORT)"
     gate:
       command: "grep -q 'REPORT_PATH=' .ion/.improver-state && echo OK || echo FAIL"
       expected: OK
