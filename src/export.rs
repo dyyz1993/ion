@@ -432,7 +432,7 @@ fn export_session_internal(
     let tool_counts: std::collections::HashMap<String, u32> = {
         let mut counts = std::collections::HashMap::new();
         for e in &entries {
-            if e.get("type") != Some(&json!("message")) { continue; }
+            if e.get("type").and_then(|v| v.as_str()) != Some("message") { continue; }
             if let Some(content) = e.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
                 for c in content {
                     if let Some(name) = c.get("type").and_then(|v| v.as_str()) {
@@ -448,12 +448,30 @@ fn export_session_internal(
         counts
     };
     let total_tool_calls: u32 = tool_counts.values().sum();
+    // 模型名：只从 assistant message 的 model 字段提取（避免抓到 CSS 里的 emoji）
     let model = entries.iter()
-        .find_map(|e| e.get("message").and_then(|m| m.get("model")).and_then(|v| v.as_str()).map(|s| s.to_string()))
-        .unwrap_or_else(|| header.get("model").and_then(|v| v.as_str()).unwrap_or("unknown").to_string());
+        .find_map(|e| {
+            let msg = e.get("message")?;
+            // 只从 assistant 消息里取
+            if msg.get("role").and_then(|v| v.as_str()) != Some("assistant") {
+                return None;
+            }
+            msg.get("model").and_then(|v| v.as_str()).map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    // session 名称：优先 header.name > spawnMeta.spawnedBy > cwd 目录名
     let session_name = header.get("name").and_then(|v| v.as_str())
         .or_else(|| header.get("spawnMeta").and_then(|m| m.get("spawnedBy")).and_then(|v| v.as_str()))
-        .unwrap_or("Session");
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            // 从 cwd 推导：/Users/xxx/ion → "ion"
+            header.get("cwd")
+                .and_then(|v| v.as_str())
+                .and_then(|cwd| cwd.rsplit('/').next())
+                .unwrap_or("Session")
+                .to_string()
+        });
 
     // 构造统计 banner HTML
     let mut tool_badges = String::new();
