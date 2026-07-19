@@ -251,6 +251,15 @@ impl GlobalMemoryStore {
         Ok(count)
     }
 
+    /// 归档条目数
+    pub fn count_all_archived(&self) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM entries WHERE archived=1", [], |row| row.get(0)
+        ).unwrap_or(0);
+        Ok(count)
+    }
+
     /// 检查是否已有相同 content 的活跃记忆（去重用）
     pub fn has_content(&self, content: &str) -> Result<bool, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
@@ -595,6 +604,40 @@ mod tests {
             1,
             "含双引号的 query 应被正确转义并匹配字面内容"
         );
+    }
+
+    #[test]
+    fn test_count_all_archived() {
+        let store = test_store();
+
+        // 初始状态：无归档
+        assert_eq!(store.count_all_archived().unwrap(), 0);
+
+        // 保存 3 条活跃 + 2 条待归档
+        let id1 = store.save("active one", "note", "t", "p", 5).unwrap();
+        let _ = store.save("active two", "note", "t", "p", 5).unwrap();
+        let _ = store.save("active three", "note", "t", "p", 5).unwrap();
+        let id2 = store.save("to archive one", "note", "t", "p", 5).unwrap();
+        let id3 = store.save("to archive two", "note", "t", "p", 5).unwrap();
+
+        // 归档前：archived 数应为 0
+        assert_eq!(store.count_all_archived().unwrap(), 0);
+        // 活跃数应为 5
+        assert_eq!(store.count().unwrap(), 5);
+
+        // 归档 2 条
+        store.forget(&id2).unwrap();
+        store.forget(&id3).unwrap();
+
+        // 归档后：archived 数应为 2
+        assert_eq!(store.count_all_archived().unwrap(), 2);
+        // 活跃数应为 3
+        assert_eq!(store.count().unwrap(), 3);
+
+        // 再归档 1 条
+        store.forget(&id1).unwrap();
+        assert_eq!(store.count_all_archived().unwrap(), 3);
+        assert_eq!(store.count().unwrap(), 2);
     }
 
     /// 回归测试：consolidate() 重建 outlines 时，多 project 的 outline ID 必须唯一，
