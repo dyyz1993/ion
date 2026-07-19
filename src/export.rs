@@ -428,6 +428,76 @@ fn export_session_internal(
         }
     }
 
+    // 统计信息（工具调用次数、模型、session 名称）
+    let tool_counts: std::collections::HashMap<String, u32> = {
+        let mut counts = std::collections::HashMap::new();
+        for e in &entries {
+            if e.get("type") != Some(&json!("message")) { continue; }
+            if let Some(content) = e.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
+                for c in content {
+                    if let Some(name) = c.get("type").and_then(|v| v.as_str()) {
+                        if name == "toolCall" {
+                            if let Some(tn) = c.get("name").and_then(|v| v.as_str()) {
+                                *counts.entry(tn.to_string()).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        counts
+    };
+    let total_tool_calls: u32 = tool_counts.values().sum();
+    let model = entries.iter()
+        .find_map(|e| e.get("message").and_then(|m| m.get("model")).and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .unwrap_or_else(|| header.get("model").and_then(|v| v.as_str()).unwrap_or("unknown").to_string());
+    let session_name = header.get("name").and_then(|v| v.as_str())
+        .or_else(|| header.get("spawnMeta").and_then(|m| m.get("spawnedBy")).and_then(|v| v.as_str()))
+        .unwrap_or("Session");
+
+    // 构造统计 banner HTML
+    let mut tool_badges = String::new();
+    let mut sorted_tools: Vec<(&String, &u32)> = tool_counts.iter().collect();
+    sorted_tools.sort_by(|a, b| b.1.cmp(a.1));
+    for (name, count) in &sorted_tools {
+        tool_badges.push_str(&format!(
+            r#"<span style="background:rgba(255,255,255,0.15);padding:2px 8px;border-radius:10px;font-size:11px;">{} ×{}</span>"#,
+            name, count
+        ));
+    }
+
+    let stats_banner = format!(r#"
+<div id="ion-stats-banner" style="
+  background: #1a1a2e;
+  color: white;
+  padding: 12px 20px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  border-bottom: 2px solid #16213e;
+  flex-wrap: wrap;
+">
+  <span style="font-size: 16px; font-weight: 700;">📋 {}</span>
+  <span style="color:#7ec8e3;">🤖 {}</span>
+  <span style="color:#aaa;">🔧 {} tool calls</span>
+  <span style="color:#aaa;">📝 {} entries</span>
+  <span style="display:flex;gap:4px;flex-wrap:wrap;">{}</span>
+</div>"#, session_name, model, total_tool_calls, entries.len(), tool_badges);
+
+    // 在 fork-origin-banner 之后（或 body 开头）插入统计 banner
+    if html.contains("fork-origin-banner") {
+        // fork 子 session：在 origin banner 后插入
+        if let Some(pos) = html.find("</div>\n</div>\n\n") {
+            html.insert_str(pos + 6, &stats_banner);
+        }
+    } else {
+        // 主 session：在 body 开头插入
+        if let Some(pos) = html.find("<body>") {
+            html.insert_str(pos + 6, &stats_banner);
+        }
+    }
+
     // fork 子 session 的文件名在 base64 编码的 session-data 里，
     // HTML 写入前替换看不到明文。改为在 HTML 末尾注入一段 JavaScript：
     // 页面加载后，遍历 DOM 把 "fork_xxxxxxxxxxxx.html" 文本替换成可点击链接。
