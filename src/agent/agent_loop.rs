@@ -974,8 +974,15 @@ impl Agent {
                                     // skill 工具的 context=fork 会 spawn 子 Worker 执行完整 skill 流程，
                                     // 可能要几分钟（audit 要读很多文件）。给它 600s（10 分钟）。
                                     // 其他工具保持 120s。
+                                    //
+                                    // 长任务 timeout 可通过 ION_TOOL_TIMEOUT 环境变量覆盖（单位秒）。
+                                    // improver 跑 container exec cargo build/test 时建议设 ION_TOOL_TIMEOUT=1800（30 分钟）。
+                                    let long_default = std::env::var("ION_TOOL_TIMEOUT")
+                                        .ok()
+                                        .and_then(|s| s.parse::<u64>().ok())
+                                        .unwrap_or(600);
                                     let timeout_duration = if tc_name == "skill" || tc_name == "bash" || tc_name == "bash_run" {
-                                        std::time::Duration::from_secs(600)
+                                        std::time::Duration::from_secs(long_default)
                                     } else {
                                         std::time::Duration::from_secs(120)
                                     };

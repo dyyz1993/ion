@@ -73,7 +73,32 @@ pub enum HookDef {
 // Built-in agents
 // ---------------------------------------------------------------------------
 
+/// improver 的 prompt 用 include_str! 编译期嵌入，命中 builtin fallback（搜索路径 #4）。
+/// 改 examples/agents/improver.md 后无需手动 cp，重新 build 即生效。
+const IMPROVER_MD: &str = include_str!("../examples/agents/improver.md");
+
 pub fn builtin_agents() -> Vec<AgentConfig> {
+    // improver 从 .md 解析；解析失败兜底一个最小配置（不会让 builtin 列表整个崩）
+    let improver = parse_agent_md(IMPROVER_MD, "examples/agents/improver.md")
+        .unwrap_or_else(|| AgentConfig {
+            name: "improver".into(),
+            description: "通用任务智能体（builtin fallback）".into(),
+            tools: None,
+            disallowed_tools: None,
+            model: None,
+            max_turns: None,
+            thinking_level: Some("high".into()),
+            tier: None,
+            color: Some("cyan".into()),
+            background: None,
+            skills: None,
+            variables: None,
+            hooks: None,
+            system_prompt: None,
+            workflow: None,
+            source: "builtin".into(),
+        });
+
     vec![
         AgentConfig {
             name: "build".into(),
@@ -129,6 +154,7 @@ pub fn builtin_agents() -> Vec<AgentConfig> {
             workflow: None,
             source: "builtin".into(),
         },
+        improver,
     ]
 }
 

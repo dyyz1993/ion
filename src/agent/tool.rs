@@ -558,7 +558,13 @@ impl Tool for BashTool {
     }
     async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
         let cmd = args.get("command").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing command".into()))?;
-        let (stdout, stderr, _exit_code) = rt.execute_command(cmd, 180).await.map_err(|e| AgentError::Tool(e))?;
+        // BashTool 默认 180s；可通过 ION_BASH_TIMEOUT 环境变量覆盖（单位秒）。
+        // improver 跑 container exec cargo build/test 时建议设 ION_BASH_TIMEOUT=1800。
+        let bash_timeout = std::env::var("ION_BASH_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(180);
+        let (stdout, stderr, _exit_code) = rt.execute_command(cmd, bash_timeout).await.map_err(|e| AgentError::Tool(e))?;
         let result = if stdout.is_empty() && !stderr.is_empty() { stderr }
             else if !stderr.is_empty() { format!("{stdout}\n{stderr}") }
             else { stdout };
@@ -573,9 +579,13 @@ impl Tool for BashTool {
         rt: &dyn crate::runtime::Runtime,
     ) -> AgentResult<String> {
         let cmd = args.get("command").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing command".into()))?;
+        let bash_timeout = std::env::var("ION_BASH_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(180);
         // 走 Runtime 的流式执行（经过 SecuredRuntime CommandGuard 检查）
         let update_fn = |s: String| { on_update(s); };
-        rt.execute_command_stream(cmd, 180, &update_fn)
+        rt.execute_command_stream(cmd, bash_timeout, &update_fn)
             .await
             .map_err(|e| AgentError::Tool(e))
     }
