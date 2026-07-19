@@ -626,14 +626,39 @@ impl Agent {
     }
 
     async fn outer_loop(&mut self) -> AgentResult<()> {
-        for outer_i in 0..self.config.max_outer_iterations {
+        // ION_AUTO_CONTINUE: workflow 等多 turn 场景下，inner_loop Stop 后自动注入
+        // "继续执行"的 follow-up，让 agent 跑完整个 workflow（而不是一个 stage 就停）。
+        // 没有这个，wf agent 每个 stage 是一个 turn，turn 结束 follow_up_queue 空了就退出。
+        let auto_continue = std::env::var("ION_AUTO_CONTINUE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let auto_continue_limit = std::env::var("ION_AUTO_CONTINUE_LIMIT")
+            .ok().and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(30);  // 默认最多自动继续 30 轮（够 workflow 10 stage 用）
+
+        for outer_i in 0..self.config.max_outer_iterations.max(auto_continue_limit) {
             let reason = self.inner_loop().await?;
             match reason {
                 StopReason::Error | StopReason::Aborted => return Ok(()),
                 _ => {}
             }
             if self.follow_up_queue.is_empty() {
-                return Ok(());
+                // auto_continue 模式：注入"继续"follow-up 让 agent 跑下一个 turn
+                // 这对 wf agent 必要——每个 stage 是一个 turn，没有外部触发不会继续
+                if auto_continue && outer_i < auto_continue_limit {
+                    tracing::info!("outer {outer_i}: auto-continue (ION_AUTO_CONTINUE=1), injecting follow-up");
+                    self.follow_up_queue.push_back(Message::User(UserMessage {
+                        role: "user".into(),
+                        content: vec![ContentBlock::Text(TextContent {
+                            text: "继续执行下一个 stage。如果所有 stage 都 done，输出 PIPELINE COMPLETE。".into(),
+                            text_signature: None,
+                        })],
+                        timestamp: now_ms(),
+                        source: ion_provider::types::MessageSource::FollowUp,
+                    }));
+                } else {
+                    return Ok(());
+                }
             }
             tracing::info!(
                 "outer {outer_i}: {} follow-up msgs",

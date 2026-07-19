@@ -1267,6 +1267,7 @@ async fn cmd_workflow_run(path: &str, set: &[String]) {
     unsafe {
         std::env::set_var("ION_FORCE_SESSION_ID", &wf_session_id);
         std::env::set_var("ION_FORK_CHILD", "1");
+        std::env::set_var("ION_AUTO_CONTINUE", "1");
     }
 
     // 启动 wf agent（--host 模式）
@@ -4150,7 +4151,7 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>) {
     // workflow 场景下 wf agent 每个 stage 是一个 turn，turn 之间会短暂 Idle（等下一轮 LLM 调用），
     // 如果立刻判定完成会提前清理。给 8 秒宽限，让 wf 有时间启动下一个 turn。
     let idle_grace_secs = std::env::var("ION_HOST_IDLE_GRACE")
-        .ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(8);
+        .ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30);
     let mut first_idle_at: Option<std::time::Instant> = None;
 
     loop {
