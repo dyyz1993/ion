@@ -1,0 +1,23 @@
+FROM alpine:latest
+
+# 安装 Rust 编译环境（用 rustup，从国内镜像源安装）
+RUN apk add --no-cache \
+    curl \
+    git \
+    build-base \
+    pkgconfig \
+    openssl-dev \
+    openssl-libs-static \
+    sqlite-dev \
+    musl-dev \
+    linux-headers \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+       --default-toolchain stable \
+       --profile minimal
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# 验证
+RUN rustc --version && cargo --version && git --version
+
+WORKDIR /workspace

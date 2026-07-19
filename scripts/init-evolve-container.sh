@@ -59,9 +59,10 @@ if [ -z "$ION_BIN" ]; then
 fi
 
 # ── Docker 镜像选择 ──
-# Rust 项目需要 Rust 编译环境。用 rust 官方镜像。
-# rust:latest 包含 cargo + rustc + git + 系统依赖
-IMAGE="${EVOLVE_IMAGE:-docker.io/library/rust:latest}"
+# Rust 项目需要 Rust 编译环境。
+# 优先用本地构建的 ion-evolve-rust 镜像（从 alpine + rustup 构建，~300MB）。
+# 如果不存在，尝试拉 rust:latest（~1GB，需要好网络）或从 Dockerfile.evolve 构建。
+IMAGE="${EVOLVE_IMAGE:-ion-evolve-rust:latest}"
 
 echo "════════════════════════════════════════════════════"
 echo "  ION 自我进化 Container 初始化"
@@ -82,6 +83,20 @@ if ! "$CONTAINER_BIN" system status >/dev/null 2>&1; then
 fi
 echo "  ✅ container 系统就绪"
 
+# ── Step 1b: 检查镜像是否存在，不存在则从 Dockerfile 构建 ──
+if ! "$CONTAINER_BIN" image list 2>/dev/null | grep -q "$IMAGE"; then
+    echo "  镜像 $IMAGE 不存在，从 Dockerfile.evolve 构建..."
+    "$CONTAINER_BIN" build \
+        -f "$SCRIPT_DIR/Dockerfile.evolve" \
+        -t "$IMAGE" \
+        --memory 4G --cpus 4 \
+        "$SCRIPT_DIR" 2>&1 || {
+        echo "❌ 镜像构建失败" >&2
+        exit 1
+    }
+    echo "  ✅ 镜像构建成功"
+fi
+
 # ── Step 2: 创建 container ──
 echo ""
 echo "── Step 2: 创建 container ──"
@@ -91,6 +106,19 @@ if "$CONTAINER_BIN" inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
     echo "  container 已存在，先删除..."
     "$CONTAINER_BIN" stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
 fi
+
+# 找 ion-provider 目录（Cargo.toml 里用 path = "../ion-provider"）
+# worktree 的 --show-toplevel 返回 worktree 路径（如 /tmp/xxx），
+# 需要从 git common dir 找主仓库位置。
+GIT_COMMON_DIR=$(cd "$WORKTREE_DIR" && git rev-parse --git-common-dir 2>/dev/null || echo "")
+# git common dir 格式：/Users/xxx/ion/.git → 主仓库是 /Users/xxx/ion
+if [ -n "$GIT_COMMON_DIR" ]; then
+    MAIN_REPO=$(cd "$GIT_COMMON_DIR/.." && pwd)
+else
+    MAIN_REPO="$WORKTREE_DIR"
+fi
+HOST_PARENT=$(dirname "$MAIN_REPO")
+ION_PROVIDER_DIR="$HOST_PARENT/ion-provider"
 
 CONTAINER_CMD=(
     "$CONTAINER_BIN" run
@@ -104,12 +132,26 @@ CONTAINER_CMD=(
     --cpus "${EVOLVE_CPUS:-4}"
 )
 
+# 额外挂载 ion-provider（Cargo.toml 用 path = "../ion-provider" 引用）
+if [ -d "$ION_PROVIDER_DIR" ]; then
+    CONTAINER_CMD+=("-v" "${ION_PROVIDER_DIR}:/ion-provider")
+fi
+
 CONTAINER_CMD+=("$IMAGE")
 CONTAINER_CMD+=(sh -lc "sleep infinity")
 
 echo "  命令: ${CONTAINER_CMD[*]}"
 "${CONTAINER_CMD[@]}"
 echo "  ✅ container 创建成功"
+
+# ── Step 2b: 修复 Cargo.toml 的 ion-provider 路径 ──
+# worktree 里 Cargo.toml 写的是 path = "../ion-provider"
+# container 里需要改成 path = "/ion-provider"
+if [ -d "$ION_PROVIDER_DIR" ]; then
+    "$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c \
+        "cd /workspace && sed -i 's|path = \"../ion-provider\"|path = \"/ion-provider\"|' Cargo.toml" 2>/dev/null
+    echo "  ✅ Cargo.toml 路径已修复（/ion-provider）"
+fi
 
 # ── Step 3: 等待 container 就绪 ──
 echo ""
