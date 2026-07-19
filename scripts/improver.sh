@@ -108,6 +108,47 @@ export ION_TOOL_TIMEOUT="${ION_TOOL_TIMEOUT:-1800}"    # 30 分钟
 export ION_BASH_TIMEOUT="${ION_BASH_TIMEOUT:-1800}"
 export ION_HOST_TIMEOUT="${ION_HOST_TIMEOUT:-1800}"
 
+# ── modify 类：预先启动 container（外提，不靠 wf agent 调 bash）──
+# wf agent 在 container stage 会"只说不做"（不真的调 bash 跑 init-evolve-container.sh），
+# 因为脚本要几分钟，wf 的 bash 工具等不了。
+# 解决：improver.sh 在 workflow run 之前启动 container，写到 .improver-state，
+# wf 的 container stage 只检查就绪（gate only，不 commands）。
+CONTAINER_STARTED=false
+if [ "$TOPIC_TYPE" = "modify" ]; then
+    echo ""
+    echo "── modify 类：预先启动 container ──"
+    # 先开 worktree（container 要挂载它）
+    WT_DIR_PRE=$(mktemp -d /tmp/ion-improver-XXXXXX)
+    if git worktree add "$WT_DIR_PRE" -b "improve/$(date +%Y%m%d-%H%M%S)" 2>&1 | tail -2; then
+        echo "✅ worktree: $WT_DIR_PRE"
+        # 写 WT_DIR 到状态文件（worktree stage 会复用，不开新的）
+        echo "WT_DIR=$WT_DIR_PRE" > "$PROJECT_DIR/.ion/.improver-state"
+
+        # 启动 container（挂载 worktree）
+        if bash "$PROJECT_DIR/scripts/init-evolve-container.sh" "$WT_DIR_PRE" 2>&1 | tee /tmp/.improver-container-init | tail -5; then
+            CONTAINER_NAME=$(grep '^CONTAINER_NAME=' /tmp/.improver-container-init | head -1 | cut -d= -f2)
+            if [ -n "$CONTAINER_NAME" ]; then
+                echo "CONTAINER_NAME=$CONTAINER_NAME" >> "$PROJECT_DIR/.ion/.improver-state"
+                echo "✅ container: $CONTAINER_NAME"
+                CONTAINER_STARTED=true
+
+                # 标记 worktree + container stage 为 done（已经预先做了）
+                # wf agent 看到 done 就跳过，直接进 edit_code stage
+                echo "(worktree + container 已预启动，wf 会跳过这两个 stage)"
+            else
+                echo "❌ container 启动失败（没拿到 CONTAINER_NAME）"
+                exit 1
+            fi
+        else
+            echo "❌ init-evolve-container.sh 失败"
+            exit 1
+        fi
+    else
+        echo "❌ git worktree add 失败"
+        exit 1
+    fi
+fi
+
 # ── 跑 ──
 echo "════════════════════════════════════════════════════"
 echo "  🚀 improver 启动"

@@ -54,41 +54,27 @@ stages:
       expected: VALID
 
   # ═══════════════════════════════════════════════════════
-  # Stage 1: 开 worktree（两类都要，共享）
+  # Stage 1: 开 worktree（两类都要）
+  # 注意：如果 .improver-state 已存在（modify 类由 improver.sh 预启动），跳过这个 stage
   # ═══════════════════════════════════════════════════════
   - id: worktree
     if: "always"
     commands:
-      - "mkdir -p .ion && WT_DIR=$(mktemp -d /tmp/ion-improver-XXXXXX) && git worktree add \"$WT_DIR\" -b \"improve/$(date +%Y%m%d-%H%M%S)\" && echo \"WT_DIR=$WT_DIR\" > .ion/.improver-state && echo \"worktree created at $WT_DIR\""
+      - "if [ -f .ion/.improver-state ] && grep -q WT_DIR .ion/.improver-state; then echo worktree-already-ready; else mkdir -p .ion && WT_DIR=$(mktemp -d /tmp/ion-improver-XXXXXX) && git worktree add \"$WT_DIR\" -b \"improve/$(date +%Y%m%d-%H%M%S)\" && echo \"WT_DIR=$WT_DIR\" > .ion/.improver-state && echo worktree-created; fi"
     gate:
       command: "test -f .ion/.improver-state && grep -q 'WT_DIR=' .ion/.improver-state && echo OK || echo FAIL"
       expected: OK
 
   # ═══════════════════════════════════════════════════════
-  # Stage 2: 起 container（仅 modify 类）
+  # Stage 2: container 就绪检查（仅 modify 类）
+  # 注意：container 由 improver.sh 预先启动（外提），这里只检查就绪
   # ═══════════════════════════════════════════════════════
   - id: container
     if: "context.topic_type == 'modify'"
     commands:
-      - |
-        source .ion/.improver-state
-        # 必须调脚本（不能自己 container run，否则 ion-provider 挂载会漏）
-        bash scripts/init-evolve-container.sh "$WT_DIR" 2>&1 | tee /tmp/.improver-container-init | tail -5
-        # 从脚本输出抓 CONTAINER_NAME，追加到状态文件
-        CONTAINER_NAME=$(grep '^CONTAINER_NAME=' /tmp/.improver-container-init | head -1 | cut -d= -f2)
-        if [ -z "$CONTAINER_NAME" ]; then
-          echo "❌ container 启动失败（没拿到 CONTAINER_NAME）"
-          exit 1
-        fi
-        echo "CONTAINER_NAME=$CONTAINER_NAME" >> .ion/.improver-state
-        echo "✅ container: $CONTAINER_NAME"
+      - "echo container-check-skip"
     gate:
-      command: |
-        source .ion/.improver-state
-        # 校验 container 在跑 + ion-provider 挂载成功
-        container list 2>/dev/null | grep -q "$CONTAINER_NAME" && \
-        container exec "$CONTAINER_NAME" test -f /ion-provider/Cargo.toml 2>/dev/null && \
-        echo OK || echo FAIL
+      command: "source .ion/.improver-state && container list 2>/dev/null | grep -q \"$CONTAINER_NAME\" && container exec \"$CONTAINER_NAME\" test -f /ion-provider/Cargo.toml 2>/dev/null && echo OK || echo FAIL"
       expected: OK
       max_retries: 2
 
@@ -115,13 +101,9 @@ stages:
   - id: build
     if: "context.topic_type == 'modify' && stages.edit_code.status == 'done'"
     commands:
-      - |
-        source .ion/.improver-state
-        container exec "$CONTAINER_NAME" sh -c 'cd /workspace && cargo build --bin ion 2>&1' | tail -15
+      - "source .ion/.improver-state && container exec \"$CONTAINER_NAME\" sh -c 'cd /workspace && cargo build --bin ion 2>&1' | tail -15"
     gate:
-      command: |
-        source .ion/.improver-state
-        container exec "$CONTAINER_NAME" sh -c 'cd /workspace && cargo build --bin ion 2>&1' | grep -q "Finished" && echo OK || echo FAIL
+      command: "source .ion/.improver-state && container exec \"$CONTAINER_NAME\" sh -c 'cd /workspace && cargo build --bin ion 2>&1' | grep -q 'Finished' && echo OK || echo FAIL"
       expected: OK
       max_retries: 3
     on_fail:
@@ -134,13 +116,9 @@ stages:
   - id: test
     if: "context.topic_type == 'modify' && stages.build.status == 'done'"
     commands:
-      - |
-        source .ion/.improver-state
-        container exec "$CONTAINER_NAME" sh -c 'cd /workspace && cargo test --lib 2>&1' | tail -15
+      - "source .ion/.improver-state && container exec \"$CONTAINER_NAME\" sh -c 'cd /workspace && cargo test --lib 2>&1' | tail -15"
     gate:
-      command: |
-        source .ion/.improver-state
-        container exec "$CONTAINER_NAME" sh -c 'cd /workspace && cargo test --lib 2>&1' | grep -qE "test result: ok\." && echo OK || echo FAIL
+      command: "source .ion/.improver-state && container exec \"$CONTAINER_NAME\" sh -c 'cd /workspace && cargo test --lib 2>&1' | grep -qE 'test result: ok\\.' && echo OK || echo FAIL"
       expected: OK
       max_retries: 3
     on_fail:
@@ -166,13 +144,9 @@ stages:
   - id: commit
     if: "context.topic_type == 'modify' && stages.test.status == 'done'"
     commands:
-      - |
-        source .ion/.improver-state
-        cd "$WT_DIR" && git add -A && git commit -m "improve: {{context.topic}}" 2>&1 | tail -3
+      - "source .ion/.improver-state && cd \"$WT_DIR\" && git add -A && git commit -m \"improve: {{context.topic}}\" 2>&1 | tail -3"
     gate:
-      command: |
-        source .ion/.improver-state
-        cd "$WT_DIR" && git log --oneline -1 2>&1 | grep -q "improve:" && echo OK || echo FAIL
+      command: "source .ion/.improver-state && cd \"$WT_DIR\" && git log --oneline -1 2>&1 | grep -q 'improve:' && echo OK || echo FAIL"
       expected: OK
 
   # ═══════════════════════════════════════════════════════
