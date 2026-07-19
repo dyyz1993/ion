@@ -1409,9 +1409,9 @@ pub struct SkillTool {
 }
 
 impl SkillTool {
-    /// 列出所有可用 skill（扫描 skill_dirs 下的 .md 文件）
+    /// 列出所有可用 skill（扫描 skill_dirs 下的 .md 文件 + 子目录/SKILL.md）
     fn list_skills(&self) -> String {
-        let mut entries: Vec<(String, String, String)> = Vec::new(); // (name, source, description)
+        let mut entries: Vec<(String, String, String, Option<String>)> = Vec::new(); // (name, source, description, context_mode)
         for dir in &self.skill_dirs {
             let source = dir
                 .file_name()
@@ -1420,19 +1420,29 @@ impl SkillTool {
             let Ok(read) = std::fs::read_dir(dir) else { continue };
             for entry in read.flatten() {
                 let path = entry.path();
-                if !path.is_file() {
-                    continue;
+
+                // 格式 1：<dir>/<name>.md（ION 格式，平铺 .md 文件）
+                if path.is_file() {
+                    let Some(fname) = path.file_name().and_then(|n| n.to_str()) else { continue };
+                    if !fname.ends_with(".md") { continue; }
+                    let name = fname.trim_end_matches(".md").to_string();
+                    let content = std::fs::read_to_string(&path).unwrap_or_default();
+                    let desc = parse_skill_description(&content);
+                    let mode = parse_skill_context_mode(&content);
+                    entries.push((name, source.to_string(), desc, mode));
                 }
-                let Some(fname) = path.file_name().and_then(|n| n.to_str()) else {
-                    continue;
-                };
-                if !fname.ends_with(".md") {
-                    continue;
+                // 格式 2：<dir>/<name>/SKILL.md（~/.agents/skills/ 格式，目录形式）
+                else if path.is_dir() {
+                    let skill_md = path.join("SKILL.md");
+                    if skill_md.is_file() {
+                        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+                        let clean_name = strip_version_suffix(name);
+                        let content = std::fs::read_to_string(&skill_md).unwrap_or_default();
+                        let desc = parse_skill_description(&content);
+                        let mode = parse_skill_context_mode(&content);
+                        entries.push((clean_name, source.to_string(), desc, mode));
+                    }
                 }
-                let name = fname.trim_end_matches(".md").to_string();
-                let content = std::fs::read_to_string(&path).unwrap_or_default();
-                let desc = parse_skill_description(&content);
-                entries.push((name, source.to_string(), desc));
             }
         }
 
@@ -1444,11 +1454,15 @@ impl SkillTool {
         entries.dedup_by(|a, b| a.0 == b.0);
 
         let mut out = String::from("Available skills:\n");
-        for (name, source, desc) in &entries {
+        for (name, source, desc, mode) in &entries {
+            let mode_tag = match mode {
+                Some(m) => format!(" (推荐:{})", m),
+                None => String::new(),
+            };
             if desc.is_empty() {
-                out.push_str(&format!("  - {name} [{source}]\n"));
+                out.push_str(&format!("  - {name}{mode_tag} [{source}]\n"));
             } else {
-                out.push_str(&format!("  - {name} [{source}]: {desc}\n"));
+                out.push_str(&format!("  - {name}{mode_tag} [{source}]: {desc}\n"));
             }
         }
         out.push_str("\nUse skill_name='<name>' to load a skill.");
@@ -1456,11 +1470,37 @@ impl SkillTool {
     }
 
     /// 按名字查找 skill 文件，返回其路径
+    /// 支持两种格式：
+    /// 1. <dir>/<name>.md（ION 格式）
+    /// 2. <dir>/<name>/SKILL.md（~/.agents/skills/ 格式，可能有版本后缀）
     fn find_skill(&self, name: &str) -> Option<PathBuf> {
         for dir in &self.skill_dirs {
+            // 格式 1：平铺 .md
             let candidate = dir.join(format!("{name}.md"));
             if candidate.is_file() {
                 return Some(candidate);
+            }
+            // 格式 2：目录/SKILL.md（精确名字匹配）
+            let dir_candidate = dir.join(name).join("SKILL.md");
+            if dir_candidate.is_file() {
+                return Some(dir_candidate);
+            }
+            // 格式 2 变体：目录有版本后缀（如 "code-review-excellence-0.1.0"）
+            // 用户传 "code-review-excellence"，匹配带后缀的目录
+            if let Ok(read) = std::fs::read_dir(dir) {
+                for entry in read.flatten() {
+                    let path = entry.path();
+                    if !path.is_dir() { continue; }
+                    let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+                    // 去掉版本后缀后是否匹配
+                    let clean = strip_version_suffix(dir_name);
+                    if clean == name {
+                        let skill_md = path.join("SKILL.md");
+                        if skill_md.is_file() {
+                            return Some(skill_md);
+                        }
+                    }
+                }
             }
         }
         None
@@ -1474,9 +1514,12 @@ impl Tool for SkillTool {
     }
 
     fn description(&self) -> &str {
-        "Load a skill by name. Skills provide specialized instructions and capabilities.\n\
-         Use this when you need domain-specific guidance (e.g., code-review, testing, deployment).\n\
-         Pass skill_name='list' to see all available skills."
+        "Load a specialized skill by name. Skills encode domain-specific workflows (code-audit, deployment, testing, etc.) that guide multi-step tasks. \
+         IMPORTANT: When the user's request matches an available skill, you SHOULD call this tool FIRST instead of manually using bash/read/write — the skill provides a proven workflow that's better than ad-hoc tool use.\n\
+         Two modes:\n\
+         - inject (default): load skill instructions into your current context, then execute the workflow yourself with bash/read/write/etc.\n\
+         - fork: spawn an isolated sub-worker to execute the skill (keeps your main context clean). Use fork for long-running or complex skills.\n\
+         Pass skill_name='list' to see all available skills with their descriptions."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -1485,12 +1528,16 @@ impl Tool for SkillTool {
             "properties": {
                 "skill_name": {
                     "type": "string",
-                    "description": "Name of the skill to load (e.g., 'code-review', 'testing'). Use 'list' to see available skills."
+                    "description": "Name of the skill to load (e.g., 'code-audit', 'deployment'). Use 'list' to see all available skills."
                 },
                 "context": {
                     "type": "string",
                     "enum": ["inject", "fork"],
-                    "description": "How to apply the skill. 'inject' = add to current context (default). 'fork' = run in isolated subtask (not yet implemented)."
+                    "description": "How to apply the skill. 'inject' = load instructions into current context (default). 'fork' = run in isolated sub-worker (keeps main context clean, for complex/long tasks)."
+                },
+                "user_request": {
+                    "type": "string",
+                    "description": "Required for fork mode: the user's original request/goal. This will be passed to the sub-worker as its task, so it knows what specifically to accomplish (not just 'run the skill')."
                 }
             },
             "required": ["skill_name"]
@@ -1506,10 +1553,24 @@ impl Tool for SkillTool {
             .get("skill_name")
             .and_then(|v| v.as_str())
             .ok_or_else(|| AgentError::Tool("missing 'skill_name'".into()))?;
-        let context_mode = args
-            .get("context")
-            .and_then(|v| v.as_str())
-            .unwrap_or("inject");
+        // context 模式优先级：LLM 显式传的 > skill frontmatter 声明的 > 默认 inject
+        let context_mode = {
+            let from_args = args.get("context").and_then(|v| v.as_str());
+            if from_args.is_some() {
+                from_args.unwrap().to_string()
+            } else {
+                // LLM 没传 context——看 skill 声明的推荐模式
+                if let Some(skill_path) = self.find_skill(name) {
+                    if let Ok(content) = std::fs::read_to_string(&skill_path) {
+                        parse_skill_context_mode(&content).unwrap_or_else(|| "inject".to_string())
+                    } else {
+                        "inject".to_string()
+                    }
+                } else {
+                    "inject".to_string()
+                }
+            }
+        };
 
         // fork 模式：读 skill 内容 → spawn_worker 起子任务 → skill 注入 system prompt（不被压缩）
         if context_mode == "fork" {
@@ -1528,11 +1589,37 @@ impl Tool for SkillTool {
             );
 
             // spawn 子 Worker 执行 skill
+            // 用户的具体需求（fork 模式必须传，让子 Worker 知道要干什么）
+            let user_request = args
+                .get("user_request")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+
+            let task = if !user_request.is_empty() {
+                // 用户传了具体需求——把需求 + skill 指引组合成 task
+                format!(
+                    "User request: {user_request}\n\n\
+                     Follow the skill instructions in your system prompt to accomplish this. \
+                     Do NOT call the skill tool (it's already loaded). \
+                     Use the available tools (read/write/bash/etc) to do the actual work. \
+                     When done, summarize what you accomplished."
+                )
+            } else {
+                // 没传需求——通用 task（兜底）
+                format!(
+                    "Follow the skill instructions that are already in your system prompt. \
+                     Do NOT call the skill tool (it's already loaded). \
+                     Just execute the workflow described in your system prompt using \
+                     the available tools (read/write/bash/etc). \
+                     When done, summarize what you accomplished."
+                )
+            };
+
             let req = crate::runtime::SpawnWorkerRequest {
                 relation: crate::runtime::SpawnRelation::Child,
                 agent: "default".into(),
-                task: format!("Execute the '{name}' skill as described in your system prompt. \
-                               When done, summarize what you accomplished."),
+                task,
                 name: Some(format!("skill-{name}")),
                 report_channel: None,
                 wait: true,  // 同步等结果
@@ -1541,11 +1628,27 @@ impl Tool for SkillTool {
                 system_prompt_override: Some(system_prompt),
             };
 
-            let resp = rt.spawn_worker(req).await
-                .map_err(|e| AgentError::Tool(format!("skill fork spawn_worker failed: {e}")))?;
+            let resp = match rt.spawn_worker(req).await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    // fork 失败时给 LLM 明确的 fallback 指引：
+                    // 场景 1（LocalRuntime）不支持 spawn_worker，LLM 应改用 inject 模式
+                    return Ok(format!(
+                        "Skill '{name}' fork mode failed: {e}\n\n\
+                         Fork mode requires a host engine (use `ion --host` or `ion serve`).\n\
+                         Falling back: please retry with `context=inject` to load the skill\n\
+                         into the current context instead."
+                    ));
+                }
+            };
 
             let output = resp.first_turn_output.unwrap_or_default();
-            return Ok(format!("Skill '{name}' executed in fork mode:\n\n{output}"));
+            // fork 返回值：drain 收集了子 Worker 所有轮次的 text_delta 拼接。
+            // 我们只返回最后一段有意义的总结（最后一个段落），不是全部拼接。
+            // 方法：找最后一次出现的 "## Summary" 或 "### " 或 "confirmed" 等总结标志，
+            // 从那里截取到末尾。如果没有标志，返回全部（兜底）。
+            let final_summary = extract_final_summary(&output);
+            return Ok(format!("Skill '{name}' executed in fork mode:\n\n{final_summary}"));
         }
 
         // list 模式：列出可用 skill
@@ -1565,6 +1668,76 @@ impl Tool for SkillTool {
         // inject 模式：返回 skill 正文（agent loop 把它当作工具结果，LLM 下一轮可见）
         Ok(format!("Skill '{name}' loaded:\n\n{body}"))
     }
+}
+
+/// 从 fork 子 Worker 的完整输出（多轮 text_delta 拼接）中提取最终总结。
+///
+/// drain 收集了所有轮次的 text，但只有最后一轮是"最终总结"。
+/// 我们找最后一个总结标志（"## Summary" / "verified as complete" / "confirmed"），
+/// 从那里截取到末尾。如果没有找到标志，返回最后 500 字符（兜底）。
+fn extract_final_summary(full_output: &str) -> String {
+    // 常见总结标志（按优先级排序）
+    let markers = [
+        "verified as complete",
+        "has been **verified",
+        "The report is ready",
+        "## Summary",
+        "### Summary",
+        "## ✅",
+        "confirmed",
+        "What was accomplished",
+    ];
+
+    // 找最后一个出现的标志
+    let mut best_pos: Option<usize> = None;
+    for marker in &markers {
+        if let Some(pos) = full_output.rfind(marker) {
+            match best_pos {
+                Some(bp) if bp > pos => {} // 已有更靠后的
+                _ => best_pos = Some(pos),
+            }
+        }
+    }
+
+    if let Some(pos) = best_pos {
+        // 从标志位置往前找段落开头（最近的 \n\n）
+        let before = &full_output[..pos];
+        let start = before.rfind("\n\n").map(|p| p + 2).unwrap_or(pos);
+        full_output[start..].trim().to_string()
+    } else {
+        // 兜底：返回最后 500 字符（安全处理 UTF-8 边界）
+        let len = full_output.len();
+        if len > 500 {
+            // 从 len - 500 开始，往前调整到字符边界（UTF-8 每个字符 1-4 字节）
+            let mut start = len - 500;
+            // UTF-8 后续字节以 10xxxxxx 开头（0x80..0xC0），跳过它们
+            while start < len && !full_output.is_char_boundary(start) {
+                start += 1;
+            }
+            // 从 start 找下一个换行（避免截断行中间）
+            let start = full_output[start..].find('\n').map(|p| start + p + 1).unwrap_or(start);
+            full_output[start..].trim().to_string()
+        } else {
+            full_output.trim().to_string()
+        }
+    }
+}
+
+/// 去掉 skill 目录名的版本后缀。
+/// 如 "code-review-excellence-0.1.0" → "code-review-excellence"
+/// "debug-pro-1.0.0" → "debug-pro"
+fn strip_version_suffix(name: &str) -> String {
+    // 匹配末尾的 -<version>（如 -0.1.0, -1.0.0, -1）
+    if let Some(pos) = name.rfind('-') {
+        let suffix = &name[pos + 1..];
+        // 版本号格式：纯数字 + 点（如 0.1.0, 1.0.0, 1）
+        if !suffix.is_empty()
+            && suffix.chars().all(|c| c.is_ascii_digit() || c == '.')
+        {
+            return name[..pos].to_string();
+        }
+    }
+    name.to_string()
 }
 
 /// 解析 skill 文件：返回 (frontmatter 原始文本, body 正文)
@@ -1599,6 +1772,27 @@ fn parse_skill_description(content: &str) -> String {
         }
     }
     String::new()
+}
+
+/// 从 frontmatter 提取推荐 context 模式（inject / fork）
+/// skill 可以在 frontmatter 里声明：
+///   context: fork    ← 这个 skill 推荐用 fork 模式（适合复杂/长任务）
+///   context: inject  ← 这个 skill 推荐用 inject 模式（默认）
+/// 如果没声明，返回 None（LLM 自己决定）
+fn parse_skill_context_mode(content: &str) -> Option<String> {
+    let (frontmatter, _) = parse_skill_content(content);
+    for line in frontmatter.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("context:") {
+            let val = rest.trim().trim_matches(|c| c == '"' || c == '\'');
+            match val {
+                "fork" => return Some("fork".to_string()),
+                "inject" => return Some("inject".to_string()),
+                _ => {}
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

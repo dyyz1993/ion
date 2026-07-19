@@ -134,6 +134,19 @@ pub trait Extension: Send + Sync {
 
     // ── Tool execution (5) ──
     async fn on_tool_execution_start(&self, _ctx: &ToolExecutionContext) -> AgentResult<()> { Ok(()) }
+
+    /// 工具执行**前**触发（增量 save 用）。
+    /// 此时 messages 已包含 user prompt + assistant tool call decision。
+    /// ion_worker 的 StreamingExtension 用这个钩子在 fork 阻塞前 save。
+    async fn on_before_tool_execute(
+        &self,
+        _tool_name: &str,
+        _args: &serde_json::Value,
+        _messages: &[crate::agent::messages::Message],
+    ) -> AgentResult<()> {
+        Ok(())
+    }
+
     /// Called during tool execution with partial results (e.g., streaming bash output).
     async fn on_tool_execution_update(&self, _ctx: &ToolExecutionContext, _partial: &str) -> AgentResult<()> { Ok(()) }
     async fn on_tool_execution_end(&self, _ctx: &ToolExecutionContext) -> AgentResult<()> { Ok(()) }
@@ -730,6 +743,18 @@ impl ExtensionRegistry {
     }
     pub async fn on_tool_call_end(&self, tool_call: &ToolCall) -> AgentResult<()> {
         for ext in &self.extensions { ext.on_tool_call_end(tool_call).await?; } Ok(())
+    }
+    /// 转发 on_before_tool_execute（增量 save 钩子）
+    pub async fn on_before_tool_execute(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        messages: &[crate::agent::messages::Message],
+    ) -> AgentResult<()> {
+        for ext in &self.extensions {
+            ext.on_before_tool_execute(tool_name, args, messages).await?;
+        }
+        Ok(())
     }
     pub async fn on_tool_execution_start(&self, ctx: &ToolExecutionContext) -> AgentResult<()> {
         for ext in &self.extensions { ext.on_tool_execution_start(ctx).await?; } Ok(())

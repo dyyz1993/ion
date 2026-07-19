@@ -82,7 +82,23 @@ impl GlobalMemoryStore {
                 project TEXT,
                 entry_count INTEGER DEFAULT 0,
                 updated_at INTEGER DEFAULT (unixepoch())
-            );",
+            );
+            -- FTS5 同步触发器（external content table 模式必须）
+            -- 保证 INSERT/UPDATE/DELETE 时 FTS 索引自动同步
+            CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
+                INSERT INTO entries_fts(rowid, content, category, tags)
+                VALUES (new.rowid, new.content, new.category, new.tags);
+            END;
+            CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
+                INSERT INTO entries_fts(entries_fts, rowid, content, category, tags)
+                VALUES ('delete', old.rowid, old.content, old.category, old.tags);
+            END;
+            CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN
+                INSERT INTO entries_fts(entries_fts, rowid, content, category, tags)
+                VALUES ('delete', old.rowid, old.content, old.category, old.tags);
+                INSERT INTO entries_fts(rowid, content, category, tags)
+                VALUES (new.rowid, new.content, new.category, new.tags);
+            END;",
         )
         .map_err(|e| format!("init schema: {}", e))?;
         Ok(Self {
@@ -106,13 +122,7 @@ impl GlobalMemoryStore {
             params![id, project, content, category, tags, importance],
         )
         .map_err(|e| format!("insert: {}", e))?;
-        // FTS5 索引（手动同步，因为用了 external content table）
-        conn.execute(
-            "INSERT INTO entries_fts (rowid, content, category, tags) VALUES (
-                (SELECT rowid FROM entries WHERE id = ?1), ?2, ?3, ?4)",
-            params![id, content, category, tags],
-        )
-        .map_err(|e| format!("fts insert: {}", e))?;
+        // FTS5 索引由 AFTER INSERT 触发器自动维护，无需手动同步
         Ok(id)
     }
 
@@ -209,12 +219,22 @@ impl GlobalMemoryStore {
         Ok(())
     }
 
-    /// 批量清空（测试用，DELETE + 清 FTS5 索引 + 清 outlines）
+    /// 批量清空（测试用，DELETE entries + 重建 FTS5 索引 + 清 outlines）
     pub fn clear_all(&self) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        conn.execute("DELETE FROM entries", []).map_err(|e| format!("clear entries: {}", e))?;
-        conn.execute("DELETE FROM entries_fts", []).map_err(|e| format!("clear fts: {}", e))?;
-        conn.execute("DELETE FROM outlines", []).map_err(|e| format!("clear outlines: {}", e))?;
+        // 1. 先清空 entries 表。
+        //    由于 FTS5 是 external-content table，DELETE 会触发 AFTER DELETE 触发器
+        //    逐行同步删除 entries_fts 中的对应索引。
+        conn.execute("DELETE FROM entries", [])
+            .map_err(|e| format!("clear entries: {}", e))?;
+        // 2. 用 'rebuild' 命令重建 FTS5 索引，彻底清理所有残留。
+        //    （DELETE 触发器理论上已清空，但 'rebuild' 可保证一致性，
+        //     即使此前触发器因 bug 未执行也能恢复正确状态。）
+        conn.execute("INSERT INTO entries_fts(entries_fts) VALUES('rebuild')", [])
+            .map_err(|e| format!("rebuild fts: {}", e))?;
+        // 3. 清空 outlines 表
+        conn.execute("DELETE FROM outlines", [])
+            .map_err(|e| format!("clear outlines: {}", e))?;
         Ok(())
     }
 

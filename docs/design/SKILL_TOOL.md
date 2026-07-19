@@ -1,6 +1,23 @@
 # Skill 工具 — LLM 按需调用 设计文档
 
-> **状态：已完成** — SkillTool 已实现（list / inject / fork 三种模式全部可用）。fork 模式通过 spawn_worker 起子任务，skill 内容注入 system prompt（不被 compaction 压缩）。
+> **状态：已完成** — SkillTool 已实现（list / inject / fork 三种模式全部可用）。
+> - **inject**（默认）：当前上下文加载，场景 1/2/3 都可用
+> - **fork**：隔离子 Worker 执行，**仅场景 2/3 可用**（需要 host 引擎才能 spawn_worker）
+>   - 场景 1（直接 `ion -p "..."`）调用 fork 会返回 fallback 提示，LLM 应改用 inject
+>   - 场景 2/3（`ion --host` / `ion serve`）fork 正常工作：spawn_worker 起子任务
+>   - **fork 子 Worker 用独立 session 文件 `<session_id>.jsonl`**
+>   - **session header 含完整血缘关联**：`parentSession`（pi 兼容）+ `spawnMeta`（ION 扩展）
+>     ```json
+>     { "parentSession": "sess_xxx",
+>       "spawnMeta": { "parentWorker": "wkr_xxx", "relation": "child", "spawnedBy": "skill_fork" } }
+>     ```
+>   - **skill 内容存到 session 文件**（custom entry `customType=system_prompt`），
+>     export HTML 时恢复到顶层 `systemPrompt` 字段
+>   - memory-agent（System 关系 Worker）也用独立 session 文件，不污染主 session
+>
+> **⚠️ 已知限制**：fork 子 Worker 的 message 在 agent.run 完成后才落盘。
+> 如果 fork 任务超时被杀，子 Worker 的 message 会丢（但 header + systemPrompt 保留）。
+> 解决方案（待做）：StreamingExtension 增量 save。
 >
 > 对齐 pi 的 `core/tools/skill.ts`。
 

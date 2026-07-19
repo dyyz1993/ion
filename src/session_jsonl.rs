@@ -590,8 +590,29 @@ pub fn ensure_session_header(cwd: &str, sid: &str) -> bool {
 
 /// 自动处理文件末尾换行防粘连。
 /// 使用单次 write_all 避免 \n 和 JSON 之间的交错（并发安全）。
+/// 全局 session 文件路径覆盖。
+/// ion_worker 启动时设置（fork 子 Worker 用 <sid>.jsonl 而不是 session.jsonl）。
+/// 如果设了，append_raw_entry / append_turn_summary 用这个路径。
+static SESSION_FILE_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<std::path::PathBuf>>> = std::sync::OnceLock::new();
+
+/// 设置全局 session 文件路径覆盖（ion_worker 启动时调）。
+pub fn set_session_file_override(path: Option<std::path::PathBuf>) {
+    let lock = SESSION_FILE_OVERRIDE.get_or_init(|| std::sync::Mutex::new(None));
+    *lock.lock().unwrap() = path;
+}
+
+/// 获取 session 文件路径：优先用全局覆盖，否则用 session_path(cwd)。
+fn resolve_session_file(cwd: &str) -> std::path::PathBuf {
+    if let Some(lock) = SESSION_FILE_OVERRIDE.get() {
+        if let Some(path) = lock.lock().unwrap().as_ref() {
+            return path.clone();
+        }
+    }
+    session_path(cwd)
+}
+
 pub fn append_raw_entry(cwd: &str, entry: &serde_json::Value) {
-    let path = session_path(cwd);
+    let path = resolve_session_file(cwd);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }

@@ -228,6 +228,256 @@ else
 fi
 
 # ──────────────────────────────────────────────────────────
+# Group R: SkillTool 注册到 build_tools（LLM 可见性）
+#
+# 这个 Group 验证一个之前的 bug：SkillTool struct 定义了但没在
+# build_tools() 里注册，导致 LLM 看不到 skill 工具，只能用 --skill
+# flag 注入 system_prompt。修复后 skill 工具应该出现在工具列表里。
+# ──────────────────────────────────────────────────────────
+echo ""
+echo "Group R: skill 工具注册到 build_tools（LLM 可见性）"
+
+# 用 export-after-run 拿到工具列表（FauxProvider 驱动，无需真实 LLM）
+REG_TMP="$TEST_TMP/reg"
+mkdir -p "$REG_TMP"
+REG_HTML="$REG_TMP/out.html"
+
+# 准备一个 skill（让 skill_dirs 非空，避免条件分支误判）
+mkdir -p "$FAKE_HOME/.ion/agent/skills"
+echo "# test skill" > "$FAKE_HOME/.ion/agent/skills/test.md"
+
+cd "$REG_TMP"
+HOME="$FAKE_HOME" ION_FAUX_REPLY="ok" \
+    "$ION_BIN" --export "$REG_HTML" -p "hi" 2>&1 >/dev/null || true
+
+if [ -f "$REG_HTML" ]; then
+    # 解析 HTML 里的 tools 数组
+    TOOLS_JSON=$(python3 - "$REG_HTML" <<'PYEOF'
+import re, base64, json, sys
+html = open(sys.argv[1]).read()
+m = re.search(r'<script id="session-data"[^>]*>([^<]+)</script>', html)
+if not m:
+    print("[]")
+else:
+    data = json.loads(base64.b64decode(m.group(1).strip()).decode("utf-8"))
+    tools = data.get("tools", [])
+    print(json.dumps([t.get("name") for t in tools]))
+PYEOF
+)
+    if [ -n "$TOOLS_JSON" ]; then
+        # 检查 skill 在工具列表里
+        if echo "$TOOLS_JSON" | grep -q '"skill"'; then
+            pass "R1: skill 工具在工具列表里（LLM 可见）"
+        else
+            fail "R1: skill 工具不在列表里（LLM 看不到）"
+            echo "  实际工具: $TOOLS_JSON"
+        fi
+
+        # 检查基本工具也在（确保注册路径没破坏其他工具）
+        for t in read write bash edit; do
+            if echo "$TOOLS_JSON" | grep -q "\"$t\""; then
+                pass "R2-$t: $t 工具仍在列表里"
+            else
+                fail "R2-$t: $t 工具丢失"
+            fi
+        done
+
+        # 检查 --no-skills 时 skill 工具被排除
+        NO_SKILL_HTML="$REG_TMP/no_skill.html"
+        HOME="$FAKE_HOME" ION_FAUX_REPLY="ok" \
+            "$ION_BIN" --no-skills --export "$NO_SKILL_HTML" -p "hi" 2>&1 >/dev/null || true
+        if [ -f "$NO_SKILL_HTML" ]; then
+            NO_SKILL_TOOLS=$(python3 - "$NO_SKILL_HTML" <<'PYEOF'
+import re, base64, json, sys
+html = open(sys.argv[1]).read()
+m = re.search(r'<script id="session-data"[^>]*>([^<]+)</script>', html)
+if not m:
+    print("[]")
+else:
+    data = json.loads(base64.b64decode(m.group(1).strip()).decode("utf-8"))
+    print(json.dumps([t.get("name") for t in data.get("tools", [])]))
+PYEOF
+)
+            if echo "$NO_SKILL_TOOLS" | grep -q '"skill"'; then
+                fail "R3: --no-skills 后 skill 工具仍在（应该排除）"
+            else
+                pass "R3: --no-skills 正确排除 skill 工具"
+            fi
+        else
+            skip "R3: --no-skills 测试 HTML 未生成"
+        fi
+    else
+        fail "R1: 工具列表解析失败"
+    fi
+else
+    fail "R1: 注册测试 HTML 未生成"
+fi
+
+# ──────────────────────────────────────────────────────────
+# Group F: fork 模式 — 独立 session 文件验证
+#
+# 这个 Group 验证一个之前的 bug：fork spawn 出来的子 Worker 跟主 Worker
+# 用同一 cwd，session_path(cwd) 算出同一文件，导致数据混乱 + 子 Worker
+# 对话历史丢失。修复后 fork 子 Worker 用 <session_id>.jsonl 独立文件。
+#
+# 测试链路：
+#   1. 起 host（隔离 HOME）
+#   2. call_tool skill(context=fork) → spawn 子 Worker
+#   3. 检查 <session_id>.jsonl 文件存在（独立 session）
+#   4. 检查文件内容有 message（不是空的）
+#   5. export HTML 验证可导出
+# ──────────────────────────────────────────────────────────
+echo ""
+echo "Group F: fork 模式独立 session 文件"
+
+# Group E 已杀掉前面的 host，Group F 必须自己重启
+
+# 准备一个 fork 用的 skill（必须在 host 启动前创建，Worker 启动时扫描）
+# 全局 skill 走 ION_AGENT_DIR（跟 Group S 一致）
+mkdir -p "$AGENT_DIR/skills"
+cat > "$AGENT_DIR/skills/fork-test.md" << 'EOF'
+# Fork Test Skill
+This skill is for testing fork mode isolation.
+Use the `echo` tool to echo "fork-mode-test-ok".
+EOF
+
+HOME="$FAKE_HOME" ION_FAUX_REPLY="ok" "$ION_BIN" serve &
+FORK_HOST_PID=$!
+sleep 4
+
+FORK_RAW=$(HOME="$FAKE_HOME" "$ION_BIN" rpc --method create_session --params '{"agent":"build"}' 2>/dev/null)
+FORK_SID=$(echo "$FORK_RAW" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('data',{}).get('session_id',''))" 2>/dev/null)
+
+if [ -n "$FORK_SID" ]; then
+    # F1: call skill fork → spawn 子 Worker
+    FORK_OUT=$(HOME="$FAKE_HOME" "$ION_BIN" rpc --session "$FORK_SID" --method call_tool \
+        --params '{"tool":"skill","args":{"skill_name":"fork-test","context":"fork"}}' \
+        2>&1)
+    FORK_SUCCESS=$(echo "$FORK_OUT" | python3 -c "
+import json,sys
+try:
+    d = json.loads(sys.stdin.read())
+    print('yes' if d.get('success') else 'no')
+except: print('parse_error')
+" 2>/dev/null)
+
+    if [ "$FORK_SUCCESS" = "yes" ]; then
+        pass "F1: skill fork spawn 子 Worker 成功"
+
+        # F2: 检查 <session_id>.jsonl 文件存在（排除 memory-agent + input）
+        sleep 2  # 给子 Worker 时间写 session
+        # sessions 目录可能在 FAKE_HOME/.ion 或 AGENT_DIR；排除 session.jsonl / input.jsonl / memory_agent
+        FORK_SESSIONS=$(find "$FAKE_HOME/.ion" "$AGENT_DIR" -name "*.jsonl" ! -name "session.jsonl" ! -name "input.jsonl" 2>/dev/null | grep -v memory_agent | head -3)
+        if [ -n "$FORK_SESSIONS" ]; then
+            pass "F2: fork 子 Worker 独立 session 文件存在"
+            FORK_SF=$(echo "$FORK_SESSIONS" | head -1)
+            FORK_SUBSID=$(head -1 "$FORK_SF" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('id','?'))" 2>/dev/null)
+            FORK_LINES=$(wc -l < "$FORK_SF")
+
+            # F3: 文件内容验证（有 session header + parentSession + spawnMeta）
+            HEAD_TYPE=$(head -1 "$FORK_SF" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('type','?'))" 2>/dev/null)
+            if [ "$HEAD_TYPE" = "session" ]; then
+                pass "F3: fork session header 正确（sid=$FORK_SUBSID, $FORK_LINES lines）"
+            else
+                fail "F3: fork session header 错误（type=$HEAD_TYPE）"
+            fi
+
+            # F3b: header 含 parentSession（关联父 Worker）
+            PARENT_SESSION=$(head -1 "$FORK_SF" | python3 -c "
+import json, sys
+e = json.loads(sys.stdin.read())
+print(e.get('parentSession') or '')
+" 2>/dev/null)
+            if [ -n "$PARENT_SESSION" ]; then
+                pass "F3b: fork header.parentSession = $PARENT_SESSION（关联父 Worker）"
+            else
+                fail "F3b: fork header 缺 parentSession（无血缘关联）"
+            fi
+
+            # F3c: header 含 spawnMeta（relation + spawnedBy）
+            SPAWN_META=$(head -1 "$FORK_SF" | python3 -c "
+import json, sys
+e = json.loads(sys.stdin.read())
+m = e.get('spawnMeta') or {}
+rel = m.get('relation', '')
+sb = m.get('spawnedBy', '')
+if rel and sb:
+    print(f'{rel}|{sb}')
+else:
+    print('')
+" 2>/dev/null)
+            if [ -n "$SPAWN_META" ]; then
+                pass "F3c: fork header.spawnMeta 含 relation + spawnedBy（$SPAWN_META）"
+            else
+                fail "F3c: fork header 缺 spawnMeta"
+            fi
+
+            # F4: export HTML 可导出
+            FORK_HTML="$TEST_TMP/fork_export.html"
+            HOME="$FAKE_HOME" "$ION_BIN" --export "$FORK_HTML" --session "$FORK_SUBSID" 2>&1 | grep -q "Exported" && \
+                pass "F4: fork 子 Worker session 可导出 HTML" || \
+                fail "F4: fork 子 Worker session 导出失败"
+
+            # F5: HTML 里有内容（不是空 entries）
+            if [ -f "$FORK_HTML" ]; then
+                ENTRY_COUNT=$(python3 - "$FORK_HTML" <<'PYEOF'
+import re, base64, json, sys
+html = open(sys.argv[1]).read()
+m = re.search(r'<script id="session-data"[^>]*>([^<]+)</script>', html)
+if m:
+    data = json.loads(base64.b64decode(m.group(1).strip()).decode("utf-8"))
+    print(len(data.get("entries", [])))
+else:
+    print(0)
+PYEOF
+)
+                [ "$ENTRY_COUNT" -gt 0 ] && \
+                    pass "F5: fork HTML 有 $ENTRY_COUNT 个 entries" || \
+                    fail "F5: fork HTML 是空的（$ENTRY_COUNT entries）"
+
+                # F6: HTML 里 systemPrompt 字段含 skill 内容（fork 关键证据）
+                SP_VALUE=$(python3 - "$FORK_HTML" <<'PYEOF'
+import re, base64, json, sys
+html = open(sys.argv[1]).read()
+m = re.search(r'<script id="session-data"[^>]*>([^<]+)</script>', html)
+if m:
+    data = json.loads(base64.b64decode(m.group(1).strip()).decode("utf-8"))
+    sp = data.get("systemPrompt", "")
+    # 应该包含 skill 名字和 "executing a skill" 标记
+    if "skill" in sp.lower() and len(sp) > 50:
+        print("ok")
+    elif sp:
+        print(f"short:{sp[:50]}")
+    else:
+        print("missing")
+else:
+    print("no_data")
+PYEOF
+)
+                case "$SP_VALUE" in
+                    ok) pass "F6: HTML systemPrompt 含 skill 内容（fork 注入证据）" ;;
+                    missing) fail "F6: HTML 缺 systemPrompt 字段（看不到 skill 注入）" ;;
+                    *) fail "F6: HTML systemPrompt 异常: $SP_VALUE" ;;
+                esac
+            fi
+        else
+            fail "F2: fork 子 Worker 独立 session 文件不存在"
+            echo "  实际 sessions dir 内容:"
+            ls -la "$FAKE_HOME/.ion/agent/sessions/" 2>&1 | head -10
+        fi
+    else
+        fail "F1: skill fork 失败"
+        echo "  输出: $(echo "$FORK_OUT" | head -3)"
+    fi
+else
+    fail "F1: host create_session 失败"
+fi
+
+# 清理 fork host
+kill $FORK_HOST_PID 2>/dev/null
+wait $FORK_HOST_PID 2>/dev/null
+
+# ──────────────────────────────────────────────────────────
 cd "$PROJECT_DIR"
 echo ""
 echo "══════════════════════════════════════════"

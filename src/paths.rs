@@ -214,6 +214,21 @@ pub fn session_jsonl_path(cwd: &str) -> PathBuf {
     session_cwd_dir(cwd).join("session.jsonl")
 }
 
+/// sessions/--cwd_hash--cwd_name--/<session_id>.jsonl
+/// 按 session_id 区分的会话文件（fork 子 Worker 用，避免跟主 Worker 写同一文件）。
+///
+/// 主 Worker 用 `session.jsonl`（共享，所有同一 cwd 的主会话共用）。
+/// fork 子 Worker 用 `<session_id>.jsonl`（独立文件，不污染主会话）。
+/// 这样 export 可以按 session_id 精确找到子 Worker 的对话历史。
+pub fn session_jsonl_path_by_id(cwd: &str, session_id: &str) -> PathBuf {
+    // 安全化 session_id（防止路径穿越）
+    let safe_id: String = session_id
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    session_cwd_dir(cwd).join(format!("{safe_id}.jsonl"))
+}
+
 /// sessions/--cwd_hash--cwd_name--/session.lock
 /// 会话锁文件
 pub fn session_lock_path(cwd: &str) -> PathBuf {
