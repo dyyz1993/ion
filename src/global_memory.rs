@@ -9,6 +9,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use uuid::Uuid;
 
 /// 全局记忆条目
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -345,11 +346,14 @@ impl GlobalMemoryStore {
         ).map_err(|e| format!("archive update: {}", e))?;
 
         // 3. 更新大纲索引（outlines 表）
+        //    先 DELETE 再按 project GROUP 重建。每行 ID 用 randomblob(16) 生成唯一值。
+        //    randomblob() 是非确定性函数，SQLite 会对 SELECT 输出的每一行独立求值，
+        //    因此 GROUP BY project 后每个项目组都会拿到独立的 16 字节随机 ID，不会碰撞。
         conn.execute("DELETE FROM outlines", []).map_err(|e| format!("clear outlines: {}", e))?;
         conn.execute(
             "INSERT INTO outlines (id, summary, project, entry_count, updated_at)
              SELECT
-                project,
+                'outl_' || lower(hex(randomblob(16))),
                 COALESCE(GROUP_CONCAT(SUBSTR(content, 1, 80), ' | '), ''),
                 project,
                 COUNT(*),
@@ -449,14 +453,9 @@ fn map_entry(row: &rusqlite::Row) -> rusqlite::Result<GlobalMemoryEntry> {
     })
 }
 
-/// 生成简易 UUID（不依赖 uuid crate 的 v4，用时间戳+随机）
+/// 生成 UUID v4 字符串
 fn uuid_str() -> String {
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let pid = std::process::id();
-    format!("{:x}{:x}", ts, pid)
+    Uuid::new_v4().to_string()
 }
 
 #[cfg(test)]
@@ -544,5 +543,41 @@ mod tests {
         let id1 = store.save("第一条", "note", "t", "p", 5).unwrap();
         let id2 = store.save("第二条", "note", "t", "p", 5).unwrap();
         assert_ne!(id1, id2, "IDs must be unique");
+    }
+
+    /// 回归测试：consolidate() 重建 outlines 时，多 project 的 outline ID 必须唯一，
+    /// 不能用 project 名作主键（会与现有 entries 冲突），也不能让 randomblob 退化成同一值。
+    #[test]
+    fn test_outline_ids_unique_after_consolidate() {
+        let store = test_store();
+        // 3 个 project，每个多条
+        for p in &["alpha", "beta", "gamma"] {
+            for i in 0..3 {
+                store
+                    .save(&format!("{}-content-{}", p, i), "note", "t", p, 5)
+                    .unwrap();
+            }
+        }
+        store.consolidate().unwrap();
+
+        let outlines = store.list_outlines().unwrap();
+        assert_eq!(outlines.len(), 3, "应有 3 个 project 大纲");
+
+        // 关键断言：所有 outline 的 id 必须唯一，且都以 outl_ 前缀开头（来自 randomblob）
+        let ids: Vec<_> = outlines.iter().map(|o| o.id.as_str()).collect();
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(
+            unique.len(),
+            ids.len(),
+            "outline ID 碰撞！ids = {:?}",
+            ids
+        );
+        for id in &ids {
+            assert!(
+                id.starts_with("outl_") && id.len() == "outl_".len() + 32,
+                "outline id 应为 outl_ + 32 hex 字符，实际 = {}",
+                id
+            );
+        }
     }
 }
