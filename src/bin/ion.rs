@@ -1249,6 +1249,15 @@ async fn cmd_workflow_run(path: &str, set: &[String]) {
 
     eprintln!("🚀 Starting workflow: {}", abs_path);
 
+    // 强制 wf agent 用唯一新 session（不复用 cwd-hash 旧 session）
+    // 避免 wf agent "记得上次跑过"导致跳步
+    let wf_session_id = format!("sess_wf_{}", std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis());
+    // Rust 2024 edition 里 set_var 是 unsafe
+    unsafe { std::env::set_var("ION_FORCE_SESSION_ID", &wf_session_id); }
+
     // 启动 wf agent（--host 模式）
     // wf agent 读取 yaml 文件，执行 stages
     let message = format!(
@@ -4080,6 +4089,15 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>) {
     cfg.provider = Some(provider.clone());
     cfg.project_path = Some(cwd.clone());
     cfg.initial_prompt = Some(user_message.to_string());
+
+    // 如果设了 ION_FORCE_SESSION_ID，强制用这个 session_id（不复用 cwd-hash 旧 session）
+    // workflow run 用它确保 wf agent 每次跑都是干净 session，不会"记得上次跑过"
+    if let Ok(forced_sid) = std::env::var("ION_FORCE_SESSION_ID") {
+        if !forced_sid.is_empty() {
+            cfg.session = Some(forced_sid.clone());
+            eprintln!("[host] 强制使用 session_id: {}", forced_sid);
+        }
+    }
 
     let entry = {
         let mut reg = registry.lock().await;
