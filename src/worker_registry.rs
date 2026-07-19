@@ -1327,11 +1327,19 @@ impl WorkerRegistry {
                     let wait = params.get("wait").and_then(|v| v.as_bool()).unwrap_or(true);
 
                     let mut config: WorkerCreateConfig = serde_json::from_value(params).unwrap_or_default();
-                    // 把 from_worker（spawn 调用者）注入 config.creator，
+                    // 把 from_worker（spawn 调用者）注入 config.creator 和 config.parent，
                     // 让 create_worker 内部能查到 parent_session_id 并传给子进程环境变量。
-                    // 入口 Worker（host 直接 create_session 创建的）没有 from_worker → creator 保持 None。
-                    if !from_worker.is_empty() && config.creator.is_none() {
-                        config.creator = Some(from_worker.clone());
+                    // 入口 Worker（host 直接 create_session 创建的）没有 from_worker → creator/parent 保持 None。
+                    //
+                    // 关键：parent 字段必须设，否则 create_worker 不会把子 worker 加到 parent.children 列表，
+                    // 导致 all_workers_idle 的 DFS 检查漏掉子 worker，误判 entry worker idle 提前清理。
+                    if !from_worker.is_empty() {
+                        if config.creator.is_none() {
+                            config.creator = Some(from_worker.clone());
+                        }
+                        if config.parent.is_none() {
+                            config.parent = Some(from_worker.clone());
+                        }
                     }
                     let report_channel = config.report_channel.clone().unwrap_or_else(|| "main".to_string());
                     match self.create_worker(config, registry_arc).await {

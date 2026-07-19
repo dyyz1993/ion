@@ -1268,6 +1268,10 @@ async fn cmd_workflow_run(path: &str, set: &[String]) {
         std::env::set_var("ION_FORCE_SESSION_ID", &wf_session_id);
         std::env::set_var("ION_FORK_CHILD", "1");
         std::env::set_var("ION_AUTO_CONTINUE", "1");
+        std::env::set_var("ION_MAX_OUTER_ITERATIONS", "30");
+        // wf agent 要跑完所有 stage（10 个），每个 stage 多个 turn（read/edit/bash/spawn），
+        // 20 turn 远远不够。设 0 = 无限。
+        std::env::set_var("ION_MAX_TURNS", "0");
     }
 
     // 启动 wf agent（--host 模式）

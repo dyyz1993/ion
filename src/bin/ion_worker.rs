@@ -257,13 +257,25 @@ async fn main() {
 	            .and_then(|s| s.parse::<u64>().ok())
 	            .map(|n| if n == 0 { None } else { Some(n) })
 	            .unwrap_or(Some(20)),
-	        max_outer_iterations: 5, max_retries: 30,
+	        max_outer_iterations: std::env::var("ION_MAX_OUTER_ITERATIONS")
+	            .ok().and_then(|s| s.parse().ok())
+	            .unwrap_or(5),
+	        max_retries: 30,
 	        retry_base_delay_ms: 1000, enable_compact: true,
 	        compact_config: CompactConfig::default(),
 	        api_key: Some(api_key.clone()),
 		        response_format: None, thinking: None,
 			    compact_model_id: None,
-		    retry_on_no_tool_use: 0,
+		    // wf agent 在 stage 之间可能"只说不做"（输出文本但没调工具），
+		    // retry_on_no_tool_use 让它在这种情况下重试（注入 WARNING）。
+		    // 对 wf/improver agent 默认启用（3 次重试），其他 agent 保持 0（禁用）。
+		    retry_on_no_tool_use: if current_agent_name == "wf" || current_agent_name == "improver" {
+		        std::env::var("ION_RETRY_NO_TOOL_USE")
+		            .ok().and_then(|s| s.parse().ok())
+		            .unwrap_or(3)
+		    } else {
+		        0
+		    },
 			    retry_config: Some(ion::retry::RetryConfig::default()),
 	    };
 
@@ -407,6 +419,15 @@ async fn main() {
                 initial_system_prompt = sp.clone();
             }
             tracing::info!("[worker] loaded agent '{}' from config", agent_cfg.name);
+            // wf agent（workflow 引擎）需要 auto-continue：
+            // 每个 stage 是一个 turn，turn 结束后 follow_up_queue 空了就退出，
+            // auto-continue 让它跨 turn 继续跑完整个 workflow。
+            if current_agent_name == "wf" || current_agent_name == "improver" {
+                if std::env::var("ION_AUTO_CONTINUE").is_err() {
+                    unsafe { std::env::set_var("ION_AUTO_CONTINUE", "1"); }
+                    tracing::info!("[worker] auto-set ION_AUTO_CONTINUE=1 for {} agent", current_agent_name);
+                }
+            }
             // Note: tool restriction is applied below after `agent` is built
             // We stash the config to apply post-construction
         } else {
@@ -3637,6 +3658,21 @@ impl ion::agent::extension::Extension for StreamingExtension {
             output(&serde_json::json!({
                 "type": "event",
                 "event": {"type": "text_delta", "delta": delta}
+            }));
+        }
+        Ok(())
+    }
+
+    async fn on_tool_call_delta(&self, delta: &str, name: &str) -> ion::agent::error::AgentResult<()> {
+        if !delta.is_empty() {
+            output(&serde_json::json!({
+                "type": "event",
+                "event": {
+                    "type": "tool_call_delta",
+                    "delta": delta,
+                    "toolName": name,
+                    "timestamp": now_ms(),
+                }
             }));
         }
         Ok(())

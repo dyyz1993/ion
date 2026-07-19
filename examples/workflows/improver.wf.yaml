@@ -59,13 +59,7 @@ stages:
   - id: worktree
     if: "always"
     commands:
-      - |
-        WT_DIR=$(mktemp -d /tmp/ion-improver-XXXXXX)
-        git worktree add "$WT_DIR" -b "improve/$(date +%Y%m%d-%H%M%S)" 2>&1 | tail -2
-        # 写状态文件供后续 stage 读取
-        mkdir -p .ion
-        echo "WT_DIR=$WT_DIR" > .ion/.improver-state
-        echo "✅ worktree: $WT_DIR"
+      - "mkdir -p .ion && WT_DIR=$(mktemp -d /tmp/ion-improver-XXXXXX) && git worktree add \"$WT_DIR\" -b \"improve/$(date +%Y%m%d-%H%M%S)\" && echo \"WT_DIR=$WT_DIR\" > .ion/.improver-state && echo \"worktree created at $WT_DIR\""
     gate:
       command: "test -f .ion/.improver-state && grep -q 'WT_DIR=' .ion/.improver-state && echo OK || echo FAIL"
       expected: OK
@@ -187,16 +181,7 @@ stages:
   - id: export_report
     if: "always"
     commands:
-      - |
-        LAST_SID=$(cat ~/.ion/agent/last_session 2>/dev/null || echo "")
-        REPORT=/tmp/improver_$(date +%Y%m%d_%H%M%S).html
-        # ion --export 会自动把 fork 出去的子 worker session（developer/researcher）
-        # 作为可点击链接嵌入主 HTML（fork_link 机制）
-        ion --export "$REPORT" --session "$LAST_SID" 2>&1 | tail -2
-        echo "REPORT_PATH=$REPORT" >> .ion/.improver-state
-        echo "✅ 报告: $REPORT"
-        # macOS 自动打开浏览器
-        open "$REPORT" 2>/dev/null && echo "✅ 已在浏览器打开" || echo "(非 macOS 环境，手动 open $REPORT)"
+      - "LAST_SID=$(cat ~/.ion/agent/last_session 2>/dev/null) && REPORT=/tmp/improver_$(date +%Y%m%d_%H%M%S).html && ion --export \"$REPORT\" --session \"$LAST_SID\" && echo \"REPORT_PATH=$REPORT\" >> .ion/.improver-state && open \"$REPORT\""
     gate:
       command: "grep -q 'REPORT_PATH=' .ion/.improver-state && echo OK || echo FAIL"
       expected: OK
@@ -207,16 +192,4 @@ stages:
   - id: cleanup
     if: "always"
     commands:
-      - |
-        source .ion/.improver-state 2>/dev/null
-        # 停 container（modify 类才有）
-        if [ -n "$CONTAINER_NAME" ]; then
-          container stop "$CONTAINER_NAME" 2>/dev/null && echo "✅ container 已停" || true
-        fi
-        # 删 worktree
-        if [ -n "$WT_DIR" ]; then
-          git worktree remove "$WT_DIR" --force 2>/dev/null && echo "✅ worktree 已删" || true
-        fi
-        # 清状态文件
-        rm -f .ion/.improver-state /tmp/.improver-container-init
-        echo "✅ 清理完成"
+      - "source .ion/.improver-state 2>/dev/null; container stop \"$CONTAINER_NAME\" 2>/dev/null; git worktree remove \"$WT_DIR\" --force 2>/dev/null; rm -f .ion/.improver-state /tmp/.improver-container-init; echo cleanup-done"

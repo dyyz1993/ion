@@ -632,12 +632,26 @@ impl Agent {
         let auto_continue = std::env::var("ION_AUTO_CONTINUE")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
+        // 文件日志（eprintln 去 stderr 文件，不确定能不能看到；直接写 /tmp 调试）
+        let _ = std::fs::OpenOptions::new()
+            .create(true).append(true)
+            .open("/tmp/agent_loop_debug.log")
+            .and_then(|mut f| std::io::Write::write_all(&mut f,
+                format!("[outer_loop] ENTER auto_continue={} env={}\n",
+                    auto_continue,
+                    std::env::var("ION_AUTO_CONTINUE").unwrap_or_default()).as_bytes()));
         let auto_continue_limit = std::env::var("ION_AUTO_CONTINUE_LIMIT")
             .ok().and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(30);  // 默认最多自动继续 30 轮（够 workflow 10 stage 用）
 
         for outer_i in 0..self.config.max_outer_iterations.max(auto_continue_limit) {
             let reason = self.inner_loop().await?;
+            let _ = std::fs::OpenOptions::new()
+                .create(true).append(true)
+                .open("/tmp/agent_loop_debug.log")
+                .and_then(|mut f| std::io::Write::write_all(&mut f,
+                    format!("[outer_loop] iter={} reason={:?} queue_len={}\n",
+                        outer_i, reason, self.follow_up_queue.len()).as_bytes()));
             match reason {
                 StopReason::Error | StopReason::Aborted => return Ok(()),
                 _ => {}
@@ -647,6 +661,7 @@ impl Agent {
                 // 这对 wf agent 必要——每个 stage 是一个 turn，没有外部触发不会继续
                 if auto_continue && outer_i < auto_continue_limit {
                     tracing::info!("outer {outer_i}: auto-continue (ION_AUTO_CONTINUE=1), injecting follow-up");
+                    println!("[auto-continue] 注入 follow-up 让 agent 继续执行（outer_i={}, auto_continue={}）", outer_i, auto_continue);
                     self.follow_up_queue.push_back(Message::User(UserMessage {
                         role: "user".into(),
                         content: vec![ContentBlock::Text(TextContent {
