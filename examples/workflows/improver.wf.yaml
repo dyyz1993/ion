@@ -1,0 +1,218 @@
+# improver Workflow — 通用任务智能体的结构化流程
+#
+# 把 improver 的 9 步流程写成 workflow，让 wf agent 按 stage 严格执行。
+# 每个 stage 有 gate 校验（不通过就重试/失败），避免 LLM 跳步。
+#
+# 用法:
+#   cp examples/workflows/improver.wf.yaml .ion/workflow.yaml
+#   ion workflow run .ion/workflow.yaml
+#
+# 或通过 improver agent 自动调:
+#   ion --agent improver "修 bug: ..."
+#
+# 变量传递机制（绕过 stdout→context 缺口）：
+#   WT_DIR / CONTAINER_NAME 写到 .ion/.improver-state，后续 stage source 它
+
+name: improver
+
+# ── 全局上下文 ──
+context:
+  topic: ""                    # 用户给的话题（stage 0 填充）
+  topic_type: ""               # "modify"（改代码）或 "research"（调研）
+  wt_dir: ""                   # worktree 路径
+  container_name: ""           # container 名字
+  changes_summary: ""          # 改动摘要
+
+# ── 默认值 ──
+defaults:
+  max_retries: 3
+  max_loops: 3
+  cleanup_on_success: true
+  cleanup_on_failure: false
+
+# ── 状态文件（跨 stage 共享 WT_DIR/CONTAINER_NAME）──
+# .ion/.improver-state 是 bash source 格式：
+#   WT_DIR=/tmp/ion-improver-xxx
+#   CONTAINER_NAME=ion-evolve-xxx
+
+stages:
+  # ═══════════════════════════════════════════════════════
+  # Stage 0: 话题分类（判断 modify 还是 research）
+  # ═══════════════════════════════════════════════════════
+  - id: classify
+    agent: build
+    task: |
+      判断以下话题属于哪类，只输出一个词（modify 或 research），不要其他内容：
+      - modify: 修 bug / 加功能 / 重构 / 优化 / 改写（要改代码）
+      - research: 分析 / 理解 / 评估 / 看看 / 检查（不改代码）
+
+      话题: "{{context.topic}}"
+    outputs:
+      topic_type: "stage_output"
+    gate:
+      command: "echo '{{context.topic_type}}' | grep -qE '^(modify|research)$' && echo VALID || echo INVALID"
+      expected: VALID
+
+  # ═══════════════════════════════════════════════════════
+  # Stage 1: 开 worktree（两类都要，共享）
+  # ═══════════════════════════════════════════════════════
+  - id: worktree
+    if: "always"
+    commands:
+      - |
+        WT_DIR=$(mktemp -d /tmp/ion-improver-XXXXXX)
+        git worktree add "$WT_DIR" -b "improve/$(date +%Y%m%d-%H%M%S)" 2>&1 | tail -2
+        # 写状态文件供后续 stage 读取
+        mkdir -p .ion
+        echo "WT_DIR=$WT_DIR" > .ion/.improver-state
+        echo "✅ worktree: $WT_DIR"
+    gate:
+      command: "test -f .ion/.improver-state && grep -q 'WT_DIR=' .ion/.improver-state && echo OK || echo FAIL"
+      expected: OK
+
+  # ═══════════════════════════════════════════════════════
+  # Stage 2: 起 container（仅 modify 类）
+  # ═══════════════════════════════════════════════════════
+  - id: container
+    if: "context.topic_type == 'modify'"
+    commands:
+      - |
+        source .ion/.improver-state
+        # 必须调脚本（不能自己 container run，否则 ion-provider 挂载会漏）
+        bash scripts/init-evolve-container.sh "$WT_DIR" 2>&1 | tee /tmp/.improver-container-init | tail -5
+        # 从脚本输出抓 CONTAINER_NAME，追加到状态文件
+        CONTAINER_NAME=$(grep '^CONTAINER_NAME=' /tmp/.improver-container-init | head -1 | cut -d= -f2)
+        if [ -z "$CONTAINER_NAME" ]; then
+          echo "❌ container 启动失败（没拿到 CONTAINER_NAME）"
+          exit 1
+        fi
+        echo "CONTAINER_NAME=$CONTAINER_NAME" >> .ion/.improver-state
+        echo "✅ container: $CONTAINER_NAME"
+    gate:
+      command: |
+        source .ion/.improver-state
+        # 校验 container 在跑 + ion-provider 挂载成功
+        container list 2>/dev/null | grep -q "$CONTAINER_NAME" && \
+        container exec "$CONTAINER_NAME" test -f /ion-provider/Cargo.toml 2>/dev/null && \
+        echo OK || echo FAIL
+      expected: OK
+      max_retries: 2
+
+  # ═══════════════════════════════════════════════════════
+  # Stage 3: 改代码（仅 modify 类，用 developer agent）
+  # ═══════════════════════════════════════════════════════
+  - id: edit_code
+    if: "context.topic_type == 'modify' && stages.container.status == 'done'"
+    agent: developer
+    task: "在 worktree 里完成这个任务（只改代码，不跑 cargo）：{{context.topic}}
+
+    重要：
+    - 用 read 读文件时，路径要带 worktree 前缀，或者 bash 先 cd 到 worktree
+    - worktree 路径从 .ion/.improver-state 读（source 它）
+    - 改完用 bash git diff --stat 看改动摘要
+    - 不要跑 cargo build/test（后续 stage 会跑）
+    - 不要 git commit（后续 stage 会做）"
+    outputs:
+      changes_summary: "stage_output"
+
+  # ═══════════════════════════════════════════════════════
+  # Stage 4: 编译验证（仅 modify 类，在 container 里）
+  # ═══════════════════════════════════════════════════════
+  - id: build
+    if: "context.topic_type == 'modify' && stages.edit_code.status == 'done'"
+    commands:
+      - |
+        source .ion/.improver-state
+        container exec "$CONTAINER_NAME" sh -c 'cd /workspace && cargo build --bin ion 2>&1' | tail -15
+    gate:
+      command: |
+        source .ion/.improver-state
+        container exec "$CONTAINER_NAME" sh -c 'cd /workspace && cargo build --bin ion 2>&1' | grep -q "Finished" && echo OK || echo FAIL
+      expected: OK
+      max_retries: 3
+    on_fail:
+      loop_back: edit_code
+      max_loops: 3
+
+  # ═══════════════════════════════════════════════════════
+  # Stage 5: 测试验证（仅 modify 类，在 container 里）
+  # ═══════════════════════════════════════════════════════
+  - id: test
+    if: "context.topic_type == 'modify' && stages.build.status == 'done'"
+    commands:
+      - |
+        source .ion/.improver-state
+        container exec "$CONTAINER_NAME" sh -c 'cd /workspace && cargo test --lib 2>&1' | tail -15
+    gate:
+      command: |
+        source .ion/.improver-state
+        container exec "$CONTAINER_NAME" sh -c 'cd /workspace && cargo test --lib 2>&1' | grep -qE "test result: ok\." && echo OK || echo FAIL
+      expected: OK
+      max_retries: 3
+    on_fail:
+      loop_back: edit_code
+      max_loops: 3
+
+  # ═══════════════════════════════════════════════════════
+  # Stage 6: 调研分析（仅 research 类，用 build agent）
+  # ═══════════════════════════════════════════════════════
+  - id: research
+    if: "context.topic_type == 'research' && stages.worktree.status == 'done'"
+    agent: build
+    task: "分析以下话题，输出结构化报告（不改代码，只读分析）：{{context.topic}}
+
+    重要：
+    - bash 先 source .ion/.improver-state 拿 WT_DIR
+    - 在 worktree 里 read/grep/find 分析
+    - 输出报告：问题列表 + 严重度 + 改进建议"
+
+  # ═══════════════════════════════════════════════════════
+  # Stage 7: 提交（仅 modify 类）
+  # ═══════════════════════════════════════════════════════
+  - id: commit
+    if: "context.topic_type == 'modify' && stages.test.status == 'done'"
+    commands:
+      - |
+        source .ion/.improver-state
+        cd "$WT_DIR" && git add -A && git commit -m "improve: {{context.topic}}" 2>&1 | tail -3
+    gate:
+      command: |
+        source .ion/.improver-state
+        cd "$WT_DIR" && git log --oneline -1 2>&1 | grep -q "improve:" && echo OK || echo FAIL
+      expected: OK
+
+  # ═══════════════════════════════════════════════════════
+  # Stage 8: 导出 HTML 报告（两类都要）
+  # ═══════════════════════════════════════════════════════
+  - id: export_report
+    if: "always"
+    commands:
+      - |
+        LAST_SID=$(cat ~/.ion/agent/last_session 2>/dev/null || echo "")
+        REPORT=/tmp/improver_$(date +%Y%m%d_%H%M%S).html
+        ion --export "$REPORT" --session "$LAST_SID" 2>&1 | tail -2
+        echo "REPORT_PATH=$REPORT" >> .ion/.improver-state
+        echo "✅ 报告: $REPORT"
+    gate:
+      command: "grep -q 'REPORT_PATH=' .ion/.improver-state && echo OK || echo FAIL"
+      expected: OK
+
+  # ═══════════════════════════════════════════════════════
+  # Stage 9: 清理（两类都要，无论成败）
+  # ═══════════════════════════════════════════════════════
+  - id: cleanup
+    if: "always"
+    commands:
+      - |
+        source .ion/.improver-state 2>/dev/null
+        # 停 container（modify 类才有）
+        if [ -n "$CONTAINER_NAME" ]; then
+          container stop "$CONTAINER_NAME" 2>/dev/null && echo "✅ container 已停" || true
+        fi
+        # 删 worktree
+        if [ -n "$WT_DIR" ]; then
+          git worktree remove "$WT_DIR" --force 2>/dev/null && echo "✅ worktree 已删" || true
+        fi
+        # 清状态文件
+        rm -f .ion/.improver-state /tmp/.improver-container-init
+        echo "✅ 清理完成"
