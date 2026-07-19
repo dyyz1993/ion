@@ -461,6 +461,12 @@ enum WorkflowAction {
     Run {
         /// Path to workflow.yaml
         path: String,
+        /// Set context values before running (format: key=value, e.g. --set topic="修 bug")
+        /// Can be repeated. Values are written into the yaml's context section.
+        /// This is the deterministic escape hatch when you don't want to rely
+        /// on the LLM editing the yaml itself.
+        #[arg(long, value_name = "KEY=VALUE")]
+        set: Vec<String>,
     },
 }
 
@@ -1172,11 +1178,68 @@ async fn cmd_workflow_status(path: &str) {
     }
 }
 
-async fn cmd_workflow_run(path: &str) {
+async fn cmd_workflow_run(path: &str, set: &[String]) {
     // 先校验
     if let Err(e) = ion::workflow::WorkflowConfig::load(path) {
         eprintln!("❌ {}", e);
         std::process::exit(1);
+    }
+
+    // 如果有 --set key=value，先写进 yaml 的 context 段
+    // 这是"确定性逃生通道"：不依赖 LLM edit yaml，直接用命令行参数注入 context
+    if !set.is_empty() {
+        let content = std::fs::read_to_string(path).unwrap_or_default();
+        let mut updated = content.clone();
+        for kv in set {
+            // 解析 key=value（value 含 = 也允许，按第一个 = 切）
+            let (key, value) = match kv.split_once('=') {
+                Some((k, v)) => (k.trim(), v.trim()),
+                None => {
+                    eprintln!("⚠️ 忽略无效 --set 参数（需要 key=value 格式）: {}", kv);
+                    continue;
+                }
+            };
+            // 纯字符串行级替换（不引入 regex 依赖）
+            // 匹配 yaml context 段下 `  key: "xxx"` 或 `  key: xxx` 这一行
+            let prefix = format!("{}:", key);
+            let new_value_quoted = format!("\"{}\"", value.replace('"', "\\\""));
+            let mut found = false;
+            let lines: Vec<&str> = updated.lines().collect();
+            let mut out_lines: Vec<String> = Vec::with_capacity(lines.len());
+            let mut in_context = false;
+            for line in lines {
+                // 检测 context: 段（顶层 key，不以空格开头）
+                if line == "context:" || line.trim() == "context:" {
+                    in_context = true;
+                    out_lines.push(line.to_string());
+                    continue;
+                }
+                // 离开 context 段（遇到另一个顶层 key 且非空行）
+                if in_context && !line.is_empty() && !line.starts_with(' ') && !line.starts_with('#') {
+                    in_context = false;
+                }
+                // 在 context 段里找 key:
+                if in_context && line.trim_start().starts_with(&prefix) {
+                    let indent = line.len() - line.trim_start().len();
+                    out_lines.push(format!("{}{}: {}", " ".repeat(indent), key, new_value_quoted));
+                    found = true;
+                    eprintln!("✅ --set {}=<value>（已更新 yaml）", key);
+                } else {
+                    out_lines.push(line.to_string());
+                }
+            }
+            if !found {
+                eprintln!("⚠️ --set {} 没匹配到 yaml context 字段（跳过）", key);
+            } else {
+                updated = out_lines.join("\n");
+                if !updated.ends_with('\n') {
+                    updated.push('\n');
+                }
+            }
+        }
+        if updated != content {
+            std::fs::write(path, &updated).ok();
+        }
     }
 
     // 用绝对路径（wf agent 需要读这个文件）
@@ -3018,7 +3081,7 @@ async fn main() {
         Some(Commands::Workflow { action }) => match action {
             WorkflowAction::Validate { path } => cmd_workflow_validate(path).await,
             WorkflowAction::Status { path } => cmd_workflow_status(path).await,
-            WorkflowAction::Run { path } => cmd_workflow_run(path).await,
+            WorkflowAction::Run { path, set } => cmd_workflow_run(path, &set).await,
         },
         Some(Commands::Dashboard) => {
             // Dashboard 用 Bun + OpenTUI 实现（dashboard/ 子目录）
