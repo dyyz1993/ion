@@ -135,6 +135,9 @@ impl GlobalMemoryStore {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
 
         // 1. 先用 FTS5 MATCH
+        //    将用户 query 用双引号包裹使其成为字面字符串短语，
+        //    query 内部的双引号用双写 ("") 转义，防止注入 FTS5 语法。
+        let escaped_query = format!("\"{}\"", query.replace('"', "\"\""));
         let fts_sql = if project.is_some() {
             "SELECT e.id, e.project, e.content, e.category, e.tags, e.importance, e.archived, e.created_at, e.updated_at
              FROM entries e JOIN entries_fts f ON e.rowid = f.rowid
@@ -148,11 +151,11 @@ impl GlobalMemoryStore {
         };
         let mut stmt = conn.prepare(fts_sql).map_err(|e| format!("prepare fts: {}", e))?;
         let fts_rows = if let Some(p) = project {
-            stmt.query_map(params![query, p], map_entry).map_err(|e| format!("query fts: {}", e))?
+            stmt.query_map(params![escaped_query, p], map_entry).map_err(|e| format!("query fts: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| format!("row fts: {}", e))?
         } else {
-            stmt.query_map(params![query], map_entry).map_err(|e| format!("query fts: {}", e))?
+            stmt.query_map(params![escaped_query], map_entry).map_err(|e| format!("query fts: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| format!("row fts: {}", e))?
         };
@@ -184,7 +187,7 @@ impl GlobalMemoryStore {
 
         let mut like_rows = Vec::new();
         for word in &words {
-            if word.len() < 2 { continue; }  // 跳过单字（噪音太大）
+            if word.chars().count() < 2 { continue; }  // 跳过单字（噪音太大，用字符数而非字节数）
             let like_pattern = format!("%{}%", word);
             let like_sql = if project.is_some() {
                 "SELECT id, project, content, category, tags, importance, archived, created_at, updated_at
@@ -543,6 +546,55 @@ mod tests {
         let id1 = store.save("第一条", "note", "t", "p", 5).unwrap();
         let id2 = store.save("第二条", "note", "t", "p", 5).unwrap();
         assert_ne!(id1, id2, "IDs must be unique");
+    }
+
+    #[test]
+    fn test_search_chinese_single_char() {
+        // Bug 1 回归: word.len() 返回字节数，单个中文字 word.len()=3 会通过 < 2 检查。
+        // 应该用 chars().count() < 2 判断字符数，确保单字被跳过。
+        let store = test_store();
+        store.save("编程语言对比分析", "note", "t", "p", 5).unwrap();
+        store.save("深度学习与神经网络", "note", "t", "p", 5).unwrap();
+
+        // 搜索 "编"（单字），应走 LIKE fallback 且被跳过，不返回噪音结果
+        let results = store.search("编", None).unwrap();
+        assert!(
+            results.is_empty(),
+            "单个中文字应被跳过（chars().count() < 2），但返回了 {} 条结果",
+            results.len()
+        );
+
+        // 搜索 "编程"（2 字），应能匹配
+        let results = store.search("编程", None).unwrap();
+        assert_eq!(results.len(), 1, "双字中文搜索应返回 1 条结果");
+        assert_eq!(results[0].content, "编程语言对比分析");
+    }
+
+    #[test]
+    fn test_search_fts_escape() {
+        // Bug 2 回归: FTS5 MATCH 查询没有转义特殊字符，含 OR/AND/NOT/双引号的 query
+        // 会被当 FTS5 语法处理。应该用双引号包裹 + 内部双引号双写转义。
+        let store = test_store();
+        store.save("Use OR keyword in content", "note", "t", "p", 5).unwrap();
+        store.save("Normal entry without keywords", "note", "t", "p", 5).unwrap();
+
+        // 搜索 "OR" —— 修复前会被 FTS5 当布尔运算符，导致报错或返回全部结果
+        let results = store.search("OR", None).unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "搜索 'OR' 应只返回包含该字面词的条目，而非被当 FTS5 运算符"
+        );
+        assert!(results[0].content.contains("OR"));
+
+        // 搜索含双引号的内容
+        store.save("Say \"hello world\" loudly", "note", "t", "p", 5).unwrap();
+        let results = store.search("\"hello world\"", None).unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "含双引号的 query 应被正确转义并匹配字面内容"
+        );
     }
 
     /// 回归测试：consolidate() 重建 outlines 时，多 project 的 outline ID 必须唯一，
