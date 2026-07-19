@@ -1251,17 +1251,35 @@ async fn cmd_workflow_run(path: &str, set: &[String]) {
 
     // 强制 wf agent 用唯一新 session（不复用 cwd-hash 旧 session）
     // 避免 wf agent "记得上次跑过"导致跳步
+    //
+    // 两步配合：
+    // 1. ION_FORCE_SESSION_ID 设唯一 sid（让 WorkerCreateConfig.session 用它）
+    // 2. ION_FORK_CHILD=1 让 ion_worker 用 <sid>.jsonl 独立文件（不复用 cwd-hash 的 session.jsonl）
+    //    否则即使 sid 是新的，文件位置还是按 cwd hash 定位，会加载旧 session 的历史
+    //
+    // 注意：ION_FORK_CHILD 只在 ion 主进程设，create_worker spawn entry worker 时继承，
+    // 但 wf spawn 的子 worker（developer/build）也会继承——这是可接受的（它们也应该用独立 session 文件）
     let wf_session_id = format!("sess_wf_{}", std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis());
     // Rust 2024 edition 里 set_var 是 unsafe
-    unsafe { std::env::set_var("ION_FORCE_SESSION_ID", &wf_session_id); }
+    unsafe {
+        std::env::set_var("ION_FORCE_SESSION_ID", &wf_session_id);
+        std::env::set_var("ION_FORK_CHILD", "1");
+    }
 
     // 启动 wf agent（--host 模式）
     // wf agent 读取 yaml 文件，执行 stages
+    //
+    // message 措辞关键：明确告诉 wf agent "yaml 是全新的，所有 stage 都没 status，
+    // 必须从第一个 stage 开始执行"。避免 LLM 幻觉"已经跑过了"。
     let message = format!(
-        "Read the workflow file at {} and execute all pending stages. \
+        "Read the workflow file at {} and execute ALL stages from the first one. \
+         The yaml is fresh — no stage has a status field yet, so every stage is pending. \
+         Do NOT say 'already executed' or 'no pending stages'. \
+         Start by reading the yaml, then execute stage by stage: \
+         edit status to running → execute (spawn_worker or bash) → check gate → edit status to done. \
          Follow the instructions in your system prompt exactly.",
         abs_path
     );
@@ -4010,6 +4028,7 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>) {
                 for wid in &ids {
                     if !subs.contains_key(wid) {
                         if let Ok(rx) = reg.subscribe(wid) {
+                            eprintln!("[pump] 订阅新 worker: {}", &wid[..12.min(wid.len())]);
                             subs.insert(wid.clone(), rx);
                             line_bufs.insert(wid.clone(), String::new());
                         }
@@ -4018,7 +4037,9 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>) {
             }
             for (wid, rx) in subs.iter_mut() {
                 while let Ok(msg) = rx.try_recv() {
-                    if msg.get("type").and_then(|v| v.as_str()) != Some("event") { continue; }
+                    if msg.get("type").and_then(|v| v.as_str()) != Some("event") {
+                        continue;
+                    }
                     let ev = msg.get("event").cloned().unwrap_or_default();
                     let et = ev.get("type").and_then(|v| v.as_str()).unwrap_or("");
                     match et {
@@ -4124,6 +4145,14 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>) {
         .unwrap_or(30 * 60);
     eprintln!("[host] waiting for workers to complete... (timeout {timeout_secs}s)");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+
+    // idle 宽限期：worker 刚 Idle 不能立刻算"完成"。
+    // workflow 场景下 wf agent 每个 stage 是一个 turn，turn 之间会短暂 Idle（等下一轮 LLM 调用），
+    // 如果立刻判定完成会提前清理。给 8 秒宽限，让 wf 有时间启动下一个 turn。
+    let idle_grace_secs = std::env::var("ION_HOST_IDLE_GRACE")
+        .ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(8);
+    let mut first_idle_at: Option<std::time::Instant> = None;
+
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
@@ -4136,8 +4165,21 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>) {
         };
 
         if all_idle {
-            eprintln!("[host] recursive idle check passed, cleaning up");
-            break;
+            // 首次进入 idle 状态，记录时间
+            if first_idle_at.is_none() {
+                first_idle_at = Some(std::time::Instant::now());
+                eprintln!("[host] workers idle, waiting {idle_grace_secs}s grace period before cleanup...");
+            }
+            // 持续 idle 超过宽限期才真的清理
+            if let Some(t0) = first_idle_at {
+                if t0.elapsed() >= std::time::Duration::from_secs(idle_grace_secs) {
+                    eprintln!("[host] idle for {}s, cleaning up", t0.elapsed().as_secs());
+                    break;
+                }
+            }
+        } else {
+            // 不是全部 idle（有 worker 在干活），重置宽限期计时器
+            first_idle_at = None;
         }
 
         if std::time::Instant::now() > deadline {

@@ -77,12 +77,20 @@ cp examples/workflows/improver.wf.yaml .ion/workflow.yaml
 
 ## Workflow 引擎执行规则
 
-### 读 yaml 找起点
+### 读 yaml 找起点（强制 read，不允许凭记忆）
 
-1. `read .ion/workflow.yaml`
-2. 找第一个 `status: pending` 或 `status: failed` 的 stage
-3. 如果所有 stage 都是 `done` 或 `skipped` → 输出 `PIPELINE COMPLETE` + 总结，停止
-4. 否则执行那个 stage
+1. **`read .ion/workflow.yaml`**（每次启动都必须 read，不允许凭记忆判断"跑过了"）
+2. 基于**刚 read 的文件内容**，找第一个 stage：
+   - stage **没有 `status:` 字段**（从来没跑过）→ **必须执行**（这不是"已经跑完"，是"从来没跑过"）
+   - stage 有 `status: pending` 或 `status: failed` → 执行
+   - stage 有 `status: done` 或 `status: skipped` → 跳过，看下一个
+3. 如果所有 stage 都是 `done` 或 `skipped`（**基于刚 read 的文件，每个 stage 都有 status: done 字段**）→ 输出 `PIPELINE COMPLETE` + 总结
+4. 否则执行那个 pending/无-status 的 stage
+
+**禁止**：
+- 不 read 文件就说"已经执行过了"
+- 把"没 status 字段"理解成"已经跑完"——没 status 就是 pending，必须执行
+- 说"这是幂等请求"或问用户"你想做什么"——你的任务就是执行 workflow
 
 ### 执行单个 Stage
 
