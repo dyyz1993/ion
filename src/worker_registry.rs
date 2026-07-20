@@ -492,7 +492,7 @@ impl WorkerRegistry {
             worker_id: worker_id.clone(),
             session_id: session_id.clone(),
             project: project_name_clone,
-            status: WorkerStatus::Idle,
+            status: WorkerStatus::Busy,  // 创建时设 Busy（马上要开始干活，避免 idle 检测误杀）
             model: record.model.clone(),
             agent: record.agent.clone(),
             channels: record.channels.clone(),
