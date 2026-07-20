@@ -23,6 +23,10 @@ pub enum AgentError {
     #[error("Agent aborted")]
     Aborted,
 
+    /// Soft interrupt：工具被 immediate steer 打断，agent 不退出（可恢复）
+    #[error("Agent interrupted (steer)")]
+    Interrupted,
+
     #[error("Agent paused")]
     Paused,
 

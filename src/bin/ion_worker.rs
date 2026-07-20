@@ -3680,6 +3680,64 @@ impl ion::agent::extension::Extension for StreamingExtension {
         Ok(())
     }
 
+
+    /// agent_start 事件（对齐 pi）
+    async fn on_agent_start(&self, _ctx: &ion::agent::agent_loop::AgentContext) -> ion::agent::error::AgentResult<()> {
+        output(&serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "agent_start",
+                "timestamp": now_ms(),
+            }
+        }));
+        Ok(())
+    }
+
+    /// agent_end 事件（对齐 pi — 含消息数）
+    async fn on_agent_end(&self, ctx: &ion::agent::agent_loop::AgentContext) -> ion::agent::error::AgentResult<()> {
+        output(&serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "agent_end",
+                "willRetry": false,
+                "messages": ctx.message_count,
+                "timestamp": now_ms(),
+            }
+        }));
+        Ok(())
+    }
+
+    /// message_start 事件（对齐 pi）
+    async fn on_message_start(&self, role: &str, content: &str) -> ion::agent::error::AgentResult<()> {
+        output(&serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "message_start",
+                "role": role,
+                "content_length": content.len(),
+                "timestamp": now_ms(),
+            }
+        }));
+        Ok(())
+    }
+
+    /// message_end 事件（对齐 pi — 含 token 用量）
+    async fn on_message_end(&self, role: &str, _full_content: &str, usage: &ion_provider::types::Usage) -> ion::agent::error::AgentResult<()> {
+        output(&serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "message_end",
+                "role": role,
+                "usage": {
+                    "input": usage.input,
+                    "output": usage.output,
+                    "total": usage.total_tokens,
+                },
+                "timestamp": now_ms(),
+            }
+        }));
+        Ok(())
+    }
     async fn on_tool_call_delta(&self, delta: &str, name: &str) -> ion::agent::error::AgentResult<()> {
         if !delta.is_empty() {
             if std::env::var("ION_STREAM_DEBUG").ok().as_deref() == Some("1") {
@@ -3697,6 +3755,7 @@ impl ion::agent::extension::Extension for StreamingExtension {
         }
         Ok(())
     }
+
 
     /// 自动重试开始事件：让前端显示 "重试中 (N/M)..."（对齐 pi auto_retry_start）
     async fn on_auto_retry_start(&self, attempt: u32, max_retries: u32) -> ion::agent::error::AgentResult<()> {
@@ -3772,6 +3831,7 @@ impl ion::agent::extension::Extension for StreamingExtension {
                 "type": "tool_execution_update",
                 "toolCallId": ctx.tool_call_id,
                 "toolName": ctx.tool_name,
+                "args": ctx.args,
                 "partialResult": partial,
             }
         }));
@@ -3786,6 +3846,7 @@ impl ion::agent::extension::Extension for StreamingExtension {
                 "toolCallId": ctx.tool_call_id,
                 "toolName": ctx.tool_name,
                 "isError": ctx.is_error,
+                "result": ctx.result,
                 "durationMs": ctx.duration_ms,
                 "timestamp": now_ms(),
             }
