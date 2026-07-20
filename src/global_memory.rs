@@ -251,6 +251,15 @@ impl GlobalMemoryStore {
         Ok(count)
     }
 
+    /// 所有记忆总数（含活跃和归档）
+    pub fn memory_count(&self) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM entries", [], |row| row.get(0)
+        ).unwrap_or(0);
+        Ok(count)
+    }
+
     /// 归档条目数
     pub fn archived_total(&self) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
@@ -661,6 +670,37 @@ mod tests {
     }
 
     
+    #[test]
+    fn test_memory_count() {
+        let store = test_store();
+
+        // ��始空库：总数为 0
+        assert_eq!(store.memory_count().unwrap(), 0);
+
+        // 保存 3 条
+        store.save("entry one", "note", "t", "p", 5).unwrap();
+        store.save("entry two", "note", "t", "p", 5).unwrap();
+        store.save("entry three", "note", "t", "p", 5).unwrap();
+        assert_eq!(store.memory_count().unwrap(), 3);
+
+        // 归档 1 条（memory_count 仍应包含归档条目）
+        let entries = store.list(None).unwrap();
+        store.forget(&entries[0].id).unwrap();
+        assert_eq!(
+            store.memory_count().unwrap(),
+            3,
+            "memory_count 应包含归档条目，总数仍为 3"
+        );
+
+        // ��档 2 条后，总数仍为 3
+        store.forget(&entries[1].id).unwrap();
+        assert_eq!(store.memory_count().unwrap(), 3);
+
+        // 清空所有后总数为 0
+        store.clear_all().unwrap();
+        assert_eq!(store.memory_count().unwrap(), 0);
+    }
+
     #[test]
     fn test_archived_total() {
         let store = test_store();
