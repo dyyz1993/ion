@@ -120,7 +120,12 @@ impl Tool for BashRunTool {
     async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
         let command = args.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let description = args.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let timeout = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(30);
+        let timeout = args.get("timeout").and_then(|v| v.as_u64())
+            .unwrap_or_else(|| {
+                std::env::var("ION_BASH_RUN_TIMEOUT")
+                    .ok().and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(30)
+            });
         let background = args.get("background").and_then(|v| v.as_bool()).unwrap_or(false);
         let timeout_bg = args.get("timeoutBackground").and_then(|v| v.as_bool()).unwrap_or(false);
         if command.is_empty() {
