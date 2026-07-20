@@ -218,8 +218,9 @@ fn default_whitelist() -> Vec<String> {
         "ls", "cat", "head", "tail", "less", "more",
         "find", "grep", "rg", "ag", "fd", "tree",
         "echo", "printf", "cd", "pwd",
-        "mkdir", "touch", "cp", "mv",
+        "mkdir", "touch", "cp", "mv", "rm",
         "diff", "wc", "sort", "uniq", "cut", "tr", "awk", "sed",
+        "source", "test", "[", "true", "false",
         // 系统信息（只读）
         "which", "where", "type", "uname", "whoami", "id",
         "date", "df", "du", "ps", "top", "htop", "free", "lsof",
@@ -230,6 +231,8 @@ fn default_whitelist() -> Vec<String> {
         "curl", "wget",
         // 容器（让 Agent 能起容器）
         "docker", "podman", "container",
+        // ion 自身（让 workflow 能调 ion --export 等）
+        "ion",
     ].into_iter().map(String::from).collect()
 }
 

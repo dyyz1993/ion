@@ -206,6 +206,47 @@ if [ "$TOPIC_TYPE" = "modify" ] && [ "$CONTAINER_STARTED" = true ]; then
     fi
 fi
 
+# ── export HTML 报告（外提）──
+# wf agent 在 export_report stage 也不调 bash，所以 export 由 improver.sh 执行
+echo ""
+echo "── 导出 HTML 报告 ──"
+WF_SID=$(ls -t ~/.ion/agent/sessions/*/sess_wf_*.jsonl 2>/dev/null | head -1 | xargs basename 2>/dev/null | sed 's/.jsonl//')
+if [ -n "$WF_SID" ]; then
+    REPORT="/tmp/improver_$(date +%Y%m%d_%H%M%S).html"
+    if "$ION_BIN" --export "$REPORT" --session "$WF_SID" 2>/dev/null; then
+        echo "REPORT_PATH=$REPORT" >> "$PROJECT_DIR/.ion/.improver-state"
+        echo "✅ 报告: $REPORT"
+        # macOS 自动打开
+        if command -v open >/dev/null 2>&1; then
+            open "$REPORT" 2>/dev/null && echo "✅ 已在浏览器打开"
+        fi
+    else
+        echo "⚠️ export 失败，尝试用 last_session"
+        LAST_SID=$(cat ~/.ion/agent/last_session 2>/dev/null)
+        "$ION_BIN" --export "$REPORT" --session "$LAST_SID" 2>/dev/null && echo "✅ 报告(fallback): $REPORT"
+    fi
+else
+    echo "⚠️ 找不到 wf session，跳过 export"
+fi
+
+# ── cleanup（外提：workflow 结束后统一清理）──
+# wf agent 在 cleanup stage 也不调 bash（跟 build/test 一样），
+# 所以 cleanup 由 improver.sh 统一执行。
+echo ""
+echo "── cleanup ──"
+source "$PROJECT_DIR/.ion/.improver-state" 2>/dev/null
+# 停 container（modify 类才有）
+if [ -n "$CONTAINER_NAME" ]; then
+    container stop "$CONTAINER_NAME" 2>/dev/null && echo "✅ container 已停" || true
+fi
+# 删 worktree
+if [ -n "$WT_DIR" ]; then
+    git worktree remove "$WT_DIR" --force 2>/dev/null && echo "✅ worktree 已删" || true
+fi
+# 清状态文件
+rm -f "$PROJECT_DIR/.ion/.improver-state" /tmp/.improver-container-init 2>/dev/null
+echo "✅ 清理完成"
+
 echo ""
 if [ $EXIT_CODE -eq 0 ]; then
     echo "════════════════════════════════════════════════════"

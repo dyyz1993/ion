@@ -146,7 +146,7 @@ stages:
   - id: export_report
     if: "always"
     commands:
-      - "WF_SID=$(ls -t ~/.ion/agent/sessions/*/sess_wf_*.jsonl 2>/dev/null | head -1 | xargs basename | sed 's/.jsonl//') && REPORT=/tmp/improver_$(date +%Y%m%d_%H%M%S).html && ion --export \"$REPORT\" --session \"$WF_SID\" && echo \"REPORT_PATH=$REPORT\" >> .ion/.improver-state && open \"$REPORT\""
+      - "echo export-deferred-to-post-workflow"
     gate:
       command: "grep -q 'REPORT_PATH=/tmp/improver' .ion/.improver-state && echo OK || echo FAIL"
       expected: OK
@@ -157,4 +157,4 @@ stages:
   - id: cleanup
     if: "always"
     commands:
-      - "source .ion/.improver-state 2>/dev/null; container stop \"$CONTAINER_NAME\" 2>/dev/null; git worktree remove \"$WT_DIR\" --force 2>/dev/null; rm -f .ion/.improver-state /tmp/.improver-container-init; echo cleanup-done"
+      - "echo cleanup-deferred-to-post-workflow"
