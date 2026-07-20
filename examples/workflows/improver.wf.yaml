@@ -96,34 +96,23 @@ stages:
       changes_summary: "stage_output"
 
   # ═══════════════════════════════════════════════════════
-  # Stage 4: 编译验证（仅 modify 类，在 container 里）
+  # Stage 4: 编译验证（仅 modify 类）
+  # 注意：build/test 由 improver.sh 在 workflow 结束后跑（外提）
+  # workflow 里直接标 done（improver.sh 后续会跑 build/test，失败则报告）
   # ═══════════════════════════════════════════════════════
   - id: build
     if: "context.topic_type == 'modify' && stages.edit_code.status == 'done'"
     commands:
-      - "source .ion/.improver-state && container exec \"$CONTAINER_NAME\" sh -c 'cd /workspace && cargo build --bin ion 2>&1' | tail -15"
-    gate:
-      command: "source .ion/.improver-state && container exec \"$CONTAINER_NAME\" sh -c 'cd /workspace && cargo build --bin ion 2>&1' | grep -q 'Finished' && echo OK || echo FAIL"
-      expected: OK
-      max_retries: 3
-    on_fail:
-      loop_back: edit_code
-      max_loops: 3
+      - "echo build-deferred-to-post-workflow"
 
   # ═══════════════════════════════════════════════════════
-  # Stage 5: 测试验证（仅 modify 类，在 container 里）
+  # Stage 5: 测试验证（仅 modify 类）
+  # 注意：跟 build 一样，由 improver.sh 后续跑
   # ═══════════════════════════════════════════════════════
   - id: test
     if: "context.topic_type == 'modify' && stages.build.status == 'done'"
     commands:
-      - "source .ion/.improver-state && container exec \"$CONTAINER_NAME\" sh -c 'cd /workspace && cargo test --lib 2>&1' | tail -15"
-    gate:
-      command: "source .ion/.improver-state && container exec \"$CONTAINER_NAME\" sh -c 'cd /workspace && cargo test --lib 2>&1' | grep -qE 'test result: ok\\.' && echo OK || echo FAIL"
-      expected: OK
-      max_retries: 3
-    on_fail:
-      loop_back: edit_code
-      max_loops: 3
+      - "echo test-deferred-to-post-workflow"
 
   # ═══════════════════════════════════════════════════════
   # Stage 6: 调研分析（仅 research 类，用 build agent）

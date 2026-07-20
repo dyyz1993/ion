@@ -167,10 +167,44 @@ if [ -n "$TOPIC_TYPE" ]; then
     SET_ARGS+=(--set "topic_type=$TOPIC_TYPE")
 fi
 
+# ── modify 类：build/test 在 workflow 结束后跑（外提）──
+# wf agent 在 build/test stage 不调 bash（LLM 倾向思考不执行），
+# 所以 workflow 里 build/test 只 echo（标 done），真正的 build/test 由 improver.sh 在 workflow 结束后跑。
+# 不再用后台监控（会跟 workflow run 竞争 + 被 wait 干扰）。
+
+# 清掉旧的标志文件
+rm -f "$PROJECT_DIR/.ion/.improver-build-ok" "$PROJECT_DIR/.ion/.improver-test-ok"
+
 # 跑 workflow（wf agent 听话，会按 stage 走）
 "$ION_BIN" workflow run "${SET_ARGS[@]}" "$WORKFLOW_YAML"
 
 EXIT_CODE=$?
+
+# ── modify 类：workflow 结束后跑 build/test ──
+if [ "$TOPIC_TYPE" = "modify" ] && [ "$CONTAINER_STARTED" = true ]; then
+    echo ""
+    echo "── workflow 结束，跑 build/test ──"
+    source "$PROJECT_DIR/.ion/.improver-state" 2>/dev/null
+    if [ -n "$CONTAINER_NAME" ] && [ -n "$WT_DIR" ]; then
+        echo "[build] cargo build in $CONTAINER_NAME"
+        if container exec "$CONTAINER_NAME" sh -c 'cd /workspace && cargo build --bin ion 2>&1' | tail -5 | grep -q "Finished"; then
+            echo "✅ build OK"
+            touch "$PROJECT_DIR/.ion/.improver-build-ok"
+
+            echo "[test] cargo test in $CONTAINER_NAME"
+            if container exec "$CONTAINER_NAME" sh -c 'cd /workspace && cargo test --lib 2>&1' | tail -5 | grep -qE "test result: ok"; then
+                echo "✅ test OK"
+                touch "$PROJECT_DIR/.ion/.improver-test-ok"
+            else
+                echo "❌ test FAILED"
+                EXIT_CODE=1
+            fi
+        else
+            echo "❌ build FAILED"
+            EXIT_CODE=1
+        fi
+    fi
+fi
 
 echo ""
 if [ $EXIT_CODE -eq 0 ]; then
