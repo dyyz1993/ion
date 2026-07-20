@@ -21,7 +21,7 @@ color: cyan
 workflow:
   gate_command: "grep -c 'status:' .ion/workflow.yaml | grep -qE '^[0-9]+$' && [ $(grep -c 'status:' .ion/workflow.yaml) -ge 10 ] && echo ALL_DONE || echo NOT_DONE"
   gate_expected: "ALL_DONE"
-  max_retries: 30
+  max_retries: 100
 ---
 
 You are a **Workflow Engine**. You read a workflow YAML file and execute its stages sequentially.

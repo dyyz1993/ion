@@ -70,11 +70,16 @@ impl Extension for WorkflowExtension {
         }
 
         // 超过最大重试 → 放行（避免无限循环）
+        // 注意：max_retries 要足够大（workflow 有 10 stage，每个 stage 可能多个 turn）。
+        // 如果 max_retries 太小（比如 30），wf 在跑前几个 stage 时就用完了，
+        // 后续 gate 永久放行，wf 提前宣告 PIPELINE COMPLETE。
         let retries = self.retry_count.fetch_add(1, Ordering::SeqCst);
-        if retries >= self.config.max_retries {
+        // 默认上限 100（够 10 stage workflow 每个跑 10 turn）
+        let effective_max = if self.config.max_retries == 0 { 100 } else { self.config.max_retries };
+        if retries >= effective_max {
             tracing::warn!(
                 "Workflow gate: max retries ({}) exceeded, allowing stop",
-                self.config.max_retries
+                effective_max
             );
             return Ok(GateDecision::Allow);
         }
