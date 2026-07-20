@@ -256,7 +256,7 @@ impl GlobalMemoryStore {
         Ok(())
     }
 
-    /// 活��条目数
+    /// 活跃条目数
     pub fn count(&self) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         let count: i64 = conn.query_row(
@@ -265,7 +265,18 @@ impl GlobalMemoryStore {
         Ok(count)
     }
 
-    /// 所有记忆总数（含活跃和归��）
+    /// 指定项目的活跃条目数
+    pub fn count_by_project(&self, project: &str) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM entries WHERE archived=0 AND project = ?1",
+            params![project],
+            |row| row.get(0)
+        ).unwrap_or(0);
+        Ok(count)
+    }
+
+    /// 所有记忆总数（含活跃和归档）
     pub fn memory_count(&self) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         let count: i64 = conn.query_row(
@@ -713,6 +724,43 @@ mod tests {
         // 清空所有后总数为 0
         store.clear_all().unwrap();
         assert_eq!(store.memory_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_count_by_project() {
+        let store = test_store();
+
+        // 初始空库：所有项目���数值为 0
+        assert_eq!(store.count_by_project("project-a").unwrap(), 0);
+        assert_eq!(store.count_by_project("project-b").unwrap(), 0);
+        assert_eq!(store.count().unwrap(), 0);
+
+        // 只向 project-a 插入条目
+        store.save("project a content 1", "note", "t", "project-a", 5).unwrap();
+        store.save("project a content 2", "note", "t", "project-a", 5).unwrap();
+        store.save("project a content 3", "note", "t", "project-a", 5).unwrap();
+        assert_eq!(store.count_by_project("project-a").unwrap(), 3, "project-a 应有 3 条");
+        assert_eq!(store.count_by_project("project-b").unwrap(), 0, "project-b 应有 0 条");
+
+        // 向 project-b 插入条目
+        store.save("project b content", "note", "t", "project-b", 5).unwrap();
+        assert_eq!(store.count_by_project("project-a").unwrap(), 3);
+        assert_eq!(store.count_by_project("project-b").unwrap(), 1, "project-b 应有 1 条");
+
+        // 向 project-a 再插入条��
+        store.save("project a content 4", "note", "t", "project-a", 5).unwrap();
+        assert_eq!(store.count_by_project("project-a").unwrap(), 4);
+        assert_eq!(store.count_by_project("project-b").unwrap(), 1);
+
+        // 归档一条 project-a 的条目后，count_by_project 应减少
+        let entries = store.list(Some("project-a")).unwrap();
+        let oldest_id = entries.last().unwrap().id.clone();
+        store.forget(&oldest_id).unwrap();
+        assert_eq!(store.count_by_project("project-a").unwrap(), 3, "归档后 project-a 应为 3 条");
+        assert_eq!(store.count_by_project("project-b").unwrap(), 1, "归档不影响 project-b");
+
+        // 总活跃条目数 = 3 + 1 = 4
+        assert_eq!(store.count().unwrap(), 4);
     }
 
     #[test]
