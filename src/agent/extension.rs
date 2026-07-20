@@ -53,6 +53,8 @@ pub struct ToolExecutionContext {
     pub duration_ms: u64,
     /// 工具执行结果文本（对齐 pi tool_execution_end 的 result 字段）
     pub result: String,
+    /// 工具被 soft interrupt 打断（文件回滚用）
+    pub is_interrupted: bool,
 }
 
 #[derive(Clone, Debug)]

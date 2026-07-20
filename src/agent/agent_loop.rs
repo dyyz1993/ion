@@ -1025,6 +1025,7 @@ impl Agent {
                                 is_error: false,
                                 duration_ms: 0,
                                 result: String::new(),
+                                    is_interrupted: false,
                             },
                         ).await?;
 
@@ -1088,6 +1089,7 @@ impl Agent {
                                                             is_error: false,
                                                             duration_ms: start.elapsed().as_millis() as u64,
                                                             result: String::new(),
+                                    is_interrupted: false,
                                                         },
                                                         &p,
                                                     ).await?;
@@ -1103,6 +1105,7 @@ impl Agent {
                                                             is_error: false,
                                                             duration_ms: start.elapsed().as_millis() as u64,
                                                             result: String::new(),
+                                    is_interrupted: false,
                                                         },
                                                         &p,
                                                     ).await?;
@@ -1149,6 +1152,7 @@ impl Agent {
                             is_error: output.starts_with("Error"),
                             duration_ms: duration,
                             result: output.clone(),
+                            is_interrupted: false,
                         };
                         self.extensions.on_tool_execution_end(&exec_ctx).await?;
 
