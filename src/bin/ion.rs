@@ -1279,6 +1279,11 @@ async fn cmd_workflow_run(path: &str, set: &[String]) {
         // 设 15：让 inner_loop 跑 15 turn（够 2-3 stage）就 Stop 返回 outer_loop，
         // outer_loop 的 auto_continue 注入 follow-up 继续。
         unsafe { std::env::set_var("ION_MAX_TURNS", "15"); }
+        // auto-continue 的 gate：当 workflow yaml 所有 10 stage 都有 status 时停止注入 follow-up
+        unsafe {
+            std::env::set_var("ION_AUTO_CONTINUE_GATE", "test -f .ion/workflow.yaml && [ $(grep -c 'status:' .ion/workflow.yaml) -ge 10 ] && echo ALL_DONE || echo NOT_DONE");
+            std::env::set_var("ION_AUTO_CONTINUE_EXPECTED", "ALL_DONE");
+        }
     }
 
     // 同步更新 last_session，让 export_report stage 的 ion --export 能找到 wf 的 session

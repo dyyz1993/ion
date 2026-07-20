@@ -660,19 +660,24 @@ impl Agent {
                 // auto_continue 模式：注入"继续"follow-up 让 agent 跑下一个 turn
                 // 这对 wf agent 必要——每个 stage 是一个 turn，没有外部触发不会继续
                 if auto_continue && outer_i < auto_continue_limit {
-                    // 检查 LLM 最后输出是否含 "PIPELINE COMPLETE"（workflow 完成标志）
-                    // 如果是，不再注入 follow-up，让 agent 退出
-                    let last_text = self.messages.last()
-                        .and_then(|m| match m {
-                            Message::Assistant(a) => a.content.iter().find_map(|c| match c {
-                                ion_provider::types::AssistantContentBlock::Text(t) => Some(t.text.clone()),
-                                _ => None,
-                            }),
-                            _ => None,
+                    // 检查 workflow 是否已完成：跑 ION_AUTO_CONTINUE_GATE 环境变量指定的 gate 命令
+                    // 如果输出含 ION_AUTO_CONTINUE_EXPECTED（默认 ALL_DONE），停止 auto-continue
+                    let workflow_done = std::env::var("ION_AUTO_CONTINUE_GATE").ok()
+                        .filter(|s| !s.is_empty())
+                        .and_then(|gate_cmd| {
+                            std::process::Command::new("bash")
+                                .arg("-c").arg(&gate_cmd)
+                                .output().ok()
+                                .map(|o| {
+                                    let out = String::from_utf8_lossy(&o.stdout);
+                                    let expected = std::env::var("ION_AUTO_CONTINUE_EXPECTED")
+                                        .unwrap_or_else(|_| "ALL_DONE".into());
+                                    out.contains(&expected)
+                                })
                         })
-                        .unwrap_or_default();
-                    if last_text.contains("PIPELINE COMPLETE") || last_text.contains("流水线完成") || last_text.contains("流水线已完成") {
-                        tracing::info!("outer {outer_i}: auto-continue 检测到 PIPELINE COMPLETE，停止注入 follow-up");
+                        .unwrap_or(false);
+                    if workflow_done {
+                        tracing::info!("outer {outer_i}: auto-continue gate passed (workflow done), stopping");
                         return Ok(());
                     }
                     tracing::info!("outer {outer_i}: auto-continue (ION_AUTO_CONTINUE=1), injecting follow-up");
