@@ -206,21 +206,16 @@ fi
 # ── Step 5: 在 container 内编译 ion binary（B 的 ion 实例）──
 # A→B 架构的关键：B 需要自己的 ion binary 才能跑 agent。
 # host 是 macOS arm64，container 是 Linux —— 跨架构 binary 跑不了，必须在 container 内编译。
-# 首次编译 10-20 分钟，后续 incremental 快。
+# 首次编译 10-20 分钟。改成后台运行（不阻塞 init 脚本），A 后续轮询检查。
 echo ""
-echo "── Step 5: 在 container 内编译 ion binary ──"
-echo "  （首次编译需要 10-20 分钟，请耐心等待）"
-"$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c \
-    'source $HOME/.cargo/env && cd /workspace && cargo build --release --bin ion 2>&1 | tail -5' 2>&1 | tail -5
-BUILD_EXIT=$?
-if [ $BUILD_EXIT -eq 0 ]; then
-    echo "  ✅ ion binary 编译成功"
-    # 验证 binary 能跑
-    "$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c \
-        'cd /workspace && ./target/release/ion --version 2>&1' | head -1
-else
-    echo "  ⚠️ ion binary 编译失败（B 将无法跑 agent，但 cargo test 仍可用）"
-fi
+echo "── Step 5: 在 container 内编译 ion binary（后台）──"
+echo "  （首次编译需要 10-20 分钟，后台运行不阻塞）"
+# 后台启动 cargo build，输出重定向到日志文件
+"$CONTAINER_BIN" exec -d "$CONTAINER_NAME" sh -c \
+    'source $HOME/.cargo/env && cd /workspace && cargo build --release --bin ion > /tmp/ion-build.log 2>&1 && touch /tmp/ion-build-done'
+echo "  ✅ cargo build 已在后台启动"
+echo "  检查编译状态：container exec $CONTAINER_NAME test -f /tmp/ion-build-done"
+echo "  查看编译日志：container exec $CONTAINER_NAME cat /tmp/ion-build.log | tail -5"
 
 # ── Step 6: 安装额外工具 ──
 echo ""

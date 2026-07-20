@@ -277,10 +277,10 @@ async fn main() {
 	        api_key: Some(api_key.clone()),
 		        response_format: None, thinking: None,
 			    compact_model_id: None,
-		    // wf agent 在 stage 之间可能"只说不做"（输出文本但没调工具），
+		    // evolver/wf/improver agent 可能在 turn 里"只说不做"（输出文本但没调工具），
 		    // retry_on_no_tool_use 让它在这种情况下重试（注入 WARNING）。
-		    // 对 wf/improver agent 默认启用（3 次重试），其他 agent 保持 0（禁用）。
-            retry_on_no_tool_use: if initial_agent.as_deref() == Some("wf") || initial_agent.as_deref() == Some("improver") {
+		    // 对这些 agent 默认启用（3 次重试），其他 agent 保持 0（禁用）。
+            retry_on_no_tool_use: if matches!(initial_agent.as_deref(), Some("wf") | Some("improver") | Some("evolver")) {
 		        std::env::var("ION_RETRY_NO_TOOL_USE")
 		            .ok().and_then(|s| s.parse().ok())
 		            .unwrap_or(3)
@@ -433,7 +433,7 @@ async fn main() {
             // wf agent（workflow 引擎）需要 auto-continue：
             // 每个 stage 是一个 turn，turn 结束后 follow_up_queue 空了就退出，
             // auto-continue 让它跨 turn 继续跑完整个 workflow。
-            if current_agent_name == "wf" || current_agent_name == "improver" {
+            if matches!(current_agent_name.as_str(), "wf" | "improver" | "evolver") {
                 if std::env::var("ION_AUTO_CONTINUE").is_err() {
                     unsafe { std::env::set_var("ION_AUTO_CONTINUE", "1"); }
                     tracing::info!("[worker] auto-set ION_AUTO_CONTINUE=1 for {} agent", current_agent_name);

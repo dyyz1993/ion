@@ -43,17 +43,27 @@ echo "WT_DIR=$WT_DIR"
 bash scripts/init-evolve-container.sh "$WT_DIR"
 ```
 
-从输出读出 `CONTAINER_NAME=ion-evolve-XXX`。这个脚本会：
+从输出读出 `CONTAINER_NAME=ion-evolve-XXX`。脚本会：
 - 启动 container（挂载 worktree + ~/.ion）
-- 在 container 里编译 ion binary（首次 10-20 分钟）
+- 后台启动 cargo build（不阻塞，10-20 分钟）
 - 配置 git 让 B 能 commit
+
+**等 cargo build 完成**（轮询检查）：
+```bash
+# 循环检查，直到 ion binary 就绪
+while ! container exec $CONTAINER_NAME test -f /tmp/ion-build-done 2>/dev/null; do
+  echo "等待编译..."; sleep 30
+done
+```
 
 **如果 container 不可用 → 报错退出**，不降级。
 
 ### Step 3: A 调用 B 改代码
 
+B 已经有自己的 ion binary 了。A 像这样调用 B：
+
 ```bash
-container exec $CONTAINER_NAME sh -c 'cd /workspace && ./target/release/ion --agent developer "任务描述"'
+container exec $CONTAINER_NAME sh -c 'cd /workspace && ./target/release/ion --agent developer "给 global_memory.rs 加 archived_total 方法 + test"'
 ```
 
 B（container 里的 ion developer agent）会自己：
