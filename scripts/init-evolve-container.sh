@@ -161,6 +161,20 @@ if [ -d "$ION_PROVIDER_DIR" ]; then
     echo "  ✅ Cargo.toml 路径已修复（/ion-provider）"
 fi
 
+# ── Step 2c: 在 host 侧把 worktree 转成独立 git repo ──
+# worktree 的 .git 是文件（指向主仓库的 gitdir），container 里路径无效。
+# 在 container 启动前（host 侧）把 .git 转成独立目录，
+# 这样 bind-mount 后 container 看到的是完整 .git 目录。
+# 副作用：worktree 断开跟主仓库的 git 关联（变成独立 repo），
+# 但这正是我们要的——B 在 container 里独立 commit，不影响主仓库。
+if [ -f "$WORKTREE_DIR/.git" ]; then
+    # .git 是文件（worktree 链接），转成独立 repo
+    GITDIR_OLD=$(cat "$WORKTREE_DIR/.git" | sed 's/gitdir: //')
+    rm -f "$WORKTREE_DIR/.git"
+    (cd "$WORKTREE_DIR" && git init -q && git config user.email 'ion-evolver@example.com' && git config user.name 'ION Evolver' && git add -A && git commit -q -m 'container init' 2>/dev/null)
+    echo "  ✅ worktree 转成独立 git repo（container 里 git 可用）"
+fi
+
 # ── Step 3: 等待 container 就绪 ──
 echo ""
 echo "── Step 3: 等待 container 就绪 ──"
@@ -207,13 +221,6 @@ if [ $BUILD_EXIT -eq 0 ]; then
 else
     echo "  ⚠️ ion binary 编译失败（B 将无法跑 agent，但 cargo test 仍可用）"
 fi
-
-# ── Step 5b: 配置 git（让 B 能 commit）──
-echo ""
-echo "── Step 5b: 配置 container 内 git ──"
-"$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c \
-    "git config user.email 'ion-evolver@example.com' && git config user.name 'ION Evolver'" 2>/dev/null
-echo "  ✅ git config 完成（B 可以 commit）"
 
 # ── Step 6: 安装额外工具 ──
 echo ""
