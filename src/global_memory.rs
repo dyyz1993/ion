@@ -302,6 +302,17 @@ impl GlobalMemoryStore {
         Ok(count)
     }
 
+    /// 指定项目的归档条目数
+    pub fn count_archived_by_project(&self, project: &str) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM entries WHERE archived=1 AND project = ?1",
+            params![project],
+            |row| row.get(0)
+        ).unwrap_or(0);
+        Ok(count)
+    }
+
     /// 检查是否已有相同 content 的活跃记忆（去重用）
     pub fn has_content(&self, content: &str) -> Result<bool, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
@@ -761,6 +772,42 @@ mod tests {
 
         // 总活跃条目数 = 3 + 1 = 4
         assert_eq!(store.count().unwrap(), 4);
+    }
+
+    #[test]
+    fn test_count_archived_by_project() {
+        let store = test_store();
+
+        // ��始空库：所有项目的归档数为 0
+        assert_eq!(store.count_archived_by_project("project-a").unwrap(), 0);
+        assert_eq!(store.count_archived_by_project("project-b").unwrap(), 0);
+
+        // 向 project-a 和 project-b 插入���目
+        store.save("pa active 1", "note", "t", "project-a", 5).unwrap();
+        store.save("pa active 2", "note", "t", "project-a", 5).unwrap();
+        store.save("pb active 1", "note", "t", "project-b", 5).unwrap();
+        assert_eq!(store.count_archived_by_project("project-a").unwrap(), 0, "���档前为 0");
+        assert_eq!(store.count_archived_by_project("project-b").unwrap(), 0, "��档前为 0");
+
+        // 归档一条 project-a 的条目
+        let pa_entries = store.list(Some("project-a")).unwrap();
+        store.forget(&pa_entries[0].id).unwrap();
+        assert_eq!(store.count_archived_by_project("project-a").unwrap(), 1, "project-a 应有 1 条归档");
+        assert_eq!(store.count_archived_by_project("project-b").unwrap(), 0, "project-b 应仍为 0");
+
+        // 再归档另一条 project-a 的条目
+        store.forget(&pa_entries[1].id).unwrap();
+        assert_eq!(store.count_archived_by_project("project-a").unwrap(), 2, "project-a 应有 2 条归档");
+        assert_eq!(store.count_archived_by_project("project-b").unwrap(), 0);
+
+        // 归档一条 project-b 的条目
+        let pb_entries = store.list(Some("project-b")).unwrap();
+        store.forget(&pb_entries[0].id).unwrap();
+        assert_eq!(store.count_archived_by_project("project-a").unwrap(), 2);
+        assert_eq!(store.count_archived_by_project("project-b").unwrap(), 1, "project-b 应有 1 条归档");
+
+        // 总归档数应等于 3
+        assert_eq!(store.count_all_archived().unwrap(), 3);
     }
 
     #[test]
