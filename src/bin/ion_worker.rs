@@ -4343,7 +4343,8 @@ impl ion_provider::registry::ApiProvider for ArcFauxProvider {
         model: &ion_provider::types::Model,
         context: &ion_provider::types::Context,
         options: Option<&ion_provider::types::StreamOptions>,
+        cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> ion_provider::error::ProviderResult<ion_provider::event_stream::EventStream> {
-        self.0.stream(model, context, options).await
+        self.0.stream(model, context, options, cancel).await
     }
 }

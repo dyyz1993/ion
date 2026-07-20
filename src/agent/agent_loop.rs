@@ -91,6 +91,9 @@ pub struct Agent {
     running: bool,
     /// 对齐 pi abort：设 true 后 check_pause 返回 Aborted 错误，终止 run()
     stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// HTTP 流式请求的 cancel token（每次 stream_with_retry 前 new 一个，stop() 时 cancel）
+    /// 对齐 pi AbortController：abort 时立刻 drop reqwest Response 关 TCP，不等 200ms 轮询
+    http_cancel: std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
     /// 工具执行运行时（本地/沙箱/远程）
     /// 用 Arc 以便 HookExtension 等 clone 共享（agent handler 需要 runtime 来 spawn 子 Worker）
     pub runtime: Arc<dyn crate::runtime::Runtime>,
@@ -133,6 +136,7 @@ impl Agent {
             pause_rx,
             running: false,
             stopped: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            http_cancel: std::sync::Mutex::new(None),
             runtime: Arc::new(crate::runtime::LocalRuntime::new()),
             compact_model: None,
             session_cwd: None,
@@ -230,9 +234,15 @@ impl Agent {
     }
     /// 硬停止当前 Agent 循环（对齐 pi abort）。
     /// 设 stopped=true + 唤醒 check_pause → 返回 AgentError::Aborted → 内循环 break。
+    /// 同时 cancel HTTP 请求 token（真正关 TCP 连接，不等 200ms 轮询）。
     pub fn stop(&self) {
         self.stopped.store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = self.pause_tx.send(true);
+        if let Ok(mut guard) = self.http_cancel.lock() {
+            if let Some(c) = guard.take() {
+                c.cancel();
+            }
+        }
     }
     pub fn is_running(&self) -> bool {
         self.running
@@ -1238,7 +1248,15 @@ impl Agent {
 
             // 用 select! 让 registry::stream 期间也能响应 abort
             // 200ms 超时检查 stopped,不重新发 HTTP(用 pin + loop 保持同一个 future)
-            let stream_fut = registry::stream(&self.registry, &self.model, context, Some(options));
+            // 同时用 CancellationToken 真正取消 HTTP（修复 D：reqwest select! + drop resp 关 TCP）
+            let cancel_token = tokio_util::sync::CancellationToken::new();
+            {
+                // 存到 self.http_cancel，让 stop() 能调 cancel()
+                if let Ok(mut guard) = self.http_cancel.lock() {
+                    *guard = Some(cancel_token.clone());
+                }
+            }
+            let stream_fut = registry::stream(&self.registry, &self.model, context, Some(options), Some(cancel_token));
             tokio::pin!(stream_fut);
             let stream_result = loop {
                 tokio::select! {
