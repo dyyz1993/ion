@@ -40,10 +40,19 @@ WT_DIR=$(mktemp -d /tmp/ion-evolve-XXXXXX) && git worktree add "$WT_DIR" -b "evo
 
 ### 2. 等编译完成
 
-调 bash 工具（把 CONTAINER 换成步骤 1 输出的 container 名字）：
+cargo build 在后台跑，需要等 10-20 分钟。**必须用 bash_run 的 background 模式**（不阻塞）：
+
+调 bash 工具，command 填（注意 background=true）：
 ```
-CONTAINER=$(grep CONTAINER_NAME /tmp/.evolver-state 2>/dev/null | cut -d= -f2) && echo "等待 $CONTAINER 编译..." && while ! container exec "$CONTAINER" test -f /tmp/ion-build-done 2>/dev/null; do echo "..."; sleep 30; done && echo "编译完成"
+CONTAINER=$(grep CONTAINER_NAME /tmp/.evolver-state 2>/dev/null | cut -d= -f2) && echo "等待 $CONTAINER 编译..."
 ```
+
+然后用 bash 工具轮询检查（每次调一个 bash，看编译完了没）：
+```
+CONTAINER=$(grep CONTAINER_NAME /tmp/.improver-state 2>/dev/null | cut -d= -f2) && container exec "$CONTAINER" test -f /tmp/ion-build-done 2>/dev/null && echo "BUILD_DONE" || echo "STILL_BUILDING"
+```
+
+如果输出 `STILL_BUILDING`，等 30 秒后再调一次这个 bash。直到看到 `BUILD_DONE`。
 
 ### 3. 调 B 改代码
 
