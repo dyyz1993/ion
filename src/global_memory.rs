@@ -271,6 +271,18 @@ impl GlobalMemoryStore {
         Ok(count > 0)
     }
 
+    /// 检查指定 ID 的记忆是否存在（含活跃和已归档条目）
+    pub fn entry_exists(&self, id: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM entries WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+        Ok(count > 0)
+    }
+
     /// 列出所有记忆（不含 archived）
     pub fn list(&self, project: Option<&str>) -> Result<Vec<GlobalMemoryEntry>, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
@@ -638,6 +650,27 @@ mod tests {
         store.forget(&id1).unwrap();
         assert_eq!(store.count_all_archived().unwrap(), 3);
         assert_eq!(store.count().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_entry_exists() {
+        let store = test_store();
+
+        // 不存在的 ID
+        assert!(!store.entry_exists("gmem_nonexistent").unwrap());
+
+        // 保存一条
+        let id = store.save("test entry for exists check", "note", "t", "p", 5).unwrap();
+
+        // 存在的 ID
+        assert!(store.entry_exists(&id).unwrap());
+
+        // 软删除后仍然存在（entry_exists 检查所有条目，含 archived）
+        store.forget(&id).unwrap();
+        assert!(
+            store.entry_exists(&id).unwrap(),
+            "软删除后条目仍存在于表中，entry_exists 应返回 true"
+        );
     }
 
     /// 回归测试：consolidate() 重建 outlines 时，多 project 的 outline ID 必须唯一，

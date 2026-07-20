@@ -11,6 +11,17 @@ use uuid::Uuid;
 // Worker Registry — Manager 内存状态
 // ---------------------------------------------------------------------------
 
+/// 单个 subscriber 的 event channel 容量。
+///
+/// 设为 4096 而非默认 256，是为了在 LLM 流式生成期间不丢事件：
+/// DeepSeek/opencode 会在很短时间（< 100ms）内连续推送 30-50 个 tool_call_delta，
+/// 如果 subscriber 消费稍慢（例如 host socket 转发被 lock 竞争阻塞），
+/// 256 容量会被瞬间填满，try_send 开始丢事件（实际测试中观察到 26/28 被丢）。
+///
+/// 4096 足够容纳一个完整 LLM 流的瞬时 burst（即使每秒 1000 事件也能撑 4 秒），
+/// 且每事件 ~1KB JSON，4096 个仅占 4MB 内存（per subscriber，可接受）。
+const EVENT_CHANNEL_CAPACITY: usize = 4096;
+
 pub struct WorkerRegistry {
     pub workers: HashMap<String, WorkerRecord>,
     pub channels: HashMap<String, Vec<String>>, // channel → worker_ids
@@ -582,22 +593,30 @@ impl WorkerRegistry {
 
                         // 关键：event 消息转发给 event_subscribers（实时流）
                         if msg_type == "event" {
-			                            let ev_type = msg.get("event")
-			                                .and_then(|e| e.get("type"))
-			                                .and_then(|v| v.as_str())
-			                                .unwrap_or("");
-			                            let mut reg = sub_registry.lock().await;
-			                            if let Some(record) = reg.workers.get_mut(&sub_wid) {
-			                                // 转发给实时订阅者
-			                                for sub in &record.event_subscribers {
-			                                    let _ = sub.try_send(msg.clone());
-			                                }
-			                                // 写入 ring buffer（用于 subscribe --replay）
-			                                record.event_history.push_back(msg.clone());
-			                                while record.event_history.len() > record.event_history_cap {
-			                                    record.event_history.pop_front();
-			                                }
-			                            }
+				            let ev_type = msg.get("event")
+				                .and_then(|e| e.get("type"))
+				                .and_then(|v| v.as_str())
+				                .unwrap_or("");
+				            let stream_debug = std::env::var("ION_STREAM_DEBUG").ok().as_deref() == Some("1");
+				            if stream_debug && ev_type == "tool_call_delta" {
+				                eprintln!("[stream-debug] host forward event type=tool_call_delta");
+				            }
+				            let mut reg = sub_registry.lock().await;
+				            if let Some(record) = reg.workers.get_mut(&sub_wid) {
+				                // 转发给实时订阅者
+				                for sub in &record.event_subscribers {
+				                    if let Err(_) = sub.try_send(msg.clone()) {
+				                        if stream_debug {
+				                            eprintln!("[stream-debug] host DROP event type=tool_call_delta (subscriber channel full)");
+				                        }
+				                    }
+				                }
+				                // 写入 ring buffer（用于 subscribe --replay）
+				                record.event_history.push_back(msg.clone());
+				                while record.event_history.len() > record.event_history_cap {
+				                    record.event_history.pop_front();
+				                }
+				            }
 			                            // 更新 latest_output / status
 		                            if ev_type == "text_delta" {
 		                                if let Some(delta) = msg.get("event")
@@ -977,7 +996,7 @@ impl WorkerRegistry {
     ) -> Result<mpsc::Receiver<serde_json::Value>, String> {
         let record = self.workers.get_mut(worker_id)
             .ok_or_else(|| format!("worker not found: {worker_id}"))?;
-        let (tx, rx) = mpsc::channel(256);
+        let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         record.event_subscribers.push(tx);
         Ok(rx)
     }
@@ -991,7 +1010,7 @@ impl WorkerRegistry {
     ) -> Result<(mpsc::Receiver<serde_json::Value>, Vec<serde_json::Value>), String> {
         let record = self.workers.get_mut(worker_id)
             .ok_or_else(|| format!("worker not found: {worker_id}"))?;
-        let (tx, rx) = mpsc::channel(256);
+        let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         record.event_subscribers.push(tx);
         // 取最近 N 条历史事件
         let history: Vec<serde_json::Value> = if replay_count > 0 {

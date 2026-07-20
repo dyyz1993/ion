@@ -94,6 +94,12 @@ async fn main() {
 
     let mut model_reg = ion_provider::registry::ModelRegistry::new();
     model_reg.register_builtins();
+    // 兼容 host 模式：如果 model_id 是 "replay/xxx" 形式，拆出 provider=replay + model_id=xxx
+    // （host 的 create_worker RPC 接受完整 model 字符串，不像 CLI 会预解析）
+    if model_id.starts_with("replay/") {
+        provider = "replay".to_string();
+        model_id = model_id["replay/".len()..].to_string();
+    }
     let mut model = model_reg.find_model(&model_id).cloned().unwrap_or_else(|| {
         // 从 auth.json 读 base_url 和 api_key
         let auth_url = ion::auth::AuthStorage::load().provider_base_urls.get(&provider).cloned();
@@ -118,6 +124,11 @@ async fn main() {
     if using_faux {
         model.api = "faux".into();
         eprintln!("[faux] model.api forced to 'faux'");
+    }
+    // replay 模式：强制 model.api 指向 replay provider（绕过 find_model fallback 的 openai-completions）
+    if provider == "replay" {
+        model.api = "replay".into();
+        eprintln!("[replay] model.api forced to 'replay' (model_id={model_id})");
     }
 
     // ── ReplayProvider（始终注册；通过 --model replay/<id> 激活）──
@@ -269,7 +280,7 @@ async fn main() {
 		    // wf agent 在 stage 之间可能"只说不做"（输出文本但没调工具），
 		    // retry_on_no_tool_use 让它在这种情况下重试（注入 WARNING）。
 		    // 对 wf/improver agent 默认启用（3 次重试），其他 agent 保持 0（禁用）。
-		    retry_on_no_tool_use: if current_agent_name == "wf" || current_agent_name == "improver" {
+            retry_on_no_tool_use: if initial_agent.as_deref() == Some("wf") || initial_agent.as_deref() == Some("improver") {
 		        std::env::var("ION_RETRY_NO_TOOL_USE")
 		            .ok().and_then(|s| s.parse().ok())
 		            .unwrap_or(3)
@@ -3665,6 +3676,9 @@ impl ion::agent::extension::Extension for StreamingExtension {
 
     async fn on_tool_call_delta(&self, delta: &str, name: &str) -> ion::agent::error::AgentResult<()> {
         if !delta.is_empty() {
+            if std::env::var("ION_STREAM_DEBUG").ok().as_deref() == Some("1") {
+                eprintln!("[stream-debug] worker emit tool_call_delta name={name} len={}", delta.len());
+            }
             output(&serde_json::json!({
                 "type": "event",
                 "event": {

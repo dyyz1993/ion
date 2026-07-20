@@ -610,6 +610,43 @@ impl Tool for WriteTool {
         rt.write_file(path, content).await.map_err(|e| AgentError::Tool(format!("write failed: {e}")))?;
         Ok(format!("wrote {} bytes to {}", content.len(), path))
     }
+    async fn execute_stream(
+        &self,
+        args: serde_json::Value,
+        on_update: ToolUpdateFn,
+        rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let path = args.get("file_path").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing file_path".into()))?;
+        let content = args.get("content").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing content".into()))?;
+
+        // 先读旧内容（算 diff 用）
+        let old_content = rt.read_file(path).await.unwrap_or_default();
+        let old_lines = old_content.lines().count() as i64;
+
+        // 流式写入：分块写，每块 update 行数
+        let lines: Vec<&str> = content.lines().collect();
+        let total_lines = lines.len();
+        let chunk_size = (total_lines / 10).max(1).min(50); // 分 10 块或每块最多 50 行
+        let mut written = String::new();
+
+        for chunk in lines.chunks(chunk_size) {
+            for line in chunk {
+                written.push_str(line);
+                written.push('\n');
+            }
+            let current_lines = written.lines().count() as i64;
+            let added = current_lines;
+            let removed = if old_lines > current_lines { old_lines - current_lines } else { 0 };
+            on_update(format!("+{} -{} lines (writing {}...)", added, removed, path));
+        }
+
+        rt.write_file(path, content).await.map_err(|e| AgentError::Tool(format!("write failed: {e}")))?;
+
+        let new_lines = content.lines().count() as i64;
+        let added = new_lines;
+        let removed = if old_lines > new_lines { old_lines - new_lines } else { 0 };
+        Ok(format!("wrote {} bytes to {} (+{} -{} lines)", content.len(), path, added, removed))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -629,9 +666,28 @@ impl Tool for EditTool {
         let path = args.get("file_path").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing file_path".into()))?;
         let old = args.get("old").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing old".into()))?;
         let new = args.get("new").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing new".into()))?;
-        // 用 Runtime 的 edit_file（内部调 read + replace + write）
         rt.edit_file(path, old, new).await.map_err(|e| AgentError::Tool(e))?;
         Ok(format!("replaced 1 occurrence in {path}"))
+    }
+    async fn execute_stream(
+        &self,
+        args: serde_json::Value,
+        on_update: ToolUpdateFn,
+        rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let path = args.get("file_path").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing file_path".into()))?;
+        let old = args.get("old").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing old".into()))?;
+        let new = args.get("new").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing new".into()))?;
+
+        // 推送 diff 预览
+        let old_lines = old.lines().count() as i64;
+        let new_lines = new.lines().count() as i64;
+        let added = new_lines;
+        let removed = old_lines;
+        on_update(format!("+{} -{} lines (editing {}...)", added, removed, path));
+
+        rt.edit_file(path, old, new).await.map_err(|e| AgentError::Tool(e))?;
+        Ok(format!("replaced 1 occurrence in {path} (+{} -{} lines)", added, removed))
     }
 }
 

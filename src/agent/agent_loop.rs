@@ -660,8 +660,22 @@ impl Agent {
                 // auto_continue 模式：注入"继续"follow-up 让 agent 跑下一个 turn
                 // 这对 wf agent 必要——每个 stage 是一个 turn，没有外部触发不会继续
                 if auto_continue && outer_i < auto_continue_limit {
+                    // 检查 LLM 最后输出是否含 "PIPELINE COMPLETE"（workflow 完成标志）
+                    // 如果是，不再注入 follow-up，让 agent 退出
+                    let last_text = self.messages.last()
+                        .and_then(|m| match m {
+                            Message::Assistant(a) => a.content.iter().find_map(|c| match c {
+                                ion_provider::types::AssistantContentBlock::Text(t) => Some(t.text.clone()),
+                                _ => None,
+                            }),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    if last_text.contains("PIPELINE COMPLETE") || last_text.contains("流水线完成") || last_text.contains("流水线已完成") {
+                        tracing::info!("outer {outer_i}: auto-continue 检测到 PIPELINE COMPLETE，停止注入 follow-up");
+                        return Ok(());
+                    }
                     tracing::info!("outer {outer_i}: auto-continue (ION_AUTO_CONTINUE=1), injecting follow-up");
-                    println!("[auto-continue] 注入 follow-up 让 agent 继续执行（outer_i={}, auto_continue={}）", outer_i, auto_continue);
                     self.follow_up_queue.push_back(Message::User(UserMessage {
                         role: "user".into(),
                         content: vec![ContentBlock::Text(TextContent {
@@ -1325,6 +1339,9 @@ impl Agent {
                                 }
                             }
                             StreamEvent::ToolCallDelta { delta, .. } => {
+                                if std::env::var("ION_STREAM_DEBUG").ok().as_deref() == Some("1") {
+                                    eprintln!("[stream-debug] agent_loop forward ToolCallDelta len={}", delta.len());
+                                }
                                 self.extensions.on_tool_call_delta(delta, "").await?;
                             }
                             StreamEvent::ToolCallEnd { tool_call, .. } => {

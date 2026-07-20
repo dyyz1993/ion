@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "",
+  "model": "deepseek-v4-flash",
+  "provider": "opencode",
+  "created_at": 1784510997922,
+  "response_count": 3,
+  "tool_call_count": 2,
+  "tool_calls": [
+    {
+      "name": "write",
+      "input_summary": "{\"content\":\"line 1 hello world test content number 1\\nline 2 hello world test content number 2\\nline 3 hello world test content number 3\\nline 4 hello world test content number 4\\nline 5 hello world test content number 5\\nline 6 hello world test content number 6\\nline 7 hello world test content number 7\\nline 8 hello world test content number 8\\nline 9 hello world test content number 9\\nline 10 hello world test content number 10\\nline 11 hello world test content number 11\\nline 12 hello world test content number 12\\nline 13 hello world test content number 13\\nline 14 hello world test content number 14\\nline 15 hello world test content number 15\\nline 16 hello world test content number 16\\nline 17 hello world test content number 17\\nline 18 hello world test content number 18\\nline 19 hello world test content number 19\\nline 20 hello world test content number 20\\nline 21 hello world test content number 21\\nline 22 hello world test content number 22\\nline 23 hello world test content number 23\\nline 24 hello world test content number 24\\nline 25 hello world test content number 25\\nline 26 hello world test content number 26\\nline 27 hello world test content number 27\\nline 28 hello world test content number 28\\nline 29 hello world test content number 29\\nline 30 hello world test content number 30\\n\",\"file_path\":\"/tmp/record_demo.txt\"}"
+    },
+    {
+      "name": "read",
+      "input_summary": "{\"file_path\":\"/tmp/record_demo.txt\"}"
+    }
+  ]
+}

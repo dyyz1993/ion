@@ -851,6 +851,11 @@ fn build_registry_and_model(eff: &EffectiveConfig) -> (Arc<ApiRegistry>, Model) 
         model.api = "faux".into();
         eprintln!("[faux] model.api forced to 'faux'");
     }
+    // replay 模式：强制 model.api 指向 replay provider（绕过 find_model fallback 的 openai-completions）
+    if eff.provider == "replay" {
+        model.api = "replay".into();
+        eprintln!("[replay] model.api forced to 'replay' (model_id={})", eff.model);
+    }
 
     // ── ReplayProvider（始终注册；通过 --model replay/<id> 激活）──
     registry.register("replay", Box::new(ion_provider::replay::ReplayProvider));
@@ -1269,9 +1274,11 @@ async fn cmd_workflow_run(path: &str, set: &[String]) {
         std::env::set_var("ION_FORK_CHILD", "1");
         std::env::set_var("ION_AUTO_CONTINUE", "1");
         std::env::set_var("ION_MAX_OUTER_ITERATIONS", "30");
-        // wf agent 要跑完所有 stage（10 个），每个 stage 多个 turn（read/edit/bash/spawn），
-        // 20 turn 远远不够。设 0 = 无限。
-        std::env::set_var("ION_MAX_TURNS", "0");
+        // wf agent 要跑完所有 stage（10 个）。
+        // 不能设 0（无限）——那样 inner_loop 永不退出，outer_loop 的 auto_continue 不触发。
+        // 设 15：让 inner_loop 跑 15 turn（够 2-3 stage）就 Stop 返回 outer_loop，
+        // outer_loop 的 auto_continue 注入 follow-up 继续。
+        unsafe { std::env::set_var("ION_MAX_TURNS", "15"); }
     }
 
     // 同步更新 last_session，让 export_report stage 的 ion --export 能找到 wf 的 session

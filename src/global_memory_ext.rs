@@ -69,6 +69,11 @@ impl Extension for GlobalMemoryExtension {
     ) -> AgentResult<()> {
         // 读 config 拿 model/provider（memory-agent 用默认模型）
         let cfg = crate::config::IonConfig::load();
+        // 如果 global-memory 在 config 里被显式禁用，跳过 memory-agent spawn（避免无谓消耗 LLM 额度）
+        if !cfg.is_extension_enabled("global-memory") {
+            tracing::info!("[global-memory] disabled by config, skipping memory-agent spawn");
+            return Ok(());
+        }
         let model = cfg.default_model.clone().unwrap_or_else(|| "deepseek-v4-flash".into());
         let provider = cfg.default_provider.clone().unwrap_or_else(|| "opencode".into());
 
