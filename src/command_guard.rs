@@ -330,6 +330,14 @@ fn default_risk_patterns() -> Vec<RiskPattern> {
         // sed -i 原地修改文件：高危！evolver agent 会用这个绕过 edit 工具限制改代码
         RiskPattern { pattern: "sed -i".into(), message: "sed 原地修改文件（绕过 edit 工具限制）".into(), level: RiskLevel::High,
             suggestion: Some("用 edit 工具或 container exec B ion --agent developer 改代码，不要用 sed -i".into()) },
+        // 在 host 上直接跑 ion --agent：高危！A 必须走 container exec B
+        RiskPattern { pattern: "./target/release/ion --agent".into(), message: "在 host 上直接跑 ion --agent（绕过 container B）".into(), level: RiskLevel::High,
+            suggestion: Some("必须走 container exec $CONTAINER_NAME ... ion --agent developer".into()) },
+        RiskPattern { pattern: "./target/debug/ion --agent".into(), message: "在 host 上直接跑 ion --agent（绕过 container B）".into(), level: RiskLevel::High,
+            suggestion: Some("必须走 container exec $CONTAINER_NAME ... ion --agent developer".into()) },
+        // 在 host 上跑 cargo build/test（应该在 container 里跑）
+        RiskPattern { pattern: "target/release/ion --agent".into(), message: "在 host 上直接跑 ion --agent（绕过 container B）".into(), level: RiskLevel::High,
+            suggestion: Some("必须走 container exec $CONTAINER_NAME ... ion --agent developer".into()) },
         RiskPattern { pattern: "| zsh".into(), message: "管道执行 zsh".into(), level: RiskLevel::Medium,
             suggestion: Some("先检查管道内容".into()) },
         RiskPattern { pattern: "| python".into(), message: "管道执行 python".into(), level: RiskLevel::Medium,

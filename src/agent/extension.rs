@@ -51,6 +51,8 @@ pub struct ToolExecutionContext {
     pub args: serde_json::Value,
     pub is_error: bool,
     pub duration_ms: u64,
+    /// 工具执行结果文本（对齐 pi tool_execution_end 的 result 字段）
+    pub result: String,
 }
 
 #[derive(Clone, Debug)]
