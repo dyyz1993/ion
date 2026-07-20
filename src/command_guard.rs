@@ -126,7 +126,10 @@ impl CommandGuard {
         }
 
         // ── 2. 白名单检查 ──
-        let in_whitelist = self.matches_whitelist(t);
+        // 对于复合命令（VAR=value && command 或 command1 && command2），
+        // 检查每个子命令是否在白名单里。
+        // 简化处理：取 && 和 ; 分隔的每个子命令的首词判断。
+        let in_whitelist = self.matches_whitelist_compound(t);
 
         // ── 3. 按模式决定最终结果 ──
         match self.mode {
@@ -175,6 +178,64 @@ impl CommandGuard {
             // 3. 带参数的完整前缀匹配：prefix == "cargo test"
             if t.starts_with(&format!("{} ", prefix)) { return true; }
         }
+        false
+    }
+
+    /// 检查复合命令（含 && ; | 管道、变量赋值）的白名单匹配。
+    ///
+    /// 对于 `WT_DIR=$(mktemp ...) && git worktree add ... && bash scripts/...` 这种命令，
+    /// 取每个子命令的首词判断，只要有一个在白名单就放行。
+    /// 这对 evolver agent 必要——它的 bash 命令经常以变量赋值开头。
+    fn matches_whitelist_compound(&self, command: &str) -> bool {
+        let t = command.trim();
+
+        // 先尝试简单匹配（单命令的情况）
+        if self.matches_whitelist(t) {
+            return true;
+        }
+
+        // 复合命令：按 && ; | 拆分子命令
+        // 对每个子命令，去掉变量赋值前缀（VAR=value），取真正的命令首词判断
+        let subcmds: Vec<&str> = t.split(|c| c == '&' || c == ';' || c == '|').collect();
+        for sub in subcmds {
+            let sub = sub.trim();
+            if sub.is_empty() { continue; }
+
+            // 跳过纯变量赋值（VAR=value，不是命令）
+            // 判断：如果不含空格且含 =，视为变量赋值
+            if !sub.contains(' ') && sub.contains('=') { continue; }
+
+            // 去掉变量赋值前缀：`WT_DIR=$(mktemp -d ...) git worktree` → 取 git worktree
+            // 简化：找第一个不含 = 的词
+            let cmd_part = {
+                let mut found_cmd = false;
+                let mut cmd_start = 0;
+                for (i, part) in sub.split_whitespace().enumerate() {
+                    // 变量赋值：WORD=... 或 WORD=$(...)
+                    if !found_cmd && (part.contains('=') && !part.starts_with('-')) {
+                        continue;
+                    }
+                    if !found_cmd {
+                        found_cmd = true;
+                        cmd_start = sub.find(part).unwrap_or(0);
+                    }
+                }
+                if found_cmd { &sub[cmd_start..] } else { sub }
+            };
+
+            // 对提取出的命令部分做白名单检查
+            if self.matches_whitelist(cmd_part) {
+                return true;
+            }
+        }
+
+        // 所有子命令都不在白名单 → 检查原始命令的首词是否是 bash/sh
+        // bash scripts/xxx.sh 应该被允许
+        let first_token = t.split_whitespace().next().unwrap_or("");
+        if first_token == "bash" || first_token == "sh" || first_token == "source" {
+            return true;
+        }
+
         false
     }
 

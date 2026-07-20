@@ -252,6 +252,14 @@ impl GlobalMemoryStore {
     }
 
     /// 归档条目数
+    pub fn archived_total(&self) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM entries WHERE archived=1", [], |row| row.get(0)
+        ).unwrap_or(0);
+        Ok(count)
+    }
+
     pub fn count_all_archived(&self) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         let count: i64 = conn.query_row(
@@ -652,6 +660,31 @@ mod tests {
         assert_eq!(store.count().unwrap(), 2);
     }
 
+    
+    #[test]
+    fn test_archived_total() {
+        let store = test_store();
+
+        // 初始：归档数为 0
+        assert_eq!(store.archived_total().unwrap(), 0);
+
+        // 存 3 条活跃
+        store.save("active a", "note", "t", "p", 5).unwrap();
+        store.save("active b", "note", "t", "p", 5).unwrap();
+        store.save("active c", "note", "t", "p", 5).unwrap();
+        assert_eq!(store.archived_total().unwrap(), 0);
+
+        // 归档 2 条
+        let entries = store.list(None).unwrap();
+        store.forget(&entries[0].id).unwrap();
+        store.forget(&entries[1].id).unwrap();
+        assert_eq!(store.archived_total().unwrap(), 2);
+
+        // 再归档 1 条
+        store.forget(&entries[2].id).unwrap();
+        assert_eq!(store.archived_total().unwrap(), 3);
+    }
+
     #[test]
     fn test_entry_exists() {
         let store = test_store();
@@ -709,3 +742,4 @@ mod tests {
         }
     }
 }
+
