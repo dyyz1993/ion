@@ -137,6 +137,14 @@ if [ -d "$ION_PROVIDER_DIR" ]; then
     CONTAINER_CMD+=("-v" "${ION_PROVIDER_DIR}:/ion-provider")
 fi
 
+# 挂载 ~/.ion（只读）——让 container 里的 ion 能读 config.json / auth.json / models.json / skills
+# 这是 A→B 架构的关键：B 是完整 ION 实例，需要 LLM API key + 模型配置
+ION_DIR="${HOME}/.ion"
+if [ -d "$ION_DIR" ]; then
+    CONTAINER_CMD+=("-v" "${ION_DIR}:/root/.ion:ro")
+    echo "  挂载 ~/.ion → /root/.ion（只读，含 API key + models + skills）"
+fi
+
 CONTAINER_CMD+=("$IMAGE")
 CONTAINER_CMD+=(sh -lc "sleep infinity")
 
@@ -181,24 +189,31 @@ if echo "$RUSTC_VER" | grep -q "未知"; then
         "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && source \$HOME/.cargo/env && rustc --version"
 fi
 
-# ── Step 5: 复制 ion binary（如果有）──
+# ── Step 5: 在 container 内编译 ion binary（B 的 ion 实例）──
+# A→B 架构的关键：B 需要自己的 ion binary 才能跑 agent。
+# host 是 macOS arm64，container 是 Linux —— 跨架构 binary 跑不了，必须在 container 内编译。
+# 首次编译 10-20 分钟，后续 incremental 快。
 echo ""
-echo "── Step 5: 复制 ion binary ──"
-if [ -n "$ION_BIN" ]; then
-    # 通过 worktree 挂载间接复制——ion binary 在 project dir 里，worktree 里可能没有
-    # 用 container exec + cp 从 host 挂载的路径复制
-    HOST_PROJECT_ROOT=$(cd "$WORKTREE_DIR" && git rev-parse --git-common-dir 2>/dev/null | xargs dirname || echo "")
-    if [ -n "$HOST_PROJECT_ROOT" ] && [ -f "$HOST_PROJECT_ROOT/target/release/ion" ]; then
-        echo "  从 host 复制 ion binary..."
-        cp "$HOST_PROJECT_ROOT/target/release/ion" "$WORKTREE_DIR/target/release/ion" 2>/dev/null || \
-        cp "$HOST_PROJECT_ROOT/target/debug/ion" "$WORKTREE_DIR/target/debug/ion" 2>/dev/null || true
-        echo "  ✅ ion binary 已复制到 worktree"
-    else
-        echo "  ⚠️ ion binary 未复制（将在 container 内编译）"
-    fi
+echo "── Step 5: 在 container 内编译 ion binary ──"
+echo "  （首次编译需要 10-20 分钟，请耐心等待）"
+"$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c \
+    'source $HOME/.cargo/env && cd /workspace && cargo build --release --bin ion 2>&1 | tail -5' 2>&1 | tail -5
+BUILD_EXIT=$?
+if [ $BUILD_EXIT -eq 0 ]; then
+    echo "  ✅ ion binary 编译成功"
+    # 验证 binary 能跑
+    "$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c \
+        'cd /workspace && ./target/release/ion --version 2>&1' | head -1
 else
-    echo "  ⚠️ host 上没有 ion binary（将在 container 内 cargo build）"
+    echo "  ⚠️ ion binary 编译失败（B 将无法跑 agent，但 cargo test 仍可用）"
 fi
+
+# ── Step 5b: 配置 git（让 B 能 commit）──
+echo ""
+echo "── Step 5b: 配置 container 内 git ──"
+"$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c \
+    "git config user.email 'ion-evolver@example.com' && git config user.name 'ION Evolver'" 2>/dev/null
+echo "  ✅ git config 完成（B 可以 commit）"
 
 # ── Step 6: 安装额外工具 ──
 echo ""
