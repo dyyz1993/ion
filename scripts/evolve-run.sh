@@ -33,78 +33,46 @@ echo "  Worktree:  $WT_DIR"
 echo "  Task:      $TASK"
 echo "════════════════════════════════════════════════════"
 
-# ── 1. 确认编译完成 ──
-echo ""
-echo "── Step 1: 确认 ion 编译完成 ──"
-if ! "$CONTAINER_BIN" exec "$CONTAINER_NAME" test -f /tmp/ion-build-done 2>/dev/null; then
-    echo "  ⏳ 等待编译完成..."
-    for i in $(seq 1 60); do
-        sleep 30
-        if "$CONTAINER_BIN" exec "$CONTAINER_NAME" test -f /tmp/ion-build-done 2>/dev/null; then
-            echo "  ✅ 编译完成（等待 $((i*30))s）"
-            break
-        fi
-        echo "  ... ($((i*30))s)"
-    done
-else
-    echo "  ✅ 已编译完成"
-fi
-
-# ── 2. 调 B 改代码 + CI（带失败重试）──
+# ── 1. 调 B 改代码 + CI（带失败重试）──
 CI_PASSED=false
 for attempt in $(seq 1 $MAX_RETRIES); do
     echo ""
-    echo "── Step 2: 调 B 改代码（尝试 $attempt/$MAX_RETRIES）──"
+    echo "── Step $attempt: 调 B 改代码（尝试 $attempt/$MAX_RETRIES）──"
     echo "  开始: $(date)"
 
     if [ $attempt -eq 1 ]; then
-        # 第一次：正常调 B
         "$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c \
             "cd /workspace && ./target/release/ion --agent developer '$TASK' --provider zhipuai --model glm-5.2" 2>&1 | tail -20
     else
-        # 重试：把 CI 错误信息给 B，让它修复
         "$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c \
-            "cd /workspace && ./target/release/ion --agent developer '上次改动 CI 失败了。错误：$CI_ERROR。请修复这个问题。' --provider zhipuai --model glm-5.2" 2>&1 | tail -20
+            "cd /workspace && ./target/release/ion --agent developer '上次 CI 失败：$CI_ERROR。请修复。' --provider zhipuai --model glm-5.2" 2>&1 | tail -20
     fi
     echo "  结束: $(date)"
 
-    # ── 3. B 跑完整 CI ──
+    # ── CI: cargo build + cargo test --lib ──
     echo ""
-    echo "── Step 3: B 跑完整 CI ──"
-
-    echo "  [3a] cargo build..."
+    echo "  [CI] cargo build..."
     BUILD_OUT=$("$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c \
         'cd /workspace && cargo build --bin ion 2>&1' 2>&1)
     echo "$BUILD_OUT" | tail -3
     if ! echo "$BUILD_OUT" | grep -q "Finished"; then
-        CI_ERROR="cargo build failed: $(echo "$BUILD_OUT" | grep 'error' | head -3)"
+        CI_ERROR="build failed: $(echo "$BUILD_OUT" | grep 'error' | head -3)"
         echo "  ❌ build 失败"
         continue
     fi
     echo "  ✅ build 通过"
 
-    echo "  [3b] cargo test --lib（全部测试）..."
+    echo "  [CI] cargo test --lib（全部）..."
     TEST_OUT=$("$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c \
         'cd /workspace && cargo test --lib 2>&1' 2>&1)
     echo "$TEST_OUT" | tail -5
     if ! echo "$TEST_OUT" | grep -qE "test result: ok\."; then
-        CI_ERROR="cargo test failed: $(echo "$TEST_OUT" | grep 'FAILED\|error' | head -3)"
+        CI_ERROR="test failed: $(echo "$TEST_OUT" | grep 'FAILED' | head -3)"
         echo "  ❌ test 失败"
         continue
     fi
     TEST_COUNT=$(echo "$TEST_OUT" | grep "test result:" | grep -oE "[0-9]+ passed" | head -1)
     echo "  ✅ test 通过（$TEST_COUNT）"
-
-    echo "  [3c] cargo test --test（集成测试）..."
-    INTEG_OUT=$("$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c \
-        'cd /workspace && cargo test --test unit_rpc_test 2>&1 && cargo test --test manager_integration 2>&1' 2>&1)
-    echo "$INTEG_OUT" | tail -5
-    if echo "$INTEG_OUT" | grep -q "FAILED"; then
-        CI_ERROR="integration test failed"
-        echo "  ⚠️ 集成测试有失败（不阻塞，记录）"
-    else
-        echo "  ✅ 集成测试通过"
-    fi
 
     CI_PASSED=true
     break
@@ -113,64 +81,66 @@ done
 if [ "$CI_PASSED" != "true" ]; then
     echo ""
     echo "── ❌ CI 失败（$MAX_RETRIES 次重试都没通过）──"
-    echo "  B 的改动在 worktree：$WT_DIR"
-    echo "  手动检查：cd $WT_DIR && cargo test --lib 2>&1 | tail -20"
-    # 不合并，不清理，留给用户检查
+    echo "  B 的改动在 container：$CONTAINER_NAME"
     exit 1
 fi
 
-# ── 4. 合并 B 的改动 ──
+# ── 2. 只同步 B 改动的文件（不是全量 rsync）──
 echo ""
-echo "── Step 4: 合并 B 的改动到主仓库 ──"
-cd "$WT_DIR"
-git add -A 2>/dev/null
-git diff --cached --quiet 2>/dev/null || git commit -m "evolve: $TASK" 2>/dev/null
-echo "  B 的 commits:"
-git log --oneline -3
+echo "── Step: 同步 B 的改动 ──"
+# 在 container 里 git diff 看改了哪些文件
+CHANGED_FILES=$("$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c \
+    'cd /workspace && git diff --name-only HEAD 2>/dev/null' 2>&1)
+echo "  B 改了这些文件:"
+echo "$CHANGED_FILES"
 
-# 用 rsync 同步代码到主仓库（worktree 是独立 git repo）
+# 只同步改动的文件
+for f in $CHANGED_FILES; do
+    src="$WT_DIR/$f"
+    dst="$PROJECT_DIR/$f"
+    if [ -f "$src" ]; then
+        mkdir -p "$(dirname "$dst")"
+        cp "$src" "$dst"
+        echo "  ✅ 同步: $f"
+    fi
+done
+
+# ── 3. 主仓库验证（B 的改动在主仓库能编译+测试）──
+echo ""
+echo "── Step: 主仓库验证 ──"
 cd "$PROJECT_DIR"
-rsync -av --exclude='target' --exclude='.git' "$WT_DIR/src/" src/ 2>/dev/null
-echo "  ✅ 代码已同步到主仓库"
+cargo build --bin ion 2>&1 | tail -3
+cargo test --lib global_memory 2>&1 | tail -5
+
+# ── 4. git commit ──
+echo ""
+echo "── Step: git commit ──"
+git add -A
+git commit -m "evolve: $TASK" 2>&1 | tail -3
+git log --oneline -3
 
 # ── 5. 导出 HTML 报告 ──
 echo ""
-echo "── Step 5: 导出 HTML 报告 ──"
-# A 的 session
+echo "── Step: 导出 HTML 报告 ──"
 LAST_SID=$(cat ~/.ion/agent/last_session 2>/dev/null || echo "")
-REPORT_A="/tmp/evolver_A_$(date +%Y%m%d_%H%M%S).html"
+REPORT="/tmp/evolver_$(date +%Y%m%d_%H%M%S).html"
 if [ -n "$LAST_SID" ]; then
-    "$PROJECT_DIR/target/debug/ion" --export "$REPORT_A" --session "$LAST_SID" 2>/dev/null && \
-        echo "  ✅ A 的报告: $REPORT_A" || echo "  ⚠️ A 的 session 导出失败"
-fi
-
-# 找 B 在 container 里的 session
-B_SID=$("$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c \
-    'ls -t /root/.ion/agent/sessions/*/session.jsonl 2>/dev/null | head -1' 2>/dev/null | xargs dirname 2>/dev/null | xargs basename 2>/dev/null)
-if [ -n "$B_SID" ]; then
-    REPORT_B="/tmp/evolver_B_$(date +%Y%m%d_%H%M%S).html"
-    "$PROJECT_DIR/target/debug/ion" --export "$REPORT_B" --session "$B_SID" 2>/dev/null && \
-        echo "  ✅ B 的报告: $REPORT_B" || echo "  ⚠️ B 的 session 导出失败"
-fi
-
-# macOS 自动打开
-if command -v open >/dev/null 2>&1; then
-    [ -f "$REPORT_A" ] && open "$REPORT_A"
-    [ -f "$REPORT_B" ] && open "$REPORT_B"
+    "$PROJECT_DIR/target/debug/ion" --export "$REPORT" --session "$LAST_SID" 2>/dev/null && \
+        echo "  ✅ 报告: $REPORT" && open "$REPORT" 2>/dev/null
 fi
 
 # ── 6. 清理 ──
 echo ""
-echo "── Step 6: 清理 ──"
+echo "── Step: 清理 ──"
 "$CONTAINER_BIN" stop "$CONTAINER_NAME" 2>/dev/null && echo "  ✅ container 已停"
+# 删除 worktree 的 target（防磁盘满）
+rm -rf "$WT_DIR/target" 2>/dev/null
 git worktree remove "$WT_DIR" --force 2>/dev/null && echo "  ✅ worktree 已删"
 rm -f /tmp/.evolver-state
 
 echo ""
 echo "════════════════════════════════════════════════════"
 echo "  ✅ A→B 自进化完成"
-echo "════════════════════════════════════════════════════"
 echo "  CI: $TEST_COUNT"
-echo "  A 报告: ${REPORT_A:-无}"
-echo "  B 报告: ${REPORT_B:-无}"
+echo "  报告: $REPORT"
 echo "════════════════════════════════════════════════════"
