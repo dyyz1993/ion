@@ -1125,8 +1125,14 @@ async fn main() {
             // promote_follow_up → 提升 follow_up 到 steering
             "prompt" => {
                 let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                // 默认 behavior：steer（对齐 pi：流式中默认插话入队，不打断）。
+                // 可通过 ION_PROMPT_BEHAVIOR=interrupt 切回旧行为。
+                // 显式传 params.behavior / params.streamingBehavior 优先级最高。
+                let default_behavior = std::env::var("ION_PROMPT_BEHAVIOR")
+                    .ok().filter(|s| matches!(s.as_str(), "interrupt" | "steer" | "followUp"))
+                    .unwrap_or_else(|| "steer".to_string());
                 let pbehavior = params.get("behavior").or_else(|| params.get("streamingBehavior"))
-                    .and_then(|v| v.as_str()).unwrap_or("interrupt");
+                    .and_then(|v| v.as_str()).unwrap_or(&default_behavior);
 
                 // !cmd 用户直发：拦截成 bash_command（避免走完整 agent loop，对齐 pi）
                 // 形如 "!ls -la" 或 "! cargo build" → 取 '!' 之后的部分作为命令
@@ -3689,6 +3695,34 @@ impl ion::agent::extension::Extension for StreamingExtension {
                 }
             }));
         }
+        Ok(())
+    }
+
+    /// 自动重试开始事件：让前端显示 "重试中 (N/M)..."（对齐 pi auto_retry_start）
+    async fn on_auto_retry_start(&self, attempt: u32, max_retries: u32) -> ion::agent::error::AgentResult<()> {
+        output(&serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "auto_retry_start",
+                "attempt": attempt,
+                "maxRetries": max_retries,
+                "timestamp": now_ms(),
+            }
+        }));
+        Ok(())
+    }
+
+    /// 自动重试结束事件（success=false 表示所有重试用完仍失败）
+    async fn on_auto_retry_end(&self, success: bool, attempt: u32) -> ion::agent::error::AgentResult<()> {
+        output(&serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "auto_retry_end",
+                "success": success,
+                "attempt": attempt,
+                "timestamp": now_ms(),
+            }
+        }));
         Ok(())
     }
 

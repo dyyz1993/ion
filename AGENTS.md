@@ -1040,7 +1040,8 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 | skill_tool_ci (CLI E2E) | 27 | Group S：skill 工具 list/inject/fork（9 case）+ Group E：边界 + Group R：SkillTool 注册可见性 + Group F：fork 模式完整链路（spawn 子 Worker + 独立 <sid>.jsonl + parentSession 血缘关联 + spawnMeta relation/spawnedBy + systemPrompt skill 内容 + export HTML 可见，8 case）|
 | streaming_throughput_ci (CLI E2E) | 14 | Group A：FauxProvider 大 tool_call args 流式分片 → subscribe 收到全部 ToolCallDelta（计数 ≥37/拼接 JSON 完整/DROP 比例 ≤60%）+ Group B：多 tool_call 不串台（2 次 prompt + 2 个 tool_execution_start）+ Group C：极小 args 边界（不丢空）+ **Group D：write 工具 tool_execution_update 事件（+N -M 跳动 — 10 个 update/N 数字递增 3→30/partialResult 格式校验/文件落地）** |
 | streaming_replay_ci (CLI E2E) | 7 | Group A：Record/Replay 真实 DeepSeek 录制 → subscribe 收到 1448 个 tool_call_delta（真实 LLM 内容流式）+ Group B：回放内容正确性（DeepSeek 生成的 30 行文件 hash 匹配）+ Group C：两次回放确定性（hash 一致） |
-| **测试覆盖合计** | **907** | 全部通过 ✅（Rust 521，CLI E2E 398，含 hooks 36 case + 真实 LLM 5 case） |
+| abort_ci (CLI E2E) | 5 | Group A：工具执行中 abort < 3s 生效（select! stopped 分支 + bash 进程清理）+ Group B：kill -TERM/KILL -<pgid> 杀整个进程树（process_group(0)）+ Group C：HTTP 流式期间 abort < 300ms + 无新 delta 泄漏（CancellationToken 真取消 TCP）|
+| **测试覆盖合计** | **912** | 全部通过 ✅（Rust 521，CLI E2E 403，含 hooks 36 case + 真实 LLM 5 case） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)

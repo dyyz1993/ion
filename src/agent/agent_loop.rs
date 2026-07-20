@@ -1417,11 +1417,13 @@ impl Agent {
 
                     match crate::retry::should_retry(&err_str, attempt, retry_cfg) {
                         crate::retry::RetryDecision::AbortPermanent => {
+                            self.extensions.on_auto_retry_end(false, attempt + 1).await?;
                             return Err(AgentError::Provider(format!(
                                 "[permanent] {e}"
                             )));
                         }
                         crate::retry::RetryDecision::TransientExhausted => {
+                            self.extensions.on_auto_retry_end(false, attempt + 1).await?;
                             return Err(AgentError::MaxRetries(format!(
                                 "after {} attempts: {e}",
                                 attempt + 1
@@ -1435,13 +1437,20 @@ impl Agent {
                                 retry_cfg.max_retries + 1,
                                 delay
                             );
+                            // 通知前端：重试开始（emit 事件让 UI 显示"重试中 (N/M)..."）
+                            self.extensions.on_auto_retry_start(attempt + 1, retry_cfg.max_retries + 1).await?;
                             last_error = Some(e);
                             tokio::time::sleep(delay).await;
+                            // sleep 结束即开始下一轮 attempt；如果是最后一轮成功，
+                            // inner_loop 收到 Ok 后不会到这里，所以 success=true 由
+                            // inner_loop 的正常路径隐式表示（前端通过 agent_end 推断）。
                         }
                     }
                 }
             }
         }
+        // 所有重试用完仍失败
+        self.extensions.on_auto_retry_end(false, self.config.max_retries + 1).await?;
         Err(AgentError::MaxRetries(format!(
             "after {} attempts: {:?}",
             self.config.max_retries + 1,

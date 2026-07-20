@@ -116,6 +116,10 @@ pub trait Extension: Send + Sync {
     async fn on_context(&self, _messages: &mut Vec<Message>) -> AgentResult<()> { Ok(()) }
     async fn before_provider_request(&self, _ctx: &ProviderRequestContext) -> AgentResult<()> { Ok(()) }
     async fn after_provider_response(&self, _ctx: &ProviderResponseContext) -> AgentResult<()> { Ok(()) }
+    /// 自动重试开始（LLM 调用失败后退避重试）。前端可显示"重试中 (N/M)..."
+    async fn on_auto_retry_start(&self, _attempt: u32, _max_retries: u32) -> AgentResult<()> { Ok(()) }
+    /// 自动重试结束（success=true 表示重试成功；false 表示所有重试用完）
+    async fn on_auto_retry_end(&self, _success: bool, _attempt: u32) -> AgentResult<()> { Ok(()) }
 
     // ── Streaming (8) ──
     async fn on_message_start(&self, _role: &str, _content: &str) -> AgentResult<()> { Ok(()) }
@@ -719,6 +723,12 @@ impl ExtensionRegistry {
     }
     pub async fn after_provider_response(&self, ctx: &ProviderResponseContext) -> AgentResult<()> {
         for ext in &self.extensions { ext.after_provider_response(ctx).await?; } Ok(())
+    }
+    pub async fn on_auto_retry_start(&self, attempt: u32, max_retries: u32) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_auto_retry_start(attempt, max_retries).await?; } Ok(())
+    }
+    pub async fn on_auto_retry_end(&self, success: bool, attempt: u32) -> AgentResult<()> {
+        for ext in &self.extensions { ext.on_auto_retry_end(success, attempt).await?; } Ok(())
     }
     pub async fn on_message_start(&self, role: &str, content: &str) -> AgentResult<()> {
         for ext in &self.extensions { ext.on_message_start(role, content).await?; } Ok(())
