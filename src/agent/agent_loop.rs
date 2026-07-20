@@ -91,6 +91,10 @@ pub struct Agent {
     running: bool,
     /// 对齐 pi abort：设 true 后 check_pause 返回 Aborted 错误，终止 run()
     stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// soft interrupt 信号（对齐 pi interruptController）：
+    /// 设 true 后工具执行 select! 立即 break，但 agent 不退出（继续下一 turn）。
+    /// 与 stopped（硬停止）独立，每个 turn 用完即重置。
+    interrupted: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// HTTP 流式请求的 cancel token（每次 stream_with_retry 前 new 一个，stop() 时 cancel）
     /// 对齐 pi AbortController：abort 时立刻 drop reqwest Response 关 TCP，不等 200ms 轮询
     http_cancel: std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
@@ -136,6 +140,7 @@ impl Agent {
             pause_rx,
             running: false,
             stopped: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            interrupted: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             http_cancel: std::sync::Mutex::new(None),
             runtime: Arc::new(crate::runtime::LocalRuntime::new()),
             compact_model: None,
@@ -243,6 +248,17 @@ impl Agent {
                 c.cancel();
             }
         }
+    }
+    /// 软中断当前 turn（对齐 pi Agent.interrupt()）。
+    /// 设 interrupted=true，工具执行 select! 立即 break 返回 Interrupted，
+    /// agent 不退出（继续下一 turn → drain steering → 注入 steer 消息）。
+    pub fn interrupt(&self) {
+        self.interrupted.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    /// consume-once 检查中断（对齐 pi 重装 interruptController）。
+    /// 返回 true 表示本轮被 interrupt 过，后续应 drain steering + continue。
+    pub fn consume_interrupt(&self) -> bool {
+        self.interrupted.swap(false, std::sync::atomic::Ordering::SeqCst)
     }
     pub fn is_running(&self) -> bool {
         self.running
@@ -1008,6 +1024,8 @@ impl Agent {
                                 args: tc.arguments.clone(),
                                 is_error: false,
                                 duration_ms: 0,
+                                result: String::new(),
+                                    is_interrupted: false,
                             },
                         ).await?;
 
@@ -1056,6 +1074,9 @@ impl Agent {
                                         std::time::Duration::from_secs(120)
                                     };
                                     let timeout_secs = timeout_duration.as_secs();
+                                    // abort + interrupt 检查 ticker
+                                    let mut check_ticker = tokio::time::interval(std::time::Duration::from_millis(200));
+                                    check_ticker.tick().await;
                                     let result = loop {
                                         tokio::select! {
                                             partial = rx.recv() => {
@@ -1067,6 +1088,8 @@ impl Agent {
                                                             args: tc_args.clone(),
                                                             is_error: false,
                                                             duration_ms: start.elapsed().as_millis() as u64,
+                                                            result: String::new(),
+                                    is_interrupted: false,
                                                         },
                                                         &p,
                                                     ).await?;
@@ -1081,6 +1104,8 @@ impl Agent {
                                                             args: tc_args.clone(),
                                                             is_error: false,
                                                             duration_ms: start.elapsed().as_millis() as u64,
+                                                            result: String::new(),
+                                    is_interrupted: false,
                                                         },
                                                         &p,
                                                     ).await?;
@@ -1089,6 +1114,17 @@ impl Agent {
                                             }
                                             _ = tokio::time::sleep(timeout_duration) => {
                                                 break Err(AgentError::Tool(format!("tool execution timeout ({}s)", timeout_secs)));
+                                            }
+                                            // 每 200ms 检查硬停止（abort）和软中断（immediate steer）
+                                            _ = check_ticker.tick() => {
+                                                if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                                                    tracing::info!("[abort] 工具执行中检测到 stopped，drop future");
+                                                    break Err(AgentError::Aborted);
+                                                }
+                                                if self.interrupted.load(std::sync::atomic::Ordering::SeqCst) {
+                                                    tracing::info!("[interrupt] 工具执行中检测到 interrupt，打断当前工具");
+                                                    break Err(AgentError::Interrupted);
+                                                }
                                             }
                                         }
                                     };
@@ -1115,6 +1151,8 @@ impl Agent {
                             args: tc.arguments.clone(),
                             is_error: output.starts_with("Error"),
                             duration_ms: duration,
+                            result: output.clone(),
+                            is_interrupted: false,
                         };
                         self.extensions.on_tool_execution_end(&exec_ctx).await?;
 
@@ -1417,11 +1455,13 @@ impl Agent {
 
                     match crate::retry::should_retry(&err_str, attempt, retry_cfg) {
                         crate::retry::RetryDecision::AbortPermanent => {
+                            self.extensions.on_auto_retry_end(false, attempt + 1).await?;
                             return Err(AgentError::Provider(format!(
                                 "[permanent] {e}"
                             )));
                         }
                         crate::retry::RetryDecision::TransientExhausted => {
+                            self.extensions.on_auto_retry_end(false, attempt + 1).await?;
                             return Err(AgentError::MaxRetries(format!(
                                 "after {} attempts: {e}",
                                 attempt + 1
@@ -1435,13 +1475,20 @@ impl Agent {
                                 retry_cfg.max_retries + 1,
                                 delay
                             );
+                            // 通知前端：重试开始（emit 事件让 UI 显示"重试中 (N/M)..."）
+                            self.extensions.on_auto_retry_start(attempt + 1, retry_cfg.max_retries + 1).await?;
                             last_error = Some(e);
                             tokio::time::sleep(delay).await;
+                            // sleep 结束即开始下一轮 attempt；如果是最后一轮成功，
+                            // inner_loop 收到 Ok 后不会到这里，所以 success=true 由
+                            // inner_loop 的正常路径隐式表示（前端通过 agent_end 推断）。
                         }
                     }
                 }
             }
         }
+        // 所有重试用完仍失败
+        self.extensions.on_auto_retry_end(false, self.config.max_retries + 1).await?;
         Err(AgentError::MaxRetries(format!(
             "after {} attempts: {:?}",
             self.config.max_retries + 1,

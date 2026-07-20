@@ -3213,6 +3213,39 @@ async fn cmd_serve_status() {
     }
 }
 
+/// 创建一个 session 的 helper（统一 4 处调用点：cmd_serve_start 默认 session、
+/// create_session RPC handler、send_to_session fallback、proxy watchdog 重建）。
+///
+/// **调用前必须确保没有持有 registry 的 MutexGuard**（函数内部会重新 lock）。
+///
+/// `source` 是 RPC params（兼容嵌套/扁平格式），支持字段：
+/// - `agent`（默认 "build"）
+/// - `session_id`（不传则自动生成 `sess_<8-hex>`）
+/// - `project_path` / `cwd`（三级 fallback：project_path > cwd > host cwd）
+/// - `initial_prompt`（可选）
+///
+/// 成功返回 session_id。
+async fn do_create_session(
+    registry: &std::sync::Arc<tokio::sync::Mutex<ion::worker_registry::WorkerRegistry>>,
+    source: &serde_json::Value,
+) -> Result<String, String> {
+    use ion::worker_registry::WorkerCreateConfig;
+    let agent = source.get("agent").and_then(|v| v.as_str()).unwrap_or("build").to_string();
+    let session_id = source.get("session_id").and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| format!("sess_{}", &uuid::Uuid::new_v4().to_string()[..8]));
+    let mut cfg = WorkerCreateConfig::default();
+    cfg.session = Some(session_id.clone());
+    cfg.agent = Some(agent);
+    cfg.project_path = source.get("project_path").and_then(|v| v.as_str()).map(String::from)
+        .or_else(|| source.get("cwd").and_then(|v| v.as_str()).map(String::from))
+        .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()));
+    cfg.channels = Some(vec!["main".to_string()]);
+    cfg.initial_prompt = source.get("initial_prompt").and_then(|v| v.as_str()).map(String::from);
+    registry.lock().await.create_worker(cfg, registry).await?;
+    Ok(session_id)
+}
+
 async fn cmd_serve_start(
     _cli: &Cli,
     _port: u16,
@@ -3272,6 +3305,13 @@ async fn cmd_serve_start(
     let pid_path = ion::paths::host_pid_path();
     let _ = std::fs::write(&pid_path, std::process::id().to_string());
     eprintln!("🔌 Host listening on Unix socket: {}", sock_path.display());
+
+    // 自动创建一个默认 build session，让首次 RPC 不用先 create_session（修复 #1）
+    // 对齐 pi：pi 启动后默认有一个 SessionManager.create 出的 session
+    match do_create_session(&registry, &serde_json::json!({"agent": "build"})).await {
+        Ok(sid) => eprintln!("🌱 Default session ready: {sid}"),
+        Err(e) => eprintln!("⚠️  Default session 创建失败（后续 RPC 会按需创建）: {e}"),
+    }
 
     // socket accept loop —— 支持两种模式：
     //   RPC mode（默认）：一问一答，返回后关闭
@@ -3873,21 +3913,9 @@ async fn handle_manager_command(
                 cmd.clone()
             };
             let agent = source.get("agent").and_then(|v| v.as_str()).unwrap_or("build").to_string();
-            let session_id = source.get("session_id").and_then(|v| v.as_str())
-                .map(String::from)
-                .unwrap_or_else(|| format!("sess_{}", &uuid::Uuid::new_v4().to_string()[..8]));
-            let mut cfg = WorkerCreateConfig::default();
-            cfg.session = Some(session_id.clone());
-            cfg.agent = Some(agent.clone());
-            // project_path 优先用 project_path 参数，fallback 到 cwd 参数（常见别名），最后才用 host cwd
-            cfg.project_path = source.get("project_path").and_then(|v| v.as_str()).map(String::from)
-                .or_else(|| source.get("cwd").and_then(|v| v.as_str()).map(String::from))
-                .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()));
-            cfg.channels = Some(vec!["main".to_string()]);
-            cfg.initial_prompt = source.get("initial_prompt").and_then(|v| v.as_str()).map(String::from);
-            drop(reg);
-            match registry.lock().await.create_worker(cfg, &registry).await {
-                Ok(_) => Ok(serde_json::json!({
+            drop(reg); // 必须先放锁，do_create_session 内部会重新 lock
+            match do_create_session(&registry, &source).await {
+                Ok(session_id) => Ok(serde_json::json!({
                     "session_id": session_id,
                     "agent": agent,
                     "status": "created",
@@ -3904,7 +3932,24 @@ async fn handle_manager_command(
                 .or_else(|| cmd.get("method").and_then(|v| v.as_str()))
                 .unwrap_or("get_state");
             let params = cmd.get("params").cloned().unwrap_or(serde_json::json!({}));
-            reg.send_to_session(session, rpc_method, params).await
+            // 检查 session 对应的 worker 是否存在，不存在则自动创建（修复 #2）
+            let exists = reg.workers.values().any(|w| w.session_id == session);
+            if exists {
+                reg.send_to_session(session, rpc_method, params).await
+            } else {
+                drop(reg); // 放锁，让 do_create_session 能重新 lock
+                tracing::info!("[send_to_session] session {session} not found, auto-creating");
+                match do_create_session(&registry, &serde_json::json!({
+                    "session_id": session,
+                    "agent": "build",
+                })).await {
+                    Ok(_) => {
+                        // 创建后立即转发原请求
+                        registry.lock().await.send_to_session(session, rpc_method, params).await
+                    }
+                    Err(e) => Err(e),
+                }
+            }
         }
         "send_to_worker" => {
             let worker_id = cmd.get("workerId").and_then(|v| v.as_str()).unwrap_or("");
@@ -3966,6 +4011,21 @@ async fn handle_manager_command(
             if let Some(sid) = session_id {
                 let params = cmd.get("params").cloned().unwrap_or_default();
 
+                // 检查 session 是否存在，不存在则自动创建（修复 #2 的另一条路径）
+                // 对齐 pi：pi 用 SessionManager 隐式管理，永远有 session
+                let exists = reg.workers.values().any(|w| w.session_id == sid);
+                if !exists {
+                    tracing::info!("[forward] session {sid} not found, auto-creating");
+                    drop(reg); // 放锁，让 do_create_session 能重新 lock
+                    if let Err(e) = do_create_session(&registry, &serde_json::json!({
+                        "session_id": sid,
+                        "agent": "build",
+                    })).await {
+                        return serde_json::json!({"type":"response","id":id,"success":false,"error":format!("auto-create session failed: {e}")});
+                    }
+                    reg = registry.lock().await;
+                }
+
                 // prompt 用 fire-and-forget(不等 oneshot)——
                 // agent.run 会阻塞 worker 主循环很久,如果等 oneshot,
                 // Manager 锁不释放,后续命令(如 abort)进不来。
@@ -3980,7 +4040,7 @@ async fn handle_manager_command(
                             reg.send_command(&wid, &method, params).await
                                 .map(|_| serde_json::json!({"status": "forwarded", "session": sid}))
                         }
-                        None => Err(format!("worker not found for session: {sid}")),
+                        None => Err(format!("worker not found for session: {sid} (auto-create should have made it)")),
                     }
                 } else {
                     // 其他命令等响应(list_turns/get_messages/abort 等)

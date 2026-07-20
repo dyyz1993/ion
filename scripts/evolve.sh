@@ -74,33 +74,16 @@ if [ -d "$ION_PROVIDER_DIR" ]; then
         "cd /workspace && sed -i 's|path = \"../ion-provider\"|path = \"/ion-provider\"|' Cargo.toml" 2>/dev/null
 fi
 
-# ── 3. 前台编译 ion（等完成再返回，A 不用轮询）──
-echo "  ⏳ 编译 ion（6-15 分钟，等完成）..."
-"$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c \
-    'source $HOME/.cargo/env && cd /workspace && cargo build --release --bin ion 2>&1 | tail -5 && touch /tmp/ion-build-done'
-BUILD_EXIT=$?
-
-if [ $BUILD_EXIT -eq 0 ]; then
-    echo "  ✅ ion 编译成功"
-    # 验证 binary
-    "$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c 'cd /workspace && ./target/release/ion --version' 2>&1 | head -1
-else
-    echo "  ❌ ion 编译失败"
-    cat > /tmp/.evolver-state << EOF
-WT_DIR=$WT_DIR
-CONTAINER_NAME=$CONTAINER_NAME
-PROJECT_DIR=$PROJECT_DIR
-BUILD_STATUS=FAILED
-EOF
-    exit 1
-fi
+# ── 3. 后台编译 ion ──
+echo "  ⏳ 后台编译 ion（10-20 分钟）..."
+"$CONTAINER_BIN" exec -d "$CONTAINER_NAME" sh -c \
+    'source $HOME/.cargo/env && cd /workspace && cargo build --release --bin ion > /tmp/ion-build.log 2>&1 && touch /tmp/ion-build-done'
 
 # ── 输出状态文件 ──
 cat > /tmp/.evolver-state << EOF
 WT_DIR=$WT_DIR
 CONTAINER_NAME=$CONTAINER_NAME
 PROJECT_DIR=$PROJECT_DIR
-BUILD_STATUS=OK
 EOF
 
 echo ""

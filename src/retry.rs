@@ -37,8 +37,11 @@ impl Default for RetryConfig {
         Self {
             max_retries: 30,
             initial_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(10 * 60),       // 10 分钟
-            fixed_delay: Duration::from_secs(10 * 60),    // 10 分钟
+            // 对齐 pi（pi 是 base 5s × cap 60s）。原来 ion 封顶 10 分钟，导致
+            // 连续失败时单次重试间隔 10 分钟 × 23 次 ≈ 总耗时 3.85 小时。
+            // 改成 60s 后：1→2→4→8→16→32→60→60...×24 ≈ 总耗时 25 分钟。
+            max_delay: Duration::from_secs(60),
+            fixed_delay: Duration::from_secs(60),
             multiplier: 2.0,
         }
     }
@@ -259,8 +262,8 @@ mod tests {
         let c = RetryConfig::default();
         assert_eq!(c.max_retries, 30);
         assert_eq!(c.initial_delay, Duration::from_secs(1));
-        assert_eq!(c.max_delay, Duration::from_secs(10 * 60));
-        assert_eq!(c.fixed_delay, Duration::from_secs(10 * 60));
+        assert_eq!(c.max_delay, Duration::from_secs(60));
+        assert_eq!(c.fixed_delay, Duration::from_secs(60));
     }
 
     #[test]
@@ -422,8 +425,8 @@ mod tests {
         let c = RetryConfig::default();
         // 只在封顶前验证抖动（指数退避阶段）
         // 封顶后返回 fixed_delay，没有抖动
-        // max_delay=600 (10min), 2^9=512 < 600, cap at i=10
-        for i in 0..9 {  // i=9 gives 512 < 600, still exponential
+        // max_delay=60, 2^5=32 < 60, 2^6=64 > 60 → cap at i=6
+        for i in 0..5 {  // i=5 gives 32 < 60, still exponential
             let d = backoff_duration(i, &c);
             let expected = c.initial_delay.as_secs_f64() * c.multiplier.powi(i as i32);
             let ratio = d.as_secs_f64() / expected;

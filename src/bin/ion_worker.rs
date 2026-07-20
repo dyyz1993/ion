@@ -1125,8 +1125,14 @@ async fn main() {
             // promote_follow_up → 提升 follow_up 到 steering
             "prompt" => {
                 let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                // 默认 behavior：steer（对齐 pi：流式中默认插话入队，不打断）。
+                // 可通过 ION_PROMPT_BEHAVIOR=interrupt 切回旧行为。
+                // 显式传 params.behavior / params.streamingBehavior 优先级最高。
+                let default_behavior = std::env::var("ION_PROMPT_BEHAVIOR")
+                    .ok().filter(|s| matches!(s.as_str(), "interrupt" | "steer" | "followUp"))
+                    .unwrap_or_else(|| "steer".to_string());
                 let pbehavior = params.get("behavior").or_else(|| params.get("streamingBehavior"))
-                    .and_then(|v| v.as_str()).unwrap_or("interrupt");
+                    .and_then(|v| v.as_str()).unwrap_or(&default_behavior);
 
                 // !cmd 用户直发：拦截成 bash_command（避免走完整 agent loop，对齐 pi）
                 // 形如 "!ls -la" 或 "! cargo build" → 取 '!' 之后的部分作为命令
@@ -3674,6 +3680,64 @@ impl ion::agent::extension::Extension for StreamingExtension {
         Ok(())
     }
 
+
+    /// agent_start 事件（对齐 pi）
+    async fn on_agent_start(&self, _ctx: &ion::agent::agent_loop::AgentContext) -> ion::agent::error::AgentResult<()> {
+        output(&serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "agent_start",
+                "timestamp": now_ms(),
+            }
+        }));
+        Ok(())
+    }
+
+    /// agent_end 事件（对齐 pi — 含消息数）
+    async fn on_agent_end(&self, ctx: &ion::agent::agent_loop::AgentContext) -> ion::agent::error::AgentResult<()> {
+        output(&serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "agent_end",
+                "willRetry": false,
+                "messages": ctx.message_count,
+                "timestamp": now_ms(),
+            }
+        }));
+        Ok(())
+    }
+
+    /// message_start 事件（对齐 pi）
+    async fn on_message_start(&self, role: &str, content: &str) -> ion::agent::error::AgentResult<()> {
+        output(&serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "message_start",
+                "role": role,
+                "content_length": content.len(),
+                "timestamp": now_ms(),
+            }
+        }));
+        Ok(())
+    }
+
+    /// message_end 事件（对齐 pi — 含 token 用量）
+    async fn on_message_end(&self, role: &str, _full_content: &str, usage: &ion_provider::types::Usage) -> ion::agent::error::AgentResult<()> {
+        output(&serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "message_end",
+                "role": role,
+                "usage": {
+                    "input": usage.input,
+                    "output": usage.output,
+                    "total": usage.total_tokens,
+                },
+                "timestamp": now_ms(),
+            }
+        }));
+        Ok(())
+    }
     async fn on_tool_call_delta(&self, delta: &str, name: &str) -> ion::agent::error::AgentResult<()> {
         if !delta.is_empty() {
             if std::env::var("ION_STREAM_DEBUG").ok().as_deref() == Some("1") {
@@ -3689,6 +3753,35 @@ impl ion::agent::extension::Extension for StreamingExtension {
                 }
             }));
         }
+        Ok(())
+    }
+
+
+    /// 自动重试开始事件：让前端显示 "重试中 (N/M)..."（对齐 pi auto_retry_start）
+    async fn on_auto_retry_start(&self, attempt: u32, max_retries: u32) -> ion::agent::error::AgentResult<()> {
+        output(&serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "auto_retry_start",
+                "attempt": attempt,
+                "maxRetries": max_retries,
+                "timestamp": now_ms(),
+            }
+        }));
+        Ok(())
+    }
+
+    /// 自动重试结束事件（success=false 表示所有重试用完仍失败）
+    async fn on_auto_retry_end(&self, success: bool, attempt: u32) -> ion::agent::error::AgentResult<()> {
+        output(&serde_json::json!({
+            "type": "event",
+            "event": {
+                "type": "auto_retry_end",
+                "success": success,
+                "attempt": attempt,
+                "timestamp": now_ms(),
+            }
+        }));
         Ok(())
     }
 
@@ -3738,6 +3831,7 @@ impl ion::agent::extension::Extension for StreamingExtension {
                 "type": "tool_execution_update",
                 "toolCallId": ctx.tool_call_id,
                 "toolName": ctx.tool_name,
+                "args": ctx.args,
                 "partialResult": partial,
             }
         }));
@@ -3752,6 +3846,7 @@ impl ion::agent::extension::Extension for StreamingExtension {
                 "toolCallId": ctx.tool_call_id,
                 "toolName": ctx.tool_name,
                 "isError": ctx.is_error,
+                "result": ctx.result,
                 "durationMs": ctx.duration_ms,
                 "timestamp": now_ms(),
             }

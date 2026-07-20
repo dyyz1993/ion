@@ -605,10 +605,38 @@ impl Runtime for LocalRuntime {
     }
 
     async fn write_file(&self, path: &str, content: &str) -> Result<(), String> {
-        if let Some(parent) = std::path::Path::new(path).parent() {
+        let target = std::path::Path::new(path);
+        if let Some(parent) = target.parent() {
             tokio::fs::create_dir_all(parent).await.map_err(|e| format!("mkdir: {e}"))?;
         }
-        tokio::fs::write(path, content).await.map_err(|e| format!("write {path}: {e}"))
+        // 原子写：写到同目录临时文件 → fsync → rename（对齐 pi write.ts 的 withFileMutationQueue 安全语义）
+        // 避免 abort/崩溃时留下半写文件（用户痛点：LLM 写 1000 行文件中途被中断 → 文件变 0 字节或半截）
+        let tmp_path = format!(
+            "{}/.ion-tmp-{}-{}",
+            target.parent().map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| ".".into()),
+            target.file_name().map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| "file".into()),
+            std::process::id(),
+        );
+        // 写临时文件
+        tokio::fs::write(&tmp_path, content).await
+            .map_err(|e| format!("write tmp {tmp_path}: {e}"))?;
+        // 同步到磁盘（防止 rename 后系统崩溃仍丢数据）
+        #[cfg(unix)]
+        {
+            use tokio::io::AsyncSeekExt;
+            if let Ok(mut f) = tokio::fs::File::open(&tmp_path).await {
+                let _ = f.sync_all().await;
+            }
+        }
+        // 原子 rename（同 filesystem 下原子；跨设备时 tokio::fs::rename 会自动 fallback 到 copy+remove）
+        tokio::fs::rename(&tmp_path, path).await
+            .map_err(|e| {
+                // rename 失败时清理临时文件，避免遗留垃圾
+                let _ = std::fs::remove_file(&tmp_path);
+                format!("rename {tmp_path} → {path}: {e}")
+            })
     }
 
     async fn edit_file(&self, path: &str, old: &str, new: &str) -> Result<(), String> {
