@@ -60,5 +60,7 @@ source /tmp/.evolver-state && container stop "$CONTAINER_NAME" && git worktree r
 1. 第一个回复必须是 bash 工具调用
 2. 禁止 sed -i 改代码
 3. 改代码只能调 B（步骤 2 的 container exec）
-4. 不要分析代码——直接执行
-5. 不要用 sleep 等待——直接重复调 bash 检查
+4. **禁止在 host 上跑 ion --agent**——所有 ion 调用必须通过 `container exec $CONTAINER_NAME`
+5. **禁止在 host 上跑 cargo build/test**——所有编译测试必须在 container 里
+6. 不要分析代码——直接执行
+7. 不要用 sleep 等待——直接重复调 bash 检查
