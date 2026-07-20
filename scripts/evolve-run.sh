@@ -85,23 +85,28 @@ if [ "$CI_PASSED" != "true" ]; then
     exit 1
 fi
 
-#  2.  B  rsync
+#  2. Sync B's changes (use diff between container init and now)
 echo ""
-echo " Step:  B  "
-#  container  git diff 
-CHANGED_FILES=$("$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c \
-    'cd /workspace && git diff --name-only HEAD 2>/dev/null' 2>&1)
-echo "  B :"
-echo "$CHANGED_FILES"
+echo " Step: sync B changes"
+# Find changed .rs files by comparing worktree with project dir
+# (git diff doesn't work in container's standalone repo)
+CHANGED_FILES=""
+for f in $(find "$WT_DIR/src" -name "*.rs" 2>/dev/null); do
+    rel="${f#$WT_DIR/}"
+    proj_file="$PROJECT_DIR/$rel"
+    if [ ! -f "$proj_file" ] || ! diff -q "$f" "$proj_file" >/dev/null 2>&1; then
+        CHANGED_FILES="$CHANGED_FILES $rel"
+    fi
+done
+echo "  Changed files: $CHANGED_FILES"
 
-# 
 for f in $CHANGED_FILES; do
     src="$WT_DIR/$f"
     dst="$PROJECT_DIR/$f"
     if [ -f "$src" ]; then
         mkdir -p "$(dirname "$dst")"
         cp "$src" "$dst"
-        echo "   : $f"
+        echo "  synced: $f"
     fi
 done
 
