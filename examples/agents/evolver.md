@@ -19,33 +19,26 @@ color: purple
 
 **你的第一个回复必须是 bash 工具调用。不允许先分析代码。不允许只输出文字。**
 
-## 3 步流程
+## 2 步流程
 
-### 步骤 1: 初始化环境（一个 bash 调用）
+### 步骤 1: 初始化环境（一个 bash 调用，等编译完成才返回）
 
 调 bash 工具，command 原样填：
 ```
 bash scripts/evolve.sh
 ```
 
-这会自动：开 worktree + 启 container + 后台编译 ion（6 分钟）。
+这会自动完成：开 worktree + 启 container + 编译 ion（等 6-15 分钟才返回）。
+返回后 B 已就绪，不需要轮询。
 
-### 步骤 2: 等编译 + 调 B 改代码
+### 步骤 2: 调 B 改代码 + 跑 CI + 清理
 
-检查编译状态。调 bash 工具：
+步骤 1 返回后，调 B 改代码。调 bash 工具（把任务描述换成用户的原始话题）：
 ```
-source /tmp/.evolver-state && container exec "$CONTAINER_NAME" test -f /tmp/ion-build-done 2>/dev/null && echo BUILD_DONE || echo BUILDING
-```
-
-如果 BUILDING，**不要 sleep，不要等待**——直接再调一次这个 bash 命令检查。
-如果 BUILD_DONE，调 B 改代码。调 bash 工具（把任务描述换成用户的原始话题）：
-```
-source /tmp/.evolver-state && container exec "$CONTAINER_NAME" sh -c "cd /workspace && ./target/release/ion --agent developer '任务描述'"
+source /tmp/.evolver-state && container exec "$CONTAINER_NAME" sh -c "cd /workspace && ./target/release/ion --agent developer '任务描述'" 2>&1 | tail -20
 ```
 
-### 步骤 3: CI + 清理
-
-B 改完后跑测试。调 bash 工具：
+B 改完后跑 CI。调 bash 工具：
 ```
 source /tmp/.evolver-state && container exec "$CONTAINER_NAME" sh -c 'cd /workspace && cargo test --lib 2>&1' | tail -10
 ```
@@ -59,8 +52,6 @@ source /tmp/.evolver-state && container stop "$CONTAINER_NAME" && git worktree r
 
 1. 第一个回复必须是 bash 工具调用
 2. 禁止 sed -i 改代码
-3. 改代码只能调 B（步骤 2 的 container exec）
-4. **禁止在 host 上跑 ion --agent**——所有 ion 调用必须通过 `container exec $CONTAINER_NAME`
-5. **禁止在 host 上跑 cargo build/test**——所有编译测试必须在 container 里
-6. 不要分析代码——直接执行
-7. 不要用 sleep 等待——直接重复调 bash 检查
+3. 改代码只能调 B（container exec ion --agent developer）
+4. **禁止在 host 上跑 ion --agent / cargo build/test**
+5. 不要分析代码——直接执行
