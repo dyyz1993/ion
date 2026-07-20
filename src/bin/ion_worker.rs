@@ -1695,7 +1695,7 @@ async fn main() {
                                     "name": name.trim_end_matches(".md"),
                                     "source": "global",
                                     "path": path.to_string_lossy(),
-                                    "brief": if brief.len() > 80 { format!("{}...", &brief[..80]) } else { brief },
+                                    "brief": if brief.chars().count() > 80 { format!("{}...", brief.chars().take(80).collect::<String>()) } else { brief },
                                 }));
                             }
                         }
@@ -1715,7 +1715,7 @@ async fn main() {
                                     "name": name.trim_end_matches(".md"),
                                     "source": "project",
                                     "path": path.to_string_lossy(),
-                                    "brief": if brief.len() > 80 { format!("{}...", &brief[..80]) } else { brief },
+                                    "brief": if brief.chars().count() > 80 { format!("{}...", brief.chars().take(80).collect::<String>()) } else { brief },
                                 }));
                             }
                         }
