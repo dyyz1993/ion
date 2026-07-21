@@ -430,14 +430,18 @@ async fn main() {
                 initial_system_prompt = sp.clone();
             }
             tracing::info!("[worker] loaded agent '{}' from config", agent_cfg.name);
-            // wf agent（workflow 引擎）需要 auto-continue：
             // auto-continue: wf/improver 需要（workflow 多 stage）
-            // evolver 不需要——它用 bash_run background + follow_up（进程完成自动唤醒）
+            // evolver 不需要 auto_continue——它用 bash_run background + follow_up
             if matches!(current_agent_name.as_str(), "wf" | "improver") {
                 if std::env::var("ION_AUTO_CONTINUE").is_err() {
                     unsafe { std::env::set_var("ION_AUTO_CONTINUE", "1"); }
                     tracing::info!("[worker] auto-set ION_AUTO_CONTINUE=1 for {} agent", current_agent_name);
                 }
+            }
+            // evolver: 等 bash_run 后台进程的异步 follow_up
+            if current_agent_name == "evolver" {
+                unsafe { std::env::set_var("ION_WAIT_BACKGROUND", "1"); }
+                tracing::info!("[worker] set ION_WAIT_BACKGROUND=1 for evolver");
             }
             // Note: tool restriction is applied below after `agent` is built
             // We stash the config to apply post-construction

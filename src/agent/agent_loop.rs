@@ -395,7 +395,7 @@ impl Agent {
         }
 
         let summarizer_model = self.compact_model.as_ref().unwrap_or(&self.model);
-        let summarizer = compact::make_llm_summarizer(self.registry.clone(), summarizer_model.clone());
+        let summarizer = compact::make_llm_summarizer(self.registry.clone(), summarizer_model.clone(), self.config.api_key.clone());
         summarizer(&messages_to_summarize).await
     }
 
@@ -717,7 +717,28 @@ impl Agent {
                         source: ion_provider::types::MessageSource::FollowUp,
                     }));
                 } else {
-                    return Ok(());
+                    // No auto_continue, no follow_up in queue.
+                    // But bash_run background process might send follow_up asynchronously.
+                    // Wait up to 30 minutes for async follow_up before giving up.
+                    // This is critical for evolver agent: bash_run(background=true) sends
+                    // follow_up when the process completes, but it arrives async.
+                    if std::env::var("ION_WAIT_BACKGROUND").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false) {
+                        tracing::info!("outer {outer_i}: follow_up empty, waiting for async background follow_up (ION_WAIT_BACKGROUND=1)");
+                        // Check every 5s if follow_up_queue got messages (from follow_up_rx drain in main loop)
+                        for _wait in 0..360 { // 360 * 5s = 30 min max
+                            if !self.follow_up_queue.is_empty() {
+                                tracing::info!("outer {outer_i}: async follow_up received after waiting");
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        }
+                        if self.follow_up_queue.is_empty() {
+                            tracing::info!("outer {outer_i}: no async follow_up after 30 min, stopping");
+                            return Ok(());
+                        }
+                    } else {
+                        return Ok(());
+                    }
                 }
             }
             tracing::info!(
@@ -1534,7 +1555,7 @@ impl Agent {
         let retry_config = RetryConfig::default();
         // Use compact model if specified, otherwise use main model
         let summarizer_model = self.compact_model.as_ref().unwrap_or(&self.model);
-        let summarizer = compact::make_llm_summarizer(self.registry.clone(), summarizer_model.clone());
+        let summarizer = compact::make_llm_summarizer(self.registry.clone(), summarizer_model.clone(), self.config.api_key.clone());
         // 尝试用 LLM summarizer 压缩，失败则 fallback 到 emergency truncate
         // （LLM 不可用 / 没 API key / 网络错 时保证 compaction 不阻塞 agent）
         match compact::compact_batched(
