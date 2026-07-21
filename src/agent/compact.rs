@@ -143,6 +143,55 @@ pub fn needs_compact(messages: &[Message], config: &CompactConfig) -> bool {
     total_tokens(messages) > config.threshold
 }
 
+/// Estimate total token count of a message list using a rough heuristic:
+/// sum of all content text lengths divided by 4.
+pub fn estimate_compact_tokens(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .map(|msg| match msg {
+            Message::User(m) => m
+                .content
+                .iter()
+                .map(|b| match b {
+                    ContentBlock::Text(t) => t.text.len(),
+                    ContentBlock::Image(_) => 0,
+                })
+                .sum::<usize>(),
+            Message::Assistant(m) => m
+                .content
+                .iter()
+                .map(|b| match b {
+                    AssistantContentBlock::Text(t) => t.text.len(),
+                    AssistantContentBlock::Thinking(th) => th.thinking.len(),
+                    AssistantContentBlock::ToolCall(tc) => tc.arguments.to_string().len(),
+                })
+                .sum::<usize>(),
+            Message::ToolResult(m) => m
+                .content
+                .iter()
+                .map(|b| match b {
+                    ContentBlock::Text(t) => t.text.len(),
+                    ContentBlock::Image(_) => 0,
+                })
+                .sum::<usize>(),
+            Message::BashExecution(m) => m.command.len() + m.output.len(),
+            Message::Custom(m) => match &m.content {
+                CustomContent::Text(s) => s.len(),
+                CustomContent::Blocks(blocks) => blocks
+                    .iter()
+                    .map(|b| match b {
+                        ContentBlock::Text(t) => t.text.len(),
+                        ContentBlock::Image(_) => 0,
+                    })
+                    .sum::<usize>(),
+            },
+            Message::BranchSummary(m) => m.summary.len(),
+            Message::CompactionSummary(m) => m.summary.len(),
+        })
+        .sum::<usize>()
+        / 4
+}
+
 // ──────────────────────────────────────────────────────────────
 // 批次规划
 // ──────────────────────────────────────────────────────────────
@@ -985,6 +1034,20 @@ mod tests {
         ];
         let total = total_tokens(&msgs);
         assert!(total >= 2);
+    }
+
+    #[test]
+    fn test_estimate_compact_tokens() {
+        // 3 messages with known content
+        let msgs = vec![
+            make_user_msg("hello world"),           // 11 chars
+            make_assistant_msg("this is a test"),   // 14 chars
+            make_user_msg("another message here"),  // 20 chars
+        ];
+        let total_chars: usize = 11 + 14 + 20; // = 45
+        let expected = total_chars / 4; // = 11
+        let result = estimate_compact_tokens(&msgs);
+        assert_eq!(result, expected, "estimate_compact_tokens({total_chars} chars) = {result}, expected {expected}");
     }
 
     fn make_compaction_summary(summary: &str) -> Message {
