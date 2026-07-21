@@ -520,6 +520,25 @@ impl GlobalMemoryStore {
         Ok(results)
     }
 
+    /// Return up to N most recent entries (created_at DESC) for the given project.
+    pub fn list_recent_by_project(&self, project: &str, limit: usize) -> Result<Vec<GlobalMemoryEntry>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, project, content, category, tags, importance, archived, created_at, updated_at
+                 FROM entries WHERE project = ?1 ORDER BY created_at DESC LIMIT ?2",
+            )
+            .map_err(|e| format!("prepare list_recent_by_project: {}", e))?;
+        let rows = stmt
+            .query_map(params![project, limit as i64], map_entry)
+            .map_err(|e| format!("query list_recent_by_project: {}", e))?;
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r.map_err(|e| format!("row list_recent_by_project: {}", e))?);
+        }
+        Ok(results)
+    }
+
     /// 返回 archived=1 的 entry 总数
     pub fn archive_count(&self) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
@@ -1632,5 +1651,37 @@ mod tests {
         for entry in &result {
             assert_eq!(entry.content, "same content", "each duplicate entry should have content 'same content'");
         }
+    }
+
+    /// Test list_recent_by_project method:
+    /// clear_all; save 3 to proj-a with 1s sleep between;
+    /// result = list_recent_by_project('proj-a', 2);
+    /// result.len()==2; result[0].created_at >= result[1].created_at (DESC order)
+    #[test]
+    fn test_list_recent_by_project() {
+        let store = test_store();
+        store.clear_all().unwrap();
+
+        // Save 3 entries to proj-a with sleep between each
+        store.save("entry 1", "note", "t", "proj-a", 5).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        store.save("entry 2", "note", "t", "proj-a", 5).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        store.save("entry 3", "note", "t", "proj-a", 5).unwrap();
+
+        // Get recent 2 entries
+        let result = store.list_recent_by_project("proj-a", 2).unwrap();
+        assert_eq!(result.len(), 2, "should return 2 entries");
+        // Verify DESC order: most recent first
+        assert!(
+            result[0].created_at >= result[1].created_at,
+            "created_at should be in DESC order: {:?} >= {:?}",
+            result[0].created_at,
+            result[1].created_at
+        );
+        // Entry 3 was saved last, so it should be first
+        assert_eq!(result[0].content, "entry 3", "most recent entry should be entry 3");
+        // Entry 2 was saved before entry 3
+        assert_eq!(result[1].content, "entry 2", "second most recent entry should be entry 2");
     }
 }
