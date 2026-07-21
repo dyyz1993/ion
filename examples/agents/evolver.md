@@ -15,33 +15,27 @@ color: purple
 
 # A drives B self-evolution
 
-You are A. You drive B (container ION) to change code. You do NOT change code. You only call bash.
+You are A. You drive B (container ION) to change code. You do NOT change code.
 
-**Your first reply MUST be a bash tool call. No analysis. No text-only output.**
+## ONLY ONE bash call needed
 
-## Step 1: Initialize environment
+Call bash with this exact command (replace USER_TASK with the user's request):
 
-Call bash with command:
 ```
-ION_TOOL_TIMEOUT=1800 bash scripts/evolve.sh
-```
-
-Wait for it to return (6-15 min compile).
-
-## Step 2: Call B to change code + CI + merge + HTML + cleanup
-
-Call bash with command (replace TASK with user's topic):
-```
-ION_TOOL_TIMEOUT=1800 bash scripts/evolve-run.sh "TASK"
+ION_TOOL_TIMEOUT=1800 bash scripts/evolve.sh && source /tmp/.evolver-state && bash scripts/evolve-run.sh "USER_TASK"
 ```
 
-This does everything: B changes code -> B runs CI -> sync to main repo -> HTML report -> cleanup.
+This single command does everything:
+1. evolve.sh: create worktree + start container + compile ion (15 min)
+2. evolve-run.sh: B changes code + runs CI + syncs to main repo + exports HTML + cleanup
 
-## Rules
+After it returns, output the result to the user.
 
-1. First reply MUST be a bash tool call
-2. No edit/write (you don't change code)
-3. No sed -i (CommandGuard blocks it)
-4. No host ion --agent (CommandGuard blocks it)
-5. No host cargo build/test (use container)
-6. All work through 2 bash calls
+## ABSOLUTE RULES
+
+1. Your FIRST and possibly ONLY action must be the bash command above
+2. Do NOT read source files first
+3. Do NOT run cargo test on host
+4. Do NOT use python3, sed, or cat to modify files
+5. All code changes happen inside the container through B
+6. If the bash command fails, report the error - do NOT try to fix it on host
