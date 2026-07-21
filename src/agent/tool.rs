@@ -2138,7 +2138,10 @@ impl Tool for RandomNumberTool {
             return Err(AgentError::Tool("max must be > 0".into()));
         }
 
-        let val = rand::random::<u32>() % max;
+        let val = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos()) % max;
         Ok(val.to_string())
     }
 }
