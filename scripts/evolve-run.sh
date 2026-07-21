@@ -105,6 +105,18 @@ fi
 #  2. Sync B's changes (use diff between container init and now)
 echo ""
 echo " Step: sync B changes"
+
+# U+FFFD 守门检查：B 偶尔会破坏中文 comment 字符（变 U+FFFD，valid UTF-8 但内容损坏）
+# 这种破坏会让后续 developer agent 的 edit 工具 pattern matching 失败。
+# 详见 docs/design/EVOLVER_LESSONS_LEARNED.md §11
+GARBLED=$(grep -rl $'\xef\xbf\xbd' "$WT_DIR/src/" 2>/dev/null | head -5)
+if [ -n "$GARBLED" ]; then
+    echo "  ERROR: B's changes contain U+FFFD garbled chars (broken Chinese comments):"
+    echo "$GARBLED" | sed 's/^/    /'
+    echo "  Rejecting merge. B should preserve existing comments verbatim."
+    exit 1
+fi
+
 # Find changed .rs files by comparing worktree with project dir
 # (git diff doesn't work in container's standalone repo)
 CHANGED_FILES=""

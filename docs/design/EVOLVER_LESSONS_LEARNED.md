@@ -162,6 +162,35 @@ evolve-run.sh 用 diff 比较 worktree 和主仓库的 .rs 文件，只同步有
 
 ---
 
+## 11. B 改代码时破坏中文 comment 字符（U+FFFD 污染）
+
+### 现象
+端到端多智能体测试时，coordinator spawn 的 developer 1 卡死——LLM 反复尝试用 edit 工具改 src/global_memory.rs，但 pattern matching 一直失败。
+
+### 根因
+- B（DeepSeek LLM）在 container 改代码时，把部分中文 comment 字符破坏成 U+FFFD（replacement char）
+- 文件本身是 valid UTF-8（cargo build/test 都通过），但**字符内容损坏**
+- developer agent 的 edit 工具用 string pattern 匹配，遇到 U+FFFD 就匹配不上
+- LLM 反复 retry 直到 timeout
+
+### 解决方案
+1. **立即修复**：扫描所有源码，用 git 历史 fuzzy 匹配恢复 + U+FFFD 直接删（commit 563d8f9）
+2. **预防机制**：evolve-run.sh 在合并 B 的改动前加守门检查：
+   ```bash
+   # 检测 U+FFFD 污染
+   if grep -rl $'\xef\xbf\xbd' "$WT_DIR/src/" 2>/dev/null; then
+       echo "ERROR: B's changes contain U+FFFD garbled chars, rejecting merge"
+       exit 1
+   fi
+   ```
+
+### 教训
+- **不要假设 LLM 输出的字节都对**——LLM 偶尔会破坏字符编码（特别是中文）
+- **合并前必须验证**：U+FFFD 检查、cargo build、cargo test 三道关
+- **agent.md 里要加规则**：告诉 B "preserve all existing comments verbatim, do not modify non-target lines"
+
+---
+
 ## 经验总结
 
 ### 做得对的
