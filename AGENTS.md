@@ -969,6 +969,58 @@ fi
 | `oldest_entry_age()` | `a08f5ed` | ✅ | 返回最早 entry 的 created_at（空表返回 None） |
 | `has_content` test | `68887fd` | ✅ | 测试 store.has_content() 方法 |
 | U+FFFD 修复 | `563d8f9` | ✅ 25 passed | 清理 187 处中文 comment 乱码 |
+| `count_by_tags(tag)` | `1e75486` | ✅ 26 passed | **完整 A→B 闭环**（含守门拦截 + B 自修复） |
+
+#### 完整 A→B 闭环示例（`count_by_tags` 任务，commit `1e75486`）
+
+这是**第一个真正符合 A→B 原则**的端到端任务——A 全程不碰代码，B 在 container 里改 + 自修复。
+
+**时间线**：
+
+| 阶段 | 角色 | 动作 | 耗时 |
+|------|------|------|------|
+| 1 | A | `bash scripts/evolve.sh`（启 container + volume cache 编译） | 3 分 05 秒 |
+| 2 | A → B | `echo "任务" \| container exec B ion --agent developer` | — |
+| 3 | B | read 文件 → edit 加 `count_by_tags` 方法 + 测试 | ~5 分钟 |
+| 4 | B | bash 跑 `cargo test --lib test_count_by_tags` 通过 | ~3 分钟（编译） |
+| 5 | B | `git commit -m 'feat(memory): count_by_tags'` | <1 秒 |
+| 6 | A | U+FFFD 守门检查 → **拦截**（B 引入 4 处乱码） | <1 秒 |
+| 7 | A → B | `echo "修复 4 行乱码" \| container exec B ion --agent developer` | — |
+| 8 | B | edit 修 4 行 comment → grep -c U+FFFD=0 → cargo test → amend commit | ~4 分钟 |
+| 9 | A | 再次守门（通过）→ `cp worktree/file main/` → cargo test 26 passed | <30 秒 |
+| 10 | A | `git commit` + `ion --export → HTML 报告` | <10 秒 |
+
+**关键命令模板**（A 驱动 B 改代码，stdin 喂 prompt 避免 shell 污染）：
+
+```bash
+# 步骤 2-5：A 驱动 B 改代码
+echo "任务描述（含详细 spec）" | container exec -i "$CONTAINER_NAME" \
+    sh -c "cd /workspace && ./target/release/ion --agent developer \
+           --provider opencode --model deepseek-v4-flash"
+
+# 步骤 6：A 守门（自动 reject 含 U+FFFD 的改动）
+GARBLED=$(container exec "$CONTAINER_NAME" \
+    sh -c "grep -rl \$'\xef\xbf\xbd' /workspace/src/" 2>/dev/null)
+if [ -n "$GARBLED" ]; then
+    echo "Gate REJECT: B's changes contain U+FFFD"
+    # 进入步骤 7：让 B 自修复
+fi
+
+# 步骤 7-8：A 驱动 B 自修复（不让 A 自己改！）
+echo "修复 N 行乱码（列出每行原文）" | container exec -i "$CONTAINER_NAME" \
+    sh -c "cd /workspace && ./target/release/ion --agent developer ..."
+```
+
+**铁律再强调**：
+- A（host）**绝不**用 edit/write 直接改主仓库源码
+- 修复任何问题（包括 U+FFFD 乱码）都通过 `container exec B ion --agent developer` 让 B 自己改
+- A 的工具集只有 `bash`（详见 `examples/agents/evolver.md`）
+
+详见：
+- [docs/design/SELF_EVOLUTION.md](./docs/design/SELF_EVOLUTION.md) — A→B 架构总览
+- [docs/design/EVOLVER_LESSONS_LEARNED.md](./docs/design/EVOLVER_LESSONS_LEARNED.md) — 11 个真实问题+解法（§11 U+FFFD 案例）
+- `scripts/evolve-run.sh` — 自动化脚本（含 U+FFFD 守门）
+- `/tmp/report_count_by_tags.html` — 本次任务的 HTML 报告（403KB）
 
 **验证方式**：
 ```bash
