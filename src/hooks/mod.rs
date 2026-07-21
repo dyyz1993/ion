@@ -224,6 +224,11 @@ impl HooksConfig {
             }).sum::<usize>()
         }).sum()
     }
+
+    /// Returns total number of hook entries across all events (sum of Vec<HookEntry> lengths)
+    pub fn count_hooks(&self) -> usize {
+        self.hooks.values().map(|v| v.len()).sum()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -264,5 +269,91 @@ impl HookOutcome {
 
     pub fn is_terminal(&self) -> bool {
         self.block
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_handler(handler_type: HandlerType, command: Option<&str>, url: Option<&str>, prompt: Option<&str>) -> HookEntry {
+        HookEntry::Handler(HookHandler {
+            handler_type,
+            command: command.map(|s| s.to_string()),
+            url: url.map(|s| s.to_string()),
+            prompt: prompt.map(|s| s.to_string()),
+            agent: None,
+            server: None,
+            tool: None,
+            input: None,
+            model: None,
+            timeout: None,
+            if_clause: None,
+            r#async: false,
+            async_rewake: false,
+            once: false,
+            status_message: None,
+            allowed_tools: None,
+            max_turns: None,
+        })
+    }
+
+    #[test]
+    fn test_count_hooks() {
+        let mut hooks = HooksConfig::default();
+        assert_eq!(hooks.count_hooks(), 0, "empty config should have 0 hooks");
+
+        // Add entries for event "event_a"
+        hooks.hooks.insert(
+            "event_a".to_string(),
+            vec![
+                make_handler(HandlerType::Command, Some("echo hello"), None, None),
+                make_handler(HandlerType::Command, Some("echo world"), None, None),
+            ],
+        );
+        assert_eq!(hooks.count_hooks(), 2, "2 hooks in one event");
+
+        // Add entries for event "event_b"
+        hooks.hooks.insert(
+            "event_b".to_string(),
+            vec![
+                make_handler(HandlerType::Http, None, Some("https://example.com"), None),
+            ],
+        );
+        assert_eq!(hooks.count_hooks(), 3, "3 hooks across two events");
+
+        // Add a group entry to verify groups count as 1 entry
+        hooks.hooks.entry("event_a".to_string()).or_default().push(
+            HookEntry::Group(HookGroup {
+                matcher: None,
+                loop_limit: None,
+                hooks: vec![
+                    HookHandler {
+                        handler_type: HandlerType::Prompt,
+                        command: None,
+                        url: None,
+                        prompt: Some("test".to_string()),
+                        agent: None,
+                        server: None,
+                        tool: None,
+                        input: None,
+                        model: None,
+                        timeout: None,
+                        if_clause: None,
+                        r#async: false,
+                        async_rewake: false,
+                        once: false,
+                        status_message: None,
+                        allowed_tools: None,
+                        max_turns: None,
+                    },
+                ],
+            }),
+        );
+        assert_eq!(hooks.count_hooks(), 4, "4 hooks after adding a group (group counts as 1)");
     }
 }
