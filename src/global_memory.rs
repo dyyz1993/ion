@@ -593,8 +593,21 @@ impl GlobalMemoryStore {
         Ok(result)
     }
 
+    /// Return the entry with the lowest importance value (min importance).
+    /// Returns Ok(None) if the table is empty.
+    pub fn oldest_by_importance(&self) -> Result<Option<GlobalMemoryEntry>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let result: Option<GlobalMemoryEntry> = conn.query_row(
+            "SELECT id, project, content, category, tags, importance, archived, created_at, updated_at
+             FROM entries ORDER BY importance ASC LIMIT 1",
+            [],
+            map_entry,
+        ).ok();
+        Ok(result)
+    }
+
     /// 统计 tags 列中包含指定 tag 字符串的 entry 数。
-    /// tags 是逗号分隔的字符串（例如 rust,sqlite,Memory），用 LIKE 模糊匹配。
+    /// tags 是逗号分隔的字符串（例如 rust,sqlite,memory），用 LIKE 模糊匹配。
     pub fn count_by_tags(&self, tag: &str) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         let pattern = format!("%{}%", tag);
@@ -1881,5 +1894,26 @@ mod tests {
             assert!(entry.get("archived").is_some(), "entry should have archived field");
             assert!(entry.get("created_at").is_some(), "entry should have created_at field");
         }
+    }
+
+    /// Test oldest_by_importance:
+    /// - clear_all
+    /// - save 3 entries with importance 5, 1, 9
+    /// - call oldest_by_importance, verify returned entry has importance == 1
+    #[test]
+    fn test_oldest_by_importance() {
+        let store = test_store();
+        store.clear_all().unwrap();
+
+        // Save 3 entries with different importance values
+        store.save("entry with importance 5", "note", "t", "p", 5).unwrap();
+        store.save("entry with importance 1", "note", "t", "p", 1).unwrap();
+        store.save("entry with importance 9", "note", "t", "p", 9).unwrap();
+
+        // Call oldest_by_importance — should return the entry with importance == 1
+        let result = store.oldest_by_importance().unwrap();
+        assert!(result.is_some(), "should return an entry when table is non-empty");
+        let entry = result.unwrap();
+        assert_eq!(entry.importance, 1, "lowest importance entry should have importance == 1");
     }
 }
