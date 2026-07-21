@@ -400,7 +400,44 @@ pub fn retrieve_turn_detail(entries: &[Value], turn_id: &str, _include_custom: &
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 内部子函数
+// Utility: count_turns
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Count how many turns (user-assistant pairs) exist in a message list.
+///
+/// A turn starts when a message with role == "user" is encountered.
+/// Each user message that is not preceded by another user message starts
+/// a new turn. This function iterates over entries, finds messages with
+/// `type == "message"`, checks if the role is "user", and counts each
+/// user message as the start of a new turn.
+///
+/// This is a lightweight utility that works on message lists already
+/// retrieved/filtered by the caller (not on raw session entries).
+pub fn count_turns(messages: &[serde_json::Value]) -> usize {
+    let mut count = 0;
+
+    for entry in messages {
+        // Only consider entries that are messages
+        let t = entry.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if t != "message" {
+            continue;
+        }
+        let role = entry
+            .get("message")
+            .and_then(|m| m.get("role"))
+            .and_then(|r| r.as_str())
+            .unwrap_or("");
+        // Each user message starts a new turn
+        if role == "user" {
+            count += 1;
+        }
+    }
+
+    count
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Internal sub-functions
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// 视点过滤：根据 view 返回 entry 子集
@@ -1307,7 +1344,38 @@ mod tests {
         assert_eq!(truncate_content("hello world", 5), "hello...");
     }
 
-    // ── 软删除 / 软压缩 apply_visibility_filter 测试 ──────────────────
+    // ── count_turns tests ──
+
+    #[test]
+    fn test_count_turns() {
+        // 3 user + 3 assistant messages = 3 turns
+        let messages = vec![
+            msg("m1", "", "user", "first user"),
+            msg("m2", "m1", "assistant", "first assistant"),
+            msg("m3", "m2", "user", "second user"),
+            msg("m4", "m3", "assistant", "second assistant"),
+            msg("m5", "m4", "user", "third user"),
+            msg("m6", "m5", "assistant", "third assistant"),
+        ];
+        assert_eq!(count_turns(&messages), 3);
+    }
+
+    #[test]
+    fn test_count_turns_empty() {
+        assert_eq!(count_turns(&[]), 0);
+    }
+
+    #[test]
+    fn test_count_turns_only_user() {
+        let messages = vec![
+            msg("m1", "", "user", "first"),
+            msg("m2", "m1", "user", "second"),
+        ];
+        // Two consecutive users: each starts a new turn
+        assert_eq!(count_turns(&messages), 2);
+    }
+
+    // ── soft-delete / soft-compress apply_visibility_filter tests ──
 
     fn deletion_entry(id: &str, target_ids: &[&str]) -> Value {
         let targets: Vec<Value> = target_ids.iter().map(|t| json!(t)).collect();
