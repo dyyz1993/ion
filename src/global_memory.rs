@@ -1174,7 +1174,7 @@ mod tests {
     fn test_recent_entries() {
         let store = test_store();
 
-        // 先清空
+        // ��清空
         store.clear_all().unwrap();
 
         // 保存 3 条，故意让时间戳不同
@@ -1191,5 +1191,20 @@ mod tests {
         assert_eq!(recent[0].content, "entry three", "第 1 条应为最近保存的 three");
         assert_eq!(recent[1].content, "entry two",    "第 2 条应为 two");
         assert!(recent[0].created_at >= recent[1].created_at, "时间应降序");
+    }
+
+    #[test]
+    fn test_has_content() {
+        let store = test_store();
+
+        // 先清空
+        store.clear_all().unwrap();
+
+        // 保存一条 content="hello world"
+        store.save("hello world", "note", "t", "p", 5).unwrap();
+
+        // 验证存在与不存在
+        assert!(store.has_content("hello world").unwrap(), "已保存的内容应返回 true");
+        assert!(!store.has_content("not exist").unwrap(), "不存在的 content 应返回 false");
     }
 }
