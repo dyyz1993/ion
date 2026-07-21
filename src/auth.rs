@@ -135,4 +135,32 @@ impl AuthStorage {
 
         None
     }
+
+    /// Return the list of provider names from `provider_base_urls`.
+    pub fn list_providers(&self) -> Vec<String> {
+        self.provider_base_urls.keys().cloned().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_list_providers() {
+        let mut base_urls = std::collections::HashMap::new();
+        base_urls.insert("openai".to_string(), "https://api.openai.com".to_string());
+        base_urls.insert("anthropic".to_string(), "https://api.anthropic.com".to_string());
+        base_urls.insert("zhipuai".to_string(), "https://open.bigmodel.cn".to_string());
+
+        let auth = AuthStorage {
+            api_key: None,
+            provider_api_keys: std::collections::HashMap::new(),
+            provider_base_urls: base_urls,
+        };
+
+        let mut providers = auth.list_providers();
+        providers.sort();
+        assert_eq!(providers, vec!["anthropic", "openai", "zhipuai"]);
+    }
 }
