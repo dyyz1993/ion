@@ -1,6 +1,8 @@
+# V 方案 - 简化版：直接用基础 image，依赖缓存通过 volume 持久化
+# 配合 scripts/build-evolve-image.sh 使用（先跑一次基础 container 编译依赖，再 commit）
 FROM alpine:latest
 
-# 安装 Rust 编译环境（用 rustup，从国内镜像源安装）
+# 安装编译依赖
 RUN apk add --no-cache \
     curl \
     git \
@@ -11,13 +13,16 @@ RUN apk add --no-cache \
     sqlite-dev \
     musl-dev \
     linux-headers \
+    ca-certificates \
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
        --default-toolchain stable \
        --profile minimal
 
 ENV PATH="/root/.cargo/bin:${PATH}"
+WORKDIR /workspace
 
 # 验证
 RUN rustc --version && cargo --version && git --version
 
-WORKDIR /workspace
+# 启动命令（被 container run -- sh -lc "sleep infinity" 覆盖）
+CMD ["sh", "-lc", "sleep infinity"]

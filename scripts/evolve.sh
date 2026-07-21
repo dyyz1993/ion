@@ -74,6 +74,12 @@ CONTAINER_CMD=(
 [ -d "$ION_PROVIDER_DIR" ] && CONTAINER_CMD+=("-v" "${ION_PROVIDER_DIR}:/ion-provider")
 [ -d "$ION_DIR" ] && CONTAINER_CMD+=("-v" "${ION_DIR}:/root/.ion")
 
+# V 方案：持久化 cargo registry + target/ 编译缓存到 volume
+# 第一次跑会编译所有依赖（~15 分钟），后续启动 container 复用缓存（~30 秒）
+# 注意：target/ 跨 worktree 共享，但跨架构不兼容（macOS host 的 target 不能给 Linux container 用）
+CONTAINER_CMD+=("-v" "ion-cargo-cache:/root/.cargo/registry")
+CONTAINER_CMD+=("-v" "ion-target-cache:/workspace/target")
+
 CONTAINER_CMD+=("$IMAGE" sh -lc "sleep infinity")
 
 "${CONTAINER_CMD[@]}" 2>&1 | tail -2
