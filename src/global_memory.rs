@@ -692,6 +692,22 @@ impl GlobalMemoryStore {
         }
         Ok(results)
     }
+
+    /// Update the importance of an existing entry.
+    /// Returns Err if no row with the given id exists.
+    pub fn update_importance(&self, id: &str, importance: i32) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let affected = conn
+            .execute(
+                "UPDATE entries SET importance=?2 WHERE id=?1",
+                params![id, importance],
+            )
+            .map_err(|e| format!("update_importance: {}", e))?;
+        if affected == 0 {
+            return Err(format!("entry with id '{}' not found", id));
+        }
+        Ok(())
+    }
 }
 
 fn map_entry(row: &rusqlite::Row) -> rusqlite::Result<GlobalMemoryEntry> {
@@ -1470,5 +1486,29 @@ mod tests {
         assert_eq!(results.len(), 2, "should find 2 entries with 'hello' prefix");
         let results_empty = store.find_by_content_prefix("xyz").unwrap();
         assert!(results_empty.is_empty(), "should be empty for 'xyz' prefix");
+    }
+
+    /// Test update_importance method:
+    /// 1) clear_all, save an entry, update its importance, re-fetch and verify
+    /// 2) update_importance on non-existent id returns Err
+    #[test]
+    fn test_update_importance() {
+        let store = test_store();
+        store.clear_all().unwrap();
+
+        // Save an entry and get its id
+        let id = store.save("test importance update", "note", "t", "p", 5).unwrap();
+
+        // Update importance to 9
+        store.update_importance(&id, 9).unwrap();
+
+        // Re-fetch and verify importance == 9
+        let entries = store.list(None).unwrap();
+        let entry = entries.iter().find(|e| e.id == id).expect("entry should exist");
+        assert_eq!(entry.importance, 9, "importance should be updated to 9");
+
+        // Update importance on non-existent id should return Err
+        let result = store.update_importance("nonexistent", 5);
+        assert!(result.is_err(), "update_importance on nonexistent id should return Err");
     }
 }
