@@ -807,6 +807,40 @@ impl GlobalMemoryStore {
         }
         Ok(results)
     }
+
+    /// Parse a JSON array of objects and import each as a new memory entry.
+    ///
+    /// Each object may have fields: `content`, `category`, `tags`, `project`, `importance`.
+    /// Returns the number of entries successfully imported.
+    /// Returns `Err` if the JSON string is syntactically invalid.
+    pub fn import_json(&self, json_str: &str) -> Result<usize, String> {
+        #[derive(serde::Deserialize)]
+        struct JsonImportItem {
+            content: String,
+            #[serde(default)]
+            category: String,
+            #[serde(default)]
+            tags: String,
+            #[serde(default)]
+            project: String,
+            #[serde(default = "default_importance")]
+            importance: i32,
+        }
+
+        fn default_importance() -> i32 {
+            5
+        }
+
+        let items: Vec<JsonImportItem> =
+            serde_json::from_str(json_str).map_err(|e| format!("invalid JSON: {}", e))?;
+
+        let mut count = 0;
+        for item in &items {
+            self.save(&item.content, &item.category, &item.tags, &item.project, item.importance)?;
+            count += 1;
+        }
+        Ok(count)
+    }
 }
 
 fn map_entry(row: &rusqlite::Row) -> rusqlite::Result<GlobalMemoryEntry> {
@@ -1738,5 +1772,25 @@ mod tests {
 
         assert_eq!(store.count().unwrap(), 3, "batch_save should save 3 entries");
         assert_eq!(ids.len(), 3, "batch_save should return 3 IDs");
+    }
+
+    /// Test import_json method:
+    /// 1) clear_all; import valid JSON array
+    /// 2) returned count == 1; count() == 1
+    /// 3) import_json('invalid') returns Err
+    #[test]
+    fn test_import_json() {
+        let store = test_store();
+        store.clear_all().unwrap();
+
+        // Valid JSON with one entry
+        let json = r#"[{"content":"a","category":"note","tags":"t","project":"p","importance":5}]"#;
+        let count = store.import_json(json).unwrap();
+        assert_eq!(count, 1, "should import 1 entry");
+        assert_eq!(store.count().unwrap(), 1, "store should have 1 entry");
+
+        // Invalid JSON should return Err
+        let result = store.import_json("invalid");
+        assert!(result.is_err(), "invalid JSON should return Err");
     }
 }
