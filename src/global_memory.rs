@@ -841,6 +841,58 @@ impl GlobalMemoryStore {
         }
         Ok(count)
     }
+
+    /// Export all entries as a JSON array. If filter_project is Some,
+    /// only entries for that project are included.
+    /// Each entry has fields: id, content, category, project, archived, created_at.
+    pub fn export_json(&self, filter_project: Option<&str>) -> Result<String, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let (sql, has_filter) = if let Some(project) = filter_project {
+            (
+                "SELECT id, content, category, project, archived, created_at FROM entries WHERE project = ?1 ORDER BY created_at ASC",
+                true,
+            )
+        } else {
+            (
+                "SELECT id, content, category, project, archived, created_at FROM entries ORDER BY created_at ASC",
+                false,
+            )
+        };
+        let mut stmt = conn.prepare(sql).map_err(|e| format!("prepare export_json: {}", e))?;
+        let rows = if has_filter {
+            // We need the project param, extract it from the option again
+            // because borrow checker can't see through the let binding above.
+            let project = filter_project.unwrap();
+            stmt.query_map(params![project], |row| {
+                Ok(serde_json::json!({
+                    "id": row.get::<_, String>(0)?,
+                    "content": row.get::<_, String>(1)?,
+                    "category": row.get::<_, String>(2)?,
+                    "project": row.get::<_, String>(3)?,
+                    "archived": row.get::<_, i32>(4)? != 0,
+                    "created_at": row.get::<_, i64>(5)?,
+                }))
+            })
+            .map_err(|e| format!("query export_json: {}", e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("row export_json: {}", e))?
+        } else {
+            stmt.query_map([], |row| {
+                Ok(serde_json::json!({
+                    "id": row.get::<_, String>(0)?,
+                    "content": row.get::<_, String>(1)?,
+                    "category": row.get::<_, String>(2)?,
+                    "project": row.get::<_, String>(3)?,
+                    "archived": row.get::<_, i32>(4)? != 0,
+                    "created_at": row.get::<_, i64>(5)?,
+                }))
+            })
+            .map_err(|e| format!("query export_json: {}", e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("row export_json: {}", e))?
+        };
+        serde_json::to_string(&rows).map_err(|e| format!("serialize: {}", e))
+    }
 }
 
 fn map_entry(row: &rusqlite::Row) -> rusqlite::Result<GlobalMemoryEntry> {
@@ -1792,5 +1844,42 @@ mod tests {
         // Invalid JSON should return Err
         let result = store.import_json("invalid");
         assert!(result.is_err(), "invalid JSON should return Err");
+    }
+
+    /// Test export_json method:
+    /// 1) clear_all; save 2 to proj-a; save 1 to proj-b
+    /// 2) export_json(Some('proj-a')) returns JSON array of 2 entries
+    /// 3) export_json(None) returns JSON array of 3 entries
+    #[test]
+    fn test_export_json() {
+        let store = test_store();
+        store.clear_all().unwrap();
+
+        // Save 2 entries to proj-a
+        store.save("content a1", "note", "t", "proj-a", 5).unwrap();
+        store.save("content a2", "note", "t", "proj-a", 5).unwrap();
+
+        // Save 1 entry to proj-b
+        store.save("content b1", "note", "t", "proj-b", 5).unwrap();
+
+        // Filter by proj-a: should get 2 entries
+        let json = store.export_json(Some("proj-a")).unwrap();
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.len(), 2, "proj-a should have 2 entries");
+
+        // No filter: should get all 3 entries
+        let all = store.export_json(None).unwrap();
+        let parsed_all: Vec<serde_json::Value> = serde_json::from_str(&all).unwrap();
+        assert_eq!(parsed_all.len(), 3, "no filter should return all 3 entries");
+
+        // Verify field structure
+        for entry in &parsed_all {
+            assert!(entry.get("id").is_some(), "entry should have id field");
+            assert!(entry.get("content").is_some(), "entry should have content field");
+            assert!(entry.get("category").is_some(), "entry should have category field");
+            assert!(entry.get("project").is_some(), "entry should have project field");
+            assert!(entry.get("archived").is_some(), "entry should have archived field");
+            assert!(entry.get("created_at").is_some(), "entry should have created_at field");
+        }
     }
 }
