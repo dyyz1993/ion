@@ -727,6 +727,31 @@ impl GlobalMemoryStore {
         ).unwrap_or(0);
         Ok(count)
     }
+
+    /// Find entries whose content appears more than once in the table.
+    /// Uses GROUP BY content HAVING COUNT(*) > 1.
+    /// Returns one representative entry per duplicate group.
+    pub fn find_duplicates(&self) -> Result<Vec<GlobalMemoryEntry>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, project, content, category, tags, importance, archived, created_at, updated_at
+                 FROM entries
+                 WHERE content IN (
+                     SELECT content FROM entries GROUP BY content HAVING COUNT(*) > 1
+                 )
+                 GROUP BY content"
+            )
+            .map_err(|e| format!("prepare find_duplicates: {}", e))?;
+        let rows = stmt
+            .query_map([], map_entry)
+            .map_err(|e| format!("query find_duplicates: {}", e))?;
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r.map_err(|e| format!("row find_duplicates: {}", e))?);
+        }
+        Ok(results)
+    }
 }
 
 fn map_entry(row: &rusqlite::Row) -> rusqlite::Result<GlobalMemoryEntry> {
@@ -1585,5 +1610,27 @@ mod tests {
 
         // Third entry still active
         assert_eq!(store.count().unwrap(), 1);
+    }
+
+    /// Test find_duplicates method:
+    /// 1) clear_all; save 'same content' twice; save 'unique' once
+    /// 2) find_duplicates().len() >= 1 (at least one duplicate group)
+    /// 3) each result entry's content == 'same content'
+    #[test]
+    fn test_find_duplicates() {
+        let store = test_store();
+        store.clear_all().unwrap();
+
+        // Save duplicate content twice
+        store.save("same content", "note", "t", "p", 5).unwrap();
+        store.save("same content", "note", "t", "p", 5).unwrap();
+        // Save unique content
+        store.save("unique", "note", "t", "p", 5).unwrap();
+
+        let result = store.find_duplicates().unwrap();
+        assert!(result.len() >= 1, "should find at least one duplicate group");
+        for entry in &result {
+            assert_eq!(entry.content, "same content", "each duplicate entry should have content 'same content'");
+        }
     }
 }
