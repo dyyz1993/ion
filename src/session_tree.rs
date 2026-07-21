@@ -534,6 +534,42 @@ pub fn check_compaction_safety(entries: &[Value], target_id: &str) -> Option<Str
     None
 }
 
+/// Count the number of branches in a session tree.
+///
+/// A branch is identified by entries with different parentId chains.
+/// Counts unique leaf nodes (entries that are not the parent of any other entry).
+/// Leaf pointers and headers are excluded from counting.
+pub fn count_branches(entries: &[serde_json::Value]) -> usize {
+    // Collect all ids that appear as parentId (i.e., have children)
+    let parent_ids: HashSet<&str> = entries
+        .iter()
+        .filter_map(|e| {
+            if is_header(e) || is_leaf_pointer(e) {
+                return None;
+            }
+            e.get("parentId").and_then(|v| v.as_str())
+        })
+        .collect();
+
+    // Count leaf nodes: entries that are not a parent of any other entry,
+    // excluding headers and leaf pointers
+    entries
+        .iter()
+        .filter(|e| {
+            // Skip headers and leaf pointers
+            if is_header(e) || is_leaf_pointer(e) {
+                return false;
+            }
+            let id = match entry_id(e) {
+                Some(id) => id,
+                None => return false,
+            };
+            // An entry is a leaf if its id never appears as parentId
+            !parent_ids.contains(id)
+        })
+        .count()
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 单元测试
 // ═══════════════════════════════════════════════════════════════════════════
@@ -911,5 +947,65 @@ mod tests {
         ];
         assert!(check_compaction_safety(&entries, "m2").is_none(), "branch to m2 (after compaction) is safe");
         assert!(check_compaction_safety(&entries, "c1").is_none(), "branch to compaction itself is safe");
+    }
+
+    #[test]
+    fn test_count_branches() {
+        // Linear chain: h → m1 → m2 → m3 → m4
+        // Only m4 is a leaf (no children) → 1 branch
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            msg("m2", "m1", "b"),
+            msg("m3", "m2", "c"),
+            msg("m4", "m3", "d"),
+        ];
+        assert_eq!(count_branches(&entries), 1, "linear chain has 1 branch");
+
+        // Fork: h → m1 → m2, h → m1 → m3
+        // Leaf nodes: m2, m3 → 2 branches
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            msg("m2", "m1", "b"),
+            msg("m3", "m1", "c"),
+        ];
+        assert_eq!(count_branches(&entries), 2, "fork with 2 leaves has 2 branches");
+
+        // Multiple levels: h → m1 → m2, h → m1 → m3 → m4
+        // Leaf nodes: m2, m4 → 2 branches
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            msg("m2", "m1", "b"),
+            msg("m3", "m1", "c"),
+            msg("m4", "m3", "d"),
+        ];
+        assert_eq!(count_branches(&entries), 2, "nested fork has 2 branches");
+
+        // Empty entries → 0
+        assert_eq!(count_branches(&[]), 0, "empty entries has 0 branches");
+
+        // Only header → 0
+        let entries = vec![header("h")];
+        assert_eq!(count_branches(&entries), 0, "only header has 0 branches");
+
+        // Single message → 1 (the message is a leaf)
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+        ];
+        assert_eq!(count_branches(&entries), 1, "single message has 1 branch");
+
+        // With leaf pointers (should be ignored)
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            msg("m2", "m1", "b"),
+            msg("m3", "m1", "c"),
+            leaf_ptr("lp1", Some("m2")),
+            leaf_ptr("lp2", Some("m3")),
+        ];
+        assert_eq!(count_branches(&entries), 2, "leaf pointers are not counted as tree nodes");
     }
 }
