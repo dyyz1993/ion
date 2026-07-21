@@ -158,6 +158,11 @@ pub fn builtin_agents() -> Vec<AgentConfig> {
     ]
 }
 
+/// Count the number of builtin agents.
+pub fn count_builtin_agents() -> usize {
+    builtin_agents().len()
+}
+
 // ---------------------------------------------------------------------------
 // Discovery paths
 // ---------------------------------------------------------------------------
@@ -247,5 +252,17 @@ impl AgentConfig {
         if let Some(ref tl) = self.thinking_level { *thinking = Some(tl.clone()); }
         if let Some(mt) = self.max_turns { *max_turns = Some(mt); }
         if let Some(ref sp) = self.system_prompt { *prompt = Some(sp.clone()); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_count_builtin_agents() {
+        let count = count_builtin_agents();
+        // build, explore, plan, improver — at least 3
+        assert!(count >= 3, "Expected at least 3 builtin agents, got {}", count);
     }
 }
