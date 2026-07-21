@@ -479,7 +479,16 @@ impl GlobalMemoryStore {
         Ok(projects)
     }
 
-    /// 获取全局记忆���路径
+    /// 返回活跃条目中唯一项目的数量。
+    pub fn project_count(&self) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(DISTINCT project) FROM entries WHERE archived=0", [], |row| row.get(0)
+        ).unwrap_or(0);
+        Ok(count)
+    }
+
+    /// 获���全局记忆���路径
     pub fn db_path() -> PathBuf {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
@@ -1069,5 +1078,33 @@ mod tests {
         assert_eq!(projects.len(), 2, "归档 project-beta 后应只剩 2 个项目");
         assert_eq!(projects[0], "project-alpha");
         assert_eq!(projects[1], "project-gamma");
+    }
+
+    #[test]
+    fn test_project_count() {
+        let store = test_store();
+
+        // 空库应返回 0
+        assert_eq!(store.project_count().unwrap(), 0, "空库应返回 0");
+
+        // 向不同项目插入条目
+        store.save("content a1", "note", "t", "project-alpha", 5).unwrap();
+        store.save("content a2", "note", "t", "project-alpha", 5).unwrap();
+        store.save("content b1", "note", "t", "project-beta", 5).unwrap();
+        store.save("content g1", "note", "t", "project-gamma", 5).unwrap();
+
+        // 应有 3 个唯一项目
+        assert_eq!(store.project_count().unwrap(), 3);
+
+        // 再插入已存在项目���目，项目数不变
+        store.save("content a3", "note", "t", "project-alpha", 5).unwrap();
+        assert_eq!(store.project_count().unwrap(), 3);
+
+        // 归档 project-beta ��所有条目后，应剩 2 个项目
+        let beta_entries = store.list(Some("project-beta")).unwrap();
+        for e in &beta_entries {
+            store.forget(&e.id).unwrap();
+        }
+        assert_eq!(store.project_count().unwrap(), 2);
     }
 }
