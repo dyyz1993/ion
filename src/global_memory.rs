@@ -582,6 +582,16 @@ impl GlobalMemoryStore {
         }
     }
 
+    /// Delete all entries (including archived) for a given project.
+    /// Returns the number of rows deleted.
+    pub fn delete_by_project(&self, project: &str) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let deleted = conn
+            .execute("DELETE FROM entries WHERE project = ?1", params![project])
+            .map_err(|e| format!("delete_by_project: {}", e))?;
+        Ok(deleted)
+    }
+
     /// 获取全局记忆库路径
     pub fn db_path() -> PathBuf {
         let home = std::env::var("HOME")
@@ -1348,26 +1358,53 @@ mod tests {
         let store = test_store();
         store.clear_all().unwrap();
 
-        // 向 project-a save 2 条（第 1 条 sleep 1 秒后 save 第 2 条）
+        // save 2 entries to project-a (sleep 1 sec between them)
         let id_a1 = store.save("project-a first", "note", "t", "project-a", 5).unwrap();
         std::thread::sleep(std::time::Duration::from_secs(1));
         let id_a2 = store.save("project-a second", "note", "t", "project-a", 5).unwrap();
 
-        // 向 project-b save 1 条
+        // save 1 entry to project-b
         let id_b1 = store.save("project-b first", "note", "t", "project-b", 5).unwrap();
 
-        // 验证 project-a 返回第 1 条
+        // verify project-a returns the first one
         let oldest_a = store.find_oldest_by_project("project-a").unwrap().expect("project-a should have an entry");
         assert_eq!(oldest_a.id, id_a1, "oldest entry in project-a should be the first saved");
         assert_eq!(oldest_a.content, "project-a first");
 
-        // 验证 project-b 返回其唯一条目
+        // verify project-b returns its only entry
         let oldest_b = store.find_oldest_by_project("project-b").unwrap().expect("project-b should have an entry");
         assert_eq!(oldest_b.id, id_b1, "oldest entry in project-b should be its only entry");
         assert_eq!(oldest_b.content, "project-b first");
 
-        // 验证不存在的 project-c 返回 None
+        // verify non-existent project-c returns None
         let oldest_c = store.find_oldest_by_project("project-c").unwrap();
         assert!(oldest_c.is_none(), "project-c has no entries, should return None");
+    }
+
+    #[test]
+    fn test_delete_by_project() {
+        let store = test_store();
+        store.clear_all().unwrap();
+
+        // save 3 entries to project-a
+        store.save("pa content 1", "note", "t", "project-a", 5).unwrap();
+        store.save("pa content 2", "note", "t", "project-a", 5).unwrap();
+        store.save("pa content 3", "note", "t", "project-a", 5).unwrap();
+
+        // save 1 entry to project-b
+        store.save("pb content 1", "note", "t", "project-b", 5).unwrap();
+
+        // verify total count == 4
+        assert_eq!(store.count().unwrap(), 4);
+
+        // delete project-a, expect 3 rows deleted
+        let deleted = store.delete_by_project("project-a").unwrap();
+        assert_eq!(deleted, 3, "should delete 3 entries for project-a");
+
+        // verify count() == 1 (project-b still there)
+        assert_eq!(store.count().unwrap(), 1, "only project-b entries should remain");
+
+        // verify count_by_project('project-a') == 0
+        assert_eq!(store.count_by_project("project-a").unwrap(), 0, "project-a should have 0 active entries");
     }
 }
