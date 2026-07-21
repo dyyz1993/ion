@@ -708,6 +708,16 @@ impl GlobalMemoryStore {
         }
         Ok(())
     }
+
+    /// Archive all entries for a given project by setting archived=1.
+    /// Returns the number of rows updated.
+    pub fn archive_by_project(&self, project: &str) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let updated = conn
+            .execute("UPDATE entries SET archived=1 WHERE project=?1", params![project])
+            .map_err(|e| format!("archive_by_project: {}", e))?;
+        Ok(updated)
+    }
 }
 
 fn map_entry(row: &rusqlite::Row) -> rusqlite::Result<GlobalMemoryEntry> {
@@ -1510,5 +1520,33 @@ mod tests {
         // Update importance on non-existent id should return Err
         let result = store.update_importance("nonexistent", 5);
         assert!(result.is_err(), "update_importance on nonexistent id should return Err");
+    }
+
+    /// Test archive_by_project method:
+    /// 1) clear_all; save 2 entries to proj-a, save 1 entry to proj-b
+    /// 2) archive_by_project('proj-a') == 2
+    /// 3) count_active_by_project('proj-a') == 0
+    /// 4) count_active_by_project('proj-b') == 1
+    #[test]
+    fn test_archive_by_project() {
+        let store = test_store();
+        store.clear_all().unwrap();
+
+        // save 2 to proj-a
+        store.save("pa entry 1", "note", "t", "proj-a", 5).unwrap();
+        store.save("pa entry 2", "note", "t", "proj-a", 5).unwrap();
+
+        // save 1 to proj-b
+        store.save("pb entry 1", "note", "t", "proj-b", 5).unwrap();
+
+        // archive_by_project('proj-a') == 2
+        let archived = store.archive_by_project("proj-a").unwrap();
+        assert_eq!(archived, 2, "should archive 2 entries for proj-a");
+
+        // count_active_by_project('proj-a') == 0
+        assert_eq!(store.count_active_by_project("proj-a").unwrap(), 0, "proj-a should have 0 active entries");
+
+        // count_active_by_project('proj-b') == 1
+        assert_eq!(store.count_active_by_project("proj-b").unwrap(), 1, "proj-b should have 1 active entry");
     }
 }
