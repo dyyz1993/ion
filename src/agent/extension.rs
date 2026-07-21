@@ -683,6 +683,11 @@ impl ExtensionRegistry {
         self.extensions.iter().map(|e| e.name().to_string()).collect()
     }
 
+    /// Returns the list of loaded extension names by iterating self.extensions.
+    pub fn loaded_extension_names(&self) -> Vec<String> {
+        self.extensions.iter().map(|e| e.name().to_string()).collect()
+    }
+
     pub async fn on_session_start(&self, ctx: &SessionContext) -> AgentResult<()> {
         for ext in &self.extensions { ext.on_session_start(ctx).await?; } Ok(())
     }
@@ -1182,5 +1187,44 @@ mod data_dirs_tests {
         let b = reg.data_dirs("ext-b").unwrap();
         assert_ne!(a.global, b.global, "different exts must have different dirs");
         assert_ne!(a.session, b.session);
+    }
+}
+
+#[cfg(test)]
+mod loaded_extension_names_tests {
+    use super::*;
+
+    /// A simple extension for testing purposes.
+    struct TestExt {
+        name: String,
+    }
+
+    impl TestExt {
+        fn new(name: &str) -> Self {
+            Self { name: name.to_string() }
+        }
+    }
+
+    #[async_trait]
+    impl Extension for TestExt {
+        fn name(&self) -> &str {
+            &self.name
+        }
+    }
+
+    #[test]
+    fn loaded_extension_names_returns_registered_names() {
+        let mut registry = ExtensionRegistry::new();
+        assert!(registry.loaded_extension_names().is_empty());
+
+        registry.register(Box::new(TestExt::new("ext-alpha")));
+        registry.register(Box::new(TestExt::new("ext-beta")));
+        registry.register(Box::new(TestExt::new("ext-gamma")));
+
+        let names = registry.loaded_extension_names();
+        assert_eq!(names.len(), 3);
+        assert!(names.contains(&"ext-alpha".to_string()));
+        assert!(names.contains(&"ext-beta".to_string()));
+        assert!(names.contains(&"ext-gamma".to_string()));
     }
 }
