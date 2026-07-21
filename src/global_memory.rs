@@ -267,6 +267,11 @@ impl GlobalMemoryStore {
 
     /// 指定项目的活跃条目数
     pub fn count_by_project(&self, project: &str) -> Result<i64, String> {
+        self.count_active_by_project(project)
+    }
+
+    /// 统计指定项目中活跃（archived=0）的条目数。
+    pub fn count_active_by_project(&self, project: &str) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM entries WHERE archived=0 AND project = ?1",
@@ -772,6 +777,45 @@ mod tests {
 
         // 总活跃条目数 = 3 + 1 = 4
         assert_eq!(store.count().unwrap(), 4);
+    }
+
+    #[test]
+    fn test_count_active_by_project() {
+        let store = test_store();
+
+        // 初始空库：各项目的活跃数为 0
+        assert_eq!(store.count_active_by_project("project-a").unwrap(), 0);
+        assert_eq!(store.count_active_by_project("project-b").unwrap(), 0);
+
+        // 向 project-a 插入 3 条，project-b 插入 1 条
+        store.save("pa content 1", "note", "t", "project-a", 5).unwrap();
+        store.save("pa content 2", "note", "t", "project-a", 5).unwrap();
+        store.save("pa content 3", "note", "t", "project-a", 5).unwrap();
+        store.save("pb content 1", "note", "t", "project-b", 5).unwrap();
+
+        assert_eq!(store.count_active_by_project("project-a").unwrap(), 3, "project-a 应有 3 条活跃");
+        assert_eq!(store.count_active_by_project("project-b").unwrap(), 1, "project-b 应有 1 条活跃");
+        assert_eq!(store.count().unwrap(), 4, "总��跃条目数为 4");
+
+        // 归档一条 project-a 的条目，活跃数应减少
+        let pa_entries = store.list(Some("project-a")).unwrap();
+        store.forget(&pa_entries[0].id).unwrap();
+        assert_eq!(store.count_active_by_project("project-a").unwrap(), 2, "归档后 project-a 活跃数应为 2");
+        assert_eq!(store.count_active_by_project("project-b").unwrap(), 1, "归档不影响 project-b");
+        assert_eq!(store.count().unwrap(), 3, "归档后总活跃数应为 3");
+
+        // 归档不影响已归档项目的活跃计数
+        store.forget(&pa_entries[1].id).unwrap();
+        assert_eq!(store.count_active_by_project("project-a").unwrap(), 1, "再归档一条后 project-a 活跃数应为 1");
+        assert_eq!(store.count_active_by_project("project-b").unwrap(), 1, "project-b 仍为 1");
+
+        // 全部归档后，活跃数为 0
+        store.forget(&pa_entries[2].id).unwrap();
+        let pb_entries = store.list(Some("project-b")).unwrap();
+        store.forget(&pb_entries[0].id).unwrap();
+        assert_eq!(store.count_active_by_project("project-a").unwrap(), 0);
+        assert_eq!(store.count_active_by_project("project-b").unwrap(), 0);
+        assert_eq!(store.count().unwrap(), 0);
     }
 
     #[test]
