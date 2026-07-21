@@ -431,9 +431,9 @@ async fn main() {
             }
             tracing::info!("[worker] loaded agent '{}' from config", agent_cfg.name);
             // wf agent（workflow 引擎）需要 auto-continue：
-            // 每个 stage 是一个 turn，turn 结束后 follow_up_queue 空了就退出，
-            // auto-continue 让它跨 turn 继续跑完整个 workflow。
-            if matches!(current_agent_name.as_str(), "wf" | "improver" | "evolver") {
+            // auto-continue: wf/improver 需要（workflow 多 stage）
+            // evolver 不需要——它用 bash_run background + follow_up（进程完成自动唤醒）
+            if matches!(current_agent_name.as_str(), "wf" | "improver") {
                 if std::env::var("ION_AUTO_CONTINUE").is_err() {
                     unsafe { std::env::set_var("ION_AUTO_CONTINUE", "1"); }
                     tracing::info!("[worker] auto-set ION_AUTO_CONTINUE=1 for {} agent", current_agent_name);
