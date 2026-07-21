@@ -488,6 +488,19 @@ impl GlobalMemoryStore {
         Ok(count)
     }
 
+    /// 统计包含指定标签（tags 字段）的活跃条目数。
+    /// tags 是逗号分隔的字符��，使用 LIKE 模糊匹配。
+    pub fn tag_count(&self, tag: &str) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let pattern = format!("%{}%", tag);
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM entries WHERE archived=0 AND tags LIKE ?1",
+            params![pattern],
+            |row| row.get(0)
+        ).unwrap_or(0);
+        Ok(count)
+    }
+
     /// 获���全局记忆���路径
     pub fn db_path() -> PathBuf {
         let home = std::env::var("HOME")
@@ -1106,5 +1119,35 @@ mod tests {
             store.forget(&e.id).unwrap();
         }
         assert_eq!(store.project_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_tag_count() {
+        let store = test_store();
+
+        // 初始空库
+        assert_eq!(store.tag_count("rust").unwrap(), 0);
+        assert_eq!(store.tag_count("python").unwrap(), 0);
+
+        // 插入带标签的记忆
+        store.save("async rust info", "note", "rust,async", "p", 5).unwrap();
+        store.save("tokio runtime", "note", "rust,tokio", "p", 5).unwrap();
+        store.save("python web framework", "note", "python,django", "p", 5).unwrap();
+        store.save("python data science", "note", "python,numpy", "p", 5).unwrap();
+        store.save("typescript types", "note", "ts,type", "p", 5).unwrap();
+
+        // 按标签计数
+        assert_eq!(store.tag_count("rust").unwrap(), 2, "rust 标签应有 2 条");
+        assert_eq!(store.tag_count("python").unwrap(), 2, "python 标签应有 2 条");
+        assert_eq!(store.tag_count("ts").unwrap(), 1, "ts 标签应有 1 条");
+        assert_eq!(store.tag_count("tokio").unwrap(), 1, "tokio 标签应有 1 条");
+        assert_eq!(store.tag_count("nonexistent").unwrap(), 0, "不存在的标签应返回 0");
+
+        // 归档后不影响 tag_count
+        let entries = store.list(Some("p")).unwrap();
+        let to_forget = entries.iter().find(|e| e.tags.contains("ts")).unwrap();
+        store.forget(&to_forget.id).unwrap();
+        assert_eq!(store.tag_count("ts").unwrap(), 0, "归档后 ts 标签应返回 0");
+        assert_eq!(store.tag_count("rust").unwrap(), 2, "归档不影响 rust 标签");
     }
 }
