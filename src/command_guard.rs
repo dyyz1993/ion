@@ -327,9 +327,26 @@ fn default_risk_patterns() -> Vec<RiskPattern> {
             suggestion: Some("先检查管道内容".into()) },
         RiskPattern { pattern: "| bash".into(), message: "管道执行 bash".into(), level: RiskLevel::Medium,
             suggestion: Some("先检查管道内容".into()) },
-        // sed -i 原地修改文件：高危！evolver agent 会用这个绕过 edit 工具限制改代码
-        RiskPattern { pattern: "sed -i".into(), message: "sed 原地修改文件（绕过 edit 工具限制）".into(), level: RiskLevel::High,
-            suggestion: Some("用 edit 工具或 container exec B ion --agent developer 改代码，不要用 sed -i".into()) },
+        // sed -i: A bypasses edit tool to modify files
+        RiskPattern { pattern: "sed -i".into(), message: "sed in-place edit (bypasses edit tool)".into(), level: RiskLevel::High,
+            suggestion: Some("Use container exec B".into()) },
+        // python3 -c: A uses python to write .rs files
+        RiskPattern { pattern: "python3 -c".into(), message: "python3 inline (may write files)".into(), level: RiskLevel::High,
+            suggestion: Some("Use container exec B".into()) },
+        RiskPattern { pattern: "python -c".into(), message: "python inline (may write files)".into(), level: RiskLevel::High,
+            suggestion: Some("Use container exec B".into()) },
+        // cat > file: redirect bypasses edit tool
+        RiskPattern { pattern: "cat >".into(), message: "cat redirect (bypasses edit tool)".into(), level: RiskLevel::High,
+            suggestion: Some("Use container exec B".into()) },
+        // host ion --agent: must go through container B
+        RiskPattern { pattern: "./target/release/ion --agent".into(), message: "ion --agent on host (use container B)".into(), level: RiskLevel::High,
+            suggestion: Some("container exec $CONTAINER_NAME ... ion --agent developer".into()) },
+        RiskPattern { pattern: "./target/debug/ion --agent".into(), message: "ion --agent on host (use container B)".into(), level: RiskLevel::High,
+            suggestion: Some("container exec $CONTAINER_NAME ... ion --agent developer".into()) },
+        RiskPattern { pattern: "target/release/ion --agent".into(), message: "ion --agent on host (use container B)".into(), level: RiskLevel::High,
+            suggestion: Some("container exec $CONTAINER_NAME ... ion --agent developer".into()) },
+        RiskPattern { pattern: "target/debug/ion --agent".into(), message: "ion --agent on host (use container B)".into(), level: RiskLevel::High,
+            suggestion: Some("container exec $CONTAINER_NAME ... ion --agent developer".into()) },
         RiskPattern { pattern: "| zsh".into(), message: "管道执行 zsh".into(), level: RiskLevel::Medium,
             suggestion: Some("先检查管道内容".into()) },
         RiskPattern { pattern: "| python".into(), message: "管道执行 python".into(), level: RiskLevel::Medium,
