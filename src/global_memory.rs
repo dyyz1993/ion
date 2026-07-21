@@ -461,6 +461,24 @@ impl GlobalMemoryStore {
         Ok(stats)
     }
 
+    /// 返回所有活跃条目中的唯一项目名称列���（按字母序排列）。
+    pub fn project_list(&self) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT project FROM entries WHERE archived=0 ORDER BY project COLLATE NOCASE"
+            )
+            .map_err(|e| format!("prepare project_list: {}", e))?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("query project_list: {}", e))?;
+        let mut projects = Vec::new();
+        for r in rows {
+            projects.push(r.map_err(|e| format!("row project_list: {}", e))?);
+        }
+        Ok(projects)
+    }
+
     /// 获取全局记忆���路径
     pub fn db_path() -> PathBuf {
         let home = std::env::var("HOME")
@@ -1014,5 +1032,42 @@ mod tests {
         store.forget(&ids[1]).unwrap();
         let summary = store.entries_summary().unwrap();
         assert_eq!(summary, "Total: 5, Active: 3, Archived: 2");
+    }
+
+    #[test]
+    fn test_project_list() {
+        let store = test_store();
+
+        // 空库返回空列���
+        let projects = store.project_list().unwrap();
+        assert!(projects.is_empty(), "空库应返回空列表");
+
+        // 向不同项目插入条目
+        store.save("content a1", "note", "t", "project-alpha", 5).unwrap();
+        store.save("content a2", "note", "t", "project-alpha", 5).unwrap();
+        store.save("content b1", "note", "t", "project-beta", 5).unwrap();
+        store.save("content g1", "note", "t", "project-gamma", 5).unwrap();
+
+        // 验证返回唯一项目名称列表（按字母序）
+        let projects = store.project_list().unwrap();
+        assert_eq!(projects.len(), 3, "应有 3 个唯一项目");
+        assert_eq!(projects[0], "project-alpha");
+        assert_eq!(projects[1], "project-beta");
+        assert_eq!(projects[2], "project-gamma");
+
+        // 再插入一个现有项目的新条目，不���增加项目数
+        store.save("content a3", "note", "t", "project-alpha", 5).unwrap();
+        let projects = store.project_list().unwrap();
+        assert_eq!(projects.len(), 3, "插入已存在项目后应仍为 3 个");
+
+        // 归���项目 beta 的所有条目后，project_list 应不再包含 project-beta
+        let beta_entries = store.list(Some("project-beta")).unwrap();
+        for e in &beta_entries {
+            store.forget(&e.id).unwrap();
+        }
+        let projects = store.project_list().unwrap();
+        assert_eq!(projects.len(), 2, "归档 project-beta 后应只剩 2 个项目");
+        assert_eq!(projects[0], "project-alpha");
+        assert_eq!(projects[1], "project-gamma");
     }
 }
