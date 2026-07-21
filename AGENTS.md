@@ -1010,7 +1010,24 @@ bash scripts/evolve_batch.sh
 
 **关键教训**：让 B 写代码时，spec 里的 comment 模板**必须用英文**。DeepSeek 处理中文 UTF-8 字节有 bug，会把字符破坏成 U+FFFD。一旦改成全英文 comment，U+FFFD 问题**完全消失**（连续 10 个任务 0 拦截）。
 
+#### 跨文件验证（`src/agent/tool.rs`，commit `6f188df`）
 
+前 14 个任务全部改 `src/global_memory.rs`。为验证 A→B 架构的**通用性**，第 15 个任务让 B 改 `src/agent/tool.rs`——加 `CalculatorAdvancedTool`（科学计算器）。
+
+| 项 | 详情 |
+|----|------|
+| 目标文件 | `src/agent/tool.rs`（不是 global_memory.rs） |
+| 改动 | +141 行（新 struct + Tool trait impl + 8 个测试） |
+| 守门 | ✅ 0 U+FFFD（英文 comment 策略生效） |
+| 主仓库 cargo build | ✅ 通过（59.67s） |
+| 新测试 | ✅ 8 passed（sin/cos/tan/log/ln/sqrt/cbrt/invalid） |
+| 全量 cargo test --lib | ✅ **461 passed**（原 453 + 8 新） |
+
+**新教训（tool.rs 这种大文件编译慢）**：B 在 container 里 cargo build 超过 5 分钟被 kill。改进策略：spec 里让 B 只跑 `cargo check`（语法检查，比 build 快），确认无语法错误就 commit，让 A 在主仓库跑完整 `cargo build + cargo test`。
+
+详见：
+- [commit 6f188df](#) — CalculatorAdvancedTool 实现
+- `/tmp/evolve_reports/report_calculator_advanced.html` — B 改代码过程报告（462KB）
 
 #### 完整 A→B 闭环示例（`count_by_tags` 任务，commit `1e75486`）
 
