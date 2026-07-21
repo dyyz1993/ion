@@ -889,6 +889,134 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 - 6 种事件：`memory_saved` / `memory_injected` / `memory_consolidated` / `memory_debug` / `memory_skipped` / `transcript_appended`
 - `tests/memory_e2e.rs` — 6 个集成测试
 
+### 🌱 A→B 自进化架构（A 驱动 B 改代码 + CI + 合并）
+
+**铁律：A 只调度，B 改代码。** 不论修什么 bug、加什么功能，A 永远通过 `container exec B ion --agent developer "任务"` 让 B 在隔离环境动手。A 自己**绝不**直接 edit/write 主仓库源码——跟 ZCode 不碰 ION 源码是同一个原则。
+
+#### 核心流程
+
+```
+ZCode → ion --host --agent evolver "话题"
+         │
+         │ A = evolver agent（host）
+         │   ├─ git worktree add（开隔离空间）
+         │   ├─ bash scripts/evolve.sh（启 container + volume cache）
+         │   ├─ bash scripts/evolve-run.sh "话题"
+         │   │   ├─ echo "话题" | container exec B ion --agent developer（B 改）
+         │   │   ├─ container exec B cargo test（B 自跑 CI）
+         │   │   ├─ U+FFFD 守门检查（拒绝 B 破坏中文 comment）
+         │   │   ├─ diff sync 到主仓库
+         │   │   └─ ion --export → HTML 报告
+         │   └─ container stop + worktree remove
+         │
+         │ B = container 里的 ion（完整实例）
+         │   └─ 有自己的 LLM + 工具 + CI 脚本
+         ▼
+主仓库代码进化（B 验证过的才合并回来）
+```
+
+#### 关键文件（详细文档）
+
+| 文件 | 作用 |
+|------|------|
+| [docs/design/SELF_EVOLUTION.md](./docs/design/SELF_EVOLUTION.md) | A→B 架构总览（设计原则 + 验证状态） |
+| [docs/design/EVOLVER_LESSONS_LEARNED.md](./docs/design/EVOLVER_LESSONS_LEARNED.md) | **11 个真实问题 + 根因 + 解法**（必读） |
+| [docs/design/WATCHDOG_DUAL_VERSION.md](./docs/design/WATCHDOG_DUAL_VERSION.md) | 看门狗双版本切换设计（待实现） |
+| `examples/agents/evolver.md` | A 的 agent 定义（只有 bash 工具） |
+| `examples/agents/developer.md` | B 的 agent 定义（container 里用） |
+| `examples/agents/improver.md` | 通用任务智能体（host 改 + container 跑） |
+| `scripts/evolve.sh` | 启 container + 编译 ion（V 方案 volume cache） |
+| `scripts/evolve-run.sh` | B 改代码 + CI + 同步 + HTML + 守门检查 |
+| `scripts/Dockerfile.evolve` | container 基础 image（alpine + rust） |
+
+#### V 方案：volume 持久化编译缓存
+
+evolve.sh 挂载两个 named volume 让 cargo+target 跨 container 持久化：
+
+```bash
+container volume create -s 5G ion-cargo-cache     # cargo 依赖下载缓存
+container volume create -s 5G ion-target-cache    # rustc 编译产物缓存
+```
+
+| 场景 | 改造前 | 改造后 |
+|------|-------|-------|
+| 首次编译 | 14 分钟 | 7 分 48 秒 |
+| 不改源码启动 | 14 分钟 | **1 秒** |
+| 改源码后编译 | 14 分钟 | **2 分 17 秒** |
+
+#### U+FFFD 守门检查（B 破坏中文 comment 的预防）
+
+B 偶尔会把中文 comment 字符破坏成 U+FFFD（valid UTF-8 但内容损坏），导致后续 developer agent 的 edit 工具 pattern matching 失败。evolve-run.sh sync 前自动检查：
+
+```bash
+GARBLED=$(grep -rl $'\xef\xbf\xbd' "$WT_DIR/src/" 2>/dev/null)
+if [ -n "$GARBLED" ]; then
+    echo "ERROR: B's changes contain U+FFFD garbled chars, rejecting merge"
+    exit 1
+fi
+```
+
+详见 [EVOLVER_LESSONS_LEARNED §11](./docs/design/EVOLVER_LESSONS_LEARNED.md)。
+
+### 🔧 端到端验证（A→B 自进化闭环）
+
+**已验证的端到端任务**（每个任务都是 B 通过 container 改的代码 + B 自己跑 CI 通过 + A 合并回主仓库）：
+
+| 方法 | Commit | 测试 | 说明 |
+|------|--------|------|------|
+| `recent_entries(limit)` | `507d58f` | ✅ | 按 created_at DESC 返回最近 N 条 entry |
+| `archive_count()` | `1bd2b2e` | ✅ | 返回 archived=1 的 entry 总数 |
+| `oldest_entry_age()` | `a08f5ed` | ✅ | 返回最早 entry 的 created_at（空表返回 None） |
+| `has_content` test | `68887fd` | ✅ | 测试 store.has_content() 方法 |
+| U+FFFD 修复 | `563d8f9` | ✅ 25 passed | 清理 187 处中文 comment 乱码 |
+
+**验证方式**：
+```bash
+# 单个 B 任务（手动驱动 A）
+bash scripts/evolve.sh                           # 启 container（首次 ~8 分钟）
+source /tmp/.evolver-state
+echo "任务描述" | container exec "$CONTAINER_NAME" \
+    sh -c "cd /workspace && ./target/release/ion --agent developer --provider opencode --model deepseek-v4-flash"
+container exec "$CONTAINER_NAME" sh -c 'cd /workspace && cargo test --lib'
+bash scripts/evolve-run.sh "任务描述"             # 同步 + 守门 + HTML 报告
+```
+
+### 🎯 多智能体编排（coordinator + developer + reviewer）
+
+`spawn_worker` 工具支持 `model`/`provider` 可选参数，让 LLM 给不同 worker 指定不同模型：
+
+```rust
+// src/runtime.rs
+pub struct SpawnWorkerRequest {
+    pub relation: SpawnRelation,    // child（同步）/ peer（异步）
+    pub agent: String,
+    pub task: String,
+    pub model: Option<String>,      // 新增：覆盖子 Worker 的 model
+    pub provider: Option<String>,   // 新增：覆盖子 Worker 的 provider
+    pub wait: bool,                 // child 模式：true=阻塞 / false=异步
+    pub worktree: Option<bool>,     // 独立 git worktree 隔离
+    // ...
+}
+```
+
+**验证场景**（已实测）：
+- coordinator（入口）spawn developer 1（同步 child + worktree）
+- developer 1 收到任务，read/edit/bash 改代码
+- 每个 worker 独立 session 文件 → 独立 HTML 报告
+
+**HTML 报告**（Chrome 渲染验证）：
+- Banner: `📋 coordinator | 🤖 deepseek-v4-flash | 🔧 20 tool calls | 📝 43 entries`
+- Stats: `Agent: coordinator | Date: ... | Models: ... | Messages: 3 user, 20 assistant | Tool Calls: 20`
+- 同样适用 developer / reviewer 等所有 agent
+
+### 📊 HTML Export 增强
+
+- **SessionHeader 加 agent/model/provider 字段**（`src/session_jsonl.rs`）
+  - `ion_worker` / `ion` 启动时从 env var 读取写入 session header
+- **Stats 区块加 Agent 字段**（`src/export.rs` 后处理注入 pi template.js）
+  - 不改 pi 源码，运行时 `replacen` 在 Date 行前插入 Agent 行
+- **banner 显示 agent 名 + 模型 + 工具调用数 + 消息数 + 工具分布**
+
 ### ✅ 已验证 (真实 LLM + 真实 API)
 
 ```
