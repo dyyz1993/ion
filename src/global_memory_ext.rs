@@ -210,3 +210,37 @@ fn serialize_entries(entries: &[GlobalMemoryEntry]) -> Vec<serde_json::Value> {
         "updated_at": e.updated_at,
     })).collect()
 }
+
+/// Return the status of the global-memory extension as a JSON object.
+///
+/// The returned JSON has three fields:
+/// - `enabled`: whether the extension is enabled in config.json
+/// - `db_exists`: whether the database file exists on disk
+/// - `db_path`: the absolute path to the database file
+pub fn extension_status() -> serde_json::Value {
+    let cfg = crate::config::IonConfig::load();
+    let enabled = cfg.is_extension_enabled("global-memory");
+    let db_path = GlobalMemoryStore::db_path();
+    let db_exists = db_path.exists();
+    serde_json::json!({
+        "enabled": enabled,
+        "db_exists": db_exists,
+        "db_path": db_path.to_string_lossy(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extension_status() {
+        let status = extension_status();
+        // Verify it returns a JSON object with the 'enabled' field
+        assert!(status.is_object(), "extension_status() must return a JSON object");
+        assert!(status.get("enabled").is_some(), "response must contain 'enabled' field");
+        // Verify it also contains the other expected fields
+        assert!(status.get("db_exists").is_some(), "response must contain 'db_exists' field");
+        assert!(status.get("db_path").is_some(), "response must contain 'db_path' field");
+    }
+}
