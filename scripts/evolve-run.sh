@@ -41,11 +41,14 @@ for attempt in $(seq 1 $MAX_RETRIES); do
     echo "  : $(date)"
 
     if [ $attempt -eq 1 ]; then
-        "$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c \
-            "cd /workspace && ./target/release/ion --agent developer '$TASK' --provider zhipuai --model glm-5.2" 2>&1 | tail -20
+        # 用 stdin 喂 prompt（避免 $TASK 含特殊字符被 shell 拆成多个参数，
+        # 导致 prompt 末尾混入 --provider/--model）
+        echo "$TASK" | "$CONTAINER_BIN" exec -i "$CONTAINER_NAME" sh -c \
+            "cd /workspace && ./target/release/ion --agent developer --provider zhipuai --model glm-5.2" 2>&1 | tail -20
     else
-        "$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c \
-            "cd /workspace && ./target/release/ion --agent developer ' CI $CI_ERROR' --provider zhipuai --model glm-5.2" 2>&1 | tail -20
+        echo "[CI 失败原因] $CI_ERROR
+请修复上述 CI 错误。" | "$CONTAINER_BIN" exec -i "$CONTAINER_NAME" sh -c \
+            "cd /workspace && ./target/release/ion --agent developer --provider zhipuai --model glm-5.2" 2>&1 | tail -20
     fi
     echo "  : $(date)"
 
