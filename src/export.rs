@@ -293,10 +293,23 @@ fn export_session_internal(
     };
 
     let css = read_file("template.css");
-    let js = read_file("template.js");
+    let mut js = read_file("template.js");
     let marked_js = read_file("vendor/marked.min.js");
     let highlight_js = read_file("vendor/highlight.min.js");
     let mut html = read_file("template.html");
+
+    // ION 扩展：在 pi template 的 stats 区块（Date/Models/...）最前面插入 Agent 行。
+    // session header 已含 agent 字段（ion_worker/ion.rs 写入），缺失时显示 '-'。
+    // 不改 pi 源码，运行时字符串替换注入。
+    let js_date_anchor = r#"<div class="info-item"><span class="info-label">Date:</span>"#;
+    let js_agent_row = r#"<div class="info-item"><span class="info-label">Agent:</span><span class="info-value">${escapeHtml(header?.agent || '-')}</span></div>"#;
+    if js.contains(js_date_anchor) {
+        js = js.replacen(
+            js_date_anchor,
+            &format!("{}\n              {}", js_agent_row, js_date_anchor),
+            1,
+        );
+    }
 
     // Replace placeholders
     html = html.replace("{{CSS}}", &css);
