@@ -322,6 +322,26 @@ impl Tool for CalculatorAdvancedTool {
 }
 
 // ---------------------------------------------------------------------------
+// UuidGeneratorTool — generate a UUID v4 string
+// ---------------------------------------------------------------------------
+
+pub struct UuidGeneratorTool;
+
+#[async_trait]
+impl Tool for UuidGeneratorTool {
+    fn name(&self) -> &str { "uuid" }
+    fn description(&self) -> &str {
+        "Generate a UUID v4 string. No arguments needed."
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object", "properties": {}})
+    }
+    async fn execute(&self, _args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        Ok(uuid::Uuid::new_v4().to_string())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Echo tool (for testing)
 // ---------------------------------------------------------------------------
 
@@ -1054,6 +1074,15 @@ mod tests_advanced_calc {
         let args = serde_json::json!({"operation":"cbrt","value":8.0});
         let result = tool.execute(args, &rt).await.unwrap();
         assert!(result.contains("2.000000"), "cbrt(8) should be 2, got {}", result);
+    }
+
+    #[tokio::test]
+    async fn test_uuid_generator() {
+        let tool = UuidGeneratorTool;
+        let rt = crate::runtime::LocalRuntime::new();
+        let result = tool.execute(serde_json::json!({}), &rt).await.unwrap();
+        assert_eq!(result.len(), 36, "UUID v4 should be 36 chars");
+        assert_eq!(result.matches('-').count(), 4, "UUID v4 has 4 dashes");
     }
 }
 
@@ -2066,5 +2095,64 @@ mod skill_tests {
             skill_dirs: vec![PathBuf::from("/nonexistent/path")],
         };
         assert!(tool.find_skill("ghost").is_none());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RandomNumber tool — generate a random number in [0, max)
+// ---------------------------------------------------------------------------
+
+pub struct RandomNumberTool;
+
+#[async_trait]
+impl Tool for RandomNumberTool {
+    fn name(&self) -> &str {
+        "random"
+    }
+
+    fn description(&self) -> &str {
+        "Generate a random number in [0, max). Args: max (number, default 100)."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "max": {
+                    "type": "number",
+                    "description": "Upper bound (exclusive), default 100"
+                }
+            },
+            "required": []
+        })
+    }
+
+    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        let max: u32 = args
+            .get("max")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .unwrap_or(100);
+
+        if max == 0 {
+            return Err(AgentError::Tool("max must be > 0".into()));
+        }
+
+        let val = rand::random::<u32>() % max;
+        Ok(val.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests_random_number {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_random_number_tool() {
+        let tool = RandomNumberTool;
+        let args = serde_json::json!({"max": 10});
+        let result = tool.execute(args, &crate::runtime::LocalRuntime::new()).await.unwrap();
+        let num: u32 = result.parse().unwrap();
+        assert!(num < 10, "random number {} should be < 10", num);
     }
 }
