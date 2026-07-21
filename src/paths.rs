@@ -347,6 +347,33 @@ pub fn extensions_dir() -> PathBuf {
     agent_dir().join("extensions")
 }
 
+/// Calculate total size in bytes of the extensions directory (~/.ion/agent/extensions/).
+///
+/// Walks the directory recursively and sums up all file sizes.
+/// Returns `Err` if the directory does not exist.
+pub fn extensions_size() -> Result<u64, String> {
+    let dir = extensions_dir();
+    if !dir.exists() {
+        return Err(format!("extensions directory does not exist: {}", dir.display()));
+    }
+    let mut total: u64 = 0;
+    walk_dir(&dir, &mut total).map_err(|e| format!("IO error: {}", e))?;
+    Ok(total)
+}
+
+fn walk_dir(dir: &std::path::Path, total: &mut u64) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            walk_dir(&entry.path(), total)?;
+        } else if ty.is_file() {
+            *total += entry.metadata()?.len();
+        }
+    }
+    Ok(())
+}
+
 /// ~/.ion/agent/skills/
 pub fn skills_dir() -> PathBuf {
     agent_dir().join("skills")
@@ -806,6 +833,41 @@ mod tests {
         assert!(s.contains("sess-1"));
         assert!(s.contains("ext-a"));
         assert!(s.contains("data"));
+    }
+
+    #[test]
+    fn extensions_size_returns_err_if_dir_missing() {
+        // Use a non-existent temp path by overriding the agent dir
+        let tmp = std::env::temp_dir().join(format!("ion_test_ext_size_missing_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        unsafe { std::env::set_var("ION_AGENT_DIR", tmp.to_str().unwrap()); }
+        let result = extensions_size();
+        unsafe { std::env::remove_var("ION_AGENT_DIR"); }
+        assert!(result.is_err(), "extensions_size should return Err if dir missing");
+    }
+
+    #[test]
+    fn extensions_size_matches_known_files() {
+        let tmp = std::env::temp_dir().join(format!("ion_test_ext_size_{}", std::process::id()));
+        let ext_dir = tmp.join("extensions");
+        std::fs::create_dir_all(&ext_dir).unwrap();
+
+        // Create known files with known sizes
+        std::fs::write(ext_dir.join("a.txt"), "hello").unwrap();             // 5 bytes
+        std::fs::write(ext_dir.join("b.txt"), "world!").unwrap();             // 6 bytes
+        std::fs::create_dir(ext_dir.join("sub")).unwrap();
+        std::fs::write(ext_dir.join("sub").join("c.txt"), "test123").unwrap(); // 7 bytes
+
+        let expected: u64 = 5 + 6 + 7;
+
+        unsafe { std::env::set_var("ION_AGENT_DIR", tmp.to_str().unwrap()); }
+        let size = extensions_size().expect("extensions_size should succeed");
+        unsafe { std::env::remove_var("ION_AGENT_DIR"); }
+
+        assert_eq!(size, expected, "extensions_size should sum all file sizes");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
