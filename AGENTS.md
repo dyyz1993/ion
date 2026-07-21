@@ -970,6 +970,47 @@ fi
 | `has_content` test | `68887fd` | ✅ | 测试 store.has_content() 方法 |
 | U+FFFD 修复 | `563d8f9` | ✅ 25 passed | 清理 187 处中文 comment 乱码 |
 | `count_by_tags(tag)` | `1e75486` | ✅ 26 passed | **完整 A→B 闭环**（含守门拦截 + B 自修复） |
+| `count_by_category(cat)` | `0fd652f` | ✅ 27 passed | 精确匹配 category |
+| `find_oldest_by_project(p)` | `813c1b3` | ✅ 28 passed | 按 project 找最早 entry |
+| `delete_by_project(p)` | `6dae862` | ✅ 29 passed | 删除某 project 全部 entry |
+| `has_tag(tag)` | `bb8933b` | ✅ 30 passed | 检查 tag 是否存在（LIKE） |
+| `find_by_content_prefix(p)` | `06d6bdb` | ✅ 31 passed | 按内容前缀查 entry |
+| `update_importance(id, n)` | `2bbfc25` | ✅ 32 passed | 更新某条 importance |
+| `archive_by_project(p)` | `5a40531` | ✅ 33 passed | 归档某项目全部 entry |
+| `count_archived()` | `c329cb8` | ✅ 34 passed | 统计已归档总数 |
+| `find_duplicates()` | `9bfc2a7` | ✅ 35 passed | 找重复 content_hash |
+| `list_recent_by_project(p, n)` | `09d119b` | ✅ 36 passed | 按项目返回最近 N 条 |
+| `batch_save(vec)` | `cd3eccb` | ✅ 37 passed | 批量保存（事务） |
+| `import_json(json_str)` | `2020c86` | ✅ 38 passed | 从 JSON 导入 |
+| `export_json(filter)` | `3414932` | ✅ 39 passed | 按条件导出 JSON |
+
+**累计：14 个 A→B 闭环任务，39 个测试全过，0 个 U+FFFD 残留。**
+
+#### 批量执行（`scripts/evolve_batch.sh`）
+
+`evolve_batch.sh` 支持一次启 container 连续跑 N 个任务，每个任务自动走完整 A→B 闭环。
+
+```bash
+# 1. 启 container（首次 ~3 分钟，后续秒级）
+ION_TOOL_TIMEOUT=1800 bash scripts/evolve.sh
+
+# 2. 批量跑（任务清单在脚本 TASKS 数组里硬编码）
+bash scripts/evolve_batch.sh
+```
+
+实测：10 任务连续跑 ~25 分钟（含 B 改代码 + CI + 守门 + 同步 + commit + HTML），全部首次通过。
+
+#### 持续优化的经验（不断改进 prompt + 守门）
+
+| 版本 | U+FFFD 数 | 改进 |
+|------|----------|------|
+| 任务 1（中文 comment spec） | 4 处 | spec 本身有中文，B 抄过去被破坏 |
+| 任务 2-4（中文 comment spec） | 2/1/1 处 | 同上 |
+| 任务 5-14（**全英文 comment 规则**） | **0 处** ✅ | prompt 加 "ALL comments MUST be in ENGLISH ONLY" |
+
+**关键教训**：让 B 写代码时，spec 里的 comment 模板**必须用英文**。DeepSeek 处理中文 UTF-8 字节有 bug，会把字符破坏成 U+FFFD。一旦改成全英文 comment，U+FFFD 问题**完全消失**（连续 10 个任务 0 拦截）。
+
+
 
 #### 完整 A→B 闭环示例（`count_by_tags` 任务，commit `1e75486`）
 
