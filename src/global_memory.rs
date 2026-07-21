@@ -539,7 +539,7 @@ impl GlobalMemoryStore {
     }
 
     /// 统计 tags 列中包含指定 tag 字符串的 entry 数。
-    /// tags 是逗号分隔的字符串（例如 'rust,sqlite,Memory'），用 LIKE 模糊匹配。
+    /// tags 是逗号分隔的字符串（例如 rust,sqlite,Memory），用 LIKE 模糊匹配。
     pub fn count_by_tags(&self, tag: &str) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         let pattern = format!("%{}%", tag);
@@ -548,6 +548,17 @@ impl GlobalMemoryStore {
             params![pattern],
             |row| row.get(0),
         ).map_err(|e| format!("query count_by_tags: {}", e))?;
+        Ok(count)
+    }
+
+    /// 统计指定 category 的 entry 数（精确匹配，不用 LIKE）。
+    pub fn count_by_category(&self, category: &str) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM entries WHERE category = ?1",
+            params![category],
+            |row| row.get(0),
+        ).map_err(|e| format!("query count_by_category: {}", e))?;
         Ok(count)
     }
 
@@ -1298,5 +1309,17 @@ mod tests {
         assert_eq!(store.count_by_tags("rust").unwrap(), 2, "含 rust tag 应有 2 条");
         assert_eq!(store.count_by_tags("sqlite").unwrap(), 1, "含 sqlite tag 应有 1 条");
         assert_eq!(store.count_by_tags("java").unwrap(), 0, "含 java tag 应有 0 条");
+    }
+
+    #[test]
+    fn test_count_by_category() {
+        let store = test_store();
+        store.clear_all().unwrap();
+        store.save("entry 1", "note", "t", "p", 5).unwrap();
+        store.save("entry 2", "code", "t", "p", 5).unwrap();
+        store.save("entry 3", "note", "t", "p", 5).unwrap();
+        assert_eq!(store.count_by_category("note").unwrap(), 2, "category=note 应有 2 条");
+        assert_eq!(store.count_by_category("code").unwrap(), 1, "category=code 应有 1 条");
+        assert_eq!(store.count_by_category("doc").unwrap(), 0, "category=doc 应有 0 条");
     }
 }
