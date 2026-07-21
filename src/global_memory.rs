@@ -520,6 +520,15 @@ impl GlobalMemoryStore {
         Ok(results)
     }
 
+    /// 返回 archived=1 的 entry 总数
+    pub fn archive_count(&self) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM entries WHERE archived = 1", [], |row| row.get(0)
+        ).unwrap_or(0);
+        Ok(count)
+    }
+
     /// 获���全局记忆���路径
     pub fn db_path() -> PathBuf {
         let home = std::env::var("HOME")
@@ -1206,5 +1215,27 @@ mod tests {
         // 验证存在与不存在
         assert!(store.has_content("hello world").unwrap(), "已保存的内容应返回 true");
         assert!(!store.has_content("not exist").unwrap(), "不存在的 content 应返回 false");
+    }
+
+    #[test]
+    fn test_archive_count() {
+        let store = test_store();
+        store.clear_all().unwrap();
+
+        // 初始：archived=1 的数量为 0
+        assert_eq!(store.archive_count().unwrap(), 0);
+
+        // 保存 2 条
+        let id1 = store.save("entry one", "note", "t", "p", 5).unwrap();
+        let id2 = store.save("entry two", "note", "t", "p", 5).unwrap();
+
+        // 归档前 archive_count 应为 0
+        assert_eq!(store.archive_count().unwrap(), 0);
+
+        // forget ��一条 → archived=1
+        store.forget(&id1).unwrap();
+
+        // 断言 archive_count == 1
+        assert_eq!(store.archive_count().unwrap(), 1);
     }
 }
