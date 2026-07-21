@@ -562,6 +562,26 @@ impl GlobalMemoryStore {
         Ok(count)
     }
 
+    /// 返回指定 project 下 created_at 最早的 entry（一条）。
+    /// 如果该 project 没有任何 entry，返回 None。
+    pub fn find_oldest_by_project(&self, project: &str) -> Result<Option<GlobalMemoryEntry>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, project, content, category, tags, importance, archived, created_at, updated_at
+                 FROM entries WHERE project = ?1 ORDER BY created_at ASC LIMIT 1"
+            )
+            .map_err(|e| format!("prepare find_oldest_by_project: {}", e))?;
+        let mut rows = stmt
+            .query_map(params![project], map_entry)
+            .map_err(|e| format!("query find_oldest_by_project: {}", e))?;
+        match rows.next() {
+            Some(Ok(entry)) => Ok(Some(entry)),
+            Some(Err(e)) => Err(format!("row find_oldest_by_project: {}", e)),
+            None => Ok(None),
+        }
+    }
+
     /// 获取全局记忆库路径
     pub fn db_path() -> PathBuf {
         let home = std::env::var("HOME")
@@ -1321,5 +1341,33 @@ mod tests {
         assert_eq!(store.count_by_category("note").unwrap(), 2, "category=note 应有 2 条");
         assert_eq!(store.count_by_category("code").unwrap(), 1, "category=code 应有 1 条");
         assert_eq!(store.count_by_category("doc").unwrap(), 0, "category=doc 应有 0 条");
+    }
+
+    #[test]
+    fn test_find_oldest_by_project() {
+        let store = test_store();
+        store.clear_all().unwrap();
+
+        // 向 project-a save 2 条（第 1 条 sleep 1 秒后 save 第 2 条）
+        let id_a1 = store.save("project-a first", "note", "t", "project-a", 5).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let id_a2 = store.save("project-a second", "note", "t", "project-a", 5).unwrap();
+
+        // 向 project-b save 1 条
+        let id_b1 = store.save("project-b first", "note", "t", "project-b", 5).unwrap();
+
+        // 验证 project-a 返回第 1 条
+        let oldest_a = store.find_oldest_by_project("project-a").unwrap().expect("project-a should have an entry");
+        assert_eq!(oldest_a.id, id_a1, "oldest entry in project-a should be the first saved");
+        assert_eq!(oldest_a.content, "project-a first");
+
+        // 验证 project-b 返回其唯一条目
+        let oldest_b = store.find_oldest_by_project("project-b").unwrap().expect("project-b should have an entry");
+        assert_eq!(oldest_b.id, id_b1, "oldest entry in project-b should be its only entry");
+        assert_eq!(oldest_b.content, "project-b first");
+
+        // 验证不存在的 project-c 返回 None
+        let oldest_c = store.find_oldest_by_project("project-c").unwrap();
+        assert!(oldest_c.is_none(), "project-c has no entries, should return None");
     }
 }
