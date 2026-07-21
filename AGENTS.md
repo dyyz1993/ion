@@ -181,17 +181,50 @@ docs/
 >
 > 禁止的模式：`pkill -f "ion"` / `pkill -f "ion serve"` / `pkill -f "ion.*serve"` / `pkill -f "ion_sse_proxy"`(单独写可以,但不能跟宽泛模式组合)。
 
-**真实 LLM 测试推荐模型**：写真实 case（`ION_E2E=1`）或手动验证时，**优先用 `deepseek-v4-flash`**（便宜、快速、够用），不要用昂贵的旗舰模型。
+**真实 LLM 测试推荐模型**：
 
-```bash
-# 手动快速验证（非交互，跑完即退）
-ion -p "帮我创建一个 hello.txt" --provider opencode --model deepseek-v4-flash
+| 用途 | 模型 | Provider | 说明 |
+|------|------|----------|------|
+| **B 改代码（主力）** | `glm-5.2` | `zai` | 代码质量好、UTF-8 稳定（无 U+FFFD 问题）、推理能力强 |
+| **快速测试** | `deepseek-v4-flash` | `opencode` | 便宜快速，适合简单任务/CI |
+| **Avoid** | claude-opus / gpt-4o | — | 昂贵，日常没必要 |
 
-# CI 真实 LLM 测试（Group L 用 default config 的 glm-4.7，也可临时切）
-ION_E2E=1 bash tests/file_snapshot_ci.sh
+**模型配置**（`~/.ion/config.json`）：
+```json
+{
+  "default_provider": "zai",
+  "default_model": "glm-5.2",
+  "tier_models": {
+    "max": "zai/glm-5.2",
+    "pro": "zai/glm-5.2",
+    "fast": "opencode/deepseek-v4-flash"
+  },
+  "providers": {
+    "zai": {
+      "name": "zai",
+      "api": "openai-completions",
+      "base_url": "https://your-zai-proxy/v4",
+      "api_key": "any-token-here",
+      "models": [
+        {"id": "glm-5.2", "name": "GLM-5.2", "reasoning": true, "context_window": 128000}
+      ]
+    }
+  }
+}
 ```
 
-> 避免用 claude-opus / gpt-4o 等昂贵模型做日常测试——成本高且没必要。`deepseek-v4-flash` 足以验证工具调用、审批闭环、多轮交互等场景。
+**A→B 自进化的模型选择**：
+- `scripts/evolve_self.sh` / `evolve_batch.sh` 默认 `MODEL=glm-5.2 PROVIDER=zai`
+- 快速任务可用 `MODEL=deepseek-v4-flash PROVIDER=opencode bash scripts/evolve_self.sh`
+
+**实测对比**（同样的 B 任务）：
+
+| 模型 | U+FFFD 数 | 代码质量 | 速度 |
+|------|----------|---------|------|
+| DeepSeek-V4-Flash | 经常引入 1-4 处 | 中等 | 快 |
+| **GLM-5.2** | **0 处** ✅ | 高（自己理解 pattern） | 中等 |
+
+> **结论**：GLM-5.2 处理 UTF-8 比 DeepSeek 稳定（不会破坏中文 comment），代码质量更好（自主选择正确的 API pattern）。A→B 自进化默认用 GLM-5.2。
 
 ### UI 交互架构规范（每个对外功能必须遵守）
 

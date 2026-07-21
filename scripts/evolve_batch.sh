@@ -18,8 +18,8 @@ set -uo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CONTAINER_BIN="${CONTAINER_BIN:-/usr/local/bin/container}"
-MODEL="${MODEL:-deepseek-v4-flash}"
-PROVIDER="${PROVIDER:-opencode}"
+MODEL="${MODEL:-glm-5.2}"
+PROVIDER="${PROVIDER:-zai}"
 HTML_DIR="/tmp/evolve_reports"
 mkdir -p "$HTML_DIR"
 
