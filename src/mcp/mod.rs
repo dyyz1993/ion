@@ -8,7 +8,7 @@ pub mod tool;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::config::{McpServerConfig};
+use crate::config::{IonConfig, McpServerConfig};
 
 /// rmcp client 类型别名（RunningService deref 到 Peer，支持并发 call_tool）
 pub type McpClient = rmcp::service::RunningService<rmcp::RoleClient, ()>;
@@ -50,8 +50,7 @@ impl ServerEntry {
     fn effective_disabled(&self, cfg: &McpServerConfig) -> bool {
         self.runtime_disabled.unwrap_or_else(|| cfg.is_disabled())
     }
-}
-
+	}
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServerStatus {
@@ -147,6 +146,11 @@ impl McpManager {
             .values()
             .filter(|e| matches!(e.status, ServerStatus::Connected))
             .count()
+    }
+
+    /// 当前已连接的 MCP server 数量（等价于 connected_count）
+    pub async fn connected_server_count(&self) -> usize {
+        self.connected_count().await
     }
 
     // ── 自动重连（Phase 3）──
@@ -834,5 +838,46 @@ impl McpManager {
                 }
             }
         }
+    }
+}
+
+/// Count the number of configured MCP servers in the given IonConfig.
+pub fn server_count_in_config(config: &IonConfig) -> usize {
+    config.mcp_servers.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::IonConfig;
+
+    #[test]
+    fn test_server_count_in_config() {
+        // Empty config -> 0
+        let config = IonConfig::default();
+        assert_eq!(server_count_in_config(&config), 0);
+
+        // With some mcp_servers
+        let mut config = IonConfig::default();
+        config.mcp_servers.insert(
+            "server1".to_string(),
+            McpServerConfig::Stdio {
+                command: "echo".to_string(),
+                args: vec![],
+                env: [].into(),
+                cwd: None,
+                disabled: false,
+            },
+        );
+        config.mcp_servers.insert(
+            "server2".to_string(),
+            McpServerConfig::Http {
+                kind: "streamable-http".to_string(),
+                url: "http://localhost:8080/mcp".to_string(),
+                headers: [].into(),
+                disabled: false,
+            },
+        );
+        assert_eq!(server_count_in_config(&config), 2);
     }
 }
