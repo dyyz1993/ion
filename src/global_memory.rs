@@ -529,6 +529,15 @@ impl GlobalMemoryStore {
         Ok(count)
     }
 
+    /// 返回最早 entry 的 created_at��如果表为空返回 None）。
+    pub fn oldest_entry_age(&self) -> Result<Option<i64>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let result: Option<i64> = conn.query_row(
+            "SELECT MIN(created_at) FROM entries", [], |row| row.get(0)
+        ).ok().flatten();
+        Ok(result)
+    }
+
     /// 获���全局记忆���路径
     pub fn db_path() -> PathBuf {
         let home = std::env::var("HOME")
@@ -1237,5 +1246,30 @@ mod tests {
 
         // 断言 archive_count == 1
         assert_eq!(store.archive_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_oldest_entry_age() {
+        let store = test_store();
+        store.clear_all().unwrap();
+
+        // 空表应返回 None
+        assert_eq!(store.oldest_entry_age().unwrap(), None);
+
+        // 保存一条，获取其 created_at
+        store.save("first entry", "note", "t", "p", 5).unwrap();
+        let ts = store.oldest_entry_age().unwrap();
+        assert!(ts.is_some(), "保存一条后应返回 Some(ts)");
+        let ts_val = ts.unwrap();
+        assert!(ts_val > 0, "created_at 应为正数时间戳");
+
+        // 再保存第二条，最早时间戳不��
+        store.save("second entry", "note", "t", "p", 5).unwrap();
+        let ts2 = store.oldest_entry_age().unwrap().unwrap();
+        assert_eq!(ts2, ts_val, "第二条插入后最��� created_at 不应改变");
+
+        // clear_all 后应返回 None
+        store.clear_all().unwrap();
+        assert_eq!(store.oldest_entry_age().unwrap(), None, "清空后应返回 None");
     }
 }
