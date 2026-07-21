@@ -299,6 +299,14 @@ impl GlobalMemoryStore {
         Ok(count)
     }
 
+    /// 返回所有条目的摘要���符串，格式："Total: {total}, Active: {active}, Archived: {archived}"
+    pub fn entries_summary(&self) -> Result<String, String> {
+        let total = self.memory_count()?;
+        let archived = self.archived_total()?;
+        let active = total - archived;
+        Ok(format!("Total: {total}, Active: {active}, Archived: {archived}"))
+    }
+
     pub fn count_all_archived(&self) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         let count: i64 = conn.query_row(
@@ -982,7 +990,29 @@ mod tests {
 
         // 验证活跃条目已被删除
         assert!(!store.entry_exists(&id1).unwrap(), "活跃条目 id1 应已删除");
-        assert!(!store.entry_exists(&id2).unwrap(), "活跃条目 id2 应已删除");
-        assert!(!store.entry_exists(&id3).unwrap(), "活跃条目 id3 应已删除");
+        assert!(!store.entry_exists(&id2).unwrap(), "活跃条目 id2 应��删除");
+        assert!(!store.entry_exists(&id3).unwrap(), "活跃条目 id3 应��删除");
+    }
+
+    #[test]
+    fn test_entries_summary() {
+        let store = test_store();
+
+        // 初始空库
+        let summary = store.entries_summary().unwrap();
+        assert_eq!(summary, "Total: 0, Active: 0, Archived: 0");
+
+        // 保存 5 条活跃条目
+        let ids: Vec<String> = (0..5)
+            .map(|i| store.save(&format!("entry {}", i), "note", "t", "p", 5).unwrap())
+            .collect();
+        let summary = store.entries_summary().unwrap();
+        assert_eq!(summary, "Total: 5, Active: 5, Archived: 0");
+
+        // 归档 2 条
+        store.forget(&ids[0]).unwrap();
+        store.forget(&ids[1]).unwrap();
+        let summary = store.entries_summary().unwrap();
+        assert_eq!(summary, "Total: 5, Active: 3, Archived: 2");
     }
 }
