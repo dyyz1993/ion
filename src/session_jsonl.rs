@@ -545,7 +545,11 @@ pub fn ensure_session_header(cwd: &str, sid: &str) -> bool {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let header = serde_json::json!({
+        // agent 名从环境变量读（ion_worker 启动时设的）
+        let agent = std::env::var("ION_SESSION_AGENT").unwrap_or_default();
+        let model = std::env::var("ION_SESSION_MODEL").unwrap_or_default();
+        let provider = std::env::var("ION_SESSION_PROVIDER").unwrap_or_default();
+        let mut header = serde_json::json!({
             "type": "session",
             "version": 3,
             "id": sid,
@@ -553,6 +557,9 @@ pub fn ensure_session_header(cwd: &str, sid: &str) -> bool {
             "cwd": cwd,
             "parentSession": null,
         });
+        if !agent.is_empty() { header["agent"] = serde_json::json!(agent); }
+        if !model.is_empty() { header["model"] = serde_json::json!(model); }
+        if !provider.is_empty() { header["provider"] = serde_json::json!(provider); }
         let json = serde_json::to_string(&header).unwrap_or_default();
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(&path) {

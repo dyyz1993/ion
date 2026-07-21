@@ -369,6 +369,15 @@ async fn main() {
         *SESSION_SID.lock().unwrap() = Some(sid.clone());
         *SESSION_CWD.lock().unwrap() = Some(worker_cwd.clone());
     }
+    // 设 session header 的 agent/model/provider（export.rs banner 显示用）
+    if let Some(ref agent_name) = initial_agent {
+        unsafe { std::env::set_var("ION_SESSION_AGENT", agent_name); }
+    }
+    unsafe {
+        std::env::set_var("ION_SESSION_MODEL", &model);
+        std::env::set_var("ION_SESSION_PROVIDER", &provider);
+    }
+
     // 先确保 session header 存在（防 turn_summary 在 header 之前被追加，导致文件第一行不是 header）
     if is_fork_child {
         ensure_fork_session_header(&session_file_path, &worker_cwd, &sid);
