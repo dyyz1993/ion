@@ -297,6 +297,21 @@ fn default_whitelist() -> Vec<String> {
     ].into_iter().map(String::from).collect()
 }
 
+/// Return the list of high-risk command patterns (e.g. "sed -i", "python3 -c")
+/// that are known to bypass safe editing tools and write files directly.
+pub fn list_blocked_patterns() -> Vec<&'static str> {
+    vec![
+        "sed -i",
+        "python3 -c",
+        "python -c",
+        "cat >",
+        "./target/release/ion --agent",
+        "./target/debug/ion --agent",
+        "target/release/ion --agent",
+        "target/debug/ion --agent",
+    ]
+}
+
 /// 默认风险模式
 fn default_risk_patterns() -> Vec<RiskPattern> {
     vec![
@@ -562,5 +577,12 @@ mod tests {
         assert!(matches!(g.check("npm install lodash"), GuardDecision::Allow));
         // 但 npm install -g 全局安装需确认
         assert!(matches!(g.check("npm install -g typescript"), GuardDecision::Ask(_)));
+    }
+
+    #[test]
+    fn test_list_blocked_patterns() {
+        let patterns = list_blocked_patterns();
+        assert!(!patterns.is_empty(), "blocked patterns should not be empty");
+        assert!(patterns.contains(&"sed -i"), "sed -i should be in the blocked patterns");
     }
 }
