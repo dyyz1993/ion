@@ -501,6 +501,25 @@ impl GlobalMemoryStore {
         Ok(count)
     }
 
+    /// 按 created_at 降序返回最近 limit 条 entry。
+    pub fn recent_entries(&self, limit: usize) -> Result<Vec<GlobalMemoryEntry>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, project, content, category, tags, importance, archived, created_at, updated_at
+                 FROM entries ORDER BY created_at DESC LIMIT ?1",
+            )
+            .map_err(|e| format!("prepare recent_entries: {}", e))?;
+        let rows = stmt
+            .query_map(params![limit as i64], map_entry)
+            .map_err(|e| format!("query recent_entries: {}", e))?;
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r.map_err(|e| format!("row recent_entries: {}", e))?);
+        }
+        Ok(results)
+    }
+
     /// 获���全局记忆���路径
     pub fn db_path() -> PathBuf {
         let home = std::env::var("HOME")
@@ -1149,5 +1168,28 @@ mod tests {
         store.forget(&to_forget.id).unwrap();
         assert_eq!(store.tag_count("ts").unwrap(), 0, "归档后 ts 标签应返回 0");
         assert_eq!(store.tag_count("rust").unwrap(), 2, "归档不影响 rust 标签");
+    }
+
+    #[test]
+    fn test_recent_entries() {
+        let store = test_store();
+
+        // 先清空
+        store.clear_all().unwrap();
+
+        // 保存 3 条，故意让时间戳不同
+        store.save("entry one",   "note", "t", "p", 5).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        store.save("entry two",   "note", "t", "p", 5).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        store.save("entry three", "note", "t", "p", 5).unwrap();
+
+        // 获取最近 2 条
+        let recent = store.recent_entries(2).unwrap();
+        assert_eq!(recent.len(), 2, "应返回 2 条");
+        // 验证降序：先 three 后 two
+        assert_eq!(recent[0].content, "entry three", "第 1 条应为最近保存的 three");
+        assert_eq!(recent[1].content, "entry two",    "第 2 条应为 two");
+        assert!(recent[0].created_at >= recent[1].created_at, "时间应降序");
     }
 }
