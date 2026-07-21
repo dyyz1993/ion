@@ -538,6 +538,19 @@ impl GlobalMemoryStore {
         Ok(result)
     }
 
+    /// 统计 tags 列中包含指定 tag 字符串的 entry 数。
+    /// tags 是逗号分隔的字符串（例如 'rust,sqlite,Memory'），用 LIKE 模糊匹配。
+    pub fn count_by_tags(&self, tag: &str) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let pattern = format!("%{}%", tag);
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM entries WHERE tags LIKE ?1",
+            params![pattern],
+            |row| row.get(0),
+        ).map_err(|e| format!("query count_by_tags: {}", e))?;
+        Ok(count)
+    }
+
     /// 获取全局记忆库路径
     pub fn db_path() -> PathBuf {
         let home = std::env::var("HOME")
@@ -1271,5 +1284,19 @@ mod tests {
         // clear_all 后应返回 None
         store.clear_all().unwrap();
         assert_eq!(store.oldest_entry_age().unwrap(), None, "清空后应返回 None");
+    }
+
+    #[test]
+    fn test_count_by_tags() {
+        let store = test_store();
+        store.clear_all().unwrap();
+        // save 3 条带不同 tags
+        store.save("entry 1", "note", "rust,sqlite", "p", 5).unwrap();
+        store.save("entry 2", "note", "rust,memory", "p", 5).unwrap();
+        store.save("entry 3", "note", "python", "p", 5).unwrap();
+        // 验证
+        assert_eq!(store.count_by_tags("rust").unwrap(), 2, "含 rust tag 应有 2 条");
+        assert_eq!(store.count_by_tags("sqlite").unwrap(), 1, "含 sqlite tag 应有 1 条");
+        assert_eq!(store.count_by_tags("java").unwrap(), 0, "含 java tag 应有 0 条");
     }
 }
