@@ -274,6 +274,13 @@ pub struct SpawnWorkerRequest {
     pub provider: Option<String>,
 }
 
+impl SpawnWorkerRequest {
+    /// Returns true if the worker relation is Peer.
+    pub fn is_peer(&self) -> bool {
+        matches!(self.relation, SpawnRelation::Peer)
+    }
+}
+
 /// spawn_worker 工具的响应。
 #[derive(Clone, Debug)]
 pub struct SpawnWorkerResponse {
@@ -1633,5 +1640,38 @@ mod tests {
         let result = rt.set_guard_mode("open");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("no command guard"));
+    }
+
+    #[tokio::test]
+    async fn test_is_peer() {
+        let peer_req = SpawnWorkerRequest {
+            relation: SpawnRelation::Peer,
+            agent: "test".into(),
+            task: "test".into(),
+            name: None,
+            report_channel: None,
+            wait: true,
+            worktree: None,
+            hook_depth: None,
+            system_prompt_override: None,
+            model: None,
+            provider: None,
+        };
+        assert!(peer_req.is_peer());
+
+        let child_req = SpawnWorkerRequest {
+            relation: SpawnRelation::Child,
+            agent: "test".into(),
+            task: "test".into(),
+            name: None,
+            report_channel: None,
+            wait: true,
+            worktree: None,
+            hook_depth: None,
+            system_prompt_override: None,
+            model: None,
+            provider: None,
+        };
+        assert!(!child_req.is_peer());
     }
 }
