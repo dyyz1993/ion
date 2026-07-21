@@ -72,7 +72,7 @@ CONTAINER_CMD=(
 )
 
 [ -d "$ION_PROVIDER_DIR" ] && CONTAINER_CMD+=("-v" "${ION_PROVIDER_DIR}:/ion-provider")
-[ -d "$ION_DIR" ] && CONTAINER_CMD+=("-v" "${ION_DIR}:/root/.ion:ro")
+[ -d "$ION_DIR" ] && CONTAINER_CMD+=("-v" "${ION_DIR}:/root/.ion")
 
 CONTAINER_CMD+=("$IMAGE" sh -lc "sleep infinity")
 
