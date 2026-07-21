@@ -51,6 +51,12 @@ pub struct SessionHeader {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "parentSession")]
     pub parent_session: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 /// Message entry (the core conversation data).
@@ -402,6 +408,9 @@ impl SessionFile {
             timestamp: String::new(),
             cwd: cwd.into(),
             parent_session: None,
+            agent: None,
+            model: None,
+            provider: None,
         });
         let mut entries: Vec<serde_json::Value> = Vec::new();
 
@@ -915,6 +924,9 @@ mod tests {
             timestamp: timestamp_iso(),
             cwd: cwd.into(),
             parent_session: None,
+            agent: None,
+            model: None,
+            provider: None,
         };
         SessionFile::save(cwd, &header, &[]);
     }

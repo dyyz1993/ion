@@ -1372,6 +1372,13 @@ async fn cmd_run(
     // Persist to last_session so --continue / --export can find it later.
     let _ = std::fs::write(ion::session_jsonl::last_session_path(), session_id);
 
+    // Set session header env vars (for save_session to include agent/model in header)
+    unsafe {
+        if let Some(ref a) = eff.agent { std::env::set_var("ION_SESSION_AGENT", a); }
+        std::env::set_var("ION_SESSION_MODEL", &eff.model);
+        std::env::set_var("ION_SESSION_PROVIDER", &eff.provider);
+    }
+
     let (registry, model) = build_registry_and_model(eff);
     
     let config = build_agent_config(eff);
@@ -4325,6 +4332,9 @@ fn save_session(id: &str, messages: &[ion::agent::messages::Message], model: &st
             timestamp: ion::session_jsonl::timestamp_iso(),
             cwd: cwd.clone(),
             parent_session: None,
+            agent: std::env::var("ION_SESSION_AGENT").ok(),
+            model: std::env::var("ION_SESSION_MODEL").ok(),
+            provider: std::env::var("ION_SESSION_PROVIDER").ok(),
         };
         if let Ok(h) = serde_json::to_string(&header) {
             use std::io::Write;
