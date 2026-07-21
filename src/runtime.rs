@@ -266,6 +266,12 @@ pub struct SpawnWorkerRequest {
     /// 用于 skill fork 模式——把 skill 内容注入 system prompt，避免被 compaction 压缩。
     /// 默认 None = 用 agent.md 的 system prompt。
     pub system_prompt_override: Option<String>,
+    /// 可选：覆盖子 Worker 的 model（让不同 worker 用不同模型）。
+    /// None = 继承父 Worker 的 model。
+    pub model: Option<String>,
+    /// 可选：覆盖子 Worker 的 provider。
+    /// None = 继承父 Worker 的 provider。
+    pub provider: Option<String>,
 }
 
 /// spawn_worker 工具的响应。
@@ -424,6 +430,9 @@ impl<R: Runtime + 'static> Runtime for WorkerRuntime<R> {
             "worktree": worktree_json,
             "hook_depth": req.hook_depth,  // hooks 递归深度传递
             "system_prompt_override": req.system_prompt_override,  // skill fork 用
+            // 可选 model/provider：让不同 worker 用不同模型
+            "model": req.model,
+            "provider": req.provider,
             // 方案 C：所有 Worker 都通过 bridge 代理，不需要 skip_mcp
         });
         let resp = self.bridge.send_command("create_worker", params).await?;

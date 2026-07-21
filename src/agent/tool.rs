@@ -1086,6 +1086,14 @@ impl Tool for SpawnWorkerTool {
                     "type": "string",
                     "description": "Detailed task spec for the new worker."
                 },
+                "model": {
+                    "type": "string",
+                    "description": "Model id for the spawned worker (e.g. 'deepseek-v4-flash', 'glm-4.6'). If omitted, inherits parent's model. Lets you use different models for different workers."
+                },
+                "provider": {
+                    "type": "string",
+                    "description": "Provider name (e.g. 'opencode', 'zhipuai'). Required when model is set to a non-default provider."
+                },
                 "wait": {
                     "type": "boolean",
                     "default": true,
@@ -1117,6 +1125,9 @@ impl Tool for SpawnWorkerTool {
         let report_channel = args.get("report_channel").and_then(|v| v.as_str()).map(String::from);
         let wait = args.get("wait").and_then(|v| v.as_bool()).unwrap_or(true);
         let worktree = args.get("worktree").and_then(|v| v.as_bool());
+        // 可选 model/provider：让 LLM 能给不同 worker 指定不同模型
+        let model = args.get("model").and_then(|v| v.as_str()).map(String::from);
+        let provider = args.get("provider").and_then(|v| v.as_str()).map(String::from);
 
         let relation = match relation_str {
             "peer" => crate::runtime::SpawnRelation::Peer,
@@ -1133,6 +1144,8 @@ impl Tool for SpawnWorkerTool {
             worktree,
             hook_depth: None,  // LLM 的 spawn_worker 不设（只有 hooks agent handler 才设）
             system_prompt_override: None,  // 普通 spawn_worker 不覆盖
+            model,
+            provider,
         };
 
         let resp = rt.spawn_worker(req).await.map_err(AgentError::Tool)?;
@@ -1692,6 +1705,8 @@ impl Tool for SkillTool {
                 worktree: None,
                 hook_depth: None,
                 system_prompt_override: Some(system_prompt),
+                model: None,
+                provider: None,
             };
 
             let resp = match rt.spawn_worker(req).await {
