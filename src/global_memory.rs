@@ -1,7 +1,7 @@
-//! Global Memory — 跨项目记忆���（SQLite + FTS5）。
+//! Global Memory — 跨项目记忆库（SQLite + FTS5）。
 //!
 //! 机器级唯一数据库 ~/.ion/agent/global-memory.db。
-//! 被 Memory Agent（V0.2 单例扩展）使用，所有项���共享。
+//! 被 Memory Agent（V0.2 单例扩展）使用，所有项目共享。
 //!
 //! 设计文档：docs/design/MEMORY_AGENT.md
 
@@ -25,7 +25,7 @@ pub struct GlobalMemoryEntry {
     pub updated_at: i64,
 }
 
-/// 大纲索��条目（outlines 表）
+/// 大纲索引条目（outlines 表）
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OutlineEntry {
     pub id: String,
@@ -50,7 +50,7 @@ pub struct GlobalMemoryStore {
 }
 
 impl GlobalMemoryStore {
-    /// ��开或创建全局记忆��。
+    /// 打开或创建全局记忆库。
     /// path 通常是 ~/.ion/agent/global-memory.db
     pub fn open(path: &PathBuf) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
@@ -85,7 +85,7 @@ impl GlobalMemoryStore {
                 updated_at INTEGER DEFAULT (unixepoch())
             );
             -- FTS5 同步触发器（external content table 模式必须）
-            -- 保�� INSERT/UPDATE/DELETE ��� FTS 索引自动同步
+            -- 保证 INSERT/UPDATE/DELETE 时 FTS 索引自动同步
             CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
                 INSERT INTO entries_fts(rowid, content, category, tags)
                 VALUES (new.rowid, new.content, new.category, new.tags);
@@ -123,20 +123,20 @@ impl GlobalMemoryStore {
             params![id, project, content, category, tags, importance],
         )
         .map_err(|e| format!("insert: {}", e))?;
-        // FTS5 索���由 AFTER INSERT 触发器自动维护，无需手动同步
+        // FTS5 索引由 AFTER INSERT 触发器自动维护，无需手动同步
         Ok(id)
     }
 
     /// FTS5 全文搜索（含中文 LIKE fallback）。
     ///
-    /// 先用 FTS5 MATCH（英文/分词语言效果好），如果结果为空��用 LIKE 模糊匹配
-    /// （中文场景 fallback，因为 FTS5 默认 tokenizer 对中文不友���）。
+    /// 先用 FTS5 MATCH（英文/分词语言效果好），如果结果为空则用 LIKE 模糊匹配
+    /// （中文场景 fallback，因为 FTS5 默认 tokenizer 对中文不友好）。
     pub fn search(&self, query: &str, project: Option<&str>) -> Result<Vec<GlobalMemoryEntry>, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
 
         // 1. 先用 FTS5 MATCH
-        //    将用户 query 用双引号包裹使其成为字面字符���短语，
-        //    query 内部的双引号用双写 ("") 转义���防止注入 FTS5 语法。
+        //    将用户 query 用双引号包裹使其成为字面字符串短语，
+        //    query 内部的双引号用双写 ("") 转义，防止注入 FTS5 语法。
         let escaped_query = format!("\"{}\"", query.replace('"', "\"\""));
         let fts_sql = if project.is_some() {
             "SELECT e.id, e.project, e.content, e.category, e.tags, e.importance, e.archived, e.created_at, e.updated_at
@@ -171,10 +171,10 @@ impl GlobalMemoryStore {
         let mut words: Vec<String> = Vec::new();
         for part in query.split(|c: char| c.is_whitespace() || "，。、！？".contains(c)) {
             if part.is_empty() { continue; }
-            // 检查是否含中文字��
+            // 检查是否含中文字符
             let has_cjk = part.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
             if has_cjk && part.chars().count() > 2 {
-                // 连���中文：2 字滑动窗口（bigram）
+                // 连续中文：2 字滑动窗口（bigram）
                 let chars: Vec<char> = part.chars().collect();
                 for i in 0..chars.len().saturating_sub(1) {
                     words.push(chars[i..i+2].iter().collect());
@@ -208,7 +208,7 @@ impl GlobalMemoryStore {
             };
             like_rows.extend(rows);
         }
-        // 去重（同一条可能被多���词命中）+ 按 importance ���序
+        // 去重（同一条可能被多个词命中）+ 按 importance 排序
         let mut seen = std::collections::HashSet::new();
         like_rows.retain(|e| seen.insert(e.id.clone()));
         like_rows.sort_by(|a, b| b.importance.cmp(&a.importance).then(b.updated_at.cmp(&a.updated_at)));
@@ -223,31 +223,31 @@ impl GlobalMemoryStore {
         Ok(())
     }
 
-    /// 清空���有活跃记忆（DELETE FROM entries WHERE archived=0），同时重建 FTS5 索���。
-    /// 已��档 (archived=1) 的条目不受影响。
+    /// 清空有活跃记忆（DELETE FROM entries WHERE archived=0），同时重建 FTS5 索引。
+    /// 已档 (archived=1) 的条目不受影响。
     pub fn clear_active(&self) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        // 1. 删��所有活跃条目
+        // 1. 删所有活跃条目
         //    FTS5 的 AFTER DELETE 触发器会自动同步删除 entries_fts 中的对应行
         conn.execute("DELETE FROM entries WHERE archived=0", [])
             .map_err(|e| format!("clear active entries: {}", e))?;
-        // 2. 重建 FTS5 索引，确保一致性
+        // 2. 重建 FTS5 索引引，确保一致性
         conn.execute("INSERT INTO entries_fts(entries_fts) VALUES('rebuild')", [])
             .map_err(|e| format!("rebuild fts after clear_active: {}", e))?;
         Ok(())
     }
 
-    /// 批量清空（测试用，DELETE entries + 重建 FTS5 索引 + 清 outlines）
+    /// 批量清空（测试用，DELETE entries + 重建 FTS5 索引引 + 清 outlines）
     pub fn clear_all(&self) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         // 1. 先清空 entries 表。
         //    由于 FTS5 是 external-content table，DELETE 会触发 AFTER DELETE 触发器
-        //    逐行同步删�� entries_fts 中的对应索引。
+        //    逐行同步删除 entries_fts 中的对应索引。
         conn.execute("DELETE FROM entries", [])
             .map_err(|e| format!("clear entries: {}", e))?;
-        // 2. ��� 'rebuild' 命令重建 FTS5 索引，彻底清理���有残留。
-        //    （DELETE 触发器理论��已清空，但 'rebuild' 可保证一致性，
-        //     ���使此前触发器因 bug 未执行也能恢复��确状态。）
+        // 2. 用 'rebuild' 命令重建 FTS5 索引引，彻底清理所有残留。
+        //    （DELETE 触发器理论上已清空，但 'rebuild' 可保证一致性，
+        //     即使此前触发器因 bug 未执行也能恢复正确状态。）
         conn.execute("INSERT INTO entries_fts(entries_fts) VALUES('rebuild')", [])
             .map_err(|e| format!("rebuild fts: {}", e))?;
         // 3. 清空 outlines 表
@@ -299,7 +299,7 @@ impl GlobalMemoryStore {
         Ok(count)
     }
 
-    /// 返回所有条目的摘要���符串，格式："Total: {total}, Active: {active}, Archived: {archived}"
+    /// 返回所有条目的摘要符串，格式："Total: {total}, Active: {active}, Archived: {archived}"
     pub fn entries_summary(&self) -> Result<String, String> {
         let total = self.memory_count()?;
         let archived = self.archived_total()?;
@@ -370,7 +370,7 @@ impl GlobalMemoryStore {
         Ok(rows)
     }
 
-    /// 列出所有���目的大纲索引（outlines 表）
+    /// 列出所有项目的大纲索引（outlines 表）
     pub fn list_outlines(&self) -> Result<Vec<OutlineEntry>, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         let mut stmt = conn.prepare(
@@ -438,7 +438,7 @@ impl GlobalMemoryStore {
         // 3. 更新大纲索引（outlines 表）
         //    先 DELETE 再按 project GROUP 重建。每行 ID 用 randomblob(16) 生成唯一值。
         //    randomblob() 是非确定性函数，SQLite 会对 SELECT 输出的每一行独立求值，
-        //    因此 GROUP BY project 后每个项目组都会拿到独立的 16 字节随机 ID，不会碰撞���
+        //    因此 GROUP BY project 后每个项目组都会拿到独立的 16 字节随机 ID，不会碰撞
         conn.execute("DELETE FROM outlines", []).map_err(|e| format!("clear outlines: {}", e))?;
         conn.execute(
             "INSERT INTO outlines (id, summary, project, entry_count, updated_at)
@@ -461,7 +461,7 @@ impl GlobalMemoryStore {
         Ok(stats)
     }
 
-    /// 返回所有活跃条目中的唯一项目名称列���（按字母序排列）。
+        // 验证返回唯一项目名称列表（按字母序）
     pub fn project_list(&self) -> Result<Vec<String>, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         let mut stmt = conn
@@ -489,7 +489,7 @@ impl GlobalMemoryStore {
     }
 
     /// 统计包含指定标签（tags 字段）的活跃条目数。
-    /// tags 是逗号分隔的字符��，使用 LIKE 模糊匹配。
+    /// tags 是逗号分隔的字符串，使用 LIKE 模糊匹配。
     pub fn tag_count(&self, tag: &str) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         let pattern = format!("%{}%", tag);
@@ -529,7 +529,7 @@ impl GlobalMemoryStore {
         Ok(count)
     }
 
-    /// 返回最早 entry 的 created_at��如果表为空返回 None）。
+    /// 返回最早 entry 的 created_at如果表为空返回 None）。
     pub fn oldest_entry_age(&self) -> Result<Option<i64>, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         let result: Option<i64> = conn.query_row(
@@ -538,7 +538,7 @@ impl GlobalMemoryStore {
         Ok(result)
     }
 
-    /// 获���全局记忆���路径
+    /// 获取全局记忆库路径
     pub fn db_path() -> PathBuf {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
@@ -547,8 +547,8 @@ impl GlobalMemoryStore {
     }
 
     /// 从 V0.1 JSON 文件自动迁移到 SQLite。
-    /// 扫描所有 project-data/*/memory/outlines/*.json，导入到全���库。
-    /// 只在 DB 空时执行（避免重复导入��。
+    /// 扫描所有 project-data/*/memory/outlines/*.json，导入到全局库。
+    /// 只在 DB 空时执行（避免重复导入）。
     pub fn migrate_from_v01(&self) -> Result<usize, String> {
         // 如果 DB 已有数据，跳过
         if !self.list(None)?.is_empty() {
@@ -564,7 +564,7 @@ impl GlobalMemoryStore {
             return Ok(0);
         }
         let mut count = 0;
-        // 遍历每个项目���录
+        // 遍历每个项目目录
         for project_dir in std::fs::read_dir(&project_data_root).map_err(|e| format!("read project-data: {}", e))? {
             let project_dir = match project_dir { Ok(d) => d, Err(_) => continue };
             let memory_dir = project_dir.path().join("memory").join("outlines");
@@ -708,7 +708,7 @@ mod tests {
     fn test_id_unique() {
         let store = test_store();
         let id1 = store.save("第一条", "note", "t", "p", 5).unwrap();
-        let id2 = store.save("第二条", "note", "t", "p", 5).unwrap();
+        let id2 = store.save("第二条条", "note", "t", "p", 5).unwrap();
         assert_ne!(id1, id2, "IDs must be unique");
     }
 
@@ -720,7 +720,7 @@ mod tests {
         store.save("编程语言对比分析", "note", "t", "p", 5).unwrap();
         store.save("深度学习与神经网络", "note", "t", "p", 5).unwrap();
 
-        // 搜索 "编"（单���），应走 LIKE fallback 且被跳过，不返回噪音结果
+        // 搜索 "编"（单字），应走 LIKE fallback 且被跳过，不返回噪音结果
         let results = store.search("编", None).unwrap();
         assert!(
             results.is_empty(),
@@ -736,8 +736,8 @@ mod tests {
 
     #[test]
     fn test_search_fts_escape() {
-        // Bug 2 回归: FTS5 MATCH ��询没有转义特殊字符，含 OR/AND/NOT/��引号的 query
-        // 会被当 FTS5 语���处理。应该用双引号包裹 + 内部���引号双写转义。
+        // Bug 2 回归: FTS5 MATCH 查询没有转义特殊字符，含 OR/AND/NOT/双引号的 query
+        // 会被当 FTS5 语法处理。应该用双引号包裹 + 内部双引号双写转义。
         let store = test_store();
         store.save("Use OR keyword in content", "note", "t", "p", 5).unwrap();
         store.save("Normal entry without keywords", "note", "t", "p", 5).unwrap();
@@ -747,7 +747,7 @@ mod tests {
         assert_eq!(
             results.len(),
             1,
-            "搜索 'OR' 应只返回包含���字面词的条���，而非被当 FTS5 运算符"
+            "搜索 'OR' 应只返回包含该字面词的条目，而非被当 FTS5 运算符"
         );
         assert!(results[0].content.contains("OR"));
 
@@ -757,7 +757,7 @@ mod tests {
         assert_eq!(
             results.len(),
             1,
-            "含双引号的 query 应被��确转义并匹配字面内容"
+            "含双引号的 query 应被正确转义并匹配字面内容"
         );
     }
 
@@ -831,7 +831,7 @@ mod tests {
     fn test_count_by_project() {
         let store = test_store();
 
-        // 初始空库：所有项目���数值为 0
+        // 初始空库：所有项目数值为 0
         assert_eq!(store.count_by_project("project-a").unwrap(), 0);
         assert_eq!(store.count_by_project("project-b").unwrap(), 0);
         assert_eq!(store.count().unwrap(), 0);
@@ -848,7 +848,7 @@ mod tests {
         assert_eq!(store.count_by_project("project-a").unwrap(), 3);
         assert_eq!(store.count_by_project("project-b").unwrap(), 1, "project-b 应有 1 条");
 
-        // 向 project-a 再插入条��
+        // 向 project-a 再插入条目
         store.save("project a content 4", "note", "t", "project-a", 5).unwrap();
         assert_eq!(store.count_by_project("project-a").unwrap(), 4);
         assert_eq!(store.count_by_project("project-b").unwrap(), 1);
@@ -880,7 +880,7 @@ mod tests {
 
         assert_eq!(store.count_active_by_project("project-a").unwrap(), 3, "project-a 应有 3 条活跃");
         assert_eq!(store.count_active_by_project("project-b").unwrap(), 1, "project-b 应有 1 条活跃");
-        assert_eq!(store.count().unwrap(), 4, "总��跃条目数为 4");
+        assert_eq!(store.count().unwrap(), 4, "总跃条目数为 4");
 
         // 归档一条 project-a 的条目，活跃数应减少
         let pa_entries = store.list(Some("project-a")).unwrap();
@@ -907,16 +907,16 @@ mod tests {
     fn test_count_archived_by_project() {
         let store = test_store();
 
-        // ��始空库：所有项目的归档数为 0
+        // 初始空库：各项目的活跃数为 0
         assert_eq!(store.count_archived_by_project("project-a").unwrap(), 0);
         assert_eq!(store.count_archived_by_project("project-b").unwrap(), 0);
 
-        // 向 project-a 和 project-b 插入���目
+        // 向 project-b 插入条目
         store.save("pa active 1", "note", "t", "project-a", 5).unwrap();
         store.save("pa active 2", "note", "t", "project-a", 5).unwrap();
         store.save("pb active 1", "note", "t", "project-b", 5).unwrap();
-        assert_eq!(store.count_archived_by_project("project-a").unwrap(), 0, "���档前为 0");
-        assert_eq!(store.count_archived_by_project("project-b").unwrap(), 0, "��档前为 0");
+        assert_eq!(store.count_archived_by_project("project-a").unwrap(), 0, "归档前为 0");
+        assert_eq!(store.count_archived_by_project("project-b").unwrap(), 0, "归档前为 0");
 
         // 归档一条 project-a 的条目
         let pa_entries = store.list(Some("project-a")).unwrap();
@@ -976,7 +976,7 @@ mod tests {
         // 存在的 ID
         assert!(store.entry_exists(&id).unwrap());
 
-        // 软删除后仍然存在（entry_exists 检��所有条目，含 archived���
+        // 软删除后仍然存在（entry_exists 检所有条目，含 archived
         store.forget(&id).unwrap();
         assert!(
             store.entry_exists(&id).unwrap(),
@@ -984,7 +984,7 @@ mod tests {
         );
     }
 
-    /// 回归测试：consolidate() 重建 outlines 时，多 project 的 outline ID 必须���一，
+    /// 回归测试：consolidate() 重建 outlines 时，多 project 的 outline ID 必须唯一，
     /// 不能用 project 名作主键（会与现有 entries 冲突），也不能让 randomblob 退化成同一值。
     #[test]
     fn test_outline_ids_unique_after_consolidate() {
@@ -1021,7 +1021,7 @@ mod tests {
     }
 
     /// 测试 clear_active() 方法：
-    /// 1) 清空前有活跃条���
+    /// 1) 清空前有活跃条目
     /// 2) 清空后 count() 为 0
     /// 3) 清空后已 archived 的条目不受影响
     /// 4) 清空后 memory_count() 应等于 archived 数
@@ -1029,7 +1029,7 @@ mod tests {
     fn test_clear_active() {
         let store = test_store();
 
-        // ��存 3 ���活跃 + 2 条待归档
+        // 保存 3 条活跃 + 2 条待归档
         let id1 = store.save("active one", "note", "t", "p", 5).unwrap();
         let id2 = store.save("active two", "note", "t", "p", 5).unwrap();
         let id3 = store.save("active three", "note", "t", "p", 5).unwrap();
@@ -1040,7 +1040,7 @@ mod tests {
         store.forget(&id4).unwrap();
         store.forget(&id5).unwrap();
 
-        // 验证 1) 清空前有活跃条���
+        // 验证 1) 清空前有活跃条目
         assert_eq!(store.count().unwrap(), 3, "清空前应有 3 条活跃");
         assert_eq!(store.archived_total().unwrap(), 2, "清空前应有 2 条归档");
         assert_eq!(store.memory_count().unwrap(), 5, "清空前总条数为 5");
@@ -1048,7 +1048,7 @@ mod tests {
         // 执行 clear_active()
         store.clear_active().unwrap();
 
-        // 验证 2) 清空后 count() ��� 0
+    /// 2) 清空后 count() 为 0
         assert_eq!(store.count().unwrap(), 0, "clear_active 后活跃条目应为 0");
 
         // 验证 3) 清空后已 archived 的条目不受影响
@@ -1061,14 +1061,14 @@ mod tests {
             "clear_active 后 memory_count 应等于 archived 数"
         );
 
-        // 验证归档的条目仍然���以查到存在
+        // 验证归档的条目仍然以查到存在
         assert!(store.entry_exists(&id4).unwrap(), "已归档条目 id4 应仍存在");
         assert!(store.entry_exists(&id5).unwrap(), "已归档条目 id5 应仍存在");
 
         // 验证活跃条目已被删除
         assert!(!store.entry_exists(&id1).unwrap(), "活跃条目 id1 应已删除");
-        assert!(!store.entry_exists(&id2).unwrap(), "活跃条目 id2 应��删除");
-        assert!(!store.entry_exists(&id3).unwrap(), "活跃条目 id3 应��删除");
+        assert!(!store.entry_exists(&id2).unwrap(), "活跃条目 id2 应已删除");
+        assert!(!store.entry_exists(&id3).unwrap(), "活跃条目 id3 应已删除");
     }
 
     #[test]
@@ -1097,7 +1097,7 @@ mod tests {
     fn test_project_list() {
         let store = test_store();
 
-        // 空库返回空列���
+        // 空库返回空列表
         let projects = store.project_list().unwrap();
         assert!(projects.is_empty(), "空库应返回空列表");
 
@@ -1114,12 +1114,12 @@ mod tests {
         assert_eq!(projects[1], "project-beta");
         assert_eq!(projects[2], "project-gamma");
 
-        // 再插入一个现有项目的新条目，不���增加项目数
+        // 再插入一个现有项目的新条目，不增加项目数
         store.save("content a3", "note", "t", "project-alpha", 5).unwrap();
         let projects = store.project_list().unwrap();
         assert_eq!(projects.len(), 3, "插入已存在项目后应仍为 3 个");
 
-        // 归���项目 beta 的所有条目后，project_list 应不再包含 project-beta
+        // 归项目 beta 的所有条目后，project_list 应不再包含 project-beta
         let beta_entries = store.list(Some("project-beta")).unwrap();
         for e in &beta_entries {
             store.forget(&e.id).unwrap();
@@ -1146,11 +1146,11 @@ mod tests {
         // 应有 3 个唯一项目
         assert_eq!(store.project_count().unwrap(), 3);
 
-        // 再插入已存在项目���目，项目数不变
+        // 再插入已存在项目目，项目数不变
         store.save("content a3", "note", "t", "project-alpha", 5).unwrap();
         assert_eq!(store.project_count().unwrap(), 3);
 
-        // 归档 project-beta ��所有条目后，应剩 2 个项目
+        // 归档 project-beta 所有条目后，应剩 2 个项目
         let beta_entries = store.list(Some("project-beta")).unwrap();
         for e in &beta_entries {
             store.forget(&e.id).unwrap();
@@ -1192,7 +1192,7 @@ mod tests {
     fn test_recent_entries() {
         let store = test_store();
 
-        // ��清空
+        // 先清空
         store.clear_all().unwrap();
 
         // 保存 3 条，故意让时间戳不同
@@ -1241,7 +1241,7 @@ mod tests {
         // 归档前 archive_count 应为 0
         assert_eq!(store.archive_count().unwrap(), 0);
 
-        // forget ��一条 → archived=1
+        // forget 一条 → archived=1
         store.forget(&id1).unwrap();
 
         // 断言 archive_count == 1
@@ -1263,10 +1263,10 @@ mod tests {
         let ts_val = ts.unwrap();
         assert!(ts_val > 0, "created_at 应为正数时间戳");
 
-        // 再保存第二条，最早时间戳不��
+        // 再保存第二条条，最早时间戳不变
         store.save("second entry", "note", "t", "p", 5).unwrap();
         let ts2 = store.oldest_entry_age().unwrap().unwrap();
-        assert_eq!(ts2, ts_val, "第二条插入后最��� created_at 不应改变");
+        assert_eq!(ts2, ts_val, "第二条条插入后最 created_at 不应改变");
 
         // clear_all 后应返回 None
         store.clear_all().unwrap();
