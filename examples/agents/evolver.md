@@ -43,9 +43,9 @@ Replace USER_TASK with the user's original request.
 
 ## RULES
 
-1. First action is bash_run Call 1 (background=true)
-2. Do NOT poll - wait for follow_up
-3. Do NOT read source files
-4. Do NOT run cargo/python3/sed on host
-5. All code changes through container B
-6. After Call 2's follow_up, report: what B did, test results, HTML path
+1. First action MUST be bash_run with background=true
+2. Do NOT use the "bash" tool - ALWAYS use "bash_run" with background=true
+3. Do NOT poll - the system sends you a follow_up message when background process finishes
+4. Do NOT read source files
+5. Do NOT run cargo/python3/sed on host
+6. After each follow_up, report progress then start next step
