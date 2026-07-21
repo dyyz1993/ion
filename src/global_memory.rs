@@ -658,6 +658,19 @@ impl GlobalMemoryStore {
         tracing::info!("[global-memory] migrated {} entries from V0.1", count);
         Ok(count)
     }
+
+    /// Check if any entry's tags column contains the given tag (LIKE '%tag%').
+    /// Returns true if at least one match exists, false otherwise.
+    pub fn has_tag(&self, tag: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let pattern = format!("%{}%", tag);
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM entries WHERE tags LIKE ?1",
+            params![pattern],
+            |row| row.get(0),
+        ).unwrap_or(0);
+        Ok(count > 0)
+    }
 }
 
 fn map_entry(row: &rusqlite::Row) -> rusqlite::Result<GlobalMemoryEntry> {
@@ -1406,5 +1419,18 @@ mod tests {
 
         // verify count_by_project('project-a') == 0
         assert_eq!(store.count_by_project("project-a").unwrap(), 0, "project-a should have 0 active entries");
+    }
+
+    /// Test has_tag method:
+    /// 1) clear_all, save entry with tags='rust,sqlite'
+    /// 2) assert has_tag('rust') == true
+    /// 3) assert has_tag('java') == false
+    #[test]
+    fn test_has_tag() {
+        let store = test_store();
+        store.clear_all().unwrap();
+        store.save("entry with tags", "note", "rust,sqlite", "p", 5).unwrap();
+        assert!(store.has_tag("rust").unwrap(), "has_tag('rust') should be true");
+        assert!(!store.has_tag("java").unwrap(), "has_tag('java') should be false");
     }
 }
