@@ -49,6 +49,20 @@ for attempt in $(seq 1 $MAX_RETRIES); do
     fi
     echo "  : $(date)"
 
+    # B 跑完后立刻抓 session id（容器内 last_session = host last_session，因为 rw 挂载）
+    # 不能等到最后才抓——host 上的 cargo test 会再次污染。
+    B_SID=$("$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c 'cat /root/.ion/agent/last_session 2>/dev/null' 2>/dev/null | tr -dc '[:alnum:]_-' | head -c 100)
+    echo "  B session: $B_SID"
+    # 立刻备份 B 的 session 文件（防止后续 host 操作污染）
+    if [ -n "$B_SID" ]; then
+        # session 文件路径：~/.ion/agent/sessions/<cwd_hash>--<cwd_basename>--/session.jsonl
+        B_SESSION_FILE=$(find "$HOME/.ion/agent/sessions/" -name "session.jsonl" 2>/dev/null | xargs grep -l "\"id\":\"$B_SID\"" 2>/dev/null | head -1)
+        if [ -n "$B_SESSION_FILE" ]; then
+            cp "$B_SESSION_FILE" "/tmp/evolver_b_session_${B_SID}.jsonl"
+            echo "  backed up: /tmp/evolver_b_session_${B_SID}.jsonl"
+        fi
+    fi
+
     #  CI: cargo build + cargo test --lib 
     echo ""
     echo "  [CI] cargo build..."
@@ -124,14 +138,19 @@ git add -A
 git commit -m "evolve: $TASK" 2>&1 | tail -3
 git log --oneline -3
 
-#  5.  HTML  
+#  5.  HTML  (B SID, last_session)
 echo ""
 echo " Step:  HTML  "
-LAST_SID=$(cat ~/.ion/agent/last_session 2>/dev/null || echo "")
+#  B_SID B
+if [ -z "$B_SID" ]; then
+    B_SID=$(cat ~/.ion/agent/last_session 2>/dev/null || echo "")
+fi
 REPORT="/tmp/evolver_$(date +%Y%m%d_%H%M%S).html"
-if [ -n "$LAST_SID" ]; then
-    "$PROJECT_DIR/target/debug/ion" --export "$REPORT" --session "$LAST_SID" 2>/dev/null && \
+if [ -n "$B_SID" ]; then
+    "$PROJECT_DIR/target/debug/ion" --export "$REPORT" --session "$B_SID" 2>/dev/null && \
         echo "   : $REPORT" && open "$REPORT" 2>/dev/null
+else
+    echo "  B_SID  HTML "
 fi
 
 #  6.  

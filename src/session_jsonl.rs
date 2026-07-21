@@ -464,7 +464,9 @@ impl SessionFile {
         let content = lines.join("\n");
         if !content.is_empty() {
             let _ = std::fs::write(&dir, &content);
-            let _ = std::fs::write(last_session_path(), &header.id);
+            // 注意：这里不写 last_session。last_session 是业务层概念（cmd_run 维护），
+            // 数据层 save 不应该有副作用——会让单元测试污染 ~/.ion/agent/last_session，
+            // 导致后续 ion --export 找错 session。
         }
     }
 }
