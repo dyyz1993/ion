@@ -671,6 +671,27 @@ impl GlobalMemoryStore {
         ).unwrap_or(0);
         Ok(count > 0)
     }
+
+    /// Find all entries whose content starts with the given prefix.
+    /// Uses SQL `content LIKE 'prefix%'`. Results are ordered by created_at DESC.
+    pub fn find_by_content_prefix(&self, prefix: &str) -> Result<Vec<GlobalMemoryEntry>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let pattern = format!("{}%", prefix);
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, project, content, category, tags, importance, archived, created_at, updated_at
+                 FROM entries WHERE content LIKE ?1 ORDER BY created_at DESC",
+            )
+            .map_err(|e| format!("prepare find_by_content_prefix: {}", e))?;
+        let rows = stmt
+            .query_map(params![pattern], map_entry)
+            .map_err(|e| format!("query find_by_content_prefix: {}", e))?;
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r.map_err(|e| format!("row find_by_content_prefix: {}", e))?);
+        }
+        Ok(results)
+    }
 }
 
 fn map_entry(row: &rusqlite::Row) -> rusqlite::Result<GlobalMemoryEntry> {
@@ -1432,5 +1453,22 @@ mod tests {
         store.save("entry with tags", "note", "rust,sqlite", "p", 5).unwrap();
         assert!(store.has_tag("rust").unwrap(), "has_tag('rust') should be true");
         assert!(!store.has_tag("java").unwrap(), "has_tag('java') should be false");
+    }
+
+    /// Test find_by_content_prefix method:
+    /// 1) clear_all, save 'hello world', 'hello rust', 'goodbye'
+    /// 2) assert find_by_content_prefix('hello').len() == 2
+    /// 3) assert find_by_content_prefix('xyz').is_empty()
+    #[test]
+    fn test_find_by_content_prefix() {
+        let store = test_store();
+        store.clear_all().unwrap();
+        store.save("hello world", "note", "t", "p", 5).unwrap();
+        store.save("hello rust", "note", "t", "p", 5).unwrap();
+        store.save("goodbye", "note", "t", "p", 5).unwrap();
+        let results = store.find_by_content_prefix("hello").unwrap();
+        assert_eq!(results.len(), 2, "should find 2 entries with 'hello' prefix");
+        let results_empty = store.find_by_content_prefix("xyz").unwrap();
+        assert!(results_empty.is_empty(), "should be empty for 'xyz' prefix");
     }
 }
