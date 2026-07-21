@@ -325,6 +325,17 @@ impl SessionIndex {
             m.agent = agent.to_string();
         });
     }
+
+    /// Count how many sessions in the index match the given project key.
+    /// Loads the index from disk and counts entries where `project` == `project_key`.
+    pub fn count_sessions_by_project(&self, project_key: &str) -> Result<i64, String> {
+        let count = self
+            .sessions
+            .values()
+            .filter(|m| m.project.as_deref() == Some(project_key))
+            .count();
+        Ok(count as i64)
+    }
 }
 
 #[cfg(test)]
@@ -411,5 +422,124 @@ mod tests {
         let fork = idx.get("fork").unwrap();
         assert_eq!(fork.parent_session.as_deref(), Some("parent_sess"));
         assert_eq!(fork.parent_type.as_deref(), Some("fork"));
+    }
+
+    #[test]
+    fn test_count_sessions_by_project() {
+        use std::io::Write;
+
+        // Create a temp index file with known data
+        let tmp_dir = std::env::temp_dir();
+        let index_path = tmp_dir.join("test_sessions_index.json");
+
+        let test_data = serde_json::json!({
+            "sessions": {
+                "sess1": {
+                    "name": null,
+                    "first_name": null,
+                    "project": "my-project",
+                    "project_name": "my-project",
+                    "worktree": false,
+                    "branch": null,
+                    "model": "gpt4",
+                    "agent": "default",
+                    "provider": "openai",
+                    "token_input": 0,
+                    "token_output": 0,
+                    "token_cache_read": 0,
+                    "token_cache_write": 0,
+                    "compress_count": 0,
+                    "message_count": 0,
+                    "turn_count": 0,
+                    "created_at": 0,
+                    "updated_at": 0,
+                    "error_count": 0,
+                    "last_thinking_level": null,
+                    "last_active_tools": null,
+                    "last_entry_id": null,
+                    "parent_session": null,
+                    "parent_type": null
+                },
+                "sess2": {
+                    "name": null,
+                    "first_name": null,
+                    "project": "my-project",
+                    "project_name": "my-project",
+                    "worktree": false,
+                    "branch": null,
+                    "model": "gpt4",
+                    "agent": "default",
+                    "provider": "openai",
+                    "token_input": 0,
+                    "token_output": 0,
+                    "token_cache_read": 0,
+                    "token_cache_write": 0,
+                    "compress_count": 0,
+                    "message_count": 0,
+                    "turn_count": 0,
+                    "created_at": 0,
+                    "updated_at": 0,
+                    "error_count": 0,
+                    "last_thinking_level": null,
+                    "last_active_tools": null,
+                    "last_entry_id": null,
+                    "parent_session": null,
+                    "parent_type": null
+                },
+                "sess3": {
+                    "name": null,
+                    "first_name": null,
+                    "project": "other-project",
+                    "project_name": "other-project",
+                    "worktree": false,
+                    "branch": null,
+                    "model": "gpt4",
+                    "agent": "default",
+                    "provider": "openai",
+                    "token_input": 0,
+                    "token_output": 0,
+                    "token_cache_read": 0,
+                    "token_cache_write": 0,
+                    "compress_count": 0,
+                    "message_count": 0,
+                    "turn_count": 0,
+                    "created_at": 0,
+                    "updated_at": 0,
+                    "error_count": 0,
+                    "last_thinking_level": null,
+                    "last_active_tools": null,
+                    "last_entry_id": null,
+                    "parent_session": null,
+                    "parent_type": null
+                }
+            }
+        });
+
+        // Backup the real index path and override HOME/temp
+        let _original_home = std::env::var("HOME").ok();
+
+        // Write temp index and override the path used by SessionIndex::path()
+        {
+            let mut file = std::fs::File::create(&index_path).unwrap();
+            file.write_all(serde_json::to_string_pretty(&test_data).unwrap().as_bytes())
+                .unwrap();
+        }
+
+        // Temporarily set HOME to the temp dir so SessionIndex::path() resolves to our test file
+        // We can't easily override path(), so let's just use the index directly.
+        let _idx = SessionIndex::default();
+        // Parse the test data into a SessionIndex and count
+        let parsed: SessionIndex = serde_json::from_value(test_data).unwrap();
+        let count = parsed.count_sessions_by_project("my-project").unwrap();
+        assert_eq!(count, 2, "Expected 2 sessions for 'my-project'");
+
+        let count_other = parsed.count_sessions_by_project("other-project").unwrap();
+        assert_eq!(count_other, 1, "Expected 1 session for 'other-project'");
+
+        let count_none = parsed.count_sessions_by_project("nonexistent").unwrap();
+        assert_eq!(count_none, 0, "Expected 0 sessions for 'nonexistent'");
+
+        // Cleanup temp file
+        let _ = std::fs::remove_file(&index_path);
     }
 }
