@@ -460,8 +460,9 @@ fn export_session_internal(
         })
         .unwrap_or_else(|| "unknown".to_string());
 
-    // session 名称：优先 header.name > spawnMeta.spawnedBy > cwd 目录名
+    // session 名称：优先 header.name > agent > spawnMeta.spawnedBy > cwd 目录名
     let session_name = header.get("name").and_then(|v| v.as_str())
+        .or_else(|| header.get("agent").and_then(|v| v.as_str()))
         .or_else(|| header.get("spawnMeta").and_then(|m| m.get("spawnedBy")).and_then(|v| v.as_str()))
         .map(|s| s.to_string())
         .unwrap_or_else(|| {
