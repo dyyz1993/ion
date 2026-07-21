@@ -137,6 +137,33 @@ impl ObjectStore {
         dir_size(&objects_dir)
     }
 
+    /// Return the number of objects in the object store
+    /// Traverse all subdirectories in the objects dir, count files
+    pub fn store_count(&self) -> Result<usize, String> {
+        let objects_dir = self.store_dir.join("objects");
+        if !objects_dir.exists() {
+            return Ok(0);
+        }
+        let mut count = 0usize;
+        let prefix_dirs = std::fs::read_dir(&objects_dir)
+            .map_err(|e| format!("Failed to read objects dir: {}", e))?;
+        for prefix_entry in prefix_dirs {
+            let prefix_entry = prefix_entry
+                .map_err(|e| format!("Failed to read dir entry: {}", e))?;
+            let path = prefix_entry.path();
+            if path.is_dir() {
+                if let Ok(files) = std::fs::read_dir(&path) {
+                    for file in files {
+                        if file.is_ok() {
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(count)
+    }
+
     /// 列出所有 object hash（GC 用）
     pub fn list_objects(&self) -> Vec<String> {
         let objects_dir = self.store_dir.join("objects");
@@ -387,6 +414,29 @@ mod tests {
             "压缩后存储（{} bytes）应小于原始（{} bytes）",
             stored_size, original_size
         );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn test_store_count() {
+        // Create temp ObjectStore, write known files, verify count
+        let tmp = std::env::temp_dir().join(format!("fs_store_count_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let store = ObjectStore::new_at(tmp.join("store"));
+
+        // Empty store -> count = 0
+        assert_eq!(store.store_count().unwrap(), 0);
+
+        // Write 3 different contents
+        store.write_object(b"content one");
+        store.write_object(b"content two");
+        store.write_object(b"content three");
+        assert_eq!(store.store_count().unwrap(), 3);
+
+        // Write duplicate content -> dedup, count unchanged
+        store.write_object(b"content one");
+        assert_eq!(store.store_count().unwrap(), 3);
 
         std::fs::remove_dir_all(&tmp).ok();
     }
