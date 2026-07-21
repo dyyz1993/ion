@@ -518,6 +518,8 @@ struct EffectiveConfig {
     no_extensions: bool,
     no_skills: bool,
     message: String,
+    /// Agent name (from --agent), for session header banner
+    agent: Option<String>,
 }
 
 impl EffectiveConfig {
@@ -701,6 +703,7 @@ fn resolve_effective(cli: &Cli) -> EffectiveConfig {
         no_extensions: cli.no_extensions,
         no_skills: cli.no_skills,
         message: EffectiveConfig::parse_messages(&cli.messages),
+        agent: cli.agent.clone(),
     };
 
     // Apply --agent config if set

@@ -374,7 +374,7 @@ async fn main() {
         unsafe { std::env::set_var("ION_SESSION_AGENT", agent_name); }
     }
     unsafe {
-        std::env::set_var("ION_SESSION_MODEL", &model);
+        std::env::set_var("ION_SESSION_MODEL", &model.id);
         std::env::set_var("ION_SESSION_PROVIDER", &provider);
     }
 

@@ -694,10 +694,12 @@ pub async fn compact(
 pub fn make_llm_summarizer(
     provider: Arc<ion_provider::registry::ApiRegistry>,
     model: Model,
+    api_key: Option<String>,
 ) -> SummarizerFn {
     Arc::new(move |old_messages: &[Message]| {
         let p = Arc::clone(&provider);
         let m = model.clone();
+        let key = api_key.clone();
         let msgs = old_messages.to_vec();
         Box::pin(async move {
             // 检测已有的 CompactionSummary（增量更新模式，对齐 pi UPDATE_SUMMARIZATION_PROMPT）
@@ -725,7 +727,15 @@ pub fn make_llm_summarizer(
                 None,
             );
             let ctx = ion_provider::Context::new(Some(system_prompt), transformed);
-            let msg = ion_provider::registry::complete(&p, &m, &ctx, None).await?;
+            let opts = ion_provider::types::StreamOptions {
+                api_key: key.clone(),
+                reasoning: None,
+                timeout_ms: Some(60000),
+                max_retries: Some(3),
+                max_tokens: None,
+                response_format: None,
+            };
+            let msg = ion_provider::registry::complete(&p, &m, &ctx, Some(&opts)).await?;
             Ok(msg
                 .content
                 .iter()
