@@ -127,7 +127,43 @@ impl GlobalMemoryStore {
         Ok(id)
     }
 
-    /// FTS5 全文搜索（含中文 LIKE fallback）。
+    /// Save multiple entries in a single transaction.
+    /// Each tuple is (content, category, tags, project, importance).
+    /// Returns list of generated IDs on success.
+    /// If any save fails, all inserts are rolled back.
+    pub fn batch_save(&self, entries: Vec<(&str, &str, &str, &str, i32)>) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        // Use savepoint for rollback capability on error
+        conn.execute("SAVEPOINT batch_save", [])
+            .map_err(|e| format!("savepoint: {}", e))?;
+        let mut ids = Vec::with_capacity(entries.len());
+        let result = (|| -> Result<(), String> {
+            for (content, category, tags, project, importance) in &entries {
+                let id = format!("gmem_{}", uuid_str());
+                conn.execute(
+                    "INSERT INTO entries (id, project, content, category, tags, importance) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![id, project, content, category, tags, importance],
+                )
+                .map_err(|e| format!("insert in batch_save: {}", e))?;
+                ids.push(id);
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                conn.execute("RELEASE batch_save", [])
+                    .map_err(|e| format!("release savepoint: {}", e))?;
+                Ok(ids)
+            }
+            Err(e) => {
+                conn.execute("ROLLBACK TO batch_save", [])
+                    .map_err(|_| format!("rollback failed after: {}", e))?;
+                Err(e)
+            }
+        }
+    }
+
+    /// FTS5 full-text search (with Chinese LIKE fallback).
     ///
     /// 先用 FTS5 MATCH（英文/分词语言效果好），如果结果为空则用 LIKE 模糊匹配
     /// （中文场景 fallback，因为 FTS5 默认 tokenizer 对中文不友好）。
@@ -1683,5 +1719,24 @@ mod tests {
         assert_eq!(result[0].content, "entry 3", "most recent entry should be entry 3");
         // Entry 2 was saved before entry 3
         assert_eq!(result[1].content, "entry 2", "second most recent entry should be entry 2");
+    }
+
+    /// Test batch_save method:
+    /// 1) clear_all; batch_save 3 entries
+    /// 2) count() == 3; returned ids.len() == 3
+    #[test]
+    fn test_batch_save() {
+        let store = test_store();
+        store.clear_all().unwrap();
+
+        let entries: Vec<(&str, &str, &str, &str, i32)> = vec![
+            ("a", "note", "t", "p", 5),
+            ("b", "note", "t", "p", 5),
+            ("c", "note", "t", "p", 5),
+        ];
+        let ids = store.batch_save(entries).unwrap();
+
+        assert_eq!(store.count().unwrap(), 3, "batch_save should save 3 entries");
+        assert_eq!(ids.len(), 3, "batch_save should return 3 IDs");
     }
 }
