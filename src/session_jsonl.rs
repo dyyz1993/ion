@@ -21,7 +21,7 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // Session entry types (pi JSONL spec v3)
@@ -903,6 +903,43 @@ pub fn message_to_entry(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Entry query helpers
+// ---------------------------------------------------------------------------
+
+/// Count entries of a specific type in a session JSONL file.
+///
+/// Reads the file at `file_path`, parses each non-empty line as JSON, and
+/// counts how many have a `"type"` field matching `entry_type`.
+///
+/// Returns `Ok(count)` on success, or `Err(reason)` if the file cannot be
+/// read or contains no valid entries.
+///
+/// # Example
+///
+/// ```no_run
+/// use std::path::Path;
+/// let count = count_entries_by_type(Path::new("/tmp/session.jsonl"), "message").unwrap();
+/// ```
+pub fn count_entries_by_type(file_path: &Path, entry_type: &str) -> Result<usize, String> {
+    let content = std::fs::read_to_string(file_path)
+        .map_err(|e| format!("Failed to read file {:?}: {}", file_path, e))?;
+
+    let count = content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| {
+            let val: serde_json::Value = serde_json::from_str(line).ok()?;
+            val.get("type")
+                .and_then(|t| t.as_str())
+                .map(|t| t == entry_type)
+        })
+        .filter(|&matched| matched)
+        .count();
+
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1075,5 +1112,39 @@ mod tests {
         assert_eq!(entry.summary, "测试摘要");
         assert_eq!(entry.tokens_before, 32000);
         assert_eq!(entry.first_kept_entry_id, Some("msg_042".to_string()));
+    }
+
+    #[test]
+    fn test_count_entries_by_type() {
+        // Create a temp JSONL file with known entries of various types
+        let dir = std::env::temp_dir().join(format!("ion_test_count_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let file_path = dir.join("session.jsonl");
+
+        // Write known entries: 1 session, 3 messages, 2 turn_summary, 1 compaction, 1 custom
+        let entries = vec![
+            r#"{"type":"session","version":3,"id":"s1","cwd":"/tmp","timestamp":"2025-01-01T00:00:00Z"}"#,
+            r#"{"type":"message","id":"m1","parentId":"s1","message":{"role":"user","content":"hi"}}"#,
+            r#"{"type":"message","id":"m2","parentId":"m1","message":{"role":"assistant","content":"hello"}}"#,
+            r#"{"type":"turn_summary","id":"t1","turnId":1,"summary":"first turn"}"#,
+            r#"{"type":"message","id":"m3","parentId":"m2","message":{"role":"user","content":"bye"}}"#,
+            r#"{"type":"turn_summary","id":"t2","turnId":2,"summary":"second turn"}"#,
+            r#"{"type":"compaction","id":"c1","summary":"compressed","tokensBefore":100}"#,
+            r#"{"type":"custom","id":"x1","customType":"my_custom","data":{"key":"val"}}"#,
+        ];
+        let content = entries.join("\n");
+        std::fs::write(&file_path, &content).expect("write temp file");
+
+        // Verify counts
+        assert_eq!(count_entries_by_type(&file_path, "session").unwrap(), 1);
+        assert_eq!(count_entries_by_type(&file_path, "message").unwrap(), 3);
+        assert_eq!(count_entries_by_type(&file_path, "turn_summary").unwrap(), 2);
+        assert_eq!(count_entries_by_type(&file_path, "compaction").unwrap(), 1);
+        assert_eq!(count_entries_by_type(&file_path, "custom").unwrap(), 1);
+        // Non-existent type should return 0
+        assert_eq!(count_entries_by_type(&file_path, "branch_summary").unwrap(), 0);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
