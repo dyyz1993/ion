@@ -718,6 +718,15 @@ impl GlobalMemoryStore {
             .map_err(|e| format!("archive_by_project: {}", e))?;
         Ok(updated)
     }
+
+    /// Return total count of archived=1 entries across all projects.
+    pub fn count_archived(&self) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM entries WHERE archived=1", [], |row| row.get(0)
+        ).unwrap_or(0);
+        Ok(count)
+    }
 }
 
 fn map_entry(row: &rusqlite::Row) -> rusqlite::Result<GlobalMemoryEntry> {
@@ -1548,5 +1557,33 @@ mod tests {
 
         // count_active_by_project('proj-b') == 1
         assert_eq!(store.count_active_by_project("proj-b").unwrap(), 1, "proj-b should have 1 active entry");
+    }
+
+    /// Test count_archived method:
+    /// clear_all; save 3; archive first (use forget); count_archived()==1;
+    /// forget second; count_archived()==2
+    #[test]
+    fn test_count_archived() {
+        let store = test_store();
+        store.clear_all().unwrap();
+
+        // Initial: no archived entries
+        assert_eq!(store.count_archived().unwrap(), 0);
+
+        // Save 3 entries
+        let id1 = store.save("entry one", "note", "t", "p", 5).unwrap();
+        let id2 = store.save("entry two", "note", "t", "p", 5).unwrap();
+        let id3 = store.save("entry three", "note", "t", "p", 5).unwrap();
+
+        // Archive first entry
+        store.forget(&id1).unwrap();
+        assert_eq!(store.count_archived().unwrap(), 1);
+
+        // Archive second entry
+        store.forget(&id2).unwrap();
+        assert_eq!(store.count_archived().unwrap(), 2);
+
+        // Third entry still active
+        assert_eq!(store.count().unwrap(), 1);
     }
 }
