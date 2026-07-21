@@ -258,6 +258,70 @@ fn evaluate_expr(expr: &str) -> AgentResult<f64> {
 }
 
 // ---------------------------------------------------------------------------
+// CalculatorAdvancedTool — scientific calculator
+// ---------------------------------------------------------------------------
+
+pub struct CalculatorAdvancedTool;
+
+#[async_trait]
+impl Tool for CalculatorAdvancedTool {
+    fn name(&self) -> &str {
+        "calculator_advanced"
+    }
+
+    fn description(&self) -> &str {
+        "Scientific calculator supporting trigonometry (sin/cos/tan), logarithms (log/ln), and roots (sqrt/cbrt). Args: operation (one of sin/cos/tan/log/ln/sqrt/cbrt), value (f64)."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "description": "Operation to perform: sin, cos, tan, log, ln, sqrt, cbrt"
+                },
+                "value": {
+                    "type": "number",
+                    "description": "Input value for the operation"
+                }
+            },
+            "required": ["operation", "value"]
+        })
+    }
+
+    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        let operation = args
+            .get("operation")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing 'operation' argument".into()))?;
+
+        let value = args
+            .get("value")
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| AgentError::Tool("missing or invalid 'value' argument".into()))?;
+
+        let result = match operation {
+            "sin" => value.to_radians().sin(),
+            "cos" => value.to_radians().cos(),
+            "tan" => value.to_radians().tan(),
+            "log" => value.log10(),
+            "ln" => value.ln(),
+            "sqrt" => value.sqrt(),
+            "cbrt" => value.cbrt(),
+            _ => {
+                return Err(AgentError::Tool(format!(
+                    "unsupported operation: '{}'. Supported: sin, cos, tan, log, ln, sqrt, cbrt",
+                    operation
+                )));
+            }
+        };
+
+        Ok(format!("{:.6}", result))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Echo tool (for testing)
 // ---------------------------------------------------------------------------
 
@@ -913,6 +977,83 @@ mod tests {
         // 全文读不附加范围提示
         assert!(!result.contains("showing lines"));
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod tests_advanced_calc {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_sin() {
+        let tool = CalculatorAdvancedTool;
+        let rt = crate::runtime::LocalRuntime::new();
+        let args = serde_json::json!({"operation":"sin","value":0.0});
+        let result = tool.execute(args, &rt).await.unwrap();
+        assert!(result.contains("0.000000"), "sin(0) should be 0, got {}", result);
+    }
+
+    #[tokio::test]
+    async fn test_sqrt() {
+        let tool = CalculatorAdvancedTool;
+        let rt = crate::runtime::LocalRuntime::new();
+        let args = serde_json::json!({"operation":"sqrt","value":9.0});
+        let result = tool.execute(args, &rt).await.unwrap();
+        assert_eq!(result, "3.000000", "sqrt(9) should be 3, got {}", result);
+    }
+
+    #[tokio::test]
+    async fn test_log() {
+        let tool = CalculatorAdvancedTool;
+        let rt = crate::runtime::LocalRuntime::new();
+        let args = serde_json::json!({"operation":"log","value":100.0});
+        let result = tool.execute(args, &rt).await.unwrap();
+        assert_eq!(result, "2.000000", "log10(100) should be 2, got {}", result);
+    }
+
+    #[tokio::test]
+    async fn test_invalid_operation() {
+        let tool = CalculatorAdvancedTool;
+        let rt = crate::runtime::LocalRuntime::new();
+        let args = serde_json::json!({"operation":"invalid","value":1.0});
+        let result = tool.execute(args, &rt).await;
+        assert!(result.is_err(), "invalid operation should return Err");
+    }
+
+    #[tokio::test]
+    async fn test_cos() {
+        let tool = CalculatorAdvancedTool;
+        let rt = crate::runtime::LocalRuntime::new();
+        let args = serde_json::json!({"operation":"cos","value":0.0});
+        let result = tool.execute(args, &rt).await.unwrap();
+        assert!(result.contains("1.000000"), "cos(0) should be 1, got {}", result);
+    }
+
+    #[tokio::test]
+    async fn test_tan() {
+        let tool = CalculatorAdvancedTool;
+        let rt = crate::runtime::LocalRuntime::new();
+        let args = serde_json::json!({"operation":"tan","value":0.0});
+        let result = tool.execute(args, &rt).await.unwrap();
+        assert!(result.contains("0.000000"), "tan(0) should be 0, got {}", result);
+    }
+
+    #[tokio::test]
+    async fn test_ln() {
+        let tool = CalculatorAdvancedTool;
+        let rt = crate::runtime::LocalRuntime::new();
+        let args = serde_json::json!({"operation":"ln","value":1.0});
+        let result = tool.execute(args, &rt).await.unwrap();
+        assert!(result.contains("0.000000"), "ln(1) should be 0, got {}", result);
+    }
+
+    #[tokio::test]
+    async fn test_cbrt() {
+        let tool = CalculatorAdvancedTool;
+        let rt = crate::runtime::LocalRuntime::new();
+        let args = serde_json::json!({"operation":"cbrt","value":8.0});
+        let result = tool.execute(args, &rt).await.unwrap();
+        assert!(result.contains("2.000000"), "cbrt(8) should be 2, got {}", result);
     }
 }
 
