@@ -136,3 +136,35 @@ ion --host --agent evolver "给 global_memory 加 fn last_count() 方法"
 | `scripts/init-evolve-container.sh` | 启动 B（container + 编译 ion） |
 | `scripts/Dockerfile.evolve` | container 镜像（Rust 工具链） |
 | `examples/agents/developer.md` | B 的 agent 定义（container 里用） |
+
+## 当前验证状态（2026-07-21）
+
+### 已验证的闭环
+
+| 方法 | commit | 测试 |
+|------|--------|------|
+| count_by_project | a174974 | 15 passed |
+| count_archived_by_project | aa0d9ab | 16 passed |
+| count_active_by_project | 857ffcf | 17 passed |
+| entries_summary | f7d8dec | 18 passed |
+| project_list | 0e4a322 | 19 passed |
+| project_count | c7d9a5c | 20 passed |
+| clear_active | 76f277b | 14 passed |
+| has_entries | 859cc21 | 13 passed |
+| memory_count | 2e5766f | 15 passed |
+| archived_total | 6955c57 | 13 passed |
+
+每个方法都是 B 通过 container exec 改的，CI 在 container 里跑通过。
+
+### 关键文件
+
+| 文件 | 作用 |
+|------|------|
+| scripts/evolve.sh | worktree + container + 编译 ion |
+| scripts/evolve-run.sh | B 改代码 + CI + 同步 + HTML + 清理 |
+| examples/agents/evolver.md | A 的 agent 定义 |
+| src/command_guard.rs | 拦截 host 代码修改 |
+| src/agent/bash.rs | bash_run background + follow_up |
+| src/agent/agent_loop.rs | ION_WAIT_BACKGROUND |
+| docs/design/EVOLVER_LESSONS_LEARNED.md | 10 个问题 + 解决方案 |
+| docs/design/WATCHDOG_DUAL_VERSION.md | 看门狗双版本切换设计 |
