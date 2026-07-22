@@ -906,6 +906,26 @@ impl GlobalMemoryStore {
         };
         serde_json::to_string(&rows).map_err(|e| format!("serialize: {}", e))
     }
+
+    /// Find all entries whose importance is within the given [min, max] range (inclusive).
+    /// Results are ordered by importance DESC.
+    pub fn find_by_importance_range(&self, min: i32, max: i32) -> Result<Vec<GlobalMemoryEntry>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, project, content, category, tags, importance, archived, created_at, updated_at
+                 FROM entries WHERE importance >= ?1 AND importance <= ?2 ORDER BY importance DESC",
+            )
+            .map_err(|e| format!("prepare find_by_importance_range: {}", e))?;
+        let rows = stmt
+            .query_map(params![min, max], map_entry)
+            .map_err(|e| format!("query find_by_importance_range: {}", e))?;
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r.map_err(|e| format!("row find_by_importance_range: {}", e))?);
+        }
+        Ok(results)
+    }
 }
 
 fn map_entry(row: &rusqlite::Row) -> rusqlite::Result<GlobalMemoryEntry> {
@@ -1915,5 +1935,46 @@ mod tests {
         assert!(result.is_some(), "should return an entry when table is non-empty");
         let entry = result.unwrap();
         assert_eq!(entry.importance, 1, "lowest importance entry should have importance == 1");
+    }
+
+    /// Test find_by_importance_range method:
+    /// - clear_all
+    /// - save entries with importance 1, 5, 5, 9, 10
+    /// - find_by_importance_range(5, 9) should return 3 entries (5, 5, 9) in DESC order
+    /// - find_by_importance_range(1, 10) should return all 5 entries in DESC order
+    /// - find_by_importance_range(0, 0) should return 0 entries (no entry has importance 0)
+    #[test]
+    fn test_find_by_importance_range() {
+        let store = test_store();
+        store.clear_all().unwrap();
+
+        // Save 5 entries with various importance values
+        store.save("entry importance 1", "note", "t", "p", 1).unwrap();
+        store.save("entry importance 5 first", "note", "t", "p", 5).unwrap();
+        store.save("entry importance 5 second", "note", "t", "p", 5).unwrap();
+        store.save("entry importance 9", "note", "t", "p", 9).unwrap();
+        store.save("entry importance 10", "note", "t", "p", 10).unwrap();
+
+        // Range [5, 9] should return 3 entries: 9, 5, 5 (DESC order)
+        let results = store.find_by_importance_range(5, 9).unwrap();
+        assert_eq!(results.len(), 3, "range [5,9] should return 3 entries");
+        assert_eq!(results[0].importance, 9, "first result should have importance 9");
+        assert_eq!(results[1].importance, 5, "second result should have importance 5");
+        assert_eq!(results[2].importance, 5, "third result should have importance 5");
+
+        // Range [1, 10] should return all 5 entries in DESC order
+        let results_all = store.find_by_importance_range(1, 10).unwrap();
+        assert_eq!(results_all.len(), 5, "range [1,10] should return all 5 entries");
+        assert_eq!(results_all[0].importance, 10, "first result should have importance 10");
+        assert_eq!(results_all[4].importance, 1, "last result should have importance 1");
+
+        // Range [0, 0] should return 0 entries (no entry has importance 0)
+        let results_empty = store.find_by_importance_range(0, 0).unwrap();
+        assert_eq!(results_empty.len(), 0, "range [0,0] should return 0 entries");
+
+        // Single-value range [9, 9] should return exactly 1 entry
+        let results_single = store.find_by_importance_range(9, 9).unwrap();
+        assert_eq!(results_single.len(), 1, "range [9,9] should return 1 entry");
+        assert_eq!(results_single[0].importance, 9);
     }
 }
