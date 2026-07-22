@@ -660,7 +660,55 @@ impl GlobalMemoryStore {
         Ok(deleted)
     }
 
-    /// 获取全局记忆库路径
+        /// Advanced multi-field search using FTS5 MATCH for content,
+    /// with optional filters for project, category, and minimum importance.
+    pub fn search_advanced(
+        &self,
+        query: &str,
+        project: Option<&str>,
+        category: Option<&str>,
+        min_importance: i32,
+    ) -> Result<Vec<GlobalMemoryEntry>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let escaped_query = format!( "\"{}\"", query.replace('"', "\"\"") );
+        let mut where_clauses = vec![
+            "entries_fts MATCH ?1".to_string(),
+            "e.archived = 0".to_string(),
+            "e.importance >= ?2".to_string(),
+        ];
+        let mut param_idx = 3;
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+            Box::new(escaped_query),
+            Box::new(min_importance),
+        ];
+        if let Some(proj) = project {
+            where_clauses.push(format!("e.project = ?{}", param_idx));
+            params.push(Box::new(proj.to_string()));
+            param_idx += 1;
+        }
+        if let Some(cat) = category {
+            where_clauses.push(format!("e.category = ?{}", param_idx));
+            params.push(Box::new(cat.to_string()));
+        }
+        let where_sql = where_clauses.join(" AND ");
+        let sql = format!(
+            "SELECT e.id, e.project, e.content, e.category, e.tags, e.importance, e.archived, e.created_at, e.updated_at
+             FROM entries e JOIN entries_fts f ON e.rowid = f.rowid
+             WHERE {}
+             ORDER BY e.importance DESC",
+            where_sql
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| format!("prepare: {}", e))?;
+        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt.query_map(param_refs.as_slice(), map_entry).map_err(|e| format!("query: {}", e))?;
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r.map_err(|e| format!("row: {}", e))?);
+        }
+        Ok(results)
+    }
+
+/// 获取全局记忆库路径
     pub fn db_path() -> PathBuf {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
@@ -794,6 +842,22 @@ impl GlobalMemoryStore {
             "SELECT COUNT(*) FROM entries WHERE archived=1", [], |row| row.get(0)
         ).unwrap_or(0);
         Ok(count)
+    }
+
+    /// Update the category of an existing entry.
+    /// Returns Err if no row with the given id exists (0 rows affected).
+    pub fn update_category(&self, id: &str, new_category: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let affected = conn
+            .execute(
+                "UPDATE entries SET category = ?2 WHERE id = ?1",
+                params![id, new_category],
+            )
+            .map_err(|e| format!("update_category: {}", e))?;
+        if affected == 0 {
+            return Err(format!("entry with id '{}' not found", id));
+        }
+        Ok(())
     }
 
     /// Find entries whose content appears more than once in the table.
@@ -1976,5 +2040,31 @@ mod tests {
         let results_single = store.find_by_importance_range(9, 9).unwrap();
         assert_eq!(results_single.len(), 1, "range [9,9] should return 1 entry");
         assert_eq!(results_single[0].importance, 9);
+    }
+
+    /// Test update_category method:
+    /// 1) clear_all; save an entry with category "old_cat"
+    /// 2) update_category to "new_cat"
+    /// 3) re-fetch and verify category == "new_cat"
+    /// 4) update_category on non-existent id returns Err
+    #[test]
+    fn test_update_category() {
+        let store = test_store();
+        store.clear_all().unwrap();
+
+        // Save an entry with initial category
+        let id = store.save("test category update", "old_cat", "t", "p", 5).unwrap();
+
+        // Update category to "new_cat"
+        store.update_category(&id, "new_cat").unwrap();
+
+        // Re-fetch and verify category == "new_cat"
+        let entries = store.list(None).unwrap();
+        let entry = entries.iter().find(|e| e.id == id).expect("entry should exist");
+        assert_eq!(entry.category, "new_cat", "category should be updated to 'new_cat'");
+
+        // update_category on non-existent id should return Err
+        let result = store.update_category("nonexistent", "whatever");
+        assert!(result.is_err(), "update_category on nonexistent id should return Err");
     }
 }
