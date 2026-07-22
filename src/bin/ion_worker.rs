@@ -535,6 +535,37 @@ async fn main() {
         }
         info.push_str(&format!("- **Agent**: `{}`\n", current_agent_name));
         info.push_str(&format!("- **Model**: `{}` ({})\n", model.id, provider));
+
+        // Recent commits (last 3, with files changed)
+        let recent = std::process::Command::new("git")
+            .args(&["log", "--oneline", "--name-only", "-3"])
+            .current_dir(cwd)
+            .output().ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string());
+        if let Some(commits) = &recent {
+            if !commits.is_empty() {
+                info.push_str("\n### Recent Changes (last 3 commits)\n```\n");
+                info.push_str(commits);
+                info.push_str("\n```\n");
+            }
+        }
+
+        // Uncommitted changes
+        let uncommitted = std::process::Command::new("git")
+            .args(&["status", "--short"])
+            .current_dir(cwd)
+            .output().ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string());
+        if let Some(changes) = &uncommitted {
+            if !changes.is_empty() {
+                info.push_str("\n### Uncommitted Changes\n```\n");
+                info.push_str(changes);
+                info.push_str("\n```\n");
+            }
+        }
+
         info
     };
     initial_system_prompt.push_str(&env_info);

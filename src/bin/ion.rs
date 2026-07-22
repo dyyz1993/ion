@@ -5101,5 +5101,36 @@ fn build_env_info() -> String {
     if let Some(remote) = &git_remote {
         info.push_str(&format!("- **Git Remote**: `{}`\n", remote));
     }
+
+    // Recent commits (last 3, with files changed)
+    let recent_commits = std::process::Command::new("git")
+        .args(["log", "--oneline", "--name-only", "-3"])
+        .current_dir(&cwd)
+        .output().ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string());
+    if let Some(commits) = &recent_commits {
+        if !commits.is_empty() {
+            info.push_str("\n### Recent Changes (last 3 commits)\n```\n");
+            info.push_str(commits);
+            info.push_str("\n```\n");
+        }
+    }
+
+    // Uncommitted changes (git status --short)
+    let uncommitted = std::process::Command::new("git")
+        .args(["status", "--short"])
+        .current_dir(&cwd)
+        .output().ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string());
+    if let Some(changes) = &uncommitted {
+        if !changes.is_empty() {
+            info.push_str("\n### Uncommitted Changes\n```\n");
+            info.push_str(changes);
+            info.push_str("\n```\n");
+        }
+    }
+
     info
 }
