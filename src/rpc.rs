@@ -1215,3 +1215,156 @@ fn cmd_export_html(
         "note": "HTML export not implemented in RPC mode. Use `ion --export <file>` on the CLI."
     }))
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── get_sid ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_get_sid_returns_explicit_session() {
+        let req = serde_json::json!({"session": "abc-123", "message": "hi"});
+        assert_eq!(get_sid(&req), "abc-123");
+    }
+
+    #[test]
+    fn test_get_sid_defaults_when_missing() {
+        // No "session" key at all → returns "default"
+        let req = serde_json::json!({"message": "hello"});
+        assert_eq!(get_sid(&req), "default");
+    }
+
+    #[test]
+    fn test_get_sid_defaults_when_not_a_string() {
+        // "session" present but not a string → falls back to "default"
+        let req = serde_json::json!({"session": 42});
+        assert_eq!(get_sid(&req), "default");
+    }
+
+    #[test]
+    fn test_get_sid_handles_empty_string() {
+        // An empty session string is still a string, so it is returned as-is
+        let req = serde_json::json!({"session": ""});
+        assert_eq!(get_sid(&req), "");
+    }
+
+    // ── tool_def ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_tool_def_shape() {
+        let params = serde_json::json!({"type": "object"});
+        let t = tool_def("read", "Read a file", params.clone());
+        assert_eq!(t["name"], "read");
+        assert_eq!(t["description"], "Read a file");
+        assert_eq!(t["parameters"], params);
+    }
+
+    #[test]
+    fn test_tool_def_preserves_complex_params() {
+        let params = serde_json::json!({
+            "type": "object",
+            "properties": {"file_path": {"type": "string"}},
+            "required": ["file_path"]
+        });
+        let t = tool_def("edit", "Edit a file", params.clone());
+        // Ensure nested structure survives
+        assert_eq!(t["parameters"]["required"][0], "file_path");
+        assert_eq!(t["parameters"]["properties"]["file_path"]["type"], "string");
+    }
+
+    // ── model_entry ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_model_entry_fields() {
+        let m = model_entry("anthropic", "claude-sonnet-4-8");
+        assert_eq!(m["provider"], "anthropic");
+        assert_eq!(m["id"], "claude-sonnet-4-8");
+        // name mirrors id in the current implementation
+        assert_eq!(m["name"], "claude-sonnet-4-8");
+    }
+
+    #[test]
+    fn test_model_entry_distinct_providers() {
+        let a = model_entry("openai", "gpt-4o");
+        let b = model_entry("deepseek", "deepseek-chat");
+        assert_ne!(a["provider"], b["provider"]);
+        assert_ne!(a["id"], b["id"]);
+    }
+
+    // ── now_ms ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_now_ms_is_positive() {
+        // Epoch milliseconds for current time must be large and positive
+        let ts = now_ms();
+        assert!(ts > 1_000_000_000_000, "timestamp should be post-2001, got {ts}");
+    }
+
+    #[test]
+    fn test_now_ms_monotonicish() {
+        // Two successive calls: the second should be >= the first
+        let a = now_ms();
+        let b = now_ms();
+        assert!(b >= a, "second call ({b}) should be >= first ({a})");
+    }
+
+    // ── messages_to_entries ──────────────────────────────────────────────
+
+    fn make_user_message(text: &str) -> Message {
+        Message::User(UserMessage {
+            role: "user".into(),
+            content: vec![ContentBlock::Text(TextContent {
+                text: text.to_string(),
+                text_signature: None,
+            })],
+            timestamp: 1_700_000_000_000,
+            source: ion_provider::types::MessageSource::Prompt,
+        })
+    }
+
+    #[test]
+    fn test_messages_to_entries_empty() {
+        let entries = messages_to_entries(&[]);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_messages_to_entries_assigns_sequential_ids() {
+        let msgs = vec![make_user_message("a"), make_user_message("b")];
+        let entries = messages_to_entries(&msgs);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["id"], "msg_001");
+        assert_eq!(entries[1]["id"], "msg_002");
+    }
+
+    #[test]
+    fn test_messages_to_entries_sets_type_message() {
+        let msgs = vec![make_user_message("hello")];
+        let entries = messages_to_entries(&msgs);
+        assert_eq!(entries[0]["type"], "message");
+    }
+
+    #[test]
+    fn test_messages_to_entries_chains_parent_ids() {
+        let msgs = vec![make_user_message("a"), make_user_message("b"), make_user_message("c")];
+        let entries = messages_to_entries(&msgs);
+        // First entry has empty parent
+        assert_eq!(entries[0]["parentId"], "");
+        // Each subsequent entry's parent is the previous entry's id
+        assert_eq!(entries[1]["parentId"], "msg_001");
+        assert_eq!(entries[2]["parentId"], "msg_002");
+    }
+
+    #[test]
+    fn test_messages_to_entries_nests_message_object() {
+        let msgs = vec![make_user_message("payload")];
+        let entries = messages_to_entries(&msgs);
+        // The original role should be nested inside a "message" object
+        assert_eq!(entries[0]["message"]["role"], "user");
+    }
+}
