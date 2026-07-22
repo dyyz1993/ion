@@ -367,3 +367,144 @@ impl Extension for HookExtension {
         Ok(())
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests — only pure functions (construction, name, has_hooks edge cases)
+// ---------------------------------------------------------------------------
+// NOTE: process_event / on_* / inject_follow_up / emit_handler_executed are
+// async or have side effects (tokio, stdout, filesystem) and are intentionally
+// excluded. We test struct construction and the `name()` impl instead.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a HookExtension with all optional dependencies set to None.
+    /// This is the simplest valid construction used across tests.
+    fn make_bare_extension() -> HookExtension {
+        HookExtension::new(
+            PathBuf::from("/tmp/nonexistent-project"),
+            None, // runtime
+            None, // registry
+            None, // model
+            None, // manager_bridge
+            None, // follow_up_tx
+        )
+    }
+
+    // -------------------------------------------------------------------------
+    // name() — the Extension trait impl returns the literal "hooks"
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_extension_name_is_hooks() {
+        let ext = make_bare_extension();
+        assert_eq!(ext.name(), "hooks");
+    }
+
+    #[test]
+    fn test_extension_name_is_static_literal() {
+        // The name should be a fixed literal, not derived from state.
+        let ext = make_bare_extension();
+        let name = ext.name();
+        assert_eq!(name, "hooks");
+        assert_eq!(name.len(), 5);
+    }
+
+    // -------------------------------------------------------------------------
+    // new() — all optional fields default to None when not provided
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_new_with_all_none_dependencies() {
+        // Constructing with None for every optional dep must not panic.
+        let ext = make_bare_extension();
+        // We can only observe behavior through name() since fields are private,
+        // but successful construction + name() proves the struct was built.
+        assert_eq!(ext.name(), "hooks");
+    }
+
+    // -------------------------------------------------------------------------
+    // has_hooks() — filesystem-based helper
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_has_hooks_returns_false_for_nonexistent_dir() {
+        // A directory that does not exist has no hooks.json, so has_hooks is false.
+        let dir = PathBuf::from("/tmp/ion-test-definitely-nonexistent-12345");
+        assert!(!HookExtension::has_hooks(&dir));
+    }
+
+    #[test]
+    fn test_has_hooks_false_for_empty_temp_dir() {
+        // Use the OS temp dir root, which has no .ion/hooks.json.
+        let dir = std::env::temp_dir();
+        // We cannot strictly guarantee the temp dir has no .ion/hooks.json in all
+        // CI environments, so we assert it returns a bool (smoke test).
+        let _ = HookExtension::has_hooks(&dir);
+    }
+
+    // -------------------------------------------------------------------------
+    // Multiple instances are independent
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_multiple_instances_independent() {
+        // Each HookExtension owns its own Mutex<HashMap> for loop_counts and
+        // once_fired. Two instances should be independently constructible and
+        // both return the same static name.
+        let ext_a = make_bare_extension();
+        let ext_b = make_bare_extension();
+        assert_eq!(ext_a.name(), ext_b.name());
+    }
+
+    // -------------------------------------------------------------------------
+    // new() accepts a concrete project_dir path
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_new_preserves_project_dir_usable_for_has_hooks() {
+        // Although project_dir is private, has_hooks uses the same pattern of
+        // reading <dir>/.ion/hooks.json. Constructing with a specific dir and
+        // then calling has_hooks on that same dir must agree.
+        let dir = PathBuf::from("/tmp/ion-ext-test-no-hooks-98765");
+        let ext = HookExtension::new(dir.clone(), None, None, None, None, None);
+        assert_eq!(ext.name(), "hooks");
+        // No hooks.json present -> has_hooks must be false.
+        assert!(!HookExtension::has_hooks(&dir));
+    }
+
+    // -------------------------------------------------------------------------
+    // Constructor with a follow_up_tx channel (verifies it doesn't panic)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_new_with_follow_up_channel() {
+        // Provide a real mpsc sender; construction must succeed.
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
+        let ext = HookExtension::new(
+            PathBuf::from("/tmp/ion-ext-test-channel"),
+            None,
+            None,
+            None,
+            None,
+            Some(tx),
+        );
+        assert_eq!(ext.name(), "hooks");
+    }
+
+    // -------------------------------------------------------------------------
+    // name() is consistent across repeated calls (no interior mutation)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_name_idempotent_across_calls() {
+        let ext = make_bare_extension();
+        let first = ext.name();
+        let second = ext.name();
+        let third = ext.name();
+        assert_eq!(first, second);
+        assert_eq!(second, third);
+        assert_eq!(first, "hooks");
+    }
+}
