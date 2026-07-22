@@ -258,49 +258,46 @@ Verify each issue is resolved. Report APPROVE or REQUEST_CHANGES."
         continue
     fi
 
-    # 同步到主仓库
+    # Sync to the main repository
     "$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c "cat /workspace/wt-$n/$target_file" > "$PROJECT_DIR/$target_file" 2>/dev/null
     echo "  [$id] ✅ Synced"
-done
 
-# A 在主仓库统一验证
-echo ""
-echo "  [A] Running cargo build + test on host (unified verification)..."
-cd "$PROJECT_DIR"
-build_out=$(cargo build --bin ion 2>&1)
-if echo "$build_out" | grep -q "Finished"; then
-    echo "  [A] ✅ cargo build OK"
-else
-    echo "  [A] ❌ cargo build FAILED"
-    echo "$build_out" | grep "error" | head -3
-    # 回滚所有改动
-    for i in "${!TASKS[@]}"; do
-        IFS='|' read -r id target_file rest <<< "${TASKS[$i]}"
+    # ── Per-task test: build + test this change individually ────────────
+    # If cargo test fails after syncing, roll back and continue to next task
+    cd "$PROJECT_DIR"
+    echo "  [$id] Running cargo build..."
+    build_out=$(cargo build --bin ion 2>&1)
+    if echo "$build_out" | grep -q "Finished"; then
+        echo "  [$id] ✅ cargo build OK"
+    else
+        echo "  [$id] ❌ cargo build FAILED — rolling back"
+        echo "$build_out" | grep "error" | head -3
+        echo "  [$id] 🔄 ROLLBACK: reverting $target_file"
         git checkout -- "$target_file" 2>/dev/null
-    done
-    exit 1
-fi
+        FAIL=$((FAIL + 1))
+        continue
+    fi
 
-test_out=$(cargo test --lib 2>&1)
-if echo "$test_out" | grep -q "test result: ok"; then
-    passed=$(echo "$test_out" | grep -oE "[0-9]+ passed" | head -1)
-    echo "  [A] ✅ cargo test: $passed"
-else
-    echo "  [A] ❌ cargo test FAILED"
-    echo "$test_out" | grep "FAILED" | head -3
-    exit 1
-fi
+    test_out=$(cargo test --lib 2>&1)
+    if echo "$test_out" | grep -q "test result: ok"; then
+        passed=$(echo "$test_out" | grep -oE "[0-9]+ passed" | head -1)
+        echo "  [$id] ✅ cargo test: $passed"
+    else
+        echo "  [$id] ❌ cargo test FAILED — rolling back"
+        echo "$test_out" | grep "FAILED" | head -3
+        echo "  [$id] 🔄 ROLLBACK: reverting $target_file (test failure)"
+        git checkout -- "$target_file" 2>/dev/null
+        FAIL=$((FAIL + 1))
+        continue
+    fi
 
-# 逐个 commit
-for i in "${!TASKS[@]}"; do
-    IFS='|' read -r id target_file method_spec test_spec test_name commit_msg <<< "${TASKS[$i]}"
-
+    # ── Commit the verified change ─────────────────────────────────────
     if git diff --stat -- "$target_file" | grep -q "$target_file"; then
         git add "$target_file"
         git commit -m "$commit_msg (concurrent self-evolution)" 2>&1 | head -1
         echo "  [$id] ✅ Committed"
 
-        # 导出 HTML
+        # Export HTML report
         SID=$(head -1 "$HOME/.ion/agent/sessions/"*workspace*"/session.jsonl" 2>/dev/null | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('id',''))" 2>/dev/null | head -1)
         if [ -n "$SID" ]; then
             mkdir -p /tmp/evolve_concurrent_reports

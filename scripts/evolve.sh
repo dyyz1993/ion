@@ -91,6 +91,30 @@ if [ -d "$ION_PROVIDER_DIR" ]; then
         "cd /workspace && sed -i 's|path = \"../ion-provider\"|path = \"/ion-provider\"|' Cargo.toml" 2>/dev/null
 fi
 
+# --- Cargo.toml Guard ---
+# After container work, check if B modified Cargo.toml by comparing
+# with the original from the project directory. If changed, reject and exit.
+echo ""
+echo "   Guard: Checking Cargo.toml for unauthorized changes..."
+ORIGINAL_CARGO_TOML="$PROJECT_DIR/Cargo.toml"
+WORKTREE_CARGO_TOML="$WT_DIR/Cargo.toml"
+
+if [ -f "$ORIGINAL_CARGO_TOML" ] && [ -f "$WORKTREE_CARGO_TOML" ]; then
+    if ! diff -q "$ORIGINAL_CARGO_TOML" "$WORKTREE_CARGO_TOML" > /dev/null 2>&1; then
+        echo "   ERROR: Cargo.toml was modified! External dependency changes are not allowed."
+        echo "   --- diff (original vs worktree) ---"
+        diff "$ORIGINAL_CARGO_TOML" "$WORKTREE_CARGO_TOML" || true
+        echo "   -----------------------------------"
+        # Clean up container before exiting
+        "$CONTAINER_BIN" stop "$CONTAINER_NAME" > /dev/null 2>&1 || true
+        exit 1
+    fi
+    echo "   OK: Cargo.toml unchanged."
+else
+    echo "   WARNING: Could not find Cargo.toml in both locations, skipping guard."
+fi
+# --- End Cargo.toml Guard ---
+
 # Step 3: Build ion with retry logic
 echo ""
 echo " Step 3: ion6-15 "
