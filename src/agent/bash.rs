@@ -691,3 +691,141 @@ fn emit_extension_event(event_type: &str, data: &serde_json::Value) {
     });
     println!("{}", serde_json::to_string(&msg).unwrap_or_default());
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── 1. ProcessInfo struct construction ────────────────────────────────
+
+    #[test]
+    fn test_process_info() {
+        let info = ProcessInfo {
+            bid: "100000".to_string(),
+            os_pid: 12345,
+            command: "echo hello".to_string(),
+            description: "say hello".to_string(),
+            status: "completed".to_string(),
+            exit_code: Some(0),
+            output: "hello\n".to_string(),
+            background: false,
+            started_at: 1_700_000_000_000,
+            elapsed_secs: 1,
+        };
+        assert_eq!(info.bid, "100000");
+        assert_eq!(info.os_pid, 12345);
+        assert_eq!(info.command, "echo hello");
+        assert_eq!(info.description, "say hello");
+        assert_eq!(info.status, "completed");
+        assert_eq!(info.exit_code, Some(0));
+        assert_eq!(info.output, "hello\n");
+        assert!(!info.background);
+        assert_eq!(info.started_at, 1_700_000_000_000);
+        assert_eq!(info.elapsed_secs, 1);
+    }
+
+    // ── 2. BashExtension::new_with_cwd() — storage context session_id ─────
+
+    #[test]
+    fn test_bash_extension_new() {
+        let ext = BashExtension::new_with_cwd("test-sid", "/tmp");
+        assert_eq!(ext.storage.session_id, "test-sid");
+        assert_eq!(ext.storage.cwd, "/tmp");
+        // Maps should start empty for a fresh session.
+        assert!(ext.process_map.try_lock().unwrap().is_empty());
+        assert!(ext.stdin_map.try_lock().unwrap().is_empty());
+        assert!(ext.notify_map.try_lock().unwrap().is_empty());
+        assert!(ext.follow_up_tx.is_none());
+    }
+
+    // ── 3-6. Tool name methods ────────────────────────────────────────────
+
+    #[test]
+    fn test_bash_run_tool_name() {
+        let tool = BashRunTool {
+            process_map: Arc::new(Mutex::new(HashMap::new())),
+            stdin_map: new_stdin_map(),
+            notify_map: Arc::new(Mutex::new(HashMap::new())),
+            follow_up_tx: None,
+            storage: crate::storage_context::StorageContext::new("/tmp", "sid", "/tmp"),
+        };
+        assert_eq!(tool.name(), "bash_run");
+    }
+
+    #[test]
+    fn test_bash_kill_tool_name() {
+        let tool = BashKillTool {
+            process_map: Arc::new(Mutex::new(HashMap::new())),
+            follow_up_tx: None,
+            storage: crate::storage_context::StorageContext::new("/tmp", "sid", "/tmp"),
+        };
+        assert_eq!(tool.name(), "bash_kill");
+    }
+
+    #[test]
+    fn test_bash_send_tool_name() {
+        let tool = BashSendTool {
+            stdin_map: new_stdin_map(),
+        };
+        assert_eq!(tool.name(), "bash_send");
+    }
+
+    #[test]
+    fn test_bash_background_tool_name() {
+        let tool = BashBackgroundTool {
+            notify_map: Arc::new(Mutex::new(HashMap::new())),
+            process_map: Arc::new(Mutex::new(HashMap::new())),
+            storage: crate::storage_context::StorageContext::new("/tmp", "sid", "/tmp"),
+        };
+        assert_eq!(tool.name(), "bash_background");
+    }
+
+    // ── 7. Pure utility functions ─────────────────────────────────────────
+
+    #[test]
+    fn test_allocate_pid_empty_map() {
+        // Empty map → first PID should be BASE = 36^5 = 60466176 → "100000" in base36.
+        let map: HashMap<String, ProcessInfo> = HashMap::new();
+        let pid = allocate_pid(&map);
+        assert_eq!(pid, "100000");
+        assert_eq!(pid.len(), 6);
+    }
+
+    #[test]
+    fn test_allocate_pid_monotonic() {
+        // With an existing PID at BASE, next allocation must be BASE+1.
+        let mut map: HashMap<String, ProcessInfo> = HashMap::new();
+        map.insert("100000".to_string(), ProcessInfo {
+            bid: "100000".to_string(), os_pid: 0, command: String::new(),
+            description: String::new(), status: "running".into(),
+            exit_code: None, output: String::new(), background: false,
+            started_at: 0, elapsed_secs: 0,
+        });
+        let pid = allocate_pid(&map);
+        assert_eq!(pid, "100001");
+    }
+
+    #[test]
+    fn test_parse_pid_present() {
+        let params = serde_json::json!({"bid": "100005"});
+        assert_eq!(parse_pid(&params), "100005");
+    }
+
+    #[test]
+    fn test_parse_pid_missing() {
+        // No "bid" key → empty string.
+        let params = serde_json::json!({"foo": "bar"});
+        assert_eq!(parse_pid(&params), "");
+    }
+
+    #[test]
+    fn test_parse_pid_wrong_type() {
+        // Non-string bid → empty string.
+        let params = serde_json::json!({"bid": 42});
+        assert_eq!(parse_pid(&params), "");
+    }
+}
