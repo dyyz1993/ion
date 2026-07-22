@@ -146,6 +146,11 @@ pub fn agent_dir() -> PathBuf {
     root().join("agent")
 }
 
+/// Check whether the agent directory exists.
+pub fn agent_dir_exists() -> bool {
+    agent_dir().exists()
+}
+
 /// ~/.ion/file-store/ — File Snapshot content-addressed 存储
 pub fn file_store_root() -> PathBuf {
     root().join("file-store")
@@ -998,5 +1003,12 @@ mod tests {
         );
         // 清理
         unsafe { std::env::remove_var("ION_PROJECT_ROOT"); }
+    }
+
+    #[test]
+    fn test_agent_dir_exists() {
+        // agent_dir_exists returns a bool — just verify it doesn't panic
+        let _result = agent_dir_exists();
+        // The result depends on the environment, so we just ensure it runs
     }
 }

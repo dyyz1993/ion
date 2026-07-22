@@ -241,6 +241,11 @@ pub fn find_agent(name_or_path: &str) -> Option<AgentConfig> {
     None
 }
 
+/// Return the description of the agent with the given name, if found.
+pub fn agent_description(name: &str) -> Option<String> {
+    find_agent(name).map(|a| a.description)
+}
+
 // ---------------------------------------------------------------------------
 // Apply agent config to CLI parameters
 // ---------------------------------------------------------------------------
@@ -264,5 +269,17 @@ mod tests {
         let count = count_builtin_agents();
         // build, explore, plan, improver — at least 3
         assert!(count >= 3, "Expected at least 3 builtin agents, got {}", count);
+    }
+
+    #[test]
+    fn test_agent_description() {
+        // The builtin "general" agent should have a non-empty description
+        let desc = agent_description("general");
+        assert!(desc.is_some(), "agent_description('general') should return Some");
+        assert!(!desc.unwrap().is_empty(), "general agent description should not be empty");
+
+        // A non-existent agent should return None
+        let missing = agent_description("nonexistent_agent_xyz_123");
+        assert!(missing.is_none(), "agent_description for nonexistent agent should return None");
     }
 }

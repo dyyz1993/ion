@@ -145,6 +145,11 @@ impl AuthStorage {
     pub fn provider_count(&self) -> usize {
         self.provider_base_urls.len()
     }
+
+    /// Return total entries count (api keys + base urls).
+    pub fn total_entries_count(&self) -> usize {
+        self.provider_api_keys.len() + self.provider_base_urls.len()
+    }
 }
 
 #[cfg(test)]
@@ -183,5 +188,31 @@ mod tests {
         };
 
         assert_eq!(auth.provider_count(), 3);
+    }
+
+    #[test]
+    fn test_total_entries_count() {
+        let mut api_keys = std::collections::HashMap::new();
+        api_keys.insert("openai".to_string(), "sk-xxx".to_string());
+        api_keys.insert("anthropic".to_string(), "sk-yyy".to_string());
+
+        let mut base_urls = std::collections::HashMap::new();
+        base_urls.insert("openai".to_string(), "https://api.openai.com".to_string());
+
+        let auth = AuthStorage {
+            api_key: None,
+            provider_api_keys: api_keys,
+            provider_base_urls: base_urls,
+        };
+
+        assert_eq!(auth.total_entries_count(), 3);
+
+        // Empty store
+        let empty = AuthStorage {
+            api_key: None,
+            provider_api_keys: std::collections::HashMap::new(),
+            provider_base_urls: std::collections::HashMap::new(),
+        };
+        assert_eq!(empty.total_entries_count(), 0);
     }
 }
