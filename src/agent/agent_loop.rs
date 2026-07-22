@@ -1751,8 +1751,8 @@ impl Agent {
 /// 保留最近一次 skill 加载的完整内容（当前 turn 可能还用得到）。
 ///
 /// 判断"已消费"：skill tool result 后面跟着 assistant message（turn > skill 加载的 turn）。
-fn unload_consumed_skills(messages: &[Message], current_turn: usize) -> Vec<Message> {
-    use ion_provider::types::{Message as ProviderMessage, ContentBlock, TextContent};
+fn unload_consumed_skills(messages: &[Message], _current_turn: usize) -> Vec<Message> {
+    use ion_provider::types::{ContentBlock, TextContent};
 
     // 找所有 skill tool result 的位置 + 对应的 skill 名字
     // skill tool result 的内容以 "Skill '" 开头（SkillTool inject 模式的返回值格式）

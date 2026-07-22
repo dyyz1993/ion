@@ -434,7 +434,7 @@ impl GlobalMemoryStore {
         let mut stats = ConsolidationStats::default();
 
         // 1. 去重：内容完全相同的记忆，保留 importance 最高的，其余 archived
-        let dupes: Vec<(String, usize)> = {
+        let _dupes: Vec<(String, usize)> = {
             let mut stmt = conn.prepare(
                 "SELECT content FROM entries WHERE archived=0 GROUP BY content HAVING COUNT(*) > 1"
             ).map_err(|e| format!("prepare dupes: {}", e))?;
@@ -924,7 +924,7 @@ impl GlobalMemoryStore {
     /// Each entry has fields: id, content, category, project, archived, created_at.
     pub fn export_json(&self, filter_project: Option<&str>) -> Result<String, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        let (sql, has_filter) = if let Some(project) = filter_project {
+        let (sql, has_filter) = if let Some(_project) = filter_project {
             (
                 "SELECT id, content, category, project, archived, created_at FROM entries WHERE project = ?1 ORDER BY created_at ASC",
                 true,
@@ -2066,5 +2066,46 @@ mod tests {
         // update_category on non-existent id should return Err
         let result = store.update_category("nonexistent", "whatever");
         assert!(result.is_err(), "update_category on nonexistent id should return Err");
+    }
+
+    /// Test search_advanced method:
+    /// - clear_all
+    /// - save 3 entries with mixed content/project/category/importance
+    /// - search by keyword only → expect 2 results, ordered by importance DESC
+    /// - search by keyword + project filter → expect 2 results
+    /// - search by keyword + category filter → expect 1 result
+    /// - search by keyword + min_importance filter → expect 1 result
+    #[test]
+    fn test_search_advanced() {
+        let store = test_store();
+        store.clear_all().unwrap();
+
+        // Save 3 entries with mixed attributes
+        store.save("alpha design", "architecture", "t", "proj-a", 8).unwrap();
+        store.save("beta code", "implementation", "t", "proj-b", 5).unwrap();
+        store.save("alpha test", "testing", "t", "proj-a", 3).unwrap();
+
+        // search_advanced by keyword only → 2 results (importance DESC: 8 then 3)
+        let results = store.search_advanced("alpha", None, None, 0).unwrap();
+        assert_eq!(results.len(), 2, "keyword 'alpha' should match 2 entries");
+        assert_eq!(results[0].importance, 8, "first result should have importance 8");
+        assert_eq!(results[1].importance, 3, "second result should have importance 3");
+
+        // search_advanced by keyword + project filter → 2 results (both proj-a)
+        let results_proj = store.search_advanced("alpha", Some("proj-a"), None, 0).unwrap();
+        assert_eq!(results_proj.len(), 2, "keyword 'alpha' in proj-a should match 2 entries");
+        for entry in &results_proj {
+            assert_eq!(entry.project, "proj-a", "all results should belong to proj-a");
+        }
+
+        // search_advanced by keyword + category filter → 1 result
+        let results_cat = store.search_advanced("alpha", None, Some("architecture"), 0).unwrap();
+        assert_eq!(results_cat.len(), 1, "keyword 'alpha' with category 'architecture' should match 1 entry");
+        assert_eq!(results_cat[0].category, "architecture");
+
+        // search_advanced by keyword + min_importance → 1 result (only importance >= 5)
+        let results_min = store.search_advanced("alpha", None, None, 5).unwrap();
+        assert_eq!(results_min.len(), 1, "keyword 'alpha' with min_importance 5 should match 1 entry");
+        assert_eq!(results_min[0].importance, 8, "result should have importance >= 5");
     }
 }

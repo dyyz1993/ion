@@ -179,7 +179,7 @@ fn export_session_internal(
     // 把它们的 entries 用 system_event 分隔标记追加进来。
     // 这样用户在一个 HTML 里能看到"主 Worker 调 skill fork → 子 Worker 干了什么"。
     // 子 session 只在 export 主 session 时合并（避免循环）。
-    let session_type = header.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let _session_type = header.get("type").and_then(|v| v.as_str()).unwrap_or("");
     let is_main_session = header.get("parentSession").and_then(|v| v.as_str()).is_none()
         && !header.get("spawnMeta").is_some();
     if is_main_session {
@@ -497,7 +497,7 @@ fn export_session_internal(
             .unwrap_or("child");
 
         // 计算主 HTML 的文件名（跟主 session id 同名）
-        let parent_html = "session_export.html"; // 兜底
+        let _parent_html = "session_export.html"; // fallback
 
         let origin_banner = format!(r#"
 <div id="fork-origin-banner" style="

@@ -371,7 +371,7 @@ impl McpManager {
         .await
         .map_err(|_| -> Box<dyn std::error::Error + Send + Sync> {
             "MCP list_tools timeout (5s)".into()
-        })??;;
+        })??;
         let tools: Vec<DiscoveredTool> = tools_result
             .tools
             .into_iter()
@@ -793,7 +793,7 @@ impl McpManager {
         // 找出新增的 server（新有旧无）+ 更新已有 server 的配置
         {
             let mut servers = self.servers.lock().await;
-            for (name, cfg) in &new_config {
+            for (name, _cfg) in &new_config {
                 if !servers.contains_key(name) {
                     servers.insert(name.clone(), ServerEntry::new());
                 }

@@ -641,8 +641,7 @@ impl Runtime for LocalRuntime {
         // 同步到磁盘（防止 rename 后系统崩溃仍丢数据）
         #[cfg(unix)]
         {
-            use tokio::io::AsyncSeekExt;
-            if let Ok(mut f) = tokio::fs::File::open(&tmp_path).await {
+            if let Ok(f) = tokio::fs::File::open(&tmp_path).await {
                 let _ = f.sync_all().await;
             }
         }

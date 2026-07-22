@@ -227,7 +227,7 @@ pub fn plan_batches(messages: &[Message], config: &CompactConfig) -> Vec<Batch> 
         .collect();
 
     // 决定切点：优先 user_indices，不够则用所有 message 索引
-    let cut_points: Vec<usize> = if user_indices.len() >= n + 1 {
+    let cut_points: Vec<usize> = if user_indices.len() > n {
         // user 足够，按 N 均分 user_indices
         let step = user_indices.len() as f64 / n as f64;
         (0..n)

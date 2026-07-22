@@ -706,7 +706,6 @@ impl Extension for MemoryExtension {
             }));
         }
 
-        use super::messages::*;
         while let Some(pending) = store.pending.pop() {
             messages.push(Message::User(UserMessage {
                 role: "user".into(),

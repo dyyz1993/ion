@@ -210,7 +210,7 @@ impl CommandGuard {
             let cmd_part = {
                 let mut found_cmd = false;
                 let mut cmd_start = 0;
-                for (i, part) in sub.split_whitespace().enumerate() {
+                for (_i, part) in sub.split_whitespace().enumerate() {
                     // 变量赋值：WORD=... 或 WORD=$(...)
                     if !found_cmd && (part.contains('=') && !part.starts_with('-')) {
                         continue;
