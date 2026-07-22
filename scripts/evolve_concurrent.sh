@@ -101,20 +101,49 @@ CRITICAL RULES:
 5. After editing: git add $target_file && git commit -m '$commit_msg'
 6. grep -c \$'\xef\xbf\xbd' $target_file (must be 0)"
 
-    echo "  [$id] Dispatching to wt-$n..."
+    echo "  [$id] Dispatching developer to wt-$n..."
 
-    # 后台并行！
+    # 后台并行：developer 改代码 → reviewer 审查
     (
-        result=$(echo "$prompt" | "$CONTAINER_BIN" exec -i "$CONTAINER_NAME" sh -c \
+        # Step 1: developer 改代码
+        dev_result=$(echo "$prompt" | "$CONTAINER_BIN" exec -i "$CONTAINER_NAME" sh -c \
             "cd /workspace/wt-$n && /workspace/target/release/ion --agent developer --provider $PROVIDER --model $MODEL" 2>&1 | tail -10)
-        echo "$result" > "/tmp/par_result_${id}.txt"
+
+        # Step 2: reviewer 审查（在同一 worktree 里读改动）
+        review_prompt="Review the latest changes in $target_file. Run: git diff HEAD~1 HEAD -- $target_file
+
+Check:
+1. Correctness: Is the SQL/logic correct?
+2. Error handling: Are errors properly propagated?
+3. Edge cases: Empty table? Null values? Invalid input?
+4. Test coverage: Does the test cover the main scenarios?
+5. Code style: Is it consistent with surrounding code?
+
+Report APPROVE or REQUEST_CHANGES with specific issues."
+
+        review_result=$(echo "$review_prompt" | "$CONTAINER_BIN" exec -i "$CONTAINER_NAME" sh -c \
+            "cd /workspace/wt-$n && /workspace/target/release/ion --agent reviewer --provider $PROVIDER --model $MODEL" 2>&1 | tail -15)
+
+        # 合并结果
+        echo "=== DEVELOPER ===" > "/tmp/par_result_${id}.txt"
+        echo "$dev_result" >> "/tmp/par_result_${id}.txt"
+        echo "" >> "/tmp/par_result_${id}.txt"
+        echo "=== REVIEWER ===" >> "/tmp/par_result_${id}.txt"
+        echo "$review_result" >> "/tmp/par_result_${id}.txt"
+
+        # 检查 reviewer 是否 APPROVE
+        if echo "$review_result" | grep -qi "APPROVE"; then
+            echo "REVIEW_APPROVED" >> "/tmp/par_result_${id}.txt"
+        else
+            echo "REVIEW_REJECTED" >> "/tmp/par_result_${id}.txt"
+        fi
     ) &
 
     echo "  [$id] dispatched (PID $!)"
 done
 
 echo ""
-echo "All $NUM_TASKS B workers running in parallel. Waiting..."
+echo "All $NUM_TASKS B workers (developer + reviewer) running in parallel. Waiting..."
 wait
 echo "All B workers complete."
 
@@ -133,11 +162,19 @@ for i in "${!TASKS[@]}"; do
     echo ""
     echo "  [$id] Processing ($target_file)..."
 
-    # B 输出
+    # B 输出（含 developer + reviewer 结果）
     if [ -f "/tmp/par_result_${id}.txt" ]; then
-        echo "  [$id] B output (last 2 lines):"
-        tail -2 "/tmp/par_result_${id}.txt" | sed 's/^/    /'
+        echo "  [$id] Developer + Reviewer output:"
+        cat "/tmp/par_result_${id}.txt" | sed 's/^/    /'
     fi
+
+    # 检查 reviewer 是否 APPROVE
+    if ! grep -q "REVIEW_APPROVED" "/tmp/par_result_${id}.txt" 2>/dev/null; then
+        echo "  [$id] ❌ Reviewer did NOT approve. Skipping."
+        FAIL=$((FAIL + 1))
+        continue
+    fi
+    echo "  [$id] ✅ Reviewer approved"
 
     # 从 container 的 wt 子目录拉改动
     # 先看 B 改了啥
