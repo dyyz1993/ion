@@ -58,18 +58,12 @@ for i in "${!TASKS[@]}"; do
 
     echo -n "  [$id] Starting container..."
 
-    # worktree
-    cd "$PROJECT_DIR"
-    git worktree add "$wt_dir" -b "par-${id}" HEAD 2>/dev/null
-    if [ -f "$wt_dir/.git" ]; then
-        rm -f "$wt_dir/.git"
-        (cd "$wt_dir" && git init -q && git config user.email 'ion@evolver' && git config user.name 'Evolver' && git add -A && git commit -q -m 'init' 2>/dev/null)
-    fi
+    # 用 rsync 复制源码（替代 git worktree——更稳定，不依赖 host gitdir）
+    rsync -a --exclude="target" --exclude=".git" --exclude="node_modules" "$PROJECT_DIR/" "$wt_dir/"
+    # 转成独立 git repo（让 container 里 git 可用）
+    (cd "$wt_dir" && git init -q && git config user.email 'ion@evolver' && git config user.name 'Evolver' && git add -A && git commit -q -m 'init' 2>/dev/null)
 
-    # 启 container（bind mount host cache——比 named volume 好，因为支持多 container 共享！）
-    # 关键：Apple Container 的 named volume 排他（不能多 container 挂载），bind mount 不排他
-    # cargo registry 用 :ro 共享只读（所有 container 复用同一份下载缓存）
-    # target 用独立目录（每 container 自己的编译产物，避免锁冲突）
+    # 启 container（bind mount host cache）
     mkdir -p /tmp/ion-cache-cargo
     local_target_dir="/tmp/ion-cache-target-${id}"
     mkdir -p "$local_target_dir"
