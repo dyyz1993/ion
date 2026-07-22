@@ -123,7 +123,7 @@ BUILD_SUCCESS=0
 for attempt in 1 2 3; do
     echo "   Compile attempt ${attempt}/3..."
     "$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c \
-        'source $HOME/.cargo/env && cd /workspace && cargo build --release --bin ion 2>&1 | tail -5 && touch /tmp/ion-build-done'
+        'source $HOME/.cargo/env && cd /workspace && cargo build --release --bin ion --bin ion-worker 2>&1 | tail -5 && touch /tmp/ion-build-done'
     BUILD_EXIT=$?
 
     if [ $BUILD_EXIT -eq 0 ]; then
