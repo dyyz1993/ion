@@ -168,15 +168,79 @@ for i in "${!TASKS[@]}"; do
         cat "/tmp/par_result_${id}.txt" | sed 's/^/    /'
     fi
 
-    # 检查 reviewer 是否 APPROVE
+    # Auto-fix loop: send reviewer feedback back to developer (max 2 rounds)
     if ! grep -q "REVIEW_APPROVED" "/tmp/par_result_${id}.txt" 2>/dev/null; then
-        echo "  [$id] ❌ Reviewer did NOT approve. Skipping."
-        FAIL=$((FAIL + 1))
-        continue
+        echo "  [$id] ⚠️ Reviewer rejected. Starting auto-fix (max 2 rounds)..."
+
+        for fix_round in 1 2; do
+            echo "  [$id] Auto-fix round $fix_round/2..."
+
+            # Extract reviewer feedback from the previous result
+            reviewer_feedback=$(sed -n '/=== REVIEWER ===/,/REVIEW_\(APPROVED\|REJECTED\)/p' "/tmp/par_result_${id}.txt" 2>/dev/null | sed '/REVIEW_\(APPROVED\|REJECTED\)/d' | sed '/=== REVIEWER ===/d')
+
+            # Build the fix prompt: tell developer what reviewer found
+            fix_prompt="Your previous changes to $target_file were REJECTED by the reviewer.
+
+REVIEWER FEEDBACK:
+$reviewer_feedback
+
+Fix ALL issues listed above. Rules:
+1. Use edit tool, not bash sed
+2. ALL comments in ENGLISH ONLY
+3. Only modify what the reviewer flagged, do NOT break other code
+4. After fixing: git add $target_file && git commit -m '${commit_msg} (fix round $fix_round)'
+5. grep -c \$'\xef\xbf\xbd' $target_file (must be 0)"
+
+            echo "  [$id] Sending fix request to developer..."
+
+            # Developer attempts the fix
+            fix_result=$(echo "$fix_prompt" | "$CONTAINER_BIN" exec -i "$CONTAINER_NAME" sh -c \
+                "cd /workspace/wt-$n && /workspace/target/release/ion --agent developer --provider $PROVIDER --model $MODEL" 2>&1 | tail -10)
+
+            # Reviewer re-reviews the fix
+            re_review_prompt="Review the latest fix to $target_file. Run: git diff HEAD~1 HEAD -- $target_file
+
+The previous review found these issues:
+$reviewer_feedback
+
+Verify each issue is resolved. Report APPROVE or REQUEST_CHANGES."
+
+            re_review_result=$(echo "$re_review_prompt" | "$CONTAINER_BIN" exec -i "$CONTAINER_NAME" sh -c \
+                "cd /workspace/wt-$n && /workspace/target/release/ion --agent reviewer --provider $PROVIDER --model $MODEL" 2>&1 | tail -15)
+
+            # Update result file
+            echo "" >> "/tmp/par_result_${id}.txt"
+            echo "=== FIX ROUND $fix_round ===" >> "/tmp/par_result_${id}.txt"
+            echo "--- Developer Fix ---" >> "/tmp/par_result_${id}.txt"
+            echo "$fix_result" >> "/tmp/par_result_${id}.txt"
+            echo "" >> "/tmp/par_result_${id}.txt"
+            echo "--- Reviewer Re-review ---" >> "/tmp/par_result_${id}.txt"
+            echo "$re_review_result" >> "/tmp/par_result_${id}.txt"
+
+            if echo "$re_review_result" | grep -qi "APPROVE"; then
+                echo "REVIEW_APPROVED" >> "/tmp/par_result_${id}.txt"
+                echo "  [$id] ✅ Auto-fix round $fix_round approved!"
+                break
+            else
+                echo "REVIEW_REJECTED" >> "/tmp/par_result_${id}.txt"
+                if [ "$fix_round" -eq 2 ]; then
+                    echo "  [$id] ❌ Auto-fix failed after 2 rounds"
+                else
+                    echo "  [$id] ⚠️ Round $fix_round rejected, trying again..."
+                fi
+            fi
+        done
+
+        # Final check after auto-fix attempts
+        if ! grep -q "REVIEW_APPROVED" "/tmp/par_result_${id}.txt" 2>/dev/null; then
+            echo "  [$id] ❌ Reviewer still NOT approved after auto-fix. Skipping."
+            FAIL=$((FAIL + 1))
+            continue
+        fi
     fi
     echo "  [$id] ✅ Reviewer approved"
 
-    # 从 container 的 wt 子目录拉改动
+    # Fetch changes from the container worktree subdirectory
     # 先看 B 改了啥
     changed=$("$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c "cd /workspace/wt-$n && git diff --name-only HEAD~1 HEAD 2>/dev/null || git diff --name-only 2>/dev/null" 2>/dev/null)
     if [ -z "$changed" ]; then
