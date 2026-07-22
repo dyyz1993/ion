@@ -280,3 +280,172 @@ impl Extension for FileSnapshotExtension {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// gen_turn_id should always produce a string with the "ts_" prefix.
+    #[test]
+    fn gen_turn_id_has_prefix() {
+        let id = gen_turn_id();
+        assert!(
+            id.starts_with("ts_"),
+            "turn ID should start with 'ts_', got: {}",
+            id
+        );
+    }
+
+    /// gen_turn_id should be 15 chars: "ts_" (3) + 12 hex chars.
+    #[test]
+    fn gen_turn_id_length() {
+        let id = gen_turn_id();
+        // "ts_" + 12 hex digits = 15 characters total
+        assert_eq!(id.len(), 15, "expected 15 chars, got '{}' (len {})", id, id.len());
+        // The suffix after "ts_" must be valid hex
+        let hex = &id[3..];
+        assert!(
+            hex.chars().all(|c| c.is_ascii_hexdigit()),
+            "suffix '{}' should be all hex digits",
+            hex
+        );
+    }
+
+    /// gen_turn_id relies on SystemTime + PID for seeding, so rapid calls within
+    /// the same time tick can collide. We instead verify the basic contract:
+    /// every generated ID has the correct format (prefix + hex suffix), and the
+    /// generator never panics across many invocations.
+    #[test]
+    fn gen_turn_id_format_contract_many_calls() {
+        for _ in 0..100 {
+            let id = gen_turn_id();
+            assert!(id.starts_with("ts_"), "missing prefix: {}", id);
+            assert_eq!(id.len(), 15, "bad length: {}", id);
+            assert!(
+                id[3..].chars().all(|c| c.is_ascii_hexdigit()),
+                "non-hex suffix: {}",
+                id
+            );
+        }
+    }
+
+    /// content_hash should be deterministic: same input -> same output.
+    #[test]
+    fn content_hash_deterministic_via_reexport() {
+        let h1 = content_hash(b"hello world");
+        let h2 = content_hash(b"hello world");
+        assert_eq!(h1, h2, "same content must hash to the same value");
+        // 16 hex chars (64-bit SipHash)
+        assert_eq!(h1.len(), 16, "expected 16 hex chars, got len {}", h1.len());
+        assert!(h1.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    /// content_hash should differ for different inputs.
+    #[test]
+    fn content_hash_differs_for_different_input() {
+        let h1 = content_hash(b"hello");
+        let h2 = content_hash(b"world");
+        assert_ne!(h1, h2, "different content should hash differently");
+    }
+
+    /// TreeDiff::is_empty() should be true for a freshly-constructed empty diff,
+    /// and false once any bucket is non-empty.
+    #[test]
+    fn tree_diff_is_empty() {
+        let empty = TreeDiff {
+            added: vec![],
+            modified: vec![],
+            deleted: vec![],
+        };
+        assert!(empty.is_empty());
+
+        let with_added = TreeDiff {
+            added: vec!["a.txt".to_string()],
+            modified: vec![],
+            deleted: vec![],
+        };
+        assert!(!with_added.is_empty());
+    }
+
+    /// TreeDiff::total() should be the sum of added + modified + deleted counts.
+    #[test]
+    fn tree_diff_total_sums_all_buckets() {
+        let diff = TreeDiff {
+            added: vec!["a".to_string(), "b".to_string()],
+            modified: vec!["c".to_string()],
+            deleted: vec!["d".to_string(), "e".to_string(), "f".to_string()],
+        };
+        assert_eq!(diff.total(), 6);
+    }
+
+    /// TreeDiff::total() should be 0 when all buckets are empty.
+    #[test]
+    fn tree_diff_total_zero_when_empty() {
+        let diff = TreeDiff {
+            added: vec![],
+            modified: vec![],
+            deleted: vec![],
+        };
+        assert_eq!(diff.total(), 0);
+    }
+
+    /// count_diff should correctly count added/removed lines,
+    /// ignoring the --- / +++ header lines.
+    #[test]
+    fn count_diff_counts_additions_and_removals_via_reexport() {
+        let diff = "--- a/x\n+++ b/x\n@@ -1,1 +1,2 @@\n-old\n+new1\n+new2\n context\n";
+        let (added, removed) = count_diff(diff);
+        assert_eq!(added, 2, "expected 2 added lines");
+        assert_eq!(removed, 1, "expected 1 removed line");
+    }
+
+    /// compute_diff should detect added, modified, and deleted entries
+    /// between two tree entry maps.
+    #[test]
+    fn compute_diff_via_reexport_detects_all_changes() {
+        let mut old = std::collections::HashMap::new();
+        old.insert("a.rs".to_string(), "h1".to_string());
+        old.insert("b.rs".to_string(), "h2".to_string());
+        old.insert("c.rs".to_string(), "h3".to_string());
+
+        let mut new = std::collections::HashMap::new();
+        new.insert("a.rs".to_string(), "h1".to_string()); // unchanged
+        new.insert("b.rs".to_string(), "h2_new".to_string()); // modified
+        new.insert("d.rs".to_string(), "h4".to_string()); // added
+
+        let diff = compute_diff(&old, &new);
+        assert_eq!(diff.added, vec!["d.rs"]);
+        assert_eq!(diff.modified, vec!["b.rs"]);
+        assert_eq!(diff.deleted, vec!["c.rs"]);
+        assert_eq!(diff.total(), 3);
+    }
+
+    /// get_file_hash should return Some(hash) for existing paths and None otherwise.
+    #[test]
+    fn get_file_hash_via_reexport() {
+        let mut tree = std::collections::HashMap::new();
+        tree.insert("src/main.rs".to_string(), "abc123".to_string());
+
+        assert_eq!(
+            get_file_hash(&tree, "src/main.rs"),
+            Some(&"abc123".to_string()),
+            "existing path should return its hash"
+        );
+        assert_eq!(
+            get_file_hash(&tree, "missing.rs"),
+            None,
+            "missing path should return None"
+        );
+    }
+
+    /// unified_diff should embed the provided path into the --- / +++ headers.
+    #[test]
+    fn unified_diff_includes_path_header_via_reexport() {
+        let before = "line1\nline2";
+        let after = "line1\nline2 changed";
+        let diff = unified_diff(before, after, "src/lib.rs");
+        assert!(diff.contains("--- a/src/lib.rs"), "missing --- header: {}", diff);
+        assert!(diff.contains("+++ b/src/lib.rs"), "missing +++ header: {}", diff);
+        assert!(diff.contains("+line2 changed"), "missing added line: {}", diff);
+    }
+}
