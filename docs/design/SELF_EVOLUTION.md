@@ -1,170 +1,173 @@
-# ION 自我进化 — A 驱动 B 架构
+# Self-Evolution — A→B Architecture Overview
 
-> **状态：开发中** — init-evolve-container.sh + evolver.md 已实现，待端到端验证。
+> **Status: Production.** Battle-tested end-to-end. This is the definitive design document.
 
-## 一句话
+---
 
-A（host 上的 ION）驱动 B（container 里的 ION）改代码 + 跑 CI，CI 通过后 A 从 B 拉代码回来。A 自己绝不碰自己的代码。
+## 1. One-Line Summary
 
-## 核心架构
+**A orchestrates, B writes code, A merges. A never touches code.**
+
+A (host coordinator ION instance) drives B (container developer ION instance) to edit source, run CI, and self-verify. B's passing changes flow back to A via bind-mount + git merge. A itself is sandboxed: `edit`/`write` are `disallowed_tools`, and `CommandGuard` blocks every host-side mutation path (`sed -i`, `cat >`, `python3 -c`, etc.).
+
+---
+
+## 2. Architecture Diagram
 
 ```
-ZCode（用户）
-  │
-  │  ion --host --agent evolver "给 xxx 加方法"
-  │  （ZCode 给 A 任务）
-  │
-  ▼
-A = ION 主体（host 上，agent 角色 = evolver）
-  │
-  │  A 对 B 做的事，跟 ZCode 对 A 做的事一模一样：
-  │
-  │  1. git worktree add（开隔离空间）
-  │  2. init-evolve-container.sh（启动 B + 编译 ion）
-  │  3. container exec B ion --agent developer "任务"（调用 B 改代码）
-  │  4. container exec B cargo test（B 自己跑 CI）
-  │  5. 看 CI 结果，失败重试（回到 3），通过进 6
-  │  6. git merge worktree 分支（A 从 B 拉代码回来）
-  │  7. container stop + worktree remove（清理）
-  │
-  ▼
-B = ION 衍生体（container 里，完整 ION 实例）
-  │
-  │  B 有自己的 ion + LLM + 工具 + CI 脚本
-  │  B 自己改代码、自己 commit、自己跑测试
-  │  B 的改动通过 bind-mount 自动同步到 host worktree
-  │
-  ▼
-A 的代码进化了（B 里验证过的才合并回来，A 自己从没改过代码）
+ ZCode (user / CI)
+   │
+   │  ion --host --agent evolver "add fn to global_memory"
+   │  (human-level task handed to A)
+   ▼
+┌──────────────────────────────────────────────────────┐
+│  A — Host Coordinator (agent role: evolver)          │
+│                                                      │
+│  • git worktree add        (isolate workspace)       │
+│  • container run           (spawn B + compile ion)   │
+│  • container exec B dev    (drive code change)       │
+│  • container exec B check  (B runs its own CI)       │
+│  • gate: U+FFFD/build/test (reject or accept)        │
+│  • git merge worktree      (pull B's commit back)    │
+│  • container stop + prune  (cleanup)                 │
+│                                                      │
+│  A NEVER: edit, write, sed, cargo build on host src  │
+└───────────────┬──────────────────────────────────────┘
+                │  container exec ... ion --agent developer "..."
+                ▼
+┌──────────────────────────────────────────────────────┐
+│  B — Container Developer (agent role: developer)     │
+│                                                      │
+│  • Full ION instance: ion binary + LLM + tools       │
+│  • read / edit / bash (git, cargo check, cargo test) │
+│  • git commit in /workspace (bind-mount = host WT)   │
+│  • Does NOT know it's in a container                 │
+└───────────────┬──────────────────────────────────────┘
+                │  commits land in host worktree instantly
+                ▼
+        A merges → master → (optional) GitHub PR
 ```
 
-## 为什么这是正确的架构
+---
 
-| 原则 | 说明 |
+## 3. The Three Orchestration Modes
+
+| Mode | Script | Concurrency | Mechanism | Best For |
+|------|--------|-------------|-----------|----------|
+| **Serial** | `evolve_self.sh` | 1 B at a time | Sequential `for` loop; full per-task build+test | Reliability, deep verification |
+| **Concurrent** | `evolve_concurrent.sh` | N B workers | `bash &` backgrounding + per-task worktree subdirs (`/workspace/wt-N`) | Throughput on independent files |
+| **Native** | `evolve_native.sh` | coordinator-driven | ION's own `spawn_worker` + `resume_worker` (no bash `&`) | Pure multi-agent: coordinator → developer → reviewer |
+
+**Serial** is the safe default. **Concurrent** trades some isolation for speed (N isolated git repos inside one container). **Native** is the "ION evolving itself with its own primitives" ideal — the coordinator agent orchestrates developer and reviewer as child workers.
+
+All three share the same bootstrapping (`evolve.sh`): worktree → container → compile `ion` + `ion-worker`.
+
+---
+
+## 4. The 6 Gate Checks
+
+Every change B makes must pass all six gates before A merges. Failure on any gate triggers rollback (or, for reviewer rejection, an auto-fix loop).
+
+| # | Gate | Tool / Command | Fail Action |
+|---|------|----------------|-------------|
+| 1 | **U+FFFD scan** | `grep -c $'\xef\xbf\xbd' <file>` | Drive B to self-fix, max 2 attempts |
+| 2 | **Cargo.toml integrity** | `diff` worktree vs. project | Hard reject — external dep changes forbidden |
+| 3 | **Reviewer approval** | `reviewer` agent → `APPROVE` / `REQUEST_CHANGES` | `resume_worker` developer with feedback |
+| 4 | **cargo build** | `cargo build --bin ion` | Rollback file, skip task |
+| 5 | **cargo test** | `cargo test --lib` | Rollback file, skip task |
+| 6 | **clippy** | `cargo clippy` | Warnings logged; errors block merge |
+
+Gates 1–3 run *before* syncing to the main repo. Gates 4–6 run *after* sync, on the host. A file that fails any post-sync gate is reverted with `git checkout --`.
+
+---
+
+## 5. Volume Cache (The "V Scheme")
+
+Apple Container is a Linux VM with no persistent build cache by default — first compile takes 10–20 minutes. `evolve.sh` mounts two named volumes to warm-start every subsequent container:
+
+```bash
+container run ... \
+  -v ion-cargo-cache:/root/.cargo/registry \   # crate registry + source
+  -v ion-target-cache:/workspace/target         # compiled artifacts
+```
+
+| Run | cargo registry | target/ | Total build time |
+|-----|----------------|---------|------------------|
+| 1st (cold) | empty | empty | ~15 min |
+| 2nd (warm) | cached | cached | ~30 sec |
+| 3rd+ (hot) | cached | cached | ~15 sec |
+
+> **Caveat:** Apple Container volumes are *exclusive* — only one container can mount a given volume at a time. For parallel runs, use **bind mounts** (`-v /tmp/cache:/root/.cargo/registry`) instead of named volumes, or run concurrent workers *inside* a single container (the `evolve_concurrent.sh` approach).
+
+---
+
+## 6. Key Lessons (Top 5)
+
+Hard-won from the full `EVOLVER_LESSONS_LEARNED.md` — these are the non-negotiables:
+
+- **English-only comments.** Non-ASCII (Chinese) characters get corrupted into U+FFFD by some LLMs, which silently breaks `edit` tool pattern matching. The U+FFFD gate exists because of this.
+- **GLM-5.2 > DeepSeek for UTF-8 stability.** GLM-5.2 (`zai` provider) produces cleaner byte output; DeepSeek occasionally mangles multi-byte chars. Default `MODEL=glm-5.2`.
+- **Apple Container volume is exclusive.** Named volumes cannot be shared across concurrent containers. Use bind mounts or single-container-multi-worktree for parallelism.
+- **`evolve.sh` must compile `--bin ion-worker`** (not just `--bin ion`). The native mode spawns workers via `ion-worker`; omitting it causes silent spawn failures.
+- **Reviewer reject → `resume_worker` for auto-fix loop.** The reviewer agent returns `REQUEST_CHANGES`; the coordinator feeds that back to the developer via `resume_worker`. Max 2 rounds before giving up — prevents infinite fix cycles.
+
+---
+
+## 7. GitHub PR Flow
+
+For changes destined for the remote (not just local master), `evolve_pr.sh` extends the pipeline with GitHub:
+
+```
+B writes code (container)
+   │
+   ▼
+Gate checks pass (U+FFFD, build, test)
+   │
+   ▼
+A creates feature branch:  git checkout -b evolve/<timestamp>
+   │
+   ▼
+A commits + pushes:        git push origin evolve/<timestamp>
+   │
+   ▼
+A opens PR:                gh pr create --base master --head evolve/<timestamp>
+   │   (PR body includes task desc, changed files, test count, model)
+   ▼
+A auto-merges:             gh pr merge --merge --delete-branch
+   │   (tests already passed locally → safe to auto-merge)
+   ▼
+A returns to master:       git checkout master && git pull
+```
+
+The PR body is auto-generated with verification proof (gate results, test count, model/provider used), providing an audit trail for every self-evolved commit.
+
+---
+
+## 8. Related Documents
+
+| Document | Purpose |
+|----------|---------|
+| [EVOLVER_LESSONS_LEARNED.md](EVOLVER_LESSONS_LEARNED.md) | Full problem log (11 issues + solutions) |
+| [WATCHDOG_DUAL_VERSION.md](WATCHDOG_DUAL_VERSION.md) | Safe hot-reload of A after merge |
+| [WORKFLOW_GATE.md](WORKFLOW_GATE.md) | Kernel delivery verification framework |
+| [APPLE_CONTAINER_EXTENSION.md](APPLE_CONTAINER_EXTENSION.md) | Apple Container integration design |
+| [TEAM_ORCHESTRATION.md](TEAM_ORCHESTRATION.md) | Multi-agent spawn/resume primitives |
+| [CLI_ARCHITECTURE.md](CLI_ARCHITECTURE.md) | ION CLI structure (agents, tools, workers) |
+| [../guides/CLI_USAGE.md](../guides/CLI_USAGE.md) | End-user CLI reference |
+| [../guides/DEPLOY_ARCH.md](../guides/DEPLOY_ARCH.md) | Deployment topology |
+
+### Key Source Files
+
+| File | Role |
 |------|------|
-| **A 绝不碰自己代码** | 就像 ZCode 不碰 ION 源码一样——A 只调度，不执行 |
-| **B 是完整 ION 实例** | 有 ion binary + LLM + 工具 + CI，跟 A 一样的能力 |
-| **A 通过"调用"驱动 B** | `container exec B ion --agent developer "..."`，跟 ZCode 调用 A 完全一样 |
-| **B 自己跑 CI** | B 里的 ion 自己跑 cargo test，不是 A 替 B 跑 |
-| **CI 通过后 A 拉代码** | bind-mount 让 B 的 commit 自动同步到 host worktree，A git merge 即可 |
-
-## 关键技术实现
-
-### container 里的 ion binary
-
-host 是 macOS arm64，container 是 Linux VM——跨架构 binary 跑不了。所以 **ion 在 container 内编译**：
-
-```bash
-container exec $NAME sh -c 'cd /workspace && cargo build --release --bin ion'
-```
-
-首次编译 10-20 分钟，后续 incremental 快。
-
-### API key + 配置传递
-
-挂载 `~/.ion` 到 container（只读）：
-```bash
-container run -v ~/.ion:/root/.ion:ro ...
-```
-
-B 能读 host 的 config.json / auth.json / models.json / skills/——零配置。
-
-### 代码同步（bind-mount）
-
-worktree 挂载到 container 的 /workspace：
-```bash
-container run -v $WT_DIR:/workspace ...
-```
-
-B 在 container 里 `git commit`，改动直接落到 host 的 worktree 目录。A 不需要 git pull——`cd $WT_DIR && git log` 立刻可见。
-
-## A 的 agent（evolver.md）
-
-```yaml
-tools:
-  - read
-  - ls
-  - grep
-  - find
-  - bash
-disallowed_tools:
-  - edit    # A 不能改代码
-  - write   # A 不能写代码
-```
-
-A 的 prompt 铁律：
-1. A 绝不 edit/write
-2. A 绝不在 host 上 cargo build/test
-3. 改代码必须 `container exec B ion --agent developer "..."`
-4. CI 必须在 B 里跑
-
-## B 的 agent（container 里的 ion）
-
-B 用 `--agent developer` 启动，developer.md 定义了 B 的行为：
-- read 源文件
-- edit 改代码
-- bash git add + commit
-- bash cargo build/test
-
-B 不知道自己在 container 里——对 B 来说，它就是一个普通的 ION agent 在改代码。
-
-## 废弃的旧方案
-
-以下方案是"A 自己编排自己改自己"的错误方向，已废弃：
-
-- `scripts/improver.sh` — 外部脚本编排 A（错误：A 应该自己驱动 B，不是被外部脚本编排）
-- `.ion/workflows/improver.wf.yaml` — workflow 外挂（错误：workflow 应该在 agent 内部）
-- `examples/agents/improver.md` — 改成 workflow 引擎（错误：A 不应该自己做 workflow）
-
-正确方案是 `examples/agents/evolver.md`——A 的 agent 直接具备"驱动 B"的能力。
-
-## 验证方式
-
-```bash
-# 端到端验证
-ion --host --agent evolver "给 global_memory 加 fn last_count() 方法"
-# 预期：
-# A 开 worktree → 启 container → 编译 ion → 调 B 改代码 → B 自己 commit
-# → B 自己跑 cargo test → A 看结果 → 合并到 master → 清理
-```
-
-## 相关文件
-
-| 文件 | 作用 |
-|------|------|
-| `examples/agents/evolver.md` | A 的 agent 定义 |
-| `scripts/init-evolve-container.sh` | 启动 B（container + 编译 ion） |
-| `scripts/Dockerfile.evolve` | container 镜像（Rust 工具链） |
-| `examples/agents/developer.md` | B 的 agent 定义（container 里用） |
-
-## 当前验证状态（2026-07-21）
-
-### 已验证的闭环
-
-| 方法 | commit | 测试 |
-|------|--------|------|
-| count_by_project | a174974 | 15 passed |
-| count_archived_by_project | aa0d9ab | 16 passed |
-| count_active_by_project | 857ffcf | 17 passed |
-| entries_summary | f7d8dec | 18 passed |
-| project_list | 0e4a322 | 19 passed |
-| project_count | c7d9a5c | 20 passed |
-| clear_active | 76f277b | 14 passed |
-| has_entries | 859cc21 | 13 passed |
-| memory_count | 2e5766f | 15 passed |
-| archived_total | 6955c57 | 13 passed |
-
-每个方法都是 B 通过 container exec 改的，CI 在 container 里跑通过。
-
-### 关键文件
-
-| 文件 | 作用 |
-|------|------|
-| scripts/evolve.sh | worktree + container + 编译 ion |
-| scripts/evolve-run.sh | B 改代码 + CI + 同步 + HTML + 清理 |
-| examples/agents/evolver.md | A 的 agent 定义 |
-| src/command_guard.rs | 拦截 host 代码修改 |
-| src/agent/bash.rs | bash_run background + follow_up |
-| src/agent/agent_loop.rs | ION_WAIT_BACKGROUND |
-| docs/design/EVOLVER_LESSONS_LEARNED.md | 10 个问题 + 解决方案 |
-| docs/design/WATCHDOG_DUAL_VERSION.md | 看门狗双版本切换设计 |
+| `scripts/evolve.sh` | Bootstrap: worktree + container + compile |
+| `scripts/evolve_self.sh` | Serial batch orchestrator |
+| `scripts/evolve_concurrent.sh` | Concurrent (N parallel B workers) |
+| `scripts/evolve_native.sh` | Native (coordinator + spawn_worker) |
+| `scripts/evolve_pr.sh` | GitHub PR flow |
+| `scripts/init-evolve-container.sh` | Standalone container init |
+| `scripts/Dockerfile.evolve` | Rust toolchain image |
+| `examples/agents/evolver.md` | A's agent definition |
+| `examples/agents/developer.md` | B's agent definition |
+| `examples/agents/reviewer.md` | Code review agent |
+| `src/command_guard.rs` | Host-side mutation blockade |

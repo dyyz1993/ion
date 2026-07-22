@@ -511,3 +511,73 @@ ion recordings
 {"thinking":"先想想","text":"然后回答"}
 {"text":"","stop_reason":"error","error_message":"模拟错误"}
 ```
+
+## Multi-Agent Orchestration
+
+### spawn_worker (sync child)
+```bash
+# Scenario 1: coordinator spawns developer synchronously
+ion --host --agent coordinator "Add a method to src/auth.rs"
+# coordinator internally calls: spawn_worker(child, developer, wait=true)
+```
+
+### spawn_worker (async, parallel)
+```bash
+# Scenario 2: coordinator spawns 3 developers in parallel
+ion --host --agent coordinator "Fix 3 independent bugs in auth.rs, paths.rs, tool.rs"
+# coordinator internally calls:
+#   spawn_worker(child, developer, wait=false) x 3
+#   await_worker(worker_1)
+#   await_worker(worker_2)
+#   await_worker(worker_3)
+```
+
+### spawn_worker (peer, background)
+```bash
+# Scenario 3: coordinator spawns background reviewer
+# coordinator internally calls: spawn_worker(peer, reviewer, report_channel='main')
+# reviewer auto-reports via follow_up when done
+```
+
+### Tool Summary
+
+| Tool | Type | When to use |
+|------|------|-------------|
+| spawn_worker(child, wait=true) | Sync | Single task, must wait |
+| spawn_worker(child, wait=false) | Async | Parallel tasks |
+| spawn_worker(peer) | Async | Background/monitoring |
+| resume_worker | Sync | Continue conversation with completed worker |
+| send_to_worker | Async | Message to background worker |
+| await_worker | Sync | Wait for async worker |
+| kill_worker | Async | Terminate stuck worker |
+| channel_send | Async | Broadcast to all workers |
+
+## Self-Evolution (A→B Architecture)
+
+### Quick Start
+```bash
+# 1. Start container + compile
+bash scripts/evolve.sh
+
+# 2. Run self-evolution task (B writes code, A merges)
+bash scripts/evolve_pr.sh "Add fn count_active() to src/global_memory.rs"
+
+# 3. Or run batch tasks
+bash scripts/evolve_self.sh
+```
+
+### How It Works
+- A = coordinator agent on host (never writes code directly)
+- B = developer agent in container (writes code + tests + commits)
+- 6 gate checks: U+FFFD, Cargo.toml, reviewer, cargo build, cargo test, clippy
+- Changes managed via GitHub PR (evolve_pr.sh)
+
+### Key Scripts
+| Script | Purpose |
+|--------|---------|
+| evolve.sh | Start container + compile ion/ion-worker |
+| evolve_self.sh | Serial batch tasks |
+| evolve_concurrent.sh | 1 container + N parallel B workers |
+| evolve_native.sh | Coordinator uses spawn_worker natively |
+| evolve_pr.sh | B writes → gate → GitHub PR → merge |
+| evolve_verify.sh | Standalone CI verification |

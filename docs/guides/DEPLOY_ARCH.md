@@ -113,116 +113,144 @@ Agent 需要写 /etc/hosts
 
 ---
 
-## 场景 1：全本地开发（当前模式）
+## Three Execution Scenarios
 
-**前置配置：**
-```json
-{ "runtime": { "default": "local" } }
+ION has three execution scenarios. Scenario 1 is a **direct spawn** (no host process).
+Scenarios 2 and 3 share the **same host engine** — `WorkerRegistry` + `spawn_worker` +
+event forwarding — and differ only in how they expose the outside world.
+
+```
+              ┌─ Scenario 1: direct child-process spawn, no host
+              │   runs and exits, no event forwarding
+              │
+   same       ├─ Scenario 2: temporary host + event pump → stdout
+   low-level  │   auto-exit on recursive idle
+   API        │
+  (spawn,    └─ Scenario 3: always-on host + Unix socket → external UI
+   await,         never auto-exits, external UI can connect at any time
+   channel)
 ```
 
-**CLI 验证：**
-```bash
-ion serve start
-ion rpc --method create_worker --params '{"cwd":"/Users/me/project"}'
+| Scenario | CLI | Engine | Event Output | Sync Subtask | Async Task | Exit |
+|----------|-----|--------|-------------|-------------|-----------|------|
+| **1. Quick execution** | `ion "msg"` | direct spawn (no host) | ❌ none | ✅ spawn → await | ❌ killed when process exits | runs and exits |
+| **2. Quick orchestration** | `ion --host "msg"` | host engine | event pump → stdout | ✅ | ✅ host holds them | auto-exit on recursive idle |
+| **3. Persistent service** | `ion serve` | host engine + socket | socket → external UI | ✅ | ✅ host holds them | manual shutdown |
 
-ion rpc --session <sid> --method call_tool \
-  --params '{"tool":"read","args":{"file_path":"src/main.rs"}}'
-# → ✅ 本机文件
-
-ion rpc --session <sid> --method call_tool \
-  --params '{"tool":"bash","args":{"command":"cargo build"}}'
-# → ✅ 本机编译
-```
-
-| 组件 | 位置 |
-|------|------|
-| LLM | 本机 |
-| bash | 本机 |
-| 代码 | 本机 |
-| 沙箱 | 无 |
+> **Scenarios 2 and 3 share the same host engine** — `WorkerRegistry`, `spawn_worker`,
+> and event forwarding are identical. The **only difference** is how they expose to the
+> outside world: Scenario 2 pumps events to stdout (auto-exit on idle), Scenario 3
+> exposes a Unix socket for external UI (stays alive).
+>
+> **Note:** Scenarios 2 and 3 both rely on the `ion-worker` binary for `spawn_worker`.
+> The host spawns `ion-worker` child processes (JSONL over stdin/stdout). Build both
+> binaries with `cargo build --bin ion --bin ion-worker`.
 
 ---
 
-## 场景 2：远程查问题（RemoteRuntime）
+### Scenario 1: Quick Execution
 
-**前置配置：**
-```json
-{
-  "runtime": {
-    "default": "remote",
-    "remote": {
-      "default_host": "xyz-mac",
-      "hosts": {
-        "xyz-mac": {
-          "user": "admin",
-          "hostname": "xyz-mac.local",
-          "transport": "ssh"
-        }
-      }
-    }
-  }
-}
-```
-
-**CLI 验证：**
 ```bash
-# 命令自动 SSH 到远程执行
-ion rpc --session <sid> --method call_tool \
-  --params '{"tool":"bash","args":{"command":"uptime"}}'
-# → ✅ SSH → xyz-mac → uptime 结果
-
-# 读远程文件
-ion rpc --session <sid> --method call_tool \
-  --params '{"tool":"read","args":{"file_path":"/var/log/nginx/error.log"}}'
-# → ✅ SSH → xyz-mac → cat error.log
+ion "summarize this repo"
 ```
 
-| 组件 | 位置 |
-|------|------|
-| LLM | 本机 |
-| bash | **SSH → xyz-mac** |
-| 代码 | **SSH/SCP → xyz-mac** |
-| 权限 | 本机（检查完再发 SSH） |
+Direct spawn — no host process. The CLI builds a tool set + Agent, runs a single
+agent turn, then the process exits.
+
+```
+Terminal                     In-process
+┌──────┐   ┌──────────────────────────┐
+│ ion  │──▶│  cmd_run()               │
+│      │   │  build tools + Agent     │
+│      │   │  agent.run(message)      │
+│      │   │    ├─ LLM loop            │
+│      │   │    ├─ call tool (read/write)│
+│      │   │    ├─ spawn_worker (sync)  │
+│      │   │    │    └─ spawn child proc│
+│      │   │    │        await done     │
+│      │   │    └─ return              │
+│      │   └─ process exits            │
+└──────┘                              │
+    ❌ no host, no async tasks
+    ❌ no event forwarding
+    ✅ sync subtasks work
+```
 
 ---
 
-## 场景 3：混合路由（RouterRuntime）
+### Scenario 2: Quick Orchestration
 
-**前置配置：**
-```json
-{
-  "runtime": {
-    "default": "local",
-    "routes": [
-      {"tool": "bash", "pattern": "kubectl *", "runtime": "remote", "host": "xyz-mac"},
-      {"tool": "bash", "pattern": "npm install *", "runtime": "sandbox"},
-      {"tool": "bash", "pattern": "ssh *", "runtime": "remote", "host": "xyz-mac"}
-    ]
-  }
-}
+```bash
+ion --host "refactor the auth module and add tests"
 ```
 
-**CLI 验证：**
+A **temporary host** is spawned with an event pump. The host provides
+`WorkerRegistry` + `spawn_worker` for multi-agent coordination (sync and async
+subtasks). Events are pumped to stdout in real-time. The host auto-exits when all
+workers are idle (recursive idle detection).
+
+```
+Terminal                        Temporary host
+┌──────┐  ┌──────────────────────────────────────────────┐
+│ ion  │──│  WorkerRegistry + command loop + event pump  │
+│      │  │  spawn coordinator Worker (child process)    │
+│--host│  │    ├─ spawn_worker(dev, sync)                 │
+│      │  │    │    └─ host creates child → await done   │
+│      │  │    ├─ spawn_worker(dev, async)                │
+│      │  │    │    └─ host creates child                 │
+│      │  │    │       └─ child runs → agent_end         │
+│      │  │    └─ channel_send ← inter-worker comms      │
+│      │  │  event pump → stdout (text_delta in realtime)│
+│      │  │  ...all idle → cleanup & exit                 │
+└──────┘  └──────────────────────────────────────────────┘
+    ✅ host engine: sync + async subtasks
+    ✅ event pump → stdout
+    ❌ no socket, external tools cannot connect
+```
+
+**Exit condition (recursive idle):**
+```
+entry Worker (coordinator) idle?
+├─ its child Worker 1 idle?
+│   └─ child of child idle?
+├─ child Worker 2 idle?
+└─ ...all idle
+  → no background processes running → cleanup & exit
+```
+
+---
+
+### Scenario 3: Persistent Service
+
 ```bash
-# 读代码 → 本地
-ion rpc --session <sid> --method call_tool \
-  --params '{"tool":"read","args":{"file_path":"src/main.rs"}}'
-# → ✅ 本地
+ion serve              # always-on host via Unix socket (~/.ion/host.sock)
+ion "do something"     # any client connects to the running host
+```
 
-# 编译 → 本地
-ion rpc --session <sid> --method call_tool \
-  --params '{"tool":"bash","args":{"command":"cargo build"}}'
-# → ✅ 本地
+An always-on host listening on a Unix domain socket. External UI / TUI / IDE
+plugins connect and stay connected. Multiple CLI invocations talk to the same
+long-lived host. The host does **not** auto-exit — it requires manual shutdown.
 
-# 部署 → SSH 到远程
-ion rpc --session <sid> --method call_tool \
-  --params '{"tool":"bash","args":{"command":"kubectl apply -f deploy.yaml"}}'
-# → ✅ SSH → xyz-mac
-
-# 安装依赖 → 沙箱
-ion rpc --session <sid> --method call_tool \
-  --params '{"tool":"bash","args":{"command":"npm install"}}'
-# → ✅ 沙箱内执行
+```
+External UI / TUI / IDE                Always-on host
+┌─────────────────┐   ┌───────────────────────────────────────┐
+│        socket    │   │  WorkerRegistry + command loop        │
+│  Web UI          │   │  Unix socket → ~/.ion/host.sock       │
+│  ┌───────────┐   │   │  spawn Worker (child process)         │
+│  │progress   │◄──│───│  ├─ sync: spawn → await (UI visible)  │
+│  │cards      │   │   │  │  └─ push text_delta via socket     │
+│  │real-time  │   │   │  ├─ async: spawn → agent_end (visible)│
+│  └─────────��─┘   │   │  │  └─ push agent_start → text_delta   │
+│                  │   │  │        → agent_end                  │
+│  ion rpc CLI     │   │  ├─ channel_send ← inter-worker comms │
+│  ┌───────────┐   │   │  ├─ subscribe → event stream to socket│
+│  │create_    │───│───│  └─ keeps running (no auto-exit)       │
+│  │worker     │   │   │                                       │
+│  └───────────┘   │   │                                       │
+└─────────────────┘   └───────────────────────────────────────┘
+    ✅ host engine: sync + async subtasks
+    ✅ events via socket → external UI (cards / progress bars)
+    ❌ no auto-exit, requires manual shutdown
 ```
 
 ---

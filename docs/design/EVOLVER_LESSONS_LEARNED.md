@@ -191,6 +191,76 @@ evolve-run.sh 用 diff 比较 worktree 和主仓库的 .rs 文件，只同步有
 
 ---
 
+## 12. Apple Container named volume is exclusive
+
+### Problem
+Multiple containers cannot share the same named volume simultaneously.
+
+### Solution
+Use host bind mount (/tmp/ion-cache-*) instead of named volumes for parallel containers.
+
+---
+
+## 13. evolve.sh must compile --bin ion-worker
+
+### Problem
+spawn_worker creates ion-worker subprocesses. If only --bin ion is compiled, spawn_worker fails with 'cannot find binary path'.
+
+### Solution
+evolve.sh now compiles both: `cargo build --release --bin ion --bin ion-worker`
+
+---
+
+## 14. coordinator --host mode works with spawn_worker
+
+### Problem
+Was unsure if coordinator agent could use spawn_worker inside --host mode.
+
+### Solution
+Verified: `coordinator --host` + `spawn_worker(child, developer)` works perfectly. 3 developers spawned in parallel via `spawn_worker(wait=false)` + `await_worker`.
+
+---
+
+## 15. DeepSeek 5-hour usage limit
+
+### Problem
+DeepSeek-v4-flash (opencode) has a 5-hour usage limit that blocks API calls.
+
+### Solution
+Switch default to GLM-5.2 (zai). Keep DeepSeek as fallback (tier_models.fast).
+
+---
+
+## 16. System prompt environment injection
+
+### Problem
+LLM didn't know the current working directory, project path, or recent git changes.
+
+### Solution
+`build_env_info()` injects: time, cwd, project_root, git branch, git remote, recent 3 commits (with file names), uncommitted changes.
+
+---
+
+## 17. HTML export now includes tools + system prompt
+
+### Problem
+`--export` command didn't show what tools the agent had or its system prompt.
+
+### Solution
+`export_session_rich()` reads agent config, reconstructs tool list, injects system prompt.
+
+---
+
+## 18. Reviewer auto-fix loop
+
+### Problem
+When reviewer rejects, the change was simply skipped.
+
+### Solution
+`evolve_concurrent.sh` now sends reviewer feedback back to developer via `resume_worker`. Developer fixes, re-reviewed. Max 2 fix rounds.
+
+---
+
 ## 经验总结
 
 ### 做得对的

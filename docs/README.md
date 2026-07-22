@@ -160,3 +160,22 @@ docs/
 | MEMORY_EXTENSION.md / MEMORY_SPEC.md | design/MEMORY_EXTENSION.md | 2 文档合并 |
 | RPC_DIFF_REPORT.md | design/PI_RPC_ALIGNMENT.md | 被替代 |
 | WORKER_COMM_TODO.md | — | 任务已完成 |
+
+---
+
+## Self-Evolution (A→B Architecture)
+
+| Document | Content |
+|----------|---------|
+| [design/SELF_EVOLUTION.md](./design/SELF_EVOLUTION.md) | A→B architecture overview |
+| [design/EVOLVER_LESSONS_LEARNED.md](./design/EVOLVER_LESSONS_LEARNED.md) | 18 real problems + solutions |
+| [design/WATCHDOG_DUAL_VERSION.md](./design/WATCHDOG_DUAL_VERSION.md) | Watchdog dual-version design (pending) |
+
+## Agent Definitions (examples/agents/)
+
+| Agent | Role |
+|-------|------|
+| coordinator.md | Orchestrate via spawn_worker (sync + async) |
+| developer.md | Write code in container (with safety rules) |
+| reviewer.md | Review changes (structured checklist) |
+| evolver_agent.md | Self-evolution orchestrator guide |
