@@ -127,3 +127,84 @@ impl Extension for PlanExtension {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_initializes_plan_mode_as_false() {
+        // A freshly created extension must not be in plan mode.
+        let ext = PlanExtension::new();
+        assert!(!ext.is_plan_mode());
+    }
+
+    #[test]
+    fn new_initializes_plan_path_as_none() {
+        // Internal invariant: the path mutex starts empty.
+        let ext = PlanExtension::new();
+        assert_eq!(lock_path(&ext.plan_path), "(not specified)");
+    }
+
+    #[test]
+    fn new_populates_expected_allowed_tools() {
+        // The default allow-list should contain the research/edit tools and plan_exit.
+        let ext = PlanExtension::new();
+        let tools = &ext.allowed_tools;
+        assert!(tools.contains(&"read".to_string()));
+        assert!(tools.contains(&"grep".to_string()));
+        assert!(tools.contains(&"find".to_string()));
+        assert!(tools.contains(&"ls".to_string()));
+        assert!(tools.contains(&"bash".to_string()));
+        assert!(tools.contains(&"write".to_string()));
+        assert!(tools.contains(&"edit".to_string()));
+        assert!(tools.contains(&"plan_exit".to_string()));
+    }
+
+    #[test]
+    fn allowed_tools_has_expected_count() {
+        // Guard against accidentally adding/removing tools without intent.
+        let ext = PlanExtension::new();
+        assert_eq!(ext.allowed_tools.len(), 8);
+    }
+
+    #[test]
+    fn is_plan_mode_reflects_atomic_state() {
+        // Manually flip the flag and confirm is_plan_mode reads it.
+        let ext = PlanExtension::new();
+        ext.plan_mode.store(true, Ordering::Relaxed);
+        assert!(ext.is_plan_mode());
+        ext.plan_mode.store(false, Ordering::Relaxed);
+        assert!(!ext.is_plan_mode());
+    }
+
+    #[test]
+    fn lock_path_returns_default_when_none() {
+        // When the mutex holds None, lock_path yields the placeholder.
+        let m = Mutex::new(None);
+        assert_eq!(lock_path(&m), "(not specified)");
+    }
+
+    #[test]
+    fn lock_path_returns_value_when_some() {
+        // When the mutex holds Some(path), lock_path yields the stored string.
+        let m = Mutex::new(Some(String::from("/tmp/plan.md")));
+        assert_eq!(lock_path(&m), "/tmp/plan.md");
+    }
+
+    #[test]
+    fn set_path_stores_a_value() {
+        // After setting Some, lock_path should observe the new value.
+        let m = Mutex::new(None);
+        set_path(&m, Some(String::from("/out/plan.txt")));
+        assert_eq!(lock_path(&m), "/out/plan.txt");
+    }
+
+    #[test]
+    fn set_path_clears_to_none() {
+        // Setting None after a value should reset back to the default placeholder.
+        let m = Mutex::new(Some(String::from("/old/plan.md")));
+        set_path(&m, None);
+        assert_eq!(lock_path(&m), "(not specified)");
+    }
+}
