@@ -273,10 +273,10 @@ mod tests {
 
     #[test]
     fn test_agent_description() {
-        // The builtin "general" agent should have a non-empty description
-        let desc = agent_description("general");
-        assert!(desc.is_some(), "agent_description('general') should return Some");
-        assert!(!desc.unwrap().is_empty(), "general agent description should not be empty");
+        // The builtin "build" agent should have a non-empty description
+        let desc = agent_description("build");
+        assert!(desc.is_some(), "agent_description('build') should return Some");
+        assert!(!desc.unwrap().is_empty(), "build agent description should not be empty");
 
         // A non-existent agent should return None
         let missing = agent_description("nonexistent_agent_xyz_123");
