@@ -417,6 +417,12 @@ pub fn tmp_dir() -> PathBuf {
     agent_dir().join("tmp")
 }
 
+/// Returns the system temp directory (std::env::temp_dir()).
+/// This is the base OS temp directory, e.g. /tmp on Linux, %TEMP% on Windows.
+pub fn os_tmp_dir() -> std::path::PathBuf {
+    std::env::temp_dir()
+}
+
 /// ~/.ion/agent/tmp/extensions/
 pub fn tmp_extensions_dir() -> PathBuf {
     tmp_dir().join("extensions")
@@ -956,6 +962,17 @@ mod tests {
                 .current_dir(&main_cwd)
                 .output();
         }
+    }
+
+    #[test]
+    fn os_tmp_dir_returns_existing_path() {
+        let tmp = os_tmp_dir();
+        assert!(tmp.exists(), "os_tmp_dir should return an existing directory");
+    }
+
+    #[test]
+    fn os_tmp_dir_is_system_temp() {
+        assert_eq!(os_tmp_dir(), std::env::temp_dir());
     }
 
     #[test]
