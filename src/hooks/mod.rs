@@ -356,4 +356,555 @@ mod tests {
         );
         assert_eq!(hooks.count_hooks(), 4, "4 hooks after adding a group (group counts as 1)");
     }
+
+    // -------------------------------------------------------------------------
+    // HooksConfig construction and defaults
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_hooks_config_default() {
+        let cfg = HooksConfig::default();
+        assert_eq!(cfg.version, 0, "default version should be 0 (serde default overrides on deserialize, but Default trait yields 0)");
+        assert!(!cfg.disable_all_hooks, "disable_all_hooks should default to false");
+        assert!(cfg.hooks.is_empty(), "hooks map should default to empty");
+    }
+
+    #[test]
+    fn test_default_version_fn() {
+        // The serde default function for the version field.
+        assert_eq!(default_version(), 1, "default_version() helper returns 1");
+    }
+
+    #[test]
+    fn test_hooks_config_construction() {
+        let mut hooks = HashMap::new();
+        hooks.insert(
+            "PreToolUse".to_string(),
+            vec![make_handler(HandlerType::Command, Some("echo hi"), None, None)],
+        );
+        let cfg = HooksConfig {
+            version: 2,
+            disable_all_hooks: true,
+            hooks,
+        };
+        assert_eq!(cfg.version, 2);
+        assert!(cfg.disable_all_hooks);
+        assert_eq!(cfg.hooks.len(), 1);
+    }
+
+    #[test]
+    fn test_hooks_config_serde_roundtrip() {
+        let json = r#"{
+            "version": 1,
+            "disableAllHooks": false,
+            "hooks": {
+                "PreToolUse": [
+                    { "type": "command", "command": "echo hi" }
+                ]
+            }
+        }"#;
+        let cfg: HooksConfig = serde_json::from_str(json).expect("parse should succeed");
+        assert_eq!(cfg.version, 1, "version should deserialize to 1 via default_version");
+        assert!(!cfg.disable_all_hooks);
+        assert_eq!(cfg.hooks.len(), 1);
+        assert_eq!(cfg.count_hooks(), 1);
+    }
+
+    #[test]
+    fn test_hooks_config_empty_json_uses_defaults() {
+        // An empty JSON object should fall back to all serde defaults.
+        let cfg: HooksConfig = serde_json::from_str("{}").expect("empty object parses");
+        assert_eq!(cfg.version, 1, "missing version uses default_version() = 1");
+        assert!(!cfg.disable_all_hooks);
+        assert!(cfg.hooks.is_empty());
+    }
+
+    #[test]
+    fn test_disable_all_hooks_field_rename() {
+        // The field is serialized as disableAllHooks (camelCase).
+        let json = r#"{ "disableAllHooks": true }"#;
+        let cfg: HooksConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.disable_all_hooks);
+    }
+
+    // -------------------------------------------------------------------------
+    // Empty config handling
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_is_empty_true_by_default() {
+        let cfg = HooksConfig::default();
+        assert!(cfg.is_empty(), "default config is empty");
+    }
+
+    #[test]
+    fn test_is_empty_false_with_hooks() {
+        let mut cfg = HooksConfig::default();
+        cfg.hooks.insert(
+            "PostToolUse".to_string(),
+            vec![make_handler(HandlerType::Command, Some("true"), None, None)],
+        );
+        assert!(!cfg.is_empty(), "config with one event is not empty");
+    }
+
+    #[test]
+    fn test_event_count() {
+        let mut cfg = HooksConfig::default();
+        assert_eq!(cfg.event_count(), 0);
+
+        cfg.hooks.insert("a".to_string(), vec![]);
+        assert_eq!(cfg.event_count(), 1, "empty vec still counts as an event");
+
+        cfg.hooks.insert("b".to_string(), vec![]);
+        assert_eq!(cfg.event_count(), 2);
+    }
+
+    #[test]
+    fn test_handler_count_empty() {
+        let cfg = HooksConfig::default();
+        assert_eq!(cfg.handler_count(), 0);
+    }
+
+    #[test]
+    fn test_handler_count_with_handlers_and_groups() {
+        let mut cfg = HooksConfig::default();
+        // Two plain handlers under "a"
+        cfg.hooks.insert(
+            "a".to_string(),
+            vec![
+                make_handler(HandlerType::Command, Some("echo 1"), None, None),
+                make_handler(HandlerType::Command, Some("echo 2"), None, None),
+            ],
+        );
+        // One group with 2 inner handlers under "b"
+        cfg.hooks.insert(
+            "b".to_string(),
+            vec![HookEntry::Group(HookGroup {
+                matcher: Some("Bash".to_string()),
+                loop_limit: None,
+                hooks: vec![
+                    make_handler(HandlerType::Command, Some("echo g1"), None, None).into_handler(),
+                    make_handler(HandlerType::Command, Some("echo g2"), None, None).into_handler(),
+                ],
+            })],
+        );
+        // 2 plain + 2 in group = 4
+        assert_eq!(cfg.handler_count(), 4);
+    }
+
+    // -------------------------------------------------------------------------
+    // HandlerType enum variants
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_handler_type_serde_variants() {
+        // Verify snake_case serialization for all 5 variants.
+        let cases = [
+            (HandlerType::Command, "\"command\""),
+            (HandlerType::Http, "\"http\""),
+            (HandlerType::Prompt, "\"prompt\""),
+            (HandlerType::Agent, "\"agent\""),
+            (HandlerType::McpTool, "\"mcp_tool\""),
+        ];
+        for (variant, expected) in cases {
+            let s = serde_json::to_string(&variant).unwrap();
+            assert_eq!(s, expected, "serialize {:?}", variant);
+            let back: HandlerType = serde_json::from_str(expected).unwrap();
+            assert_eq!(back, variant, "deserialize {:?}", variant);
+        }
+    }
+
+    #[test]
+    fn test_handler_type_equality() {
+        assert_eq!(HandlerType::Command, HandlerType::Command);
+        assert_ne!(HandlerType::Command, HandlerType::Http);
+    }
+
+    // -------------------------------------------------------------------------
+    // HookHandler struct — all 5 handler variants
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_command_handler_construction() {
+        let h = HookHandler {
+            handler_type: HandlerType::Command,
+            command: Some("echo hello".to_string()),
+            ..full_default_handler()
+        };
+        assert_eq!(h.handler_type, HandlerType::Command);
+        assert_eq!(h.command.as_deref(), Some("echo hello"));
+        assert!(h.url.is_none());
+    }
+
+    #[test]
+    fn test_http_handler_construction() {
+        let h = HookHandler {
+            handler_type: HandlerType::Http,
+            url: Some("https://example.com/hook".to_string()),
+            ..full_default_handler()
+        };
+        assert_eq!(h.handler_type, HandlerType::Http);
+        assert_eq!(h.url.as_deref(), Some("https://example.com/hook"));
+        assert!(h.command.is_none());
+    }
+
+    #[test]
+    fn test_prompt_handler_construction() {
+        let h = HookHandler {
+            handler_type: HandlerType::Prompt,
+            prompt: Some("Is this safe?".to_string()),
+            model: Some("gpt-4".to_string()),
+            ..full_default_handler()
+        };
+        assert_eq!(h.handler_type, HandlerType::Prompt);
+        assert_eq!(h.prompt.as_deref(), Some("Is this safe?"));
+        assert_eq!(h.model.as_deref(), Some("gpt-4"));
+    }
+
+    #[test]
+    fn test_agent_handler_construction() {
+        let h = HookHandler {
+            handler_type: HandlerType::Agent,
+            agent: Some("outline-syncer".to_string()),
+            prompt: Some("sync outline".to_string()),
+            allowed_tools: Some(vec!["Read".to_string(), "Write".to_string()]),
+            max_turns: Some(5),
+            ..full_default_handler()
+        };
+        assert_eq!(h.handler_type, HandlerType::Agent);
+        assert_eq!(h.agent.as_deref(), Some("outline-syncer"));
+        assert_eq!(h.allowed_tools.as_deref(), Some(&["Read".to_string(), "Write".to_string()][..]));
+        assert_eq!(h.max_turns, Some(5));
+    }
+
+    #[test]
+    fn test_mcp_tool_handler_construction() {
+        let h = HookHandler {
+            handler_type: HandlerType::McpTool,
+            server: Some("context7".to_string()),
+            tool: Some("search".to_string()),
+            input: Some(serde_json::json!({"query": "rust"})),
+            ..full_default_handler()
+        };
+        assert_eq!(h.handler_type, HandlerType::McpTool);
+        assert_eq!(h.server.as_deref(), Some("context7"));
+        assert_eq!(h.tool.as_deref(), Some("search"));
+        assert_eq!(h.input, Some(serde_json::json!({"query": "rust"})));
+    }
+
+    #[test]
+    fn test_handler_optional_fields() {
+        let h = HookHandler {
+            handler_type: HandlerType::Command,
+            command: Some("run".to_string()),
+            timeout: Some(60),
+            if_clause: Some("Bash(rm *)".to_string()),
+            r#async: true,
+            async_rewake: true,
+            once: true,
+            status_message: Some("working...".to_string()),
+            ..full_default_handler()
+        };
+        assert_eq!(h.timeout, Some(60));
+        assert_eq!(h.if_clause.as_deref(), Some("Bash(rm *)"));
+        assert!(h.r#async);
+        assert!(h.async_rewake);
+        assert!(h.once);
+        assert_eq!(h.status_message.as_deref(), Some("working..."));
+    }
+
+    #[test]
+    fn test_handler_if_clause_rename() {
+        // The field is serialized as "if".
+        let json = r#"{ "type": "command", "command": "echo x", "if": "Bash(rm *)" }"#;
+        let h: HookHandler = serde_json::from_str(json).unwrap();
+        assert_eq!(h.if_clause.as_deref(), Some("Bash(rm *)"));
+    }
+
+    #[test]
+    fn test_handler_async_keyword_field() {
+        let json = r#"{ "type": "command", "command": "echo x", "async": true }"#;
+        let h: HookHandler = serde_json::from_str(json).unwrap();
+        assert!(h.r#async);
+    }
+
+    // -------------------------------------------------------------------------
+    // HookGroup and HookEntry
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_hook_group_construction() {
+        let g = HookGroup {
+            matcher: Some("Bash.*".to_string()),
+            loop_limit: Some(3),
+            hooks: vec![make_handler(HandlerType::Command, Some("echo"), None, None).into_handler()],
+        };
+        assert_eq!(g.matcher.as_deref(), Some("Bash.*"));
+        assert_eq!(g.loop_limit, Some(3));
+        assert_eq!(g.hooks.len(), 1);
+    }
+
+    #[test]
+    fn test_hook_group_defaults() {
+        let g = HookGroup {
+            matcher: None,
+            loop_limit: None,
+            hooks: vec![],
+        };
+        assert!(g.matcher.is_none());
+        assert!(g.loop_limit.is_none());
+        assert!(g.hooks.is_empty());
+    }
+
+    #[test]
+    fn test_hook_entry_untagged_deserialize_handler() {
+        // Untagged enum: an object without "hooks" is treated as a plain Handler.
+        let json = r#"{ "type": "command", "command": "echo hi" }"#;
+        let entry: HookEntry = serde_json::from_str(json).unwrap();
+        match entry {
+            HookEntry::Handler(h) => {
+                assert_eq!(h.handler_type, HandlerType::Command);
+                assert_eq!(h.command.as_deref(), Some("echo hi"));
+            }
+            HookEntry::Group(_) => panic!("should deserialize as Handler"),
+        }
+    }
+
+    #[test]
+    fn test_hook_entry_untagged_deserialize_group() {
+        // An object with a "hooks" array is treated as a Group.
+        let json = r#"{
+            "matcher": "Bash",
+            "hooks": [ { "type": "command", "command": "echo g" } ]
+        }"#;
+        let entry: HookEntry = serde_json::from_str(json).unwrap();
+        match entry {
+            HookEntry::Group(g) => {
+                assert_eq!(g.matcher.as_deref(), Some("Bash"));
+                assert_eq!(g.hooks.len(), 1);
+            }
+            HookEntry::Handler(_) => panic!("should deserialize as Group"),
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // handlers_for_event helper
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_handlers_for_event_missing() {
+        let cfg = HooksConfig::default();
+        let result = cfg.handlers_for_event("Nonexistent");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_handlers_for_event_plain_handlers() {
+        let mut cfg = HooksConfig::default();
+        cfg.hooks.insert(
+            "PreToolUse".to_string(),
+            vec![
+                make_handler(HandlerType::Command, Some("a"), None, None),
+                make_handler(HandlerType::Command, Some("b"), None, None),
+            ],
+        );
+        let result = cfg.handlers_for_event("PreToolUse");
+        assert_eq!(result.len(), 2);
+        // Plain handlers have no matcher.
+        assert!(result.iter().all(|(m, _)| m.is_none()));
+    }
+
+    #[test]
+    fn test_handlers_for_event_with_group() {
+        let mut cfg = HooksConfig::default();
+        cfg.hooks.insert(
+            "PreToolUse".to_string(),
+            vec![HookEntry::Group(HookGroup {
+                matcher: Some("Bash".to_string()),
+                loop_limit: None,
+                hooks: vec![
+                    make_handler(HandlerType::Command, Some("g1"), None, None).into_handler(),
+                    make_handler(HandlerType::Command, Some("g2"), None, None).into_handler(),
+                ],
+            })],
+        );
+        let result = cfg.handlers_for_event("PreToolUse");
+        assert_eq!(result.len(), 2);
+        // All handlers from a group carry the group's matcher.
+        assert!(result.iter().all(|(m, _)| *m == Some("Bash")));
+    }
+
+    #[test]
+    fn test_handlers_for_event_mixed() {
+        let mut cfg = HooksConfig::default();
+        cfg.hooks.insert(
+            "PostToolUse".to_string(),
+            vec![
+                // Plain handler -> matcher None
+                make_handler(HandlerType::Command, Some("plain"), None, None),
+                // Group handler -> matcher Some("Read")
+                HookEntry::Group(HookGroup {
+                    matcher: Some("Read".to_string()),
+                    loop_limit: None,
+                    hooks: vec![
+                        make_handler(HandlerType::Command, Some("grp"), None, None).into_handler(),
+                    ],
+                }),
+            ],
+        );
+        let result = cfg.handlers_for_event("PostToolUse");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].0, None);
+        assert_eq!(result[1].0, Some("Read"));
+    }
+
+    // -------------------------------------------------------------------------
+    // count_hooks vs handler_count distinction
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_count_hooks_vs_handler_count() {
+        let mut cfg = HooksConfig::default();
+        // A group with 3 inner handlers counts as 1 entry but 3 handlers.
+        cfg.hooks.insert(
+            "e".to_string(),
+            vec![HookEntry::Group(HookGroup {
+                matcher: None,
+                loop_limit: None,
+                hooks: vec![
+                    make_handler(HandlerType::Command, Some("1"), None, None).into_handler(),
+                    make_handler(HandlerType::Command, Some("2"), None, None).into_handler(),
+                    make_handler(HandlerType::Command, Some("3"), None, None).into_handler(),
+                ],
+            })],
+        );
+        assert_eq!(cfg.count_hooks(), 1, "count_hooks counts entries (group = 1)");
+        assert_eq!(cfg.handler_count(), 3, "handler_count flattens groups");
+    }
+
+    // -------------------------------------------------------------------------
+    // HookOutcome
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_hook_outcome_default() {
+        let o = HookOutcome::default();
+        assert!(!o.block);
+        assert!(o.block_reason.is_none());
+        assert!(!o.ask);
+        assert!(o.additional_context.is_none());
+        assert!(o.updated_input.is_none());
+        assert!(!o.is_terminal(), "default outcome is not terminal");
+    }
+
+    #[test]
+    fn test_hook_outcome_is_terminal() {
+        let o = HookOutcome { block: true, ..Default::default() };
+        assert!(o.is_terminal());
+    }
+
+    #[test]
+    fn test_hook_outcome_merge_block_propagates() {
+        let a = HookOutcome { block: false, ..Default::default() };
+        let b = HookOutcome { block: true, block_reason: Some("nope".to_string()), ..Default::default() };
+        let m = a.merge(b);
+        assert!(m.block);
+        assert_eq!(m.block_reason.as_deref(), Some("nope"));
+        assert!(m.is_terminal());
+    }
+
+    #[test]
+    fn test_hook_outcome_merge_ask_propagates() {
+        let a = HookOutcome { ask: true, ..Default::default() };
+        let b = HookOutcome { ask: false, ..Default::default() };
+        let m = a.merge(b);
+        assert!(m.ask, "ask should be OR-ed");
+    }
+
+    #[test]
+    fn test_hook_outcome_merge_additional_context_both() {
+        let a = HookOutcome { additional_context: Some("ctx-a".to_string()), ..Default::default() };
+        let b = HookOutcome { additional_context: Some("ctx-b".to_string()), ..Default::default() };
+        let m = a.merge(b);
+        assert_eq!(m.additional_context.as_deref(), Some("ctx-a\n\nctx-b"));
+    }
+
+    #[test]
+    fn test_hook_outcome_merge_additional_context_one_side() {
+        let a = HookOutcome { additional_context: None, ..Default::default() };
+        let b = HookOutcome { additional_context: Some("only-b".to_string()), ..Default::default() };
+        let m = a.merge(b);
+        assert_eq!(m.additional_context.as_deref(), Some("only-b"));
+
+        let a2 = HookOutcome { additional_context: Some("only-a".to_string()), ..Default::default() };
+        let b2 = HookOutcome { additional_context: None, ..Default::default() };
+        let m2 = a2.merge(b2);
+        assert_eq!(m2.additional_context.as_deref(), Some("only-a"));
+    }
+
+    #[test]
+    fn test_hook_outcome_merge_block_reason_other_none() {
+        // other (second) has no block_reason -> falls back to self's.
+        let a = HookOutcome { block_reason: Some("from-a".to_string()), ..Default::default() };
+        let b = HookOutcome { block_reason: None, ..Default::default() };
+        let m = a.merge(b);
+        assert_eq!(m.block_reason.as_deref(), Some("from-a"));
+    }
+
+    #[test]
+    fn test_hook_outcome_merge_updated_input_other_wins() {
+        let a = HookOutcome { updated_input: Some(serde_json::json!({"a": 1})), ..Default::default() };
+        let b = HookOutcome { updated_input: Some(serde_json::json!({"b": 2})), ..Default::default() };
+        let m = a.merge(b);
+        assert_eq!(m.updated_input, Some(serde_json::json!({"b": 2})), "other takes priority");
+
+        let a2 = HookOutcome { updated_input: Some(serde_json::json!({"a": 1})), ..Default::default() };
+        let b2 = HookOutcome { updated_input: None, ..Default::default() };
+        let m2 = a2.merge(b2);
+        assert_eq!(m2.updated_input, Some(serde_json::json!({"a": 1})), "falls back to self when other is None");
+    }
+
+    // -------------------------------------------------------------------------
+    // Helper trait/impl to reduce boilerplate in tests
+    // -------------------------------------------------------------------------
+
+    /// Convenience trait to unwrap a HookEntry::Handler into its inner HookHandler.
+    impl From<HookEntry> for HookHandler {
+        fn from(entry: HookEntry) -> Self {
+            match entry {
+                HookEntry::Handler(h) => h,
+                HookEntry::Group(g) => g.hooks.into_iter().next().expect("group must have at least one handler"),
+            }
+        }
+    }
+
+    impl HookEntry {
+        /// Convert a Handler-style HookEntry back into its inner HookHandler (test helper).
+        fn into_handler(self) -> HookHandler {
+            self.into()
+        }
+    }
+
+    /// Build a HookHandler with all fields defaulted except handler_type (caller overrides).
+    fn full_default_handler() -> HookHandler {
+        HookHandler {
+            handler_type: HandlerType::Command,
+            command: None,
+            url: None,
+            prompt: None,
+            agent: None,
+            server: None,
+            tool: None,
+            input: None,
+            model: None,
+            timeout: None,
+            if_clause: None,
+            r#async: false,
+            async_rewake: false,
+            once: false,
+            status_message: None,
+            allowed_tools: None,
+            max_turns: None,
+        }
+    }
 }
