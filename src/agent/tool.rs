@@ -91,10 +91,13 @@ impl ToolRegistry {
         self.tools.remove(name);
     }
 
-    /// Register all 15 built-in tools (read, grep, find, ls, bash, write, edit,
-    /// calculator, echo, git_status, git_diff, git_log, git_add, git_commit, git_branch).
+    /// Register all built-in tools including orchestration tools.
     /// Used by export_session_rich to reconstruct tool definitions for standalone --export.
+    /// Includes: read, grep, find, ls, bash, write, edit, calculator, echo,
+    /// git tools, spawn_worker, send_to_worker, resume_worker, await_worker,
+    /// channel_send, kill_worker, branch_session, global_memory_search/save, skill.
     pub fn register_builtins(&mut self) {
+        // Basic tools
         self.register(Box::new(ReadTool));
         self.register(Box::new(GrepTool));
         self.register(Box::new(FindTool));
@@ -104,12 +107,27 @@ impl ToolRegistry {
         self.register(Box::new(EditTool));
         self.register(Box::new(CalculatorTool));
         self.register(Box::new(EchoTool));
+        // Git tools
         self.register(Box::new(GitStatusTool));
         self.register(Box::new(GitDiffTool));
         self.register(Box::new(GitLogTool));
         self.register(Box::new(GitAddTool));
         self.register(Box::new(GitCommitTool));
         self.register(Box::new(GitBranchTool));
+        // Orchestration tools (multi-worker)
+        self.register(Box::new(SpawnWorkerTool));
+        self.register(Box::new(SendToWorkerTool));
+        self.register(Box::new(ResumeWorkerTool));
+        self.register(Box::new(AwaitWorkerTool));
+        self.register(Box::new(ChannelSendTool));
+        self.register(Box::new(KillWorkerTool));
+        // Session tools
+        self.register(Box::new(BranchSessionTool));
+        // Memory tools
+        self.register(Box::new(GlobalMemorySearchTool));
+        self.register(Box::new(GlobalMemorySaveTool));
+        // SkillTool requires skill_dirs at construction time — skipped here.
+        // It's registered separately in ion_worker.rs / ion.rs with proper config.
     }
 }
 
