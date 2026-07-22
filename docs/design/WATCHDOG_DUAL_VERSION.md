@@ -1,50 +1,57 @@
-# 看门狗双版本切换设计
+# 看门狗双版本切换
 
-> **状态：待定** — 设计思路记录，暂不实现。优先完成 A→B 自进化的生产化改造。
+> **状态：已实现** — `scripts/watchdog.sh` 已完成。
 
-## 背景
-
-A 改了自己的代码后，需要重启才能加载新代码。但 A 不能自己 kill 自己再启动（会断开）。需要一个"看门狗"来管理重启过程。
-
-## 核心思路（用户提出）
-
-A 合并新代码前，旧版本（A_old）是经过验证的、能跑的"安全基线"。直到 A_new 完全启动且自检通过，才杀掉 A_old。双版本并存只在切换那一刻存在。
-
-## 三层架构
+## 架构
 
 ```
-W = 看门狗（极简 bash，永不进化，不依赖 ion）
-A_old = 当前运行版本（经过验证的安全基线）
-A_new = 合并后的新版本（需要自检通过才替换 A_old）
+W = 看门狗（scripts/watchdog.sh，纯 bash，永不进化）
+A_old = 当前运行的 ion（安全基线）
+A_new = 合并新代码后编译的 ion（自检通过才替换）
 ```
+
+## 并发设计
+
+Watchdog 本身是**后台并发运行**的：
+- W 后台监控 A_old（每 5 秒检查一次）
+- A_old 可以同时并发跑多个 B（spawn_worker × N）
+- 当检测到 restart signal 时，W **后台编译 A_new**（不阻塞 A_old）
+- A_new 启动在**不同端口**（9001），不影响 A_old（9000）
+- 切换时 A_old 一直在服务（零停机）
 
 ## 流程
 
-1. W 启动 A_old
-2. A_old 接收任务 → 调 B 改代码 → CI 通过 → 合并 → 通知 W（写文件 /tmp/.ion-evolve-restart）
-3. W 编译新代码
-4. W 启动 A_new（不同端口）
-5. A_new 自检（health check）
-6. 自检通过 → W 杀 A_old → A_new 成为新的 A_old
-7. 自检失败 → W 回滚 binary → A_old 继续跑
+```
+1. W 启动 A_old（ion serve --port 9000）
+2. A_old 并发跑任务（spawn_worker × N）
+3. A_old 合并新代码 → touch /tmp/.ion-evolve-restart
+4. W 检测到信号 → 后台编译 A_new（不阻塞 A_old）
+5. W 启动 A_new（端口 9001）
+6. W 对 A_new 做 health check（5 秒存活检查）
+7. 通过 → W 杀 A_old → A_new 成为新的 A_old
+8. 失败 → W 回滚 binary → A_old 继续跑
+```
 
-## 关键原则
+## 关键特性
 
-- W 的代码永远不变（不参与进化）
-- W 不依赖 ion / LLM / container
-- W 有超时保护（A_new 启动失败 W 能检测到）
-- W 有回滚能力（A_new 跑不起来，W 用 A_old 备份启动）
-- 切换期间零停机（A_old 一直在服务）
+- **零停机**：A_old 在切换期间一直服务
+- **自动回滚**：A_new 启动失败 → 回滚到 backup binary
+- **自动恢复**：A_old 崩溃 → W 从 backup 重启
+- **超时保护**：编译超时 600s / 健康检查超时 60s
 
-## 后续实现
+## 使用
 
-- `scripts/watchdog.sh`（极简 bash，~100 行）
-- A 通知 W：`std::fs::write("/tmp/.ion-evolve-restart", "restart")`
-- A 自检：`GET /health` 返回 ok
-- 双版本端口管理：A_old=9000, A_new=9001（临时）
+```bash
+# 启动 watchdog（后台）
+bash scripts/watchdog.sh &
+
+# A_old 正常跑任务
+# 当 A 合并新代码后：
+touch /tmp/.ion-evolve-restart
+# Watchdog 自动处理切换
+```
 
 ## 关联文档
 
 - [SELF_EVOLUTION.md](./SELF_EVOLUTION.md) — A→B 自进化架构
-- `scripts/evolve.sh` — 环境初始化
-- `scripts/evolve-run.sh` — B 改代码 + CI + 合并
+- `scripts/watchdog.sh` — 实际实现（~150 行 bash）
