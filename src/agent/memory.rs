@@ -957,3 +957,228 @@ async fn run_memory_processing(
         session_id, extracted.len(), saved);
     Ok(())
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Unit tests — only PURE functions (struct construction, serialization, helpers)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage_context::StorageContext;
+
+    // ── MemoryEntry ──
+
+    #[test]
+    fn memory_entry_default_archived_is_false_via_serde() {
+        // The `archived` field uses #[serde(default)], so a JSON payload
+        // that omits it should deserialize to false.
+        let json = r#"{
+            "id": "mem_1",
+            "content": "hello",
+            "description": "greeting",
+            "category": "general",
+            "tags": [],
+            "outline": "auto"
+        }"#;
+        let entry: MemoryEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.id, "mem_1");
+        assert!(!entry.archived, "archived should default to false");
+    }
+
+    #[test]
+    fn memory_entry_round_trip_serialization() {
+        let entry = MemoryEntry {
+            id: "mem_42".into(),
+            content: "remember the milk".into(),
+            description: "shopping note".into(),
+            category: "preferences".into(),
+            tags: vec!["shopping".into(), "food".into()],
+            outline: "auto".into(),
+            archived: true,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let back: MemoryEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(entry.id, back.id);
+        assert_eq!(entry.content, back.content);
+        assert_eq!(entry.tags, back.tags);
+        assert_eq!(entry.archived, back.archived);
+    }
+
+    // ── OutlineIndex ──
+
+    #[test]
+    fn outline_index_construction_and_serde() {
+        let idx = OutlineIndex {
+            id: "design".into(),
+            summary: "architecture decisions".into(),
+            entry_count: 7,
+        };
+        let json = serde_json::to_string(&idx).unwrap();
+        assert!(json.contains("\"entry_count\":7"));
+        let back: OutlineIndex = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.summary, "architecture decisions");
+    }
+
+    // ── InjectRecord ──
+
+    #[test]
+    fn inject_record_serialization() {
+        let rec = InjectRecord {
+            outline: "auto".into(),
+            file_hash: "deadbeef".into(),
+            last_injected_turn: 3,
+            last_injected_at: 1700000000,
+        };
+        let json = serde_json::to_string_pretty(&rec).unwrap();
+        let back: InjectRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.outline, "auto");
+        assert_eq!(back.file_hash, "deadbeef");
+        assert_eq!(back.last_injected_turn, 3);
+    }
+
+    // ── ExtractedMemory (V0.2 pipeline struct) ──
+
+    #[test]
+    fn extracted_memory_entities_default_empty() {
+        // `entities` has #[serde(default)]; omitting it should yield [].
+        let json = r#"{"content":"x","category":"y","importance":3}"#;
+        let m: ExtractedMemory = serde_json::from_str(json).unwrap();
+        assert!(m.entities.is_empty());
+        assert_eq!(m.importance, 3);
+    }
+
+    // ── simple_hash (pure helper) ──
+
+    #[test]
+    fn simple_hash_is_deterministic() {
+        // Same input → same output across calls.
+        let a = simple_hash("rust");
+        let b = simple_hash("rust");
+        assert_eq!(a, b);
+        assert!(!a.is_empty());
+    }
+
+    #[test]
+    fn simple_hash_differs_for_different_input() {
+        // Different inputs should (practically) produce different hashes.
+        let a = simple_hash("hello");
+        let b = simple_hash("world");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn simple_hash_empty_string_has_init_value() {
+        // djb2 of empty string = initial hash 5381 → hex "1505".
+        assert_eq!(simple_hash(""), format!("{:x}", 5381u64));
+    }
+
+    // ── MemoryStore: pure stateless helpers (no global SQLite) ──
+
+    /// Build a MemoryStore backed by a fresh temp dir and with no global store,
+    /// keeping each test hermetic.
+    fn make_store_no_global() -> MemoryStore {
+        let tmp = std::env::temp_dir().join(format!(
+            "ion_memory_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let storage = StorageContext::new(
+            tmp.to_str().unwrap(),
+            "test_session",
+            tmp.to_str().unwrap(),
+        );
+        MemoryStore::new_no_global(storage)
+    }
+
+    #[test]
+    fn store_project_name_derived_from_config_root() {
+        // project_name comes from the final path component of config_root.
+        let store = make_store_no_global();
+        let last = std::path::Path::new(&store.storage.config_root)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap();
+        assert_eq!(store.project_name, last);
+    }
+
+    #[test]
+    fn store_initial_state_is_empty() {
+        // A freshly created store should have zero turn count and empty queues.
+        let store = make_store_no_global();
+        assert_eq!(store.turn_count, 0);
+        assert!(store.pending.is_empty());
+        assert!(store.pending_global.is_empty());
+        assert!(store.global_injected_hashes.is_empty());
+        assert!(store.global_store.is_none());
+    }
+
+    #[test]
+    fn store_read_index_returns_empty_when_no_file() {
+        let store = make_store_no_global();
+        assert!(store.read_index().is_empty());
+    }
+
+    #[test]
+    fn store_read_injected_returns_empty_when_no_file() {
+        let store = make_store_no_global();
+        assert!(store.read_injected().is_empty());
+    }
+
+    #[test]
+    fn store_build_context_xml_structure() {
+        // Pure string builder: verify the XML wrapper and entry rendering.
+        let store = make_store_no_global();
+        let entries = vec![
+            MemoryEntry {
+                id: "mem_1".into(),
+                content: "alpha".into(),
+                description: String::new(),
+                category: "c".into(),
+                tags: vec![],
+                outline: "auto".into(),
+                archived: false,
+            },
+            MemoryEntry {
+                id: "mem_2".into(),
+                content: "beta".into(),
+                description: String::new(),
+                category: "c".into(),
+                tags: vec![],
+                outline: "auto".into(),
+                archived: false,
+            },
+        ];
+        let xml = store.build_context_xml("design", &entries);
+        assert!(xml.starts_with("<memory_context"));
+        assert!(xml.contains("<source id=\"design\">design</source>"));
+        assert!(xml.contains("<entry id=\"mem_1\">alpha</entry>"));
+        assert!(xml.contains("<entry id=\"mem_2\">beta</entry>"));
+        assert!(xml.ends_with("</memory_context>"));
+    }
+
+    #[test]
+    fn store_content_hash_is_stable_for_same_entries() {
+        // content_hash is deterministic given identical outline contents.
+        let store = make_store_no_global();
+        store.ensure_dirs();
+        store.write_outline(
+            "auto",
+            &[MemoryEntry {
+                id: "mem_1".into(),
+                content: "stable".into(),
+                description: String::new(),
+                category: "c".into(),
+                tags: vec![],
+                outline: "auto".into(),
+                archived: false,
+            }],
+        );
+        let h1 = store.content_hash("auto");
+        let h2 = store.content_hash("auto");
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 16, "hash should be 16 hex chars");
+    }
+}
