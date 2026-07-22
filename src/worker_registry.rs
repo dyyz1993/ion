@@ -2433,3 +2433,196 @@ fn remove_worktree(worktree_path: &str, source_repo: &str) -> Result<(), String>
         Ok(())
     }
 }
+
+// ---------------------------------------------------------------------------
+// Unit tests — pure sync functions / struct construction / serialization
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// WorkerStatus Display should render the variant name (via Debug).
+    #[test]
+    fn test_worker_status_display() {
+        assert_eq!(WorkerStatus::Idle.to_string(), "Idle");
+        assert_eq!(WorkerStatus::Busy.to_string(), "Busy");
+        assert_eq!(WorkerStatus::Dead.to_string(), "Dead");
+        // Bonus: other variants should also render their Debug name.
+        assert_eq!(WorkerStatus::Paused.to_string(), "Paused");
+        assert_eq!(WorkerStatus::Stale.to_string(), "Stale");
+    }
+
+    /// A freshly constructed WorkerRegistry must start empty with no entry worker.
+    #[test]
+    fn test_worker_registry_new() {
+        let reg = WorkerRegistry::new();
+        assert!(reg.workers.is_empty(), "workers map should be empty");
+        assert!(reg.channels.is_empty(), "channels map should be empty");
+        assert!(reg.entry_worker_id.is_none(), "entry_worker_id should be None");
+        assert!(reg.worker_bin.is_none(), "worker_bin should be None");
+        assert!(reg.singletons.is_empty(), "singletons map should be empty");
+        assert!(reg.global_subscribers.is_empty());
+        assert!(reg.overview_subscribers.is_empty());
+        assert!(reg.mcp_manager.is_none());
+    }
+
+    /// WorkerRegistry::with_binary should preserve the provided binary path.
+    #[test]
+    fn test_worker_registry_with_binary() {
+        let reg = WorkerRegistry::with_binary("/usr/local/bin/ion-worker");
+        assert_eq!(reg.worker_bin.as_deref(), Some("/usr/local/bin/ion-worker"));
+        assert!(reg.workers.is_empty());
+        assert!(reg.entry_worker_id.is_none());
+    }
+
+    /// Default WorkerCreateConfig should leave all optional fields as None.
+    #[test]
+    fn test_worker_create_config_default() {
+        let cfg = WorkerCreateConfig::default();
+        assert!(cfg.model.is_none(), "default model should be None");
+        assert!(cfg.provider.is_none(), "default provider should be None");
+        assert!(cfg.agent.is_none(), "default agent should be None");
+        assert!(cfg.worktree.is_none(), "default worktree should be None");
+        assert!(cfg.relation.is_none(), "default relation should be None");
+        assert!(cfg.session.is_none());
+        assert!(cfg.project_path.is_none());
+        assert!(cfg.channels.is_none());
+        assert!(cfg.parent.is_none());
+        assert!(cfg.creator.is_none());
+    }
+
+    /// WorktreeConfig should round-trip the branch field and default base to None.
+    #[test]
+    fn test_worktree_config() {
+        let cfg = WorktreeConfig {
+            branch: "test-branch".to_string(),
+            base: None,
+        };
+        assert_eq!(cfg.branch, "test-branch");
+        assert!(cfg.base.is_none(), "base should default to None");
+    }
+
+    /// WorktreeConfig::default() should yield an empty branch and None base.
+    #[test]
+    fn test_worktree_config_default() {
+        let cfg = WorktreeConfig::default();
+        assert!(cfg.branch.is_empty());
+        assert!(cfg.base.is_none());
+    }
+
+    /// WorkerInfo should serialize to JSON containing the expected fields.
+    #[test]
+    fn test_worker_info_serialization() {
+        let info = WorkerInfo {
+            worker_id: "w-001".to_string(),
+            session_id: "s-001".to_string(),
+            project: "ion".to_string(),
+            status: WorkerStatus::Idle,
+            model: "test-model".to_string(),
+            agent: "test-agent".to_string(),
+            channels: vec!["main".to_string()],
+            parent: None,
+            children: vec![],
+        };
+
+        let json = serde_json::to_value(&info).expect("WorkerInfo should serialize");
+        let obj = json.as_object().expect("serialized value should be an object");
+        assert_eq!(obj.get("worker_id").and_then(|v| v.as_str()), Some("w-001"));
+        assert_eq!(obj.get("session_id").and_then(|v| v.as_str()), Some("s-001"));
+        assert_eq!(obj.get("project").and_then(|v| v.as_str()), Some("ion"));
+        assert_eq!(obj.get("model").and_then(|v| v.as_str()), Some("test-model"));
+        assert_eq!(obj.get("agent").and_then(|v| v.as_str()), Some("test-agent"));
+        // status serializes via snake_case rename → "idle"
+        assert_eq!(obj.get("status").and_then(|v| v.as_str()), Some("idle"));
+        assert!(obj.get("parent").map(|v| v.is_null()).unwrap_or(true));
+    }
+
+    /// WorkerInfo should round-trip through serialize → deserialize.
+    #[test]
+    fn test_worker_info_roundtrip() {
+        let info = WorkerInfo {
+            worker_id: "w-002".to_string(),
+            session_id: "s-002".to_string(),
+            project: "proj".to_string(),
+            status: WorkerStatus::Busy,
+            model: "m".to_string(),
+            agent: "a".to_string(),
+            channels: vec!["c1".to_string(), "c2".to_string()],
+            parent: Some("w-parent".to_string()),
+            children: vec!["child-1".to_string()],
+        };
+
+        let json = serde_json::to_string(&info).expect("serialize");
+        let back: WorkerInfo = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.worker_id, info.worker_id);
+        assert_eq!(back.status, info.status);
+        assert_eq!(back.channels, info.channels);
+        assert_eq!(back.parent, info.parent);
+        assert_eq!(back.children, info.children);
+    }
+
+    /// SingletonEntry should construct with an empty user set (reference count = 0)
+    /// until workers register themselves as users.
+    ///
+    /// NOTE: We cannot easily build a real Extension instance in a unit test without
+    /// pulling in heavy dependencies, so we use a minimal in-test mock extension.
+    #[test]
+    fn test_singleton_entry() {
+        struct MockExt;
+        impl crate::agent::extension::Extension for MockExt {
+            fn name(&self) -> &str {
+                "mock"
+            }
+        }
+
+        let entry = SingletonEntry {
+            key: "singleton-key-1".to_string(),
+            instance: std::sync::Arc::new(MockExt),
+            users: HashSet::new(),
+            initialized: false,
+        };
+
+        assert_eq!(entry.key, "singleton-key-1");
+        assert!(entry.users.is_empty(), "users set should start empty");
+        assert_eq!(entry.users.len(), 0, "reference count should start at 0");
+        assert!(!entry.initialized, "initialized should start false");
+    }
+
+    /// WorkerRelation default should be Child (per #[default] attribute).
+    #[test]
+    fn test_worker_relation_default() {
+        let rel = WorkerRelation::default();
+        assert_eq!(rel, WorkerRelation::Child);
+    }
+
+    /// WorkerStatus should serialize using snake_case rename.
+    #[test]
+    fn test_worker_status_serialization() {
+        let idle_json = serde_json::to_string(&WorkerStatus::Idle).unwrap();
+        assert_eq!(idle_json, "\"idle\"");
+        let busy_json = serde_json::to_string(&WorkerStatus::Busy).unwrap();
+        assert_eq!(busy_json, "\"busy\"");
+        let dead_json = serde_json::to_string(&WorkerStatus::Dead).unwrap();
+        assert_eq!(dead_json, "\"dead\"");
+    }
+
+    /// now_ms() should return a positive, monotonically non-decreasing value.
+    #[test]
+    fn test_now_ms_positive() {
+        let t1 = now_ms();
+        let t2 = now_ms();
+        assert!(t1 > 0, "now_ms should return a positive timestamp");
+        assert!(t2 >= t1, "now_ms should be monotonic non-decreasing");
+    }
+
+    /// randish() should return a value within u32 range (always true by type,
+    /// but guards against panics on unwrap).
+    #[test]
+    fn test_randish_in_range() {
+        let r = randish();
+        let _ = r; // value is opaque; just ensure it does not panic
+    }
+}
+
