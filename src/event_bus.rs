@@ -178,3 +178,127 @@ impl ExtensionEventBus {
         self.subscribers.retain(|sub| !sub.tx.is_closed());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- EventVisibility ----
+
+    #[test]
+    fn test_event_visibility_clone_eq() {
+        let a = EventVisibility::LlmAndUi;
+        let b = a.clone();
+        assert_eq!(a, b);
+        assert_ne!(a, EventVisibility::UiOnly);
+    }
+
+    #[test]
+    fn test_event_visibility_variants_distinct() {
+        let v1 = EventVisibility::LlmAndUi;
+        let v2 = EventVisibility::UiOnly;
+        assert_ne!(v1, v2);
+    }
+
+    // ---- ExtensionEvent::new ----
+
+    #[test]
+    fn test_extension_event_new_defaults() {
+        let e = ExtensionEvent::new("memory", "memory_saved");
+        assert_eq!(e.route, "extension");
+        assert_eq!(e.extension, "memory");
+        assert_eq!(e.custom_type, "memory_saved");
+        assert!(e.session.is_none());
+        assert_eq!(e.data, serde_json::Value::Null);
+        assert!(!e.persisted);
+        assert_eq!(e.visibility, EventVisibility::UiOnly);
+        assert!(e.correlation_id.is_empty());
+    }
+
+    // ---- ExtensionEvent::new_ui ----
+
+    #[test]
+    fn test_extension_event_new_ui_route_and_data() {
+        let e = ExtensionEvent::new_ui("Ask", "Confirm?", "Proceed?");
+        assert_eq!(e.route, "ui");
+        assert_eq!(e.extension, "ui");
+        assert_eq!(e.custom_type, "Ask");
+        assert_eq!(e.data["title"], "Confirm?");
+        assert_eq!(e.data["message"], "Proceed?");
+        assert!(e.session.is_none());
+        assert!(!e.persisted);
+        assert_eq!(e.visibility, EventVisibility::UiOnly);
+    }
+
+    // ---- Builder methods ----
+
+    #[test]
+    fn test_with_session() {
+        let e = ExtensionEvent::new("todo", "added").with_session("sess_abc");
+        assert_eq!(e.session.as_deref(), Some("sess_abc"));
+    }
+
+    #[test]
+    fn test_with_data() {
+        let payload = serde_json::json!({"key": 42});
+        let e = ExtensionEvent::new("memory", "x").with_data(payload.clone());
+        assert_eq!(e.data, payload);
+    }
+
+    #[test]
+    fn test_with_persisted() {
+        let e = ExtensionEvent::new("memory", "x").with_persisted(true);
+        assert!(e.persisted);
+    }
+
+    #[test]
+    fn test_with_visibility() {
+        let e = ExtensionEvent::new("memory", "x").with_visibility(EventVisibility::LlmAndUi);
+        assert_eq!(e.visibility, EventVisibility::LlmAndUi);
+    }
+
+    #[test]
+    fn test_with_correlation() {
+        let e = ExtensionEvent::new("memory", "x").with_correlation("corr-123");
+        assert_eq!(e.correlation_id, "corr-123");
+    }
+
+    #[test]
+    fn test_with_route_override() {
+        let e = ExtensionEvent::new("memory", "x").with_route("custom");
+        assert_eq!(e.route, "custom");
+    }
+
+    // ---- Builder chaining ----
+
+    #[test]
+    fn test_builder_chain_combines_all_fields() {
+        let e = ExtensionEvent::new("memory", "saved")
+            .with_session("s1")
+            .with_data(serde_json::json!({"n": 1}))
+            .with_persisted(true)
+            .with_visibility(EventVisibility::LlmAndUi)
+            .with_correlation("cid")
+            .with_route("ui");
+
+        assert_eq!(e.route, "ui");
+        assert_eq!(e.session.as_deref(), Some("s1"));
+        assert_eq!(e.data["n"], 1);
+        assert!(e.persisted);
+        assert_eq!(e.visibility, EventVisibility::LlmAndUi);
+        assert_eq!(e.correlation_id, "cid");
+    }
+
+    // ---- Default impl ----
+
+    #[test]
+    fn test_extension_event_bus_default_is_empty() {
+        // Default produces an empty bus (no subscribers). We can only
+        // verify indirectly via broadcast being a no-op on empty bus.
+        let mut bus: ExtensionEventBus = Default::default();
+        let event = ExtensionEvent::new("any", "any");
+        // Should not panic on an empty subscriber list.
+        bus.broadcast(&event);
+        bus.cleanup();
+    }
+}
