@@ -247,15 +247,13 @@ impl McpManager {
                 }
                 Err(e) => {
                     let mut servers = self.servers.lock().await;
-                    if let Some(entry) = servers.get_mut(&name) {
-                        if entry.reconnect_attempts >= Self::RECONNECT_MAX_ATTEMPTS {
-                            entry.status = ServerStatus::Error;
-                            entry.error = Some(format!(
-                                "max reconnect attempts ({}) exceeded: {e}",
-                                Self::RECONNECT_MAX_ATTEMPTS
-                            ));
-                            self.notify_status(&name, &ServerStatus::Error).await;
-                        }
+                    if let Some(entry) = servers.get_mut(&name) && entry.reconnect_attempts >= Self::RECONNECT_MAX_ATTEMPTS {
+                        entry.status = ServerStatus::Error;
+                        entry.error = Some(format!(
+                            "max reconnect attempts ({}) exceeded: {e}",
+                            Self::RECONNECT_MAX_ATTEMPTS
+                        ));
+                        self.notify_status(&name, &ServerStatus::Error).await;
                     }
                     tracing::warn!("[mcp] '{}' reconnect failed: {e}", name);
                 }

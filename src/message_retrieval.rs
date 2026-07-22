@@ -33,12 +33,8 @@ pub fn load_entries_cached(cwd: &str) -> Vec<Value> {
     // 检查缓存
     if let Ok(mut cache_guard) = SESSION_CACHE.lock() {
         let cache = cache_guard.get_or_insert_with(HashMap::new);
-        if let Some(mtime) = mtime {
-            if let Some((cached_mtime, entries)) = cache.get(cwd) {
-                if *cached_mtime == mtime {
-                    return entries.clone();
-                }
-            }
+        if let Some(mtime) = mtime && let Some((cached_mtime, entries)) = cache.get(cwd) && *cached_mtime == mtime {
+            return entries.clone();
         }
     }
 
@@ -60,10 +56,8 @@ pub fn load_entries_cached(cwd: &str) -> Vec<Value> {
 
 /// 使缓存失效（外部修改了 session 文件后调用，比如 append 操作后）。
 pub fn invalidate_cache(cwd: &str) {
-    if let Ok(mut cache_guard) = SESSION_CACHE.lock() {
-        if let Some(cache) = cache_guard.as_mut() {
-            cache.remove(cwd);
-        }
+    if let Ok(mut cache_guard) = SESSION_CACHE.lock() && let Some(cache) = cache_guard.as_mut() {
+        cache.remove(cwd);
     }
 }
 

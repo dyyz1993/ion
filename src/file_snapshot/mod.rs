@@ -210,24 +210,22 @@ impl Extension for FileSnapshotExtension {
         let (current_tree_hash, _) = tree_store::write_tree(self.store.objects(), &files);
 
         let baseline = self.baseline_tree_hash.lock().unwrap().clone();
-        if let Some(ref baseline_hash) = baseline {
-            if &current_tree_hash != baseline_hash {
-                // 有变更：算 diff + 写 step-snapshot
-                let old_tree = tree_store::read_tree(self.store.objects(), baseline_hash)
-                    .unwrap_or_default();
-                let new_tree = tree_store::read_tree(self.store.objects(), &current_tree_hash)
-                    .unwrap_or_default();
-                let diff = tree_store::compute_diff(&old_tree, &new_tree);
-                if !diff.is_empty() {
-                    let step = tree_store::StepSnapshot {
-                        turn_id: turn_id.clone(),
-                        baseline_tree_hash: baseline_hash.clone(),
-                        snapshot_tree_hash: current_tree_hash.clone(),
-                        diff,
-                        timestamp: crate::session_jsonl::timestamp_iso(),
-                    };
-                    self.store.save_step_snapshot(&step);
-                }
+        if let Some(ref baseline_hash) = baseline && &current_tree_hash != baseline_hash {
+            // 有变更：算 diff + 写 step-snapshot
+            let old_tree = tree_store::read_tree(self.store.objects(), baseline_hash)
+                .unwrap_or_default();
+            let new_tree = tree_store::read_tree(self.store.objects(), &current_tree_hash)
+                .unwrap_or_default();
+            let diff = tree_store::compute_diff(&old_tree, &new_tree);
+            if !diff.is_empty() {
+                let step = tree_store::StepSnapshot {
+                    turn_id: turn_id.clone(),
+                    baseline_tree_hash: baseline_hash.clone(),
+                    snapshot_tree_hash: current_tree_hash.clone(),
+                    diff,
+                    timestamp: crate::session_jsonl::timestamp_iso(),
+                };
+                self.store.save_step_snapshot(&step);
             }
         }
 

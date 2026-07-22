@@ -440,11 +440,9 @@ impl Extension {
         };
 
         // Call version (extension_version or legacy plugin_version)
-        if let Ok(func) =  ext.get_export_func::<(), u32>("version") {
-            if let Ok(ver) = func.call(&mut ext.store, ()) {
-                ext.version = ver;
-                tracing::info!("[wasm] extension v{ver}");
-            }
+        if let Ok(func) =  ext.get_export_func::<(), u32>("version") && let Ok(ver) = func.call(&mut ext.store, ()) {
+            ext.version = ver;
+            tracing::info!("[wasm] extension v{ver}");
         }
 
         // Call init (extension_init or legacy plugin_init) — triggers host_register_tool
@@ -1027,11 +1025,9 @@ fn register_dim(
             };
             let tmp = final_path.with_extension("tmp");
 
-            if !dir.exists() {
-                if let Err(e) = std::fs::create_dir_all(&dir) {
-                    tracing::warn!("[extension] write:{dim_name_write} mkdir failed: {e}");
-                    return 1;
-                }
+            if !dir.exists() && let Err(e) = std::fs::create_dir_all(&dir) {
+                tracing::warn!("[extension] write:{dim_name_write} mkdir failed: {e}");
+                return 1;
             }
             if std::fs::write(&tmp, &data).is_err() { return 1; }
             if std::fs::rename(&tmp, &final_path).is_err() { return 1; }
@@ -1220,24 +1216,16 @@ impl ExtTrait for HookAdapter {
 
     async fn on_session_before_compact(&self, msgs: &mut Vec<Message>) -> AgentResult<()> {
         let result = self.call_mut("on_session_before_compact", &serde_json::json!({"messages": msgs}))?;
-        if let Some(v) = result {
-            if let Some(m) = v.get("messages") {
-                if let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok() {
-                    *msgs = new_msgs;
-                }
-            }
+        if let Some(v) = result && let Some(m) = v.get("messages") && let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok() {
+            *msgs = new_msgs;
         }
         Ok(())
     }
 
     async fn on_session_compact(&self, msgs: &mut Vec<Message>) -> AgentResult<()> {
         let result = self.call_mut("on_session_compact", &serde_json::json!({"messages": msgs}))?;
-        if let Some(v) = result {
-            if let Some(m) = v.get("messages") {
-                if let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok() {
-                    *msgs = new_msgs;
-                }
-            }
+        if let Some(v) = result && let Some(m) = v.get("messages") && let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok() {
+            *msgs = new_msgs;
         }
         Ok(())
     }
@@ -1268,10 +1256,8 @@ impl ExtTrait for HookAdapter {
             if let Some(sp) = v.get("system_prompt").and_then(|v| v.as_str()) {
                 ctx.system_prompt = Some(sp.to_string());
             }
-            if let Some(m) = v.get("messages") {
-                if let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok() {
-                    ctx.messages = new_msgs;
-                }
+            if let Some(m) = v.get("messages") && let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok() {
+                ctx.messages = new_msgs;
             }
         }
         Ok(())
@@ -1302,12 +1288,8 @@ impl ExtTrait for HookAdapter {
             "stop_reason": &ctx.stop_reason,
         });
         let result = self.call_mut("on_turn_start", &payload)?;
-        if let Some(v) = result {
-            if let Some(m) = v.get("messages") {
-                if let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok() {
-                    ctx.messages = new_msgs;
-                }
-            }
+        if let Some(v) = result && let Some(m) = v.get("messages") && let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok() {
+            ctx.messages = new_msgs;
         }
         Ok(())
     }
@@ -1323,12 +1305,8 @@ impl ExtTrait for HookAdapter {
     // ── Context / Provider ──
     async fn on_context(&self, messages: &mut Vec<Message>) -> AgentResult<()> {
         let result = self.call_mut("on_context", &serde_json::json!({"messages": messages}))?;
-        if let Some(v) = result {
-            if let Some(m) = v.get("messages") {
-                if let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok() {
-                    *messages = new_msgs;
-                }
-            }
+        if let Some(v) = result && let Some(m) = v.get("messages") && let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok() {
+            *messages = new_msgs;
         }
         Ok(())
     }
@@ -1499,10 +1477,8 @@ impl ExtTrait for HookAdapter {
 
     async fn on_system_prompt(&self, prompt: &mut String) -> AgentResult<()> {
         let result = self.call_mut("on_system_prompt", &serde_json::json!({"prompt": &*prompt}))?;
-        if let Some(v) = result {
-            if let Some(p) = v.get("prompt").and_then(|v| v.as_str()) {
-                *prompt = p.to_string();
-            }
+        if let Some(v) = result && let Some(p) = v.get("prompt").and_then(|v| v.as_str()) {
+            *prompt = p.to_string();
         }
         Ok(())
     }

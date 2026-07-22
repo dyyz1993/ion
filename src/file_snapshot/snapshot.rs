@@ -266,10 +266,8 @@ impl SnapshotStore {
         let mut all = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
-                if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                    if let Ok(snap) = serde_json::from_str::<super::tree_store::StepSnapshot>(&content) {
-                        all.push(snap);
-                    }
+                if let Ok(content) = std::fs::read_to_string(entry.path()) && let Ok(snap) = serde_json::from_str::<super::tree_store::StepSnapshot>(&content) {
+                    all.push(snap);
                 }
             }
         }

@@ -464,10 +464,8 @@ fn default_timeout() -> u64 {
 /// 执行命令钩子
 pub async fn execute_command_hook(hook: &CommandHook, context: &HashMap<String, String>) -> Result<String, String> {
     // 简单条件检查（支持 "tool === 'edit'" 格式）
-    if let Some(ref cond) = hook.condition {
-        if !evaluate_condition(cond, context) {
-            return Ok(String::new()); // 条件不满足，跳过
-        }
+    if let Some(ref cond) = hook.condition && !evaluate_condition(cond, context) {
+        return Ok(String::new()); // 条件不满足，跳过
     }
 
     // 模板替换 {{variable}}

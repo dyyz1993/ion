@@ -305,25 +305,19 @@ impl WorkerRegistry {
         // 只有 LLM 通过 spawn_worker 工具创建的子 worker 才跳过（config.skip_mcp=true）。
         // host 创建的第一个入口 worker 不跳过（它持有 MCP 连接）。
         // 子 Worker 通过 spawn_worker 工具创建时设 skip_mcp=Some("stdio")（方案 B）。
-        if let Some(ref mode) = config.skip_mcp {
-            if !mode.is_empty() {
-                child_cmd.env("ION_SKIP_MCP", mode);
-            }
+        if let Some(ref mode) = config.skip_mcp && !mode.is_empty() {
+            child_cmd.env("ION_SKIP_MCP", mode);
         }
 
         // ── 补丁 1（HOOKS_AND_OUTLINE_SYNC）：工具白/黑名单 + max_turns 传给子进程 ──
         // 子 Worker 启动时读这些环境变量，应用到 ToolRegistry 过滤和 Agent 循环退出条件。
         // 这让扩展/hooks 的 agent handler 能 spawn "限定工具 + 限定步数"的子 Worker，
         // 是 ION 的 agent handler 比 pi 更强的关键（pi 的 agent handler 不传 tools，退化成单轮 LLM）。
-        if let Some(ref tools) = config.allowed_tools {
-            if !tools.is_empty() {
-                child_cmd.env("ION_ALLOWED_TOOLS", tools.join(","));
-            }
+        if let Some(ref tools) = config.allowed_tools && !tools.is_empty() {
+            child_cmd.env("ION_ALLOWED_TOOLS", tools.join(","));
         }
-        if let Some(ref tools) = config.disallowed_tools {
-            if !tools.is_empty() {
-                child_cmd.env("ION_DISALLOWED_TOOLS", tools.join(","));
-            }
+        if let Some(ref tools) = config.disallowed_tools && !tools.is_empty() {
+            child_cmd.env("ION_DISALLOWED_TOOLS", tools.join(","));
         }
         if let Some(turns) = config.max_turns {
             child_cmd.env("ION_MAX_TURNS", turns.to_string());
@@ -471,10 +465,8 @@ impl WorkerRegistry {
         };
 
         // Register in parent's children list
-        if let Some(ref parent_id) = config.parent {
-            if let Some(parent) = self.workers.get_mut(parent_id) {
-                parent.children.push(worker_id.clone());
-            }
+        if let Some(ref parent_id) = config.parent && let Some(parent) = self.workers.get_mut(parent_id) {
+            parent.children.push(worker_id.clone());
         }
 
         // Register in channels
@@ -584,10 +576,8 @@ impl WorkerRegistry {
                         // Response with ID → match pending oneshot（不经过 stdout_tx）
                         if msg_type == "response" && !msg_id.is_empty() {
                             let mut reg = sub_registry.lock().await;
-                            if let Some(record) = reg.workers.get_mut(&sub_wid) {
-                                if let Some(tx) = record.pending.remove(&msg_id) {
-                                    let _ = tx.send(msg.clone());
-                                }
+                            if let Some(record) = reg.workers.get_mut(&sub_wid) && let Some(tx) = record.pending.remove(&msg_id) {
+                                let _ = tx.send(msg.clone());
                             }
                         }
 
@@ -605,10 +595,8 @@ impl WorkerRegistry {
 				            if let Some(record) = reg.workers.get_mut(&sub_wid) {
 				                // 转发给实时订阅者
 				                for sub in &record.event_subscribers {
-				                    if let Err(_) = sub.try_send(msg.clone()) {
-				                        if stream_debug {
+				                    if let Err(_) = sub.try_send(msg.clone()) && stream_debug {
 				                            eprintln!("[stream-debug] host DROP event type=tool_call_delta (subscriber channel full)");
-				                        }
 				                    }
 				                }
 				                // 写入 ring buffer（用于 subscribe --replay）
@@ -691,10 +679,8 @@ impl WorkerRegistry {
 			                            subs.retain(|id| id != &sub_wid);
 			                        }
 			                    }
-			                    if let Some(ref parent_id) = record.parent {
-			                        if let Some(parent) = reg.workers.get_mut(parent_id) {
+			                    if let Some(ref parent_id) = record.parent && let Some(parent) = reg.workers.get_mut(parent_id) {
 			                            parent.children.retain(|id| id != &sub_wid);
-			                        }
 			                    }
 			                }
 			            } else {
@@ -744,10 +730,8 @@ impl WorkerRegistry {
 			                }
 			                // 也通过 parent_event_tx 通知父
 			                if let Some(ref parent_id) = crash_parent {
-			                    if let Some(parent) = reg.workers.get(parent_id.as_str()) {
-			                        if let Some(ref tx) = parent.parent_event_tx {
+			                    if let Some(parent) = reg.workers.get(parent_id.as_str()) && let Some(ref tx) = parent.parent_event_tx {
 			                            let _ = tx.try_send(crash_event.clone());
-			                        }
 			                    }
 			                    // 从父的 children 列表中移除
 			                    if let Some(parent) = reg.workers.get_mut(parent_id.as_str()) {
@@ -881,10 +865,8 @@ impl WorkerRegistry {
                 }
             }
             // Remove from parent's children
-            if let Some(ref parent_id) = record.parent {
-                if let Some(parent) = self.workers.get_mut(parent_id) {
-                    parent.children.retain(|id| id != worker_id);
-                }
+            if let Some(ref parent_id) = record.parent && let Some(parent) = self.workers.get_mut(parent_id) {
+                parent.children.retain(|id| id != worker_id);
             }
 
             // Emit worker_destroyed + project_changed events
@@ -967,14 +949,12 @@ impl WorkerRegistry {
     /// Note: events are already forwarded to subscribers by the stdout reader task.
     /// This method only drains the buffer to prevent overflow.
     pub async fn drain_events(&mut self, worker_id: &str, timeout_ms: u64) {
-        if let Some(record) = self.workers.get_mut(&worker_id.to_string()) {
-            if let Some(rx) = &mut record.stdout_rx {
-                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
-                while std::time::Instant::now() < deadline {
-                    match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
-                        Ok(Some(_)) => { /* drain — stdout reader already forwards */ }
-                        _ => break,
-                    }
+        if let Some(record) = self.workers.get_mut(&worker_id.to_string()) && let Some(rx) = &mut record.stdout_rx {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+            while std::time::Instant::now() < deadline {
+                match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
+                    Ok(Some(_)) => { /* drain — stdout reader already forwards */ }
+                    _ => break,
                 }
             }
         }
@@ -1249,11 +1229,9 @@ impl WorkerRegistry {
 
         if let Some(subscribers) = self.channels.get(channel) {
             for sub_id in subscribers.clone() {
-                if let Some(record) = self.workers.get_mut(&sub_id) {
-                    if let Some(ref mut stdin) = record.stdin {
-                        let _ = stdin.write_all(format!("{line}\n").as_bytes()).await;
-                        let _ = stdin.flush().await;
-                    }
+                if let Some(record) = self.workers.get_mut(&sub_id) && let Some(ref mut stdin) = record.stdin {
+                    let _ = stdin.write_all(format!("{line}\n").as_bytes()).await;
+                    let _ = stdin.flush().await;
                 }
             }
         }
@@ -1830,11 +1808,9 @@ impl WorkerRegistry {
 
         match target {
             Some(wid) => {
-                if let Some(record) = self.workers.get_mut(&wid) {
-                    if let Some(ref mut stdin) = record.stdin {
-                        let _ = stdin.write_all(line.as_bytes()).await;
-                        let _ = stdin.flush().await;
-                    }
+                if let Some(record) = self.workers.get_mut(&wid) && let Some(ref mut stdin) = record.stdin {
+                    let _ = stdin.write_all(line.as_bytes()).await;
+                    let _ = stdin.flush().await;
                 }
             }
             None => {
@@ -2099,10 +2075,8 @@ async fn read_worker_stdout(
             "response" => {
                 if let Some(id) = msg_id {
                     let mut reg = registry.lock().await;
-                    if let Some(record) = reg.workers.get_mut(&worker_id) {
-                        if let Some(tx) = record.pending.remove(&id) {
-                            let _ = tx.send(msg.clone());
-                        }
+                    if let Some(record) = reg.workers.get_mut(&worker_id) && let Some(tx) = record.pending.remove(&id) {
+                        let _ = tx.send(msg.clone());
                     }
                 }
             }
@@ -2147,15 +2121,14 @@ async fn read_worker_stdout(
                         if let Some(delta) = msg.get("event")
                             .and_then(|e| e.get("delta"))
                             .and_then(|v| v.as_str())
+                            && let Some(record) = reg.workers.get_mut(&worker_id)
                         {
-                            if let Some(record) = reg.workers.get_mut(&worker_id) {
-                                let truncated: String = delta.chars().take(60).collect();
-                                record.latest_output.push_back(truncated.clone());
-                                while record.latest_output.len() > 5 {
-                                    record.latest_output.pop_front();
-                                }
-                                record.log_short = Some(truncated);
+                            let truncated: String = delta.chars().take(60).collect();
+                            record.latest_output.push_back(truncated.clone());
+                            while record.latest_output.len() > 5 {
+                                record.latest_output.pop_front();
                             }
+                            record.log_short = Some(truncated);
                         }
                         // Forward to event subscribers
                         if let Some(record) = reg.workers.get(&worker_id) {

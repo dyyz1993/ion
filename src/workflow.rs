@@ -174,13 +174,11 @@ impl WorkflowConfig {
                 )));
             }
             // loop_back 指向的 stage 必须存在
-            if let Some(ref on_fail) = stage.on_fail {
-                if !ids.contains(&on_fail.loop_back.as_str()) {
-                    return Err(WorkflowError::Invalid(format!(
-                        "stage '{}' on_fail.loop_back='{}' but no stage with id '{}' exists",
-                        stage.id, on_fail.loop_back, on_fail.loop_back
-                    )));
-                }
+            if let Some(ref on_fail) = stage.on_fail && !ids.contains(&on_fail.loop_back.as_str()) {
+                return Err(WorkflowError::Invalid(format!(
+                    "stage '{}' on_fail.loop_back='{}' but no stage with id '{}' exists",
+                    stage.id, on_fail.loop_back, on_fail.loop_back
+                )));
             }
             // stage id 唯一
             let dup_count = ids.iter().filter(|&&id| id == stage.id).count();

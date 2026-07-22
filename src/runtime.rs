@@ -863,10 +863,8 @@ impl<R: Runtime> SecuredRuntime<R> {
     /// 3. 都没有 → 安全优先，拒绝
     async fn resolve_ask(&self, title: &str, message: &str) -> bool {
         // 路径 1：同步确认
-        if let Some(ref ui) = self.ui_system {
-            if ui.has_confirm_handler() {
-                return ui.confirm(title, message);
-            }
+        if let Some(ref ui) = self.ui_system && ui.has_confirm_handler() {
+            return ui.confirm(title, message);
         }
         // 路径 2：异步 Ask 走 UI 通道
         if let Some(ref bus_arc) = self.event_bus {

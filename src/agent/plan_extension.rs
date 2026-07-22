@@ -93,14 +93,12 @@ impl Extension for PlanExtension {
     // ── Reject non-allowed tools during plan mode ──
 
     async fn before_tool_call(&self, call: &ToolCall) -> AgentResult<()> {
-        if self.plan_mode.load(Ordering::Relaxed) && call.name != "plan_enter" {
-            if !self.allowed_tools.contains(&call.name) {
-                return Err(super::error::AgentError::Tool(format!(
-                    "Tool '{}' is not available in plan mode. \
-                     Available tools: {:?}",
-                    call.name, self.allowed_tools
-                )));
-            }
+        if self.plan_mode.load(Ordering::Relaxed) && call.name != "plan_enter" && !self.allowed_tools.contains(&call.name) {
+            return Err(super::error::AgentError::Tool(format!(
+                "Tool '{}' is not available in plan mode. \
+                 Available tools: {:?}",
+                call.name, self.allowed_tools
+            )));
         }
         Ok(())
     }

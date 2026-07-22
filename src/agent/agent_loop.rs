@@ -248,10 +248,8 @@ impl Agent {
     pub fn stop(&self) {
         self.stopped.store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = self.pause_tx.send(true);
-        if let Ok(mut guard) = self.http_cancel.lock() {
-            if let Some(c) = guard.take() {
-                c.cancel();
-            }
+        if let Ok(mut guard) = self.http_cancel.lock() && let Some(c) = guard.take() {
+            c.cancel();
         }
     }
     /// 软中断当前 turn（对齐 pi Agent.interrupt()）。
@@ -907,7 +905,7 @@ impl Agent {
 
                     self.extensions
                         .on_turn_end(&TurnContext {
-                            turn_index: turn as u64,
+                            turn_index: turn,
                             messages: self.messages.clone(),
                             has_tool_calls: false,
                             stop_reason: Some(format!("{stop_reason:?}")),
@@ -915,7 +913,7 @@ impl Agent {
                         .await?;
 
                     // ── turn_summary 落盘：每一轮 turn 结束时追加结构化摘要 ──
-                    self.persist_turn_summary(turn as u64, &events, &stop_reason, turn_start.elapsed().as_millis() as u64);
+                    self.persist_turn_summary(turn, &events, &stop_reason, turn_start.elapsed().as_millis() as u64);
 
                     // ── 反幻觉重试：如果 LLM 没调任何工具就返回 → 重试 ──
                     // LLM 可能说"已创建文件"但实际没调 write 工具。
@@ -956,7 +954,7 @@ impl Agent {
                     // 如果 gate 失败 → 注入失败原因 + 强制继续循环。
                     // 这和 retry_on_no_tool_use 一样的机制，只是条件可插拔。
                     let gate_ctx = TurnContext {
-                        turn_index: turn as u64,
+                        turn_index: turn,
                         messages: self.messages.clone(),
                         has_tool_calls: false,
                         stop_reason: Some(format!("{stop_reason:?}")),
@@ -1221,7 +1219,7 @@ impl Agent {
 
                     self.extensions
                         .on_turn_end(&TurnContext {
-                            turn_index: turn as u64,
+                            turn_index: turn,
                             messages: self.messages.clone(),
                             has_tool_calls: true,
                             stop_reason: Some("tool_calls".into()),
@@ -1229,13 +1227,13 @@ impl Agent {
                         .await?;
 
                     // ── turn_summary 落盘（ToolUse 路径）──
-                    self.persist_turn_summary(turn as u64, &events, &ion_provider::StopReason::ToolUse, turn_start.elapsed().as_millis() as u64);
+                    self.persist_turn_summary(turn, &events, &ion_provider::StopReason::ToolUse, turn_start.elapsed().as_millis() as u64);
 
                     continue;
                 }
                 StopReason::Error => {
                     // ── turn_summary 落盘（Error 路径，强制记录中断 turn）──
-                    self.persist_turn_summary(turn as u64, &events, &ion_provider::StopReason::Error, turn_start.elapsed().as_millis() as u64);
+                    self.persist_turn_summary(turn, &events, &ion_provider::StopReason::Error, turn_start.elapsed().as_millis() as u64);
 
                     // ── 溢出恢复：检测到上下文溢出时，触发 compaction 然后重试该 turn ──
                     // 对齐 pi 的 overflow recovery：最多 compact-and-retry MAX_OVERFLOW_ROUNDS 次
@@ -1283,7 +1281,7 @@ impl Agent {
                 }
                 StopReason::Aborted => {
                     // ── turn_summary 落盘（Aborted 路径）──
-                    self.persist_turn_summary(turn as u64, &events, &ion_provider::StopReason::Error, turn_start.elapsed().as_millis() as u64);
+                    self.persist_turn_summary(turn, &events, &ion_provider::StopReason::Error, turn_start.elapsed().as_millis() as u64);
                     return Ok(StopReason::Aborted);
                 }
             }

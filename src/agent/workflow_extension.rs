@@ -63,10 +63,8 @@ impl Extension for WorkflowExtension {
 
     async fn on_gate_check(&self, _ctx: &TurnContext) -> AgentResult<GateDecision> {
         // 已通过 → 放行
-        if let Ok(passed) = self.passed.lock() {
-            if *passed {
-                return Ok(GateDecision::Allow);
-            }
+        if let Ok(passed) = self.passed.lock() && *passed {
+            return Ok(GateDecision::Allow);
         }
 
         // 超过最大重试 → 放行（避免无限循环）

@@ -535,10 +535,8 @@ fn filter_messages_on_live_path(
                 continue; // 不在 live path 上，跳过
             }
         }
-        if let Some(msg_val) = val.get("message") {
-            if let Ok(msg) = serde_json::from_value::<crate::agent::messages::Message>(msg_val.clone()) {
-                messages.push(msg);
-            }
+        if let Some(msg_val) = val.get("message") && let Ok(msg) = serde_json::from_value::<crate::agent::messages::Message>(msg_val.clone()) {
+            messages.push(msg);
         }
     }
     messages
@@ -582,10 +580,8 @@ pub fn ensure_session_header(cwd: &str, sid: &str) -> bool {
     // 文件存在 → 检查第一行是否是 session header
     if let Ok(content) = std::fs::read_to_string(&path) {
         let first_line = content.lines().next().unwrap_or("");
-        if let Ok(first_val) = serde_json::from_str::<serde_json::Value>(first_line) {
-            if first_val.get("type").and_then(|v| v.as_str()) == Some("session") {
-                return false; // header 已存在
-            }
+        if let Ok(first_val) = serde_json::from_str::<serde_json::Value>(first_line) && first_val.get("type").and_then(|v| v.as_str()) == Some("session") {
+            return false; // header 已存在
         }
         // 第一行不是 session header → 需要在开头插入
         // 读取全部内容，prepend header，重写文件
@@ -621,10 +617,8 @@ pub fn set_session_file_override(path: Option<std::path::PathBuf>) {
 
 /// 获取 session 文件路径：优先用全局覆盖，否则用 session_path(cwd)。
 fn resolve_session_file(cwd: &str) -> std::path::PathBuf {
-    if let Some(lock) = SESSION_FILE_OVERRIDE.get() {
-        if let Some(path) = lock.lock().unwrap().as_ref() {
-            return path.clone();
-        }
+    if let Some(lock) = SESSION_FILE_OVERRIDE.get() && let Some(path) = lock.lock().unwrap().as_ref() {
+        return path.clone();
     }
     session_path(cwd)
 }
@@ -829,12 +823,8 @@ pub fn read_last_turn_entry_range(cwd: &str) -> Option<Vec<String>> {
     let start = last_ts_index.map(|i| i + 1).unwrap_or(0);
     let mut ids = Vec::new();
     for line in &lines[start..] {
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
-            if val.get("type").and_then(|v| v.as_str()) == Some("message") {
-                if let Some(id) = val.get("id").and_then(|v| v.as_str()) {
-                    ids.push(id.to_string());
-                }
-            }
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) && val.get("type").and_then(|v| v.as_str()) == Some("message") && let Some(id) = val.get("id").and_then(|v| v.as_str()) {
+            ids.push(id.to_string());
         }
     }
     if ids.is_empty() { None } else { Some(ids) }
@@ -851,14 +841,12 @@ pub fn find_turn_id_for_entry(cwd: &str, entry_id: &str) -> Option<String> {
 
     // 策略 1：entryRange 包含
     for line in &lines {
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
-            if val.get("type").and_then(|v| v.as_str()) == Some("turn_summary") {
-                let in_range = val.get("entryRange")
-                    .and_then(|v| v.as_array())
-                    .map_or(false, |arr| arr.iter().any(|a| a.as_str() == Some(entry_id)));
-                if in_range {
-                    return val.get("turnId").and_then(|v| v.as_str()).map(|s| s.to_string());
-                }
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) && val.get("type").and_then(|v| v.as_str()) == Some("turn_summary") {
+            let in_range = val.get("entryRange")
+                .and_then(|v| v.as_array())
+                .map_or(false, |arr| arr.iter().any(|a| a.as_str() == Some(entry_id)));
+            if in_range {
+                return val.get("turnId").and_then(|v| v.as_str()).map(|s| s.to_string());
             }
         }
     }
@@ -877,10 +865,8 @@ pub fn find_turn_id_for_entry(cwd: &str, entry_id: &str) -> Option<String> {
 
     if let Some(pos) = entry_pos {
         for line in &lines[pos..] {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
-                if val.get("type").and_then(|v| v.as_str()) == Some("turn_summary") {
-                    return val.get("turnId").and_then(|v| v.as_str()).map(|s| s.to_string());
-                }
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) && val.get("type").and_then(|v| v.as_str()) == Some("turn_summary") {
+                return val.get("turnId").and_then(|v| v.as_str()).map(|s| s.to_string());
             }
         }
     }

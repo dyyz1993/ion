@@ -102,11 +102,8 @@ impl ObjectStore {
         let bytes = std::fs::read(&path).ok()?;
 
         // 检测 zstd 压缩（magic bytes）
-        if bytes.starts_with(&ZSTD_MAGIC) {
-            if let Ok(decompressed) = zstd::decode_all(&bytes[..]) {
-                return Some(decompressed);
-            }
-            // 解压失败 → 可能是碰巧以 magic 开头的明文 → fallthrough 到明文返回
+        if bytes.starts_with(&ZSTD_MAGIC) && let Ok(decompressed) = zstd::decode_all(&bytes[..]) {
+            return Some(decompressed);
         }
         Some(bytes)
     }
@@ -151,12 +148,10 @@ impl ObjectStore {
             let prefix_entry = prefix_entry
                 .map_err(|e| format!("Failed to read dir entry: {}", e))?;
             let path = prefix_entry.path();
-            if path.is_dir() {
-                if let Ok(files) = std::fs::read_dir(&path) {
-                    for file in files {
-                        if file.is_ok() {
-                            count += 1;
-                        }
+            if path.is_dir() && let Ok(files) = std::fs::read_dir(&path) {
+                for file in files {
+                    if file.is_ok() {
+                        count += 1;
                     }
                 }
             }

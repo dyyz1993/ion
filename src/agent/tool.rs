@@ -508,11 +508,11 @@ impl Tool for BranchSessionTool {
         let new_entries = if is_rollback {
             let reason = args.get("reason").and_then(|v| v.as_str());
             crate::session_tree::make_rollback(&target, current_leaf.as_deref(), reason)
-                .map_err(|e| AgentError::Tool(e))?
+                .map_err(AgentError::Tool)?
         } else {
             let name = args.get("name").and_then(|v| v.as_str());
             crate::session_tree::make_branch(&target, name)
-                .map_err(|e| AgentError::Tool(e))?
+                .map_err(AgentError::Tool)?
         };
 
         // 追加到文件（only-append）
@@ -615,7 +615,7 @@ impl Tool for GrepTool {
         let pattern = args.get("pattern").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing pattern".into()))?;
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
         let cmd = format!("rg -n --max-count=50 {} {} 2>/dev/null || grep -rn --max-count=50 '{}' {} 2>/dev/null || echo '(no matches)'", shell_quote(pattern), shell_quote(path), shell_quote(pattern), shell_quote(path));
-        let (stdout, _, _) = rt.execute_command(&cmd, 30).await.map_err(|e| AgentError::Tool(e))?;
+        let (stdout, _, _) = rt.execute_command(&cmd, 30).await.map_err(AgentError::Tool)?;
         Ok(stdout)
     }
 }
@@ -641,7 +641,7 @@ impl Tool for FindTool {
         let pattern = args.get("pattern").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing pattern".into()))?;
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
         let cmd = format!("find {} -name '{}' -type f 2>/dev/null | head -50", shell_quote(path), pattern);
-        let (stdout, _, _) = rt.execute_command(&cmd, 30).await.map_err(|e| AgentError::Tool(e))?;
+        let (stdout, _, _) = rt.execute_command(&cmd, 30).await.map_err(AgentError::Tool)?;
         Ok(stdout)
     }
 }
@@ -661,7 +661,7 @@ impl Tool for LsTool {
     }
     async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-        let (stdout, _, _) = rt.execute_command(&format!("ls -la '{}'", path.replace("'", "'\''")), 30).await.map_err(|e| AgentError::Tool(e))?;
+        let (stdout, _, _) = rt.execute_command(&format!("ls -la '{}'", path.replace("'", "'\''")), 30).await.map_err(AgentError::Tool)?;
         Ok(stdout)
     }
 }
@@ -687,7 +687,7 @@ impl Tool for BashTool {
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(180);
-        let (stdout, stderr, _exit_code) = rt.execute_command(cmd, bash_timeout).await.map_err(|e| AgentError::Tool(e))?;
+        let (stdout, stderr, _exit_code) = rt.execute_command(cmd, bash_timeout).await.map_err(AgentError::Tool)?;
         let result = if stdout.is_empty() && !stderr.is_empty() { stderr }
             else if !stderr.is_empty() { format!("{stdout}\n{stderr}") }
             else { stdout };
@@ -710,7 +710,7 @@ impl Tool for BashTool {
         let update_fn = |s: String| { on_update(s); };
         rt.execute_command_stream(cmd, bash_timeout, &update_fn)
             .await
-            .map_err(|e| AgentError::Tool(e))
+            .map_err(AgentError::Tool)
     }
 }
 
@@ -789,7 +789,7 @@ impl Tool for EditTool {
         let path = args.get("file_path").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing file_path".into()))?;
         let old = args.get("old").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing old".into()))?;
         let new = args.get("new").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing new".into()))?;
-        rt.edit_file(path, old, new).await.map_err(|e| AgentError::Tool(e))?;
+        rt.edit_file(path, old, new).await.map_err(AgentError::Tool)?;
         Ok(format!("replaced 1 occurrence in {path}"))
     }
     async fn execute_stream(
@@ -809,7 +809,7 @@ impl Tool for EditTool {
         let removed = old_lines;
         on_update(format!("+{} -{} lines (editing {}...)", added, removed, path));
 
-        rt.edit_file(path, old, new).await.map_err(|e| AgentError::Tool(e))?;
+        rt.edit_file(path, old, new).await.map_err(AgentError::Tool)?;
         Ok(format!("replaced 1 occurrence in {path} (+{} -{} lines)", added, removed))
     }
 }
@@ -1241,7 +1241,7 @@ impl Tool for GitBranchTool {
 /// 执行 git 命令的辅助函数
 async fn run_git_with(rt: &dyn crate::runtime::Runtime, path: &str, args: &[&str]) -> AgentResult<String> {
     let cmd = format!("git -C {} {}", shell_quote(path), args.iter().map(|a| shell_quote(a)).collect::<Vec<_>>().join(" "));
-    let (stdout, stderr, exit_code) = rt.execute_command(&cmd, 60).await.map_err(|e| AgentError::Tool(e))?;
+    let (stdout, stderr, exit_code) = rt.execute_command(&cmd, 60).await.map_err(AgentError::Tool)?;
     if exit_code == 0 {
         Ok(if stdout.is_empty() && !stderr.is_empty() { stderr } else { stdout })
     } else {
@@ -1624,7 +1624,7 @@ impl Tool for GlobalMemorySearchTool {
         let store = crate::global_memory::GlobalMemoryStore::open(&db_path)
             .map_err(|e| AgentError::Tool(format!("open global memory: {}", e)))?;
         let results = store.search(query, project)
-            .map_err(|e| AgentError::Tool(e))?;
+            .map_err(AgentError::Tool)?;
         if results.is_empty() {
             return Ok("No matching memories found.".into());
         }
@@ -1677,7 +1677,7 @@ impl Tool for GlobalMemorySaveTool {
         let store = crate::global_memory::GlobalMemoryStore::open(&db_path)
             .map_err(|e| AgentError::Tool(format!("open global memory: {}", e)))?;
         let id = store.save(content, category, tags, project, importance)
-            .map_err(|e| AgentError::Tool(e))?;
+            .map_err(AgentError::Tool)?;
         Ok(format!("✅ Saved to global memory: {}", id))
     }
 }

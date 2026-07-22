@@ -152,34 +152,26 @@ impl HooksConfig {
 
         // 全局配置
         let global_path = crate::paths::root().join("hooks.json");
-        if global_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&global_path) {
-                if let Ok(global) = serde_json::from_str::<HooksConfig>(&content) {
-                    // disableAllHooks 任一文件设 true 则全局禁用
-                    if global.disable_all_hooks {
-                        merged.disable_all_hooks = true;
-                    }
-                    // 合并 hooks（拼接，不覆盖）
-                    for (event, entries) in global.hooks {
-                        merged.hooks.entry(event).or_default().extend(entries);
-                    }
-                }
+        if global_path.exists() && let Ok(content) = std::fs::read_to_string(&global_path) && let Ok(global) = serde_json::from_str::<HooksConfig>(&content) {
+            // disableAllHooks 任一文件设 true 则全局禁用
+            if global.disable_all_hooks {
+                merged.disable_all_hooks = true;
+            }
+            // 合并 hooks（拼接，不覆盖）
+            for (event, entries) in global.hooks {
+                merged.hooks.entry(event).or_default().extend(entries);
             }
         }
 
         // 项目级配置（合并）
         if let Some(proj) = project_dir {
             let proj_path = proj.join(".ion").join("hooks.json");
-            if proj_path.exists() {
-                if let Ok(content) = std::fs::read_to_string(&proj_path) {
-                    if let Ok(proj_cfg) = serde_json::from_str::<HooksConfig>(&content) {
-                        if proj_cfg.disable_all_hooks {
-                            merged.disable_all_hooks = true;
-                        }
-                        for (event, entries) in proj_cfg.hooks {
-                            merged.hooks.entry(event).or_default().extend(entries);
-                        }
-                    }
+            if proj_path.exists() && let Ok(content) = std::fs::read_to_string(&proj_path) && let Ok(proj_cfg) = serde_json::from_str::<HooksConfig>(&content) {
+                if proj_cfg.disable_all_hooks {
+                    merged.disable_all_hooks = true;
+                }
+                for (event, entries) in proj_cfg.hooks {
+                    merged.hooks.entry(event).or_default().extend(entries);
                 }
             }
         }

@@ -84,10 +84,8 @@ impl ApprovalManager {
         approvals: &HashMap<String, FileApproval>,
     ) -> Option<String> {
         // 优先用该文件的 approved baseline（即使状态被 re-approval 重置成 pending，baseline 锚定保持）
-        if let Some(appr) = approvals.get(path) {
-            if let Some(ref h) = appr.approved_tree_hash {
-                return Some(h.clone());
-            }
+        if let Some(appr) = approvals.get(path) && let Some(ref h) = appr.approved_tree_hash {
+            return Some(h.clone());
         }
         // 否则用 session baseline
         self.session_baseline_tree_hash()
@@ -319,14 +317,14 @@ impl ApprovalManager {
         {
             let mut approvals = self.approvals.lock().unwrap();
             for path in changed_paths {
-                if let Some(appr) = approvals.get_mut(path) {
-                    if appr.status == ApprovalStatus::Approved || appr.status == ApprovalStatus::Rejected {
-                        appr.status = ApprovalStatus::Pending;
-                        appr.timestamp = now_ts();
-                        reset_paths.push(path.clone());
-                        // 注意：approved_tree_hash 不删（保持 baseline 锚定）
-                        // 这样 diff 仍从上次 approved 位置算
-                    }
+                if let Some(appr) = approvals.get_mut(path)
+                    && (appr.status == ApprovalStatus::Approved || appr.status == ApprovalStatus::Rejected)
+                {
+                    appr.status = ApprovalStatus::Pending;
+                    appr.timestamp = now_ts();
+                    reset_paths.push(path.clone());
+                    // 注意：approved_tree_hash 不删（保持 baseline 锚定）
+                    // 这样 diff 仍从上次 approved 位置算
                 }
             }
         }
@@ -347,32 +345,30 @@ impl ApprovalManager {
         ever_approved.clear();
 
         for entry in entries {
-            if entry.get("type").and_then(|v| v.as_str()) == Some("file-approval") {
-                if let Some(data) = entry.get("data") {
-                    let path = data.get("path").and_then(|v| v.as_str()).unwrap_or("");
-                    let status_str = data.get("status").and_then(|v| v.as_str()).unwrap_or("pending");
-                    let status = match status_str {
-                        "approved" => ApprovalStatus::Approved,
-                        "rejected" => ApprovalStatus::Rejected,
-                        _ => ApprovalStatus::Pending,
-                    };
-                    let ts = data.get("timestamp").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let approved_tree_hash = data.get("approved_tree_hash")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
+            if entry.get("type").and_then(|v| v.as_str()) == Some("file-approval") && let Some(data) = entry.get("data") {
+                let path = data.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                let status_str = data.get("status").and_then(|v| v.as_str()).unwrap_or("pending");
+                let status = match status_str {
+                    "approved" => ApprovalStatus::Approved,
+                    "rejected" => ApprovalStatus::Rejected,
+                    _ => ApprovalStatus::Pending,
+                };
+                let ts = data.get("timestamp").and_then(|v| v.as_u64()).unwrap_or(0);
+                let approved_tree_hash = data.get("approved_tree_hash")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
 
-                    if status == ApprovalStatus::Approved {
-                        ever_approved.insert(path.to_string());
-                    }
-
-                    approvals.insert(path.to_string(), FileApproval {
-                        path: path.to_string(),
-                        status,
-                        timestamp: ts,
-                        approved_tree_hash,
-                        approved_turn_id: None,
-                    });
+                if status == ApprovalStatus::Approved {
+                    ever_approved.insert(path.to_string());
                 }
+
+                approvals.insert(path.to_string(), FileApproval {
+                    path: path.to_string(),
+                    status,
+                    timestamp: ts,
+                    approved_tree_hash,
+                    approved_turn_id: None,
+                });
             }
         }
     }

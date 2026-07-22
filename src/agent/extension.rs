@@ -523,10 +523,8 @@ fn glob_rec(
 ) {
     if idx >= segs.len() {
         // 匹配到末尾，记录（相对 base 的路径）
-        if let Ok(rel) = cur.strip_prefix(base) {
-            if !rel.as_os_str().is_empty() {
-                out.push(rel.to_string_lossy().to_string());
-            }
+        if let Ok(rel) = cur.strip_prefix(base) && !rel.as_os_str().is_empty() {
+            out.push(rel.to_string_lossy().to_string());
         }
         return;
     }

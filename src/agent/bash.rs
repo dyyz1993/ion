@@ -158,7 +158,7 @@ impl Tool for BashRunTool {
         // ── 后台模式：先安全预检，再用 spawn_watcher（保持流式输出和 stdin 转发）──
         if background || timeout_bg {
             // 安全预检：走 Runtime check_command（经过 SecuredRuntime CommandGuard）
-            rt.check_command(&command).await.map_err(|e| AgentError::Tool(e))?;
+            rt.check_command(&command).await.map_err(AgentError::Tool)?;
 
             let child = match tokio::process::Command::new("sh")
                 .args(["-c", &command])

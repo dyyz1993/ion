@@ -57,6 +57,6 @@ impl Tool for McpTool {
         self.manager
             .call_tool(&self.server_name, &self.tool_name, args)
             .await
-            .map_err(|e| AgentError::Tool(e))
+            .map_err(AgentError::Tool)
     }
 }

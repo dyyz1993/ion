@@ -22,10 +22,8 @@ fn common_fields(event: &str) -> Value {
 /// 合并通用字段 + 事件特有字段
 fn build(event: &str, extra: Value) -> Value {
     let mut stdin = common_fields(event);
-    if let Some(obj) = stdin.as_object_mut() {
-        if let Some(extra_obj) = extra.as_object() {
-            obj.extend(extra_obj.clone());
-        }
+    if let Some(obj) = stdin.as_object_mut() && let Some(extra_obj) = extra.as_object() {
+        obj.extend(extra_obj.clone());
     }
     stdin
 }

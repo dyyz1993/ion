@@ -55,10 +55,8 @@ fn prune_old_objects(store: &ObjectStore, max_age_secs: u64, active_hashes: &[St
             continue; // 保护活跃 object
         }
         // 检查 createdAt
-        if let Some(created) = get_object_created_at(store, hash) {
-            if created < cutoff {
-                store.delete_object(hash);
-            }
+        if let Some(created) = get_object_created_at(store, hash) && created < cutoff {
+            store.delete_object(hash);
         }
     }
 }

@@ -294,11 +294,9 @@ async fn run_prompt(handler: &HookHandler, stdin_data: serde_json::Value, ctx: &
                 .collect::<Vec<_>>()
                 .join("");
             // 解析 JSON 决策
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-                if json.get("block").and_then(|v| v.as_bool()) == Some(true) {
-                    let reason = json.get("reason").and_then(|v| v.as_str()).unwrap_or("blocked by prompt hook");
-                    return HookOutcome { block: true, block_reason: Some(reason.into()), ..Default::default() };
-                }
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) && json.get("block").and_then(|v| v.as_bool()) == Some(true) {
+                let reason = json.get("reason").and_then(|v| v.as_str()).unwrap_or("blocked by prompt hook");
+                return HookOutcome { block: true, block_reason: Some(reason.into()), ..Default::default() };
             }
             // 不是 block 就看有没有 additionalContext
             interpret_stdout(&text)
@@ -411,11 +409,9 @@ async fn run_mcp_tool(
     // args 合并：handler.input 为底 + stdin.tool_input 覆盖
     // （不 merge 整个 stdin_data，避免 session_id / hook_event_name 污染 MCP 工具参数）
     let mut args = handler.input.clone().unwrap_or(serde_json::json!({}));
-    if let Some(tool_input) = stdin_data.get("tool_input") {
-        if let (Some(obj), Some(input_obj)) = (args.as_object_mut(), tool_input.as_object()) {
-            for (k, v) in input_obj {
-                obj.insert(k.clone(), v.clone());
-            }
+    if let Some(tool_input) = stdin_data.get("tool_input") && let (Some(obj), Some(input_obj)) = (args.as_object_mut(), tool_input.as_object()) {
+        for (k, v) in input_obj {
+            obj.insert(k.clone(), v.clone());
         }
     }
 
@@ -536,10 +532,8 @@ pub fn interpret_stdout(stdout: &str) -> HookOutcome {
         }
 
         // 顶层 additionalContext（简写）
-        if outcome.additional_context.is_none() {
-            if let Some(ctx) = json.get("additionalContext").and_then(|v| v.as_str()) {
-                outcome.additional_context = Some(ctx.to_string());
-            }
+        if outcome.additional_context.is_none() && let Some(ctx) = json.get("additionalContext").and_then(|v| v.as_str()) {
+            outcome.additional_context = Some(ctx.to_string());
         }
 
         outcome

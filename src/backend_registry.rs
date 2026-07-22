@@ -276,13 +276,10 @@ impl BackendRegistry {
                 tracing::warn!("[backend-registry] command rule target '{}' 未注册，跳过", target);
             }
             // 兼容旧 pattern：当 tool 为空或 bash 时尝试匹配
-            if !rule.pattern.is_empty() && rule.command.is_empty() && rule.path.is_empty() {
-                if (rule.tool.is_empty() || rule.tool == "bash" || rule.tool == "*")
-                    && glob_match(&rule.pattern, command) {
-                    let target = rule.effective_target();
-                    if let Some(rt) = self.backends.get(&target) {
-                        return rt.as_ref();
-                    }
+            if !rule.pattern.is_empty() && rule.command.is_empty() && rule.path.is_empty() && (rule.tool.is_empty() || rule.tool == "bash" || rule.tool == "*") {
+                let target = rule.effective_target();
+                if let Some(rt) = self.backends.get(&target) {
+                    return rt.as_ref();
                 }
             }
         }
@@ -540,12 +537,10 @@ impl AppleContainerRuntime {
             if let Err(e) = start_out {
                 return Err(format!("container system start 失败: {e}"));
             }
-            if let Ok(out) = start_out {
-                if !out.status.success() {
-                    let err = String::from_utf8_lossy(&out.stderr);
-                    if !err.trim().is_empty() && !err.contains("already running") {
-                        return Err(format!("container system start 失败: {err}"));
-                    }
+            if let Ok(out) = start_out && !out.status.success() {
+                let err = String::from_utf8_lossy(&out.stderr);
+                if !err.trim().is_empty() && !err.contains("already running") {
+                    return Err(format!("container system start 失败: {err}"));
                 }
             }
 
@@ -553,11 +548,9 @@ impl AppleContainerRuntime {
             let inspect_out = tokio::process::Command::new("/usr/local/bin/container")
                 .args(["inspect", &self.container_name])
                 .output().await;
-            if let Ok(out) = inspect_out {
-                if out.status.success() {
-                    // 容器已存在，直接使用
-                    return Ok(true);
-                }
+            if let Ok(out) = inspect_out && out.status.success() {
+                // 容器已存在，直接使用
+                return Ok(true);
             }
 
             // 3. 构造 container run 命令（符合真实 CLI 语法，参考 run-worktree-container.sh）
@@ -621,20 +614,8 @@ impl AppleContainerRuntime {
             10,
         ).await?;
         // 解析 JSON：取 networks[0].ipv4Address
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&out) {
-            if let Some(arr) = v.as_array() {
-                if let Some(first) = arr.first() {
-                    if let Some(networks) = first.get("networks") {
-                        if let Some(net_arr) = networks.as_array() {
-                            if let Some(net) = net_arr.first() {
-                                if let Some(ip) = net.get("ipv4Address").and_then(|i| i.as_str()) {
-                                    return Ok(ip.to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&out) && let Some(arr) = v.as_array() && let Some(first) = arr.first() && let Some(networks) = first.get("networks") && let Some(net_arr) = networks.as_array() && let Some(net) = net_arr.first() && let Some(ip) = net.get("ipv4Address").and_then(|i| i.as_str()) {
+            return Ok(ip.to_string());
         }
         Err(format!("无法从 container inspect 解析 IP: {out}"))
     }

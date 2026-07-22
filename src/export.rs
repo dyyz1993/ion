@@ -82,43 +82,41 @@ pub fn export_session_rich(
     let mut tools: Option<Vec<ExportToolInfo>> = None;
     let mut system_prompt: Option<String> = None;
 
-    if let Some(name) = agent_name {
-        if let Some(agent_cfg) = crate::agent_config::find_agent(name) {
-            // Get system prompt from agent config
-            system_prompt = agent_cfg.system_prompt.clone();
+    if let Some(name) = agent_name && let Some(agent_cfg) = crate::agent_config::find_agent(name) {
+        // Get system prompt from agent config
+        system_prompt = agent_cfg.system_prompt.clone();
 
-            // Reconstruct tool definitions by instantiating all built-in tools,
-            // then applying the agent config's allowlist and blocklist.
-            let mut registry = crate::agent::tool::ToolRegistry::new();
-            registry.register_builtins();
+        // Reconstruct tool definitions by instantiating all built-in tools,
+        // then applying the agent config's allowlist and blocklist.
+        let mut registry = crate::agent::tool::ToolRegistry::new();
+        registry.register_builtins();
 
-            // Apply allowlist: agent_cfg.tools is a list of tool names
-            if let Some(ref allowed) = agent_cfg.tools {
-                let allowed_refs: Vec<&str> = allowed.iter().map(|s| s.as_str()).collect();
-                registry.filter(allowed_refs);
+        // Apply allowlist: agent_cfg.tools is a list of tool names
+        if let Some(ref allowed) = agent_cfg.tools {
+            let allowed_refs: Vec<&str> = allowed.iter().map(|s| s.as_str()).collect();
+            registry.filter(allowed_refs);
+        }
+
+        // Apply blocklist: agent_cfg.disallowed_tools
+        if let Some(ref blocked) = agent_cfg.disallowed_tools {
+            for name in blocked {
+                registry.remove(name);
             }
+        }
 
-            // Apply blocklist: agent_cfg.disallowed_tools
-            if let Some(ref blocked) = agent_cfg.disallowed_tools {
-                for name in blocked {
-                    registry.remove(name);
-                }
-            }
+        // Convert to ExportToolInfo list
+        let defs: Vec<ExportToolInfo> = registry
+            .tool_defs()
+            .into_iter()
+            .map(|td| ExportToolInfo {
+                name: td.name,
+                description: td.description,
+                parameters: td.parameters,
+            })
+            .collect();
 
-            // Convert to ExportToolInfo list
-            let defs: Vec<ExportToolInfo> = registry
-                .tool_defs()
-                .into_iter()
-                .map(|td| ExportToolInfo {
-                    name: td.name,
-                    description: td.description,
-                    parameters: td.parameters,
-                })
-                .collect();
-
-            if !defs.is_empty() {
-                tools = Some(defs);
-            }
+        if !defs.is_empty() {
+            tools = Some(defs);
         }
     }
 
@@ -182,93 +180,89 @@ fn export_session_internal(
     let _session_type = header.get("type").and_then(|v| v.as_str()).unwrap_or("");
     let is_main_session = header.get("parentSession").and_then(|v| v.as_str()).is_none()
         && !header.get("spawnMeta").is_some();
-    if is_main_session {
-        if let Some(parent_dir) = jsonl_path.parent() {
-            if let Ok(files) = std::fs::read_dir(parent_dir) {
-                for file in files.flatten() {
-                    let path = file.path();
-                    let name = match path.file_name().and_then(|n| n.to_str()) {
-                        Some(n) => n,
-                        None => continue,
-                    };
-                    // 只扫 <sid>.jsonl，跳过 session.jsonl（自己）+ memory_agent + input
-                    if name == "session.jsonl" || name.starts_with("sess_memory_agent") || name == "input.jsonl" {
-                        continue;
-                    }
-                    if !name.ends_with(".jsonl") { continue; }
+    if is_main_session && let Some(parent_dir) = jsonl_path.parent() && let Ok(files) = std::fs::read_dir(parent_dir) {
+        for file in files.flatten() {
+            let path = file.path();
+            let name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+            // 只扫 <sid>.jsonl，跳过 session.jsonl（自己）+ memory_agent + input
+            if name == "session.jsonl" || name.starts_with("sess_memory_agent") || name == "input.jsonl" {
+                continue;
+            }
+            if !name.ends_with(".jsonl") { continue; }
 
-                    // 读子 session header，检查 parentSession 是否匹配
-                    let sub_content = match std::fs::read_to_string(&path) {
-                        Ok(c) => c,
-                        Err(_) => continue,
-                    };
-                    let mut sub_lines = sub_content.lines().filter(|l| !l.trim().is_empty());
-                    let sub_header_line = match sub_lines.next() {
-                        Some(l) => l,
-                        None => continue,
-                    };
-                    let sub_header: Value = match serde_json::from_str(sub_header_line) {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
-                    let parent_match = sub_header
-                        .get("parentSession")
-                        .and_then(|v| v.as_str())
-                        == Some(session_id);
-                    if !parent_match { continue; }
+            // 读子 session header，检查 parentSession 是否匹配
+            let sub_content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let mut sub_lines = sub_content.lines().filter(|l| !l.trim().is_empty());
+            let sub_header_line = match sub_lines.next() {
+                Some(l) => l,
+                None => continue,
+            };
+            let sub_header: Value = match serde_json::from_str(sub_header_line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let parent_match = sub_header
+                .get("parentSession")
+                .and_then(|v| v.as_str())
+                == Some(session_id);
+            if !parent_match { continue; }
 
-                    // 匹配！自动导出子 session HTML + 在主 HTML 里放可点击链接
-                    let sub_sid = sub_header.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string();
-                    let spawn_meta = sub_header.get("spawnMeta").cloned();
-                    let spawned_by = spawn_meta
-                        .as_ref()
-                        .and_then(|m| m.get("spawnedBy"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
+            // 匹配！自动导出子 session HTML + 在主 HTML 里放可点击链接
+            let sub_sid = sub_header.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+            let spawn_meta = sub_header.get("spawnMeta").cloned();
+            let spawned_by = spawn_meta
+                .as_ref()
+                .and_then(|m| m.get("spawnedBy"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
 
-                    // 自动导出子 session HTML（跟主 HTML 同目录，文件名 fork_<sid>.html）
-                    let sub_html_name = format!("fork_{}.html", &sub_sid[..12.min(sub_sid.len())]);
-                    let sub_html_path = output_path.parent()
-                        .map(|p| p.join(&sub_html_name))
-                        .unwrap_or_else(|| std::path::PathBuf::from(&sub_html_name));
+            // 自动导出子 session HTML（跟主 HTML 同目录，文件名 fork_<sid>.html）
+            let sub_html_name = format!("fork_{}.html", &sub_sid[..12.min(sub_sid.len())]);
+            let sub_html_path = output_path.parent()
+                .map(|p| p.join(&sub_html_name))
+                .unwrap_or_else(|| std::path::PathBuf::from(&sub_html_name));
 
-                    // 递归导出子 session（但不深度递归——只导一层 fork 子 session）
-                    match export_session_internal(&sub_sid, &sub_html_path, None, None) {
-                        Ok(()) => {
-                            eprintln!("[export] auto-exported fork sub-session → {}", sub_html_path.display());
-                        }
-                        Err(e) => {
-                            eprintln!("[export] WARN: failed to auto-export fork sub-session {sub_sid}: {e}");
-                        }
-                    }
-
-                    // 分隔标记：content 里有可点击的 HTML 链接（指向子 HTML 文件）
-                    let sub_sid_short = &sub_sid[..12.min(sub_sid.len())];
-                    let separator_content = format!(
-                        "🔗 Fork 子 Worker session（{sub_sid_short}）\n\
-                         spawnedBy: {spawned_by}\n\
-                         子 session ID: {sub_sid}\n\n\
-                         👆 点击查看完整 fork 子 Worker 执行过程：fork_{sub_sid_short}.html\n\n\
-                         （或命令行导出：ion --export sub.html --session {sub_sid}）"
-                    );
-                    let separator = json!({
-                        "type": "custom_message",
-                        "id": format!("fork-sep-{}", sub_sid),
-                        "parentId": null,
-                        "timestamp": sub_header.get("timestamp").cloned().unwrap_or(json!("")),
-                        "customType": "fork_separator",
-                        "content": separator_content,
-                        "data": { "subSessionId": sub_sid, "spawnedBy": spawned_by },
-                        "display": true,
-                    });
-                    raw_entries.push(separator);
-
-                    // 不追加子 session 的 entries——fork 是独立进程，应该有独立的 session.jsonl
-                    // 和独立的 HTML。主 HTML 只显示主 Worker 的对话流程。
-                    // 用户可以用 subSessionId 单独 export 子 session：
-                    //   ion --export sub.html --session <subSessionId>
+            // 递归导出子 session（但不深度递归——只导一层 fork 子 session）
+            match export_session_internal(&sub_sid, &sub_html_path, None, None) {
+                Ok(()) => {
+                    eprintln!("[export] auto-exported fork sub-session → {}", sub_html_path.display());
+                }
+                Err(e) => {
+                    eprintln!("[export] WARN: failed to auto-export fork sub-session {sub_sid}: {e}");
                 }
             }
+
+            // 分隔标记：content 里有可点击的 HTML 链接（指向子 HTML 文件）
+            let sub_sid_short = &sub_sid[..12.min(sub_sid.len())];
+            let separator_content = format!(
+                "🔗 Fork 子 Worker session（{sub_sid_short}）\n\
+                 spawnedBy: {spawned_by}\n\
+                 子 session ID: {sub_sid}\n\n\
+                 👆 点击查看完整 fork 子 Worker 执行过程：fork_{sub_sid_short}.html\n\n\
+                 （或命令行导出：ion --export sub.html --session {sub_sid}）"
+            );
+            let separator = json!({
+                "type": "custom_message",
+                "id": format!("fork-sep-{}", sub_sid),
+                "parentId": null,
+                "timestamp": sub_header.get("timestamp").cloned().unwrap_or(json!("")),
+                "customType": "fork_separator",
+                "content": separator_content,
+                "data": { "subSessionId": sub_sid, "spawnedBy": spawned_by },
+                "display": true,
+            });
+            raw_entries.push(separator);
+
+            // 不追加子 session 的 entries——fork 是独立进程，应该有独立的 session.jsonl
+            // 和独立的 HTML。主 HTML 只显示主 Worker 的对话流程。
+            // 用户可以用 subSessionId 单独 export 子 session：
+            //   ion --export sub.html --session <subSessionId>
         }
     }
 
@@ -534,12 +528,8 @@ fn export_session_internal(
             if e.get("type").and_then(|v| v.as_str()) != Some("message") { continue; }
             if let Some(content) = e.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
                 for c in content {
-                    if let Some(name) = c.get("type").and_then(|v| v.as_str()) {
-                        if name == "toolCall" {
-                            if let Some(tn) = c.get("name").and_then(|v| v.as_str()) {
-                                *counts.entry(tn.to_string()).or_insert(0) += 1;
-                            }
-                        }
+                    if let Some(name) = c.get("type").and_then(|v| v.as_str()) && name == "toolCall" && let Some(tn) = c.get("name").and_then(|v| v.as_str()) {
+                        *counts.entry(tn.to_string()).or_insert(0) += 1;
                     }
                 }
             }
@@ -728,35 +718,27 @@ fn convert_message_entry(entry: &Value) -> Value {
         });
     }
     // ION ToolResult 存的是 role:"tool"，修正为 pi 的 role:"toolResult"
-    if variant == "ToolResult" {
-        if let Some(obj) = flat.as_object_mut() {
-            if obj.get("role").and_then(|v| v.as_str()) == Some("tool") {
-                obj.insert("role".to_string(), json!("toolResult"));
-            }
-        }
+    if variant == "ToolResult" && let Some(obj) = flat.as_object_mut() && obj.get("role").and_then(|v| v.as_str()) == Some("tool") {
+        obj.insert("role".to_string(), json!("toolResult"));
     }
 
     // ToolResult 字段 camelCase 化
-    if variant == "ToolResult" {
-        if let Some(obj) = flat.as_object_mut() {
-            rename_key(obj, "is_error", "isError");
-            rename_key(obj, "tool_call_id", "toolCallId");
-            rename_key(obj, "tool_name", "toolName");
-        }
+    if variant == "ToolResult" && let Some(obj) = flat.as_object_mut() {
+        rename_key(obj, "is_error", "isError");
+        rename_key(obj, "tool_call_id", "toolCallId");
+        rename_key(obj, "tool_name", "toolName");
     }
 
     // Assistant 字段 camelCase 化：stop_reason → stopReason, response_id → responseId, response_model → responseModel
-    if variant == "Assistant" {
-        if let Some(obj) = flat.as_object_mut() {
-            rename_key(obj, "stop_reason", "stopReason");
-            rename_key(obj, "response_id", "responseId");
-            rename_key(obj, "response_model", "responseModel");
-            // usage 字段：cache_read → cacheRead, cache_write → cacheWrite, total_tokens → totalTokens
-            if let Some(usage) = obj.get_mut("usage").and_then(|v| v.as_object_mut()) {
-                rename_key(usage, "cache_read", "cacheRead");
-                rename_key(usage, "cache_write", "cacheWrite");
-                rename_key(usage, "total_tokens", "totalTokens");
-            }
+    if variant == "Assistant" && let Some(obj) = flat.as_object_mut() {
+        rename_key(obj, "stop_reason", "stopReason");
+        rename_key(obj, "response_id", "responseId");
+        rename_key(obj, "response_model", "responseModel");
+        // usage 字段：cache_read → cacheRead, cache_write → cacheWrite, total_tokens → totalTokens
+        if let Some(usage) = obj.get_mut("usage").and_then(|v| v.as_object_mut()) {
+            rename_key(usage, "cache_read", "cacheRead");
+            rename_key(usage, "cache_write", "cacheWrite");
+            rename_key(usage, "total_tokens", "totalTokens");
         }
     }
 
@@ -770,46 +752,42 @@ fn convert_message_entry(entry: &Value) -> Value {
     // ION 的 skill 调用通常只有 toolCall 没 text → 侧边栏看不到 skill 调用。
     // 修复：给这种 message 注入一个描述性 text block（含工具名 + 参数），
     // 这样侧边栏能显示 "skill(context=fork, skill_name=code-audit)" 而不是空。
-    if variant == "Assistant" {
-        if let Some(content) = flat.get("content").and_then(|v| v.as_array()) {
-            let has_text = content.iter().any(|c| {
-                c.get("type").and_then(|v| v.as_str()) == Some("text")
-                    && c.get("text").and_then(|v| v.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false)
-            });
-            if !has_text {
-                // 没有有意义的 text —— 从 toolCall 生成描述
-                let mut descriptions: Vec<String> = Vec::new();
-                for c in content {
-                    if c.get("type").and_then(|v| v.as_str()) == Some("toolCall") {
-                        let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
-                        let args = c.get("arguments").cloned().unwrap_or(json!({}));
-                        let args_str = if args.is_object() {
-                            let obj = args.as_object().unwrap();
-                            if obj.is_empty() {
-                                String::new()
-                            } else {
-                                let pairs: Vec<String> = obj.iter()
-                                    .map(|(k, v)| {
-                                        let val_str = v.as_str().map(|s| s.to_string())
-                                            .unwrap_or_else(|| v.to_string());
-                                        format!("{}={}", k, val_str)
-                                    })
-                                    .collect();
-                                format!("({})", pairs.join(", "))
-                            }
-                        } else {
+    if variant == "Assistant" && let Some(content) = flat.get("content").and_then(|v| v.as_array()) {
+        let has_text = content.iter().any(|c| {
+            c.get("type").and_then(|v| v.as_str()) == Some("text")
+                && c.get("text").and_then(|v| v.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false)
+        });
+        if !has_text {
+            // 没有有意义的 text —— 从 toolCall 生成描述
+            let mut descriptions: Vec<String> = Vec::new();
+            for c in content {
+                if c.get("type").and_then(|v| v.as_str()) == Some("toolCall") {
+                    let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
+                    let args = c.get("arguments").cloned().unwrap_or(json!({}));
+                    let args_str = if args.is_object() {
+                        let obj = args.as_object().unwrap();
+                        if obj.is_empty() {
                             String::new()
-                        };
-                        descriptions.push(format!("{}{}", name, args_str));
-                    }
-                }
-                if !descriptions.is_empty() {
-                    let placeholder = descriptions.join("; ");
-                    if let Some(obj) = flat.as_object_mut() {
-                        if let Some(content) = obj.get_mut("content").and_then(|v| v.as_array_mut()) {
-                            content.insert(0, json!({"type": "text", "text": placeholder}));
+                        } else {
+                            let pairs: Vec<String> = obj.iter()
+                                .map(|(k, v)| {
+                                    let val_str = v.as_str().map(|s| s.to_string())
+                                        .unwrap_or_else(|| v.to_string());
+                                    format!("{}={}", k, val_str)
+                                })
+                                .collect();
+                            format!("({})", pairs.join(", "))
                         }
-                    }
+                    } else {
+                        String::new()
+                    };
+                    descriptions.push(format!("{}{}", name, args_str));
+                }
+            }
+            if !descriptions.is_empty() {
+                let placeholder = descriptions.join("; ");
+                if let Some(obj) = flat.as_object_mut() && let Some(content) = obj.get_mut("content").and_then(|v| v.as_array_mut()) {
+                    content.insert(0, json!({"type": "text", "text": placeholder}));
                 }
             }
         }
@@ -829,10 +807,8 @@ fn convert_tool_result_entry(entry: &Value) -> Value {
         rename_key(obj, "is_error", "isError");
         rename_key(obj, "tool_call_id", "toolCallId");
         rename_key(obj, "tool_name", "toolName");
-        if let Some(role) = obj.get("role").and_then(|v| v.as_str()) {
-            if role == "tool" {
-                obj.insert("role".to_string(), json!("toolResult"));
-            }
+        if let Some(role) = obj.get("role").and_then(|v| v.as_str()) && role == "tool" {
+            obj.insert("role".to_string(), json!("toolResult"));
         }
         if let Some(content) = obj.get_mut("content") {
             *content = convert_content_blocks(content);
@@ -968,16 +944,12 @@ fn rename_key(obj: &mut serde_json::Map<String, Value>, from: &str, to: &str) {
 fn resolve_session_file(session_id: &str) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
     // Strategy 1: Look up session in global index → get cwd → use cwd path
     let index = crate::session_index::SessionIndex::load();
-    if let Some(meta) = index.get(session_id) {
-        if let Some(ref project) = meta.project {
-            let cwd_path = crate::session_jsonl::session_path(project);
-            if cwd_path.exists() {
-                // Verify the session file contains this session
-                if let Some(file) = crate::session_jsonl::SessionFile::load(project) {
-                    if file.header.id == session_id {
-                        return Ok(cwd_path);
-                    }
-                }
+    if let Some(meta) = index.get(session_id) && let Some(ref project) = meta.project {
+        let cwd_path = crate::session_jsonl::session_path(project);
+        if cwd_path.exists() {
+            // Verify the session file contains this session
+            if let Some(file) = crate::session_jsonl::SessionFile::load(project) && file.header.id == session_id {
+                return Ok(cwd_path);
             }
         }
     }
@@ -1000,30 +972,22 @@ fn resolve_session_file(session_id: &str) -> Result<std::path::PathBuf, Box<dyn 
     // This handles cases where the index is stale or the session was created
     // in a worktree/temp cwd that wasn't tracked in the global index.
     let sessions_root = crate::paths::sessions_dir();
-    if sessions_root.exists() {
-        if let Ok(entries) = std::fs::read_dir(&sessions_root) {
-            for entry in entries.flatten() {
-                let dir = entry.path();
-                if !dir.is_dir() { continue; }
-                // 扫目录下所有 .jsonl 文件（session.jsonl + <sid>.jsonl）
-                if let Ok(files) = std::fs::read_dir(&dir) {
-                    for file in files.flatten() {
-                        let path = file.path();
-                        let name = match path.file_name().and_then(|n| n.to_str()) {
-                            Some(n) => n,
-                            None => continue,
-                        };
-                        if !name.ends_with(".jsonl") { continue; }
-                        // Read only the first line (header) to check id
-                        if let Ok(header_line) = std::fs::read_to_string(&path) {
-                            if let Some(first_line) = header_line.lines().next() {
-                                if let Ok(header) = serde_json::from_str::<Value>(first_line) {
-                                    if header.get("id").and_then(|v| v.as_str()) == Some(session_id) {
-                                        return Ok(path);
-                                    }
-                                }
-                            }
-                        }
+    if sessions_root.exists() && let Ok(entries) = std::fs::read_dir(&sessions_root) {
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            if !dir.is_dir() { continue; }
+            // 扫目录下所有 .jsonl 文件（session.jsonl + <sid>.jsonl）
+            if let Ok(files) = std::fs::read_dir(&dir) {
+                for file in files.flatten() {
+                    let path = file.path();
+                    let name = match path.file_name().and_then(|n| n.to_str()) {
+                        Some(n) => n,
+                        None => continue,
+                    };
+                    if !name.ends_with(".jsonl") { continue; }
+                    // Read only the first line (header) to check id
+                    if let Ok(header_line) = std::fs::read_to_string(&path) && let Some(first_line) = header_line.lines().next() && let Ok(header) = serde_json::from_str::<Value>(first_line) && header.get("id").and_then(|v| v.as_str()) == Some(session_id) {
+                        return Ok(path);
                     }
                 }
             }

@@ -540,18 +540,14 @@ impl Extension for MemoryExtension {
         }
 
         // ── 全局记忆大纲（V0.2 Active Memory）──
-        if let Some(ref global) = store.global_store {
-            if let Ok(outlines) = global.list_outlines() {
-                if !outlines.is_empty() {
-                    let mut xml = String::from("\n<global_memory_outline>\n");
-                    for o in &outlines {
-                        let summary_preview: String = o.summary.chars().take(100).collect();
-                        xml.push_str(&format!("  {} ({} entries): {}\n", o.project, o.entry_count, summary_preview));
-                    }
-                    xml.push_str("</global_memory_outline>");
-                    prompt.push_str(&xml);
-                }
+        if let Some(ref global) = store.global_store && let Ok(outlines) = global.list_outlines() && !outlines.is_empty() {
+            let mut xml = String::from("\n<global_memory_outline>\n");
+            for o in &outlines {
+                let summary_preview: String = o.summary.chars().take(100).collect();
+                xml.push_str(&format!("  {} ({} entries): {}\n", o.project, o.entry_count, summary_preview));
             }
+            xml.push_str("</global_memory_outline>");
+            prompt.push_str(&xml);
         }
         Ok(())
     }
@@ -603,16 +599,12 @@ impl Extension for MemoryExtension {
         }
 
         // ── 全局整理（V0.2 Active Memory）：每 10 轮触发一次 ──
-        if store.turn_count % 10 == 0 {
-            if let Some(ref global) = store.global_store {
-                if let Ok(stats) = global.consolidate() {
-                    self.emit("global_memory_consolidated", serde_json::json!({
-                        "deduplicated": stats.deduplicated,
-                        "archived": stats.archived,
-                        "total_remaining": stats.total,
-                    }));
-                }
-            }
+        if store.turn_count % 10 == 0 && let Some(ref global) = store.global_store && let Ok(stats) = global.consolidate() {
+            self.emit("global_memory_consolidated", serde_json::json!({
+                "deduplicated": stats.deduplicated,
+                "archived": stats.archived,
+                "total_remaining": stats.total,
+            }));
         }
 
         // 搜索匹配的记忆
@@ -802,15 +794,13 @@ impl Extension for MemoryExtension {
                 let tdir = store.session_dir().join("transcript");
                 let tlog = tdir.join("input.jsonl");
                 let mut results = Vec::new();
-                if tlog.exists() {
-                    if let Ok(content) = std::fs::read_to_string(&tlog) {
-                        for line in content.lines().rev() {
-                            if results.len() >= limit { break; }
-                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                                let text = v.get("content").and_then(|s| s.as_str()).unwrap_or("");
-                                if query.is_empty() || text.to_lowercase().contains(&query) {
-                                    results.push(v);
-                                }
+                if tlog.exists() && let Ok(content) = std::fs::read_to_string(&tlog) {
+                    for line in content.lines().rev() {
+                        if results.len() >= limit { break; }
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                            let text = v.get("content").and_then(|s| s.as_str()).unwrap_or("");
+                            if query.is_empty() || text.to_lowercase().contains(&query) {
+                                results.push(v);
                             }
                         }
                     }

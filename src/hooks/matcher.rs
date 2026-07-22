@@ -50,20 +50,16 @@ pub fn matches_if_clause(handler: &HookHandler, tool_name: Option<&str>, tool_in
     if let Some(paren_idx) = clause.find('(') {
         let tool_pattern = &clause[..paren_idx].trim();
         // 工具名匹配（大小写不敏感）
-        if let Some(actual_tool) = tool_name {
-            if !tool_pattern.is_empty() && !tool_pattern.eq_ignore_ascii_case(actual_tool) {
-                return false;
-            }
+        if let Some(actual_tool) = tool_name && !tool_pattern.is_empty() && !tool_pattern.eq_ignore_ascii_case(actual_tool) {
+            return false;
         }
         // glob 部分简化：检查 input 里有没有匹配的关键词
         let glob = clause[paren_idx + 1..].trim_end_matches(')');
-        if !glob.is_empty() {
-            if let Some(input) = tool_input {
-                let input_str = input.to_string().to_lowercase();
-                let glob_lower = glob.to_lowercase().replace('*', "");
-                if !glob_lower.is_empty() && !input_str.contains(&glob_lower) {
-                    return false;
-                }
+        if !glob.is_empty() && let Some(input) = tool_input {
+            let input_str = input.to_string().to_lowercase();
+            let glob_lower = glob.to_lowercase().replace('*', "");
+            if !glob_lower.is_empty() && !input_str.contains(&glob_lower) {
+                return false;
             }
         }
         true

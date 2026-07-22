@@ -412,26 +412,24 @@ impl PermissionExtension {
     /// 返回被删除规则的 JSON（找不到时返回 None）。
     pub fn remove_stored(&self, id: &str) -> Option<serde_json::Value> {
         // 1. 先在 session 级找
-        if let Ok(mut session) = self.session_rules.lock() {
-            if let Some(pos) = session
+        if let Ok(mut session) = self.session_rules.lock()
+            && let Some(pos) = session
                 .iter()
                 .position(|r| r.id == id && r.source == DecisionSource::Stored)
-            {
-                let removed = session.remove(pos);
-                return Some(rule_to_json(&removed, "session"));
-            }
+        {
+            let removed = session.remove(pos);
+            return Some(rule_to_json(&removed, "session"));
         }
         // 2. 再在 project 级找（删后需持久化）
-        if let Ok(mut project) = self.project_rules.write() {
-            if let Some(pos) = project
+        if let Ok(mut project) = self.project_rules.write()
+            && let Some(pos) = project
                 .iter()
                 .position(|r| r.id == id && r.source == DecisionSource::Stored)
-            {
-                let removed = project.remove(pos);
-                drop(project);
-                self.save_project_rules();
-                return Some(rule_to_json(&removed, "project"));
-            }
+        {
+            let removed = project.remove(pos);
+            drop(project);
+            self.save_project_rules();
+            return Some(rule_to_json(&removed, "project"));
         }
         None
     }
@@ -560,7 +558,7 @@ impl Extension for PermissionExtension {
                 Ok(serde_json::json!({"rules": rules, "count": rules.len()}))
             }
             "reload" => {
-                let msg = self.reload().map_err(|e| AgentError::Tool(e))?;
+                let msg = self.reload().map_err(AgentError::Tool)?;
                 Ok(serde_json::json!({"status": "ok", "message": msg}))
             }
             // ── Stored-Decision（权限记忆）API ──

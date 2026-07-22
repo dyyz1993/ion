@@ -145,7 +145,7 @@ impl Extension for GlobalMemoryExtension {
                 let importance = params.get("importance").and_then(|v| v.as_i64())
                     .unwrap_or(5) as i32;
                 let id = store.save(content, category, tags, project, importance)
-                    .map_err(|e| AgentError::Tool(e))?;
+                    .map_err(AgentError::Tool)?;
                 Ok(serde_json::json!({"id": id}))
             }
 
@@ -154,40 +154,40 @@ impl Extension for GlobalMemoryExtension {
                     .ok_or_else(|| AgentError::Tool("missing 'query'".into()))?;
                 let project = params.get("project").and_then(|v| v.as_str());
                 let results = store.search(query, project)
-                    .map_err(|e| AgentError::Tool(e))?;
+                    .map_err(AgentError::Tool)?;
                 Ok(serde_json::json!({"results": serialize_entries(&results)}))
             }
 
             "list" => {
                 let project = params.get("project").and_then(|v| v.as_str());
                 let results = store.list(project)
-                    .map_err(|e| AgentError::Tool(e))?;
+                    .map_err(AgentError::Tool)?;
                 Ok(serde_json::json!({"entries": serialize_entries(&results)}))
             }
 
             "forget" => {
                 let id = params.get("id").and_then(|v| v.as_str())
                     .ok_or_else(|| AgentError::Tool("missing 'id'".into()))?;
-                store.forget(id).map_err(|e| AgentError::Tool(e))?;
+                store.forget(id).map_err(AgentError::Tool)?;
                 Ok(serde_json::json!({"ok": true}))
             }
 
             "list_outlines" => {
                 let outlines = store.list_outlines()
-                    .map_err(|e| AgentError::Tool(e))?;
+                    .map_err(AgentError::Tool)?;
                 Ok(serde_json::json!({"outlines": outlines}))
             }
 
             "consolidate" => {
                 let stats = store.consolidate()
-                    .map_err(|e| AgentError::Tool(e))?;
+                    .map_err(AgentError::Tool)?;
                 Ok(serde_json::json!({"stats": stats}))
             }
 
             "clear_stored" => {
                 // 清空所有记忆（测试用）——SQL 批量删，不走逐条 forget
                 let count = store.count().unwrap_or(0);
-                store.clear_all().map_err(|e| AgentError::Tool(e))?;
+                store.clear_all().map_err(AgentError::Tool)?;
                 Ok(serde_json::json!({"removed": count}))
             }
 

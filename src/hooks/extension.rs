@@ -151,12 +151,11 @@ impl HookExtension {
             }
 
             // matcher 过滤（PreToolUse/PostToolUse 按 tool_name 过滤）
-            if let Some(tn) = tool_name {
-                if event == "PreToolUse" || event == "PostToolUse" || event == "PostToolUseFailure" {
-                    if !matcher::matches_matcher(matcher_str, tn) {
-                        continue;
-                    }
-                }
+            if let Some(tn) = tool_name
+                && (event == "PreToolUse" || event == "PostToolUse" || event == "PostToolUseFailure")
+                && !matcher::matches_matcher(matcher_str, tn)
+            {
+                continue;
             }
 
             // if 条件过滤

@@ -246,10 +246,8 @@ fn parse_grep_paths(output: &str) -> Vec<String> {
         }
         // ripgrep 格式: path:line_num:content 或 path:line_num:content
         // 策略：从左找第一个 `:` 后面跟数字的位置
-        if let Some(path) = extract_path_before_line_num(line) {
-            if seen.insert(path.clone()) {
-                paths.push(path);
-            }
+        if let Some(path) = extract_path_before_line_num(line) && seen.insert(path.clone()) {
+            paths.push(path);
         }
     }
     paths
@@ -382,13 +380,11 @@ impl Extension for ContextIndexExtension {
 
         // 遍历 messages，折叠 Stale 的 ToolResult（锁外操作，不阻塞 after_tool_call）
         for msg in messages.iter_mut() {
-            if let Message::ToolResult(tr) = msg {
-                if let Some(placeholder) = fold_map.get(tr.tool_call_id.as_str()) {
-                    tr.content = vec![ContentBlock::Text(TextContent {
-                        text: placeholder.to_string(),
-                        text_signature: None,
-                    })];
-                }
+            if let Message::ToolResult(tr) = msg && let Some(placeholder) = fold_map.get(tr.tool_call_id.as_str()) {
+                tr.content = vec![ContentBlock::Text(TextContent {
+                    text: placeholder.to_string(),
+                    text_signature: None,
+                })];
             }
         }
         Ok(())

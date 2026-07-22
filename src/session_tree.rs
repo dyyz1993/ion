@@ -110,10 +110,8 @@ pub fn resolve_current_leaf(entries: &[Value]) -> Option<String> {
     // 收集所有"作为别人 parent"的 id（这些不是 leaf 候选）
     let mut parent_ids: HashSet<String> = HashSet::new();
     for e in entries {
-        if !is_header(e) && !is_leaf_pointer(e) {
-            if let Some(p) = entry_parent_id(e) {
-                parent_ids.insert(p.to_string());
-            }
+        if !is_header(e) && !is_leaf_pointer(e) && let Some(p) = entry_parent_id(e) {
+            parent_ids.insert(p.to_string());
         }
     }
     // id -> entry 索引
@@ -126,7 +124,7 @@ pub fn resolve_current_leaf(entries: &[Value]) -> Option<String> {
     let depths = compute_depths(&by_id);
 
     // Phase B：从后往前找最后一个 leaf_pointer
-    let lp_pos = entries.iter().rposition(|e| is_leaf_pointer(e));
+    let lp_pos = entries.iter().rposition(is_leaf_pointer);
 
     match lp_pos {
         Some(i) => {
@@ -281,10 +279,8 @@ pub fn get_tree(entries: &[Value]) -> Vec<TreeNode> {
             }
             Some(p) => {
                 if node_map.contains_key(p) {
-                    if let Some(child) = node_map.get(id).cloned() {
-                        if let Some(parent) = node_map.get_mut(p) {
-                            parent.children.push(child);
-                        }
+                    if let Some(child) = node_map.get(id).cloned() && let Some(parent) = node_map.get_mut(p) {
+                        parent.children.push(child);
                     }
                 } else {
                     // parent 不在 node_map（可能是 session id）→ 当 root
