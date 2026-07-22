@@ -229,3 +229,167 @@ impl Drop for ChildProcessWorker {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // ChildProcessWorker construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn new_sets_command_and_args() {
+        let worker = ChildProcessWorker::new("echo", vec!["hello".to_string()]);
+        // command is stored internally; verify via args length and next_id default
+        assert_eq!(worker.args.len(), 1);
+        assert_eq!(worker.args[0], "hello");
+    }
+
+    #[test]
+    fn new_initializes_next_id_to_one() {
+        let worker = ChildProcessWorker::new("cmd", vec![]);
+        assert_eq!(worker.next_id, 1);
+    }
+
+    #[test]
+    fn new_initializes_status_to_idle() {
+        let worker = ChildProcessWorker::new("cmd", vec![]);
+        assert_eq!(worker.status, WorkerStatus::Idle);
+    }
+
+    #[test]
+    fn new_starts_without_child_or_streams() {
+        let worker = ChildProcessWorker::new("cmd", vec![]);
+        assert!(worker.child.is_none());
+        assert!(worker.stdin.is_none());
+        assert!(worker.stdout.is_none());
+    }
+
+    #[test]
+    fn new_accepts_empty_args() {
+        let worker = ChildProcessWorker::new("cmd", vec![]);
+        assert!(worker.args.is_empty());
+    }
+
+    #[test]
+    fn new_accepts_multiple_args() {
+        let worker = ChildProcessWorker::new(
+            "cmd",
+            vec!["--flag".to_string(), "value".to_string(), "extra".to_string()],
+        );
+        assert_eq!(worker.args.len(), 3);
+        assert_eq!(worker.args[2], "extra");
+    }
+
+    // -----------------------------------------------------------------------
+    // Request serialization (tagged JSONL protocol)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn request_prompt_serializes_to_tagged_json() {
+        let req = Request::Prompt { id: 1, text: "hi".to_string() };
+        let json = serde_json::to_string(&req).unwrap();
+        // type tag is renamed to "prompt"
+        assert!(json.contains(r#""type":"prompt""#));
+        assert!(json.contains(r#""id":1"#));
+        assert!(json.contains(r#""text":"hi""#));
+    }
+
+    #[test]
+    fn request_steer_serializes_with_correct_tag() {
+        let req = Request::Steer { id: 5, msg: "redirect".to_string() };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""type":"steer""#));
+        assert!(json.contains(r#""msg":"redirect""#));
+    }
+
+    #[test]
+    fn request_state_serializes_with_correct_tag() {
+        let req = Request::State { id: 9 };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""type":"state""#));
+        assert!(json.contains(r#""id":9"#));
+    }
+
+    #[test]
+    fn request_dispose_serializes_with_correct_tag() {
+        let req = Request::Dispose { id: 7 };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""type":"dispose""#));
+        assert!(json.contains(r#""id":7"#));
+    }
+
+    // -----------------------------------------------------------------------
+    // Response deserialization (reverse direction of the protocol)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn response_ok_deserializes_from_tagged_json() {
+        let json = r#"{"type":"ok","id":42}"#;
+        let resp: Response = serde_json::from_str(json).unwrap();
+        match resp {
+            Response::Ok { id } => assert_eq!(id, 42),
+            _ => panic!("expected Ok variant"),
+        }
+    }
+
+    #[test]
+    fn response_prompt_result_deserializes() {
+        let json = r#"{"type":"result","id":1,"success":true,"output":"done"}"#;
+        let resp: Response = serde_json::from_str(json).unwrap();
+        match resp {
+            Response::PromptResult { id, success, output } => {
+                assert_eq!(id, 1);
+                assert!(success);
+                assert_eq!(output, "done");
+            }
+            _ => panic!("expected PromptResult variant"),
+        }
+    }
+
+    #[test]
+    fn response_state_result_deserializes_with_optional_summary() {
+        let json = r#"{"type":"state","id":3,"message_count":10,"turn_index":2,"summary":"hi"}"#;
+        let resp: Response = serde_json::from_str(json).unwrap();
+        match resp {
+            Response::StateResult { id, message_count, turn_index, summary } => {
+                assert_eq!(id, 3);
+                assert_eq!(message_count, 10);
+                assert_eq!(turn_index, 2);
+                assert_eq!(summary.as_deref(), Some("hi"));
+            }
+            _ => panic!("expected StateResult variant"),
+        }
+    }
+
+    #[test]
+    fn response_state_result_accepts_null_summary() {
+        let json = r#"{"type":"state","id":0,"message_count":0,"turn_index":0,"summary":null}"#;
+        let resp: Response = serde_json::from_str(json).unwrap();
+        match resp {
+            Response::StateResult { summary, .. } => assert!(summary.is_none()),
+            _ => panic!("expected StateResult variant"),
+        }
+    }
+
+    #[test]
+    fn response_error_deserializes() {
+        let json = r#"{"type":"error","id":99,"message":"boom"}"#;
+        let resp: Response = serde_json::from_str(json).unwrap();
+        match resp {
+            Response::Error { id, message } => {
+                assert_eq!(id, 99);
+                assert_eq!(message, "boom");
+            }
+            _ => panic!("expected Error variant"),
+        }
+    }
+
+    #[test]
+    fn response_rejects_unknown_type_tag() {
+        let json = r#"{"type":"unknown","id":1}"#;
+        let result: Result<Response, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+}
