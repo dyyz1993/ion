@@ -57,6 +57,88 @@ pub fn export_session(
     export_session_with_tools(session_id, output_path, None)
 }
 
+/// Export a session with tools + system prompt extracted from the agent config.
+///
+/// This is used by the standalone `--export` CLI path (no agent run). It reads
+/// the session header to find the agent name, loads the agent's tool list and
+/// system prompt, then delegates to export_session_with_tools_and_prompt.
+///
+/// If the session has no agent name or the agent config is not found, falls
+/// back to a plain export with no tools and no system prompt.
+pub fn export_session_rich(
+    session_id: &str,
+    output_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Read session file to get header
+    let jsonl_path = resolve_session_file(session_id)?;
+    let content = std::fs::read_to_string(&jsonl_path)?;
+    let first_line = content.lines().next().unwrap_or("{}");
+    let header: Value = serde_json::from_str(first_line)?;
+
+    // Extract agent name from header
+    let agent_name = header.get("agent").and_then(|v| v.as_str());
+
+    // Load agent config to get tools + system prompt
+    let mut tools: Option<Vec<ExportToolInfo>> = None;
+    let mut system_prompt: Option<String> = None;
+
+    if let Some(name) = agent_name {
+        if let Some(agent_cfg) = crate::agent_config::find_agent(name) {
+            // Get system prompt from agent config
+            system_prompt = agent_cfg.system_prompt.clone();
+
+            // Reconstruct tool definitions by instantiating all built-in tools,
+            // then applying the agent config's allowlist and blocklist.
+            let mut registry = crate::agent::tool::ToolRegistry::new();
+            registry.register_builtins();
+
+            // Apply allowlist: agent_cfg.tools is a list of tool names
+            if let Some(ref allowed) = agent_cfg.tools {
+                let allowed_refs: Vec<&str> = allowed.iter().map(|s| s.as_str()).collect();
+                registry.filter(allowed_refs);
+            }
+
+            // Apply blocklist: agent_cfg.disallowed_tools
+            if let Some(ref blocked) = agent_cfg.disallowed_tools {
+                for name in blocked {
+                    registry.remove(name);
+                }
+            }
+
+            // Convert to ExportToolInfo list
+            let defs: Vec<ExportToolInfo> = registry
+                .tool_defs()
+                .into_iter()
+                .map(|td| ExportToolInfo {
+                    name: td.name,
+                    description: td.description,
+                    parameters: td.parameters,
+                })
+                .collect();
+
+            if !defs.is_empty() {
+                tools = Some(defs);
+            }
+        }
+    }
+
+    // Delegate to internal export with tools + system_prompt
+    export_session_with_tools_and_prompt(session_id, output_path, tools, system_prompt)
+}
+
+/// Export with optional tools list and optional system prompt override.
+///
+/// `override_system_prompt` is injected into the session data as systemPrompt
+/// if the session itself does not already contain one (e.g. from fork sub-workers).
+pub fn export_session_with_tools_and_prompt(
+    session_id: &str,
+    output_path: &Path,
+    tools: Option<Vec<ExportToolInfo>>,
+    override_system_prompt: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    export_session_internal(session_id, output_path, tools, override_system_prompt)
+}
+
 /// Export with optional tools list (called by CLI when an Agent has run).
 /// 入口函数：自动导出关联的 fork 子 session HTML。
 pub fn export_session_with_tools(
@@ -64,7 +146,7 @@ pub fn export_session_with_tools(
     output_path: &Path,
     tools: Option<Vec<ExportToolInfo>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    export_session_internal(session_id, output_path, tools)
+    export_session_internal(session_id, output_path, tools, None)
 }
 
 /// 内部导出函数（不自动导出子 session，避免递归）。
@@ -73,6 +155,7 @@ fn export_session_internal(
     session_id: &str,
     output_path: &Path,
     tools: Option<Vec<ExportToolInfo>>,
+    override_system_prompt: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Try to find the session file
     let jsonl_path = resolve_session_file(session_id)?;
@@ -150,7 +233,7 @@ fn export_session_internal(
                         .unwrap_or_else(|| std::path::PathBuf::from(&sub_html_name));
 
                     // 递归导出子 session（但不深度递归——只导一层 fork 子 session）
-                    match export_session_internal(&sub_sid, &sub_html_path, None) {
+                    match export_session_internal(&sub_sid, &sub_html_path, None, None) {
                         Ok(()) => {
                             eprintln!("[export] auto-exported fork sub-session → {}", sub_html_path.display());
                         }
@@ -270,7 +353,10 @@ fn export_session_internal(
         "leafId": leaf_id,
     });
     // systemPrompt（fork 子 Worker 的 skill 内容，让 HTML 顶部能显示）
-    if let Some(sp) = system_prompt {
+    // If the session data already has a system_prompt (from fork sub-workers), use it.
+    // Otherwise fall back to the override_system_prompt (from agent config, for main sessions).
+    let effective_system_prompt = system_prompt.or(override_system_prompt);
+    if let Some(sp) = effective_system_prompt {
         session_data
             .as_object_mut()
             .map(|o| o.insert("systemPrompt".to_string(), json!(sp)));

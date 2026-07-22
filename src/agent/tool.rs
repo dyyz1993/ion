@@ -90,6 +90,27 @@ impl ToolRegistry {
     pub fn remove(&mut self, name: &str) {
         self.tools.remove(name);
     }
+
+    /// Register all 15 built-in tools (read, grep, find, ls, bash, write, edit,
+    /// calculator, echo, git_status, git_diff, git_log, git_add, git_commit, git_branch).
+    /// Used by export_session_rich to reconstruct tool definitions for standalone --export.
+    pub fn register_builtins(&mut self) {
+        self.register(Box::new(ReadTool));
+        self.register(Box::new(GrepTool));
+        self.register(Box::new(FindTool));
+        self.register(Box::new(LsTool));
+        self.register(Box::new(BashTool));
+        self.register(Box::new(WriteTool));
+        self.register(Box::new(EditTool));
+        self.register(Box::new(CalculatorTool));
+        self.register(Box::new(EchoTool));
+        self.register(Box::new(GitStatusTool));
+        self.register(Box::new(GitDiffTool));
+        self.register(Box::new(GitLogTool));
+        self.register(Box::new(GitAddTool));
+        self.register(Box::new(GitCommitTool));
+        self.register(Box::new(GitBranchTool));
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -3065,7 +3065,7 @@ async fn main() {
             if session_id.is_empty() {
                 eprintln!("No session to export. Run a prompt first, or use --session <id>.");
             } else {
-                match ion::export::export_session(&session_id, std::path::Path::new(export_path)) {
+                match ion::export::export_session_rich(&session_id, std::path::Path::new(export_path)) {
                     Ok(()) => println!("Exported to {export_path}"),
                     Err(e) => eprintln!("Export failed: {e}"),
                 }
