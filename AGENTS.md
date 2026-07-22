@@ -922,7 +922,124 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
 - 6 种事件：`memory_saved` / `memory_injected` / `memory_consolidated` / `memory_debug` / `memory_skipped` / `transcript_appended`
 - `tests/memory_e2e.rs` — 6 个集成测试
 
-### 🌱 A→B 自进化架构（A 驱动 B 改代码 + CI + 合并）
+### 🌱 A→B 自进化架构（A 驱动 B 改代码 + CI + 合并 + PR）
+
+**铁律：A 只调度，B 改代码。** 不论修什么 bug、加什么功能，A 永远通过 `container exec B ion --agent developer "任务"` 让 B 在隔离环境动手。A 自己**绝不**直接 edit/write 主仓库源码——跟 ZCode 不碰 ION 源码是同一个原则。
+
+#### 核心流程
+
+```
+ZCode → ion --host --agent coordinator "话题"
+         │
+         │ A = coordinator agent（host 上）
+         │   ├─ 准备 container + worktree（隔离环境）
+         │   ├─ spawn_worker(developer, wait=false) × 3（并行）
+         │   ├─ await_worker 等全部完成
+         │   ├─ spawn_worker(reviewer)（审查改动）
+         │   │    APPROVE → 合并
+         │   │    REQUEST_CHANGES → resume_worker(developer) 修复
+         │   └─ push feature 分支 → 开 PR → merge
+         │
+         │ B = container 里的 ion（完整实例）
+         │   └─ 有自己的 LLM + 工具 + CI
+         ▼
+主仓库代码进化（B 验证过的才合并，通过 GitHub PR 管理）
+```
+
+#### 5 个自进化脚本
+
+| 脚本 | 用途 | 编排方式 |
+|------|------|---------|
+| [scripts/evolve.sh](./scripts/evolve.sh) | 启 container + 编译 ion/ion-worker | 基础设施 |
+| [scripts/evolve_self.sh](./scripts/evolve_self.sh) | 串行批量任务（B 改 ION 自己源码） | bash 循环 |
+| [scripts/evolve_concurrent.sh](./scripts/evolve_concurrent.sh) | 1 container + N B 并行（含 reviewer） | bash `&` |
+| [scripts/evolve_native.sh](./scripts/evolve_native.sh) | coordinator 用 spawn_worker 原生编排 | ION 多智能体 |
+| [scripts/evolve_pr.sh](./scripts/evolve_pr.sh) | B 改代码 → 守门 → GitHub PR → merge | bash + gh CLI |
+| [scripts/evolve_verify.sh](./scripts/evolve_verify.sh) | 独立 CI 验证（build + test + clippy + U+FFFD） | bash |
+
+#### 6 道守门机制
+
+```
+B 改代码
+  ↓
+① U+FFFD 守门 — grep 检查中文乱码
+② Cargo.toml 守门 — 拒绝 B 加外部依赖
+③ Reviewer agent — 检查 SQL/错误处理/边缘 case/测试覆盖
+④ cargo build — 编译通过
+⑤ cargo test --lib — 测试通过
+⑥ cargo clippy — warning 不增加
+  ↓
+全部通过 → GitHub PR → merge
+```
+
+#### 关键文件
+
+| 文件 | 作用 |
+|------|------|
+| [docs/design/SELF_EVOLUTION.md](./docs/design/SELF_EVOLUTION.md) | A→B 架构总览 |
+| [docs/design/EVOLVER_LESSONS_LEARNED.md](./docs/design/EVOLVER_LESSONS_LEARNED.md) | 11 个真实问题 + 根因 + 解法 |
+| `examples/agents/coordinator.md` | coordinator agent（spawn_worker 编排 + 同步/异步区分） |
+| `examples/agents/developer.md` | developer agent（container 里用，含安全规则） |
+| `examples/agents/reviewer.md` | reviewer agent（检查清单：SQL 注入/错误处理/边缘 case） |
+| `examples/agents/evolver_agent.md` | evolver agent（spawn_worker 使用指南） |
+
+#### V 方案：volume 持久化编译缓存
+
+evolve.sh 挂载两个 named volume 让 cargo+target 跨 container 持久化：
+
+```bash
+container volume create -s 15G ion-cargo-cache     # cargo 依赖下载缓存
+container volume create -s 15G ion-target-cache    # rustc 编译产物缓存
+```
+
+| 场景 | 改造前 | 改造后 |
+|------|-------|-------|
+| 首次编译 | 14 分钟 | 7 分 48 秒 |
+| 不改源码启动 | 14 分钟 | **1 秒** |
+| 改源码后编译 | 14 分钟 | **2 分 17 秒** |
+
+#### 持续优化的经验
+
+| 版本 | U+FFFD 数 | 改进 |
+|------|----------|------|
+| 中文 comment spec | 1-4 处/任务 | DeepSeek 破坏 UTF-8 |
+| 全英文 comment 规则 | **0 处** ✅ | prompt 加 "ALL comments MUST be in ENGLISH ONLY" |
+| GLM-5.2 替代 DeepSeek | **0 处** ✅ | GLM-5.2 UTF-8 更稳定，代码质量更好 |
+
+**关键教训**：让 B 写代码时，spec 里的 comment **必须用英文**。GLM-5.2 处理 UTF-8 比 DeepSeek 稳定。
+
+### 🎯 多智能体编排（7 个工具全部验证通过）
+
+`spawn_worker` 支持 `model`/`provider` 参数，让不同 worker 用不同模型。
+
+#### 同步 vs 异步工具区分
+
+| 类型 | 工具 | 特点 |
+|------|------|------|
+| **同步** | `spawn_worker(child, wait=true)` + `resume_worker` | 阻塞等待 → 用 resume 恢复对话 → **不需要 kill** |
+| **异步** | `spawn_worker(peer/wait=false)` + `send_to_worker` + `await_worker` + `kill_worker` | 立即返回 → 用 send_to_worker 说话 → **才需要 kill** |
+
+#### 验证状态（全部 ✅）
+
+| 工具 | 验证场景 | 状态 |
+|------|---------|------|
+| `spawn_worker(child, wait=true)` | coordinator 同步 spawn developer | ✅ |
+| `spawn_worker(child, wait=false)` × 3 | 并发 3 个 developer 同时跑 | ✅ |
+| `spawn_worker(peer)` | 异步后台 reviewer | ✅ |
+| `resume_worker` | 恢复 developer 修 bug | ✅ |
+| `await_worker` | 等异步任务完成 | ✅ |
+| `send_to_worker` | 跨 worker 发消息 | ✅ |
+| `kill_worker` | 终止超时 worker | ✅ |
+
+### 📊 HTML Export 增强
+
+- **SessionHeader 含 agent/model/provider 字段** — banner 显示 agent 名
+- **Stats 区块含 Agent 字段** — pi template.js 后处理注入
+- **--export 包含 tools 列表** — `export_session_rich()` 读 agent config 重建工具列表
+- **--export 包含 system prompt** — 从 agent config 提取
+- **System prompt 注入环境信息** — 时间/cwd/项目路径/git branch/git remote/最近改动文件
+
+### ✅ 已验证 (真实 LLM + 真实 API)
 
 **铁律：A 只调度，B 改代码。** 不论修什么 bug、加什么功能，A 永远通过 `container exec B ion --agent developer "任务"` 让 B 在隔离环境动手。A 自己**绝不**直接 edit/write 主仓库源码——跟 ZCode 不碰 ION 源码是同一个原则。
 
@@ -1124,53 +1241,6 @@ container exec "$CONTAINER_NAME" sh -c 'cd /workspace && cargo test --lib'
 bash scripts/evolve-run.sh "任务描述"             # 同步 + 守门 + HTML 报告
 ```
 
-### 🎯 多智能体编排（coordinator + developer + reviewer）
-
-`spawn_worker` 工具支持 `model`/`provider` 可选参数，让 LLM 给不同 worker 指定不同模型：
-
-```rust
-// src/runtime.rs
-pub struct SpawnWorkerRequest {
-    pub relation: SpawnRelation,    // child（同步）/ peer（异步）
-    pub agent: String,
-    pub task: String,
-    pub model: Option<String>,      // 新增：覆盖子 Worker 的 model
-    pub provider: Option<String>,   // 新增：覆盖子 Worker 的 provider
-    pub wait: bool,                 // child 模式：true=阻塞 / false=异步
-    pub worktree: Option<bool>,     // 独立 git worktree 隔离
-    // ...
-}
-```
-
-**验证场景**（已实测）：
-- coordinator（入口）spawn developer 1（同步 child + worktree）
-- developer 1 收到任务，read/edit/bash 改代码
-- 每个 worker 独立 session 文件 → 独立 HTML 报告
-
-**HTML 报告**（Chrome 渲染验证）：
-- Banner: `📋 coordinator | 🤖 deepseek-v4-flash | 🔧 20 tool calls | 📝 43 entries`
-- Stats: `Agent: coordinator | Date: ... | Models: ... | Messages: 3 user, 20 assistant | Tool Calls: 20`
-- 同样适用 developer / reviewer 等所有 agent
-
-### 📊 HTML Export 增强
-
-- **SessionHeader 加 agent/model/provider 字段**（`src/session_jsonl.rs`）
-  - `ion_worker` / `ion` 启动时从 env var 读取写入 session header
-- **Stats 区块加 Agent 字段**（`src/export.rs` 后处理注入 pi template.js）
-  - 不改 pi 源码，运行时 `replacen` 在 Date 行前插入 Agent 行
-- **banner 显示 agent 名 + 模型 + 工具调用数 + 消息数 + 工具分布**
-
-### ✅ 已验证 (真实 LLM + 真实 API)
-
-```
-✅ RPC 75 命令全覆盖 (pi 格式对齐)
-✅ Manager spawn Worker + IO Bridge (小助手 + 对讲机)
-✅ 真实 LLM prompt (DeepSeek API / GLM-4.7)
-✅ Worker 工具调用 (read Cargo.toml → tokio)
-✅ 实时事件推送 (agent_start/text_delta/agent_end)
-✅ 多 Worker LLM 并发 (A=hi B=hey 同时)
-✅ Channel 广播 + 接收
-✅ E1 代码审查流水线 (协调者 + 2 子 Worker 并行)
 ✅ E3 Channel 协作 (3 Worker)
 ✅ E4 会话恢复 (关闭→重启→记住 Alice)
 ✅ 10 Worker 压力测试
