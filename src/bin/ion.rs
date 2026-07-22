@@ -1502,6 +1502,9 @@ async fn cmd_run(
         sys_prompt.push_str("\n");
         sys_prompt.push_str(append);
     }
+
+    // Inject environment info (time, cwd, project root, git info)
+    sys_prompt.push_str(&build_env_info());
     // Apply skill prompts
     for skill_path in &eff.skill {
         if let Ok(content) = std::fs::read_to_string(skill_path) {
@@ -5043,4 +5046,60 @@ mod tests {
         let cli = Cli::try_parse_from(["ion", "hi"]).unwrap();
         assert!(cli.compact_model.is_none());
     }
+}
+
+/// Build environment info string for system prompt injection.
+/// Includes: time, cwd, project root, git branch, git remote.
+fn build_env_info() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let project_root = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(&cwd)
+        .output().ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| cwd.clone());
+
+    let git_branch = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(&cwd)
+        .output().ok()
+        .and_then(|o| {
+            let b = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if b.is_empty() { None } else { Some(b) }
+        });
+
+    let git_remote = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(&cwd)
+        .output().ok()
+        .and_then(|o| {
+            let r = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if r.is_empty() { None } else { Some(r) }
+        });
+
+    let worktree = std::env::var("ION_WORKTREE_ROOT").ok()
+        .or_else(|| std::env::var("ION_WORKTREE").ok());
+
+    let mut info = String::from("\n\n## Environment\n");
+    info.push_str(&format!("- **Time**: {} (unix epoch)\n", now));
+    info.push_str(&format!("- **Working Directory**: `{}`\n", cwd));
+    info.push_str(&format!("- **Project Root**: `{}`\n", project_root));
+    if let Some(wt) = &worktree {
+        info.push_str(&format!("- **Worktree Path**: `{}`\n", wt));
+    }
+    if let Some(branch) = &git_branch {
+        info.push_str(&format!("- **Git Branch**: `{}`\n", branch));
+    }
+    if let Some(remote) = &git_remote {
+        info.push_str(&format!("- **Git Remote**: `{}`\n", remote));
+    }
+    info
 }

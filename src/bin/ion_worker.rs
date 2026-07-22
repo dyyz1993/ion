@@ -477,6 +477,68 @@ async fn main() {
         }
     }
 
+    // ── 注入环境信息到 system prompt ──────────────────────────────
+    // 让 LLM 知道：当前时间、cwd、项目路径、worktree 路径、git remote
+    let env_info = {
+        let now = {
+            let secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            format!("{} (unix epoch)", secs)
+        };
+        let cwd = &worker_cwd;
+        let project_root = std::env::var("ION_PROJECT_ROOT").ok()
+            .or_else(|| {
+                // Try to find git root from cwd
+                std::process::Command::new("git")
+                    .args(&["rev-parse", "--show-toplevel"])
+                    .current_dir(cwd)
+                    .output().ok()
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                    .map(|s| s.trim().to_string())
+            })
+            .unwrap_or_else(|| cwd.clone());
+        let worktree = std::env::var("ION_WORKTREE_ROOT").ok()
+            .or_else(|| {
+                std::env::var("ION_WORKTREE").ok()
+            });
+        let git_remote = std::process::Command::new("git")
+            .args(&["remote", "get-url", "origin"])
+            .current_dir(cwd)
+            .output().ok()
+            .and_then(|o| {
+                let url = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if url.is_empty() { None } else { Some(url) }
+            });
+        let git_branch = std::process::Command::new("git")
+            .args(&["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(cwd)
+            .output().ok()
+            .and_then(|o| {
+                let branch = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if branch.is_empty() { None } else { Some(branch) }
+            });
+
+        let mut info = format!("\n\n## Environment\n");
+        info.push_str(&format!("- **Time**: {}\n", now));
+        info.push_str(&format!("- **Working Directory**: `{}`\n", cwd));
+        info.push_str(&format!("- **Project Root**: `{}`\n", project_root));
+        if let Some(wt) = &worktree {
+            info.push_str(&format!("- **Worktree Path**: `{}`\n", wt));
+        }
+        if let Some(branch) = &git_branch {
+            info.push_str(&format!("- **Git Branch**: `{}`\n", branch));
+        }
+        if let Some(remote) = &git_remote {
+            info.push_str(&format!("- **Git Remote**: `{}`\n", remote));
+        }
+        info.push_str(&format!("- **Agent**: `{}`\n", current_agent_name));
+        info.push_str(&format!("- **Model**: `{}` ({})\n", model.id, provider));
+        info
+    };
+    initial_system_prompt.push_str(&env_info);
+
     let mut agent = Agent::new(
         Arc::clone(&registry),
         model.clone(),
