@@ -270,3 +270,204 @@ impl ExtensionApi {
         println!("{}", serde_json::to_string(&msg).unwrap_or_default());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event_bus::{EventVisibility, ExtensionEvent};
+
+    // ── ExtensionWorkerConfig ──
+
+    #[test]
+    fn extension_worker_config_default_is_all_none() {
+        // Default construction should leave every optional field as None,
+        // matching Manager-side expectations when nothing is specified.
+        let cfg = ExtensionWorkerConfig::default();
+        assert!(cfg.session.is_none());
+        assert!(cfg.model.is_none());
+        assert!(cfg.provider.is_none());
+        assert!(cfg.channels.is_none());
+        assert!(cfg.parent.is_none());
+        assert!(cfg.agent.is_none());
+        assert!(cfg.initial_prompt.is_none());
+        assert!(cfg.worktree.is_none());
+        assert!(cfg.relation.is_none());
+        assert!(cfg.allowed_tools.is_none());
+        assert!(cfg.disallowed_tools.is_none());
+        assert!(cfg.max_turns.is_none());
+    }
+
+    #[test]
+    fn extension_worker_config_round_trips_through_json() {
+        // The struct must serialize/deserialize losslessly because the Manager
+        // reconstructs it via serde_json::from_value on the receiving side.
+        let cfg = ExtensionWorkerConfig {
+            session: Some("sess-1".into()),
+            model: Some("gpt-4".into()),
+            provider: Some("openai".into()),
+            channels: Some(vec!["ch-a".into(), "ch-b".into()]),
+            parent: Some("parent-1".into()),
+            agent: Some("coder".into()),
+            initial_prompt: Some("do the thing".into()),
+            worktree: None,
+            relation: Some("Child".into()),
+            allowed_tools: Some(vec!["bash".into()]),
+            disallowed_tools: Some(vec!["rm".into()]),
+            max_turns: Some(42),
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let back: ExtensionWorkerConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.session.as_deref(), Some("sess-1"));
+        assert_eq!(back.model.as_deref(), Some("gpt-4"));
+        assert_eq!(back.provider.as_deref(), Some("openai"));
+        assert_eq!(back.channels.as_deref(), Some(&["ch-a".to_string(), "ch-b".to_string()][..]));
+        assert_eq!(back.parent.as_deref(), Some("parent-1"));
+        assert_eq!(back.agent.as_deref(), Some("coder"));
+        assert_eq!(back.initial_prompt.as_deref(), Some("do the thing"));
+        assert!(back.worktree.is_none());
+        assert_eq!(back.relation.as_deref(), Some("Child"));
+        assert_eq!(back.allowed_tools.as_deref(), Some(&["bash".to_string()][..]));
+        assert_eq!(back.disallowed_tools.as_deref(), Some(&["rm".to_string()][..]));
+        assert_eq!(back.max_turns, Some(42));
+    }
+
+    #[test]
+    fn extension_worker_config_serializes_to_object() {
+        // The JSON shape must be an object (serde_json::Value::Object) — the
+        // create_worker code in ExtensionApi merges these keys into an RPC payload.
+        let cfg = ExtensionWorkerConfig {
+            session: Some("s".into()),
+            ..Default::default()
+        };
+        let value: serde_json::Value =
+            serde_json::to_value(&cfg).expect("serialize failed");
+        assert!(value.is_object());
+        assert_eq!(value.get("session").and_then(|v| v.as_str()), Some("s"));
+    }
+
+    // ── ExtensionWorkerInfo ──
+
+    #[test]
+    fn extension_worker_info_round_trips_through_json() {
+        // WorkerInfo is the reply payload returned from Manager on worker creation;
+        // it must deserialize back into the same struct.
+        let info = ExtensionWorkerInfo {
+            worker_id: "w-1".into(),
+            session_id: "s-1".into(),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let back: ExtensionWorkerInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.worker_id, "w-1");
+        assert_eq!(back.session_id, "s-1");
+    }
+
+    #[test]
+    fn extension_worker_info_rejects_missing_fields() {
+        // Deserialization should fail when a required field is absent.
+        let bad = serde_json::json!({"worker_id": "w-1"});
+        let res: Result<ExtensionWorkerInfo, _> = serde_json::from_value(bad);
+        assert!(res.is_err());
+    }
+
+    // ── WorkerHandle (sync accessors only) ──
+
+    #[test]
+    fn worker_handle_new_stores_ids() {
+        // The sync constructor + accessors must round-trip the id/session_id.
+        let (tx, _rx) = mpsc::channel::<ManagerCommand>(1);
+        let handle = WorkerHandle::new("worker-1".into(), "session-1".into(), tx);
+        assert_eq!(handle.id(), "worker-1");
+        assert_eq!(handle.session_id(), "session-1");
+    }
+
+    #[test]
+    fn worker_handle_clone_preserves_ids() {
+        // Cloning a WorkerHandle must copy the worker_id and session_id.
+        let (tx, _rx) = mpsc::channel::<ManagerCommand>(1);
+        let handle = WorkerHandle::new("worker-2".into(), "session-2".into(), tx);
+        let cloned = handle.clone();
+        assert_eq!(cloned.id(), "worker-2");
+        assert_eq!(cloned.session_id(), "session-2");
+    }
+
+    // ── ManagerCommand variants ──
+
+    #[test]
+    fn manager_command_kill_worker_construction() {
+        // Pure construction check: KillWorker should carry the worker_id verbatim.
+        let cmd = ManagerCommand::KillWorker { worker_id: "w-kill".into() };
+        match cmd {
+            ManagerCommand::KillWorker { worker_id } => assert_eq!(worker_id, "w-kill"),
+            _ => panic!("expected KillWorker variant"),
+        }
+    }
+
+    #[test]
+    fn manager_command_channel_send_construction() {
+        // Pure construction check: ChannelSend carries channel/from/msg fields.
+        let cmd = ManagerCommand::ChannelSend {
+            channel: "ch".into(),
+            from: "sender".into(),
+            msg: serde_json::json!({"hello": "world"}),
+        };
+        match cmd {
+            ManagerCommand::ChannelSend { channel, from, msg } => {
+                assert_eq!(channel, "ch");
+                assert_eq!(from, "sender");
+                assert_eq!(msg.get("hello").and_then(|v| v.as_str()), Some("world"));
+            }
+            _ => panic!("expected ChannelSend variant"),
+        }
+    }
+
+    // ── ExtensionApi sync accessors ──
+
+    #[test]
+    fn extension_api_new_defaults_bridge_and_follow_up_to_none() {
+        // The base constructor should leave bridge and follow_up_tx unset.
+        let (tx, _rx) = mpsc::channel::<ManagerCommand>(1);
+        let api = ExtensionApi::new("w-self".into(), "s-self".into(), tx);
+        assert_eq!(api.worker_id, "w-self");
+        assert_eq!(api.session_id, "s-self");
+        assert!(api.bridge.is_none());
+        assert!(api.follow_up_tx.is_none());
+    }
+
+    #[test]
+    fn extension_api_self_handle_copies_ids() {
+        // self_handle() must build a WorkerHandle whose ids match the api.
+        let (tx, _rx) = mpsc::channel::<ManagerCommand>(1);
+        let api = ExtensionApi::new("w-self".into(), "s-self".into(), tx);
+        let h = api.self_handle();
+        assert_eq!(h.id(), "w-self");
+        assert_eq!(h.session_id(), "s-self");
+    }
+
+    #[test]
+    fn extension_api_get_worker_yields_given_id() {
+        // get_worker must preserve the caller-supplied worker_id (session left empty).
+        let (tx, _rx) = mpsc::channel::<ManagerCommand>(1);
+        let api = ExtensionApi::new("w-self".into(), "s-self".into(), tx);
+        let h = api.get_worker("other-worker");
+        assert_eq!(h.id(), "other-worker");
+        assert_eq!(h.session_id(), "");
+    }
+
+    // ── emit_extension_event visibility mapping (pure logic, no I/O assertions) ──
+
+    #[test]
+    fn extension_event_visibility_default_is_ui_only() {
+        // The default ExtensionEvent starts as UiOnly per the constructor.
+        let ev = ExtensionEvent::new("memory", "saved");
+        assert_eq!(ev.visibility, EventVisibility::UiOnly);
+    }
+
+    #[test]
+    fn extension_event_visibility_can_be_upgraded_to_llm_and_ui() {
+        // Builder should allow flipping visibility — used by emit_extension_event
+        // when serializing the "llm_and_ui" string.
+        let ev = ExtensionEvent::new("memory", "saved")
+            .with_visibility(EventVisibility::LlmAndUi);
+        assert_eq!(ev.visibility, EventVisibility::LlmAndUi);
+    }
+}
