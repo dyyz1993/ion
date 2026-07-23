@@ -43,6 +43,31 @@ pub struct ConsolidationStats {
     pub total: usize,
 }
 
+/// Knowledge graph entity (V0.3)
+#[derive(Clone, Debug, Serialize)]
+pub struct Entity {
+    pub id: String,
+    pub name: String,
+    pub entity_type: String,
+    pub description: String,
+    pub project: String,
+    pub importance: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// Knowledge graph relation between two entities (V0.3)
+#[derive(Clone, Debug, Serialize)]
+pub struct Relation {
+    pub id: String,
+    pub source_entity: String,
+    pub target_entity: String,
+    pub relation_type: String,
+    pub description: String,
+    pub weight: f64,
+    pub created_at: i64,
+}
+
 /// 全局记忆库（线程安全，Arc<Mutex<Connection>>，可 Clone 因为 Arc）
 #[derive(Clone)]
 pub struct GlobalMemoryStore {
@@ -84,6 +109,30 @@ impl GlobalMemoryStore {
                 entry_count INTEGER DEFAULT 0,
                 updated_at INTEGER DEFAULT (unixepoch())
             );
+            -- Knowledge graph tables (V0.3): entities and relations
+            CREATE TABLE IF NOT EXISTS entities (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                entity_type TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                project TEXT DEFAULT '',
+                importance INTEGER DEFAULT 5,
+                created_at INTEGER DEFAULT (unixepoch()),
+                updated_at INTEGER DEFAULT (unixepoch())
+            );
+            CREATE TABLE IF NOT EXISTS relations (
+                id TEXT PRIMARY KEY,
+                source_entity TEXT NOT NULL,
+                target_entity TEXT NOT NULL,
+                relation_type TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                weight REAL DEFAULT 1.0,
+                created_at INTEGER DEFAULT (unixepoch())
+            );
+            CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
+            CREATE INDEX IF NOT EXISTS idx_entities_project ON entities(project);
+            CREATE INDEX IF NOT EXISTS idx_relations_source ON relations(source_entity);
+            CREATE INDEX IF NOT EXISTS idx_relations_target ON relations(target_entity);
             -- FTS5 同步触发器（external content table 模式必须）
             -- 保证 INSERT/UPDATE/DELETE 时 FTS 索引自动同步
             CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
@@ -990,6 +1039,273 @@ impl GlobalMemoryStore {
         }
         Ok(results)
     }
+
+    // ====================================================================
+    // Knowledge graph (V0.3): entities + relations
+    // All methods below are pure additions; existing methods are unchanged.
+    // ====================================================================
+
+    /// Add a new entity to the knowledge graph. Returns the generated entity id.
+    /// If an entity with the same name already exists, the insert is rejected
+    /// (UNIQUE constraint on name) and an error is returned.
+    pub fn add_entity(
+        &self,
+        name: &str,
+        entity_type: &str,
+        description: &str,
+        project: &str,
+    ) -> Result<String, String> {
+        let id = format!("ent_{}", uuid_str());
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        conn.execute(
+            "INSERT INTO entities (id, name, entity_type, description, project) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, name, entity_type, description, project],
+        )
+        .map_err(|e| format!("insert entity: {}", e))?;
+        Ok(id)
+    }
+
+    /// Get a single entity by its name (case-sensitive exact match).
+    /// Returns Ok(None) if no entity with that name exists.
+    pub fn get_entity(&self, name: &str) -> Result<Option<Entity>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, entity_type, description, project, importance, created_at, updated_at
+                 FROM entities WHERE name = ?1",
+            )
+            .map_err(|e| format!("prepare get_entity: {}", e))?;
+        let mut rows = stmt
+            .query_map(params![name], map_entity)
+            .map_err(|e| format!("query get_entity: {}", e))?;
+        match rows.next() {
+            Some(Ok(e)) => Ok(Some(e)),
+            Some(Err(e)) => Err(format!("row get_entity: {}", e)),
+            None => Ok(None),
+        }
+    }
+
+    /// List entities, optionally filtered by project.
+    /// Results are ordered by importance DESC then created_at DESC.
+    /// The limit caps the maximum number of returned entities.
+    pub fn list_entities(&self, project: Option<&str>, limit: usize) -> Result<Vec<Entity>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let mut stmt = if project.is_some() {
+            conn.prepare(
+                "SELECT id, name, entity_type, description, project, importance, created_at, updated_at
+                 FROM entities WHERE project = ?1 ORDER BY importance DESC, created_at DESC LIMIT ?2",
+            )
+            .map_err(|e| format!("prepare list_entities: {}", e))?
+        } else {
+            conn.prepare(
+                "SELECT id, name, entity_type, description, project, importance, created_at, updated_at
+                 FROM entities ORDER BY importance DESC, created_at DESC LIMIT ?1",
+            )
+            .map_err(|e| format!("prepare list_entities: {}", e))?
+        };
+        let rows = if let Some(p) = project {
+            stmt.query_map(params![p, limit as i64], map_entity)
+                .map_err(|e| format!("query list_entities: {}", e))?
+        } else {
+            stmt.query_map(params![limit as i64], map_entity)
+                .map_err(|e| format!("query list_entities: {}", e))?
+        };
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r.map_err(|e| format!("row list_entities: {}", e))?);
+        }
+        Ok(results)
+    }
+
+    /// Update the description of an entity identified by name.
+    /// Also bumps updated_at to the current unix timestamp.
+    /// Returns true if a row was updated, false if no entity matched the name.
+    pub fn update_entity_description(&self, name: &str, description: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let affected = conn
+            .execute(
+                "UPDATE entities SET description = ?2, updated_at = unixepoch() WHERE name = ?1",
+                params![name, description],
+            )
+            .map_err(|e| format!("update_entity_description: {}", e))?;
+        Ok(affected > 0)
+    }
+
+    /// Delete an entity by name.
+    /// All relations that reference the deleted entity (as source or target)
+    /// are also removed. Returns true if an entity was deleted.
+    pub fn delete_entity(&self, name: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        // Remove relations referencing this entity name first.
+        conn.execute(
+            "DELETE FROM relations WHERE source_entity = ?1 OR target_entity = ?1",
+            params![name],
+        )
+        .map_err(|e| format!("delete_entity relations: {}", e))?;
+        let affected = conn
+            .execute("DELETE FROM entities WHERE name = ?1", params![name])
+            .map_err(|e| format!("delete_entity: {}", e))?;
+        Ok(affected > 0)
+    }
+
+    /// Search entities whose name or description contains the query string (LIKE '%query%').
+    /// Results are ordered by importance DESC then created_at DESC.
+    pub fn search_entities(&self, query: &str) -> Result<Vec<Entity>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let pattern = format!("%{}%", query);
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, entity_type, description, project, importance, created_at, updated_at
+                 FROM entities WHERE name LIKE ?1 OR description LIKE ?1
+                 ORDER BY importance DESC, created_at DESC",
+            )
+            .map_err(|e| format!("prepare search_entities: {}", e))?;
+        let rows = stmt
+            .query_map(params![pattern], map_entity)
+            .map_err(|e| format!("query search_entities: {}", e))?;
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r.map_err(|e| format!("row search_entities: {}", e))?);
+        }
+        Ok(results)
+    }
+
+    /// Add a relation between two entities.
+    /// source and target are entity names. Returns the generated relation id.
+    pub fn add_relation(
+        &self,
+        source: &str,
+        target: &str,
+        relation_type: &str,
+        description: &str,
+    ) -> Result<String, String> {
+        let id = format!("rel_{}", uuid_str());
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        conn.execute(
+            "INSERT INTO relations (id, source_entity, target_entity, relation_type, description)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, source, target, relation_type, description],
+        )
+        .map_err(|e| format!("insert relation: {}", e))?;
+        Ok(id)
+    }
+
+    /// Get all relations where the given entity is either the source or the target.
+    /// Results are ordered by weight DESC then created_at DESC.
+    pub fn get_relations(&self, entity: &str) -> Result<Vec<Relation>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, source_entity, target_entity, relation_type, description, weight, created_at
+                 FROM relations WHERE source_entity = ?1 OR target_entity = ?1
+                 ORDER BY weight DESC, created_at DESC",
+            )
+            .map_err(|e| format!("prepare get_relations: {}", e))?;
+        let rows = stmt
+            .query_map(params![entity], map_relation)
+            .map_err(|e| format!("query get_relations: {}", e))?;
+        let mut results = Vec::new();
+        for r in rows {
+            results.push(r.map_err(|e| format!("row get_relations: {}", e))?);
+        }
+        Ok(results)
+    }
+
+    /// Delete a relation by its id. Returns true if a row was deleted.
+    pub fn delete_relation(&self, id: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let affected = conn
+            .execute("DELETE FROM relations WHERE id = ?1", params![id])
+            .map_err(|e| format!("delete_relation: {}", e))?;
+        Ok(affected > 0)
+    }
+
+    /// Find the shortest path (by number of hops) between two entities using BFS.
+    /// from and to are entity names. The relations are treated as undirected
+    /// (an edge is traversable from both source->target and target->source).
+    /// max_depth limits the search depth; if no path within max_depth hops is
+    /// found, an empty Vec is returned. The returned Vec starts with `from` and
+    /// ends with `to`.
+    pub fn find_path(&self, from: &str, to: &str, max_depth: usize) -> Result<Vec<String>, String> {
+        // Trivial case: from == to
+        if from == to {
+            return Ok(vec![from.to_string()]);
+        }
+        // Gather the full adjacency list once (knowledge graphs are typically small).
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let mut stmt = conn
+            .prepare("SELECT source_entity, target_entity FROM relations")
+            .map_err(|e| format!("prepare find_path: {}", e))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| format!("query find_path: {}", e))?;
+        let mut adj: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for r in rows {
+            let (s, t) = r.map_err(|e| format!("row find_path: {}", e))?;
+            // Undirected: add both directions
+            adj.entry(s.clone()).or_default().push(t.clone());
+            adj.entry(t).or_default().push(s);
+        }
+
+        // BFS for shortest path
+        use std::collections::VecDeque;
+        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // parent map to reconstruct the path
+        let mut parent: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        queue.push_back((from.to_string(), 0));
+        visited.insert(from.to_string());
+
+        while let Some((node, depth)) = queue.pop_front() {
+            if depth >= max_depth {
+                continue;
+            }
+            if let Some(neighbors) = adj.get(&node) {
+                for neighbor in neighbors {
+                    if visited.contains(neighbor) {
+                        continue;
+                    }
+                    visited.insert(neighbor.clone());
+                    parent.insert(neighbor.clone(), node.clone());
+                    if neighbor == to {
+                        // Reconstruct path
+                        let mut path = vec![to.to_string()];
+                        let mut cur = to.to_string();
+                        while let Some(p) = parent.get(&cur) {
+                            path.push(p.clone());
+                            cur = p.clone();
+                        }
+                        path.reverse();
+                        return Ok(path);
+                    }
+                    queue.push_back((neighbor.clone(), depth + 1));
+                }
+            }
+        }
+        Ok(Vec::new())
+    }
+
+    /// Total number of entities in the knowledge graph.
+    pub fn entity_count(&self) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0))
+            .unwrap_or(0);
+        Ok(count as usize)
+    }
+
+    /// Total number of relations in the knowledge graph.
+    pub fn relation_count(&self) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM relations", [], |row| row.get(0))
+            .unwrap_or(0);
+        Ok(count as usize)
+    }
 }
 
 fn map_entry(row: &rusqlite::Row) -> rusqlite::Result<GlobalMemoryEntry> {
@@ -1009,6 +1325,33 @@ fn map_entry(row: &rusqlite::Row) -> rusqlite::Result<GlobalMemoryEntry> {
 /// 生成 UUID v4 字符串
 fn uuid_str() -> String {
     Uuid::new_v4().to_string()
+}
+
+/// Map a SQLite row to an Entity struct.
+fn map_entity(row: &rusqlite::Row) -> rusqlite::Result<Entity> {
+    Ok(Entity {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        entity_type: row.get(2)?,
+        description: row.get(3)?,
+        project: row.get(4)?,
+        importance: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+    })
+}
+
+/// Map a SQLite row to a Relation struct.
+fn map_relation(row: &rusqlite::Row) -> rusqlite::Result<Relation> {
+    Ok(Relation {
+        id: row.get(0)?,
+        source_entity: row.get(1)?,
+        target_entity: row.get(2)?,
+        relation_type: row.get(3)?,
+        description: row.get(4)?,
+        weight: row.get(5)?,
+        created_at: row.get(6)?,
+    })
 }
 
 #[cfg(test)]
@@ -2107,5 +2450,211 @@ mod tests {
         let results_min = store.search_advanced("alpha", None, None, 5).unwrap();
         assert_eq!(results_min.len(), 1, "keyword 'alpha' with min_importance 5 should match 1 entry");
         assert_eq!(results_min[0].importance, 8, "result should have importance >= 5");
+    }
+
+    // ====================================================================
+    // Knowledge graph (V0.3) tests: entities + relations
+    // ====================================================================
+
+    #[test]
+    fn test_add_and_get_entity() {
+        let store = test_store();
+        let id = store
+            .add_entity("auth-service", "service", "handles user login", "proj-x")
+            .unwrap();
+        assert!(id.starts_with("ent_"), "entity id should start with 'ent_'");
+
+        // Fetch it back by name
+        let entity = store.get_entity("auth-service").unwrap().expect("entity should exist");
+        assert_eq!(entity.name, "auth-service");
+        assert_eq!(entity.entity_type, "service");
+        assert_eq!(entity.description, "handles user login");
+        assert_eq!(entity.project, "proj-x");
+        assert_eq!(entity.importance, 5, "default importance should be 5");
+
+        // Unknown name returns None
+        assert!(store.get_entity("does-not-exist").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_list_entities_by_project() {
+        let store = test_store();
+        store.add_entity("a", "service", "", "proj-1").unwrap();
+        store.add_entity("b", "service", "", "proj-1").unwrap();
+        store.add_entity("c", "service", "", "proj-2").unwrap();
+
+        // Filter by proj-1
+        let proj1 = store.list_entities(Some("proj-1"), 100).unwrap();
+        assert_eq!(proj1.len(), 2, "proj-1 should have 2 entities");
+        for e in &proj1 {
+            assert_eq!(e.project, "proj-1");
+        }
+
+        // No filter → all 3
+        let all = store.list_entities(None, 100).unwrap();
+        assert_eq!(all.len(), 3, "total entities should be 3");
+
+        // Limit cap works
+        let limited = store.list_entities(None, 1).unwrap();
+        assert_eq!(limited.len(), 1, "limit=1 should return 1 entity");
+    }
+
+    #[test]
+    fn test_update_entity_description() {
+        let store = test_store();
+        store.add_entity("svc", "service", "old desc", "p").unwrap();
+
+        let updated = store.update_entity_description("svc", "new desc").unwrap();
+        assert!(updated, "should update existing entity");
+
+        let entity = store.get_entity("svc").unwrap().unwrap();
+        assert_eq!(entity.description, "new desc");
+
+        // Non-existent entity returns false
+        let missed = store.update_entity_description("nope", "x").unwrap();
+        assert!(!missed, "should return false for missing entity");
+    }
+
+    #[test]
+    fn test_delete_entity_cascades_relations() {
+        let store = test_store();
+        store.add_entity("a", "s", "", "p").unwrap();
+        store.add_entity("b", "s", "", "p").unwrap();
+        store.add_relation("a", "b", "depends_on", "").unwrap();
+        store.add_relation("b", "a", "used_by", "").unwrap();
+
+        assert_eq!(store.relation_count().unwrap(), 2);
+
+        // Delete entity 'a' should cascade-delete its relations
+        let deleted = store.delete_entity("a").unwrap();
+        assert!(deleted, "entity 'a' should be deleted");
+        assert!(store.get_entity("a").unwrap().is_none());
+        assert_eq!(
+            store.relation_count().unwrap(),
+            0,
+            "all relations referencing 'a' should be deleted"
+        );
+    }
+
+    #[test]
+    fn test_search_entities() {
+        let store = test_store();
+        store.add_entity("user-service", "service", "manages accounts", "p").unwrap();
+        store.add_entity("order-service", "service", "handles orders", "p").unwrap();
+        store.add_entity("billing-db", "database", "stores invoices", "p").unwrap();
+
+        // Search by name fragment
+        let by_name = store.search_entities("service").unwrap();
+        assert_eq!(by_name.len(), 2, "two entities have 'service' in name");
+
+        // Search by description fragment
+        let by_desc = store.search_entities("invoice").unwrap();
+        assert_eq!(by_desc.len(), 1, "one entity has 'invoice' in description");
+        assert_eq!(by_desc[0].name, "billing-db");
+
+        // No match
+        assert!(store.search_entities("zzz-not-found").unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_add_and_get_relations() {
+        let store = test_store();
+        store.add_entity("alpha", "s", "", "p").unwrap();
+        store.add_entity("beta", "s", "", "p").unwrap();
+        store.add_entity("gamma", "s", "", "p").unwrap();
+
+        let r1 = store.add_relation("alpha", "beta", "depends_on", "runtime dep").unwrap();
+        let r2 = store.add_relation("beta", "gamma", "calls", "").unwrap();
+        assert!(r1.starts_with("rel_"));
+        assert!(r2.starts_with("rel_"));
+
+        // get_relations for 'beta' returns both relations (as source and target)
+        let beta_rels = store.get_relations("beta").unwrap();
+        assert_eq!(beta_rels.len(), 2, "beta should have 2 relations");
+
+        // get_relations for 'alpha' returns only the alpha->beta relation
+        let alpha_rels = store.get_relations("alpha").unwrap();
+        assert_eq!(alpha_rels.len(), 1);
+        assert_eq!(alpha_rels[0].target_entity, "beta");
+        assert_eq!(alpha_rels[0].relation_type, "depends_on");
+        assert_eq!(alpha_rels[0].description, "runtime dep");
+    }
+
+    #[test]
+    fn test_delete_relation() {
+        let store = test_store();
+        store.add_entity("a", "s", "", "p").unwrap();
+        store.add_entity("b", "s", "", "p").unwrap();
+        let rid = store.add_relation("a", "b", "depends_on", "").unwrap();
+
+        assert_eq!(store.relation_count().unwrap(), 1);
+        let deleted = store.delete_relation(&rid).unwrap();
+        assert!(deleted, "relation should be deleted");
+        assert_eq!(store.relation_count().unwrap(), 0);
+
+        // Deleting again returns false
+        let again = store.delete_relation(&rid).unwrap();
+        assert!(!again, "re-deleting should return false");
+    }
+
+    #[test]
+    fn test_find_path_direct() {
+        let store = test_store();
+        store.add_entity("a", "s", "", "p").unwrap();
+        store.add_entity("b", "s", "", "p").unwrap();
+        store.add_relation("a", "b", "connects", "").unwrap();
+
+        // Direct path a -> b (1 hop)
+        let path = store.find_path("a", "b", 5).unwrap();
+        assert_eq!(path, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn test_find_path_two_hops() {
+        let store = test_store();
+        store.add_entity("a", "s", "", "p").unwrap();
+        store.add_entity("b", "s", "", "p").unwrap();
+        store.add_entity("c", "s", "", "p").unwrap();
+        // a -> b -> c
+        store.add_relation("a", "b", "connects", "").unwrap();
+        store.add_relation("b", "c", "connects", "").unwrap();
+
+        let path = store.find_path("a", "c", 5).unwrap();
+        assert_eq!(
+            path,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            "path should be a -> b -> c"
+        );
+    }
+
+    #[test]
+    fn test_find_path_no_connection() {
+        let store = test_store();
+        store.add_entity("a", "s", "", "p").unwrap();
+        store.add_entity("z", "s", "", "p").unwrap();
+        // No relation between a and z
+        store.add_relation("a", "b", "connects", "").unwrap();
+
+        let path = store.find_path("a", "z", 5).unwrap();
+        assert!(path.is_empty(), "no connection should return empty path");
+    }
+
+    #[test]
+    fn test_entity_count() {
+        let store = test_store();
+        assert_eq!(store.entity_count().unwrap(), 0, "fresh store has 0 entities");
+        store.add_entity("a", "s", "", "p").unwrap();
+        store.add_entity("b", "s", "", "p").unwrap();
+        assert_eq!(store.entity_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_relation_count() {
+        let store = test_store();
+        assert_eq!(store.relation_count().unwrap(), 0, "fresh store has 0 relations");
+        store.add_entity("a", "s", "", "p").unwrap();
+        store.add_entity("b", "s", "", "p").unwrap();
+        store.add_relation("a", "b", "connects", "").unwrap();
+        assert_eq!(store.relation_count().unwrap(), 1);
     }
 }
