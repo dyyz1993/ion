@@ -1306,6 +1306,12 @@ impl GlobalMemoryStore {
             .unwrap_or(0);
         Ok(count as usize)
     }
+
+    /// Return the health status of the store.
+    /// Always returns "healthy" to indicate the store is operational.
+    pub fn health_status() -> &'static str {
+        "healthy"
+    }
 }
 
 fn map_entry(row: &rusqlite::Row) -> rusqlite::Result<GlobalMemoryEntry> {
@@ -2656,5 +2662,11 @@ mod tests {
         store.add_entity("b", "s", "", "p").unwrap();
         store.add_relation("a", "b", "connects", "").unwrap();
         assert_eq!(store.relation_count().unwrap(), 1);
+    }
+
+    /// Verify that health_status() returns the expected status string.
+    #[test]
+    fn test_health_status() {
+        assert_eq!(GlobalMemoryStore::health_status(), "healthy");
     }
 }
