@@ -6,6 +6,7 @@ FROM alpine:latest
 RUN apk add --no-cache \
     curl \
     git \
+    grep \
     build-base \
     pkgconfig \
     openssl-dev \
