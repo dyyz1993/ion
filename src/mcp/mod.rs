@@ -755,7 +755,7 @@ impl McpManager {
             client.read_resource(params),
         )
         .await
-        .map_err(|_| format!("mcp read_resource timeout (30s)"))?
+        .map_err(|_| "mcp read_resource timeout (30s)".to_string())?
         .map_err(|e| format!("mcp read_resource error: {e}"))?;
 
         // 提取文本内容

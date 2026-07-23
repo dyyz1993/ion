@@ -28,6 +28,12 @@ impl GlobalMemoryExtension {
     }
 }
 
+impl Default for GlobalMemoryExtension {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl Extension for GlobalMemoryExtension {
     fn name(&self) -> &str {

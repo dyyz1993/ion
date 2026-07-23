@@ -1894,14 +1894,13 @@ impl Tool for SkillTool {
                      When done, summarize what you accomplished."
                 )
             } else {
-                // 没传需求——通用 task（兜底）
-                format!(
-                    "Follow the skill instructions that are already in your system prompt. \
-                     Do NOT call the skill tool (it's already loaded). \
-                     Just execute the workflow described in your system prompt using \
-                     the available tools (read/write/bash/etc). \
-                     When done, summarize what you accomplished."
-                )
+                // No request provided — generic task (fallback)
+                "Follow the skill instructions that are already in your system prompt. \
+                 Do NOT call the skill tool (it's already loaded). \
+                 Just execute the workflow described in your system prompt using \
+                 the available tools (read/write/bash/etc). \
+                 When done, summarize what you accomplished."
+                    .to_string()
             };
 
             let req = crate::runtime::SpawnWorkerRequest {

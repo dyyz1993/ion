@@ -138,15 +138,19 @@ impl ExtensionEventBus {
     /// 广播事件给所有匹配的 subscriber
     pub fn broadcast(&mut self, event: &ExtensionEvent) {
         self.subscribers.retain(|sub| {
-            // 按 route 过滤
-            if let Some(ref route) = sub.filter.route {
-                if route != &event.route { return true; }
+            // Filter by route
+            if let Some(ref route) = sub.filter.route
+                && route != &event.route
+            {
+                return true;
             }
-            // 按 extension 过滤
-            if let Some(ref extension) = sub.filter.extension {
-                if extension != &event.extension { return true; }
+            // Filter by extension
+            if let Some(ref extension) = sub.filter.extension
+                && extension != &event.extension
+            {
+                return true;
             }
-            // 按 session 过滤
+            // Filter by session
             if let Some(ref session) = sub.filter.session {
                 if let Some(ref ev_sess) = event.session {
                     if session != ev_sess { return true; }
@@ -154,7 +158,7 @@ impl ExtensionEventBus {
                     return true;
                 }
             }
-            // 发送（bounded queue，失败 = 客户端太慢，断开）
+            // Send (bounded queue; failure = client too slow, disconnect)
             match sub.tx.try_send(event.clone()) {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Full(_)) => {

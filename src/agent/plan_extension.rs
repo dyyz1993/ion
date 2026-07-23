@@ -64,6 +64,12 @@ impl PlanExtension {
     }
 }
 
+impl Default for PlanExtension {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl Extension for PlanExtension {
     // ── Intercept tool calls to manage plan state ──

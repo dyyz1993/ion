@@ -366,6 +366,167 @@ async fn run_task(
     }
 }
 
+/// Test helper: build a `WorkerHandle` backed by a real worker task so that
+/// `prompt`/`steer` RPCs are answered without spinning up the full manager.
+#[cfg(test)]
+fn test_worker_handle() -> (WorkerHandle, tokio::task::JoinHandle<()>) {
+    use crate::worker::{stub::StubWorker, WorkerCmd};
+    let (tx, mut rx) = mpsc::channel(16);
+    let worker_id = crate::ids::WorkerId::new(0u64);
+    let handle = WorkerHandle::new(worker_id, tx);
+
+    let join = tokio::spawn(async move {
+        let mut worker = StubWorker::new("test-handle");
+        // drive the worker command loop
+        while let Some(cmd) = rx.recv().await {
+            match cmd {
+                WorkerCmd::Prompt { text, reply, .. } => {
+                    let res = worker.prompt(text).await;
+                    let _ = reply.send(res);
+                }
+                WorkerCmd::Steer { msg, reply } => {
+                    let res = worker.steer(msg).await;
+                    let _ = reply.send(res);
+                }
+                WorkerCmd::State { reply } => {
+                    let res = worker.state().await;
+                    let _ = reply.send(res);
+                }
+                WorkerCmd::Dispose { reply } => {
+                    let res = worker.dispose().await;
+                    let _ = reply.send(res);
+                }
+                WorkerCmd::Shutdown => break,
+            }
+        }
+    });
+
+    (handle, join)
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests for pure functions
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod pure_tests {
+    use super::*;
+
+    // --- TaskResult helpers -------------------------------------------------
+
+    #[test]
+    fn task_result_ok_marks_success() {
+        let r = TaskResult::ok("done");
+        assert!(r.success);
+        assert_eq!(r.output, "done");
+        assert!(r.tokens_used.is_none());
+    }
+
+    #[test]
+    fn task_result_err_marks_failure() {
+        let r = TaskResult::err("boom");
+        assert!(!r.success);
+        assert_eq!(r.output, "boom");
+        assert!(r.tokens_used.is_none());
+    }
+
+    // --- TaskPayload descriptions ------------------------------------------
+
+    #[test]
+    fn payload_descriptions() {
+        assert_eq!(TaskPayload::Prompt("x".into()).description(), "prompt");
+        assert_eq!(TaskPayload::Steer("x".into()).description(), "steer");
+        assert_eq!(TaskPayload::Delegate("x".into()).description(), "delegate");
+        assert_eq!(TaskPayload::Fork("x".into()).description(), "fork");
+    }
+
+    // --- Task construction --------------------------------------------------
+
+    #[test]
+    fn new_task_has_defaults() {
+        let task = Task::new(TaskPayload::Prompt("hello".into()));
+        // retry_count starts at zero
+        assert_eq!(task.retry_count, 0);
+        // default max_retries comes from TaskConfig::default()
+        assert_eq!(task.max_retries, TaskConfig::default().max_retries);
+        // no session assigned yet
+        assert!(task.session_id.is_none());
+        // timestamps unset
+        assert!(task.started_at.is_none());
+        assert!(task.completed_at.is_none());
+    }
+
+    #[test]
+    fn new_task_generates_unique_ids() {
+        let a = Task::new(TaskPayload::Prompt("a".into()));
+        let b = Task::new(TaskPayload::Prompt("b".into()));
+        assert_ne!(a.id, b.id);
+    }
+
+    #[test]
+    fn task_with_max_retries_builder() {
+        let task = Task::new(TaskPayload::Steer("s".into())).with_max_retries(7);
+        assert_eq!(task.max_retries, 7);
+    }
+
+    #[test]
+    fn task_with_session_builder() {
+        let sid = crate::ids::SessionId::new("sess-1");
+        let task = Task::new(TaskPayload::Prompt("p".into())).with_session(sid);
+        assert!(task.session_id.is_some());
+    }
+
+    // --- run_task via StubWorker (pure-ish: no manager needed) -------------
+
+    #[tokio::test]
+    async fn run_task_prompt_returns_worker_result() {
+        let (worker, join) = test_worker_handle();
+        let task_id = TaskId::new();
+        let payload = TaskPayload::Prompt("echo me".into());
+        let result = run_task(&worker, task_id, &payload).await.unwrap();
+        assert!(result.success);
+        assert!(result.output.contains("echo me"));
+        let _ = worker.shutdown().await;
+        let _ = join.await;
+    }
+
+    #[tokio::test]
+    async fn run_task_steer_returns_ok_steered() {
+        let (worker, join) = test_worker_handle();
+        let task_id = TaskId::new();
+        let payload = TaskPayload::Steer("turn left".into());
+        let result = run_task(&worker, task_id, &payload).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.output, "steered");
+        let _ = worker.shutdown().await;
+        let _ = join.await;
+    }
+
+    #[tokio::test]
+    async fn run_task_delegate_routes_like_prompt() {
+        let (worker, join) = test_worker_handle();
+        let task_id = TaskId::new();
+        let payload = TaskPayload::Delegate("do work".into());
+        let result = run_task(&worker, task_id, &payload).await.unwrap();
+        assert!(result.success);
+        assert!(result.output.contains("do work"));
+        let _ = worker.shutdown().await;
+        let _ = join.await;
+    }
+
+    #[tokio::test]
+    async fn run_task_fork_routes_like_prompt() {
+        let (worker, join) = test_worker_handle();
+        let task_id = TaskId::new();
+        let payload = TaskPayload::Fork("branch".into());
+        let result = run_task(&worker, task_id, &payload).await.unwrap();
+        assert!(result.success);
+        assert!(result.output.contains("branch"));
+        let _ = worker.shutdown().await;
+        let _ = join.await;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

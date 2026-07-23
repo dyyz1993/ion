@@ -581,7 +581,7 @@ impl Extension for MemoryExtension {
         let mut store = self.store.lock().await;
 
         // ── Consolidation：每 5 轮触发一次（项目级）──
-        if store.turn_count % 5 == 0 {
+        if store.turn_count.is_multiple_of(5) {
             let index = store.read_index();
             let mut total = 0usize;
             for i in &index {
@@ -598,8 +598,8 @@ impl Extension for MemoryExtension {
             self.emit("memory_consolidated", serde_json::json!({"reviewed": total}));
         }
 
-        // ── 全局整理（V0.2 Active Memory）：每 10 轮触发一次 ──
-        if store.turn_count % 10 == 0 && let Some(ref global) = store.global_store && let Ok(stats) = global.consolidate() {
+        // ── Global consolidation (V0.2 Active Memory): triggered every 10 turns ──
+        if store.turn_count.is_multiple_of(10) && let Some(ref global) = store.global_store && let Ok(stats) = global.consolidate() {
             self.emit("global_memory_consolidated", serde_json::json!({
                 "deduplicated": stats.deduplicated,
                 "archived": stats.archived,

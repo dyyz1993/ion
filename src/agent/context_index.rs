@@ -300,6 +300,7 @@ fn is_valid_path_candidate(path: &str) -> bool {
 // Extension
 // ---------------------------------------------------------------------------
 
+#[derive(Default)]
 pub struct ContextIndexExtension {
     pub index: Arc<Mutex<ContextIndex>>,
     name: String,
@@ -307,10 +308,7 @@ pub struct ContextIndexExtension {
 
 impl ContextIndexExtension {
     pub fn new() -> Self {
-        Self {
-            index: Arc::new(Mutex::new(ContextIndex::new())),
-            name: "context-index".into(),
-        }
+        Self::default()
     }
 
     pub fn new_with_index(index: Arc<Mutex<ContextIndex>>) -> Self {

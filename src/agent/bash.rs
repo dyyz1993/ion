@@ -412,7 +412,7 @@ impl Tool for BashKillTool {
         if killed {
             let mut map = self.process_map.lock().await;
             if let Some(info) = map.get_mut(&pid) { info.status = "killed".into(); }
-            let _ = std::fs::write(format!("/tmp/ion-bash/{pid}.log"), format!("[killed by bash_kill]\n"));
+            let _ = std::fs::write(format!("/tmp/ion-bash/{pid}.log"), "[killed by bash_kill]\n".to_string());
             // Notify LLM: inject a custom message into conversation history
             if let Some(ref tx) = self.follow_up_tx {
                 let content = format!(
