@@ -50,8 +50,8 @@ $RECENT
 
 先执行步骤 1：读 git log，找出新功能。"
 
-# 用 --continue 加载历史会话（首次运行会自动创建新会话，后续运行会接续）
-echo "$PROMPT" | timeout 600 ./target/debug/ion -p --agent user --model "$MODEL" --provider "$PROVIDER" --continue 2>&1 | tee /tmp/user_experience.log
+# Use --host so the user agent can spawn sub-tasks (e.g. create issues via sub-agents).
+echo "$PROMPT" | timeout 600 ./target/debug/ion --host --agent user --model "$MODEL" --provider "$PROVIDER" --continue 2>&1 | tee /tmp/user_experience.log
 
 echo ""
 echo "=========================================="

@@ -82,7 +82,21 @@ pub fn should_retry(error: &str, attempt: u32, config: &RetryConfig) -> RetryDec
         || lower.contains("rate limit exceeded")
         || lower.contains("credit")
     {
-        // 这些都是资源不足类的错误，不重试
+        // These errors indicate resource exhaustion; retrying won't help.
+        return RetryDecision::AbortPermanent;
+    }
+
+    // Auth failures (HTTP 401/403) → never retry. The key is invalid/expired or
+    // lacks permission; retrying with the same key is pointless and wastes time.
+    // Keep retrying 429/5xx/timeouts/network errors (handled by the fallthrough below).
+    if lower.contains("401")
+        || lower.contains("403")
+        || lower.contains("autherror")
+        || lower.contains("invalid api key")
+        || lower.contains("unauthorized")
+        || lower.contains("forbidden")
+    {
+        // Auth failure: retrying won't fix an invalid/expired key.
         return RetryDecision::AbortPermanent;
     }
 
@@ -297,6 +311,19 @@ mod tests {
             should_retry("too many requests", 0, &c),
             RetryDecision::Retry(_)
         ));
+    }
+
+    #[test]
+    fn should_retry_aborts_on_auth_errors() {
+        // Auth failures (401/403/invalid key) must not retry — retrying an
+        // invalid or expired key wastes time and never succeeds.
+        let c = RetryConfig::default();
+        assert_eq!(should_retry("HTTP 401 Unauthorized", 0, &c), RetryDecision::AbortPermanent);
+        assert_eq!(should_retry("403 Forbidden", 0, &c), RetryDecision::AbortPermanent);
+        assert_eq!(should_retry("AuthError: token expired", 0, &c), RetryDecision::AbortPermanent);
+        assert_eq!(should_retry("Invalid API key", 0, &c), RetryDecision::AbortPermanent);
+        // Case-insensitive matching
+        assert_eq!(should_retry("invalid api key", 0, &c), RetryDecision::AbortPermanent);
     }
 
     #[test]

@@ -1492,6 +1492,22 @@ impl Agent {
                             )));
                         }
                         _ => {
+                            // Defensive belt-and-suspenders: if the error is an auth
+                            // failure (401/403/AuthError/Invalid API key) but somehow
+                            // slipped past should_retry's AbortPermanent check, break
+                            // immediately. Retrying an invalid/expired key is pointless.
+                            let err_str_lower = err_str.to_lowercase();
+                            if err_str_lower.contains("401")
+                                || err_str_lower.contains("403")
+                                || err_str_lower.contains("autherror")
+                                || err_str_lower.contains("invalid api key")
+                            {
+                                tracing::warn!("Auth error, not retrying: {}", err_str);
+                                self.extensions.on_auto_retry_end(false, attempt + 1).await?;
+                                return Err(AgentError::Provider(format!(
+                                    "[auth] {e}"
+                                )));
+                            }
                             let delay = crate::retry::backoff_duration(attempt, retry_cfg);
                             tracing::warn!(
                                 "[retry] attempt {}/{} failed: {e:.80} — retrying in {:?}",

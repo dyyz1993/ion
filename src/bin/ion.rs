@@ -1870,6 +1870,12 @@ async fn cmd_run(
                 let msg = e.to_string();
                 if msg.contains("MissingApiKey") || msg.contains("API key") {
                     eprintln!("No API key found. Run: ion config set api-key <key>");
+                } else if msg.contains("401") || msg.contains("403")
+                    || msg.contains("AuthError") || msg.contains("Invalid API key")
+                    || msg.contains("unauthorized") || msg.contains("forbidden")
+                {
+                    // Auth error: key is invalid, expired, or lacks permission.
+                    eprintln!("API key invalid or expired (HTTP 401/403). Run: ion config set api-key <new-key>");
                 } else {
                     eprintln!("Error: {e}");
                 }
