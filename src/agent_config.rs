@@ -202,13 +202,66 @@ pub fn parse_agent_md(content: &str, file_path: &str) -> Option<AgentConfig> {
 
     let mut config: AgentConfig = serde_yaml::from_str(frontmatter_str).ok()?;
     config.system_prompt = Some(if body.is_empty() { config.description.clone() } else { body.to_string() });
-    config.source = if file_path.contains(".ion/agents/") { "project".into() } else { "user".into() };
+    config.source = if file_path.contains(".ion/agents/") {
+        "project".into()
+    } else if file_path.contains("examples/agents/") {
+        "examples".into()
+    } else {
+        "user".into()
+    };
     Some(config)
 }
 
 // ---------------------------------------------------------------------------
 // Find agent by name or path
 // ---------------------------------------------------------------------------
+
+/// Look for a shipped agent file (e.g. `user.md`) under an `examples/agents/`
+/// directory. Search order:
+///   1. `$CARGO_MANIFEST_DIR/examples/agents/` (compile-time path, most reliable)
+///   2. `$cwd/examples/agents/`
+///   3. Walk up from `$cwd` to find the nearest ancestor containing
+///      `examples/agents/` (covers subdirectory invocations).
+/// Returns the absolute path to the agent file if found.
+fn find_examples_agent(filename: &str) -> Option<PathBuf> {
+    let candidate_dirs = examples_agent_dirs();
+    for dir in candidate_dirs {
+        let candidate = dir.join(filename);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Build the list of candidate `examples/agents/` directories to probe.
+fn examples_agent_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+
+    // 1. Compile-time manifest dir (preferred — stable regardless of cwd).
+    //    Only available when built with cargo (sets CARGO_MANIFEST_DIR).
+    if let Some(manifest) = option_env!("CARGO_MANIFEST_DIR") {
+        dirs.push(PathBuf::from(manifest).join("examples").join("agents"));
+    }
+
+    // 2. Current working directory, then walk up to project root.
+    if let Ok(cwd) = std::env::current_dir() {
+        // cwd itself
+        dirs.push(cwd.join("examples").join("agents"));
+
+        // Walk up: check each ancestor for an examples/agents/ folder.
+        let mut ancestor = cwd.parent();
+        while let Some(parent) = ancestor {
+            let dir = parent.join("examples").join("agents");
+            if dir.exists() {
+                dirs.push(dir);
+            }
+            ancestor = parent.parent();
+        }
+    }
+
+    dirs
+}
 
 pub fn find_agent(name_or_path: &str) -> Option<AgentConfig> {
     // 1. If it's a file path, load directly
@@ -223,6 +276,13 @@ pub fn find_agent(name_or_path: &str) -> Option<AgentConfig> {
         if proj_path.exists() {
             return parse_agent_file(&proj_path);
         }
+    }
+
+    // 2.5. examples/agents/ (shipped agents — user, architect, qa, pm, ci, maintainer, etc.)
+    // Check the current working directory first, then walk up to find the project root
+    // (the directory containing examples/agents/).
+    if let Some(examples_path) = find_examples_agent(&format!("{name_or_path}.md")) {
+        return parse_agent_file(&examples_path);
     }
 
     // 3. Global ~/.ion/agent/agents/
