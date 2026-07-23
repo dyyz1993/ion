@@ -155,6 +155,8 @@ loop:
 ### 关键规则
 
 - **每次 developer 修复后必须从头走 4 阶段**（不能跳过审查）
+- **CI-Agent 拥有 edit/write 工具** —— 它能直接修复代码（不像 reviewer 只能报告问题）
+- **CI-Agent 是除 developer 外唯一能修改代码的 agent**
 - **user 用 --continue 保持历史会话连贯**（记得之前测过什么）
 - **最多 3 轮**——超过 3 轮说明问题反复出现，需要人工介入
 - **user 的 Issue 通过 GitHub PR 修复**（developer 改代码 → 新 PR → 走 4 阶段）
