@@ -1071,7 +1071,7 @@ ZCode → ion --host --agent evolver "话题"
 |------|------|
 | [docs/design/SELF_EVOLUTION.md](./docs/design/SELF_EVOLUTION.md) | A→B 架构总览（设计原则 + 验证状态） |
 | [docs/design/EVOLVER_LESSONS_LEARNED.md](./docs/design/EVOLVER_LESSONS_LEARNED.md) | **11 个真实问题 + 根因 + 解法**（必读） |
-| [docs/design/WATCHDOG_DUAL_VERSION.md](./docs/design/WATCHDOG_DUAL_VERSION.md) | 看门狗双版本切换设计（待实现） |
+| [docs/design/WATCHDOG_DUAL_VERSION.md](./docs/design/WATCHDOG_DUAL_VERSION.md) | 看门狗安全升级（单实例滚动重启 + 心跳监控 + 自动回滚，3 场景验证通过） |
 | `examples/agents/evolver.md` | A 的 agent 定义（只有 bash 工具） |
 | `examples/agents/developer.md` | B 的 agent 定义（container 里用） |
 | `examples/agents/improver.md` | 通用任务智能体（host 改 + container 跑） |
