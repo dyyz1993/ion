@@ -25,11 +25,19 @@ set -uo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ION_BIN="${ION_BIN:-$PROJECT_DIR/target/release/ion}"
 ION_DEBUG="${ION_BIN:-$PROJECT_DIR/target/debug/ion}"
-BACKUP_DIR="$PROJECT_DIR/target/release/.backups"
+# Backup dir: must be in the SAME profile dir as ION_BIN (debug or release).
+# Extract parent dir of ION_BIN so backup/compile/restore all use the same binary.
+BACKUP_DIR=""  # Set after ION_BIN is resolved (see below)
 RESTART_FILE="/tmp/.ion-evolve-restart"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-30}"
 COMPILE_TIMEOUT="${COMPILE_TIMEOUT:-600}"
 SOCK_PATH="${HOME}/.ion/host.sock"
+
+# Resolve BACKUP_DIR from ION_BIN's parent directory.
+# This ensures backup/compile/restore all operate on the EXACT same binary path.
+# e.g. ION_BIN=target/debug/ion → BACKUP_DIR=target/debug/.backups
+ION_BIN_DIR=$(dirname "$ION_BIN")
+BACKUP_DIR="$ION_BIN_DIR/.backups"
 
 mkdir -p "$BACKUP_DIR"
 
@@ -259,60 +267,116 @@ do_monitor() {
     local CURRENT_PID
     CURRENT_PID=$(get_pid)
     echo "[W] Monitoring A_old (PID: ${CURRENT_PID:-unknown})"
+    echo "[W] Heartbeat: health RPC every 5s, crash after 3 consecutive failures"
     echo ""
 
+    # Heartbeat failure counter: 3 consecutive health failures = dead
+    local heartbeat_failures=0
+    local HEARTBEAT_THRESHOLD=3
+
     while true; do
-        # ── Check: A_old alive? ─────────────────────────────────────
+        # ── Check: A_old alive (PID)? ───────────────────────────────
         if ! is_running; then
             echo ""
-            echo "[W] ⚠️  A_old died! Attempting restart from last backup..."
+            echo "[W] ⚠️  A_old process died! Restarting from last backup..."
+            heartbeat_failures=0
+            # ... (restart logic below)
+        else
+            # ── Check: A_old healthy (RPC responds)? ─────────────────
+            # Even if PID is alive, the process could be deadlocked,
+            # stuck in an infinite loop, or out of memory.
+            # We send a real health RPC to verify it's actually serving.
+            # Use `timeout 3` so a frozen process doesn't hang the watchdog.
+            local health_resp
+            health_resp=$(timeout 3 "$ION_BIN" rpc --method health --params '{}' 2>/dev/null)
 
-            # Find latest backup
-            local latest_backup
-            latest_backup=$(ls -t "$BACKUP_DIR"/ion.*.backup 2>/dev/null | head -1)
-
-            if [ -n "$latest_backup" ] && [ -f "$latest_backup" ]; then
-                cp "$latest_backup" "$ION_BIN"
-                echo "[W] Restored from: $latest_backup"
+            if echo "$health_resp" | grep -q '"status":[[:space:]]*"ok"'; then
+                # Healthy — reset counter
+                if [ "$heartbeat_failures" -gt 0 ]; then
+                    echo "[W] 💓 Heartbeat recovered (was $heartbeat_failures failures)"
+                    heartbeat_failures=0
+                fi
             else
-                echo "[W] No backup found, trying current binary as-is"
+                heartbeat_failures=$((heartbeat_failures + 1))
+                echo "[W] ⚠️  Heartbeat failure $heartbeat_failures/$HEARTBEAT_THRESHOLD (no health response)"
+
+                if [ "$heartbeat_failures" -ge "$HEARTBEAT_THRESHOLD" ]; then
+                    echo "[W] 🚨 A_old is unresponsive ($HEARTBEAT_THRESHOLD consecutive failures)!"
+                    echo "[W] 🚨 Treating as dead — forcing restart from backup..."
+                    # Fall through to restart logic below
+                else
+                    sleep 5
+                    continue
+                fi
             fi
 
-            rm -f "$SOCK_PATH" 2>/dev/null
-            cd "$PROJECT_DIR"
-            "$ION_BIN" serve &
-            CURRENT_PID=$!
-            echo "[W] A_old restarted (PID: $CURRENT_PID)"
-            sleep 5
+            # If we get here with healthy heartbeat, skip restart
+            if [ "$heartbeat_failures" -lt "$HEARTBEAT_THRESHOLD" ]; then
+                # Check restart signal
+                if [ -f "$RESTART_FILE" ]; then
+                    echo ""
+                    echo "[W] 🔄 Restart signal detected!"
+                    rm -f "$RESTART_FILE"
+                    heartbeat_failures=0
 
-            if health_check "$ION_BIN" 15; then
-                echo "[W] ✅ Restarted successfully"
-            else
-                echo "[W] ❌ Restart failed! Will retry in 30s"
-                sleep 30
+                    do_upgrade
+                    local rc=$?
+
+                    if [ $rc -eq 0 ]; then
+                        CURRENT_PID=$(get_pid)
+                        echo "[W] Monitoring new A_old (PID: ${CURRENT_PID:-unknown})"
+                    else
+                        echo "[W] Upgrade returned code $rc. Continuing with current instance."
+                        CURRENT_PID=$(get_pid)
+                    fi
+
+                    echo ""
+                    echo "[W] Resuming monitor..."
+                fi
+
+                sleep 5
                 continue
             fi
         fi
 
-        # ── Check: restart signal? ──────────────────────────────────
-        if [ -f "$RESTART_FILE" ]; then
-            echo ""
-            echo "[W] 🔄 Restart signal detected!"
-            rm -f "$RESTART_FILE"
+        # ── Restart logic (reached when process dead OR heartbeat failed) ──
+        echo ""
+        echo "[W] ⚠️  Restarting A_old from last backup..."
 
-            do_upgrade
-            local rc=$?
+        # Kill the stuck/dead process if PID still exists
+        local stuck_pid
+        stuck_pid=$(get_pid)
+        if [ -n "$stuck_pid" ]; then
+            echo "[W] Force killing stuck process (PID: $stuck_pid)..."
+            kill -KILL "$stuck_pid" 2>/dev/null
+            sleep 1
+        fi
 
-            if [ $rc -eq 0 ]; then
-                CURRENT_PID=$(get_pid)
-                echo "[W] Monitoring new A_old (PID: ${CURRENT_PID:-unknown})"
-            else
-                echo "[W] Upgrade returned code $rc. Continuing with current instance."
-                CURRENT_PID=$(get_pid)
-            fi
+        # Find latest backup
+        local latest_backup
+        latest_backup=$(ls -t "$BACKUP_DIR"/ion.*.backup 2>/dev/null | head -1)
 
-            echo ""
-            echo "[W] Resuming monitor..."
+        if [ -n "$latest_backup" ] && [ -f "$latest_backup" ]; then
+            cp "$latest_backup" "$ION_BIN"
+            echo "[W] Restored from: $latest_backup"
+        else
+            echo "[W] No backup found, trying current binary as-is"
+        fi
+
+        rm -f "$SOCK_PATH" 2>/dev/null
+        cd "$PROJECT_DIR"
+        "$ION_BIN" serve &
+        CURRENT_PID=$!
+        heartbeat_failures=0
+        echo "[W] A_old restarted (PID: $CURRENT_PID)"
+        sleep 5
+
+        if health_check "$ION_BIN" 15; then
+            echo "[W] ✅ Restarted successfully"
+        else
+            echo "[W] ❌ Restart failed! Will retry in 30s"
+            sleep 30
+            continue
         fi
 
         sleep 5
