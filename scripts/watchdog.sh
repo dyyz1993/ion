@@ -154,15 +154,22 @@ do_upgrade() {
     fi
 
     # ── Step 2: Compile new binary ──────────────────────────────────
-    echo "[W] Compiling A_new (timeout: ${COMPILE_TIMEOUT}s)..."
+    # Match the build profile to ION_BIN path (debug vs release).
+    # This ensures backup/compile/restore all operate on the SAME binary.
+    local build_flag="--release"
+    case "$ION_BIN" in
+        */target/debug/*) build_flag="" ;;
+        */target/release/*) build_flag="--release" ;;
+    esac
+    echo "[W] Compiling A_new ($build_flag, timeout: ${COMPILE_TIMEOUT}s)..."
 
-    if ! timeout "$COMPILE_TIMEOUT" cargo build --release --bin ion --bin ion-worker 2>&1 | tail -5; then
+    if ! timeout "$COMPILE_TIMEOUT" cargo build $build_flag --bin ion --bin ion-worker 2>&1 | tail -5; then
         echo "[W] ❌ Compile failed or timed out. A_old continues."
         return 1
     fi
 
     if [ ! -f "$ION_BIN" ]; then
-        echo "[W] ❌ Binary not found after compile. A_old continues."
+        echo "[W] ❌ Binary not found at $ION_BIN after compile. A_old continues."
         return 1
     fi
     echo "[W] ✅ A_new compiled"
