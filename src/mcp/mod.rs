@@ -878,4 +878,327 @@ mod tests {
         );
         assert_eq!(server_count_in_config(&config), 2);
     }
+
+    // ── ServerStatus serialization ───────────────────────────────────────────
+
+    #[test]
+    fn test_server_status_serialize_variants() {
+        // Each variant must serialize to its snake_case representation.
+        assert_eq!(
+            serde_json::to_string(&ServerStatus::Disconnected).unwrap(),
+            "\"disconnected\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ServerStatus::Connecting).unwrap(),
+            "\"connecting\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ServerStatus::Connected).unwrap(),
+            "\"connected\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ServerStatus::Error).unwrap(),
+            "\"error\""
+        );
+    }
+
+    // ── DiscoveredTool / DiscoveredResource / DiscoveredPrompt serialization ──
+
+    #[test]
+    fn test_discovered_tool_serialize() {
+        let tool = DiscoveredTool {
+            full_name: "mcp__myserver__foo".to_string(),
+            original_name: "foo".to_string(),
+            description: "Does foo".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+        };
+        let json = serde_json::to_value(&tool).unwrap();
+        assert_eq!(json["full_name"], "mcp__myserver__foo");
+        assert_eq!(json["original_name"], "foo");
+        assert_eq!(json["description"], "Does foo");
+        assert_eq!(json["input_schema"]["type"], "object");
+    }
+
+    #[test]
+    fn test_discovered_resource_serialize() {
+        let res = DiscoveredResource {
+            uri: "file:///tmp/x".to_string(),
+            name: "x".to_string(),
+            description: Some("a file".to_string()),
+            mime_type: Some("text/plain".to_string()),
+        };
+        let json = serde_json::to_value(&res).unwrap();
+        assert_eq!(json["uri"], "file:///tmp/x");
+        assert_eq!(json["name"], "x");
+        assert_eq!(json["description"], "a file");
+        assert_eq!(json["mime_type"], "text/plain");
+
+        // None fields must serialize to null.
+        let res2 = DiscoveredResource {
+            uri: "file:///tmp/y".to_string(),
+            name: "y".to_string(),
+            description: None,
+            mime_type: None,
+        };
+        let json2 = serde_json::to_value(&res2).unwrap();
+        assert!(json2["description"].is_null());
+        assert!(json2["mime_type"].is_null());
+    }
+
+    #[test]
+    fn test_discovered_prompt_serialize() {
+        let prompt = DiscoveredPrompt {
+            name: "greet".to_string(),
+            description: Some("Say hi".to_string()),
+        };
+        let json = serde_json::to_value(&prompt).unwrap();
+        assert_eq!(json["name"], "greet");
+        assert_eq!(json["description"], "Say hi");
+
+        let prompt2 = DiscoveredPrompt {
+            name: "greet".to_string(),
+            description: None,
+        };
+        let json2 = serde_json::to_value(&prompt2).unwrap();
+        assert!(json2["description"].is_null());
+    }
+
+    // ── McpServerConfig serialization (Stdio + Http) ──────────────────────────
+
+    #[test]
+    fn test_mcp_server_config_stdio_serialize() {
+        let cfg = McpServerConfig::Stdio {
+            command: "echo".to_string(),
+            args: vec!["hi".to_string()],
+            env: [("KEY".to_string(), "VAL".to_string())].into(),
+            cwd: Some("/tmp".to_string()),
+            disabled: false,
+        };
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["command"], "echo");
+        assert_eq!(json["args"][0], "hi");
+        assert_eq!(json["env"]["KEY"], "VAL");
+        assert_eq!(json["cwd"], "/tmp");
+        assert_eq!(json["disabled"], false);
+    }
+
+    #[test]
+    fn test_mcp_server_config_http_serialize() {
+        let cfg = McpServerConfig::Http {
+            kind: "streamable-http".to_string(),
+            url: "http://localhost:8080/mcp".to_string(),
+            headers: [("Authorization".to_string(), "Bearer x".to_string())].into(),
+            disabled: true,
+        };
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["type"], "streamable-http");
+        assert_eq!(json["url"], "http://localhost:8080/mcp");
+        assert_eq!(json["headers"]["Authorization"], "Bearer x");
+        assert_eq!(json["disabled"], true);
+    }
+
+    // ── McpServerConfig parsing (untagged enum) ───────────────────────────────
+
+    #[test]
+    fn test_mcp_server_config_parse_stdio() {
+        // Presence of "command" field → Stdio variant.
+        let json = r#"{ "command": "node", "args": ["server.js"] }"#;
+        let cfg: McpServerConfig = serde_json::from_str(json).unwrap();
+        match cfg {
+            McpServerConfig::Stdio { command, args, env, cwd, disabled } => {
+                assert_eq!(command, "node");
+                assert_eq!(args, vec!["server.js".to_string()]);
+                assert!(env.is_empty());
+                assert!(cwd.is_none());
+                assert!(!disabled);
+            }
+            _ => panic!("expected Stdio variant"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_server_config_parse_http() {
+        // type=streamable-http with url → Http variant.
+        let json = r#"{ "type": "streamable-http", "url": "http://example.com/mcp" }"#;
+        let cfg: McpServerConfig = serde_json::from_str(json).unwrap();
+        match cfg {
+            McpServerConfig::Http { kind, url, headers, disabled } => {
+                assert_eq!(kind, "streamable-http");
+                assert_eq!(url, "http://example.com/mcp");
+                assert!(headers.is_empty());
+                assert!(!disabled);
+            }
+            _ => panic!("expected Http variant"),
+        }
+    }
+
+    // ── McpServerConfig helper methods ────────────────────────────────────────
+
+    #[test]
+    fn test_mcp_server_config_is_disabled() {
+        let enabled = McpServerConfig::Stdio {
+            command: "echo".to_string(),
+            args: vec![],
+            env: [].into(),
+            cwd: None,
+            disabled: false,
+        };
+        assert!(!enabled.is_disabled());
+
+        let disabled = McpServerConfig::Stdio {
+            command: "echo".to_string(),
+            args: vec![],
+            env: [].into(),
+            cwd: None,
+            disabled: true,
+        };
+        assert!(disabled.is_disabled());
+
+        let http_enabled = McpServerConfig::Http {
+            kind: "streamable-http".to_string(),
+            url: "http://localhost:8080".to_string(),
+            headers: [].into(),
+            disabled: false,
+        };
+        assert!(!http_enabled.is_disabled());
+
+        let http_disabled = McpServerConfig::Http {
+            kind: "streamable-http".to_string(),
+            url: "http://localhost:8080".to_string(),
+            headers: [].into(),
+            disabled: true,
+        };
+        assert!(http_disabled.is_disabled());
+    }
+
+    #[test]
+    fn test_mcp_server_config_transport() {
+        let stdio = McpServerConfig::Stdio {
+            command: "echo".to_string(),
+            args: vec![],
+            env: [].into(),
+            cwd: None,
+            disabled: false,
+        };
+        assert_eq!(stdio.transport(), "stdio");
+
+        let http = McpServerConfig::Http {
+            kind: "streamable-http".to_string(),
+            url: "http://localhost:8080".to_string(),
+            headers: [].into(),
+            disabled: false,
+        };
+        assert_eq!(http.transport(), "streamable-http");
+    }
+
+    // ── McpManager construction ──────────────────────────────────────────────
+
+    #[test]
+    fn test_mcp_manager_empty() {
+        let manager = McpManager::new(HashMap::new());
+        assert!(manager.is_empty());
+        assert_eq!(manager.server_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_mcp_manager_counts_no_connection() {
+        // Manager with 2 configured servers but no connect_all → connected_count == 0.
+        let mut config = HashMap::new();
+        config.insert(
+            "stdio1".to_string(),
+            McpServerConfig::Stdio {
+                command: "echo".to_string(),
+                args: vec![],
+                env: [].into(),
+                cwd: None,
+                disabled: false,
+            },
+        );
+        config.insert(
+            "http1".to_string(),
+            McpServerConfig::Http {
+                kind: "streamable-http".to_string(),
+                url: "http://localhost:9999/mcp".to_string(),
+                headers: [].into(),
+                disabled: false,
+            },
+        );
+        let manager = McpManager::new(config);
+
+        assert!(!manager.is_empty());
+        assert_eq!(manager.server_count(), 2);
+        assert_eq!(manager.connected_count().await, 0);
+        assert_eq!(manager.connected_server_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_mcp_manager_no_servers_has_empty_lists() {
+        // Without connecting, discovered-tools / server-list JSON are empty.
+        let manager = McpManager::new(HashMap::new());
+        assert!(manager.all_discovered_tools().await.is_empty());
+        assert!(manager.all_discovered_tools_serialized().await.is_empty());
+        assert!(manager.server_list_json().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_mcp_manager_restart_unknown_server() {
+        // Restarting an unknown server returns an error message.
+        let manager = McpManager::new(HashMap::new());
+        let result = manager.restart_server("does-not-exist").await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("unknown mcp server: does-not-exist")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mcp_manager_toggle_unknown_server() {
+        // Toggling an unknown server returns an error message.
+        let manager = McpManager::new(HashMap::new());
+        let result = manager.toggle_server("nope", true).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown mcp server: nope"));
+    }
+
+    // ── reconnect_delay helper (static, deterministic) ────────────────────────
+
+    #[test]
+    fn test_reconnect_delay_exponential_backoff() {
+        // attempt 0 → 1s, attempt 1 → 2s, attempt 2 → 4s (exponential growth).
+        assert_eq!(McpManager::reconnect_delay(0), std::time::Duration::from_secs(1));
+        assert_eq!(McpManager::reconnect_delay(1), std::time::Duration::from_secs(2));
+        assert_eq!(McpManager::reconnect_delay(2), std::time::Duration::from_secs(4));
+        assert_eq!(McpManager::reconnect_delay(3), std::time::Duration::from_secs(8));
+    }
+
+    #[test]
+    fn test_reconnect_delay_capped_at_max() {
+        // Large attempt values must never exceed RECONNECT_MAX_DELAY_MS (30s).
+        let max = std::time::Duration::from_millis(McpManager::RECONNECT_MAX_DELAY_MS);
+        assert!(McpManager::reconnect_delay(10) <= max);
+        assert!(McpManager::reconnect_delay(20) <= max);
+        assert!(McpManager::reconnect_delay(100) <= max);
+    }
+
+    // ── is_connection_error helper ───────────────────────────────────────────
+
+    #[test]
+    fn test_is_connection_error_positive() {
+        assert!(McpManager::is_connection_error("connection reset by peer"));
+        assert!(McpManager::is_connection_error("channel closed"));
+        assert!(McpManager::is_connection_error("transport error"));
+        assert!(McpManager::is_connection_error("broken pipe"));
+        assert!(McpManager::is_connection_error("unexpected EOF"));
+        assert!(McpManager::is_connection_error("connection refused"));
+    }
+
+    #[test]
+    fn test_is_connection_error_negative() {
+        assert!(!McpManager::is_connection_error("tool not found"));
+        assert!(!McpManager::is_connection_error("invalid arguments"));
+        assert!(!McpManager::is_connection_error("permission denied"));
+        assert!(!McpManager::is_connection_error(""));
+    }
 }
