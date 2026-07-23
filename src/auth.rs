@@ -217,3 +217,4 @@ mod tests {
         assert_eq!(empty.total_entries_count(), 0);
     }
 }
+// User4 test: approval flow baseline anchor verification
