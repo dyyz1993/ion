@@ -35,3 +35,4 @@ pub mod workflow;
 pub mod file_snapshot;
 pub mod mcp;
 pub mod hooks;
+pub mod rules_engine;

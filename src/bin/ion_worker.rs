@@ -723,6 +723,14 @@ async fn main() {
             tracing::info!("[extension] context-index disabled by config");
         }
 
+        // Rules Engine Extension (project rules injection based on applyTo glob patterns)
+        if ion_cfg.is_extension_enabled("rules-engine") {
+            ext_reg.register(Box::new(ion::rules_engine::RulesEngineExtension::new()));
+            tracing::info!("[extension] rules-engine enabled");
+        } else {
+            tracing::info!("[extension] rules-engine disabled by config");
+        }
+
         // File Snapshot Extension（文件快照 + diff 追踪）
         snapshot_store =
             if ion_cfg.is_extension_enabled("file-snapshot") {
