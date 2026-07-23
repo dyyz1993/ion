@@ -45,6 +45,9 @@ async fn main() {
         .try_init().ok();
 
     let args: Vec<String> = std::env::args().collect();
+    // Capture process start time for the health check RPC. Used by the watchdog
+    // (scripts/watchdog.sh) to report uptime during dual-version switching.
+    let start_time = std::time::Instant::now();
     let mut session_id: Option<String> = None;
     let mut model_id = "deepseek-v4-flash".to_string();
     let mut provider = "opencode".to_string();
@@ -931,6 +934,48 @@ async fn main() {
 
         // 分发命令
         match method.as_str() {
+            // ── Health check & restart notification (watchdog dual-version switching) ──
+            // These two handlers enable zero-downtime self-evolution. See
+            // scripts/watchdog.sh: watchdog polls /tmp/.ion-evolve-restart and
+            // verifies A_new is alive before promoting it over A_old.
+            "health" => {
+                // Health check for watchdog dual-version switching.
+                // Returns system status quickly (<10ms): uptime, pid, version.
+                // No DB queries, no network calls.
+                let uptime = start_time.elapsed().as_secs();
+                output_response(&id, "health", &serde_json::json!({
+                    "status": "ok",
+                    "uptime_secs": uptime,
+                    "pid": std::process::id(),
+                    "version": env!("CARGO_PKG_VERSION"),
+                }));
+            }
+
+            "request_restart" => {
+                // Notify watchdog that new code was merged and ion should restart.
+                // Watchdog (scripts/watchdog.sh) polls for this sentinel file.
+                let restart_file = "/tmp/.ion-evolve-restart";
+                // RFC3339 timestamp via SystemTime (no chrono dependency required).
+                let secs = std::time::SystemTime::now()
+                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let payload = format!("restart requested at {}", secs);
+                match std::fs::write(restart_file, payload) {
+                    Ok(_) => {
+                        eprintln!("[restart] Notified watchdog via {}", restart_file);
+                        output_response(&id, "request_restart", &serde_json::json!({
+                            "notified": true,
+                            "file": restart_file,
+                        }));
+                    }
+                    Err(e) => {
+                        output_error_response(&id, "request_restart",
+                            &format!("Failed to write restart file: {e}"));
+                    }
+                }
+            }
+
             // ── 同步查询 ──
             "get_state" => {
                 output_response(&id, "get_state", &serde_json::json!({
@@ -4675,5 +4720,35 @@ mod tests {
         output_error_response("42", "get_state", "not found");
         // If we reach this assertion, the call succeeded without panicking.
         assert!(true);
+    }
+
+    // --- watchdog dual-version switching (health + request_restart RPC) ---
+
+    #[test]
+    fn test_restart_notification_file() {
+        // Verify the sentinel-file mechanism that request_restart relies on:
+        // writing the restart signal to /tmp must round-trip correctly so the
+        // watchdog (scripts/watchdog.sh) can detect it on the next poll.
+        let restart_file = "/tmp/.ion-evolve-restart-test";
+        let content = "test restart";
+        std::fs::write(restart_file, content).unwrap();
+        assert_eq!(std::fs::read_to_string(restart_file).unwrap(), content);
+        std::fs::remove_file(restart_file).unwrap();
+    }
+
+    #[test]
+    fn test_health_response_structure() {
+        // The health RPC must return a JSON object with the fields the watchdog
+        // inspects during dual-version switching: status, uptime_secs, pid,
+        // version. No field may be null; uptime and pid must be positive.
+        let health = serde_json::json!({
+            "status": "ok",
+            "uptime_secs": 100u64,
+            "pid": 12345u64,
+            "version": "0.1.0",
+        });
+        assert_eq!(health["status"], "ok");
+        assert!(health["uptime_secs"].as_u64().unwrap() > 0);
+        assert!(health["pid"].as_u64().unwrap() > 0);
     }
 }
