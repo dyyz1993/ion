@@ -76,16 +76,79 @@ to the same long-lived orchestration core.
 
 ## Quick Start
 
+### Prerequisites
+
+- **Rust** 1.85+ (2024 edition)
+  ```bash
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  source $HOME/.cargo/env
+  ```
+- **ion-provider** (sibling crate)
+  ```bash
+  cd ..
+  git clone <ion-provider-repo> ion-provider
+  # or: ION already has ion-provider as a sibling directory
+  ```
+
+### Build
+
 ```bash
-# Build the two binaries
+git clone https://github.com/dyyz1993/ion.git
+cd ion
+
+# Build both binaries (ion CLI + ion-worker subprocess)
 cargo build --bin ion --bin ion-worker
 
-# Configure your provider API key
+# Verify installation
+./target/debug/ion --version
+```
+
+### Configure
+
+```bash
+# Set your API key (stored in ~/.ion/auth.json, permissions 600)
 ion config set api-key "sk-xxx"
 
-# Run a one-shot task
-ion "hello"
+# Or create ~/.ion/config.json manually:
+# {
+#   "default_provider": "zai",
+#   "default_model": "glm-5.2",
+#   "providers": {
+#     "zai": {
+#       "name": "zai",
+#       "api": "openai-completions",
+#       "base_url": "https://your-api-endpoint/v1",
+#       "api_key": "your-token"
+#     }
+#   }
+# }
 ```
+
+### Run
+
+```bash
+# One-shot task (Scenario 1: quick execution)
+ion "summarize this repo"
+
+# Multi-agent orchestration (Scenario 2: quick host)
+ion --host --agent coordinator "add a method to src/auth.rs"
+
+# Persistent service (Scenario 3: daemon)
+ion serve
+```
+
+### Supported Providers
+
+ION supports 10 API protocols (aligned with pi):
+- OpenAI Completions / Responses / Codex
+- Anthropic Messages
+- Azure OpenAI Responses
+- Google Generative AI / Vertex
+- Mistral Conversations
+- Cloudflare Workers AI
+- Amazon Bedrock
+
+Use any provider by configuring ~/.ion/config.json.
 
 ---
 
