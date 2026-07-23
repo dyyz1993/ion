@@ -723,6 +723,14 @@ async fn main() {
             tracing::info!("[extension] context-index disabled by config");
         }
 
+        // File Time Guard Extension（detect externally-modified files before write/edit）
+        if ion_cfg.is_extension_enabled("file-time-guard") {
+            ext_reg.register(Box::new(ion::file_time_guard::FileTimeGuardExtension::new()));
+            tracing::info!("[extension] file-time-guard enabled");
+        } else {
+            tracing::info!("[extension] file-time-guard disabled by config");
+        }
+
         // Rules Engine Extension (project rules injection based on applyTo glob patterns)
         if ion_cfg.is_extension_enabled("rules-engine") {
             ext_reg.register(Box::new(ion::rules_engine::RulesEngineExtension::new()));

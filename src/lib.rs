@@ -33,6 +33,7 @@ pub mod storage_context;
 pub mod retry;
 pub mod workflow;
 pub mod file_snapshot;
+pub mod file_time_guard;
 pub mod mcp;
 pub mod hooks;
 pub mod rules_engine;
