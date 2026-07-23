@@ -120,11 +120,19 @@ loop:
 
   spawn_worker(child, qa, "Add missing tests", wait=true)
 
-  ── 阶段 1.5: CI 检查 ──
-  spawn_worker(child, ci, 'Run full CI: cargo build + cargo test --lib + cargo clippy + cargo fmt --check. Report PASS or FAIL.', wait=true)
-  if ci FAIL:
-      resume_worker(developer_id, 'Fix CI failure: <paste error>')
-      → 重新跑 ci
+  ── Stage 1.5: CI Check (with auto-fix) ──
+  spawn_worker(child, ci, "Run full CI: cargo build + test + clippy + fmt. Report PASS/FAIL.", wait=true)
+
+  if ci-agent reports FAIL:
+      # CI-Agent identifies the failure and fixes it
+      resume_worker(ci_worker_id, "Fix the CI failure. Read the error log, fix the code, verify locally, report.")
+
+      # Re-run CI
+      spawn_worker(child, ci, "Re-run CI to verify fix.", wait=true)
+
+      if still FAIL after 3 attempts:
+          report "CI failed 3 times. Human intervention needed."
+          stop.
 
   ── 阶段 2: 合并 ──
   spawn_worker(child, merger, "Merge to master + cleanup", wait=true)

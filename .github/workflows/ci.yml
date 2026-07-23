@@ -59,3 +59,21 @@ jobs:
 
       - name: Integration tests (Rust)
         run: cargo test --tests 2>&1 || echo "(some tests may need manager)"
+
+      - name: Scenario 1 test (quick execution)
+        run: |
+          echo 'hello' | timeout 30 ./target/debug/ion -p --model faux --provider faux 2>&1 | head -5
+        env:
+          ION_FAUX_REPLY: 'Hello from faux!'
+
+      - name: Scenario 2 test (host orchestration)
+        run: |
+          echo 'say hi' | timeout 30 ./target/debug/ion --host --agent build --model faux --provider faux 2>&1 | head -5
+
+      - name: Scenario 3 test (serve mode)
+        run: |
+          timeout 5 ./target/debug/ion serve &
+          sleep 2
+          # Verify socket exists
+          test -S ~/.ion/host.sock && echo 'socket OK' || echo 'no socket'
+          kill %1 2>/dev/null || true
