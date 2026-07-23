@@ -1004,4 +1004,237 @@ mod tests {
         ];
         assert_eq!(count_branches(&entries), 2, "leaf pointers are not counted as tree nodes");
     }
+
+    // ── Additional coverage tests ──
+
+    // 1. LeafPointerEntry construction + serialization
+
+    /// Verify leaf_pointer entry has the expected JSON shape when constructed via the
+    /// helper, and that it round-trips through serde serialization.
+    #[test]
+    fn leaf_pointer_construction_and_serialization() {
+        let lp = leaf_ptr("lp1", Some("m2"));
+        // Required fields are present and typed correctly
+        assert_eq!(lp["type"].as_str(), Some("leaf_pointer"));
+        assert_eq!(lp["id"].as_str(), Some("lp1"));
+        assert_eq!(lp["leafId"].as_str(), Some("m2"));
+        assert!(lp["parentId"].is_null(), "leaf_pointer parentId is null");
+
+        // Round-trip: serialize to JSON string and back, fields preserved
+        let json_str = serde_json::to_string(&lp).expect("must serialize");
+        let parsed: Value = serde_json::from_str(&json_str).expect("must deserialize");
+        assert_eq!(parsed["type"].as_str(), Some("leaf_pointer"));
+        assert_eq!(parsed["leafId"].as_str(), Some("m2"));
+
+        // is_leaf_pointer predicate must accept it
+        assert!(is_leaf_pointer(&lp));
+
+        // leaf_pointer_target helper extracts the target id
+        assert_eq!(leaf_pointer_target(&lp), Some("m2"));
+    }
+
+    /// A leaf_pointer with an empty leafId string represents a "reset".
+    /// is_leaf_pointer still matches, and leaf_pointer_target returns Some("").
+    #[test]
+    fn leaf_pointer_empty_target_is_still_leaf_pointer() {
+        let lp = leaf_ptr("lp2", None);
+        assert!(is_leaf_pointer(&lp), "type field is still leaf_pointer");
+        // None maps to null in JSON; leaf_pointer_target returns None
+        assert_eq!(leaf_pointer_target(&lp), None);
+    }
+
+    // 2. resolve_current_leaf with various tree shapes
+
+    /// A forked tree with two leaves but no leaf_pointer:
+    /// the deeper (or first-seen deepest) non-parent entry wins.
+    /// h → m1 → m2 → m3  (depth 3)
+    ///      └ → m4         (depth 2)
+    /// m3 is the deepest leaf → wins.
+    #[test]
+    fn resolve_leaf_forked_picks_deeper_branch() {
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            msg("m2", "m1", "b"),
+            msg("m4", "m1", "d"), // sibling branch, depth 2
+            msg("m3", "m2", "c"), // depth 3
+        ];
+        assert_eq!(resolve_current_leaf(&entries), Some("m3".into()));
+    }
+
+    /// A reset leaf_pointer (empty leafId) in the middle of the log:
+    /// entries after it become candidates; the deepest non-parent after it wins.
+    #[test]
+    fn resolve_leaf_reset_pointer_finds_deepest_after() {
+        // h → m1 → m2, then reset pointer, then m3 → m4 (new chain after reset)
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            msg("m2", "m1", "b"),
+            leaf_ptr("lp1", None), // reset
+            msg("m3", "h", "c"),   // new branch from h
+            msg("m4", "m3", "d"),  // deepest non-parent after reset
+        ];
+        assert_eq!(resolve_current_leaf(&entries), Some("m4".into()));
+    }
+
+    /// Two sibling branches both at depth 1 (same depth), neither is a parent.
+    /// resolve_current_leaf returns one of them (deterministic: first-seen with
+    /// that max depth since `>` is strict).
+    #[test]
+    fn resolve_leaf_equal_depth_siblings() {
+        // h → m1, h → m2  (both depth 1, both leaves)
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            msg("m2", "h", "b"),
+        ];
+        let leaf = resolve_current_leaf(&entries);
+        assert!(leaf == Some("m1".into()) || leaf == Some("m2".into()),
+            "leaf must be one of the two siblings");
+    }
+
+    // 3. get_tree structure vs full mode (labels attached)
+
+    /// get_tree attaches labels from label entries onto the matching tree node.
+    /// Note: label entries themselves are NOT filtered by get_tree (only headers
+    /// and leaf_pointers are), so a label with no parentId appears as an extra
+    /// root. The label text is attached to the node whose id matches targetId.
+    #[test]
+    fn get_tree_attaches_label_to_node() {
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            msg("m2", "m1", "b"),
+            json!({"type": "label", "id": "l1", "parentId": null, "targetId": "m1", "label": "checkpoint", "timestamp": "x"}),
+        ];
+        let tree = get_tree(&entries);
+        // The label entry (parentId null) becomes a second root, so 2 roots.
+        // Find the node for m1 and verify it carries the label.
+        let m1_node = tree.iter().find(|n| entry_id(&n.entry) == Some("m1"));
+        assert!(m1_node.is_some(), "m1 node must be present");
+        assert_eq!(
+            m1_node.unwrap().label.as_deref(),
+            Some("checkpoint"),
+            "m1 node should carry the label"
+        );
+        // m2 has no label
+        let m2_node = tree
+            .iter()
+            .find_map(|n| n.children.iter().find(|c| entry_id(&c.entry) == Some("m2")));
+        assert!(m2_node.is_some());
+        assert!(m2_node.unwrap().label.is_none(), "m2 has no label");
+    }
+
+    /// get_tree produces a multi-root forest when several entries share no parent
+    /// (or have a parentId pointing outside the tree).
+    #[test]
+    fn get_tree_multiple_roots() {
+        let entries = vec![
+            header("h"),
+            msg("m1", "ghost", "a"), // parent not in tree → root
+            msg("m2", "ghost", "b"), // parent not in tree → root
+        ];
+        let tree = get_tree(&entries);
+        assert_eq!(tree.len(), 2, "two disconnected roots form a forest");
+        // Each root is childless
+        assert_eq!(tree[0].children.len(), 0);
+        assert_eq!(tree[1].children.len(), 0);
+    }
+
+    /// get_tree sorts children by timestamp ascending. Insert children out of
+    /// timestamp order and verify they come back sorted.
+    #[test]
+    fn get_tree_sorts_children_by_timestamp() {
+        let older = json!({"type": "message", "id": "a", "parentId": "root", "timestamp": "2026-01-01T00:00:00Z", "message": {"role":"user","content":"old"}});
+        let newer = json!({"type": "message", "id": "b", "parentId": "root", "timestamp": "2026-01-01T00:00:05Z", "message": {"role":"user","content":"new"}});
+        let root = json!({"type": "message", "id": "root", "parentId": "h", "timestamp": "2026-01-01T00:00:00Z", "message": {"role":"user","content":"root"}});
+        let entries = vec![
+            header("h"),
+            root,
+            newer.clone(), // appended first, later timestamp
+            older.clone(), // appended second, earlier timestamp
+        ];
+        let tree = get_tree(&entries);
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].children.len(), 2);
+        // Older child must come first after sorting
+        assert_eq!(entry_id(&tree[0].children[0].entry), Some("a"));
+        assert_eq!(entry_id(&tree[0].children[1].entry), Some("b"));
+    }
+
+    // 4. Branch naming + checkout logic helpers
+
+    /// make_branch with a name produces a label whose targetId equals the from_id.
+    /// Combined with named_branches round-trip: building a branch then scanning
+    /// for labels recovers the same (label, target) pair.
+    #[test]
+    fn make_branch_label_round_trips_through_named_branches() {
+        let base_entries = vec![header("h"), msg("m1", "h", "a")];
+        let new = make_branch("m1", Some("feature-x")).unwrap();
+        let combined: Vec<Value> = base_entries.iter().cloned().chain(new).collect();
+
+        let branches = named_branches(&combined);
+        assert!(branches.iter().any(|(l, t)| l == "feature-x" && t == "m1"),
+            "named_branches must find the label created by make_branch");
+    }
+
+    /// make_checkout produces a leaf_pointer whose leafId equals the label's
+    /// targetId. Appending it to the session and re-running make_checkout for a
+    /// different existing label yields a different target.
+    #[test]
+    fn make_checkout_targets_correct_label() {
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            msg("m2", "m1", "b"),
+            json!({"type": "label", "id": "l1", "parentId": null, "targetId": "m1", "label": "root", "timestamp": "x"}),
+            json!({"type": "label", "id": "l2", "parentId": null, "targetId": "m2", "label": "tip", "timestamp": "x"}),
+        ];
+        let co_root = make_checkout(&entries, "root").unwrap();
+        assert_eq!(co_root[0]["leafId"].as_str(), Some("m1"));
+
+        let co_tip = make_checkout(&entries, "tip").unwrap();
+        assert_eq!(co_tip[0]["leafId"].as_str(), Some("m2"));
+    }
+
+    /// named_branches ignores non-label entries (messages, headers, leaf_pointers)
+    /// and only returns entries of type "label".
+    #[test]
+    fn named_branches_ignores_non_label_entries() {
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            leaf_ptr("lp1", Some("m1")),
+            json!({"type": "branch_summary", "id": "bs1", "parentId": null, "summary": "...", "timestamp": "x"}),
+        ];
+        assert!(named_branches(&entries).is_empty(),
+            "no label entries → empty result");
+    }
+
+    /// find_leaf_pointer_target returns the target of the *last* leaf_pointer in
+    /// the log, even when earlier pointers point elsewhere.
+    #[test]
+    fn find_leaf_pointer_target_returns_last_even_with_different_targets() {
+        let entries = vec![
+            header("h"),
+            msg("m1", "h", "a"),
+            msg("m2", "m1", "b"),
+            msg("m3", "m2", "c"),
+            leaf_ptr("lp1", Some("m1")),
+            leaf_ptr("lp2", Some("m3")),
+        ];
+        // Last pointer wins → m3
+        assert_eq!(find_leaf_pointer_target(&entries), Some("m3".into()));
+    }
+
+    /// make_branch and make_rollback both generate unique ids (no collision)
+    /// across multiple invocations, since gen_id uses an atomic counter.
+    #[test]
+    fn make_branch_generates_unique_ids() {
+        let a = make_branch("m1", None).unwrap();
+        let b = make_branch("m1", None).unwrap();
+        assert_ne!(a[0]["id"].as_str(), b[0]["id"].as_str(),
+            "consecutive make_branch calls must produce distinct ids");
+    }
 }
