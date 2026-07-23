@@ -672,12 +672,18 @@ pub struct Registry {
     pub ctx: RwLock<Context>,
 }
 
-impl Registry {
-    pub fn new() -> Self {
+impl Default for Registry {
+    fn default() -> Self {
         Self {
             plugins: RwLock::new(HashMap::new()),
             ctx: RwLock::new(Context::default()),
         }
+    }
+}
+
+impl Registry {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Add (or reload) a plugin from the given path.
