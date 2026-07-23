@@ -516,4 +516,126 @@ mod tests {
         assert_eq!(stats.total_workers, 5);
         pool.shutdown().await;
     }
+
+    // ---- pure (non-async) unit tests ----
+
+    #[test]
+    fn pool_options_default_values() {
+        let opts = PoolOptions::default();
+        assert_eq!(opts.min_workers, 0);
+        assert_eq!(opts.max_workers, 10);
+        assert_eq!(opts.idle_timeout, Duration::from_secs(300));
+        assert_eq!(opts.worker_timeout, Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn pool_options_custom_values() {
+        let opts = PoolOptions {
+            min_workers: 3,
+            max_workers: 42,
+            idle_timeout: Duration::from_secs(10),
+            worker_timeout: Duration::from_secs(99),
+        };
+        assert_eq!(opts.min_workers, 3);
+        assert_eq!(opts.max_workers, 42);
+        assert_eq!(opts.idle_timeout, Duration::from_secs(10));
+        assert_eq!(opts.worker_timeout, Duration::from_secs(99));
+    }
+
+    #[test]
+    fn pool_options_clone_preserves_fields() {
+        let original = PoolOptions {
+            min_workers: 2,
+            max_workers: 8,
+            ..Default::default()
+        };
+        let cloned = original.clone();
+        assert_eq!(original.min_workers, cloned.min_workers);
+        assert_eq!(original.max_workers, cloned.max_workers);
+        assert_eq!(original.idle_timeout, cloned.idle_timeout);
+    }
+
+    #[test]
+    fn pool_stats_default_is_zeroed() {
+        let stats = PoolStats::default();
+        assert_eq!(stats.total_workers, 0);
+        assert_eq!(stats.idle_workers, 0);
+        assert_eq!(stats.claimed_workers, 0);
+        assert_eq!(stats.running_workers, 0);
+        assert_eq!(stats.dead_workers, 0);
+    }
+
+    #[test]
+    fn pool_handle_clone_shares_channel() {
+        let (tx, mut rx) = mpsc::channel::<PoolCmd>(8);
+        let h1 = PoolHandle::new(tx);
+        let h2 = h1.clone();
+
+        // Both handles share the same sender, so a send from one is
+        // observable by the receiver.
+        tokio_test_block_on(async {
+            h1.release(WorkerId::new(1)).await;
+            let cmd = rx.recv().await;
+            assert!(matches!(
+                cmd,
+                Some(PoolCmd::Release { worker_id }) if worker_id == WorkerId::new(1)
+            ));
+            drop(h2);
+        });
+    }
+
+    #[test]
+    fn pool_cmd_release_carries_worker_id() {
+        let cmd = PoolCmd::Release {
+            worker_id: WorkerId::new(7),
+        };
+        match cmd {
+            PoolCmd::Release { worker_id } => assert_eq!(worker_id, WorkerId::new(7)),
+            _ => panic!("expected Release variant"),
+        }
+    }
+
+    #[test]
+    fn pool_cmd_scale_to_carries_target() {
+        let cmd = PoolCmd::ScaleTo {
+            n: 4,
+            reply: oneshot::channel().0,
+        };
+        match cmd {
+            PoolCmd::ScaleTo { n, .. } => assert_eq!(n, 4),
+            _ => panic!("expected ScaleTo variant"),
+        }
+    }
+
+    #[test]
+    fn worker_status_variants_are_distinct() {
+        // Sanity check: the statuses the pool relies on are distinct
+        // single-value enum variants.
+        let idle = WorkerStatus::Idle;
+        let claimed = WorkerStatus::Claimed;
+        let running = WorkerStatus::Running;
+        let dead = WorkerStatus::Dead;
+
+        // Format each to a string to compare distinctness without PartialEq.
+        let tags = [
+            format!("{idle:?}"),
+            format!("{claimed:?}"),
+            format!("{running:?}"),
+            format!("{dead:?}"),
+        ];
+        let unique: std::collections::HashSet<&str> =
+            tags.iter().map(|s| s.as_str()).collect();
+        assert_eq!(unique.len(), tags.len());
+    }
+}
+
+/// Tiny helper so we can drive a small async snippet from a synchronous test
+/// without pulling in extra dev-dependencies.
+#[cfg(test)]
+fn tokio_test_block_on<F: std::future::Future>(future: F) {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build test runtime")
+        .block_on(future);
 }

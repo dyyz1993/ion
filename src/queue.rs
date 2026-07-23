@@ -453,4 +453,145 @@ mod tests {
         assert_eq!(snap.status, TaskStatus::Cancelled);
         queue.shutdown().await;
     }
+
+    // -----------------------------------------------------------------------
+    // Pure unit tests (no async, no actor)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn queue_stats_default_is_all_zero() {
+        // The Default derive should produce an all-zero stats object.
+        let stats = QueueStats::default();
+        assert_eq!(stats.queued, 0);
+        assert_eq!(stats.running, 0);
+        assert_eq!(stats.completed, 0);
+        assert_eq!(stats.failed, 0);
+        assert_eq!(stats.cancelled, 0);
+    }
+
+    #[test]
+    fn queue_stats_can_be_constructed_with_counts() {
+        // Constructing a QueueStats with non-zero counts should preserve them.
+        let stats = QueueStats {
+            queued: 2,
+            running: 1,
+            completed: 5,
+            failed: 3,
+            cancelled: 1,
+        };
+        assert_eq!(stats.queued, 2);
+        assert_eq!(stats.running, 1);
+        assert_eq!(stats.completed, 5);
+        assert_eq!(stats.failed, 3);
+        assert_eq!(stats.cancelled, 1);
+    }
+
+    #[test]
+    fn queue_stats_serializes_to_json() {
+        // QueueStats derives Serialize — verify the JSON shape and field names.
+        let stats = QueueStats {
+            queued: 1,
+            running: 2,
+            completed: 3,
+            failed: 4,
+            cancelled: 5,
+        };
+        let json = serde_json::to_string(&stats).expect("serialize QueueStats");
+        assert!(json.contains("\"queued\":1"));
+        assert!(json.contains("\"running\":2"));
+        assert!(json.contains("\"completed\":3"));
+        assert!(json.contains("\"failed\":4"));
+        assert!(json.contains("\"cancelled\":5"));
+    }
+
+    #[test]
+    fn queue_stats_is_clone_and_debug() {
+        // QueueStats derives Clone + Debug — ensure cloning produces equal values
+        // and the Debug output contains the expected field name.
+        let stats = QueueStats {
+            queued: 1,
+            running: 0,
+            completed: 0,
+            failed: 0,
+            cancelled: 0,
+        };
+        let cloned = stats.clone();
+        assert_eq!(stats.queued, cloned.queued);
+
+        let debug_str = format!("{:?}", stats);
+        assert!(debug_str.contains("queued"));
+        assert!(debug_str.contains("running"));
+    }
+
+    #[test]
+    fn queue_handle_new_wraps_sender() {
+        // QueueHandle::new should simply wrap the provided mpsc sender without
+        // sending anything. Constructing it should not panic.
+        let (tx, _rx) = mpsc::channel::<QueueCmd>(8);
+        let _handle = QueueHandle::new(tx);
+        // If we reach this point, construction succeeded.
+    }
+
+    #[test]
+    fn task_status_terminal_variants() {
+        // Verify which statuses are considered terminal.
+        assert!(!TaskStatus::Queued.is_terminal());
+        assert!(!TaskStatus::Running.is_terminal());
+        assert!(TaskStatus::Completed.is_terminal());
+        assert!(TaskStatus::Failed.is_terminal());
+        assert!(TaskStatus::Cancelled.is_terminal());
+    }
+
+    #[test]
+    fn task_status_equality_and_clone() {
+        // TaskStatus derives PartialEq, Eq, and Clone.
+        let a = TaskStatus::Running;
+        let b = a.clone();
+        assert_eq!(a, b);
+        assert_ne!(TaskStatus::Queued, TaskStatus::Running);
+    }
+
+    #[test]
+    fn task_status_serializes_as_expected() {
+        // Ensure each variant serializes to its snake/expected JSON string form.
+        assert_eq!(
+            serde_json::to_string(&TaskStatus::Queued).unwrap(),
+            "\"Queued\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TaskStatus::Running).unwrap(),
+            "\"Running\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TaskStatus::Completed).unwrap(),
+            "\"Completed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TaskStatus::Failed).unwrap(),
+            "\"Failed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TaskStatus::Cancelled).unwrap(),
+            "\"Cancelled\""
+        );
+    }
+
+    #[test]
+    fn task_config_default_max_retries() {
+        // TaskConfig::default should use 3 retries (matches the impl in types.rs).
+        let cfg = TaskConfig::default();
+        assert_eq!(cfg.max_retries, 3);
+    }
+
+    #[test]
+    fn task_result_ok_and_err_builders() {
+        // TaskResult::ok builds a success result; TaskResult::err builds a failure.
+        let ok = TaskResult::ok("done");
+        assert!(ok.success);
+        assert_eq!(ok.output, "done");
+
+        let err = TaskResult::err("boom");
+        assert!(!err.success);
+        assert_eq!(err.output, "boom");
+    }
 }
