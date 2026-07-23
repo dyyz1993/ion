@@ -483,6 +483,11 @@ enum ExtensionAction {
         /// Extension name (filename without .wasm)
         name: String,
     },
+    /// Create a new extension scaffold (Cargo project) with minimal boilerplate
+    Create {
+        /// Extension name (used as directory and crate name)
+        name: String,
+    },
     /// List installed WASM extensions
     List,
 }
@@ -2866,6 +2871,105 @@ async fn cmd_extension(action: ExtensionAction) {
                     std::process::exit(1);
                 }
             }
+        }
+        ExtensionAction::Create { name } => {
+            // Create scaffold: <name>/Cargo.toml + <name>/src/lib.rs
+            let dir = std::path::Path::new(&name);
+            if dir.exists() {
+                eprintln!("❌ directory already exists: {name}");
+                std::process::exit(1);
+            }
+            let src_dir = dir.join("src");
+            if let Err(e) = std::fs::create_dir_all(&src_dir) {
+                eprintln!("❌ failed to create scaffold dir: {e}");
+                std::process::exit(1);
+            }
+
+            // Cargo.toml — cdylib so it can be compiled to WASM
+            let cargo_toml = format!(
+                r#"[package]
+name = "{name}"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+serde = {{ version = "1", features = ["derive"] }}
+"#,
+                name = name,
+            );
+            let lib_rs = format!(
+                r#"//! {name} — ion extension scaffold.
+//!
+//! Build the WASM artifact with:
+//!   cargo build --release --target wasm32-wasi
+
+use serde::{{Deserialize, Serialize}};
+
+/// Version reported by the extension.
+#[no_mangle]
+pub extern "C" fn extension_version() -> *const u8 {{
+    static VERSION: &[u8] = b"0.1.0\0";
+    VERSION.as_ptr()
+}}
+
+/// Called once when the extension is loaded.
+#[no_mangle]
+pub extern "C" fn extension_init() {{
+    println!("[{name}] initialized");
+}}
+
+/// Serialized tool-execution result.
+#[derive(Serialize, Deserialize)]
+pub struct ToolResult {{
+    pub ok: bool,
+    pub output: String,
+}}
+
+/// Handle a named tool invocation.
+/// Currently supports one tool: "hello" → returns "Hello!".
+#[no_mangle]
+pub extern "C" fn extension_execute_tool(name_ptr: *const u8, name_len: usize, _args_ptr: *const u8, _args_len: usize) -> *mut ToolResult {{
+    let name = if name_ptr.is_null() {{
+        String::new()
+    }} else {{
+        unsafe {{
+            let slice = std::slice::from_raw_parts(name_ptr, name_len);
+            String::from_utf8_lossy(slice).to_string()
+        }}
+    }};
+
+    let output = match name.as_str() {{
+        "hello" => "Hello!".to_string(),
+        other => format!("unknown tool: {{other}}"),
+    }};
+
+    Box::into_raw(Box::new(ToolResult {{ ok: true, output }}))
+}}
+"#,
+                name = name,
+            );
+
+            // Write files
+            if let Err(e) = std::fs::write(dir.join("Cargo.toml"), cargo_toml) {
+                eprintln!("❌ failed to write Cargo.toml: {e}");
+                std::process::exit(1);
+            }
+            if let Err(e) = std::fs::write(src_dir.join("lib.rs"), lib_rs) {
+                eprintln!("❌ failed to write src/lib.rs: {e}");
+                std::process::exit(1);
+            }
+
+            println!("✅ scaffolded extension: {name}/");
+            println!("   {name}/Cargo.toml");
+            println!("   {name}/src/lib.rs");
+            println!();
+            println!("Next steps:");
+            println!("  cd {name}");
+            println!("  cargo build --release --target wasm32-wasi");
+            println!("  ion extension install ./target/wasm32-wasi/release/{name}.wasm");
         }
         ExtensionAction::List => {
             if !ext_dir.exists() {
