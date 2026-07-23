@@ -4111,6 +4111,33 @@ async fn handle_manager_command(
         "stats" => {
             Ok(serde_json::json!({"workers": reg.list_workers().len()}))
         }
+        "health" => {
+            // Manager-level health check for watchdog.sh.
+            // Returns immediately (<10ms): no DB, no network.
+            Ok(serde_json::json!({
+                "status": "ok",
+                "workers": reg.list_workers().len(),
+                "version": env!("CARGO_PKG_VERSION"),
+            }))
+        }
+        "request_restart" => {
+            // Write sentinel file so watchdog.sh can detect and do safe upgrade.
+            let restart_file = "/tmp/.ion-evolve-restart";
+            match std::fs::write(restart_file, format!(
+                "{} pid={}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                std::process::id(),
+            )) {
+                Ok(_) => {
+                    eprintln!("[restart] Sentinel file written: {}", restart_file);
+                    Ok(serde_json::json!({"notified": true, "file": restart_file}))
+                }
+                Err(e) => Err(format!("Failed to write restart sentinel: {}", e)),
+            }
+        }
         "extension_rpc" => {
             // 单例扩展的 extension_rpc：直接从 SingletonRegistry 调
             let params = cmd.get("params").cloned().unwrap_or_default();
