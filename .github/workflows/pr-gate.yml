@@ -1,25 +1,22 @@
-name: CI
+name: PR Gate
 
+# Strict status check that must pass before a PR can be merged.
+# Unlike ci.yml this job fails on any error (no continue-on-error).
 on:
-  push:
-    branches: [main, master]
-    paths-ignore:
-      - '*.md'
-      - 'docs/**'
-      - 'dashboard/**'
   pull_request:
     branches: [main, master]
 
 env:
   CARGO_TERM_COLOR: always
 
-# Cancel old runs when a new commit is pushed to the same branch/PR
+# Cancel superseded runs on the same PR to save CI minutes
 concurrency:
-  group: ci-${{ github.ref }}
+  group: pr-gate-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-and-test:
+  build-check-test:
+    name: PR Gate
     runs-on: ubuntu-latest
 
     steps:
@@ -27,6 +24,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -40,13 +39,13 @@ jobs:
       - name: Build
         run: cargo build --bin ion --bin ion-worker --bin agent-demo
 
+      # Strict clippy: any warning fails the build
       - name: Clippy
         run: cargo clippy --lib -- -D warnings
-        continue-on-error: true
 
+      # Strict fmt: any unformatted file fails the build
       - name: Format check
         run: cargo fmt -- --check
-        continue-on-error: true
 
       - name: Unit tests (ion lib)
         run: cargo test --lib
