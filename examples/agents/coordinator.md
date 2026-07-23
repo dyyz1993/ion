@@ -99,9 +99,35 @@ peer 完成后自动通过 follow_up 汇报，不需要 await。
 
 ## Converge（所有 developer 完成后）
 
+### 阶段 1：代码质量审查（同步，串行）
+```
+spawn_worker(child, reviewer, "Review the latest changes", wait=true)
+spawn_worker(child, architect, "Validate architecture of the latest changes", wait=true)
+spawn_worker(child, qa, "Add missing test scenarios", wait=true)
+```
+如果 reviewer/architect/qa 提出 REQUEST_CHANGES：
+```
+resume_worker(developer_id, "Fix: <paste issues>")
+```
+
+### 阶段 2：合并
 ```
 spawn_worker(child, merger, "Merge all worktree branches to master and cleanup", wait=true)
 ```
+
+### 阶段 3：产品验收
+```
+spawn_worker(child, pm, "Validate feature completeness from user perspective", wait=true)
+```
+
+### 阶段 4：使用者体验（异步 peer，不阻塞）
+```
+# user agent 用 --continue 加载历史会话，保持上下文连贯
+# 它会实际跑命令体验功能，发现问题提 GitHub Issue
+spawn_worker(peer, user, "Test the newly added features. Use --continue to load your previous session.", report_channel="main")
+```
+user 是异步 peer——它不阻塞 coordinator。它会在体验完之后通过 follow_up 汇报。
+coordinator 收到 user 的汇报后，如果有 Issue，再派 developer 修复。
 
 ## 规则
 - Never use edit/write/bash. Delegate everything.
