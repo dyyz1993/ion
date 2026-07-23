@@ -152,6 +152,39 @@ Use any provider by configuring ~/.ion/config.json.
 
 ---
 
+## Next Steps
+
+### Try different agents
+```bash
+# Explore codebase (read-only)
+ion --agent explore "analyze this repo"
+
+# Code review
+ion --agent reviewer "review src/auth.rs"
+
+# Multi-agent orchestration
+ion --host --agent coordinator "add a method to src/global_memory.rs"
+```
+
+### Export reports
+```bash
+ion --export /tmp/report.html
+open /tmp/report.html
+```
+
+### Browse sessions
+```bash
+ion sessions              # list all sessions
+ion history <session-id>  # view conversation history
+```
+
+### Learn more
+- [CLI_USAGE.md](docs/guides/CLI_USAGE.md) — Full CLI reference
+- [WORKFLOW.md](docs/guides/WORKFLOW.md) — Development workflows
+- [CONTRIBUTING.md](CONTRIBUTING.md) — How to contribute
+
+---
+
 ## Key Features
 
 - **45+ CLI parameters** — fully aligned with pi's command surface.
