@@ -3,6 +3,10 @@ target/
 .DS_Store
 .ion/
 
+# Vendored ion-provider build artifacts
+/ion-provider/target
+/ion-provider/Cargo.lock
+
 # 测试副作用文件（测试在根目录写的临时文件）
 current_greeting.txt
 hello_test.txt

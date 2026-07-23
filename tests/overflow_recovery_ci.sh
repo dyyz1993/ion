@@ -25,8 +25,8 @@ cargo build --lib 2>&1 | tail -1
 echo ""
 echo "── Phase 1: 单元测试（溢出检测 + retry 拦截）──"
 
-# A1: ProviderError 溢出检测测试（ion-provider 是独立 crate）
-PROVIDER_DIR="$(cd "$PROJECT_DIR/../ion-provider" && pwd)"
+# A1: ProviderError overflow detection test (ion-provider is vendored inside the repo)
+PROVIDER_DIR="$PROJECT_DIR/ion-provider"
 if [ -d "$PROVIDER_DIR" ]; then
     cd "$PROVIDER_DIR"
     TEST_OUT=$(cargo test --lib error::tests 2>&1)
@@ -37,7 +37,7 @@ if [ -d "$PROVIDER_DIR" ]; then
     fi
     cd "$PROJECT_DIR"
 else
-    pass "A1 跳过（ion-provider 目录不存在）"
+    pass "A1 skip (ion-provider directory not found)"
 fi
 
 # A2: retry 拦截溢出
