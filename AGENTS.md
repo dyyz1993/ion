@@ -1149,6 +1149,23 @@ fi
 
 `evolve_batch.sh` 支持一次启 container 连续跑 N 个任务，每个任务自动走完整 A→B 闭环。
 
+> **🔴 ZCode 派发 A→B 任务的铁律（硬性要求）**
+>
+> ZCode 派发 A→B 任务时，**必须用 nohup 后台脚本**，不能用同步方式。
+> 同步执行会被 ZCode 的 Bash 工具超时（600 秒）杀掉，连带杀掉 container exec 子进程。
+>
+> ```bash
+> # ✅ 正确：nohup 完全脱离 ZCode 进程树
+> nohup bash scripts/evolve_auto.sh "任务" > /tmp/evolve.log 2>&1 &
+> echo "PID: $!"
+>
+> # ❌ 错误：会被超时杀掉
+> bash scripts/evolve_auto.sh "任务"  # 同步，超 600s 被 kill
+> run_in_background: true             # ZCode 后台模式，仍然有超时限制
+> ```
+>
+> 检查进度：`tail -f /tmp/evolve.log`
+> 检查是否完成：`ps aux | grep "[e]volve_auto"`
 ```bash
 # 1. 启 container（首次 ~3 分钟，后续秒级）
 ION_TOOL_TIMEOUT=1800 bash scripts/evolve.sh
