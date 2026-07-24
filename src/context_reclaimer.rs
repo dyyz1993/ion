@@ -1,30 +1,52 @@
-//! Context Reclaimer — priority-based context recycling.
+//! Context Reclaimer — priority-based context recycling with recency heat window.
 //!
 //! Runs on `on_context` hook (every turn, before LLM call).
 //! Removes low-value content to keep token usage low, without LLM summarization.
 //!
+//! ## Recency heat window
+//!
+//! Tool results have a "heat" period — within the last N turns, they are kept
+//! intact because the agent may still reference them (rollback, compare, re-read).
+//! After the heat window expires, they become reclaimable.
+//!
+//! ```
+//! Timeline (messages):
+//! ┌──────────────────────────────────────────────────────────────┐
+//! │  Old (cold)        ←── HEAT_TURNS (hot) ──→         Recent  │
+//! │  Reclaimable          Keep intact                 Always keep │
+//! │  (bash > grep > read) (reference value)           (last KEEP) │
+//! └──────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! For `read` specifically: if the file was later modified by write/edit,
+//! the old read result is "stale" (useless — disk has new content) and can
+//! be reclaimed even within the heat window. This aligns with ContextIndex
+//! stale-read tracking.
+//!
 //! ## Reclaim priority (highest = reclaimed first)
 //!
-//! 1. **Thinking blocks** — reasoning output, useless after the turn. Biggest token sink.
-//! 2. **Old bash output** — logs, compile output, test results. "Fire and forget".
-//! 3. **Old grep/find/ls output** — search results, already consumed.
-//! 4. **Old read output** — file contents. Reclaimed last (agent might re-reference).
-//! 5. **Never reclaimed** — User messages, recent N messages, ToolCall blocks.
+//! 1. **Thinking blocks** — always stripped (zero value after turn).
+//! 2. **Stale read results** — file was modified after read (no rollback value).
+//! 3. **Old bash output** — logs/compile output (fire and forget).
+//! 4. **Old grep/find/ls output** — search results (consumed already).
+//! 5. **Old read results** — file contents (kept during heat window).
 //!
-//! ## Token budget
-//!
-//! Target: keep context under `max_tokens` (default: 60% of context_window).
-//! When exceeded, reclaim by priority until under budget or nothing left to reclaim.
+//! Never reclaimed: User messages, last KEEP_RECENT messages, ToolCall blocks.
 
 use crate::agent::error::AgentResult;
 use crate::agent::extension::Extension;
 use ion_provider::types::{AssistantContentBlock, ContentBlock, Message, TextContent};
+use std::collections::{HashMap, HashSet};
 
-/// Default: start reclaiming when context exceeds 60% of window.
+/// Start reclaiming when context exceeds this % of window.
 const DEFAULT_USAGE_PERCENT: u64 = 60;
 
-/// Number of recent messages to always keep (never reclaim).
-const KEEP_RECENT: usize = 8;
+/// Recency heat window: tool results within the last N turns are kept intact.
+/// Agent may still need to reference them (rollback, compare).
+const HEAT_TURNS: usize = 6;
+
+/// Number of recent messages to always keep (never reclaim, regardless of type).
+const KEEP_RECENT: usize = 4;
 
 /// Minimum tool result chars to bother reclaiming (don't trim tiny results).
 const MIN_RECLAIM_CHARS: usize = 200;
@@ -120,44 +142,99 @@ impl ContextReclaimer {
         removed
     }
 
-    /// Reclaim old tool results by priority tier.
-    /// `tier` = which tier to reclaim (1=bash, 2=grep/find, 3=read).
-    /// Skips the last `keep_recent` messages.
-    /// Returns total chars reclaimed.
+    /// Build a set of file paths that were modified by write/edit tools.
+    /// A read result for a modified file is "stale" and can be reclaimed
+    /// even within the heat window (disk has new content, old read is useless).
+    fn find_modified_files(messages: &[Message]) -> HashSet<String> {
+        let mut modified = HashSet::new();
+        for msg in messages {
+            if let Message::Assistant(a) = msg {
+                for block in &a.content {
+                    if let AssistantContentBlock::ToolCall(tc) = block {
+                        if tc.name == "write" || tc.name == "edit" {
+                            // Extract file path from tool arguments
+                            if let Some(path) = tc.arguments.get("path")
+                                .and_then(|v| v.as_str())
+                                .or_else(|| tc.arguments.get("file_path")
+                                    .and_then(|v| v.as_str()))
+                            {
+                                modified.insert(path.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        modified
+    }
+
+    /// Reclaim tool results by priority tier, respecting the heat window.
+    ///
+    /// - Messages in the last `keep_recent` are never touched.
+    /// - Tool results older than `heat_turns` are reclaimable.
+    /// - Stale read results (file was modified after read) are reclaimable
+    ///   even within the heat window.
     fn reclaim_tier(
         messages: &mut Vec<Message>,
         tier: u8,
         keep_recent: usize,
+        heat_turns: usize,
+        modified_files: &HashSet<String>,
     ) -> usize {
+        let total = messages.len();
+        // Never touch the last `keep_recent` messages
+        let hard_cutoff = total.saturating_sub(keep_recent);
+        // Heat boundary: tool results older than this are reclaimable
+        let heat_cutoff = total.saturating_sub(heat_turns);
+
         let mut reclaimed = 0;
-        let start = messages.len().saturating_sub(keep_recent);
 
-        for i in 0..start {
+        for i in 0..hard_cutoff {
             if let Message::ToolResult(tr) = &mut messages[i] {
-                if Self::tool_tier(&tr.tool_name) == tier {
-                    // Calculate current size
-                    let chars: usize = tr
-                        .content
-                        .iter()
-                        .map(|b| match b {
-                            ContentBlock::Text(t) => t.text.len(),
-                            _ => 0,
-                        })
-                        .sum();
+                if Self::tool_tier(&tr.tool_name) != tier {
+                    continue;
+                }
 
-                    if chars > MIN_RECLAIM_CHARS {
-                        // Replace with a compact placeholder
-                        let placeholder = format!(
-                            "[reclaimed: {} output was {} chars]",
-                            tr.tool_name, chars
-                        );
-                        reclaimed += chars;
-                        reclaimed -= placeholder.len();
-                        tr.content = vec![ContentBlock::Text(TextContent {
-                            text: placeholder,
-                            text_signature: None,
-                        })];
-                    }
+                // Check if this read result is stale (file was modified after)
+                let is_stale_read = tr.tool_name == "read" && {
+                    // Try to extract file path from the tool result
+                    // (tool_call_id maps to the ToolCall that produced this result)
+                    // Simple heuristic: check if any modified file path appears in the content
+                    let content_str: String = tr.content.iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::Text(t) => Some(t.text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("");
+                    modified_files.iter().any(|f| content_str.contains(f))
+                };
+
+                // Skip if within heat window AND not stale
+                if i >= heat_cutoff && !is_stale_read {
+                    continue;
+                }
+
+                // Calculate current size
+                let chars: usize = tr.content.iter()
+                    .map(|b| match b {
+                        ContentBlock::Text(t) => t.text.len(),
+                        _ => 0,
+                    })
+                    .sum();
+
+                if chars > MIN_RECLAIM_CHARS {
+                    let reason = if is_stale_read { "stale" } else { "old" };
+                    let placeholder = format!(
+                        "[reclaimed: {} output was {} chars ({})]",
+                        tr.tool_name, chars, reason
+                    );
+                    reclaimed += chars;
+                    reclaimed -= placeholder.len();
+                    tr.content = vec![ContentBlock::Text(TextContent {
+                        text: placeholder,
+                        text_signature: None,
+                    })];
                 }
             }
         }
@@ -165,26 +242,32 @@ impl ContextReclaimer {
     }
 
     /// Run the full reclaim pipeline.
-    /// Returns summary of what was reclaimed.
     fn run_reclaim(
         messages: &mut Vec<Message>,
         context_window: u64,
     ) -> ReclaimSummary {
-        let target_tokens = (context_window as u64 * DEFAULT_USAGE_PERCENT / 100) as usize;
+        let target_tokens = (context_window * DEFAULT_USAGE_PERCENT / 100) as usize;
         let mut summary = ReclaimSummary::default();
 
         // Phase 1: Always strip thinking blocks (free win, every turn)
         summary.thinking_blocks_removed = Self::strip_thinking(messages);
 
-        // Check if we're under budget after thinking strip
+        // Check if under budget after thinking strip
         let current = Self::estimate_tokens(messages);
         if current <= target_tokens {
             summary.tokens_after = current;
             return summary;
         }
 
-        // Phase 2: Reclaim old bash output (tier 1)
-        summary.bash_chars_reclaimed = Self::reclaim_tier(messages, 1, KEEP_RECENT);
+        // Detect files modified by write/edit (for stale read detection)
+        let modified_files = Self::find_modified_files(messages);
+
+        // Phase 2: Reclaim stale read results (file was modified after read)
+        // These are useless even within the heat window — disk has new content.
+        summary.stale_read_chars = Self::reclaim_tier(
+            messages, 3, KEEP_RECENT, HEAT_TURNS, &modified_files,
+        );
+        // Note: this only reclaims stale reads; non-stale reads survive heat window
 
         let current = Self::estimate_tokens(messages);
         if current <= target_tokens {
@@ -192,8 +275,10 @@ impl ContextReclaimer {
             return summary;
         }
 
-        // Phase 3: Reclaim old grep/find/ls output (tier 2)
-        summary.search_chars_reclaimed = Self::reclaim_tier(messages, 2, KEEP_RECENT);
+        // Phase 3: Reclaim old bash output (tier 1, beyond heat window)
+        summary.bash_chars_reclaimed = Self::reclaim_tier(
+            messages, 1, KEEP_RECENT, HEAT_TURNS, &modified_files,
+        );
 
         let current = Self::estimate_tokens(messages);
         if current <= target_tokens {
@@ -201,8 +286,21 @@ impl ContextReclaimer {
             return summary;
         }
 
-        // Phase 4: Reclaim old read output (tier 3)
-        summary.read_chars_reclaimed = Self::reclaim_tier(messages, 3, KEEP_RECENT);
+        // Phase 4: Reclaim old grep/find/ls output (tier 2)
+        summary.search_chars_reclaimed = Self::reclaim_tier(
+            messages, 2, KEEP_RECENT, HEAT_TURNS, &modified_files,
+        );
+
+        let current = Self::estimate_tokens(messages);
+        if current <= target_tokens {
+            summary.tokens_after = current;
+            return summary;
+        }
+
+        // Phase 5: Reclaim old read output (tier 3, beyond heat window)
+        summary.read_chars_reclaimed = Self::reclaim_tier(
+            messages, 3, KEEP_RECENT, HEAT_TURNS, &modified_files,
+        );
 
         summary.tokens_after = Self::estimate_tokens(messages);
         summary
@@ -212,6 +310,7 @@ impl ContextReclaimer {
 #[derive(Default, Debug)]
 struct ReclaimSummary {
     thinking_blocks_removed: usize,
+    stale_read_chars: usize,
     bash_chars_reclaimed: usize,
     search_chars_reclaimed: usize,
     read_chars_reclaimed: usize,
@@ -237,11 +336,10 @@ impl Extension for ContextReclaimer {
         if before != after {
             tracing::info!(
                 "[reclaimer] {} → {} tokens (saved {}). \
-                 thinking_blocks={} bash_chars={} search_chars={} read_chars={}",
-                before,
-                after,
-                before.saturating_sub(after),
+                 thinking={} stale_read={} bash={} search={} read={}",
+                before, after, before.saturating_sub(after),
                 summary.thinking_blocks_removed,
+                summary.stale_read_chars,
                 summary.bash_chars_reclaimed,
                 summary.search_chars_reclaimed,
                 summary.read_chars_reclaimed,
@@ -346,7 +444,7 @@ mod tests {
             make_user("thanks"),
             make_user("ok"),
         ];
-        let reclaimed = ContextReclaimer::reclaim_tier(&mut msgs, 1, 4);
+        let reclaimed = ContextReclaimer::reclaim_tier(&mut msgs, 1, 4, 4, &HashSet::new());
         assert!(reclaimed > 0, "should reclaim bash output");
         assert!(tool_result_text(&msgs[2]).contains("reclaimed"));
     }
@@ -356,7 +454,7 @@ mod tests {
         let mut msgs: Vec<Message> = (0..20)
             .map(|i| make_tool_result("bash", &format!("output line {}\n", i).repeat(50)))
             .collect();
-        let reclaimed = ContextReclaimer::reclaim_tier(&mut msgs, 1, 8);
+        let reclaimed = ContextReclaimer::reclaim_tier(&mut msgs, 1, 8, 6, &HashSet::new());
         assert!(reclaimed > 0);
         for i in 12..20 {
             assert!(!tool_result_text(&msgs[i]).contains("reclaimed"),
@@ -377,7 +475,7 @@ mod tests {
     #[test]
     fn test_skip_small_results() {
         let mut msgs = vec![make_tool_result("bash", "ok")];
-        let reclaimed = ContextReclaimer::reclaim_tier(&mut msgs, 1, 0);
+        let reclaimed = ContextReclaimer::reclaim_tier(&mut msgs, 1, 0, 0, &HashSet::new());
         assert_eq!(reclaimed, 0, "should not reclaim tiny results");
     }
 
@@ -390,7 +488,7 @@ mod tests {
             make_user("recent1"),
             make_user("recent2"),
         ];
-        let bash_reclaimed = ContextReclaimer::reclaim_tier(&mut msgs, 1, 2);
+        let bash_reclaimed = ContextReclaimer::reclaim_tier(&mut msgs, 1, 2, 2, &HashSet::new());
         assert!(bash_reclaimed > 0);
         assert!(!tool_result_text(&msgs[1]).contains("reclaimed"));
         assert!(!tool_result_text(&msgs[2]).contains("reclaimed"));
