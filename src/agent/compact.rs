@@ -781,7 +781,7 @@ pub fn make_llm_summarizer(
                 reasoning: None,
                 timeout_ms: Some(60000),
                 max_retries: Some(5),
-                max_tokens: Some(16000),  // reasoning models need large budget
+                max_tokens: Some(32000),  // reasoning models need large budget for reasoning + content
                 response_format: None,
             };
             let msg = ion_provider::registry::complete(&p, &m, &ctx, Some(&opts)).await?;
