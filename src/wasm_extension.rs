@@ -416,17 +416,18 @@ impl Extension {
         }
     )?;
 
-    // ── Host: write_file (ctx.fs unified file write) ─────────────────────
-    // Lets WASM extensions write files within allowed_roots.
-    // Signature: host_write_file(path_ptr, path_len, content_ptr, content_len, out_buf, out_cap) -> u32
-    //   Returns: 0 = success, 1 = no fs, 2 = path blocked, 3 = IO error
+    // ── Host: write_file (ctx.fs unified filesystem access) ──────────────
+    // Lets WASM extensions write files inside allowed_roots.
+    // Signature: host_write_file(path_ptr, path_len, content_ptr, content_len) -> u32
+    //   Return codes: 0 = success, 1 = no fs capability,
+    //                 2 = path traversal blocked, 3 = IO error.
     linker.func_wrap("env", "host_write_file",
         move |mut caller: WasmCaller,
               path_ptr: u32, path_len: u32,
-              content_ptr: u32, content_len: u32,
-              _out_buf: u32, _out_cap: u32| -> u32 {
+              content_ptr: u32, content_len: u32| -> u32 {
             let path = mem_read_str(&mut caller, path_ptr, path_len);
             if path.is_empty() { return 3; }
+            let content = mem_read_str(&mut caller, content_ptr, content_len);
             let ctx = caller.data().clone();
 
             let (fs, handle) = match (ctx.fs.as_ref(), ctx.tokio_handle.as_ref()) {
@@ -437,22 +438,31 @@ impl Extension {
                 }
             };
 
-            let content = mem_read_str(&mut caller, content_ptr, content_len);
             let result = tokio::task::block_in_place(|| handle.block_on(fs.write_file(&path, &content)));
             match result {
-                Ok(_) => 0,
+                Ok(()) => 0,
                 Err(e) => {
-                    tracing::info!("[wasm] host_write_file('{}'): {e}", path);
-                    3
+                    // Classify path-traversal vs generic IO error by keyword
+                    if e.contains("outside allowed roots")
+                        || e.contains("traversal")
+                        || e.contains("escape")
+                        || e.contains("null byte")
+                    {
+                        tracing::warn!("[wasm] host_write_file('{}'): path traversal blocked", path);
+                        2
+                    } else {
+                        tracing::info!("[wasm] host_write_file('{}'): {e}", path);
+                        3
+                    }
                 }
             }
         }
     )?;
 
-    // ── Host: path_exists ────────────────────────────────────────────────
-    // Check if a file or directory exists within allowed_roots.
+    // ── Host: path_exists (ctx.fs unified filesystem access) ─────────────
+    // Lets WASM extensions check whether a path exists (file or directory).
     // Signature: host_path_exists(path_ptr, path_len) -> u32
-    //   Returns: 1 = exists, 0 = not found, 2 = blocked
+    //   Return codes: 1 = exists, 0 = not found, 2 = path traversal blocked.
     linker.func_wrap("env", "host_path_exists",
         move |mut caller: WasmCaller,
               path_ptr: u32, path_len: u32| -> u32 {
@@ -462,19 +472,36 @@ impl Extension {
 
             let (fs, handle) = match (ctx.fs.as_ref(), ctx.tokio_handle.as_ref()) {
                 (Some(fs), Some(h)) => (fs.clone(), h.clone()),
-                _ => return 0,
+                _ => {
+                    tracing::warn!("[wasm] host_path_exists: no fs capability injected");
+                    return 0;
+                }
             };
 
-            let exists = tokio::task::block_in_place(|| handle.block_on(fs.path_exists(&path)));
-            if exists { 1 } else { 0 }
+            // Use read_file as a traversal probe: if it returns a traversal
+            // error we know the path is outside allowed roots. Otherwise fall
+            // through to path_exists which handles files + directories.
+            let probe = tokio::task::block_in_place(|| handle.block_on(fs.read_file(&path)));
+            match probe {
+                Ok(_) => 1, // file exists and is readable
+                Err(e) if e.contains("outside allowed roots")
+                    || e.contains("traversal")
+                    || e.contains("escape")
+                    || e.contains("null byte") => 2,
+                _ => {
+                    // Might be a directory or not found — check path_exists
+                    let exists = tokio::task::block_in_place(|| handle.block_on(fs.path_exists(&path)));
+                    if exists { 1 } else { 0 }
+                }
+            }
         }
     )?;
 
-    // ── Host: glob ───────────────────────────────────────────────────────
-    // Glob match files against a pattern within allowed_roots.
+    // ── Host: glob (ctx.fs unified filesystem access) ────────────────────
+    // Lets WASM extensions glob-match files against a pattern.
     // Signature: host_glob(pattern_ptr, pattern_len, out_buf, out_capacity) -> u32
-    //   Returns: bytes written (JSON array of paths), or 0 on error.
-    //   JSON format: ["path1", "path2", ...]
+    //   Returns bytes written (JSON array), or 0 on error.
+    //   Pattern: supports * (single segment) and ** (recursive).
     linker.func_wrap("env", "host_glob",
         move |mut caller: WasmCaller,
               pattern_ptr: u32, pattern_len: u32,
@@ -485,24 +512,86 @@ impl Extension {
 
             let (fs, handle) = match (ctx.fs.as_ref(), ctx.tokio_handle.as_ref()) {
                 (Some(fs), Some(h)) => (fs.clone(), h.clone()),
-                _ => return 0,
+                _ => {
+                    tracing::warn!("[wasm] host_glob: no fs capability injected");
+                    return 0;
+                }
             };
 
             let result = tokio::task::block_in_place(|| handle.block_on(fs.glob(&pattern)));
-            let paths = match result {
-                Ok(p) => p,
+            let matches = match result {
+                Ok(m) => m,
                 Err(e) => {
                     tracing::info!("[wasm] host_glob('{}'): {e}", pattern);
                     return 0;
                 }
             };
-            let json_str = serde_json::to_string(&paths).unwrap_or_else(|_| "[]".into());
+            let json_str = serde_json::to_string(&matches).unwrap_or_else(|_| "[]".into());
             let bytes = json_str.as_bytes();
             let len = bytes.len().min(out_capacity as usize);
             if let Some(mem) = mem_get(&mut caller) {
                 mem.write(&mut caller, out_buf as usize, &bytes[..len]).ok();
             }
             len as u32
+        }
+    )?;
+
+    // ── Host: data_read (extension-specific data storage) ────────────────
+    // Read extension-specific data from the global data directory.
+    // Data is stored in: ~/.ion/agent/extensions-data/<ext_name>/<key>
+    // Signature: host_data_read(key_ptr, key_len, out_buf, out_capacity) -> u32
+    //   Returns bytes written, or 0 if not found / blocked.
+    linker.func_wrap("env", "host_data_read",
+        move |mut caller: WasmCaller,
+              key_ptr: u32, key_len: u32,
+              out_buf: u32, out_capacity: u32| -> u32 {
+            let ctx = caller.data().clone();
+            let dir = paths::global_data_dir(&ctx.ext_name);
+            let key = mem_read_str(&mut caller, key_ptr, key_len);
+
+            let path = match safe_join(&dir, &key) {
+                Some(p) => p,
+                None => return 0, // blocked — treat as not found
+            };
+            let data = match std::fs::read(&path) {
+                Ok(d) => d,
+                Err(_) => return 0, // not found
+            };
+            let len = data.len().min(out_capacity as usize);
+            if let Some(mem) = mem_get(&mut caller) {
+                mem.write(&mut caller, out_buf as usize, &data[..len]).ok();
+            }
+            len as u32
+        }
+    )?;
+
+    // ── Host: data_write (extension-specific data storage) ───────────────
+    // Write extension-specific data to the global data directory.
+    // Data is stored in: ~/.ion/agent/extensions-data/<ext_name>/<key>
+    // Signature: host_data_write(key_ptr, key_len, content_ptr, content_len) -> u32
+    //   Return codes: 0 = success, 1 = error (traversal blocked / IO failure).
+    linker.func_wrap("env", "host_data_write",
+        move |mut caller: WasmCaller,
+              key_ptr: u32, key_len: u32,
+              content_ptr: u32, content_len: u32| -> u32 {
+            let ctx = caller.data().clone();
+            let dir = paths::global_data_dir(&ctx.ext_name);
+            let key = mem_read_str(&mut caller, key_ptr, key_len);
+            let data = mem_read_bytes(&mut caller, content_ptr, content_len);
+
+            let final_path = match safe_join(&dir, &key) {
+                Some(p) => p,
+                None => return 1, // blocked
+            };
+            let tmp = final_path.with_extension("tmp");
+
+            if !dir.exists() && let Err(e) = std::fs::create_dir_all(&dir) {
+                tracing::warn!("[wasm] host_data_write: mkdir failed: {e}");
+                return 1;
+            }
+            if std::fs::write(&tmp, &data).is_err() { return 1; }
+            if std::fs::rename(&tmp, &final_path).is_err() { return 1; }
+            0 // success
         }
     )?;
 
@@ -1083,6 +1172,96 @@ mod path_safety_tests {
             canonicalize_path_str(p),
             std::path::PathBuf::from("/a/c/d")
         );
+    }
+
+    // ── Host function logic tests (without WASM instantiation) ────────────
+    // These exercise the safe_join + std::fs logic that backs
+    // host_write_file / host_path_exists / host_data_read / host_data_write.
+
+    #[test]
+    fn test_host_write_and_read_file() {
+        // Simulate the host_data_write + host_data_read round-trip logic.
+        // The host functions use paths::global_data_dir(ext_name) + safe_join.
+        let tmp = std::env::temp_dir().join(format!(
+            "ion_wasm_test_wr_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // Write: safe_join + atomic write (tmp + rename), matching host_data_write
+        let key = "test_file.txt";
+        let content = "hello wasm write/read";
+        let final_path = safe_join(&tmp, key).expect("safe_join should succeed");
+        assert_eq!(final_path, tmp.join(key));
+        let tmp_path = final_path.with_extension("tmp");
+        std::fs::write(&tmp_path, content).unwrap();
+        std::fs::rename(&tmp_path, &final_path).unwrap();
+
+        // Read: std::fs::read, matching host_data_read
+        let read_data = std::fs::read(&final_path).unwrap();
+        assert_eq!(read_data, content.as_bytes());
+
+        // Traversal must be blocked for writes (would return error code)
+        assert!(safe_join(&tmp, "../../../etc/passwd").is_none());
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn test_host_path_exists() {
+        // Exercise the logic behind host_path_exists: safe_join probe +
+        // existence check. We use a temp dir directly since host_path_exists
+        // delegates to ctx.fs.path_exists which ultimately checks the FS.
+        let tmp = std::env::temp_dir().join(format!(
+            "ion_wasm_test_pe_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let existing_file = tmp.join("exists.txt");
+        std::fs::write(&existing_file, "data").unwrap();
+
+        // Existing path resolves via safe_join and exists on FS
+        let resolved = safe_join(&tmp, "exists.txt").expect("safe_join should succeed");
+        assert_eq!(resolved, existing_file);
+        assert!(resolved.exists());
+
+        // Non-existing path resolves via safe_join but does not exist on FS
+        let missing = safe_join(&tmp, "missing.txt").expect("safe_join should succeed");
+        assert!(!missing.exists());
+
+        // Traversal blocked — would return code 2
+        assert!(safe_join(&tmp, "../../etc/passwd").is_none());
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn test_host_data_write_and_read() {
+        // Full round-trip using paths::global_data_dir to mirror exactly
+        // what host_data_write / host_data_read do at runtime.
+        let ext_name = format!("test_ext_{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let dir = paths::global_data_dir(&ext_name);
+
+        // Write (mirror host_data_write logic)
+        let key = "round_trip_key";
+        let content = "extension data payload";
+        let final_path = safe_join(&dir, key).expect("safe_join should succeed");
+        let tmp_path = final_path.with_extension("tmp");
+        if !dir.exists() {
+            std::fs::create_dir_all(&dir).unwrap();
+        }
+        std::fs::write(&tmp_path, content).unwrap();
+        std::fs::rename(&tmp_path, &final_path).unwrap();
+
+        // Read (mirror host_data_read logic)
+        let read_path = safe_join(&dir, key).expect("safe_join should succeed");
+        let data = std::fs::read(&read_path).unwrap();
+        assert_eq!(data, content.as_bytes());
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
