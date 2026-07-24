@@ -4758,6 +4758,10 @@ fn find_most_recent_session() -> Option<(String, Vec<ion::agent::messages::Messa
 fn extract_assistant_text(agent: &Agent) -> Option<String> {
     for msg in agent.messages().iter().rev() {
         if let ion::agent::messages::Message::Assistant(a) = msg {
+            for (i, block) in a.content.iter().enumerate() {
+            }
+        }
+        if let ion::agent::messages::Message::Assistant(a) = msg {
             for block in &a.content {
                 if let ion::agent::messages::AssistantContentBlock::Text(t) = block {
                     if !t.text.is_empty() { return Some(t.text.clone()); }

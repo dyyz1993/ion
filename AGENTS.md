@@ -1151,21 +1151,17 @@ fi
 
 > **🔴 ZCode 派发 A→B 任务的铁律（硬性要求）**
 >
-> ZCode 派发 A→B 任务时，**必须用 nohup 后台脚本**，不能用同步方式。
-> 同步执行会被 ZCode 的 Bash 工具超时（600 秒）杀掉，连带杀掉 container exec 子进程。
+> ZCode 派发 A→B 任务时，**必须用 Bash 工具的 `run_in_background: true`**，不能用同步方式。
+> 同步执行会被 ZCode 的 Bash 工具超时杀掉，连带杀掉 container exec 子进程。
 >
-> ```bash
-> # ✅ 正确：nohup 完全脱离 ZCode 进程树
-> nohup bash scripts/evolve_auto.sh "任务" > /tmp/evolve.log 2>&1 &
-> echo "PID: $!"
->
-> # ❌ 错误：会被超时杀掉
-> bash scripts/evolve_auto.sh "任务"  # 同步，超 600s 被 kill
-> run_in_background: true             # ZCode 后台模式，仍然有超时限制
 > ```
+> ✅ 正确：ZCode Bash run_in_background: true
+>    → 进程在后台跑，不受超时限制
+>    → 完成后自动通知
 >
-> 检查进度：`tail -f /tmp/evolve.log`
-> 检查是否完成：`ps aux | grep "[e]volve_auto"`
+> ❌ 错误：同步执行
+>    → 超 600s 被 kill，container exec 子进程也一起被杀
+> ```
 ```bash
 # 1. 启 container（首次 ~3 分钟，后续秒级）
 ION_TOOL_TIMEOUT=1800 bash scripts/evolve.sh
