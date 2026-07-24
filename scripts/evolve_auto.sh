@@ -129,9 +129,18 @@ CONSTRAINTS:
 - After editing: cargo check && git add -A && git commit -m 'feat: $(echo "$TASK_DESC" | head -c 60)'"
 
 echo "  Sending task to B ($MODEL)..."
-echo "$FULL_TASK" | container exec -i "$CONTAINER_NAME" \
-    sh -c "cd /workspace && ./target/release/ion --agent developer --provider $PROVIDER --model $MODEL 2>&1" \
-    | tail -20
+
+# Write task to container's /tmp/task.txt using printf (works on BusyBox).
+# Then run B reading from the file.
+container exec "$CONTAINER_NAME" sh -c "printf '%s\n' '$(echo "$FULL_TASK" | sed "s/'/'\\\\''/g")' > /tmp/task.txt"
+
+# Run B: read task from file, pipe into ion
+container exec "$CONTAINER_NAME" \
+    sh -c "cd /workspace && cat /tmp/task.txt | ./target/release/ion --agent developer --provider $PROVIDER --model $MODEL" \
+    > /tmp/b_output.log 2>&1
+
+echo "  B output (tail):"
+tail -10 /tmp/b_output.log 2>/dev/null
 
 # Check if B committed
 B_COMMIT=$(container exec "$CONTAINER_NAME" sh -c 'cd /workspace && git log --oneline -1' 2>/dev/null)
