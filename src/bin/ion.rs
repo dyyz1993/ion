@@ -4151,6 +4151,24 @@ async fn handle_manager_command(
                     Ok(val) => Ok(val),
                     Err(e) => Err(format!("{:?}", e)),
                 }
+            } else if extension == "permission" {
+                // Worker-level extensions can't be reached via Manager singleton
+                // lookup, so we forward to an active worker. The permission extension
+                // is registered inside each Worker (ion_worker.rs) rather than as a
+                // host-level singleton, so a singleton miss is expected for it.
+                let first_active = reg2.workers.values()
+                    .find(|w| w.status != ion::worker_registry::WorkerStatus::Dead)
+                    .map(|w| w.session_id.clone());
+                match first_active {
+                    Some(session_id) => {
+                        reg2.send_to_session(&session_id, "extension_rpc", serde_json::json!({
+                            "extension": extension,
+                            "method": method,
+                            "args": args,
+                        })).await
+                    }
+                    None => Err(format!("singleton extension '{}' not found and no active worker to forward to", extension)),
+                }
             } else {
                 Err(format!("singleton extension '{}' not found", extension))
             }
