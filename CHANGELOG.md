@@ -3,7 +3,7 @@
 All notable changes to ION are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased] — v0.2.0 (2026-07-24)
+## [0.2.0] — 2026-07-24
 
 ### 🚀 新功能 / New Features
 

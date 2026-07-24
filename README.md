@@ -4,7 +4,8 @@
 
 ![Rust](https://img.shields.io/badge/Rust-1.85%2B-ed2024?logo=rust)
 ![Edition](https://img.shields.io/badge/Edition-2024-orange)
-![Tests](https://img.shields.io/badge/tests-490%2B-brightgreen)
+![Tests](https://img.shields.io/badge/tests-777%2B-brightgreen)
+![WASM](https://img.shields.io/badge/WASM_extensions-3-blue)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 ---
@@ -83,12 +84,6 @@ to the same long-lived orchestration core.
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
   source $HOME/.cargo/env
   ```
-- **ion-provider** (sibling crate)
-  ```bash
-  cd ..
-  git clone <ion-provider-repo> ion-provider
-  # or: ION already has ion-provider as a sibling directory
-  ```
 
 ### Build
 
@@ -152,6 +147,55 @@ Use any provider by configuring ~/.ion/config.json.
 
 ---
 
+## WASM Extensions
+
+ION supports hot-pluggable WASM extensions. Drop a `.wasm` file into `~/.ion/agent/extensions/` and it's auto-discovered — no recompilation needed.
+
+### Install Pre-built Extensions
+
+```bash
+# Rules Engine — inject project rules into system prompt based on file globs
+cp extensions/rules-engine/rules_engine.wasm ~/.ion/agent/extensions/
+
+# File Time Guard — block writes to stale files (prevents clobbering user edits)
+cp extensions/file-time-guard/file_time_guard.wasm ~/.ion/agent/extensions/
+
+# Session Supervisor — auto-scan for TODO/FIXME after agent finishes
+cp extensions/session-supervisor/session_supervisor.wasm ~/.ion/agent/extensions/
+```
+
+### Use Rules Engine
+
+Create `.ion/rules/rust.md` in your project:
+```
+---
+applyTo: "**/*.rs"
+---
+
+- Use snake_case for function names
+- Add doc comments for public functions
+- Run `cargo fmt` before committing
+```
+
+The rules are automatically injected into the agent's system prompt when it works on `.rs` files.
+
+### Write Your Own Extension
+
+WASM extensions have access to **27 host functions** and **36 lifecycle hooks**:
+
+| Category | Host Functions |
+|----------|---------------|
+| File system | `host_read_file`, `host_write_file`, `host_list_dir`, `host_path_exists`, `host_glob` |
+| Data storage | `host_read/write/delete/list_{global,project,project_local,session}_data` (16 functions) |
+| Agent state | `host_get_token_count`, `host_get_messages`, `host_get_state`, `host_steer`, `host_llm_call` |
+| Communication | `host_send_message`, `host_channel_send`, `host_create_worker` |
+| UI | `host_ui_ask`, `host_ui_confirm`, `host_ui_notif`, `host_ui_alert`, `host_ui_prompt` |
+| Tools | `host_register_tool` |
+
+See `extensions/rules-engine/src/lib.rs` for a complete example.
+
+---
+
 ## Next Steps
 
 ### Try different agents
@@ -179,6 +223,7 @@ ion history <session-id>  # view conversation history
 ```
 
 ### Learn more
+- [CHANGELOG.md](CHANGELOG.md) — What's new in each version
 - [CLI_USAGE.md](docs/guides/CLI_USAGE.md) — Full CLI reference
 - [WORKFLOW.md](docs/guides/WORKFLOW.md) — Development workflows
 - [CONTRIBUTING.md](CONTRIBUTING.md) — How to contribute
