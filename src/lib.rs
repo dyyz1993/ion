@@ -37,3 +37,4 @@ pub mod file_time_guard;
 pub mod mcp;
 pub mod hooks;
 pub mod rules_engine;
+pub mod context_reclaimer;

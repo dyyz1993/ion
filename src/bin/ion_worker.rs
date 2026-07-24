@@ -746,6 +746,12 @@ async fn main() {
             tracing::info!("[extension] rules-engine disabled by config");
         }
 
+        // Context Reclaimer (priority-based token recycling)
+        // Strips thinking blocks + reclaims old tool results (bash > grep > read)
+        // Always enabled — zero LLM cost, pure text manipulation.
+        ext_reg.register(Box::new(ion::context_reclaimer::ContextReclaimer::new()));
+        tracing::info!("[extension] context-reclaimer enabled (thinking strip + tool result recycling)");
+
         // File Snapshot Extension（文件快照 + diff 追踪）
         snapshot_store =
             if ion_cfg.is_extension_enabled("file-snapshot") {
