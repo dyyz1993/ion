@@ -589,7 +589,16 @@ ion rpc --session sess_xxx --method get_flags \
     ✅ 有 host，同步异步都行
     ✅ 事件泵 → stdout
     ❌ 没有 socket，外部工具接不了
+    ❌ 无 UI 交互通道（权限拦截后无法放行，建议放开权限或用 .ion/settings.json 预配 allow 规则）
 ```
+
+> **⚠️ 场景 2 权限注意事项**
+>
+> 场景 2 没有 socket，无法接收外部命令。如果权限规则 deny 了 agent 需要的操作（如 file.write），
+> agent 会被卡住——既不能执行，也没有人能通过 `ion rpc` 放行。
+>
+> **建议**：在场景 2 下，通过 `.ion/settings.json` 预先配好 allow 规则（如 `allow file.write src/*`），
+> 避免运行时出现 UI 交互需求。需要动态权限管理的场景请用场景 3（`ion serve`）。
 
 ### 场景 3 流程图
 

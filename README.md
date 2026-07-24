@@ -43,6 +43,11 @@ ion --host "refactor the auth module and add tests"
 A temporary **host** is spawned with an event pump, enabling multi-agent coordination
 for the duration of the task. The host tears down on completion.
 
+> **Permission note**: Scenario 2 has permission checks but no external UI channel.
+> If a permission rule denies an operation, the agent gets stuck (no one can grant access).
+> Pre-configure `allow` rules in `.ion/settings.json` before running, or use Scenario 3
+> for runtime permission management.
+
 ```
 ┌────────┐  spawn host   ┌──────────────┐  spawn_worker   ┌────────┐
 │  ion   │ ─────────────▶│  Host + Pump │ ───────────────▶│ Worker │
@@ -59,7 +64,9 @@ ion "do something"     # any client connects to the running host
 ```
 
 An always-on host listening on a Unix domain socket. Multiple CLI invocations connect
-to the same long-lived orchestration core.
+to the same long-lived orchestration core. Supports runtime permission management via
+`ion rpc`, real-time event streaming via `ion subscribe`, and UI interactions
+(approve/deny permission requests, ask user questions).
 
 ```
 ┌──────────────────────────────────────────┐
