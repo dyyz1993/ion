@@ -127,6 +127,84 @@ impl Extension {
             Arc::new(Mutex::new(Vec::new()));
         let tools = tools_registered.clone();
 
+    // ── WASI stubs: minimal implementations for std-compiled WASM ────────
+    // std-based WASM (wasm32-wasip1) imports these from wasi_snapshot_preview1.
+    // We provide minimal stubs so the module can instantiate without wasmtime-wasi.
+
+    // environ_sizes_get: return 0 environment variables
+    linker.func_wrap("wasi_snapshot_preview1", "environ_sizes_get",
+        |mut caller: WasmCaller, count_ptr: u32, buf_size_ptr: u32| -> u32 {
+            if let Some(mem) = mem_get(&mut caller) {
+                mem.write(&mut caller, count_ptr as usize, &0u32.to_le_bytes()).ok();
+                mem.write(&mut caller, buf_size_ptr as usize, &0u32.to_le_bytes()).ok();
+            }
+            0 // WASI errno: ESUCCESS
+        }
+    )?;
+
+    // environ_get: no environment variables to write (count=0)
+    linker.func_wrap("wasi_snapshot_preview1", "environ_get",
+        |_: WasmCaller, _environ_ptr: u32, _environ_buf_ptr: u32| -> u32 {
+            0 // ESUCCESS — no env vars
+        }
+    )?;
+
+    // fd_write: discard output (stdout/stderr from std::println! etc.)
+    linker.func_wrap("wasi_snapshot_preview1", "fd_write",
+        |mut caller: WasmCaller, _fd: u32, iovs_ptr: u32, iovs_len: u32, nwritten_ptr: u32| -> u32 {
+            let mut total: u32 = 0;
+            if let Some(mem) = mem_get(&mut caller) {
+                for i in 0..iovs_len {
+                    let base = iovs_ptr as usize + (i as usize) * 8;
+                    let mut buf = [0u8; 4];
+                    if mem.read(&mut caller, base, &mut buf).is_ok() {
+                        let buf_len = u32::from_le_bytes(buf);
+                        total += buf_len;
+                    }
+                }
+                mem.write(&mut caller, nwritten_ptr as usize, &total.to_le_bytes()).ok();
+            }
+            0
+        }
+    )?;
+
+    // proc_exit: trap the instance (wasmtime convention for WASI exit)
+    linker.func_wrap("wasi_snapshot_preview1", "proc_exit",
+        |code: u32| -> () {
+            tracing::info!("[wasm] proc_exit({})", code);
+        }
+    )?;
+
+    // random_get: fill buffer with random bytes (used by std for HashMap seeding)
+    linker.func_wrap("wasi_snapshot_preview1", "random_get",
+        |mut caller: WasmCaller, buf_ptr: u32, buf_len: u32| -> u32 {
+            if let Some(mem) = mem_get(&mut caller) {
+                // Use a simple deterministic seed instead of crypto random
+                let mut data = vec![0u8; buf_len as usize];
+                // Fill with pseudo-random (good enough for HashMap seeding)
+                for i in 0..data.len() {
+                    data[i] = ((i as u64).wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407) >> 32) as u8;
+                }
+                mem.write(&mut caller, buf_ptr as usize, &data).ok();
+            }
+            0 // ESUCCESS
+        }
+    )?;
+
+    // clock_time_get: return monotonic clock (used by std::time::Instant)
+    linker.func_wrap("wasi_snapshot_preview1", "clock_time_get",
+        |mut caller: WasmCaller, _clock_id: u32, _precision: u64, time_ptr: u32| -> u32 {
+            if let Some(mem) = mem_get(&mut caller) {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64;
+                mem.write(&mut caller, time_ptr as usize, &now.to_le_bytes()).ok();
+            }
+            0 // ESUCCESS
+        }
+    )?;
+
     // ── Host: register_tool ──────────────────────────────────────────────
     linker.func_wrap("env", "host_register_tool",
         move |mut caller: wasmtime::Caller<'_, Context>,
