@@ -333,6 +333,79 @@ else
     fi
 fi
 
+# ── Phase 7: Publish (version bump + changelog + tag) ──────────────
+if [ "${PUBLISH:-0}" = "1" ]; then
+    info "Phase 7: Publish (version bump + changelog + git tag)"
+
+    cd "$PROJECT_DIR"
+
+    # Determine version bump type (patch/minor/major, default: patch)
+    BUMP_TYPE="${BUMP_TYPE:-patch}"
+
+    # Read current version
+    CURRENT_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+    echo "  Current version: $CURRENT_VERSION"
+
+    # Calculate new version
+    IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+    case "$BUMP_TYPE" in
+        major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+        minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+        patch) PATCH=$((PATCH + 1)) ;;
+    esac
+    NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+    echo "  New version: $NEW_VERSION ($BUMP_TYPE bump)"
+
+    # Bump version in Cargo.toml files
+    sed -i.bak "s/^version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/" Cargo.toml
+    sed -i.bak "s/^version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/" ion-provider/Cargo.toml 2>/dev/null
+    rm -f Cargo.toml.bak ion-provider/Cargo.toml.bak
+
+    # Add to CHANGELOG.md (prepend new version section)
+    if [ -f CHANGELOG.md ]; then
+        DATE=$(date +%Y-%m-%d)
+        # Insert new version section after the header
+        python3 -c "
+import sys
+with open('CHANGELOG.md', 'r') as f:
+            content = f.read()
+section = '''## [$NEW_VERSION] — $DATE
+
+### Changes
+- $TASK_DESC (A→B self-evolution, $MODEL)
+
+'''
+# Insert after 'Format based on...' line
+lines = content.split('\n')
+for i, line in enumerate(lines):
+    if 'Format based on' in line:
+        lines.insert(i + 2, section)
+        break
+with open('CHANGELOG.md', 'w') as f:
+    f.write('\n'.join(lines))
+" 2>/dev/null
+        echo "  CHANGELOG.md updated"
+    fi
+
+    # Commit version bump
+    git add Cargo.toml ion-provider/Cargo.toml CHANGELOG.md 2>/dev/null
+    git commit -m "release: v$NEW_VERSION — $TASK_DESC
+
+Auto-published by evolve_auto.sh (A→B self-evolution).
+Bump type: $BUMP_TYPE" 2>&1 | tail -2
+
+    # Create git tag
+    git tag -a "v$NEW_VERSION" -m "v$NEW_VERSION — $TASK_DESC" 2>/dev/null
+    echo "  Tag v$NEW_VERSION created"
+
+    # Push
+    git push origin master 2>&1 | tail -1
+    git push origin "v$NEW_VERSION" 2>&1 | tail -1
+    ok "Published v$NEW_VERSION"
+else
+    info "Phase 7: Publish (skipped — set PUBLISH=1 to enable)"
+fi
+
 echo ""
 ok "============================================"
 ok "  Self-Evolution Complete!"
@@ -340,6 +413,7 @@ ok "============================================"
 ok "  Task: $TASK_DESC"
 ok "  Changes: $CHANGED"
 ok "  CI: $TEST_COUNT"
-ok "  PR/Commit: $([ "$NO_PR" = "1" ] && echo "master" || echo "$BRANCH_NAME")"
+ok "  PR/Commit: $([ "$NO_PR" = "1" ] && echo "master" || echo "${BRANCH_NAME:-master}")"
 ok "  Watchdog: $([ "$NO_WATCHDOG" = "1" ] && echo "skipped" || echo "upgraded")"
+ok "  Publish: $([ "${PUBLISH:-0}" = "1" ] && echo "v$NEW_VERSION" || echo "skipped")"
 ok "============================================"
