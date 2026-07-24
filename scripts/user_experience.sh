@@ -90,7 +90,7 @@ for retry in 1 2 3 4 5; do
     sleep 2
 done
 if [ -n "$SID" ]; then
-    READ_OUT=$("$ION" rpc --session "$SID" --method call_tool --params '{"tool":"read","args":{"path":"Cargo.toml"}}' 2>/dev/null)
+    READ_OUT=$("$ION" rpc --session "$SID" --method call_tool --params '{"tool":"read","args":{"file_path":"Cargo.toml"}}' 2>/dev/null)
     if echo "$READ_OUT" | grep -qi "error\|fail"; then
         echo "  ❌ FAIL: read tool error"
         echo '{"role":6,"name":"Security","issue":"read tool failed"}' >> "$ISSUES_FILE"
