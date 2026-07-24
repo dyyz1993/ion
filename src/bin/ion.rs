@@ -1987,16 +1987,24 @@ async fn cmd_rpc(session: Option<&str>, method: &str, params: &str) {
 
     // 读响应——host 可能先推事件（worker_created/project_changed 等），
     // 我们要跳过事件，找到带 `id` 字段的真正响应（rpc-client 标记）。
+    // 30 秒超时：防止 Manager 对未知 session 卡死等 oneshot。
     let mut reader = BufReader::new(stream);
     let mut attempts = 0;
     loop {
         let mut line = String::new();
-        match reader.read_line(&mut line).await {
-            Ok(0) => {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            reader.read_line(&mut line),
+        ).await {
+            Err(_) => {
+                eprintln!("❌ RPC timeout (30s) — Manager did not respond. Session may not exist or agent is busy.");
+                std::process::exit(1);
+            }
+            Ok(Ok(0)) => {
                 eprintln!("(Manager closed connection without response)");
                 break;
             }
-            Ok(_) => {
+            Ok(Ok(_)) => {
                 let trimmed = line.trim();
                 if trimmed.is_empty() { continue; }
                 // 尝试解析
@@ -2013,7 +2021,7 @@ async fn cmd_rpc(session: Option<&str>, method: &str, params: &str) {
                 // 非 JSON 行，打印 + 继续
                 print!("{line}");
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 eprintln!("❌ read socket failed: {e}");
                 break;
             }
