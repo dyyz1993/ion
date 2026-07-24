@@ -91,11 +91,13 @@ for retry in 1 2 3 4 5; do
 done
 if [ -n "$SID" ]; then
     READ_OUT=$("$ION" rpc --session "$SID" --method call_tool --params '{"tool":"read","args":{"file_path":"Cargo.toml"}}' 2>/dev/null)
-    if echo "$READ_OUT" | grep -qi "error\|fail"; then
-        echo "  ❌ FAIL: read tool error"
-        echo '{"role":6,"name":"Security","issue":"read tool failed"}' >> "$ISSUES_FILE"
-    else
+    # Check JSON success field, NOT grep for "error" (file content may contain "error")
+    SUCCESS=$(echo "$READ_OUT" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('success', False))" 2>/dev/null)
+    if [ "$SUCCESS" = "True" ]; then
         echo "  ✅ PASS — tools work in serve mode"
+    else
+        echo "  ❌ FAIL: read tool returned success=false"
+        echo '{"role":6,"name":"Security","issue":"read tool success=false"}' >> "$ISSUES_FILE"
     fi
 else
     echo "  ❌ FAIL: session creation failed"
