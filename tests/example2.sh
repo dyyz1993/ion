@@ -1,1 +1,1 @@
-echo goodbye world
+echo world
