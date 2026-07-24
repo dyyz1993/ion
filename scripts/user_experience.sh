@@ -85,7 +85,7 @@ echo "=== 角色 6: 安全审计员 ==="
 sleep 3  # Extra time for serve to fully initialize
 SID=""
 for retry in 1 2 3 4 5; do
-    SID=$("$ION" rpc --method create_session --params '{"agent":"build"}' 2>/dev/null | grep -o '"session_id":"[^"]*"' | head -1 | sed 's/"session_id":"//;s/"//')
+    SID=$("$ION" rpc --method create_session --params '{"agent":"build"}' 2>/dev/null | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('data',{}).get('session_id',''))" 2>/dev/null)
     [ -n "$SID" ] && break
     sleep 2
 done
