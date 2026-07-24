@@ -3,6 +3,28 @@
 All notable changes to ION are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+
+## [0.3.0] — 2026-07-24
+
+### Bug Fixes
+- **compaction max_tokens**: set to 32000 (was None) — fixes DeepSeek reasoning model 400 errors
+- **WASM WASI stubs**: added environ_get/fd_write/proc_exit/random_get/clock_time_get — std-compiled WASM extensions now load
+- **evolve_auto.sh stdin**: fixed task transfer via printf to file (B was not receiving tasks)
+- **permission hot-reload**: auto-reload settings.json on mtime change (rules now update without restart)
+- **SSE idle timeout**: 120s timeout for stalled connections (zai proxy reasoning phase)
+
+### New Features
+- **DeepSeek fast model verified**: A→B self-evolution works with DeepSeek-V4-Flash
+- **evolve_loop.sh**: continuous self-evolution loop (self_test → fix → verify → repeat)
+- **WASM Extension Guide**: docs/guides/WASM_EXTENSION_GUIDE.md (689 lines, by A→B)
+- **evolve_auto.sh publish stage**: auto version bump + changelog + git tag
+
+### Verification
+- Permission deny→grant→deny roundtrip verified (hot-reload works)
+- 3 WASM extensions load successfully
+- DeepSeek + GLM-5.2 both verified working
+- 777 lib tests + 15 ion-worker tests pass
+
 ## [0.2.0] — 2026-07-24
 
 ### 🚀 新功能 / New Features
