@@ -37,7 +37,7 @@ impl Default for AgentConfig {
         Self {
             max_turns: None,
             max_outer_iterations: 5,
-            max_retries: 3,
+            max_retries: 10,
             retry_base_delay_ms: 1000,
             enable_compact: true,
             compact_config: CompactConfig::default(),
