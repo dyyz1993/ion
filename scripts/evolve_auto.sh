@@ -130,13 +130,16 @@ CONSTRAINTS:
 
 echo "  Sending task to B ($MODEL)..."
 
-# Write task to container's /tmp/task.txt using printf (works on BusyBox).
-# Then run B reading from the file.
-container exec "$CONTAINER_NAME" sh -c "printf '%s\n' '$(echo "$FULL_TASK" | sed "s/'/'\\\\''/g")' > /tmp/task.txt"
+# Write task to a local file, then copy into container via exec stdin.
+# This avoids ALL shell quoting/escaping issues.
+echo "$FULL_TASK" > /tmp/.evolve_task_payload.txt
 
-# Run B: read task from file, pipe into ion
+# Step 1: write task file into container using stdin redirect
+container exec -i "$CONTAINER_NAME" sh -c 'cat > /tmp/ion_task.txt' < /tmp/.evolve_task_payload.txt
+
+# Step 2: run B reading task from file
 container exec "$CONTAINER_NAME" \
-    sh -c "cd /workspace && cat /tmp/task.txt | ./target/release/ion --agent developer --provider $PROVIDER --model $MODEL" \
+    sh -c "cd /workspace && cat /tmp/ion_task.txt | ./target/release/ion --agent developer --provider $PROVIDER --model $MODEL" \
     > /tmp/b_output.log 2>&1
 
 echo "  B output (tail):"
