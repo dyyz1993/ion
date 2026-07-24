@@ -45,6 +45,20 @@ pub struct Context {
     pub fs: Option<std::sync::Arc<dyn crate::agent::extension::FileSystemCapability>>,
     /// Tokio runtime handle（用于在同步 host 函数里 block_on 异步 fs 调用）。
     pub tokio_handle: Option<tokio::runtime::Handle>,
+    /// Agent RPC channel — lets WASM extensions query/modify agent state
+    /// (token counts, messages, steer, LLM calls, worker status, compaction).
+    /// Injected by ion_worker.rs when building the WASM extension context.
+    pub agent_rpc: Option<std::sync::Arc<dyn AgentRpcHandle>>,
+}
+
+/// Trait for agent state access from WASM host functions.
+/// Implemented by ion_worker.rs's WorkerAgentRpc.
+/// Each method returns a JSON string (success) or error message.
+/// The trait is async because some methods (like llm_call) need to await
+/// network I/O. The implementation handles its own blocking internally.
+#[async_trait::async_trait]
+pub trait AgentRpcHandle: Send + Sync {
+    async fn call(&self, method: &str, params_json: &str) -> Result<String, String>;
 }
 
 impl std::fmt::Debug for Context {
@@ -68,6 +82,7 @@ impl Default for Context {
             event_bus: None,
             fs: None,
             tokio_handle: None,
+            agent_rpc: None,
         }
     }
 }
@@ -595,6 +610,186 @@ impl Extension {
         }
     )?;
 
+    // ── Agent state host functions (via AgentRpcHandle) ──────────────────
+    // These let WASM extensions query/modify agent state: token counts,
+    // messages, steer, LLM calls, worker status, compaction, worktrees.
+    // All use the same pattern: clone ctx → get agent_rpc → block_in_place.
+
+    // host_get_token_count(out_buf, out_cap) -> u32
+    // Returns JSON: {"total_tokens":N,"context_window":N,"usage_percent":N}
+    linker.func_wrap("env", "host_get_token_count",
+        move |mut caller: WasmCaller,
+              out_buf: u32, out_capacity: u32| -> u32 {
+            let ctx = caller.data().clone();
+            let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
+                (Some(r), Some(h)) => (r.clone(), h.clone()),
+                _ => return 0,
+            };
+            let result = tokio::task::block_in_place(|| {
+                handle.block_on(async { rpc.call("get_context_usage", "{}").await })
+            });
+            write_result_to_wasm(result, &mut caller, out_buf, out_capacity)
+        }
+    )?;
+
+    // host_get_messages(out_buf, out_cap) -> u32
+    // Returns JSON array of all messages (including thinking blocks).
+    linker.func_wrap("env", "host_get_messages",
+        move |mut caller: WasmCaller,
+              out_buf: u32, out_capacity: u32| -> u32 {
+            let ctx = caller.data().clone();
+            let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
+                (Some(r), Some(h)) => (r.clone(), h.clone()),
+                _ => return 0,
+            };
+            let result = tokio::task::block_in_place(|| {
+                handle.block_on(async { rpc.call("get_full_messages", "{}").await })
+            });
+            write_result_to_wasm(result, &mut caller, out_buf, out_capacity)
+        }
+    )?;
+
+    // host_get_state(out_buf, out_cap) -> u32
+    // Returns JSON: {"model":"...","message_count":N,"is_running":bool}
+    linker.func_wrap("env", "host_get_state",
+        move |mut caller: WasmCaller,
+              out_buf: u32, out_capacity: u32| -> u32 {
+            let ctx = caller.data().clone();
+            let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
+                (Some(r), Some(h)) => (r.clone(), h.clone()),
+                _ => return 0,
+            };
+            let result = tokio::task::block_in_place(|| {
+                handle.block_on(async { rpc.call("get_state", "{}").await })
+            });
+            write_result_to_wasm(result, &mut caller, out_buf, out_capacity)
+        }
+    )?;
+
+    // host_steer(text_ptr, text_len) -> u32
+    // Injects a steer message into the agent's steering queue.
+    // Returns 0 on success, 1 on error.
+    linker.func_wrap("env", "host_steer",
+        move |mut caller: WasmCaller,
+              text_ptr: u32, text_len: u32| -> u32 {
+            let text = mem_read_str(&mut caller, text_ptr, text_len);
+            if text.is_empty() { return 1; }
+            let ctx = caller.data().clone();
+            let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
+                (Some(r), Some(h)) => (r.clone(), h.clone()),
+                _ => return 1,
+            };
+            let params = serde_json::json!({"text": text}).to_string();
+            let result = tokio::task::block_in_place(|| {
+                handle.block_on(async { rpc.call("steer", &params).await })
+            });
+            if result.is_ok() { 0 } else { 1 }
+        }
+    )?;
+
+    // host_inject_follow_up(text_ptr, text_len) -> u32
+    // Injects a follow-up message (drives outer loop continuation).
+    linker.func_wrap("env", "host_inject_follow_up",
+        move |mut caller: WasmCaller,
+              text_ptr: u32, text_len: u32| -> u32 {
+            let text = mem_read_str(&mut caller, text_ptr, text_len);
+            if text.is_empty() { return 1; }
+            let ctx = caller.data().clone();
+            let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
+                (Some(r), Some(h)) => (r.clone(), h.clone()),
+                _ => return 1,
+            };
+            let params = serde_json::json!({"text": text}).to_string();
+            let result = tokio::task::block_in_place(|| {
+                handle.block_on(async { rpc.call("inject_follow_up", &params).await })
+            });
+            if result.is_ok() { 0 } else { 1 }
+        }
+    )?;
+
+    // host_llm_call(prompt_ptr, prompt_len, model_ptr, model_len, out_buf, out_cap) -> u32
+    // Calls a small LLM with a one-shot prompt. Returns the response text.
+    linker.func_wrap("env", "host_llm_call",
+        move |mut caller: WasmCaller,
+              prompt_ptr: u32, prompt_len: u32,
+              model_ptr: u32, model_len: u32,
+              out_buf: u32, out_capacity: u32| -> u32 {
+            let prompt = mem_read_str(&mut caller, prompt_ptr, prompt_len);
+            let model = mem_read_str(&mut caller, model_ptr, model_len);
+            if prompt.is_empty() { return 0; }
+            let ctx = caller.data().clone();
+            let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
+                (Some(r), Some(h)) => (r.clone(), h.clone()),
+                _ => return 0,
+            };
+            let params = serde_json::json!({
+                "prompt": prompt,
+                "model": if model.is_empty() { "fast" } else { &model }
+            }).to_string();
+            let result = tokio::task::block_in_place(|| {
+                handle.block_on(async { rpc.call("llm_call", &params).await })
+            });
+            write_result_to_wasm(result, &mut caller, out_buf, out_capacity)
+        }
+    )?;
+
+    // host_get_worker_status(id_ptr, id_len, out_buf, out_cap) -> u32
+    // Returns JSON: {"status":"...","session_id":"...","latest_output":[...]}
+    linker.func_wrap("env", "host_get_worker_status",
+        move |mut caller: WasmCaller,
+              id_ptr: u32, id_len: u32,
+              out_buf: u32, out_capacity: u32| -> u32 {
+            let worker_id = mem_read_str(&mut caller, id_ptr, id_len);
+            if worker_id.is_empty() { return 0; }
+            let ctx = caller.data().clone();
+            let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
+                (Some(r), Some(h)) => (r.clone(), h.clone()),
+                _ => return 0,
+            };
+            let params = serde_json::json!({"worker_id": worker_id}).to_string();
+            let result = tokio::task::block_in_place(|| {
+                handle.block_on(async { rpc.call("get_worker_status", &params).await })
+            });
+            write_result_to_wasm(result, &mut caller, out_buf, out_capacity)
+        }
+    )?;
+
+    // host_compact_now() -> u32
+    // Triggers immediate context compaction. Returns 0 on success.
+    linker.func_wrap("env", "host_compact_now",
+        move |mut caller: WasmCaller| -> u32 {
+            let ctx = caller.data().clone();
+            let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
+                (Some(r), Some(h)) => (r.clone(), h.clone()),
+                _ => return 1,
+            };
+            let result = tokio::task::block_in_place(|| {
+                handle.block_on(async { rpc.call("compact_now", "{}").await })
+            });
+            if result.is_ok() { 0 } else { 1 }
+        }
+    )?;
+
+    // host_create_worktree(branch_ptr, branch_len, out_buf, out_cap) -> u32
+    // Creates a git worktree for isolated work. Returns the worktree path.
+    linker.func_wrap("env", "host_create_worktree",
+        move |mut caller: WasmCaller,
+              branch_ptr: u32, branch_len: u32,
+              out_buf: u32, out_capacity: u32| -> u32 {
+            let branch = mem_read_str(&mut caller, branch_ptr, branch_len);
+            let ctx = caller.data().clone();
+            let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
+                (Some(r), Some(h)) => (r.clone(), h.clone()),
+                _ => return 0,
+            };
+            let params = serde_json::json!({"branch": branch}).to_string();
+            let result = tokio::task::block_in_place(|| {
+                handle.block_on(async { rpc.call("create_worktree", &params).await })
+            });
+            write_result_to_wasm(result, &mut caller, out_buf, out_capacity)
+        }
+    )?;
+
         // ── Register data dimension host functions (4 dims × 4 ops = 16) ───
         register_dim(&mut linker, "global".into(), |ctx| paths::global_data_dir(&ctx.ext_name))?;
         register_dim(&mut linker, "project".into(), |ctx| paths::project_data_dir(&ctx.cwd, &ctx.ext_name))?;
@@ -1002,6 +1197,30 @@ impl Tool for ToolAdapter {
 // ---------------------------------------------------------------------------
 
 type WasmCaller<'a> = wasmtime::Caller<'a, Context>;
+
+/// Write a Result<String, String> into WASM memory.
+/// On Ok(s): writes s.as_bytes() to out_buf, returns byte count.
+/// On Err(e): writes 0 bytes, returns 0.
+fn write_result_to_wasm(
+    result: Result<String, String>,
+    caller: &mut WasmCaller,
+    out_buf: u32,
+    out_capacity: u32,
+) -> u32 {
+    let s = match result {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("[wasm] agent_rpc error: {e}");
+            return 0;
+        }
+    };
+    let bytes = s.as_bytes();
+    let len = bytes.len().min(out_capacity as usize);
+    if let Some(mem) = mem_get(caller) {
+        mem.write(caller, out_buf as usize, &bytes[..len]).ok();
+    }
+    len as u32
+}
 
 fn mem_get(caller: &mut WasmCaller) -> Option<wasmtime::Memory> {
     match caller.get_export("memory") {

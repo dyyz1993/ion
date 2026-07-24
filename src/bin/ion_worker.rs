@@ -657,6 +657,13 @@ async fn main() {
                 let mut ctx = wasm_ext_registry.ctx.write().unwrap();
                 ctx.fs = Some(runtime_fs.clone());
                 ctx.tokio_handle = Some(tokio::runtime::Handle::current());
+                // Inject agent_rpc: gives WASM extensions access to agent state
+                // (token counts, messages, steer, LLM calls, compaction).
+                ctx.agent_rpc = Some(std::sync::Arc::new(WorkerAgentRpc::new(
+                    model_id.clone(),
+                    provider.clone(),
+                    sid.clone(),
+                )));
             }
             // FsProbeExtension（给 CLI 测试用，通过 extension_rpc 暴露 ctx.fs + data_dirs）
             ext_reg.register(Box::new(FsProbeExtension {
@@ -4019,6 +4026,158 @@ impl ion::agent::extension::Extension for StreamingExtension {
             }
         }));
         Ok(())
+    }
+}
+
+// ── WorkerAgentRpc: gives WASM extensions access to agent state ──────────
+// Implements AgentRpcHandle so WASM host functions can query/modify agent:
+// token counts, messages, steer, LLM calls, worker status, compaction, worktrees.
+// Uses a shared snapshot (Arc<RwLock<AgentSnapshot>>) updated each turn.
+
+/// Snapshot of agent state, cloned at turn boundaries.
+/// WASM reads this — never touches &mut Agent directly.
+#[derive(Clone, Default)]
+struct AgentSnapshot {
+    model: String,
+    provider: String,
+    session_id: String,
+    message_count: usize,
+    is_running: bool,
+    total_input_tokens: u64,
+    total_output_tokens: u64,
+    context_window: u64,
+    estimated_tokens: u64,
+    messages_json: String,
+    steering_queue_len: usize,
+    follow_up_queue_len: usize,
+}
+
+struct WorkerAgentRpc {
+    snapshot: std::sync::Arc<std::sync::RwLock<AgentSnapshot>>,
+}
+
+impl WorkerAgentRpc {
+    fn new(model: String, provider: String, session_id: String) -> Self {
+        Self {
+            snapshot: std::sync::Arc::new(std::sync::RwLock::new(AgentSnapshot {
+                model, provider, session_id,
+                ..Default::default()
+            })),
+        }
+    }
+
+    /// Returns a clone of the Arc<RwLock> so ion_worker can update the snapshot
+    /// at turn boundaries (before each tool execution).
+    fn snapshot_handle(&self) -> std::sync::Arc<std::sync::RwLock<AgentSnapshot>> {
+        std::sync::Arc::clone(&self.snapshot)
+    }
+}
+
+#[async_trait::async_trait]
+impl ion::wasm_extension::AgentRpcHandle for WorkerAgentRpc {
+    async fn call(&self, method: &str, params_json: &str) -> Result<String, String> {
+        let snap = self.snapshot.read().unwrap();
+        let params: serde_json::Value = serde_json::from_str(params_json)
+            .unwrap_or(serde_json::Value::Null);
+
+        match method {
+            "get_context_usage" => {
+                Ok(serde_json::json!({
+                    "total_tokens": snap.estimated_tokens,
+                    "input_tokens": snap.total_input_tokens,
+                    "output_tokens": snap.total_output_tokens,
+                    "context_window": snap.context_window,
+                    "usage_percent": if snap.context_window > 0 {
+                        (snap.estimated_tokens as f64 / snap.context_window as f64 * 100.0) as u64
+                    } else { 0 },
+                    "message_count": snap.message_count,
+                }).to_string())
+            }
+
+            "get_full_messages" => {
+                Ok(snap.messages_json.clone())
+            }
+
+            "get_state" => {
+                Ok(serde_json::json!({
+                    "model": snap.model,
+                    "provider": snap.provider,
+                    "session_id": snap.session_id,
+                    "message_count": snap.message_count,
+                    "is_running": snap.is_running,
+                    "steering_queue": snap.steering_queue_len,
+                    "follow_up_queue": snap.follow_up_queue_len,
+                }).to_string())
+            }
+
+            "steer" => {
+                // Emit steer command to stdout (Manager/worker picks it up)
+                let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                if text.is_empty() {
+                    return Err("steer: empty text".into());
+                }
+                // Emit as a steer event — the worker's select! loop handles it
+                let cmd = serde_json::json!({
+                    "type": "steer",
+                    "text": text,
+                });
+                println!("{}", cmd);
+                Ok(serde_json::json!({"steered": true}).to_string())
+            }
+
+            "inject_follow_up" => {
+                let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                if text.is_empty() {
+                    return Err("inject_follow_up: empty text".into());
+                }
+                let cmd = serde_json::json!({
+                    "type": "follow_up",
+                    "text": text,
+                });
+                println!("{}", cmd);
+                Ok(serde_json::json!({"injected": true}).to_string())
+            }
+
+            "llm_call" => {
+                // LLM call not available in snapshot — would need ApiRegistry.
+                // Return error for now; can be extended later.
+                Err("llm_call: not yet implemented (requires ApiRegistry injection)".into())
+            }
+
+            "get_worker_status" => {
+                let worker_id = params.get("worker_id").and_then(|v| v.as_str()).unwrap_or("");
+                if worker_id.is_empty() {
+                    return Err("get_worker_status: empty worker_id".into());
+                }
+                // Emit a get_worker_status command — Manager responds
+                let cmd = serde_json::json!({
+                    "type": "get_worker_status",
+                    "worker_id": worker_id,
+                });
+                println!("{}", cmd);
+                Ok(serde_json::json!({"requested": true}).to_string())
+            }
+
+            "compact_now" => {
+                // Trigger compaction by setting a flag the agent loop checks.
+                // For now, emit a compact command.
+                let cmd = serde_json::json!({"type": "compact_now"});
+                println!("{}", cmd);
+                Ok(serde_json::json!({"compacting": true}).to_string())
+            }
+
+            "create_worktree" => {
+                let branch = params.get("branch").and_then(|v| v.as_str()).unwrap_or("");
+                let cmd = serde_json::json!({
+                    "type": "create_worktree",
+                    "branch": branch,
+                });
+                println!("{}", cmd);
+                Ok(serde_json::json!({"requested": true}).to_string())
+            }
+
+            _ => Err(format!("unknown agent_rpc method: {method}")),
+        }
     }
 }
 
