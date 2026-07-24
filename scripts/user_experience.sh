@@ -82,8 +82,9 @@ fi
 # ── Role 6: Security ──
 echo ""
 echo "=== 角色 6: 安全审计员 ==="
+sleep 3  # Extra time for serve to fully initialize
 SID=""
-for retry in 1 2 3; do
+for retry in 1 2 3 4 5; do
     SID=$("$ION" rpc --method create_session --params '{"agent":"build"}' 2>/dev/null | grep -o '"session_id":"[^"]*"' | head -1 | sed 's/"session_id":"//;s/"//')
     [ -n "$SID" ] && break
     sleep 2
