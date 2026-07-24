@@ -521,7 +521,30 @@ async fn read_sse(
     let stream_debug = std::env::var("ION_STREAM_DEBUG").ok().as_deref() == Some("1");
     let mut _chunk_seq: u64 = 0;
 
-    while let Some(bytes) = chunk_rx.recv().await {
+    // Idle timeout: if no chunk received within this duration, treat connection as broken.
+    // Some API proxies (e.g. zai) silently drop SSE connections during long reasoning phases.
+    // Configurable via ION_SSE_IDLE_TIMEOUT (default 120s).
+    let idle_timeout_secs: u64 = std::env::var("ION_SSE_IDLE_TIMEOUT")
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(120);
+
+    loop {
+        let bytes = match tokio::time::timeout(
+            std::time::Duration::from_secs(idle_timeout_secs),
+            chunk_rx.recv(),
+        ).await {
+            Ok(Some(b)) => b,
+            Ok(None) => break,  // stream ended normally
+            Err(_) => {
+                // Timeout — connection stalled. Log and break with partial results.
+                tracing::warn!(
+                    "[stream] SSE idle timeout ({}s) — connection may have been dropped by proxy. \
+                     Partial results: {} text chunks, {} reasoning chunks",
+                    idle_timeout_secs, text_parts.len(), reasoning_parts.len()
+                );
+                break;
+            }
+        };
+
         if stream_debug {
             _chunk_seq += 1;
             eprintln!("[stream-debug] provider bytes_chunk #{_chunk_seq} len={}", bytes.len());
