@@ -114,6 +114,8 @@ pub struct PermissionExtension {
     session_rules: Mutex<Vec<PermissionRule>>,
     /// 统一存储上下文（拿 settings.json 路径）
     storage: crate::storage_context::StorageContext,
+    /// Last known mtime of settings.json — if changed, auto-reload on next check
+    last_settings_mtime: Mutex<Option<std::time::SystemTime>>,
     /// Extension 名
     name: String,
 }
@@ -124,6 +126,7 @@ impl PermissionExtension {
             project_rules: RwLock::new(Vec::new()),
             session_rules: Mutex::new(Vec::new()),
             storage,
+            last_settings_mtime: Mutex::new(None),
             name: "permission".into(),
         };
         ext.reload_internal();
@@ -164,14 +167,22 @@ impl PermissionExtension {
         }
 
         // 2. 项目配置 <project>/.ion/settings.json → permissions.rules（覆盖同名规则）
-        let mut project_count = 0;
         if let Some(rules) = Self::load_rules_from_file(&Some(self.project_settings_path())) {
-            project_count = rules.len();
             new_rules.extend(rules);
         }
 
+        let project_count = new_rules.len().saturating_sub(global_count);
+
         if let Ok(mut rules) = self.project_rules.write() {
             *rules = new_rules;
+        }
+
+        // Track mtime for auto hot-reload
+        let settings_path = self.project_settings_path();
+        if settings_path.exists() {
+            if let Ok(meta) = std::fs::metadata(&settings_path) {
+                *self.last_settings_mtime.lock().unwrap() = meta.modified().ok();
+            }
         }
 
         (global_count, project_count)
@@ -205,11 +216,29 @@ impl PermissionExtension {
     fn check_tool(&self, call: &ToolCall) -> Option<Decision> {
         let subject = tool_to_subject(&call.name);
         if subject.is_empty() {
-            return None; // 不认识的工具，放行
+            return None;
         }
 
-        // MCP 工具：pattern 匹配工具名（mcp__server__tool）
-        // 其他工具：pattern 匹配路径/命令
+        // Auto hot-reload: check if settings.json was modified since last read
+        let settings_path = self.project_settings_path();
+        if settings_path.exists() {
+            let current_mtime = std::fs::metadata(&settings_path)
+                .and_then(|m| m.modified())
+                .ok();
+            let needs_reload = {
+                let last = self.last_settings_mtime.lock().unwrap();
+                *last != current_mtime
+            };
+            if needs_reload {
+                let (count_global, count_project) = self.reload_internal();
+                tracing::info!(
+                    "[permission] hot-reloaded: {} global, {} project rules",
+                    count_global, count_project
+                );
+                *self.last_settings_mtime.lock().unwrap() = current_mtime;
+            }
+        }
+
         let match_value = if subject == "mcp_tool" {
             call.name.as_str()
         } else {
@@ -219,6 +248,7 @@ impl PermissionExtension {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
         };
+
 
         // 1. 先查会话级规则（优先级最高）
         if let Ok(rules) = self.session_rules.lock() {
