@@ -742,7 +742,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - `disallowed_tools` 黑名单生效（之前被忽略的 bug 已修）
   - runtime 默认 local（不从全局继承），`--local`/`--remote` flag 即时切换
   - **验证**: 5 任务串行 converge + 3 阶段 pipeline（develop→merge→publish GitHub）全部通过
-- **测试**: 488 个 Rust 测试 + 37 MCP CI + 30 hooks CI 全部通过 ✅（截至 2026-07-15）
+- **测试**: 777 个 Rust 测试 + 37 MCP CI + 30 hooks CI 全部通过 ✅（截至 2026-07-24）
 - **消息拉取（Message Retrieval）** — 9 接口 + 分页/视点/过滤/turn 聚合（已验证）
   - `message_retrieval.rs` 纯函数模块（~1000 行）— retrieve_messages/turns/inputs/turn_detail
   - turn_summary entry — 每轮 turn 结束自动落盘（含 abort/error turn）
