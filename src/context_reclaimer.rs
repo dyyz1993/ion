@@ -539,3 +539,70 @@ mod tests {
         assert_eq!(tokens, 100);
     }
 }
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    
+    #[test]
+    fn test_large_context_reclaim() {
+        use ion_provider::types::*;
+        
+        let mut messages: Vec<Message> = Vec::new();
+        messages.push(Message::User(UserMessage {
+            role: "user".into(),
+            content: vec![ContentBlock::Text(TextContent { text: "Do work".into(), text_signature: None })],
+            timestamp: 0,
+            source: crate::agent::messages::MessageSource::Prompt,
+        }));
+        
+        // 50 rounds: assistant(thinking) + bash result(2KB)
+        for i in 0..50 {
+            messages.push(Message::Assistant(AssistantMessage {
+                role: "assistant".into(),
+                content: vec![
+                    AssistantContentBlock::Thinking(ThinkingContent {
+                        thinking: format!("Thinking about step {} with detailed analysis...", i),
+                        thinking_signature: None, redacted: None,
+                    }),
+                    AssistantContentBlock::Text(TextContent {
+                        text: format!("Step {} done", i),
+                        text_signature: None,
+                    }),
+                ],
+                api: String::new(), provider: String::new(), model: String::new(),
+                response_model: None, response_id: None,
+                usage: Usage::default(), stop_reason: StopReason::ToolUse,
+                error_message: None, timestamp: i as i64,
+            }));
+            messages.push(Message::ToolResult(ToolResultMessage {
+                role: "toolResult".into(),
+                tool_call_id: format!("call_{}", i),
+                tool_name: "bash".into(),
+                content: vec![ContentBlock::Text(TextContent {
+                    text: format!("output line {}\n{}", i, "data ".repeat(100)),
+                    text_signature: None,
+                })],
+                details: None, is_error: false, timestamp: i as i64,
+            }));
+        }
+        
+        let before = ContextReclaimer::estimate_tokens(&messages);
+        // Use a small context window (8K) so 7K tokens triggers reclamation beyond 60% threshold
+        let summary = ContextReclaimer::run_reclaim(&mut messages, 8_000);
+        let after = ContextReclaimer::estimate_tokens(&messages);
+        let saved = before - after;
+        let pct = saved as f64 / before as f64 * 100.0;
+        
+        println!("\n=== Reclaim Integration Test ===");
+        println!("Before: {} tokens ({} messages)", before, 101);
+        println!("After:  {} tokens ({} messages)", after, messages.len());
+        println!("Saved:  {} tokens ({:.1}%)", saved, pct);
+        println!("Thinking blocks removed: {}", summary.thinking_blocks_removed);
+        println!("Bash chars reclaimed: {}", summary.bash_chars_reclaimed);
+        println!("================================\n");
+        
+        assert!(saved > 0, "should save tokens");
+        assert!(pct > 10.0, "should save at least 10%, got {:.1}%", pct);
+    }
+}
