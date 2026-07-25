@@ -1,31 +1,32 @@
-//! TODO Plugin — session 维度的任务管理
+//! TODO Extension -- session-scoped task management.
 //!
-//! 数据存储在 `~/.ion/agent/sessions/--hash--name--/data/{session_id}/todo_plugin/tasks`
-//! 格式：JSON 数组 [{id, text, done, created_at}]
+//! Data is stored in session-scoped storage at
+//!   `~/.ion/agent/sessions/--hash--name--/data/{session_id}/todo-extension/tasks`
+//! Format: a JSON array of objects: [{id, text, done, created_at}].
 //!
-//! 工具：
-//!   todo_add(text)     → 创建任务
-//!   todo_list(status?) → 列任务 (all|active|done)
-//!   todo_done(id)      → 标记完成
-//!   todo_remove(id)    → 删除任务
-//!   todo_clean()       → 清理已完成
+//! Tools:
+//!   todo_add(text)     -> create a task
+//!   todo_list(status?) -> list tasks (all|active|done)
+//!   todo_done(id)      -> mark a task done
+//!   todo_remove(id)    -> delete a task
+//!   todo_clean()       -> remove all done tasks
 //!
-//! 构建：
+//! Build:
 //!   cargo build --target wasm32-wasip1 --release
-//!   cp target/wasm32-wasip1/release/todo_plugin.wasm <project>/.ion/extensions/
+//!   cp target/wasm32-wasip1/release/todo_extension.wasm <project>/.ion/extensions/
 
 #![no_std]
 
-// ── 宿主函数（由 ION worker 提供）─────────────────────────────────────────
+// ── Host functions (provided by the ION worker) ─────────────────────────────
 
 extern "C" {
-    // 工具注册
+    // Tool registration.
     fn host_register_tool(
         name_ptr: *const u8, name_len: u32,
         desc_ptr: *const u8, desc_len: u32,
         schema_ptr: *const u8, schema_len: u32,
     );
-    // Session 维度存储（路径见上文）
+    // Session-scoped storage (path documented above).
     fn host_read_session_data(
         key_ptr: *const u8, key_len: u32,
         out_buf: *mut u8, out_capacity: u32,
@@ -35,38 +36,42 @@ extern "C" {
         data_ptr: *const u8, data_len: u32,
     ) -> u32;
 }
-// ── Panic handler（no_std 必需）─────────────────────────────────────────
+// ── Panic handler (required for #![no_std]) ─────────────────────────────────
 
+// Only compile this for the WASM target. Under `cargo test` we link against
+// `std` (which provides its own panic handler), so the lang-item here would
+// otherwise collide with std's.
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
 
-// ── JSON 辅助（no_std，不依赖 alloc）─────────────────────────────────────
+// ── JSON helpers (no_std, no alloc) ─────────────────────────────────────────
 
-/// 从 JSON 字符串中提取字段值（简化版，不支持嵌套对象）
+/// Extract a field value from a JSON string (simplified; no nested objects).
 fn json_get<'a>(json: &'a str, key: &str) -> Option<&'a str> {
     let bytes = json.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        // 找 '"'
+        // Find the opening quote of a key.
         if bytes[i] != b'"' { i += 1; continue; }
         let k_start = i + 1;
-        // 找到 key 结束位置
+        // Find the closing quote of the key.
         let k_end = json[k_start..].find('"')? + k_start;
         if &json[k_start..k_end] == key {
-            // 跳过 ":
+            // Skip past the key, the colon, and any whitespace.
             let mut v = k_end + 1;
             while v < bytes.len() && (bytes[v] == b'"' || bytes[v] == b':' || bytes[v] == b' ' || bytes[v] == b'\t') { v += 1; }
             let val_start = v;
             if bytes.get(val_start)? == &b'"' {
-                // 字符串
+                // String value: return the bytes between the quotes.
                 let content_start = val_start + 1;
                 let end = json[content_start..].find('"')? + content_start;
                 return Some(&json[content_start..end]);
             } else {
-                // 数字或 boolean
+                // Number or boolean: return the bare token.
                 let mut end = val_start;
                 while end < bytes.len() && bytes[end] != b',' && bytes[end] != b'}' && bytes[end] != b' ' {
                     if bytes[end] == b'"' { break; }
@@ -75,9 +80,9 @@ fn json_get<'a>(json: &'a str, key: &str) -> Option<&'a str> {
                 return Some(&json[val_start..end]);
             }
         }
-        // 跳到值末尾
+        // Skip to the end of this value before looking for the next key.
         let val_start = json[k_end + 1..].find(':')? + k_end + 2;
-        // 处理嵌套
+        // Handle nested objects/arrays by counting braces.
         if bytes.get(val_start)? == &b'{' || bytes.get(val_start)? == &b'[' {
             let mut depth = 1;
             let mut j = val_start + 1;
@@ -99,7 +104,7 @@ fn json_get<'a>(json: &'a str, key: &str) -> Option<&'a str> {
     None
 }
 
-/// 在 JSON 数组中找到第 N 个对象的结束位置
+/// Return the byte offset one past the end of the Nth top-level object.
 fn json_skip_objects(json: &str, count: usize) -> usize {
     let bytes = json.as_bytes();
     let mut i = 0;
@@ -123,7 +128,7 @@ fn json_skip_objects(json: &str, count: usize) -> usize {
     bytes.len()
 }
 
-// ── 写缓冲区辅助 ──────────────────────────────────────────────────────────
+// ── Output buffer helper ────────────────────────────────────────────────────
 
 struct Buf<'a>(&'a mut [u8], usize);
 
@@ -154,7 +159,7 @@ impl Buf<'_> {
     fn as_slice(&self) -> &[u8] { &self.0[..self.1] }
 }
 
-// ── 插件入口 ──────────────────────────────────────────────────────────────
+// ── Extension entry points ──────────────────────────────────────────────────
 
 #[no_mangle]
 pub extern "C" fn extension_version() -> u32 { 1 }
@@ -229,7 +234,7 @@ fn write_storage(data: &[u8]) {
     unsafe { host_write_session_data(KEY.as_ptr(), KEY.len() as u32, data.as_ptr(), data.len() as u32); }
 }
 
-// ── 工具实现 ──────────────────────────────────────────────────────────────
+// ── Tool implementations ────────────────────────────────────────────────────
 
 fn cmd_add(args: &str, out: *mut u8, cap: u32) -> u32 {
     let text = json_get(args, "text").unwrap_or("task");
@@ -238,7 +243,7 @@ fn cmd_add(args: &str, out: *mut u8, cap: u32) -> u32 {
     let existing = read_storage(&mut storage);
     let bytes = existing.as_bytes();
 
-    // 找当前最大 ID
+    // Find the current maximum ID.
     let mut max_id: u64 = 0;
     let mut i = 0;
     while i < bytes.len() {
@@ -463,7 +468,7 @@ fn cmd_clean(_args: &str, out: *mut u8, cap: u32) -> u32 {
     copy_out(r.as_slice(), out, cap)
 }
 
-// ── 辅助 ──────────────────────────────────────────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn parse_u64(s: &str) -> Result<u64, ()> {
     let bytes = s.as_bytes();
@@ -474,4 +479,76 @@ fn parse_u64(s: &str) -> Result<u64, ()> {
         n = n.wrapping_mul(10).wrapping_add((b - b'0') as u64);
     }
     Ok(n)
+}
+
+// ── Unit tests ───────────────────────────────────────────────────────────────
+//
+// These run under the native target (`cargo test -p todo-extension`) and
+// exercise the pure-logic helpers (parse_u64, json_get, json_skip_objects)
+// WITHOUT touching host imports. The host-side integration test that loads
+// the compiled WASM lives in `tests/host_integration.rs`.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_u64_basic() {
+        assert_eq!(parse_u64("0"), Ok(0));
+        assert_eq!(parse_u64("1"), Ok(1));
+        assert_eq!(parse_u64("42"), Ok(42));
+        assert_eq!(parse_u64("99999"), Ok(99_999));
+    }
+
+    #[test]
+    fn parse_u64_rejects_non_digits() {
+        assert_eq!(parse_u64(""), Err(()));
+        assert_eq!(parse_u64("abc"), Err(()));
+        assert_eq!(parse_u64("12a"), Err(()));
+        assert_eq!(parse_u64("1.5"), Err(()));
+        assert_eq!(parse_u64("-1"), Err(()));
+    }
+
+    #[test]
+    fn json_get_string_value() {
+        let json = r#"{"text":"hello"}"#;
+        assert_eq!(json_get(json, "text"), Some("hello"));
+    }
+
+    #[test]
+    fn json_get_numeric_value() {
+        let json = r#"{"id":5}"#;
+        assert_eq!(json_get(json, "id"), Some("5"));
+    }
+
+    #[test]
+    fn json_get_boolean_value() {
+        let json = r#"{"done":true}"#;
+        assert_eq!(json_get(json, "done"), Some("true"));
+    }
+
+    #[test]
+    fn json_get_skips_earlier_keys() {
+        let json = r#"{"a":"first","b":"second"}"#;
+        assert_eq!(json_get(json, "a"), Some("first"));
+        assert_eq!(json_get(json, "b"), Some("second"));
+    }
+
+    #[test]
+    fn json_get_missing_key_returns_none() {
+        let json = r#"{"a":"first"}"#;
+        assert_eq!(json_get(json, "missing"), None);
+    }
+
+    #[test]
+    fn json_skip_objects_counts_correctly() {
+        // Three top-level objects.
+        let json = r#"[{"id":1},{"id":2},{"id":3}]"#;
+        // Skipping 0 objects returns the end of the first object.
+        let p0 = json_skip_objects(json, 0);
+        assert!(json[..p0].ends_with('}'));
+        // Skipping past all objects returns the end of the string.
+        let p_all = json_skip_objects(json, 100);
+        assert_eq!(p_all, json.len());
+    }
 }

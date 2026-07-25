@@ -1,0 +1,7 @@
+# wasm32-wasip1: allow undefined symbols (host functions like host_register_tool
+# are provided by the ION worker at runtime via wasmtime Linker).
+# Required for rustc >= 1.93 which tightened wasm link checks.
+# Mirrors todo-extension/.cargo/config.toml; placed at workspace root so that
+# `cargo build -p todo-extension` invoked from /workspace discovers the flag.
+[target.wasm32-wasip1]
+rustflags = ["-C", "link-arg=--allow-undefined"]

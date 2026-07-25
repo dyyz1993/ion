@@ -1,0 +1,5 @@
+# wasm32-wasip1: allow undefined symbols (host functions like host_register_tool
+# are provided by the ION worker at runtime via wasmtime Linker).
+# Required for rustc >= 1.93 which tightened wasm link checks.
+[target.wasm32-wasip1]
+rustflags = ["-C", "link-arg=--allow-undefined"]

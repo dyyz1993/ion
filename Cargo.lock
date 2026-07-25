@@ -1819,8 +1819,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
-name = "plan-plugin"
+name = "plan-extension"
 version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "wasmtime",
+]
 
 [[package]]
 name = "postcard"
@@ -2771,8 +2775,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
-name = "todo-plugin"
+name = "todo-extension"
 version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "wasmtime",
+]
 
 [[package]]
 name = "tokio"

@@ -1,0 +1,17 @@
+[package]
+name = "plan-extension"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Build for WASM:
+#   cargo build --target wasm32-wasip1 --release
+#
+# Run host-side integration tests:
+#   cargo test -p plan-extension --test host_integration
+
+[dev-dependencies]
+wasmtime = "44.0.3"
+serde_json = "1"
