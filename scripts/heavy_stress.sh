@@ -125,55 +125,55 @@ echo "Launching 10 roles concurrently..."
 
 # Role 1: Full code review + fix + test (GLM-5.2, 15+ min)
 run_role 1 "代码审查员" \
-    "You are doing a comprehensive code review. Read ALL these files: src/main.rs, src/utils.rs, src/models.rs, src/database.rs, src/project_lib.rs. For EACH file: 1) Identify at least 3 code quality issues (naming, error handling, missing docs, performance). 2) Fix each issue using the edit tool. 3) After ALL fixes, run cargo check. 4) Write a REVIEW.md summarizing all changes. Be thorough — do not skip any file." &
+    "You are a senior code reviewer. Your job is NOT done until you have checked every single file thoroughly. Step 1: Read src/main.rs. List ALL issues. Step 2: Read src/utils.rs. List ALL issues. Step 3: Read src/models.rs. List ALL issues. Step 4: Read src/database.rs. List ALL issues. Step 5: Read src/project_lib.rs (this is a large file, read it fully). List ALL issues. Step 6: Fix every issue you found, one by one. After each fix, run cargo check. Step 7: Write REVIEW.md with full report. DO NOT stop early. DO NOT summarize without reading every file first. If you think you are done, re-read each file to verify your fixes." &
 P1=$!
 
 # Role 2: Build complete feature module (GLM-5.2, 15+ min)
 run_role 2 "功能开发者" \
-    "Build a complete user management module. Read src/models.rs and src/database.rs first. Then create src/user_service.rs with: UserService struct, create_user, get_user, update_user, delete_user, list_users methods. Add input validation for each. Create src/user_service_tests.rs with at least 10 test cases covering normal + edge cases. Run cargo check. Fix any errors." &
+    "You are building a production-grade user management system. DO NOT rush. Step 1: Read src/models.rs and src/database.rs to understand existing types. Step 2: Create src/user_service.rs — implement UserService with: new(), create_user (with email validation), get_user (with not-found error), update_user (partial updates), delete_user, list_users (with pagination). Each method must return Result<T, UserServiceError>. Step 3: Create src/user_service_error.rs with a proper error enum (NotFound, AlreadyExists, InvalidEmail, InvalidId, DatabaseError). Step 4: Create src/user_service_tests.rs with 15+ tests. Step 5: Run cargo check. Fix ALL errors. Step 6: Create FEATURES.md documenting the API." &
 P2=$!
 
 # Role 3: Full refactor + migration (DeepSeek, 15+ min)
 run_role 3 "重构工程师" \
-    "Read src/main.rs, src/utils.rs, src/models.rs, src/database.rs. Refactor ALL files: 1) Extract magic numbers into constants. 2) Add Result return types where errors can occur. 3) Add doc comments to every public function. 4) Rename any unclear variable names. 5) Run cargo check after EACH file. 6) Create REFACTOR.md documenting all changes." \
+    "You are doing a complete codebase refactor. DO NOT stop after one file. Process: 1) Read src/main.rs — refactor: extract constants, add error handling, add docs. Run cargo check. 2) Read src/utils.rs — refactor: use Result types, add docs, improve naming. Run cargo check. 3) Read src/models.rs — refactor: add Display trait, add validation methods. Run cargo check. 4) Read src/database.rs — refactor: add error handling, add iter methods. Run cargo check. 5) Read src/project_lib.rs — this is large, read it in full, refactor what you can. Run cargo check. 6) Write REFACTOR.md listing every change made. DO NOT skip any file." \
     deepseek-v4-flash opencode &
 P3=$!
 
 # Role 4: Comprehensive test suite (DeepSeek, 15+ min)
 run_role 4 "测试工程师" \
-    "Read src/utils.rs, src/models.rs, src/database.rs. Create a comprehensive test suite: src/tests/utils_test.rs (10+ tests for utils), src/tests/models_test.rs (8+ tests for models), src/tests/database_test.rs (10+ tests for database CRUD). Cover: normal cases, edge cases (empty, negative, overflow), error cases. Run cargo check. Document test coverage in TESTS.md." \
+    "You must create an exhaustive test suite. DO NOT write fewer than 30 tests total. Step 1: Read src/utils.rs. Write src/tests/utils_test.rs with 10 tests: add normal, add overflow, add negative, multiply normal, multiply overflow, multiply by zero, multiply negative, edge cases. Step 2: Read src/models.rs. Write src/tests/models_test.rs with 10 tests: User creation, Product creation, Order creation, field validation, serialization. Step 3: Read src/database.rs. Write src/tests/database_test.rs with 10 tests: add_user, add_product, get_user, get_product, delete, concurrent access, large dataset. Step 4: Run cargo check after EACH test file. Step 5: Write TESTS.md with coverage report." \
     deepseek-v4-flash opencode &
 P4=$!
 
 # Role 5: Full project documentation (GLM-5.2, 15+ min)
 run_role 5 "文档撰写者" \
-    "Read ALL source files: src/main.rs, src/utils.rs, src/models.rs, src/database.rs, src/project_lib.rs. Create comprehensive documentation: README.md (project overview, getting started, architecture), docs/API.md (every public function with examples), docs/ARCHITECTURE.md (module relationships, data flow), docs/CONTRIBUTING.md (coding standards, PR process). Be detailed — read every file before writing." &
+    "You must create comprehensive documentation. DO NOT write docs without reading the source first. Step 1: Read src/main.rs, src/utils.rs, src/models.rs, src/database.rs, src/project_lib.rs one by one. Step 2: Write README.md — project overview, installation, usage, examples. Step 3: Write docs/API.md — document EVERY public function with signature, description, parameters, return value, example. Step 4: Write docs/ARCHITECTURE.md — module diagram, data flow, dependency graph. Step 5: Write docs/CONTRIBUTING.md — code style, testing requirements, PR process. Step 6: Write docs/CHANGELOG.md — current features. DO NOT summarize — be detailed." &
 P5=$!
 
 # Role 6: Deep bug analysis + fixes (GLM-5.2, 15+ min)
 run_role 6 "Bug猎手" \
-    "Read src/main.rs, src/utils.rs, src/models.rs, src/database.rs, src/project_lib.rs. Perform deep analysis: 1) Integer overflow risks (add/multiply with i32). 2) Memory issues (HashMap growth, cloning). 3) Thread safety (if used concurrently). 4) Logic errors. 5) Missing input validation. For EACH bug found: write a test that reproduces it, then fix it. Create BUGS.md with full report. Run cargo check." &
+    "You are a meticulous bug hunter. DO NOT stop after finding 2-3 bugs. Step 1: Read src/main.rs. List every potential bug: integer overflow, panic risks, logic errors. Step 2: Read src/utils.rs. Same analysis. Step 3: Read src/models.rs. Same analysis. Step 4: Read src/database.rs. Same analysis: HashMap unbounded growth, missing error handling. Step 5: Read src/project_lib.rs. Deep analysis of this large file. Step 6: For EACH bug found, write a reproduction test in src/bug_tests.rs. Step 7: Fix each bug. Run cargo check after each fix. Step 8: Write BUGS.md with full report including severity ratings." &
 P6=$!
 
 # Role 7: Performance optimization (DeepSeek, 15+ min)
 run_role 7 "性能分析师" \
-    "Read src/main.rs, src/utils.rs, src/models.rs, src/database.rs. Analyze performance deeply: 1) Time complexity of each function. 2) Memory allocations. 3) Clone vs borrow. 4) HashMap vs Vec for small datasets. Write src/perf_bench.rs with benchmark code. Create PERF.md with: current analysis, 5+ optimization suggestions, estimated impact. Implement the top 2 optimizations. Run cargo check." \
+    "You are a performance engineer. DO NOT write suggestions without measuring. Step 1: Read src/main.rs. Analyze: time complexity, space complexity, allocation count. Step 2: Read src/utils.rs. Same analysis. Step 3: Read src/models.rs. Analyze struct sizes, alignment. Step 4: Read src/database.rs. Analyze HashMap vs BTreeMap, growth strategy. Step 5: Read src/project_lib.rs. This is large — identify hot paths. Step 6: Write src/perf_benchmarks.rs with criterion-like benchmarks for each function. Step 7: Implement the top 3 optimizations. Run cargo check. Step 8: Write PERF.md with before/after analysis." \
     deepseek-v4-flash opencode &
 P7=$!
 
 # Role 8: Security audit + hardening (GLM-5.2, 15+ min)
 run_role 8 "安全审计员" \
-    "Read src/main.rs, src/utils.rs, src/models.rs, src/database.rs. Perform thorough security audit: 1) Input validation gaps. 2) Injection risks. 3) Unsafe code. 4) Resource exhaustion (unbounded HashMap). 5) Integer overflow as security issue. 6) Error message information leakage. For each finding: rate severity (Critical/High/Medium/Low), write a fix, apply it. Create SECURITY.md with full report. Run cargo check." &
+    "You are a security auditor. DO NOT stop after surface-level checks. Step 1: Read src/main.rs. Check: input validation, output encoding, panic on attacker input. Step 2: Read src/utils.rs. Check: integer overflow as security issue, denial of service. Step 3: Read src/models.rs. Check: data leakage in Display/Debug, PII handling. Step 4: Read src/database.rs. Check: resource exhaustion, race conditions. Step 5: Read src/project_lib.rs. Deep security review. Step 6: For each finding, write the fix and apply it. Step 7: Create src/security_tests.rs with tests proving the fixes work. Step 8: Write SECURITY.md with full CVE-style report." &
 P8=$!
 
 # Role 9: API design + trait implementation (GLM-5.2, 15+ min)
 run_role 9 "API设计师" \
-    "Read src/models.rs, src/database.rs, src/utils.rs. Design a clean public API: 1) Create src/traits.rs with traits: Repository, Validatable, Serializable. 2) Implement traits for User, Product, Order, Database. 3) Create src/api.rs with builder pattern for queries. 4) Add doc comments with examples. 5) Run cargo check. 6) Create API_CHANGES.md documenting the design decisions." &
+    "You are designing a clean public API layer. DO NOT rush the design. Step 1: Read src/models.rs, src/database.rs, src/utils.rs to understand existing types. Step 2: Create src/traits.rs — define Repository<T>, Validatable, Serializable, Displayable traits. Step 3: Create src/api.rs — implement ApiClient with builder pattern: new(), with_database(), with_auth(), create_user(), query_products(), etc. Step 4: Create src/api_error.rs — comprehensive error types with thiserror. Step 5: Implement all traits for User, Product, Order. Step 6: Create src/api_tests.rs with 10+ integration tests. Step 7: Run cargo check after EACH new file. Step 8: Write API_DESIGN.md." &
 P9=$!
 
 # Role 10: CI/CD + DevOps setup (DeepSeek, 15+ min)
 run_role 10 "CICD工程师" \
-    "Read Cargo.toml and ALL source files. Create complete CI/CD: .github/workflows/ci.yml (build, test, clippy, fmt, security audit), .github/workflows/release.yml (tagged release), Dockerfile (multi-stage build), docker-compose.yml, .gitignore updates, scripts/test.sh (local CI runner), scripts/lint.sh. Make ci.yml run tests for each module separately. Run cargo check to validate project compiles." \
+    "You are setting up complete CI/CD from scratch. DO NOT create just one file. Step 1: Read Cargo.toml to understand the project. Step 2: Create .github/workflows/ci.yml — matrix build (stable + beta), cargo build, cargo test (per module), cargo clippy -D warnings, cargo fmt --check, cargo audit. Step 3: Create .github/workflows/release.yml — tagged release, cross-compile, GitHub release creation. Step 4: Create Dockerfile — multi-stage build, minimal final image. Step 5: Create docker-compose.yml — app + redis. Step 6: Create scripts/ci_local.sh — runs all CI steps locally. Step 7: Create .gitignore. Step 8: Create Makefile with common commands. Step 9: Run cargo check to verify. DO NOT skip any file." \
     deepseek-v4-flash opencode &
 P10=$!
 
