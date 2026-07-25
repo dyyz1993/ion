@@ -798,7 +798,7 @@ impl Agent {
                         content: vec![ion_provider::types::ContentBlock::Text(
                             ion_provider::types::TextContent { text: remind, text_signature: None },
                         )],
-                        timestamp: chrono::Utc::now().timestamp(),
+                        timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
                         source: ion_provider::types::MessageSource::Steer,
                     }));
                 }
