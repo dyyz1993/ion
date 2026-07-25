@@ -37,6 +37,31 @@ Implement the parser
 Add tests
 ```
 
+## Path Constraints (IMPORTANT)
+
+`plan_path` must satisfy BOTH:
+
+1. **Inside allowed_roots**: The ION WASM runtime only allows file I/O inside
+   the project root directory or `~/.ion/`. Paths outside (e.g. `/tmp/...`,
+   `/Users/...` outside the project) are rejected with `outside allowed roots`.
+
+2. **Not protected by permission rules**: Subdirectories like `<project>/.ion/`
+   are protected by the `protect-ion-config` permission rule. Write attempts
+   there are silently rejected.
+
+**Recommended**: use a path at the project root or a non-protected subdir:
+- ✅ `<project>/plan.md`
+- ✅ `<project>/docs/plan.md`
+- ❌ `/tmp/plan.txt` (outside allowed_roots)
+- ❌ `<project>/.ion/plan.txt` (protected by permission rule)
+
+## Agent Compatibility
+
+WASM extension tools are filtered by agent tool whitelists. Use an agent
+WITHOUT a `tools:` whitelist (e.g. `build`, `user`, or no `--agent` flag)
+so the `plan_*` tools are available. The `developer` agent's whitelist
+(`read/write/edit/bash/ls`) excludes WASM tools.
+
 ## Storage
 
 - The plan path is provided by the caller in `plan_enter({plan_path})`.
