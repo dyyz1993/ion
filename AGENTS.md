@@ -401,7 +401,28 @@ ion rpc --session sess_xxx --method get_flags \
 
 现有扩展手册：
 - [todo-extension/MANUAL.md](./todo-extension/MANUAL.md) — 待办任务管理 (WASM)
+- **plan 工具**（内核内置，非 WASM）— plan_enter/exit/add/list/done/approve，支持 strict_mode 强制用户审批
 - MEMORY 扩展手册（内核内置，见 [docs/design/MEMORY_EXTENSION.md](./docs/design/MEMORY_EXTENSION.md)）
+
+#### plan 工具（内核内置，commit 501697e/25b009e/10d4761）
+
+**不要做成 WASM 扩展**——ION 内核已有内置 PlanExtension（`src/agent/plan_extension.rs`）+ PlanTool（`src/agent/plan_tool.rs`），提供 6 个工具：
+
+| 工具 | 作用 |
+|------|------|
+| `plan_enter` | 进入计划模式（锁定 edit/write/bash，强制先规划） |
+| `plan_exit` | 退出计划模式（持久化 PLAN.md，解锁工具） |
+| `plan_add` | 加步骤 |
+| `plan_list` | 列步骤（状态：`[ ]` pending / `[a]` approved / `[x]` done）|
+| `plan_done` | 标记步骤完成 |
+| `plan_approve` | 用户审批步骤（strict_mode 下必需）|
+
+**strict_mode**（commit 10d4761）：`plan_enter(strict_mode=true)` 启用强制审批——`plan_exit` 要求所有步骤 approved 才放行，`plan_done` 要求步骤先 approved。默认 false（向后兼容，AI 自决）。
+
+**踩过的坑**（别再踩）：
+1. 工具名 `plan_enter`/`plan_exit` 不要做成 WASM——会跟内置 PlanExtension 的 plan mode 触发器冲突（之前 WASM 版 bug：进 plan mode 后 plan_add 被锁死）
+2. PlanExtension 跟 PlanTool 必须共享同一个 `Arc<PlanExtension>` 实例（通过 `SharedPlanExtension` wrapper），否则 plan_add 写的状态 plan_exit 读不到（PLAN.md 空文件 bug）
+3. strict 检查必须放在 `Tool::execute` 里，不能放 `after_tool_call`——因为 `agent.call_tool()`（RPC 路径）不调 after_tool_call
 
 ### 例外
 
@@ -516,6 +537,7 @@ ion rpc --session sess_xxx --method get_flags \
 | `src/message_retrieval.rs` | 消息拉取核心逻辑（retrieve_messages/turns/inputs/turn_detail + view/过滤/分页） |
 | `src/global_memory.rs` | 全局记忆库（SQLite + FTS5，跨项目检索） |
 | `src/global_memory_ext.rs` | GlobalMemoryExtension（单例扩展，on_singleton_init + extension_rpc） |
+| `src/agent/plan_extension.rs` + `src/agent/plan_tool.rs` | 内置 plan 工具（plan_enter/exit/add/list/done/approve + strict_mode 强制审批）|
 | `src/hooks/`（规划中） | Hooks 系统：HooksConfig + HookExtension + 5 handler 执行引擎（command/http/prompt/agent/mcp_tool），[详情](./docs/design/HOOKS_AND_OUTLINE_SYNC.md) |
 
 ## 架构
@@ -742,7 +764,7 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - `disallowed_tools` 黑名单生效（之前被忽略的 bug 已修）
   - runtime 默认 local（不从全局继承），`--local`/`--remote` flag 即时切换
   - **验证**: 5 任务串行 converge + 3 阶段 pipeline（develop→merge→publish GitHub）全部通过
-- **测试**: 777 个 Rust 测试 + 37 MCP CI + 30 hooks CI 全部通过 ✅（截至 2026-07-24）
+- **测试**: 785 个 Rust 测试 + 37 MCP CI + 30 hooks CI + 19 extensions CI 全部通过 ✅（截至 2026-07-25）
 - **消息拉取（Message Retrieval）** — 9 接口 + 分页/视点/过滤/turn 聚合（已验证）
   - `message_retrieval.rs` 纯函数模块（~1000 行）— retrieve_messages/turns/inputs/turn_detail
   - turn_summary entry — 每轮 turn 结束自动落盘（含 abort/error turn）
@@ -788,6 +810,24 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - 支持所有 JSON 类型（bool/number/string/object/array）
   - 扩展内通过 `ExtensionRegistry::get_flag()` 读取
   - **验证**: 10 CI 测试全过 ✅
+
+- **Plan 工具内置化 + strict_mode（重构 + 深度验证修复）**:
+  - 删除 WASM `plan-extension`（跟内置 PlanExtension 工具名冲突，进 plan mode 后 plan_add 被锁死）
+  - 内置 `src/agent/plan_extension.rs` + `src/agent/plan_tool.rs` 提供 6 工具：plan_enter/exit/add/list/done/approve
+  - PlanExtension 跟 PlanTool 通过 `SharedPlanExtension` 共享同一 `Arc<PlanExtension>` 实例（修 PLAN.md 空文件 bug）
+  - plan mode 的 `allowed_tools` 去掉 edit/write/bash（强制先规划后执行，不允许边规划边改代码）
+  - `plan_enter(strict_mode=true)` 启用强制审批：plan_exit 要求所有步骤 approved 才放行，plan_done 要求步骤先 approved
+  - plan_list 三态显示：`[ ]` pending / `[a]` approved / `[x]` done
+  - plan_exit 持久化 PLAN.md + 退出后 steps 保留（可复查）
+  - **A→B 深度验证**：GLM-4.7 真实业务使用，评分 7.5/10；strict 模式下 plan_exit 未批准被正确 blocked
+  - **验证**: 785 单元测试 + 19 CI assertions 全过 ✅
+  - 关键 commit: `501697e`（删 WASM + 内置化）、`25b009e`（Q1-Q4 修复）、`10d4761`（strict_mode）
+
+- **todo-extension 重命名（plugin→extension）**:
+  - 目录 `todo-plugin/` → `todo-extension/`（术语合规）
+  - 加 `.cargo/config.toml`（`--allow-undefined`，rustc 1.93+ wasm link 兼容）
+  - host 集成测试搬到独立 `tests-extensions` crate（解决 no_std cdylib + cargo test 冲突）
+  - **验证**: 14 wasmtime 集成测试 + 19 CI assertions 全过 ✅
 
 - **Extension Host API（ctx.fs 统一文件访问，对齐 pi ExtensionContext.fs）**:
   - `FileSystemCapability` trait（read_file/write_file/list_dir/path_exists/glob）+ `RuntimeFileSystem` 实现
@@ -1359,7 +1399,7 @@ bash scripts/evolve-run.sh "任务描述"             # 同步 + 守门 + HTML �
 
 | 套件 | 数量 | 覆盖 |
 |------|------|------|
-| lib tests (核心逻辑) | 777 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory(+entities/relations V0.3)/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact/FileSnapshot/RulesEngine/FileTimeGuard/ContextReclaimer/TierModels/Hooks/StoredDecision/WasmExtension |
+| lib tests (核心逻辑) | 785 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory(+entities/relations V0.3)/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact/FileSnapshot/RulesEngine/FileTimeGuard/ContextReclaimer/TierModels/Hooks/StoredDecision/WasmExtension/PlanExtension/PlanTool |
 | unit_rpc_test (RPC 协议) | 20 | U1-U20 RPC 命令覆盖 + 接口格式兼容 |
 | manager_integration (集成) | 25 | Manager + Worker + 事件 + UI + 消息拉取 |
 | session_tree_test (集成) | 4 | only-append 审计/branch 接 leaf/全操作序列 |
@@ -1398,6 +1438,7 @@ bash scripts/evolve-run.sh "任务描述"             # 同步 + 守门 + HTML �
 | session_hook_ci (CLI E2E) | 8 | Group A：call_tool branch_session → subscribe 收到 session_switch_seen 事件（action=branch + branch_name 透传）+ Group B：rollback action=rollback + Group C：其他工具不触发 |
 | hooks_handler_ci (CLI E2E) | 6 | Group A：command handler 执行 → subscribe 收到 hook_handler_executed + Group B：http handler 安全校验（非HTTPS→block / localhost→block）+ Group C：prompt handler 触发 |
 | extension_cli_ci (CLI E2E) | 11 | Group A：install（成功/文件拷到位/不存在报错/非wasm拒绝）+ Group B：list（列两个+总数）+ Group C：remove（不带后缀/不存在报错/带后缀）+ Group D：install 覆盖更新 |
+| extensions_ci (CLI E2E) | 19 | todo_extension（add/list/done/remove 5 工具）+ 内置 plan（enter/add/list/done/exit + PLAN.md 落盘）端到端验证，含动态 id + 唯一 token 防数据污染 |
 | memory_agent_ci (CLI E2E) | 10 | Group A：memory-agent 自动 spawn（日志+list_workers+状态）+ Group B：session/model 有效 + Group C：global-memory extension_rpc save/search/clear |
 | export_ci (CLI E2E) | 18 | Group A：真实对话导出（FauxProvider → 验证 message flatten + role/content 转换 + leafId）+ Group B：现有 session 导出（turn_summary → custom_message）+ Group C：边界场景（不存在 session 报错 / 自动选 last_session）+ Group D：export-after-run 工具面板（28 工具 + bash/read 必在 + schema 完整）|
 | skill_tool_ci (CLI E2E) | 27 | Group S：skill 工具 list/inject/fork（9 case）+ Group E：边界 + Group R：SkillTool 注册可见性 + Group F：fork 模式完整链路（spawn 子 Worker + 独立 <sid>.jsonl + parentSession 血缘关联 + spawnMeta relation/spawnedBy + systemPrompt skill 内容 + export HTML 可见，8 case）|
@@ -1405,7 +1446,7 @@ bash scripts/evolve-run.sh "任务描述"             # 同步 + 守门 + HTML �
 | streaming_replay_ci (CLI E2E) | 7 | Group A：Record/Replay 真实 DeepSeek 录制 → subscribe 收到 1448 个 tool_call_delta（真实 LLM 内容流式）+ Group B：回放内容正确性（DeepSeek 生成的 30 行文件 hash 匹配）+ Group C：两次回放确定性（hash 一致） |
 | soft_interrupt_ci (CLI E2E) | 3 | Group A：interrupt 中断工具 < 3s + 进程清理 + Group B：默认 behavior=steer（不报 busy）|
 | abort_ci (CLI E2E) | 5 | Group A：工具执行中 abort < 3s 生效（select! stopped 分支 + bash 进程清理）+ Group B：kill -TERM/KILL -<pgid> 杀整个进程树（process_group(0)）+ Group C：HTTP 流式期间 abort < 300ms + 无新 delta 泄漏（CancellationToken 真取消 TCP）|
-| **测试覆盖合计** | **1204+** | 全部通过 ✅（Rust 777，CLI E2E 427+，含 hooks 36 case + 真实 LLM 5 case + WASM 扩展） |
+| **测试覆盖合计** | **1223+** | 全部通过 ✅（Rust 785，CLI E2E 438+，含 hooks 36 case + extensions 19 case + 真实 LLM 5 case + WASM 扩展） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
