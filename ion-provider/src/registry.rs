@@ -183,7 +183,7 @@ fn builtin_models() -> Vec<Model> {
             base_url: "https://opencode.ai/zen/go/v1".into(),
             reasoning: true, input: vec!["text".into()],
             cost: Cost { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 },
-            context_window: 1000000, max_tokens: 65536,
+            context_window: 128000, max_tokens: 65536,
             compat: Some(CompatConfig::OpenAICompletions(OpenAICompletionsCompat {
                 max_tokens_field: Some("max_tokens".into()),
                 requires_reasoning_content_on_assistant_messages: Some(true),
@@ -198,7 +198,7 @@ fn builtin_models() -> Vec<Model> {
             base_url: "https://opencode.ai/zen/go/v1".into(),
             reasoning: true, input: vec!["text".into()],
             cost: Cost { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 },
-            context_window: 1000000, max_tokens: 65536,
+            context_window: 128000, max_tokens: 65536,
             compat: Some(CompatConfig::OpenAICompletions(OpenAICompletionsCompat {
                 max_tokens_field: Some("max_tokens".into()),
                 requires_reasoning_content_on_assistant_messages: Some(true),
