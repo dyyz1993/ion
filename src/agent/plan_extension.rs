@@ -222,12 +222,17 @@ impl Extension for PlanExtension {
                  Plan output path: {}\n\
                  Current plan steps: {}\n\n\
                  You are in planning mode. Your task is to:\n\
-                 1. Research the codebase (read/grep/find/ls/bash)\n\
+                 1. Research the codebase using read/grep/find/ls (read-only — \
+                 edit/write/bash are BLOCKED in plan mode, by design, to enforce \
+                 plan-first-execute-later)\n\
                  2. Build a step-by-step plan using `plan_add`\n\
-                 3. Mark steps done with `plan_done` as you validate them\n\
-                 4. List with `plan_list` to review\n\
-                 5. Call `plan_exit` when the plan is complete to return to \
-                 normal workflow (the plan will be persisted to the path above)\n",
+                 3. Optionally get user approval with `plan_approve` (status shows \
+                 as [ ] pending / [a] approved / [x] done)\n\
+                 4. Mark steps done with `plan_done` as you validate them\n\
+                 5. List with `plan_list` to review the current plan\n\
+                 6. Call `plan_exit` when the plan is complete to return to normal \
+                 workflow (the plan will be persisted to the path above, and \
+                 edit/write/bash will become available again)\n",
                 path, step_count
             ));
         }
