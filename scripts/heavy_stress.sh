@@ -85,7 +85,7 @@ run_role() {
         --agent developer \
         --provider "$provider" \
         --model "$model" \
-        --max-turns 30 \
+        --max-turns 200 \
         >> "$log" 2>&1
 
     local rc=$?
@@ -145,13 +145,13 @@ P2=$!
 # Role 3: Full refactor + migration (DeepSeek, 15+ min)
 run_role 3 "重构工程师" \
     "You are doing a complete codebase refactor. DO NOT stop after one file. Process: 1) Read src/main.rs — refactor: extract constants, add error handling, add docs. Run cargo check. 2) Read src/utils.rs — refactor: use Result types, add docs, improve naming. Run cargo check. 3) Read src/models.rs — refactor: add Display trait, add validation methods. Run cargo check. 4) Read src/database.rs — refactor: add error handling, add iter methods. Run cargo check. 5) Read src/project_lib.rs — this is large, read it in full, refactor what you can. Run cargo check. 6) Write REFACTOR.md listing every change made. DO NOT skip any file." \
-    deepseek-v4-flash opencode &
+    glm-5.2 zai &
 P3=$!
 
 # Role 4: Comprehensive test suite (DeepSeek, 15+ min)
 run_role 4 "测试工程师" \
     "You must create an exhaustive test suite. DO NOT write fewer than 30 tests total. Step 1: Read src/utils.rs. Write src/tests/utils_test.rs with 10 tests: add normal, add overflow, add negative, multiply normal, multiply overflow, multiply by zero, multiply negative, edge cases. Step 2: Read src/models.rs. Write src/tests/models_test.rs with 10 tests: User creation, Product creation, Order creation, field validation, serialization. Step 3: Read src/database.rs. Write src/tests/database_test.rs with 10 tests: add_user, add_product, get_user, get_product, delete, concurrent access, large dataset. Step 4: Run cargo check after EACH test file. Step 5: Write TESTS.md with coverage report." \
-    deepseek-v4-flash opencode &
+    glm-5.2 zai &
 P4=$!
 
 # Role 5: Full project documentation (GLM-5.2, 15+ min)
@@ -167,7 +167,7 @@ P6=$!
 # Role 7: Performance optimization (DeepSeek, 15+ min)
 run_role 7 "性能分析师" \
     "You are a performance engineer. DO NOT write suggestions without measuring. Step 1: Read src/main.rs. Analyze: time complexity, space complexity, allocation count. Step 2: Read src/utils.rs. Same analysis. Step 3: Read src/models.rs. Analyze struct sizes, alignment. Step 4: Read src/database.rs. Analyze HashMap vs BTreeMap, growth strategy. Step 5: Read src/project_lib.rs. This is large — identify hot paths. Step 6: Write src/perf_benchmarks.rs with criterion-like benchmarks for each function. Step 7: Implement the top 3 optimizations. Run cargo check. Step 8: Write PERF.md with before/after analysis." \
-    deepseek-v4-flash opencode &
+    glm-5.2 zai &
 P7=$!
 
 # Role 8: Security audit + hardening (GLM-5.2, 15+ min)
@@ -183,7 +183,7 @@ P9=$!
 # Role 10: CI/CD + DevOps setup (DeepSeek, 15+ min)
 run_role 10 "CICD工程师" \
     "You are setting up complete CI/CD from scratch. DO NOT create just one file. Step 1: Read Cargo.toml to understand the project. Step 2: Create .github/workflows/ci.yml — matrix build (stable + beta), cargo build, cargo test (per module), cargo clippy -D warnings, cargo fmt --check, cargo audit. Step 3: Create .github/workflows/release.yml — tagged release, cross-compile, GitHub release creation. Step 4: Create Dockerfile — multi-stage build, minimal final image. Step 5: Create docker-compose.yml — app + redis. Step 6: Create scripts/ci_local.sh — runs all CI steps locally. Step 7: Create .gitignore. Step 8: Create Makefile with common commands. Step 9: Run cargo check to verify. DO NOT skip any file." \
-    deepseek-v4-flash opencode &
+    glm-5.2 zai &
 P10=$!
 
 echo ""

@@ -787,6 +787,20 @@ impl Agent {
             // Build context for provider (clone to avoid borrow issues)
             let mut sys_prompt = self.system_prompt.clone().unwrap_or_default();
             self.extensions.on_system_prompt(&mut sys_prompt).await?;
+
+            // Inject turn budget info so agent can pace itself and summarize before running out.
+            // Only inject when max_turns is set (not unlimited).
+            if max_turns != u64::MAX {
+                let remaining = max_turns - turn;
+                if remaining <= 10 && remaining > 0 {
+                    sys_prompt.push_str(&format!(
+                        "\n\n⚠️ BUDGET ALERT: You have {} tool call(s) remaining. \
+                        If you are close to finishing, wrap up now and provide your final summary. \
+                        If you still have important work to do, prioritize the most critical tasks first.",
+                        remaining
+                    ));
+                }
+            }
             let sys_prompt = Some(sys_prompt);
 
             // Skill 自动卸载：skill 内容（tool result）在加载后的下一轮 turn 就被"消化"了。
