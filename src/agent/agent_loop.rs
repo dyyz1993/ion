@@ -779,27 +779,34 @@ impl Agent {
             self.drain_steering().await?;
             self.maybe_compact().await?;
 
-            // Inject budget reminder as a user message with XML tag.
-            // Uses <remind> tag so frontend can distinguish system reminders from real user input.
-            // Only fires in the last 10 turns when max_turns is set.
+            // Inject budget reminder as a CustomMessage.
+            // Uses customType="remind" + display=true so frontend can render it
+            // differently from real user messages (e.g. badge "System Reminder").
+            // details carries structured metadata for UI rendering.
             if max_turns != u64::MAX {
                 let remaining = max_turns - turn;
                 if remaining <= 10 && remaining > 0 {
-                    let remind = format!(
-                        "<remind type=\"budget\">\n\
-                        You have {} tool call(s) remaining. \
+                    let remind_text = format!(
+                        "You have {} tool call(s) remaining. \
                         If you are close to finishing, wrap up now and provide your final summary. \
-                        If you still have important work to do, prioritize the most critical tasks.\n\
-                        </remind>",
+                        If you still have important work to do, prioritize the most critical tasks.",
                         remaining
                     );
-                    self.messages.push(Message::User(ion_provider::types::UserMessage {
-                        role: "user".into(),
-                        content: vec![ion_provider::types::ContentBlock::Text(
-                            ion_provider::types::TextContent { text: remind, text_signature: None },
-                        )],
-                        timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
-                        source: ion_provider::types::MessageSource::Steer,
+                    self.messages.push(Message::Custom(ion_provider::types::CustomMessage {
+                        role: "custom".into(),
+                        custom_type: "remind".into(),
+                        content: ion_provider::types::CustomContent::Text(remind_text),
+                        display: true,
+                        details: Some(serde_json::json!({
+                            "remindType": "budget",
+                            "remaining": remaining,
+                            "maxTurns": max_turns,
+                            "currentTurn": turn,
+                        })),
+                        timestamp: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as i64,
                     }));
                 }
             }
