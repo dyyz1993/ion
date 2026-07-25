@@ -785,34 +785,48 @@ fn build_registry_and_model(eff: &EffectiveConfig) -> (Arc<ApiRegistry>, Model) 
     let mut model_registry = ModelRegistry::new();
     model_registry.register_builtins();
 
-    let mut model = model_registry
-        .find_model(&eff.model)
-        .cloned()
-        .unwrap_or_else(|| {
-            // Check if this model is defined in a custom provider
-            if let Some(cp) = cfg.providers.get(&eff.provider) {
-                if let Some(cm) = cp.models.iter().find(|m| m.id == eff.model) {
-                    return Model {
-                        id: cm.id.clone(),
-                        name: cm.name.clone().unwrap_or_else(|| cm.id.clone()),
-                        api: cp.api.clone(),
-                        provider: eff.provider.clone(),
-                        base_url: cp.base_url.clone(),
-                        reasoning: cm.reasoning.unwrap_or(false),
-                        input: vec!["text".into()],
-                        cost: Cost {
-                            input: cm.cost.as_ref().and_then(|c| Some(c.input)).unwrap_or(0.0),
-                            output: cm.cost.as_ref().and_then(|c| Some(c.output)).unwrap_or(0.0),
-                            cache_read: 0.0,
-                            cache_write: 0.0,
-                        },
-                        context_window: cm.context_window.unwrap_or(128000),
-                        max_tokens: cm.max_tokens.unwrap_or(8192),
-                        compat: None,
-                        headers: cp.headers.clone(),
-                    };
-                }
-            }
+    // Model resolution priority (highest first):
+    //   1. User explicitly specified --provider AND that provider is defined in
+    //      config.json with the requested model → use config.json's definition
+    //      (this lets users override built-in models with their own base_url /
+    //      api_key / proxy settings).
+    //   2. Built-in registry (find_model — searches across all built-in providers).
+    //   3. Fallback construction.
+    //
+    // Rationale: built-ins use official endpoints (e.g. open.bigmodel.cn for GLM).
+    // Users who configure a custom provider in config.json with the same model id
+    // (e.g. their own proxy) expect their config to win when they pass --provider.
+    // Previously find_model ran first and always picked the built-in, ignoring
+    // the user's --provider + config.json combination.
+    let mut model = if let Some(cp) = cfg.providers.get(&eff.provider) {
+        if let Some(cm) = cp.models.iter().find(|m| m.id == eff.model) {
+            Some(Model {
+                id: cm.id.clone(),
+                name: cm.name.clone().unwrap_or_else(|| cm.id.clone()),
+                api: cp.api.clone(),
+                provider: eff.provider.clone(),
+                base_url: cp.base_url.clone(),
+                reasoning: cm.reasoning.unwrap_or(false),
+                input: vec!["text".into()],
+                cost: Cost {
+                    input: cm.cost.as_ref().and_then(|c| Some(c.input)).unwrap_or(0.0),
+                    output: cm.cost.as_ref().and_then(|c| Some(c.output)).unwrap_or(0.0),
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+                context_window: cm.context_window.unwrap_or(128000),
+                max_tokens: cm.max_tokens.unwrap_or(8192),
+                compat: None,
+                headers: cp.headers.clone(),
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+    .or_else(|| model_registry.find_model(&eff.model).cloned())
+    .unwrap_or_else(|| {
             // Fallback: construct from effective config + show hint
             tracing::warn!(
                 "model '{}' not in registry, using fallback (context=128k). \
