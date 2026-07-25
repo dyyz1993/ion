@@ -787,9 +787,11 @@ impl Agent {
                 let remaining = max_turns - turn;
                 if remaining <= 10 && remaining > 0 {
                     let remind_text = format!(
-                        "You have {} tool call(s) remaining. \
+                        "<remind>\n\
+                        You have {} tool call(s) remaining. \
                         If you are close to finishing, wrap up now and provide your final summary. \
-                        If you still have important work to do, prioritize the most critical tasks.",
+                        If you still have important work to do, prioritize the most critical tasks.\n\
+                        </remind>",
                         remaining
                     );
                     self.messages.push(Message::Custom(ion_provider::types::CustomMessage {
