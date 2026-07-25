@@ -69,17 +69,24 @@ where
     Fut: std::future::Future<Output = AgentResult<String>>,
 {
     let mut last_err: Option<AgentError> = None;
-    for attempt in 0..=config.max_retries {
+    let max_retries = config.max_retries.min(3); // Cap at 3 for compaction — don't waste time
+    for attempt in 0..=max_retries {
         if attempt > 0 {
             let delay = std::time::Duration::from_millis(
-                500u64 * 2u64.pow((attempt - 1)).min(6),
+                500u64 * 2u64.pow((attempt - 1)).min(4),
             );
             tokio::time::sleep(delay).await;
         }
         match operation().await {
             Ok(s) => return Ok(s),
             Err(e) => {
-                tracing::warn!("compaction retry {}/{}: {}", attempt + 1, config.max_retries + 1, e);
+                let err_str = e.to_string();
+                // HTTP 400 from provider = request format issue, retrying won't help
+                if err_str.contains("400") || err_str.contains("Upstream request failed") {
+                    tracing::warn!("compaction: provider returned 400, falling back to truncation");
+                    return Err(e);
+                }
+                tracing::warn!("compaction retry {}/{}: {}", attempt + 1, max_retries + 1, e);
                 last_err = Some(e);
             }
         }
