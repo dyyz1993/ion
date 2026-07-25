@@ -776,14 +776,14 @@ pub fn make_llm_summarizer(
                 None,
             );
             let ctx = ion_provider::Context::new(Some(system_prompt), transformed);
-            // Use the model's own max_tokens budget (e.g. DeepSeek=65536, GLM=32000).
-            // Reasoning models consume large amounts of tokens for reasoning_content,
-            // so we need the full budget to ensure content output has room.
+            // Disable reasoning for compaction — summarization doesn't need deep thinking,
+            // and reasoning models waste the entire token budget on reasoning_content
+            // leaving nothing for the actual summary output (causes HTTP 400).
             let max_tok = if m.max_tokens > 0 { m.max_tokens } else { 32000 };
             let opts = ion_provider::types::StreamOptions {
                 api_key: key.clone(),
-                reasoning: None,
-                timeout_ms: Some(120000),  // 2min — reasoning models are slow
+                reasoning: Some(ion_provider::types::ThinkingLevel::Off),
+                timeout_ms: Some(120000),
                 max_retries: Some(5),
                 max_tokens: Some(max_tok),
                 response_format: None,
