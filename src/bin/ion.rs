@@ -3415,6 +3415,7 @@ async fn cmd_serve_start(
     {
         let mut reg = registry.lock().await;
         reg.register_singleton(Box::new(ion::global_memory_ext::GlobalMemoryExtension::new()));
+        reg.register_singleton(Box::new(ion::monitor_extension::MonitorExtension::new()));
         reg.init_singletons().await;
     }
     // post_init（释放 lock 后调，让单例能 create_worker spawn 系统级 agent）

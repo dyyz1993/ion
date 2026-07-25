@@ -38,3 +38,4 @@ pub mod mcp;
 pub mod hooks;
 pub mod rules_engine;
 pub mod context_reclaimer;
+pub mod monitor_extension;
