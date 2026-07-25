@@ -197,6 +197,13 @@ async fn main() {
     tools.register(Box::new(EditTool));
     tools.register(Box::new(CalculatorTool));
     tools.register(Box::new(EchoTool));
+    // ── 内置 plan 工具（plan_enter/exit/add/list/done）──
+    // 不依赖 WASM plan-extension（已删除，跟内置 PlanExtension 工具名冲突）。
+    // 这 5 个工具共享一个 PlanExtension 实例，state 在内存中，
+    // plan_exit / plan_add 会自动持久化到 plan_enter 设的文件路径。
+    for t in ion::agent::plan_tool::plan_tools() {
+        tools.register(t);
+    }
     tools.register(Box::new(BranchSessionTool));
     tools.register(Box::new(GlobalMemorySearchTool));
     tools.register(Box::new(GlobalMemorySaveTool));

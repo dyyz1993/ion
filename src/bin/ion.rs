@@ -993,6 +993,13 @@ fn build_tools(eff: &EffectiveConfig) -> ToolRegistry {
         tools.register(Box::new(EditTool));
         tools.register(Box::new(CalculatorTool));
         tools.register(Box::new(EchoTool));
+        // ── 内置 plan 工具（plan_enter/exit/add/list/done）──
+        // 不依赖 WASM plan-extension（已删除，跟内置 PlanExtension 工具名冲突）。
+        // 这 5 个工具共享一个 PlanExtension 实例。PlanExtension 的 mode 切换钩子
+        // 通过下方的 has_plan_tools 始终为 true 来保证注册。
+        for t in ion::agent::plan_tool::plan_tools() {
+            tools.register(t);
+        }
         tools.register(Box::new(GitStatusTool));
         tools.register(Box::new(GitDiffTool));
         tools.register(Box::new(GitLogTool));

@@ -8,6 +8,7 @@ pub mod memory;
 pub mod messages;
 pub mod permission_extension;
 pub mod plan_extension;
+pub mod plan_tool;
 pub mod provider;
 pub mod tool;
 pub mod workflow_extension;
