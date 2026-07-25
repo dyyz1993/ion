@@ -33,6 +33,29 @@ RUST
 pub fn add(a: i32, b: i32) -> i32 { a + b }
 pub fn multiply(a: i32, b: i32) -> i32 { a * b }
 RUST
+
+    # Create more files for deeper tasks
+    cat > "$dir/src/models.rs" << 'RUST'
+pub struct User { pub id: u32, pub name: String, pub email: String }
+pub struct Product { pub id: u32, pub name: String, pub price: f64 }
+pub struct Order { pub id: u32, pub user_id: u32, pub product_id: u32, pub quantity: u32 }
+RUST
+
+    cat > "$dir/src/database.rs" << 'RUST'
+use std::collections::HashMap;
+pub struct Database { users: HashMap<u32, String>, products: HashMap<u32, f64> }
+impl Database {
+    pub fn new() -> Self { Self { users: HashMap::new(), products: HashMap::new() } }
+    pub fn add_user(&mut self, id: u32, name: String) { self.users.insert(id, name); }
+    pub fn add_product(&mut self, id: u32, price: f64) { self.products.insert(id, price); }
+}
+RUST
+
+    # Copy real project files for deeper analysis
+    cp "$PROJECT_DIR/src/lib.rs" "$dir/src/project_lib.rs" 2>/dev/null
+    cp "$PROJECT_DIR/src/agent/agent_loop.rs" "$dir/src/agent_loop_ref.rs" 2>/dev/null
+    cp "$PROJECT_DIR/Cargo.toml" "$dir/Cargo.toml" 2>/dev/null
+
     echo "$dir"
 }
 
@@ -100,57 +123,57 @@ echo ""
 # ── Launch all 10 roles concurrently ──
 echo "Launching 10 roles concurrently..."
 
-# Role 1: Full code review (GLM-5.2, 15+ min)
+# Role 1: Full code review + fix + test (GLM-5.2, 15+ min)
 run_role 1 "代码审查员" \
-    "Read src/main.rs and src/utils.rs. Review both files for code quality issues: naming conventions, error handling, missing tests, performance. For each issue found, fix it using the edit tool. After fixing, run: cargo check. Report what you fixed." &
+    "You are doing a comprehensive code review. Read ALL these files: src/main.rs, src/utils.rs, src/models.rs, src/database.rs, src/project_lib.rs. For EACH file: 1) Identify at least 3 code quality issues (naming, error handling, missing docs, performance). 2) Fix each issue using the edit tool. 3) After ALL fixes, run cargo check. 4) Write a REVIEW.md summarizing all changes. Be thorough — do not skip any file." &
 P1=$!
 
-# Role 2: Add new features (GLM-5.2, 15+ min)
+# Role 2: Build complete feature module (GLM-5.2, 15+ min)
 run_role 2 "功能开发者" \
-    "Read src/utils.rs. Add three new functions: subtract(a,b), divide(a,b) with division by zero check, and power(a,b). Add unit tests for each. Run cargo check after adding. Report the code." &
+    "Build a complete user management module. Read src/models.rs and src/database.rs first. Then create src/user_service.rs with: UserService struct, create_user, get_user, update_user, delete_user, list_users methods. Add input validation for each. Create src/user_service_tests.rs with at least 10 test cases covering normal + edge cases. Run cargo check. Fix any errors." &
 P2=$!
 
-# Role 3: Refactor (DeepSeek fast, 10+ min)
+# Role 3: Full refactor + migration (DeepSeek, 15+ min)
 run_role 3 "重构工程师" \
-    "Read src/main.rs. Refactor the main function: extract the sum calculation into a separate function called calculate_sum. Add doc comments. Run cargo check. Report changes." \
+    "Read src/main.rs, src/utils.rs, src/models.rs, src/database.rs. Refactor ALL files: 1) Extract magic numbers into constants. 2) Add Result return types where errors can occur. 3) Add doc comments to every public function. 4) Rename any unclear variable names. 5) Run cargo check after EACH file. 6) Create REFACTOR.md documenting all changes." \
     deepseek-v4-flash opencode &
 P3=$!
 
-# Role 4: Test writer (DeepSeek fast, 10+ min)
+# Role 4: Comprehensive test suite (DeepSeek, 15+ min)
 run_role 4 "测试工程师" \
-    "Read src/utils.rs. Write comprehensive tests for add and multiply functions in a new file src/utils_test.rs. Include edge cases: negative numbers, zero, large numbers. Run cargo check." \
+    "Read src/utils.rs, src/models.rs, src/database.rs. Create a comprehensive test suite: src/tests/utils_test.rs (10+ tests for utils), src/tests/models_test.rs (8+ tests for models), src/tests/database_test.rs (10+ tests for database CRUD). Cover: normal cases, edge cases (empty, negative, overflow), error cases. Run cargo check. Document test coverage in TESTS.md." \
     deepseek-v4-flash opencode &
 P4=$!
 
-# Role 5: Documentation (GLM-5.2, 10+ min)
+# Role 5: Full project documentation (GLM-5.2, 15+ min)
 run_role 5 "文档撰写者" \
-    "Read src/main.rs and src/utils.rs. Create a README.md with: project description, usage examples, function reference, build instructions. Write comprehensive documentation." &
+    "Read ALL source files: src/main.rs, src/utils.rs, src/models.rs, src/database.rs, src/project_lib.rs. Create comprehensive documentation: README.md (project overview, getting started, architecture), docs/API.md (every public function with examples), docs/ARCHITECTURE.md (module relationships, data flow), docs/CONTRIBUTING.md (coding standards, PR process). Be detailed — read every file before writing." &
 P5=$!
 
-# Role 6: Bug hunter (GLM-5.2, 15+ min)
+# Role 6: Deep bug analysis + fixes (GLM-5.2, 15+ min)
 run_role 6 "Bug猎手" \
-    "Read src/main.rs and src/utils.rs carefully. Look for potential bugs: integer overflow, unused variables, missing error handling. For each bug found, write a comment explaining it. Create a file BUGS.md listing all findings." &
+    "Read src/main.rs, src/utils.rs, src/models.rs, src/database.rs, src/project_lib.rs. Perform deep analysis: 1) Integer overflow risks (add/multiply with i32). 2) Memory issues (HashMap growth, cloning). 3) Thread safety (if used concurrently). 4) Logic errors. 5) Missing input validation. For EACH bug found: write a test that reproduces it, then fix it. Create BUGS.md with full report. Run cargo check." &
 P6=$!
 
-# Role 7: Performance analyst (DeepSeek fast, 10+ min)
+# Role 7: Performance optimization (DeepSeek, 15+ min)
 run_role 7 "性能分析师" \
-    "Read src/main.rs. Analyze performance: memory usage, time complexity, potential bottlenecks. Write optimization suggestions in a file PERF.md. Suggest at least 3 improvements." \
+    "Read src/main.rs, src/utils.rs, src/models.rs, src/database.rs. Analyze performance deeply: 1) Time complexity of each function. 2) Memory allocations. 3) Clone vs borrow. 4) HashMap vs Vec for small datasets. Write src/perf_bench.rs with benchmark code. Create PERF.md with: current analysis, 5+ optimization suggestions, estimated impact. Implement the top 2 optimizations. Run cargo check." \
     deepseek-v4-flash opencode &
 P7=$!
 
-# Role 8: Security audit (GLM-5.2, 10+ min)
+# Role 8: Security audit + hardening (GLM-5.2, 15+ min)
 run_role 8 "安全审计员" \
-    "Read src/main.rs and src/utils.rs. Check for security issues: input validation, unsafe operations, resource leaks. Create SECURITY.md with findings and recommendations." &
+    "Read src/main.rs, src/utils.rs, src/models.rs, src/database.rs. Perform thorough security audit: 1) Input validation gaps. 2) Injection risks. 3) Unsafe code. 4) Resource exhaustion (unbounded HashMap). 5) Integer overflow as security issue. 6) Error message information leakage. For each finding: rate severity (Critical/High/Medium/Low), write a fix, apply it. Create SECURITY.md with full report. Run cargo check." &
 P8=$!
 
-# Role 9: API designer (GLM-5.2, 15+ min)
+# Role 9: API design + trait implementation (GLM-5.2, 15+ min)
 run_role 9 "API设计师" \
-    "Read src/utils.rs. Design a public API module: create src/api.rs that re-exports utils functions with better names and adds convenience methods. Add doc comments. Run cargo check." &
+    "Read src/models.rs, src/database.rs, src/utils.rs. Design a clean public API: 1) Create src/traits.rs with traits: Repository, Validatable, Serializable. 2) Implement traits for User, Product, Order, Database. 3) Create src/api.rs with builder pattern for queries. 4) Add doc comments with examples. 5) Run cargo check. 6) Create API_CHANGES.md documenting the design decisions." &
 P9=$!
 
-# Role 10: CI/CD setup (DeepSeek fast, 10+ min)
+# Role 10: CI/CD + DevOps setup (DeepSeek, 15+ min)
 run_role 10 "CICD工程师" \
-    "Read Cargo.toml. Create a GitHub Actions workflow file .github/workflows/ci.yml that: builds the project, runs cargo test, runs cargo clippy, runs cargo fmt --check. Use Rust stable toolchain." \
+    "Read Cargo.toml and ALL source files. Create complete CI/CD: .github/workflows/ci.yml (build, test, clippy, fmt, security audit), .github/workflows/release.yml (tagged release), Dockerfile (multi-stage build), docker-compose.yml, .gitignore updates, scripts/test.sh (local CI runner), scripts/lint.sh. Make ci.yml run tests for each module separately. Run cargo check to validate project compiles." \
     deepseek-v4-flash opencode &
 P10=$!
 
