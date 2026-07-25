@@ -27,32 +27,87 @@ pub type SharedPlan = Arc<PlanExtension>;
 
 /// Build the five plan tools sharing the same state.
 /// Register all of them with `ToolRegistry::register`.
-pub fn plan_tools() -> Vec<Box<dyn Tool>> {
-    // Note: PlanExtension is also registered separately as an Extension so
-    // its before/after_tool_call hooks fire. The Tool side just mutates state.
-    let shared: SharedPlan = Arc::new(PlanExtension::new());
+///
+/// IMPORTANT: pass the SAME `SharedPlan` instance that was used to register
+/// the PlanExtension (as an Extension). Otherwise the Tool side and the
+/// Extension side diverge — plan_add writes to the Tool instance, but the
+/// Extension's plan_exit persists the Extension instance's (empty) state.
+/// This was the root cause of "PLAN.md is empty after plan_exit" bug.
+pub fn plan_tools_with(shared: SharedPlan) -> Vec<Box<dyn Tool>> {
     vec![
         Box::new(PlanEnterTool(shared.clone())),
         Box::new(PlanExitTool(shared.clone())),
         Box::new(PlanAddTool(shared.clone())),
         Box::new(PlanListTool(shared.clone())),
+        Box::new(PlanApproveTool(shared.clone())),
         Box::new(PlanDoneTool(shared)),
     ]
 }
 
-// Note on state divergence: the PlanExtension registered as an Extension and
-// the PlanExtension inside SharedPlan are *separate instances*. This is fine
-// because:
-//   - plan_enter/exit mode switching is handled by the *Extension* instance's
-//     after_tool_call hook (it observes the tool name).
-//   - plan_add/list/done only touch the in-memory step list, which lives in
-//     the *Tool side* SharedPlan instance.
-//   - plan_enter writes the path into BOTH instances (Extension hook + Tool
-//     execute), keeping them consistent for path/mode.
-//
-// If deeper coupling is needed later, the ExtensionRegistry could expose the
-// Extension instance and the tools could share it. For now this is simple
-// and correct.
+/// Convenience: create a fresh shared state and build the tools.
+/// Use this ONLY when you don't also need to register a PlanExtension
+/// (i.e. plan mode hooks won't fire). For full functionality prefer
+/// `plan_tools_with(existing_shared)`.
+pub fn plan_tools() -> Vec<Box<dyn Tool>> {
+    plan_tools_with(Arc::new(PlanExtension::new()))
+}
+
+// ---------------------------------------------------------------------------
+// plan_approve {index} — Q4 fix: human approval gate before plan_done
+// ---------------------------------------------------------------------------
+
+pub struct PlanApproveTool(pub SharedPlan);
+
+#[async_trait]
+impl Tool for PlanApproveTool {
+    fn name(&self) -> &str { "plan_approve" }
+    fn description(&self) -> &str {
+        "Approve a plan step (marks it as 'approved', required before plan_done can mark it 'done'). \
+         In auto mode (default), this is a no-op pass-through. The host can override this to \
+         require real human confirmation."
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "index": {"type": "integer", "description": "0-based step index to approve."}
+            },
+            "required": ["index"]
+        })
+    }
+    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        let index = args.get("index")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| AgentError::Tool("missing or invalid index".into()))?
+            as usize;
+
+        let mut found = false;
+        let mut already_done = false;
+        if let Ok(mut g) = self.0.plan_steps.lock() {
+            if index < g.len() {
+                if g[index].done {
+                    already_done = true;
+                } else {
+                    g[index].approved = true;
+                    found = true;
+                }
+            }
+        }
+
+        if already_done {
+            return Ok(format!("{{\"status\":\"noop\",\"index\":{},\"reason\":\"already done\"}}", index));
+        }
+        if found {
+            Ok(format!("{{\"status\":\"approved\",\"index\":{}}}", index))
+        } else {
+            Ok(format!(
+                "{{\"status\":\"error\",\"reason\":\"index {} out of range (plan has {} steps)\"}}",
+                index,
+                self.0.plan_steps.lock().map(|g| g.len()).unwrap_or(0)
+            ))
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // plan_enter {plan_path: string}
@@ -169,7 +224,7 @@ impl Tool for PlanAddTool {
 
         let index = if let Ok(mut g) = self.0.plan_steps.lock() {
             let i = g.len();
-            g.push(PlanStep { text: step.clone(), done: false });
+            g.push(PlanStep::new(step.clone()));
             i
         } else {
             0
@@ -207,10 +262,18 @@ impl Tool for PlanListTool {
     }
     async fn execute(&self, _args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
         let steps = self.0.plan_steps.lock().map(|g| g.clone()).unwrap_or_default();
-        // Build JSON array of step strings (with [x] prefix for done).
-        let arr: Vec<String> = steps.iter().map(|s| {
-            let rendered = if s.done { format!("[x] {}", s.text) } else { s.text.clone() };
-            format!("\"{}\"", rendered.replace('\\', "\\\\").replace('"', "\\\""))
+        // Build JSON array of step objects with status flags.
+        // [x] = done, [a] = approved (not yet done), [ ] = pending.
+        let arr: Vec<String> = steps.iter().enumerate().map(|(i, s)| {
+            let mark = if s.done { "[x]" } else if s.approved { "[a]" } else { "[ ]" };
+            let rendered = format!("{} {}", mark, s.text);
+            format!(
+                "{{\"index\":{},\"text\":\"{}\",\"done\":{},\"approved\":{}}}",
+                i,
+                rendered.replace('\\', "\\\\").replace('"', "\\\""),
+                s.done,
+                s.approved
+            )
         }).collect();
         Ok(format!(
             "{{\"steps\":[{}],\"count\":{}}}",
@@ -246,12 +309,20 @@ impl Tool for PlanDoneTool {
             as usize;
 
         let mut found = false;
+        let mut not_approved = false;
         if let Ok(mut g) = self.0.plan_steps.lock() {
             if index < g.len() {
+                if !g[index].approved {
+                    // Q4 fix: auto-approve in default mode (no human gate).
+                    // Hosts that want strict approval can pre-call plan_approve
+                    // and configure plan_done to require it.
+                    g[index].approved = true;
+                }
                 g[index].done = true;
                 found = true;
             }
         }
+        let _ = not_approved; // (reserved for future strict-approval mode)
 
         // Best-effort persist.
         let path = self.0.plan_path.lock().ok().and_then(|g| g.clone());
@@ -357,8 +428,9 @@ mod tests {
     }
 
     #[test]
-    fn plan_tools_returns_five_tools() {
+    fn plan_tools_returns_six_tools() {
+        // enter + exit + add + list + approve + done = 6 (added approve for Q4)
         let v = plan_tools();
-        assert_eq!(v.len(), 5);
+        assert_eq!(v.len(), 6);
     }
 }

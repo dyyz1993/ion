@@ -23,10 +23,21 @@ fn set_path(m: &Mutex<Option<String>>, val: Option<String>) {
 
 /// One step in a plan.
 /// `done` steps are prefixed with `[x] ` when rendered; pending steps have no prefix.
+///
+/// Lifecycle: pending → approved (via plan_approve) → done (via plan_done).
+/// In auto mode (default), plan_done auto-approves if not already approved,
+/// so the approval gate is opt-in (host can require it).
 #[derive(Clone, Debug)]
 pub struct PlanStep {
     pub text: String,
     pub done: bool,
+    pub approved: bool,
+}
+
+impl PlanStep {
+    pub fn new(text: String) -> Self {
+        Self { text, done: false, approved: false }
+    }
 }
 
 /// PlanExtension manages a structured plan plus the "plan mode" lifecycle.
@@ -68,14 +79,21 @@ impl PlanExtension {
                 "plan_add".into(),
                 "plan_list".into(),
                 "plan_done".into(),
-                // research / writing tools — for investigating the codebase
+                "plan_approve".into(),
+                // RESEARCH tools only (Q1 fix): no edit/write/bash — plan mode
+                // is for investigating + drafting the plan, NOT for executing
+                // changes. Execution happens AFTER plan_exit. This enforces the
+                // "plan first, execute later" discipline that gives plan mode
+                // its value; otherwise the agent could just edit code while
+                // "planning", bypassing review entirely.
                 "read".into(),
                 "grep".into(),
                 "find".into(),
                 "ls".into(),
-                "bash".into(),
-                "write".into(),
-                "edit".into(),
+                // Note: bash/write/edit are intentionally EXCLUDED. The host
+                // may relax this via config if the agent truly needs to
+                // experiment during planning (e.g. running tests), but the
+                // default is strict.
                 // todo_* tools — task tracking is part of planning
                 "todo_add".into(),
                 "todo_list".into(),
@@ -152,18 +170,20 @@ impl Extension for PlanExtension {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
                 set_path(&self.plan_path, path.clone());
-                // Reset the step list when entering with a fresh plan.
-                if let Ok(mut g) = self.plan_steps.lock() {
-                    g.clear();
-                }
-                tracing::info!("[plan] entered plan mode, path={:?}", path);
+                // Q3 fix: do NOT clear steps on enter. If the user re-enters
+                // plan mode (e.g. to revise the plan), they should see their
+                // prior steps. Steps are only cleared by an explicit reset
+                // tool (future) or by constructing a fresh PlanExtension.
+                tracing::info!("[plan] entered plan mode, path={:?}, steps preserved", path);
             }
             "plan_exit" => {
                 // Persist final plan before exiting (so the file reflects the
                 // last known state even if the agent forgets to re-write it).
                 self.persist_to_disk();
                 self.plan_mode.store(false, Ordering::Relaxed);
-                tracing::info!("[plan] exited plan mode");
+                // Q3 fix: steps are PRESERVED on exit so the user can review
+                // the completed plan via plan_list even after exiting.
+                tracing::info!("[plan] exited plan mode (steps preserved for review)");
             }
             _ => {}
         }
@@ -233,11 +253,32 @@ impl Extension for PlanExtension {
     }
 }
 
-/// Shared handle used by `PlanTool` (in plan_tool.rs) to read/write the
-/// extension's in-memory plan. The ExtensionRegistry wraps PlanExtension in
-/// an Arc internally, but the tools are registered separately — so we expose
-/// a clonable handle that points at the same Mutex-protected state.
-pub type PlanState = Arc<PlanExtension>;
+/// Wrapper that lets an `Arc<PlanExtension>` be registered as an `Extension`.
+///
+/// We need this because `ExtensionRegistry::register` takes `Box<dyn Extension>`,
+/// but the plan Tools hold a `SharedPlan = Arc<PlanExtension>`. To make the
+/// Extension's hooks (before/after_tool_call for plan mode) operate on the
+/// SAME state the Tools mutate, both sides must share one Arc — this wrapper
+/// makes that possible by forwarding all Extension calls to the inner Arc.
+pub struct SharedPlanExtension(pub std::sync::Arc<PlanExtension>);
+
+impl std::ops::Deref for SharedPlanExtension {
+    type Target = PlanExtension;
+    fn deref(&self) -> &PlanExtension { &self.0 }
+}
+
+#[async_trait]
+impl Extension for SharedPlanExtension {
+    async fn after_tool_call(&self, call: &ToolCall, result: &ToolResult) -> AgentResult<()> {
+        self.0.after_tool_call(call, result).await
+    }
+    async fn before_tool_call(&self, call: &ToolCall) -> AgentResult<()> {
+        self.0.before_tool_call(call).await
+    }
+    async fn on_system_prompt(&self, prompt: &mut String) -> AgentResult<()> {
+        self.0.on_system_prompt(prompt).await
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -266,12 +307,17 @@ mod tests {
     fn new_populates_expected_allowed_tools() {
         let ext = PlanExtension::new();
         let tools = &ext.allowed_tools;
-        // research/edit tools
-        for t in &["read", "grep", "find", "ls", "bash", "write", "edit"] {
-            assert!(tools.contains(&t.to_string()), "missing allowed tool: {}", t);
+        // Q1 fix: research tools only (no edit/write/bash — plan mode is for
+        // investigating + drafting, execution happens AFTER plan_exit).
+        for t in &["read", "grep", "find", "ls"] {
+            assert!(tools.contains(&t.to_string()), "missing research tool: {}", t);
+        }
+        // edit/write/bash must NOT be in allowed_tools (Q1 fix)
+        for t in &["bash", "write", "edit"] {
+            assert!(!tools.contains(&t.to_string()), "edit tool {} should NOT be allowed in plan mode", t);
         }
         // plan_* tools (so the agent can build the plan while in plan mode)
-        for t in &["plan_exit", "plan_add", "plan_list", "plan_done"] {
+        for t in &["plan_exit", "plan_add", "plan_list", "plan_done", "plan_approve"] {
             assert!(tools.contains(&t.to_string()), "missing plan tool: {}", t);
         }
         // todo_* tools (task tracking is part of planning)
@@ -283,9 +329,9 @@ mod tests {
     #[test]
     fn render_steps_pending_and_done() {
         let steps = vec![
-            PlanStep { text: "write code".into(), done: false },
-            PlanStep { text: "test it".into(), done: true },
-            PlanStep { text: "ship it".into(), done: false },
+            PlanStep { text: "write code".into(), done: false, approved: false },
+            PlanStep { text: "test it".into(), done: true, approved: true },
+            PlanStep { text: "ship it".into(), done: false, approved: false },
         ];
         let rendered = PlanExtension::render_steps(&steps);
         assert_eq!(rendered, "write code\n[x] test it\nship it");

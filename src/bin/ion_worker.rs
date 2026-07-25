@@ -197,11 +197,17 @@ async fn main() {
     tools.register(Box::new(EditTool));
     tools.register(Box::new(CalculatorTool));
     tools.register(Box::new(EchoTool));
-    // ── 内置 plan 工具（plan_enter/exit/add/list/done）──
+    // ── 内置 plan 工具（plan_enter/exit/add/list/done/approve）──
     // 不依赖 WASM plan-extension（已删除，跟内置 PlanExtension 工具名冲突）。
-    // 这 5 个工具共享一个 PlanExtension 实例，state 在内存中，
-    // plan_exit / plan_add 会自动持久化到 plan_enter 设的文件路径。
-    for t in ion::agent::plan_tool::plan_tools() {
+    //
+    // Q2 fix: create ONE SharedPlan instance and pass it to BOTH the
+    // PlanExtension (registered below as an Extension for mode hooks) AND
+    // the plan Tools. Previously they used separate instances, so plan_add
+    // wrote to the Tool's instance while plan_exit persisted the Extension's
+    // (empty) instance → PLAN.md was always empty after exit.
+    let shared_plan: ion::agent::plan_tool::SharedPlan =
+        std::sync::Arc::new(ion::agent::plan_extension::PlanExtension::new());
+    for t in ion::agent::plan_tool::plan_tools_with(shared_plan.clone()) {
         tools.register(t);
     }
     tools.register(Box::new(BranchSessionTool));
@@ -687,6 +693,16 @@ async fn main() {
         // ── SessionProbeExtension（给 CLI 测试用，让 session hook 可通过 subscribe 观察）──
         ext_reg.register(Box::new(SessionProbeExtension { veto: false }));
         tracing::info!("[extension] session_probe registered (session hook observable via subscribe)");
+
+        // ── PlanExtension（plan mode 钩子：限制工具集 + 注入 prompt）──
+        // Q2 fix: wrap the SAME shared_plan Arc that the plan Tools use, so
+        // before/after_tool_call hooks see the same plan_steps state that
+        // plan_add writes to. Without this, plan_exit persists an empty step
+        // list (the Extension's own fresh instance), producing an empty PLAN.md.
+        ext_reg.register(Box::new(
+            ion::agent::plan_extension::SharedPlanExtension(shared_plan.clone()),
+        ));
+        tracing::info!("[extension] PlanExtension registered (shared with plan tools)");
 
         // Memory Extension
         if ion_cfg.is_extension_enabled("memory") {
