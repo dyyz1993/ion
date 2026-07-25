@@ -19,9 +19,18 @@ setup_workspace() {
     local role_id=$1
     local dir="/tmp/ion_heavy_role${role_id}"
     rm -rf "$dir"
-    mkdir -p "$dir/src"
+    mkdir -p "$dir/src" "$dir/src/tests" "$dir/docs" "$dir/.github/workflows"
     # Copy some real files for agents to work with
     cp "$PROJECT_DIR/Cargo.toml" "$dir/" 2>/dev/null
+
+    # Initialize git repo (agents need git for commits/diffs)
+    cd "$dir"
+    git init -q 2>/dev/null
+    git config user.email "test@test.com" 2>/dev/null
+    git config user.name "Test Agent" 2>/dev/null
+    git add -A 2>/dev/null
+    git commit -q -m "initial" 2>/dev/null
+    cd "$PROJECT_DIR"
     cat > "$dir/src/main.rs" << 'RUST'
 fn main() {
     let numbers = vec![1, 2, 3, 4, 5];
