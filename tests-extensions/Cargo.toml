@@ -1,0 +1,15 @@
+[package]
+name = "tests-extensions"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Independent test crate for WASM extensions.
+# Why separate? The extension libs are #![no_std] with crate-type = ["cdylib", "rlib"].
+# cargo test on a no_std cdylib fails with "unwinding panics not supported without std".
+# This crate has NO dependency on the no_std libs — it loads prebuilt .wasm files
+# via wasmtime, so it compiles cleanly under normal std targets.
+
+[dev-dependencies]
+wasmtime = "44.0.3"
+serde_json = "1"

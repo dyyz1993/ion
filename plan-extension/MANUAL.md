@@ -57,7 +57,7 @@ exercises the tools end-to-end). Requires the WASM artifact to be present:
 
 ```bash
 cargo build --target wasm32-wasip1 --release -p plan-extension
-cargo test -p plan-extension --test host_integration
+cargo test -p tests-extensions --test plan_host
 ```
 
 If the WASM artifact is not built, the host integration tests are skipped

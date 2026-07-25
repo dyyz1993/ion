@@ -45,7 +45,7 @@ the tools end-to-end). Requires the WASM artifact to be present:
 
 ```bash
 cargo build --target wasm32-wasip1 --release -p todo-extension
-cargo test -p todo-extension --test host_integration
+cargo test -p tests-extensions --test todo_host
 ```
 
 If the WASM artifact is not built, the host integration tests are skipped
