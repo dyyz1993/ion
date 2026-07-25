@@ -261,8 +261,10 @@ fn write_plan_file(content: &[u8]) -> u32 {
 }
 
 fn path_exists(path: &str) -> bool {
+    // host_path_exists returns: 1 = exists, 0 = not found, 2 = traversal blocked.
+    // Only 1 means "exists"; treat 0 and 2 (and any other value) as "does not exist".
     let r = unsafe { host_path_exists(path.as_ptr(), path.len() as u32) };
-    r != 0
+    r == 1
 }
 
 fn copy_out(src: &[u8], out: *mut u8, cap: u32) -> u32 {
