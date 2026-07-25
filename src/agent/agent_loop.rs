@@ -38,7 +38,7 @@ impl Default for AgentConfig {
             max_turns: None,
             max_outer_iterations: 5,
             max_retries: 10,
-            retry_base_delay_ms: 1000,
+            retry_base_delay_ms: 2000,
             enable_compact: true,
             compact_config: CompactConfig::default(),
             api_key: None,
@@ -1508,7 +1508,14 @@ impl Agent {
                                     "[auth] {e}"
                                 )));
                             }
-                            let delay = crate::retry::backoff_duration(attempt, retry_cfg);
+                            let delay = if err_str.contains("503") || err_str.contains("502") || err_str.contains("temporarily unavailable") || err_str.contains("暂时不可用") {
+                                // Server overload: use longer backoff to give proxy time to recover
+                                // Base 5s, double each time, cap at 60s: 5s → 10s → 20s → 40s → 60s → 60s...
+                                let secs = (5u64 * 2u64.pow(attempt as u32)).min(60);
+                                Duration::from_secs(secs)
+                            } else {
+                                crate::retry::backoff_duration(attempt, retry_cfg)
+                            };
                             tracing::warn!(
                                 "[retry] attempt {}/{} failed: {e:.80} — retrying in {:?}",
                                 attempt + 1,
