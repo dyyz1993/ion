@@ -776,12 +776,16 @@ pub fn make_llm_summarizer(
                 None,
             );
             let ctx = ion_provider::Context::new(Some(system_prompt), transformed);
+            // Use the model's own max_tokens budget (e.g. DeepSeek=65536, GLM=32000).
+            // Reasoning models consume large amounts of tokens for reasoning_content,
+            // so we need the full budget to ensure content output has room.
+            let max_tok = if m.max_tokens > 0 { m.max_tokens } else { 32000 };
             let opts = ion_provider::types::StreamOptions {
                 api_key: key.clone(),
                 reasoning: None,
-                timeout_ms: Some(60000),
+                timeout_ms: Some(120000),  // 2min — reasoning models are slow
                 max_retries: Some(5),
-                max_tokens: Some(32000),  // reasoning models need large budget for reasoning + content
+                max_tokens: Some(max_tok),
                 response_format: None,
             };
             let msg = ion_provider::registry::complete(&p, &m, &ctx, Some(&opts)).await?;
