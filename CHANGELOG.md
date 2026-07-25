@@ -4,6 +4,45 @@ All notable changes to ION are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 
+## [0.4.0] — 2026-07-25
+
+### Stability & Concurrency (32 commits since v0.3.0)
+
+#### Compaction Fixes
+- Disable reasoning for summarization (root cause of DeepSeek HTTP 400)
+- Cap compaction retries at 3 (was 31) — immediate fallback to truncation
+- HTTP 400/429 detection → instant abort, no wasted retries
+- Use model.max_tokens for compaction budget (65536 for DeepSeek)
+- 2min timeout (was 60s) for reasoning models
+- Emergency truncation fallback verified working
+
+#### Retry Enhancements
+- Agent retry 3→10 (API instability tolerance)
+- 503/502 overload: longer backoff (5s→10s→20s→40s→60s cap)
+- 429 GoUsageLimitError: immediate abort (not retried)
+- Retry base delay 1s→2s
+
+#### RPC & Edge Cases
+- 30s timeout for RPC client (was infinite hang on non-existent session)
+- Immediate error on connection refused (was infinite hang)
+- 10/10 edge case tests pass (timing/concurrency/exception)
+
+#### Budget Alert
+- Last 10 turns inject <remind> as CustomMessage (customType=remind)
+- display=true + details={remaining,maxTurns,currentTurn}
+- Consistent with bash_result XML pattern
+
+#### DeepSeek V4 Support
+- context_window aligned to proxy limit (128K)
+- Verified: 0 compaction 400, 0 agent 503, serve 20+ min stable
+
+### Verification
+- 777 lib tests pass
+- 10/10 role experience (all scenarios)
+- 10/10 edge case tests
+- Heavy stress: 10 concurrent agents, 0 crashes, 0 503/400
+
+
 ## [0.3.0] — 2026-07-24
 
 ### Bug Fixes
