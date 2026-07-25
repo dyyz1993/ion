@@ -129,6 +129,11 @@ impl Tool for PlanEnterTool {
                 "plan_path": {
                     "type": "string",
                     "description": "Path to write the final plan to (must be inside the project root)."
+                },
+                "strict_mode": {
+                    "type": "boolean",
+                    "description": "If true, plan_exit requires all steps to be approved (via plan_approve) before exiting. Default: false.",
+                    "default": false
                 }
             },
             "required": ["plan_path"]
@@ -139,6 +144,11 @@ impl Tool for PlanEnterTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| AgentError::Tool("missing plan_path".into()))?
             .to_string();
+        // Read optional strict_mode flag (default false — backward compat).
+        let strict = args.get("strict_mode")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        self.0.strict_mode.store(strict, std::sync::atomic::Ordering::Relaxed);
 
         // Reset steps (mirror the Extension hook's behavior).
         if let Ok(mut g) = self.0.plan_steps.lock() {
@@ -156,8 +166,9 @@ impl Tool for PlanEnterTool {
         let _ = std::fs::write(&path, "");
 
         Ok(format!(
-            "{{\"status\":\"ok\",\"plan_path\":\"{}\",\"mode\":\"plan\"}}",
-            path.replace('"', "\\\"")
+            "{{\"status\":\"ok\",\"plan_path\":\"{}\",\"mode\":\"plan\",\"strict_mode\":{}}}",
+            path.replace('"', "\\\""),
+            strict
         ))
     }
 }
@@ -179,6 +190,33 @@ impl Tool for PlanExitTool {
         serde_json::json!({"type": "object", "properties": {}})
     }
     async fn execute(&self, _args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        // strict_mode gate: if enabled, ALL non-empty steps must be approved
+        // (or already done) before exiting. This check lives in execute()
+        // (not after_tool_call) because agent.call_tool() — the RPC path —
+        // doesn't invoke after_tool_call. Only agent.run() does.
+        let strict = self.0.strict_mode.load(std::sync::atomic::Ordering::Relaxed);
+        if strict {
+            let unapproved: Vec<usize> = self
+                .0
+                .plan_steps
+                .lock()
+                .map(|g| {
+                    g.iter()
+                        .enumerate()
+                        .filter(|(_, s)| !s.approved && !s.done)
+                        .map(|(i, _)| i)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !unapproved.is_empty() {
+                let list: Vec<String> = unapproved.iter().map(|i| i.to_string()).collect();
+                return Ok(format!(
+                    "{{\"status\":\"blocked\",\"reason\":\"strict_mode: steps [{}] not approved. \
+                     Have the user call plan_approve for each, then retry plan_exit.\"}}",
+                    list.join(",")
+                ));
+            }
+        }
         // Persist current plan to disk.
         let path = self.0.plan_path.lock().ok().and_then(|g| g.clone());
         let steps = self.0.plan_steps.lock().map(|g| g.clone()).unwrap_or_default();
@@ -309,20 +347,38 @@ impl Tool for PlanDoneTool {
             as usize;
 
         let mut found = false;
-        let mut not_approved = false;
+        let not_approved_in_strict = if let Ok(g) = self.0.plan_steps.lock() {
+            if index < g.len() {
+                let strict = self.0.strict_mode.load(std::sync::atomic::Ordering::Relaxed);
+                if strict && !g[index].approved {
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if not_approved_in_strict {
+            return Ok(format!(
+                "{{\"status\":\"error\",\"reason\":\"step {} is not approved (strict_mode). Call plan_approve first, or have the user approve it.\"}}",
+                index
+            ));
+        }
+
         if let Ok(mut g) = self.0.plan_steps.lock() {
             if index < g.len() {
                 if !g[index].approved {
-                    // Q4 fix: auto-approve in default mode (no human gate).
-                    // Hosts that want strict approval can pre-call plan_approve
-                    // and configure plan_done to require it.
+                    // Auto-approve in default mode (no human gate).
                     g[index].approved = true;
                 }
                 g[index].done = true;
                 found = true;
             }
         }
-        let _ = not_approved; // (reserved for future strict-approval mode)
 
         // Best-effort persist.
         let path = self.0.plan_path.lock().ok().and_then(|g| g.clone());

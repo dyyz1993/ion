@@ -65,6 +65,11 @@ pub struct PlanExtension {
     /// Tool names allowed during plan mode.
     /// Includes all plan_* tools so the agent can build the plan while planning.
     allowed_tools: Vec<String>,
+    /// strict_mode: when true, plan_exit requires ALL steps to be approved,
+    /// and plan_done requires the step to be approved first.
+    /// Default false (auto-approve, backward compat).
+    /// Set via plan_enter(strict_mode=true).
+    pub(crate) strict_mode: AtomicBool,
 }
 
 impl PlanExtension {
@@ -73,6 +78,7 @@ impl PlanExtension {
             plan_mode: AtomicBool::new(false),
             plan_path: Mutex::new(None),
             plan_steps: Mutex::new(Vec::new()),
+            strict_mode: AtomicBool::new(false),
             allowed_tools: vec![
                 // plan_* tools — always usable so the agent can build/edit the plan
                 "plan_exit".into(),
@@ -170,13 +176,50 @@ impl Extension for PlanExtension {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
                 set_path(&self.plan_path, path.clone());
+                // strict_mode: optional gate. When true, plan_exit requires
+                // ALL steps approved; plan_done requires the step approved.
+                let strict = call
+                    .arguments
+                    .get("strict_mode")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                self.strict_mode.store(strict, Ordering::Relaxed);
                 // Q3 fix: do NOT clear steps on enter. If the user re-enters
                 // plan mode (e.g. to revise the plan), they should see their
                 // prior steps. Steps are only cleared by an explicit reset
                 // tool (future) or by constructing a fresh PlanExtension.
-                tracing::info!("[plan] entered plan mode, path={:?}, steps preserved", path);
+                tracing::info!("[plan] entered plan mode, path={:?}, steps preserved, strict={}", path, strict);
             }
             "plan_exit" => {
+                // strict_mode gate: if enabled, ALL non-empty steps must be approved.
+                // Empty plan (no steps) is allowed to exit (user just wanted to look around).
+                if self.strict_mode.load(Ordering::Relaxed) {
+                    let unapproved: Vec<String> = self
+                        .plan_steps
+                        .lock()
+                        .map(|g| {
+                            g.iter()
+                                .enumerate()
+                                .filter(|(_, s)| !s.approved && !s.done)
+                                .map(|(i, _)| i.to_string())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if !unapproved.is_empty() {
+                        // Re-set plan_mode to true (persist the gate) and DO NOT exit.
+                        self.plan_mode.store(true, Ordering::Relaxed);
+                        tracing::warn!(
+                            "[plan] plan_exit blocked: steps {} not approved (strict_mode)",
+                            unapproved.join(", ")
+                        );
+                        // Return an error so the agent sees the rejection.
+                        return Err(AgentError::Tool(format!(
+                            "plan_exit blocked (strict_mode): the following steps are not approved: [{}]. \
+                             Have the user call `plan_approve {{index}}` for each, then retry plan_exit.",
+                            unapproved.join(", ")
+                        )));
+                    }
+                }
                 // Persist final plan before exiting (so the file reflects the
                 // last known state even if the agent forgets to re-write it).
                 self.persist_to_disk();
