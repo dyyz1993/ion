@@ -86,6 +86,16 @@ pub fn should_retry(error: &str, attempt: u32, config: &RetryConfig) -> RetryDec
         return RetryDecision::AbortPermanent;
     }
 
+    // Usage limit / monthly quota exceeded → never retry (429 GoUsageLimitError etc.)
+    if lower.contains("usage limit")
+        || lower.contains("monthly usage")
+        || lower.contains("usagelimiterror")
+        || lower.contains("resets in")
+        || lower.contains("balance")
+    {
+        return RetryDecision::AbortPermanent;
+    }
+
     // Auth failures (HTTP 401/403) → never retry. The key is invalid/expired or
     // lacks permission; retrying with the same key is pointless and wastes time.
     // Keep retrying 429/5xx/timeouts/network errors (handled by the fallthrough below).
