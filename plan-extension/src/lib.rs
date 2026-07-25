@@ -400,7 +400,9 @@ fn cmd_add(args: &str, out: *mut u8, cap: u32) -> u32 {
     // Count existing lines to compute the new 0-based index.
     let index = count_lines(existing);
 
-    // Build new content: existing + "\n" + step.
+    // Build new content: existing + "\n" + step + trailing "\n".
+    // Use Buf's own as_slice() to inspect the last byte (avoids indexing
+    // content while Buf holds a mutable borrow — E0503).
     let mut content = [0u8; FILE_BUF];
     let mut c = Buf(&mut content, 0);
     let needs_nl = !existing.is_empty() && !existing.ends_with('\n');
@@ -413,23 +415,42 @@ fn cmd_add(args: &str, out: *mut u8, cap: u32) -> u32 {
     for &b in step.as_bytes() {
         c.b(b);
     }
-    // Ensure file ends with a newline so subsequent appends are clean.
-    let cur_len = c.len();
-    drop(c);
-    if cur_len > 0 && content[cur_len - 1] != b'\n' {
-        // Re-open the buffer to append the trailing newline.
-        let mut c2 = Buf(&mut content, cur_len);
-        c2.b(b'\n');
+    let needs_trailing_nl = {
+        let s = c.as_slice();
+        s.last() != Some(&b'\n')
+    };
+    if needs_trailing_nl {
+        c.b(b'\n');
     }
-    write_plan_file(&content[..cur_len]);
+    let final_len = c.len();
+    drop(c);
+
+    // Write the full content (including trailing newline) and CHECK the result.
+    // host_write_file returns: 0=success, 1=no fs, 2=traversal blocked, 3=IO error.
+    let write_result = write_plan_file(&content[..final_len]);
 
     let mut resp = [0u8; OUT_BUF];
     let mut r = Buf(&mut resp, 0);
-    r.s(r#"{"status":"added","step":"#);
-    r.esc(step);
-    r.s(r#","index":"#);
-    r.num(index as u64);
-    r.s(r#"}"#);
+    if write_result == 0 {
+        r.s(r#"{"status":"added","step":"#);
+        r.esc(step);
+        r.s(r#","index":"#);
+        r.num(index as u64);
+        r.s(r#"}"#);
+    } else {
+        // Encode the failure reason so callers can diagnose.
+        r.s(r#"{"status":"error","code":"#);
+        r.num(write_result as u64);
+        r.s(r#","reason":""#);
+        let reason = match write_result {
+            1 => "no fs capability injected",
+            2 => "path traversal blocked (outside allowed_roots)",
+            3 => "IO error",
+            _ => "unknown",
+        };
+        r.s(reason);
+        r.s(r#""}"#);
+    }
     copy_out(r.as_slice(), out, cap)
 }
 
