@@ -537,6 +537,7 @@ ion rpc --session sess_xxx --method get_flags \
 | `src/message_retrieval.rs` | 消息拉取核心逻辑（retrieve_messages/turns/inputs/turn_detail + view/过滤/分页） |
 | `src/global_memory.rs` | 全局记忆库（SQLite + FTS5，跨项目检索） |
 | `src/global_memory_ext.rs` | GlobalMemoryExtension（单例扩展，on_singleton_init + extension_rpc） |
+| `src/monitor_extension.rs` | MonitorExtension（单例扩展，场景 3 定时脚本监控→触发 LLM 对话） |
 | `src/agent/plan_extension.rs` + `src/agent/plan_tool.rs` | 内置 plan 工具（plan_enter/exit/add/list/done/approve + strict_mode 强制审批）|
 | `src/hooks/`（规划中） | Hooks 系统：HooksConfig + HookExtension + 5 handler 执行引擎（command/http/prompt/agent/mcp_tool），[详情](./docs/design/HOOKS_AND_OUTLINE_SYNC.md) |
 
@@ -810,6 +811,17 @@ ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - 支持所有 JSON 类型（bool/number/string/object/array）
   - 扩展内通过 `ExtensionRegistry::get_flag()` 读取
   - **验证**: 10 CI 测试全过 ✅
+
+- **Monitor Extension（场景 3 定时监控→LLM 触发）**:
+  - Singleton 扩展（`singleton_key = "monitor"`），只在 `ion serve` 注册
+  - 从 `.ion/monitors/*.json` + `~/.ion/monitors/*.json` 加载监控定义
+  - `MonitorDef`: name / interval_secs / script / agent / prompt_template / enabled
+  - 每 N 秒 spawn interval loop 跑 bash 脚本；exit=0 + stdout 非空 → 触发 LLM 对话
+  - 触发逻辑：找 idle worker（agent 匹配）→ `send_command(prompt)`；没有就 `create_worker`
+  - 错误脚本（exit≠0）记录日志不崩溃；空 stdout 不触发
+  - `on_extension_rpc`: list / add / remove / enable / disable / status
+  - 用途：监控→检测→自修复闭环（GitHub issues / 日志异常 / 进程崩溃 / TODO 残留）
+  - **验证**: monitor_ci 11 case 全过 ✅（Group A 加载+触发 + Group B RPC + Group C 空输出/错误 + Group D 多 monitor 并行）
 
 - **Plan 工具内置化 + strict_mode（重构 + 深度验证修复）**:
   - 删除 WASM `plan-extension`（跟内置 PlanExtension 工具名冲突，进 plan mode 后 plan_add 被锁死）
@@ -1446,7 +1458,8 @@ bash scripts/evolve-run.sh "任务描述"             # 同步 + 守门 + HTML �
 | streaming_replay_ci (CLI E2E) | 7 | Group A：Record/Replay 真实 DeepSeek 录制 → subscribe 收到 1448 个 tool_call_delta（真实 LLM 内容流式）+ Group B：回放内容正确性（DeepSeek 生成的 30 行文件 hash 匹配）+ Group C：两次回放确定性（hash 一致） |
 | soft_interrupt_ci (CLI E2E) | 3 | Group A：interrupt 中断工具 < 3s + 进程清理 + Group B：默认 behavior=steer（不报 busy）|
 | abort_ci (CLI E2E) | 5 | Group A：工具执行中 abort < 3s 生效（select! stopped 分支 + bash 进程清理）+ Group B：kill -TERM/KILL -<pgid> 杀整个进程树（process_group(0)）+ Group C：HTTP 流式期间 abort < 300ms + 无新 delta 泄漏（CancellationToken 真取消 TCP）|
-| **测试覆盖合计** | **1223+** | 全部通过 ✅（Rust 785，CLI E2E 438+，含 hooks 36 case + extensions 19 case + 真实 LLM 5 case + WASM 扩展） |
+| monitor_ci (CLI E2E) | 11 | Group A：monitor 配置加载 + 脚本触发 worker + trigger 日志 + Group B：create_session + extension_rpc（host-level singleton 不可达）+ starting 日志 + Group C：空输出不触发 + 错误脚本不崩溃 + serve 存活 + Group D：多 monitor 并行加载+触发 |
+| **测试覆盖合计** | **1234+** | 全部通过 ✅（Rust 785，CLI E2E 449+，含 hooks 36 case + extensions 19 case + 真实 LLM 5 case + WASM 扩展） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
