@@ -2,6 +2,7 @@ pub mod agent;
 pub mod agent_config;
 pub mod auto_session_title;
 pub mod auth;
+pub mod secret_detector;
 pub mod tool_loop_detector;
 pub mod backend_registry;
 pub mod command_guard;
