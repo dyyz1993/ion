@@ -63,6 +63,26 @@ impl Default for TriggerMode {
     }
 }
 
+impl std::fmt::Display for MonitorMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MonitorMode::SerialSkip => write!(f, "serial_skip"),
+            MonitorMode::SerialQueue => write!(f, "serial_queue"),
+            MonitorMode::Concurrent => write!(f, "concurrent"),
+        }
+    }
+}
+
+impl std::fmt::Display for TriggerMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TriggerMode::AutoSpawn => write!(f, "auto_spawn"),
+            TriggerMode::ChannelNotify => write!(f, "channel_notify"),
+            TriggerMode::EventOnly => write!(f, "event_only"),
+        }
+    }
+}
+
 /// A single monitor definition (from .ion/monitors/*.json or added via RPC).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MonitorDef {

@@ -82,6 +82,12 @@ impl LspExtension {
         }
     }
 
+    /// Whether LSP diagnostics are enabled for this extension instance.
+    /// Currently always true once constructed; reserved for future config-driven disable.
+    pub fn enabled(&self) -> bool {
+        true
+    }
+
     /// Get shared diagnostics handle (for LspCheckTool registration).
     pub fn get_shared_diagnostics(&self) -> Arc<Mutex<Vec<Diagnostic>>> {
         Arc::clone(&self.diagnostics)
