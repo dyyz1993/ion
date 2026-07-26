@@ -493,7 +493,7 @@ impl MonitorExtension {
 
 /// Captured output of a script run, used by the `test` dry-run RPC.
 #[derive(Clone, Debug)]
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq)]  // Debug already derived elsewhere; only add PartialEq
 struct ScriptRun {
     stdout: String,
     stderr: String,
@@ -1118,7 +1118,7 @@ impl Extension for MonitorExtension {
                 }
 
                 // v2: enforce semantic validation before persisting.
-                let (errors, _warnings) = Self::validate_def(&def);
+                let (errors, _warnings) = MonitorExtension::validate_def(&def);
                 if !errors.is_empty() {
                     return Err(AgentError::Tool(format!(
                         "monitor validation failed: {}",
@@ -1730,17 +1730,17 @@ mod tests {
             monitor: "test".into(),
             key: "issue-1".into(),
             worker_id: None,
-            started_at: "epoch:1".into(), // epoch second 1 (very old)
+            started_at: "epoch:1".into(), // very old
             stage: "developer".into(),
         };
         let fresh = ActivePipeline {
             monitor: "test".into(),
             key: "issue-2".into(),
             worker_id: None,
-            started_at: format!("epoch:{}", chrono::Utc::now().timestamp()),
+            started_at: "epoch:99999999999".into(), // far future
             stage: "developer".into(),
         };
-        let now = chrono::Utc::now().timestamp();
+        let now: i64 = 1785060000; // fixed timestamp
         assert!(old.is_expired(now), "old pipeline should be expired");
         assert!(!fresh.is_expired(now), "fresh pipeline should not be expired");
     }
@@ -1749,6 +1749,7 @@ mod tests {
 
     #[test]
     fn test_validate_def_serial_skip_zero_max_concurrent() {
+        let ext = MonitorExtension::new();
         let def = MonitorDef {
             name: "test".into(),
             interval_secs: 60,
@@ -1757,11 +1758,11 @@ mod tests {
             prompt_template: "Got: {output}".into(),
             enabled: true,
             mode: MonitorMode::SerialSkip,
+            trigger_mode: TriggerMode::AutoSpawn,
             max_concurrent: 0,
-            ..Default::default()
+            cooldown_secs: 60,
         };
-        let (errors, _warnings) = validate_def(&def);
-        // max_concurrent=0 with SerialSkip should NOT error (only matters for Concurrent)
+        let (errors, _warnings) = MonitorExtension::validate_def(&def);
         assert!(
             errors.iter().all(|e| !e.contains("max_concurrent")),
             "unexpected max_concurrent error: {:?}",
