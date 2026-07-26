@@ -424,6 +424,9 @@ fn standard_rules() -> Vec<PermissionRule> {
         PermissionRule { name: "protect-ssh".into(), actions: vec![Action::Read, Action::Write], pattern: "**/.ssh/**".into(), policy: PermissionPolicy::Deny, priority: 100 },
         PermissionRule { name: "protect-aws".into(), actions: vec![Action::Read, Action::Write], pattern: "**/.aws/**".into(), policy: PermissionPolicy::Deny, priority: 100 },
         PermissionRule { name: "protect-git-config".into(), actions: vec![Action::Write], pattern: "**/.git/config".into(), policy: PermissionPolicy::Deny, priority: 100 },
+        // Allow agents to write monitor configs (intended workflow: scheduler agent generates monitors)
+        // Higher priority (110) than protect-ion-config (100) — exception must win.
+        PermissionRule { name: "allow-ion-monitors".into(), actions: vec![Action::Write], pattern: "**/.ion/monitors/**".into(), policy: PermissionPolicy::Allow, priority: 110 },
         PermissionRule { name: "protect-ion-config".into(), actions: vec![Action::Write], pattern: "**/.ion/**".into(), policy: PermissionPolicy::Deny, priority: 100 },
     ]
 }
