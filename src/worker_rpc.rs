@@ -225,9 +225,6 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     }
 
     // LSP shared handles (populated during extension registration below)
-    let mut lsp_diagnostics: Option<std::sync::Arc<tokio::sync::Mutex<Vec<crate::lsp_extension::Diagnostic>>>> = None;
-    let mut lsp_dirty: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
-    let mut lsp_has_errors: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
 
     let mut tools = ToolRegistry::new();
     tools.register(Box::new(ReadTool));
@@ -628,16 +625,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     };
     initial_system_prompt.push_str(&env_info);
 
-    // Register LSP tool if extension was enabled (shares diagnostics handles)
-    if let (Some(diags), Some(dirty), Some(has_errs)) = (&lsp_diagnostics, &lsp_dirty, &lsp_has_errors) {
-        tools.register(Box::new(
-            crate::lsp_extension::LspCheckTool::new(
-                Arc::clone(diags),
-                Arc::clone(dirty),
-                Arc::clone(has_errs),
-            )
-        ));
-    }
+    // LSP tool registration: deferred to after Agent::new (tools moved there)
+    // The shared handles are set inside the extension block below
 
     let mut agent = Agent::new(
         Arc::clone(&registry),
@@ -648,6 +637,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     )
         .with_runtime_arc(worker_rt.clone())
         .with_session_cwd(Some(worker_cwd.clone()));
+
+    // LSP tool registration deferred to inside extension block (lsp_shared set there)
 
     // 应用初始 agent 的工具限制（必须在 Agent 构造后调用）
     if let Some(ref agent_name) = initial_agent {
@@ -699,6 +690,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     let mut process_map = None;
     let mut stdin_map = None;
     let mut notify_map = None;
+    let mut lsp_shared: Option<(
+        std::sync::Arc<tokio::sync::Mutex<Vec<crate::lsp_extension::Diagnostic>>>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    )> = None;
     {
         let mut ext_reg = crate::agent::extension::ExtensionRegistry::new();
 
@@ -813,11 +809,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             let dirty = lsp_ext.get_shared_dirty();
             let has_errs = lsp_ext.get_shared_has_errors();
             ext_reg.register(Box::new(lsp_ext));
-            // Note: LspCheckTool registered separately below (needs shared Arc handles)
-            // Store the shared handles for tool registration
-            lsp_diagnostics = Some(diags);
-            lsp_dirty = Some(dirty);
-            lsp_has_errors = Some(has_errs);
+            // Store handles for LspCheckTool registration (registered after Agent::new,
+            // since tools is moved into Agent at that point — we add it via agent.add_tool)
+            lsp_shared = Some((diags, dirty, has_errs));
             tracing::info!("[extension] lsp enabled (cargo check diagnostics)");
         } else {
             tracing::info!("[extension] lsp disabled by config");
@@ -950,6 +944,18 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             agent.register_tool(Box::new(bash_kill_tool));
             agent.register_tool(Box::new(bash_send_tool));
             agent.register_tool(Box::new(bash_bg_tool));
+        }
+
+        // Register LspCheckTool if lsp extension was enabled (shares diagnostics handles)
+        if let Some((diags, dirty, has_errs)) = &lsp_shared {
+            agent.register_tool(Box::new(
+                crate::lsp_extension::LspCheckTool::new(
+                    Arc::clone(diags),
+                    Arc::clone(dirty),
+                    Arc::clone(has_errs),
+                )
+            ));
+            tracing::info!("[lsp] LspCheckTool registered");
         }
     }
 

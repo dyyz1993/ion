@@ -4213,6 +4213,24 @@ async fn handle_manager_command(
                 Err(format!(
                     "permission is a Worker-level extension. Use: ion rpc --session <SID> --method extension_rpc --params '{{\"extension\":\"permission\",\"method\":\"list_rules\"}}'"
                 ))
+            } else if extension == "lsp" || extension == "memory" || extension == "bash" || extension == "streaming" || extension == "context-index" || extension == "file-time-guard" || extension == "plan" {
+                // Worker-level extensions: forward to session's worker
+                let session_id = cmd.get("session").and_then(|v| v.as_str());
+                if let Some(sid) = session_id {
+                    drop(reg2);
+                    // Forward to worker via send_to_session
+                    let mut reg3 = registry.lock().await;
+                    reg3.send_to_session(sid, "extension_rpc", serde_json::json!({
+                        "extension": extension,
+                        "method": method,
+                        "args": args,
+                    })).await
+                } else {
+                    Err(format!(
+                        "{} is a Worker-level extension. Use: ion rpc --session <SID> --method extension_rpc --params '{{\"extension\":\"{}\",\"method\":\"{}\"}}'",
+                        extension, extension, method
+                    ))
+                }
             } else {
                 Err(format!("singleton extension '{}' not found", extension))
             }
