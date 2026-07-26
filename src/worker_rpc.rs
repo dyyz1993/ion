@@ -761,6 +761,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         ext_reg.register(Box::new(crate::auto_session_title::AutoSessionTitle::new()));
         tracing::info!("[extension] auto-session-title registered");
 
+        // Learning Extension（会话结束时自动提炼记忆，先脱敏再 LLM 提炼）
+        ext_reg.register(Box::new(crate::learning_extension::LearningExtension::new()));
+        tracing::info!("[extension] learning-extension registered");
+
         // Memory Extension
         if ion_cfg.is_extension_enabled("memory") {
             let mut memory_ext = crate::agent::memory::MemoryExtension::new(storage_ctx.clone());
