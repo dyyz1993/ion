@@ -3908,6 +3908,29 @@ async fn cmd_serve_start(
                     }
                 }
             }
+            // Auto-GC: remove Stale workers older than 10 minutes to prevent
+            // zombie accumulation during long-running auto-heal sessions.
+            // Without this, stale coordinator/developer/reviewer workers pile up
+            // and eventually overwhelm the registry.
+            let stale_count = reg.workers.values()
+                .filter(|w| w.status == ion::worker_registry::WorkerStatus::Stale)
+                .count();
+            if stale_count > 5 {
+                tracing::info!("[gc] {} stale workers, cleaning up", stale_count);
+                let stale_ids: Vec<String> = reg.workers.iter()
+                    .filter(|(_, w)| w.status == ion::worker_registry::WorkerStatus::Stale)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                for id in &stale_ids {
+                    reg.workers.remove(id);
+                    // Clean up channels
+                    for subs in reg.channels.values_mut() {
+                        subs.retain(|s| s != id);
+                    }
+                }
+                tracing::info!("[gc] removed {} stale workers", stale_ids.len());
+                changed = true;
+            }
             if changed {
                 reg.broadcast_overview();
             }

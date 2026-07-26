@@ -1223,15 +1223,8 @@ impl WorkerRegistry {
     }
 
     /// Forward a channel message to all subscribers.
-    ///
-    /// CRITICAL DESIGN: This function must NOT block on stdin writes.
-    /// Workers may have full stdin buffers (not reading stdin), and waiting
-    /// would block the registry lock, deadlocking all RPC handlers.
-    ///
-    /// Solution: collect subscriber worker_ids (short lock), then spawn
-    /// background tasks to write to each subscriber's stdin (no lock held).
-    /// If a subscriber's stdin is full, only that background task blocks,
-    /// not the caller.
+    /// CRITICAL: This must NOT block on stdin writes. Uses 200ms timeout per subscriber.
+    /// If a subscriber's stdin buffer is full, the message is dropped (better than deadlock).
     pub async fn channel_send(
         &mut self,
         channel: &str,
@@ -1247,33 +1240,18 @@ impl WorkerRegistry {
         let line = serde_json::to_string(&channel_msg).unwrap_or_default();
         let write_line = format!("{line}\n");
 
-        // Collect subscriber IDs (short lock)
         let subscriber_ids: Vec<String> = self.channels.get(channel)
             .map(|subs| subs.clone())
             .unwrap_or_default();
 
-        // For each subscriber, try to extract the stdin handle and spawn a
-        // background write task. If we can't take ownership of stdin
-        // (borrow issues), fall back to inline write with timeout.
         for sub_id in subscriber_ids {
-            // Use a try-write approach: clone the ChildStdin (it's behind
-            // Option<Box<ChildStdin>>). Since we hold &mut self, we can
-            // take it temporarily.
-            //
-            // Actually, ChildStdin doesn't implement Clone. So we need a
-            // different approach: move the write into a tokio::spawn that
-            // captures the line, and have it re-acquire the lock just to
-            // write then release. But that re-introduces lock contention.
-            //
-            // Best approach: use tokio::select with a very short timeout (100ms)
-            // per subscriber. If the write doesn't complete in 100ms, drop it
-            // (the subscriber will miss this message, but that's better than
-            // deadlocking the entire system).
             if let Some(record) = self.workers.get_mut(&sub_id) {
                 if let Some(ref mut stdin) = record.stdin {
                     use tokio::io::AsyncWriteExt;
+                    // 200ms hard timeout per subscriber write.
+                    // If buffer full, drop the message — never block the registry lock.
                     let _ = tokio::time::timeout(
-                        std::time::Duration::from_millis(500),
+                        std::time::Duration::from_millis(200),
                         async {
                             let _ = stdin.write_all(write_line.as_bytes()).await;
                             let _ = stdin.flush().await;

@@ -156,8 +156,8 @@ impl Agent {
         self.messages.len()
     }
 
-    /// 替换运��时（本地/沙箱/��程切换）
-    /// ��受 Box，内部转 Arc（向后兼容）
+    /// Swap runtime (local/sandbox/remote switching)
+    /// Accepts Box, internally converts to Arc (backward compatible)
     pub fn with_runtime(self, rt: Box<dyn crate::runtime::Runtime>) -> Self {
         self.with_runtime_arc(Arc::from(rt))
     }

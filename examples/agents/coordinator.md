@@ -17,6 +17,7 @@ disallowed_tools:
   - write
   - bash
 thinking_level: high
+max_turns: 100
 color: cyan
 ---
 
