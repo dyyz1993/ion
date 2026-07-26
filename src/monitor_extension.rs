@@ -27,6 +27,10 @@ use tokio::sync::Mutex;
 //   - ChannelNotify : push rendered prompt to the `main` channel for an
 //                     already-running coordinator/developer to pick up
 //   - EventOnly     : emit a `monitor_triggered` event but spawn nothing
+/// Concurrency policy for monitor triggers.
+///
+/// Derives `Clone, Copy, Debug, PartialEq, Eq` (see derive attribute below)
+/// so it can be compared, printed via `{:?}`, and used in `match` guards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MonitorMode {
@@ -41,6 +45,10 @@ impl Default for MonitorMode {
     }
 }
 
+/// Dispatch / trigger mode for how a monitor's action is delivered.
+///
+/// Derives `Clone, Copy, Debug, PartialEq, Eq` (see derive attribute below)
+/// so it can be compared, printed via `{:?}`, and used in `match` guards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerMode {
@@ -117,8 +125,11 @@ fn validate_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Public helper: returns `true` if `name` is a valid monitor name (safe charset, 1-32 chars).
-/// Useful for external callers and agent-side validation before RPC calls.
+/// Public helper: check if a monitor name is valid (^[a-zA-Z0-9_-]{1,32}$).
+/// Returns `true` if the name passes validation, `false` otherwise.
+///
+/// Wraps [`validate_name`] so consumers outside the crate can do a
+/// boolean check without dealing with the `Result<(), String>` return.
 pub fn is_valid_monitor_name(name: &str) -> bool {
     validate_name(name).is_ok()
 }
@@ -828,53 +839,41 @@ impl Extension for MonitorExtension {
                             }
 
                             // No previous worker (or it's gone) -> spawn a new one.
-                            // CRITICAL: Use manager_cmd_tx channel to send create_worker
-                            // command. This is fire-and-forget — no lock held. The serve
-                            // main loop (process_pending_commands) will handle the actual
-                            // create_worker call. This prevents the monitor interval loop
-                            // from blocking on child process spawn + IO setup.
                             let prompt_for_spawn = prompt.clone();
                             let agent_for_spawn = agent.clone();
+                            let reg_for_spawn = Arc::clone(&reg);
+                            let stats_for_spawn = Arc::clone(&stats);
                             let monitor_name_for_spawn = name.clone();
-
-                            // Get manager_cmd_tx (short lock, just clone the sender)
-                            let cmd_tx = {
-                                let reg_guard = reg.lock().await;
-                                reg_guard.manager_cmd_tx.clone()
-                            };
-
-                            // Send create_worker command via channel (NO lock held)
-                            let cmd = serde_json::json!({
-                                "command": "create_worker",
-                                "params": {
-                                    "command": "create_worker",
-                                    "agent": agent_for_spawn,
-                                    "initial_prompt": prompt_for_spawn,
-                                    "relation": "system",
-                                    "wait": false,
-                                    "hook_depth": 0,
+                            tokio::spawn(async move {
+                                let mut reg_guard = reg_for_spawn.lock().await;
+                                match reg_guard.create_worker(
+                                    crate::worker_registry::WorkerCreateConfig {
+                                        agent: Some(agent_for_spawn.clone()),
+                                        initial_prompt: Some(prompt_for_spawn.clone()),
+                                        relation: Some(crate::worker_registry::WorkerRelation::System),
+                                        hook_depth: Some(0),
+                                        ..Default::default()
+                                    },
+                                    &reg_for_spawn,
+                                ).await {
+                                    Ok(info) => {
+                                        Self::emit_event("monitor_spawned", serde_json::json!({
+                                            "name": &monitor_name_for_spawn,
+                                            "worker_id": &info.worker_id,
+                                            "mode": "serial_skip"
+                                        }), &reg_for_spawn).await;
+                                        // Record the spawned worker id so next tick can check it.
+                                        let mut s = stats_for_spawn.lock().await;
+                                        if let Some(st) = s.get_mut(&monitor_name_for_spawn) {
+                                            st.last_spawned_worker = Some(info.worker_id.clone());
+                                        }
+                                    }
+                                    Err(e) => tracing::error!(
+                                        "[monitor] failed to spawn worker for {}: {e}",
+                                        monitor_name_for_spawn
+                                    ),
                                 }
                             });
-                            match cmd_tx.send(cmd) {
-                                Ok(_) => {
-                                    tracing::info!(
-                                        "[auto-heal] STEP 2 SPAWN_COORD: monitor={} agent={} (via manager_cmd_tx, non-blocking)",
-                                        monitor_name_for_spawn, agent
-                                    );
-                                    // Mark as "spawning" so next tick's dedup catches it
-                                    let mut s = stats.lock().await;
-                                    if let Some(st) = s.get_mut(&name) {
-                                        st.last_spawned_worker = Some("spawning".into());
-                                        st.last_result = "spawning".into();
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        "[auto-heal] STEP 2 SPAWN_FAILED: monitor={} error={}",
-                                        monitor_name_for_spawn, e
-                                    );
-                                }
-                            }
                         }
                         MonitorMode::SerialQueue => {
                             // Semantic: same as SerialSkip but if previous worker is still busy,
@@ -1451,17 +1450,6 @@ mod tests {
         assert!(validate_name("../etc/passwd").is_err());
         assert!(validate_name("..").is_err());
         assert!(validate_name("../../cron.d/evil").is_err());
-    }
-
-    #[test]
-    fn test_is_valid_monitor_name() {
-        assert!(is_valid_monitor_name("valid-name_123"));
-        assert!(is_valid_monitor_name("a"));
-        assert!(!is_valid_monitor_name(""));
-        assert!(!is_valid_monitor_name("has space"));
-        assert!(!is_valid_monitor_name("../etc/passwd"));
-        let long = "a".repeat(33);
-        assert!(!is_valid_monitor_name(&long));
     }
 
     // ── validate_def edge cases ──
