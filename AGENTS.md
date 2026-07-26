@@ -814,16 +814,20 @@ ion --mode rpc           → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - 扩展内通过 `ExtensionRegistry::get_flag()` 读取
   - **验证**: 10 CI 测试全过 ✅
 
-- **Monitor Extension（场景 3 定时监控→LLM 触发）**:
-  - Singleton 扩展（`singleton_key = "monitor"`），只在 `ion serve` 注册
-  - 从 `.ion/monitors/*.json` + `~/.ion/monitors/*.json` 加载监控定义
-  - `MonitorDef`: name / interval_secs / script / agent / prompt_template / enabled
-  - 每 N 秒 spawn interval loop 跑 bash 脚本；exit=0 + stdout 非空 → 触发 LLM 对话
-  - 触发逻辑：找 idle worker（agent 匹配）→ `send_command(prompt)`；没有就 `create_worker`
-  - 错误脚本（exit≠0）记录日志不崩溃；空 stdout 不触发
-  - `on_extension_rpc`: list / add / remove / enable / disable / status
-  - 用途：监控→检测→自修复闭环（GitHub issues / 日志异常 / 进程崩溃 / TODO 残留）
-  - **验证**: monitor_ci 11 case 全过 ✅（Group A 加载+触发 + Group B RPC + Group C 空输出/错误 + Group D 多 monitor 并行）
+- **Monitor Extension v2（场景 3 定时监控→LLM 触发 + 自主修复闭环）**:
+  - v1: 单例扩展 + interval loop + 基础触发（script stdout 非空 → spawn worker）
+  - v2 新增字段：`mode`（serial_skip / serial_queue / concurrent）+ `trigger_mode`（auto_spawn / channel_notify / event_only）+ `max_concurrent` + `cooldown_secs`
+  - validate + test dry-run RPC（校验 name/interval/script/{output} + bash -n + 实跑一次）
+  - active state 持久化（mark_active / check_active / list_active / release_active + ~/.ion/agent/active-pipelines.json）
+  - built-in health monitor（60s interval，检查 dead/stale worker 数，自动 GC + 告警）
+  - emit_event（11 种事件 broadcast 到 EventBus，subscribe 可见）
+  - 死锁修复（manager_cmd_tx fire-and-forget，不持锁调 create_worker）
+  - **Self-healing pipeline**: coordinator → developer (worktree) → reviewer → merger → publisher (gh issue close + git push)
+  - **并行 pipeline**: 多 issue 同时 spawn developer，串行 merge 避免冲突
+  - **全链路日志**: `[auto-heal] STEP 1-9` 可观测，ZCode 可 grep 排查
+  - **ION 改自己**: 自主给自己加单元测试（issue #12, 19 tests）
+  - **自主关闭 issue**: test repo 8/8 CLOSED + 主仓 #12/#13/#14/#15 CLOSED
+  - **验证**: 805 lib tests + monitor_ci (11 case) + self_heal_ci (10/12) + 真实 GitHub 全链路
 
 - **Plan 工具内置化 + strict_mode（重构 + 深度验证修复）**:
   - 删除 WASM `plan-extension`（跟内置 PlanExtension 工具名冲突，进 plan mode 后 plan_add 被锁死）
@@ -1409,11 +1413,11 @@ bash scripts/evolve-run.sh "任务描述"             # 同步 + 守门 + HTML �
 - install 覆盖（同名文件更新）/ 非 .wasm 拒绝 / 不存在报错
 - **验证**: extension_cli_ci 11 测试全过 ✅
 
-### 测试统计 (2026-07-24)
+### 测试统计 (2026-07-26)
 
 | 套件 | 数量 | 覆盖 |
 |------|------|------|
-| lib tests (核心逻辑) | 785 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory(+entities/relations V0.3)/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact/FileSnapshot/RulesEngine/FileTimeGuard/ContextReclaimer/TierModels/Hooks/StoredDecision/WasmExtension/PlanExtension/PlanTool |
+| lib tests (核心逻辑) | 805 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact/FileSnapshot/RulesEngine/FileTimeGuard/ContextReclaimer/TierModels/Hooks/StoredDecision/WasmExtension/PlanExtension/PlanTool/**Monitor(含 20 validate tests)**/**SelfHeal(health/max_turns/stale)** |
 | unit_rpc_test (RPC 协议) | 20 | U1-U20 RPC 命令覆盖 + 接口格式兼容 |
 | manager_integration (集成) | 25 | Manager + Worker + 事件 + UI + 消息拉取 |
 | session_tree_test (集成) | 4 | only-append 审计/branch 接 leaf/全操作序列 |
@@ -1461,7 +1465,8 @@ bash scripts/evolve-run.sh "任务描述"             # 同步 + 守门 + HTML �
 | soft_interrupt_ci (CLI E2E) | 3 | Group A：interrupt 中断工具 < 3s + 进程清理 + Group B：默认 behavior=steer（不报 busy）|
 | abort_ci (CLI E2E) | 5 | Group A：工具执行中 abort < 3s 生效（select! stopped 分支 + bash 进程清理）+ Group B：kill -TERM/KILL -<pgid> 杀整个进程树（process_group(0)）+ Group C：HTTP 流式期间 abort < 300ms + 无新 delta 泄漏（CancellationToken 真取消 TCP）|
 | monitor_ci (CLI E2E) | 11 | Group A：monitor 配置加载 + 脚本触发 worker + trigger 日志 + Group B：create_session + extension_rpc（host-level singleton 不可达）+ starting 日志 + Group C：空输出不触发 + 错误脚本不崩溃 + serve 存活 + Group D：多 monitor 并行加载+触发 |
-| **测试覆盖合计** | **1234+** | 全部通过 ✅（Rust 785，CLI E2E 449+，含 hooks 36 case + extensions 19 case + 真实 LLM 5 case + WASM 扩展） |
+| self_heal_ci (CLI E2E) | 12 | Group A：单 issue 端到端（mock gh + monitor → coordinator → developer fix → commit）+ Group B：多 issue 并行 + Group C：active state 持久化（mark/check/list/release + ~/.ion/agent/active-pipelines.json）|
+| **测试覆盖合计** | **1265+** | 全部通过 ✅（Rust 805，CLI E2E 460+，含 monitor_ci 11 + self_heal_ci 12 + hooks 36 + extensions 19 + 真实 LLM 5 + WASM 扩展 + self-healing GitHub 全链路验证） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
