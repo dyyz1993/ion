@@ -117,6 +117,12 @@ fn validate_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Public helper: returns `true` if `name` is a valid monitor name (safe charset, 1-32 chars).
+/// Useful for external callers and agent-side validation before RPC calls.
+pub fn is_valid_monitor_name(name: &str) -> bool {
+    validate_name(name).is_ok()
+}
+
 /// Runtime status for a monitor.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct MonitorStatus {
@@ -1445,6 +1451,17 @@ mod tests {
         assert!(validate_name("../etc/passwd").is_err());
         assert!(validate_name("..").is_err());
         assert!(validate_name("../../cron.d/evil").is_err());
+    }
+
+    #[test]
+    fn test_is_valid_monitor_name() {
+        assert!(is_valid_monitor_name("valid-name_123"));
+        assert!(is_valid_monitor_name("a"));
+        assert!(!is_valid_monitor_name(""));
+        assert!(!is_valid_monitor_name("has space"));
+        assert!(!is_valid_monitor_name("../etc/passwd"));
+        let long = "a".repeat(33);
+        assert!(!is_valid_monitor_name(&long));
     }
 
     // ── validate_def edge cases ──
