@@ -1279,3 +1279,190 @@ struct ActivePipelinesFile {
     #[serde(default)]
     active: Vec<ActivePipeline>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: create a valid MonitorDef for testing
+    fn valid_def() -> MonitorDef {
+        MonitorDef {
+            name: "test-monitor".into(),
+            interval_secs: 300,
+            script: "echo hello".into(),
+            agent: "developer".into(),
+            prompt_template: "Output: {output}".into(),
+            enabled: true,
+            mode: MonitorMode::SerialSkip,
+            trigger_mode: TriggerMode::AutoSpawn,
+            max_concurrent: 3,
+            cooldown_secs: 60,
+        }
+    }
+
+    // ── validate_name edge cases ──
+
+    #[test]
+    fn test_validate_name_valid() {
+        assert!(validate_name("valid-name_123").is_ok());
+        assert!(validate_name("a").is_ok());
+        assert!(validate_name("A_B-C").is_ok());
+    }
+
+    #[test]
+    fn test_validate_name_empty() {
+        assert!(validate_name("").is_err());
+    }
+
+    #[test]
+    fn test_validate_name_too_long() {
+        let long_name = "a".repeat(33);
+        assert!(validate_name(&long_name).is_err());
+        // Exactly 32 chars should be OK
+        let max_name = "a".repeat(32);
+        assert!(validate_name(&max_name).is_ok());
+    }
+
+    #[test]
+    fn test_validate_name_invalid_chars() {
+        // Spaces, dots, slashes, special chars
+        assert!(validate_name("has space").is_err());
+        assert!(validate_name("has.dot").is_err());
+        assert!(validate_name("has/slash").is_err());
+        assert!(validate_name("has\\backslash").is_err());
+        assert!(validate_name("has@at").is_err());
+        assert!(validate_name("café").is_err()); // non-ASCII
+    }
+
+    #[test]
+    fn test_validate_name_path_traversal() {
+        // Security: path traversal attempts must be rejected
+        assert!(validate_name("../etc/passwd").is_err());
+        assert!(validate_name("..").is_err());
+        assert!(validate_name("../../cron.d/evil").is_err());
+    }
+
+    // ── validate_def edge cases ──
+    // Note: validate_def returns (errors, warnings) — errors first!
+    // validate_def is inside impl MonitorExtension, so call as MonitorExtension::validate_def
+
+    #[test]
+    fn test_validate_def_valid_no_warnings_no_errors() {
+        let def = valid_def();
+        let (errors, warnings) = MonitorExtension::validate_def(&def);
+        assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+        assert!(warnings.is_empty(), "expected no warnings, got: {:?}", warnings);
+    }
+
+    #[test]
+    fn test_validate_def_empty_name() {
+        let mut def = valid_def();
+        def.name = "".into();
+        let (errors, _) = MonitorExtension::validate_def(&def);
+        assert!(!errors.is_empty(), "expected error for empty name");
+        assert!(errors.iter().any(|e| e.contains("name")));
+    }
+
+    #[test]
+    fn test_validate_def_invalid_name_chars() {
+        let mut def = valid_def();
+        def.name = "bad name!".into();
+        let (errors, _) = MonitorExtension::validate_def(&def);
+        assert!(!errors.is_empty());
+        assert!(errors.iter().any(|e| e.contains("name")));
+    }
+
+    #[test]
+    fn test_validate_def_zero_interval() {
+        let mut def = valid_def();
+        def.interval_secs = 0;
+        let (errors, _) = MonitorExtension::validate_def(&def);
+        assert!(errors.iter().any(|e| e.contains("interval")));
+    }
+
+    #[test]
+    fn test_validate_def_interval_too_large() {
+        let mut def = valid_def();
+        def.interval_secs = 100000;
+        let (errors, _) = MonitorExtension::validate_def(&def);
+        assert!(errors.iter().any(|e| e.contains("interval")));
+    }
+
+    #[test]
+    fn test_validate_def_long_interval_warning() {
+        let mut def = valid_def();
+        def.interval_secs = 7200; // > 3600, should warn but not error
+        let (errors, warnings) = MonitorExtension::validate_def(&def);
+        assert!(errors.is_empty(), "should not error for 7200");
+        assert!(warnings.iter().any(|w| w.contains("interval")));
+    }
+
+    #[test]
+    fn test_validate_def_empty_script() {
+        let mut def = valid_def();
+        def.script = "".into();
+        let (errors, _) = MonitorExtension::validate_def(&def);
+        assert!(errors.iter().any(|e| e.contains("script")));
+    }
+
+    #[test]
+    fn test_validate_def_whitespace_only_script() {
+        let mut def = valid_def();
+        def.script = "   ".into();
+        let (errors, _) = MonitorExtension::validate_def(&def);
+        assert!(errors.iter().any(|e| e.contains("script")));
+    }
+
+    #[test]
+    fn test_validate_def_empty_agent() {
+        let mut def = valid_def();
+        def.agent = "".into();
+        let (errors, _) = MonitorExtension::validate_def(&def);
+        assert!(errors.iter().any(|e| e.contains("agent")));
+    }
+
+    #[test]
+    fn test_validate_def_prompt_missing_placeholder() {
+        let mut def = valid_def();
+        def.prompt_template = "no placeholder here".into();
+        let (errors, _) = MonitorExtension::validate_def(&def);
+        assert!(errors.iter().any(|e| e.contains("output")));
+    }
+
+    #[test]
+    fn test_validate_def_concurrent_zero_max() {
+        let mut def = valid_def();
+        def.mode = MonitorMode::Concurrent;
+        def.max_concurrent = 0;
+        let (errors, _) = MonitorExtension::validate_def(&def);
+        assert!(errors.iter().any(|e| e.contains("max_concurrent")));
+    }
+
+    #[test]
+    fn test_validate_def_serial_skip_zero_max_ok() {
+        let mut def = valid_def();
+        def.mode = MonitorMode::SerialSkip;
+        def.max_concurrent = 0;
+        let (errors, _) = MonitorExtension::validate_def(&def);
+        // max_concurrent=0 only errors with Concurrent mode
+        assert!(!errors.iter().any(|e| e.contains("max_concurrent")));
+    }
+
+    #[test]
+    fn test_validate_def_high_max_concurrent_warning() {
+        let mut def = valid_def();
+        def.max_concurrent = 200;
+        let (_, warnings) = MonitorExtension::validate_def(&def);
+        assert!(warnings.iter().any(|w| w.contains("max_concurrent")));
+    }
+
+    #[test]
+    fn test_validate_def_cooldown_gt_interval_warning() {
+        let mut def = valid_def();
+        def.interval_secs = 10;
+        def.cooldown_secs = 60;
+        let (errors, warnings) = MonitorExtension::validate_def(&def);
+        assert!(errors.is_empty(), "should not error");
+        assert!(warnings.iter().any(|w| w.contains("cooldown")));
+    }
+}
