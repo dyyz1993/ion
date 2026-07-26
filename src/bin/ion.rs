@@ -4385,6 +4385,13 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>) {
 
     let entry = {
         let mut reg = registry.lock().await;
+
+        // ── 注册单例扩展（scene 2 也需要，跟 cmd_serve_start 一致）──
+        // 否则 scheduler agent 通过 extension_rpc 调 monitor validate/add 会失败。
+        reg.register_singleton(Box::new(ion::global_memory_ext::GlobalMemoryExtension::new()));
+        reg.register_singleton(Box::new(ion::monitor_extension::MonitorExtension::new()));
+        reg.init_singletons().await;
+
         match reg.create_worker(cfg, &registry).await {
             Ok(info) => {
                 eprintln!("[host] spawned {} ({})", &info.worker_id[..12], agent);
@@ -4399,6 +4406,11 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>) {
 
     // Set entry worker for recursive idle detection
     registry.lock().await.set_entry_worker(&entry.worker_id);
+
+    // 启动单例扩展的后初始化（关键：让 Monitor interval loop 真的跑起来）
+    // 否则 monitor 配置加载了但不会触发，因为 on_singleton_post_init 没被调用。
+    ion::worker_registry::WorkerRegistry::post_init_singletons(&registry).await;
+
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // 4. Wait for idle with configurable timeout
