@@ -85,9 +85,12 @@ CONTAINER_CMD+=("$IMAGE" sh -lc "sleep infinity")
 "${CONTAINER_CMD[@]}" 2>&1 | tail -2
 echo "   container: $CONTAINER_NAME"
 
-# Ensure GNU grep is installed (BusyBox grep lacks --include flag)
+# Ensure GNU grep + bash are installed (BusyBox versions lack features developer agent needs)
+# - GNU grep: --include flag
+# - bash: developer agent's bash tool calls /bin/bash; without it agent dies with "sh: bash: not found"
 "$CONTAINER_BIN" exec "$CONTAINER_NAME" sh -c \
-    "grep --version 2>/dev/null | grep -q GNU || apk add --no-cache grep 2>/dev/null" 2>/dev/null
+    "grep --version 2>/dev/null | grep -q GNU || apk add --no-cache grep 2>/dev/null; \
+     command -v bash >/dev/null 2>&1 || apk add --no-cache bash 2>/dev/null" 2>/dev/null
 
 #  Cargo.toml
 if [ -d "$ION_PROVIDER_DIR" ]; then

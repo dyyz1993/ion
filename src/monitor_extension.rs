@@ -130,6 +130,9 @@ pub struct MonitorStatus {
     pub active_workers: u32,
     pub last_error: Option<String>,
     pub consecutive_failures: u32,
+    /// Track the worker id that THIS monitor spawned (for serial_skip "previous still running" check).
+    /// None = no worker spawned yet, or the previous one is gone.
+    pub last_spawned_worker: Option<String>,
 }
 
 /// MonitorExtension — singleton, only registered in serve mode.
@@ -410,6 +413,7 @@ impl Extension for MonitorExtension {
                     active_workers: 0,
                     last_error: None,
                     consecutive_failures: 0,
+                    last_spawned_worker: None,
                 });
             }
 
@@ -574,25 +578,32 @@ impl Extension for MonitorExtension {
                     // v2: AutoSpawn concurrency policy
                     match mode {
                         MonitorMode::SerialSkip => {
-                            let idle_worker = {
-                                let reg_guard = reg.lock().await;
-                                reg_guard.workers.iter()
-                                    .find(|(_, w)| w.agent == agent
-                                        && w.status != crate::worker_registry::WorkerStatus::Dead
-                                        && w.status != crate::worker_registry::WorkerStatus::Busy)
-                                    .map(|(id, _)| id.clone())
+                            // Semantic: if THIS monitor's previously-spawned worker is still
+                            // alive (running or idle), skip this tick. Otherwise spawn a new one.
+                            // This is different from "any worker with matching agent is busy" —
+                            // we only care about workers WE spawned, not user's workers.
+                            let prev_worker_alive = {
+                                let s_guard = stats.lock().await;
+                                if let Some(st) = s_guard.get(&name) {
+                                    if let Some(ref wid) = st.last_spawned_worker {
+                                        // Check if this worker id still exists in registry
+                                        let reg_guard = reg.lock().await;
+                                        reg_guard.workers.contains_key(wid)
+                                            && reg_guard.workers.get(wid)
+                                                .map(|w| w.status != crate::worker_registry::WorkerStatus::Dead)
+                                                .unwrap_or(false)
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
                             };
 
-                            if let Some(wid) = idle_worker {
-                                let mut reg_guard = reg.lock().await;
-                                let _ = reg_guard.send_command(&wid, "prompt", serde_json::json!({
-                                    "text": prompt
-                                })).await;
-                                tracing::info!("[monitor] sent to existing worker {}", wid);
-                            } else {
-                                // All busy -> skip this tick + count it.
+                            if prev_worker_alive {
+                                // Previous worker still running -> skip this tick.
                                 tracing::info!(
-                                    "[monitor] '{}' serial_skip: all workers busy, skipping",
+                                    "[monitor] '{}' serial_skip: previous worker still running, skipping",
                                     name
                                 );
                                 let mut s = stats.lock().await;
@@ -603,32 +614,64 @@ impl Extension for MonitorExtension {
                                 *last_trigger.lock().await = std::time::Instant::now();
                                 continue;
                             }
+
+                            // No previous worker (or it's gone) -> spawn a new one.
+                            let prompt_for_spawn = prompt.clone();
+                            let agent_for_spawn = agent.clone();
+                            let reg_for_spawn = Arc::clone(&reg);
+                            let stats_for_spawn = Arc::clone(&stats);
+                            let monitor_name_for_spawn = name.clone();
+                            tokio::spawn(async move {
+                                let mut reg_guard = reg_for_spawn.lock().await;
+                                match reg_guard.create_worker(
+                                    crate::worker_registry::WorkerCreateConfig {
+                                        agent: Some(agent_for_spawn.clone()),
+                                        initial_prompt: Some(prompt_for_spawn.clone()),
+                                        relation: Some(crate::worker_registry::WorkerRelation::System),
+                                        hook_depth: Some(0),
+                                        ..Default::default()
+                                    },
+                                    &reg_for_spawn,
+                                ).await {
+                                    Ok(info) => {
+                                        tracing::info!(
+                                            "[monitor] spawned worker {} for {}",
+                                            info.worker_id, monitor_name_for_spawn
+                                        );
+                                        // Record the spawned worker id so next tick can check it.
+                                        let mut s = stats_for_spawn.lock().await;
+                                        if let Some(st) = s.get_mut(&monitor_name_for_spawn) {
+                                            st.last_spawned_worker = Some(info.worker_id.clone());
+                                        }
+                                    }
+                                    Err(e) => tracing::error!(
+                                        "[monitor] failed to spawn worker for {}: {e}",
+                                        monitor_name_for_spawn
+                                    ),
+                                }
+                            });
                         }
                         MonitorMode::SerialQueue => {
-                            // First: if we have an idle worker, replay the oldest queued
-                            // prompt (FIFO) and consume the new one afterwards.
-                            let idle_worker = {
-                                let reg_guard = reg.lock().await;
-                                reg_guard.workers.iter()
-                                    .find(|(_, w)| w.agent == agent
-                                        && w.status != crate::worker_registry::WorkerStatus::Dead
-                                        && w.status != crate::worker_registry::WorkerStatus::Busy)
-                                    .map(|(id, _)| id.clone())
+                            // Semantic: same as SerialSkip but if previous worker is still busy,
+                            // enqueue instead of dropping.
+                            let prev_worker_busy = {
+                                let s_guard = stats.lock().await;
+                                if let Some(st) = s_guard.get(&name) {
+                                    if let Some(ref wid) = st.last_spawned_worker {
+                                        let reg_guard = reg.lock().await;
+                                        reg_guard.workers.get(wid)
+                                            .map(|w| w.status == crate::worker_registry::WorkerStatus::Busy)
+                                            .unwrap_or(false)
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
                             };
 
-                            if let Some(wid) = idle_worker {
-                                // Drain one queued item first, then this tick's prompt.
-                                let to_send = {
-                                    let mut q = pending_queue.lock().await;
-                                    q.pop_front().unwrap_or(prompt.clone())
-                                };
-                                let mut reg_guard = reg.lock().await;
-                                let _ = reg_guard.send_command(&wid, "prompt", serde_json::json!({
-                                    "text": to_send
-                                })).await;
-                                tracing::info!("[monitor] dequeued to worker {}", wid);
-                            } else {
-                                // No idle worker -> enqueue (with overflow protection).
+                            if prev_worker_busy {
+                                // Previous worker busy -> enqueue.
                                 let mut q = pending_queue.lock().await;
                                 if q.len() >= MONITOR_QUEUE_CAPACITY {
                                     let dropped = q.pop_front();
@@ -654,6 +697,46 @@ impl Extension for MonitorExtension {
                                 *last_trigger.lock().await = std::time::Instant::now();
                                 continue;
                             }
+
+                            // Previous worker gone or idle -> consume queued first, else use current prompt.
+                            let to_send = {
+                                let mut q = pending_queue.lock().await;
+                                q.pop_front().unwrap_or(prompt.clone())
+                            };
+
+                            // Spawn new worker for this prompt.
+                            let agent_for_spawn = agent.clone();
+                            let reg_for_spawn = Arc::clone(&reg);
+                            let stats_for_spawn = Arc::clone(&stats);
+                            let monitor_name_for_spawn = name.clone();
+                            tokio::spawn(async move {
+                                let mut reg_guard = reg_for_spawn.lock().await;
+                                match reg_guard.create_worker(
+                                    crate::worker_registry::WorkerCreateConfig {
+                                        agent: Some(agent_for_spawn.clone()),
+                                        initial_prompt: Some(to_send.clone()),
+                                        relation: Some(crate::worker_registry::WorkerRelation::System),
+                                        hook_depth: Some(0),
+                                        ..Default::default()
+                                    },
+                                    &reg_for_spawn,
+                                ).await {
+                                    Ok(info) => {
+                                        tracing::info!(
+                                            "[monitor] spawned worker {} for {} (queue)",
+                                            info.worker_id, monitor_name_for_spawn
+                                        );
+                                        let mut s = stats_for_spawn.lock().await;
+                                        if let Some(st) = s.get_mut(&monitor_name_for_spawn) {
+                                            st.last_spawned_worker = Some(info.worker_id.clone());
+                                        }
+                                    }
+                                    Err(e) => tracing::error!(
+                                        "[monitor] failed to spawn worker for {}: {e}",
+                                        monitor_name_for_spawn
+                                    ),
+                                }
+                            });
                         }
                         MonitorMode::Concurrent => {
                             let active = active_count.load(
