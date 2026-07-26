@@ -80,8 +80,25 @@ impl Extension for GlobalMemoryExtension {
             tracing::info!("[global-memory] disabled by config, skipping memory-agent spawn");
             return Ok(());
         }
-        let model = cfg.default_model.clone().unwrap_or_else(|| "deepseek-v4-flash".into());
-        let provider = cfg.default_provider.clone().unwrap_or_else(|| "opencode".into());
+
+        // Use tier_models "fast" if available, otherwise default model/provider.
+        // This avoids using the expensive main model for memory-agent (which just
+        // answers queries) and also avoids the opencode quota issue if the fast
+        // tier points to a different provider.
+        let tier_fast = cfg.tier_models.get("fast").cloned();
+        let (model, provider) = if let Some(tier) = tier_fast {
+            // tier format: "provider/model"
+            let parts: Vec<&str> = tier.split('/').collect();
+            if parts.len() == 2 {
+                (parts[1].to_string(), parts[0].to_string())
+            } else {
+                (cfg.default_model.clone().unwrap_or_else(|| "glm-5.2".into()),
+                 cfg.default_provider.clone().unwrap_or_else(|| "zai".into()))
+            }
+        } else {
+            (cfg.default_model.clone().unwrap_or_else(|| "glm-5.2".into()),
+             cfg.default_provider.clone().unwrap_or_else(|| "zai".into()))
+        };
 
         // 构造 memory-agent 的 WorkerCreateConfig
         let config = crate::worker_registry::WorkerCreateConfig {

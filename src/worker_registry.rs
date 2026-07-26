@@ -2051,6 +2051,10 @@ impl WorkerRegistry {
     }
 
     /// Check if a worker and all its descendants are idle (DFS recursive).
+    /// System workers (memory-agent, monitor-coordinator) are EXCLUDED — they are
+    /// long-running services, not user tasks. Without this exclusion, a System
+    /// worker dying (e.g. memory-agent hits 429 quota error) causes the serve
+    /// to think "all workers idle" and shut down after the grace period.
     pub fn all_workers_idle(&self, entry_worker_id: &str) -> Result<bool, String> {
         let mut stack = vec![entry_worker_id.to_string()];
         let mut visited = std::collections::HashSet::new();
@@ -2059,8 +2063,19 @@ impl WorkerRegistry {
             let record = self.workers.get(&wid).ok_or_else(|| {
                 format!("worker {wid} not found in registry")
             })?;
-	            match record.status {
-	                WorkerStatus::Idle | WorkerStatus::Dead => {}
+
+            // Skip System workers — they are services, not user tasks.
+            // A dead memory-agent should NOT cause serve to think "all done".
+            // Detect by agent name (memory-agent, etc. are always System relation).
+            if record.agent == "memory-agent" {
+                for child_id in &record.children {
+                    stack.push(child_id.clone());
+                }
+                continue;
+            }
+
+            match record.status {
+                WorkerStatus::Idle | WorkerStatus::Dead => {}
                 _ => return Ok(false),
             }
             for child_id in &record.children {
