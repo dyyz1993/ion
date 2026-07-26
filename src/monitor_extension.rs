@@ -749,9 +749,19 @@ impl Extension for MonitorExtension {
                         "interval_secs": m.interval_secs,
                         "agent": m.agent,
                         "enabled": m.enabled,
+                        // v2 fields
+                        "mode": m.mode,
+                        "trigger_mode": m.trigger_mode,
+                        "max_concurrent": m.max_concurrent,
+                        "cooldown_secs": m.cooldown_secs,
+                        // runtime counters
                         "trigger_count": status.map(|s| s.trigger_count).unwrap_or(0),
+                        "skip_count": status.map(|s| s.skip_count).unwrap_or(0),
+                        "queue_length": status.map(|s| s.queue_length).unwrap_or(0),
+                        "active_workers": status.map(|s| s.active_workers).unwrap_or(0),
                         "last_run": status.and_then(|s| s.last_run.clone()),
                         "last_result": status.map(|s| s.last_result.as_str()).unwrap_or("unknown"),
+                        "last_error": status.and_then(|s| s.last_error.clone()),
                     })
                 }).collect();
                 Ok(serde_json::json!({"monitors": result}))
@@ -825,19 +835,37 @@ impl Extension for MonitorExtension {
 
             // v2 — dry-run the script without touching the scheduler.
             "test" => {
-                let def = Self::parse_def(&params);
-                let (errors, _warnings) = Self::validate_def(&def);
-                if !errors.is_empty() {
-                    return Err(AgentError::Tool(format!(
-                        "monitor validation failed: {}",
-                        errors.join("; ")
-                    )));
+                // Dry-run: only need script + prompt_template, do NOT require name/interval
+                // (caller is just checking what the script would output)
+                let script = params.get("script").and_then(|v| v.as_str()).unwrap_or("");
+                let prompt_template = params.get("prompt_template").and_then(|v| v.as_str())
+                    .unwrap_or("Monitor triggered:\n{output}");
+
+                if script.trim().is_empty() {
+                    return Ok(serde_json::json!({
+                        "valid": false,
+                        "errors": ["script must not be empty"],
+                        "would_trigger": false
+                    }));
                 }
 
-                let run = Self::run_script_capturing(&def.script);
+                // bash -n syntax check
+                let syntax_ok = std::process::Command::new("bash")
+                    .arg("-n").arg("-c").arg(script).status()
+                    .map(|s| s.success()).unwrap_or(false);
+                if !syntax_ok {
+                    return Ok(serde_json::json!({
+                        "valid": true,
+                        "script_exit_ok": false,
+                        "script_stderr": "bash -n syntax check failed",
+                        "would_trigger": false
+                    }));
+                }
+
+                let run = Self::run_script_capturing(script);
                 let would_trigger = run.exit_ok && !run.stdout.is_empty();
                 let rendered_prompt = if would_trigger {
-                    Some(Self::format_prompt(&def.prompt_template, &run.stdout))
+                    Some(Self::format_prompt(prompt_template, &run.stdout))
                 } else {
                     None
                 };
@@ -849,7 +877,7 @@ impl Extension for MonitorExtension {
                     "script_stdout": run.stdout,
                     "script_stderr": run.stderr,
                     "would_trigger": would_trigger,
-                    "rendered_prompt": rendered_prompt,
+                    "rendered_prompt": rendered_prompt
                 }))
             }
 
