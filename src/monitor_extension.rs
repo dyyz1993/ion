@@ -193,6 +193,33 @@ impl MonitorExtension {
         template.replace("{output}", output)
     }
 
+    /// Broadcast an event to the host EventBus (so `ion subscribe` and all
+    /// subscribers receive it). Falls back to tracing log if EventBus is not
+    /// configured (e.g. tests).
+    async fn emit_event(
+        custom_type: &str,
+        data: serde_json::Value,
+        registry: &Arc<tokio::sync::Mutex<crate::worker_registry::WorkerRegistry>>,
+    ) {
+        // Always log first (cheap, useful for debugging even without subscribers).
+        tracing::info!("[monitor] {}: {}", custom_type, data);
+
+        let bus_opt = {
+            let reg = registry.lock().await;
+            reg.event_bus.clone()
+        };
+        if let Some(bus) = bus_opt {
+            let mut bus_guard = bus.lock().await;
+            // Use LlmAndUi visibility so both subscribe CLI and worker LLMs
+            // can observe monitor lifecycle events. This lets coordinator/developer
+            // workers react to monitor_triggered / monitor_skipped etc.
+            let event = crate::event_bus::ExtensionEvent::new("monitor", custom_type)
+                .with_data(data)
+                .with_visibility(crate::event_bus::EventVisibility::LlmAndUi);
+            bus_guard.broadcast(&event);
+        }
+    }
+
     // ===== v2: RPC param parsing + validation helpers (merged from T2) =====
 
     /// Parse a `MonitorDef` from RPC `params`.
@@ -471,7 +498,9 @@ impl Extension for MonitorExtension {
                     }
 
                     if !success {
-                        tracing::warn!("[monitor] '{}' script failed: {}", name, output);
+                        Self::emit_event("monitor_script_failed", serde_json::json!({
+                            "name": &name, "stderr": &output
+                        }), &reg).await;
                         continue;
                     }
 
@@ -484,10 +513,9 @@ impl Extension for MonitorExtension {
                     {
                         let last = *last_trigger.lock().await;
                         if last.elapsed() < std::time::Duration::from_secs(cooldown_secs) {
-                            tracing::info!(
-                                "[monitor] '{}' cooldown ({}s), skipping trigger",
-                                name, cooldown_secs
-                            );
+                            Self::emit_event("monitor_cooldown", serde_json::json!({
+                                "name": &name, "cooldown_secs": cooldown_secs
+                            }), &reg).await;
                             let mut s = stats.lock().await;
                             if let Some(status) = s.get_mut(&name) {
                                 status.last_result = "cooldown".into();
@@ -496,11 +524,15 @@ impl Extension for MonitorExtension {
                         }
                     }
 
-                    // Event detected — trigger LLM conversation
-                    tracing::info!(
-                        "[monitor] '{}' triggered! output={} bytes, triggering agent={}",
-                        name, output.len(), agent
-                    );
+                    // Event detected — emit monitor_triggered (the canonical event)
+                    Self::emit_event("monitor_triggered", serde_json::json!({
+                        "name": &name,
+                        "output_bytes": output.len(),
+                        "output": &output,
+                        "agent": &agent,
+                        "mode": serde_json::to_value(&mode).unwrap_or_default(),
+                        "trigger_mode": serde_json::to_value(&trigger_mode).unwrap_or_default(),
+                    }), &reg).await;
 
                     // Increment trigger count
                     {
@@ -517,10 +549,9 @@ impl Extension for MonitorExtension {
                     match trigger_mode {
                         TriggerMode::EventOnly => {
                             // Only emit; never spawn a worker.
-                            tracing::info!(
-                                "[monitor] '{}' event_only: emitted trigger, no spawn",
-                                name
-                            );
+                            Self::emit_event("monitor_event_only", serde_json::json!({
+                                "name": &name
+                            }), &reg).await;
                             {
                                 let mut s = stats.lock().await;
                                 if let Some(status) = s.get_mut(&name) {
@@ -551,15 +582,13 @@ impl Extension for MonitorExtension {
                                         serde_json::json!({ "text": prompt }),
                                     )
                                     .await;
-                                tracing::info!(
-                                    "[monitor] '{}' channel_notify: pushed to main",
-                                    name
-                                );
+                                Self::emit_event("monitor_channel_notify", serde_json::json!({
+                                    "name": &name, "channel": "main"
+                                }), &reg).await;
                             } else {
-                                tracing::warn!(
-                                    "[monitor] '{}' channel_notify: no_subscriber, fallback to event_only",
-                                    name
-                                );
+                                Self::emit_event("monitor_no_subscriber", serde_json::json!({
+                                    "name": &name, "fallback": "event_only"
+                                }), &reg).await;
                             }
                             {
                                 let mut s = stats.lock().await;
@@ -602,10 +631,10 @@ impl Extension for MonitorExtension {
 
                             if prev_worker_alive {
                                 // Previous worker still running -> skip this tick.
-                                tracing::info!(
-                                    "[monitor] '{}' serial_skip: previous worker still running, skipping",
-                                    name
-                                );
+                                Self::emit_event("monitor_skipped", serde_json::json!({
+                                    "name": &name, "mode": "serial_skip",
+                                    "reason": "previous_worker_running"
+                                }), &reg).await;
                                 let mut s = stats.lock().await;
                                 if let Some(status) = s.get_mut(&name) {
                                     status.skip_count += 1;
@@ -634,10 +663,11 @@ impl Extension for MonitorExtension {
                                     &reg_for_spawn,
                                 ).await {
                                     Ok(info) => {
-                                        tracing::info!(
-                                            "[monitor] spawned worker {} for {}",
-                                            info.worker_id, monitor_name_for_spawn
-                                        );
+                                        Self::emit_event("monitor_spawned", serde_json::json!({
+                                            "name": &monitor_name_for_spawn,
+                                            "worker_id": &info.worker_id,
+                                            "mode": "serial_skip"
+                                        }), &reg_for_spawn).await;
                                         // Record the spawned worker id so next tick can check it.
                                         let mut s = stats_for_spawn.lock().await;
                                         if let Some(st) = s.get_mut(&monitor_name_for_spawn) {
@@ -675,23 +705,23 @@ impl Extension for MonitorExtension {
                                 let mut q = pending_queue.lock().await;
                                 if q.len() >= MONITOR_QUEUE_CAPACITY {
                                     let dropped = q.pop_front();
-                                    tracing::warn!(
-                                        "[monitor] '{}' queue_overflow (cap={}), dropped oldest: {:?}",
-                                        name, MONITOR_QUEUE_CAPACITY, dropped
-                                    );
+                                    Self::emit_event("monitor_queue_overflow", serde_json::json!({
+                                        "name": &name, "capacity": MONITOR_QUEUE_CAPACITY,
+                                        "dropped": dropped
+                                    }), &reg).await;
                                     let mut s = stats.lock().await;
                                     if let Some(status) = s.get_mut(&name) {
                                         status.last_result = "queue_overflow".into();
                                     }
                                 }
                                 q.push_back(prompt.clone());
-                                tracing::info!(
-                                    "[monitor] '{}' serial_queue: enqueued (len={})",
-                                    name, q.len()
-                                );
+                                let qlen = q.len();
+                                Self::emit_event("monitor_queued", serde_json::json!({
+                                    "name": &name, "queue_length": qlen, "capacity": MONITOR_QUEUE_CAPACITY
+                                }), &reg).await;
                                 let mut s = stats.lock().await;
                                 if let Some(status) = s.get_mut(&name) {
-                                    status.queue_length = q.len();
+                                    status.queue_length = qlen;
                                     status.last_result = "queued".into();
                                 }
                                 *last_trigger.lock().await = std::time::Instant::now();
@@ -722,10 +752,11 @@ impl Extension for MonitorExtension {
                                     &reg_for_spawn,
                                 ).await {
                                     Ok(info) => {
-                                        tracing::info!(
-                                            "[monitor] spawned worker {} for {} (queue)",
-                                            info.worker_id, monitor_name_for_spawn
-                                        );
+                                        Self::emit_event("monitor_spawned", serde_json::json!({
+                                            "name": &monitor_name_for_spawn,
+                                            "worker_id": &info.worker_id,
+                                            "mode": "serial_queue"
+                                        }), &reg_for_spawn).await;
                                         let mut s = stats_for_spawn.lock().await;
                                         if let Some(st) = s.get_mut(&monitor_name_for_spawn) {
                                             st.last_spawned_worker = Some(info.worker_id.clone());
@@ -783,20 +814,20 @@ impl Extension for MonitorExtension {
                                         },
                                         &reg_for_spawn,
                                     ).await {
-                                        Ok(info) => tracing::info!(
-                                            "[monitor] created worker {} for {}",
-                                            info.worker_id, ac_name
-                                        ),
+                                        Ok(info) => Self::emit_event("monitor_spawned", serde_json::json!({
+                                            "name": &ac_name,
+                                            "worker_id": &info.worker_id,
+                                            "mode": "concurrent"
+                                        }), &reg_for_spawn).await,
                                         Err(e) => tracing::error!(
                                             "[monitor] failed to create worker: {e}"
                                         ),
                                     }
                                 });
                             } else {
-                                tracing::info!(
-                                    "[monitor] '{}' concurrent: throttled (active={}/{})",
-                                    name, active, max_concurrent
-                                );
+                                Self::emit_event("monitor_throttled", serde_json::json!({
+                                    "name": &name, "active": active, "max": max_concurrent
+                                }), &reg).await;
                                 let mut s = stats.lock().await;
                                 if let Some(status) = s.get_mut(&name) {
                                     status.skip_count += 1;

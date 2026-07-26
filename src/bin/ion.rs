@@ -3406,6 +3406,9 @@ async fn cmd_serve_start(
     // ── 注册单例扩展（host 级，只在 serve 模式）──
     {
         let mut reg = registry.lock().await;
+        // Inject EventBus so Monitor/GlobalMemory singletons can broadcast events
+        // (otherwise subscribe CLI cannot see monitor_triggered etc.)
+        reg.set_event_bus(Arc::clone(&event_bus));
         reg.register_singleton(Box::new(ion::global_memory_ext::GlobalMemoryExtension::new()));
         reg.register_singleton(Box::new(ion::monitor_extension::MonitorExtension::new()));
         reg.init_singletons().await;
@@ -4388,6 +4391,9 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>) {
 
         // ── 注册单例扩展（scene 2 也需要，跟 cmd_serve_start 一致）──
         // 否则 scheduler agent 通过 extension_rpc 调 monitor validate/add 会失败。
+        // 同时注入 EventBus（虽然在 scene 2 没 socket subscriber，但保持单例行为一致）。
+        let host_event_bus = Arc::new(tokio::sync::Mutex::new(ion::event_bus::ExtensionEventBus::new()));
+        reg.set_event_bus(host_event_bus);
         reg.register_singleton(Box::new(ion::global_memory_ext::GlobalMemoryExtension::new()));
         reg.register_singleton(Box::new(ion::monitor_extension::MonitorExtension::new()));
         reg.init_singletons().await;

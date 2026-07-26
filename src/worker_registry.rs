@@ -40,6 +40,9 @@ pub struct WorkerRegistry {
     pub manager_cmd_rx: mpsc::UnboundedReceiver<serde_json::Value>,
     /// Host 级 MCP 管理器（方案 C：所有 Worker 通过 bridge 代理调用）
     pub mcp_manager: Option<std::sync::Arc<crate::mcp::McpManager>>,
+    /// Host 级 EventBus handle（singleton 扩展用，broadcast 给所有 subscribers）
+    /// None = 默认（cmd_run 等不需要事件广播的场景）；Some = cmd_serve/cmd_host 注入
+    pub event_bus: Option<std::sync::Arc<tokio::sync::Mutex<crate::event_bus::ExtensionEventBus>>>,
 }
 
 pub struct WorkerRecord {
@@ -148,12 +151,18 @@ impl WorkerRegistry {
             manager_cmd_tx,
             manager_cmd_rx,
             mcp_manager: None,
+            event_bus: None,
         }
     }
 
     /// 设置 host 级 MCP 管理器（方案 C：host 持有连接，Worker 代理调用）
     pub fn set_mcp_manager(&mut self, mgr: std::sync::Arc<crate::mcp::McpManager>) {
         self.mcp_manager = Some(mgr);
+    }
+
+    /// 设置 host 级 EventBus handle，让 singleton 扩展能 broadcast 事件
+    pub fn set_event_bus(&mut self, bus: std::sync::Arc<tokio::sync::Mutex<crate::event_bus::ExtensionEventBus>>) {
+        self.event_bus = Some(bus);
     }
 
     /// Create a new WorkerRegistry with a pre-configured worker binary path.
@@ -170,6 +179,7 @@ impl WorkerRegistry {
             manager_cmd_tx,
             manager_cmd_rx,
             mcp_manager: None,
+            event_bus: None,
         }
     }
 
