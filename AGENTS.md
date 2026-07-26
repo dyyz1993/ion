@@ -538,6 +538,9 @@ ion rpc --session sess_xxx --method get_flags \
 | `src/global_memory.rs` | 全局记忆库（SQLite + FTS5，跨项目检索） |
 | `src/global_memory_ext.rs` | GlobalMemoryExtension（单例扩展，on_singleton_init + extension_rpc） |
 | `src/monitor_extension.rs` | MonitorExtension（单例扩展，场景 3 定时脚本监控→触发 LLM 对话） |
+| `src/lsp_extension.rs` | LSP Extension（多语言诊断：cargo check / tsc / go vet / py_compile / HTML 标签匹配） |
+| `src/tool_loop_detector.rs` | Tool Loop Detector（防 LLM 重复调同一工具死循环） |
+| `src/auto_session_title.rs` | Auto Session Title（首轮启发式标题生成） |
 | `src/agent/plan_extension.rs` + `src/agent/plan_tool.rs` | 内置 plan 工具（plan_enter/exit/add/list/done/approve + strict_mode 强制审批）|
 | `src/hooks/`（规划中） | Hooks 系统：HooksConfig + HookExtension + 5 handler 执行引擎（command/http/prompt/agent/mcp_tool），[详情](./docs/design/HOOKS_AND_OUTLINE_SYNC.md) |
 
@@ -840,6 +843,47 @@ ion --mode rpc           → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - **A→B 深度验证**：GLM-4.7 真实业务使用，评分 7.5/10；strict 模式下 plan_exit 未批准被正确 blocked
   - **验证**: 785 单元测试 + 19 CI assertions 全过 ✅
   - 关键 commit: `501697e`（删 WASM + 内置化）、`25b009e`（Q1-Q4 修复）、`10d4761`（strict_mode）
+
+- **LSP Extension（cargo check 诊断集成，对标 pi LSP）**:
+  - 多语言自动检测：Rust (cargo check) / TypeScript (tsc) / Python (ruff/py_compile) / Go (go vet) / HTML (自定义标签匹配)
+  - 两种触发：自动（on_tool_execution_end → 后台异步 cargo check → on_context 注入）+ 主动（lsp_check 工具）
+  - 异步检查（不阻塞 LLM 调用）+ 去重（相同诊断不重复注入）+ 压缩（errors 全 + warnings 前 5 + 旧诊断替摘要）
+  - 3 层保护：改动文件优先 + 超时 120s + 循环检测 max 10 次
+  - 执行时间监控 + 持久化 metrics（~/.ion/agent/lsp-metrics.jsonl，为自进化铺路）
+  - extension_rpc: check / status / clear
+  - **验证**: 834 lib tests + 11 LSP 单元测试 + 5 语言 linter 验证
+  - **对标**: pi 用 rust-analyzer JSON-RPC (2060 行)，ION 用 cargo check (~500 行)，覆盖 80% 场景
+
+- **Tool Loop Detector（防 LLM 工具调用死循环，对标 pi）**:
+  - 检测连续相同工具调用（同 tool + 同签名）
+  - WARN_THRESHOLD=3 / ABORT_THRESHOLD=5 / ERROR_ABORT_THRESHOLD=2
+  - 签名归一化（read→file_path, bash→echo/noop 归一, write→file_path）
+  - 豁免工具（lsp_check/memory_search/plan_list 等合法重复）
+  - reset() 方法手动清除状态
+  - **验证**: 6 单元测试
+
+- **Auto Session Title（首轮自动生成会话标题，对标 pi）**:
+  - 启发式生成（取第一句/第一行，≤80 字符，中英文句号分隔）
+  - 零 LLM 成本（不用调模型，纯文本处理）
+  - 持久化到 ~/.ion/agent/session-titles.json
+  - **验证**: 7 单元测试（short/long/multiline/sentence/command/empty/chinese）
+
+- **PermissionProfile（5 模式安全配置，对标 pi PermissionProfile）**:
+  - 5 模式：permissive (yolo) / readonly / standard (默认) / strict / **autopilot**
+  - autopilot：自动批准 workspace 内 write/edit（self-healing 用，不弹窗）
+  - 保留 protect 规则（.env/.ssh/.aws/.ion 仍保护）
+  - CLI: `--profile autopilot` / config: `"security_mode": "autopilot"`
+  - 别名：`--profile yolo` = permissive
+  - **验证**: 834 lib tests
+
+- **Serve 稳定性修复（24h 长跑验证）**:
+  - memory-agent 429/401 不再拖死 serve（all_workers_idle 排除 memory-agent）
+  - memory-agent 改用 fast tier model（不再硬编码 opencode）
+  - channel_send timeout 200ms + send_command timeout（防 stdin 写阻塞）
+  - Stale worker >5 自动 GC（防僵尸堆积）
+  - Stale 检测只对 Idle 生效（Busy 不误杀）
+  - manager_cmd_tx fire-and-forget（monitor spawn 不持锁）
+  - **验证**: 24h 长跑 7h+ 稳定，零内存增长
 
 - **todo-extension 重命名（plugin→extension）**:
   - 目录 `todo-plugin/` → `todo-extension/`（术语合规）
@@ -1417,7 +1461,7 @@ bash scripts/evolve-run.sh "任务描述"             # 同步 + 守门 + HTML �
 
 | 套件 | 数量 | 覆盖 |
 |------|------|------|
-| lib tests (核心逻辑) | 805 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact/FileSnapshot/RulesEngine/FileTimeGuard/ContextReclaimer/TierModels/Hooks/StoredDecision/WasmExtension/PlanExtension/PlanTool/**Monitor(含 20 validate tests)**/**SelfHeal(health/max_turns/stale)** |
+| lib tests (核心逻辑) | 834 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact/FileSnapshot/RulesEngine/FileTimeGuard/ContextReclaimer/TierModels/Hooks/StoredDecision/WasmExtension/PlanExtension/PlanTool/**Monitor(含 20 validate tests)**/**SelfHeal(health/max_turns/stale)**/**LSP(11 parse/format tests)**/**ToolLoopDetector(6 tests)**/**AutoSessionTitle(7 tests)**/**PermissionProfile(autopilot)** |
 | unit_rpc_test (RPC 协议) | 20 | U1-U20 RPC 命令覆盖 + 接口格式兼容 |
 | manager_integration (集成) | 25 | Manager + Worker + 事件 + UI + 消息拉取 |
 | session_tree_test (集成) | 4 | only-append 审计/branch 接 leaf/全操作序列 |
@@ -1466,7 +1510,7 @@ bash scripts/evolve-run.sh "任务描述"             # 同步 + 守门 + HTML �
 | abort_ci (CLI E2E) | 5 | Group A：工具执行中 abort < 3s 生效（select! stopped 分支 + bash 进程清理）+ Group B：kill -TERM/KILL -<pgid> 杀整个进程树（process_group(0)）+ Group C：HTTP 流式期间 abort < 300ms + 无新 delta 泄漏（CancellationToken 真取消 TCP）|
 | monitor_ci (CLI E2E) | 11 | Group A：monitor 配置加载 + 脚本触发 worker + trigger 日志 + Group B：create_session + extension_rpc（host-level singleton 不可达）+ starting 日志 + Group C：空输出不触发 + 错误脚本不崩溃 + serve 存活 + Group D：多 monitor 并行加载+触发 |
 | self_heal_ci (CLI E2E) | 12 | Group A：单 issue 端到端（mock gh + monitor → coordinator → developer fix → commit）+ Group B：多 issue 并行 + Group C：active state 持久化（mark/check/list/release + ~/.ion/agent/active-pipelines.json）|
-| **测试覆盖合计** | **1265+** | 全部通过 ✅（Rust 805，CLI E2E 460+，含 monitor_ci 11 + self_heal_ci 12 + hooks 36 + extensions 19 + 真实 LLM 5 + WASM 扩展 + self-healing GitHub 全链路验证） |
+| **测试覆盖合计** | **1295+** | 全部通过 ✅（Rust 834，CLI E2E 461+，含 monitor_ci 11 + self_heal_ci 12 + lsp_ci 14 + hooks 36 + extensions 19 + 真实 LLM 5 + WASM 扩展 + self-healing GitHub 全链路验证） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
