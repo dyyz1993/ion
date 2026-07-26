@@ -269,6 +269,32 @@ data.output 是什么？
 
 当 monitor_triggered 或 monitor_channel_notify 事件包含可处理的数据（GitHub issue / log error / test failure），启动完整修复 pipeline。
 
+### 选择策略：串行 vs 并行
+
+```
+data.output 里有几个需要处理的项？
+├─ 1 个（单个 issue / 单条 error）
+│   └─ → 串行策略（spawn_worker wait=true 一步步走，最稳）
+│
+├─ 2-5 个（少量独立 issue）
+│   └─ → 并行策略（spawn_worker wait=false 多个 developer，最后 await_worker 全部）
+│       上限 max_parallel_pipelines（建议 3-5）
+│
+└─ > 5 个（issue 风暴）
+    └─ → 批量串行（前 3 个并行，完成后再取下一批）
+        避免 OOM 和 LLM API rate limit
+```
+
+**何时选并行**：
+- 多个 issue 互相**独立**（不同文件 / 不同模块）
+- 每个 developer 用独立 worktree（避免冲突）
+- LLM API 配额够（并行会瞬时多倍消耗）
+
+**何时强制串行**：
+- 多个 issue 改**同一文件**（worktree 会冲突）
+- 系统 resource 紧张
+- pipeline 中途（reviewer / merger 阶段一定串行，不能并行 review）
+
 ### Pipeline 阶段（按顺序）
 
 #### Step 1: 分析 + dedup
@@ -456,3 +482,99 @@ Step 6: self.messages += "RESOLVED: github-issues/issue-42"
         删除 ACTIVE 标记
         "✅ Issue #42 resolved via self-healing pipeline"
 ```
+
+### 并行示例（3 个独立 issue 同时处理）
+
+事件：
+```json
+{
+  "customType": "monitor_channel_notify",
+  "data": {
+    "name": "github-issues",
+    "output": "[{\"number\":10,\"title\":\"fix typo in README\"},
+               {\"number\":11,\"title\":\"add test for foo()\"},
+               {\"number\":12,\"title\":\"rename bar() to baz()\"}]"
+  }
+}
+```
+
+3 个 issue 互相独立（不同文件 / 不同函数），选择**并行策略**：
+
+```
+分析: 3 个独立 issue (10: README typo, 11: foo test, 12: bar→baz rename)
+策略: 并行（max_parallel=3），各用独立 worktree
+
+# Phase 1: 并行 spawn 3 个 developer（不等）
+Step 2a (parallel):
+  dev_10 = spawn_worker(developer, worktree=true, wait=false,
+           task="Fix issue #10: README typo. Commit when done.")
+  dev_11 = spawn_worker(developer, worktree=true, wait=false,
+           task="Fix issue #11: add test_foo. Commit when done.")
+  dev_12 = spawn_worker(developer, worktree=true, wait=false,
+           task="Fix issue #12: rename bar→baz. Commit when done.")
+
+  ACTIVE markers:
+    self.messages += "ACTIVE: github-issues/issue-10 (wkr_xxx)"
+    self.messages += "ACTIVE: github-issues/issue-11 (wkr_yyy)"
+    self.messages += "ACTIVE: github-issues/issue-12 (wkr_zzz)"
+
+# Phase 2: 等所有 developer 完成
+  await_worker(dev_10)
+  await_worker(dev_11)
+  await_worker(dev_12)
+
+# Phase 3: 并行 review + 串行 merge（merge 必须串行，避免 git 冲突）
+  for each (issue, dev) in [(10, dev_10), (11, dev_11), (12, dev_12)]:
+      # Review（可并行）
+      spawn_worker(reviewer, wait=true, task="Review branch for issue #N")
+      if APPROVE:
+          # Merge（串行 — git lock）
+          spawn_worker(merger, wait=true, task="Merge #N branch + cleanup")
+          # Publish（可并行 — gh CLI 无冲突）
+          spawn_worker(publisher, wait=true, task="Close issue #N")
+      else:
+          resume_worker(dev, "fix issues") → await → re-review (max 3 rounds)
+
+# Phase 4: 记录
+  for each issue in [10, 11, 12]:
+      self.messages += "RESOLVED: github-issues/issue-N"
+      删除 ACTIVE 标记
+```
+
+**关键约束**：
+- **max_parallel = 3-5**（避免 LLM rate limit）
+- **每个 developer 用独立 worktree**（避免文件冲突）
+- **merge 阶段必须串行**（git index lock，并行会冲突）
+- **publisher 可以并行**（gh CLI 无副作用冲突）
+- **失败一个不影响其他**（dev_10 失败不阻塞 dev_11/12）
+
+### 并行 pipeline 反模式
+
+- ❌ **超过 max_parallel 上限**： spawns 10 个 developer 同时跑，LLM rate limit 撞墙
+- ❌ **多个 developer 改同一文件**：worktree 合并时冲突
+- ❌ **并行 merge**：git index 锁，必然冲突
+- ❌ **不 await 就 spawn reviewer**：developer 还没 commit，reviewer 没东西看
+- ❌ **一个失败拖累全部**：用 try-await 个别 worker，不让一个 failure 阻塞其他
+
+### 失败隔离（重要）
+
+并行模式下，单个 pipeline 失败**不能影响其他**：
+
+```
+# 错（一个失败阻塞全部）
+result_10 = await_worker(dev_10)  # 失败
+result_11 = await_worker(dev_11)  # 永远等不到，因为上面抛错了
+
+# 对（独立 try）
+for issue, dev in [(10, dev_10), (11, dev_11), (12, dev_12)]:
+    try:
+        await_worker(dev)
+        # success path
+    except WorkerFailed:
+        log("issue #N pipeline failed, skipping")
+        kill_worker(dev)  # cleanup
+        release_active(issue)
+        continue  # 处理下一个
+```
+
+每条 pipeline 是独立的 try/catch，不互相影响。
