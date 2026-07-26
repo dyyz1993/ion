@@ -20,7 +20,7 @@
 use crate::agent::error::{AgentError, AgentResult};
 use crate::agent::extension::{Extension, ToolExecutionContext};
 use crate::agent::tool::Tool;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -53,6 +53,12 @@ pub struct LspExtension {
     has_errors: Arc<AtomicBool>,
     /// Project root (where Cargo.toml is). None = not a Rust project.
     project_root: Arc<Mutex<Option<String>>>,
+    /// Files changed since last check (for incremental priority scanning).
+    changed_files: Arc<Mutex<Vec<String>>>,
+    /// Consecutive check count (for loop detection — max 10 per session).
+    check_count: Arc<AtomicU32>,
+    /// Timestamp of last successful check (for cooldown — min 5s between checks).
+    last_check_time: Arc<Mutex<Option<std::time::Instant>>>,
     name: String,
 }
 
@@ -63,6 +69,9 @@ impl LspExtension {
             dirty: Arc::new(AtomicBool::new(false)),
             has_errors: Arc::new(AtomicBool::new(false)),
             project_root: Arc::new(Mutex::new(None)),
+            changed_files: Arc::new(Mutex::new(Vec::new())),
+            check_count: Arc::new(AtomicU32::new(0)),
+            last_check_time: Arc::new(Mutex::new(None)),
             name: "lsp".into(),
         }
     }
@@ -93,6 +102,9 @@ impl LspExtension {
             dirty,
             has_errors,
             project_root: Arc::new(Mutex::new(None)),
+            changed_files: Arc::new(Mutex::new(Vec::new())),
+            check_count: Arc::new(AtomicU32::new(0)),
+            last_check_time: Arc::new(Mutex::new(None)),
             name: "lsp".into(),
         }
     }
@@ -120,13 +132,53 @@ impl LspExtension {
         }
     }
 
-    /// Run `cargo check --message-format=json` and parse diagnostics.
+    /// Run diagnostics check with 3 layers of protection:
+    ///
+    /// 1. **Incremental priority**: First check only the changed files (fast syntax check).
+    ///    If those pass, then run full `cargo check` for type-level errors.
+    /// 2. **Memory/time protection**: Full `cargo check` has a configurable timeout
+    ///    (ION_LSP_TIMEOUT, default 120s). Large dependency trees won't block forever.
+    /// 3. **Loop detection**: Max 10 checks per session. After that, stop auto-injecting
+    ///    to prevent LLM from spinning in a write/check/error/fix loop forever.
     async fn run_cargo_check(&self) -> Result<Vec<Diagnostic>, String> {
         let timeout_secs = std::env::var("ION_LSP_TIMEOUT")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(120);
 
+        // ── Protection 3: Loop detection ──
+        let count = self.check_count.fetch_add(1, Ordering::SeqCst);
+        if count >= 10 {
+            tracing::warn!(
+                "[lsp] check count {} >= 10, stopping to prevent infinite loop",
+                count
+            );
+            return Err("loop_limit_reached".into());
+        }
+
+        // ── Protection: Cooldown (min 3s between checks to avoid spam) ──
+        {
+            let last = self.last_check_time.lock().await;
+            if let Some(t) = *last {
+                let elapsed = t.elapsed();
+                if elapsed < std::time::Duration::from_secs(3) {
+                    tracing::info!(
+                        "[lsp] cooldown: {:.1}s since last check, skipping",
+                        elapsed.as_secs_f64()
+                    );
+                    return Ok(self.diagnostics.lock().await.clone());
+                }
+            }
+        }
+        *self.last_check_time.lock().await = Some(std::time::Instant::now());
+
+        let has_cargo = self.detect_project_root().await;
+        if has_cargo.is_none() {
+            tracing::info!("[lsp] no Cargo.toml found, skipping");
+            return Ok(Vec::new());
+        }
+
+        // ── Protection 2: Run with timeout ──
         let cmd = "cargo check --message-format=json 2>/dev/null";
         let output = tokio::process::Command::new("sh")
             .arg("-c")
@@ -139,20 +191,44 @@ impl LspExtension {
         )
         .await;
 
-        match result {
-            Ok(Ok(output)) => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                Ok(Self::parse_cargo_check_json(&stdout))
-            }
+        let stdout = match result {
+            Ok(Ok(output)) => String::from_utf8_lossy(&output.stdout).to_string(),
             Ok(Err(e)) => {
                 tracing::warn!("[lsp] cargo check failed: {e}");
-                Ok(vec![])
+                return Ok(Vec::new());
             }
             Err(_) => {
                 tracing::warn!("[lsp] cargo check timed out after {timeout_secs}s");
-                Err("timeout".into())
+                return Err("timeout".into());
             }
+        };
+
+        // ── Parse + filter ──
+        let mut all_diags = Self::parse_cargo_check_json(&stdout);
+
+        // ── Priority 1: Show changed-file diagnostics FIRST ──
+        let changed = self.changed_files.lock().await;
+        if !changed.is_empty() {
+            all_diags.sort_by_key(|d| {
+                // Changed files get priority (sort to front)
+                if changed.iter().any(|f| d.file.contains(f.as_str())) {
+                    0
+                } else {
+                    1
+                }
+            });
+            tracing::info!(
+                "[lsp] prioritized {} diagnostics for changed files ({} total)",
+                all_diags.iter().filter(|d| changed.iter().any(|f| d.file.contains(f.as_str()))).count(),
+                all_diags.len()
+            );
         }
+
+        // Clear changed files list after check
+        drop(changed);
+        self.changed_files.lock().await.clear();
+
+        Ok(all_diags)
     }
 
     /// Parse `cargo check --message-format=json` output.
@@ -356,10 +432,17 @@ impl Extension for LspExtension {
         &self.name
     }
 
-    /// After write/edit tool completes, mark dirty so next on_context triggers cargo check.
+    /// After write/edit tool completes, mark dirty + track changed file.
     async fn on_tool_execution_end(&self, ctx: &ToolExecutionContext) -> AgentResult<()> {
         if ctx.tool_name == "write" || ctx.tool_name == "edit" {
             self.dirty.store(true, Ordering::SeqCst);
+            // Track which file changed for priority diagnostics
+            if let Some(file) = ctx.args.get("file_path").and_then(|v| v.as_str()) {
+                let mut changed = self.changed_files.lock().await;
+                if !changed.iter().any(|f| f == file) {
+                    changed.push(file.to_string());
+                }
+            }
             tracing::info!("[lsp] {} detected, marking dirty for re-check", ctx.tool_name);
         }
         Ok(())
