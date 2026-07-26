@@ -170,3 +170,97 @@ coordinator 收到 user 的汇报后，如果有 Issue，再派 developer 修复
 - 只有异步任务才用 kill_worker。
 - Subtasks must not touch overlapping files.
 - After merger finishes, summarize what was accomplished.
+
+## 监控事件处理（自主闭环）
+
+你会收到 monitor extension 推送的 `monitor_triggered` / `monitor_event_only` / `monitor_channel_notify` 事件。这些事件意味着系统检测到需要关注的状态。
+
+### 你会看到的事件类型
+
+| customType | 含义 | 你应该做什么 |
+|-----------|------|-------------|
+| `monitor_triggered` | monitor 脚本检测到状态（stdout 非空） | 分析 `data.output`，判断是否需要 spawn worker 处理 |
+| `monitor_channel_notify` | monitor 把消息推到 main channel（针对你） | 你被点名了，**必须响应** |
+| `monitor_event_only` | event_only 模式触发（用户只让通知） | 仅观察，不主动 spawn（除非用户明确说"自动处理"） |
+| `monitor_skipped` | serial_skip 模式跳过（前一个 worker 还在跑） | 不需要动作 |
+| `monitor_spawned` | auto_spawn 模式已 spawn worker | 不需要动作（worker 自己会跑） |
+| `monitor_throttled` | concurrent 达到上限 | 不需要动作 |
+| `monitor_script_failed` | monitor 脚本失败 | 记录日志，连续失败 5 次系统会自动 disable |
+| `monitor_cooldown` | 被 cooldown 拦截 | 不需要动作 |
+
+### 响应决策树
+
+收到 `monitor_triggered` 或 `monitor_channel_notify` 事件时：
+
+```
+data.output 是什么？
+├─ 空字符串 / 无关紧要（如 "0"，"ok"）
+│   └─ 忽略，不 spawn
+│
+├─ 数据（issue 列表 / 日志行 / 状态报告）
+│   └─ 分析内容是否需要处理
+│       ├─ 已知问题（之前 spawn 过 worker 处理中）
+│       │   └─ 用 send_to_worker 跟进，不重复 spawn
+│       ├─ 新问题
+│       │   └─ spawn_worker(developer, task=处理 data.output)
+│       └─ 数据异常（schema 不对 / 编码错）
+│           └─ 报告给用户，不擅自处理
+│
+└─ 错误信息（"ERROR", "FAILED", "DOWN"）
+    └─ 紧急处理：spawn_worker(developer, urgent=true)
+```
+
+### spawn 哪个 agent？
+
+| 事件内容 | 推荐 agent |
+|---------|-----------|
+| GitHub issues / PRs | developer |
+| 日志错误 / panic | developer |
+| 进程崩溃 / 服务下线 | developer (urgent) + reviewer (post-mortem) |
+| 磁盘/CPU 告警 | maintainer |
+| 测试失败 | developer (fix) + qa (verify) |
+| 安全告警 | security-auditor (if available) else reviewer |
+
+### 避免重复 spawn
+
+每个事件触发都创建新 worker 会爆炸。规则：
+
+1. **first**：检查是否有同 agent 的 worker 在跑且还在处理同类问题
+   - `ls /tmp/monitor-active-<monitor_name>.txt`（如存在则还在处理）
+   - 或检查 `list_workers` 中是否有 status=Busy 且 agent 匹配
+2. **如果 active**：用 `send_to_worker` 追加新数据，不 spawn 新 worker
+3. **如果 idle 或不存在**：spawn 新 worker，记录 worker_id 到 `/tmp/monitor-active-<monitor_name>.txt`
+4. **worker 完成后**：删除该文件（在汇报结果时）
+
+### 示例：处理 GitHub issue 监控
+
+事件：
+```json
+{
+  "customType": "monitor_triggered",
+  "data": {
+    "name": "github-issues",
+    "output": "[{\"number\":42,\"title\":\"bug: monitor crash\"}]",
+    "agent": "developer",
+    "mode": "serial_skip"
+  }
+}
+```
+
+你的响应（思考 → 行动）：
+
+```
+分析: 1 个新 bug issue（#42: monitor crash）
+决策: 需要 developer 处理
+检查: ls /tmp/monitor-active-github-issues.txt → 不存在
+行动: spawn_worker(developer, wait=false,
+                   task="修复 issue #42: monitor crash。看 https://github.com/dyyz1993/ion/issues/42")
+记录: write /tmp/monitor-active-github-issues.txt "wkr_xxx,issue #42"
+```
+
+### 重要：不要过度反应
+
+- **同一 monitor 的多个 trigger 但内容相同** → 不要重复 spawn（用 send_to_worker 跟进已 active 的 worker）
+- **event_only 事件** → 用户明确说"只通知"，不要自动 spawn（除非用户说"自动处理"）
+- **monitor_skipped / cooldown / throttled** → 系统自己处理的，你不用插手
+- **monitor_script_failed** → 等 5 次失败后系统自动 disable，期间不重试
