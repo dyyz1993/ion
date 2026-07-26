@@ -844,26 +844,49 @@ async fn run_memory_processing(
 ) -> Result<(), String> {
     tracing::info!("[memory-v2] processing session {} for project {}", session_id, project_name);
 
-    // Step 1: 读取会话 JSONL
-    let session_file = crate::paths::sessions_dir().join(format!("{}.jsonl", session_id));
+    // Step 1: Resolve session JSONL path.
+    // Sessions live under `sessions/<cwd_subdir>/<file>.jsonl`, NOT flat `sessions/<sid>.jsonl`.
+    // Search for `<sid>.jsonl` (forked) across all subdirs, else fall back to most-recent session.jsonl.
+    let session_file = match crate::skill_distillation::resolve_session_file_pub(session_id) {
+        Some(p) => p,
+        None => {
+            tracing::warn!(
+                "[memory-v2] session file not found for {} — skipping processing",
+                session_id
+            );
+            return Ok(());
+        }
+    };
     let content = std::fs::read_to_string(&session_file)
-        .map_err(|e| format!("read session file: {e}"))?;
+        .map_err(|e| format!("read session file {}: {e}", session_file.display()))?;
+    // Parse pi-style session JSONL (either type="message" or customType="message").
+    // Reuses skill_distillation::extract_block_text so memory + skill share the same parser.
     let messages: Vec<String> = content.lines()
         .filter(|l| !l.is_empty())
-        .take(200) // 最多 200 条
-        .map(|l| {
-            // 提取每条消息的文本内容（简化解析）
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(l) {
-                let role = v.get("role").and_then(|r| r.as_str()).unwrap_or("?");
-                let text = v.get("text").and_then(|t| t.as_str())
-                    .or_else(|| v.get("content").and_then(|c| c.as_str()))
-                    .unwrap_or("");
-                format!("{role}: {text}")
+        .take(300)
+        .filter_map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l).ok()?;
+            let is_message = v.get("type").and_then(|s| s.as_str()) == Some("message")
+                || v.get("customType").and_then(|s| s.as_str()) == Some("message");
+            if !is_message {
+                return None;
+            }
+            let msg = v.get("message")?;
+            let msg_obj = msg.as_object()?;
+            if msg_obj.len() != 1 {
+                return None;
+            }
+            let (role, inner) = msg_obj.iter().next()?;
+            let content_arr = inner.get("content")?.as_array()?;
+            let parts: Vec<String> = content_arr.iter()
+                .filter_map(|block| crate::skill_distillation::extract_block_text(block))
+                .collect();
+            if parts.is_empty() {
+                None
             } else {
-                String::new()
+                Some(format!("{}: {}", role, parts.join(" | ")))
             }
         })
-        .filter(|s| !s.is_empty())
         .collect();
 
     if messages.is_empty() {

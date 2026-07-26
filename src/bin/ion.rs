@@ -1407,7 +1407,11 @@ async fn cmd_run(
     }
 
     let (registry, model) = build_registry_and_model(eff);
-    
+    // Keep clones for worker-level extensions (LearningExtension needs them
+    // to call LLM in on_session_shutdown). Agent::new takes ownership below.
+    let registry_for_ext = std::sync::Arc::clone(&registry);
+    let model_for_ext = model.clone();
+
     let config = build_agent_config(eff);
 
     let mut tools = build_tools(eff);
@@ -1705,6 +1709,20 @@ async fn cmd_run(
         }
     }
 
+    // ── 注册 worker 级内置扩展（与 worker_rpc.rs 对齐）──
+    // 这些扩展之前只在 worker_rpc（场景 2/3 host）下注册，
+    // cmd_run（场景 1 --print / 单次执行）也应该有，否则 on_session_shutdown 等钩子永远不触发。
+    ext_reg.register(Box::new(ion::tool_loop_detector::ToolLoopDetector::new()));
+    tracing::info!("[extension] tool-loop-detector registered");
+
+    ext_reg.register(Box::new(ion::auto_session_title::AutoSessionTitle::new()));
+    tracing::info!("[extension] auto-session-title registered");
+
+    let learning_ext = ion::learning_extension::LearningExtension::new()
+        .with_registry_model(registry_for_ext, model_for_ext);
+    ext_reg.register(Box::new(learning_ext));
+    tracing::info!("[extension] learning-extension registered (with LLM distillation)");
+
     agent = agent.with_extensions(ext_reg);
 
     tracing::info!("Running agent...");
@@ -1899,6 +1917,24 @@ async fn cmd_run(
                         eprintln!("  msgs={mc} assistant={ac} tools={tc} attempts={max_attempts}");
                     }
                     save_session(session_id, agent.messages(), &eff.model, &eff.provider, eff.name.as_deref());
+                    // After save, run skill distillation synchronously (NOT spawned —
+                    // spawned tasks die when cmd_run returns and the runtime drops).
+                    // The on_session_shutdown hook fires BEFORE save_session, so it can't
+                    // read the saved file; this is the cmd_run-only path.
+                    let project_name = std::env::current_dir()
+                        .ok()
+                        .and_then(|p| p.file_name().and_then(|n| n.to_str().map(|s| s.to_string())))
+                        .unwrap_or_else(|| "unknown".into());
+                    let reg_clone = std::sync::Arc::clone(agent.registry());
+                    let model_clone = agent.model().clone();
+                    let sid_owned = session_id.to_string();
+                    match ion::skill_distillation::run_skill_distillation(
+                        &sid_owned, &project_name, &reg_clone, &model_clone,
+                    ).await {
+                        Ok(Some(p)) => tracing::info!("[learning] skill distilled to {}", p.display()),
+                        Ok(None) => tracing::info!("[learning] no skill distilled"),
+                        Err(e) => tracing::warn!("[learning] skill distillation failed: {e}"),
+                    }
                     break;
                 }
             }
