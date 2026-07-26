@@ -158,7 +158,7 @@ impl LspExtension {
         // Rust: Cargo.toml
         if path.join("Cargo.toml").exists() {
             return Some(("rust".into(),
-                "cargo check --message-format=json 2>/dev/null".into()));
+                "cargo clippy --message-format=json 2>/dev/null".into()));
         }
 
         // TypeScript/JavaScript: package.json + tsconfig.json or .ts files
