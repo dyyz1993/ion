@@ -172,6 +172,23 @@ pub struct ActivePipeline {
     pub stage: String,
 }
 
+impl ActivePipeline {
+    /// Returns true if this pipeline has been active for more than 1 hour.
+    pub fn is_expired(&self, now_epoch_secs: i64) -> bool {
+        let started: i64 = self.started_at
+            .strip_prefix("epoch:")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        now_epoch_secs - started > 3600
+    }
+}
+
+impl std::fmt::Display for MonitorStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}: triggers={}, skips={}, last={}", self.name, self.trigger_count, self.skip_count, self.last_result)
+    }
+}
+
 /// MonitorExtension — singleton, only registered in serve mode.
 pub struct MonitorExtension {
     /// Monitor definitions (shared with interval loops).
@@ -191,6 +208,11 @@ impl MonitorExtension {
             active_pipelines: Arc::new(Mutex::new(Vec::new())),
             name: "monitor".into(),
         }
+    }
+
+    /// Returns the number of loaded monitor definitions.
+    pub async fn monitor_count(&self) -> usize {
+        self.monitors.lock().await.len()
     }
 
     // ── T3: active pipeline state persistence ──
@@ -471,6 +493,7 @@ impl MonitorExtension {
 
 /// Captured output of a script run, used by the `test` dry-run RPC.
 #[derive(Clone, Debug)]
+#[derive(Debug, PartialEq)]
 struct ScriptRun {
     stdout: String,
     stderr: String,
@@ -1653,5 +1676,96 @@ mod tests {
         assert!(ext.monitors.lock().await.is_empty());
         assert!(!ext.statuses.lock().await.contains_key(&name));
         assert!(ext.active_pipelines.lock().await.is_empty());
+    }
+
+    // ── Issue #20: monitor_count() convenience method ──
+
+    #[tokio::test]
+    async fn test_monitor_count() {
+        let ext = MonitorExtension::new();
+        assert_eq!(ext.monitor_count().await, 0);
+        ext.monitors.lock().await.push(valid_def());
+        assert_eq!(ext.monitor_count().await, 1);
+    }
+
+    // ── Issue #21: Display impl for MonitorStatus ──
+
+    #[test]
+    fn test_display_monitor_status() {
+        let s = MonitorStatus {
+            name: "test-mon".into(),
+            enabled: true,
+            last_run: None,
+            last_result: "triggered".into(),
+            trigger_count: 5,
+            skip_count: 2,
+            queue_length: 0,
+            active_workers: 1,
+            last_error: None,
+            consecutive_failures: 0,
+            last_spawned_worker: None,
+        };
+        let display = format!("{}", s);
+        assert!(display.contains("test-mon"));
+        assert!(display.contains("triggers=5"));
+        assert!(display.contains("skips=2"));
+    }
+
+    // ── Issue #22: ScriptRun Debug + PartialEq ──
+
+    #[test]
+    fn test_script_run_equality() {
+        let a = ScriptRun { stdout: "hello".into(), stderr: "".into(), exit_ok: true, exit_code: 0 };
+        let b = ScriptRun { stdout: "hello".into(), stderr: "".into(), exit_ok: true, exit_code: 0 };
+        let c = ScriptRun { stdout: "world".into(), stderr: "".into(), exit_ok: true, exit_code: 0 };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    // ── Issue #23: ActivePipeline::is_expired() ──
+
+    #[test]
+    fn test_active_pipeline_expired() {
+        let old = ActivePipeline {
+            monitor: "test".into(),
+            key: "issue-1".into(),
+            worker_id: None,
+            started_at: "epoch:1".into(), // epoch second 1 (very old)
+            stage: "developer".into(),
+        };
+        let fresh = ActivePipeline {
+            monitor: "test".into(),
+            key: "issue-2".into(),
+            worker_id: None,
+            started_at: format!("epoch:{}", chrono::Utc::now().timestamp()),
+            stage: "developer".into(),
+        };
+        let now = chrono::Utc::now().timestamp();
+        assert!(old.is_expired(now), "old pipeline should be expired");
+        assert!(!fresh.is_expired(now), "fresh pipeline should not be expired");
+    }
+
+    // ── Issue #24: validate_def serial_skip with max_concurrent=0 ──
+
+    #[test]
+    fn test_validate_def_serial_skip_zero_max_concurrent() {
+        let def = MonitorDef {
+            name: "test".into(),
+            interval_secs: 60,
+            script: "echo hi".into(),
+            agent: "build".into(),
+            prompt_template: "Got: {output}".into(),
+            enabled: true,
+            mode: MonitorMode::SerialSkip,
+            max_concurrent: 0,
+            ..Default::default()
+        };
+        let (errors, _warnings) = validate_def(&def);
+        // max_concurrent=0 with SerialSkip should NOT error (only matters for Concurrent)
+        assert!(
+            errors.iter().all(|e| !e.contains("max_concurrent")),
+            "unexpected max_concurrent error: {:?}",
+            errors
+        );
     }
 }
