@@ -762,8 +762,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         tracing::info!("[extension] auto-session-title registered");
 
         // Learning Extension（会话结束时自动提炼记忆，先脱敏再 LLM 提炼）
-        ext_reg.register(Box::new(crate::learning_extension::LearningExtension::new()));
-        tracing::info!("[extension] learning-extension registered");
+        // 注入 registry + model，让 on_session_shutdown 能 spawn LLM 蒸馏 skill
+        let learning_ext = crate::learning_extension::LearningExtension::new()
+            .with_registry_model(Arc::clone(&registry), model.clone());
+        ext_reg.register(Box::new(learning_ext));
+        tracing::info!("[extension] learning-extension registered (with LLM distillation)");
 
         // Memory Extension
         if ion_cfg.is_extension_enabled("memory") {

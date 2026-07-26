@@ -4,6 +4,7 @@ pub mod auto_session_title;
 pub mod auth;
 pub mod learning_extension;
 pub mod secret_detector;
+pub mod skill_distillation;
 pub mod tool_loop_detector;
 pub mod backend_registry;
 pub mod command_guard;

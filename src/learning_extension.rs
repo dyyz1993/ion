@@ -19,6 +19,8 @@
 //!
 //! Registered as a worker-level extension in `worker_rpc.rs`.
 
+use std::sync::Arc;
+
 use crate::agent::error::AgentResult;
 use crate::agent::extension::{Extension, SessionContext};
 use crate::secret_detector;
@@ -43,13 +45,30 @@ const WORK_TOOLS: &[&str] = &[
 
 pub struct LearningExtension {
     name: String,
+    /// ApiRegistry (LLM 提炼 skill 用)。None 时跳过 distill。
+    pub registry: Option<Arc<ion_provider::registry::ApiRegistry>>,
+    /// 当前会话模型。
+    pub model: Option<ion_provider::types::Model>,
 }
 
 impl LearningExtension {
     pub fn new() -> Self {
         Self {
             name: "learning".into(),
+            registry: None,
+            model: None,
         }
+    }
+
+    /// Inject ApiRegistry + Model so on_session_shutdown can call LLM.
+    pub fn with_registry_model(
+        mut self,
+        registry: Arc<ion_provider::registry::ApiRegistry>,
+        model: ion_provider::types::Model,
+    ) -> Self {
+        self.registry = Some(registry);
+        self.model = Some(model);
+        self
     }
 
     /// Check if a session's content is worth extracting memories from.
@@ -128,25 +147,77 @@ impl Extension for LearningExtension {
         &self.name
     }
 
-    /// On session shutdown: run extraction pipeline with secret redaction + filtering.
+    /// On session shutdown: trigger skill distillation if the session qualifies.
     ///
-    /// This hook fires AFTER MemoryExtension's on_session_shutdown.
-    /// The existing memory processing in MemoryExtension handles the LLM call + store.
-    /// This extension's role is to:
-    /// 1. Pre-filter (should_extract) — if not worth it, the MemoryExtension's
-    ///    spawn will still run but with already-filtered content.
-    /// 2. Log learning decisions for observability.
+    /// Flow:
+    ///   1. Read session_id from ~/.ion/agent/last_session (worker-level, not in SessionContext)
+    ///   2. Compute project_name from current_dir()
+    ///   3. If registry + model are wired, tokio::spawn the async distillation
+    ///      (fire-and-forget — never block session exit)
+    ///   4. All errors are logged inside the spawned task; we always return Ok here
+    ///
+    /// Memory extraction is handled separately by MemoryExtension::on_session_shutdown.
     async fn on_session_shutdown(&self, _ctx: &SessionContext) -> AgentResult<()> {
-        tracing::info!("[learning] session shutdown, running learning checks");
+        tracing::info!("[learning] session shutdown, evaluating for skill distillation");
 
-        // Note: The actual LLM extraction is done by MemoryExtension's on_session_shutdown.
-        // This extension provides the filtering + secret redaction layer.
-        // In a future refactor, we'd move the extraction logic here and call
-        // secret_detector::redact_secrets before the LLM call.
-        //
-        // For now, we log the learning decision:
-        // - If session has write operations → skill distillation candidate
-        // - If session is worth extracting → memory extraction candidate
+        let registry = match self.registry.clone() {
+            Some(r) => r,
+            None => {
+                tracing::info!("[learning] no registry wired, skipping skill distillation");
+                return Ok(());
+            }
+        };
+        let model = match self.model.clone() {
+            Some(m) => m,
+            None => {
+                tracing::info!("[learning] no model wired, skipping skill distillation");
+                return Ok(());
+            }
+        };
+
+        // Read session_id from disk (SessionContext doesn't carry it)
+        let session_id = match std::fs::read_to_string(crate::paths::last_session_path()) {
+            Ok(s) => s.trim().to_string(),
+            Err(e) => {
+                tracing::warn!("[learning] cannot read last_session: {e}");
+                return Ok(());
+            }
+        };
+        if session_id.is_empty() {
+            tracing::info!("[learning] empty last_session, skipping skill distillation");
+            return Ok(());
+        }
+
+        // Derive project_name from CWD basename (best-effort)
+        let project_name = std::env::current_dir()
+            .ok()
+            .and_then(|p| p.file_name().and_then(|n| n.to_str().map(|s| s.to_string())))
+            .unwrap_or_else(|| "unknown".into());
+
+        // Fire-and-forget — must not block session exit
+        tokio::spawn(async move {
+            match crate::skill_distillation::run_skill_distillation(
+                &session_id,
+                &project_name,
+                &registry,
+                &model,
+            )
+            .await
+            {
+                Ok(Some(path)) => {
+                    tracing::info!(
+                        "[learning] skill distilled to {}",
+                        path.display()
+                    );
+                }
+                Ok(None) => {
+                    tracing::info!("[learning] no skill distilled (session skipped)");
+                }
+                Err(e) => {
+                    tracing::warn!("[learning] skill distillation failed: {e}");
+                }
+            }
+        });
 
         Ok(())
     }
