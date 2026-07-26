@@ -753,6 +753,14 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         ));
         tracing::info!("[extension] PlanExtension registered (shared with plan tools)");
 
+        // Tool Loop Detector（防 LLM 重复调同一工具死循环）
+        ext_reg.register(Box::new(crate::tool_loop_detector::ToolLoopDetector::new()));
+        tracing::info!("[extension] tool-loop-detector registered");
+
+        // Auto Session Title（首轮自动生成会话标题）
+        ext_reg.register(Box::new(crate::auto_session_title::AutoSessionTitle::new()));
+        tracing::info!("[extension] auto-session-title registered");
+
         // Memory Extension
         if ion_cfg.is_extension_enabled("memory") {
             let mut memory_ext = crate::agent::memory::MemoryExtension::new(storage_ctx.clone());
