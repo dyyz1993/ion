@@ -647,6 +647,27 @@ impl LspExtension {
     }
 }
 
+/// Extract a one-line summary from diagnostics XML content.
+fn extract_diag_summary(content: &ion_provider::types::CustomContent) -> String {
+    let text = match content {
+        ion_provider::types::CustomContent::Text(s) => s.as_str(),
+        _ => return "[diagnostics history] (unknown)".into(),
+    };
+    let count = text
+        .find("count=\"")
+        .and_then(|i| text[i + 7..].find('"').map(|j| &text[i + 7..i + 7 + j]))
+        .unwrap_or("?");
+    let has_errors = text.contains("has_errors=\"true\"");
+    let error_count = text.matches("<error ").count();
+    let warning_count = text.matches("<warning ").count();
+    format!(
+        "[diagnostics history] {} issues ({} error(s), {} warning(s))",
+        count,
+        if has_errors { error_count } else { 0 },
+        warning_count,
+    )
+}
+
 // ── Extension impl ────────────────────────────────────────────
 
 #[async_trait::async_trait]
@@ -677,36 +698,36 @@ impl Extension for LspExtension {
             return Ok(());
         }
 
-        // ── Cleanup: remove old diagnostics, keep only the latest 2 ──
-        // Rationale: LLM only needs to see recent diagnostics (current + last).
-        // Old diagnostics are stale (the bug was likely already fixed).
-        // Keeping all of them wastes tokens and confuses the LLM.
-        let mut diag_indices: Vec<usize> = Vec::new();
+        // ── Cleanup old diagnostics: keep 2 recent full, compress older to summary ──
+        // Strategy C: Replace old diagnostics with a one-line summary instead of
+        // deleting them entirely. This way the LLM retains a history trail:
+        //   "[diagnostics history] turn 5: 3 errors, 2 warnings"
+        // without wasting tokens on the full diagnostic text.
+        //
+        // We keep:
+        //   - Latest 2: full XML (current + previous, for comparison)
+        //   - Older ones: replaced with summary line (~20 tokens each)
+        let mut diag_entries: Vec<(usize, String)> = Vec::new(); // (index, summary)
         for (i, msg) in messages.iter().enumerate() {
             if let crate::agent::messages::Message::Custom(c) = msg {
                 if c.custom_type == "diagnostics" {
-                    diag_indices.push(i);
+                    // Extract summary info from the XML content
+                    let summary = extract_diag_summary(&c.content);
+                    diag_entries.push((i, summary));
                 }
             }
         }
-        // Keep last 2, remove the rest (remove from front to preserve indices)
-        if diag_indices.len() > 2 {
-            let to_remove = diag_indices.len() - 2;
-            let remove_set: std::collections::HashSet<usize> =
-                diag_indices[..to_remove].iter().copied().collect();
-            // Retain in reverse to avoid index shift
-            let mut write_idx = 0;
-            for read_idx in 0..messages.len() {
-                if !remove_set.contains(&read_idx) {
-                    messages.swap(write_idx, read_idx);
-                    write_idx += 1;
+
+        // If we have > 2 diagnostics, compress the older ones to summaries
+        if diag_entries.len() > 2 {
+            let to_compress = diag_entries.len() - 2;
+            for &(idx, ref summary) in diag_entries[..to_compress].iter() {
+                if let crate::agent::messages::Message::Custom(ref mut c) = messages[idx] {
+                    // Replace full XML with one-line summary
+                    c.content = ion_provider::types::CustomContent::Text(summary.clone());
+                    tracing::info!("[lsp] compressed old diagnostics to summary: {}", summary);
                 }
             }
-            messages.truncate(write_idx);
-            tracing::info!(
-                "[lsp] cleaned {} old diagnostic message(s), kept 2 recent",
-                to_remove
-            );
         }
 
         // Run cargo check
