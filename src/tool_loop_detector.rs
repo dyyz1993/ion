@@ -76,14 +76,6 @@ impl ToolLoopDetector {
         tracing::info!("[loop-detector] state reset");
     }
 
-    /// Reset all tracking state (history, consecutive counter, current signature).
-    /// Useful when switching context or clearing a detected loop.
-    pub async fn reset(&self) {
-        self.history.lock().await.clear();
-        *self.consecutive.lock().await = 0;
-        *self.current_sig.lock().await = None;
-    }
-
     /// Compute a normalized signature for a tool call.
     /// Same tool + same target = same signature (loose enough to catch loops,
     /// strict enough to avoid false positives).

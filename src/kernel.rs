@@ -377,6 +377,9 @@ pub enum SecurityProfile {
     Standard,
     /// 🔒🔒 严格模式：默认拒绝所有写操作，需显式白名单放行
     Strict,
+    /// 🤖 自动驾驶：自动批准低风险写操作（workspace 内），拦截高危操作
+    /// 用于 self-healing / unattended 场景：不弹窗、不等待用户确认
+    Autopilot,
 }
 
 impl SecurityProfile {
@@ -409,6 +412,33 @@ impl SecurityProfile {
             SecurityProfile::Strict => {
                 engine.clear();
                 for rule in strict_rules() { engine.register_rule(rule); }
+            }
+            SecurityProfile::Autopilot => {
+                // Autopilot: standard rules + auto-approve workspace writes.
+                // Protect sensitive files (same as standard), but allow workspace
+                // file writes without user confirmation (for self-healing).
+                engine.clear();
+                for rule in standard_rules() { engine.register_rule(rule); }
+                // Auto-approve writes to workspace (cwd and subdirs)
+                let cwd = std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| "**".into());
+                engine.register_rule(PermissionRule {
+                    name: "autopilot-allow-workspace-write".into(),
+                    actions: vec![Action::Write, Action::Edit],
+                    pattern: format!("{cwd}/**"),
+                    policy: PermissionPolicy::Allow,
+                    priority: 90, // Lower than protect rules (100), so .env/.ssh still blocked
+                });
+                // Auto-approve writes to .ion/monitors (for scheduler agent)
+                engine.register_rule(PermissionRule {
+                    name: "autopilot-allow-monitors".into(),
+                    actions: vec![Action::Write],
+                    pattern: "**/.ion/monitors/**".into(),
+                    policy: PermissionPolicy::Allow,
+                    priority: 110,
+                });
+                tracing::info!("[security] autopilot profile: auto-approve workspace writes, sensitive files still protected");
             }
         }
     }

@@ -62,6 +62,16 @@ struct Cli {
     #[arg(long, global = true)]
     provider: Option<String>,
 
+    /// Security profile: permissive | readonly | standard | strict | autopilot
+    /// Controls permission engine rules + command guard.
+    /// - permissive: no restrictions (yolo mode)
+    /// - readonly: deny all writes/edits, allow reads + safe commands
+    /// - standard: protect sensitive files (.env/.ssh/.aws/.ion), allow workspace writes
+    /// - strict: deny all writes by default, require explicit allow rules
+    /// - autopilot: auto-approve low-risk workspace writes (for self-healing/unattended runs)
+    #[arg(long, global = true)]
+    profile: Option<String>,
+
     /// API base URL override
     #[arg(long, global = true)]
     base_url: Option<String>,
@@ -1573,8 +1583,20 @@ async fn cmd_run(
         .unwrap_or_default();
     let runtime_cfg = ion::config::IonConfig::load().runtime;
     let backend_registry = BackendRegistry::from_config(&runtime_cfg, &cwd);
+
+    // Parse security profile from config.json (CLI --profile handled in main, passed via eff)
+    let cfg = ion::config::IonConfig::load();
+    let profile = cfg.security_mode.as_deref().unwrap_or("standard");
+    let sec_profile = match profile {
+        "permissive" | "yolo" => ion::kernel::SecurityProfile::Permissive,
+        "readonly" => ion::kernel::SecurityProfile::ReadOnly,
+        "strict" => ion::kernel::SecurityProfile::Strict,
+        "autopilot" => ion::kernel::SecurityProfile::Autopilot,
+        _ => ion::kernel::SecurityProfile::Standard,
+    };
+    tracing::info!("[security] profile: {profile}");
     let rt = ion::runtime::SecuredRuntime::new(backend_registry)
-        .with_profile(ion::kernel::SecurityProfile::default());
+        .with_profile(sec_profile);
 
     // Snapshot tool definitions before passing ownership to Agent.
     // Used for --export-after-run: HTML export shows the tools panel.

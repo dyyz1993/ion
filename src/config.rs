@@ -50,6 +50,11 @@ pub struct IonConfig {
     #[serde(default = "default_tier_models")]
     pub tier_models: HashMap<String, String>,
 
+    /// Security profile: "permissive" | "readonly" | "standard" | "strict" | "autopilot"
+    /// CLI --profile overrides this. Default: "standard"
+    #[serde(default)]
+    pub security_mode: Option<String>,
+
     /// MCP server 配置（详见 docs/design/MCP_SYSTEM.md）
     /// 放 ② 项目维度（含本地路径/密钥，不依赖 git 同步）
     #[serde(default)]
@@ -527,6 +532,7 @@ impl Default for IonConfig {
             providers: HashMap::new(),
             extensions: HashMap::new(),
             tier_models: default_tier_models(),
+            security_mode: None,
             mcp_servers: HashMap::new(),
             runtime: RuntimeConfig::default(),
         }
