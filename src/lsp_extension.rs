@@ -109,80 +109,295 @@ impl LspExtension {
         }
     }
 
-    /// Check if Cargo.toml exists in the current directory or parents.
-    async fn detect_project_root(&self) -> Option<String> {
+    /// Detect project language by looking for marker files.
+    /// Returns (project_root, language, check_command).
+    async fn detect_project(&self) -> Option<(String, String, String)> {
         // Check cache first
         {
             let cached = self.project_root.lock().await;
-            if cached.is_some() {
-                return cached.clone();
+            if let Some(ref root) = *cached {
+                // Re-detect language each time (cheap)
+                let lang_cmd = Self::detect_language_command(root)?;
+                return Some((root.clone(), lang_cmd.0, lang_cmd.1));
             }
         }
 
-        // Walk up from cwd looking for Cargo.toml
+        // Walk up from cwd looking for project markers
         let cwd = std::env::current_dir().ok()?;
         let mut dir = cwd.as_path();
         loop {
-            if dir.join("Cargo.toml").exists() {
+            // Try each language marker
+            if let Some((lang, cmd)) = Self::detect_language_command(&dir.to_string_lossy()) {
                 let root = dir.to_string_lossy().to_string();
                 *self.project_root.lock().await = Some(root.clone());
-                return Some(root);
+                return Some((root, lang, cmd));
             }
             dir = dir.parent()?;
         }
     }
 
-    /// Run diagnostics check with 3 layers of protection:
+    /// Given a directory, detect the language and return (language_name, check_command).
+    /// Checks for marker files in priority order.
+    fn detect_language_command(dir: &str) -> Option<(String, String)> {
+        let path = std::path::Path::new(dir);
+
+        // Rust: Cargo.toml
+        if path.join("Cargo.toml").exists() {
+            return Some(("rust".into(),
+                "cargo check --message-format=json 2>/dev/null".into()));
+        }
+
+        // TypeScript/JavaScript: package.json + tsconfig.json or .ts files
+        if path.join("package.json").exists() || path.join("tsconfig.json").exists() {
+            // Prefer tsc if available, fall back to npx tsc
+            let cmd = if std::process::Command::new("which")
+                .arg("tsc").output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+            {
+                "tsc --noEmit --pretty false 2>&1"
+            } else {
+                "npx --yes tsc --noEmit --pretty false 2>&1"
+            };
+            return Some(("typescript".into(), cmd.into()));
+        }
+
+        // Python: setup.py / pyproject.toml / requirements.txt / .py files
+        if path.join("pyproject.toml").exists()
+            || path.join("setup.py").exists()
+            || path.join("requirements.txt").exists()
+        {
+            // Use py_compile for syntax check (always available in Python 3)
+            // Or ruff if available for linting
+            let cmd = if std::process::Command::new("which")
+                .arg("ruff").output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+            {
+                "ruff check --output-format=json . 2>/dev/null"
+            } else {
+                "python3 -m py_compile $(find . -name '*.py' -not -path './venv/*' -not -path './.venv/*' 2>/dev/null) 2>&1"
+            };
+            return Some(("python".into(), cmd.into()));
+        }
+
+        // Go: go.mod
+        if path.join("go.mod").exists() {
+            return Some(("go".into(),
+                "go vet ./... 2>&1".into()));
+        }
+
+        // HTML: index.html or *.html files
+        if path.join("index.html").exists()
+            || std::fs::read_dir(path).ok()
+                .map(|entries| entries.filter_map(|e| e.ok())
+                    .any(|e| e.path().extension().map(|ext| ext == "html" || ext == "htm").unwrap_or(false)))
+                .unwrap_or(false)
+        {
+            return Some(("html".into(),
+                // Use a basic HTML validation: check for unclosed tags
+                "python3 -c \"\nimport sys, re, os, json\nerrs = []\nfor f in os.listdir('.'):\n    if not f.endswith(('.html', '.htm')): continue\n    content = open(f).read()\n    opens = re.findall(r'<([a-z]+)[^>]*>', content, re.I)\n    closes = re.findall(r'</([a-z]+)>', content, re.I)\n    from collections import Counter\n    o, c = Counter(opens), Counter(closes)\n    for tag in o:\n        if tag not in ('br','hr','img','input','meta','link','hr','source'):\n            if o[tag] > c.get(tag, 0):\n                errs.append({'file': f, 'line': 1, 'col': 1, 'severity': 'warning', 'message': f'Unclosed <{tag}> tag', 'code': 'html'})\nimport json\nprint(json.dumps([{'reason': 'compiler-message', 'message': {'level': e['severity'], 'code': {'code': e['code']}, 'message': e['message'], 'spans': [{'file_name': e['file'], 'line_start': e['line'], 'column_start': e['col']}]}} for e in errs]))\n\" 2>/dev/null".into()));
+        }
+
+        None
+    }
+
+    /// Parse generic linter output into Diagnostic format.
+    /// Handles both cargo check JSON and simple text output.
+    fn parse_linter_output(stdout: &str, language: &str) -> Vec<Diagnostic> {
+        match language {
+            "rust" => Self::parse_cargo_check_json(stdout),
+            "typescript" => Self::parse_tsc_output(stdout),
+            "python" => {
+                // Try JSON first (ruff), fall back to text parsing (py_compile)
+                if stdout.trim().starts_with("[") {
+                    Self::parse_ruff_json(stdout)
+                } else {
+                    Self::parse_py_compile_output(stdout)
+                }
+            }
+            "go" => Self::parse_go_vet_output(stdout),
+            "html" => Self::parse_cargo_check_json(stdout), // HTML checker outputs cargo-like JSON
+            _ => Vec::new(),
+        }
+    }
+
+    /// Parse `tsc --noEmit --pretty false` output.
+    /// Format: file.ts(line,col): error TS1234: message
+    fn parse_tsc_output(stdout: &str) -> Vec<Diagnostic> {
+        let mut diags = Vec::new();
+        for line in stdout.lines() {
+            // Pattern: file.ts(line,col): error TS1234: message
+            if let Some(rest) = line.strip_suffix("") {
+                if let Some(close_paren) = rest.find("):") {
+                    let before = &rest[..close_paren];
+                    let after = &rest[close_paren + 2..];
+
+                    // Extract file + line + col from "file.ts(line,col"
+                    if let Some(open_paren) = before.rfind('(') {
+                        let file = &before[..open_paren];
+                        let pos = &before[open_paren + 1..];
+                        let parts: Vec<&str> = pos.split(',').collect();
+                        let line_num: u32 = parts.first()
+                            .and_then(|s| s.trim().parse::<u32>().ok())
+                            .unwrap_or(0);
+                        let col: u32 = parts.get(1)
+                            .and_then(|s| s.trim().parse::<u32>().ok())
+                            .unwrap_or(0);
+
+                        let (severity, rest_msg) = if after.starts_with(" error") {
+                            ("error", &after[6..])
+                        } else if after.starts_with(" warning") {
+                            ("warning", &after[9..])
+                        } else {
+                            ("warning", after)
+                        };
+
+                        // Extract code (TS1234)
+                        let (code, message) = if let Some(colon) = rest_msg.find(": ") {
+                            (rest_msg[..colon].trim().to_string(), rest_msg[colon + 2..].trim().to_string())
+                        } else {
+                            (String::new(), rest_msg.trim().to_string())
+                        };
+
+                        diags.push(Diagnostic {
+                            file: file.to_string(),
+                            line: line_num,
+                            column: col,
+                            severity: severity.into(),
+                            message,
+                            code,
+                        });
+                    }
+                }
+            }
+        }
+        diags
+    }
+
+    /// Parse `ruff check --output-format=json` output.
+    fn parse_ruff_json(stdout: &str) -> Vec<Diagnostic> {
+        let parsed: Vec<serde_json::Value> = serde_json::from_str(stdout).unwrap_or_default();
+        parsed.iter().filter_map(|item| {
+            let location = item.get("location")?;
+            Some(Diagnostic {
+                file: item.get("filename").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
+                line: location.get("row").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                column: location.get("column").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                severity: if item.get("url").map(|u| u.as_str().unwrap_or("").contains("error")).unwrap_or(false) {
+                    "error".into()
+                } else {
+                    "warning".into()
+                },
+                message: item.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                code: item.get("code").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            })
+        }).collect()
+    }
+
+    /// Parse `python3 -m py_compile` output.
+    /// Format: File "file.py", line 42\n    code\nSyntaxError: message
+    fn parse_py_compile_output(stdout: &str) -> Vec<Diagnostic> {
+        let mut diags = Vec::new();
+        for line in stdout.lines() {
+            if line.starts_with("  File \"") {
+                // Extract: File "path", line N
+                let start = line.find("\"").map(|i| i + 1).unwrap_or(0);
+                let end = line.rfind("\"").unwrap_or(0);
+                let file = &line[start..end];
+                if let Some(line_pos) = line.find(", line ") {
+                    let rest = &line[line_pos + 7..];
+                    let line_num = rest.split(',').next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+                    diags.push(Diagnostic {
+                        file: file.to_string(),
+                        line: line_num,
+                        column: 0,
+                        severity: "error".into(),
+                        message: "SyntaxError".into(),
+                        code: "syntax".into(),
+                    });
+                }
+            } else if line.starts_with("SyntaxError:") || line.starts_with("IndentationError:") {
+                // Attach message to last diagnostic
+                if let Some(last) = diags.last_mut() {
+                    last.message = line.trim().to_string();
+                }
+            }
+        }
+        diags
+    }
+
+    /// Parse `go vet ./...` output.
+    /// Format: ./file.go:42:5: message
+    fn parse_go_vet_output(stdout: &str) -> Vec<Diagnostic> {
+        let mut diags = Vec::new();
+        for line in stdout.lines() {
+            // Pattern: ./file.go:line:col: message
+            let parts: Vec<&str> = line.splitn(4, ':').collect();
+            if parts.len() >= 4 {
+                let file = parts[0].trim_start_matches("./").to_string();
+                let line_num = parts[1].trim().parse().unwrap_or(0);
+                let col = parts[2].trim().parse().unwrap_or(0);
+                let message = parts[3].trim().to_string();
+                diags.push(Diagnostic {
+                    file,
+                    line: line_num,
+                    column: col,
+                    severity: "warning".into(),
+                    message,
+                    code: "go_vet".into(),
+                });
+            }
+        }
+        diags
+    }
+
+    /// Run diagnostics check with multi-language support + 3 layers of protection.
     ///
-    /// 1. **Incremental priority**: First check only the changed files (fast syntax check).
-    ///    If those pass, then run full `cargo check` for type-level errors.
-    /// 2. **Memory/time protection**: Full `cargo check` has a configurable timeout
-    ///    (ION_LSP_TIMEOUT, default 120s). Large dependency trees won't block forever.
-    /// 3. **Loop detection**: Max 10 checks per session. After that, stop auto-injecting
-    ///    to prevent LLM from spinning in a write/check/error/fix loop forever.
+    /// Automatically detects project language (Rust/TS/Python/Go/HTML) and runs
+    /// the appropriate linter. Includes:
+    /// 1. Changed-file priority sorting
+    /// 2. Timeout protection (ION_LSP_TIMEOUT, default 120s)
+    /// 3. Loop detection (max 10 checks/session)
     async fn run_cargo_check(&self) -> Result<Vec<Diagnostic>, String> {
         let timeout_secs = std::env::var("ION_LSP_TIMEOUT")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(120);
 
-        // ── Protection 3: Loop detection ──
+        // Protection 3: Loop detection
         let count = self.check_count.fetch_add(1, Ordering::SeqCst);
         if count >= 10 {
-            tracing::warn!(
-                "[lsp] check count {} >= 10, stopping to prevent infinite loop",
-                count
-            );
+            tracing::warn!("[lsp] check count {} >= 10, stopping", count);
             return Err("loop_limit_reached".into());
         }
 
-        // ── Protection: Cooldown (min 3s between checks to avoid spam) ──
+        // Cooldown (min 3s between checks)
         {
             let last = self.last_check_time.lock().await;
             if let Some(t) = *last {
-                let elapsed = t.elapsed();
-                if elapsed < std::time::Duration::from_secs(3) {
-                    tracing::info!(
-                        "[lsp] cooldown: {:.1}s since last check, skipping",
-                        elapsed.as_secs_f64()
-                    );
+                if t.elapsed() < std::time::Duration::from_secs(3) {
                     return Ok(self.diagnostics.lock().await.clone());
                 }
             }
         }
         *self.last_check_time.lock().await = Some(std::time::Instant::now());
 
-        let has_cargo = self.detect_project_root().await;
-        if has_cargo.is_none() {
-            tracing::info!("[lsp] no Cargo.toml found, skipping");
-            return Ok(Vec::new());
-        }
+        // Detect project language
+        let (root, language, check_cmd) = match self.detect_project().await {
+            Some(info) => info,
+            None => {
+                tracing::info!("[lsp] no recognized project found (no Cargo.toml/package.json/pyproject.toml/go.mod/index.html)");
+                return Ok(Vec::new());
+            }
+        };
 
-        // ── Protection 2: Run with timeout ──
-        let cmd = "cargo check --message-format=json 2>/dev/null";
+        tracing::info!("[lsp] detected {} project at {}, running: {}", language, root, check_cmd);
+
+        // Run with timeout
         let output = tokio::process::Command::new("sh")
             .arg("-c")
-            .arg(cmd)
+            .arg(&check_cmd)
             .output();
 
         let result = tokio::time::timeout(
@@ -194,37 +409,35 @@ impl LspExtension {
         let stdout = match result {
             Ok(Ok(output)) => String::from_utf8_lossy(&output.stdout).to_string(),
             Ok(Err(e)) => {
-                tracing::warn!("[lsp] cargo check failed: {e}");
+                tracing::warn!("[lsp] {} check failed: {e}", language);
                 return Ok(Vec::new());
             }
             Err(_) => {
-                tracing::warn!("[lsp] cargo check timed out after {timeout_secs}s");
+                tracing::warn!("[lsp] {} check timed out after {timeout_secs}s", language);
                 return Err("timeout".into());
             }
         };
 
-        // ── Parse + filter ──
-        let mut all_diags = Self::parse_cargo_check_json(&stdout);
+        // Parse with language-specific parser
+        let mut all_diags = Self::parse_linter_output(&stdout, &language);
 
-        // ── Priority 1: Show changed-file diagnostics FIRST ──
+        // Priority: changed-file diagnostics first
         let changed = self.changed_files.lock().await;
         if !changed.is_empty() {
             all_diags.sort_by_key(|d| {
-                // Changed files get priority (sort to front)
-                if changed.iter().any(|f| d.file.contains(f.as_str())) {
-                    0
-                } else {
-                    1
-                }
+                if changed.iter().any(|f| d.file.contains(f.as_str())) { 0 } else { 1 }
             });
+            let prioritized = all_diags.iter()
+                .filter(|d| changed.iter().any(|f| d.file.contains(f.as_str())))
+                .count();
             tracing::info!(
-                "[lsp] prioritized {} diagnostics for changed files ({} total)",
-                all_diags.iter().filter(|d| changed.iter().any(|f| d.file.contains(f.as_str()))).count(),
-                all_diags.len()
+                "[lsp] {} check: {} diagnostics ({} prioritized for changed files)",
+                language, all_diags.len(), prioritized
             );
+        } else {
+            tracing::info!("[lsp] {} check: {} diagnostics", language, all_diags.len());
         }
 
-        // Clear changed files list after check
         drop(changed);
         self.changed_files.lock().await.clear();
 
@@ -389,35 +602,20 @@ impl LspExtension {
         text
     }
 
-    /// Do a fresh cargo check and update stored diagnostics.
+    /// Do a fresh check and update stored diagnostics.
     async fn do_check(&self) -> Result<Vec<Diagnostic>, String> {
-        let has_cargo = self.detect_project_root().await;
-        if has_cargo.is_none() {
-            tracing::info!("[lsp] no Cargo.toml found, skipping");
-            let empty = Vec::new();
-            *self.diagnostics.lock().await = empty.clone();
-            self.dirty.store(false, Ordering::SeqCst);
-            self.has_errors.store(false, Ordering::SeqCst);
-            return Ok(empty);
-        }
-
         let result = self.run_cargo_check().await;
         match result {
             Ok(diags) => {
                 let has_errs = diags.iter().any(|d| d.severity == "error");
                 self.has_errors.store(has_errs, Ordering::SeqCst);
                 self.dirty.store(false, Ordering::SeqCst);
-                tracing::info!(
-                    "[lsp] cargo check completed: {} diagnostics ({} errors)",
-                    diags.len(),
-                    diags.iter().filter(|d| d.severity == "error").count()
-                );
                 let mut store = self.diagnostics.lock().await;
                 *store = diags.clone();
                 Ok(diags)
             }
             Err(e) => {
-                tracing::warn!("[lsp] cargo check failed: {e}");
+                tracing::warn!("[lsp] check failed: {e}");
                 Err(e)
             }
         }
