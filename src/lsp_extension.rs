@@ -59,6 +59,10 @@ pub struct LspExtension {
     check_count: Arc<AtomicU32>,
     /// Timestamp of last successful check (for cooldown — min 5s between checks).
     last_check_time: Arc<Mutex<Option<std::time::Instant>>>,
+    /// True = a background cargo check is running (async, non-blocking).
+    bg_check_running: Arc<AtomicBool>,
+    /// True = background check has fresh results waiting to be injected.
+    bg_check_ready: Arc<AtomicBool>,
     name: String,
 }
 
@@ -72,6 +76,8 @@ impl LspExtension {
             changed_files: Arc::new(Mutex::new(Vec::new())),
             check_count: Arc::new(AtomicU32::new(0)),
             last_check_time: Arc::new(Mutex::new(None)),
+            bg_check_running: Arc::new(AtomicBool::new(false)),
+            bg_check_ready: Arc::new(AtomicBool::new(false)),
             name: "lsp".into(),
         }
     }
@@ -105,6 +111,8 @@ impl LspExtension {
             changed_files: Arc::new(Mutex::new(Vec::new())),
             check_count: Arc::new(AtomicU32::new(0)),
             last_check_time: Arc::new(Mutex::new(None)),
+            bg_check_running: Arc::new(AtomicBool::new(false)),
+            bg_check_ready: Arc::new(AtomicBool::new(false)),
             name: "lsp".into(),
         }
     }
@@ -680,60 +688,158 @@ impl Extension for LspExtension {
     async fn on_tool_execution_end(&self, ctx: &ToolExecutionContext) -> AgentResult<()> {
         if ctx.tool_name == "write" || ctx.tool_name == "edit" {
             self.dirty.store(true, Ordering::SeqCst);
-            // Track which file changed for priority diagnostics
             if let Some(file) = ctx.args.get("file_path").and_then(|v| v.as_str()) {
                 let mut changed = self.changed_files.lock().await;
                 if !changed.iter().any(|f| f == file) {
                     changed.push(file.to_string());
                 }
             }
-            tracing::info!("[lsp] {} detected, marking dirty for re-check", ctx.tool_name);
+            tracing::info!("[lsp] {} detected, marking dirty", ctx.tool_name);
+
+            // ── ASYNC: Kick off background cargo check (non-blocking) ──
+            // Don't wait for it — the check runs in a tokio task.
+            // Results are picked up by on_context on the next turn.
+            if !self.bg_check_running.load(Ordering::SeqCst) {
+                self.bg_check_running.store(true, Ordering::SeqCst);
+                self.bg_check_ready.store(false, Ordering::SeqCst);
+                let diags_handle = Arc::clone(&self.diagnostics);
+                let dirty_handle = Arc::clone(&self.dirty);
+                let has_errs_handle = Arc::clone(&self.has_errors);
+                let bg_running = Arc::clone(&self.bg_check_running);
+                let bg_ready = Arc::clone(&self.bg_check_ready);
+                let changed_handle = Arc::clone(&self.changed_files);
+                let count_handle = Arc::clone(&self.check_count);
+                let last_time = Arc::clone(&self.last_check_time);
+                let proj_root = Arc::clone(&self.project_root);
+
+                tokio::spawn(async move {
+                    // Run the actual check (reuse logic)
+                    let count = count_handle.fetch_add(1, Ordering::SeqCst);
+                    if count >= 10 {
+                        tracing::warn!("[lsp] bg check: loop limit reached");
+                        bg_running.store(false, Ordering::SeqCst);
+                        return;
+                    }
+                    *last_time.lock().await = Some(std::time::Instant::now());
+
+                    // Detect project
+                    let cwd = std::env::current_dir().ok();
+                    let check_cmd: Option<String> = {
+                        let cached = proj_root.lock().await;
+                        if let Some(ref root) = *cached {
+                            LspExtension::detect_language_command(root).map(|(_, cmd)| cmd)
+                        } else {
+                            drop(cached);
+                            if let Some(ref cwd) = cwd {
+                                let mut dir = cwd.as_path();
+                                loop {
+                                    if let Some((_, cmd)) = LspExtension::detect_language_command(&dir.to_string_lossy()) {
+                                        break Some(cmd);
+                                    }
+                                    dir = match dir.parent() { Some(p) => p, None => break None };
+                                }
+                            } else { None }
+                        }
+                    };
+
+                    let cmd = match check_cmd {
+                        Some(c) => c,
+                        None => {
+                            tracing::info!("[lsp] bg check: no project detected");
+                            bg_running.store(false, Ordering::SeqCst);
+                            return;
+                        }
+                    };
+
+                    let timeout_secs: u64 = std::env::var("ION_LSP_TIMEOUT")
+                        .ok().and_then(|v| v.parse().ok()).unwrap_or(120);
+
+                    let result = tokio::time::timeout(
+                        std::time::Duration::from_secs(timeout_secs),
+                        tokio::process::Command::new("sh").arg("-c").arg(&cmd).output()
+                    ).await;
+
+                    let diags = match result {
+                        Ok(Ok(output)) => {
+                            let stdout = String::from_utf8_lossy(&output.stdout);
+                            let cwd_str = std::env::current_dir()
+                                .map(|c| c.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            let lang = LspExtension::detect_language_command(&cwd_str)
+                                .map(|(l, _)| l)
+                                .unwrap_or_else(|| "rust".to_string());
+                            LspExtension::parse_linter_output(&stdout, &lang)
+                        }
+                        _ => Vec::new(),
+                    };
+
+                    let has_errs = diags.iter().any(|d| d.severity == "error");
+                    has_errs_handle.store(has_errs, Ordering::SeqCst);
+                    dirty_handle.store(false, Ordering::SeqCst);
+                    changed_handle.lock().await.clear();
+                    *diags_handle.lock().await = diags.clone();
+
+                    bg_ready.store(true, Ordering::SeqCst);
+                    bg_running.store(false, Ordering::SeqCst);
+                    tracing::info!("[lsp] bg check done: {} diagnostics ready for next turn", diags.len());
+                });
+            }
         }
         Ok(())
     }
 
-    /// Inject <diagnostics> XML into messages if dirty.
+    /// Inject <diagnostics> XML into messages — NON-BLOCKING + DEDUP.
     async fn on_context(&self, messages: &mut Vec<crate::agent::messages::Message>) -> AgentResult<()> {
-        if !self.dirty.load(Ordering::SeqCst) {
-            return Ok(());
+        // ── NON-BLOCKING: Only inject if bg check has fresh results ──
+        if !self.bg_check_ready.load(Ordering::SeqCst) {
+            return Ok(()); // No fresh results yet — don't block the LLM call
+        }
+        self.bg_check_ready.store(false, Ordering::SeqCst);
+
+        let diags = self.diagnostics.lock().await.clone();
+
+        // ── DEDUP: Skip injection if identical to last injected diagnostics ──
+        // Compare with the most recent diagnostics in messages
+        for msg in messages.iter().rev() {
+            if let crate::agent::messages::Message::Custom(c) = msg {
+                if c.custom_type == "diagnostics" {
+                    let last_summary = extract_diag_summary(&c.content);
+                    let current_summary = format!(
+                        "[diagnostics history] {} issues ({} error(s), {} warning(s))",
+                        diags.len(),
+                        diags.iter().filter(|d| d.severity == "error").count(),
+                        diags.iter().filter(|d| d.severity == "warning").count(),
+                    );
+                    if last_summary == current_summary {
+                        tracing::info!("[lsp] diagnostics unchanged, skipping injection (dedup)");
+                        return Ok(());
+                    }
+                    break; // Found last diagnostics — it's different, proceed
+                }
+            }
         }
 
-        // ── Cleanup old diagnostics: keep 2 recent full, compress older to summary ──
-        // Strategy C: Replace old diagnostics with a one-line summary instead of
-        // deleting them entirely. This way the LLM retains a history trail:
-        //   "[diagnostics history] turn 5: 3 errors, 2 warnings"
-        // without wasting tokens on the full diagnostic text.
-        //
-        // We keep:
-        //   - Latest 2: full XML (current + previous, for comparison)
-        //   - Older ones: replaced with summary line (~20 tokens each)
-        let mut diag_entries: Vec<(usize, String)> = Vec::new(); // (index, summary)
+        // ── Compress old diagnostics: keep 2 recent, rest → summary ──
+        let mut diag_indices: Vec<usize> = Vec::new();
         for (i, msg) in messages.iter().enumerate() {
             if let crate::agent::messages::Message::Custom(c) = msg {
                 if c.custom_type == "diagnostics" {
-                    // Extract summary info from the XML content
-                    let summary = extract_diag_summary(&c.content);
-                    diag_entries.push((i, summary));
+                    diag_indices.push(i);
                 }
             }
         }
-
-        // If we have > 2 diagnostics, compress the older ones to summaries
-        if diag_entries.len() > 2 {
-            let to_compress = diag_entries.len() - 2;
-            for &(idx, ref summary) in diag_entries[..to_compress].iter() {
+        if diag_indices.len() > 2 {
+            let to_compress = diag_indices.len() - 2;
+            for &idx in &diag_indices[..to_compress] {
                 if let crate::agent::messages::Message::Custom(ref mut c) = messages[idx] {
-                    // Replace full XML with one-line summary
-                    c.content = ion_provider::types::CustomContent::Text(summary.clone());
-                    tracing::info!("[lsp] compressed old diagnostics to summary: {}", summary);
+                    let summary = extract_diag_summary(&c.content);
+                    c.content = ion_provider::types::CustomContent::Text(summary);
                 }
             }
+            tracing::info!("[lsp] compressed {} old diagnostics to summaries", to_compress);
         }
 
-        // Run cargo check
-        let diags = self.do_check().await.unwrap_or_default();
-
-        // Inject diagnostics as a custom message
+        // ── Inject new diagnostics ──
         let xml = Self::format_diagnostics_xml(&diags);
         use ion_provider::types::{CustomMessage, CustomContent};
 
