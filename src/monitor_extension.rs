@@ -264,6 +264,26 @@ impl MonitorExtension {
         template.replace("{output}", output)
     }
 
+    /// Health monitor event emitter (reuses emit_event but with different extension name).
+    async fn emit_health_event(
+        registry: &Arc<tokio::sync::Mutex<crate::worker_registry::WorkerRegistry>>,
+        custom_type: &str,
+        data: serde_json::Value,
+    ) {
+        tracing::warn!("[health] {}: {}", custom_type, data);
+        let bus_opt = {
+            let reg = registry.lock().await;
+            reg.event_bus.clone()
+        };
+        if let Some(bus) = bus_opt {
+            let mut bus_guard = bus.lock().await;
+            let event = crate::event_bus::ExtensionEvent::new("monitor", custom_type)
+                .with_data(data)
+                .with_visibility(crate::event_bus::EventVisibility::LlmAndUi);
+            bus_guard.broadcast(&event);
+        }
+    }
+
     /// Broadcast an event to the host EventBus (so `ion subscribe` and all
     /// subscribers receive it). Falls back to tracing log if EventBus is not
     /// configured (e.g. tests).
@@ -483,6 +503,79 @@ impl Extension for MonitorExtension {
     ) -> AgentResult<()> {
         let monitors = self.monitors.lock().await.clone();
         let statuses = Arc::clone(&self.statuses);
+
+        // ── Built-in health monitor (meta self-healing) ──
+        // Checks serve health every 60s: dead workers, stale count, memory.
+        // Emits monitor_serve_unhealthy event when anomalies detected.
+        // This is NOT a user-defined monitor — it's always present in serve mode.
+        {
+            let reg = Arc::clone(registry);
+            let stats = Arc::clone(&statuses);
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(
+                    tokio::time::Duration::from_secs(60)
+                );
+                ticker.set_missed_tick_behavior(
+                    tokio::time::MissedTickBehavior::Skip
+                );
+                loop {
+                    ticker.tick().await;
+                    let (dead, stale, busy, idle, total) = {
+                        let g = reg.lock().await;
+                        let workers: Vec<_> = g.workers.values().collect();
+                        let dead = workers.iter().filter(|w| w.status == crate::worker_registry::WorkerStatus::Dead).count();
+                        let stale = workers.iter().filter(|w| w.status == crate::worker_registry::WorkerStatus::Stale).count();
+                        let busy = workers.iter().filter(|w| w.status == crate::worker_registry::WorkerStatus::Busy).count();
+                        let idle = workers.iter().filter(|w| w.status == crate::worker_registry::WorkerStatus::Idle).count();
+                        (dead, stale, busy, idle, workers.len())
+                    };
+
+                    // GC dead workers if > 3
+                    if dead > 3 {
+                        tracing::warn!(
+                            "[health] {} dead workers, triggering gc_dead_workers",
+                            dead
+                        );
+                        let mut g = reg.lock().await;
+                        g.gc_dead_workers(300); // remove dead workers older than 5 min
+                        Self::emit_health_event(
+                            &reg,
+                            "monitor_serve_unhealthy",
+                            serde_json::json!({
+                                "issue": "too_many_dead_workers",
+                                "dead_count": dead,
+                                "total_workers": total,
+                                "action": "gc_triggered"
+                            })
+                        ).await;
+                    }
+
+                    // Alert if > 5 stale workers (possible zombie accumulation)
+                    if stale > 5 {
+                        tracing::warn!(
+                            "[health] {} stale workers detected (possible zombie accumulation)",
+                            stale
+                        );
+                        Self::emit_health_event(
+                            &reg,
+                            "monitor_serve_unhealthy",
+                            serde_json::json!({
+                                "issue": "too_many_stale_workers",
+                                "stale_count": stale,
+                                "total_workers": total
+                            })
+                        ).await;
+                    }
+
+                    // Periodic health log (every check, not just anomalies)
+                    tracing::info!(
+                        "[health] workers: total={} busy={} idle={} stale={} dead={}",
+                        total, busy, idle, stale, dead
+                    );
+                }
+            });
+            tracing::info!("[monitor] built-in health monitor started (60s interval)");
+        }
 
         for def in monitors.into_iter().filter(|m| m.enabled) {
             let reg = Arc::clone(registry);
