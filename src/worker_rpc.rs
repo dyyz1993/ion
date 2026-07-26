@@ -224,6 +224,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         }
     }
 
+    // LSP shared handles (populated during extension registration below)
+    let mut lsp_diagnostics: Option<std::sync::Arc<tokio::sync::Mutex<Vec<crate::lsp_extension::Diagnostic>>>> = None;
+    let mut lsp_dirty: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
+    let mut lsp_has_errors: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> = None;
+
     let mut tools = ToolRegistry::new();
     tools.register(Box::new(ReadTool));
     tools.register(Box::new(GrepTool));
@@ -623,6 +628,17 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     };
     initial_system_prompt.push_str(&env_info);
 
+    // Register LSP tool if extension was enabled (shares diagnostics handles)
+    if let (Some(diags), Some(dirty), Some(has_errs)) = (&lsp_diagnostics, &lsp_dirty, &lsp_has_errors) {
+        tools.register(Box::new(
+            crate::lsp_extension::LspCheckTool::new(
+                Arc::clone(diags),
+                Arc::clone(dirty),
+                Arc::clone(has_errs),
+            )
+        ));
+    }
+
     let mut agent = Agent::new(
         Arc::clone(&registry),
         model.clone(),
@@ -788,6 +804,23 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             ext_reg.register(Box::new(ctx_ext));
         } else {
             tracing::info!("[extension] context-index disabled by config");
+        }
+
+        // LSP Extension（cargo check diagnostics — LLM 编译错误反馈）
+        if ion_cfg.is_extension_enabled("lsp") {
+            let lsp_ext = crate::lsp_extension::LspExtension::new();
+            let diags = lsp_ext.get_shared_diagnostics();
+            let dirty = lsp_ext.get_shared_dirty();
+            let has_errs = lsp_ext.get_shared_has_errors();
+            ext_reg.register(Box::new(lsp_ext));
+            // Note: LspCheckTool registered separately below (needs shared Arc handles)
+            // Store the shared handles for tool registration
+            lsp_diagnostics = Some(diags);
+            lsp_dirty = Some(dirty);
+            lsp_has_errors = Some(has_errs);
+            tracing::info!("[extension] lsp enabled (cargo check diagnostics)");
+        } else {
+            tracing::info!("[extension] lsp disabled by config");
         }
 
         // File Time Guard Extension（detect externally-modified files before write/edit）
