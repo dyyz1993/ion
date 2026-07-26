@@ -226,9 +226,15 @@ impl MonitorExtension {
                 let path = entry.path();
                 if path.extension().map(|e| e == "json").unwrap_or(false) {
                     if let Ok(content) = std::fs::read_to_string(&path) {
-                        if let Ok(def) = serde_json::from_str::<MonitorDef>(&content) {
-                            tracing::info!("[monitor] loaded: {} from {}", def.name, path.display());
-                            result.push(def);
+                        match serde_json::from_str::<MonitorDef>(&content) {
+                            Ok(def) => {
+                                tracing::info!("[monitor] loaded: {} from {}", def.name, path.display());
+                                result.push(def);
+                            }
+                            Err(e) => tracing::warn!(
+                                "[monitor] failed to parse {}: {e}",
+                                path.display()
+                            ),
                         }
                     }
                 }

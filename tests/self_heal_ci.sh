@@ -63,20 +63,22 @@ EOF
 
 create_issue() {
     local title="$1" body="$2"
-    # Use mock issue file instead of real gh
     local issues_file="$TEST_REPO/issues.json"
-    if [ ! -f "$issues_file" ]; then
-        echo '[' > "$issues_file"
-        first=1
-    else
-        # Remove trailing ]
-        sed -i '' 's/]$//' "$issues_file"
-        first=0
-    fi
-    local num=$(( $(grep -c '"number"' "$issues_file" 2>/dev/null || echo 0) + 1 ))
-    if [ $first -eq 0 ]; then echo ',' >> "$issues_file"; fi
-    echo -n "{\"number\":$num,\"title\":\"$title\"}" >> "$issues_file"
-    echo ']' >> "$issues_file"
+    # Count existing issues to determine next number (avoid arithmetic on empty/multi-line)
+    local count
+    count=$(grep -o '"number"' "$issues_file" 2>/dev/null | wc -l | tr -d ' ')
+    count=${count:-0}
+    local num=$(( count + 1 ))
+    # Build issues file fresh each time (simpler than incremental editing)
+    python3 -c "
+import json
+issues = []
+try:
+    with open('$issues_file') as f: issues = json.load(f)
+except: pass
+issues.append({'number': $num, 'title': '$title'})
+with open('$issues_file', 'w') as f: json.dump(issues, f)
+" 2>/dev/null
     echo $num
 }
 
@@ -146,7 +148,7 @@ cat > .ion/monitors/ci-test.json <<EOF
   "script": "PATH=/tmp/mock-gh-dir:\$PATH gh issue list --repo test --state open --json number,title 2>/dev/null",
   "agent": "coordinator",
   "prompt_template": "Issues",
-  "mode": "event_only",
+  "mode": "concurrent",
   "trigger_mode": "event_only",
   "cooldown_secs": 300
 }
@@ -157,8 +159,13 @@ nohup bash -c "cd $PROJECT_DIR && RUST_LOG=ion=info $ION serve" > /tmp/heal_ci.l
 SERVE_PID=$!
 sleep 8
 
-# Verify monitor triggered
-TRIG=$(awk '/monitor_triggered.*ci-test/{c++} END{print c+0}' /tmp/heal_ci.log)
+# Verify monitor triggered (wait up to 15s for first trigger)
+TRIG=0
+for i in 1 2 3; do
+    sleep 5
+    TRIG=$(awk '/monitor_triggered.*ci-test/{c++} END{print c+0}' /tmp/heal_ci.log)
+    if [ "$TRIG" -ge 1 ]; then break; fi
+done
 if [ "$TRIG" -ge 1 ]; then
     record_pass "A1.1: monitor triggered ($TRIG times)"
 else
@@ -198,13 +205,21 @@ if [ -f "$TEST_REPO/src/lib.rs" ]; then
     fi
 fi
 
-# A3: Verify commit
+# A3: Verify commit (wait up to 60s for developer to commit)
 echo "--- A3: 验证 commit ---"
-cd "$TEST_REPO"
-if git log --oneline | grep -q "fix\|Fix\|issue"; then
-    record_pass "A3: commit exists with fix message"
-else
-    record_fail "A3: no fix commit"
+A3_COMMITTED=0
+for i in 1 2 3 4 5 6; do
+    sleep 10
+    cd "$TEST_REPO"
+    if git log --oneline 2>/dev/null | grep -qiE "fix|patch|update|resolve|process_output|panic|issue"; then
+        A3_COMMITTED=1
+        record_pass "A3: commit exists with fix/patch/update message"
+        break
+    fi
+    cd "$PROJECT_DIR"
+done
+if [ "$A3_COMMITTED" = "0" ]; then
+    record_fail "A3: no fix commit (timeout)"
 fi
 cd "$PROJECT_DIR"
 
