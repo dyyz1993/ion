@@ -1012,8 +1012,22 @@ impl WorkerRegistry {
             .ok_or_else(|| format!("worker not found: {worker_id}"))?;
         if let Some(stdin) = &mut record.stdin {
             use tokio::io::AsyncWriteExt;
-            stdin.write_all(format!("{line}\n").as_bytes()).await.map_err(|e| format!("write: {e}"))?;
-            stdin.flush().await.map_err(|e| format!("flush: {e}"))?;
+            let write_line = format!("{line}\n");
+            // Timeout to prevent deadlock when worker's stdin buffer is full.
+            // Without this, send_command holds the registry lock while blocked on write.
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                async {
+                    stdin.write_all(write_line.as_bytes()).await.map_err(|e| format!("write: {e}"))?;
+                    stdin.flush().await.map_err(|e| format!("flush: {e}"))?;
+                    Ok::<(), String>(())
+                },
+            ).await;
+            match result {
+                Ok(Ok(())) => {},
+                Ok(Err(e)) => return Err(e),
+                Err(_) => return Err(format!("timeout: worker {worker_id} stdin blocked (buffer full?)")),
+            }
         }
         record.status = WorkerStatus::Busy;
         Ok(req_id)
@@ -1226,8 +1240,19 @@ impl WorkerRegistry {
         if let Some(subscribers) = self.channels.get(channel) {
             for sub_id in subscribers.clone() {
                 if let Some(record) = self.workers.get_mut(&sub_id) && let Some(ref mut stdin) = record.stdin {
-                    let _ = stdin.write_all(format!("{line}\n").as_bytes()).await;
-                    let _ = stdin.flush().await;
+                    // Wrap write in 2s timeout to prevent deadlock if a worker's
+                    // stdin buffer is full (worker not reading stdin). Without this,
+                    // a single channel_send can hold the registry lock indefinitely
+                    // and block all RPC handlers.
+                    let write_line = format!("{line}\n");
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        async {
+                            use tokio::io::AsyncWriteExt;
+                            let _ = stdin.write_all(write_line.as_bytes()).await;
+                            let _ = stdin.flush().await;
+                        },
+                    ).await;
                 }
             }
         }
