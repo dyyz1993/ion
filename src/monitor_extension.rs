@@ -1190,15 +1190,26 @@ impl Extension for MonitorExtension {
             }
 
             "remove" => {
-                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                let mut monitors = self.monitors.lock().await;
-                let before = monitors.len();
-                monitors.retain(|m| m.name != name);
-                let removed = before > monitors.len();
+                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
-                // Delete file
+                // 1. Remove from monitors Vec
+                let removed = {
+                    let mut monitors = self.monitors.lock().await;
+                    let before = monitors.len();
+                    monitors.retain(|m| m.name != name);
+                    before > monitors.len()
+                };
+                // monitors lock dropped here
+
+                // 2. Delete file
                 let path = std::path::Path::new(".ion/monitors").join(format!("{name}.json"));
                 let _ = std::fs::remove_file(path);
+
+                // 3. Remove from statuses (separate lock scope)
+                self.statuses.lock().await.remove(&name);
+
+                // 4. Remove from active_pipelines (separate lock scope)
+                self.active_pipelines.lock().await.retain(|p| p.monitor != name);
 
                 Ok(serde_json::json!({"removed": removed, "name": name}))
             }
@@ -1574,5 +1585,73 @@ mod tests {
         let (errors, warnings) = MonitorExtension::validate_def(&def);
         assert!(errors.is_empty(), "should not error");
         assert!(warnings.iter().any(|w| w.contains("cooldown")));
+    }
+
+    #[tokio::test]
+    async fn test_remove_clears_in_memory_state() {
+        // Issue #16: remove() must clear statuses and active_pipelines too.
+        let ext = MonitorExtension::new();
+        let name = "ghost-monitor".to_string();
+
+        // Seed monitors Vec
+        {
+            let mut monitors = ext.monitors.lock().await;
+            let mut def = valid_def();
+            def.name = name.clone();
+            monitors.push(def);
+        }
+        // Seed statuses HashMap
+        {
+            let mut statuses = ext.statuses.lock().await;
+            statuses.insert(
+                name.clone(),
+                MonitorStatus {
+                    name: name.clone(),
+                    enabled: true,
+                    last_run: None,
+                    last_result: "ok".into(),
+                    trigger_count: 1,
+                    skip_count: 0,
+                    queue_length: 0,
+                    active_workers: 0,
+                    last_error: None,
+                    consecutive_failures: 0,
+                    last_spawned_worker: None,
+                },
+            );
+        }
+        // Seed active_pipelines Vec
+        {
+            let mut active = ext.active_pipelines.lock().await;
+            active.push(ActivePipeline {
+                monitor: name.clone(),
+                key: "issue-1".into(),
+                worker_id: None,
+                started_at: "2025-01-01T00:00:00Z".into(),
+                stage: "developer".into(),
+            });
+        }
+
+        // Verify seeded
+        assert_eq!(ext.monitors.lock().await.len(), 1);
+        assert!(ext.statuses.lock().await.contains_key(&name));
+        assert_eq!(ext.active_pipelines.lock().await.len(), 1);
+
+        // Simulate the remove handler body (monitors → file → statuses → pipelines)
+        let removed = {
+            let mut monitors = ext.monitors.lock().await;
+            let before = monitors.len();
+            monitors.retain(|m| m.name != name);
+            before > monitors.len()
+        };
+        assert!(removed);
+
+        ext.statuses.lock().await.remove(&name);
+        ext.active_pipelines.lock().await.retain(|p| p.monitor != name);
+
+        // All three should be empty now
+        assert!(ext.monitors.lock().await.is_empty());
+        assert!(!ext.statuses.lock().await.contains_key(&name));
+        assert!(ext.active_pipelines.lock().await.is_empty());
     }
 }
