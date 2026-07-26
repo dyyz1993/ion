@@ -11,6 +11,7 @@
 use crate::agent::error::{AgentError, AgentResult};
 use crate::agent::extension::Extension;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -135,12 +136,33 @@ pub struct MonitorStatus {
     pub last_spawned_worker: Option<String>,
 }
 
+/// A single active pipeline entry (persisted to disk so serve restarts don't
+/// re-trigger the same monitor/key and spawn a duplicate worker).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ActivePipeline {
+    /// Monitor name that produced this pipeline (e.g. "github-issues").
+    pub monitor: String,
+    /// Logical key within that monitor (e.g. "issue-42").
+    pub key: String,
+    /// Worker id handling this pipeline, if known.
+    #[serde(default)]
+    pub worker_id: Option<String>,
+    /// ISO-8601-ish timestamp of when it was marked active.
+    #[serde(default)]
+    pub started_at: String,
+    /// Current pipeline stage: "developer" / "reviewer" / "merger" / "publisher".
+    #[serde(default)]
+    pub stage: String,
+}
+
 /// MonitorExtension — singleton, only registered in serve mode.
 pub struct MonitorExtension {
     /// Monitor definitions (shared with interval loops).
     monitors: Arc<Mutex<Vec<MonitorDef>>>,
     /// Runtime statuses.
     statuses: Arc<Mutex<HashMap<String, MonitorStatus>>>,
+    /// T3: Active pipeline state, persisted across serve restarts.
+    active_pipelines: Arc<Mutex<Vec<ActivePipeline>>>,
     name: String,
 }
 
@@ -149,7 +171,50 @@ impl MonitorExtension {
         Self {
             monitors: Arc::new(Mutex::new(Vec::new())),
             statuses: Arc::new(Mutex::new(HashMap::new())),
+            active_pipelines: Arc::new(Mutex::new(Vec::new())),
             name: "monitor".into(),
+        }
+    }
+
+    // ── T3: active pipeline state persistence ──
+    //
+    // State file location: `$HOME/.ion/agent/active-pipelines.json`.
+    // On startup we load it (via on_singleton_init) so a restarted coordinator
+    // knows which monitor keys are already being processed and won't spawn a
+    // duplicate worker.
+
+    /// Return the on-disk path for the persisted active pipeline state.
+    fn active_path() -> PathBuf {
+        let home = std::env::var("HOME").unwrap_or_default();
+        PathBuf::from(home).join(".ion/agent/active-pipelines.json")
+    }
+
+    /// Load persisted active pipelines from disk. Missing/unreadable/unparseable
+    /// files are treated as "no active pipelines" (return empty vec) rather than
+    /// an error, so a clean first-run never blocks startup.
+    fn load_active() -> Vec<ActivePipeline> {
+        let path = Self::active_path();
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<ActivePipelinesFile>(&s).ok())
+            .map(|f| f.active)
+            .unwrap_or_default()
+    }
+
+    /// Persist the current active pipeline list to disk. Creates the parent
+    /// directory if needed. Failures are swallowed (logged by tracing) so a
+    /// transiently unwritable disk never breaks the in-memory state machine.
+    fn save_active(active: &[ActivePipeline]) {
+        let path = Self::active_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) =
+            serde_json::to_string_pretty(&serde_json::json!({ "active": active }))
+        {
+            let _ = std::fs::write(&path, json);
+        } else {
+            tracing::warn!("[monitor] failed to serialize active pipelines for {:?}", path);
         }
     }
 
@@ -390,6 +455,19 @@ impl Extension for MonitorExtension {
 
         let mut monitors = self.monitors.lock().await;
         *monitors = loaded;
+
+        // T3: load persisted active pipeline state so a restarted serve knows
+        // which monitor keys are already being processed.
+        let persisted = Self::load_active();
+        if !persisted.is_empty() {
+            tracing::info!(
+                "[monitor] restored {} active pipeline(s) from disk",
+                persisted.len()
+            );
+        }
+        let mut active = self.active_pipelines.lock().await;
+        *active = persisted;
+
         Ok(())
     }
 
@@ -1034,6 +1112,115 @@ impl Extension for MonitorExtension {
                 Ok(serde_json::json!({"statuses": result}))
             }
 
+            // ── T3: active pipeline state RPCs ──
+
+            // mark_active: record that monitor/key is being processed and persist.
+            // params: { monitor, key, worker_id?, stage? }
+            "mark_active" => {
+                let monitor = params.get("monitor").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let key = params.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if monitor.is_empty() || key.is_empty() {
+                    return Err(AgentError::Tool(
+                        "mark_active requires non-empty 'monitor' and 'key'".into(),
+                    ));
+                }
+                let worker_id = params.get("worker_id").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let stage = params.get("stage").and_then(|v| v.as_str()).unwrap_or("developer").to_string();
+                let started_at = chrono_or_systime();
+
+                let mut active = self.active_pipelines.lock().await;
+                // Update-in-place if this monitor/key is already tracked,
+                // otherwise push a new entry. This keeps the list de-duplicated.
+                let entry = active
+                    .iter_mut()
+                    .find(|p| p.monitor == monitor && p.key == key);
+                let (was_update, worker_id_out, stage_out, started_out) = match entry {
+                    Some(p) => {
+                        p.worker_id = worker_id.clone().or_else(|| p.worker_id.clone());
+                        p.stage = stage.clone();
+                        p.started_at = started_at.clone();
+                        (true, p.worker_id.clone(), p.stage.clone(), p.started_at.clone())
+                    }
+                    None => {
+                        let pipeline = ActivePipeline {
+                            monitor: monitor.clone(),
+                            key: key.clone(),
+                            worker_id: worker_id.clone(),
+                            started_at: started_at.clone(),
+                            stage: stage.clone(),
+                        };
+                        let snapshot = (
+                            pipeline.worker_id.clone(),
+                            pipeline.stage.clone(),
+                            pipeline.started_at.clone(),
+                        );
+                        active.push(pipeline);
+                        (false, snapshot.0, snapshot.1, snapshot.2)
+                    }
+                };
+                Self::save_active(&active);
+                drop(active);
+
+                Ok(serde_json::json!({
+                    "marked": true,
+                    "updated": was_update,
+                    "monitor": monitor,
+                    "key": key,
+                    "worker_id": worker_id_out,
+                    "stage": stage_out,
+                    "started_at": started_out,
+                }))
+            }
+
+            // release_active: remove monitor/key from the active list and persist.
+            // params: { monitor, key }
+            "release_active" => {
+                let monitor = params.get("monitor").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let key = params.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if monitor.is_empty() || key.is_empty() {
+                    return Err(AgentError::Tool(
+                        "release_active requires non-empty 'monitor' and 'key'".into(),
+                    ));
+                }
+                let mut active = self.active_pipelines.lock().await;
+                let before = active.len();
+                active.retain(|p| !(p.monitor == monitor && p.key == key));
+                let released = before > active.len();
+                Self::save_active(&active);
+                drop(active);
+
+                Ok(serde_json::json!({
+                    "released": released,
+                    "monitor": monitor,
+                    "key": key,
+                }))
+            }
+
+            // check_active: returns whether monitor/key is currently active.
+            // params: { monitor, key }
+            "check_active" => {
+                let monitor = params.get("monitor").and_then(|v| v.as_str()).unwrap_or("");
+                let key = params.get("key").and_then(|v| v.as_str()).unwrap_or("");
+                let active = self.active_pipelines.lock().await;
+                let is_active = active
+                    .iter()
+                    .any(|p| p.monitor == monitor && p.key == key);
+                Ok(serde_json::json!({
+                    "active": is_active,
+                    "monitor": monitor,
+                    "key": key,
+                }))
+            }
+
+            // list_active: returns all active pipelines.
+            "list_active" => {
+                let active = self.active_pipelines.lock().await;
+                Ok(serde_json::json!({
+                    "active": active.clone(),
+                    "count": active.len(),
+                }))
+            }
+
             _ => Err(AgentError::Tool(format!("unknown method: {method}")))
         }
     }
@@ -1074,4 +1261,15 @@ impl Drop for ActiveGuard {
             self.count.load(std::sync::atomic::Ordering::Relaxed)
         );
     }
+}
+
+// ── T3: on-disk schema wrapper for the active pipeline state file ──
+//
+// `active-pipelines.json` is an object with a single "active" array. We
+// deserialize through this struct so missing/extra fields are tolerated
+// gracefully by serde defaults.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct ActivePipelinesFile {
+    #[serde(default)]
+    active: Vec<ActivePipeline>,
 }

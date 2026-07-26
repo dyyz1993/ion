@@ -285,6 +285,17 @@ data.output 里有几个需要处理的项？
         避免 OOM 和 LLM API rate limit
 ```
 
+**MANDATORY**: When `data.output` contains N issues, you MUST process **ALL N** of them.
+Do not skip any. Do not pick "interesting" ones. Each issue has a human waiting.
+
+If you can only fit M < N in parallel, do them in batches:
+  batch 1: issues[0..M] in parallel
+  batch 2: issues[M..2M] in parallel
+  ...
+  batch last: issues[N-M..N] in parallel
+Until all N are processed.
+```
+
 **何时选并行**：
 - 多个 issue 互相**独立**（不同文件 / 不同模块）
 - 每个 developer 用独立 worktree（避免冲突）
@@ -500,6 +511,18 @@ Step 6: self.messages += "RESOLVED: github-issues/issue-42"
 
 3 个 issue 互相独立（不同文件 / 不同函数），选择**并行策略**：
 
+**Step 0: Enumerate ALL issues** (do this FIRST, before any spawning)
+
+```
+issues = parse(data.output)        # list of (number, title)
+self.messages.append(f"QUEUE: {len(issues)} issues to process: {[i.number for i in issues]}")
+
+for issue in issues:
+    self.messages.append(f"PENDING: issue #{issue.number}")
+```
+
+This explicit enumeration forces LLM to acknowledge each issue and not skip any.
+
 ```
 分析: 3 个独立 issue (10: README typo, 11: foo test, 12: bar→baz rename)
 策略: 并行（max_parallel=3），各用独立 worktree
@@ -539,6 +562,16 @@ Step 2a (parallel):
   for each issue in [10, 11, 12]:
       self.messages += "RESOLVED: github-issues/issue-N"
       删除 ACTIVE 标记
+```
+
+**Step Final: Verify all issues processed**
+
+```
+processed = [issue for issue in issues if f"RESOLVED: {issue.number}" in self.messages or f"FAILED: {issue.number}" in self.messages]
+if len(processed) < len(issues):
+    unhandled = [i for i in issues if i not in processed]
+    log(f"⚠️ UNHANDLED issues: {[i.number for i in unhandled]}")
+    # Process them now (don't exit until all done)
 ```
 
 **关键约束**：

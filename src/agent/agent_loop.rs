@@ -762,13 +762,29 @@ impl Agent {
     async fn inner_loop(&mut self) -> AgentResult<StopReason> {
         let max_turns = self.config.max_turns.unwrap_or(u64::MAX);
         let mut no_tool_retries = 0u32;
-        for turn in 0..max_turns {
+        // Tools that represent "agent waiting on external work" (subworker, channel, etc).
+        // These should NOT consume turn budget — they're like async await, not active work.
+        // Without this, coordinator running parallel self-healing pipeline (spawn N developers
+        // + await each + reviewer + merger + publisher) easily exhausts max_turns before
+        // the pipeline completes, leaving issues unresolved.
+        const BLOCKING_TOOLS: &[&str] = &[
+            "spawn_worker",    // create subworker (wait=true blocks)
+            "await_worker",    // explicitly wait for subworker
+            "resume_worker",   // resume a paused subworker conversation
+            "send_to_worker",  // send message to async peer (fire-and-forget but conceptually "wait")
+            "channel_send",    // broadcast to channel (coordination, not active work)
+        ];
+
+        // Use manual counter so we can skip increment for blocking tools.
+        let mut turn: u64 = 0;
+        let mut actual_turns: u64 = 0;
+        while actual_turns < max_turns {
             let turn_start = std::time::Instant::now();
-            self.turn_index = turn;
+            self.turn_index = actual_turns;
             self.check_pause().await?;
 
             let turn_ctx = TurnContext {
-                turn_index: turn,
+                turn_index: actual_turns,
                 messages: vec![],
                 has_tool_calls: false,
                 stop_reason: None,
@@ -866,6 +882,10 @@ impl Agent {
 
             match stop_reason {
                 StopReason::Stop | StopReason::Length => {
+                    // No tool calls → agent is producing final answer. Counts as a real turn.
+                    actual_turns += 1;
+                    turn += 1;
+
                     // Extract token usage from the Done event
                     let usage_from_done = events.iter().rev().find_map(|e| match e {
                         StreamEvent::Done { message, .. } => Some(message.usage.clone()),
@@ -1038,6 +1058,17 @@ impl Agent {
                             ..AssistantMessage::new(&self.model)
                         }));
                     }
+
+                    // Determine if this turn counts as "active work" for max_turns budget.
+                    // Turns where ALL tool calls are blocking (spawn_worker/await_worker/etc)
+                    // do NOT consume turn budget — they represent the agent waiting on
+                    // external work, not actively using resources.
+                    let all_blocking = !tool_calls.is_empty() && tool_calls.iter()
+                        .all(|tc| BLOCKING_TOOLS.contains(&tc.name.as_str()));
+                    if !all_blocking {
+                        actual_turns += 1;
+                    }
+                    turn += 1;
 
                     for tc in &tool_calls {
                         // 工具执行前检查 abort(stopped 是 Arc<AtomicBool>)
