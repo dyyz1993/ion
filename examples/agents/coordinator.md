@@ -301,6 +301,34 @@ Until all N are processed.
 - 每个 developer 用独立 worktree（避免冲突）
 - LLM API 配额够（并行会瞬时多倍消耗）
 
+### ⚠️ 日志规范（ZCode 可观测性）
+
+每个 pipeline 阶段必须输出一条结构化日志，让 ZCode（或运维）能在 serve log 里 grep 全链路：
+
+```
+[auto-heal] STEP 1 ANALYZE: monitor=X, issues=[#N1, #N2, ...]
+[auto-heal] STEP 2 SPAWN_DEV: issue=#N, worktree=true, wait=true
+[auto-heal] STEP 3 DEV_DONE: issue=#N, commit=abc123, files=[src/lib.rs]
+[auto-heal] STEP 4 SPAWN_REVIEW: issue=#N
+[auto-heal] STEP 5 REVIEW_DONE: issue=#N, verdict=APPROVE
+[auto-heal] STEP 6 SPAWN_MERGE: issue=#N
+[auto-heal] STEP 7 MERGE_DONE: issue=#N, merge_commit=def456
+[auto-heal] STEP 8 SPAWN_PUBLISH: issue=#N
+[auto-heal] STEP 9 PUBLISH_DONE: issue=#N, pushed=true, closed=true
+[auto-heal] PIPELINE_COMPLETE: issue=#N, status=RESOLVED
+```
+
+失败时也必须 log：
+```
+[auto-heal] STEP 2 DEV_FAILED: issue=#N, error=compile_error
+[auto-heal] STEP 5 REVIEW_REQUEST_CHANGES: issue=#N, round=1, issues=["line 42: ..."]
+[auto-heal] PIPELINE_ABORTED: issue=#N, reason=review_failed_3_rounds
+```
+
+**为什么**：ZCode 不参与 pipeline 执行，但需要从 serve log 排查"ION 处理 issue 时发生了什么"。
+如果没有这些 log，出问题时只能猜。
+
+
 **何时强制串行**：
 - 多个 issue 改**同一文件**（worktree 会冲突）
 - 系统 resource 紧张
