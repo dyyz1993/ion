@@ -35,7 +35,7 @@ echo ""
 # Ensure ion binary is built
 if [ ! -f "$ION" ]; then
     echo "Building ion..."
-    cargo build --bin ion --bin ion-worker 2>&1 | tail -3
+    cargo build --bin ion 2>&1 | tail -3
 fi
 
 # Track issues across rounds

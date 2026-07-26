@@ -24,8 +24,8 @@ echo "════════════════════════�
 echo "  Session Hook CI — $(date)"
 echo "════════════════════════════════════════════════════"
 
-cargo build --bin ion --bin ion-worker 2>/dev/null || { echo "❌ build failed"; exit 1; }
-pass "build ion + ion-worker"
+cargo build --bin ion 2>/dev/null || { echo "❌ build failed"; exit 1; }
+pass "build ion"
 
 # ── 启动 host ──
 SOCK="$HOME/.ion/host.sock"

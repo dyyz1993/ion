@@ -11,7 +11,7 @@
 #   bash tests/extensions_ci.sh
 #
 # 前提：
-#   - 已 cargo build --bin ion --bin ion-worker（debug 即可）
+#   - 已 cargo build --bin ion（debug 即可）
 #   - 已 cargo build --target wasm32-wasip1 --release -p todo-extension -p plan-extension
 #   - 本脚本会自动 build wasm 如果产物缺失
 #

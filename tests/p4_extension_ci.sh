@@ -45,12 +45,12 @@ echo "  P4 — Extension 生态验证 CI   $(date)"
 echo "══════════════════════════════════════════════════════════"
 
 # ── Phase 0: Build ──
-cargo build --bin ion --bin ion-worker -q 2>/dev/null
+cargo build --bin ion -q 2>/dev/null
 if [ $? -ne 0 ]; then
     echo "  Build failed — aborting"
     exit 1
 fi
-pass "build ion + ion-worker"
+pass "build ion"
 
 # ── Phase 1: Start Host ──
 cleanup

@@ -2,7 +2,7 @@
 # evolve_pr.sh — 自进化 PR 流程（B 改代码 → 守门 → 开 PR → merge）
 #
 # 流程：
-#   1. A 启动 container + 编译 ion/ion-worker
+#   1. A 启动 container + 编译 ion (单二进制)
 #   2. A 驱动 B 改代码（container exec，用 stdin 喂 prompt）
 #   3. A 守门（U+FFFD + cargo build + cargo test）
 #   4. 通过 → 在 host 上创建 feature 分支 + push + 开 PR

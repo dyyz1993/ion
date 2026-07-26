@@ -13,9 +13,9 @@ fn worker_bin_path() -> std::path::PathBuf {
         return std::path::PathBuf::from(path);
     }
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let debug_bin = manifest.join("target").join("debug").join("ion-worker");
+    let debug_bin = manifest.join("target").join("debug").join("ion");
     if debug_bin.exists() { return debug_bin; }
-    std::path::PathBuf::from("ion-worker")
+    std::path::PathBuf::from("ion")
 }
 
 fn create_registry() -> Arc<Mutex<WorkerRegistry>> {

@@ -4,7 +4,7 @@ set -o pipefail
 GROUP="E"
 source "$(dirname "$0")/common.sh"
 e2e_init
-cargo build --bin ion --bin ion-worker 2>/dev/null
+cargo build --bin ion 2>/dev/null
 pass "E0: build"
 
 start_host "tools test"

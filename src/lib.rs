@@ -15,7 +15,6 @@ pub mod types;
 
 pub mod manager;
 pub mod wasm_extension;
-pub mod rpc;
 pub mod runtime;
 pub mod pool;
 pub mod queue;
@@ -39,3 +38,4 @@ pub mod hooks;
 pub mod rules_engine;
 pub mod context_reclaimer;
 pub mod monitor_extension;
+pub mod worker_rpc;

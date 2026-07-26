@@ -29,7 +29,7 @@ echo "════════════════════════�
 echo "  P3 — 审计日志验证 CI   $(date)"
 echo "══════════════════════════════════════════════════════════"
 
-cargo build --bin ion --bin ion-worker -q 2>/dev/null && pass "build" || { echo "Build failed"; exit 1; }
+cargo build --bin ion -q 2>/dev/null && pass "build" || { echo "Build failed"; exit 1; }
 
 cleanup; sleep 0.5
 "$ION_BIN" serve start > /tmp/ion-ci-p3a-host.log 2>&1 &

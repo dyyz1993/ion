@@ -39,7 +39,7 @@ echo "  P4 — Extension 事件发射验证 CI   $(date)"
 echo "══════════════════════════════════════════════════════════"
 
 # ── Phase 0: Build ──
-cargo build --bin ion --bin ion-worker -q 2>/dev/null && pass "build ion + ion-worker" || { echo "  Build failed"; exit 1; }
+cargo build --bin ion -q 2>/dev/null && pass "build ion" || { echo "  Build failed"; exit 1; }
 
 # ── Phase 1: Start Host ──
 cleanup; sleep 0.5

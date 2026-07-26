@@ -60,7 +60,7 @@ A (host coordinator ION instance) drives B (container developer ION instance) to
 
 **Serial** is the safe default. **Concurrent** trades some isolation for speed (N isolated git repos inside one container). **Native** is the "ION evolving itself with its own primitives" ideal — the coordinator agent orchestrates developer and reviewer as child workers.
 
-All three share the same bootstrapping (`evolve.sh`): worktree → container → compile `ion` + `ion-worker`.
+All three share the same bootstrapping (`evolve.sh`): worktree → container → compile `ion` (single binary, worker mode built in via `--mode rpc`).
 
 ---
 
@@ -108,7 +108,7 @@ Hard-won from the full `EVOLVER_LESSONS_LEARNED.md` — these are the non-negoti
 - **English-only comments.** Non-ASCII (Chinese) characters get corrupted into U+FFFD by some LLMs, which silently breaks `edit` tool pattern matching. The U+FFFD gate exists because of this.
 - **GLM-5.2 > DeepSeek for UTF-8 stability.** GLM-5.2 (`zai` provider) produces cleaner byte output; DeepSeek occasionally mangles multi-byte chars. Default `MODEL=glm-5.2`.
 - **Apple Container volume is exclusive.** Named volumes cannot be shared across concurrent containers. Use bind mounts or single-container-multi-worktree for parallelism.
-- **`evolve.sh` must compile `--bin ion-worker`** (not just `--bin ion`). The native mode spawns workers via `ion-worker`; omitting it causes silent spawn failures.
+- ~~**`evolve.sh` must compile `--bin ion-worker`**~~ (2026-07-26 已过时：ION 已合并为单一 `ion` 二进制，`cargo build --release --bin ion` 即可。host 通过 `current_exe() + --mode rpc` spawn 自身创建 worker。)
 - **Reviewer reject → `resume_worker` for auto-fix loop.** The reviewer agent returns `REQUEST_CHANGES`; the coordinator feeds that back to the developer via `resume_worker`. Max 2 rounds before giving up — prevents infinite fix cycles.
 
 ---

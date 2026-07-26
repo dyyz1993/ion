@@ -15,32 +15,32 @@ const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 
 // ---------------------------------------------------------------------------
-// Helper: find the ion-worker binary
+// Helper: find the ion binary
 // ---------------------------------------------------------------------------
 
-/// Locate the `ion-worker` binary. Tries, in order:
+/// Locate the `ion` binary. Tries, in order:
 /// 1. `ION_WORKER_BIN` env var
 /// 2. Sibling of the current test executable
-/// 3. `ion-worker` in PATH
+/// 3. `ion` in PATH
 fn find_worker_bin() -> String {
     std::env::var("ION_WORKER_BIN").unwrap_or_else(|_| {
         let current_exe = std::env::current_exe().ok();
         if let Some(exe) = current_exe {
             if let Some(parent) = exe.parent() {
-                let sibling = parent.join("ion-worker");
+                let sibling = parent.join("ion");
                 if sibling.exists() {
                     return sibling.to_string_lossy().to_string();
                 }
-                // Also try ../ion-worker (one level up for different target dirs)
+                // Also try ../ion (one level up for different target dirs)
                 if let Some(grandparent) = parent.parent() {
-                    let alt = grandparent.join("ion-worker");
+                    let alt = grandparent.join("ion");
                     if alt.exists() {
                         return alt.to_string_lossy().to_string();
                     }
                 }
             }
         }
-        "ion-worker".to_string()
+        "ion".to_string()
     })
 }
 
@@ -64,7 +64,7 @@ struct WorkerProc {
 }
 
 impl WorkerProc {
-    /// Spawn `ion-worker --mode rpc` in an isolated temp directory with unique session.
+    /// Spawn `ion --mode rpc` in an isolated temp directory with unique session.
     fn spawn() -> Self {
         let worker_path = find_worker_bin();
         let session_id = format!("ut_{:08x}", rand_u32());
@@ -81,7 +81,7 @@ impl WorkerProc {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .expect("failed to spawn ion-worker");
+            .expect("failed to spawn ion");
 
         let stdin = child.stdin.take().expect("no stdin");
         let stdout = child.stdout.take().expect("no stdout");
@@ -388,7 +388,7 @@ fn u12_ready_signal() {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .expect("failed to spawn ion-worker");
+        .expect("failed to spawn ion");
 
     let stdout = child.stdout.take().expect("no stdout");
     let mut reader = BufReader::new(stdout);
@@ -466,7 +466,7 @@ fn u15_shutdown() {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .expect("failed to spawn ion-worker");
+        .expect("failed to spawn ion");
 
     let mut stdin = child.stdin.take().expect("no stdin");
     let stdout = child.stdout.take().expect("no stdout");
@@ -698,6 +698,9 @@ fn u17_create_session_writes_jsonl() {
         timestamp: ion::session_jsonl::timestamp_iso(),
         cwd: cwd.clone(),
         parent_session: None,
+        agent: None,
+        model: None,
+        provider: None,
     };
     ion::session_jsonl::SessionFile::save(&cwd, &header, &[]);
 
@@ -728,6 +731,9 @@ fn u18_load_session_restores_messages() {
         timestamp: ion::session_jsonl::timestamp_iso(),
         cwd: cwd.clone(),
         parent_session: None,
+        agent: None,
+        model: None,
+        provider: None,
     };
 
     // Build entries with parent chain
@@ -800,6 +806,9 @@ fn u19_session_index_updates() {
         timestamp: ion::session_jsonl::timestamp_iso(),
         cwd: cwd.clone(),
         parent_session: None,
+        agent: None,
+        model: None,
+        provider: None,
     };
     ion::session_jsonl::SessionFile::save(&cwd, &header, &[]);
 
@@ -851,6 +860,9 @@ fn u20_token_stats_are_accurate() {
         timestamp: ion::session_jsonl::timestamp_iso(),
         cwd: cwd.clone(),
         parent_session: None,
+        agent: None,
+        model: None,
+        provider: None,
     };
 
     let mut entries: Vec<serde_json::Value> = Vec::new();

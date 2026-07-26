@@ -47,7 +47,7 @@ echo "════════════════════════�
 
 # ── Phase 0: Build ──
 echo "--- Phase 0: Build ---"
-cargo build --bin ion --bin ion-worker 2>/dev/null && pass "build" || { fail "build"; exit 1; }
+cargo build --bin ion 2>/dev/null && pass "build" || { fail "build"; exit 1; }
 RUST_LOG=error cargo test --lib backend_registry 2>&1 | grep -q "test result:" && pass "unit tests (backend_registry)" || fail "unit tests"
 
 # ── Phase 0.5: container 服务检查 ──

@@ -37,7 +37,7 @@ echo "  ION Runtime CI Test — $(date)"
 echo "════════════════════════════════════════════════════"
 
 # ── Phase 0: Build ──
-cargo build --bin ion --bin ion-worker 2>/dev/null && pass "build" || { fail "build"; exit 1; }
+cargo build --bin ion 2>/dev/null && pass "build" || { fail "build"; exit 1; }
 
 # ── Phase 1: 单元测试 ──
 RUST_LOG=error cargo test --lib 2>&1 | grep -q "test result:" && pass "cargo test --lib" || fail "cargo test --lib"

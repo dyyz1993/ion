@@ -80,7 +80,7 @@ echo "  ION Scenario 2 CI Test — $(date)"
 echo "  覆盖 CLI_ARCHITECTURE.md Group A2-1 / A2-2 / A2-3"
 echo "════════════════════════════════════════════════════"
 
-cargo build --bin ion --bin ion-worker 2>/dev/null && pass "build" || { fail "build"; exit 1; }
+cargo build --bin ion 2>/dev/null && pass "build" || { fail "build"; exit 1; }
 
 # ──────────────────────────────────────────────────────────
 # Group A2-1：host 启停基础

@@ -53,10 +53,6 @@ path = "src/bin/agent_demo.rs"
 name = "manager-test"
 path = "src/bin/manager_test.rs"
 
-[[bin]]
-name = "ion-worker"
-path = "src/bin/ion_worker.rs"
-
 [profile.dev]
 opt-level = 1
 debug = true

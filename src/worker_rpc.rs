@@ -1,4 +1,8 @@
-//! ion worker --mode rpc
+//! Worker RPC 模式 — `ion --mode rpc` 入口的实现。
+//!
+//! 历史：原本是独立二进制 `ion-worker`，现已合并进 `ion` 单二进制。
+//! host 通过 `current_exe() + ["--mode", "rpc", ...]` spawn 自身来创建 worker 子进程，
+//! 对齐 pi 的 `pi --mode rpc` 设计。
 //!
 //! JSONL RPC 协议，完全对齐 pi 的 rpc-mode.ts。
 //!
@@ -12,11 +16,11 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::Mutex;
 use tokio::sync::{mpsc, oneshot};
-use ion::agent::agent_loop::{Agent, AgentConfig};
-use ion::agent::compact::CompactConfig;
-use ion::agent::tool::{ReadTool, WriteTool, EditTool, BashTool, GrepTool, FindTool, LsTool, CalculatorTool, EchoTool, GitStatusTool, GitDiffTool, GitLogTool, GitAddTool, GitCommitTool, GitBranchTool, SpawnWorkerTool, SendToWorkerTool, ResumeWorkerTool, AwaitWorkerTool, ChannelSendTool, KillWorkerTool, BranchSessionTool, GlobalMemorySearchTool, GlobalMemorySaveTool, SkillTool, ToolRegistry};
-use ion::wasm_extension::{Registry, ToolAdapter};
-use ion::session_jsonl;
+use crate::agent::agent_loop::{Agent, AgentConfig};
+use crate::agent::compact::CompactConfig;
+use crate::agent::tool::{ReadTool, WriteTool, EditTool, BashTool, GrepTool, FindTool, LsTool, CalculatorTool, EchoTool, GitStatusTool, GitDiffTool, GitLogTool, GitAddTool, GitCommitTool, GitBranchTool, SpawnWorkerTool, SendToWorkerTool, ResumeWorkerTool, AwaitWorkerTool, ChannelSendTool, KillWorkerTool, BranchSessionTool, GlobalMemorySearchTool, GlobalMemorySaveTool, SkillTool, ToolRegistry};
+use crate::wasm_extension::{Registry, ToolAdapter};
+use crate::session_jsonl;
 
 /// 全局：当前 Worker 的 session 文件路径。
 /// 主 Worker = session.jsonl；fork 子 Worker = <session_id>.jsonl（独立文件）。
@@ -32,8 +36,56 @@ use ion_provider::types::*;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-#[tokio::main]
-async fn main() {
+/// Worker RPC 入口的参数。
+///
+/// `ion --mode rpc` 解析 CLI 后构造此结构，再调用 [`run_worker_rpc`]。
+/// 也可由 host 通过 spawn 自身（`current_exe()` + `--mode rpc`）间接传入。
+#[derive(Debug, Default, Clone)]
+pub struct WorkerRpcArgs {
+    /// `--session <id>`：复用已有 session；None 则生成新 UUID。
+    pub session_id: Option<String>,
+    /// `--model <id>`：默认 `deepseek-v4-flash`（会被 config.json 覆盖）。
+    pub model_id: Option<String>,
+    /// `--provider <p>`：默认 `opencode`（会被 config.json 覆盖）。
+    pub provider: Option<String>,
+    /// `--channel <name>`：可重复，订阅的 channel 列表。
+    pub channels: Vec<String>,
+    /// `--agent <name>`：初始 agent 模板。
+    pub initial_agent: Option<String>,
+}
+
+impl WorkerRpcArgs {
+    /// 从 `std::env::args()` 解析（兼容旧 `ion-worker --mode rpc` 调用约定）。
+    ///
+    /// 识别的 flag：`--session/--model/--provider/--channel/--agent/--mode`。
+    /// 其他 flag（如 `--help`）被忽略。
+    pub fn from_env_args() -> Self {
+        let args: Vec<String> = std::env::args().collect();
+        let mut out = Self::default();
+        let mut i = 1;
+        while i < args.len() {
+            match args[i].as_str() {
+                "--session" => { out.session_id = args.get(i + 1).cloned(); i += 2; continue; }
+                "--model" => { out.model_id = args.get(i + 1).cloned(); i += 2; continue; }
+                "--provider" => { out.provider = args.get(i + 1).cloned(); i += 2; continue; }
+                "--channel" => { if let Some(ch) = args.get(i + 1) { out.channels.push(ch.clone()); } i += 2; continue; }
+                "--agent" => { out.initial_agent = args.get(i + 1).cloned(); i += 2; continue; }
+                "--mode" => { i += 2; continue; } // 已知是 rpc
+                _ => { i += 1; }
+            }
+        }
+        out
+    }
+}
+
+/// Worker RPC 主入口。
+///
+/// 由 `ion --mode rpc` 分支调用。初始化 tracing、Provider、Agent、RPC 循环，
+/// 在 stdin EOF 时优雅退出（保存 session）。
+///
+/// # Panics
+/// 不主动 panic；遇到致命初始化错误时通过 `eprintln!` + `std::process::exit(1)` 退出。
+pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     // CRITICAL: tracing MUST go to stderr, stdout is reserved for JSONL
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -44,28 +96,13 @@ async fn main() {
         .with_target(false)
         .try_init().ok();
 
-    let args: Vec<String> = std::env::args().collect();
     // Capture process start time for the health check RPC. Used by the watchdog
     // (scripts/watchdog.sh) to report uptime during dual-version switching.
     let start_time = std::time::Instant::now();
-    let mut session_id: Option<String> = None;
-    let mut model_id = "deepseek-v4-flash".to_string();
-    let mut provider = "opencode".to_string();
-    let mut channels: Vec<String> = Vec::new();
-    let mut initial_agent: Option<String> = None;
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--session" => { session_id = args.get(i + 1).cloned(); i += 2; continue; }
-            "--model" => { model_id = args.get(i + 1).cloned().unwrap_or(model_id); i += 2; continue; }
-            "--provider" => { provider = args.get(i + 1).cloned().unwrap_or(provider); i += 2; continue; }
-            "--channel" => { if let Some(ch) = args.get(i + 1) { channels.push(ch.clone()); } i += 2; continue; }
-            "--agent" => { initial_agent = args.get(i + 1).cloned(); i += 2; continue; }
-            "--mode" => { i += 2; continue; } // 已知是 rpc
-            _ => { i += 1; }
-        }
-    }
+    let WorkerRpcArgs { session_id, model_id, provider, channels, initial_agent } = args;
+    let mut model_id = model_id.unwrap_or_else(|| "deepseek-v4-flash".to_string());
+    let mut provider = provider.unwrap_or_else(|| "opencode".to_string());
+    let initial_agent = initial_agent;
 
     let sid = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
@@ -105,7 +142,7 @@ async fn main() {
     }
     let mut model = model_reg.find_model(&model_id).cloned().unwrap_or_else(|| {
         // 从 auth.json 读 base_url 和 api_key
-        let auth_url = ion::auth::AuthStorage::load().provider_base_urls.get(&provider).cloned();
+        let auth_url = crate::auth::AuthStorage::load().provider_base_urls.get(&provider).cloned();
         Model {
             id: model_id.clone(), name: model_id.clone(),
             api: "openai-completions".into(), provider: provider.clone(),
@@ -117,7 +154,7 @@ async fn main() {
     });
     // 即使是 builtin model，如果 auth.json 里有该 provider 的代理 base_url，覆盖之。
     // （builtin GLM model 的 base_url 是直连 open.bigmodel.cn，但用户可能用代理。）
-    if let Some(override_url) = ion::auth::AuthStorage::load().provider_base_urls.get(&provider) {
+    if let Some(override_url) = crate::auth::AuthStorage::load().provider_base_urls.get(&provider) {
         if !override_url.is_empty() {
             model.base_url = override_url.clone();
         }
@@ -205,9 +242,9 @@ async fn main() {
     // the plan Tools. Previously they used separate instances, so plan_add
     // wrote to the Tool's instance while plan_exit persisted the Extension's
     // (empty) instance → PLAN.md was always empty after exit.
-    let shared_plan: ion::agent::plan_tool::SharedPlan =
-        std::sync::Arc::new(ion::agent::plan_extension::PlanExtension::new());
-    for t in ion::agent::plan_tool::plan_tools_with(shared_plan.clone()) {
+    let shared_plan: crate::agent::plan_tool::SharedPlan =
+        std::sync::Arc::new(crate::agent::plan_extension::PlanExtension::new());
+    for t in crate::agent::plan_tool::plan_tools_with(shared_plan.clone()) {
         tools.register(t);
     }
     tools.register(Box::new(BranchSessionTool));
@@ -232,19 +269,19 @@ async fn main() {
     let worker_cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
-    let config_root = ion::paths::project_root_for_config()
+    let config_root = crate::paths::project_root_for_config()
         .to_string_lossy().to_string();
-    let storage_ctx = ion::storage_context::StorageContext::new(
+    let storage_ctx = crate::storage_context::StorageContext::new(
         &worker_cwd, &sid, &config_root,
     );
 
     // ── Memory 工具 + 共享 Store ──
     // Memory 用 config_root（worktree 场景回源主仓库，缺口 #2：worktree 共享记忆）
     let memory_store = std::sync::Arc::new(tokio::sync::Mutex::new(
-        ion::agent::memory::MemoryStore::new(storage_ctx.clone())
+        crate::agent::memory::MemoryStore::new(storage_ctx.clone())
     ));
-    tools.register(Box::new(ion::agent::memory::MemorySaveTool { store: memory_store.clone() }));
-    tools.register(Box::new(ion::agent::memory::MemorySearchTool { store: memory_store.clone() }));
+    tools.register(Box::new(crate::agent::memory::MemorySaveTool { store: memory_store.clone() }));
+    tools.register(Box::new(crate::agent::memory::MemorySearchTool { store: memory_store.clone() }));
 
     // ── Skill 工具（让 LLM 按需加载 skill）──
     // 扫描三个位置：
@@ -256,14 +293,14 @@ async fn main() {
         .map(|h| std::path::PathBuf::from(h).join(".agents").join("skills"))
         .unwrap_or_else(|| std::path::PathBuf::from("~/.agents/skills"));
     let skill_dirs = vec![
-        ion::paths::skills_dir(),
-        ion::paths::project_skills_dir(&config_root),
+        crate::paths::skills_dir(),
+        crate::paths::project_skills_dir(&config_root),
         agents_skills,
     ];
     tools.register(Box::new(SkillTool { skill_dirs }));
 
     // 加载 API key
-    let api_key = ion::auth::AuthStorage::resolve_api_key(None, &provider);
+    let api_key = crate::auth::AuthStorage::resolve_api_key(None, &provider);
     if api_key.is_none() {
         // Hardcoded fallback for testing
         let key = std::env::var("ION_API_KEY").unwrap_or_else(|_| {
@@ -303,7 +340,7 @@ async fn main() {
 		    } else {
 		        0
 		    },
-			    retry_config: Some(ion::retry::RetryConfig::default()),
+			    retry_config: Some(crate::retry::RetryConfig::default()),
 	    };
 
     let registry = Arc::new(registry);
@@ -318,11 +355,11 @@ async fn main() {
     // 扫描 ~/.ion/agent/extensions/ 和 {project_root}/.ion/extensions/ 下的 .wasm 文件
     // project_root 用 project_root_for_config()（worktree 场景回源到主仓库，缺口 #2）
     {
-        let config_root = ion::paths::project_root_for_config()
+        let config_root = crate::paths::project_root_for_config()
             .to_string_lossy().to_string();
         let extensions_dirs: Vec<std::path::PathBuf> = vec![
-            ion::paths::extensions_dir(),
-            ion::paths::project_extensions_dir(&config_root),
+            crate::paths::extensions_dir(),
+            crate::paths::project_extensions_dir(&config_root),
         ];
         for dir in &extensions_dirs {
             if !dir.exists() { continue; }
@@ -333,7 +370,7 @@ async fn main() {
                         let canonical_str = std::fs::canonicalize(&path)
                             .map(|p| p.to_string_lossy().to_string())
                             .unwrap_or_else(|_| path.to_string_lossy().to_string());
-                        let ext_name = ion::wasm_extension::ext_name_from_path(&canonical_str);
+                        let ext_name = crate::wasm_extension::ext_name_from_path(&canonical_str);
                         match wasm_ext_registry.add(&canonical_str) {
                             Ok(tool_defs) => {
                                 for td in &tool_defs {
@@ -368,9 +405,9 @@ async fn main() {
     // 导致数据混乱。这样 export 可以按 session_id 精确找到 fork 子 Worker 的对话历史。
     let is_fork_child = std::env::var("ION_FORK_CHILD").map(|v| v == "1").unwrap_or(false);
     let session_file_path: std::path::PathBuf = if is_fork_child {
-        ion::paths::session_jsonl_path_by_id(&worker_cwd, &sid)
+        crate::paths::session_jsonl_path_by_id(&worker_cwd, &sid)
     } else {
-        ion::paths::session_jsonl_path(&worker_cwd)
+        crate::paths::session_jsonl_path(&worker_cwd)
     };
     // 存到全局，save_worker_session 用同一个路径
     {
@@ -379,7 +416,7 @@ async fn main() {
     }
     // 设置 lib 层全局覆盖（让 append_raw_entry / append_turn_summary 也用正确路径）
     // 这样 fork 子 Worker 的 turn_summary 不会写到主 session.jsonl
-    ion::session_jsonl::set_session_file_override(Some(session_file_path.clone()));
+    crate::session_jsonl::set_session_file_override(Some(session_file_path.clone()));
     // 存 sid + cwd 到全局，on_before_tool_execute 钩子用
     {
         *SESSION_SID.lock().unwrap() = Some(sid.clone());
@@ -408,14 +445,14 @@ async fn main() {
 
     // File Snapshot Store（预声明，agent 初始化块和 RPC loop 都要用）
     #[allow(unused_assignments)]
-    let mut snapshot_store: Option<std::sync::Arc<ion::file_snapshot::SnapshotStore>> = None;
+    let mut snapshot_store: Option<std::sync::Arc<crate::file_snapshot::SnapshotStore>> = None;
 
     // Approval Manager（预声明，审批 RPC 用，依赖 snapshot_store）
     #[allow(unused_assignments)]
-    let mut approval_mgr: Option<std::sync::Arc<ion::file_snapshot::approval::ApprovalManager>> = None;
+    let mut approval_mgr: Option<std::sync::Arc<crate::file_snapshot::approval::ApprovalManager>> = None;
 
     // ── 加载配置（在 Runtime 和 Extension 初始化之前）──
-    let ion_cfg = ion::config::IonConfig::load();
+    let ion_cfg = crate::config::IonConfig::load();
 
     // ── MCP（方案 C：所有 Worker 通过 bridge 代理调 host 的 MCP 连接）──
     // Worker 进程不自己 connect_all，而是从 host 拉工具列表注册 McpProxyTool。
@@ -428,18 +465,18 @@ async fn main() {
 
     // ── 根据配置选择 Runtime ──
     // 用 Arc 保存，这样 HookExtension 能 clone 一份（agent handler 需要 runtime 来 spawn 子 Worker）
-    let worker_rt: Arc<dyn ion::runtime::Runtime> = {
+    let worker_rt: Arc<dyn crate::runtime::Runtime> = {
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        let registry = ion::backend_registry::BackendRegistry::from_config(&ion_cfg.runtime, &cwd);
+        let registry = crate::backend_registry::BackendRegistry::from_config(&ion_cfg.runtime, &cwd);
         tracing::info!(
             "[runtime] BackendRegistry 初始化: backends={:?}",
             registry.list_backends(),
         );
-        let worker_inner = ion::runtime::WorkerRuntime::new(
+        let worker_inner = crate::runtime::WorkerRuntime::new(
             registry,
-            manager_bridge.clone() as Arc<dyn ion::runtime::ManagerBridgeHandle>,
+            manager_bridge.clone() as Arc<dyn crate::runtime::ManagerBridgeHandle>,
         );
         Arc::new(worker_inner)
     };
@@ -449,7 +486,7 @@ async fn main() {
     let mut initial_system_prompt = default_prompt.clone();
     let mut current_agent_name: String = "build".into();
     if let Some(ref agent_name) = initial_agent {
-        if let Some(agent_cfg) = ion::agent_config::find_agent(agent_name) {
+        if let Some(agent_cfg) = crate::agent_config::find_agent(agent_name) {
             current_agent_name = agent_cfg.name.clone();
             if let Some(ref sp) = agent_cfg.system_prompt {
                 initial_system_prompt = sp.clone();
@@ -598,7 +635,7 @@ async fn main() {
 
     // 应用初始 agent 的工具限制（必须在 Agent 构造后调用）
     if let Some(ref agent_name) = initial_agent {
-        if let Some(agent_cfg) = ion::agent_config::find_agent(agent_name) {
+        if let Some(agent_cfg) = crate::agent_config::find_agent(agent_name) {
             // 1. 白名单优先：如果 agent 定义了 tools，只保留这些工具
             if let Some(ref allowed) = agent_cfg.tools {
                 agent.restrict_tools(allowed.clone());
@@ -647,18 +684,18 @@ async fn main() {
     let mut stdin_map = None;
     let mut notify_map = None;
     {
-        let mut ext_reg = ion::agent::extension::ExtensionRegistry::new();
+        let mut ext_reg = crate::agent::extension::ExtensionRegistry::new();
 
         // ── 注入 ctx.fs 统一文件访问能力（RuntimeFileSystem）──
         // 内置扩展通过 registry.filesystem() 拿到，WASM 扩展通过 host_read_file / host_list_dir 拿到。
         // allowed_roots = 项目根目录 + ~/.ion/（默认白名单，防路径逃逸）。
         {
             let fs_allowed_roots =
-                ion::agent::extension::RuntimeFileSystem::default_allowed_roots(
+                crate::agent::extension::RuntimeFileSystem::default_allowed_roots(
                     std::path::Path::new(&worker_cwd),
                 );
             let runtime_fs = std::sync::Arc::new(
-                ion::agent::extension::RuntimeFileSystem::new(
+                crate::agent::extension::RuntimeFileSystem::new(
                     worker_rt.clone(),
                     fs_allowed_roots,
                 ),
@@ -700,13 +737,13 @@ async fn main() {
         // plan_add writes to. Without this, plan_exit persists an empty step
         // list (the Extension's own fresh instance), producing an empty PLAN.md.
         ext_reg.register(Box::new(
-            ion::agent::plan_extension::SharedPlanExtension(shared_plan.clone()),
+            crate::agent::plan_extension::SharedPlanExtension(shared_plan.clone()),
         ));
         tracing::info!("[extension] PlanExtension registered (shared with plan tools)");
 
         // Memory Extension
         if ion_cfg.is_extension_enabled("memory") {
-            let mut memory_ext = ion::agent::memory::MemoryExtension::new(storage_ctx.clone());
+            let mut memory_ext = crate::agent::memory::MemoryExtension::new(storage_ctx.clone());
             // 复用 tools 的 MemoryStore（同一份数据）
             memory_ext.store = memory_store.clone();
             // V0.2 会话加工：注入 registry + model（SessionEnd 时 LLM 提炼记忆）
@@ -720,7 +757,7 @@ async fn main() {
 
         // Bash Extension（后台进程管理）
         if ion_cfg.is_extension_enabled("bash") {
-            let bash_ext = ion::agent::bash::BashExtension::new(storage_ctx.clone());
+            let bash_ext = crate::agent::bash::BashExtension::new(storage_ctx.clone());
             process_map = Some(bash_ext.process_map.clone());
             stdin_map = Some(bash_ext.stdin_map.clone());
             notify_map = Some(bash_ext.notify_map.clone());
@@ -739,7 +776,7 @@ async fn main() {
         // Permission Extension（权限策略层）
         // 用 config_root（worktree 回源主仓库，读主仓库 .ion/settings.json）
         if ion_cfg.is_extension_enabled("permission") {
-            let perm_ext = ion::agent::permission_extension::PermissionExtension::new(storage_ctx.clone());
+            let perm_ext = crate::agent::permission_extension::PermissionExtension::new(storage_ctx.clone());
             ext_reg.register(Box::new(perm_ext));
         } else {
             tracing::info!("[extension] permission disabled by config");
@@ -747,7 +784,7 @@ async fn main() {
 
         // Context Index Extension（上下文索引 + 快照折叠）
         if ion_cfg.is_extension_enabled("context-index") {
-            let ctx_ext = ion::agent::context_index::ContextIndexExtension::new();
+            let ctx_ext = crate::agent::context_index::ContextIndexExtension::new();
             ext_reg.register(Box::new(ctx_ext));
         } else {
             tracing::info!("[extension] context-index disabled by config");
@@ -755,7 +792,7 @@ async fn main() {
 
         // File Time Guard Extension（detect externally-modified files before write/edit）
         if ion_cfg.is_extension_enabled("file-time-guard") {
-            ext_reg.register(Box::new(ion::file_time_guard::FileTimeGuardExtension::new()));
+            ext_reg.register(Box::new(crate::file_time_guard::FileTimeGuardExtension::new()));
             tracing::info!("[extension] file-time-guard enabled");
         } else {
             tracing::info!("[extension] file-time-guard disabled by config");
@@ -763,7 +800,7 @@ async fn main() {
 
         // Rules Engine Extension (project rules injection based on applyTo glob patterns)
         if ion_cfg.is_extension_enabled("rules-engine") {
-            ext_reg.register(Box::new(ion::rules_engine::RulesEngineExtension::new()));
+            ext_reg.register(Box::new(crate::rules_engine::RulesEngineExtension::new()));
             tracing::info!("[extension] rules-engine enabled");
         } else {
             tracing::info!("[extension] rules-engine disabled by config");
@@ -772,13 +809,13 @@ async fn main() {
         // Context Reclaimer (priority-based token recycling)
         // Strips thinking blocks + reclaims old tool results (bash > grep > read)
         // Always enabled — zero LLM cost, pure text manipulation.
-        ext_reg.register(Box::new(ion::context_reclaimer::ContextReclaimer::new()));
+        ext_reg.register(Box::new(crate::context_reclaimer::ContextReclaimer::new()));
         tracing::info!("[extension] context-reclaimer enabled (thinking strip + tool result recycling)");
 
         // File Snapshot Extension（文件快照 + diff 追踪）
         snapshot_store =
             if ion_cfg.is_extension_enabled("file-snapshot") {
-                let (fs_ext, store) = ion::file_snapshot::FileSnapshotExtension::new_pair(storage_ctx.clone());
+                let (fs_ext, store) = crate::file_snapshot::FileSnapshotExtension::new_pair(storage_ctx.clone());
                 ext_reg.register(Box::new(fs_ext));
                 tracing::info!("[extension] file-snapshot enabled");
                 Some(store)
@@ -792,11 +829,11 @@ async fn main() {
         // Approval Manager + Extension（审批，依赖 snapshot_store）
         approval_mgr = if let Some(ref store) = snapshot_store {
             let mgr = std::sync::Arc::new(
-                ion::file_snapshot::approval::ApprovalManager::new(store.clone(), storage_ctx.clone())
+                crate::file_snapshot::approval::ApprovalManager::new(store.clone(), storage_ctx.clone())
             );
             // 注册 ApprovalExtension（on_gate_check + on_turn_end re-approval 重置）
             ext_reg.register(Box::new(
-                ion::file_snapshot::approval::ApprovalExtension::new(mgr.clone())
+                crate::file_snapshot::approval::ApprovalExtension::new(mgr.clone())
             ));
             tracing::info!("[extension] file-approval enabled");
             Some(mgr)
@@ -817,12 +854,12 @@ async fn main() {
         // 当 agent .md 定义了 workflow: gate_command 时才生效。
         if ion_cfg.is_extension_enabled("workflow_gate") {
             if let Some(ref agent_name) = initial_agent {
-                if let Some(agent_cfg) = ion::agent_config::find_agent(agent_name) {
+                if let Some(agent_cfg) = crate::agent_config::find_agent(agent_name) {
                     if let Some(ref wf_config) = agent_cfg.workflow {
                         tracing::info!("[workflow] gate registered: cmd='{}', expected='{}'",
                             wf_config.gate_command, wf_config.gate_expected);
                         ext_reg.register(Box::new(
-                            ion::agent::workflow_extension::WorkflowExtension::new(wf_config.clone())
+                            crate::agent::workflow_extension::WorkflowExtension::new(wf_config.clone())
                         ));
                     }
                 }
@@ -834,13 +871,13 @@ async fn main() {
         // runtime=None：command handler 用 tokio::spawn fallback；agent handler 待后续接入 runtime
         if ion_cfg.is_extension_enabled("hooks") {
             let proj_dir = std::path::PathBuf::from(&worker_cwd);
-            if ion::hooks::extension::HookExtension::has_hooks(&proj_dir) {
-                let hook_ext = ion::hooks::extension::HookExtension::new(
+            if crate::hooks::extension::HookExtension::has_hooks(&proj_dir) {
+                let hook_ext = crate::hooks::extension::HookExtension::new(
                     proj_dir,
                     Some(worker_rt.clone()),     // agent handler 需要 runtime 来 spawn 子 Worker
                     Some(Arc::clone(&registry)), // prompt handler 需要 ApiRegistry 来调 LLM
                     Some(model.clone()),         // prompt handler 需要当前会话模型
-                    Some(manager_bridge.clone() as Arc<dyn ion::runtime::ManagerBridgeHandle>), // mcp_tool handler 转发 MCP 调用
+                    Some(manager_bridge.clone() as Arc<dyn crate::runtime::ManagerBridgeHandle>), // mcp_tool handler 转发 MCP 调用
                     Some(follow_up_tx.clone()),
                 );
                 ext_reg.register(Box::new(hook_ext));
@@ -856,22 +893,22 @@ async fn main() {
 
         // 注册 bash 工具（仅当 bash extension 启用时）
         if let (Some(pm), Some(sm), Some(nm)) = (&process_map, &stdin_map, &notify_map) {
-            let bash_run_tool = ion::agent::bash::BashRunTool {
+            let bash_run_tool = crate::agent::bash::BashRunTool {
                 process_map: pm.clone(),
                 stdin_map: sm.clone(),
                 notify_map: nm.clone(),
                 follow_up_tx: Some(follow_up_tx.clone()),
                 storage: storage_ctx.clone(),
             };
-            let bash_kill_tool = ion::agent::bash::BashKillTool {
+            let bash_kill_tool = crate::agent::bash::BashKillTool {
                 process_map: pm.clone(),
                 follow_up_tx: Some(follow_up_tx.clone()),
                 storage: storage_ctx.clone(),
             };
-            let bash_send_tool = ion::agent::bash::BashSendTool {
+            let bash_send_tool = crate::agent::bash::BashSendTool {
                 stdin_map: sm.clone(),
             };
-            let bash_bg_tool = ion::agent::bash::BashBackgroundTool {
+            let bash_bg_tool = crate::agent::bash::BashBackgroundTool {
                 notify_map: nm.clone(),
                 process_map: pm.clone(),
                 storage: storage_ctx.clone(),
@@ -1105,7 +1142,7 @@ async fn main() {
                     .sum();
 
                 // 从 SessionIndex 读血缘 + lastEntryId
-                let index = ion::session_index::SessionIndex::load();
+                let index = crate::session_index::SessionIndex::load();
                 let meta = index.get(&sid);
                 let parent_session = meta.and_then(|m| m.parent_session.clone());
                 let parent_type = meta.and_then(|m| m.parent_type.clone());
@@ -1113,7 +1150,7 @@ async fn main() {
 
                 // 从磁盘读 lastEntryId（如果 index 里没有）
                 let last_entry_id = last_entry_id.or_else(|| {
-                    ion::session_jsonl::SessionFile::load(&worker_cwd)
+                    crate::session_jsonl::SessionFile::load(&worker_cwd)
                         .and_then(|f| f.last_id)
                 });
 
@@ -1133,7 +1170,7 @@ async fn main() {
 
             "get_children" => {
                 let target_session = params.get("session").and_then(|v| v.as_str()).unwrap_or(&sid);
-                let index = ion::session_index::SessionIndex::load();
+                let index = crate::session_index::SessionIndex::load();
                 let children: Vec<_> = index.get_children(target_session).iter().map(|m| {
                     serde_json::json!({
                         "id": m.name,
@@ -1154,12 +1191,12 @@ async fn main() {
                 // 解析分页参数
                 let view_str = params.get("view").and_then(|v| v.as_str()).unwrap_or("live");
                 let view = match view_str {
-                    "since_compaction" => ion::message_retrieval::View::SinceCompaction,
-                    "full" => ion::message_retrieval::View::Full,
+                    "since_compaction" => crate::message_retrieval::View::SinceCompaction,
+                    "full" => crate::message_retrieval::View::Full,
                     s if s.starts_with("branch:") => {
-                        ion::message_retrieval::View::Branch(s[7..].to_string())
+                        crate::message_retrieval::View::Branch(s[7..].to_string())
                     }
-                    _ => ion::message_retrieval::View::Live,
+                    _ => crate::message_retrieval::View::Live,
                 };
                 let after = params.get("after").and_then(|v| v.as_str()).map(|s| s.to_string());
                 let before = params.get("before").and_then(|v| v.as_str()).map(|s| s.to_string());
@@ -1167,16 +1204,16 @@ async fn main() {
                 let complete_turn = params.get("complete_turn").and_then(|v| v.as_bool()).unwrap_or(true);
                 let custom_str = params.get("include_custom").and_then(|v| v.as_str()).unwrap_or("none");
                 let include_custom = match custom_str {
-                    "display_only" => ion::message_retrieval::CustomFilter::DisplayOnly,
-                    "all" => ion::message_retrieval::CustomFilter::All,
-                    _ => ion::message_retrieval::CustomFilter::None,
+                    "display_only" => crate::message_retrieval::CustomFilter::DisplayOnly,
+                    "all" => crate::message_retrieval::CustomFilter::All,
+                    _ => crate::message_retrieval::CustomFilter::None,
                 };
 
                 // 从磁盘读 entries（含 turn_summary/compaction 等非 message entry）
                 let entries: Vec<serde_json::Value> =
-                    ion::message_retrieval::load_entries_cached(&worker_cwd);
+                    crate::message_retrieval::load_entries_cached(&worker_cwd);
 
-                let retrieval_params = ion::message_retrieval::RetrievalParams {
+                let retrieval_params = crate::message_retrieval::RetrievalParams {
                     view,
                     after,
                     before,
@@ -1184,7 +1221,7 @@ async fn main() {
                     complete_turn,
                     include_custom,
                 };
-                let result = ion::message_retrieval::retrieve_messages(&entries, &retrieval_params);
+                let result = crate::message_retrieval::retrieve_messages(&entries, &retrieval_params);
 
                 output_response(&id, "get_messages", &serde_json::json!({
                     "messages": result.messages,
@@ -1200,12 +1237,12 @@ async fn main() {
                 let full_content = params.get("full_content").and_then(|v| v.as_bool()).unwrap_or(false);
                 let limit = params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(50);
                 let entries: Vec<serde_json::Value> =
-                    ion::message_retrieval::load_entries_cached(&worker_cwd);
-                let params = ion::message_retrieval::RetrievalParams {
+                    crate::message_retrieval::load_entries_cached(&worker_cwd);
+                let params = crate::message_retrieval::RetrievalParams {
                     limit,
                     ..Default::default()
                 };
-                let result = ion::message_retrieval::retrieve_turns(&entries, &params, full_content);
+                let result = crate::message_retrieval::retrieve_turns(&entries, &params, full_content);
                 output_response(&id, "list_turns", &serde_json::json!({
                     "turns": result.turns.iter().map(|t| serde_json::json!({
                         "turnId": t.turn_id,
@@ -1227,10 +1264,10 @@ async fn main() {
 
             "list_inputs" => {
                 let entries: Vec<serde_json::Value> =
-                    ion::message_retrieval::load_entries_cached(&worker_cwd);
-                let result = ion::message_retrieval::retrieve_inputs(
+                    crate::message_retrieval::load_entries_cached(&worker_cwd);
+                let result = crate::message_retrieval::retrieve_inputs(
                     &entries,
-                    &ion::message_retrieval::RetrievalParams::default(),
+                    &crate::message_retrieval::RetrievalParams::default(),
                 );
                 output_response(&id, "list_inputs", &serde_json::json!({
                     "inputs": result.inputs.iter().map(|i| serde_json::json!({
@@ -1247,11 +1284,11 @@ async fn main() {
             "get_turn_detail" => {
                 let turn_id = params.get("turnId").and_then(|v| v.as_str()).unwrap_or("");
                 let entries: Vec<serde_json::Value> =
-                    ion::message_retrieval::load_entries_cached(&worker_cwd);
-                match ion::message_retrieval::retrieve_turn_detail(
+                    crate::message_retrieval::load_entries_cached(&worker_cwd);
+                match crate::message_retrieval::retrieve_turn_detail(
                     &entries,
                     turn_id,
-                    &ion::message_retrieval::CustomFilter::None,
+                    &crate::message_retrieval::CustomFilter::None,
                 ) {
                     Some(detail) => output_response(&id, "get_turn_detail", &serde_json::json!({
                         "turnId": detail.turn_id,
@@ -1458,9 +1495,9 @@ async fn main() {
                                         "list_turns" => {
                                             let full_content = bg_params.get("full_content").and_then(|v| v.as_bool()).unwrap_or(false);
                                             let limit = bg_params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(50);
-                                            let entries: Vec<serde_json::Value> = ion::message_retrieval::load_entries_cached(&worker_cwd);
-                                            let rp = ion::message_retrieval::RetrievalParams { limit, ..Default::default() };
-                                            let result = ion::message_retrieval::retrieve_turns(&entries, &rp, full_content);
+                                            let entries: Vec<serde_json::Value> = crate::message_retrieval::load_entries_cached(&worker_cwd);
+                                            let rp = crate::message_retrieval::RetrievalParams { limit, ..Default::default() };
+                                            let result = crate::message_retrieval::retrieve_turns(&entries, &rp, full_content);
                                             output_response(&bg_id, "list_turns", &serde_json::json!({
                                                 "turns": result.turns.iter().map(|t| serde_json::json!({
                                                     "turnId": t.turn_id,
@@ -1482,10 +1519,10 @@ async fn main() {
                                         "get_messages" => {
                                             let view_str = bg_params.get("view").and_then(|v| v.as_str()).unwrap_or("live");
                                             let view = match view_str {
-                                                "since_compaction" => ion::message_retrieval::View::SinceCompaction,
-                                                "full" => ion::message_retrieval::View::Full,
-                                                s if s.starts_with("branch:") => ion::message_retrieval::View::Branch(s[7..].to_string()),
-                                                _ => ion::message_retrieval::View::Live,
+                                                "since_compaction" => crate::message_retrieval::View::SinceCompaction,
+                                                "full" => crate::message_retrieval::View::Full,
+                                                s if s.starts_with("branch:") => crate::message_retrieval::View::Branch(s[7..].to_string()),
+                                                _ => crate::message_retrieval::View::Live,
                                             };
                                             let limit = bg_params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(0);
                                             let after = bg_params.get("after").and_then(|v| v.as_str()).map(String::from);
@@ -1493,15 +1530,15 @@ async fn main() {
                                             let complete_turn = bg_params.get("complete_turn").and_then(|v| v.as_bool()).unwrap_or(false);
                                             let inc_custom = bg_params.get("include_custom").and_then(|v| v.as_str()).unwrap_or("none");
                                             let include_custom = match inc_custom {
-                                                "display_only" => ion::message_retrieval::CustomFilter::DisplayOnly,
-                                                "all" => ion::message_retrieval::CustomFilter::All,
-                                                _ => ion::message_retrieval::CustomFilter::None,
+                                                "display_only" => crate::message_retrieval::CustomFilter::DisplayOnly,
+                                                "all" => crate::message_retrieval::CustomFilter::All,
+                                                _ => crate::message_retrieval::CustomFilter::None,
                                             };
-                                            let entries: Vec<serde_json::Value> = ion::message_retrieval::load_entries_cached(&worker_cwd);
-                                            let rp = ion::message_retrieval::RetrievalParams {
+                                            let entries: Vec<serde_json::Value> = crate::message_retrieval::load_entries_cached(&worker_cwd);
+                                            let rp = crate::message_retrieval::RetrievalParams {
                                                 view, after, before, limit, complete_turn, include_custom,
                                             };
-                                            let result = ion::message_retrieval::retrieve_messages(&entries, &rp);
+                                            let result = crate::message_retrieval::retrieve_messages(&entries, &rp);
                                             output_response(&bg_id, "get_messages", &serde_json::json!({
                                                 "messages": result.messages,
                                                 "hasMore": result.has_more,
@@ -1511,9 +1548,9 @@ async fn main() {
                                             }));
                                         }
                                         "list_inputs" => {
-                                            let entries: Vec<serde_json::Value> = ion::message_retrieval::load_entries_cached(&worker_cwd);
-                                            let rp = ion::message_retrieval::RetrievalParams::default();
-                                            let result = ion::message_retrieval::retrieve_inputs(&entries, &rp);
+                                            let entries: Vec<serde_json::Value> = crate::message_retrieval::load_entries_cached(&worker_cwd);
+                                            let rp = crate::message_retrieval::RetrievalParams::default();
+                                            let result = crate::message_retrieval::retrieve_inputs(&entries, &rp);
                                             output_response(&bg_id, "list_inputs", &serde_json::json!({
                                                 "inputs": result.inputs.iter().map(|i| serde_json::json!({
                                                     "turnId": i.turn_id, "entryId": i.entry_id, "text": i.text,
@@ -1524,8 +1561,8 @@ async fn main() {
                                         }
                                         "get_turn_detail" => {
                                             let turn_id = bg_params.get("turnId").and_then(|v| v.as_str()).unwrap_or("");
-                                            let entries: Vec<serde_json::Value> = ion::message_retrieval::load_entries_cached(&worker_cwd);
-                                            match ion::message_retrieval::retrieve_turn_detail(&entries, turn_id, &ion::message_retrieval::CustomFilter::None) {
+                                            let entries: Vec<serde_json::Value> = crate::message_retrieval::load_entries_cached(&worker_cwd);
+                                            match crate::message_retrieval::retrieve_turn_detail(&entries, turn_id, &crate::message_retrieval::CustomFilter::None) {
                                                 Some(detail) => output_response(&bg_id, "get_turn_detail", &serde_json::json!({
                                                     "turnId": detail.turn_id,
                                                     "entries": detail.entries,
@@ -1724,11 +1761,11 @@ async fn main() {
                 let user_text = format!("[channel #{} from {}] {}", channel, from_short, msg_text);
 
                 // 注入到 Agent follow_up queue（Agent 当前轮次结束后自动消化）
-                agent.follow_up(ion::agent::messages::Message::User(
-                    ion::agent::messages::UserMessage {
+                agent.follow_up(crate::agent::messages::Message::User(
+                    crate::agent::messages::UserMessage {
                         role: "user".into(),
-                        content: vec![ion::agent::messages::ContentBlock::Text(
-                            ion::agent::messages::TextContent { text: user_text, text_signature: None }
+                        content: vec![crate::agent::messages::ContentBlock::Text(
+                            crate::agent::messages::TextContent { text: user_text, text_signature: None }
                         )],
                         timestamp: now_ms(),
                         source: ion_provider::types::MessageSource::FollowUp,
@@ -1786,8 +1823,8 @@ async fn main() {
                 // Return the first user message (system prompt)
                 let sp = agent.messages().iter()
                     .find_map(|m| match m {
-                        ion::agent::messages::Message::User(u) => u.content.iter().find_map(|b| match b {
-                            ion::agent::messages::ContentBlock::Text(t) => Some(t.text.clone()),
+                        crate::agent::messages::Message::User(u) => u.content.iter().find_map(|b| match b {
+                            crate::agent::messages::ContentBlock::Text(t) => Some(t.text.clone()),
                             _ => None,
                         }),
                         _ => None,
@@ -1796,7 +1833,7 @@ async fn main() {
             },
             "get_agents" => {
                 // 真实实现：列出所有内置 + 自定义 agent
-                let agents = ion::agent_config::builtin_agents();
+                let agents = crate::agent_config::builtin_agents();
                 let list: Vec<serde_json::Value> = agents.iter().map(|a| {
                     serde_json::json!({
                         "name": a.name,
@@ -1809,10 +1846,10 @@ async fn main() {
                 output_response(&id, "get_agents", &serde_json::json!(list));
             },
             "get_current_agent" => {
-                // 当前 agent（从 ion::agent_config 读真实定义）
-                let cur = ion::agent_config::find_agent(&current_agent_name)
+                // 当前 agent（从 crate::agent_config 读真实定义）
+                let cur = crate::agent_config::find_agent(&current_agent_name)
                     .unwrap_or_else(|| {
-                        ion::agent_config::builtin_agents().into_iter()
+                        crate::agent_config::builtin_agents().into_iter()
                             .next().unwrap()
                     });
                 output_response(&id, "get_current_agent", &serde_json::json!({
@@ -1823,7 +1860,7 @@ async fn main() {
                 }));
             },
             "get_settings" => {
-                let cfg = ion::config::IonConfig::load();
+                let cfg = crate::config::IonConfig::load();
                 let key = params.get("key").and_then(|v| v.as_str());
                 if let Some(k) = key {
                     let val = match k {
@@ -1886,7 +1923,7 @@ async fn main() {
                 let mut skills: Vec<serde_json::Value> = Vec::new();
 
                 // 全局 skills (~/.ion/skills/)
-                let global_dir = ion::paths::skills_dir();
+                let global_dir = crate::paths::skills_dir();
                 if let Ok(entries) = std::fs::read_dir(&global_dir) {
                     for entry in entries.flatten() {
                         if let Some(name) = entry.file_name().to_str() {
@@ -1906,7 +1943,7 @@ async fn main() {
                 }
 
                 // 项目级 skills (<config_root>/.ion/skills/)——worktree 回源主仓库（缺口 #2）
-                let proj_dir = ion::paths::project_skills_dir(&config_root);
+                let proj_dir = crate::paths::project_skills_dir(&config_root);
                 if let Ok(entries) = std::fs::read_dir(&proj_dir) {
                     for entry in entries.flatten() {
                         if let Some(name) = entry.file_name().to_str() {
@@ -1948,13 +1985,13 @@ async fn main() {
                 output_response(&id, "get_available_models", &serde_json::json!(models));
             },
             "get_tier_models" => {
-                let cfg = ion::config::IonConfig::load();
+                let cfg = crate::config::IonConfig::load();
                 output_response(&id, "get_tier_models", &serde_json::json!(cfg.tier_models));
             }
             "get_tree" => {
                 let mode = params.get("mode").and_then(|v| v.as_str()).unwrap_or("structure");
                 let entries: Vec<serde_json::Value> =
-                    ion::message_retrieval::load_entries_cached(&worker_cwd);
+                    crate::message_retrieval::load_entries_cached(&worker_cwd);
 
                 if entries.is_empty() {
                     output_response(&id, "get_tree", &serde_json::json!({
@@ -1977,7 +2014,7 @@ async fn main() {
                         let t = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
                         t == "compaction" || t == "leaf_pointer" || t == "turn_summary"
                     }).cloned().collect();
-                    let current_leaf = ion::session_tree::resolve_current_leaf(&entries);
+                    let current_leaf = crate::session_tree::resolve_current_leaf(&entries);
                     let compaction_points: Vec<_> = entries.iter()
                         .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("compaction"))
                         .filter_map(|e| e.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
@@ -2080,11 +2117,11 @@ async fn main() {
                 let ctx_chars: usize = msgs.iter()
                     .map(|m| match m {
                         Message::User(u) => u.content.iter().map(|b| match b {
-                            ion::agent::messages::ContentBlock::Text(t) => t.text.len(),
+                            crate::agent::messages::ContentBlock::Text(t) => t.text.len(),
                             _ => 0,
                         }).sum::<usize>(),
                         Message::Assistant(a) => a.content.iter().map(|b| match b {
-                            ion::agent::messages::AssistantContentBlock::Text(t) => t.text.len(),
+                            crate::agent::messages::AssistantContentBlock::Text(t) => t.text.len(),
                             _ => 0,
                         }).sum::<usize>(),
                         _ => 0,
@@ -2187,7 +2224,7 @@ async fn main() {
                     let next_id = next_model.id.clone();
                     agent.set_model(next_model);
                     model_id = next_id.clone();
-                    ion::session_index::SessionIndex::set_model(&sid, &provider, &next_id);
+                    crate::session_index::SessionIndex::set_model(&sid, &provider, &next_id);
                     output_response(&id, "cycle_model", &serde_json::json!({
                         "modelId": next_id, "provider": current_provider,
                         "previousModel": current_id,
@@ -2201,17 +2238,17 @@ async fn main() {
                     .map(|i| levels[(i + 1) % levels.len()])
                     .unwrap_or("medium");
                 agent.set_thinking_level(Some(next.to_string()));
-                ion::session_index::SessionIndex::set_thinking_level(&sid, next);
+                crate::session_index::SessionIndex::set_thinking_level(&sid, next);
                 output_response(&id, "cycle_thinking_level", &serde_json::json!({
                     "thinkingLevel": next, "previousLevel": current,
                 }));
             },
             "compact" => {
                 let before_msgs = agent.messages().len();
-                let before_tokens = ion::agent::compact::total_tokens(agent.messages());
+                let before_tokens = crate::agent::compact::total_tokens(agent.messages());
                 match agent.compact_now().await {
                     Ok(result) => {
-                        let after_tokens = ion::agent::compact::total_tokens(agent.messages());
+                        let after_tokens = crate::agent::compact::total_tokens(agent.messages());
                         output_response(&id, "compact", &serde_json::json!({
                             "compacted": true,
                             "beforeMessages": before_msgs,
@@ -2242,8 +2279,8 @@ async fn main() {
             "navigate_tree" => {
                 // 返回树的可导航线性结构（id/parentId/role/content 截断/leaf 标记）
                 let entries: Vec<serde_json::Value> =
-                    ion::message_retrieval::load_entries_cached(&worker_cwd);
-                let current_leaf = ion::session_tree::resolve_current_leaf(&entries);
+                    crate::message_retrieval::load_entries_cached(&worker_cwd);
+                let current_leaf = crate::session_tree::resolve_current_leaf(&entries);
 
                 let nodes: Vec<_> = entries.iter().filter_map(|e| {
                     let etype = e.get("type").and_then(|v| v.as_str())?;
@@ -2251,7 +2288,7 @@ async fn main() {
                     let parent_id = e.get("parentId").and_then(|v| v.as_str()).unwrap_or("");
                     let is_on_leaf_path = current_leaf.as_ref().map(|leaf| {
                         // 简单判断：id 在 leaf path 里
-                        ion::session_tree::get_branch_path(&entries, leaf)
+                        crate::session_tree::get_branch_path(&entries, leaf)
                             .iter()
                             .any(|pe| pe.get("id").and_then(|v| v.as_str()) == Some(id))
                     }).unwrap_or(false);
@@ -2303,7 +2340,7 @@ async fn main() {
                 }
 
                 // 从 JSONL 构建消息 entry id → 数组索引的映射
-                let entries = ion::message_retrieval::load_entries_cached(&worker_cwd);
+                let entries = crate::message_retrieval::load_entries_cached(&worker_cwd);
 
                 // 尝试精确索引映射（compaction 前的快速路径）
                 let indices = resolve_target_indices(
@@ -2331,9 +2368,9 @@ async fn main() {
                 // 执行删除
                 agent.mark_deleted(&indices, &target_ids).await;
                 // 落 DeletionEntry
-                ion::session_jsonl::append_deletion(&worker_cwd, &target_ids, reason);
+                crate::session_jsonl::append_deletion(&worker_cwd, &target_ids, reason);
                 // 失效缓存（下次 load_entries_cached 会重新读盘）
-                ion::message_retrieval::invalidate_cache(&worker_cwd);
+                crate::message_retrieval::invalidate_cache(&worker_cwd);
 
                 output_response(&id, "delete_entries", &serde_json::json!({
                     "deleted": indices.len(), "before": before, "after": agent.messages().len()
@@ -2356,7 +2393,7 @@ async fn main() {
                 }
 
                 // 从 JSONL 构建索引映射（支持 compaction 后的降级匹配）
-                let entries = ion::message_retrieval::load_entries_cached(&worker_cwd);
+                let entries = crate::message_retrieval::load_entries_cached(&worker_cwd);
 
                 let indices = resolve_target_indices(
                     &entries,
@@ -2385,8 +2422,8 @@ async fn main() {
                 // 执行折叠
                 agent.mark_summarized(&indices, &target_ids, &summary).await;
                 // 落 SegmentSummaryEntry
-                ion::session_jsonl::append_segment_summary(&worker_cwd, &target_ids, &summary);
-                ion::message_retrieval::invalidate_cache(&worker_cwd);
+                crate::session_jsonl::append_segment_summary(&worker_cwd, &target_ids, &summary);
+                crate::message_retrieval::invalidate_cache(&worker_cwd);
 
                 output_response(&id, "summarize_entries", &serde_json::json!({
                     "summarized": indices.len(),
@@ -2413,9 +2450,9 @@ async fn main() {
                 // 1. 从 Agent 状态移除
                 agent.restore_entries(&target_ids);
                 // 2. 追加 restoration entry 到 JSONL（拉取层会撤销过滤）
-                ion::session_jsonl::append_restoration(&worker_cwd, &target_ids);
+                crate::session_jsonl::append_restoration(&worker_cwd, &target_ids);
                 // 3. 失效缓存
-                ion::message_retrieval::invalidate_cache(&worker_cwd);
+                crate::message_retrieval::invalidate_cache(&worker_cwd);
                 // 4. 从 JSONL 重载消息到 Agent（恢复被删/折叠的原始消息）
                 let new_count = agent.reload_messages_from_session(&worker_cwd);
 
@@ -2430,7 +2467,7 @@ async fn main() {
                 // 真实切换 agent：加载定义 + 应用系统提示词/工具限制
                 let target = params.get("agentName").or_else(|| params.get("name"))
                     .and_then(|v| v.as_str()).unwrap_or("");
-                if let Some(agent_cfg) = ion::agent_config::find_agent(target) {
+                if let Some(agent_cfg) = crate::agent_config::find_agent(target) {
                     current_agent_name = agent_cfg.name.clone();
                     // 应用系统提示词
                     if let Some(ref sp) = agent_cfg.system_prompt {
@@ -2621,7 +2658,7 @@ async fn main() {
                                 // Remove old tools, add new ones
                                 for old_name in &p.tools { agent.remove_tool(old_name); }
                                 let canonical_str = p.path.clone();
-                                let ext_name = ion::wasm_extension::ext_name_from_path(&canonical_str);
+                                let ext_name = crate::wasm_extension::ext_name_from_path(&canonical_str);
                                 for td in &tool_defs {
                                     agent.register_tool(Box::new(ToolAdapter {
                                         name: td.name.clone(),
@@ -2656,7 +2693,7 @@ async fn main() {
                 if tier.is_empty() || model.is_empty() {
                     output_response(&id, "set_tier_models", &serde_json::json!({"error": "missing 'tier' or 'model'"}));
                 } else {
-                    let mut cfg = ion::config::IonConfig::load();
+                    let mut cfg = crate::config::IonConfig::load();
                     let old = cfg.tier_models.get(tier).cloned();
                     cfg.tier_models.insert(tier.to_string(), model.to_string());
                     match cfg.save() {
@@ -2670,13 +2707,13 @@ async fn main() {
             "get_tree_with_leaf" => {
                 // get_tree + 带 pathToLeaf（root → current leaf 的路径）
                 let entries: Vec<serde_json::Value> =
-                    ion::message_retrieval::load_entries_cached(&worker_cwd);
-                let current_leaf = ion::session_tree::resolve_current_leaf(&entries);
-                let tree_nodes = ion::session_tree::get_tree(&entries);
+                    crate::message_retrieval::load_entries_cached(&worker_cwd);
+                let current_leaf = crate::session_tree::resolve_current_leaf(&entries);
+                let tree_nodes = crate::session_tree::get_tree(&entries);
 
                 // 计算 root → leaf 路径
                 let path_to_leaf = if let Some(ref leaf_id) = current_leaf {
-                    ion::session_tree::get_branch_path(&entries, leaf_id)
+                    crate::session_tree::get_branch_path(&entries, leaf_id)
                         .iter()
                         .filter_map(|e| e.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
                         .collect::<Vec<_>>()
@@ -2684,7 +2721,7 @@ async fn main() {
                     vec![]
                 };
 
-                let branches = ion::session_tree::named_branches(&entries);
+                let branches = crate::session_tree::named_branches(&entries);
                 output_response(&id, "get_tree_with_leaf", &serde_json::json!({
                     "tree": tree_nodes,
                     "currentLeaf": current_leaf,
@@ -2742,12 +2779,12 @@ async fn main() {
                         }
 
                         let diff = match (&before_content, &after_content) {
-                            (Some(b), Some(a)) => ion::file_snapshot::unified_diff(b, a, file_path),
+                            (Some(b), Some(a)) => crate::file_snapshot::unified_diff(b, a, file_path),
                             (None, Some(a)) => format!("+++ new file\n{}", a),
                             (Some(b), None) => format!("--- deleted file\n{}", b),
                             _ => String::new(),
                         };
-                        let (added, removed) = ion::file_snapshot::count_diff(&diff);
+                        let (added, removed) = crate::file_snapshot::count_diff(&diff);
                         output_response(&id, "get_file_diff", &serde_json::json!({
                             "path": file_path,
                             "diff": diff,
@@ -2785,7 +2822,7 @@ async fn main() {
                     };
                     // 按 path 分组，取每个 path 的首尾
                     use std::collections::HashMap;
-                    let mut grouped: HashMap<String, Vec<&ion::file_snapshot::ToolSnapshot>> = HashMap::new();
+                    let mut grouped: HashMap<String, Vec<&crate::file_snapshot::ToolSnapshot>> = HashMap::new();
                     for s in &snaps {
                         grouped.entry(s.path.clone()).or_default().push(s);
                     }
@@ -2800,12 +2837,12 @@ async fn main() {
                         let after_content = last.after_hash.as_ref()
                             .and_then(|h| store.objects().read_object_text(h));
                         let diff = match (&before_content, &after_content) {
-                            (Some(b), Some(a)) => ion::file_snapshot::unified_diff(b, a, path),
+                            (Some(b), Some(a)) => crate::file_snapshot::unified_diff(b, a, path),
                             (None, Some(a)) => format!("+++ new file\n{}", a),
                             (Some(b), None) => format!("--- deleted\n{}", b),
                             _ => String::new(),
                         };
-                        let (added, removed) = ion::file_snapshot::count_diff(&diff);
+                        let (added, removed) = crate::file_snapshot::count_diff(&diff);
                         total_added += added;
                         total_removed += removed;
                         files.push(serde_json::json!({
@@ -2855,7 +2892,7 @@ async fn main() {
                 if to_turn.is_empty() {
                     output_response(&id, "restore_files", &serde_json::json!({"error": "missing 'toTurn' (turnId)"}));
                 } else if let Some(ref store) = snapshot_store {
-                    let result = ion::file_snapshot::restore::restore_code_to_turn(store, to_turn);
+                    let result = crate::file_snapshot::restore::restore_code_to_turn(store, to_turn);
                     output_response(&id, "restore_files", &serde_json::json!({
                         "restoredFiles": result.restored_files.iter().map(|f| serde_json::json!({
                             "path": f.path,
@@ -2935,14 +2972,14 @@ async fn main() {
                                 "id": format!("approval_deny_{}", std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)),
                                 "parentId": null,
-                                "timestamp": ion::session_jsonl::timestamp_iso(),
+                                "timestamp": crate::session_jsonl::timestamp_iso(),
                                 "message": {
                                     "role": "user",
                                     "content": [{"type": "text", "text": deny_msg}],
                                 },
                                 "customType": "approval_deny",
                             });
-                            ion::session_jsonl::append_raw_entry(&worker_cwd, &entry);
+                            crate::session_jsonl::append_raw_entry(&worker_cwd, &entry);
 
                             output_response(&id, "review_reject", &serde_json::json!({
                                 "path": rf.path, "status": "rejected",
@@ -2984,9 +3021,9 @@ async fn main() {
                 if let Some(ref mgr) = approval_mgr {
                     let filter = params.get("status").and_then(|v| v.as_str());
                     let status_filter = filter.and_then(|s| match s {
-                        "pending" => Some(ion::file_snapshot::ApprovalStatus::Pending),
-                        "approved" => Some(ion::file_snapshot::ApprovalStatus::Approved),
-                        "rejected" => Some(ion::file_snapshot::ApprovalStatus::Rejected),
+                        "pending" => Some(crate::file_snapshot::ApprovalStatus::Pending),
+                        "approved" => Some(crate::file_snapshot::ApprovalStatus::Approved),
+                        "rejected" => Some(crate::file_snapshot::ApprovalStatus::Rejected),
                         _ => None,
                     });
                     let list = mgr.approvals_list(status_filter.as_ref());
@@ -3005,9 +3042,9 @@ async fn main() {
             "get_fork_messages" => {
                 // 复用 retrieve_inputs（只返回 user 消息，用于 fork 选择）
                 let entries: Vec<serde_json::Value> =
-                    ion::message_retrieval::load_entries_cached(&worker_cwd);
-                let params = ion::message_retrieval::RetrievalParams::default();
-                let result = ion::message_retrieval::retrieve_inputs(&entries, &params);
+                    crate::message_retrieval::load_entries_cached(&worker_cwd);
+                let params = crate::message_retrieval::RetrievalParams::default();
+                let result = crate::message_retrieval::retrieve_inputs(&entries, &params);
                 output_response(&id, "get_fork_messages", &serde_json::json!({
                     "inputs": result.inputs.iter().map(|i| serde_json::json!({
                         "entryId": i.entry_id,
@@ -3026,7 +3063,7 @@ async fn main() {
                 if name.is_empty() {
                     output_response(&id, "get_agent_detail", &serde_json::json!({"error":"missing agentName"}));
                 } else {
-                    match ion::agent_config::find_agent(name) {
+                    match crate::agent_config::find_agent(name) {
                         Some(agent) => {
                             // 手动构建 JSON（确保 system_prompt 可见）
                             let detail = serde_json::json!({
@@ -3172,11 +3209,11 @@ async fn main() {
             }
             "follow_up" => {
                 let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                agent.follow_up(ion::agent::messages::Message::User(
-                    ion::agent::messages::UserMessage {
+                agent.follow_up(crate::agent::messages::Message::User(
+                    crate::agent::messages::UserMessage {
                         role: "user".into(),
-                        content: vec![ion::agent::messages::ContentBlock::Text(
-                            ion::agent::messages::TextContent { text, text_signature: None }
+                        content: vec![crate::agent::messages::ContentBlock::Text(
+                            crate::agent::messages::TextContent { text, text_signature: None }
                         )],
                         timestamp: now_ms(),
                         source: ion_provider::types::MessageSource::FollowUp,
@@ -3235,7 +3272,7 @@ async fn main() {
                     output_error_response(&id, "register_remote_tool", "missing 'name' or 'url'");
                     continue;
                 }
-                agent.register_tool(Box::new(ion::agent::tool::RemoteTool {
+                agent.register_tool(Box::new(crate::agent::tool::RemoteTool {
                     name: name.clone(),
                     description,
                     parameters,
@@ -3279,7 +3316,7 @@ async fn main() {
 
                 match wasm_ext_registry.add(&canonical_str) {
                     Ok(tool_defs) => {
-                        let ext_name = ion::wasm_extension::ext_name_from_path(&canonical_str);
+                        let ext_name = crate::wasm_extension::ext_name_from_path(&canonical_str);
                         for td in &tool_defs {
                             agent.register_tool(Box::new(ToolAdapter {
                                 name: td.name.clone(),
@@ -3344,7 +3381,7 @@ async fn main() {
                 }
 
                 // 重新加载
-                let ext_name = ion::wasm_extension::ext_name_from_path(&canonical_str);
+                let ext_name = crate::wasm_extension::ext_name_from_path(&canonical_str);
                 match wasm_ext_registry.add(&canonical_str) {
                     Ok(tool_defs) => {
                         for td in &tool_defs {
@@ -3372,7 +3409,7 @@ async fn main() {
                 if key.is_empty() {
                     output_response(&id, "set_settings", &serde_json::json!({"error": "missing 'key' parameter"}));
                 } else {
-                    let mut cfg = ion::config::IonConfig::load();
+                    let mut cfg = crate::config::IonConfig::load();
                     let old_val: serde_json::Value;
                     match key {
                         "default_provider" | "default-provider" => {
@@ -3474,7 +3511,7 @@ async fn main() {
                     "modelId": model_id,
                 }));
                 // 同步到 session index（O(1) 查询用）
-                ion::session_index::SessionIndex::set_model(&sid, provider, model_id);
+                crate::session_index::SessionIndex::set_model(&sid, provider, model_id);
                 output_response(&id, "append_model_change", &serde_json::json!({"status":"appended"}));
             }
             "append_thinking_level_change" => {
@@ -3482,7 +3519,7 @@ async fn main() {
                 append_session_entry(&worker_cwd, &sid, "thinking_level_change", &serde_json::json!({
                     "level": level,
                 }));
-                ion::session_index::SessionIndex::set_thinking_level(&sid, level);
+                crate::session_index::SessionIndex::set_thinking_level(&sid, level);
                 output_response(&id, "append_thinking_level_change", &serde_json::json!({"status":"appended"}));
             }
             "append_agent_change" => {
@@ -3491,7 +3528,7 @@ async fn main() {
                 let mut entry = serde_json::json!({"name": name});
                 if let Some(c) = config { entry["config"] = c.clone(); }
                 append_session_entry(&worker_cwd, &sid, "agent_change", &entry);
-                ion::session_index::SessionIndex::set_agent(&sid, name);
+                crate::session_index::SessionIndex::set_agent(&sid, name);
                 output_response(&id, "append_agent_change", &serde_json::json!({"status":"appended"}));
             }
             "append_session_name" => {
@@ -3499,7 +3536,7 @@ async fn main() {
                 append_session_entry(&worker_cwd, &sid, "session_info", &serde_json::json!({
                     "name": name,
                 }));
-                ion::session_index::SessionIndex::set_name(&sid, name);
+                crate::session_index::SessionIndex::set_name(&sid, name);
                 output_response(&id, "append_session_name", &serde_json::json!({"status":"appended","name":name}));
             }
             "append_label" => {
@@ -3521,7 +3558,7 @@ async fn main() {
                 append_session_entry(&worker_cwd, &sid, "active_tools_change", &serde_json::json!({
                     "activeToolNames": names,
                 }));
-                ion::session_index::SessionIndex::set_active_tools(&sid, names);
+                crate::session_index::SessionIndex::set_active_tools(&sid, names);
                 output_response(&id, "append_active_tools_change",
                     &serde_json::json!({"status":"appended"}));
             }
@@ -3693,8 +3730,8 @@ fn build_skill_hint(config_root: &str) -> String {
         .map(|h| std::path::PathBuf::from(h).join(".agents").join("skills"))
         .unwrap_or_else(|| std::path::PathBuf::from("~/.agents/skills"));
     let dirs = [
-        ion::paths::skills_dir(),
-        ion::paths::project_skills_dir(config_root),
+        crate::paths::skills_dir(),
+        crate::paths::project_skills_dir(config_root),
         agents_skills,
     ];
     // 收集 (name, description) 对
@@ -3829,7 +3866,7 @@ impl McpProxyTool {
 }
 
 #[mcp_async_trait]
-impl ion::agent::tool::Tool for McpProxyTool {
+impl crate::agent::tool::Tool for McpProxyTool {
     fn name(&self) -> &str { &self.full_name }
     fn description(&self) -> &str { &self.description }
     fn parameters(&self) -> serde_json::Value { self.parameters.clone() }
@@ -3837,8 +3874,8 @@ impl ion::agent::tool::Tool for McpProxyTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _rt: &dyn ion::runtime::Runtime,
-    ) -> ion::agent::error::AgentResult<String> {
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> crate::agent::error::AgentResult<String> {
         let resp = self.bridge
             .send_command("mcp_call_tool", serde_json::json!({
                 "server": self.server_name,
@@ -3846,7 +3883,7 @@ impl ion::agent::tool::Tool for McpProxyTool {
                 "args": args,
             }))
             .await
-            .map_err(|e| ion::agent::error::AgentError::Tool(e))?;
+            .map_err(|e| crate::agent::error::AgentError::Tool(e))?;
 
         if resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
             Ok(resp
@@ -3856,7 +3893,7 @@ impl ion::agent::tool::Tool for McpProxyTool {
                 .unwrap_or("")
                 .to_string())
         } else {
-            Err(ion::agent::error::AgentError::Tool(
+            Err(crate::agent::error::AgentError::Tool(
                 resp.get("error")
                     .and_then(|e| e.as_str())
                     .unwrap_or("mcp proxy error")
@@ -3870,10 +3907,10 @@ impl ion::agent::tool::Tool for McpProxyTool {
 struct StreamingExtension;
 
 #[async_trait::async_trait]
-impl ion::agent::extension::Extension for StreamingExtension {
+impl crate::agent::extension::Extension for StreamingExtension {
     fn name(&self) -> &str { "streaming" }
 
-    async fn on_message_delta(&self, delta: &str, role: &str) -> ion::agent::error::AgentResult<()> {
+    async fn on_message_delta(&self, delta: &str, role: &str) -> crate::agent::error::AgentResult<()> {
         if role == "assistant" && !delta.is_empty() {
             output(&serde_json::json!({
                 "type": "event",
@@ -3885,7 +3922,7 @@ impl ion::agent::extension::Extension for StreamingExtension {
 
 
     /// agent_start 事件（对齐 pi）
-    async fn on_agent_start(&self, _ctx: &ion::agent::agent_loop::AgentContext) -> ion::agent::error::AgentResult<()> {
+    async fn on_agent_start(&self, _ctx: &crate::agent::agent_loop::AgentContext) -> crate::agent::error::AgentResult<()> {
         output(&serde_json::json!({
             "type": "event",
             "event": {
@@ -3897,7 +3934,7 @@ impl ion::agent::extension::Extension for StreamingExtension {
     }
 
     /// agent_end 事件（对齐 pi — 含消息数）
-    async fn on_agent_end(&self, ctx: &ion::agent::agent_loop::AgentContext) -> ion::agent::error::AgentResult<()> {
+    async fn on_agent_end(&self, ctx: &crate::agent::agent_loop::AgentContext) -> crate::agent::error::AgentResult<()> {
         output(&serde_json::json!({
             "type": "event",
             "event": {
@@ -3911,7 +3948,7 @@ impl ion::agent::extension::Extension for StreamingExtension {
     }
 
     /// message_start 事件（对齐 pi）
-    async fn on_message_start(&self, role: &str, content: &str) -> ion::agent::error::AgentResult<()> {
+    async fn on_message_start(&self, role: &str, content: &str) -> crate::agent::error::AgentResult<()> {
         output(&serde_json::json!({
             "type": "event",
             "event": {
@@ -3925,7 +3962,7 @@ impl ion::agent::extension::Extension for StreamingExtension {
     }
 
     /// message_end 事件（对齐 pi — 含 token 用量）
-    async fn on_message_end(&self, role: &str, _full_content: &str, usage: &ion_provider::types::Usage) -> ion::agent::error::AgentResult<()> {
+    async fn on_message_end(&self, role: &str, _full_content: &str, usage: &ion_provider::types::Usage) -> crate::agent::error::AgentResult<()> {
         output(&serde_json::json!({
             "type": "event",
             "event": {
@@ -3941,7 +3978,7 @@ impl ion::agent::extension::Extension for StreamingExtension {
         }));
         Ok(())
     }
-    async fn on_tool_call_delta(&self, delta: &str, name: &str) -> ion::agent::error::AgentResult<()> {
+    async fn on_tool_call_delta(&self, delta: &str, name: &str) -> crate::agent::error::AgentResult<()> {
         if !delta.is_empty() {
             if std::env::var("ION_STREAM_DEBUG").ok().as_deref() == Some("1") {
                 eprintln!("[stream-debug] worker emit tool_call_delta name={name} len={}", delta.len());
@@ -3961,7 +3998,7 @@ impl ion::agent::extension::Extension for StreamingExtension {
 
 
     /// 自动重试开始事件：让前端显示 "重试中 (N/M)..."（对齐 pi auto_retry_start）
-    async fn on_auto_retry_start(&self, attempt: u32, max_retries: u32) -> ion::agent::error::AgentResult<()> {
+    async fn on_auto_retry_start(&self, attempt: u32, max_retries: u32) -> crate::agent::error::AgentResult<()> {
         output(&serde_json::json!({
             "type": "event",
             "event": {
@@ -3975,7 +4012,7 @@ impl ion::agent::extension::Extension for StreamingExtension {
     }
 
     /// 自动重试结束事件（success=false 表示所有重试用完仍失败）
-    async fn on_auto_retry_end(&self, success: bool, attempt: u32) -> ion::agent::error::AgentResult<()> {
+    async fn on_auto_retry_end(&self, success: bool, attempt: u32) -> crate::agent::error::AgentResult<()> {
         output(&serde_json::json!({
             "type": "event",
             "event": {
@@ -3988,7 +4025,7 @@ impl ion::agent::extension::Extension for StreamingExtension {
         Ok(())
     }
 
-    async fn on_tool_execution_start(&self, ctx: &ion::agent::extension::ToolExecutionContext) -> ion::agent::error::AgentResult<()> {
+    async fn on_tool_execution_start(&self, ctx: &crate::agent::extension::ToolExecutionContext) -> crate::agent::error::AgentResult<()> {
         output(&serde_json::json!({
             "type": "event",
             "event": {
@@ -4009,8 +4046,8 @@ impl ion::agent::extension::Extension for StreamingExtension {
         &self,
         _tool_name: &str,
         _args: &serde_json::Value,
-        messages: &[ion::agent::messages::Message],
-    ) -> ion::agent::error::AgentResult<()> {
+        messages: &[crate::agent::messages::Message],
+    ) -> crate::agent::error::AgentResult<()> {
         let msgs_json: Vec<serde_json::Value> = messages.iter()
             .filter_map(|m| serde_json::to_value(m).ok())
             .collect();
@@ -4027,7 +4064,7 @@ impl ion::agent::extension::Extension for StreamingExtension {
         Ok(())
     }
 
-    async fn on_tool_execution_update(&self, ctx: &ion::agent::extension::ToolExecutionContext, partial: &str) -> ion::agent::error::AgentResult<()> {
+    async fn on_tool_execution_update(&self, ctx: &crate::agent::extension::ToolExecutionContext, partial: &str) -> crate::agent::error::AgentResult<()> {
         output(&serde_json::json!({
             "type": "event",
             "event": {
@@ -4041,7 +4078,7 @@ impl ion::agent::extension::Extension for StreamingExtension {
         Ok(())
     }
 
-    async fn on_tool_execution_end(&self, ctx: &ion::agent::extension::ToolExecutionContext) -> ion::agent::error::AgentResult<()> {
+    async fn on_tool_execution_end(&self, ctx: &crate::agent::extension::ToolExecutionContext) -> crate::agent::error::AgentResult<()> {
         output(&serde_json::json!({
             "type": "event",
             "event": {
@@ -4103,7 +4140,7 @@ impl WorkerAgentRpc {
 }
 
 #[async_trait::async_trait]
-impl ion::wasm_extension::AgentRpcHandle for WorkerAgentRpc {
+impl crate::wasm_extension::AgentRpcHandle for WorkerAgentRpc {
     async fn call(&self, method: &str, params_json: &str) -> Result<String, String> {
         let snap = self.snapshot.read().unwrap();
         let params: serde_json::Value = serde_json::from_str(params_json)
@@ -4214,21 +4251,21 @@ impl ion::wasm_extension::AgentRpcHandle for WorkerAgentRpc {
 // 通过 extension_rpc 暴露 ctx.fs 的 read_file / list_dir / path_exists / glob，
 // 以及 data_dirs（4 级数据目录），让 tests/extension_fs_ci.sh 能验证注入。
 struct FsProbeExtension {
-    fs: std::sync::Arc<ion::agent::extension::RuntimeFileSystem>,
-    storage: ion::storage_context::StorageContext,
+    fs: std::sync::Arc<crate::agent::extension::RuntimeFileSystem>,
+    storage: crate::storage_context::StorageContext,
 }
 
 #[async_trait::async_trait]
-impl ion::agent::extension::Extension for FsProbeExtension {
+impl crate::agent::extension::Extension for FsProbeExtension {
     fn name(&self) -> &str { "fs_probe" }
 
     async fn on_extension_rpc(
         &self,
         method: &str,
         params: serde_json::Value,
-    ) -> ion::agent::error::AgentResult<serde_json::Value> {
-        use ion::agent::error::AgentError;
-        use ion::agent::extension::FileSystemCapability;
+    ) -> crate::agent::error::AgentResult<serde_json::Value> {
+        use crate::agent::error::AgentError;
+        use crate::agent::extension::FileSystemCapability;
         let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
         match method {
             "read_file" => {
@@ -4265,7 +4302,7 @@ impl ion::agent::extension::Extension for FsProbeExtension {
             "data_dirs" => {
                 // 返回 4 级数据目录（验证 StorageContext 注入）
                 let ext_name = params.get("ext_name").and_then(|v| v.as_str()).unwrap_or("fs_probe");
-                let dirs = ion::agent::extension::ExtensionDataDirs {
+                let dirs = crate::agent::extension::ExtensionDataDirs {
                     global: self.storage.global_dir(ext_name),
                     project: self.storage.project_dir(ext_name),
                     cwd: self.storage.cwd_dir(ext_name),
@@ -4315,16 +4352,16 @@ impl SessionProbeExtension {
 }
 
 #[async_trait::async_trait]
-impl ion::agent::extension::Extension for SessionProbeExtension {
+impl crate::agent::extension::Extension for SessionProbeExtension {
     fn name(&self) -> &str { "session_probe" }
 
     async fn on_session_before_switch(
         &self,
-        ctx: &ion::agent::extension::SessionSwitchContext,
-    ) -> ion::agent::error::AgentResult<()> {
+        ctx: &crate::agent::extension::SessionSwitchContext,
+    ) -> crate::agent::error::AgentResult<()> {
         self.emit_seen(&ctx.action, &ctx.target_leaf_id, &ctx.branch_name);
         if self.veto {
-            Err(ion::agent::error::AgentError::Tool("vetoed by session_probe".into()))
+            Err(crate::agent::error::AgentError::Tool("vetoed by session_probe".into()))
         } else {
             Ok(())
         }
@@ -4373,7 +4410,7 @@ pub struct ManagerBridge {
 }
 
 #[async_trait::async_trait]
-impl ion::runtime::ManagerBridgeHandle for ManagerBridge {
+impl crate::runtime::ManagerBridgeHandle for ManagerBridge {
     async fn send_command(
         &self,
         command: &str,
@@ -4384,7 +4421,7 @@ impl ion::runtime::ManagerBridgeHandle for ManagerBridge {
 }
 
 #[async_trait::async_trait]
-impl ion::worker_api::BridgeHandle for ManagerBridge {
+impl crate::worker_api::BridgeHandle for ManagerBridge {
     async fn send_command(
         &self,
         command: &str,
@@ -4484,7 +4521,7 @@ fn append_session_entry(cwd: &str, sid: &str, entry_type: &str, entry_data: &ser
             .filter(|l| !l.trim().is_empty())
             .filter_map(|l| serde_json::from_str(l).ok())
             .collect();
-        ion::session_tree::resolve_current_leaf(&entries)
+        crate::session_tree::resolve_current_leaf(&entries)
     })().unwrap_or_else(|| sid.to_string());
 
     let mut line = serde_json::json!({
@@ -4574,7 +4611,7 @@ fn ensure_fork_session_header(path: &std::path::Path, cwd: &str, sid: &str) {
 }
 
 /// Load messages from a fork sub-worker's session file.
-fn load_fork_session_messages(path: &std::path::Path) -> Option<Vec<ion::agent::messages::Message>> {
+fn load_fork_session_messages(path: &std::path::Path) -> Option<Vec<crate::agent::messages::Message>> {
     let content = std::fs::read_to_string(path).ok()?;
     let mut messages = Vec::new();
     for line in content.lines() {
@@ -4626,7 +4663,7 @@ fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
     }
 
     // leaf 感知：用 resolve_current_leaf 算 parentId（对齐 Session Tree，感知 leaf_pointer）
-    let last_id = ion::session_tree::resolve_current_leaf(&all_entries)
+    let last_id = crate::session_tree::resolve_current_leaf(&all_entries)
         .unwrap_or_else(|| sid.to_string());
 
     // 若文件不存在或空，先写 header
@@ -4729,7 +4766,7 @@ fn now_ms() -> i64 {
 ///    用 entry 里的 message 序列化内容在 self.messages 中查找匹配
 fn resolve_target_indices(
     entries: &[serde_json::Value],
-    agent_messages: &[ion::agent::messages::Message],
+    agent_messages: &[crate::agent::messages::Message],
     target_ids: &[String],
 ) -> Vec<usize> {
     let msg_entries: Vec<&serde_json::Value> = entries.iter()
@@ -4802,7 +4839,7 @@ impl ion_provider::registry::ApiProvider for ArcFauxProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ion::agent::extension::Extension;
+    use crate::agent::extension::Extension;
 
     // --- strip_version_suffix_inline ---
 

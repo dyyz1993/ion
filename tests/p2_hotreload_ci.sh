@@ -36,7 +36,7 @@ echo "════════════════════════�
 echo "  P2 — 权限热重载验证 CI   $(date)"
 echo "══════════════════════════════════════════════════════════"
 
-cargo build --bin ion --bin ion-worker -q 2>/dev/null && pass "build" || { echo "Build failed"; exit 1; }
+cargo build --bin ion -q 2>/dev/null && pass "build" || { echo "Build failed"; exit 1; }
 
 # ── Round 1: 热重载命令 ──
 cleanup; sleep 0.5

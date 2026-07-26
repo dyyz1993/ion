@@ -30,7 +30,7 @@ echo "  ION Team E2E CI Test — $(date)"
 echo "════════════════════════════════════════════════════"
 
 # ── Phase 0: Build ──
-cargo build --bin ion --bin ion-worker 2>/dev/null && pass "build ion + ion-worker" || { fail "build"; exit 1; }
+cargo build --bin ion 2>/dev/null && pass "build ion" || { fail "build"; exit 1; }
 
 # ── Phase 1: Setup test project ──
 echo ""

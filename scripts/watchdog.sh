@@ -171,7 +171,7 @@ do_upgrade() {
     esac
     echo "[W] Compiling A_new ($build_flag, timeout: ${COMPILE_TIMEOUT}s)..."
 
-    if ! timeout "$COMPILE_TIMEOUT" cargo build $build_flag --bin ion --bin ion-worker 2>&1 | tail -5; then
+    if ! timeout "$COMPILE_TIMEOUT" cargo build $build_flag --bin ion 2>&1 | tail -5; then
         echo "[W] ❌ Compile failed or timed out. A_old continues."
         return 1
     fi

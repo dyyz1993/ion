@@ -16,7 +16,7 @@ fail() { red "❌ FAIL: $1"; FAIL=$((FAIL+1)); }
 
 echo "── Phase 0: Build ──"
 cargo build --lib 2>&1 | tail -1
-cargo build --bin ion --bin ion-worker 2>&1 | tail -1
+cargo build --bin ion 2>&1 | tail -1
 
 echo ""
 echo "── Phase 1: 单元测试（apply_visibility_filter）──"

@@ -28,8 +28,8 @@ echo "════════════════════════�
 echo "  Extension Host API (ctx.fs) CI — $(date)"
 echo "════════════════════════════════════════════════════"
 
-cargo build --bin ion --bin ion-worker 2>/dev/null || { echo "❌ build failed"; exit 1; }
-pass "build ion + ion-worker"
+cargo build --bin ion 2>/dev/null || { echo "❌ build failed"; exit 1; }
+pass "build ion"
 
 # ── 先跑 Rust 单元测试（ctx.fs 逻辑层：read_file / list_dir / path_exists / glob / safe_join）──
 if cargo test --lib -- extension::fs_tests 2>&1 | grep -q "test result: ok"; then

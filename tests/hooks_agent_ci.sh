@@ -12,7 +12,7 @@
 #     → Manager 创建子 Worker
 #     → 子 Worker 跑完（FauxProvider 驱动）
 #
-# 依赖：ion + ion-worker 二进制（脚本会先 build）
+# 依赖：ion 二进制（脚本会先 build）
 # ──────────────────────────────────────────────────────────
 set -uo pipefail
 
@@ -32,7 +32,7 @@ echo "════════════════════════�
 
 # Phase 0: Build
 echo "── Phase 0: Build ──"
-cargo build --bin ion --bin ion-worker 2>&1 | tail -2
+cargo build --bin ion 2>&1 | tail -2
 ION_BIN="$PROJECT_DIR/target/debug/ion"
 [ -x "$ION_BIN" ] || { echo "ion binary missing"; exit 1; }
 

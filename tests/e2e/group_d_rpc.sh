@@ -4,7 +4,7 @@ set -o pipefail
 GROUP="D"
 source "$(dirname "$0")/common.sh"
 e2e_init
-cargo build --bin ion --bin ion-worker 2>/dev/null
+cargo build --bin ion 2>/dev/null
 pass "D0: build"
 
 # D1 ion serve 启动

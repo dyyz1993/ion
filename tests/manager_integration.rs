@@ -12,18 +12,18 @@ use std::path::PathBuf;
 
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Locate the ion-worker binary for testing
+/// Locate the ion binary for testing
 fn worker_bin_path() -> PathBuf {
     if let Ok(path) = std::env::var("ION_WORKER_BIN") {
         return PathBuf::from(path);
     }
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let debug_bin = manifest.join("target").join("debug").join("ion-worker");
+    let debug_bin = manifest.join("target").join("debug").join("ion");
     if debug_bin.exists() {
         return debug_bin;
     }
     // Fall back to PATH
-    PathBuf::from("ion-worker")
+    PathBuf::from("ion")
 }
 
 /// Create a registry pre-configured with the worker binary path

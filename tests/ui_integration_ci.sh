@@ -55,7 +55,7 @@ echo ""
 
 # ── Phase 0: build + 起 host + proxy ──
 echo "[Phase 0] Build + start host + proxy..."
-cargo build --bin ion --bin ion-worker 2>/dev/null || { echo "❌ build failed"; exit 1; }
+cargo build --bin ion 2>/dev/null || { echo "❌ build failed"; exit 1; }
 green "build OK"
 
 # 准备 config（opencode + DeepSeek，禁用扩展）

@@ -10,7 +10,7 @@
 #   Group E：自动整理（5 case）— 去重/归档/精度/不误删/幂等
 #   Group F：边界安全（5 case）— 空库/超长/特殊字符/并发/空结果
 #
-# 依赖：ion + ion-worker 二进制（脚本先 build）
+# 依赖：ion 二进制（脚本先 build）
 # ──────────────────────────────────────────────────────────
 set -o pipefail
 
@@ -49,7 +49,7 @@ echo "════════════════════════�
 
 echo ""
 echo "── Phase 0: Build + Setup ──"
-cargo build --bin ion --bin ion-worker 2>&1 | tail -2
+cargo build --bin ion 2>&1 | tail -2
 
 # 清理旧数据
 rm -f "$DB_PATH"

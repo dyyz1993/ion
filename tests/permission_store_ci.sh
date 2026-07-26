@@ -50,10 +50,10 @@ echo "════════════════════════�
 # ── Phase 0: Build ──
 echo ""
 echo "── Phase 0: Build ──"
-if cargo build --bin ion --bin ion-worker 2>/dev/null; then
-    pass "cargo build ion/ion-worker"
+if cargo build --bin ion 2>/dev/null; then
+    pass "cargo build ion"
 else
-    fail "cargo build ion/ion-worker"
+    fail "cargo build ion"
     exit 1
 fi
 

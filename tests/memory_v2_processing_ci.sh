@@ -30,7 +30,7 @@ echo "════════════════════════�
 
 echo ""
 echo "── Phase 0: Build + Setup ──"
-cargo build --bin ion --bin ion-worker 2>&1 | tail -2
+cargo build --bin ion 2>&1 | tail -2
 
 # 清理
 rm -f "$DB_PATH" "$DB_PATH"-*

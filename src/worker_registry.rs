@@ -238,33 +238,19 @@ impl WorkerRegistry {
             (project_path.clone(), None)
         };
 
-        // Spawn child process: ion-worker --mode rpc
-        // Use configured binary path, or auto-discover
+        // Spawn child process: 复用自身 (current_exe) 在 --mode rpc 下运行。
+        // 单二进制方案：对齐 pi 的 `pi --mode rpc`，不再有独立的 ion-worker 文件。
         let binary = if let Some(ref configured_bin) = self.worker_bin {
             configured_bin.clone()
         } else {
-            // Find ion-worker binary next to current executable
-            let exe_dir = std::env::current_exe()
-                .map_err(|e| e.to_string())?
-                .parent()
-                .ok_or("no parent dir")?
-                .to_path_buf();
-            let worker_bin = exe_dir.join("ion-worker");
-
-            if worker_bin.exists() {
-                worker_bin.to_string_lossy().to_string()
-            } else if let Some(parent) = exe_dir.parent() {
-                // Test binaries are in deps/ subdirectory; try one level up
-                let parent_bin = parent.join("ion-worker");
-                if parent_bin.exists() {
-                    parent_bin.to_string_lossy().to_string()
-                } else {
-                    // Fallback: look for ion-worker in PATH
-                    which::which("ion-worker").map_err(|e| e.to_string())?
-                        .to_string_lossy().to_string()
-                }
+            // 优先用 current_exe（host 和 worker 是同一个二进制）
+            let exe = std::env::current_exe()
+                .map_err(|e| e.to_string())?;
+            if exe.exists() {
+                exe.to_string_lossy().to_string()
             } else {
-                which::which("ion-worker").map_err(|e| e.to_string())?
+                // Fallback: 找 PATH 里的 ion
+                which::which("ion").map_err(|e| e.to_string())?
                     .to_string_lossy().to_string()
             }
         };

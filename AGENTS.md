@@ -520,8 +520,8 @@ ion rpc --session sess_xxx --method get_flags \
 
 | 文件 | 内容 |
 |------|------|
-| `src/bin/ion.rs` | 主 CLI (45+ 参数) |
-| `src/bin/ion_worker.rs` | Worker 子进程 (75 RPC 命令) |
+| `src/bin/ion.rs` | 单一 CLI 入口 (45+ 参数)。`--mode rpc` 分支进入 worker 模式 |
+| `src/worker_rpc.rs` | Worker RPC 实现 (~120 命令)。host 通过 `current_exe() + --mode rpc` spawn 自身创建 worker 子进程，对齐 pi 的 `pi --mode rpc` |
 | `src/worker_registry.rs` | Manager 内存状态 + Worker 管理 |
 | `src/worker_api.rs` | WorkerHandle + ExtensionApi (扩展 API) |
 | `src/agent/` | Agent 循环 (内层+外层+扩展钩子) |
@@ -683,10 +683,12 @@ Agent: ← 拿结果                          channel_send 实时收
 ### 基础组件
 
 ```
-ion "hello"              → 用户入口
-ion --host "hello"       → 带 host 能力的入口
-ion serve                → 常驻服务入口
-ion-worker --mode rpc    → 内部 Worker 子进程 (JSONL over stdin/stdout)
+ion "hello"              → 用户入口（场景 1：直接执行）
+ion --host "hello"       → 带 host 能力的入口（场景 2：快速编排）
+ion serve                → 常驻服务入口（场景 3：常驻服务）
+ion --mode rpc           → 内部 Worker 子进程 (JSONL over stdin/stdout)
+                            host 通过 current_exe() spawn 自身进入此模式
+                            对齐 pi 的 `pi --mode rpc`，不再有独立 ion-worker 二进制
 ```
 
 ### 通信协议: JSONL over stdin/stdout (对齐 pi)
@@ -1011,7 +1013,7 @@ ZCode → ion --host --agent coordinator "话题"
 
 | 脚本 | 用途 | 编排方式 |
 |------|------|---------|
-| [scripts/evolve.sh](./scripts/evolve.sh) | 启 container + 编译 ion/ion-worker | 基础设施 |
+| [scripts/evolve.sh](./scripts/evolve.sh) | 启 container + 编译 ion | 基础设施 |
 | [scripts/evolve_self.sh](./scripts/evolve_self.sh) | 串行批量任务（B 改 ION 自己源码） | bash 循环 |
 | [scripts/evolve_concurrent.sh](./scripts/evolve_concurrent.sh) | 1 container + N B 并行（含 reviewer） | bash `&` |
 | [scripts/evolve_native.sh](./scripts/evolve_native.sh) | coordinator 用 spawn_worker 原生编排 | ION 多智能体 |
@@ -1654,8 +1656,7 @@ cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture
 ## 开发命令
 
 ```bash
-cargo build --bin ion              # 主 CLI
-cargo build --bin ion-worker       # Worker 子进程
+cargo build --bin ion              # 单一二进制（含主 CLI + worker 模式）
 cargo build --bin manager-test     # Manager 测试程序
 cargo test --lib                   # 61 个单元测试 (核心逻辑)
 cargo test --test unit_rpc_test     # 20 个 RPC 协议测试 (U1-U20)
@@ -1720,8 +1721,8 @@ ion/                          # 主项目
 ├── src/extension.rs             # WASM 扩展加载器
 ├── src/session_jsonl.rs      # JSONL v3 会话格式
 ├── src/session_index.rs      # 实时索引 (O(1) 统计)
-├── src/bin/ion.rs            # 主 CLI
-├── src/bin/ion_worker.rs     # Worker 子进程
+├── src/bin/ion.rs            # 单一 CLI 入口（含 --mode rpc worker 模式）
+├── src/worker_rpc.rs         # Worker RPC 实现（合并自原 ion-worker 二进制）
 ├── stock-extension/             # WASM 扩展示例
 ├── AGENTS.md                 # 本文件
 ├── TEST_CASES.md             # 测试 case 文档

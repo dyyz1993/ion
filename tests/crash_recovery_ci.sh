@@ -12,7 +12,7 @@ pass(){ green "✅ PASS: $1"; ((PASS++)); }
 fail(){ red "❌ FAIL: $1"; ((FAIL++)); }
 
 echo "── Phase 0: Build ──"
-cargo build --bin ion --bin ion-worker 2>&1 | tail -2
+cargo build --bin ion 2>&1 | tail -2
 ION_BIN="$PROJECT_DIR/target/debug/ion"
 echo ""
 

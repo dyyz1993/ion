@@ -201,13 +201,16 @@ Use host bind mount (/tmp/ion-cache-*) instead of named volumes for parallel con
 
 ---
 
-## 13. evolve.sh must compile --bin ion-worker
+## 13. ~~evolve.sh must compile --bin ion-worker~~ (已修复：合并为单二进制)
 
-### Problem
+### Problem (历史)
 spawn_worker creates ion-worker subprocesses. If only --bin ion is compiled, spawn_worker fails with 'cannot find binary path'.
 
-### Solution
+### Solution (历史)
 evolve.sh now compiles both: `cargo build --release --bin ion --bin ion-worker`
+
+### Update (2026-07-26)
+ION 已合并为单一 `ion` 二进制——host 通过 `current_exe() + --mode rpc` spawn 自身创建 worker 子进程（对齐 pi 的 `pi --mode rpc`）。此问题不再存在，`cargo build --release --bin ion` 即可。
 
 ---
 

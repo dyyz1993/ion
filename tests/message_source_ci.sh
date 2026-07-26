@@ -25,7 +25,7 @@ echo "════════════════════════�
 echo "  ION Message Source CI Test — $(date)"
 echo "════════════════════════════════════════════════════"
 
-cargo build --bin ion --bin ion-worker 2>/dev/null && pass "build" || { fail "build"; exit 1; }
+cargo build --bin ion 2>/dev/null && pass "build" || { fail "build"; exit 1; }
 
 # 清理残留
 pkill -f "target/debug/ion serve" 2>/dev/null || true

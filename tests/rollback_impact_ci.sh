@@ -62,7 +62,7 @@ echo "  ION Rollback Impact CI — $(date)"
 echo "════════════════════════════════════════════════════"
 
 echo "── Phase 0: Build ──"
-cargo build --bin ion --bin ion-worker 2>&1 | tail -1
+cargo build --bin ion 2>&1 | tail -1
 [ -x "$ION_BIN" ] || { echo "ion binary missing"; exit 1; }
 
 # ════════════════════════════════════════════════════════

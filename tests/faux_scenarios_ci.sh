@@ -14,9 +14,8 @@ fail() { red "❌ FAIL: $1"; FAIL=$((FAIL+1)); }
 
 # Phase 0: Build
 echo "── Phase 0: Build ──"
-cargo build --bin ion --bin ion-worker 2>&1 | tail -3
+cargo build --bin ion 2>&1 | tail -3
 ION_BIN="$PROJECT_DIR/target/debug/ion"
-ION_WORKER_BIN="$PROJECT_DIR/target/debug/ion-worker"
 [ -x "$ION_BIN" ] || { echo "ion binary missing"; exit 1; }
 
 # 准备干净测试目录（避免 session 状态串扰）

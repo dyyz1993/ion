@@ -41,7 +41,7 @@ echo ""
 
 # ── Phase 0: build ──
 echo "[Phase 0] Build..."
-cargo build --bin ion --bin ion-worker 2>/dev/null || { echo "❌ build failed"; exit 1; }
+cargo build --bin ion 2>/dev/null || { echo "❌ build failed"; exit 1; }
 green "build OK"
 echo ""
 

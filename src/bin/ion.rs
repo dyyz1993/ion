@@ -1346,20 +1346,8 @@ async fn cmd_workflow_run(path: &str, set: &[String]) {
 // Command implementations
 // ---------------------------------------------------------------------------
 
-/// --mode rpc: JSON-RPC protocol over stdin/stdout (aligned with pi).
-async fn cmd_mode_rpc(eff: &EffectiveConfig, _session_id: &str) {
-    let (registry, model) = build_registry_and_model(eff);
-    let config = build_agent_config(eff);
-
-    let cfg = ion::rpc::RpcConfig {
-        registry,
-        model,
-        agent_config: config,
-        thinking: eff.thinking.clone(),
-        max_turns: eff.max_turns,
-    };
-    ion::rpc::handle_rpc(cfg).await;
-}
+// --mode rpc 入口已迁移到 src/worker_rpc.rs（合并自原 ion-worker 二进制）。
+// 单二进制方案：ion --mode rpc 由 lib 内的 ion::worker_rpc::run_worker_rpc 处理。
 
 async fn cmd_run(
     eff: &EffectiveConfig,
@@ -3168,6 +3156,17 @@ async fn main() {
 
     let mut eff = resolve_effective(&cli);
 
+    // ── --mode rpc: RPC 模式（JSON-RPC over stdin/stdout）──
+    // 必须在 read_piped_stdin() 之前！否则 read_piped_stdin 会消费 stdin 内容
+    // （host 持续写 RPC 命令，永远不 EOF），导致 worker 永远拿不到输入。
+    // 由 host (场景 2/3) spawn 自身 (current_exe + --mode rpc) 创建 worker 子进程，
+    // 对齐 pi 的 `pi --mode rpc` 设计。详见 src/worker_rpc.rs。
+    if matches!(cli.mode, Some(OutputMode::Rpc)) {
+        let args = ion::worker_rpc::WorkerRpcArgs::from_env_args();
+        ion::worker_rpc::run_worker_rpc(args).await;
+        return;
+    }
+
     // ── 管道 stdin 自动检测（对齐 pi）──
     // 当 stdin 不是 TTY（有管道输入），自动读取并用做消息
     let piped_stdin = read_piped_stdin();
@@ -3219,13 +3218,6 @@ async fn main() {
     };
 
     let effective_message = eff.message.clone();
-
-    // ── --mode rpc: RPC 模式（JSON-RPC over stdin/stdout）──
-    if matches!(cli.mode, Some(OutputMode::Rpc)) {
-        let (session_id, _preloaded) = resolve_session_id(&cli);
-        cmd_mode_rpc(&eff, &session_id).await;
-        return;
-    }
 
     // ── --host: 临时 host 模式（快速编排）──
     if cli.host {
