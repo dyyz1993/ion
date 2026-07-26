@@ -402,7 +402,8 @@ impl LspExtension {
 
         tracing::info!("[lsp] detected {} project at {}, running: {}", language, root, check_cmd);
 
-        // Run with timeout
+        // Run with timeout + measure duration
+        let check_start = std::time::Instant::now();
         let output = tokio::process::Command::new("sh")
             .arg("-c")
             .arg(&check_cmd)
@@ -413,6 +414,25 @@ impl LspExtension {
             output,
         )
         .await;
+
+        let check_duration_ms = check_start.elapsed().as_millis();
+
+        // ── Log timing + persist metrics for self-evolution ──
+        let timed_out = result.is_err();
+        let diag_count = match &result {
+            Ok(Ok(o)) => {
+                let s = String::from_utf8_lossy(&o.stdout);
+                let lang2 = language.clone();
+                Self::parse_linter_output(&s, &lang2).len()
+            }
+            _ => 0,
+        };
+        log_check_metrics(
+            &language,
+            check_duration_ms,
+            timed_out,
+            diag_count,
+        );
 
         let stdout = match result {
             Ok(Ok(output)) => String::from_utf8_lossy(&output.stdout).to_string(),
@@ -674,6 +694,77 @@ fn extract_diag_summary(content: &ion_provider::types::CustomContent) -> String 
         if has_errors { error_count } else { 0 },
         warning_count,
     )
+}
+
+/// LSP check metrics record (for self-evolution / analysis).
+#[derive(Clone, Debug, serde::Serialize)]
+struct CheckMetric {
+    timestamp: String,
+    language: String,
+    duration_ms: u128,
+    timed_out: bool,
+    diagnostic_count: usize,
+    error_count: usize,
+}
+
+/// Log check metrics to:
+/// 1. tracing (real-time visibility in serve log)
+/// 2. ~/.ion/agent/lsp-metrics.jsonl (persistent for self-evolution analysis)
+fn log_check_metrics(language: &str, duration_ms: u128, timed_out: bool, diag_count: usize) {
+    let error_count = if timed_out { 0 } else { diag_count };
+
+    // Real-time log
+    if timed_out {
+        tracing::warn!(
+            "[lsp] CHECK_TIMEOUT: language={} duration={}ms (exceeded limit)",
+            language, duration_ms
+        );
+    } else if duration_ms > 30000 {
+        tracing::warn!(
+            "[lsp] CHECK_SLOW: language={} duration={}ms diagnostics={} (>30s, consider optimizing)",
+            language, duration_ms, diag_count
+        );
+    } else {
+        tracing::info!(
+            "[lsp] CHECK_DONE: language={} duration={}ms diagnostics={}",
+            language, duration_ms, diag_count
+        );
+    }
+
+    // Persist to JSONL for self-evolution
+    let metric = CheckMetric {
+        timestamp: chrono_or_systime(),
+        language: language.to_string(),
+        duration_ms,
+        timed_out,
+        diagnostic_count: diag_count,
+        error_count,
+    };
+
+    let metrics_path = std::path::Path::new(
+        &std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())
+    ).join(".ion/agent/lsp-metrics.jsonl");
+
+    // Append (don't read whole file — just append one line)
+    if let Ok(line) = serde_json::to_string(&metric) {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&metrics_path)
+        {
+            let _ = writeln!(f, "{line}");
+        }
+    }
+}
+
+/// Get current timestamp as ISO-8601 or epoch fallback.
+fn chrono_or_systime() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| format!("epoch:{}", d.as_millis()))
+        .unwrap_or_else(|| "unknown".into())
 }
 
 // ── Extension impl ────────────────────────────────────────────
