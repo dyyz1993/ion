@@ -677,6 +677,38 @@ impl Extension for LspExtension {
             return Ok(());
         }
 
+        // ── Cleanup: remove old diagnostics, keep only the latest 2 ──
+        // Rationale: LLM only needs to see recent diagnostics (current + last).
+        // Old diagnostics are stale (the bug was likely already fixed).
+        // Keeping all of them wastes tokens and confuses the LLM.
+        let mut diag_indices: Vec<usize> = Vec::new();
+        for (i, msg) in messages.iter().enumerate() {
+            if let crate::agent::messages::Message::Custom(c) = msg {
+                if c.custom_type == "diagnostics" {
+                    diag_indices.push(i);
+                }
+            }
+        }
+        // Keep last 2, remove the rest (remove from front to preserve indices)
+        if diag_indices.len() > 2 {
+            let to_remove = diag_indices.len() - 2;
+            let remove_set: std::collections::HashSet<usize> =
+                diag_indices[..to_remove].iter().copied().collect();
+            // Retain in reverse to avoid index shift
+            let mut write_idx = 0;
+            for read_idx in 0..messages.len() {
+                if !remove_set.contains(&read_idx) {
+                    messages.swap(write_idx, read_idx);
+                    write_idx += 1;
+                }
+            }
+            messages.truncate(write_idx);
+            tracing::info!(
+                "[lsp] cleaned {} old diagnostic message(s), kept 2 recent",
+                to_remove
+            );
+        }
+
         // Run cargo check
         let diags = self.do_check().await.unwrap_or_default();
 
