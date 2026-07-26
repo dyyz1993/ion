@@ -526,14 +526,17 @@ impl LspExtension {
     }
 
     /// Format diagnostics as XML block for context injection.
+    /// COMPRESSED: Only inject errors + first 5 warnings to save tokens.
+    /// Excess warnings are summarized as count only.
     fn format_diagnostics_xml(diagnostics: &[Diagnostic]) -> String {
         if diagnostics.is_empty() {
             return "<diagnostics count=\"0\" status=\"clean\">\nProject compiles cleanly.\n</diagnostics>".into();
         }
 
-        let error_count = diagnostics.iter().filter(|d| d.severity == "error").count();
-        let warning_count = diagnostics.len() - error_count;
-        let has_errors = error_count > 0;
+        let errors: Vec<&Diagnostic> = diagnostics.iter().filter(|d| d.severity == "error").collect();
+        let warnings: Vec<&Diagnostic> = diagnostics.iter().filter(|d| d.severity == "warning").collect();
+
+        let has_errors = !errors.is_empty();
 
         let mut xml = format!(
             "<diagnostics count=\"{}\" has_errors=\"{}\">\n",
@@ -541,64 +544,86 @@ impl LspExtension {
             has_errors
         );
 
-        for d in diagnostics {
-            let icon = if d.severity == "error" { "error" } else { "warning" };
-            let code_part = if d.code.is_empty() {
-                String::new()
-            } else {
-                format!(" code=\"{}\"", d.code)
-            };
+        // Inject ALL errors (these block compilation — LLM must fix them)
+        for d in &errors {
+            let code_part = if d.code.is_empty() { String::new() } else { format!(" code=\"{}\"", d.code) };
             xml.push_str(&format!(
-                "<{} file=\"{}\" line=\"{}\" col=\"{}\"{}>\n",
-                icon, d.file, d.line, d.column, code_part
+                "<error file=\"{}\" line=\"{}\" col=\"{}\"{}>\n{}\n</error>\n",
+                d.file, d.line, d.column, code_part, d.message
             ));
-            xml.push_str(&format!("{}\n", d.message));
-            xml.push_str(&format!("</{}>\n", icon));
+        }
+
+        // Inject first 5 warnings only (excess = token waste)
+        const MAX_WARNINGS: usize = 5;
+        for d in warnings.iter().take(MAX_WARNINGS) {
+            let code_part = if d.code.is_empty() { String::new() } else { format!(" code=\"{}\"", d.code) };
+            xml.push_str(&format!(
+                "<warning file=\"{}\" line=\"{}\" col=\"{}\"{}>\n{}\n</warning>\n",
+                d.file, d.line, d.column, code_part, d.message
+            ));
+        }
+
+        // Summarize excess warnings (don't waste tokens listing them all)
+        if warnings.len() > MAX_WARNINGS {
+            xml.push_str(&format!(
+                "<summary>{} additional warning(s) omitted (run lsp_check for full list)</summary>\n",
+                warnings.len() - MAX_WARNINGS
+            ));
         }
 
         xml.push_str(&format!(
             "\nSummary: {} issue(s) ({} error(s), {} warning(s))\n",
             diagnostics.len(),
-            error_count,
-            warning_count
+            errors.len(),
+            warnings.len()
         ));
         xml.push_str("</diagnostics>");
         xml
     }
 
     /// Format diagnostics as human-readable text (for LspCheckTool).
+    /// COMPRESSED: errors always shown, warnings limited to first 10.
     fn format_diagnostics_text(diagnostics: &[Diagnostic]) -> String {
         if diagnostics.is_empty() {
             return "✅ No diagnostics. Project compiles cleanly.".into();
         }
 
-        let error_count = diagnostics.iter().filter(|d| d.severity == "error").count();
-        let warning_count = diagnostics.len() - error_count;
+        let errors: Vec<&Diagnostic> = diagnostics.iter().filter(|d| d.severity == "error").collect();
+        let warnings: Vec<&Diagnostic> = diagnostics.iter().filter(|d| d.severity == "warning").collect();
 
         let mut text = format!(
-            "📋 Diagnostics ({} issue(s)):\n\n",
-            diagnostics.len()
+            "📋 Diagnostics ({} issue(s)): {} error(s), {} warning(s)\n\n",
+            diagnostics.len(), errors.len(), warnings.len()
         );
 
-        for d in diagnostics {
-            let icon = if d.severity == "error" { "🔴" } else { "🟡" };
-            let code_part = if d.code.is_empty() {
-                String::new()
-            } else {
-                format!(" [{}]", d.code)
-            };
+        // All errors
+        for d in &errors {
             text.push_str(&format!(
-                "{} {}:{}:{}{} {}\n",
-                icon, d.file, d.line, d.column, code_part, d.message
+                "🔴 {}:{}:{} [{}] {}\n",
+                d.file, d.line, d.column,
+                if d.code.is_empty() { "error" } else { &d.code },
+                d.message
             ));
         }
 
-        text.push_str(&format!(
-            "\nStatus: {} issue(s) ({} error(s), {} warning(s))",
-            diagnostics.len(),
-            error_count,
-            warning_count
-        ));
+        // First 10 warnings
+        const MAX_TEXT_WARNINGS: usize = 10;
+        for d in warnings.iter().take(MAX_TEXT_WARNINGS) {
+            text.push_str(&format!(
+                "🟡 {}:{}:{} [{}] {}\n",
+                d.file, d.line, d.column,
+                if d.code.is_empty() { "warning" } else { &d.code },
+                d.message
+            ));
+        }
+
+        if warnings.len() > MAX_TEXT_WARNINGS {
+            text.push_str(&format!(
+                "\n... and {} more warning(s) omitted\n",
+                warnings.len() - MAX_TEXT_WARNINGS
+            ));
+        }
+
         text
     }
 
