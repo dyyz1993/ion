@@ -3894,7 +3894,15 @@ async fn cmd_serve_start(
                 if record.status != ion::worker_registry::WorkerStatus::Dead
                     && record.status != ion::worker_registry::WorkerStatus::Stale
                 {
-                    if now - record.last_heartbeat > 180_000 {
+                    // Only mark Idle workers as Stale. Busy workers are actively
+                    // working (or waiting on spawn_worker wait=true), and must not
+                    // be marked stale even if they haven't sent output recently.
+                    // Without this exemption, a coordinator waiting on a long-running
+                    // developer (5+ min task) gets marked Stale after 180s, breaking
+                    // the self-healing pipeline.
+                    if record.status == ion::worker_registry::WorkerStatus::Idle
+                        && now - record.last_heartbeat > 180_000
+                    {
                         record.status = ion::worker_registry::WorkerStatus::Stale;
                         changed = true;
                     }
