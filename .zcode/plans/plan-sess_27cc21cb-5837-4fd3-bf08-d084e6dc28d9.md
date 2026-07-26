@@ -1,62 +1,73 @@
-# Monitor Scheduler — Singleton Extension 模式
+# LSP Extension 设计文档（按 DESIGN_TEMPLATE + CLI_TEST_TEMPLATE）
 
-## 架构
+## 产出文件
 
-```
-ion serve 启动
-  └─ WorkerRegistry.init_singletons()
-       └─ MonitorExtension::on_singleton_post_init(registry)
-            ├─ 加载 .ion/monitors/*.json
-            └─ 每个 monitor: tokio::spawn(interval loop)
-                 ├─ 每 N 秒运行 bash 脚本
-                 ├─ stdout 非空 → 有事件
-                 └─ 有事件 → registry.send_command(worker_id, "prompt", ...)
-```
+1. **`docs/design/LSP_EXTENSION.md`** — 按 DESIGN_TEMPLATE 写完整设计文档
+   - 概览 + 能力清单
+   - 实现状态核查清单（14 项，像 Bash Extension 的 21 项）
+   - §1 配置（config.json 开关 + Diagnostic 结构）
+   - §2 主流程（cargo check → 解析 → 注入 context 流程图）
+   - §3 RPC 接口规格（lsp_check 工具 + extension_rpc lsp）
+   - §4 CLI 测试指南（Group A-E，每个 case 有完整 ion rpc 命令 + 响应 JSON）
+   - §5 对标 pi（pi 的 LSP 1657 行 vs ION 精简版 cargo check）
+   - §6 后续工作（rust-analyzer / 多语言 / go-to-definition）
 
-## 改动清单（2 新文件 + 2 处注册）
+2. **`docs/testing/LSP_CLI_TEST.md`** — 按 CLI_TEST_TEMPLATE 写测试用例
+   - Group A: 基础功能（cargo check + diagnostics 返回）
+   - Group B: 自动注入（write → 检测 → context 注入）
+   - Group C: LLM 主动查询（lsp_check 工具）
+   - Group D: 边界（无 Cargo.toml / 编译通过 / 超时）
+   - Group E: extension_rpc（CLI 直调）
 
-### 1. `src/monitor_extension.rs`（~200 行）
+3. **`tests/lsp_ci.sh`** — bash CI 脚本（照搬 BASH_EXTENSION 的 CI 模式）
 
-- `MonitorDef`：name / interval_secs / script / agent / prompt_template / enabled
-- `MonitorExtension`：singleton，`on_singleton_post_init` 里 spawn interval loop
-- interval loop：运行脚本 → 判断 stdout → 触发 LLM
-- `on_extension_rpc`：list / add / remove / enable / disable / status
+## 代码产出
 
-### 2. `src/lib.rs` 加 `pub mod monitor_extension;`
+4. **`src/lsp_extension.rs`**（~300 行）— LspExtension + LspCheckTool
+   - Diagnostic struct（file/line/column/severity/message/code）
+   - LspExtension impl Extension（on_tool_execution_end + on_context + on_extension_rpc）
+   - LspCheckTool impl Tool（LLM 可主动调用）
+   - cargo check JSON 解析（逐行 serde_json，过滤 compiler-message）
+   - XML 格式化注入（<diagnostics> block，对齐 Memory 的 <memory_context> 模式）
 
-### 3. `src/bin/ion_worker.rs` 注册：
-```rust
-if ion_cfg.is_extension_enabled("monitor") {
-    ext_reg.register(Box::new(ion::monitor_extension::MonitorExtension::new()));
-}
-```
+5. **`src/worker_rpc.rs`** — 注册点（~3 行改动）
+6. **`src/bin/ion.rs`** — standalone 注册（~3 行）
 
-### 4. Monitor 定义文件格式（`.ion/monitors/*.json`）
-```json
-{
-  "name": "github-issues",
-  "interval_secs": 300,
-  "script": "gh issue list --label bug 2>/dev/null",
-  "agent": "developer", 
-  "prompt_template": "New issues:\n{output}\nProcess them.",
-  "enabled": true
-}
-```
+## 实现顺序（跟 Bash Extension 一样）
 
-## 运行时行为
+1. 先写设计文档（DESIGN_TEMPLATE）→ 你审
+2. 审通过后写代码
+3. 写 CLI 测试指南（CLI_TEST_TEMPLATE）
+4. 写 CI 脚本
+5. 跑 CI 验证
 
-- 脚本 exit=0 + stdout 空 → 没事，继续循环
-- 脚本 exit=0 + stdout 非空 → 有事件，触发 LLM 对话
-- 脚本 exit≠0 → 记录错误，继续循环
-- Agent 可以通过 extension_rpc 自己 add/remove monitor（自生成脚本）
+## 与 Bash Extension 对齐的关键点
 
-## 只在 serve/--host 模式下注册
+| 维度 | Bash Extension | LSP Extension |
+|------|---------------|---------------|
+| 扩展注册 | `ext_reg.register(Box::new(BashExtension::new()))` | `ext_reg.register(Box::new(LspExtension::new()))` |
+| LLM 工具 | `bash_run` / `bash_kill` / `bash_send` | `lsp_check` |
+| Extension RPC | `list / kill / send / inspect / clean` | `check / clear / status` |
+| 事件 | `process_started / completed / killed` | `diagnostics_updated / diagnostics_clean` |
+| Context 注入 | `<bash_result>` XML（follow_up） | `<diagnostics>` XML（on_context） |
+| 持久化 | processes.json | 不需要（每次实时 cargo check） |
+| 配置开关 | config.json extensions.bash.enabled | config.json extensions.lsp.enabled |
+| CLI 测试 | Group A-E 18 case | Group A-E ~12 case |
 
-跟 GlobalMemoryExtension 一样，只在 `ion_worker.rs` 的 serve 路径注册。场景 1 不注册。
+## 对标 pi
 
-## 不改的东西
+| 维度 | pi LSP | ION LSP（本设计） |
+|------|--------|-------------------|
+| 引擎 | rust-analyzer JSON-RPC（完整 LSP server） | cargo check --message-format=json（精简版） |
+| 诊断 | diagnostics + definition + hover + references + rename | 仅 diagnostics（P0） |
+| 触发 | 文件保存 + 钩子 | write/edit 工具后 on_tool_execution_end |
+| 注入 | agent_end 自动注入 + lsp 工具 | on_context 注入 + lsp_check 工具 |
+| 代码量 | 1657 + 402 = ~2060 行 | ~300 行（先做 80% 场景） |
+| 多语言 | 通过 LSP server 支持任意语言 | 先只 Rust（后续扩展） |
 
-- 不改 Extension trait（不加 on_tick）
-- 不改 hooks 系统
-- 不改 Cargo.toml
-- 不改 agent_loop
+## 不做的事（明确排除）
+
+- 不做完整 LSP server（rust-analyzer JSON-RPC）——太复杂
+- 不做 go-to-definition / hover / rename——先 diagnostics
+- 不做其他语言——先 Rust
+- 不改 agent_loop.rs 核心——纯扩展 + 工具
