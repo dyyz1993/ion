@@ -35,6 +35,20 @@ echo "── Starting ion serve host ──"
 lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null || true
 sleep 1
 
+# 临时启用 global-memory（CI 需要它）
+CONFIG_FILE="$HOME/.ion/config.json"
+python3 -c "
+import json
+with open('$CONFIG_FILE') as f: c = json.load(f)
+if 'extensions' not in c: c['extensions'] = {}
+c['extensions']['global-memory'] = {'enabled': True}
+with open('$CONFIG_FILE', 'w') as f: json.dump(c, f, indent=2)
+print('  global-memory enabled for CI')
+" 2>/dev/null
+
+# 清理旧 DB（避免损坏）
+rm -f "$HOME/.ion/agent/global-memory.db"* 2>/dev/null
+
 # 起 host
 ION_FAUX_REPLY="host ready" "$ION_BIN" serve > /tmp/goal_ci_host.log 2>&1 &
 HOST_PID=$!
@@ -103,6 +117,16 @@ echo ""
 echo "── Shutting down host ──"
 kill $HOST_PID 2>/dev/null || true
 echo "  Host stopped (PID $HOST_PID)"
+
+# 恢复 config（禁用 global-memory）
+python3 -c "
+import json
+with open('$CONFIG_FILE') as f: c = json.load(f)
+if 'extensions' in c and 'global-memory' in c['extensions']:
+    c['extensions']['global-memory'] = {'enabled': False}
+    with open('$CONFIG_FILE', 'w') as f: json.dump(c, f, indent=2)
+    print('  global-memory restored to disabled')
+" 2>/dev/null
 
 echo ""
 echo "════════════════════════════════════════════════════"
