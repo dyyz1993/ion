@@ -1,0 +1,3 @@
+{"tool_call":{"name":"goal_set","input":{"objective":"goal A","checks":[{"name":"a","check_type":"ci","rationale":"a","command":"true","pass_criteria":{"kind":"exit_code","expected":0},"must_pass":true}]}}
+{"tool_call":{"name":"goal_set","input":{"objective":"goal B","checks":[{"name":"b","check_type":"ci","rationale":"b","command":"true","pass_criteria":{"kind":"exit_code","expected":0},"must_pass":true}]}}
+{"text":"done with goal B","stop_reason":"end_turn"}

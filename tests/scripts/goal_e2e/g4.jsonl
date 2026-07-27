@@ -1,0 +1,4 @@
+{"tool_call":{"name":"goal_set","input":{"objective":"impossible goal","checks":[{"name":"never","check_type":"ci","rationale":"file that won't be created","command":"test -f /tmp/nonexistent_xyz_12345","pass_criteria":{"kind":"file_exists","path":"/tmp/nonexistent_xyz_12345"},"must_pass":true}]}}
+{"text":"trying","stop_reason":"end_turn"}
+{"text":"still trying","stop_reason":"end_turn"}
+{"text":"giving up context","stop_reason":"end_turn"}

@@ -1,0 +1,3 @@
+{"tool_call":{"name":"goal_set","input":{"objective":"create test file","checks":[{"name":"file_exists","check_type":"ci","rationale":"target file must exist","command":"test -f /tmp/goal_e2e_1.txt","pass_criteria":{"kind":"file_exists","path":"/tmp/goal_e2e_1.txt"},"must_pass":true}]}}}
+{"tool_call":{"name":"bash","input":{"command":"echo hello > /tmp/goal_e2e_1.txt"}}}
+{"text":"done creating the file","stop_reason":"end_turn"}

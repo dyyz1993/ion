@@ -1,0 +1,2 @@
+{"tool_call":{"name":"goal_set","input":{"objective":"vague goal with no checks","checks":[]}}
+{"text":"working on it","stop_reason":"end_turn"}
