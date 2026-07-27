@@ -50,7 +50,23 @@ REAL_CARGO=$(command -v cargo 2>/dev/null || echo /usr/local/cargo/bin/cargo)
 mkdir -p /tmp/ci-bin
 cat > /tmp/ci-bin/cargo <<SHIM
 #!/usr/bin/env bash
+# Skip 'cargo build' (binary already built) and convert 'cargo run --bin ion ...'
+# to direct execution of the prebuilt binary (avoids cargo lock contention).
 if [ "\$1" = "build" ]; then exit 0; fi
+if [ "\$1" = "run" ] && echo "\$@" | grep -q -- "--bin ion"; then
+    # Extract args after '--' and run the binary directly
+    BIN="$PROJECT_DIR/target/debug/ion"
+    AFTER_DASH=""
+    FOUND_DASH=0
+    for arg in "\$@"; do
+        if [ "\$FOUND_DASH" = "1" ]; then
+            AFTER_DASH="\$AFTER_DASH \"\$arg\""
+        elif [ "\$arg" = "--" ]; then
+            FOUND_DASH=1
+        fi
+    done
+    eval "exec \"\$BIN\" \$AFTER_DASH"
+fi
 exec $REAL_CARGO "\$@"
 SHIM
 chmod +x /tmp/ci-bin/cargo
@@ -138,12 +154,17 @@ run_one_script() {
     # CRITICAL: call the script via the work_dir's symlinked path (not the
     # real path) so that PROJECT_DIR=$(dirname $0/..) resolves to work_dir,
     # not the real project. This ensures .ion/monitors/ is per-script.
+    #
+    # CARGO_TARGET_DIR points to the REAL project's target/ so that
+    # 'cargo test' uses the pre-built cache instead of recompiling from
+    # scratch in the work_dir (which would take 3+ minutes).
     local script_in_workdir="$work_dir/tests/$(basename "$script")"
     local start=$(date +%s)
     (
         cd "$work_dir"
         HOME="$home_dir" \
         PATH="/tmp/ci-bin:$PATH" \
+        CARGO_TARGET_DIR="$PROJECT_DIR/target" \
         timeout "$PER_SCRIPT_TIMEOUT" bash "$script_in_workdir"
     ) > "$log" 2>&1
     local exit_code=$?
