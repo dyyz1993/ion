@@ -1422,10 +1422,22 @@ async fn cmd_run(
         std::sync::Arc::new(std::sync::Mutex::new(None::<
             ion::goal_supervisor_extension::GoalState,
         >));
+    // Resolve fast-tier model for goal plan generation (avoids reasoning token waste).
+    let fast_model: Option<ion_provider::types::Model> = {
+        let cfg = ion::config::IonConfig::load();
+        cfg.tier_models.get("fast").and_then(|s| {
+            let model_id = s.splitn(2, '/').nth(1).unwrap_or(s);
+            let mut mr = ion_provider::registry::ModelRegistry::new();
+            mr.register_builtins();
+            mr.find_model(model_id).cloned()
+        })
+    };
+
     tools.register(Box::new(ion::goal_supervisor_extension::GoalSetTool::with_llm(
         shared_goal_state.clone(),
         registry_for_ext.clone(),
         model_for_ext.clone(),
+        fast_model.clone(),
     )));
     tools.register(Box::new(ion::goal_supervisor_extension::GoalRefineTool(
         shared_goal_state.clone(),

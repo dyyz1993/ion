@@ -1304,14 +1304,21 @@ pub struct GoalSetTool {
     pub state: SharedGoalState,
     pub registry: Option<Arc<ion_provider::registry::ApiRegistry>>,
     pub model: Option<ion_provider::types::Model>,
+    /// Fast-tier model for plan generation (avoids expensive reasoning tokens).
+    pub plan_model: Option<ion_provider::types::Model>,
 }
 
 impl GoalSetTool {
     pub fn new(state: SharedGoalState) -> Self {
-        Self { state, registry: None, model: None }
+        Self { state, registry: None, model: None, plan_model: None }
     }
-    pub fn with_llm(state: SharedGoalState, registry: Arc<ion_provider::registry::ApiRegistry>, model: ion_provider::types::Model) -> Self {
-        Self { state, registry: Some(registry), model: Some(model) }
+    pub fn with_llm(
+        state: SharedGoalState,
+        registry: Arc<ion_provider::registry::ApiRegistry>,
+        model: ion_provider::types::Model,
+        plan_model: Option<ion_provider::types::Model>,
+    ) -> Self {
+        Self { state, registry: Some(registry), model: Some(model), plan_model }
     }
 }
 
@@ -1369,10 +1376,14 @@ impl Tool for GoalSetTool {
         let mut goal_plan = GoalPlan::default();
         if checks.is_empty() {
             // Try LLM-driven goal plan generation first.
-            if let (Some(reg), Some(mdl)) = (&self.registry, &self.model) {
-                if let Some((plan, generated_checks)) = generate_goal_plan(reg, mdl, &objective).await {
-                    goal_plan = plan;
-                    checks = generated_checks;
+            // Prefer fast-tier plan_model (avoids expensive reasoning tokens on models like GLM-5.2).
+            if let Some(reg) = &self.registry {
+                let mdl = self.plan_model.as_ref().or(self.model.as_ref());
+                if let Some(mdl) = mdl {
+                    if let Some((plan, generated_checks)) = generate_goal_plan(reg, mdl, &objective).await {
+                        goal_plan = plan;
+                        checks = generated_checks;
+                    }
                 }
             }
             // Fallback to CI defaults if LLM didn't produce checks.
