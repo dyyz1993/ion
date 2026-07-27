@@ -18,11 +18,12 @@ FAIL=0
 
 # ── Session isolation (issue #30) ──────────────────────────────────────────
 # ION_SESSION_DIR isolation (issue #30)
+# Use a subdirectory UNDER $HOME/.ion/agent/sessions so that scripts which
+# `find $HOME/.ion/agent/sessions` still work. Each test gets a unique subdir.
 if [ -z "${ION_SESSION_DIR:-}" ]; then
-    _TMP_DIR=$(mktemp -d /tmp/ion-ci-$(basename "$0" .sh)-XXXXXX)
-    trap 'rm -rf "$_TMP_DIR"' EXIT
-    export ION_SESSION_DIR="$_TMP_DIR/sessions"
+    export ION_SESSION_DIR="$HOME/.ion/agent/sessions/_ci_$(basename "$0" .sh)_$$"
     mkdir -p "$ION_SESSION_DIR"
+    trap 'rm -rf "$ION_SESSION_DIR"' EXIT
 fi
 SERVE_PID=""
 
