@@ -35,18 +35,26 @@ pass "build ion"
 TEST_HOME="/tmp/ion_mcp_ci_home_$$"
 rm -rf "$TEST_HOME" 2>/dev/null
 mkdir -p "$TEST_HOME/.ion"
+ln -sf "/Users/xuyingzhou/.rustup" "$TEST_HOME/.rustup" 2>/dev/null
+ln -sf "/Users/xuyingzhou/.cargo" "$TEST_HOME/.cargo" 2>/dev/null
 export HOME="$TEST_HOME"
 
 # 启动 host（用 ION_FAUX_REPLY 避免 LLM 调用）
 start_host() {
     SOCK="$TEST_HOME/.ion/host.sock"
     rm -f "$SOCK" 2>/dev/null
-    ION_FAUX_REPLY="mcp test" $ION_BIN serve >/tmp/ion_mcp_host.log 2>&1 &
+    ION_FAUX_REPLY="mcp test" ION_FAUX_REPEAT=1 $ION_BIN serve >/tmp/ion_mcp_host.log 2>&1 &
     HOST_PID=$!
-    sleep 2
-    if ! kill -0 $HOST_PID 2>/dev/null; then
-        echo "❌ host 启动失败"; cat /tmp/ion_mcp_host.log | tail -5; exit 1
-    fi
+    # Wait up to 30s for serve to be ready (MCP server download may take time)
+    for i in $(seq 1 30); do
+        sleep 1
+        if $ION_BIN rpc --method list_sessions >/dev/null 2>&1; then
+            break
+        fi
+        if ! kill -0 $HOST_PID 2>/dev/null; then
+            echo "❌ host 启动失败"; cat /tmp/ion_mcp_host.log | tail -5; exit 1
+        fi
+    done
     CREATE_OUT=$($ION_BIN rpc --method create_session --params '{"agent":"build"}' 2>&1)
     SID=$(echo "$CREATE_OUT" | grep '"session_id"' | sed 's/.*"session_id"[: ]*"//;s/".*//')
     sleep 1  # 等 worker 完成初始化（含 MCP connect_all）
