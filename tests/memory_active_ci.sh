@@ -124,8 +124,8 @@ else
     fail "A2 模糊命中'登录过期'（未找到相关记忆）"
 fi
 
-# A3 多条 + importance 排序：搜"ion"应命中多条，importance 高的在前
-RESULT=$(rpc_ext search '{"query":"ion 项目"}')
+# A3 多条 + importance 排序：搜"auth"应命中多条（m1+m7都有auth），importance 高的在前
+RESULT=$(rpc_ext search '{"query":"auth"}')
 ORDER_OK=$(echo "$RESULT" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)

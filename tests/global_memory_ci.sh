@@ -90,7 +90,7 @@ echo "── Group C: 软删除 + 边界 ──"
 
 # C1: forget（用 grep 提取 ID，更健壮）
 SAVE_OUTPUT=$(timeout 5 "$ION_BIN" rpc --method extension_rpc --params '{"extension":"global-memory","method":"save","args":{"content":"entry-to-delete","category":"note","tags":"test","project":"test","importance":3}}' 2>&1)
-MEM_ID=$(echo "$SAVE_OUTPUT" | grep -o '"id": *"gmem_[a-f0-9]*"' | grep -o 'gmem_[a-f0-9]*' | head -1)
+MEM_ID=$(echo "$SAVE_OUTPUT" | grep -o '"id": *"gmem_[a-f0-9-]*"' | grep -o 'gmem_[a-f0-9-]*' | head -1)
 OUTPUT=$(timeout 5 "$ION_BIN" rpc --method extension_rpc --params "{\"extension\":\"global-memory\",\"method\":\"forget\",\"args\":{\"id\":\"$MEM_ID\"}}" 2>&1)
 if echo "$OUTPUT" | grep -q "true"; then
     pass "C1 forget 软删除"
