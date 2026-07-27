@@ -249,6 +249,18 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     for t in crate::agent::plan_tool::plan_tools_with(shared_plan.clone()) {
         tools.register(t);
     }
+    // ── Goal Supervisor（goal_set tool + on_gate_check closed loop）──
+    // Tool is always registered (like plan tools); the Extension (which runs
+    // the verification loop) is conditionally registered below based on config.
+    // Both share the same SharedGoalState so the tool's writes are visible to
+    // the extension's gate checks.
+    let shared_goal: crate::goal_supervisor_extension::SharedGoalState =
+        std::sync::Arc::new(std::sync::Mutex::new(None::<
+            crate::goal_supervisor_extension::GoalState,
+        >));
+    tools.register(Box::new(crate::goal_supervisor_extension::GoalSetTool(
+        shared_goal.clone(),
+    )));
     tools.register(Box::new(BranchSessionTool));
     tools.register(Box::new(GlobalMemorySearchTool));
     tools.register(Box::new(GlobalMemorySaveTool));
@@ -846,6 +858,19 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             tracing::info!("[extension] rules-engine enabled");
         } else {
             tracing::info!("[extension] rules-engine disabled by config");
+        }
+
+        // Goal Supervisor Extension (on_gate_check closed loop: run checks,
+        // RetryWith on fail, until goal complete or guard trips).
+        // Shares state with GoalSetTool (registered above in the tools section).
+        if ion_cfg.is_extension_enabled("goal-supervisor") {
+            let goal_ext =
+                crate::goal_supervisor_extension::GoalSupervisorExtension::new()
+                    .with_shared_state(shared_goal.clone());
+            ext_reg.register(Box::new(goal_ext));
+            tracing::info!("[extension] goal-supervisor enabled (on_gate_check closed loop)");
+        } else {
+            tracing::info!("[extension] goal-supervisor disabled by config");
         }
 
         // Context Reclaimer (priority-based token recycling)

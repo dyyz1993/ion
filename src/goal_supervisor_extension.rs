@@ -238,6 +238,13 @@ impl GoalSupervisorExtension {
         self
     }
 
+    /// Inject a shared state handle (e.g. the one already given to GoalSetTool).
+    /// This lets the Extension and the Tool see the same goal state.
+    pub fn with_shared_state(mut self, state: SharedGoalState) -> Self {
+        self.state = state;
+        self
+    }
+
     // -----------------------------------------------------------------------
     // Check execution (Stage B)
     // -----------------------------------------------------------------------
