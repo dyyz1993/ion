@@ -1427,6 +1427,9 @@ async fn cmd_run(
         registry_for_ext.clone(),
         model_for_ext.clone(),
     )));
+    tools.register(Box::new(ion::goal_supervisor_extension::GoalRefineTool(
+        shared_goal_state.clone(),
+    )));
 
     // WASM plugin registry (hot‑pluggable — used by worker RPC too)
     let wasm_ext_registry = std::sync::Arc::new(ion::wasm_extension::Registry::new());

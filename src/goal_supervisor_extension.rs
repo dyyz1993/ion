@@ -470,6 +470,84 @@ impl GoalSupervisorExtension {
     }
 
     // -----------------------------------------------------------------------
+    // Progress analysis (Deepening Task 1)
+    // -----------------------------------------------------------------------
+
+    /// Analyze recent progress by reading iterations.jsonl history.
+    ///
+    /// Returns a ProgressReport classifying the trend and giving a recommendation.
+    /// Pure heuristic — no LLM call. Called from on_gate_check before RetryWith.
+    pub fn analyze_progress(&self, current_plan: Option<&str>) -> ProgressReport {
+        let (objective, iteration_count) = {
+            let guard = self.state.lock().ok();
+            match guard.as_ref().and_then(|g| g.as_ref()) {
+                Some(s) => (s.objective.clone(), s.iteration_count),
+                None => return ProgressReport::default(),
+            }
+        };
+
+        // Check drift FIRST (doesn't need history): is the action plan related to the objective?
+        let drifting = match current_plan {
+            Some(plan) if !plan.is_empty() => {
+                calculate_similarity(plan, &objective) < 0.15
+            }
+            _ => false,
+        };
+        if drifting {
+            return ProgressReport {
+                trend: ProgressTrend::Drifting,
+                failed_history: vec![],
+                recommendation: format!(
+                    "Your recent work seems unrelated to the objective: \"{}\". \
+                     Re-focus on the goal.",
+                    &objective[..objective.len().min(80)]
+                ),
+            };
+        }
+
+        // Read recent failed_checks history from iterations.jsonl.
+        let session = self.session_id.as_deref().unwrap_or("default");
+        let failed_history = read_recent_failed_history(&dirs_for(session), 3);
+
+        // Need at least 2 data points to classify trend.
+        if failed_history.len() < 2 {
+            return ProgressReport {
+                trend: ProgressTrend::Converging,
+                failed_history,
+                recommendation: "Early iterations — keep working.".into(),
+            };
+        }
+
+        // Determine trend from failed_history.
+        let trend = classify_trend(&failed_history);
+
+        let recommendation = match trend {
+            ProgressTrend::Converging => {
+                "Progress looks good — failed checks are decreasing. Keep going.".into()
+            }
+            ProgressTrend::Oscillating => {
+                "Different checks keep failing each iteration (oscillating). \
+                 Consider calling goal_refine to adjust or split the checks."
+                    .into()
+            }
+            ProgressTrend::Stagnant => {
+                "The same checks keep failing (stagnant). The approach may be wrong — \
+                 try a fundamentally different strategy, or call goal_refine to relax checks."
+                    .into()
+            }
+            ProgressTrend::Drifting => {
+                format!(
+                    "Your recent work seems unrelated to the objective: \"{}\". \
+                     Re-focus on the goal.",
+                    &objective[..objective.len().min(80)]
+                )
+            }
+        };
+
+        ProgressReport { trend, failed_history, recommendation }
+    }
+
+    // -----------------------------------------------------------------------
     // Logging (Stage C)
     // -----------------------------------------------------------------------
 
@@ -673,6 +751,96 @@ pub fn default_ci_checks() -> Vec<Check> {
     ]
 }
 
+// ===========================================================================
+// Progress analysis types + helpers (Deepening Task 1)
+// ===========================================================================
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProgressTrend {
+    Converging,
+    Oscillating,
+    Drifting,
+    Stagnant,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ProgressReport {
+    pub trend: ProgressTrend,
+    pub failed_history: Vec<Vec<String>>,
+    pub recommendation: String,
+}
+
+impl Default for ProgressTrend {
+    fn default() -> Self {
+        ProgressTrend::Converging
+    }
+}
+
+/// Read the last N entries' failed_checks from iterations.jsonl.
+fn read_recent_failed_history(dir: &std::path::Path, n: usize) -> Vec<Vec<String>> {
+    let path = dir.join("iterations.jsonl");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut all: Vec<Vec<String>> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).ok()?;
+            v.get("failed_checks")?
+                .as_array()?
+                .iter()
+                .filter_map(|f| f.as_str().map(String::from))
+                .collect::<Vec<_>>()
+                .into()
+        })
+        .collect();
+    let start = all.len().saturating_sub(n);
+    all.drain(start..).collect()
+}
+
+/// Classify the trend from a list of failed_checks history (oldest first).
+///
+/// - Converging: failed set size is decreasing
+/// - Stagnant: failed set identical across all entries
+/// - Oscillating: failed count stable but elements change
+fn classify_trend(history: &[Vec<String>]) -> ProgressTrend {
+    if history.len() < 2 {
+        return ProgressTrend::Converging;
+    }
+
+    // Check stagnant: all entries have the same set.
+    let first_set: std::collections::HashSet<&str> =
+        history[0].iter().map(|s| s.as_str()).collect();
+    let all_same = history.iter().all(|h| {
+        let s: std::collections::HashSet<&str> = h.iter().map(|s| s.as_str()).collect();
+        s == first_set
+    });
+    if all_same {
+        return ProgressTrend::Stagnant;
+    }
+
+    // Check converging: sizes are monotonically non-increasing and at least one decrease.
+    let sizes: Vec<usize> = history.iter().map(|h| h.len()).collect();
+    let mut decreasing = false;
+    for i in 1..sizes.len() {
+        if sizes[i] < sizes[i - 1] {
+            decreasing = true;
+        }
+        if sizes[i] > sizes[i - 1] {
+            // Size increased — not converging.
+            return ProgressTrend::Oscillating;
+        }
+    }
+    if decreasing {
+        ProgressTrend::Converging
+    } else {
+        // Same size but different elements.
+        ProgressTrend::Oscillating
+    }
+}
+
 /// Jaccard similarity over whitespace-split tokens (length > 2).
 /// Returns 0.0 if either string has no qualifying tokens.
 pub fn calculate_similarity(a: &str, b: &str) -> f64 {
@@ -824,6 +992,13 @@ impl Extension for GoalSupervisorExtension {
             msg.push_str(&format!("- {} (evidence: {})\n", r.name, evidence_excerpt));
         }
         msg.push_str("Fix the failing checks before stopping.");
+
+        // Progress analysis (Task 1 deepening): classify trend + give recommendation.
+        let progress = self.analyze_progress(current_plan.as_deref());
+        msg.push_str(&format!(
+            "\n📊 Progress: {:?}. {}",
+            progress.trend, progress.recommendation
+        ));
 
         // 4 (repetition strategy): if repetitive, nudge a different approach.
         if current_plan
@@ -983,6 +1158,90 @@ impl Tool for GoalSetTool {
 }
 
 // ===========================================================================
+// GoalRefineTool — incrementally adjust a running goal (Task 2 deepening)
+// ===========================================================================
+
+/// Tool that refines (incrementally updates) the current goal without resetting progress.
+///
+/// Unlike goal_set (which replaces the entire goal, clearing iteration_count),
+/// goal_refine patches the objective and/or checks while preserving progress metrics.
+/// This lets the agent adapt when progress analysis suggests adjustments.
+pub struct GoalRefineTool(pub SharedGoalState);
+
+#[async_trait]
+impl Tool for GoalRefineTool {
+    fn name(&self) -> &str {
+        "goal_refine"
+    }
+
+    fn description(&self) -> &str {
+        "Incrementally adjust the current goal without resetting progress. \
+         Supports: objective_patch (new objective text), checks_add (array of Check), \
+         checks_remove (array of check names to drop). Preserves iteration_count and cost."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "objective_patch": {
+                    "type": "string",
+                    "description": "Optional: updated objective text"
+                },
+                "checks_add": {
+                    "type": "array",
+                    "description": "Checks to add (same format as goal_set checks)",
+                    "items": {"type": "object"}
+                },
+                "checks_remove": {
+                    "type": "array",
+                    "description": "Names of checks to remove",
+                    "items": {"type": "string"}
+                }
+            }
+        })
+    }
+
+    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        let objective_patch = args.get("objective_patch").and_then(|v| v.as_str());
+        let checks_add: Vec<Check> = if let Some(arr) = args.get("checks_add").and_then(|v| v.as_array()) {
+            arr.iter().filter_map(|item| serde_json::from_value(item.clone()).ok()).collect()
+        } else {
+            vec![]
+        };
+        let checks_remove: Vec<String> = args.get("checks_remove")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+
+        let mut guard = self.0.lock().map_err(|e| AgentError::Tool(format!("goal_refine: lock: {e}")))?;
+        let state = guard.as_mut().ok_or_else(|| AgentError::Tool("goal_refine: no active goal".into()))?;
+
+        // Apply objective patch.
+        if let Some(new_obj) = objective_patch {
+            state.objective = new_obj.to_string();
+        }
+
+        // Remove checks by name.
+        if !checks_remove.is_empty() {
+            state.checks.retain(|c| !checks_remove.contains(&c.name));
+        }
+
+        // Add new checks.
+        state.checks.extend(checks_add);
+
+        // Note: iteration_count, started_at, total_cost_usd, last_action_plan preserved.
+        let check_names: Vec<&str> = state.checks.iter().map(|c| c.name.as_str()).collect();
+        Ok(format!(
+            "Goal refined. Objective: \"{}\". Checks: [{}]. Progress preserved (iteration_count={}).",
+            &state.objective[..state.objective.len().min(60)],
+            check_names.join(", "),
+            state.iteration_count
+        ))
+    }
+}
+
+// ===========================================================================
 // Helpers
 // ===========================================================================
 
@@ -1039,6 +1298,148 @@ fn write_artifact(check_name: &str, stdout: &str) -> std::io::Result<String> {
 mod tests {
     use super::*;
     use crate::runtime::LocalRuntime;
+
+    // ── Progress analysis tests (Task 1) ──
+
+    #[test]
+    fn test_classify_trend_converging() {
+        let h = vec![
+            vec!["a".into(), "b".into(), "c".into()],
+            vec!["a".into(), "b".into()],
+            vec!["a".into()],
+        ];
+        assert_eq!(classify_trend(&h), ProgressTrend::Converging);
+    }
+
+    #[test]
+    fn test_classify_trend_stagnant() {
+        let h = vec![
+            vec!["a".into(), "b".into()],
+            vec!["a".into(), "b".into()],
+            vec!["a".into(), "b".into()],
+        ];
+        assert_eq!(classify_trend(&h), ProgressTrend::Stagnant);
+    }
+
+    #[test]
+    fn test_classify_trend_oscillating() {
+        // Same count, different elements.
+        let h = vec![
+            vec!["a".into(), "b".into()],
+            vec!["b".into(), "c".into()],
+            vec!["a".into(), "c".into()],
+        ];
+        assert_eq!(classify_trend(&h), ProgressTrend::Oscillating);
+    }
+
+    #[test]
+    fn test_classify_trend_single_entry() {
+        // Only 1 entry → can't classify, default Converging.
+        let h = vec![vec!["a".into()]];
+        assert_eq!(classify_trend(&h), ProgressTrend::Converging);
+    }
+
+    #[test]
+    fn test_analyze_progress_drift_detection() {
+        // Action plan completely unrelated to objective → Drifting.
+        let ext = GoalSupervisorExtension::new();
+        {
+            let mut guard = ext.state.lock().unwrap();
+            *guard = Some(GoalState {
+                goal_id: "g1".into(),
+                objective: "fix the authentication bug in login module".into(),
+                checks: vec![],
+                status: GoalStatus::Running,
+                iteration_count: 2,
+                started_at: format!("epoch:{}", now_epoch_ms() / 1000),
+                total_cost_usd: 0.0,
+                last_action_plan: None,
+            });
+        }
+        // Plan about something totally unrelated.
+        let report = ext.analyze_progress(Some("update the README documentation formatting"));
+        assert_eq!(report.trend, ProgressTrend::Drifting);
+        assert!(report.recommendation.contains("Re-focus"));
+    }
+
+    // ── GoalRefineTool tests (Task 2) ──
+
+    #[tokio::test]
+    async fn test_goal_refine_add_check() {
+        let shared: SharedGoalState = Arc::new(Mutex::new(Some(GoalState {
+            goal_id: "g1".into(),
+            objective: "original".into(),
+            checks: vec![],
+            status: GoalStatus::Running,
+            iteration_count: 3,
+            started_at: "epoch:100".into(),
+            total_cost_usd: 0.5,
+            last_action_plan: None,
+        })));
+        let tool = GoalRefineTool(shared.clone());
+        let args = serde_json::json!({
+            "checks_add": [{"name": "new_check", "check_type": "ci", "rationale": "test", "command": "true", "pass_criteria": {"kind": "exit_code", "expected": 0}, "must_pass": true}]
+        });
+        let _ = tool.execute(args, &rt()).await.expect("refine ok");
+        let guard = shared.lock().unwrap();
+        let state = guard.as_ref().unwrap();
+        assert_eq!(state.checks.len(), 1, "new check added");
+        assert_eq!(state.checks[0].name, "new_check");
+        // Progress preserved.
+        assert_eq!(state.iteration_count, 3, "iteration_count preserved");
+        assert_eq!(state.total_cost_usd, 0.5, "cost preserved");
+    }
+
+    #[tokio::test]
+    async fn test_goal_refine_remove_check() {
+        let shared: SharedGoalState = Arc::new(Mutex::new(Some(GoalState {
+            goal_id: "g1".into(),
+            objective: "test".into(),
+            checks: vec![
+                Check { name: "keep".into(), check_type: CheckType::Ci, rationale: "r".into(), command: "true".into(), pass_criteria: PassCriteria::ExitCode { expected: 0 }, must_pass: true },
+                Check { name: "drop".into(), check_type: CheckType::Ci, rationale: "r".into(), command: "true".into(), pass_criteria: PassCriteria::ExitCode { expected: 0 }, must_pass: true },
+            ],
+            status: GoalStatus::Running,
+            iteration_count: 2,
+            started_at: "epoch:100".into(),
+            total_cost_usd: 0.1,
+            last_action_plan: None,
+        })));
+        let tool = GoalRefineTool(shared.clone());
+        let args = serde_json::json!({"checks_remove": ["drop"]});
+        let _ = tool.execute(args, &rt()).await.expect("refine ok");
+        let guard = shared.lock().unwrap();
+        let state = guard.as_ref().unwrap();
+        assert_eq!(state.checks.len(), 1, "one check removed");
+        assert_eq!(state.checks[0].name, "keep");
+    }
+
+    #[tokio::test]
+    async fn test_goal_refine_patch_objective() {
+        let shared: SharedGoalState = Arc::new(Mutex::new(Some(GoalState {
+            goal_id: "g1".into(),
+            objective: "old objective".into(),
+            checks: vec![],
+            status: GoalStatus::Running,
+            iteration_count: 1,
+            started_at: "epoch:100".into(),
+            total_cost_usd: 0.0,
+            last_action_plan: None,
+        })));
+        let tool = GoalRefineTool(shared.clone());
+        let args = serde_json::json!({"objective_patch": "new refined objective"});
+        let _ = tool.execute(args, &rt()).await.expect("refine ok");
+        let guard = shared.lock().unwrap();
+        assert_eq!(guard.as_ref().unwrap().objective, "new refined objective");
+    }
+
+    #[tokio::test]
+    async fn test_goal_refine_no_goal_errors() {
+        let shared: SharedGoalState = Arc::new(Mutex::new(None));
+        let tool = GoalRefineTool(shared);
+        let result = tool.execute(serde_json::json!({}), &rt()).await;
+        assert!(result.is_err(), "refine without active goal must error");
+    }
 
     fn rt() -> LocalRuntime {
         LocalRuntime::new()
