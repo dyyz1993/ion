@@ -389,6 +389,182 @@ impl GoalSupervisorExtension {
             reason: None,
         })
     }
+
+    // -----------------------------------------------------------------------
+    // State machine + guards (Stage C)
+    // -----------------------------------------------------------------------
+
+    /// Return the first guard that trips, or None if all guards pass.
+    ///
+    /// Guards checked (in order):
+    ///   1. max_iterations      — iteration_count >= config.max_iterations
+    ///   5. max_total_duration  — elapsed minutes >= config.max_total_duration_min
+    ///   6. max_total_cost      — total_cost_usd >= config.max_total_cost_usd
+    ///   3. repetitive          — similarity(last_action_plan, current) >= threshold
+    ///
+    /// Guards 2 (confidence) and 4 (repetition-strategy) are decision-time
+    /// checks handled in `inject_continue`, not here.
+    pub fn check_guards(&self, current_plan: Option<&str>) -> Option<String> {
+        let guard = self.state.lock().ok()?;
+        let state = guard.as_ref()?;
+
+        // 1. max_iterations
+        if state.iteration_count >= self.config.max_iterations {
+            return Some("max_iterations".into());
+        }
+
+        // 5. max_total_duration — started_at is "epoch:NNN" (seconds).
+        let started_secs = state
+            .started_at
+            .strip_prefix("epoch:")
+            .and_then(|n| n.parse::<u64>().ok())
+            .unwrap_or(0);
+        let now_secs = now_epoch_ms() / 1000;
+        let elapsed_min = now_secs.saturating_sub(started_secs) / 60;
+        if elapsed_min >= self.config.max_total_duration_min as u64 {
+            return Some("max_duration".into());
+        }
+
+        // 6. max_total_cost
+        if state.total_cost_usd >= self.config.max_total_cost_usd {
+            return Some("max_cost".into());
+        }
+
+        // 3. repetitive — repetition_threshold is a count of consecutive
+        //    identical action plans. We approximate "identical" via high
+        //    text similarity (>= 0.8). Each matching iteration counts as one.
+        if let (Some(prev), Some(curr)) = (state.last_action_plan.as_deref(), current_plan) {
+            let sim = calculate_similarity(prev, curr);
+            if sim >= 0.8 && state.iteration_count >= self.config.repetition_threshold {
+                return Some("repetitive".into());
+            }
+        }
+
+        None
+    }
+
+    /// Increment the iteration counter and record the latest action plan.
+    pub fn record_iteration(&self, action_plan: Option<String>) {
+        if let Ok(mut guard) = self.state.lock() {
+            if let Some(state) = guard.as_mut() {
+                state.iteration_count += 1;
+                state.last_action_plan = action_plan;
+            }
+        }
+    }
+
+    /// Set the goal status (Running / Complete / Exhausted / Blocked / Cancelled).
+    pub fn set_status(&self, status: GoalStatus) {
+        if let Ok(mut guard) = self.state.lock() {
+            if let Some(state) = guard.as_mut() {
+                state.status = status;
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Logging (Stage C)
+    // -----------------------------------------------------------------------
+
+    /// Append one iteration record to iterations.jsonl under the goal-run dir.
+    ///
+    /// Layout: `~/.ion/agent/goal-runs/<session_id>/iterations.jsonl`
+    /// If `session_id` is None, falls back to the literal dir name "default".
+    pub fn log_iteration(&self, results: &[CheckResult]) -> Result<(), String> {
+        let session = self.session_id.as_deref().unwrap_or("default");
+        let dir = dirs_for(session);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir goal-runs: {e}"))?;
+
+        let all_passed = results.iter().all(|r| r.status == CheckStatus::Pass);
+        let failed: Vec<&str> = results
+            .iter()
+            .filter(|r| r.status != CheckStatus::Pass)
+            .map(|r| r.name.as_str())
+            .collect();
+
+        let (goal_id, objective, iter) = {
+            let guard = self
+                .state
+                .lock()
+                .map_err(|e| format!("log_iteration: lock: {e}"))?;
+            let state = guard
+                .as_ref()
+                .ok_or_else(|| "log_iteration: no goal".to_string())?;
+            (state.goal_id.clone(), state.objective.clone(), state.iteration_count)
+        };
+
+        let record = serde_json::json!({
+            "iter": iter,
+            "timestamp": now_iso8601(),
+            "session_id": session,
+            "goal_id": goal_id,
+            "objective": objective,
+            "checks_run": results.iter().map(|r| {
+                let status_str = match r.status {
+                    CheckStatus::Pass => "pass",
+                    CheckStatus::Fail => "fail",
+                    CheckStatus::Error => "error",
+                    CheckStatus::Skipped => "skipped",
+                };
+                serde_json::json!({
+                    "name": r.name,
+                    "status": status_str,
+                    "evidence": r.evidence.as_ref().map(|e| serde_json::json!({
+                        "exit_code": e.exit_code,
+                        "stdout_excerpt": e.stdout_excerpt,
+                        "artifact_path": e.artifact_path,
+                        "matches": e.matches,
+                    })),
+                    "duration_ms": r.duration_ms,
+                })
+            }).collect::<Vec<_>>(),
+            "all_passed": all_passed,
+            "failed_checks": failed,
+        });
+
+        let path = dir.join("iterations.jsonl");
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| format!("open iterations.jsonl: {e}"))?;
+        use std::io::Write;
+        writeln!(file, "{}", serde_json::to_string(&record).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("write iterations.jsonl: {e}"))?;
+        Ok(())
+    }
+
+    /// Write the final-report.json for this goal run.
+    pub fn write_final_report(&self, status: &str, reason: &str) -> Result<(), String> {
+        let session = self.session_id.as_deref().unwrap_or("default");
+        let dir = dirs_for(session);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir goal-runs: {e}"))?;
+
+        let (goal_id, iterations, started_at) = {
+            let guard = self
+                .state
+                .lock()
+                .map_err(|e| format!("write_final_report: lock: {e}"))?;
+            let state = guard
+                .as_ref()
+                .ok_or_else(|| "write_final_report: no goal".to_string())?;
+            (state.goal_id.clone(), state.iteration_count, state.started_at.clone())
+        };
+
+        let report = serde_json::json!({
+            "goal_id": goal_id,
+            "final_status": status,
+            "total_iterations": iterations,
+            "started_at": started_at,
+            "finished_at": now_epoch_ms(),
+            "stopped_reason": reason,
+        });
+
+        let path = dir.join("final-report.json");
+        std::fs::write(&path, serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("write final-report.json: {e}"))?;
+        Ok(())
+    }
 }
 
 impl Default for GoalSupervisorExtension {
@@ -397,18 +573,173 @@ impl Default for GoalSupervisorExtension {
     }
 }
 
+// ===========================================================================
+// Free helper functions (Stage C)
+// ===========================================================================
+
+/// Jaccard similarity over whitespace-split tokens (length > 2).
+/// Returns 0.0 if either string has no qualifying tokens.
+pub fn calculate_similarity(a: &str, b: &str) -> f64 {
+    fn tokenize<'a>(s: &'a str) -> std::collections::HashSet<&'a str> {
+        s.split(|c: char| c.is_whitespace() || matches!(c, ',' | '.' | ';' | '!' | '?' | '\n'))
+            .filter(|t| t.len() > 2)
+            .collect()
+    }
+    let set_a = tokenize(a);
+    let set_b = tokenize(b);
+    if set_a.is_empty() || set_b.is_empty() {
+        return 0.0;
+    }
+    let inter = set_a.intersection(&set_b).count() as f64;
+    let union = (set_a.len() + set_b.len()) as f64 - inter;
+    if union == 0.0 {
+        return 0.0;
+    }
+    inter / union
+}
+
+/// Current time in unix milliseconds.
+pub fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Current time as ISO-8601 string (best-effort, no chrono dep).
+pub fn now_iso8601() -> String {
+    // Simple RFC3339-ish stamp using unix seconds. Good enough for log sorting.
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("epoch:{secs}")
+}
+
+/// Directory for a goal run: `~/.ion/agent/goal-runs/<session>/`.
+pub fn dirs_for(session: &str) -> std::path::PathBuf {
+    let base = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    std::path::PathBuf::from(base)
+        .join(".ion/agent/goal-runs")
+        .join(session)
+}
+
 #[async_trait]
 impl Extension for GoalSupervisorExtension {
     fn name(&self) -> &str {
         "goal_supervisor"
     }
 
-    /// Stage C will run the verification checks here and decide retry vs. stop.
-    /// For Stage A this is a stub.
+    /// Stage C: the on_agent_end hook is kept for status bookkeeping only.
+    /// The real closed-loop enforcement happens in on_gate_check (below),
+    /// which is the kernel-mandated gate that the LLM cannot skip.
     async fn on_agent_end(&self, _ctx: &crate::agent::agent_loop::AgentContext) -> AgentResult<()> {
-        // Intentionally a no-op for Stage A. Check execution is wired up in
-        // Stage C (see GOAL_SUPERVISOR_B1_TASK.md).
+        // No-op: gate check already handled completion/exhaustion decisions.
         Ok(())
+    }
+
+    /// Kernel-enforced gate: runs when the LLM decides to Stop.
+    ///
+    /// If a goal is active and checks have not all passed, returns
+    /// `RetryWith(continue_message)` to force another loop iteration. The LLM
+    /// sees the failure evidence and must fix it before it can stop.
+    ///
+    /// This is the core of the goal closed-loop (GOAL_SUPERVISOR.md section 1).
+    async fn on_gate_check(
+        &self,
+        ctx: &crate::agent::extension::TurnContext,
+    ) -> AgentResult<crate::agent::extension::GateDecision> {
+        use crate::agent::extension::GateDecision;
+
+        // Skip if disabled or no active goal.
+        if !self.config.check_on_agent_end {
+            return Ok(GateDecision::Allow);
+        }
+        let has_goal = self.state.lock().map(|g| g.is_some()).unwrap_or(false);
+        if !has_goal {
+            return Ok(GateDecision::Allow);
+        }
+
+        // 1. Run all checks (deterministic execution + evidence collection).
+        let results = self
+            .run_all_checks()
+            .await
+            .map_err(AgentError::Tool)?;
+
+        // 2. Log this iteration.
+        let _ = self.log_iteration(&results);
+
+        // 3. If all passed -> goal complete, allow stop.
+        let all_pass = results.iter().all(|r| r.status == CheckStatus::Pass);
+        if all_pass {
+            self.set_status(GoalStatus::Complete);
+            let _ = self.write_final_report("complete", "all_checks_passed");
+            return Ok(GateDecision::Allow);
+        }
+
+        // 4. Extract the current action plan from the last assistant message
+        //    (used for repetition detection).
+        let current_plan = ctx
+            .messages
+            .iter()
+            .rev()
+            .find_map(|m| match m {
+                ion_provider::types::Message::Assistant(a) => {
+                    // Concatenate all Text blocks into one string.
+                    let text: String = a
+                        .content
+                        .iter()
+                        .filter_map(|b| match b {
+                            ion_provider::types::AssistantContentBlock::Text(t) => Some(t.text.as_str()),
+                            _ => None, // Ignore Thinking / ToolCall blocks.
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if text.is_empty() { None } else { Some(text) }
+                }
+                _ => None,
+            });
+
+        // 5. Check guards (max_iter / max_duration / max_cost / repetitive).
+        if let Some(reason) = self.check_guards(current_plan.as_deref()) {
+            self.set_status(GoalStatus::Exhausted);
+            let _ = self.write_final_report("exhausted", &reason);
+            // Guard tripped -> stop the loop (don't retry forever).
+            return Ok(GateDecision::Allow);
+        }
+
+        // 6. Increment iteration counter + remember the action plan.
+        self.record_iteration(current_plan.clone());
+
+        // 7. Build the continue message with failure evidence.
+        let failed: Vec<&CheckResult> = results
+            .iter()
+            .filter(|r| r.status != CheckStatus::Pass)
+            .collect();
+        let mut msg = String::from(
+            "Goal not complete. The following checks failed:\n",
+        );
+        for r in &failed {
+            let evidence_excerpt = r
+                .evidence
+                .as_ref()
+                .and_then(|e| e.stdout_excerpt.as_deref())
+                .unwrap_or("(no evidence)");
+            msg.push_str(&format!("- {} (evidence: {})\n", r.name, evidence_excerpt));
+        }
+        msg.push_str("Fix the failing checks before stopping.");
+
+        // 4 (repetition strategy): if repetitive, nudge a different approach.
+        if current_plan
+            .as_deref()
+            .map(|p| self.check_guards(Some(p)).as_deref() == Some("repetitive"))
+            .unwrap_or(false)
+        {
+            msg.push_str(" NOTE: previous attempt was similar. Try a different approach.");
+        }
+
+        self.set_status(GoalStatus::Running);
+        Ok(GateDecision::RetryWith(msg))
     }
 }
 
@@ -943,5 +1274,199 @@ mod tests {
         assert_eq!(results[1].name, "c2");
         assert_eq!(results[0].status, CheckStatus::Pass);
         assert_eq!(results[1].status, CheckStatus::Pass);
+    }
+
+    // ── Stage C tests: guards, similarity, logging ──
+
+    #[test]
+    fn test_calculate_similarity_identical() {
+        let s = "fix the login bug and add tests";
+        assert_eq!(calculate_similarity(s, s), 1.0);
+    }
+
+    #[test]
+    fn test_calculate_similarity_disjoint() {
+        // No shared tokens longer than 2 chars.
+        let a = "alpha beta gamma";
+        let b = "delta epsilon zeta";
+        assert_eq!(calculate_similarity(a, b), 0.0);
+    }
+
+    #[test]
+    fn test_calculate_similarity_partial() {
+        // Shared: "fix", "login", "bug"; union also includes unique tokens.
+        let a = "fix the login bug";
+        let b = "fix the login bug and add tests";
+        let sim = calculate_similarity(a, b);
+        assert!(sim > 0.5, "partial overlap should be > 0.5, got {sim}");
+        assert!(sim < 1.0, "not identical, should be < 1.0, got {sim}");
+    }
+
+    #[test]
+    fn test_guard_max_iterations() {
+        // iteration_count at the limit -> guard trips.
+        let ext = GoalSupervisorExtension::new()
+            .with_config(GoalSupervisorConfig {
+                max_iterations: 3,
+                ..Default::default()
+            });
+        {
+            let mut guard = ext.state.lock().unwrap();
+            *guard = Some(GoalState {
+                goal_id: "g1".into(),
+                objective: "test".into(),
+                checks: vec![],
+                status: GoalStatus::Running,
+                iteration_count: 3,
+                started_at: format!("epoch:{}", now_epoch_ms()/1000),
+                total_cost_usd: 0.0,
+                last_action_plan: None,
+            });
+        }
+        let hit = ext.check_guards(None);
+        assert_eq!(hit.as_deref(), Some("max_iterations"));
+    }
+
+    #[test]
+    fn test_guard_max_duration() {
+        // started_at far in the past -> max_duration trips.
+        let ext = GoalSupervisorExtension::new()
+            .with_config(GoalSupervisorConfig {
+                max_total_duration_min: 1,
+                ..Default::default()
+            });
+        let old = format!("epoch:{}", now_epoch_ms().saturating_sub(120 * 60 * 1000) / 1000); // 120 min ago
+        {
+            let mut guard = ext.state.lock().unwrap();
+            *guard = Some(GoalState {
+                goal_id: "g1".into(),
+                objective: "test".into(),
+                checks: vec![],
+                status: GoalStatus::Running,
+                iteration_count: 0,
+                started_at: old,
+                total_cost_usd: 0.0,
+                last_action_plan: None,
+            });
+        }
+        let hit = ext.check_guards(None);
+        assert_eq!(hit.as_deref(), Some("max_duration"));
+    }
+
+    #[test]
+    fn test_guard_max_cost() {
+        let ext = GoalSupervisorExtension::new()
+            .with_config(GoalSupervisorConfig {
+                max_total_cost_usd: 1.0,
+                ..Default::default()
+            });
+        {
+            let mut guard = ext.state.lock().unwrap();
+            *guard = Some(GoalState {
+                goal_id: "g1".into(),
+                objective: "test".into(),
+                checks: vec![],
+                status: GoalStatus::Running,
+                iteration_count: 0,
+                started_at: format!("epoch:{}", now_epoch_ms()/1000),
+                total_cost_usd: 1.5,
+                last_action_plan: None,
+            });
+        }
+        let hit = ext.check_guards(None);
+        assert_eq!(hit.as_deref(), Some("max_cost"));
+    }
+
+    #[test]
+    fn test_guard_repetitive() {
+        // Same action plan twice -> repetitive trips (needs iteration_count >= threshold).
+        let ext = GoalSupervisorExtension::new()
+            .with_config(GoalSupervisorConfig {
+                repetition_threshold: 1,
+                ..Default::default()
+            });
+        let plan = "fix the login bug by updating auth module";
+        {
+            let mut guard = ext.state.lock().unwrap();
+            *guard = Some(GoalState {
+                goal_id: "g1".into(),
+                objective: "test".into(),
+                checks: vec![],
+                status: GoalStatus::Running,
+                iteration_count: 1,
+                started_at: format!("epoch:{}", now_epoch_ms()/1000),
+                total_cost_usd: 0.0,
+                last_action_plan: Some(plan.into()),
+            });
+        }
+        let hit = ext.check_guards(Some(plan));
+        assert_eq!(hit.as_deref(), Some("repetitive"));
+    }
+
+    #[test]
+    fn test_guard_none_when_healthy() {
+        // Fresh goal, low iter, low cost, distinct plan -> no guard trips.
+        let ext = GoalSupervisorExtension::new();
+        {
+            let mut guard = ext.state.lock().unwrap();
+            *guard = Some(GoalState {
+                goal_id: "g1".into(),
+                objective: "test".into(),
+                checks: vec![],
+                status: GoalStatus::Running,
+                iteration_count: 0,
+                started_at: format!("epoch:{}", now_epoch_ms()/1000),
+                total_cost_usd: 0.0,
+                last_action_plan: Some("first attempt plan alpha".into()),
+            });
+        }
+        let hit = ext.check_guards(Some("a completely different plan beta"));
+        assert!(hit.is_none(), "healthy goal should not trip any guard, got {hit:?}");
+    }
+
+    #[tokio::test]
+    async fn test_log_iteration_writes_jsonl() {
+        // Use a unique session id to avoid clashing with real goal-runs.
+        let session = format!("test_log_{}", now_epoch_ms());
+        let ext = GoalSupervisorExtension::new()
+            .with_session_id(session.clone());
+        {
+            let mut guard = ext.state.lock().unwrap();
+            *guard = Some(GoalState {
+                goal_id: "g_log".into(),
+                objective: "log test".into(),
+                checks: vec![],
+                status: GoalStatus::Running,
+                iteration_count: 1,
+                started_at: format!("epoch:{}", now_epoch_ms()/1000),
+                total_cost_usd: 0.0,
+                last_action_plan: None,
+            });
+        }
+        let results = vec![CheckResult {
+            name: "ci_test".into(),
+            status: CheckStatus::Pass,
+            evidence: Some(Evidence {
+                exit_code: Some(0),
+                stdout_excerpt: Some("ok".into()),
+                artifact_path: None,
+                matches: None,
+            }),
+            duration_ms: 10,
+            reason: None,
+        }];
+        ext.log_iteration(&results).expect("log writes ok");
+
+        let path = dirs_for(&session).join("iterations.jsonl");
+        let content = std::fs::read_to_string(&path).expect("log file exists");
+        let line = content.trim();
+        let json: serde_json::Value = serde_json::from_str(line).expect("valid json");
+        assert_eq!(json["iter"], 1);
+        assert_eq!(json["goal_id"], "g_log");
+        assert_eq!(json["all_passed"], true);
+        assert!(json["checks_run"].is_array());
+
+        // Cleanup test artifact.
+        let _ = std::fs::remove_file(&path);
     }
 }
