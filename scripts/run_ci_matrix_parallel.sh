@@ -113,6 +113,11 @@ run_one_script() {
     ln -sf "$PROJECT_DIR/Cargo.lock" "$work_dir/Cargo.lock" 2>/dev/null
     ln -sfn "$PROJECT_DIR/examples" "$work_dir/examples" 2>/dev/null
     ln -sfn "$PROJECT_DIR/.git" "$work_dir/.git" 2>/dev/null
+    # Workspace member dirs (Cargo.toml references these — cargo test fails without them)
+    for member in todo-extension tests-extensions stock-plugin hello-extension \
+                  extensions permission dashboard ion-dashboard-ui docs scripts; do
+        [ -d "$PROJECT_DIR/$member" ] && ln -sfn "$PROJECT_DIR/$member" "$work_dir/$member"
+    done
 
     # Symlink .ion/ contents EXCEPT monitors/ (that's the one we isolate).
     # Some scripts need .ion/config.json, .ion/settings.json, .ion/agents/ etc.
