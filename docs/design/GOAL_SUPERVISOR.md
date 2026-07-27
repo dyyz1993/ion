@@ -666,3 +666,86 @@ ion rpc --method goal_evolver_run_once \
 | 进化系统 | 无 | goal-evolver agent 提 Issue |
 | 会幻觉吗 | 会 | 不会（证据驱动） |
 | 归属 | 扩展 | 扩展（同） |
+
+---
+
+## 13. 深化：进展分析 + 目标校正 + 诊断 agent
+
+> **状态：已完成** — 4 项深化全部实现，928 lib tests + 真实 LLM 验证通过。
+
+B1-B3 实现了"完成判定"（硬判定）。深化增加了**"进展好不好"**（软分析）+ **"不好怎么办"**（校正 + 诊断）。
+
+### 13.1 进展分析（ProgressReport）
+
+每次 `on_gate_check` 触发 RetryWith 前，自动运行 `analyze_progress()`：
+
+| Trend | 触发条件 | 给 agent 的建议 |
+|-------|---------|---------------|
+| **Converging** | failed 集合在缩小 | "继续，进展良好" |
+| **Oscillating** | failed 数量不变但元素变化 | "考虑调 goal_refine 调整检测项" |
+| **Stagnant** | failed 完全相同连续多轮 | "换策略或放宽检测" |
+| **Drifting** | action plan 跟 objective 相似度 < 0.15 | "重新聚焦目标" |
+
+**Drifting 有两个检测维度**：
+1. **语义偏离**：action plan 文本跟 objective 关键词重叠低（Jaccard < 0.15）
+2. **工具行为偏离**（Task 4）：连续 5+ 次只 bash/read 不 write/edit → "你在探索但不实现"
+
+分析结果附加到 RetryWith 消息：
+```
+Goal not complete. Failed: [cargo_test, no_ufffd]
+📊 Progress: Oscillating. Different checks keep failing each iteration.
+   Consider calling goal_refine to adjust or split the checks.
+Fix the failing checks.
+```
+
+### 13.2 目标校正（goal_refine tool）
+
+`goal_refine` — 增量调整运行中的目标，不清零进展：
+
+| 参数 | 作用 |
+|------|------|
+| `objective_patch` | 更新目标描述 |
+| `checks_add` | 添加检测项 |
+| `checks_remove` | 按 name 删除检测项 |
+
+**跟 goal_set 区别**：
+- `goal_set` = 覆盖整个 goal（清零 iteration_count/cost）
+- `goal_refine` = 增量改（保留 iteration_count/cost/started_at）
+
+典型流程：agent 看到 Oscillating 建议 → 调 goal_refine 删掉太严的检测项 → 继续执行。
+
+### 13.3 诊断 agent（goal_diagnose tool + goal-diagnostician）
+
+`goal_diagnose` — 当目标严重卡住时，spawn 一个专家 agent 深度诊断：
+
+```
+goal_diagnose → spawn_worker(agent="goal-diagnostician", task=打包上下文)
+  → diagnostician 读日志 → 分析 3 维度：
+    1. 检测项质量：太严？测错东西？
+    2. agent 能力：用对工具？重复？
+    3. 目标可行性：太大？太模糊？
+  → 返回 ROOT CAUSE + RECOMMENDATION
+```
+
+诊断 agent 定义在 `examples/agents/goal-diagnostician.md`（read-only，不 edit/write/spawn）。
+
+### 13.4 偏离监控（on_tool_execution_end）
+
+在 GoalState 增加 `recent_tools` 字段（滑动窗口 K=10），记录每次工具调用的 `(tool_name, target_summary)`。
+
+`on_tool_execution_end` 钩子自动记录。`analyze_progress` 检查 recent_tools：连续 5+ 次只 bash/read 无 write/edit → 标记 Drifting。
+
+### 13.5 暴露给 LLM 的 3 个 tool
+
+| Tool | 作用 | 何时用 |
+|------|------|--------|
+| `goal_set` | 设目标（覆盖 + B2 自动生成检测项） | 开始新目标 |
+| `goal_refine` | 增量调整（加/删检测项，改 objective） | 进展分析建议调整时 |
+| `goal_diagnose` | spawn 诊断 agent 深度分析 | 严重卡住时 |
+
+### 13.6 验证
+
+- **单元测试**：ProgressTrend 各分支（Converging/Oscillating/Stagnant/Drifting）+ GoalRefineTool（add/remove/patch/error）= 9 新测试
+- **真实 LLM**：GLM-5.2 跑 goal_set（无 checks → B2 自动生成 → 全 PASS → complete）
+- **全量回归**：928 lib tests，0 回归
+

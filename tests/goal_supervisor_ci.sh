@@ -179,6 +179,69 @@ else
 fi
 
 # ──────────────────────────────────────────────────────────
+echo ""
+echo "Group E: 深化功能（进展分析 + goal_refine + goal_diagnose）"
+# ──────────────────────────────────────────────────────────
+
+# E1: 进展分析测试存在
+UNIT_DEEP=$(cargo test --lib goal_supervisor 2>&1)
+if echo "$UNIT_DEEP" | grep -q "test_classify_trend_converging"; then
+    pass "E1: 进展分析 — classify_trend（4 种 trend）"
+else
+    fail "E1: 进展分析测试缺失"
+fi
+
+# E2: drift 检测测试
+if echo "$UNIT_DEEP" | grep -q "test_analyze_progress_drift_detection"; then
+    pass "E2: drift 检测（action plan vs objective 偏离）"
+else
+    fail "E2: drift 检测测试缺失"
+fi
+
+# E3: GoalRefineTool 测试
+if echo "$UNIT_DEEP" | grep -q "test_goal_refine_add_check"; then
+    pass "E3: GoalRefineTool（增量改检测项）"
+else
+    fail "E3: GoalRefineTool 测试缺失"
+fi
+
+# E4: GoalDiagnoseTool 注册
+if grep -q "GoalDiagnoseTool" src/goal_supervisor_extension.rs; then
+    pass "E4: GoalDiagnoseTool（诊断 agent spawn）"
+else
+    fail "E4: GoalDiagnoseTool 缺失"
+fi
+
+# E5: goal-diagnostician agent 定义存在
+if [ -f examples/agents/goal-diagnostician.md ]; then
+    pass "E5: goal-diagnostician.md agent 定义存在"
+else
+    fail "E5: 诊断 agent 定义缺失"
+fi
+
+# E6: on_tool_execution_end 偏离监控
+if grep -q "on_tool_execution_end" src/goal_supervisor_extension.rs; then
+    pass "E6: on_tool_execution_end 偏离监控"
+else
+    fail "E6: 偏离监控钩子缺失"
+fi
+
+# E7: recent_tools 字段（行为追踪）
+if grep -q "recent_tools" src/goal_supervisor_extension.rs; then
+    pass "E7: recent_tools 行为追踪字段"
+else
+    fail "E7: recent_tools 字段缺失"
+fi
+
+# E8: 3 个 tool 全注册
+TOOLS_COUNT=$(grep -c "GoalSetTool\|GoalRefineTool\|GoalDiagnoseTool" src/bin/ion.rs 2>/dev/null)
+if [ "$TOOLS_COUNT" -ge 3 ]; then
+    pass "E8: 3 个 tool 全注册（goal_set + goal_refine + goal_diagnose）"
+else
+    fail "E8: tool 注册不全（$TOOLS_COUNT/3）"
+fi
+
+# ──────────────────────────────────────────────────────────
 # 总结
 # ──────────────────────────────────────────────────────────
 echo ""
