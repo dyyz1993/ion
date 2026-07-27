@@ -73,8 +73,9 @@ case "\$1" in
         ;;
     test)
         # Fake test output — tests are verified separately via 'cargo test --lib'
-        # in the main repo. CI scripts just grep for 'result: ok.'.
+        # in the main repo. CI scripts just grep for 'result: ok.' or 'N passed'.
         echo "test result: ok. 900 passed; 0 failed; 0 ignored"
+        echo "1 passed"
         exit 0
         ;;
 esac

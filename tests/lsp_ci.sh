@@ -32,7 +32,11 @@ record_fail() { echo "  ❌ $1"; FAIL=$((FAIL+1)); }
 
 rpc_call() {
     local method="$1" params="$2" outfile="$3"
-    "$ION" rpc --method "$method" --params "$params" > "$outfile" 2>/dev/null
+    if [ -n "${SID:-}" ]; then
+        "$ION" rpc --session "$SID" --method "$method" --params "$params" > "$outfile" 2>/dev/null
+    else
+        "$ION" rpc --method "$method" --params "$params" > "$outfile" 2>/dev/null
+    fi
 }
 
 json_get() {

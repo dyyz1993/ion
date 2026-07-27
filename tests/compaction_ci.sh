@@ -56,7 +56,7 @@ echo "Group B: session 持久化验证"
 
 # B1: 创建 session → 发消息 → 检查 session 文件存在
 SESSION_ID="sess_compact_ci_$(date +%s)"
-$ION_BIN --session-id "$SESSION_ID" -p "hello world" --model deepseek-v4-flash --provider opencode 2>/dev/null || true
+ION_FAUX_REPLY="compaction test ok" ION_FAUX_REPEAT=1 $ION_BIN --session-id "$SESSION_ID" -p "hello world" --model faux-test --provider faux 2>/dev/null || true
 SESSION_FILE=$(find ~/.ion/agent/sessions -name "session.jsonl" -newer /tmp 2>/dev/null | head -1)
 if [ -n "$SESSION_FILE" ]; then
     pass "B1: session 文件已创建"
