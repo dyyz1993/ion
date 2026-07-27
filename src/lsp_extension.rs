@@ -35,6 +35,9 @@ pub struct Diagnostic {
     pub severity: String, // "error" | "warning"
     pub message: String,
     pub code: String, // "E0308" | "unused_variables" etc
+    /// Machine-applicable fix suggestion extracted from the compiler message.
+    /// Empty string when no suggestion is available.
+    pub suggestion: String,
 }
 
 // ── LspExtension ──────────────────────────────────────────────
@@ -281,6 +284,8 @@ impl LspExtension {
                             severity: severity.into(),
                             message,
                             code,
+                            // TSC output does not carry fix suggestions.
+                            suggestion: String::new(),
                         });
                     }
                 }
@@ -305,6 +310,8 @@ impl LspExtension {
                 },
                 message: item.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 code: item.get("code").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                // Ruff output does not carry fix suggestions in this format.
+                suggestion: String::new(),
             })
         }).collect()
     }
@@ -329,6 +336,8 @@ impl LspExtension {
                         severity: "error".into(),
                         message: "SyntaxError".into(),
                         code: "syntax".into(),
+                        // py_compile output does not carry fix suggestions.
+                        suggestion: String::new(),
                     });
                 }
             } else if line.starts_with("SyntaxError:") || line.starts_with("IndentationError:") {
@@ -360,6 +369,8 @@ impl LspExtension {
                     severity: "warning".into(),
                     message,
                     code: "go_vet".into(),
+                    // go vet output does not carry fix suggestions.
+                    suggestion: String::new(),
                 });
             }
         }
@@ -553,10 +564,56 @@ impl LspExtension {
                 severity,
                 message,
                 code,
+                suggestion: Self::extract_fix_suggestion(msg),
             });
         }
 
         diagnostics
+    }
+
+    /// Extract a machine-applicable fix suggestion from a cargo check JSON message.
+    ///
+    /// Looks first at `spans[].suggested_replacement` where the span's
+    /// `suggestion_applicability == "MachineApplicable"` (highest confidence —
+    /// safe to auto-apply). Falls back to the first `help`-level child message
+    /// when no machine-applicable span suggestion is present.
+    ///
+    /// Returns an empty string when no suggestion can be extracted.
+    fn extract_fix_suggestion(msg: &serde_json::Value) -> String {
+        // Primary: a span with a machine-applicable suggested replacement.
+        if let Some(spans) = msg.get("spans").and_then(|s| s.as_array()) {
+            for span in spans {
+                let applicability = span
+                    .get("suggestion_applicability")
+                    .and_then(|v| v.as_str());
+                if applicability == Some("MachineApplicable") {
+                    if let Some(repl) = span
+                        .get("suggested_replacement")
+                        .and_then(|v| v.as_str())
+                    {
+                        if !repl.is_empty() {
+                            return repl.to_string();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: first help-level child message.
+        if let Some(children) = msg.get("children").and_then(|c| c.as_array()) {
+            for child in children {
+                let level = child.get("level").and_then(|v| v.as_str());
+                if level == Some("help") {
+                    if let Some(message) = child.get("message").and_then(|v| v.as_str()) {
+                        if !message.is_empty() {
+                            return message.to_string();
+                        }
+                    }
+                }
+            }
+        }
+
+        String::new()
     }
 
     /// Format diagnostics as XML block for context injection.
@@ -581,9 +638,14 @@ impl LspExtension {
         // Inject ALL errors (these block compilation — LLM must fix them)
         for d in &errors {
             let code_part = if d.code.is_empty() { String::new() } else { format!(" code=\"{}\"", d.code) };
+            let suggestion_part = if d.suggestion.is_empty() {
+                String::new()
+            } else {
+                format!("\n<suggestion>{}</suggestion>", d.suggestion)
+            };
             xml.push_str(&format!(
-                "<error file=\"{}\" line=\"{}\" col=\"{}\"{}>\n{}\n</error>\n",
-                d.file, d.line, d.column, code_part, d.message
+                "<error file=\"{}\" line=\"{}\" col=\"{}\"{}>\n{}\n{}</error>\n",
+                d.file, d.line, d.column, code_part, d.message, suggestion_part
             ));
         }
 
@@ -591,9 +653,14 @@ impl LspExtension {
         const MAX_WARNINGS: usize = 5;
         for d in warnings.iter().take(MAX_WARNINGS) {
             let code_part = if d.code.is_empty() { String::new() } else { format!(" code=\"{}\"", d.code) };
+            let suggestion_part = if d.suggestion.is_empty() {
+                String::new()
+            } else {
+                format!("\n<suggestion>{}</suggestion>", d.suggestion)
+            };
             xml.push_str(&format!(
-                "<warning file=\"{}\" line=\"{}\" col=\"{}\"{}>\n{}\n</warning>\n",
-                d.file, d.line, d.column, code_part, d.message
+                "<warning file=\"{}\" line=\"{}\" col=\"{}\"{}>\n{}\n{}</warning>\n",
+                d.file, d.line, d.column, code_part, d.message, suggestion_part
             ));
         }
 
@@ -632,22 +699,34 @@ impl LspExtension {
 
         // All errors
         for d in &errors {
+            let suggestion_part = if d.suggestion.is_empty() {
+                String::new()
+            } else {
+                format!("\n  💡 suggestion: {}", d.suggestion)
+            };
             text.push_str(&format!(
-                "🔴 {}:{}:{} [{}] {}\n",
+                "🔴 {}:{}:{} [{}] {}{}\n",
                 d.file, d.line, d.column,
                 if d.code.is_empty() { "error" } else { &d.code },
-                d.message
+                d.message,
+                suggestion_part
             ));
         }
 
         // First 10 warnings
         const MAX_TEXT_WARNINGS: usize = 10;
         for d in warnings.iter().take(MAX_TEXT_WARNINGS) {
+            let suggestion_part = if d.suggestion.is_empty() {
+                String::new()
+            } else {
+                format!("\n  💡 suggestion: {}", d.suggestion)
+            };
             text.push_str(&format!(
-                "🟡 {}:{}:{} [{}] {}\n",
+                "🟡 {}:{}:{} [{}] {}{}\n",
                 d.file, d.line, d.column,
                 if d.code.is_empty() { "warning" } else { &d.code },
-                d.message
+                d.message,
+                suggestion_part
             ));
         }
 
@@ -1141,6 +1220,7 @@ mod tests {
                 severity: "error".into(),
                 message: "type mismatch".into(),
                 code: "E0308".into(),
+                suggestion: String::new(),
             },
             Diagnostic {
                 file: "src/main.rs".into(),
@@ -1149,6 +1229,7 @@ mod tests {
                 severity: "warning".into(),
                 message: "unused variable".into(),
                 code: "unused_variables".into(),
+                suggestion: String::new(),
             },
         ];
         let xml = LspExtension::format_diagnostics_xml(&diags);
@@ -1176,6 +1257,7 @@ mod tests {
             severity: "error".into(),
             message: "type mismatch".into(),
             code: "E0308".into(),
+            suggestion: String::new(),
         }];
         let text = LspExtension::format_diagnostics_text(&diags);
         assert!(text.contains("🔴"));
@@ -1193,8 +1275,44 @@ mod tests {
             severity: "error".into(),
             message: "test".into(),
             code: "E0001".into(),
+            suggestion: String::new(),
         };
         let b = a.clone();
         assert_eq!(a, b);
+    }
+
+    /// Extracting a suggestion from a machine-applicable span replacement.
+    #[test]
+    fn test_parse_with_machine_applicable_suggestion() {
+        let input = r#"{"reason":"compiler-message","message":{"level":"error","code":{"code":"E0308"},"message":"mismatched types","spans":[{"file_name":"src/lib.rs","line_start":42,"column_start":5,"suggested_replacement":"foo","suggestion_applicability":"MachineApplicable"}]}}"#;
+        let diags = LspExtension::parse_cargo_check_json(input);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].suggestion, "foo");
+
+        // A non-MachineApplicable applicability must not be picked up.
+        let input_unsure = r#"{"reason":"compiler-message","message":{"level":"error","code":{"code":"E0308"},"message":"mismatched types","spans":[{"file_name":"src/lib.rs","line_start":42,"column_start":5,"suggested_replacement":"maybe","suggestion_applicability":"MaybeIncorrect"}]}}"#;
+        let diags_unsure = LspExtension::parse_cargo_check_json(input_unsure);
+        assert_eq!(diags_unsure.len(), 1);
+        assert_eq!(diags_unsure[0].suggestion, "");
+    }
+
+    /// When no machine-applicable span suggestion exists, fall back to the
+    /// first help-level child message.
+    #[test]
+    fn test_parse_with_help_child_fallback() {
+        let input = r#"{"reason":"compiler-message","message":{"level":"error","code":{"code":"E0308"},"message":"mismatched types","spans":[{"file_name":"src/lib.rs","line_start":42,"column_start":5}],"children":[{"level":"note","message":"expected u32"},{"level":"help","message":"consider using `as u32`"},{"level":"help","message":"ignored help"}]}}"#;
+        let diags = LspExtension::parse_cargo_check_json(input);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].suggestion, "consider using `as u32`");
+    }
+
+    /// When neither a span suggestion nor a help child is present, the
+    /// suggestion field must be empty.
+    #[test]
+    fn test_parse_no_suggestion_yields_empty() {
+        let input = r#"{"reason":"compiler-message","message":{"level":"error","code":{"code":"E0308"},"message":"mismatched types","spans":[{"file_name":"src/lib.rs","line_start":42,"column_start":5}]}}"#;
+        let diags = LspExtension::parse_cargo_check_json(input);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].suggestion, "");
     }
 }
