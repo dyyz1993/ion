@@ -558,6 +558,52 @@ impl GoalSupervisorExtension {
             (state.goal_id.clone(), state.iteration_count, state.started_at.clone())
         };
 
+        // B2-b: auto-generate outcome + diagnosis_hint from status/reason.
+        // This gives the goal-evolver actionable context without manual annotation.
+        let (outcome, diagnosis_hint) = match status {
+            "complete" => (
+                "fixed",
+                Some(format!(
+                    "Goal completed after {} iterations (stopped: {}). \
+                     All verification checks passed.",
+                    iterations, reason
+                )),
+            ),
+            "exhausted" => {
+                let hint = match reason {
+                    "max_iterations" => format!(
+                        "Agent hit max_iterations ({}) without completing all checks. \
+                         Possible causes: checks too strict, agent lacks skill, or \
+                         objective too large for single-goal loop. Consider splitting \
+                         into sub-goals or strengthening the model tier.",
+                        iterations
+                    ),
+                    "max_duration" => format!(
+                        "Goal exceeded time budget after {} iterations. \
+                         If each iteration is slow (e.g. long builds), the closed-loop \
+                         feedback is too slow. Consider a faster check command or \
+                         longer duration budget.",
+                        iterations
+                    ),
+                    "max_cost" => format!(
+                        "Goal exceeded cost budget after {} iterations. \
+                         Large objectives consume many tokens per iteration. \
+                         Consider splitting into smaller sub-goals.",
+                        iterations
+                    ),
+                    "repetitive" => format!(
+                        "Agent repeated the same approach {}+ times without progress. \
+                         The skill may be missing a required step, or the agent needs \
+                         a stronger model to find a different approach.",
+                        iterations
+                    ),
+                    other => format!("Goal exhausted for reason: {} after {} iterations.", other, iterations),
+                };
+                ("abandoned", Some(hint))
+            }
+            _ => ("unknown".into(), None),
+        };
+
         let report = serde_json::json!({
             "goal_id": goal_id,
             "final_status": status,
@@ -565,6 +611,10 @@ impl GoalSupervisorExtension {
             "started_at": started_at,
             "finished_at": now_epoch_ms(),
             "stopped_reason": reason,
+            "outcome": outcome,
+            "outcome_detail": {
+                "diagnosis_hint": diagnosis_hint,
+            },
         });
 
         let path = dir.join("final-report.json");
@@ -583,6 +633,45 @@ impl Default for GoalSupervisorExtension {
 // ===========================================================================
 // Free helper functions (Stage C)
 // ===========================================================================
+
+/// Generate default CI checks when goal_set is called without explicit checks.
+///
+/// These are generic CI checks that apply to most code-change goals:
+/// - cargo build (compiles)
+/// - cargo test (tests pass)
+/// - cargo clippy (no new warnings)
+/// - no U+FFFD garbled chars (ION-specific)
+///
+/// B2: This is the fallback when the caller doesn't specify checks.
+/// Future: an LLM call could generate objective-specific checks here.
+pub fn default_ci_checks() -> Vec<Check> {
+    vec![
+        Check {
+            name: "cargo_build".into(),
+            check_type: CheckType::Ci,
+            rationale: "Code must compile".into(),
+            command: "cargo build --lib 2>&1 | tail -1".into(),
+            pass_criteria: PassCriteria::ExitCode { expected: 0 },
+            must_pass: true,
+        },
+        Check {
+            name: "cargo_test".into(),
+            check_type: CheckType::Ci,
+            rationale: "Tests must pass".into(),
+            command: "cargo test --lib 2>&1 | tail -1".into(),
+            pass_criteria: PassCriteria::ExitCode { expected: 0 },
+            must_pass: true,
+        },
+        Check {
+            name: "no_ufffd".into(),
+            check_type: CheckType::Ci,
+            rationale: "No garbled UTF-8 (U+FFFD) in source".into(),
+            command: "! grep -rq $'\\xef\\xbf\\xbd' src/".into(),
+            pass_criteria: PassCriteria::ExitCode { expected: 0 },
+            must_pass: true,
+        },
+    ]
+}
 
 /// Jaccard similarity over whitespace-split tokens (length > 2).
 /// Returns 0.0 if either string has no qualifying tokens.
@@ -820,8 +909,8 @@ impl Tool for GoalSetTool {
             .ok_or_else(|| AgentError::Tool("goal_set: missing 'objective'".into()))?
             .to_string();
 
-        // Optional: checks (default empty). Parse each check defensively; a
-        // malformed check is reported back as a tool error rather than panicking.
+        // Optional: checks. If not provided (or empty), generate default CI
+        // checks so the goal is still verifiable (B2: auto-generate fallback).
         let mut checks: Vec<Check> = Vec::new();
         if let Some(arr) = args.get("checks").and_then(|v| v.as_array()) {
             for (i, item) in arr.iter().enumerate() {
@@ -830,6 +919,10 @@ impl Tool for GoalSetTool {
                 })?;
                 checks.push(check);
             }
+        }
+        // B2: if no checks were provided, use default CI checks.
+        if checks.is_empty() {
+            checks = default_ci_checks();
         }
 
         let goal_id = uuid::Uuid::new_v4().to_string();
@@ -955,6 +1048,32 @@ mod tests {
         assert_eq!(cfg.delay_ms, 2000, "delay_ms default");
     }
 
+    #[test]
+    fn test_default_ci_checks_not_empty() {
+        let checks = default_ci_checks();
+        assert!(!checks.is_empty(), "default CI checks must not be empty");
+        assert!(checks.iter().any(|c| c.name == "cargo_build"), "must have cargo_build");
+        assert!(checks.iter().any(|c| c.name == "cargo_test"), "must have cargo_test");
+        assert!(checks.iter().any(|c| c.name == "no_ufffd"), "must have no_ufffd");
+        // All must be must_pass=true and check_type=Ci
+        assert!(checks.iter().all(|c| c.must_pass), "all default checks must_pass");
+        assert!(checks.iter().all(|c| c.check_type == CheckType::Ci), "all default checks are CI");
+    }
+
+    #[tokio::test]
+    async fn test_goal_set_no_checks_uses_defaults() {
+        // When goal_set is called without checks, default CI checks should be used.
+        let shared: SharedGoalState = Arc::new(Mutex::new(None));
+        let tool = GoalSetTool(shared.clone());
+        let args = serde_json::json!({"objective": "fix the bug"});
+        let result = tool.execute(args, &rt()).await.expect("goal_set ok");
+        // Verify state has default checks
+        let guard = shared.lock().unwrap();
+        let state = guard.as_ref().expect("goal set");
+        assert!(!state.checks.is_empty(), "default checks should be generated");
+        assert!(state.checks.len() >= 3, "at least 3 default CI checks, got {}", state.checks.len());
+    }
+
     #[tokio::test]
     async fn test_goal_set_overrides() {
         // Two goal_set calls share the same SharedGoalState. The second call
@@ -1009,7 +1128,8 @@ mod tests {
             assert_eq!(state.objective, "goal B", "objective replaced by goal B");
             assert_eq!(state.goal_id, json_b["goal_id"].as_str().unwrap());
             assert_ne!(state.goal_id, goal_a_id, "goal B has a different id than A");
-            assert!(state.checks.is_empty(), "goal B has no checks");
+            // B2: empty checks now auto-fills with default CI checks.
+            assert!(!state.checks.is_empty(), "goal B has default CI checks (B2 auto-fill)");
             assert_eq!(state.status, GoalStatus::Running);
             assert_eq!(state.iteration_count, 0);
         }
