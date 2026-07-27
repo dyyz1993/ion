@@ -1,0 +1,3 @@
+{"tool_call":{"name":"goal_set","input":{"objective":"fix a bug in auth module"}}}
+{"text":"I'll work on the auth fix","stop_reason":"end_turn"}
+{"text":"done","stop_reason":"end_turn"}
