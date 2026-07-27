@@ -113,7 +113,21 @@ run_one_script() {
     ln -sf "$PROJECT_DIR/Cargo.lock" "$work_dir/Cargo.lock" 2>/dev/null
     ln -sfn "$PROJECT_DIR/examples" "$work_dir/examples" 2>/dev/null
     ln -sfn "$PROJECT_DIR/.git" "$work_dir/.git" 2>/dev/null
+
+    # Symlink .ion/ contents EXCEPT monitors/ (that's the one we isolate).
+    # Some scripts need .ion/config.json, .ion/settings.json, .ion/agents/ etc.
     mkdir -p "$work_dir/.ion"
+    if [ -d "$PROJECT_DIR/.ion" ]; then
+        for item in "$PROJECT_DIR/.ion"/*; do
+            bn=$(basename "$item")
+            if [ "$bn" != "monitors" ]; then
+                ln -sfn "$item" "$work_dir/.ion/$bn"
+            fi
+        done
+    fi
+    # Ensure monitors/ exists but is empty (scripts may create configs here,
+    # but they won't affect other parallel scripts).
+    mkdir -p "$work_dir/.ion/monitors"
 
     # Run from the isolated work dir with isolated HOME + cargo shim.
     # CRITICAL: call the script via the work_dir's symlinked path (not the
