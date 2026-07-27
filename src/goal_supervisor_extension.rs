@@ -1157,40 +1157,20 @@ impl Tool for GoalSetTool {
     }
 
     fn description(&self) -> &str {
-        "Declare a goal for the Goal Supervisor: an objective plus verification \
-         checks. Setting a new goal cancels (overrides) any previous goal. The \
-         supervisor will iterate toward the objective and run the checks to \
-         decide completion, retry, or exhaustion."
+        "Set a goal for the Goal Supervisor. Just describe what you want to achieve \
+         in natural language — the system will automatically generate verification \
+         checks and iterate until the goal is complete. Setting a new goal cancels \
+         any previous goal. Example: goal_set({\"objective\": \"add a login function with tests\"})"
     }
 
-    /// JSON schema for the goal_set arguments (B1_TASK.md section 2.3).
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
                 "objective": {
                     "type": "string",
-                    "description": "Natural-language description of the goal the agent must achieve."
-                },
-                "checks": {
-                    "type": "array",
-                    "description": "Verification checks. Each check has: name, check_type \
-                                    (\"ci\" or \"contingency\"), rationale, command, pass_criteria, \
-                                    must_pass. pass_criteria is an object with a \"kind\" of \
-                                    \"exit_code\" ({expected}), \"grep_empty\" ({pattern}), or \
-                                    \"file_exists\" ({path}).",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "check_type": {"type": "string", "enum": ["ci", "contingency"]},
-                            "rationale": {"type": "string"},
-                            "command": {"type": "string"},
-                            "pass_criteria": {"type": "object"},
-                            "must_pass": {"type": "boolean"}
-                        },
-                        "required": ["name", "check_type", "rationale", "command", "pass_criteria", "must_pass"]
-                    }
+                    "description": "What you want to achieve, in natural language. \
+                                    Example: 'implement a tic-tac-toe game with win detection'"
                 }
             },
             "required": ["objective"]
