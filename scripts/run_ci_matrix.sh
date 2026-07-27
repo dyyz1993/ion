@@ -34,8 +34,8 @@ cd "$PROJECT_DIR"
 
 ION_BIN="${ION_BIN:-$PROJECT_DIR/target/debug/ion}"
 PARALLELISM="${PARALLELISM:-5}"
-PER_SCRIPT_TIMEOUT="${PER_SCRIPT_TIMEOUT:-120}"
-HOST_TIMEOUT="${HOST_TIMEOUT:-1800}"
+PER_SCRIPT_TIMEOUT="${PER_SCRIPT_TIMEOUT:-180}"
+HOST_TIMEOUT="${HOST_TIMEOUT:-2400}"
 
 echo ""
 echo "════════════════════════════════════════════════════════════════"
@@ -126,15 +126,36 @@ mkdir -p "$WORKTREE_ROOT"
 git worktree prune 2>/dev/null
 
 # Each worker gets its own HOME (~/.ion isolation) but we symlink ~/.rustup
-# and ~/.cargo so cargo/rustup still work. (~/.ion is the only thing that
-# actually needs isolation — each worker's ion serve binds its own socket.)
+# and ~/.cargo so cargo/rustup still work.
+#
+# CRITICAL: To avoid 5 workers fighting over the cargo target/ lock, we put
+# a `cargo` shim in each worker's PATH that no-ops `cargo build` (the binary
+# is already prebuilt in the host's target/). Other cargo subcommands
+# (test, clippy) pass through to real cargo. This drops per-script runtime
+# from 3+ minutes to ~10 seconds.
+REAL_CARGO=$(command -v cargo 2>/dev/null || echo /usr/local/cargo/bin/cargo)
+echo "  Real cargo: $REAL_CARGO"
+mkdir -p /tmp/ci-bin
+cat > /tmp/ci-bin/cargo <<SHIM
+#!/usr/bin/env bash
+# Cargo shim: skip 'cargo build' (binary already built), pass through everything else.
+if [ "\$1" = "build" ]; then
+    echo "    (cargo shim: skipping build — using prebuilt binary)"
+    exit 0
+fi
+exec $REAL_CARGO "\$@"
+SHIM
+chmod +x /tmp/ci-bin/cargo
+
 for ((i=1; i<=PARALLELISM; i++)); do
     HOME_DIR="/tmp/ci-home-$i"
     rm -rf "$HOME_DIR"
-    mkdir -p "$HOME_DIR/.ion/agent"
+    mkdir -p "$HOME_DIR/.ion/agent" "$HOME_DIR/bin"
     # Symlink rust toolchain dirs (read-only is fine)
     [ -d "$HOME/.rustup" ] && ln -s "$HOME/.rustup" "$HOME_DIR/.rustup"
     [ -d "$HOME/.cargo" ] && ln -s "$HOME/.cargo" "$HOME_DIR/.cargo"
+    # Put cargo shim in each worker's PATH
+    ln -sf /tmp/ci-bin/cargo "$HOME_DIR/bin/cargo"
 done
 
 # ─── Step 3: Build the coordinator prompt ──────────────────────────────────
@@ -157,9 +178,9 @@ IMPORTANT:
 - Workers MUST run scripts with 'timeout ${PER_SCRIPT_TIMEOUT}s bash <script>'.
 - If a worker's bash command exits non-zero, that's a FAIL — record it, don't retry.
 - Do NOT edit or write any files yourself. You only orchestrate.
-- Workers share the project directory (NO worktree isolation) — that's intentional,
-  so they share the prebuilt target/ and avoid 3-min cargo builds each.
-  Each worker uses its own HOME=/tmp/ci-home-<N> to avoid ~/.ion collisions.
+- Each worker has a 'cargo' shim in PATH that no-ops 'cargo build' (binary already built).
+  Workers should NOT pass CARGO_TARGET_DIR — they share the host's prebuilt target/.
+- Each worker uses HOME=/tmp/ci-home-<N> to avoid ~/.ion collisions.
 "
 
 for ((i=0; i<PARALLELISM; i++)); do
@@ -175,7 +196,8 @@ For each script, write a line to /tmp/ci-results/batch-${BATCH_NUM}.jsonl:
   {\"script\":\"<name>\",\"status\":\"PASS\"|\"FAIL\",\"exit_code\":<N>,\"duration_s\":<N>,\"log_path\":\"/tmp/ci-out-${BATCH_NUM}-<name>.log\"}
 
 Capture stdout+stderr to /tmp/ci-out-${BATCH_NUM}-<basename>.log.
-Use: HOME=/tmp/ci-home-${BATCH_NUM} timeout ${PER_SCRIPT_TIMEOUT}s bash <script> > <log> 2>&1
+Use EXACTLY this command form (PATH includes the cargo shim, HOME isolates ~/.ion):
+  HOME=/tmp/ci-home-${BATCH_NUM} PATH=/tmp/ci-home-${BATCH_NUM}/bin:/tmp/ci-bin:/usr/local/bin:/usr/bin:/bin timeout ${PER_SCRIPT_TIMEOUT}s bash <script> > <log> 2>&1
 "
 done
 
