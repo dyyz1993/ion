@@ -1,0 +1,18 @@
+{
+  "goal_id": "goal_hard_won",
+  "final_status": "complete",
+  "total_iterations": 4,
+  "started_at": "epoch:1753609000",
+  "finished_at": "epoch:1753609425",
+  "stopped_reason": "all_checks_passed",
+  "guards_hit_summary": {
+    "repetitive": 1
+  },
+  "outcome": "fixed",
+  "outcome_detail": {
+    "fixed_at_iter": 4,
+    "final_failed_checks": [],
+    "key_breakthrough": "iter 3 triggered repetitive guard (similarity 0.90 with iter 2). The 'try a different approach' nudge in RetryWith caused agent to abandon the line-89 close() approach and instead implement a Drop trait for the connection wrapper. similarity_to_prev dropped from 0.90 to 0.25 in iter 4, confirming a genuinely different approach. This proves the repetition-strategy guard works: it unblocks agents stuck in a loop.",
+    "diagnosis_hint": "Healthy case for the repetitive guard. Guard correctly fired at iter 3, agent pivoted, goal completed at iter 4. No Issue needed — this is the intended behavior. Could improve: detect the pivot earlier (similarity threshold 0.8 might be too high; 0.70 would have caught it at iter 2)."
+  }
+}

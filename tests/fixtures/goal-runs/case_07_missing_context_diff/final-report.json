@@ -1,0 +1,18 @@
+{
+  "goal_id": "goal_missing_diff",
+  "final_status": "exhausted",
+  "total_iterations": 2,
+  "started_at": "epoch:1753606000",
+  "finished_at": "epoch:1753606090",
+  "stopped_reason": "max_iterations",
+  "guards_hit_summary": {
+    "low_confidence": 1
+  },
+  "outcome": "abandoned",
+  "outcome_detail": {
+    "fixed_at_iter": null,
+    "final_failed_checks": ["cargo_build"],
+    "key_breakthrough": null,
+    "diagnosis_hint": "git_diff_lines=0 across ALL iterations — agent had NO visibility into what changed. The error is a missing 'settings' module but generate_checks didn't create a check for 'verify settings module exists' because it couldn't see the diff. The agent edited config.rs but context_snapshot showed 0 diff lines, meaning the agent's edits weren't captured. ISSUE: context_snapshot MUST include git diff (or uncommitted changes) before generate_checks. Without seeing what changed, checks can't cover the right files. Also: checks_quality=poor because generate_checks had no diff to reason about."
+  }
+}

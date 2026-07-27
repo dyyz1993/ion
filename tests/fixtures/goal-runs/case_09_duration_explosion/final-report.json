@@ -1,0 +1,18 @@
+{
+  "goal_id": "goal_duration_explosion",
+  "final_status": "exhausted",
+  "total_iterations": 2,
+  "started_at": "epoch:1753608000",
+  "finished_at": "epoch:1753611710",
+  "stopped_reason": "max_duration",
+  "guards_hit_summary": {
+    "max_duration": 1
+  },
+  "outcome": "abandoned",
+  "outcome_detail": {
+    "fixed_at_iter": null,
+    "final_failed_checks": ["build_under_120s"],
+    "key_breakthrough": null,
+    "diagnosis_hint": "Each iteration took 5+ minutes just running cargo build (340s → 310s). Progress was marginal (30s improvement). The check itself (build_under_120s) is a perf target that requires deep architectural changes (incremental compilation, feature gating, dependency pruning) — not achievable in a closed loop. ISSUE: perf-optimization goals are poor candidates for goal supervisor (feedback loop too slow — 5min/iter). max_total_duration_min default (30min) correctly stopped it. Skill should flag perf goals and recommend manual approach or much longer budget."
+  }
+}

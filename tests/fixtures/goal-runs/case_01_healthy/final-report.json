@@ -1,0 +1,15 @@
+{
+  "goal_id": "goal_healthy",
+  "final_status": "complete",
+  "total_iterations": 1,
+  "started_at": "epoch:1753600000",
+  "finished_at": "epoch:1753600021",
+  "stopped_reason": "all_checks_passed",
+  "guards_hit_summary": {},
+  "outcome": "fixed",
+  "outcome_detail": {
+    "fixed_at_iter": 1,
+    "final_failed_checks": [],
+    "key_breakthrough": "agent added method correctly on first try, all checks passed immediately"
+  }
+}

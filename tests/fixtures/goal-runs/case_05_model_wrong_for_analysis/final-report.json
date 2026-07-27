@@ -1,0 +1,19 @@
+{
+  "goal_id": "goal_wrong_analysis_model",
+  "final_status": "exhausted",
+  "total_iterations": 3,
+  "started_at": "epoch:1753604000",
+  "finished_at": "epoch:1753604180",
+  "stopped_reason": "repetitive",
+  "guards_hit_summary": {
+    "repetitive": 1,
+    "low_confidence": 2
+  },
+  "outcome": "abandoned",
+  "outcome_detail": {
+    "fixed_at_iter": null,
+    "final_failed_checks": ["no_ufffd"],
+    "key_breakthrough": null,
+    "diagnosis_hint": "analyze_failure used opencode/deepseek-v4-flash but analysis_used=false across ALL 3 iterations. The weak model's failure analysis was never useful — agent didn't act on it. The 3 U+FFFD chars stayed IDENTICAL across all iterations (agent never touched the lines). ISSUE: switch analyze_failure to max tier model (zai/glm-5.2) — it needs to read the grep output and produce actionable fix instructions. Also: the failure evidence clearly shows line numbers, skill should auto-inject 'edit these exact lines' guidance."
+  }
+}

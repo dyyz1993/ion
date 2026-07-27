@@ -1,0 +1,18 @@
+{
+  "goal_id": "goal_cost_explosion",
+  "final_status": "exhausted",
+  "total_iterations": 3,
+  "started_at": "epoch:1753607000",
+  "finished_at": "epoch:1753607160",
+  "stopped_reason": "max_cost",
+  "guards_hit_summary": {
+    "max_cost": 1
+  },
+  "outcome": "abandoned",
+  "outcome_detail": {
+    "fixed_at_iter": null,
+    "final_failed_checks": ["cargo_test"],
+    "key_breakthrough": null,
+    "diagnosis_hint": "Cost reached $5.20 in 3 iterations (avg $1.73/iter). Goal was too large for single-goal closed loop — 'rewrite entire auth system' touches 4 files with 580 diff lines. Each iteration consumed massive context (30 messages by iter 3). ISSUE: max_total_cost_usd default ($5) is appropriate — goal was correctly stopped. But skill should detect oversized goals and suggest splitting into sub-goals. Also: progress WAS happening (3 failing tests → 2 failing tests), so this is a legitimate cost limit, not a quality problem."
+  }
+}

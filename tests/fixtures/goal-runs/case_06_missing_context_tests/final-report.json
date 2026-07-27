@@ -1,0 +1,18 @@
+{
+  "goal_id": "goal_missing_tests",
+  "final_status": "exhausted",
+  "total_iterations": 2,
+  "started_at": "epoch:1753605000",
+  "finished_at": "epoch:1753605090",
+  "stopped_reason": "max_iterations",
+  "guards_hit_summary": {
+    "low_confidence": 2
+  },
+  "outcome": "abandoned",
+  "outcome_detail": {
+    "fixed_at_iter": null,
+    "final_failed_checks": ["cargo_test"],
+    "key_breakthrough": null,
+    "diagnosis_hint": "test_results_included=false across ALL iterations. Agent never saw the actual test assertion details in its working context (only in the check evidence, injected via RetryWith). The failure is clearly version mismatch (left: v3, right: v2) but agent couldn't diagnose because it lacked test output in generate_checks phase. ISSUE: skill must inject test stdout into context_snapshot before generate_checks. Also: the RetryWith message should include the FULL assertion line, not just 'test failed'."
+  }
+}

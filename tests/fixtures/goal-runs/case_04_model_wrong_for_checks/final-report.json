@@ -1,0 +1,16 @@
+{
+  "goal_id": "goal_weak_check_model",
+  "final_status": "complete",
+  "total_iterations": 1,
+  "started_at": "epoch:1753603000",
+  "finished_at": "epoch:1753603012",
+  "stopped_reason": "all_checks_passed",
+  "guards_hit_summary": {},
+  "outcome": "fixed",
+  "outcome_detail": {
+    "fixed_at_iter": 1,
+    "final_failed_checks": [],
+    "key_breakthrough": null,
+    "diagnosis_hint": "FALSE POSITIVE — goal marked complete but checks are insufficient. generate_checks used opencode/deepseek-v4-flash (weak model) and only generated 2 generic checks (cargo_build + compiles). Missing critical checks: SQL injection test, input sanitization test, parameterized query verification. The rust-ci skill should have added these but generate_checks model ignored skill guidance. ISSUE: use stronger model for generate_checks (max tier), and skill must enforce security-relevant checks."
+  }
+}
