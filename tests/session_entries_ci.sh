@@ -183,8 +183,11 @@ else
     pass "session.jsonl found"
 
     for ENTRY_TYPE in active_tools_change custom_message system_event label; do
-        # 只查当前 SID 对应的 entry（避免旧数据干扰）
-        LAST=$(grep "\"type\":\"$ENTRY_TYPE\"" "$SESSION_FILE" 2>/dev/null | grep "$SID" | tail -1)
+        # SESSION_FILE 已按 SID 定位（header 行含 sid），且 ION_SESSION_DIR
+        # 隔离了每个测试运行的会话目录，因此文件内所有 entry 均属于当前 SID。
+        # 不要再按行 grep "$SID"：只有链首 entry 的 parentId == sid，
+        # 后续 entry 的 parentId 链到前一条 entry 的 id（不含 sid 字面量）。
+        LAST=$(grep "\"type\":\"$ENTRY_TYPE\"" "$SESSION_FILE" 2>/dev/null | tail -1)
         if [ -z "$LAST" ]; then
             fail "  $ENTRY_TYPE entry exists (sid=$SID)"
         elif echo "$LAST" | python3 -c "import sys,json; e=json.loads(sys.stdin.read()); print('flat' if 'data' not in e else 'nested')" 2>/dev/null | grep -q flat; then

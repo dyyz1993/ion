@@ -50,6 +50,30 @@ trigger: when user asks to review code
 3. Provide structured feedback
 EOF
 
+# 项目级 developer agent — 覆盖 examples/agents/developer.md 的工具白名单
+# 原始 developer.md 白名单 [read, write, edit, bash, ls] 不含 skill，
+# 会导致 restrict_tools 把 SkillTool 过滤掉（call_tool 报 "tool not found: skill"）。
+# 测试项目级 developer.md 把 skill 加进白名单，让 SkillTool 保留。
+mkdir -p "$TEST_TMP/proj/.ion/agents"
+cat > "$TEST_TMP/proj/.ion/agents/developer.md" <<'EOF'
+---
+name: developer
+description: Implement code per spec (test variant — includes skill tool)
+tools:
+  - read
+  - write
+  - edit
+  - bash
+  - ls
+  - skill
+disallowed_tools:
+  - spawn_worker
+thinking_level: low
+color: green
+---
+Test developer agent (project-level override).
+EOF
+
 cat > "$TEST_TMP/proj/.ion/skills/testing.md" <<'EOF'
 ---
 name: testing
@@ -198,6 +222,27 @@ wait $HOST_PID 2>/dev/null
 EMPTY_AGENT="$TEST_TMP/empty_agent"
 mkdir -p "$EMPTY_AGENT"
 mkdir -p "$TEST_TMP/emptyproj"
+# 同 S 组：emptyproj 也需要项目级 developer.md 覆盖（否则 worker 走 examples/agents
+# 的 developer.md，其 tools 白名单不含 skill → SkillTool 被 restrict_tools 过滤）。
+mkdir -p "$TEST_TMP/emptyproj/.ion/agents"
+cat > "$TEST_TMP/emptyproj/.ion/agents/developer.md" <<'EOF'
+---
+name: developer
+description: Implement code per spec (test variant — includes skill tool)
+tools:
+  - read
+  - write
+  - edit
+  - bash
+  - ls
+  - skill
+disallowed_tools:
+  - spawn_worker
+thinking_level: low
+color: green
+---
+Test developer agent (project-level override, empty project).
+EOF
 
 cd "$TEST_TMP/emptyproj"
 ION_AGENT_DIR="$EMPTY_AGENT" \
