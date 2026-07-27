@@ -100,7 +100,7 @@ impl FauxProvider {
                 response_id: None,
                 usage: crate::types::Usage::default(),
                 stop_reason: crate::types::StopReason::Error,
-                error_message: Some("simulated error for auto_retry test".into()),
+                error_message: Some("500 Internal Server Error (faux injected)".into()),
                 timestamp: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as i64)
@@ -135,6 +135,18 @@ impl ApiProvider for FauxProvider {
         options: Option<&StreamOptions>,
         _cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> ProviderResult<EventStream> {
+        // ION_FAUX_ERROR=1: return a hard error to trigger agent's auto_retry.
+        // This returns Err (not Ok with stop_reason=Error), which is what the
+        // retry logic in agent_loop.rs actually checks.
+        if std::env::var("ION_FAUX_ERROR").ok().as_deref() == Some("1") {
+            // Only inject error on the first call; subsequent calls (after retry) succeed
+            let count = self.call_count.fetch_add(1, Ordering::SeqCst);
+            if count == 0 {
+                return Err(crate::ProviderError::Stream(
+                    "500 Internal Server Error (faux injected for auto_retry test)".into()
+                ));
+            }
+        }
         // FIFO pop — loud failure on empty queue (mirrors pi).
         let step = self.pop().ok_or_else(|| {
             crate::ProviderError::Stream("No more faux responses queued".into())

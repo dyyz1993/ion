@@ -20,8 +20,38 @@ ION_BIN="$PROJECT_DIR/target/debug/ion"
 
 TEST_ID=$$
 TEST_DIR="${TMPDIR:-/tmp}/ion-wf-ci-$TEST_ID"
-cleanup() { rm -rf "$TEST_DIR"; }
+SCRIPTS_DIR="${TMPDIR:-/tmp}/ion-wf-scripts-$TEST_ID"
+cleanup() { rm -rf "$TEST_DIR" "$SCRIPTS_DIR"; }
 trap cleanup EXIT
+
+# ── Faux helpers (avoid real LLM; keep CI under 120s) ──
+# Each `workflow run` is wrapped so the wf agent + spawned child workers all
+# use FauxProvider. The faux script is a FIFO of responses; with
+# ION_FAUX_REPEAT=1 the last response is replayed once the queue empties.
+#
+# wf_run <bash_command> [edit_old] [edit_new]
+#   - <bash_command> : shell command the agent runs via the `bash` tool
+#                      (e.g. create files the gate checks for)
+#   - edit_old/new   : optional search/replace run via the `edit` tool against
+#                      .ion/workflow.yaml (e.g. flip status: pending → done)
+wf_run() {
+    local bash_cmd="$1"
+    local edit_old="${2:-}"
+    local edit_new="${3:-}"
+    mkdir -p "$SCRIPTS_DIR"
+    local script="$SCRIPTS_DIR/wf_$$.jsonl"
+    {
+        echo "{\"tool_call\":{\"name\":\"bash\",\"input\":{\"command\":$(printf '%s' "$bash_cmd" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')}}}"
+        if [ -n "$edit_old" ]; then
+            echo "{\"tool_call\":{\"name\":\"edit\",\"input\":{\"file_path\":\".ion/workflow.yaml\",\"old\":$(printf '%s' "$edit_old" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),\"new\":$(printf '%s' "$edit_new" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')}}}"
+        fi
+    } > "$script"
+    ION_FAUX_SCRIPT="$script" \
+    ION_FAUX_REPEAT=1 \
+    ION_HOST_TIMEOUT=15 \
+    timeout 25 "$ION_BIN" --provider faux --model faux-test --agent wf \
+        workflow run .ion/workflow.yaml 2>&1
+}
 
 setup_project() {
     rm -rf "$TEST_DIR"
@@ -117,7 +147,7 @@ stages:
       expected: EXISTS
 WF
 
-OUTPUT=$(ION_HOST_TIMEOUT=120 timeout 150 $ION_BIN workflow run .ion/workflow.yaml 2>&1)
+OUTPUT=$(wf_run "echo \"print('hello')\" > hello.py")
 if echo "$OUTPUT" | grep -qi "complete\|all.*done\|pipeline"; then
     pass "W2-1: 单 stage gate 通过 → COMPLETE"
 else
@@ -154,7 +184,7 @@ stages:
     if: "context.run_step2 == true"
 WF
 
-OUTPUT=$(ION_HOST_TIMEOUT=120 timeout 150 $ION_BIN workflow run .ion/workflow.yaml 2>&1)
+OUTPUT=$(wf_run "echo \"print('a')\" > a.py")
 if echo "$OUTPUT" | grep -qi "complete\|all.*done\|pipeline\|skipped"; then
     pass "W3-2: if=false → skip → COMPLETE"
 else
@@ -187,7 +217,7 @@ stages:
       expected: EXISTS
 WF
 
-OUTPUT=$(ION_HOST_TIMEOUT=120 timeout 150 $ION_BIN workflow run .ion/workflow.yaml 2>&1)
+OUTPUT=$(wf_run "echo \"print('ctx works')\" > myctx.py")
 if [ -f "$TEST_DIR/myctx.py" ]; then
     pass "W4-2: context.filename → myctx.py 创建"
 else
@@ -220,7 +250,7 @@ stages:
       expected: HAS
 WF
 
-OUTPUT=$(ION_HOST_TIMEOUT=180 timeout 210 $ION_BIN workflow run .ion/workflow.yaml 2>&1)
+OUTPUT=$(wf_run "printf 'def add(a,b):\\n    return a+b\\n' > calc.py && git add calc.py && git commit -q -m 'Add calc.py with add function'")
 if echo "$OUTPUT" | grep -qi "complete\|all.*done\|pipeline"; then
     pass "W5-1: develop → merge → COMPLETE"
 else
@@ -257,7 +287,7 @@ stages:
       expected: EXISTS
 WF
 
-OUTPUT=$(ION_HOST_TIMEOUT=120 timeout 150 $ION_BIN workflow run .ion/workflow.yaml 2>&1)
+OUTPUT=$(wf_run "echo \"print('b')\" > b.py" "status: pending" "status: done")
 if echo "$OUTPUT" | grep -qi "complete\|all.*done\|pipeline"; then
     pass "W7-1: 从 pending step2 恢复 → COMPLETE"
 else
@@ -364,7 +394,7 @@ stages:
       expected: EXISTS
 WF
 
-OUTPUT=$(ION_HOST_TIMEOUT=120 timeout 150 $ION_BIN workflow run .ion/workflow.yaml 2>&1)
+OUTPUT=$(wf_run "echo \"print('hello from context')\" > greetmod.py")
 if [ -f "$TEST_DIR/greetmod.py" ]; then
     CONTENT=$(cat "$TEST_DIR/greetmod.py")
     if echo "$CONTENT" | grep -q "hello from context"; then
@@ -392,7 +422,7 @@ stages:
       expected: BOTH
 WF
 
-OUTPUT=$(ION_HOST_TIMEOUT=120 timeout 150 $ION_BIN workflow run .ion/workflow.yaml 2>&1)
+OUTPUT=$(wf_run "echo \"print('a')\" > alpha.py && echo \"print('b')\" > beta.py")
 if [ -f "$TEST_DIR/alpha.py" ] && [ -f "$TEST_DIR/beta.py" ]; then
     pass "W4-2: 多个 context 值传递 → 两个文件都创建"
 else
@@ -486,7 +516,7 @@ stages:
       expected: EXISTS
 WF
 
-OUTPUT=$(ION_HOST_TIMEOUT=180 timeout 210 $ION_BIN workflow run .ion/workflow.yaml 2>&1)
+OUTPUT=$(wf_run "echo \"print('a')\" > a.py && echo \"print('b')\" > b.py")
 if [ -f "$TEST_DIR/a.py" ] && [ -f "$TEST_DIR/b.py" ]; then
     pass "W3-1: if=true → 两个 stage 都执行"
 else
