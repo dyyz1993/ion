@@ -137,6 +137,50 @@ pub enum GoalStatus {
 }
 
 /// Full state of the current goal.
+// ===========================================================================
+// GoalPlan — structured decomposition of a text objective (Deep Task 1)
+// ===========================================================================
+
+/// One executable step in a goal plan.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct ExecutionStep {
+    pub id: String,              // "step_1"
+    pub description: String,     // "create board data structure"
+    pub deliverable: String,     // "src/board.rs with Board struct"
+    #[serde(default)]
+    pub status: String,          // "pending" | "done"
+}
+
+/// A complete plan decomposed from a text objective.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, Default)]
+pub struct GoalPlan {
+    /// Execution steps the agent should follow (ordered).
+    #[serde(default)]
+    pub execution_steps: Vec<ExecutionStep>,
+    /// Human-readable acceptance criteria (what "done" looks like).
+    #[serde(default)]
+    pub acceptance_criteria: Vec<String>,
+    /// Optional report template for the final summary.
+    #[serde(default)]
+    pub report_template: Option<String>,
+}
+
+impl GoalPlan {
+    /// How many steps are still pending.
+    pub fn pending_step_count(&self) -> usize {
+        self.execution_steps.iter().filter(|s| s.status != "done").count()
+    }
+
+    /// List pending step descriptions (for RetryWith messages).
+    pub fn pending_step_descriptions(&self) -> Vec<String> {
+        self.execution_steps
+            .iter()
+            .filter(|s| s.status != "done")
+            .map(|s| format!("{} ({})", s.id, s.description))
+            .collect()
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct GoalState {
     /// Unique id for this goal instance (UUID v4, generated on goal_set).
@@ -158,6 +202,9 @@ pub struct GoalState {
     /// Recent tool calls for drift monitoring (Task 4): (tool_name, target_file_or_cmd_summary).
     #[serde(default)]
     pub recent_tools: Vec<(String, String)>,
+    /// Structured plan decomposed from the objective (Deep Task 1).
+    #[serde(default)]
+    pub goal_plan: GoalPlan,
 }
 
 /// Configuration for the Goal Supervisor.
@@ -797,10 +844,96 @@ pub async fn generate_checks_via_llm(
 /// - cargo build (compiles)
 /// - cargo test (tests pass)
 /// - cargo clippy (no new warnings)
-/// - no U+FFFD garbled chars (ION-specific)
+/// Generate a complete GoalPlan from a text objective via LLM (Deep Task 1).
 ///
-/// B2: This is the fallback when the caller doesn't specify checks.
-/// Future: an LLM call could generate objective-specific checks here.
+/// Asks the LLM to decompose the objective into:
+/// - execution_steps: ordered steps with deliverables
+/// - checks: verification commands (same format as generate_checks_via_llm)
+/// - acceptance_criteria: human-readable "done" conditions
+///
+/// Returns (GoalPlan, Vec<Check>) on success, or None on failure.
+pub async fn generate_goal_plan(
+    registry: &ion_provider::registry::ApiRegistry,
+    model: &ion_provider::types::Model,
+    objective: &str,
+) -> Option<(GoalPlan, Vec<Check>)> {
+    let system_prompt = format!(
+        "You are a goal planner. Given a coding objective, decompose it into a structured plan.\n\n\
+         Output a JSON object with:\n\
+         - execution_steps: array of {{id, description, deliverable}} — ordered steps to achieve the goal\n\
+         - checks: array of verification checks, each with {{name, check_type, rationale, command, pass_criteria, must_pass}}\n\
+           - check_type: \"ci\" or \"contingency\"\n\
+           - pass_criteria: {{\"kind\":\"exit_code\",\"expected\":0}}\n\
+           - command: shell command that exits 0 on success\n\
+         - acceptance_criteria: array of strings — human-readable \"done\" conditions\n\n\
+         Rules:\n\
+         - Steps should be concrete and actionable (e.g., 'create board struct', 'implement win detection')\n\
+         - Checks should verify the objective's key requirements (grep for functions, cargo build/test)\n\
+         - 3-7 steps is ideal; too many means the goal is too large\n\
+         - Output ONLY the JSON object, no markdown fences\n\n\
+         Objective: {objective}"
+    );
+    let context = ion_provider::types::Context {
+        system_prompt: Some(system_prompt),
+        messages: vec![],
+        tools: None,
+    };
+    let options = ion_provider::types::StreamOptions {
+        max_tokens: Some(3000),
+        api_key: None,
+        reasoning: None,
+        timeout_ms: None,
+        max_retries: None,
+        response_format: None,
+    };
+
+    let msg = ion_provider::registry::complete(registry, model, &context, Some(&options)).await.ok()?;
+    let text: String = msg.content.iter().filter_map(|c| match c {
+        ion_provider::types::AssistantContentBlock::Text(t) => Some(t.text.as_str()),
+        _ => None,
+    }).collect::<Vec<_>>().join("");
+
+    // Strip markdown fences.
+    let text = text.trim()
+        .strip_prefix("```json").or_else(|| text.trim().strip_prefix("```"))
+        .unwrap_or(&text).trim()
+        .trim_end_matches("```").trim();
+
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+
+    // Parse execution_steps.
+    let steps: Vec<ExecutionStep> = v.get("execution_steps").and_then(|a| a.as_array())
+        .map(|arr| arr.iter().filter_map(|item| {
+            serde_json::from_value(item.clone()).ok()
+        }).collect()).unwrap_or_default();
+
+    // Parse checks (reuse Check deserialization).
+    let checks: Vec<Check> = v.get("checks").and_then(|a| a.as_array())
+        .map(|arr| arr.iter().filter_map(|item| {
+            serde_json::from_value(item.clone()).ok()
+        }).collect()).unwrap_or_default();
+
+    // Parse acceptance_criteria.
+    let criteria: Vec<String> = v.get("acceptance_criteria").and_then(|a| a.as_array())
+        .map(|arr| arr.iter().filter_map(|c| c.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+
+    if steps.is_empty() && checks.is_empty() {
+        tracing::warn!("[goal-supervisor] LLM returned empty plan");
+        return None;
+    }
+
+    let plan = GoalPlan {
+        execution_steps: steps,
+        acceptance_criteria: criteria,
+        report_template: None,
+    };
+
+    tracing::info!("[goal-supervisor] Generated plan: {} steps, {} checks", plan.execution_steps.len(), checks.len());
+    Some((plan, checks))
+}
+
+/// Generate default CI checks when goal_set is called without explicit checks.
 pub fn default_ci_checks() -> Vec<Check> {
     vec![
         Check {
@@ -1105,6 +1238,26 @@ impl Extension for GoalSupervisorExtension {
         }
         msg.push_str("Fix the failing checks before stopping.");
 
+        // Execution plan: show remaining steps (Deep Task 3).
+        {
+            let guard = self.state.lock().ok();
+            if let Some(state) = guard.as_ref().and_then(|g| g.as_ref()) {
+                let pending = state.goal_plan.pending_step_descriptions();
+                if !pending.is_empty() {
+                    msg.push_str(&format!("\n📋 Remaining steps ({}):\n", pending.len()));
+                    for p in &pending {
+                        msg.push_str(&format!("  - {}\n", p));
+                    }
+                }
+                if !state.goal_plan.acceptance_criteria.is_empty() {
+                    msg.push_str("\n✅ Acceptance criteria:\n");
+                    for c in &state.goal_plan.acceptance_criteria {
+                        msg.push_str(&format!("  - {}\n", c));
+                    }
+                }
+            }
+        }
+
         // Progress analysis (Task 1 deepening): classify trend + give recommendation.
         let progress = self.analyze_progress(current_plan.as_deref());
         msg.push_str(&format!(
@@ -1200,15 +1353,20 @@ impl Tool for GoalSetTool {
                 checks.push(check);
             }
         }
-        // B2: if no checks were provided, use default CI checks.
+        // Generate plan + checks from objective if not provided.
+        let mut goal_plan = GoalPlan::default();
         if checks.is_empty() {
-            // B2: try LLM generation first, fall back to CI defaults.
-            checks = if let (Some(reg), Some(mdl)) = (&self.registry, &self.model) {
-                generate_checks_via_llm(reg, mdl, &objective).await
-                    .unwrap_or_else(default_ci_checks)
-            } else {
-                default_ci_checks()
-            };
+            // Try LLM-driven goal plan generation first.
+            if let (Some(reg), Some(mdl)) = (&self.registry, &self.model) {
+                if let Some((plan, generated_checks)) = generate_goal_plan(reg, mdl, &objective).await {
+                    goal_plan = plan;
+                    checks = generated_checks;
+                }
+            }
+            // Fallback to CI defaults if LLM didn't produce checks.
+            if checks.is_empty() {
+                checks = default_ci_checks();
+            }
         }
 
         let goal_id = uuid::Uuid::new_v4().to_string();
@@ -1222,7 +1380,7 @@ impl Tool for GoalSetTool {
             iteration_count: 0,
             started_at: started_at.clone(),
             total_cost_usd: 0.0,
-            last_action_plan: None, recent_tools: vec![],
+            last_action_plan: None, recent_tools: vec![], goal_plan,
         };
 
         // Replace any previous goal (the old one is implicitly cancelled).
@@ -1528,7 +1686,7 @@ mod tests {
                 iteration_count: 2,
                 started_at: format!("epoch:{}", now_epoch_ms() / 1000),
                 total_cost_usd: 0.0,
-                last_action_plan: None, recent_tools: vec![],
+                last_action_plan: None, recent_tools: vec![], goal_plan: GoalPlan::default(),
             });
         }
         // Plan about something totally unrelated.
@@ -1549,7 +1707,7 @@ mod tests {
             iteration_count: 3,
             started_at: "epoch:100".into(),
             total_cost_usd: 0.5,
-            last_action_plan: None, recent_tools: vec![],
+            last_action_plan: None, recent_tools: vec![], goal_plan: GoalPlan::default(),
         })));
         let tool = GoalRefineTool(shared.clone());
         let args = serde_json::json!({
@@ -1578,7 +1736,7 @@ mod tests {
             iteration_count: 2,
             started_at: "epoch:100".into(),
             total_cost_usd: 0.1,
-            last_action_plan: None, recent_tools: vec![],
+            last_action_plan: None, recent_tools: vec![], goal_plan: GoalPlan::default(),
         })));
         let tool = GoalRefineTool(shared.clone());
         let args = serde_json::json!({"checks_remove": ["drop"]});
@@ -1599,7 +1757,7 @@ mod tests {
             iteration_count: 1,
             started_at: "epoch:100".into(),
             total_cost_usd: 0.0,
-            last_action_plan: None, recent_tools: vec![],
+            last_action_plan: None, recent_tools: vec![], goal_plan: GoalPlan::default(),
         })));
         let tool = GoalRefineTool(shared.clone());
         let args = serde_json::json!({"objective_patch": "new refined objective"});
@@ -1971,7 +2129,7 @@ mod tests {
                 iteration_count: 0,
                 started_at: "epoch:0".into(),
                 total_cost_usd: 0.0,
-                last_action_plan: None, recent_tools: vec![],
+                last_action_plan: None, recent_tools: vec![], goal_plan: GoalPlan::default(),
             };
             *shared.lock().unwrap() = Some(state);
         }
@@ -2034,7 +2192,7 @@ mod tests {
                 iteration_count: 3,
                 started_at: format!("epoch:{}", now_epoch_ms()/1000),
                 total_cost_usd: 0.0,
-                last_action_plan: None, recent_tools: vec![],
+                last_action_plan: None, recent_tools: vec![], goal_plan: GoalPlan::default(),
             });
         }
         let hit = ext.check_guards(None);
@@ -2060,7 +2218,7 @@ mod tests {
                 iteration_count: 0,
                 started_at: old,
                 total_cost_usd: 0.0,
-                last_action_plan: None, recent_tools: vec![],
+                last_action_plan: None, recent_tools: vec![], goal_plan: GoalPlan::default(),
             });
         }
         let hit = ext.check_guards(None);
@@ -2084,7 +2242,7 @@ mod tests {
                 iteration_count: 0,
                 started_at: format!("epoch:{}", now_epoch_ms()/1000),
                 total_cost_usd: 1.5,
-                last_action_plan: None, recent_tools: vec![],
+                last_action_plan: None, recent_tools: vec![], goal_plan: GoalPlan::default(),
             });
         }
         let hit = ext.check_guards(None);
@@ -2110,7 +2268,7 @@ mod tests {
                 iteration_count: 1,
                 started_at: format!("epoch:{}", now_epoch_ms()/1000),
                 total_cost_usd: 0.0,
-                last_action_plan: Some(plan.into()), recent_tools: vec![],
+                last_action_plan: Some(plan.into()), recent_tools: vec![], goal_plan: GoalPlan::default(),
             });
         }
         let hit = ext.check_guards(Some(plan));
@@ -2131,7 +2289,7 @@ mod tests {
                 iteration_count: 0,
                 started_at: format!("epoch:{}", now_epoch_ms()/1000),
                 total_cost_usd: 0.0,
-                last_action_plan: Some("first attempt plan alpha".into()), recent_tools: vec![],
+                last_action_plan: Some("first attempt plan alpha".into()), recent_tools: vec![], goal_plan: GoalPlan::default(),
             });
         }
         let hit = ext.check_guards(Some("a completely different plan beta"));
@@ -2154,7 +2312,7 @@ mod tests {
                 iteration_count: 1,
                 started_at: format!("epoch:{}", now_epoch_ms()/1000),
                 total_cost_usd: 0.0,
-                last_action_plan: None, recent_tools: vec![],
+                last_action_plan: None, recent_tools: vec![], goal_plan: GoalPlan::default(),
             });
         }
         let results = vec![CheckResult {
