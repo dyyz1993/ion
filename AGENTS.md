@@ -480,6 +480,7 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/design/MEMORY_ACTIVE.md](./docs/design/MEMORY_ACTIVE.md) | Memory Active — V0.2 主动注入（on_input→on_context 自动检索全局库）+ 自动整理（去重/归档/大纲索引）+ bigram 中文分词 (已完成) |
 | [docs/design/MEMORY_V2_PROCESSING.md](./docs/design/MEMORY_V2_PROCESSING.md) | Memory V0.2 会话加工 — SessionEnd 自动 LLM 提炼精华（替代原样存）+ 去重 + entities 铺路 (已完成) |
 | [docs/design/SELF_EVOLUTION.md](./docs/design/SELF_EVOLUTION.md) | **自我进化闭环** — evolver agent + worktree + Apple Container 双重隔离 + ION 子实例改代码 + 测试 + 开 PR（开发中） |
+| [docs/design/GOAL_SUPERVISOR.md](./docs/design/GOAL_SUPERVISOR.md) | **Goal Supervisor** — 证据驱动的目标闭环（on_gate_check + 6 道防线 + 日志 + 进化系统）+ A→B 任务规格 (B1 已完成) |
 
 ### 使用指南（docs/guides/）
 
@@ -538,6 +539,7 @@ ion rpc --session sess_xxx --method get_flags \
 | `src/global_memory.rs` | 全局记忆库（SQLite + FTS5，跨项目检索） |
 | `src/global_memory_ext.rs` | GlobalMemoryExtension（单例扩展，on_singleton_init + extension_rpc） |
 | `src/monitor_extension.rs` | MonitorExtension（单例扩展，场景 3 定时脚本监控→触发 LLM 对话） |
+| `src/goal_supervisor_extension.rs` | GoalSupervisorExtension（证据驱动目标闭环：on_gate_check + 6 道防线 + 日志，[详情](./docs/design/GOAL_SUPERVISOR.md)） |
 | `src/lsp_extension.rs` | LSP Extension（多语言诊断：cargo check / tsc / go vet / py_compile / HTML 标签匹配） |
 | `src/tool_loop_detector.rs` | Tool Loop Detector（防 LLM 重复调同一工具死循环） |
 | `src/auto_session_title.rs` | Auto Session Title（首轮启发式标题生成） |
@@ -924,6 +926,19 @@ ion --mode rpc           → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - `Agent.runtime` 从 `Box<dyn>` 改 `Arc<dyn>`（让 HookExtension clone 共享）
   - command handler 并发安全修复：`spawn_command_with_stdin` 透传 `ctx.project_dir` 作为 bash `current_dir`（不再依赖进程级 cwd，消除并行 hook/测试互相踩的隐患）
   - **验证**: hooks_ci 8 + hooks_agent_ci 4 + hooks_handler_ci 6（command/http/prompt handler 可观测）+ hooks_e2e 10（并发模式稳定）+ patch1 5 + hooks_agent_real 3（真实 LLM DeepSeek）= 36 测试全过 ✅
+
+### 🎯 Goal Supervisor（证据驱动的目标闭环，B1 已完成）
+
+- **核心机制**：`on_gate_check` 钩子（内核强制 Stop 拦截点）— agent 想 Stop 时跑全部检测项，没全 PASS 就 `RetryWith(失败证据)` 强制继续，直到目标完成
+- **证据驱动**：完成 = 全检测项 PASS + 有证据（artifact 日志），不是 LLM 软判断（对齐 pi session-supervisor 但更可靠）
+- **1 个 tool**：`goal_set`（设/覆盖目标 + 检测项），砍掉 clear/propose/confirm 等冗余 tool
+- **6 道防线**：max_iterations / max_duration / max_cost / repetitive（Jaccard 相似度 + 重复计数）
+- **检测执行**：`run_all_checks` → `run_single_check`（tokio::process::Command + PassCriteria 评估 + Evidence 收集）
+- **日志 schema**：`~/.ion/agent/goal-runs/<sid>/iterations.jsonl` + `final-report.json`（含 outcome 回填）
+- **注册接入**：GoalSetTool 无条件注册（同 plan 工具），GoalSupervisorExtension 按 config `goal-supervisor` 开关注册，共享 `SharedGoalState`
+- **A→B 实现**：B1-a/b 由 GLM-5.2 自主实现，B1-c 手动完成（B 超时未产出，A 兜底）
+- **设计文档**：[docs/design/GOAL_SUPERVISOR.md](./docs/design/GOAL_SUPERVISOR.md) + [GOAL_SUPERVISOR_B1_TASK.md](./docs/design/GOAL_SUPERVISOR_B1_TASK.md)
+- **验证**: 24 单元测试 + goal_supervisor_ci 18 checks 全过 ✅（B2 skill 自动生成 + B3 evolver 待做）
 
 ### 🔌 MCP 系统（Model Context Protocol，Phase 1-4 全部实现）
 
@@ -1461,7 +1476,7 @@ bash scripts/evolve-run.sh "任务描述"             # 同步 + 守门 + HTML �
 
 | 套件 | 数量 | 覆盖 |
 |------|------|------|
-| lib tests (核心逻辑) | 834 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact/FileSnapshot/RulesEngine/FileTimeGuard/ContextReclaimer/TierModels/Hooks/StoredDecision/WasmExtension/PlanExtension/PlanTool/**Monitor(含 20 validate tests)**/**SelfHeal(health/max_turns/stale)**/**LSP(11 parse/format tests)**/**ToolLoopDetector(6 tests)**/**AutoSessionTitle(7 tests)**/**PermissionProfile(autopilot)** |
+| lib tests (核心逻辑) | 905 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact/FileSnapshot/RulesEngine/FileTimeGuard/ContextReclaimer/TierModels/Hooks/StoredDecision/WasmExtension/PlanExtension/PlanTool/**Monitor(含 20 validate tests)**/**SelfHeal(health/max_turns/stale)**/**LSP(11 parse/format tests)**/**ToolLoopDetector(6 tests)**/**AutoSessionTitle(7 tests)**/**PermissionProfile(autopilot)**/**GoalSupervisor(24 tests: data structs/checks/guards/similarity/logging)** |
 | unit_rpc_test (RPC 协议) | 20 | U1-U20 RPC 命令覆盖 + 接口格式兼容 |
 | manager_integration (集成) | 25 | Manager + Worker + 事件 + UI + 消息拉取 |
 | session_tree_test (集成) | 4 | only-append 审计/branch 接 leaf/全操作序列 |
@@ -1473,7 +1488,7 @@ bash scripts/evolve-run.sh "任务描述"             # 同步 + 守门 + HTML �
 | child_worker / concurrency | 4 | 子进程通信/并发池 |
 | memory_e2e | 6 | Memory 扩展存储/搜索/注入/去重 |
 | ion-provider 单元 | 70 | OpenAI/Anthropic/Google/FauxProvider/RecordReplay/transform_messages |
-| **小计 Rust 测试** | **777** | 全部通过 ✅ |
+| **小计 Rust 测试** | **905** | 全部通过 ✅ |
 | faux_scenarios_ci (CLI E2E) | 4 | 三场景 faux（直接执行/host/serve） |
 | record_replay_ci (CLI E2E) | 11 | 录制/回放/路径穿越/冲突/OVERWRITE/权限 |
 | crash_recovery_ci (CLI E2E) | 6 | stderr/exit_code/Dead/父通知 |
@@ -1510,7 +1525,8 @@ bash scripts/evolve-run.sh "任务描述"             # 同步 + 守门 + HTML �
 | abort_ci (CLI E2E) | 5 | Group A：工具执行中 abort < 3s 生效（select! stopped 分支 + bash 进程清理）+ Group B：kill -TERM/KILL -<pgid> 杀整个进程树（process_group(0)）+ Group C：HTTP 流式期间 abort < 300ms + 无新 delta 泄漏（CancellationToken 真取消 TCP）|
 | monitor_ci (CLI E2E) | 11 | Group A：monitor 配置加载 + 脚本触发 worker + trigger 日志 + Group B：create_session + extension_rpc（host-level singleton 不可达）+ starting 日志 + Group C：空输出不触发 + 错误脚本不崩溃 + serve 存活 + Group D：多 monitor 并行加载+触发 |
 | self_heal_ci (CLI E2E) | 12 | Group A：单 issue 端到端（mock gh + monitor → coordinator → developer fix → commit）+ Group B：多 issue 并行 + Group C：active state 持久化（mark/check/list/release + ~/.ion/agent/active-pipelines.json）|
-| **测试覆盖合计** | **1295+** | 全部通过 ✅（Rust 834，CLI E2E 461+，含 monitor_ci 11 + self_heal_ci 12 + lsp_ci 14 + hooks 36 + extensions 19 + 真实 LLM 5 + WASM 扩展 + self-healing GitHub 全链路验证） |
+| goal_supervisor_ci (CLI E2E) | 18 | Group A：单元测试 24 个（数据结构/checks/guards/logging）+ Group B：goal_set tool 注册可见 + Group C：Extension 注册 + config 开关 + on_gate_check + RetryWith + Group D：日志 schema（iterations.jsonl/final-report.json/evidence）+ U+FFFD 守门 |
+| **测试覆盖合计** | **1337+** | 全部通过 ✅（Rust 905 [含 goal_supervisor 24]，CLI E2E 479+ [含 goal_supervisor_ci 18]，含 monitor_ci 11 + self_heal_ci 12 + lsp_ci 14 + hooks 36 + extensions 19 + 真实 LLM 5 + WASM 扩展 + self-healing GitHub 全链路验证） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
