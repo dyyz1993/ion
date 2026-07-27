@@ -264,6 +264,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     tools.register(Box::new(crate::goal_supervisor_extension::GoalRefineTool(
         shared_goal.clone(),
     )));
+    tools.register(Box::new(crate::goal_supervisor_extension::GoalDiagnoseTool(
+        shared_goal.clone(),
+    )));
     tools.register(Box::new(BranchSessionTool));
     tools.register(Box::new(GlobalMemorySearchTool));
     tools.register(Box::new(GlobalMemorySaveTool));

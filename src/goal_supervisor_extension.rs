@@ -1306,6 +1306,83 @@ impl Tool for GoalRefineTool {
 }
 
 // ===========================================================================
+// GoalDiagnoseTool — spawn diagnostic agent for stuck goals (Task 3)
+// ===========================================================================
+
+/// Tool that spawns a goal-diagnostician agent to analyze why a goal is stuck.
+///
+/// Packages the objective, failed checks, and progress history into a prompt,
+/// spawns the diagnostician agent via Runtime::spawn_worker, and returns its analysis.
+pub struct GoalDiagnoseTool(pub SharedGoalState);
+
+#[async_trait]
+impl Tool for GoalDiagnoseTool {
+    fn name(&self) -> &str {
+        "goal_diagnose"
+    }
+
+    fn description(&self) -> &str {
+        "Spawn a diagnostic agent to analyze why the current goal is stuck and \
+         recommend adjustments. Use when progress analysis shows Oscillating, \
+         Stagnant, or Drifting trends. Returns diagnosis + recommendations."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {}
+        })
+    }
+
+    async fn execute(&self, _args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+        // Package current goal state into a diagnostic prompt.
+        let (objective, checks, iteration_count) = {
+            let guard = self.0.lock().map_err(|e| AgentError::Tool(format!("goal_diagnose: lock: {e}")))?;
+            let state = guard.as_ref().ok_or_else(|| AgentError::Tool("goal_diagnose: no active goal".into()))?;
+            (state.objective.clone(), state.checks.clone(), state.iteration_count)
+        };
+
+        let check_summary: Vec<String> = checks.iter().map(|c| {
+            format!("- {} ({}): {}", c.name, match c.check_type { CheckType::Ci => "ci", CheckType::Contingency => "contingency" }, c.rationale)
+        }).collect();
+
+        let task = format!(
+            "Diagnose why this goal is stuck after {} iterations:\n\n\
+             OBJECTIVE: {}\n\n\
+             CHECKS:\n{}\n\n\
+             Read the goal-runs log in ~/.ion/agent/goal-runs/ for iteration history. \
+             Analyze why the agent can't complete the checks and recommend adjustments \
+             (goal_refine to relax checks, split the goal, or change approach).",
+            iteration_count,
+            objective,
+            check_summary.join("\n")
+        );
+
+        // Spawn diagnostician agent.
+        let req = crate::runtime::SpawnWorkerRequest {
+            relation: crate::runtime::SpawnRelation::Peer,
+            agent: "goal-diagnostician".into(),
+            task,
+            name: None,
+            report_channel: None,
+            wait: true,
+            worktree: None,
+            hook_depth: Some(1),
+            system_prompt_override: None,
+            model: None,
+            provider: None,
+        };
+
+        match rt.spawn_worker(req).await {
+            Ok(resp) => {
+                Ok(resp.first_turn_output.unwrap_or_else(|| "Diagnostician returned no output".into()))
+            }
+            Err(e) => {
+                Err(AgentError::Tool(format!("goal_diagnose: spawn failed: {e}")))
+            }
+        }
+    }
+}
 // Helpers
 // ===========================================================================
 
