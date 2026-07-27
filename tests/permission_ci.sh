@@ -25,10 +25,39 @@ quiet() { "$@" 2>/dev/null | grep -v "setValueForKey\|valueForKey\|_encode\|_dec
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 
+# Resolve HOME-aware paths (do NOT hardcode /Users/xuyingzhou — breaks isolation).
+HOST_SOCK="$HOME/.ion/host.sock"
+HOST_PID_FILE="$HOME/.ion/host.pid"
+HOST_LOG="/tmp/ion-ci-perm-host-${$}.log"
+LIB_LOG="/tmp/ion-ci-perm-lib-${$}.log"
+
 echo "════════════════════════════════════════════════════"
 echo "  ION Permission System CI Test"
 echo "  $(date)"
 echo "════════════════════════════════════════════════════"
+
+# ── Cleanup trap ──
+# Kill only the host we started (by PID), never anything matching the broad
+# "target/debug/ion" pattern — that would kill production workers in a shared
+# environment. The host writes host.pid on startup; we read & kill that PID.
+cleanup() {
+    local pid
+    if [ -n "${MANAGER_PID:-}" ] && kill -0 "$MANAGER_PID" 2>/dev/null; then
+        kill -9 "$MANAGER_PID" 2>/dev/null || true
+        wait "$MANAGER_PID" 2>/dev/null || true
+    fi
+    # Best-effort cleanup of host via its pid file (covers cases where the cargo
+    # shim exec'd into the binary, so MANAGER_PID was the cargo wrapper).
+    if [ -f "$HOST_PID_FILE" ]; then
+        pid=$(cat "$HOST_PID_FILE" 2>/dev/null || true)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            kill -9 "$pid" 2>/dev/null || true
+        fi
+        rm -f "$HOST_PID_FILE" 2>/dev/null || true
+    fi
+    rm -f "$HOST_LOG" "$LIB_LOG" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
 
 # ── Phase 0: Build ──
 echo ""
@@ -51,33 +80,80 @@ echo "  使用 binary: $ION_BIN"
 # ── Phase 1: 单元测试 ──
 echo ""
 echo "── Phase 1: Unit Tests ──"
-RUST_LOG=error cargo test --lib --color never 2>&1 > /tmp/ion-ci-perm-lib.log
-if grep -q "^test result:" /tmp/ion-ci-perm-lib.log; then
-    pass "cargo test --lib"
+# Guard against cargo file-lock contention in parallel CI matrices:
+# if the lock is held, cargo would block forever. Use `timeout` so the test
+# is reported as failed (not hung) and other shards can proceed.
+if command -v timeout >/dev/null 2>&1; then
+    TEST_WRAP=(timeout 180)
+elif [ -x /usr/local/bin/timeout ] || [ -x /opt/homebrew/bin/timeout ] || [ -x /usr/local/bin/gtimeout ]; then
+    TEST_WRAP=("${TOOL:-gtimeout}" 180)
 else
-    fail "cargo test --lib"
+    TEST_WRAP=()
+fi
+if RUST_LOG=error "${TEST_WRAP[@]}" cargo test --lib --color never > "$LIB_LOG" 2>&1; then
+    if grep -q "^test result:" "$LIB_LOG"; then
+        pass "cargo test --lib"
+    else
+        fail "cargo test --lib (no result line)"
+    fi
+else
+    rc=$?
+    if grep -q "Blocking waiting for file lock" "$LIB_LOG"; then
+        fail "cargo test --lib (blocked on file lock — parallel CI?)"
+        echo "  ℹ️  skip lib tests this run; another shard holds the build lock"
+    else
+        fail "cargo test --lib (rc=$rc)"
+    fi
 fi
 
 # ── Phase 2: 启动 Manager + Worker ──
 echo ""
 echo "── Phase 2: Manager & Worker ──"
 
-# 清理残留
-lsof -ti :53293 2>/dev/null | xargs kill -9 2>/dev/null || true
-for pid in $(ps aux | grep "target/debug/ion" | grep -v grep | awk '{print $2}' 2>/dev/null || true); do
-    kill -9 "$pid" 2>/dev/null || true
+# 清理 stale host（只清自己启动的）
+MANAGER_PID=""
+if [ -f "$HOST_PID_FILE" ]; then
+    old_pid=$(cat "$HOST_PID_FILE" 2>/dev/null || true)
+    if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+        kill -9 "$old_pid" 2>/dev/null || true
+        sleep 1
+    fi
+    rm -f "$HOST_PID_FILE"
+fi
+# 仅当 socket 没人监听才删除（避免误删活跃 host）
+if [ -S "$HOST_SOCK" ] && ! lsof -ti "$HOST_SOCK" >/dev/null 2>&1; then
+    rm -f "$HOST_SOCK"
+fi
+
+# 启动 host（后台）。cargo run --bin ion 会 exec 进 ion binary，
+# MANAGER_PID 是 cargo wrapper PID；真正监听 socket 的是其子进程。
+nohup "$ION_BIN" serve > "$HOST_LOG" 2>&1 &
+MANAGER_PID=$!
+
+# 等待 host socket 可用（poll 而非固定 sleep 4 —— 修复 cargo 慢启动竞态）
+HOST_READY=0
+for i in $(seq 1 30); do
+    sleep 1
+    if "$ION_BIN" rpc --method health >/dev/null 2>&1; then
+        HOST_READY=1
+        break
+    fi
+    # If wrapper died, give up early.
+    if ! kill -0 "$MANAGER_PID" 2>/dev/null; then
+        # Maybe ion exec'd and replaced, double check socket via pid file
+        if [ -f "$HOST_PID_FILE" ] && kill -0 "$(cat "$HOST_PID_FILE" 2>/dev/null)" 2>/dev/null; then
+            continue
+        fi
+        break
+    fi
 done
-sleep 2
-rm -f /Users/xuyingzhou/.ion/host.sock
 
-cargo run --bin ion -- serve start > /tmp/ion-ci-perm-host.log 2>&1 &
-MANAGER_CMD_PID=$!
-sleep 4
-
-if ps -p "$MANAGER_CMD_PID" > /dev/null 2>&1 || lsof -ti :53293 2>/dev/null | head -1 > /dev/null; then
+if [ "$HOST_READY" -eq 1 ]; then
     pass "serve start"
 else
     fail "serve start"
+    echo "  host log tail:"
+    tail -10 "$HOST_LOG" 2>/dev/null | sed 's/^/    /'
     exit 1
 fi
 
@@ -159,11 +235,8 @@ fi
 # ── Phase 5: 清理 ──
 echo ""
 echo "── Cleanup ──"
-for pid in $(ps aux | grep "target/debug/ion" | grep -v grep | awk '{print $2}' 2>/dev/null || true); do
-    kill "$pid" 2>/dev/null || true
-done
-rm -f /tmp/ion-ci-perm-host.log /tmp/ion-ci-perm-lib.log
-echo "  Cleaned up"
+# trap 已处理，这里仅提示
+echo "  Cleaned up (via EXIT trap)"
 
 # ── 总结 ──
 echo ""

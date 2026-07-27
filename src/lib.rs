@@ -47,3 +47,92 @@ pub mod rules_engine;
 pub mod context_reclaimer;
 pub mod monitor_extension;
 pub mod worker_rpc;
+
+/// Returns the nth Fibonacci number (0-indexed).
+///
+/// `fibonacci(0) == 0`, `fibonacci(1) == 1`, and so on. Panics on overflow
+/// for very large `n`; returns `0` for negative input.
+pub fn fibonacci(n: u64) -> u64 {
+    match n {
+        0 => 0,
+        1 => 1,
+        _ => {
+            let mut a: u64 = 0;
+            let mut b: u64 = 1;
+            for _ in 2..=n {
+                let next = a.checked_add(b).expect("fibonacci overflow");
+                a = b;
+                b = next;
+            }
+            b
+        }
+    }
+}
+
+/// Multiplies two integers and returns the product.
+///
+/// Wrapping semantics: on overflow the result wraps around using
+/// [`u64::wrapping_mul`].
+pub fn multiply(a: u64, b: u64) -> u64 {
+    a.wrapping_mul(b)
+}
+
+/// Returns the factorial of `n` (`n!`).
+///
+/// `factorial(0) == 1`. Panics on overflow for `n > 20` (on u64).
+pub fn factorial(n: u64) -> u64 {
+    match n {
+        0 | 1 => 1,
+        _ => (2..=n)
+            .fold(1u64, |acc, x| acc.checked_mul(x).expect("factorial overflow")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{factorial, fibonacci, multiply};
+
+    #[test]
+    fn fibonacci_base_cases() {
+        assert_eq!(fibonacci(0), 0);
+        assert_eq!(fibonacci(1), 1);
+        assert_eq!(fibonacci(2), 1);
+        assert_eq!(fibonacci(3), 2);
+        assert_eq!(fibonacci(10), 55);
+    }
+
+    #[test]
+    fn fibonacci_larger_values() {
+        assert_eq!(fibonacci(20), 6765);
+        assert_eq!(fibonacci(50), 12586269025);
+        assert_eq!(fibonacci(90), 2880067194370816120);
+    }
+
+    #[test]
+    fn factorial_base_cases() {
+        assert_eq!(factorial(0), 1);
+        assert_eq!(factorial(1), 1);
+        assert_eq!(factorial(2), 2);
+        assert_eq!(factorial(5), 120);
+    }
+
+    #[test]
+    fn factorial_max_u64() {
+        // 20! is the largest factorial that fits in u64
+        assert_eq!(factorial(20), 2432902008176640000);
+    }
+
+    #[test]
+    fn multiply_basic() {
+        assert_eq!(multiply(2, 3), 6);
+        assert_eq!(multiply(0, 5), 0);
+        assert_eq!(multiply(7, 1), 7);
+        assert_eq!(multiply(12, 12), 144);
+    }
+
+    #[test]
+    fn multiply_overflow_wraps() {
+        // u64::MAX * 2 wraps to u64::MAX - 1
+        assert_eq!(multiply(u64::MAX, 2), u64::MAX - 1);
+    }
+}
