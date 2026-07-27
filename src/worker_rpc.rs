@@ -807,7 +807,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
         // Streaming Extension（流式透传）
         if ion_cfg.is_extension_enabled("streaming") {
-            ext_reg.register(Box::new(StreamingExtension));
+            ext_reg.register(Box::new(StreamingExtension { session_id: sid.clone() }));
         } else {
             tracing::info!("[extension] streaming disabled by config");
         }
@@ -3983,7 +3983,14 @@ impl crate::agent::tool::Tool for McpProxyTool {
 }
 
 // ── StreamingExtension: 透传 text_delta + tool_execution 到 stdout ──
-struct StreamingExtension;
+/// Streaming extension — emits agent events as JSON to stdout.
+///
+/// Holds the worker's `session_id` so every emitted event includes it.
+/// Without this, `subscribe --session <SID>` can't filter events for a
+/// specific session (the bug tracked in issue #29).
+struct StreamingExtension {
+    session_id: String,
+}
 
 #[async_trait::async_trait]
 impl crate::agent::extension::Extension for StreamingExtension {
@@ -3993,7 +4000,7 @@ impl crate::agent::extension::Extension for StreamingExtension {
         if role == "assistant" && !delta.is_empty() {
             output(&serde_json::json!({
                 "type": "event",
-                "event": {"type": "text_delta", "delta": delta}
+                "event": {"type": "text_delta", "delta": delta, "sessionId": self.session_id}
             }));
         }
         Ok(())
@@ -4006,6 +4013,7 @@ impl crate::agent::extension::Extension for StreamingExtension {
             "type": "event",
             "event": {
                 "type": "agent_start",
+                "sessionId": self.session_id,
                 "timestamp": now_ms(),
             }
         }));
@@ -4018,6 +4026,7 @@ impl crate::agent::extension::Extension for StreamingExtension {
             "type": "event",
             "event": {
                 "type": "agent_end",
+                "sessionId": self.session_id,
                 "willRetry": false,
                 "messages": ctx.message_count,
                 "timestamp": now_ms(),
@@ -4032,6 +4041,7 @@ impl crate::agent::extension::Extension for StreamingExtension {
             "type": "event",
             "event": {
                 "type": "message_start",
+                "sessionId": self.session_id,
                 "role": role,
                 "content_length": content.len(),
                 "timestamp": now_ms(),
@@ -4046,6 +4056,7 @@ impl crate::agent::extension::Extension for StreamingExtension {
             "type": "event",
             "event": {
                 "type": "message_end",
+                "sessionId": self.session_id,
                 "role": role,
                 "usage": {
                     "input": usage.input,
@@ -4066,6 +4077,7 @@ impl crate::agent::extension::Extension for StreamingExtension {
                 "type": "event",
                 "event": {
                     "type": "tool_call_delta",
+                    "sessionId": self.session_id,
                     "delta": delta,
                     "toolName": name,
                     "timestamp": now_ms(),
@@ -4082,6 +4094,7 @@ impl crate::agent::extension::Extension for StreamingExtension {
             "type": "event",
             "event": {
                 "type": "auto_retry_start",
+                "sessionId": self.session_id,
                 "attempt": attempt,
                 "maxRetries": max_retries,
                 "timestamp": now_ms(),
@@ -4096,6 +4109,7 @@ impl crate::agent::extension::Extension for StreamingExtension {
             "type": "event",
             "event": {
                 "type": "auto_retry_end",
+                "sessionId": self.session_id,
                 "success": success,
                 "attempt": attempt,
                 "timestamp": now_ms(),
@@ -4109,6 +4123,7 @@ impl crate::agent::extension::Extension for StreamingExtension {
             "type": "event",
             "event": {
                 "type": "tool_execution_start",
+                "sessionId": self.session_id,
                 "toolCallId": ctx.tool_call_id,
                 "toolName": ctx.tool_name,
                 "args": ctx.args,
@@ -4148,6 +4163,7 @@ impl crate::agent::extension::Extension for StreamingExtension {
             "type": "event",
             "event": {
                 "type": "tool_execution_update",
+                "sessionId": self.session_id,
                 "toolCallId": ctx.tool_call_id,
                 "toolName": ctx.tool_name,
                 "args": ctx.args,
@@ -4162,6 +4178,7 @@ impl crate::agent::extension::Extension for StreamingExtension {
             "type": "event",
             "event": {
                 "type": "tool_execution_end",
+                "sessionId": self.session_id,
                 "toolCallId": ctx.tool_call_id,
                 "toolName": ctx.tool_name,
                 "isError": ctx.is_error,
