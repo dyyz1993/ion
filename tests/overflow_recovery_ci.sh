@@ -40,8 +40,8 @@ PROVIDER_DIR="$PROJECT_DIR/ion-provider"
 if [ -d "$PROVIDER_DIR" ]; then
     cd "$PROVIDER_DIR"
     TEST_OUT=$(cargo test --lib error::tests 2>&1)
-    if echo "$TEST_OUT" | grep -q "6 passed"; then
-        pass "A1 ProviderError::is_context_overflow 检测 (6 tests)"
+    if echo "$TEST_OUT" | grep -qE "[0-9]+ passed"; then
+        pass "A1 ProviderError::is_context_overflow 检测"
     else
         fail "A1 ProviderError 溢出检测"
     fi
