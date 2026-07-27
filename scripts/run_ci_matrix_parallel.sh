@@ -37,6 +37,14 @@ echo ""
 # ─── Pre-flight ────────────────────────────────────────────────────────────
 [ -x "$ION_BIN" ] || { echo "❌ build ion first"; exit 1; }
 
+# Clean up leftover monitor configs from previous test runs.
+# These get created by monitor_ci.sh and similar tests; if present, every
+# `ion serve` spawned by other tests will pick them up and start spawning
+# workers every 3s, which holds the registry lock and blocks all RPC.
+# This is the #1 cause of "create_session failed" / "host not responding".
+rm -rf .ion/monitors 2>/dev/null
+echo "  ✅ cleaned .ion/monitors/"
+
 # ─── Prepare cargo shim + per-worker HOME ─────────────────────────────────
 REAL_CARGO=$(command -v cargo 2>/dev/null || echo /usr/local/cargo/bin/cargo)
 mkdir -p /tmp/ci-bin
