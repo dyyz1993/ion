@@ -3534,10 +3534,19 @@ async fn cmd_serve_start(
 
     // 自动创建一个默认 build session，让首次 RPC 不用先 create_session（修复 #1）
     // 对齐 pi：pi 启动后默认有一个 SessionManager.create 出的 session
-    match do_create_session(&registry, &serde_json::json!({"agent": "build"})).await {
-        Ok(sid) => eprintln!("🌱 Default session ready: {sid}"),
-        Err(e) => eprintln!("⚠️  Default session 创建失败（后续 RPC 会按需创建）: {e}"),
-    }
+    //
+    // ⚠️ 必须用 tokio::spawn，不能直接 .await！
+    // 原因：do_create_session → create_worker → 子进程 LLM 调用可能挂起（FauxProvider
+    // 队列空 → auto-retry loop）。如果 .await，会阻塞 socket accept loop 启动，导致
+    // serve 起来了但所有 RPC 都 timeout（"Manager did not respond"）。
+    // 用 spawn 后，socket loop 立即启动，默认 session 在后台异步创建。
+    let default_session_registry = Arc::clone(&registry);
+    tokio::spawn(async move {
+        match do_create_session(&default_session_registry, &serde_json::json!({"agent": "build"})).await {
+            Ok(sid) => eprintln!("🌱 Default session ready: {sid}"),
+            Err(e) => eprintln!("⚠️  Default session 创建失败（后续 RPC 会按需创建）: {e}"),
+        }
+    });
 
     // socket accept loop —— 支持两种模式：
     //   RPC mode（默认）：一问一答，返回后关闭
