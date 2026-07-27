@@ -887,8 +887,21 @@ impl Extension for MonitorExtension {
                             let reg_for_spawn = Arc::clone(&reg);
                             let stats_for_spawn = Arc::clone(&stats);
                             let monitor_name_for_spawn = name.clone();
+                            // Use fire-and-forget via tokio::spawn + try_lock_timeout
+                            // to avoid blocking the registry lock during create_worker.
                             tokio::spawn(async move {
-                                let mut reg_guard = reg_for_spawn.lock().await;
+                                // Try to acquire lock with timeout (don't block forever)
+                                let reg_guard = match tokio::time::timeout(
+                                    std::time::Duration::from_secs(5),
+                                    reg_for_spawn.lock(),
+                                ).await {
+                                    Ok(g) => g,
+                                    Err(_) => {
+                                        tracing::warn!("[monitor] timeout waiting for registry lock, skipping spawn for {}", monitor_name_for_spawn);
+                                        return;
+                                    }
+                                };
+                                let mut reg_guard = reg_guard;
                                 match reg_guard.create_worker(
                                     crate::worker_registry::WorkerCreateConfig {
                                         agent: Some(agent_for_spawn.clone()),

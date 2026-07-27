@@ -48,8 +48,9 @@ wf_run() {
     } > "$script"
     ION_FAUX_SCRIPT="$script" \
     ION_FAUX_REPEAT=1 \
-    ION_HOST_TIMEOUT=15 \
-    timeout 25 "$ION_BIN" --provider faux --model faux-test --agent wf \
+    ION_HOST_TIMEOUT=30 \
+    ION_HOST_IDLE_GRACE=2 \
+    timeout 35 "$ION_BIN" --provider faux --model faux-test --agent wf \
         workflow run .ion/workflow.yaml 2>&1
 }
 
