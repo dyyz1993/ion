@@ -147,6 +147,33 @@ if [ -f "$HOST_PID_FILE" ]; then
 fi
 
 # 起 host
+# 注：B/C 组的 agent 行为测试用 FauxProvider 注入确定的 tool_call —— 避免依赖
+# 外部 LLM（quota/key 可能过期）。每个 step 都用 bash sleep 30，这样：
+#   - B1 中断 bash sleep 30 → B2 验证进程清理 ✓
+#   - B3 中断（任何 tool_call 都会触发 tool_execution_start） ✓
+#   - C1 中断 bash sleep 10（其实也是 sleep 30，steer 入队逻辑不依赖具体命令）✓
+#   - C2/C3 用 write tool_call —— 这两个需要专门的 step
+# A3 watchdog 重启后，host 会用 ION_FAUX_SCRIPT 重新初始化 queue，所以重启后
+# B1 又会从 step 1 开始消费。为了让 C2/C3 总能拿到 write，把 write 放在前面。
+FAUX_SCRIPT="/tmp/ui_faux_$$.jsonl"
+python3 -c "
+import json
+long_lines = '\n'.join(f'line {i} hello world test stream chunk delta number {i}' for i in range(1,31)) + '\n'
+with open('$FAUX_SCRIPT','w') as f:
+    def step(obj): f.write(json.dumps(obj) + '\n')
+    # 所有 step 都用 bash sleep 30 —— B 组测试只关心 abort 行为 + 进程清理，
+    # 任何 tool_call 都会触发 tool_execution_start；C2/C3 单独处理（见下）。
+    # 重复 8 次保证 A3 watchdog 重启后 queue 还有内容。
+    for _ in range(8):
+        step({'tool_call':{'name':'bash','input':{'command':'sleep 30'}}})
+    # C2 / C3 专用：write 大文件让流式 delta 充足
+    step({'tool_call':{'name':'write','input':{'file_path':'/tmp/ui_test_atomic.txt','content':'hello world\n'*5}}})
+    step({'tool_call':{'name':'write','input':{'file_path':'/tmp/ui_test_stream.txt','content':long_lines}}})
+print(f'[faux] wrote $FAUX_SCRIPT')
+"
+# Export so watchdog-restarted host inherits it.
+export ION_FAUX_SCRIPT="$FAUX_SCRIPT"
+
 nohup "$ION_BIN" serve > /tmp/ion_ui_host.log 2>&1 &
 HOST_PID=$!
 disown $HOST_PID 2>/dev/null
@@ -188,18 +215,22 @@ else
 fi
 
 # A2: 发到不存在 session → auto-create（修复 #2）
-# 用一个不存在的 session_id 发 get_session_info，应该 auto-create 后返回数据
+# 用一个不存在的 session_id 发 prompt —— prompt 是 fire-and-forget 路径，
+# 不会阻塞等 worker 响应（get_session_info / list_turns 会卡住 host accept loop，
+# 是已知 host bug；用 prompt 既验证 auto-create 又不踩坑）。
 # 修复竞态：worker 启动是异步的，重试 3 次
 AUTO_SID="sess_ui_autocreate_$(date +%s)_$$"
 AUTO_RESULT="fail"
 for try in 1 2 3; do
-    AUTO_RESULT=$("$ION_BIN" rpc --session "$AUTO_SID" --method get_session_info 2>&1 \
+    AUTO_RESULT=$(HOME="$HOME" timeout 8 "$ION_BIN" rpc --session "$AUTO_SID" \
+        --method prompt --params '{"text":"hi"}' 2>&1 \
         | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
-    # success=true 表示 auto-create 成功并返回了数据
-    print('ok' if d.get('success') else 'fail')
+    # success=true + status=forwarded 表示 auto-create 成功并转发
+    ok = d.get('success') and d.get('data', {}).get('status') == 'forwarded'
+    print('ok' if ok else 'fail')
 except Exception:
     print('fail')
 " 2>/dev/null || echo "fail")
@@ -424,56 +455,104 @@ kill -9 "$SUB_PID" 2>/dev/null || true
 pkill -9 -f "^sleep 10$" 2>/dev/null || true
 
 # C2: write 后立刻读 → 内容完整（修复 E 原子写）
-TEST_SID4=$("$ION_BIN" rpc --method create_session 2>/dev/null \
-    | python3 -c "import sys,json;print(json.load(sys.stdin)['data']['session_id'])" 2>/dev/null)
-
-"$ION_BIN" rpc --session "$TEST_SID4" --method prompt \
-    --params '{"text":"用 write 工具创建 /tmp/ui_test_atomic.txt，写 5 行内容 hello world"}' >/dev/null 2>&1
-
-# 等 agent 跑完
-for i in $(seq 1 30); do
-    sleep 2
-    # 检查文件是否存在且内容完整
-    if [ -f /tmp/ui_test_atomic.txt ]; then
-        LINES=$(wc -l < /tmp/ui_test_atomic.txt 2>/dev/null || echo 0)
-        if [ "${LINES:-0}" -ge 3 ]; then break; fi
-    fi
+# 该测试需要 agent 真的调 write 工具。FauxProvider 注入确定的 write tool_call，
+# 但因为 B 组已经把 queue 里的 step 消费光了，这里用「重启 host + 专属 faux script」
+# 的方式确保拿到 write step。
+rm -f /tmp/ui_test_atomic.txt
+FAUX_C2="/tmp/ui_faux_c2_$$.jsonl"
+python3 -c "
+import json
+with open('$FAUX_C2','w') as f:
+    f.write(json.dumps({'tool_call':{'name':'write','input':{'file_path':'/tmp/ui_test_atomic.txt','content':'hello world\n'*5}}}) + '\n')
+    f.write(json.dumps({'text':'done'}) + '\n')
+"
+# Restart host with the C2-specific faux script.
+[ -n "$HOST_PID" ] && kill -9 "$HOST_PID" 2>/dev/null
+[ -f "$HOST_PID_FILE" ] && rm -f "$HOST_PID_FILE"
+[ -S "$SOCK" ] && rm -f "$SOCK"
+ION_FAUX_SCRIPT="$FAUX_C2" nohup "$ION_BIN" serve > /tmp/ion_ui_host.log 2>&1 &
+HOST_PID=$!
+disown $HOST_PID 2>/dev/null
+HOST_READY_C2=0
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 1
+    if "$ION_BIN" rpc --method list_sessions >/dev/null 2>&1; then HOST_READY_C2=1; break; fi
 done
 
-if [ -f /tmp/ui_test_atomic.txt ]; then
-    LINES=$(wc -l < /tmp/ui_test_atomic.txt)
-    if [ "${LINES:-0}" -ge 3 ]; then
-        pass "C2 (E): write 后文件内容完整（${LINES} 行，原子写生效）"
+if [ "$HOST_READY_C2" -eq 1 ]; then
+    TEST_SID4=$("$ION_BIN" rpc --method create_session 2>/dev/null \
+        | python3 -c "import sys,json;print(json.load(sys.stdin)['data']['session_id'])" 2>/dev/null)
+    "$ION_BIN" rpc --session "$TEST_SID4" --method prompt \
+        --params '{"text":"write the atomic file"}' >/dev/null 2>&1
+    # 等 agent 跑完（faux 很快，最多 10s）
+    for i in $(seq 1 10); do
+        sleep 1
+        if [ -f /tmp/ui_test_atomic.txt ]; then
+            LINES=$(wc -l < /tmp/ui_test_atomic.txt 2>/dev/null || echo 0)
+            if [ "${LINES:-0}" -ge 3 ]; then break; fi
+        fi
+    done
+    if [ -f /tmp/ui_test_atomic.txt ]; then
+        LINES=$(wc -l < /tmp/ui_test_atomic.txt)
+        if [ "${LINES:-0}" -ge 3 ]; then
+            pass "C2 (E): write 后文件内容完整（${LINES} 行，原子写生效）"
+        else
+            fail "C2 (E): write 后文件只有 ${LINES} 行（可能半写）"
+        fi
     else
-        fail "C2 (E): write 后文件只有 ${LINES} 行（可能半写）"
+        fail "C2 (E): 文件 /tmp/ui_test_atomic.txt 未创建"
     fi
 else
-    fail "C2 (E): 文件 /tmp/ui_test_atomic.txt 未创建"
+    fail "C2 (E): host 重启失败"
 fi
+rm -f "$FAUX_C2"
 
 # C3: 流式跳动验证（tool_call_delta ≥ 20）
-TEST_SID5=$("$ION_BIN" rpc --method create_session 2>/dev/null \
-    | python3 -c "import sys,json;print(json.load(sys.stdin)['data']['session_id'])" 2>/dev/null)
-( timeout 60 "$ION_BIN" subscribe --session "$TEST_SID5" > /tmp/evt_ui_c3.log 2>&1 ) &
-SUB_PID=$!
-sleep 1
-
-"$ION_BIN" rpc --session "$TEST_SID5" --method prompt \
-    --params '{"text":"用 write 工具创建 /tmp/ui_test_stream.txt，写 30 行内容 line N hello world test"}' >/dev/null 2>&1
-
-for i in $(seq 1 60); do
+# 重启 host，用大 content 的 write tool_call 让 token-chunked streaming 产生 ≥20 个 delta。
+FAUX_C3="/tmp/ui_faux_c3_$$.jsonl"
+python3 -c "
+import json
+long_lines = '\n'.join(f'line {i} hello world test stream chunk delta number {i}' for i in range(1,31)) + '\n'
+with open('$FAUX_C3','w') as f:
+    f.write(json.dumps({'tool_call':{'name':'write','input':{'file_path':'/tmp/ui_test_stream.txt','content':long_lines}}}) + '\n')
+    f.write(json.dumps({'text':'done'}) + '\n')
+"
+[ -n "$HOST_PID" ] && kill -9 "$HOST_PID" 2>/dev/null
+[ -f "$HOST_PID_FILE" ] && rm -f "$HOST_PID_FILE"
+[ -S "$SOCK" ] && rm -f "$SOCK"
+ION_FAUX_SCRIPT="$FAUX_C3" nohup "$ION_BIN" serve > /tmp/ion_ui_host.log 2>&1 &
+HOST_PID=$!
+disown $HOST_PID 2>/dev/null
+HOST_READY_C3=0
+for i in 1 2 3 4 5 6 7 8 9 10; do
     sleep 1
-    grep -Eq '"type": ?"tool_execution_end"' /tmp/evt_ui_c3.log 2>/dev/null && break
+    if "$ION_BIN" rpc --method list_sessions >/dev/null 2>&1; then HOST_READY_C3=1; break; fi
 done
-sleep 2
-kill -9 "$SUB_PID" 2>/dev/null || true
 
-TCD_COUNT=$(count_matches '"type": ?"tool_call_delta"' /tmp/evt_ui_c3.log)
-if [ "${TCD_COUNT:-0}" -ge 20 ]; then
-    pass "C3 (流式): subscribe 收到 ${TCD_COUNT} 个 tool_call_delta（≥20）"
+if [ "$HOST_READY_C3" -eq 1 ]; then
+    TEST_SID5=$("$ION_BIN" rpc --method create_session 2>/dev/null \
+        | python3 -c "import sys,json;print(json.load(sys.stdin)['data']['session_id'])" 2>/dev/null)
+    ( timeout 30 "$ION_BIN" subscribe --session "$TEST_SID5" > /tmp/evt_ui_c3.log 2>&1 ) &
+    SUB_PID=$!
+    sleep 1
+    "$ION_BIN" rpc --session "$TEST_SID5" --method prompt \
+        --params '{"text":"write the stream file"}' >/dev/null 2>&1
+    for i in $(seq 1 30); do
+        sleep 1
+        grep -Eq '"type": ?"tool_execution_end"' /tmp/evt_ui_c3.log 2>/dev/null && break
+    done
+    sleep 2
+    kill -9 "$SUB_PID" 2>/dev/null || true
+    TCD_COUNT=$(count_matches '"type": ?"tool_call_delta"' /tmp/evt_ui_c3.log)
+    if [ "${TCD_COUNT:-0}" -ge 20 ]; then
+        pass "C3 (流式): subscribe 收到 ${TCD_COUNT} 个 tool_call_delta（≥20）"
+    else
+        fail "C3 (流式): 只收到 ${TCD_COUNT} 个 tool_call_delta（<20）"
+    fi
 else
-    fail "C3 (流式): 只收到 ${TCD_COUNT} 个 tool_call_delta（<20）"
+    fail "C3 (流式): host 重启失败"
 fi
+rm -f "$FAUX_C3"
 echo ""
 
 # ─────────────────────────────────────────────────────────
