@@ -237,6 +237,158 @@ impl GoalSupervisorExtension {
         self.config = config;
         self
     }
+
+    // -----------------------------------------------------------------------
+    // Check execution (Stage B)
+    // -----------------------------------------------------------------------
+
+    /// Run every check attached to the current goal, in declaration order.
+    ///
+    /// The checks are snapshotted out of the shared state up front so the mutex
+    /// is not held across the (potentially long-running) command executions.
+    ///
+    /// Returns an error if no goal is currently set.
+    pub async fn run_all_checks(&self) -> Result<Vec<CheckResult>, String> {
+        // Clone the checks out of shared state without holding the lock across awaits.
+        let checks: Vec<Check> = {
+            let guard = self
+                .state
+                .lock()
+                .map_err(|e| format!("run_all_checks: state lock poisoned: {e}"))?;
+            match guard.as_ref() {
+                Some(state) => state.checks.clone(),
+                None => return Err("run_all_checks: no goal is set".into()),
+            }
+        };
+
+        let mut results = Vec::with_capacity(checks.len());
+        for check in &checks {
+            let result = Self::run_single_check(check).await?;
+            results.push(result);
+        }
+        Ok(results)
+    }
+
+    /// Execute a single check and evaluate its pass criteria.
+    ///
+    /// Steps:
+    ///   1. Run `check.command` via `sh -c` using `tokio::process::Command`,
+    ///      capturing stdout/stderr/exit_code.
+    ///   2. Collect `Evidence` (exit_code, a stdout excerpt of the first 2000
+    ///      chars, an artifact file holding the full stdout, and the grep
+    ///      matches for `GrepEmpty`).
+    ///   3. Evaluate `check.pass_criteria`.
+    ///
+    /// If evidence cannot be collected (e.g. the command fails to spawn, or the
+    /// artifact file cannot be written), the result is `Fail` with reason
+    /// "no evidence".
+    pub async fn run_single_check(check: &Check) -> Result<CheckResult, String> {
+        let start = std::time::Instant::now();
+
+        // 1. Execute the command through the shell.
+        let output = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(&check.command)
+            .output()
+            .await;
+
+        let (exit_code, stdout) = match output {
+            Ok(out) => {
+                let code = out.status.code().unwrap_or(-1);
+                let so = String::from_utf8_lossy(&out.stdout).to_string();
+                (code, so)
+            }
+            Err(_) => {
+                // Could not run the command -> no evidence available.
+                let duration_ms = start.elapsed().as_millis() as u64;
+                return Ok(CheckResult {
+                    name: check.name.clone(),
+                    status: CheckStatus::Fail,
+                    evidence: None,
+                    duration_ms,
+                    reason: Some("no evidence".into()),
+                });
+            }
+        };
+
+        // 2. Collect evidence.
+        // stdout excerpt: first 2000 characters.
+        let stdout_excerpt: String = stdout.chars().take(2000).collect();
+
+        // For GrepEmpty, capture the matching lines up front so the evidence is
+        // complete and self-describing.
+        let matches: Option<Vec<String>> = match &check.pass_criteria {
+            PassCriteria::GrepEmpty { pattern } => Some(
+                stdout
+                    .lines()
+                    .filter(|line| line.contains(pattern.as_str()))
+                    .map(|line| line.to_string())
+                    .collect(),
+            ),
+            _ => None,
+        };
+
+        // Write the full stdout to an artifact file. If this fails we have no
+        // usable evidence -> Fail with reason "no evidence".
+        let artifact_path = match write_artifact(&check.name, &stdout) {
+            Ok(p) => Some(p),
+            Err(_) => {
+                let duration_ms = start.elapsed().as_millis() as u64;
+                return Ok(CheckResult {
+                    name: check.name.clone(),
+                    status: CheckStatus::Fail,
+                    evidence: None,
+                    duration_ms,
+                    reason: Some("no evidence".into()),
+                });
+            }
+        };
+
+        let evidence = Evidence {
+            exit_code: Some(exit_code),
+            stdout_excerpt: Some(stdout_excerpt),
+            artifact_path,
+            matches,
+        };
+
+        // 3. Evaluate pass criteria against the command output / evidence.
+        let status = match &check.pass_criteria {
+            PassCriteria::ExitCode { expected } => {
+                if exit_code == *expected {
+                    CheckStatus::Pass
+                } else {
+                    CheckStatus::Fail
+                }
+            }
+            PassCriteria::GrepEmpty { pattern } => {
+                // Pass iff no line of stdout contains the pattern.
+                let any_match = stdout
+                    .lines()
+                    .any(|line| line.contains(pattern.as_str()));
+                if any_match {
+                    CheckStatus::Fail
+                } else {
+                    CheckStatus::Pass
+                }
+            }
+            PassCriteria::FileExists { path } => {
+                if std::path::Path::new(path).exists() {
+                    CheckStatus::Pass
+                } else {
+                    CheckStatus::Fail
+                }
+            }
+        };
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+        Ok(CheckResult {
+            name: check.name.clone(),
+            status,
+            evidence: Some(evidence),
+            duration_ms,
+            reason: None,
+        })
+    }
 }
 
 impl Default for GoalSupervisorExtension {
@@ -400,6 +552,41 @@ fn now_epoch_string() -> String {
         Ok(d) => format!("epoch:{}", d.as_secs()),
         Err(_) => "epoch:0".into(),
     }
+}
+
+/// Write `stdout` to `/tmp/goal-checks/<check_name>-<timestamp>.log` and return
+/// the absolute path of the artifact file.
+///
+/// The artifact directory is created with `create_dir_all` if it does not yet
+/// exist. Returns an error if the directory cannot be created or the file
+/// cannot be written.
+fn write_artifact(check_name: &str, stdout: &str) -> std::io::Result<String> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let dir = "/tmp/goal-checks";
+    std::fs::create_dir_all(dir)?;
+
+    // Sanitize the check name so it is safe to embed in a filename: keep only
+    // alphanumeric characters, underscores, and hyphens; collapse the rest.
+    let safe_name: String = check_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+
+    let path = format!("{dir}/{safe_name}-{ts}.log");
+    std::fs::write(&path, stdout)?;
+    Ok(path)
 }
 
 // ===========================================================================
@@ -573,5 +760,188 @@ mod tests {
         });
         let res = tool.execute(args, &rt()).await;
         assert!(res.is_err(), "malformed check must error");
+    }
+
+    // -----------------------------------------------------------------------
+    // Stage B: run_single_check / run_all_checks tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: build a Check with sane defaults for the check-execution tests.
+    fn make_check(name: &str, command: &str, pc: PassCriteria) -> Check {
+        Check {
+            name: name.into(),
+            check_type: CheckType::Ci,
+            rationale: "test".into(),
+            command: command.into(),
+            pass_criteria: pc,
+            must_pass: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_check_exit_code_pass() {
+        // `true` exits 0; ExitCode(0) -> Pass.
+        let check = make_check("exit-ok", "true", PassCriteria::ExitCode { expected: 0 });
+        let res = GoalSupervisorExtension::run_single_check(&check)
+            .await
+            .expect("check ran");
+        assert_eq!(res.status, CheckStatus::Pass, "expected Pass");
+        assert_eq!(res.name, "exit-ok");
+        assert!(res.evidence.is_some(), "evidence collected");
+        assert_eq!(
+            res.evidence.as_ref().unwrap().exit_code,
+            Some(0),
+            "exit_code captured"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_check_exit_code_fail() {
+        // `false` exits 1; ExitCode(0) -> Fail.
+        let check = make_check("exit-fail", "false", PassCriteria::ExitCode { expected: 0 });
+        let res = GoalSupervisorExtension::run_single_check(&check)
+            .await
+            .expect("check ran");
+        assert_eq!(res.status, CheckStatus::Fail, "expected Fail");
+        let ev = res.evidence.as_ref().expect("evidence present");
+        assert_ne!(ev.exit_code, Some(0), "exit_code is non-zero");
+    }
+
+    #[tokio::test]
+    async fn test_check_grep_empty_pass() {
+        // stdout "hello" contains no "xyz" -> GrepEmpty passes.
+        let check = make_check(
+            "grep-empty-ok",
+            "echo hello",
+            PassCriteria::GrepEmpty { pattern: "xyz".into() },
+        );
+        let res = GoalSupervisorExtension::run_single_check(&check)
+            .await
+            .expect("check ran");
+        assert_eq!(res.status, CheckStatus::Pass, "no match -> Pass");
+        let ev = res.evidence.as_ref().expect("evidence present");
+        // For GrepEmpty, the evidence.matches vector must be empty (no matches).
+        let m = ev.matches.as_ref().expect("matches present for grep");
+        assert!(m.is_empty(), "no matches captured");
+    }
+
+    #[tokio::test]
+    async fn test_check_grep_empty_fail() {
+        // stdout "hello" contains "hello" -> GrepEmpty fails.
+        let check = make_check(
+            "grep-empty-fail",
+            "echo hello",
+            PassCriteria::GrepEmpty { pattern: "hello".into() },
+        );
+        let res = GoalSupervisorExtension::run_single_check(&check)
+            .await
+            .expect("check ran");
+        assert_eq!(res.status, CheckStatus::Fail, "match -> Fail");
+        let ev = res.evidence.as_ref().expect("evidence present");
+        let m = ev.matches.as_ref().expect("matches present for grep");
+        assert_eq!(m.len(), 1, "one matching line captured");
+        assert!(m[0].contains("hello"), "matched line content");
+    }
+
+    #[tokio::test]
+    async fn test_check_file_exists_pass() {
+        // /tmp always exists -> FileExists passes.
+        let check = make_check(
+            "file-exists-ok",
+            "true",
+            PassCriteria::FileExists { path: "/tmp".into() },
+        );
+        let res = GoalSupervisorExtension::run_single_check(&check)
+            .await
+            .expect("check ran");
+        assert_eq!(res.status, CheckStatus::Pass, "/tmp exists -> Pass");
+        assert!(res.evidence.is_some(), "evidence still collected");
+    }
+
+    #[tokio::test]
+    async fn test_check_file_exists_fail() {
+        // A path that does not exist -> FileExists fails.
+        let check = make_check(
+            "file-exists-fail",
+            "true",
+            PassCriteria::FileExists { path: "/nonexistent/xyz".into() },
+        );
+        let res = GoalSupervisorExtension::run_single_check(&check)
+            .await
+            .expect("check ran");
+        assert_eq!(res.status, CheckStatus::Fail, "missing path -> Fail");
+    }
+
+    #[tokio::test]
+    async fn test_evidence_artifact_written() {
+        // Running a check must produce an artifact file on disk whose path is
+        // recorded in the evidence, and whose contents match the stdout.
+        let check = make_check(
+            "artifact-check",
+            "echo artifact-line",
+            PassCriteria::ExitCode { expected: 0 },
+        );
+        let res = GoalSupervisorExtension::run_single_check(&check)
+            .await
+            .expect("check ran");
+        assert_eq!(res.status, CheckStatus::Pass);
+        let ev = res.evidence.as_ref().expect("evidence present");
+        let path = ev.artifact_path.as_ref().expect("artifact path set");
+        assert!(path.starts_with("/tmp/goal-checks/"), "artifact under goal-checks dir");
+        assert!(
+            path.contains("artifact-check"),
+            "artifact filename includes the check name"
+        );
+        // The artifact file must actually exist on disk.
+        assert!(std::path::Path::new(path).exists(), "artifact file exists on disk");
+        // And its contents should hold the full stdout.
+        let body = std::fs::read_to_string(path).expect("read artifact");
+        assert!(body.contains("artifact-line"), "artifact holds stdout content");
+    }
+
+    #[tokio::test]
+    async fn test_run_all_checks_no_goal_errors() {
+        // With no goal set, run_all_checks should return an error.
+        let ext = GoalSupervisorExtension::new();
+        let res = ext.run_all_checks().await;
+        assert!(res.is_err(), "no goal -> Err");
+    }
+
+    #[tokio::test]
+    async fn test_run_all_checks_runs_each() {
+        // With a goal set holding two checks, run_all_checks returns one
+        // CheckResult per check in order.
+        let shared: SharedGoalState = Arc::new(Mutex::new(None));
+        let ext = GoalSupervisorExtension::new().with_config(GoalSupervisorConfig::default());
+        // Reuse the extension's own state by cloning it in.
+        {
+            let state = GoalState {
+                goal_id: "g1".into(),
+                objective: "o".into(),
+                checks: vec![
+                    make_check("c1", "true", PassCriteria::ExitCode { expected: 0 }),
+                    make_check("c2", "true", PassCriteria::ExitCode { expected: 0 }),
+                ],
+                status: GoalStatus::Running,
+                iteration_count: 0,
+                started_at: "epoch:0".into(),
+                total_cost_usd: 0.0,
+                last_action_plan: None,
+            };
+            *shared.lock().unwrap() = Some(state);
+        }
+        // The extension uses its own `state`; we emulate by constructing one
+        // bound to the shared state above.
+        let ext = GoalSupervisorExtension {
+            state: shared,
+            config: GoalSupervisorConfig::default(),
+            session_id: None,
+        };
+        let results = ext.run_all_checks().await.expect("all checks run");
+        assert_eq!(results.len(), 2, "one result per check");
+        assert_eq!(results[0].name, "c1");
+        assert_eq!(results[1].name, "c2");
+        assert_eq!(results[0].status, CheckStatus::Pass);
+        assert_eq!(results[1].status, CheckStatus::Pass);
     }
 }
