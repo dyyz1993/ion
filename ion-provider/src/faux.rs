@@ -39,6 +39,10 @@ pub struct FauxState {
 pub struct FauxProvider {
     queue: Mutex<VecDeque<FauxResponseStep>>,
     call_count: AtomicUsize,
+    /// Last popped static response (for ION_FAUX_REPEAT=1 mode — multi-turn tests).
+    /// Only captures Static steps; Factory steps aren't cloneable but they
+    /// already produce fresh output each call so repeat isn't needed for them.
+    last_response: Mutex<Option<AssistantMessage>>,
 }
 
 impl FauxProvider {
@@ -47,6 +51,7 @@ impl FauxProvider {
         Self {
             queue: Mutex::new(VecDeque::new()),
             call_count: AtomicUsize::new(0),
+            last_response: Mutex::new(None),
         }
     }
 }
@@ -76,8 +81,25 @@ impl FauxProvider {
     }
 
     /// FIFO pop one step. Returns None if empty.
+    ///
+    /// If `ION_FAUX_REPEAT=1` is set and the queue is empty, the LAST popped
+    /// Static response is returned again (for multi-turn tests that need a
+    /// stable reply without pre-queueing N copies).
     fn pop(&self) -> Option<FauxResponseStep> {
-        self.queue.lock().unwrap().pop_front()
+        let mut queue = self.queue.lock().unwrap();
+        if let Some(step) = queue.pop_front() {
+            // Capture last Static response for repeat mode
+            if let FauxResponseStep::Static(ref msg) = step {
+                *self.last_response.lock().unwrap() = Some(msg.clone());
+            }
+            Some(step)
+        } else if std::env::var("ION_FAUX_REPEAT").ok().as_deref() == Some("1") {
+            // Repeat last Static response indefinitely
+            self.last_response.lock().unwrap().clone()
+                .map(FauxResponseStep::Static)
+        } else {
+            None
+        }
     }
 }
 

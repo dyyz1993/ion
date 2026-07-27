@@ -48,7 +48,7 @@ start_serve() {
     lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null || true
     sleep 1
     rm -f ~/.ion/host.sock ~/.ion/host.pid 2>/dev/null
-    ION_FAUX_REPLY="ok" "$ION_BIN" serve >/tmp/ion_rb_serve.log 2>&1 &
+    ION_FAUX_REPLY="ok" ION_FAUX_REPEAT=1 "$ION_BIN" serve >/tmp/ion_rb_serve.log 2>&1 &
     local pid=$!
     for i in $(seq 1 15); do
         "$ION_BIN" rpc --method list_sessions >/dev/null 2>&1 && break

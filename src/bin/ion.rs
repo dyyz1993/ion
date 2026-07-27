@@ -1416,6 +1416,16 @@ async fn cmd_run(
 
     let mut tools = build_tools(eff);
 
+    // ── Goal Supervisor：goal_set tool + shared state for extension ──
+    // Tool is always registered; the Extension (registered below) shares this state.
+    let shared_goal_state: ion::goal_supervisor_extension::SharedGoalState =
+        std::sync::Arc::new(std::sync::Mutex::new(None::<
+            ion::goal_supervisor_extension::GoalState,
+        >));
+    tools.register(Box::new(ion::goal_supervisor_extension::GoalSetTool(
+        shared_goal_state.clone(),
+    )));
+
     // WASM plugin registry (hot‑pluggable — used by worker RPC too)
     let wasm_ext_registry = std::sync::Arc::new(ion::wasm_extension::Registry::new());
     let mut loaded_wasm_paths: Vec<String> = Vec::new();
@@ -1722,6 +1732,15 @@ async fn cmd_run(
         .with_registry_model(registry_for_ext, model_for_ext);
     ext_reg.register(Box::new(learning_ext));
     tracing::info!("[extension] learning-extension registered (with LLM distillation)");
+
+    // ── Goal Supervisor（on_gate_check closed loop）──
+    // Shares state with GoalSetTool (registered in build_tools above).
+    // In scene 1, always enabled (no host config gate) — the extension is inert
+    // unless goal_set is actually called by the LLM.
+    let goal_ext = ion::goal_supervisor_extension::GoalSupervisorExtension::new()
+        .with_shared_state(shared_goal_state.clone());
+    ext_reg.register(Box::new(goal_ext));
+    tracing::info!("[extension] goal-supervisor registered (on_gate_check closed loop)");
 
     agent = agent.with_extensions(ext_reg);
 
@@ -4640,14 +4659,24 @@ fn save_session(id: &str, messages: &[ion::agent::messages::Message], model: &st
         }
     }
 
-    // 统计已有 message 数（用 saved_msg_count 判断哪些是新增的）
+    // 统计已有 message 数。
+    //
+    // 注意：磁盘上的 message 总数（包括被回滚的）≠ live message 数。
+    // 用 live count 比较，避免回滚后误判"已存过"跳过新消息（issue #28）。
     let saved_msg_count = existing_entries.iter()
         .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("message"))
         .count();
+    let live_msg_count = ion::worker_rpc::count_live_messages(&existing_entries);
 
-    // 只 append 新增的 message（saved_msg_count 之后的部分）
-    let new_msgs = if messages.len() > saved_msg_count {
-        &messages[saved_msg_count..]
+    // 优先用 live count 决定新增范围；如果 messages.len() 比 live 还短（罕见，理论上不该
+    // 发生），把全部 messages 当新消息追加。
+    let new_msgs: &[ion::agent::messages::Message] = if messages.len() > live_msg_count {
+        &messages[live_msg_count..]
+    } else if messages.len() < live_msg_count {
+        // ROLLBACK CASE: agent.messages 比 live 短 — 全部当新消息追加
+        eprintln!("[save-debug] ROLLBACK CASE in save_session: msgs={} < live={} (saved_total={})",
+            messages.len(), live_msg_count, saved_msg_count);
+        messages
     } else {
         &[][..]
     };
