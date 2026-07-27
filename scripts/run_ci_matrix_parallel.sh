@@ -91,20 +91,42 @@ run_one_script() {
     local bn=$(basename "$script" .sh)
     local worker_id=$(echo "$script" | md5sum | cut -c1-8)
     local home_dir="/tmp/ci-home-$worker_id"
+    local work_dir="/tmp/ci-work-$worker_id"
     local log="/tmp/ci-out-$bn.log"
     local result_file="/tmp/ci-results/$bn.jsonl"
 
     # Per-script isolated HOME
-    rm -rf "$home_dir"
-    mkdir -p "$home_dir/.ion/agent"
+    rm -rf "$home_dir" "$work_dir"
+    mkdir -p "$home_dir/.ion/agent" "$work_dir"
     [ -d "$HOME/.rustup" ] && ln -s "$HOME/.rustup" "$home_dir/.rustup" 2>/dev/null
     [ -d "$HOME/.cargo" ] && ln -s "$HOME/.cargo" "$home_dir/.cargo" 2>/dev/null
 
-    # Run with isolated HOME + cargo shim in PATH + script's own ION_SESSION_DIR
+    # Per-script isolated work dir — symlink the project so scripts can find
+    # target/, tests/, src/, etc., but .ion/ is per-script (no monitor pollution).
+    # This is the KEY fix: each script's `ion serve` reads .ion/monitors/ from
+    # its own cwd, so monitor configs created by one script don't affect others.
+    ln -sfn "$PROJECT_DIR/target" "$work_dir/target"
+    ln -sfn "$PROJECT_DIR/tests" "$work_dir/tests"
+    ln -sfn "$PROJECT_DIR/src" "$work_dir/src"
+    ln -sfn "$PROJECT_DIR/ion-provider" "$work_dir/ion-provider"
+    ln -sf "$PROJECT_DIR/Cargo.toml" "$work_dir/Cargo.toml"
+    ln -sf "$PROJECT_DIR/Cargo.lock" "$work_dir/Cargo.lock" 2>/dev/null
+    ln -sfn "$PROJECT_DIR/examples" "$work_dir/examples" 2>/dev/null
+    ln -sfn "$PROJECT_DIR/.git" "$work_dir/.git" 2>/dev/null
+    mkdir -p "$work_dir/.ion"
+
+    # Run from the isolated work dir with isolated HOME + cargo shim.
+    # CRITICAL: call the script via the work_dir's symlinked path (not the
+    # real path) so that PROJECT_DIR=$(dirname $0/..) resolves to work_dir,
+    # not the real project. This ensures .ion/monitors/ is per-script.
+    local script_in_workdir="$work_dir/tests/$(basename "$script")"
     local start=$(date +%s)
-    HOME="$home_dir" \
-    PATH="/tmp/ci-bin:$PATH" \
-    timeout "$PER_SCRIPT_TIMEOUT" bash "$script" > "$log" 2>&1
+    (
+        cd "$work_dir"
+        HOME="$home_dir" \
+        PATH="/tmp/ci-bin:$PATH" \
+        timeout "$PER_SCRIPT_TIMEOUT" bash "$script_in_workdir"
+    ) > "$log" 2>&1
     local exit_code=$?
     local end=$(date +%s)
     local dur=$((end - start))
@@ -115,13 +137,13 @@ run_one_script() {
     # Write JSON result
     echo "{\"script\":\"$script\",\"status\":\"$status\",\"exit_code\":$exit_code,\"duration_s\":$dur,\"log_path\":\"$log\"}" > "$result_file"
 
-    # Cleanup HOME dir
-    rm -rf "$home_dir"
+    # Cleanup HOME + work dirs
+    rm -rf "$home_dir" "$work_dir"
 
     echo "  $status $bn (exit=$exit_code, ${dur}s)"
 }
 export -f run_one_script
-export PER_SCRIPT_TIMEOUT REAL_CARGO
+export PER_SCRIPT_TIMEOUT REAL_CARGO PROJECT_DIR
 
 # ─── Run in parallel via xargs ─────────────────────────────────────────────
 echo "[Step] Running $TOTAL scripts in parallel (xargs -P $PARALLELISM)..."
