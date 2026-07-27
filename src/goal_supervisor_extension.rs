@@ -848,7 +848,20 @@ impl Extension for GoalSupervisorExtension {
 /// Setting a new goal overrides (cancels) any previous goal: the previous
 /// `GoalState` is replaced wholesale. The new goal starts in `Running` status
 /// with `iteration_count = 0`.
-pub struct GoalSetTool(pub SharedGoalState);
+pub struct GoalSetTool {
+    pub state: SharedGoalState,
+    pub registry: Option<Arc<ion_provider::registry::ApiRegistry>>,
+    pub model: Option<ion_provider::types::Model>,
+}
+
+impl GoalSetTool {
+    pub fn new(state: SharedGoalState) -> Self {
+        Self { state, registry: None, model: None }
+    }
+    pub fn with_llm(state: SharedGoalState, registry: Arc<ion_provider::registry::ApiRegistry>, model: ion_provider::types::Model) -> Self {
+        Self { state, registry: Some(registry), model: Some(model) }
+    }
+}
 
 #[async_trait]
 impl Tool for GoalSetTool {
@@ -941,9 +954,7 @@ impl Tool for GoalSetTool {
 
         // Replace any previous goal (the old one is implicitly cancelled).
         let previous_id = {
-            let mut guard = self
-                .0
-                .lock()
+            let mut guard = self.state.lock()
                 .map_err(|e| AgentError::Tool(format!("goal_set: state lock poisoned: {e}")))?;
             let prev = guard.as_ref().map(|s| s.goal_id.clone());
             *guard = Some(new_state);
@@ -953,7 +964,7 @@ impl Tool for GoalSetTool {
         let confirmation = {
             // Compute check count before building JSON (json! macro can't host expression blocks).
             let check_count = {
-                let g = self.0.lock().map_err(|e| AgentError::Tool(format!("goal_set: state lock poisoned: {e}")))?;
+                let g = self.state.lock().map_err(|e| AgentError::Tool(format!("goal_set: state lock poisoned: {e}")))?;
                 g.as_ref().map(|s| s.checks.len()).unwrap_or(0)
             };
             serde_json::json!({
@@ -1064,7 +1075,7 @@ mod tests {
     async fn test_goal_set_no_checks_uses_defaults() {
         // When goal_set is called without checks, default CI checks should be used.
         let shared: SharedGoalState = Arc::new(Mutex::new(None));
-        let tool = GoalSetTool(shared.clone());
+        let tool = GoalSetTool::new(shared.clone());
         let args = serde_json::json!({"objective": "fix the bug"});
         let result = tool.execute(args, &rt()).await.expect("goal_set ok");
         // Verify state has default checks
@@ -1080,7 +1091,7 @@ mod tests {
         // must cancel the first: only the second goal remains in state, and
         // the tool result reports the previous goal id + cancelled flag.
         let shared: SharedGoalState = Arc::new(Mutex::new(None));
-        let tool = GoalSetTool(shared.clone());
+        let tool = GoalSetTool::new(shared.clone());
 
         // Set goal A.
         let args_a = serde_json::json!({
@@ -1191,7 +1202,7 @@ mod tests {
     #[test]
     fn test_goal_set_tool_name_and_params() {
         let shared: SharedGoalState = Arc::new(Mutex::new(None));
-        let tool = GoalSetTool(shared);
+        let tool = GoalSetTool::new(shared);
         assert_eq!(tool.name(), "goal_set");
         let params = tool.parameters();
         // objective is required; checks is optional.
@@ -1202,7 +1213,7 @@ mod tests {
     #[tokio::test]
     async fn test_goal_set_missing_objective_errors() {
         let shared: SharedGoalState = Arc::new(Mutex::new(None));
-        let tool = GoalSetTool(shared);
+        let tool = GoalSetTool::new(shared);
         let res = tool.execute(serde_json::json!({}), &rt()).await;
         assert!(res.is_err(), "missing objective must error");
     }
@@ -1210,7 +1221,7 @@ mod tests {
     #[tokio::test]
     async fn test_goal_set_bad_check_errors() {
         let shared: SharedGoalState = Arc::new(Mutex::new(None));
-        let tool = GoalSetTool(shared);
+        let tool = GoalSetTool::new(shared);
         // check missing required fields -> deserialization error.
         let args = serde_json::json!({
             "objective": "ok",

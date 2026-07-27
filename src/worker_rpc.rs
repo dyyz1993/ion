@@ -258,7 +258,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         std::sync::Arc::new(std::sync::Mutex::new(None::<
             crate::goal_supervisor_extension::GoalState,
         >));
-    tools.register(Box::new(crate::goal_supervisor_extension::GoalSetTool(
+    tools.register(Box::new(crate::goal_supervisor_extension::GoalSetTool::new(
         shared_goal.clone(),
     )));
     tools.register(Box::new(BranchSessionTool));
