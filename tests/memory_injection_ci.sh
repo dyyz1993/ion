@@ -46,10 +46,13 @@ fail()  { red   "  ❌ FAIL: $1"; ((FAIL++)); }
 # Usage: rpc_mem <method> <args-json>
 rpc_mem() {
     local method="$1"
-    local args="${2:-{}}"
+    local args="${2:-\{\}}"
+    # Use printf to safely construct the JSON params without shell quoting issues.
+    local params
+    params=$(printf '{"extension":"global-memory","method":"%s","args":%s}' "$method" "$args")
     "$ION_BIN" rpc \
         --method extension_rpc \
-        --params "{\"extension\":\"global-memory\",\"method\":\"$method\",\"args\":$args}" \
+        --params "$params" \
         2>&1
 }
 
@@ -100,7 +103,7 @@ SAVE_OUTPUT=$(rpc_mem save \
     '{"content":"CI test memory","project":"test","tags":"ci","category":"note","importance":5}')
 
 # Memory ids look like gmem_<hex>. Extract the first one if present.
-MEM_ID=$(echo "$SAVE_OUTPUT" | grep -o 'gmem_[a-f0-9]*' | head -1)
+MEM_ID=$(echo "$SAVE_OUTPUT" | grep -o 'gmem_[a-f0-9-]*' | head -1)
 
 if [ -n "$MEM_ID" ]; then
     pass "save returned memory id ($MEM_ID)"

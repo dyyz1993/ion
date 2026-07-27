@@ -101,7 +101,7 @@ sleep 1
 rm -f "$HOME/.ion/host.sock" "$HOME/.ion/host.pid" 2>/dev/null
 
 # 启动 serve（后台）
-SERVE_LOG=$(mktemp /tmp/ion-ext-ci-XXXXXX.log)
+SERVE_LOG=$(mktemp /tmp/ion-ext-ci.XXXXXX)
 nohup "$ION_BIN" serve > "$SERVE_LOG" 2>&1 &
 SERVE_PID=$!
 yellow "serve pid=$SERVE_PID, log=$SERVE_LOG"
