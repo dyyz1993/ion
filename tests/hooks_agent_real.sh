@@ -70,7 +70,7 @@ echo "── 验证：agent handler 的子 Worker 真能用 read 工具 ──"
 echo "  （主 Worker 跑完 → Stop → agent handler spawn 子 Worker → 子 Worker 读 test.md）"
 echo ""
 
-OUTPUT=$(ION_HOST_TIMEOUT=90 timeout 120 "$ION_BIN" --no-session --host "完成任务" 2>&1)
+OUTPUT=$(ION_HOST_TIMEOUT=90 timeout 120 "$ION_BIN" --no-session --provider zai --model glm-5.2 --host "完成任务" 2>&1)
 
 echo "  输出摘要："
 echo "$OUTPUT" | tail -10 | sed 's/^/    /'
