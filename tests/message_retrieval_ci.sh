@@ -655,7 +655,7 @@ pkill -f "target/debug/ion serve" 2>/dev/null || true
 rm -f "$HOME/.ion/host.sock"
 sleep 1
 # 不用 timeout（会被递归 idle 关或脚本末尾手动 kill）
-ION_FAUX_REPLY="P group faux reply" "$ION_BIN" serve >"$P_HOST_LOG" 2>&1 &
+ION_FAUX_REPEAT=1 ION_FAUX_REPLY="P group faux reply" "$ION_BIN" serve >"$P_HOST_LOG" 2>&1 &
 P_HOST_PID=$!
 sleep 4
 

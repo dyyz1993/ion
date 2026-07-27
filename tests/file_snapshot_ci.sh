@@ -109,7 +109,7 @@ echo "Group F: RPC 接口（需 host 模式）"
 SOCK="$HOME/.ion/host.sock"
 rm -f "$SOCK" 2>/dev/null
 
-ION_FAUX_REPLY="snapshot test" ./target/debug/ion serve >/tmp/ion_fs_host.log 2>&1 &
+ION_FAUX_REPEAT=1 ION_FAUX_REPLY="snapshot test" ./target/debug/ion serve >/tmp/ion_fs_host.log 2>&1 &
 HOST_PID=$!
 sleep 2
 
@@ -242,7 +242,7 @@ fi
 # H2: restore_files RPC（如果 host 可用）
 SOCK2="$HOME/.ion/host.sock"
 rm -f "$SOCK2" 2>/dev/null
-ION_FAUX_REPLY="restore test" ./target/debug/ion serve >/tmp/ion_fs_h2.log 2>&1 &
+ION_FAUX_REPEAT=1 ION_FAUX_REPLY="restore test" ./target/debug/ion serve >/tmp/ion_fs_h2.log 2>&1 &
 HOST2_PID=$!
 sleep 2
 
