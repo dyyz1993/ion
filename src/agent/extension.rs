@@ -204,6 +204,13 @@ pub trait Extension: Send + Sync {
         Ok(GateDecision::Allow)
     }
 
+    /// Called when a gate extension (e.g. GoalSupervisor) forces a retry via
+    /// `GateDecision::RetryWith`. Extensions that track tool-call patterns
+    /// (e.g. ToolLoopDetector) should reset their state here, because a
+    /// gate-driven retry is intentional, not an accidental loop.
+    /// Default: no-op.
+    async fn on_gate_retry(&self) {}
+
     // ── Singleton lifecycle（host 级单例扩展，场景 3）──
     // 这些钩子仅对 is_singleton()=true 的扩展生效。
     // 内核通过 singleton_key() 聚合相同单例，保证整个 host 只创建一份。
@@ -836,6 +843,18 @@ impl ExtensionRegistry {
             }
         }
         Ok(GateDecision::Allow)
+    }
+
+    /// Notify all extensions that a gate-driven retry is happening.
+    ///
+    /// This is called when `check_gates` returns `RetryWith` — i.e. the goal
+    /// supervisor (or any gate extension) is forcing another iteration.
+    /// Extensions like ToolLoopDetector use this to reset their state, because
+    /// a gate-driven retry is intentional (not an infinite loop).
+    pub async fn on_gate_retry(&self) {
+        for ext in &self.extensions {
+            let _ = ext.on_gate_retry().await;
+        }
     }
 }
 

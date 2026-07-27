@@ -144,6 +144,14 @@ impl Extension for ToolLoopDetector {
         &self.name
     }
 
+    /// When a gate extension (e.g. GoalSupervisor) forces a retry, reset the
+    /// loop detection state. A gate-driven retry is intentional — the goal
+    /// isn't complete and the agent is told to keep working — so consecutive
+    /// tool calls across gate retries should NOT be counted as a loop.
+    async fn on_gate_retry(&self) {
+        self.reset().await;
+    }
+
     async fn on_tool_execution_start(&self, ctx: &ToolExecutionContext) -> AgentResult<()> {
         // Skip exempt tools
         if LOOP_EXEMPT_TOOLS.contains(&ctx.tool_name.as_str()) {

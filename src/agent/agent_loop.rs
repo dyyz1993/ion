@@ -1016,6 +1016,9 @@ impl Agent {
                     match self.extensions.check_gates(&gate_ctx).await? {
                         super::extension::GateDecision::RetryWith(msg) => {
                             tracing::warn!("Gate check failed, forcing retry: {}", &msg[..msg.len().min(100)]);
+                            // Reset loop detection state: a gate-driven retry is
+                            // intentional (goal not complete), not an infinite loop.
+                            self.extensions.on_gate_retry().await;
                             self.messages.push(Message::User(UserMessage {
                                 role: "user".into(),
                                 content: vec![ContentBlock::Text(TextContent {
