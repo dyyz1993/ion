@@ -229,12 +229,12 @@ echo ""
 echo "[Group E] auto_retry_start/end 事件"
 echo "-------------------------------------"
 
-# FauxProvider 错误响应 → 触发重试
-echo '{"error":"500 Internal Server Error"}' > "$FAUX"
+# FauxProvider error injection → trigger auto_retry
+# ION_FAUX_ERROR=1 makes FauxProvider return stop_reason=Error responses
+echo '{"text":"ok"}' > "$FAUX"
 rm -f "$SOCK"; lsof -ti "$SOCK" 2>/dev/null | xargs kill 2>/dev/null; sleep 1
 TMP_DIR=$(mktemp -d)
-# 只放 1 个错误响应，agent 第一次失败 → retry → 队列空 → 最终失败
-ION_FAUX_SCRIPT="$FAUX" ION_SESSION_DIR="$TMP_DIR/sessions" \
+ION_FAUX_SCRIPT="$FAUX" ION_FAUX_ERROR=1 ION_FAUX_REPEAT=1 ION_SESSION_DIR="$TMP_DIR/sessions" \
     ION_MAX_TURNS=1 \
     "$ION_BIN" serve --provider faux --model faux-test > /tmp/sse_host3.log 2>&1 &
 HOST_PID=$!
@@ -267,7 +267,7 @@ if [ "${ARS:-0}" -ge 1 ]; then
         fail "E2: auto_retry_start 缺 attempt/maxRetries 字段"
     fi
 else
-    pass "E1: auto_retry_start (skipped — FauxProvider doesn't support error injection)"
+    fail "E1: 未收到 auto_retry_start 事件"
 fi
 
 # E3: auto_retry_end 事件（success=false 因为队列空了）
@@ -275,7 +275,7 @@ ARE=$(count_matches /tmp/sse_evt3.log '"type": ?"auto_retry_end"')
 if [ "${ARE:-0}" -ge 1 ]; then
     pass "E3: auto_retry_end 事件收到（count=${ARE}）"
 else
-    pass "E3: auto_retry_end (skipped — FauxProvider doesn't support error injection)"
+    fail "E3: 未收到 auto_retry_end 事件"
 fi
 
 rm -rf "$TMP_DIR"

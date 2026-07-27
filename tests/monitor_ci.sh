@@ -23,7 +23,11 @@ record_fail() { echo "  ❌ $1"; FAIL=$((FAIL+1)); }
 # Captures RPC stdout to file (filters shell-config noise on stderr).
 rpc_call() {
     local method="$1" params="$2" outfile="$3"
-    if [ -n "${SID:-}" ]; then
+    # Singleton extensions (monitor, global-memory) must NOT use --session.
+    # Worker-level extensions (permission, lsp) need --session.
+    if echo "$params" | grep -q '"extension":"monitor"\|"extension":"global-memory"'; then
+        "$ION" rpc --method "$method" --params "$params" > "$outfile" 2>/dev/null
+    elif [ -n "${SID:-}" ]; then
         "$ION" rpc --session "$SID" --method "$method" --params "$params" > "$outfile" 2>/dev/null
     else
         "$ION" rpc --method "$method" --params "$params" > "$outfile" 2>/dev/null

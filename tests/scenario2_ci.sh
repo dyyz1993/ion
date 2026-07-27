@@ -90,7 +90,7 @@ echo "Group A2-1：host 启停基础"
 setup_project
 
 # A2-1-1 host 自动启动 + 执行 + 退出
-OUTPUT=$(ION_HOST_TIMEOUT=60 timeout 90 $ION_BIN --host --agent build "say hello in 2 words" 2>&1)
+OUTPUT=$(ION_FAUX_REPLY="ok" ION_FAUX_REPEAT=1 ION_HOST_TIMEOUT=60 timeout 90 $ION_BIN --host --provider faux --model faux-test --agent build "say hello in 2 words" 2>&1)
 if echo "$OUTPUT" | grep -q "host.*Starting\|host.*spawned\|▶ start"; then
     pass "A2-1-1: host 自动启动"
 else
@@ -103,7 +103,7 @@ else
 fi
 
 # A2-1-3 事件泵输出（按行打印，不是碎词）
-OUTPUT2=$(ION_HOST_TIMEOUT=30 timeout 45 $ION_BIN --host --agent build "say hi" 2>&1)
+OUTPUT2=$(ION_FAUX_REPLY="ok" ION_FAUX_REPEAT=1 ION_HOST_TIMEOUT=30 timeout 45 $ION_BIN --host --provider faux --model faux-test --agent build "say hi" 2>&1)
 LINES=$(echo "$OUTPUT2" | grep -c "^\[wkr_")
 if [ "$LINES" -gt 0 ]; then
     pass "A2-1-3: 事件泵输出 $LINES 行（按行打印正常）"
@@ -112,8 +112,8 @@ else
 fi
 
 # A2-1-4 重复启停不冲突
-$ION_BIN --host --agent build "say 1" > /dev/null 2>&1 || true
-$ION_BIN --host --agent build "say 2" > /dev/null 2>&1 || true
+ION_FAUX_REPLY="ok" ION_FAUX_REPEAT=1 $ION_BIN --host --provider faux --model faux-test --agent build "say 1" > /dev/null 2>&1 || true
+ION_FAUX_REPLY="ok" ION_FAUX_REPEAT=1 $ION_BIN --host --provider faux --model faux-test --agent build "say 2" > /dev/null 2>&1 || true
 pass "A2-1-4: 连续两次 --host 无冲突"
 
 # ──────────────────────────────────────────────────────────
@@ -125,7 +125,7 @@ setup_project
 
 # A2-2-1 单 worker spawn（coordinator → developer）
 rm -f task.py
-OUTPUT=$(ION_HOST_TIMEOUT=120 timeout 150 $ION_BIN --host --agent coordinator "use spawn_worker to create task.py with print('hello')" 2>&1)
+OUTPUT=$(ION_FAUX_REPLY="ok" ION_FAUX_REPEAT=1 ION_HOST_TIMEOUT=120 timeout 150 $ION_BIN --host --provider faux --model faux-test --agent coordinator "use spawn_worker to create task.py with print('hello')" 2>&1)
 WORKER_COUNT=$(echo "$OUTPUT" | grep -c "▶ start")
 if [ "$WORKER_COUNT" -ge 2 ]; then
     pass "A2-2-1: coordinator spawn 了 $WORKER_COUNT 个 worker（含自己+developer）"
@@ -142,7 +142,7 @@ fi
 
 # A2-2-3 三阶段工作流（coordinator → developer → reviewer）
 rm -f calc.py
-OUTPUT=$(ION_HOST_TIMEOUT=180 timeout 200 $ION_BIN --host --agent coordinator "create calc.py with add(a,b). then spawn reviewer to review." 2>&1)
+OUTPUT=$(ION_FAUX_REPLY="ok" ION_FAUX_REPEAT=1 ION_HOST_TIMEOUT=180 timeout 200 $ION_BIN --host --provider faux --model faux-test --agent coordinator "create calc.py with add(a,b). then spawn reviewer to review." 2>&1)
 WORKER_COUNT=$(echo "$OUTPUT" | grep -c "▶ start")
 if [ "$WORKER_COUNT" -ge 3 ]; then
     pass "A2-2-3: 三阶段工作流（$WORKER_COUNT 个 worker: coordinator+developer+reviewer）"
@@ -152,7 +152,7 @@ fi
 
 # A2-2-4 递归 idle 检测（用简单场景，避免 reviewer 死循环）
 rm -f simple.txt
-OUTPUT_IDLE=$($ION_BIN --host --agent coordinator "use spawn_worker to create simple.txt with content 'ok'" 2>&1)
+OUTPUT_IDLE=$(ION_FAUX_REPLY="ok" ION_FAUX_REPEAT=1 $ION_BIN --host --provider faux --model faux-test --agent coordinator "use spawn_worker to create simple.txt with content 'ok'" 2>&1)
 if echo "$OUTPUT_IDLE" | grep -q "idle check passed"; then
     pass "A2-2-4: 递归 idle 检测（coordinator+developer 全部 idle 后退出）"
 else
@@ -206,7 +206,7 @@ sleep 1
 # A2-3-4 死锁回归测试（coordinator + worktree=true 不卡住）
 setup_project
 rm -f feat.py
-OUTPUT=$(ION_HOST_TIMEOUT=90 timeout 120 $ION_BIN --host --agent coordinator "use spawn_worker with worktree=true to create feat.py with def square(x)" 2>&1)
+OUTPUT=$(ION_FAUX_REPLY="ok" ION_FAUX_REPEAT=1 ION_HOST_TIMEOUT=90 timeout 120 $ION_BIN --host --provider faux --model faux-test --agent coordinator "use spawn_worker with worktree=true to create feat.py with def square(x)" 2>&1)
 if echo "$OUTPUT" | grep -q "timeout reached"; then
     fail "A2-3-4: 死锁回归（超时未完成）"
 else
@@ -226,7 +226,7 @@ echo "Group A2-4：错误处理"
 setup_project
 
 # A2-4-1 不存在的 agent
-OUTPUT=$($ION_BIN --host --agent nonexistent-xyz "hi" 2>&1) || true
+OUTPUT=$(ION_FAUX_REPLY="ok" ION_FAUX_REPEAT=1 $ION_BIN --host --provider faux --model faux-test --agent nonexistent-xyz "hi" 2>&1) || true
 if echo "$OUTPUT" | grep -qi "not found\|error\|fallback"; then
     pass "A2-4-1: 不存在的 agent 给出错误/fallback"
 else
@@ -234,7 +234,7 @@ else
 fi
 
 # A2-4-2 空消息
-OUTPUT=$($ION_BIN --host "" 2>&1) || true
+OUTPUT=$(ION_FAUX_REPLY="ok" ION_FAUX_REPEAT=1 $ION_BIN --host --provider faux --model faux-test "" 2>&1) || true
 pass "A2-4-2: 空消息未崩溃"
 
 # ──────────────────────────────────────────────────────────
@@ -274,7 +274,7 @@ echo "Group A2-6：worktree 真实干活"
 # A2-6-1 developer 不走 worktree，能真写文件（baseline）
 setup_project
 rm -f baseline.txt
-OUTPUT=$($ION_BIN --host --agent developer "create baseline.txt with content ok" 2>&1)
+OUTPUT=$(ION_FAUX_REPLY="ok" ION_FAUX_REPEAT=1 $ION_BIN --host --provider faux --model faux-test --agent developer "create baseline.txt with content ok" 2>&1)
 if [ -f "$TEST_DIR/baseline.txt" ]; then
     pass "A2-6-1: developer 不走 worktree 能真写文件（baseline）"
 else
@@ -285,7 +285,7 @@ fi
 setup_project
 rm -rf ~/.ion/worktrees/* 2>/dev/null
 rm -f wt_task.txt
-OUTPUT=$($ION_BIN --host --agent coordinator "use spawn_worker with worktree=true, agent=developer, task='create wt_task.txt with content done'" 2>&1)
+OUTPUT=$(ION_FAUX_REPLY="ok" ION_FAUX_REPEAT=1 $ION_BIN --host --provider faux --model faux-test --agent coordinator "use spawn_worker with worktree=true, agent=developer, task='create wt_task.txt with content done'" 2>&1)
 sleep 2
 
 # 检查 worktree 目录
@@ -363,7 +363,7 @@ setup_project
 
 # A2-8-1: 3 个并行 developer + merge + cleanup
 unset ION_HOST_TIMEOUT
-OUTPUT=$(ION_HOST_TIMEOUT=300 timeout 360 $ION_BIN --host --agent coordinator \
+OUTPUT=$(ION_FAUX_REPLY="ok" ION_FAUX_REPEAT=1 ION_HOST_TIMEOUT=300 timeout 360 $ION_BIN --host --provider faux --model faux-test --agent coordinator \
   "Create 3 Python modules in PARALLEL:
   1. mod_a.py with function add(a,b) returning a+b
   2. mod_b.py with function sub(a,b) returning a-b

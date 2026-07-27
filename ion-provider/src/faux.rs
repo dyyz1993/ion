@@ -86,6 +86,29 @@ impl FauxProvider {
     /// Static response is returned again (for multi-turn tests that need a
     /// stable reply without pre-queueing N copies).
     fn pop(&self) -> Option<FauxResponseStep> {
+        // ION_FAUX_ERROR=1: inject a simulated error response to trigger auto_retry.
+        // Returns an AssistantMessage with stop_reason=Error and an error message,
+        // so the agent's retry logic sees it as a retryable error.
+        if std::env::var("ION_FAUX_ERROR").ok().as_deref() == Some("1") {
+            let error_msg = crate::types::AssistantMessage {
+                role: "assistant".into(),
+                content: vec![],
+                api: "faux".into(),
+                provider: "faux".into(),
+                model: "faux-error".into(),
+                response_model: None,
+                response_id: None,
+                usage: crate::types::Usage::default(),
+                stop_reason: crate::types::StopReason::Error,
+                error_message: Some("simulated error for auto_retry test".into()),
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0),
+            };
+            return Some(FauxResponseStep::Static(error_msg));
+        }
+
         let mut queue = self.queue.lock().unwrap();
         if let Some(step) = queue.pop_front() {
             // Capture last Static response for repeat mode
