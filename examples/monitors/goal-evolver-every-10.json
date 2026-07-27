@@ -1,0 +1,11 @@
+{
+  "name": "goal-evolver-every-10",
+  "interval_secs": 3600,
+  "script": "n=$(find ~/.ion/agent/goal-runs -name 'iterations.jsonl' 2>/dev/null | wc -l | tr -d ' '); stamp=~/.ion/agent/.evolver-last-count; prev=$(cat \"$stamp\" 2>/dev/null || echo 0); echo $n > \"$stamp\"; [ $((n - prev)) -ge 10 ] && echo \"new_goals=$((n - prev))\"",
+  "agent": "goal-evolver",
+  "prompt_template": "{output}\n\n10+ new goals accumulated. Run goal_evolver_run_once on ~/.ion/agent/goal-runs/ (dry_run=false) and submit Issues.",
+  "mode": "serial_skip",
+  "trigger_mode": "auto_spawn",
+  "enabled": true,
+  "cooldown_secs": 3600
+}

@@ -1,0 +1,11 @@
+{
+  "name": "goal-evolver-daily",
+  "interval_secs": 86400,
+  "script": "find ~/.ion/agent/goal-runs -name 'iterations.jsonl' 2>/dev/null | wc -l | tr -d ' ' | grep -v '^0$'",
+  "agent": "goal-evolver",
+  "prompt_template": "Goal runs ready to analyze ({output} goals with logs).\n\nRun goal_evolver_run_once on ~/.ion/agent/goal-runs/ (dry_run=false) and submit Issues to the main repo per your agent definition.",
+  "mode": "serial_skip",
+  "trigger_mode": "auto_spawn",
+  "enabled": true,
+  "cooldown_secs": 3600
+}
