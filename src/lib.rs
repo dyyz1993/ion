@@ -4,6 +4,7 @@ pub mod auto_session_title;
 pub mod auth;
 pub mod learning_extension;
 pub mod goal_supervisor_extension;
+pub mod goal_evolver;
 pub mod secret_detector;
 pub mod skill_distillation;
 pub mod tool_loop_detector;
