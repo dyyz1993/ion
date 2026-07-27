@@ -743,6 +743,54 @@ impl Default for GoalSupervisorExtension {
 // Free helper functions (Stage C)
 // ===========================================================================
 
+/// Generate objective-specific verification checks via LLM (B2).
+///
+/// Asks the LLM to produce a JSON array of Check objects tailored to the
+/// objective. On any failure (LLM error, parse error), returns None → CI fallback.
+pub async fn generate_checks_via_llm(
+    registry: &ion_provider::registry::ApiRegistry,
+    model: &ion_provider::types::Model,
+    objective: &str,
+) -> Option<Vec<Check>> {
+    let system_prompt = format!(
+        "You are a verification engineer. Given a coding objective, generate a JSON array of \
+         verification checks. Each check must have: name, check_type (\"ci\" or \"contingency\"), \
+         rationale, command (shell command, exit 0 on success), pass_criteria ({{\"kind\":\"exit_code\",\"expected\":0}}), \
+         must_pass (true).\n\n\
+         Rules:\n- Include objective-specific checks (grep for required functions/symbols).\n\
+         - Include cargo build + cargo test as CI checks.\n\
+         - Commands must be shell-safe.\n- Output ONLY the JSON array, no markdown.\n\n\
+         Objective: {objective}"
+    );
+    let context = ion_provider::types::Context {
+        system_prompt: Some(system_prompt),
+        messages: vec![],
+        tools: None,
+    };
+    let options = ion_provider::types::StreamOptions {
+        max_tokens: Some(2000),
+        api_key: None,
+        reasoning: None,
+        timeout_ms: None,
+        max_retries: None,
+        response_format: None,
+    };
+    let msg = ion_provider::registry::complete(registry, model, &context, Some(&options)).await.ok()?;
+    let text: String = msg.content.iter().filter_map(|c| match c {
+        ion_provider::types::AssistantContentBlock::Text(t) => Some(t.text.as_str()),
+        _ => None,
+    }).collect::<Vec<_>>().join("");
+    // Strip markdown fences.
+    let text = text.trim().strip_prefix("```json").or_else(|| text.trim().strip_prefix("```")).unwrap_or(&text).trim().trim_end_matches("```").trim();
+    match serde_json::from_str::<Vec<serde_json::Value>>(text) {
+        Ok(arr) => {
+            let checks: Vec<Check> = arr.iter().filter_map(|item| serde_json::from_value(item.clone()).ok()).collect();
+            if checks.is_empty() { None } else { Some(checks) }
+        }
+        Err(_) => None,
+    }
+}
+
 /// Generate default CI checks when goal_set is called without explicit checks.
 ///
 /// These are generic CI checks that apply to most code-change goals:
@@ -1174,7 +1222,13 @@ impl Tool for GoalSetTool {
         }
         // B2: if no checks were provided, use default CI checks.
         if checks.is_empty() {
-            checks = default_ci_checks();
+            // B2: try LLM generation first, fall back to CI defaults.
+            checks = if let (Some(reg), Some(mdl)) = (&self.registry, &self.model) {
+                generate_checks_via_llm(reg, mdl, &objective).await
+                    .unwrap_or_else(default_ci_checks)
+            } else {
+                default_ci_checks()
+            };
         }
 
         let goal_id = uuid::Uuid::new_v4().to_string();
