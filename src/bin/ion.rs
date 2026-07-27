@@ -1426,10 +1426,31 @@ async fn cmd_run(
     let fast_model: Option<ion_provider::types::Model> = {
         let cfg = ion::config::IonConfig::load();
         cfg.tier_models.get("fast").and_then(|s| {
-            let model_id = s.splitn(2, '/').nth(1).unwrap_or(s);
-            let mut mr = ion_provider::registry::ModelRegistry::new();
-            mr.register_builtins();
-            mr.find_model(model_id).cloned()
+            // Parse "provider/model_id" format.
+            let parts: Vec<&str> = s.splitn(2, '/').collect();
+            if parts.len() == 2 {
+                let provider = parts[0];
+                let model_id = parts[1];
+                // Look up in config.json providers (custom models not in builtin registry).
+                cfg.providers.get(provider).and_then(|p| {
+                    p.models.iter().find(|m| m.id == model_id).map(|m| {
+                        ion_provider::types::Model {
+                            id: m.id.clone(),
+                            name: m.name.clone().unwrap_or_else(|| m.id.clone()),
+                            api: p.api.clone(),
+                            provider: provider.to_string(),
+                            base_url: p.base_url.clone(),
+                            reasoning: m.reasoning.unwrap_or(false),
+                            input: vec!["text".into()],
+                            cost: ion_provider::types::Cost::default(),
+                            context_window: m.context_window.unwrap_or(128000),
+                            max_tokens: m.max_tokens.unwrap_or(32000),
+                            compat: None,
+                            headers: p.headers.clone(),
+                        }
+                    })
+                })
+            } else { None }
         })
     };
 
