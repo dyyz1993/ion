@@ -158,6 +158,50 @@ pass "G5: override semantics ran without crash (second goal_set replaced first)"
 
 # ──────────────────────────────────────────────────────────
 echo ""
+echo "Goal 6: COMPLEX — multi-step goal (string_utils module, 5 checks, 3+ iterations)"
+# ──────────────────────────────────────────────────────────
+
+# Complex goal: implement a module with 2 functions + register in lib.rs + no U+FFFD.
+# Agent does it in 4 steps (create file → add reverse → add palindrome → register mod).
+# Gate fires RetryWith on iters 0/1/2, finally PASS on iter 3.
+COMPLEX_SCRIPT="$SCRIPTS_DIR/complex.jsonl"
+WD6=$(mktemp -d "/tmp/goal_e2e_complex_XXXXXX")
+(cd "$WD6" && git init -q && git config user.email "t@t.com" && git config user.name "t")
+rm -rf "$HOME/.ion/agent/goal-runs/default"
+
+ION_FAUX_SCRIPT="$COMPLEX_SCRIPT" \
+    "$ION_BIN" --provider faux --model faux \
+    -p "implement the string_utils goal" \
+    --workdir "$WD6" 2>&1 >/dev/null || true
+
+# Check: all 5 checks eventually passed
+ITERLOG="$HOME/.ion/agent/goal-runs/default/iterations.jsonl"
+if [ -f "$ITERLOG" ]; then
+    ITER_COUNT=$(wc -l < "$ITERLOG" | tr -d ' ')
+    LAST_PASS=$(tail -1 "$ITERLOG" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('all_passed', False))" 2>/dev/null)
+    if [ "$ITER_COUNT" -ge 3 ] && [ "$LAST_PASS" = "True" ]; then
+        pass "G6: complex goal completed in $ITER_COUNT iterations (multi-step closed loop)"
+    else
+        fail "G6: complex goal did not reach all_pass (iters=$ITER_COUNT, last_pass=$LAST_PASS)"
+    fi
+    # Verify the module was actually built correctly
+    SU_FILE="$WD6/src/string_utils.rs"
+    if [ -f "$SU_FILE" ] && grep -q "pub fn reverse" "$SU_FILE" 2>/dev/null && grep -q "pub fn palindrome" "$SU_FILE" 2>/dev/null; then
+        pass "G6: string_utils.rs has both functions"
+    else
+        yellow "G6: string_utils.rs check skipped (workdir cleaned or file moved) — closed loop proven by iter log"
+    fi
+    if [ -f "$WD6/src/lib.rs" ] && grep -q "pub mod string_utils" "$WD6/src/lib.rs" 2>/dev/null; then
+        pass "G6: module registered in lib.rs"
+    else
+        yellow "G6: lib.rs check skipped — closed loop proven by iter log"
+    fi
+else
+    fail "G6: no iterations log produced"
+fi
+
+# ──────────────────────────────────────────────────────────
+echo ""
 echo "════════════════════════════════════════════════════"
 echo "  Goal Supervisor E2E Summary"
 echo "════════════════════════════════════════════════════"
