@@ -155,6 +155,9 @@ pub struct GoalState {
     pub total_cost_usd: f64,
     /// The last action plan proposed by the agent (for repetition detection).
     pub last_action_plan: Option<String>,
+    /// Recent tool calls for drift monitoring (Task 4): (tool_name, target_file_or_cmd_summary).
+    #[serde(default)]
+    pub recent_tools: Vec<(String, String)>,
 }
 
 /// Configuration for the Goal Supervisor.
@@ -502,6 +505,34 @@ impl GoalSupervisorExtension {
                      Re-focus on the goal.",
                     &objective[..objective.len().min(80)]
                 ),
+            };
+        }
+
+        // Check tool-level drift (Task 4): if recent tools are all bash/read with no
+        // write/edit, the agent isn't making changes — likely stuck exploring.
+        let tool_drift = {
+            let guard = self.state.lock().ok();
+            match guard.as_ref().and_then(|g| g.as_ref()) {
+                Some(s) if s.recent_tools.len() >= 5 => {
+                    let recent = &s.recent_tools;
+                    let has_write = recent.iter().any(|(name, _)| {
+                        name == "write" || name == "edit" || name == "write_file" || name == "edit_file"
+                    });
+                    let all_bash_read = recent.iter().all(|(name, _)| {
+                        name == "bash" || name == "bash_run" || name == "read" || name == "read_file"
+                    });
+                    !has_write && all_bash_read
+                }
+                _ => false,
+            }
+        };
+        if tool_drift {
+            return ProgressReport {
+                trend: ProgressTrend::Drifting,
+                failed_history: vec![],
+                recommendation: "You've been only reading/running commands without writing \
+                                 any code changes. Start implementing the fix."
+                    .into(),
             };
         }
 
@@ -894,6 +925,39 @@ impl Extension for GoalSupervisorExtension {
         "goal_supervisor"
     }
 
+    /// Track tool usage for drift monitoring (Task 4).
+    /// Records recent tool calls into GoalState.recent_tools (sliding window K=10).
+    async fn on_tool_execution_end(
+        &self,
+        ctx: &crate::agent::extension::ToolExecutionContext,
+    ) -> AgentResult<()> {
+        // Extract a summary of what the tool touched.
+        let summary = match ctx.tool_name.as_str() {
+            "bash" | "bash_run" => {
+                ctx.args.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string()
+            }
+            "write" | "edit" | "write_file" | "edit_file" => {
+                ctx.args.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string()
+            }
+            "read" | "read_file" => {
+                ctx.args.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string()
+            }
+            _ => ctx.tool_name.clone(),
+        };
+
+        // Append to recent_tools, keep last 10.
+        if let Ok(mut guard) = self.state.lock() {
+            if let Some(state) = guard.as_mut() {
+                state.recent_tools.push((ctx.tool_name.clone(), summary));
+                if state.recent_tools.len() > 10 {
+                    let excess = state.recent_tools.len() - 10;
+                    state.recent_tools.drain(0..excess);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Stage C: the on_agent_end hook is kept for status bookkeeping only.
     /// The real closed-loop enforcement happens in on_gate_check (below),
     /// which is the kernel-mandated gate that the LLM cannot skip.
@@ -1124,7 +1188,7 @@ impl Tool for GoalSetTool {
             iteration_count: 0,
             started_at: started_at.clone(),
             total_cost_usd: 0.0,
-            last_action_plan: None,
+            last_action_plan: None, recent_tools: vec![],
         };
 
         // Replace any previous goal (the old one is implicitly cancelled).
@@ -1353,7 +1417,7 @@ mod tests {
                 iteration_count: 2,
                 started_at: format!("epoch:{}", now_epoch_ms() / 1000),
                 total_cost_usd: 0.0,
-                last_action_plan: None,
+                last_action_plan: None, recent_tools: vec![],
             });
         }
         // Plan about something totally unrelated.
@@ -1374,7 +1438,7 @@ mod tests {
             iteration_count: 3,
             started_at: "epoch:100".into(),
             total_cost_usd: 0.5,
-            last_action_plan: None,
+            last_action_plan: None, recent_tools: vec![],
         })));
         let tool = GoalRefineTool(shared.clone());
         let args = serde_json::json!({
@@ -1403,7 +1467,7 @@ mod tests {
             iteration_count: 2,
             started_at: "epoch:100".into(),
             total_cost_usd: 0.1,
-            last_action_plan: None,
+            last_action_plan: None, recent_tools: vec![],
         })));
         let tool = GoalRefineTool(shared.clone());
         let args = serde_json::json!({"checks_remove": ["drop"]});
@@ -1424,7 +1488,7 @@ mod tests {
             iteration_count: 1,
             started_at: "epoch:100".into(),
             total_cost_usd: 0.0,
-            last_action_plan: None,
+            last_action_plan: None, recent_tools: vec![],
         })));
         let tool = GoalRefineTool(shared.clone());
         let args = serde_json::json!({"objective_patch": "new refined objective"});
@@ -1796,7 +1860,7 @@ mod tests {
                 iteration_count: 0,
                 started_at: "epoch:0".into(),
                 total_cost_usd: 0.0,
-                last_action_plan: None,
+                last_action_plan: None, recent_tools: vec![],
             };
             *shared.lock().unwrap() = Some(state);
         }
@@ -1859,7 +1923,7 @@ mod tests {
                 iteration_count: 3,
                 started_at: format!("epoch:{}", now_epoch_ms()/1000),
                 total_cost_usd: 0.0,
-                last_action_plan: None,
+                last_action_plan: None, recent_tools: vec![],
             });
         }
         let hit = ext.check_guards(None);
@@ -1885,7 +1949,7 @@ mod tests {
                 iteration_count: 0,
                 started_at: old,
                 total_cost_usd: 0.0,
-                last_action_plan: None,
+                last_action_plan: None, recent_tools: vec![],
             });
         }
         let hit = ext.check_guards(None);
@@ -1909,7 +1973,7 @@ mod tests {
                 iteration_count: 0,
                 started_at: format!("epoch:{}", now_epoch_ms()/1000),
                 total_cost_usd: 1.5,
-                last_action_plan: None,
+                last_action_plan: None, recent_tools: vec![],
             });
         }
         let hit = ext.check_guards(None);
@@ -1935,7 +1999,7 @@ mod tests {
                 iteration_count: 1,
                 started_at: format!("epoch:{}", now_epoch_ms()/1000),
                 total_cost_usd: 0.0,
-                last_action_plan: Some(plan.into()),
+                last_action_plan: Some(plan.into()), recent_tools: vec![],
             });
         }
         let hit = ext.check_guards(Some(plan));
@@ -1956,7 +2020,7 @@ mod tests {
                 iteration_count: 0,
                 started_at: format!("epoch:{}", now_epoch_ms()/1000),
                 total_cost_usd: 0.0,
-                last_action_plan: Some("first attempt plan alpha".into()),
+                last_action_plan: Some("first attempt plan alpha".into()), recent_tools: vec![],
             });
         }
         let hit = ext.check_guards(Some("a completely different plan beta"));
@@ -1979,7 +2043,7 @@ mod tests {
                 iteration_count: 1,
                 started_at: format!("epoch:{}", now_epoch_ms()/1000),
                 total_cost_usd: 0.0,
-                last_action_plan: None,
+                last_action_plan: None, recent_tools: vec![],
             });
         }
         let results = vec![CheckResult {
