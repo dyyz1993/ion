@@ -866,7 +866,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         if ion_cfg.is_extension_enabled("goal-supervisor") {
             let goal_ext =
                 crate::goal_supervisor_extension::GoalSupervisorExtension::new()
-                    .with_shared_state(shared_goal.clone());
+                    .with_shared_state(shared_goal.clone())
+                    .with_session_id(&sid);
             ext_reg.register(Box::new(goal_ext));
             tracing::info!("[extension] goal-supervisor enabled (on_gate_check closed loop)");
         } else {

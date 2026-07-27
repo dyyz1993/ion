@@ -1738,7 +1738,8 @@ async fn cmd_run(
     // In scene 1, always enabled (no host config gate) — the extension is inert
     // unless goal_set is actually called by the LLM.
     let goal_ext = ion::goal_supervisor_extension::GoalSupervisorExtension::new()
-        .with_shared_state(shared_goal_state.clone());
+        .with_shared_state(shared_goal_state.clone())
+        .with_session_id(session_id.clone());
     ext_reg.register(Box::new(goal_ext));
     tracing::info!("[extension] goal-supervisor registered (on_gate_check closed loop)");
 

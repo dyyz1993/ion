@@ -1,0 +1,21 @@
+{"tool_call":{"name":"goal_set","input":{"objective":"create file with exact marker","checks":[{"name":"marker","check_type":"ci","rationale":"must contain marker","command":"grep -q 'EXACT_MARKER_XYZ' /tmp/goal_stuck_test.txt","pass_criteria":{"kind":"exit_code","expected":0},"must_pass":true}]}}}
+{"tool_call":{"name":"bash","input":{"command":"echo 'wrong1' > /tmp/goal_stuck_test.txt"}}}
+{"text":"try1","stop_reason":"end_turn"}
+{"tool_call":{"name":"bash","input":{"command":"echo 'wrong2' > /tmp/goal_stuck_test.txt"}}}
+{"text":"try2","stop_reason":"end_turn"}
+{"tool_call":{"name":"bash","input":{"command":"echo 'wrong3' > /tmp/goal_stuck_test.txt"}}}
+{"text":"try3","stop_reason":"end_turn"}
+{"tool_call":{"name":"bash","input":{"command":"echo 'wrong4' > /tmp/goal_stuck_test.txt"}}}
+{"text":"try4","stop_reason":"end_turn"}
+{"tool_call":{"name":"bash","input":{"command":"echo 'wrong5' > /tmp/goal_stuck_test.txt"}}}
+{"text":"try5","stop_reason":"end_turn"}
+{"tool_call":{"name":"bash","input":{"command":"echo 'wrong6' > /tmp/goal_stuck_test.txt"}}}
+{"text":"try6","stop_reason":"end_turn"}
+{"tool_call":{"name":"bash","input":{"command":"echo 'wrong7' > /tmp/goal_stuck_test.txt"}}}
+{"text":"try7","stop_reason":"end_turn"}
+{"tool_call":{"name":"bash","input":{"command":"echo 'wrong8' > /tmp/goal_stuck_test.txt"}}}
+{"text":"try8","stop_reason":"end_turn"}
+{"tool_call":{"name":"bash","input":{"command":"echo 'wrong9' > /tmp/goal_stuck_test.txt"}}}
+{"text":"try9","stop_reason":"end_turn"}
+{"tool_call":{"name":"bash","input":{"command":"echo 'wrong10' > /tmp/goal_stuck_test.txt"}}}
+{"text":"try10","stop_reason":"end_turn"}
