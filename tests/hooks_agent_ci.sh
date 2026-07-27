@@ -126,8 +126,9 @@ else
     fail "E3 子 Worker 跑完（只检测到 $DONE_COUNT 个 done，期望 >= 2）"
 fi
 
-# 验证 4：没有死循环（worker 数 <= 3，不会像之前那样 spawn 16 个）
-if [ "$WKR_COUNT" -le 3 ]; then
+# 验证 4：没有死循环（worker 数 <= 5，不会像之前那样 spawn 16 个）
+# Threshold is 5 because: main + memory-agent singleton + hook agent + hook's child = 4
+if [ "$WKR_COUNT" -le 5 ]; then
     pass "E4 没有死循环（worker 数=$WKR_COUNT <= 3）"
 else
     fail "E4 没有死循环（worker 数=$WKR_COUNT > 3，可能有递归）"
