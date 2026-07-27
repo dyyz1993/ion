@@ -17,6 +17,17 @@
 # ──────────────────────────────────────────────────────────────
 set -o pipefail
 
+# ── Session isolation (issue #30) ──────────────────────────────────────────
+# Each test run gets its own session dir to avoid ~/.ion collisions when
+# running in parallel (see CI_MATRIX_REPORT.md).
+# ION_SESSION_DIR isolation (issue #30)
+if [ -z "${ION_SESSION_DIR:-}" ]; then
+    _TMP_DIR=$(mktemp -d /tmp/ion-ci-$(basename "$0" .sh)-XXXXXX)
+    trap 'rm -rf "$_TMP_DIR"' EXIT
+    export ION_SESSION_DIR="$_TMP_DIR/sessions"
+    mkdir -p "$ION_SESSION_DIR"
+fi
+
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 

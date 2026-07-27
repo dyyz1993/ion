@@ -12,6 +12,17 @@ cleanup() {
 trap cleanup EXIT
 
 PASS=0; FAIL=0; SKIP=0
+
+# ── Session isolation (issue #30) ──────────────────────────────────────────
+# Each test run gets its own session dir to avoid ~/.ion collisions when
+# running in parallel (see CI_MATRIX_REPORT.md).
+# ION_SESSION_DIR isolation (issue #30)
+if [ -z "${ION_SESSION_DIR:-}" ]; then
+    _TMP_DIR=$(mktemp -d /tmp/ion-ci-$(basename "$0" .sh)-XXXXXX)
+    trap 'rm -rf "$_TMP_DIR"' EXIT
+    export ION_SESSION_DIR="$_TMP_DIR/sessions"
+    mkdir -p "$ION_SESSION_DIR"
+fi
 green() { echo -e "\033[32m  ✅ $1\033[0m"; }
 red()   { echo -e "\033[31m  ❌ $1\033[0m"; }
 yellow(){ echo -e "\033[33m  ⏭️  $1\033[0m"; }
