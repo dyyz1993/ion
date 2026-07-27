@@ -1994,6 +1994,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     {"name": "cycle_model", "desc": "循环切模型"},
                     {"name": "cycle_thinking_level", "desc": "循环切思考级别"},
                     {"name": "get_skills", "desc": "列出可用 skills"},
+                    {"name": "goal_evolver_run_once", "desc": "分析 goal 运行日志，规划改进 Issue（dry_run=true 只看计划不提交）"},
                 ]);
                 output_response(&id, "get_commands", &commands);
             }
@@ -2066,6 +2067,48 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             "get_tier_models" => {
                 let cfg = crate::config::IonConfig::load();
                 output_response(&id, "get_tier_models", &serde_json::json!(cfg.tier_models));
+            }
+            "goal_evolver_run_once" => {
+                // Analyze goal-run logs and plan improvement Issues.
+                // Params: { data_dir: string (required), dry_run: bool (default true) }
+                // dry_run=true  → returns planned issues without submitting them
+                // dry_run=false → (future) would submit via gh issue create
+                let data_dir = params.get("data_dir").and_then(|v| v.as_str());
+                let dry_run = params.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true);
+                match data_dir {
+                    None => {
+                        output_response(&id, "goal_evolver_run_once", &serde_json::json!({
+                            "success": false, "error": "data_dir param is required"
+                        }));
+                    }
+                    Some(dir) => {
+                        match crate::goal_evolver::run_once(dir) {
+                            Ok(report) => {
+                                let issues: Vec<serde_json::Value> = report.issues_planned.iter().map(|ip| {
+                                    serde_json::json!({
+                                        "title": ip.title,
+                                        "dimension": format!("{:?}", ip.dimension),
+                                        "severity": format!("{:?}", ip.severity),
+                                        "body": ip.body,
+                                        "would_submit": !dry_run,
+                                    })
+                                }).collect();
+                                output_response(&id, "goal_evolver_run_once", &serde_json::json!({
+                                    "success": true,
+                                    "dry_run": dry_run,
+                                    "analyzed_goals": report.analyzed_goals,
+                                    "total_iterations": report.total_iterations,
+                                    "issues_planned": issues,
+                                }));
+                            }
+                            Err(e) => {
+                                output_response(&id, "goal_evolver_run_once", &serde_json::json!({
+                                    "success": false, "error": e
+                                }));
+                            }
+                        }
+                    }
+                }
             }
             "get_tree" => {
                 let mode = params.get("mode").and_then(|v| v.as_str()).unwrap_or("structure");
@@ -4724,6 +4767,49 @@ fn load_fork_session_messages(path: &std::path::Path) -> Option<Vec<crate::agent
     Some(messages)
 }
 
+/// Count messages reachable from the current leaf pointer (live view).
+///
+/// The session file is only-append, so after a rollback the disk still has
+/// all historical messages. To know how many messages are "live" (visible
+/// to the agent after rollback), we walk the parentId chain starting from
+/// the current leaf_pointer's leafId.
+pub fn count_live_messages(entries: &[serde_json::Value]) -> usize {
+    // Resolve current leaf id (the cursor)
+    let leaf_id = match crate::session_tree::resolve_current_leaf(entries) {
+        Some(id) => id,
+        None => {
+            // No leaf_pointer entries → all messages are live
+            return entries.iter()
+                .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("message"))
+                .count();
+        }
+    };
+
+    // Walk parentId chain from leaf_id, counting messages on the path
+    let mut count = 0usize;
+    let mut current_id = Some(leaf_id.as_str());
+    let mut visited = std::collections::HashSet::new();
+    while let Some(cid) = current_id {
+        if !visited.insert(cid.to_string()) {
+            break; // cycle guard
+        }
+        // Find entry with id == cid
+        let entry = entries.iter().find(|e| {
+            e.get("id").and_then(|v| v.as_str()) == Some(cid)
+        });
+        match entry {
+            Some(e) => {
+                if e.get("type").and_then(|v| v.as_str()) == Some("message") {
+                    count += 1;
+                }
+                current_id = e.get("parentId").and_then(|v| v.as_str());
+            }
+            None => break,
+        }
+    }
+    count
+}
+
 fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
     // 优先用全局 SESSION_FILE_PATH（fork 子 Worker 设的 <session_id>.jsonl）
     // fallback 到 session_path(cwd)（主 Worker 的 session.jsonl）
@@ -4784,11 +4870,32 @@ fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
         // 已被 unwrap_or_else(sid) 处理；saved_msg_count 本就是 0）
     }
 
-    // 只 append 新增的 message（saved_msg_count 之后的部分）
-    let new_msgs = if msgs.len() > saved_msg_count {
-        eprintln!("[save-debug] msgs={} saved={} new={}", msgs.len(), saved_msg_count, msgs.len() - saved_msg_count);
-        &msgs[saved_msg_count..]
+    // 只 append 新增的 message。
+    //
+    // 注意：session 文件是 only-append 的，回滚后磁盘上仍保留所有历史 message
+    // （只是 leaf_pointer 移到了更早的位置）。所以不能简单地用"磁盘 message 总数"
+    // 作为已保存数量——否则回滚后再加消息会被误判为"已经存过"而跳过。
+    //
+    // 正确做法：数磁盘上 parentId 链能到达的 message（即 live 视图），跟 msgs.len() 比。
+    // 简化：如果 msgs.len() > saved_msg_count，说明是纯追加（正常情况），取后半段。
+    // 如果 msgs.len() <= saved_msg_count，说明发生了回滚/分支，需要从头重写 live 部分
+    // —— 但 only-append 不变量禁止改写，所以这里用"追加 live 视图里有但磁盘 leaf 链
+    // 上没有的部分"。
+    //
+    // 简化实现：比较 live message 数（按 leaf_pointer 链计算）vs msgs.len()
+    let live_msg_count = count_live_messages(&all_entries);
+    let new_msgs = if msgs.len() > live_msg_count {
+        eprintln!("[save-debug] msgs={} live={} saved_total={} new={}",
+            msgs.len(), live_msg_count, saved_msg_count, msgs.len() - live_msg_count);
+        &msgs[live_msg_count..]
+    } else if msgs.len() < live_msg_count {
+        // 回滚后再加消息：msgs 比 live 短，说明 leaf 已经回退到比 msgs 还早的位置。
+        // 这种情况理论上不该发生（resume 后 agent.messages 应该 ≥ live），但如果发生了
+        // 就把所有 msgs 当新消息追加（带新的 parentId 链）。
+        eprintln!("[save-debug] ROLLBACK CASE: msgs={} < live={} — appending all as new", msgs.len(), live_msg_count);
+        msgs
     } else {
+        // msgs.len() == live_msg_count: 没有新消息，跳过
         &[][..]
     };
 
