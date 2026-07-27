@@ -46,7 +46,7 @@ This is a multi-step task — actually invoke each tool. Do not just describe wh
 echo "[Step 1] Running ion session with write+edit directive..."
 echo ""
 ION_BIN="$HOME/Project/study-rust/ion/target/debug/ion"
-"$ION_BIN" --print "$PROMPT" 2>&1 | grep -v "command not found" | tail -30
+"$ION_BIN" --provider zai --model glm-5.2 -p "$PROMPT" 2>&1 | grep -v "command not found" | tail -30
 echo ""
 echo "[Step 2] Verifying files were written..."
 ls -la "$TEST_DIR/src/main.rs" 2>&1 | head -1
