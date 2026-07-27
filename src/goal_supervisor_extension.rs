@@ -703,7 +703,7 @@ impl GoalSupervisorExtension {
         let dir = dirs_for(session);
         std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir goal-runs: {e}"))?;
 
-        let (goal_id, iterations, started_at) = {
+        let (goal_id, iterations, started_at, objective, plan, checks) = {
             let guard = self
                 .state
                 .lock()
@@ -711,7 +711,8 @@ impl GoalSupervisorExtension {
             let state = guard
                 .as_ref()
                 .ok_or_else(|| "write_final_report: no goal".to_string())?;
-            (state.goal_id.clone(), state.iteration_count, state.started_at.clone())
+            (state.goal_id.clone(), state.iteration_count, state.started_at.clone(),
+             state.objective.clone(), state.goal_plan.clone(), state.checks.clone())
         };
 
         // B2-b: auto-generate outcome + diagnosis_hint from status/reason.
@@ -762,6 +763,7 @@ impl GoalSupervisorExtension {
 
         let report = serde_json::json!({
             "goal_id": goal_id,
+            "objective": objective,
             "final_status": status,
             "total_iterations": iterations,
             "started_at": started_at,
@@ -771,6 +773,16 @@ impl GoalSupervisorExtension {
             "outcome_detail": {
                 "diagnosis_hint": diagnosis_hint,
             },
+            "goal_plan": {
+                "execution_steps": plan.execution_steps.iter().map(|s| {
+                    serde_json::json!({"id": s.id, "description": s.description, "deliverable": s.deliverable, "status": s.status})
+                }).collect::<Vec<_>>(),
+                "pending_steps": plan.pending_step_count(),
+                "acceptance_criteria": plan.acceptance_criteria,
+            },
+            "checks_summary": checks.iter().map(|c| {
+                serde_json::json!({"name": c.name, "type": format!("{:?}", c.check_type), "must_pass": c.must_pass})
+            }).collect::<Vec<_>>(),
         });
 
         let path = dir.join("final-report.json");
