@@ -211,6 +211,7 @@ ION_WORKTREE_ROOT="$WORKTREE_ROOT" \
 ION_HOST_TIMEOUT="$HOST_TIMEOUT" \
 ION_HOST_IDLE_GRACE=600 \
 RUST_LOG=info \
+PATH="/tmp/ci-bin:$PATH" \
 timeout $((HOST_TIMEOUT + 300)) \
 "$ION_BIN" --host --agent ci_runner_coordinator "$PROMPT" \
     2>&1 | tee /tmp/ci-matrix-host.log
