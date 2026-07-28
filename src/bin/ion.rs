@@ -2761,9 +2761,24 @@ fn load_session_raw_content(sid: &str) -> Option<String> {
     let index = ion::session_index::SessionIndex::load();
     let meta = index.get(sid)?;
     let cwd = meta.project.as_deref()?;
+    // 先试主 Worker 的 session.jsonl
     let path = ion::session_jsonl::session_path(cwd);
     if path.exists() {
-        return std::fs::read_to_string(&path).ok();
+        // 确认 header.id 匹配（避免主 session.jsonl 的 header 不是目标 sid）
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Some(first_line) = content.lines().next() {
+                if let Ok(hdr) = serde_json::from_str::<serde_json::Value>(first_line) {
+                    if hdr.get("id").and_then(|v| v.as_str()) == Some(sid) {
+                        return Some(content);
+                    }
+                }
+            }
+        }
+    }
+    // 回退：子 Worker（spawn/fork 派发）写的是 <sid>.jsonl
+    let by_id_path = ion::paths::session_jsonl_path_by_id(cwd, sid);
+    if by_id_path.exists() {
+        return std::fs::read_to_string(&by_id_path).ok();
     }
     None
 }

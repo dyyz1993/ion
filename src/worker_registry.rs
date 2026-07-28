@@ -364,8 +364,12 @@ impl WorkerRegistry {
         } else if config.relation == Some(WorkerRelation::System) {
             child_cmd.env("ION_SPAWNED_BY", "singleton_init");
         }
+        // Child/Peer 也用独立 session 文件（<sid>.jsonl），让 export HTML 能聚合父子血缘。
+        // 否则普通 spawn_worker 子 worker 写 session.jsonl（与父同名），export.rs 会跳过同名
+        // 文件导致父子无法在同一 HTML 显示；且 ensure_session_header 硬编码 parentSession:null。
+        // 让 Child/Peer 走 fork 路径后，ensure_fork_session_header 会读 env 正确记录血缘。
         let is_independent_session = config.system_prompt_override.is_some()
-            || config.relation == Some(WorkerRelation::System);
+            || matches!(config.relation, Some(WorkerRelation::System) | Some(WorkerRelation::Child) | Some(WorkerRelation::Peer));
         if is_independent_session {
             child_cmd.env("ION_FORK_CHILD", "1");
         }
@@ -595,12 +599,15 @@ impl WorkerRegistry {
         }
 
         // ── 独立 session 文件标记 ──
-        // 以下两类 Worker 用 <session_id>.jsonl 而不是共享 session.jsonl：
+        // 以下 Worker 用 <session_id>.jsonl 而不是共享 session.jsonl：
         // 1. fork 子 Worker（system_prompt_override 非空）：skill fork spawn 的隔离子任务
         // 2. System 关系 Worker（memory-agent 等）：常驻后台 Agent，不应污染主会话
-        // 主 Worker（入口 Worker）继续用 session.jsonl（兼容现有 export/list 行为）
+        // 3. Child/Peer 关系 Worker（spawn_worker 派发）：让 export HTML 能聚合父子血缘
+        //    （普通 spawn_worker 子 worker 之前写 session.jsonl 与父同名，export 跳过同名文件
+        //     导致血缘断链；改写 <sid>.jsonl 后 ensure_fork_session_header 读 env 正确记录 parentSession）
+        // 主 Worker（入口 Worker，无 creator）继续用 session.jsonl（兼容现有 export/list 行为）
         let is_independent_session = config.system_prompt_override.is_some()
-            || config.relation == Some(WorkerRelation::System);
+            || matches!(config.relation, Some(WorkerRelation::System) | Some(WorkerRelation::Child) | Some(WorkerRelation::Peer));
         if is_independent_session {
             child_cmd.env("ION_FORK_CHILD", "1");
         }

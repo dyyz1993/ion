@@ -22,8 +22,12 @@ static SESSION_CACHE: Mutex<Option<HashMap<String, (SystemTime, Vec<Value>)>>> =
 /// 从缓存加载 session entries（带 mtime 校验）。
 /// 文件没变化时 O(1) 返回缓存，变化时才重新读盘+解析。
 /// worker 进程内多次调用 get_messages/list_turns 等时复用，避免每次整盘读。
+///
+/// 路径解析：优先用全局 override（fork/spawn 子 Worker 设的 <sid>.jsonl），
+/// 否则回退 session_path(cwd)（主 Worker 的 session.jsonl）。
+/// 这样 spawn_worker 派发的子 Worker 在进程内调 RPC 时能正确读到自己的 <sid>.jsonl。
 pub fn load_entries_cached(cwd: &str) -> Vec<Value> {
-    let path = crate::session_jsonl::session_path(cwd);
+    let path = crate::session_jsonl::resolve_session_file(cwd);
 
     // 获取文件 mtime
     let mtime = std::fs::metadata(&path)

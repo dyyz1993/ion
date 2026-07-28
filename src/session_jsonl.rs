@@ -389,8 +389,12 @@ pub struct SessionFile {
 
 impl SessionFile {
     /// Load and parse a session file for a given cwd.
+    ///
+    /// 优先用全局 override 路径（fork/spawn 子 Worker 设的 <sid>.jsonl），
+    /// 否则回退到 session_path(cwd)（主 Worker 的 session.jsonl）。
+    /// 这样 worker 进程内的 SessionFile::load 能正确读到子 Worker 的 <sid>.jsonl。
     pub fn load(cwd: &str) -> Option<Self> {
-        let path = session_path(cwd);
+        let path = resolve_session_file(cwd);
         if !path.exists() {
             return None;
         }
@@ -616,7 +620,7 @@ pub fn set_session_file_override(path: Option<std::path::PathBuf>) {
 }
 
 /// 获取 session 文件路径：优先用全局覆盖，否则用 session_path(cwd)。
-fn resolve_session_file(cwd: &str) -> std::path::PathBuf {
+pub fn resolve_session_file(cwd: &str) -> std::path::PathBuf {
     if let Some(lock) = SESSION_FILE_OVERRIDE.get() && let Some(path) = lock.lock().unwrap().as_ref() {
         return path.clone();
     }

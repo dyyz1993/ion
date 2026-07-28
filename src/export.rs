@@ -221,46 +221,68 @@ fn export_session_internal(
                 .and_then(|m| m.get("spawnedBy"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
+            // relation：child（同步/异步派发）/ peer（同级）/ system（常驻）/ fork（skill fork）
+            let relation = spawn_meta
+                .as_ref()
+                .and_then(|m| m.get("relation"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("child");
+            // 根据 relation + spawnedBy 判定子 Worker 类型（影响文案）
+            let (sub_kind_label, sub_kind_en) = if spawned_by == "skill_fork" {
+                ("Fork 子 Worker（skill fork）", "fork")
+            } else if spawned_by == "singleton_init" || relation == "system" {
+                ("System 子 Worker（常驻）", "system")
+            } else if relation == "peer" {
+                ("Peer 子 Worker（同级异步）", "peer")
+            } else {
+                ("Spawn 子 Worker（派发）", "spawn")
+            };
 
-            // 自动导出子 session HTML（跟主 HTML 同目录，文件名 fork_<sid>.html）
-            let sub_html_name = format!("fork_{}.html", &sub_sid[..12.min(sub_sid.len())]);
+            // 自动导出子 session HTML（跟主 HTML 同目录，文件名 sub_<sid>.html）
+            let sub_html_name = format!("sub_{}.html", &sub_sid[..12.min(sub_sid.len())]);
             let sub_html_path = output_path.parent()
                 .map(|p| p.join(&sub_html_name))
                 .unwrap_or_else(|| std::path::PathBuf::from(&sub_html_name));
 
-            // 递归导出子 session（但不深度递归——只导一层 fork 子 session）
+            // 递归导出子 session（但不深度递归——只导一层子 session）
             match export_session_internal(&sub_sid, &sub_html_path, None, None) {
                 Ok(()) => {
-                    eprintln!("[export] auto-exported fork sub-session → {}", sub_html_path.display());
+                    eprintln!("[export] auto-exported {sub_kind_en} sub-session → {}", sub_html_path.display());
                 }
                 Err(e) => {
-                    eprintln!("[export] WARN: failed to auto-export fork sub-session {sub_sid}: {e}");
+                    eprintln!("[export] WARN: failed to auto-export {sub_kind_en} sub-session {sub_sid}: {e}");
                 }
             }
 
             // 分隔标记：content 里有可点击的 HTML 链接（指向子 HTML 文件）
             let sub_sid_short = &sub_sid[..12.min(sub_sid.len())];
             let separator_content = format!(
-                "🔗 Fork 子 Worker session（{sub_sid_short}）\n\
-                 spawnedBy: {spawned_by}\n\
+                "🔗 {sub_kind_label} session（{sub_sid_short}）\n\
+                 relation: {relation} | spawnedBy: {spawned_by}\n\
                  子 session ID: {sub_sid}\n\n\
-                 👆 点击查看完整 fork 子 Worker 执行过程：fork_{sub_sid_short}.html\n\n\
+                 👆 点击查看完整子 Worker 执行过程：sub_{sub_sid_short}.html\n\n\
                  （或命令行导出：ion --export sub.html --session {sub_sid}）"
             );
             let separator = json!({
                 "type": "custom_message",
-                "id": format!("fork-sep-{}", sub_sid),
+                "id": format!("sub-sep-{}", sub_sid),
                 "parentId": null,
                 "timestamp": sub_header.get("timestamp").cloned().unwrap_or(json!("")),
-                "customType": "fork_separator",
+                "customType": "sub_session_separator",
                 "content": separator_content,
-                "data": { "subSessionId": sub_sid, "spawnedBy": spawned_by },
+                "data": {
+                    "subSessionId": sub_sid,
+                    "spawnedBy": spawned_by,
+                    "relation": relation,
+                    "kind": sub_kind_en,
+                    "htmlFile": format!("sub_{}.html", sub_sid_short),
+                },
                 "display": true,
             });
             raw_entries.push(separator);
 
-            // 不追加子 session 的 entries——fork 是独立进程，应该有独立的 session.jsonl
-            // 和独立的 HTML。主 HTML 只显示主 Worker 的对话流程。
+            // 不追加子 session 的 entries——子 Worker 是独立进程，有独立的 <sid>.jsonl
+            // 和独立的 HTML。主 HTML 只显示主 Worker 的对话流程 + 分隔链接。
             // 用户可以用 subSessionId 单独 export 子 session：
             //   ion --export sub.html --session <subSessionId>
         }
@@ -330,12 +352,13 @@ fn export_session_internal(
         }
     });
 
-    // Find leaf id (last message entry id, or last entry id) — template uses this
-    // to scroll to / highlight the latest message.
+    // Find leaf id — template uses getPath(leafId) 决定主体内容显示哪些 entry。
+    // 必须取最后一个 entry（含 sub_session_separator 这种末尾 custom_message），
+    // 否则末尾的 separator 不在 getPath 路径上 → 不会渲染。
+    // 优先取最后一个 entry；若为空则回退到最后一个 message。
     let leaf_id = entries
-        .iter()
-        .rev()
-        .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("message"))
+        .last()
+        .or_else(|| entries.iter().rev().find(|e| e.get("type").and_then(|v| v.as_str()) == Some("message")))
         .and_then(|e| e.get("id"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
@@ -457,7 +480,7 @@ fn export_session_internal(
       text-transform: uppercase;
       letter-spacing: 0.5px;
     }
-    /* custom_message（fork_separator 等）特殊样式 */
+    /* custom_message（sub_session_separator 等）特殊样式 */
     .custom-message {
       border-left: 3px solid #8b5cf6 !important;
       background: #f5f3ff !important;
@@ -606,19 +629,29 @@ fn export_session_internal(
         }
     }
 
-    // fork 子 session 的文件名在 base64 编码的 session-data 里，
-    // HTML 写入前替换看不到明文。改为在 HTML 末尾注入一段 JavaScript：
-    // 页面加载后，遍历 DOM 把 "fork_xxxxxxxxxxxx.html" 文本替换成可点击链接。
+    // 子 session 的文件名（sub_<sid>.html / 旧版 fork_<sid>.html）在 base64 编码的
+    // session-data 里，HTML 写入前替换看不到明文。改为在 HTML 末尾注入一段 JavaScript：
+    // 页面加载后，遍历 DOM 把 "sub_xxxxxxxxxxxx.html" / "fork_xxxxxxxxxxxx.html" 文本替换成可点击链接。
+    // 注意：正则要同时匹配新前缀 sub_ 和旧前缀 fork_，兼容历史导出的 HTML。
     let fork_link_script = r#"
 <script>
 (function() {
   function makeForkLinks() {
-    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode: function(n) {
+        // 跳过 <a> 内的文本（已转成链接的不重复处理）
+        if (n.parentNode && n.parentNode.tagName === 'A') return NodeFilter.FILTER_REJECT;
+        // 跳过已标记处理的容器
+        if (n.parentNode && n.parentNode.getAttribute && n.parentNode.getAttribute('data-fork-done') === '1') return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    }, false);
     var node;
     var nodesToReplace = [];
     while (node = walker.nextNode()) {
       var text = node.textContent;
-      var match = text.match(/fork_[0-9a-f-]{8,}\.html/);
+      // 同时匹配 sub_<sid>.html（新）和 fork_<sid>.html（旧）
+      var match = text.match(/(?:sub|fork)_[0-9a-f-]{8,}\.html/);
       if (match) {
         nodesToReplace.push({node: node, match: match[0]});
       }
@@ -632,6 +665,8 @@ fn export_session_internal(
       link.textContent = '🔗 ' + item.match;
       link.style.cssText = 'color:#2563eb;text-decoration:underline;font-weight:bold;';
       var parent = item.node.parentNode;
+      // 标记父容器已处理（防 setTimeout 重跑重复加 🔗）
+      if (parent.setAttribute) parent.setAttribute('data-fork-done', '1');
       parent.insertBefore(document.createTextNode(before), item.node);
       parent.insertBefore(link, item.node);
       parent.insertBefore(document.createTextNode(after), item.node);
