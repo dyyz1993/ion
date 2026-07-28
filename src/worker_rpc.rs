@@ -4698,8 +4698,12 @@ fn append_session_entry(cwd: &str, sid: &str, entry_type: &str, entry_data: &ser
 /// Unlike ensure_session_header (which writes to session.jsonl shared by cwd),
 /// this writes to <session_id>.jsonl — a fork sub-worker's private session file.
 fn ensure_fork_session_header(path: &std::path::Path, cwd: &str, sid: &str) {
+    // 文件已存在：检查 header 是否缺 agent/model/provider（历史 session 用旧版
+    // ensure_fork_session_header 生成，没写这些字段，导致 export 拿不到 system prompt）。
+    // 缺了就从 ION_SESSION_* env 补（in-place 修补第一行），补完即返回，不重建文件。
     if path.exists() {
-        return; // 已存在，不覆盖
+        patch_fork_session_header_if_needed(path);
+        return;
     }
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -4760,6 +4764,68 @@ fn ensure_fork_session_header(path: &std::path::Path, cwd: &str, sid: &str) {
             }
         }
     }
+}
+
+/// 历史遗留修复：旧版 ensure_fork_session_header 不写 agent/model/provider 字段，
+/// 导致 export HTML 拿不到 agent config（system prompt + tools 都显示不出来）。
+/// 本函数在文件已存在时检查 header 是否缺这些字段，缺了就从 ION_SESSION_* env 补，
+/// 只改第一行（header），不动其余 entries。幂等：字段齐全则什么都不做。
+fn patch_fork_session_header_if_needed(path: &std::path::Path) {
+    // 只有当 env 里确实有 agent 信息时才补（避免把入口 worker 的空 env 误写入）
+    let agent = match std::env::var("ION_SESSION_AGENT") {
+        Ok(a) if !a.is_empty() => a,
+        _ => return, // 无 agent env，无法补，跳过
+    };
+    let model = std::env::var("ION_SESSION_MODEL").ok().filter(|s| !s.is_empty());
+    let provider = std::env::var("ION_SESSION_PROVIDER").ok().filter(|s| !s.is_empty());
+
+    // 读现有文件
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+    if lines.is_empty() {
+        return;
+    }
+
+    // 解析 header（第一行）
+    let mut header: serde_json::Value = match serde_json::from_str(&lines[0]) {
+        Ok(v) => v,
+        Err(_) => return, // header 损坏，不冒险动
+    };
+    let obj = match header.as_object_mut() {
+        Some(o) => o,
+        None => return,
+    };
+
+    // 检查是否需要补
+    let need_agent = obj.get("agent").and_then(|v| v.as_str()).is_none();
+    let need_model = model.as_ref().is_some()
+        && obj.get("model").and_then(|v| v.as_str()).is_none();
+    let need_provider = provider.as_ref().is_some()
+        && obj.get("provider").and_then(|v| v.as_str()).is_none();
+
+    if !need_agent && !need_model && !need_provider {
+        return; // 字段齐全，无需补
+    }
+
+    // 补缺失字段
+    if need_agent {
+        obj.insert("agent".to_string(), serde_json::Value::String(agent.clone()));
+    }
+    if need_model {
+        obj.insert("model".to_string(), serde_json::Value::String(model.unwrap()));
+    }
+    if need_provider {
+        obj.insert("provider".to_string(), serde_json::Value::String(provider.unwrap()));
+    }
+
+    // 重写文件（header 行替换，其余 entries 原样保留）
+    lines[0] = serde_json::to_string(&header).unwrap_or_else(|_| lines[0].clone());
+    let new_content = lines.join("\n") + "\n";
+    let _ = std::fs::write(path, new_content);
+    tracing::info!("[worker] patched legacy fork session header (agent/model/provider) → {}", path.display());
 }
 
 /// Load messages from a fork sub-worker's session file.
