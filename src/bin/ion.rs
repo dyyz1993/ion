@@ -4166,6 +4166,9 @@ async fn handle_manager_command(
                     "project": w.project,
                     "status": format!("{}", w.status),
                     "model": w.model,
+                    "agent": w.agent,
+                    "parent": w.parent,
+                    "channels": w.channels,
                 })).collect()
             };
             Ok(serde_json::json!({"workers": workers}))

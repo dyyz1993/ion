@@ -323,8 +323,8 @@ sleep 1
 "$ION_BIN" rpc --session "$TEST_SID" --method prompt \
     --params '{"text":"用 bash 工具执行 sleep 30"}' >/dev/null 2>&1
 
-# 等 tool_execution_start
-for i in 1 2 3 4 5 6 7 8; do
+# 等 tool_execution_start（reasoning models like GLM-5.2 may take 15-25s to start tool call）
+for i in $(seq 1 30); do
     sleep 1
     grep -Eq '"type": ?"tool_execution_start"' /tmp/evt_ui_b1.log 2>/dev/null && break
 done

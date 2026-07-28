@@ -54,10 +54,10 @@ fi
 
 # A2: extension_rpc 可用（单例已初始化）
 OUTPUT=$(timeout 5 "$ION_BIN" rpc --method extension_rpc --params '{"extension":"global-memory","method":"list","args":{}}' 2>&1)
-if echo "$OUTPUT" | grep -q "entries"; then
+if grep -q "entries" <<< "$OUTPUT"; then
     pass "A2 extension_rpc 可用（单例已初始化）"
 else
-    fail "A2 extension_rpc 可用 (output: $(echo "$OUTPUT" | head -3))"
+    fail "A2 extension_rpc 可用 (output: $(echo "$OUTPUT" | head -5))"
 fi
 
 echo ""
