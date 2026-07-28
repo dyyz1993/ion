@@ -3505,7 +3505,12 @@ async fn do_create_session(
         .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()));
     cfg.channels = Some(vec!["main".to_string()]);
     cfg.initial_prompt = source.get("initial_prompt").and_then(|v| v.as_str()).map(String::from);
-    registry.lock().await.create_worker(cfg, registry).await?;
+
+    // Lock split: prepare (no lock) → register (short lock).
+    // The old `registry.lock().await.create_worker(...)` held the lock for the
+    // entire worktree+spawn duration, blocking ALL RPCs (including list_sessions).
+    let prepared = ion::worker_registry::WorkerRegistry::prepare_worker_spawn(&cfg).await?;
+    registry.lock().await.register_prepared_worker(prepared, &cfg, registry).await?;
     Ok(session_id)
 }
 
@@ -4129,6 +4134,68 @@ async fn handle_manager_command(
     let method = cmd.get("method").and_then(|v| v.as_str())
         .or_else(|| cmd.get("type").and_then(|v| v.as_str())).unwrap_or("");
 
+    // Read-only commands: acquire lock only briefly to snapshot data, then
+    // release before formatting the response. This prevents a slow create_worker
+    // (which now uses prepare/register split) from blocking status queries.
+    //
+    // Write commands acquire the lock inside their own branch as needed.
+    let result: Result<serde_json::Value, String> = match method {
+        // ── Fast read paths (short lock, snapshot then release) ──
+        "list_sessions" => {
+            let sessions: Vec<_> = {
+                let reg = registry.lock().await;
+                reg.workers.values().map(|w| serde_json::json!({
+                    "session_id": w.session_id,
+                    "agent": w.agent,
+                    "status": format!("{}", w.status),
+                    "model": w.model,
+                    "started_at": w.started_at,
+                    "latest_output": w.latest_output.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                    "log_short": w.log_short,
+                    "model_size": w.model_size,
+                })).collect()
+            };
+            Ok(serde_json::json!({"sessions": sessions}))
+        }
+        "list_workers" => {
+            let workers: Vec<_> = {
+                let reg = registry.lock().await;
+                reg.list_workers().iter().map(|w| serde_json::json!({
+                    "workerId": w.worker_id,
+                    "sessionId": w.session_id,
+                    "project": w.project,
+                    "status": format!("{}", w.status),
+                    "model": w.model,
+                })).collect()
+            };
+            Ok(serde_json::json!({"workers": workers}))
+        }
+        _ => {
+            // Fall through to write-path handling below (acquires lock per-branch).
+            handle_manager_command_write(registry, cmd.clone(), id.clone(), method).await
+        }
+    };
+
+    let mut resp = match result {
+        Ok(data) => serde_json::json!({"type":"response","id":id,"success":true,"data":data}),
+        Err(e) => serde_json::json!({"type":"response","id":id,"success":false,"error":e}),
+    };
+    if let Some(sid) = cmd.get("session").and_then(|v| v.as_str()) {
+        resp["session"] = serde_json::json!(sid);
+    }
+    resp
+}
+
+/// Write-path command handler. Each branch acquires the registry lock as needed
+/// (and releases it before any long-running await where possible).
+async fn handle_manager_command_write(
+    registry: &Arc<tokio::sync::Mutex<ion::worker_registry::WorkerRegistry>>,
+    cmd: serde_json::Value,
+    id: serde_json::Value,
+    method: &str,
+) -> Result<serde_json::Value, String> {
+    use ion::worker_registry::WorkerCreateConfig;
+
     let mut reg = registry.lock().await;
     let result: Result<serde_json::Value, String> = match method {
         "create_worker" => {
@@ -4379,7 +4446,7 @@ async fn handle_manager_command(
                         "session_id": sid,
                         "agent": "build",
                     })).await {
-                        return serde_json::json!({"type":"response","id":id,"success":false,"error":format!("auto-create session failed: {e}")});
+                        return Err(format!("auto-create session failed: {e}"));
                     }
                     reg = registry.lock().await;
                 }
@@ -4413,10 +4480,8 @@ async fn handle_manager_command(
         }
     };
 
-    match result {
-        Ok(data) => serde_json::json!({"type":"response","id":id,"success":true,"data":data}),
-        Err(e) => serde_json::json!({"type":"response","id":id,"success":false,"error":e}),
-    }
+    // Return Result; the caller (handle_manager_command) wraps it into a response.
+    result
 }
 
 // ---------------------------------------------------------------------------

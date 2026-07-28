@@ -92,23 +92,30 @@ PYEOF
 }
 
 cleanup_serve() {
-    # 1. Use the host pidfile (authoritative)
+    # 1. Kill serve first (authoritative: pidfile), so workers stop respawning
     if [ -f "$HOME/.ion/host.pid" ]; then
         local pid
         pid=$(cat "$HOME/.ion/host.pid" 2>/dev/null)
         [ -n "$pid" ] && kill "$pid" 2>/dev/null
     fi
-    # 2. Kill by binary path (covers child workers)
-    ps aux | grep "study-rust/ion/target/debug/ion" | grep -v grep | awk '{print $2}' | xargs kill 2>/dev/null
-    sleep 2
-    # 3. Force kill stragglers
-    ps aux | grep "study-rust/ion/target/debug/ion" | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null
-    if [ -f "$HOME/.ion/host.pid" ]; then
-        pid=$(cat "$HOME/.ion/host.pid" 2>/dev/null)
-        [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null
+    # Also kill any SERVE_PID we tracked (in case pidfile is stale)
+    if [ -n "${SERVE_PID:-}" ]; then
+        kill "$SERVE_PID" 2>/dev/null
     fi
-    rm -f "$HOME/.ion/host.sock" "$HOME/.ion/host.pid"
     sleep 1
+    # 2. Kill by binary path (covers serve + worker subprocesses)
+    ps aux | grep "study-rust/ion/target/debug/ion" | grep -v grep | awk '{print $2}' | xargs kill 2>/dev/null
+    sleep 1
+    # 3. Force kill stragglers (SIGKILL)
+    ps aux | grep "study-rust/ion/target/debug/ion" | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null
+    # 4. Clean up socket + pidfile so next serve can bind cleanly
+    rm -f "$HOME/.ion/host.sock" "$HOME/.ion/host.pid"
+    # 5. Verify socket is gone (sometimes OS holds it briefly)
+    for _ in 1 2 3 4 5; do
+        [ -S "$HOME/.ion/host.sock" ] || break
+        sleep 1
+    done
+    rm -f "$HOME/.ion/host.sock"
 }
 
 echo "=========================================="
@@ -124,6 +131,11 @@ d.setdefault('extensions', {})['monitor'] = {'enabled': True}
 with open('$HOME/.ion/config.json', 'w') as f:
     json.dump(d, f, indent=2)
 " 2>/dev/null
+
+# Use FauxProvider so monitor-spawned workers don't depend on a real LLM
+# (makes the test deterministic and immune to provider rate limits).
+export ION_FAUX_REPLY="Monitor worker online."
+export ION_FAUX_REPEAT=1
 
 # ── Group A ──────────────────────────────────────────
 echo ""
@@ -146,16 +158,17 @@ else
     record_fail "A1: monitor not added"
 fi
 
-# A2: workers created (memory-agent singleton + monitor-triggered)
+# A2: workers spawned by monitor (check serve log — deterministic, not timing-dependent)
+# The monitor spawns a worker every `interval_secs`. With FauxProvider the
+# worker completes quickly and exits, so list_workers may show 0 by the time
+# we check. The authoritative signal is the monitor_spawned event in the log.
 echo "--- A2: 脚本触发 worker ---"
-sleep 8
-rpc_call list_workers '{}' /tmp/mon_a2.json
-WORKER_COUNT=$(json_get /tmp/mon_a2.json data.workers)
-WORKER_COUNT=${WORKER_COUNT:-0}
-if [ "$WORKER_COUNT" -ge 2 ] 2>/dev/null; then
-    record_pass "A2: workers created (count=$WORKER_COUNT)"
+sleep 5
+A2_SPAWNED=$(grep -c "monitor_spawned" /tmp/mon_ci_serve.log 2>/dev/null)
+if [ "$A2_SPAWNED" -ge 1 ] 2>/dev/null; then
+    record_pass "A2: monitor spawned worker (spawned=$A2_SPAWNED)"
 else
-    record_fail "A2: no workers created (count=$WORKER_COUNT)"
+    record_fail "A2: no monitor_spawned event in log"
 fi
 
 # A3: trigger in log

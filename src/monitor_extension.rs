@@ -800,21 +800,27 @@ impl MonitorExtension {
                                 };
 
                                 // Phase 2: register (SHORT lock — just insert into registry)
-                                let mut reg_guard = match tokio::time::timeout(
-                                    std::time::Duration::from_secs(5),
-                                    reg_for_spawn_clone.lock(),
-                                ).await {
-                                    Ok(g) => g,
-                                    Err(_) => {
-                                        tracing::warn!("[monitor] timeout waiting for registry lock (register phase), skipping spawn for {}", monitor_name_for_spawn);
-                                        return;
-                                    }
-                                };
-                                match reg_guard.register_prepared_worker(
-                                    prepared,
-                                    &spawn_config,
-                                    &reg_for_spawn_clone,
-                                ).await {
+                                // CRITICAL: the lock guard must be dropped before calling emit_event,
+                                // because emit_event itself acquires the registry lock (to read event_bus).
+                                // Holding the guard across emit_event → deadlock.
+                                let spawn_result = {
+                                    let mut reg_guard = match tokio::time::timeout(
+                                        std::time::Duration::from_secs(5),
+                                        reg_for_spawn_clone.lock(),
+                                    ).await {
+                                        Ok(g) => g,
+                                        Err(_) => {
+                                            tracing::warn!("[monitor] timeout waiting for registry lock (register phase), skipping spawn for {}", monitor_name_for_spawn);
+                                            return;
+                                        }
+                                    };
+                                    reg_guard.register_prepared_worker(
+                                        prepared,
+                                        &spawn_config,
+                                        &reg_for_spawn_clone,
+                                    ).await
+                                }; // reg_guard dropped here — lock released
+                                match spawn_result {
                                     Ok(info) => {
                                         Self::emit_event("monitor_spawned", serde_json::json!({
                                             "name": &monitor_name_for_spawn,
