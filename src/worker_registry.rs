@@ -337,7 +337,7 @@ impl WorkerRegistry {
         if let Ok(rt_override) = std::env::var("ION_RUNTIME_OVERRIDE") {
             child_cmd.env("ION_RUNTIME_OVERRIDE", &rt_override);
         }
-        for var in &["ION_FAUX_SCRIPT", "ION_FAUX_REPLY"] {
+        for var in &["ION_FAUX_SCRIPT", "ION_FAUX_REPLY", "ION_FAUX_REPEAT", "ION_FAUX_ERROR"] {
             if let Ok(val) = std::env::var(var) {
                 child_cmd.env(var, &val);
             }
@@ -536,7 +536,7 @@ impl WorkerRegistry {
         }
 
         // 传递 FauxProvider 环境变量到子 Worker（让 host 模式下的子进程也用 faux）
-        for var in &["ION_FAUX_SCRIPT", "ION_FAUX_REPLY"] {
+        for var in &["ION_FAUX_SCRIPT", "ION_FAUX_REPLY", "ION_FAUX_REPEAT", "ION_FAUX_ERROR"] {
             if let Ok(val) = std::env::var(var) {
                 child_cmd.env(var, &val);
             }
