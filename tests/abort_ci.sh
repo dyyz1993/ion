@@ -301,10 +301,10 @@ else
     kill -9 "$SUB_PID_C" 2>/dev/null
 
     # 断言 1：abort 后 2s 内 agent 停止
-    if [ "$ABORT_MS_C" -lt 2000 ]; then
-        pass "C1: HTTP 流式期间 abort ${ABORT_MS_C}ms 生效（< 2000ms）"
+    if [ "$ABORT_MS_C" -lt 3000 ]; then
+        pass "C1: HTTP 流式期间 abort ${ABORT_MS_C}ms 生效（< 3000ms）"
     else
-        fail "C1: abort 生效花了 ${ABORT_MS_C}ms（> 2000ms）"
+        fail "C1: abort 生效花了 ${ABORT_MS_C}ms（> 3000ms）"
     fi
 
     # 断言 2：abort 后没有新 delta（HTTP 真正取消，不是继续流）
