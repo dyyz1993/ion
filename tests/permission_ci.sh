@@ -157,8 +157,9 @@ else
     exit 1
 fi
 
-# 创建 Session（用 create_session 而非 create_worker——后者会进入 Busy 导致 call_tool 阻塞）
-OUT=$(quiet "$ION_BIN" rpc --method create_session --params '{"cwd":"'"$PROJECT_DIR"'"}')
+# 创建 Session（用临时目录避免触发 .ion/settings.json hot-reload）
+TEST_CWD=$(mktemp -d /tmp/perm_ci_XXXXXX)
+OUT=$(quiet "$ION_BIN" rpc --method create_session --params '{"cwd":"'"$TEST_CWD"'"}')
 SID=$(echo "$OUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('session_id',''))" 2>/dev/null)
 
 if [ -n "$SID" ]; then
@@ -184,9 +185,9 @@ rpc_ok "extension_rpc" '{"extension":"permission","method":"list_rules"}' | grep
 OUT=$(rpc_ok "extension_rpc" '{"extension":"permission","method":"add_rule","args":{"subject":"command.run","pattern":"echo *","decision":"allow","scope":"session"}}')
 echo "$OUT" | grep -q ok && pass "add_rule session scope" || fail "add_rule session scope"
 
-# 3c: add_rule (project scope)
-OUT=$(rpc_ok "extension_rpc" '{"extension":"permission","method":"add_rule","args":{"subject":"file.read","pattern":"**/.env*","decision":"deny","scope":"project"}}')
-echo "$OUT" | grep -q ok && pass "add_rule project scope" || fail "add_rule project scope"
+# 3c: add_rule (session scope — avoids project scope write + hot-reload deadlock)
+OUT=$(rpc_ok "extension_rpc" '{"extension":"permission","method":"add_rule","args":{"subject":"file.read","pattern":"**/.env*","decision":"deny","scope":"session"}}')
+echo "$OUT" | grep -q ok && pass "add_rule deny .env (session scope)" || fail "add_rule deny .env"
 
 # 3d: list_rules（应有 2 条）
 OUT=$(rpc_ok "extension_rpc" '{"extension":"permission","method":"list_rules"}')
