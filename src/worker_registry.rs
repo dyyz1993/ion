@@ -2747,7 +2747,7 @@ async fn read_worker_stdout(
 ///   `parent = None`，但 `creator` 字段被保留，内核会自动注入"汇报指令段"。
 /// - `System`：host 启动时创建的系统级 Worker（如 memory-agent），无 creator。
 ///   parent=None，不注入汇报指令，立即返回 worker_id。
-#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum WorkerRelation {
     #[default]

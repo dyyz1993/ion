@@ -24,6 +24,17 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
+// customType 字符串常量（writer 和 filter 共用，避免 drift）
+// ---------------------------------------------------------------------------
+
+/// custom entry：system prompt 全文（fork 子 Worker 第二行 + 主 session agent 切换时）
+pub const CUSTOM_TYPE_SYSTEM_PROMPT: &str = "system_prompt";
+/// custom_message：子 session 分隔标记（export HTML 主 session 中插入）
+pub const CUSTOM_TYPE_SUB_SESSION_SEPARATOR: &str = "sub_session_separator";
+/// custom_message：turn 摘要（compaction 后插入，让用户看到压缩了什么）
+pub const CUSTOM_TYPE_TURN_SUMMARY: &str = "turn_summary";
+
+// ---------------------------------------------------------------------------
 // Session entry types (pi JSONL spec v3)
 // ---------------------------------------------------------------------------
 
@@ -634,6 +645,14 @@ pub fn read_session_header(path: &std::path::Path) -> Option<SessionHeader> {
     let file = File::open(path).ok()?;
     let first_line = BufReader::new(file).lines().next()?.ok()?;
     serde_json::from_str(&first_line).ok()
+}
+
+/// 从 ION_SESSION_AGENT / MODEL / PROVIDER 环境变量读 (agent, model, provider) 三元组。
+/// 空 env 或空字符串都返回 None。fork 子 Worker 启动时由 worker_rpc.rs 写入这些 env，
+/// ensure_session_header / ensure_fork_session_header / patch_fork_session_header_if_needed 共用。
+pub fn read_session_env_tuple() -> (Option<String>, Option<String>, Option<String>) {
+    let read = |k: &str| std::env::var(k).ok().filter(|s| !s.is_empty());
+    (read("ION_SESSION_AGENT"), read("ION_SESSION_MODEL"), read("ION_SESSION_PROVIDER"))
 }
 
 pub fn append_raw_entry(cwd: &str, entry: &serde_json::Value) {

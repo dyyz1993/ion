@@ -4725,12 +4725,12 @@ fn ensure_fork_session_header(path: &std::path::Path, cwd: &str, sid: &str) {
         "cwd": cwd,
         "parentSession": parent_session.clone(),
     });
-    // 写入 agent/model/provider（export.rs 依赖 header.agent 从 agent 定义加载 system prompt
-    // 和 tools；缺失会导致子 worker HTML 不显示 system prompt 和工具面板）。
-    // 这些 env 在 worker_rpc.rs 启动时已从 initial_agent/model/provider 设置（见 ION_SESSION_*）。
-    if let Ok(a) = std::env::var("ION_SESSION_AGENT") { if !a.is_empty() { header["agent"] = serde_json::Value::String(a); } }
-    if let Ok(m) = std::env::var("ION_SESSION_MODEL") { if !m.is_empty() { header["model"] = serde_json::Value::String(m); } }
-    if let Ok(p) = std::env::var("ION_SESSION_PROVIDER") { if !p.is_empty() { header["provider"] = serde_json::Value::String(p); } }
+    // export.rs 依赖 header.agent 加载 system prompt + tools，缺失会导致子 worker HTML
+    // 显示不全。env 在 worker_rpc.rs 启动时由 initial_agent/model/provider 写入。
+    let (env_agent, env_model, env_provider) = session_jsonl::read_session_env_tuple();
+    if let Some(a) = env_agent { header["agent"] = serde_json::Value::String(a); }
+    if let Some(m) = env_model { header["model"] = serde_json::Value::String(m); }
+    if let Some(p) = env_provider { header["provider"] = serde_json::Value::String(p); }
     if has_spawn_meta {
         let mut spawn_meta = serde_json::json!({});
         if let Some(ref pw) = parent_worker { spawn_meta["parentWorker"] = serde_json::Value::String(pw.clone()); }
@@ -4755,7 +4755,7 @@ fn ensure_fork_session_header(path: &std::path::Path, cwd: &str, sid: &str) {
                 "id": session_jsonl::generate_id(),
                 "parentId": sid,
                 "timestamp": session_jsonl::timestamp_iso(),
-                "customType": "system_prompt",
+                "customType": session_jsonl::CUSTOM_TYPE_SYSTEM_PROMPT,
                 "data": { "systemPrompt": sp },
             });
             let sp_json = serde_json::to_string(&sp_entry).unwrap_or_default();
@@ -4771,60 +4771,45 @@ fn ensure_fork_session_header(path: &std::path::Path, cwd: &str, sid: &str) {
 /// 本函数在文件已存在时检查 header 是否缺这些字段，缺了就从 ION_SESSION_* env 补，
 /// 只改第一行（header），不动其余 entries。幂等：字段齐全则什么都不做。
 fn patch_fork_session_header_if_needed(path: &std::path::Path) {
-    // 只有当 env 里确实有 agent 信息时才补（避免把入口 worker 的空 env 误写入）
-    let agent = match std::env::var("ION_SESSION_AGENT") {
-        Ok(a) if !a.is_empty() => a,
-        _ => return, // 无 agent env，无法补，跳过
-    };
-    let model = std::env::var("ION_SESSION_MODEL").ok().filter(|s| !s.is_empty());
-    let provider = std::env::var("ION_SESSION_PROVIDER").ok().filter(|s| !s.is_empty());
+    let (env_agent, env_model, env_provider) = session_jsonl::read_session_env_tuple();
+    // 无 agent env 时无法判定该补什么 —— 跳过（避免把入口 worker 的空 env 误写入）
+    let env_agent = match env_agent { Some(a) => a, None => return };
 
-    // 读现有文件
+    // 先用 read_session_header 只读首行（避免为判定字段把整文件读进内存）
+    let mut header = match session_jsonl::read_session_header(path) {
+        Some(h) => h,
+        None => return,
+    };
+
+    let need_agent = header.agent.is_none();
+    let need_model = env_model.is_some() && header.model.is_none();
+    let need_provider = env_provider.is_some() && header.provider.is_none();
+    if !need_agent && !need_model && !need_provider {
+        return;
+    }
+
+    if need_agent { header.agent = Some(env_agent); }
+    if need_model { header.model = env_model; }
+    if need_provider { header.provider = env_provider; }
+
+    // 只有确实需要改才读全文 + 重写（header 行替换，其余 entries 原样保留）
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return,
     };
-    let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+    let mut lines: Vec<&str> = content.lines().collect();
     if lines.is_empty() {
         return;
     }
-
-    // 解析 header（第一行）
-    let mut header: serde_json::Value = match serde_json::from_str(&lines[0]) {
-        Ok(v) => v,
-        Err(_) => return, // header 损坏，不冒险动
-    };
-    let obj = match header.as_object_mut() {
-        Some(o) => o,
-        None => return,
-    };
-
-    // 检查是否需要补
-    let need_agent = obj.get("agent").and_then(|v| v.as_str()).is_none();
-    let need_model = model.as_ref().is_some()
-        && obj.get("model").and_then(|v| v.as_str()).is_none();
-    let need_provider = provider.as_ref().is_some()
-        && obj.get("provider").and_then(|v| v.as_str()).is_none();
-
-    if !need_agent && !need_model && !need_provider {
-        return; // 字段齐全，无需补
+    let new_header = serde_json::to_string(&header).unwrap_or_else(|_| lines[0].to_string());
+    let mut out = String::with_capacity(content.len() + new_header.len());
+    out.push_str(&new_header);
+    out.push('\n');
+    for line in &lines[1..] {
+        out.push_str(line);
+        out.push('\n');
     }
-
-    // 补缺失字段
-    if need_agent {
-        obj.insert("agent".to_string(), serde_json::Value::String(agent.clone()));
-    }
-    if need_model {
-        obj.insert("model".to_string(), serde_json::Value::String(model.unwrap()));
-    }
-    if need_provider {
-        obj.insert("provider".to_string(), serde_json::Value::String(provider.unwrap()));
-    }
-
-    // 重写文件（header 行替换，其余 entries 原样保留）
-    lines[0] = serde_json::to_string(&header).unwrap_or_else(|_| lines[0].clone());
-    let new_content = lines.join("\n") + "\n";
-    let _ = std::fs::write(path, new_content);
+    let _ = std::fs::write(path, out);
     tracing::info!("[worker] patched legacy fork session header (agent/model/provider) → {}", path.display());
 }
 

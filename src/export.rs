@@ -26,6 +26,9 @@
 use serde_json::{json, Value};
 use std::path::Path;
 
+use crate::session_jsonl;
+use crate::worker_registry::WorkerRelation;
+
 /// Paths to pi's export template files
 const PI_EXPORT_DIR: &str =
     "/Users/xuyingzhou/Project/temporary/pi-momo-fork/packages/coding-agent/src/core/export-html";
@@ -221,25 +224,29 @@ fn export_session_internal(
                 .and_then(|m| m.get("spawnedBy"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
-            // relation：child（同步/异步派发）/ peer（同级）/ system（常驻）/ fork（skill fork）
-            let relation = spawn_meta
+            // relation 字符串 → WorkerRelation enum（serde lowercase: child/peer/system）
+            let relation_enum = spawn_meta
                 .as_ref()
                 .and_then(|m| m.get("relation"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("child");
-            // 根据 relation + spawnedBy 判定子 Worker 类型（影响文案）
-            let (sub_kind_label, sub_kind_en) = if spawned_by == "skill_fork" {
-                ("Fork 子 Worker（skill fork）", "fork")
-            } else if spawned_by == "singleton_init" || relation == "system" {
-                ("System 子 Worker（常驻）", "system")
-            } else if relation == "peer" {
-                ("Peer 子 Worker（同级异步）", "peer")
-            } else {
-                ("Spawn 子 Worker（派发）", "spawn")
+                .map(|v| serde_json::from_value::<WorkerRelation>(v.clone()).unwrap_or_default())
+                .unwrap_or_default();
+            // 根据 (spawned_by, relation) 判定子 Worker 类型（影响文案 + HTML 文件名前缀）
+            let (sub_kind_label, sub_kind_en) = match (spawned_by, relation_enum) {
+                ("skill_fork", _) => ("Fork 子 Worker（skill fork）", "fork"),
+                ("singleton_init", _) | (_, WorkerRelation::System) => {
+                    ("System 子 Worker（常驻）", "system")
+                }
+                (_, WorkerRelation::Peer) => ("Peer 子 Worker（同级异步）", "peer"),
+                _ => ("Spawn 子 Worker（派发）", "spawn"),
+            };
+            let relation = match relation_enum {
+                WorkerRelation::Child => "child",
+                WorkerRelation::Peer => "peer",
+                WorkerRelation::System => "system",
             };
 
             // 自动导出子 session HTML（跟主 HTML 同目录，文件名 sub_<sid>.html）
-            let sub_html_name = format!("sub_{}.html", &sub_sid[..12.min(sub_sid.len())]);
+            let sub_html_name = sub_html_filename(&sub_sid);
             let sub_html_path = output_path.parent()
                 .map(|p| p.join(&sub_html_name))
                 .unwrap_or_else(|| std::path::PathBuf::from(&sub_html_name));
@@ -260,11 +267,12 @@ fn export_session_internal(
 
             // 分隔标记：content 里有可点击的 HTML 链接（指向子 HTML 文件）
             let sub_sid_short = &sub_sid[..12.min(sub_sid.len())];
+            let sub_html_file = sub_html_filename(&sub_sid);
             let separator_content = format!(
                 "🔗 {sub_kind_label} session（{sub_sid_short}）\n\
                  relation: {relation} | spawnedBy: {spawned_by}\n\
                  子 session ID: {sub_sid}\n\n\
-                 👆 点击查看完整子 Worker 执行过程：sub_{sub_sid_short}.html\n\n\
+                 👆 点击查看完整子 Worker 执行过程：{sub_html_file}\n\n\
                  （或命令行导出：ion --export sub.html --session {sub_sid}）"
             );
             let separator = json!({
@@ -272,14 +280,14 @@ fn export_session_internal(
                 "id": format!("sub-sep-{}", sub_sid),
                 "parentId": null,
                 "timestamp": sub_header.get("timestamp").cloned().unwrap_or(json!("")),
-                "customType": "sub_session_separator",
+                "customType": session_jsonl::CUSTOM_TYPE_SUB_SESSION_SEPARATOR,
                 "content": separator_content,
                 "data": {
                     "subSessionId": sub_sid,
                     "spawnedBy": spawned_by,
                     "relation": relation,
                     "kind": sub_kind_en,
-                    "htmlFile": format!("sub_{}.html", sub_sid_short),
+                    "htmlFile": sub_html_file,
                 },
                 "display": true,
             });
@@ -302,7 +310,7 @@ fn export_session_internal(
         .filter(|e| {
             // 过滤掉 system_prompt custom entry
             if e.get("type").and_then(|v| v.as_str()) == Some("custom")
-                && e.get("customType").and_then(|v| v.as_str()) == Some("system_prompt")
+                && e.get("customType").and_then(|v| v.as_str()) == Some(session_jsonl::CUSTOM_TYPE_SYSTEM_PROMPT)
             {
                 return false;
             }
@@ -312,7 +320,7 @@ fn export_session_internal(
             }
             // 过滤掉转换后的 turn_summary custom_message
             if e.get("type").and_then(|v| v.as_str()) == Some("custom_message")
-                && e.get("customType").and_then(|v| v.as_str()) == Some("turn_summary")
+                && e.get("customType").and_then(|v| v.as_str()) == Some(session_jsonl::CUSTOM_TYPE_TURN_SUMMARY)
             {
                 return false;
             }
@@ -345,7 +353,7 @@ fn export_session_internal(
     // 主 Worker 没有（system_prompt 是固定的，不需要存）
     let system_prompt: Option<String> = raw_entries.iter().find_map(|e| {
         if e.get("type").and_then(|v| v.as_str()) == Some("custom")
-            && e.get("customType").and_then(|v| v.as_str()) == Some("system_prompt")
+            && e.get("customType").and_then(|v| v.as_str()) == Some(session_jsonl::CUSTOM_TYPE_SYSTEM_PROMPT)
         {
             e.get("data")
                 .and_then(|d| d.get("systemPrompt"))
@@ -706,6 +714,19 @@ fn export_session_internal(
 
 /// Convert a single ION entry to pi-compatible format.
 ///
+/// 子 session HTML 文件名前缀（旧版导出用 `fork_`，新版统一 `sub_`）。
+/// JS 端的链接识别正则会同时匹配两个前缀（见 export_session_internal 末尾的 makeForkLinks）。
+const SUB_HTML_PREFIX: &str = "sub_";
+/// 旧版前缀，仅用于向后兼容识别历史导出 HTML 里的链接。
+const SUB_HTML_LEGACY_PREFIX: &str = "fork_";
+
+/// 生成子 session 的 HTML 文件名：`<prefix><sid 前 12 字符>.html`。
+/// 截 12 字符避免文件名过长（sid 是 UUID，12 字符足够区分）。
+fn sub_html_filename(sid: &str) -> String {
+    let short = &sid[..12.min(sid.len())];
+    format!("{SUB_HTML_PREFIX}{short}.html")
+}
+
 /// Handles:
 /// - `message`: unwrap the `Assistant`/`User`/`ToolResult` variant, flatten into pi's `{role, content}` form
 /// - `turn_summary` (ION-only): rewrite to `custom_message` so pi template renders it in the tree
@@ -873,7 +894,7 @@ fn convert_turn_summary_entry(entry: &Value) -> Value {
     let mut out = entry.clone();
     if let Some(obj) = out.as_object_mut() {
         obj.insert("type".to_string(), json!("custom_message"));
-        obj.insert("customType".to_string(), json!("turn_summary"));
+        obj.insert("customType".to_string(), json!(session_jsonl::CUSTOM_TYPE_TURN_SUMMARY));
         // content 用 string 形式（pi 支持 string | array）
         let content = if !summary.is_empty() {
             summary.clone()
