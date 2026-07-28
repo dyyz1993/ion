@@ -95,7 +95,7 @@ mkdir -p /tmp/ci-results
 # ─── Gather + filter scripts ──────────────────────────────────────────────
 ALL_SCRIPTS=$(ls tests/*_ci.sh tests/scenario2_ci.sh tests/team_e2e.sh 2>/dev/null | sort -u)
 
-SKIP_LIST="apple_container_ci"
+SKIP_LIST=""
 
 FILTERED=""
 SKIPPED=""
