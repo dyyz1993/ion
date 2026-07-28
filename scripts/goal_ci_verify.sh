@@ -29,62 +29,36 @@ echo ""
 cargo build --bin ion 2>/dev/null || { echo "❌ build failed"; exit 1; }
 echo "✅ Build OK"
 
-# ── 准备环境（不起全局 host——CI 脚本自己管理 host）──
+# ── 起 watchdog host 守护进程 ──
 echo ""
-echo "── Preparing environment ──"
+echo "── Starting watchdog host ──"
 
 # 确保没有残留 host
 lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null || true
+rm -f "$HOME/.ion/host.sock" 2>/dev/null
 sleep 1
 
-# 临时启用 global-memory（memory 相关 CI 需要它）
-CONFIG_FILE="$HOME/.ion/config.json"
-python3 -c "
-import json
-with open('$CONFIG_FILE') as f: c = json.load(f)
-if 'extensions' not in c: c['extensions'] = {}
-c['extensions']['global-memory'] = {'enabled': True}
-with open('$CONFIG_FILE', 'w') as f: json.dump(c, f, indent=2)
-print('  global-memory enabled for CI')
-" 2>/dev/null
+# 起 watchdog（自动重启被杀的 host）
+nohup bash "$PROJECT_DIR/scripts/ci_watchdog_host.sh" > /tmp/ci_watchdog.log 2>&1 &
+WATCHDOG_PID=$!
+echo "  Watchdog PID: $WATCHDOG_PID"
 
-# 清理旧 DB + 扩展残留
-rm -f "$HOME/.ion/agent/global-memory.db"* 2>/dev/null
-rm -f "$HOME/.ion/agent/extensions/"*.wasm 2>/dev/null
-
-echo "  Environment ready (each CI manages its own host)"
-
-# Collect CI scripts — split into two batches:
-# Batch 1: CIs that don't kill the global host (run first)
-# Batch 2: CIs that kill the global host (run last, isolated)
-KILL_CIS="abort_ci export_ci file_snapshot_ci global_memory_ci hooks_handler_ci lsp_ci memory_active_ci memory_agent_ci memory_injection_ci memory_v2_processing_ci permission_store_ci rollback_impact_ci self_heal_ci session_entries_ci session_hook_ci soft_interrupt_ci sse_events_ci streaming_replay_ci streaming_throughput_ci"
-
-# All CIs sorted
-ALL_CIS=$(ls tests/*_ci.sh tests/*_e2e.sh 2>/dev/null | sort)
-
-# Split: safe CIs first, kill-host CIs last
-CI_SCRIPTS=""
-for script in $ALL_CIS; do
-    name=$(basename "$script" .sh)
-    is_kill=0
-    for k in $KILL_CIS; do
-        [ "$name" = "$k" ] && is_kill=1 && break
-    done
-    [ $is_kill -eq 0 ] && CI_SCRIPTS="$CI_SCRIPTS $script"
+# 等 host 就绪
+echo -n "  Waiting for host..."
+for i in $(seq 1 20); do
+    sleep 2
+    if "$ION_BIN" rpc --method list_sessions 2>/dev/null | grep -q "sessions"; then
+        echo " ✅ Ready"
+        break
+    fi
+    echo -n "."
 done
-# Kill-host CIs at the end
-for script in $ALL_CIS; do
-    name=$(basename "$script" .sh)
-    for k in $KILL_CIS; do
-        if [ "$name" = "$k" ]; then
-            CI_SCRIPTS="$CI_SCRIPTS $script"
-            break
-        fi
-    done
-done
+echo ""
 
-TOTAL=$(echo "$CI_SCRIPTS" | wc -w)
-echo "📋 Found $TOTAL CI scripts (safe first, kill-host last)"
+# Collect all CI scripts
+CI_SCRIPTS=$(ls tests/*_ci.sh tests/*_e2e.sh 2>/dev/null | sort)
+TOTAL=$(echo "$CI_SCRIPTS" | wc -l | tr -d ' ')
+echo "📋 Found $TOTAL CI scripts (watchdog keeps host alive)"
 echo ""
 
 PASS=0; FAIL=0; SKIP=0
@@ -142,16 +116,17 @@ done
 echo ""
 echo "── Cleanup ──"
 
-# 关闭残留 host
+# 关闭 watchdog + host
+kill $WATCHDOG_PID 2>/dev/null || true
 lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null || true
 
 # 恢复 config
 python3 -c "
 import json
-with open('$CONFIG_FILE') as f: c = json.load(f)
+with open('$HOME/.ion/config.json') as f: c = json.load(f)
 if 'extensions' in c and 'global-memory' in c['extensions']:
     c['extensions']['global-memory'] = {'enabled': False}
-    with open('$CONFIG_FILE', 'w') as f: json.dump(c, f, indent=2)
+    with open('$HOME/.ion/config.json', 'w') as f: json.dump(c, f, indent=2)
     print('  global-memory restored to disabled')
 " 2>/dev/null
 
