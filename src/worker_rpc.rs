@@ -4721,6 +4721,12 @@ fn ensure_fork_session_header(path: &std::path::Path, cwd: &str, sid: &str) {
         "cwd": cwd,
         "parentSession": parent_session.clone(),
     });
+    // 写入 agent/model/provider（export.rs 依赖 header.agent 从 agent 定义加载 system prompt
+    // 和 tools；缺失会导致子 worker HTML 不显示 system prompt 和工具面板）。
+    // 这些 env 在 worker_rpc.rs 启动时已从 initial_agent/model/provider 设置（见 ION_SESSION_*）。
+    if let Ok(a) = std::env::var("ION_SESSION_AGENT") { if !a.is_empty() { header["agent"] = serde_json::Value::String(a); } }
+    if let Ok(m) = std::env::var("ION_SESSION_MODEL") { if !m.is_empty() { header["model"] = serde_json::Value::String(m); } }
+    if let Ok(p) = std::env::var("ION_SESSION_PROVIDER") { if !p.is_empty() { header["provider"] = serde_json::Value::String(p); } }
     if has_spawn_meta {
         let mut spawn_meta = serde_json::json!({});
         if let Some(ref pw) = parent_worker { spawn_meta["parentWorker"] = serde_json::Value::String(pw.clone()); }

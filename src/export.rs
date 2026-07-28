@@ -244,8 +244,12 @@ fn export_session_internal(
                 .map(|p| p.join(&sub_html_name))
                 .unwrap_or_else(|| std::path::PathBuf::from(&sub_html_name));
 
-            // 递归导出子 session（但不深度递归——只导一层子 session）
-            match export_session_internal(&sub_sid, &sub_html_path, None, None) {
+            // 递归导出子 session（但不深度递归——只导一层子 session）。
+            // 用 export_session_rich（而非 export_session_internal）：子 worker session
+            // header 现在带 agent 字段（ensure_fork_session_header 写入），rich 路径会
+            // 读 header.agent 加载 agent config 的 system prompt + tools，让子 worker HTML
+            // 也能显示 system prompt 和工具面板。
+            match export_session_rich(&sub_sid, &sub_html_path) {
                 Ok(()) => {
                     eprintln!("[export] auto-exported {sub_kind_en} sub-session → {}", sub_html_path.display());
                 }
