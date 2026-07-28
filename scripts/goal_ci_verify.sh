@@ -90,6 +90,22 @@ for script in $CI_SCRIPTS; do
     exit_code=$?
     duration=$(( $(date +%s) - start ))
 
+    # 检测 host 是否被 CI 杀了——如果死了就重启
+    if ! "$ION_BIN" rpc --method list_sessions 2>/dev/null | grep -q "sessions"; then
+        echo -n "🔄 "
+        lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null || true
+        sleep 1
+        ION_FAUX_REPLY="host ready" "$ION_BIN" serve > /tmp/goal_ci_host.log 2>&1 &
+        HOST_PID=$!
+        for i in $(seq 1 10); do
+            sleep 2
+            if "$ION_BIN" rpc --method list_sessions 2>/dev/null | grep -q "sessions"; then
+                echo "(host restarted) "
+                break
+            fi
+        done
+    fi
+
     if [ $exit_code -eq 0 ]; then
         echo "✅ PASS (${duration}s)"
         PASS=$((PASS+1))
