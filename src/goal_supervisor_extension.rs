@@ -528,7 +528,7 @@ impl GoalSupervisorExtension {
     /// Returns a ProgressReport classifying the trend and giving a recommendation.
     /// Pure heuristic — no LLM call. Called from on_gate_check before RetryWith.
     pub fn analyze_progress(&self, current_plan: Option<&str>) -> ProgressReport {
-        let (objective, iteration_count) = {
+        let (objective, _iteration_count) = {
             let guard = self.state.lock().ok();
             match guard.as_ref().and_then(|g| g.as_ref()) {
                 Some(s) => (s.objective.clone(), s.iteration_count),

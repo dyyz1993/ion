@@ -3,6 +3,10 @@ target/
 .DS_Store
 .ion/
 
+# IDE / agent caches
+.claude/
+.zcode/
+
 # Vendored ion-provider build artifacts
 /ion-provider/target
 /ion-provider/Cargo.lock

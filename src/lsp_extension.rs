@@ -1044,7 +1044,7 @@ impl Extension for LspExtension {
     async fn on_extension_rpc(
         &self,
         method: &str,
-        params: serde_json::Value,
+        _params: serde_json::Value,
     ) -> AgentResult<serde_json::Value> {
         match method {
             "check" => {

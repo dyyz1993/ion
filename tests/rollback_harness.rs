@@ -38,6 +38,7 @@ fn msg_entry(parent_id: &str, role: &str, text: &str) -> serde_json::Value {
             role: "user".into(),
             content: vec![ContentBlock::Text(TextContent { text: text.into(), text_signature: None })],
             timestamp: 0,
+            source: MessageSource::Prompt,
         })
     } else {
         Message::Assistant(AssistantMessage {

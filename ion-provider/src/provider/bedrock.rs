@@ -338,7 +338,7 @@ fn build_request_body(
         .or(Some(model.max_tokens))
         .unwrap_or(4096);
 
-    let temperature = options.and_then(|o| {
+    let temperature = options.and_then(|_o| {
         // Bedrock does not expose a thinking-level → temperature mapping; we
         // leave temperature unset unless the caller provides one. Currently
         // StreamOptions has no temperature field, so this is always None.

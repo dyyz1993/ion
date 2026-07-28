@@ -928,6 +928,15 @@ ion --mode rpc           → 内部 Worker 子进程 (JSONL over stdin/stdout)
   - command handler 并发安全修复：`spawn_command_with_stdin` 透传 `ctx.project_dir` 作为 bash `current_dir`（不再依赖进程级 cwd，消除并行 hook/测试互相踩的隐患）
   - **验证**: hooks_ci 8 + hooks_agent_ci 4 + hooks_handler_ci 6（command/http/prompt handler 可观测）+ hooks_e2e 10（并发模式稳定）+ patch1 5 + hooks_agent_real 3（真实 LLM DeepSeek）= 36 测试全过 ✅
 
+- **并发锁死锁修复 + FauxProvider env 继承 + list_workers 字段修复**:
+  - `emit_event` 死锁修复：monitor spawn 任务持有 `registry.lock()` guard 跨 `emit_event()` 调用，而 `emit_event` 内部又获取同一个 `registry.lock()` → tokio Mutex 不可重入 → 永久死锁。修复：scope guard 在 emit_event 之前 drop
+  - `handle_manager_command` 读/写路径锁拆分：list_sessions/list_workers 用短锁快照数据后立即释放；do_create_session 改用 prepare_worker_spawn + register_prepared_worker（锁拆分）
+  - abort/steer 改为 fire-and-forget（同 prompt），避免 worker 在 bash sleep 期间 send_to_session 持锁阻塞
+  - `list_workers` 读路径补回 agent/parent/channels 字段（锁拆分重构时遗漏）
+  - worker 环境变量继承补齐：`ION_FAUX_REPEAT` + `ION_FAUX_ERROR` 加入 child_cmd.env 传递列表
+  - watchdog 三处 serve 重启路径支持 `ION_SERVE_ARGS` 环境变量
+  - **验证**: 938 lib tests + monitor_ci 38 + memory_agent_ci 11 + global_memory_ci 8 + sse_events_ci 13 + abort_ci 8 + ui_integration_ci 13 全部 0 fail ✅
+
 ### 🎯 Goal Supervisor（证据驱动的目标闭环，B1 已完成）
 
 - **核心机制**：`on_gate_check` 钩子（内核强制 Stop 拦截点）— agent 想 Stop 时跑全部检测项，没全 PASS 就 `RetryWith(失败证据)` 强制继续，直到目标完成
@@ -1497,7 +1506,7 @@ bash scripts/evolve-run.sh "任务描述"             # 同步 + 守门 + HTML �
 
 | 套件 | 数量 | 覆盖 |
 |------|------|------|
-| lib tests (核心逻辑) | 928 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact/FileSnapshot/RulesEngine/FileTimeGuard/ContextReclaimer/TierModels/Hooks/StoredDecision/WasmExtension/PlanExtension/PlanTool/**Monitor(含 20 validate tests)**/**SelfHeal(health/max_turns/stale)**/**LSP(11 parse/format tests)**/**ToolLoopDetector(6 tests)**/**AutoSessionTitle(7 tests)**/**PermissionProfile(autopilot)**/**GoalSupervisor(35 tests: data structs/checks/guards/similarity/logging/progress analysis/goal_refine/drift detection)**/**GoalEvolver(12 tests)** |
+| lib tests (核心逻辑) | 938 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact/FileSnapshot/RulesEngine/FileTimeGuard/ContextReclaimer/TierModels/Hooks/StoredDecision/WasmExtension/PlanExtension/PlanTool/**Monitor(含 20 validate tests)**/**SelfHeal(health/max_turns/stale)**/**LSP(11 parse/format tests)**/**ToolLoopDetector(6 tests)**/**AutoSessionTitle(7 tests)**/**PermissionProfile(autopilot)**/**GoalSupervisor(35 tests: data structs/checks/guards/similarity/logging/progress analysis/goal_refine/drift detection)**/**GoalEvolver(12 tests)** |
 | unit_rpc_test (RPC 协议) | 20 | U1-U20 RPC 命令覆盖 + 接口格式兼容 |
 | manager_integration (集成) | 25 | Manager + Worker + 事件 + UI + 消息拉取 |
 | session_tree_test (集成) | 4 | only-append 审计/branch 接 leaf/全操作序列 |
@@ -1509,7 +1518,7 @@ bash scripts/evolve-run.sh "任务描述"             # 同步 + 守门 + HTML �
 | child_worker / concurrency | 4 | 子进程通信/并发池 |
 | memory_e2e | 6 | Memory 扩展存储/搜索/注入/去重 |
 | ion-provider 单元 | 70 | OpenAI/Anthropic/Google/FauxProvider/RecordReplay/transform_messages |
-| **小计 Rust 测试** | **928** | 全部通过 ✅ |
+| **小计 Rust 测试** | **938** | 全部通过 ✅ |
 | faux_scenarios_ci (CLI E2E) | 4 | 三场景 faux（直接执行/host/serve） |
 | record_replay_ci (CLI E2E) | 11 | 录制/回放/路径穿越/冲突/OVERWRITE/权限 |
 | crash_recovery_ci (CLI E2E) | 6 | stderr/exit_code/Dead/父通知 |
@@ -1548,7 +1557,7 @@ bash scripts/evolve-run.sh "任务描述"             # 同步 + 守门 + HTML �
 | self_heal_ci (CLI E2E) | 12 | Group A：单 issue 端到端（mock gh + monitor → coordinator → developer fix → commit）+ Group B：多 issue 并行 + Group C：active state 持久化（mark/check/list/release + ~/.ion/agent/active-pipelines.json）|
 | goal_supervisor_ci (CLI E2E) | 26 | Group A-D：单元测试 + tool 注册 + config + 日志 schema + U+FFFD + **Group E：深化（进展分析/drift/goal_refine/goal_diagnose/偏离监控/3 tool 注册）** |
 | goal_evolver_ci (CLI E2E) | 18 | Group A：12 单元测试（10 fixture 场景 + 解析健壮性）+ Group B：6 问题场景检测（deadloop/model/context）+ Group C：2 健康场景不误报 + Group D：run_once 全量扫描 + Group E：goal_evolver_run_once RPC 注册 + dry_run 默认 true + Group F：10 fixture 目录完整 |
-| **测试覆盖合计** | **1397+** | 全部通过 ✅（Rust 917 [含 goal_supervisor 24 + goal_evolver 12]，CLI E2E 497+ [含 goal_supervisor_ci 18 + goal_evolver_ci 18]，含 monitor_ci 11 + self_heal_ci 12 + lsp_ci 14 + hooks 36 + extensions 19 + 真实 LLM 5 + WASM 扩展 + self-healing GitHub 全链路验证） |
+| **测试覆盖合计** | **1420+** | 全部通过 ✅（Rust 938 [含 goal_supervisor 24 + goal_evolver 12，含并发锁拆分修复]，CLI E2E 497+ [含 goal_supervisor_ci 18 + goal_evolver_ci 18]，含 monitor_ci 11 + self_heal_ci 12 + lsp_ci 14 + hooks 36 + extensions 19 + 真实 LLM 5 + WASM 扩展 + self-healing GitHub 全链路验证 + 锁拆分回归 monitor_ci 38 + memory_agent_ci 11 + sse_events_ci 13 + abort_ci 8 + ui_integration_ci 13） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)

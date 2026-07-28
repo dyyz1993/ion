@@ -37,7 +37,7 @@
 use crate::agent::error::AgentResult;
 use crate::agent::extension::Extension;
 use ion_provider::types::{AssistantContentBlock, ContentBlock, Message, TextContent};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 /// Start reclaiming when context exceeds this % of window.
 const DEFAULT_USAGE_PERCENT: u64 = 60;

@@ -19,6 +19,7 @@ pub struct DetectedSecret {
 /// Known secret patterns (13 types, aligned with pi).
 /// Each entry: (pattern, label).
 /// Patterns use simple string matching (not regex) for safety + speed.
+#[allow(dead_code)]
 fn known_patterns() -> Vec<(&'static str, &'static str)> {
     vec![
         // AWS Access Key (starts with AKIA, 20 chars)

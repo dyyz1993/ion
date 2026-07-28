@@ -1318,12 +1318,10 @@ async fn cmd_workflow_run(path: &str, set: &[String]) {
         // 不能设 0（无限）——那样 inner_loop 永不退出，outer_loop 的 auto_continue 不触发。
         // 设 15：让 inner_loop 跑 15 turn（够 2-3 stage）就 Stop 返回 outer_loop，
         // outer_loop 的 auto_continue 注入 follow-up 继续。
-        unsafe { std::env::set_var("ION_MAX_TURNS", "15"); }
+        std::env::set_var("ION_MAX_TURNS", "15");
         // auto-continue 的 gate：当 workflow yaml 所有 10 stage 都有 status 时停止注入 follow-up
-        unsafe {
-            std::env::set_var("ION_AUTO_CONTINUE_GATE", "test -f .ion/workflow.yaml && [ $(grep -c 'status:' .ion/workflow.yaml) -ge 10 ] && echo ALL_DONE || echo NOT_DONE");
-            std::env::set_var("ION_AUTO_CONTINUE_EXPECTED", "ALL_DONE");
-        }
+        std::env::set_var("ION_AUTO_CONTINUE_GATE", "test -f .ion/workflow.yaml && [ $(grep -c 'status:' .ion/workflow.yaml) -ge 10 ] && echo ALL_DONE || echo NOT_DONE");
+        std::env::set_var("ION_AUTO_CONTINUE_EXPECTED", "ALL_DONE");
     }
 
     // 同步更新 last_session，让 export_report stage 的 ion --export 能找到 wf 的 session
@@ -1780,7 +1778,7 @@ async fn cmd_run(
     // unless goal_set is actually called by the LLM.
     let goal_ext = ion::goal_supervisor_extension::GoalSupervisorExtension::new()
         .with_shared_state(shared_goal_state.clone())
-        .with_session_id(session_id.clone());
+        .with_session_id(session_id);
     ext_reg.register(Box::new(goal_ext));
     tracing::info!("[extension] goal-supervisor registered (on_gate_check closed loop)");
 
@@ -4131,8 +4129,6 @@ async fn handle_manager_command(
     registry: &Arc<tokio::sync::Mutex<ion::worker_registry::WorkerRegistry>>,
     cmd: serde_json::Value,
 ) -> serde_json::Value {
-    use ion::worker_registry::WorkerCreateConfig;
-
     let id = cmd.get("id").cloned().unwrap_or(serde_json::Value::Null);
     let method = cmd.get("method").and_then(|v| v.as_str())
         .or_else(|| cmd.get("type").and_then(|v| v.as_str())).unwrap_or("");
@@ -4197,7 +4193,7 @@ async fn handle_manager_command(
 async fn handle_manager_command_write(
     registry: &Arc<tokio::sync::Mutex<ion::worker_registry::WorkerRegistry>>,
     cmd: serde_json::Value,
-    id: serde_json::Value,
+    _id: serde_json::Value,
     method: &str,
 ) -> Result<serde_json::Value, String> {
     use ion::worker_registry::WorkerCreateConfig;
@@ -5061,10 +5057,6 @@ fn find_most_recent_session() -> Option<(String, Vec<ion::agent::messages::Messa
 
 fn extract_assistant_text(agent: &Agent) -> Option<String> {
     for msg in agent.messages().iter().rev() {
-        if let ion::agent::messages::Message::Assistant(a) = msg {
-            for (i, block) in a.content.iter().enumerate() {
-            }
-        }
         if let ion::agent::messages::Message::Assistant(a) = msg {
             for block in &a.content {
                 if let ion::agent::messages::AssistantContentBlock::Text(t) = block {

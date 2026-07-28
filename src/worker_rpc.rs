@@ -4280,6 +4280,7 @@ impl WorkerAgentRpc {
 
     /// Returns a clone of the Arc<RwLock> so ion_worker can update the snapshot
     /// at turn boundaries (before each tool execution).
+    #[allow(dead_code)]
     fn snapshot_handle(&self) -> std::sync::Arc<std::sync::RwLock<AgentSnapshot>> {
         std::sync::Arc::clone(&self.snapshot)
     }
@@ -4797,7 +4798,7 @@ fn patch_fork_session_header_if_needed(path: &std::path::Path) {
         Ok(c) => c,
         Err(_) => return,
     };
-    let mut lines: Vec<&str> = content.lines().collect();
+    let lines: Vec<&str> = content.lines().collect();
     if lines.is_empty() {
         return;
     }

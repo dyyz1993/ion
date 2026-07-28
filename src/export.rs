@@ -718,6 +718,7 @@ fn export_session_internal(
 /// JS 端的链接识别正则会同时匹配两个前缀（见 export_session_internal 末尾的 makeForkLinks）。
 const SUB_HTML_PREFIX: &str = "sub_";
 /// 旧版前缀，仅用于向后兼容识别历史导出 HTML 里的链接。
+#[allow(dead_code)]
 const SUB_HTML_LEGACY_PREFIX: &str = "fork_";
 
 /// 生成子 session 的 HTML 文件名：`<prefix><sid 前 12 字符>.html`。

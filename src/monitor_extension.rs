@@ -1070,7 +1070,7 @@ impl Extension for MonitorExtension {
         // This is NOT a user-defined monitor — it's always present in serve mode.
         {
             let reg = Arc::clone(registry);
-            let stats = Arc::clone(&statuses);
+            let _stats = Arc::clone(&statuses); // reserved for future health metrics
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(
                     tokio::time::Duration::from_secs(60)

@@ -1,64 +1,80 @@
-# Plan: 复杂端到端验证 — LSP Fix-Suggestion 提取 + 多智能体编排
+# Plan: create_worker 锁拆分 — 注册与启动分离
 
-## 目标
+## 问题
 
-用一个真实的功能开发任务，验证 ION 的**完整能力链**：多智能体编排 + worktree 隔离 + 真实 LLM 改代码 + 审查 + 合并 + 测试验证。
+`create_worker()` 从 line 187 到 line 700+ 全程持有 `registry.lock()`。其中包含：
+1. **worktree 创建**（git init/add/commit）—— 1-3 秒
+2. **child_cmd.spawn()**（fork+exec）—— 50-200ms
+3. **stderr pipe + stdout reader** —— 微秒级
+4. **SessionIndex 写入**（文件 IO）—— 毫秒级
+5. **singleton_user_join** —— 可能触发 LLM 调用
 
-## 任务
+这期间所有 RPC 被阻塞，导致 monitor 触发时整个 serve 无响应。
 
-给 `src/lsp_extension.rs` 加 **fix-suggestion 提取**功能：
-- 扩展 `Diagnostic` 结构体加 `suggestion: String` 字段
-- 新增 `extract_fix_suggestion()` 方法从 cargo/clippy JSON 提取建议
-- 在 `parse_cargo_check_json` 里调用
-- 在 XML/text 格式化里展示
-- 加 3 个单元测试
+## 改动
 
-**只改 1 个文件**（src/lsp_extension.rs），~50-80 行新代码。
+把 `create_worker()` 拆成 3 阶段，只有阶段 1 和 3 持锁：
 
-## 验证覆盖的功能
+```
+阶段 1（持锁，微秒级）：
+  - 分配 worker_id + session_id
+  - 读取 config（project_path/model/agent 等）
+  - 注册 WorkerRecord { status: Spawning } 占位
+  - 写入 parent.children + channels
+  - 返回 worker_id + 预分配的变量（project_path/model/agent等）
 
-| 功能 | 怎么覆盖 |
-|------|---------|
-| **多智能体编排** | coordinator → developer (worktree) → reviewer → merger |
-| **worktree 隔离** | developer 在独立 git 分支改代码 |
-| **真实 LLM** | GLM-5.2 真的写 Rust 代码 |
-| **Session 管理** | 每个 worker 独立 session |
-| **File Snapshot** | 代码改动被追踪 |
-| **事件流** | subscribe 看 text_delta + agent_start/end |
-| **权限** | developer 有 write/edit/bash，reviewer 只有 read |
-| **Hooks** | LSP extension 的 on_tool_execution_end 自动触发 |
+阶段 2（无锁，秒级）：
+  - worktree 创建（git init/add/commit）
+  - child_cmd 构建 + env 设置
+  - child_cmd.spawn()
+  - stderr pipe 创建
+  - stdout reader task 启动
+  - SessionIndex 写入
 
-## 执行方式
-
-### 方式 A（推荐）：直接用 `ion --host --agent coordinator`
-
-```bash
-echo "任务 spec" | ./target/debug/ion --host --agent coordinator \
-    --provider zai --model glm-5.2
+阶段 3（持锁，微秒级）：
+  - 更新 WorkerRecord：child_process / stdin / stdout_rx / stderr_path
+  - 更新 status: Idle
+  - singleton_user_join
 ```
 
-coordinator 自动：
-1. spawn_worker(developer, worktree=true, wait=true) — 在隔离分支改代码
-2. spawn_worker(reviewer, wait=true) — 审查 + U+FFFD 检查
-3. 如果 reviewer REQUEST_CHANGES → resume_worker(developer) 修
-4. spawn_worker(merger, wait=true) — git merge 回主分支
-5. bash: cargo test --lib lsp_extension — 验证全过
+## 具体代码改动
 
-### 方式 B（fallback）：A→B container 模式
+### 文件：`src/worker_registry.rs`
 
-如果方式 A 的 LLM coordinator 不稳定（之前遇到过），用 evolve_self.sh 模式。
+1. **新增 `WorkerStatus::Spawning`**（占位状态）
 
-## 验收标准
+2. **新增 `create_worker_phase1()`**：
+   - 分配 worker_id + session_id
+   - 读 config 参数（project_path/model/agent 等）
+   - 注册占位 WorkerRecord
+   - 返回 `(WorkerInfo, SpawnContext)` — SpawnContext 包含阶段 2 需要的所有变量
 
-- ✅ `cargo test --lib lsp_extension` 全过（原 13 + 新 3 = 16 个测试）
-- ✅ `grep -c U+FFFD src/lsp_extension.rs` == 0（无中文乱码）
-- ✅ `cargo build --bin ion` 编译通过
-- ✅ coordinator 真的 spawn 了 ≥2 个 worker（developer + reviewer）
-- ✅ 最终代码改动在主分支上（不是只留在 worktree）
+3. **新增 `create_worker_phase2()`**（无锁）：
+   - 接收 SpawnContext
+   - worktree 创建
+   - child_cmd 构建 + spawn
+   - stderr pipe + stdout reader
+   - SessionIndex 写入
+   - 返回 `SpawnResult`（child_process + stdin 等）
 
-## 不做的事
+4. **新增 `create_worker_phase3()`**：
+   - 接收 SpawnResult
+   - 更新 WorkerRecord 字段
+   - singleton_user_join
 
-- 不改 agent_loop.rs（避免 blast radius）
-- 不加新文件（只改 src/lsp_extension.rs）
-- 不动其他 CI 脚本
-- 如果 coordinator LLM 挂了，切方式 B，不强求 A
+5. **修改 `create_worker()`**：改为调用 phase1 → phase2 → phase3
+
+6. **修改 `process_pending_commands()`**：phase2 在 `tokio::spawn` 中执行，不阻塞命令处理循环
+
+### 影响范围
+
+- `create_worker` 调用方：`process_pending_commands` + `cmd_serve_start` (do_create_session) + `post_init_singletons`
+- 所有调用方都通过 `registry.lock().await.create_worker()` 调用，改成 `phase1 → spawn phase2 → phase3` 后，调用方也需要适配
+- **monitor_extension.rs** 的 spawn 逻辑也需要适配（它目前直接 lock + create_worker）
+
+### 测试验证
+
+- `cargo test --lib` 全过（931 测试）
+- `cargo build --bin ion` 编译通过
+- 串行跑 monitor_ci（应该不再有锁竞争 timeout）
+- 并行跑 P=3（abort/extension_fs/mcp 应该不再 FAIL）

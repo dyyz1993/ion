@@ -152,7 +152,6 @@ fn serialize_response(msg: &AssistantMessage, req_hash: &str) -> String {
         crate::types::StopReason::Length => "length",
         crate::types::StopReason::Error => "error",
         crate::types::StopReason::Aborted => "aborted",
-        _ => "stop",
     };
     obj["stop_reason"] = serde_json::Value::String(stop_str.into());
     if matches!(msg.stop_reason, crate::types::StopReason::Error) {

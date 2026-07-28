@@ -835,7 +835,7 @@ impl Extension {
     // host_compact_now() -> u32
     // Triggers immediate context compaction. Returns 0 on success.
     linker.func_wrap("env", "host_compact_now",
-        move |mut caller: WasmCaller| -> u32 {
+        move |caller: WasmCaller| -> u32 {
             let ctx = caller.data().clone();
             let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
                 (Some(r), Some(h)) => (r.clone(), h.clone()),

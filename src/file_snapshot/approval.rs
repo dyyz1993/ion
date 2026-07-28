@@ -63,6 +63,7 @@ pub struct ApprovalManager {
     /// session cwd（用于 restore 和文件操作）
     cwd: String,
     /// 统一存储上下文（持久化审批 entry 到 session.jsonl 用）
+    #[allow(dead_code)]
     storage: crate::storage_context::StorageContext,
 }
 

@@ -47,6 +47,7 @@ fn user_msg(text: &str) -> Message {
             text_signature: None,
         })],
         timestamp: 0,
+        source: MessageSource::Prompt,
     })
 }
 

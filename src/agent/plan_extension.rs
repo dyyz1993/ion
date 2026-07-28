@@ -4,7 +4,7 @@ use super::messages::ToolCall;
 use async_trait::async_trait;
 use ion_provider::types::ToolResult;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 /// Helper: lock a Mutex<Option<String>> and return a clone or default.
 fn lock_path(m: &Mutex<Option<String>>) -> String {

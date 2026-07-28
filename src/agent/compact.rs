@@ -73,7 +73,7 @@ where
     for attempt in 0..=max_retries {
         if attempt > 0 {
             let delay = std::time::Duration::from_millis(
-                500u64 * 2u64.pow((attempt - 1)).min(4),
+                500u64 * (2u64.pow(attempt - 1)).min(4),
             );
             tokio::time::sleep(delay).await;
         }

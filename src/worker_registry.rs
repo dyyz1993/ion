@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 /// Result of `prepare_worker_spawn` — contains spawned child process + all data
 /// needed to register the worker in the registry (under lock, fast).
@@ -1039,7 +1039,7 @@ impl WorkerRegistry {
         // stderr capture
         let stderr_path = std::env::temp_dir().join(format!("ion-worker-{}.stderr", worker_id));
         let stderr_path_c = stderr_path.clone();
-        let stderr_wid = worker_id.clone();
+        let _stderr_wid = worker_id.clone();
         tokio::spawn(async move {
             use tokio::io::AsyncBufReadExt;
             use std::io::Write;

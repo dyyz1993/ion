@@ -119,6 +119,8 @@ impl LearningExtension {
 
     /// Redact secrets from a list of messages.
     /// Returns redacted messages.
+    #[allow(dead_code)]
+    #[allow(dead_code)]
     fn redact_messages(messages: &[String]) -> Vec<String> {
         messages.iter().map(|m| {
             let redacted = secret_detector::redact_secrets(m);
