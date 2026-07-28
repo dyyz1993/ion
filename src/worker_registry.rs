@@ -3,6 +3,47 @@ use std::collections::{HashMap, VecDeque};
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+/// Result of `prepare_worker_spawn` — contains spawned child process + all data
+/// needed to register the worker in the registry (under lock, fast).
+pub struct PreparedSpawn {
+    pub child: tokio::process::Child,
+    pub stdin: tokio::process::ChildStdin,
+    pub stdout: tokio::process::ChildStdout,
+    pub stderr: tokio::process::ChildStderr,
+    pub worker_id: String,
+    pub session_id: String,
+    pub project_path: String,
+    pub project_name: String,
+    pub worktree_path: String,
+    pub worktree_info: Option<WorktreeInfo>,
+    pub model: String,
+    pub provider: String,
+    pub agent_name: String,
+}
+
+/// Find the ion binary path (for spawning child workers).
+fn find_ion_binary() -> String {
+    // Try current exe first
+    if let Ok(exe) = std::env::current_exe() {
+        if exe.exists() {
+            return exe.to_string_lossy().to_string();
+        }
+    }
+    // Fallback: look for target/debug/ion relative to CWD
+    let candidates = [
+        "target/debug/ion-worker",
+        "target/debug/ion",
+        "ion-worker",
+        "/usr/local/bin/ion-worker",
+    ];
+    for c in &candidates {
+        if std::path::Path::new(c).exists() {
+            return c.to_string();
+        }
+    }
+    "ion-worker".to_string() // last resort: rely on PATH
+}
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use uuid::Uuid;
@@ -117,6 +158,9 @@ pub enum WorkerStatus {
     Paused,
     Dead,
     Stale,
+    /// Worker registered but child process not yet spawned.
+    /// all_workers_idle treats this as NOT idle (prevents premature host exit).
+    Spawning,
 }
 
 impl std::fmt::Display for WorkerStatus {
@@ -181,6 +225,175 @@ impl WorkerRegistry {
             mcp_manager: None,
             event_bus: None,
         }
+    }
+
+    /// Pre-compute worktree path + spawn child process OUTSIDE the registry lock.
+    ///
+    /// This extracts the slow parts of create_worker (git init/add/commit for worktree,
+    /// fork+exec for child process) so they can run without blocking RPCs.
+    ///
+    /// Returns a `PreparedSpawn` containing the child process + all data needed
+    /// for the caller to register it in the registry (phase 2, under lock).
+    pub async fn prepare_worker_spawn(
+        config: &WorkerCreateConfig,
+    ) -> Result<PreparedSpawn, String> {
+        let project_path = config.project_path.clone().unwrap_or_else(|| {
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default()
+        });
+        let project_name = std::path::Path::new(&project_path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".into());
+        let session_id = config.session.clone().unwrap_or_else(|| {
+            Uuid::new_v4().to_string()
+        });
+
+        // ── Worktree creation (SLOW: git init/add/commit, 1-3s) ──
+        let (worktree_path, worktree_info) = if let Some(ref wt_config) = config.worktree {
+            let repo = std::path::Path::new(&project_path);
+            if !repo.join(".git").exists() {
+                tracing::info!("[worktree] project is not a git repo, initializing");
+                let init = std::process::Command::new("git")
+                    .args(["-C", &project_path, "init", "-b", "main"])
+                    .output()
+                    .map_err(|e| format!("git init failed: {e}"))?;
+                if !init.status.success() {
+                    let stderr = String::from_utf8_lossy(&init.stderr);
+                    return Err(format!("git init failed: {stderr}"));
+                }
+                let _add = std::process::Command::new("git")
+                    .args(["-C", &project_path, "add", "."])
+                    .output()
+                    .map_err(|e| format!("git add failed: {e}"))?;
+                let _commit = std::process::Command::new("git")
+                    .args(["-C", &project_path, "commit", "-m", "ion: initial commit"])
+                    .output()
+                    .map_err(|e| format!("git commit failed: {e}"))?;
+                tracing::info!("[worktree] git init + initial commit done");
+            }
+            match create_worktree_advanced(&session_id, &project_path, wt_config) {
+                Ok((path, branch)) => {
+                    let info = WorktreeInfo {
+                        path: path.clone(),
+                        branch: branch.clone(),
+                        source_repo: project_path.clone(),
+                    };
+                    tracing::info!("[worktree] created: {} (branch: {})", path, branch);
+                    (path, Some(info))
+                }
+                Err(e) => return Err(format!("worktree creation failed: {e}")),
+            }
+        } else {
+            (project_path.clone(), None)
+        };
+
+        // ── Resolve model/provider/agent ──
+        let cfg = crate::config::IonConfig::load();
+        let default_model = cfg.default_model.clone().unwrap_or_else(|| "glm-4.7".to_string());
+        let default_provider = cfg.default_provider.clone().unwrap_or_else(|| "zhipuai".to_string());
+        let model = config.model.clone().unwrap_or(default_model);
+        let provider = config.provider.clone().unwrap_or(default_provider);
+        let agent_name = config.agent.clone().unwrap_or_default();
+
+        // ── Build child command args ──
+        let mut cmd_args = vec![
+            "--mode".to_string(), "rpc".to_string(),
+            "--session".to_string(), session_id.clone(),
+            "--model".to_string(), model.clone(),
+            "--provider".to_string(), provider.clone(),
+        ];
+        if !agent_name.is_empty() {
+            cmd_args.push("--agent".to_string());
+            cmd_args.push(agent_name.clone());
+        }
+
+        // ── Find ion binary ──
+        let binary = find_ion_binary();
+
+        let mut child_cmd = tokio::process::Command::new(&binary);
+        child_cmd
+            .args(&cmd_args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .current_dir(&worktree_path);
+
+        // ── Set env vars (same as original create_worker) ──
+        child_cmd.env("ION_PROJECT_ROOT", &project_path);
+        if let Some(ref mode) = config.skip_mcp && !mode.is_empty() {
+            child_cmd.env("ION_SKIP_MCP", mode);
+        }
+        if let Some(ref tools) = config.allowed_tools && !tools.is_empty() {
+            child_cmd.env("ION_ALLOWED_TOOLS", tools.join(","));
+        }
+        if let Some(ref tools) = config.disallowed_tools && !tools.is_empty() {
+            child_cmd.env("ION_DISALLOWED_TOOLS", tools.join(","));
+        }
+        if let Some(turns) = config.max_turns {
+            child_cmd.env("ION_MAX_TURNS", turns.to_string());
+        }
+        if let Ok(rt_override) = std::env::var("ION_RUNTIME_OVERRIDE") {
+            child_cmd.env("ION_RUNTIME_OVERRIDE", &rt_override);
+        }
+        for var in &["ION_FAUX_SCRIPT", "ION_FAUX_REPLY"] {
+            if let Ok(val) = std::env::var(var) {
+                child_cmd.env(var, &val);
+            }
+        }
+        for var in &["ION_RECORD", "ION_RECORD_OVERWRITE"] {
+            if let Ok(val) = std::env::var(var) {
+                child_cmd.env(var, &val);
+            }
+        }
+        if let Some(depth) = config.hook_depth {
+            child_cmd.env("ION_HOOK_DEPTH", depth.to_string());
+        }
+        if let Some(ref sp) = config.system_prompt_override {
+            child_cmd.env("ION_SYSTEM_PROMPT", sp);
+        }
+        let relation_str = match config.relation {
+            Some(WorkerRelation::System) => "system",
+            Some(WorkerRelation::Peer) => "peer",
+            _ => "child",
+        };
+        child_cmd.env("ION_SPAWN_RELATION", relation_str);
+        if config.system_prompt_override.is_some() {
+            child_cmd.env("ION_SPAWNED_BY", "skill_fork");
+        } else if config.relation == Some(WorkerRelation::System) {
+            child_cmd.env("ION_SPAWNED_BY", "singleton_init");
+        }
+        let is_independent_session = config.system_prompt_override.is_some()
+            || config.relation == Some(WorkerRelation::System);
+        if is_independent_session {
+            child_cmd.env("ION_FORK_CHILD", "1");
+        }
+
+        // ── Spawn child process (SLOW: fork+exec, 50-200ms) ──
+        let mut child = child_cmd
+            .spawn()
+            .map_err(|e| format!("failed to spawn worker: {e}"))?;
+
+        let stdin = child.stdin.take().ok_or("no stdin")?;
+        let stdout = child.stdout.take().ok_or("no stdout")?;
+        let stderr = child.stderr.take().ok_or("no stderr")?;
+
+        Ok(PreparedSpawn {
+            child,
+            stdin,
+            stdout,
+            stderr,
+            worker_id: format!("wkr_{}", &Uuid::new_v4().to_string()[..8]),
+            session_id,
+            project_path,
+            project_name,
+            worktree_path,
+            worktree_info,
+            model,
+            provider,
+            agent_name,
+        })
     }
 
     /// Create a new Worker: spawn child process, register, start IO bridge
@@ -809,6 +1022,298 @@ impl WorkerRegistry {
         // Notify overview subscribers
         self.broadcast_overview();
 
+        Ok(info)
+    }
+
+    /// Register a pre-spawned worker (phase 2: under lock, fast).
+    ///
+    /// Takes a `PreparedSpawn` (child process already forked, no lock needed for that)
+    /// and registers it in the registry. This is the fast path — only takes microseconds
+    /// under the lock (vs seconds for the full create_worker).
+    pub async fn register_prepared_worker(
+        &mut self,
+        spawn: PreparedSpawn,
+        config: &WorkerCreateConfig,
+        registry_arc: &Arc<Mutex<WorkerRegistry>>,
+    ) -> Result<WorkerInfo, String> {
+        let worker_id = spawn.worker_id.clone();
+        let session_id = spawn.session_id.clone();
+        let project_name = spawn.project_name.clone();
+        let project_path = spawn.project_path.clone();
+        let worktree_path = spawn.worktree_path.clone();
+        let model = spawn.model.clone();
+        let provider = spawn.provider.clone();
+        let agent_name = spawn.agent_name.clone();
+
+        // stderr capture
+        let stderr_path = std::env::temp_dir().join(format!("ion-worker-{}.stderr", worker_id));
+        let stderr_path_c = stderr_path.clone();
+        let stderr_wid = worker_id.clone();
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            use std::io::Write;
+            let reader = tokio::io::BufReader::new(spawn.stderr);
+            let mut lines = reader.lines();
+            if let Some(parent) = stderr_path_c.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            while let Ok(Some(line)) = lines.next_line().await {
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true).append(true).open(&stderr_path_c)
+                {
+                    let _ = writeln!(f, "{}", line);
+                }
+            }
+        });
+
+        // parent event channel
+        let parent_tx = config.parent.as_ref().and_then(|pid| {
+            self.workers.get(pid).and_then(|w| w.parent_event_tx.clone())
+        });
+
+        let mut record = WorkerRecord {
+            worker_id: worker_id.clone(),
+            session_id: session_id.clone(),
+            project: project_name.clone(),
+            project_path: project_path.clone(),
+            model: model.clone(),
+            agent: agent_name.clone(),
+            status: WorkerStatus::Busy,
+            channels: config.channels.clone().unwrap_or_default(),
+            parent: config.parent.clone(),
+            children: Vec::new(),
+            started_at: now_ms(),
+            last_heartbeat: now_ms(),
+            ready_tx: None,
+            stdout_rx: None,
+            response_rx: None,
+            child_process: Some(spawn.child),
+            stdin: Some(spawn.stdin),
+            pending: HashMap::new(),
+            event_subscribers: Vec::new(),
+            parent_event_tx: parent_tx,
+            worktree: spawn.worktree_info,
+            latest_output: VecDeque::with_capacity(5),
+            log_short: None,
+            model_size: None,
+            exit_code: None,
+            exit_reason: None,
+            stderr_path: Some(stderr_path.to_string_lossy().to_string()),
+            event_history: std::collections::VecDeque::with_capacity(200),
+            event_history_cap: 200,
+        };
+
+        // parent children
+        if let Some(ref parent_id) = config.parent && let Some(parent) = self.workers.get_mut(parent_id) {
+            parent.children.push(worker_id.clone());
+        }
+
+        // channels
+        if let Some(ref chs) = config.channels {
+            for ch in chs {
+                self.channels.entry(ch.clone()).or_default().push(worker_id.clone());
+            }
+        }
+
+        let info = WorkerInfo {
+            worker_id: worker_id.clone(),
+            session_id: session_id.clone(),
+            project: project_name.clone(),
+            status: WorkerStatus::Busy,
+            model: model.clone(),
+            agent: agent_name.clone(),
+            channels: record.channels.clone(),
+            parent: record.parent.clone(),
+            children: Vec::new(),
+        };
+
+        // stdout channel
+        let (stdout_tx, stdout_rx) = mpsc::unbounded_channel::<serde_json::Value>();
+        let (_response_tx, response_rx) = mpsc::channel::<(String, serde_json::Value)>(64);
+        record.stdout_rx = Some(stdout_rx);
+        record.response_rx = Some(response_rx);
+
+        self.workers.insert(worker_id.clone(), record);
+
+        // SessionIndex
+        {
+            use crate::session_index::{SessionIndex, SessionMeta};
+            let now = now_ms();
+            let mut idx = SessionIndex::load();
+            idx.upsert(&session_id, SessionMeta {
+                name: Some(session_id.clone()),
+                first_name: Some(session_id.clone()),
+                project: Some(worktree_path.clone()),
+                project_name: Some(project_name.clone()),
+                worktree: config.worktree.is_some(),
+                branch: None,
+                model: model.clone(),
+                agent: agent_name.clone(),
+                provider: provider.clone(),
+                token_input: 0, token_output: 0, token_cache_read: 0, token_cache_write: 0,
+                compress_count: 0, message_count: 0, turn_count: 0,
+                created_at: now, updated_at: now, error_count: 0,
+                last_thinking_level: None, last_active_tools: None, last_entry_id: None,
+                parent_session: None, parent_type: None,
+            });
+            idx.save();
+        }
+
+        // singleton user join
+        if config.relation != Some(WorkerRelation::System) {
+            self.singleton_user_join(&worker_id).await;
+        }
+
+        // stdout reader task
+        let wid = worker_id.clone();
+        let cmd_tx = self.manager_cmd_tx.clone();
+        let sub_registry = Arc::clone(registry_arc);
+        let sub_wid = worker_id.clone();
+        tokio::spawn(async move {
+            let reader = BufReader::new(spawn.stdout);
+            let mut lines = reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if line.trim().is_empty() { continue; }
+                match serde_json::from_str::<serde_json::Value>(&line) {
+                    Ok(msg) => {
+                        let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        let msg_id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+                        if msg_type == "response" && !msg_id.is_empty() {
+                            let mut reg = sub_registry.lock().await;
+                            if let Some(record) = reg.workers.get_mut(&sub_wid)
+                                && let Some(tx) = record.pending.remove(&msg_id) {
+                                let _ = tx.send(msg.clone());
+                            }
+                        }
+
+                        if msg_type == "event" {
+                            let ev_type = msg.get("event")
+                                .and_then(|e| e.get("type"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let mut reg = sub_registry.lock().await;
+                            if let Some(record) = reg.workers.get_mut(&sub_wid) {
+                                for sub in &record.event_subscribers {
+                                    let _ = sub.try_send(msg.clone());
+                                }
+                                record.event_history.push_back(msg.clone());
+                                while record.event_history.len() > record.event_history_cap {
+                                    record.event_history.pop_front();
+                                }
+                            }
+                            if ev_type == "text_delta" {
+                                if let Some(delta) = msg.get("event")
+                                    .and_then(|e| e.get("delta"))
+                                    .and_then(|v| v.as_str()) {
+                                    if let Some(record) = reg.workers.get_mut(&sub_wid) {
+                                        let mut buf: String = record.latest_output.iter().cloned().collect();
+                                        buf.push_str(delta);
+                                        record.latest_output.clear();
+                                        for chunk in buf.split('\n').last().unwrap_or("").lines() {
+                                            record.latest_output.push_back(chunk.to_string());
+                                        }
+                                    }
+                                }
+                            }
+                            if ev_type == "agent_end" || ev_type == "agent_stopped" {
+                                if let Some(record) = reg.workers.get_mut(&sub_wid) {
+                                    record.status = WorkerStatus::Idle;
+                                }
+                            }
+                            if ev_type == "agent_start" {
+                                if let Some(record) = reg.workers.get_mut(&sub_wid) {
+                                    record.status = WorkerStatus::Busy;
+                                }
+                            }
+                        }
+
+                        match msg_type {
+                            "manager_command" => { let _ = cmd_tx.send(msg); }
+                            _ => { if stdout_tx.send(msg).is_err() { break; } }
+                        }
+                    }
+                    Err(_) => {
+                        tracing::warn!("[{wid}] non-JSON: {line}");
+                    }
+                }
+            }
+            // Worker exited
+            tracing::warn!("[{wid}] stdout closed, cleaning up");
+            let mut reg = sub_registry.lock().await;
+            let exit_code = reg.workers.get_mut(&sub_wid)
+                .and_then(|r| r.child_process.as_mut())
+                .and_then(|c| c.try_wait().ok().flatten())
+                .and_then(|s| s.code());
+            if let Some(record) = reg.workers.get_mut(&sub_wid) {
+                record.exit_code = exit_code;
+            }
+            if exit_code == Some(0) || exit_code.is_none() {
+                if let Some(mut record) = reg.workers.remove(&sub_wid) {
+                    if let Some(ref mut child) = record.child_process {
+                        let _ = child.start_kill();
+                    }
+                    for ch in &record.channels {
+                        if let Some(subs) = reg.channels.get_mut(ch) {
+                            subs.retain(|id| id != &sub_wid);
+                        }
+                    }
+                    if let Some(ref parent_id) = record.parent
+                        && let Some(parent) = reg.workers.get_mut(parent_id) {
+                        parent.children.retain(|id| id != &sub_wid);
+                    }
+                }
+            } else {
+                if let Some(record) = reg.workers.get_mut(&sub_wid) {
+                    record.status = WorkerStatus::Dead;
+                    if let Some(ref stderr_path) = record.stderr_path {
+                        if let Ok(content) = std::fs::read_to_string(stderr_path) {
+                            let tail: Vec<&str> = content.lines().rev().take(10).collect::<Vec<_>>();
+                            let tail: Vec<&str> = tail.into_iter().rev().collect();
+                            let snippet = tail.join("\n");
+                            record.exit_reason = if !snippet.is_empty() {
+                                Some(format!("exit={}: {}", exit_code.unwrap_or(-1), snippet))
+                            } else {
+                                Some(format!("exit={}", exit_code.unwrap_or(-1)))
+                            };
+                        } else {
+                            record.exit_reason = Some(format!("exit={}", exit_code.unwrap_or(-1)));
+                        }
+                    }
+                }
+                if let Some(record) = reg.workers.get(&sub_wid) {
+                    let crash_parent = record.parent.clone();
+                    let crash_session = record.session_id.clone();
+                    let crash_reason = record.exit_reason.clone().unwrap_or_default();
+                    let crash_channels = record.channels.clone();
+                    if let Some(ref parent_id) = crash_parent
+                        && let Some(parent) = reg.workers.get_mut(parent_id) {
+                        if let Some(ref tx) = parent.parent_event_tx {
+                            let _ = tx.send(serde_json::json!({
+                                "type": "event",
+                                "event": {
+                                    "type": "child_crashed",
+                                    "session_id": crash_session,
+                                    "exit_reason": crash_reason,
+                                }
+                            })).await;
+                        }
+                    }
+                    for ch in &crash_channels {
+                        if let Some(subs) = reg.channels.get_mut(ch) {
+                            subs.retain(|id| id != &sub_wid);
+                        }
+                    }
+                }
+            }
+            let rc = Arc::clone(&sub_registry);
+            tokio::spawn(async move {
+                let mut r = rc.lock().await;
+                r.broadcast_overview();
+            });
+        });
+
+        self.broadcast_overview();
         Ok(info)
     }
 
