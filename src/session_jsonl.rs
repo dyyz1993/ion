@@ -390,9 +390,8 @@ pub struct SessionFile {
 impl SessionFile {
     /// Load and parse a session file for a given cwd.
     ///
-    /// 优先用全局 override 路径（fork/spawn 子 Worker 设的 <sid>.jsonl），
-    /// 否则回退到 session_path(cwd)（主 Worker 的 session.jsonl）。
-    /// 这样 worker 进程内的 SessionFile::load 能正确读到子 Worker 的 <sid>.jsonl。
+    /// 路径解析走 `resolve_session_file`（fork/spawn 子 Worker 进程内 override 指向自己的 <sid>.jsonl），
+    /// 否则回退 `session_path(cwd)`（主 Worker 的 session.jsonl）。
     pub fn load(cwd: &str) -> Option<Self> {
         let path = resolve_session_file(cwd);
         if !path.exists() {
@@ -625,6 +624,16 @@ pub fn resolve_session_file(cwd: &str) -> std::path::PathBuf {
         return path.clone();
     }
     session_path(cwd)
+}
+
+/// 只读首行解析 SessionHeader，避免为了看 id 把整个 jsonl 文件读进内存。
+/// session.jsonl 在长会话中可能数 MB，而判定目标 session 只需要 header.id。
+pub fn read_session_header(path: &std::path::Path) -> Option<SessionHeader> {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
+    let file = File::open(path).ok()?;
+    let first_line = BufReader::new(file).lines().next()?.ok()?;
+    serde_json::from_str(&first_line).ok()
 }
 
 pub fn append_raw_entry(cwd: &str, entry: &serde_json::Value) {

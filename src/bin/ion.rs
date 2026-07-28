@@ -2757,30 +2757,18 @@ fn load_session_raw_content(sid: &str) -> Option<String> {
     if sid.contains('/') || sid.ends_with(".jsonl") {
         return std::fs::read_to_string(sid).ok();
     }
-    // 通过 index 查 cwd，再算 session_path
     let index = ion::session_index::SessionIndex::load();
     let meta = index.get(sid)?;
     let cwd = meta.project.as_deref()?;
-    // 先试主 Worker 的 session.jsonl
-    let path = ion::session_jsonl::session_path(cwd);
-    if path.exists() {
-        // 确认 header.id 匹配（避免主 session.jsonl 的 header 不是目标 sid）
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Some(first_line) = content.lines().next() {
-                if let Ok(hdr) = serde_json::from_str::<serde_json::Value>(first_line) {
-                    if hdr.get("id").and_then(|v| v.as_str()) == Some(sid) {
-                        return Some(content);
-                    }
-                }
-            }
-        }
+    // 主 Worker 的 session.jsonl —— 校验 header.id（文件可能属于另一个 session）
+    let main_path = ion::session_jsonl::session_path(cwd);
+    if ion::session_jsonl::read_session_header(&main_path).is_some_and(|h| h.id == sid)
+        && let Ok(content) = std::fs::read_to_string(&main_path)
+    {
+        return Some(content);
     }
-    // 回退：子 Worker（spawn/fork 派发）写的是 <sid>.jsonl
-    let by_id_path = ion::paths::session_jsonl_path_by_id(cwd, sid);
-    if by_id_path.exists() {
-        return std::fs::read_to_string(&by_id_path).ok();
-    }
-    None
+    // 子 Worker（spawn/fork 派发）写的是 <sid>.jsonl
+    std::fs::read_to_string(ion::paths::session_jsonl_path_by_id(cwd, sid)).ok()
 }
 
 /// 打印 session 的消息树（ASCII）
@@ -5502,6 +5490,81 @@ mod tests {
     fn test_compact_model_default_none() {
         let cli = Cli::try_parse_from(["ion", "hi"]).unwrap();
         assert!(cli.compact_model.is_none());
+    }
+
+    /// E2E：load_session_raw_content 在 session.jsonl 的 header.id 与目标 sid 不匹配时，
+    /// 必须 fallthrough 到 <sid>.jsonl（spawned child worker 的独立 session 文件）。
+    /// 这是 spawn_worker 派发的 Child/Peer worker 能被 `ion session tree <sid>` 正确读取的关键。
+    #[test]
+    fn load_session_raw_content_falls_through_to_by_id_path() {
+        use std::fs;
+        // 临时 HOME，隔离 SessionIndex
+        let tmp = std::env::temp_dir().join(format!(
+            "ion-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        fs::create_dir_all(&tmp).unwrap();
+        let prev_home = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &tmp); }
+
+        // 项目目录 + 主 session.jsonl（header.id = main-sid，内容是 MAIN 标记）
+        let project = tmp.join("proj");
+        fs::create_dir_all(&project).unwrap();
+        let main_sid = "sess_main_001";
+        let child_sid = "sess_child_002";
+        let main_path = ion::session_jsonl::session_path(project.to_str().unwrap());
+        fs::create_dir_all(main_path.parent().unwrap()).unwrap();
+        fs::write(
+            &main_path,
+            format!(
+                "{{\"type\":\"session\",\"version\":1,\"id\":\"{main_sid}\",\"timestamp\":\"t\",\"cwd\":\"\"}}\n\
+                 {{\"type\":\"message\",\"id\":\"m1\",\"parentId\":\"{main_sid}\",\"timestamp\":\"t\",\"message\":{{\"role\":\"user\",\"content\":\"MAIN\"}}}}\n"
+            )
+        ).unwrap();
+        // 子 Worker 的 <child-sid>.jsonl（内容是 CHILD 标记）
+        let child_path = ion::paths::session_jsonl_path_by_id(project.to_str().unwrap(), child_sid);
+        fs::write(
+            &child_path,
+            format!(
+                "{{\"type\":\"session\",\"version\":1,\"id\":\"{child_sid}\",\"timestamp\":\"t\",\"cwd\":\"\",\"parentSession\":\"{main_sid}\"}}\n\
+                 {{\"type\":\"message\",\"id\":\"c1\",\"parentId\":\"{child_sid}\",\"timestamp\":\"t\",\"message\":{{\"role\":\"user\",\"content\":\"CHILD\"}}}}\n"
+            )
+        ).unwrap();
+        // 注册到 SessionIndex
+        let mut idx = ion::session_index::SessionIndex { sessions: std::collections::HashMap::new() };
+        for sid in [main_sid, child_sid] {
+            idx.sessions.insert(sid.into(), ion::session_index::SessionMeta {
+                name: None, first_name: None,
+                project: Some(project.to_str().unwrap().into()),
+                project_name: None, worktree: false, branch: None,
+                model: "".into(), agent: "".into(), provider: "".into(),
+                token_input: 0, token_output: 0,
+                token_cache_read: 0, token_cache_write: 0, compress_count: 0,
+                message_count: 0, turn_count: 0,
+                created_at: 0, updated_at: 0, error_count: 0,
+                last_thinking_level: None, last_active_tools: None,
+                last_entry_id: None, parent_session: None, parent_type: None,
+            });
+        }
+        idx.save();
+
+        // 查 child_sid → 必须读到 CHILD，不是 MAIN
+        let got = load_session_raw_content(child_sid).expect("应该 fallthrough 到 <sid>.jsonl");
+        assert!(got.contains("CHILD"), "应该返回 child session 内容，got: {}", got);
+        assert!(!got.contains("MAIN"), "不应该返回 main session 内容");
+
+        // 查 main_sid → 应该读 session.jsonl
+        let got_main = load_session_raw_content(main_sid).expect("main session 应能读到");
+        assert!(got_main.contains("MAIN"));
+
+        // 恢复 HOME
+        unsafe {
+            if let Some(h) = prev_home { std::env::set_var("HOME", h); }
+            else { std::env::remove_var("HOME"); }
+        }
+        let _ = fs::remove_dir_all(&tmp);
     }
 }
 
