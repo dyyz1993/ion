@@ -67,10 +67,37 @@ for i in $(seq 1 15); do
 done
 echo ""
 
-# Collect all CI scripts
-CI_SCRIPTS=$(ls tests/*_ci.sh tests/*_e2e.sh 2>/dev/null | sort)
-TOTAL=$(echo "$CI_SCRIPTS" | wc -l | tr -d ' ')
-echo "📋 Found $TOTAL CI scripts to verify"
+# Collect CI scripts — split into two batches:
+# Batch 1: CIs that don't kill the global host (run first)
+# Batch 2: CIs that kill the global host (run last, isolated)
+KILL_CIS="abort_ci export_ci file_snapshot_ci global_memory_ci hooks_handler_ci lsp_ci memory_active_ci memory_agent_ci memory_injection_ci memory_v2_processing_ci permission_store_ci rollback_impact_ci self_heal_ci session_entries_ci session_hook_ci soft_interrupt_ci sse_events_ci streaming_replay_ci streaming_throughput_ci"
+
+# All CIs sorted
+ALL_CIS=$(ls tests/*_ci.sh tests/*_e2e.sh 2>/dev/null | sort)
+
+# Split: safe CIs first, kill-host CIs last
+CI_SCRIPTS=""
+for script in $ALL_CIS; do
+    name=$(basename "$script" .sh)
+    is_kill=0
+    for k in $KILL_CIS; do
+        [ "$name" = "$k" ] && is_kill=1 && break
+    done
+    [ $is_kill -eq 0 ] && CI_SCRIPTS="$CI_SCRIPTS $script"
+done
+# Kill-host CIs at the end
+for script in $ALL_CIS; do
+    name=$(basename "$script" .sh)
+    for k in $KILL_CIS; do
+        if [ "$name" = "$k" ]; then
+            CI_SCRIPTS="$CI_SCRIPTS $script"
+            break
+        fi
+    done
+done
+
+TOTAL=$(echo "$CI_SCRIPTS" | wc -w)
+echo "📋 Found $TOTAL CI scripts (safe first, kill-host last)"
 echo ""
 
 PASS=0; FAIL=0; SKIP=0
