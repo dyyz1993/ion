@@ -29,16 +29,21 @@ cargo build --bin ion 2>&1 | tail -2
 
 # 清理旧数据
 rm -f ~/.ion/agent/global-memory.db
-# 确保 serve 没在跑
-lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null; sleep 1
+
+# 如果已有 host 在跑，复用它；否则起新的
+if ! "$ION_BIN" rpc --method list_sessions 2>/dev/null | grep -q "sessions"; then
+    lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null; sleep 1
+    timeout 60 "$ION_BIN" serve start >/tmp/mem-serve.log 2>&1 &
+    SERVE_PID=$!
+    sleep 4
+    echo "  (started new host PID=$SERVE_PID)"
+else
+    SERVE_PID=""
+    echo "  (reusing existing host)"
+fi
 
 echo ""
 echo "── Group A: 单例生命周期 ──"
-
-# 启动 serve
-timeout 30 "$ION_BIN" serve start >/tmp/mem-serve.log 2>&1 &
-SERVE_PID=$!
-sleep 4
 
 # A1: DB 创建（on_singleton_init 触发）
 if [ -f ~/.ion/agent/global-memory.db ]; then
