@@ -66,7 +66,12 @@ WORKDIR=$(mktemp -d)
 HTML="$WORKDIR/out.html"
 SOCK="$HOME/.ion/host.sock"
 # 清理上次 host 残留
-[ -e "$SOCK" ] && lsof -ti "$SOCK" 2>/dev/null | xargs kill 2>/dev/null || true
+# Reuse existing host if available
+if "$ION_BIN" rpc --method list_sessions 2>/dev/null | grep -q sessions; then
+  echo "  (reusing existing host)"
+else
+  [ -e "$SOCK" ] && lsof -ti "$SOCK" 2>/dev/null | xargs kill 2>/dev/null || true
+fi
 sleep 1
 
 cd "$WORKDIR"

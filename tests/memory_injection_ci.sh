@@ -69,8 +69,13 @@ cargo build --bin ion 2>&1 | tail -2
 
 # Clean any leftover DB / running serve from previous runs.
 rm -f "$DB_PATH"
-lsof -ti "$SOCK_PATH" 2>/dev/null | xargs kill 2>/dev/null
+# Reuse existing host if available
+if "$ION_BIN" rpc --method list_sessions 2>/dev/null | grep -q sessions; then
+  echo "  (reusing existing host)"
+else
+  lsof -ti "$SOCK_PATH" 2>/dev/null | xargs kill 2>/dev/null
 sleep 1
+fi
 
 # ──────────────────────────────────────────────────────────────
 # Step 1: Start ion serve in the background

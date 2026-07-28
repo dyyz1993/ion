@@ -31,11 +31,17 @@ pass "build ion"
 SOCK="$HOME/.ion/host.sock"
 # 清理：按 socket 杀占用者（不用 pkill，避免误杀系统进程）
 rm -f "$SOCK" 2>/dev/null
-lsof -ti "$SOCK" 2>/dev/null | xargs kill 2>/dev/null; sleep 1
+# Reuse existing host if available
+if "$ION_BIN" rpc --method list_sessions 2>/dev/null | grep -q sessions; then
+  echo "  (reusing existing host)"
+else
+  lsof -ti "$SOCK" 2>/dev/null | xargs kill 2>/dev/null; sleep 1
 
 target/debug/ion serve >/tmp/ion_session_hook_host.log 2>&1 &
 HOST_PID=$!
 sleep 2
+fi
+fi
 
 if ! kill -0 "$HOST_PID" 2>/dev/null; then
     fail "host 启动失败"; cat /tmp/ion_session_hook_host.log | tail -5; exit 1

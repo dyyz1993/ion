@@ -85,8 +85,13 @@ trap cleanup EXIT
 start_host() {
     local script="$1"; local log="$2"
     rm -f "$SOCK" 2>/dev/null
-    lsof -ti "$SOCK" 2>/dev/null | xargs kill 2>/dev/null
+# Reuse existing host if available
+if "$ION_BIN" rpc --method list_sessions 2>/dev/null | grep -q sessions; then
+  echo "  (reusing existing host)"
+else
+      lsof -ti "$SOCK" 2>/dev/null | xargs kill 2>/dev/null
     sleep 1
+fi
     TMP_PROJ_DIR=$(mktemp -d /tmp/ion_abort_test_XXXXXX)
     ION_FAUX_SCRIPT="$script" ION_STREAM_DEBUG=1 \
         ION_SESSION_DIR="$TMP_PROJ_DIR/sessions" \

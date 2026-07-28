@@ -69,11 +69,16 @@ echo ""
 echo "── Phase 1: Manager & Worker ──"
 
 # 清理残留
-lsof -ti :53293 2>/dev/null | xargs kill -9 2>/dev/null || true
+# Reuse existing host if available
+if "$ION_BIN" rpc --method list_sessions 2>/dev/null | grep -q sessions; then
+  echo "  (reusing existing host)"
+else
+  lsof -ti :53293 2>/dev/null | xargs kill -9 2>/dev/null || true
 for pid in $(ps aux | grep "target/debug/ion" | grep -v grep | awk '{print $2}' 2>/dev/null || true); do
     kill -9 "$pid" 2>/dev/null || true
 done
 sleep 1
+fi
 rm -f /Users/xuyingzhou/.ion/host.sock
 
 cargo run --bin ion -- serve start > /tmp/ion-perm-store-host.log 2>&1 &

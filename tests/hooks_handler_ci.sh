@@ -36,8 +36,13 @@ cleanup() {
     for pidfile in /tmp/ion_hh_pid_*.txt; do
         [ -f "$pidfile" ] && kill "$(cat "$pidfile")" 2>/dev/null
     done
-    lsof -ti "$SOCK" 2>/dev/null | xargs kill 2>/dev/null
+# Reuse existing host if available
+if "$ION_BIN" rpc --method list_sessions 2>/dev/null | grep -q sessions; then
+  echo "  (reusing existing host)"
+else
+      lsof -ti "$SOCK" 2>/dev/null | xargs kill 2>/dev/null
     rm -f "$SOCK"; rm -rf "$TESTDIR" /tmp/ion_hh_pid_*.txt
+fi
 }
 trap cleanup EXIT
 

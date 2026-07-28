@@ -41,8 +41,13 @@ fi
 if [ -f "$HOME/.ion/host.pid" ]; then
     kill "$(cat "$HOME/.ion/host.pid")" 2>/dev/null
 fi
-lsof -ti "$SOCK" 2>/dev/null | xargs kill 2>/dev/null
+# Reuse existing host if available
+if "$ION_BIN" rpc --method list_sessions 2>/dev/null | grep -q sessions; then
+  echo "  (reusing existing host)"
+else
+  lsof -ti "$SOCK" 2>/dev/null | xargs kill 2>/dev/null
 for i in 1 2 3 4 5; do [ ! -S "$SOCK" ] && break; sleep 1; done
+fi
 rm -f "$SOCK" "$HOME/.ion/host.pid"; sleep 2
 
 cleanup() {

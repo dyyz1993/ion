@@ -74,7 +74,12 @@ echo "-------------------------------------------"
 FAUX_A="/tmp/faux_softint.jsonl"
 echo '{"tool_call":{"name":"bash","input":{"command":"sleep 30"}}}' > "$FAUX_A"
 
-rm -f "$SOCK"; lsof -ti "$SOCK" 2>/dev/null | xargs kill 2>/dev/null; sleep 1
+# Reuse existing host if available
+if "$ION_BIN" rpc --method list_sessions 2>/dev/null | grep -q sessions; then
+  echo "  (reusing existing host)"
+else
+  rm -f "$SOCK"; lsof -ti "$SOCK" 2>/dev/null | xargs kill 2>/dev/null; sleep 1
+fi
 TMP_DIR=$(mktemp -d)
 ION_FAUX_SCRIPT="$FAUX_A" ION_SESSION_DIR="$TMP_DIR/sessions" \
     "$ION_BIN" serve --provider faux --model faux-test > /tmp/softint_host.log 2>&1 &

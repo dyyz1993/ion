@@ -31,6 +31,8 @@ rpc_call() {
 
 cleanup_serve() {
     ps aux | grep "study-rust/ion/target/debug/ion" | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null
+  # Skip cleanup if host is reusable
+  "$ION_BIN" rpc --method list_sessions 2>/dev/null | grep -q sessions && return 0
     rm -f "$HOME/.ion/host.sock" "$HOME/.ion/host.pid"
     sleep 2
 }
