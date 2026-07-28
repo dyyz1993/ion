@@ -124,7 +124,7 @@ do_upgrade() {
     if ! is_running; then
         echo "[W] ion serve is not running. Starting it first..."
         cd "$PROJECT_DIR"
-        "$ION_BIN" serve &
+        "$ION_BIN" serve ${ION_SERVE_ARGS:-} &
         local serve_pid=$!
         echo "[W] Started ion serve (PID: $serve_pid)"
         sleep 3
@@ -195,7 +195,7 @@ do_upgrade() {
     # ── Step 4: Start A_new ─────────────────────────────────────────
     echo "[W] Starting A_new..."
     cd "$PROJECT_DIR"
-    "$ION_BIN" serve &
+    "$ION_BIN" serve ${ION_SERVE_ARGS:-} &
     local NEW_PID=$!
     echo "[W] A_new started (PID: $NEW_PID)"
 
@@ -254,7 +254,7 @@ do_monitor() {
     if ! is_running; then
         echo "[W] ion serve not running. Starting..."
         cd "$PROJECT_DIR"
-        "$ION_BIN" serve &
+        "$ION_BIN" serve ${ION_SERVE_ARGS:-} &
         local pid=$!
         sleep 3
         if ! kill -0 "$pid" 2>/dev/null; then
@@ -365,7 +365,7 @@ do_monitor() {
 
         rm -f "$SOCK_PATH" 2>/dev/null
         cd "$PROJECT_DIR"
-        "$ION_BIN" serve &
+        "$ION_BIN" serve ${ION_SERVE_ARGS:-} &
         CURRENT_PID=$!
         heartbeat_failures=0
         echo "[W] A_old restarted (PID: $CURRENT_PID)"

@@ -4457,11 +4457,11 @@ async fn handle_manager_command_write(
                     reg = registry.lock().await;
                 }
 
-                // prompt 用 fire-and-forget(不等 oneshot)——
-                // agent.run 会阻塞 worker 主循环很久,如果等 oneshot,
+                // prompt/abort/steer 用 fire-and-forget(不等 oneshot)——
+                // agent.run / bash sleep 会阻塞 worker 主循环很久,如果等 oneshot,
                 // Manager 锁不释放,后续命令(如 abort)进不来。
-                // prompt 的 worker handler 会在 agent.run 前立刻 output_response(null)
-                if method == "prompt" {
+                // 这些命令的 worker handler 会在 agent.run 前立刻 output_response(null)
+                if method == "prompt" || method == "abort" || method == "steer" {
                     // 找 worker_id,用 send_command(fire-and-forget)
                     let wid = reg.workers.iter()
                         .find(|(_, w)| w.session_id == sid)

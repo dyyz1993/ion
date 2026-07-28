@@ -173,8 +173,15 @@ print(f'[faux] wrote $FAUX_SCRIPT')
 "
 # Export so watchdog-restarted host inherits it.
 export ION_FAUX_SCRIPT="$FAUX_SCRIPT"
+# Repeat last response when queue empties (multi-turn tests need this).
+export ION_FAUX_REPEAT=1
+# Pass --provider faux to watchdog-restarted serve instances too.
+export ION_SERVE_ARGS="--provider faux --model faux-test"
 
-nohup "$ION_BIN" serve > /tmp/ion_ui_host.log 2>&1 &
+# Use --provider faux so spawned workers actually use FauxProvider responses
+# (without this, workers inherit the default provider from config.json and make
+# real LLM calls, which is slow and depends on external API availability).
+nohup "$ION_BIN" serve --provider faux --model faux-test > /tmp/ion_ui_host.log 2>&1 &
 HOST_PID=$!
 disown $HOST_PID 2>/dev/null
 HOST_READY=0
