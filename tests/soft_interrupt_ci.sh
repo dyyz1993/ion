@@ -15,6 +15,8 @@ set -uo pipefail
 PASS=0; FAIL=0
 green() { echo -e "\033[32m  ✅ $1\033[0m"; }
 red()   { echo -e "\033[31m  ❌ $1\033[0m"; }
+yellow(){ echo -e "\033[33m  ⚠️  $1\033[0m"; }
+info()  { echo -e "\033[34m  ℹ️  $1\033[0m"; }
 pass() { PASS=$((PASS+1)); green "$1"; }
 fail() { FAIL=$((FAIL+1)); red   "$1"; }
 

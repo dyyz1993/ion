@@ -236,7 +236,7 @@ $ION_BIN --model opencode/deepseek-v4-flash -p "say ok in 1 word" 2>&1 | grep -q
     pass "G2: --model provider/id 已执行(输出不同)"
 
 # G3: --model with :thinking suffix (just verify it parses)
-OUTPUT_G3=$($ION_BIN -p "say ok" --model deepseek-v4-flash:low --provider opencode 2>&1) || true
+OUTPUT_G3=$($ION_BIN -p "say ok" --model glm-5.2:low --provider zai 2>&1) || true
 if ! echo "$OUTPUT_G3" | grep -qi "error.*model"; then
     pass "G3: --model model:thinking 格式可运行"
 else

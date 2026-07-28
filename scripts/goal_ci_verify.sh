@@ -29,13 +29,15 @@ echo ""
 cargo build --bin ion 2>/dev/null || { echo "❌ build failed"; exit 1; }
 echo "✅ Build OK"
 
-# ── 起 ion serve host ──
+# ── 准备环境（不起全局 host——CI 脚本自己管理 host）──
 echo ""
-echo "── Starting ion serve host ──"
+echo "── Preparing environment ──"
+
+# 确保没有残留 host
 lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null || true
 sleep 1
 
-# 临时启用 global-memory（CI 需要它）
+# 临时启用 global-memory（memory 相关 CI 需要它）
 CONFIG_FILE="$HOME/.ion/config.json"
 python3 -c "
 import json
@@ -49,26 +51,10 @@ print('  global-memory enabled for CI')
 # 清理旧 DB（避免损坏）
 rm -f "$HOME/.ion/agent/global-memory.db"* 2>/dev/null
 
-# 起 host
-ION_FAUX_REPLY="host ready" "$ION_BIN" serve > /tmp/goal_ci_host.log 2>&1 &
-HOST_PID=$!
-echo "  Host PID: $HOST_PID"
+# 清理扩展残留（extension_cli_ci 期望干净状态）
+rm -f "$HOME/.ion/agent/extensions/"*.wasm 2>/dev/null
 
-# 等待 host 就绪
-echo -n "  Waiting for host..."
-READY=0
-for i in $(seq 1 15); do
-    sleep 2
-    if "$ION_BIN" rpc --method list_sessions 2>/dev/null | grep -q "sessions"; then
-        echo " ✅ Ready (${i}x2s)"
-        READY=1
-        break
-    fi
-    echo -n "."
-done
-if [ $READY -eq 0 ]; then
-    echo " ⚠️ Host not ready, continuing anyway (some CI may fail)"
-fi
+echo "  Environment ready (no global host — CIs manage their own)"
 echo ""
 
 # Collect all CI scripts
@@ -112,11 +98,9 @@ for script in $CI_SCRIPTS; do
     echo "{\"script\":\"$name\",\"status\":\"$status\",\"exit_code\":$exit_code,\"duration_s\":$duration}" >> "$RESULTS_FILE"
 done
 
-# ── 关闭 host ──
+# ── 清理（恢复 config）──
 echo ""
-echo "── Shutting down host ──"
-kill $HOST_PID 2>/dev/null || true
-echo "  Host stopped (PID $HOST_PID)"
+echo "── Cleanup ──"
 
 # 恢复 config（禁用 global-memory）
 python3 -c "
@@ -127,6 +111,9 @@ if 'extensions' in c and 'global-memory' in c['extensions']:
     with open('$CONFIG_FILE', 'w') as f: json.dump(c, f, indent=2)
     print('  global-memory restored to disabled')
 " 2>/dev/null
+
+# 杀掉残留的 ion serve 进程
+lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null || true
 
 echo ""
 echo "════════════════════════════════════════════════════"
