@@ -45,7 +45,7 @@ rm -f "$SOCK" 2>/dev/null
 echo ""
 echo "── 启动 host ──"
 
-ION_FAUX_REPLY="历史拼接测试回复" $ION_BIN serve >/tmp/ion_host_i.log 2>&1 &
+ION_FAUX_REPLY="历史拼接测试回复" ION_FAUX_REPEAT=1 $ION_BIN serve >/tmp/ion_host_i.log 2>&1 &
 HOST_PID=$!
 sleep 2
 

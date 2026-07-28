@@ -1335,9 +1335,38 @@ fi
 
 `evolve_batch.sh` 支持一次启 container 连续跑 N 个任务，每个任务自动走完整 A→B 闭环。
 
-> **🔴 ZCode 派发 A→B 任务的铁律（硬性要求）**
+> **🔴 ZCode 与 A→B 铁律（硬性要求）**
 >
-> ZCode 派发 A→B 任务时，**必须用 Bash 工具的 `run_in_background: true`**，不能用同步方式。
+> **铁律 1：ZCode 绝不直接改主仓库源码。**
+>
+> ZCode（即 A、host 上的编排者）**绝不**用 Edit/Write 工具直接修改主仓库的以下目录/文件：
+> - `src/`（任何 `.rs` 源码）
+> - `tests/`（任何 `.rs` 集成测试源码）
+> - `Cargo.toml` / `Cargo.lock`
+> - `*-extension/`（WASM 扩展源码）
+> - `ion-provider/`
+>
+> 所有源码改动（修 bug、加功能、重构、哪怕是改一行）**必须走 A→B 流程**：ZCode 写任务 spec → `ion --host --agent coordinator "任务"` → coordinator spawn developer → developer 在 container/worktree 里改 + 自跑 CI → reviewer 审 → merger 合并。
+>
+> 这条铁律适用于**所有源码改动场景**——不只是"写新功能"。包括：bug 修复、重构、测试修复、配置改动、依赖升级。
+>
+> ZCode **可以**直接做的（不违反铁律）：
+> - 改 `docs/`、`scripts/`、`.zcode/`、`AGENTS.md` 等辅助/文档文件
+> - 跑测试验证（`cargo test`、`bash tests/xxx_ci.sh`）
+> - git 操作（add/commit **已经由 B 改好的代码**、push、branch）
+> - 写 spec、设计文档、任务清单、调研报告
+> - 读代码（Read 工具不限）
+>
+> **反面案例（禁止再犯）**：
+> - ❌ ZCode 直接 `Edit src/bin/ion.rs` 把 `--mode rpc` 分支提前——应该让 B 改
+> - ❌ ZCode 直接 `git mv src/bin/ion_worker.rs src/worker_rpc.rs`——应该让 B 改
+> - ❌ ZCode 直接改 `Cargo.toml` 删 `[[bin]] ion-worker`——应该让 B 改
+> - ✅ ZCode 写一份"合并 ion-worker 到 ion"的 spec 文档，然后 `ion --host --agent coordinator "按 docs/xxx.md 合并"` 让 B 执行
+>
+> ---
+>
+> **铁律 2：ZCode 派发 A→B 任务时，必须用 Bash 工具的 `run_in_background: true`。**
+>
 > 同步执行会被 ZCode 的 Bash 工具超时杀掉，连带杀掉 container exec 子进程。
 >
 > ```
