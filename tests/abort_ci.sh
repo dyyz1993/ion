@@ -172,9 +172,24 @@ else
     fi
 
     # 断言 2：bash sleep 进程被杀（修复 A.2：drop future 触发 kill_on_drop）
+    # 注意：用 PID 精确检测，不用 pgrep（并行 CI 环境下 pgrep 会检测到其他 CI 的 sleep）
     sleep 1  # 给 OS 一点时间清理
-    SLEEP_COUNT=$(pgrep -f "sleep 30" 2>/dev/null | wc -l | tr -d ' ')
-    if [ "${SLEEP_COUNT:-0}" -eq 0 ]; then
+    # 检测我们自己的 host 进程树里是否还有 sleep 30
+    OUR_SLEEP=$(pgrep -f "sleep 30" 2>/dev/null | while read pid; do
+        # 检查这个 sleep 的父进程链是否属于我们的 host
+        ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+        if [ -n "$ppid" ] && kill -0 "$HOST_PID" 2>/dev/null; then
+            # 向上查找进程树是否包含 HOST_PID
+            cur="$ppid"
+            for _ in 1 2 3 4 5; do
+                [ "$cur" = "$HOST_PID" ] && echo "$pid" && break
+                cur=$(ps -o ppid= -p "$cur" 2>/dev/null | tr -d ' ')
+                [ -z "$cur" ] && break
+            done
+        fi
+    done | wc -l | tr -d ' ')
+    SLEEP_COUNT="${OUR_SLEEP:-0}"
+    if [ "$SLEEP_COUNT" -eq 0 ]; then
         pass "A2: bash sleep 30 进程已清理（kill_on_drop + process_group 生效）"
     else
         fail "A2: 仍有 $SLEEP_COUNT 个 sleep 30 进程残留 — kill 未杀整个进程组"
