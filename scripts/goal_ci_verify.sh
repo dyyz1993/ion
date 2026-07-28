@@ -29,7 +29,7 @@ echo ""
 cargo build --bin ion 2>/dev/null || { echo "❌ build failed"; exit 1; }
 echo "✅ Build OK"
 
-# ── 准备环境（不起全局 host——CI 脚本自己管理 host 生命周期）──
+# ── 准备环境 + 起全局 host ──
 echo ""
 echo "── Preparing environment ──"
 
@@ -37,7 +37,7 @@ echo "── Preparing environment ──"
 lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null || true
 sleep 1
 
-# 临时启用 global-memory（memory 相关 CI 需要它，CI 自己起 host 时会用这个 config）
+# 临时启用 global-memory（memory 相关 CI 需要它）
 CONFIG_FILE="$HOME/.ion/config.json"
 python3 -c "
 import json
@@ -52,7 +52,20 @@ print('  global-memory enabled for CI')
 rm -f "$HOME/.ion/agent/global-memory.db"* 2>/dev/null
 rm -f "$HOME/.ion/agent/extensions/"*.wasm 2>/dev/null
 
-echo "  Environment ready (CIs manage their own host)"
+# 起全局 host（给需要 RPC 的 CI 用）
+ION_FAUX_REPLY="host ready" "$ION_BIN" serve > /tmp/goal_ci_host.log 2>&1 &
+HOST_PID=$!
+echo "  Host PID: $HOST_PID"
+echo -n "  Waiting..."
+for i in $(seq 1 15); do
+    sleep 2
+    if "$ION_BIN" rpc --method list_sessions 2>/dev/null | grep -q "sessions"; then
+        echo " ✅ Ready"
+        break
+    fi
+    echo -n "."
+done
+echo ""
 
 # Collect all CI scripts
 CI_SCRIPTS=$(ls tests/*_ci.sh tests/*_e2e.sh 2>/dev/null | sort)
@@ -99,7 +112,11 @@ done
 echo ""
 echo "── Cleanup ──"
 
-# 恢复 config（禁用 global-memory）
+# 关闭 host
+kill $HOST_PID 2>/dev/null || true
+lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null || true
+
+# 恢复 config
 python3 -c "
 import json
 with open('$CONFIG_FILE') as f: c = json.load(f)
@@ -108,9 +125,6 @@ if 'extensions' in c and 'global-memory' in c['extensions']:
     with open('$CONFIG_FILE', 'w') as f: json.dump(c, f, indent=2)
     print('  global-memory restored to disabled')
 " 2>/dev/null
-
-# 杀残留 host
-lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null || true
 
 echo ""
 echo "════════════════════════════════════════════════════"
