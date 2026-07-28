@@ -40,8 +40,8 @@ for i in $(seq 1 10); do
 done
 [ ! -S ~/.ion/host.sock ] && { fail "host not started"; exit 1; }
 
-SID=$($RPC --method create_worker --params '{"session":"p3-audit"}' 2>/dev/null | \
-    python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('sessionId',''))" 2>/dev/null)
+SID=$($RPC --method create_session --params '{"session":"p3-audit"}' 2>/dev/null | \
+    python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('session_id',''))" 2>/dev/null)
 [ -n "$SID" ] && pass "create_worker (SID=$SID)" || { fail "create_worker failed"; exit 1; }
 
 # 1. 执行一个 Allow 命令 → 审计日志应有 allow 记录

@@ -58,8 +58,8 @@ SUB_PID=$!
 sleep 1
 
 # ── Phase 3: Create worker ──
-SID=$($RPC --method create_worker --params '{"session":"p4-events"}' 2>/dev/null | \
-    python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('sessionId',''))" 2>/dev/null)
+SID=$($RPC --method create_session --params '{"session":"p4-events"}' 2>/dev/null | \
+    python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('session_id',''))" 2>/dev/null)
 [ -n "$SID" ] && pass "create_worker (SID=$SID)" || { fail "create_worker failed"; exit 1; }
 
 # ── Phase 4: Run bash background process (triggers extension events) ──

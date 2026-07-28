@@ -157,14 +157,14 @@ else
     exit 1
 fi
 
-# 创建 Worker
-OUT=$(quiet "$ION_BIN" rpc --session x --method create_worker --params '{"cwd":"'"$PROJECT_DIR"'"}')
-SID=$(echo "$OUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('sessionId',''))" 2>/dev/null)
+# 创建 Session（用 create_session 而非 create_worker——后者会进入 Busy 导致 call_tool 阻塞）
+OUT=$(quiet "$ION_BIN" rpc --method create_session --params '{"cwd":"'"$PROJECT_DIR"'"}')
+SID=$(echo "$OUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('session_id',''))" 2>/dev/null)
 
 if [ -n "$SID" ]; then
-    pass "create_worker (sid=${SID:0:8}...)"
+    pass "create_session (sid=${SID:0,8}...)"
 else
-    fail "create_worker"
+    fail "create_session"
     exit 1
 fi
 

@@ -52,8 +52,8 @@ echo "$MANAGER_PID" > "$HOST_PID_FILE"
 sleep 3
 ps -p $! > /dev/null 2>&1 && pass "serve start" || { fail "serve start"; exit 1; }
 
-OUT=$("$ION_BIN" rpc --session x --method create_worker --params '{"cwd":"'"$PROJECT_DIR"'"}' 2>/dev/null)
-SID=$(echo "$OUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('sessionId',''))" 2>/dev/null)
+OUT=$("$ION_BIN" rpc --session x --method create_session --params '{"cwd":"'"$PROJECT_DIR"'"}' 2>/dev/null)
+SID=$(echo "$OUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('session_id',''))" 2>/dev/null)
 [ -n "$SID" ] && pass "create_worker" || { fail "create_worker"; exit 1; }
 
 rpc() { "$ION_BIN" rpc --session "$SID" --method call_tool --params "$1" 2>/dev/null; }

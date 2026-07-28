@@ -93,8 +93,8 @@ else
 fi
 
 # 创建 Worker（cwd = 隔离测试目录，这样 settings.json 写到这里）
-OUT=$(quiet "$ION_BIN" rpc --session x --method create_worker --params '{"cwd":"'"$TEST_PROJECT"'"}')
-SID=$(echo "$OUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('sessionId',''))" 2>/dev/null)
+OUT=$(quiet "$ION_BIN" rpc --session x --method create_session --params '{"cwd":"'"$TEST_PROJECT"'"}')
+SID=$(echo "$OUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('session_id',''))" 2>/dev/null)
 
 if [ -n "$SID" ]; then
     pass "create_worker (sid=${SID:0:8}...)"

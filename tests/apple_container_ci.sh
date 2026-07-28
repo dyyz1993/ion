@@ -123,7 +123,7 @@ HOST_PID=$!
 echo $HOST_PID > "$HOST_PID_FILE"
 sleep 3
 
-SID=$($RPC --method create_worker --params '{"cwd":"/tmp"}' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('sessionId',''))")
+SID=$($RPC --method create_session --params '{"cwd":"/tmp"}' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('session_id',''))")
 if [ -z "$SID" ]; then
     pass "create_worker"
     echo "  host log: $(tail -3 /tmp/ion-ac-host.log)"
@@ -348,7 +348,7 @@ if [ $? -eq 0 ]; then
     echo $HOST_PID > "$HOST_PID_FILE"
     sleep 3
 
-    SID2=$($RPC --method create_worker --params '{"cwd":"/tmp"}' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('sessionId',''))" 2>/dev/null)
+    SID2=$($RPC --method create_session --params '{"cwd":"/tmp"}' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('session_id',''))" 2>/dev/null)
     if [ -n "$SID2" ]; then
         OUT=$($RPC --session "$SID2" --method call_tool --params '{"tool":"bash","args":{"command":"echo conflict-test"}}' 2>/dev/null)
         VAL=$(echo "$OUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('output',''))" 2>/dev/null)

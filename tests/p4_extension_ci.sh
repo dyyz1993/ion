@@ -74,8 +74,8 @@ if [ ! -S ~/.ion/host.sock ]; then
 fi
 
 # ── Phase 2: Create parent worker ──
-PARENT_JSON=$($RPC --method create_worker --params '{"session":"p4-parent"}' 2>/dev/null)
-PARENT_SID=$(echo "$PARENT_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('sessionId',''))" 2>/dev/null)
+PARENT_JSON=$($RPC --method create_session --params '{"session":"p4-parent"}' 2>/dev/null)
+PARENT_SID=$(echo "$PARENT_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('session_id',''))" 2>/dev/null)
 PARENT_WID=$(echo "$PARENT_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('workerId',''))" 2>/dev/null)
 
 if [ -n "$PARENT_SID" ]; then
