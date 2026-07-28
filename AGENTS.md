@@ -544,8 +544,12 @@ ion rpc --session sess_xxx --method get_flags \
 | `src/lsp_extension.rs` | LSP Extension（多语言诊断：cargo check / tsc / go vet / py_compile / HTML 标签匹配） |
 | `src/tool_loop_detector.rs` | Tool Loop Detector（防 LLM 重复调同一工具死循环） |
 | `src/auto_session_title.rs` | Auto Session Title（首轮启发式标题生成） |
+| `src/rules_engine.rs` | **Rules Engine**（项目规则注入：`.ion/rules/*.md` frontmatter glob 匹配 → on_system_prompt 注入 XML） |
+| `src/learning_extension.rs` | **Learning Extension** Phase 2（session 分析：has_write_operations + redact_messages + should_extract） |
+| `src/skill_distillation.rs` | **Skill Distillation** Phase 3（LLM 提炼技能：run_skill_distillation + summarize_args + resolve_session_file） |
+| `src/secret_detector.rs` | **Secret Detector** Phase 1（API key/token 检测 + redact：detect_secrets + scan_known_prefixes + redact_secrets） |
 | `src/agent/plan_extension.rs` + `src/agent/plan_tool.rs` | 内置 plan 工具（plan_enter/exit/add/list/done/approve + strict_mode 强制审批）|
-| `src/hooks/`（规划中） | Hooks 系统：HooksConfig + HookExtension + 5 handler 执行引擎（command/http/prompt/agent/mcp_tool），[详情](./docs/design/HOOKS_AND_OUTLINE_SYNC.md) |
+| `src/hooks/` | Hooks 系统：HooksConfig + HookExtension + 5 handler 执行引擎（command/http/prompt/agent/mcp_tool），[详情](./docs/design/HOOKS_AND_OUTLINE_SYNC.md) |
 
 ## 架构
 
@@ -969,6 +973,41 @@ ion --mode rpc           → 内部 Worker 子进程 (JSONL over stdin/stdout)
 - **唯一出口**：给主仓库提 GitHub Issue（带日志证据），不直接改 config/skill/代码
 - **设计文档**：[docs/design/GOAL_SUPERVISOR.md](./docs/design/GOAL_SUPERVISOR.md) §8
 - **验证**: 12 单元测试 + goal_evolver_ci 18 checks 全过 ✅
+
+### 📏 Rules Engine（项目规则注入，已完成）
+
+- **机制**：读 `.ion/rules/*.md` 文件的 frontmatter（`globs: ["*.rs"]`），根据当前工作文件路径 glob 匹配，匹配中的规则注入到 `<project_rules>` XML 块到 system prompt
+- **glob 支持**：`*.rs` / `**/*` / `?` / 精确路径（自研 `glob_match`，不依赖外部 crate）
+- **frontmatter 解析**：数组 `[a, b]` / 逗号分隔 `a, b` / 单值 / 无 frontmatter（降级为全文匹配）
+- **extension_rpc**：`list`（列全部规则）/ `match`（按文件路径匹配）/ unknown_method 报错
+- **特殊字符转义**：规则内容中的 `<>&` 自动转义为 XML entity
+- **三套安全机制区分**：
+  - `rules_engine` → 规则注入（LLM 看到的行为指导，软约束）
+  - `command_guard` → 命令拦截（bash 黑白名单，硬拦截）
+  - `permission_extension` → 文件权限（read/write/delete 放行/拒绝，硬拦截）
+- **验证**: 28 单元测试全过 ✅
+
+### 📚 Learning Extension（学习系统 Phase 1-3，已完成）
+
+- **Phase 1 — Secret Detector**（`src/secret_detector.rs`，~390 行）：
+  - `detect_secrets(text)` — 扫描 API key / token / 密码（正则 + 已知前缀双模式）
+  - `redact_secrets(text)` — 替换敏感信息为 `<REDACTED:xxx>`
+  - `scan_known_prefixes(text)` — sk- / ak- / ghp_ / AKIA 等已知前缀检测
+  - **验证**: 14 单元测试
+- **Phase 2 — LearningExtension**（`src/learning_extension.rs`，~280 行）：
+  - `should_extract(session)` — 判断 session 是否值得提炼（有 write 操作 + 足够长度）
+  - `redact_messages(messages)` — 消息脱敏（调用 Phase 1 的 secret detector）
+  - `has_write_operations(entries)` — 检测 session 是否有文件写入操作
+  - `analyze_session(entries)` — 分析 session 内容（工具使用 / 文件改动 / 错误处理）
+  - **验证**: 12 单元测试
+- **Phase 3 — Skill Distillation**（`src/skill_distillation.rs`，~400 行）：
+  - `run_skill_distillation(session_id, api_registry)` — 主入口：读 session → 脱敏 → LLM 提炼 → 存技能
+  - `resolve_session_file(session_id)` — 定位 session JSONL 文件
+  - `count_live_messages(entries)` — 统计有效消息数（跳过 system/deleted）
+  - `extract_block_text(content)` — 提取消息文本块
+  - `summarize_args(args)` — 工具参数摘要（截断长参数）
+  - `resolve_api_key_for(provider)` — 从 auth.json 解析 API key
+  - **验证**: 21 单元测试
 
 ### 🔌 MCP 系统（Model Context Protocol，Phase 1-4 全部实现）
 
@@ -1506,7 +1545,7 @@ bash scripts/evolve-run.sh "任务描述"             # 同步 + 守门 + HTML �
 
 | 套件 | 数量 | 覆盖 |
 |------|------|------|
-| lib tests (核心逻辑) | 938 | Agent/Permission/Retry/CommandGuard/Session/SessionTree/GlobalMemory/Memory/Worker/MessageRetrieval/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact/FileSnapshot/RulesEngine/FileTimeGuard/ContextReclaimer/TierModels/Hooks/StoredDecision/WasmExtension/PlanExtension/PlanTool/**Monitor(含 20 validate tests)**/**SelfHeal(health/max_turns/stale)**/**LSP(11 parse/format tests)**/**ToolLoopDetector(6 tests)**/**AutoSessionTitle(7 tests)**/**PermissionProfile(autopilot)**/**GoalSupervisor(35 tests: data structs/checks/guards/similarity/logging/progress analysis/goal_refine/drift detection)**/**GoalEvolver(12 tests)** |
+| lib tests (核心逻辑) | 938 | Agent(155: tool/context_index/extension/permission/compact/memory)/Permission/Retry/CommandGuard/Session/SessionTree(42)/GlobalMemory(56: count/dedup/FTS5)/Memory/Worker/MessageRetrieval(27)/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact/FileSnapshot(69: object_store/zstd/diff/GC/approval)/**RulesEngine(28: glob/frontmatter/inject)**/**FileTimeGuard**/**ContextReclaimer**/**TierModels**/**Hooks(39)**/**StoredDecision**/**WasmExtension(13: path_safety)**/**PlanExtension/PlanTool**/**Monitor(25: 含 20 validate tests)**/**SelfHeal(health/max_turns/stale)**/**LSP(14: parse/format tests)**/**ToolLoopDetector(6)**/**AutoSessionTitle(7)**/**PermissionProfile(autopilot)**/**GoalSupervisor(35)**/**GoalEvolver(12)**/**SecretDetector(14)**/**LearningExtension(12)**/**SkillDistillation(21)**/**MCP(20)**/**BackendRegistry(20)**/**Runtime(13)**/**Pool(13)**/**Workflow(13)**/**EventBus(12)**/**Queue(15)**/**Export(12)** |
 | unit_rpc_test (RPC 协议) | 20 | U1-U20 RPC 命令覆盖 + 接口格式兼容 |
 | manager_integration (集成) | 25 | Manager + Worker + 事件 + UI + 消息拉取 |
 | session_tree_test (集成) | 4 | only-append 审计/branch 接 leaf/全操作序列 |
