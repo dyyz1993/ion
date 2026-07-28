@@ -41,7 +41,6 @@ target/debug/ion serve >/tmp/ion_session_hook_host.log 2>&1 &
 HOST_PID=$!
 sleep 2
 fi
-fi
 
 if ! kill -0 "$HOST_PID" 2>/dev/null; then
     fail "host 启动失败"; cat /tmp/ion_session_hook_host.log | tail -5; exit 1

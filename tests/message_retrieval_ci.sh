@@ -651,7 +651,7 @@ echo "  本组验证「字段存在 + 类型正确」，真实耗时由真实 LL
 P_DIR=$(mktemp -d)
 P_HOST_LOG="/tmp/ion_mr_p_host.log"
 # 清理可能残留的 host（前面 Group 的 host 或手动测试残留）
-pkill -f "target/debug/ion serve" 2>/dev/null || true
+lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null || true
 rm -f "$HOME/.ion/host.sock"
 sleep 1
 # 不用 timeout（会被递归 idle 关或脚本末尾手动 kill）
@@ -697,7 +697,7 @@ fi
 # 清理 host（精确 PID 优先 + 完整路径兜底，按 AGENTS.md 规范）
 kill "$P_HOST_PID" 2>/dev/null || true
 wait "$P_HOST_PID" 2>/dev/null || true
-pkill -f "target/debug/ion serve" 2>/dev/null || true
+lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null || true
 rm -f "$HOME/.ion/host.sock"
 rm -rf "$P_DIR"
 

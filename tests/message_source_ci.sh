@@ -37,8 +37,8 @@ echo "════════════════════════�
 
 cargo build --bin ion 2>/dev/null && pass "build" || { fail "build"; exit 1; }
 
-# 清理残留
-pkill -f "target/debug/ion serve" 2>/dev/null || true
+# 清理残留（精确 PID，不用 pkill 避免误杀并行 CI 的 host）
+lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null || true
 rm -f "$HOME/.ion/host.sock"
 sleep 1
 
@@ -166,7 +166,7 @@ fi
 # ──────────────────────────────────────────────────────────
 kill "$HOST_PID" 2>/dev/null || true
 wait "$HOST_PID" 2>/dev/null || true
-pkill -f "target/debug/ion serve" 2>/dev/null || true
+rm -f "$HOME/.ion/host.sock" 2>/dev/null
 rm -f "$HOME/.ion/host.sock"
 rm -rf "$D"
 

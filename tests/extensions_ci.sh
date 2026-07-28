@@ -96,7 +96,7 @@ cp target/wasm32-wasip1/release/plan_extension.wasm "$EXT_DIR/"
 green "✅ wasm 安装到 $EXT_DIR"
 
 # 杀残留 serve + 清 host.sock
-pkill -f "target/debug/ion serve" 2>/dev/null
+lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null || true
 sleep 1
 rm -f "$HOME/.ion/host.sock" "$HOME/.ion/host.pid" 2>/dev/null
 
