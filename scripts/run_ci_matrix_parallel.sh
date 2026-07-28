@@ -95,7 +95,8 @@ mkdir -p /tmp/ci-results
 # ─── Gather + filter scripts ──────────────────────────────────────────────
 ALL_SCRIPTS=$(ls tests/*_ci.sh tests/scenario2_ci.sh tests/team_e2e.sh 2>/dev/null | sort -u)
 
-SKIP_LIST=""
+# Skip CIs that need real cargo test/build (cargo lock contention in parallel)
+SKIP_LIST="goal_supervisor_ci goal_supervisor_e2e goal_evolver_ci"
 
 FILTERED=""
 SKIPPED=""
