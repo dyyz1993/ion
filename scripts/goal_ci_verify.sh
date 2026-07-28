@@ -29,7 +29,7 @@ echo ""
 cargo build --bin ion 2>/dev/null || { echo "❌ build failed"; exit 1; }
 echo "✅ Build OK"
 
-# ── 准备环境 + 起全局 host ──
+# ── 准备环境（不起全局 host——CI 脚本自己管理 host）──
 echo ""
 echo "── Preparing environment ──"
 
@@ -52,20 +52,7 @@ print('  global-memory enabled for CI')
 rm -f "$HOME/.ion/agent/global-memory.db"* 2>/dev/null
 rm -f "$HOME/.ion/agent/extensions/"*.wasm 2>/dev/null
 
-# 起全局 host（给需要 RPC 的 CI 用）
-ION_FAUX_REPLY="host ready" "$ION_BIN" serve > /tmp/goal_ci_host.log 2>&1 &
-HOST_PID=$!
-echo "  Host PID: $HOST_PID"
-echo -n "  Waiting..."
-for i in $(seq 1 15); do
-    sleep 2
-    if "$ION_BIN" rpc --method list_sessions 2>/dev/null | grep -q "sessions"; then
-        echo " ✅ Ready"
-        break
-    fi
-    echo -n "."
-done
-echo ""
+echo "  Environment ready (each CI manages its own host)"
 
 # Collect CI scripts — split into two batches:
 # Batch 1: CIs that don't kill the global host (run first)
@@ -155,8 +142,7 @@ done
 echo ""
 echo "── Cleanup ──"
 
-# 关闭 host
-kill $HOST_PID 2>/dev/null || true
+# 关闭残留 host
 lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null || true
 
 # 恢复 config
