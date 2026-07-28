@@ -13,7 +13,7 @@ use crate::agent::extension::Extension;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OnceCell};
 
 // ── v2: concurrency + consumer policy enums ──
 //
@@ -217,6 +217,10 @@ pub struct MonitorExtension {
     statuses: Arc<Mutex<HashMap<String, MonitorStatus>>>,
     /// T3: Active pipeline state, persisted across serve restarts.
     active_pipelines: Arc<Mutex<Vec<ActivePipeline>>>,
+    /// Registry reference — captured from `on_singleton_post_init` so that
+    /// the `add` RPC (which goes through `on_extension_rpc` and has no
+    /// registry parameter) can spawn new monitor loops at runtime.
+    registry: OnceCell<Arc<tokio::sync::Mutex<crate::worker_registry::WorkerRegistry>>>,
     name: String,
 }
 
@@ -226,6 +230,7 @@ impl MonitorExtension {
             monitors: Arc::new(Mutex::new(Vec::new())),
             statuses: Arc::new(Mutex::new(HashMap::new())),
             active_pipelines: Arc::new(Mutex::new(Vec::new())),
+            registry: OnceCell::new(),
             name: "monitor".into(),
         }
     }
@@ -509,182 +514,68 @@ impl MonitorExtension {
 
         (errors, warnings)
     }
-}
+    /// Spawn the interval loop for a monitor definition.
+    ///
+    /// Called from:
+    /// - `on_singleton_post_init` for each monitor loaded at startup
+    /// - `add` RPC handler so newly-added monitors activate immediately
+    ///   (without requiring a serve restart).
+    ///
+    /// This initializes the status entry and spawns a tokio task that ticks
+    /// every `interval_secs`, runs the script, and routes the output per
+    /// `trigger_mode` and `mode`.
+    async fn spawn_monitor_for_def(
+        def: MonitorDef,
+        registry: Arc<tokio::sync::Mutex<crate::worker_registry::WorkerRegistry>>,
+        statuses: Arc<Mutex<HashMap<String, MonitorStatus>>>,
+    ) {
+        let reg = registry;
+        let stats = statuses;
+        let name = def.name.clone();
+        let interval = def.interval_secs;
+        let script = def.script.clone();
+        let agent = def.agent.clone();
+        let prompt_tpl = def.prompt_template.clone();
+        // v2: capture concurrency + consumer policy for the trigger loop
+        let mode = def.mode;
+        let trigger_mode = def.trigger_mode;
+        let max_concurrent = def.max_concurrent;
+        let cooldown_secs = def.cooldown_secs;
+        // v2: per-monitor runtime state (queue, active counter, last trigger time)
+        let pending_queue = Arc::new(Mutex::new(
+            std::collections::VecDeque::<String>::new()
+        ));
+        let active_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        // Initialize last_trigger far in the past so the first tick can fire.
+        let last_trigger = Arc::new(Mutex::new(
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(cooldown_secs.max(1) + 1))
+                .unwrap_or_else(std::time::Instant::now)
+        ));
 
-/// Captured output of a script run, used by the `test` dry-run RPC.
-#[derive(Clone, Debug)]
-#[derive(PartialEq)]  // Debug already derived elsewhere; only add PartialEq
-struct ScriptRun {
-    stdout: String,
-    stderr: String,
-    exit_ok: bool,
-    exit_code: i32,
-}
-
-#[async_trait::async_trait]
-impl Extension for MonitorExtension {
-    fn name(&self) -> &str { &self.name }
-
-    fn is_singleton(&self) -> bool { true }
-    fn singleton_key(&self) -> &str { "monitor" }
-
-    async fn on_singleton_init(&self) -> AgentResult<()> {
-        // Load monitor definitions from project .ion/monitors/
-        let project_monitors = std::path::Path::new(".ion/monitors");
-        let global_monitors = crate::paths::root().join("monitors");
-
-        let mut loaded = Vec::new();
-        loaded.extend(Self::load_from_dir(&project_monitors));
-        loaded.extend(Self::load_from_dir(&global_monitors));
-
-        tracing::info!("[monitor] loaded {} monitor definition(s)", loaded.len());
-
-        let mut monitors = self.monitors.lock().await;
-        *monitors = loaded;
-
-        // T3: load persisted active pipeline state so a restarted serve knows
-        // which monitor keys are already being processed.
-        let persisted = Self::load_active();
-        if !persisted.is_empty() {
-            tracing::info!(
-                "[monitor] restored {} active pipeline(s) from disk",
-                persisted.len()
-            );
-        }
-        let mut active = self.active_pipelines.lock().await;
-        *active = persisted;
-
-        Ok(())
-    }
-
-    async fn on_singleton_post_init(
-        &self,
-        registry: &Arc<tokio::sync::Mutex<crate::worker_registry::WorkerRegistry>>,
-    ) -> AgentResult<()> {
-        let monitors = self.monitors.lock().await.clone();
-        let statuses = Arc::clone(&self.statuses);
-
-        // ── Built-in health monitor (meta self-healing) ──
-        // Checks serve health every 60s: dead workers, stale count, memory.
-        // Emits monitor_serve_unhealthy event when anomalies detected.
-        // This is NOT a user-defined monitor — it's always present in serve mode.
+        // Initialize status
         {
-            let reg = Arc::clone(registry);
-            let stats = Arc::clone(&statuses);
-            tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(
-                    tokio::time::Duration::from_secs(60)
-                );
-                ticker.set_missed_tick_behavior(
-                    tokio::time::MissedTickBehavior::Skip
-                );
-                loop {
-                    ticker.tick().await;
-                    let (dead, stale, busy, idle, total) = {
-                        let g = reg.lock().await;
-                        let workers: Vec<_> = g.workers.values().collect();
-                        let dead = workers.iter().filter(|w| w.status == crate::worker_registry::WorkerStatus::Dead).count();
-                        let stale = workers.iter().filter(|w| w.status == crate::worker_registry::WorkerStatus::Stale).count();
-                        let busy = workers.iter().filter(|w| w.status == crate::worker_registry::WorkerStatus::Busy).count();
-                        let idle = workers.iter().filter(|w| w.status == crate::worker_registry::WorkerStatus::Idle).count();
-                        (dead, stale, busy, idle, workers.len())
-                    };
-
-                    // GC dead workers if > 3
-                    if dead > 3 {
-                        tracing::warn!(
-                            "[health] {} dead workers, triggering gc_dead_workers",
-                            dead
-                        );
-                        let mut g = reg.lock().await;
-                        g.gc_dead_workers(300); // remove dead workers older than 5 min
-                        Self::emit_health_event(
-                            &reg,
-                            "monitor_serve_unhealthy",
-                            serde_json::json!({
-                                "issue": "too_many_dead_workers",
-                                "dead_count": dead,
-                                "total_workers": total,
-                                "action": "gc_triggered"
-                            })
-                        ).await;
-                    }
-
-                    // Alert if > 5 stale workers (possible zombie accumulation)
-                    if stale > 5 {
-                        tracing::warn!(
-                            "[health] {} stale workers detected (possible zombie accumulation)",
-                            stale
-                        );
-                        Self::emit_health_event(
-                            &reg,
-                            "monitor_serve_unhealthy",
-                            serde_json::json!({
-                                "issue": "too_many_stale_workers",
-                                "stale_count": stale,
-                                "total_workers": total
-                            })
-                        ).await;
-                    }
-
-                    // Periodic health log (every check, not just anomalies)
-                    tracing::info!(
-                        "[health] workers: total={} busy={} idle={} stale={} dead={}",
-                        total, busy, idle, stale, dead
-                    );
-                }
+            let mut s = stats.lock().await;
+            s.insert(name.clone(), MonitorStatus {
+                name: name.clone(),
+                enabled: true,
+                last_run: None,
+                last_result: "starting".into(),
+                trigger_count: 0,
+                // v2 status fields
+                skip_count: 0,
+                queue_length: 0,
+                active_workers: 0,
+                last_error: None,
+                consecutive_failures: 0,
+                last_spawned_worker: None,
             });
-            tracing::info!("[monitor] built-in health monitor started (60s interval)");
         }
 
-        for def in monitors.into_iter().filter(|m| m.enabled) {
-            let reg = Arc::clone(registry);
-            let stats = Arc::clone(&statuses);
-            let name = def.name.clone();
-            let interval = def.interval_secs;
-            let script = def.script.clone();
-            let agent = def.agent.clone();
-            let prompt_tpl = def.prompt_template.clone();
-            // v2: capture concurrency + consumer policy for the trigger loop
-            let mode = def.mode;
-            let trigger_mode = def.trigger_mode;
-            let max_concurrent = def.max_concurrent;
-            let cooldown_secs = def.cooldown_secs;
-            // v2: per-monitor runtime state (queue, active counter, last trigger time)
-            let pending_queue = Arc::new(Mutex::new(
-                std::collections::VecDeque::<String>::new()
-            ));
-            let active_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
-            // Initialize last_trigger far in the past so the first tick can fire.
-            let last_trigger = Arc::new(Mutex::new(
-                std::time::Instant::now()
-                    .checked_sub(std::time::Duration::from_secs(cooldown_secs.max(1) + 1))
-                    .unwrap_or_else(std::time::Instant::now)
-            ));
-
-            // Initialize status
-            {
-                let mut s = stats.lock().await;
-                s.insert(name.clone(), MonitorStatus {
-                    name: name.clone(),
-                    enabled: true,
-                    last_run: None,
-                    last_result: "starting".into(),
-                    trigger_count: 0,
-                    // v2 status fields
-                    skip_count: 0,
-                    queue_length: 0,
-                    active_workers: 0,
-                    last_error: None,
-                    consecutive_failures: 0,
-                    last_spawned_worker: None,
-                });
-            }
-
-            tracing::info!(
-                "[monitor] starting '{}' (interval={}s, agent={})",
-                name, interval, agent
-            );
+        tracing::info!(
+            "[monitor] starting '{}' (interval={}s, agent={})",
+            name, interval, agent
+        );
 
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(
@@ -887,37 +778,49 @@ impl Extension for MonitorExtension {
                             let reg_for_spawn = Arc::clone(&reg);
                             let stats_for_spawn = Arc::clone(&stats);
                             let monitor_name_for_spawn = name.clone();
-                            // Use fire-and-forget via tokio::spawn + try_lock_timeout
-                            // to avoid blocking the registry lock during create_worker.
+                            // Use prepare_worker_spawn (NO lock) + register_prepared_worker (short lock).
+                            // This avoids holding the registry lock during worktree creation + child spawn.
+                            let reg_for_spawn_clone = Arc::clone(&reg_for_spawn);
                             tokio::spawn(async move {
-                                // Try to acquire lock with timeout (don't block forever)
-                                let reg_guard = match tokio::time::timeout(
-                                    std::time::Duration::from_secs(5),
-                                    reg_for_spawn.lock(),
-                                ).await {
-                                    Ok(g) => g,
-                                    Err(_) => {
-                                        tracing::warn!("[monitor] timeout waiting for registry lock, skipping spawn for {}", monitor_name_for_spawn);
+                                let spawn_config = crate::worker_registry::WorkerCreateConfig {
+                                    agent: Some(agent_for_spawn.clone()),
+                                    initial_prompt: Some(prompt_for_spawn.clone()),
+                                    relation: Some(crate::worker_registry::WorkerRelation::System),
+                                    hook_depth: Some(0),
+                                    ..Default::default()
+                                };
+
+                                // Phase 1: prepare (NO lock — worktree + spawn child process)
+                                let prepared = match crate::worker_registry::WorkerRegistry::prepare_worker_spawn(&spawn_config).await {
+                                    Ok(p) => p,
+                                    Err(e) => {
+                                        tracing::warn!("[monitor] prepare_worker_spawn failed for {}: {}", monitor_name_for_spawn, e);
                                         return;
                                     }
                                 };
-                                let mut reg_guard = reg_guard;
-                                match reg_guard.create_worker(
-                                    crate::worker_registry::WorkerCreateConfig {
-                                        agent: Some(agent_for_spawn.clone()),
-                                        initial_prompt: Some(prompt_for_spawn.clone()),
-                                        relation: Some(crate::worker_registry::WorkerRelation::System),
-                                        hook_depth: Some(0),
-                                        ..Default::default()
-                                    },
-                                    &reg_for_spawn,
+
+                                // Phase 2: register (SHORT lock — just insert into registry)
+                                let mut reg_guard = match tokio::time::timeout(
+                                    std::time::Duration::from_secs(5),
+                                    reg_for_spawn_clone.lock(),
+                                ).await {
+                                    Ok(g) => g,
+                                    Err(_) => {
+                                        tracing::warn!("[monitor] timeout waiting for registry lock (register phase), skipping spawn for {}", monitor_name_for_spawn);
+                                        return;
+                                    }
+                                };
+                                match reg_guard.register_prepared_worker(
+                                    prepared,
+                                    &spawn_config,
+                                    &reg_for_spawn_clone,
                                 ).await {
                                     Ok(info) => {
                                         Self::emit_event("monitor_spawned", serde_json::json!({
                                             "name": &monitor_name_for_spawn,
                                             "worker_id": &info.worker_id,
                                             "mode": "serial_skip"
-                                        }), &reg_for_spawn).await;
+                                        }), &reg_for_spawn_clone).await;
                                         // Record the spawned worker id so next tick can check it.
                                         let mut s = stats_for_spawn.lock().await;
                                         if let Some(st) = s.get_mut(&monitor_name_for_spawn) {
@@ -987,6 +890,7 @@ impl Extension for MonitorExtension {
                             // Spawn new worker for this prompt.
                             let agent_for_spawn = agent.clone();
                             let reg_for_spawn = Arc::clone(&reg);
+                            let reg_for_spawn_clone = Arc::clone(&reg_for_spawn);
                             let stats_for_spawn = Arc::clone(&stats);
                             let monitor_name_for_spawn = name.clone();
                             tokio::spawn(async move {
@@ -1006,7 +910,7 @@ impl Extension for MonitorExtension {
                                             "name": &monitor_name_for_spawn,
                                             "worker_id": &info.worker_id,
                                             "mode": "serial_queue"
-                                        }), &reg_for_spawn).await;
+                                        }), &reg_for_spawn_clone).await;
                                         let mut s = stats_for_spawn.lock().await;
                                         if let Some(st) = s.get_mut(&monitor_name_for_spawn) {
                                             st.last_spawned_worker = Some(info.worker_id.clone());
@@ -1037,6 +941,7 @@ impl Extension for MonitorExtension {
                                 let prompt_for_spawn = prompt.clone();
                                 let agent_for_spawn = agent.clone();
                                 let reg_for_spawn = Arc::clone(&reg);
+                                let reg_for_spawn_clone = Arc::clone(&reg_for_spawn);
                                 tokio::spawn(async move {
                                     let _ac = ActiveGuard::new(ac, ac_name.clone());
                                     let mut reg_guard = reg_for_spawn.lock().await;
@@ -1068,7 +973,7 @@ impl Extension for MonitorExtension {
                                             "name": &ac_name,
                                             "worker_id": &info.worker_id,
                                             "mode": "concurrent"
-                                        }), &reg_for_spawn).await,
+                                        }), &reg_for_spawn_clone).await,
                                         Err(e) => tracing::error!(
                                             "[monitor] failed to create worker: {e}"
                                         ),
@@ -1092,10 +997,147 @@ impl Extension for MonitorExtension {
                     *last_trigger.lock().await = std::time::Instant::now();
                 }
             });
+    }
+
+}
+
+/// Captured output of a script run, used by the `test` dry-run RPC.
+#[derive(Clone, Debug)]
+#[derive(PartialEq)]  // Debug already derived elsewhere; only add PartialEq
+struct ScriptRun {
+    stdout: String,
+    stderr: String,
+    exit_ok: bool,
+    exit_code: i32,
+}
+
+#[async_trait::async_trait]
+impl Extension for MonitorExtension {
+    fn name(&self) -> &str { &self.name }
+
+    fn is_singleton(&self) -> bool { true }
+    fn singleton_key(&self) -> &str { "monitor" }
+
+    async fn on_singleton_init(&self) -> AgentResult<()> {
+        // Load monitor definitions from project .ion/monitors/
+        let project_monitors = std::path::Path::new(".ion/monitors");
+        let global_monitors = crate::paths::root().join("monitors");
+
+        let mut loaded = Vec::new();
+        loaded.extend(Self::load_from_dir(&project_monitors));
+        loaded.extend(Self::load_from_dir(&global_monitors));
+
+        tracing::info!("[monitor] loaded {} monitor definition(s)", loaded.len());
+
+        let mut monitors = self.monitors.lock().await;
+        *monitors = loaded;
+
+        // T3: load persisted active pipeline state so a restarted serve knows
+        // which monitor keys are already being processed.
+        let persisted = Self::load_active();
+        if !persisted.is_empty() {
+            tracing::info!(
+                "[monitor] restored {} active pipeline(s) from disk",
+                persisted.len()
+            );
+        }
+        let mut active = self.active_pipelines.lock().await;
+        *active = persisted;
+
+        Ok(())
+    }
+
+    async fn on_singleton_post_init(
+        &self,
+        registry: &Arc<tokio::sync::Mutex<crate::worker_registry::WorkerRegistry>>,
+    ) -> AgentResult<()> {
+        // Capture the registry so the `add` RPC (which has no registry param)
+        // can spawn new monitor loops at runtime.
+        let _ = self.registry.set(Arc::clone(registry));
+
+        let monitors = self.monitors.lock().await.clone();
+        let statuses = Arc::clone(&self.statuses);
+
+        // ── Built-in health monitor (meta self-healing) ──
+        // Checks serve health every 60s: dead workers, stale count, memory.
+        // Emits monitor_serve_unhealthy event when anomalies detected.
+        // This is NOT a user-defined monitor — it's always present in serve mode.
+        {
+            let reg = Arc::clone(registry);
+            let stats = Arc::clone(&statuses);
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(
+                    tokio::time::Duration::from_secs(60)
+                );
+                ticker.set_missed_tick_behavior(
+                    tokio::time::MissedTickBehavior::Skip
+                );
+                loop {
+                    ticker.tick().await;
+                    let (dead, stale, busy, idle, total) = {
+                        let g = reg.lock().await;
+                        let workers: Vec<_> = g.workers.values().collect();
+                        let dead = workers.iter().filter(|w| w.status == crate::worker_registry::WorkerStatus::Dead).count();
+                        let stale = workers.iter().filter(|w| w.status == crate::worker_registry::WorkerStatus::Stale).count();
+                        let busy = workers.iter().filter(|w| w.status == crate::worker_registry::WorkerStatus::Busy).count();
+                        let idle = workers.iter().filter(|w| w.status == crate::worker_registry::WorkerStatus::Idle).count();
+                        (dead, stale, busy, idle, workers.len())
+                    };
+
+                    // GC dead workers if > 3
+                    if dead > 3 {
+                        tracing::warn!(
+                            "[health] {} dead workers, triggering gc_dead_workers",
+                            dead
+                        );
+                        let mut g = reg.lock().await;
+                        g.gc_dead_workers(300); // remove dead workers older than 5 min
+                        Self::emit_health_event(
+                            &reg,
+                            "monitor_serve_unhealthy",
+                            serde_json::json!({
+                                "issue": "too_many_dead_workers",
+                                "dead_count": dead,
+                                "total_workers": total,
+                                "action": "gc_triggered"
+                            })
+                        ).await;
+                    }
+
+                    // Alert if > 5 stale workers (possible zombie accumulation)
+                    if stale > 5 {
+                        tracing::warn!(
+                            "[health] {} stale workers detected (possible zombie accumulation)",
+                            stale
+                        );
+                        Self::emit_health_event(
+                            &reg,
+                            "monitor_serve_unhealthy",
+                            serde_json::json!({
+                                "issue": "too_many_stale_workers",
+                                "stale_count": stale,
+                                "total_workers": total
+                            })
+                        ).await;
+                    }
+
+                    // Periodic health log (every check, not just anomalies)
+                    tracing::info!(
+                        "[health] workers: total={} busy={} idle={} stale={} dead={}",
+                        total, busy, idle, stale, dead
+                    );
+                }
+            });
+            tracing::info!("[monitor] built-in health monitor started (60s interval)");
+        }
+
+        for def in monitors.into_iter().filter(|m| m.enabled) {
+            Self::spawn_monitor_for_def(def, Arc::clone(registry), Arc::clone(&statuses)).await;
         }
 
         Ok(())
     }
+
 
     async fn on_extension_rpc(
         &self,
@@ -1171,11 +1213,33 @@ impl Extension for MonitorExtension {
                     let _ = std::fs::write(&path, json);
                 }
 
+                // Spawn the interval loop immediately (if we have a registry reference).
+                // This makes `add` activate the monitor without requiring a serve restart.
+                let activated = if let Some(reg) = self.registry.get() {
+                    if def.enabled {
+                        Self::spawn_monitor_for_def(
+                            def.clone(),
+                            Arc::clone(reg),
+                            Arc::clone(&self.statuses),
+                        ).await;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
                 Ok(serde_json::json!({
                     "added": name,
                     "validated": true,
                     "file": path.display().to_string(),
-                    "note": "restart serve to activate new monitors"
+                    "activated": activated,
+                    "note": if activated {
+                        "monitor loop started".to_string()
+                    } else {
+                        "restart serve to activate new monitors".to_string()
+                    }
                 }))
             }
 

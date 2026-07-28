@@ -19,6 +19,20 @@ FAIL=0
 record_pass() { echo "  ✅ $1"; PASS=$((PASS+1)); }
 record_fail() { echo "  ❌ $1"; FAIL=$((FAIL+1)); }
 
+# wait_for_socket — block until the host socket is accepting connections
+# (serve startup is async; the socket may lag the process spawn).
+wait_for_socket() {
+    local tries=30
+    while [ "$tries" -gt 0 ]; do
+        if "$ION" rpc --method list_sessions >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+        tries=$((tries - 1))
+    done
+    return 1
+}
+
 # rpc_call <method> <params> <outfile>
 # Captures RPC stdout to file (filters shell-config noise on stderr).
 rpc_call() {
@@ -120,7 +134,7 @@ mkdir -p .ion/monitors
 cleanup_serve
 RUST_LOG="ion=info" "$ION" serve > /tmp/mon_ci_serve.log 2>&1 &
 SERVE_PID=$!
-sleep 8
+wait_for_socket || { echo "FATAL: serve did not start"; exit 1; }
 
 # A1: monitor added via RPC (not file-based, avoids startup lock)
 echo "--- A1: monitor 添加 ---"
