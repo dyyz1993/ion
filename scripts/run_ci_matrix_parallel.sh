@@ -98,6 +98,9 @@ ALL_SCRIPTS=$(ls tests/*_ci.sh tests/scenario2_ci.sh tests/team_e2e.sh 2>/dev/nu
 # Skip CIs that need real cargo test/build (cargo lock contention in parallel)
 SKIP_LIST="goal_supervisor_ci goal_supervisor_e2e goal_evolver_ci"
 
+# CIs that need long-running serve — run serially (resource contention)
+SERIAL_LIST="monitor_ci mcp_ci faux_scenarios_ci rollback_impact_ci"
+
 FILTERED=""
 SKIPPED=""
 for s in $ALL_SCRIPTS; do
@@ -205,9 +208,38 @@ export -f run_one_script
 export PER_SCRIPT_TIMEOUT REAL_CARGO PROJECT_DIR
 
 # ─── Run in parallel via xargs ─────────────────────────────────────────────
-echo "[Step] Running $TOTAL scripts in parallel (xargs -P $PARALLELISM)..."
+# Split FILTERED into parallel-safe and serial-only
+PARALLEL_SCRIPTS=""
+SERIAL_SCRIPTS=""
+for s in $FILTERED; do
+    bn=$(basename "$s" .sh)
+    is_serial=0
+    for sl in $SERIAL_LIST; do
+        if [ "$bn" == "$sl" ]; then is_serial=1; break; fi
+    done
+    if [ $is_serial -eq 1 ]; then
+        SERIAL_SCRIPTS="$SERIAL_SCRIPTS $s"
+    else
+        PARALLEL_SCRIPTS="$PARALLEL_SCRIPTS $s"
+    fi
+done
+SERIAL_CNT=$(echo "$SERIAL_SCRIPTS" | wc -w | tr -d ' ')
+PARALLEL_CNT=$(echo "$PARALLEL_SCRIPTS" | wc -w | tr -d ' ')
+
+echo "[Step] Phase 1: Running $PARALLEL_CNT scripts in parallel (xargs -P $PARALLELISM)..."
+echo "$PARALLEL_SCRIPTS" | tr ' ' '\n' | grep -v '^$' | \
+    xargs -P "$PARALLELISM" -I {} bash -c 'run_one_script "$@"' _ {} 2>&1 | grep -v "command not found\|setValueFor\|valueForKey"
 echo "$FILTERED" | tr ' ' '\n' | grep -v '^$' | \
     xargs -P "$PARALLELISM" -I {} bash -c 'run_one_script "$@"' _ {} 2>&1 | grep -v "command not found\|setValueFor\|valueForKey"
+
+# ─── Phase 2: Serial (long-running serve CIs) ──────────────────────────────
+echo ""
+echo "[Step] Phase 2: Running $SERIAL_CNT serial CIs (resource-intensive)..."
+for s in $SERIAL_SCRIPTS; do
+    bn=$(basename "$s")
+    echo "  → serial: $bn"
+    run_one_script "$s" 2>&1 | grep -v "command not found\|setValueFor\|valueForKey"
+done
 
 # ─── Aggregate ─────────────────────────────────────────────────────────────
 echo ""
