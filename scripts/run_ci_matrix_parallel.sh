@@ -25,6 +25,9 @@ cd "$PROJECT_DIR"
 
 ION_BIN="${ION_BIN:-$PROJECT_DIR/target/debug/ion}"
 PARALLELISM="${PARALLELISM:-5}"
+# Note: P=5 is optimal on macOS (P=3 causes more failures due to longer
+# wall-clock time → more timeout issues). The machine has enough RAM for
+# 5 concurrent ion serve processes.
 PER_SCRIPT_TIMEOUT="${PER_SCRIPT_TIMEOUT:-600}"
 
 echo ""
