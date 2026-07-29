@@ -666,27 +666,45 @@ impl Extension for BashExtension {
         }
     }
 
-    /// 注入 bash 使用说明到 system prompt（复用 bash_tool_guide，去重）。
+    /// 注入 bash 使用说明 + 当前后台进程摘要到 system prompt。
+    /// 进程摘要只含 bid/command/elapsed/status（不含 output，避免占 token + 泄隐私），
+    /// 让 LLM 感知到有哪些后台进程、运行多久、怎么管理（kill/inspect）。
     async fn on_system_prompt(&self, prompt: &mut String) -> AgentResult<()> {
         prompt.push_str(&bash_tool_guide());
+        // 追加当前后台进程摘要（动态，每轮 turn 刷新）
+        let map = self.process_map.lock().await;
+        let active: Vec<_> = map.values()
+            .filter(|p| p.status == "running" || p.status == "background")
+            .collect();
+        if !active.is_empty() {
+            prompt.push_str(&format!("\n### Active Background Processes ({})\n", active.len()));
+            prompt.push_str("| bid | command | elapsed | status |\n|-----|---------|---------|--------|\n");
+            for p in &active {
+                let cmd_short = if p.command.len() > 50 { format!("{}...", &p.command[..50]) } else { p.command.clone() };
+                prompt.push_str(&format!("| {} | `{}` | {:.0}s | {} |\n",
+                    p.bid, cmd_short, p.elapsed_secs, p.status));
+            }
+            prompt.push_str("\nManage via `extension_rpc(bash, inspect|kill|send)`. Use `inspect` to view output (truncated).\n");
+        }
         Ok(())
     }
 }
 
-/// Bash 工具使用指南（注入 system prompt）。pub 让 cmd_run / export 都能调用，
-/// 不依赖 BashExtension 注册（cmd_run 场景1 不注册 Extension）。
+/// Bash 工具指南（注入 system prompt）。pub 让 cmd_run / export 都能调用。
+/// 只给工具概述 + 管理方法（不含具体进程，进程摘要在 on_system_prompt 动态注入）。
 pub fn bash_tool_guide() -> String {
     let bash_timeout = std::env::var("ION_BASH_TIMEOUT")
         .ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(180);
     format!("\n\n--- bash-tool-guide ---\n\
-## Bash Tool Guide\n\
-Use the `bash` tool to execute shell commands. Key rules:\n\
-- **Timeout**: commands time out after {bash_timeout}s (override via `ION_BASH_TIMEOUT` env). For long tasks (build/test), use shorter verification commands or split work.\n\
-- **Output**: stdout + stderr are returned. Truncate if too long (tail is preserved).\n\
-- **Background processes**: use `bash_run` tool for long-running/background commands. Manage via `extension_rpc(bash, list|inspect|kill|send)`.\n\
-- **Working directory**: commands run in the current cwd. Use absolute paths for files outside cwd.\n\
-- **Safety**: avoid destructive commands (rm -rf, dd, etc.) without confirmation. The command guard may block risky patterns.\n\
-- **Idempotency**: prefer idempotent commands (e.g., `mkdir -p` over `mkdir`).\n")
+## Bash Tool\n\
+- `bash` tool: execute shell command (timeout {bash_timeout}s, override via `ION_BASH_TIMEOUT`).\n\
+- `bash_run` tool: run long/background commands (returns bid for management).\n\
+- Background process management via `extension_rpc(bash, ...)`:\n\
+  - `list`: list all background processes (bid/command/elapsed/status)\n\
+  - `inspect`: view a process output (supports `tail`/`offset`+`limit` for pagination)\n\
+  - `kill`: kill a process by bid/pid\n\
+  - `send`: send input to a process stdin\n\
+- Commands run in cwd; use absolute paths for files outside cwd.\n")
 }
 
 // ============================================================================
