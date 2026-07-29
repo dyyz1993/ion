@@ -1846,6 +1846,17 @@ async fn cmd_run(
     //    通过 on_system_prompt 注入 <rules> XML）──
     ext_reg.register(Box::new(ion::rules_engine::RulesEngineExtension::new()));
 
+    // ── 注册 HookExtension（扫描 .ion/hooks.json，command/http/prompt/agent handler
+    //    通过事件钩子触发，对齐 Claude Code hooks 系统）──
+    let hooks_project_dir = std::path::PathBuf::from(&cwd);
+    if ion::hooks::extension::HookExtension::has_hooks(&hooks_project_dir) {
+        ext_reg.register(Box::new(ion::hooks::extension::HookExtension::new(
+            hooks_project_dir,
+            None, None, None, None, None, // cmd_run 场景：无 runtime/registry/model/bridge（handler 需要时再补）
+        )));
+        tracing::info!("[extension] HookExtension registered (hooks.json detected)");
+    }
+
     // Register per-turn session index extension if session is active
     if !session_id.is_empty() {
         ext_reg.register(Box::new(SessionIndexExtension::new(
