@@ -262,6 +262,12 @@ impl Extension for HookExtension {
         Ok(())
     }
 
+    async fn on_session_compact(&self, _messages: &mut Vec<Message>) -> AgentResult<()> {
+        // PostCompact 事件（压缩完成后触发）
+        let _ = self.process_event("PostCompact", stdin_builder::common_fields("PostCompact")).await;
+        Ok(())
+    }
+
     // ── Input ──
 
     async fn on_input(&self, ctx: &mut InputContext) -> AgentResult<()> {
@@ -338,6 +344,20 @@ impl Extension for HookExtension {
         let outcome = self.process_event("SubagentStop", stdin).await;
         if outcome.block {
             self.inject_follow_up(&outcome.block_reason.unwrap_or_else(|| "continue working".into()));
+        }
+        Ok(())
+    }
+
+    // ── Permission ──
+
+    async fn on_permission_request(&self, tool: &str, args: &serde_json::Value) -> AgentResult<()> {
+        let stdin = stdin_builder::permission_request(tool, args);
+        let outcome = self.process_event("PermissionRequest", stdin).await;
+        if outcome.block {
+            return Err(AgentError::Tool(format!(
+                "permission denied by hook: {}",
+                outcome.block_reason.unwrap_or_default()
+            )));
         }
         Ok(())
     }

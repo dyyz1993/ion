@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 /// 通用字段（所有事件都有）
 /// 对齐 Claude Code 的 createBaseHookInput：session_id + cwd + transcript_path +
 /// permission_mode + hook_event_name。
-fn common_fields(event: &str) -> Value {
+pub fn common_fields(event: &str) -> Value {
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
