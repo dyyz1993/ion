@@ -100,13 +100,21 @@ impl RulesEngineExtension {
         }
     }
 
-    /// Load all rules from `<project_dir>/.ion/rules/*.md`.
-    ///
-    /// Returns an empty vector if the rules directory does not exist.
-    /// Files that fail to read or parse are silently skipped (logged at debug).
+    /// Load all rules from:
+    /// 1. `~/.ion/rules/*.md`（用户全局，跨项目共享，对齐 ~/.claude/rules/）
+    /// 2. `<project_dir>/.ion/rules/*.md`（项目级）
+    /// Both .md and .mdc files are supported (Cursor 兼容).
     pub fn load_rules(&self) -> Vec<Rule> {
-        let rules_dir = self.project_dir.join(".ion").join("rules");
-        load_rules_from_dir(&rules_dir)
+        let mut all_rules = Vec::new();
+        // 用户全局 rules（~/.ion/rules/）
+        if let Some(home) = std::env::var("HOME").ok() {
+            let global_dir = PathBuf::from(home).join(".ion").join("rules");
+            all_rules.extend(load_rules_from_dir(&global_dir));
+        }
+        // 项目级 rules（<project>/.ion/rules/）
+        let project_dir = self.project_dir.join(".ion").join("rules");
+        all_rules.extend(load_rules_from_dir(&project_dir));
+        all_rules
     }
 
     /// Collect a representative set of file paths in the project directory.
@@ -299,7 +307,10 @@ fn load_rules_from_dir(rules_dir: &Path) -> Vec<Rule> {
     let mut md_files: Vec<PathBuf> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
+        .filter(|p| {
+            let ext = p.extension().and_then(|s| s.to_str());
+            ext == Some("md") || ext == Some("mdc") // 支持 .md + .mdc（Cursor 兼容）
+        })
         .collect();
     md_files.sort();
 
@@ -441,8 +452,12 @@ fn parse_apply_to(frontmatter: &str) -> Vec<String> {
             continue;
         }
 
-        // Detect `applyTo:` key (case-insensitive, allows optional spaces).
-        if let Some(rest) = strip_key(trimmed, "applyTo") {
+        // Detect `applyTo:` / `globs:` / `paths:` key (case-insensitive).
+        // 对齐 Claude Code/OpenCode：globs 是主字段，paths 是别名，applyTo 是 ION 原生。
+        let rest = strip_key(trimmed, "applyTo")
+            .or_else(|| strip_key(trimmed, "globs"))
+            .or_else(|| strip_key(trimmed, "paths"));
+        if let Some(rest) = rest {
             in_block_array = false;
             let val = rest.trim();
             if val.is_empty() {
