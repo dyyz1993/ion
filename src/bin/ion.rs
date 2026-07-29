@@ -1720,7 +1720,11 @@ async fn cmd_run(
         })
         .collect();
 
-    // Snapshot system prompt for --export-after-run（export 时复用含 skill 大纲的完整 system prompt）
+    // Snapshot system prompt for --export-after-run（export 时复用完整 system prompt）。
+    // 补一次 bash_tool_guide：cmd_run 注册了 BashExtension，它的 on_system_prompt 会在
+    // agent.run 每轮注入 guide，但 snapshot 在 agent.run 之前拍，拍不到。这里先补一次静态
+    // guide（动态进程摘要在 agent.run 内部注入，export 快照本就拍不到实时状态）。
+    sys_prompt.push_str(&ion::agent::bash::bash_tool_guide());
     let sys_prompt_snapshot = sys_prompt.clone();
     let mut agent = Agent::new(registry, model, Some(sys_prompt), tools, config)
         .with_runtime(Box::new(rt));
