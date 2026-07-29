@@ -71,21 +71,33 @@ impl Rule {
 pub struct RulesEngineExtension {
     /// The project root directory used to locate `.ion/rules/` and scan files.
     project_dir: PathBuf,
-    /// Already-injected rule names (去重：同一 rule 不重复注入 system prompt）。
-    /// 路径匹配的 rule 只在首次匹配时注入，后续不再重复。
+    /// Already-injected rule names (去重：同一 rule 不管匹配多少文件只追加一次）。
     injected: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Turn 计数（每 N 轮清理 injected set，让 rule 可重新注入）。
+    turn_counter: std::sync::atomic::AtomicU32,
 }
+
+/// 每 20 轮清理一次 injected set（让 rule 可重新注入，避免长对话后永远看不到 rule）。
+const INJECTED_TTL_TURNS: u32 = 20;
 
 impl RulesEngineExtension {
     /// Create a new extension bound to the current working directory.
     pub fn new() -> Self {
         let project_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        Self { project_dir, injected: std::sync::Mutex::new(Default::default()) }
+        Self {
+            project_dir,
+            injected: std::sync::Mutex::new(Default::default()),
+            turn_counter: std::sync::atomic::AtomicU32::new(0),
+        }
     }
 
     /// Create a new extension with an explicit project directory (useful for tests).
     pub fn with_project_dir(project_dir: PathBuf) -> Self {
-        Self { project_dir, injected: std::sync::Mutex::new(Default::default()) }
+        Self {
+            project_dir,
+            injected: std::sync::Mutex::new(Default::default()),
+            turn_counter: std::sync::atomic::AtomicU32::new(0),
+        }
     }
 
     /// Load all rules from `<project_dir>/.ion/rules/*.md`.
@@ -139,7 +151,15 @@ impl Extension for RulesEngineExtension {
     /// 全局 rule（applyTo 为空或 `**/*`）→ 常驻注入 system prompt。
     /// 路径匹配 rule（applyTo: `**/*.rs` 等）→ 不在 system prompt 注入，
     /// 改在 after_tool_call 追加到 tool result（按需，LLM 访问匹配文件时才看到）。
+    /// 同时做 turn 计数清理：每 INJECTED_TTL_TURNS 轮清空 injected set（让 rule 可重新注入）。
     async fn on_system_prompt(&self, prompt: &mut String) -> AgentResult<()> {
+        // Turn 计数 + 定期清理 injected set
+        let turn = self.turn_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if turn > 0 && turn % INJECTED_TTL_TURNS == 0 {
+            let mut injected = self.injected.lock().unwrap();
+            injected.clear();
+        }
+
         let rules = self.load_rules();
         if rules.is_empty() {
             return Ok(());
@@ -197,9 +217,9 @@ impl Extension for RulesEngineExtension {
 
             // 匹配当前文件路径
             if !file_path.is_empty() && rule.matches_file(file_path) {
-                let dedup_key = format!("{}:{}", rule.name, file_path);
-                if !injected.contains(&dedup_key) {
-                    injected.insert(dedup_key);
+                // 去重：同一 rule 只追加一次（不管匹配多少文件，rule 内容一样）
+                if !injected.contains(&rule.name) {
+                    injected.insert(rule.name.clone());
                     to_append.push(rule);
                 }
             }
