@@ -665,6 +665,28 @@ impl Extension for BashExtension {
             _ => Err(AgentError::Tool(format!("bash extension_rpc: unknown method {method}"))),
         }
     }
+
+    /// 注入 bash 使用说明到 system prompt（复用 bash_tool_guide，去重）。
+    async fn on_system_prompt(&self, prompt: &mut String) -> AgentResult<()> {
+        prompt.push_str(&bash_tool_guide());
+        Ok(())
+    }
+}
+
+/// Bash 工具使用指南（注入 system prompt）。pub 让 cmd_run / export 都能调用，
+/// 不依赖 BashExtension 注册（cmd_run 场景1 不注册 Extension）。
+pub fn bash_tool_guide() -> String {
+    let bash_timeout = std::env::var("ION_BASH_TIMEOUT")
+        .ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(180);
+    format!("\n\n--- bash-tool-guide ---\n\
+## Bash Tool Guide\n\
+Use the `bash` tool to execute shell commands. Key rules:\n\
+- **Timeout**: commands time out after {bash_timeout}s (override via `ION_BASH_TIMEOUT` env). For long tasks (build/test), use shorter verification commands or split work.\n\
+- **Output**: stdout + stderr are returned. Truncate if too long (tail is preserved).\n\
+- **Background processes**: use `bash_run` tool for long-running/background commands. Manage via `extension_rpc(bash, list|inspect|kill|send)`.\n\
+- **Working directory**: commands run in the current cwd. Use absolute paths for files outside cwd.\n\
+- **Safety**: avoid destructive commands (rm -rf, dd, etc.) without confirmation. The command guard may block risky patterns.\n\
+- **Idempotency**: prefer idempotent commands (e.g., `mkdir -p` over `mkdir`).\n")
 }
 
 // ============================================================================

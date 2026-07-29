@@ -119,6 +119,9 @@ pub fn export_session_rich(
         let session_cwd = header.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
         sp.push_str(&build_env_info_for_export(session_cwd));
 
+        // 注入 bash tool guide（export 不跑 agent loop，直接注入）
+        sp.push_str(&crate::agent::bash::bash_tool_guide());
+
         let skill_tool = crate::agent::tool::SkillTool { skill_dirs };
         let outline = skill_tool.list_skills();
         if !outline.contains("No skills available") {

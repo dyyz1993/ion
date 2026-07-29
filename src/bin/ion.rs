@@ -1623,6 +1623,9 @@ async fn cmd_run(
     let env_cwd = std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
     sys_prompt.push_str(&build_env_info(&env_cwd));
 
+    // Inject bash tool guide（cmd_run 场景1 不注册 BashExtension，直接注入）
+    sys_prompt.push_str(&ion::agent::bash::bash_tool_guide());
+
     // Inject skill outline（扫描 ~/.agents/skills + ~/.ion/skills + ./.ion/skills，
     // 把所有 skill 的 name + description 注入 system prompt，让 LLM 启动就知道有哪些
     // skill 可用，而不需要先调 skill(skill_name='list')）。
