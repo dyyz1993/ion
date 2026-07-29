@@ -87,7 +87,42 @@ pub fn export_session_rich(
 
     if let Some(name) = agent_name && let Some(agent_cfg) = crate::agent_config::find_agent(name) {
         // Get system prompt from agent config
-        system_prompt = agent_cfg.system_prompt.clone();
+        let mut sp = agent_cfg.system_prompt.clone().unwrap_or_default();
+        // 追加 skill 大纲（对齐 cmd_run 的 system prompt 构建逻辑，让 export 出来的
+        // HTML 也能看到 skill 列表）。扫描 ~/.agents/skills + ~/.ion/skills + 项目级 + ZCode plugins。
+        let home = std::env::var("HOME").unwrap_or_default();
+        let cwd = header.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
+        let mut skill_dirs: Vec<std::path::PathBuf> = vec![
+            crate::paths::skills_dir(),
+            crate::paths::project_skills_dir(cwd),
+            std::path::PathBuf::from(&home).join(".agents").join("skills"),
+        ];
+        // ZCode plugin skills
+        let plugins_cache = std::path::PathBuf::from(&home).join(".zcode/cli/plugins/cache");
+        if plugins_cache.exists() {
+            if let Ok(mp_iter) = std::fs::read_dir(&plugins_cache) {
+                for mp_entry in mp_iter.flatten() {
+                    if let Ok(plugin_iter) = std::fs::read_dir(mp_entry.path()) {
+                        for plugin_entry in plugin_iter.flatten() {
+                            if let Ok(ver_iter) = std::fs::read_dir(plugin_entry.path()) {
+                                for ver_entry in ver_iter.flatten() {
+                                    let sd = ver_entry.path().join("skills");
+                                    if sd.is_dir() { skill_dirs.push(sd); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let skill_tool = crate::agent::tool::SkillTool { skill_dirs };
+        let outline = skill_tool.list_skills();
+        if !outline.contains("No skills available") {
+            sp.push_str("\n\n## Available Skills\n");
+            sp.push_str(&outline);
+            sp.push('\n');
+        }
+        system_prompt = Some(sp);
 
         // Reconstruct tool definitions by instantiating all built-in tools,
         // then applying the agent config's allowlist and blocklist.
