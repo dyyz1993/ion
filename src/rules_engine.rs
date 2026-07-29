@@ -71,18 +71,21 @@ impl Rule {
 pub struct RulesEngineExtension {
     /// The project root directory used to locate `.ion/rules/` and scan files.
     project_dir: PathBuf,
+    /// Already-injected rule names (去重：同一 rule 不重复注入 system prompt）。
+    /// 路径匹配的 rule 只在首次匹配时注入，后续不再重复。
+    injected: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl RulesEngineExtension {
     /// Create a new extension bound to the current working directory.
     pub fn new() -> Self {
         let project_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        Self { project_dir }
+        Self { project_dir, injected: std::sync::Mutex::new(Default::default()) }
     }
 
     /// Create a new extension with an explicit project directory (useful for tests).
     pub fn with_project_dir(project_dir: PathBuf) -> Self {
-        Self { project_dir }
+        Self { project_dir, injected: std::sync::Mutex::new(Default::default()) }
     }
 
     /// Load all rules from `<project_dir>/.ion/rules/*.md`.
@@ -133,8 +136,12 @@ impl Extension for RulesEngineExtension {
         "rules-engine"
     }
 
-    /// Reload rules from disk, filter by project files, and inject matched
-    /// rules as an XML block into the system prompt.
+    /// Reload rules from disk, filter by project files, and inject matched rules.
+    ///
+    /// 策略（按需注入 + 去重）：
+    /// - **全局 rule**（applyTo 为空或 `**/*`）：常驻注入 system prompt（每轮都注入）
+    /// - **路径匹配 rule**（applyTo: `**/*.rs` 等）：只在**首次匹配**时注入，去重。
+    ///   同一 rule 不重复注入（injected set 记录），避免 token 浪费。
     async fn on_system_prompt(&self, prompt: &mut String) -> AgentResult<()> {
         let rules = self.load_rules();
         if rules.is_empty() {
@@ -142,17 +149,29 @@ impl Extension for RulesEngineExtension {
         }
 
         let project_files = self.collect_project_files();
-        let matched: Vec<&Rule> = rules
-            .iter()
-            .filter(|r| r.matches_any(&project_files))
-            .collect();
+        let mut to_inject: Vec<Rule> = Vec::new();
+        let mut injected = self.injected.lock().unwrap();
 
-        if matched.is_empty() {
-            return Ok(());
+        for rule in &rules {
+            let is_global = rule.apply_to.is_empty()
+                || rule.apply_to.iter().any(|p| p == "**/*" || p == "**");
+            let matched = rule.matches_any(&project_files);
+
+            if is_global {
+                // 全局 rule：常驻注入（不参与去重）
+                to_inject.push(rule.clone());
+            } else if matched {
+                // 路径匹配 rule：去重（首次匹配才注入）
+                if !injected.contains(&rule.name) {
+                    injected.insert(rule.name.clone());
+                    to_inject.push(rule.clone());
+                }
+            }
         }
 
-        let owned: Vec<Rule> = matched.into_iter().cloned().collect();
-        prompt.push_str(&Self::format_rules_xml(&owned));
+        if !to_inject.is_empty() {
+            prompt.push_str(&Self::format_rules_xml(&to_inject));
+        }
         Ok(())
     }
 
