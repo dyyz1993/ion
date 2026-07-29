@@ -40,10 +40,10 @@ TMP=$(mktemp -d /tmp/ion-rules-ci-XXXXXX)
 mkdir -p "$TMP/proj/src" "$TMP/proj/.ion/rules"
 echo "fn main() {}" > "$TMP/proj/src/main.rs"
 
-# Rule 1: 全局 rule（applyTo 为空 → 常驻注入）
+# Rule 1: 全局 rule（globs 为空 → 常驻注入）
 cat > "$TMP/proj/.ion/rules/global.md" << 'EOF'
 ---
-applyTo: "**"
+globs: "**"
 ---
 # Global Rule
 - Always respond in English.
@@ -52,7 +52,7 @@ EOF
 # Rule 2: 路径匹配 rule（**/*.rs → 首次匹配注入 + 去重）
 cat > "$TMP/proj/.ion/rules/rust.md" << 'EOF'
 ---
-applyTo: "**/*.rs"
+globs: "**/*.rs"
 ---
 # Rust Rule
 - Use snake_case for functions.
@@ -62,7 +62,7 @@ EOF
 # Rule 3: 不匹配的 rule（**/*.py → 项目无 .py 文件，不注入）
 cat > "$TMP/proj/.ion/rules/python.md" << 'EOF'
 ---
-applyTo: "**/*.py"
+globs: "**/*.py"
 ---
 # Python Rule
 - Use PEP 8 style.

@@ -10,8 +10,8 @@
 |----|--------|---------|------|
 | A1 | `.ion/rules/*.md` 文件扫描 | 创建 2 个 rule md，export HTML | systemPrompt 含 `<project_rules>` |
 | A2 | 无 frontmatter 的 rule（全局） | 创建无 frontmatter 的 md | 分类为全局 rule，进 system prompt |
-| A3 | `applyTo: "**"` 全局 rule | 创建 applyTo:** 的 md | 进 system prompt |
-| A4 | `applyTo: "**/*.rs"` 路径匹配 rule | 项目有 .rs 文件 | 进 tool result，不进 system prompt |
+| A3 | `globs: "**"` 全局 rule | 创建 globs:** 的 md | 进 system prompt |
+| A4 | `globs: "**/*.rs"` 路径匹配 rule | 项目有 .rs 文件 | 进 tool result，不进 system prompt |
 | A5 | 不匹配的 rule（`**/*.py`，无 .py） | 项目无 .py 文件 | 不注入（既不进 SP 也不进 TR） |
 
 ### Group B: Glob 匹配
@@ -66,7 +66,7 @@
 
 | 特性 | pi | ION | 优先级 |
 |------|----|----|--------|
-| frontmatter 字段名 | `globs`（主）+ `paths`（别名兼容） | `applyTo` | P1（应同时支持 globs/paths/applyTo）|
+| frontmatter 字段名 | `globs`（主）+ `paths`（别名兼容） | `globs` | P1（应同时支持 globs/paths/globs）|
 | 花括号展开 `*.{ts,tsx}` | ✅（ignore 库支持） | ❌ | P2 |
 | 排除模式 `!**/*.d.ts` | ✅（ignore 库支持） | ❌ | P2 |
 | severity/description 扩展字段 | ✅ | ❌ | P3（不影响功能）|

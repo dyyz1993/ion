@@ -1,11 +1,11 @@
 //! Rules Engine Extension
 //!
 //! Scans `.ion/rules/*.md` files in the project directory, parses YAML
-//! frontmatter for `applyTo` glob patterns, and injects matched rules
+//! frontmatter for `globs` glob patterns, and injects matched rules
 //! into the system prompt based on the current working directory's files.
 //!
 //! Aligned with pi's `extensions/rules-engine/` design:
-//! - Each `.md` file has YAML frontmatter with `applyTo: "**/*.rs"` glob patterns
+//! - Each `.md` file has YAML frontmatter with `globs: "**/*.rs"` glob patterns
 //! - The body of the `.md` file is the rule content
 //! - Rules are injected into the system prompt via the `on_system_prompt` hook
 //! - Also exposes `list` and `match` RPC methods
@@ -66,7 +66,7 @@ impl Rule {
 /// and appends the matched rules as an XML block to the system prompt.
 ///
 /// RPC methods:
-/// - `"list"`: return all loaded rules (name + source + applyTo).
+/// - `"list"`: return all loaded rules (name + source + globs).
 /// - `"match"`: given a file path, return the rules that match it.
 pub struct RulesEngineExtension {
     /// The project root directory used to locate `.ion/rules/` and scan files.
@@ -121,7 +121,7 @@ impl RulesEngineExtension {
     ///
     /// Walks the project tree (skipping common ignore directories like `.git`,
     /// `target`, `node_modules`) and returns relative paths. This is used to
-    /// determine which rules apply based on `applyTo` glob patterns.
+    /// determine which rules apply based on `globs` glob patterns.
     pub fn collect_project_files(&self) -> Vec<String> {
         let mut files = Vec::new();
         collect_files(&self.project_dir, &self.project_dir, &mut files);
@@ -156,8 +156,8 @@ impl Extension for RulesEngineExtension {
         "rules-engine"
     }
 
-    /// 全局 rule（applyTo 为空或 `**/*`）→ 常驻注入 system prompt。
-    /// 路径匹配 rule（applyTo: `**/*.rs` 等）→ 不在 system prompt 注入，
+    /// 全局 rule（globs 为空或 `**/*`）→ 常驻注入 system prompt。
+    /// 路径匹配 rule（globs: `**/*.rs` 等）→ 不在 system prompt 注入，
     /// 改在 after_tool_call 追加到 tool result（按需，LLM 访问匹配文件时才看到）。
     /// 同时做 turn 计数清理：每 INJECTED_TTL_TURNS 轮清空 injected set（让 rule 可重新注入）。
     async fn on_system_prompt(&self, prompt: &mut String) -> AgentResult<()> {
@@ -258,7 +258,7 @@ impl Extension for RulesEngineExtension {
                         serde_json::json!({
                             "name": r.name,
                             "source": r.source,
-                            "applyTo": r.apply_to,
+                            "globs": r.apply_to,
                         })
                     })
                     .collect();
@@ -277,7 +277,7 @@ impl Extension for RulesEngineExtension {
                         serde_json::json!({
                             "name": r.name,
                             "source": r.source,
-                            "applyTo": r.apply_to,
+                            "globs": r.apply_to,
                             "content": r.content,
                         })
                     })
@@ -348,7 +348,7 @@ fn load_rule_file(path: &Path) -> Option<Rule> {
 /// Expected format:
 /// ```text
 /// ---
-/// applyTo: "**/*.rs"
+/// globs: "**/*.rs"
 /// ---
 /// Rule body content here.
 /// ```
@@ -356,13 +356,13 @@ fn load_rule_file(path: &Path) -> Option<Rule> {
 /// Returns `(apply_to_patterns, body)`. If there is no frontmatter, returns
 /// `(empty_vec, full_content)`.
 ///
-/// The `applyTo` value may be:
-/// - A single string: `applyTo: "**/*.rs"`
-/// - Comma-separated: `applyTo: "**/*.rs, **/*.toml"`
-/// - A YAML inline array: `applyTo: ["**/*.rs", "**/*.toml"]`
+/// The `globs` value may be:
+/// - A single string: `globs: "**/*.rs"`
+/// - Comma-separated: `globs: "**/*.rs, **/*.toml"`
+/// - A YAML inline array: `globs: ["**/*.rs", "**/*.toml"]`
 /// - A YAML block array:
 ///   ```yaml
-///   applyTo:
+///   globs:
 ///     - "**/*.rs"
 ///     - "**/*.toml"
 ///   ```
@@ -420,15 +420,15 @@ fn find_frontmatter_close(s: &str) -> Option<usize> {
     None
 }
 
-/// Parse the `applyTo` field from frontmatter text into a list of glob patterns.
+/// Parse the `globs` field from frontmatter text into a list of glob patterns.
 ///
 /// Handles four forms:
-/// 1. Single value: `applyTo: "**/*.rs"`
-/// 2. Comma-separated: `applyTo: "**/*.rs, **/*.toml"`
-/// 3. Inline YAML array: `applyTo: ["**/*.rs", "**/*.toml"]`
+/// 1. Single value: `globs: "**/*.rs"`
+/// 2. Comma-separated: `globs: "**/*.rs, **/*.toml"`
+/// 3. Inline YAML array: `globs: ["**/*.rs", "**/*.toml"]`
 /// 4. Block YAML array:
 ///    ```yaml
-///    applyTo:
+///    globs:
 ///      - "**/*.rs"
 ///      - "**/*.toml"
 ///    ```
@@ -452,10 +452,9 @@ fn parse_apply_to(frontmatter: &str) -> Vec<String> {
             continue;
         }
 
-        // Detect `applyTo:` / `globs:` / `paths:` key (case-insensitive).
-        // 对齐 Claude Code/OpenCode：globs 是主字段，paths 是别名，applyTo 是 ION 原生。
-        let rest = strip_key(trimmed, "applyTo")
-            .or_else(|| strip_key(trimmed, "globs"))
+        // Detect `globs:` / `paths:` key (case-insensitive).
+        // 对齐 Claude Code/OpenCode：globs 是主字段，paths 是别名。
+        let rest = strip_key(trimmed, "globs")
             .or_else(|| strip_key(trimmed, "paths"));
         if let Some(rest) = rest {
             in_block_array = false;
@@ -477,7 +476,7 @@ fn parse_apply_to(frontmatter: &str) -> Vec<String> {
             }
             // Single value or comma-separated values.
             // First, strip any surrounding quotes from the whole value (e.g.,
-            // `applyTo: "**/*.rs, **/*.toml"` has quotes around everything).
+            // `globs: "**/*.rs, **/*.toml"` has quotes around everything).
             let stripped = clean_yaml_value(val);
             if stripped.contains(',') {
                 // Comma-separated values inside a (possibly quoted) string.
@@ -739,7 +738,7 @@ mod tests {
 
     #[test]
     fn test_parse_frontmatter_single_value() {
-        let input = "---\napplyTo: \"**/*.rs\"\n---\nUse snake_case for functions.";
+        let input = "---\nglobs: \"**/*.rs\"\n---\nUse snake_case for functions.";
         let (apply_to, body) = parse_frontmatter(input);
         assert_eq!(apply_to, vec!["**/*.rs"]);
         assert_eq!(body, "Use snake_case for functions.");
@@ -747,7 +746,7 @@ mod tests {
 
     #[test]
     fn test_parse_frontmatter_comma_separated() {
-        let input = "---\napplyTo: \"**/*.rs, **/*.toml\"\n---\nBody content.";
+        let input = "---\nglobs: \"**/*.rs, **/*.toml\"\n---\nBody content.";
         let (apply_to, body) = parse_frontmatter(input);
         assert_eq!(apply_to, vec!["**/*.rs", "**/*.toml"]);
         assert_eq!(body, "Body content.");
@@ -755,14 +754,14 @@ mod tests {
 
     #[test]
     fn test_parse_frontmatter_inline_array() {
-        let input = "---\napplyTo: [\"**/*.rs\", \"**/*.py\"]\n---\nRules body.";
+        let input = "---\nglobs: [\"**/*.rs\", \"**/*.py\"]\n---\nRules body.";
         let (apply_to, _body) = parse_frontmatter(input);
         assert_eq!(apply_to, vec!["**/*.rs", "**/*.py"]);
     }
 
     #[test]
     fn test_parse_frontmatter_block_array() {
-        let input = "---\napplyTo:\n  - \"**/*.rs\"\n  - \"**/*.ts\"\n---\nBlock body.";
+        let input = "---\nglobs:\n  - \"**/*.rs\"\n  - \"**/*.ts\"\n---\nBlock body.";
         let (apply_to, body) = parse_frontmatter(input);
         assert_eq!(apply_to, vec!["**/*.rs", "**/*.ts"]);
         assert_eq!(body, "Block body.");
@@ -778,7 +777,7 @@ mod tests {
 
     #[test]
     fn test_parse_frontmatter_unquoted_value() {
-        let input = "---\napplyTo: **/*.rs\n---\nBody.";
+        let input = "---\nglobs: **/*.rs\n---\nBody.";
         let (apply_to, _body) = parse_frontmatter(input);
         assert_eq!(apply_to, vec!["**/*.rs"]);
     }
@@ -896,7 +895,7 @@ mod tests {
 
     #[test]
     fn test_find_frontmatter_close_basic() {
-        let s = "applyTo: \"**/*.rs\"\n---\nbody";
+        let s = "globs: \"**/*.rs\"\n---\nbody";
         let pos = find_frontmatter_close(s);
         assert!(pos.is_some());
         // The close marker `---` should be found before "body".
@@ -906,7 +905,7 @@ mod tests {
 
     #[test]
     fn test_find_frontmatter_close_none() {
-        let s = "applyTo: \"**/*.rs\"\nno closing marker";
+        let s = "globs: \"**/*.rs\"\nno closing marker";
         assert!(find_frontmatter_close(s).is_none());
     }
 
@@ -923,12 +922,12 @@ mod tests {
 
         std::fs::write(
             rules_dir.join("rust.md"),
-            "---\napplyTo: \"**/*.rs\"\n---\nUse snake_case.",
+            "---\nglobs: \"**/*.rs\"\n---\nUse snake_case.",
         )
         .unwrap();
         std::fs::write(
             rules_dir.join("python.md"),
-            "---\napplyTo: \"**/*.py\"\n---\nFollow PEP 8.",
+            "---\nglobs: \"**/*.py\"\n---\nFollow PEP 8.",
         )
         .unwrap();
 
@@ -1000,16 +999,16 @@ mod tests {
         ));
         let rules_dir = tmp.join(".ion").join("rules");
         std::fs::create_dir_all(&rules_dir).unwrap();
-        // 全局 rule（applyTo: "**"）→ 进 system prompt
+        // 全局 rule（globs: "**"）→ 进 system prompt
         std::fs::write(
             rules_dir.join("global.md"),
-            "---\napplyTo: \"**\"\n---\nAlways respond concisely.",
+            "---\nglobs: \"**\"\n---\nAlways respond concisely.",
         )
         .unwrap();
-        // 路径匹配 rule（applyTo: "**/*.rs"）→ 不进 system prompt（走 tool result）
+        // 路径匹配 rule（globs: "**/*.rs"）→ 不进 system prompt（走 tool result）
         std::fs::write(
             rules_dir.join("rust.md"),
-            "---\napplyTo: \"**/*.rs\"\n---\nUse snake_case.",
+            "---\nglobs: \"**/*.rs\"\n---\nUse snake_case.",
         )
         .unwrap();
         // Create a .rs file so the rule matches the project.
@@ -1036,7 +1035,7 @@ mod tests {
         std::fs::create_dir_all(&rules_dir).unwrap();
         std::fs::write(
             rules_dir.join("rust.md"),
-            "---\napplyTo: \"**/*.rs\"\n---\nBody.",
+            "---\nglobs: \"**/*.rs\"\n---\nBody.",
         )
         .unwrap();
 
@@ -1061,12 +1060,12 @@ mod tests {
         std::fs::create_dir_all(&rules_dir).unwrap();
         std::fs::write(
             rules_dir.join("rust.md"),
-            "---\napplyTo: \"**/*.rs\"\n---\nRust body.",
+            "---\nglobs: \"**/*.rs\"\n---\nRust body.",
         )
         .unwrap();
         std::fs::write(
             rules_dir.join("python.md"),
-            "---\napplyTo: \"**/*.py\"\n---\nPython body.",
+            "---\nglobs: \"**/*.py\"\n---\nPython body.",
         )
         .unwrap();
 

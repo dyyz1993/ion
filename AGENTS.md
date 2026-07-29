@@ -976,14 +976,14 @@ ion --mode rpc           → 内部 Worker 子进程 (JSONL over stdin/stdout)
 
 ### 📏 Rules Engine（项目规则注入，已完成）
 
-- **机制**：读 `.ion/rules/*.md` 文件的 frontmatter（`applyTo: "**/*.rs"`），根据 glob 匹配注入规则
+- **机制**：读 `.ion/rules/*.md` 文件的 frontmatter（`globs: "**/*.rs"`），根据 glob 匹配注入规则
 - **双路径注入**：
-  - 全局 rule（`applyTo: "**"` 或空）→ system prompt 常驻（`<project_rules>` XML 块）
-  - 路径匹配 rule（`applyTo: "**/*.rs"`）→ **tool result 末尾追加**（read/write/ls/grep 访问匹配文件时，📌 [project rules for this file]）
+  - 全局 rule（`globs: "**"` 或空）→ system prompt 常驻（`<project_rules>` XML 块）
+  - 路径匹配 rule（`globs: "**/*.rs"`）→ **tool result 末尾追加**（read/write/ls/grep 访问匹配文件时，📌 [project rules for this file]）
 - **去重**：同一 rule 只追加一次（不管匹配多少文件），injected set 按 rule.name 去重
 - **TTL 清理**：每 20 轮（INJECTED_TTL_TURNS）清空 injected set，让 rule 可重新注入
 - **glob 支持**：`**/*.rs` / `**` / `?` / 精确路径（自研 `glob_match`，不依赖外部 crate）
-- **frontmatter 解析**：`applyTo` 键（不区分大小写）+ 数组 `[a, b]` / 逗号分隔 `a, b` / 单值 / 无 frontmatter（降级为全文匹配）
+- **frontmatter 解析**：`globs` 键（不区分大小写）+ 数组 `[a, b]` / 逗号分隔 `a, b` / 单值 / 无 frontmatter（降级为全文匹配）
 - **extension_rpc**：`list`（列全部规则）/ `match`（按文件路径匹配）/ unknown_method 报错
 - **特殊字符转义**：规则内容中的 `<>&` 自动转义为 XML entity
 - **三套安全机制区分**：
