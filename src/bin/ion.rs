@@ -1666,6 +1666,20 @@ async fn cmd_run(
     let mut agent = Agent::new(registry, model, Some(sys_prompt), tools, config)
         .with_runtime(Box::new(rt));
 
+    // ── 注入 session_cwd + session_id（让场景1 也写 turn_summary + 更新 SessionIndex 统计）──
+    // 之前 cmd_run 不设这俩，导致场景1 的 turn_summary 全丢、索引统计字段全 0。
+    // session_cwd 让 persist_turn_summary/persist_compaction 能落盘；
+    // session_id 让 increment_turn_stats/increment_compress_count 能更新索引。
+    let run_cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if !run_cwd.is_empty() {
+        agent.set_session_cwd(Some(run_cwd));
+    }
+    if !session_id_in.is_empty() {
+        agent.set_session_id(Some(session_id_in.to_string()));
+    }
+
     // Resolve compact model for summarization (if specified via --compact-model)
     if let Some(ref cm_id) = eff.compact_model {
         let mut mr = ion_provider::registry::ModelRegistry::new();
@@ -5111,6 +5125,19 @@ impl Extension for SessionIndexExtension {
             &self.session_id, &self.model, &self.provider, "default", None,
             total_input, total_output, ctx.messages.len() as u32,
             ctx.messages.iter().filter(|m| matches!(m, ion::agent::messages::Message::Assistant(_))).count() as u32,
+        );
+        // 增量统计新字段（cmd_run 路径走这里，不走 persist_turn_summary）：
+        // - user_prompt_count: 本轮 +1（on_turn_end 每 turn 一次）
+        // - llm_request_count: 本轮新增的 Assistant 数（delta，不是 sum）
+        // - total_duration_ms: TurnContext 无 duration，传 0（不影响其他字段）
+        // - error: stop_reason == "Error" 时 +1
+        let user_prompts = 1u32;
+        let llm_calls_delta = 1u32; // 每 turn 至少 1 次 LLM 调用（on_turn_end 粒度）
+        let is_error = ctx.stop_reason.as_deref() == Some("Error");
+        ion::session_index::SessionIndex::increment_turn_stats(
+            &self.session_id, user_prompts, llm_calls_delta, 0,
+            0, 0, // token 已由上面的 update 全量写入，这里不重复累加
+            is_error,
         );
         Ok(())
     }

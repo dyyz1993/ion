@@ -32,6 +32,15 @@ pub struct SessionMeta {
     pub token_cache_read: u64,
     /// Cache write tokens
     pub token_cache_write: u64,
+    /// 用户提问次数（每轮 turn +1）
+    #[serde(default)]
+    pub user_prompt_count: u32,
+    /// LLM 循环次数（= Assistant message 数 = LLM API 调用次数）
+    #[serde(default)]
+    pub llm_request_count: u32,
+    /// 总耗时（毫秒，turn_summary.durationMs 累加）
+    #[serde(default)]
+    pub total_duration_ms: u64,
     /// Number of context compressions
     pub compress_count: u32,
     /// Total messages in session
@@ -92,7 +101,12 @@ impl SessionIndex {
             let _ = std::fs::create_dir_all(parent);
         }
         if let Ok(content) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(&path, &content);
+            // 原子写：先写 .tmp 再 rename，防多 worker 进程并发写导致 last-write-wins 丢更新。
+            // rename 在同一文件系统内是原子的（POSIX 保证），.tmp 和目标在同目录确保同 FS。
+            let tmp = path.with_extension("json.tmp");
+            if std::fs::write(&tmp, &content).is_ok() {
+                let _ = std::fs::rename(&tmp, &path);
+            }
         }
     }
 
@@ -189,6 +203,9 @@ impl SessionIndex {
             token_output: existing.as_ref().map_or(0, |e| e.token_output) + token_output,
             token_cache_read: existing.as_ref().map_or(0, |e| e.token_cache_read) + token_cache,
             token_cache_write: 0,
+            user_prompt_count: existing.as_ref().map_or(0, |e| e.user_prompt_count),
+            llm_request_count: existing.as_ref().map_or(0, |e| e.llm_request_count),
+            total_duration_ms: existing.as_ref().map_or(0, |e| e.total_duration_ms),
             compress_count: existing.as_ref().map_or(0, |e| e.compress_count),
             message_count: existing.as_ref().map_or(0, |e| e.message_count) + message_count,
             turn_count: existing.as_ref().map_or(0, |e| e.turn_count) + turn_count,
@@ -265,6 +282,9 @@ impl SessionIndex {
                     token_output: 0,
                     token_cache_read: 0,
                     token_cache_write: 0,
+                    user_prompt_count: 0,
+                    llm_request_count: 0,
+                    total_duration_ms: 0,
                     compress_count: 0,
                     message_count: 0,
                     turn_count: 0,
@@ -326,6 +346,51 @@ impl SessionIndex {
         });
     }
 
+    /// turn 结束时一次性增量更新多项统计（合并到一个 patch_meta 调用，减少写盘次数）。
+    /// - user_prompts: 本轮用户提问数（通常 1）
+    /// - llm_calls: 本轮 LLM 调用次数（StreamEvent::Done 计数）
+    /// - duration_ms: 本轮耗时
+    /// - tok_in/tok_out: 本轮 token 消耗
+    /// - is_error: 本轮是否以 Error 结束（true 则 error_count +1）
+    pub fn increment_turn_stats(
+        id: &str,
+        user_prompts: u32,
+        llm_calls: u32,
+        duration_ms: u64,
+        tok_in: u64,
+        tok_out: u64,
+        is_error: bool,
+    ) {
+        Self::patch_meta(id, |m| {
+            m.user_prompt_count = m.user_prompt_count.saturating_add(user_prompts);
+            m.llm_request_count = m.llm_request_count.saturating_add(llm_calls);
+            m.total_duration_ms = m.total_duration_ms.saturating_add(duration_ms);
+            m.token_input = m.token_input.saturating_add(tok_in);
+            m.token_output = m.token_output.saturating_add(tok_out);
+            m.turn_count = m.turn_count.saturating_add(1);
+            m.message_count = m.message_count.saturating_add(llm_calls.saturating_add(user_prompts));
+            if is_error {
+                m.error_count = m.error_count.saturating_add(1);
+            }
+        });
+    }
+
+    /// 压缩触发时 +1（compaction 成功后调用）。
+    pub fn increment_compress_count(id: &str) {
+        Self::patch_meta(id, |m| {
+            m.compress_count = m.compress_count.saturating_add(1);
+        });
+    }
+
+    /// 设置血缘：父会话 id + 关系类型（child/peer/system/fork）。
+    /// 在 worker 创建时（upsert）调用，让 ion sessions --json 能查派发关系。
+    pub fn set_parent(id: &str, parent_session: &str, relation: &str) {
+        Self::patch_meta(id, |m| {
+            m.parent_session = Some(parent_session.to_string());
+            m.parent_type = Some(relation.to_string());
+        });
+    }
+
     /// Count how many sessions in the index match the given project key.
     /// Loads the index from disk and counts entries where `project` == `project_key`.
     pub fn count_sessions_by_project(&self, project_key: &str) -> Result<i64, String> {
@@ -357,6 +422,9 @@ mod tests {
             token_output: 0,
             token_cache_read: 0,
             token_cache_write: 0,
+            user_prompt_count: 0,
+            llm_request_count: 0,
+            total_duration_ms: 0,
             compress_count: 0,
             message_count: 0,
             turn_count: 0,

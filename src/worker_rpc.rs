@@ -654,7 +654,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         config,
     )
         .with_runtime_arc(worker_rt.clone())
-        .with_session_cwd(Some(worker_cwd.clone()));
+        .with_session_cwd(Some(worker_cwd.clone()))
+        .with_session_id(Some(sid.clone()));
 
     // LSP tool registration deferred to inside extension block (lsp_shared set there)
 

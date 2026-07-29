@@ -714,6 +714,21 @@ impl WorkerRegistry {
         {
             use crate::session_index::{SessionIndex, SessionMeta};
             let now = now_ms();
+            // 反查 parent_session_id（复用 line 557-566 的逻辑）+ relation，写入血缘字段。
+            // 让 ion sessions --json 能查派发关系（child/peer/system）。
+            let (parent_sid, parent_rel) = if let Some(ref creator_wid) = config.creator {
+                let parent_record = self.workers.get(creator_wid)
+                    .or_else(|| self.workers.values().find(|w| &w.session_id == creator_wid));
+                let rel = match config.relation {
+                    Some(WorkerRelation::System) => "system",
+                    Some(WorkerRelation::Peer) => "peer",
+                    _ => "child",
+                };
+                parent_record.map(|r| (Some(r.session_id.clone()), Some(rel.to_string())))
+                    .unwrap_or((None, None))
+            } else {
+                (None, None)
+            };
             let mut idx = SessionIndex::load();
             idx.upsert(
                 &session_id,
@@ -731,6 +746,9 @@ impl WorkerRegistry {
                     token_output: 0,
                     token_cache_read: 0,
                     token_cache_write: 0,
+                    user_prompt_count: 0,
+                    llm_request_count: 0,
+                    total_duration_ms: 0,
                     compress_count: 0,
                     message_count: 0,
                     turn_count: 0,
@@ -740,8 +758,8 @@ impl WorkerRegistry {
                     last_thinking_level: None,
                     last_active_tools: None,
                     last_entry_id: None,
-                    parent_session: None,
-                    parent_type: None,
+                    parent_session: parent_sid,
+                    parent_type: parent_rel,
                 },
             );
             idx.save();
@@ -1130,6 +1148,20 @@ impl WorkerRegistry {
         {
             use crate::session_index::{SessionIndex, SessionMeta};
             let now = now_ms();
+            // 反查 parent_session_id（register_prepared_worker 有 self.workers 访问权）
+            let (parent_sid, parent_rel) = if let Some(ref creator_wid) = config.creator {
+                let parent_record = self.workers.get(creator_wid)
+                    .or_else(|| self.workers.values().find(|w| &w.session_id == creator_wid));
+                let rel = match config.relation {
+                    Some(WorkerRelation::System) => "system",
+                    Some(WorkerRelation::Peer) => "peer",
+                    _ => "child",
+                };
+                parent_record.map(|r| (Some(r.session_id.clone()), Some(rel.to_string())))
+                    .unwrap_or((None, None))
+            } else {
+                (None, None)
+            };
             let mut idx = SessionIndex::load();
             idx.upsert(&session_id, SessionMeta {
                 name: Some(session_id.clone()),
@@ -1142,10 +1174,11 @@ impl WorkerRegistry {
                 agent: agent_name.clone(),
                 provider: provider.clone(),
                 token_input: 0, token_output: 0, token_cache_read: 0, token_cache_write: 0,
+                user_prompt_count: 0, llm_request_count: 0, total_duration_ms: 0,
                 compress_count: 0, message_count: 0, turn_count: 0,
                 created_at: now, updated_at: now, error_count: 0,
                 last_thinking_level: None, last_active_tools: None, last_entry_id: None,
-                parent_session: None, parent_type: None,
+                parent_session: parent_sid, parent_type: parent_rel,
             });
             idx.save();
         }

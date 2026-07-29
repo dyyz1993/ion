@@ -105,6 +105,9 @@ pub struct Agent {
     compact_model: Option<Model>,
     /// 会话文件所在 cwd（用于 compaction/turn_summary 落盘，None = 不落盘）
     session_cwd: Option<String>,
+    /// 会话 ID（用于 SessionIndex 增量统计：turn/error/compress 计数）。
+    /// None = 不更新索引统计（入口 Worker 未注入时静默跳过，不崩溃）。
+    session_id: Option<String>,
     /// 溢出恢复已尝试次数（达 MAX_OVERFLOW_ROUNDS 后放弃，对齐 pi）
     overflow_recovery_attempts: u32,
     /// 软删除状态：被软删的 entry ID 集合（快速查询）
@@ -145,6 +148,7 @@ impl Agent {
             runtime: Arc::new(crate::runtime::LocalRuntime::new()),
             compact_model: None,
             session_cwd: None,
+            session_id: None,
             overflow_recovery_attempts: 0,
             deleted_entry_ids: std::collections::HashSet::new(),
             summarized_entry_ids: std::collections::HashMap::new(),
@@ -180,9 +184,21 @@ impl Agent {
         self
     }
 
+    /// 设置会话 ID（用于 SessionIndex 增量统计：turn/error/compress 计数）。
+    /// 在 worker_rpc / cmd_run 创建 agent 后注入。
+    pub fn with_session_id(mut self, sid: Option<String>) -> Self {
+        self.session_id = sid;
+        self
+    }
+
     /// 动态设置 session cwd（worker 启动后设置）。
     pub fn set_session_cwd(&mut self, cwd: Option<String>) {
         self.session_cwd = cwd;
+    }
+
+    /// 动态设置 session ID（worker 启动后 / cmd_run 设置）。
+    pub fn set_session_id(&mut self, sid: Option<String>) {
+        self.session_id = sid;
     }
 
     /// 动态设置系统提示词（switch_agent 时调用）
@@ -1701,6 +1717,11 @@ impl Agent {
             );
             tracing::info!("compaction entry persisted to session JSONL (stage={})", result.stage);
         }
+
+        // ── SessionIndex: compress_count +1（无论 cwd 是否设置，只要 session_id 有就更新）──
+        if let Some(ref sid) = self.session_id {
+            crate::session_index::SessionIndex::increment_compress_count(sid);
+        }
     }
 
     /// 将本轮 turn 的结构化摘要落盘到 session JSONL（turn_summary entry）。
@@ -1806,6 +1827,27 @@ impl Agent {
             &[], // entryRange 暂空（内存 Message 无 entryId）
             status,
         );
+
+        // ── SessionIndex 增量统计（turn 结束时一次性 flush）──
+        // 每轮 turn +1、LLM 调用数（StreamEvent::Done 计数）、耗时累加、token 累加。
+        // 若本轮以 Error 结束，error_count +1（turn 级去重，不按 API 重试次数算）。
+        if let Some(ref sid) = self.session_id {
+            // 本轮 LLM 调用次数 = StreamEvent::Done 出现次数（每次完整 LLM 响应一个 Done）
+            let llm_calls_this_turn = events
+                .iter()
+                .filter(|e| matches!(e, ion_provider::StreamEvent::Done { .. }))
+                .count() as u32;
+            let is_error = matches!(stop_reason, ion_provider::StopReason::Error);
+            crate::session_index::SessionIndex::increment_turn_stats(
+                sid,
+                1, // user_prompt_count: 每 turn 一次用户提问
+                llm_calls_this_turn,
+                duration_ms,
+                tok_in,
+                tok_out,
+                is_error,
+            );
+        }
     }
 
     async fn check_pause(&self) -> AgentResult<()> {
