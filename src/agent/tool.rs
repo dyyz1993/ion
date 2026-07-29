@@ -1697,14 +1697,33 @@ pub struct SkillTool {
 }
 
 impl SkillTool {
+    /// 把 skill 目录路径映射成可读的短标签（区分来源，不刷屏完整路径）。
+    /// - ~/.agents/skills            → "agents"
+    /// - ~/.ion/agent/skills         → "ion-global"
+    /// - <project>/.ion/skills       → "project"
+    /// - .../plugins/<mp>/<plugin>/<ver>/skills → "<plugin>"（如 cloudflare / superpowers）
+    fn source_label(dir: &std::path::Path) -> String {
+        let s = dir.to_string_lossy();
+        if s.contains(".agents/skills") { "agents".into() }
+        else if s.contains(".ion/agent/skills") { "ion-global".into() }
+        else if s.contains(".ion/skills") { "project".into() }
+        else if s.contains("plugins/cache") {
+            // .../plugins/cache/<marketplace>/<plugin>/<version>/skills → <plugin>
+            let parts: Vec<&str> = s.split('/').collect();
+            // 从 "skills" 往前找 plugin 名（skills 前是 version，再前是 plugin）
+            if let Some(pos) = parts.iter().rposition(|p| *p == "skills") {
+                if pos >= 2 { return parts[pos - 2].to_string(); }
+            }
+            "plugin".into()
+        }
+        else { dir.file_name().and_then(|n| n.to_str()).unwrap_or("skills").to_string() }
+    }
+
     /// 列出所有可用 skill（扫描 skill_dirs 下的 .md 文件 + 子目录/SKILL.md）
     pub fn list_skills(&self) -> String {
         let mut entries: Vec<(String, String, String, Option<String>)> = Vec::new(); // (name, source, description, context_mode)
         for dir in &self.skill_dirs {
-            let source = dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("skills");
+            let source = Self::source_label(dir);
             let Ok(read) = std::fs::read_dir(dir) else { continue };
             for entry in read.flatten() {
                 let path = entry.path();
