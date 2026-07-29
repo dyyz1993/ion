@@ -679,11 +679,11 @@ mod tests {
             arguments: serde_json::json!({"file_path": "src/test.rs"}),
             thought_signature: None,
         };
-        let result = ToolResult {
+        let mut result = ToolResult {
             tool_call_id: "tc_test".into(),
             output: "fn test() {}".into(),
         };
-        ext.after_tool_call(&call, &result).await.unwrap();
+        ext.after_tool_call(&call, &mut result).await.unwrap();
 
         let idx = ext.index.lock().await;
         assert!(idx.files.contains_key("src/test.rs"));
@@ -700,11 +700,11 @@ mod tests {
             arguments: serde_json::json!({"file_path": "foo.rs"}),
             thought_signature: None,
         };
-        let read_result = ToolResult {
+        let mut read_result = ToolResult {
             tool_call_id: "tc_read".into(),
             output: "old".into(),
         };
-        ext.after_tool_call(&read_call, &read_result).await.unwrap();
+        ext.after_tool_call(&read_call, &mut read_result).await.unwrap();
 
         let write_call = ToolCall {
             call_type: "function".into(),
@@ -713,11 +713,11 @@ mod tests {
             arguments: serde_json::json!({"file_path": "foo.rs"}),
             thought_signature: None,
         };
-        let write_result = ToolResult {
+        let mut write_result = ToolResult {
             tool_call_id: "tc_write".into(),
             output: "wrote".into(),
         };
-        ext.after_tool_call(&write_call, &write_result).await.unwrap();
+        ext.after_tool_call(&write_call, &mut write_result).await.unwrap();
 
         let idx = ext.index.lock().await;
         assert_eq!(idx.files["foo.rs"].reads[0].status, Freshness::Stale {
@@ -737,10 +737,11 @@ mod tests {
             arguments: serde_json::json!({"file_path": "fold.rs"}),
             thought_signature: None,
         };
-        ext.after_tool_call(&read_call, &ToolResult {
+        let mut tr_fold = ToolResult {
             tool_call_id: "tc_fold".into(),
             output: "original content".into(),
-        }).await.unwrap();
+        };
+        ext.after_tool_call(&read_call, &mut tr_fold).await.unwrap();
 
         let write_call = ToolCall {
             call_type: "function".into(),
@@ -749,10 +750,11 @@ mod tests {
             arguments: serde_json::json!({"file_path": "fold.rs"}),
             thought_signature: None,
         };
-        ext.after_tool_call(&write_call, &ToolResult {
+        let mut tr_w = ToolResult {
             tool_call_id: "tc_w".into(),
             output: "wrote".into(),
-        }).await.unwrap();
+        };
+        ext.after_tool_call(&write_call, &mut tr_w).await.unwrap();
 
         let mut messages = vec![Message::ToolResult(ToolResultMessage {
             role: "toolResult".into(),

@@ -458,11 +458,11 @@ mod tests {
             arguments: serde_json::json!({ "file_path": path }),
             thought_signature: None,
         };
-        let result = ToolResult {
+        let mut result = ToolResult {
             tool_call_id: "tc_read".into(),
             output: "read me".into(),
         };
-        ext.after_tool_call(&call, &result).await.unwrap();
+        ext.after_tool_call(&call, &mut result).await.unwrap();
 
         // The file should now be tracked.
         let status = ext.on_extension_rpc("status", serde_json::json!({})).await.unwrap();

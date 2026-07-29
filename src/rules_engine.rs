@@ -985,6 +985,13 @@ mod tests {
         ));
         let rules_dir = tmp.join(".ion").join("rules");
         std::fs::create_dir_all(&rules_dir).unwrap();
+        // 全局 rule（applyTo: "**"）→ 进 system prompt
+        std::fs::write(
+            rules_dir.join("global.md"),
+            "---\napplyTo: \"**\"\n---\nAlways respond concisely.",
+        )
+        .unwrap();
+        // 路径匹配 rule（applyTo: "**/*.rs"）→ 不进 system prompt（走 tool result）
         std::fs::write(
             rules_dir.join("rust.md"),
             "---\napplyTo: \"**/*.rs\"\n---\nUse snake_case.",
@@ -996,8 +1003,11 @@ mod tests {
         let ext = RulesEngineExtension::with_project_dir(tmp.clone());
         let mut prompt = String::from("base");
         ext.on_system_prompt(&mut prompt).await.unwrap();
+        // 全局 rule 应在 system prompt
         assert!(prompt.contains("<project_rules>"));
-        assert!(prompt.contains("Use snake_case."));
+        assert!(prompt.contains("Always respond concisely."));
+        // 路径匹配 rule 不应在 system prompt（走 tool result）
+        assert!(!prompt.contains("Use snake_case."));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

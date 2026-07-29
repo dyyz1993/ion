@@ -89,18 +89,36 @@ if not blobs:
     print("no_data"); exit()
 data = json.loads(base64.b64decode(blobs[0] + "==").decode("utf-8","replace"))
 sp = data.get("systemPrompt","")
+entries = data.get("entries", [])
+# 检查 tool result 里有没有 rust rule（路径匹配 rule 追加到 tool result）
+rust_in_tr = False
+for e in entries:
+    msg = e.get("message", {})
+    for key in ("ToolResult",):
+        tr = msg.get(key, {})
+        if isinstance(tr, dict):
+            content = tr.get("content", [])
+            if isinstance(content, list):
+                for b in content:
+                    if isinstance(b, dict):
+                        text = b.get("Text", {}).get("text", "") if "Text" in b else b.get("text", "")
+                        if "project rules for this file" in text or "snake_case" in text:
+                            rust_in_tr = True
 results = []
 results.append("HAS_PROJECT_RULES" if "<project_rules>" in sp else "NO_PROJECT_RULES")
 results.append("HAS_GLOBAL" if "Global Rule" in sp else "NO_GLOBAL")
-results.append("HAS_RUST" if "snake_case" in sp else "NO_RUST")
+# 路径匹配 rule 不应在 system prompt（只走 tool result）
+results.append("NO_RUST_IN_SP" if "snake_case" not in sp else "HAS_RUST_IN_SP")
+results.append("RUST_IN_TR" if rust_in_tr else "NO_RUST_IN_TR")
 results.append("NO_PYTHON" if "PEP 8" not in sp else "HAS_PYTHON")
 print(" ".join(results))
 PYEOF
     )
-    assert_contains "A1: 含 <project_rules> 标签" "$SP_CHECK" "HAS_PROJECT_RULES"
-    assert_contains "A2: 全局 rule 注入（Global Rule）" "$SP_CHECK" "HAS_GLOBAL"
-    assert_contains "A3: rust rule 注入（匹配 **/*.rs → snake_case）" "$SP_CHECK" "HAS_RUST"
-    assert_contains "A4: python rule 不注入（无 .py 文件）" "$SP_CHECK" "NO_PYTHON"
+    assert_contains "A1: 含 <project_rules> 标签（全局 rule 在 SP）" "$SP_CHECK" "HAS_PROJECT_RULES"
+    assert_contains "A2: 全局 rule 注入（Global Rule 在 SP）" "$SP_CHECK" "HAS_GLOBAL"
+    assert_contains "A3: 路径匹配 rust rule 不在 SP（走 tool result）" "$SP_CHECK" "NO_RUST_IN_SP"
+    assert_contains "A4: rust rule 追加到 tool result" "$SP_CHECK" "RUST_IN_TR"
+    assert_contains "A5: 不匹配的 python rule 不注入" "$SP_CHECK" "NO_PYTHON"
 else
     echo "  ⚠️ export 文件未生成，跳过 A 组（可能 session 创建失败）"
     FAIL=$((FAIL+4))
