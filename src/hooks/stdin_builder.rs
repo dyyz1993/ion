@@ -7,16 +7,31 @@
 use serde_json::{json, Value};
 
 /// 通用字段（所有事件都有）
+/// 对齐 Claude Code 的 createBaseHookInput：session_id + cwd + transcript_path +
+/// permission_mode + hook_event_name。
 fn common_fields(event: &str) -> Value {
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
-    json!({
-        "session_id": std::env::var("ION_SESSION_ID").unwrap_or_default(),
-        "cwd": cwd.clone(),
-        "hook_event_name": event,
-        "workspace_roots": [cwd],
-    })
+    let session_id = std::env::var("ION_SESSION_ID").unwrap_or_default();
+    // transcript_path: session JSONL 路径，让 hook 脚本能读对话历史
+    let transcript_path = if !session_id.is_empty() {
+        let cwd_for_path = std::env::var("ION_SESSION_CWD").unwrap_or_else(|_| cwd.clone());
+        crate::session_jsonl::session_path(&cwd_for_path).to_string_lossy().to_string()
+    } else {
+        String::new()
+    };
+    let mut obj = serde_json::Map::new();
+    obj.insert("session_id".into(), json!(session_id));
+    obj.insert("cwd".into(), json!(cwd.clone()));
+    obj.insert("transcript_path".into(), json!(transcript_path));
+    obj.insert("hook_event_name".into(), json!(event));
+    obj.insert("workspace_roots".into(), json!([cwd]));
+    // permission_mode（可选）
+    if let Ok(mode) = std::env::var("ION_SECURITY_MODE") {
+        obj.insert("permission_mode".into(), json!(mode));
+    }
+    Value::Object(obj)
 }
 
 /// 合并通用字段 + 事件特有字段
@@ -53,13 +68,14 @@ pub fn pre_tool_use(tool_name: &str, tool_input: &Value, tool_call_id: &str) -> 
     }))
 }
 
-pub fn post_tool_use(tool_name: &str, tool_input: &Value, tool_response: &Value, is_error: bool) -> Value {
+pub fn post_tool_use(tool_name: &str, tool_input: &Value, tool_response: &Value, is_error: bool, tool_call_id: &str) -> Value {
     let event = if is_error { "PostToolUseFailure" } else { "PostToolUse" };
     build(event, json!({
         "tool_name": tool_name,
         "llm_tool_name": tool_name,
         "tool_input": tool_input,
         "tool_response": tool_response,
+        "tool_use_id": tool_call_id,
     }))
 }
 

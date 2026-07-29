@@ -300,7 +300,7 @@ impl Extension for HookExtension {
         });
         // ToolResult 只有 output 字段，用是否包含 "error" 简单判断 is_error
         let is_error = result.output.to_lowercase().contains("error") || result.output.is_empty();
-        let stdin = stdin_builder::post_tool_use(&call.name, &call.arguments, &response, is_error);
+        let stdin = stdin_builder::post_tool_use(&call.name, &call.arguments, &response, is_error, &call.id);
         let outcome = self.process_event(
             if is_error { "PostToolUseFailure" } else { "PostToolUse" },
             stdin,
