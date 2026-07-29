@@ -1688,14 +1688,12 @@ async fn cmd_run(
         .unwrap_or_default();
     if !run_cwd.is_empty() {
         agent.set_session_cwd(Some(run_cwd.clone()));
-        // 记录首次启动工作路径（CI 启动路径 / 首次选中，创建时记一次）
-        if !session_id_in.is_empty() {
-            ion::session_index::SessionIndex::set_initial_cwd(session_id_in, &run_cwd);
-        }
+        // 记录首次启动工作路径（CI 启动路径 / 首次选中，用实际 session_id 而非 session_id_in）
+        ion::session_index::SessionIndex::set_initial_cwd(session_id, &run_cwd);
     }
-    if !session_id_in.is_empty() {
-        agent.set_session_id(Some(session_id_in.to_string()));
-    }
+    agent.set_session_id(Some(session_id.to_string()));
+    // 记录权限模式快照（permissive/standard/strict/autopilot/readonly）
+    ion::session_index::SessionIndex::set_security_profile(session_id, profile);
 
     // Resolve compact model for summarization (if specified via --compact-model)
     if let Some(ref cm_id) = eff.compact_model {

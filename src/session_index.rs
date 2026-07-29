@@ -80,6 +80,9 @@ pub struct SessionMeta {
     /// tier_models 快照（创建时从全局 config 读，让历史 session 能还原当时用的 fast/pro/max）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier_models: Option<serde_json::Value>,
+    /// 权限模式（permissive/standard/strict/autopilot/readonly，创建时记录）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security_profile: Option<String>,
 }
 
 /// Index of all sessions, stored in sessions.index.json
@@ -233,6 +236,7 @@ impl SessionIndex {
             last_cwd: existing.as_ref().and_then(|e| e.last_cwd.clone()),
             extra_cwds: existing.as_ref().map_or(Vec::new(), |e| e.extra_cwds.clone()),
             tier_models: existing.as_ref().and_then(|e| e.tier_models.clone()),
+            security_profile: existing.as_ref().and_then(|e| e.security_profile.clone()),
         }
     }
 
@@ -316,6 +320,7 @@ impl SessionIndex {
                     last_cwd: None,
                     extra_cwds: Vec::new(),
                     tier_models: None,
+                    security_profile: None,
                 },
             );
         }
@@ -443,6 +448,13 @@ impl SessionIndex {
         });
     }
 
+    /// 写入权限模式（permissive/standard/strict/autopilot/readonly，创建时记录）。
+    pub fn set_security_profile(id: &str, profile: &str) {
+        Self::patch_meta(id, |m| {
+            m.security_profile = Some(profile.to_string());
+        });
+    }
+
     /// Count how many sessions in the index match the given project key.
     /// Loads the index from disk and counts entries where `project` == `project_key`.
     pub fn count_sessions_by_project(&self, project_key: &str) -> Result<i64, String> {
@@ -492,6 +504,7 @@ mod tests {
             last_cwd: None,
             extra_cwds: Vec::new(),
             tier_models: None,
+            security_profile: None,
         }
     }
 
