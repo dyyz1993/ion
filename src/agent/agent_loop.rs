@@ -108,6 +108,8 @@ pub struct Agent {
     /// 会话 ID（用于 SessionIndex 增量统计：turn/error/compress 计数）。
     /// None = 不更新索引统计（入口 Worker 未注入时静默跳过，不崩溃）。
     session_id: Option<String>,
+    /// 额外工作目录（用户/LLM 通过 add_dir 添加，注入到 system prompt 让 LLM 知道可访问）。
+    extra_cwds: std::sync::Mutex<Vec<String>>,
     /// 溢出恢复已尝试次数（达 MAX_OVERFLOW_ROUNDS 后放弃，对齐 pi）
     overflow_recovery_attempts: u32,
     /// 软删除状态：被软删的 entry ID 集合（快速查询）
@@ -149,6 +151,7 @@ impl Agent {
             compact_model: None,
             session_cwd: None,
             session_id: None,
+            extra_cwds: std::sync::Mutex::new(Vec::new()),
             overflow_recovery_attempts: 0,
             deleted_entry_ids: std::collections::HashSet::new(),
             summarized_entry_ids: std::collections::HashMap::new(),
@@ -199,6 +202,34 @@ impl Agent {
     /// 动态设置 session ID（worker 启动后 / cmd_run 设置）。
     pub fn set_session_id(&mut self, sid: Option<String>) {
         self.session_id = sid;
+    }
+
+    /// 添加额外工作目录（add_dir RPC 调用，去重）。
+    pub fn add_extra_cwd(&self, cwd: &str) -> bool {
+        let mut dirs = self.extra_cwds.lock().unwrap();
+        if dirs.iter().any(|c| c == cwd) {
+            return false; // 已存在
+        }
+        dirs.push(cwd.to_string());
+        true
+    }
+
+    /// 移除额外工作目录（remove_dir RPC 调用）。
+    pub fn remove_extra_cwd(&self, cwd: &str) -> bool {
+        let mut dirs = self.extra_cwds.lock().unwrap();
+        let before = dirs.len();
+        dirs.retain(|c| c != cwd);
+        dirs.len() < before // true = 移除了
+    }
+
+    /// 获取额外工作目录列表（快照，用于 prompt 注入）。
+    pub fn get_extra_cwds(&self) -> Vec<String> {
+        self.extra_cwds.lock().unwrap().clone()
+    }
+
+    /// 获取当前 session cwd（list_dirs 等 RPC 用）。
+    pub fn session_cwd(&self) -> Option<String> {
+        self.session_cwd.clone()
     }
 
     /// 动态设置系统提示词（switch_agent 时调用）
@@ -853,6 +884,16 @@ impl Agent {
             // Build context for provider (clone to avoid borrow issues)
             let mut sys_prompt = self.system_prompt.clone().unwrap_or_default();
             self.extensions.on_system_prompt(&mut sys_prompt).await?;
+            // 注入额外工作目录（add_dir 添加的，让 LLM 知道有哪些目录可访问）
+            let extra = self.get_extra_cwds();
+            if !extra.is_empty() {
+                let dirs_list = extra.iter().map(|d| format!("  - {d}")).collect::<Vec<_>>().join("\n");
+                sys_prompt.push_str(&format!(
+                    "\n\n## Additional Working Directories\n\
+                     The following directories have been added to your workspace (via add_dir). \
+                     You can read/write/list files in these directories:\n{dirs_list}\n"
+                ));
+            }
             let sys_prompt = Some(sys_prompt);
 
             // Skill 自动卸载：skill 内容（tool result）在加载后的下一轮 turn 就被"消化"了。

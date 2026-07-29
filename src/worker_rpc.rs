@@ -1992,6 +1992,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     {"name": "permission_remove_stored", "desc": "删除某条存储决策"},
                     {"name": "permission_clear_stored", "desc": "清空所有存储决策"},
                     {"name": "set_cwd", "desc": "切工作目录"},
+                    {"name": "add_dir", "desc": "添加额外工作目录"},
+                    {"name": "remove_dir", "desc": "移除额外工作目录"},
+                    {"name": "list_dirs", "desc": "列出所有工作目录"},
                     {"name": "set_auto_retry", "desc": "设置重试次数"},
                     {"name": "abort_retry", "desc": "中断重试"},
                     {"name": "abort_bash", "desc": "中断后台 bash"},
@@ -2337,6 +2340,67 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         }));
                     }
                 }
+            }
+            "add_dir" => {
+                // 添加额外工作目录（记录到 extra_cwds + Agent 内存，用于 prompt 注入让 LLM 知道可访问）
+                let dir = params.get("dir").and_then(|v| v.as_str())
+                    .or_else(|| params.get("cwd").and_then(|v| v.as_str()))
+                    .or_else(|| params.get("path").and_then(|v| v.as_str()))
+                    .unwrap_or("");
+                if dir.is_empty() {
+                    output_response(&id, "add_dir", &serde_json::json!({"error": "missing 'dir' parameter"}));
+                } else {
+                    // 规范化为绝对路径
+                    let abs = if std::path::Path::new(dir).is_absolute() {
+                        dir.to_string()
+                    } else {
+                        std::env::current_dir().ok()
+                            .map(|c| c.join(dir).to_string_lossy().to_string())
+                            .unwrap_or_else(|| dir.to_string())
+                    };
+                    if !std::path::Path::new(&abs).exists() {
+                        output_response(&id, "add_dir", &serde_json::json!({"error": format!("path '{}' does not exist", abs)}));
+                    } else {
+                        let added = agent.add_extra_cwd(&abs);
+                        // 同步到 SessionIndex.extra_cwds（持久化）
+                        crate::session_index::SessionIndex::add_extra_cwd(&sid, &abs);
+                        let dirs = agent.get_extra_cwds();
+                        output_response(&id, "add_dir", &serde_json::json!({
+                            "added": added,
+                            "dir": abs,
+                            "extra_cwds": dirs,
+                        }));
+                    }
+                }
+            }
+            "remove_dir" => {
+                let dir = params.get("dir").and_then(|v| v.as_str())
+                    .or_else(|| params.get("cwd").and_then(|v| v.as_str()))
+                    .unwrap_or("");
+                if dir.is_empty() {
+                    output_response(&id, "remove_dir", &serde_json::json!({"error": "missing 'dir' parameter"}));
+                } else {
+                    let removed = agent.remove_extra_cwd(dir);
+                    if removed {
+                        // 同步移除 SessionIndex.extra_cwds（重新写整个列表）
+                        let remaining = agent.get_extra_cwds();
+                        crate::session_index::SessionIndex::patch_meta(&sid, |m| {
+                            m.extra_cwds = remaining.clone();
+                        });
+                    }
+                    output_response(&id, "remove_dir", &serde_json::json!({
+                        "removed": removed,
+                        "extra_cwds": agent.get_extra_cwds(),
+                    }));
+                }
+            }
+            "list_dirs" => {
+                // 列出所有工作目录：cwd + extra_cwds
+                let cwd = agent.session_cwd();
+                output_response(&id, "list_dirs", &serde_json::json!({
+                    "cwd": cwd,
+                    "extra_cwds": agent.get_extra_cwds(),
+                }));
             }
             "cycle_model" => {
                 let current_id = agent.model().id.clone();
