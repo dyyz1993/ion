@@ -112,3 +112,72 @@ pub fn permission_request(tool: &str, args: &Value) -> Value {
         "args": args,
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_common_fields_has_transcript_path() {
+        let stdin = common_fields("PreToolUse");
+        assert!(stdin.get("transcript_path").is_some(), "transcript_path must exist");
+        assert!(stdin.get("session_id").is_some(), "session_id must exist");
+        assert!(stdin.get("cwd").is_some(), "cwd must exist");
+        assert!(stdin.get("hook_event_name").is_some(), "hook_event_name must exist");
+        assert_eq!(stdin["hook_event_name"], "PreToolUse");
+    }
+
+    #[test]
+    fn test_pre_tool_use_has_tool_use_id() {
+        let stdin = pre_tool_use("Bash", &json!({"command": "ls"}), "call_abc123");
+        assert_eq!(stdin["tool_name"], "Bash");
+        assert_eq!(stdin["tool_use_id"], "call_abc123");
+        assert!(stdin.get("tool_input").is_some());
+    }
+
+    #[test]
+    fn test_post_tool_use_has_tool_use_id_and_response() {
+        let stdin = post_tool_use(
+            "Read",
+            &json!({"file_path": "src/lib.rs"}),
+            &json!({"output": "file contents"}),
+            false,
+            "call_xyz789",
+        );
+        assert_eq!(stdin["hook_event_name"], "PostToolUse");
+        assert_eq!(stdin["tool_use_id"], "call_xyz789");
+        assert!(stdin.get("tool_response").is_some(), "tool_response must exist");
+    }
+
+    #[test]
+    fn test_post_tool_use_failure_event_name() {
+        let stdin = post_tool_use(
+            "Bash",
+            &json!({"command": "false"}),
+            &json!({"output": "error"}),
+            true,
+            "call_err",
+        );
+        assert_eq!(stdin["hook_event_name"], "PostToolUseFailure");
+    }
+
+    #[test]
+    fn test_stop_has_last_assistant_message() {
+        let stdin = stop("task completed", 0);
+        assert_eq!(stdin["last_assistant_message"], "task completed");
+        assert_eq!(stdin["stop_hook_active"], false);
+    }
+
+    #[test]
+    fn test_session_start_has_source() {
+        let stdin = session_start("SessionStart", "startup");
+        assert_eq!(stdin["source"], "startup");
+        assert_eq!(stdin["reason"], "startup");
+    }
+
+    #[test]
+    fn test_user_prompt_submit_has_prompt() {
+        let stdin = user_prompt_submit("hello world");
+        assert_eq!(stdin["prompt"], "hello world");
+    }
+}
