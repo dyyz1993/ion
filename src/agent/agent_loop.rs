@@ -579,14 +579,14 @@ impl Agent {
     /// 用于：ion rpc 直接触发 spawn_worker / read / write 等工具，不跑 LLM。
     pub async fn call_tool(&self, name: &str, args: serde_json::Value) -> AgentResult<String> {
         // 权限检查（与 agent.run() 循环里的 before_tool_call 一致）
-        let tc = crate::agent::messages::ToolCall {
+        let mut tc = crate::agent::messages::ToolCall {
             call_type: "function".into(),
             id: "cli_call".into(),
             name: name.to_string(),
             arguments: args.clone(),
             thought_signature: None,
         };
-        self.extensions.before_tool_call(&tc).await?;
+        self.extensions.before_tool_call(&mut tc).await?;
 
         // session 分支/回滚钩子（与 run() 循环里一致，CLI call_tool 直调时也触发）
         if name == "branch_session" {
@@ -1093,7 +1093,7 @@ impl Agent {
                     return Ok(stop_reason);
                 }
                 StopReason::ToolUse => {
-                    let tool_calls: Vec<ToolCall> = events
+                    let mut tool_calls: Vec<ToolCall> = events
                         .iter()
                         .filter_map(|e| match e {
                             StreamEvent::ToolCallEnd { tool_call, .. } => Some(tool_call.clone()),
@@ -1130,7 +1130,7 @@ impl Agent {
                     }
                     turn += 1;
 
-                    for tc in &tool_calls {
+                    for tc in &mut tool_calls {
                         // 工具执行前检查 abort(stopped 是 Arc<AtomicBool>)
                         if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
                             tracing::info!("[abort] 工具执行循环中检测到 stopped，终止");

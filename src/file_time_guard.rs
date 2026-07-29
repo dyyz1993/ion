@@ -213,7 +213,7 @@ impl Extension for FileTimeGuardExtension {
 
     /// Before `write`/`edit`: detect external modifications and apply the
     /// configured guard mode (Block / Warn / Ignore).
-    async fn before_tool_call(&self, call: &ToolCall) -> AgentResult<()> {
+    async fn before_tool_call(&self, call: &mut ToolCall) -> AgentResult<()> {
         // Only intercept tools that mutate files.
         if call.name != "write" && call.name != "edit" {
             return Ok(());
@@ -402,14 +402,14 @@ mod tests {
         std::fs::write(&path, "externally changed content").unwrap();
 
         // Build a write ToolCall targeting the now-stale file.
-        let call = ToolCall {
+        let mut call = ToolCall {
             call_type: "function".into(),
             id: "tc_block".into(),
             name: "write".into(),
             arguments: serde_json::json!({ "file_path": path }),
             thought_signature: None,
         };
-        let result = ext.before_tool_call(&call).await;
+        let result = ext.before_tool_call(&mut call).await;
         assert!(result.is_err(), "Block mode should reject a stale write");
         let err = result.unwrap_err().to_string();
         assert!(
@@ -432,7 +432,7 @@ mod tests {
         bump_mtime();
         std::fs::write(&path, "externally changed content").unwrap();
 
-        let call = ToolCall {
+        let mut call = ToolCall {
             call_type: "function".into(),
             id: "tc_warn".into(),
             name: "edit".into(),
@@ -440,7 +440,7 @@ mod tests {
             thought_signature: None,
         };
         // Warn mode must allow the write (Ok) even though the file is stale.
-        let result = ext.before_tool_call(&call).await;
+        let result = ext.before_tool_call(&mut call).await;
         assert!(result.is_ok(), "Warn mode should allow a stale write");
 
         let _ = std::fs::remove_file(&path);
@@ -451,7 +451,7 @@ mod tests {
         let path = make_tmp_file("read", "read me");
         let ext = FileTimeGuardExtension::new();
 
-        let call = ToolCall {
+        let mut call = ToolCall {
             call_type: "function".into(),
             id: "tc_read".into(),
             name: "read".into(),

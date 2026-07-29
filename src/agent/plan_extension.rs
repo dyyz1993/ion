@@ -235,7 +235,7 @@ impl Extension for PlanExtension {
 
     // ── Reject non-allowed tools during plan mode ──
 
-    async fn before_tool_call(&self, call: &ToolCall) -> AgentResult<()> {
+    async fn before_tool_call(&self, call: &mut ToolCall) -> AgentResult<()> {
         if self.plan_mode.load(Ordering::Relaxed)
             && call.name != "plan_enter"
             && !self.allowed_tools.contains(&call.name)
@@ -320,7 +320,7 @@ impl Extension for SharedPlanExtension {
     async fn after_tool_call(&self, call: &ToolCall, result: &mut ToolResult) -> AgentResult<()> {
         self.0.after_tool_call(call, result).await
     }
-    async fn before_tool_call(&self, call: &ToolCall) -> AgentResult<()> {
+    async fn before_tool_call(&self, call: &mut ToolCall) -> AgentResult<()> {
         self.0.before_tool_call(call).await
     }
     async fn on_system_prompt(&self, prompt: &mut String) -> AgentResult<()> {

@@ -1965,7 +1965,7 @@ impl ExtTrait for HookAdapter {
         }))
     }
 
-    async fn before_tool_call(&self, call: &ToolCall) -> AgentResult<()> {
+    async fn before_tool_call(&self, call: &mut ToolCall) -> AgentResult<()> {
         let blocked = self.call_status("before_tool_call", &serde_json::json!({
             "id": &call.id,
             "name": &call.name,

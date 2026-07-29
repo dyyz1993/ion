@@ -555,7 +555,7 @@ fn chrono_now() -> String {
 impl Extension for PermissionExtension {
     fn name(&self) -> &str { &self.name }
 
-    async fn before_tool_call(&self, call: &ToolCall) -> AgentResult<()> {
+    async fn before_tool_call(&self, call: &mut ToolCall) -> AgentResult<()> {
         if let Some(decision) = self.check_tool(call) {
             match decision {
                 Decision::Allow => return Ok(()),
@@ -780,9 +780,9 @@ mod tests {
         ext.store_decision("command.run", "git status", "allow", "session")
             .unwrap();
         // before_tool_call 应放行
-        let call = tool_call("bash", serde_json::json!({"command": "git status"}));
+        let mut call = tool_call("bash", serde_json::json!({"command": "git status"}));
         // Allow → Ok
-        assert!(ext.before_tool_call(&call).await.is_ok());
+        assert!(ext.before_tool_call(&mut call).await.is_ok());
     }
 
     #[tokio::test]
@@ -791,8 +791,8 @@ mod tests {
         // *.env 是后缀匹配（matches() 支持 prefix=* 后缀匹配）
         ext.store_decision("file.read", "*.env", "deny", "session")
             .unwrap();
-        let call = tool_call("read", serde_json::json!({"file_path": "/tmp/.env"}));
-        let res = ext.before_tool_call(&call).await;
+        let mut call = tool_call("read", serde_json::json!({"file_path": "/tmp/.env"}));
+        let res = ext.before_tool_call(&mut call).await;
         assert!(res.is_err());
         let err = res.unwrap_err().to_string();
         assert!(err.contains("denied by extension rule"));

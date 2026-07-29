@@ -158,7 +158,7 @@ pub trait Extension: Send + Sync {
     /// Called during tool execution with partial results (e.g., streaming bash output).
     async fn on_tool_execution_update(&self, _ctx: &ToolExecutionContext, _partial: &str) -> AgentResult<()> { Ok(()) }
     async fn on_tool_execution_end(&self, _ctx: &ToolExecutionContext) -> AgentResult<()> { Ok(()) }
-    async fn before_tool_call(&self, _call: &ToolCall) -> AgentResult<()> { Ok(()) }
+    async fn before_tool_call(&self, _call: &mut ToolCall) -> AgentResult<()> { Ok(()) }
     async fn after_tool_call(&self, _call: &ToolCall, _result: &mut ToolResult) -> AgentResult<()> { Ok(()) }
 
     // ── Model (3) ──
@@ -789,7 +789,7 @@ impl ExtensionRegistry {
     pub async fn on_tool_execution_end(&self, ctx: &ToolExecutionContext) -> AgentResult<()> {
         for ext in &self.extensions { ext.on_tool_execution_end(ctx).await?; } Ok(())
     }
-    pub async fn before_tool_call(&self, call: &ToolCall) -> AgentResult<()> {
+    pub async fn before_tool_call(&self, call: &mut ToolCall) -> AgentResult<()> {
         for ext in &self.extensions { ext.before_tool_call(call).await?; } Ok(())
     }
     pub async fn after_tool_call(&self, call: &ToolCall, result: &mut ToolResult) -> AgentResult<()> {
