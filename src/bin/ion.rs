@@ -1622,9 +1622,7 @@ async fn cmd_run(
     // Inject environment info (time, cwd, project root, git info)
     let env_cwd = std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
     sys_prompt.push_str(&build_env_info(&env_cwd));
-
-    // Inject bash tool guide（cmd_run 场景1 不注册 BashExtension，直接注入）
-    sys_prompt.push_str(&ion::agent::bash::bash_tool_guide());
+    // bash tool guide 由 BashExtension.on_system_prompt 自动注入（见 ext_reg.register）
 
     // Inject skill outline（扫描 ~/.agents/skills + ~/.ion/skills + ./.ion/skills，
     // 把所有 skill 的 name + description 注入 system prompt，让 LLM 启动就知道有哪些
@@ -1803,10 +1801,13 @@ async fn cmd_run(
     }
 
     // ── 注入 StorageContext（扩展通过 registry.data_dirs(name) 拿 4 级数据目录）──
-    ext_reg = ext_reg.with_storage(ion::storage_context::StorageContext::new(
-        &cwd, &session_id, &cwd,
-    ));
+    let storage_ctx = ion::storage_context::StorageContext::new(&cwd, &session_id, &cwd);
+    ext_reg = ext_reg.with_storage(storage_ctx.clone());
     tracing::info!("[extension] StorageContext injected (data_dirs available)");
+
+    // ── 注册 BashExtension（让 bash 工具的 guide + 后台进程摘要通过 on_system_prompt
+    //    自动注入，跟 memory/plan/rules_engine 等扩展一致，而非内核硬编码调用）──
+    ext_reg.register(Box::new(ion::agent::bash::BashExtension::new(storage_ctx.clone())));
 
     // Register per-turn session index extension if session is active
     if !session_id.is_empty() {
