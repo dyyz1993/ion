@@ -79,14 +79,19 @@ echo "$OUT" | grep -q "CommandGuard" && pass "A4: CommandGuard rm -rf" || fail "
 # ═══ Group B: 沙箱 ═══
 echo ""; echo "═══ Group B: 沙箱 ═══"
 
-sandbox-exec -p '(version 1)(allow default)' /bin/echo sb-ok 2>/dev/null | grep -q sb-ok && pass "B1: sandbox-exec" || fail "B1: sandbox-exec"
+# sandbox-exec is macOS-only — skip B1-B3 on Linux
+if [ "$(uname)" = "Darwin" ] && command -v sandbox-exec >/dev/null 2>&1; then
+    sandbox-exec -p '(version 1)(allow default)' /bin/echo sb-ok 2>/dev/null | grep -q sb-ok && pass "B1: sandbox-exec" || fail "B1: sandbox-exec"
 
-OUT=$(sandbox-exec -p '(version 1)(allow default)(deny file-write* (path "/etc"))' /bin/sh -c 'echo x>/etc/sb-test' 2>&1)
-echo "$OUT" | grep -qi "denied" && pass "B2: readonly sandbox" || fail "B2: readonly sandbox"
+    OUT=$(sandbox-exec -p '(version 1)(allow default)(deny file-write* (path "/etc"))' /bin/sh -c 'echo x>/etc/sb-test' 2>&1)
+    echo "$OUT" | grep -qi "denied" && pass "B2: readonly sandbox" || fail "B2: readonly sandbox"
 
-sandbox-exec -p '(version 1)(allow default)(allow file-write* (subpath "'"$PROJECT_DIR"'"))' /bin/sh -c "echo ok > $PROJECT_DIR/target/sb-test.txt" 2>/dev/null
-[ $? -eq 0 ] && pass "B3: workspace sandbox write" || fail "B3: workspace sandbox write"
-rm -f "$PROJECT_DIR/target/sb-test.txt"
+    sandbox-exec -p '(version 1)(allow default)(allow file-write* (subpath "'"$PROJECT_DIR"'"))' /bin/sh -c "echo ok > $PROJECT_DIR/target/sb-test.txt" 2>/dev/null
+    [ $? -eq 0 ] && pass "B3: workspace sandbox write" || fail "B3: workspace sandbox write"
+    rm -f "$PROJECT_DIR/target/sb-test.txt"
+else
+    echo "  ⏭️  B1-B3: sandbox-exec not available (Linux)"
+fi
 
 # ═══ Group C: RemoteRuntime SSH 格式 ═══
 echo ""; echo "═══ Group C: RemoteRuntime ═══"

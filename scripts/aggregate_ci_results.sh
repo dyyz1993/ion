@@ -22,9 +22,21 @@ if [ ! -d "$RESULTS_DIR" ] || [ -z "$(ls -A "$RESULTS_DIR" 2>/dev/null)" ]; then
     exit 1
 fi
 
-# ─── Collect all result lines ──────────────────────────────────────────────
+# ─── Collect all result lines (dedup by script — keep last result) ────────
 TMP_JSONL="/tmp/ci-aggregate.jsonl"
-cat "$RESULTS_DIR"/*.jsonl > "$TMP_JSONL" 2>/dev/null
+cat "$RESULTS_DIR"/*.jsonl 2>/dev/null | python3 -c "
+import json, sys
+results = {}
+for line in sys.stdin:
+    line = line.strip()
+    if not line: continue
+    try:
+        d = json.loads(line)
+        results[d['script']] = d  # last result wins
+    except: pass
+for d in results.values():
+    print(json.dumps(d))
+" > "$TMP_JSONL" 2>/dev/null
 TOTAL_LINES=$(wc -l < "$TMP_JSONL" | tr -d ' ')
 
 if [ "$TOTAL_LINES" -eq 0 ]; then
