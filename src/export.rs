@@ -115,6 +115,10 @@ pub fn export_session_rich(
                 }
             }
         }
+        // 注入环境信息（cwd/git/最近 commit/最近修改文件）——用 session header 的 cwd
+        let session_cwd = header.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
+        sp.push_str(&build_env_info_for_export(session_cwd));
+
         let skill_tool = crate::agent::tool::SkillTool { skill_dirs };
         let outline = skill_tool.list_skills();
         if !outline.contains("No skills available") {
@@ -1123,6 +1127,83 @@ fn base64_encode(input: &str) -> String {
     }
 
     result
+}
+
+/// 构建环境信息（export 用，用 session header 的 cwd 跑 git 命令）。
+/// 跟 bin/ion.rs 的 build_env_info 同逻辑，但独立实现（lib 看不到 bin 的函数）。
+fn build_env_info_for_export(cwd: &str) -> String {
+    use std::process::Command;
+    let now_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default().as_secs();
+    let days = now_epoch / 86400;
+    let remain = now_epoch % 86400;
+    let now_human = format!("day {} ({}:{:02} UTC)", days, remain / 3600, (remain % 3600) / 60);
+
+    let project_root = Command::new("git").args(["rev-parse", "--show-toplevel"])
+        .current_dir(cwd).output().ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+        .unwrap_or_else(|| cwd.to_string());
+    let git_branch = Command::new("git").args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(cwd).output().ok()
+        .and_then(|o| { let b = String::from_utf8_lossy(&o.stdout).trim().to_string(); if b.is_empty() { None } else { Some(b) } });
+    let git_remote = Command::new("git").args(["remote", "get-url", "origin"])
+        .current_dir(cwd).output().ok()
+        .and_then(|o| { let r = String::from_utf8_lossy(&o.stdout).trim().to_string(); if r.is_empty() { None } else { Some(r) } });
+    let worktree = std::env::var("ION_WORKTREE_ROOT").ok().or_else(|| std::env::var("ION_WORKTREE").ok());
+
+    let mut info = String::from("\n\n--- environment ---\n## Environment\n");
+    info.push_str(&format!("- **Current Time**: {} (unix: {})\n", now_human, now_epoch));
+    info.push_str(&format!("- **Working Directory (cwd)**: `{}`\n", cwd));
+    info.push_str(&format!("- **Project Root**: `{}`\n", project_root));
+    if let Some(wt) = &worktree { info.push_str(&format!("- **Worktree Path**: `{}`\n", wt)); }
+    info.push_str(&format!("- **Platform**: `{} {}`\n", std::env::consts::OS, std::env::consts::ARCH));
+    info.push_str(&format!("- **ION Version**: `{}`\n", env!("CARGO_PKG_VERSION")));
+    if let Some(b) = &git_branch { info.push_str(&format!("- **Git Branch**: `{}`\n", b)); }
+    if let Some(r) = &git_remote { info.push_str(&format!("- **Git Remote**: `{}`\n", r)); }
+
+    // 最近 5 个 commit 主题
+    if let Ok(o) = Command::new("git").args(["log", "--oneline", "-5"]).current_dir(cwd).output() {
+        if let Ok(s) = String::from_utf8(o.stdout) {
+            let s = s.trim();
+            if !s.is_empty() {
+                info.push_str("\n### Recent Commits (last 5)\n```\n");
+                info.push_str(s);
+                info.push_str("\n```\n");
+            }
+        }
+    }
+    // 最近修改文件（HEAD~1..HEAD + 未提交，前 20）
+    let mut recent_files: Vec<String> = Vec::new();
+    if let Ok(o) = Command::new("git").args(["diff", "--name-only", "HEAD~1", "HEAD"]).current_dir(cwd).output() {
+        if let Ok(s) = String::from_utf8(o.stdout) {
+            for line in s.lines() {
+                let f = line.trim();
+                if !f.is_empty() && !recent_files.contains(&f.to_string()) { recent_files.push(f.to_string()); }
+            }
+        }
+    }
+    if let Ok(o) = Command::new("git").args(["status", "--short"]).current_dir(cwd).output() {
+        if let Ok(s) = String::from_utf8(o.stdout) {
+            let s = s.trim();
+            if !s.is_empty() {
+                info.push_str("\n### Uncommitted Changes\n```\n");
+                info.push_str(s);
+                info.push_str("\n```\n");
+                for line in s.lines() {
+                    let f = line.trim_start_matches(|c: char| c.is_uppercase() || c == ' ' || c == '?').trim();
+                    if !f.is_empty() && !recent_files.contains(&f.to_string()) { recent_files.push(f.to_string()); }
+                }
+            }
+        }
+    }
+    if !recent_files.is_empty() {
+        let trunc = if recent_files.len() > 20 { format!("\n  (and {} more...)", recent_files.len() - 20) } else { String::new() };
+        let list = recent_files.iter().take(20).map(|f| format!("  - {}", f)).collect::<Vec<_>>().join("\n");
+        info.push_str(&format!("\n### Recently Modified Files\n{}\n{}\n", list, trunc));
+    }
+    info
 }
 
 #[cfg(test)]

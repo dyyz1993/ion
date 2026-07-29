@@ -1620,8 +1620,8 @@ async fn cmd_run(
     }
 
     // Inject environment info (time, cwd, project root, git info)
-    sys_prompt.push_str("\n\n--- environment ---\n");
-    sys_prompt.push_str(&build_env_info());
+    let env_cwd = std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+    sys_prompt.push_str(&build_env_info(&env_cwd));
 
     // Inject skill outline（扫描 ~/.agents/skills + ~/.ion/skills + ./.ion/skills，
     // 把所有 skill 的 name + description 注入 system prompt，让 LLM 启动就知道有哪些
@@ -5650,36 +5650,43 @@ mod tests {
 
 /// Build environment info string for system prompt injection.
 /// Includes: time, cwd, project root, git branch, git remote.
-fn build_env_info() -> String {
-    let now = std::time::SystemTime::now()
+/// 构建环境信息（cwd/git/时间/最近 commit/最近修改文件），注入 system prompt。
+/// pub + 接受 cwd 参数：让 export_session_rich 也能复用（用 session header.cwd）。
+pub fn build_env_info(cwd: &str) -> String {
+    use std::process::Command;
+    let now_epoch = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let cwd = std::env::current_dir()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
+    // 人类可读时间（本地时区）
+    let now_human = {
+        let secs = now_epoch;
+        let days = secs / 86400;
+        let remain = secs % 86400;
+        let h = remain / 3600;
+        let m = (remain % 3600) / 60;
+        format!("day {} ({}:{:02} UTC)", days, h, m)
+    };
 
-    let project_root = std::process::Command::new("git")
+    let project_root = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
-        .current_dir(&cwd)
-        .output().ok()
+        .current_dir(cwd).output().ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| cwd.clone());
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| cwd.to_string());
 
-    let git_branch = std::process::Command::new("git")
+    let git_branch = Command::new("git")
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(&cwd)
-        .output().ok()
+        .current_dir(cwd).output().ok()
         .and_then(|o| {
             let b = String::from_utf8_lossy(&o.stdout).trim().to_string();
             if b.is_empty() { None } else { Some(b) }
         });
 
-    let git_remote = std::process::Command::new("git")
+    let git_remote = Command::new("git")
         .args(["remote", "get-url", "origin"])
-        .current_dir(&cwd)
-        .output().ok()
+        .current_dir(cwd).output().ok()
         .and_then(|o| {
             let r = String::from_utf8_lossy(&o.stdout).trim().to_string();
             if r.is_empty() { None } else { Some(r) }
@@ -5688,13 +5695,21 @@ fn build_env_info() -> String {
     let worktree = std::env::var("ION_WORKTREE_ROOT").ok()
         .or_else(|| std::env::var("ION_WORKTREE").ok());
 
-    let mut info = String::from("\n\n## Environment\n");
-    info.push_str(&format!("- **Time**: {} (unix epoch)\n", now));
-    info.push_str(&format!("- **Working Directory**: `{}`\n", cwd));
+    // 原始工作目录（从 SessionIndex 读，如果 session_id 已知）
+    // 注意：这里不直接读 index（build_env_info 是无状态函数），由调用方决定是否注入 initial_cwd。
+
+    let mut info = String::from("\n\n--- environment ---\n## Environment\n");
+    info.push_str(&format!("- **Current Time**: {} (unix: {})\n", now_human, now_epoch));
+    info.push_str(&format!("- **Working Directory (cwd)**: `{}`\n", cwd));
     info.push_str(&format!("- **Project Root**: `{}`\n", project_root));
     if let Some(wt) = &worktree {
         info.push_str(&format!("- **Worktree Path**: `{}`\n", wt));
     }
+    // OS / 运行环境
+    let os_info = format!("{} {}", std::env::consts::OS, std::env::consts::ARCH);
+    info.push_str(&format!("- **Platform**: `{}`\n", os_info));
+    let ion_ver = env!("CARGO_PKG_VERSION");
+    info.push_str(&format!("- **ION Version**: `{}`\n", ion_ver));
     if let Some(branch) = &git_branch {
         info.push_str(&format!("- **Git Branch**: `{}`\n", branch));
     }
@@ -5702,34 +5717,60 @@ fn build_env_info() -> String {
         info.push_str(&format!("- **Git Remote**: `{}`\n", remote));
     }
 
-    // Recent commits (last 3, with files changed)
-    let recent_commits = std::process::Command::new("git")
-        .args(["log", "--oneline", "--name-only", "-3"])
-        .current_dir(&cwd)
-        .output().ok()
+    // 最近 commit 主题（last 5，只标题，不含文件名——压缩 token）
+    let recent_subjects = Command::new("git")
+        .args(["log", "--oneline", "-5"])
+        .current_dir(cwd).output().ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string());
-    if let Some(commits) = &recent_commits {
-        if !commits.is_empty() {
-            info.push_str("\n### Recent Changes (last 3 commits)\n```\n");
-            info.push_str(commits);
+    if let Some(subjects) = &recent_subjects {
+        if !subjects.is_empty() {
+            info.push_str("\n### Recent Commits (last 5)\n```\n");
+            info.push_str(subjects);
             info.push_str("\n```\n");
         }
     }
 
-    // Uncommitted changes (git status --short)
-    let uncommitted = std::process::Command::new("git")
+    // 最近修改的文件（最近 1 次 commit 改动的文件 + 未提交的改动合并去重，前 20 个）
+    let mut recent_files: Vec<String> = Vec::new();
+    // 最近 commit 的文件
+    if let Ok(o) = Command::new("git").args(["diff", "--name-only", "HEAD~1", "HEAD"]).current_dir(cwd).output() {
+        if let Ok(s) = String::from_utf8(o.stdout) {
+            for line in s.lines() {
+                let f = line.trim();
+                if !f.is_empty() && !recent_files.contains(&f.to_string()) {
+                    recent_files.push(f.to_string());
+                }
+            }
+        }
+    }
+    // 未提交的改动（M/A/D 标记）
+    let uncommitted_raw = Command::new("git")
         .args(["status", "--short"])
-        .current_dir(&cwd)
-        .output().ok()
+        .current_dir(cwd).output().ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string());
-    if let Some(changes) = &uncommitted {
+    if let Some(changes) = &uncommitted_raw {
         if !changes.is_empty() {
             info.push_str("\n### Uncommitted Changes\n```\n");
             info.push_str(changes);
             info.push_str("\n```\n");
+            // 同时收集到 recent_files
+            for line in changes.lines() {
+                let f = line.trim_start_matches(|c: char| c.is_uppercase() || c == ' ' || c == '?').trim();
+                if !f.is_empty() && !recent_files.contains(&f.to_string()) {
+                    recent_files.push(f.to_string());
+                }
+            }
         }
+    }
+    // 最近修改文件汇总（前 20，压缩）
+    if !recent_files.is_empty() {
+        let truncated = if recent_files.len() > 20 {
+            format!("\n  (and {} more...)", recent_files.len() - 20)
+        } else { String::new() };
+        let files_list = recent_files.iter().take(20).map(|f| format!("  - {}", f)).collect::<Vec<_>>().join("\n");
+        info.push_str(&format!("\n### Recently Modified Files\n{}\n{}\n", files_list, truncated));
     }
 
     info
