@@ -106,7 +106,7 @@ impl RulesEngineExtension {
     }
 
     /// Format a list of matched rules as an XML block for system-prompt injection.
-    fn format_rules_xml(rules: &[Rule]) -> String {
+    pub fn format_rules_xml(rules: &[Rule]) -> String {
         let mut xml = String::from("\n<project_rules>\n");
         for rule in rules {
             xml.push_str(&format!(

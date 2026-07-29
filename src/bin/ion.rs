@@ -1738,6 +1738,18 @@ async fn cmd_run(
     // agent.run 每轮注入 guide，但 snapshot 在 agent.run 之前拍，拍不到。这里先补一次静态
     // guide（动态进程摘要在 agent.run 内部注入，export 快照本就拍不到实时状态）。
     sys_prompt.push_str(&ion::agent::bash::bash_tool_guide());
+    // 补一次 rules（RulesEngineExtension.on_system_prompt 在 agent.run 里注入，snapshot 拍不到）
+    {
+        let rules_ext = ion::rules_engine::RulesEngineExtension::new();
+        let rules = rules_ext.load_rules();
+        let project_files = rules_ext.collect_project_files();
+        let matched: Vec<&ion::rules_engine::Rule> = rules.iter()
+            .filter(|r| r.matches_any(&project_files)).collect();
+        if !matched.is_empty() {
+            let owned: Vec<ion::rules_engine::Rule> = matched.into_iter().cloned().collect();
+            sys_prompt.push_str(&ion::rules_engine::RulesEngineExtension::format_rules_xml(&owned));
+        }
+    }
     let sys_prompt_snapshot = sys_prompt.clone();
     let mut agent = Agent::new(registry, model, Some(sys_prompt), tools, config)
         .with_runtime(Box::new(rt));
@@ -1825,6 +1837,10 @@ async fn cmd_run(
     // ── 注册 BashExtension（让 bash 工具的 guide + 后台进程摘要通过 on_system_prompt
     //    自动注入，跟 memory/plan/rules_engine 等扩展一致，而非内核硬编码调用）──
     ext_reg.register(Box::new(ion::agent::bash::BashExtension::new(storage_ctx.clone())));
+
+    // ── 注册 RulesEngineExtension（扫描 <project>/.ion/rules/*.md，匹配的项目规则
+    //    通过 on_system_prompt 注入 <rules> XML）──
+    ext_reg.register(Box::new(ion::rules_engine::RulesEngineExtension::new()));
 
     // Register per-turn session index extension if session is active
     if !session_id.is_empty() {

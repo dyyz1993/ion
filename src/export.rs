@@ -122,6 +122,21 @@ pub fn export_session_rich(
         // 注入 bash tool guide（export 不跑 agent loop，直接注入）
         sp.push_str(&crate::agent::bash::bash_tool_guide());
 
+        // 注入项目 rules（扫描 <cwd>/.ion/rules/*.md，跟 RulesEngineExtension.on_system_prompt 同逻辑）
+        {
+            let rules_ext = crate::rules_engine::RulesEngineExtension::with_project_dir(
+                std::path::PathBuf::from(session_cwd)
+            );
+            let rules = rules_ext.load_rules();
+            let project_files = rules_ext.collect_project_files();
+            let matched: Vec<&crate::rules_engine::Rule> = rules.iter()
+                .filter(|r| r.matches_any(&project_files)).collect();
+            if !matched.is_empty() {
+                let owned: Vec<crate::rules_engine::Rule> = matched.into_iter().cloned().collect();
+                sp.push_str(&crate::rules_engine::RulesEngineExtension::format_rules_xml(&owned));
+            }
+        }
+
         let skill_tool = crate::agent::tool::SkillTool { skill_dirs };
         let outline = skill_tool.list_skills();
         if !outline.contains("No skills available") {
