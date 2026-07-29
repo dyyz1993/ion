@@ -52,7 +52,11 @@ pub fn session_end() -> Value {
 }
 
 pub fn pre_compact(message_count: usize) -> Value {
-    build("PreCompact", json!({"message_count": message_count}))
+    build("PreCompact", json!({
+        "message_count": message_count,
+        "trigger": "auto",
+        "custom_instructions": "",
+    }))
 }
 
 pub fn user_prompt_submit(prompt: &str) -> Value {

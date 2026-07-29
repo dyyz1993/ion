@@ -104,7 +104,7 @@ async fn run_command(
         }
     };
 
-    interpret_exit_code(exit_code, &stdout, &stderr, handler)
+    interpret_exit_code(exit_code, &stdout, &stderr, handler, &ctx.event_name)
 }
 
 /// 直接 spawn bash + stdin（fallback，不走 Runtime）
@@ -467,11 +467,14 @@ async fn run_mcp_tool(
 /// - exit 2 → block（reason 取 stderr 或 JSON.permissionDecisionReason）
 /// - exit 3 → ask（仅 PreToolUse，请求用户确认）
 /// - 其他 → 忽略
-pub fn interpret_exit_code(exit_code: i32, stdout: &str, stderr: &str, _handler: &HookHandler) -> HookOutcome {
+pub fn interpret_exit_code(exit_code: i32, stdout: &str, stderr: &str, _handler: &HookHandler, event_name: &str) -> HookOutcome {
     match exit_code {
         0 => interpret_stdout(stdout),
         2 => {
-            // exit 2 = 阻断
+            // exit 2 = 阻断（但某些事件上是非阻断通知，对齐 Claude Code）
+            // SessionStart/SessionEnd/Setup/SubagentStart/Notification 上 exit-2 只记日志不阻断
+            // event_name 从参数传入（HookExecContext.event_name）
+            let non_blocking_events = ["SessionStart", "SessionEnd", "Setup", "SubagentStart", "Notification"];
             let reason = if let Some(json) = parse_json(stdout) {
                 json.get("reason")
                     .or_else(|| json.get("message"))
@@ -483,7 +486,13 @@ pub fn interpret_exit_code(exit_code: i32, stdout: &str, stderr: &str, _handler:
             }.unwrap_or_else(|| {
                 if stderr.is_empty() { "blocked by hook".into() } else { stderr.to_string() }
             });
-            HookOutcome { block: true, block_reason: Some(reason), ..Default::default() }
+            if non_blocking_events.contains(&event_name) {
+                // 非阻断事件：exit-2 只记录 additionalContext，不 block
+                tracing::warn!("[hooks] {} exit 2 (non-blocking): {}", event_name, reason);
+                HookOutcome { block: false, block_reason: Some(reason.clone()), additional_context: Some(format!("Hook notification: {}", reason)), ..Default::default() }
+            } else {
+                HookOutcome { block: true, block_reason: Some(reason), ..Default::default() }
+            }
         }
         3 => {
             // exit 3 = 请求确认（仅 PreToolUse）
@@ -523,6 +532,14 @@ pub fn interpret_stdout(stdout: &str) -> HookOutcome {
                 match perm {
                     "deny" => { outcome.block = true; }
                     "ask" => { outcome.ask = true; }
+                    "allow" => { /* 显式放行：不 block 不 ask（覆盖之前的 deny/ask） */
+                        outcome.block = false;
+                        outcome.ask = false;
+                    }
+                    "defer" => { /* defer = 暂不决策，当 allow 处理（ION 无 defer 流程） */
+                        outcome.block = false;
+                        outcome.ask = false;
+                    }
                     _ => {}
                 }
             }
@@ -565,7 +582,7 @@ mod tests {
             r#async: false, async_rewake: false, once: false,
             status_message: None, allowed_tools: None, max_turns: None,
         };
-        let outcome = interpret_exit_code(0, "hello world", "", &handler);
+        let outcome = interpret_exit_code(0, "hello world", "", &handler, "PreToolUse");
         assert_eq!(outcome.additional_context.as_deref(), Some("hello world"));
         assert!(!outcome.block);
     }
@@ -581,7 +598,7 @@ mod tests {
             status_message: None, allowed_tools: None, max_turns: None,
         };
         let stdout = r#"{"decision":"block","reason":"forbidden"}"#;
-        let outcome = interpret_exit_code(0, stdout, "", &handler);
+        let outcome = interpret_exit_code(0, stdout, "", &handler, "PreToolUse");
         assert!(outcome.block);
         assert_eq!(outcome.block_reason.as_deref(), Some("forbidden"));
     }
@@ -596,7 +613,7 @@ mod tests {
             r#async: false, async_rewake: false, once: false,
             status_message: None, allowed_tools: None, max_turns: None,
         };
-        let outcome = interpret_exit_code(2, "", "command not allowed", &handler);
+        let outcome = interpret_exit_code(2, "", "command not allowed", &handler, "PreToolUse");
         assert!(outcome.block);
         assert_eq!(outcome.block_reason.as_deref(), Some("command not allowed"));
     }
@@ -612,7 +629,7 @@ mod tests {
             status_message: None, allowed_tools: None, max_turns: None,
         };
         let stdout = r#"{"hookSpecificOutput":{"additionalContext":"injected text"}}"#;
-        let outcome = interpret_exit_code(0, stdout, "", &handler);
+        let outcome = interpret_exit_code(0, stdout, "", &handler, "PreToolUse");
         assert_eq!(outcome.additional_context.as_deref(), Some("injected text"));
     }
 

@@ -291,6 +291,11 @@ impl Extension for HookExtension {
             )));
         }
         // ask（exit 3）暂不处理（需要 UI 确认，后续接入 PermissionEngine）
+        // updatedInput：hook 返回了参数覆盖，但 before_tool_call 签名是 &ToolCall（不可变），
+        // 无法就地修改。改为 tracing 记录（后续改 trait 签名为 &mut ToolCall 时应用）。
+        if let Some(ref updated) = outcome.updated_input {
+            tracing::warn!("[hooks] PreToolUse updatedInput ignored (trait signature limitation): {:?}", updated);
+        }
         Ok(())
     }
 
