@@ -1698,7 +1698,7 @@ pub struct SkillTool {
 
 impl SkillTool {
     /// 列出所有可用 skill（扫描 skill_dirs 下的 .md 文件 + 子目录/SKILL.md）
-    fn list_skills(&self) -> String {
+    pub fn list_skills(&self) -> String {
         let mut entries: Vec<(String, String, String, Option<String>)> = Vec::new(); // (name, source, description, context_mode)
         for dir in &self.skill_dirs {
             let source = dir

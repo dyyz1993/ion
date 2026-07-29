@@ -987,10 +987,11 @@ fn build_agent_config(eff: &EffectiveConfig) -> AgentConfig {
     }
 }
 
-fn build_tools(eff: &EffectiveConfig) -> ToolRegistry {
+fn build_tools(eff: &EffectiveConfig) -> (ToolRegistry, Option<Vec<std::path::PathBuf>>) {
+    let mut skill_dirs_for_prompt: Option<Vec<std::path::PathBuf>> = None;
     let mut tools = ToolRegistry::new();
     if eff.no_tools {
-        return tools;
+        return (tools, skill_dirs_for_prompt);
     }
     // Built-in tools (skip if --no-builtin-tools)
     if !eff.no_builtin_tools {
@@ -1038,6 +1039,8 @@ fn build_tools(eff: &EffectiveConfig) -> ToolRegistry {
                 ion::paths::project_skills_dir(&cwd_str),
                 agents_skills,
             ];
+            // 保存 skill_dirs 到外层，供后面 system prompt 注入大纲用
+            skill_dirs_for_prompt = Some(skill_dirs.clone());
             tools.register(Box::new(ion::agent::tool::SkillTool { skill_dirs }));
         }
     }
@@ -1053,7 +1056,7 @@ fn build_tools(eff: &EffectiveConfig) -> ToolRegistry {
             tools.remove(name);
         }
     }
-    tools
+    (tools, skill_dirs_for_prompt)
 }
 
 fn init_logging(verbose: bool) {
@@ -1425,7 +1428,7 @@ async fn cmd_run(
 
     let config = build_agent_config(eff);
 
-    let mut tools = build_tools(eff);
+    let (mut tools, skill_dirs_for_prompt) = build_tools(eff);
 
     // ── Goal Supervisor：goal_set tool + shared state for extension ──
     // Tool is always registered; the Extension (registered below) shares this state.
@@ -1595,6 +1598,19 @@ async fn cmd_run(
 
     // Inject environment info (time, cwd, project root, git info)
     sys_prompt.push_str(&build_env_info());
+
+    // Inject skill outline（扫描 ~/.agents/skills + ~/.ion/skills + ./.ion/skills，
+    // 把所有 skill 的 name + description 注入 system prompt，让 LLM 启动就知道有哪些
+    // skill 可用，而不需要先调 skill(skill_name='list')）。
+    if let Some(ref dirs) = skill_dirs_for_prompt {
+        let skill_tool = ion::agent::tool::SkillTool { skill_dirs: dirs.clone() };
+        let outline = skill_tool.list_skills();
+        if !outline.contains("No skills available") {
+            sys_prompt.push_str("\n\n## Available Skills\n");
+            sys_prompt.push_str(&outline);
+            sys_prompt.push_str("\n");
+        }
+    }
     // Apply skill prompts
     for skill_path in &eff.skill {
         if let Ok(content) = std::fs::read_to_string(skill_path) {
