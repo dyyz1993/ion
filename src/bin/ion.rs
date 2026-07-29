@@ -1026,19 +1026,42 @@ fn build_tools(eff: &EffectiveConfig) -> (ToolRegistry, Option<Vec<std::path::Pa
             let cwd_str = std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default();
-            // 扫描三个位置：
+            let home = std::env::var("HOME").unwrap_or_default();
+            // 扫描位置：
             // 1. ~/.ion/agent/skills/（ION 全局 skill）
             // 2. <project>/.ion/skills/（项目级 skill）
-            // 3. ~/.agents/skills/（全局 skill 库，跟 ZCode 共享，111 个）
-            let agents_skills = std::env::var("HOME")
-                .ok()
-                .map(|h| std::path::PathBuf::from(h).join(".agents").join("skills"))
-                .unwrap_or_else(|| std::path::PathBuf::from("~/.agents/skills"));
-            let skill_dirs: Vec<std::path::PathBuf> = vec![
+            // 3. ~/.agents/skills/（全局 skill 库，跟 ZCode 共享，102 个）
+            // 4. ~/.zcode/cli/plugins/cache/<marketplace>/<plugin>/<version>/skills/
+            //    （ZCode plugin skill，68 个，如 document-skills:pdf / cloudflare:wrangler）
+            let agents_skills = std::path::PathBuf::from(&home).join(".agents").join("skills");
+            let mut skill_dirs: Vec<std::path::PathBuf> = vec![
                 ion::paths::skills_dir(),
                 ion::paths::project_skills_dir(&cwd_str),
                 agents_skills,
             ];
+            // 递归找 ZCode plugin 的 skills 目录（cache/<mp>/<plugin>/<ver>/skills/）
+            let plugins_cache = std::path::PathBuf::from(&home).join(".zcode/cli/plugins/cache");
+            if plugins_cache.exists() {
+                if let Ok(mp_iter) = std::fs::read_dir(&plugins_cache) {
+                    for mp_entry in mp_iter.flatten() {
+                        // mp_entry = marketplace 目录（zcode-plugins-official / claude-plugins-official）
+                        if let Ok(plugin_iter) = std::fs::read_dir(mp_entry.path()) {
+                            for plugin_entry in plugin_iter.flatten() {
+                                // plugin_entry = plugin 目录（cloudflare / android-emulator）
+                                if let Ok(ver_iter) = std::fs::read_dir(plugin_entry.path()) {
+                                    for ver_entry in ver_iter.flatten() {
+                                        // ver_entry = version 目录（1.0.0）
+                                        let skills_dir = ver_entry.path().join("skills");
+                                        if skills_dir.is_dir() {
+                                            skill_dirs.push(skills_dir);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             // 保存 skill_dirs 到外层，供后面 system prompt 注入大纲用
             skill_dirs_for_prompt = Some(skill_dirs.clone());
             tools.register(Box::new(ion::agent::tool::SkillTool { skill_dirs }));
