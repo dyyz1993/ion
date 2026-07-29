@@ -2325,6 +2325,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     // 验证路径存在
                     if std::path::Path::new(cwd).exists() {
                         agent.set_session_cwd(Some(cwd.to_string()));
+                        // 更新 SessionIndex.last_cwd（记录最后切换到的工作路径）
+                        crate::session_index::SessionIndex::set_last_cwd(&sid, cwd);
                         output_response(&id, "set_cwd", &serde_json::json!({
                             "cwd": cwd,
                             "success": true,

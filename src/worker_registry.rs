@@ -760,9 +760,19 @@ impl WorkerRegistry {
                     last_entry_id: None,
                     parent_session: parent_sid,
                     parent_type: parent_rel,
+                    initial_cwd: Some(worktree_path.clone()),
+                    last_cwd: Some(worktree_path.clone()),
+                    extra_cwds: Vec::new(),
+                    tier_models: None,
                 },
             );
             idx.save();
+            // 写 tier_models 快照（创建时从全局 config 读，历史 session 可还原当时配置）
+            let cfg = crate::config::IonConfig::load();
+            let tm = serde_json::to_value(&cfg.tier_models).unwrap_or(serde_json::Value::Null);
+            if tm != serde_json::Value::Null {
+                SessionIndex::set_tier_models(&session_id, tm);
+            }
             tracing::info!("[worker] SessionIndex 写入: {} → {}", session_id, worktree_path);
         }
 
@@ -1179,8 +1189,16 @@ impl WorkerRegistry {
                 created_at: now, updated_at: now, error_count: 0,
                 last_thinking_level: None, last_active_tools: None, last_entry_id: None,
                 parent_session: parent_sid, parent_type: parent_rel,
+                initial_cwd: Some(worktree_path.clone()), last_cwd: Some(worktree_path.clone()),
+                extra_cwds: Vec::new(), tier_models: None,
             });
             idx.save();
+            // tier_models 快照
+            let cfg = crate::config::IonConfig::load();
+            let tm = serde_json::to_value(&cfg.tier_models).unwrap_or(serde_json::Value::Null);
+            if tm != serde_json::Value::Null {
+                SessionIndex::set_tier_models(&session_id, tm);
+            }
         }
 
         // singleton user join

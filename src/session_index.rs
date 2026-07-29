@@ -68,6 +68,18 @@ pub struct SessionMeta {
     /// 父会话关系类型（fork）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_type: Option<String>,
+    /// 首次启动时的工作路径（CI 启动路径 / 首次选中路径，创建时记录，不变）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_cwd: Option<String>,
+    /// 最后切换到的工作路径（switch_cwd / cd 时更新）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_cwd: Option<String>,
+    /// 追加的额外工作目录（read/write 操作过的 cwd 外路径，数组）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_cwds: Vec<String>,
+    /// tier_models 快照（创建时从全局 config 读，让历史 session 能还原当时用的 fast/pro/max）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier_models: Option<serde_json::Value>,
 }
 
 /// Index of all sessions, stored in sessions.index.json
@@ -217,6 +229,10 @@ impl SessionIndex {
             last_entry_id: existing.as_ref().and_then(|e| e.last_entry_id.clone()),
             parent_session: existing.as_ref().and_then(|e| e.parent_session.clone()),
             parent_type: existing.as_ref().and_then(|e| e.parent_type.clone()),
+            initial_cwd: existing.as_ref().and_then(|e| e.initial_cwd.clone()),
+            last_cwd: existing.as_ref().and_then(|e| e.last_cwd.clone()),
+            extra_cwds: existing.as_ref().map_or(Vec::new(), |e| e.extra_cwds.clone()),
+            tier_models: existing.as_ref().and_then(|e| e.tier_models.clone()),
         }
     }
 
@@ -296,6 +312,10 @@ impl SessionIndex {
                     last_entry_id: None,
                     parent_session: None,
                     parent_type: None,
+                    initial_cwd: None,
+                    last_cwd: None,
+                    extra_cwds: Vec::new(),
+                    tier_models: None,
                 },
             );
         }
@@ -391,6 +411,38 @@ impl SessionIndex {
         });
     }
 
+    /// 设置首次启动工作路径（CI 启动路径 / 首次选中，创建时调一次，后续不变）。
+    pub fn set_initial_cwd(id: &str, cwd: &str) {
+        Self::patch_meta(id, |m| {
+            if m.initial_cwd.is_none() {
+                m.initial_cwd = Some(cwd.to_string());
+            }
+        });
+    }
+
+    /// 更新最后工作路径（switch_cwd / cd 时调）。
+    pub fn set_last_cwd(id: &str, cwd: &str) {
+        Self::patch_meta(id, |m| {
+            m.last_cwd = Some(cwd.to_string());
+        });
+    }
+
+    /// 追加额外工作目录（read/write 操作过的 cwd 外路径，去重）。
+    pub fn add_extra_cwd(id: &str, cwd: &str) {
+        Self::patch_meta(id, |m| {
+            if !m.extra_cwds.iter().any(|c| c == cwd) {
+                m.extra_cwds.push(cwd.to_string());
+            }
+        });
+    }
+
+    /// 写入 tier_models 快照（创建时从全局 config 读，让历史 session 还原当时的 fast/pro/max）。
+    pub fn set_tier_models(id: &str, tier_models: serde_json::Value) {
+        Self::patch_meta(id, |m| {
+            m.tier_models = Some(tier_models);
+        });
+    }
+
     /// Count how many sessions in the index match the given project key.
     /// Loads the index from disk and counts entries where `project` == `project_key`.
     pub fn count_sessions_by_project(&self, project_key: &str) -> Result<i64, String> {
@@ -436,6 +488,10 @@ mod tests {
             last_entry_id: None,
             parent_session: parent.map(|s| s.to_string()),
             parent_type: parent.map(|_| "fork".to_string()),
+            initial_cwd: None,
+            last_cwd: None,
+            extra_cwds: Vec::new(),
+            tier_models: None,
         }
     }
 

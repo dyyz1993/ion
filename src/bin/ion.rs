@@ -1097,6 +1097,19 @@ async fn cmd_config_show() {
     let cfg = IonConfig::load();
     println!("Config file: {}", IonConfig::path().display());
     println!("{}", serde_json::to_string_pretty(&cfg).unwrap());
+
+    // 运行时默认值（不在 config.json 里，硬编码在代码中）
+    let retry = ion::retry::RetryConfig::default();
+    println!("\n# ── Runtime defaults (not in config.json, hardcoded) ──");
+    println!("{{");
+    println!("  \"retry\": {{");
+    println!("    \"max_retries\": {},", retry.max_retries);
+    println!("    \"initial_delay_secs\": {},", retry.initial_delay.as_secs());
+    println!("    \"max_delay_secs\": {},", retry.max_delay.as_secs());
+    println!("    \"fixed_delay_secs\": {},", retry.fixed_delay.as_secs());
+    println!("    \"multiplier\": {}", retry.multiplier);
+    println!("  }}");
+    println!("}}");
 }
 
 async fn cmd_config_set(key: &str, value: &str) {
@@ -1674,7 +1687,11 @@ async fn cmd_run(
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
     if !run_cwd.is_empty() {
-        agent.set_session_cwd(Some(run_cwd));
+        agent.set_session_cwd(Some(run_cwd.clone()));
+        // 记录首次启动工作路径（CI 启动路径 / 首次选中，创建时记一次）
+        if !session_id_in.is_empty() {
+            ion::session_index::SessionIndex::set_initial_cwd(session_id_in, &run_cwd);
+        }
     }
     if !session_id_in.is_empty() {
         agent.set_session_id(Some(session_id_in.to_string()));
