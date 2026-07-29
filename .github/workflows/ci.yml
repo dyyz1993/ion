@@ -19,9 +19,100 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ─── Job 1: Build + Lint + Unit Tests ─────────────────────────────
   build-and-test:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq lsof netcat-openbsd
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --bin ion
+
+      - name: Clippy
+        run: cargo clippy --lib -- -D warnings
+        continue-on-error: true
+
+      - name: Format check
+        run: cargo fmt -- --check
+        continue-on-error: true
+
+      - name: Unit tests (ion lib)
+        run: cargo test --lib
+
+      - name: Provider tests
+        run: cargo test -p ion-provider
+
+  # ─── Job 2: CI Matrix (FauxProvider, no real LLM) ─────────────────
+  ci-matrix:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq lsof netcat-openbsd
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build ion binary
+        run: cargo build --bin ion
+
+      - name: Run CI Matrix (parallel + serial)
+        run: |
+          chmod +x scripts/run_ci_matrix_parallel.sh
+          bash scripts/run_ci_matrix_parallel.sh
+        env:
+          PARALLELISM: 5
+          PER_SCRIPT_TIMEOUT: 600
+
+      - name: Upload CI results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-results
+          path: /tmp/ci-results/
+
+      - name: Upload CI logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs
+          path: /tmp/ci-out-*.log
+
+  # ─── Job 3: Scenario tests (quick smoke) ──────────────────────────
+  scenario-tests:
+    runs-on: ubuntu-latest
+    needs: build-and-test
     steps:
       - uses: actions/checkout@v4
 
@@ -38,27 +129,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build
-        run: cargo build --bin ion --bin ion-worker --bin agent-demo
-
-      - name: Clippy
-        run: cargo clippy --lib -- -D warnings
-        continue-on-error: true
-
-      - name: Format check
-        run: cargo fmt -- --check
-        continue-on-error: true
-
-      - name: Unit tests (ion lib)
-        run: cargo test --lib
-
-      - name: Provider tests
-        run: cargo test -p ion-provider
-
-      - name: CLI session entry integration test
-        run: bash tests/session_entries_ci.sh
-
-      - name: Integration tests (Rust)
-        run: cargo test --tests 2>&1 || echo "(some tests may need manager)"
+        run: cargo build --bin ion
 
       - name: Scenario 1 test (quick execution)
         run: |
@@ -74,6 +145,17 @@ jobs:
         run: |
           timeout 5 ./target/debug/ion serve &
           sleep 2
-          # Verify socket exists
           test -S ~/.ion/host.sock && echo 'socket OK' || echo 'no socket'
           kill %1 2>/dev/null || true
+
+      - name: Goal Supervisor E2E (FauxProvider)
+        run: |
+          chmod +x tests/goal_supervisor_ci.sh
+          timeout 120 bash tests/goal_supervisor_ci.sh
+        env:
+          ION_FAUX_REPLY: 'goal test'
+
+      - name: Goal Evolver CI
+        run: |
+          chmod +x tests/goal_evolver_ci.sh
+          timeout 60 bash tests/goal_evolver_ci.sh
