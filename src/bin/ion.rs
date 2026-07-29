@@ -1615,11 +1615,12 @@ async fn cmd_run(
         "You are a helpful AI assistant with access to tools.".into()
     };
     for append in &eff.append_prompts {
-        sys_prompt.push_str("\n");
+        sys_prompt.push_str("\n\n--- append-system-prompt ---\n");
         sys_prompt.push_str(append);
     }
 
     // Inject environment info (time, cwd, project root, git info)
+    sys_prompt.push_str("\n\n--- environment ---\n");
     sys_prompt.push_str(&build_env_info());
 
     // Inject skill outline（扫描 ~/.agents/skills + ~/.ion/skills + ./.ion/skills，
@@ -1629,12 +1630,11 @@ async fn cmd_run(
         let skill_tool = ion::agent::tool::SkillTool { skill_dirs: dirs.clone() };
         let outline = skill_tool.list_skills();
         if !outline.contains("No skills available") {
-            sys_prompt.push_str("\n\n## Available Skills\n");
+            sys_prompt.push_str("\n\n--- available-skills ---\n");
             sys_prompt.push_str(&outline);
-            sys_prompt.push_str("\n");
         }
     }
-    // Apply skill prompts
+    // Apply skill prompts (--skill 指定的完整 skill 正文)
     for skill_path in &eff.skill {
         if let Ok(content) = std::fs::read_to_string(skill_path) {
             // Parse frontmatter (--- yaml ---) and body
@@ -1644,7 +1644,9 @@ async fn cmd_run(
                 } else { content.trim() }
             } else { content.trim() };
             if !body.is_empty() {
-                sys_prompt.push_str("\n");
+                sys_prompt.push_str("\n\n--- skill-file: ");
+                sys_prompt.push_str(skill_path);
+                sys_prompt.push_str(" ---\n");
                 sys_prompt.push_str(body);
             }
         }
@@ -1654,7 +1656,9 @@ async fn cmd_run(
         if let Ok(content) = std::fs::read_to_string(ext_path) {
             if let Ok(def) = serde_json::from_str::<serde_json::Value>(&content) {
                 if let Some(sp) = def.get("system_prompt").and_then(|v| v.as_str()) {
-                    sys_prompt.push_str("\n");
+                    sys_prompt.push_str("\n\n--- extension: ");
+                    sys_prompt.push_str(ext_path);
+                    sys_prompt.push_str(" ---\n");
                     sys_prompt.push_str(sp);
                 }
             }

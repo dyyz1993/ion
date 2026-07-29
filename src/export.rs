@@ -118,9 +118,8 @@ pub fn export_session_rich(
         let skill_tool = crate::agent::tool::SkillTool { skill_dirs };
         let outline = skill_tool.list_skills();
         if !outline.contains("No skills available") {
-            sp.push_str("\n\n## Available Skills\n");
+            sp.push_str("\n\n--- available-skills ---\n");
             sp.push_str(&outline);
-            sp.push('\n');
         }
         system_prompt = Some(sp);
 
