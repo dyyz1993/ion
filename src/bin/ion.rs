@@ -17,7 +17,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use ion::agent::agent_loop::{Agent, AgentConfig};
 use ion::agent::compact::CompactConfig;
-use ion::agent::tool::{ReadTool, GrepTool, FindTool, LsTool, BashTool, WriteTool, EditTool, CalculatorTool, EchoTool, GitStatusTool, GitDiffTool, GitLogTool, GitAddTool, GitCommitTool, GitBranchTool, ToolRegistry};
+use ion::agent::tool::{ReadTool, GrepTool, FindTool, LsTool, BashTool, WriteTool, EditTool, CalculatorTool, EchoTool, ToolRegistry};
 use ion::backend_registry::BackendRegistry;
 use ion::config::{IonConfig, default_model_for_provider};
 use ion::event_bus::ExtensionEvent;
@@ -1011,12 +1011,11 @@ fn build_tools(eff: &EffectiveConfig) -> (ToolRegistry, Option<Vec<std::path::Pa
         for t in ion::agent::plan_tool::plan_tools() {
             tools.register(t);
         }
-        tools.register(Box::new(GitStatusTool));
-        tools.register(Box::new(GitDiffTool));
-        tools.register(Box::new(GitLogTool));
-        tools.register(Box::new(GitAddTool));
-        tools.register(Box::new(GitCommitTool));
-        tools.register(Box::new(GitBranchTool));
+
+
+
+
+
 
         // Skill tool — lets the LLM autonomously load skills by name.
         // Scans global (~/.ion/agent/skills/) and project (<cwd>/.ion/skills/) dirs.

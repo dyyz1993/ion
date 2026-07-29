@@ -18,7 +18,7 @@ use tokio::sync::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use crate::agent::agent_loop::{Agent, AgentConfig};
 use crate::agent::compact::CompactConfig;
-use crate::agent::tool::{ReadTool, WriteTool, EditTool, BashTool, GrepTool, FindTool, LsTool, CalculatorTool, EchoTool, GitStatusTool, GitDiffTool, GitLogTool, GitAddTool, GitCommitTool, GitBranchTool, SpawnWorkerTool, SendToWorkerTool, ResumeWorkerTool, AwaitWorkerTool, ChannelSendTool, KillWorkerTool, BranchSessionTool, GlobalMemorySearchTool, GlobalMemorySaveTool, SkillTool, ToolRegistry};
+use crate::agent::tool::{ReadTool, WriteTool, EditTool, BashTool, GrepTool, FindTool, LsTool, CalculatorTool, EchoTool, SpawnWorkerTool, SendToWorkerTool, ResumeWorkerTool, AwaitWorkerTool, ChannelSendTool, KillWorkerTool, BranchSessionTool, GlobalMemorySearchTool, GlobalMemorySaveTool, SkillTool, ToolRegistry};
 use crate::wasm_extension::{Registry, ToolAdapter};
 use crate::session_jsonl;
 
@@ -270,12 +270,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     tools.register(Box::new(BranchSessionTool));
     tools.register(Box::new(GlobalMemorySearchTool));
     tools.register(Box::new(GlobalMemorySaveTool));
-    tools.register(Box::new(GitStatusTool));
-    tools.register(Box::new(GitDiffTool));
-    tools.register(Box::new(GitLogTool));
-    tools.register(Box::new(GitAddTool));
-    tools.register(Box::new(GitCommitTool));
-    tools.register(Box::new(GitBranchTool));
+
+
+
+
+
     // ── Worker 编排工具（仅 WorkerRuntime 支持真实实现）──
     // 让 LLM 自主调用 spawn_worker 创建子/同级 Worker，send_to_worker 跨 Worker 对话。
     tools.register(Box::new(SpawnWorkerTool));
