@@ -99,7 +99,7 @@ ALL_SCRIPTS=$(ls tests/*_ci.sh tests/scenario2_ci.sh tests/team_e2e.sh 2>/dev/nu
 SKIP_LIST="goal_supervisor_ci goal_supervisor_e2e goal_evolver_ci"
 
 # CIs that need long-running serve — run serially (resource contention)
-SERIAL_LIST="monitor_ci mcp_ci faux_scenarios_ci rollback_impact_ci permission_ci realtime_stitch_ci session_hook_ci abort_ci"
+SERIAL_LIST="monitor_ci mcp_ci faux_scenarios_ci rollback_impact_ci permission_ci realtime_stitch_ci session_hook_ci abort_ci hooks_handler_ci"
 
 FILTERED=""
 SKIPPED=""
