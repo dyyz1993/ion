@@ -331,7 +331,7 @@ impl Extension for ContextIndexExtension {
         Ok(())
     }
 
-    async fn after_tool_call(&self, call: &ToolCall, result: &ToolResult) -> AgentResult<()> {
+    async fn after_tool_call(&self, call: &ToolCall, result: &mut ToolResult) -> AgentResult<()> {
         let mut idx = self.index.lock().await;
 
         match call.name.as_str() {

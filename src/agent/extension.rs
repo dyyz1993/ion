@@ -159,7 +159,7 @@ pub trait Extension: Send + Sync {
     async fn on_tool_execution_update(&self, _ctx: &ToolExecutionContext, _partial: &str) -> AgentResult<()> { Ok(()) }
     async fn on_tool_execution_end(&self, _ctx: &ToolExecutionContext) -> AgentResult<()> { Ok(()) }
     async fn before_tool_call(&self, _call: &ToolCall) -> AgentResult<()> { Ok(()) }
-    async fn after_tool_call(&self, _call: &ToolCall, _result: &ToolResult) -> AgentResult<()> { Ok(()) }
+    async fn after_tool_call(&self, _call: &ToolCall, _result: &mut ToolResult) -> AgentResult<()> { Ok(()) }
 
     // ── Model (3) ──
     /// 模型选择钩子。ctx 可变 → 扩展能覆盖模型选择（自定义策略）。
@@ -792,7 +792,7 @@ impl ExtensionRegistry {
     pub async fn before_tool_call(&self, call: &ToolCall) -> AgentResult<()> {
         for ext in &self.extensions { ext.before_tool_call(call).await?; } Ok(())
     }
-    pub async fn after_tool_call(&self, call: &ToolCall, result: &ToolResult) -> AgentResult<()> {
+    pub async fn after_tool_call(&self, call: &ToolCall, result: &mut ToolResult) -> AgentResult<()> {
         for ext in &self.extensions { ext.after_tool_call(call, result).await?; } Ok(())
     }
     pub async fn on_model_select(&self, ctx: &mut ModelSelectContext) -> AgentResult<()> {

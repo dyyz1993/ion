@@ -166,7 +166,7 @@ impl Default for PlanExtension {
 impl Extension for PlanExtension {
     // ── Intercept tool calls to manage plan state ──
 
-    async fn after_tool_call(&self, call: &ToolCall, _result: &ToolResult) -> AgentResult<()> {
+    async fn after_tool_call(&self, call: &ToolCall, _result: &mut ToolResult) -> AgentResult<()> {
         match call.name.as_str() {
             "plan_enter" => {
                 self.plan_mode.store(true, Ordering::Relaxed);
@@ -317,7 +317,7 @@ impl std::ops::Deref for SharedPlanExtension {
 
 #[async_trait]
 impl Extension for SharedPlanExtension {
-    async fn after_tool_call(&self, call: &ToolCall, result: &ToolResult) -> AgentResult<()> {
+    async fn after_tool_call(&self, call: &ToolCall, result: &mut ToolResult) -> AgentResult<()> {
         self.0.after_tool_call(call, result).await
     }
     async fn before_tool_call(&self, call: &ToolCall) -> AgentResult<()> {

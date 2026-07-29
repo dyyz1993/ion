@@ -1305,7 +1305,7 @@ impl Agent {
                         };
                         self.extensions.on_tool_execution_end(&exec_ctx).await?;
 
-                        let tr = ToolResultMessage {
+                        let mut tr = ToolResultMessage {
                             role: "tool".into(),
                             tool_call_id: tc.id.clone(),
                             tool_name: tc.name.clone(),
@@ -1318,7 +1318,7 @@ impl Agent {
                             timestamp: now_ms(),
                         };
 
-                        let tool_result = ion_provider::types::ToolResult {
+                        let mut tool_result = ion_provider::types::ToolResult {
                             tool_call_id: tc.id.clone(),
                             output: tr
                                 .content
@@ -1331,7 +1331,11 @@ impl Agent {
                                 .join(""),
                         };
 
-                        self.extensions.after_tool_call(tc, &tool_result).await?;
+                        self.extensions.after_tool_call(tc, &mut tool_result).await?;
+                        // 同步 after_tool_call 对 output 的修改回 tr（让消息列表也看到追加的内容）
+                        if let Some(ContentBlock::Text(t)) = tr.content.get_mut(0) {
+                            t.text = tool_result.output.clone();
+                        }
                         self.messages.push(Message::ToolResult(tr));
 
                         // 增量 save：toolResult 加到 messages 后立即落盘。

@@ -248,7 +248,7 @@ impl Extension for FileTimeGuardExtension {
 
     /// After `read`: record the file's current mtime/size so future writes
     /// can detect external modifications.
-    async fn after_tool_call(&self, call: &ToolCall, _result: &ToolResult) -> AgentResult<()> {
+    async fn after_tool_call(&self, call: &ToolCall, _result: &mut ToolResult) -> AgentResult<()> {
         if call.name != "read" {
             return Ok(());
         }

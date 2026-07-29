@@ -1980,7 +1980,7 @@ impl ExtTrait for HookAdapter {
         Ok(())
     }
 
-    async fn after_tool_call(&self, call: &ToolCall, result: &ToolResult) -> AgentResult<()> {
+    async fn after_tool_call(&self, call: &ToolCall, result: &mut ToolResult) -> AgentResult<()> {
         self.notify("after_tool_call", &serde_json::json!({
             "id": &call.id,
             "name": &call.name,

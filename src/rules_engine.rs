@@ -136,41 +136,79 @@ impl Extension for RulesEngineExtension {
         "rules-engine"
     }
 
-    /// Reload rules from disk, filter by project files, and inject matched rules.
-    ///
-    /// 策略（按需注入 + 去重）：
-    /// - **全局 rule**（applyTo 为空或 `**/*`）：常驻注入 system prompt（每轮都注入）
-    /// - **路径匹配 rule**（applyTo: `**/*.rs` 等）：只在**首次匹配**时注入，去重。
-    ///   同一 rule 不重复注入（injected set 记录），避免 token 浪费。
+    /// 全局 rule（applyTo 为空或 `**/*`）→ 常驻注入 system prompt。
+    /// 路径匹配 rule（applyTo: `**/*.rs` 等）→ 不在 system prompt 注入，
+    /// 改在 after_tool_call 追加到 tool result（按需，LLM 访问匹配文件时才看到）。
     async fn on_system_prompt(&self, prompt: &mut String) -> AgentResult<()> {
         let rules = self.load_rules();
         if rules.is_empty() {
             return Ok(());
         }
 
-        let project_files = self.collect_project_files();
-        let mut to_inject: Vec<Rule> = Vec::new();
-        let mut injected = self.injected.lock().unwrap();
+        // 只注入全局 rule（无路径约束的）
+        let global_rules: Vec<Rule> = rules
+            .iter()
+            .filter(|r| {
+                r.apply_to.is_empty()
+                    || r.apply_to.iter().any(|p| p == "**/*" || p == "**")
+            })
+            .cloned()
+            .collect();
 
+        if !global_rules.is_empty() {
+            prompt.push_str(&Self::format_rules_xml(&global_rules));
+        }
+        Ok(())
+    }
+
+    /// 路径匹配 rule 追加到 tool result（read/ls/grep 等工具访问匹配文件时）。
+    /// 去重：同一 rule 对同一文件类型只追加一次（injected set）。
+    async fn after_tool_call(
+        &self,
+        call: &ion_provider::types::ToolCall,
+        result: &mut ion_provider::types::ToolResult,
+    ) -> AgentResult<()> {
+        // 只对路径相关的工具追加（read/ls/grep/find/write/edit），不对 bash 追加（不确定路径）
+        let path_tools = ["read", "ls", "grep", "find", "write", "edit"];
+        if !path_tools.contains(&call.name.as_str()) {
+            return Ok(());
+        }
+
+        let rules = self.load_rules();
+        if rules.is_empty() {
+            return Ok(());
+        }
+
+        // 从 tool args 提取访问的文件路径
+        let file_path = call.arguments.get("file_path")
+            .or_else(|| call.arguments.get("path"))
+            .or_else(|| call.arguments.get("pattern"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        // 找匹配这个文件路径 + 没注入过的路径 rule
+        let mut injected = self.injected.lock().unwrap();
+        let mut to_append: Vec<&Rule> = Vec::new();
         for rule in &rules {
+            // 跳过全局 rule（已在 system prompt）
             let is_global = rule.apply_to.is_empty()
                 || rule.apply_to.iter().any(|p| p == "**/*" || p == "**");
-            let matched = rule.matches_any(&project_files);
+            if is_global { continue; }
 
-            if is_global {
-                // 全局 rule：常驻注入（不参与去重）
-                to_inject.push(rule.clone());
-            } else if matched {
-                // 路径匹配 rule：去重（首次匹配才注入）
-                if !injected.contains(&rule.name) {
-                    injected.insert(rule.name.clone());
-                    to_inject.push(rule.clone());
+            // 匹配当前文件路径
+            if !file_path.is_empty() && rule.matches_file(file_path) {
+                let dedup_key = format!("{}:{}", rule.name, file_path);
+                if !injected.contains(&dedup_key) {
+                    injected.insert(dedup_key);
+                    to_append.push(rule);
                 }
             }
         }
 
-        if !to_inject.is_empty() {
-            prompt.push_str(&Self::format_rules_xml(&to_inject));
+        if !to_append.is_empty() {
+            let rules_xml = Self::format_rules_xml(&to_append.iter().map(|r| (*r).clone()).collect::<Vec<_>>());
+            result.output.push_str("\n\n📌 [project rules for this file]");
+            result.output.push_str(&rules_xml);
         }
         Ok(())
     }

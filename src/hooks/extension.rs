@@ -294,7 +294,7 @@ impl Extension for HookExtension {
         Ok(())
     }
 
-    async fn after_tool_call(&self, call: &ToolCall, result: &ToolResult) -> AgentResult<()> {
+    async fn after_tool_call(&self, call: &ToolCall, result: &mut ToolResult) -> AgentResult<()> {
         let response = serde_json::json!({
             "output": result.output,
         });
