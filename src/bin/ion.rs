@@ -1710,7 +1710,7 @@ async fn cmd_run(
 
     // Snapshot tool definitions before passing ownership to Agent.
     // Used for --export-after-run: HTML export shows the tools panel.
-    let tool_defs_snapshot: Vec<ion::export::ExportToolInfo> = tools
+    let mut tool_defs_snapshot: Vec<ion::export::ExportToolInfo> = tools
         .tool_defs()
         .into_iter()
         .map(|td| ion::export::ExportToolInfo {
@@ -1719,6 +1719,20 @@ async fn cmd_run(
             parameters: td.parameters,
         })
         .collect();
+    // 按类型分组 + 组内字母序，避免 HashMap 随机顺序导致同类工具散落。
+    // 优先级：内置核心(read/write/bash...) > git > skill > goal > spawn/orchestrate > wasm > mcp__
+    tool_defs_snapshot.sort_by(|a, b| {
+        fn group(name: &str) -> u8 {
+            if name.starts_with("mcp__") { 6 }
+            else if name.starts_with("wasm_") { 5 }
+            else if matches!(name, "spawn_worker"|"send_to_worker"|"resume_worker"|"await_worker"|"channel_send"|"kill_worker") { 4 }
+            else if name.starts_with("goal_") { 3 }
+            else if name == "skill" { 2 }
+            else if name.starts_with("git_") { 1 }
+            else { 0 } // 内置核心工具
+        }
+        (group(&a.name), &a.name).cmp(&(group(&b.name), &b.name))
+    });
 
     // Snapshot system prompt for --export-after-run（export 时复用完整 system prompt）。
     // 补一次 bash_tool_guide：cmd_run 注册了 BashExtension，它的 on_system_prompt 会在

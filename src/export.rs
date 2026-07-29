@@ -148,8 +148,8 @@ pub fn export_session_rich(
             }
         }
 
-        // Convert to ExportToolInfo list
-        let defs: Vec<ExportToolInfo> = registry
+        // Convert to ExportToolInfo list（按类型分组 + 字母序，避免 HashMap 随机顺序）
+        let mut defs: Vec<ExportToolInfo> = registry
             .tool_defs()
             .into_iter()
             .map(|td| ExportToolInfo {
@@ -158,6 +158,18 @@ pub fn export_session_rich(
                 parameters: td.parameters,
             })
             .collect();
+        defs.sort_by(|a, b| {
+            fn group(name: &str) -> u8 {
+                if name.starts_with("mcp__") { 6 }
+                else if name.starts_with("wasm_") { 5 }
+                else if matches!(name, "spawn_worker"|"send_to_worker"|"resume_worker"|"await_worker"|"channel_send"|"kill_worker") { 4 }
+                else if name.starts_with("goal_") { 3 }
+                else if name == "skill" { 2 }
+                else if name.starts_with("git_") { 1 }
+                else { 0 }
+            }
+            (group(&a.name), &a.name).cmp(&(group(&b.name), &b.name))
+        });
 
         if !defs.is_empty() {
             tools = Some(defs);
