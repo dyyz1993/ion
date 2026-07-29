@@ -1738,16 +1738,20 @@ async fn cmd_run(
     // agent.run 每轮注入 guide，但 snapshot 在 agent.run 之前拍，拍不到。这里先补一次静态
     // guide（动态进程摘要在 agent.run 内部注入，export 快照本就拍不到实时状态）。
     sys_prompt.push_str(&ion::agent::bash::bash_tool_guide());
-    // 补一次 rules（RulesEngineExtension.on_system_prompt 在 agent.run 里注入，snapshot 拍不到）
+    // 补一次全局 rules（只全局 rule 进 system prompt；路径匹配 rule 走 tool result，不进 SP）
     {
         let rules_ext = ion::rules_engine::RulesEngineExtension::new();
         let rules = rules_ext.load_rules();
-        let project_files = rules_ext.collect_project_files();
-        let matched: Vec<&ion::rules_engine::Rule> = rules.iter()
-            .filter(|r| r.matches_any(&project_files)).collect();
-        if !matched.is_empty() {
-            let owned: Vec<ion::rules_engine::Rule> = matched.into_iter().cloned().collect();
-            sys_prompt.push_str(&ion::rules_engine::RulesEngineExtension::format_rules_xml(&owned));
+        let global_rules: Vec<ion::rules_engine::Rule> = rules
+            .iter()
+            .filter(|r| {
+                r.apply_to.is_empty()
+                    || r.apply_to.iter().any(|p| p == "**/*" || p == "**")
+            })
+            .cloned()
+            .collect();
+        if !global_rules.is_empty() {
+            sys_prompt.push_str(&ion::rules_engine::RulesEngineExtension::format_rules_xml(&global_rules));
         }
     }
     let sys_prompt_snapshot = sys_prompt.clone();

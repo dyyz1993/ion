@@ -122,18 +122,24 @@ pub fn export_session_rich(
         // 注入 bash tool guide（export 不跑 agent loop，直接注入）
         sp.push_str(&crate::agent::bash::bash_tool_guide());
 
-        // 注入项目 rules（扫描 <cwd>/.ion/rules/*.md，跟 RulesEngineExtension.on_system_prompt 同逻辑）
+        // 注入项目 rules（只注入全局 rule 到 system prompt，跟实时 agent on_system_prompt 一致）
+        // 路径匹配 rule 在实时 agent 里追加到 tool result（session.jsonl 已记录），不进 system prompt。
         {
             let rules_ext = crate::rules_engine::RulesEngineExtension::with_project_dir(
                 std::path::PathBuf::from(session_cwd)
             );
             let rules = rules_ext.load_rules();
-            let project_files = rules_ext.collect_project_files();
-            let matched: Vec<&crate::rules_engine::Rule> = rules.iter()
-                .filter(|r| r.matches_any(&project_files)).collect();
-            if !matched.is_empty() {
-                let owned: Vec<crate::rules_engine::Rule> = matched.into_iter().cloned().collect();
-                sp.push_str(&crate::rules_engine::RulesEngineExtension::format_rules_xml(&owned));
+            // 只注入全局 rule（applyTo 为空或 **/* 或 **）
+            let global_rules: Vec<crate::rules_engine::Rule> = rules
+                .iter()
+                .filter(|r| {
+                    r.apply_to.is_empty()
+                        || r.apply_to.iter().any(|p| p == "**/*" || p == "**")
+                })
+                .cloned()
+                .collect();
+            if !global_rules.is_empty() {
+                sp.push_str(&crate::rules_engine::RulesEngineExtension::format_rules_xml(&global_rules));
             }
         }
 
