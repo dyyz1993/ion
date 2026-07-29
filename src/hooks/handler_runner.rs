@@ -11,6 +11,7 @@ use std::time::Duration;
 use super::{HookHandler, HookOutcome, HandlerType};
 
 /// 执行上下文（handler 执行时需要的能力）
+#[derive(Clone)]
 pub struct HookExecContext {
     /// 项目目录（变量替换用）
     pub project_dir: String,

@@ -28,10 +28,9 @@ pub fn matches_matcher(matcher: Option<&str>, tool_name: &str) -> bool {
         return m.to_lowercase() == tool_name.to_lowercase();
     }
 
-    // 否则当简单的 contains 匹配（避免引入 regex 依赖）
-    // 真正的正则匹配后续按需接入
-    m.to_lowercase().contains(&tool_name.to_lowercase().chars().next().unwrap_or(' ').to_string())
-        || tool_name.to_lowercase().contains(&m.to_lowercase())
+    // 否则用 glob 模式匹配（复用 rules_engine 的 glob_match，不引入 regex 依赖）
+    // 支持 mcp__* / Bash* / *test 等 glob 模式
+    crate::rules_engine::glob_match(m, tool_name)
 }
 
 /// 检查 handler 的 if 条件是否满足
@@ -99,8 +98,11 @@ mod tests {
     }
 
     #[test]
-    fn test_matcher_regex() {
-        assert!(matches_matcher(Some("mcp__.*"), "mcp__server__tool"));
-        assert!(!matches_matcher(Some("mcp__.*"), "bash"));
+    fn test_matcher_glob() {
+        // glob 模式（不是正则，用 glob_match 引擎）
+        assert!(matches_matcher(Some("mcp__*"), "mcp__server__tool"));
+        assert!(!matches_matcher(Some("mcp__*"), "bash"));
+        assert!(matches_matcher(Some("Bash*"), "Bash"));
+        assert!(matches_matcher(Some("*"), "anything"));
     }
 }

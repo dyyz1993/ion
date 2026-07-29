@@ -108,7 +108,9 @@ impl HookExtension {
             drop(counts);
         }
 
-        let handlers = config.handlers_for_event(event);
+        let handlers: Vec<(Option<String>, super::HookHandler)> = config.handlers_for_event(event)
+            .into_iter().map(|(m, h)| (m.map(|s| s.to_string()), h.clone())).collect();
+        drop(config); // 释放 config（handlers 已 owned）
         if handlers.is_empty() {
             return HookOutcome::default();
         }
@@ -124,59 +126,55 @@ impl HookExtension {
 
         let mut combined = HookOutcome::default();
 
-        for (matcher_str, handler) in handlers {
-            // ── agent handler 递归保护 ──
-            // depth >= 1 说明当前 Worker 是 hooks spawn 的子 Worker
-            // 入口 Worker depth=0，能 spawn（这是用户要的）
-            // 子 Worker depth=1+，跳过 agent handler 阻断递归
-            if handler.handler_type == super::HandlerType::Agent && hook_depth >= 1 {
-                tracing::info!(
-                    "[hooks] 跳过 agent handler（递归深度 {} >= 2，防死循环）",
-                    hook_depth
-                );
-                continue;
-            }
+        // 收集要执行的 handler（已过滤 matcher/if/once/递归）
+        let handler_futs: Vec<_> = handlers.into_iter()
+                .filter(|(matcher_str, handler)| {
+                    // 递归保护
+                    if handler.handler_type == super::HandlerType::Agent && hook_depth >= 1 { return false; }
+                    // once 去重
+                    if handler.once {
+                        let session_id = stdin.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
+                        let once_key = format!("{session_id}:{event}:{}", handler.command.as_deref()
+                            .or(handler.prompt.as_deref()).or(handler.url.as_deref()).unwrap_or("?"));
+                        let mut fired = self.once_fired.lock().unwrap();
+                        if !fired.insert(once_key) { return false; }
+                    }
+                    // matcher 过滤
+                    if let Some(tn) = tool_name
+                        && (event == "PreToolUse" || event == "PostToolUse" || event == "PostToolUseFailure")
+                        && !matcher::matches_matcher(matcher_str.as_deref(), tn) { return false; }
+                    // if 条件过滤
+                    if !matcher::matches_if_clause(handler, tool_name, tool_input) { return false; }
+                    true
+                })
+                .collect();
 
-            // once 去重
-            if handler.once {
-                let session_id = stdin.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
-                let once_key = format!("{session_id}:{event}:{}", handler.command.as_deref()
-                    .or(handler.prompt.as_deref())
-                    .or(handler.url.as_deref())
-                    .unwrap_or("?"));
-                let mut fired = self.once_fired.lock().unwrap();
-                if !fired.insert(once_key) {
-                    continue; // 已经触发过
+            // 并行执行所有匹配的 handler（对齐 Claude Code "所有匹配的 hook 并行运行"）
+            let outcomes: Vec<HookOutcome> = {
+                let exec_ctx = std::sync::Arc::new(exec_ctx);
+                let mut tasks: Vec<tokio::task::JoinHandle<HookOutcome>> = Vec::new();
+                for (_, handler) in &handler_futs {
+                    let h = std::sync::Arc::new(handler.clone());
+                    let s = stdin.clone();
+                    let ctx = std::sync::Arc::clone(&exec_ctx);
+                    tasks.push(tokio::spawn(async move {
+                        handler_runner::run_handler(&h, s, &ctx).await
+                    }));
                 }
+                let mut results = Vec::new();
+                for task in tasks {
+                    match task.await {
+                        Ok(outcome) => results.push(outcome),
+                        Err(e) => tracing::error!("[hooks] handler task panicked: {e}"),
+                    }
+                }
+                results
+            };
+
+            // 合并结果（任一 block 则整体 block）
+            for outcome in outcomes {
+                combined = combined.merge(outcome);
             }
-
-            // matcher 过滤（PreToolUse/PostToolUse 按 tool_name 过滤）
-            if let Some(tn) = tool_name
-                && (event == "PreToolUse" || event == "PostToolUse" || event == "PostToolUseFailure")
-                && !matcher::matches_matcher(matcher_str, tn)
-            {
-                continue;
-            }
-
-            // if 条件过滤
-            if !matcher::matches_if_clause(handler, tool_name, tool_input) {
-                continue;
-            }
-
-            // 执行 handler
-            let outcome = handler_runner::run_handler(handler, stdin.clone(), &exec_ctx).await;
-
-            // ── 可观测性：emit hook_handler_executed 事件（让 CI 能通过 subscribe 观察）──
-            // 不管哪种 handler（command/http/prompt/agent），执行后都发一个事件，
-            // 包含 handler 类型 + event + outcome（block/allow/reason）。
-            self.emit_handler_executed(event, handler, &outcome);
-
-            combined = combined.merge(outcome);
-
-            if combined.is_terminal() {
-                break; // block 后停止后续 handler
-            }
-        }
 
         combined
     }
