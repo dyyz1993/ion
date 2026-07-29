@@ -1715,6 +1715,8 @@ async fn cmd_run(
         })
         .collect();
 
+    // Snapshot system prompt for --export-after-run（export 时复用含 skill 大纲的完整 system prompt）
+    let sys_prompt_snapshot = sys_prompt.clone();
     let mut agent = Agent::new(registry, model, Some(sys_prompt), tools, config)
         .with_runtime(Box::new(rt));
 
@@ -2132,10 +2134,11 @@ async fn cmd_run(
         } else {
             Some(tool_defs_snapshot.clone())
         };
-        match ion::export::export_session_with_tools(
+        match ion::export::export_session_with_tools_and_prompt(
             session_id,
             std::path::Path::new(export_path),
             tools_opt,
+            Some(sys_prompt_snapshot.clone()),
         ) {
             Ok(()) => println!("Exported to {export_path}"),
             Err(e) => eprintln!("Export failed: {e}"),
