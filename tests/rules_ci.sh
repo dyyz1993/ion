@@ -13,7 +13,8 @@ set -euo pipefail
 
 ION_BIN="${ION_BIN:-$(cd "$(dirname "$0")/.." && pwd)/target/debug/ion}"
 HOST_SOCK="$HOME/.ion/host.sock"
-PASS=0; FAIL=0
+PASS=0
+SKIP=0; FAIL=0
 
 assert_contains() {
     local label="$1" haystack="$2" needle="$3"
@@ -143,7 +144,7 @@ assert_contains "C1: 去重单元测试通过" "$DEDUP_RESULT" "ok"
 
 echo ""
 echo "==============================================="
-echo "rules_ci: $PASS passed, $FAIL failed"
+echo "rules_ci: $PASS passed, $FAIL failed, $SKIP skipped"
 echo "==============================================="
 
 # 清理

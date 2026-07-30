@@ -10,6 +10,7 @@ set -uo pipefail
 ION_BIN="${ION_BIN:-$(cd "$(dirname "$0")/.." && pwd)/target/debug/ion}"
 HOST_SOCK="$HOME/.ion/host.sock"
 PASS=0; FAIL=0
+SKIP=0
 
 assert_contains() {
     local label="$1" haystack="$2" needle="$3"
@@ -116,7 +117,7 @@ ION_FAUX_REPLY='ok' \
 
 if [ -f "$TMP/stdin_stop.json" ]; then
     STOP=$(cat "$TMP/stdin_stop.json")
-    if echo "$STOP_STDIN" | grep -q "hook_event_name"; then
+    if echo "$STOP" | grep -q "hook_event_name"; then
         pass "C1: hook_event_name=Stop"
     else
         yellow "C1: hook_event_name 缺失（CI 版本差异）"
@@ -140,7 +141,7 @@ ION_FAUX_REPLY='ok' \
 
 if [ -f "$TMP/stdin_ups.json" ]; then
     UPS=$(cat "$TMP/stdin_ups.json")
-    if echo "$UPS_STDIN" | grep -q "hook_event_name"; then
+    if echo "$UPS" | grep -q "hook_event_name"; then
         pass "D1: hook_event_name=UserPromptSubmit"
         yellow "D1: hook_event_name 缺失（CI 版本差异）"
         SKIP=$((SKIP+1))
