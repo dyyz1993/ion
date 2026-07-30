@@ -3690,6 +3690,7 @@ async fn cmd_submit(eff: &EffectiveConfig, message: &str, _workers: usize, _max_
     use tokio::sync::Mutex;
 
     let registry = Arc::new(Mutex::new(WorkerRegistry::new()));
+    registry.lock().await.set_self_ref(&registry);
     tracing::info!("Submitting: {}", message);
     {
         let w = registry
@@ -4157,6 +4158,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
     use tokio::sync::Mutex;
 
     let registry = Arc::new(Mutex::new(WorkerRegistry::new()));
+    registry.lock().await.set_self_ref(&registry);
     let event_bus = Arc::new(tokio::sync::Mutex::new(
         ion::event_bus::ExtensionEventBus::new(),
     ));
@@ -5134,7 +5136,11 @@ async fn handle_manager_command_write(
             // 检查 session 对应的 worker 是否存在，不存在则自动创建（修复 #2）
             let exists = reg.workers.values().any(|w| w.session_id == session);
             if exists {
-                reg.send_to_session(session, rpc_method, params).await
+                drop(reg); // release lock — send_to_session locks internally
+                ion::worker_registry::WorkerRegistry::send_to_session(
+                    &registry, session, rpc_method, params,
+                )
+                .await
             } else {
                 drop(reg); // 放锁，让 do_create_session 能重新 lock
                 tracing::info!("[send_to_session] session {session} not found, auto-creating");
@@ -5148,12 +5154,11 @@ async fn handle_manager_command_write(
                 .await
                 {
                     Ok(_) => {
-                        // 创建后立即转发原请求
-                        registry
-                            .lock()
-                            .await
-                            .send_to_session(session, rpc_method, params)
-                            .await
+                        // 创建后立即转发原请求（关联函数，内部自己 lock）
+                        ion::worker_registry::WorkerRegistry::send_to_session(
+                            &registry, session, rpc_method, params,
+                        )
+                        .await
                     }
                     Err(e) => Err(e),
                 }
@@ -5283,9 +5288,9 @@ async fn handle_manager_command_write(
                 let session_id = cmd.get("session").and_then(|v| v.as_str());
                 if let Some(sid) = session_id {
                     drop(reg2);
-                    // Forward to worker via send_to_session
-                    let mut reg3 = registry.lock().await;
-                    reg3.send_to_session(
+                    // Forward to worker via send_to_session (associated fn, locks internally)
+                    ion::worker_registry::WorkerRegistry::send_to_session(
+                        &registry,
                         sid,
                         "extension_rpc",
                         serde_json::json!({
@@ -5353,7 +5358,12 @@ async fn handle_manager_command_write(
                     }
                 } else {
                     // 其他命令等响应(list_turns/get_messages/abort 等)
-                    match reg.send_to_session(sid, method, params).await {
+                    drop(reg); // release lock — send_to_session locks internally
+                    match ion::worker_registry::WorkerRegistry::send_to_session(
+                        &registry, sid, method, params,
+                    )
+                    .await
+                    {
                         Ok(_) => Ok(serde_json::json!({"status": "forwarded", "session": sid})),
                         Err(e) => Err(e),
                     }
@@ -5411,6 +5421,7 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>) {
     eprintln!("[host] Starting WorkerRegistry");
 
     let registry = Arc::new(Mutex::new(WorkerRegistry::new()));
+    registry.lock().await.set_self_ref(&registry);
 
     // 1. Event pump → stdout
     let pump_registry = Arc::clone(&registry);

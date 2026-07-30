@@ -84,6 +84,11 @@ pub struct WorkerRegistry {
     /// Host 级 EventBus handle（singleton 扩展用，broadcast 给所有 subscribers）
     /// None = 默认（cmd_run 等不需要事件广播的场景）；Some = cmd_serve/cmd_host 注入
     pub event_bus: Option<std::sync::Arc<tokio::sync::Mutex<crate::event_bus::ExtensionEventBus>>>,
+    /// Weak back-reference to the Arc<Mutex<Self>> that owns this registry.
+    /// Set by `new_in_arc` / `set_self_ref` after construction. Used by
+    /// `send_to_session` to auto-start workers (which needs the Arc to pass to
+    /// `create_worker`). Weak avoids a reference cycle.
+    self_ref: std::sync::Weak<tokio::sync::Mutex<WorkerRegistry>>,
 }
 
 pub struct WorkerRecord {
@@ -202,7 +207,21 @@ impl WorkerRegistry {
             manager_cmd_rx,
             mcp_manager: None,
             event_bus: None,
+            self_ref: std::sync::Weak::new(),
         }
+    }
+
+    /// Set the weak back-reference to the owning Arc. Call once after wrapping
+    /// in `Arc::new(Mutex::new(...))` so that `send_to_session` can auto-start
+    /// workers (it needs the Arc to pass to `create_worker`).
+    ///
+    /// Example:
+    /// ```ignore
+    /// let registry = Arc::new(Mutex::new(WorkerRegistry::new()));
+    /// registry.lock().await.set_self_ref(&registry);
+    /// ```
+    pub fn set_self_ref(&mut self, arc: &std::sync::Arc<tokio::sync::Mutex<WorkerRegistry>>) {
+        self.self_ref = std::sync::Arc::downgrade(arc);
     }
 
     /// 设置 host 级 MCP 管理器（方案 C：host 持有连接，Worker 代理调用）
@@ -233,6 +252,7 @@ impl WorkerRegistry {
             manager_cmd_rx,
             mcp_manager: None,
             event_bus: None,
+            self_ref: std::sync::Weak::new(),
         }
     }
 
@@ -1636,34 +1656,82 @@ impl WorkerRegistry {
         Ok(())
     }
 
-    /// Send to a session by ID. Auto-starts Worker if not running.
+    /// Send to a session by ID. Auto-starts a Worker if not running.
+    ///
+    /// This is an associated function (not `&mut self`) so it can release the
+    /// registry lock between phases and avoid deadlock:
+    ///   phase 1 (lock ①): find worker by session_id; if found, send + await
+    ///   phase 2 (lock ②): if not found, create_worker (which spawns a stdout
+    ///                      reader task that locks the registry independently)
+    ///   phase 3 (lock ③): send the original command to the new worker
+    /// Each lock is short and never nested, so create_worker's internal
+    /// `sub_registry.lock()` doesn't deadlock against us.
     pub async fn send_to_session(
-        &mut self,
+        registry_arc: &Arc<Mutex<WorkerRegistry>>,
         session_id: &str,
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
-        // Find worker by session_id
-        let worker_id = self
-            .workers
-            .iter()
-            .find(|(_, w)| w.session_id == session_id)
-            .map(|(id, _)| id.clone());
+        // Phase 1: look for an existing worker for this session.
+        let existing = {
+            let reg = registry_arc.lock().await;
+            reg.workers
+                .iter()
+                .find(|(_, w)| w.session_id == session_id)
+                .map(|(id, _)| id.clone())
+        };
 
-        match worker_id {
-            Some(wid) => {
-                // Worker exists → send directly
-                self.send_to_worker(&wid, method, params).await
-            }
-            None => {
-                // Worker not running → auto-start
-                tracing::info!("[session] auto-starting for {session_id}");
-                // 注：send_to_session 不能 auto-start（缺 registry_arc）
-                Err(format!(
-                    "worker not found for session {session_id}, please create_worker first"
-                ))
-            }
+        if let Some(wid) = existing {
+            // Worker exists — send directly (lock → write stdin → drop lock → await oneshot).
+            let rx = {
+                let mut reg = registry_arc.lock().await;
+                reg.send_to_worker_prepare(&wid, method, params).await?
+            };
+            return Self::await_oneshot_timeout(rx).await;
         }
+
+        // Phase 2: worker not found → auto-start. Lock briefly to create.
+        tracing::info!("[session] auto-starting worker for {session_id}");
+        let config = WorkerCreateConfig {
+            worktree: None,
+            session: Some(session_id.to_string()),
+            project_path: None,
+            model: None,
+            provider: None,
+            agent: None,
+            channels: None,
+            parent: None,
+            relation: Some(WorkerRelation::Child),
+            creator: None,
+            report_channel: None,
+            report_to: None,
+            initial_prompt: None,
+            skip_mcp: None,
+            allowed_tools: None,
+            disallowed_tools: None,
+            max_turns: None,
+            hook_depth: None,
+            system_prompt_override: None,
+        };
+        {
+            let mut reg = registry_arc.lock().await;
+            reg.create_worker(config, registry_arc).await?;
+        } // lock dropped here — create_worker's reader task can now lock freely.
+
+        // Phase 3: find the freshly created worker and send the command.
+        let wid = {
+            let reg = registry_arc.lock().await;
+            reg.workers
+                .iter()
+                .find(|(_, w)| w.session_id == session_id)
+                .map(|(id, _)| id.clone())
+                .ok_or_else(|| format!("auto-started worker for {session_id} vanished"))?
+        };
+        let rx = {
+            let mut reg = registry_arc.lock().await;
+            reg.send_to_worker_prepare(&wid, method, params).await?
+        };
+        Self::await_oneshot_timeout(rx).await
     }
 
     /// Drain pending events from a worker's stdout_rx.
@@ -1847,7 +1915,24 @@ impl WorkerRegistry {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
-        // Step 1: write stdin + register oneshot (holds lock briefly)
+        // Prepare (write stdin + register oneshot) then await outside the lock.
+        let rx = self
+            .send_to_worker_prepare(worker_id, method, params)
+            .await?;
+        Self::await_oneshot_timeout(rx).await
+    }
+
+    /// Step 1 of send_to_worker: write the command to the worker's stdin and
+    /// register a oneshot receiver for the response. Returns the receiver so
+    /// the caller can drop the registry lock before awaiting (avoids deadlock
+    /// when the worker's stdout reader needs to lock the registry to deliver
+    /// the response).
+    pub async fn send_to_worker_prepare(
+        &mut self,
+        worker_id: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<oneshot::Receiver<serde_json::Value>, String> {
         let req_id = Uuid::new_v4().to_string()[..8].to_string();
         let line = serde_json::json!({
             "id": req_id,
@@ -1856,29 +1941,22 @@ impl WorkerRegistry {
         })
         .to_string();
 
-        let rx = {
-            let record = self
-                .workers
-                .get_mut(worker_id)
-                .ok_or_else(|| format!("worker not found: {worker_id}"))?;
-            if let Some(ref mut stdin) = record.stdin {
-                use tokio::io::AsyncWriteExt;
-                stdin
-                    .write_all(format!("{line}\n").as_bytes())
-                    .await
-                    .map_err(|e| format!("write stdin: {e}"))?;
-                stdin.flush().await.map_err(|e| format!("flush: {e}"))?;
-            }
-            record.status = WorkerStatus::Busy;
-            let (tx, rx) = oneshot::channel();
-            record.pending.insert(req_id.clone(), tx);
-            rx
-        };
-        // &mut self 在此被释放（NLL），后面的 await 不需要 self
-        // 但调用方仍持锁（MutexGuard）直到 Guard 被 drop
-
-        // Step 2: wait for oneshot via static method (no &mut self)
-        Self::await_oneshot_timeout(rx).await
+        let record = self
+            .workers
+            .get_mut(worker_id)
+            .ok_or_else(|| format!("worker not found: {worker_id}"))?;
+        if let Some(ref mut stdin) = record.stdin {
+            use tokio::io::AsyncWriteExt;
+            stdin
+                .write_all(format!("{line}\n").as_bytes())
+                .await
+                .map_err(|e| format!("write stdin: {e}"))?;
+            stdin.flush().await.map_err(|e| format!("flush: {e}"))?;
+        }
+        record.status = WorkerStatus::Busy;
+        let (tx, rx) = oneshot::channel();
+        record.pending.insert(req_id.clone(), tx);
+        Ok(rx)
     }
 
     /// 静待方法，不持有 `&mut self`。用于在锁外等 oneshot。
