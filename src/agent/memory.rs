@@ -105,11 +105,13 @@ pub struct PendingInject {
 
 impl MemoryStore {
     pub fn new(storage: crate::storage_context::StorageContext) -> Self {
-        let project_name = std::path::Path::new(&storage.config_root)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+        // Project partition key for the global memory DB. Use project_key_git
+        // (git-common-dir hash) instead of config_root basename: the basename
+        // collided across same-named dirs in different paths (e.g. two ~/work
+        // dirs shared memory). project_key_git is stable per main repo (shared
+        // by its worktrees) and distinct across repos — same semantics as the
+        // other project-dimension storage in paths.rs.
+        let project_name = crate::paths::project_key_git(&storage.config_root);
         // 尝试打开全局 SQLite 存储（统一存储层）
         // 测试可通过 ION_MEMORY_NO_GLOBAL=1 禁用（回退到 JSON 文件存储）
         let global_store = if std::env::var("ION_MEMORY_NO_GLOBAL").is_err() {
@@ -142,11 +144,8 @@ impl MemoryStore {
 
     /// 测试专用：不打开全局 SQLite（避免测试间数据污染，不依赖环境变量）
     pub fn new_no_global(storage: crate::storage_context::StorageContext) -> Self {
-        let project_name = std::path::Path::new(&storage.config_root)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+        // Same project_key_git partition as new() — see comment there.
+        let project_name = crate::paths::project_key_git(&storage.config_root);
         Self {
             storage,
             turn_count: 0,
@@ -1368,13 +1367,51 @@ mod tests {
 
     #[test]
     fn store_project_name_derived_from_config_root() {
-        // project_name comes from the final path component of config_root.
+        // project_name is now project_key_git(config_root) (git-common-dir hash),
+        // NOT the basename — same-named dirs in different paths must not share memory.
         let store = make_store_no_global();
-        let last = std::path::Path::new(&store.storage.config_root)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap();
-        assert_eq!(store.project_name, last);
+        let expected = crate::paths::project_key_git(&store.storage.config_root);
+        assert_eq!(
+            store.project_name, expected,
+            "project_name should be project_key_git, not basename"
+        );
+    }
+
+    #[test]
+    fn store_project_name_distinct_for_same_basename_different_path() {
+        // Regression guard: two dirs with the SAME basename but DIFFERENT paths
+        // must produce DIFFERENT project_keys (previously they collided via
+        // basename → shared memory across unrelated projects).
+        // Use temp dirs (non-git → fallback to cwd hash, still path-distinct).
+        let dir_a = std::env::temp_dir().join(format!(
+            "ion_mem_collide_a_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        let dir_b = dir_a.parent().unwrap().join(format!(
+            "ion_mem_collide_b_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        // Force same basename by creating a "collide" subdir under each.
+        let a = dir_a.join("collide");
+        let b = dir_b.join("collide");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let key_a = crate::paths::project_key_git(&a.to_string_lossy());
+        let key_b = crate::paths::project_key_git(&b.to_string_lossy());
+        assert_ne!(
+            key_a, key_b,
+            "same basename (collide) in different parent dirs must NOT collide"
+        );
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
     }
 
     #[test]
