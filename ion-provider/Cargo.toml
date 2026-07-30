@@ -15,6 +15,10 @@ futures-util = "0.3"
 thiserror = "2"
 regex = "1"
 tokio-util = { version = "0.7", features = ["rt"] }
+# AWS SigV4 signing for the Bedrock provider (HMAC-SHA256 + SHA-256).
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

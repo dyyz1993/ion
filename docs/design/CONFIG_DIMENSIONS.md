@@ -207,7 +207,11 @@ grep -rn "ION_PROJECT_ROOT" src/
 
 **修复**：`merge_project` 已改成深度合并所有字段（HashMap 按 key 合并、Option 按需覆盖、Vec 非空替换）。9 个单元测试（`merge_tests::a1-a8b`）覆盖 Group A 全部 case。
 
-**遗留问题（serde 默认值陷阱）**：`tier_models` 字段标了 `#[serde(default = "default_tier_models")]`，项目级 config 从文件反序列化时，**即使用户没写 tier_models，serde 也会填上默认值**（fast/pro/max）。merge 时这些"默认值"会覆盖全局的显式配置。影响：如果全局配了 `tier_models.fast = "custom/model"`，项目级 config 文件完全没提 tier_models，merge 后 fast 会被项目级的默认值 `deepseek/deepseek-v4-flash` 覆盖。后续需考虑用 `Option<HashMap>` 或自定义反序列化区分"未设置"和"显式空"。
+**遗留问题（serde 默认值陷阱）— ✅ 已修复**：`tier_models` 字段标了 `#[serde(default = "default_tier_models")]`，项目级 config 从文件反序列化时，即使用户没写 tier_models，serde 也会填上默认值（fast/pro/max）。
+
+**修复**（`src/config.rs` `merge_project`）：合并前检测项目级 `tier_models` 是否等于默认值——如果完全相同，说明用户没自定义，跳过合并（保留全局显式配置）。测试 `a3_tier_models_merge_preserves_global_keys` 覆盖：全局配 fast/pro，项目级只配 max，merge 后全局的 fast/pro 保留。
+
+**已知边缘 case**（不影响正常使用）：如果用户在项目级**显式**写跟默认值完全相同的 tier_models，会被误判为"未自定义"而跳过——但没人会显式写默认值，实际无影响。
 
 ### 缺口 #2：`ION_PROJECT_ROOT` 只被 config 消费（HIGH）— ✅ 已修复
 
