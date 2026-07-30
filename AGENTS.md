@@ -1575,11 +1575,11 @@ bash scripts/evolve-run.sh "任务描述"             # 同步 + 守门 + HTML �
 - install 覆盖（同名文件更新）/ 非 .wasm 拒绝 / 不存在报错
 - **验证**: extension_cli_ci 11 测试全过 ✅
 
-### 测试统计 (2026-07-26)
+### 测试统计 (2026-07-30)
 
 | 套件 | 数量 | 覆盖 |
 |------|------|------|
-| lib tests (核心逻辑) | 938 | Agent(155: tool/context_index/extension/permission/compact/memory)/Permission/Retry/CommandGuard/Session/SessionTree(42)/GlobalMemory(56: count/dedup/FTS5)/Memory/Worker/MessageRetrieval(27)/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact/FileSnapshot(69: object_store/zstd/diff/GC/approval)/**RulesEngine(28: glob/frontmatter/inject)**/**FileTimeGuard**/**ContextReclaimer**/**TierModels**/**Hooks(39)**/**StoredDecision**/**WasmExtension(13: path_safety)**/**PlanExtension/PlanTool**/**Monitor(25: 含 20 validate tests)**/**SelfHeal(health/max_turns/stale)**/**LSP(14: parse/format tests)**/**ToolLoopDetector(6)**/**AutoSessionTitle(7)**/**PermissionProfile(autopilot)**/**GoalSupervisor(35)**/**GoalEvolver(12)**/**SecretDetector(14)**/**LearningExtension(12)**/**SkillDistillation(21)**/**MCP(20)**/**BackendRegistry(20)**/**Runtime(13)**/**Pool(13)**/**Workflow(13)**/**EventBus(12)**/**Queue(15)**/**Export(12)** |
+| lib tests (核心逻辑) | 945 | Agent(155: tool/context_index/extension/permission/compact/memory)/Permission/Retry/CommandGuard/Session/SessionTree(42)/GlobalMemory(56: count/dedup/FTS5)/Memory/Worker/MessageRetrieval(27)/SessionJsonl/SessionIndex/ContextIndex/SoftDeleteCompact/FileSnapshot(69: object_store/zstd/diff/GC/approval)/**RulesEngine(28: glob/frontmatter/inject)**/**FileTimeGuard**/**ContextReclaimer**/**TierModels**/**Hooks(39)**/**StoredDecision**/**WasmExtension(13: path_safety)**/**PlanExtension/PlanTool**/**Monitor(25: 含 20 validate tests)**/**SelfHeal(health/max_turns/stale)**/**LSP(14: parse/format tests)**/**ToolLoopDetector(6)**/**AutoSessionTitle(7)**/**PermissionProfile(autopilot)**/**GoalSupervisor(35: data structs/checks/guards/similarity/logging/progress analysis/goal_refine/drift detection)**/**GoalEvolver(12)**/**SecretDetector(14)**/**LearningExtension(12)**/**SkillDistillation(21)**/**MCP(20)**/**BackendRegistry(20)**/**Runtime(13)**/**Pool(13)**/**Workflow(13)**/**EventBus(12)**/**Queue(15)**/**Export(12)** |
 | unit_rpc_test (RPC 协议) | 20 | U1-U20 RPC 命令覆盖 + 接口格式兼容 |
 | manager_integration (集成) | 25 | Manager + Worker + 事件 + UI + 消息拉取 |
 | session_tree_test (集成) | 4 | only-append 审计/branch 接 leaf/全操作序列 |
@@ -1591,7 +1591,7 @@ bash scripts/evolve-run.sh "任务描述"             # 同步 + 守门 + HTML �
 | child_worker / concurrency | 4 | 子进程通信/并发池 |
 | memory_e2e | 6 | Memory 扩展存储/搜索/注入/去重 |
 | ion-provider 单元 | 70 | OpenAI/Anthropic/Google/FauxProvider/RecordReplay/transform_messages |
-| **小计 Rust 测试** | **938** | 全部通过 ✅ |
+| **小计 Rust 测试** | **945** | 全部通过 ✅ |
 | faux_scenarios_ci (CLI E2E) | 4 | 三场景 faux（直接执行/host/serve） |
 | record_replay_ci (CLI E2E) | 11 | 录制/回放/路径穿越/冲突/OVERWRITE/权限 |
 | crash_recovery_ci (CLI E2E) | 6 | stderr/exit_code/Dead/父通知 |
@@ -1630,7 +1630,8 @@ bash scripts/evolve-run.sh "任务描述"             # 同步 + 守门 + HTML �
 | self_heal_ci (CLI E2E) | 12 | Group A：单 issue 端到端（mock gh + monitor → coordinator → developer fix → commit）+ Group B：多 issue 并行 + Group C：active state 持久化（mark/check/list/release + ~/.ion/agent/active-pipelines.json）|
 | goal_supervisor_ci (CLI E2E) | 26 | Group A-D：单元测试 + tool 注册 + config + 日志 schema + U+FFFD + **Group E：深化（进展分析/drift/goal_refine/goal_diagnose/偏离监控/3 tool 注册）** |
 | goal_evolver_ci (CLI E2E) | 18 | Group A：12 单元测试（10 fixture 场景 + 解析健壮性）+ Group B：6 问题场景检测（deadloop/model/context）+ Group C：2 健康场景不误报 + Group D：run_once 全量扫描 + Group E：goal_evolver_run_once RPC 注册 + dry_run 默认 true + Group F：10 fixture 目录完整 |
-| **测试覆盖合计** | **1420+** | 全部通过 ✅（Rust 938 [含 goal_supervisor 24 + goal_evolver 12，含并发锁拆分修复]，CLI E2E 497+ [含 goal_supervisor_ci 18 + goal_evolver_ci 18]，含 monitor_ci 11 + self_heal_ci 12 + lsp_ci 14 + hooks 36 + extensions 19 + 真实 LLM 5 + WASM 扩展 + self-healing GitHub 全链路验证 + 锁拆分回归 monitor_ci 38 + memory_agent_ci 11 + sse_events_ci 13 + abort_ci 8 + ui_integration_ci 13） |
+| goal_supervisor_e2e (CLI E2E) | 8 | G1-G5 FauxProvider 闭环验证 + G6 复杂目标(3轮) + G7 mega(4轮) + G8 死循环 guard |
+| **测试覆盖合计** | **1453+** | 全部通过 ✅（Rust 945 [含 goal_supervisor 35 + goal_evolver 12]，CLI E2E 508+ [含 goal_supervisor_ci 26 + goal_evolver_ci 18 + e2e 8]，含 monitor_ci 11 + self_heal_ci 12 + lsp_ci 14 + hooks 36 + extensions 19 + 真实 LLM 5（Tic-Tac-Toe + Snake + BST + Stack + 硬目标3轮）+ GitHub Actions CI Matrix 47/52 Linux） |
 
 **P5 - 扩展钩子补全:** ✅
 - ~~on_context 接入~~ ✅ (Memory 扩展 on_context 注入)
