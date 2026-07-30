@@ -576,7 +576,8 @@ fn filter_messages_on_live_path(
 ///
 /// 返回 true 如果新建了 header（之前不存在），false 如果已存在。
 pub fn ensure_session_header(cwd: &str, sid: &str) -> bool {
-    let path = session_path(cwd);
+    // 优先用全局 override（主会话隔离后走 <sid>.jsonl），否则 fallback 到 session.jsonl。
+    let path = resolve_session_file(cwd);
 
     // 文件不存在 → 创建 header
     if !path.exists() {
@@ -1267,5 +1268,54 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Session isolation: ensure_session_header honors override ──
+
+    #[test]
+    fn ensure_session_header_uses_override_when_set() {
+        // When set_session_file_override is set, ensure_session_header must write
+        // to the override path (<sid>.jsonl), NOT the legacy session.jsonl.
+        let cwd = test_cwd("override_header");
+        cleanup(&cwd);
+
+        // Override → per-run <sid>.jsonl
+        let override_path = crate::paths::session_jsonl_path_by_id(&cwd, "sess_iso_test");
+        set_session_file_override(Some(override_path.clone()));
+
+        let created = ensure_session_header(&cwd, "sess_iso_test");
+        assert!(created, "header should be newly created");
+        assert!(
+            override_path.exists(),
+            "override <sid>.jsonl should exist after ensure_session_header"
+        );
+
+        // Legacy session.jsonl must NOT have been created.
+        let legacy = crate::paths::session_jsonl_path(&cwd);
+        assert!(
+            !legacy.exists(),
+            "legacy session.jsonl must not be created when override is set"
+        );
+
+        // resolve_session_file must also point at the override.
+        assert_eq!(resolve_session_file(&cwd), override_path);
+
+        set_session_file_override(None);
+        cleanup(&cwd);
+    }
+
+    #[test]
+    fn ensure_session_header_falls_back_to_session_jsonl_without_override() {
+        // Without override, behavior is unchanged: writes session.jsonl.
+        let cwd = test_cwd("no_override_header");
+        cleanup(&cwd);
+        set_session_file_override(None);
+
+        let created = ensure_session_header(&cwd, "sess_legacy");
+        assert!(created);
+        let legacy = crate::paths::session_jsonl_path(&cwd);
+        assert!(legacy.exists(), "legacy session.jsonl should exist");
+
+        cleanup(&cwd);
     }
 }

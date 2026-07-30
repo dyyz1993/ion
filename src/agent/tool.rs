@@ -485,8 +485,8 @@ impl Tool for BranchSessionTool {
             .map(|p| p.to_string_lossy().to_string())
             .map_err(|e| AgentError::Tool(format!("cwd error: {}", e)))?;
 
-        // 读当前 session 文件
-        let path = crate::session_jsonl::session_path(&cwd);
+        // 读当前 session 文件（走 override 以尊重会话隔离）
+        let path = crate::session_jsonl::resolve_session_file(&cwd);
         let entries: Vec<serde_json::Value> = match std::fs::read_to_string(&path) {
             Ok(content) => content
                 .lines()
