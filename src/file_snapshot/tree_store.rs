@@ -137,9 +137,16 @@ mod tests {
     use super::*;
 
     fn tmp_store() -> (std::path::PathBuf, ObjectStore) {
+        // Process-unique counter guarantees no collision even when parallel
+        // tests call tmp_store() within the same nanosecond (subsec_nanos alone
+        // collided occasionally, causing shared ObjectStore dirs → flaky counts).
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, Ordering::SeqCst);
         let tmp = std::env::temp_dir().join(format!(
-            "fs_tree_test_{}_{}",
+            "fs_tree_test_{}_{}_{}",
             std::process::id(),
+            seq,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

@@ -600,9 +600,16 @@ mod tests {
         std::sync::Arc<SnapshotStore>,
         ApprovalManager,
     ) {
+        // Process-unique counter guarantees no collision even when parallel
+        // tests call setup() within the same nanosecond (subsec_nanos alone
+        // collided occasionally → shared store dirs → flaky baseline hashing).
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, Ordering::SeqCst);
         let id = format!(
-            "fs_approval_{}_{}",
+            "fs_approval_{}_{}_{}",
             std::process::id(),
+            n,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
