@@ -471,6 +471,7 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/design/FAUX_PROVIDER.md](./docs/design/FAUX_PROVIDER.md) | FauxProvider 架构级 LLM Mock：FIFO 队列 + 工厂响应 + 流式分块，对标 pi (已实现 Phase 1) |
 | [docs/design/RECORD_REPLAY.md](./docs/design/RECORD_REPLAY.md) | Record/Replay 录制回放：环境变量录制 + `--model replay/id` 回放，复用 FauxProvider (已实现 Phase 1) |
 | [docs/design/SESSION_TREE.md](./docs/design/SESSION_TREE.md) | Session Tree（会话分支）：文件内分支 + leaf 指针 + only-append 回滚 (已实现) |
+| [docs/design/SESSION_ISOLATION.md](./docs/design/SESSION_ISOLATION.md) | **会话隔离 + Session GC**：主会话默认 `<sid>.jsonl`（不再共享）+ 启动时 GC 清旧文件 + distillation 并发修复 (已验证) |
 | [docs/design/MCP_SYSTEM.md](./docs/design/MCP_SYSTEM.md) | MCP 系统：rmcp 1.x + 方案 C 共享池 + 权限控制 + resources/prompts + 热更新 (Phase 1-4 全部实现) |
 | [docs/design/CONFIG_DIMENSIONS.md](./docs/design/CONFIG_DIMENSIONS.md) | 配置与数据维度分析：5 类存储划分 + 组件归属全表 + worktree 副本预期 + StorageContext 统一抽象 + 新扩展开发指南 (已实现) |
 | [docs/design/FILE_SNAPSHOT.md](./docs/design/FILE_SNAPSHOT.md) | File Snapshot：双路快照（工具级 before/after + 目录扫描 + turn_end 兜底），restore_files + --restore-code 联动回滚，不遵守 .gitignore (已实现 + 2026-07-11 修复 5 个正确性问题) |
