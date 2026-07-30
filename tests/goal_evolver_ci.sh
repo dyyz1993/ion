@@ -152,7 +152,9 @@ else
 fi
 
 # E3: dry_run 默认 true（安全）
-if grep -q "dry_run.*unwrap_or(true)" src/worker_rpc.rs; then
+# Note: match across newlines — `cargo fmt` may split the chain onto
+# multiple lines, so single-line grep breaks. Collapse whitespace first.
+if tr '\n' ' ' < src/worker_rpc.rs | grep -q "dry_run.*unwrap_or(true)"; then
     pass "E3: dry_run 默认 true（安全，不误提交 Issue）"
 else
     fail "E3: dry_run 默认值不对"
