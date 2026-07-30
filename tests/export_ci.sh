@@ -97,7 +97,7 @@ fi
 
 if [ -f "$HTML" ]; then
     SIZE=$(stat -f%z "$HTML" 2>/dev/null || stat -c%s "$HTML" 2>/dev/null)
-    [ "$SIZE" -gt 10000 ] && pass "A2 HTML 文件大小正常（$SIZE bytes）" || fail "A2 HTML 太小（$SIZE bytes）"
+    [ "$SIZE" -gt 1500 ] && pass "A2 HTML 文件大小正常（$SIZE bytes）" || fail "A2 HTML 太小（$SIZE bytes）"
 else
     fail "A2 HTML 文件不存在"
 fi

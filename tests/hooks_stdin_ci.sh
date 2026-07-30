@@ -61,7 +61,7 @@ echo "--- Group A: 通用字段 ---"
 # SessionStart
 write_hooks "SessionStart" "$TMP/stdin_sessionstart.json"
 OUT_FILE="$TMP/faux_ss.html"
-ION_FAUX_REPLY='{"role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"Stop"}' \
+ION_FAUX_REPLY='ok' \
     "$ION_BIN" --no-context-files --provider faux --model faux-test \
     --export "$OUT_FILE" "test" >/dev/null 2>&1 </dev/null
 
@@ -83,7 +83,7 @@ echo ""
 echo "--- Group B: PreToolUse 字段 ---"
 
 write_hooks "PreToolUse" "$TMP/stdin_pretl.json"
-ION_FAUX_REPLY='{"role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"Stop"}' \
+ION_FAUX_REPLY='ok' \
     "$ION_BIN" --no-context-files --provider faux --model faux-test \
     --export "$TMP/faux_pre.html" "test" >/dev/null 2>&1 </dev/null
 
@@ -104,7 +104,7 @@ echo ""
 echo "--- Group C: Stop 字段 ---"
 
 write_hooks "Stop" "$TMP/stdin_stop.json"
-ION_FAUX_REPLY='{"role":"assistant","content":[{"type":"text","text":"task done"}],"stop_reason":"Stop"}' \
+ION_FAUX_REPLY='ok' \
     "$ION_BIN" --no-context-files --provider faux --model faux-test \
     --export "$TMP/faux_stop.html" "test" >/dev/null 2>&1 </dev/null
 
@@ -123,7 +123,7 @@ echo ""
 echo "--- Group D: UserPromptSubmit 字段 ---"
 
 write_hooks "UserPromptSubmit" "$TMP/stdin_ups.json"
-ION_FAUX_REPLY='{"role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"Stop"}' \
+ION_FAUX_REPLY='ok' \
     "$ION_BIN" --no-context-files --provider faux --model faux-test \
     --export "$TMP/faux_ups.html" "test prompt here" >/dev/null 2>&1 </dev/null
 

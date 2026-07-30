@@ -32,6 +32,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y jq lsof netcat-openbsd
+          rustup target add wasm32-wasip1
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -75,6 +76,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y jq lsof netcat-openbsd
+          rustup target add wasm32-wasip1
 
       - name: Cache cargo registry
         uses: actions/cache@v4

@@ -74,7 +74,7 @@ echo "--- Group A: export HTML（rules 注入验证）---"
 # 在 proj 目录里用 FauxProvider 跑一个 session + export（cwd 对，.ion/rules 能扫到）
 cd "$TMP/proj"
 EXPORT_OUT="$TMP/rules_export.html"
-ION_FAUX_REPLY='{"role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"Stop"}' \
+ION_FAUX_REPLY='ok rules test response' \
     $ION_BIN --no-context-files --provider faux --model faux-test \
     --export "$EXPORT_OUT" \
     "test" >/dev/null 2>&1 </dev/null

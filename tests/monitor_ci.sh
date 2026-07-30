@@ -647,10 +647,11 @@ rm -f .ion/monitors/i2.json /tmp/test_i2.log
 # I3: Process check (always fails = always triggers)
 echo "--- I3: process down ---"
 cat > .ion/monitors/i3.json <<'EJSON'
-{"name":"i3-proc","interval_secs":3,"script":"pgrep -f nonexistent-xxx-yyy >/dev/null 2>&1 || echo DOWN","agent":"build","prompt_template":"Proc: {output}","trigger_mode":"event_only","enabled":true,"cooldown_secs":0}
+{"name":"i3-proc","interval_secs":3,"script":"pgrep -f nonexistent_zzz_12345 >/dev/null 2>&1 || echo DOWN","agent":"build","prompt_template":"Proc: {output}","trigger_mode":"event_only","enabled":true,"cooldown_secs":0}
 EJSON
 RUST_LOG="ion=info" "$ION" serve > /tmp/mon_ci_i3.log 2>&1 &
 I3_PID=$!
+sleep 12
 sleep 10
 I3_EVT=$(awk '/monitor_triggered.*i3-proc/{c++} END{print c+0}' /tmp/mon_ci_i3.log)
 if [ "$I3_EVT" -ge 1 ]; then

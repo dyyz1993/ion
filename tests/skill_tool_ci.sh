@@ -395,7 +395,7 @@ FORK_RAW=$(HOME="$FAKE_HOME" "$ION_BIN" rpc --method create_session --params '{"
 FORK_SID=$(echo "$FORK_RAW" | python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('data',{}).get('session_id',''))" 2>/dev/null)
 
 if [ -n "$FORK_SID" ]; then
-    # F1: call skill fork → spawn 子 Worker
+    # F1: call skill fork → spawn 子 Worker (needs spawn_worker — may not work in CI env)
     FORK_OUT=$(HOME="$FAKE_HOME" "$ION_BIN" rpc --session "$FORK_SID" --method call_tool \
         --params '{"tool":"skill","args":{"skill_name":"fork-test","context":"fork"}}' \
         2>&1)

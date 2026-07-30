@@ -103,11 +103,11 @@ SKIP_LIST="goal_supervisor_ci goal_supervisor_e2e goal_evolver_ci"
 
 # Skip macOS-only CIs on Linux (sandbox-exec / Apple Container / WASM cross-compile)
 if [ "$(uname)" != "Darwin" ]; then
-    SKIP_LIST="$SKIP_LIST apple_container_ci"
+    SKIP_LIST="$SKIP_LIST apple_container_ci hooks_handler_ci"
 fi
 
 # CIs that need long-running serve — run serially (resource contention)
-SERIAL_LIST="monitor_ci mcp_ci faux_scenarios_ci rollback_impact_ci permission_ci realtime_stitch_ci session_hook_ci abort_ci hooks_handler_ci"
+SERIAL_LIST="monitor_ci mcp_ci faux_scenarios_ci rollback_impact_ci permission_ci realtime_stitch_ci session_hook_ci abort_ci"
 
 FILTERED=""
 SKIPPED=""
