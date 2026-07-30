@@ -25,11 +25,10 @@ pub struct PreparedSpawn {
 /// Find the ion binary path (for spawning child workers).
 fn find_ion_binary() -> String {
     // Try current exe first
-    if let Ok(exe) = std::env::current_exe() {
-        if exe.exists() {
+    if let Ok(exe) = std::env::current_exe()
+        && exe.exists() {
             return exe.to_string_lossy().to_string();
         }
-    }
     // Fallback: look for target/debug/ion relative to CWD
     let candidates = [
         "target/debug/ion-worker",
@@ -179,6 +178,12 @@ pub struct SingletonEntry {
     pub users: std::collections::HashSet<String>,
     /// 是否已初始化（on_singleton_init 是否已调用）
     pub initialized: bool,
+}
+
+impl Default for WorkerRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WorkerRegistry {
@@ -1391,33 +1396,28 @@ impl WorkerRegistry {
                                     record.event_history.pop_front();
                                 }
                             }
-                            if ev_type == "text_delta" {
-                                if let Some(delta) = msg
+                            if ev_type == "text_delta"
+                                && let Some(delta) = msg
                                     .get("event")
                                     .and_then(|e| e.get("delta"))
                                     .and_then(|v| v.as_str())
-                                {
-                                    if let Some(record) = reg.workers.get_mut(&sub_wid) {
+                                    && let Some(record) = reg.workers.get_mut(&sub_wid) {
                                         let mut buf: String =
                                             record.latest_output.iter().cloned().collect();
                                         buf.push_str(delta);
                                         record.latest_output.clear();
-                                        for chunk in buf.split('\n').last().unwrap_or("").lines() {
+                                        for chunk in buf.split('\n').next_back().unwrap_or("").lines() {
                                             record.latest_output.push_back(chunk.to_string());
                                         }
                                     }
-                                }
-                            }
-                            if ev_type == "agent_end" || ev_type == "agent_stopped" {
-                                if let Some(record) = reg.workers.get_mut(&sub_wid) {
+                            if (ev_type == "agent_end" || ev_type == "agent_stopped")
+                                && let Some(record) = reg.workers.get_mut(&sub_wid) {
                                     record.status = WorkerStatus::Idle;
                                 }
-                            }
-                            if ev_type == "agent_start" {
-                                if let Some(record) = reg.workers.get_mut(&sub_wid) {
+                            if ev_type == "agent_start"
+                                && let Some(record) = reg.workers.get_mut(&sub_wid) {
                                     record.status = WorkerStatus::Busy;
                                 }
-                            }
                         }
 
                         match msg_type {
@@ -1490,8 +1490,7 @@ impl WorkerRegistry {
                     let crash_channels = record.channels.clone();
                     if let Some(ref parent_id) = crash_parent
                         && let Some(parent) = reg.workers.get_mut(parent_id)
-                    {
-                        if let Some(ref tx) = parent.parent_event_tx {
+                        && let Some(ref tx) = parent.parent_event_tx {
                             let _ = tx
                                 .send(serde_json::json!({
                                     "type": "event",
@@ -1503,7 +1502,6 @@ impl WorkerRegistry {
                                 }))
                                 .await;
                         }
-                    }
                     for ch in &crash_channels {
                         if let Some(subs) = reg.channels.get_mut(ch) {
                             subs.retain(|id| id != &sub_wid);
@@ -1656,9 +1654,9 @@ impl WorkerRegistry {
                 // Worker not running → auto-start
                 tracing::info!("[session] auto-starting for {session_id}");
                 // 注：send_to_session 不能 auto-start（缺 registry_arc）
-                return Err(format!(
+                Err(format!(
                     "worker not found for session {session_id}, please create_worker first"
-                ));
+                ))
             }
         }
     }
@@ -1993,13 +1991,12 @@ impl WorkerRegistry {
 
         let subscriber_ids: Vec<String> = self
             .channels
-            .get(channel)
-            .map(|subs| subs.clone())
+            .get(channel).cloned()
             .unwrap_or_default();
 
         for sub_id in subscriber_ids {
-            if let Some(record) = self.workers.get_mut(&sub_id) {
-                if let Some(ref mut stdin) = record.stdin {
+            if let Some(record) = self.workers.get_mut(&sub_id)
+                && let Some(ref mut stdin) = record.stdin {
                     use tokio::io::AsyncWriteExt;
                     // 200ms hard timeout per subscriber write.
                     // If buffer full, drop the message — never block the registry lock.
@@ -2009,7 +2006,6 @@ impl WorkerRegistry {
                     })
                     .await;
                 }
-            }
         }
     }
 
@@ -2058,12 +2054,11 @@ impl WorkerRegistry {
                                     .unwrap_or("unknown");
                                 return format!("Worker crashed (exit={}):\n{}", exit, reason);
                             }
-                            if et == "text_delta" {
-                                if let Some(d) = msg.get("event")
+                            if et == "text_delta"
+                                && let Some(d) = msg.get("event")
                                     .and_then(|e| e.get("delta"))
                                     .and_then(|v| v.as_str())
                                 { acc.push_str(d); }
-                            }
                             if et == "agent_end" { return acc; }
                         }
                         None => return acc,
@@ -2143,7 +2138,7 @@ impl WorkerRegistry {
                             let session_id = info.session_id.clone();
                             let creator_id = from_worker.clone();
 
-                            match (relation.clone(), wait) {
+                            match (relation, wait) {
                                 (WorkerRelation::Child, true) => {
                                     // ── child + wait：subscribe（持 lock）后立即返回响应占位，
                                     //    真正的等待放到 wait_then_respond task 里 ──

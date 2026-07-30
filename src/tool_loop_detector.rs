@@ -58,6 +58,12 @@ pub struct ToolLoopDetector {
     name: String,
 }
 
+impl Default for ToolLoopDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolLoopDetector {
     pub fn new() -> Self {
         Self {

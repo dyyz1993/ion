@@ -312,7 +312,7 @@ impl SnapshotStore {
             return steps
                 .iter()
                 .filter(|s| s.timestamp.as_str() <= ts)
-                .last()
+                .next_back()
                 .map(|s| s.snapshot_tree_hash.clone());
         }
         // 都找不到 → 返回最新的
@@ -470,7 +470,7 @@ pub fn capture_after_dir(
     }
 
     // 检查删除
-    for (path, _) in &before_scan.files {
+    for path in before_scan.files.keys() {
         if !after_scan.files.contains_key(path) {
             snapshots.push(ToolSnapshot {
                 turn_id: turn_id.to_string(),

@@ -351,7 +351,7 @@ fn scan_known_prefixes(text: &str) -> Vec<(String, String)> {
         }
         // Find separator '=' or ':'
         let rest = &text[after..];
-        if let Some(sep_rel) = rest.find(|c| c == '=' || c == ':') {
+        if let Some(sep_rel) = rest.find(['=', ':']) {
             let val_start = after + sep_rel + 1;
             if val_start >= text.len() {
                 continue;

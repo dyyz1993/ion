@@ -188,7 +188,7 @@ impl ApprovalManager {
         let session_baseline = self.session_baseline_tree_hash();
         if let Some(ref bh) = session_baseline {
             let baseline_tree = tree_store::read_tree(objects, bh).unwrap_or_default();
-            for (path, _old_hash) in &baseline_tree {
+            for path in baseline_tree.keys() {
                 if !current_tree.contains_key(path) {
                     // 文件被删除了
                     let approval = approvals.get(path);

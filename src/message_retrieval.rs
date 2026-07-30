@@ -75,8 +75,10 @@ pub fn invalidate_cache(cwd: &str) {
 
 /// 视点：决定从哪个点开始看
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub enum View {
     /// 活跃分支完整历史（解析最后一个 leaf_pointer）
+    #[default]
     Live,
     /// 压缩点之后（扫最后一个 compaction entry）
     SinceCompaction,
@@ -86,16 +88,13 @@ pub enum View {
     Full,
 }
 
-impl Default for View {
-    fn default() -> Self {
-        View::Live
-    }
-}
 
 /// 旁路数据过滤
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub enum CustomFilter {
     /// 只拉 message 类型
+    #[default]
     None,
     /// 带 display:true 的旁路
     DisplayOnly,
@@ -103,11 +102,6 @@ pub enum CustomFilter {
     All,
 }
 
-impl Default for CustomFilter {
-    fn default() -> Self {
-        CustomFilter::None
-    }
-}
 
 /// 拉取参数（所有接口共享）
 #[derive(Clone, Debug, Default)]

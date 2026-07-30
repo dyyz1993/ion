@@ -69,6 +69,12 @@ const HIGH_VALUE_TOOLS: &[&str] = &["read"];
 /// Context Reclaimer extension.
 pub struct ContextReclaimer;
 
+impl Default for ContextReclaimer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ContextReclaimer {
     pub fn new() -> Self {
         Self
@@ -158,8 +164,8 @@ impl ContextReclaimer {
         for msg in messages {
             if let Message::Assistant(a) = msg {
                 for block in &a.content {
-                    if let AssistantContentBlock::ToolCall(tc) = block {
-                        if tc.name == "write" || tc.name == "edit" {
+                    if let AssistantContentBlock::ToolCall(tc) = block
+                        && (tc.name == "write" || tc.name == "edit") {
                             // Extract file path from tool arguments
                             if let Some(path) = tc
                                 .arguments
@@ -170,7 +176,6 @@ impl ContextReclaimer {
                                 modified.insert(path.to_string());
                             }
                         }
-                    }
                 }
             }
         }

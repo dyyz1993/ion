@@ -995,7 +995,7 @@ impl Agent {
             // 就把 skill tool result 的内容替换成简短占位符。
             // 保留最近一次 skill 加载的完整内容（当前 turn 可能还需要）。
             let messages_snapshot = unload_consumed_skills(&self.messages, turn as usize);
-            let tool_defs: Vec<_> = self.tools.tool_defs().iter().cloned().collect();
+            let tool_defs: Vec<_> = self.tools.tool_defs().to_vec();
 
             // 跨 provider 消息规范化：当对话历史混合多个 provider 的消息时，
             // 降级 thinking block / 规范化 tool call ID / 补合成孤儿 tool result
@@ -1834,7 +1834,7 @@ impl Agent {
                             {
                                 // Server overload: use longer backoff to give proxy time to recover
                                 // Base 5s, double each time, cap at 60s: 5s → 10s → 20s → 40s → 60s → 60s...
-                                let secs = (5u64 * 2u64.pow(attempt as u32)).min(60);
+                                let secs = (5u64 * 2u64.pow(attempt)).min(60);
                                 Duration::from_secs(secs)
                             } else {
                                 crate::retry::backoff_duration(attempt, retry_cfg)
@@ -2143,8 +2143,8 @@ fn unload_consumed_skills(messages: &[Message], _current_turn: usize) -> Vec<Mes
     // skill tool result 的内容以 "Skill '" 开头（SkillTool inject 模式的返回值格式）
     let mut skill_positions: Vec<(usize, String)> = Vec::new(); // (index, skill_name)
     for (i, msg) in messages.iter().enumerate() {
-        if let Message::ToolResult(tr) = msg {
-            if tr.content.iter().any(|c| {
+        if let Message::ToolResult(tr) = msg
+            && tr.content.iter().any(|c| {
                 if let ContentBlock::Text(TextContent { text, .. }) = c {
                     text.starts_with("Skill '") && text.contains("' loaded:")
                 } else {
@@ -2158,8 +2158,7 @@ fn unload_consumed_skills(messages: &[Message], _current_turn: usize) -> Vec<Mes
                     .find_map(|c| {
                         if let ContentBlock::Text(TextContent { text, .. }) = c {
                             // "Skill 'code-audit' loaded:" → "code-audit"
-                            if text.starts_with("Skill '") {
-                                let rest = &text[7..];
+                            if let Some(rest) = text.strip_prefix("Skill '") {
                                 if let Some(end) = rest.find('\'') {
                                     return Some(rest[..end].to_string());
                                 }
@@ -2170,7 +2169,6 @@ fn unload_consumed_skills(messages: &[Message], _current_turn: usize) -> Vec<Mes
                     .unwrap_or_default();
                 skill_positions.push((i, skill_name));
             }
-        }
     }
 
     if skill_positions.is_empty() {

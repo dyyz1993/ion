@@ -837,7 +837,7 @@ fn last_entry_id(cwd: &str) -> Option<String> {
     content
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .last()
+        .next_back()
         .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .and_then(|e| e.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
 }
@@ -925,7 +925,7 @@ pub fn find_turn_id_for_entry(cwd: &str, entry_id: &str) -> Option<String> {
             let in_range = val
                 .get("entryRange")
                 .and_then(|v| v.as_array())
-                .map_or(false, |arr| {
+                .is_some_and(|arr| {
                     arr.iter().any(|a| a.as_str() == Some(entry_id))
                 });
             if in_range {

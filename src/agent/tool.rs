@@ -1958,11 +1958,10 @@ impl SkillTool {
             // .../plugins/cache/<marketplace>/<plugin>/<version>/skills → <plugin>
             let parts: Vec<&str> = s.split('/').collect();
             // 从 "skills" 往前找 plugin 名（skills 前是 version，再前是 plugin）
-            if let Some(pos) = parts.iter().rposition(|p| *p == "skills") {
-                if pos >= 2 {
+            if let Some(pos) = parts.iter().rposition(|p| *p == "skills")
+                && pos >= 2 {
                     return parts[pos - 2].to_string();
                 }
-            }
             "plugin".into()
         } else {
             dir.file_name()

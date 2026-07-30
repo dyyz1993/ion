@@ -352,14 +352,13 @@ impl Extension for HookExtension {
         }
         // ask（exit 3）暂不处理（需要 UI 确认，后续接入 PermissionEngine）
         // updatedInput：hook 返回参数覆盖 → 就地应用到 call.arguments
-        if let Some(updated) = outcome.updated_input {
-            if let Some(obj) = updated.as_object() {
+        if let Some(updated) = outcome.updated_input
+            && let Some(obj) = updated.as_object() {
                 for (k, v) in obj {
                     call.arguments[k.as_str()] = v.clone();
                 }
                 tracing::info!("[hooks] PreToolUse updatedInput applied to {}", call.name);
             }
-        }
         Ok(())
     }
 

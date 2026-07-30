@@ -495,7 +495,7 @@ pub async fn compact_batched(
     .await?;
 
     // Step 3: 与保留区合并压缩
-    let final_input = build_merged_input(&[merged_summary.clone()], messages, config);
+    let final_input = build_merged_input(std::slice::from_ref(&merged_summary), messages, config);
     let final_summary = retry_summarizer(&retry_config, || {
         let msgs = final_input.clone();
         let s = Arc::clone(&summarizer);

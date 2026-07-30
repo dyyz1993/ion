@@ -103,8 +103,8 @@ pub fn export_session_rich(
         ];
         // ZCode plugin skills
         let plugins_cache = std::path::PathBuf::from(&home).join(".zcode/cli/plugins/cache");
-        if plugins_cache.exists() {
-            if let Ok(mp_iter) = std::fs::read_dir(&plugins_cache) {
+        if plugins_cache.exists()
+            && let Ok(mp_iter) = std::fs::read_dir(&plugins_cache) {
                 for mp_entry in mp_iter.flatten() {
                     if let Ok(plugin_iter) = std::fs::read_dir(mp_entry.path()) {
                         for plugin_entry in plugin_iter.flatten() {
@@ -120,7 +120,6 @@ pub fn export_session_rich(
                     }
                 }
             }
-        }
         // 注入环境信息（cwd/git/最近 commit/最近修改文件）——用 session header 的 cwd
         let session_cwd = header.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
         sp.push_str(&build_env_info_for_export(session_cwd));
@@ -948,9 +947,7 @@ fn convert_message_entry(entry: &Value) -> Value {
         _ => None,
     };
     if let Some(role) = role_for_variant {
-        flat.as_object_mut().map(|o| {
-            o.entry("role").or_insert(json!(role));
-        });
+        if let Some(o) = flat.as_object_mut() { o.entry("role").or_insert(json!(role)); }
     }
     // ION ToolResult 存的是 role:"tool"，修正为 pi 的 role:"toolResult"
     if variant == "ToolResult"
@@ -1045,9 +1042,7 @@ fn convert_message_entry(entry: &Value) -> Value {
         }
     }
 
-    out.as_object_mut().map(|o| {
-        o.insert("message".to_string(), flat);
-    });
+    if let Some(o) = out.as_object_mut() { o.insert("message".to_string(), flat); }
     out
 }
 
@@ -1385,8 +1380,7 @@ fn build_env_info_for_export(cwd: &str) -> String {
         .args(["log", "--oneline", "-5"])
         .current_dir(cwd)
         .output()
-    {
-        if let Ok(s) = String::from_utf8(o.stdout) {
+        && let Ok(s) = String::from_utf8(o.stdout) {
             let s = s.trim();
             if !s.is_empty() {
                 info.push_str("\n### Recent Commits (last 5)\n```\n");
@@ -1394,15 +1388,13 @@ fn build_env_info_for_export(cwd: &str) -> String {
                 info.push_str("\n```\n");
             }
         }
-    }
     // 最近修改文件（HEAD~1..HEAD + 未提交，前 20）
     let mut recent_files: Vec<String> = Vec::new();
     if let Ok(o) = Command::new("git")
         .args(["diff", "--name-only", "HEAD~1", "HEAD"])
         .current_dir(cwd)
         .output()
-    {
-        if let Ok(s) = String::from_utf8(o.stdout) {
+        && let Ok(s) = String::from_utf8(o.stdout) {
             for line in s.lines() {
                 let f = line.trim();
                 if !f.is_empty() && !recent_files.contains(&f.to_string()) {
@@ -1410,13 +1402,11 @@ fn build_env_info_for_export(cwd: &str) -> String {
                 }
             }
         }
-    }
     if let Ok(o) = Command::new("git")
         .args(["status", "--short"])
         .current_dir(cwd)
         .output()
-    {
-        if let Ok(s) = String::from_utf8(o.stdout) {
+        && let Ok(s) = String::from_utf8(o.stdout) {
             let s = s.trim();
             if !s.is_empty() {
                 info.push_str("\n### Uncommitted Changes\n```\n");
@@ -1432,7 +1422,6 @@ fn build_env_info_for_export(cwd: &str) -> String {
                 }
             }
         }
-    }
     if !recent_files.is_empty() {
         let trunc = if recent_files.len() > 20 {
             format!("\n  (and {} more...)", recent_files.len() - 20)

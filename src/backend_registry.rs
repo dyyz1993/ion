@@ -487,11 +487,10 @@ pub fn canonicalize_path(path: &str) -> String {
     // 1. 展开 ~ 和 ~user
     if p == "~" {
         p = std::env::var("HOME").unwrap_or_else(|_| "~".into());
-    } else if let Some(rest) = p.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
+    } else if let Some(rest) = p.strip_prefix("~/")
+        && let Ok(home) = std::env::var("HOME") {
             p = format!("{}/{}", home, rest);
         }
-    }
     // ~user 形式：不展开（需要查 passwd），保持原样
 
     // 2. 把 // 合并成 /
@@ -731,7 +730,7 @@ impl AppleContainerRuntime {
         let local = LocalRuntime::new();
         let (_, err, code) = local
             .execute_command(
-                &format!("/usr/local/bin/container stop {}", &self.container_name),
+                &format!("/usr/local/bin/container stop {}", self.container_name),
                 15,
             )
             .await?;

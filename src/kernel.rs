@@ -375,12 +375,14 @@ impl Default for UiSystem {
 /// ```
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum SecurityProfile {
     /// 🔓 完全放开：无权限检查，无命令守卫
     Permissive,
     /// 👁 只读模式：所有写/编辑/删除操作被拒绝，只能读和执行
     ReadOnly,
     /// 🔒 标准模式：保护敏感文件 + 高危命令拦截（默认）
+    #[default]
     Standard,
     /// 🔒🔒 严格模式：默认拒绝所有写操作，需显式白名单放行
     Strict,
@@ -459,11 +461,6 @@ impl SecurityProfile {
     }
 }
 
-impl Default for SecurityProfile {
-    fn default() -> Self {
-        Self::Standard
-    }
-}
 
 fn standard_rules() -> Vec<PermissionRule> {
     vec![

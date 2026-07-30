@@ -503,21 +503,19 @@ impl GoalSupervisorExtension {
 
     /// Increment the iteration counter and record the latest action plan.
     pub fn record_iteration(&self, action_plan: Option<String>) {
-        if let Ok(mut guard) = self.state.lock() {
-            if let Some(state) = guard.as_mut() {
+        if let Ok(mut guard) = self.state.lock()
+            && let Some(state) = guard.as_mut() {
                 state.iteration_count += 1;
                 state.last_action_plan = action_plan;
             }
-        }
     }
 
     /// Set the goal status (Running / Complete / Exhausted / Blocked / Cancelled).
     pub fn set_status(&self, status: GoalStatus) {
-        if let Ok(mut guard) = self.state.lock() {
-            if let Some(state) = guard.as_mut() {
+        if let Ok(mut guard) = self.state.lock()
+            && let Some(state) = guard.as_mut() {
                 state.status = status;
             }
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -784,7 +782,7 @@ impl GoalSupervisorExtension {
                 };
                 ("abandoned", Some(hint))
             }
-            _ => ("unknown".into(), None),
+            _ => ("unknown", None),
         };
 
         let report = serde_json::json!({
@@ -1061,7 +1059,9 @@ pub fn default_ci_checks() -> Vec<Check> {
 // ===========================================================================
 
 #[derive(Clone, Debug, PartialEq)]
+#[derive(Default)]
 pub enum ProgressTrend {
+    #[default]
     Converging,
     Oscillating,
     Drifting,
@@ -1075,11 +1075,6 @@ pub struct ProgressReport {
     pub recommendation: String,
 }
 
-impl Default for ProgressTrend {
-    fn default() -> Self {
-        ProgressTrend::Converging
-    }
-}
 
 /// Read the last N entries' failed_checks from iterations.jsonl.
 fn read_recent_failed_history(dir: &std::path::Path, n: usize) -> Vec<Vec<String>> {
@@ -1149,7 +1144,7 @@ fn classify_trend(history: &[Vec<String>]) -> ProgressTrend {
 /// Jaccard similarity over whitespace-split tokens (length > 2).
 /// Returns 0.0 if either string has no qualifying tokens.
 pub fn calculate_similarity(a: &str, b: &str) -> f64 {
-    fn tokenize<'a>(s: &'a str) -> std::collections::HashSet<&'a str> {
+    fn tokenize(s: &str) -> std::collections::HashSet<&str> {
         s.split(|c: char| c.is_whitespace() || matches!(c, ',' | '.' | ';' | '!' | '?' | '\n'))
             .filter(|t| t.len() > 2)
             .collect()
@@ -1229,15 +1224,14 @@ impl Extension for GoalSupervisorExtension {
         };
 
         // Append to recent_tools, keep last 10.
-        if let Ok(mut guard) = self.state.lock() {
-            if let Some(state) = guard.as_mut() {
+        if let Ok(mut guard) = self.state.lock()
+            && let Some(state) = guard.as_mut() {
                 state.recent_tools.push((ctx.tool_name.clone(), summary));
                 if state.recent_tools.len() > 10 {
                     let excess = state.recent_tools.len() - 10;
                     state.recent_tools.drain(0..excess);
                 }
             }
-        }
         Ok(())
     }
 
@@ -1472,14 +1466,13 @@ impl Tool for GoalSetTool {
             // Prefer fast-tier plan_model (avoids expensive reasoning tokens on models like GLM-5.2).
             if let Some(reg) = &self.registry {
                 let mdl = self.plan_model.as_ref().or(self.model.as_ref());
-                if let Some(mdl) = mdl {
-                    if let Some((plan, generated_checks)) =
+                if let Some(mdl) = mdl
+                    && let Some((plan, generated_checks)) =
                         generate_goal_plan(reg, mdl, &objective).await
                     {
                         goal_plan = plan;
                         checks = generated_checks;
                     }
-                }
             }
             // Fallback to CI defaults if LLM didn't produce checks.
             if checks.is_empty() {

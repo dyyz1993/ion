@@ -107,7 +107,7 @@ impl RulesEngineExtension {
     pub fn load_rules(&self) -> Vec<Rule> {
         let mut all_rules = Vec::new();
         // 用户全局 rules（~/.ion/rules/）
-        if let Some(home) = std::env::var("HOME").ok() {
+        if let Ok(home) = std::env::var("HOME") {
             let global_dir = PathBuf::from(home).join(".ion").join("rules");
             all_rules.extend(load_rules_from_dir(&global_dir));
         }
@@ -165,7 +165,7 @@ impl Extension for RulesEngineExtension {
         let turn = self
             .turn_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if turn > 0 && turn % INJECTED_TTL_TURNS == 0 {
+        if turn > 0 && turn.is_multiple_of(INJECTED_TTL_TURNS) {
             let mut injected = self.injected.lock().unwrap();
             injected.clear();
         }
@@ -700,11 +700,10 @@ fn collect_files(base: &Path, current: &Path, out: &mut Vec<String>) {
                 continue;
             }
             collect_files(base, &path, out);
-        } else if path.is_file() {
-            if let Ok(rel) = path.strip_prefix(base) {
+        } else if path.is_file()
+            && let Ok(rel) = path.strip_prefix(base) {
                 out.push(rel.to_string_lossy().to_string());
             }
-        }
     }
 }
 

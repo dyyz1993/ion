@@ -805,7 +805,7 @@ impl McpManager {
         // 找出新增的 server（新有旧无）+ 更新已有 server 的配置
         {
             let mut servers = self.servers.lock().await;
-            for (name, _cfg) in &new_config {
+            for name in new_config.keys() {
                 if !servers.contains_key(name) {
                     servers.insert(name.clone(), ServerEntry::new());
                 }

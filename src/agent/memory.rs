@@ -1124,7 +1124,7 @@ async fn run_memory_processing(
             let content_arr = inner.get("content")?.as_array()?;
             let parts: Vec<String> = content_arr
                 .iter()
-                .filter_map(|block| crate::skill_distillation::extract_block_text(block))
+                .filter_map(crate::skill_distillation::extract_block_text)
                 .collect();
             if parts.is_empty() {
                 None

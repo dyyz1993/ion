@@ -69,6 +69,12 @@ pub struct LspExtension {
     name: String,
 }
 
+impl Default for LspExtension {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LspExtension {
     pub fn new() -> Self {
         Self {
@@ -255,8 +261,8 @@ impl LspExtension {
         let mut diags = Vec::new();
         for line in stdout.lines() {
             // Pattern: file.ts(line,col): error TS1234: message
-            if let Some(rest) = line.strip_suffix("") {
-                if let Some(close_paren) = rest.find("):") {
+            if let Some(rest) = line.strip_suffix("")
+                && let Some(close_paren) = rest.find("):") {
                     let before = &rest[..close_paren];
                     let after = &rest[close_paren + 2..];
 
@@ -304,7 +310,6 @@ impl LspExtension {
                         });
                     }
                 }
-            }
         }
         diags
     }
@@ -438,11 +443,10 @@ impl LspExtension {
         // Cooldown (min 3s between checks)
         {
             let last = self.last_check_time.lock().await;
-            if let Some(t) = *last {
-                if t.elapsed() < std::time::Duration::from_secs(3) {
+            if let Some(t) = *last
+                && t.elapsed() < std::time::Duration::from_secs(3) {
                     return Ok(self.diagnostics.lock().await.clone());
                 }
-            }
         }
         *self.last_check_time.lock().await = Some(std::time::Instant::now());
 
@@ -627,13 +631,11 @@ impl LspExtension {
                 let applicability = span
                     .get("suggestion_applicability")
                     .and_then(|v| v.as_str());
-                if applicability == Some("MachineApplicable") {
-                    if let Some(repl) = span.get("suggested_replacement").and_then(|v| v.as_str()) {
-                        if !repl.is_empty() {
+                if applicability == Some("MachineApplicable")
+                    && let Some(repl) = span.get("suggested_replacement").and_then(|v| v.as_str())
+                        && !repl.is_empty() {
                             return repl.to_string();
                         }
-                    }
-                }
             }
         }
 
@@ -641,13 +643,11 @@ impl LspExtension {
         if let Some(children) = msg.get("children").and_then(|c| c.as_array()) {
             for child in children {
                 let level = child.get("level").and_then(|v| v.as_str());
-                if level == Some("help") {
-                    if let Some(message) = child.get("message").and_then(|v| v.as_str()) {
-                        if !message.is_empty() {
+                if level == Some("help")
+                    && let Some(message) = child.get("message").and_then(|v| v.as_str())
+                        && !message.is_empty() {
                             return message.to_string();
                         }
-                    }
-                }
             }
         }
 
@@ -1069,8 +1069,8 @@ impl Extension for LspExtension {
         // ── DEDUP: Skip injection if identical to last injected diagnostics ──
         // Compare with the most recent diagnostics in messages
         for msg in messages.iter().rev() {
-            if let crate::agent::messages::Message::Custom(c) = msg {
-                if c.custom_type == "diagnostics" {
+            if let crate::agent::messages::Message::Custom(c) = msg
+                && c.custom_type == "diagnostics" {
                     let last_summary = extract_diag_summary(&c.content);
                     let current_summary = format!(
                         "[diagnostics history] {} issues ({} error(s), {} warning(s))",
@@ -1084,17 +1084,15 @@ impl Extension for LspExtension {
                     }
                     break; // Found last diagnostics — it's different, proceed
                 }
-            }
         }
 
         // ── Compress old diagnostics: keep 2 recent, rest → summary ──
         let mut diag_indices: Vec<usize> = Vec::new();
         for (i, msg) in messages.iter().enumerate() {
-            if let crate::agent::messages::Message::Custom(c) = msg {
-                if c.custom_type == "diagnostics" {
+            if let crate::agent::messages::Message::Custom(c) = msg
+                && c.custom_type == "diagnostics" {
                     diag_indices.push(i);
                 }
-            }
         }
         if diag_indices.len() > 2 {
             let to_compress = diag_indices.len() - 2;
@@ -1143,7 +1141,7 @@ impl Extension for LspExtension {
     ) -> AgentResult<serde_json::Value> {
         match method {
             "check" => {
-                let diags = self.do_check().await.map_err(|e| AgentError::Tool(e))?;
+                let diags = self.do_check().await.map_err(AgentError::Tool)?;
                 Ok(serde_json::json!({
                     "count": diags.len(),
                     "has_errors": diags.iter().any(|d| d.severity == "error"),
@@ -1231,7 +1229,7 @@ impl Tool for LspCheckTool {
             Arc::clone(&self.has_errors),
         );
 
-        let diags = ext.do_check().await.map_err(|e| AgentError::Tool(e))?;
+        let diags = ext.do_check().await.map_err(AgentError::Tool)?;
         Ok(LspExtension::format_diagnostics_text(&diags))
     }
 }

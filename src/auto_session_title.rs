@@ -16,6 +16,12 @@ pub struct AutoSessionTitle {
     name: String,
 }
 
+impl Default for AutoSessionTitle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AutoSessionTitle {
     pub fn new() -> Self {
         Self {
@@ -39,7 +45,7 @@ impl AutoSessionTitle {
         // Take first sentence or first line
         let first_line = trimmed.lines().next().unwrap_or(trimmed);
         let first_sentence = first_line
-            .split(|c: char| c == '.' || c == '。' || c == '!' || c == '?')
+            .split(['.', '。', '!', '?'])
             .next()
             .unwrap_or(first_line);
 

@@ -360,7 +360,7 @@ fn analyze_deadloop(run: &GoalRun) -> Vec<Finding> {
         findings.push(Finding {
             dimension: Dimension::Deadloop,
             severity: Severity::Medium,
-            title: format!("thrashing: exhausted via max_iter without repetition (different errors each time)"),
+            title: "thrashing: exhausted via max_iter without repetition (different errors each time)".to_string(),
             evidence: format!(
                 "goal_id={}, iters={}, no repetitive guard fired → agent hitting different errors",
                 run.goal_id, run.total_iterations

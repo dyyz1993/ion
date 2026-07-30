@@ -33,17 +33,14 @@ use tokio::sync::{Mutex, OnceCell};
 /// so it can be compared, printed via `{:?}`, and used in `match` guards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum MonitorMode {
+    #[default]
     SerialSkip,
     SerialQueue,
     Concurrent,
 }
 
-impl Default for MonitorMode {
-    fn default() -> Self {
-        MonitorMode::SerialSkip
-    }
-}
 
 /// Dispatch / trigger mode for how a monitor's action is delivered.
 ///
@@ -51,17 +48,14 @@ impl Default for MonitorMode {
 /// so it can be compared, printed via `{:?}`, and used in `match` guards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum TriggerMode {
+    #[default]
     AutoSpawn,
     ChannelNotify,
     EventOnly,
 }
 
-impl Default for TriggerMode {
-    fn default() -> Self {
-        TriggerMode::AutoSpawn
-    }
-}
 
 impl std::fmt::Display for MonitorMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -239,6 +233,12 @@ pub struct MonitorExtension {
     name: String,
 }
 
+impl Default for MonitorExtension {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MonitorExtension {
     pub fn new() -> Self {
         Self {
@@ -304,8 +304,8 @@ impl MonitorExtension {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().map(|e| e == "json").unwrap_or(false) {
-                    if let Ok(content) = std::fs::read_to_string(&path) {
+                if path.extension().map(|e| e == "json").unwrap_or(false)
+                    && let Ok(content) = std::fs::read_to_string(&path) {
                         match serde_json::from_str::<MonitorDef>(&content) {
                             Ok(def) => {
                                 tracing::info!(
@@ -320,7 +320,6 @@ impl MonitorExtension {
                             }
                         }
                     }
-                }
             }
         }
         result
@@ -704,8 +703,8 @@ impl MonitorExtension {
                         "output_bytes": output.len(),
                         "output": &output,
                         "agent": &agent,
-                        "mode": serde_json::to_value(&mode).unwrap_or_default(),
-                        "trigger_mode": serde_json::to_value(&trigger_mode).unwrap_or_default(),
+                        "mode": serde_json::to_value(mode).unwrap_or_default(),
+                        "trigger_mode": serde_json::to_value(trigger_mode).unwrap_or_default(),
                     }),
                     &reg,
                 )
@@ -1163,7 +1162,7 @@ impl Extension for MonitorExtension {
         let global_monitors = crate::paths::root().join("monitors");
 
         let mut loaded = Vec::new();
-        loaded.extend(Self::load_from_dir(&project_monitors));
+        loaded.extend(Self::load_from_dir(project_monitors));
         loaded.extend(Self::load_from_dir(&global_monitors));
 
         tracing::info!("[monitor] loaded {} monitor definition(s)", loaded.len());

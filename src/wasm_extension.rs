@@ -29,6 +29,7 @@ const DATA_OFFSET: u32 = 100_000; // 100 KB — past HEAP, before stack
 /// Host functions (`host_write_global_data`, etc.) read this from the
 /// `Caller` to determine file paths for the four storage dimensions.
 #[derive(Clone)]
+#[derive(Default)]
 pub struct Context {
     /// Current session ID (used for session-level data paths).
     pub session_id: String,
@@ -72,20 +73,6 @@ impl std::fmt::Debug for Context {
     }
 }
 
-impl Default for Context {
-    fn default() -> Self {
-        Self {
-            session_id: String::new(),
-            cwd: String::new(),
-            project_root: String::new(),
-            ext_name: String::new(),
-            event_bus: None,
-            fs: None,
-            tokio_handle: None,
-            agent_rpc: None,
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Extension

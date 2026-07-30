@@ -77,6 +77,12 @@ pub struct LearningExtension {
     pub model: Option<ion_provider::types::Model>,
 }
 
+impl Default for LearningExtension {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LearningExtension {
     pub fn new() -> Self {
         Self {

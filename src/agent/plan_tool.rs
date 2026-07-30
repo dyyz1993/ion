@@ -90,8 +90,8 @@ impl Tool for PlanApproveTool {
 
         let mut found = false;
         let mut already_done = false;
-        if let Ok(mut g) = self.0.plan_steps.lock() {
-            if index < g.len() {
+        if let Ok(mut g) = self.0.plan_steps.lock()
+            && index < g.len() {
                 if g[index].done {
                     already_done = true;
                 } else {
@@ -99,7 +99,6 @@ impl Tool for PlanApproveTool {
                     found = true;
                 }
             }
-        }
 
         if already_done {
             return Ok(format!(
@@ -431,11 +430,7 @@ impl Tool for PlanDoneTool {
                     .0
                     .strict_mode
                     .load(std::sync::atomic::Ordering::Relaxed);
-                if strict && !g[index].approved {
-                    true
-                } else {
-                    false
-                }
+                strict && !g[index].approved
             } else {
                 false
             }
@@ -450,8 +445,8 @@ impl Tool for PlanDoneTool {
             ));
         }
 
-        if let Ok(mut g) = self.0.plan_steps.lock() {
-            if index < g.len() {
+        if let Ok(mut g) = self.0.plan_steps.lock()
+            && index < g.len() {
                 if !g[index].approved {
                     // Auto-approve in default mode (no human gate).
                     g[index].approved = true;
@@ -459,7 +454,6 @@ impl Tool for PlanDoneTool {
                 g[index].done = true;
                 found = true;
             }
-        }
 
         // Best-effort persist.
         let path = self.0.plan_path.lock().ok().and_then(|g| g.clone());

@@ -1182,7 +1182,7 @@ impl Extension for GenericExtension {
     async fn before_agent_start(&self, ctx: &mut BeforeAgentContext) -> AgentResult<()> {
         if let Some(ref sp) = self.def.system_prompt {
             if let Some(ref mut existing) = ctx.system_prompt {
-                existing.push_str("\n");
+                existing.push('\n');
                 existing.push_str(sp);
             } else {
                 ctx.system_prompt = Some(sp.clone());

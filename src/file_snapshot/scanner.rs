@@ -17,7 +17,7 @@ pub struct DirScanResult {
 }
 
 /// 扫描限制
-pub const MAX_FILE_SIZE: u64 = 1 * 1024 * 1024; // 1MB
+pub const MAX_FILE_SIZE: u64 = 1024 * 1024; // 1MB
 pub const MAX_TOTAL_SIZE: u64 = 50 * 1024 * 1024; // 50MB
 pub const MAX_FILE_COUNT: usize = 5000;
 pub const MAX_DEPTH: usize = 10;

@@ -21,12 +21,14 @@ pub enum RiskLevel {
 /// 工作模式
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum GuardMode {
     /// 全部放行（除了高危 Deny）
     Open,
     /// 默认放行 + 黑名单拦截（旧行为）
     Blacklist,
     /// 只放行白名单 + 风险拦截 + 未知命令 Ask（推荐）
+    #[default]
     Whitelist,
 }
 
@@ -40,12 +42,6 @@ impl std::fmt::Display for GuardMode {
     }
 }
 
-impl Default for GuardMode {
-    fn default() -> Self {
-        // 默认半信任模式 — 真正的白名单
-        GuardMode::Whitelist
-    }
-}
 
 /// 风险模式定义
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -214,7 +210,7 @@ impl CommandGuard {
 
         // 复合命令：按 && ; | 拆分子命令
         // 对每个子命令，去掉变量赋值前缀（VAR=value），取真正的命令首词判断
-        let subcmds: Vec<&str> = t.split(|c| c == '&' || c == ';' || c == '|').collect();
+        let subcmds: Vec<&str> = t.split(['&', ';', '|']).collect();
         for sub in subcmds {
             let sub = sub.trim();
             if sub.is_empty() {
@@ -232,7 +228,7 @@ impl CommandGuard {
             let cmd_part = {
                 let mut found_cmd = false;
                 let mut cmd_start = 0;
-                for (_i, part) in sub.split_whitespace().enumerate() {
+                for part in sub.split_whitespace() {
                     // 变量赋值：WORD=... 或 WORD=$(...)
                     if !found_cmd && (part.contains('=') && !part.starts_with('-')) {
                         continue;

@@ -124,7 +124,7 @@ impl FileSnapshotExtension {
     fn scan_to_file_contents(&self) -> HashMap<String, Vec<u8>> {
         let scan = scan_dir_fast(&self.storage.cwd);
         let mut files = HashMap::new();
-        for (rel_path, _) in &scan.files {
+        for rel_path in scan.files.keys() {
             let abs_path = std::path::Path::new(&self.storage.cwd).join(rel_path);
             if let Ok(content) = std::fs::read(&abs_path) {
                 files.insert(rel_path.clone(), content);

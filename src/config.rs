@@ -328,6 +328,7 @@ impl Default for BackendConfig {
 
 /// Remote execution configuration
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Default)]
 pub struct RemoteConfig {
     /// Default host name
     #[serde(default)]
@@ -337,14 +338,6 @@ pub struct RemoteConfig {
     pub hosts: HashMap<String, RemoteHost>,
 }
 
-impl Default for RemoteConfig {
-    fn default() -> Self {
-        Self {
-            default_host: String::new(),
-            hosts: HashMap::new(),
-        }
-    }
-}
 
 /// A single remote host definition
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

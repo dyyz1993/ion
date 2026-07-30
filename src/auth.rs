@@ -6,6 +6,7 @@ use std::path::PathBuf;
 /// Stored in `~/.ion/auth.json` with permissions 0600 (owner read/write only).
 /// This separates secrets from the main `config.json`.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Default)]
 pub struct AuthStorage {
     /// Default API key (used across providers)
     #[serde(default)]
@@ -20,15 +21,6 @@ pub struct AuthStorage {
     pub provider_base_urls: std::collections::HashMap<String, String>,
 }
 
-impl Default for AuthStorage {
-    fn default() -> Self {
-        Self {
-            api_key: None,
-            provider_api_keys: std::collections::HashMap::new(),
-            provider_base_urls: std::collections::HashMap::new(),
-        }
-    }
-}
 
 impl AuthStorage {
     /// Path: ~/.ion/auth.json
