@@ -35,7 +35,7 @@ for line in sys.stdin:
         results[d['script']] = d  # last result wins
     except: pass
 for d in results.values():
-    print(json.dumps(d))
+    print(json.dumps(d, separators=(',', ':')))
 " > "$TMP_JSONL" 2>/dev/null
 TOTAL_LINES=$(wc -l < "$TMP_JSONL" | tr -d ' ')
 
