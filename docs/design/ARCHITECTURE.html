@@ -1,0 +1,998 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ION 总体架构</title>
+<style>
+  :root {
+    --bg: #fafafa;
+    --bg-card: #ffffff;
+    --bg-code: #1e1e2e;
+    --fg: #1a1a1a;
+    --fg-muted: #6b6b6b;
+    --fg-code: #cdd6f4;
+    --fg-code-dim: #7f849c;
+    --accent: #4a6cf7;
+    --accent-soft: #eef2ff;
+    --border: #e4e4e7;
+    --green: #40a02b;
+    --orange: #fe640b;
+    --pink: #ea76cb;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* 顶部标题区 */
+  header.hero {
+    background: linear-gradient(135deg, #1e1e2e 0%, #313244 100%);
+    color: #cdd6f4;
+    padding: 48px 32px 36px;
+    border-bottom: 3px solid var(--accent);
+  }
+  header.hero h1 {
+    margin: 0 0 8px;
+    font-size: 30px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  header.hero .subtitle {
+    color: #a6adc8;
+    font-size: 15px;
+    margin: 0;
+  }
+  header.hero .meta {
+    margin-top: 16px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  header.hero .badge {
+    background: rgba(205, 214, 244, 0.12);
+    border: 1px solid rgba(205, 214, 244, 0.25);
+    color: #cdd6f4;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-family: "SF Mono", "JetBrains Mono", Consolas, monospace;
+  }
+  /* 目录导航 */
+  nav.toc {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 32px;
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  nav.toc a {
+    color: var(--fg-muted);
+    text-decoration: none;
+    font-size: 13px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+  nav.toc a:hover {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  /* 主内容 */
+  main {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 32px;
+  }
+  section {
+    margin-bottom: 48px;
+    scroll-margin-top: 60px;
+  }
+  h2 {
+    font-size: 22px;
+    margin: 0 0 16px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--accent);
+    color: var(--fg);
+  }
+  h3 {
+    font-size: 17px;
+    margin: 28px 0 12px;
+    color: var(--accent);
+  }
+  h4 {
+    font-size: 15px;
+    margin: 20px 0 8px;
+  }
+  p { margin: 10px 0; }
+  ul, ol { padding-left: 24px; }
+  li { margin: 4px 0; }
+  /* 引用块 */
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    background: var(--accent-soft);
+    border-left: 4px solid var(--accent);
+    border-radius: 0 6px 6px 0;
+    color: #3a3a3a;
+  }
+  blockquote p { margin: 4px 0; }
+  /* 行内代码 */
+  code {
+    font-family: "SF Mono", "JetBrains Mono", "Fira Code", Consolas, monospace;
+    background: #f1f1f4;
+    color: #d20f39;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+  /* 框图 / 代码块 - 深色凸显 */
+  pre {
+    background: var(--bg-code);
+    color: var(--fg-code);
+    font-family: "SF Mono", "JetBrains Mono", "Fira Code", Consolas, "Courier New", monospace;
+    font-size: 12.5px;
+    line-height: 1.55;
+    padding: 18px 20px;
+    border-radius: 10px;
+    overflow-x: auto;
+    margin: 16px 0;
+    box-shadow: 0 4px 12px rgba(30, 30, 46, 0.15);
+    white-space: pre;
+    tab-size: 4;
+  }
+  pre .dim { color: var(--fg-code-dim); }
+  /* 表格 */
+  .table-wrap { overflow-x: auto; margin: 16px 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    background: var(--bg-card);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    font-size: 14px;
+  }
+  th {
+    background: #f4f4f8;
+    text-align: left;
+    padding: 10px 14px;
+    font-weight: 600;
+    border-bottom: 2px solid var(--border);
+    color: #2a2a2a;
+  }
+  td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:nth-child(even) td { background: #fafafe; }
+  /* 链接 */
+  a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+  a:hover { text-decoration: underline; }
+  /* 状态标签 */
+  .tag {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .tag-done { background: #e6f4ea; color: var(--green); }
+  .tag-key { background: #fff4e6; color: var(--orange); }
+  /* 返回顶部 */
+  #top-btn {
+    position: fixed;
+    bottom: 28px;
+    right: 28px;
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: white;
+    border: none;
+    font-size: 20px;
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s, transform 0.2s;
+    box-shadow: 0 4px 12px rgba(74, 108, 247, 0.4);
+    z-index: 100;
+  }
+  #top-btn.show { opacity: 1; pointer-events: auto; }
+  #top-btn:hover { transform: translateY(-2px); }
+  footer {
+    text-align: center;
+    color: var(--fg-muted);
+    font-size: 13px;
+    padding: 32px;
+    border-top: 1px solid var(--border);
+    margin-top: 32px;
+  }
+  /* 打印优化 */
+  @media print {
+    nav.toc, #top-btn { display: none; }
+    pre { box-shadow: none; }
+    body { font-size: 11px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>ION 总体架构</h1>
+  <p class="subtitle">AI Agent 编排平台 · 整体系统架构总览</p>
+  <div class="meta">
+    <span class="badge">状态：已完成</span>
+    <span class="badge">5 层架构</span>
+    <span class="badge">3 场景</span>
+    <span class="badge">36 钩子 + 27 host fn</span>
+    <span class="badge">6 条 ADR</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <a href="#sec-0">导读</a>
+  <a href="#sec-1">总体大图</a>
+  <a href="#sec-2">三场景</a>
+  <a href="#sec-3">Worker 内部</a>
+  <a href="#sec-4">Agent 循环</a>
+  <a href="#sec-5">通信/编排</a>
+  <a href="#sec-6">存储</a>
+  <a href="#sec-7">设计决策</a>
+  <a href="#sec-8">数据流</a>
+  <a href="#sec-9">源码导航</a>
+  <a href="#sec-10">相关文档</a>
+</nav>
+
+<main>
+
+<!-- §0 -->
+<section id="sec-0">
+  <h2>0. 阅读这份文档</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>你想看什么</th><th>跳到</th></tr></thead>
+      <tbody>
+        <tr><td>一张图看全貌</td><td><a href="#sec-1">§1 总体架构大图</a></td></tr>
+        <tr><td>三种 CLI 跑法（直接执行 / <code>--host</code> / <code>serve</code>）区别</td><td><a href="#sec-2">§2 三场景对比</a></td></tr>
+        <tr><td>一个 Worker 子进程内部是怎么转的</td><td><a href="#sec-3">§3 Worker 内部结构</a></td></tr>
+        <tr><td>Agent 循环 + 扩展钩子时序</td><td><a href="#sec-4">§4 Agent 循环与扩展钩子</a></td></tr>
+        <tr><td>Worker 之间怎么通信、多智能体怎么编排</td><td><a href="#sec-5">§5 通信层与多智能体编排</a></td></tr>
+        <tr><td>配置 / 会话 / 快照 / 记忆存哪</td><td><a href="#sec-6">§6 存储与数据维度</a></td></tr>
+        <tr><td>为什么这么设计（关键决策）</td><td><a href="#sec-7">§7 关键设计决策</a></td></tr>
+        <tr><td>一次工具调用从头到尾怎么走</td><td><a href="#sec-8">§8 数据流示例</a></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <blockquote>
+    <p><strong>术语约定</strong>：本项目所有可扩展能力统称 <strong>Extension</strong>，禁止使用 "plugin/插件"。内置 Extension 与运行时 WASM Extension 共享同一套 trait 接口（36 钩子 + 27 host functions），唯一区别是"代码住哪"。</p>
+  </blockquote>
+</section>
+
+<!-- §1 -->
+<section id="sec-1">
+  <h2>1. 总体架构大图</h2>
+  <p>ION 是一个 AI Agent 编排平台，对齐 pi 的全部能力。整体可以切成 <strong>5 个垂直分层 + 若干横向能力</strong>：</p>
+
+<pre>┌─────────────────────────────────────────────────────────────────────────────┐
+│                              用户接入层 (CLI)                                │
+│   ion "任务"          ion --host "任务"          ion serve                   │
+│   ion rpc ...         ion subscribe ...         ion history / sessions ...   │
+│   ion --agent X       ion --skill / --extension    ion --export HTML         │
+└────────────┬──────────────────┬──────────────────────┬──────────────────────┘
+             │ (场景 1)          │ (场景 2)              │ (场景 3)
+             │ 直接执行          │ 临时 host             │ 常驻 host + socket
+             ▼                  ▼                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            引擎层 (host 引擎 / cmd_run)                      │
+│   场景 1: 直接 spawn Agent 进程，跑完即退                                     │
+│   场景 2/3 共享同一套 host 引擎:                                             │
+│     ┌─ WorkerRegistry (Worker 生命周期 + 内存状态)                            │
+│     ├─ 命令循环 (处理 create_session / prompt / rpc ...)                      │
+│     ├─ IO Bridge (子进程 stdin/stdout 桥接)                                   │
+│     ├─ Event Pump (ExtensionEvent → EventBus broadcast)                       │
+│     ├─ stderr 捕获 + exit code + 崩溃恢复 (Dead 保留 + 父通知)                │
+│     └─ Unix socket IPC (场景 3: ~/.ion/host.sock)                            │
+└───────────────────────────────┬─────────────────────────────────────────────┘
+                                │  spawn self (current_exe + --mode rpc)
+                                ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       Worker 层 (子进程, 每个 = 一个 Agent 会话)              │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │ Agent 循环 (内层 LLM 调用 + 外层工具调度 + ~45 个 Extension 钩子)         │  │
+│  │   ├─ Provider 抽象 (ion-provider crate)                                │  │
+│  │   │    OpenAI / Anthropic / Google / Bedrock / Faux / Record-Replay      │  │
+│  │   ├─ 内置工具 (~27: read/write/edit/bash/grep/find/git/spawn_worker...)  │  │
+│  │   ├─ Agent 循环保护: Tool Loop Detector / Tool-Use 重试 / GoalSupervisor │  │
+│  │   └─ Context 管理: on_context 注入 / Compaction / SoftDelete             │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│  ┌─ Extension 注册中心 (ExtensionRegistry)                                   │  │
+│  │   内置: Bash / Memory / Plan / GoalSupervisor / LSP / Monitor /          │  │
+│  │         RulesEngine / Learning / Hooks / Permission / FileSnapshot        │  │
+│  │   WASM: 运行时加载 .wasm (todo / stock / 第三方)                          │  │
+│  │   接口一致: Extension trait (36 钩子) + 27 host functions + ctx.fs         │  │
+│  └─ MCP 客户端 (rmcp 1.x, 方案 C 共享池)                                      │  │
+└───────────────────────────────┬─────────────────────────────────────────────┘
+                                │
+        ┌───────────────────────┼───────────────────────┐
+        ▼                       ▼                       ▼
+┌──────────────────┐  ┌────────────────────┐  ┌────────────────────┐
+│   能力层          │  │   运行时层 (Runtime) │  │   存储层 (Storage)  │
+│                  │  │                    │  │                    │
+│ Provider 协议:    │  │ BackendRegistry:   │  │ StorageContext:    │
+│ openai-complete   │  │   Local (直接执行)  │  │   ~/.ion/ (5 维)   │
+│ anthropic-msg     │  │   Sandbox (权限过滤)│  │   global/agent/    │
+│ google-genai      │  │   Remote (SSH)     │  │   project/session/ │
+│ bedrock-converse  │  │   AppleContainer   │  │   cwd               │
+│ openai-responses  │  │   (VM 隔离)         │  │                    │
+│                  │  │ 路由层: 前缀+路径    │  │ SQLite/FTS5:       │
+│ MCP bridge:       │  │   命令前缀路由      │  │   global-memory.db │
+│   host 持有连接    │  │   路径前缀路由      │  │ JSONL: session     │
+│   Worker 代理     │  │                    │  │ Object store:      │
+│   call/resource   │  │ 权限引擎:           │  │   file-snapshot     │
+│                  │  │   PermissionEngine  │  │                    │
+│ 工具执行:         │  │   CommandGuard      │  │ Cache:             │
+│   read/write/bash │  │   (白/黑/开放 3 模式)│  │   cargo/target     │
+│   git/spawn...    │  │   UiSystem (审批)    │  │   (container volume)│
+└──────────────────┘  └────────────────────┘  └────────────────────┘</pre>
+
+  <h3>分层职责一句话</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>层</th><th>职责</th><th>关键模块</th></tr></thead>
+      <tbody>
+        <tr><td><strong>接入层</strong></td><td>解析 45+ 参数，决定走哪种执行模式</td><td><code>src/bin/ion.rs</code></td></tr>
+        <tr><td><strong>引擎层</strong></td><td>Worker 生命周期 + 事件转发 + IPC</td><td><code>src/worker_registry.rs</code> / <code>worker_rpc.rs</code></td></tr>
+        <tr><td><strong>Worker 层</strong></td><td>一个 Agent 会话：LLM 循环 + 工具 + 扩展</td><td><code>src/agent/</code> / <code>src/extension.rs</code></td></tr>
+        <tr><td><strong>能力层</strong></td><td>Provider 协议 / 工具 / MCP / Extension 能力</td><td><code>ion-provider/</code> / <code>src/mcp/</code></td></tr>
+        <tr><td><strong>运行时层</strong></td><td>命令实际在哪跑（本地/沙箱/远程/容器）+ 权限</td><td><code>src/backend_registry.rs</code></td></tr>
+        <tr><td><strong>存储层</strong></td><td>统一 5 维路径访问 + SQLite + JSONL + object store</td><td><code>src/storage_context.rs</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- §2 -->
+<section id="sec-2">
+  <h2>2. 三场景对比</h2>
+  <p>ION 的所有 CLI 入口最终归到 <strong>三种执行场景</strong>，场景 1 走直接执行，场景 2 和 3 共享同一套 host 引擎：</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>场景</th><th>CLI</th><th>引擎</th><th>事件出口</th><th>同步子任务</th><th>异步任务</th><th>退出方式</th></tr></thead>
+      <tbody>
+        <tr><td><strong>1. 快速执行</strong></td><td><code>ion "任务"</code></td><td>直接 spawn（无 host）</td><td>❌</td><td>✅</td><td>❌ 进程退出子 Worker 被回收</td><td>跑完即退</td></tr>
+        <tr><td><strong>2. 快速编排</strong></td><td><code>ion --host "任务"</code></td><td>host 引擎</td><td>事件泵 → stdout</td><td>✅</td><td>✅ host 兜着</td><td>递归 idle 自动关</td></tr>
+        <tr><td><strong>3. 常驻服务</strong></td><td><code>ion serve</code></td><td>host 引擎 + socket</td><td>socket → 外部 UI</td><td>✅</td><td>✅ host 兜着</td><td>手动 shutdown</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+<pre>              ┌─ 场景 1：直接 spawn 子进程，不经过 host
+              │   跑完即退，没有事件转发
+              │
+    同一套     ├─ 场景 2：临时 host + 事件泵 → stdout
+    底层 API  │   递归 idle 自动关
+    (spawn、   │
+     await、  └─ 场景 3：常驻 host + Unix socket → 外部 UI
+    channel)      不自动退，外部可全程接入</pre>
+
+  <h3>2.1 场景 1：直接执行</h3>
+<pre>终端                   进程内
+┌──────┐   ┌──────────────────────────┐
+│      │   │  cmd_run()               │
+│ ion  │──→│  建工具集 + Agent        │
+│ "任务"│   │  agent.run(message)      │
+│      │   │    ├─ LLM 循环            │
+│      │   │    ├─ 调 tool (read/write)│
+│      │   │    ├─ spawn_worker(同步)  │
+│      │   │    │    └─ spawn 子进程    │
+│      │   │    │        await 等完    │
+│      │   │    └─ 返回               │
+│      │   └─ 进程退出                  │
+└──────┘
+    ❌ 没有 host，不能异步任务
+    ❌ 没有事件转发
+    ✅ 同步子任务能用</pre>
+
+  <h3>2.2 场景 2：临时 host（快速编排）</h3>
+<pre>终端                              临时 host
+┌──────┐  ┌──────────────────────────────────────────────┐
+│      │  │  WorkerRegistry + 命令循环 + 事件泵           │
+│ ion  │──│                                              │
+│--host│  │  spawn coordinator Worker (子进程)            │
+│"任务" │  │    ├─ spawn_worker(dev, 同步)  → await      │
+│      │  │    ├─ spawn_worker(dev, 异步)  → agent_end   │
+│      │  │    └─ channel_send ← 子 Worker 过程通信      │
+│      │  │                                              │
+│      │  │  事件泵 → stdout (实时打印 text_delta)        │
+│      │  │  ...全部 idle → 清理退出                      │
+└──────┘  └──────────────────────────────────────────────┘
+    ✅ 有 host，同步异步都行
+    ✅ 事件泵 → stdout
+    ❌ 没有 socket，外部工具接不了（权限拦截需预配 allow 规则）</pre>
+
+  <h3>2.3 场景 3：常驻服务（serve）</h3>
+<pre>外部 UI / TUI / IDE 插件               常驻 host
+┌─────────────────┐   ┌───────────────────────────────────────┐
+│        socket    │   │  WorkerRegistry + 命令循环            │
+│  Web UI          │   │  Unix socket → ~/.ion/host.sock      │
+│  ┌───────────┐   │   │                                       │
+│  │进度条     │   │   │  spawn Worker(子进程)                  │
+│  │卡片       │◄──│───│  ├─ 同步：spawn → await （UI 可见）   │
+│  │步骤状态   │   │   │  ├─ 异步：spawn → agent_end（UI 可见）│
+│  │实时日志   │   │   │  ├─ channel_send ← 过程通信          │
+│  └───────────┘   │   │  ├─ subscribe → 事件流推给 socket    │
+│                  │   │  └─ 一直运行（不自动退）               │
+│  ion rpc 命令行  │   │                                       │
+│  ┌───────────┐   │   │                                       │
+│  │create_   │───│───│  …                                     │
+│  │worker     │   │   │                                       │
+│  └───────────┘   │   │                                       │
+└─────────────────┘   └───────────────────────────────────────┘
+    ✅ 有 host，同步异步都行
+    ✅ 事件通过 socket 推给外部工具
+    ❌ 不自动退出，需要手动 shutdown</pre>
+
+  <blockquote>
+    <p><strong>退出条件（场景 2）</strong>：递归 idle 检测——入口 coordinator idle ∧ 它 spawn 的所有子 Worker idle ∧ 子 Worker 的子 Worker idle … 全部 idle → 没有后台进程 → 清理退出。</p>
+  </blockquote>
+</section>
+
+<!-- §3 -->
+<section id="sec-3">
+  <h2>3. Worker 内部结构</h2>
+  <p><strong>Worker = 一个子进程 = 一个 Agent 会话</strong>。host 通过 <code>current_exe() + --mode rpc</code> spawn 自身进入 worker 模式（对齐 pi 的 <code>pi --mode rpc</code>），通过 JSONL over stdin/stdout 通信。</p>
+
+<pre>┌─────────────────────────── Worker 子进程 (src/worker_rpc.rs, ~124 个 RPC 命令) ───────────────────────────┐
+│                                                                                                           │
+│  ┌─ stdin ──→ 命令分发器 (JSONL)                                                                          │
+│  │    {"id":"1","method":"prompt","params":{...}}                                                          │
+│  │    {"id":"2","method":"rpc","params":{"method":"extension_rpc",...}}                                    │
+│  │                                                                                                        │
+│  │          ┌─────────────────────────────────────────────────────────────────────────────────┐            │
+│  │          │  Agent 主循环 (src/agent/, 内层 + 外层)                                           │            │
+│  │          │                                                                                  │            │
+│  │          │  while !done:                                                                    │            │
+│  │          │    on_input           ← 用户消息进来 (记忆检索 / hook 触发)                       │            │
+│  │          │    on_context          ← 组装上下文 (记忆注入 / 规则注入 / 诊断注入 / 快照折叠)    │            │
+│  │          │    on_model_select     ← 选模型 (tier 别名 / 扩展可覆盖)                          │            │
+│  │          │    ────── LLM 调用 (Provider) ──────                                             │            │
+│  │          │       ion-provider::chat_stream(context, options, model)                          │            │
+│  │          │         ├─ openai-completions / anthropic-messages / google-generative-ai        │            │
+│  │          │         ├─ bedrock-converse-stream / openai-responses                             │            │
+│  │          │         └─ faux (Mock) / replay (录放)                                            │            │
+│  │          │    on_assistant_message ← LLM 回复 (secret 脱敏 / learning 分析)                  │            │
+│  │          │    if 有 tool_calls:                                                              │            │
+│  │          │      for tool in tool_calls:                                                      │            │
+│  │          │        on_tool_call(前)  ← 权限检查 / hook PreToolUse                              │            │
+│  │          │        ── ToolRegistry.dispatch ──                                                │            │
+│  │          │           内置工具 (read/write/edit/bash/grep/find/git/...)                       │            │
+│  │          │           扩展工具 (extension.register_tool)                                       │            │
+│  │          │           MCP 工具 (McpProxyTool bridge → host McpManager)                        │            │
+│  │          │           编排工具 (spawn_worker/send/await/channel_send/kill)                    │            │
+│  │          │        on_tool_execution_end(后) ← hook PostToolUse / LSP 诊断 / GoalSupervisor    │            │
+│  │          │        Tool Loop Detector (防死循环: 3 次 WARN / 5 次 ABORT)                      │            │
+│  │          │      done = false (继续循环)                                                      │            │
+│  │          │    else:                                                                         │            │
+│  │          │      on_gate_check ← GoalSupervisor: 目标完成了吗? 没完成 RetryWith(证据)        │            │
+│  │          │      done = true                                                                  │            │
+│  │          │  end                                                                              │            │
+│  │          │  on_stop ← hook Stop / session 落盘 / auto_title / learning extract               │            │
+│  │          └─────────────────────────────────────────────────────────────────────────────────┘            │
+│  │                                                                                                        │
+│  └── stdout ──→ 事件流 (JSONL)                                                                           │
+│       {"type":"response","id":"1","success":true,...}    (RPC 响应)                                       │
+│       {"type":"event","event":{"type":"text_delta",...}} (事件, host 转发给 subscriber)                   │
+│       {"type":"event","event":{"type":"extension_event",...}} (扩展自定义事件)                            │
+│                                                                                                           │
+│  ┌─ ExtensionRegistry ──────────────────────────────────────────────────────────────────────────┐          │
+│  │  内置扩展 (编译进内核, config.enabled 控制开关):                                                │          │
+│  │    Bash / Memory(V0.1+V0.2) / Plan / GoalSupervisor / Monitor / LSP /                         │          │
+│  │    RulesEngine / Learning / Hooks / Permission / FileSnapshot / GlobalMemory(单例)             │          │
+│  │  WASM 扩展 (运行时 .wasm):                                                                     │          │
+│  │    todo / stock / 第三方                                                                       │          │
+│  │  共享接口: Extension trait (36 钩子) + 27 host functions + ctx.fs + 4 级数据目录                 │          │
+│  └────────────────────────────────────────────────────────────────────────────────────────────────┘          │
+│                                                                                                           │
+│  ┌─ ExtensionApi (扩展拿到的内核把手, src/worker_api.rs) ─┐                                                  │
+│  │  create_worker / channel_send / emit_extension_event    │  (扩展能编排子 Worker + 广播事件)              │
+│  │  fs.read_file / fs.write_file / fs.list_dir / fs.glob   │  (统一文件访问, safe_join 防逃逸)             │
+│  │  get_flag / set_flag / storage(data_dirs)               │  (运行时 flag + 4 级数据存储)                 │
+│  └─────────────────────────────────────────────────────────┘                                                  │
+└───────────────────────────────────────────────────────────────────────────────────────────────────────────┘</pre>
+
+  <h3>3.1 Agent 循环 = 内层 + 外层</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>层</th><th>干什么</th><th>触发的钩子</th></tr></thead>
+      <tbody>
+        <tr><td><strong>外层循环</strong></td><td>一轮"用户输入 → Agent 结束"的完整 turn</td><td><code>on_input</code> → <code>on_session_start</code> → ... → <code>on_stop</code></td></tr>
+        <tr><td><strong>内层循环</strong></td><td>一个 turn 内的多次 LLM 调用 + 工具调用</td><td><code>on_context</code> → <code>on_model_select</code> → LLM → <code>on_tool_call</code> → <code>on_tool_execution_end</code> → 循环</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>3.2 Provider 抽象（独立 crate）</h3>
+  <p><code>ion-provider</code> 是独立的 crate，支持 9 种 API 协议，统一成 <code>chat_stream(context, options, model)</code> 一个入口：</p>
+<pre>ion-provider crate
+├─ registry.rs        ← 模型/Provider 注册（从 ~/.ion/config.json 或 ~/.pi/agent/models.json 加载）
+├─ providers/
+│   ├─ openai_completions.rs      (SSE + tool_calls)
+│   ├─ anthropic_messages.rs      (messages API)
+│   ├─ google_generative_ai.rs    (Gemini)
+│   ├─ openai_responses.rs        (Responses API)
+│   ├─ bedrock_converse.rs        (Bedrock 流式)
+│   ├─ faux.rs                    (架构级 LLM Mock, FIFO 队列 + 工厂函数)
+│   └─ record_replay.rs           (录制/回放)
+└─ transform_messages.rs  ← 不同协议的消息格式互转 + 兼容性检测</pre>
+</section>
+
+<!-- §4 -->
+<section id="sec-4">
+  <h2>4. Agent 循环与扩展钩子</h2>
+  <p>Agent 的每个生命周期点都有钩子，扩展可以挂上去改变行为。下图标注 <strong>钩子触发点 + 谁在用</strong>：</p>
+
+<pre>用户消息 ──→ on_input ───────────────────────────────────────────────────┐
+            (Memory 关键词匹配 / Hooks UserPromptSubmit)                  │
+                                                                          ▼
+        on_context ────────────────────────────────────────────────┐  组装 messages
+        (Memory 注入 / RulesEngine 注入 / LSP 诊断注入 / 快照折叠)  │
+                                                                    ▼
+        on_model_select ──────────────────────┐  选模型
+        (tier_models 解析 / 扩展可 &amp;mut 覆盖)  │
+                                               ▼
+        ┌─────────────── LLM 调用 (Provider) ──────────────┐
+        │  chat_stream(context, options, model)             │
+        │  ├─ 失败: retry_async (RetryConfig)               │
+        │  └─ 成功: 返回 AssistantMessage                    │
+        └────────────────────────┬───────────────────────────┘
+                                 ▼
+        on_assistant_message ────────────┐  (Secret 脱敏 / Learning 分析)
+                                         ▼
+                   ┌─── 有 tool_calls ?──┐
+                   │                     │
+              否   │                     │ 是
+                   ▼                     ▼
+        on_gate_check              for tool in tool_calls:
+        (GoalSupervisor            ├─ on_tool_call (前)
+         目标完成否)               │    (Permission 检查 / Hooks PreToolUse)
+              │                    │    ├─ Deny → 拒绝 + 注入失败结果
+              │                    │    └─ Allow ↓
+              │                    ├─ ToolRegistry.dispatch
+              │                    │    (内置 / 扩展 / MCP / 编排 工具)
+              │                    └─ on_tool_execution_end (后)
+              │                         (Hooks PostToolUse / LSP 异步诊断
+              │                          / GoalSupervisor drift 检测)
+              │                    Tool Loop Detector (同签名 ≥3 WARN / ≥5 ABORT)
+              │                    ▼
+              │              回到 on_context 继续循环
+              ▼
+        on_stop ──────────────────────────────────────────────┐
+        (Hooks Stop / session 落盘 / auto_title /             │
+         Learning extract / Memory consolidation)             │
+                                                             ▼
+                                                    Agent 结束, Worker idle</pre>
+
+  <h3>4.1 Extension trait 钩子全景（36 个）</h3>
+  <p>按触发阶段分组，下表列出一部分（全部见 <a href="EXTENSION_SYSTEM.md">EXTENSION_SYSTEM.md</a>）：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>阶段</th><th>钩子</th><th>谁在用</th></tr></thead>
+      <tbody>
+        <tr><td>会话</td><td><code>on_session_start</code> / <code>on_singleton_init</code> / <code>on_user_join</code> / <code>on_user_leave</code> / <code>on_last_user_gone</code> / <code>on_singleton_shutdown</code></td><td>GlobalMemory(单例) / Monitor</td></tr>
+        <tr><td>输入</td><td><code>on_input</code> / <code>on_system_prompt</code></td><td>Memory / RulesEngine</td></tr>
+        <tr><td>上下文</td><td><code>on_context</code> / <code>on_pre_compact</code> / <code>on_post_compact</code></td><td>Memory / Compaction / SoftDelete</td></tr>
+        <tr><td>模型</td><td><code>on_model_select(&amp;mut)</code></td><td>TierModels</td></tr>
+        <tr><td>工具</td><td><code>on_tool_call</code> / <code>on_tool_execution_end</code> / <code>on_tool_call_failure</code></td><td>Permission / LSP / GoalSupervisor</td></tr>
+        <tr><td>交付</td><td><code>on_gate_check</code></td><td>GoalSupervisor</td></tr>
+        <tr><td>自定义</td><td><code>on_extension_rpc</code></td><td>扩展私有 RPC 入口</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- §5 -->
+<section id="sec-5">
+  <h2>5. 通信层与多智能体编排</h2>
+
+  <h3>5.1 Worker 间通信</h3>
+<pre>┌─────────────── host 引擎 (WorkerRegistry) ───────────────┐
+│                                                          │
+│   Worker A          Worker B          Worker C            │
+│  ┌────────┐        ┌────────┐        ┌────────┐          │
+│  │ coord. │        │ dev-1  │        │ dev-2  │          │
+│  └───┬────┘        └───┬────┘        └───┬────┘          │
+│      │                  │                 │               │
+│      │  send_to_worker(id, msg)  ────────►│  点对点        │
+│      │  send_to_session(sid, msg) ───────►│  按会话        │
+│      │  channel_send(name, msg) ──► [broadcast] ◄─ 群聊    │
+│      │  subscribe(id)            ◄── 事件流                │
+│      │                                                    │
+└──────┼────────────────────────────────────────────────────┘
+       │
+       │  spawn_worker(child, wait=true)   → await_worker
+       │  spawn_worker(peer, wait=false)   → send → await → kill
+       │
+       ▼
+   新 Worker 子进程</pre>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方式</th><th>说明</th><th>用法</th></tr></thead>
+      <tbody>
+        <tr><td><code>send_to_worker(id, msg)</code></td><td>点对点（知道对方 ID）</td><td>异步任务</td></tr>
+        <tr><td><code>send_to_session(sid, msg)</code></td><td>按会话 ID（没运行会自动启动）</td><td>会话恢复</td></tr>
+        <tr><td><code>channel_send(name, msg)</code></td><td>群聊广播（不需知道对方 ID）</td><td>多 Worker 协作</td></tr>
+        <tr><td><code>subscribe(id)</code></td><td>订阅 Worker 事件流</td><td>UI / 监控</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>5.2 同步 vs 异步子任务</h3>
+<pre>同步子任务 (spawn + await)              异步任务 (spawn + agent_end)
+───────────────────────────            ──────────────────────────────
+Agent: spawn_worker(dev, wait=true)    Agent: spawn_worker(dev, wait=false)
+Agent: await_worker(id)                Agent: 继续聊别的
+       ────干活────                          ──子 Worker 发消息──
+Agent: ← 拿结果                              channel_send 实时收
+                                             ──子 Worker agent_end──
+                                              host 检测到 → UI 更新</pre>
+
+  <h3>5.3 多智能体编排（agent.md 驱动，零内核策略）</h3>
+  <p><code>ion --host --agent coordinator "做这个"</code> 拆任务开发，不需要硬编码编排逻辑：</p>
+
+<pre>┌─ coordinator (host 上) ──────────────────────────────────────────┐
+│  读 examples/agents/coordinator.md (agent 定义)                    │
+│  ├─ spawn_worker(developer, worktree=true) × N  ──并行            │
+│  │     │                                                          │
+│  │     ▼                                                          │
+│  │  ┌─ developer (独立 worktree 分支) ──────────┐                 │
+│  │  │  read/write/edit/bash + cargo test        │                 │
+│  │  │  写代码 → 自跑测试 → commit               │                 │
+│  │  └───────────────────────────────────────────┘                 │
+│  │                                                                │
+│  ├─ await_worker(全部 dev 完成)                                    │
+│  ├─ spawn_worker(reviewer)  ──审查改动                            │
+│  │     ├─ APPROVE → 合并                                          │
+│  │     └─ REQUEST_CHANGES → resume_worker(dev) 修复               │
+│  ├─ spawn_worker(merger)    ──合并分支 + cleanup                   │
+│  └─ spawn_worker(publisher) ──推送 GitHub + 开/关 issue            │
+└──────────────────────────────────────────────────────────────────┘
+
+调度策略:
+  串行:     wait=true, 一个一个跑
+  小批量并行: wait=false + await_worker
+  后台同级:  peer 模式</pre>
+
+  <p><strong>7 个编排工具</strong>（全部验证通过 ✅）：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>类型</th><th>工具</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>同步</td><td><code>spawn_worker(child, wait=true)</code> + <code>resume_worker</code></td><td>阻塞等待，用 resume 恢复，<strong>不需 kill</strong></td></tr>
+        <tr><td>异步</td><td><code>spawn_worker(peer/wait=false)</code> + <code>send_to_worker</code> + <code>await_worker</code> + <code>kill_worker</code></td><td>立即返回，<strong>才需要 kill</strong></td></tr>
+        <tr><td>通信</td><td><code>channel_send</code></td><td>群聊广播</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>5.4 A→B 自进化架构（host A 编排 container B 改代码）</h3>
+  <blockquote>
+    <p><strong>铁律：A 只调度，B 改代码。</strong> ZCode/编排者 A <strong>绝不</strong>直接 edit/write 主仓库源码，所有改动通过 container 里的 B（完整 ion 实例）完成。</p>
+  </blockquote>
+
+<pre>ZCode / coordinator (A)
+   │
+   ├─ git worktree add (开隔离空间)
+   ├─ bash scripts/evolve.sh (启 container + volume cache)
+   │
+   ├─ echo "任务 spec" | container exec -i B ion --agent developer
+   │     │
+   │     ▼
+   │  ┌─ B = container 里的完整 ion 实例 ──────────────┐
+   │  │  有自己的 LLM + 工具 + CI                       │
+   │  │  read → edit 加代码 → cargo test → commit      │
+   │  └─────────────────────────────────────────────────┘
+   │
+   ├─ 6 道守门:
+   │   ① U+FFFD 守门 (grep 查中文乱码)
+   │   ② Cargo.toml 守门 (拒绝加外部依赖)
+   │   ③ reviewer agent (SQL/错误处理/边缘 case/测试)
+   │   ④ cargo build
+   │   ⑤ cargo test --lib
+   │   ⑥ cargo clippy (warning 不增)
+   │
+   └─ 全过 → GitHub PR → merge</pre>
+</section>
+
+<!-- §6 -->
+<section id="sec-6">
+  <h2>6. 存储与数据维度</h2>
+
+  <h3>6.1 五维存储（StorageContext 统一访问）</h3>
+  <p>所有扩展通过 <code>StorageContext</code> 拿路径，不再自己拼，worktree 透明：</p>
+
+<pre>~/.ion/                              ← global (跨项目共享)
+├── config.json                      ← 全局配置 (provider/model/tier/command_guard)
+├── settings.json                    ← 权限规则 (permissions.rules)
+├── auth.json                        ← API key
+├── models.json                      ← 模型定义 (或读 ~/.pi/agent/models.json)
+├── host.sock                        ← 场景 3 Unix socket
+└── agent/                           ← agent 维度 (跨 session)
+    ├── sessions/                    ← session JSONL + 索引
+    │   └── &lt;session_id&gt;/
+    │       ├── messages.jsonl       ← 会话消息 (v3 格式)
+    │       ├── index.json           ← 实时索引
+    │       └── ...
+    ├── extensions/                  ← 运行时 WASM 扩展 (.wasm)
+    ├── extensions-data/             ← 扩展数据 (4 级目录)
+    ├── global-memory.db             ← SQLite + FTS5 (跨项目记忆)
+    ├── file-snapshot/               ← 文件快照 object store (去重 + zstd)
+    ├── goal-runs/                   ← GoalSupervisor 日志
+    ├── active-pipelines.json        ← Monitor 活跃 pipeline
+    ├── lsp-metrics.jsonl            ← LSP 执行指标
+    └── audit.jsonl                  ← CommandGuard 审计日志
+
+~/.ion/projects/&lt;project_key&gt;/       ← project 维度 (主仓库 + worktree 共享 key)
+├── config.json                      ← 项目级配置 (mcp_servers 等)
+└── settings.json                    ← 项目级权限规则
+
+&lt;cwd&gt;/.ion/                          ← cwd 维度 (项目内)
+├── rules/*.md                       ← 项目规则 (frontmatter glob 匹配)
+├── settings.json                    ← 项目内权限
+└── extensions/                      ← 项目级 WASM 扩展
+
+&lt;cwd&gt;/                               ← session/cwd 工作区
+├── target/                          ← 编译产物 (container volume 持久化)
+└── 源码...</pre>
+
+  <h3>6.2 关键存储组件</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>组件</th><th>格式</th><th>位置</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>Session</td><td>JSONL v3 + index.json</td><td><code>agent/sessions/&lt;sid&gt;/</code></td><td>实时索引 + fork/continue/resume + cwd-hash 分组</td></tr>
+        <tr><td>Session Tree</td><td>only-append + leaf 指针</td><td>同上</td><td>文件内分支 + tombstone 回滚</td></tr>
+        <tr><td>File Snapshot</td><td>object store + zstd</td><td><code>agent/file-snapshot/</code></td><td>双路快照（工具级 + 目录扫描），content-addressed 去重</td></tr>
+        <tr><td>Global Memory</td><td>SQLite + FTS5</td><td><code>agent/global-memory.db</code></td><td>跨项目全文检索</td></tr>
+        <tr><td>Compaction</td><td>soft delete + summarize</td><td>session JSONL 内</td><td>mark_deleted/summarized/restore</td></tr>
+        <tr><td>Config</td><td>JSON (合并)</td><td>global + project</td><td>深度合并，project 覆盖 global</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>6.3 Worktree 隔离与 project_key</h3>
+<pre>主仓库 /Users/xuyingzhou/Project/study-rust/ion
+   │  git-common-dir = .git
+   │
+   ├─ worktree A: /Users/.../ion-wt-feature1
+   │  git-common-dir = /主仓库/.git  (共享)
+   │
+   └─ project_key = hash(git-common-dir)  ← 主仓库和所有 worktree 算出同一 key
+                                              → file-snapshot / memory / config 共享</pre>
+</section>
+
+<!-- §7 -->
+<section id="sec-7">
+  <h2>7. 关键设计决策（ADR 简化版）</h2>
+  <blockquote><p>以下是 ION 几个关键架构决策，记录"为什么这么做"。</p></blockquote>
+
+  <h3><span class="tag tag-key">ADR-1</span> Worker 用子进程而非线程</h3>
+  <ul>
+    <li><strong>决策</strong>：每个 Agent 会话 = 一个独立子进程（<code>current_exe + --mode rpc</code>）</li>
+    <li><strong>备选</strong>：线程池 / 异步 task</li>
+    <li><strong>理由</strong>：强隔离（一个 Agent 崩溃不影响其他）；崩溃恢复可观测（stderr + exit code + Dead 保留 + 父通知）；对齐 pi 的 <code>pi --mode rpc</code> 进程模型；worktree/cwd 隔离天然干净</li>
+    <li><strong>代价</strong>：进程间通信用 JSONL over stdin/stdout，比线程慢</li>
+  </ul>
+
+  <h3><span class="tag tag-key">ADR-2</span> 内置 Extension 与 WASM Extension 共享同一 trait</h3>
+  <ul>
+    <li><strong>决策</strong>：两类扩展用完全相同的 <code>Extension</code> trait + 27 host functions + ctx.fs，唯一区别是代码住哪</li>
+    <li><strong>备选</strong>：内置用 native trait，WASM 用独立 ABI</li>
+    <li><strong>理由</strong>：扩展开发体验一致；内置扩展能享受扩展系统的所有钩子；WASM 提供安全沙箱 + 热更新</li>
+    <li><strong>代价</strong>：内置扩展也得遵守 Extension trait 的约束</li>
+  </ul>
+
+  <h3><span class="tag tag-key">ADR-3</span> 三场景共享同一套 host 引擎</h3>
+  <ul>
+    <li><strong>决策</strong>：场景 1 直接执行；场景 2/3 共享 <code>WorkerRegistry + 事件转发 + spawn_worker</code> 底层 API</li>
+    <li><strong>备选</strong>：每个场景独立实现</li>
+    <li><strong>理由</strong>：一套底层 API，三个入口；场景 2/3 只差"对外暴露方式"（stdout vs socket）和"退出策略"（idle 自动关 vs 常驻）</li>
+    <li><strong>代价</strong>：场景 1 没事件转发能力（但用户要的就是快进快出）</li>
+  </ul>
+
+  <h3><span class="tag tag-key">ADR-4</span> 多智能体编排零内核策略（agent.md 驱动）</h3>
+  <ul>
+    <li><strong>决策</strong>：不硬编码任何编排逻辑，全靠 agent.md 定义 + <code>spawn_worker</code> 工具</li>
+    <li><strong>备选</strong>：内置 coordinator/team 逻辑</li>
+    <li><strong>理由</strong>：编排策略是"策略层"，不该进内核；agent.md 可热改，零编译；<code>ion-team</code> 不存在——完全被 <code>ion --host --agent coordinator</code> 覆盖</li>
+    <li><strong>代价</strong>：新人需要理解 agent.md 才能用编排</li>
+  </ul>
+
+  <h3><span class="tag tag-key">ADR-5</span> MCP 方案 C（host 持有连接，Worker 代理）</h3>
+  <ul>
+    <li><strong>决策</strong>：host 进程持有 MCP 连接，所有 Worker 通过 bridge 代理（<code>McpProxyTool</code>）</li>
+    <li><strong>备选</strong>：每个 Worker 自己连 / 全局单例</li>
+    <li><strong>理由</strong>：进程只 1 份连接（N Worker 不开 N 份 stdio）；连接生命周期跟 host 走，Worker 崩溃不丢连接；权限统一在 host 层管</li>
+    <li><strong>代价</strong>：每次 call 多一跳 bridge</li>
+  </ul>
+
+  <h3><span class="tag tag-key">ADR-6</span> A→B 铁律（编排者不碰源码）</h3>
+  <ul>
+    <li><strong>决策</strong>：ZCode/coordinator（A）绝不直接 edit/write 主仓库源码，所有改动通过 container 里的 B（完整 ion 实例）</li>
+    <li><strong>备选</strong>：A 直接改</li>
+    <li><strong>理由</strong>：守门机制（U+FFFD / reviewer / CI）才能生效——A 改没人审；B 有完整隔离环境 + 自跑 CI；跟"ZCode 不碰 ION 源码"同一个原则</li>
+    <li><strong>代价</strong>：多一层 container，慢一些</li>
+  </ul>
+</section>
+
+<!-- §8 -->
+<section id="sec-8">
+  <h2>8. 数据流示例：一次工具调用的完整链路</h2>
+  <p>以"用户说：读一下 src/lib.rs 然后改成 async"为例（场景 2，host 模式）：</p>
+
+<pre>① 用户终端
+   $ ion --host "读 src/lib.rs 然后改成 async"
+        │
+        ▼
+② CLI 接入层 (src/bin/ion.rs)
+   解析参数 → 走场景 2 → 启动临时 host
+        │
+        ▼
+③ host 引擎 (WorkerRegistry)
+   spawn Worker 子进程 (current_exe + --mode rpc)
+   ├─ 通过 stdin 发 prompt 命令
+   └─ 订阅事件流准备打印
+        │
+        ▼
+④ Worker 子进程 (src/worker_rpc.rs)
+   ┌─ Agent 循环 ──────────────────────────────────────────┐
+   │  Turn 1:                                              │
+   │    on_input     → Memory 匹配 (无命中)                 │
+   │    on_context   → RulesEngine 注入 *.rs 规则           │
+   │    on_model_select → 解析 tier → glm-5.2              │
+   │    LLM 调用    → 返回 tool_call: read(src/lib.rs)      │
+   │    on_tool_call → Permission Allow                     │
+   │    ToolRegistry.dispatch → ReadTool 执行               │
+   │       └─ StorageContext 解析路径                       │
+   │       └─ 读文件内容                                    │
+   │    on_tool_execution_end → LSP 异步诊断                │
+   │    (回循环)                                            │
+   │                                                       │
+   │  Turn 2:                                              │
+   │    on_context → 注入上轮 read 结果 + LSP 诊断          │
+   │    LLM 调用   → 返回 tool_call: edit(src/lib.rs, ...)  │
+   │    on_tool_call → Permission 检查                      │
+   │       └─ 未预配 → UiSystem 弹审批                      │
+   │       └─ (场景 2 无 socket, 需 settings.json 预配)     │
+   │    FileSnapshot 拍 before 快照                         │
+   │    EditTool 执行 → 改文件                              │
+   │    FileSnapshot 拍 after 快照                          │
+   │    (回循环)                                            │
+   │                                                       │
+   │  Turn 3:                                              │
+   │    on_gate_check → GoalSupervisor (无目标, 放行)       │
+   │    on_stop → session 落盘 + auto_title                 │
+   └───────────────────────────────────────────────────────┘
+        │
+        │  stdout 事件流 (JSONL)
+        │  {"type":"event","event":{"type":"text_delta",...}}
+        │  {"type":"event","event":{"type":"file_snapshot",...}}
+        ▼
+⑤ host 事件泵 → stdout → 终端实时打印
+        │
+        ▼
+⑥ 全部 Worker idle → 递归 idle 检测通过 → 清理退出</pre>
+</section>
+
+<!-- §9 -->
+<section id="sec-9">
+  <h2>9. 源码导航（按层索引）</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>层</th><th>文件</th><th>内容</th></tr></thead>
+      <tbody>
+        <tr><td>接入</td><td><code>src/bin/ion.rs</code></td><td>单一 CLI 入口（45+ 参数），<code>--mode rpc</code> 进 worker 模式</td></tr>
+        <tr><td>引擎</td><td><code>src/worker_registry.rs</code></td><td>Manager 内存状态 + Worker 管理</td></tr>
+        <tr><td>引擎</td><td><code>src/worker_rpc.rs</code></td><td>Worker RPC 实现（~124 命令）</td></tr>
+        <tr><td>引擎</td><td><code>src/worker_api.rs</code></td><td>WorkerHandle + ExtensionApi</td></tr>
+        <tr><td>Agent</td><td><code>src/agent/</code></td><td>Agent 循环（内层 + 外层 + 扩展钩子）</td></tr>
+        <tr><td>能力</td><td><code>ion-provider/</code></td><td>Provider 抽象（独立 crate）</td></tr>
+        <tr><td>能力</td><td><code>src/extension.rs</code></td><td>WASM 扩展加载器</td></tr>
+        <tr><td>能力</td><td><code>src/mcp/</code></td><td>MCP 客户端（rmcp + 方案 C 共享池）</td></tr>
+        <tr><td>运行时</td><td><code>src/backend_registry.rs</code></td><td>路由层（命令前缀 + 路径前缀）</td></tr>
+        <tr><td>存储</td><td><code>src/storage_context.rs</code></td><td>统一存储路径访问（5 维 + worktree 透明）</td></tr>
+        <tr><td>存储</td><td><code>src/file_snapshot/</code></td><td>File Snapshot 双路快照</td></tr>
+        <tr><td>存储</td><td><code>src/global_memory.rs</code></td><td>全局记忆库（SQLite + FTS5）</td></tr>
+        <tr><td>存储</td><td><code>src/session_tree.rs</code></td><td>Session Tree（分支 + leaf 指针）</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>更多模块详见 <a href="../../AGENTS.md">AGENTS.md §源码导航</a>。</p>
+</section>
+
+<!-- §10 -->
+<section id="sec-10">
+  <h2>10. 相关文档</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>主题</th><th>文档</th></tr></thead>
+      <tbody>
+        <tr><td>扩展系统（36 钩子 + 27 host functions）</td><td><a href="EXTENSION_SYSTEM.md">EXTENSION_SYSTEM.md</a></td></tr>
+        <tr><td>Extension Host API（ctx.fs + 4 级数据）</td><td><a href="EXTENSION_HOST_API.md">EXTENSION_HOST_API.md</a></td></tr>
+        <tr><td>Provider 协议</td><td><a href="PROVIDER_PROTOCOL.md">PROVIDER_PROTOCOL.md</a></td></tr>
+        <tr><td>Team 编排</td><td><a href="TEAM_ORCHESTRATION.md">TEAM_ORCHESTRATION.md</a></td></tr>
+        <tr><td>三场景 CLI 完整方案</td><td><a href="CLI_PLAN.md">CLI_PLAN.md</a></td></tr>
+        <tr><td>配置与数据维度</td><td><a href="CONFIG_DIMENSIONS.md">CONFIG_DIMENSIONS.md</a></td></tr>
+        <tr><td>File Snapshot</td><td><a href="FILE_SNAPSHOT.md">FILE_SNAPSHOT.md</a></td></tr>
+        <tr><td>MCP 系统</td><td><a href="MCP_SYSTEM.md">MCP_SYSTEM.md</a></td></tr>
+        <tr><td>A→B 自进化</td><td><a href="SELF_EVOLUTION.md">SELF_EVOLUTION.md</a></td></tr>
+        <tr><td>Hooks 系统</td><td><a href="HOOKS_AND_OUTLINE_SYNC.md">HOOKS_AND_OUTLINE_SYNC.md</a></td></tr>
+        <tr><td>Goal Supervisor</td><td><a href="GOAL_SUPERVISOR.md">GOAL_SUPERVISOR.md</a></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  ION 总体架构 · <span class="tag tag-done">状态：已完成</span> · 基于 ARCHITECTURE.md 生成
+</footer>
+
+<button id="top-btn" title="返回顶部" aria-label="返回顶部">↑</button>
+
+<script>
+  // 返回顶部按钮显隐
+  const topBtn = document.getElementById('top-btn');
+  window.addEventListener('scroll', () => {
+    if (window.scrollY > 400) {
+      topBtn.classList.add('show');
+    } else {
+      topBtn.classList.remove('show');
+    }
+  });
+  topBtn.addEventListener('click', () => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+
+  // 目录当前章节高亮
+  const sections = document.querySelectorAll('section[id]');
+  const navLinks = document.querySelectorAll('nav.toc a');
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        const id = entry.target.id;
+        navLinks.forEach(link => {
+          link.style.background = link.getAttribute('href') === '#' + id
+            ? 'var(--accent-soft)' : '';
+          link.style.color = link.getAttribute('href') === '#' + id
+            ? 'var(--accent)' : '';
+        });
+      }
+    });
+  }, { rootMargin: '-80px 0px -70% 0px' });
+  sections.forEach(s => observer.observe(s));
+</script>
+
+</body>
+</html>

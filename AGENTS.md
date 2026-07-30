@@ -438,6 +438,7 @@ ion rpc --session sess_xxx --method get_flags \
 
 | 文档 | 内容 |
 |------|------|
+| [docs/design/ARCHITECTURE.md](./docs/design/ARCHITECTURE.md) | **总体架构总览**：5 层架构大图 + 三场景对比 + Worker 内部结构 + Agent 循环钩子时序 + 多智能体编排 + 5 维存储 + 6 条 ADR (已完成) |
 | [docs/design/EXTENSION_SYSTEM.md](./docs/design/EXTENSION_SYSTEM.md) | WASM 扩展系统：热更新、4 维数据存储、27 个 host functions + 36 个生命周期钩子 + WASI stubs (已完成) |
 | [docs/design/BASH_EXTENSION.md](./docs/design/BASH_EXTENSION.md) | Bash 扩展：同步执行 + 后台进程 + 综合教程 + CLI 测试 (设计稿+已实现) |
 | [docs/design/MEMORY_EXTENSION.md](./docs/design/MEMORY_EXTENSION.md) | Memory 扩展 v0.1：大纲索引、异步检索、XML 注入、4 维存储 (已验证，搜索 bug 已修) |
