@@ -488,9 +488,10 @@ pub fn canonicalize_path(path: &str) -> String {
     if p == "~" {
         p = std::env::var("HOME").unwrap_or_else(|_| "~".into());
     } else if let Some(rest) = p.strip_prefix("~/")
-        && let Ok(home) = std::env::var("HOME") {
-            p = format!("{}/{}", home, rest);
-        }
+        && let Ok(home) = std::env::var("HOME")
+    {
+        p = format!("{}/{}", home, rest);
+    }
     // ~user 形式：不展开（需要查 passwd），保持原样
 
     // 2. 把 // 合并成 /

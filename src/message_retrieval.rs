@@ -74,8 +74,7 @@ pub fn invalidate_cache(cwd: &str) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// 视点：决定从哪个点开始看
-#[derive(Clone, Debug)]
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub enum View {
     /// 活跃分支完整历史（解析最后一个 leaf_pointer）
     #[default]
@@ -88,10 +87,8 @@ pub enum View {
     Full,
 }
 
-
 /// 旁路数据过滤
-#[derive(Clone, Debug)]
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub enum CustomFilter {
     /// 只拉 message 类型
     #[default]
@@ -101,7 +98,6 @@ pub enum CustomFilter {
     /// 全部（含 display:false 的隐藏事件）
     All,
 }
-
 
 /// 拉取参数（所有接口共享）
 #[derive(Clone, Debug, Default)]

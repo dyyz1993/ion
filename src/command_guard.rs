@@ -42,7 +42,6 @@ impl std::fmt::Display for GuardMode {
     }
 }
 
-
 /// 风险模式定义
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RiskPattern {

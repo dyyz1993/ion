@@ -2150,25 +2150,26 @@ fn unload_consumed_skills(messages: &[Message], _current_turn: usize) -> Vec<Mes
                 } else {
                     false
                 }
-            }) {
-                // 提取 skill 名字
-                let skill_name = tr
-                    .content
-                    .iter()
-                    .find_map(|c| {
-                        if let ContentBlock::Text(TextContent { text, .. }) = c {
-                            // "Skill 'code-audit' loaded:" → "code-audit"
-                            if let Some(rest) = text.strip_prefix("Skill '") {
-                                if let Some(end) = rest.find('\'') {
-                                    return Some(rest[..end].to_string());
-                                }
+            })
+        {
+            // 提取 skill 名字
+            let skill_name = tr
+                .content
+                .iter()
+                .find_map(|c| {
+                    if let ContentBlock::Text(TextContent { text, .. }) = c {
+                        // "Skill 'code-audit' loaded:" → "code-audit"
+                        if let Some(rest) = text.strip_prefix("Skill '") {
+                            if let Some(end) = rest.find('\'') {
+                                return Some(rest[..end].to_string());
                             }
                         }
-                        None
-                    })
-                    .unwrap_or_default();
-                skill_positions.push((i, skill_name));
-            }
+                    }
+                    None
+                })
+                .unwrap_or_default();
+            skill_positions.push((i, skill_name));
+        }
     }
 
     if skill_positions.is_empty() {

@@ -104,22 +104,23 @@ pub fn export_session_rich(
         // ZCode plugin skills
         let plugins_cache = std::path::PathBuf::from(&home).join(".zcode/cli/plugins/cache");
         if plugins_cache.exists()
-            && let Ok(mp_iter) = std::fs::read_dir(&plugins_cache) {
-                for mp_entry in mp_iter.flatten() {
-                    if let Ok(plugin_iter) = std::fs::read_dir(mp_entry.path()) {
-                        for plugin_entry in plugin_iter.flatten() {
-                            if let Ok(ver_iter) = std::fs::read_dir(plugin_entry.path()) {
-                                for ver_entry in ver_iter.flatten() {
-                                    let sd = ver_entry.path().join("skills");
-                                    if sd.is_dir() {
-                                        skill_dirs.push(sd);
-                                    }
+            && let Ok(mp_iter) = std::fs::read_dir(&plugins_cache)
+        {
+            for mp_entry in mp_iter.flatten() {
+                if let Ok(plugin_iter) = std::fs::read_dir(mp_entry.path()) {
+                    for plugin_entry in plugin_iter.flatten() {
+                        if let Ok(ver_iter) = std::fs::read_dir(plugin_entry.path()) {
+                            for ver_entry in ver_iter.flatten() {
+                                let sd = ver_entry.path().join("skills");
+                                if sd.is_dir() {
+                                    skill_dirs.push(sd);
                                 }
                             }
                         }
                     }
                 }
             }
+        }
         // 注入环境信息（cwd/git/最近 commit/最近修改文件）——用 session header 的 cwd
         let session_cwd = header.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
         sp.push_str(&build_env_info_for_export(session_cwd));
@@ -947,7 +948,9 @@ fn convert_message_entry(entry: &Value) -> Value {
         _ => None,
     };
     if let Some(role) = role_for_variant {
-        if let Some(o) = flat.as_object_mut() { o.entry("role").or_insert(json!(role)); }
+        if let Some(o) = flat.as_object_mut() {
+            o.entry("role").or_insert(json!(role));
+        }
     }
     // ION ToolResult 存的是 role:"tool"，修正为 pi 的 role:"toolResult"
     if variant == "ToolResult"
@@ -1042,7 +1045,9 @@ fn convert_message_entry(entry: &Value) -> Value {
         }
     }
 
-    if let Some(o) = out.as_object_mut() { o.insert("message".to_string(), flat); }
+    if let Some(o) = out.as_object_mut() {
+        o.insert("message".to_string(), flat);
+    }
     out
 }
 
@@ -1380,48 +1385,51 @@ fn build_env_info_for_export(cwd: &str) -> String {
         .args(["log", "--oneline", "-5"])
         .current_dir(cwd)
         .output()
-        && let Ok(s) = String::from_utf8(o.stdout) {
-            let s = s.trim();
-            if !s.is_empty() {
-                info.push_str("\n### Recent Commits (last 5)\n```\n");
-                info.push_str(s);
-                info.push_str("\n```\n");
-            }
+        && let Ok(s) = String::from_utf8(o.stdout)
+    {
+        let s = s.trim();
+        if !s.is_empty() {
+            info.push_str("\n### Recent Commits (last 5)\n```\n");
+            info.push_str(s);
+            info.push_str("\n```\n");
         }
+    }
     // 最近修改文件（HEAD~1..HEAD + 未提交，前 20）
     let mut recent_files: Vec<String> = Vec::new();
     if let Ok(o) = Command::new("git")
         .args(["diff", "--name-only", "HEAD~1", "HEAD"])
         .current_dir(cwd)
         .output()
-        && let Ok(s) = String::from_utf8(o.stdout) {
+        && let Ok(s) = String::from_utf8(o.stdout)
+    {
+        for line in s.lines() {
+            let f = line.trim();
+            if !f.is_empty() && !recent_files.contains(&f.to_string()) {
+                recent_files.push(f.to_string());
+            }
+        }
+    }
+    if let Ok(o) = Command::new("git")
+        .args(["status", "--short"])
+        .current_dir(cwd)
+        .output()
+        && let Ok(s) = String::from_utf8(o.stdout)
+    {
+        let s = s.trim();
+        if !s.is_empty() {
+            info.push_str("\n### Uncommitted Changes\n```\n");
+            info.push_str(s);
+            info.push_str("\n```\n");
             for line in s.lines() {
-                let f = line.trim();
+                let f = line
+                    .trim_start_matches(|c: char| c.is_uppercase() || c == ' ' || c == '?')
+                    .trim();
                 if !f.is_empty() && !recent_files.contains(&f.to_string()) {
                     recent_files.push(f.to_string());
                 }
             }
         }
-    if let Ok(o) = Command::new("git")
-        .args(["status", "--short"])
-        .current_dir(cwd)
-        .output()
-        && let Ok(s) = String::from_utf8(o.stdout) {
-            let s = s.trim();
-            if !s.is_empty() {
-                info.push_str("\n### Uncommitted Changes\n```\n");
-                info.push_str(s);
-                info.push_str("\n```\n");
-                for line in s.lines() {
-                    let f = line
-                        .trim_start_matches(|c: char| c.is_uppercase() || c == ' ' || c == '?')
-                        .trim();
-                    if !f.is_empty() && !recent_files.contains(&f.to_string()) {
-                        recent_files.push(f.to_string());
-                    }
-                }
-            }
-        }
+    }
     if !recent_files.is_empty() {
         let trunc = if recent_files.len() > 20 {
             format!("\n  (and {} more...)", recent_files.len() - 20)

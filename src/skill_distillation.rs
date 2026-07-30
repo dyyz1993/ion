@@ -82,10 +82,7 @@ pub async fn run_skill_distillation(
             }
             let (role, inner) = msg_obj.iter().next()?;
             let content_arr = inner.get("content")?.as_array()?;
-            let parts: Vec<String> = content_arr
-                .iter()
-                .filter_map(extract_block_text)
-                .collect();
+            let parts: Vec<String> = content_arr.iter().filter_map(extract_block_text).collect();
             if parts.is_empty() {
                 None
             } else {
@@ -348,10 +345,11 @@ fn resolve_session_file(session_id: &str) -> Option<PathBuf> {
             let candidate = dir.join("session.jsonl");
             if let Ok(content) = std::fs::read_to_string(&candidate)
                 && let Some(first_line) = content.lines().next()
-                    && let Ok(v) = serde_json::from_str::<serde_json::Value>(first_line)
-                        && v.get("id").and_then(|i| i.as_str()) == Some(session_id) {
-                            return Some(candidate);
-                        }
+                && let Ok(v) = serde_json::from_str::<serde_json::Value>(first_line)
+                && v.get("id").and_then(|i| i.as_str()) == Some(session_id)
+            {
+                return Some(candidate);
+            }
         }
     }
 
@@ -424,18 +422,20 @@ fn resolve_api_key_for(provider: &str) -> Option<String> {
     let cfg = crate::config::IonConfig::load();
     if let Some(p) = cfg.providers.get(provider)
         && let Some(k) = &p.api_key
-            && !k.is_empty() {
-                return Some(k.clone());
-            }
+        && !k.is_empty()
+    {
+        return Some(k.clone());
+    }
     // 3. auth.json (legacy field structure)
     let auth = crate::auth::AuthStorage::load();
     if let Some(k) = auth.provider_api_keys.get(provider) {
         return Some(k.clone());
     }
     if let Some(k) = &auth.api_key
-        && !k.is_empty() {
-            return Some(k.clone());
-        }
+        && !k.is_empty()
+    {
+        return Some(k.clone());
+    }
     None
 }
 

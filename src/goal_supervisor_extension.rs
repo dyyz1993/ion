@@ -504,18 +504,20 @@ impl GoalSupervisorExtension {
     /// Increment the iteration counter and record the latest action plan.
     pub fn record_iteration(&self, action_plan: Option<String>) {
         if let Ok(mut guard) = self.state.lock()
-            && let Some(state) = guard.as_mut() {
-                state.iteration_count += 1;
-                state.last_action_plan = action_plan;
-            }
+            && let Some(state) = guard.as_mut()
+        {
+            state.iteration_count += 1;
+            state.last_action_plan = action_plan;
+        }
     }
 
     /// Set the goal status (Running / Complete / Exhausted / Blocked / Cancelled).
     pub fn set_status(&self, status: GoalStatus) {
         if let Ok(mut guard) = self.state.lock()
-            && let Some(state) = guard.as_mut() {
-                state.status = status;
-            }
+            && let Some(state) = guard.as_mut()
+        {
+            state.status = status;
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1058,8 +1060,7 @@ pub fn default_ci_checks() -> Vec<Check> {
 // Progress analysis types + helpers (Deepening Task 1)
 // ===========================================================================
 
-#[derive(Clone, Debug, PartialEq)]
-#[derive(Default)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub enum ProgressTrend {
     #[default]
     Converging,
@@ -1074,7 +1075,6 @@ pub struct ProgressReport {
     pub failed_history: Vec<Vec<String>>,
     pub recommendation: String,
 }
-
 
 /// Read the last N entries' failed_checks from iterations.jsonl.
 fn read_recent_failed_history(dir: &std::path::Path, n: usize) -> Vec<Vec<String>> {
@@ -1225,13 +1225,14 @@ impl Extension for GoalSupervisorExtension {
 
         // Append to recent_tools, keep last 10.
         if let Ok(mut guard) = self.state.lock()
-            && let Some(state) = guard.as_mut() {
-                state.recent_tools.push((ctx.tool_name.clone(), summary));
-                if state.recent_tools.len() > 10 {
-                    let excess = state.recent_tools.len() - 10;
-                    state.recent_tools.drain(0..excess);
-                }
+            && let Some(state) = guard.as_mut()
+        {
+            state.recent_tools.push((ctx.tool_name.clone(), summary));
+            if state.recent_tools.len() > 10 {
+                let excess = state.recent_tools.len() - 10;
+                state.recent_tools.drain(0..excess);
             }
+        }
         Ok(())
     }
 
@@ -1469,10 +1470,10 @@ impl Tool for GoalSetTool {
                 if let Some(mdl) = mdl
                     && let Some((plan, generated_checks)) =
                         generate_goal_plan(reg, mdl, &objective).await
-                    {
-                        goal_plan = plan;
-                        checks = generated_checks;
-                    }
+                {
+                    goal_plan = plan;
+                    checks = generated_checks;
+                }
             }
             // Fallback to CI defaults if LLM didn't produce checks.
             if checks.is_empty() {

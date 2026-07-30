@@ -461,7 +461,6 @@ impl SecurityProfile {
     }
 }
 
-
 fn standard_rules() -> Vec<PermissionRule> {
     vec![
         PermissionRule {

@@ -701,9 +701,10 @@ fn collect_files(base: &Path, current: &Path, out: &mut Vec<String>) {
             }
             collect_files(base, &path, out);
         } else if path.is_file()
-            && let Ok(rel) = path.strip_prefix(base) {
-                out.push(rel.to_string_lossy().to_string());
-            }
+            && let Ok(rel) = path.strip_prefix(base)
+        {
+            out.push(rel.to_string_lossy().to_string());
+        }
     }
 }
 

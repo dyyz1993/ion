@@ -212,9 +212,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     if let Some(override_url) = crate::auth::AuthStorage::load()
         .provider_base_urls
         .get(&provider)
-        && !override_url.is_empty() {
-            model.base_url = override_url.clone();
-        }
+        && !override_url.is_empty()
+    {
+        model.base_url = override_url.clone();
+    }
 
     // faux 模式：强制 model.api 指向 faux provider（覆盖任何真实 API 路由）
     if using_faux {
@@ -607,15 +608,16 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             // auto-continue: wf/improver 需要（workflow 多 stage）
             // evolver 不需要 auto_continue——它用 bash_run background + follow_up
             if matches!(current_agent_name.as_str(), "wf" | "improver")
-                && std::env::var("ION_AUTO_CONTINUE").is_err() {
-                    unsafe {
-                        std::env::set_var("ION_AUTO_CONTINUE", "1");
-                    }
-                    tracing::info!(
-                        "[worker] auto-set ION_AUTO_CONTINUE=1 for {} agent",
-                        current_agent_name
-                    );
+                && std::env::var("ION_AUTO_CONTINUE").is_err()
+            {
+                unsafe {
+                    std::env::set_var("ION_AUTO_CONTINUE", "1");
                 }
+                tracing::info!(
+                    "[worker] auto-set ION_AUTO_CONTINUE=1 for {} agent",
+                    current_agent_name
+                );
+            }
             // evolver: 等 bash_run 后台进程的异步 follow_up
             if current_agent_name == "evolver" {
                 unsafe {
@@ -642,13 +644,14 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     // 覆盖 agent.md 的 system prompt。用于 skill fork——把 skill 内容注入 system prompt，
     // 避免被 compaction 压缩（compaction 只处理 messages，不碰 system prompt）。
     if let Ok(sp_override) = std::env::var("ION_SYSTEM_PROMPT")
-        && !sp_override.is_empty() {
-            tracing::info!(
-                "[worker] system prompt overridden by ION_SYSTEM_PROMPT ({} bytes)",
-                sp_override.len()
-            );
-            initial_system_prompt = sp_override;
-        }
+        && !sp_override.is_empty()
+    {
+        tracing::info!(
+            "[worker] system prompt overridden by ION_SYSTEM_PROMPT ({} bytes)",
+            sp_override.len()
+        );
+        initial_system_prompt = sp_override;
+    }
 
     // ── 注入环境信息到 system prompt ──────────────────────────────
     // 让 LLM 知道：当前时间、cwd、项目路径、worktree 路径、git remote
@@ -725,11 +728,12 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string());
         if let Some(commits) = &recent
-            && !commits.is_empty() {
-                info.push_str("\n### Recent Changes (last 3 commits)\n```\n");
-                info.push_str(commits);
-                info.push_str("\n```\n");
-            }
+            && !commits.is_empty()
+        {
+            info.push_str("\n### Recent Changes (last 3 commits)\n```\n");
+            info.push_str(commits);
+            info.push_str("\n```\n");
+        }
 
         // Uncommitted changes
         let uncommitted = std::process::Command::new("git")
@@ -740,11 +744,12 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string());
         if let Some(changes) = &uncommitted
-            && !changes.is_empty() {
-                info.push_str("\n### Uncommitted Changes\n```\n");
-                info.push_str(changes);
-                info.push_str("\n```\n");
-            }
+            && !changes.is_empty()
+        {
+            info.push_str("\n### Uncommitted Changes\n```\n");
+            info.push_str(changes);
+            info.push_str("\n```\n");
+        }
 
         info
     };
@@ -768,18 +773,19 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
     // 应用初始 agent 的工具限制（必须在 Agent 构造后调用）
     if let Some(ref agent_name) = initial_agent
-        && let Some(agent_cfg) = crate::agent_config::find_agent(agent_name) {
-            // 1. 白名单优先：如果 agent 定义了 tools，只保留这些工具
-            if let Some(ref allowed) = agent_cfg.tools {
-                agent.restrict_tools(allowed.clone());
-            }
-            // 2. 黑名单：移除 disallowed_tools 里的工具
-            if let Some(ref disallowed) = agent_cfg.disallowed_tools {
-                for tool_name in disallowed {
-                    agent.remove_tool(tool_name);
-                }
+        && let Some(agent_cfg) = crate::agent_config::find_agent(agent_name)
+    {
+        // 1. 白名单优先：如果 agent 定义了 tools，只保留这些工具
+        if let Some(ref allowed) = agent_cfg.tools {
+            agent.restrict_tools(allowed.clone());
+        }
+        // 2. 黑名单：移除 disallowed_tools 里的工具
+        if let Some(ref disallowed) = agent_cfg.disallowed_tools {
+            for tool_name in disallowed {
+                agent.remove_tool(tool_name);
             }
         }
+    }
 
     // ── 补丁 1（HOOKS_AND_OUTLINE_SYNC）：环境变量来源的工具限制 ──
     // Manager spawn 子 Worker 时通过 ION_ALLOWED_TOOLS / ION_DISALLOWED_TOOLS 环境变量传入。
@@ -1047,19 +1053,18 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         // 当 agent .md 定义了 workflow: gate_command 时才生效。
         if ion_cfg.is_extension_enabled("workflow_gate")
             && let Some(ref agent_name) = initial_agent
-                && let Some(agent_cfg) = crate::agent_config::find_agent(agent_name)
-                    && let Some(ref wf_config) = agent_cfg.workflow {
-                        tracing::info!(
-                            "[workflow] gate registered: cmd='{}', expected='{}'",
-                            wf_config.gate_command,
-                            wf_config.gate_expected
-                        );
-                        ext_reg.register(Box::new(
-                            crate::agent::workflow_extension::WorkflowExtension::new(
-                                wf_config.clone(),
-                            ),
-                        ));
-                    }
+            && let Some(agent_cfg) = crate::agent_config::find_agent(agent_name)
+            && let Some(ref wf_config) = agent_cfg.workflow
+        {
+            tracing::info!(
+                "[workflow] gate registered: cmd='{}', expected='{}'",
+                wf_config.gate_command,
+                wf_config.gate_expected
+            );
+            ext_reg.register(Box::new(
+                crate::agent::workflow_extension::WorkflowExtension::new(wf_config.clone()),
+            ));
+        }
 
         // ── 注册 HookExtension（hooks.json 配置式钩子，热重载）──
         // 每次 on_session_start 等钩子触发时动态读 hooks.json，改完即生效。
@@ -2661,8 +2666,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             .filter(|s| {
                                 let after_from =
                                     from_ts.as_ref().is_none_or(|ft| &s.timestamp >= ft);
-                                let before_to =
-                                    to_ts.as_ref().is_none_or(|tt| &s.timestamp <= tt);
+                                let before_to = to_ts.as_ref().is_none_or(|tt| &s.timestamp <= tt);
                                 after_from && before_to
                             })
                             .collect()
@@ -3893,8 +3897,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             .filter(|s| {
                                 let after_from =
                                     from_ts.as_ref().is_none_or(|ft| &s.timestamp >= ft);
-                                let before_to =
-                                    to_ts.as_ref().is_none_or(|tt| &s.timestamp <= tt);
+                                let before_to = to_ts.as_ref().is_none_or(|tt| &s.timestamp <= tt);
                                 after_from && before_to
                             })
                             .collect()
@@ -5370,18 +5373,19 @@ fn strip_version_suffix_inline(name: &str) -> String {
 fn parse_skill_description_inline(content: &str) -> String {
     let trimmed = content.trim_start();
     if let Some(rest) = trimmed.strip_prefix("---")
-        && let Some(end) = rest.find("\n---") {
-            let frontmatter = &rest[..end];
-            for line in frontmatter.lines() {
-                let line = line.trim();
-                if let Some(rest) = line.strip_prefix("description:") {
-                    let val = rest.trim().trim_matches(|c| c == '"' || c == '\'');
-                    if !val.is_empty() {
-                        return val.to_string();
-                    }
+        && let Some(end) = rest.find("\n---")
+    {
+        let frontmatter = &rest[..end];
+        for line in frontmatter.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("description:") {
+                let val = rest.trim().trim_matches(|c| c == '"' || c == '\'');
+                if !val.is_empty() {
+                    return val.to_string();
                 }
             }
         }
+    }
     // 没有 frontmatter，取第一行 # 标题作为描述
     for line in content.lines() {
         let line = line.trim();
@@ -6185,11 +6189,12 @@ fn append_session_entry(cwd: &str, sid: &str, entry_type: &str, entry_data: &ser
     });
     // 合并 entry_data 的字段到顶层（不嵌套在 data 里），对齐 pi JSONL 格式
     if let Some(obj) = entry_data.as_object()
-        && let Some(m) = line.as_object_mut() {
-            for (k, v) in obj {
-                m.insert(k.clone(), v.clone());
-            }
+        && let Some(m) = line.as_object_mut()
+    {
+        for (k, v) in obj {
+            m.insert(k.clone(), v.clone());
         }
+    }
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
@@ -6287,20 +6292,21 @@ fn ensure_fork_session_header(path: &std::path::Path, cwd: &str, sid: &str) {
     // fork 子 Worker：把 system_prompt（含 skill 内容）作为 custom entry 写到第二行
     // 这样 export HTML 时能恢复 systemPrompt 字段，让用户看到 skill 注入的内容
     if let Ok(sp) = std::env::var("ION_SYSTEM_PROMPT")
-        && !sp.is_empty() {
-            let sp_entry = serde_json::json!({
-                "type": "custom",
-                "id": session_jsonl::generate_id(),
-                "parentId": sid,
-                "timestamp": session_jsonl::timestamp_iso(),
-                "customType": session_jsonl::CUSTOM_TYPE_SYSTEM_PROMPT,
-                "data": { "systemPrompt": sp },
-            });
-            let sp_json = serde_json::to_string(&sp_entry).unwrap_or_default();
-            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(path) {
-                let _ = f.write_all(format!("{sp_json}\n").as_bytes());
-            }
+        && !sp.is_empty()
+    {
+        let sp_entry = serde_json::json!({
+            "type": "custom",
+            "id": session_jsonl::generate_id(),
+            "parentId": sid,
+            "timestamp": session_jsonl::timestamp_iso(),
+            "customType": session_jsonl::CUSTOM_TYPE_SYSTEM_PROMPT,
+            "data": { "systemPrompt": sp },
+        });
+        let sp_json = serde_json::to_string(&sp_entry).unwrap_or_default();
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(path) {
+            let _ = f.write_all(format!("{sp_json}\n").as_bytes());
         }
+    }
 }
 
 /// 历史遗留修复：旧版 ensure_fork_session_header 不写 agent/model/provider 字段，
@@ -6375,12 +6381,12 @@ fn load_fork_session_messages(
         }
         if let Ok(e) = serde_json::from_str::<serde_json::Value>(line)
             && e.get("type").and_then(|v| v.as_str()) == Some("message")
-                && let Some(m) = e
-                    .get("message")
-                    .and_then(|m| serde_json::from_value(m.clone()).ok())
-                {
-                    messages.push(m);
-                }
+            && let Some(m) = e
+                .get("message")
+                .and_then(|m| serde_json::from_value(m.clone()).ok())
+        {
+            messages.push(m);
+        }
     }
     Some(messages)
 }

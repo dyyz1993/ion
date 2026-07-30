@@ -26,9 +26,10 @@ pub struct PreparedSpawn {
 fn find_ion_binary() -> String {
     // Try current exe first
     if let Ok(exe) = std::env::current_exe()
-        && exe.exists() {
-            return exe.to_string_lossy().to_string();
-        }
+        && exe.exists()
+    {
+        return exe.to_string_lossy().to_string();
+    }
     // Fallback: look for target/debug/ion relative to CWD
     let candidates = [
         "target/debug/ion-worker",
@@ -1401,23 +1402,26 @@ impl WorkerRegistry {
                                     .get("event")
                                     .and_then(|e| e.get("delta"))
                                     .and_then(|v| v.as_str())
-                                    && let Some(record) = reg.workers.get_mut(&sub_wid) {
-                                        let mut buf: String =
-                                            record.latest_output.iter().cloned().collect();
-                                        buf.push_str(delta);
-                                        record.latest_output.clear();
-                                        for chunk in buf.split('\n').next_back().unwrap_or("").lines() {
-                                            record.latest_output.push_back(chunk.to_string());
-                                        }
-                                    }
+                                && let Some(record) = reg.workers.get_mut(&sub_wid)
+                            {
+                                let mut buf: String =
+                                    record.latest_output.iter().cloned().collect();
+                                buf.push_str(delta);
+                                record.latest_output.clear();
+                                for chunk in buf.split('\n').next_back().unwrap_or("").lines() {
+                                    record.latest_output.push_back(chunk.to_string());
+                                }
+                            }
                             if (ev_type == "agent_end" || ev_type == "agent_stopped")
-                                && let Some(record) = reg.workers.get_mut(&sub_wid) {
-                                    record.status = WorkerStatus::Idle;
-                                }
+                                && let Some(record) = reg.workers.get_mut(&sub_wid)
+                            {
+                                record.status = WorkerStatus::Idle;
+                            }
                             if ev_type == "agent_start"
-                                && let Some(record) = reg.workers.get_mut(&sub_wid) {
-                                    record.status = WorkerStatus::Busy;
-                                }
+                                && let Some(record) = reg.workers.get_mut(&sub_wid)
+                            {
+                                record.status = WorkerStatus::Busy;
+                            }
                         }
 
                         match msg_type {
@@ -1490,18 +1494,19 @@ impl WorkerRegistry {
                     let crash_channels = record.channels.clone();
                     if let Some(ref parent_id) = crash_parent
                         && let Some(parent) = reg.workers.get_mut(parent_id)
-                        && let Some(ref tx) = parent.parent_event_tx {
-                            let _ = tx
-                                .send(serde_json::json!({
-                                    "type": "event",
-                                    "event": {
-                                        "type": "child_crashed",
-                                        "session_id": crash_session,
-                                        "exit_reason": crash_reason,
-                                    }
-                                }))
-                                .await;
-                        }
+                        && let Some(ref tx) = parent.parent_event_tx
+                    {
+                        let _ = tx
+                            .send(serde_json::json!({
+                                "type": "event",
+                                "event": {
+                                    "type": "child_crashed",
+                                    "session_id": crash_session,
+                                    "exit_reason": crash_reason,
+                                }
+                            }))
+                            .await;
+                    }
                     for ch in &crash_channels {
                         if let Some(subs) = reg.channels.get_mut(ch) {
                             subs.retain(|id| id != &sub_wid);
@@ -1989,23 +1994,21 @@ impl WorkerRegistry {
         let line = serde_json::to_string(&channel_msg).unwrap_or_default();
         let write_line = format!("{line}\n");
 
-        let subscriber_ids: Vec<String> = self
-            .channels
-            .get(channel).cloned()
-            .unwrap_or_default();
+        let subscriber_ids: Vec<String> = self.channels.get(channel).cloned().unwrap_or_default();
 
         for sub_id in subscriber_ids {
             if let Some(record) = self.workers.get_mut(&sub_id)
-                && let Some(ref mut stdin) = record.stdin {
-                    use tokio::io::AsyncWriteExt;
-                    // 200ms hard timeout per subscriber write.
-                    // If buffer full, drop the message — never block the registry lock.
-                    let _ = tokio::time::timeout(std::time::Duration::from_millis(200), async {
-                        let _ = stdin.write_all(write_line.as_bytes()).await;
-                        let _ = stdin.flush().await;
-                    })
-                    .await;
-                }
+                && let Some(ref mut stdin) = record.stdin
+            {
+                use tokio::io::AsyncWriteExt;
+                // 200ms hard timeout per subscriber write.
+                // If buffer full, drop the message — never block the registry lock.
+                let _ = tokio::time::timeout(std::time::Duration::from_millis(200), async {
+                    let _ = stdin.write_all(write_line.as_bytes()).await;
+                    let _ = stdin.flush().await;
+                })
+                .await;
+            }
         }
     }
 

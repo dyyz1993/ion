@@ -199,9 +199,10 @@ impl PermissionExtension {
         // Track mtime for auto hot-reload
         let settings_path = self.project_settings_path();
         if settings_path.exists()
-            && let Ok(meta) = std::fs::metadata(&settings_path) {
-                *self.last_settings_mtime.lock().unwrap() = meta.modified().ok();
-            }
+            && let Ok(meta) = std::fs::metadata(&settings_path)
+        {
+            *self.last_settings_mtime.lock().unwrap() = meta.modified().ok();
+        }
 
         (global_count, project_count)
     }
@@ -220,13 +221,14 @@ impl PermissionExtension {
         if let Ok(rules) = self.project_rules.read()
             && let Ok(json) = serde_json::to_string_pretty(&serde_json::json!({
                 "permissions": { "rules": &*rules }
-            })) {
-                let psp = self.project_settings_path();
-                if let Some(parent) = psp.parent() {
-                    std::fs::create_dir_all(parent).ok();
-                }
-                std::fs::write(&psp, json).ok();
+            }))
+        {
+            let psp = self.project_settings_path();
+            if let Some(parent) = psp.parent() {
+                std::fs::create_dir_all(parent).ok();
             }
+            std::fs::write(&psp, json).ok();
+        }
     }
 
     /// 检查工具调用是否匹配规则

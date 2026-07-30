@@ -91,14 +91,15 @@ impl Tool for PlanApproveTool {
         let mut found = false;
         let mut already_done = false;
         if let Ok(mut g) = self.0.plan_steps.lock()
-            && index < g.len() {
-                if g[index].done {
-                    already_done = true;
-                } else {
-                    g[index].approved = true;
-                    found = true;
-                }
+            && index < g.len()
+        {
+            if g[index].done {
+                already_done = true;
+            } else {
+                g[index].approved = true;
+                found = true;
             }
+        }
 
         if already_done {
             return Ok(format!(
@@ -446,14 +447,15 @@ impl Tool for PlanDoneTool {
         }
 
         if let Ok(mut g) = self.0.plan_steps.lock()
-            && index < g.len() {
-                if !g[index].approved {
-                    // Auto-approve in default mode (no human gate).
-                    g[index].approved = true;
-                }
-                g[index].done = true;
-                found = true;
+            && index < g.len()
+        {
+            if !g[index].approved {
+                // Auto-approve in default mode (no human gate).
+                g[index].approved = true;
             }
+            g[index].done = true;
+            found = true;
+        }
 
         // Best-effort persist.
         let path = self.0.plan_path.lock().ok().and_then(|g| g.clone());

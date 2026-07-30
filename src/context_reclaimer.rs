@@ -165,17 +165,18 @@ impl ContextReclaimer {
             if let Message::Assistant(a) = msg {
                 for block in &a.content {
                     if let AssistantContentBlock::ToolCall(tc) = block
-                        && (tc.name == "write" || tc.name == "edit") {
-                            // Extract file path from tool arguments
-                            if let Some(path) = tc
-                                .arguments
-                                .get("path")
-                                .and_then(|v| v.as_str())
-                                .or_else(|| tc.arguments.get("file_path").and_then(|v| v.as_str()))
-                            {
-                                modified.insert(path.to_string());
-                            }
+                        && (tc.name == "write" || tc.name == "edit")
+                    {
+                        // Extract file path from tool arguments
+                        if let Some(path) = tc
+                            .arguments
+                            .get("path")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| tc.arguments.get("file_path").and_then(|v| v.as_str()))
+                        {
+                            modified.insert(path.to_string());
                         }
+                    }
                 }
             }
         }

@@ -262,54 +262,55 @@ impl LspExtension {
         for line in stdout.lines() {
             // Pattern: file.ts(line,col): error TS1234: message
             if let Some(rest) = line.strip_suffix("")
-                && let Some(close_paren) = rest.find("):") {
-                    let before = &rest[..close_paren];
-                    let after = &rest[close_paren + 2..];
+                && let Some(close_paren) = rest.find("):")
+            {
+                let before = &rest[..close_paren];
+                let after = &rest[close_paren + 2..];
 
-                    // Extract file + line + col from "file.ts(line,col"
-                    if let Some(open_paren) = before.rfind('(') {
-                        let file = &before[..open_paren];
-                        let pos = &before[open_paren + 1..];
-                        let parts: Vec<&str> = pos.split(',').collect();
-                        let line_num: u32 = parts
-                            .first()
-                            .and_then(|s| s.trim().parse::<u32>().ok())
-                            .unwrap_or(0);
-                        let col: u32 = parts
-                            .get(1)
-                            .and_then(|s| s.trim().parse::<u32>().ok())
-                            .unwrap_or(0);
+                // Extract file + line + col from "file.ts(line,col"
+                if let Some(open_paren) = before.rfind('(') {
+                    let file = &before[..open_paren];
+                    let pos = &before[open_paren + 1..];
+                    let parts: Vec<&str> = pos.split(',').collect();
+                    let line_num: u32 = parts
+                        .first()
+                        .and_then(|s| s.trim().parse::<u32>().ok())
+                        .unwrap_or(0);
+                    let col: u32 = parts
+                        .get(1)
+                        .and_then(|s| s.trim().parse::<u32>().ok())
+                        .unwrap_or(0);
 
-                        let (severity, rest_msg) = if after.starts_with(" error") {
-                            ("error", &after[6..])
-                        } else if after.starts_with(" warning") {
-                            ("warning", &after[9..])
-                        } else {
-                            ("warning", after)
-                        };
+                    let (severity, rest_msg) = if after.starts_with(" error") {
+                        ("error", &after[6..])
+                    } else if after.starts_with(" warning") {
+                        ("warning", &after[9..])
+                    } else {
+                        ("warning", after)
+                    };
 
-                        // Extract code (TS1234)
-                        let (code, message) = if let Some(colon) = rest_msg.find(": ") {
-                            (
-                                rest_msg[..colon].trim().to_string(),
-                                rest_msg[colon + 2..].trim().to_string(),
-                            )
-                        } else {
-                            (String::new(), rest_msg.trim().to_string())
-                        };
+                    // Extract code (TS1234)
+                    let (code, message) = if let Some(colon) = rest_msg.find(": ") {
+                        (
+                            rest_msg[..colon].trim().to_string(),
+                            rest_msg[colon + 2..].trim().to_string(),
+                        )
+                    } else {
+                        (String::new(), rest_msg.trim().to_string())
+                    };
 
-                        diags.push(Diagnostic {
-                            file: file.to_string(),
-                            line: line_num,
-                            column: col,
-                            severity: severity.into(),
-                            message,
-                            code,
-                            // TSC output does not carry fix suggestions.
-                            suggestion: String::new(),
-                        });
-                    }
+                    diags.push(Diagnostic {
+                        file: file.to_string(),
+                        line: line_num,
+                        column: col,
+                        severity: severity.into(),
+                        message,
+                        code,
+                        // TSC output does not carry fix suggestions.
+                        suggestion: String::new(),
+                    });
                 }
+            }
         }
         diags
     }
@@ -444,9 +445,10 @@ impl LspExtension {
         {
             let last = self.last_check_time.lock().await;
             if let Some(t) = *last
-                && t.elapsed() < std::time::Duration::from_secs(3) {
-                    return Ok(self.diagnostics.lock().await.clone());
-                }
+                && t.elapsed() < std::time::Duration::from_secs(3)
+            {
+                return Ok(self.diagnostics.lock().await.clone());
+            }
         }
         *self.last_check_time.lock().await = Some(std::time::Instant::now());
 
@@ -633,9 +635,10 @@ impl LspExtension {
                     .and_then(|v| v.as_str());
                 if applicability == Some("MachineApplicable")
                     && let Some(repl) = span.get("suggested_replacement").and_then(|v| v.as_str())
-                        && !repl.is_empty() {
-                            return repl.to_string();
-                        }
+                    && !repl.is_empty()
+                {
+                    return repl.to_string();
+                }
             }
         }
 
@@ -645,9 +648,10 @@ impl LspExtension {
                 let level = child.get("level").and_then(|v| v.as_str());
                 if level == Some("help")
                     && let Some(message) = child.get("message").and_then(|v| v.as_str())
-                        && !message.is_empty() {
-                            return message.to_string();
-                        }
+                    && !message.is_empty()
+                {
+                    return message.to_string();
+                }
             }
         }
 
@@ -1070,29 +1074,31 @@ impl Extension for LspExtension {
         // Compare with the most recent diagnostics in messages
         for msg in messages.iter().rev() {
             if let crate::agent::messages::Message::Custom(c) = msg
-                && c.custom_type == "diagnostics" {
-                    let last_summary = extract_diag_summary(&c.content);
-                    let current_summary = format!(
-                        "[diagnostics history] {} issues ({} error(s), {} warning(s))",
-                        diags.len(),
-                        diags.iter().filter(|d| d.severity == "error").count(),
-                        diags.iter().filter(|d| d.severity == "warning").count(),
-                    );
-                    if last_summary == current_summary {
-                        tracing::info!("[lsp] diagnostics unchanged, skipping injection (dedup)");
-                        return Ok(());
-                    }
-                    break; // Found last diagnostics — it's different, proceed
+                && c.custom_type == "diagnostics"
+            {
+                let last_summary = extract_diag_summary(&c.content);
+                let current_summary = format!(
+                    "[diagnostics history] {} issues ({} error(s), {} warning(s))",
+                    diags.len(),
+                    diags.iter().filter(|d| d.severity == "error").count(),
+                    diags.iter().filter(|d| d.severity == "warning").count(),
+                );
+                if last_summary == current_summary {
+                    tracing::info!("[lsp] diagnostics unchanged, skipping injection (dedup)");
+                    return Ok(());
                 }
+                break; // Found last diagnostics — it's different, proceed
+            }
         }
 
         // ── Compress old diagnostics: keep 2 recent, rest → summary ──
         let mut diag_indices: Vec<usize> = Vec::new();
         for (i, msg) in messages.iter().enumerate() {
             if let crate::agent::messages::Message::Custom(c) = msg
-                && c.custom_type == "diagnostics" {
-                    diag_indices.push(i);
-                }
+                && c.custom_type == "diagnostics"
+            {
+                diag_indices.push(i);
+            }
         }
         if diag_indices.len() > 2 {
             let to_compress = diag_indices.len() - 2;

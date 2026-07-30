@@ -925,9 +925,7 @@ pub fn find_turn_id_for_entry(cwd: &str, entry_id: &str) -> Option<String> {
             let in_range = val
                 .get("entryRange")
                 .and_then(|v| v.as_array())
-                .is_some_and(|arr| {
-                    arr.iter().any(|a| a.as_str() == Some(entry_id))
-                });
+                .is_some_and(|arr| arr.iter().any(|a| a.as_str() == Some(entry_id)));
             if in_range {
                 return val
                     .get("turnId")

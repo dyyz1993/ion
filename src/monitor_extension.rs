@@ -41,7 +41,6 @@ pub enum MonitorMode {
     Concurrent,
 }
 
-
 /// Dispatch / trigger mode for how a monitor's action is delivered.
 ///
 /// Derives `Clone, Copy, Debug, PartialEq, Eq` (see derive attribute below)
@@ -55,7 +54,6 @@ pub enum TriggerMode {
     ChannelNotify,
     EventOnly,
 }
-
 
 impl std::fmt::Display for MonitorMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -305,21 +303,22 @@ impl MonitorExtension {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().map(|e| e == "json").unwrap_or(false)
-                    && let Ok(content) = std::fs::read_to_string(&path) {
-                        match serde_json::from_str::<MonitorDef>(&content) {
-                            Ok(def) => {
-                                tracing::info!(
-                                    "[monitor] loaded: {} from {}",
-                                    def.name,
-                                    path.display()
-                                );
-                                result.push(def);
-                            }
-                            Err(e) => {
-                                tracing::warn!("[monitor] failed to parse {}: {e}", path.display())
-                            }
+                    && let Ok(content) = std::fs::read_to_string(&path)
+                {
+                    match serde_json::from_str::<MonitorDef>(&content) {
+                        Ok(def) => {
+                            tracing::info!(
+                                "[monitor] loaded: {} from {}",
+                                def.name,
+                                path.display()
+                            );
+                            result.push(def);
+                        }
+                        Err(e) => {
+                            tracing::warn!("[monitor] failed to parse {}: {e}", path.display())
                         }
                     }
+                }
             }
         }
         result
