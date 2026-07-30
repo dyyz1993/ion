@@ -4916,6 +4916,19 @@ pub fn count_live_messages(entries: &[serde_json::Value]) -> usize {
         }
     };
 
+    // Build a HashMap<id, index> once so each parentId-chain lookup is O(1)
+    // instead of O(n) (the old entries.iter().find() made this O(n²) on
+    // large sessions — see the perf bug where a 110k-entry session hung at
+    // 100% CPU inside on_before_tool_execute → save_worker_session).
+    let mut id_index: std::collections::HashMap<&str, &serde_json::Value> =
+        std::collections::HashMap::with_capacity(entries.len());
+    for e in entries {
+        if let Some(id) = e.get("id").and_then(|v| v.as_str()) {
+            // First occurrence wins, mirroring the old .find() semantics.
+            id_index.entry(id).or_insert(e);
+        }
+    }
+
     // Walk parentId chain from leaf_id, counting messages on the path
     let mut count = 0usize;
     let mut current_id = Some(leaf_id.as_str());
@@ -4924,11 +4937,8 @@ pub fn count_live_messages(entries: &[serde_json::Value]) -> usize {
         if !visited.insert(cid.to_string()) {
             break; // cycle guard
         }
-        // Find entry with id == cid
-        let entry = entries.iter().find(|e| {
-            e.get("id").and_then(|v| v.as_str()) == Some(cid)
-        });
-        match entry {
+        // O(1) lookup via the prebuilt index (was O(n) entries.iter().find).
+        match id_index.get(cid) {
             Some(e) => {
                 if e.get("type").and_then(|v| v.as_str()) == Some("message") {
                     count += 1;
@@ -5325,5 +5335,88 @@ mod tests {
         assert_eq!(health["status"], "ok");
         assert!(health["uptime_secs"].as_u64().unwrap() > 0);
         assert!(health["pid"].as_u64().unwrap() > 0);
+    }
+
+    // --- count_live_messages ---
+    //
+    // These guard against the O(n²) regression where parentId-chain lookups
+    // used entries.iter().find() per step. With a large session that lookup
+    // dominated and hung the worker at 100% CPU inside save_worker_session.
+
+    fn mk_msg(id: &str, parent: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "type": "message",
+            "id": id,
+            "parentId": parent,
+            "role": "user",
+            "content": "x",
+        })
+    }
+
+    #[test]
+    fn test_count_live_messages_no_leaf_counts_all_messages() {
+        // No leaf_pointer entry → every message entry is live.
+        let entries = vec![
+            mk_msg("a", None),
+            mk_msg("b", Some("a")),
+            serde_json::json!({"type": "turn_summary", "id": "s1"}),
+        ];
+        assert_eq!(count_live_messages(&entries), 2);
+    }
+
+    #[test]
+    fn test_count_live_messages_walks_parent_chain_from_leaf() {
+        // Leaf points at the last message; walk back through parentId.
+        let entries = vec![
+            serde_json::json!({"type": "leaf_pointer", "id": "lp1", "leafId": "c"}),
+            mk_msg("a", None),
+            mk_msg("b", Some("a")),
+            mk_msg("c", Some("b")),
+            // Orphan message not on the leaf chain — must NOT be counted.
+            mk_msg("orphan", None),
+        ];
+        assert_eq!(count_live_messages(&entries), 3);
+    }
+
+    #[test]
+    fn test_count_live_messages_cycle_guard() {
+        // A malformed cycle (b→a→b) must terminate, not loop forever.
+        let entries = vec![
+            serde_json::json!({"type": "leaf_pointer", "id": "lp1", "leafId": "b"}),
+            mk_msg("a", Some("b")),
+            mk_msg("b", Some("a")),
+        ];
+        // Visits b and a then hits the visited guard → 2 messages counted.
+        assert_eq!(count_live_messages(&entries), 2);
+    }
+
+    #[test]
+    fn test_count_live_messages_large_chain_is_linear() {
+        // Regression: a long parentId chain used to be O(n²) because each
+        // step did a linear entries.iter().find(). Build a 20k-entry chain
+        // (previously this would hang) and assert it completes quickly and
+        // counts correctly. Also interleaves non-message entries to confirm
+        // they are skipped but still indexed for id lookup.
+        let n = 20_000usize;
+        let mut entries: Vec<serde_json::Value> = Vec::with_capacity(n + 1);
+        entries.push(serde_json::json!({"type": "leaf_pointer", "id": "lp", "leafId": "m0"}));
+        for i in 0..n {
+            let parent = if i == 0 { None } else { Some(format!("m{}", i - 1)) };
+            entries.push(mk_msg(&format!("m{}", i), parent.as_deref()));
+            // Sprinkle a non-message entry sharing an id-free shape; it must
+            // not break the id index.
+            entries.push(serde_json::json!({"type": "turn_summary", "id": format!("s{}", i)}));
+        }
+        let start = std::time::Instant::now();
+        let count = count_live_messages(&entries);
+        let elapsed = start.elapsed();
+        assert_eq!(count, n, "all {} chain messages should be live", n);
+        // Generous bound: the old O(n²) impl took minutes/forever on 110k.
+        // The O(n) impl should be well under a second; allow headroom for CI.
+        assert!(
+            elapsed.as_secs() < 5,
+            "count_live_messages should be near-linear, took {:?}",
+            elapsed
+        );
     }
 }
