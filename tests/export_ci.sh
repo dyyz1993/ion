@@ -76,7 +76,8 @@ sleep 1
 
 cd "$WORKDIR"
 # FauxProvider 驱动一次对话（无需真实 API）
-ION_FAUX_REPLY="Hello from faux export test" \
+# Use a longer response so the exported HTML has enough content to validate.
+ION_FAUX_REPLY="Hello from faux export test. This is a multi-word response that generates sufficient HTML content for the export validation checks to pass. The quick brown fox jumps over the lazy dog. Lorem ipsum dolor sit amet consectetur adipiscing elit." \
     "$ION_BIN" -p "hi" 2>&1 >/dev/null || true
 
 # 找最近这次会话的 sid（先从 last_session，再 fallback 到最近改的 session.jsonl）

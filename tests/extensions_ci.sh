@@ -79,6 +79,12 @@ except Exception as e:
 
 bold "=== 准备阶段 ==="
 
+# Check if wasm32 target is available
+if ! rustup target list --installed 2>/dev/null | grep -q wasm32-wasip1; then
+    echo "  ⚠️  wasm32-wasip1 target not installed — attempting install"
+    rustup target add wasm32-wasip1 2>/dev/null || true
+fi
+
 # Build wasm 产物（如果缺失）
 for ext in todo_extension plan_extension; do
     WASM="target/wasm32-wasip1/release/${ext}.wasm"

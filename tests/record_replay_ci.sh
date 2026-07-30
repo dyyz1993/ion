@@ -100,12 +100,17 @@ else
     fail "C4 trace 含 request_hash"
 fi
 
-# C5: 文件权限 0600
-PERMS=$(stat -f "%Lp" ~/.ion/recordings/rr-test-a1/trace.jsonl 2>/dev/null || stat -c "%a" ~/.ion/recordings/rr-test-a1/trace.jsonl)
+# C5: 文件权限 0600 (macOS: stat -f %Lp, Linux: stat -c %a)
+TRACE_FILE="$HOME/.ion/recordings/rr-test-a1/trace.jsonl"
+if [ "$(uname)" = "Darwin" ]; then
+    PERMS=$(stat -f "%Lp" "$TRACE_FILE" 2>/dev/null)
+else
+    PERMS=$(stat -c "%a" "$TRACE_FILE" 2>/dev/null)
+fi
 if [ "$PERMS" = "600" ]; then
     pass "C5 trace 文件权限 0600"
 else
-    fail "C5 trace 文件权限 (got $PERMS, want 600)"
+    fail "C5 trace 文件权限 (got '$PERMS', want 600)"
 fi
 
 # C6: meta schema_version
