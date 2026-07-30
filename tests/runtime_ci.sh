@@ -52,9 +52,8 @@ echo "$MANAGER_PID" > "$HOST_PID_FILE"
 sleep 3
 ps -p $! > /dev/null 2>&1 && pass "serve start" || { fail "serve start"; exit 1; }
 
-# 用临时目录避免触发 .ion/settings.json hot-reload（跟 permission_ci 同样的修复）
-RUNTIME_CWD=$(mktemp -d /tmp/runtime_ci_XXXXXX)
-OUT=$("$ION_BIN" rpc --session x --method create_session --params '{"cwd":"'"$RUNTIME_CWD"'"}' 2>/dev/null)
+# hot-reload 死锁已用 try_write 修复，直接用项目目录
+OUT=$("$ION_BIN" rpc --session x --method create_session --params '{"cwd":"'"$PROJECT_DIR"'"}' 2>/dev/null)
 SID=$(echo "$OUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('session_id',''))" 2>/dev/null)
 [ -n "$SID" ] && pass "create_worker" || { fail "create_worker"; exit 1; }
 

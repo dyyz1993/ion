@@ -173,8 +173,18 @@ impl PermissionExtension {
 
         let project_count = new_rules.len().saturating_sub(global_count);
 
-        if let Ok(mut rules) = self.project_rules.write() {
-            *rules = new_rules;
+        // Use try_write instead of write to avoid deadlock:
+        // check_tool holds a read lock on project_rules while calling reload_internal
+        // (via hot-reload). If we block on write(), it deadlocks with the read lock.
+        // try_write() fails gracefully — reload skipped, will retry on next check_tool call.
+        match self.project_rules.try_write() {
+            Ok(mut rules) => {
+                *rules = new_rules;
+            }
+            Err(_) => {
+                tracing::debug!("[permission] hot-reload skipped (lock busy) — will retry next call");
+                return (0, 0); // Don't update mtime — forces retry on next call
+            }
         }
 
         // Track mtime for auto hot-reload

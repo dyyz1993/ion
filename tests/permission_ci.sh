@@ -157,9 +157,8 @@ else
     exit 1
 fi
 
-# 创建 Session（用临时目录避免触发 .ion/settings.json hot-reload）
-TEST_CWD=$(mktemp -d /tmp/perm_ci_XXXXXX)
-OUT=$(quiet "$ION_BIN" rpc --method create_session --params '{"cwd":"'"$TEST_CWD"'"}')
+# 创建 Session（用项目目录——hot-reload 死锁已用 try_write 修复）
+OUT=$(quiet "$ION_BIN" rpc --method create_session --params '{"cwd":"'"$PROJECT_DIR"'"}')
 SID=$(echo "$OUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('data',{}).get('session_id',''))" 2>/dev/null)
 
 if [ -n "$SID" ]; then
