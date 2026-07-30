@@ -621,9 +621,13 @@ mod tests {
         std::fs::write(work_dir.join("a.rs"), "original").unwrap();
         std::fs::write(work_dir.join("b.rs"), "stable").unwrap();
 
-        // 写一条 step-snapshot 模拟 session start
+        // 写一条 step-snapshot 模拟 session start。
+        // turn_id 用 ts_000000：load_all_step_snapshots 按 (timestamp, turn_id)
+        // 排序，同秒写入时按 turn_id 字典序定序。baseline 必须排在所有测试
+        // 写入的 ts_000001/ts_000002... 之前，否则 .last() 会误取 session
+        // start 作为"最新"step（这是 Linux CI 上同秒写入导致 flaky 的根因）。
         let step = tree_store::StepSnapshot {
-            turn_id: "ts_baseline".into(),
+            turn_id: "ts_000000".into(),
             baseline_tree_hash: baseline_hash.clone(),
             snapshot_tree_hash: baseline_hash.clone(), // session start 无变更
             diff: tree_store::TreeDiff {
@@ -746,7 +750,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "flaky on Linux CI: file-changed-after-approval mtime check triggers spuriously on ubuntu filesystems; passes deterministically on macOS. Track separately."]
     fn approve_anchors_baseline() {
         let (work_dir, store, mgr) = setup();
 
@@ -807,7 +810,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "flaky on Linux CI: same mtime-detection issue as approve_anchors_baseline; passes on macOS. Track separately."]
     fn approve_all_and_reject_all() {
         let (work_dir, store, mgr) = setup();
 
