@@ -126,7 +126,11 @@ impl WorkerProc {
     }
 
     /// Send a JSONL command to the worker and read the response.
-    fn send_command(&mut self, method: &str, params: Option<serde_json::Value>) -> serde_json::Value {
+    fn send_command(
+        &mut self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> serde_json::Value {
         let id = format!("ut_{}", method.replace(|c: char| !c.is_alphanumeric(), "_"));
         let mut cmd = serde_json::json!({
             "id": id,
@@ -178,13 +182,19 @@ impl WorkerProc {
     }
 
     /// Send a command and extract the `data` field from the response.
-    fn send_and_get_data(&mut self, method: &str, params: Option<serde_json::Value>) -> serde_json::Value {
+    fn send_and_get_data(
+        &mut self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> serde_json::Value {
         let resp = self.send_command(method, params);
         assert_eq!(
             resp.get("success").and_then(|v| v.as_bool()),
             Some(true),
             "Command {method} failed: {}",
-            resp.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error")
+            resp.get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error")
         );
         resp.get("data").cloned().unwrap_or(serde_json::Value::Null)
     }
@@ -257,8 +267,13 @@ fn u03_get_messages() {
     let data = wp.send_and_get_data("get_messages", None);
 
     // 消息拉取改造后返回 {messages: [...], hasMore, totalCount, ...}
-    assert!(data.get("messages").is_some(), "get_messages should return object with 'messages' array");
-    let msgs = data["messages"].as_array().expect("messages should be array");
+    assert!(
+        data.get("messages").is_some(),
+        "get_messages should return object with 'messages' array"
+    );
+    let msgs = data["messages"]
+        .as_array()
+        .expect("messages should be array");
     assert_eq!(msgs.len(), 0, "fresh session: empty messages");
 }
 
@@ -267,8 +282,15 @@ fn u04_get_last_assistant_text() {
     let mut wp = WorkerProc::spawn();
     let data = wp.send_and_get_data("get_last_assistant_text", None);
 
-    assert!(data.is_string(), "get_last_assistant_text should return a string");
-    assert_eq!(data.as_str().unwrap(), "", "empty session returns empty string");
+    assert!(
+        data.is_string(),
+        "get_last_assistant_text should return a string"
+    );
+    assert_eq!(
+        data.as_str().unwrap(),
+        "",
+        "empty session returns empty string"
+    );
 }
 
 #[test]
@@ -277,7 +299,10 @@ fn u05_get_tools() {
     let data = wp.send_and_get_data("get_tools", None);
 
     // Tools are wrapped in a 'tools' key
-    assert!(data.get("tools").is_some(), "get_tools should include 'tools' array");
+    assert!(
+        data.get("tools").is_some(),
+        "get_tools should include 'tools' array"
+    );
     let tools = data["tools"].as_array().unwrap();
     assert!(!tools.is_empty(), "should have at least the builtin tools");
 
@@ -301,7 +326,10 @@ fn u06_get_active_tools() {
     let data = wp.send_and_get_data("get_active_tools", None);
 
     // 改造后返回 {tools: [...], count}
-    assert!(data.get("tools").is_some(), "get_active_tools should return object with 'tools' array");
+    assert!(
+        data.get("tools").is_some(),
+        "get_active_tools should return object with 'tools' array"
+    );
     let tools = data["tools"].as_array().expect("tools should be array");
     assert!(!tools.is_empty(), "should have at least some active tools");
     for t in tools {
@@ -314,9 +342,15 @@ fn u07_get_available_models() {
     let mut wp = WorkerProc::spawn();
     let data = wp.send_and_get_data("get_available_models", None);
 
-    assert!(data.is_array(), "get_available_models should return an array");
+    assert!(
+        data.is_array(),
+        "get_available_models should return an array"
+    );
     let models = data.as_array().unwrap();
-    assert!(!models.is_empty(), "should have at least some models registered");
+    assert!(
+        !models.is_empty(),
+        "should have at least some models registered"
+    );
 
     for m in models {
         assert!(m.get("id").is_some(), "model should have 'id'");
@@ -331,11 +365,17 @@ fn u08_get_agents() {
 
     assert!(data.is_array(), "get_agents should return an array");
     let agents = data.as_array().unwrap();
-    assert!(!agents.is_empty(), "should have at least the default agents");
+    assert!(
+        !agents.is_empty(),
+        "should have at least the default agents"
+    );
 
     for agent in agents {
         assert!(agent.get("name").is_some(), "agent should have 'name'");
-        assert!(agent.get("description").is_some(), "agent should have 'description'");
+        assert!(
+            agent.get("description").is_some(),
+            "agent should have 'description'"
+        );
     }
 }
 
@@ -356,9 +396,18 @@ fn u10_get_context_usage() {
     let data = wp.send_and_get_data("get_context_usage", None);
 
     // 改造后返回 usagePercent/totalInputTokens/totalOutputTokens/autoCompaction
-    assert!(data.get("totalInputTokens").is_some(), "should include 'totalInputTokens'");
-    assert!(data.get("totalOutputTokens").is_some(), "should include 'totalOutputTokens'");
-    assert!(data.get("usagePercent").is_some(), "should include 'usagePercent'");
+    assert!(
+        data.get("totalInputTokens").is_some(),
+        "should include 'totalInputTokens'"
+    );
+    assert!(
+        data.get("totalOutputTokens").is_some(),
+        "should include 'totalOutputTokens'"
+    );
+    assert!(
+        data.get("usagePercent").is_some(),
+        "should include 'usagePercent'"
+    );
 }
 
 #[test]
@@ -413,9 +462,15 @@ fn u12_ready_signal() {
                 // Verify ready signal structure
                 assert!(val.get("session").is_some(), "ready should have 'session'");
                 assert!(val.get("model").is_some(), "ready should have 'model'");
-                assert!(val.get("provider").is_some(), "ready should have 'provider'");
+                assert!(
+                    val.get("provider").is_some(),
+                    "ready should have 'provider'"
+                );
                 assert!(val.get("version").is_some(), "ready should have 'version'");
-                assert!(val.get("channels").is_some(), "ready should have 'channels'");
+                assert!(
+                    val.get("channels").is_some(),
+                    "ready should have 'channels'"
+                );
                 // Clean up
                 let _ = child.stdin.take();
                 let _ = child.kill();
@@ -620,7 +675,8 @@ fn u16_all_supported_commands() {
     for cmd in commands {
         match wp.send_command(cmd, None) {
             val if val.get("success").and_then(|v| v.as_bool()) == Some(false) => {
-                let err = val.get("error")
+                let err = val
+                    .get("error")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown")
                     .to_string();
@@ -814,9 +870,15 @@ fn u19_session_index_updates() {
 
     // Update the index
     ion::session_index::SessionIndex::update(
-        &sid, "deepseek-v4-flash", "opencode",
-        "default", Some("test-session"),
-        100, 50, 1, 1,
+        &sid,
+        "deepseek-v4-flash",
+        "opencode",
+        "default",
+        Some("test-session"),
+        100,
+        50,
+        1,
+        1,
     );
 
     // Load index and verify
@@ -829,8 +891,16 @@ fn u19_session_index_updates() {
     assert_eq!(meta.provider, "opencode");
     assert_eq!(meta.agent, "default");
     assert_eq!(meta.name.as_deref(), Some("test-session"));
-    assert!(meta.token_input >= 100, "token_input should be >= 100, got {}", meta.token_input);
-    assert!(meta.token_output >= 50, "token_output should be >= 50, got {}", meta.token_output);
+    assert!(
+        meta.token_input >= 100,
+        "token_input should be >= 100, got {}",
+        meta.token_input
+    );
+    assert!(
+        meta.token_output >= 50,
+        "token_output should be >= 50, got {}",
+        meta.token_output
+    );
 
     // Cleanup
     cleanup_session(&cwd);
@@ -902,8 +972,7 @@ fn u20_token_stats_are_accurate() {
 
     // Update index with token stats
     ion::session_index::SessionIndex::update(
-        &sid, "gpt-4o", "openai", "default",
-        None, 50, 30, 2, 1,
+        &sid, "gpt-4o", "openai", "default", None, 50, 30, 2, 1,
     );
 
     // Verify token stats

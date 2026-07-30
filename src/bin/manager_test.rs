@@ -6,22 +6,36 @@ use tokio::sync::Mutex;
 async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new("info"))
-        .with_target(false).try_init().ok();
+        .with_target(false)
+        .try_init()
+        .ok();
 
     let registry = Arc::new(Mutex::new(WorkerRegistry::new()));
-    let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+    let cwd = std::env::current_dir()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
     tracing::info!("=== Worktree 隔离测试 ===");
     tracing::info!("项目路径: {}", cwd);
 
     // 创建带 worktree 隔离的 Worker
     let wid = {
         let mut reg = registry.lock().await;
-        let w = reg.create_worker(WorkerCreateConfig {
-            session: Some("worktree-test".into()),
-            project_path: Some(cwd.clone()),
-            worktree: Some(ion::worker_registry::WorktreeConfig { branch: "test-branch".into(), base: None }),
-            ..Default::default()
-        }, &registry).await.unwrap();
+        let w = reg
+            .create_worker(
+                WorkerCreateConfig {
+                    session: Some("worktree-test".into()),
+                    project_path: Some(cwd.clone()),
+                    worktree: Some(ion::worker_registry::WorktreeConfig {
+                        branch: "test-branch".into(),
+                        base: None,
+                    }),
+                    ..Default::default()
+                },
+                &registry,
+            )
+            .await
+            .unwrap();
         w.worker_id
     };
 
@@ -41,8 +55,14 @@ async fn main() {
     // 查结果
     {
         let mut reg = registry.lock().await;
-        match reg.send_to_worker(&wid, "get_last_assistant_text", serde_json::json!({})).await {
-            Ok(r) => tracing::info!("✅ 结果: {}", r.get("data").and_then(|v| v.as_str()).unwrap_or("(empty)")),
+        match reg
+            .send_to_worker(&wid, "get_last_assistant_text", serde_json::json!({}))
+            .await
+        {
+            Ok(r) => tracing::info!(
+                "✅ 结果: {}",
+                r.get("data").and_then(|v| v.as_str()).unwrap_or("(empty)")
+            ),
             Err(e) => tracing::warn!("❌ {e}"),
         }
         let _ = reg.kill_worker(&wid);

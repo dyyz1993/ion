@@ -3,8 +3,8 @@ use super::extension::Extension;
 use super::messages::ToolCall;
 use async_trait::async_trait;
 use ion_provider::types::ToolResult;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Helper: lock a Mutex<Option<String>> and return a clone or default.
 fn lock_path(m: &Mutex<Option<String>>) -> String {
@@ -36,7 +36,11 @@ pub struct PlanStep {
 
 impl PlanStep {
     pub fn new(text: String) -> Self {
-        Self { text, done: false, approved: false }
+        Self {
+            text,
+            done: false,
+            approved: false,
+        }
     }
 }
 
@@ -188,7 +192,11 @@ impl Extension for PlanExtension {
                 // plan mode (e.g. to revise the plan), they should see their
                 // prior steps. Steps are only cleared by an explicit reset
                 // tool (future) or by constructing a fresh PlanExtension.
-                tracing::info!("[plan] entered plan mode, path={:?}, steps preserved, strict={}", path, strict);
+                tracing::info!(
+                    "[plan] entered plan mode, path={:?}, steps preserved, strict={}",
+                    path,
+                    strict
+                );
             }
             "plan_exit" => {
                 // strict_mode gate: if enabled, ALL non-empty steps must be approved.
@@ -254,11 +262,7 @@ impl Extension for PlanExtension {
     async fn on_system_prompt(&self, prompt: &mut String) -> AgentResult<()> {
         if self.plan_mode.load(Ordering::Relaxed) {
             let path = lock_path(&self.plan_path);
-            let step_count = self
-                .plan_steps
-                .lock()
-                .map(|g| g.len())
-                .unwrap_or(0);
+            let step_count = self.plan_steps.lock().map(|g| g.len()).unwrap_or(0);
 
             prompt.push_str(&format!(
                 "\n\n[PLAN MODE]\n\
@@ -312,7 +316,9 @@ pub struct SharedPlanExtension(pub std::sync::Arc<PlanExtension>);
 
 impl std::ops::Deref for SharedPlanExtension {
     type Target = PlanExtension;
-    fn deref(&self) -> &PlanExtension { &self.0 }
+    fn deref(&self) -> &PlanExtension {
+        &self.0
+    }
 }
 
 #[async_trait]
@@ -358,18 +364,38 @@ mod tests {
         // Q1 fix: research tools only (no edit/write/bash — plan mode is for
         // investigating + drafting, execution happens AFTER plan_exit).
         for t in &["read", "grep", "find", "ls"] {
-            assert!(tools.contains(&t.to_string()), "missing research tool: {}", t);
+            assert!(
+                tools.contains(&t.to_string()),
+                "missing research tool: {}",
+                t
+            );
         }
         // edit/write/bash must NOT be in allowed_tools (Q1 fix)
         for t in &["bash", "write", "edit"] {
-            assert!(!tools.contains(&t.to_string()), "edit tool {} should NOT be allowed in plan mode", t);
+            assert!(
+                !tools.contains(&t.to_string()),
+                "edit tool {} should NOT be allowed in plan mode",
+                t
+            );
         }
         // plan_* tools (so the agent can build the plan while in plan mode)
-        for t in &["plan_exit", "plan_add", "plan_list", "plan_done", "plan_approve"] {
+        for t in &[
+            "plan_exit",
+            "plan_add",
+            "plan_list",
+            "plan_done",
+            "plan_approve",
+        ] {
             assert!(tools.contains(&t.to_string()), "missing plan tool: {}", t);
         }
         // todo_* tools (task tracking is part of planning)
-        for t in &["todo_add", "todo_list", "todo_done", "todo_remove", "todo_clean"] {
+        for t in &[
+            "todo_add",
+            "todo_list",
+            "todo_done",
+            "todo_remove",
+            "todo_clean",
+        ] {
             assert!(tools.contains(&t.to_string()), "missing todo tool: {}", t);
         }
     }
@@ -377,9 +403,21 @@ mod tests {
     #[test]
     fn render_steps_pending_and_done() {
         let steps = vec![
-            PlanStep { text: "write code".into(), done: false, approved: false },
-            PlanStep { text: "test it".into(), done: true, approved: true },
-            PlanStep { text: "ship it".into(), done: false, approved: false },
+            PlanStep {
+                text: "write code".into(),
+                done: false,
+                approved: false,
+            },
+            PlanStep {
+                text: "test it".into(),
+                done: true,
+                approved: true,
+            },
+            PlanStep {
+                text: "ship it".into(),
+                done: false,
+                approved: false,
+            },
         ];
         let rendered = PlanExtension::render_steps(&steps);
         assert_eq!(rendered, "write code\n[x] test it\nship it");

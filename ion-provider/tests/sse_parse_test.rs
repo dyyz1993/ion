@@ -92,7 +92,11 @@ fn parse_sse(raw: &[u8]) -> Vec<ParsedEvent> {
         let event_str = &rest[..pos];
         // Advance past the boundary. Both `\n\n` and `\r\n\r\n` are at least
         // 2 bytes; for `\r\n\r\n` we additionally skip the leading `\r\n`.
-        let skip = if rest[pos..].starts_with("\r\n\r\n") { 4 } else { 2 };
+        let skip = if rest[pos..].starts_with("\r\n\r\n") {
+            4
+        } else {
+            2
+        };
         rest = &rest[pos + skip..];
         if event_str.trim().is_empty() {
             continue;
@@ -161,15 +165,24 @@ fn parse_sse(raw: &[u8]) -> Vec<ParsedEvent> {
 /// Test 1: Parse a single SSE event with one text delta and verify fields.
 #[test]
 fn parse_single_sse_event() {
-    let raw = b"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n";
+    let raw =
+        b"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n";
 
     let events = parse_sse(raw);
 
     assert_eq!(events.len(), 1, "exactly one event expected");
     match &events[0] {
-        ParsedEvent::Data { text_deltas, finish_reason, usage, .. } => {
+        ParsedEvent::Data {
+            text_deltas,
+            finish_reason,
+            usage,
+            ..
+        } => {
             assert_eq!(text_deltas, &vec!["Hello".to_string()]);
-            assert!(finish_reason.is_none(), "no finish_reason on a mid-stream chunk");
+            assert!(
+                finish_reason.is_none(),
+                "no finish_reason on a mid-stream chunk"
+            );
             assert!(usage.is_none(), "no usage on a mid-stream chunk");
         }
         other => panic!("expected Data event, got {other:?}"),
@@ -193,7 +206,11 @@ data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\
     // First two chunks carry text deltas.
     for ev in &events[0..2] {
         match ev {
-            ParsedEvent::Data { text_deltas, finish_reason, .. } => {
+            ParsedEvent::Data {
+                text_deltas,
+                finish_reason,
+                ..
+            } => {
                 assert!(!text_deltas.is_empty(), "expected a text delta");
                 assert!(finish_reason.is_none());
             }
@@ -222,7 +239,11 @@ data: [DONE]\n\
 
     assert_eq!(events.len(), 2);
     assert!(matches!(events[0], ParsedEvent::Data { .. }));
-    assert_eq!(events[1], ParsedEvent::Done, "stream should end cleanly on [DONE]");
+    assert_eq!(
+        events[1],
+        ParsedEvent::Done,
+        "stream should end cleanly on [DONE]"
+    );
 }
 
 /// Test 4: Parse malformed SSE (missing `data:` prefix and bad JSON) and
@@ -250,7 +271,12 @@ data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\
         .iter()
         .filter(|e| match e {
             ParsedEvent::Done => true,
-            ParsedEvent::Data { text_deltas, reasoning_deltas, finish_reason, usage } => {
+            ParsedEvent::Data {
+                text_deltas,
+                reasoning_deltas,
+                finish_reason,
+                usage,
+            } => {
                 !text_deltas.is_empty()
                     || !reasoning_deltas.is_empty()
                     || finish_reason.is_some()
@@ -258,7 +284,11 @@ data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\
             }
         })
         .collect();
-    assert_eq!(meaningful.len(), 1, "only the valid event should carry content");
+    assert_eq!(
+        meaningful.len(),
+        1,
+        "only the valid event should carry content"
+    );
     match meaningful[0] {
         ParsedEvent::Data { text_deltas, .. } => {
             assert_eq!(*text_deltas, vec!["ok".to_string()]);
@@ -282,10 +312,14 @@ data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prom
 
     assert_eq!(events.len(), 2);
     match &events[1] {
-        ParsedEvent::Data { usage, finish_reason, .. } => {
+        ParsedEvent::Data {
+            usage,
+            finish_reason,
+            ..
+        } => {
             assert_eq!(finish_reason.as_deref(), Some("stop"));
-            let (prompt, completion, total) = usage
-                .expect("usage should be present on the final chunk");
+            let (prompt, completion, total) =
+                usage.expect("usage should be present on the final chunk");
             assert_eq!(prompt, 42, "prompt_tokens mismatch");
             assert_eq!(completion, 7, "completion_tokens mismatch");
             assert_eq!(total, 49, "total_tokens mismatch");
@@ -302,5 +336,8 @@ fn parse_empty_sse_stream() {
 
     // Whitespace-only input should also be safe and yield nothing.
     let events_ws = parse_sse(b"\n\n\r\n\r\n   ");
-    assert!(events_ws.is_empty(), "whitespace-only input must yield zero events");
+    assert!(
+        events_ws.is_empty(),
+        "whitespace-only input must yield zero events"
+    );
 }

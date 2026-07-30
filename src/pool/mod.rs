@@ -623,8 +623,7 @@ mod tests {
             format!("{running:?}"),
             format!("{dead:?}"),
         ];
-        let unique: std::collections::HashSet<&str> =
-            tags.iter().map(|s| s.as_str()).collect();
+        let unique: std::collections::HashSet<&str> = tags.iter().map(|s| s.as_str()).collect();
         assert_eq!(unique.len(), tags.len());
     }
 }

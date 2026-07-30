@@ -69,6 +69,12 @@ const HIGH_VALUE_TOOLS: &[&str] = &["read"];
 /// Context Reclaimer extension.
 pub struct ContextReclaimer;
 
+impl Default for ContextReclaimer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ContextReclaimer {
     pub fn new() -> Self {
         Self
@@ -123,12 +129,13 @@ impl ContextReclaimer {
             Message::BashExecution(m) => m.command.len() + m.output.len(),
             Message::Custom(m) => match &m.content {
                 ion_provider::types::CustomContent::Text(s) => s.len(),
-                ion_provider::types::CustomContent::Blocks(blocks) => {
-                    blocks.iter().map(|b| match b {
+                ion_provider::types::CustomContent::Blocks(blocks) => blocks
+                    .iter()
+                    .map(|b| match b {
                         ContentBlock::Text(t) => t.text.len(),
                         _ => 0,
-                    }).sum()
-                }
+                    })
+                    .sum(),
             },
             _ => 0,
         }
@@ -141,7 +148,8 @@ impl ContextReclaimer {
         for msg in messages.iter_mut() {
             if let Message::Assistant(a) = msg {
                 let before = a.content.len();
-                a.content.retain(|b| !matches!(b, AssistantContentBlock::Thinking(_)));
+                a.content
+                    .retain(|b| !matches!(b, AssistantContentBlock::Thinking(_)));
                 removed += before - a.content.len();
             }
         }
@@ -156,16 +164,17 @@ impl ContextReclaimer {
         for msg in messages {
             if let Message::Assistant(a) = msg {
                 for block in &a.content {
-                    if let AssistantContentBlock::ToolCall(tc) = block {
-                        if tc.name == "write" || tc.name == "edit" {
-                            // Extract file path from tool arguments
-                            if let Some(path) = tc.arguments.get("path")
-                                .and_then(|v| v.as_str())
-                                .or_else(|| tc.arguments.get("file_path")
-                                    .and_then(|v| v.as_str()))
-                            {
-                                modified.insert(path.to_string());
-                            }
+                    if let AssistantContentBlock::ToolCall(tc) = block
+                        && (tc.name == "write" || tc.name == "edit")
+                    {
+                        // Extract file path from tool arguments
+                        if let Some(path) = tc
+                            .arguments
+                            .get("path")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| tc.arguments.get("file_path").and_then(|v| v.as_str()))
+                        {
+                            modified.insert(path.to_string());
                         }
                     }
                 }
@@ -230,7 +239,9 @@ impl ContextReclaimer {
 
                 // Check if this read result is stale (file was modified after)
                 let is_stale_read = tr.tool_name == "read" && {
-                    let content_str: String = tr.content.iter()
+                    let content_str: String = tr
+                        .content
+                        .iter()
                         .filter_map(|b| match b {
                             ContentBlock::Text(t) => Some(t.text.as_str()),
                             _ => None,
@@ -246,7 +257,9 @@ impl ContextReclaimer {
                 }
 
                 // Calculate current size
-                let chars: usize = tr.content.iter()
+                let chars: usize = tr
+                    .content
+                    .iter()
                     .map(|b| match b {
                         ContentBlock::Text(t) => t.text.len(),
                         _ => 0,
@@ -272,10 +285,7 @@ impl ContextReclaimer {
     }
 
     /// Run the full reclaim pipeline.
-    fn run_reclaim(
-        messages: &mut Vec<Message>,
-        context_window: u64,
-    ) -> ReclaimSummary {
+    fn run_reclaim(messages: &mut Vec<Message>, context_window: u64) -> ReclaimSummary {
         let target_tokens = (context_window * DEFAULT_USAGE_PERCENT / 100) as usize;
         let mut summary = ReclaimSummary::default();
 
@@ -297,9 +307,8 @@ impl ContextReclaimer {
 
         // Phase 2: Reclaim stale read results (file was modified after read)
         // These are useless even within the heat window — disk has new content.
-        summary.stale_read_chars = Self::reclaim_tier(
-            messages, 3, KEEP_RECENT, heat_idx, &modified_files,
-        );
+        summary.stale_read_chars =
+            Self::reclaim_tier(messages, 3, KEEP_RECENT, heat_idx, &modified_files);
         // Note: this only reclaims stale reads; non-stale reads survive heat window
 
         let current = Self::estimate_tokens(messages);
@@ -309,9 +318,8 @@ impl ContextReclaimer {
         }
 
         // Phase 3: Reclaim old bash output (tier 1, beyond heat window)
-        summary.bash_chars_reclaimed = Self::reclaim_tier(
-            messages, 1, KEEP_RECENT, heat_idx, &modified_files,
-        );
+        summary.bash_chars_reclaimed =
+            Self::reclaim_tier(messages, 1, KEEP_RECENT, heat_idx, &modified_files);
 
         let current = Self::estimate_tokens(messages);
         if current <= target_tokens {
@@ -320,9 +328,8 @@ impl ContextReclaimer {
         }
 
         // Phase 4: Reclaim old grep/find/ls output (tier 2)
-        summary.search_chars_reclaimed = Self::reclaim_tier(
-            messages, 2, KEEP_RECENT, heat_idx, &modified_files,
-        );
+        summary.search_chars_reclaimed =
+            Self::reclaim_tier(messages, 2, KEEP_RECENT, heat_idx, &modified_files);
 
         let current = Self::estimate_tokens(messages);
         if current <= target_tokens {
@@ -331,9 +338,8 @@ impl ContextReclaimer {
         }
 
         // Phase 5: Reclaim old read output (tier 3, beyond heat window)
-        summary.read_chars_reclaimed = Self::reclaim_tier(
-            messages, 3, KEEP_RECENT, heat_idx, &modified_files,
-        );
+        summary.read_chars_reclaimed =
+            Self::reclaim_tier(messages, 3, KEEP_RECENT, heat_idx, &modified_files);
 
         summary.tokens_after = Self::estimate_tokens(messages);
         summary
@@ -370,7 +376,9 @@ impl Extension for ContextReclaimer {
             tracing::info!(
                 "[reclaimer] {} → {} tokens (saved {}). \
                  thinking={} stale_read={} bash={} search={} read={}",
-                before, after, before.saturating_sub(after),
+                before,
+                after,
+                before.saturating_sub(after),
                 summary.thinking_blocks_removed,
                 summary.stale_read_chars,
                 summary.bash_chars_reclaimed,
@@ -386,10 +394,8 @@ impl Extension for ContextReclaimer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ion_provider::types::{
-        AssistantMessage, ThinkingContent, ToolResultMessage,
-    };
-    use crate::agent::messages::{UserMessage, MessageSource};
+    use crate::agent::messages::{MessageSource, UserMessage};
+    use ion_provider::types::{AssistantMessage, ThinkingContent, ToolResultMessage};
 
     fn make_assistant_with_thinking(thinking: &str, text: &str) -> Message {
         Message::Assistant(AssistantMessage {
@@ -435,7 +441,10 @@ mod tests {
     fn make_user(text: &str) -> Message {
         Message::User(UserMessage {
             role: "user".into(),
-            content: vec![ContentBlock::Text(TextContent { text: text.into(), text_signature: None })],
+            content: vec![ContentBlock::Text(TextContent {
+                text: text.into(),
+                text_signature: None,
+            })],
             timestamp: 0,
             source: MessageSource::Prompt,
         })
@@ -443,10 +452,14 @@ mod tests {
 
     fn tool_result_text(msg: &Message) -> String {
         match msg {
-            Message::ToolResult(tr) => tr.content.first().map(|b| match b {
-                ContentBlock::Text(t) => t.text.clone(),
-                _ => String::new(),
-            }).unwrap_or_default(),
+            Message::ToolResult(tr) => tr
+                .content
+                .first()
+                .map(|b| match b {
+                    ContentBlock::Text(t) => t.text.clone(),
+                    _ => String::new(),
+                })
+                .unwrap_or_default(),
             _ => String::new(),
         }
     }
@@ -461,7 +474,11 @@ mod tests {
         assert_eq!(removed, 2);
         for msg in &msgs {
             if let Message::Assistant(a) = msg {
-                assert!(a.content.iter().all(|b| !matches!(b, AssistantContentBlock::Thinking(_))));
+                assert!(
+                    a.content
+                        .iter()
+                        .all(|b| !matches!(b, AssistantContentBlock::Thinking(_)))
+                );
             }
         }
     }
@@ -493,8 +510,11 @@ mod tests {
         let reclaimed = ContextReclaimer::reclaim_tier(&mut msgs, 1, 8, hb, &HashSet::new());
         assert!(reclaimed > 0);
         for i in 12..20 {
-            assert!(!tool_result_text(&msgs[i]).contains("reclaimed"),
-                "message {} should be preserved", i);
+            assert!(
+                !tool_result_text(&msgs[i]).contains("reclaimed"),
+                "message {} should be preserved",
+                i
+            );
         }
     }
 
@@ -543,19 +563,22 @@ mod tests {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    
+
     #[test]
     fn test_large_context_reclaim() {
         use ion_provider::types::*;
-        
+
         let mut messages: Vec<Message> = Vec::new();
         messages.push(Message::User(UserMessage {
             role: "user".into(),
-            content: vec![ContentBlock::Text(TextContent { text: "Do work".into(), text_signature: None })],
+            content: vec![ContentBlock::Text(TextContent {
+                text: "Do work".into(),
+                text_signature: None,
+            })],
             timestamp: 0,
             source: crate::agent::messages::MessageSource::Prompt,
         }));
-        
+
         // 50 rounds: assistant(thinking) + bash result(2KB)
         for i in 0..50 {
             messages.push(Message::Assistant(AssistantMessage {
@@ -563,17 +586,23 @@ mod integration_tests {
                 content: vec![
                     AssistantContentBlock::Thinking(ThinkingContent {
                         thinking: format!("Thinking about step {} with detailed analysis...", i),
-                        thinking_signature: None, redacted: None,
+                        thinking_signature: None,
+                        redacted: None,
                     }),
                     AssistantContentBlock::Text(TextContent {
                         text: format!("Step {} done", i),
                         text_signature: None,
                     }),
                 ],
-                api: String::new(), provider: String::new(), model: String::new(),
-                response_model: None, response_id: None,
-                usage: Usage::default(), stop_reason: StopReason::ToolUse,
-                error_message: None, timestamp: i as i64,
+                api: String::new(),
+                provider: String::new(),
+                model: String::new(),
+                response_model: None,
+                response_id: None,
+                usage: Usage::default(),
+                stop_reason: StopReason::ToolUse,
+                error_message: None,
+                timestamp: i as i64,
             }));
             messages.push(Message::ToolResult(ToolResultMessage {
                 role: "toolResult".into(),
@@ -583,25 +612,30 @@ mod integration_tests {
                     text: format!("output line {}\n{}", i, "data ".repeat(100)),
                     text_signature: None,
                 })],
-                details: None, is_error: false, timestamp: i as i64,
+                details: None,
+                is_error: false,
+                timestamp: i as i64,
             }));
         }
-        
+
         let before = ContextReclaimer::estimate_tokens(&messages);
         // Use a small context window (8K) so 7K tokens triggers reclamation beyond 60% threshold
         let summary = ContextReclaimer::run_reclaim(&mut messages, 8_000);
         let after = ContextReclaimer::estimate_tokens(&messages);
         let saved = before - after;
         let pct = saved as f64 / before as f64 * 100.0;
-        
+
         println!("\n=== Reclaim Integration Test ===");
         println!("Before: {} tokens ({} messages)", before, 101);
         println!("After:  {} tokens ({} messages)", after, messages.len());
         println!("Saved:  {} tokens ({:.1}%)", saved, pct);
-        println!("Thinking blocks removed: {}", summary.thinking_blocks_removed);
+        println!(
+            "Thinking blocks removed: {}",
+            summary.thinking_blocks_removed
+        );
         println!("Bash chars reclaimed: {}", summary.bash_chars_reclaimed);
         println!("================================\n");
-        
+
         assert!(saved > 0, "should save tokens");
         assert!(pct > 10.0, "should save at least 10%, got {:.1}%", pct);
     }

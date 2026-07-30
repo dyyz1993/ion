@@ -50,7 +50,7 @@ impl ServerEntry {
     fn effective_disabled(&self, cfg: &McpServerConfig) -> bool {
         self.runtime_disabled.unwrap_or_else(|| cfg.is_disabled())
     }
-	}
+}
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServerStatus {
@@ -117,7 +117,10 @@ impl McpManager {
     }
 
     /// 设置连接变更回调（ion_worker 启动时调，用于推送事件到 stdout/subscribe）
-    pub async fn set_on_status_change(&self, f: impl Fn(&str, &ServerStatus) + Send + Sync + 'static) {
+    pub async fn set_on_status_change(
+        &self,
+        f: impl Fn(&str, &ServerStatus) + Send + Sync + 'static,
+    ) {
         *self.on_status_change.lock().await = Some(Box::new(f));
     }
 
@@ -161,8 +164,7 @@ impl McpManager {
 
     /// 计算第 n 次重连的延迟（指数退避：1s → 2s → 4s...，上限 30s）
     fn reconnect_delay(attempt: u32) -> std::time::Duration {
-        let delay_ms = Self::RECONNECT_BASE_DELAY_MS
-            .saturating_mul(1u64 << attempt.min(5)); // 防溢出，最多 2^5=32
+        let delay_ms = Self::RECONNECT_BASE_DELAY_MS.saturating_mul(1u64 << attempt.min(5)); // 防溢出，最多 2^5=32
         std::time::Duration::from_millis(delay_ms.min(Self::RECONNECT_MAX_DELAY_MS))
     }
 
@@ -214,7 +216,9 @@ impl McpManager {
             let delay = Self::reconnect_delay(attempt);
             tracing::warn!(
                 "[mcp] '{}' connection lost, reconnect attempt {} (delay {:?})",
-                name, attempt + 1, delay
+                name,
+                attempt + 1,
+                delay
             );
 
             {
@@ -247,7 +251,9 @@ impl McpManager {
                 }
                 Err(e) => {
                     let mut servers = self.servers.lock().await;
-                    if let Some(entry) = servers.get_mut(&name) && entry.reconnect_attempts >= Self::RECONNECT_MAX_ATTEMPTS {
+                    if let Some(entry) = servers.get_mut(&name)
+                        && entry.reconnect_attempts >= Self::RECONNECT_MAX_ATTEMPTS
+                    {
                         entry.status = ServerStatus::Error;
                         entry.error = Some(format!(
                             "max reconnect attempts ({}) exceeded: {e}",
@@ -320,14 +326,17 @@ impl McpManager {
     async fn connect_one(
         name: &str,
         cfg: &McpServerConfig,
-    ) -> Result<
-        ConnectResult,
-        Box<dyn std::error::Error + Send + Sync>,
-    > {
+    ) -> Result<ConnectResult, Box<dyn std::error::Error + Send + Sync>> {
         use rmcp::ServiceExt;
 
         let client = match cfg {
-            McpServerConfig::Stdio { command, args, env, cwd, .. } => {
+            McpServerConfig::Stdio {
+                command,
+                args,
+                env,
+                cwd,
+                ..
+            } => {
                 let mut cmd = tokio::process::Command::new(command);
                 cmd.args(args);
                 for (k, v) in env {
@@ -338,26 +347,20 @@ impl McpManager {
                 }
                 let transport = rmcp::transport::TokioChildProcess::new(cmd)?;
                 // 连接超时 25s（留 5s 给 list_tools，总共 30s 在 connect_all 的超时内）
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(25),
-                    ().serve(transport),
-                )
-                .await
-                .map_err(|_| -> Box<dyn std::error::Error + Send + Sync> {
-                    "stdio MCP server connect timeout (25s)".into()
-                })??
+                tokio::time::timeout(std::time::Duration::from_secs(25), ().serve(transport))
+                    .await
+                    .map_err(|_| -> Box<dyn std::error::Error + Send + Sync> {
+                        "stdio MCP server connect timeout (25s)".into()
+                    })??
             }
             McpServerConfig::Http { url, .. } => {
                 let transport =
                     rmcp::transport::StreamableHttpClientTransport::from_uri(url.as_str());
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(25),
-                    ().serve(transport),
-                )
-                .await
-                .map_err(|_| -> Box<dyn std::error::Error + Send + Sync> {
-                    "http MCP server connect timeout (25s)".into()
-                })??
+                tokio::time::timeout(std::time::Duration::from_secs(25), ().serve(transport))
+                    .await
+                    .map_err(|_| -> Box<dyn std::error::Error + Send + Sync> {
+                        "http MCP server connect timeout (25s)".into()
+                    })??
             }
         };
 
@@ -409,24 +412,27 @@ impl McpManager {
         .unwrap_or_default();
 
         // 发现提示模板（超时 5s，失败不阻断）
-        let prompts: Vec<DiscoveredPrompt> = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            client.list_all_prompts(),
-        )
-        .await
-        .ok()
-        .and_then(|r| r.ok())
-        .map(|ps| {
-            ps.into_iter()
-                .map(|p| DiscoveredPrompt {
-                    name: p.name.clone(),
-                    description: p.description.clone().map(|d| d.to_string()),
+        let prompts: Vec<DiscoveredPrompt> =
+            tokio::time::timeout(std::time::Duration::from_secs(5), client.list_all_prompts())
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+                .map(|ps| {
+                    ps.into_iter()
+                        .map(|p| DiscoveredPrompt {
+                            name: p.name.clone(),
+                            description: p.description.clone().map(|d| d.to_string()),
+                        })
+                        .collect()
                 })
-                .collect()
-        })
-        .unwrap_or_default();
+                .unwrap_or_default();
 
-        Ok(ConnectResult { client, tools, resources, prompts })
+        Ok(ConnectResult {
+            client,
+            tools,
+            resources,
+            prompts,
+        })
     }
 
     /// 断开单个 server（用于 toggle 关闭 / restart）
@@ -558,7 +564,11 @@ impl McpManager {
                 // 检查连接是否已断开（is_closed 检测 JoinHandle + cancellation_token）
                 if client.is_closed() {
                     drop(servers); // 释放锁
-                    tracing::warn!("[mcp] '{}' connection detected as closed (attempt {})", server_name, attempt + 1);
+                    tracing::warn!(
+                        "[mcp] '{}' connection detected as closed (attempt {})",
+                        server_name,
+                        attempt + 1
+                    );
                     // 尝试重连
                     if let Err(e) = self.reconnect_if_needed(server_name).await {
                         return Err(format!("mcp server '{server_name}' reconnect failed: {e}"));
@@ -573,10 +583,9 @@ impl McpManager {
                 params = params.with_arguments(map.clone());
             }
 
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(60),
-                client.call_tool(params),
-            ).await {
+            match tokio::time::timeout(std::time::Duration::from_secs(60), client.call_tool(params))
+                .await
+            {
                 Ok(Ok(result)) => {
                     // 成功：格式化结果
                     use rmcp::model::RawContent;
@@ -604,7 +613,10 @@ impl McpManager {
                     tracing::warn!("[mcp] '{}' call_tool error: {err_str}", server_name);
                     // 如果是连接类错误且第一次尝试，标记断开并重连重试
                     if attempt == 0 && Self::is_connection_error(&err_str) {
-                        tracing::warn!("[mcp] '{}' connection error, attempting reconnect", server_name);
+                        tracing::warn!(
+                            "[mcp] '{}' connection error, attempting reconnect",
+                            server_name
+                        );
                         if let Ok(()) = self.reconnect_if_needed(server_name).await {
                             continue; // 重连成功，重试
                         }
@@ -612,11 +624,15 @@ impl McpManager {
                     return Err(format!("mcp call_tool error: {err_str}"));
                 }
                 Err(_) => {
-                    return Err(format!("mcp tool '{server_name}__{tool_name}' timeout (60s)"));
+                    return Err(format!(
+                        "mcp tool '{server_name}__{tool_name}' timeout (60s)"
+                    ));
                 }
             }
         }
-        Err(format!("mcp tool '{server_name}__{tool_name}' failed after reconnect retry"))
+        Err(format!(
+            "mcp tool '{server_name}__{tool_name}' failed after reconnect retry"
+        ))
     }
 
     /// 判断错误是否是连接类错误（需要重连）
@@ -691,12 +707,14 @@ impl McpManager {
         servers
             .values()
             .flat_map(|e| e.tools.iter())
-            .map(|t| serde_json::json!({
-                "full_name": t.full_name,
-                "original_name": t.original_name,
-                "description": t.description,
-                "input_schema": t.input_schema,
-            }))
+            .map(|t| {
+                serde_json::json!({
+                    "full_name": t.full_name,
+                    "original_name": t.original_name,
+                    "description": t.description,
+                    "input_schema": t.input_schema,
+                })
+            })
             .collect()
     }
 
@@ -731,11 +749,7 @@ impl McpManager {
     }
 
     /// 读取 MCP 资源内容（通过 rmcp read_resource）
-    pub async fn read_resource(
-        &self,
-        server_name: &str,
-        uri: &str,
-    ) -> Result<String, String> {
+    pub async fn read_resource(&self, server_name: &str, uri: &str) -> Result<String, String> {
         use rmcp::model::ReadResourceRequestParams;
 
         let client = {
@@ -791,7 +805,7 @@ impl McpManager {
         // 找出新增的 server（新有旧无）+ 更新已有 server 的配置
         {
             let mut servers = self.servers.lock().await;
-            for (name, _cfg) in &new_config {
+            for name in new_config.keys() {
                 if !servers.contains_key(name) {
                     servers.insert(name.clone(), ServerEntry::new());
                 }
@@ -804,7 +818,10 @@ impl McpManager {
         for (name, cfg) in &new_config {
             let need_connect = {
                 let servers = self.servers.lock().await;
-                servers.get(name).map(|e| e.client.is_none() && !e.effective_disabled(cfg)).unwrap_or(false)
+                servers
+                    .get(name)
+                    .map(|e| e.client.is_none() && !e.effective_disabled(cfg))
+                    .unwrap_or(false)
             };
             if need_connect {
                 // 标记 connecting
@@ -1005,7 +1022,13 @@ mod tests {
         let json = r#"{ "command": "node", "args": ["server.js"] }"#;
         let cfg: McpServerConfig = serde_json::from_str(json).unwrap();
         match cfg {
-            McpServerConfig::Stdio { command, args, env, cwd, disabled } => {
+            McpServerConfig::Stdio {
+                command,
+                args,
+                env,
+                cwd,
+                disabled,
+            } => {
                 assert_eq!(command, "node");
                 assert_eq!(args, vec!["server.js".to_string()]);
                 assert!(env.is_empty());
@@ -1022,7 +1045,12 @@ mod tests {
         let json = r#"{ "type": "streamable-http", "url": "http://example.com/mcp" }"#;
         let cfg: McpServerConfig = serde_json::from_str(json).unwrap();
         match cfg {
-            McpServerConfig::Http { kind, url, headers, disabled } => {
+            McpServerConfig::Http {
+                kind,
+                url,
+                headers,
+                disabled,
+            } => {
                 assert_eq!(kind, "streamable-http");
                 assert_eq!(url, "http://example.com/mcp");
                 assert!(headers.is_empty());
@@ -1167,10 +1195,22 @@ mod tests {
     #[test]
     fn test_reconnect_delay_exponential_backoff() {
         // attempt 0 → 1s, attempt 1 → 2s, attempt 2 → 4s (exponential growth).
-        assert_eq!(McpManager::reconnect_delay(0), std::time::Duration::from_secs(1));
-        assert_eq!(McpManager::reconnect_delay(1), std::time::Duration::from_secs(2));
-        assert_eq!(McpManager::reconnect_delay(2), std::time::Duration::from_secs(4));
-        assert_eq!(McpManager::reconnect_delay(3), std::time::Duration::from_secs(8));
+        assert_eq!(
+            McpManager::reconnect_delay(0),
+            std::time::Duration::from_secs(1)
+        );
+        assert_eq!(
+            McpManager::reconnect_delay(1),
+            std::time::Duration::from_secs(2)
+        );
+        assert_eq!(
+            McpManager::reconnect_delay(2),
+            std::time::Duration::from_secs(4)
+        );
+        assert_eq!(
+            McpManager::reconnect_delay(3),
+            std::time::Duration::from_secs(8)
+        );
     }
 
     #[test]

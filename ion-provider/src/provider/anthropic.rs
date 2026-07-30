@@ -3,11 +3,11 @@
 //! 对齐 pi packages/ai/src/providers/anthropic.ts
 //! 协议：https://docs.anthropic.com/en/api/messages-streaming
 
+use crate::ApiProvider;
 use crate::env_keys::resolve_api_key;
 use crate::error::{ProviderError, ProviderResult};
-use crate::event_stream::{EventStream, EventSender};
+use crate::event_stream::{EventSender, EventStream};
 use crate::types::*;
-use crate::ApiProvider;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -48,7 +48,8 @@ impl AnthropicMessagesProvider {
         let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
 
         let body = build_request_body(model, context, options)?;
-        let body_json = serde_json::to_string(&body).map_err(|e| ProviderError::Provider(e.to_string()))?;
+        let body_json =
+            serde_json::to_string(&body).map_err(|e| ProviderError::Provider(e.to_string()))?;
 
         let client = Client::builder()
             .timeout(Duration::from_secs(300))
@@ -70,13 +71,18 @@ impl AnthropicMessagesProvider {
                 _ = c.cancelled() => return Err(crate::ProviderError::Stream("HTTP request aborted".into())),
             }
         } else {
-            send_fut.await.map_err(|e| ProviderError::Provider(e.to_string()))?
+            send_fut
+                .await
+                .map_err(|e| ProviderError::Provider(e.to_string()))?
         };
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(ProviderError::HttpError { status: status.as_u16(), body: text });
+            return Err(ProviderError::HttpError {
+                status: status.as_u16(),
+                body: text,
+            });
         }
 
         let model_clone = model.clone();
@@ -135,7 +141,11 @@ enum AnthropicContentBlock {
     #[serde(rename = "image")]
     Image { source: AnthropicImageSource },
     #[serde(rename = "tool_use")]
-    ToolUse { id: String, name: String, input: serde_json::Value },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
     #[serde(rename = "tool_result")]
     ToolResult {
         tool_use_id: String,
@@ -162,7 +172,9 @@ struct AnthropicTool {
     input_schema: serde_json::Value,
 }
 
-fn is_false(b: &bool) -> bool { !*b }
+fn is_false(b: &bool) -> bool {
+    !*b
+}
 
 fn build_request_body(
     model: &Model,
@@ -181,7 +193,10 @@ fn build_request_body(
         match msg {
             Message::User(u) => {
                 let content = convert_user_message(u);
-                messages.push(AnthropicMessage { role: "user".into(), content });
+                messages.push(AnthropicMessage {
+                    role: "user".into(),
+                    content,
+                });
             }
             Message::Assistant(a) => {
                 let blocks = convert_assistant_message(a);
@@ -193,10 +208,15 @@ fn build_request_body(
                 }
             }
             Message::ToolResult(tr) => {
-                let content_text = tr.content.iter().filter_map(|b| match b {
-                    ContentBlock::Text(t) => Some(t.text.clone()),
-                    _ => None,
-                }).collect::<Vec<_>>().join("\n");
+                let content_text = tr
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 let block = AnthropicContentBlock::ToolResult {
                     tool_use_id: tr.tool_call_id.clone(),
                     content: content_text,
@@ -210,27 +230,37 @@ fn build_request_body(
             Message::BashExecution(b) => {
                 messages.push(AnthropicMessage {
                     role: "user".into(),
-                    content: AnthropicMessageContent::Text(format!("$ {}\n{}", b.command, b.output)),
+                    content: AnthropicMessageContent::Text(format!(
+                        "$ {}\n{}",
+                        b.command, b.output
+                    )),
                 });
             }
             Message::Custom(c) => {
                 let has_image = match &c.content {
                     CustomContent::Text(_) => false,
-                    CustomContent::Blocks(blocks) => blocks.iter().any(|b| matches!(b, ContentBlock::Image(_))),
+                    CustomContent::Blocks(blocks) => {
+                        blocks.iter().any(|b| matches!(b, ContentBlock::Image(_)))
+                    }
                 };
                 if has_image {
                     // When an image is present, emit content blocks array
                     let blocks: Vec<AnthropicContentBlock> = match &c.content {
-                        CustomContent::Blocks(blocks) => blocks.iter().filter_map(|b| match b {
-                            ContentBlock::Text(t) => Some(AnthropicContentBlock::Text { text: t.text.clone() }),
-                            ContentBlock::Image(img) => Some(AnthropicContentBlock::Image {
-                                source: AnthropicImageSource {
-                                    source_type: "base64".into(),
-                                    media_type: img.mime_type.clone(),
-                                    data: img.data.clone(),
-                                },
-                            }),
-                        }).collect(),
+                        CustomContent::Blocks(blocks) => blocks
+                            .iter()
+                            .filter_map(|b| match b {
+                                ContentBlock::Text(t) => Some(AnthropicContentBlock::Text {
+                                    text: t.text.clone(),
+                                }),
+                                ContentBlock::Image(img) => Some(AnthropicContentBlock::Image {
+                                    source: AnthropicImageSource {
+                                        source_type: "base64".into(),
+                                        media_type: img.mime_type.clone(),
+                                        data: img.data.clone(),
+                                    },
+                                }),
+                            })
+                            .collect(),
                         _ => vec![],
                     };
                     messages.push(AnthropicMessage {
@@ -241,7 +271,8 @@ fn build_request_body(
                     // Text-only: join into a single string
                     let text = match &c.content {
                         CustomContent::Text(s) => s.clone(),
-                        CustomContent::Blocks(blocks) => blocks.iter()
+                        CustomContent::Blocks(blocks) => blocks
+                            .iter()
                             .filter_map(|b| match b {
                                 ContentBlock::Text(t) => Some(t.text.clone()),
                                 _ => None,
@@ -270,7 +301,8 @@ fn build_request_body(
         }
     }
 
-    let tools: Vec<AnthropicTool> = context.tools
+    let tools: Vec<AnthropicTool> = context
+        .tools
         .as_deref()
         .unwrap_or(&[])
         .iter()
@@ -292,49 +324,66 @@ fn build_request_body(
 }
 
 fn convert_user_message(u: &UserMessage) -> AnthropicMessageContent {
-    let has_image = u.content.iter().any(|b| matches!(b, ContentBlock::Image(_)));
+    let has_image = u
+        .content
+        .iter()
+        .any(|b| matches!(b, ContentBlock::Image(_)));
     if !has_image {
-        let text = u.content.iter().filter_map(|b| match b {
-            ContentBlock::Text(t) => Some(t.text.clone()),
-            _ => None,
-        }).collect::<Vec<_>>().join("\n");
+        let text = u
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text(t) => Some(t.text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         AnthropicMessageContent::Text(text)
     } else {
-        let blocks: Vec<AnthropicContentBlock> = u.content.iter().map(|b| match b {
-            ContentBlock::Text(t) => AnthropicContentBlock::Text { text: t.text.clone() },
-            ContentBlock::Image(img) => AnthropicContentBlock::Image {
-                source: AnthropicImageSource {
-                    source_type: "base64".into(),
-                    media_type: img.mime_type.clone(),
-                    data: img.data.clone(),
+        let blocks: Vec<AnthropicContentBlock> = u
+            .content
+            .iter()
+            .map(|b| match b {
+                ContentBlock::Text(t) => AnthropicContentBlock::Text {
+                    text: t.text.clone(),
                 },
-            },
-        }).collect();
+                ContentBlock::Image(img) => AnthropicContentBlock::Image {
+                    source: AnthropicImageSource {
+                        source_type: "base64".into(),
+                        media_type: img.mime_type.clone(),
+                        data: img.data.clone(),
+                    },
+                },
+            })
+            .collect();
         AnthropicMessageContent::Blocks(blocks)
     }
 }
 
 fn convert_assistant_message(a: &AssistantMessage) -> Vec<AnthropicContentBlock> {
-    a.content.iter().filter_map(|b| match b {
-        AssistantContentBlock::Text(t) => Some(AnthropicContentBlock::Text { text: t.text.clone() }),
-        AssistantContentBlock::Thinking(th) => Some(AnthropicContentBlock::Thinking { thinking: th.thinking.clone() }),
-        AssistantContentBlock::ToolCall(tc) => Some(AnthropicContentBlock::ToolUse {
-            id: tc.id.clone(),
-            name: tc.name.clone(),
-            input: tc.arguments.clone(),
-        }),
-    }).collect()
+    a.content
+        .iter()
+        .filter_map(|b| match b {
+            AssistantContentBlock::Text(t) => Some(AnthropicContentBlock::Text {
+                text: t.text.clone(),
+            }),
+            AssistantContentBlock::Thinking(th) => Some(AnthropicContentBlock::Thinking {
+                thinking: th.thinking.clone(),
+            }),
+            AssistantContentBlock::ToolCall(tc) => Some(AnthropicContentBlock::ToolUse {
+                id: tc.id.clone(),
+                name: tc.name.clone(),
+                input: tc.arguments.clone(),
+            }),
+        })
+        .collect()
 }
 
 // ──────────────────────────────────────────────────────────────
 // SSE 流解析
 // ──────────────────────────────────────────────────────────────
 
-async fn parse_sse_stream(
-    resp: reqwest::Response,
-    sender: EventSender,
-    model: &Model,
-) {
+async fn parse_sse_stream(resp: reqwest::Response, sender: EventSender, model: &Model) {
     let mut output = AssistantMessage::new(model);
     let mut byte_stream = resp.bytes_stream();
     let mut buffer = String::new();
@@ -343,13 +392,20 @@ async fn parse_sse_stream(
     let mut stop_reason = StopReason::Stop;
 
     // Start 事件
-    let _ = sender.send(StreamEvent::Start { partial: output.clone() }).await;
+    let _ = sender
+        .send(StreamEvent::Start {
+            partial: output.clone(),
+        })
+        .await;
 
     let parse_result: ProviderResult<()> = async {
         while let Some(chunk_result) = byte_stream.next().await {
             let chunk = match chunk_result {
                 Ok(c) => c,
-                Err(e) => { println!("[anthropic-debug] chunk error: {e}"); return Err(ProviderError::Stream(e.to_string())); }
+                Err(e) => {
+                    println!("[anthropic-debug] chunk error: {e}");
+                    return Err(ProviderError::Stream(e.to_string()));
+                }
             };
             let text = String::from_utf8_lossy(&chunk);
             buffer.push_str(&text);
@@ -363,23 +419,31 @@ async fn parse_sse_stream(
                     match event_type.as_str() {
                         "message_start" => {}
                         "content_block_start" => {
-                            if let Ok(block_start) = serde_json::from_str::<ContentBlockStart>(&data) {
+                            if let Ok(block_start) =
+                                serde_json::from_str::<ContentBlockStart>(&data)
+                            {
                                 let block = block_start.content_block;
                                 match block.block_type.as_str() {
                                     "text" => {
-                                        let _ = sender.send(StreamEvent::TextStart {
-                                            content_index,
-                                            partial: output.clone(),
-                                        }).await;
-                                        current_block = Some(BlockState::Text { text: String::new() });
+                                        let _ = sender
+                                            .send(StreamEvent::TextStart {
+                                                content_index,
+                                                partial: output.clone(),
+                                            })
+                                            .await;
+                                        current_block = Some(BlockState::Text {
+                                            text: String::new(),
+                                        });
                                     }
                                     "tool_use" => {
                                         let id = block.id.unwrap_or_default();
                                         let name = block.name.unwrap_or_default();
-                                        let _ = sender.send(StreamEvent::ToolCallStart {
-                                            content_index,
-                                            partial: output.clone(),
-                                        }).await;
+                                        let _ = sender
+                                            .send(StreamEvent::ToolCallStart {
+                                                content_index,
+                                                partial: output.clone(),
+                                            })
+                                            .await;
                                         current_block = Some(BlockState::ToolUse {
                                             id,
                                             name,
@@ -387,10 +451,12 @@ async fn parse_sse_stream(
                                         });
                                     }
                                     "thinking" => {
-                                        let _ = sender.send(StreamEvent::ThinkingStart {
-                                            content_index,
-                                            partial: output.clone(),
-                                        }).await;
+                                        let _ = sender
+                                            .send(StreamEvent::ThinkingStart {
+                                                content_index,
+                                                partial: output.clone(),
+                                            })
+                                            .await;
                                         current_block = Some(BlockState::Thinking {
                                             thinking: String::new(),
                                             signature: None,
@@ -404,45 +470,66 @@ async fn parse_sse_stream(
                             if let Ok(delta) = serde_json::from_str::<ContentBlockDelta>(&data) {
                                 match &delta.delta {
                                     DeltaPayload::TextDelta { text } => {
-                                        if let Some(BlockState::Text { text: t }) = &mut current_block {
+                                        if let Some(BlockState::Text { text: t }) =
+                                            &mut current_block
+                                        {
                                             t.push_str(text);
-                                            if let Some(AssistantContentBlock::Text(tc)) = output.content.last_mut() {
+                                            if let Some(AssistantContentBlock::Text(tc)) =
+                                                output.content.last_mut()
+                                            {
                                                 tc.text.push_str(text);
                                             }
                                         }
-                                        let _ = sender.send(StreamEvent::TextDelta {
-                                            content_index,
-                                            delta: text.clone(),
-                                            partial: output.clone(),
-                                        }).await;
+                                        let _ = sender
+                                            .send(StreamEvent::TextDelta {
+                                                content_index,
+                                                delta: text.clone(),
+                                                partial: output.clone(),
+                                            })
+                                            .await;
                                     }
                                     DeltaPayload::InputJsonDelta { partial_json } => {
-                                        if let Some(BlockState::ToolUse { partial_json: pj, .. }) = &mut current_block {
+                                        if let Some(BlockState::ToolUse {
+                                            partial_json: pj, ..
+                                        }) = &mut current_block
+                                        {
                                             pj.push_str(partial_json);
                                         }
-                                        let _ = sender.send(StreamEvent::ToolCallDelta {
-                                            content_index,
-                                            delta: partial_json.clone(),
-                                            partial: output.clone(),
-                                        }).await;
+                                        let _ = sender
+                                            .send(StreamEvent::ToolCallDelta {
+                                                content_index,
+                                                delta: partial_json.clone(),
+                                                partial: output.clone(),
+                                            })
+                                            .await;
                                     }
                                     DeltaPayload::ThinkingDelta { thinking } => {
-                                        if let Some(BlockState::Thinking { thinking: t, .. }) = &mut current_block {
+                                        if let Some(BlockState::Thinking { thinking: t, .. }) =
+                                            &mut current_block
+                                        {
                                             t.push_str(thinking);
-                                            if let Some(AssistantContentBlock::Thinking(tc)) = output.content.last_mut() {
+                                            if let Some(AssistantContentBlock::Thinking(tc)) =
+                                                output.content.last_mut()
+                                            {
                                                 tc.thinking.push_str(thinking);
                                             }
                                         }
-                                        let _ = sender.send(StreamEvent::ThinkingDelta {
-                                            content_index,
-                                            delta: thinking.clone(),
-                                            partial: output.clone(),
-                                        }).await;
+                                        let _ = sender
+                                            .send(StreamEvent::ThinkingDelta {
+                                                content_index,
+                                                delta: thinking.clone(),
+                                                partial: output.clone(),
+                                            })
+                                            .await;
                                     }
                                     DeltaPayload::SignatureDelta { signature } => {
-                                        if let Some(BlockState::Thinking { signature: s, .. }) = &mut current_block {
+                                        if let Some(BlockState::Thinking { signature: s, .. }) =
+                                            &mut current_block
+                                        {
                                             *s = Some(signature.clone());
-                                            if let Some(AssistantContentBlock::Thinking(tc)) = output.content.last_mut() {
+                                            if let Some(AssistantContentBlock::Thinking(tc)) =
+                                                output.content.last_mut()
+                                            {
                                                 tc.thinking_signature = Some(signature.clone());
                                             }
                                         }
@@ -451,53 +538,70 @@ async fn parse_sse_stream(
                                 }
                             }
                         }
-                        "content_block_stop" => {
-                            match current_block.take() {
-                                Some(BlockState::Text { text }) => {
-                                    output.content.push(AssistantContentBlock::Text(TextContent {
+                        "content_block_stop" => match current_block.take() {
+                            Some(BlockState::Text { text }) => {
+                                output
+                                    .content
+                                    .push(AssistantContentBlock::Text(TextContent {
                                         text: text.clone(),
                                         text_signature: None,
                                     }));
-                                    let _ = sender.send(StreamEvent::TextEnd {
+                                let _ = sender
+                                    .send(StreamEvent::TextEnd {
                                         content_index,
                                         content: text,
                                         partial: output.clone(),
-                                    }).await;
-                                    content_index += 1;
-                                }
-                                Some(BlockState::ToolUse { id, name, partial_json }) => {
-                                    let arguments = parse_json_repair(&partial_json);
-                                    let tool_call = ToolCall {
-                                        call_type: "function".into(),
-                                        id: id.clone(),
-                                        name: name.clone(),
-                                        arguments: arguments.clone(),
-                                        thought_signature: None,
-                                    };
-                                    output.content.push(AssistantContentBlock::ToolCall(tool_call.clone()));
-                                    let _ = sender.send(StreamEvent::ToolCallEnd {
+                                    })
+                                    .await;
+                                content_index += 1;
+                            }
+                            Some(BlockState::ToolUse {
+                                id,
+                                name,
+                                partial_json,
+                            }) => {
+                                let arguments = parse_json_repair(&partial_json);
+                                let tool_call = ToolCall {
+                                    call_type: "function".into(),
+                                    id: id.clone(),
+                                    name: name.clone(),
+                                    arguments: arguments.clone(),
+                                    thought_signature: None,
+                                };
+                                output
+                                    .content
+                                    .push(AssistantContentBlock::ToolCall(tool_call.clone()));
+                                let _ = sender
+                                    .send(StreamEvent::ToolCallEnd {
                                         content_index,
                                         tool_call,
                                         partial: output.clone(),
-                                    }).await;
-                                    content_index += 1;
-                                }
-                                Some(BlockState::Thinking { thinking, signature }) => {
-                                    output.content.push(AssistantContentBlock::Thinking(ThinkingContent {
+                                    })
+                                    .await;
+                                content_index += 1;
+                            }
+                            Some(BlockState::Thinking {
+                                thinking,
+                                signature,
+                            }) => {
+                                output.content.push(AssistantContentBlock::Thinking(
+                                    ThinkingContent {
                                         thinking: thinking.clone(),
                                         thinking_signature: signature,
                                         redacted: None,
-                                    }));
-                                    let _ = sender.send(StreamEvent::ThinkingEnd {
+                                    },
+                                ));
+                                let _ = sender
+                                    .send(StreamEvent::ThinkingEnd {
                                         content_index,
                                         content: thinking,
                                         partial: output.clone(),
-                                    }).await;
-                                    content_index += 1;
-                                }
-                                None => {}
+                                    })
+                                    .await;
+                                content_index += 1;
                             }
-                        }
+                            None => {}
+                        },
                         "message_delta" => {
                             if let Ok(msg_delta) = serde_json::from_str::<MessageDelta>(&data) {
                                 if let Some(sr) = msg_delta.delta.stop_reason {
@@ -525,7 +629,8 @@ async fn parse_sse_stream(
             }
         }
         Ok(())
-    }.await;
+    }
+    .await;
 
     match parse_result {
         Ok(()) => {
@@ -541,9 +646,18 @@ async fn parse_sse_stream(
 }
 
 enum BlockState {
-    Text { text: String },
-    ToolUse { id: String, name: String, partial_json: String },
-    Thinking { thinking: String, signature: Option<String> },
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        partial_json: String,
+    },
+    Thinking {
+        thinking: String,
+        signature: Option<String>,
+    },
 }
 
 fn parse_sse_event(event_str: &str) -> Option<(String, String)> {
@@ -580,10 +694,21 @@ fn parse_json_repair(s: &str) -> serde_json::Value {
     let mut in_string = false;
     let mut escape = false;
     for c in repaired.chars() {
-        if escape { escape = false; continue; }
-        if c == '\\' { escape = true; continue; }
-        if c == '"' { in_string = !in_string; continue; }
-        if in_string { continue; }
+        if escape {
+            escape = false;
+            continue;
+        }
+        if c == '\\' {
+            escape = true;
+            continue;
+        }
+        if c == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
         match c {
             '{' => open_braces += 1,
             '}' => open_braces -= 1,
@@ -592,9 +717,15 @@ fn parse_json_repair(s: &str) -> serde_json::Value {
             _ => {}
         }
     }
-    if in_string { repaired.push('"'); }
-    for _ in 0..open_brackets.max(0) { repaired.push(']'); }
-    for _ in 0..open_braces.max(0) { repaired.push('}'); }
+    if in_string {
+        repaired.push('"');
+    }
+    for _ in 0..open_brackets.max(0) {
+        repaired.push(']');
+    }
+    for _ in 0..open_braces.max(0) {
+        repaired.push('}');
+    }
     serde_json::from_str(&repaired).unwrap_or(serde_json::json!({}))
 }
 
@@ -758,7 +889,10 @@ mod tests {
             Some("You are helpful".into()),
             vec![Message::User(UserMessage {
                 role: "user".into(),
-                content: vec![ContentBlock::Text(TextContent { text: "Hello".into(), text_signature: None })],
+                content: vec![ContentBlock::Text(TextContent {
+                    text: "Hello".into(),
+                    text_signature: None,
+                })],
                 timestamp: 0,
                 source: MessageSource::Prompt,
             })],
@@ -792,8 +926,14 @@ mod tests {
         let u = UserMessage {
             role: "user".into(),
             content: vec![
-                ContentBlock::Text(TextContent { text: "What's this?".into(), text_signature: None }),
-                ContentBlock::Image(ImageContent { data: "base64data".into(), mime_type: "image/png".into() }),
+                ContentBlock::Text(TextContent {
+                    text: "What's this?".into(),
+                    text_signature: None,
+                }),
+                ContentBlock::Image(ImageContent {
+                    data: "base64data".into(),
+                    mime_type: "image/png".into(),
+                }),
             ],
             timestamp: 0,
             source: MessageSource::Prompt,

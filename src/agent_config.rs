@@ -79,8 +79,8 @@ const IMPROVER_MD: &str = include_str!("../examples/agents/improver.md");
 
 pub fn builtin_agents() -> Vec<AgentConfig> {
     // improver 从 .md 解析；解析失败兜底一个最小配置（不会让 builtin 列表整个崩）
-    let improver = parse_agent_md(IMPROVER_MD, "examples/agents/improver.md")
-        .unwrap_or_else(|| AgentConfig {
+    let improver =
+        parse_agent_md(IMPROVER_MD, "examples/agents/improver.md").unwrap_or_else(|| AgentConfig {
             name: "improver".into(),
             description: "通用任务智能体（builtin fallback）".into(),
             tools: None,
@@ -171,7 +171,10 @@ pub fn global_agents_dir() -> PathBuf {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".ion").join("agent").join("agents")
+    PathBuf::from(home)
+        .join(".ion")
+        .join("agent")
+        .join("agents")
 }
 
 pub fn project_agents_dir() -> Option<PathBuf> {
@@ -201,7 +204,11 @@ pub fn parse_agent_md(content: &str, file_path: &str) -> Option<AgentConfig> {
     let body = content[3 + end + 3..].trim();
 
     let mut config: AgentConfig = serde_yaml::from_str(frontmatter_str).ok()?;
-    config.system_prompt = Some(if body.is_empty() { config.description.clone() } else { body.to_string() });
+    config.system_prompt = Some(if body.is_empty() {
+        config.description.clone()
+    } else {
+        body.to_string()
+    });
     config.source = if file_path.contains(".ion/agents/") {
         "project".into()
     } else if file_path.contains("examples/agents/") {
@@ -312,11 +319,25 @@ pub fn agent_description(name: &str) -> Option<String> {
 
 impl AgentConfig {
     /// Apply this agent's settings to overridable parameters.
-    pub fn apply(&self, model: &mut String, thinking: &mut Option<String>, max_turns: &mut Option<u64>, prompt: &mut Option<String>) {
-        if let Some(ref m) = self.model { *model = m.clone(); }
-        if let Some(ref tl) = self.thinking_level { *thinking = Some(tl.clone()); }
-        if let Some(mt) = self.max_turns { *max_turns = Some(mt); }
-        if let Some(ref sp) = self.system_prompt { *prompt = Some(sp.clone()); }
+    pub fn apply(
+        &self,
+        model: &mut String,
+        thinking: &mut Option<String>,
+        max_turns: &mut Option<u64>,
+        prompt: &mut Option<String>,
+    ) {
+        if let Some(ref m) = self.model {
+            *model = m.clone();
+        }
+        if let Some(ref tl) = self.thinking_level {
+            *thinking = Some(tl.clone());
+        }
+        if let Some(mt) = self.max_turns {
+            *max_turns = Some(mt);
+        }
+        if let Some(ref sp) = self.system_prompt {
+            *prompt = Some(sp.clone());
+        }
     }
 }
 
@@ -328,18 +349,31 @@ mod tests {
     fn test_count_builtin_agents() {
         let count = count_builtin_agents();
         // build, explore, plan, improver — at least 3
-        assert!(count >= 3, "Expected at least 3 builtin agents, got {}", count);
+        assert!(
+            count >= 3,
+            "Expected at least 3 builtin agents, got {}",
+            count
+        );
     }
 
     #[test]
     fn test_agent_description() {
         // The builtin "build" agent should have a non-empty description
         let desc = agent_description("build");
-        assert!(desc.is_some(), "agent_description('build') should return Some");
-        assert!(!desc.unwrap().is_empty(), "build agent description should not be empty");
+        assert!(
+            desc.is_some(),
+            "agent_description('build') should return Some"
+        );
+        assert!(
+            !desc.unwrap().is_empty(),
+            "build agent description should not be empty"
+        );
 
         // A non-existent agent should return None
         let missing = agent_description("nonexistent_agent_xyz_123");
-        assert!(missing.is_none(), "agent_description for nonexistent agent should return None");
+        assert!(
+            missing.is_none(),
+            "agent_description for nonexistent agent should return None"
+        );
     }
 }

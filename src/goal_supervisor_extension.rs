@@ -144,11 +144,11 @@ pub enum GoalStatus {
 /// One executable step in a goal plan.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct ExecutionStep {
-    pub id: String,              // "step_1"
-    pub description: String,     // "create board data structure"
-    pub deliverable: String,     // "src/board.rs with Board struct"
+    pub id: String,          // "step_1"
+    pub description: String, // "create board data structure"
+    pub deliverable: String, // "src/board.rs with Board struct"
     #[serde(default)]
-    pub status: String,          // "pending" | "done"
+    pub status: String, // "pending" | "done"
 }
 
 /// A complete plan decomposed from a text objective.
@@ -168,7 +168,10 @@ pub struct GoalPlan {
 impl GoalPlan {
     /// How many steps are still pending.
     pub fn pending_step_count(&self) -> usize {
-        self.execution_steps.iter().filter(|s| s.status != "done").count()
+        self.execution_steps
+            .iter()
+            .filter(|s| s.status != "done")
+            .count()
     }
 
     /// List pending step descriptions (for RetryWith messages).
@@ -419,9 +422,7 @@ impl GoalSupervisorExtension {
             }
             PassCriteria::GrepEmpty { pattern } => {
                 // Pass iff no line of stdout contains the pattern.
-                let any_match = stdout
-                    .lines()
-                    .any(|line| line.contains(pattern.as_str()));
+                let any_match = stdout.lines().any(|line| line.contains(pattern.as_str()));
                 if any_match {
                     CheckStatus::Fail
                 } else {
@@ -502,20 +503,20 @@ impl GoalSupervisorExtension {
 
     /// Increment the iteration counter and record the latest action plan.
     pub fn record_iteration(&self, action_plan: Option<String>) {
-        if let Ok(mut guard) = self.state.lock() {
-            if let Some(state) = guard.as_mut() {
-                state.iteration_count += 1;
-                state.last_action_plan = action_plan;
-            }
+        if let Ok(mut guard) = self.state.lock()
+            && let Some(state) = guard.as_mut()
+        {
+            state.iteration_count += 1;
+            state.last_action_plan = action_plan;
         }
     }
 
     /// Set the goal status (Running / Complete / Exhausted / Blocked / Cancelled).
     pub fn set_status(&self, status: GoalStatus) {
-        if let Ok(mut guard) = self.state.lock() {
-            if let Some(state) = guard.as_mut() {
-                state.status = status;
-            }
+        if let Ok(mut guard) = self.state.lock()
+            && let Some(state) = guard.as_mut()
+        {
+            state.status = status;
         }
     }
 
@@ -538,9 +539,7 @@ impl GoalSupervisorExtension {
 
         // Check drift FIRST (doesn't need history): is the action plan related to the objective?
         let drifting = match current_plan {
-            Some(plan) if !plan.is_empty() => {
-                calculate_similarity(plan, &objective) < 0.15
-            }
+            Some(plan) if !plan.is_empty() => calculate_similarity(plan, &objective) < 0.15,
             _ => false,
         };
         if drifting {
@@ -563,10 +562,16 @@ impl GoalSupervisorExtension {
                 Some(s) if s.recent_tools.len() >= 5 => {
                     let recent = &s.recent_tools;
                     let has_write = recent.iter().any(|(name, _)| {
-                        name == "write" || name == "edit" || name == "write_file" || name == "edit_file"
+                        name == "write"
+                            || name == "edit"
+                            || name == "write_file"
+                            || name == "edit_file"
                     });
                     let all_bash_read = recent.iter().all(|(name, _)| {
-                        name == "bash" || name == "bash_run" || name == "read" || name == "read_file"
+                        name == "bash"
+                            || name == "bash_run"
+                            || name == "read"
+                            || name == "read_file"
                     });
                     !has_write && all_bash_read
                 }
@@ -622,7 +627,11 @@ impl GoalSupervisorExtension {
             }
         };
 
-        ProgressReport { trend, failed_history, recommendation }
+        ProgressReport {
+            trend,
+            failed_history,
+            recommendation,
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -653,7 +662,11 @@ impl GoalSupervisorExtension {
             let state = guard
                 .as_ref()
                 .ok_or_else(|| "log_iteration: no goal".to_string())?;
-            (state.goal_id.clone(), state.objective.clone(), state.iteration_count)
+            (
+                state.goal_id.clone(),
+                state.objective.clone(),
+                state.iteration_count,
+            )
         };
 
         let record = serde_json::json!({
@@ -692,8 +705,12 @@ impl GoalSupervisorExtension {
             .open(&path)
             .map_err(|e| format!("open iterations.jsonl: {e}"))?;
         use std::io::Write;
-        writeln!(file, "{}", serde_json::to_string(&record).map_err(|e| e.to_string())?)
-            .map_err(|e| format!("write iterations.jsonl: {e}"))?;
+        writeln!(
+            file,
+            "{}",
+            serde_json::to_string(&record).map_err(|e| e.to_string())?
+        )
+        .map_err(|e| format!("write iterations.jsonl: {e}"))?;
         Ok(())
     }
 
@@ -711,8 +728,14 @@ impl GoalSupervisorExtension {
             let state = guard
                 .as_ref()
                 .ok_or_else(|| "write_final_report: no goal".to_string())?;
-            (state.goal_id.clone(), state.iteration_count, state.started_at.clone(),
-             state.objective.clone(), state.goal_plan.clone(), state.checks.clone())
+            (
+                state.goal_id.clone(),
+                state.iteration_count,
+                state.started_at.clone(),
+                state.objective.clone(),
+                state.goal_plan.clone(),
+                state.checks.clone(),
+            )
         };
 
         // B2-b: auto-generate outcome + diagnosis_hint from status/reason.
@@ -754,11 +777,14 @@ impl GoalSupervisorExtension {
                          a stronger model to find a different approach.",
                         iterations
                     ),
-                    other => format!("Goal exhausted for reason: {} after {} iterations.", other, iterations),
+                    other => format!(
+                        "Goal exhausted for reason: {} after {} iterations.",
+                        other, iterations
+                    ),
                 };
                 ("abandoned", Some(hint))
             }
-            _ => ("unknown".into(), None),
+            _ => ("unknown", None),
         };
 
         let report = serde_json::json!({
@@ -786,8 +812,11 @@ impl GoalSupervisorExtension {
         });
 
         let path = dir.join("final-report.json");
-        std::fs::write(&path, serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?)
-            .map_err(|e| format!("write final-report.json: {e}"))?;
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("write final-report.json: {e}"))?;
         Ok(())
     }
 }
@@ -834,17 +863,38 @@ pub async fn generate_checks_via_llm(
         max_retries: None,
         response_format: None,
     };
-    let msg = ion_provider::registry::complete(registry, model, &context, Some(&options)).await.ok()?;
-    let text: String = msg.content.iter().filter_map(|c| match c {
-        ion_provider::types::AssistantContentBlock::Text(t) => Some(t.text.as_str()),
-        _ => None,
-    }).collect::<Vec<_>>().join("");
+    let msg = ion_provider::registry::complete(registry, model, &context, Some(&options))
+        .await
+        .ok()?;
+    let text: String = msg
+        .content
+        .iter()
+        .filter_map(|c| match c {
+            ion_provider::types::AssistantContentBlock::Text(t) => Some(t.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("");
     // Strip markdown fences.
-    let text = text.trim().strip_prefix("```json").or_else(|| text.trim().strip_prefix("```")).unwrap_or(&text).trim().trim_end_matches("```").trim();
+    let text = text
+        .trim()
+        .strip_prefix("```json")
+        .or_else(|| text.trim().strip_prefix("```"))
+        .unwrap_or(&text)
+        .trim()
+        .trim_end_matches("```")
+        .trim();
     match serde_json::from_str::<Vec<serde_json::Value>>(text) {
         Ok(arr) => {
-            let checks: Vec<Check> = arr.iter().filter_map(|item| serde_json::from_value(item.clone()).ok()).collect();
-            if checks.is_empty() { None } else { Some(checks) }
+            let checks: Vec<Check> = arr
+                .iter()
+                .filter_map(|item| serde_json::from_value(item.clone()).ok())
+                .collect();
+            if checks.is_empty() {
+                None
+            } else {
+                Some(checks)
+            }
         }
         Err(_) => None,
     }
@@ -899,35 +949,62 @@ pub async fn generate_goal_plan(
         response_format: None,
     };
 
-    let msg = ion_provider::registry::complete(registry, model, &context, Some(&options)).await.ok()?;
-    let text: String = msg.content.iter().filter_map(|c| match c {
-        ion_provider::types::AssistantContentBlock::Text(t) => Some(t.text.as_str()),
-        _ => None,
-    }).collect::<Vec<_>>().join("");
+    let msg = ion_provider::registry::complete(registry, model, &context, Some(&options))
+        .await
+        .ok()?;
+    let text: String = msg
+        .content
+        .iter()
+        .filter_map(|c| match c {
+            ion_provider::types::AssistantContentBlock::Text(t) => Some(t.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("");
 
     // Strip markdown fences.
-    let text = text.trim()
-        .strip_prefix("```json").or_else(|| text.trim().strip_prefix("```"))
-        .unwrap_or(&text).trim()
-        .trim_end_matches("```").trim();
+    let text = text
+        .trim()
+        .strip_prefix("```json")
+        .or_else(|| text.trim().strip_prefix("```"))
+        .unwrap_or(&text)
+        .trim()
+        .trim_end_matches("```")
+        .trim();
 
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
 
     // Parse execution_steps.
-    let steps: Vec<ExecutionStep> = v.get("execution_steps").and_then(|a| a.as_array())
-        .map(|arr| arr.iter().filter_map(|item| {
-            serde_json::from_value(item.clone()).ok()
-        }).collect()).unwrap_or_default();
+    let steps: Vec<ExecutionStep> = v
+        .get("execution_steps")
+        .and_then(|a| a.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| serde_json::from_value(item.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default();
 
     // Parse checks (reuse Check deserialization).
-    let checks: Vec<Check> = v.get("checks").and_then(|a| a.as_array())
-        .map(|arr| arr.iter().filter_map(|item| {
-            serde_json::from_value(item.clone()).ok()
-        }).collect()).unwrap_or_default();
+    let checks: Vec<Check> = v
+        .get("checks")
+        .and_then(|a| a.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| serde_json::from_value(item.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default();
 
     // Parse acceptance_criteria.
-    let criteria: Vec<String> = v.get("acceptance_criteria").and_then(|a| a.as_array())
-        .map(|arr| arr.iter().filter_map(|c| c.as_str().map(String::from)).collect())
+    let criteria: Vec<String> = v
+        .get("acceptance_criteria")
+        .and_then(|a| a.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| c.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
     if steps.is_empty() && checks.is_empty() {
@@ -941,7 +1018,11 @@ pub async fn generate_goal_plan(
         report_template: None,
     };
 
-    tracing::info!("[goal-supervisor] Generated plan: {} steps, {} checks", plan.execution_steps.len(), checks.len());
+    tracing::info!(
+        "[goal-supervisor] Generated plan: {} steps, {} checks",
+        plan.execution_steps.len(),
+        checks.len()
+    );
     Some((plan, checks))
 }
 
@@ -979,8 +1060,9 @@ pub fn default_ci_checks() -> Vec<Check> {
 // Progress analysis types + helpers (Deepening Task 1)
 // ===========================================================================
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub enum ProgressTrend {
+    #[default]
     Converging,
     Oscillating,
     Drifting,
@@ -992,12 +1074,6 @@ pub struct ProgressReport {
     pub trend: ProgressTrend,
     pub failed_history: Vec<Vec<String>>,
     pub recommendation: String,
-}
-
-impl Default for ProgressTrend {
-    fn default() -> Self {
-        ProgressTrend::Converging
-    }
 }
 
 /// Read the last N entries' failed_checks from iterations.jsonl.
@@ -1068,7 +1144,7 @@ fn classify_trend(history: &[Vec<String>]) -> ProgressTrend {
 /// Jaccard similarity over whitespace-split tokens (length > 2).
 /// Returns 0.0 if either string has no qualifying tokens.
 pub fn calculate_similarity(a: &str, b: &str) -> f64 {
-    fn tokenize<'a>(s: &'a str) -> std::collections::HashSet<&'a str> {
+    fn tokenize(s: &str) -> std::collections::HashSet<&str> {
         s.split(|c: char| c.is_whitespace() || matches!(c, ',' | '.' | ';' | '!' | '?' | '\n'))
             .filter(|t| t.len() > 2)
             .collect()
@@ -1126,26 +1202,35 @@ impl Extension for GoalSupervisorExtension {
     ) -> AgentResult<()> {
         // Extract a summary of what the tool touched.
         let summary = match ctx.tool_name.as_str() {
-            "bash" | "bash_run" => {
-                ctx.args.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string()
-            }
-            "write" | "edit" | "write_file" | "edit_file" => {
-                ctx.args.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string()
-            }
-            "read" | "read_file" => {
-                ctx.args.get("file_path").and_then(|v| v.as_str()).unwrap_or("").to_string()
-            }
+            "bash" | "bash_run" => ctx
+                .args
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            "write" | "edit" | "write_file" | "edit_file" => ctx
+                .args
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            "read" | "read_file" => ctx
+                .args
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
             _ => ctx.tool_name.clone(),
         };
 
         // Append to recent_tools, keep last 10.
-        if let Ok(mut guard) = self.state.lock() {
-            if let Some(state) = guard.as_mut() {
-                state.recent_tools.push((ctx.tool_name.clone(), summary));
-                if state.recent_tools.len() > 10 {
-                    let excess = state.recent_tools.len() - 10;
-                    state.recent_tools.drain(0..excess);
-                }
+        if let Ok(mut guard) = self.state.lock()
+            && let Some(state) = guard.as_mut()
+        {
+            state.recent_tools.push((ctx.tool_name.clone(), summary));
+            if state.recent_tools.len() > 10 {
+                let excess = state.recent_tools.len() - 10;
+                state.recent_tools.drain(0..excess);
             }
         }
         Ok(())
@@ -1182,10 +1267,7 @@ impl Extension for GoalSupervisorExtension {
         }
 
         // 1. Run all checks (deterministic execution + evidence collection).
-        let results = self
-            .run_all_checks()
-            .await
-            .map_err(AgentError::Tool)?;
+        let results = self.run_all_checks().await.map_err(AgentError::Tool)?;
 
         // 2. Log this iteration.
         let _ = self.log_iteration(&results);
@@ -1200,26 +1282,24 @@ impl Extension for GoalSupervisorExtension {
 
         // 4. Extract the current action plan from the last assistant message
         //    (used for repetition detection).
-        let current_plan = ctx
-            .messages
-            .iter()
-            .rev()
-            .find_map(|m| match m {
-                ion_provider::types::Message::Assistant(a) => {
-                    // Concatenate all Text blocks into one string.
-                    let text: String = a
-                        .content
-                        .iter()
-                        .filter_map(|b| match b {
-                            ion_provider::types::AssistantContentBlock::Text(t) => Some(t.text.as_str()),
-                            _ => None, // Ignore Thinking / ToolCall blocks.
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    if text.is_empty() { None } else { Some(text) }
-                }
-                _ => None,
-            });
+        let current_plan = ctx.messages.iter().rev().find_map(|m| match m {
+            ion_provider::types::Message::Assistant(a) => {
+                // Concatenate all Text blocks into one string.
+                let text: String = a
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ion_provider::types::AssistantContentBlock::Text(t) => {
+                            Some(t.text.as_str())
+                        }
+                        _ => None, // Ignore Thinking / ToolCall blocks.
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if text.is_empty() { None } else { Some(text) }
+            }
+            _ => None,
+        });
 
         // 5. Check guards (max_iter / max_duration / max_cost / repetitive).
         if let Some(reason) = self.check_guards(current_plan.as_deref()) {
@@ -1237,9 +1317,7 @@ impl Extension for GoalSupervisorExtension {
             .iter()
             .filter(|r| r.status != CheckStatus::Pass)
             .collect();
-        let mut msg = String::from(
-            "Goal not complete. The following checks failed:\n",
-        );
+        let mut msg = String::from("Goal not complete. The following checks failed:\n");
         for r in &failed {
             let evidence_excerpt = r
                 .evidence
@@ -1310,7 +1388,12 @@ pub struct GoalSetTool {
 
 impl GoalSetTool {
     pub fn new(state: SharedGoalState) -> Self {
-        Self { state, registry: None, model: None, plan_model: None }
+        Self {
+            state,
+            registry: None,
+            model: None,
+            plan_model: None,
+        }
     }
     pub fn with_llm(
         state: SharedGoalState,
@@ -1318,7 +1401,12 @@ impl GoalSetTool {
         model: ion_provider::types::Model,
         plan_model: Option<ion_provider::types::Model>,
     ) -> Self {
-        Self { state, registry: Some(registry), model: Some(model), plan_model }
+        Self {
+            state,
+            registry: Some(registry),
+            model: Some(model),
+            plan_model,
+        }
     }
 }
 
@@ -1379,11 +1467,12 @@ impl Tool for GoalSetTool {
             // Prefer fast-tier plan_model (avoids expensive reasoning tokens on models like GLM-5.2).
             if let Some(reg) = &self.registry {
                 let mdl = self.plan_model.as_ref().or(self.model.as_ref());
-                if let Some(mdl) = mdl {
-                    if let Some((plan, generated_checks)) = generate_goal_plan(reg, mdl, &objective).await {
-                        goal_plan = plan;
-                        checks = generated_checks;
-                    }
+                if let Some(mdl) = mdl
+                    && let Some((plan, generated_checks)) =
+                        generate_goal_plan(reg, mdl, &objective).await
+                {
+                    goal_plan = plan;
+                    checks = generated_checks;
                 }
             }
             // Fallback to CI defaults if LLM didn't produce checks.
@@ -1403,12 +1492,16 @@ impl Tool for GoalSetTool {
             iteration_count: 0,
             started_at: started_at.clone(),
             total_cost_usd: 0.0,
-            last_action_plan: None, recent_tools: vec![], goal_plan,
+            last_action_plan: None,
+            recent_tools: vec![],
+            goal_plan,
         };
 
         // Replace any previous goal (the old one is implicitly cancelled).
         let previous_id = {
-            let mut guard = self.state.lock()
+            let mut guard = self
+                .state
+                .lock()
                 .map_err(|e| AgentError::Tool(format!("goal_set: state lock poisoned: {e}")))?;
             let prev = guard.as_ref().map(|s| s.goal_id.clone());
             *guard = Some(new_state);
@@ -1418,7 +1511,10 @@ impl Tool for GoalSetTool {
         let confirmation = {
             // Compute check count before building JSON (json! macro can't host expression blocks).
             let check_count = {
-                let g = self.state.lock().map_err(|e| AgentError::Tool(format!("goal_set: state lock poisoned: {e}")))?;
+                let g = self
+                    .state
+                    .lock()
+                    .map_err(|e| AgentError::Tool(format!("goal_set: state lock poisoned: {e}")))?;
                 g.as_ref().map(|s| s.checks.len()).unwrap_or(0)
             };
             serde_json::json!({
@@ -1481,20 +1577,37 @@ impl Tool for GoalRefineTool {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
         let objective_patch = args.get("objective_patch").and_then(|v| v.as_str());
-        let checks_add: Vec<Check> = if let Some(arr) = args.get("checks_add").and_then(|v| v.as_array()) {
-            arr.iter().filter_map(|item| serde_json::from_value(item.clone()).ok()).collect()
-        } else {
-            vec![]
-        };
-        let checks_remove: Vec<String> = args.get("checks_remove")
+        let checks_add: Vec<Check> =
+            if let Some(arr) = args.get("checks_add").and_then(|v| v.as_array()) {
+                arr.iter()
+                    .filter_map(|item| serde_json::from_value(item.clone()).ok())
+                    .collect()
+            } else {
+                vec![]
+            };
+        let checks_remove: Vec<String> = args
+            .get("checks_remove")
             .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
-        let mut guard = self.0.lock().map_err(|e| AgentError::Tool(format!("goal_refine: lock: {e}")))?;
-        let state = guard.as_mut().ok_or_else(|| AgentError::Tool("goal_refine: no active goal".into()))?;
+        let mut guard = self
+            .0
+            .lock()
+            .map_err(|e| AgentError::Tool(format!("goal_refine: lock: {e}")))?;
+        let state = guard
+            .as_mut()
+            .ok_or_else(|| AgentError::Tool("goal_refine: no active goal".into()))?;
 
         // Apply objective patch.
         if let Some(new_obj) = objective_patch {
@@ -1549,17 +1662,41 @@ impl Tool for GoalDiagnoseTool {
         })
     }
 
-    async fn execute(&self, _args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
         // Package current goal state into a diagnostic prompt.
         let (objective, checks, iteration_count) = {
-            let guard = self.0.lock().map_err(|e| AgentError::Tool(format!("goal_diagnose: lock: {e}")))?;
-            let state = guard.as_ref().ok_or_else(|| AgentError::Tool("goal_diagnose: no active goal".into()))?;
-            (state.objective.clone(), state.checks.clone(), state.iteration_count)
+            let guard = self
+                .0
+                .lock()
+                .map_err(|e| AgentError::Tool(format!("goal_diagnose: lock: {e}")))?;
+            let state = guard
+                .as_ref()
+                .ok_or_else(|| AgentError::Tool("goal_diagnose: no active goal".into()))?;
+            (
+                state.objective.clone(),
+                state.checks.clone(),
+                state.iteration_count,
+            )
         };
 
-        let check_summary: Vec<String> = checks.iter().map(|c| {
-            format!("- {} ({}): {}", c.name, match c.check_type { CheckType::Ci => "ci", CheckType::Contingency => "contingency" }, c.rationale)
-        }).collect();
+        let check_summary: Vec<String> = checks
+            .iter()
+            .map(|c| {
+                format!(
+                    "- {} ({}): {}",
+                    c.name,
+                    match c.check_type {
+                        CheckType::Ci => "ci",
+                        CheckType::Contingency => "contingency",
+                    },
+                    c.rationale
+                )
+            })
+            .collect();
 
         let task = format!(
             "Diagnose why this goal is stuck after {} iterations:\n\n\
@@ -1589,12 +1726,12 @@ impl Tool for GoalDiagnoseTool {
         };
 
         match rt.spawn_worker(req).await {
-            Ok(resp) => {
-                Ok(resp.first_turn_output.unwrap_or_else(|| "Diagnostician returned no output".into()))
-            }
-            Err(e) => {
-                Err(AgentError::Tool(format!("goal_diagnose: spawn failed: {e}")))
-            }
+            Ok(resp) => Ok(resp
+                .first_turn_output
+                .unwrap_or_else(|| "Diagnostician returned no output".into())),
+            Err(e) => Err(AgentError::Tool(format!(
+                "goal_diagnose: spawn failed: {e}"
+            ))),
         }
     }
 }
@@ -1709,7 +1846,9 @@ mod tests {
                 iteration_count: 2,
                 started_at: format!("epoch:{}", now_epoch_ms() / 1000),
                 total_cost_usd: 0.0,
-                last_action_plan: None, recent_tools: vec![], goal_plan: GoalPlan::default(),
+                last_action_plan: None,
+                recent_tools: vec![],
+                goal_plan: GoalPlan::default(),
             });
         }
         // Plan about something totally unrelated.
@@ -1730,7 +1869,9 @@ mod tests {
             iteration_count: 3,
             started_at: "epoch:100".into(),
             total_cost_usd: 0.5,
-            last_action_plan: None, recent_tools: vec![], goal_plan: GoalPlan::default(),
+            last_action_plan: None,
+            recent_tools: vec![],
+            goal_plan: GoalPlan::default(),
         })));
         let tool = GoalRefineTool(shared.clone());
         let args = serde_json::json!({
@@ -1752,14 +1893,30 @@ mod tests {
             goal_id: "g1".into(),
             objective: "test".into(),
             checks: vec![
-                Check { name: "keep".into(), check_type: CheckType::Ci, rationale: "r".into(), command: "true".into(), pass_criteria: PassCriteria::ExitCode { expected: 0 }, must_pass: true },
-                Check { name: "drop".into(), check_type: CheckType::Ci, rationale: "r".into(), command: "true".into(), pass_criteria: PassCriteria::ExitCode { expected: 0 }, must_pass: true },
+                Check {
+                    name: "keep".into(),
+                    check_type: CheckType::Ci,
+                    rationale: "r".into(),
+                    command: "true".into(),
+                    pass_criteria: PassCriteria::ExitCode { expected: 0 },
+                    must_pass: true,
+                },
+                Check {
+                    name: "drop".into(),
+                    check_type: CheckType::Ci,
+                    rationale: "r".into(),
+                    command: "true".into(),
+                    pass_criteria: PassCriteria::ExitCode { expected: 0 },
+                    must_pass: true,
+                },
             ],
             status: GoalStatus::Running,
             iteration_count: 2,
             started_at: "epoch:100".into(),
             total_cost_usd: 0.1,
-            last_action_plan: None, recent_tools: vec![], goal_plan: GoalPlan::default(),
+            last_action_plan: None,
+            recent_tools: vec![],
+            goal_plan: GoalPlan::default(),
         })));
         let tool = GoalRefineTool(shared.clone());
         let args = serde_json::json!({"checks_remove": ["drop"]});
@@ -1780,7 +1937,9 @@ mod tests {
             iteration_count: 1,
             started_at: "epoch:100".into(),
             total_cost_usd: 0.0,
-            last_action_plan: None, recent_tools: vec![], goal_plan: GoalPlan::default(),
+            last_action_plan: None,
+            recent_tools: vec![],
+            goal_plan: GoalPlan::default(),
         })));
         let tool = GoalRefineTool(shared.clone());
         let args = serde_json::json!({"objective_patch": "new refined objective"});
@@ -1810,7 +1969,10 @@ mod tests {
             "check_on_agent_end should default to true"
         );
         assert_eq!(cfg.max_iterations, 10, "max_iterations default");
-        assert_eq!(cfg.max_total_duration_min, 60, "max_total_duration_min default");
+        assert_eq!(
+            cfg.max_total_duration_min, 60,
+            "max_total_duration_min default"
+        );
         assert_eq!(cfg.max_total_cost_usd, 1.0, "max_total_cost_usd default");
         assert_eq!(cfg.repetition_threshold, 3, "repetition_threshold default");
         assert_eq!(cfg.delay_ms, 2000, "delay_ms default");
@@ -1820,12 +1982,27 @@ mod tests {
     fn test_default_ci_checks_not_empty() {
         let checks = default_ci_checks();
         assert!(!checks.is_empty(), "default CI checks must not be empty");
-        assert!(checks.iter().any(|c| c.name == "cargo_build"), "must have cargo_build");
-        assert!(checks.iter().any(|c| c.name == "cargo_test"), "must have cargo_test");
-        assert!(checks.iter().any(|c| c.name == "no_ufffd"), "must have no_ufffd");
+        assert!(
+            checks.iter().any(|c| c.name == "cargo_build"),
+            "must have cargo_build"
+        );
+        assert!(
+            checks.iter().any(|c| c.name == "cargo_test"),
+            "must have cargo_test"
+        );
+        assert!(
+            checks.iter().any(|c| c.name == "no_ufffd"),
+            "must have no_ufffd"
+        );
         // All must be must_pass=true and check_type=Ci
-        assert!(checks.iter().all(|c| c.must_pass), "all default checks must_pass");
-        assert!(checks.iter().all(|c| c.check_type == CheckType::Ci), "all default checks are CI");
+        assert!(
+            checks.iter().all(|c| c.must_pass),
+            "all default checks must_pass"
+        );
+        assert!(
+            checks.iter().all(|c| c.check_type == CheckType::Ci),
+            "all default checks are CI"
+        );
     }
 
     #[tokio::test]
@@ -1838,8 +2015,15 @@ mod tests {
         // Verify state has default checks
         let guard = shared.lock().unwrap();
         let state = guard.as_ref().expect("goal set");
-        assert!(!state.checks.is_empty(), "default checks should be generated");
-        assert!(state.checks.len() >= 3, "at least 3 default CI checks, got {}", state.checks.len());
+        assert!(
+            !state.checks.is_empty(),
+            "default checks should be generated"
+        );
+        assert!(
+            state.checks.len() >= 3,
+            "at least 3 default CI checks, got {}",
+            state.checks.len()
+        );
     }
 
     #[tokio::test]
@@ -1886,7 +2070,10 @@ mod tests {
         let res_b = tool.execute(args_b, &rt()).await.expect("goal B set ok");
         let json_b: serde_json::Value = serde_json::from_str(&res_b).expect("valid json");
         assert_eq!(json_b["status"], "ok");
-        assert_eq!(json_b["previous_goal_id"].as_str(), Some(goal_a_id.as_str()));
+        assert_eq!(
+            json_b["previous_goal_id"].as_str(),
+            Some(goal_a_id.as_str())
+        );
         assert!(json_b["previous_cancelled"].as_bool() == Some(true));
 
         // Only goal B remains.
@@ -1897,7 +2084,10 @@ mod tests {
             assert_eq!(state.goal_id, json_b["goal_id"].as_str().unwrap());
             assert_ne!(state.goal_id, goal_a_id, "goal B has a different id than A");
             // B2: empty checks now auto-fills with default CI checks.
-            assert!(!state.checks.is_empty(), "goal B has default CI checks (B2 auto-fill)");
+            assert!(
+                !state.checks.is_empty(),
+                "goal B has default CI checks (B2 auto-fill)"
+            );
             assert_eq!(state.status, GoalStatus::Running);
             assert_eq!(state.iteration_count, 0);
         }
@@ -1964,7 +2154,13 @@ mod tests {
         let params = tool.parameters();
         // objective is required; checks is optional.
         assert_eq!(params["type"], "object");
-        assert!(params["required"].as_array().unwrap().iter().any(|v| v == "objective"));
+        assert!(
+            params["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "objective")
+        );
     }
 
     #[tokio::test]
@@ -2039,7 +2235,9 @@ mod tests {
         let check = make_check(
             "grep-empty-ok",
             "echo hello",
-            PassCriteria::GrepEmpty { pattern: "xyz".into() },
+            PassCriteria::GrepEmpty {
+                pattern: "xyz".into(),
+            },
         );
         let res = GoalSupervisorExtension::run_single_check(&check)
             .await
@@ -2057,7 +2255,9 @@ mod tests {
         let check = make_check(
             "grep-empty-fail",
             "echo hello",
-            PassCriteria::GrepEmpty { pattern: "hello".into() },
+            PassCriteria::GrepEmpty {
+                pattern: "hello".into(),
+            },
         );
         let res = GoalSupervisorExtension::run_single_check(&check)
             .await
@@ -2075,7 +2275,9 @@ mod tests {
         let check = make_check(
             "file-exists-ok",
             "true",
-            PassCriteria::FileExists { path: "/tmp".into() },
+            PassCriteria::FileExists {
+                path: "/tmp".into(),
+            },
         );
         let res = GoalSupervisorExtension::run_single_check(&check)
             .await
@@ -2090,7 +2292,9 @@ mod tests {
         let check = make_check(
             "file-exists-fail",
             "true",
-            PassCriteria::FileExists { path: "/nonexistent/xyz".into() },
+            PassCriteria::FileExists {
+                path: "/nonexistent/xyz".into(),
+            },
         );
         let res = GoalSupervisorExtension::run_single_check(&check)
             .await
@@ -2113,16 +2317,25 @@ mod tests {
         assert_eq!(res.status, CheckStatus::Pass);
         let ev = res.evidence.as_ref().expect("evidence present");
         let path = ev.artifact_path.as_ref().expect("artifact path set");
-        assert!(path.starts_with("/tmp/goal-checks/"), "artifact under goal-checks dir");
+        assert!(
+            path.starts_with("/tmp/goal-checks/"),
+            "artifact under goal-checks dir"
+        );
         assert!(
             path.contains("artifact-check"),
             "artifact filename includes the check name"
         );
         // The artifact file must actually exist on disk.
-        assert!(std::path::Path::new(path).exists(), "artifact file exists on disk");
+        assert!(
+            std::path::Path::new(path).exists(),
+            "artifact file exists on disk"
+        );
         // And its contents should hold the full stdout.
         let body = std::fs::read_to_string(path).expect("read artifact");
-        assert!(body.contains("artifact-line"), "artifact holds stdout content");
+        assert!(
+            body.contains("artifact-line"),
+            "artifact holds stdout content"
+        );
     }
 
     #[tokio::test]
@@ -2152,7 +2365,9 @@ mod tests {
                 iteration_count: 0,
                 started_at: "epoch:0".into(),
                 total_cost_usd: 0.0,
-                last_action_plan: None, recent_tools: vec![], goal_plan: GoalPlan::default(),
+                last_action_plan: None,
+                recent_tools: vec![],
+                goal_plan: GoalPlan::default(),
             };
             *shared.lock().unwrap() = Some(state);
         }
@@ -2200,11 +2415,10 @@ mod tests {
     #[test]
     fn test_guard_max_iterations() {
         // iteration_count at the limit -> guard trips.
-        let ext = GoalSupervisorExtension::new()
-            .with_config(GoalSupervisorConfig {
-                max_iterations: 3,
-                ..Default::default()
-            });
+        let ext = GoalSupervisorExtension::new().with_config(GoalSupervisorConfig {
+            max_iterations: 3,
+            ..Default::default()
+        });
         {
             let mut guard = ext.state.lock().unwrap();
             *guard = Some(GoalState {
@@ -2213,9 +2427,11 @@ mod tests {
                 checks: vec![],
                 status: GoalStatus::Running,
                 iteration_count: 3,
-                started_at: format!("epoch:{}", now_epoch_ms()/1000),
+                started_at: format!("epoch:{}", now_epoch_ms() / 1000),
                 total_cost_usd: 0.0,
-                last_action_plan: None, recent_tools: vec![], goal_plan: GoalPlan::default(),
+                last_action_plan: None,
+                recent_tools: vec![],
+                goal_plan: GoalPlan::default(),
             });
         }
         let hit = ext.check_guards(None);
@@ -2225,12 +2441,14 @@ mod tests {
     #[test]
     fn test_guard_max_duration() {
         // started_at far in the past -> max_duration trips.
-        let ext = GoalSupervisorExtension::new()
-            .with_config(GoalSupervisorConfig {
-                max_total_duration_min: 1,
-                ..Default::default()
-            });
-        let old = format!("epoch:{}", now_epoch_ms().saturating_sub(120 * 60 * 1000) / 1000); // 120 min ago
+        let ext = GoalSupervisorExtension::new().with_config(GoalSupervisorConfig {
+            max_total_duration_min: 1,
+            ..Default::default()
+        });
+        let old = format!(
+            "epoch:{}",
+            now_epoch_ms().saturating_sub(120 * 60 * 1000) / 1000
+        ); // 120 min ago
         {
             let mut guard = ext.state.lock().unwrap();
             *guard = Some(GoalState {
@@ -2241,7 +2459,9 @@ mod tests {
                 iteration_count: 0,
                 started_at: old,
                 total_cost_usd: 0.0,
-                last_action_plan: None, recent_tools: vec![], goal_plan: GoalPlan::default(),
+                last_action_plan: None,
+                recent_tools: vec![],
+                goal_plan: GoalPlan::default(),
             });
         }
         let hit = ext.check_guards(None);
@@ -2250,11 +2470,10 @@ mod tests {
 
     #[test]
     fn test_guard_max_cost() {
-        let ext = GoalSupervisorExtension::new()
-            .with_config(GoalSupervisorConfig {
-                max_total_cost_usd: 1.0,
-                ..Default::default()
-            });
+        let ext = GoalSupervisorExtension::new().with_config(GoalSupervisorConfig {
+            max_total_cost_usd: 1.0,
+            ..Default::default()
+        });
         {
             let mut guard = ext.state.lock().unwrap();
             *guard = Some(GoalState {
@@ -2263,9 +2482,11 @@ mod tests {
                 checks: vec![],
                 status: GoalStatus::Running,
                 iteration_count: 0,
-                started_at: format!("epoch:{}", now_epoch_ms()/1000),
+                started_at: format!("epoch:{}", now_epoch_ms() / 1000),
                 total_cost_usd: 1.5,
-                last_action_plan: None, recent_tools: vec![], goal_plan: GoalPlan::default(),
+                last_action_plan: None,
+                recent_tools: vec![],
+                goal_plan: GoalPlan::default(),
             });
         }
         let hit = ext.check_guards(None);
@@ -2275,11 +2496,10 @@ mod tests {
     #[test]
     fn test_guard_repetitive() {
         // Same action plan twice -> repetitive trips (needs iteration_count >= threshold).
-        let ext = GoalSupervisorExtension::new()
-            .with_config(GoalSupervisorConfig {
-                repetition_threshold: 1,
-                ..Default::default()
-            });
+        let ext = GoalSupervisorExtension::new().with_config(GoalSupervisorConfig {
+            repetition_threshold: 1,
+            ..Default::default()
+        });
         let plan = "fix the login bug by updating auth module";
         {
             let mut guard = ext.state.lock().unwrap();
@@ -2289,9 +2509,11 @@ mod tests {
                 checks: vec![],
                 status: GoalStatus::Running,
                 iteration_count: 1,
-                started_at: format!("epoch:{}", now_epoch_ms()/1000),
+                started_at: format!("epoch:{}", now_epoch_ms() / 1000),
                 total_cost_usd: 0.0,
-                last_action_plan: Some(plan.into()), recent_tools: vec![], goal_plan: GoalPlan::default(),
+                last_action_plan: Some(plan.into()),
+                recent_tools: vec![],
+                goal_plan: GoalPlan::default(),
             });
         }
         let hit = ext.check_guards(Some(plan));
@@ -2310,21 +2532,25 @@ mod tests {
                 checks: vec![],
                 status: GoalStatus::Running,
                 iteration_count: 0,
-                started_at: format!("epoch:{}", now_epoch_ms()/1000),
+                started_at: format!("epoch:{}", now_epoch_ms() / 1000),
                 total_cost_usd: 0.0,
-                last_action_plan: Some("first attempt plan alpha".into()), recent_tools: vec![], goal_plan: GoalPlan::default(),
+                last_action_plan: Some("first attempt plan alpha".into()),
+                recent_tools: vec![],
+                goal_plan: GoalPlan::default(),
             });
         }
         let hit = ext.check_guards(Some("a completely different plan beta"));
-        assert!(hit.is_none(), "healthy goal should not trip any guard, got {hit:?}");
+        assert!(
+            hit.is_none(),
+            "healthy goal should not trip any guard, got {hit:?}"
+        );
     }
 
     #[tokio::test]
     async fn test_log_iteration_writes_jsonl() {
         // Use a unique session id to avoid clashing with real goal-runs.
         let session = format!("test_log_{}", now_epoch_ms());
-        let ext = GoalSupervisorExtension::new()
-            .with_session_id(session.clone());
+        let ext = GoalSupervisorExtension::new().with_session_id(session.clone());
         {
             let mut guard = ext.state.lock().unwrap();
             *guard = Some(GoalState {
@@ -2333,9 +2559,11 @@ mod tests {
                 checks: vec![],
                 status: GoalStatus::Running,
                 iteration_count: 1,
-                started_at: format!("epoch:{}", now_epoch_ms()/1000),
+                started_at: format!("epoch:{}", now_epoch_ms() / 1000),
                 total_cost_usd: 0.0,
-                last_action_plan: None, recent_tools: vec![], goal_plan: GoalPlan::default(),
+                last_action_plan: None,
+                recent_tools: vec![],
+                goal_plan: GoalPlan::default(),
             });
         }
         let results = vec![CheckResult {

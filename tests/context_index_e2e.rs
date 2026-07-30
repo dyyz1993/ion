@@ -5,11 +5,11 @@ use std::sync::Arc;
 use ion::agent::agent_loop::{Agent, AgentConfig};
 use ion::agent::context_index::{ContextIndexExtension, WriteKind};
 use ion::agent::extension::{Extension, ExtensionRegistry};
-use ion::agent::tool::{ToolRegistry, ReadTool, WriteTool};
 use ion::agent::messages::Message;
+use ion::agent::tool::{ReadTool, ToolRegistry, WriteTool};
+use ion_provider::faux;
 use ion_provider::registry::ApiRegistry;
 use ion_provider::types::*;
-use ion_provider::faux;
 
 fn faux_model() -> Model {
     Model {
@@ -40,25 +40,46 @@ async fn context_index_records_read_and_write() {
     // 设置 5 个响应：read tool_call → write tool_call → done（+ 2 个余量防 agent 多调）
     faux_handle.set_responses(vec![
         faux::FauxResponseStep::Static(faux::faux_assistant_message(
-            faux::FauxContent::Single(faux::faux_tool_call("read", serde_json::json!({"file_path": test_file}))),
-            faux::FauxMessageOptions { stop_reason: Some(StopReason::ToolUse), error_message: None },
+            faux::FauxContent::Single(faux::faux_tool_call(
+                "read",
+                serde_json::json!({"file_path": test_file}),
+            )),
+            faux::FauxMessageOptions {
+                stop_reason: Some(StopReason::ToolUse),
+                error_message: None,
+            },
         )),
         faux::FauxResponseStep::Static(faux::faux_assistant_message(
-            faux::FauxContent::Single(faux::faux_tool_call("write", serde_json::json!({"file_path": test_file, "content": "new content"}))),
-            faux::FauxMessageOptions { stop_reason: Some(StopReason::ToolUse), error_message: None },
+            faux::FauxContent::Single(faux::faux_tool_call(
+                "write",
+                serde_json::json!({"file_path": test_file, "content": "new content"}),
+            )),
+            faux::FauxMessageOptions {
+                stop_reason: Some(StopReason::ToolUse),
+                error_message: None,
+            },
         )),
         faux::FauxResponseStep::Static(faux::faux_assistant_message(
             faux::FauxContent::Text("done".into()),
-            faux::FauxMessageOptions { stop_reason: Some(StopReason::Stop), error_message: None },
+            faux::FauxMessageOptions {
+                stop_reason: Some(StopReason::Stop),
+                error_message: None,
+            },
         )),
         // 余量：agent 可能多调一次
         faux::FauxResponseStep::Static(faux::faux_assistant_message(
             faux::FauxContent::Text("done".into()),
-            faux::FauxMessageOptions { stop_reason: Some(StopReason::Stop), error_message: None },
+            faux::FauxMessageOptions {
+                stop_reason: Some(StopReason::Stop),
+                error_message: None,
+            },
         )),
         faux::FauxResponseStep::Static(faux::faux_assistant_message(
             faux::FauxContent::Text("done".into()),
-            faux::FauxMessageOptions { stop_reason: Some(StopReason::Stop), error_message: None },
+            faux::FauxMessageOptions {
+                stop_reason: Some(StopReason::Stop),
+                error_message: None,
+            },
         )),
     ]);
 
@@ -80,15 +101,19 @@ async fn context_index_records_read_and_write() {
         ..Default::default()
     };
 
-    let mut agent = Agent::new(registry, faux_model(), None, tools, config)
-        .with_extensions(ext_reg);
+    let mut agent =
+        Agent::new(registry, faux_model(), None, tools, config).with_extensions(ext_reg);
 
     let result = agent.run("test context index").await;
     assert!(result.is_ok(), "agent.run should succeed: {:?}", result);
 
     let messages = agent.messages();
-    let has_read = messages.iter().any(|m| matches!(m, Message::ToolResult(tr) if tr.tool_name == "read"));
-    let has_write = messages.iter().any(|m| matches!(m, Message::ToolResult(tr) if tr.tool_name == "write"));
+    let has_read = messages
+        .iter()
+        .any(|m| matches!(m, Message::ToolResult(tr) if tr.tool_name == "read"));
+    let has_write = messages
+        .iter()
+        .any(|m| matches!(m, Message::ToolResult(tr) if tr.tool_name == "write"));
     assert!(has_read, "should have read tool result");
     assert!(has_write, "should have write tool result");
 
@@ -106,12 +131,15 @@ async fn context_index_records_read_and_write() {
 
     if let Some(text) = &read_content {
         if text.contains("original content") && !text.contains("[ContextIndex") {
-            eprintln!("⚠️ read tool_result NOT yet folded. on_context timing: content starts with: {}",
-                &text[..text.len().min(50)]);
+            eprintln!(
+                "⚠️ read tool_result NOT yet folded. on_context timing: content starts with: {}",
+                &text[..text.len().min(50)]
+            );
         } else {
             assert!(
                 text.contains("[ContextIndex") || text.contains("Re-read"),
-                "read should be folded, got: {}", &text[..text.len().min(80)]
+                "read should be folded, got: {}",
+                &text[..text.len().min(80)]
             );
         }
     }
@@ -130,10 +158,15 @@ async fn context_index_rpc_tree() {
         idx.record_write("src/main.rs", WriteKind::Write);
     }
 
-    let result = Extension::on_extension_rpc(&ext, "tree", serde_json::Value::Null).await.unwrap();
+    let result = Extension::on_extension_rpc(&ext, "tree", serde_json::Value::Null)
+        .await
+        .unwrap();
     let files = result.get("files").and_then(|v| v.as_array()).unwrap();
     assert!(!files.is_empty());
-    let main_rs = files.iter().find(|f| f["path"].as_str() == Some("src/main.rs")).unwrap();
+    let main_rs = files
+        .iter()
+        .find(|f| f["path"].as_str() == Some("src/main.rs"))
+        .unwrap();
     assert_eq!(main_rs["status"].as_str(), Some("stale"));
 }
 
@@ -148,7 +181,10 @@ async fn context_index_rpc_ranges() {
         idx.record_read("src/lib.rs", "tc_b", "pub mod a;\npub mod b;");
     }
 
-    let result = Extension::on_extension_rpc(&ext, "ranges", serde_json::json!({"path":"src/lib.rs"})).await.unwrap();
+    let result =
+        Extension::on_extension_rpc(&ext, "ranges", serde_json::json!({"path":"src/lib.rs"}))
+            .await
+            .unwrap();
     let reads = result.get("reads").and_then(|v| v.as_array()).unwrap();
     assert_eq!(reads.len(), 2);
 }

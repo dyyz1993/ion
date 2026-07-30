@@ -12,11 +12,11 @@
 //! passed explicitly). In production this token is obtained from a Google
 //! Cloud service account via `gcloud auth print-access-token`.
 
+use crate::ApiProvider;
 use crate::env_keys::resolve_api_key;
 use crate::error::{ProviderError, ProviderResult};
-use crate::event_stream::{EventStream, EventSender};
+use crate::event_stream::{EventSender, EventStream};
 use crate::types::*;
-use crate::ApiProvider;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -49,7 +49,8 @@ impl GoogleVertexProvider {
         let (stream, sender) = EventStream::new();
 
         // The bearer access token is supplied through the same api_key channel.
-        let bearer_token = resolve_api_key(&model.provider, options.and_then(|o| o.api_key.clone()))?;
+        let bearer_token =
+            resolve_api_key(&model.provider, options.and_then(|o| o.api_key.clone()))?;
 
         // Vertex AI requires project + location. They may be provided via
         // base_url (fully-qualified endpoint) or via env vars. If base_url is
@@ -58,7 +59,8 @@ impl GoogleVertexProvider {
         let url = build_vertex_url(model);
 
         let body = build_request_body(model, context, options)?;
-        let body_json = serde_json::to_string(&body).map_err(|e| ProviderError::Provider(e.to_string()))?;
+        let body_json =
+            serde_json::to_string(&body).map_err(|e| ProviderError::Provider(e.to_string()))?;
 
         let client = Client::builder()
             .timeout(Duration::from_secs(300))
@@ -79,13 +81,18 @@ impl GoogleVertexProvider {
                 _ = c.cancelled() => return Err(crate::ProviderError::Stream("HTTP request aborted".into())),
             }
         } else {
-            send_fut.await.map_err(|e| ProviderError::Provider(e.to_string()))?
+            send_fut
+                .await
+                .map_err(|e| ProviderError::Provider(e.to_string()))?
         };
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(ProviderError::HttpError { status: status.as_u16(), body: text });
+            return Err(ProviderError::HttpError {
+                status: status.as_u16(),
+                body: text,
+            });
         }
 
         let model_clone = model.clone();
@@ -125,7 +132,10 @@ fn build_vertex_url(model: &Model) -> String {
         if base.contains(":streamGenerateContent") {
             return format!("{base}?alt=sse");
         }
-        return format!("{base}/publishers/google/models/{}:streamGenerateContent?alt=sse", model.id);
+        return format!(
+            "{base}/publishers/google/models/{}:streamGenerateContent?alt=sse",
+            model.id
+        );
     }
 
     // Otherwise build from env vars.
@@ -168,11 +178,22 @@ struct GeminiContent {
 #[derive(Serialize)]
 #[serde(untagged)]
 enum GeminiPart {
-    Text { text: String },
-    Thought { text: String, thought: bool },
-    FunctionCall { function_call: GeminiFunctionCall },
-    FunctionResponse { function_response: GeminiFunctionResponse },
-    InlineData { inline_data: GeminiInlineData },
+    Text {
+        text: String,
+    },
+    Thought {
+        text: String,
+        thought: bool,
+    },
+    FunctionCall {
+        function_call: GeminiFunctionCall,
+    },
+    FunctionResponse {
+        function_response: GeminiFunctionResponse,
+    },
+    InlineData {
+        inline_data: GeminiInlineData,
+    },
 }
 
 #[derive(Serialize)]
@@ -245,17 +266,26 @@ fn build_request_body(
     for msg in &context.messages {
         match msg {
             Message::User(u) => {
-                let parts: Vec<GeminiPart> = u.content.iter().filter_map(|b| match b {
-                    ContentBlock::Text(t) => Some(GeminiPart::Text { text: t.text.clone() }),
-                    ContentBlock::Image(img) => Some(GeminiPart::InlineData {
-                        inline_data: GeminiInlineData {
-                            mime_type: img.mime_type.clone(),
-                            data: img.data.clone(),
-                        }
-                    }),
-                }).collect();
+                let parts: Vec<GeminiPart> = u
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text(t) => Some(GeminiPart::Text {
+                            text: t.text.clone(),
+                        }),
+                        ContentBlock::Image(img) => Some(GeminiPart::InlineData {
+                            inline_data: GeminiInlineData {
+                                mime_type: img.mime_type.clone(),
+                                data: img.data.clone(),
+                            },
+                        }),
+                    })
+                    .collect();
                 if !parts.is_empty() {
-                    contents.push(GeminiContent { role: "user".into(), parts });
+                    contents.push(GeminiContent {
+                        role: "user".into(),
+                        parts,
+                    });
                 }
             }
             Message::Assistant(a) => {
@@ -263,7 +293,9 @@ fn build_request_body(
                 for block in &a.content {
                     match block {
                         AssistantContentBlock::Text(t) => {
-                            parts.push(GeminiPart::Text { text: t.text.clone() });
+                            parts.push(GeminiPart::Text {
+                                text: t.text.clone(),
+                            });
                         }
                         AssistantContentBlock::Thinking(th) => {
                             if !th.thinking.is_empty() {
@@ -285,14 +317,22 @@ fn build_request_body(
                     }
                 }
                 if !parts.is_empty() {
-                    contents.push(GeminiContent { role: "model".into(), parts });
+                    contents.push(GeminiContent {
+                        role: "model".into(),
+                        parts,
+                    });
                 }
             }
             Message::ToolResult(tr) => {
-                let text = tr.content.iter().filter_map(|b| match b {
-                    ContentBlock::Text(t) => Some(t.text.clone()),
-                    _ => None,
-                }).collect::<Vec<_>>().join("\n");
+                let text = tr
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 contents.push(GeminiContent {
                     role: "user".into(),
                     parts: vec![GeminiPart::FunctionResponse {
@@ -305,7 +345,9 @@ fn build_request_body(
                 });
             }
             Message::BashExecution(b) => {
-                if b.exclude_from_context == Some(true) { continue; }
+                if b.exclude_from_context == Some(true) {
+                    continue;
+                }
                 let text = format!("$ {}\n{}", b.command, b.output);
                 contents.push(GeminiContent {
                     role: "user".into(),
@@ -315,10 +357,14 @@ fn build_request_body(
             Message::Custom(c) => {
                 let text = match &c.content {
                     CustomContent::Text(s) => s.clone(),
-                    CustomContent::Blocks(blocks) => blocks.iter().filter_map(|b| match b {
-                        ContentBlock::Text(t) => Some(t.text.clone()),
-                        _ => None,
-                    }).collect::<Vec<_>>().join("\n"),
+                    CustomContent::Blocks(blocks) => blocks
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::Text(t) => Some(t.text.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
                 };
                 contents.push(GeminiContent {
                     role: "user".into(),
@@ -328,13 +374,17 @@ fn build_request_body(
             Message::BranchSummary(bs) => {
                 contents.push(GeminiContent {
                     role: "user".into(),
-                    parts: vec![GeminiPart::Text { text: format!("[Branch summary]\n{}", bs.summary) }],
+                    parts: vec![GeminiPart::Text {
+                        text: format!("[Branch summary]\n{}", bs.summary),
+                    }],
                 });
             }
             Message::CompactionSummary(cs) => {
                 contents.push(GeminiContent {
                     role: "user".into(),
-                    parts: vec![GeminiPart::Text { text: format!("[Compaction summary]\n{}", cs.summary) }],
+                    parts: vec![GeminiPart::Text {
+                        text: format!("[Compaction summary]\n{}", cs.summary),
+                    }],
                 });
             }
         }
@@ -345,14 +395,17 @@ fn build_request_body(
         if tool_defs.is_empty() {
             vec![]
         } else {
-            let decls: Vec<GeminiFunctionDeclaration> = tool_defs.iter().map(|t| {
-                GeminiFunctionDeclaration {
+            let decls: Vec<GeminiFunctionDeclaration> = tool_defs
+                .iter()
+                .map(|t| GeminiFunctionDeclaration {
                     name: t.name.clone(),
                     description: t.description.clone(),
                     parameters: t.parameters.clone(),
-                }
-            }).collect();
-            vec![GeminiToolDeclaration { function_declarations: decls }]
+                })
+                .collect();
+            vec![GeminiToolDeclaration {
+                function_declarations: decls,
+            }]
         }
     } else {
         vec![]
@@ -372,9 +425,15 @@ fn build_request_body(
         };
         // Off -> disabled (budget=0), otherwise include thoughts.
         if matches!(level, Some(ThinkingLevel::Off)) {
-            Some(ThinkingConfig { include_thoughts: false, thinking_budget: Some(0) })
+            Some(ThinkingConfig {
+                include_thoughts: false,
+                thinking_budget: Some(0),
+            })
         } else {
-            Some(ThinkingConfig { include_thoughts: true, thinking_budget: budget })
+            Some(ThinkingConfig {
+                include_thoughts: true,
+                thinking_budget: budget,
+            })
         }
     } else {
         None
@@ -463,11 +522,7 @@ struct GeminiUsageMetadata {
     total_token_count: u64,
 }
 
-async fn parse_sse_stream(
-    resp: reqwest::Response,
-    sender: EventSender,
-    model: &Model,
-) {
+async fn parse_sse_stream(resp: reqwest::Response, sender: EventSender, model: &Model) {
     let mut output = AssistantMessage::new(model);
     let mut byte_stream = resp.bytes_stream();
     let mut buffer = String::new();
@@ -479,7 +534,9 @@ async fn parse_sse_stream(
     let mut current_thinking = String::new();
     let mut current_thought_signature: Option<String> = None;
 
-    let _ = sender.push(StreamEvent::Start { partial: output.clone() });
+    let _ = sender.push(StreamEvent::Start {
+        partial: output.clone(),
+    });
 
     let parse_result: ProviderResult<()> = async {
         while let Some(chunk_result) = byte_stream.next().await {
@@ -500,7 +557,9 @@ async fn parse_sse_stream(
                         data_str.push_str(&line[5..]);
                     }
                 }
-                if data_str.is_empty() { continue; }
+                if data_str.is_empty() {
+                    continue;
+                }
 
                 let chunk_data: GeminiStreamChunk = match serde_json::from_str(&data_str) {
                     Ok(c) => c,
@@ -520,7 +579,9 @@ async fn parse_sse_stream(
                         stop_reason = match reason.as_str() {
                             "STOP" => StopReason::Stop,
                             "MAX_TOKENS" => StopReason::Length,
-                            "SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" => StopReason::Stop,
+                            "SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" => {
+                                StopReason::Stop
+                            }
                             _ => StopReason::Stop,
                         };
                     }
@@ -532,9 +593,18 @@ async fn parse_sse_stream(
                             // Function call
                             if let Some(fc) = part.function_call {
                                 // Close current text/thinking block if any
-                                close_current_block(&mut current_block, &mut output, &current_text, &current_thinking, &current_thought_signature, &sender);
+                                close_current_block(
+                                    &mut current_block,
+                                    &mut output,
+                                    &current_text,
+                                    &current_thinking,
+                                    &current_thought_signature,
+                                    &sender,
+                                );
 
-                                let id = fc.id.unwrap_or_else(|| format!("call_{}", output.content.len()));
+                                let id = fc
+                                    .id
+                                    .unwrap_or_else(|| format!("call_{}", output.content.len()));
                                 let args = fc.args.unwrap_or(serde_json::json!({}));
                                 let tool_call = ToolCall {
                                     call_type: "function".into(),
@@ -544,16 +614,22 @@ async fn parse_sse_stream(
                                     thought_signature: part.thought_signature.clone(),
                                 };
                                 let content_index = output.content.len();
-                                output.content.push(AssistantContentBlock::ToolCall(tool_call.clone()));
-                                let _ = sender.send(StreamEvent::ToolCallStart {
-                                    content_index,
-                                    partial: output.clone(),
-                                }).await;
-                                let _ = sender.send(StreamEvent::ToolCallEnd {
-                                    content_index,
-                                    tool_call,
-                                    partial: output.clone(),
-                                }).await;
+                                output
+                                    .content
+                                    .push(AssistantContentBlock::ToolCall(tool_call.clone()));
+                                let _ = sender
+                                    .send(StreamEvent::ToolCallStart {
+                                        content_index,
+                                        partial: output.clone(),
+                                    })
+                                    .await;
+                                let _ = sender
+                                    .send(StreamEvent::ToolCallEnd {
+                                        content_index,
+                                        tool_call,
+                                        partial: output.clone(),
+                                    })
+                                    .await;
                                 continue;
                             }
 
@@ -562,63 +638,93 @@ async fn parse_sse_stream(
                                 if is_thought {
                                     // Switch to thinking block
                                     if !matches!(current_block, Some(GeminiBlockKind::Thinking)) {
-                                        close_current_block(&mut current_block, &mut output, &current_text, &current_thinking, &current_thought_signature, &sender);
+                                        close_current_block(
+                                            &mut current_block,
+                                            &mut output,
+                                            &current_text,
+                                            &current_thinking,
+                                            &current_thought_signature,
+                                            &sender,
+                                        );
                                         current_thinking.clear();
                                         current_thought_signature = None;
-                                        output.content.push(AssistantContentBlock::Thinking(ThinkingContent {
-                                            thinking: String::new(),
-                                            thinking_signature: None,
-                                            redacted: None,
-                                        }));
+                                        output.content.push(AssistantContentBlock::Thinking(
+                                            ThinkingContent {
+                                                thinking: String::new(),
+                                                thinking_signature: None,
+                                                redacted: None,
+                                            },
+                                        ));
                                         current_block = Some(GeminiBlockKind::Thinking);
                                         let content_index = output.content.len() - 1;
-                                        let _ = sender.send(StreamEvent::ThinkingStart {
-                                            content_index,
-                                            partial: output.clone(),
-                                        }).await;
+                                        let _ = sender
+                                            .send(StreamEvent::ThinkingStart {
+                                                content_index,
+                                                partial: output.clone(),
+                                            })
+                                            .await;
                                     }
                                     current_thinking.push_str(&text);
                                     if let Some(sig) = part.thought_signature.as_ref() {
                                         current_thought_signature = Some(sig.clone());
                                     }
-                                    if let Some(AssistantContentBlock::Thinking(th)) = output.content.last_mut() {
+                                    if let Some(AssistantContentBlock::Thinking(th)) =
+                                        output.content.last_mut()
+                                    {
                                         th.thinking.push_str(&text);
                                         if let Some(sig) = current_thought_signature.as_ref() {
                                             th.thinking_signature = Some(sig.clone());
                                         }
                                     }
                                     let content_index = output.content.len() - 1;
-                                    let _ = sender.send(StreamEvent::ThinkingDelta {
-                                        content_index,
-                                        delta: text,
-                                        partial: output.clone(),
-                                    }).await;
+                                    let _ = sender
+                                        .send(StreamEvent::ThinkingDelta {
+                                            content_index,
+                                            delta: text,
+                                            partial: output.clone(),
+                                        })
+                                        .await;
                                 } else {
                                     // Text block
                                     if !matches!(current_block, Some(GeminiBlockKind::Text)) {
-                                        close_current_block(&mut current_block, &mut output, &current_text, &current_thinking, &current_thought_signature, &sender);
+                                        close_current_block(
+                                            &mut current_block,
+                                            &mut output,
+                                            &current_text,
+                                            &current_thinking,
+                                            &current_thought_signature,
+                                            &sender,
+                                        );
                                         current_text.clear();
-                                        output.content.push(AssistantContentBlock::Text(TextContent {
-                                            text: String::new(),
-                                            text_signature: None,
-                                        }));
+                                        output.content.push(AssistantContentBlock::Text(
+                                            TextContent {
+                                                text: String::new(),
+                                                text_signature: None,
+                                            },
+                                        ));
                                         current_block = Some(GeminiBlockKind::Text);
                                         let content_index = output.content.len() - 1;
-                                        let _ = sender.send(StreamEvent::TextStart {
-                                            content_index,
-                                            partial: output.clone(),
-                                        }).await;
+                                        let _ = sender
+                                            .send(StreamEvent::TextStart {
+                                                content_index,
+                                                partial: output.clone(),
+                                            })
+                                            .await;
                                     }
                                     current_text.push_str(&text);
-                                    if let Some(AssistantContentBlock::Text(t)) = output.content.last_mut() {
+                                    if let Some(AssistantContentBlock::Text(t)) =
+                                        output.content.last_mut()
+                                    {
                                         t.text.push_str(&text);
                                     }
                                     let content_index = output.content.len() - 1;
-                                    let _ = sender.send(StreamEvent::TextDelta {
-                                        content_index,
-                                        delta: text,
-                                        partial: output.clone(),
-                                    }).await;
+                                    let _ = sender
+                                        .send(StreamEvent::TextDelta {
+                                            content_index,
+                                            delta: text,
+                                            partial: output.clone(),
+                                        })
+                                        .await;
                                 }
                             }
                         }
@@ -627,9 +733,17 @@ async fn parse_sse_stream(
             }
         }
         // Close any remaining block before returning
-        close_current_block(&mut current_block, &mut output, &current_text, &current_thinking, &current_thought_signature, &sender);
+        close_current_block(
+            &mut current_block,
+            &mut output,
+            &current_text,
+            &current_thinking,
+            &current_thought_signature,
+            &sender,
+        );
         Ok(())
-    }.await;
+    }
+    .await;
 
     match parse_result {
         Ok(()) => {
@@ -722,7 +836,10 @@ mod tests {
             Some("You are helpful".into()),
             vec![Message::User(UserMessage {
                 role: "user".into(),
-                content: vec![ContentBlock::Text(TextContent { text: "Hello".into(), text_signature: None })],
+                content: vec![ContentBlock::Text(TextContent {
+                    text: "Hello".into(),
+                    text_signature: None,
+                })],
                 timestamp: 0,
                 source: MessageSource::Prompt,
             })],
@@ -731,21 +848,32 @@ mod tests {
         assert_eq!(body.contents.len(), 1);
         assert!(body.system_instruction.is_some());
         assert!(body.generation_config.thinking_config.is_some());
-        assert!(body.generation_config.thinking_config.as_ref().unwrap().include_thoughts);
+        assert!(
+            body.generation_config
+                .thinking_config
+                .as_ref()
+                .unwrap()
+                .include_thoughts
+        );
     }
 
     #[test]
     fn build_request_body_thinking_off() {
         let model = make_test_model();
         let ctx = Context::new(None, vec![]);
-        let body = build_request_body(&model, &ctx, Some(&StreamOptions {
-            max_tokens: None,
-            api_key: None,
-            reasoning: Some(ThinkingLevel::Off),
-            timeout_ms: None,
-            max_retries: None,
-            response_format: None,
-        })).unwrap();
+        let body = build_request_body(
+            &model,
+            &ctx,
+            Some(&StreamOptions {
+                max_tokens: None,
+                api_key: None,
+                reasoning: Some(ThinkingLevel::Off),
+                timeout_ms: None,
+                max_retries: None,
+                response_format: None,
+            }),
+        )
+        .unwrap();
         let tc = body.generation_config.thinking_config.unwrap();
         assert!(!tc.include_thoughts);
         assert_eq!(tc.thinking_budget, Some(0));
@@ -802,7 +930,9 @@ mod tests {
     #[test]
     fn build_vertex_url_from_base_url() {
         let mut model = make_test_model();
-        model.base_url = "https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/us-central1".into();
+        model.base_url =
+            "https://us-central1-aiplatform.googleapis.com/v1/projects/p/locations/us-central1"
+                .into();
         let url = build_vertex_url(&model);
         assert!(url.contains(":streamGenerateContent?alt=sse"));
     }

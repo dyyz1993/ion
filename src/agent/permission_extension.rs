@@ -135,7 +135,11 @@ impl PermissionExtension {
 
     /// 兼容旧签名（测试用）
     pub fn new_with_root(_session_id: &str, project_root: &str) -> Self {
-        Self::new(crate::storage_context::StorageContext::new(project_root, "test", project_root))
+        Self::new(crate::storage_context::StorageContext::new(
+            project_root,
+            "test",
+            project_root,
+        ))
     }
 
     /// 全局 settings.json 路径
@@ -152,7 +156,10 @@ impl PermissionExtension {
     /// 不修改会话级规则，不清空。
     pub fn reload(&self) -> Result<String, String> {
         let (count_global, count_project) = self.reload_internal();
-        Ok(format!("reloaded: {} global rules, {} project rules", count_global, count_project))
+        Ok(format!(
+            "reloaded: {} global rules, {} project rules",
+            count_global, count_project
+        ))
     }
 
     /// 内部重载实现
@@ -182,17 +189,19 @@ impl PermissionExtension {
                 *rules = new_rules;
             }
             Err(_) => {
-                tracing::debug!("[permission] hot-reload skipped (lock busy) — will retry next call");
+                tracing::debug!(
+                    "[permission] hot-reload skipped (lock busy) — will retry next call"
+                );
                 return (0, 0); // Don't update mtime — forces retry on next call
             }
         }
 
         // Track mtime for auto hot-reload
         let settings_path = self.project_settings_path();
-        if settings_path.exists() {
-            if let Ok(meta) = std::fs::metadata(&settings_path) {
-                *self.last_settings_mtime.lock().unwrap() = meta.modified().ok();
-            }
+        if settings_path.exists()
+            && let Ok(meta) = std::fs::metadata(&settings_path)
+        {
+            *self.last_settings_mtime.lock().unwrap() = meta.modified().ok();
         }
 
         (global_count, project_count)
@@ -209,16 +218,16 @@ impl PermissionExtension {
 
     /// 持久化项目级规则到 settings.json
     fn save_project_rules(&self) {
-        if let Ok(rules) = self.project_rules.read() {
-            if let Ok(json) = serde_json::to_string_pretty(&serde_json::json!({
+        if let Ok(rules) = self.project_rules.read()
+            && let Ok(json) = serde_json::to_string_pretty(&serde_json::json!({
                 "permissions": { "rules": &*rules }
-            })) {
-                let psp = self.project_settings_path();
-                if let Some(parent) = psp.parent() {
-                    std::fs::create_dir_all(parent).ok();
-                }
-                std::fs::write(&psp, json).ok();
+            }))
+        {
+            let psp = self.project_settings_path();
+            if let Some(parent) = psp.parent() {
+                std::fs::create_dir_all(parent).ok();
             }
+            std::fs::write(&psp, json).ok();
         }
     }
 
@@ -243,7 +252,8 @@ impl PermissionExtension {
                 let (count_global, count_project) = self.reload_internal();
                 tracing::info!(
                     "[permission] hot-reloaded: {} global, {} project rules",
-                    count_global, count_project
+                    count_global,
+                    count_project
                 );
                 *self.last_settings_mtime.lock().unwrap() = current_mtime;
             }
@@ -252,13 +262,13 @@ impl PermissionExtension {
         let match_value = if subject == "mcp_tool" {
             call.name.as_str()
         } else {
-            call.arguments.get("path")
+            call.arguments
+                .get("path")
                 .or_else(|| call.arguments.get("command"))
                 .or_else(|| call.arguments.get("file_path"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
         };
-
 
         // 1. 先查会话级规则（优先级最高）
         if let Ok(rules) = self.session_rules.lock() {
@@ -308,16 +318,30 @@ impl PermissionExtension {
     }
 
     /// 添加一条规则
-    pub fn add_rule(&self, subject: &str, pattern: &str, decision: &str, scope: &str) -> AgentResult<String> {
+    pub fn add_rule(
+        &self,
+        subject: &str,
+        pattern: &str,
+        decision: &str,
+        scope: &str,
+    ) -> AgentResult<String> {
         let decision = match decision {
             "allow" => Decision::Allow,
             "deny" => Decision::Deny,
-            _ => return Err(AgentError::Tool("decision must be 'allow' or 'deny'".into())),
+            _ => {
+                return Err(AgentError::Tool(
+                    "decision must be 'allow' or 'deny'".into(),
+                ));
+            }
         };
         let scope = match scope {
             "session" => Scope::Session,
             "project" => Scope::Project,
-            _ => return Err(AgentError::Tool("scope must be 'session' or 'project'".into())),
+            _ => {
+                return Err(AgentError::Tool(
+                    "scope must be 'session' or 'project'".into(),
+                ));
+            }
         };
 
         let rule = PermissionRule {
@@ -341,7 +365,13 @@ impl PermissionExtension {
             }
         }
 
-        Ok(format!("rule added: {} {} {} {}", subject, pattern, decision_str(&decision), scope_str(&scope)))
+        Ok(format!(
+            "rule added: {} {} {} {}",
+            subject,
+            pattern,
+            decision_str(&decision),
+            scope_str(&scope)
+        ))
     }
 
     /// 列出所有规则
@@ -386,13 +416,17 @@ impl PermissionExtension {
             _ => {
                 return Err(AgentError::Tool(
                     "decision must be 'allow' or 'deny'".into(),
-                ))
+                ));
             }
         };
         let scope = match scope {
             "session" => Scope::Session,
             "project" => Scope::Project,
-            _ => return Err(AgentError::Tool("scope must be 'session' or 'project'".into())),
+            _ => {
+                return Err(AgentError::Tool(
+                    "scope must be 'session' or 'project'".into(),
+                ));
+            }
         };
 
         let id = format!("perm_stored_{}", &uuid::Uuid::new_v4().to_string()[..8]);
@@ -540,11 +574,17 @@ fn source_str(s: &DecisionSource) -> &'static str {
 }
 
 fn decision_str(d: &Decision) -> &str {
-    match d { Decision::Allow => "allow", Decision::Deny => "deny" }
+    match d {
+        Decision::Allow => "allow",
+        Decision::Deny => "deny",
+    }
 }
 
 fn scope_str(s: &Scope) -> &str {
-    match s { Scope::Session => "session", Scope::Project => "project" }
+    match s {
+        Scope::Session => "session",
+        Scope::Project => "project",
+    }
 }
 
 fn chrono_now() -> String {
@@ -553,17 +593,21 @@ fn chrono_now() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     let secs = dur.as_secs();
-    format!("2026-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        (secs / 2592000 % 12) + 1,  // approximate month
-        (secs / 86400 % 30) + 1,    // approximate day
+    format!(
+        "2026-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        (secs / 2592000 % 12) + 1, // approximate month
+        (secs / 86400 % 30) + 1,   // approximate day
         (secs / 3600 % 24),
         (secs / 60 % 60),
-        (secs % 60))
+        (secs % 60)
+    )
 }
 
 #[async_trait]
 impl Extension for PermissionExtension {
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 
     async fn before_tool_call(&self, call: &mut ToolCall) -> AgentResult<()> {
         if let Some(decision) = self.check_tool(call) {
@@ -571,7 +615,8 @@ impl Extension for PermissionExtension {
                 Decision::Allow => return Ok(()),
                 Decision::Deny => {
                     return Err(AgentError::Tool(format!(
-                        "[Permission] '{}' denied by extension rule", call.name
+                        "[Permission] '{}' denied by extension rule",
+                        call.name
                     )));
                 }
             }
@@ -586,10 +631,19 @@ impl Extension for PermissionExtension {
     ) -> AgentResult<serde_json::Value> {
         match method {
             "add_rule" => {
-                let subject = params.get("subject").and_then(|v| v.as_str()).unwrap_or("command.run");
+                let subject = params
+                    .get("subject")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("command.run");
                 let pattern = params.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
-                let decision = params.get("decision").and_then(|v| v.as_str()).unwrap_or("allow");
-                let scope = params.get("scope").and_then(|v| v.as_str()).unwrap_or("session");
+                let decision = params
+                    .get("decision")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("allow");
+                let scope = params
+                    .get("scope")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("session");
                 let msg = self.add_rule(subject, pattern, decision, scope)?;
                 Ok(serde_json::json!({"status": "ok", "message": msg}))
             }
@@ -612,7 +666,10 @@ impl Extension for PermissionExtension {
                     .get("decision")
                     .and_then(|v| v.as_str())
                     .unwrap_or("allow");
-                let scope = params.get("scope").and_then(|v| v.as_str()).unwrap_or("project");
+                let scope = params
+                    .get("scope")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("project");
                 let msg = self.store_decision(subject, pattern, decision, scope)?;
                 Ok(serde_json::json!({"status": "ok", "message": msg}))
             }
@@ -638,7 +695,9 @@ impl Extension for PermissionExtension {
                 let removed = self.clear_stored();
                 Ok(serde_json::json!({"status": "ok", "removed": removed}))
             }
-            _ => Err(AgentError::Tool(format!("permission: unknown method '{method}'"))),
+            _ => Err(AgentError::Tool(format!(
+                "permission: unknown method '{method}'"
+            ))),
         }
     }
 }
@@ -654,8 +713,11 @@ mod tests {
     /// 遵循项目现有测试模式（std::env::temp_dir + process id），不依赖 tempfile crate。
     fn make_ext() -> PermissionExtension {
         let seq = TEST_SEQ.fetch_add(1, Ordering::SeqCst);
-        let root = std::env::temp_dir()
-            .join(format!("ion_perm_store_test_{}_{}", std::process::id(), seq));
+        let root = std::env::temp_dir().join(format!(
+            "ion_perm_store_test_{}_{}",
+            std::process::id(),
+            seq
+        ));
         let _ = std::fs::remove_dir_all(&root);
         let root = root.to_str().unwrap().to_string();
         PermissionExtension::new_with_root("test-sid", &root)
@@ -705,13 +767,15 @@ mod tests {
     fn test_store_decision_invalid_args() {
         let ext = make_ext();
         // 非法 decision
-        assert!(ext
-            .store_decision("command.run", "x", "maybe", "project")
-            .is_err());
+        assert!(
+            ext.store_decision("command.run", "x", "maybe", "project")
+                .is_err()
+        );
         // 非法 scope
-        assert!(ext
-            .store_decision("command.run", "x", "allow", "global")
-            .is_err());
+        assert!(
+            ext.store_decision("command.run", "x", "allow", "global")
+                .is_err()
+        );
     }
 
     #[test]

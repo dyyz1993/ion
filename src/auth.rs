@@ -5,7 +5,7 @@ use std::path::PathBuf;
 ///
 /// Stored in `~/.ion/auth.json` with permissions 0600 (owner read/write only).
 /// This separates secrets from the main `config.json`.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, Default)]
 pub struct AuthStorage {
     /// Default API key (used across providers)
     #[serde(default)]
@@ -18,16 +18,6 @@ pub struct AuthStorage {
     /// Per-provider base URLs
     #[serde(default)]
     pub provider_base_urls: std::collections::HashMap<String, String>,
-}
-
-impl Default for AuthStorage {
-    fn default() -> Self {
-        Self {
-            api_key: None,
-            provider_api_keys: std::collections::HashMap::new(),
-            provider_base_urls: std::collections::HashMap::new(),
-        }
-    }
 }
 
 impl AuthStorage {
@@ -161,8 +151,14 @@ mod tests {
     fn test_list_providers() {
         let mut base_urls = std::collections::HashMap::new();
         base_urls.insert("openai".to_string(), "https://api.openai.com".to_string());
-        base_urls.insert("anthropic".to_string(), "https://api.anthropic.com".to_string());
-        base_urls.insert("zhipuai".to_string(), "https://open.bigmodel.cn".to_string());
+        base_urls.insert(
+            "anthropic".to_string(),
+            "https://api.anthropic.com".to_string(),
+        );
+        base_urls.insert(
+            "zhipuai".to_string(),
+            "https://open.bigmodel.cn".to_string(),
+        );
 
         let auth = AuthStorage {
             api_key: None,
@@ -179,8 +175,14 @@ mod tests {
     fn test_provider_count() {
         let mut base_urls = std::collections::HashMap::new();
         base_urls.insert("openai".to_string(), "https://api.openai.com".to_string());
-        base_urls.insert("anthropic".to_string(), "https://api.anthropic.com".to_string());
-        base_urls.insert("zhipuai".to_string(), "https://open.bigmodel.cn".to_string());
+        base_urls.insert(
+            "anthropic".to_string(),
+            "https://api.anthropic.com".to_string(),
+        );
+        base_urls.insert(
+            "zhipuai".to_string(),
+            "https://open.bigmodel.cn".to_string(),
+        );
 
         let auth = AuthStorage {
             api_key: None,

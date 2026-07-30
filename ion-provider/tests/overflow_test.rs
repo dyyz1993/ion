@@ -17,10 +17,10 @@
 //!   5. Many small messages totaling > window    → verify behavior.
 
 use ion_provider::faux::{
-    faux_assistant_message, FauxContent, FauxMessageOptions, FauxProvider, FauxResponseStep,
+    FauxContent, FauxMessageOptions, FauxProvider, FauxResponseStep, faux_assistant_message,
     register_faux,
 };
-use ion_provider::registry::{stream, ApiRegistry};
+use ion_provider::registry::{ApiRegistry, stream};
 use ion_provider::types::{
     ContentBlock, Context, Cost, Message, MessageSource, Model, StreamEvent, TextContent,
     UserMessage,

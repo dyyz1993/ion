@@ -49,11 +49,7 @@ impl Tool for McpTool {
         self.parameters.clone()
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _rt: &dyn Runtime,
-    ) -> AgentResult<String> {
+    async fn execute(&self, args: serde_json::Value, _rt: &dyn Runtime) -> AgentResult<String> {
         self.manager
             .call_tool(&self.server_name, &self.tool_name, args)
             .await

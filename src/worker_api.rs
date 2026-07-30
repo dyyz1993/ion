@@ -9,7 +9,11 @@ use tokio::sync::mpsc;
 #[async_trait]
 pub trait BridgeHandle: Send + Sync {
     /// 发送一个 manager_command 到 Manager，等待响应（阻塞等待）。
-    async fn send_command(&self, command: &str, params: serde_json::Value) -> Result<serde_json::Value, String>;
+    async fn send_command(
+        &self,
+        command: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String>;
 }
 
 /// Worker creation config for extensions.
@@ -58,50 +62,75 @@ pub struct WorkerHandle {
 }
 
 impl WorkerHandle {
-    pub fn new(worker_id: String, session_id: String, manager_tx: mpsc::Sender<ManagerCommand>) -> Self {
-        Self { worker_id, session_id, manager_tx }
+    pub fn new(
+        worker_id: String,
+        session_id: String,
+        manager_tx: mpsc::Sender<ManagerCommand>,
+    ) -> Self {
+        Self {
+            worker_id,
+            session_id,
+            manager_tx,
+        }
     }
 
-    pub fn id(&self) -> &str { &self.worker_id }
-    pub fn session_id(&self) -> &str { &self.session_id }
+    pub fn id(&self) -> &str {
+        &self.worker_id
+    }
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
 
     /// Send a prompt to this Worker.
     pub async fn send(&self, text: impl Into<String>) -> Result<(), String> {
-        self.manager_tx.send(ManagerCommand::SendToWorker {
-            worker_id: self.worker_id.clone(),
-            method: "prompt".into(),
-            params: serde_json::json!({"text": text.into()}),
-        }).await.map_err(|e| e.to_string())
+        self.manager_tx
+            .send(ManagerCommand::SendToWorker {
+                worker_id: self.worker_id.clone(),
+                method: "prompt".into(),
+                params: serde_json::json!({"text": text.into()}),
+            })
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// Send an RPC command to this Worker.
     pub async fn rpc(&self, method: &str, params: serde_json::Value) -> Result<(), String> {
-        self.manager_tx.send(ManagerCommand::SendToWorker {
-            worker_id: self.worker_id.clone(),
-            method: method.into(),
-            params,
-        }).await.map_err(|e| e.to_string())
+        self.manager_tx
+            .send(ManagerCommand::SendToWorker {
+                worker_id: self.worker_id.clone(),
+                method: method.into(),
+                params,
+            })
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// Steer this Worker.
     pub async fn steer(&self, text: impl Into<String>) -> Result<(), String> {
-        self.rpc("steer", serde_json::json!({"text": text.into()})).await
+        self.rpc("steer", serde_json::json!({"text": text.into()}))
+            .await
     }
 
     /// Kill this Worker.
     pub async fn kill(&self) -> Result<(), String> {
-        self.manager_tx.send(ManagerCommand::KillWorker {
-            worker_id: self.worker_id.clone(),
-        }).await.map_err(|e| e.to_string())
+        self.manager_tx
+            .send(ManagerCommand::KillWorker {
+                worker_id: self.worker_id.clone(),
+            })
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// Send to a channel.
     pub async fn channel_send(&self, channel: &str, msg: serde_json::Value) -> Result<(), String> {
-        self.manager_tx.send(ManagerCommand::ChannelSend {
-            channel: channel.into(),
-            from: self.worker_id.clone(),
-            msg,
-        }).await.map_err(|e| e.to_string())
+        self.manager_tx
+            .send(ManagerCommand::ChannelSend {
+                channel: channel.into(),
+                from: self.worker_id.clone(),
+                msg,
+            })
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -160,8 +189,18 @@ pub struct ExtensionApi {
 }
 
 impl ExtensionApi {
-    pub fn new(worker_id: String, session_id: String, manager_tx: mpsc::Sender<ManagerCommand>) -> Self {
-        Self { worker_id, session_id, manager_tx, follow_up_tx: None, bridge: None }
+    pub fn new(
+        worker_id: String,
+        session_id: String,
+        manager_tx: mpsc::Sender<ManagerCommand>,
+    ) -> Self {
+        Self {
+            worker_id,
+            session_id,
+            manager_tx,
+            follow_up_tx: None,
+            bridge: None,
+        }
     }
 
     /// Set the bridge to Manager (JSON stdout protocol).
@@ -173,7 +212,10 @@ impl ExtensionApi {
 
     /// Set the follow_up channel sender.
     /// Called by the worker during startup, before the extension is used.
-    pub fn set_follow_up_tx(&mut self, tx: tokio::sync::mpsc::UnboundedSender<crate::agent::messages::Message>) {
+    pub fn set_follow_up_tx(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<crate::agent::messages::Message>,
+    ) {
         self.follow_up_tx = Some(tx);
     }
 
@@ -188,7 +230,10 @@ impl ExtensionApi {
 
     /// Create a child Worker. Returns a WorkerHandle.
     /// Uses BridgeHandle when available, falls back to mpsc (dead code path).
-    pub async fn create_worker(&self, config: ExtensionWorkerConfig) -> Result<WorkerHandle, String> {
+    pub async fn create_worker(
+        &self,
+        config: ExtensionWorkerConfig,
+    ) -> Result<WorkerHandle, String> {
         if let Some(ref bridge) = self.bridge {
             // Live path: JSON stdout → Manager
             // 透传所有字段（含补丁 1 新增的 agent/initial_prompt/worktree/allowed_tools/max_turns）
@@ -209,28 +254,53 @@ impl ExtensionApi {
                 "max_turns": config.max_turns,
             });
             let resp = bridge.send_command("create_worker", params).await?;
-            let worker_id = resp.get("workerId").and_then(|v| v.as_str()).ok_or("create_worker: missing workerId in response")?.to_string();
-            let session_id = resp.get("sessionId").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            Ok(WorkerHandle::new(worker_id, session_id.clone(), self.manager_tx.clone()))
+            let worker_id = resp
+                .get("workerId")
+                .and_then(|v| v.as_str())
+                .ok_or("create_worker: missing workerId in response")?
+                .to_string();
+            let session_id = resp
+                .get("sessionId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Ok(WorkerHandle::new(
+                worker_id,
+                session_id.clone(),
+                self.manager_tx.clone(),
+            ))
         } else {
             // Dead code path: mpsc ManagerCommand (no receiver exists!)
             let (reply, rx) = tokio::sync::oneshot::channel();
-            self.manager_tx.send(ManagerCommand::CreateWorker {
-                config, reply,
-            }).await.map_err(|e| e.to_string())?;
+            self.manager_tx
+                .send(ManagerCommand::CreateWorker { config, reply })
+                .await
+                .map_err(|e| e.to_string())?;
             let info = rx.await.map_err(|e| e.to_string())?;
-            Ok(WorkerHandle::new(info.worker_id, info.session_id, self.manager_tx.clone()))
+            Ok(WorkerHandle::new(
+                info.worker_id,
+                info.session_id,
+                self.manager_tx.clone(),
+            ))
         }
     }
 
     /// Get a handle to self.
     pub fn self_handle(&self) -> WorkerHandle {
-        WorkerHandle::new(self.worker_id.clone(), self.session_id.clone(), self.manager_tx.clone())
+        WorkerHandle::new(
+            self.worker_id.clone(),
+            self.session_id.clone(),
+            self.manager_tx.clone(),
+        )
     }
 
     /// Get a handle to an existing Worker by ID.
     pub fn get_worker(&self, worker_id: &str) -> WorkerHandle {
-        WorkerHandle::new(worker_id.to_string(), String::new(), self.manager_tx.clone())
+        WorkerHandle::new(
+            worker_id.to_string(),
+            String::new(),
+            self.manager_tx.clone(),
+        )
     }
 
     /// Send to a channel.
@@ -320,14 +390,23 @@ mod tests {
         assert_eq!(back.session.as_deref(), Some("sess-1"));
         assert_eq!(back.model.as_deref(), Some("gpt-4"));
         assert_eq!(back.provider.as_deref(), Some("openai"));
-        assert_eq!(back.channels.as_deref(), Some(&["ch-a".to_string(), "ch-b".to_string()][..]));
+        assert_eq!(
+            back.channels.as_deref(),
+            Some(&["ch-a".to_string(), "ch-b".to_string()][..])
+        );
         assert_eq!(back.parent.as_deref(), Some("parent-1"));
         assert_eq!(back.agent.as_deref(), Some("coder"));
         assert_eq!(back.initial_prompt.as_deref(), Some("do the thing"));
         assert!(back.worktree.is_none());
         assert_eq!(back.relation.as_deref(), Some("Child"));
-        assert_eq!(back.allowed_tools.as_deref(), Some(&["bash".to_string()][..]));
-        assert_eq!(back.disallowed_tools.as_deref(), Some(&["rm".to_string()][..]));
+        assert_eq!(
+            back.allowed_tools.as_deref(),
+            Some(&["bash".to_string()][..])
+        );
+        assert_eq!(
+            back.disallowed_tools.as_deref(),
+            Some(&["rm".to_string()][..])
+        );
         assert_eq!(back.max_turns, Some(42));
     }
 
@@ -339,8 +418,7 @@ mod tests {
             session: Some("s".into()),
             ..Default::default()
         };
-        let value: serde_json::Value =
-            serde_json::to_value(&cfg).expect("serialize failed");
+        let value: serde_json::Value = serde_json::to_value(&cfg).expect("serialize failed");
         assert!(value.is_object());
         assert_eq!(value.get("session").and_then(|v| v.as_str()), Some("s"));
     }
@@ -395,7 +473,9 @@ mod tests {
     #[test]
     fn manager_command_kill_worker_construction() {
         // Pure construction check: KillWorker should carry the worker_id verbatim.
-        let cmd = ManagerCommand::KillWorker { worker_id: "w-kill".into() };
+        let cmd = ManagerCommand::KillWorker {
+            worker_id: "w-kill".into(),
+        };
         match cmd {
             ManagerCommand::KillWorker { worker_id } => assert_eq!(worker_id, "w-kill"),
             _ => panic!("expected KillWorker variant"),
@@ -466,8 +546,7 @@ mod tests {
     fn extension_event_visibility_can_be_upgraded_to_llm_and_ui() {
         // Builder should allow flipping visibility — used by emit_extension_event
         // when serializing the "llm_and_ui" string.
-        let ev = ExtensionEvent::new("memory", "saved")
-            .with_visibility(EventVisibility::LlmAndUi);
+        let ev = ExtensionEvent::new("memory", "saved").with_visibility(EventVisibility::LlmAndUi);
         assert_eq!(ev.visibility, EventVisibility::LlmAndUi);
     }
 }

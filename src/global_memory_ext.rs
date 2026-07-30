@@ -92,17 +92,28 @@ impl Extension for GlobalMemoryExtension {
             if parts.len() == 2 {
                 (parts[1].to_string(), parts[0].to_string())
             } else {
-                (cfg.default_model.clone().unwrap_or_else(|| "glm-5.2".into()),
-                 cfg.default_provider.clone().unwrap_or_else(|| "zai".into()))
+                (
+                    cfg.default_model
+                        .clone()
+                        .unwrap_or_else(|| "glm-5.2".into()),
+                    cfg.default_provider.clone().unwrap_or_else(|| "zai".into()),
+                )
             }
         } else {
-            (cfg.default_model.clone().unwrap_or_else(|| "glm-5.2".into()),
-             cfg.default_provider.clone().unwrap_or_else(|| "zai".into()))
+            (
+                cfg.default_model
+                    .clone()
+                    .unwrap_or_else(|| "glm-5.2".into()),
+                cfg.default_provider.clone().unwrap_or_else(|| "zai".into()),
+            )
         };
 
         // 构造 memory-agent 的 WorkerCreateConfig
         let config = crate::worker_registry::WorkerCreateConfig {
-            session: Some(format!("sess_memory_agent_{}", &uuid::Uuid::new_v4().to_string()[..8])),
+            session: Some(format!(
+                "sess_memory_agent_{}",
+                &uuid::Uuid::new_v4().to_string()[..8]
+            )),
             agent: Some("memory-agent".into()),
             model: Some(model),
             provider: Some(provider),
@@ -122,7 +133,11 @@ impl Extension for GlobalMemoryExtension {
         match reg.create_worker(config, registry).await {
             Ok(info) => {
                 let wid = info.worker_id.clone();
-                tracing::info!("[global-memory] Active Memory sub-agent started: {} (session: {})", wid, info.session_id);
+                tracing::info!(
+                    "[global-memory] Active Memory sub-agent started: {} (session: {})",
+                    wid,
+                    info.session_id
+                );
                 *self.active_memory_worker.lock().unwrap() = Some(wid);
             }
             Err(e) => {
@@ -159,51 +174,61 @@ impl Extension for GlobalMemoryExtension {
 
         match method {
             "save" => {
-                let content = params.get("content").and_then(|v| v.as_str())
+                let content = params
+                    .get("content")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| AgentError::Tool("missing 'content'".into()))?;
-                let category = params.get("category").and_then(|v| v.as_str()).unwrap_or("");
+                let category = params
+                    .get("category")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let tags = params.get("tags").and_then(|v| v.as_str()).unwrap_or("");
-                let project = params.get("project").and_then(|v| v.as_str())
+                let project = params
+                    .get("project")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| AgentError::Tool("missing 'project'".into()))?;
-                let importance = params.get("importance").and_then(|v| v.as_i64())
+                let importance = params
+                    .get("importance")
+                    .and_then(|v| v.as_i64())
                     .unwrap_or(5) as i32;
-                let id = store.save(content, category, tags, project, importance)
+                let id = store
+                    .save(content, category, tags, project, importance)
                     .map_err(AgentError::Tool)?;
                 Ok(serde_json::json!({"id": id}))
             }
 
             "search" => {
-                let query = params.get("query").and_then(|v| v.as_str())
+                let query = params
+                    .get("query")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| AgentError::Tool("missing 'query'".into()))?;
                 let project = params.get("project").and_then(|v| v.as_str());
-                let results = store.search(query, project)
-                    .map_err(AgentError::Tool)?;
+                let results = store.search(query, project).map_err(AgentError::Tool)?;
                 Ok(serde_json::json!({"results": serialize_entries(&results)}))
             }
 
             "list" => {
                 let project = params.get("project").and_then(|v| v.as_str());
-                let results = store.list(project)
-                    .map_err(AgentError::Tool)?;
+                let results = store.list(project).map_err(AgentError::Tool)?;
                 Ok(serde_json::json!({"entries": serialize_entries(&results)}))
             }
 
             "forget" => {
-                let id = params.get("id").and_then(|v| v.as_str())
+                let id = params
+                    .get("id")
+                    .and_then(|v| v.as_str())
                     .ok_or_else(|| AgentError::Tool("missing 'id'".into()))?;
                 store.forget(id).map_err(AgentError::Tool)?;
                 Ok(serde_json::json!({"ok": true}))
             }
 
             "list_outlines" => {
-                let outlines = store.list_outlines()
-                    .map_err(AgentError::Tool)?;
+                let outlines = store.list_outlines().map_err(AgentError::Tool)?;
                 Ok(serde_json::json!({"outlines": outlines}))
             }
 
             "consolidate" => {
-                let stats = store.consolidate()
-                    .map_err(AgentError::Tool)?;
+                let stats = store.consolidate().map_err(AgentError::Tool)?;
                 Ok(serde_json::json!({"stats": stats}))
             }
 
@@ -215,23 +240,29 @@ impl Extension for GlobalMemoryExtension {
             }
 
             _ => Err(AgentError::Tool(format!(
-                "unknown method '{}'. Available: save, search, list, forget, list_outlines, consolidate, clear_stored", method
+                "unknown method '{}'. Available: save, search, list, forget, list_outlines, consolidate, clear_stored",
+                method
             ))),
         }
     }
 }
 
 fn serialize_entries(entries: &[GlobalMemoryEntry]) -> Vec<serde_json::Value> {
-    entries.iter().map(|e| serde_json::json!({
-        "id": e.id,
-        "project": e.project,
-        "content": e.content,
-        "category": e.category,
-        "tags": e.tags,
-        "importance": e.importance,
-        "created_at": e.created_at,
-        "updated_at": e.updated_at,
-    })).collect()
+    entries
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "id": e.id,
+                "project": e.project,
+                "content": e.content,
+                "category": e.category,
+                "tags": e.tags,
+                "importance": e.importance,
+                "created_at": e.created_at,
+                "updated_at": e.updated_at,
+            })
+        })
+        .collect()
 }
 
 /// Return the status of the global-memory extension as a JSON object.
@@ -260,10 +291,22 @@ mod tests {
     fn test_extension_status() {
         let status = extension_status();
         // Verify it returns a JSON object with the 'enabled' field
-        assert!(status.is_object(), "extension_status() must return a JSON object");
-        assert!(status.get("enabled").is_some(), "response must contain 'enabled' field");
+        assert!(
+            status.is_object(),
+            "extension_status() must return a JSON object"
+        );
+        assert!(
+            status.get("enabled").is_some(),
+            "response must contain 'enabled' field"
+        );
         // Verify it also contains the other expected fields
-        assert!(status.get("db_exists").is_some(), "response must contain 'db_exists' field");
-        assert!(status.get("db_path").is_some(), "response must contain 'db_path' field");
+        assert!(
+            status.get("db_exists").is_some(),
+            "response must contain 'db_exists' field"
+        );
+        assert!(
+            status.get("db_path").is_some(),
+            "response must contain 'db_path' field"
+        );
     }
 }

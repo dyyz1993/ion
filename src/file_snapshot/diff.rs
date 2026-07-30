@@ -21,7 +21,8 @@ pub fn unified_diff(before: &str, after: &str, path: &str) -> String {
 
     // similar 的 unified_diff 输出已含 --- / +++ 头，但我们用自己的路径格式
     // 跳过 similar 输出的前两行头（--- / +++），只取 hunk 部分
-    let hunk_part = output.lines()
+    let hunk_part = output
+        .lines()
         .skip_while(|l| l.starts_with("---") || l.starts_with("+++"))
         .collect::<Vec<_>>()
         .join("\n");
@@ -120,7 +121,11 @@ mod tests {
         let diff = unified_diff(before, after, "test.rs");
         let (added, removed) = count_diff(&diff);
         // 真行级 diff：只删 2 行（l2, l8）、加 2 行（l2-X, l8-X）
-        assert_eq!(removed, 2, "分散修改应只报 2 处删除，而非整段。diff:\n{}", diff);
+        assert_eq!(
+            removed, 2,
+            "分散修改应只报 2 处删除，而非整段。diff:\n{}",
+            diff
+        );
         assert_eq!(added, 2, "分散修改应只报 2 处新增");
     }
 }

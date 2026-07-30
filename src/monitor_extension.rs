@@ -33,16 +33,12 @@ use tokio::sync::{Mutex, OnceCell};
 /// so it can be compared, printed via `{:?}`, and used in `match` guards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum MonitorMode {
+    #[default]
     SerialSkip,
     SerialQueue,
     Concurrent,
-}
-
-impl Default for MonitorMode {
-    fn default() -> Self {
-        MonitorMode::SerialSkip
-    }
 }
 
 /// Dispatch / trigger mode for how a monitor's action is delivered.
@@ -51,16 +47,12 @@ impl Default for MonitorMode {
 /// so it can be compared, printed via `{:?}`, and used in `match` guards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum TriggerMode {
+    #[default]
     AutoSpawn,
     ChannelNotify,
     EventOnly,
-}
-
-impl Default for TriggerMode {
-    fn default() -> Self {
-        TriggerMode::AutoSpawn
-    }
 }
 
 impl std::fmt::Display for MonitorMode {
@@ -118,12 +110,24 @@ pub struct MonitorDef {
     pub cooldown_secs: u64,
 }
 
-fn default_interval() -> u64 { 300 }
-fn default_agent() -> String { "developer".into() }
-fn default_prompt() -> String { "Monitor triggered:\n{output}".into() }
-fn default_enabled() -> bool { true }
-fn default_max_concurrent() -> u32 { 3 }
-fn default_cooldown() -> u64 { 60 }
+fn default_interval() -> u64 {
+    300
+}
+fn default_agent() -> String {
+    "developer".into()
+}
+fn default_prompt() -> String {
+    "Monitor triggered:\n{output}".into()
+}
+fn default_enabled() -> bool {
+    true
+}
+fn default_max_concurrent() -> u32 {
+    3
+}
+fn default_cooldown() -> u64 {
+    60
+}
 
 /// Default queue capacity for serial_queue mode (overflow protection).
 pub const MONITOR_QUEUE_CAPACITY: usize = 10;
@@ -132,15 +136,13 @@ pub const MONITOR_QUEUE_CAPACITY: usize = 10;
 /// This guards against path traversal (e.g. "../../etc/cron.d/evil").
 fn validate_name(name: &str) -> Result<(), String> {
     if name.is_empty() || name.len() > 32 {
-        return Err(format!(
-            "name length must be 1-32, got {}",
-            name.len()
-        ));
+        return Err(format!("name length must be 1-32, got {}", name.len()));
     }
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-        return Err(format!(
-            "name may only contain [a-zA-Z0-9_-], got '{name}'"
-        ));
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(format!("name may only contain [a-zA-Z0-9_-], got '{name}'"));
     }
     Ok(())
 }
@@ -195,7 +197,8 @@ pub struct ActivePipeline {
 impl ActivePipeline {
     /// Returns true if this pipeline has been active for more than 1 hour.
     pub fn is_expired(&self, now_epoch_secs: i64) -> bool {
-        let started: i64 = self.started_at
+        let started: i64 = self
+            .started_at
             .strip_prefix("epoch:")
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
@@ -205,7 +208,11 @@ impl ActivePipeline {
 
 impl std::fmt::Display for MonitorStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}: triggers={}, skips={}, last={}", self.name, self.trigger_count, self.skip_count, self.last_result)
+        write!(
+            f,
+            "{}: triggers={}, skips={}, last={}",
+            self.name, self.trigger_count, self.skip_count, self.last_result
+        )
     }
 }
 
@@ -222,6 +229,12 @@ pub struct MonitorExtension {
     /// registry parameter) can spawn new monitor loops at runtime.
     registry: OnceCell<Arc<tokio::sync::Mutex<crate::worker_registry::WorkerRegistry>>>,
     name: String,
+}
+
+impl Default for MonitorExtension {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MonitorExtension {
@@ -273,12 +286,13 @@ impl MonitorExtension {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(json) =
-            serde_json::to_string_pretty(&serde_json::json!({ "active": active }))
-        {
+        if let Ok(json) = serde_json::to_string_pretty(&serde_json::json!({ "active": active })) {
             let _ = std::fs::write(&path, json);
         } else {
-            tracing::warn!("[monitor] failed to serialize active pipelines for {:?}", path);
+            tracing::warn!(
+                "[monitor] failed to serialize active pipelines for {:?}",
+                path
+            );
         }
     }
 
@@ -288,17 +302,20 @@ impl MonitorExtension {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().map(|e| e == "json").unwrap_or(false) {
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        match serde_json::from_str::<MonitorDef>(&content) {
-                            Ok(def) => {
-                                tracing::info!("[monitor] loaded: {} from {}", def.name, path.display());
-                                result.push(def);
-                            }
-                            Err(e) => tracing::warn!(
-                                "[monitor] failed to parse {}: {e}",
+                if path.extension().map(|e| e == "json").unwrap_or(false)
+                    && let Ok(content) = std::fs::read_to_string(&path)
+                {
+                    match serde_json::from_str::<MonitorDef>(&content) {
+                        Ok(def) => {
+                            tracing::info!(
+                                "[monitor] loaded: {} from {}",
+                                def.name,
                                 path.display()
-                            ),
+                            );
+                            result.push(def);
+                        }
+                        Err(e) => {
+                            tracing::warn!("[monitor] failed to parse {}: {e}", path.display())
                         }
                     }
                 }
@@ -385,12 +402,20 @@ impl MonitorExtension {
     /// errors rather than panics.
     fn parse_def(params: &serde_json::Value) -> MonitorDef {
         MonitorDef {
-            name: params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            name: params
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
             interval_secs: params
                 .get("interval_secs")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(default_interval()),
-            script: params.get("script").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            script: params
+                .get("script")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
             agent: params
                 .get("agent")
                 .and_then(|v| v.as_str())
@@ -401,7 +426,10 @@ impl MonitorExtension {
                 .and_then(|v| v.as_str())
                 .unwrap_or(&default_prompt())
                 .to_string(),
-            enabled: params.get("enabled").and_then(|v| v.as_bool()).unwrap_or(default_enabled()),
+            enabled: params
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(default_enabled()),
             mode: Self::parse_mode(params.get("mode")),
             trigger_mode: Self::parse_trigger_mode(params.get("trigger_mode")),
             max_concurrent: params
@@ -419,15 +447,13 @@ impl MonitorExtension {
     /// Decode `mode` from a JSON value using the snake_case rename.
     /// Falls back to the default (SerialSkip) on missing/invalid input.
     fn parse_mode(v: Option<&serde_json::Value>) -> MonitorMode {
-        serde_json::from_value(v.cloned().unwrap_or(serde_json::Value::Null))
-            .unwrap_or_default()
+        serde_json::from_value(v.cloned().unwrap_or(serde_json::Value::Null)).unwrap_or_default()
     }
 
     /// Decode `trigger_mode` from a JSON value using the snake_case rename.
     /// Falls back to the default (AutoSpawn) on missing/invalid input.
     fn parse_trigger_mode(v: Option<&serde_json::Value>) -> TriggerMode {
-        serde_json::from_value(v.cloned().unwrap_or(serde_json::Value::Null))
-            .unwrap_or_default()
+        serde_json::from_value(v.cloned().unwrap_or(serde_json::Value::Null)).unwrap_or_default()
     }
 
     /// Run a script capturing stdout, stderr, exit status separately.
@@ -443,7 +469,12 @@ impl MonitorExtension {
                 let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
                 let exit_ok = output.status.success();
                 let exit_code = output.status.code().unwrap_or(-1);
-                ScriptRun { stdout, stderr, exit_ok, exit_code }
+                ScriptRun {
+                    stdout,
+                    stderr,
+                    exit_ok,
+                    exit_code,
+                }
             }
             Err(e) => ScriptRun {
                 stdout: String::new(),
@@ -542,416 +573,496 @@ impl MonitorExtension {
         let max_concurrent = def.max_concurrent;
         let cooldown_secs = def.cooldown_secs;
         // v2: per-monitor runtime state (queue, active counter, last trigger time)
-        let pending_queue = Arc::new(Mutex::new(
-            std::collections::VecDeque::<String>::new()
-        ));
+        let pending_queue = Arc::new(Mutex::new(std::collections::VecDeque::<String>::new()));
         let active_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
         // Initialize last_trigger far in the past so the first tick can fire.
         let last_trigger = Arc::new(Mutex::new(
             std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_secs(cooldown_secs.max(1) + 1))
-                .unwrap_or_else(std::time::Instant::now)
+                .unwrap_or_else(std::time::Instant::now),
         ));
 
         // Initialize status
         {
             let mut s = stats.lock().await;
-            s.insert(name.clone(), MonitorStatus {
-                name: name.clone(),
-                enabled: true,
-                last_run: None,
-                last_result: "starting".into(),
-                trigger_count: 0,
-                // v2 status fields
-                skip_count: 0,
-                queue_length: 0,
-                active_workers: 0,
-                last_error: None,
-                consecutive_failures: 0,
-                last_spawned_worker: None,
-            });
+            s.insert(
+                name.clone(),
+                MonitorStatus {
+                    name: name.clone(),
+                    enabled: true,
+                    last_run: None,
+                    last_result: "starting".into(),
+                    trigger_count: 0,
+                    // v2 status fields
+                    skip_count: 0,
+                    queue_length: 0,
+                    active_workers: 0,
+                    last_error: None,
+                    consecutive_failures: 0,
+                    last_spawned_worker: None,
+                },
+            );
         }
 
         tracing::info!(
             "[monitor] starting '{}' (interval={}s, agent={})",
-            name, interval, agent
+            name,
+            interval,
+            agent
         );
 
-            tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(
-                    tokio::time::Duration::from_secs(interval.max(1))
-                );
-                ticker.set_missed_tick_behavior(
-                    tokio::time::MissedTickBehavior::Skip
-                );
+        tokio::spawn(async move {
+            let mut ticker =
+                tokio::time::interval(tokio::time::Duration::from_secs(interval.max(1)));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-                loop {
-                    ticker.tick().await;
+            loop {
+                ticker.tick().await;
 
-                    // Run the monitor script
-                    let (success, output) = Self::run_script(&script);
-                    let now = chrono_or_systime();
+                // Run the monitor script
+                let (success, output) = Self::run_script(&script);
+                let now = chrono_or_systime();
 
-                    // Update status (+ track consecutive failures for auto-disable)
-                    {
+                // Update status (+ track consecutive failures for auto-disable)
+                {
+                    let mut s = stats.lock().await;
+                    if let Some(status) = s.get_mut(&name) {
+                        status.last_run = Some(now.clone());
+                        if !success {
+                            status.consecutive_failures += 1;
+                            status.last_error = Some(if output.is_empty() {
+                                "exit code non-zero".into()
+                            } else {
+                                output.clone()
+                            });
+                            status.last_result = "error".into();
+                            // v2: auto-disable after 5 consecutive failures
+                            if status.consecutive_failures >= 5 {
+                                status.enabled = false;
+                                status.last_result = "auto_disabled".into();
+                                tracing::warn!(
+                                    "[monitor] '{}' auto-disabled after {} consecutive failures",
+                                    name,
+                                    status.consecutive_failures
+                                );
+                            }
+                        } else {
+                            status.consecutive_failures = 0;
+                            status.last_result = if output.is_empty() {
+                                "idle".into()
+                            } else {
+                                "triggered".into()
+                            };
+                        }
+                    }
+                }
+
+                if !success {
+                    Self::emit_event(
+                        "monitor_script_failed",
+                        serde_json::json!({
+                            "name": &name, "stderr": &output
+                        }),
+                        &reg,
+                    )
+                    .await;
+                    continue;
+                }
+
+                if output.is_empty() {
+                    // No event — idle, keep looping
+                    continue;
+                }
+
+                // v2: cooldown check (debounce)
+                {
+                    let last = *last_trigger.lock().await;
+                    if last.elapsed() < std::time::Duration::from_secs(cooldown_secs) {
+                        Self::emit_event(
+                            "monitor_cooldown",
+                            serde_json::json!({
+                                "name": &name, "cooldown_secs": cooldown_secs
+                            }),
+                            &reg,
+                        )
+                        .await;
                         let mut s = stats.lock().await;
                         if let Some(status) = s.get_mut(&name) {
-                            status.last_run = Some(now.clone());
-                            if !success {
-                                status.consecutive_failures += 1;
-                                status.last_error = Some(if output.is_empty() {
-                                    "exit code non-zero".into()
-                                } else {
-                                    output.clone()
-                                });
-                                status.last_result = "error".into();
-                                // v2: auto-disable after 5 consecutive failures
-                                if status.consecutive_failures >= 5 {
-                                    status.enabled = false;
-                                    status.last_result = "auto_disabled".into();
-                                    tracing::warn!(
-                                        "[monitor] '{}' auto-disabled after {} consecutive failures",
-                                        name, status.consecutive_failures
-                                    );
-                                }
-                            } else {
-                                status.consecutive_failures = 0;
-                                status.last_result = if output.is_empty() {
-                                    "idle".into()
-                                } else {
-                                    "triggered".into()
-                                };
-                            }
+                            status.last_result = "cooldown".into();
                         }
-                    }
-
-                    if !success {
-                        Self::emit_event("monitor_script_failed", serde_json::json!({
-                            "name": &name, "stderr": &output
-                        }), &reg).await;
                         continue;
                     }
+                }
 
-                    if output.is_empty() {
-                        // No event — idle, keep looping
-                        continue;
-                    }
-
-                    // v2: cooldown check (debounce)
-                    {
-                        let last = *last_trigger.lock().await;
-                        if last.elapsed() < std::time::Duration::from_secs(cooldown_secs) {
-                            Self::emit_event("monitor_cooldown", serde_json::json!({
-                                "name": &name, "cooldown_secs": cooldown_secs
-                            }), &reg).await;
-                            let mut s = stats.lock().await;
-                            if let Some(status) = s.get_mut(&name) {
-                                status.last_result = "cooldown".into();
-                            }
-                            continue;
-                        }
-                    }
-
-                    // Event detected — emit monitor_triggered (the canonical event)
-                    Self::emit_event("monitor_triggered", serde_json::json!({
+                // Event detected — emit monitor_triggered (the canonical event)
+                Self::emit_event(
+                    "monitor_triggered",
+                    serde_json::json!({
                         "name": &name,
                         "output_bytes": output.len(),
                         "output": &output,
                         "agent": &agent,
-                        "mode": serde_json::to_value(&mode).unwrap_or_default(),
-                        "trigger_mode": serde_json::to_value(&trigger_mode).unwrap_or_default(),
-                    }), &reg).await;
+                        "mode": serde_json::to_value(mode).unwrap_or_default(),
+                        "trigger_mode": serde_json::to_value(trigger_mode).unwrap_or_default(),
+                    }),
+                    &reg,
+                )
+                .await;
 
-                    // Increment trigger count
-                    {
-                        let mut s = stats.lock().await;
-                        if let Some(status) = s.get_mut(&name) {
-                            status.trigger_count += 1;
-                        }
+                // Increment trigger count
+                {
+                    let mut s = stats.lock().await;
+                    if let Some(status) = s.get_mut(&name) {
+                        status.trigger_count += 1;
                     }
+                }
 
-                    // Build the prompt
-                    let prompt = Self::format_prompt(&prompt_tpl, &output);
+                // Build the prompt
+                let prompt = Self::format_prompt(&prompt_tpl, &output);
 
-                    // v2: route by trigger_mode
-                    match trigger_mode {
-                        TriggerMode::EventOnly => {
-                            // Only emit; never spawn a worker.
-                            Self::emit_event("monitor_event_only", serde_json::json!({
+                // v2: route by trigger_mode
+                match trigger_mode {
+                    TriggerMode::EventOnly => {
+                        // Only emit; never spawn a worker.
+                        Self::emit_event(
+                            "monitor_event_only",
+                            serde_json::json!({
                                 "name": &name
-                            }), &reg).await;
-                            {
-                                let mut s = stats.lock().await;
-                                if let Some(status) = s.get_mut(&name) {
-                                    status.last_result = "triggered_event_only".into();
-                                }
+                            }),
+                            &reg,
+                        )
+                        .await;
+                        {
+                            let mut s = stats.lock().await;
+                            if let Some(status) = s.get_mut(&name) {
+                                status.last_result = "triggered_event_only".into();
                             }
-                            *last_trigger.lock().await = std::time::Instant::now();
-                            continue;
                         }
-                        TriggerMode::ChannelNotify => {
-                            // Push the rendered prompt to the main channel for an
-                            // already-running coordinator/developer to pick up.
-                            // If no subscribers exist, degrade to event_only.
-                            let has_sub = {
-                                let reg_guard = reg.lock().await;
-                                reg_guard
-                                    .channels
-                                    .get("main")
-                                    .map(|subs| !subs.is_empty())
-                                    .unwrap_or(false)
-                            };
-                            if has_sub {
-                                let mut reg_guard = reg.lock().await;
-                                reg_guard
-                                    .channel_send(
-                                        "main",
-                                        &format!("monitor:{name}"),
-                                        serde_json::json!({ "text": prompt }),
-                                    )
-                                    .await;
-                                Self::emit_event("monitor_channel_notify", serde_json::json!({
-                                    "name": &name, "channel": "main"
-                                }), &reg).await;
-                            } else {
-                                Self::emit_event("monitor_no_subscriber", serde_json::json!({
-                                    "name": &name, "fallback": "event_only"
-                                }), &reg).await;
-                            }
-                            {
-                                let mut s = stats.lock().await;
-                                if let Some(status) = s.get_mut(&name) {
-                                    status.last_result = "channel_notified".into();
-                                }
-                            }
-                            *last_trigger.lock().await = std::time::Instant::now();
-                            continue;
-                        }
-                        TriggerMode::AutoSpawn => {
-                            // fall through to the mode-based concurrency logic below
-                        }
+                        *last_trigger.lock().await = std::time::Instant::now();
+                        continue;
                     }
+                    TriggerMode::ChannelNotify => {
+                        // Push the rendered prompt to the main channel for an
+                        // already-running coordinator/developer to pick up.
+                        // If no subscribers exist, degrade to event_only.
+                        let has_sub = {
+                            let reg_guard = reg.lock().await;
+                            reg_guard
+                                .channels
+                                .get("main")
+                                .map(|subs| !subs.is_empty())
+                                .unwrap_or(false)
+                        };
+                        if has_sub {
+                            let mut reg_guard = reg.lock().await;
+                            reg_guard
+                                .channel_send(
+                                    "main",
+                                    &format!("monitor:{name}"),
+                                    serde_json::json!({ "text": prompt }),
+                                )
+                                .await;
+                            Self::emit_event(
+                                "monitor_channel_notify",
+                                serde_json::json!({
+                                    "name": &name, "channel": "main"
+                                }),
+                                &reg,
+                            )
+                            .await;
+                        } else {
+                            Self::emit_event(
+                                "monitor_no_subscriber",
+                                serde_json::json!({
+                                    "name": &name, "fallback": "event_only"
+                                }),
+                                &reg,
+                            )
+                            .await;
+                        }
+                        {
+                            let mut s = stats.lock().await;
+                            if let Some(status) = s.get_mut(&name) {
+                                status.last_result = "channel_notified".into();
+                            }
+                        }
+                        *last_trigger.lock().await = std::time::Instant::now();
+                        continue;
+                    }
+                    TriggerMode::AutoSpawn => {
+                        // fall through to the mode-based concurrency logic below
+                    }
+                }
 
-                    // v2: AutoSpawn concurrency policy
-                    match mode {
-                        MonitorMode::SerialSkip => {
-                            // Semantic: if THIS monitor's previously-spawned worker is still
-                            // alive (running or idle), skip this tick. Otherwise spawn a new one.
-                            // This is different from "any worker with matching agent is busy" —
-                            // we only care about workers WE spawned, not user's workers.
-                            let prev_worker_alive = {
-                                let s_guard = stats.lock().await;
-                                if let Some(st) = s_guard.get(&name) {
-                                    if let Some(ref wid) = st.last_spawned_worker {
-                                        // Check if this worker id still exists in registry
-                                        let reg_guard = reg.lock().await;
-                                        reg_guard.workers.contains_key(wid)
-                                            && reg_guard.workers.get(wid)
-                                                .map(|w| w.status != crate::worker_registry::WorkerStatus::Dead)
-                                                .unwrap_or(false)
-                                    } else {
-                                        false
-                                    }
+                // v2: AutoSpawn concurrency policy
+                match mode {
+                    MonitorMode::SerialSkip => {
+                        // Semantic: if THIS monitor's previously-spawned worker is still
+                        // alive (running or idle), skip this tick. Otherwise spawn a new one.
+                        // This is different from "any worker with matching agent is busy" —
+                        // we only care about workers WE spawned, not user's workers.
+                        let prev_worker_alive = {
+                            let s_guard = stats.lock().await;
+                            if let Some(st) = s_guard.get(&name) {
+                                if let Some(ref wid) = st.last_spawned_worker {
+                                    // Check if this worker id still exists in registry
+                                    let reg_guard = reg.lock().await;
+                                    reg_guard.workers.contains_key(wid)
+                                        && reg_guard
+                                            .workers
+                                            .get(wid)
+                                            .map(|w| {
+                                                w.status
+                                                    != crate::worker_registry::WorkerStatus::Dead
+                                            })
+                                            .unwrap_or(false)
                                 } else {
                                     false
                                 }
-                            };
+                            } else {
+                                false
+                            }
+                        };
 
-                            if prev_worker_alive {
-                                // Previous worker still running -> skip this tick.
-                                Self::emit_event("monitor_skipped", serde_json::json!({
+                        if prev_worker_alive {
+                            // Previous worker still running -> skip this tick.
+                            Self::emit_event(
+                                "monitor_skipped",
+                                serde_json::json!({
                                     "name": &name, "mode": "serial_skip",
                                     "reason": "previous_worker_running"
-                                }), &reg).await;
-                                let mut s = stats.lock().await;
-                                if let Some(status) = s.get_mut(&name) {
-                                    status.skip_count += 1;
-                                    status.last_result = "skipped".into();
-                                }
-                                *last_trigger.lock().await = std::time::Instant::now();
-                                continue;
+                                }),
+                                &reg,
+                            )
+                            .await;
+                            let mut s = stats.lock().await;
+                            if let Some(status) = s.get_mut(&name) {
+                                status.skip_count += 1;
+                                status.last_result = "skipped".into();
                             }
+                            *last_trigger.lock().await = std::time::Instant::now();
+                            continue;
+                        }
 
-                            // No previous worker (or it's gone) -> spawn a new one.
-                            let prompt_for_spawn = prompt.clone();
-                            let agent_for_spawn = agent.clone();
-                            let reg_for_spawn = Arc::clone(&reg);
-                            let stats_for_spawn = Arc::clone(&stats);
-                            let monitor_name_for_spawn = name.clone();
-                            // Use prepare_worker_spawn (NO lock) + register_prepared_worker (short lock).
-                            // This avoids holding the registry lock during worktree creation + child spawn.
-                            let reg_for_spawn_clone = Arc::clone(&reg_for_spawn);
-                            tokio::spawn(async move {
-                                let spawn_config = crate::worker_registry::WorkerCreateConfig {
-                                    agent: Some(agent_for_spawn.clone()),
-                                    initial_prompt: Some(prompt_for_spawn.clone()),
-                                    relation: Some(crate::worker_registry::WorkerRelation::System),
-                                    hook_depth: Some(0),
-                                    ..Default::default()
-                                };
+                        // No previous worker (or it's gone) -> spawn a new one.
+                        let prompt_for_spawn = prompt.clone();
+                        let agent_for_spawn = agent.clone();
+                        let reg_for_spawn = Arc::clone(&reg);
+                        let stats_for_spawn = Arc::clone(&stats);
+                        let monitor_name_for_spawn = name.clone();
+                        // Use prepare_worker_spawn (NO lock) + register_prepared_worker (short lock).
+                        // This avoids holding the registry lock during worktree creation + child spawn.
+                        let reg_for_spawn_clone = Arc::clone(&reg_for_spawn);
+                        tokio::spawn(async move {
+                            let spawn_config = crate::worker_registry::WorkerCreateConfig {
+                                agent: Some(agent_for_spawn.clone()),
+                                initial_prompt: Some(prompt_for_spawn.clone()),
+                                relation: Some(crate::worker_registry::WorkerRelation::System),
+                                hook_depth: Some(0),
+                                ..Default::default()
+                            };
 
-                                // Phase 1: prepare (NO lock — worktree + spawn child process)
-                                let prepared = match crate::worker_registry::WorkerRegistry::prepare_worker_spawn(&spawn_config).await {
+                            // Phase 1: prepare (NO lock — worktree + spawn child process)
+                            let prepared =
+                                match crate::worker_registry::WorkerRegistry::prepare_worker_spawn(
+                                    &spawn_config,
+                                )
+                                .await
+                                {
                                     Ok(p) => p,
                                     Err(e) => {
-                                        tracing::warn!("[monitor] prepare_worker_spawn failed for {}: {}", monitor_name_for_spawn, e);
+                                        tracing::warn!(
+                                            "[monitor] prepare_worker_spawn failed for {}: {}",
+                                            monitor_name_for_spawn,
+                                            e
+                                        );
                                         return;
                                     }
                                 };
 
-                                // Phase 2: register (SHORT lock — just insert into registry)
-                                // CRITICAL: the lock guard must be dropped before calling emit_event,
-                                // because emit_event itself acquires the registry lock (to read event_bus).
-                                // Holding the guard across emit_event → deadlock.
-                                let spawn_result = {
-                                    let mut reg_guard = match tokio::time::timeout(
-                                        std::time::Duration::from_secs(5),
-                                        reg_for_spawn_clone.lock(),
-                                    ).await {
-                                        Ok(g) => g,
-                                        Err(_) => {
-                                            tracing::warn!("[monitor] timeout waiting for registry lock (register phase), skipping spawn for {}", monitor_name_for_spawn);
-                                            return;
-                                        }
-                                    };
-                                    reg_guard.register_prepared_worker(
+                            // Phase 2: register (SHORT lock — just insert into registry)
+                            // CRITICAL: the lock guard must be dropped before calling emit_event,
+                            // because emit_event itself acquires the registry lock (to read event_bus).
+                            // Holding the guard across emit_event → deadlock.
+                            let spawn_result = {
+                                let mut reg_guard = match tokio::time::timeout(
+                                    std::time::Duration::from_secs(5),
+                                    reg_for_spawn_clone.lock(),
+                                )
+                                .await
+                                {
+                                    Ok(g) => g,
+                                    Err(_) => {
+                                        tracing::warn!(
+                                            "[monitor] timeout waiting for registry lock (register phase), skipping spawn for {}",
+                                            monitor_name_for_spawn
+                                        );
+                                        return;
+                                    }
+                                };
+                                reg_guard
+                                    .register_prepared_worker(
                                         prepared,
                                         &spawn_config,
                                         &reg_for_spawn_clone,
-                                    ).await
-                                }; // reg_guard dropped here — lock released
-                                match spawn_result {
-                                    Ok(info) => {
-                                        Self::emit_event("monitor_spawned", serde_json::json!({
+                                    )
+                                    .await
+                            }; // reg_guard dropped here — lock released
+                            match spawn_result {
+                                Ok(info) => {
+                                    Self::emit_event(
+                                        "monitor_spawned",
+                                        serde_json::json!({
                                             "name": &monitor_name_for_spawn,
                                             "worker_id": &info.worker_id,
                                             "mode": "serial_skip"
-                                        }), &reg_for_spawn_clone).await;
-                                        // Record the spawned worker id so next tick can check it.
-                                        let mut s = stats_for_spawn.lock().await;
-                                        if let Some(st) = s.get_mut(&monitor_name_for_spawn) {
-                                            st.last_spawned_worker = Some(info.worker_id.clone());
-                                        }
+                                        }),
+                                        &reg_for_spawn_clone,
+                                    )
+                                    .await;
+                                    // Record the spawned worker id so next tick can check it.
+                                    let mut s = stats_for_spawn.lock().await;
+                                    if let Some(st) = s.get_mut(&monitor_name_for_spawn) {
+                                        st.last_spawned_worker = Some(info.worker_id.clone());
                                     }
-                                    Err(e) => tracing::error!(
-                                        "[monitor] failed to spawn worker for {}: {e}",
-                                        monitor_name_for_spawn
-                                    ),
                                 }
-                            });
-                        }
-                        MonitorMode::SerialQueue => {
-                            // Semantic: same as SerialSkip but if previous worker is still busy,
-                            // enqueue instead of dropping.
-                            let prev_worker_busy = {
-                                let s_guard = stats.lock().await;
-                                if let Some(st) = s_guard.get(&name) {
-                                    if let Some(ref wid) = st.last_spawned_worker {
-                                        let reg_guard = reg.lock().await;
-                                        reg_guard.workers.get(wid)
-                                            .map(|w| w.status == crate::worker_registry::WorkerStatus::Busy)
-                                            .unwrap_or(false)
-                                    } else {
-                                        false
-                                    }
+                                Err(e) => tracing::error!(
+                                    "[monitor] failed to spawn worker for {}: {e}",
+                                    monitor_name_for_spawn
+                                ),
+                            }
+                        });
+                    }
+                    MonitorMode::SerialQueue => {
+                        // Semantic: same as SerialSkip but if previous worker is still busy,
+                        // enqueue instead of dropping.
+                        let prev_worker_busy = {
+                            let s_guard = stats.lock().await;
+                            if let Some(st) = s_guard.get(&name) {
+                                if let Some(ref wid) = st.last_spawned_worker {
+                                    let reg_guard = reg.lock().await;
+                                    reg_guard
+                                        .workers
+                                        .get(wid)
+                                        .map(|w| {
+                                            w.status == crate::worker_registry::WorkerStatus::Busy
+                                        })
+                                        .unwrap_or(false)
                                 } else {
                                     false
                                 }
-                            };
+                            } else {
+                                false
+                            }
+                        };
 
-                            if prev_worker_busy {
-                                // Previous worker busy -> enqueue.
-                                let mut q = pending_queue.lock().await;
-                                if q.len() >= MONITOR_QUEUE_CAPACITY {
-                                    let dropped = q.pop_front();
-                                    Self::emit_event("monitor_queue_overflow", serde_json::json!({
+                        if prev_worker_busy {
+                            // Previous worker busy -> enqueue.
+                            let mut q = pending_queue.lock().await;
+                            if q.len() >= MONITOR_QUEUE_CAPACITY {
+                                let dropped = q.pop_front();
+                                Self::emit_event(
+                                    "monitor_queue_overflow",
+                                    serde_json::json!({
                                         "name": &name, "capacity": MONITOR_QUEUE_CAPACITY,
                                         "dropped": dropped
-                                    }), &reg).await;
-                                    let mut s = stats.lock().await;
-                                    if let Some(status) = s.get_mut(&name) {
-                                        status.last_result = "queue_overflow".into();
-                                    }
-                                }
-                                q.push_back(prompt.clone());
-                                let qlen = q.len();
-                                Self::emit_event("monitor_queued", serde_json::json!({
-                                    "name": &name, "queue_length": qlen, "capacity": MONITOR_QUEUE_CAPACITY
-                                }), &reg).await;
+                                    }),
+                                    &reg,
+                                )
+                                .await;
                                 let mut s = stats.lock().await;
                                 if let Some(status) = s.get_mut(&name) {
-                                    status.queue_length = qlen;
-                                    status.last_result = "queued".into();
+                                    status.last_result = "queue_overflow".into();
                                 }
-                                *last_trigger.lock().await = std::time::Instant::now();
-                                continue;
                             }
+                            q.push_back(prompt.clone());
+                            let qlen = q.len();
+                            Self::emit_event("monitor_queued", serde_json::json!({
+                                    "name": &name, "queue_length": qlen, "capacity": MONITOR_QUEUE_CAPACITY
+                                }), &reg).await;
+                            let mut s = stats.lock().await;
+                            if let Some(status) = s.get_mut(&name) {
+                                status.queue_length = qlen;
+                                status.last_result = "queued".into();
+                            }
+                            *last_trigger.lock().await = std::time::Instant::now();
+                            continue;
+                        }
 
-                            // Previous worker gone or idle -> consume queued first, else use current prompt.
-                            let to_send = {
-                                let mut q = pending_queue.lock().await;
-                                q.pop_front().unwrap_or(prompt.clone())
-                            };
+                        // Previous worker gone or idle -> consume queued first, else use current prompt.
+                        let to_send = {
+                            let mut q = pending_queue.lock().await;
+                            q.pop_front().unwrap_or(prompt.clone())
+                        };
 
-                            // Spawn new worker for this prompt.
-                            let agent_for_spawn = agent.clone();
-                            let reg_for_spawn = Arc::clone(&reg);
-                            let reg_for_spawn_clone = Arc::clone(&reg_for_spawn);
-                            let stats_for_spawn = Arc::clone(&stats);
-                            let monitor_name_for_spawn = name.clone();
-                            tokio::spawn(async move {
-                                let mut reg_guard = reg_for_spawn.lock().await;
-                                match reg_guard.create_worker(
+                        // Spawn new worker for this prompt.
+                        let agent_for_spawn = agent.clone();
+                        let reg_for_spawn = Arc::clone(&reg);
+                        let reg_for_spawn_clone = Arc::clone(&reg_for_spawn);
+                        let stats_for_spawn = Arc::clone(&stats);
+                        let monitor_name_for_spawn = name.clone();
+                        tokio::spawn(async move {
+                            let mut reg_guard = reg_for_spawn.lock().await;
+                            match reg_guard
+                                .create_worker(
                                     crate::worker_registry::WorkerCreateConfig {
                                         agent: Some(agent_for_spawn.clone()),
                                         initial_prompt: Some(to_send.clone()),
-                                        relation: Some(crate::worker_registry::WorkerRelation::System),
+                                        relation: Some(
+                                            crate::worker_registry::WorkerRelation::System,
+                                        ),
                                         hook_depth: Some(0),
                                         ..Default::default()
                                     },
                                     &reg_for_spawn,
-                                ).await {
-                                    Ok(info) => {
-                                        Self::emit_event("monitor_spawned", serde_json::json!({
+                                )
+                                .await
+                            {
+                                Ok(info) => {
+                                    Self::emit_event(
+                                        "monitor_spawned",
+                                        serde_json::json!({
                                             "name": &monitor_name_for_spawn,
                                             "worker_id": &info.worker_id,
                                             "mode": "serial_queue"
-                                        }), &reg_for_spawn_clone).await;
-                                        let mut s = stats_for_spawn.lock().await;
-                                        if let Some(st) = s.get_mut(&monitor_name_for_spawn) {
-                                            st.last_spawned_worker = Some(info.worker_id.clone());
-                                        }
-                                    }
-                                    Err(e) => tracing::error!(
-                                        "[monitor] failed to spawn worker for {}: {e}",
-                                        monitor_name_for_spawn
-                                    ),
-                                }
-                            });
-                        }
-                        MonitorMode::Concurrent => {
-                            let active = active_count.load(
-                                std::sync::atomic::Ordering::Relaxed
-                            );
-                            if active < max_concurrent {
-                                let ac = Arc::clone(&active_count);
-                                let ac_name = name.clone();
-                                active_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                {
-                                    let mut s = stats.lock().await;
-                                    if let Some(status) = s.get_mut(&name) {
-                                        status.active_workers =
-                                            active_count.load(std::sync::atomic::Ordering::Relaxed);
+                                        }),
+                                        &reg_for_spawn_clone,
+                                    )
+                                    .await;
+                                    let mut s = stats_for_spawn.lock().await;
+                                    if let Some(st) = s.get_mut(&monitor_name_for_spawn) {
+                                        st.last_spawned_worker = Some(info.worker_id.clone());
                                     }
                                 }
-                                let prompt_for_spawn = prompt.clone();
-                                let agent_for_spawn = agent.clone();
-                                let reg_for_spawn = Arc::clone(&reg);
-                                let reg_for_spawn_clone = Arc::clone(&reg_for_spawn);
-                                tokio::spawn(async move {
-                                    let _ac = ActiveGuard::new(ac, ac_name.clone());
-                                    let mut reg_guard = reg_for_spawn.lock().await;
-                                    match reg_guard.create_worker(
+                                Err(e) => tracing::error!(
+                                    "[monitor] failed to spawn worker for {}: {e}",
+                                    monitor_name_for_spawn
+                                ),
+                            }
+                        });
+                    }
+                    MonitorMode::Concurrent => {
+                        let active = active_count.load(std::sync::atomic::Ordering::Relaxed);
+                        if active < max_concurrent {
+                            let ac = Arc::clone(&active_count);
+                            let ac_name = name.clone();
+                            active_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            {
+                                let mut s = stats.lock().await;
+                                if let Some(status) = s.get_mut(&name) {
+                                    status.active_workers =
+                                        active_count.load(std::sync::atomic::Ordering::Relaxed);
+                                }
+                            }
+                            let prompt_for_spawn = prompt.clone();
+                            let agent_for_spawn = agent.clone();
+                            let reg_for_spawn = Arc::clone(&reg);
+                            let reg_for_spawn_clone = Arc::clone(&reg_for_spawn);
+                            tokio::spawn(async move {
+                                let _ac = ActiveGuard::new(ac, ac_name.clone());
+                                let mut reg_guard = reg_for_spawn.lock().await;
+                                match reg_guard
+                                    .create_worker(
                                         crate::worker_registry::WorkerCreateConfig {
                                             agent: Some(agent_for_spawn.clone()),
                                             model: None,
@@ -959,7 +1070,9 @@ impl MonitorExtension {
                                             session: None,
                                             project_path: None,
                                             worktree: None,
-                                            relation: Some(crate::worker_registry::WorkerRelation::System),
+                                            relation: Some(
+                                                crate::worker_registry::WorkerRelation::System,
+                                            ),
                                             channels: None,
                                             parent: None,
                                             creator: None,
@@ -974,42 +1087,54 @@ impl MonitorExtension {
                                             system_prompt_override: None,
                                         },
                                         &reg_for_spawn,
-                                    ).await {
-                                        Ok(info) => Self::emit_event("monitor_spawned", serde_json::json!({
-                                            "name": &ac_name,
-                                            "worker_id": &info.worker_id,
-                                            "mode": "concurrent"
-                                        }), &reg_for_spawn_clone).await,
-                                        Err(e) => tracing::error!(
-                                            "[monitor] failed to create worker: {e}"
-                                        ),
+                                    )
+                                    .await
+                                {
+                                    Ok(info) => {
+                                        Self::emit_event(
+                                            "monitor_spawned",
+                                            serde_json::json!({
+                                                "name": &ac_name,
+                                                "worker_id": &info.worker_id,
+                                                "mode": "concurrent"
+                                            }),
+                                            &reg_for_spawn_clone,
+                                        )
+                                        .await
                                     }
-                                });
-                            } else {
-                                Self::emit_event("monitor_throttled", serde_json::json!({
-                                    "name": &name, "active": active, "max": max_concurrent
-                                }), &reg).await;
-                                let mut s = stats.lock().await;
-                                if let Some(status) = s.get_mut(&name) {
-                                    status.skip_count += 1;
-                                    status.last_result = "throttled".into();
+                                    Err(e) => {
+                                        tracing::error!("[monitor] failed to create worker: {e}")
+                                    }
                                 }
-                                *last_trigger.lock().await = std::time::Instant::now();
-                                continue;
+                            });
+                        } else {
+                            Self::emit_event(
+                                "monitor_throttled",
+                                serde_json::json!({
+                                    "name": &name, "active": active, "max": max_concurrent
+                                }),
+                                &reg,
+                            )
+                            .await;
+                            let mut s = stats.lock().await;
+                            if let Some(status) = s.get_mut(&name) {
+                                status.skip_count += 1;
+                                status.last_result = "throttled".into();
                             }
+                            *last_trigger.lock().await = std::time::Instant::now();
+                            continue;
                         }
                     }
-
-                    *last_trigger.lock().await = std::time::Instant::now();
                 }
-            });
-    }
 
+                *last_trigger.lock().await = std::time::Instant::now();
+            }
+        });
+    }
 }
 
 /// Captured output of a script run, used by the `test` dry-run RPC.
-#[derive(Clone, Debug)]
-#[derive(PartialEq)]  // Debug already derived elsewhere; only add PartialEq
+#[derive(Clone, Debug, PartialEq)] // Debug already derived elsewhere; only add PartialEq
 struct ScriptRun {
     stdout: String,
     stderr: String,
@@ -1019,10 +1144,16 @@ struct ScriptRun {
 
 #[async_trait::async_trait]
 impl Extension for MonitorExtension {
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 
-    fn is_singleton(&self) -> bool { true }
-    fn singleton_key(&self) -> &str { "monitor" }
+    fn is_singleton(&self) -> bool {
+        true
+    }
+    fn singleton_key(&self) -> &str {
+        "monitor"
+    }
 
     async fn on_singleton_init(&self) -> AgentResult<()> {
         // Load monitor definitions from project .ion/monitors/
@@ -1030,7 +1161,7 @@ impl Extension for MonitorExtension {
         let global_monitors = crate::paths::root().join("monitors");
 
         let mut loaded = Vec::new();
-        loaded.extend(Self::load_from_dir(&project_monitors));
+        loaded.extend(Self::load_from_dir(project_monitors));
         loaded.extend(Self::load_from_dir(&global_monitors));
 
         tracing::info!("[monitor] loaded {} monitor definition(s)", loaded.len());
@@ -1072,21 +1203,29 @@ impl Extension for MonitorExtension {
             let reg = Arc::clone(registry);
             let _stats = Arc::clone(&statuses); // reserved for future health metrics
             tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(
-                    tokio::time::Duration::from_secs(60)
-                );
-                ticker.set_missed_tick_behavior(
-                    tokio::time::MissedTickBehavior::Skip
-                );
+                let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(60));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     ticker.tick().await;
                     let (dead, stale, busy, idle, total) = {
                         let g = reg.lock().await;
                         let workers: Vec<_> = g.workers.values().collect();
-                        let dead = workers.iter().filter(|w| w.status == crate::worker_registry::WorkerStatus::Dead).count();
-                        let stale = workers.iter().filter(|w| w.status == crate::worker_registry::WorkerStatus::Stale).count();
-                        let busy = workers.iter().filter(|w| w.status == crate::worker_registry::WorkerStatus::Busy).count();
-                        let idle = workers.iter().filter(|w| w.status == crate::worker_registry::WorkerStatus::Idle).count();
+                        let dead = workers
+                            .iter()
+                            .filter(|w| w.status == crate::worker_registry::WorkerStatus::Dead)
+                            .count();
+                        let stale = workers
+                            .iter()
+                            .filter(|w| w.status == crate::worker_registry::WorkerStatus::Stale)
+                            .count();
+                        let busy = workers
+                            .iter()
+                            .filter(|w| w.status == crate::worker_registry::WorkerStatus::Busy)
+                            .count();
+                        let idle = workers
+                            .iter()
+                            .filter(|w| w.status == crate::worker_registry::WorkerStatus::Idle)
+                            .count();
                         (dead, stale, busy, idle, workers.len())
                     };
 
@@ -1106,8 +1245,9 @@ impl Extension for MonitorExtension {
                                 "dead_count": dead,
                                 "total_workers": total,
                                 "action": "gc_triggered"
-                            })
-                        ).await;
+                            }),
+                        )
+                        .await;
                     }
 
                     // Alert if > 5 stale workers (possible zombie accumulation)
@@ -1123,14 +1263,19 @@ impl Extension for MonitorExtension {
                                 "issue": "too_many_stale_workers",
                                 "stale_count": stale,
                                 "total_workers": total
-                            })
-                        ).await;
+                            }),
+                        )
+                        .await;
                     }
 
                     // Periodic health log (every check, not just anomalies)
                     tracing::info!(
                         "[health] workers: total={} busy={} idle={} stale={} dead={}",
-                        total, busy, idle, stale, dead
+                        total,
+                        busy,
+                        idle,
+                        stale,
+                        dead
                     );
                 }
             });
@@ -1143,7 +1288,6 @@ impl Extension for MonitorExtension {
 
         Ok(())
     }
-
 
     async fn on_extension_rpc(
         &self,
@@ -1227,7 +1371,8 @@ impl Extension for MonitorExtension {
                             def.clone(),
                             Arc::clone(reg),
                             Arc::clone(&self.statuses),
-                        ).await;
+                        )
+                        .await;
                         true
                     } else {
                         false
@@ -1272,7 +1417,9 @@ impl Extension for MonitorExtension {
                 // Dry-run: only need script + prompt_template, do NOT require name/interval
                 // (caller is just checking what the script would output)
                 let script = params.get("script").and_then(|v| v.as_str()).unwrap_or("");
-                let prompt_template = params.get("prompt_template").and_then(|v| v.as_str())
+                let prompt_template = params
+                    .get("prompt_template")
+                    .and_then(|v| v.as_str())
                     .unwrap_or("Monitor triggered:\n{output}");
 
                 if script.trim().is_empty() {
@@ -1285,8 +1432,12 @@ impl Extension for MonitorExtension {
 
                 // bash -n syntax check
                 let syntax_ok = std::process::Command::new("bash")
-                    .arg("-n").arg("-c").arg(script).status()
-                    .map(|s| s.success()).unwrap_or(false);
+                    .arg("-n")
+                    .arg("-c")
+                    .arg(script)
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
                 if !syntax_ok {
                     return Ok(serde_json::json!({
                         "valid": true,
@@ -1316,7 +1467,11 @@ impl Extension for MonitorExtension {
             }
 
             "remove" => {
-                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let name = params
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
 
                 // 1. Remove from monitors Vec
                 let removed = {
@@ -1335,7 +1490,10 @@ impl Extension for MonitorExtension {
                 self.statuses.lock().await.remove(&name);
 
                 // 4. Remove from active_pipelines (separate lock scope)
-                self.active_pipelines.lock().await.retain(|p| p.monitor != name);
+                self.active_pipelines
+                    .lock()
+                    .await
+                    .retain(|p| p.monitor != name);
 
                 Ok(serde_json::json!({"removed": removed, "name": name}))
             }
@@ -1370,15 +1528,30 @@ impl Extension for MonitorExtension {
             // mark_active: record that monitor/key is being processed and persist.
             // params: { monitor, key, worker_id?, stage? }
             "mark_active" => {
-                let monitor = params.get("monitor").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let key = params.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let monitor = params
+                    .get("monitor")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let key = params
+                    .get("key")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if monitor.is_empty() || key.is_empty() {
                     return Err(AgentError::Tool(
                         "mark_active requires non-empty 'monitor' and 'key'".into(),
                     ));
                 }
-                let worker_id = params.get("worker_id").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let stage = params.get("stage").and_then(|v| v.as_str()).unwrap_or("developer").to_string();
+                let worker_id = params
+                    .get("worker_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let stage = params
+                    .get("stage")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("developer")
+                    .to_string();
                 let started_at = chrono_or_systime();
 
                 let mut active = self.active_pipelines.lock().await;
@@ -1392,7 +1565,12 @@ impl Extension for MonitorExtension {
                         p.worker_id = worker_id.clone().or_else(|| p.worker_id.clone());
                         p.stage = stage.clone();
                         p.started_at = started_at.clone();
-                        (true, p.worker_id.clone(), p.stage.clone(), p.started_at.clone())
+                        (
+                            true,
+                            p.worker_id.clone(),
+                            p.stage.clone(),
+                            p.started_at.clone(),
+                        )
                     }
                     None => {
                         let pipeline = ActivePipeline {
@@ -1428,8 +1606,16 @@ impl Extension for MonitorExtension {
             // release_active: remove monitor/key from the active list and persist.
             // params: { monitor, key }
             "release_active" => {
-                let monitor = params.get("monitor").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let key = params.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let monitor = params
+                    .get("monitor")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let key = params
+                    .get("key")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if monitor.is_empty() || key.is_empty() {
                     return Err(AgentError::Tool(
                         "release_active requires non-empty 'monitor' and 'key'".into(),
@@ -1455,9 +1641,7 @@ impl Extension for MonitorExtension {
                 let monitor = params.get("monitor").and_then(|v| v.as_str()).unwrap_or("");
                 let key = params.get("key").and_then(|v| v.as_str()).unwrap_or("");
                 let active = self.active_pipelines.lock().await;
-                let is_active = active
-                    .iter()
-                    .any(|p| p.monitor == monitor && p.key == key);
+                let is_active = active.iter().any(|p| p.monitor == monitor && p.key == key);
                 Ok(serde_json::json!({
                     "active": is_active,
                     "monitor": monitor,
@@ -1474,7 +1658,7 @@ impl Extension for MonitorExtension {
                 }))
             }
 
-            _ => Err(AgentError::Tool(format!("unknown method: {method}")))
+            _ => Err(AgentError::Tool(format!("unknown method: {method}"))),
         }
     }
 }
@@ -1507,7 +1691,8 @@ impl ActiveGuard {
 
 impl Drop for ActiveGuard {
     fn drop(&mut self) {
-        self.count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        self.count
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         tracing::info!(
             "[monitor] '{}' active worker done, count now {}",
             self.name,
@@ -1598,7 +1783,11 @@ mod tests {
         let def = valid_def();
         let (errors, warnings) = MonitorExtension::validate_def(&def);
         assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
-        assert!(warnings.is_empty(), "expected no warnings, got: {:?}", warnings);
+        assert!(
+            warnings.is_empty(),
+            "expected no warnings, got: {:?}",
+            warnings
+        );
     }
 
     #[test]
@@ -1773,7 +1962,10 @@ mod tests {
         assert!(removed);
 
         ext.statuses.lock().await.remove(&name);
-        ext.active_pipelines.lock().await.retain(|p| p.monitor != name);
+        ext.active_pipelines
+            .lock()
+            .await
+            .retain(|p| p.monitor != name);
 
         // All three should be empty now
         assert!(ext.monitors.lock().await.is_empty());
@@ -1818,9 +2010,24 @@ mod tests {
 
     #[test]
     fn test_script_run_equality() {
-        let a = ScriptRun { stdout: "hello".into(), stderr: "".into(), exit_ok: true, exit_code: 0 };
-        let b = ScriptRun { stdout: "hello".into(), stderr: "".into(), exit_ok: true, exit_code: 0 };
-        let c = ScriptRun { stdout: "world".into(), stderr: "".into(), exit_ok: true, exit_code: 0 };
+        let a = ScriptRun {
+            stdout: "hello".into(),
+            stderr: "".into(),
+            exit_ok: true,
+            exit_code: 0,
+        };
+        let b = ScriptRun {
+            stdout: "hello".into(),
+            stderr: "".into(),
+            exit_ok: true,
+            exit_code: 0,
+        };
+        let c = ScriptRun {
+            stdout: "world".into(),
+            stderr: "".into(),
+            exit_ok: true,
+            exit_code: 0,
+        };
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
@@ -1845,7 +2052,10 @@ mod tests {
         };
         let now: i64 = 1785060000; // fixed timestamp
         assert!(old.is_expired(now), "old pipeline should be expired");
-        assert!(!fresh.is_expired(now), "fresh pipeline should not be expired");
+        assert!(
+            !fresh.is_expired(now),
+            "fresh pipeline should not be expired"
+        );
     }
 
     // ── Issue #24: validate_def serial_skip with max_concurrent=0 ──

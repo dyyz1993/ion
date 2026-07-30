@@ -1,4 +1,3 @@
-
 /// Map provider name → environment variable name.
 ///
 /// Follows the pi-ai reference: each provider maps to a specific env var.

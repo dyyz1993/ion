@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use ion::worker_registry::{WorkerCreateConfig, WorktreeConfig, WorkerRegistry};
 use ion::agent::tool::Tool;
+use ion::worker_registry::{WorkerCreateConfig, WorkerRegistry, WorktreeConfig};
 
 fn worker_bin_path() -> std::path::PathBuf {
     if let Ok(path) = std::env::var("ION_WORKER_BIN") {
@@ -48,24 +48,50 @@ async fn e02_multi_project_concurrent() {
     std::fs::create_dir_all(&tmp_a).ok();
     std::fs::create_dir_all(&tmp_b).ok();
 
-    let a = reg.create_worker(WorkerCreateConfig {
-        session: Some("e2-proj-a".into()),
-        project_path: Some(tmp_a.to_string_lossy().to_string()),
-        ..Default::default()
-    }, &registry).await.unwrap();
+    let a = reg
+        .create_worker(
+            WorkerCreateConfig {
+                session: Some("e2-proj-a".into()),
+                project_path: Some(tmp_a.to_string_lossy().to_string()),
+                ..Default::default()
+            },
+            &registry,
+        )
+        .await
+        .unwrap();
 
-    let b = reg.create_worker(WorkerCreateConfig {
-        session: Some("e2-proj-b".into()),
-        project_path: Some(tmp_b.to_string_lossy().to_string()),
-        ..Default::default()
-    }, &registry).await.unwrap();
+    let b = reg
+        .create_worker(
+            WorkerCreateConfig {
+                session: Some("e2-proj-b".into()),
+                project_path: Some(tmp_b.to_string_lossy().to_string()),
+                ..Default::default()
+            },
+            &registry,
+        )
+        .await
+        .unwrap();
 
     // Both respond independently
     drop(reg);
-    let r1 = WorkerRegistry::send_async(&registry, &a.worker_id, "get_state", serde_json::Value::Null).await.unwrap();
+    let r1 = WorkerRegistry::send_async(
+        &registry,
+        &a.worker_id,
+        "get_state",
+        serde_json::Value::Null,
+    )
+    .await
+    .unwrap();
     let mut reg = registry.lock().await;
     drop(reg);
-    let r2 = WorkerRegistry::send_async(&registry, &b.worker_id, "get_state", serde_json::Value::Null).await.unwrap();
+    let r2 = WorkerRegistry::send_async(
+        &registry,
+        &b.worker_id,
+        "get_state",
+        serde_json::Value::Null,
+    )
+    .await
+    .unwrap();
     let mut reg = registry.lock().await;
     assert_eq!(r1["success"], true, "A should respond");
     assert_eq!(r2["success"], true, "B should respond");
@@ -73,8 +99,14 @@ async fn e02_multi_project_concurrent() {
     // Projects should be isolated
     let projects = reg.list_projects();
     let paths: Vec<&str> = projects.iter().map(|p| p.path.as_str()).collect();
-    assert!(paths.iter().any(|p| p.contains("proj-alpha")), "proj-alpha project");
-    assert!(paths.iter().any(|p| p.contains("proj-beta")), "proj-beta project");
+    assert!(
+        paths.iter().any(|p| p.contains("proj-alpha")),
+        "proj-alpha project"
+    );
+    assert!(
+        paths.iter().any(|p| p.contains("proj-beta")),
+        "proj-beta project"
+    );
 
     let _ = reg.kill_worker(&a.worker_id);
     let _ = reg.kill_worker(&b.worker_id);
@@ -93,17 +125,28 @@ async fn e04_session_recovery() {
     let session_id;
     {
         let mut reg = registry.lock().await;
-        info = reg.create_worker(WorkerCreateConfig {
-            session: Some("e4-recover".into()),
-            ..Default::default()
-        }, &registry).await.unwrap();
+        info = reg
+            .create_worker(
+                WorkerCreateConfig {
+                    session: Some("e4-recover".into()),
+                    ..Default::default()
+                },
+                &registry,
+            )
+            .await
+            .unwrap();
         session_id = info.session_id.clone();
 
         // Verify worker is alive
         drop(reg);
-        let resp = WorkerRegistry::send_async(&registry, 
-            &info.worker_id, "get_state", serde_json::Value::Null,
-        ).await.unwrap();
+        let resp = WorkerRegistry::send_async(
+            &registry,
+            &info.worker_id,
+            "get_state",
+            serde_json::Value::Null,
+        )
+        .await
+        .unwrap();
         let mut reg = registry.lock().await;
         assert_eq!(resp["success"], true);
         assert_eq!(resp["data"]["session_id"], session_id);
@@ -114,16 +157,27 @@ async fn e04_session_recovery() {
     // Lock scope 2: recreate with same session
     {
         let mut reg = registry.lock().await;
-        let info2 = reg.create_worker(WorkerCreateConfig {
-            session: Some(session_id.clone()),
-            ..Default::default()
-        }, &registry).await.unwrap();
+        let info2 = reg
+            .create_worker(
+                WorkerCreateConfig {
+                    session: Some(session_id.clone()),
+                    ..Default::default()
+                },
+                &registry,
+            )
+            .await
+            .unwrap();
 
         // Recreated worker should be operational
         drop(reg);
-        let resp = WorkerRegistry::send_async(&registry, 
-            &info2.worker_id, "get_state", serde_json::Value::Null,
-        ).await.unwrap();
+        let resp = WorkerRegistry::send_async(
+            &registry,
+            &info2.worker_id,
+            "get_state",
+            serde_json::Value::Null,
+        )
+        .await
+        .unwrap();
         let mut reg = registry.lock().await;
         assert_eq!(resp["success"], true, "recreated worker should respond");
 
@@ -131,7 +185,9 @@ async fn e04_session_recovery() {
         // Note: the worker generates a new session if not specified,
         // but if we pass --session it should use that
         assert!(
-            resp["data"]["session_id"].as_str().map_or(false, |s| s.contains("e4-recover") || s == &session_id),
+            resp["data"]["session_id"]
+                .as_str()
+                .map_or(false, |s| s.contains("e4-recover") || s == &session_id),
             "recreated worker should have matching session"
         );
 
@@ -152,10 +208,16 @@ async fn s01_ten_workers_concurrent() {
         let mut reg = registry.lock().await;
         let mut workers = Vec::new();
         for i in 0..10 {
-            let info = reg.create_worker(WorkerCreateConfig {
-                session: Some(format!("s1-worker-{i}")),
-                ..Default::default()
-            }, &registry).await.unwrap();
+            let info = reg
+                .create_worker(
+                    WorkerCreateConfig {
+                        session: Some(format!("s1-worker-{i}")),
+                        ..Default::default()
+                    },
+                    &registry,
+                )
+                .await
+                .unwrap();
             workers.push(info);
         }
         workers
@@ -167,14 +229,15 @@ async fn s01_ten_workers_concurrent() {
     let mut results = Vec::new();
     for w in &workers {
         let wid = w.worker_id.clone();
-        let result = WorkerRegistry::send_async(&registry,
-            &wid, "get_state", serde_json::Value::Null,
-        ).await;
+        let result =
+            WorkerRegistry::send_async(&registry, &wid, "get_state", serde_json::Value::Null).await;
         results.push(result);
     }
 
     // Verify all 10 succeeded
-    let failures: Vec<_> = results.iter().enumerate()
+    let failures: Vec<_> = results
+        .iter()
+        .enumerate()
         .filter(|(_, r)| r.is_err() || !r.as_ref().unwrap()["success"].as_bool().unwrap_or(false))
         .collect();
     assert!(failures.is_empty(), "{} workers failed", failures.len());
@@ -203,30 +266,45 @@ async fn s02_fifty_rounds_single_worker() {
 
     let wid = {
         let mut reg = registry.lock().await;
-        reg.create_worker(WorkerCreateConfig {
-            session: Some("s2-fifty".into()),
-            ..Default::default()
-        }, &registry).await.unwrap().worker_id
+        reg.create_worker(
+            WorkerCreateConfig {
+                session: Some("s2-fifty".into()),
+                ..Default::default()
+            },
+            &registry,
+        )
+        .await
+        .unwrap()
+        .worker_id
     }; // 锁释放
 
     // Send 50 rapid get_state commands
     for i in 0..50 {
-        let resp = WorkerRegistry::send_async(&registry,
-            &wid, "get_state", serde_json::Value::Null,
-        ).await.expect(&format!("round {i} should succeed"));
+        let resp =
+            WorkerRegistry::send_async(&registry, &wid, "get_state", serde_json::Value::Null)
+                .await
+                .expect(&format!("round {i} should succeed"));
         assert_eq!(resp["success"], true, "round {i} should be success");
 
         // Verify session_id stays consistent
         if i == 0 {
-            let sid = resp["data"]["session_id"].as_str().unwrap_or("").to_string();
+            let sid = resp["data"]["session_id"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
             assert!(!sid.is_empty(), "should have session_id");
         }
     }
 
     // Final state check
-    let final_resp = WorkerRegistry::send_async(&registry,
-        &wid, "get_session_stats", serde_json::Value::Null,
-    ).await.unwrap();
+    let final_resp = WorkerRegistry::send_async(
+        &registry,
+        &wid,
+        "get_session_stats",
+        serde_json::Value::Null,
+    )
+    .await
+    .unwrap();
     assert_eq!(final_resp["success"], true);
 
     let mut reg = registry.lock().await;
@@ -245,24 +323,40 @@ async fn s03_channel_100_messages() {
     // Create 3 subscribers on "broadcast" channel
     let mut subs = Vec::new();
     for i in 0..3 {
-        let info = reg.create_worker(WorkerCreateConfig {
-            session: Some(format!("s3-sub-{i}")),
-            channels: Some(vec!["broadcast".into()]),
-            ..Default::default()
-        }, &registry).await.unwrap();
+        let info = reg
+            .create_worker(
+                WorkerCreateConfig {
+                    session: Some(format!("s3-sub-{i}")),
+                    channels: Some(vec!["broadcast".into()]),
+                    ..Default::default()
+                },
+                &registry,
+            )
+            .await
+            .unwrap();
         subs.push(info);
     }
 
     // Create sender (not subscribed)
-    let sender = reg.create_worker(WorkerCreateConfig {
-        session: Some("s3-sender".into()),
-        ..Default::default()
-    }, &registry).await.unwrap();
+    let sender = reg
+        .create_worker(
+            WorkerCreateConfig {
+                session: Some("s3-sender".into()),
+                ..Default::default()
+            },
+            &registry,
+        )
+        .await
+        .unwrap();
 
     // Send 100 messages to channel
     for i in 0..100 {
-        reg.channel_send("broadcast", &sender.worker_id,
-            serde_json::json!({"seq": i, "text": format!("msg {i}")})).await;
+        reg.channel_send(
+            "broadcast",
+            &sender.worker_id,
+            serde_json::json!({"seq": i, "text": format!("msg {i}")}),
+        )
+        .await;
     }
 
     // Drain events on all subscribers
@@ -278,7 +372,10 @@ async fn s03_channel_100_messages() {
     assert_eq!(channel_subs.len(), 3, "3 subscribers should be registered");
 
     for sub in &subs {
-        assert!(channel_subs.contains(&sub.worker_id), "subscriber should be in channel");
+        assert!(
+            channel_subs.contains(&sub.worker_id),
+            "subscriber should be in channel"
+        );
     }
 
     // Cleanup
@@ -302,17 +399,21 @@ async fn s04_rapid_create_destroy_20() {
         // Create (持锁创建)
         let info = {
             let mut reg = registry.lock().await;
-            reg.create_worker(WorkerCreateConfig {
-                session: Some(format!("s4-rapid-{i}")),
-                ..Default::default()
-            }, &registry).await.expect(&format!("create worker {i} should succeed"))
+            reg.create_worker(
+                WorkerCreateConfig {
+                    session: Some(format!("s4-rapid-{i}")),
+                    ..Default::default()
+                },
+                &registry,
+            )
+            .await
+            .expect(&format!("create worker {i} should succeed"))
         };
 
         // Quick command to verify it's alive (放锁后调用)
         let wid = info.worker_id.clone();
-        let resp = WorkerRegistry::send_async(&registry,
-            &wid, "get_state", serde_json::Value::Null,
-        ).await;
+        let resp =
+            WorkerRegistry::send_async(&registry, &wid, "get_state", serde_json::Value::Null).await;
         assert!(resp.is_ok(), "worker {i} should respond after creation");
 
         created.push(info);
@@ -350,10 +451,16 @@ async fn e01_code_review_pipeline() {
     let mut reg = registry.lock().await;
 
     // Step 1: Create coordinator (parent) worker
-    let coord = reg.create_worker(WorkerCreateConfig {
-        session: Some("e1-coordinator".into()),
-        ..Default::default()
-    }, &registry).await.unwrap();
+    let coord = reg
+        .create_worker(
+            WorkerCreateConfig {
+                session: Some("e1-coordinator".into()),
+                ..Default::default()
+            },
+            &registry,
+        )
+        .await
+        .unwrap();
     let coord_id = coord.worker_id.clone();
 
     // Step 2: Send create_worker command to coordinator
@@ -361,20 +468,26 @@ async fn e01_code_review_pipeline() {
     // which the reader task sends to manager_cmd_rx.
     // The worker also returns a pending response immediately.
     drop(reg);
-    let resp = WorkerRegistry::send_async(&registry, 
-        &coord_id, "create_worker",
+    let resp = WorkerRegistry::send_async(
+        &registry,
+        &coord_id,
+        "create_worker",
         serde_json::json!({
             "session": "e1-reviewer-auth",
             "parent": coord_id,
             "channels": ["review"],
         }),
-    ).await.expect("coordinator should accept create_worker");
+    )
+    .await
+    .expect("coordinator should accept create_worker");
     let mut reg = registry.lock().await;
 
     // Verify coordinator returned a pending response
     assert_eq!(resp["success"], true, "coordinator should respond");
-    assert_eq!(resp["data"]["status"], "pending",
-        "create_worker should be pending when delegated to Manager");
+    assert_eq!(
+        resp["data"]["status"], "pending",
+        "create_worker should be pending when delegated to Manager"
+    );
 
     // Step 3: Process the queued manager command（重试几次，等 reader task 把命令送到通道）
     for _ in 0..5 {
@@ -389,28 +502,41 @@ async fn e01_code_review_pipeline() {
 
     // Step 4: Verify child worker was created by the Manager
     let reviewer = reg.find_by_session("e1-reviewer-auth");
-    assert!(reviewer.is_some(), "reviewer worker should have been created");
+    assert!(
+        reviewer.is_some(),
+        "reviewer worker should have been created"
+    );
     let reviewer_id = reviewer.unwrap().worker_id.clone();
 
     // Verify coordinator->reviewer parent-child relationship
     let coord_record = reg.get_worker(&coord_id).unwrap();
-    assert!(coord_record.children.contains(&reviewer_id),
-        "coordinator should track reviewer as child");
+    assert!(
+        coord_record.children.contains(&reviewer_id),
+        "coordinator should track reviewer as child"
+    );
 
     let reviewer_record = reg.get_worker(&reviewer_id).unwrap();
-    assert_eq!(reviewer_record.parent.as_deref(), Some(coord_id.as_str()),
-        "reviewer's parent should be coordinator");
+    assert_eq!(
+        reviewer_record.parent.as_deref(),
+        Some(coord_id.as_str()),
+        "reviewer's parent should be coordinator"
+    );
 
     // Verify reviewer is on the "review" channel
-    assert!(reviewer_record.channels.contains(&"review".into()),
-        "reviewer should be subscribed to review channel");
+    assert!(
+        reviewer_record.channels.contains(&"review".into()),
+        "reviewer should be subscribed to review channel"
+    );
 
     // Step 5: Send a prompt to the reviewer child
     drop(reg);
-    let prompt_resp = WorkerRegistry::send_async(&registry, 
-        &reviewer_id, "prompt",
+    let prompt_resp = WorkerRegistry::send_async(
+        &registry,
+        &reviewer_id,
+        "prompt",
         serde_json::json!({"text": "Review the auth module"}),
-    ).await;
+    )
+    .await;
     let mut reg = registry.lock().await;
     assert!(prompt_resp.is_ok(), "reviewer should accept prompt");
 
@@ -429,27 +555,43 @@ async fn e01b_worker_channel_send() {
     let mut reg = registry.lock().await;
 
     // Create a subscriber on "alerts" channel
-    let sub = reg.create_worker(WorkerCreateConfig {
-        session: Some("e1b-sub".into()),
-        channels: Some(vec!["alerts".into()]),
-        ..Default::default()
-    }, &registry).await.unwrap();
+    let sub = reg
+        .create_worker(
+            WorkerCreateConfig {
+                session: Some("e1b-sub".into()),
+                channels: Some(vec!["alerts".into()]),
+                ..Default::default()
+            },
+            &registry,
+        )
+        .await
+        .unwrap();
 
     // Create a sender worker
-    let sender = reg.create_worker(WorkerCreateConfig {
-        session: Some("e1b-sender".into()),
-        ..Default::default()
-    }, &registry).await.unwrap();
+    let sender = reg
+        .create_worker(
+            WorkerCreateConfig {
+                session: Some("e1b-sender".into()),
+                ..Default::default()
+            },
+            &registry,
+        )
+        .await
+        .unwrap();
 
     // Send channel_send to the sender worker
     drop(reg);
-    let resp = WorkerRegistry::send_async(&registry, 
-        &sender.worker_id, "channel_send",
+    let resp = WorkerRegistry::send_async(
+        &registry,
+        &sender.worker_id,
+        "channel_send",
         serde_json::json!({
             "channel": "alerts",
             "msg": {"type": "build_complete", "status": "success"},
         }),
-    ).await.expect("sender should accept channel_send");
+    )
+    .await
+    .expect("sender should accept channel_send");
     let mut reg = registry.lock().await;
     assert_eq!(resp["success"], true);
 
@@ -459,8 +601,10 @@ async fn e01b_worker_channel_send() {
     // Verify subscriber is still on the channel
     let channel_subs = reg.channels.get("alerts");
     assert!(channel_subs.is_some(), "alerts channel should exist");
-    assert!(channel_subs.unwrap().contains(&sub.worker_id),
-        "subscriber should still be on channel");
+    assert!(
+        channel_subs.unwrap().contains(&sub.worker_id),
+        "subscriber should still be on channel"
+    );
 
     // Cleanup
     let _ = reg.kill_worker(&sub.worker_id);
@@ -477,10 +621,16 @@ async fn rt01_retry_on_timeout() {
     let registry = create_registry();
     let mut reg = registry.lock().await;
 
-    let info = reg.create_worker(WorkerCreateConfig {
-        session: Some("rt01-test".into()),
-        ..Default::default()
-    }, &registry).await.unwrap();
+    let info = reg
+        .create_worker(
+            WorkerCreateConfig {
+                session: Some("rt01-test".into()),
+                ..Default::default()
+            },
+            &registry,
+        )
+        .await
+        .unwrap();
 
     // 使用 retry config：快速失败（小 delay）
     let retry_cfg = ion::retry::RetryConfig {
@@ -493,12 +643,25 @@ async fn rt01_retry_on_timeout() {
 
     // 正常命令应该第一次就成功
     let start = std::time::Instant::now();
-    let result = reg.send_to_worker_retry(
-        &info.worker_id, "get_state", serde_json::Value::Null, &retry_cfg,
-    ).await;
+    let result = reg
+        .send_to_worker_retry(
+            &info.worker_id,
+            "get_state",
+            serde_json::Value::Null,
+            &retry_cfg,
+        )
+        .await;
     let elapsed = start.elapsed();
-    assert!(result.is_ok(), "get_state should succeed: {:?}", result.err());
-    assert!(elapsed < Duration::from_millis(500), "should succeed fast: {:?}", elapsed);
+    assert!(
+        result.is_ok(),
+        "get_state should succeed: {:?}",
+        result.err()
+    );
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "should succeed fast: {:?}",
+        elapsed
+    );
 
     let _ = reg.kill_worker(&info.worker_id);
 }
@@ -519,11 +682,15 @@ async fn rt02_retry_aborts_on_no_money() {
 
     let result = ion::retry::retry_async(&retry_cfg, || async {
         Err::<i32, String>("Insufficient balance".into())
-    }).await;
+    })
+    .await;
 
     match result {
         Err(ion::retry::RetryError::Permanent { reason, .. }) => {
-            assert!(reason.contains("Insufficient"), "should abort on insufficient balance: {reason}");
+            assert!(
+                reason.contains("Insufficient"),
+                "should abort on insufficient balance: {reason}"
+            );
         }
         _ => panic!("should have aborted permanently"),
     }
@@ -553,12 +720,16 @@ async fn rt03_retry_exhausts_max_retries() {
             c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Err::<i32, String>("timeout".into())
         }
-    }).await;
+    })
+    .await;
 
     match result {
         Err(ion::retry::RetryError::Transient { attempts, .. }) => {
             // 1 initial + 3 retries = 4 total
-            assert!(attempts >= 3, "should have attempted at least 3 times: {attempts}");
+            assert!(
+                attempts >= 3,
+                "should have attempted at least 3 times: {attempts}"
+            );
             let total = counter.load(std::sync::atomic::Ordering::SeqCst);
             assert_eq!(total, attempts, "total calls should match attempts");
         }
@@ -593,11 +764,15 @@ async fn rt04_retry_succeeds_after_failures() {
                 Ok(42)
             }
         }
-    }).await;
+    })
+    .await;
 
     assert_eq!(result.unwrap(), 42);
-    assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 3,
-        "should fail twice then succeed");
+    assert_eq!(
+        counter.load(std::sync::atomic::Ordering::SeqCst),
+        3,
+        "should fail twice then succeed"
+    );
 }
 
 // =========================================================================
@@ -610,10 +785,16 @@ async fn rt05_send_to_worker_retry_failing() {
     let registry = create_registry();
     let mut reg = registry.lock().await;
 
-    let info = reg.create_worker(WorkerCreateConfig {
-        session: Some("rt05-test".into()),
-        ..Default::default()
-    }, &registry).await.unwrap();
+    let info = reg
+        .create_worker(
+            WorkerCreateConfig {
+                session: Some("rt05-test".into()),
+                ..Default::default()
+            },
+            &registry,
+        )
+        .await
+        .unwrap();
 
     let retry_cfg = ion::retry::RetryConfig {
         max_retries: 2,
@@ -624,14 +805,21 @@ async fn rt05_send_to_worker_retry_failing() {
     };
 
     // 未知命令应该每次失败，最后返回 exhausted
-    let result = reg.send_to_worker_retry(
-        &info.worker_id, "nonexistent_command_xyz", serde_json::Value::Null, &retry_cfg,
-    ).await;
+    let result = reg
+        .send_to_worker_retry(
+            &info.worker_id,
+            "nonexistent_command_xyz",
+            serde_json::Value::Null,
+            &retry_cfg,
+        )
+        .await;
 
     assert!(result.is_err(), "unknown command should fail");
     let err = result.unwrap_err();
-    assert!(err.contains("exhausted") || err.contains("unknown"),
-        "should mention exhausted: {err}");
+    assert!(
+        err.contains("exhausted") || err.contains("unknown"),
+        "should mention exhausted: {err}"
+    );
 
     let _ = reg.kill_worker(&info.worker_id);
 }
@@ -645,33 +833,56 @@ async fn bash01_execute_works() {
     let registry = create_registry();
     let mut reg = registry.lock().await;
 
-    let info = reg.create_worker(WorkerCreateConfig {
-        session: Some("bash01".into()),
-        ..Default::default()
-    }, &registry).await.unwrap();
+    let info = reg
+        .create_worker(
+            WorkerCreateConfig {
+                session: Some("bash01".into()),
+                ..Default::default()
+            },
+            &registry,
+        )
+        .await
+        .unwrap();
 
     // echo 命令
     drop(reg);
-    let resp = WorkerRegistry::send_async(&registry, &info.worker_id, "bash",
-        serde_json::json!({"command": "echo 'hello from ion'"})
-    ).await.unwrap();
+    let resp = WorkerRegistry::send_async(
+        &registry,
+        &info.worker_id,
+        "bash",
+        serde_json::json!({"command": "echo 'hello from ion'"}),
+    )
+    .await
+    .unwrap();
     let mut reg = registry.lock().await;
     assert_eq!(resp["success"], true, "bash should succeed");
     assert_eq!(resp["data"]["exitCode"], 0, "exit code 0");
-    assert!(resp["data"]["output"].as_str().unwrap_or("").contains("hello from ion"),
-        "output should contain echo text");
+    assert!(
+        resp["data"]["output"]
+            .as_str()
+            .unwrap_or("")
+            .contains("hello from ion"),
+        "output should contain echo text"
+    );
 
     // pwd
     drop(reg);
-    let resp2 = WorkerRegistry::send_async(&registry, &info.worker_id, "bash",
-        serde_json::json!({"command": "pwd"})
-    ).await.unwrap();
+    let resp2 = WorkerRegistry::send_async(
+        &registry,
+        &info.worker_id,
+        "bash",
+        serde_json::json!({"command": "pwd"}),
+    )
+    .await
+    .unwrap();
     let mut reg = registry.lock().await;
     assert_eq!(resp2["success"], true);
     let pwd = resp2["data"]["stdout"].as_str().unwrap_or("");
     assert!(!pwd.is_empty(), "pwd should output something");
-    assert!(pwd.contains("ion") || std::path::Path::new(pwd.trim()).exists(),
-        "pwd should be a valid path");
+    assert!(
+        pwd.contains("ion") || std::path::Path::new(pwd.trim()).exists(),
+        "pwd should be a valid path"
+    );
 
     let _ = reg.kill_worker(&info.worker_id);
 }
@@ -685,15 +896,26 @@ async fn bash02_error_exit_code() {
     let registry = create_registry();
     let mut reg = registry.lock().await;
 
-    let info = reg.create_worker(WorkerCreateConfig {
-        session: Some("bash02".into()),
-        ..Default::default()
-    }, &registry).await.unwrap();
+    let info = reg
+        .create_worker(
+            WorkerCreateConfig {
+                session: Some("bash02".into()),
+                ..Default::default()
+            },
+            &registry,
+        )
+        .await
+        .unwrap();
 
     drop(reg);
-    let resp = WorkerRegistry::send_async(&registry, &info.worker_id, "bash",
-        serde_json::json!({"command": "exit 42"})
-    ).await.unwrap();
+    let resp = WorkerRegistry::send_async(
+        &registry,
+        &info.worker_id,
+        "bash",
+        serde_json::json!({"command": "exit 42"}),
+    )
+    .await
+    .unwrap();
     let mut reg = registry.lock().await;
     assert_eq!(resp["success"], true);
     assert_eq!(resp["data"]["exitCode"], 42, "should have exit code 42");
@@ -712,26 +934,40 @@ async fn bash03_worktree_cwd() {
     let registry = create_registry();
     let mut reg = registry.lock().await;
 
-    let info = reg.create_worker(WorkerCreateConfig {
-        session: Some("bash03".into()),
-        project_path: Some(repo_str.clone()),
-        worktree: Some(WorktreeConfig {
-            branch: "bash-worktree-test".into(),
-            base: Some("main".into()),
-        }),
-        ..Default::default()
-    }, &registry).await.unwrap();
+    let info = reg
+        .create_worker(
+            WorkerCreateConfig {
+                session: Some("bash03".into()),
+                project_path: Some(repo_str.clone()),
+                worktree: Some(WorktreeConfig {
+                    branch: "bash-worktree-test".into(),
+                    base: Some("main".into()),
+                }),
+                ..Default::default()
+            },
+            &registry,
+        )
+        .await
+        .unwrap();
 
     // bash 命令会在 worktree 目录执行（因为 cwd 被设为 worktree_path）
     // 验证：pwd 返回 worktree 路径，不是主仓库路径
     drop(reg);
-    let resp = WorkerRegistry::send_async(&registry, &info.worker_id, "bash",
-        serde_json::json!({"command": "pwd"})
-    ).await.unwrap();
+    let resp = WorkerRegistry::send_async(
+        &registry,
+        &info.worker_id,
+        "bash",
+        serde_json::json!({"command": "pwd"}),
+    )
+    .await
+    .unwrap();
     let mut reg = registry.lock().await;
     assert_eq!(resp["success"], true);
     let pwd = resp["data"]["stdout"].as_str().unwrap_or("").trim();
-    assert!(pwd.contains("ion_wt_test_bash03"), "pwd should contain test repo: {pwd}");
+    assert!(
+        pwd.contains("ion_wt_test_bash03"),
+        "pwd should contain test repo: {pwd}"
+    );
 
     // 在 worktree 里写文件
     drop(reg);
@@ -740,11 +976,18 @@ async fn bash03_worktree_cwd() {
     ).await.unwrap();
     let mut reg = registry.lock().await;
     assert_eq!(resp2["success"], true);
-    assert!(resp2["data"]["output"].as_str().unwrap_or("").contains("worktree test content"));
+    assert!(
+        resp2["data"]["output"]
+            .as_str()
+            .unwrap_or("")
+            .contains("worktree test content")
+    );
 
     // 验证主仓库没有这个文件（隔离生效）
-    assert!(!repo.join("bash_worktree_test.txt").exists(),
-        "main repo should NOT have the worktree test file");
+    assert!(
+        !repo.join("bash_worktree_test.txt").exists(),
+        "main repo should NOT have the worktree test file"
+    );
 
     let _ = reg.reclaim(&info.worker_id);
 }
@@ -755,12 +998,28 @@ fn setup_temp_repo_for_bash(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("ion_wt_test_{}_{}", name, std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    for cmd in &[["init", "-b", "main"], ["config", "user.email", "test@ion.dev"], ["config", "user.name", "Ion Test"]] {
-        Command::new("git").args(cmd).current_dir(&dir).output().unwrap();
+    for cmd in &[
+        ["init", "-b", "main"],
+        ["config", "user.email", "test@ion.dev"],
+        ["config", "user.name", "Ion Test"],
+    ] {
+        Command::new("git")
+            .args(cmd)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
     }
     std::fs::write(dir.join("README.md"), "# Test Project\n").unwrap();
-    Command::new("git").args(["add", "."]).current_dir(&dir).output().unwrap();
-    Command::new("git").args(["commit", "-m", "init"]).current_dir(&dir).output().unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
     dir
 }
 
@@ -791,7 +1050,10 @@ async fn perm01_permission_denies_tool() {
     // 写应该被拒绝
     match engine.check("/tmp/test.txt", ion::kernel::Action::Write) {
         ion::kernel::PermissionResult::Deny(reason) => {
-            assert!(reason.contains("no-write"), "reason should mention rule name: {reason}");
+            assert!(
+                reason.contains("no-write"),
+                "reason should mention rule name: {reason}"
+            );
         }
         other => panic!("write should be denied, got: {other:?}"),
     }
@@ -803,13 +1065,34 @@ async fn perm01_permission_denies_tool() {
 
 #[tokio::test]
 async fn perm02_action_from_tool() {
-    assert_eq!(ion::kernel::Action::from_tool("read"), ion::kernel::Action::Read);
-    assert_eq!(ion::kernel::Action::from_tool("write"), ion::kernel::Action::Write);
-    assert_eq!(ion::kernel::Action::from_tool("bash"), ion::kernel::Action::Execute);
-    assert_eq!(ion::kernel::Action::from_tool("edit"), ion::kernel::Action::Edit);
-    assert_eq!(ion::kernel::Action::from_tool("grep"), ion::kernel::Action::Read);
-    assert_eq!(ion::kernel::Action::from_tool("find"), ion::kernel::Action::Read);
-    assert_eq!(ion::kernel::Action::from_tool("ls"), ion::kernel::Action::Read);
+    assert_eq!(
+        ion::kernel::Action::from_tool("read"),
+        ion::kernel::Action::Read
+    );
+    assert_eq!(
+        ion::kernel::Action::from_tool("write"),
+        ion::kernel::Action::Write
+    );
+    assert_eq!(
+        ion::kernel::Action::from_tool("bash"),
+        ion::kernel::Action::Execute
+    );
+    assert_eq!(
+        ion::kernel::Action::from_tool("edit"),
+        ion::kernel::Action::Edit
+    );
+    assert_eq!(
+        ion::kernel::Action::from_tool("grep"),
+        ion::kernel::Action::Read
+    );
+    assert_eq!(
+        ion::kernel::Action::from_tool("find"),
+        ion::kernel::Action::Read
+    );
+    assert_eq!(
+        ion::kernel::Action::from_tool("ls"),
+        ion::kernel::Action::Read
+    );
 }
 
 // =========================================================================
@@ -863,10 +1146,12 @@ async fn perm04_extension_registry_with_permissions() {
         priority: 100,
     });
 
-    let registry = ExtensionRegistry::new()
-        .with_permissions(engine);
+    let registry = ExtensionRegistry::new().with_permissions(engine);
 
-    assert!(registry.permission_engine.is_some(), "should have permission engine");
+    assert!(
+        registry.permission_engine.is_some(),
+        "should have permission engine"
+    );
 
     // 权限检查应该工作（通过 registry 上的 engine）
     let engine = registry.permission_engine.as_ref().unwrap();
@@ -888,9 +1173,9 @@ async fn perm04_extension_registry_with_permissions() {
 
 #[tokio::test]
 async fn runtime01_read_goes_through_secured() {
-    use std::sync::Arc;
-    use ion::kernel::*;
     use ion::agent::tool::ReadTool;
+    use ion::kernel::*;
+    use std::sync::Arc;
 
     let engine = Arc::new(PermissionEngine::new());
     engine.register_rule(PermissionRule {
@@ -905,18 +1190,22 @@ async fn runtime01_read_goes_through_secured() {
         .with_permissions(engine);
 
     let tool = ReadTool;
-    let result: Result<String, ion::agent::error::AgentError> = tool.execute(
-        serde_json::json!({"file_path": "/tmp/nonexistent_ion_test_file.txt"}),
-        &secured,
-    ).await;
+    let result: Result<String, ion::agent::error::AgentError> = tool
+        .execute(
+            serde_json::json!({"file_path": "/tmp/nonexistent_ion_test_file.txt"}),
+            &secured,
+        )
+        .await;
 
     // 应该因为权限被拒绝，而不是文件不存在
     match result {
         Err(e) => {
             let e = e.to_string();
             let msg = e.to_string();
-            assert!(msg.contains("Permission") || msg.contains("Deny"),
-                "should be blocked by permission, got: {msg}");
+            assert!(
+                msg.contains("Permission") || msg.contains("Deny"),
+                "should be blocked by permission, got: {msg}"
+            );
         }
         Ok(_) => panic!("read should have been blocked"),
     }
@@ -928,25 +1217,26 @@ async fn runtime01_read_goes_through_secured() {
 
 #[tokio::test]
 async fn runtime02_bash_goes_through_guard() {
-    use ion::command_guard::CommandGuard;
     use ion::agent::tool::BashTool;
+    use ion::command_guard::CommandGuard;
 
     let guard = CommandGuard::default();
     let secured = ion::runtime::SecuredRuntime::new(ion::runtime::LocalRuntime::new())
         .with_command_guard(guard);
 
     let tool = BashTool;
-    let result: Result<String, ion::agent::error::AgentError> = tool.execute(
-        serde_json::json!({"command": "rm -rf / "}),
-        &secured,
-    ).await;
+    let result: Result<String, ion::agent::error::AgentError> = tool
+        .execute(serde_json::json!({"command": "rm -rf / "}), &secured)
+        .await;
 
     match result {
         Err(e) => {
             let e = e.to_string();
             let msg = e.to_string();
-            assert!(msg.contains("CommandGuard") || msg.contains("高危"),
-                "should be blocked by guard, got: {msg}");
+            assert!(
+                msg.contains("CommandGuard") || msg.contains("高危"),
+                "should be blocked by guard, got: {msg}"
+            );
         }
         Ok(_) => panic!("rm -rf / should have been blocked"),
     }
@@ -961,21 +1251,34 @@ async fn runtime03_agent_uses_runtime() {
     // 验证 Agent 默认使用 LocalRuntime
     let registry = create_registry();
     let mut reg = registry.lock().await;
-    let info = reg.create_worker(WorkerCreateConfig {
-        session: Some("runtime03".into()),
-        ..Default::default()
-    }, &registry).await.unwrap();
+    let info = reg
+        .create_worker(
+            WorkerCreateConfig {
+                session: Some("runtime03".into()),
+                ..Default::default()
+            },
+            &registry,
+        )
+        .await
+        .unwrap();
 
     // bash 命令应该正常工作（走 LocalRuntime）
     drop(reg);
-    let resp = WorkerRegistry::send_async(&registry, &info.worker_id, "bash",
-        serde_json::json!({"command": "echo runtime_test_ok"})
-    ).await.unwrap();
+    let resp = WorkerRegistry::send_async(
+        &registry,
+        &info.worker_id,
+        "bash",
+        serde_json::json!({"command": "echo runtime_test_ok"}),
+    )
+    .await
+    .unwrap();
     let mut reg = registry.lock().await;
     assert_eq!(resp["success"], true);
     let output = resp["data"]["output"].as_str().unwrap_or("");
-    assert!(output.contains("runtime_test_ok"),
-        "bash should work through LocalRuntime: {output}");
+    assert!(
+        output.contains("runtime_test_ok"),
+        "bash should work through LocalRuntime: {output}"
+    );
 
     let _ = reg.kill_worker(&info.worker_id);
 }

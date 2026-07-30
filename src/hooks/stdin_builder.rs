@@ -4,7 +4,7 @@
 //! 所有事件 stdin 都包含通用字段（session_id/cwd/hook_event_name/workspace_roots），
 //! 各事件再附加自己的字段。
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// 通用字段（所有事件都有）
 /// 对齐 Claude Code 的 createBaseHookInput：session_id + cwd + transcript_path +
@@ -17,7 +17,9 @@ pub fn common_fields(event: &str) -> Value {
     // transcript_path: session JSONL 路径，让 hook 脚本能读对话历史
     let transcript_path = if !session_id.is_empty() {
         let cwd_for_path = std::env::var("ION_SESSION_CWD").unwrap_or_else(|_| cwd.clone());
-        crate::session_jsonl::session_path(&cwd_for_path).to_string_lossy().to_string()
+        crate::session_jsonl::session_path(&cwd_for_path)
+            .to_string_lossy()
+            .to_string()
     } else {
         String::new()
     };
@@ -37,7 +39,9 @@ pub fn common_fields(event: &str) -> Value {
 /// 合并通用字段 + 事件特有字段
 fn build(event: &str, extra: Value) -> Value {
     let mut stdin = common_fields(event);
-    if let Some(obj) = stdin.as_object_mut() && let Some(extra_obj) = extra.as_object() {
+    if let Some(obj) = stdin.as_object_mut()
+        && let Some(extra_obj) = extra.as_object()
+    {
         obj.extend(extra_obj.clone());
     }
     stdin
@@ -52,11 +56,14 @@ pub fn session_end() -> Value {
 }
 
 pub fn pre_compact(message_count: usize) -> Value {
-    build("PreCompact", json!({
-        "message_count": message_count,
-        "trigger": "auto",
-        "custom_instructions": "",
-    }))
+    build(
+        "PreCompact",
+        json!({
+            "message_count": message_count,
+            "trigger": "auto",
+            "custom_instructions": "",
+        }),
+    )
 }
 
 pub fn user_prompt_submit(prompt: &str) -> Value {
@@ -64,23 +71,39 @@ pub fn user_prompt_submit(prompt: &str) -> Value {
 }
 
 pub fn pre_tool_use(tool_name: &str, tool_input: &Value, tool_call_id: &str) -> Value {
-    build("PreToolUse", json!({
-        "tool_name": tool_name,
-        "llm_tool_name": tool_name,
-        "tool_input": tool_input,
-        "tool_use_id": tool_call_id,
-    }))
+    build(
+        "PreToolUse",
+        json!({
+            "tool_name": tool_name,
+            "llm_tool_name": tool_name,
+            "tool_input": tool_input,
+            "tool_use_id": tool_call_id,
+        }),
+    )
 }
 
-pub fn post_tool_use(tool_name: &str, tool_input: &Value, tool_response: &Value, is_error: bool, tool_call_id: &str) -> Value {
-    let event = if is_error { "PostToolUseFailure" } else { "PostToolUse" };
-    build(event, json!({
-        "tool_name": tool_name,
-        "llm_tool_name": tool_name,
-        "tool_input": tool_input,
-        "tool_response": tool_response,
-        "tool_use_id": tool_call_id,
-    }))
+pub fn post_tool_use(
+    tool_name: &str,
+    tool_input: &Value,
+    tool_response: &Value,
+    is_error: bool,
+    tool_call_id: &str,
+) -> Value {
+    let event = if is_error {
+        "PostToolUseFailure"
+    } else {
+        "PostToolUse"
+    };
+    build(
+        event,
+        json!({
+            "tool_name": tool_name,
+            "llm_tool_name": tool_name,
+            "tool_input": tool_input,
+            "tool_response": tool_response,
+            "tool_use_id": tool_call_id,
+        }),
+    )
 }
 
 pub fn subagent_start() -> Value {
@@ -88,33 +111,45 @@ pub fn subagent_start() -> Value {
 }
 
 pub fn subagent_stop(last_message: &str, loop_count: u32) -> Value {
-    build("SubagentStop", json!({
-        "last_assistant_message": last_message,
-        "loop_count": loop_count,
-        "stop_hook_active": loop_count > 0,
-    }))
+    build(
+        "SubagentStop",
+        json!({
+            "last_assistant_message": last_message,
+            "loop_count": loop_count,
+            "stop_hook_active": loop_count > 0,
+        }),
+    )
 }
 
 pub fn stop(last_message: &str, loop_count: u32) -> Value {
-    build("Stop", json!({
-        "last_assistant_message": last_message,
-        "loop_count": loop_count,
-        "stop_hook_active": loop_count > 0,
-    }))
+    build(
+        "Stop",
+        json!({
+            "last_assistant_message": last_message,
+            "loop_count": loop_count,
+            "stop_hook_active": loop_count > 0,
+        }),
+    )
 }
 
 pub fn notification(notification_type: &str, message: &str) -> Value {
-    build("Notification", json!({
-        "notification_type": notification_type,
-        "message": message,
-    }))
+    build(
+        "Notification",
+        json!({
+            "notification_type": notification_type,
+            "message": message,
+        }),
+    )
 }
 
 pub fn permission_request(tool: &str, args: &Value) -> Value {
-    build("PermissionRequest", json!({
-        "tool": tool,
-        "args": args,
-    }))
+    build(
+        "PermissionRequest",
+        json!({
+            "tool": tool,
+            "args": args,
+        }),
+    )
 }
 
 #[cfg(test)]
@@ -124,10 +159,16 @@ mod tests {
     #[test]
     fn test_common_fields_has_transcript_path() {
         let stdin = common_fields("PreToolUse");
-        assert!(stdin.get("transcript_path").is_some(), "transcript_path must exist");
+        assert!(
+            stdin.get("transcript_path").is_some(),
+            "transcript_path must exist"
+        );
         assert!(stdin.get("session_id").is_some(), "session_id must exist");
         assert!(stdin.get("cwd").is_some(), "cwd must exist");
-        assert!(stdin.get("hook_event_name").is_some(), "hook_event_name must exist");
+        assert!(
+            stdin.get("hook_event_name").is_some(),
+            "hook_event_name must exist"
+        );
         assert_eq!(stdin["hook_event_name"], "PreToolUse");
     }
 
@@ -150,7 +191,10 @@ mod tests {
         );
         assert_eq!(stdin["hook_event_name"], "PostToolUse");
         assert_eq!(stdin["tool_use_id"], "call_xyz789");
-        assert!(stdin.get("tool_response").is_some(), "tool_response must exist");
+        assert!(
+            stdin.get("tool_response").is_some(),
+            "tool_response must exist"
+        );
     }
 
     #[test]

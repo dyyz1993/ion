@@ -6,7 +6,7 @@ use std::process::Command;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use ion::worker_registry::{WorkerCreateConfig, WorktreeConfig, WorkerRegistry};
+use ion::worker_registry::{WorkerCreateConfig, WorkerRegistry, WorktreeConfig};
 
 fn worker_bin_path() -> std::path::PathBuf {
     if let Ok(path) = std::env::var("ION_WORKER_BIN") {
@@ -14,13 +14,17 @@ fn worker_bin_path() -> std::path::PathBuf {
     }
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let debug_bin = manifest.join("target").join("debug").join("ion");
-    if debug_bin.exists() { return debug_bin; }
+    if debug_bin.exists() {
+        return debug_bin;
+    }
     std::path::PathBuf::from("ion")
 }
 
 fn create_registry() -> Arc<Mutex<WorkerRegistry>> {
     let bin = worker_bin_path();
-    Arc::new(Mutex::new(WorkerRegistry::with_binary(&bin.to_string_lossy())))
+    Arc::new(Mutex::new(WorkerRegistry::with_binary(
+        &bin.to_string_lossy(),
+    )))
 }
 
 fn setup_temp_repo(name: &str) -> std::path::PathBuf {
@@ -31,22 +35,47 @@ fn setup_temp_repo(name: &str) -> std::path::PathBuf {
         ["init", "-b", "main"],
         ["config", "user.email", "test@ion.dev"],
         ["config", "user.name", "Ion Test"],
-    ] { Command::new("git").args(cmd).current_dir(&dir).output().unwrap(); }
+    ] {
+        Command::new("git")
+            .args(cmd)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+    }
     std::fs::write(dir.join("README.md"), "# Test Project\n").unwrap();
-    Command::new("git").args(["add", "."]).current_dir(&dir).output().unwrap();
-    Command::new("git").args(["commit", "-m", "init"]).current_dir(&dir).output().unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
     dir
 }
 
 fn branch_exists(repo: &str, branch: &str) -> bool {
-    let o = Command::new("git").args(["branch", "--list", branch]).current_dir(repo).output().unwrap();
+    let o = Command::new("git")
+        .args(["branch", "--list", branch])
+        .current_dir(repo)
+        .output()
+        .unwrap();
     String::from_utf8_lossy(&o.stdout).contains(branch)
 }
 
 fn list_worktrees(repo: &str) -> Vec<String> {
-    let o = Command::new("git").args(["worktree", "list", "--porcelain"]).current_dir(repo).output().unwrap();
-    String::from_utf8_lossy(&o.stdout).lines().filter(|l| l.starts_with("worktree "))
-        .map(|l| l.strip_prefix("worktree ").unwrap_or(l).to_string()).collect()
+    let o = Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .filter(|l| l.starts_with("worktree "))
+        .map(|l| l.strip_prefix("worktree ").unwrap_or(l).to_string())
+        .collect()
 }
 
 // WT1: worktree 创建 + cwd 隔离
@@ -57,16 +86,34 @@ async fn wt01_worktree_creates_isolated_cwd() {
     let registry = create_registry();
     let mut reg = registry.lock().await;
 
-    let info = reg.create_worker(WorkerCreateConfig {
-        session: Some("wt01-session".into()),
-        project_path: Some(repo_str.clone()),
-        worktree: Some(WorktreeConfig { branch: "feature-wt01".into(), base: Some("main".into()) }),
-        ..Default::default()
-    }, &registry).await.unwrap();
+    let info = reg
+        .create_worker(
+            WorkerCreateConfig {
+                session: Some("wt01-session".into()),
+                project_path: Some(repo_str.clone()),
+                worktree: Some(WorktreeConfig {
+                    branch: "feature-wt01".into(),
+                    base: Some("main".into()),
+                }),
+                ..Default::default()
+            },
+            &registry,
+        )
+        .await
+        .unwrap();
 
-    let wt = reg.get_worker(&info.worker_id).unwrap().worktree.as_ref().unwrap().clone();
+    let wt = reg
+        .get_worker(&info.worker_id)
+        .unwrap()
+        .worktree
+        .as_ref()
+        .unwrap()
+        .clone();
     assert_eq!(wt.branch, "feature-wt01");
-    assert!(std::path::Path::new(&wt.path).exists(), "worktree should exist");
+    assert!(
+        std::path::Path::new(&wt.path).exists(),
+        "worktree should exist"
+    );
     assert!(branch_exists(&repo_str, "feature-wt01"));
     assert!(list_worktrees(&repo_str).iter().any(|w| *w == wt.path));
     reg.kill_worker(&info.worker_id).unwrap();
@@ -80,21 +127,40 @@ async fn wt02_reclaim_cleans_worktree_preserves_branch() {
     let registry = create_registry();
     let mut reg = registry.lock().await;
 
-    let info = reg.create_worker(WorkerCreateConfig {
-        session: Some("wt02-session".into()),
-        project_path: Some(repo_str.clone()),
-        worktree: Some(WorktreeConfig { branch: "feature-wt02".into(), base: Some("main".into()) }),
-        ..Default::default()
-    }, &registry).await.unwrap();
+    let info = reg
+        .create_worker(
+            WorkerCreateConfig {
+                session: Some("wt02-session".into()),
+                project_path: Some(repo_str.clone()),
+                worktree: Some(WorktreeConfig {
+                    branch: "feature-wt02".into(),
+                    base: Some("main".into()),
+                }),
+                ..Default::default()
+            },
+            &registry,
+        )
+        .await
+        .unwrap();
 
-    let wt_path = reg.get_worker(&info.worker_id).unwrap().worktree.as_ref().unwrap().path.clone();
+    let wt_path = reg
+        .get_worker(&info.worker_id)
+        .unwrap()
+        .worktree
+        .as_ref()
+        .unwrap()
+        .path
+        .clone();
     assert!(std::path::Path::new(&wt_path).exists());
     reg.reclaim(&info.worker_id).unwrap();
 
     assert!(reg.get_worker(&info.worker_id).is_none());
     assert!(!std::path::Path::new(&wt_path).exists(), "worktree cleaned");
     assert!(branch_exists(&repo_str, "feature-wt02"), "branch preserved");
-    assert!(!list_worktrees(&repo_str).iter().any(|w| *w == wt_path), "git worktree removed");
+    assert!(
+        !list_worktrees(&repo_str).iter().any(|w| *w == wt_path),
+        "git worktree removed"
+    );
 }
 
 // WT3: 两个 worker 并行隔离
@@ -105,32 +171,79 @@ async fn wt03_parallel_workers_isolated() {
     let registry = create_registry();
     let mut reg = registry.lock().await;
 
-    let a = reg.create_worker(WorkerCreateConfig {
-        session: Some("wt03-a".into()), project_path: Some(repo_str.clone()),
-        worktree: Some(WorktreeConfig { branch: "feature-A".into(), base: Some("main".into()) }),
-        ..Default::default()
-    }, &registry).await.unwrap();
-    let b = reg.create_worker(WorkerCreateConfig {
-        session: Some("wt03-b".into()), project_path: Some(repo_str.clone()),
-        worktree: Some(WorktreeConfig { branch: "feature-B".into(), base: Some("main".into()) }),
-        ..Default::default()
-    }, &registry).await.unwrap();
+    let a = reg
+        .create_worker(
+            WorkerCreateConfig {
+                session: Some("wt03-a".into()),
+                project_path: Some(repo_str.clone()),
+                worktree: Some(WorktreeConfig {
+                    branch: "feature-A".into(),
+                    base: Some("main".into()),
+                }),
+                ..Default::default()
+            },
+            &registry,
+        )
+        .await
+        .unwrap();
+    let b = reg
+        .create_worker(
+            WorkerCreateConfig {
+                session: Some("wt03-b".into()),
+                project_path: Some(repo_str.clone()),
+                worktree: Some(WorktreeConfig {
+                    branch: "feature-B".into(),
+                    base: Some("main".into()),
+                }),
+                ..Default::default()
+            },
+            &registry,
+        )
+        .await
+        .unwrap();
 
-    let wa = reg.get_worker(&a.worker_id).unwrap().worktree.as_ref().unwrap().path.clone();
-    let wb = reg.get_worker(&b.worker_id).unwrap().worktree.as_ref().unwrap().path.clone();
+    let wa = reg
+        .get_worker(&a.worker_id)
+        .unwrap()
+        .worktree
+        .as_ref()
+        .unwrap()
+        .path
+        .clone();
+    let wb = reg
+        .get_worker(&b.worker_id)
+        .unwrap()
+        .worktree
+        .as_ref()
+        .unwrap()
+        .path
+        .clone();
     assert_ne!(wa, wb);
     assert!(std::path::Path::new(&wa).exists() && std::path::Path::new(&wb).exists());
     assert!(branch_exists(&repo_str, "feature-A") && branch_exists(&repo_str, "feature-B"));
 
     drop(reg);
-    let r1 = WorkerRegistry::send_async(&registry, &a.worker_id, "get_state", serde_json::Value::Null).await;
+    let r1 = WorkerRegistry::send_async(
+        &registry,
+        &a.worker_id,
+        "get_state",
+        serde_json::Value::Null,
+    )
+    .await;
     let mut reg = registry.lock().await;
     drop(reg);
-    let r2 = WorkerRegistry::send_async(&registry, &b.worker_id, "get_state", serde_json::Value::Null).await;
+    let r2 = WorkerRegistry::send_async(
+        &registry,
+        &b.worker_id,
+        "get_state",
+        serde_json::Value::Null,
+    )
+    .await;
     let mut reg = registry.lock().await;
     assert!(r1.is_ok() && r2.is_ok());
 
-    reg.reclaim(&a.worker_id).unwrap(); reg.reclaim(&b.worker_id).unwrap();
+    reg.reclaim(&a.worker_id).unwrap();
+    reg.reclaim(&b.worker_id).unwrap();
     assert!(!std::path::Path::new(&wa).exists() && !std::path::Path::new(&wb).exists());
     assert!(branch_exists(&repo_str, "feature-A") && branch_exists(&repo_str, "feature-B"));
 }
@@ -143,16 +256,36 @@ async fn wt04_kill_cleans_worktree() {
     let registry = create_registry();
     let mut reg = registry.lock().await;
 
-    let info = reg.create_worker(WorkerCreateConfig {
-        session: Some("wt04-session".into()), project_path: Some(repo_str.clone()),
-        worktree: Some(WorktreeConfig { branch: "feature-wt04".into(), base: Some("main".into()) }),
-        ..Default::default()
-    }, &registry).await.unwrap();
+    let info = reg
+        .create_worker(
+            WorkerCreateConfig {
+                session: Some("wt04-session".into()),
+                project_path: Some(repo_str.clone()),
+                worktree: Some(WorktreeConfig {
+                    branch: "feature-wt04".into(),
+                    base: Some("main".into()),
+                }),
+                ..Default::default()
+            },
+            &registry,
+        )
+        .await
+        .unwrap();
 
-    let wt_path = reg.get_worker(&info.worker_id).unwrap().worktree.as_ref().unwrap().path.clone();
+    let wt_path = reg
+        .get_worker(&info.worker_id)
+        .unwrap()
+        .worktree
+        .as_ref()
+        .unwrap()
+        .path
+        .clone();
     assert!(std::path::Path::new(&wt_path).exists());
     reg.kill_worker(&info.worker_id).unwrap();
-    assert!(!std::path::Path::new(&wt_path).exists(), "kill cleans worktree");
+    assert!(
+        !std::path::Path::new(&wt_path).exists(),
+        "kill cleans worktree"
+    );
     assert!(branch_exists(&repo_str, "feature-wt04"), "branch preserved");
 }
 
@@ -162,12 +295,29 @@ async fn wt05_no_worktree_default_behavior() {
     let _repo = setup_temp_repo("wt05");
     let registry = create_registry();
     let mut reg = registry.lock().await;
-    let info = reg.create_worker(WorkerCreateConfig {
-        session: Some("wt05-plain".into()), worktree: None, ..Default::default()
-    }, &registry).await.unwrap();
+    let info = reg
+        .create_worker(
+            WorkerCreateConfig {
+                session: Some("wt05-plain".into()),
+                worktree: None,
+                ..Default::default()
+            },
+            &registry,
+        )
+        .await
+        .unwrap();
     assert!(reg.get_worker(&info.worker_id).unwrap().worktree.is_none());
     drop(reg);
-    assert!(WorkerRegistry::send_async(&registry, &info.worker_id, "get_state", serde_json::Value::Null).await.is_ok());
+    assert!(
+        WorkerRegistry::send_async(
+            &registry,
+            &info.worker_id,
+            "get_state",
+            serde_json::Value::Null
+        )
+        .await
+        .is_ok()
+    );
     let mut reg = registry.lock().await;
     reg.kill_worker(&info.worker_id).unwrap();
 }
@@ -185,13 +335,29 @@ async fn wt06_concurrent_development() {
     let mut infos: Vec<(String, String, String)> = Vec::new();
     for i in 0..n {
         let branch = format!("feature-concurrent-{}", i);
-        let info = reg.create_worker(WorkerCreateConfig {
-            session: Some(format!("wt06-wkr-{}", i)),
-            project_path: Some(repo_str.clone()),
-            worktree: Some(WorktreeConfig { branch: branch.clone(), base: Some("main".into()) }),
-            ..Default::default()
-        }, &registry).await.unwrap();
-        let wt_path = reg.get_worker(&info.worker_id).unwrap().worktree.as_ref().unwrap().path.clone();
+        let info = reg
+            .create_worker(
+                WorkerCreateConfig {
+                    session: Some(format!("wt06-wkr-{}", i)),
+                    project_path: Some(repo_str.clone()),
+                    worktree: Some(WorktreeConfig {
+                        branch: branch.clone(),
+                        base: Some("main".into()),
+                    }),
+                    ..Default::default()
+                },
+                &registry,
+            )
+            .await
+            .unwrap();
+        let wt_path = reg
+            .get_worker(&info.worker_id)
+            .unwrap()
+            .worktree
+            .as_ref()
+            .unwrap()
+            .path
+            .clone();
         infos.push((info.worker_id, branch, wt_path));
     }
 
@@ -200,37 +366,75 @@ async fn wt06_concurrent_development() {
         let task_file = format!("task-{}.md", i);
         let content = format!("# Task {}\n\nCompleted on branch {}.\n", i, branch);
         std::fs::write(std::path::Path::new(wt_path).join(&task_file), &content).unwrap();
-        let add = Command::new("git").args(["add", &task_file]).current_dir(wt_path).output().unwrap();
+        let add = Command::new("git")
+            .args(["add", &task_file])
+            .current_dir(wt_path)
+            .output()
+            .unwrap();
         assert!(add.status.success(), "git add {} failed", i);
-        let commit = Command::new("git").args(["commit", "-m", &format!("task {} done", i)]).current_dir(wt_path).output().unwrap();
+        let commit = Command::new("git")
+            .args(["commit", "-m", &format!("task {} done", i)])
+            .current_dir(wt_path)
+            .output()
+            .unwrap();
         assert!(commit.status.success(), "git commit {} failed", i);
     }
 
     // 验证：主分支没有 task 文件（隔离有效）
-    let main_tasks = std::fs::read_dir(&repo).unwrap().filter_map(|e| e.ok())
-        .filter(|e| e.file_name().to_string_lossy().starts_with("task-")).count();
+    let main_tasks = std::fs::read_dir(&repo)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("task-"))
+        .count();
     assert_eq!(main_tasks, 0, "main should NOT have task files");
 
     // 验证：每个分支有对应文件且内容正确
     for (i, (_, branch, _)) in infos.iter().enumerate() {
-        let out = Command::new("git").args(["show", &format!("{}:task-{}.md", branch, i)])
-            .current_dir(&repo_str).output().unwrap();
-        assert!(out.status.success(), "branch {} missing task-{}.md", branch, i);
+        let out = Command::new("git")
+            .args(["show", &format!("{}:task-{}.md", branch, i)])
+            .current_dir(&repo_str)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "branch {} missing task-{}.md",
+            branch,
+            i
+        );
         assert!(String::from_utf8_lossy(&out.stdout).contains(&format!("# Task {}", i)));
     }
 
     // 回收所有 Worker
-    for (wid, _, _) in &infos { reg.reclaim(wid).unwrap(); }
+    for (wid, _, _) in &infos {
+        reg.reclaim(wid).unwrap();
+    }
 
     // 验证：所有 worktree 目录已清理
     for (i, (_, _, wt_path)) in infos.iter().enumerate() {
-        assert!(!std::path::Path::new(wt_path).exists(), "worktree {} still exists", i);
+        assert!(
+            !std::path::Path::new(wt_path).exists(),
+            "worktree {} still exists",
+            i
+        );
     }
     // 验证：git worktree list 无残留
     let wts = list_worktrees(&repo_str);
-    for (_, _, wt_path) in &infos { assert!(!wts.iter().any(|w| *w == *wt_path), "git has worktree"); }
+    for (_, _, wt_path) in &infos {
+        assert!(!wts.iter().any(|w| *w == *wt_path), "git has worktree");
+    }
     // 验证：所有分支保留
-    for (_, branch, _) in &infos { assert!(branch_exists(&repo_str, branch), "branch {} missing", branch); }
+    for (_, branch, _) in &infos {
+        assert!(
+            branch_exists(&repo_str, branch),
+            "branch {} missing",
+            branch
+        );
+    }
     // 验证：主仓库不变
-    assert_eq!(std::fs::read_to_string(repo.join("README.md")).unwrap().trim(), "# Test Project");
+    assert_eq!(
+        std::fs::read_to_string(repo.join("README.md"))
+            .unwrap()
+            .trim(),
+        "# Test Project"
+    );
 }

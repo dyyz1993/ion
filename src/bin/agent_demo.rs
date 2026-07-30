@@ -69,9 +69,7 @@ fn describe_message(msg: &Message) -> Vec<String> {
                     AssistantContentBlock::Text(text) if !text.text.is_empty() => {
                         lines.push(format!("[assistant] {}", text.text));
                     }
-                    AssistantContentBlock::Thinking(thinking)
-                        if !thinking.thinking.is_empty() =>
-                    {
+                    AssistantContentBlock::Thinking(thinking) if !thinking.thinking.is_empty() => {
                         lines.push(format!("[thinking] {}", thinking.thinking));
                     }
                     AssistantContentBlock::ToolCall(tool_call) => {
@@ -95,10 +93,9 @@ fn describe_message(msg: &Message) -> Vec<String> {
             .content
             .iter()
             .filter_map(|block| match block {
-                ContentBlock::Text(text) if !text.text.is_empty() => Some(format!(
-                    "[tool_result:{}] {}",
-                    result.tool_name, text.text
-                )),
+                ContentBlock::Text(text) if !text.text.is_empty() => {
+                    Some(format!("[tool_result:{}] {}", result.tool_name, text.text))
+                }
                 _ => None,
             })
             .collect(),
@@ -106,12 +103,21 @@ fn describe_message(msg: &Message) -> Vec<String> {
             "[bashExecution] `{}` exit={:?} cancelled={} truncated={}",
             b.command, b.exit_code, b.cancelled, b.truncated
         )],
-        Message::Custom(c) => vec![format!("[custom:{}] {}", c.custom_type, match &c.content {
-            CustomContent::Text(s) => s.clone(),
-            CustomContent::Blocks(_) => "<blocks>".into(),
-        })],
-        Message::BranchSummary(b) => vec![format!("[branchSummary from={}] {}", b.from_id, b.summary)],
-        Message::CompactionSummary(c) => vec![format!("[compactionSummary tokens={}] {}", c.tokens_before, c.summary)],
+        Message::Custom(c) => vec![format!(
+            "[custom:{}] {}",
+            c.custom_type,
+            match &c.content {
+                CustomContent::Text(s) => s.clone(),
+                CustomContent::Blocks(_) => "<blocks>".into(),
+            }
+        )],
+        Message::BranchSummary(b) => {
+            vec![format!("[branchSummary from={}] {}", b.from_id, b.summary)]
+        }
+        Message::CompactionSummary(c) => vec![format!(
+            "[compactionSummary tokens={}] {}",
+            c.tokens_before, c.summary
+        )],
     }
 }
 

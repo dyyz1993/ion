@@ -17,7 +17,12 @@ fn header(id: &str) -> serde_json::Value {
 /// 写一个 session 文件（header + entries）
 fn write_session(path: &std::path::Path, entries: &[serde_json::Value]) {
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(path).unwrap();
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .unwrap();
     for e in entries {
         writeln!(f, "{}", serde_json::to_string(e).unwrap()).unwrap();
     }
@@ -26,7 +31,8 @@ fn write_session(path: &std::path::Path, entries: &[serde_json::Value]) {
 /// 读 session 文件的所有 entries
 fn read_session(path: &std::path::Path) -> Vec<serde_json::Value> {
     let content = std::fs::read_to_string(path).unwrap();
-    content.lines()
+    content
+        .lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str(l).ok())
         .collect()
@@ -39,7 +45,11 @@ fn branch_appends_leaf_pointer_and_preserves_old_entries() {
     let path = tmp.join("session.jsonl");
 
     // 初始：h → m1 → m2
-    let initial = vec![header("h"), msg_entry("m1", "h", "a"), msg_entry("m2", "m1", "b")];
+    let initial = vec![
+        header("h"),
+        msg_entry("m1", "h", "a"),
+        msg_entry("m2", "m1", "b"),
+    ];
     write_session(&path, &initial);
     let original_content = std::fs::read_to_string(&path).unwrap();
 
@@ -47,7 +57,10 @@ fn branch_appends_leaf_pointer_and_preserves_old_entries() {
     let new_entries = ion::session_tree::make_branch("m1", Some("try-x")).unwrap();
     // 模拟 append_raw_entry：追加到文件
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
     for e in &new_entries {
         write!(f, "\n{}", serde_json::to_string(e).unwrap()).unwrap();
     }
@@ -58,8 +71,16 @@ fn branch_appends_leaf_pointer_and_preserves_old_entries() {
 
     // leaf_pointer 写入了
     let after = read_session(&path);
-    assert!(after.iter().any(|e| e["type"].as_str() == Some("leaf_pointer")), "leaf_pointer 写入");
-    assert!(after.iter().any(|e| e["type"].as_str() == Some("label")), "label 写入");
+    assert!(
+        after
+            .iter()
+            .any(|e| e["type"].as_str() == Some("leaf_pointer")),
+        "leaf_pointer 写入"
+    );
+    assert!(
+        after.iter().any(|e| e["type"].as_str() == Some("label")),
+        "label 写入"
+    );
 
     // current_leaf 解析正确
     let leaf = ion::session_tree::resolve_current_leaf(&after);
@@ -74,14 +95,21 @@ fn rollback_appends_tombstone_and_preserves_old_entries() {
     std::fs::create_dir_all(&tmp).unwrap();
     let path = tmp.join("session.jsonl");
 
-    let initial = vec![header("h"), msg_entry("m1", "h", "a"), msg_entry("m2", "m1", "b")];
+    let initial = vec![
+        header("h"),
+        msg_entry("m1", "h", "a"),
+        msg_entry("m2", "m1", "b"),
+    ];
     write_session(&path, &initial);
     let original_content = std::fs::read_to_string(&path).unwrap();
 
     // rollback 到 m1，带 reason
     let new_entries = ion::session_tree::make_rollback("m1", Some("m2"), Some("走错了")).unwrap();
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
     for e in &new_entries {
         write!(f, "\n{}", serde_json::to_string(e).unwrap()).unwrap();
     }
@@ -92,8 +120,16 @@ fn rollback_appends_tombstone_and_preserves_old_entries() {
     verify_prefix_unchanged(&path, &original_content);
 
     // tombstone
-    assert!(after.iter().any(|e| e["type"].as_str() == Some("branch_summary")), "tombstone 写入");
-    let tombstone = after.iter().find(|e| e["type"].as_str() == Some("branch_summary")).unwrap();
+    assert!(
+        after
+            .iter()
+            .any(|e| e["type"].as_str() == Some("branch_summary")),
+        "tombstone 写入"
+    );
+    let tombstone = after
+        .iter()
+        .find(|e| e["type"].as_str() == Some("branch_summary"))
+        .unwrap();
     assert!(tombstone["summary"].as_str().unwrap().contains("走错了"));
 
     std::fs::remove_dir_all(&tmp).ok();
@@ -106,14 +142,23 @@ fn branch_then_new_message_parents_off_leaf() {
     std::fs::create_dir_all(&tmp).unwrap();
     let path = tmp.join("session.jsonl");
 
-    let initial = vec![header("h"), msg_entry("m1", "h", "a"), msg_entry("m2", "m1", "b")];
+    let initial = vec![
+        header("h"),
+        msg_entry("m1", "h", "a"),
+        msg_entry("m2", "m1", "b"),
+    ];
     write_session(&path, &initial);
 
     // branch 到 m1
     let new_entries = ion::session_tree::make_branch("m1", None).unwrap();
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
-    for e in &new_entries { write!(f, "\n{}", serde_json::to_string(e).unwrap()).unwrap(); }
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    for e in &new_entries {
+        write!(f, "\n{}", serde_json::to_string(e).unwrap()).unwrap();
+    }
     drop(f);
 
     // 模拟 save_session 的 leaf 感知 append：新消息 parentId = resolve_current_leaf
@@ -123,7 +168,10 @@ fn branch_then_new_message_parents_off_leaf() {
 
     // 写一条新消息，parentId = m1（不是 m2）
     let new_msg = msg_entry("m3", &parent_id, "branch msg");
-    let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
     write!(f, "\n{}", serde_json::to_string(&new_msg).unwrap()).unwrap();
     drop(f);
 
@@ -144,7 +192,11 @@ fn full_branch_rollback_checkout_sequence_preserves_only_append() {
     std::fs::create_dir_all(&tmp).unwrap();
     let path = tmp.join("session.jsonl");
 
-    let initial = vec![header("h"), msg_entry("m1", "h", "a"), msg_entry("m2", "m1", "b")];
+    let initial = vec![
+        header("h"),
+        msg_entry("m1", "h", "a"),
+        msg_entry("m2", "m1", "b"),
+    ];
     write_session(&path, &initial);
     let original_content = std::fs::read_to_string(&path).unwrap();
 
@@ -154,17 +206,27 @@ fn full_branch_rollback_checkout_sequence_preserves_only_append() {
         ion::session_tree::make_rollback("m2", Some("m1"), Some("back")).unwrap(),
     ];
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
     for op_entries in &ops {
-        for e in op_entries { write!(f, "\n{}", serde_json::to_string(e).unwrap()).unwrap(); }
+        for e in op_entries {
+            write!(f, "\n{}", serde_json::to_string(e).unwrap()).unwrap();
+        }
     }
     drop(f);
 
     // checkout branch-a
     let entries = read_session(&path);
     let checkout_entries = ion::session_tree::make_checkout(&entries, "branch-a").unwrap();
-    let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
-    for e in &checkout_entries { write!(f, "\n{}", serde_json::to_string(e).unwrap()).unwrap(); }
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    for e in &checkout_entries {
+        write!(f, "\n{}", serde_json::to_string(e).unwrap()).unwrap();
+    }
     drop(f);
 
     // only-append 核心验证
@@ -172,7 +234,10 @@ fn full_branch_rollback_checkout_sequence_preserves_only_append() {
 
     // 消息一条没少
     let after = read_session(&path);
-    let msg_count = after.iter().filter(|e| e["type"].as_str() == Some("message")).count();
+    let msg_count = after
+        .iter()
+        .filter(|e| e["type"].as_str() == Some("message"))
+        .count();
     assert_eq!(msg_count, 2, "消息数不变（2）");
 
     std::fs::remove_dir_all(&tmp).ok();
@@ -197,13 +262,18 @@ fn verify_prefix_unchanged(path: &std::path::Path, original_full_content: &str) 
     let current_lines: Vec<&str> = current.lines().collect();
     assert!(
         current_lines.len() >= original_lines.len(),
-        "行数不应减少: 原 {} 现 {}", original_lines.len(), current_lines.len()
+        "行数不应减少: 原 {} 现 {}",
+        original_lines.len(),
+        current_lines.len()
     );
     for (i, orig) in original_lines.iter().enumerate() {
         assert_eq!(
-            current_lines[i], *orig,
+            current_lines[i],
+            *orig,
             "第 {} 行被修改（违反 only-append）\n  原: {}\n  现: {}",
-            i + 1, orig, current_lines[i]
+            i + 1,
+            orig,
+            current_lines[i]
         );
     }
 }

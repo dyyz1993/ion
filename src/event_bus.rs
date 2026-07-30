@@ -69,18 +69,36 @@ impl ExtensionEvent {
         }
     }
 
-    pub fn with_session(mut self, sid: &str) -> Self { self.session = Some(sid.to_string()); self }
-    pub fn with_data(mut self, data: serde_json::Value) -> Self { self.data = data; self }
-    pub fn with_persisted(mut self, p: bool) -> Self { self.persisted = p; self }
-    pub fn with_visibility(mut self, v: EventVisibility) -> Self { self.visibility = v; self }
-    pub fn with_correlation(mut self, cid: &str) -> Self { self.correlation_id = cid.to_string(); self }
-    pub fn with_route(mut self, r: &str) -> Self { self.route = r.to_string(); self }
+    pub fn with_session(mut self, sid: &str) -> Self {
+        self.session = Some(sid.to_string());
+        self
+    }
+    pub fn with_data(mut self, data: serde_json::Value) -> Self {
+        self.data = data;
+        self
+    }
+    pub fn with_persisted(mut self, p: bool) -> Self {
+        self.persisted = p;
+        self
+    }
+    pub fn with_visibility(mut self, v: EventVisibility) -> Self {
+        self.visibility = v;
+        self
+    }
+    pub fn with_correlation(mut self, cid: &str) -> Self {
+        self.correlation_id = cid.to_string();
+        self
+    }
+    pub fn with_route(mut self, r: &str) -> Self {
+        self.route = r.to_string();
+        self
+    }
 }
 
 /// Subscriber 过滤器
 #[derive(Clone, Debug)]
 struct SubFilter {
-    route: Option<String>,    // "ui" | "extension" | None(不限)
+    route: Option<String>, // "ui" | "extension" | None(不限)
     extension: Option<String>,
     session: Option<String>,
 }
@@ -98,7 +116,11 @@ pub struct ExtensionEventBus {
 }
 
 impl ExtensionEventBus {
-    pub fn new() -> Self { Self { subscribers: Vec::new() } }
+    pub fn new() -> Self {
+        Self {
+            subscribers: Vec::new(),
+        }
+    }
 
     /// 订阅指定插件的所有事件（不限制 session）
     pub fn subscribe(&mut self, extension: &str) -> mpsc::Receiver<ExtensionEvent> {
@@ -110,7 +132,11 @@ impl ExtensionEventBus {
     }
 
     /// 订阅指定插件 + session 的事件
-    pub fn subscribe_with_session(&mut self, extension: &str, session: &str) -> mpsc::Receiver<ExtensionEvent> {
+    pub fn subscribe_with_session(
+        &mut self,
+        extension: &str,
+        session: &str,
+    ) -> mpsc::Receiver<ExtensionEvent> {
         self.subscribe_with_filter(SubFilter {
             route: Some("extension".into()),
             extension: Some(extension.to_string()),
@@ -120,12 +146,20 @@ impl ExtensionEventBus {
 
     /// 订阅全部事件（不限 route、extension、session）
     pub fn subscribe_all(&mut self) -> mpsc::Receiver<ExtensionEvent> {
-        self.subscribe_with_filter(SubFilter { route: None, extension: None, session: None })
+        self.subscribe_with_filter(SubFilter {
+            route: None,
+            extension: None,
+            session: None,
+        })
     }
 
     /// 订阅 UI 事件（Ask/Confirm/Prompt/Notif/Alert）
     pub fn subscribe_ui(&mut self) -> mpsc::Receiver<ExtensionEvent> {
-        self.subscribe_with_filter(SubFilter { route: Some("ui".into()), extension: None, session: None })
+        self.subscribe_with_filter(SubFilter {
+            route: Some("ui".into()),
+            extension: None,
+            session: None,
+        })
     }
 
     fn subscribe_with_filter(&mut self, filter: SubFilter) -> mpsc::Receiver<ExtensionEvent> {

@@ -3,7 +3,10 @@
 use crate::error::ProviderResult;
 use crate::event_stream::EventStream;
 use crate::registry::ApiProvider;
-use crate::types::{AssistantContentBlock, AssistantMessage, Context, Model, StreamOptions, TextContent, ThinkingContent};
+use crate::types::{
+    AssistantContentBlock, AssistantMessage, Context, Model, StreamOptions, TextContent,
+    ThinkingContent,
+};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -42,7 +45,12 @@ impl RecordingProvider {
             created_at: now_ms(),
             ..Default::default()
         };
-        Self { inner, trace_path, meta_path, meta: Arc::new(Mutex::new(meta)) }
+        Self {
+            inner,
+            trace_path,
+            meta_path,
+            meta: Arc::new(Mutex::new(meta)),
+        }
     }
 }
 
@@ -71,10 +79,13 @@ impl ApiProvider for RecordingProvider {
         let meta_path = self.meta_path.clone();
         let meta_arc = self.meta.clone();
 
-        Ok(EventStream::forward_with_done_tap(inner_stream, move |msg| {
-            write_trace_line(&trace_path, msg, &req_hash);
-            update_meta(&meta_arc, &meta_path, msg);
-        }))
+        Ok(EventStream::forward_with_done_tap(
+            inner_stream,
+            move |msg| {
+                write_trace_line(&trace_path, msg, &req_hash);
+                update_meta(&meta_arc, &meta_path, msg);
+            },
+        ))
     }
 }
 
@@ -95,9 +106,16 @@ fn write_trace_line(trace_path: &Path, msg: &AssistantMessage, req_hash: &str) {
     }
     let line = serialize_response(msg, req_hash);
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(trace_path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(trace_path)
+    {
         let _ = writeln!(f, "{}", line);
-        let _ = std::fs::set_permissions(trace_path, std::os::unix::fs::PermissionsExt::from_mode(0o600));
+        let _ = std::fs::set_permissions(
+            trace_path,
+            std::os::unix::fs::PermissionsExt::from_mode(0o600),
+        );
     }
 }
 
@@ -117,7 +135,10 @@ fn update_meta(meta_arc: &Arc<Mutex<RecordingMeta>>, meta_path: &Path, msg: &Ass
         let tmp = meta_path.with_extension("json.tmp");
         if std::fs::write(&tmp, &content).is_ok() {
             let _ = std::fs::rename(&tmp, meta_path);
-            let _ = std::fs::set_permissions(meta_path, std::os::unix::fs::PermissionsExt::from_mode(0o600));
+            let _ = std::fs::set_permissions(
+                meta_path,
+                std::os::unix::fs::PermissionsExt::from_mode(0o600),
+            );
         }
     }
 }
@@ -129,7 +150,9 @@ fn serialize_response(msg: &AssistantMessage, req_hash: &str) -> String {
     for block in &msg.content {
         match block {
             AssistantContentBlock::Text(TextContent { text, .. }) => text_parts.push(text.clone()),
-            AssistantContentBlock::Thinking(ThinkingContent { thinking, .. }) => thinking_parts.push(thinking.clone()),
+            AssistantContentBlock::Thinking(ThinkingContent { thinking, .. }) => {
+                thinking_parts.push(thinking.clone())
+            }
             AssistantContentBlock::ToolCall(tc) => {
                 tool_calls.push(serde_json::json!({"name": tc.name, "input": tc.arguments}));
             }

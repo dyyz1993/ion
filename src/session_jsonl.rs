@@ -415,17 +415,18 @@ impl SessionFile {
         }
 
         // First line is the header（损坏时用空 header 继续，不丢弃会话）
-        let header: SessionHeader = serde_json::from_str(lines[0]).unwrap_or_else(|_| SessionHeader {
-            entry_type: "session".into(),
-            version: 3,
-            id: "recovered".into(),
-            timestamp: String::new(),
-            cwd: cwd.into(),
-            parent_session: None,
-            agent: None,
-            model: None,
-            provider: None,
-        });
+        let header: SessionHeader =
+            serde_json::from_str(lines[0]).unwrap_or_else(|_| SessionHeader {
+                entry_type: "session".into(),
+                version: 3,
+                id: "recovered".into(),
+                timestamp: String::new(),
+                cwd: cwd.into(),
+                parent_session: None,
+                agent: None,
+                model: None,
+                provider: None,
+            });
         let mut entries: Vec<serde_json::Value> = Vec::new();
 
         for line in &lines[1..] {
@@ -433,8 +434,11 @@ impl SessionFile {
             let val: serde_json::Value = match serde_json::from_str(line) {
                 Ok(v) => v,
                 Err(e) => {
-                    tracing::warn!("[session_jsonl] skipping corrupted line: {} ({})",
-                        &line[..line.len().min(80)], e);
+                    tracing::warn!(
+                        "[session_jsonl] skipping corrupted line: {} ({})",
+                        &line[..line.len().min(80)],
+                        e
+                    );
                     continue;
                 }
             };
@@ -506,14 +510,17 @@ fn filter_messages_on_live_path(
     use std::collections::HashSet;
 
     // 找最后一个 leaf_pointer
-    let leaf_id: Option<&str> = entries.iter().rev()
+    let leaf_id: Option<&str> = entries
+        .iter()
+        .rev()
         .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("leaf_pointer"))
         .and_then(|lp| lp.get("leafId").and_then(|v| v.as_str()));
 
     // 如果没有 leaf_pointer，所有 message 都加载
     let live_ids: Option<HashSet<String>> = if let Some(leaf) = leaf_id {
         // 沿 parentId 链从 leaf 回溯到 root
-        let by_id: std::collections::HashMap<&str, &serde_json::Value> = entries.iter()
+        let by_id: std::collections::HashMap<&str, &serde_json::Value> = entries
+            .iter()
             .filter_map(|e| e.get("id").and_then(|v| v.as_str()).map(|id| (id, e)))
             .collect();
 
@@ -521,13 +528,18 @@ fn filter_messages_on_live_path(
         let mut cur: Option<&str> = Some(leaf);
         let mut visited = HashSet::new();
         while let Some(id) = cur {
-            if !visited.insert(id) { break; } // 环保护
+            if !visited.insert(id) {
+                break;
+            } // 环保护
             live.insert(id.to_string());
-            cur = by_id.get(id)
+            cur = by_id
+                .get(id)
                 .and_then(|e| e.get("parentId").and_then(|v| v.as_str()));
             // parentId == session_id 或 null 时停（root 已加入）
             if cur == Some(session_id) || cur.is_none() {
-                if let Some(sid) = cur { live.insert(sid.to_string()); }
+                if let Some(sid) = cur {
+                    live.insert(sid.to_string());
+                }
                 break;
             }
         }
@@ -549,7 +561,10 @@ fn filter_messages_on_live_path(
                 continue; // 不在 live path 上，跳过
             }
         }
-        if let Some(msg_val) = val.get("message") && let Ok(msg) = serde_json::from_value::<crate::agent::messages::Message>(msg_val.clone()) {
+        if let Some(msg_val) = val.get("message")
+            && let Ok(msg) =
+                serde_json::from_value::<crate::agent::messages::Message>(msg_val.clone())
+        {
             messages.push(msg);
         }
     }
@@ -580,12 +595,23 @@ pub fn ensure_session_header(cwd: &str, sid: &str) -> bool {
             "cwd": cwd,
             "parentSession": null,
         });
-        if !agent.is_empty() { header["agent"] = serde_json::json!(agent); }
-        if !model.is_empty() { header["model"] = serde_json::json!(model); }
-        if !provider.is_empty() { header["provider"] = serde_json::json!(provider); }
+        if !agent.is_empty() {
+            header["agent"] = serde_json::json!(agent);
+        }
+        if !model.is_empty() {
+            header["model"] = serde_json::json!(model);
+        }
+        if !provider.is_empty() {
+            header["provider"] = serde_json::json!(provider);
+        }
         let json = serde_json::to_string(&header).unwrap_or_default();
         use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(&path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)
+        {
             let _ = f.write_all(format!("{}\n", json).as_bytes());
         }
         return true;
@@ -594,7 +620,9 @@ pub fn ensure_session_header(cwd: &str, sid: &str) -> bool {
     // 文件存在 → 检查第一行是否是 session header
     if let Ok(content) = std::fs::read_to_string(&path) {
         let first_line = content.lines().next().unwrap_or("");
-        if let Ok(first_val) = serde_json::from_str::<serde_json::Value>(first_line) && first_val.get("type").and_then(|v| v.as_str()) == Some("session") {
+        if let Ok(first_val) = serde_json::from_str::<serde_json::Value>(first_line)
+            && first_val.get("type").and_then(|v| v.as_str()) == Some("session")
+        {
             return false; // header 已存在
         }
         // 第一行不是 session header → 需要在开头插入
@@ -621,7 +649,8 @@ pub fn ensure_session_header(cwd: &str, sid: &str) -> bool {
 /// 全局 session 文件路径覆盖。
 /// ion_worker 启动时设置（fork 子 Worker 用 <sid>.jsonl 而不是 session.jsonl）。
 /// 如果设了，append_raw_entry / append_turn_summary 用这个路径。
-static SESSION_FILE_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<std::path::PathBuf>>> = std::sync::OnceLock::new();
+static SESSION_FILE_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<std::path::PathBuf>>> =
+    std::sync::OnceLock::new();
 
 /// 设置全局 session 文件路径覆盖（ion_worker 启动时调）。
 pub fn set_session_file_override(path: Option<std::path::PathBuf>) {
@@ -631,7 +660,9 @@ pub fn set_session_file_override(path: Option<std::path::PathBuf>) {
 
 /// 获取 session 文件路径：优先用全局覆盖，否则用 session_path(cwd)。
 pub fn resolve_session_file(cwd: &str) -> std::path::PathBuf {
-    if let Some(lock) = SESSION_FILE_OVERRIDE.get() && let Some(path) = lock.lock().unwrap().as_ref() {
+    if let Some(lock) = SESSION_FILE_OVERRIDE.get()
+        && let Some(path) = lock.lock().unwrap().as_ref()
+    {
         return path.clone();
     }
     session_path(cwd)
@@ -652,7 +683,11 @@ pub fn read_session_header(path: &std::path::Path) -> Option<SessionHeader> {
 /// ensure_session_header / ensure_fork_session_header / patch_fork_session_header_if_needed 共用。
 pub fn read_session_env_tuple() -> (Option<String>, Option<String>, Option<String>) {
     let read = |k: &str| std::env::var(k).ok().filter(|s| !s.is_empty());
-    (read("ION_SESSION_AGENT"), read("ION_SESSION_MODEL"), read("ION_SESSION_PROVIDER"))
+    (
+        read("ION_SESSION_AGENT"),
+        read("ION_SESSION_MODEL"),
+        read("ION_SESSION_PROVIDER"),
+    )
 }
 
 pub fn append_raw_entry(cwd: &str, entry: &serde_json::Value) {
@@ -661,7 +696,11 @@ pub fn append_raw_entry(cwd: &str, entry: &serde_json::Value) {
         let _ = std::fs::create_dir_all(parent);
     }
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let json = serde_json::to_string(entry).unwrap_or_default();
         // 合并 \n + JSON 为单次 write_all，避免两阶段写入的交错窗口
         let needs_newline = f.metadata().map(|m| m.len() > 0).unwrap_or(false);
@@ -795,9 +834,10 @@ pub fn append_compaction(
 fn last_entry_id(cwd: &str) -> Option<String> {
     let path = session_path(cwd);
     let content = std::fs::read_to_string(&path).ok()?;
-    content.lines()
+    content
+        .lines()
         .filter(|l| !l.trim().is_empty())
-        .last()
+        .next_back()
         .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .and_then(|e| e.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
 }
@@ -843,19 +883,25 @@ pub fn read_last_turn_entry_range(cwd: &str) -> Option<Vec<String>> {
     let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
 
     // 从后往前找最后一个 turn_summary
-    let last_ts_index = lines.iter().enumerate().rev()
-        .find_map(|(i, line)| {
-            serde_json::from_str::<serde_json::Value>(line).ok().and_then(|val| {
+    let last_ts_index = lines.iter().enumerate().rev().find_map(|(i, line)| {
+        serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .and_then(|val| {
                 if val.get("type").and_then(|v| v.as_str()) == Some("turn_summary") {
                     Some(i)
-                } else { None }
+                } else {
+                    None
+                }
             })
-        });
+    });
 
     let start = last_ts_index.map(|i| i + 1).unwrap_or(0);
     let mut ids = Vec::new();
     for line in &lines[start..] {
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) && val.get("type").and_then(|v| v.as_str()) == Some("message") && let Some(id) = val.get("id").and_then(|v| v.as_str()) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line)
+            && val.get("type").and_then(|v| v.as_str()) == Some("message")
+            && let Some(id) = val.get("id").and_then(|v| v.as_str())
+        {
             ids.push(id.to_string());
         }
     }
@@ -873,12 +919,18 @@ pub fn find_turn_id_for_entry(cwd: &str, entry_id: &str) -> Option<String> {
 
     // 策略 1：entryRange 包含
     for line in &lines {
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) && val.get("type").and_then(|v| v.as_str()) == Some("turn_summary") {
-            let in_range = val.get("entryRange")
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line)
+            && val.get("type").and_then(|v| v.as_str()) == Some("turn_summary")
+        {
+            let in_range = val
+                .get("entryRange")
                 .and_then(|v| v.as_array())
-                .map_or(false, |arr| arr.iter().any(|a| a.as_str() == Some(entry_id)));
+                .is_some_and(|arr| arr.iter().any(|a| a.as_str() == Some(entry_id)));
             if in_range {
-                return val.get("turnId").and_then(|v| v.as_str()).map(|s| s.to_string());
+                return val
+                    .get("turnId")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
             }
         }
     }
@@ -889,16 +941,25 @@ pub fn find_turn_id_for_entry(cwd: &str, entry_id: &str) -> Option<String> {
             .ok()
             .and_then(|v| {
                 if v.get("type").and_then(|t| t.as_str()) == Some("message") {
-                    v.get("id").and_then(|v| v.as_str()).map(|id| id == entry_id)
-                } else { None }
+                    v.get("id")
+                        .and_then(|v| v.as_str())
+                        .map(|id| id == entry_id)
+                } else {
+                    None
+                }
             })
             .unwrap_or(false)
     });
 
     if let Some(pos) = entry_pos {
         for line in &lines[pos..] {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) && val.get("type").and_then(|v| v.as_str()) == Some("turn_summary") {
-                return val.get("turnId").and_then(|v| v.as_str()).map(|s| s.to_string());
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(line)
+                && val.get("type").and_then(|v| v.as_str()) == Some("turn_summary")
+            {
+                return val
+                    .get("turnId")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
             }
         }
     }
@@ -964,7 +1025,8 @@ mod tests {
 
     /// 造一个临时 cwd（用 tmpdir + 子目录隔离）
     fn test_cwd(name: &str) -> String {
-        let dir = std::env::temp_dir().join(format!("ion_test_jsonl_{}_{}", name, std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("ion_test_jsonl_{}_{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         format!("{}", dir.display())
     }
@@ -993,12 +1055,20 @@ mod tests {
         let cwd = test_cwd("compaction");
         write_header(&cwd);
 
-        append_compaction(&cwd, "压缩摘要", 32000, Some("msg_011"), Some("batched_merged"), Some(3));
+        append_compaction(
+            &cwd,
+            "压缩摘要",
+            32000,
+            Some("msg_011"),
+            Some("batched_merged"),
+            Some(3),
+        );
 
         let file = SessionFile::load(&cwd).expect("file should exist");
-        let compaction_entry = file.entries.iter().find(|e| {
-            e.get("type").and_then(|v| v.as_str()) == Some("compaction")
-        });
+        let compaction_entry = file
+            .entries
+            .iter()
+            .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("compaction"));
         assert!(compaction_entry.is_some(), "compaction entry should exist");
         let entry = compaction_entry.unwrap();
         assert_eq!(entry["summary"].as_str(), Some("压缩摘要"));
@@ -1018,9 +1088,11 @@ mod tests {
         append_compaction(&cwd, "emergency", 50000, None, None, None);
 
         let file = SessionFile::load(&cwd).expect("file should exist");
-        let entry = file.entries.iter().find(|e| {
-            e.get("type").and_then(|v| v.as_str()) == Some("compaction")
-        }).unwrap();
+        let entry = file
+            .entries
+            .iter()
+            .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("compaction"))
+            .unwrap();
         assert_eq!(entry["summary"].as_str(), Some("emergency"));
         // firstKeptEntryId / stage / batchCount 应该不存在（skip_serializing_if）
         assert!(entry.get("firstKeptEntryId").is_none() || entry["firstKeptEntryId"].is_null());
@@ -1043,16 +1115,26 @@ mod tests {
         append_raw_entry(&cwd, &msg2);
 
         // 触发压缩
-        append_compaction(&cwd, "压缩了 msg_001/msg_002", 5000, Some("msg_003"), None, None);
+        append_compaction(
+            &cwd,
+            "压缩了 msg_001/msg_002",
+            5000,
+            Some("msg_003"),
+            None,
+            None,
+        );
 
         let file = SessionFile::load(&cwd).expect("file should exist");
-        let compaction = file.entries.iter().find(|e| {
-            e.get("type").and_then(|v| v.as_str()) == Some("compaction")
-        }).expect("compaction entry should exist");
+        let compaction = file
+            .entries
+            .iter()
+            .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("compaction"))
+            .expect("compaction entry should exist");
 
         // parentId 应指向 msg_002（压缩前最后一个 entry），不是 null
         assert_eq!(
-            compaction["parentId"].as_str(), Some("msg_002"),
+            compaction["parentId"].as_str(),
+            Some("msg_002"),
             "compaction parentId 应指向压缩前最后一个 entry（修复 check_compaction_safety 拦截 bug）"
         );
 
@@ -1079,9 +1161,10 @@ mod tests {
         );
 
         let file = SessionFile::load(&cwd).expect("file should exist");
-        let entry = file.entries.iter().find(|e| {
-            e.get("type").and_then(|v| v.as_str()) == Some("turn_summary")
-        });
+        let entry = file
+            .entries
+            .iter()
+            .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("turn_summary"));
         assert!(entry.is_some(), "turn_summary entry should exist");
         let entry = entry.unwrap();
         assert_eq!(entry["turnId"].as_u64(), Some(3));
@@ -1103,12 +1186,26 @@ mod tests {
         let cwd = test_cwd("turn_abort");
         write_header(&cwd);
 
-        append_turn_summary(&cwd, 8, "msg_015", "好的我来重构这", &[], 0, 340, 0, 100, &[], "aborted");
+        append_turn_summary(
+            &cwd,
+            8,
+            "msg_015",
+            "好的我来重构这",
+            &[],
+            0,
+            340,
+            0,
+            100,
+            &[],
+            "aborted",
+        );
 
         let file = SessionFile::load(&cwd).expect("file should exist");
-        let entry = file.entries.iter().find(|e| {
-            e.get("type").and_then(|v| v.as_str()) == Some("turn_summary")
-        }).unwrap();
+        let entry = file
+            .entries
+            .iter()
+            .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("turn_summary"))
+            .unwrap();
         assert_eq!(entry["status"].as_str(), Some("aborted"));
 
         cleanup(&cwd);
@@ -1156,11 +1253,17 @@ mod tests {
         // Verify counts
         assert_eq!(count_entries_by_type(&file_path, "session").unwrap(), 1);
         assert_eq!(count_entries_by_type(&file_path, "message").unwrap(), 3);
-        assert_eq!(count_entries_by_type(&file_path, "turn_summary").unwrap(), 2);
+        assert_eq!(
+            count_entries_by_type(&file_path, "turn_summary").unwrap(),
+            2
+        );
         assert_eq!(count_entries_by_type(&file_path, "compaction").unwrap(), 1);
         assert_eq!(count_entries_by_type(&file_path, "custom").unwrap(), 1);
         // Non-existent type should return 0
-        assert_eq!(count_entries_by_type(&file_path, "branch_summary").unwrap(), 0);
+        assert_eq!(
+            count_entries_by_type(&file_path, "branch_summary").unwrap(),
+            0
+        );
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);

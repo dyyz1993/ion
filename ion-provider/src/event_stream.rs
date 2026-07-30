@@ -1,4 +1,4 @@
-use crate::types::{StreamEvent, AssistantMessage, StopReason};
+use crate::types::{AssistantMessage, StopReason, StreamEvent};
 use tokio::sync::{mpsc, oneshot};
 
 /// A channel-based event stream.
@@ -16,7 +16,10 @@ impl EventStream {
             rx,
             result_rx: Some(result_rx),
         };
-        let sender = EventSender { tx, result_tx: Some(result_tx) };
+        let sender = EventSender {
+            tx,
+            result_tx: Some(result_tx),
+        };
 
         (stream, sender)
     }
@@ -37,10 +40,7 @@ impl EventStream {
     /// Forward events from `inner` to a new EventStream, tapping the final Done/Error message.
     /// `on_done` is called once with the final AssistantMessage BEFORE the stream completes.
     /// Correctly completes the result oneshot via end()/error() — do NOT drop the returned stream early.
-    pub fn forward_with_done_tap<F>(
-        mut inner: EventStream,
-        on_done: F,
-    ) -> EventStream
+    pub fn forward_with_done_tap<F>(mut inner: EventStream, on_done: F) -> EventStream
     where
         F: FnOnce(&AssistantMessage) + Send + 'static,
     {
@@ -49,8 +49,12 @@ impl EventStream {
             let mut final_msg: Option<AssistantMessage> = None;
             while let Some(ev) = inner.recv().await {
                 match &ev {
-                    StreamEvent::Done { message, .. } => { final_msg = Some(message.clone()); }
-                    StreamEvent::Error { message, .. } => { final_msg = Some(message.clone()); }
+                    StreamEvent::Done { message, .. } => {
+                        final_msg = Some(message.clone());
+                    }
+                    StreamEvent::Error { message, .. } => {
+                        final_msg = Some(message.clone());
+                    }
                     _ => {}
                 }
                 tap_sender.push(ev);

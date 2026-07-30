@@ -276,7 +276,11 @@ mod tests {
     fn new_accepts_multiple_args() {
         let worker = ChildProcessWorker::new(
             "cmd",
-            vec!["--flag".to_string(), "value".to_string(), "extra".to_string()],
+            vec![
+                "--flag".to_string(),
+                "value".to_string(),
+                "extra".to_string(),
+            ],
         );
         assert_eq!(worker.args.len(), 3);
         assert_eq!(worker.args[2], "extra");
@@ -288,7 +292,10 @@ mod tests {
 
     #[test]
     fn request_prompt_serializes_to_tagged_json() {
-        let req = Request::Prompt { id: 1, text: "hi".to_string() };
+        let req = Request::Prompt {
+            id: 1,
+            text: "hi".to_string(),
+        };
         let json = serde_json::to_string(&req).unwrap();
         // type tag is renamed to "prompt"
         assert!(json.contains(r#""type":"prompt""#));
@@ -298,7 +305,10 @@ mod tests {
 
     #[test]
     fn request_steer_serializes_with_correct_tag() {
-        let req = Request::Steer { id: 5, msg: "redirect".to_string() };
+        let req = Request::Steer {
+            id: 5,
+            msg: "redirect".to_string(),
+        };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains(r#""type":"steer""#));
         assert!(json.contains(r#""msg":"redirect""#));
@@ -339,7 +349,11 @@ mod tests {
         let json = r#"{"type":"result","id":1,"success":true,"output":"done"}"#;
         let resp: Response = serde_json::from_str(json).unwrap();
         match resp {
-            Response::PromptResult { id, success, output } => {
+            Response::PromptResult {
+                id,
+                success,
+                output,
+            } => {
                 assert_eq!(id, 1);
                 assert!(success);
                 assert_eq!(output, "done");
@@ -353,7 +367,12 @@ mod tests {
         let json = r#"{"type":"state","id":3,"message_count":10,"turn_index":2,"summary":"hi"}"#;
         let resp: Response = serde_json::from_str(json).unwrap();
         match resp {
-            Response::StateResult { id, message_count, turn_index, summary } => {
+            Response::StateResult {
+                id,
+                message_count,
+                turn_index,
+                summary,
+            } => {
                 assert_eq!(id, 3);
                 assert_eq!(message_count, 10);
                 assert_eq!(turn_index, 2);

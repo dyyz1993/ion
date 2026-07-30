@@ -18,8 +18,12 @@ pub fn matches_matcher(matcher: Option<&str>, tool_name: &str) -> bool {
     };
 
     // 纯简单字符（字母数字 + | + _）→ 按 | 分割精确匹配
-    if m.chars().all(|c| c.is_alphanumeric() || c == '|' || c == '_') && m.contains('|') {
-        return m.split('|')
+    if m.chars()
+        .all(|c| c.is_alphanumeric() || c == '|' || c == '_')
+        && m.contains('|')
+    {
+        return m
+            .split('|')
             .map(|s| s.trim().to_lowercase())
             .any(|part| part == tool_name.to_lowercase());
     }
@@ -38,7 +42,11 @@ pub fn matches_matcher(matcher: Option<&str>, tool_name: &str) -> bool {
 /// 格式 `ToolName(glob)`，如 `Bash(rm *)` 表示只对 bash 删文件命令生效。
 /// 当前实现简化版：只解析 `ToolName` 部分，glob 部分暂不实现（始终 true）。
 /// None 或空 = 始终满足。
-pub fn matches_if_clause(handler: &HookHandler, tool_name: Option<&str>, tool_input: Option<&serde_json::Value>) -> bool {
+pub fn matches_if_clause(
+    handler: &HookHandler,
+    tool_name: Option<&str>,
+    tool_input: Option<&serde_json::Value>,
+) -> bool {
     let clause = match &handler.if_clause {
         None => return true,
         Some(s) if s.is_empty() => return true,
@@ -49,12 +57,17 @@ pub fn matches_if_clause(handler: &HookHandler, tool_name: Option<&str>, tool_in
     if let Some(paren_idx) = clause.find('(') {
         let tool_pattern = &clause[..paren_idx].trim();
         // 工具名匹配（大小写不敏感）
-        if let Some(actual_tool) = tool_name && !tool_pattern.is_empty() && !tool_pattern.eq_ignore_ascii_case(actual_tool) {
+        if let Some(actual_tool) = tool_name
+            && !tool_pattern.is_empty()
+            && !tool_pattern.eq_ignore_ascii_case(actual_tool)
+        {
             return false;
         }
         // glob 部分简化：检查 input 里有没有匹配的关键词
         let glob = clause[paren_idx + 1..].trim_end_matches(')');
-        if !glob.is_empty() && let Some(input) = tool_input {
+        if !glob.is_empty()
+            && let Some(input) = tool_input
+        {
             let input_str = input.to_string().to_lowercase();
             let glob_lower = glob.to_lowercase().replace('*', "");
             if !glob_lower.is_empty() && !input_str.contains(&glob_lower) {

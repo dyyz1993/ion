@@ -96,17 +96,24 @@ impl SessionIndex {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| ".".into());
-        PathBuf::from(home).join(".ion").join("agent").join("sessions.index.json")
+        PathBuf::from(home)
+            .join(".ion")
+            .join("agent")
+            .join("sessions.index.json")
     }
 
     pub fn load() -> Self {
         let path = Self::path();
         if !path.exists() {
-            return Self { sessions: HashMap::new() };
+            return Self {
+                sessions: HashMap::new(),
+            };
         }
         match std::fs::read_to_string(&path) {
             Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-            Err(_) => Self { sessions: HashMap::new() },
+            Err(_) => Self {
+                sessions: HashMap::new(),
+            },
         }
     }
 
@@ -179,10 +186,14 @@ impl SessionIndex {
         let existing = Self::load().get(id).cloned();
 
         let project_path = project.map(|p| p.to_string()).or_else(|| {
-            std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string())
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
         });
         let project_name = project_path.as_ref().and_then(|p| {
-            std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().to_string())
+            std::path::Path::new(p)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
         });
 
         let branch = std::process::Command::new("git")
@@ -191,7 +202,9 @@ impl SessionIndex {
             .ok()
             .and_then(|o| {
                 if o.status.success() {
-                    String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
+                    String::from_utf8(o.stdout)
+                        .ok()
+                        .map(|s| s.trim().to_string())
                 } else {
                     None
                 }
@@ -205,8 +218,13 @@ impl SessionIndex {
             .unwrap_or(false);
 
         SessionMeta {
-            name: name.map(|s| s.to_string()).or(existing.as_ref().and_then(|e| e.name.clone())),
-            first_name: existing.as_ref().and_then(|e| e.first_name.clone()).or(name.map(|s| s.to_string())),
+            name: name
+                .map(|s| s.to_string())
+                .or(existing.as_ref().and_then(|e| e.name.clone())),
+            first_name: existing
+                .as_ref()
+                .and_then(|e| e.first_name.clone())
+                .or(name.map(|s| s.to_string())),
             project: project_path,
             project_name,
             worktree: is_worktree,
@@ -227,14 +245,18 @@ impl SessionIndex {
             created_at: existing.as_ref().map_or(now, |e| e.created_at),
             updated_at: now,
             error_count: existing.as_ref().map_or(0, |e| e.error_count),
-            last_thinking_level: existing.as_ref().and_then(|e| e.last_thinking_level.clone()),
+            last_thinking_level: existing
+                .as_ref()
+                .and_then(|e| e.last_thinking_level.clone()),
             last_active_tools: existing.as_ref().and_then(|e| e.last_active_tools.clone()),
             last_entry_id: existing.as_ref().and_then(|e| e.last_entry_id.clone()),
             parent_session: existing.as_ref().and_then(|e| e.parent_session.clone()),
             parent_type: existing.as_ref().and_then(|e| e.parent_type.clone()),
             initial_cwd: existing.as_ref().and_then(|e| e.initial_cwd.clone()),
             last_cwd: existing.as_ref().and_then(|e| e.last_cwd.clone()),
-            extra_cwds: existing.as_ref().map_or(Vec::new(), |e| e.extra_cwds.clone()),
+            extra_cwds: existing
+                .as_ref()
+                .map_or(Vec::new(), |e| e.extra_cwds.clone()),
             tier_models: existing.as_ref().and_then(|e| e.tier_models.clone()),
             security_profile: existing.as_ref().and_then(|e| e.security_profile.clone()),
         }
@@ -253,9 +275,17 @@ impl SessionIndex {
         turn_count: u32,
     ) {
         let meta = Self::build(
-            id, model, provider, agent, name, None,
-            token_input, token_output, 0,
-            message_count, turn_count,
+            id,
+            model,
+            provider,
+            agent,
+            name,
+            None,
+            token_input,
+            token_output,
+            0,
+            message_count,
+            turn_count,
         );
         let mut index = Self::load();
         index.upsert(id, meta);
@@ -393,7 +423,9 @@ impl SessionIndex {
             m.token_input = m.token_input.saturating_add(tok_in);
             m.token_output = m.token_output.saturating_add(tok_out);
             m.turn_count = m.turn_count.saturating_add(1);
-            m.message_count = m.message_count.saturating_add(llm_calls.saturating_add(user_prompts));
+            m.message_count = m
+                .message_count
+                .saturating_add(llm_calls.saturating_add(user_prompts));
             if is_error {
                 m.error_count = m.error_count.saturating_add(1);
             }
@@ -512,9 +544,12 @@ mod tests {
     fn test_get_children() {
         let mut idx = SessionIndex::default();
         idx.sessions.insert("root".into(), make_meta(None));
-        idx.sessions.insert("child1".into(), make_meta(Some("root")));
-        idx.sessions.insert("child2".into(), make_meta(Some("root")));
-        idx.sessions.insert("other".into(), make_meta(Some("different")));
+        idx.sessions
+            .insert("child1".into(), make_meta(Some("root")));
+        idx.sessions
+            .insert("child2".into(), make_meta(Some("root")));
+        idx.sessions
+            .insert("other".into(), make_meta(Some("different")));
 
         let children = idx.get_children("root");
         assert_eq!(children.len(), 2);

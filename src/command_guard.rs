@@ -12,17 +12,23 @@ use serde::{Deserialize, Serialize};
 /// 风险级别
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum RiskLevel { High, Medium, Low }
+pub enum RiskLevel {
+    High,
+    Medium,
+    Low,
+}
 
 /// 工作模式
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum GuardMode {
     /// 全部放行（除了高危 Deny）
     Open,
     /// 默认放行 + 黑名单拦截（旧行为）
     Blacklist,
     /// 只放行白名单 + 风险拦截 + 未知命令 Ask（推荐）
+    #[default]
     Whitelist,
 }
 
@@ -33,13 +39,6 @@ impl std::fmt::Display for GuardMode {
             GuardMode::Blacklist => write!(f, "blacklist"),
             GuardMode::Whitelist => write!(f, "whitelist"),
         }
-    }
-}
-
-impl Default for GuardMode {
-    fn default() -> Self {
-        // 默认半信任模式 — 真正的白名单
-        GuardMode::Whitelist
     }
 }
 
@@ -89,7 +88,11 @@ impl Default for CommandGuard {
 
 impl CommandGuard {
     pub fn new(whitelist: Vec<String>, risk_patterns: Vec<RiskPattern>) -> Self {
-        Self { mode: GuardMode::Blacklist, whitelist, risk_patterns }
+        Self {
+            mode: GuardMode::Blacklist,
+            whitelist,
+            risk_patterns,
+        }
     }
 
     /// 构造指定模式
@@ -104,7 +107,9 @@ impl CommandGuard {
     /// 检查命令，返回决策
     pub fn check(&self, command: &str) -> GuardDecision {
         let t = command.trim();
-        if t.is_empty() { return GuardDecision::Allow; }
+        if t.is_empty() {
+            return GuardDecision::Allow;
+        }
         let lower = t.to_lowercase();
 
         // ── 1. 风险模式优先检查 ──
@@ -162,7 +167,9 @@ impl CommandGuard {
         let t = command.trim();
         // 取首词（命令本身，不含参数）
         let first_token = t.split_whitespace().next().unwrap_or("");
-        if first_token.is_empty() { return false; }
+        if first_token.is_empty() {
+            return false;
+        }
 
         // 取首词的 basename（处理 /usr/local/bin/npm 这种路径）
         let basename = std::path::Path::new(first_token)
@@ -172,11 +179,17 @@ impl CommandGuard {
 
         for prefix in &self.whitelist {
             // 1. 精确匹配首词：command == prefix
-            if first_token == prefix.as_str() { return true; }
+            if first_token == prefix.as_str() {
+                return true;
+            }
             // 2. 匹配 basename：/usr/local/bin/npm → basename "npm" == prefix
-            if basename == prefix.as_str() { return true; }
+            if basename == prefix.as_str() {
+                return true;
+            }
             // 3. 带参数的完整前缀匹配：prefix == "cargo test"
-            if t.starts_with(&format!("{} ", prefix)) { return true; }
+            if t.starts_with(&format!("{} ", prefix)) {
+                return true;
+            }
         }
         false
     }
@@ -196,21 +209,25 @@ impl CommandGuard {
 
         // 复合命令：按 && ; | 拆分子命令
         // 对每个子命令，去掉变量赋值前缀（VAR=value），取真正的命令首词判断
-        let subcmds: Vec<&str> = t.split(|c| c == '&' || c == ';' || c == '|').collect();
+        let subcmds: Vec<&str> = t.split(['&', ';', '|']).collect();
         for sub in subcmds {
             let sub = sub.trim();
-            if sub.is_empty() { continue; }
+            if sub.is_empty() {
+                continue;
+            }
 
             // 跳过纯变量赋值（VAR=value，不是命令）
             // 判断：如果不含空格且含 =，视为变量赋值
-            if !sub.contains(' ') && sub.contains('=') { continue; }
+            if !sub.contains(' ') && sub.contains('=') {
+                continue;
+            }
 
             // 去掉变量赋值前缀：`WT_DIR=$(mktemp -d ...) git worktree` → 取 git worktree
             // 简化：找第一个不含 = 的词
             let cmd_part = {
                 let mut found_cmd = false;
                 let mut cmd_start = 0;
-                for (_i, part) in sub.split_whitespace().enumerate() {
+                for part in sub.split_whitespace() {
                     // 变量赋值：WORD=... 或 WORD=$(...)
                     if !found_cmd && (part.contains('=') && !part.starts_with('-')) {
                         continue;
@@ -259,42 +276,116 @@ fn contains(cmd: &str, pat: &str) -> bool {
 
 /// 截断字符串（用于日志）
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max { s.to_string() }
-    else { format!("{}...", &s[..max]) }
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max])
+    }
 }
 
 /// 默认白名单 — 常见开发命令
 fn default_whitelist() -> Vec<String> {
     [
         // 包管理器
-        "npm", "pnpm", "yarn", "bun", "npx", "node", "deno",
-        "cargo", "rustup", "rustc",
-        "pip", "pip3", "uv", "poetry", "python", "python3",
+        "npm",
+        "pnpm",
+        "yarn",
+        "bun",
+        "npx",
+        "node",
+        "deno",
+        "cargo",
+        "rustup",
+        "rustc",
+        "pip",
+        "pip3",
+        "uv",
+        "poetry",
+        "python",
+        "python3",
         "go",
         // 构建
-        "make", "cmake", "ninja", "tsc", "vite", "webpack", "esbuild", "rollup",
+        "make",
+        "cmake",
+        "ninja",
+        "tsc",
+        "vite",
+        "webpack",
+        "esbuild",
+        "rollup",
         // 版本控制
-        "git", "svn", "gh",
+        "git",
+        "svn",
+        "gh",
         // 文件操作（安全）
-        "ls", "cat", "head", "tail", "less", "more",
-        "find", "grep", "rg", "ag", "fd", "tree",
-        "echo", "printf", "cd", "pwd",
-        "mkdir", "touch", "cp", "mv", "rm",
-        "diff", "wc", "sort", "uniq", "cut", "tr", "awk", "sed",
-        "source", "test", "[", "true", "false",
+        "ls",
+        "cat",
+        "head",
+        "tail",
+        "less",
+        "more",
+        "find",
+        "grep",
+        "rg",
+        "ag",
+        "fd",
+        "tree",
+        "echo",
+        "printf",
+        "cd",
+        "pwd",
+        "mkdir",
+        "touch",
+        "cp",
+        "mv",
+        "rm",
+        "diff",
+        "wc",
+        "sort",
+        "uniq",
+        "cut",
+        "tr",
+        "awk",
+        "sed",
+        "source",
+        "test",
+        "[",
+        "true",
+        "false",
         // 系统信息（只读）
-        "which", "where", "type", "uname", "whoami", "id",
-        "date", "df", "du", "ps", "top", "htop", "free", "lsof",
-        "env", "printenv",
+        "which",
+        "where",
+        "type",
+        "uname",
+        "whoami",
+        "id",
+        "date",
+        "df",
+        "du",
+        "ps",
+        "top",
+        "htop",
+        "free",
+        "lsof",
+        "env",
+        "printenv",
         // 测试
-        "cargo test", "npm test", "pytest",
+        "cargo test",
+        "npm test",
+        "pytest",
         // 网络（安全客户端）
-        "curl", "wget",
+        "curl",
+        "wget",
         // 容器（让 Agent 能起容器）
-        "docker", "podman", "container",
+        "docker",
+        "podman",
+        "container",
         // ion 自身（让 workflow 能调 ion --export 等）
         "ion",
-    ].into_iter().map(String::from).collect()
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
 }
 
 /// Return the list of high-risk command patterns (e.g. "sed -i", "python3 -c")
@@ -316,96 +407,347 @@ pub fn list_blocked_patterns() -> Vec<&'static str> {
 fn default_risk_patterns() -> Vec<RiskPattern> {
     vec![
         // ── 高危：直接 Deny ──
-        RiskPattern { pattern: "rm -rf / ".into(), message: "删除根目录".into(), level: RiskLevel::High,
-            suggestion: Some("考虑 rm -rf /tmp/build".into()) },
-        RiskPattern { pattern: "rm -rf /*".into(), message: "删除根目录下所有文件".into(), level: RiskLevel::High, suggestion: None },
-        RiskPattern { pattern: "rm -rf ~".into(), message: "删除家目录".into(), level: RiskLevel::High, suggestion: None },
-        RiskPattern { pattern: "rm -rf $home".into(), message: "删除家目录".into(), level: RiskLevel::High, suggestion: None },
-        RiskPattern { pattern: "mkfs".into(), message: "格式化文件系统".into(), level: RiskLevel::High, suggestion: None },
-        RiskPattern { pattern: "dd if=".into(), message: "磁盘直接写入".into(), level: RiskLevel::High, suggestion: None },
-        RiskPattern { pattern: "dd of=/dev/".into(), message: "写入块设备".into(), level: RiskLevel::High, suggestion: None },
-        RiskPattern { pattern: "chmod 777 /".into(), message: "根目录 777".into(), level: RiskLevel::High, suggestion: None },
-        RiskPattern { pattern: ">/dev/sd".into(), message: "写入块设备".into(), level: RiskLevel::High, suggestion: None },
-        RiskPattern { pattern: ">/dev/nvme".into(), message: "写入块设备".into(), level: RiskLevel::High, suggestion: None },
-        RiskPattern { pattern: ":(){:|:&};:".into(), message: "Fork 炸弹".into(), level: RiskLevel::High, suggestion: None },
-        RiskPattern { pattern: ":(){ :|: & };:".into(), message: "Fork 炸弹".into(), level: RiskLevel::High, suggestion: None },
-        RiskPattern { pattern: "fork bomb".into(), message: "Fork 炸弹".into(), level: RiskLevel::High, suggestion: None },
-        RiskPattern { pattern: "shutdown".into(), message: "关机命令".into(), level: RiskLevel::High, suggestion: None },
-        RiskPattern { pattern: "reboot".into(), message: "重启命令".into(), level: RiskLevel::High, suggestion: None },
-        RiskPattern { pattern: "init 0".into(), message: "关机命令".into(), level: RiskLevel::High, suggestion: None },
-        RiskPattern { pattern: "init 6".into(), message: "重启命令".into(), level: RiskLevel::High, suggestion: None },
-        RiskPattern { pattern: "systemctl stop".into(), message: "停止系统服务".into(), level: RiskLevel::High, suggestion: None },
-        RiskPattern { pattern: "systemctl disable".into(), message: "禁用系统服务".into(), level: RiskLevel::High, suggestion: None },
-
+        RiskPattern {
+            pattern: "rm -rf / ".into(),
+            message: "删除根目录".into(),
+            level: RiskLevel::High,
+            suggestion: Some("考虑 rm -rf /tmp/build".into()),
+        },
+        RiskPattern {
+            pattern: "rm -rf /*".into(),
+            message: "删除根目录下所有文件".into(),
+            level: RiskLevel::High,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "rm -rf ~".into(),
+            message: "删除家目录".into(),
+            level: RiskLevel::High,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "rm -rf $home".into(),
+            message: "删除家目录".into(),
+            level: RiskLevel::High,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "mkfs".into(),
+            message: "格式化文件系统".into(),
+            level: RiskLevel::High,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "dd if=".into(),
+            message: "磁盘直接写入".into(),
+            level: RiskLevel::High,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "dd of=/dev/".into(),
+            message: "写入块设备".into(),
+            level: RiskLevel::High,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "chmod 777 /".into(),
+            message: "根目录 777".into(),
+            level: RiskLevel::High,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: ">/dev/sd".into(),
+            message: "写入块设备".into(),
+            level: RiskLevel::High,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: ">/dev/nvme".into(),
+            message: "写入块设备".into(),
+            level: RiskLevel::High,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: ":(){:|:&};:".into(),
+            message: "Fork 炸弹".into(),
+            level: RiskLevel::High,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: ":(){ :|: & };:".into(),
+            message: "Fork 炸弹".into(),
+            level: RiskLevel::High,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "fork bomb".into(),
+            message: "Fork 炸弹".into(),
+            level: RiskLevel::High,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "shutdown".into(),
+            message: "关机命令".into(),
+            level: RiskLevel::High,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "reboot".into(),
+            message: "重启命令".into(),
+            level: RiskLevel::High,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "init 0".into(),
+            message: "关机命令".into(),
+            level: RiskLevel::High,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "init 6".into(),
+            message: "重启命令".into(),
+            level: RiskLevel::High,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "systemctl stop".into(),
+            message: "停止系统服务".into(),
+            level: RiskLevel::High,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "systemctl disable".into(),
+            message: "禁用系统服务".into(),
+            level: RiskLevel::High,
+            suggestion: None,
+        },
         // ── 中危：Ask 用户 ──
-        RiskPattern { pattern: "| sh".into(), message: "管道执行 sh".into(), level: RiskLevel::Medium,
-            suggestion: Some("先检查管道内容".into()) },
-        RiskPattern { pattern: "| bash".into(), message: "管道执行 bash".into(), level: RiskLevel::Medium,
-            suggestion: Some("先检查管道内容".into()) },
+        RiskPattern {
+            pattern: "| sh".into(),
+            message: "管道执行 sh".into(),
+            level: RiskLevel::Medium,
+            suggestion: Some("先检查管道内容".into()),
+        },
+        RiskPattern {
+            pattern: "| bash".into(),
+            message: "管道执行 bash".into(),
+            level: RiskLevel::Medium,
+            suggestion: Some("先检查管道内容".into()),
+        },
         // sed -i: A bypasses edit tool to modify files
-        RiskPattern { pattern: "sed -i".into(), message: "sed in-place edit (bypasses edit tool)".into(), level: RiskLevel::High,
-            suggestion: Some("Use container exec B".into()) },
+        RiskPattern {
+            pattern: "sed -i".into(),
+            message: "sed in-place edit (bypasses edit tool)".into(),
+            level: RiskLevel::High,
+            suggestion: Some("Use container exec B".into()),
+        },
         // python3 -c: A uses python to write .rs files
-        RiskPattern { pattern: "python3 -c".into(), message: "python3 inline (may write files)".into(), level: RiskLevel::High,
-            suggestion: Some("Use container exec B".into()) },
-        RiskPattern { pattern: "python -c".into(), message: "python inline (may write files)".into(), level: RiskLevel::High,
-            suggestion: Some("Use container exec B".into()) },
+        RiskPattern {
+            pattern: "python3 -c".into(),
+            message: "python3 inline (may write files)".into(),
+            level: RiskLevel::High,
+            suggestion: Some("Use container exec B".into()),
+        },
+        RiskPattern {
+            pattern: "python -c".into(),
+            message: "python inline (may write files)".into(),
+            level: RiskLevel::High,
+            suggestion: Some("Use container exec B".into()),
+        },
         // cat > file: redirect bypasses edit tool
-        RiskPattern { pattern: "cat >".into(), message: "cat redirect (bypasses edit tool)".into(), level: RiskLevel::High,
-            suggestion: Some("Use container exec B".into()) },
+        RiskPattern {
+            pattern: "cat >".into(),
+            message: "cat redirect (bypasses edit tool)".into(),
+            level: RiskLevel::High,
+            suggestion: Some("Use container exec B".into()),
+        },
         // host ion --agent: must go through container B
-        RiskPattern { pattern: "./target/release/ion --agent".into(), message: "ion --agent on host (use container B)".into(), level: RiskLevel::High,
-            suggestion: Some("container exec $CONTAINER_NAME ... ion --agent developer".into()) },
-        RiskPattern { pattern: "./target/debug/ion --agent".into(), message: "ion --agent on host (use container B)".into(), level: RiskLevel::High,
-            suggestion: Some("container exec $CONTAINER_NAME ... ion --agent developer".into()) },
-        RiskPattern { pattern: "target/release/ion --agent".into(), message: "ion --agent on host (use container B)".into(), level: RiskLevel::High,
-            suggestion: Some("container exec $CONTAINER_NAME ... ion --agent developer".into()) },
-        RiskPattern { pattern: "target/debug/ion --agent".into(), message: "ion --agent on host (use container B)".into(), level: RiskLevel::High,
-            suggestion: Some("container exec $CONTAINER_NAME ... ion --agent developer".into()) },
-        RiskPattern { pattern: "| zsh".into(), message: "管道执行 zsh".into(), level: RiskLevel::Medium,
-            suggestion: Some("先检查管道内容".into()) },
-        RiskPattern { pattern: "| python".into(), message: "管道执行 python".into(), level: RiskLevel::Medium,
-            suggestion: Some("先检查管道内容".into()) },
-        RiskPattern { pattern: "| perl".into(), message: "管道执行 perl".into(), level: RiskLevel::Medium,
-            suggestion: Some("先检查管道内容".into()) },
-        RiskPattern { pattern: "| ruby".into(), message: "管道执行 ruby".into(), level: RiskLevel::Medium,
-            suggestion: Some("先检查管道内容".into()) },
-        RiskPattern { pattern: "| base64 -d".into(), message: "管道 base64 解码（可能藏恶意代码）".into(), level: RiskLevel::Medium,
-            suggestion: Some("先检查解码内容".into()) },
-        RiskPattern { pattern: "| base64 --decode".into(), message: "管道 base64 解码（可能藏恶意代码）".into(), level: RiskLevel::Medium,
-            suggestion: Some("先检查解码内容".into()) },
-        RiskPattern { pattern: "base64 -d |".into(), message: "base64 解码管道（可能藏恶意代码）".into(), level: RiskLevel::Medium,
-            suggestion: Some("先检查解码内容".into()) },
-        RiskPattern { pattern: "eval $".into(), message: "eval 执行变量".into(), level: RiskLevel::Medium,
-            suggestion: Some("避免 eval".into()) },
-        RiskPattern { pattern: "eval (".into(), message: "eval 执行子 shell".into(), level: RiskLevel::Medium,
-            suggestion: Some("避免 eval".into()) },
-        RiskPattern { pattern: "sudo".into(), message: "sudo 提权".into(), level: RiskLevel::Medium, suggestion: None },
-        RiskPattern { pattern: "su ".into(), message: "切换用户".into(), level: RiskLevel::Medium, suggestion: None },
-        RiskPattern { pattern: "passwd".into(), message: "修改密码".into(), level: RiskLevel::Medium, suggestion: None },
-        RiskPattern { pattern: "kill -9".into(), message: "SIGKILL".into(), level: RiskLevel::Medium,
-            suggestion: Some("先 kill -15".into()) },
-        RiskPattern { pattern: "pkill".into(), message: "按名杀进程".into(), level: RiskLevel::Medium,
-            suggestion: Some("确认目标进程".into()) },
-        RiskPattern { pattern: "killall".into(), message: "按名杀进程".into(), level: RiskLevel::Medium,
-            suggestion: Some("确认目标进程".into()) },
-        RiskPattern { pattern: "crontab -".into(), message: "修改 cron 任务".into(), level: RiskLevel::Medium, suggestion: None },
-        RiskPattern { pattern: "launchctl load".into(), message: "加载 launchd 任务".into(), level: RiskLevel::Medium, suggestion: None },
-        RiskPattern { pattern: "chmod +x".into(), message: "添加可执行权限".into(), level: RiskLevel::Medium, suggestion: None },
-        RiskPattern { pattern: "chown".into(), message: "修改属主".into(), level: RiskLevel::Medium, suggestion: None },
-        RiskPattern { pattern: "iptables".into(), message: "修改防火墙规则".into(), level: RiskLevel::Medium, suggestion: None },
-        RiskPattern { pattern: "ufw".into(), message: "修改防火墙规则".into(), level: RiskLevel::Medium, suggestion: None },
-        RiskPattern { pattern: "defaults write".into(), message: "修改 macOS 系统默认".into(), level: RiskLevel::Medium, suggestion: None },
-        RiskPattern { pattern: "npm install -g".into(), message: "全局安装 npm 包".into(), level: RiskLevel::Medium,
-            suggestion: Some("确认包来源可信".into()) },
-        RiskPattern { pattern: "pip install --user".into(), message: "用户级安装 pip 包".into(), level: RiskLevel::Medium,
-            suggestion: Some("确认包来源可信".into()) },
-        RiskPattern { pattern: "curl http://".into(), message: "HTTP 明文下载（可能被篡改）".into(), level: RiskLevel::Medium,
-            suggestion: Some("使用 HTTPS".into()) },
-        RiskPattern { pattern: "wget http://".into(), message: "HTTP 明文下载（可能被篡改）".into(), level: RiskLevel::Medium,
-            suggestion: Some("使用 HTTPS".into()) },
-        RiskPattern { pattern: "git clone http://".into(), message: "HTTP 明文 clone".into(), level: RiskLevel::Medium,
-            suggestion: Some("使用 HTTPS".into()) },
+        RiskPattern {
+            pattern: "./target/release/ion --agent".into(),
+            message: "ion --agent on host (use container B)".into(),
+            level: RiskLevel::High,
+            suggestion: Some("container exec $CONTAINER_NAME ... ion --agent developer".into()),
+        },
+        RiskPattern {
+            pattern: "./target/debug/ion --agent".into(),
+            message: "ion --agent on host (use container B)".into(),
+            level: RiskLevel::High,
+            suggestion: Some("container exec $CONTAINER_NAME ... ion --agent developer".into()),
+        },
+        RiskPattern {
+            pattern: "target/release/ion --agent".into(),
+            message: "ion --agent on host (use container B)".into(),
+            level: RiskLevel::High,
+            suggestion: Some("container exec $CONTAINER_NAME ... ion --agent developer".into()),
+        },
+        RiskPattern {
+            pattern: "target/debug/ion --agent".into(),
+            message: "ion --agent on host (use container B)".into(),
+            level: RiskLevel::High,
+            suggestion: Some("container exec $CONTAINER_NAME ... ion --agent developer".into()),
+        },
+        RiskPattern {
+            pattern: "| zsh".into(),
+            message: "管道执行 zsh".into(),
+            level: RiskLevel::Medium,
+            suggestion: Some("先检查管道内容".into()),
+        },
+        RiskPattern {
+            pattern: "| python".into(),
+            message: "管道执行 python".into(),
+            level: RiskLevel::Medium,
+            suggestion: Some("先检查管道内容".into()),
+        },
+        RiskPattern {
+            pattern: "| perl".into(),
+            message: "管道执行 perl".into(),
+            level: RiskLevel::Medium,
+            suggestion: Some("先检查管道内容".into()),
+        },
+        RiskPattern {
+            pattern: "| ruby".into(),
+            message: "管道执行 ruby".into(),
+            level: RiskLevel::Medium,
+            suggestion: Some("先检查管道内容".into()),
+        },
+        RiskPattern {
+            pattern: "| base64 -d".into(),
+            message: "管道 base64 解码（可能藏恶意代码）".into(),
+            level: RiskLevel::Medium,
+            suggestion: Some("先检查解码内容".into()),
+        },
+        RiskPattern {
+            pattern: "| base64 --decode".into(),
+            message: "管道 base64 解码（可能藏恶意代码）".into(),
+            level: RiskLevel::Medium,
+            suggestion: Some("先检查解码内容".into()),
+        },
+        RiskPattern {
+            pattern: "base64 -d |".into(),
+            message: "base64 解码管道（可能藏恶意代码）".into(),
+            level: RiskLevel::Medium,
+            suggestion: Some("先检查解码内容".into()),
+        },
+        RiskPattern {
+            pattern: "eval $".into(),
+            message: "eval 执行变量".into(),
+            level: RiskLevel::Medium,
+            suggestion: Some("避免 eval".into()),
+        },
+        RiskPattern {
+            pattern: "eval (".into(),
+            message: "eval 执行子 shell".into(),
+            level: RiskLevel::Medium,
+            suggestion: Some("避免 eval".into()),
+        },
+        RiskPattern {
+            pattern: "sudo".into(),
+            message: "sudo 提权".into(),
+            level: RiskLevel::Medium,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "su ".into(),
+            message: "切换用户".into(),
+            level: RiskLevel::Medium,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "passwd".into(),
+            message: "修改密码".into(),
+            level: RiskLevel::Medium,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "kill -9".into(),
+            message: "SIGKILL".into(),
+            level: RiskLevel::Medium,
+            suggestion: Some("先 kill -15".into()),
+        },
+        RiskPattern {
+            pattern: "pkill".into(),
+            message: "按名杀进程".into(),
+            level: RiskLevel::Medium,
+            suggestion: Some("确认目标进程".into()),
+        },
+        RiskPattern {
+            pattern: "killall".into(),
+            message: "按名杀进程".into(),
+            level: RiskLevel::Medium,
+            suggestion: Some("确认目标进程".into()),
+        },
+        RiskPattern {
+            pattern: "crontab -".into(),
+            message: "修改 cron 任务".into(),
+            level: RiskLevel::Medium,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "launchctl load".into(),
+            message: "加载 launchd 任务".into(),
+            level: RiskLevel::Medium,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "chmod +x".into(),
+            message: "添加可执行权限".into(),
+            level: RiskLevel::Medium,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "chown".into(),
+            message: "修改属主".into(),
+            level: RiskLevel::Medium,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "iptables".into(),
+            message: "修改防火墙规则".into(),
+            level: RiskLevel::Medium,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "ufw".into(),
+            message: "修改防火墙规则".into(),
+            level: RiskLevel::Medium,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "defaults write".into(),
+            message: "修改 macOS 系统默认".into(),
+            level: RiskLevel::Medium,
+            suggestion: None,
+        },
+        RiskPattern {
+            pattern: "npm install -g".into(),
+            message: "全局安装 npm 包".into(),
+            level: RiskLevel::Medium,
+            suggestion: Some("确认包来源可信".into()),
+        },
+        RiskPattern {
+            pattern: "pip install --user".into(),
+            message: "用户级安装 pip 包".into(),
+            level: RiskLevel::Medium,
+            suggestion: Some("确认包来源可信".into()),
+        },
+        RiskPattern {
+            pattern: "curl http://".into(),
+            message: "HTTP 明文下载（可能被篡改）".into(),
+            level: RiskLevel::Medium,
+            suggestion: Some("使用 HTTPS".into()),
+        },
+        RiskPattern {
+            pattern: "wget http://".into(),
+            message: "HTTP 明文下载（可能被篡改）".into(),
+            level: RiskLevel::Medium,
+            suggestion: Some("使用 HTTPS".into()),
+        },
+        RiskPattern {
+            pattern: "git clone http://".into(),
+            message: "HTTP 明文 clone".into(),
+            level: RiskLevel::Medium,
+            suggestion: Some("使用 HTTPS".into()),
+        },
     ]
 }
 
@@ -430,17 +772,26 @@ mod tests {
         let g = CommandGuard::with_mode(GuardMode::Whitelist);
         // 不在白名单
         assert!(matches!(g.check("myscript --foo"), GuardDecision::Ask(_)));
-        assert!(matches!(g.check("./dangerous-binary"), GuardDecision::Ask(_)));
+        assert!(matches!(
+            g.check("./dangerous-binary"),
+            GuardDecision::Ask(_)
+        ));
         // bash -c 'rm -rf /' — risk 检测看的是整个字符串，rm -rf / 可能匹配不到（因为是 bash -c 包裹的）
         // 所以 bash 白名单生效 → Allow。风险检测只对直接 rm -rf / 生效。
-        assert!(matches!(g.check("bash -c 'rm -rf /'"), GuardDecision::Allow));
+        assert!(matches!(
+            g.check("bash -c 'rm -rf /'"),
+            GuardDecision::Allow
+        ));
     }
 
     #[test]
     fn whitelist_mode_allows_binary_path() {
         let g = CommandGuard::with_mode(GuardMode::Whitelist);
         // /usr/local/bin/npm 应该被识别为 npm
-        assert!(matches!(g.check("/usr/local/bin/npm install"), GuardDecision::Allow));
+        assert!(matches!(
+            g.check("/usr/local/bin/npm install"),
+            GuardDecision::Allow
+        ));
     }
 
     #[test]
@@ -449,14 +800,20 @@ mod tests {
         // rm 不在白名单，但即使假设在，高危模式优先
         assert!(matches!(g.check("rm -rf / "), GuardDecision::Deny(_)));
         assert!(matches!(g.check("rm -rf ~"), GuardDecision::Deny(_)));
-        assert!(matches!(g.check("mkfs.ext4 /dev/sda1"), GuardDecision::Deny(_)));
+        assert!(matches!(
+            g.check("mkfs.ext4 /dev/sda1"),
+            GuardDecision::Deny(_)
+        ));
     }
 
     #[test]
     fn whitelist_mode_medium_risk_asks() {
         let g = CommandGuard::with_mode(GuardMode::Whitelist);
         // curl 在白名单，但 | sh 中危
-        assert!(matches!(g.check("curl https://example.com | sh"), GuardDecision::Ask(_)));
+        assert!(matches!(
+            g.check("curl https://example.com | sh"),
+            GuardDecision::Ask(_)
+        ));
         // sudo 中危
         assert!(matches!(g.check("sudo ls"), GuardDecision::Ask(_)));
     }
@@ -484,8 +841,11 @@ mod tests {
     fn open_mode_allows_all_except_high_risk() {
         let g = CommandGuard::with_mode(GuardMode::Open);
         assert!(matches!(g.check("anything"), GuardDecision::Allow));
-        assert!(matches!(g.check("unknown-binary --x"), GuardDecision::Allow));
-        assert!(matches!(g.check("sudo ls"), GuardDecision::Allow));  // open 模式不询问
+        assert!(matches!(
+            g.check("unknown-binary --x"),
+            GuardDecision::Allow
+        ));
+        assert!(matches!(g.check("sudo ls"), GuardDecision::Allow)); // open 模式不询问
         // 高危仍然拦
         assert!(matches!(g.check("rm -rf / "), GuardDecision::Deny(_)));
     }
@@ -501,28 +861,43 @@ mod tests {
     #[test]
     fn high_risk_dd_to_device_denied() {
         let g = CommandGuard::default();
-        assert!(matches!(g.check("dd if=/dev/zero of=/dev/sda"), GuardDecision::Deny(_)));
+        assert!(matches!(
+            g.check("dd if=/dev/zero of=/dev/sda"),
+            GuardDecision::Deny(_)
+        ));
         assert!(matches!(g.check("dd of=/dev/sdb"), GuardDecision::Deny(_)));
     }
 
     #[test]
     fn high_risk_redirect_to_device_denied() {
         let g = CommandGuard::default();
-        assert!(matches!(g.check("echo x >/dev/sda"), GuardDecision::Deny(_)));
+        assert!(matches!(
+            g.check("echo x >/dev/sda"),
+            GuardDecision::Deny(_)
+        ));
     }
 
     #[test]
     fn medium_risk_base64_pipe_asks() {
         let g = CommandGuard::default();
         // base64 解码管道
-        assert!(matches!(g.check("echo xxx | base64 -d | sh"), GuardDecision::Ask(_)));
-        assert!(matches!(g.check("echo xxx | base64 -d > /tmp/evil"), GuardDecision::Ask(_)));
+        assert!(matches!(
+            g.check("echo xxx | base64 -d | sh"),
+            GuardDecision::Ask(_)
+        ));
+        assert!(matches!(
+            g.check("echo xxx | base64 -d > /tmp/evil"),
+            GuardDecision::Ask(_)
+        ));
     }
 
     #[test]
     fn medium_risk_eval_asks() {
         let g = CommandGuard::default();
-        assert!(matches!(g.check("eval $(echo hello)"), GuardDecision::Ask(_)));
+        assert!(matches!(
+            g.check("eval $(echo hello)"),
+            GuardDecision::Ask(_)
+        ));
     }
 
     #[test]
@@ -565,24 +940,39 @@ mod tests {
     fn http_warning() {
         let g = CommandGuard::default();
         // curl 在白名单，但 http:// 是中危
-        assert!(matches!(g.check("curl http://example.com"), GuardDecision::Ask(_)));
+        assert!(matches!(
+            g.check("curl http://example.com"),
+            GuardDecision::Ask(_)
+        ));
         // HTTPS 没问题
-        assert!(matches!(g.check("curl https://example.com"), GuardDecision::Allow));
+        assert!(matches!(
+            g.check("curl https://example.com"),
+            GuardDecision::Allow
+        ));
     }
 
     #[test]
     fn npm_install_safe() {
         let g = CommandGuard::with_mode(GuardMode::Whitelist);
         // 普通 npm install 安全
-        assert!(matches!(g.check("npm install lodash"), GuardDecision::Allow));
+        assert!(matches!(
+            g.check("npm install lodash"),
+            GuardDecision::Allow
+        ));
         // 但 npm install -g 全局安装需确认
-        assert!(matches!(g.check("npm install -g typescript"), GuardDecision::Ask(_)));
+        assert!(matches!(
+            g.check("npm install -g typescript"),
+            GuardDecision::Ask(_)
+        ));
     }
 
     #[test]
     fn test_list_blocked_patterns() {
         let patterns = list_blocked_patterns();
         assert!(!patterns.is_empty(), "blocked patterns should not be empty");
-        assert!(patterns.contains(&"sed -i"), "sed -i should be in the blocked patterns");
+        assert!(
+            patterns.contains(&"sed -i"),
+            "sed -i should be in the blocked patterns"
+        );
     }
 }

@@ -16,6 +16,12 @@ pub struct AutoSessionTitle {
     name: String,
 }
 
+impl Default for AutoSessionTitle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AutoSessionTitle {
     pub fn new() -> Self {
         Self {
@@ -39,7 +45,7 @@ impl AutoSessionTitle {
         // Take first sentence or first line
         let first_line = trimmed.lines().next().unwrap_or(trimmed);
         let first_sentence = first_line
-            .split(|c: char| c == '.' || c == '。' || c == '!' || c == '?')
+            .split(['.', '。', '!', '?'])
             .next()
             .unwrap_or(first_line);
 
@@ -75,19 +81,20 @@ impl Extension for AutoSessionTitle {
         }
 
         // Find the first user message
-        let first_user_msg = ctx.messages.iter().find_map(|msg| {
-            match msg {
-                crate::agent::messages::Message::User(u) => {
-                    let text = u.content.iter().filter_map(|b| {
-                        match b {
-                            crate::agent::messages::ContentBlock::Text(t) => Some(t.text.as_str()),
-                            _ => None,
-                        }
-                    }).collect::<Vec<_>>().join(" ");
-                    if text.is_empty() { None } else { Some(text) }
-                }
-                _ => None,
+        let first_user_msg = ctx.messages.iter().find_map(|msg| match msg {
+            crate::agent::messages::Message::User(u) => {
+                let text = u
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        crate::agent::messages::ContentBlock::Text(t) => Some(t.text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if text.is_empty() { None } else { Some(text) }
             }
+            _ => None,
         });
 
         if let Some(text) = first_user_msg {

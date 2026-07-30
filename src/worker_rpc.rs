@@ -11,21 +11,27 @@
 //! 2. 异步操作: set_model → await → 返回
 //! 3. 流式:     prompt → 触发(不 await) → 事件推送
 
-use std::io::{self, Write};
-use std::sync::Arc;
-use std::collections::HashMap;
-use tokio::sync::Mutex;
-use tokio::sync::{mpsc, oneshot};
 use crate::agent::agent_loop::{Agent, AgentConfig};
 use crate::agent::compact::CompactConfig;
-use crate::agent::tool::{ReadTool, WriteTool, EditTool, BashTool, GrepTool, FindTool, LsTool, CalculatorTool, EchoTool, SpawnWorkerTool, SendToWorkerTool, ResumeWorkerTool, AwaitWorkerTool, ChannelSendTool, KillWorkerTool, BranchSessionTool, GlobalMemorySearchTool, GlobalMemorySaveTool, SkillTool, ToolRegistry};
-use crate::wasm_extension::{Registry, ToolAdapter};
+use crate::agent::tool::{
+    AwaitWorkerTool, BashTool, BranchSessionTool, CalculatorTool, ChannelSendTool, EchoTool,
+    EditTool, FindTool, GlobalMemorySaveTool, GlobalMemorySearchTool, GrepTool, KillWorkerTool,
+    LsTool, ReadTool, ResumeWorkerTool, SendToWorkerTool, SkillTool, SpawnWorkerTool, ToolRegistry,
+    WriteTool,
+};
 use crate::session_jsonl;
+use crate::wasm_extension::{Registry, ToolAdapter};
+use std::collections::HashMap;
+use std::io::{self, Write};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tokio::sync::{mpsc, oneshot};
 
 /// 全局：当前 Worker 的 session 文件路径。
 /// 主 Worker = session.jsonl；fork 子 Worker = <session_id>.jsonl（独立文件）。
 /// save_worker_session 读这个路径决定往哪写。
-static SESSION_FILE_PATH: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+static SESSION_FILE_PATH: std::sync::Mutex<Option<std::path::PathBuf>> =
+    std::sync::Mutex::new(None);
 
 /// 全局：当前 Worker 的 session_id + cwd。
 /// on_before_tool_execute 钩子用（它拿不到 sid/cwd，只能从全局读）。
@@ -65,13 +71,40 @@ impl WorkerRpcArgs {
         let mut i = 1;
         while i < args.len() {
             match args[i].as_str() {
-                "--session" => { out.session_id = args.get(i + 1).cloned(); i += 2; continue; }
-                "--model" => { out.model_id = args.get(i + 1).cloned(); i += 2; continue; }
-                "--provider" => { out.provider = args.get(i + 1).cloned(); i += 2; continue; }
-                "--channel" => { if let Some(ch) = args.get(i + 1) { out.channels.push(ch.clone()); } i += 2; continue; }
-                "--agent" => { out.initial_agent = args.get(i + 1).cloned(); i += 2; continue; }
-                "--mode" => { i += 2; continue; } // 已知是 rpc
-                _ => { i += 1; }
+                "--session" => {
+                    out.session_id = args.get(i + 1).cloned();
+                    i += 2;
+                    continue;
+                }
+                "--model" => {
+                    out.model_id = args.get(i + 1).cloned();
+                    i += 2;
+                    continue;
+                }
+                "--provider" => {
+                    out.provider = args.get(i + 1).cloned();
+                    i += 2;
+                    continue;
+                }
+                "--channel" => {
+                    if let Some(ch) = args.get(i + 1) {
+                        out.channels.push(ch.clone());
+                    }
+                    i += 2;
+                    continue;
+                }
+                "--agent" => {
+                    out.initial_agent = args.get(i + 1).cloned();
+                    i += 2;
+                    continue;
+                }
+                "--mode" => {
+                    i += 2;
+                    continue;
+                } // 已知是 rpc
+                _ => {
+                    i += 1;
+                }
             }
         }
         out
@@ -90,16 +123,22 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "warn".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
         )
         .with_target(false)
-        .try_init().ok();
+        .try_init()
+        .ok();
 
     // Capture process start time for the health check RPC. Used by the watchdog
     // (scripts/watchdog.sh) to report uptime during dual-version switching.
     let start_time = std::time::Instant::now();
-    let WorkerRpcArgs { session_id, model_id, provider, channels, initial_agent } = args;
+    let WorkerRpcArgs {
+        session_id,
+        model_id,
+        provider,
+        channels,
+        initial_agent,
+    } = args;
     let mut model_id = model_id.unwrap_or_else(|| "deepseek-v4-flash".to_string());
     let mut provider = provider.unwrap_or_else(|| "opencode".to_string());
     let initial_agent = initial_agent;
@@ -142,22 +181,40 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     }
     let mut model = model_reg.find_model(&model_id).cloned().unwrap_or_else(|| {
         // 从 auth.json 读 base_url 和 api_key
-        let auth_url = crate::auth::AuthStorage::load().provider_base_urls.get(&provider).cloned();
+        let auth_url = crate::auth::AuthStorage::load()
+            .provider_base_urls
+            .get(&provider)
+            .cloned();
         Model {
-            id: model_id.clone(), name: model_id.clone(),
-            api: "openai-completions".into(), provider: provider.clone(),
-            base_url: auth_url.clone().unwrap_or_else(|| "https://opencode.ai/zen/go/v1".into()),
-            reasoning: false, input: vec!["text".into()],
-            cost: Cost { input: 0.0, output: 0.0, cache_read: 0.0, cache_write: 0.0 },
-            context_window: 128000, max_tokens: 8192, compat: None, headers: None,
+            id: model_id.clone(),
+            name: model_id.clone(),
+            api: "openai-completions".into(),
+            provider: provider.clone(),
+            base_url: auth_url
+                .clone()
+                .unwrap_or_else(|| "https://opencode.ai/zen/go/v1".into()),
+            reasoning: false,
+            input: vec!["text".into()],
+            cost: Cost {
+                input: 0.0,
+                output: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+            context_window: 128000,
+            max_tokens: 8192,
+            compat: None,
+            headers: None,
         }
     });
     // 即使是 builtin model，如果 auth.json 里有该 provider 的代理 base_url，覆盖之。
     // （builtin GLM model 的 base_url 是直连 open.bigmodel.cn，但用户可能用代理。）
-    if let Some(override_url) = crate::auth::AuthStorage::load().provider_base_urls.get(&provider) {
-        if !override_url.is_empty() {
-            model.base_url = override_url.clone();
-        }
+    if let Some(override_url) = crate::auth::AuthStorage::load()
+        .provider_base_urls
+        .get(&provider)
+        && !override_url.is_empty()
+    {
+        model.base_url = override_url.clone();
     }
 
     // faux 模式：强制 model.api 指向 faux provider（覆盖任何真实 API 路由）
@@ -182,38 +239,55 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 let rec_dir = trace_path.parent().unwrap().to_path_buf();
                 match ion_provider::replay::acquire_recording_lock(&rec_dir, overwrite) {
                     Ok(lock_opt) => {
-                        let inner: Option<Box<dyn ion_provider::registry::ApiProvider>> = if using_faux {
-                            let new_faux = std::sync::Arc::new(ion_provider::faux::FauxProvider::new());
-                            let responses = if let Some(path) = &faux_script {
-                                ion_provider::faux::load_script(std::path::Path::new(path)).ok()
+                        let inner: Option<Box<dyn ion_provider::registry::ApiProvider>> =
+                            if using_faux {
+                                let new_faux =
+                                    std::sync::Arc::new(ion_provider::faux::FauxProvider::new());
+                                let responses = if let Some(path) = &faux_script {
+                                    ion_provider::faux::load_script(std::path::Path::new(path)).ok()
+                                } else {
+                                    Some(vec![ion_provider::faux::FauxResponseStep::Static(
+                                        ion_provider::faux::faux_assistant_message(
+                                            ion_provider::faux::FauxContent::Text(
+                                                faux_reply
+                                                    .as_deref()
+                                                    .unwrap_or_default()
+                                                    .to_string(),
+                                            ),
+                                            ion_provider::faux::FauxMessageOptions::default(),
+                                        ),
+                                    )])
+                                };
+                                if let Some(rsps) = responses {
+                                    new_faux.set_responses(rsps);
+                                }
+                                Some(Box::new(ArcFauxProvider(new_faux)))
                             } else {
-                                Some(vec![ion_provider::faux::FauxResponseStep::Static(
-                                    ion_provider::faux::faux_assistant_message(
-                                        ion_provider::faux::FauxContent::Text(faux_reply.as_deref().unwrap_or_default().to_string()),
-                                        ion_provider::faux::FauxMessageOptions::default(),
-                                    ),
-                                )])
+                                let factory = ion_provider::registry::BuiltinProviderFactory;
+                                factory.create(&model.api)
                             };
-                            if let Some(rsps) = responses {
-                                new_faux.set_responses(rsps);
-                            }
-                            Some(Box::new(ArcFauxProvider(new_faux)))
-                        } else {
-                            let factory = ion_provider::registry::BuiltinProviderFactory;
-                            factory.create(&model.api)
-                        };
                         match inner {
                             Some(real) => {
-                                let meta_path = ion_provider::replay::recording_meta_path(&rec_id).unwrap();
+                                let meta_path =
+                                    ion_provider::replay::recording_meta_path(&rec_id).unwrap();
                                 let recording = ion_provider::record::RecordingProvider::new(
                                     real, trace_path, meta_path,
                                 );
                                 registry.register(&model.api, Box::new(recording));
-                                eprintln!("[record] recording to {} (model: {})", rec_dir.display(), model.id);
-                                if let Some(l) = lock_opt { std::mem::forget(l); }
+                                eprintln!(
+                                    "[record] recording to {} (model: {})",
+                                    rec_dir.display(),
+                                    model.id
+                                );
+                                if let Some(l) = lock_opt {
+                                    std::mem::forget(l);
+                                }
                             }
                             None => {
-                                eprintln!("[record] ⚠️  no builtin provider for api '{}', recording disabled", model.api);
+                                eprintln!(
+                                    "[record] ⚠️  no builtin provider for api '{}', recording disabled",
+                                    model.api
+                                );
                             }
                         }
                     }
@@ -254,26 +328,21 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     // the verification loop) is conditionally registered below based on config.
     // Both share the same SharedGoalState so the tool's writes are visible to
     // the extension's gate checks.
-    let shared_goal: crate::goal_supervisor_extension::SharedGoalState =
-        std::sync::Arc::new(std::sync::Mutex::new(None::<
-            crate::goal_supervisor_extension::GoalState,
-        >));
-    tools.register(Box::new(crate::goal_supervisor_extension::GoalSetTool::new(
-        shared_goal.clone(),
-    )));
+    let shared_goal: crate::goal_supervisor_extension::SharedGoalState = std::sync::Arc::new(
+        std::sync::Mutex::new(None::<crate::goal_supervisor_extension::GoalState>),
+    );
+    tools.register(Box::new(
+        crate::goal_supervisor_extension::GoalSetTool::new(shared_goal.clone()),
+    ));
     tools.register(Box::new(crate::goal_supervisor_extension::GoalRefineTool(
         shared_goal.clone(),
     )));
-    tools.register(Box::new(crate::goal_supervisor_extension::GoalDiagnoseTool(
-        shared_goal.clone(),
-    )));
+    tools.register(Box::new(
+        crate::goal_supervisor_extension::GoalDiagnoseTool(shared_goal.clone()),
+    ));
     tools.register(Box::new(BranchSessionTool));
     tools.register(Box::new(GlobalMemorySearchTool));
     tools.register(Box::new(GlobalMemorySaveTool));
-
-
-
-
 
     // ── Worker 编排工具（仅 WorkerRuntime 支持真实实现）──
     // 让 LLM 自主调用 spawn_worker 创建子/同级 Worker，send_to_worker 跨 Worker 对话。
@@ -289,18 +358,21 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
     let config_root = crate::paths::project_root_for_config()
-        .to_string_lossy().to_string();
-    let storage_ctx = crate::storage_context::StorageContext::new(
-        &worker_cwd, &sid, &config_root,
-    );
+        .to_string_lossy()
+        .to_string();
+    let storage_ctx = crate::storage_context::StorageContext::new(&worker_cwd, &sid, &config_root);
 
     // ── Memory 工具 + 共享 Store ──
     // Memory 用 config_root（worktree 场景回源主仓库，缺口 #2：worktree 共享记忆）
     let memory_store = std::sync::Arc::new(tokio::sync::Mutex::new(
-        crate::agent::memory::MemoryStore::new(storage_ctx.clone())
+        crate::agent::memory::MemoryStore::new(storage_ctx.clone()),
     ));
-    tools.register(Box::new(crate::agent::memory::MemorySaveTool { store: memory_store.clone() }));
-    tools.register(Box::new(crate::agent::memory::MemorySearchTool { store: memory_store.clone() }));
+    tools.register(Box::new(crate::agent::memory::MemorySaveTool {
+        store: memory_store.clone(),
+    }));
+    tools.register(Box::new(crate::agent::memory::MemorySearchTool {
+        store: memory_store.clone(),
+    }));
 
     // ── Skill 工具（让 LLM 按需加载 skill）──
     // 扫描三个位置：
@@ -327,40 +399,48 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         });
         let _ = key; // Will be set below
     }
-    let api_key = api_key.or_else(|| {
-        std::env::var("ION_API_KEY").ok()
-    }).unwrap_or_else(|| {
-        "sk-sniMbFE0l8wIGsTAsbfERSGrvcrBv97iBfDuppzN99kg5Wp2a2dMYxntMFBN9lEg".into()
-    });
+    let api_key = api_key
+        .or_else(|| std::env::var("ION_API_KEY").ok())
+        .unwrap_or_else(|| {
+            "sk-sniMbFE0l8wIGsTAsbfERSGrvcrBv97iBfDuppzN99kg5Wp2a2dMYxntMFBN9lEg".into()
+        });
 
-	    let config = AgentConfig {
-	        // max_turns：优先读 ION_MAX_TURNS 环境变量（补丁 1：hooks/扩展 spawn 子 Worker 时限定步数）
-	        // 没设则默认 20（对齐 pi）。0 = 无限。
-	        max_turns: std::env::var("ION_MAX_TURNS").ok()
-	            .and_then(|s| s.parse::<u64>().ok())
-	            .map(|n| if n == 0 { None } else { Some(n) })
-	            .unwrap_or(Some(20)),
-	        max_outer_iterations: std::env::var("ION_MAX_OUTER_ITERATIONS")
-	            .ok().and_then(|s| s.parse().ok())
-	            .unwrap_or(5),
-	        max_retries: 30,
-	        retry_base_delay_ms: 1000, enable_compact: true,
-	        compact_config: CompactConfig::default(),
-	        api_key: Some(api_key.clone()),
-		        response_format: None, thinking: None,
-			    compact_model_id: None,
-		    // evolver/wf/improver agent 可能在 turn 里"只说不做"（输出文本但没调工具），
-		    // retry_on_no_tool_use 让它在这种情况下重试（注入 WARNING）。
-		    // 对这些 agent 默认启用（3 次重试），其他 agent 保持 0（禁用）。
-            retry_on_no_tool_use: if matches!(initial_agent.as_deref(), Some("wf") | Some("improver") | Some("evolver")) {
-		        std::env::var("ION_RETRY_NO_TOOL_USE")
-		            .ok().and_then(|s| s.parse().ok())
-		            .unwrap_or(3)
-		    } else {
-		        0
-		    },
-			    retry_config: Some(crate::retry::RetryConfig::default()),
-	    };
+    let config = AgentConfig {
+        // max_turns：优先读 ION_MAX_TURNS 环境变量（补丁 1：hooks/扩展 spawn 子 Worker 时限定步数）
+        // 没设则默认 20（对齐 pi）。0 = 无限。
+        max_turns: std::env::var("ION_MAX_TURNS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(|n| if n == 0 { None } else { Some(n) })
+            .unwrap_or(Some(20)),
+        max_outer_iterations: std::env::var("ION_MAX_OUTER_ITERATIONS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5),
+        max_retries: 30,
+        retry_base_delay_ms: 1000,
+        enable_compact: true,
+        compact_config: CompactConfig::default(),
+        api_key: Some(api_key.clone()),
+        response_format: None,
+        thinking: None,
+        compact_model_id: None,
+        // evolver/wf/improver agent 可能在 turn 里"只说不做"（输出文本但没调工具），
+        // retry_on_no_tool_use 让它在这种情况下重试（注入 WARNING）。
+        // 对这些 agent 默认启用（3 次重试），其他 agent 保持 0（禁用）。
+        retry_on_no_tool_use: if matches!(
+            initial_agent.as_deref(),
+            Some("wf") | Some("improver") | Some("evolver")
+        ) {
+            std::env::var("ION_RETRY_NO_TOOL_USE")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(3)
+        } else {
+            0
+        },
+        retry_config: Some(crate::retry::RetryConfig::default()),
+    };
 
     let registry = Arc::new(registry);
 
@@ -375,13 +455,16 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     // project_root 用 project_root_for_config()（worktree 场景回源到主仓库，缺口 #2）
     {
         let config_root = crate::paths::project_root_for_config()
-            .to_string_lossy().to_string();
+            .to_string_lossy()
+            .to_string();
         let extensions_dirs: Vec<std::path::PathBuf> = vec![
             crate::paths::extensions_dir(),
             crate::paths::project_extensions_dir(&config_root),
         ];
         for dir in &extensions_dirs {
-            if !dir.exists() { continue; }
+            if !dir.exists() {
+                continue;
+            }
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
@@ -401,7 +484,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                         ext_name: ext_name.clone(),
                                         registry: wasm_ext_registry.clone(),
                                     }));
-                                    tracing::info!("[wasm] auto-discovered {ext_name}: {}", td.name);
+                                    tracing::info!(
+                                        "[wasm] auto-discovered {ext_name}: {}",
+                                        td.name
+                                    );
                                 }
                                 loaded_wasm_paths.push(canonical_str);
                             }
@@ -422,7 +508,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     // 主 Worker 用 session.jsonl（共享，所有同一 cwd 的主会话共用）。
     // fork 子 Worker（ION_FORK_CHILD=1）用 <session_id>.jsonl，避免跟主 Worker 写同一文件
     // 导致数据混乱。这样 export 可以按 session_id 精确找到 fork 子 Worker 的对话历史。
-    let is_fork_child = std::env::var("ION_FORK_CHILD").map(|v| v == "1").unwrap_or(false);
+    let is_fork_child = std::env::var("ION_FORK_CHILD")
+        .map(|v| v == "1")
+        .unwrap_or(false);
     let session_file_path: std::path::PathBuf = if is_fork_child {
         crate::paths::session_jsonl_path_by_id(&worker_cwd, &sid)
     } else {
@@ -443,7 +531,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     }
     // 设 session header 的 agent/model/provider（export.rs banner 显示用）
     if let Some(ref agent_name) = initial_agent {
-        unsafe { std::env::set_var("ION_SESSION_AGENT", agent_name); }
+        unsafe {
+            std::env::set_var("ION_SESSION_AGENT", agent_name);
+        }
     }
     unsafe {
         std::env::set_var("ION_SESSION_MODEL", &model.id);
@@ -468,7 +558,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
     // Approval Manager（预声明，审批 RPC 用，依赖 snapshot_store）
     #[allow(unused_assignments)]
-    let mut approval_mgr: Option<std::sync::Arc<crate::file_snapshot::approval::ApprovalManager>> = None;
+    let mut approval_mgr: Option<
+        std::sync::Arc<crate::file_snapshot::approval::ApprovalManager>,
+    > = None;
 
     // ── 加载配置（在 Runtime 和 Extension 初始化之前）──
     let ion_cfg = crate::config::IonConfig::load();
@@ -480,7 +572,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
     // ── ManagerBridge 必须在 Agent 构造前创建，因为 WorkerRuntime 包装它注入到 Agent ──
     let stdout = Arc::new(Mutex::new(io::stdout()));
-    let manager_bridge: Arc<ManagerBridge> = Arc::new(ManagerBridge::new(sid.clone(), stdout.clone()));
+    let manager_bridge: Arc<ManagerBridge> =
+        Arc::new(ManagerBridge::new(sid.clone(), stdout.clone()));
 
     // ── 根据配置选择 Runtime ──
     // 用 Arc 保存，这样 HookExtension 能 clone 一份（agent handler 需要 runtime 来 spawn 子 Worker）
@@ -488,7 +581,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        let registry = crate::backend_registry::BackendRegistry::from_config(&ion_cfg.runtime, &cwd);
+        let registry =
+            crate::backend_registry::BackendRegistry::from_config(&ion_cfg.runtime, &cwd);
         tracing::info!(
             "[runtime] BackendRegistry 初始化: backends={:?}",
             registry.list_backends(),
@@ -513,15 +607,22 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             tracing::info!("[worker] loaded agent '{}' from config", agent_cfg.name);
             // auto-continue: wf/improver 需要（workflow 多 stage）
             // evolver 不需要 auto_continue——它用 bash_run background + follow_up
-            if matches!(current_agent_name.as_str(), "wf" | "improver") {
-                if std::env::var("ION_AUTO_CONTINUE").is_err() {
-                    unsafe { std::env::set_var("ION_AUTO_CONTINUE", "1"); }
-                    tracing::info!("[worker] auto-set ION_AUTO_CONTINUE=1 for {} agent", current_agent_name);
+            if matches!(current_agent_name.as_str(), "wf" | "improver")
+                && std::env::var("ION_AUTO_CONTINUE").is_err()
+            {
+                unsafe {
+                    std::env::set_var("ION_AUTO_CONTINUE", "1");
                 }
+                tracing::info!(
+                    "[worker] auto-set ION_AUTO_CONTINUE=1 for {} agent",
+                    current_agent_name
+                );
             }
             // evolver: 等 bash_run 后台进程的异步 follow_up
             if current_agent_name == "evolver" {
-                unsafe { std::env::set_var("ION_WAIT_BACKGROUND", "1"); }
+                unsafe {
+                    std::env::set_var("ION_WAIT_BACKGROUND", "1");
+                }
                 tracing::info!("[worker] set ION_WAIT_BACKGROUND=1 for evolver");
             }
             // Note: tool restriction is applied below after `agent` is built
@@ -542,11 +643,14 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     // ION_SYSTEM_PROMPT 环境变量由 create_worker 设置（config.system_prompt_override），
     // 覆盖 agent.md 的 system prompt。用于 skill fork——把 skill 内容注入 system prompt，
     // 避免被 compaction 压缩（compaction 只处理 messages，不碰 system prompt）。
-    if let Ok(sp_override) = std::env::var("ION_SYSTEM_PROMPT") {
-        if !sp_override.is_empty() {
-            tracing::info!("[worker] system prompt overridden by ION_SYSTEM_PROMPT ({} bytes)", sp_override.len());
-            initial_system_prompt = sp_override;
-        }
+    if let Ok(sp_override) = std::env::var("ION_SYSTEM_PROMPT")
+        && !sp_override.is_empty()
+    {
+        tracing::info!(
+            "[worker] system prompt overridden by ION_SYSTEM_PROMPT ({} bytes)",
+            sp_override.len()
+        );
+        initial_system_prompt = sp_override;
     }
 
     // ── 注入环境信息到 system prompt ──────────────────────────────
@@ -560,39 +664,46 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             format!("{} (unix epoch)", secs)
         };
         let cwd = &worker_cwd;
-        let project_root = std::env::var("ION_PROJECT_ROOT").ok()
+        let project_root = std::env::var("ION_PROJECT_ROOT")
+            .ok()
             .or_else(|| {
                 // Try to find git root from cwd
                 std::process::Command::new("git")
-                    .args(&["rev-parse", "--show-toplevel"])
+                    .args(["rev-parse", "--show-toplevel"])
                     .current_dir(cwd)
-                    .output().ok()
+                    .output()
+                    .ok()
                     .and_then(|o| String::from_utf8(o.stdout).ok())
                     .map(|s| s.trim().to_string())
             })
             .unwrap_or_else(|| cwd.clone());
-        let worktree = std::env::var("ION_WORKTREE_ROOT").ok()
-            .or_else(|| {
-                std::env::var("ION_WORKTREE").ok()
-            });
+        let worktree = std::env::var("ION_WORKTREE_ROOT")
+            .ok()
+            .or_else(|| std::env::var("ION_WORKTREE").ok());
         let git_remote = std::process::Command::new("git")
-            .args(&["remote", "get-url", "origin"])
+            .args(["remote", "get-url", "origin"])
             .current_dir(cwd)
-            .output().ok()
+            .output()
+            .ok()
             .and_then(|o| {
                 let url = String::from_utf8_lossy(&o.stdout).trim().to_string();
                 if url.is_empty() { None } else { Some(url) }
             });
         let git_branch = std::process::Command::new("git")
-            .args(&["rev-parse", "--abbrev-ref", "HEAD"])
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
             .current_dir(cwd)
-            .output().ok()
+            .output()
+            .ok()
             .and_then(|o| {
                 let branch = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if branch.is_empty() { None } else { Some(branch) }
+                if branch.is_empty() {
+                    None
+                } else {
+                    Some(branch)
+                }
             });
 
-        let mut info = format!("\n\n## Environment\n");
+        let mut info = "\n\n## Environment\n".to_string();
         info.push_str(&format!("- **Time**: {}\n", now));
         info.push_str(&format!("- **Working Directory**: `{}`\n", cwd));
         info.push_str(&format!("- **Project Root**: `{}`\n", project_root));
@@ -610,32 +721,34 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
         // Recent commits (last 3, with files changed)
         let recent = std::process::Command::new("git")
-            .args(&["log", "--oneline", "--name-only", "-3"])
+            .args(["log", "--oneline", "--name-only", "-3"])
             .current_dir(cwd)
-            .output().ok()
+            .output()
+            .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string());
-        if let Some(commits) = &recent {
-            if !commits.is_empty() {
-                info.push_str("\n### Recent Changes (last 3 commits)\n```\n");
-                info.push_str(commits);
-                info.push_str("\n```\n");
-            }
+        if let Some(commits) = &recent
+            && !commits.is_empty()
+        {
+            info.push_str("\n### Recent Changes (last 3 commits)\n```\n");
+            info.push_str(commits);
+            info.push_str("\n```\n");
         }
 
         // Uncommitted changes
         let uncommitted = std::process::Command::new("git")
-            .args(&["status", "--short"])
+            .args(["status", "--short"])
             .current_dir(cwd)
-            .output().ok()
+            .output()
+            .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string());
-        if let Some(changes) = &uncommitted {
-            if !changes.is_empty() {
-                info.push_str("\n### Uncommitted Changes\n```\n");
-                info.push_str(changes);
-                info.push_str("\n```\n");
-            }
+        if let Some(changes) = &uncommitted
+            && !changes.is_empty()
+        {
+            info.push_str("\n### Uncommitted Changes\n```\n");
+            info.push_str(changes);
+            info.push_str("\n```\n");
         }
 
         info
@@ -652,24 +765,24 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         tools,
         config,
     )
-        .with_runtime_arc(worker_rt.clone())
-        .with_session_cwd(Some(worker_cwd.clone()))
-        .with_session_id(Some(sid.clone()));
+    .with_runtime_arc(worker_rt.clone())
+    .with_session_cwd(Some(worker_cwd.clone()))
+    .with_session_id(Some(sid.clone()));
 
     // LSP tool registration deferred to inside extension block (lsp_shared set there)
 
     // 应用初始 agent 的工具限制（必须在 Agent 构造后调用）
-    if let Some(ref agent_name) = initial_agent {
-        if let Some(agent_cfg) = crate::agent_config::find_agent(agent_name) {
-            // 1. 白名单优先：如果 agent 定义了 tools，只保留这些工具
-            if let Some(ref allowed) = agent_cfg.tools {
-                agent.restrict_tools(allowed.clone());
-            }
-            // 2. 黑名单：移除 disallowed_tools 里的工具
-            if let Some(ref disallowed) = agent_cfg.disallowed_tools {
-                for tool_name in disallowed {
-                    agent.remove_tool(tool_name);
-                }
+    if let Some(ref agent_name) = initial_agent
+        && let Some(agent_cfg) = crate::agent_config::find_agent(agent_name)
+    {
+        // 1. 白名单优先：如果 agent 定义了 tools，只保留这些工具
+        if let Some(ref allowed) = agent_cfg.tools {
+            agent.restrict_tools(allowed.clone());
+        }
+        // 2. 黑名单：移除 disallowed_tools 里的工具
+        if let Some(ref disallowed) = agent_cfg.disallowed_tools {
+            for tool_name in disallowed {
+                agent.remove_tool(tool_name);
             }
         }
     }
@@ -682,7 +795,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     // 这让扩展/hooks 的 agent handler 能 spawn "限定工具"的子 Worker，
     // 是 ION 的 agent handler 比 pi 更强的关键。
     if let Ok(allowed_str) = std::env::var("ION_ALLOWED_TOOLS") {
-        let allowed: Vec<String> = allowed_str.split(',')
+        let allowed: Vec<String> = allowed_str
+            .split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
@@ -692,7 +806,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         }
     }
     if let Ok(disallowed_str) = std::env::var("ION_DISALLOWED_TOOLS") {
-        for tool_name in disallowed_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        for tool_name in disallowed_str
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
             agent.remove_tool(tool_name);
         }
         tracing::info!("[worker] applied ION_DISALLOWED_TOOLS from env");
@@ -724,12 +842,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 crate::agent::extension::RuntimeFileSystem::default_allowed_roots(
                     std::path::Path::new(&worker_cwd),
                 );
-            let runtime_fs = std::sync::Arc::new(
-                crate::agent::extension::RuntimeFileSystem::new(
-                    worker_rt.clone(),
-                    fs_allowed_roots,
-                ),
-            );
+            let runtime_fs = std::sync::Arc::new(crate::agent::extension::RuntimeFileSystem::new(
+                worker_rt.clone(),
+                fs_allowed_roots,
+            ));
             // 内置扩展用
             ext_reg = ext_reg.with_filesystem(runtime_fs.clone());
             // WASM 扩展用（注入到 WASM registry 的共享 Context）
@@ -759,16 +875,18 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
         // ── SessionProbeExtension（给 CLI 测试用，让 session hook 可通过 subscribe 观察）──
         ext_reg.register(Box::new(SessionProbeExtension { veto: false }));
-        tracing::info!("[extension] session_probe registered (session hook observable via subscribe)");
+        tracing::info!(
+            "[extension] session_probe registered (session hook observable via subscribe)"
+        );
 
         // ── PlanExtension（plan mode 钩子：限制工具集 + 注入 prompt）──
         // Q2 fix: wrap the SAME shared_plan Arc that the plan Tools use, so
         // before/after_tool_call hooks see the same plan_steps state that
         // plan_add writes to. Without this, plan_exit persists an empty step
         // list (the Extension's own fresh instance), producing an empty PLAN.md.
-        ext_reg.register(Box::new(
-            crate::agent::plan_extension::SharedPlanExtension(shared_plan.clone()),
-        ));
+        ext_reg.register(Box::new(crate::agent::plan_extension::SharedPlanExtension(
+            shared_plan.clone(),
+        )));
         tracing::info!("[extension] PlanExtension registered (shared with plan tools)");
 
         // Tool Loop Detector（防 LLM 重复调同一工具死循环）
@@ -813,7 +931,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
         // Streaming Extension（流式透传）
         if ion_cfg.is_extension_enabled("streaming") {
-            ext_reg.register(Box::new(StreamingExtension { session_id: sid.clone() }));
+            ext_reg.register(Box::new(StreamingExtension {
+                session_id: sid.clone(),
+            }));
         } else {
             tracing::info!("[extension] streaming disabled by config");
         }
@@ -821,7 +941,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         // Permission Extension（权限策略层）
         // 用 config_root（worktree 回源主仓库，读主仓库 .ion/settings.json）
         if ion_cfg.is_extension_enabled("permission") {
-            let perm_ext = crate::agent::permission_extension::PermissionExtension::new(storage_ctx.clone());
+            let perm_ext =
+                crate::agent::permission_extension::PermissionExtension::new(storage_ctx.clone());
             ext_reg.register(Box::new(perm_ext));
         } else {
             tracing::info!("[extension] permission disabled by config");
@@ -852,7 +973,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
         // File Time Guard Extension（detect externally-modified files before write/edit）
         if ion_cfg.is_extension_enabled("file-time-guard") {
-            ext_reg.register(Box::new(crate::file_time_guard::FileTimeGuardExtension::new()));
+            ext_reg.register(Box::new(
+                crate::file_time_guard::FileTimeGuardExtension::new(),
+            ));
             tracing::info!("[extension] file-time-guard enabled");
         } else {
             tracing::info!("[extension] file-time-guard disabled by config");
@@ -870,10 +993,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         // RetryWith on fail, until goal complete or guard trips).
         // Shares state with GoalSetTool (registered above in the tools section).
         if ion_cfg.is_extension_enabled("goal-supervisor") {
-            let goal_ext =
-                crate::goal_supervisor_extension::GoalSupervisorExtension::new()
-                    .with_shared_state(shared_goal.clone())
-                    .with_session_id(&sid);
+            let goal_ext = crate::goal_supervisor_extension::GoalSupervisorExtension::new()
+                .with_shared_state(shared_goal.clone())
+                .with_session_id(&sid);
             ext_reg.register(Box::new(goal_ext));
             tracing::info!("[extension] goal-supervisor enabled (on_gate_check closed loop)");
         } else {
@@ -884,30 +1006,33 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         // Strips thinking blocks + reclaims old tool results (bash > grep > read)
         // Always enabled — zero LLM cost, pure text manipulation.
         ext_reg.register(Box::new(crate::context_reclaimer::ContextReclaimer::new()));
-        tracing::info!("[extension] context-reclaimer enabled (thinking strip + tool result recycling)");
+        tracing::info!(
+            "[extension] context-reclaimer enabled (thinking strip + tool result recycling)"
+        );
 
         // File Snapshot Extension（文件快照 + diff 追踪）
-        snapshot_store =
-            if ion_cfg.is_extension_enabled("file-snapshot") {
-                let (fs_ext, store) = crate::file_snapshot::FileSnapshotExtension::new_pair(storage_ctx.clone());
-                ext_reg.register(Box::new(fs_ext));
-                tracing::info!("[extension] file-snapshot enabled");
-                Some(store)
-            } else {
-                tracing::info!("[extension] file-snapshot disabled by config");
-                None
-            };
+        snapshot_store = if ion_cfg.is_extension_enabled("file-snapshot") {
+            let (fs_ext, store) =
+                crate::file_snapshot::FileSnapshotExtension::new_pair(storage_ctx.clone());
+            ext_reg.register(Box::new(fs_ext));
+            tracing::info!("[extension] file-snapshot enabled");
+            Some(store)
+        } else {
+            tracing::info!("[extension] file-snapshot disabled by config");
+            None
+        };
         // 标记 snapshot_store 在后续 RPC 分支中被读取（消除编译器误报）
         let _ = snapshot_store.is_some();
 
         // Approval Manager + Extension（审批，依赖 snapshot_store）
         approval_mgr = if let Some(ref store) = snapshot_store {
-            let mgr = std::sync::Arc::new(
-                crate::file_snapshot::approval::ApprovalManager::new(store.clone(), storage_ctx.clone())
-            );
+            let mgr = std::sync::Arc::new(crate::file_snapshot::approval::ApprovalManager::new(
+                store.clone(),
+                storage_ctx.clone(),
+            ));
             // 注册 ApprovalExtension（on_gate_check + on_turn_end re-approval 重置）
             ext_reg.register(Box::new(
-                crate::file_snapshot::approval::ApprovalExtension::new(mgr.clone())
+                crate::file_snapshot::approval::ApprovalExtension::new(mgr.clone()),
             ));
             tracing::info!("[extension] file-approval enabled");
             Some(mgr)
@@ -926,18 +1051,19 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
         // ── 注册 WorkflowExtension（可配置，默认启用）──
         // 当 agent .md 定义了 workflow: gate_command 时才生效。
-        if ion_cfg.is_extension_enabled("workflow_gate") {
-            if let Some(ref agent_name) = initial_agent {
-                if let Some(agent_cfg) = crate::agent_config::find_agent(agent_name) {
-                    if let Some(ref wf_config) = agent_cfg.workflow {
-                        tracing::info!("[workflow] gate registered: cmd='{}', expected='{}'",
-                            wf_config.gate_command, wf_config.gate_expected);
-                        ext_reg.register(Box::new(
-                            crate::agent::workflow_extension::WorkflowExtension::new(wf_config.clone())
-                        ));
-                    }
-                }
-            }
+        if ion_cfg.is_extension_enabled("workflow_gate")
+            && let Some(ref agent_name) = initial_agent
+            && let Some(agent_cfg) = crate::agent_config::find_agent(agent_name)
+            && let Some(ref wf_config) = agent_cfg.workflow
+        {
+            tracing::info!(
+                "[workflow] gate registered: cmd='{}', expected='{}'",
+                wf_config.gate_command,
+                wf_config.gate_expected
+            );
+            ext_reg.register(Box::new(
+                crate::agent::workflow_extension::WorkflowExtension::new(wf_config.clone()),
+            ));
         }
 
         // ── 注册 HookExtension（hooks.json 配置式钩子，热重载）──
@@ -948,9 +1074,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             if crate::hooks::extension::HookExtension::has_hooks(&proj_dir) {
                 let hook_ext = crate::hooks::extension::HookExtension::new(
                     proj_dir,
-                    Some(worker_rt.clone()),     // agent handler 需要 runtime 来 spawn 子 Worker
+                    Some(worker_rt.clone()), // agent handler 需要 runtime 来 spawn 子 Worker
                     Some(Arc::clone(&registry)), // prompt handler 需要 ApiRegistry 来调 LLM
-                    Some(model.clone()),         // prompt handler 需要当前会话模型
+                    Some(model.clone()),     // prompt handler 需要当前会话模型
                     Some(manager_bridge.clone() as Arc<dyn crate::runtime::ManagerBridgeHandle>), // mcp_tool handler 转发 MCP 调用
                     Some(follow_up_tx.clone()),
                 );
@@ -995,13 +1121,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
         // Register LspCheckTool if lsp extension was enabled (shares diagnostics handles)
         if let Some((diags, dirty, has_errs)) = &lsp_shared {
-            agent.register_tool(Box::new(
-                crate::lsp_extension::LspCheckTool::new(
-                    Arc::clone(diags),
-                    Arc::clone(dirty),
-                    Arc::clone(has_errs),
-                )
-            ));
+            agent.register_tool(Box::new(crate::lsp_extension::LspCheckTool::new(
+                Arc::clone(diags),
+                Arc::clone(dirty),
+                Arc::clone(has_errs),
+            )));
             tracing::info!("[lsp] LspCheckTool registered");
         }
     }
@@ -1034,11 +1158,17 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         loop {
             match lines.next_line().await {
                 Ok(Some(line)) => {
-                    if line.trim().is_empty() { continue; }
+                    if line.trim().is_empty() {
+                        continue;
+                    }
                     match serde_json::from_str::<serde_json::Value>(&line) {
                         Ok(v) => {
                             // 关键：_reply_to 消息是 manager_response，直接投递避免死锁
-                            let has_reply_to = v.get("_reply_to").and_then(|r| r.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
+                            let has_reply_to = v
+                                .get("_reply_to")
+                                .and_then(|r| r.as_str())
+                                .map(|s| !s.is_empty())
+                                .unwrap_or(false);
                             if has_reply_to {
                                 let reply_to = v["_reply_to"].as_str().unwrap_or("").to_string();
                                 bridge_for_reader.deliver_response(&reply_to, v).await;
@@ -1067,10 +1197,15 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         let mcp_result = tokio::time::timeout(
             std::time::Duration::from_secs(3),
             manager_bridge.send_command("mcp_list_tools", serde_json::json!({})),
-        ).await;
+        )
+        .await;
         match mcp_result {
             Ok(Ok(resp)) => {
-                if resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+                if resp
+                    .get("success")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
                     let tools_list = resp
                         .get("data")
                         .and_then(|d| d.get("tools"))
@@ -1078,12 +1213,22 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         .unwrap_or(serde_json::json!([]));
                     if let Some(arr) = tools_list.as_array() {
                         for tool in arr {
-                            let full_name = tool.get("full_name").and_then(|v| v.as_str()).unwrap_or("");
-                            let desc = tool.get("description").and_then(|v| v.as_str()).unwrap_or("");
-                            let params = tool.get("input_schema").cloned().unwrap_or(serde_json::json!({}));
+                            let full_name =
+                                tool.get("full_name").and_then(|v| v.as_str()).unwrap_or("");
+                            let desc = tool
+                                .get("description")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let params = tool
+                                .get("input_schema")
+                                .cloned()
+                                .unwrap_or(serde_json::json!({}));
                             if !full_name.is_empty() {
                                 agent.register_tool(Box::new(McpProxyTool::new(
-                                    full_name, desc, &params, manager_bridge.clone(),
+                                    full_name,
+                                    desc,
+                                    &params,
+                                    manager_bridge.clone(),
                                 )));
                             }
                         }
@@ -1095,17 +1240,29 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 tracing::warn!("[mcp] failed to fetch tools from host: {e}");
             }
             Err(_) => {
-                tracing::info!("[mcp] mcp_list_tools timeout (no host or 3s limit), skip MCP proxy");
+                tracing::info!(
+                    "[mcp] mcp_list_tools timeout (no host or 3s limit), skip MCP proxy"
+                );
             }
         }
     }
 
     while let Some(cmd) = stdin_rx.recv().await {
-        let id = cmd.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let method = cmd.get("method").and_then(|v| v.as_str())
+        let id = cmd
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let method = cmd
+            .get("method")
+            .and_then(|v| v.as_str())
             .or_else(|| cmd.get("type").and_then(|v| v.as_str()))
-            .unwrap_or("").to_string();
-        let params = cmd.get("params").cloned().unwrap_or(serde_json::Value::Null);
+            .unwrap_or("")
+            .to_string();
+        let params = cmd
+            .get("params")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
 
         // 分发命令
         match method.as_str() {
@@ -1118,12 +1275,16 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 // Returns system status quickly (<10ms): uptime, pid, version.
                 // No DB queries, no network calls.
                 let uptime = start_time.elapsed().as_secs();
-                output_response(&id, "health", &serde_json::json!({
-                    "status": "ok",
-                    "uptime_secs": uptime,
-                    "pid": std::process::id(),
-                    "version": env!("CARGO_PKG_VERSION"),
-                }));
+                output_response(
+                    &id,
+                    "health",
+                    &serde_json::json!({
+                        "status": "ok",
+                        "uptime_secs": uptime,
+                        "pid": std::process::id(),
+                        "version": env!("CARGO_PKG_VERSION"),
+                    }),
+                );
             }
 
             "request_restart" => {
@@ -1139,66 +1300,100 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 match std::fs::write(restart_file, payload) {
                     Ok(_) => {
                         eprintln!("[restart] Notified watchdog via {}", restart_file);
-                        output_response(&id, "request_restart", &serde_json::json!({
-                            "notified": true,
-                            "file": restart_file,
-                        }));
+                        output_response(
+                            &id,
+                            "request_restart",
+                            &serde_json::json!({
+                                "notified": true,
+                                "file": restart_file,
+                            }),
+                        );
                     }
                     Err(e) => {
-                        output_error_response(&id, "request_restart",
-                            &format!("Failed to write restart file: {e}"));
+                        output_error_response(
+                            &id,
+                            "request_restart",
+                            &format!("Failed to write restart file: {e}"),
+                        );
                     }
                 }
             }
 
             // ── 同步查询 ──
             "get_state" => {
-                output_response(&id, "get_state", &serde_json::json!({
-                    "model": model_id,
-                    "provider": provider,
-                    "session_id": sid,
-                    "message_count": agent.messages().len(),
-                    "is_running": agent.is_running(),
-                    "steering_queue": agent.steering_queue_len(),
-                    "follow_up_queue": agent.follow_up_queue_len(),
-                }));
+                output_response(
+                    &id,
+                    "get_state",
+                    &serde_json::json!({
+                        "model": model_id,
+                        "provider": provider,
+                        "session_id": sid,
+                        "message_count": agent.messages().len(),
+                        "is_running": agent.is_running(),
+                        "steering_queue": agent.steering_queue_len(),
+                        "follow_up_queue": agent.follow_up_queue_len(),
+                    }),
+                );
             }
 
             "get_session_info" => {
                 // 统一状态接口（合并 get_state + get_session_stats + token 统计）
-                let total_input: u64 = agent.messages().iter()
-                    .filter_map(|m| match m { Message::Assistant(a) => Some(a.usage.input), _ => None })
+                let total_input: u64 = agent
+                    .messages()
+                    .iter()
+                    .filter_map(|m| match m {
+                        Message::Assistant(a) => Some(a.usage.input),
+                        _ => None,
+                    })
                     .sum();
-                let total_output: u64 = agent.messages().iter()
-                    .filter_map(|m| match m { Message::Assistant(a) => Some(a.usage.output), _ => None })
+                let total_output: u64 = agent
+                    .messages()
+                    .iter()
+                    .filter_map(|m| match m {
+                        Message::Assistant(a) => Some(a.usage.output),
+                        _ => None,
+                    })
                     .sum();
-                let user_count = agent.messages().iter()
-                    .filter(|m| matches!(m, Message::User(_))).count();
-                let assistant_count = agent.messages().iter()
-                    .filter(|m| matches!(m, Message::Assistant(_))).count();
-                let tool_result_count = agent.messages().iter()
-                    .filter(|m| matches!(m, Message::ToolResult(_))).count();
-                output_response(&id, "get_session_info", &serde_json::json!({
-                    "session_id": sid,
-                    "model": model_id,
-                    "provider": provider,
-                    "agent": current_agent_name,
-                    "is_running": agent.is_running(),
-                    "is_stopped": agent.is_stopped(),
-                    "message_count": agent.messages().len(),
-                    "user_messages": user_count,
-                    "assistant_messages": assistant_count,
-                    "tool_results": tool_result_count,
-                    "tokens": {
-                        "input": total_input,
-                        "output": total_output,
-                        "total": total_input + total_output,
-                    },
-                    "steering_queue": agent.steering_queue_len(),
-                    "follow_up_queue": agent.follow_up_queue_len(),
-                    "context_window": agent.model().context_window,
-                    "max_tokens": agent.model().max_tokens,
-                }));
+                let user_count = agent
+                    .messages()
+                    .iter()
+                    .filter(|m| matches!(m, Message::User(_)))
+                    .count();
+                let assistant_count = agent
+                    .messages()
+                    .iter()
+                    .filter(|m| matches!(m, Message::Assistant(_)))
+                    .count();
+                let tool_result_count = agent
+                    .messages()
+                    .iter()
+                    .filter(|m| matches!(m, Message::ToolResult(_)))
+                    .count();
+                output_response(
+                    &id,
+                    "get_session_info",
+                    &serde_json::json!({
+                        "session_id": sid,
+                        "model": model_id,
+                        "provider": provider,
+                        "agent": current_agent_name,
+                        "is_running": agent.is_running(),
+                        "is_stopped": agent.is_stopped(),
+                        "message_count": agent.messages().len(),
+                        "user_messages": user_count,
+                        "assistant_messages": assistant_count,
+                        "tool_results": tool_result_count,
+                        "tokens": {
+                            "input": total_input,
+                            "output": total_output,
+                            "total": total_input + total_output,
+                        },
+                        "steering_queue": agent.steering_queue_len(),
+                        "follow_up_queue": agent.follow_up_queue_len(),
+                        "context_window": agent.model().context_window,
+                        "max_tokens": agent.model().max_tokens,
+                    }),
+                );
             }
 
             "get_inflight_messages" => {
@@ -1208,23 +1403,38 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 let msgs = agent.messages();
                 let total = msgs.len();
                 let start = total.saturating_sub(limit);
-                let recent: Vec<serde_json::Value> = msgs[start..].iter()
+                let recent: Vec<serde_json::Value> = msgs[start..]
+                    .iter()
                     .map(|m| serde_json::to_value(m).unwrap_or(serde_json::json!(null)))
                     .collect();
-                output_response(&id, "get_inflight_messages", &serde_json::json!({
-                    "total": total,
-                    "returned": recent.len(),
-                    "is_running": agent.is_running(),
-                    "messages": recent,
-                }));
+                output_response(
+                    &id,
+                    "get_inflight_messages",
+                    &serde_json::json!({
+                        "total": total,
+                        "returned": recent.len(),
+                        "is_running": agent.is_running(),
+                        "messages": recent,
+                    }),
+                );
             }
 
             "get_session_stats" => {
-                let total_input: u64 = agent.messages().iter()
-                    .filter_map(|m| match m { Message::Assistant(a) => Some(a.usage.input), _ => None })
+                let total_input: u64 = agent
+                    .messages()
+                    .iter()
+                    .filter_map(|m| match m {
+                        Message::Assistant(a) => Some(a.usage.input),
+                        _ => None,
+                    })
                     .sum();
-                let total_output: u64 = agent.messages().iter()
-                    .filter_map(|m| match m { Message::Assistant(a) => Some(a.usage.output), _ => None })
+                let total_output: u64 = agent
+                    .messages()
+                    .iter()
+                    .filter_map(|m| match m {
+                        Message::Assistant(a) => Some(a.usage.output),
+                        _ => None,
+                    })
                     .sum();
 
                 // 从 SessionIndex 读血缘 + lastEntryId
@@ -1236,46 +1446,63 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
                 // 从磁盘读 lastEntryId（如果 index 里没有）
                 let last_entry_id = last_entry_id.or_else(|| {
-                    crate::session_jsonl::SessionFile::load(&worker_cwd)
-                        .and_then(|f| f.last_id)
+                    crate::session_jsonl::SessionFile::load(&worker_cwd).and_then(|f| f.last_id)
                 });
 
-                output_response(&id, "get_session_stats", &serde_json::json!({
-                    "sessionId": sid,
-                    "userMessages": agent.messages().iter().filter(|m| matches!(m, Message::User(_))).count(),
-                    "assistantMessages": agent.messages().iter().filter(|m| matches!(m, Message::Assistant(_))).count(),
-                    "toolResults": agent.messages().iter().filter(|m| matches!(m, Message::ToolResult(_))).count(),
-                    "totalMessages": agent.messages().len(),
-                    "tokens": {"input": total_input, "output": total_output, "cacheRead": 0, "cacheWrite": 0, "total": total_input + total_output},
-                    "cost": 0,
-                    "lastEntryId": last_entry_id,
-                    "parentSession": parent_session,
-                    "parentType": parent_type,
-                }));
+                output_response(
+                    &id,
+                    "get_session_stats",
+                    &serde_json::json!({
+                        "sessionId": sid,
+                        "userMessages": agent.messages().iter().filter(|m| matches!(m, Message::User(_))).count(),
+                        "assistantMessages": agent.messages().iter().filter(|m| matches!(m, Message::Assistant(_))).count(),
+                        "toolResults": agent.messages().iter().filter(|m| matches!(m, Message::ToolResult(_))).count(),
+                        "totalMessages": agent.messages().len(),
+                        "tokens": {"input": total_input, "output": total_output, "cacheRead": 0, "cacheWrite": 0, "total": total_input + total_output},
+                        "cost": 0,
+                        "lastEntryId": last_entry_id,
+                        "parentSession": parent_session,
+                        "parentType": parent_type,
+                    }),
+                );
             }
 
             "get_children" => {
-                let target_session = params.get("session").and_then(|v| v.as_str()).unwrap_or(&sid);
+                let target_session = params
+                    .get("session")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&sid);
                 let index = crate::session_index::SessionIndex::load();
-                let children: Vec<_> = index.get_children(target_session).iter().map(|m| {
-                    serde_json::json!({
-                        "id": m.name,
-                        "name": m.name,
-                        "turnCount": m.turn_count,
-                        "updatedAt": m.updated_at,
-                        "parentSession": m.parent_session,
-                        "parentType": m.parent_type,
+                let children: Vec<_> = index
+                    .get_children(target_session)
+                    .iter()
+                    .map(|m| {
+                        serde_json::json!({
+                            "id": m.name,
+                            "name": m.name,
+                            "turnCount": m.turn_count,
+                            "updatedAt": m.updated_at,
+                            "parentSession": m.parent_session,
+                            "parentType": m.parent_type,
+                        })
                     })
-                }).collect();
-                output_response(&id, "get_children", &serde_json::json!({
-                    "children": children,
-                    "count": children.len(),
-                }));
+                    .collect();
+                output_response(
+                    &id,
+                    "get_children",
+                    &serde_json::json!({
+                        "children": children,
+                        "count": children.len(),
+                    }),
+                );
             }
 
             "get_messages" => {
                 // 解析分页参数
-                let view_str = params.get("view").and_then(|v| v.as_str()).unwrap_or("live");
+                let view_str = params
+                    .get("view")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("live");
                 let view = match view_str {
                     "since_compaction" => crate::message_retrieval::View::SinceCompaction,
                     "full" => crate::message_retrieval::View::Full,
@@ -1284,11 +1511,27 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     }
                     _ => crate::message_retrieval::View::Live,
                 };
-                let after = params.get("after").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let before = params.get("before").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let limit = params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(50);
-                let complete_turn = params.get("complete_turn").and_then(|v| v.as_bool()).unwrap_or(true);
-                let custom_str = params.get("include_custom").and_then(|v| v.as_str()).unwrap_or("none");
+                let after = params
+                    .get("after")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let before = params
+                    .get("before")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let limit = params
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .unwrap_or(50);
+                let complete_turn = params
+                    .get("complete_turn")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let custom_str = params
+                    .get("include_custom")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("none");
                 let include_custom = match custom_str {
                     "display_only" => crate::message_retrieval::CustomFilter::DisplayOnly,
                     "all" => crate::message_retrieval::CustomFilter::All,
@@ -1307,45 +1550,62 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     complete_turn,
                     include_custom,
                 };
-                let result = crate::message_retrieval::retrieve_messages(&entries, &retrieval_params);
+                let result =
+                    crate::message_retrieval::retrieve_messages(&entries, &retrieval_params);
 
-                output_response(&id, "get_messages", &serde_json::json!({
-                    "messages": result.messages,
-                    "hasMore": result.has_more,
-                    "totalCount": result.total_count,
-                    "nextCursor": result.next_cursor,
-                    "view": result.view,
-                    "compactionPoints": result.compaction_points,
-                }));
+                output_response(
+                    &id,
+                    "get_messages",
+                    &serde_json::json!({
+                        "messages": result.messages,
+                        "hasMore": result.has_more,
+                        "totalCount": result.total_count,
+                        "nextCursor": result.next_cursor,
+                        "view": result.view,
+                        "compactionPoints": result.compaction_points,
+                    }),
+                );
             }
 
             "list_turns" => {
-                let full_content = params.get("full_content").and_then(|v| v.as_bool()).unwrap_or(false);
-                let limit = params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(50);
+                let full_content = params
+                    .get("full_content")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let limit = params
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .unwrap_or(50);
                 let entries: Vec<serde_json::Value> =
                     crate::message_retrieval::load_entries_cached(&worker_cwd);
                 let params = crate::message_retrieval::RetrievalParams {
                     limit,
                     ..Default::default()
                 };
-                let result = crate::message_retrieval::retrieve_turns(&entries, &params, full_content);
-                output_response(&id, "list_turns", &serde_json::json!({
-                    "turns": result.turns.iter().map(|t| serde_json::json!({
-                        "turnId": t.turn_id,
-                        "userContent": t.user_content,
-                        "assistantContent": t.assistant_content,
-                        "keySteps": t.key_steps,
-                        "toolCallCount": t.tool_call_count,
-                        "tokens": {"input": t.tokens_input, "output": t.tokens_output},
-                        "status": t.status,
-                        "summary": t.summary,
-                        "durationMs": t.duration_ms,
-                        "source": t.source,
-                    })).collect::<Vec<_>>(),
-                    "hasMore": result.has_more,
-                    "totalCount": result.total_count,
-                    "nextCursor": result.next_cursor,
-                }));
+                let result =
+                    crate::message_retrieval::retrieve_turns(&entries, &params, full_content);
+                output_response(
+                    &id,
+                    "list_turns",
+                    &serde_json::json!({
+                        "turns": result.turns.iter().map(|t| serde_json::json!({
+                            "turnId": t.turn_id,
+                            "userContent": t.user_content,
+                            "assistantContent": t.assistant_content,
+                            "keySteps": t.key_steps,
+                            "toolCallCount": t.tool_call_count,
+                            "tokens": {"input": t.tokens_input, "output": t.tokens_output},
+                            "status": t.status,
+                            "summary": t.summary,
+                            "durationMs": t.duration_ms,
+                            "source": t.source,
+                        })).collect::<Vec<_>>(),
+                        "hasMore": result.has_more,
+                        "totalCount": result.total_count,
+                        "nextCursor": result.next_cursor,
+                    }),
+                );
             }
 
             "list_inputs" => {
@@ -1355,16 +1615,20 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     &entries,
                     &crate::message_retrieval::RetrievalParams::default(),
                 );
-                output_response(&id, "list_inputs", &serde_json::json!({
-                    "inputs": result.inputs.iter().map(|i| serde_json::json!({
-                        "turnId": i.turn_id,
-                        "entryId": i.entry_id,
-                        "text": i.text,
-                    })).collect::<Vec<_>>(),
-                    "hasMore": result.has_more,
-                    "totalCount": result.total_count,
-                    "nextCursor": result.next_cursor,
-                }));
+                output_response(
+                    &id,
+                    "list_inputs",
+                    &serde_json::json!({
+                        "inputs": result.inputs.iter().map(|i| serde_json::json!({
+                            "turnId": i.turn_id,
+                            "entryId": i.entry_id,
+                            "text": i.text,
+                        })).collect::<Vec<_>>(),
+                        "hasMore": result.has_more,
+                        "totalCount": result.total_count,
+                        "nextCursor": result.next_cursor,
+                    }),
+                );
             }
 
             "get_turn_detail" => {
@@ -1376,60 +1640,90 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     turn_id,
                     &crate::message_retrieval::CustomFilter::None,
                 ) {
-                    Some(detail) => output_response(&id, "get_turn_detail", &serde_json::json!({
-                        "turnId": detail.turn_id,
-                        "entries": detail.entries,
-                        "overview": {
-                            "userContent": detail.overview.user_content,
-                            "assistantContent": detail.overview.assistant_content,
-                            "keySteps": detail.overview.key_steps,
-                            "toolCallCount": detail.overview.tool_call_count,
-                            "tokens": {"input": detail.overview.tokens_input, "output": detail.overview.tokens_output},
-                            "status": detail.overview.status,
-                            "durationMs": detail.overview.duration_ms,
-                            "source": detail.overview.source,
-                        }
-                    })),
-                    None => output_response(&id, "get_turn_detail", &serde_json::json!({
-                        "error": "turn not found", "turnId": turn_id
-                    })),
+                    Some(detail) => output_response(
+                        &id,
+                        "get_turn_detail",
+                        &serde_json::json!({
+                            "turnId": detail.turn_id,
+                            "entries": detail.entries,
+                            "overview": {
+                                "userContent": detail.overview.user_content,
+                                "assistantContent": detail.overview.assistant_content,
+                                "keySteps": detail.overview.key_steps,
+                                "toolCallCount": detail.overview.tool_call_count,
+                                "tokens": {"input": detail.overview.tokens_input, "output": detail.overview.tokens_output},
+                                "status": detail.overview.status,
+                                "durationMs": detail.overview.duration_ms,
+                                "source": detail.overview.source,
+                            }
+                        }),
+                    ),
+                    None => output_response(
+                        &id,
+                        "get_turn_detail",
+                        &serde_json::json!({
+                            "error": "turn not found", "turnId": turn_id
+                        }),
+                    ),
                 }
             }
 
             "get_last_assistant_text" => {
-                let text = agent.messages().iter().rev()
+                let text = agent
+                    .messages()
+                    .iter()
+                    .rev()
                     .find_map(|m| match m {
                         Message::Assistant(a) => a.content.iter().find_map(|b| match b {
                             AssistantContentBlock::Text(t) => Some(t.text.clone()),
                             _ => None,
                         }),
                         _ => None,
-                    }).unwrap_or_default();
+                    })
+                    .unwrap_or_default();
                 output_response(&id, "get_last_assistant_text", &serde_json::json!(text));
             }
 
             "get_tools" => {
-                output_response(&id, "get_tools", &serde_json::json!({"tools": [
-                    {"name": "read"}, {"name": "write"}, {"name": "edit"},
-                    {"name": "bash"}, {"name": "grep"}, {"name": "find"},
-                    {"name": "ls"}, {"name": "calculator"}, {"name": "echo"}
-                ]}));
+                output_response(
+                    &id,
+                    "get_tools",
+                    &serde_json::json!({"tools": [
+                        {"name": "read"}, {"name": "write"}, {"name": "edit"},
+                        {"name": "bash"}, {"name": "grep"}, {"name": "find"},
+                        {"name": "ls"}, {"name": "calculator"}, {"name": "echo"}
+                    ]}),
+                );
             }
 
             // ── 异步操作 ──
             "set_model" => {
                 let new_model = params.get("modelId").and_then(|v| v.as_str()).unwrap_or("");
-                let new_provider = params.get("provider").and_then(|v| v.as_str()).unwrap_or(&provider);
+                let new_provider = params
+                    .get("provider")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&provider);
                 model_id = new_model.to_string();
                 provider = new_provider.to_string();
-                output_response(&id, "get_state", &serde_json::json!({
-                    "model": model_id, "provider": provider
-                }));
+                output_response(
+                    &id,
+                    "get_state",
+                    &serde_json::json!({
+                        "model": model_id, "provider": provider
+                    }),
+                );
             }
 
             "set_thinking_level" => {
-                let level = params.get("level").and_then(|v| v.as_str()).unwrap_or("off");
-                output_response(&id, "set_thinking_level", &serde_json::json!({"thinkingLevel": level}));
+                let level = params
+                    .get("level")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("off");
+                output_response(
+                    &id,
+                    "set_thinking_level",
+                    &serde_json::json!({"thinkingLevel": level}),
+                );
             }
 
             "set_session_name" => {
@@ -1437,7 +1731,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 output_response(&id, "set_session_name", &serde_json::json!({"name": name}));
             }
 
-                        // ── 流式命令 ──
+            // ── 流式命令 ──
             //
             // prompt(text, behavior?: "interrupt" | "steer" | "followUp")
             //   空闲时直接执行。忙时 + behavior 决定策略：
@@ -1450,15 +1744,23 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             // abort()  → 硬停止
             // promote_follow_up → 提升 follow_up 到 steering
             "prompt" => {
-                let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let text = params
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 // 默认 behavior：steer（对齐 pi：流式中默认插话入队，不打断）。
                 // 可通过 ION_PROMPT_BEHAVIOR=interrupt 切回旧行为。
                 // 显式传 params.behavior / params.streamingBehavior 优先级最高。
                 let default_behavior = std::env::var("ION_PROMPT_BEHAVIOR")
-                    .ok().filter(|s| matches!(s.as_str(), "interrupt" | "steer" | "followUp"))
+                    .ok()
+                    .filter(|s| matches!(s.as_str(), "interrupt" | "steer" | "followUp"))
                     .unwrap_or_else(|| "steer".to_string());
-                let pbehavior = params.get("behavior").or_else(|| params.get("streamingBehavior"))
-                    .and_then(|v| v.as_str()).unwrap_or(&default_behavior);
+                let pbehavior = params
+                    .get("behavior")
+                    .or_else(|| params.get("streamingBehavior"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&default_behavior);
 
                 // !cmd 用户直发：拦截成 bash_command（避免走完整 agent loop，对齐 pi）
                 // 形如 "!ls -la" 或 "! cargo build" → 取 '!' 之后的部分作为命令
@@ -1466,33 +1768,43 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     let cmd_text = stripped.trim().to_string();
                     if !cmd_text.is_empty() {
                         // 直接执行，不入 agent loop
-                        let timeout_secs = params.get("timeout").and_then(|v| v.as_u64()).unwrap_or(30);
-                        let (stdout, stderr, exit_code) = match execute_bash(&cmd_text, timeout_secs).await {
-                            Ok(t) => t,
-                            Err(e) => {
-                                let bash_msg = BashExecutionMessage {
-                                    role: "bashExecution".into(),
-                                    command: cmd_text.clone(),
-                                    output: format!("error: {e}"),
-                                    exit_code: None,
-                                    cancelled: false,
-                                    truncated: false,
-                                    full_output_path: None,
-                                    timestamp: now_ms(),
-                                    exclude_from_context: None,
-                                };
-                                agent.push_message(Message::BashExecution(bash_msg));
-                                output_response(&id, "prompt", &serde_json::json!({
-                                    "status":"bash_error",
-                                    "command": cmd_text,
-                                    "error": e,
-                                }));
-                                continue;
-                            }
+                        let timeout_secs =
+                            params.get("timeout").and_then(|v| v.as_u64()).unwrap_or(30);
+                        let (stdout, stderr, exit_code) =
+                            match execute_bash(&cmd_text, timeout_secs).await {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    let bash_msg = BashExecutionMessage {
+                                        role: "bashExecution".into(),
+                                        command: cmd_text.clone(),
+                                        output: format!("error: {e}"),
+                                        exit_code: None,
+                                        cancelled: false,
+                                        truncated: false,
+                                        full_output_path: None,
+                                        timestamp: now_ms(),
+                                        exclude_from_context: None,
+                                    };
+                                    agent.push_message(Message::BashExecution(bash_msg));
+                                    output_response(
+                                        &id,
+                                        "prompt",
+                                        &serde_json::json!({
+                                            "status":"bash_error",
+                                            "command": cmd_text,
+                                            "error": e,
+                                        }),
+                                    );
+                                    continue;
+                                }
+                            };
+                        let combined = if stderr.is_empty() {
+                            stdout
+                        } else if stdout.is_empty() {
+                            stderr
+                        } else {
+                            format!("{stdout}\n[stderr]\n{stderr}")
                         };
-                        let combined = if stderr.is_empty() { stdout }
-                            else if stdout.is_empty() { stderr }
-                            else { format!("{stdout}\n[stderr]\n{stderr}") };
                         let truncated = combined.contains("[truncated");
                         let bash_msg = BashExecutionMessage {
                             role: "bashExecution".into(),
@@ -1507,16 +1819,26 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         };
                         agent.push_message(Message::BashExecution(bash_msg));
 
-                        output(&serde_json::json!({"type":"event","event":{"type":"agent_start","sessionId":sid,"timestamp":now_ms()}}));
-                        output(&serde_json::json!({"type":"event","event":{"type":"text_delta","delta":&combined}}));
-                        output(&serde_json::json!({"type":"event","event":{"type":"agent_end","sessionId":sid,"timestamp":now_ms()}}));
-                        output_response(&id, "prompt", &serde_json::json!({
-                            "status":"bash_executed",
-                            "command": cmd_text,
-                            "exitCode": exit_code,
-                            "output": combined,
-                            "truncated": truncated,
-                        }));
+                        output(
+                            &serde_json::json!({"type":"event","event":{"type":"agent_start","sessionId":sid,"timestamp":now_ms()}}),
+                        );
+                        output(
+                            &serde_json::json!({"type":"event","event":{"type":"text_delta","delta":&combined}}),
+                        );
+                        output(
+                            &serde_json::json!({"type":"event","event":{"type":"agent_end","sessionId":sid,"timestamp":now_ms()}}),
+                        );
+                        output_response(
+                            &id,
+                            "prompt",
+                            &serde_json::json!({
+                                "status":"bash_executed",
+                                "command": cmd_text,
+                                "exitCode": exit_code,
+                                "output": combined,
+                                "truncated": truncated,
+                            }),
+                        );
                         continue;
                     }
                 }
@@ -1525,20 +1847,34 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 if agent.is_running() && pbehavior == "steer" {
                     agent.steer(Message::User(UserMessage {
                         role: "user".into(),
-                        content: vec![ContentBlock::Text(TextContent { text: text.clone(), text_signature: None })],
+                        content: vec![ContentBlock::Text(TextContent {
+                            text: text.clone(),
+                            text_signature: None,
+                        })],
                         timestamp: now_ms(),
                         source: ion_provider::types::MessageSource::Steer,
                     }));
-                    output_response(&id, "prompt", &serde_json::json!({"status":"queued","queue":"steering"}));
+                    output_response(
+                        &id,
+                        "prompt",
+                        &serde_json::json!({"status":"queued","queue":"steering"}),
+                    );
                     skip = true;
                 } else if agent.is_running() && pbehavior == "followUp" {
                     agent.follow_up(Message::User(UserMessage {
                         role: "user".into(),
-                        content: vec![ContentBlock::Text(TextContent { text: text.clone(), text_signature: None })],
+                        content: vec![ContentBlock::Text(TextContent {
+                            text: text.clone(),
+                            text_signature: None,
+                        })],
                         timestamp: now_ms(),
                         source: ion_provider::types::MessageSource::FollowUp,
                     }));
-                    output_response(&id, "prompt", &serde_json::json!({"status":"queued","queue":"followUp"}));
+                    output_response(
+                        &id,
+                        "prompt",
+                        &serde_json::json!({"status":"queued","queue":"followUp"}),
+                    );
                     skip = true;
                 } else if agent.is_running() && pbehavior == "interrupt" {
                     agent.stop();
@@ -1548,7 +1884,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     output_response(&id, "prompt", &serde_json::Value::Null);
                     // agent_start / text_delta / agent_end 由 StreamingExtension 实时推送，
                     // 不需要这里再发（避免重复）
-                    output(&serde_json::json!({"type":"event","event":{"type":"agent_start","sessionId":sid,"timestamp":now_ms()}}));
+                    output(
+                        &serde_json::json!({"type":"event","event":{"type":"agent_start","sessionId":sid,"timestamp":now_ms()}}),
+                    );
                     {
                         let mut ctx = wasm_ext_registry.ctx.write().unwrap();
                         ctx.session_id = sid.clone();
@@ -1561,8 +1899,16 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     // 同时支持 abort(pause_tx clone + 设 stopped)
                     let pause_tx_clone = agent.pause_handle();
                     let stopped_handle = agent.stopped_handle();
-                    let pending_steer_queue: std::sync::Arc<tokio::sync::Mutex<std::collections::VecDeque<(ion_provider::types::MessageSource, ion_provider::types::Message)>>> =
-                        std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::VecDeque::new()));
+                    let pending_steer_queue: std::sync::Arc<
+                        tokio::sync::Mutex<
+                            std::collections::VecDeque<(
+                                ion_provider::types::MessageSource,
+                                ion_provider::types::Message,
+                            )>,
+                        >,
+                    > = std::sync::Arc::new(tokio::sync::Mutex::new(
+                        std::collections::VecDeque::new(),
+                    ));
                     let run_result = {
                         let mut run_fut = std::pin::pin!(agent.run(&text));
                         loop {
@@ -1730,12 +2076,15 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     };
                     match run_result {
                         Ok(()) => {
-                            let msgs_json: Vec<serde_json::Value> = agent.messages().iter()
+                            let msgs_json: Vec<serde_json::Value> = agent
+                                .messages()
+                                .iter()
                                 .filter_map(|m| serde_json::to_value(m).ok())
                                 .collect();
                             save_worker_session(&sid, &worker_cwd, &msgs_json);
                             // 区分正常完成 vs 被中止
-                            let was_stopped = stopped_handle.load(std::sync::atomic::Ordering::SeqCst);
+                            let was_stopped =
+                                stopped_handle.load(std::sync::atomic::Ordering::SeqCst);
                             let (evt_type, reason) = if was_stopped {
                                 ("agent_stopped", "user_abort")
                             } else {
@@ -1762,7 +2111,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         while let Some((source, msg)) = pq.pop_front() {
                             match source {
                                 ion_provider::types::MessageSource::Steer => agent.steer(msg),
-                                ion_provider::types::MessageSource::FollowUp => agent.follow_up(msg),
+                                ion_provider::types::MessageSource::FollowUp => {
+                                    agent.follow_up(msg)
+                                }
                                 _ => agent.follow_up(msg),
                             }
                         }
@@ -1770,8 +2121,15 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 }
             }
             "steer" => {
-                let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let immediate = params.get("immediate").and_then(|v| v.as_bool()).unwrap_or(false);
+                let text = params
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let immediate = params
+                    .get("immediate")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 let promote = params.get("promote").and_then(|v| v.as_u64());
                 if let Some(idx) = promote {
                     agent.promote_follow_up(idx as usize);
@@ -1781,11 +2139,16 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         break;
                     }
                 }
-                if immediate { agent.stop(); }
+                if immediate {
+                    agent.stop();
+                }
                 if !text.is_empty() {
                     agent.steer(Message::User(UserMessage {
                         role: "user".into(),
-                        content: vec![ContentBlock::Text(TextContent { text: text.clone(), text_signature: None })],
+                        content: vec![ContentBlock::Text(TextContent {
+                            text: text.clone(),
+                            text_signature: None,
+                        })],
                         timestamp: now_ms(),
                         source: ion_provider::types::MessageSource::Steer,
                     }));
@@ -1797,15 +2160,25 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 output_response(&id, "abort", &serde_json::Value::Null);
             }
             "promote_follow_up" => {
-                let index = params.get("item")
-                    .and_then(|i| i.get("index")).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                let text = params.get("item")
-                    .and_then(|i| i.get("text")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let index = params
+                    .get("item")
+                    .and_then(|i| i.get("index"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                let text = params
+                    .get("item")
+                    .and_then(|i| i.get("text"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 agent.promote_follow_up(index);
                 if !text.is_empty() {
                     agent.steer(Message::User(UserMessage {
                         role: "user".into(),
-                        content: vec![ContentBlock::Text(TextContent { text: text.clone(), text_signature: None })],
+                        content: vec![ContentBlock::Text(TextContent {
+                            text: text.clone(),
+                            text_signature: None,
+                        })],
                         timestamp: now_ms(),
                         source: ion_provider::types::MessageSource::Steer,
                     }));
@@ -1815,30 +2188,44 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             "remove_follow_up" => {
                 let index = params.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                 let removed = agent.remove_follow_up(index);
-                output_response(&id, "remove_follow_up", &serde_json::json!({
-                    "removed": removed.is_some(),
-                    "follow_up_queue": agent.follow_up_queue_len(),
-                }));
+                output_response(
+                    &id,
+                    "remove_follow_up",
+                    &serde_json::json!({
+                        "removed": removed.is_some(),
+                        "follow_up_queue": agent.follow_up_queue_len(),
+                    }),
+                );
             }
             "remove_steering" => {
                 let index = params.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                 let removed = agent.remove_steering(index);
-                output_response(&id, "remove_steering", &serde_json::json!({
-                    "removed": removed.is_some(),
-                    "steering_queue": agent.steering_queue_len(),
-                }));
+                output_response(
+                    &id,
+                    "remove_steering",
+                    &serde_json::json!({
+                        "removed": removed.is_some(),
+                        "steering_queue": agent.steering_queue_len(),
+                    }),
+                );
             }
-// ── Channel 消息 (从其他 Worker 转发过来) ──
+            // ── Channel 消息 (从其他 Worker 转发过来) ──
             // 把消息作为 follow_up 注入 Agent，让 Agent 下一轮消化（不抢当前轮次）。
             "channel_msg" => {
-                let channel = params.get("channel").and_then(|v| v.as_str())
+                let channel = params
+                    .get("channel")
+                    .and_then(|v| v.as_str())
                     .or_else(|| cmd.get("channel").and_then(|v| v.as_str()))
                     .unwrap_or("");
-                let from = params.get("from").and_then(|v| v.as_str())
+                let from = params
+                    .get("from")
+                    .and_then(|v| v.as_str())
                     .or_else(|| cmd.get("from").and_then(|v| v.as_str()))
                     .unwrap_or("");
-                let msg_text = params.get("msg")
-                    .and_then(|m| m.get("text")).and_then(|v| v.as_str())
+                let msg_text = params
+                    .get("msg")
+                    .and_then(|m| m.get("text"))
+                    .and_then(|v| v.as_str())
                     .or_else(|| params.get("msg").and_then(|v| v.as_str()))
                     .or_else(|| cmd.get("msg").and_then(|v| v.as_str()))
                     .unwrap_or("");
@@ -1851,11 +2238,14 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     crate::agent::messages::UserMessage {
                         role: "user".into(),
                         content: vec![crate::agent::messages::ContentBlock::Text(
-                            crate::agent::messages::TextContent { text: user_text, text_signature: None }
+                            crate::agent::messages::TextContent {
+                                text: user_text,
+                                text_signature: None,
+                            },
                         )],
                         timestamp: now_ms(),
                         source: ion_provider::types::MessageSource::FollowUp,
-                    }
+                    },
                 ));
                 tracing::info!("[channel] {channel} from {from}: {msg_text} (queued as follow_up)");
                 output_response(&id, "channel_msg", &serde_json::Value::Null);
@@ -1870,10 +2260,14 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     // 结果由 manager_response → pending map → oneshot 触发；
                     // RPC 调用方（如果想要结果）应该用 spawn_worker 工具，而不是 RPC。
                 });
-                output_response(&id, "create_worker", &serde_json::json!({
-                    "status": "pending",
-                    "message": "create_worker forwarded to Manager",
-                }));
+                output_response(
+                    &id,
+                    "create_worker",
+                    &serde_json::json!({
+                        "status": "pending",
+                        "message": "create_worker forwarded to Manager",
+                    }),
+                );
             }
 
             "channel_send" => {
@@ -1881,10 +2275,14 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 tokio::spawn(async move {
                     let _ = bridge.send_command("channel_send", params).await;
                 });
-                output_response(&id, "channel_send", &serde_json::json!({
-                    "status": "pending",
-                    "message": "channel_send forwarded to Manager",
-                }));
+                output_response(
+                    &id,
+                    "channel_send",
+                    &serde_json::json!({
+                        "status": "pending",
+                        "message": "channel_send forwarded to Manager",
+                    }),
+                );
             }
 
             "send_to_worker" => {
@@ -1892,10 +2290,14 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 tokio::spawn(async move {
                     let _ = bridge.send_command("send_to_worker", params).await;
                 });
-                output_response(&id, "send_to_worker", &serde_json::json!({
-                    "status": "pending",
-                    "message": "send_to_worker forwarded to Manager",
-                }));
+                output_response(
+                    &id,
+                    "send_to_worker",
+                    &serde_json::json!({
+                        "status": "pending",
+                        "message": "send_to_worker forwarded to Manager",
+                    }),
+                );
             }
 
             // ── 生命周期 ──
@@ -1907,62 +2309,87 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             // ── 未实现的命令（返回空/默认值，格式对齐 pi）──
             "get_system_prompt" => {
                 // Return the first user message (system prompt)
-                let sp = agent.messages().iter()
+                let sp = agent
+                    .messages()
+                    .iter()
                     .find_map(|m| match m {
-                        crate::agent::messages::Message::User(u) => u.content.iter().find_map(|b| match b {
-                            crate::agent::messages::ContentBlock::Text(t) => Some(t.text.clone()),
-                            _ => None,
-                        }),
+                        crate::agent::messages::Message::User(u) => {
+                            u.content.iter().find_map(|b| match b {
+                                crate::agent::messages::ContentBlock::Text(t) => {
+                                    Some(t.text.clone())
+                                }
+                                _ => None,
+                            })
+                        }
                         _ => None,
-                    }).unwrap_or_default();
+                    })
+                    .unwrap_or_default();
                 output_response(&id, "get_system_prompt", &serde_json::json!(sp));
-            },
+            }
             "get_agents" => {
                 // 真实实现：列出所有内置 + 自定义 agent
                 let agents = crate::agent_config::builtin_agents();
-                let list: Vec<serde_json::Value> = agents.iter().map(|a| {
-                    serde_json::json!({
-                        "name": a.name,
-                        "description": a.description,
-                        "color": a.color,
-                        "tier": a.tier,
-                        "source": a.source,
+                let list: Vec<serde_json::Value> = agents
+                    .iter()
+                    .map(|a| {
+                        serde_json::json!({
+                            "name": a.name,
+                            "description": a.description,
+                            "color": a.color,
+                            "tier": a.tier,
+                            "source": a.source,
+                        })
                     })
-                }).collect();
+                    .collect();
                 output_response(&id, "get_agents", &serde_json::json!(list));
-            },
+            }
             "get_current_agent" => {
                 // 当前 agent（从 crate::agent_config 读真实定义）
-                let cur = crate::agent_config::find_agent(&current_agent_name)
-                    .unwrap_or_else(|| {
-                        crate::agent_config::builtin_agents().into_iter()
-                            .next().unwrap()
+                let cur =
+                    crate::agent_config::find_agent(&current_agent_name).unwrap_or_else(|| {
+                        crate::agent_config::builtin_agents()
+                            .into_iter()
+                            .next()
+                            .unwrap()
                     });
-                output_response(&id, "get_current_agent", &serde_json::json!({
-                    "name": cur.name,
-                    "description": cur.description,
-                    "color": cur.color,
-                    "tier": cur.tier,
-                }));
-            },
+                output_response(
+                    &id,
+                    "get_current_agent",
+                    &serde_json::json!({
+                        "name": cur.name,
+                        "description": cur.description,
+                        "color": cur.color,
+                        "tier": cur.tier,
+                    }),
+                );
+            }
             "get_settings" => {
                 let cfg = crate::config::IonConfig::load();
                 let key = params.get("key").and_then(|v| v.as_str());
                 if let Some(k) = key {
                     let val = match k {
-                        "default_provider" | "default-provider" => serde_json::json!(cfg.default_provider),
+                        "default_provider" | "default-provider" => {
+                            serde_json::json!(cfg.default_provider)
+                        }
                         "default_model" | "default-model" => serde_json::json!(cfg.default_model),
-                        "api_key" | "api-key" => serde_json::json!(if cfg.api_key.is_some() { "***" } else { "" }),
+                        "api_key" | "api-key" => {
+                            serde_json::json!(if cfg.api_key.is_some() { "***" } else { "" })
+                        }
                         "base_url" | "base-url" => serde_json::json!(cfg.base_url),
                         "runtime" => serde_json::json!(cfg.runtime),
                         "extensions" => serde_json::json!(cfg.extensions),
                         _ => serde_json::Value::Null,
                     };
-                    output_response(&id, "get_settings", &serde_json::json!({ "key": k, "value": val }));
+                    output_response(
+                        &id,
+                        "get_settings",
+                        &serde_json::json!({ "key": k, "value": val }),
+                    );
                 } else {
                     let mut cfg_json = serde_json::to_value(&cfg).unwrap_or_default();
                     if cfg_json.get("api_key").is_some() {
-                        cfg_json["api_key"] = serde_json::json!(if cfg.api_key.is_some() { "***" } else { "" });
+                        cfg_json["api_key"] =
+                            serde_json::json!(if cfg.api_key.is_some() { "***" } else { "" });
                     }
                     output_response(&id, "get_settings", &cfg_json);
                 }
@@ -2052,28 +2479,40 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     }
                 }
 
-                output_response(&id, "get_skills", &serde_json::json!({
-                    "skills": skills,
-                    "count": skills.len(),
-                }));
+                output_response(
+                    &id,
+                    "get_skills",
+                    &serde_json::json!({
+                        "skills": skills,
+                        "count": skills.len(),
+                    }),
+                );
             }
             "get_extensions" => {
                 // 列出已加载的扩展（从 ExtensionRegistry）
                 let exts: Vec<_> = agent.extensions().names();
-                output_response(&id, "get_extensions", &serde_json::json!({
-                    "extensions": exts.iter().map(|n| serde_json::json!({"name": n})).collect::<Vec<_>>(),
-                    "count": exts.len(),
-                }));
+                output_response(
+                    &id,
+                    "get_extensions",
+                    &serde_json::json!({
+                        "extensions": exts.iter().map(|n| serde_json::json!({"name": n})).collect::<Vec<_>>(),
+                        "count": exts.len(),
+                    }),
+                );
             }
             "get_available_models" => {
-                let models: Vec<serde_json::Value> = model_reg.list_models().iter()
-                    .map(|m| serde_json::json!({
-                        "id": m.id, "name": m.name, "provider": m.provider,
-                        "reasoning": m.reasoning, "contextWindow": m.context_window,
-                    }))
+                let models: Vec<serde_json::Value> = model_reg
+                    .list_models()
+                    .iter()
+                    .map(|m| {
+                        serde_json::json!({
+                            "id": m.id, "name": m.name, "provider": m.provider,
+                            "reasoning": m.reasoning, "contextWindow": m.context_window,
+                        })
+                    })
                     .collect();
                 output_response(&id, "get_available_models", &serde_json::json!(models));
-            },
+            }
             "get_tier_models" => {
                 let cfg = crate::config::IonConfig::load();
                 output_response(&id, "get_tier_models", &serde_json::json!(cfg.tier_models));
@@ -2084,17 +2523,26 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 // dry_run=true  → returns planned issues without submitting them
                 // dry_run=false → (future) would submit via gh issue create
                 let data_dir = params.get("data_dir").and_then(|v| v.as_str());
-                let dry_run = params.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true);
+                let dry_run = params
+                    .get("dry_run")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
                 match data_dir {
                     None => {
-                        output_response(&id, "goal_evolver_run_once", &serde_json::json!({
-                            "success": false, "error": "data_dir param is required"
-                        }));
+                        output_response(
+                            &id,
+                            "goal_evolver_run_once",
+                            &serde_json::json!({
+                                "success": false, "error": "data_dir param is required"
+                            }),
+                        );
                     }
-                    Some(dir) => {
-                        match crate::goal_evolver::run_once(dir) {
-                            Ok(report) => {
-                                let issues: Vec<serde_json::Value> = report.issues_planned.iter().map(|ip| {
+                    Some(dir) => match crate::goal_evolver::run_once(dir) {
+                        Ok(report) => {
+                            let issues: Vec<serde_json::Value> = report
+                                .issues_planned
+                                .iter()
+                                .map(|ip| {
                                     serde_json::json!({
                                         "title": ip.title,
                                         "dimension": format!("{:?}", ip.dimension),
@@ -2102,176 +2550,273 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                         "body": ip.body,
                                         "would_submit": !dry_run,
                                     })
-                                }).collect();
-                                output_response(&id, "goal_evolver_run_once", &serde_json::json!({
+                                })
+                                .collect();
+                            output_response(
+                                &id,
+                                "goal_evolver_run_once",
+                                &serde_json::json!({
                                     "success": true,
                                     "dry_run": dry_run,
                                     "analyzed_goals": report.analyzed_goals,
                                     "total_iterations": report.total_iterations,
                                     "issues_planned": issues,
-                                }));
-                            }
-                            Err(e) => {
-                                output_response(&id, "goal_evolver_run_once", &serde_json::json!({
-                                    "success": false, "error": e
-                                }));
-                            }
+                                }),
+                            );
                         }
-                    }
+                        Err(e) => {
+                            output_response(
+                                &id,
+                                "goal_evolver_run_once",
+                                &serde_json::json!({
+                                    "success": false, "error": e
+                                }),
+                            );
+                        }
+                    },
                 }
             }
             "get_tree" => {
-                let mode = params.get("mode").and_then(|v| v.as_str()).unwrap_or("structure");
+                let mode = params
+                    .get("mode")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("structure");
                 let entries: Vec<serde_json::Value> =
                     crate::message_retrieval::load_entries_cached(&worker_cwd);
 
                 if entries.is_empty() {
-                    output_response(&id, "get_tree", &serde_json::json!({
-                        "nodes": [], "currentLeaf": null, "branches": [], "compactionPoints": []
-                    }));
+                    output_response(
+                        &id,
+                        "get_tree",
+                        &serde_json::json!({
+                            "nodes": [], "currentLeaf": null, "branches": [], "compactionPoints": []
+                        }),
+                    );
                 } else if mode == "full" {
                     // full 模式：返回全部 entry 骨架
-                    let nodes: Vec<_> = entries.iter().map(|e| serde_json::json!({
-                        "id": e.get("id").and_then(|v| v.as_str()).unwrap_or(""),
-                        "parentId": e.get("parentId").and_then(|v| v.as_str()),
-                        "type": e.get("type").and_then(|v| v.as_str()).unwrap_or(""),
-                        "turnId": e.get("turnId").and_then(|v| v.as_u64()),
-                    })).collect();
-                    output_response(&id, "get_tree", &serde_json::json!({
-                        "nodes": nodes, "mode": "full"
-                    }));
+                    let nodes: Vec<_> = entries
+                        .iter()
+                        .map(|e| {
+                            serde_json::json!({
+                                "id": e.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                                "parentId": e.get("parentId").and_then(|v| v.as_str()),
+                                "type": e.get("type").and_then(|v| v.as_str()).unwrap_or(""),
+                                "turnId": e.get("turnId").and_then(|v| v.as_u64()),
+                            })
+                        })
+                        .collect();
+                    output_response(
+                        &id,
+                        "get_tree",
+                        &serde_json::json!({
+                            "nodes": nodes, "mode": "full"
+                        }),
+                    );
                 } else {
                     // structure 模式：只返回 compaction + leaf_pointer + 分支末端
-                    let struct_nodes: Vec<_> = entries.iter().filter(|e| {
-                        let t = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                        t == "compaction" || t == "leaf_pointer" || t == "turn_summary"
-                    }).cloned().collect();
+                    let struct_nodes: Vec<_> = entries
+                        .iter()
+                        .filter(|e| {
+                            let t = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                            t == "compaction" || t == "leaf_pointer" || t == "turn_summary"
+                        })
+                        .cloned()
+                        .collect();
                     let current_leaf = crate::session_tree::resolve_current_leaf(&entries);
-                    let compaction_points: Vec<_> = entries.iter()
+                    let compaction_points: Vec<_> = entries
+                        .iter()
                         .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("compaction"))
                         .filter_map(|e| e.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
                         .collect();
-                    output_response(&id, "get_tree", &serde_json::json!({
-                        "nodes": struct_nodes,
-                        "currentLeaf": current_leaf,
-                        "compactionPoints": compaction_points,
-                        "mode": "structure"
-                    }));
+                    output_response(
+                        &id,
+                        "get_tree",
+                        &serde_json::json!({
+                            "nodes": struct_nodes,
+                            "currentLeaf": current_leaf,
+                            "compactionPoints": compaction_points,
+                            "mode": "structure"
+                        }),
+                    );
                 }
             }
             "get_modified_files" => {
-                let from_turn = params.get("fromTurn").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let to_turn = params.get("toTurn").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let from_turn = params
+                    .get("fromTurn")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let to_turn = params
+                    .get("toTurn")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 if let Some(ref store) = snapshot_store {
                     let all_snaps = store.load_all_tool_snapshots();
                     // 按 turnId 范围过滤（from/to 是 turnId 字符串，按 timestamp 比较）
                     let snaps: Vec<_> = if from_turn.is_some() || to_turn.is_some() {
-                        let from_ts = from_turn.as_ref()
+                        let from_ts = from_turn
+                            .as_ref()
                             .and_then(|ft| all_snaps.iter().find(|s| &s.turn_id == ft))
                             .map(|s| s.timestamp.clone());
-                        let to_ts = to_turn.as_ref()
+                        let to_ts = to_turn
+                            .as_ref()
                             .and_then(|tt| all_snaps.iter().find(|s| &s.turn_id == tt))
                             .map(|s| s.timestamp.clone());
-                        all_snaps.into_iter().filter(|s| {
-                            let after_from = from_ts.as_ref().map_or(true, |ft| &s.timestamp >= ft);
-                            let before_to = to_ts.as_ref().map_or(true, |tt| &s.timestamp <= tt);
-                            after_from && before_to
-                        }).collect()
+                        all_snaps
+                            .into_iter()
+                            .filter(|s| {
+                                let after_from =
+                                    from_ts.as_ref().is_none_or(|ft| &s.timestamp >= ft);
+                                let before_to = to_ts.as_ref().is_none_or(|tt| &s.timestamp <= tt);
+                                after_from && before_to
+                            })
+                            .collect()
                     } else {
                         all_snaps
                     };
-                    let files: Vec<serde_json::Value> = snaps.iter().map(|s| {
-                        let status = match (&s.before_hash, &s.after_hash) {
-                            (None, Some(_)) => "added",
-                            (Some(_), None) => "deleted",
-                            (Some(_), Some(_)) => "modified",
-                            _ => "unchanged",
-                        };
-                        // source 区分：write/edit 工具 vs bash 目录扫描
-                        let source = match s.tool_name.as_str() {
-                            "write" => "tool_write",
-                            "edit" => "tool_edit",
-                            "bash" => "turn_scan",
-                            _ => "tool",
-                        };
-                        // 路径规范化：cwd 内相对化，cwd 外绝对化
-                        let normalized = normalize_path(&s.path, &worker_cwd);
-                        serde_json::json!({
-                            "path": normalized,
-                            "status": status,
-                            "source": source,
-                            "turnId": s.turn_id,
-                            "toolCallId": s.tool_call_id,
-                            "tool": s.tool_name,
-                            "hasDiff": s.before_hash.is_some() || s.after_hash.is_some(),
+                    let files: Vec<serde_json::Value> = snaps
+                        .iter()
+                        .map(|s| {
+                            let status = match (&s.before_hash, &s.after_hash) {
+                                (None, Some(_)) => "added",
+                                (Some(_), None) => "deleted",
+                                (Some(_), Some(_)) => "modified",
+                                _ => "unchanged",
+                            };
+                            // source 区分：write/edit 工具 vs bash 目录扫描
+                            let source = match s.tool_name.as_str() {
+                                "write" => "tool_write",
+                                "edit" => "tool_edit",
+                                "bash" => "turn_scan",
+                                _ => "tool",
+                            };
+                            // 路径规范化：cwd 内相对化，cwd 外绝对化
+                            let normalized = normalize_path(&s.path, &worker_cwd);
+                            serde_json::json!({
+                                "path": normalized,
+                                "status": status,
+                                "source": source,
+                                "turnId": s.turn_id,
+                                "toolCallId": s.tool_call_id,
+                                "tool": s.tool_name,
+                                "hasDiff": s.before_hash.is_some() || s.after_hash.is_some(),
+                            })
                         })
-                    }).collect();
+                        .collect();
                     let added = files.iter().filter(|f| f["status"] == "added").count();
                     let modified = files.iter().filter(|f| f["status"] == "modified").count();
                     let deleted = files.iter().filter(|f| f["status"] == "deleted").count();
-                    output_response(&id, "get_modified_files", &serde_json::json!({
-                        "files": files,
-                        "summary": { "added": added, "modified": modified, "deleted": deleted },
-                    }));
+                    output_response(
+                        &id,
+                        "get_modified_files",
+                        &serde_json::json!({
+                            "files": files,
+                            "summary": { "added": added, "modified": modified, "deleted": deleted },
+                        }),
+                    );
                 } else {
-                    output_response(&id, "get_modified_files", &serde_json::json!({
-                        "error": "file-snapshot extension not enabled",
-                    }));
+                    output_response(
+                        &id,
+                        "get_modified_files",
+                        &serde_json::json!({
+                            "error": "file-snapshot extension not enabled",
+                        }),
+                    );
                 }
             }
             "get_queue" => {
-                let steering: Vec<serde_json::Value> = agent.steering_queue_snapshot().iter()
-                    .filter_map(|m| serde_json::to_value(m).ok()).collect();
-                let follow_up: Vec<serde_json::Value> = agent.follow_up_queue_snapshot().iter()
-                    .filter_map(|m| serde_json::to_value(m).ok()).collect();
-                output_response(&id, "get_queue", &serde_json::json!({
-                    "steering": steering, "followUp": follow_up,
-                    "steeringCount": agent.steering_queue_len(),
-                    "followUpCount": agent.follow_up_queue_len(),
-                }));
-            },
+                let steering: Vec<serde_json::Value> = agent
+                    .steering_queue_snapshot()
+                    .iter()
+                    .filter_map(|m| serde_json::to_value(m).ok())
+                    .collect();
+                let follow_up: Vec<serde_json::Value> = agent
+                    .follow_up_queue_snapshot()
+                    .iter()
+                    .filter_map(|m| serde_json::to_value(m).ok())
+                    .collect();
+                output_response(
+                    &id,
+                    "get_queue",
+                    &serde_json::json!({
+                        "steering": steering, "followUp": follow_up,
+                        "steeringCount": agent.steering_queue_len(),
+                        "followUpCount": agent.follow_up_queue_len(),
+                    }),
+                );
+            }
             "clear_queue" => {
                 agent.clear_queues();
-                output_response(&id, "clear_queue", &serde_json::json!({
-                    "cleared": true,
-                    "steeringCleared": agent.steering_queue_len(),
-                    "followUpCleared": agent.follow_up_queue_len(),
-                }));
-            },
+                output_response(
+                    &id,
+                    "clear_queue",
+                    &serde_json::json!({
+                        "cleared": true,
+                        "steeringCleared": agent.steering_queue_len(),
+                        "followUpCleared": agent.follow_up_queue_len(),
+                    }),
+                );
+            }
             "get_context_usage" => {
                 let msgs = agent.messages();
-                let input_tokens: u64 = msgs.iter()
-                    .filter_map(|m| match m { Message::Assistant(a) => Some(a.usage.input), _ => None })
+                let input_tokens: u64 = msgs
+                    .iter()
+                    .filter_map(|m| match m {
+                        Message::Assistant(a) => Some(a.usage.input),
+                        _ => None,
+                    })
                     .sum();
-                let output_tokens: u64 = msgs.iter()
-                    .filter_map(|m| match m { Message::Assistant(a) => Some(a.usage.output), _ => None })
+                let output_tokens: u64 = msgs
+                    .iter()
+                    .filter_map(|m| match m {
+                        Message::Assistant(a) => Some(a.usage.output),
+                        _ => None,
+                    })
                     .sum();
-                let ctx_chars: usize = msgs.iter()
+                let ctx_chars: usize = msgs
+                    .iter()
                     .map(|m| match m {
-                        Message::User(u) => u.content.iter().map(|b| match b {
-                            crate::agent::messages::ContentBlock::Text(t) => t.text.len(),
-                            _ => 0,
-                        }).sum::<usize>(),
-                        Message::Assistant(a) => a.content.iter().map(|b| match b {
-                            crate::agent::messages::AssistantContentBlock::Text(t) => t.text.len(),
-                            _ => 0,
-                        }).sum::<usize>(),
+                        Message::User(u) => u
+                            .content
+                            .iter()
+                            .map(|b| match b {
+                                crate::agent::messages::ContentBlock::Text(t) => t.text.len(),
+                                _ => 0,
+                            })
+                            .sum::<usize>(),
+                        Message::Assistant(a) => a
+                            .content
+                            .iter()
+                            .map(|b| match b {
+                                crate::agent::messages::AssistantContentBlock::Text(t) => {
+                                    t.text.len()
+                                }
+                                _ => 0,
+                            })
+                            .sum::<usize>(),
                         _ => 0,
-                    }).sum();
+                    })
+                    .sum();
                 let context_window = agent.model().context_window;
                 let estimated_tokens = (ctx_chars / 4) as u64;
-                output_response(&id, "get_context_usage", &serde_json::json!({
-                    "messageCount": msgs.len(),
-                    "estimatedTokens": estimated_tokens,
-                    "contextWindow": context_window,
-                    "usagePercent": if context_window > 0 { (estimated_tokens * 100 / context_window as u64) as u32 } else { 0 },
-                    "totalInputTokens": input_tokens,
-                    "totalOutputTokens": output_tokens,
-                    "autoCompaction": agent.auto_compact_enabled(),
-                }));
-            },
+                output_response(
+                    &id,
+                    "get_context_usage",
+                    &serde_json::json!({
+                        "messageCount": msgs.len(),
+                        "estimatedTokens": estimated_tokens,
+                        "contextWindow": context_window,
+                        "usagePercent": if context_window > 0 { (estimated_tokens * 100 / context_window as u64) as u32 } else { 0 },
+                        "totalInputTokens": input_tokens,
+                        "totalOutputTokens": output_tokens,
+                        "autoCompaction": agent.auto_compact_enabled(),
+                    }),
+                );
+            }
             "get_flags" => {
-                let ext_name = params.get("extension").and_then(|v| v.as_str()).unwrap_or("");
+                let ext_name = params
+                    .get("extension")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if ext_name.is_empty() {
                     // 无参数 → 返回所有扩展的 flag
                     let names = agent.extensions().names();
@@ -2282,102 +2827,165 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     output_response(&id, "get_flags", &serde_json::Value::Object(all_flags));
                 } else {
                     let flags = agent.extensions().get_flags(ext_name);
-                    output_response(&id, "get_flags", &serde_json::json!({
-                        "extension": ext_name,
-                        "flags": flags,
-                    }));
+                    output_response(
+                        &id,
+                        "get_flags",
+                        &serde_json::json!({
+                            "extension": ext_name,
+                            "flags": flags,
+                        }),
+                    );
                 }
             }
 
             "get_active_tools" => {
                 let tools: Vec<String> = agent.list_tool_names();
-                output_response(&id, "get_active_tools", &serde_json::json!({"tools": tools, "count": tools.len()}));
-            },
+                output_response(
+                    &id,
+                    "get_active_tools",
+                    &serde_json::json!({"tools": tools, "count": tools.len()}),
+                );
+            }
             "set_active_tools" => {
-                let tools_arr: Vec<String> = params.get("tools")
+                let tools_arr: Vec<String> = params
+                    .get("tools")
                     .and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 agent.restrict_tools(tools_arr.clone());
-                output_response(&id, "set_active_tools", &serde_json::json!({
-                    "activeTools": tools_arr, "count": tools_arr.len(),
-                }));
-            },
+                output_response(
+                    &id,
+                    "set_active_tools",
+                    &serde_json::json!({
+                        "activeTools": tools_arr, "count": tools_arr.len(),
+                    }),
+                );
+            }
             "get_full_messages" => {
-                let msgs: Vec<serde_json::Value> = agent.messages().iter()
+                let msgs: Vec<serde_json::Value> = agent
+                    .messages()
+                    .iter()
                     .filter_map(|m| serde_json::to_value(m).ok())
                     .collect();
-                output_response(&id, "get_full_messages", &serde_json::json!({
-                    "messages": msgs, "count": msgs.len(),
-                    "note": "Includes thinking blocks and all content types",
-                }));
-            },
+                output_response(
+                    &id,
+                    "get_full_messages",
+                    &serde_json::json!({
+                        "messages": msgs, "count": msgs.len(),
+                        "note": "Includes thinking blocks and all content types",
+                    }),
+                );
+            }
             "set_auto_compaction" => {
-                let enabled = params.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+                let enabled = params
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
                 agent.set_auto_compact(enabled);
-                output_response(&id, "set_auto_compaction", &serde_json::json!({
-                    "autoCompaction": enabled,
-                }));
-            },
+                output_response(
+                    &id,
+                    "set_auto_compaction",
+                    &serde_json::json!({
+                        "autoCompaction": enabled,
+                    }),
+                );
+            }
             "set_cwd" => {
                 let cwd = params.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
                 if cwd.is_empty() {
-                    output_response(&id, "set_cwd", &serde_json::json!({"error": "missing 'cwd' parameter"}));
+                    output_response(
+                        &id,
+                        "set_cwd",
+                        &serde_json::json!({"error": "missing 'cwd' parameter"}),
+                    );
                 } else {
                     // 验证路径存在
                     if std::path::Path::new(cwd).exists() {
                         agent.set_session_cwd(Some(cwd.to_string()));
                         // 更新 SessionIndex.last_cwd（记录最后切换到的工作路径）
                         crate::session_index::SessionIndex::set_last_cwd(&sid, cwd);
-                        output_response(&id, "set_cwd", &serde_json::json!({
-                            "cwd": cwd,
-                            "success": true,
-                        }));
+                        output_response(
+                            &id,
+                            "set_cwd",
+                            &serde_json::json!({
+                                "cwd": cwd,
+                                "success": true,
+                            }),
+                        );
                     } else {
-                        output_response(&id, "set_cwd", &serde_json::json!({
-                            "error": format!("path '{}' does not exist", cwd),
-                        }));
+                        output_response(
+                            &id,
+                            "set_cwd",
+                            &serde_json::json!({
+                                "error": format!("path '{}' does not exist", cwd),
+                            }),
+                        );
                     }
                 }
             }
             "add_dir" => {
                 // 添加额外工作目录（记录到 extra_cwds + Agent 内存，用于 prompt 注入让 LLM 知道可访问）
-                let dir = params.get("dir").and_then(|v| v.as_str())
+                let dir = params
+                    .get("dir")
+                    .and_then(|v| v.as_str())
                     .or_else(|| params.get("cwd").and_then(|v| v.as_str()))
                     .or_else(|| params.get("path").and_then(|v| v.as_str()))
                     .unwrap_or("");
                 if dir.is_empty() {
-                    output_response(&id, "add_dir", &serde_json::json!({"error": "missing 'dir' parameter"}));
+                    output_response(
+                        &id,
+                        "add_dir",
+                        &serde_json::json!({"error": "missing 'dir' parameter"}),
+                    );
                 } else {
                     // 规范化为绝对路径
                     let abs = if std::path::Path::new(dir).is_absolute() {
                         dir.to_string()
                     } else {
-                        std::env::current_dir().ok()
+                        std::env::current_dir()
+                            .ok()
                             .map(|c| c.join(dir).to_string_lossy().to_string())
                             .unwrap_or_else(|| dir.to_string())
                     };
                     if !std::path::Path::new(&abs).exists() {
-                        output_response(&id, "add_dir", &serde_json::json!({"error": format!("path '{}' does not exist", abs)}));
+                        output_response(
+                            &id,
+                            "add_dir",
+                            &serde_json::json!({"error": format!("path '{}' does not exist", abs)}),
+                        );
                     } else {
                         let added = agent.add_extra_cwd(&abs);
                         // 同步到 SessionIndex.extra_cwds（持久化）
                         crate::session_index::SessionIndex::add_extra_cwd(&sid, &abs);
                         let dirs = agent.get_extra_cwds();
-                        output_response(&id, "add_dir", &serde_json::json!({
-                            "added": added,
-                            "dir": abs,
-                            "extra_cwds": dirs,
-                        }));
+                        output_response(
+                            &id,
+                            "add_dir",
+                            &serde_json::json!({
+                                "added": added,
+                                "dir": abs,
+                                "extra_cwds": dirs,
+                            }),
+                        );
                     }
                 }
             }
             "remove_dir" => {
-                let dir = params.get("dir").and_then(|v| v.as_str())
+                let dir = params
+                    .get("dir")
+                    .and_then(|v| v.as_str())
                     .or_else(|| params.get("cwd").and_then(|v| v.as_str()))
                     .unwrap_or("");
                 if dir.is_empty() {
-                    output_response(&id, "remove_dir", &serde_json::json!({"error": "missing 'dir' parameter"}));
+                    output_response(
+                        &id,
+                        "remove_dir",
+                        &serde_json::json!({"error": "missing 'dir' parameter"}),
+                    );
                 } else {
                     let removed = agent.remove_extra_cwd(dir);
                     if removed {
@@ -2387,19 +2995,27 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             m.extra_cwds = remaining.clone();
                         });
                     }
-                    output_response(&id, "remove_dir", &serde_json::json!({
-                        "removed": removed,
-                        "extra_cwds": agent.get_extra_cwds(),
-                    }));
+                    output_response(
+                        &id,
+                        "remove_dir",
+                        &serde_json::json!({
+                            "removed": removed,
+                            "extra_cwds": agent.get_extra_cwds(),
+                        }),
+                    );
                 }
             }
             "list_dirs" => {
                 // 列出所有工作目录：cwd + extra_cwds
                 let cwd = agent.session_cwd();
-                output_response(&id, "list_dirs", &serde_json::json!({
-                    "cwd": cwd,
-                    "extra_cwds": agent.get_extra_cwds(),
-                }));
+                output_response(
+                    &id,
+                    "list_dirs",
+                    &serde_json::json!({
+                        "cwd": cwd,
+                        "extra_cwds": agent.get_extra_cwds(),
+                    }),
+                );
             }
             "cycle_model" => {
                 let current_id = agent.model().id.clone();
@@ -2407,12 +3023,18 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 let mut models = model_reg.models_by_provider(&current_provider);
                 models.sort_by(|a, b| a.id.cmp(&b.id));
                 if models.len() < 2 {
-                    output_response(&id, "cycle_model", &serde_json::json!({
-                        "modelId": current_id, "provider": current_provider,
-                        "note": "Only one model available, no cycle",
-                    }));
+                    output_response(
+                        &id,
+                        "cycle_model",
+                        &serde_json::json!({
+                            "modelId": current_id, "provider": current_provider,
+                            "note": "Only one model available, no cycle",
+                        }),
+                    );
                 } else {
-                    let next_idx = models.iter().position(|m| m.id == current_id)
+                    let next_idx = models
+                        .iter()
+                        .position(|m| m.id == current_id)
                         .map(|i| (i + 1) % models.len())
                         .unwrap_or(0);
                     let next_model = models[next_idx].clone();
@@ -2420,54 +3042,74 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     agent.set_model(next_model);
                     model_id = next_id.clone();
                     crate::session_index::SessionIndex::set_model(&sid, &provider, &next_id);
-                    output_response(&id, "cycle_model", &serde_json::json!({
-                        "modelId": next_id, "provider": current_provider,
-                        "previousModel": current_id,
-                    }));
+                    output_response(
+                        &id,
+                        "cycle_model",
+                        &serde_json::json!({
+                            "modelId": next_id, "provider": current_provider,
+                            "previousModel": current_id,
+                        }),
+                    );
                 }
-            },
+            }
             "cycle_thinking_level" => {
                 let levels = ["off", "minimal", "low", "medium", "high", "xhigh"];
                 let current = agent.thinking_level().unwrap_or("off").to_string();
-                let next = levels.iter().position(|&l| l == current)
+                let next = levels
+                    .iter()
+                    .position(|&l| l == current)
                     .map(|i| levels[(i + 1) % levels.len()])
                     .unwrap_or("medium");
                 agent.set_thinking_level(Some(next.to_string()));
                 crate::session_index::SessionIndex::set_thinking_level(&sid, next);
-                output_response(&id, "cycle_thinking_level", &serde_json::json!({
-                    "thinkingLevel": next, "previousLevel": current,
-                }));
-            },
+                output_response(
+                    &id,
+                    "cycle_thinking_level",
+                    &serde_json::json!({
+                        "thinkingLevel": next, "previousLevel": current,
+                    }),
+                );
+            }
             "compact" => {
                 let before_msgs = agent.messages().len();
                 let before_tokens = crate::agent::compact::total_tokens(agent.messages());
                 match agent.compact_now().await {
                     Ok(result) => {
                         let after_tokens = crate::agent::compact::total_tokens(agent.messages());
-                        output_response(&id, "compact", &serde_json::json!({
-                            "compacted": true,
-                            "beforeMessages": before_msgs,
-                            "beforeTokens": before_tokens,
-                            "afterMessages": agent.messages().len(),
-                            "afterTokens": after_tokens,
-                            "stage": result.stage,
-                            "batchCount": result.batch_count,
-                            "batchSummaries": result.batch_summaries.len(),
-                            "hasMergedSummary": result.merged_summary.is_some(),
-                            "summaryPreview": result.summary.chars().take(200).collect::<String>(),
-                        }));
+                        output_response(
+                            &id,
+                            "compact",
+                            &serde_json::json!({
+                                "compacted": true,
+                                "beforeMessages": before_msgs,
+                                "beforeTokens": before_tokens,
+                                "afterMessages": agent.messages().len(),
+                                "afterTokens": after_tokens,
+                                "stage": result.stage,
+                                "batchCount": result.batch_count,
+                                "batchSummaries": result.batch_summaries.len(),
+                                "hasMergedSummary": result.merged_summary.is_some(),
+                                "summaryPreview": result.summary.chars().take(200).collect::<String>(),
+                            }),
+                        );
                     }
                     Err(e) => {
-                        output_response(&id, "compact", &serde_json::json!({
-                            "compacted": false,
-                            "error": e.to_string(),
-                            "beforeMessages": before_msgs,
-                            "beforeTokens": before_tokens,
-                        }));
+                        output_response(
+                            &id,
+                            "compact",
+                            &serde_json::json!({
+                                "compacted": false,
+                                "error": e.to_string(),
+                                "beforeMessages": before_msgs,
+                                "beforeTokens": before_tokens,
+                            }),
+                        );
                     }
                 }
             }
-            "new_session" => output_response(&id, "new_session", &serde_json::json!({"sessionId":sid})),
+            "new_session" => {
+                output_response(&id, "new_session", &serde_json::json!({"sessionId":sid}))
+            }
             "export_html" => output_response(&id, "export_html", &serde_json::json!({"path":""})),
             "switch_session" => output_response(&id, "switch_session", &serde_json::Value::Null),
             "fork" => output_response(&id, "fork", &serde_json::json!({"sessionId":sid})),
@@ -2477,60 +3119,85 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     crate::message_retrieval::load_entries_cached(&worker_cwd);
                 let current_leaf = crate::session_tree::resolve_current_leaf(&entries);
 
-                let nodes: Vec<_> = entries.iter().filter_map(|e| {
-                    let etype = e.get("type").and_then(|v| v.as_str())?;
-                    let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                    let parent_id = e.get("parentId").and_then(|v| v.as_str()).unwrap_or("");
-                    let is_on_leaf_path = current_leaf.as_ref().map(|leaf| {
-                        // 简单判断：id 在 leaf path 里
-                        crate::session_tree::get_branch_path(&entries, leaf)
-                            .iter()
-                            .any(|pe| pe.get("id").and_then(|v| v.as_str()) == Some(id))
-                    }).unwrap_or(false);
+                let nodes: Vec<_> = entries
+                    .iter()
+                    .filter_map(|e| {
+                        let etype = e.get("type").and_then(|v| v.as_str())?;
+                        let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        let parent_id = e.get("parentId").and_then(|v| v.as_str()).unwrap_or("");
+                        let is_on_leaf_path = current_leaf
+                            .as_ref()
+                            .map(|leaf| {
+                                // 简单判断：id 在 leaf path 里
+                                crate::session_tree::get_branch_path(&entries, leaf)
+                                    .iter()
+                                    .any(|pe| pe.get("id").and_then(|v| v.as_str()) == Some(id))
+                            })
+                            .unwrap_or(false);
 
-                    let role = e.get("message")
-                        .and_then(|m| m.get("role"))
-                        .and_then(|r| r.as_str())
-                        .unwrap_or("");
+                        let role = e
+                            .get("message")
+                            .and_then(|m| m.get("role"))
+                            .and_then(|r| r.as_str())
+                            .unwrap_or("");
 
-                    // content 截断到 50 字
-                    let content = e.get("message")
-                        .and_then(|m| m.get("content"))
-                        .and_then(|c| c.as_str())
-                        .unwrap_or("");
-                    let brief = if content.len() > 50 { format!("{}...", &content[..50]) } else { content.to_string() };
+                        // content 截断到 50 字
+                        let content = e
+                            .get("message")
+                            .and_then(|m| m.get("content"))
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("");
+                        let brief = if content.len() > 50 {
+                            format!("{}...", &content[..50])
+                        } else {
+                            content.to_string()
+                        };
 
-                    Some(serde_json::json!({
-                        "id": id,
-                        "parentId": parent_id,
-                        "type": etype,
-                        "role": role,
-                        "brief": brief,
-                        "turnId": e.get("turnId").and_then(|v| v.as_u64()),
-                        "onLeafPath": is_on_leaf_path,
-                        "isCurrentLeaf": current_leaf.as_deref() == Some(id),
-                    }))
-                }).collect();
+                        Some(serde_json::json!({
+                            "id": id,
+                            "parentId": parent_id,
+                            "type": etype,
+                            "role": role,
+                            "brief": brief,
+                            "turnId": e.get("turnId").and_then(|v| v.as_u64()),
+                            "onLeafPath": is_on_leaf_path,
+                            "isCurrentLeaf": current_leaf.as_deref() == Some(id),
+                        }))
+                    })
+                    .collect();
 
-                output_response(&id, "navigate_tree", &serde_json::json!({
-                    "nodes": nodes,
-                    "currentLeaf": current_leaf,
-                    "totalNodes": nodes.len(),
-                }));
+                output_response(
+                    &id,
+                    "navigate_tree",
+                    &serde_json::json!({
+                        "nodes": nodes,
+                        "currentLeaf": current_leaf,
+                        "totalNodes": nodes.len(),
+                    }),
+                );
             }
             "delete_entries" => {
                 // 软删除：从 self.messages 移除 + 落 DeletionEntry 到 JSONL
-                let target_ids: Vec<String> = params.get("targetIds")
+                let target_ids: Vec<String> = params
+                    .get("targetIds")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let reason = params.get("reason").and_then(|v| v.as_str());
                 let before = agent.messages().len();
 
                 if target_ids.is_empty() {
-                    output_response(&id, "delete_entries", &serde_json::json!({
-                        "deleted": 0, "before": before, "after": before, "error": "no targetIds"
-                    }));
+                    output_response(
+                        &id,
+                        "delete_entries",
+                        &serde_json::json!({
+                            "deleted": 0, "before": before, "after": before, "error": "no targetIds"
+                        }),
+                    );
                     continue;
                 }
 
@@ -2538,25 +3205,29 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 let entries = crate::message_retrieval::load_entries_cached(&worker_cwd);
 
                 // 尝试精确索引映射（compaction 前的快速路径）
-                let indices = resolve_target_indices(
-                    &entries,
-                    agent.messages(),
-                    &target_ids,
-                );
+                let indices = resolve_target_indices(&entries, agent.messages(), &target_ids);
 
                 if indices.is_empty() {
-                    output_response(&id, "delete_entries", &serde_json::json!({
-                        "deleted": 0, "before": before, "after": before,
-                        "error": "no matching entries found (possibly after compaction)"
-                    }));
+                    output_response(
+                        &id,
+                        "delete_entries",
+                        &serde_json::json!({
+                            "deleted": 0, "before": before, "after": before,
+                            "error": "no matching entries found (possibly after compaction)"
+                        }),
+                    );
                     continue;
                 }
 
                 if indices.is_empty() {
-                    output_response(&id, "delete_entries", &serde_json::json!({
-                        "deleted": 0, "before": before, "after": before,
-                        "error": "no matching entries found"
-                    }));
+                    output_response(
+                        &id,
+                        "delete_entries",
+                        &serde_json::json!({
+                            "deleted": 0, "before": before, "after": before,
+                            "error": "no matching entries found"
+                        }),
+                    );
                     continue;
                 }
 
@@ -2567,40 +3238,57 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 // 失效缓存（下次 load_entries_cached 会重新读盘）
                 crate::message_retrieval::invalidate_cache(&worker_cwd);
 
-                output_response(&id, "delete_entries", &serde_json::json!({
-                    "deleted": indices.len(), "before": before, "after": agent.messages().len()
-                }));
+                output_response(
+                    &id,
+                    "delete_entries",
+                    &serde_json::json!({
+                        "deleted": indices.len(), "before": before, "after": agent.messages().len()
+                    }),
+                );
             }
             "summarize_entries" => {
                 // 软压缩：把一批消息替换成 BranchSummary + 落 SegmentSummaryEntry
-                let target_ids: Vec<String> = params.get("targetIds")
+                let target_ids: Vec<String> = params
+                    .get("targetIds")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
-                let summary_text = params.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let summary_text = params
+                    .get("summary")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let before = agent.messages().len();
 
                 if target_ids.is_empty() {
-                    output_response(&id, "summarize_entries", &serde_json::json!({
-                        "summarized": 0, "before": before, "after": before, "error": "no targetIds"
-                    }));
+                    output_response(
+                        &id,
+                        "summarize_entries",
+                        &serde_json::json!({
+                            "summarized": 0, "before": before, "after": before, "error": "no targetIds"
+                        }),
+                    );
                     continue;
                 }
 
                 // 从 JSONL 构建索引映射（支持 compaction 后的降级匹配）
                 let entries = crate::message_retrieval::load_entries_cached(&worker_cwd);
 
-                let indices = resolve_target_indices(
-                    &entries,
-                    agent.messages(),
-                    &target_ids,
-                );
+                let indices = resolve_target_indices(&entries, agent.messages(), &target_ids);
 
                 if indices.is_empty() {
-                    output_response(&id, "summarize_entries", &serde_json::json!({
-                        "summarized": 0, "before": before, "after": before,
-                        "error": "no matching entries found (possibly after compaction)"
-                    }));
+                    output_response(
+                        &id,
+                        "summarize_entries",
+                        &serde_json::json!({
+                            "summarized": 0, "before": before, "after": before,
+                            "error": "no matching entries found (possibly after compaction)"
+                        }),
+                    );
                     continue;
                 }
 
@@ -2620,25 +3308,38 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 crate::session_jsonl::append_segment_summary(&worker_cwd, &target_ids, &summary);
                 crate::message_retrieval::invalidate_cache(&worker_cwd);
 
-                output_response(&id, "summarize_entries", &serde_json::json!({
-                    "summarized": indices.len(),
-                    "before": before,
-                    "after": agent.messages().len(),
-                    "summary": summary,
-                }));
+                output_response(
+                    &id,
+                    "summarize_entries",
+                    &serde_json::json!({
+                        "summarized": indices.len(),
+                        "before": before,
+                        "after": agent.messages().len(),
+                        "summary": summary,
+                    }),
+                );
             }
             "restore_entries" => {
                 // 恢复软删除/折叠：追加 restoration entry + 从 JSONL 重载消息
-                let target_ids: Vec<String> = params.get("targetIds")
+                let target_ids: Vec<String> = params
+                    .get("targetIds")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let before = agent.messages().len();
 
                 if target_ids.is_empty() {
-                    output_response(&id, "restore_entries", &serde_json::json!({
-                        "restored": 0, "before": before, "after": before, "error": "no targetIds"
-                    }));
+                    output_response(
+                        &id,
+                        "restore_entries",
+                        &serde_json::json!({
+                            "restored": 0, "before": before, "after": before, "error": "no targetIds"
+                        }),
+                    );
                     continue;
                 }
 
@@ -2651,17 +3352,24 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 // 4. 从 JSONL 重载消息到 Agent（恢复被删/折叠的原始消息）
                 let new_count = agent.reload_messages_from_session(&worker_cwd);
 
-                output_response(&id, "restore_entries", &serde_json::json!({
-                    "restored": target_ids.len(),
-                    "before": before,
-                    "after": new_count,
-                }));
+                output_response(
+                    &id,
+                    "restore_entries",
+                    &serde_json::json!({
+                        "restored": target_ids.len(),
+                        "before": before,
+                        "after": new_count,
+                    }),
+                );
             }
             "clone" => output_response(&id, "clone", &serde_json::json!({"sessionId":sid})),
             "switch_agent" => {
                 // 真实切换 agent：加载定义 + 应用系统提示词/工具限制
-                let target = params.get("agentName").or_else(|| params.get("name"))
-                    .and_then(|v| v.as_str()).unwrap_or("");
+                let target = params
+                    .get("agentName")
+                    .or_else(|| params.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if let Some(agent_cfg) = crate::agent_config::find_agent(target) {
                     current_agent_name = agent_cfg.name.clone();
                     // 应用系统提示词
@@ -2678,32 +3386,52 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             agent.remove_tool(tool_name);
                         }
                     }
-                    output_response(&id, "switch_agent", &serde_json::json!({
-                        "agent": agent_cfg.name,
-                        "description": agent_cfg.description,
-                        "color": agent_cfg.color,
-                    }));
+                    output_response(
+                        &id,
+                        "switch_agent",
+                        &serde_json::json!({
+                            "agent": agent_cfg.name,
+                            "description": agent_cfg.description,
+                            "color": agent_cfg.color,
+                        }),
+                    );
                 } else {
-                    output_response(&id, "switch_agent", &serde_json::json!({
-                        "error": format!("agent '{}' not found", target)
-                    }));
+                    output_response(
+                        &id,
+                        "switch_agent",
+                        &serde_json::json!({
+                            "error": format!("agent '{}' not found", target)
+                        }),
+                    );
                 }
-            },
+            }
             "set_permission_mode" => {
                 let mode = params.get("mode").and_then(|v| v.as_str()).unwrap_or("");
                 if mode.is_empty() {
-                    output_response(&id, "set_permission_mode", &serde_json::json!({
-                        "error": "missing 'mode' parameter (open/blacklist/whitelist)",
-                    }));
+                    output_response(
+                        &id,
+                        "set_permission_mode",
+                        &serde_json::json!({
+                            "error": "missing 'mode' parameter (open/blacklist/whitelist)",
+                        }),
+                    );
                 } else {
                     match agent.runtime().set_guard_mode(mode) {
-                        Ok(()) => output_response(&id, "set_permission_mode", &serde_json::json!({
-                            "mode": mode,
-                            "success": true,
-                        })),
-                        Err(e) => output_response(&id, "set_permission_mode", &serde_json::json!({
-                            "error": e,
-                        })),
+                        Ok(()) => output_response(
+                            &id,
+                            "set_permission_mode",
+                            &serde_json::json!({
+                                "mode": mode,
+                                "success": true,
+                            }),
+                        ),
+                        Err(e) => output_response(
+                            &id,
+                            "set_permission_mode",
+                            &serde_json::json!({
+                                "error": e,
+                            }),
+                        ),
                     }
                 }
             }
@@ -2711,10 +3439,17 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             // 对齐 docs/design/PERMISSION_STORE.md §2.4，转发给 permission 扩展。
             // 用户选"always allow"后持久化决策，下次自动放行，不用反复确认。
             "permission_store_decision" => {
-                match agent.extension_rpc("permission", "store_decision", params).await {
-                    Ok(output) => output_response(&id, "permission_store_decision", &serde_json::json!({
-                        "success": true, "data": output,
-                    })),
+                match agent
+                    .extension_rpc("permission", "store_decision", params)
+                    .await
+                {
+                    Ok(output) => output_response(
+                        &id,
+                        "permission_store_decision",
+                        &serde_json::json!({
+                            "success": true, "data": output,
+                        }),
+                    ),
                     Err(e) => output(&serde_json::json!({
                         "type": "response", "id": id, "success": false,
                         "error": format!("permission_store_decision: {e}"),
@@ -2722,10 +3457,17 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 }
             }
             "permission_list_stored" => {
-                match agent.extension_rpc("permission", "list_stored", serde_json::Value::Null).await {
-                    Ok(output) => output_response(&id, "permission_list_stored", &serde_json::json!({
-                        "success": true, "data": output,
-                    })),
+                match agent
+                    .extension_rpc("permission", "list_stored", serde_json::Value::Null)
+                    .await
+                {
+                    Ok(output) => output_response(
+                        &id,
+                        "permission_list_stored",
+                        &serde_json::json!({
+                            "success": true, "data": output,
+                        }),
+                    ),
                     Err(e) => output(&serde_json::json!({
                         "type": "response", "id": id, "success": false,
                         "error": format!("permission_list_stored: {e}"),
@@ -2733,10 +3475,17 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 }
             }
             "permission_remove_stored" => {
-                match agent.extension_rpc("permission", "remove_stored", params).await {
-                    Ok(output) => output_response(&id, "permission_remove_stored", &serde_json::json!({
-                        "success": true, "data": output,
-                    })),
+                match agent
+                    .extension_rpc("permission", "remove_stored", params)
+                    .await
+                {
+                    Ok(output) => output_response(
+                        &id,
+                        "permission_remove_stored",
+                        &serde_json::json!({
+                            "success": true, "data": output,
+                        }),
+                    ),
                     Err(e) => output(&serde_json::json!({
                         "type": "response", "id": id, "success": false,
                         "error": format!("permission_remove_stored: {e}"),
@@ -2744,10 +3493,17 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 }
             }
             "permission_clear_stored" => {
-                match agent.extension_rpc("permission", "clear_stored", serde_json::Value::Null).await {
-                    Ok(output) => output_response(&id, "permission_clear_stored", &serde_json::json!({
-                        "success": true, "data": output,
-                    })),
+                match agent
+                    .extension_rpc("permission", "clear_stored", serde_json::Value::Null)
+                    .await
+                {
+                    Ok(output) => output_response(
+                        &id,
+                        "permission_clear_stored",
+                        &serde_json::json!({
+                            "success": true, "data": output,
+                        }),
+                    ),
                     Err(e) => output(&serde_json::json!({
                         "type": "response", "id": id, "success": false,
                         "error": format!("permission_clear_stored: {e}"),
@@ -2755,21 +3511,35 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 }
             }
             "set_auto_retry" => {
-                let enabled = params.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
-                let max_retries = params.get("max_retries").and_then(|v| v.as_u64()).map(|v| v as u32);
+                let enabled = params
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let max_retries = params
+                    .get("max_retries")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32);
                 if enabled {
                     let max = max_retries.unwrap_or(3);
                     agent.set_max_retries(max);
-                    output_response(&id, "set_auto_retry", &serde_json::json!({
-                        "enabled": true,
-                        "max_retries": max,
-                    }));
+                    output_response(
+                        &id,
+                        "set_auto_retry",
+                        &serde_json::json!({
+                            "enabled": true,
+                            "max_retries": max,
+                        }),
+                    );
                 } else {
                     agent.set_max_retries(0);
-                    output_response(&id, "set_auto_retry", &serde_json::json!({
-                        "enabled": false,
-                        "max_retries": 0,
-                    }));
+                    output_response(
+                        &id,
+                        "set_auto_retry",
+                        &serde_json::json!({
+                            "enabled": false,
+                            "max_retries": 0,
+                        }),
+                    );
                 }
             }
             "bash" => {
@@ -2781,37 +3551,64 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     let timeout_secs = params.get("timeout").and_then(|v| v.as_u64()).unwrap_or(30);
                     match execute_bash(command, timeout_secs).await {
                         Ok((stdout, stderr, exit_code)) => {
-                            let output = if stderr.is_empty() { stdout.clone() }
-                                else { format!("{stdout}\n{stderr}") };
-                            output_response(&id, "bash", &serde_json::json!({
-                                "output": output,
-                                "stdout": stdout,
-                                "stderr": stderr,
-                                "exitCode": exit_code,
-                            }));
+                            let output = if stderr.is_empty() {
+                                stdout.clone()
+                            } else {
+                                format!("{stdout}\n{stderr}")
+                            };
+                            output_response(
+                                &id,
+                                "bash",
+                                &serde_json::json!({
+                                    "output": output,
+                                    "stdout": stdout,
+                                    "stderr": stderr,
+                                    "exitCode": exit_code,
+                                }),
+                            );
                         }
                         Err(e) => {
-                            output_response(&id, "bash", &serde_json::json!({
-                                "output": format!("bash error: {e}"),
-                                "exitCode": -1,
-                            }));
+                            output_response(
+                                &id,
+                                "bash",
+                                &serde_json::json!({
+                                    "output": format!("bash error: {e}"),
+                                    "exitCode": -1,
+                                }),
+                            );
                         }
                     }
                 }
             }
-            "set_steering_mode" => output_response(&id, "set_steering_mode", &serde_json::Value::Null),
+            "set_steering_mode" => {
+                output_response(&id, "set_steering_mode", &serde_json::Value::Null)
+            }
             "extension_rpc" => {
                 // 调插件私有 RPC 方法（给 CLI/外部调试用）。
                 // 用于：ion rpc --session <id> --method extension_rpc
                 //   --params '{"method":"ping","args":{}}'
                 //   --params '{"extension":"bash","method":"list"}'
-                let extension_name = params.get("extension").and_then(|v| v.as_str()).unwrap_or("");
-                let rpc_method = params.get("method").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let extension_name = params
+                    .get("extension")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let rpc_method = params
+                    .get("method")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let rpc_args = params.get("args").cloned().unwrap_or_default();
-                match agent.extension_rpc(extension_name, &rpc_method, rpc_args).await {
-                    Ok(output) => output_response(&id, "extension_rpc", &serde_json::json!({
-                        "method": rpc_method, "output": output,
-                    })),
+                match agent
+                    .extension_rpc(extension_name, &rpc_method, rpc_args)
+                    .await
+                {
+                    Ok(output) => output_response(
+                        &id,
+                        "extension_rpc",
+                        &serde_json::json!({
+                            "method": rpc_method, "output": output,
+                        }),
+                    ),
                     Err(e) => output(&serde_json::json!({
                         "type": "response", "id": id, "success": false,
                         "error": format!("extension_rpc {rpc_method}: {e}"),
@@ -2822,28 +3619,42 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 // Directly call an LLM-registered tool by name (bypass LLM).
                 // 用于 CLI 测试工具如 bash_run/bash_kill/bash_send。
                 // --params '{"tool":"bash_run","args":{"command":"echo hi","description":"test"}}'
-                let tool_name = params.get("tool").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let tool_name = params
+                    .get("tool")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let tool_args = params.get("args").cloned().unwrap_or_default();
                 if tool_name.is_empty() {
                     output_error_response(&id, "call_tool", "missing 'tool'");
                     continue;
                 }
                 match agent.call_tool(&tool_name, tool_args).await {
-                    Ok(result) => output_response(&id, "call_tool", &serde_json::json!({
-                        "tool": tool_name, "output": result,
-                    })),
+                    Ok(result) => output_response(
+                        &id,
+                        "call_tool",
+                        &serde_json::json!({
+                            "tool": tool_name, "output": result,
+                        }),
+                    ),
                     Err(e) => output(&serde_json::json!({
                         "type": "response", "id": id, "success": false,
                         "error": format!("call_tool {tool_name}: {e}"),
                     })),
                 }
             }
-            "set_follow_up_mode" => output_response(&id, "set_follow_up_mode", &serde_json::Value::Null),
+            "set_follow_up_mode" => {
+                output_response(&id, "set_follow_up_mode", &serde_json::Value::Null)
+            }
             "reload" => {
                 // Generic reload: reload all loaded extensions
                 let extensions = wasm_ext_registry.list();
                 if extensions.is_empty() {
-                    output_response(&id, "reload", &serde_json::json!({"message": "no extensions loaded"}));
+                    output_response(
+                        &id,
+                        "reload",
+                        &serde_json::json!({"message": "no extensions loaded"}),
+                    );
                 } else {
                     let mut reloaded: Vec<String> = Vec::new();
                     let mut errors: Vec<String> = Vec::new();
@@ -2851,9 +3662,12 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         match wasm_ext_registry.reload(&p.path) {
                             Ok(tool_defs) => {
                                 // Remove old tools, add new ones
-                                for old_name in &p.tools { agent.remove_tool(old_name); }
+                                for old_name in &p.tools {
+                                    agent.remove_tool(old_name);
+                                }
                                 let canonical_str = p.path.clone();
-                                let ext_name = crate::wasm_extension::ext_name_from_path(&canonical_str);
+                                let ext_name =
+                                    crate::wasm_extension::ext_name_from_path(&canonical_str);
                                 for td in &tool_defs {
                                     agent.register_tool(Box::new(ToolAdapter {
                                         name: td.name.clone(),
@@ -2871,31 +3685,51 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             }
                         }
                     }
-                    output_response(&id, "reload", &serde_json::json!({"reloaded": reloaded, "errors": errors}));
+                    output_response(
+                        &id,
+                        "reload",
+                        &serde_json::json!({"reloaded": reloaded, "errors": errors}),
+                    );
                 }
             }
             "abort_retry" => {
                 // 中断当前重试循环（复用 abort 机制）
                 agent.stop();
-                output_response(&id, "abort_retry", &serde_json::json!({
-                    "aborted": true,
-                    "message": "retry loop interrupted",
-                }));
+                output_response(
+                    &id,
+                    "abort_retry",
+                    &serde_json::json!({
+                        "aborted": true,
+                        "message": "retry loop interrupted",
+                    }),
+                );
             }
             "set_tier_models" => {
                 let tier = params.get("tier").and_then(|v| v.as_str()).unwrap_or("");
                 let model = params.get("model").and_then(|v| v.as_str()).unwrap_or("");
                 if tier.is_empty() || model.is_empty() {
-                    output_response(&id, "set_tier_models", &serde_json::json!({"error": "missing 'tier' or 'model'"}));
+                    output_response(
+                        &id,
+                        "set_tier_models",
+                        &serde_json::json!({"error": "missing 'tier' or 'model'"}),
+                    );
                 } else {
                     let mut cfg = crate::config::IonConfig::load();
                     let old = cfg.tier_models.get(tier).cloned();
                     cfg.tier_models.insert(tier.to_string(), model.to_string());
                     match cfg.save() {
-                        Ok(()) => output_response(&id, "set_tier_models", &serde_json::json!({
-                            "tier": tier, "oldModel": old, "newModel": model, "saved": true,
-                        })),
-                        Err(e) => output_response(&id, "set_tier_models", &serde_json::json!({"error": format!("save failed: {}", e)})),
+                        Ok(()) => output_response(
+                            &id,
+                            "set_tier_models",
+                            &serde_json::json!({
+                                "tier": tier, "oldModel": old, "newModel": model, "saved": true,
+                            }),
+                        ),
+                        Err(e) => output_response(
+                            &id,
+                            "set_tier_models",
+                            &serde_json::json!({"error": format!("save failed: {}", e)}),
+                        ),
                     }
                 }
             }
@@ -2917,107 +3751,163 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 };
 
                 let branches = crate::session_tree::named_branches(&entries);
-                output_response(&id, "get_tree_with_leaf", &serde_json::json!({
-                    "tree": tree_nodes,
-                    "currentLeaf": current_leaf,
-                    "pathToLeaf": path_to_leaf,
-                    "branches": branches.iter().map(|(name, target)| {
-                        serde_json::json!({"name": name, "target": target})
-                    }).collect::<Vec<_>>(),
-                }));
+                output_response(
+                    &id,
+                    "get_tree_with_leaf",
+                    &serde_json::json!({
+                        "tree": tree_nodes,
+                        "currentLeaf": current_leaf,
+                        "pathToLeaf": path_to_leaf,
+                        "branches": branches.iter().map(|(name, target)| {
+                            serde_json::json!({"name": name, "target": target})
+                        }).collect::<Vec<_>>(),
+                    }),
+                );
             }
             "get_file_diff" => {
-                let file_path = params.get("filePath").and_then(|v| v.as_str()).unwrap_or("");
-                let from_turn = params.get("fromTurn").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let to_turn = params.get("toTurn").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let file_path = params
+                    .get("filePath")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let from_turn = params
+                    .get("fromTurn")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let to_turn = params
+                    .get("toTurn")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 if file_path.is_empty() {
-                    output_response(&id, "get_file_diff", &serde_json::json!({"error": "missing 'filePath'"}));
+                    output_response(
+                        &id,
+                        "get_file_diff",
+                        &serde_json::json!({"error": "missing 'filePath'"}),
+                    );
                 } else if let Some(ref store) = snapshot_store {
                     let history = store.load_file_history(file_path);
                     // 按 turnId 字符串过滤（timestamp 比较）
-                    let from_ts = from_turn.as_ref()
+                    let from_ts = from_turn
+                        .as_ref()
                         .and_then(|ft| history.iter().find(|s| &s.turn_id == ft))
                         .map(|s| s.timestamp.clone());
-                    let to_ts = to_turn.as_ref()
+                    let to_ts = to_turn
+                        .as_ref()
                         .and_then(|tt| history.iter().find(|s| &s.turn_id == tt))
                         .map(|s| s.timestamp.clone());
-                    let relevant: Vec<_> = history.iter()
+                    let relevant: Vec<_> = history
+                        .iter()
                         .filter(|s| {
-                            from_ts.as_ref().map_or(true, |ft| &s.timestamp >= ft)
-                                && to_ts.as_ref().map_or(true, |tt| &s.timestamp <= tt)
+                            from_ts.as_ref().is_none_or(|ft| &s.timestamp >= ft)
+                                && to_ts.as_ref().is_none_or(|tt| &s.timestamp <= tt)
                         })
                         .collect();
                     if relevant.is_empty() {
-                        output_response(&id, "get_file_diff", &serde_json::json!({
-                            "path": file_path, "diff": null, "hasContent": false,
-                        }));
+                        output_response(
+                            &id,
+                            "get_file_diff",
+                            &serde_json::json!({
+                                "path": file_path, "diff": null, "hasContent": false,
+                            }),
+                        );
                     } else {
                         let first = relevant.first().unwrap();
                         let last = relevant.last().unwrap();
-                        let before_content = first.before_hash.as_ref()
+                        let before_content = first
+                            .before_hash
+                            .as_ref()
                             .and_then(|h| store.objects().read_object_text(h));
-                        let after_content = last.after_hash.as_ref()
+                        let after_content = last
+                            .after_hash
+                            .as_ref()
                             .and_then(|h| store.objects().read_object_text(h));
 
                         // GC 降级：hash 存在但 object 不可读
-                        let before_missing = first.before_hash.is_some() && before_content.is_none();
+                        let before_missing =
+                            first.before_hash.is_some() && before_content.is_none();
                         let after_missing = last.after_hash.is_some() && after_content.is_none();
                         if before_missing || after_missing {
-                            output_response(&id, "get_file_diff", &serde_json::json!({
-                                "path": file_path,
-                                "diffAvailable": false,
-                                "error": { "code": "SNAPSHOT_OBJECT_MISSING" },
-                                "beforeHash": first.before_hash,
-                                "afterHash": last.after_hash,
-                            }));
+                            output_response(
+                                &id,
+                                "get_file_diff",
+                                &serde_json::json!({
+                                    "path": file_path,
+                                    "diffAvailable": false,
+                                    "error": { "code": "SNAPSHOT_OBJECT_MISSING" },
+                                    "beforeHash": first.before_hash,
+                                    "afterHash": last.after_hash,
+                                }),
+                            );
                             return;
                         }
 
                         let diff = match (&before_content, &after_content) {
-                            (Some(b), Some(a)) => crate::file_snapshot::unified_diff(b, a, file_path),
+                            (Some(b), Some(a)) => {
+                                crate::file_snapshot::unified_diff(b, a, file_path)
+                            }
                             (None, Some(a)) => format!("+++ new file\n{}", a),
                             (Some(b), None) => format!("--- deleted file\n{}", b),
                             _ => String::new(),
                         };
                         let (added, removed) = crate::file_snapshot::count_diff(&diff);
-                        output_response(&id, "get_file_diff", &serde_json::json!({
-                            "path": file_path,
-                            "diff": diff,
-                            "diffAvailable": true,
-                            "beforeHash": first.before_hash,
-                            "afterHash": last.after_hash,
-                            "hasContent": before_content.is_some() || after_content.is_some(),
-                            "added": added,
-                            "removed": removed,
-                        }));
+                        output_response(
+                            &id,
+                            "get_file_diff",
+                            &serde_json::json!({
+                                "path": file_path,
+                                "diff": diff,
+                                "diffAvailable": true,
+                                "beforeHash": first.before_hash,
+                                "afterHash": last.after_hash,
+                                "hasContent": before_content.is_some() || after_content.is_some(),
+                                "added": added,
+                                "removed": removed,
+                            }),
+                        );
                     }
                 } else {
-                    output_response(&id, "get_file_diff", &serde_json::json!({"error": "file-snapshot not enabled"}));
+                    output_response(
+                        &id,
+                        "get_file_diff",
+                        &serde_json::json!({"error": "file-snapshot not enabled"}),
+                    );
                 }
             }
             "get_batch_diffs" => {
-                let from_turn = params.get("fromTurn").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let to_turn = params.get("toTurn").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let from_turn = params
+                    .get("fromTurn")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let to_turn = params
+                    .get("toTurn")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 if let Some(ref store) = snapshot_store {
                     let all_snaps = store.load_all_tool_snapshots();
                     let snaps: Vec<_> = if from_turn.is_some() || to_turn.is_some() {
-                        let from_ts = from_turn.as_ref()
+                        let from_ts = from_turn
+                            .as_ref()
                             .and_then(|ft| all_snaps.iter().find(|s| &s.turn_id == ft))
                             .map(|s| s.timestamp.clone());
-                        let to_ts = to_turn.as_ref()
+                        let to_ts = to_turn
+                            .as_ref()
                             .and_then(|tt| all_snaps.iter().find(|s| &s.turn_id == tt))
                             .map(|s| s.timestamp.clone());
-                        all_snaps.into_iter().filter(|s| {
-                            let after_from = from_ts.as_ref().map_or(true, |ft| &s.timestamp >= ft);
-                            let before_to = to_ts.as_ref().map_or(true, |tt| &s.timestamp <= tt);
-                            after_from && before_to
-                        }).collect()
+                        all_snaps
+                            .into_iter()
+                            .filter(|s| {
+                                let after_from =
+                                    from_ts.as_ref().is_none_or(|ft| &s.timestamp >= ft);
+                                let before_to = to_ts.as_ref().is_none_or(|tt| &s.timestamp <= tt);
+                                after_from && before_to
+                            })
+                            .collect()
                     } else {
                         all_snaps
                     };
                     // 按 path 分组，取每个 path 的首尾
                     use std::collections::HashMap;
-                    let mut grouped: HashMap<String, Vec<&crate::file_snapshot::ToolSnapshot>> = HashMap::new();
+                    let mut grouped: HashMap<String, Vec<&crate::file_snapshot::ToolSnapshot>> =
+                        HashMap::new();
                     for s in &snaps {
                         grouped.entry(s.path.clone()).or_default().push(s);
                     }
@@ -3027,9 +3917,13 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     for (path, group) in &grouped {
                         let first = group.first().unwrap();
                         let last = group.last().unwrap();
-                        let before_content = first.before_hash.as_ref()
+                        let before_content = first
+                            .before_hash
+                            .as_ref()
                             .and_then(|h| store.objects().read_object_text(h));
-                        let after_content = last.after_hash.as_ref()
+                        let after_content = last
+                            .after_hash
+                            .as_ref()
                             .and_then(|h| store.objects().read_object_text(h));
                         let diff = match (&before_content, &after_content) {
                             (Some(b), Some(a)) => crate::file_snapshot::unified_diff(b, a, path),
@@ -3044,67 +3938,106 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             "path": path, "diff": diff, "added": added, "removed": removed,
                         }));
                     }
-                    output_response(&id, "get_batch_diffs", &serde_json::json!({
-                        "files": files,
-                        "summary": { "files": grouped.len(), "added": total_added, "removed": total_removed },
-                    }));
+                    output_response(
+                        &id,
+                        "get_batch_diffs",
+                        &serde_json::json!({
+                            "files": files,
+                            "summary": { "files": grouped.len(), "added": total_added, "removed": total_removed },
+                        }),
+                    );
                 } else {
-                    output_response(&id, "get_batch_diffs", &serde_json::json!({"error": "file-snapshot not enabled"}));
+                    output_response(
+                        &id,
+                        "get_batch_diffs",
+                        &serde_json::json!({"error": "file-snapshot not enabled"}),
+                    );
                 }
             }
             "get_file_history" => {
-                let file_path = params.get("filePath").and_then(|v| v.as_str()).unwrap_or("");
+                let file_path = params
+                    .get("filePath")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if file_path.is_empty() {
-                    output_response(&id, "get_file_history", &serde_json::json!({"error": "missing 'filePath'"}));
+                    output_response(
+                        &id,
+                        "get_file_history",
+                        &serde_json::json!({"error": "missing 'filePath'"}),
+                    );
                 } else if let Some(ref store) = snapshot_store {
                     let history = store.load_file_history(file_path);
-                    let entries: Vec<serde_json::Value> = history.iter().map(|s| {
-                        let action = match (&s.before_hash, &s.after_hash) {
-                            (None, Some(_)) => "added",
-                            (Some(_), None) => "deleted",
-                            (Some(_), Some(_)) => "modified",
-                            _ => "unchanged",
-                        };
-                        serde_json::json!({
-                            "turnId": s.turn_id,
-                            "action": action,
-                            "toolCallId": s.tool_call_id,
-                            "tool": s.tool_name,
-                            "hash": s.after_hash,
+                    let entries: Vec<serde_json::Value> = history
+                        .iter()
+                        .map(|s| {
+                            let action = match (&s.before_hash, &s.after_hash) {
+                                (None, Some(_)) => "added",
+                                (Some(_), None) => "deleted",
+                                (Some(_), Some(_)) => "modified",
+                                _ => "unchanged",
+                            };
+                            serde_json::json!({
+                                "turnId": s.turn_id,
+                                "action": action,
+                                "toolCallId": s.tool_call_id,
+                                "tool": s.tool_name,
+                                "hash": s.after_hash,
+                            })
                         })
-                    }).collect();
-                    output_response(&id, "get_file_history", &serde_json::json!({
-                        "path": file_path,
-                        "history": entries,
-                        "count": entries.len(),
-                    }));
+                        .collect();
+                    output_response(
+                        &id,
+                        "get_file_history",
+                        &serde_json::json!({
+                            "path": file_path,
+                            "history": entries,
+                            "count": entries.len(),
+                        }),
+                    );
                 } else {
-                    output_response(&id, "get_file_history", &serde_json::json!({"error": "file-snapshot not enabled"}));
+                    output_response(
+                        &id,
+                        "get_file_history",
+                        &serde_json::json!({"error": "file-snapshot not enabled"}),
+                    );
                 }
             }
             "restore_files" => {
                 let to_turn = params.get("toTurn").and_then(|v| v.as_str()).unwrap_or("");
                 if to_turn.is_empty() {
-                    output_response(&id, "restore_files", &serde_json::json!({"error": "missing 'toTurn' (turnId)"}));
+                    output_response(
+                        &id,
+                        "restore_files",
+                        &serde_json::json!({"error": "missing 'toTurn' (turnId)"}),
+                    );
                 } else if let Some(ref store) = snapshot_store {
-                    let result = crate::file_snapshot::restore::restore_code_to_turn(store, to_turn);
-                    output_response(&id, "restore_files", &serde_json::json!({
-                        "restoredFiles": result.restored_files.iter().map(|f| serde_json::json!({
-                            "path": f.path,
-                            "action": f.action,
-                            "fromHash": f.from_hash,
-                            "toHash": f.to_hash,
-                            "reason": f.reason,
-                        })).collect::<Vec<_>>(),
-                        "restorePoint": result.restore_point_id,
-                        "summary": {
-                            "restored": result.summary.restored,
-                            "deleted": result.summary.deleted,
-                            "skipped": result.summary.skipped,
-                        },
-                    }));
+                    let result =
+                        crate::file_snapshot::restore::restore_code_to_turn(store, to_turn);
+                    output_response(
+                        &id,
+                        "restore_files",
+                        &serde_json::json!({
+                            "restoredFiles": result.restored_files.iter().map(|f| serde_json::json!({
+                                "path": f.path,
+                                "action": f.action,
+                                "fromHash": f.from_hash,
+                                "toHash": f.to_hash,
+                                "reason": f.reason,
+                            })).collect::<Vec<_>>(),
+                            "restorePoint": result.restore_point_id,
+                            "summary": {
+                                "restored": result.summary.restored,
+                                "deleted": result.summary.deleted,
+                                "skipped": result.summary.skipped,
+                            },
+                        }),
+                    );
                 } else {
-                    output_response(&id, "restore_files", &serde_json::json!({"error": "file-snapshot not enabled"}));
+                    output_response(
+                        &id,
+                        "restore_files",
+                        &serde_json::json!({"error": "file-snapshot not enabled"}),
+                    );
                 }
             }
             // ── 审批 RPC（review_pending / approve / reject / approve_all / reject_all / approvals）──
@@ -3114,46 +4047,77 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     let added = pending.iter().filter(|p| p.status == "added").count();
                     let modified = pending.iter().filter(|p| p.status == "modified").count();
                     let deleted = pending.iter().filter(|p| p.status == "deleted").count();
-                    let pending_json: Vec<_> = pending.iter().map(|p| serde_json::json!({
-                        "path": p.path,
-                        "status": p.status,
-                        "diffStat": p.diff_stat,
-                        "oldContent": p.old_content,
-                        "newContent": p.new_content,
-                    })).collect();
-                    output_response(&id, "review_pending", &serde_json::json!({
-                        "pending": pending_json,
-                        "summary": {
-                            "total": pending.len(),
-                            "added": added,
-                            "modified": modified,
-                            "deleted": deleted,
-                        },
-                    }));
+                    let pending_json: Vec<_> = pending
+                        .iter()
+                        .map(|p| {
+                            serde_json::json!({
+                                "path": p.path,
+                                "status": p.status,
+                                "diffStat": p.diff_stat,
+                                "oldContent": p.old_content,
+                                "newContent": p.new_content,
+                            })
+                        })
+                        .collect();
+                    output_response(
+                        &id,
+                        "review_pending",
+                        &serde_json::json!({
+                            "pending": pending_json,
+                            "summary": {
+                                "total": pending.len(),
+                                "added": added,
+                                "modified": modified,
+                                "deleted": deleted,
+                            },
+                        }),
+                    );
                 } else {
-                    output_response(&id, "review_pending", &serde_json::json!({"error": "approval not enabled (requires file-snapshot)"}));
+                    output_response(
+                        &id,
+                        "review_pending",
+                        &serde_json::json!({"error": "approval not enabled (requires file-snapshot)"}),
+                    );
                 }
             }
             "review_approve" => {
                 let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
                 if path.is_empty() {
-                    output_response(&id, "review_approve", &serde_json::json!({"error": "missing 'path'"}));
+                    output_response(
+                        &id,
+                        "review_approve",
+                        &serde_json::json!({"error": "missing 'path'"}),
+                    );
                 } else if let Some(ref mgr) = approval_mgr {
                     match mgr.approve(path) {
-                        Ok(appr) => output_response(&id, "review_approve", &serde_json::json!({
-                            "path": appr.path, "status": "approved",
-                            "approvedTreeHash": appr.approved_tree_hash,
-                        })),
-                        Err(e) => output_response(&id, "review_approve", &serde_json::json!({"error": e})),
+                        Ok(appr) => output_response(
+                            &id,
+                            "review_approve",
+                            &serde_json::json!({
+                                "path": appr.path, "status": "approved",
+                                "approvedTreeHash": appr.approved_tree_hash,
+                            }),
+                        ),
+                        Err(e) => {
+                            output_response(&id, "review_approve", &serde_json::json!({"error": e}))
+                        }
                     }
                 } else {
-                    output_response(&id, "review_approve", &serde_json::json!({"error": "approval not enabled"}));
+                    output_response(
+                        &id,
+                        "review_approve",
+                        &serde_json::json!({"error": "approval not enabled"}),
+                    );
                 }
             }
             "review_reject" => {
                 let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
                 if path.is_empty() {
-                    output_response(&id, "review_reject", &serde_json::json!({"error": "missing 'path'"}));
+                    output_response(
+                        &id,
+                        "review_reject",
+                        &serde_json::json!({"error": "missing 'path'"}),
+                    );
                 } else if let Some(ref mgr) = approval_mgr {
                     match mgr.reject(path) {
                         Ok(rf) => {
@@ -3176,16 +4140,26 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             });
                             crate::session_jsonl::append_raw_entry(&worker_cwd, &entry);
 
-                            output_response(&id, "review_reject", &serde_json::json!({
-                                "path": rf.path, "status": "rejected",
-                                "action": rf.action, "rolledBack": true,
-                                "denyMessageInjected": true,
-                            }));
+                            output_response(
+                                &id,
+                                "review_reject",
+                                &serde_json::json!({
+                                    "path": rf.path, "status": "rejected",
+                                    "action": rf.action, "rolledBack": true,
+                                    "denyMessageInjected": true,
+                                }),
+                            );
                         }
-                        Err(e) => output_response(&id, "review_reject", &serde_json::json!({"error": e})),
+                        Err(e) => {
+                            output_response(&id, "review_reject", &serde_json::json!({"error": e}))
+                        }
                     }
                 } else {
-                    output_response(&id, "review_reject", &serde_json::json!({"error": "approval not enabled"}));
+                    output_response(
+                        &id,
+                        "review_reject",
+                        &serde_json::json!({"error": "approval not enabled"}),
+                    );
                 }
             }
             "review_approve_all" => {
@@ -3193,11 +4167,19 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     let results = mgr.approve_all();
                     let ok_count = results.iter().filter(|r| r.is_ok()).count();
                     let err_count = results.len() - ok_count;
-                    output_response(&id, "review_approve_all", &serde_json::json!({
-                        "approved": ok_count, "errors": err_count, "total": results.len(),
-                    }));
+                    output_response(
+                        &id,
+                        "review_approve_all",
+                        &serde_json::json!({
+                            "approved": ok_count, "errors": err_count, "total": results.len(),
+                        }),
+                    );
                 } else {
-                    output_response(&id, "review_approve_all", &serde_json::json!({"error": "approval not enabled"}));
+                    output_response(
+                        &id,
+                        "review_approve_all",
+                        &serde_json::json!({"error": "approval not enabled"}),
+                    );
                 }
             }
             "review_reject_all" => {
@@ -3205,11 +4187,19 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     let results = mgr.reject_all();
                     let ok_count = results.iter().filter(|r| r.is_ok()).count();
                     let err_count = results.len() - ok_count;
-                    output_response(&id, "review_reject_all", &serde_json::json!({
-                        "rejected": ok_count, "errors": err_count, "total": results.len(),
-                    }));
+                    output_response(
+                        &id,
+                        "review_reject_all",
+                        &serde_json::json!({
+                            "rejected": ok_count, "errors": err_count, "total": results.len(),
+                        }),
+                    );
                 } else {
-                    output_response(&id, "review_reject_all", &serde_json::json!({"error": "approval not enabled"}));
+                    output_response(
+                        &id,
+                        "review_reject_all",
+                        &serde_json::json!({"error": "approval not enabled"}),
+                    );
                 }
             }
             "review_approvals" => {
@@ -3222,16 +4212,24 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         _ => None,
                     });
                     let list = mgr.approvals_list(status_filter.as_ref());
-                    output_response(&id, "review_approvals", &serde_json::json!({
-                        "approvals": list.iter().map(|a| serde_json::json!({
-                            "path": a.path,
-                            "status": serde_json::to_string(&a.status).unwrap_or_default().trim_matches('"'),
-                            "timestamp": a.timestamp,
-                            "approvedTreeHash": a.approved_tree_hash,
-                        })).collect::<Vec<_>>(),
-                    }));
+                    output_response(
+                        &id,
+                        "review_approvals",
+                        &serde_json::json!({
+                            "approvals": list.iter().map(|a| serde_json::json!({
+                                "path": a.path,
+                                "status": serde_json::to_string(&a.status).unwrap_or_default().trim_matches('"'),
+                                "timestamp": a.timestamp,
+                                "approvedTreeHash": a.approved_tree_hash,
+                            })).collect::<Vec<_>>(),
+                        }),
+                    );
                 } else {
-                    output_response(&id, "review_approvals", &serde_json::json!({"error": "approval not enabled"}));
+                    output_response(
+                        &id,
+                        "review_approvals",
+                        &serde_json::json!({"error": "approval not enabled"}),
+                    );
                 }
             }
             "get_fork_messages" => {
@@ -3240,23 +4238,36 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     crate::message_retrieval::load_entries_cached(&worker_cwd);
                 let params = crate::message_retrieval::RetrievalParams::default();
                 let result = crate::message_retrieval::retrieve_inputs(&entries, &params);
-                output_response(&id, "get_fork_messages", &serde_json::json!({
-                    "inputs": result.inputs.iter().map(|i| serde_json::json!({
-                        "entryId": i.entry_id,
-                        "turnId": i.turn_id,
-                        "text": i.text,
-                    })).collect::<Vec<_>>(),
-                    "count": result.inputs.len(),
-                }));
+                output_response(
+                    &id,
+                    "get_fork_messages",
+                    &serde_json::json!({
+                        "inputs": result.inputs.iter().map(|i| serde_json::json!({
+                            "entryId": i.entry_id,
+                            "turnId": i.turn_id,
+                            "text": i.text,
+                        })).collect::<Vec<_>>(),
+                        "count": result.inputs.len(),
+                    }),
+                );
             }
             "get_agents_files" => output_response(&id, "get_agents_files", &serde_json::json!([])),
-            "get_latest_agent_change" => output_response(&id, "get_latest_agent_change", &serde_json::Value::Null),
+            "get_latest_agent_change" => {
+                output_response(&id, "get_latest_agent_change", &serde_json::Value::Null)
+            }
             "get_agent_detail" => {
                 // 真实实现：返回 agent 详情（含 system_prompt）
-                let name = params.get("agentName").or_else(|| params.get("name"))
-                    .and_then(|v| v.as_str()).unwrap_or("");
+                let name = params
+                    .get("agentName")
+                    .or_else(|| params.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if name.is_empty() {
-                    output_response(&id, "get_agent_detail", &serde_json::json!({"error":"missing agentName"}));
+                    output_response(
+                        &id,
+                        "get_agent_detail",
+                        &serde_json::json!({"error":"missing agentName"}),
+                    );
                 } else {
                     match crate::agent_config::find_agent(name) {
                         Some(agent) => {
@@ -3276,46 +4287,80 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                 "source": agent.source,
                             });
                             output_response(&id, "get_agent_detail", &detail);
-                        },
+                        }
                         None => {
-                            output_response(&id, "get_agent_detail", &serde_json::json!({"error": format!("agent '{}' not found", name)}));
+                            output_response(
+                                &id,
+                                "get_agent_detail",
+                                &serde_json::json!({"error": format!("agent '{}' not found", name)}),
+                            );
                         }
                     }
                 }
-            },
+            }
             "get_all_tools" => output_response(&id, "get_all_tools", &serde_json::json!([])),
             "get_flag_values" => output_response(&id, "get_flag_values", &serde_json::json!({})),
             "set_flag" => {
-                let ext_name = params.get("extension").and_then(|v| v.as_str()).unwrap_or("");
+                let ext_name = params
+                    .get("extension")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let flag_name = params.get("flag").and_then(|v| v.as_str()).unwrap_or("");
-                let value = params.get("value").cloned().unwrap_or(serde_json::Value::Null);
+                let value = params
+                    .get("value")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
                 if ext_name.is_empty() || flag_name.is_empty() {
-                    output_response(&id, "set_flag", &serde_json::json!({
-                        "error": "missing 'extension' or 'flag' parameter",
-                    }));
+                    output_response(
+                        &id,
+                        "set_flag",
+                        &serde_json::json!({
+                            "error": "missing 'extension' or 'flag' parameter",
+                        }),
+                    );
                 } else {
-                    agent.extensions().set_flag(ext_name, flag_name, value.clone());
-                    output_response(&id, "set_flag", &serde_json::json!({
-                        "extension": ext_name,
-                        "flag": flag_name,
-                        "value": value,
-                        "set": true,
-                    }));
+                    agent
+                        .extensions()
+                        .set_flag(ext_name, flag_name, value.clone());
+                    output_response(
+                        &id,
+                        "set_flag",
+                        &serde_json::json!({
+                            "extension": ext_name,
+                            "flag": flag_name,
+                            "value": value,
+                            "set": true,
+                        }),
+                    );
                 }
             }
             "get_mcp_servers" => {
                 // 方案 C：转发给 host 查真实状态
-                match manager_bridge.send_command("mcp_get_servers", serde_json::json!({})).await {
+                match manager_bridge
+                    .send_command("mcp_get_servers", serde_json::json!({}))
+                    .await
+                {
                     Ok(resp) => {
-                        let servers = resp.get("data").cloned().unwrap_or(serde_json::Value::Array(vec![]));
+                        let servers = resp
+                            .get("data")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Array(vec![]));
                         output_response(&id, "get_mcp_servers", &servers);
                     }
-                    Err(e) => output_error_response(&id, "get_mcp_servers", &format!("host proxy error: {e}")),
+                    Err(e) => output_error_response(
+                        &id,
+                        "get_mcp_servers",
+                        &format!("host proxy error: {e}"),
+                    ),
                 }
             }
             "mcp_toggle_server" => {
                 // 方案 C：转发给 host（host 的 McpManager 执行 toggle）
-                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let name = params
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let enabled = params.get("enabled").and_then(|v| v.as_bool());
                 if name.is_empty() {
                     output_error_response(&id, "mcp_toggle_server", "missing 'name'");
@@ -3328,49 +4373,111 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         continue;
                     }
                 };
-                match manager_bridge.send_command("mcp_toggle_server", serde_json::json!({
-                    "name": name, "enabled": enabled
-                })).await {
+                match manager_bridge
+                    .send_command(
+                        "mcp_toggle_server",
+                        serde_json::json!({
+                            "name": name, "enabled": enabled
+                        }),
+                    )
+                    .await
+                {
                     Ok(resp) => {
-                        if resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
-                            output_response(&id, "mcp_toggle_server", resp.get("data").unwrap_or(&serde_json::Value::Null));
+                        if resp
+                            .get("success")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                        {
+                            output_response(
+                                &id,
+                                "mcp_toggle_server",
+                                resp.get("data").unwrap_or(&serde_json::Value::Null),
+                            );
                         } else {
-                            output_error_response(&id, "mcp_toggle_server",
-                                resp.get("error").and_then(|v| v.as_str()).unwrap_or("unknown"));
+                            output_error_response(
+                                &id,
+                                "mcp_toggle_server",
+                                resp.get("error")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown"),
+                            );
                         }
                     }
-                    Err(e) => output_error_response(&id, "mcp_toggle_server", &format!("proxy: {e}")),
+                    Err(e) => {
+                        output_error_response(&id, "mcp_toggle_server", &format!("proxy: {e}"))
+                    }
                 }
             }
             "mcp_restart_server" => {
-                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let name = params
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if name.is_empty() {
                     output_error_response(&id, "mcp_restart_server", "missing 'name'");
                     continue;
                 }
-                match manager_bridge.send_command("mcp_restart_server", serde_json::json!({
-                    "name": name
-                })).await {
+                match manager_bridge
+                    .send_command(
+                        "mcp_restart_server",
+                        serde_json::json!({
+                            "name": name
+                        }),
+                    )
+                    .await
+                {
                     Ok(resp) => {
-                        if resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
-                            output_response(&id, "mcp_restart_server", resp.get("data").unwrap_or(&serde_json::Value::Null));
+                        if resp
+                            .get("success")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                        {
+                            output_response(
+                                &id,
+                                "mcp_restart_server",
+                                resp.get("data").unwrap_or(&serde_json::Value::Null),
+                            );
                         } else {
-                            output_error_response(&id, "mcp_restart_server",
-                                resp.get("error").and_then(|v| v.as_str()).unwrap_or("unknown"));
+                            output_error_response(
+                                &id,
+                                "mcp_restart_server",
+                                resp.get("error")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown"),
+                            );
                         }
                     }
-                    Err(e) => output_error_response(&id, "mcp_restart_server", &format!("proxy: {e}")),
+                    Err(e) => {
+                        output_error_response(&id, "mcp_restart_server", &format!("proxy: {e}"))
+                    }
                 }
             }
             "mcp_reload" => {
                 // 方案 C：转发给 host 重新加载 MCP 配置
-                match manager_bridge.send_command("mcp_reload", serde_json::json!({})).await {
+                match manager_bridge
+                    .send_command("mcp_reload", serde_json::json!({}))
+                    .await
+                {
                     Ok(resp) => {
-                        if resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
-                            output_response(&id, "mcp_reload", resp.get("data").unwrap_or(&serde_json::Value::Null));
+                        if resp
+                            .get("success")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                        {
+                            output_response(
+                                &id,
+                                "mcp_reload",
+                                resp.get("data").unwrap_or(&serde_json::Value::Null),
+                            );
                         } else {
-                            output_error_response(&id, "mcp_reload",
-                                resp.get("error").and_then(|v| v.as_str()).unwrap_or("unknown"));
+                            output_error_response(
+                                &id,
+                                "mcp_reload",
+                                resp.get("error")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown"),
+                            );
                         }
                     }
                     Err(e) => output_error_response(&id, "mcp_reload", &format!("proxy: {e}")),
@@ -3378,24 +4485,53 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             }
             "mcp_read_resource" => {
                 // 方案 C：转发给 host 读 MCP 资源
-                let server = params.get("server").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let uri = params.get("uri").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let server = params
+                    .get("server")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let uri = params
+                    .get("uri")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if server.is_empty() || uri.is_empty() {
                     output_error_response(&id, "mcp_read_resource", "missing 'server' or 'uri'");
                     continue;
                 }
-                match manager_bridge.send_command("mcp_read_resource", serde_json::json!({
-                    "server": server, "uri": uri
-                })).await {
+                match manager_bridge
+                    .send_command(
+                        "mcp_read_resource",
+                        serde_json::json!({
+                            "server": server, "uri": uri
+                        }),
+                    )
+                    .await
+                {
                     Ok(resp) => {
-                        if resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
-                            output_response(&id, "mcp_read_resource", resp.get("data").unwrap_or(&serde_json::Value::Null));
+                        if resp
+                            .get("success")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                        {
+                            output_response(
+                                &id,
+                                "mcp_read_resource",
+                                resp.get("data").unwrap_or(&serde_json::Value::Null),
+                            );
                         } else {
-                            output_error_response(&id, "mcp_read_resource",
-                                resp.get("error").and_then(|v| v.as_str()).unwrap_or("unknown"));
+                            output_error_response(
+                                &id,
+                                "mcp_read_resource",
+                                resp.get("error")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown"),
+                            );
                         }
                     }
-                    Err(e) => output_error_response(&id, "mcp_read_resource", &format!("proxy: {e}")),
+                    Err(e) => {
+                        output_error_response(&id, "mcp_read_resource", &format!("proxy: {e}"))
+                    }
                 }
             }
             "continue" => {
@@ -3403,16 +4539,23 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 output_response(&id, "continue", &serde_json::Value::Null);
             }
             "follow_up" => {
-                let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let text = params
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 agent.follow_up(crate::agent::messages::Message::User(
                     crate::agent::messages::UserMessage {
                         role: "user".into(),
                         content: vec![crate::agent::messages::ContentBlock::Text(
-                            crate::agent::messages::TextContent { text, text_signature: None }
+                            crate::agent::messages::TextContent {
+                                text,
+                                text_signature: None,
+                            },
                         )],
                         timestamp: now_ms(),
                         source: ion_provider::types::MessageSource::FollowUp,
-                    }
+                    },
                 ));
                 output_response(&id, "follow_up", &serde_json::Value::Null);
             }
@@ -3420,7 +4563,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 // 通过 process_map 找到 pid 并 kill
                 let bid = params.get("bid").and_then(|v| v.as_str()).unwrap_or("");
                 if bid.is_empty() {
-                    output_response(&id, "abort_bash", &serde_json::json!({"error": "missing 'bid' parameter"}));
+                    output_response(
+                        &id,
+                        "abort_bash",
+                        &serde_json::json!({"error": "missing 'bid' parameter"}),
+                    );
                 } else if let Some(ref pm) = process_map {
                     let map = pm.blocking_lock();
                     if let Some(info) = map.get(bid) {
@@ -3434,34 +4581,68 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             .output()
                             .map(|o| o.status.success())
                             .unwrap_or(false);
-                        output_response(&id, "abort_bash", &serde_json::json!({
-                            "bid": bid,
-                            "pid": pid,
-                            "command": cmd,
-                            "signal": "SIGTERM",
-                            "success": kill_result,
-                        }));
+                        output_response(
+                            &id,
+                            "abort_bash",
+                            &serde_json::json!({
+                                "bid": bid,
+                                "pid": pid,
+                                "command": cmd,
+                                "signal": "SIGTERM",
+                                "success": kill_result,
+                            }),
+                        );
                     } else {
-                        output_response(&id, "abort_bash", &serde_json::json!({
-                            "error": format!("process '{}' not found", bid),
-                            "available": map.keys().cloned().collect::<Vec<_>>(),
-                        }));
+                        output_response(
+                            &id,
+                            "abort_bash",
+                            &serde_json::json!({
+                                "error": format!("process '{}' not found", bid),
+                                "available": map.keys().cloned().collect::<Vec<_>>(),
+                            }),
+                        );
                     }
                 } else {
-                    output_response(&id, "abort_bash", &serde_json::json!({"error": "bash extension not enabled"}));
+                    output_response(
+                        &id,
+                        "abort_bash",
+                        &serde_json::json!({"error": "bash extension not enabled"}),
+                    );
                 }
             }
             "register_remote_tool" => {
-                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let url = params.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let description = params.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let method = params.get("method").and_then(|v| v.as_str()).unwrap_or("POST").to_string();
-                let parameters = params.get("parameters").cloned().unwrap_or(serde_json::json!({}));
-                let headers: std::collections::HashMap<String, String> = params.get("headers")
+                let name = params
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let url = params
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let description = params
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let method = params
+                    .get("method")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("POST")
+                    .to_string();
+                let parameters = params
+                    .get("parameters")
+                    .cloned()
+                    .unwrap_or(serde_json::json!({}));
+                let headers: std::collections::HashMap<String, String> = params
+                    .get("headers")
                     .and_then(|v| v.as_object())
-                    .map(|obj| obj.iter().filter_map(|(k, v)| {
-                        v.as_str().map(|s| (k.clone(), s.to_string()))
-                    }).collect())
+                    .map(|obj| {
+                        obj.iter()
+                            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 if name.is_empty() || url.is_empty() {
                     output_error_response(&id, "register_remote_tool", "missing 'name' or 'url'");
@@ -3475,22 +4656,34 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     method,
                     headers,
                 }));
-                output_response(&id, "register_remote_tool", &serde_json::json!({
-                    "name": name,
-                    "status": "registered"
-                }));
+                output_response(
+                    &id,
+                    "register_remote_tool",
+                    &serde_json::json!({
+                        "name": name,
+                        "status": "registered"
+                    }),
+                );
             }
             "unregister_remote_tool" => {
-                let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let name = params
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if name.is_empty() {
                     output_error_response(&id, "unregister_remote_tool", "missing 'name'");
                     continue;
                 }
                 agent.remove_tool(&name);
-                output_response(&id, "unregister_remote_tool", &serde_json::json!({
-                    "name": name,
-                    "status": "removed"
-                }));
+                output_response(
+                    &id,
+                    "unregister_remote_tool",
+                    &serde_json::json!({
+                        "name": name,
+                        "status": "removed"
+                    }),
+                );
             }
 
             // ── WASM 插件热更新 ──
@@ -3542,7 +4735,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         for name in &tool_names {
                             agent.remove_tool(name);
                         }
-                        output_response(&id, "extension_remove", &serde_json::json!({"removed_tools": tool_names}));
+                        output_response(
+                            &id,
+                            "extension_remove",
+                            &serde_json::json!({"removed_tools": tool_names}),
+                        );
                     }
                     Err(e) => {
                         output_error_response(&id, "extension_remove", &e);
@@ -3552,7 +4749,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
             "extension_list" => {
                 let extensions = wasm_ext_registry.list();
-                output_response(&id, "extension_list", &serde_json::json!({"extensions": extensions}));
+                output_response(
+                    &id,
+                    "extension_list",
+                    &serde_json::json!({"extensions": extensions}),
+                );
             }
 
             "extension_reload" => {
@@ -3572,7 +4773,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
                 // 先卸载旧的（如果有）
                 if let Ok(old_tools) = wasm_ext_registry.remove(&canonical_str) {
-                    for name in &old_tools { agent.remove_tool(name); }
+                    for name in &old_tools {
+                        agent.remove_tool(name);
+                    }
                 }
 
                 // 重新加载
@@ -3590,19 +4793,34 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             }));
                         }
                         let names: Vec<&str> = tool_defs.iter().map(|t| t.name.as_str()).collect();
-                        output_response(&id, "extension_reload", &serde_json::json!({"tools": names}));
+                        output_response(
+                            &id,
+                            "extension_reload",
+                            &serde_json::json!({"tools": names}),
+                        );
                     }
                     Err(e) => {
-                        output_error_response(&id, "extension_reload", &format!("reload failed: {e}"));
+                        output_error_response(
+                            &id,
+                            "extension_reload",
+                            &format!("reload failed: {e}"),
+                        );
                     }
                 }
             }
 
             "set_settings" => {
                 let key = params.get("key").and_then(|v| v.as_str()).unwrap_or("");
-                let value = params.get("value").cloned().unwrap_or(serde_json::Value::Null);
+                let value = params
+                    .get("value")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
                 if key.is_empty() {
-                    output_response(&id, "set_settings", &serde_json::json!({"error": "missing 'key' parameter"}));
+                    output_response(
+                        &id,
+                        "set_settings",
+                        &serde_json::json!({"error": "missing 'key' parameter"}),
+                    );
                 } else {
                     let mut cfg = crate::config::IonConfig::load();
                     let old_val: serde_json::Value;
@@ -3624,64 +4842,122 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             cfg.base_url = value.as_str().map(|s| s.to_string());
                         }
                         _ => {
-                            output_response(&id, "set_settings", &serde_json::json!({
-                                "error": format!("unknown key '{}' (supported: default_provider, default_model, api_key, base_url)", key),
-                            }));
+                            output_response(
+                                &id,
+                                "set_settings",
+                                &serde_json::json!({
+                                    "error": format!("unknown key '{}' (supported: default_provider, default_model, api_key, base_url)", key),
+                                }),
+                            );
                             return;
                         }
                     }
                     match cfg.save() {
-                        Ok(()) => output_response(&id, "set_settings", &serde_json::json!({
-                            "key": key,
-                            "old_value": old_val,
-                            "new_value": if key.contains("api_key") { serde_json::json!("***") } else { value },
-                            "saved": true,
-                        })),
-                        Err(e) => output_response(&id, "set_settings", &serde_json::json!({
-                            "error": format!("save failed: {}", e),
-                        })),
+                        Ok(()) => output_response(
+                            &id,
+                            "set_settings",
+                            &serde_json::json!({
+                                "key": key,
+                                "old_value": old_val,
+                                "new_value": if key.contains("api_key") { serde_json::json!("***") } else { value },
+                                "saved": true,
+                            }),
+                        ),
+                        Err(e) => output_response(
+                            &id,
+                            "set_settings",
+                            &serde_json::json!({
+                                "error": format!("save failed: {}", e),
+                            }),
+                        ),
                     }
                 }
             }
-            "rollback_preview" => output_response(&id, "rollback_preview", &serde_json::Value::Null),
+            "rollback_preview" => {
+                output_response(&id, "rollback_preview", &serde_json::Value::Null)
+            }
             "copy_fork" => output_response(&id, "copy_fork", &serde_json::json!({"sessionId":sid})),
             "append_system_event" => {
                 let ctype = params.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 let label = params.get("label").and_then(|v| v.as_str()).unwrap_or("");
-                let display = params.get("display").and_then(|v| v.as_bool()).unwrap_or(true);
-                append_session_entry(&worker_cwd, &sid, "system_event", &serde_json::json!({
-                    "customType": ctype,
-                    "label": label,
-                    "display": display,
-                }));
-                output_response(&id, "append_system_event", &serde_json::json!({"status":"appended"}));
+                let display = params
+                    .get("display")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                append_session_entry(
+                    &worker_cwd,
+                    &sid,
+                    "system_event",
+                    &serde_json::json!({
+                        "customType": ctype,
+                        "label": label,
+                        "display": display,
+                    }),
+                );
+                output_response(
+                    &id,
+                    "append_system_event",
+                    &serde_json::json!({"status":"appended"}),
+                );
             }
             "append_custom_message" => {
                 let ctype = params.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 let content = params.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                let display = params.get("display").and_then(|v| v.as_bool()).unwrap_or(true);
+                let display = params
+                    .get("display")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
                 let details = params.get("details");
-                append_session_entry(&worker_cwd, &sid, "custom_message", &serde_json::json!({
-                    "customType": ctype,
-                    "content": content,
-                    "display": display,
-                    "details": details,
-                }));
-                output_response(&id, "append_custom_message", &serde_json::json!({"status":"appended"}));
+                append_session_entry(
+                    &worker_cwd,
+                    &sid,
+                    "custom_message",
+                    &serde_json::json!({
+                        "customType": ctype,
+                        "content": content,
+                        "display": display,
+                        "details": details,
+                    }),
+                );
+                output_response(
+                    &id,
+                    "append_custom_message",
+                    &serde_json::json!({"status":"appended"}),
+                );
             }
             "append_custom_entry" => {
                 let ctype = params.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 let data = params.get("data").cloned().unwrap_or_default();
-                append_session_entry(&worker_cwd, &sid, "custom", &serde_json::json!({
-                    "customType": ctype,
-                    "data": data,
-                }));
-                output_response(&id, "append_custom_entry", &serde_json::json!({"status":"appended"}));
+                append_session_entry(
+                    &worker_cwd,
+                    &sid,
+                    "custom",
+                    &serde_json::json!({
+                        "customType": ctype,
+                        "data": data,
+                    }),
+                );
+                output_response(
+                    &id,
+                    "append_custom_entry",
+                    &serde_json::json!({"status":"appended"}),
+                );
             }
             "send_custom_message" => {
-                let ctype: String = params.get("type").and_then(|v| v.as_str()).map(String::from).unwrap_or_default();
-                let content: String = params.get("content").and_then(|v| v.as_str()).map(String::from).unwrap_or_default();
-                let deliver_as = params.get("deliverAs").and_then(|v| v.as_str()).unwrap_or("followUp");
+                let ctype: String = params
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .unwrap_or_default();
+                let content: String = params
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .unwrap_or_default();
+                let deliver_as = params
+                    .get("deliverAs")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("followUp");
                 // 用 Message::Custom（不是 Message::User），
                 // 确保历史重建时能与真实用户消息区分
                 let msg = Message::Custom(CustomMessage {
@@ -3696,76 +4972,146 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     "steer" => agent.steer(msg),
                     "nextTurn" | _ => agent.follow_up(msg),
                 }
-                output_response(&id, "send_custom_message", &serde_json::json!({"status":"queued","queue":deliver_as}));
+                output_response(
+                    &id,
+                    "send_custom_message",
+                    &serde_json::json!({"status":"queued","queue":deliver_as}),
+                );
             }
             "append_model_change" => {
-                let provider = params.get("provider").and_then(|v| v.as_str()).unwrap_or("");
+                let provider = params
+                    .get("provider")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let model_id = params.get("modelId").and_then(|v| v.as_str()).unwrap_or("");
-                append_session_entry(&worker_cwd, &sid, "model_change", &serde_json::json!({
-                    "provider": provider,
-                    "modelId": model_id,
-                }));
+                append_session_entry(
+                    &worker_cwd,
+                    &sid,
+                    "model_change",
+                    &serde_json::json!({
+                        "provider": provider,
+                        "modelId": model_id,
+                    }),
+                );
                 // 同步到 session index（O(1) 查询用）
                 crate::session_index::SessionIndex::set_model(&sid, provider, model_id);
-                output_response(&id, "append_model_change", &serde_json::json!({"status":"appended"}));
+                output_response(
+                    &id,
+                    "append_model_change",
+                    &serde_json::json!({"status":"appended"}),
+                );
             }
             "append_thinking_level_change" => {
                 let level = params.get("level").and_then(|v| v.as_str()).unwrap_or("");
-                append_session_entry(&worker_cwd, &sid, "thinking_level_change", &serde_json::json!({
-                    "level": level,
-                }));
+                append_session_entry(
+                    &worker_cwd,
+                    &sid,
+                    "thinking_level_change",
+                    &serde_json::json!({
+                        "level": level,
+                    }),
+                );
                 crate::session_index::SessionIndex::set_thinking_level(&sid, level);
-                output_response(&id, "append_thinking_level_change", &serde_json::json!({"status":"appended"}));
+                output_response(
+                    &id,
+                    "append_thinking_level_change",
+                    &serde_json::json!({"status":"appended"}),
+                );
             }
             "append_agent_change" => {
                 let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let config = params.get("config");
                 let mut entry = serde_json::json!({"name": name});
-                if let Some(c) = config { entry["config"] = c.clone(); }
+                if let Some(c) = config {
+                    entry["config"] = c.clone();
+                }
                 append_session_entry(&worker_cwd, &sid, "agent_change", &entry);
                 crate::session_index::SessionIndex::set_agent(&sid, name);
-                output_response(&id, "append_agent_change", &serde_json::json!({"status":"appended"}));
+                output_response(
+                    &id,
+                    "append_agent_change",
+                    &serde_json::json!({"status":"appended"}),
+                );
             }
             "append_session_name" => {
                 let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                append_session_entry(&worker_cwd, &sid, "session_info", &serde_json::json!({
-                    "name": name,
-                }));
+                append_session_entry(
+                    &worker_cwd,
+                    &sid,
+                    "session_info",
+                    &serde_json::json!({
+                        "name": name,
+                    }),
+                );
                 crate::session_index::SessionIndex::set_name(&sid, name);
-                output_response(&id, "append_session_name", &serde_json::json!({"status":"appended","name":name}));
+                output_response(
+                    &id,
+                    "append_session_name",
+                    &serde_json::json!({"status":"appended","name":name}),
+                );
             }
             "append_label" => {
-                let target_id = params.get("targetId").and_then(|v| v.as_str()).unwrap_or("");
+                let target_id = params
+                    .get("targetId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let label = params.get("label").and_then(|v| v.as_str()).unwrap_or("");
-                append_session_entry(&worker_cwd, &sid, "label", &serde_json::json!({
-                    "targetId": target_id,
-                    "label": label,
-                }));
-                output_response(&id, "append_label", &serde_json::json!({"status":"appended"}));
+                append_session_entry(
+                    &worker_cwd,
+                    &sid,
+                    "label",
+                    &serde_json::json!({
+                        "targetId": target_id,
+                        "label": label,
+                    }),
+                );
+                output_response(
+                    &id,
+                    "append_label",
+                    &serde_json::json!({"status":"appended"}),
+                );
             }
             "append_active_tools_change" => {
-                let names: Vec<String> = params.get("activeToolNames")
+                let names: Vec<String> = params
+                    .get("activeToolNames")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter()
-                        .filter_map(|x| x.as_str().map(String::from))
-                        .collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
-                append_session_entry(&worker_cwd, &sid, "active_tools_change", &serde_json::json!({
-                    "activeToolNames": names,
-                }));
+                append_session_entry(
+                    &worker_cwd,
+                    &sid,
+                    "active_tools_change",
+                    &serde_json::json!({
+                        "activeToolNames": names,
+                    }),
+                );
                 crate::session_index::SessionIndex::set_active_tools(&sid, names);
-                output_response(&id, "append_active_tools_change",
-                    &serde_json::json!({"status":"appended"}));
+                output_response(
+                    &id,
+                    "append_active_tools_change",
+                    &serde_json::json!({"status":"appended"}),
+                );
             }
-            "get_process_snapshot" => output_response(&id, "get_process_snapshot", &serde_json::json!({})),
+            "get_process_snapshot" => {
+                output_response(&id, "get_process_snapshot", &serde_json::json!({}))
+            }
 
             // ── bash_command：用户 !cmd 直发，结果作为 Message::BashExecution 入历史 ──
             // 不走 agent.run()，直接执行 + 入库 + 返回。
             // LLM 下次看到时 provider 自动把 role:bashExecution 转成 user text。
             "bash_command" => {
-                let command: String = params.get("command").and_then(|v| v.as_str()).map(String::from).unwrap_or_default();
+                let command: String = params
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .unwrap_or_default();
                 let timeout_secs = params.get("timeout").and_then(|v| v.as_u64()).unwrap_or(30);
-                let exclude_from_context = params.get("excludeFromContext").and_then(|v| v.as_bool());
+                let exclude_from_context =
+                    params.get("excludeFromContext").and_then(|v| v.as_bool());
 
                 if command.is_empty() {
                     output_error_response(&id, "bash_command", "missing 'command'");
@@ -3789,12 +5135,16 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             exclude_from_context,
                         };
                         agent.push_message(Message::BashExecution(bash_msg.clone()));
-                        output_response(&id, "bash_command", &serde_json::json!({
-                            "status":"error",
-                            "error": e,
-                            "exitCode": null,
-                            "output": null,
-                        }));
+                        output_response(
+                            &id,
+                            "bash_command",
+                            &serde_json::json!({
+                                "status":"error",
+                                "error": e,
+                                "exitCode": null,
+                                "output": null,
+                            }),
+                        );
                         continue;
                     }
                 };
@@ -3823,18 +5173,26 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 // 入 agent.messages（下次 LLM 调用会看到）
                 agent.push_message(Message::BashExecution(bash_msg));
 
-                output_response(&id, "bash_command", &serde_json::json!({
-                    "status":"ok",
-                    "exitCode": exit_code,
-                    "output": combined,
-                    "truncated": truncated,
-                }));
+                output_response(
+                    &id,
+                    "bash_command",
+                    &serde_json::json!({
+                        "status":"ok",
+                        "exitCode": exit_code,
+                        "output": combined,
+                        "truncated": truncated,
+                    }),
+                );
             }
 
             // ── Manager 回执（worker→manager 命令的结果）──
             // 按 _reply_to 查 pending map，触发对应 oneshot；不再 echo response。
             "manager_response" => {
-                let reply_to = cmd.get("_reply_to").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let reply_to = cmd
+                    .get("_reply_to")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if !reply_to.is_empty() {
                     manager_bridge.deliver_response(&reply_to, cmd).await;
                 } else {
@@ -3845,7 +5203,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             // ── 真正未知 ──
             _ => {
                 // 兜底：检查是否有 _reply_to（Manager 写回 manager_response 可能不带 type）
-                let reply_to = cmd.get("_reply_to")
+                let reply_to = cmd
+                    .get("_reply_to")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
@@ -3870,7 +5229,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     }
 
     // 退出前保存会话
-    let msgs_json: Vec<serde_json::Value> = agent.messages().iter()
+    let msgs_json: Vec<serde_json::Value> = agent
+        .messages()
+        .iter()
         .filter_map(|m| serde_json::to_value(m).ok())
         .collect();
     save_worker_session(&sid, &worker_cwd, &msgs_json);
@@ -3889,8 +5250,10 @@ async fn execute_bash(command: &str, timeout_secs: u64) -> Result<(String, Strin
         tokio::process::Command::new("sh")
             .args(["-c", command])
             .output(),
-    ).await.map_err(|_| format!("bash timed out after {timeout_secs}s"))?
-     .map_err(|e| format!("spawn failed: {e}"))?;
+    )
+    .await
+    .map_err(|_| format!("bash timed out after {timeout_secs}s"))?
+    .map_err(|e| format!("spawn failed: {e}"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -3902,7 +5265,9 @@ async fn execute_bash(command: &str, timeout_secs: u64) -> Result<(String, Strin
         if s.len() > MAX_OUTPUT {
             let left = MAX_OUTPUT;
             format!("{}...[truncated {} bytes]", &s[..left], s.len() - left)
-        } else { s }
+        } else {
+            s
+        }
     }
 
     Ok((truncate(stdout), truncate(stderr), exit_code))
@@ -3946,7 +5311,9 @@ fn build_skill_hint(config_root: &str) -> String {
                 } else if path.is_dir() {
                     // 格式 2：<dir>/<name>/SKILL.md
                     let skill_md = path.join("SKILL.md");
-                    if !skill_md.is_file() { continue; }
+                    if !skill_md.is_file() {
+                        continue;
+                    }
                     let dir_name = match path.file_name().and_then(|n| n.to_str()) {
                         Some(n) => n,
                         None => continue,
@@ -4005,16 +5372,16 @@ fn strip_version_suffix_inline(name: &str) -> String {
 /// 从 skill 文件 frontmatter 提取 description（build_skill_hint 用，避免跟 tool.rs 的私有函数冲突）
 fn parse_skill_description_inline(content: &str) -> String {
     let trimmed = content.trim_start();
-    if let Some(rest) = trimmed.strip_prefix("---") {
-        if let Some(end) = rest.find("\n---") {
-            let frontmatter = &rest[..end];
-            for line in frontmatter.lines() {
-                let line = line.trim();
-                if let Some(rest) = line.strip_prefix("description:") {
-                    let val = rest.trim().trim_matches(|c| c == '"' || c == '\'');
-                    if !val.is_empty() {
-                        return val.to_string();
-                    }
+    if let Some(rest) = trimmed.strip_prefix("---")
+        && let Some(end) = rest.find("\n---")
+    {
+        let frontmatter = &rest[..end];
+        for line in frontmatter.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("description:") {
+                let val = rest.trim().trim_matches(|c| c == '"' || c == '\'');
+                if !val.is_empty() {
+                    return val.to_string();
                 }
             }
         }
@@ -4062,25 +5429,39 @@ impl McpProxyTool {
 
 #[mcp_async_trait]
 impl crate::agent::tool::Tool for McpProxyTool {
-    fn name(&self) -> &str { &self.full_name }
-    fn description(&self) -> &str { &self.description }
-    fn parameters(&self) -> serde_json::Value { self.parameters.clone() }
+    fn name(&self) -> &str {
+        &self.full_name
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+    fn parameters(&self) -> serde_json::Value {
+        self.parameters.clone()
+    }
 
     async fn execute(
         &self,
         args: serde_json::Value,
         _rt: &dyn crate::runtime::Runtime,
     ) -> crate::agent::error::AgentResult<String> {
-        let resp = self.bridge
-            .send_command("mcp_call_tool", serde_json::json!({
-                "server": self.server_name,
-                "tool": self.tool_name,
-                "args": args,
-            }))
+        let resp = self
+            .bridge
+            .send_command(
+                "mcp_call_tool",
+                serde_json::json!({
+                    "server": self.server_name,
+                    "tool": self.tool_name,
+                    "args": args,
+                }),
+            )
             .await
-            .map_err(|e| crate::agent::error::AgentError::Tool(e))?;
+            .map_err(crate::agent::error::AgentError::Tool)?;
 
-        if resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if resp
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
             Ok(resp
                 .get("data")
                 .and_then(|d| d.get("output"))
@@ -4110,9 +5491,15 @@ struct StreamingExtension {
 
 #[async_trait::async_trait]
 impl crate::agent::extension::Extension for StreamingExtension {
-    fn name(&self) -> &str { "streaming" }
+    fn name(&self) -> &str {
+        "streaming"
+    }
 
-    async fn on_message_delta(&self, delta: &str, role: &str) -> crate::agent::error::AgentResult<()> {
+    async fn on_message_delta(
+        &self,
+        delta: &str,
+        role: &str,
+    ) -> crate::agent::error::AgentResult<()> {
         if role == "assistant" && !delta.is_empty() {
             output(&serde_json::json!({
                 "type": "event",
@@ -4122,9 +5509,11 @@ impl crate::agent::extension::Extension for StreamingExtension {
         Ok(())
     }
 
-
     /// agent_start 事件（对齐 pi）
-    async fn on_agent_start(&self, _ctx: &crate::agent::agent_loop::AgentContext) -> crate::agent::error::AgentResult<()> {
+    async fn on_agent_start(
+        &self,
+        _ctx: &crate::agent::agent_loop::AgentContext,
+    ) -> crate::agent::error::AgentResult<()> {
         output(&serde_json::json!({
             "type": "event",
             "event": {
@@ -4137,7 +5526,10 @@ impl crate::agent::extension::Extension for StreamingExtension {
     }
 
     /// agent_end 事件（对齐 pi — 含消息数）
-    async fn on_agent_end(&self, ctx: &crate::agent::agent_loop::AgentContext) -> crate::agent::error::AgentResult<()> {
+    async fn on_agent_end(
+        &self,
+        ctx: &crate::agent::agent_loop::AgentContext,
+    ) -> crate::agent::error::AgentResult<()> {
         output(&serde_json::json!({
             "type": "event",
             "event": {
@@ -4152,7 +5544,11 @@ impl crate::agent::extension::Extension for StreamingExtension {
     }
 
     /// message_start 事件（对齐 pi）
-    async fn on_message_start(&self, role: &str, content: &str) -> crate::agent::error::AgentResult<()> {
+    async fn on_message_start(
+        &self,
+        role: &str,
+        content: &str,
+    ) -> crate::agent::error::AgentResult<()> {
         output(&serde_json::json!({
             "type": "event",
             "event": {
@@ -4167,7 +5563,12 @@ impl crate::agent::extension::Extension for StreamingExtension {
     }
 
     /// message_end 事件（对齐 pi — 含 token 用量）
-    async fn on_message_end(&self, role: &str, _full_content: &str, usage: &ion_provider::types::Usage) -> crate::agent::error::AgentResult<()> {
+    async fn on_message_end(
+        &self,
+        role: &str,
+        _full_content: &str,
+        usage: &ion_provider::types::Usage,
+    ) -> crate::agent::error::AgentResult<()> {
         output(&serde_json::json!({
             "type": "event",
             "event": {
@@ -4184,10 +5585,17 @@ impl crate::agent::extension::Extension for StreamingExtension {
         }));
         Ok(())
     }
-    async fn on_tool_call_delta(&self, delta: &str, name: &str) -> crate::agent::error::AgentResult<()> {
+    async fn on_tool_call_delta(
+        &self,
+        delta: &str,
+        name: &str,
+    ) -> crate::agent::error::AgentResult<()> {
         if !delta.is_empty() {
             if std::env::var("ION_STREAM_DEBUG").ok().as_deref() == Some("1") {
-                eprintln!("[stream-debug] worker emit tool_call_delta name={name} len={}", delta.len());
+                eprintln!(
+                    "[stream-debug] worker emit tool_call_delta name={name} len={}",
+                    delta.len()
+                );
             }
             output(&serde_json::json!({
                 "type": "event",
@@ -4203,9 +5611,12 @@ impl crate::agent::extension::Extension for StreamingExtension {
         Ok(())
     }
 
-
     /// 自动重试开始事件：让前端显示 "重试中 (N/M)..."（对齐 pi auto_retry_start）
-    async fn on_auto_retry_start(&self, attempt: u32, max_retries: u32) -> crate::agent::error::AgentResult<()> {
+    async fn on_auto_retry_start(
+        &self,
+        attempt: u32,
+        max_retries: u32,
+    ) -> crate::agent::error::AgentResult<()> {
         output(&serde_json::json!({
             "type": "event",
             "event": {
@@ -4220,7 +5631,11 @@ impl crate::agent::extension::Extension for StreamingExtension {
     }
 
     /// 自动重试结束事件（success=false 表示所有重试用完仍失败）
-    async fn on_auto_retry_end(&self, success: bool, attempt: u32) -> crate::agent::error::AgentResult<()> {
+    async fn on_auto_retry_end(
+        &self,
+        success: bool,
+        attempt: u32,
+    ) -> crate::agent::error::AgentResult<()> {
         output(&serde_json::json!({
             "type": "event",
             "event": {
@@ -4234,7 +5649,10 @@ impl crate::agent::extension::Extension for StreamingExtension {
         Ok(())
     }
 
-    async fn on_tool_execution_start(&self, ctx: &crate::agent::extension::ToolExecutionContext) -> crate::agent::error::AgentResult<()> {
+    async fn on_tool_execution_start(
+        &self,
+        ctx: &crate::agent::extension::ToolExecutionContext,
+    ) -> crate::agent::error::AgentResult<()> {
         output(&serde_json::json!({
             "type": "event",
             "event": {
@@ -4258,7 +5676,8 @@ impl crate::agent::extension::Extension for StreamingExtension {
         _args: &serde_json::Value,
         messages: &[crate::agent::messages::Message],
     ) -> crate::agent::error::AgentResult<()> {
-        let msgs_json: Vec<serde_json::Value> = messages.iter()
+        let msgs_json: Vec<serde_json::Value> = messages
+            .iter()
             .filter_map(|m| serde_json::to_value(m).ok())
             .collect();
         eprintln!("[before-tool] tool={_tool_name} msgs={}", msgs_json.len());
@@ -4274,7 +5693,11 @@ impl crate::agent::extension::Extension for StreamingExtension {
         Ok(())
     }
 
-    async fn on_tool_execution_update(&self, ctx: &crate::agent::extension::ToolExecutionContext, partial: &str) -> crate::agent::error::AgentResult<()> {
+    async fn on_tool_execution_update(
+        &self,
+        ctx: &crate::agent::extension::ToolExecutionContext,
+        partial: &str,
+    ) -> crate::agent::error::AgentResult<()> {
         output(&serde_json::json!({
             "type": "event",
             "event": {
@@ -4289,7 +5712,10 @@ impl crate::agent::extension::Extension for StreamingExtension {
         Ok(())
     }
 
-    async fn on_tool_execution_end(&self, ctx: &crate::agent::extension::ToolExecutionContext) -> crate::agent::error::AgentResult<()> {
+    async fn on_tool_execution_end(
+        &self,
+        ctx: &crate::agent::extension::ToolExecutionContext,
+    ) -> crate::agent::error::AgentResult<()> {
         output(&serde_json::json!({
             "type": "event",
             "event": {
@@ -4338,7 +5764,9 @@ impl WorkerAgentRpc {
     fn new(model: String, provider: String, session_id: String) -> Self {
         Self {
             snapshot: std::sync::Arc::new(std::sync::RwLock::new(AgentSnapshot {
-                model, provider, session_id,
+                model,
+                provider,
+                session_id,
                 ..Default::default()
             })),
         }
@@ -4356,38 +5784,34 @@ impl WorkerAgentRpc {
 impl crate::wasm_extension::AgentRpcHandle for WorkerAgentRpc {
     async fn call(&self, method: &str, params_json: &str) -> Result<String, String> {
         let snap = self.snapshot.read().unwrap();
-        let params: serde_json::Value = serde_json::from_str(params_json)
-            .unwrap_or(serde_json::Value::Null);
+        let params: serde_json::Value =
+            serde_json::from_str(params_json).unwrap_or(serde_json::Value::Null);
 
         match method {
-            "get_context_usage" => {
-                Ok(serde_json::json!({
-                    "total_tokens": snap.estimated_tokens,
-                    "input_tokens": snap.total_input_tokens,
-                    "output_tokens": snap.total_output_tokens,
-                    "context_window": snap.context_window,
-                    "usage_percent": if snap.context_window > 0 {
-                        (snap.estimated_tokens as f64 / snap.context_window as f64 * 100.0) as u64
-                    } else { 0 },
-                    "message_count": snap.message_count,
-                }).to_string())
-            }
+            "get_context_usage" => Ok(serde_json::json!({
+                "total_tokens": snap.estimated_tokens,
+                "input_tokens": snap.total_input_tokens,
+                "output_tokens": snap.total_output_tokens,
+                "context_window": snap.context_window,
+                "usage_percent": if snap.context_window > 0 {
+                    (snap.estimated_tokens as f64 / snap.context_window as f64 * 100.0) as u64
+                } else { 0 },
+                "message_count": snap.message_count,
+            })
+            .to_string()),
 
-            "get_full_messages" => {
-                Ok(snap.messages_json.clone())
-            }
+            "get_full_messages" => Ok(snap.messages_json.clone()),
 
-            "get_state" => {
-                Ok(serde_json::json!({
-                    "model": snap.model,
-                    "provider": snap.provider,
-                    "session_id": snap.session_id,
-                    "message_count": snap.message_count,
-                    "is_running": snap.is_running,
-                    "steering_queue": snap.steering_queue_len,
-                    "follow_up_queue": snap.follow_up_queue_len,
-                }).to_string())
-            }
+            "get_state" => Ok(serde_json::json!({
+                "model": snap.model,
+                "provider": snap.provider,
+                "session_id": snap.session_id,
+                "message_count": snap.message_count,
+                "is_running": snap.is_running,
+                "steering_queue": snap.steering_queue_len,
+                "follow_up_queue": snap.follow_up_queue_len,
+            })
+            .to_string()),
 
             "steer" => {
                 // Emit steer command to stdout (Manager/worker picks it up)
@@ -4424,7 +5848,10 @@ impl crate::wasm_extension::AgentRpcHandle for WorkerAgentRpc {
             }
 
             "get_worker_status" => {
-                let worker_id = params.get("worker_id").and_then(|v| v.as_str()).unwrap_or("");
+                let worker_id = params
+                    .get("worker_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if worker_id.is_empty() {
                     return Err("get_worker_status: empty worker_id".into());
                 }
@@ -4470,7 +5897,9 @@ struct FsProbeExtension {
 
 #[async_trait::async_trait]
 impl crate::agent::extension::Extension for FsProbeExtension {
-    fn name(&self) -> &str { "fs_probe" }
+    fn name(&self) -> &str {
+        "fs_probe"
+    }
 
     async fn on_extension_rpc(
         &self,
@@ -4482,22 +5911,27 @@ impl crate::agent::extension::Extension for FsProbeExtension {
         let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
         match method {
             "read_file" => {
-                let content = self.fs.read_file(path).await
-                    .map_err(AgentError::Tool)?;
+                let content = self.fs.read_file(path).await.map_err(AgentError::Tool)?;
                 Ok(serde_json::json!({"content": content}))
             }
             "write_file" => {
                 let content = params.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                self.fs.write_file(path, content).await
+                self.fs
+                    .write_file(path, content)
+                    .await
                     .map_err(AgentError::Tool)?;
                 Ok(serde_json::json!({"written": true}))
             }
             "list_dir" => {
-                let entries = self.fs.list_dir(path).await
-                    .map_err(AgentError::Tool)?;
-                let arr: Vec<serde_json::Value> = entries.iter().map(|e| serde_json::json!({
-                    "name": e.name, "is_dir": e.is_dir, "size": e.size,
-                })).collect();
+                let entries = self.fs.list_dir(path).await.map_err(AgentError::Tool)?;
+                let arr: Vec<serde_json::Value> = entries
+                    .iter()
+                    .map(|e| {
+                        serde_json::json!({
+                            "name": e.name, "is_dir": e.is_dir, "size": e.size,
+                        })
+                    })
+                    .collect();
                 Ok(serde_json::json!({"entries": arr}))
             }
             "path_exists" => {
@@ -4508,13 +5942,15 @@ impl crate::agent::extension::Extension for FsProbeExtension {
             }
             "glob" => {
                 let pattern = params.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
-                let matches = self.fs.glob(pattern).await
-                    .map_err(AgentError::Tool)?;
+                let matches = self.fs.glob(pattern).await.map_err(AgentError::Tool)?;
                 Ok(serde_json::json!({"matches": matches}))
             }
             "data_dirs" => {
                 // 返回 4 级数据目录（验证 StorageContext 注入）
-                let ext_name = params.get("ext_name").and_then(|v| v.as_str()).unwrap_or("fs_probe");
+                let ext_name = params
+                    .get("ext_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("fs_probe");
                 let dirs = crate::agent::extension::ExtensionDataDirs {
                     global: self.storage.global_dir(ext_name),
                     project: self.storage.project_dir(ext_name),
@@ -4566,7 +6002,9 @@ impl SessionProbeExtension {
 
 #[async_trait::async_trait]
 impl crate::agent::extension::Extension for SessionProbeExtension {
-    fn name(&self) -> &str { "session_probe" }
+    fn name(&self) -> &str {
+        "session_probe"
+    }
 
     async fn on_session_before_switch(
         &self,
@@ -4574,7 +6012,9 @@ impl crate::agent::extension::Extension for SessionProbeExtension {
     ) -> crate::agent::error::AgentResult<()> {
         self.emit_seen(&ctx.action, &ctx.target_leaf_id, &ctx.branch_name);
         if self.veto {
-            Err(crate::agent::error::AgentError::Tool("vetoed by session_probe".into()))
+            Err(crate::agent::error::AgentError::Tool(
+                "vetoed by session_probe".into(),
+            ))
         } else {
             Ok(())
         }
@@ -4721,7 +6161,9 @@ impl ManagerBridge {
 /// Append a JSON line to the session.jsonl file (not a message, just a record).
 fn append_session_entry(cwd: &str, sid: &str, entry_type: &str, entry_data: &serde_json::Value) {
     // 优先用全局 SESSION_FILE_PATH（fork 子 Worker 的 <session_id>.jsonl）
-    let path = SESSION_FILE_PATH.lock().unwrap()
+    let path = SESSION_FILE_PATH
+        .lock()
+        .unwrap()
         .clone()
         .unwrap_or_else(|| session_jsonl::session_path(cwd));
     if let Some(parent) = path.parent() {
@@ -4730,12 +6172,14 @@ fn append_session_entry(cwd: &str, sid: &str, entry_type: &str, entry_data: &ser
     // parentId：从文件现有 entries 解析当前 leaf（修 bug：原来硬编码 sid）
     let parent_id = (|| {
         let content = std::fs::read_to_string(&path).ok()?;
-        let entries: Vec<serde_json::Value> = content.lines()
+        let entries: Vec<serde_json::Value> = content
+            .lines()
             .filter(|l| !l.trim().is_empty())
             .filter_map(|l| serde_json::from_str(l).ok())
             .collect();
         crate::session_tree::resolve_current_leaf(&entries)
-    })().unwrap_or_else(|| sid.to_string());
+    })()
+    .unwrap_or_else(|| sid.to_string());
 
     let mut line = serde_json::json!({
         "type": entry_type,
@@ -4744,18 +6188,22 @@ fn append_session_entry(cwd: &str, sid: &str, entry_type: &str, entry_data: &ser
         "timestamp": session_jsonl::timestamp_iso(),
     });
     // 合并 entry_data 的字段到顶层（不嵌套在 data 里），对齐 pi JSONL 格式
-    if let Some(obj) = entry_data.as_object() {
-        if let Some(m) = line.as_object_mut() {
-            for (k, v) in obj {
-                m.insert(k.clone(), v.clone());
-            }
+    if let Some(obj) = entry_data.as_object()
+        && let Some(m) = line.as_object_mut()
+    {
+        for (k, v) in obj {
+            m.insert(k.clone(), v.clone());
         }
     }
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let need_sep = f.metadata().ok().map(|m| m.len() > 0).unwrap_or(false);
         if need_sep {
-            let _ = write!(f, "\n");
+            let _ = writeln!(f);
         }
         let _ = write!(f, "{}", serde_json::to_string(&line).unwrap_or_default());
     }
@@ -4777,13 +6225,22 @@ fn ensure_fork_session_header(path: &std::path::Path, cwd: &str, sid: &str) {
     }
 
     // ── 读 parent 关联信息（ION_FORK_CHILD 子 Worker 都会设这些 env）──
-    let parent_session = std::env::var("ION_PARENT_SESSION").ok().filter(|s| !s.is_empty());
-    let parent_worker = std::env::var("ION_PARENT_WORKER").ok().filter(|s| !s.is_empty());
-    let spawn_relation = std::env::var("ION_SPAWN_RELATION").ok().filter(|s| !s.is_empty());
-    let spawned_by = std::env::var("ION_SPAWNED_BY").ok().filter(|s| !s.is_empty());
+    let parent_session = std::env::var("ION_PARENT_SESSION")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let parent_worker = std::env::var("ION_PARENT_WORKER")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let spawn_relation = std::env::var("ION_SPAWN_RELATION")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let spawned_by = std::env::var("ION_SPAWNED_BY")
+        .ok()
+        .filter(|s| !s.is_empty());
 
     // 构造 spawnMeta（ION 扩展，详细血缘信息）
-    let has_spawn_meta = parent_worker.is_some() || spawn_relation.is_some() || spawned_by.is_some();
+    let has_spawn_meta =
+        parent_worker.is_some() || spawn_relation.is_some() || spawned_by.is_some();
     let mut header = serde_json::json!({
         "type": "session",
         "version": 3,
@@ -4795,40 +6252,59 @@ fn ensure_fork_session_header(path: &std::path::Path, cwd: &str, sid: &str) {
     // export.rs 依赖 header.agent 加载 system prompt + tools，缺失会导致子 worker HTML
     // 显示不全。env 在 worker_rpc.rs 启动时由 initial_agent/model/provider 写入。
     let (env_agent, env_model, env_provider) = session_jsonl::read_session_env_tuple();
-    if let Some(a) = env_agent { header["agent"] = serde_json::Value::String(a); }
-    if let Some(m) = env_model { header["model"] = serde_json::Value::String(m); }
-    if let Some(p) = env_provider { header["provider"] = serde_json::Value::String(p); }
+    if let Some(a) = env_agent {
+        header["agent"] = serde_json::Value::String(a);
+    }
+    if let Some(m) = env_model {
+        header["model"] = serde_json::Value::String(m);
+    }
+    if let Some(p) = env_provider {
+        header["provider"] = serde_json::Value::String(p);
+    }
     if has_spawn_meta {
         let mut spawn_meta = serde_json::json!({});
-        if let Some(ref pw) = parent_worker { spawn_meta["parentWorker"] = serde_json::Value::String(pw.clone()); }
-        if let Some(ref rel) = spawn_relation { spawn_meta["relation"] = serde_json::Value::String(rel.clone()); }
-        if let Some(ref sb) = spawned_by { spawn_meta["spawnedBy"] = serde_json::Value::String(sb.clone()); }
-        if let Some(ref ps) = parent_session { spawn_meta["parentSession"] = serde_json::Value::String(ps.clone()); }
+        if let Some(ref pw) = parent_worker {
+            spawn_meta["parentWorker"] = serde_json::Value::String(pw.clone());
+        }
+        if let Some(ref rel) = spawn_relation {
+            spawn_meta["relation"] = serde_json::Value::String(rel.clone());
+        }
+        if let Some(ref sb) = spawned_by {
+            spawn_meta["spawnedBy"] = serde_json::Value::String(sb.clone());
+        }
+        if let Some(ref ps) = parent_session {
+            spawn_meta["parentSession"] = serde_json::Value::String(ps.clone());
+        }
         header["spawnMeta"] = spawn_meta;
     }
 
     let json = serde_json::to_string(&header).unwrap_or_default();
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+    {
         let _ = f.write_all(format!("{json}\n").as_bytes());
     }
 
     // fork 子 Worker：把 system_prompt（含 skill 内容）作为 custom entry 写到第二行
     // 这样 export HTML 时能恢复 systemPrompt 字段，让用户看到 skill 注入的内容
-    if let Ok(sp) = std::env::var("ION_SYSTEM_PROMPT") {
-        if !sp.is_empty() {
-            let sp_entry = serde_json::json!({
-                "type": "custom",
-                "id": session_jsonl::generate_id(),
-                "parentId": sid,
-                "timestamp": session_jsonl::timestamp_iso(),
-                "customType": session_jsonl::CUSTOM_TYPE_SYSTEM_PROMPT,
-                "data": { "systemPrompt": sp },
-            });
-            let sp_json = serde_json::to_string(&sp_entry).unwrap_or_default();
-            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(path) {
-                let _ = f.write_all(format!("{sp_json}\n").as_bytes());
-            }
+    if let Ok(sp) = std::env::var("ION_SYSTEM_PROMPT")
+        && !sp.is_empty()
+    {
+        let sp_entry = serde_json::json!({
+            "type": "custom",
+            "id": session_jsonl::generate_id(),
+            "parentId": sid,
+            "timestamp": session_jsonl::timestamp_iso(),
+            "customType": session_jsonl::CUSTOM_TYPE_SYSTEM_PROMPT,
+            "data": { "systemPrompt": sp },
+        });
+        let sp_json = serde_json::to_string(&sp_entry).unwrap_or_default();
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(path) {
+            let _ = f.write_all(format!("{sp_json}\n").as_bytes());
         }
     }
 }
@@ -4840,7 +6316,10 @@ fn ensure_fork_session_header(path: &std::path::Path, cwd: &str, sid: &str) {
 fn patch_fork_session_header_if_needed(path: &std::path::Path) {
     let (env_agent, env_model, env_provider) = session_jsonl::read_session_env_tuple();
     // 无 agent env 时无法判定该补什么 —— 跳过（避免把入口 worker 的空 env 误写入）
-    let env_agent = match env_agent { Some(a) => a, None => return };
+    let env_agent = match env_agent {
+        Some(a) => a,
+        None => return,
+    };
 
     // 先用 read_session_header 只读首行（避免为判定字段把整文件读进内存）
     let mut header = match session_jsonl::read_session_header(path) {
@@ -4855,9 +6334,15 @@ fn patch_fork_session_header_if_needed(path: &std::path::Path) {
         return;
     }
 
-    if need_agent { header.agent = Some(env_agent); }
-    if need_model { header.model = env_model; }
-    if need_provider { header.provider = env_provider; }
+    if need_agent {
+        header.agent = Some(env_agent);
+    }
+    if need_model {
+        header.model = env_model;
+    }
+    if need_provider {
+        header.provider = env_provider;
+    }
 
     // 只有确实需要改才读全文 + 重写（header 行替换，其余 entries 原样保留）
     let content = match std::fs::read_to_string(path) {
@@ -4877,22 +6362,30 @@ fn patch_fork_session_header_if_needed(path: &std::path::Path) {
         out.push('\n');
     }
     let _ = std::fs::write(path, out);
-    tracing::info!("[worker] patched legacy fork session header (agent/model/provider) → {}", path.display());
+    tracing::info!(
+        "[worker] patched legacy fork session header (agent/model/provider) → {}",
+        path.display()
+    );
 }
 
 /// Load messages from a fork sub-worker's session file.
-fn load_fork_session_messages(path: &std::path::Path) -> Option<Vec<crate::agent::messages::Message>> {
+fn load_fork_session_messages(
+    path: &std::path::Path,
+) -> Option<Vec<crate::agent::messages::Message>> {
     let content = std::fs::read_to_string(path).ok()?;
     let mut messages = Vec::new();
     for line in content.lines() {
         let line = line.trim();
-        if line.is_empty() { continue; }
-        if let Ok(e) = serde_json::from_str::<serde_json::Value>(line) {
-            if e.get("type").and_then(|v| v.as_str()) == Some("message") {
-                if let Some(m) = e.get("message").and_then(|m| serde_json::from_value(m.clone()).ok()) {
-                    messages.push(m);
-                }
-            }
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(e) = serde_json::from_str::<serde_json::Value>(line)
+            && e.get("type").and_then(|v| v.as_str()) == Some("message")
+            && let Some(m) = e
+                .get("message")
+                .and_then(|m| serde_json::from_value(m.clone()).ok())
+        {
+            messages.push(m);
         }
     }
     Some(messages)
@@ -4910,7 +6403,8 @@ pub fn count_live_messages(entries: &[serde_json::Value]) -> usize {
         Some(id) => id,
         None => {
             // No leaf_pointer entries → all messages are live
-            return entries.iter()
+            return entries
+                .iter()
                 .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("message"))
                 .count();
         }
@@ -4954,7 +6448,9 @@ pub fn count_live_messages(entries: &[serde_json::Value]) -> usize {
 fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
     // 优先用全局 SESSION_FILE_PATH（fork 子 Worker 设的 <session_id>.jsonl）
     // fallback 到 session_path(cwd)（主 Worker 的 session.jsonl）
-    let path = SESSION_FILE_PATH.lock().unwrap()
+    let path = SESSION_FILE_PATH
+        .lock()
+        .unwrap()
         .clone()
         .unwrap_or_else(|| session_jsonl::session_path(cwd));
     if let Some(parent) = path.parent() {
@@ -4971,7 +6467,9 @@ fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
     if let Ok(content) = std::fs::read_to_string(&path) {
         for line in content.lines() {
             let line = line.trim();
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
             existing_lines.push(line.to_string());
             if let Ok(e) = serde_json::from_str::<serde_json::Value>(line) {
                 if e.get("type").and_then(|v| v.as_str()) == Some("session") {
@@ -4986,8 +6484,8 @@ fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
     }
 
     // leaf 感知：用 resolve_current_leaf 算 parentId（对齐 Session Tree，感知 leaf_pointer）
-    let last_id = crate::session_tree::resolve_current_leaf(&all_entries)
-        .unwrap_or_else(|| sid.to_string());
+    let last_id =
+        crate::session_tree::resolve_current_leaf(&all_entries).unwrap_or_else(|| sid.to_string());
 
     // 若文件不存在或空，先写 header
     if !header_existed {
@@ -5001,10 +6499,14 @@ fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
         let header_line = serde_json::to_string(&header).unwrap_or_default();
 
         use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
             // 文件之前不存在，写 header
             if existing_lines.is_empty() {
-                let _ = write!(f, "{header_line}\n");
+                let _ = writeln!(f, "{header_line}");
             }
         }
         // 全新会话：leaf 就是 session id（resolve_current_leaf 此时返回 None，
@@ -5026,14 +6528,23 @@ fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
     // 简化实现：比较 live message 数（按 leaf_pointer 链计算）vs msgs.len()
     let live_msg_count = count_live_messages(&all_entries);
     let new_msgs = if msgs.len() > live_msg_count {
-        eprintln!("[save-debug] msgs={} live={} saved_total={} new={}",
-            msgs.len(), live_msg_count, saved_msg_count, msgs.len() - live_msg_count);
+        eprintln!(
+            "[save-debug] msgs={} live={} saved_total={} new={}",
+            msgs.len(),
+            live_msg_count,
+            saved_msg_count,
+            msgs.len() - live_msg_count
+        );
         &msgs[live_msg_count..]
     } else if msgs.len() < live_msg_count {
         // 回滚后再加消息：msgs 比 live 短，说明 leaf 已经回退到比 msgs 还早的位置。
         // 这种情况理论上不该发生（resume 后 agent.messages 应该 ≥ live），但如果发生了
         // 就把所有 msgs 当新消息追加（带新的 parentId 链）。
-        eprintln!("[save-debug] ROLLBACK CASE: msgs={} < live={} — appending all as new", msgs.len(), live_msg_count);
+        eprintln!(
+            "[save-debug] ROLLBACK CASE: msgs={} < live={} — appending all as new",
+            msgs.len(),
+            live_msg_count
+        );
         msgs
     } else {
         // msgs.len() == live_msg_count: 没有新消息，跳过
@@ -5045,7 +6556,11 @@ fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
     }
 
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let need_sep = f.metadata().ok().map(|m| m.len() > 0).unwrap_or(false);
         // parentId 链：从 last_id 开始
         let mut parent_id = last_id;
@@ -5113,16 +6628,19 @@ fn resolve_target_indices(
     agent_messages: &[crate::agent::messages::Message],
     target_ids: &[String],
 ) -> Vec<usize> {
-    let msg_entries: Vec<&serde_json::Value> = entries.iter()
+    let msg_entries: Vec<&serde_json::Value> = entries
+        .iter()
         .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("message"))
         .collect();
 
     // 路径 1：精确索引映射（计数一致时）
     if msg_entries.len() == agent_messages.len() {
-        let entry_ids: Vec<&str> = msg_entries.iter()
+        let entry_ids: Vec<&str> = msg_entries
+            .iter()
             .filter_map(|e| e.get("id").and_then(|v| v.as_str()))
             .collect();
-        return target_ids.iter()
+        return target_ids
+            .iter()
             .filter_map(|tid| entry_ids.iter().position(|eid| *eid == tid))
             .collect();
     }
@@ -5132,11 +6650,13 @@ fn resolve_target_indices(
     // 然后在 agent 的内存消息里按序列化内容查找
     tracing::info!(
         "[soft-delete] entry/index mismatch (jsonl={} agent={}), falling back to content matching",
-        msg_entries.len(), agent_messages.len()
+        msg_entries.len(),
+        agent_messages.len()
     );
 
     // 构建 entry_id → 序列化 message 文本 的映射
-    let id_to_content: std::collections::HashMap<&str, String> = msg_entries.iter()
+    let id_to_content: std::collections::HashMap<&str, String> = msg_entries
+        .iter()
         .filter_map(|e| {
             let id = e.get("id").and_then(|v| v.as_str())?;
             let msg_val = e.get("message")?;
@@ -5146,11 +6666,13 @@ fn resolve_target_indices(
         .collect();
 
     // 构建 agent 内存消息的序列化文本列表
-    let agent_contents: Vec<String> = agent_messages.iter()
+    let agent_contents: Vec<String> = agent_messages
+        .iter()
         .map(|m| serde_json::to_string(m).unwrap_or_default())
         .collect();
 
-    target_ids.iter()
+    target_ids
+        .iter()
         .filter_map(|tid| {
             let target_content = id_to_content.get(tid.as_str())?;
             // 在 agent 内存里找第一条内容匹配的
@@ -5198,7 +6720,10 @@ mod tests {
     fn test_strip_version_suffix_keeps_name_without_version() {
         // Names that have no version-like suffix should be returned unchanged.
         assert_eq!(strip_version_suffix_inline("code-audit"), "code-audit");
-        assert_eq!(strip_version_suffix_inline("code-audit-v1"), "code-audit-v1");
+        assert_eq!(
+            strip_version_suffix_inline("code-audit-v1"),
+            "code-audit-v1"
+        );
     }
 
     #[test]
@@ -5212,8 +6737,12 @@ mod tests {
     #[test]
     fn test_parse_skill_description_from_frontmatter() {
         // A SKILL.md with a frontmatter description should extract that value.
-        let content = "---\nname: code-audit\ndescription: \"Audit code for bugs\"\n---\n# Code Audit\nbody";
-        assert_eq!(parse_skill_description_inline(content), "Audit code for bugs");
+        let content =
+            "---\nname: code-audit\ndescription: \"Audit code for bugs\"\n---\n# Code Audit\nbody";
+        assert_eq!(
+            parse_skill_description_inline(content),
+            "Audit code for bugs"
+        );
     }
 
     #[test]
@@ -5401,7 +6930,11 @@ mod tests {
         let mut entries: Vec<serde_json::Value> = Vec::with_capacity(n + 1);
         entries.push(serde_json::json!({"type": "leaf_pointer", "id": "lp", "leafId": "m0"}));
         for i in 0..n {
-            let parent = if i == 0 { None } else { Some(format!("m{}", i - 1)) };
+            let parent = if i == 0 {
+                None
+            } else {
+                Some(format!("m{}", i - 1))
+            };
             entries.push(mk_msg(&format!("m{}", i), parent.as_deref()));
             // Sprinkle a non-message entry sharing an id-free shape; it must
             // not break the id index.

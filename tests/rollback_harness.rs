@@ -9,7 +9,7 @@
 //!
 //! 参照 tests/file_snapshot_harness.rs 的 tmp_cwd 模式（唯一 cwd 隔离）。
 
-use ion::message_retrieval::{retrieve_messages, RetrievalParams, View, CustomFilter};
+use ion::message_retrieval::{CustomFilter, RetrievalParams, View, retrieve_messages};
 use ion::session_jsonl;
 use ion::session_tree;
 use ion_provider::types::*;
@@ -36,14 +36,20 @@ fn msg_entry(parent_id: &str, role: &str, text: &str) -> serde_json::Value {
     let msg = if role == "user" {
         Message::User(UserMessage {
             role: "user".into(),
-            content: vec![ContentBlock::Text(TextContent { text: text.into(), text_signature: None })],
+            content: vec![ContentBlock::Text(TextContent {
+                text: text.into(),
+                text_signature: None,
+            })],
             timestamp: 0,
             source: MessageSource::Prompt,
         })
     } else {
         Message::Assistant(AssistantMessage {
             role: "assistant".into(),
-            content: vec![AssistantContentBlock::Text(TextContent { text: text.into(), text_signature: None })],
+            content: vec![AssistantContentBlock::Text(TextContent {
+                text: text.into(),
+                text_signature: None,
+            })],
             api: "faux".into(),
             provider: "faux".into(),
             model: "faux".into(),
@@ -160,12 +166,16 @@ fn full_msg_count(entries: &[serde_json::Value]) -> usize {
 #[test]
 fn c1_live_excludes_rolled_back() {
     let cwd = tmp_cwd("c1");
-    let ids = seed_session(&cwd, "sess_c1", &[
-        ("user", "turn1 chat"),
-        ("assistant", "reply1"),
-        ("user", "turn2 write code"),
-        ("assistant", "reply2"),
-    ]);
+    let ids = seed_session(
+        &cwd,
+        "sess_c1",
+        &[
+            ("user", "turn1 chat"),
+            ("assistant", "reply1"),
+            ("user", "turn2 write code"),
+            ("assistant", "reply2"),
+        ],
+    );
     // ids: [session_id, msg1, msg2, msg3, msg4]
     let turn1_last = &ids[2]; // reply1（Turn1 的最后一条）
 
@@ -183,9 +193,13 @@ fn c1_live_excludes_rolled_back() {
     assert!(
         live < full,
         "C1 FAIL: live({}) should < full({}) after rollback. F1 exposure: retrieval 层应过滤",
+        live,
+        full
+    );
+    println!(
+        "C1 PASS: live={} < full={}（retrieval 层正确过滤）",
         live, full
     );
-    println!("C1 PASS: live={} < full={}（retrieval 层正确过滤）", live, full);
 }
 
 /// C2: 回滚后 SessionFile::load 只加载 live path 上的消息（F1 已修复）
@@ -194,12 +208,16 @@ fn c1_live_excludes_rolled_back() {
 #[test]
 fn c2_load_filters_leaf_pointer() {
     let cwd = tmp_cwd("c2");
-    let ids = seed_session(&cwd, "sess_c2", &[
-        ("user", "msg1"),
-        ("assistant", "msg2"),
-        ("user", "msg3"),
-        ("assistant", "msg4"),
-    ]);
+    let ids = seed_session(
+        &cwd,
+        "sess_c2",
+        &[
+            ("user", "msg1"),
+            ("assistant", "msg2"),
+            ("user", "msg3"),
+            ("assistant", "msg4"),
+        ],
+    );
 
     // 回滚到 msg2（丢弃 msg3/msg4）
     let rb_entries = session_tree::make_rollback(&ids[2], Some(&ids[4]), None).unwrap();
@@ -210,20 +228,26 @@ fn c2_load_filters_leaf_pointer() {
     // SessionFile::load 应只返回 live path 上的 2 条
     let sf = session_jsonl::SessionFile::load(&cwd).expect("session should load");
     assert_eq!(
-        sf.messages.len(), 2,
-        "C2: SessionFile::load 应返回 2 条（live path），实际 {} 条", sf.messages.len()
+        sf.messages.len(),
+        2,
+        "C2: SessionFile::load 应返回 2 条（live path），实际 {} 条",
+        sf.messages.len()
     );
-    println!("C2 PASS: SessionFile::load 只返回 live path 的 {} 条消息（F1 已修复）", sf.messages.len());
+    println!(
+        "C2 PASS: SessionFile::load 只返回 live path 的 {} 条消息（F1 已修复）",
+        sf.messages.len()
+    );
 }
 
 /// C3: 回滚→追加新消息→再回滚，废弃分支不泄漏到 live
 #[test]
 fn c3_rollback_chain_no_leak() {
     let cwd = tmp_cwd("c3");
-    let ids = seed_session(&cwd, "sess_c3", &[
-        ("user", "base1"),
-        ("assistant", "base2"),
-    ]);
+    let ids = seed_session(
+        &cwd,
+        "sess_c3",
+        &[("user", "base1"), ("assistant", "base2")],
+    );
 
     // 回滚到 base2
     let rb1 = session_tree::make_rollback(&ids[2], Some(&ids[2]), None).unwrap();
@@ -260,12 +284,16 @@ fn c3_rollback_chain_no_leak() {
 #[test]
 fn m1_full_includes_all() {
     let cwd = tmp_cwd("m1");
-    let ids = seed_session(&cwd, "sess_m1", &[
-        ("user", "a"),
-        ("assistant", "b"),
-        ("user", "c"),
-        ("assistant", "d"),
-    ]);
+    let ids = seed_session(
+        &cwd,
+        "sess_m1",
+        &[
+            ("user", "a"),
+            ("assistant", "b"),
+            ("user", "c"),
+            ("assistant", "d"),
+        ],
+    );
     let rb_entries = session_tree::make_rollback(&ids[2], Some(&ids[4]), None).unwrap();
     for e in &rb_entries {
         session_jsonl::append_raw_entry(&cwd, e);
@@ -281,12 +309,16 @@ fn m1_full_includes_all() {
 #[test]
 fn m2_branch_view_finds_abandoned() {
     let cwd = tmp_cwd("m2");
-    let ids = seed_session(&cwd, "sess_m2", &[
-        ("user", "keep1"),
-        ("assistant", "keep2"),
-        ("user", "abandon1"),
-        ("assistant", "abandon2"),
-    ]);
+    let ids = seed_session(
+        &cwd,
+        "sess_m2",
+        &[
+            ("user", "keep1"),
+            ("assistant", "keep2"),
+            ("user", "abandon1"),
+            ("assistant", "abandon2"),
+        ],
+    );
     let old_leaf = &ids[4]; // abandon2
 
     // 回滚到 keep2
@@ -303,7 +335,9 @@ fn m2_branch_view_finds_abandoned() {
         ..Default::default()
     };
     let result = retrieve_messages(&entries, &params);
-    let count = result.messages.iter()
+    let count = result
+        .messages
+        .iter()
         .filter(|m| m.get("type").and_then(|v| v.as_str()) == Some("message"))
         .count();
     // branch:old_leaf 应包含 root→old_leaf 路径 = 4 条
@@ -315,12 +349,16 @@ fn m2_branch_view_finds_abandoned() {
 #[test]
 fn m3_resolve_leaf_after_rollback() {
     let cwd = tmp_cwd("m3");
-    let ids = seed_session(&cwd, "sess_m3", &[
-        ("user", "x"),
-        ("assistant", "y"),
-        ("user", "z"),
-        ("assistant", "w"),
-    ]);
+    let ids = seed_session(
+        &cwd,
+        "sess_m3",
+        &[
+            ("user", "x"),
+            ("assistant", "y"),
+            ("user", "z"),
+            ("assistant", "w"),
+        ],
+    );
     // 回滚到 ids[2]（assistant "y"），丢弃 z/w
     let target = &ids[2];
     let rb_entries = session_tree::make_rollback(target, Some(&ids[4]), None).unwrap();
@@ -331,8 +369,13 @@ fn m3_resolve_leaf_after_rollback() {
     let entries = load_all(&cwd);
     let leaf = session_tree::resolve_current_leaf(&entries);
     // target 不是别人的 parent（是叶子），resolve 应返回 target
-    assert_eq!(leaf.as_deref(), Some(target.as_str()),
-        "M3: current_leaf 应指向回滚目标 {}，实际 {:?}", target, leaf);
+    assert_eq!(
+        leaf.as_deref(),
+        Some(target.as_str()),
+        "M3: current_leaf 应指向回滚目标 {}，实际 {:?}",
+        target,
+        leaf
+    );
     println!("M3 PASS: current_leaf = {}（回滚目标）", target);
 }
 
@@ -345,12 +388,16 @@ fn m3_resolve_leaf_after_rollback() {
 #[test]
 fn k1_messages_count_excludes_rolled_back() {
     let cwd = tmp_cwd("k1");
-    let ids = seed_session(&cwd, "sess_k1", &[
-        ("user", "long message padding "),
-        ("assistant", "reply"),
-        ("user", "another long padding "),
-        ("assistant", "reply2"),
-    ]);
+    let ids = seed_session(
+        &cwd,
+        "sess_k1",
+        &[
+            ("user", "long message padding "),
+            ("assistant", "reply"),
+            ("user", "another long padding "),
+            ("assistant", "reply2"),
+        ],
+    );
 
     let rb_entries = session_tree::make_rollback(&ids[2], Some(&ids[4]), None).unwrap();
     for e in &rb_entries {
@@ -359,19 +406,27 @@ fn k1_messages_count_excludes_rolled_back() {
 
     let sf = session_jsonl::SessionFile::load(&cwd).unwrap();
     // F1 修复后：messages 只含 live path 的 2 条（msg1 + reply）
-    assert_eq!(sf.messages.len(), 2,
-        "K1: messages 应只有 2 条（live path），实际 {}", sf.messages.len());
-    println!("K1 PASS: messages.len()={}（只含 live path，F1 已修复）", sf.messages.len());
+    assert_eq!(
+        sf.messages.len(),
+        2,
+        "K1: messages 应只有 2 条（live path），实际 {}",
+        sf.messages.len()
+    );
+    println!(
+        "K1 PASS: messages.len()={}（只含 live path，F1 已修复）",
+        sf.messages.len()
+    );
 }
 
 /// K2: compaction entry 后回滚被拒绝（穿越压缩点）
 #[test]
 fn k2_rollback_across_compaction_rejected() {
     let cwd = tmp_cwd("k2");
-    let ids = seed_session(&cwd, "sess_k2", &[
-        ("user", "before compaction"),
-        ("assistant", "reply"),
-    ]);
+    let ids = seed_session(
+        &cwd,
+        "sess_k2",
+        &[("user", "before compaction"), ("assistant", "reply")],
+    );
 
     // 追加 compaction entry
     let compaction = serde_json::json!({
@@ -392,8 +447,10 @@ fn k2_rollback_across_compaction_rejected() {
     let entries = load_all(&cwd);
     // 回滚到 compaction 之前的 entry（ids[1]）
     let safety = session_tree::check_compaction_safety(&entries, &ids[1]);
-    assert!(safety.is_some(),
-        "K2: 回滚到压缩点之前应被拒绝（返回 compaction entry id）");
+    assert!(
+        safety.is_some(),
+        "K2: 回滚到压缩点之前应被拒绝（返回 compaction entry id）"
+    );
     println!("K2 PASS: 穿越压缩点的回滚被拒绝（safety={:?}）", safety);
 }
 
@@ -407,12 +464,16 @@ fn k2_rollback_across_compaction_rejected() {
 #[test]
 fn t1_turnid_unique_hex() {
     let cwd = tmp_cwd("t1");
-    let _ids = seed_session(&cwd, "sess_t1", &[
-        ("user", "round1"),
-        ("assistant", "reply1"),
-        ("user", "round2"),
-        ("assistant", "reply2"),
-    ]);
+    let _ids = seed_session(
+        &cwd,
+        "sess_t1",
+        &[
+            ("user", "round1"),
+            ("assistant", "reply1"),
+            ("user", "round2"),
+            ("assistant", "reply2"),
+        ],
+    );
 
     // 写两个 turn_summary，用唯一 hex turnId（模拟修复后的 persist_turn_summary）
     let ts1 = turn_summary_entry("ts_aabb0011", &[] as &[String]);
@@ -421,9 +482,14 @@ fn t1_turnid_unique_hex() {
     session_jsonl::append_raw_entry(&cwd, &ts2);
 
     let entries = load_all(&cwd);
-    let turn_ids: Vec<String> = entries.iter()
+    let turn_ids: Vec<String> = entries
+        .iter()
         .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("turn_summary"))
-        .filter_map(|e| e.get("turnId").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .filter_map(|e| {
+            e.get("turnId")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
         .collect();
 
     // 验证：每个 turnId 都是 ts_ 前缀的 hex
@@ -446,10 +512,11 @@ fn t1_turnid_unique_hex() {
 #[test]
 fn t2_entry_range_filled() {
     let cwd = tmp_cwd("t2");
-    let ids = seed_session(&cwd, "sess_t2", &[
-        ("user", "msg1"),
-        ("assistant", "reply1"),
-    ]);
+    let ids = seed_session(
+        &cwd,
+        "sess_t2",
+        &[("user", "msg1"), ("assistant", "reply1")],
+    );
     // ids: [session_id, msg1_id, reply1_id]
 
     // 写第一条 turn_summary（覆盖 msg1 + reply1）
@@ -481,12 +548,16 @@ fn t2_entry_range_filled() {
 #[test]
 fn t3_find_turn_id_for_entry() {
     let cwd = tmp_cwd("t3");
-    let ids = seed_session(&cwd, "sess_t3", &[
-        ("user", "msg1"),
-        ("assistant", "reply1"),
-        ("user", "msg2"),
-        ("assistant", "reply2"),
-    ]);
+    let ids = seed_session(
+        &cwd,
+        "sess_t3",
+        &[
+            ("user", "msg1"),
+            ("assistant", "reply1"),
+            ("user", "msg2"),
+            ("assistant", "reply2"),
+        ],
+    );
 
     // turn_summary 覆盖前两条（msg1 + reply1）
     let ts1 = turn_summary_entry("ts_turn0", &[ids[1].clone(), ids[2].clone()]);
@@ -497,12 +568,23 @@ fn t3_find_turn_id_for_entry() {
 
     // 策略 1：entryRange 包含 → 直接找到
     let found1 = session_jsonl::find_turn_id_for_entry(&cwd, &ids[1]);
-    assert_eq!(found1.as_deref(), Some("ts_turn0"), "T3: msg1 应属于 ts_turn0");
+    assert_eq!(
+        found1.as_deref(),
+        Some("ts_turn0"),
+        "T3: msg1 应属于 ts_turn0"
+    );
 
     let found2 = session_jsonl::find_turn_id_for_entry(&cwd, &ids[3]);
-    assert_eq!(found2.as_deref(), Some("ts_turn1"), "T3: msg2 应属于 ts_turn1");
+    assert_eq!(
+        found2.as_deref(),
+        Some("ts_turn1"),
+        "T3: msg2 应属于 ts_turn1"
+    );
 
-    println!("T3 PASS: find_turn_id_for_entry 正确: msg1→{:?}, msg2→{:?}", found1, found2);
+    println!(
+        "T3 PASS: find_turn_id_for_entry 正确: msg1→{:?}, msg2→{:?}",
+        found1, found2
+    );
 }
 
 // ════════════════════════════════════════════════════════
@@ -513,12 +595,16 @@ fn t3_find_turn_id_for_entry() {
 #[test]
 fn s1_pure_rollback_no_disk_change() {
     let cwd = tmp_cwd("s1");
-    let ids = seed_session(&cwd, "sess_s1", &[
-        ("user", "闲聊 turn1"),
-        ("assistant", "reply"),
-        ("user", "改代码 turn2"),
-        ("assistant", "reply2"),
-    ]);
+    let ids = seed_session(
+        &cwd,
+        "sess_s1",
+        &[
+            ("user", "闲聊 turn1"),
+            ("assistant", "reply"),
+            ("user", "改代码 turn2"),
+            ("assistant", "reply2"),
+        ],
+    );
 
     // 模拟磁盘文件（a.txt）
     let file_path = format!("{}/a.txt", cwd);
@@ -537,10 +623,19 @@ fn s1_pure_rollback_no_disk_change() {
 
     // leaf_pointer 已写入
     let entries = load_all(&cwd);
-    let types: Vec<_> = entries.iter().filter_map(|e| e.get("type").and_then(|v| v.as_str())).collect();
+    let types: Vec<_> = entries
+        .iter()
+        .filter_map(|e| e.get("type").and_then(|v| v.as_str()))
+        .collect();
     eprintln!("S1 DEBUG: entry types = {:?}", types);
-    let has_leaf = entries.iter().any(|e| e.get("type").and_then(|v| v.as_str()) == Some("leaf_pointer"));
-    assert!(has_leaf, "S1: leaf_pointer 应已写入，entries types = {:?}", types);
+    let has_leaf = entries
+        .iter()
+        .any(|e| e.get("type").and_then(|v| v.as_str()) == Some("leaf_pointer"));
+    assert!(
+        has_leaf,
+        "S1: leaf_pointer 应已写入，entries types = {:?}",
+        types
+    );
     println!("S1 PASS: leaf_pointer 已写入");
 }
 
@@ -548,31 +643,41 @@ fn s1_pure_rollback_no_disk_change() {
 #[test]
 fn s2_rollback_is_append_only() {
     let cwd = tmp_cwd("s2");
-    let ids = seed_session(&cwd, "sess_s2", &[
-        ("user", "a"),
-        ("assistant", "b"),
-        ("user", "c"),
-        ("assistant", "d"),
-    ]);
+    let ids = seed_session(
+        &cwd,
+        "sess_s2",
+        &[
+            ("user", "a"),
+            ("assistant", "b"),
+            ("user", "c"),
+            ("assistant", "d"),
+        ],
+    );
 
     // 回滚（带 reason → 追加 leaf_pointer + branch_summary）
-    let new_entries = session_tree::make_rollback(&ids[2], Some(&ids[4]), Some("test reason")).unwrap();
+    let new_entries =
+        session_tree::make_rollback(&ids[2], Some(&ids[4]), Some("test reason")).unwrap();
     let appended_count = new_entries.len();
     for e in &new_entries {
         session_jsonl::append_raw_entry(&cwd, e);
     }
 
     // 只追加（make_rollback 至少返回 leaf_pointer）
-    assert!(appended_count >= 1, "S2: make_rollback 应返回至少 1 条 entry（leaf_pointer）");
-    
+    assert!(
+        appended_count >= 1,
+        "S2: make_rollback 应返回至少 1 条 entry（leaf_pointer）"
+    );
+
     // 原始 4 条消息仍在
     let entries = load_all(&cwd);
-    let msg_count = entries.iter()
+    let msg_count = entries
+        .iter()
         .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("message"))
         .count();
     assert_eq!(msg_count, 4, "S2: 4 条原始消息全在（only-append）");
-    
-    let leaf_count = entries.iter()
+
+    let leaf_count = entries
+        .iter()
         .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("leaf_pointer"))
         .count();
     assert_eq!(leaf_count, 1, "S2: 1 条 leaf_pointer");
@@ -588,7 +693,7 @@ fn s2_rollback_is_append_only() {
 // F1 导致：load 不过滤 leaf_pointer → messages 含被回滚的 → token 虚高 → compaction 误判
 // ════════════════════════════════════════════════════════
 
-use ion::agent::compact::{total_tokens, needs_compact, CompactConfig};
+use ion::agent::compact::{CompactConfig, needs_compact, total_tokens};
 
 /// 构造大消息（让单条 token 足够大，方便测阈值）
 fn big_msg_entry(parent_id: &str, role: &str, size: usize) -> serde_json::Value {
@@ -616,7 +721,9 @@ fn tc1_tokens_exclude_rolled_back() {
     }
 
     let rb_entries = session_tree::make_rollback(&ids[2], Some(&ids[4]), None).unwrap();
-    for e in &rb_entries { session_jsonl::append_raw_entry(&cwd, e); }
+    for e in &rb_entries {
+        session_jsonl::append_raw_entry(&cwd, e);
+    }
 
     let sf = session_jsonl::SessionFile::load(&cwd).unwrap();
     let tokens = total_tokens(&sf.messages);
@@ -624,7 +731,10 @@ fn tc1_tokens_exclude_rolled_back() {
     // F1 修复后：只有 2 条 → tokens ≈ 200
     assert_eq!(sf.messages.len(), 2, "TC1: messages 应只有 2 条");
     assert!(tokens < 250, "TC1: tokens={} 应 < 250（只算 2 条）", tokens);
-    println!("TC1 PASS: tokens={}（只算 live path 的 2 条，F1 已修复）", tokens);
+    println!(
+        "TC1 PASS: tokens={}（只算 live path 的 2 条，F1 已修复）",
+        tokens
+    );
 }
 
 /// TC2: 回滚后 needs_compact 不误触发（F1 已修复）
@@ -652,14 +762,23 @@ fn tc2_needs_compact_correct() {
     session_jsonl::append_raw_entry(&cwd, &m4);
 
     let rb_entries = session_tree::make_rollback(&id2, Some(&id4), None).unwrap();
-    for e in &rb_entries { session_jsonl::append_raw_entry(&cwd, e); }
+    for e in &rb_entries {
+        session_jsonl::append_raw_entry(&cwd, e);
+    }
 
     let sf = session_jsonl::SessionFile::load(&cwd).unwrap();
-    let config = CompactConfig { threshold: 10000, ..Default::default() };
+    let config = CompactConfig {
+        threshold: 10000,
+        ..Default::default()
+    };
 
     // F1 修复后：只有 2 条小消息 → needs_compact = false
     let result = needs_compact(&sf.messages, &config);
-    assert!(!result, "TC2: needs_compact={} 应为 false（live path 只有 2 条小消息）", result);
+    assert!(
+        !result,
+        "TC2: needs_compact={} 应为 false（live path 只有 2 条小消息）",
+        result
+    );
     println!("TC2 PASS: needs_compact=false（被回滚的大消息不参与计算，F1 已修复）");
 }
 
@@ -669,17 +788,23 @@ fn tc2_needs_compact_correct() {
 #[test]
 fn tc3_context_length_matches_live() {
     let cwd = tmp_cwd("tc3");
-    let ids = seed_session(&cwd, "sess_tc3", &[
-        ("user", "keep1"),
-        ("assistant", "keep2"),
-        ("user", "discard1"),
-        ("assistant", "discard2"),
-        ("user", "discard3"),
-        ("assistant", "discard4"),
-    ]);
+    let ids = seed_session(
+        &cwd,
+        "sess_tc3",
+        &[
+            ("user", "keep1"),
+            ("assistant", "keep2"),
+            ("user", "discard1"),
+            ("assistant", "discard2"),
+            ("user", "discard3"),
+            ("assistant", "discard4"),
+        ],
+    );
 
     let rb_entries = session_tree::make_rollback(&ids[2], Some(&ids[6]), None).unwrap();
-    for e in &rb_entries { session_jsonl::append_raw_entry(&cwd, e); }
+    for e in &rb_entries {
+        session_jsonl::append_raw_entry(&cwd, e);
+    }
 
     let entries = load_all(&cwd);
     let live_count = live_msg_count(&entries);
@@ -688,9 +813,15 @@ fn tc3_context_length_matches_live() {
     let context_count = sf.messages.len();
 
     assert_eq!(live_count, 2, "TC3: live path 应只有 2 条");
-    assert_eq!(context_count, live_count,
-        "TC3: context({}) 应 = live({})（F1 已修复）", context_count, live_count);
-    println!("TC3 PASS: context={} = live={}（F1 已修复）", context_count, live_count);
+    assert_eq!(
+        context_count, live_count,
+        "TC3: context({}) 应 = live({})（F1 已修复）",
+        context_count, live_count
+    );
+    println!(
+        "TC3 PASS: context={} = live={}（F1 已修复）",
+        context_count, live_count
+    );
 }
 
 /// TC4: 如果 F1 修复（load 过滤），token/compaction/context 应正确
@@ -736,25 +867,43 @@ fn tc4_fixed_token_would_be_correct() {
     };
     let live_result = retrieve_messages(&entries, &params);
     // 从 live entries 反序列化成 Message（模拟修复后 load 的行为）
-    let live_messages: Vec<Message> = live_result.messages.iter()
+    let live_messages: Vec<Message> = live_result
+        .messages
+        .iter()
         .filter_map(|e| {
-            if e.get("type").and_then(|v| v.as_str()) != Some("message") { return None; }
-            e.get("message").and_then(|m| serde_json::from_value(m.clone()).ok())
+            if e.get("type").and_then(|v| v.as_str()) != Some("message") {
+                return None;
+            }
+            e.get("message")
+                .and_then(|m| serde_json::from_value(m.clone()).ok())
         })
         .collect();
 
     let live_tokens = total_tokens(&live_messages);
-    let config = CompactConfig { threshold: 10000, ..Default::default() };
+    let config = CompactConfig {
+        threshold: 10000,
+        ..Default::default()
+    };
     let live_needs = needs_compact(&live_messages, &config);
 
     // 修复后：只有 2 条小消息 → token 极小 → 不需要压缩
     assert_eq!(live_messages.len(), 2, "TC4: live path 只有 2 条");
-    assert!(live_tokens < 100, "TC4: live token={} 应很小（< 100）", live_tokens);
-    assert!(!live_needs, "TC4: live path 不需要压缩（token={} < threshold=10000）", live_tokens);
+    assert!(
+        live_tokens < 100,
+        "TC4: live token={} 应很小（< 100）",
+        live_tokens
+    );
+    assert!(
+        !live_needs,
+        "TC4: live path 不需要压缩（token={} < threshold=10000）",
+        live_tokens
+    );
 
     println!(
         "TC4 PASS (修复后预期): live msg={}, token={}, needs_compact={}（如果 F1 修复，行为应如此）",
-        live_messages.len(), live_tokens, live_needs
+        live_messages.len(),
+        live_tokens,
+        live_needs
     );
 }
 
@@ -765,12 +914,16 @@ fn tc4_fixed_token_would_be_correct() {
 #[test]
 fn tc5_compaction_safety_independent_of_f1() {
     let cwd = tmp_cwd("tc5");
-    let ids = seed_session(&cwd, "sess_tc5", &[
-        ("user", "before compaction 1"),
-        ("assistant", "reply 1"),
-        ("user", "before compaction 2"),
-        ("assistant", "reply 2"),
-    ]);
+    let ids = seed_session(
+        &cwd,
+        "sess_tc5",
+        &[
+            ("user", "before compaction 1"),
+            ("assistant", "reply 1"),
+            ("user", "before compaction 2"),
+            ("assistant", "reply 2"),
+        ],
+    );
 
     // 追加 compaction entry
     let compaction = serde_json::json!({
@@ -799,8 +952,10 @@ fn tc5_compaction_safety_independent_of_f1() {
     let safety_after = session_tree::check_compaction_safety(&entries, &after_id);
     assert!(safety_after.is_none(), "TC5: 压缩点之后的回滚应允许");
 
-    println!("TC5 PASS: compaction 安全检查独立于 F1（穿越拒绝={}, 之后允许）",
-        safety_before.is_some());
+    println!(
+        "TC5 PASS: compaction 安全检查独立于 F1（穿越拒绝={}, 之后允许）",
+        safety_before.is_some()
+    );
 }
 
 /// TC6: 多次回滚后 context 不累积（F1 已修复）
@@ -827,7 +982,9 @@ fn tc6_token_stable_across_rollbacks() {
     let c1id2 = c1m2["id"].as_str().unwrap().to_string();
     session_jsonl::append_raw_entry(&cwd, &c1m2);
     let rb1 = session_tree::make_rollback(&id2, Some(&c1id2), None).unwrap();
-    for e in &rb1 { session_jsonl::append_raw_entry(&cwd, e); }
+    for e in &rb1 {
+        session_jsonl::append_raw_entry(&cwd, e);
+    }
 
     // Cycle 2
     let c2m1 = msg_entry(&id2, "user", "cycle2 msg padding ");
@@ -837,7 +994,9 @@ fn tc6_token_stable_across_rollbacks() {
     let c2id2 = c2m2["id"].as_str().unwrap().to_string();
     session_jsonl::append_raw_entry(&cwd, &c2m2);
     let rb2 = session_tree::make_rollback(&id2, Some(&c2id2), None).unwrap();
-    for e in &rb2 { session_jsonl::append_raw_entry(&cwd, e); }
+    for e in &rb2 {
+        session_jsonl::append_raw_entry(&cwd, e);
+    }
 
     // F1 修复后：messages 只有 live path 的 2 条
     let sf = session_jsonl::SessionFile::load(&cwd).unwrap();
@@ -845,8 +1004,15 @@ fn tc6_token_stable_across_rollbacks() {
     let live_count = live_msg_count(&entries);
 
     assert_eq!(live_count, 2, "TC6: live path 只有 2 条");
-    assert_eq!(sf.messages.len(), 2,
-        "TC6: context 应只有 2 条（不累积废弃分支），实际 {}", sf.messages.len());
-    println!("TC6 PASS: 2 次回滚后 context={} 条 = live={}（F1 已修复，不累积）",
-        sf.messages.len(), live_count);
+    assert_eq!(
+        sf.messages.len(),
+        2,
+        "TC6: context 应只有 2 条（不累积废弃分支），实际 {}",
+        sf.messages.len()
+    );
+    println!(
+        "TC6 PASS: 2 次回滚后 context={} 条 = live={}（F1 已修复，不累积）",
+        sf.messages.len(),
+        live_count
+    );
 }

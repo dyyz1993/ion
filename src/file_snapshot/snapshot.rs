@@ -3,17 +3,17 @@
 //! 路线 1：write/edit 工具级 before/after
 //! 路线 2：bash 目录扫描（后续在 scanner.rs 实现）
 
+use super::object_store::{ObjectStore, WriteResult};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use super::object_store::{ObjectStore, WriteResult};
 
 /// 路线 1：write/edit 的 before/after 记录
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ToolSnapshot {
-    pub turn_id: String,           // 全局唯一 ID（如 "ts_a3f8b2"），不依赖下标
+    pub turn_id: String, // 全局唯一 ID（如 "ts_a3f8b2"），不依赖下标
     pub tool_call_id: String,
-    pub tool_name: String,         // "write" | "edit" | "bash"
-    pub path: String,              // 文件路径（可能 cwd 外）
+    pub tool_name: String,           // "write" | "edit" | "bash"
+    pub path: String,                // 文件路径（可能 cwd 外）
     pub before_hash: Option<String>, // 执行前内容 hash（None = 文件不存在 OR 未知）
     pub after_hash: Option<String>,  // 执行后内容 hash（None = 文件被删除）
     pub timestamp: String,
@@ -64,9 +64,7 @@ pub enum BeforeState {
         before_hash: Option<String>,
     },
     /// bash 工具：记录目录快照（路线 2）
-    DirCapture {
-        scan: super::scanner::DirScanResult,
-    },
+    DirCapture { scan: super::scanner::DirScanResult },
 }
 
 /// 快照管理器：管理 ToolSnapshot + DirSnapshot 的存储和查询
@@ -127,7 +125,11 @@ impl SnapshotStore {
         let path = dir.join(format!("{}.jsonl", safe_turn));
         let line = serde_json::to_string(snap).unwrap_or_default();
         use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
             let _ = writeln!(f, "{}", line);
         }
     }
@@ -210,13 +212,12 @@ impl SnapshotStore {
     pub fn load_tool_snapshots_after(&self, after_turn_id: &str) -> Vec<ToolSnapshot> {
         let all = self.load_all_tool_snapshots();
         // 找到 after_turn_id 对应的 timestamp，返回之后的所有快照
-        let cutoff_ts = all.iter()
+        let cutoff_ts = all
+            .iter()
             .find(|s| s.turn_id == after_turn_id)
             .map(|s| s.timestamp.clone());
         match cutoff_ts {
-            Some(cutoff) => all.into_iter()
-                .filter(|s| s.timestamp > cutoff)
-                .collect(),
+            Some(cutoff) => all.into_iter().filter(|s| s.timestamp > cutoff).collect(),
             None => all, // 找不到 → 返回全部（安全降级）
         }
     }
@@ -228,13 +229,12 @@ impl SnapshotStore {
         session_id: &str,
     ) -> Vec<ToolSnapshot> {
         let all = self.load_tool_snapshots_by_session(session_id);
-        let cutoff_ts = all.iter()
+        let cutoff_ts = all
+            .iter()
             .find(|s| s.turn_id == after_turn_id)
             .map(|s| s.timestamp.clone());
         match cutoff_ts {
-            Some(cutoff) => all.into_iter()
-                .filter(|s| s.timestamp > cutoff)
-                .collect(),
+            Some(cutoff) => all.into_iter().filter(|s| s.timestamp > cutoff).collect(),
             None => all,
         }
     }
@@ -242,9 +242,7 @@ impl SnapshotStore {
     /// 读取某文件的全部历史（按 timestamp 排序）
     pub fn load_file_history(&self, file_path: &str) -> Vec<ToolSnapshot> {
         let all = self.load_all_tool_snapshots();
-        all.into_iter()
-            .filter(|s| s.path == file_path)
-            .collect()
+        all.into_iter().filter(|s| s.path == file_path).collect()
     }
 
     // ── tree 快照方法（步骤 2 新增）──
@@ -252,7 +250,10 @@ impl SnapshotStore {
     /// 存储 step-snapshot（每 turn 有变更时写一条）
     pub fn save_step_snapshot(&self, snap: &super::tree_store::StepSnapshot) {
         let safe_name = snap.turn_id.replace('/', "_");
-        let path = self.snapshots_dir.join("tree").join(format!("{}.json", safe_name));
+        let path = self
+            .snapshots_dir
+            .join("tree")
+            .join(format!("{}.json", safe_name));
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
@@ -266,13 +267,20 @@ impl SnapshotStore {
         let mut all = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
-                if let Ok(content) = std::fs::read_to_string(entry.path()) && let Ok(snap) = serde_json::from_str::<super::tree_store::StepSnapshot>(&content) {
+                if let Ok(content) = std::fs::read_to_string(entry.path())
+                    && let Ok(snap) =
+                        serde_json::from_str::<super::tree_store::StepSnapshot>(&content)
+                {
                     all.push(snap);
                 }
             }
         }
         // timestamp 相同（同秒写入）时用 turn_id 做次要排序键，保证顺序稳定
-        all.sort_by(|a, b| a.timestamp.cmp(&b.timestamp).then_with(|| a.turn_id.cmp(&b.turn_id)));
+        all.sort_by(|a, b| {
+            a.timestamp
+                .cmp(&b.timestamp)
+                .then_with(|| a.turn_id.cmp(&b.turn_id))
+        });
         all
     }
 
@@ -296,13 +304,15 @@ impl SnapshotStore {
         }
         // fallback：找 turn_id 最接近但不超过的 step-snapshot（该 turn 之后最近一次建树）
         // 按 timestamp 排序已保证，找最后一个 timestamp <= target 的
-        let target_ts = steps.iter()
+        let target_ts = steps
+            .iter()
             .find(|s| s.turn_id == turn_id)
             .map(|s| s.timestamp.as_str());
         if let Some(ts) = target_ts {
-            return steps.iter()
+            return steps
+                .iter()
                 .filter(|s| s.timestamp.as_str() <= ts)
-                .last()
+                .next_back()
                 .map(|s| s.snapshot_tree_hash.clone());
         }
         // 都找不到 → 返回最新的
@@ -316,7 +326,9 @@ fn read_jsonl<T: for<'de> Deserialize<'de>>(path: &std::path::Path) -> Vec<T> {
     if let Ok(content) = std::fs::read_to_string(path) {
         for line in content.lines() {
             let line = line.trim();
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
             if let Ok(item) = serde_json::from_str(line) {
                 result.push(item);
             }
@@ -336,15 +348,17 @@ pub fn capture_before(
 ) -> BeforeState {
     match tool_name {
         "write" | "edit" => {
-            let path = args.get("file_path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let path = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
             if path.is_empty() {
                 return BeforeState::Skip;
             }
-            let before_hash = std::fs::read(path).ok()
+            let before_hash = std::fs::read(path)
+                .ok()
                 .map(|content| store.write_object(&content).hash);
-            BeforeState::FileCapture { path: path.to_string(), before_hash }
+            BeforeState::FileCapture {
+                path: path.to_string(),
+                before_hash,
+            }
         }
         "bash" => {
             // 路线 2：bash 前扫目录（只 stat mtime+size，不读内容）
@@ -368,11 +382,10 @@ pub fn capture_after(
         _ => return None,
     };
 
-    let after_hash = std::fs::read(&path).ok()
-        .map(|content| {
-            let result: WriteResult = store.write_object(&content);
-            result.hash
-        });
+    let after_hash = std::fs::read(&path).ok().map(|content| {
+        let result: WriteResult = store.write_object(&content);
+        result.hash
+    });
 
     // 内容没变就不记（write 相同内容）
     if before_hash == after_hash {
@@ -415,7 +428,8 @@ pub fn capture_after_dir(
             None => {
                 // 新文件（bash 扫描到的，但 before_scan 没有 → 要么真新建，要么在 before 时已存在但未被扫到）
                 let abs_path = std::path::Path::new(cwd).join(path);
-                let after_hash = std::fs::read(&abs_path).ok()
+                let after_hash = std::fs::read(&abs_path)
+                    .ok()
                     .map(|c| store.write_object(&c).hash);
                 if let Some(h) = after_hash {
                     snapshots.push(ToolSnapshot {
@@ -426,7 +440,7 @@ pub fn capture_after_dir(
                         before_hash: None,
                         after_hash: Some(h),
                         timestamp: crate::session_jsonl::timestamp_iso(),
-                        before_unknown: true, // bash 路线没存 before 内容
+                        before_unknown: true,      // bash 路线没存 before 内容
                         session_id: String::new(), // XL4: 由 save_snap 补
                     });
                 }
@@ -434,7 +448,8 @@ pub fn capture_after_dir(
             Some((b_mtime, b_size)) if mtime != b_mtime || size != b_size => {
                 // 修改了
                 let abs_path = std::path::Path::new(cwd).join(path);
-                let after_hash = std::fs::read(&abs_path).ok()
+                let after_hash = std::fs::read(&abs_path)
+                    .ok()
                     .map(|c| store.write_object(&c).hash);
                 if let Some(h) = after_hash {
                     snapshots.push(ToolSnapshot {
@@ -445,7 +460,7 @@ pub fn capture_after_dir(
                         before_hash: None, // bash 路线没存 before 内容
                         after_hash: Some(h),
                         timestamp: crate::session_jsonl::timestamp_iso(),
-                        before_unknown: true, // bash 路线没存 before 内容
+                        before_unknown: true,      // bash 路线没存 before 内容
                         session_id: String::new(), // XL4: 由 save_snap 补
                     });
                 }
@@ -455,7 +470,7 @@ pub fn capture_after_dir(
     }
 
     // 检查删除
-    for (path, _) in &before_scan.files {
+    for path in before_scan.files.keys() {
         if !after_scan.files.contains_key(path) {
             snapshots.push(ToolSnapshot {
                 turn_id: turn_id.to_string(),
@@ -526,8 +541,12 @@ mod tests {
     #[test]
     fn xl4_snapshots_isolated_by_session() {
         let tmp = std::env::temp_dir().join(format!(
-            "fs_xl4_iso_{}_{}", std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos()
+            "fs_xl4_iso_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
         ));
         std::fs::create_dir_all(&tmp).unwrap();
         let store = SnapshotStore::new_at(tmp.clone());
@@ -581,8 +600,12 @@ mod tests {
     #[test]
     fn xl4_turn_id_collision_no_corruption() {
         let tmp = std::env::temp_dir().join(format!(
-            "fs_xl4_coll_{}_{}", std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos()
+            "fs_xl4_coll_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
         ));
         std::fs::create_dir_all(&tmp).unwrap();
         let store = SnapshotStore::new_at(tmp.clone());
@@ -607,8 +630,10 @@ mod tests {
         let sess_y_snaps = store.load_tool_snapshots_by_session("sess_Y");
         assert_eq!(sess_x_snaps.len(), 1);
         assert_eq!(sess_y_snaps.len(), 1);
-        assert_ne!(sess_x_snaps[0].path, sess_y_snaps[0].path,
-            "不同 session 同 turn_id 的快照不应混淆");
+        assert_ne!(
+            sess_x_snaps[0].path, sess_y_snaps[0].path,
+            "不同 session 同 turn_id 的快照不应混淆"
+        );
 
         std::fs::remove_dir_all(&tmp).ok();
     }
@@ -617,8 +642,12 @@ mod tests {
     #[test]
     fn xl4_legacy_data_compatible() {
         let tmp = std::env::temp_dir().join(format!(
-            "fs_xl4_leg_{}_{}", std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos()
+            "fs_xl4_leg_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
         ));
         std::fs::create_dir_all(&tmp).unwrap();
         let store = SnapshotStore::new_at(tmp.clone());

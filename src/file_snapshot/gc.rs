@@ -16,8 +16,11 @@ pub fn enforce_limit(store: &ObjectStore, active_hashes: &[String]) {
         return; // 没超，跳过
     }
 
-    tracing::info!("[file-snapshot] GC triggered: {}MB > {}MB limit",
-        size / 1024 / 1024, STORE_LIMIT / 1024 / 1024);
+    tracing::info!(
+        "[file-snapshot] GC triggered: {}MB > {}MB limit",
+        size / 1024 / 1024,
+        STORE_LIMIT / 1024 / 1024
+    );
 
     // 第 1 步：删 7 天前的（保护 active）
     prune_old_objects(store, 7 * 24 * 3600, active_hashes);
@@ -55,7 +58,9 @@ fn prune_old_objects(store: &ObjectStore, max_age_secs: u64, active_hashes: &[St
             continue; // 保护活跃 object
         }
         // 检查 createdAt
-        if let Some(created) = get_object_created_at(store, hash) && created < cutoff {
+        if let Some(created) = get_object_created_at(store, hash)
+            && created < cutoff
+        {
             store.delete_object(hash);
         }
     }
@@ -78,7 +83,10 @@ fn get_object_created_at(store: &ObjectStore, hash: &str) -> Option<u64> {
     let object_path = store.object_path(hash);
     let metadata = std::fs::metadata(&object_path).ok()?;
     let mtime = metadata.modified().ok()?;
-    mtime.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
+    mtime
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
 }
 
 /// 异步执行 GC（启动时 void 调用）
@@ -130,8 +138,12 @@ mod tests {
         let remaining = store.list_objects();
         assert!(remaining.contains(&r1.hash), "r1 应保留");
         assert!(remaining.contains(&r2.hash), "r2 应保留");
-        assert!(!remaining.iter().any(|h| h.starts_with(&_r3.hash[..2]) && h == &_r3.hash),
-            "r3 不可达应被删");
+        assert!(
+            !remaining
+                .iter()
+                .any(|h| h.starts_with(&_r3.hash[..2]) && h == &_r3.hash),
+            "r3 不可达应被删"
+        );
 
         std::fs::remove_dir_all(&tmp).ok();
     }

@@ -13,11 +13,10 @@
 //! 所有 backend 通过名字引用。新加 backend 类型 = 在 from_config 里加一行构造分支。
 
 use crate::config::{BackendConfig, CommandGuardConfig, RouteRule, RuntimeConfig};
-use crate::runtime::{
-    LocalRuntime, RemoteRuntime, Runtime, SandboxRuntime, SecuredRuntime,
-    sh_quote,
-};
 use crate::kernel::SecurityProfile;
+use crate::runtime::{
+    LocalRuntime, RemoteRuntime, Runtime, SandboxRuntime, SecuredRuntime, sh_quote,
+};
 use std::collections::HashMap;
 
 // NOTE: SecuredRuntime<R: Runtime> requires R to be a concrete Runtime type.
@@ -64,7 +63,9 @@ fn build_secured<R: crate::runtime::Runtime + 'static>(
             secured = secured.with_command_guard(guard);
         } else if !cfg.whitelist.is_empty() || !cfg.risk_patterns.is_empty() {
             // whitelist 模式，但修改了 whitelist/risk_patterns
-            let mut guard = crate::command_guard::CommandGuard::with_mode(crate::command_guard::GuardMode::Whitelist);
+            let mut guard = crate::command_guard::CommandGuard::with_mode(
+                crate::command_guard::GuardMode::Whitelist,
+            );
             if !cfg.whitelist.is_empty() {
                 guard.whitelist = cfg.whitelist.clone();
             }
@@ -129,10 +130,17 @@ impl BackendRegistry {
         }
 
         for (name, spec) in &cfg.backends {
-            match Self::build_backend(name, spec, &cfg.remote, workspace, Some(&cfg.command_guard)) {
-                Ok(rt) => { backends.insert(name.clone(), rt); }
+            match Self::build_backend(name, spec, &cfg.remote, workspace, Some(&cfg.command_guard))
+            {
+                Ok(rt) => {
+                    backends.insert(name.clone(), rt);
+                }
                 Err(e) => {
-                    tracing::warn!("[backend-registry] backend '{}' 创建失败: {} — 引用时回退 default", name, e);
+                    tracing::warn!(
+                        "[backend-registry] backend '{}' 创建失败: {} — 引用时回退 default",
+                        name,
+                        e
+                    );
                 }
             }
         }
@@ -142,7 +150,10 @@ impl BackendRegistry {
         let default_name = if backends.contains_key(&cfg.default) {
             cfg.default.clone()
         } else if !cfg.default.is_empty() {
-            tracing::warn!("[backend-registry] default='{}' 未成功创建或不存在，回退 local", cfg.default);
+            tracing::warn!(
+                "[backend-registry] default='{}' 未成功创建或不存在，回退 local",
+                cfg.default
+            );
             "local".into()
         } else {
             "local".into()
@@ -177,12 +188,16 @@ impl BackendRegistry {
                     );
                     host_name.into()
                 } else {
-                    tracing::warn!("[backend-registry] legacy remote host '{}' 未定义，回退 local", cfg.remote.default_host);
+                    tracing::warn!(
+                        "[backend-registry] legacy remote host '{}' 未定义，回退 local",
+                        cfg.remote.default_host
+                    );
                     "local".into()
                 }
             }
             "sandbox" => {
-                let sandbox = SandboxRuntime::new(LocalRuntime::new(), &cfg.sandbox.profile, workspace);
+                let sandbox =
+                    SandboxRuntime::new(LocalRuntime::new(), &cfg.sandbox.profile, workspace);
                 backends.insert(
                     "sandbox_default".into(),
                     build_secured(sandbox, Some(&cfg.command_guard)),
@@ -193,29 +208,43 @@ impl BackendRegistry {
         };
 
         // 旧 routes 的 runtime/host 自动映射成 target
-        let routes: Vec<RouteRule> = cfg.routes.iter().map(|r| {
-            let mut nr = r.clone();
-            if nr.target.is_empty() {
-                nr.target = r.effective_target();
-            }
-            // 把旧 pattern 字段映射成 command 或 path（启发式：以 / 开头当 path，否则当 command）
-            if nr.command.is_empty() && nr.path.is_empty() && !nr.pattern.is_empty() {
-                if nr.pattern.starts_with('/') {
-                    nr.path = nr.pattern.clone();
-                } else if nr.tool == "bash" || nr.tool.is_empty() {
-                    nr.command = nr.pattern.clone();
-                } else {
-                    nr.path = nr.pattern.clone();
+        let routes: Vec<RouteRule> = cfg
+            .routes
+            .iter()
+            .map(|r| {
+                let mut nr = r.clone();
+                if nr.target.is_empty() {
+                    nr.target = r.effective_target();
                 }
-            }
-            nr
-        }).collect();
+                // 把旧 pattern 字段映射成 command 或 path（启发式：以 / 开头当 path，否则当 command）
+                if nr.command.is_empty() && nr.path.is_empty() && !nr.pattern.is_empty() {
+                    if nr.pattern.starts_with('/') {
+                        nr.path = nr.pattern.clone();
+                    } else if nr.tool == "bash" || nr.tool.is_empty() {
+                        nr.command = nr.pattern.clone();
+                    } else {
+                        nr.path = nr.pattern.clone();
+                    }
+                }
+                nr
+            })
+            .collect();
 
-        Self { backends, default_name, routes }
+        Self {
+            backends,
+            default_name,
+            routes,
+        }
     }
 
     /// 根据 BackendConfig 构造单个 Runtime 实例
-    fn build_backend(name: &str, spec: &BackendConfig, _remote_pool: &crate::config::RemoteConfig, workspace: &str, guard_cfg: Option<&CommandGuardConfig>) -> Result<Box<dyn Runtime>, String> {
+    fn build_backend(
+        name: &str,
+        spec: &BackendConfig,
+        _remote_pool: &crate::config::RemoteConfig,
+        workspace: &str,
+        guard_cfg: Option<&CommandGuardConfig>,
+    ) -> Result<Box<dyn Runtime>, String> {
         match spec.backend_type.as_str() {
             "local" => Ok(build_secured(LocalRuntime::new(), guard_cfg)),
             "remote" => {
@@ -228,16 +257,25 @@ impl BackendRegistry {
                 let port = spec.port.unwrap_or(22);
                 let key = spec.key.clone();
                 let proxy = spec.proxy_jump.clone();
-                let remote = RemoteRuntime::new(LocalRuntime::new(), &user, &host, port, &key, &proxy);
+                let remote =
+                    RemoteRuntime::new(LocalRuntime::new(), &user, &host, port, &key, &proxy);
                 Ok(build_secured(remote, guard_cfg))
             }
             "sandbox" => {
-                let profile = if spec.profile.is_empty() { "workspace" } else { &spec.profile };
+                let profile = if spec.profile.is_empty() {
+                    "workspace"
+                } else {
+                    &spec.profile
+                };
                 let sandbox = SandboxRuntime::new(LocalRuntime::new(), profile, workspace);
                 Ok(build_secured(sandbox, guard_cfg))
             }
             "container" => {
-                let driver = if spec.driver.is_empty() { "apple" } else { &spec.driver };
+                let driver = if spec.driver.is_empty() {
+                    "apple"
+                } else {
+                    &spec.driver
+                };
                 match driver {
                     "apple" => {
                         if spec.image.is_empty() {
@@ -273,19 +311,32 @@ impl BackendRegistry {
                     return rt.as_ref();
                 }
                 // target 未注册，跳过此规则（继续匹配下一条或走 default）
-                tracing::warn!("[backend-registry] command rule target '{}' 未注册，跳过", target);
+                tracing::warn!(
+                    "[backend-registry] command rule target '{}' 未注册，跳过",
+                    target
+                );
             }
             // 兼容旧 pattern：当 tool 为空或 bash 时尝试匹配
-            if !rule.pattern.is_empty() && rule.command.is_empty() && rule.path.is_empty() && (rule.tool.is_empty() || rule.tool == "bash" || rule.tool == "*") {
+            if !rule.pattern.is_empty()
+                && rule.command.is_empty()
+                && rule.path.is_empty()
+                && (rule.tool.is_empty() || rule.tool == "bash" || rule.tool == "*")
+            {
                 let target = rule.effective_target();
                 if let Some(rt) = self.backends.get(&target) {
                     return rt.as_ref();
                 }
             }
         }
-        self.backends.get(&self.default_name)
+        self.backends
+            .get(&self.default_name)
             .map(|b| b.as_ref())
-            .unwrap_or_else(|| panic!("[backend-registry] default backend '{}' 未注册 (内部错误)", self.default_name))
+            .unwrap_or_else(|| {
+                panic!(
+                    "[backend-registry] default backend '{}' 未注册 (内部错误)",
+                    self.default_name
+                )
+            })
     }
 
     /// 路径路由：规范化后遍历 routes 匹配最长前缀
@@ -295,7 +346,9 @@ impl BackendRegistry {
         // 多条路径规则匹配时取最长前缀
         let mut best: Option<(usize, &dyn Runtime)> = None;
         for rule in &self.routes {
-            if rule.path.is_empty() { continue; }
+            if rule.path.is_empty() {
+                continue;
+            }
             let rule_canon = canonicalize_path(&rule.path);
             // pattern 末尾的 * 是通配符提示，取前缀
             let prefix = rule_canon.trim_end_matches('*');
@@ -309,11 +362,19 @@ impl BackendRegistry {
                 }
             }
         }
-        if let Some((_, rt)) = best { return rt; }
+        if let Some((_, rt)) = best {
+            return rt;
+        }
 
-        self.backends.get(&self.default_name)
+        self.backends
+            .get(&self.default_name)
             .map(|b| b.as_ref())
-            .unwrap_or_else(|| panic!("[backend-registry] default backend '{}' 未注册 (内部错误)", self.default_name))
+            .unwrap_or_else(|| {
+                panic!(
+                    "[backend-registry] default backend '{}' 未注册 (内部错误)",
+                    self.default_name
+                )
+            })
     }
 
     /// 列出所有后端名（调试用）
@@ -330,17 +391,31 @@ impl BackendRegistry {
 #[async_trait::async_trait]
 impl Runtime for BackendRegistry {
     fn runtime_type(&self) -> String {
-        format!("router(default={}, backends={})", self.default_name, self.backends.len())
+        format!(
+            "router(default={}, backends={})",
+            self.default_name,
+            self.backends.len()
+        )
     }
 
-    async fn execute_command(&self, command: &str, timeout_secs: u64) -> Result<(String, String, i32), String> {
-        self.resolve_command(command).execute_command(command, timeout_secs).await
+    async fn execute_command(
+        &self,
+        command: &str,
+        timeout_secs: u64,
+    ) -> Result<(String, String, i32), String> {
+        self.resolve_command(command)
+            .execute_command(command, timeout_secs)
+            .await
     }
     async fn execute_command_stream(
-        &self, command: &str, timeout_secs: u64,
+        &self,
+        command: &str,
+        timeout_secs: u64,
         on_update: &(dyn Fn(String) + Send + Sync),
     ) -> Result<String, String> {
-        self.resolve_command(command).execute_command_stream(command, timeout_secs, on_update).await
+        self.resolve_command(command)
+            .execute_command_stream(command, timeout_secs, on_update)
+            .await
     }
     async fn read_file(&self, path: &str) -> Result<String, String> {
         self.resolve_path(path).read_file(path).await
@@ -372,19 +447,26 @@ impl Runtime for BackendRegistry {
     async fn check_command(&self, cmd: &str) -> Result<(), String> {
         self.resolve_command(cmd).check_command(cmd).await
     }
-    async fn spawn_process(&self, req: crate::runtime::SpawnProcessRequest) -> Result<crate::runtime::ProcessHandle, String> {
+    async fn spawn_process(
+        &self,
+        req: crate::runtime::SpawnProcessRequest,
+    ) -> Result<crate::runtime::ProcessHandle, String> {
         self.resolve_command(&req.command).spawn_process(req).await
     }
     async fn kill_process(&self, pid: u32) -> Result<(), String> {
         // kill 不需要路由——但默认走 default
-        self.backends.get(&self.default_name)
+        self.backends
+            .get(&self.default_name)
             .unwrap_or_else(|| panic!("default backend missing"))
-            .kill_process(pid).await
+            .kill_process(pid)
+            .await
     }
     async fn send_stdin(&self, pid: u32, input: &str) -> Result<(), String> {
-        self.backends.get(&self.default_name)
+        self.backends
+            .get(&self.default_name)
             .unwrap_or_else(|| panic!("default backend missing"))
-            .send_stdin(pid, input).await
+            .send_stdin(pid, input)
+            .await
     }
 }
 
@@ -405,10 +487,10 @@ pub fn canonicalize_path(path: &str) -> String {
     // 1. 展开 ~ 和 ~user
     if p == "~" {
         p = std::env::var("HOME").unwrap_or_else(|_| "~".into());
-    } else if let Some(rest) = p.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            p = format!("{}/{}", home, rest);
-        }
+    } else if let Some(rest) = p.strip_prefix("~/")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        p = format!("{}/{}", home, rest);
     }
     // ~user 形式：不展开（需要查 passwd），保持原样
 
@@ -454,7 +536,9 @@ pub fn canonicalize_path(path: &str) -> String {
 ///   - "npm *" 去掉 `*` 后是 "npm "（含空格）→ s 必须以 "npm " 开头（"npm install" 匹配，裸 "npm" 不匹配）
 /// - pattern 不以 `*` 结尾：精确匹配
 fn glob_match(pattern: &str, s: &str) -> bool {
-    if pattern == "*" { return true; }
+    if pattern == "*" {
+        return true;
+    }
     if let Some(prefix) = pattern.strip_suffix('*') {
         // prefix 末尾通常带空格（如 "npm "），保留原样做前缀匹配
         // 例：pattern "npm *" → prefix "npm " → s 必须以 "npm " 开头
@@ -529,75 +613,91 @@ impl AppleContainerRuntime {
 
     /// 懒启动容器。先 inspect 检查是否已存在，不存在则 run。
     async fn ensure_started(&self) -> Result<&str, String> {
-        self.started.get_or_try_init(|| async {
-            // 1. 确认 container 服务运行
-            let start_out = tokio::process::Command::new("/usr/local/bin/container")
-                .args(["system", "start"])
-                .output().await;
-            if let Err(e) = start_out {
-                return Err(format!("container system start 失败: {e}"));
-            }
-            if let Ok(out) = start_out && !out.status.success() {
-                let err = String::from_utf8_lossy(&out.stderr);
-                if !err.trim().is_empty() && !err.contains("already running") {
-                    return Err(format!("container system start 失败: {err}"));
+        self.started
+            .get_or_try_init(|| async {
+                // 1. 确认 container 服务运行
+                let start_out = tokio::process::Command::new("/usr/local/bin/container")
+                    .args(["system", "start"])
+                    .output()
+                    .await;
+                if let Err(e) = start_out {
+                    return Err(format!("container system start 失败: {e}"));
                 }
-            }
+                if let Ok(out) = start_out
+                    && !out.status.success()
+                {
+                    let err = String::from_utf8_lossy(&out.stderr);
+                    if !err.trim().is_empty() && !err.contains("already running") {
+                        return Err(format!("container system start 失败: {err}"));
+                    }
+                }
 
-            // 2. 检查容器是否已存在
-            let inspect_out = tokio::process::Command::new("/usr/local/bin/container")
-                .args(["inspect", &self.container_name])
-                .output().await;
-            if let Ok(out) = inspect_out && out.status.success() {
-                // 容器已存在，直接使用
-                return Ok(true);
-            }
+                // 2. 检查容器是否已存在
+                let inspect_out = tokio::process::Command::new("/usr/local/bin/container")
+                    .args(["inspect", &self.container_name])
+                    .output()
+                    .await;
+                if let Ok(out) = inspect_out
+                    && out.status.success()
+                {
+                    // 容器已存在，直接使用
+                    return Ok(true);
+                }
 
-            // 3. 构造 container run 命令（符合真实 CLI 语法，参考 run-worktree-container.sh）
-            let mut cmd = tokio::process::Command::new("/usr/local/bin/container");
-            cmd.arg("run");
-            cmd.arg("--name").arg(&self.container_name);
-            cmd.arg("--detach");
-            cmd.arg("--rm");
-            cmd.arg("--network").arg("default");
+                // 3. 构造 container run 命令（符合真实 CLI 语法，参考 run-worktree-container.sh）
+                let mut cmd = tokio::process::Command::new("/usr/local/bin/container");
+                cmd.arg("run");
+                cmd.arg("--name").arg(&self.container_name);
+                cmd.arg("--detach");
+                cmd.arg("--rm");
+                cmd.arg("--network").arg("default");
 
-            // 挂载 worktree（可选）
-            if !self.workspace.is_empty() && !self.mount_path.is_empty() {
-                cmd.arg("-v").arg(format!("{}:{}", self.workspace, self.mount_path));
-                cmd.arg("-w").arg(&self.mount_path);
-            }
-            if !self.memory.is_empty() {
-                cmd.arg("--memory").arg(&self.memory);
-            }
-            if let Some(cpus) = self.cpus {
-                cmd.arg("--cpus").arg(cpus.to_string());
-            }
-            if !self.volume.is_empty() {
-                cmd.arg("--volume").arg(&self.volume);
-            }
+                // 挂载 worktree（可选）
+                if !self.workspace.is_empty() && !self.mount_path.is_empty() {
+                    cmd.arg("-v")
+                        .arg(format!("{}:{}", self.workspace, self.mount_path));
+                    cmd.arg("-w").arg(&self.mount_path);
+                }
+                if !self.memory.is_empty() {
+                    cmd.arg("--memory").arg(&self.memory);
+                }
+                if let Some(cpus) = self.cpus {
+                    cmd.arg("--cpus").arg(cpus.to_string());
+                }
+                if !self.volume.is_empty() {
+                    cmd.arg("--volume").arg(&self.volume);
+                }
 
-            // 镜像和启动命令（位置参数）
-            cmd.arg(&self.image);
-            cmd.arg("sh").arg("-lc").arg("sleep infinity");
+                // 镜像和启动命令（位置参数）
+                cmd.arg(&self.image);
+                cmd.arg("sh").arg("-lc").arg("sleep infinity");
 
-            let output = cmd.output().await
-                .map_err(|e| format!("container run 失败: {e}"))?;
-            if !output.status.success() {
-                let err = String::from_utf8_lossy(&output.stderr);
-                return Err(format!("container run 失败 ({})", err.trim()));
-            }
+                let output = cmd
+                    .output()
+                    .await
+                    .map_err(|e| format!("container run 失败: {e}"))?;
+                if !output.status.success() {
+                    let err = String::from_utf8_lossy(&output.stderr);
+                    return Err(format!("container run 失败 ({})", err.trim()));
+                }
 
-            Ok(true)
-        }).await?;
+                Ok(true)
+            })
+            .await?;
         Ok(&self.container_name)
     }
 
     /// 在容器内执行命令
-    async fn exec_in_container(&self, cmd: &str, timeout_secs: u64) -> Result<(String, String, i32), String> {
+    async fn exec_in_container(
+        &self,
+        cmd: &str,
+        timeout_secs: u64,
+    ) -> Result<(String, String, i32), String> {
         let name = self.ensure_started().await?;
         let exec_cmd = format!(
             "/usr/local/bin/container exec {} sh -c {}",
-            name, sh_quote(cmd)
+            name,
+            sh_quote(cmd)
         );
         let local = LocalRuntime::new();
         local.execute_command(&exec_cmd, timeout_secs).await
@@ -609,12 +709,18 @@ impl AppleContainerRuntime {
         let name = self.ensure_started().await?;
         let local = LocalRuntime::new();
         // 用 container inspect 解析 JSON 取 IP
-        let (out, _, _) = local.execute_command(
-            &format!("/usr/local/bin/container inspect {}", name),
-            10,
-        ).await?;
+        let (out, _, _) = local
+            .execute_command(&format!("/usr/local/bin/container inspect {}", name), 10)
+            .await?;
         // 解析 JSON：取 networks[0].ipv4Address
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&out) && let Some(arr) = v.as_array() && let Some(first) = arr.first() && let Some(networks) = first.get("networks") && let Some(net_arr) = networks.as_array() && let Some(net) = net_arr.first() && let Some(ip) = net.get("ipv4Address").and_then(|i| i.as_str()) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&out)
+            && let Some(arr) = v.as_array()
+            && let Some(first) = arr.first()
+            && let Some(networks) = first.get("networks")
+            && let Some(net_arr) = networks.as_array()
+            && let Some(net) = net_arr.first()
+            && let Some(ip) = net.get("ipv4Address").and_then(|i| i.as_str())
+        {
             return Ok(ip.to_string());
         }
         Err(format!("无法从 container inspect 解析 IP: {out}"))
@@ -623,10 +729,12 @@ impl AppleContainerRuntime {
     /// 停止容器。Worker 关闭时调用。
     pub async fn stop(&self) -> Result<(), String> {
         let local = LocalRuntime::new();
-        let (_, err, code) = local.execute_command(
-            &format!("/usr/local/bin/container stop {}", &self.container_name),
-            15,
-        ).await?;
+        let (_, err, code) = local
+            .execute_command(
+                &format!("/usr/local/bin/container stop {}", self.container_name),
+                15,
+            )
+            .await?;
         if code != 0 {
             return Err(format!("container stop 失败: {err}"));
         }
@@ -643,10 +751,9 @@ impl Drop for AppleContainerRuntime {
             if let Ok(rt) = rt {
                 rt.block_on(async {
                     let local = LocalRuntime::new();
-                    let _ = local.execute_command(
-                        &format!("/usr/local/bin/container stop {}", name),
-                        10,
-                    ).await;
+                    let _ = local
+                        .execute_command(&format!("/usr/local/bin/container stop {}", name), 10)
+                        .await;
                 });
             }
         });
@@ -659,12 +766,18 @@ impl Runtime for AppleContainerRuntime {
         format!("apple-container({})", self.image)
     }
 
-    async fn execute_command(&self, command: &str, timeout_secs: u64) -> Result<(String, String, i32), String> {
+    async fn execute_command(
+        &self,
+        command: &str,
+        timeout_secs: u64,
+    ) -> Result<(String, String, i32), String> {
         self.exec_in_container(command, timeout_secs).await
     }
 
     async fn execute_command_stream(
-        &self, command: &str, timeout_secs: u64,
+        &self,
+        command: &str,
+        timeout_secs: u64,
         on_update: &(dyn Fn(String) + Send + Sync),
     ) -> Result<String, String> {
         let (out, _, _) = self.exec_in_container(command, timeout_secs).await?;
@@ -673,52 +786,97 @@ impl Runtime for AppleContainerRuntime {
     }
 
     async fn read_file(&self, path: &str) -> Result<String, String> {
-        let (out, err, code) = self.exec_in_container(&format!("cat {}", sh_quote(path)), 30).await?;
-        if code != 0 { Err(format!("read: {err}")) } else { Ok(out) }
+        let (out, err, code) = self
+            .exec_in_container(&format!("cat {}", sh_quote(path)), 30)
+            .await?;
+        if code != 0 {
+            Err(format!("read: {err}"))
+        } else {
+            Ok(out)
+        }
     }
     async fn write_file(&self, path: &str, content: &str) -> Result<(), String> {
         let esc = content.replace('\'', "'\\''");
-        let (_, err, code) = self.exec_in_container(
-            &format!("mkdir -p $(dirname {}) && cat > {} << 'IONEOF'\n{}\nIONEOF", sh_quote(path), sh_quote(path), esc),
-            30,
-        ).await?;
-        if code != 0 { Err(format!("write: {err}")) } else { Ok(()) }
+        let (_, err, code) = self
+            .exec_in_container(
+                &format!(
+                    "mkdir -p $(dirname {}) && cat > {} << 'IONEOF'\n{}\nIONEOF",
+                    sh_quote(path),
+                    sh_quote(path),
+                    esc
+                ),
+                30,
+            )
+            .await?;
+        if code != 0 {
+            Err(format!("write: {err}"))
+        } else {
+            Ok(())
+        }
     }
     async fn edit_file(&self, path: &str, old: &str, new: &str) -> Result<(), String> {
         let content = self.read_file(path).await?;
         self.write_file(path, &content.replace(old, new)).await
     }
     async fn path_exists(&self, path: &str) -> bool {
-        self.exec_in_container(&format!("test -e {}", sh_quote(path)), 10).await
-            .map(|(_, _, c)| c == 0).unwrap_or(false)
+        self.exec_in_container(&format!("test -e {}", sh_quote(path)), 10)
+            .await
+            .map(|(_, _, c)| c == 0)
+            .unwrap_or(false)
     }
     async fn list_dir(&self, path: &str) -> Result<Vec<String>, String> {
-        let (out, _, _) = self.exec_in_container(&format!("ls -1 {}", sh_quote(path)), 15).await?;
+        let (out, _, _) = self
+            .exec_in_container(&format!("ls -1 {}", sh_quote(path)), 15)
+            .await?;
         Ok(out.lines().map(String::from).collect())
     }
     async fn remove_file(&self, path: &str) -> Result<(), String> {
-        let (_, err, code) = self.exec_in_container(&format!("rm -f {}", sh_quote(path)), 15).await?;
-        if code != 0 { Err(format!("rm: {err}")) } else { Ok(()) }
+        let (_, err, code) = self
+            .exec_in_container(&format!("rm -f {}", sh_quote(path)), 15)
+            .await?;
+        if code != 0 {
+            Err(format!("rm: {err}"))
+        } else {
+            Ok(())
+        }
     }
     async fn grep_search(&self, pattern: &str, path: &str) -> Result<Vec<String>, String> {
-        let (out, _, _) = self.exec_in_container(
-            &format!("grep -rn {} {} 2>/dev/null || true", sh_quote(pattern), sh_quote(path)),
-            30,
-        ).await?;
+        let (out, _, _) = self
+            .exec_in_container(
+                &format!(
+                    "grep -rn {} {} 2>/dev/null || true",
+                    sh_quote(pattern),
+                    sh_quote(path)
+                ),
+                30,
+            )
+            .await?;
         Ok(out.lines().map(String::from).collect())
     }
     async fn find_files(&self, path: &str, name: &str) -> Result<Vec<String>, String> {
-        let (out, _, _) = self.exec_in_container(
-            &format!("find {} -name {} 2>/dev/null || true", sh_quote(path), sh_quote(name)),
-            30,
-        ).await?;
-        Ok(out.lines().map(String::from).filter(|l| !l.is_empty()).collect())
+        let (out, _, _) = self
+            .exec_in_container(
+                &format!(
+                    "find {} -name {} 2>/dev/null || true",
+                    sh_quote(path),
+                    sh_quote(name)
+                ),
+                30,
+            )
+            .await?;
+        Ok(out
+            .lines()
+            .map(String::from)
+            .filter(|l| !l.is_empty())
+            .collect())
     }
     async fn file_info(&self, path: &str) -> Result<Vec<crate::runtime::FileEntry>, String> {
-        let (out, _, _) = self.exec_in_container(
-            &format!("ls -la {} 2>/dev/null || true", sh_quote(path)),
-            15,
-        ).await?;
+        let (out, _, _) = self
+            .exec_in_container(
+                &format!("ls -la {} 2>/dev/null || true", sh_quote(path)),
+                15,
+            )
+            .await?;
         let mut v = Vec::new();
         for line in out.lines().skip(1) {
             if !line.is_empty() {
@@ -735,8 +893,13 @@ impl Runtime for AppleContainerRuntime {
         }
         Ok(v)
     }
-    async fn check_command(&self, _cmd: &str) -> Result<(), String> { Ok(()) }
-    async fn spawn_process(&self, _req: crate::runtime::SpawnProcessRequest) -> Result<crate::runtime::ProcessHandle, String> {
+    async fn check_command(&self, _cmd: &str) -> Result<(), String> {
+        Ok(())
+    }
+    async fn spawn_process(
+        &self,
+        _req: crate::runtime::SpawnProcessRequest,
+    ) -> Result<crate::runtime::ProcessHandle, String> {
         Err("AppleContainerRuntime: spawn_process 暂不支持".into())
     }
     async fn kill_process(&self, _pid: u32) -> Result<(), String> {
@@ -761,11 +924,20 @@ mod tests {
     fn test_canonicalize_tilde() {
         // SAFETY: save and restore HOME to avoid test pollution
         let original_home = std::env::var("HOME").ok();
-        unsafe { std::env::set_var("HOME", "/Users/test"); }
-        assert_eq!(canonicalize_path("~/.ion/skill.md"), "/Users/test/.ion/skill.md");
+        unsafe {
+            std::env::set_var("HOME", "/Users/test");
+        }
+        assert_eq!(
+            canonicalize_path("~/.ion/skill.md"),
+            "/Users/test/.ion/skill.md"
+        );
         match original_home {
-            Some(h) => unsafe { std::env::set_var("HOME", h); },
-            None => unsafe { std::env::remove_var("HOME"); },
+            Some(h) => unsafe {
+                std::env::set_var("HOME", h);
+            },
+            None => unsafe {
+                std::env::remove_var("HOME");
+            },
         }
     }
 
@@ -828,10 +1000,13 @@ mod tests {
     fn empty_cfg_with_default(default: &str) -> RuntimeConfig {
         let mut cfg = RuntimeConfig::default();
         cfg.default = default.into();
-        cfg.backends.insert("local".into(), BackendConfig {
-            backend_type: "local".into(),
-            ..Default::default()
-        });
+        cfg.backends.insert(
+            "local".into(),
+            BackendConfig {
+                backend_type: "local".into(),
+                ..Default::default()
+            },
+        );
         cfg
     }
 
@@ -848,10 +1023,13 @@ mod tests {
     fn test_default_unknown_falls_back_to_local() {
         let mut cfg = RuntimeConfig::default();
         cfg.default = "nonexistent".into();
-        cfg.backends.insert("local".into(), BackendConfig {
-            backend_type: "local".into(),
-            ..Default::default()
-        });
+        cfg.backends.insert(
+            "local".into(),
+            BackendConfig {
+                backend_type: "local".into(),
+                ..Default::default()
+            },
+        );
         let reg = BackendRegistry::from_config(&cfg, "/tmp");
         assert_eq!(reg.default_name, "local"); // 回退
     }
@@ -890,11 +1068,14 @@ mod tests {
         // 路径规则用规范化路径匹配
         let mut cfg = empty_cfg_with_default("local");
         // 加一个 remote backend 让 default 有选择
-        cfg.backends.insert("remote1".into(), BackendConfig {
-            backend_type: "remote".into(),
-            hostname: "example.com".into(),
-            ..Default::default()
-        });
+        cfg.backends.insert(
+            "remote1".into(),
+            BackendConfig {
+                backend_type: "remote".into(),
+                hostname: "example.com".into(),
+                ..Default::default()
+            },
+        );
         cfg.default = "remote1".into();
         // 配置规则：/Users/xuyingzhou/.ion/* → local
         cfg.routes.push(RouteRule {
@@ -916,15 +1097,21 @@ mod tests {
     #[test]
     fn test_longest_prefix_match() {
         let mut cfg = RuntimeConfig::default();
-        cfg.backends.insert("local".into(), BackendConfig {
-            backend_type: "local".into(),
-            ..Default::default()
-        });
-        cfg.backends.insert("remote1".into(), BackendConfig {
-            backend_type: "remote".into(),
-            hostname: "example.com".into(),
-            ..Default::default()
-        });
+        cfg.backends.insert(
+            "local".into(),
+            BackendConfig {
+                backend_type: "local".into(),
+                ..Default::default()
+            },
+        );
+        cfg.backends.insert(
+            "remote1".into(),
+            BackendConfig {
+                backend_type: "remote".into(),
+                hostname: "example.com".into(),
+                ..Default::default()
+            },
+        );
         cfg.default = "remote1".into();
         // 两条路径规则：第一条范围广，第二条更精确
         cfg.routes.push(RouteRule {
@@ -954,10 +1141,13 @@ mod tests {
         let mut cfg = RuntimeConfig::default();
         cfg.default_mode = "remote".into();
         cfg.remote.default_host = "shanbox".into();
-        cfg.remote.hosts.insert("shanbox".into(), crate::config::RemoteHost {
-            hostname: "shanbox".into(),
-            ..Default::default()
-        });
+        cfg.remote.hosts.insert(
+            "shanbox".into(),
+            crate::config::RemoteHost {
+                hostname: "shanbox".into(),
+                ..Default::default()
+            },
+        );
         let reg = BackendRegistry::from_config(&cfg, "/tmp");
         assert_eq!(reg.default_name, "shanbox");
         assert!(reg.backends.contains_key("local")); // 自动注入 local 兜底
@@ -987,14 +1177,20 @@ mod tests {
     fn test_backend_type_unknown() {
         let mut cfg = RuntimeConfig::default();
         cfg.default = "weird".into();
-        cfg.backends.insert("weird".into(), BackendConfig {
-            backend_type: "unknown_type".into(),
-            ..Default::default()
-        });
-        cfg.backends.insert("local".into(), BackendConfig {
-            backend_type: "local".into(),
-            ..Default::default()
-        });
+        cfg.backends.insert(
+            "weird".into(),
+            BackendConfig {
+                backend_type: "unknown_type".into(),
+                ..Default::default()
+            },
+        );
+        cfg.backends.insert(
+            "local".into(),
+            BackendConfig {
+                backend_type: "local".into(),
+                ..Default::default()
+            },
+        );
         let reg = BackendRegistry::from_config(&cfg, "/tmp");
         // unknown_type 创建失败 → "weird" 未注册 → default 回退 local
         assert_eq!(reg.default_name, "local");
