@@ -1498,28 +1498,37 @@ async fn cmd_run(
     // - Else if a session file already exists for this cwd, reuse its header id
     //   (so we append to the same session instead of inventing a mismatched id).
     // - Else generate a fresh sess_<8-char> id for the new session.
+    //
+    // Session isolation: previously the default branch read the shared
+    // `session.jsonl` header and reused its id, so every run in the same cwd
+    // appended to one ever-growing file (the 93MB incident). Now each run
+    // gets a fresh id and writes its own `<sid>.jsonl`. `--continue`/`--resume`
+    // discover prior sessions by scanning all `*.jsonl` (see find_most_recent_session).
     let owned_sid = if !session_id_in.is_empty() {
         session_id_in.to_string()
     } else {
-        let cwd = std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let existing_path = ion::session_jsonl::session_path(&cwd);
-        std::fs::read_to_string(&existing_path)
-            .ok()
-            .and_then(|c| c.lines().next().map(|s| s.to_string()))
-            .and_then(|h| serde_json::from_str::<serde_json::Value>(&h).ok())
-            .and_then(|v| {
-                v.get("id")
-                    .and_then(|i| i.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string())
-            })
-            .unwrap_or_else(|| format!("sess_{}", &uuid::Uuid::new_v4().to_string()[..8]))
+        format!("sess_{}", &uuid::Uuid::new_v4().to_string()[..8])
     };
     let session_id: &str = &owned_sid;
     // Persist to last_session so --continue / --export can find it later.
     let _ = std::fs::write(ion::session_jsonl::last_session_path(), session_id);
+
+    // Route this run's session storage to a per-run `<sid>.jsonl` file instead
+    // of the shared `session.jsonl`. This mirrors what fork/spawn child workers
+    // already do (ION_FORK_CHILD + set_session_file_override), so the main
+    // session is now physically isolated from other runs in the same cwd.
+    {
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let session_file = ion::paths::session_jsonl_path_by_id(&cwd, session_id);
+        ion::session_jsonl::set_session_file_override(Some(session_file));
+        // ensure_session_header / resolve_session_file honor the override, but
+        // a few code paths key off ION_FORK_CHILD; set it so they all agree.
+        unsafe {
+            std::env::set_var("ION_FORK_CHILD", "1");
+        }
+    }
 
     // Set session header env vars (for save_session to include agent/model in header)
     unsafe {
@@ -5618,7 +5627,8 @@ fn save_session(
         .unwrap_or_default();
 
     // 读已有文件，判断已写入的 message 数量 + 当前 leaf（光标）
-    let path = ion::session_jsonl::session_path(&cwd);
+    // Honor the per-run override (session isolation) if set, else legacy session.jsonl.
+    let path = ion::session_jsonl::resolve_session_file(&cwd);
     let mut existing_entries: Vec<serde_json::Value> = Vec::new();
     let mut header_existed = false;
     if let Ok(content) = std::fs::read_to_string(&path) {
@@ -5778,7 +5788,25 @@ fn load_session(id: &str) -> Option<Vec<ion::agent::messages::Message>> {
         }
     }
 
-    // Strategy 3: Treat id as cwd path (encoded)
+    // Strategy 3: Per-run isolated file sessions/<cwd_dir>/<id>.jsonl.
+    // After session isolation, each run writes its own <sid>.jsonl; scan all
+    // cwd subdirs for an exact filename match. (export.rs uses the same scan.)
+    {
+        let target_name = format!("{id}.jsonl");
+        let sessions_dir = ion::paths::sessions_dir();
+        if let Ok(cwd_dirs) = std::fs::read_dir(&sessions_dir) {
+            for entry in cwd_dirs.flatten() {
+                let candidate = entry.path().join(&target_name);
+                if candidate.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&candidate) {
+                        return parse_jsonl_messages(&content);
+                    }
+                }
+            }
+        }
+    }
+
+    // Strategy 4: Treat id as cwd path (encoded)
     ion::session_jsonl::SessionFile::load(id).map(|f| f.messages)
 }
 
@@ -5945,17 +5973,30 @@ fn find_session_by_prefix(prefix: &str) -> Option<(String, Vec<ion::agent::messa
 
 /// Find the most recent session by scanning sessions directory for latest mtime.
 /// Returns (session_id, messages) for the most recent session.
+///
+/// Scans ALL `*.jsonl` files under each cwd subdir (both legacy `session.jsonl`
+/// and per-run `<sid>.jsonl`), so `--continue` works across the isolation
+/// change: it rediscovers the most recently modified session regardless of
+/// which naming scheme it used.
 fn find_most_recent_session() -> Option<(String, Vec<ion::agent::messages::Message>)> {
     let sessions_dir = ion::paths::sessions_dir();
     let mut candidates: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
 
     if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
         for entry in entries.flatten() {
-            let path = entry.path();
-            let session_file = path.join("session.jsonl");
-            if let Ok(meta) = session_file.metadata() {
-                if let Ok(mtime) = meta.modified() {
-                    candidates.push((session_file, mtime));
+            let cwd_dir = entry.path();
+            if !cwd_dir.is_dir() {
+                continue;
+            }
+            // Scan every .jsonl in this cwd's session dir (session.jsonl + <sid>.jsonl).
+            if let Ok(files) = std::fs::read_dir(&cwd_dir) {
+                for f in files.flatten() {
+                    let fp = f.path();
+                    if fp.extension().is_some_and(|e| e == "jsonl") {
+                        if let Ok(mtime) = fp.metadata().and_then(|m| m.modified()) {
+                            candidates.push((fp, mtime));
+                        }
+                    }
                 }
             }
         }

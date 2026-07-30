@@ -68,6 +68,11 @@ pub struct ModelSelectContext {
 #[derive(Clone, Debug)]
 pub struct SessionContext {
     pub reason: String, // "startup" | "reload" | "new" | "resume" | "fork" | "quit"
+    /// The session id of the session being started/shut down.
+    /// Extensions (e.g. skill distillation) must read the id from here rather
+    /// than from the global `~/.ion/agent/last_session` file, which races under
+    /// concurrent sessions.
+    pub session_id: Option<String>,
 }
 
 /// Context for session_before_switch / session_before_fork hooks.

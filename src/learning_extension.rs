@@ -207,7 +207,7 @@ impl Extension for LearningExtension {
     ///   4. All errors are logged inside the spawned task; we always return Ok here
     ///
     /// Memory extraction is handled separately by MemoryExtension::on_session_shutdown.
-    async fn on_session_shutdown(&self, _ctx: &SessionContext) -> AgentResult<()> {
+    async fn on_session_shutdown(&self, ctx: &SessionContext) -> AgentResult<()> {
         tracing::info!("[learning] session shutdown, evaluating for skill distillation");
 
         let registry = match self.registry.clone() {
@@ -225,18 +225,15 @@ impl Extension for LearningExtension {
             }
         };
 
-        // Read session_id from disk (SessionContext doesn't carry it)
-        let session_id = match std::fs::read_to_string(crate::paths::last_session_path()) {
-            Ok(s) => s.trim().to_string(),
-            Err(e) => {
-                tracing::warn!("[learning] cannot read last_session: {e}");
+        // Read session_id from the context (NOT the global last_session file,
+        // which races under concurrent sessions and can distill the wrong one).
+        let session_id = match &ctx.session_id {
+            Some(s) if !s.is_empty() => s.clone(),
+            _ => {
+                tracing::info!("[learning] no session_id in context, skipping skill distillation");
                 return Ok(());
             }
         };
-        if session_id.is_empty() {
-            tracing::info!("[learning] empty last_session, skipping skill distillation");
-            return Ok(());
-        }
 
         // Derive project_name from CWD basename (best-effort)
         let project_name = std::env::current_dir()

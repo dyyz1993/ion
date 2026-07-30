@@ -680,6 +680,7 @@ impl Agent {
         self.extensions
             .on_session_start(&super::extension::SessionContext {
                 reason: "startup".into(),
+                session_id: self.session_id.clone(),
             })
             .await?;
 
@@ -746,6 +747,7 @@ impl Agent {
         self.extensions
             .on_session_shutdown(&super::extension::SessionContext {
                 reason: "quit".into(),
+                session_id: self.session_id.clone(),
             })
             .await?;
         result
