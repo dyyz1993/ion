@@ -107,7 +107,7 @@ if [ "$(uname)" != "Darwin" ]; then
 fi
 
 # CIs that need long-running serve — run serially (resource contention)
-SERIAL_LIST="monitor_ci mcp_ci faux_scenarios_ci rollback_impact_ci permission_ci realtime_stitch_ci session_hook_ci abort_ci"
+SERIAL_LIST="message_source_ci monitor_ci mcp_ci faux_scenarios_ci rollback_impact_ci permission_ci realtime_stitch_ci session_hook_ci abort_ci"
 
 FILTERED=""
 SKIPPED=""
