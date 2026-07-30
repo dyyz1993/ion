@@ -1,6 +1,6 @@
 # 缺失 Provider 协议 规划文档
 
-> **状态：开发中** — pi 支持 9 种 API 协议，ION 实现 5 种（mistral-conversations 已完成）。本文档规划剩余 4 种的补齐方案。
+> **状态：开发中** — pi 支持 9 种 API 协议，ION 实现 6 种（mistral-conversations + bedrock-converse-stream 已完成，含 SigV4 签名）。本文档规划剩余 3 种的补齐方案。
 >
 > 对标 pi 的 `packages/ai/src/providers/`。
 
@@ -36,7 +36,7 @@
 | `azure-openai-responses` | Azure 部署的 OpenAI Responses API | 🔴 | Azure endpoint + key |
 | `openai-codex-responses` | OpenAI Codex 专用（gpt-5.5-codex） | 🔴 | OpenAI Codex key |
 | `google-vertex` | Google Vertex AI（区别于 Generative AI） | 🟡 | GCP service account |
-| `bedrock-converse-stream` | Amazon Bedrock（Claude / Llama 等） | 🔴 | AWS credentials |
+| `bedrock-converse-stream` | Amazon Bedrock（Claude / Llama 等） | ✅ | AWS credentials（SigV4 已实现） |
 
 ## 2. 每个协议的实现规划
 
@@ -152,7 +152,7 @@ cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture mistral
 
 **估计**：~300 行（JWT 认证是主要工作量）
 
-### 2.5 `bedrock-converse-stream`
+### 2.5 `bedrock-converse-stream` ✅ 已实现
 
 **Amazon Bedrock Converse API** — AWS 的多模型 API。
 
@@ -163,13 +163,13 @@ cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture mistral
 - 流式：event stream（AWS EventStream 编码，不是 SSE）
 - 支持 Anthropic / Meta / Mistral / Amazon 等多家模型
 
-**实现文件**：`ion-provider/src/provider/bedrock.rs`（新建）
+**实现文件**：`ion-provider/src/provider/bedrock.rs`（~1400 行，已实现）
 
-**参照**：无（格式完全独立，是最复杂的实现）
+**SigV4 签名**：用 `sha2` + `hmac` + `hex` crate 实现完整签名链（`signing_key` / `canonical_request` / `string_to_sign` / `signature` / `authorization_header`）。签名 key 用 AWS 官方文档测试向量验证（`sigv4_signing_key_matches_aws_example`）。
 
-**额外依赖**：AWS SigV4 签名库（或手写）+ EventStream 解析
+**额外依赖**：`sha2` 0.10 + `hmac` 0.12 + `hex` 0.4
 
-**估计**：~400 行（SigV4 + EventStream 是主要工作量）
+**验证**：24 个 ion-provider lib 测试通过（含 6 个 SigV4 单元测试 + AWS 官方向量）。真实 Bedrock API 调用需配 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` 环境变量。
 
 ## 3. 注册 + models.json 配置
 

@@ -37,6 +37,180 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+// ───────────────────────────────────────────────────────────────────────────
+// AWS Signature V4 (SigV4) signing
+// ───────────────────────────────────────────────────────────────────────────
+// Pure functions so the signing chain is unit-testable with AWS's published
+// test vectors (no network, no AWS credentials needed).
+//
+// Reference: https://docs.aws.amazon.com/general/latest/gr/sigv4-create-canonical-request.html
+
+mod sigv4 {
+    use hmac::{Hmac, Mac};
+    use sha2::{Digest, Sha256};
+
+    type HmacSha256 = Hmac<Sha256>;
+
+    /// SHA-256 hex digest of `data`.
+    pub fn sha256_hex(data: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        hex::encode(hasher.finalize())
+    }
+
+    /// HMAC-SHA256(key, data) → raw bytes.
+    fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
+        let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
+        mac.update(data);
+        mac.finalize().into_bytes().to_vec()
+    }
+
+    /// Derive the SigV4 signing key:
+    ///   kDate    = HMAC("AWS4" + secret, date)
+    ///   kRegion  = HMAC(kDate, region)
+    ///   kService = HMAC(kRegion, service)
+    ///   kSigning = HMAC(kService, "aws4_request")
+    pub fn signing_key(secret: &str, date: &str, region: &str, service: &str) -> Vec<u8> {
+        let k_date = hmac(format!("AWS4{secret}").as_bytes(), date.as_bytes());
+        let k_region = hmac(&k_date, region.as_bytes());
+        let k_service = hmac(&k_region, service.as_bytes());
+        hmac(&k_service, b"aws4_request")
+    }
+
+    /// Build the canonical request string.
+    ///   method\nuri\nquery\nsigned_headers_string\nsigned_header_names\nhashed_payload
+    pub fn canonical_request(
+        method: &str,
+        canonical_uri: &str,
+        canonical_query: &str,
+        canonical_headers: &str,
+        signed_headers: &str,
+        payload_hash: &str,
+    ) -> String {
+        format!(
+            "{method}\n{canonical_uri}\n{canonical_query}\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
+        )
+    }
+
+    /// Build the string-to-sign:
+    ///   AWS4-HMAC-SHA256\ntimestamp\nscope\nhash(canonical_request)
+    pub fn string_to_sign(timestamp: &str, scope: &str, canonical_request: &str) -> String {
+        format!(
+            "AWS4-HMAC-SHA256\n{timestamp}\n{scope}\n{}",
+            sha256_hex(canonical_request.as_bytes())
+        )
+    }
+
+    /// Compute the final hex signature.
+    pub fn signature(signing_key: &[u8], string_to_sign: &str) -> String {
+        hex::encode(hmac(signing_key, string_to_sign.as_bytes()))
+    }
+
+    /// Build the Authorization header value.
+    pub fn authorization_header(
+        access_key_id: &str,
+        scope: &str,
+        signed_headers: &str,
+        signature: &str,
+    ) -> String {
+        format!(
+            "AWS4-HMAC-SHA256 Credential={access_key_id}/{scope}, SignedHeaders={signed_headers}, Signature={signature}"
+        )
+    }
+}
+
+/// Signed Bedrock request headers (the three headers SigV4 adds).
+struct Sigv4Headers {
+    authorization: String,
+    amz_date: String,
+    content_sha256: String,
+}
+
+/// Compute SigV4 headers for a Bedrock Converse request.
+/// `host` is the Host header value (e.g. bedrock-runtime.us-east-1.amazonaws.com).
+/// `uri` is the path (e.g. /model/claude.../converse-stream).
+#[allow(clippy::too_many_arguments)] // SigV4 inherently needs all 8 inputs
+fn sign_bedrock_request(
+    access_key_id: &str,
+    secret_access_key: &str,
+    region: &str,
+    host: &str,
+    uri: &str,
+    body: &[u8],
+    amz_date: &str,   // yyyyMMdd'T'HHmmss'Z'
+    date_stamp: &str, // yyyyMMdd
+) -> Sigv4Headers {
+    let payload_hash = sigv4::sha256_hex(body);
+    let service = "bedrock";
+    let scope = format!("{date_stamp}/{region}/{service}/aws4_request");
+
+    // Canonical headers (must be sorted by header name, lowercase, trimmed,
+    // each followed by \n). For Bedrock we sign: host, x-amz-content-sha256,
+    // x-amz-date.
+    let canonical_headers =
+        format!("host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n");
+    let signed_headers = "host;x-amz-content-sha256;x-amz-date";
+
+    let canon = sigv4::canonical_request(
+        "POST",
+        uri,
+        "", // no query string for converse-stream
+        &canonical_headers,
+        signed_headers,
+        &payload_hash,
+    );
+    let sts = sigv4::string_to_sign(amz_date, &scope, &canon);
+    let k_signing = sigv4::signing_key(secret_access_key, date_stamp, region, service);
+    let sig = sigv4::signature(&k_signing, &sts);
+    let auth = sigv4::authorization_header(access_key_id, &scope, signed_headers, &sig);
+
+    Sigv4Headers {
+        authorization: auth,
+        amz_date: amz_date.to_string(),
+        content_sha256: payload_hash,
+    }
+}
+
+/// Split a `https://host/path...` URL into (host, path). path includes the
+/// leading `/`. Query strings are not produced by build_bedrock_url, so we
+/// don't parse them here.
+fn parse_host_and_path(url: &str) -> (String, String) {
+    let after_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    if let Some(slash) = after_scheme.find('/') {
+        let (host, path) = after_scheme.split_at(slash);
+        (host.to_string(), path.to_string())
+    } else {
+        (after_scheme.to_string(), "/".to_string())
+    }
+}
+
+/// Break a Unix timestamp into UTC (year, month, day, hour, minute, second).
+/// Minimal civil-calendar conversion (Howard Hinnant's algorithm) — avoids
+/// pulling in chrono/time just for date formatting.
+fn utc_components(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
+    let days = (secs / 86400) as i64;
+    let rem = (secs % 86400) as u32;
+    let h = rem / 3600;
+    let mi = (rem % 3600) / 60;
+    let s = rem % 60;
+
+    // Days since 1970-01-01 → civil date (Hinnant's days_from_civil inverse).
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let year = if m <= 2 { y + 1 } else { y };
+    (year as u32, m, d, h, mi, s)
+}
+
 /// AWS Bedrock Converse Stream provider.
 ///
 /// Registry name: `bedrock-converse-stream`.
@@ -74,6 +248,7 @@ impl BedrockConverseProvider {
         let _secret_access_key = std::env::var("AWS_SECRET_ACCESS_KEY")
             .or_else(|_| std::env::var("AWS_SECRET_KEY"))
             .map_err(|_| ProviderError::MissingApiKey("AWS_SECRET_ACCESS_KEY".into()))?;
+        let secret_access_key = _secret_access_key; // now used by the signer
         let region = std::env::var("AWS_REGION")
             .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
             .unwrap_or_else(|_| "us-east-1".to_string());
@@ -91,38 +266,39 @@ impl BedrockConverseProvider {
             .map_err(|e| ProviderError::Provider(e.to_string()))?;
 
         // --- SigV4 signing ------------------------------------------------
-        // TODO: implement AWS Signature V4.
-        //
-        // Overview of the algorithm (RFC-ish):
-        //   1. Build the canonical request:
-        //        HTTPMethod\nCanonicalURI\nCanonicalQueryString\nCanonicalHeaders\nSignedHeaders\nHashedPayload
-        //   2. Build the string-to-sign:
-        //        AWS4-HMAC-SHA256\nTimeStamp\nScope\nHash(CanonicalRequest)
-        //      where Scope = "{date}/{region}/bedrock/aws4_request"
-        //   3. Derive the signing key:
-        //        kDate    = HMAC-SHA256("AWS4" + secret, date)
-        //        kRegion  = HMAC-SHA256(kDate, region)
-        //        kService = HMAC-SHA256(kRegion, "bedrock")
-        //        kSigning = HMAC-SHA256(kService, "aws4_request")
-        //   4. Compute the signature:
-        //        signature = HEX(HMAC-SHA256(kSigning, stringToSign))
-        //   5. Add headers:
-        //        Authorization: AWS4-HMAC-SHA256 Credential={key}/{scope}, SignedHeaders=..., Signature=...
-        //        x-amz-date: {timestamp}
-        //        x-amz-content-sha256: {hashed body}
-        //
-        // Required crates: `sha2` (SHA-256) + `hmac` (HMAC-SHA256) + `hex`,
-        // or alternatively `ring::hmac` + `ring::digest`. Neither is a direct
-        // dependency today; add them to Cargo.toml to complete this.
-        //
-        // Until then, we send the request unsigned (which Bedrock will reject
-        // with 403) but the request body + response parsing are fully functional.
-        let _ = &access_key_id; // used by future signer
+        // Parse the URL into host + path (the signer needs them for the
+        // canonical request). reqwest/Url isn't a dep here, so split manually
+        // (build_bedrock_url always produces https://host/path).
+        let (host, uri) = parse_host_and_path(&url);
+
+        // SigV4 timestamps: amz_date = yyyyMMdd'T'HHmmss'Z', date_stamp = yyyyMMdd.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let secs = now.as_secs();
+        let (y, mo, d, h, mi, s) = utc_components(secs);
+        let amz_date = format!("{y:04}{mo:02}{d:02}T{h:02}{mi:02}{s:02}Z");
+        let date_stamp = format!("{y:04}{mo:02}{d:02}");
+
+        let signed = sign_bedrock_request(
+            &access_key_id,
+            &secret_access_key,
+            &region,
+            &host,
+            &uri,
+            body_json.as_bytes(),
+            &amz_date,
+            &date_stamp,
+        );
 
         let mut req = client
             .post(&url)
             .header("content-type", "application/json")
             .header("accept", "text/event-stream")
+            .header("host", &host)
+            .header("x-amz-date", &signed.amz_date)
+            .header("x-amz-content-sha256", &signed.content_sha256)
+            .header("authorization", &signed.authorization)
             .body(body_json);
 
         // Apply model-level custom headers (same pattern as other providers).
@@ -1207,5 +1383,124 @@ mod tests {
     fn json_repair_empty() {
         let v = parse_json_repair("");
         assert_eq!(v, serde_json::json!({}));
+    }
+
+    // ── SigV4 signing (verified against AWS's published test vectors) ──
+    //
+    // AWS publishes a worked example in the Signature V4 reference docs:
+    //   secret        = wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY
+    //   date_stamp    = 20150830
+    //   region        = us-east-1
+    //   service       = iam
+    //   signing key   = c4afb1cc5771d871763a393e44b703571b55cc28424d1a5e86da6ed3c154a4b9
+    //
+    // We validate our signing_key() against that known output.
+
+    #[test]
+    fn sigv4_signing_key_matches_aws_example() {
+        let key = sigv4::signing_key(
+            "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+            "20150830",
+            "us-east-1",
+            "iam",
+        );
+        let expected = "c4afb1cc5771d871763a393e44b703571b55cc28424d1a5e86da6ed3c154a4b9";
+        assert_eq!(
+            hex::encode(&key),
+            expected,
+            "signing key must match AWS doc"
+        );
+    }
+
+    #[test]
+    fn sigv4_sha256_hex_known_vector() {
+        // SHA-256("") = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+        assert_eq!(
+            sigv4::sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        // SHA-256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+        assert_eq!(
+            sigv4::sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn sigv4_authorization_header_format() {
+        let auth = sigv4::authorization_header(
+            "AKIDEXAMPLE",
+            "20150830/us-east-1/iam/aws4_request",
+            "content-type;host;x-amz-date",
+            "f4780e2d9f65fa895f9c67b32ce1baf09809a4fda92ecac86f9e2bb5b5b5e4a1",
+        );
+        assert_eq!(
+            auth,
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/iam/aws4_request, \
+             SignedHeaders=content-type;host;x-amz-date, \
+             Signature=f4780e2d9f65fa895f9c67b32ce1baf09809a4fda92ecac86f9e2bb5b5b5e4a1"
+        );
+    }
+
+    #[test]
+    fn sign_bedrock_request_produces_consistent_headers() {
+        // End-to-end: sign a fake Bedrock request and check the three headers
+        // are well-formed (we can't check the exact signature without a known
+        // Bedrock vector, but we assert structure + that the payload hash is
+        // the SHA-256 of the body).
+        let body = br#"{"hello":"world"}"#;
+        let signed = sign_bedrock_request(
+            "AKIDTEST",
+            "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+            "us-west-2",
+            "bedrock-runtime.us-west-2.amazonaws.com",
+            "/model/anthropic.claude-3/converse-stream",
+            body,
+            "20240101T120000Z",
+            "20240101",
+        );
+        // payload hash matches body
+        assert_eq!(signed.content_sha256, sigv4::sha256_hex(body));
+        // amz_date passed through
+        assert_eq!(signed.amz_date, "20240101T120000Z");
+        // Authorization header has the right shape
+        assert!(
+            signed
+                .authorization
+                .starts_with("AWS4-HMAC-SHA256 Credential=AKIDTEST/")
+        );
+        assert!(
+            signed
+                .authorization
+                .contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date")
+        );
+        assert!(signed.authorization.contains("Signature="));
+        // signature is 64 hex chars
+        let sig = signed.authorization.rsplit("Signature=").next().unwrap();
+        assert_eq!(sig.len(), 64, "signature must be 64 hex chars");
+        assert!(sig.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn parse_host_and_path_splits_url() {
+        let (host, path) = parse_host_and_path(
+            "https://bedrock-runtime.us-east-1.amazonaws.com/model/foo/converse-stream",
+        );
+        assert_eq!(host, "bedrock-runtime.us-east-1.amazonaws.com");
+        assert_eq!(path, "/model/foo/converse-stream");
+
+        let (host2, path2) = parse_host_and_path("https://example.com/");
+        assert_eq!(host2, "example.com");
+        assert_eq!(path2, "/");
+    }
+
+    #[test]
+    fn utc_components_known_date() {
+        // 2024-01-01 00:00:00 UTC = 1704067200
+        let (y, mo, d, h, mi, s) = utc_components(1704067200);
+        assert_eq!((y, mo, d, h, mi, s), (2024, 1, 1, 0, 0, 0));
+        // 2024-12-31 23:59:59 UTC = 1735689599
+        let (y2, mo2, d2, h2, mi2, s2) = utc_components(1735689599);
+        assert_eq!((y2, mo2, d2, h2, mi2, s2), (2024, 12, 31, 23, 59, 59));
     }
 }
