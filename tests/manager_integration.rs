@@ -34,6 +34,14 @@ fn create_registry() -> Arc<Mutex<WorkerRegistry>> {
     )))
 }
 
+/// Like create_registry but also wires self_ref (needed for send_to_session
+/// auto-start tests). Must be awaited-locked from a tokio context.
+async fn create_registry_with_self_ref() -> Arc<Mutex<WorkerRegistry>> {
+    let arc = create_registry();
+    arc.lock().await.set_self_ref(&arc);
+    arc
+}
+
 // ---------------------------------------------------------------------------
 // I1: Manager 启动 (0 Worker)
 // ---------------------------------------------------------------------------
@@ -1101,21 +1109,25 @@ async fn i18_multi_channel() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "send_to_session auto-start not implemented"]
 async fn i19_session_auto_start() {
-    let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let registry = create_registry_with_self_ref().await;
 
-    // Send to a non-existent session — should auto-start
-    let resp = reg
-        .send_to_session("i19-auto-session", "get_state", serde_json::Value::Null)
-        .await
-        .expect("send_to_session should auto-start worker");
+    // Send to a non-existent session — should auto-start (associated fn locks internally)
+    let resp = WorkerRegistry::send_to_session(
+        &registry,
+        "i19-auto-session",
+        "get_state",
+        serde_json::Value::Null,
+    )
+    .await
+    .expect("send_to_session should auto-start worker");
 
     assert_eq!(resp["success"], true, "auto-started worker should respond");
 
-    // Verify worker was created for this session — clone the ID before mutable use
-    let auto_worker_id = reg
+    // Verify worker was created for this session
+    let auto_worker_id = registry
+        .lock()
+        .await
         .find_by_session("i19-auto-session")
         .map(|w| w.worker_id.clone());
     assert!(
@@ -1124,10 +1136,14 @@ async fn i19_session_auto_start() {
     );
 
     // Send again — should reuse existing worker
-    let resp2 = reg
-        .send_to_session("i19-auto-session", "get_state", serde_json::Value::Null)
-        .await
-        .expect("second send should reuse existing");
+    let resp2 = WorkerRegistry::send_to_session(
+        &registry,
+        "i19-auto-session",
+        "get_state",
+        serde_json::Value::Null,
+    )
+    .await
+    .expect("second send should reuse existing");
 
     assert_eq!(resp2["success"], true);
     assert_eq!(
@@ -1137,7 +1153,7 @@ async fn i19_session_auto_start() {
 
     // Cleanup: kill the auto-started worker
     if let Some(wid) = auto_worker_id {
-        let _ = reg.kill_worker(&wid);
+        let _ = registry.lock().await.kill_worker(&wid);
     }
 }
 
@@ -1146,37 +1162,38 @@ async fn i19_session_auto_start() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "send_to_session auto-start not implemented"]
 async fn i20_session_lookup_auto_start() {
-    let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let registry = create_registry_with_self_ref().await;
 
     // Initially no worker for this session
     {
+        let reg = registry.lock().await;
         let not_found = reg.find_by_session("i20-new-session");
         assert!(not_found.is_none(), "should not exist before creation");
     }
 
-    // Create worker via send_to_session (auto-start)
-    let resp = reg
-        .send_to_session(
-            "i20-new-session",
-            "get_session_stats",
-            serde_json::Value::Null,
-        )
-        .await
-        .expect("auto-start should work");
+    // Create worker via send_to_session (auto-start) — associated fn locks internally
+    let resp = WorkerRegistry::send_to_session(
+        &registry,
+        "i20-new-session",
+        "get_session_stats",
+        serde_json::Value::Null,
+    )
+    .await
+    .expect("auto-start should work");
     assert_eq!(resp["success"], true);
 
-    // Now it should exist — clone the ID before mutable use
-    let auto_id = reg
+    // Now it should exist
+    let auto_id = registry
+        .lock()
+        .await
         .find_by_session("i20-new-session")
         .map(|w| w.worker_id.clone());
     assert!(auto_id.is_some(), "worker should exist after auto-start");
 
     // Cleanup
     if let Some(wid) = auto_id {
-        let _ = reg.kill_worker(&wid);
+        let _ = registry.lock().await.kill_worker(&wid);
     }
 }
 
