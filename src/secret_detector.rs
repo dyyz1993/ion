@@ -264,6 +264,80 @@ fn scan_known_prefixes(text: &str) -> Vec<(String, String)> {
         }
     }
 
+    // JWT (eyJ prefix — three base64 segments separated by dots, no spaces)
+    for pos in lower.match_indices("eyj") {
+        let start = pos.0;
+        // Capture until whitespace or end of string
+        let candidate: String = text[start..].chars()
+            .take_while(|c| !c.is_whitespace())
+            .collect();
+        if candidate.len() >= 20 {
+            results.push((candidate, "JWT".into()));
+        }
+    }
+
+    // Bearer token (Bearer <token>)
+    for pos in lower.match_indices("bearer ") {
+        let start = pos.0 + 7; // skip past "bearer "
+        if start >= text.len() {
+            continue;
+        }
+        let candidate: String = text[start..].chars()
+            .take_while(|c| !c.is_whitespace())
+            .collect();
+        if candidate.len() >= 10 {
+            results.push((candidate, "BEARER_TOKEN".into()));
+        }
+    }
+
+    // Database connection strings (postgres:// mysql:// mongodb:// redis://)
+    for scheme in &["postgres://", "mysql://", "mongodb://", "redis://"] {
+        for pos in lower.match_indices(scheme) {
+            let start = pos.0;
+            let candidate: String = text[start..].chars()
+                .take_while(|c| !c.is_whitespace())
+                .collect();
+            if candidate.len() > scheme.len() {
+                results.push((candidate, "DB_CONNECTION".into()));
+            }
+        }
+    }
+
+    // AWS Secret Access Key (aws_secret_access_key=<40-char value>)
+    for pos in lower.match_indices("aws_secret_access_key") {
+        let kw_len = "aws_secret_access_key".len();
+        let after = pos.0 + kw_len;
+        if after >= text.len() {
+            continue;
+        }
+        // Find separator '=' or ':'
+        let rest = &text[after..];
+        if let Some(sep_rel) = rest.find(|c| c == '=' || c == ':') {
+            let val_start = after + sep_rel + 1;
+            if val_start >= text.len() {
+                continue;
+            }
+            // Skip whitespace and quotes
+            let val_text = &text[val_start..];
+            let skip = val_text.char_indices()
+                .skip_while(|(_, c)| c.is_whitespace() || *c == '"' || *c == '\'')
+                .map(|(i, _)| i)
+                .next()
+                .unwrap_or(0);
+            let val_start = val_start + skip;
+            if val_start >= text.len() {
+                continue;
+            }
+            // Take 40-char value
+            let candidate: String = text[val_start..].chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '/' || *c == '+' || *c == '=')
+                .collect();
+            if candidate.len() >= 20 {
+                results.push((candidate, "AWS_SECRET_KEY".into()));
+            }
+        }
+    }
+
     results
 }
 
@@ -383,5 +457,69 @@ mod tests {
     fn test_pem_key_detection() {
         let secrets = detect_secrets("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...");
         assert!(secrets.iter().any(|s| s.secret_type == "PEM_KEY"), "expected PEM_KEY in {:?}", secrets);
+    }
+
+    #[test]
+    fn test_detect_jwt() {
+        // JWTs begin with eyJ and contain three base64 segments separated by dots
+        let input = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+        let secrets = detect_secrets(input);
+        assert!(secrets.iter().any(|s| s.secret_type == "JWT"), "expected JWT in {:?}", secrets);
+    }
+
+    #[test]
+    fn test_detect_bearer_token() {
+        // Bearer token value follows the "Bearer " prefix
+        let input = "Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789";
+        let secrets = detect_secrets(input);
+        assert!(secrets.iter().any(|s| s.secret_type == "BEARER_TOKEN"), "expected BEARER_TOKEN in {:?}", secrets);
+    }
+
+    #[test]
+    fn test_detect_db_connection() {
+        // Connection string with embedded credentials
+        let input = "postgres://myuser:mypassword123@db.example.com:5432/mydb";
+        let secrets = detect_secrets(input);
+        assert!(secrets.iter().any(|s| s.secret_type == "DB_CONNECTION"), "expected DB_CONNECTION in {:?}", secrets);
+    }
+
+    #[test]
+    fn test_detect_aws_secret_key() {
+        // AWS secret key assigned via env-style syntax
+        let input = "aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        let secrets = detect_secrets(input);
+        assert!(secrets.iter().any(|s| s.secret_type == "AWS_SECRET_KEY"), "expected AWS_SECRET_KEY in {:?}", secrets);
+    }
+
+    #[test]
+    fn test_detect_gitlab_token() {
+        // GitLab personal access token with glpat- prefix
+        let token = format!("glpat-{}", "a".repeat(20));
+        let secrets = detect_secrets(&token);
+        assert!(secrets.iter().any(|s| s.secret_type == "GITLAB_TOKEN"), "expected GITLAB_TOKEN in {:?}", secrets);
+    }
+
+    #[test]
+    fn test_detect_slack_token() {
+        // Slack bot token with xoxb- prefix
+        let secrets = detect_secrets("xoxb-1234567890-abcdefghij");
+        assert!(secrets.iter().any(|s| s.secret_type == "SLACK_TOKEN"), "expected SLACK_TOKEN in {:?}", secrets);
+    }
+
+    #[test]
+    fn test_detect_google_api_key() {
+        // Google API key with AIza prefix (39 chars total)
+        let key = format!("AIza{}", "a".repeat(35));
+        let secrets = detect_secrets(&key);
+        assert!(secrets.iter().any(|s| s.secret_type == "GOOGLE_KEY"), "expected GOOGLE_KEY in {:?}", secrets);
+    }
+
+    #[test]
+    fn test_detect_multiple_secrets() {
+        // Multiple secret types in a single input string
+        let input = "Found AWS key AKIAIOSFODNN7EXAMPLE and OpenAI key sk-proj-abcdef1234567890abcdefghij";
+        let secrets = detect_secrets(input);
+        assert!(secrets.iter().any(|s| s.secret_type == "AWS_ACCESS_KEY"), "expected AWS_ACCESS_KEY");
+        assert!(secrets.iter().any(|s| s.secret_type == "OPENAI_KEY"), "expected OPENAI_KEY");
     }
 }
