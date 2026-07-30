@@ -36,7 +36,7 @@
 |------|------|
 | `src/bin/ion.rs` `cmd_run` | 无 session_id 时生成新 `sess_<uuid8>`（不再复用 `session.jsonl` header id）；设 `set_session_file_override` + `ION_FORK_CHILD=1` 让所有 session IO 走 `<sid>.jsonl` |
 | `src/bin/ion.rs` `save_session` | 读写用 `resolve_session_file`（honors override）而非写死 `session_path` |
-| `src/bin/ion.rs` `find_most_recent_session` | 扫每个 cwd 目录的**所有 `*.jsonl`**（含旧 `session.jsonl` + 新 `<sid>.jsonl`），向后兼容 |
+| `src/bin/ion.rs` `find_most_recent_session` | 扫每个 cwd 目录的**所有 `*.jsonl`**（按后缀过滤，比硬编码文件名健壮） |
 | `src/bin/ion.rs` `load_session` | 新增 Strategy 3：扫 cwd 目录精确匹配 `<id>.jsonl`，让 `--resume <id>` 能找到隔离文件 |
 | `src/session_jsonl.rs` `ensure_session_header` | 用 `resolve_session_file`（受 override 影响），header 写进正确文件 |
 | `src/agent/tool.rs` `get_messages` | 读 session 走 `resolve_session_file` |
@@ -111,11 +111,14 @@
 
 ---
 
-## 5. 向后兼容
+## 5. 项目状态：未上线，无需兼容旧数据
 
-- **旧 `session.jsonl` 文件**：不主动迁移。`--continue` 扫描已放宽到 `*.jsonl`，旧文件自然能被发现；GC 会按 30 天规则慢慢清理。
-- **`--continue` / `--resume`**：完全兼容。`find_most_recent_session` 扫所有 `.jsonl`（旧 + 新），`load_session` 新增按 `<id>.jsonl` 精确匹配。
-- **config.json**：`SessionConfig` 全字段 `#[serde(default)]`，现有配置文件不用改。
+> AGENTS.md 明确规定：本项目未上线，所有数据格式 breaking change 可直接做，不需要写迁移逻辑。旧 session 文件（包括之前那个 93MB 的）可直接 `rm -rf ~/.ion/agent/sessions/` 清理。
+
+- **旧 `session.jsonl` 文件**：无需兼容。`find_most_recent_session` 扫所有 `*.jsonl` 是正确做法（按后缀过滤比硬编码文件名健壮），不是为了兼容旧文件。开发产生的旧 session 直接清即可。
+- **`--continue` / `--resume`**：多 strategy 查找是正常的兜底逻辑（session 可能存在不同位置），不是兼容层。
+- **config.json**：`SessionConfig` 全字段 `#[serde(default)]` 是 serde 标准实践，不是兼容性妥协。
+- **Session GC**：开发期可直接 `rm -rf ~/.ion/agent/sessions/`；GC 是上线后才需要的自动清理。
 
 ---
 

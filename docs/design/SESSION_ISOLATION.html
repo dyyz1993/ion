@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ION 会话隔离与 Session GC</title>
+<style>
+  :root {
+    --bg: #fafafa;
+    --bg-code: #1e1e2e;
+    --fg: #1a1a1a;
+    --fg-muted: #6b6b6b;
+    --fg-code: #cdd6f4;
+    --fg-code-dim: #7f849c;
+    --accent: #4a6cf7;
+    --accent-soft: #eef2ff;
+    --green: #40a02b;
+    --red: #d20f39;
+    --orange: #fe640b;
+    --border: #e4e4e7;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Microsoft YaHei", sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+  header.hero {
+    background: linear-gradient(135deg, #1e1e2e 0%, #181825 100%);
+    color: #cdd6f4;
+    padding: 44px 32px 36px;
+    border-bottom: 3px solid var(--accent);
+  }
+  header.hero h1 { margin: 0 0 8px; font-size: 28px; font-weight: 700; }
+  header.hero .subtitle { color: #a6adc8; font-size: 15px; margin: 0; }
+  header.hero .meta { margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap; }
+  header.hero .badge {
+    background: rgba(205,214,244,0.12);
+    border: 1px solid rgba(205,214,244,0.25);
+    padding: 3px 10px; border-radius: 12px; font-size: 12px;
+    font-family: "SF Mono", Consolas, monospace;
+  }
+  nav.toc {
+    position: sticky; top: 0; z-index: 10;
+    background: #fff; border-bottom: 1px solid var(--border);
+    padding: 10px 32px; display: flex; gap: 4px; flex-wrap: wrap;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  nav.toc a {
+    color: var(--fg-muted); text-decoration: none; font-size: 13px;
+    padding: 4px 10px; border-radius: 6px; transition: all 0.15s; white-space: nowrap;
+  }
+  nav.toc a:hover { background: var(--accent-soft); color: var(--accent); }
+  main { max-width: 1180px; margin: 0 auto; padding: 32px; }
+  section { margin-bottom: 48px; scroll-margin-top: 60px; }
+  h2 {
+    font-size: 22px; margin: 0 0 16px; padding-bottom: 8px;
+    border-bottom: 2px solid var(--accent);
+  }
+  h3 { font-size: 17px; margin: 28px 0 12px; color: var(--accent); }
+  h4 { font-size: 15px; margin: 20px 0 8px; }
+  p { margin: 10px 0; }
+  ul, ol { padding-left: 24px; }
+  li { margin: 4px 0; }
+  code {
+    font-family: "SF Mono", "JetBrains Mono", Consolas, monospace;
+    background: #f1f1f4; color: #d20f39;
+    padding: 1px 6px; border-radius: 4px; font-size: 13px;
+  }
+  pre {
+    background: var(--bg-code); color: var(--fg-code);
+    font-family: "SF Mono", "JetBrains Mono", Consolas, monospace;
+    font-size: 12.5px; line-height: 1.55;
+    padding: 18px 20px; border-radius: 10px; overflow-x: auto;
+    margin: 16px 0; box-shadow: 0 4px 12px rgba(30,30,46,0.15);
+    white-space: pre;
+  }
+  .table-wrap { overflow-x: auto; margin: 16px 0; }
+  table {
+    border-collapse: collapse; width: 100%; background: #fff;
+    border-radius: 8px; overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); font-size: 14px;
+  }
+  th { background: #f4f4f8; text-align: left; padding: 10px 14px;
+       font-weight: 600; border-bottom: 2px solid var(--border); }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr:nth-child(even) td { background: #fafafe; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .verdict {
+    display: inline-block; padding: 1px 8px; border-radius: 10px;
+    font-size: 12px; font-weight: 600;
+  }
+  .v-ok { background: #e6f4ea; color: var(--green); }
+  .v-warn { background: #fff4e6; color: var(--orange); }
+  .v-bad { background: #fce8ec; color: var(--red); }
+  blockquote {
+    margin: 16px 0; padding: 12px 16px; background: var(--accent-soft);
+    border-left: 4px solid var(--accent); border-radius: 0 6px 6px 0;
+  }
+  .pr-card {
+    border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px;
+    margin: 12px 0; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+  .pr-card .pr-title { font-weight: 600; color: var(--accent); margin-bottom: 6px; }
+  .pr-card .pr-num { font-family: monospace; color: var(--fg-muted); font-size: 13px; }
+  footer {
+    text-align: center; color: var(--fg-muted); font-size: 13px;
+    padding: 32px; border-top: 1px solid var(--border); margin-top: 32px;
+  }
+  #top-btn {
+    position: fixed; bottom: 28px; right: 28px;
+    width: 42px; height: 42px; border-radius: 50%;
+    background: var(--accent); color: white; border: none;
+    font-size: 20px; cursor: pointer; opacity: 0; pointer-events: none;
+    transition: opacity 0.2s; box-shadow: 0 4px 12px rgba(74,108,247,0.4);
+    z-index: 100;
+  }
+  #top-btn.show { opacity: 1; pointer-events: auto; }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>ION 会话隔离与 Session GC</h1>
+  <p class="subtitle">主会话默认 <code>&lt;sid&gt;.jsonl</code> 隔离 · 启动时 GC 清理 · distillation 并发修复</p>
+  <div class="meta">
+    <span class="badge">状态：已验证</span>
+    <span class="badge">PR #35 + #36 + #37 + #38</span>
+    <span class="badge">965 lib tests</span>
+    <span class="badge">coordinator 验证 6/6 PASS</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <a href="#sec-1">解决什么</a>
+  <a href="#sec-2">改造前 vs 后</a>
+  <a href="#sec-3">隔离方案</a>
+  <a href="#sec-4">Session GC</a>
+  <a href="#sec-5">distillation 修复</a>
+  <a href="#sec-6">配置</a>
+  <a href="#sec-7">隔离矩阵</a>
+  <a href="#sec-8">项目状态</a>
+  <a href="#sec-9">验证</a>
+  <a href="#sec-10">PR 清单</a>
+</nav>
+
+<main>
+
+<!-- §1 -->
+<section id="sec-1">
+  <h2>1. 解决什么问题</h2>
+
+  <h3>问题 1：主会话 JSONL 共享（93MB 事件根因）</h3>
+  <p>改造前，同一个工作目录（cwd）下的<strong>所有主会话</strong>都 append 到同一个固定文件 <code>~/.ion/agent/sessions/&lt;cwd_hash&gt;/session.jsonl</code>。后果：</p>
+  <ul>
+    <li>会话之间<strong>互相能看到对方的消息历史</strong>（无隔离）</li>
+    <li>文件<strong>无限膨胀</strong> —— 反复跑会话（CI / 长会话）一直 append，最终 93MB / 11 万条消息</li>
+    <li>新会话启动时<strong>全量加载</strong>，CPU 100% 卡死（还触发了 <code>count_live_messages</code> 的 O(n²) 性能 bug）</li>
+  </ul>
+
+  <h3>问题 2：无 GC（5150 目录 / 1.7MB 索引）</h3>
+  <p>完全没有清理代码。<code>SessionIndex</code> 只增不减，session 目录无限堆积。实测一台机器上 5150 个 session 目录、1.7MB 索引文件。</p>
+
+  <h3>问题 3：distillation 读全局 last_session（并发泄漏）</h3>
+  <p>会话结束时的 skill distillation 从全局文件 <code>~/.ion/agent/last_session</code> 读 session_id。并发会话场景下，A 会话 shutdown 时读到的可能是 B 会话刚写的 id → <strong>提炼错误会话</strong>。</p>
+</section>
+
+<!-- §2 -->
+<section id="sec-2">
+  <h2>2. 改造前 vs 改造后</h2>
+
+<pre>改造前(共享 session.jsonl)              改造后(隔离 <sid>.jsonl)
+─────────────────────────────          ─────────────────────────────
+~/.ion/agent/sessions/                 ~/.ion/agent/sessions/
+└── <cwd_hash>/                        └── <cwd_hash>/
+    └── session.jsonl  ← 所有会话堆这      ├── sess_1b51b6a7.jsonl  ← 会话1
+        │  会话1 消息                      │  (独立, 看不到会话2)
+        │  会话2 消息                      ├── sess_7d29f98c.jsonl  ← 会话2
+        │  会话3 消息                      │  (独立, 看不到会话1)
+        │  ...无限膨胀到 93MB              └── session.jsonl  ← 旧文件(GC 会清)
+        └                                        不再被新会话写入</pre>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>改造前</th><th>改造后</th></tr></thead>
+      <tbody>
+        <tr><td>主会话文件</td><td><span class="verdict v-bad">共享一个 session.jsonl</span></td><td><span class="verdict v-ok">各自 &lt;sid&gt;.jsonl</span></td></tr>
+        <tr><td>会话间可见性</td><td><span class="verdict v-bad">互相能看到历史</span></td><td><span class="verdict v-ok">完全隔离</span></td></tr>
+        <tr><td>文件膨胀</td><td><span class="verdict v-bad">无限增长(93MB)</span></td><td><span class="verdict v-ok">GC 自动清理(30天/50个)</span></td></tr>
+        <tr><td>distillation session_id</td><td><span class="verdict v-bad">读全局文件(并发泄漏)</span></td><td><span class="verdict v-ok">context 参数传递</span></td></tr>
+        <tr><td>--continue / --resume</td><td>✅</td><td><span class="verdict v-ok">✅ 兼容(扫所有 *.jsonl)</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- §3 -->
+<section id="sec-3">
+  <h2>3. 隔离方案（PR #35）</h2>
+  <p>每次 <code>ion</code> 启动（无 <code>--continue</code>/<code>--resume</code>）默认开一个<strong>新的 <code>&lt;sid&gt;.jsonl</code></strong>，复用 fork 子 worker 已有的 override 机制。</p>
+
+<pre>┌─ cmd_run (src/bin/ion.rs) ───────────────────────────────────────┐
+│                                                                  │
+│  无 session_id?                                                  │
+│  ├─ 是 → 生成新 sess_<uuid8>  (不再读 session.jsonl header)      │
+│  └─ 否 → 用传入的 id (--continue/--resume)                       │
+│                                                                  │
+│  设 override:                                                    │
+│    set_session_file_override(<cwd>/<sid>.jsonl)                  │
+│    ION_FORK_CHILD=1   ← 让所有 session IO 走 <sid>.jsonl         │
+│                                                                  │
+│  ↓ 后续所有读写自动走 override 文件                               │
+│    save_session    → resolve_session_file() ✓                    │
+│    ensure_header   → resolve_session_file() ✓                    │
+│    get_messages    → resolve_session_file() ✓                    │
+│    append_entry    → resolve_session_file() ✓                    │
+└──────────────────────────────────────────────────────────────────┘</pre>
+
+  <h3>改动文件（6 个）</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>文件</th><th>改动</th></tr></thead>
+      <tbody>
+        <tr><td><code>cmd_run</code></td><td>生成新 sid + 设 override + <code>ION_FORK_CHILD=1</code></td></tr>
+        <tr><td><code>save_session</code></td><td>读写用 <code>resolve_session_file</code></td></tr>
+        <tr><td><code>find_most_recent_session</code></td><td>扫<strong>所有 <code>*.jsonl</code></strong>（含旧 session.jsonl）</td></tr>
+        <tr><td><code>load_session</code></td><td>新增 Strategy 3：精确匹配 <code>&lt;id&gt;.jsonl</code></td></tr>
+        <tr><td><code>ensure_session_header</code></td><td>用 <code>resolve_session_file</code></td></tr>
+        <tr><td><code>get_messages</code></td><td>读走 <code>resolve_session_file</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- §4 -->
+<section id="sec-4">
+  <h2>4. Session GC（PR #36）</h2>
+  <p>启动时<strong>异步</strong>跑一次 GC（仿 <code>file_snapshot/gc.rs</code>），不阻塞 agent。</p>
+
+<pre>┌─ run_gc (src/session_gc.rs) — 启动时后台线程 ─────────────────────┐
+│                                                                  │
+│  扫所有 sessions/<cwd_dir>/  (跳过 active cwd 保护)               │
+│     │                                                            │
+│     ▼ 每个 *.jsonl 文件:                                          │
+│  ┌─ Pass 1: 按 mtime 删超期 ──────────────────────────────────┐  │
+│  │  age > max_age_days(30) ? → 删                              │  │
+│  └────────────────────────────────────────────────────────────┘  │
+│  ┌─ Pass 2: 每 cwd LRU 裁剪 ─────────────────────────────────┐  │
+│  │  超过 max_sessions_per_cwd(50)? → 删最旧的                  │  │
+│  └────────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  清孤儿: 空目录 → 删                                              │
+│  同步 index: SessionIndex::remove(删掉的 sid)                     │
+│                                                                  │
+│  → 全程不 panic, 错误只 log                                      │
+└──────────────────────────────────────────────────────────────────┘</pre>
+
+  <h3>新模块</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>文件</th><th>内容</th></tr></thead>
+      <tbody>
+        <tr><td><code>src/session_gc.rs</code> (新)</td><td><code>SessionGcConfig</code> + <code>run_gc</code> + helpers</td></tr>
+        <tr><td><code>src/session_index.rs</code></td><td>加 <code>len</code> / <code>is_empty</code> / <code>remove</code></td></tr>
+        <tr><td><code>src/config.rs</code></td><td>加 <code>SessionConfig</code>（全 <code>#[serde(default)]</code>）</td></tr>
+        <tr><td><code>cmd_run</code></td><td>后台线程 spawn <code>run_gc</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- §5 -->
+<section id="sec-5">
+  <h2>5. distillation 并发修复（PR #35）</h2>
+
+<pre>改造前(读全局文件, 并发泄漏)          改造后(context 参数传递)
+─────────────────────────────        ─────────────────────────────
+on_session_shutdown:                 on_session_shutdown(ctx):
+  read last_session 文件  ← 并发写      session_id = ctx.session_id  ✓
+  ↑                                    ↑
+  会话A shutdown 时                    cmd_run 已知 session_id
+  可能读到会话B 的 id                  构造 SessionContext 时传入
+  → 提炼错会话                         → 每个会话拿自己的 id</pre>
+
+  <p><strong>改动</strong>：<code>SessionContext</code> 加 <code>session_id</code> 字段，<code>agent_loop</code> 在 startup/shutdown 构造时填入 <code>self.session_id</code>，<code>learning_extension</code> 用它替代读文件。</p>
+</section>
+
+<!-- §6 -->
+<section id="sec-6">
+  <h2>6. 配置</h2>
+  <p><code>~/.ion/config.json</code>（可选，全字段都有默认值）：</p>
+<pre>{
+  "session": {
+    "max_age_days": 30,
+    "max_sessions_per_cwd": 50,
+    "gc_on_start": true
+  }
+}</pre>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>字段</th><th>默认</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><code>max_age_days</code></td><td>30</td><td>删除 mtime 超过此天数的 session 文件</td></tr>
+        <tr><td><code>max_sessions_per_cwd</code></td><td>50</td><td>每个 cwd 目录最多保留多少 session</td></tr>
+        <tr><td><code>gc_on_start</code></td><td>true</td><td>false 则启动时不跑 GC</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- §7 -->
+<section id="sec-7">
+  <h2>7. 隔离矩阵（改造后）</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>数据层</th><th>同 cwd 多会话</th><th>不同 cwd</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td><strong>主会话 JSONL</strong></td><td>各自独立 <code>&lt;sid&gt;.jsonl</code></td><td>各自</td><td><span class="verdict v-ok">已修复</span></td></tr>
+        <tr><td>fork/子 worker JSONL</td><td>各自独立</td><td>各自</td><td><span class="verdict v-ok">本来就隔离</span></td></tr>
+        <tr><td>session 内分支 (leaf_pointer)</td><td>软过滤</td><td>n/a</td><td><span class="verdict v-ok">✅</span></td></tr>
+        <tr><td><strong>distillation session_id</strong></td><td>context 传参</td><td>n/a</td><td><span class="verdict v-ok">已修复</span></td></tr>
+        <tr><td>memory (global-memory.db)</td><td>按 project_name 共享</td><td>同名目录会撞</td><td><span class="verdict v-warn">设计如此</span></td></tr>
+        <tr><td>skill (skills/)</td><td>全局共享</td><td>全局共享</td><td><span class="verdict v-warn">设计意图</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <blockquote>
+    <p><strong>仍存在的共享</strong>（设计如此，非 bug）：memory 按 project_name 共享（跨会话记忆是 feature）、skill 全局可见（可复用技能是 feature）。</p>
+  </blockquote>
+</section>
+
+<!-- §8 -->
+<section id="sec-8">
+  <h2>8. 项目状态：未上线，无需兼容旧数据</h2>
+  <blockquote>
+    <p>AGENTS.md 明确规定：本项目未上线，所有数据格式 breaking change 可直接做，不需要写迁移逻辑。旧 session 文件（包括之前那个 93MB 的）可直接 <code>rm -rf ~/.ion/agent/sessions/</code> 清理。</p>
+  </blockquote>
+  <ul>
+    <li><strong>旧 <code>session.jsonl</code></strong>：无需兼容。<code>find_most_recent_session</code> 扫所有 <code>*.jsonl</code> 是正确做法（按后缀过滤比硬编码文件名健壮），不是为了兼容旧文件。开发产生的旧 session 直接清即可。</li>
+    <li><strong><code>--continue</code> / <code>--resume</code></strong>：多 strategy 查找是正常的兜底逻辑（session 可能存在不同位置），不是兼容层。</li>
+    <li><strong>config.json</strong>：<code>SessionConfig</code> 全字段 <code>#[serde(default)]</code> 是 serde 标准实践，不是兼容性妥协。</li>
+    <li><strong>Session GC</strong>：开发期可直接 <code>rm -rf ~/.ion/agent/sessions/</code>；GC 是上线后才需要的自动清理。</li>
+  </ul>
+</section>
+
+<!-- §9 -->
+<section id="sec-9">
+  <h2>9. 验证</h2>
+
+  <h3>coordinator 端到端验证（6/6 PASS）</h3>
+  <p>用真实 ion 二进制跑两个会话，检查 session 文件隔离：</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>验证点</th><th>结果</th></tr></thead>
+      <tbody>
+        <tr><td>5a: 两个独立的 <code>&lt;sid&gt;.jsonl</code></td><td><span class="verdict v-ok">PASS</span>（sess_8c357589 + sess_d1441b0b）</td></tr>
+        <tr><td>5b: 文件1 含 "session one content"</td><td><span class="verdict v-ok">PASS</span>（grep=1）</td></tr>
+        <tr><td>5b: 文件1 不含 "session two content"</td><td><span class="verdict v-ok">PASS</span>（grep=0）</td></tr>
+        <tr><td>5c: 文件2 含 "session two content"</td><td><span class="verdict v-ok">PASS</span>（grep=1）</td></tr>
+        <tr><td>5c: 文件2 不含 "session one content"</td><td><span class="verdict v-ok">PASS</span>（grep=0）</td></tr>
+        <tr><td>5d: 无共享 session.jsonl</td><td><span class="verdict v-ok">PASS</span>（文件不存在）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <blockquote>
+    <p>coordinator 结论："Session isolation is working correctly. Each ion invocation creates its own <code>&lt;sid&gt;.jsonl</code> file. Session 1's history is completely invisible to Session 2 and vice versa. No shared legacy <code>session.jsonl</code> is written."</p>
+  </blockquote>
+
+  <h3>测试</h3>
+  <ul>
+    <li><strong>965 lib tests</strong> passed（含 8 个新测试）</li>
+    <li><strong>e2e 集成测试</strong>：隔离 <code>ION_SESSION_DIR</code> 造旧文件 + 超量文件，确认 <code>run_gc</code> 删对了</li>
+    <li><strong>flaky 修复</strong>（PR #38）：5 次全量 + 20 次单测，0 失败</li>
+    <li><strong>Linux CI</strong>：PR Gate + build-and-test 全绿</li>
+  </ul>
+</section>
+
+<!-- §10 -->
+<section id="sec-10">
+  <h2>10. PR 清单</h2>
+
+  <div class="pr-card">
+    <div class="pr-title">feat(session): isolate main session to per-run &lt;sid&gt;.jsonl files</div>
+    <div class="pr-num">PR #35 · MERGED · 6 files, +130/-35</div>
+    <p>隔离核心：每次启动生成新 <code>&lt;sid&gt;.jsonl</code>，复用 fork override 机制；<code>--continue</code>/<code>--resume</code> 扫描放宽；distillation 用 context 传参。</p>
+  </div>
+
+  <div class="pr-card">
+    <div class="pr-title">feat(session-gc): clean up old session files at startup</div>
+    <div class="pr-num">PR #36 · MERGED · 5 files, +425</div>
+    <p>启动时异步 GC：30 天 + 每 cwd 50 个 + 保护活跃 cwd + 同步清 index。</p>
+  </div>
+
+  <div class="pr-card">
+    <div class="pr-title">docs: add SESSION_ISOLATION.md</div>
+    <div class="pr-num">PR #37 · MERGED · 设计文档</div>
+    <p>隔离矩阵 + 配置参考 + 兼容性 + 验证步骤。</p>
+  </div>
+
+  <div class="pr-card">
+    <div class="pr-title">fix(file_snapshot): prevent parallel-test tmp_store collisions</div>
+    <div class="pr-num">PR #38 · MERGED · 2 files, +16/-2</div>
+    <p>修 <code>no_change_turn_zero_overhead</code> flaky：tmp_store/setup 加 atomic SEQ 防并行碰撞。</p>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  ION 会话隔离与 Session GC · <span class="verdict v-ok">状态：已验证</span> · 基于 SESSION_ISOLATION.md 生成
+</footer>
+
+<button id="top-btn" title="返回顶部">↑</button>
+
+<script>
+  const topBtn = document.getElementById('top-btn');
+  window.addEventListener('scroll', () => {
+    topBtn.classList.toggle('show', window.scrollY > 400);
+  });
+  topBtn.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+
+  const sections = document.querySelectorAll('section[id]');
+  const navLinks = document.querySelectorAll('nav.toc a');
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        const id = entry.target.id;
+        navLinks.forEach(link => {
+          const active = link.getAttribute('href') === '#' + id;
+          link.style.background = active ? 'var(--accent-soft)' : '';
+          link.style.color = active ? 'var(--accent)' : '';
+        });
+      }
+    });
+  }, { rootMargin: '-80px 0px -70% 0px' });
+  sections.forEach(s => observer.observe(s));
+</script>
+
+</body>
+</html>
