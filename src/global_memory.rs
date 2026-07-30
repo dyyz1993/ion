@@ -215,6 +215,26 @@ impl GlobalMemoryStore {
         }
     }
 
+    /// Async FTS5 search — runs the (potentially slow) full-text query on a
+    /// blocking thread so it does not stall the tokio worker. The store is
+    /// cheap to clone (Arc inside), and SQLite Connection is Send under the
+    /// bundled feature, so this is safe to move into spawn_blocking.
+    ///
+    /// Use this from async hot paths (e.g. on_input). The synchronous `search`
+    /// remains for non-async callers and tests.
+    pub async fn search_async(
+        &self,
+        query: &str,
+        project: Option<&str>,
+    ) -> Result<Vec<GlobalMemoryEntry>, String> {
+        let store = self.clone();
+        let query = query.to_string();
+        let project = project.map(|s| s.to_string());
+        tokio::task::spawn_blocking(move || store.search(&query, project.as_deref()))
+            .await
+            .map_err(|e| format!("spawn_blocking join: {e}"))?
+    }
+
     /// FTS5 full-text search (with Chinese LIKE fallback).
     ///
     /// 先用 FTS5 MATCH（英文/分词语言效果好），如果结果为空则用 LIKE 模糊匹配
@@ -3228,5 +3248,38 @@ mod tests {
     #[test]
     fn test_health_status() {
         assert_eq!(GlobalMemoryStore::health_status(), "healthy");
+    }
+
+    #[tokio::test]
+    async fn search_async_returns_saved_entries() {
+        // End-to-end: save then search_async must find the entry, proving the
+        // spawn_blocking path works (store is Send, connection survives the
+        // thread hop). Uses an isolated temp DB via ION_MEMORY_NO_GLOBAL-style
+        // temp path.
+        let dir = std::env::temp_dir().join(format!(
+            "ion_gm_async_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("test-async.db");
+        let store = GlobalMemoryStore::open(&db).unwrap();
+        store
+            .save("async test content xyz", "test", "tag", "proj_async", 5)
+            .unwrap();
+        // sync search works (baseline)
+        let sync_results = store.search("xyz", Some("proj_async")).unwrap();
+        assert!(!sync_results.is_empty(), "sync search should find it");
+        // async search works too (the real point of this test)
+        let async_results = store.search_async("xyz", Some("proj_async")).await.unwrap();
+        assert!(
+            !async_results.is_empty(),
+            "search_async via spawn_blocking must find it"
+        );
+        assert_eq!(async_results.len(), sync_results.len());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
