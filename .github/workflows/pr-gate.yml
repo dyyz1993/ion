@@ -37,7 +37,9 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build
-        run: cargo build --bin ion --bin ion-worker --bin agent-demo
+        # ion-worker was merged into ion (--mode rpc) and removed from
+        # Cargo.toml; building just `ion` covers that code path now.
+        run: cargo build --bin ion --bin agent-demo
 
       # Strict clippy: any warning fails the build
       - name: Clippy
