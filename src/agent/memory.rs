@@ -812,7 +812,7 @@ impl Extension for MemoryExtension {
         // 用 FTS5 搜全局库，命中则标记待注入（on_context 消费）
         if let Some(ref global) = store.global_store {
             let t0 = std::time::Instant::now();
-            let global_results = global.search(text, None).unwrap_or_default();
+            let global_results = global.search_async(text, None).await.unwrap_or_default();
             let search_ms = t0.elapsed().as_millis();
 
             // 去重：跳过最近 20 轮注入过的（content hash 对比）
