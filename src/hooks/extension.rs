@@ -13,13 +13,15 @@ use super::matcher;
 use super::stdin_builder;
 use super::{HookOutcome, HooksConfig};
 
+use crate::agent::agent_loop::AgentContext;
 use crate::agent::error::{AgentError, AgentResult};
 use crate::agent::extension::{
     BeforeAgentContext, Extension, InputContext, SessionContext, TurnContext,
 };
 use crate::agent::messages::Message;
-use crate::agent::agent_loop::AgentContext;
-use ion_provider::types::{ContentBlock, AssistantContentBlock, TextContent, ToolCall, ToolResult, UserMessage};
+use ion_provider::types::{
+    AssistantContentBlock, ContentBlock, TextContent, ToolCall, ToolResult, UserMessage,
+};
 
 /// HookExtension — 读 hooks.json + 在 12 个事件点执行 handler
 pub struct HookExtension {
@@ -93,7 +95,10 @@ impl HookExtension {
 
         // Stop/SubagentStop 的 loop_count 检查（防死循环）
         if event == "Stop" || event == "SubagentStop" {
-            let session_id = stdin.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
+            let session_id = stdin
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let key = format!("{session_id}:{event}");
             let mut counts = self.loop_counts.lock().unwrap();
             let count = counts.entry(key.clone()).or_insert(0);
@@ -108,8 +113,11 @@ impl HookExtension {
             drop(counts);
         }
 
-        let handlers: Vec<(Option<String>, super::HookHandler)> = config.handlers_for_event(event)
-            .into_iter().map(|(m, h)| (m.map(|s| s.to_string()), h.clone())).collect();
+        let handlers: Vec<(Option<String>, super::HookHandler)> = config
+            .handlers_for_event(event)
+            .into_iter()
+            .map(|(m, h)| (m.map(|s| s.to_string()), h.clone()))
+            .collect();
         drop(config); // 释放 config（handlers 已 owned）
         if handlers.is_empty() {
             return HookOutcome::default();
@@ -127,54 +135,76 @@ impl HookExtension {
         let mut combined = HookOutcome::default();
 
         // 收集要执行的 handler（已过滤 matcher/if/once/递归）
-        let handler_futs: Vec<_> = handlers.into_iter()
-                .filter(|(matcher_str, handler)| {
-                    // 递归保护
-                    if handler.handler_type == super::HandlerType::Agent && hook_depth >= 1 { return false; }
-                    // once 去重
-                    if handler.once {
-                        let session_id = stdin.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
-                        let once_key = format!("{session_id}:{event}:{}", handler.command.as_deref()
-                            .or(handler.prompt.as_deref()).or(handler.url.as_deref()).unwrap_or("?"));
-                        let mut fired = self.once_fired.lock().unwrap();
-                        if !fired.insert(once_key) { return false; }
-                    }
-                    // matcher 过滤
-                    if let Some(tn) = tool_name
-                        && (event == "PreToolUse" || event == "PostToolUse" || event == "PostToolUseFailure")
-                        && !matcher::matches_matcher(matcher_str.as_deref(), tn) { return false; }
-                    // if 条件过滤
-                    if !matcher::matches_if_clause(handler, tool_name, tool_input) { return false; }
-                    true
-                })
-                .collect();
-
-            // 并行执行所有匹配的 handler（对齐 Claude Code "所有匹配的 hook 并行运行"）
-            let outcomes: Vec<HookOutcome> = {
-                let exec_ctx = std::sync::Arc::new(exec_ctx);
-                let mut tasks: Vec<tokio::task::JoinHandle<HookOutcome>> = Vec::new();
-                for (_, handler) in &handler_futs {
-                    let h = std::sync::Arc::new(handler.clone());
-                    let s = stdin.clone();
-                    let ctx = std::sync::Arc::clone(&exec_ctx);
-                    tasks.push(tokio::spawn(async move {
-                        handler_runner::run_handler(&h, s, &ctx).await
-                    }));
+        let handler_futs: Vec<_> = handlers
+            .into_iter()
+            .filter(|(matcher_str, handler)| {
+                // 递归保护
+                if handler.handler_type == super::HandlerType::Agent && hook_depth >= 1 {
+                    return false;
                 }
-                let mut results = Vec::new();
-                for task in tasks {
-                    match task.await {
-                        Ok(outcome) => results.push(outcome),
-                        Err(e) => tracing::error!("[hooks] handler task panicked: {e}"),
+                // once 去重
+                if handler.once {
+                    let session_id = stdin
+                        .get("session_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let once_key = format!(
+                        "{session_id}:{event}:{}",
+                        handler
+                            .command
+                            .as_deref()
+                            .or(handler.prompt.as_deref())
+                            .or(handler.url.as_deref())
+                            .unwrap_or("?")
+                    );
+                    let mut fired = self.once_fired.lock().unwrap();
+                    if !fired.insert(once_key) {
+                        return false;
                     }
                 }
-                results
-            };
+                // matcher 过滤
+                if let Some(tn) = tool_name
+                    && (event == "PreToolUse"
+                        || event == "PostToolUse"
+                        || event == "PostToolUseFailure")
+                    && !matcher::matches_matcher(matcher_str.as_deref(), tn)
+                {
+                    return false;
+                }
+                // if 条件过滤
+                if !matcher::matches_if_clause(handler, tool_name, tool_input) {
+                    return false;
+                }
+                true
+            })
+            .collect();
 
-            // 合并结果（任一 block 则整体 block）
-            for outcome in outcomes {
-                combined = combined.merge(outcome);
+        // 并行执行所有匹配的 handler（对齐 Claude Code "所有匹配的 hook 并行运行"）
+        let outcomes: Vec<HookOutcome> = {
+            let exec_ctx = std::sync::Arc::new(exec_ctx);
+            let mut tasks: Vec<tokio::task::JoinHandle<HookOutcome>> = Vec::new();
+            for (_, handler) in &handler_futs {
+                let h = std::sync::Arc::new(handler.clone());
+                let s = stdin.clone();
+                let ctx = std::sync::Arc::clone(&exec_ctx);
+                tasks.push(tokio::spawn(async move {
+                    handler_runner::run_handler(&h, s, &ctx).await
+                }));
             }
+            let mut results = Vec::new();
+            for task in tasks {
+                match task.await {
+                    Ok(outcome) => results.push(outcome),
+                    Err(e) => tracing::error!("[hooks] handler task panicked: {e}"),
+                }
+            }
+            results
+        };
+
+        // 合并结果（任一 block 则整体 block）
+        for outcome in outcomes {
+            combined = combined.merge(outcome);
+        }
 
         combined
     }
@@ -184,7 +214,10 @@ impl HookExtension {
         if let Some(ref tx) = self.follow_up_tx {
             let msg = Message::User(UserMessage {
                 role: "user".into(),
-                content: vec![ContentBlock::Text(TextContent { text: reason.to_string(), text_signature: None })],
+                content: vec![ContentBlock::Text(TextContent {
+                    text: reason.to_string(),
+                    text_signature: None,
+                })],
                 timestamp: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as i64)
@@ -206,7 +239,12 @@ impl HookExtension {
     ///   "customType":"hook_handler_executed",
     ///   "data":{"event":"UserPromptSubmit","handler_type":"prompt","block":true,"reason":"..."}}}
     /// ```
-    fn emit_handler_executed(&self, event: &str, handler: &super::HookHandler, outcome: &HookOutcome) {
+    fn emit_handler_executed(
+        &self,
+        event: &str,
+        handler: &super::HookHandler,
+        outcome: &HookOutcome,
+    ) {
         let handler_type = match handler.handler_type {
             super::HandlerType::Command => "command",
             super::HandlerType::Http => "http",
@@ -235,36 +273,51 @@ impl HookExtension {
 
 #[async_trait]
 impl Extension for HookExtension {
-    fn name(&self) -> &str { "hooks" }
+    fn name(&self) -> &str {
+        "hooks"
+    }
 
     // ── Session lifecycle ──
 
     async fn on_session_start(&self, ctx: &SessionContext) -> AgentResult<()> {
-        let outcome = self.process_event("SessionStart", stdin_builder::session_start("SessionStart", &ctx.reason)).await;
+        let outcome = self
+            .process_event(
+                "SessionStart",
+                stdin_builder::session_start("SessionStart", &ctx.reason),
+            )
+            .await;
         // SessionStart 的 additionalContext 通过 on_system_prompt 注入（下面）
         if outcome.block {
             tracing::info!("[hooks] SessionStart blocked: {:?}", outcome.block_reason);
         }
         // startup 时额外触发 Setup
         if ctx.reason == "startup" {
-            let _ = self.process_event("Setup", stdin_builder::session_start("Setup", &ctx.reason)).await;
+            let _ = self
+                .process_event("Setup", stdin_builder::session_start("Setup", &ctx.reason))
+                .await;
         }
         Ok(())
     }
 
     async fn on_session_shutdown(&self, _ctx: &SessionContext) -> AgentResult<()> {
-        let _ = self.process_event("SessionEnd", stdin_builder::session_end()).await;
+        let _ = self
+            .process_event("SessionEnd", stdin_builder::session_end())
+            .await;
         Ok(())
     }
 
     async fn on_session_before_compact(&self, msgs: &mut Vec<Message>) -> AgentResult<()> {
-        let _ = self.process_event("PreCompact", stdin_builder::pre_compact(msgs.len())).await;
+        let _ = self
+            .process_event("PreCompact", stdin_builder::pre_compact(msgs.len()))
+            .await;
         Ok(())
     }
 
     async fn on_session_compact(&self, _messages: &mut Vec<Message>) -> AgentResult<()> {
         // PostCompact 事件（压缩完成后触发）
-        let _ = self.process_event("PostCompact", stdin_builder::common_fields("PostCompact")).await;
+        let _ = self
+            .process_event("PostCompact", stdin_builder::common_fields("PostCompact"))
+            .await;
         Ok(())
     }
 
@@ -275,7 +328,10 @@ impl Extension for HookExtension {
         let outcome = self.process_event("UserPromptSubmit", stdin).await;
         if outcome.block {
             ctx.handled = true;
-            ctx.text = format!("[blocked by hook] {}", outcome.block_reason.unwrap_or_default());
+            ctx.text = format!(
+                "[blocked by hook] {}",
+                outcome.block_reason.unwrap_or_default()
+            );
         } else if let Some(extra) = outcome.additional_context {
             ctx.text = format!("{}\n\n---\n{}", ctx.text, extra);
         }
@@ -313,14 +369,29 @@ impl Extension for HookExtension {
         });
         // ToolResult 只有 output 字段，用是否包含 "error" 简单判断 is_error
         let is_error = result.output.to_lowercase().contains("error") || result.output.is_empty();
-        let stdin = stdin_builder::post_tool_use(&call.name, &call.arguments, &response, is_error, &call.id);
-        let outcome = self.process_event(
-            if is_error { "PostToolUseFailure" } else { "PostToolUse" },
-            stdin,
-        ).await;
+        let stdin = stdin_builder::post_tool_use(
+            &call.name,
+            &call.arguments,
+            &response,
+            is_error,
+            &call.id,
+        );
+        let outcome = self
+            .process_event(
+                if is_error {
+                    "PostToolUseFailure"
+                } else {
+                    "PostToolUse"
+                },
+                stdin,
+            )
+            .await;
         // PostToolUse 的 block 通知 LLM（工具已执行无法撤销）
         if outcome.block {
-            tracing::info!("[hooks] PostToolUse block notification: {:?}", outcome.block_reason);
+            tracing::info!(
+                "[hooks] PostToolUse block notification: {:?}",
+                outcome.block_reason
+            );
         }
         Ok(())
     }
@@ -334,16 +405,25 @@ impl Extension for HookExtension {
     }
 
     async fn on_agent_start(&self, _ctx: &AgentContext) -> AgentResult<()> {
-        let _ = self.process_event("SubagentStart", stdin_builder::subagent_start()).await;
+        let _ = self
+            .process_event("SubagentStart", stdin_builder::subagent_start())
+            .await;
         Ok(())
     }
 
     async fn on_agent_end(&self, ctx: &AgentContext) -> AgentResult<()> {
-        let last_msg = format!("agent ended (turns={}, tools={})", ctx.turn_index, ctx.tool_call_count);
+        let last_msg = format!(
+            "agent ended (turns={}, tools={})",
+            ctx.turn_index, ctx.tool_call_count
+        );
         let stdin = stdin_builder::subagent_stop(&last_msg, 0);
         let outcome = self.process_event("SubagentStop", stdin).await;
         if outcome.block {
-            self.inject_follow_up(&outcome.block_reason.unwrap_or_else(|| "continue working".into()));
+            self.inject_follow_up(
+                &outcome
+                    .block_reason
+                    .unwrap_or_else(|| "continue working".into()),
+            );
         }
         Ok(())
     }
@@ -377,7 +457,11 @@ impl Extension for HookExtension {
         let stdin = stdin_builder::stop(&last_msg, 0);
         let outcome = self.process_event("Stop", stdin).await;
         if outcome.block {
-            self.inject_follow_up(&outcome.block_reason.unwrap_or_else(|| "please continue".into()));
+            self.inject_follow_up(
+                &outcome
+                    .block_reason
+                    .unwrap_or_else(|| "please continue".into()),
+            );
         }
         Ok(())
     }
@@ -386,7 +470,12 @@ impl Extension for HookExtension {
 
     async fn on_system_prompt(&self, prompt: &mut String) -> AgentResult<()> {
         // SessionStart 的 additionalContext 注入到 system prompt
-        let outcome = self.process_event("SessionStart", stdin_builder::session_start("SessionStart", "prompt_inject")).await;
+        let outcome = self
+            .process_event(
+                "SessionStart",
+                stdin_builder::session_start("SessionStart", "prompt_inject"),
+            )
+            .await;
         if let Some(extra) = outcome.additional_context {
             prompt.push_str(&format!("\n\n---\n{extra}"));
         }

@@ -12,10 +12,10 @@
 //!   max_retries: 3
 //! ```
 
-use super::extension::{Extension, GateDecision, TurnContext};
 use super::error::AgentResult;
-use std::sync::atomic::{AtomicU32, Ordering};
+use super::extension::{Extension, GateDecision, TurnContext};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Workflow gate 配置（从 agent .md frontmatter 解析）
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -30,8 +30,12 @@ pub struct WorkflowGateConfig {
     pub max_retries: u32,
 }
 
-fn default_expected() -> String { "PASS".into() }
-fn default_max_retries() -> u32 { 3 }
+fn default_expected() -> String {
+    "PASS".into()
+}
+fn default_max_retries() -> u32 {
+    3
+}
 
 /// WorkflowExtension — 内核级 gate 校验
 ///
@@ -59,11 +63,15 @@ impl WorkflowExtension {
 
 #[async_trait::async_trait]
 impl Extension for WorkflowExtension {
-    fn name(&self) -> &str { "workflow" }
+    fn name(&self) -> &str {
+        "workflow"
+    }
 
     async fn on_gate_check(&self, _ctx: &TurnContext) -> AgentResult<GateDecision> {
         // 已通过 → 放行
-        if let Ok(passed) = self.passed.lock() && *passed {
+        if let Ok(passed) = self.passed.lock()
+            && *passed
+        {
             return Ok(GateDecision::Allow);
         }
 
@@ -73,7 +81,11 @@ impl Extension for WorkflowExtension {
         // 后续 gate 永久放行，wf 提前宣告 PIPELINE COMPLETE。
         let retries = self.retry_count.fetch_add(1, Ordering::SeqCst);
         // 默认上限 100（够 10 stage workflow 每个跑 10 turn）
-        let effective_max = if self.config.max_retries == 0 { 100 } else { self.config.max_retries };
+        let effective_max = if self.config.max_retries == 0 {
+            100
+        } else {
+            self.config.max_retries
+        };
         if retries >= effective_max {
             tracing::warn!(
                 "Workflow gate: max retries ({}) exceeded, allowing stop",
@@ -92,7 +104,11 @@ impl Extension for WorkflowExtension {
             Ok(o) => {
                 let stdout = String::from_utf8_lossy(&o.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&o.stderr).to_string();
-                if stderr.is_empty() { stdout } else { format!("{stdout}\n{stderr}") }
+                if stderr.is_empty() {
+                    stdout
+                } else {
+                    format!("{stdout}\n{stderr}")
+                }
             }
             Err(e) => format!("gate command failed to execute: {e}"),
         };
@@ -108,7 +124,8 @@ impl Extension for WorkflowExtension {
             let preview: String = output_str.trim().chars().take(200).collect();
             tracing::warn!(
                 "Workflow gate FAILED (attempt {}/{}): expected '{}', got: {}",
-                retries + 1, self.config.max_retries,
+                retries + 1,
+                self.config.max_retries,
                 self.config.gate_expected,
                 preview
             );
@@ -144,9 +161,8 @@ mod tests {
 
     #[test]
     fn test_workflow_gate_config_defaults() {
-        let config: WorkflowGateConfig = serde_yaml::from_str(
-            "gate_command: \"echo PASS\""
-        ).unwrap();
+        let config: WorkflowGateConfig =
+            serde_yaml::from_str("gate_command: \"echo PASS\"").unwrap();
         assert_eq!(config.gate_expected, "PASS");
         assert_eq!(config.max_retries, 3);
     }
@@ -154,8 +170,9 @@ mod tests {
     #[test]
     fn test_workflow_gate_config_custom() {
         let config: WorkflowGateConfig = serde_yaml::from_str(
-            "gate_command: \"ls hello.py\"\ngate_expected: \"hello.py\"\nmax_retries: 5"
-        ).unwrap();
+            "gate_command: \"ls hello.py\"\ngate_expected: \"hello.py\"\nmax_retries: 5",
+        )
+        .unwrap();
         assert_eq!(config.gate_expected, "hello.py");
         assert_eq!(config.max_retries, 5);
     }

@@ -4,11 +4,11 @@
 //! 协议：https://platform.openai.com/docs/api-reference/responses-streaming
 //! 端点：POST /v1/responses
 
+use crate::ApiProvider;
 use crate::env_keys::resolve_api_key;
 use crate::error::{ProviderError, ProviderResult};
-use crate::event_stream::{EventStream, EventSender};
+use crate::event_stream::{EventSender, EventStream};
 use crate::types::*;
-use crate::ApiProvider;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -49,7 +49,8 @@ impl OpenAIResponsesProvider {
         let url = format!("{}/v1/responses", base_url.trim_end_matches('/'));
 
         let body = build_request_body(model, context, options)?;
-        let body_json = serde_json::to_string(&body).map_err(|e| ProviderError::Provider(e.to_string()))?;
+        let body_json =
+            serde_json::to_string(&body).map_err(|e| ProviderError::Provider(e.to_string()))?;
 
         let client = Client::builder()
             .timeout(Duration::from_secs(300))
@@ -70,13 +71,18 @@ impl OpenAIResponsesProvider {
                 _ = c.cancelled() => return Err(crate::ProviderError::Stream("HTTP request aborted".into())),
             }
         } else {
-            send_fut.await.map_err(|e| ProviderError::Provider(e.to_string()))?
+            send_fut
+                .await
+                .map_err(|e| ProviderError::Provider(e.to_string()))?
         };
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(ProviderError::HttpError { status: status.as_u16(), body: text });
+            return Err(ProviderError::HttpError {
+                status: status.as_u16(),
+                body: text,
+            });
         }
 
         let model_clone = model.clone();
@@ -140,10 +146,15 @@ fn build_request_body(
     for msg in &context.messages {
         match msg {
             Message::User(u) => {
-                let text = u.content.iter().filter_map(|b| match b {
-                    ContentBlock::Text(t) => Some(t.text.clone()),
-                    _ => None,
-                }).collect::<Vec<_>>().join("\n");
+                let text = u
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
 
                 // Check if this user message is a tool result (assistant tool call response)
                 // In Responses API, tool results go as function_call_output items
@@ -200,10 +211,15 @@ fn build_request_body(
                 }
             }
             Message::ToolResult(tr) => {
-                let text = tr.content.iter().filter_map(|b| match b {
-                    ContentBlock::Text(t) => Some(t.text.clone()),
-                    _ => None,
-                }).collect::<Vec<_>>().join("\n");
+                let text = tr
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 input.push(serde_json::json!({
                     "type": "function_call_output",
                     "call_id": tr.tool_call_id,
@@ -211,7 +227,9 @@ fn build_request_body(
                 }));
             }
             Message::BashExecution(b) => {
-                if b.exclude_from_context == Some(true) { continue; }
+                if b.exclude_from_context == Some(true) {
+                    continue;
+                }
                 let text = format!("$ {}\n{}", b.command, b.output);
                 input.push(serde_json::json!({
                     "type": "message",
@@ -222,10 +240,14 @@ fn build_request_body(
             Message::Custom(c) => {
                 let text = match &c.content {
                     CustomContent::Text(s) => s.clone(),
-                    CustomContent::Blocks(blocks) => blocks.iter().filter_map(|b| match b {
-                        ContentBlock::Text(t) => Some(t.text.clone()),
-                        _ => None,
-                    }).collect::<Vec<_>>().join("\n"),
+                    CustomContent::Blocks(blocks) => blocks
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::Text(t) => Some(t.text.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
                 };
                 input.push(serde_json::json!({
                     "type": "message",
@@ -251,16 +273,19 @@ fn build_request_body(
     }
 
     // Tools
-    let tools: Vec<serde_json::Value> = context.tools
+    let tools: Vec<serde_json::Value> = context
+        .tools
         .as_deref()
         .unwrap_or(&[])
         .iter()
-        .map(|t| serde_json::json!({
-            "type": "function",
-            "name": t.name,
-            "description": t.description,
-            "parameters": t.parameters,
-        }))
+        .map(|t| {
+            serde_json::json!({
+                "type": "function",
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.parameters,
+            })
+        })
         .collect();
 
     // Reasoning: respect explicit Off (disable), else use level or default medium for reasoning models
@@ -327,11 +352,7 @@ struct ResponsesSSEEvent {
     content_index: Option<u32>,
 }
 
-async fn parse_sse_stream(
-    resp: reqwest::Response,
-    sender: EventSender,
-    model: &Model,
-) {
+async fn parse_sse_stream(resp: reqwest::Response, sender: EventSender, model: &Model) {
     let mut output = AssistantMessage::new(model);
     let mut byte_stream = resp.bytes_stream();
     let mut buffer = String::new();
@@ -347,7 +368,11 @@ async fn parse_sse_stream(
     let mut current_tool_name: Option<String> = None;
     let mut current_tool_item_id: Option<String> = None;
 
-    let _ = sender.send(StreamEvent::Start { partial: output.clone() }).await;
+    let _ = sender
+        .send(StreamEvent::Start {
+            partial: output.clone(),
+        })
+        .await;
 
     let parse_result: ProviderResult<()> = async {
         while let Some(chunk_result) = byte_stream.next().await {
@@ -368,8 +393,12 @@ async fn parse_sse_stream(
                         data_str.push_str(&line[5..]);
                     }
                 }
-                if data_str.is_empty() { continue; }
-                if data_str.trim() == "[DONE]" { continue; }
+                if data_str.is_empty() {
+                    continue;
+                }
+                if data_str.trim() == "[DONE]" {
+                    continue;
+                }
 
                 let event: ResponsesSSEEvent = match serde_json::from_str(&data_str) {
                     Ok(e) => e,
@@ -390,47 +419,64 @@ async fn parse_sse_stream(
                             let content_index = output.content.len();
                             match item_type {
                                 "reasoning" => {
-                                    output.content.push(AssistantContentBlock::Thinking(ThinkingContent {
-                                        thinking: String::new(),
-                                        thinking_signature: None,
-                                        redacted: None,
-                                    }));
+                                    output.content.push(AssistantContentBlock::Thinking(
+                                        ThinkingContent {
+                                            thinking: String::new(),
+                                            thinking_signature: None,
+                                            redacted: None,
+                                        },
+                                    ));
                                     current_block_type = Some(BlockKind::Thinking);
                                     current_thinking.clear();
-                                    let _ = sender.send(StreamEvent::ThinkingStart {
-                                        content_index,
-                                        partial: output.clone(),
-                                    }).await;
+                                    let _ = sender
+                                        .send(StreamEvent::ThinkingStart {
+                                            content_index,
+                                            partial: output.clone(),
+                                        })
+                                        .await;
                                 }
                                 "message" => {
-                                    output.content.push(AssistantContentBlock::Text(TextContent {
-                                        text: String::new(),
-                                        text_signature: None,
-                                    }));
+                                    output
+                                        .content
+                                        .push(AssistantContentBlock::Text(TextContent {
+                                            text: String::new(),
+                                            text_signature: None,
+                                        }));
                                     current_block_type = Some(BlockKind::Text);
                                     current_text.clear();
-                                    let _ = sender.send(StreamEvent::TextStart {
-                                        content_index,
-                                        partial: output.clone(),
-                                    }).await;
+                                    let _ = sender
+                                        .send(StreamEvent::TextStart {
+                                            content_index,
+                                            partial: output.clone(),
+                                        })
+                                        .await;
                                 }
                                 "function_call" => {
-                                    current_tool_id = item.get("call_id").and_then(|v| v.as_str()).map(String::from);
-                                    current_tool_name = item.get("name").and_then(|v| v.as_str()).map(String::from);
-                                    current_tool_item_id = item.get("id").and_then(|v| v.as_str()).map(String::from);
+                                    current_tool_id = item
+                                        .get("call_id")
+                                        .and_then(|v| v.as_str())
+                                        .map(String::from);
+                                    current_tool_name =
+                                        item.get("name").and_then(|v| v.as_str()).map(String::from);
+                                    current_tool_item_id =
+                                        item.get("id").and_then(|v| v.as_str()).map(String::from);
                                     current_tool_partial_json.clear();
-                                    output.content.push(AssistantContentBlock::ToolCall(ToolCall {
-                                        call_type: "function".into(),
-                                        id: current_tool_id.clone().unwrap_or_default(),
-                                        name: current_tool_name.clone().unwrap_or_default(),
-                                        arguments: serde_json::json!({}),
-                                        thought_signature: None,
-                                    }));
+                                    output.content.push(AssistantContentBlock::ToolCall(
+                                        ToolCall {
+                                            call_type: "function".into(),
+                                            id: current_tool_id.clone().unwrap_or_default(),
+                                            name: current_tool_name.clone().unwrap_or_default(),
+                                            arguments: serde_json::json!({}),
+                                            thought_signature: None,
+                                        },
+                                    ));
                                     current_block_type = Some(BlockKind::ToolCall);
-                                    let _ = sender.send(StreamEvent::ToolCallStart {
-                                        content_index,
-                                        partial: output.clone(),
-                                    }).await;
+                                    let _ = sender
+                                        .send(StreamEvent::ToolCallStart {
+                                            content_index,
+                                            partial: output.clone(),
+                                        })
+                                        .await;
                                 }
                                 _ => {}
                             }
@@ -440,15 +486,19 @@ async fn parse_sse_stream(
                         if matches!(current_block_type, Some(BlockKind::Thinking)) {
                             if let Some(ref delta) = event.delta {
                                 current_thinking.push_str(delta);
-                                if let Some(AssistantContentBlock::Thinking(th)) = output.content.last_mut() {
+                                if let Some(AssistantContentBlock::Thinking(th)) =
+                                    output.content.last_mut()
+                                {
                                     th.thinking.push_str(delta);
                                 }
                                 let content_index = output.content.len().saturating_sub(1);
-                                let _ = sender.send(StreamEvent::ThinkingDelta {
-                                    content_index,
-                                    delta: delta.clone(),
-                                    partial: output.clone(),
-                                }).await;
+                                let _ = sender
+                                    .send(StreamEvent::ThinkingDelta {
+                                        content_index,
+                                        delta: delta.clone(),
+                                        partial: output.clone(),
+                                    })
+                                    .await;
                             }
                         }
                     }
@@ -456,15 +506,19 @@ async fn parse_sse_stream(
                         if matches!(current_block_type, Some(BlockKind::Text)) {
                             if let Some(ref delta) = event.delta {
                                 current_text.push_str(delta);
-                                if let Some(AssistantContentBlock::Text(t)) = output.content.last_mut() {
+                                if let Some(AssistantContentBlock::Text(t)) =
+                                    output.content.last_mut()
+                                {
                                     t.text.push_str(delta);
                                 }
                                 let content_index = output.content.len().saturating_sub(1);
-                                let _ = sender.send(StreamEvent::TextDelta {
-                                    content_index,
-                                    delta: delta.clone(),
-                                    partial: output.clone(),
-                                }).await;
+                                let _ = sender
+                                    .send(StreamEvent::TextDelta {
+                                        content_index,
+                                        delta: delta.clone(),
+                                        partial: output.clone(),
+                                    })
+                                    .await;
                             }
                         }
                     }
@@ -473,15 +527,19 @@ async fn parse_sse_stream(
                             if let Some(ref delta) = event.delta {
                                 current_tool_partial_json.push_str(delta);
                                 let parsed = parse_json_repair(&current_tool_partial_json);
-                                if let Some(AssistantContentBlock::ToolCall(tc)) = output.content.last_mut() {
+                                if let Some(AssistantContentBlock::ToolCall(tc)) =
+                                    output.content.last_mut()
+                                {
                                     tc.arguments = parsed;
                                 }
                                 let content_index = output.content.len().saturating_sub(1);
-                                let _ = sender.send(StreamEvent::ToolCallDelta {
-                                    content_index,
-                                    delta: delta.clone(),
-                                    partial: output.clone(),
-                                }).await;
+                                let _ = sender
+                                    .send(StreamEvent::ToolCallDelta {
+                                        content_index,
+                                        delta: delta.clone(),
+                                        partial: output.clone(),
+                                    })
+                                    .await;
                             }
                         }
                     }
@@ -489,7 +547,9 @@ async fn parse_sse_stream(
                         if matches!(current_block_type, Some(BlockKind::ToolCall)) {
                             if let Some(args) = event.arguments {
                                 let parsed = parse_json_repair(&args);
-                                if let Some(AssistantContentBlock::ToolCall(tc)) = output.content.last_mut() {
+                                if let Some(AssistantContentBlock::ToolCall(tc)) =
+                                    output.content.last_mut()
+                                {
                                     tc.arguments = parsed;
                                 }
                             }
@@ -499,28 +559,37 @@ async fn parse_sse_stream(
                         let content_index = output.content.len().saturating_sub(1);
                         match current_block_type.take() {
                             Some(BlockKind::Text) => {
-                                if let Some(AssistantContentBlock::Text(t)) = output.content.last() {
-                                    let _ = sender.send(StreamEvent::TextEnd {
-                                        content_index,
-                                        content: t.text.clone(),
-                                        partial: output.clone(),
-                                    }).await;
+                                if let Some(AssistantContentBlock::Text(t)) = output.content.last()
+                                {
+                                    let _ = sender
+                                        .send(StreamEvent::TextEnd {
+                                            content_index,
+                                            content: t.text.clone(),
+                                            partial: output.clone(),
+                                        })
+                                        .await;
                                 }
                             }
                             Some(BlockKind::Thinking) => {
                                 // Capture reasoning signature (full item JSON) for replay
                                 if let Some(item) = &event.item {
                                     let sig = serde_json::to_string(item).unwrap_or_default();
-                                    if let Some(AssistantContentBlock::Thinking(th)) = output.content.last_mut() {
+                                    if let Some(AssistantContentBlock::Thinking(th)) =
+                                        output.content.last_mut()
+                                    {
                                         th.thinking_signature = Some(sig);
                                     }
                                 }
-                                if let Some(AssistantContentBlock::Thinking(th)) = output.content.last() {
-                                    let _ = sender.send(StreamEvent::ThinkingEnd {
-                                        content_index,
-                                        content: th.thinking.clone(),
-                                        partial: output.clone(),
-                                    }).await;
+                                if let Some(AssistantContentBlock::Thinking(th)) =
+                                    output.content.last()
+                                {
+                                    let _ = sender
+                                        .send(StreamEvent::ThinkingEnd {
+                                            content_index,
+                                            content: th.thinking.clone(),
+                                            partial: output.clone(),
+                                        })
+                                        .await;
                                 }
                             }
                             Some(BlockKind::ToolCall) => {
@@ -530,15 +599,21 @@ async fn parse_sse_stream(
                                     (Some(c), None) => c.clone(),
                                     _ => String::new(),
                                 };
-                                if let Some(AssistantContentBlock::ToolCall(tc)) = output.content.last_mut() {
+                                if let Some(AssistantContentBlock::ToolCall(tc)) =
+                                    output.content.last_mut()
+                                {
                                     tc.id = final_id;
                                 }
-                                if let Some(AssistantContentBlock::ToolCall(tc)) = output.content.last() {
-                                    let _ = sender.send(StreamEvent::ToolCallEnd {
-                                        content_index,
-                                        tool_call: tc.clone(),
-                                        partial: output.clone(),
-                                    }).await;
+                                if let Some(AssistantContentBlock::ToolCall(tc)) =
+                                    output.content.last()
+                                {
+                                    let _ = sender
+                                        .send(StreamEvent::ToolCallEnd {
+                                            content_index,
+                                            tool_call: tc.clone(),
+                                            partial: output.clone(),
+                                        })
+                                        .await;
                                 }
                                 current_tool_id = None;
                                 current_tool_name = None;
@@ -561,9 +636,18 @@ async fn parse_sse_stream(
                             }
                             // usage
                             if let Some(usage) = resp.get("usage") {
-                                let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                                let out = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                                let total = usage.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(input + out);
+                                let input = usage
+                                    .get("input_tokens")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0);
+                                let out = usage
+                                    .get("output_tokens")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0);
+                                let total = usage
+                                    .get("total_tokens")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(input + out);
                                 output.usage.input = input;
                                 output.usage.output = out;
                                 output.usage.total_tokens = total;
@@ -571,7 +655,8 @@ async fn parse_sse_stream(
                         }
                     }
                     "error" => {
-                        let msg = event.item
+                        let msg = event
+                            .item
                             .as_ref()
                             .and_then(|v| v.get("message"))
                             .and_then(|v| v.as_str())
@@ -584,7 +669,8 @@ async fn parse_sse_stream(
             }
         }
         Ok(())
-    }.await;
+    }
+    .await;
 
     match parse_result {
         Ok(()) => {
@@ -608,18 +694,33 @@ enum BlockKind {
 
 /// JSON 容错解析
 fn parse_json_repair(s: &str) -> serde_json::Value {
-    if s.is_empty() { return serde_json::json!({}); }
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) { return v; }
+    if s.is_empty() {
+        return serde_json::json!({});
+    }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
+        return v;
+    }
     let mut repaired = s.to_string();
     let mut open_braces = 0i32;
     let mut open_brackets = 0i32;
     let mut in_string = false;
     let mut escape = false;
     for c in repaired.chars() {
-        if escape { escape = false; continue; }
-        if c == '\\' { escape = true; continue; }
-        if c == '"' { in_string = !in_string; continue; }
-        if in_string { continue; }
+        if escape {
+            escape = false;
+            continue;
+        }
+        if c == '\\' {
+            escape = true;
+            continue;
+        }
+        if c == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
         match c {
             '{' => open_braces += 1,
             '}' => open_braces -= 1,
@@ -628,9 +729,15 @@ fn parse_json_repair(s: &str) -> serde_json::Value {
             _ => {}
         }
     }
-    if in_string { repaired.push('"'); }
-    for _ in 0..open_brackets.max(0) { repaired.push(']'); }
-    for _ in 0..open_braces.max(0) { repaired.push('}'); }
+    if in_string {
+        repaired.push('"');
+    }
+    for _ in 0..open_brackets.max(0) {
+        repaired.push(']');
+    }
+    for _ in 0..open_braces.max(0) {
+        repaired.push('}');
+    }
     serde_json::from_str(&repaired).unwrap_or(serde_json::json!({}))
 }
 
@@ -666,7 +773,10 @@ mod tests {
             Some("You are helpful".into()),
             vec![Message::User(UserMessage {
                 role: "user".into(),
-                content: vec![ContentBlock::Text(TextContent { text: "Hello".into(), text_signature: None })],
+                content: vec![ContentBlock::Text(TextContent {
+                    text: "Hello".into(),
+                    text_signature: None,
+                })],
                 timestamp: 0,
                 source: MessageSource::Prompt,
             })],
@@ -699,14 +809,19 @@ mod tests {
     fn build_request_body_reasoning_off() {
         let model = make_test_model();
         let ctx = Context::new(None, vec![]);
-        let body = build_request_body(&model, &ctx, Some(&StreamOptions {
-            max_tokens: None,
-            api_key: None,
-            reasoning: Some(ThinkingLevel::Off),
-            timeout_ms: None,
-            max_retries: None,
-            response_format: None,
-        })).unwrap();
+        let body = build_request_body(
+            &model,
+            &ctx,
+            Some(&StreamOptions {
+                max_tokens: None,
+                api_key: None,
+                reasoning: Some(ThinkingLevel::Off),
+                timeout_ms: None,
+                max_retries: None,
+                response_format: None,
+            }),
+        )
+        .unwrap();
         assert!(body.reasoning.is_none());
     }
 

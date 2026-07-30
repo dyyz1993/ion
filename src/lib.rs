@@ -1,13 +1,7 @@
 pub mod agent;
 pub mod agent_config;
-pub mod auto_session_title;
 pub mod auth;
-pub mod learning_extension;
-pub mod goal_supervisor_extension;
-pub mod goal_evolver;
-pub mod secret_detector;
-pub mod skill_distillation;
-pub mod tool_loop_detector;
+pub mod auto_session_title;
 pub mod backend_registry;
 pub mod command_guard;
 pub mod config;
@@ -17,36 +11,42 @@ pub mod event_bus;
 pub mod export;
 pub mod global_memory;
 pub mod global_memory_ext;
-pub mod lsp_extension;
+pub mod goal_evolver;
+pub mod goal_supervisor_extension;
 pub mod ids;
+pub mod learning_extension;
+pub mod lsp_extension;
+pub mod secret_detector;
+pub mod skill_distillation;
+pub mod tool_loop_detector;
 pub mod types;
 
+pub mod context_reclaimer;
+pub mod file_snapshot;
+pub mod file_time_guard;
+pub mod hooks;
+pub mod kernel;
 pub mod manager;
-pub mod wasm_extension;
-pub mod runtime;
+pub mod mcp;
+pub mod message_retrieval;
+pub mod monitor_extension;
+pub mod paths;
 pub mod pool;
 pub mod queue;
+pub mod retry;
+pub mod rules_engine;
+pub mod runtime;
 pub mod session;
-pub mod message_retrieval;
 pub mod session_index;
 pub mod session_jsonl;
 pub mod session_tree;
+pub mod storage_context;
+pub mod wasm_extension;
 pub mod worker;
 pub mod worker_api;
 pub mod worker_registry;
-pub mod kernel;
-pub mod paths;
-pub mod storage_context;
-pub mod retry;
-pub mod workflow;
-pub mod file_snapshot;
-pub mod file_time_guard;
-pub mod mcp;
-pub mod hooks;
-pub mod rules_engine;
-pub mod context_reclaimer;
-pub mod monitor_extension;
 pub mod worker_rpc;
+pub mod workflow;
 
 /// Returns the nth Fibonacci number (0-indexed).
 ///
@@ -83,8 +83,9 @@ pub fn multiply(a: u64, b: u64) -> u64 {
 pub fn factorial(n: u64) -> u64 {
     match n {
         0 | 1 => 1,
-        _ => (2..=n)
-            .fold(1u64, |acc, x| acc.checked_mul(x).expect("factorial overflow")),
+        _ => (2..=n).fold(1u64, |acc, x| {
+            acc.checked_mul(x).expect("factorial overflow")
+        }),
     }
 }
 

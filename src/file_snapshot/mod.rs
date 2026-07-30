@@ -10,30 +10,30 @@
 //! - 仓库目录内：每轮 turn_end 扫描（兜底捕获 bash/外部工具/手动改动）
 //! - 仓库目录外：只靠 write/edit 工具拦截（不定期扫描仓库外路径）
 
-pub mod object_store;
-pub mod snapshot;
-pub mod scanner;
+pub mod approval;
 pub mod diff;
 pub mod gc;
+pub mod object_store;
 pub mod restore;
+pub mod scanner;
+pub mod snapshot;
 pub mod tree_store;
-pub mod approval;
 
-pub use object_store::{ObjectStore, project_key, content_hash};
+pub use approval::{ApprovalExtension, ApprovalManager, ApprovalStatus, FileApproval, PendingFile};
+pub use diff::{count_diff, unified_diff};
+pub use object_store::{ObjectStore, content_hash, project_key};
+pub use scanner::{DirScanResult, is_binary, scan_dir_fast};
 pub use snapshot::{
-    ToolSnapshot, DirSnapshot, DirFileChange, ChangeStatus,
-    BeforeState, SnapshotStore, capture_before, capture_after, capture_after_dir,
+    BeforeState, ChangeStatus, DirFileChange, DirSnapshot, SnapshotStore, ToolSnapshot,
+    capture_after, capture_after_dir, capture_before,
 };
-pub use scanner::{scan_dir_fast, is_binary, DirScanResult};
 pub use tree_store::{
-    TreeEntries, TreeDiff, TreeChangeStatus, StepSnapshot,
-    serialize_tree, deserialize_tree, write_tree, read_tree, compute_diff, get_file_hash,
+    StepSnapshot, TreeChangeStatus, TreeDiff, TreeEntries, compute_diff, deserialize_tree,
+    get_file_hash, read_tree, serialize_tree, write_tree,
 };
-pub use approval::{ApprovalManager, ApprovalExtension, ApprovalStatus, FileApproval, PendingFile};
-pub use diff::{unified_diff, count_diff};
 
-use crate::agent::extension::{Extension, SessionContext, TurnContext};
 use crate::agent::error::AgentResult;
+use crate::agent::extension::{Extension, SessionContext, TurnContext};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -69,7 +69,9 @@ fn gen_turn_id() -> String {
 
 impl FileSnapshotExtension {
     /// 创建并返回 (extension, store_arc)
-    pub fn new_pair(storage: crate::storage_context::StorageContext) -> (Self, std::sync::Arc<SnapshotStore>) {
+    pub fn new_pair(
+        storage: crate::storage_context::StorageContext,
+    ) -> (Self, std::sync::Arc<SnapshotStore>) {
         let pk = project_key(&storage.cwd);
         let store = std::sync::Arc::new(SnapshotStore::new(&pk));
         let ext = Self {
@@ -86,7 +88,9 @@ impl FileSnapshotExtension {
 
     /// 兼容旧签名（测试用）
     pub fn new_pair_with_cwd(cwd: &str) -> (Self, std::sync::Arc<SnapshotStore>) {
-        Self::new_pair(crate::storage_context::StorageContext::new(cwd, "test", cwd))
+        Self::new_pair(crate::storage_context::StorageContext::new(
+            cwd, "test", cwd,
+        ))
     }
 
     /// 获取快照存储（RPC 查询用）
@@ -140,7 +144,9 @@ impl FileSnapshotExtension {
 
 #[async_trait::async_trait]
 impl Extension for FileSnapshotExtension {
-    fn name(&self) -> &str { "file_snapshot" }
+    fn name(&self) -> &str {
+        "file_snapshot"
+    }
 
     async fn on_session_start(&self, _ctx: &SessionContext) -> AgentResult<()> {
         // session start：建立初始扫描 baseline + baseline tree + 异步触发 GC
@@ -174,10 +180,7 @@ impl Extension for FileSnapshotExtension {
         Ok(())
     }
 
-    async fn on_turn_start(
-        &self,
-        _ctx: &mut TurnContext,
-    ) -> AgentResult<()> {
+    async fn on_turn_start(&self, _ctx: &mut TurnContext) -> AgentResult<()> {
         // 每轮 turn 生成唯一 ID（不依赖下标递增）
         *self.current_turn_id.lock().unwrap() = gen_turn_id();
         Ok(())
@@ -210,12 +213,14 @@ impl Extension for FileSnapshotExtension {
         let (current_tree_hash, _) = tree_store::write_tree(self.store.objects(), &files);
 
         let baseline = self.baseline_tree_hash.lock().unwrap().clone();
-        if let Some(ref baseline_hash) = baseline && &current_tree_hash != baseline_hash {
+        if let Some(ref baseline_hash) = baseline
+            && &current_tree_hash != baseline_hash
+        {
             // 有变更：算 diff + 写 step-snapshot
-            let old_tree = tree_store::read_tree(self.store.objects(), baseline_hash)
-                .unwrap_or_default();
-            let new_tree = tree_store::read_tree(self.store.objects(), &current_tree_hash)
-                .unwrap_or_default();
+            let old_tree =
+                tree_store::read_tree(self.store.objects(), baseline_hash).unwrap_or_default();
+            let new_tree =
+                tree_store::read_tree(self.store.objects(), &current_tree_hash).unwrap_or_default();
             let diff = tree_store::compute_diff(&old_tree, &new_tree);
             if !diff.is_empty() {
                 let step = tree_store::StepSnapshot {
@@ -239,9 +244,17 @@ impl Extension for FileSnapshotExtension {
         &self,
         ctx: &crate::agent::extension::ToolExecutionContext,
     ) -> AgentResult<()> {
-        let before = capture_before(&ctx.tool_name, &ctx.args, self.store.objects(), &self.storage.cwd);
+        let before = capture_before(
+            &ctx.tool_name,
+            &ctx.args,
+            self.store.objects(),
+            &self.storage.cwd,
+        );
         if !matches!(before, BeforeState::Skip) {
-            self.before_states.lock().unwrap().insert(ctx.tool_call_id.clone(), before);
+            self.before_states
+                .lock()
+                .unwrap()
+                .insert(ctx.tool_call_id.clone(), before);
         }
         Ok(())
     }
@@ -257,16 +270,22 @@ impl Extension for FileSnapshotExtension {
             match &before_state {
                 BeforeState::FileCapture { .. } => {
                     if let Some(snap) = capture_after(
-                        &before_state, self.store.objects(),
-                        &turn_id, &ctx.tool_call_id, &ctx.tool_name,
+                        &before_state,
+                        self.store.objects(),
+                        &turn_id,
+                        &ctx.tool_call_id,
+                        &ctx.tool_name,
                     ) {
                         self.save_snap(snap);
                     }
                 }
                 BeforeState::DirCapture { .. } => {
                     let snaps = capture_after_dir(
-                        &before_state, self.store.objects(), &self.storage.cwd,
-                        &turn_id, &ctx.tool_call_id,
+                        &before_state,
+                        self.store.objects(),
+                        &self.storage.cwd,
+                        &turn_id,
+                        &ctx.tool_call_id,
                     );
                     for snap in snaps {
                         self.save_snap(snap);
@@ -299,7 +318,13 @@ mod tests {
     fn gen_turn_id_length() {
         let id = gen_turn_id();
         // "ts_" + 12 hex digits = 15 characters total
-        assert_eq!(id.len(), 15, "expected 15 chars, got '{}' (len {})", id, id.len());
+        assert_eq!(
+            id.len(),
+            15,
+            "expected 15 chars, got '{}' (len {})",
+            id,
+            id.len()
+        );
         // The suffix after "ts_" must be valid hex
         let hex = &id[3..];
         assert!(
@@ -442,8 +467,20 @@ mod tests {
         let before = "line1\nline2";
         let after = "line1\nline2 changed";
         let diff = unified_diff(before, after, "src/lib.rs");
-        assert!(diff.contains("--- a/src/lib.rs"), "missing --- header: {}", diff);
-        assert!(diff.contains("+++ b/src/lib.rs"), "missing +++ header: {}", diff);
-        assert!(diff.contains("+line2 changed"), "missing added line: {}", diff);
+        assert!(
+            diff.contains("--- a/src/lib.rs"),
+            "missing --- header: {}",
+            diff
+        );
+        assert!(
+            diff.contains("+++ b/src/lib.rs"),
+            "missing +++ header: {}",
+            diff
+        );
+        assert!(
+            diff.contains("+line2 changed"),
+            "missing added line: {}",
+            diff
+        );
     }
 }

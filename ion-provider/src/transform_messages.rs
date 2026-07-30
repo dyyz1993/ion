@@ -17,11 +17,13 @@
 use crate::types::*;
 
 const NON_VISION_USER_IMAGE_PLACEHOLDER: &str = "(image omitted: model does not support images)";
-const NON_VISION_TOOL_IMAGE_PLACEHOLDER: &str = "(tool image omitted: model does not support images)";
+const NON_VISION_TOOL_IMAGE_PLACEHOLDER: &str =
+    "(tool image omitted: model does not support images)";
 
 /// 规范化 tool call ID 的回调类型
 /// 返回新的 ID（如果需要规范化）
-pub type NormalizeToolCallIdFn = Box<dyn Fn(&str, &Model, &AssistantMessage) -> String + Send + Sync>;
+pub type NormalizeToolCallIdFn =
+    Box<dyn Fn(&str, &Model, &AssistantMessage) -> String + Send + Sync>;
 
 /// 主入口：规范化消息列表
 pub fn transform_messages(
@@ -33,11 +35,14 @@ pub fn transform_messages(
     let messages = downgrade_unsupported_images(messages, model);
 
     // 2. 构建 toolCallId 映射 + thinking/text/toolCall 跨模型转换
-    let mut tool_call_id_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut tool_call_id_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
 
     let transformed: Vec<Message> = messages
         .into_iter()
-        .map(|msg| transform_single_message(msg, model, normalize_tool_call_id, &mut tool_call_id_map))
+        .map(|msg| {
+            transform_single_message(msg, model, normalize_tool_call_id, &mut tool_call_id_map)
+        })
         .collect();
 
     // 3. 第二遍：为孤儿 tool call 插入合成 result，跳过 error/aborted assistant
@@ -56,22 +61,34 @@ fn downgrade_unsupported_images(messages: Vec<Message>, model: &Model) -> Vec<Me
         .into_iter()
         .map(|msg| match msg {
             Message::User(u) => {
-                let has_image = u.content.iter().any(|b| matches!(b, ContentBlock::Image(_)));
+                let has_image = u
+                    .content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::Image(_)));
                 if !has_image {
                     return Message::User(u);
                 }
                 Message::User(UserMessage {
-                    content: replace_images_with_placeholder(u.content, NON_VISION_USER_IMAGE_PLACEHOLDER),
+                    content: replace_images_with_placeholder(
+                        u.content,
+                        NON_VISION_USER_IMAGE_PLACEHOLDER,
+                    ),
                     ..u
                 })
             }
             Message::ToolResult(tr) => {
-                let has_image = tr.content.iter().any(|b| matches!(b, ContentBlock::Image(_)));
+                let has_image = tr
+                    .content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::Image(_)));
                 if !has_image {
                     return Message::ToolResult(tr);
                 }
                 Message::ToolResult(ToolResultMessage {
-                    content: replace_images_with_placeholder(tr.content, NON_VISION_TOOL_IMAGE_PLACEHOLDER),
+                    content: replace_images_with_placeholder(
+                        tr.content,
+                        NON_VISION_TOOL_IMAGE_PLACEHOLDER,
+                    ),
                     ..tr
                 })
             }
@@ -80,7 +97,10 @@ fn downgrade_unsupported_images(messages: Vec<Message>, model: &Model) -> Vec<Me
         .collect()
 }
 
-fn replace_images_with_placeholder(content: Vec<ContentBlock>, placeholder: &str) -> Vec<ContentBlock> {
+fn replace_images_with_placeholder(
+    content: Vec<ContentBlock>,
+    placeholder: &str,
+) -> Vec<ContentBlock> {
     let mut result: Vec<ContentBlock> = Vec::new();
     let mut previous_was_placeholder = false;
 
@@ -112,8 +132,11 @@ fn transform_single_message(
     tool_call_id_map: &mut std::collections::HashMap<String, String>,
 ) -> Message {
     match msg {
-        Message::User(_) | Message::BashExecution(_) | Message::Custom(_)
-        | Message::BranchSummary(_) | Message::CompactionSummary(_) => msg,
+        Message::User(_)
+        | Message::BashExecution(_)
+        | Message::Custom(_)
+        | Message::BranchSummary(_)
+        | Message::CompactionSummary(_) => msg,
 
         Message::ToolResult(mut tr) => {
             // 用映射表规范化 tool_call_id
@@ -126,15 +149,23 @@ fn transform_single_message(
         }
 
         Message::Assistant(a) => {
-            let is_same_model = a.provider == model.provider
-                && a.api == model.api
-                && a.model == model.id;
+            let is_same_model =
+                a.provider == model.provider && a.api == model.api && a.model == model.id;
 
             let transformed_content: Vec<AssistantContentBlock> = a
                 .content
                 .iter()
                 .cloned()
-                .flat_map(|block| transform_content_block(block, is_same_model, model, &a, normalize_tool_call_id, tool_call_id_map))
+                .flat_map(|block| {
+                    transform_content_block(
+                        block,
+                        is_same_model,
+                        model,
+                        &a,
+                        normalize_tool_call_id,
+                        tool_call_id_map,
+                    )
+                })
                 .collect();
 
             Message::Assistant(AssistantMessage {
@@ -166,7 +197,11 @@ fn transform_content_block(
         AssistantContentBlock::Thinking(th) => {
             // redacted thinking 跨模型丢弃
             if th.redacted == Some(true) {
-                return if is_same_model { vec![AssistantContentBlock::Thinking(th)] } else { vec![] };
+                return if is_same_model {
+                    vec![AssistantContentBlock::Thinking(th)]
+                } else {
+                    vec![]
+                };
             }
             // 同模型且带 signature：保留（replay 需要）
             if is_same_model && th.thinking_signature.is_some() {
@@ -228,13 +263,18 @@ fn transform_content_block(
 fn insert_synthetic_tool_results(messages: Vec<Message>) -> Vec<Message> {
     let mut result: Vec<Message> = Vec::new();
     let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
-    let mut existing_tool_result_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut existing_tool_result_ids: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
 
     for msg in messages {
         match &msg {
             Message::Assistant(a) => {
                 // flush 上一轮的孤儿 tool call
-                flush_pending(&mut pending_tool_calls, &mut existing_tool_result_ids, &mut result);
+                flush_pending(
+                    &mut pending_tool_calls,
+                    &mut existing_tool_result_ids,
+                    &mut result,
+                );
 
                 // 跳过 error/aborted
                 if a.stop_reason == StopReason::Error || a.stop_reason == StopReason::Aborted {
@@ -242,10 +282,14 @@ fn insert_synthetic_tool_results(messages: Vec<Message>) -> Vec<Message> {
                 }
 
                 // 收集本轮 tool call
-                let tool_calls: Vec<ToolCall> = a.content.iter().filter_map(|b| match b {
-                    AssistantContentBlock::ToolCall(tc) => Some(tc.clone()),
-                    _ => None,
-                }).collect();
+                let tool_calls: Vec<ToolCall> = a
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        AssistantContentBlock::ToolCall(tc) => Some(tc.clone()),
+                        _ => None,
+                    })
+                    .collect();
                 if !tool_calls.is_empty() {
                     pending_tool_calls = tool_calls;
                     existing_tool_result_ids.clear();
@@ -259,7 +303,11 @@ fn insert_synthetic_tool_results(messages: Vec<Message>) -> Vec<Message> {
             }
             Message::User(_) => {
                 // user 中断 tool flow
-                flush_pending(&mut pending_tool_calls, &mut existing_tool_result_ids, &mut result);
+                flush_pending(
+                    &mut pending_tool_calls,
+                    &mut existing_tool_result_ids,
+                    &mut result,
+                );
                 result.push(msg);
             }
             _ => {
@@ -269,7 +317,11 @@ fn insert_synthetic_tool_results(messages: Vec<Message>) -> Vec<Message> {
     }
 
     // 对话末尾的孤儿 tool call
-    flush_pending(&mut pending_tool_calls, &mut existing_tool_result_ids, &mut result);
+    flush_pending(
+        &mut pending_tool_calls,
+        &mut existing_tool_result_ids,
+        &mut result,
+    );
 
     result
 }
@@ -440,9 +492,16 @@ pub fn normalize_tool_call_id_cross_provider(
 // Default ID normalizer: Anthropic requires ^[a-zA-Z0-9_-]+$ (max 64)
 // ──────────────────────────────────────────────────────────────
 
-pub fn default_normalize_tool_call_id(id: &str, _model: &Model, _source: &AssistantMessage) -> String {
+pub fn default_normalize_tool_call_id(
+    id: &str,
+    _model: &Model,
+    _source: &AssistantMessage,
+) -> String {
     // 如果已经合规，直接返回
-    let is_valid = id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    let is_valid = id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
     if is_valid {
         return id.to_string();
     }
@@ -450,7 +509,10 @@ pub fn default_normalize_tool_call_id(id: &str, _model: &Model, _source: &Assist
     // OpenAI Responses 格式：{call_id}|{item_id} — 取 call_id 部分
     if let Some((call_id, _)) = id.split_once('|') {
         if !call_id.is_empty() {
-            let cleaned: String = call_id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-').collect();
+            let cleaned: String = call_id
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+                .collect();
             if !cleaned.is_empty() {
                 return cleaned.chars().take(64).collect();
             }
@@ -476,20 +538,28 @@ mod tests {
 
     fn make_model(api: &str, provider: &str, id: &str, input: Vec<String>) -> Model {
         Model {
-            id: id.into(), name: id.into(),
-            api: api.into(), provider: provider.into(),
+            id: id.into(),
+            name: id.into(),
+            api: api.into(),
+            provider: provider.into(),
             base_url: String::new(),
-            reasoning: false, input,
+            reasoning: false,
+            input,
             cost: Cost::default(),
-            context_window: 128000, max_tokens: 4096,
-            compat: None, headers: None,
+            context_window: 128000,
+            max_tokens: 4096,
+            compat: None,
+            headers: None,
         }
     }
 
     fn make_user_text(text: &str) -> Message {
         Message::User(UserMessage {
             role: "user".into(),
-            content: vec![ContentBlock::Text(TextContent { text: text.into(), text_signature: None })],
+            content: vec![ContentBlock::Text(TextContent {
+                text: text.into(),
+                text_signature: None,
+            })],
             timestamp: 0,
             source: MessageSource::Prompt,
         })
@@ -498,11 +568,15 @@ mod tests {
     fn make_assistant_text(text: &str, model: &Model) -> Message {
         Message::Assistant(AssistantMessage {
             role: "assistant".into(),
-            content: vec![AssistantContentBlock::Text(TextContent { text: text.into(), text_signature: None })],
+            content: vec![AssistantContentBlock::Text(TextContent {
+                text: text.into(),
+                text_signature: None,
+            })],
             api: model.api.clone(),
             provider: model.provider.clone(),
             model: model.id.clone(),
-            response_model: None, response_id: None,
+            response_model: None,
+            response_id: None,
             usage: Usage::default(),
             stop_reason: StopReason::Stop,
             error_message: None,
@@ -512,12 +586,23 @@ mod tests {
 
     #[test]
     fn downgrade_images_for_non_vision_model() {
-        let model = make_model("anthropic-messages", "anthropic", "claude-3-haiku", vec!["text".into()]);
+        let model = make_model(
+            "anthropic-messages",
+            "anthropic",
+            "claude-3-haiku",
+            vec!["text".into()],
+        );
         let messages = vec![Message::User(UserMessage {
             role: "user".into(),
             content: vec![
-                ContentBlock::Text(TextContent { text: "看这张图".into(), text_signature: None }),
-                ContentBlock::Image(ImageContent { data: "abc".into(), mime_type: "image/png".into() }),
+                ContentBlock::Text(TextContent {
+                    text: "看这张图".into(),
+                    text_signature: None,
+                }),
+                ContentBlock::Image(ImageContent {
+                    data: "abc".into(),
+                    mime_type: "image/png".into(),
+                }),
             ],
             timestamp: 0,
             source: MessageSource::Prompt,
@@ -527,7 +612,9 @@ mod tests {
             Message::User(u) => {
                 assert_eq!(u.content.len(), 2);
                 assert!(matches!(&u.content[0], ContentBlock::Text(t) if t.text == "看这张图"));
-                assert!(matches!(&u.content[1], ContentBlock::Text(t) if t.text.contains("image omitted")));
+                assert!(
+                    matches!(&u.content[1], ContentBlock::Text(t) if t.text.contains("image omitted"))
+                );
             }
             _ => panic!("expected User"),
         }
@@ -535,19 +622,34 @@ mod tests {
 
     #[test]
     fn keep_images_for_vision_model() {
-        let model = make_model("anthropic-messages", "anthropic", "claude-3-sonnet", vec!["text".into(), "image".into()]);
+        let model = make_model(
+            "anthropic-messages",
+            "anthropic",
+            "claude-3-sonnet",
+            vec!["text".into(), "image".into()],
+        );
         let messages = vec![Message::User(UserMessage {
             role: "user".into(),
             content: vec![
-                ContentBlock::Text(TextContent { text: "看这张图".into(), text_signature: None }),
-                ContentBlock::Image(ImageContent { data: "abc".into(), mime_type: "image/png".into() }),
+                ContentBlock::Text(TextContent {
+                    text: "看这张图".into(),
+                    text_signature: None,
+                }),
+                ContentBlock::Image(ImageContent {
+                    data: "abc".into(),
+                    mime_type: "image/png".into(),
+                }),
             ],
             timestamp: 0,
             source: MessageSource::Prompt,
         })];
         let result = transform_messages(messages, &model, None);
         match &result[0] {
-            Message::User(u) => assert!(u.content.iter().any(|b| matches!(b, ContentBlock::Image(_)))),
+            Message::User(u) => assert!(
+                u.content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::Image(_)))
+            ),
             _ => panic!("expected User"),
         }
     }
@@ -555,7 +657,12 @@ mod tests {
     #[test]
     fn thinking_cross_model_becomes_text() {
         let source_model = make_model("openai-completions", "openai", "gpt-5", vec!["text".into()]);
-        let target_model = make_model("anthropic-messages", "anthropic", "claude-3-sonnet", vec!["text".into()]);
+        let target_model = make_model(
+            "anthropic-messages",
+            "anthropic",
+            "claude-3-sonnet",
+            vec!["text".into()],
+        );
         let assistant = AssistantMessage {
             role: "assistant".into(),
             content: vec![
@@ -564,12 +671,16 @@ mod tests {
                     thinking_signature: None,
                     redacted: None,
                 }),
-                AssistantContentBlock::Text(TextContent { text: "Answer".into(), text_signature: None }),
+                AssistantContentBlock::Text(TextContent {
+                    text: "Answer".into(),
+                    text_signature: None,
+                }),
             ],
             api: source_model.api.clone(),
             provider: source_model.provider.clone(),
             model: source_model.id.clone(),
-            response_model: None, response_id: None,
+            response_model: None,
+            response_id: None,
             usage: Usage::default(),
             stop_reason: StopReason::Stop,
             error_message: None,
@@ -581,9 +692,13 @@ mod tests {
             Message::Assistant(a) => {
                 assert_eq!(a.content.len(), 2);
                 // thinking → text
-                assert!(matches!(&a.content[0], AssistantContentBlock::Text(t) if t.text == "Let me think..."));
+                assert!(
+                    matches!(&a.content[0], AssistantContentBlock::Text(t) if t.text == "Let me think...")
+                );
                 // 原 text 保留
-                assert!(matches!(&a.content[1], AssistantContentBlock::Text(t) if t.text == "Answer"));
+                assert!(
+                    matches!(&a.content[1], AssistantContentBlock::Text(t) if t.text == "Answer")
+                );
             }
             _ => panic!("expected Assistant"),
         }
@@ -591,7 +706,12 @@ mod tests {
 
     #[test]
     fn thinking_same_model_kept() {
-        let model = make_model("anthropic-messages", "anthropic", "claude-3-sonnet", vec!["text".into()]);
+        let model = make_model(
+            "anthropic-messages",
+            "anthropic",
+            "claude-3-sonnet",
+            vec!["text".into()],
+        );
         let assistant = AssistantMessage {
             role: "assistant".into(),
             content: vec![AssistantContentBlock::Thinking(ThinkingContent {
@@ -602,7 +722,8 @@ mod tests {
             api: model.api.clone(),
             provider: model.provider.clone(),
             model: model.id.clone(),
-            response_model: None, response_id: None,
+            response_model: None,
+            response_id: None,
             usage: Usage::default(),
             stop_reason: StopReason::Stop,
             error_message: None,
@@ -622,7 +743,12 @@ mod tests {
     #[test]
     fn redacted_thinking_dropped_cross_model() {
         let source_model = make_model("openai-completions", "openai", "gpt-5", vec!["text".into()]);
-        let target_model = make_model("anthropic-messages", "anthropic", "claude-3-sonnet", vec!["text".into()]);
+        let target_model = make_model(
+            "anthropic-messages",
+            "anthropic",
+            "claude-3-sonnet",
+            vec!["text".into()],
+        );
         let assistant = AssistantMessage {
             role: "assistant".into(),
             content: vec![
@@ -631,12 +757,16 @@ mod tests {
                     thinking_signature: Some("sig".into()),
                     redacted: Some(true),
                 }),
-                AssistantContentBlock::Text(TextContent { text: "Final answer".into(), text_signature: None }),
+                AssistantContentBlock::Text(TextContent {
+                    text: "Final answer".into(),
+                    text_signature: None,
+                }),
             ],
             api: source_model.api.clone(),
             provider: source_model.provider.clone(),
             model: source_model.id.clone(),
-            response_model: None, response_id: None,
+            response_model: None,
+            response_id: None,
             usage: Usage::default(),
             stop_reason: StopReason::Stop,
             error_message: None,
@@ -657,11 +787,19 @@ mod tests {
     #[test]
     fn tool_call_id_normalized_cross_provider() {
         let source_model = make_model("openai-responses", "openai", "gpt-5", vec!["text".into()]);
-        let target_model = make_model("anthropic-messages", "anthropic", "claude-3-sonnet", vec!["text".into()]);
+        let target_model = make_model(
+            "anthropic-messages",
+            "anthropic",
+            "claude-3-sonnet",
+            vec!["text".into()],
+        );
         let assistant = AssistantMessage {
             role: "assistant".into(),
             content: vec![
-                AssistantContentBlock::Text(TextContent { text: "查天气".into(), text_signature: None }),
+                AssistantContentBlock::Text(TextContent {
+                    text: "查天气".into(),
+                    text_signature: None,
+                }),
                 AssistantContentBlock::ToolCall(ToolCall {
                     call_type: "function".into(),
                     id: "call_abc123|rs_xyz789".into(), // OpenAI Responses 格式
@@ -673,7 +811,8 @@ mod tests {
             api: source_model.api.clone(),
             provider: source_model.provider.clone(),
             model: source_model.id.clone(),
-            response_model: None, response_id: None,
+            response_model: None,
+            response_id: None,
             usage: Usage::default(),
             stop_reason: StopReason::ToolUse,
             error_message: None,
@@ -685,19 +824,47 @@ mod tests {
                 role: "toolResult".into(),
                 tool_call_id: "call_abc123|rs_xyz789".into(),
                 tool_name: "get_weather".into(),
-                content: vec![ContentBlock::Text(TextContent { text: "晴".into(), text_signature: None })],
-                details: None, is_error: false, timestamp: 0,
+                content: vec![ContentBlock::Text(TextContent {
+                    text: "晴".into(),
+                    text_signature: None,
+                })],
+                details: None,
+                is_error: false,
+                timestamp: 0,
             }),
         ];
-        let normalizer: NormalizeToolCallIdFn = Box::new(|id, _, _| default_normalize_tool_call_id(id, &Model {
-            id: String::new(), name: String::new(), api: String::new(), provider: String::new(),
-            base_url: String::new(), reasoning: false, input: vec![], cost: Cost::default(),
-            context_window: 0, max_tokens: 0, compat: None, headers: None,
-        }, &AssistantMessage {
-            role: String::new(), content: vec![], api: String::new(), provider: String::new(),
-            model: String::new(), response_model: None, response_id: None,
-            usage: Usage::default(), stop_reason: StopReason::Stop, error_message: None, timestamp: 0,
-        }));
+        let normalizer: NormalizeToolCallIdFn = Box::new(|id, _, _| {
+            default_normalize_tool_call_id(
+                id,
+                &Model {
+                    id: String::new(),
+                    name: String::new(),
+                    api: String::new(),
+                    provider: String::new(),
+                    base_url: String::new(),
+                    reasoning: false,
+                    input: vec![],
+                    cost: Cost::default(),
+                    context_window: 0,
+                    max_tokens: 0,
+                    compat: None,
+                    headers: None,
+                },
+                &AssistantMessage {
+                    role: String::new(),
+                    content: vec![],
+                    api: String::new(),
+                    provider: String::new(),
+                    model: String::new(),
+                    response_model: None,
+                    response_id: None,
+                    usage: Usage::default(),
+                    stop_reason: StopReason::Stop,
+                    error_message: None,
+                    timestamp: 0,
+                },
+            )
+        });
         let result = transform_messages(messages, &target_model, Some(&normalizer));
         // assistant 的 tool_call id 应被规范化
         match &result[0] {
@@ -719,11 +886,19 @@ mod tests {
 
     #[test]
     fn orphaned_tool_call_gets_synthetic_result() {
-        let model = make_model("anthropic-messages", "anthropic", "claude-3-sonnet", vec!["text".into()]);
+        let model = make_model(
+            "anthropic-messages",
+            "anthropic",
+            "claude-3-sonnet",
+            vec!["text".into()],
+        );
         let assistant = AssistantMessage {
             role: "assistant".into(),
             content: vec![
-                AssistantContentBlock::Text(TextContent { text: "查天气".into(), text_signature: None }),
+                AssistantContentBlock::Text(TextContent {
+                    text: "查天气".into(),
+                    text_signature: None,
+                }),
                 AssistantContentBlock::ToolCall(ToolCall {
                     call_type: "function".into(),
                     id: "call_1".into(),
@@ -732,9 +907,15 @@ mod tests {
                     thought_signature: None,
                 }),
             ],
-            api: model.api.clone(), provider: model.provider.clone(), model: model.id.clone(),
-            response_model: None, response_id: None, usage: Usage::default(),
-            stop_reason: StopReason::ToolUse, error_message: None, timestamp: 0,
+            api: model.api.clone(),
+            provider: model.provider.clone(),
+            model: model.id.clone(),
+            response_model: None,
+            response_id: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::ToolUse,
+            error_message: None,
+            timestamp: 0,
         };
         // 没有 tool result，直接接 user
         let messages = vec![
@@ -751,13 +932,27 @@ mod tests {
 
     #[test]
     fn error_assistant_skipped() {
-        let model = make_model("anthropic-messages", "anthropic", "claude-3-sonnet", vec!["text".into()]);
+        let model = make_model(
+            "anthropic-messages",
+            "anthropic",
+            "claude-3-sonnet",
+            vec!["text".into()],
+        );
         let error_assistant = AssistantMessage {
             role: "assistant".into(),
-            content: vec![AssistantContentBlock::Text(TextContent { text: "partial".into(), text_signature: None })],
-            api: model.api.clone(), provider: model.provider.clone(), model: model.id.clone(),
-            response_model: None, response_id: None, usage: Usage::default(),
-            stop_reason: StopReason::Error, error_message: Some("timeout".into()), timestamp: 0,
+            content: vec![AssistantContentBlock::Text(TextContent {
+                text: "partial".into(),
+                text_signature: None,
+            })],
+            api: model.api.clone(),
+            provider: model.provider.clone(),
+            model: model.id.clone(),
+            response_model: None,
+            response_id: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Error,
+            error_message: Some("timeout".into()),
+            timestamp: 0,
         };
         let messages = vec![
             make_user_text("hi"),
@@ -776,9 +971,17 @@ mod tests {
         let id = "call_abc123";
         let model = make_model("anthropic-messages", "anthropic", "claude-3", vec![]);
         let assistant = AssistantMessage {
-            role: "assistant".into(), content: vec![], api: String::new(), provider: String::new(),
-            model: String::new(), response_model: None, response_id: None,
-            usage: Usage::default(), stop_reason: StopReason::Stop, error_message: None, timestamp: 0,
+            role: "assistant".into(),
+            content: vec![],
+            api: String::new(),
+            provider: String::new(),
+            model: String::new(),
+            response_model: None,
+            response_id: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            timestamp: 0,
         };
         let result = default_normalize_tool_call_id(id, &model, &assistant);
         assert_eq!(result, id);
@@ -788,9 +991,17 @@ mod tests {
     fn default_normalize_id_with_pipe() {
         let model = make_model("anthropic-messages", "anthropic", "claude-3", vec![]);
         let assistant = AssistantMessage {
-            role: "assistant".into(), content: vec![], api: String::new(), provider: String::new(),
-            model: String::new(), response_model: None, response_id: None,
-            usage: Usage::default(), stop_reason: StopReason::Stop, error_message: None, timestamp: 0,
+            role: "assistant".into(),
+            content: vec![],
+            api: String::new(),
+            provider: String::new(),
+            model: String::new(),
+            response_model: None,
+            response_id: None,
+            usage: Usage::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            timestamp: 0,
         };
         let result = default_normalize_tool_call_id("call_abc|item_xyz", &model, &assistant);
         assert_eq!(result, "call_abc");
@@ -805,7 +1016,12 @@ mod tests {
     /// first-class thinking block) and the signature must be stripped.
     #[test]
     fn thinking_anthropic_to_openai_becomes_text() {
-        let source_model = make_model("anthropic-messages", "anthropic", "claude-3-sonnet", vec!["text".into()]);
+        let source_model = make_model(
+            "anthropic-messages",
+            "anthropic",
+            "claude-3-sonnet",
+            vec!["text".into()],
+        );
         let target_model = make_model("openai-completions", "openai", "gpt-5", vec!["text".into()]);
         let assistant = AssistantMessage {
             role: "assistant".into(),
@@ -862,7 +1078,12 @@ mod tests {
     /// kept verbatim, but the normalizer callback still runs.
     #[test]
     fn tool_call_id_anthropic_to_openai_kept_when_valid() {
-        let source_model = make_model("anthropic-messages", "anthropic", "claude-3-sonnet", vec!["text".into()]);
+        let source_model = make_model(
+            "anthropic-messages",
+            "anthropic",
+            "claude-3-sonnet",
+            vec!["text".into()],
+        );
         let target_model = make_model("openai-completions", "openai", "gpt-5", vec!["text".into()]);
         let assistant = AssistantMessage {
             role: "assistant".into(),
@@ -889,7 +1110,10 @@ mod tests {
                 role: "toolResult".into(),
                 tool_call_id: "toolu_01ABCdef".into(),
                 tool_name: "read_file".into(),
-                content: vec![ContentBlock::Text(TextContent { text: "content".into(), text_signature: None })],
+                content: vec![ContentBlock::Text(TextContent {
+                    text: "content".into(),
+                    text_signature: None,
+                })],
                 details: None,
                 is_error: false,
                 timestamp: 0,
@@ -900,7 +1124,12 @@ mod tests {
             default_normalize_tool_call_id(
                 id,
                 &make_model("openai-completions", "openai", "gpt-5", vec![]),
-                &AssistantMessage::new(&make_model("openai-completions", "openai", "gpt-5", vec![])),
+                &AssistantMessage::new(&make_model(
+                    "openai-completions",
+                    "openai",
+                    "gpt-5",
+                    vec![],
+                )),
             )
         });
         let result = transform_messages(messages, &target_model, Some(&normalizer));
@@ -928,7 +1157,12 @@ mod tests {
     /// unchanged (it is not dropped, and no synthetic assistant is inserted).
     #[test]
     fn orphaned_tool_result_preserved() {
-        let model = make_model("anthropic-messages", "anthropic", "claude-3-sonnet", vec!["text".into()]);
+        let model = make_model(
+            "anthropic-messages",
+            "anthropic",
+            "claude-3-sonnet",
+            vec!["text".into()],
+        );
         let messages = vec![
             make_user_text("run something"),
             Message::ToolResult(ToolResultMessage {
@@ -964,14 +1198,25 @@ mod tests {
     /// block when the target model does not support images.
     #[test]
     fn tool_result_image_downgraded_for_non_vision_model() {
-        let model = make_model("openai-completions", "openai", "gpt-3.5", vec!["text".into()]);
+        let model = make_model(
+            "openai-completions",
+            "openai",
+            "gpt-3.5",
+            vec!["text".into()],
+        );
         let messages = vec![Message::ToolResult(ToolResultMessage {
             role: "toolResult".into(),
             tool_call_id: "call_img_1".into(),
             tool_name: "screenshot".into(),
             content: vec![
-                ContentBlock::Text(TextContent { text: "captured".into(), text_signature: None }),
-                ContentBlock::Image(ImageContent { data: "pngdata".into(), mime_type: "image/png".into() }),
+                ContentBlock::Text(TextContent {
+                    text: "captured".into(),
+                    text_signature: None,
+                }),
+                ContentBlock::Image(ImageContent {
+                    data: "pngdata".into(),
+                    mime_type: "image/png".into(),
+                }),
             ],
             details: None,
             is_error: false,
@@ -997,11 +1242,19 @@ mod tests {
     /// tool call.
     #[test]
     fn multiple_orphaned_tool_calls_at_end() {
-        let model = make_model("anthropic-messages", "anthropic", "claude-3-sonnet", vec!["text".into()]);
+        let model = make_model(
+            "anthropic-messages",
+            "anthropic",
+            "claude-3-sonnet",
+            vec!["text".into()],
+        );
         let assistant = AssistantMessage {
             role: "assistant".into(),
             content: vec![
-                AssistantContentBlock::Text(TextContent { text: "two calls".into(), text_signature: None }),
+                AssistantContentBlock::Text(TextContent {
+                    text: "two calls".into(),
+                    text_signature: None,
+                }),
                 AssistantContentBlock::ToolCall(ToolCall {
                     call_type: "function".into(),
                     id: "call_a".into(),
@@ -1032,13 +1285,16 @@ mod tests {
         // assistant + 2 synthetic results
         assert_eq!(result.len(), 3);
         assert!(matches!(&result[0], Message::Assistant(_)));
-        let ids: Vec<&str> = result[1..].iter().filter_map(|m| match m {
-            Message::ToolResult(tr) => {
-                assert!(tr.is_error);
-                Some(tr.tool_call_id.as_str())
-            }
-            _ => None,
-        }).collect();
+        let ids: Vec<&str> = result[1..]
+            .iter()
+            .filter_map(|m| match m {
+                Message::ToolResult(tr) => {
+                    assert!(tr.is_error);
+                    Some(tr.tool_call_id.as_str())
+                }
+                _ => None,
+            })
+            .collect();
         assert_eq!(ids, vec!["call_a", "call_b"]);
     }
 
@@ -1047,7 +1303,12 @@ mod tests {
     #[test]
     fn empty_thinking_block_dropped() {
         let target_model = make_model("openai-completions", "openai", "gpt-5", vec!["text".into()]);
-        let source_model = make_model("anthropic-messages", "anthropic", "claude-3-sonnet", vec!["text".into()]);
+        let source_model = make_model(
+            "anthropic-messages",
+            "anthropic",
+            "claude-3-sonnet",
+            vec!["text".into()],
+        );
         let assistant = AssistantMessage {
             role: "assistant".into(),
             content: vec![
@@ -1056,7 +1317,10 @@ mod tests {
                     thinking_signature: None,
                     redacted: None,
                 }),
-                AssistantContentBlock::Text(TextContent { text: "real answer".into(), text_signature: None }),
+                AssistantContentBlock::Text(TextContent {
+                    text: "real answer".into(),
+                    text_signature: None,
+                }),
             ],
             api: source_model.api.clone(),
             provider: source_model.provider.clone(),
@@ -1074,7 +1338,9 @@ mod tests {
             Message::Assistant(a) => {
                 // empty thinking dropped, only the text block remains
                 assert_eq!(a.content.len(), 1);
-                assert!(matches!(&a.content[0], AssistantContentBlock::Text(t) if t.text == "real answer"));
+                assert!(
+                    matches!(&a.content[0], AssistantContentBlock::Text(t) if t.text == "real answer")
+                );
             }
             _ => panic!("expected Assistant"),
         }
@@ -1168,7 +1434,10 @@ mod tests {
         })];
         let result = degrade_all_thinking(&content);
         if let AssistantContentBlock::ToolCall(tc) = &result[0] {
-            assert_eq!(tc.id, "toolu_01xyz", "tool call id must not be mutated by thinking degradation");
+            assert_eq!(
+                tc.id, "toolu_01xyz",
+                "tool call id must not be mutated by thinking degradation"
+            );
         } else {
             panic!("expected ToolCall");
         }
@@ -1196,10 +1465,7 @@ mod tests {
     #[test]
     fn anthropic_to_openai_id_unrecognized_prefix() {
         // Unknown prefix — return as-is
-        assert_eq!(
-            anthropic_to_openai_tool_call_id("custom_xyz"),
-            "custom_xyz"
-        );
+        assert_eq!(anthropic_to_openai_tool_call_id("custom_xyz"), "custom_xyz");
     }
 
     #[test]
@@ -1229,7 +1495,12 @@ mod tests {
 
     #[test]
     fn cross_provider_normalizer_anthropic_to_openai() {
-        let source_model = make_model("anthropic-messages", "anthropic", "claude-3", vec!["text".into()]);
+        let source_model = make_model(
+            "anthropic-messages",
+            "anthropic",
+            "claude-3",
+            vec!["text".into()],
+        );
         let target_model = make_model("openai-completions", "openai", "gpt-5", vec!["text".into()]);
         let source = AssistantMessage::new(&source_model);
         let result = normalize_tool_call_id_cross_provider("toolu_01XYZ", &target_model, &source);
@@ -1239,9 +1510,15 @@ mod tests {
     #[test]
     fn cross_provider_normalizer_openai_to_anthropic() {
         let source_model = make_model("openai-completions", "openai", "gpt-5", vec!["text".into()]);
-        let target_model = make_model("anthropic-messages", "anthropic", "claude-3", vec!["text".into()]);
+        let target_model = make_model(
+            "anthropic-messages",
+            "anthropic",
+            "claude-3",
+            vec!["text".into()],
+        );
         let source = AssistantMessage::new(&source_model);
-        let result = normalize_tool_call_id_cross_provider("call_abc|rs_99", &target_model, &source);
+        let result =
+            normalize_tool_call_id_cross_provider("call_abc|rs_99", &target_model, &source);
         assert_eq!(result, "toolu_abc");
     }
 
@@ -1249,19 +1526,42 @@ mod tests {
     fn cross_provider_normalizer_same_provider_uses_default() {
         // Same provider → falls back to default_normalize_tool_call_id
         let source_model = make_model("openai-completions", "openai", "gpt-5", vec!["text".into()]);
-        let target_model = make_model("openai-completions", "openai", "gpt-4o", vec!["text".into()]);
+        let target_model = make_model(
+            "openai-completions",
+            "openai",
+            "gpt-4o",
+            vec!["text".into()],
+        );
         let source = AssistantMessage::new(&source_model);
         let result = normalize_tool_call_id_cross_provider("call_abc", &target_model, &source);
-        assert_eq!(result, "call_abc", "same-provider IDs pass through default normalizer unchanged");
+        assert_eq!(
+            result, "call_abc",
+            "same-provider IDs pass through default normalizer unchanged"
+        );
     }
 
     #[test]
     fn provider_kind_detection() {
-        assert_eq!(ProviderKind::from_provider_str("anthropic"), ProviderKind::Anthropic);
-        assert_eq!(ProviderKind::from_provider_str("Anthropic"), ProviderKind::Anthropic);
-        assert_eq!(ProviderKind::from_provider_str("openai"), ProviderKind::OpenAI);
-        assert_eq!(ProviderKind::from_provider_str("OpenAI"), ProviderKind::OpenAI);
-        assert_eq!(ProviderKind::from_provider_str("custom-provider"), ProviderKind::Other);
+        assert_eq!(
+            ProviderKind::from_provider_str("anthropic"),
+            ProviderKind::Anthropic
+        );
+        assert_eq!(
+            ProviderKind::from_provider_str("Anthropic"),
+            ProviderKind::Anthropic
+        );
+        assert_eq!(
+            ProviderKind::from_provider_str("openai"),
+            ProviderKind::OpenAI
+        );
+        assert_eq!(
+            ProviderKind::from_provider_str("OpenAI"),
+            ProviderKind::OpenAI
+        );
+        assert_eq!(
+            ProviderKind::from_provider_str("custom-provider"),
+            ProviderKind::Other
+        );
     }
 
     #[test]
@@ -1270,6 +1570,9 @@ mod tests {
         let to_openai = anthropic_to_openai_tool_call_id(original);
         assert_eq!(to_openai, "call_01AbCdEf");
         let back_to_anthropic = openai_to_anthropic_tool_call_id(&to_openai);
-        assert_eq!(back_to_anthropic, original, "roundtrip must restore original ID");
+        assert_eq!(
+            back_to_anthropic, original,
+            "roundtrip must restore original ID"
+        );
     }
 }

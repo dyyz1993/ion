@@ -22,18 +22,25 @@
 extern "C" {
     // Tool registration.
     fn host_register_tool(
-        name_ptr: *const u8, name_len: u32,
-        desc_ptr: *const u8, desc_len: u32,
-        schema_ptr: *const u8, schema_len: u32,
+        name_ptr: *const u8,
+        name_len: u32,
+        desc_ptr: *const u8,
+        desc_len: u32,
+        schema_ptr: *const u8,
+        schema_len: u32,
     );
     // Session-scoped storage (path documented above).
     fn host_read_session_data(
-        key_ptr: *const u8, key_len: u32,
-        out_buf: *mut u8, out_capacity: u32,
+        key_ptr: *const u8,
+        key_len: u32,
+        out_buf: *mut u8,
+        out_capacity: u32,
     ) -> u32;
     fn host_write_session_data(
-        key_ptr: *const u8, key_len: u32,
-        data_ptr: *const u8, data_len: u32,
+        key_ptr: *const u8,
+        key_len: u32,
+        data_ptr: *const u8,
+        data_len: u32,
     ) -> u32;
 }
 // ── Panic handler (required for #![no_std]) ─────────────────────────────────
@@ -47,7 +54,6 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
-
 // ── JSON helpers (no_std, no alloc) ─────────────────────────────────────────
 
 /// Extract a field value from a JSON string (simplified; no nested objects).
@@ -56,14 +62,21 @@ fn json_get<'a>(json: &'a str, key: &str) -> Option<&'a str> {
     let mut i = 0;
     while i < bytes.len() {
         // Find the opening quote of a key.
-        if bytes[i] != b'"' { i += 1; continue; }
+        if bytes[i] != b'"' {
+            i += 1;
+            continue;
+        }
         let k_start = i + 1;
         // Find the closing quote of the key.
         let k_end = json[k_start..].find('"')? + k_start;
         if &json[k_start..k_end] == key {
             // Skip past the key, the colon, and any whitespace.
             let mut v = k_end + 1;
-            while v < bytes.len() && (bytes[v] == b'"' || bytes[v] == b':' || bytes[v] == b' ' || bytes[v] == b'\t') { v += 1; }
+            while v < bytes.len()
+                && (bytes[v] == b'"' || bytes[v] == b':' || bytes[v] == b' ' || bytes[v] == b'\t')
+            {
+                v += 1;
+            }
             let val_start = v;
             if bytes.get(val_start)? == &b'"' {
                 // String value: return the bytes between the quotes.
@@ -73,8 +86,14 @@ fn json_get<'a>(json: &'a str, key: &str) -> Option<&'a str> {
             } else {
                 // Number or boolean: return the bare token.
                 let mut end = val_start;
-                while end < bytes.len() && bytes[end] != b',' && bytes[end] != b'}' && bytes[end] != b' ' {
-                    if bytes[end] == b'"' { break; }
+                while end < bytes.len()
+                    && bytes[end] != b','
+                    && bytes[end] != b'}'
+                    && bytes[end] != b' '
+                {
+                    if bytes[end] == b'"' {
+                        break;
+                    }
                     end += 1;
                 }
                 return Some(&json[val_start..end]);
@@ -87,8 +106,11 @@ fn json_get<'a>(json: &'a str, key: &str) -> Option<&'a str> {
             let mut depth = 1;
             let mut j = val_start + 1;
             while j < bytes.len() && depth > 0 {
-                if bytes[j] == b'{' || bytes[j] == b'[' { depth += 1; }
-                else if bytes[j] == b'}' || bytes[j] == b']' { depth -= 1; }
+                if bytes[j] == b'{' || bytes[j] == b'[' {
+                    depth += 1;
+                } else if bytes[j] == b'}' || bytes[j] == b']' {
+                    depth -= 1;
+                }
                 j += 1;
             }
             i = j;
@@ -97,7 +119,13 @@ fn json_get<'a>(json: &'a str, key: &str) -> Option<&'a str> {
             i = end;
         } else {
             let mut end = val_start;
-            while end < bytes.len() && bytes[end] != b',' && bytes[end] != b'}' && bytes[end] != b']' { end += 1; }
+            while end < bytes.len()
+                && bytes[end] != b','
+                && bytes[end] != b'}'
+                && bytes[end] != b']'
+            {
+                end += 1;
+            }
             i = end;
         }
     }
@@ -114,11 +142,16 @@ fn json_skip_objects(json: &str, count: usize) -> usize {
             let mut depth = 1;
             let mut j = i + 1;
             while j < bytes.len() && depth > 0 {
-                if bytes[j] == b'{' { depth += 1; }
-                else if bytes[j] == b'}' { depth -= 1; }
+                if bytes[j] == b'{' {
+                    depth += 1;
+                } else if bytes[j] == b'}' {
+                    depth -= 1;
+                }
                 j += 1;
             }
-            if found >= count { return j; }
+            if found >= count {
+                return j;
+            }
             found += 1;
             i = j;
         } else {
@@ -133,41 +166,75 @@ fn json_skip_objects(json: &str, count: usize) -> usize {
 struct Buf<'a>(&'a mut [u8], usize);
 
 impl Buf<'_> {
-    fn s(&mut self, s: &str) { for &b in s.as_bytes() { self.b(b); } }
-    fn b(&mut self, b: u8) { if self.1 < self.0.len() { self.0[self.1] = b; self.1 += 1; } }
+    fn s(&mut self, s: &str) {
+        for &b in s.as_bytes() {
+            self.b(b);
+        }
+    }
+    fn b(&mut self, b: u8) {
+        if self.1 < self.0.len() {
+            self.0[self.1] = b;
+            self.1 += 1;
+        }
+    }
     fn num(&mut self, n: u64) {
-        if n == 0 { return self.b(b'0'); }
+        if n == 0 {
+            return self.b(b'0');
+        }
         let mut d = [0u8; 20];
         let mut i = 0;
         let mut v = n;
-        while v > 0 { d[i] = b'0' + (v % 10) as u8; v /= 10; i += 1; }
-        while i > 0 { i -= 1; self.b(d[i]); }
+        while v > 0 {
+            d[i] = b'0' + (v % 10) as u8;
+            v /= 10;
+            i += 1;
+        }
+        while i > 0 {
+            i -= 1;
+            self.b(d[i]);
+        }
     }
     fn esc(&mut self, s: &str) {
         self.b(b'"');
         for &b in s.as_bytes() {
             match b {
-                b'"' => { self.b(b'\\'); self.b(b'"'); }
-                b'\\' => { self.b(b'\\'); self.b(b'\\'); }
-                b'\n' => { self.b(b'\\'); self.b(b'n'); }
+                b'"' => {
+                    self.b(b'\\');
+                    self.b(b'"');
+                }
+                b'\\' => {
+                    self.b(b'\\');
+                    self.b(b'\\');
+                }
+                b'\n' => {
+                    self.b(b'\\');
+                    self.b(b'n');
+                }
                 _ => self.b(b),
             }
         }
         self.b(b'"');
     }
-    fn len(&self) -> usize { self.1 }
-    fn as_slice(&self) -> &[u8] { &self.0[..self.1] }
+    fn len(&self) -> usize {
+        self.1
+    }
+    fn as_slice(&self) -> &[u8] {
+        &self.0[..self.1]
+    }
 }
 
 // ── Extension entry points ──────────────────────────────────────────────────
 
 #[no_mangle]
-pub extern "C" fn extension_version() -> u32 { 1 }
+pub extern "C" fn extension_version() -> u32 {
+    1
+}
 
 #[no_mangle]
 pub extern "C" fn extension_init() {
     host_register(
-        "todo_add", "Create a new task.\nArgs: {text: string}. Returns: {id, text, status}",
+        "todo_add",
+        "Create a new task.\nArgs: {text: string}. Returns: {id, text, status}",
         r#"{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}"#,
     );
     host_register(
@@ -175,22 +242,32 @@ pub extern "C" fn extension_init() {
         r#"{"type":"object","properties":{"status":{"type":"string","enum":["all","active","done"]}}}"#,
     );
     host_register(
-        "todo_done", "Mark a task done.\nArgs: {id: string}. Returns: {id, status}",
+        "todo_done",
+        "Mark a task done.\nArgs: {id: string}. Returns: {id, status}",
         r#"{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}"#,
     );
     host_register(
-        "todo_remove", "Remove a task.\nArgs: {id: string}. Returns: {id, status}",
+        "todo_remove",
+        "Remove a task.\nArgs: {id: string}. Returns: {id, status}",
         r#"{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}"#,
     );
     host_register(
-        "todo_clean", "Remove all done tasks.\nArgs: {}. Returns: {removed: count}",
+        "todo_clean",
+        "Remove all done tasks.\nArgs: {}. Returns: {removed: count}",
         r#"{"type":"object","properties":{}}"#,
     );
 }
 
 fn host_register(name: &str, desc: &str, schema: &str) {
     unsafe {
-        host_register_tool(name.as_ptr(), name.len() as u32, desc.as_ptr(), desc.len() as u32, schema.as_ptr(), schema.len() as u32);
+        host_register_tool(
+            name.as_ptr(),
+            name.len() as u32,
+            desc.as_ptr(),
+            desc.len() as u32,
+            schema.as_ptr(),
+            schema.len() as u32,
+        );
     }
 }
 
@@ -200,12 +277,19 @@ const OUT_BUF: usize = 4096;
 
 #[no_mangle]
 pub extern "C" fn extension_execute_tool(
-    name_ptr: *const u8, name_len: u32,
-    args_ptr: *const u8, args_len: u32,
-    out_buf: *mut u8, out_capacity: u32,
+    name_ptr: *const u8,
+    name_len: u32,
+    args_ptr: *const u8,
+    args_len: u32,
+    out_buf: *mut u8,
+    out_capacity: u32,
 ) -> u32 {
-    let name = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(name_ptr, name_len as usize)) };
-    let args = unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(args_ptr, args_len as usize)) };
+    let name = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(name_ptr, name_len as usize))
+    };
+    let args = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(args_ptr, args_len as usize))
+    };
 
     match name {
         "todo_add" => cmd_add(args, out_buf, out_capacity),
@@ -213,25 +297,46 @@ pub extern "C" fn extension_execute_tool(
         "todo_done" => cmd_done(args, out_buf, out_capacity),
         "todo_remove" => cmd_remove(args, out_buf, out_capacity),
         "todo_clean" => cmd_clean(args, out_buf, out_capacity),
-        _ => { let e = b"unknown tool"; copy_out(e, out_buf, out_capacity) }
+        _ => {
+            let e = b"unknown tool";
+            copy_out(e, out_buf, out_capacity)
+        }
     }
 }
 
 fn copy_out(src: &[u8], out: *mut u8, cap: u32) -> u32 {
     let len = src.len().min(cap as usize);
-    unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), out, len); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(src.as_ptr(), out, len);
+    }
     len as u32
 }
 
 fn read_storage(buf: &mut [u8]) -> &str {
-    let len = unsafe { host_read_session_data(KEY.as_ptr(), KEY.len() as u32, buf.as_mut_ptr(), buf.len() as u32) };
-    if len == 0 { return "[]"; }
+    let len = unsafe {
+        host_read_session_data(
+            KEY.as_ptr(),
+            KEY.len() as u32,
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+        )
+    };
+    if len == 0 {
+        return "[]";
+    }
     let actual = len.min(buf.len() as u32) as usize;
     unsafe { core::str::from_utf8_unchecked(&buf[..actual]) }
 }
 
 fn write_storage(data: &[u8]) {
-    unsafe { host_write_session_data(KEY.as_ptr(), KEY.len() as u32, data.as_ptr(), data.len() as u32); }
+    unsafe {
+        host_write_session_data(
+            KEY.as_ptr(),
+            KEY.len() as u32,
+            data.as_ptr(),
+            data.len() as u32,
+        );
+    }
 }
 
 // ── Tool implementations ────────────────────────────────────────────────────
@@ -247,15 +352,35 @@ fn cmd_add(args: &str, out: *mut u8, cap: u32) -> u32 {
     let mut max_id: u64 = 0;
     let mut i = 0;
     while i < bytes.len() {
-        if let Some(id_str) = json_get(&bytes[i..].first().map(|_| unsafe { core::str::from_utf8_unchecked(&bytes[i..]) }).unwrap_or(""), "id") {
-            if let Ok(n) = parse_u64(id_str) { if n > max_id { max_id = n; } }
+        if let Some(id_str) = json_get(
+            &bytes[i..]
+                .first()
+                .map(|_| unsafe { core::str::from_utf8_unchecked(&bytes[i..]) })
+                .unwrap_or(""),
+            "id",
+        ) {
+            if let Ok(n) = parse_u64(id_str) {
+                if n > max_id {
+                    max_id = n;
+                }
+            }
         }
         // Skip to next object
         if bytes[i] == b'{' {
-            let mut depth = 1; let mut j = i + 1;
-            while j < bytes.len() && depth > 0 { if bytes[j] == b'{' { depth += 1; } else if bytes[j] == b'}' { depth -= 1; } j += 1; }
+            let mut depth = 1;
+            let mut j = i + 1;
+            while j < bytes.len() && depth > 0 {
+                if bytes[j] == b'{' {
+                    depth += 1;
+                } else if bytes[j] == b'}' {
+                    depth -= 1;
+                }
+                j += 1;
+            }
             i = j;
-        } else { i += 1; }
+        } else {
+            i += 1;
+        }
     }
     let new_id = max_id + 1;
     let now = 1000000 + new_id;
@@ -272,12 +397,17 @@ fn cmd_add(args: &str, out: *mut u8, cap: u32) -> u32 {
         let trim = existing.trim_end();
         let last = trim.rfind(']').unwrap_or(trim.len());
         b.s(&existing[..last]);
-        if last > 1 { b.b(b','); }
+        if last > 1 {
+            b.b(b',');
+        }
     }
     b.b(b'{');
-    b.s(r#""id":""#); b.num(new_id);
-    b.s(r#"","text":"#); b.esc(text);
-    b.s(r#","done":false,"created_at":"#); b.num(now);
+    b.s(r#""id":""#);
+    b.num(new_id);
+    b.s(r#"","text":"#);
+    b.esc(text);
+    b.s(r#","done":false,"created_at":"#);
+    b.num(now);
     b.s(r#"}"#);
     b.b(b']');
 
@@ -286,7 +416,11 @@ fn cmd_add(args: &str, out: *mut u8, cap: u32) -> u32 {
     // Response
     let mut resp = [0u8; OUT_BUF];
     let mut r = Buf(&mut resp, 0);
-    r.s(r#"{"id":""#); r.num(new_id); r.s(r#"","text":""#); r.s(text); r.s(r#"","status":"created"}"#);
+    r.s(r#"{"id":""#);
+    r.num(new_id);
+    r.s(r#"","text":""#);
+    r.s(text);
+    r.s(r#"","status":"created"}"#);
     copy_out(r.as_slice(), out, cap)
 }
 
@@ -306,21 +440,36 @@ fn cmd_list(args: &str, out: *mut u8, cap: u32) -> u32 {
     while i < bytes.len() {
         if bytes[i] == b'{' {
             let start = i;
-            let mut depth = 1; i += 1;
+            let mut depth = 1;
+            i += 1;
             while i < bytes.len() && depth > 0 {
-                if bytes[i] == b'{' { depth += 1; } else if bytes[i] == b'}' { depth -= 1; }
+                if bytes[i] == b'{' {
+                    depth += 1;
+                } else if bytes[i] == b'}' {
+                    depth -= 1;
+                }
                 i += 1;
             }
             let obj = &existing[start..i];
-            let include = if status == "all" { true }
-                else if status == "done" { json_get(obj, "done") == Some("true") }
-                else { json_get(obj, "done") != Some("true") };
+            let include = if status == "all" {
+                true
+            } else if status == "done" {
+                json_get(obj, "done") == Some("true")
+            } else {
+                json_get(obj, "done") != Some("true")
+            };
             if include {
-                if !first { b.b(b','); }
+                if !first {
+                    b.b(b',');
+                }
                 first = false;
-                for &ch in obj.as_bytes() { b.b(ch); }
+                for &ch in obj.as_bytes() {
+                    b.b(ch);
+                }
             }
-        } else { i += 1; }
+        } else {
+            i += 1;
+        }
     }
     b.b(b']');
 
@@ -343,9 +492,14 @@ fn cmd_done(args: &str, out: *mut u8, cap: u32) -> u32 {
     while i < bytes.len() {
         if bytes[i] == b'{' {
             let start = i;
-            let mut depth = 1; i += 1;
+            let mut depth = 1;
+            i += 1;
             while i < bytes.len() && depth > 0 {
-                if bytes[i] == b'{' { depth += 1; } else if bytes[i] == b'}' { depth -= 1; }
+                if bytes[i] == b'{' {
+                    depth += 1;
+                } else if bytes[i] == b'}' {
+                    depth -= 1;
+                }
                 i += 1;
             }
             let obj = &existing[start..i];
@@ -356,30 +510,52 @@ fn cmd_done(args: &str, out: *mut u8, cap: u32) -> u32 {
                 let done_str = r#""done":false"#;
                 let replaced = r#""done":true"#;
                 if let Some(pos) = obj.find(done_str) {
-                    for &ch in obj[..pos].as_bytes() { b.b(ch); }
-                    for &ch in replaced.as_bytes() { b.b(ch); }
-                    for &ch in obj[pos + done_str.len()..].as_bytes() { b.b(ch); }
+                    for &ch in obj[..pos].as_bytes() {
+                        b.b(ch);
+                    }
+                    for &ch in replaced.as_bytes() {
+                        b.b(ch);
+                    }
+                    for &ch in obj[pos + done_str.len()..].as_bytes() {
+                        b.b(ch);
+                    }
                 } else {
-                    for &ch in obj.as_bytes() { b.b(ch); }
+                    for &ch in obj.as_bytes() {
+                        b.b(ch);
+                    }
                 }
             } else {
-                for &ch in obj.as_bytes() { b.b(ch); }
+                for &ch in obj.as_bytes() {
+                    b.b(ch);
+                }
             }
             // Add comma if not last
-            let next = existing[start..].find('}').map(|p| start + p + 1).unwrap_or(start);
+            let next = existing[start..]
+                .find('}')
+                .map(|p| start + p + 1)
+                .unwrap_or(start);
             if next < bytes.len() && bytes[next] == b',' {
-                b.b(b','); i += 1; // skip comma
+                b.b(b',');
+                i += 1; // skip comma
             } else if i < bytes.len() && bytes[i] == b',' {
-                b.b(b','); i += 1;
+                b.b(b',');
+                i += 1;
             }
-        } else { b.b(bytes[i]); i += 1; }
+        } else {
+            b.b(bytes[i]);
+            i += 1;
+        }
     }
 
-    if found { write_storage(b.as_slice()); }
+    if found {
+        write_storage(b.as_slice());
+    }
 
     let mut resp = [0u8; OUT_BUF];
     let mut r = Buf(&mut resp, 0);
-    r.s(r#"{"id":""#); r.s(id); r.s(r#"","status":"done"}"#);
+    r.s(r#"{"id":""#);
+    r.s(id);
+    r.s(r#"","status":"done"}"#);
     copy_out(r.as_slice(), out, cap)
 }
 
@@ -400,31 +576,53 @@ fn cmd_remove(args: &str, out: *mut u8, cap: u32) -> u32 {
     while i < bytes.len() {
         if bytes[i] == b'{' {
             let start = i;
-            let mut depth = 1; i += 1;
+            let mut depth = 1;
+            i += 1;
             while i < bytes.len() && depth > 0 {
-                if bytes[i] == b'{' { depth += 1; } else if bytes[i] == b'}' { depth -= 1; }
+                if bytes[i] == b'{' {
+                    depth += 1;
+                } else if bytes[i] == b'}' {
+                    depth -= 1;
+                }
                 i += 1;
             }
             let obj = &existing[start..i];
             let obj_id = json_get(obj, "id").unwrap_or("");
-            if obj_id == id { removed = true; }
-            else {
-                if !first { b.b(b','); }
+            if obj_id == id {
+                removed = true;
+            } else {
+                if !first {
+                    b.b(b',');
+                }
                 first = false;
-                for &ch in obj.as_bytes() { b.b(ch); }
+                for &ch in obj.as_bytes() {
+                    b.b(ch);
+                }
             }
             // skip comma
-            let next = existing[start..].find('}').map(|p| start + p + 1).unwrap_or(start);
-            if next < bytes.len() && bytes[next] == b',' { i += 1; }
-            else if i < bytes.len() && bytes[i] == b',' { i += 1; }
-        } else { i += 1; }
+            let next = existing[start..]
+                .find('}')
+                .map(|p| start + p + 1)
+                .unwrap_or(start);
+            if next < bytes.len() && bytes[next] == b',' {
+                i += 1;
+            } else if i < bytes.len() && bytes[i] == b',' {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
     }
     b.b(b']');
-    if removed { write_storage(b.as_slice()); }
+    if removed {
+        write_storage(b.as_slice());
+    }
 
     let mut resp = [0u8; OUT_BUF];
     let mut r = Buf(&mut resp, 0);
-    r.s(r#"{"id":""#); r.s(id); r.s(r#"","status":"removed"}"#);
+    r.s(r#"{"id":""#);
+    r.s(id);
+    r.s(r#"","status":"removed"}"#);
     copy_out(r.as_slice(), out, cap)
 }
 
@@ -443,28 +641,44 @@ fn cmd_clean(_args: &str, out: *mut u8, cap: u32) -> u32 {
     while i < bytes.len() {
         if bytes[i] == b'{' {
             let start = i;
-            let mut depth = 1; i += 1;
+            let mut depth = 1;
+            i += 1;
             while i < bytes.len() && depth > 0 {
-                if bytes[i] == b'{' { depth += 1; } else if bytes[i] == b'}' { depth -= 1; }
+                if bytes[i] == b'{' {
+                    depth += 1;
+                } else if bytes[i] == b'}' {
+                    depth -= 1;
+                }
                 i += 1;
             }
             let obj = &existing[start..i];
             let is_done = json_get(obj, "done") == Some("true");
-            if is_done { removed += 1; }
-            else {
-                if !first { b.b(b','); }
+            if is_done {
+                removed += 1;
+            } else {
+                if !first {
+                    b.b(b',');
+                }
                 first = false;
-                for &ch in obj.as_bytes() { b.b(ch); }
+                for &ch in obj.as_bytes() {
+                    b.b(ch);
+                }
             }
-            if i < bytes.len() && bytes[i] == b',' { i += 1; }
-        } else { i += 1; }
+            if i < bytes.len() && bytes[i] == b',' {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
     }
     b.b(b']');
     write_storage(b.as_slice());
 
     let mut resp = [0u8; OUT_BUF];
     let mut r = Buf(&mut resp, 0);
-    r.s(r#"{"removed":"#); r.num(removed); r.s(r#","status":"done"}"#);
+    r.s(r#"{"removed":"#);
+    r.num(removed);
+    r.s(r#","status":"done"}"#);
     copy_out(r.as_slice(), out, cap)
 }
 
@@ -472,10 +686,14 @@ fn cmd_clean(_args: &str, out: *mut u8, cap: u32) -> u32 {
 
 fn parse_u64(s: &str) -> Result<u64, ()> {
     let bytes = s.as_bytes();
-    if bytes.is_empty() { return Err(()); }
+    if bytes.is_empty() {
+        return Err(());
+    }
     let mut n: u64 = 0;
     for &b in bytes {
-        if b < b'0' || b > b'9' { return Err(()); }
+        if b < b'0' || b > b'9' {
+            return Err(());
+        }
         n = n.wrapping_mul(10).wrapping_add((b - b'0') as u64);
     }
     Ok(n)

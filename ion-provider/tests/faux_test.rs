@@ -1,11 +1,11 @@
-use ion_provider::faux::{
-    faux_assistant_message, FauxContent, FauxMessageOptions, FauxProvider, FauxResponseStep,
-    FauxState,
-};
-use ion_provider::registry::{ApiRegistry, ApiProvider, stream};
-use ion_provider::types::{AssistantContentBlock, Context, Model, StopReason, StreamOptions};
-use ion_provider::ProviderResult;
 use ion_provider::EventStream;
+use ion_provider::ProviderResult;
+use ion_provider::faux::{
+    FauxContent, FauxMessageOptions, FauxProvider, FauxResponseStep, FauxState,
+    faux_assistant_message,
+};
+use ion_provider::registry::{ApiProvider, ApiRegistry, stream};
+use ion_provider::types::{AssistantContentBlock, Context, Model, StopReason, StreamOptions};
 
 #[test]
 fn faux_provider_can_be_created_empty() {
@@ -128,7 +128,7 @@ async fn stream_emits_text_deltas_for_long_text() {
     while let Some(ev) = es.recv().await {
         match ev {
             ion_provider::types::StreamEvent::Start { .. } => start_count += 1,
-            ion_provider::types::StreamEvent::TextStart { .. } => {},
+            ion_provider::types::StreamEvent::TextStart { .. } => {}
             ion_provider::types::StreamEvent::TextDelta { .. } => delta_count += 1,
             ion_provider::types::StreamEvent::TextEnd { .. } => end_count += 1,
             ion_provider::types::StreamEvent::Done { .. } => done_count += 1,
@@ -137,7 +137,10 @@ async fn stream_emits_text_deltas_for_long_text() {
     }
     assert_eq!(start_count, 1, "exactly one Start event");
     assert_eq!(done_count, 1, "exactly one Done event");
-    assert!(delta_count >= 2, "long text must be split into >=2 deltas, got {delta_count}");
+    assert!(
+        delta_count >= 2,
+        "long text must be split into >=2 deltas, got {delta_count}"
+    );
     assert_eq!(end_count, 1, "exactly one TextEnd");
 }
 
@@ -156,8 +159,12 @@ async fn stream_loud_failure_on_empty_queue() {
         Err(e) => e,
         Ok(_) => unreachable!("checked is_err above"),
     };
-    assert!(format!("{err}").to_lowercase().contains("no more faux responses")
-        || format!("{err}").to_lowercase().contains("faux"));
+    assert!(
+        format!("{err}")
+            .to_lowercase()
+            .contains("no more faux responses")
+            || format!("{err}").to_lowercase().contains("faux")
+    );
 }
 
 // ── Builder function tests (Task 6) ──
@@ -184,8 +191,14 @@ fn faux_thinking_builder() {
 fn faux_tool_call_builder_has_unique_id() {
     let b1 = ion_provider::faux::faux_tool_call("echo", serde_json::json!({"x":1}));
     let b2 = ion_provider::faux::faux_tool_call("echo", serde_json::json!({"x":2}));
-    let id1 = match b1 { AssistantContentBlock::ToolCall(t) => t.id, _ => panic!() };
-    let id2 = match b2 { AssistantContentBlock::ToolCall(t) => t.id, _ => panic!() };
+    let id1 = match b1 {
+        AssistantContentBlock::ToolCall(t) => t.id,
+        _ => panic!(),
+    };
+    let id2 = match b2 {
+        AssistantContentBlock::ToolCall(t) => t.id,
+        _ => panic!(),
+    };
     assert_ne!(id1, id2, "tool call ids must be unique");
 }
 
@@ -209,7 +222,10 @@ fn faux_assistant_message_from_blocks() {
             ion_provider::faux::faux_text("a"),
             ion_provider::faux::faux_tool_call("t", serde_json::json!({})),
         ]),
-        ion_provider::faux::FauxMessageOptions { stop_reason: Some(StopReason::ToolUse), ..Default::default() },
+        ion_provider::faux::FauxMessageOptions {
+            stop_reason: Some(StopReason::ToolUse),
+            ..Default::default()
+        },
     );
     assert_eq!(msg.content.len(), 2);
     assert_eq!(msg.stop_reason, StopReason::ToolUse);
@@ -225,7 +241,10 @@ async fn factory_response_receives_context_and_state() {
         |ctx, _opts, state, _model| {
             let n = ctx.messages.len();
             ion_provider::faux::faux_assistant_message(
-                ion_provider::faux::FauxContent::Text(format!("call={} msgs={}", state.call_count, n)),
+                ion_provider::faux::FauxContent::Text(format!(
+                    "call={} msgs={}",
+                    state.call_count, n
+                )),
                 ion_provider::faux::FauxMessageOptions::default(),
             )
         },
@@ -247,7 +266,10 @@ async fn factory_response_receives_context_and_state() {
         AssistantContentBlock::Text(t) => t.text.clone(),
         _ => panic!(),
     };
-    assert!(text.starts_with("call=0 msgs="), "factory saw call_count=0; got: {text}");
+    assert!(
+        text.starts_with("call=0 msgs="),
+        "factory saw call_count=0; got: {text}"
+    );
 }
 
 #[tokio::test]
@@ -359,13 +381,15 @@ async fn faux_needs_no_api_key() {
 async fn faux_emits_error_for_stop_reason_error() {
     let mut reg = ApiRegistry::new();
     let faux = ion_provider::faux::register_faux(&mut reg);
-    faux.set_responses(vec![FauxResponseStep::Static(ion_provider::faux::faux_assistant_message(
-        ion_provider::faux::FauxContent::Text("".into()),
-        ion_provider::faux::FauxMessageOptions {
-            stop_reason: Some(StopReason::Error),
-            error_message: Some("simulated".into()),
-        },
-    ))]);
+    faux.set_responses(vec![FauxResponseStep::Static(
+        ion_provider::faux::faux_assistant_message(
+            ion_provider::faux::FauxContent::Text("".into()),
+            ion_provider::faux::FauxMessageOptions {
+                stop_reason: Some(StopReason::Error),
+                error_message: Some("simulated".into()),
+            },
+        ),
+    )]);
     let model = faux_model();
     let ctx = Context::default();
 
@@ -416,7 +440,11 @@ use std::io::Write;
 fn load_script_parses_text_and_tool_call_lines() {
     let mut tmp = tempfile::NamedTempFile::new().unwrap();
     writeln!(tmp, r#"{{"text":"hello"}}"#).unwrap();
-    writeln!(tmp, r#"{{"tool_call":{{"name":"read","input":{{"path":"x"}}}}}}"#).unwrap();
+    writeln!(
+        tmp,
+        r#"{{"tool_call":{{"name":"read","input":{{"path":"x"}}}}}}"#
+    )
+    .unwrap();
     writeln!(tmp, "# comment line").unwrap();
     writeln!(tmp).unwrap(); // blank line
     writeln!(tmp, r#"{{"thinking":"plan","text":"done"}}"#).unwrap();
@@ -438,4 +466,3 @@ fn load_script_rejects_empty_file() {
     let result = ion_provider::faux::load_script(tmp.path());
     assert!(result.is_err());
 }
-

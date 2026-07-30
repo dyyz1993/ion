@@ -33,14 +33,40 @@ const MIN_MESSAGES: usize = 4;
 
 /// Skip words — if ALL messages are these, skip extraction entirely.
 const SKIP_WORDS: &[&str] = &[
-    "ok", "okay", "thanks", "thank you", "好的", "嗯", "ok了", "继续", "hi", "hello",
-    "hey", "你好", "测试", "test", "ping", "pong", "done", "完成", "ok。",
+    "ok",
+    "okay",
+    "thanks",
+    "thank you",
+    "好的",
+    "嗯",
+    "ok了",
+    "继续",
+    "hi",
+    "hello",
+    "hey",
+    "你好",
+    "测试",
+    "test",
+    "ping",
+    "pong",
+    "done",
+    "完成",
+    "ok。",
 ];
 
 /// Tool names that indicate real work was done (for extraction trigger).
 const WORK_TOOLS: &[&str] = &[
-    "write", "edit", "bash", "bash_run", "read", "grep", "find",
-    "spawn_worker", "git_diff", "git_commit", "git_push",
+    "write",
+    "edit",
+    "bash",
+    "bash_run",
+    "read",
+    "grep",
+    "find",
+    "spawn_worker",
+    "git_diff",
+    "git_commit",
+    "git_push",
 ];
 
 pub struct LearningExtension {
@@ -76,21 +102,31 @@ impl LearningExtension {
     fn should_extract(messages: &[String]) -> bool {
         // Too few messages
         if messages.len() < MIN_MESSAGES {
-            tracing::info!("[learning] skip: only {} messages (< {})", messages.len(), MIN_MESSAGES);
+            tracing::info!(
+                "[learning] skip: only {} messages (< {})",
+                messages.len(),
+                MIN_MESSAGES
+            );
             return false;
         }
 
         // Join all messages for length check
         let combined = messages.join("\n");
         if combined.len() < MIN_CONTENT_LEN {
-            tracing::info!("[learning] skip: content too short ({} chars < {})", combined.len(), MIN_CONTENT_LEN);
+            tracing::info!(
+                "[learning] skip: content too short ({} chars < {})",
+                combined.len(),
+                MIN_CONTENT_LEN
+            );
             return false;
         }
 
         // Check if ALL messages are skip words (pure greeting session)
         let all_skip = messages.iter().all(|m| {
             let lower = m.trim().to_lowercase();
-            SKIP_WORDS.iter().any(|&sw| lower == sw || lower.starts_with(sw))
+            SKIP_WORDS
+                .iter()
+                .any(|&sw| lower == sw || lower.starts_with(sw))
         });
         if all_skip {
             tracing::info!("[learning] skip: all messages are greetings/skip words");
@@ -122,14 +158,20 @@ impl LearningExtension {
     #[allow(dead_code)]
     #[allow(dead_code)]
     fn redact_messages(messages: &[String]) -> Vec<String> {
-        messages.iter().map(|m| {
-            let redacted = secret_detector::redact_secrets(m);
-            if redacted != *m {
-                let secret_count = secret_detector::detect_secrets(m).len();
-                tracing::info!("[learning] redacted {} secret(s) from message", secret_count);
-            }
-            redacted
-        }).collect()
+        messages
+            .iter()
+            .map(|m| {
+                let redacted = secret_detector::redact_secrets(m);
+                if redacted != *m {
+                    let secret_count = secret_detector::detect_secrets(m).len();
+                    tracing::info!(
+                        "[learning] redacted {} secret(s) from message",
+                        secret_count
+                    );
+                }
+                redacted
+            })
+            .collect()
     }
 
     /// Check if session contained write/edit operations (for skill distillation trigger).
@@ -193,7 +235,10 @@ impl Extension for LearningExtension {
         // Derive project_name from CWD basename (best-effort)
         let project_name = std::env::current_dir()
             .ok()
-            .and_then(|p| p.file_name().and_then(|n| n.to_str().map(|s| s.to_string())))
+            .and_then(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str().map(|s| s.to_string()))
+            })
             .unwrap_or_else(|| "unknown".into());
 
         // Fire-and-forget — must not block session exit
@@ -207,10 +252,7 @@ impl Extension for LearningExtension {
             .await
             {
                 Ok(Some(path)) => {
-                    tracing::info!(
-                        "[learning] skill distilled to {}",
-                        path.display()
-                    );
+                    tracing::info!("[learning] skill distilled to {}", path.display());
                 }
                 Ok(None) => {
                     tracing::info!("[learning] no skill distilled (session skipped)");
@@ -243,7 +285,8 @@ pub fn analyze_session(messages: &[String]) -> LearningDecision {
     let content_length = combined.len();
 
     // Count secrets in raw messages
-    let secret_count = messages.iter()
+    let secret_count = messages
+        .iter()
         .map(|m| secret_detector::detect_secrets(m).len())
         .sum::<usize>();
 

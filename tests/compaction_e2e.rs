@@ -55,14 +55,21 @@ fn test_compaction_save_reload_continue() {
     // --- Step 2: Reload the session ---
     let content = std::fs::read_to_string(&session_file).unwrap();
     let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
-    assert!(lines.len() > 40, "Should have header + 40 messages, got {}", lines.len());
+    assert!(
+        lines.len() > 40,
+        "Should have header + 40 messages, got {}",
+        lines.len()
+    );
 
     // Verify messages can be parsed
-    let msg_count = lines[1..].iter()
+    let msg_count = lines[1..]
+        .iter()
         .filter(|l| {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(l) {
                 v["type"].as_str() == Some("message")
-            } else { false }
+            } else {
+                false
+            }
         })
         .count();
     assert_eq!(msg_count, 40, "Should have 40 messages");
@@ -76,17 +83,23 @@ fn test_compaction_save_reload_continue() {
             "timestamp": 99999
         }
     });
-    let mut f = std::fs::OpenOptions::new().append(true).open(&session_file).unwrap();
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&session_file)
+        .unwrap();
     writeln!(f, "{}", extra_msg).unwrap();
 
     // --- Step 4: Reload again and verify all messages intact ---
     let content2 = std::fs::read_to_string(&session_file).unwrap();
     let lines2: Vec<&str> = content2.lines().filter(|l| !l.trim().is_empty()).collect();
-    let msg_count2 = lines2[1..].iter()
+    let msg_count2 = lines2[1..]
+        .iter()
         .filter(|l| {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(l) {
                 v["type"].as_str() == Some("message")
-            } else { false }
+            } else {
+                false
+            }
         })
         .count();
     assert_eq!(msg_count2, 41, "Should have 41 messages after append");

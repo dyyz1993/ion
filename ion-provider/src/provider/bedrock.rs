@@ -27,10 +27,10 @@
 //! Protocol reference:
 //!   https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ConverseStream.html
 
-use crate::error::{ProviderError, ProviderResult};
-use crate::event_stream::{EventStream, EventSender};
-use crate::types::*;
 use crate::ApiProvider;
+use crate::error::{ProviderError, ProviderResult};
+use crate::event_stream::{EventSender, EventStream};
+use crate::types::*;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -144,7 +144,9 @@ impl BedrockConverseProvider {
                 }
             }
         } else {
-            send_fut.await.map_err(|e| ProviderError::Provider(e.to_string()))?
+            send_fut
+                .await
+                .map_err(|e| ProviderError::Provider(e.to_string()))?
         };
 
         if !resp.status().is_success() {
@@ -238,13 +240,9 @@ struct BedrockSystemBlock {
 #[serde(tag = "type")] // not used for toolResult; handled via untagged below
 enum BedrockContentBlock {
     /// Plain text content.
-    Text {
-        text: String,
-    },
+    Text { text: String },
     /// Base64 image.
-    Image {
-        image: BedrockImageSource,
-    },
+    Image { image: BedrockImageSource },
     /// Assistant tool-use block (echoed back in multi-turn conversations).
     #[serde(rename = "toolUse")]
     ToolUse {
@@ -281,9 +279,7 @@ struct BedrockImageBytes {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 enum BedrockToolResultContent {
-    Text {
-        text: String,
-    },
+    Text { text: String },
     // Bedrock also supports `{"json": ...}` and `{"image": ...}` content,
     // omitted here for simplicity.
 }
@@ -346,9 +342,10 @@ fn build_request_body(
     });
 
     // System prompt → array of `{"text": "..."}` blocks.
-    let system = context.system_prompt.as_ref().map(|s| {
-        vec![BedrockSystemBlock { text: s.clone() }]
-    });
+    let system = context
+        .system_prompt
+        .as_ref()
+        .map(|s| vec![BedrockSystemBlock { text: s.clone() }]);
 
     let mut messages: Vec<BedrockMessage> = Vec::new();
 
@@ -383,7 +380,11 @@ fn build_request_body(
                     .collect::<Vec<_>>()
                     .join("\n");
 
-                let status = if tr.is_error { Some("error".to_string()) } else { None };
+                let status = if tr.is_error {
+                    Some("error".to_string())
+                } else {
+                    None
+                };
 
                 let block = BedrockContentBlock::ToolResult {
                     tool_use_id: tr.tool_call_id.clone(),
@@ -456,7 +457,9 @@ fn build_request_body(
                 },
             })
             .collect();
-        Some(BedrockToolConfig { tools: bedrock_tools })
+        Some(BedrockToolConfig {
+            tools: bedrock_tools,
+        })
     });
 
     Ok(BedrockRequest {
@@ -477,9 +480,9 @@ fn convert_user_message(u: &UserMessage) -> Vec<BedrockContentBlock> {
     u.content
         .iter()
         .filter_map(|b| match b {
-            ContentBlock::Text(t) if !t.text.is_empty() => {
-                Some(BedrockContentBlock::Text { text: t.text.clone() })
-            }
+            ContentBlock::Text(t) if !t.text.is_empty() => Some(BedrockContentBlock::Text {
+                text: t.text.clone(),
+            }),
             ContentBlock::Image(img) => {
                 // Extract format from mime_type (e.g. "image/png" → "png").
                 let format = img
@@ -507,7 +510,9 @@ fn convert_assistant_message(a: &AssistantMessage) -> Vec<BedrockContentBlock> {
         .iter()
         .filter_map(|b| match b {
             AssistantContentBlock::Text(t) if !t.text.is_empty() => {
-                Some(BedrockContentBlock::Text { text: t.text.clone() })
+                Some(BedrockContentBlock::Text {
+                    text: t.text.clone(),
+                })
             }
             AssistantContentBlock::ToolCall(tc) => Some(BedrockContentBlock::ToolUse {
                 tool_use_id: tc.id.clone(),
@@ -528,7 +533,9 @@ fn convert_assistant_message(a: &AssistantMessage) -> Vec<BedrockContentBlock> {
 
 /// Tracks the content block currently being built from the stream.
 enum BlockState {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -637,9 +644,7 @@ async fn parse_sse_stream(resp: reqwest::Response, sender: EventSender, model: &
                         {
                             match delta.delta {
                                 BedrockDelta::TextDelta { text } => {
-                                    if let Some(BlockState::Text { text: t }) =
-                                        &mut current_block
-                                    {
+                                    if let Some(BlockState::Text { text: t }) = &mut current_block {
                                         t.push_str(&text);
                                     }
                                     let _ = sender
@@ -667,9 +672,7 @@ async fn parse_sse_stream(resp: reqwest::Response, sender: EventSender, model: &
                                 BedrockDelta::ReasoningContentDelta { reasoning } => {
                                     // Bedrock reasoning text — treat like a text
                                     // delta for display purposes.
-                                    if let Some(BlockState::Text { text: t }) =
-                                        &mut current_block
-                                    {
+                                    if let Some(BlockState::Text { text: t }) = &mut current_block {
                                         t.push_str(&reasoning);
                                     }
                                     let _ = sender
@@ -687,12 +690,12 @@ async fn parse_sse_stream(resp: reqwest::Response, sender: EventSender, model: &
                         // Finalize the current block.
                         match current_block.take() {
                             Some(BlockState::Text { text }) => {
-                                output.content.push(AssistantContentBlock::Text(
-                                    TextContent {
+                                output
+                                    .content
+                                    .push(AssistantContentBlock::Text(TextContent {
                                         text: text.clone(),
                                         text_signature: None,
-                                    },
-                                ));
+                                    }));
                                 let _ = sender
                                     .send(StreamEvent::TextEnd {
                                         content_index,
@@ -740,21 +743,20 @@ async fn parse_sse_stream(resp: reqwest::Response, sender: EventSender, model: &
                         }
                     }
                     "metadata" => {
-                        if let Ok(meta) =
-                            serde_json::from_value::<MetadataEvent>(payload.clone())
-                        {
+                        if let Ok(meta) = serde_json::from_value::<MetadataEvent>(payload.clone()) {
                             if let Some(usage) = meta.usage {
                                 output.usage.input = usage.input_tokens;
                                 output.usage.output = usage.output_tokens;
-                                output.usage.total_tokens =
-                                    usage.total_tokens.unwrap_or_else(|| {
-                                        usage.input_tokens + usage.output_tokens
-                                    });
+                                output.usage.total_tokens = usage
+                                    .total_tokens
+                                    .unwrap_or_else(|| usage.input_tokens + usage.output_tokens);
                             }
                         }
                     }
-                    "internalServerException" | "modelStreamErrorException"
-                    | "validationException" | "throttlingException" => {
+                    "internalServerException"
+                    | "modelStreamErrorException"
+                    | "validationException"
+                    | "throttlingException" => {
                         let msg = payload
                             .get("message")
                             .and_then(|v| v.as_str())
@@ -1037,10 +1039,7 @@ mod tests {
         let tc = body.tool_config.unwrap();
         assert_eq!(tc.tools.len(), 1);
         assert_eq!(tc.tools[0].tool_spec.name, "get_weather");
-        assert_eq!(
-            tc.tools[0].tool_spec.input_schema.json["type"],
-            "object"
-        );
+        assert_eq!(tc.tools[0].tool_spec.input_schema.json["type"], "object");
     }
 
     #[test]

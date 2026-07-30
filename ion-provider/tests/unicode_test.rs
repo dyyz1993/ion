@@ -122,7 +122,10 @@ fn chinese_characters_in_user_message_preserved() {
 
     // Verify byte length matches UTF-8 encoding expectation.
     // 3 bytes per CJK char + 3 bytes for the full-width punctuation.
-    assert_eq!(original.len(), original.chars().map(|c| c.len_utf8()).sum::<usize>());
+    assert_eq!(
+        original.len(),
+        original.chars().map(|c| c.len_utf8()).sum::<usize>()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -133,10 +136,12 @@ fn chinese_characters_in_user_message_preserved() {
 fn emoji_in_assistant_response_preserved() {
     let model = dummy_model();
     let mut assistant = AssistantMessage::new(&model);
-    assistant.content.push(AssistantContentBlock::Text(TextContent {
-        text: "Here are some emoji: 🚀🎉🦀✨🔥".into(),
-        text_signature: None,
-    }));
+    assistant
+        .content
+        .push(AssistantContentBlock::Text(TextContent {
+            text: "Here are some emoji: 🚀🎉🦀✨🔥".into(),
+            text_signature: None,
+        }));
 
     let serialized = round_trip(&assistant);
     let recovered = first_assistant_text(&serialized);

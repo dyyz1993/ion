@@ -83,16 +83,24 @@ async fn mark_deleted_removes_messages() {
     assert_eq!(agent.messages().len(), 4);
 
     // 软删除 index 1 和 3（两条 assistant）
-    agent.mark_deleted(&[1, 3], &["e1".into(), "e3".into()]).await;
+    agent
+        .mark_deleted(&[1, 3], &["e1".into(), "e3".into()])
+        .await;
 
     assert_eq!(agent.messages().len(), 2);
     // 剩余应该是 index 0 (user "hello") 和 index 2 (user "bye")
-    let remaining: Vec<&str> = agent.messages().iter().filter_map(|m| {
-        if let Message::User(u) = m {
-            if let ContentBlock::Text(t) = &u.content[0] { return Some(t.text.as_str()); }
-        }
-        None
-    }).collect();
+    let remaining: Vec<&str> = agent
+        .messages()
+        .iter()
+        .filter_map(|m| {
+            if let Message::User(u) = m {
+                if let ContentBlock::Text(t) = &u.content[0] {
+                    return Some(t.text.as_str());
+                }
+            }
+            None
+        })
+        .collect();
     assert!(remaining.contains(&"hello"));
     assert!(remaining.contains(&"bye"));
 }
@@ -110,17 +118,30 @@ async fn mark_summarized_replaces_with_branch_summary() {
     assert_eq!(agent.messages().len(), 5);
 
     // 折叠 index 1-3（3 条消息）
-    agent.mark_summarized(&[1, 2, 3], &["e1".into(), "e2".into(), "e3".into()], "这段讨论已折叠").await;
+    agent
+        .mark_summarized(
+            &[1, 2, 3],
+            &["e1".into(), "e2".into(), "e3".into()],
+            "这段讨论已折叠",
+        )
+        .await;
 
     assert_eq!(agent.messages().len(), 3); // 5 - 3 + 1(BranchSummary) = 3
 
     // 应该有 BranchSummary
-    let has_branch = agent.messages().iter().any(|m| matches!(m, Message::BranchSummary(_)));
+    let has_branch = agent
+        .messages()
+        .iter()
+        .any(|m| matches!(m, Message::BranchSummary(_)));
     assert!(has_branch, "should have BranchSummary");
 
     // BranchSummary 的 summary 正确
     let summary_text = agent.messages().iter().find_map(|m| {
-        if let Message::BranchSummary(bs) = m { Some(bs.summary.as_str()) } else { None }
+        if let Message::BranchSummary(bs) = m {
+            Some(bs.summary.as_str())
+        } else {
+            None
+        }
     });
     assert_eq!(summary_text, Some("这段讨论已折叠"));
 }
@@ -150,7 +171,9 @@ async fn deleted_ids_tracks_all_deleted() {
     agent.push_message(asst_msg("b"));
     agent.push_message(user_msg("c"));
 
-    agent.mark_deleted(&[0, 2], &["id_a".into(), "id_c".into()]).await;
+    agent
+        .mark_deleted(&[0, 2], &["id_a".into(), "id_c".into()])
+        .await;
 
     assert_eq!(agent.messages().len(), 1);
     assert!(agent.deleted_ids().contains("id_a"));
@@ -164,7 +187,9 @@ async fn mark_deleted_out_of_range_index_ignored() {
     agent.push_message(user_msg("only"));
 
     // index 5 超出范围，应该被安全跳过
-    agent.mark_deleted(&[0, 5], &["e0".into(), "e5".into()]).await;
+    agent
+        .mark_deleted(&[0, 5], &["e0".into(), "e5".into()])
+        .await;
 
     assert_eq!(agent.messages().len(), 0); // 只有 index 0 被删
 }

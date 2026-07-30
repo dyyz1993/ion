@@ -2,17 +2,20 @@
 //! Registers as "faux" ApiProvider; FIFO-replays pre-scripted responses.
 //! Mirrors pi's @dyyz1993/pi-ai FauxProvider (packages/ai/src/providers/faux.ts).
 
-use crate::types::{
-    AssistantContentBlock, AssistantMessage, Context, Model, StreamOptions, StopReason,
-    TextContent, ThinkingContent, ToolCall, Usage,
-};
-use crate::event_stream::{EventSender, EventStream};
 use crate::error::ProviderResult;
+use crate::event_stream::{EventSender, EventStream};
 use crate::registry::{ApiProvider, ApiRegistry};
 use crate::types::StreamEvent;
+use crate::types::{
+    AssistantContentBlock, AssistantMessage, Context, Model, StopReason, StreamOptions,
+    TextContent, ThinkingContent, ToolCall, Usage,
+};
 use async_trait::async_trait;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 
 /// A single pre-scripted response. Consumed FIFO, one per LLM call.
 pub enum FauxResponseStep {
@@ -118,7 +121,10 @@ impl FauxProvider {
             Some(step)
         } else if std::env::var("ION_FAUX_REPEAT").ok().as_deref() == Some("1") {
             // Repeat last Static response indefinitely
-            self.last_response.lock().unwrap().clone()
+            self.last_response
+                .lock()
+                .unwrap()
+                .clone()
                 .map(FauxResponseStep::Static)
         } else {
             None
@@ -143,14 +149,14 @@ impl ApiProvider for FauxProvider {
             let count = self.call_count.fetch_add(1, Ordering::SeqCst);
             if count == 0 {
                 return Err(crate::ProviderError::Stream(
-                    "500 Internal Server Error (faux injected for auto_retry test)".into()
+                    "500 Internal Server Error (faux injected for auto_retry test)".into(),
                 ));
             }
         }
         // FIFO pop — loud failure on empty queue (mirrors pi).
-        let step = self.pop().ok_or_else(|| {
-            crate::ProviderError::Stream("No more faux responses queued".into())
-        })?;
+        let step = self
+            .pop()
+            .ok_or_else(|| crate::ProviderError::Stream("No more faux responses queued".into()))?;
         let count = self.call_count.fetch_add(1, Ordering::SeqCst);
         let state = FauxState { call_count: count };
 
@@ -164,7 +170,9 @@ impl ApiProvider for FauxProvider {
         let (event_stream, sender) = EventStream::new();
         tokio::spawn(async move {
             // Start
-            sender.push(StreamEvent::Start { partial: message.clone() });
+            sender.push(StreamEvent::Start {
+                partial: message.clone(),
+            });
             // Token-chunked block streaming (Text/Thinking/ToolCall deltas).
             faux_stream_blocks(sender, message).await;
         });
@@ -240,29 +248,62 @@ async fn faux_stream_blocks(sender: EventSender, message: AssistantMessage) {
     for (idx, block) in message.content.iter().enumerate() {
         match block {
             AssistantContentBlock::Text(TextContent { text, .. }) => {
-                sender.push(StreamEvent::TextStart { content_index: idx, partial: message.clone() });
+                sender.push(StreamEvent::TextStart {
+                    content_index: idx,
+                    partial: message.clone(),
+                });
                 for chunk in split_by_token_size(text, 3, 8) {
-                    sender.push(StreamEvent::TextDelta { content_index: idx, delta: chunk, partial: message.clone() });
+                    sender.push(StreamEvent::TextDelta {
+                        content_index: idx,
+                        delta: chunk,
+                        partial: message.clone(),
+                    });
                     tokio::task::yield_now().await;
                 }
-                sender.push(StreamEvent::TextEnd { content_index: idx, content: text.clone(), partial: message.clone() });
+                sender.push(StreamEvent::TextEnd {
+                    content_index: idx,
+                    content: text.clone(),
+                    partial: message.clone(),
+                });
             }
             AssistantContentBlock::Thinking(ThinkingContent { thinking, .. }) => {
-                sender.push(StreamEvent::ThinkingStart { content_index: idx, partial: message.clone() });
+                sender.push(StreamEvent::ThinkingStart {
+                    content_index: idx,
+                    partial: message.clone(),
+                });
                 for chunk in split_by_token_size(thinking, 3, 8) {
-                    sender.push(StreamEvent::ThinkingDelta { content_index: idx, delta: chunk, partial: message.clone() });
+                    sender.push(StreamEvent::ThinkingDelta {
+                        content_index: idx,
+                        delta: chunk,
+                        partial: message.clone(),
+                    });
                     tokio::task::yield_now().await;
                 }
-                sender.push(StreamEvent::ThinkingEnd { content_index: idx, content: thinking.clone(), partial: message.clone() });
+                sender.push(StreamEvent::ThinkingEnd {
+                    content_index: idx,
+                    content: thinking.clone(),
+                    partial: message.clone(),
+                });
             }
             AssistantContentBlock::ToolCall(tc) => {
-                sender.push(StreamEvent::ToolCallStart { content_index: idx, partial: message.clone() });
+                sender.push(StreamEvent::ToolCallStart {
+                    content_index: idx,
+                    partial: message.clone(),
+                });
                 let args_str = serde_json::to_string(&tc.arguments).unwrap_or_default();
                 for chunk in split_by_token_size(&args_str, 3, 8) {
-                    sender.push(StreamEvent::ToolCallDelta { content_index: idx, delta: chunk, partial: message.clone() });
+                    sender.push(StreamEvent::ToolCallDelta {
+                        content_index: idx,
+                        delta: chunk,
+                        partial: message.clone(),
+                    });
                     tokio::task::yield_now().await;
                 }
-                sender.push(StreamEvent::ToolCallEnd { content_index: idx, tool_call: tc.clone(), partial: message.clone() });
+                sender.push(StreamEvent::ToolCallEnd {
+                    content_index: idx,
+                    tool_call: tc.clone(),
+                    partial: message.clone(),
+                });
             }
         }
     }
@@ -383,12 +424,19 @@ fn parse_script_line(v: &serde_json::Value) -> Option<FauxResponseStep> {
 
 /// Build a Text content block.
 pub fn faux_text(text: &str) -> AssistantContentBlock {
-    AssistantContentBlock::Text(TextContent { text: text.into(), text_signature: None })
+    AssistantContentBlock::Text(TextContent {
+        text: text.into(),
+        text_signature: None,
+    })
 }
 
 /// Build a Thinking content block.
 pub fn faux_thinking(thinking: &str) -> AssistantContentBlock {
-    AssistantContentBlock::Thinking(ThinkingContent { thinking: thinking.into(), thinking_signature: None, redacted: None })
+    AssistantContentBlock::Thinking(ThinkingContent {
+        thinking: thinking.into(),
+        thinking_signature: None,
+        redacted: None,
+    })
 }
 
 /// Build a ToolCall content block with an auto-generated unique id.
@@ -417,7 +465,10 @@ pub struct FauxMessageOptions {
 }
 
 /// Build a full AssistantMessage stamped as faux.
-pub fn faux_assistant_message(content: FauxContent, options: FauxMessageOptions) -> AssistantMessage {
+pub fn faux_assistant_message(
+    content: FauxContent,
+    options: FauxMessageOptions,
+) -> AssistantMessage {
     let blocks = match content {
         FauxContent::Text(s) => vec![faux_text(&s)],
         FauxContent::Single(b) => vec![b],

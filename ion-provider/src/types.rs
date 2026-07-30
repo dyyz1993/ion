@@ -34,8 +34,8 @@ pub struct ThinkingContent {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImageContent {
-    pub data: String,       // base64
-    pub mime_type: String,  // "image/jpeg" | "image/png"
+    pub data: String,      // base64
+    pub mime_type: String, // "image/jpeg" | "image/png"
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -271,11 +271,11 @@ impl Context {
 pub struct Model {
     pub id: String,
     pub name: String,
-    pub api: String,         // routes to ApiRegistry key
-    pub provider: String,    // used for env var lookup
-    pub base_url: String,    // API endpoint
+    pub api: String,      // routes to ApiRegistry key
+    pub provider: String, // used for env var lookup
+    pub base_url: String, // API endpoint
     pub reasoning: bool,
-    pub input: Vec<String>,  // ["text"] | ["text", "image"]
+    pub input: Vec<String>, // ["text"] | ["text", "image"]
     pub cost: Cost,
     pub context_window: u64,
     pub max_tokens: u64,
@@ -646,9 +646,10 @@ mod tests {
 
     #[test]
     fn test_customcontent_blocks() {
-        let cc = CustomContent::Blocks(vec![
-            ContentBlock::Text(TextContent { text: "hello".into(), text_signature: None }),
-        ]);
+        let cc = CustomContent::Blocks(vec![ContentBlock::Text(TextContent {
+            text: "hello".into(),
+            text_signature: None,
+        })]);
         let json = serde_json::to_string(&cc).unwrap();
         assert!(json.contains(r#"{"text":"hello"}"#));
 

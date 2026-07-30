@@ -27,11 +27,11 @@
 //!    - Mistral SDK 用 camelCase，但其 HTTP API 同时接受 snake_case 与 camelCase
 //!    - 本实现统一发送 **snake_case**（HTTP 原生），兼容性最广，与 openai.rs 风格一致
 
+use crate::ApiProvider;
 use crate::env_keys::resolve_api_key;
 use crate::error::{ProviderError, ProviderResult};
 use crate::event_stream::{EventSender, EventStream};
 use crate::types::*;
-use crate::ApiProvider;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -63,10 +63,7 @@ impl MistralProvider {
         let output = AssistantMessage::new(model);
         let (stream, sender) = EventStream::new();
 
-        let api_key = resolve_api_key(
-            &model.provider,
-            options.and_then(|o| o.api_key.clone()),
-        )?;
+        let api_key = resolve_api_key(&model.provider, options.and_then(|o| o.api_key.clone()))?;
 
         // ---- 构造消息 ----
         let mut messages: Vec<MistralMessage> = Vec::new();
@@ -87,7 +84,10 @@ impl MistralProvider {
         for msg in &context.messages {
             match msg {
                 Message::User(u) => {
-                    let has_image = u.content.iter().any(|b| matches!(b, ContentBlock::Image(_)));
+                    let has_image = u
+                        .content
+                        .iter()
+                        .any(|b| matches!(b, ContentBlock::Image(_)));
                     if has_image && supports_images {
                         // 含图片：content 必须是 content parts 数组
                         let parts: Vec<serde_json::Value> = u.content.iter()
@@ -111,7 +111,9 @@ impl MistralProvider {
                             name: None,
                         });
                     } else {
-                        let text = u.content.iter()
+                        let text = u
+                            .content
+                            .iter()
                             .filter_map(|b| match b {
                                 ContentBlock::Text(t) => Some(t.text.clone()),
                                 _ => None,
@@ -135,7 +137,9 @@ impl MistralProvider {
                         match block {
                             AssistantContentBlock::Text(t) => {
                                 if !t.text.trim().is_empty() {
-                                    content_parts.push(serde_json::json!({ "type": "text", "text": t.text }));
+                                    content_parts.push(
+                                        serde_json::json!({ "type": "text", "text": t.text }),
+                                    );
                                 }
                             }
                             AssistantContentBlock::Thinking(th) => {
@@ -153,7 +157,9 @@ impl MistralProvider {
                         }
                     }
 
-                    let tool_calls: Vec<serde_json::Value> = a.content.iter()
+                    let tool_calls: Vec<serde_json::Value> = a
+                        .content
+                        .iter()
                         .filter_map(|b| match b {
                             AssistantContentBlock::ToolCall(tc) => Some(serde_json::json!({
                                 "id": tc.id,
@@ -180,13 +186,19 @@ impl MistralProvider {
                         role: "assistant".into(),
                         content,
                         tool_call_id: None,
-                        tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+                        tool_calls: if tool_calls.is_empty() {
+                            None
+                        } else {
+                            Some(tool_calls)
+                        },
                         name: None,
                     });
                 }
                 Message::ToolResult(tr) => {
                     // Mistral tool 消息：role="tool", content 是 content parts 数组，带 tool_call_id + name
-                    let text = tr.content.iter()
+                    let text = tr
+                        .content
+                        .iter()
                         .filter_map(|b| match b {
                             ContentBlock::Text(t) => Some(t.text.clone()),
                             _ => None,
@@ -194,7 +206,9 @@ impl MistralProvider {
                         .collect::<Vec<_>>()
                         .join("\n");
                     let error_prefix = if tr.is_error { "[tool error] " } else { "" };
-                    let content_parts = vec![serde_json::json!({ "type": "text", "text": format!("{error_prefix}{text}") })];
+                    let content_parts = vec![
+                        serde_json::json!({ "type": "text", "text": format!("{error_prefix}{text}") }),
+                    ];
 
                     // 如果支持图片且 tool result 含图片，追加 image_url parts
                     let mut content_parts = content_parts;
@@ -245,7 +259,8 @@ impl MistralProvider {
                 Message::Custom(c) => {
                     let text = match &c.content {
                         CustomContent::Text(s) => s.clone(),
-                        CustomContent::Blocks(blocks) => blocks.iter()
+                        CustomContent::Blocks(blocks) => blocks
+                            .iter()
                             .filter_map(|b| match b {
                                 ContentBlock::Text(t) => Some(t.text.clone()),
                                 _ => None,
@@ -292,18 +307,23 @@ impl MistralProvider {
 
         // ---- tools ----
         let tools: Option<Vec<MistralTool>> = context.tools.as_ref().map(|tools| {
-            tools.iter().map(|t| MistralTool {
-                r#type: "function".into(),
-                function: MistralToolFunction {
-                    name: t.name.clone(),
-                    description: t.description.clone(),
-                    parameters: t.parameters.clone(),
-                },
-            }).collect()
+            tools
+                .iter()
+                .map(|t| MistralTool {
+                    r#type: "function".into(),
+                    function: MistralToolFunction {
+                        name: t.name.clone(),
+                        description: t.description.clone(),
+                        parameters: t.parameters.clone(),
+                    },
+                })
+                .collect()
         });
 
         // ---- 构造 body ----
-        let max_tokens = options.and_then(|o| o.max_tokens).unwrap_or(model.max_tokens);
+        let max_tokens = options
+            .and_then(|o| o.max_tokens)
+            .unwrap_or(model.max_tokens);
 
         let mut body = serde_json::json!({
             "model": model.id,
@@ -363,7 +383,9 @@ impl MistralProvider {
             {
                 tracing::warn!("Mistral API rejected response_format, falling back");
                 let mut fallback_body = body.clone();
-                fallback_body.as_object_mut().map(|obj| obj.remove("response_format"));
+                fallback_body
+                    .as_object_mut()
+                    .map(|obj| obj.remove("response_format"));
                 let resp = client
                     .post(&url)
                     .header("Authorization", format!("Bearer {api_key}"))
@@ -373,7 +395,10 @@ impl MistralProvider {
                 if !resp.status().is_success() {
                     let s2 = resp.status();
                     let b2 = resp.text().await.unwrap_or_default();
-                    return Err(ProviderError::HttpError { status: s2.as_u16(), body: b2 });
+                    return Err(ProviderError::HttpError {
+                        status: s2.as_u16(),
+                        body: b2,
+                    });
                 }
                 let cancel_clone_fb = cancel.clone();
                 tokio::spawn(async move {
@@ -389,7 +414,10 @@ impl MistralProvider {
                 return Ok(stream);
             }
 
-            return Err(ProviderError::HttpError { status: s.as_u16(), body: b });
+            return Err(ProviderError::HttpError {
+                status: s.as_u16(),
+                body: b,
+            });
         }
 
         let cancel_clone = cancel.clone();
@@ -554,11 +582,7 @@ struct AccTC {
     arguments: String,
 }
 
-async fn read_sse(
-    resp: reqwest::Response,
-    sender: EventSender,
-    mut output: AssistantMessage,
-) {
+async fn read_sse(resp: reqwest::Response, sender: EventSender, mut output: AssistantMessage) {
     use futures_util::StreamExt;
 
     let mut buffer = String::new();
@@ -572,13 +596,24 @@ async fn read_sse(
     tokio::spawn(async move {
         while let Some(chunk) = stream.next().await {
             match chunk {
-                Ok(b) => { if chunk_tx.send(b.to_vec()).await.is_err() { break; } }
-                Err(e) => { tracing::warn!("Mistral SSE: {e}"); break; }
+                Ok(b) => {
+                    if chunk_tx.send(b.to_vec()).await.is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Mistral SSE: {e}");
+                    break;
+                }
             }
         }
     });
 
-    sender.send(StreamEvent::Start { partial: output.clone() }).await;
+    sender
+        .send(StreamEvent::Start {
+            partial: output.clone(),
+        })
+        .await;
 
     while let Some(bytes) = chunk_rx.recv().await {
         let text = String::from_utf8_lossy(&bytes);
@@ -591,13 +626,19 @@ async fn read_sse(
             };
             let event_str = buffer[..pos].to_string();
             buffer = buffer[pos + 2..].to_string();
-            if event_str.trim().is_empty() { continue; }
+            if event_str.trim().is_empty() {
+                continue;
+            }
 
             for line in event_str.lines() {
                 let line = line.trim();
-                if !line.starts_with("data: ") { continue; }
+                if !line.starts_with("data: ") {
+                    continue;
+                }
                 let json_str = &line[6..];
-                if json_str == "[DONE]" { continue; }
+                if json_str == "[DONE]" {
+                    continue;
+                }
 
                 let chunk: Chunk = match serde_json::from_str(json_str) {
                     Ok(c) => c,
@@ -606,7 +647,9 @@ async fn read_sse(
 
                 // 保留首个非空 response id
                 if output.response_id.is_none() {
-                    if let Some(ref id) = chunk.id { output.response_id = Some(id.clone()); }
+                    if let Some(ref id) = chunk.id {
+                        output.response_id = Some(id.clone());
+                    }
                 }
 
                 for choice in chunk.choices {
@@ -621,7 +664,8 @@ async fn read_sse(
                             &mut output,
                             &sender,
                             content_idx,
-                        ).await;
+                        )
+                        .await;
                     }
 
                     // ---- tool calls ----
@@ -629,7 +673,9 @@ async fn read_sse(
                         for tc in tcs {
                             let idx = tc.index.unwrap_or(0);
                             // arguments 可能是 string 或 object
-                            let args_str = tc.function.as_ref()
+                            let args_str = tc
+                                .function
+                                .as_ref()
                                 .and_then(|f| f.arguments.as_ref())
                                 .map(|v| match v {
                                     serde_json::Value::String(s) => s.clone(),
@@ -648,11 +694,18 @@ async fn read_sse(
                                 } else {
                                     raw_id
                                 };
-                                let name = tc.function.as_ref()
+                                let name = tc
+                                    .function
+                                    .as_ref()
                                     .and_then(|f| f.name.clone())
                                     .unwrap_or_default();
                                 let args = args_str.unwrap_or_default();
-                                accs.push(AccTC { index: idx, id, name, arguments: args });
+                                accs.push(AccTC {
+                                    index: idx,
+                                    id,
+                                    name,
+                                    arguments: args,
+                                });
                             }
                         }
                     }
@@ -668,38 +721,51 @@ async fn read_sse(
                             output.usage.total_tokens = usage.total_tokens;
                         }
 
-                        output.content = build_assistant_content(&text_parts, &reasoning_parts, &accs);
+                        output.content =
+                            build_assistant_content(&text_parts, &reasoning_parts, &accs);
 
-                        let tcs: Vec<ToolCall> = accs.iter().map(|a| ToolCall {
-                            call_type: "function".into(),
-                            id: a.id.clone(),
-                            name: a.name.clone(),
-                            arguments: serde_json::from_str(&a.arguments).unwrap_or(serde_json::Value::Null),
-                            thought_signature: None,
-                        }).collect();
+                        let tcs: Vec<ToolCall> = accs
+                            .iter()
+                            .map(|a| ToolCall {
+                                call_type: "function".into(),
+                                id: a.id.clone(),
+                                name: a.name.clone(),
+                                arguments: serde_json::from_str(&a.arguments)
+                                    .unwrap_or(serde_json::Value::Null),
+                                thought_signature: None,
+                            })
+                            .collect();
 
                         if !tcs.is_empty() {
-                            sender.send(StreamEvent::ToolCallStart {
-                                content_index: content_idx,
-                                partial: output.clone(),
-                            }).await;
+                            sender
+                                .send(StreamEvent::ToolCallStart {
+                                    content_index: content_idx,
+                                    partial: output.clone(),
+                                })
+                                .await;
                         }
                         for tc in &tcs {
-                            sender.send(StreamEvent::ToolCallEnd {
-                                content_index: content_idx,
-                                tool_call: tc.clone(),
-                                partial: output.clone(),
-                            }).await;
-                            output.content.push(AssistantContentBlock::ToolCall(tc.clone()));
+                            sender
+                                .send(StreamEvent::ToolCallEnd {
+                                    content_index: content_idx,
+                                    tool_call: tc.clone(),
+                                    partial: output.clone(),
+                                })
+                                .await;
+                            output
+                                .content
+                                .push(AssistantContentBlock::ToolCall(tc.clone()));
                         }
 
                         if !text_parts.is_empty() {
                             let full_text = text_parts.join("");
-                            sender.send(StreamEvent::TextEnd {
-                                content_index: content_idx,
-                                content: full_text,
-                                partial: output.clone(),
-                            }).await;
+                            sender
+                                .send(StreamEvent::TextEnd {
+                                    content_index: content_idx,
+                                    content: full_text,
+                                    partial: output.clone(),
+                                })
+                                .await;
                         }
 
                         sender.end(output.clone());
@@ -728,21 +794,27 @@ async fn process_delta_content(
     match content_val {
         // 纯字符串（最常见的非思考场景）
         serde_json::Value::String(s) => {
-            if s.is_empty() { return; }
+            if s.is_empty() {
+                return;
+            }
             if text_parts.is_empty() {
-                sender.send(StreamEvent::TextStart {
-                    content_index: content_idx,
-                    partial: output.clone(),
-                }).await;
+                sender
+                    .send(StreamEvent::TextStart {
+                        content_index: content_idx,
+                        partial: output.clone(),
+                    })
+                    .await;
             }
             text_parts.push(s.clone());
             let mut partial = output.clone();
             partial.content = build_assistant_content(text_parts, reasoning_parts, &[]);
-            sender.send(StreamEvent::TextDelta {
-                content_index: content_idx,
-                delta: s,
-                partial,
-            }).await;
+            sender
+                .send(StreamEvent::TextDelta {
+                    content_index: content_idx,
+                    delta: s,
+                    partial,
+                })
+                .await;
         }
         // 数组：可含 {type:"thinking"} 和 {type:"text"} 两种 part
         serde_json::Value::Array(parts) => {
@@ -751,47 +823,62 @@ async fn process_delta_content(
                 match part_type {
                     "thinking" => {
                         // thinking 字段是 [{type:"text", text:"..."}]
-                        let delta_text = part.get("thinking")
+                        let delta_text = part
+                            .get("thinking")
                             .and_then(|t| t.as_array())
-                            .map(|arr| arr.iter()
-                                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-                                .collect::<Vec<_>>()
-                                .join(""))
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                                    .collect::<Vec<_>>()
+                                    .join("")
+                            })
                             .unwrap_or_default();
-                        if delta_text.is_empty() { continue; }
+                        if delta_text.is_empty() {
+                            continue;
+                        }
                         if reasoning_parts.is_empty() {
-                            sender.send(StreamEvent::ThinkingStart {
-                                content_index: content_idx,
-                                partial: output.clone(),
-                            }).await;
+                            sender
+                                .send(StreamEvent::ThinkingStart {
+                                    content_index: content_idx,
+                                    partial: output.clone(),
+                                })
+                                .await;
                         }
                         reasoning_parts.push(delta_text.clone());
                         let mut partial = output.clone();
                         partial.content = build_assistant_content(text_parts, reasoning_parts, &[]);
-                        sender.send(StreamEvent::ThinkingDelta {
-                            content_index: content_idx,
-                            delta: delta_text,
-                            partial,
-                        }).await;
+                        sender
+                            .send(StreamEvent::ThinkingDelta {
+                                content_index: content_idx,
+                                delta: delta_text,
+                                partial,
+                            })
+                            .await;
                     }
                     _ => {
                         // "text" 或未知 type 当文本处理
                         let text = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                        if text.is_empty() { continue; }
+                        if text.is_empty() {
+                            continue;
+                        }
                         if text_parts.is_empty() {
-                            sender.send(StreamEvent::TextStart {
-                                content_index: content_idx,
-                                partial: output.clone(),
-                            }).await;
+                            sender
+                                .send(StreamEvent::TextStart {
+                                    content_index: content_idx,
+                                    partial: output.clone(),
+                                })
+                                .await;
                         }
                         text_parts.push(text.to_string());
                         let mut partial = output.clone();
                         partial.content = build_assistant_content(text_parts, reasoning_parts, &[]);
-                        sender.send(StreamEvent::TextDelta {
-                            content_index: content_idx,
-                            delta: text.to_string(),
-                            partial,
-                        }).await;
+                        sender
+                            .send(StreamEvent::TextDelta {
+                                content_index: content_idx,
+                                delta: text.to_string(),
+                                partial,
+                            })
+                            .await;
                     }
                 }
             }
@@ -864,7 +951,10 @@ mod tests {
     fn make_user_text(text: &str) -> Message {
         Message::User(UserMessage {
             role: "user".into(),
-            content: vec![ContentBlock::Text(TextContent { text: text.into(), text_signature: None })],
+            content: vec![ContentBlock::Text(TextContent {
+                text: text.into(),
+                text_signature: None,
+            })],
             timestamp: 0,
             source: MessageSource::Prompt,
         })
@@ -893,11 +983,18 @@ mod tests {
         assert!(!uses_prompt_mode_reasoning(&model));
 
         let mut body = serde_json::json!({});
-        apply_mistral_reasoning(&mut body, &model, Some(&StreamOptions {
-            max_tokens: None, api_key: None,
-            reasoning: Some(ThinkingLevel::High),
-            timeout_ms: None, max_retries: None, response_format: None,
-        }));
+        apply_mistral_reasoning(
+            &mut body,
+            &model,
+            Some(&StreamOptions {
+                max_tokens: None,
+                api_key: None,
+                reasoning: Some(ThinkingLevel::High),
+                timeout_ms: None,
+                max_retries: None,
+                response_format: None,
+            }),
+        );
         assert_eq!(body["reasoning_effort"], "high");
         // prompt_mode 不应出现
         assert!(body.get("prompt_mode").is_none());
@@ -908,11 +1005,18 @@ mod tests {
         let mut model = make_model(true);
         model.id = "mistral-small-latest".into();
         let mut body = serde_json::json!({});
-        apply_mistral_reasoning(&mut body, &model, Some(&StreamOptions {
-            max_tokens: None, api_key: None,
-            reasoning: Some(ThinkingLevel::Off),
-            timeout_ms: None, max_retries: None, response_format: None,
-        }));
+        apply_mistral_reasoning(
+            &mut body,
+            &model,
+            Some(&StreamOptions {
+                max_tokens: None,
+                api_key: None,
+                reasoning: Some(ThinkingLevel::Off),
+                timeout_ms: None,
+                max_retries: None,
+                response_format: None,
+            }),
+        );
         assert_eq!(body["reasoning_effort"], "none");
     }
 
@@ -925,11 +1029,18 @@ mod tests {
         assert!(uses_prompt_mode_reasoning(&model));
 
         let mut body = serde_json::json!({});
-        apply_mistral_reasoning(&mut body, &model, Some(&StreamOptions {
-            max_tokens: None, api_key: None,
-            reasoning: Some(ThinkingLevel::Medium),
-            timeout_ms: None, max_retries: None, response_format: None,
-        }));
+        apply_mistral_reasoning(
+            &mut body,
+            &model,
+            Some(&StreamOptions {
+                max_tokens: None,
+                api_key: None,
+                reasoning: Some(ThinkingLevel::Medium),
+                timeout_ms: None,
+                max_retries: None,
+                response_format: None,
+            }),
+        );
         assert_eq!(body["prompt_mode"], "reasoning");
         // reasoning_effort 不应出现
         assert!(body.get("reasoning_effort").is_none());
@@ -939,11 +1050,18 @@ mod tests {
     fn no_reasoning_params_for_non_reasoning_model() {
         let model = make_model(false);
         let mut body = serde_json::json!({});
-        apply_mistral_reasoning(&mut body, &model, Some(&StreamOptions {
-            max_tokens: None, api_key: None,
-            reasoning: Some(ThinkingLevel::High),
-            timeout_ms: None, max_retries: None, response_format: None,
-        }));
+        apply_mistral_reasoning(
+            &mut body,
+            &model,
+            Some(&StreamOptions {
+                max_tokens: None,
+                api_key: None,
+                reasoning: Some(ThinkingLevel::High),
+                timeout_ms: None,
+                max_retries: None,
+                response_format: None,
+            }),
+        );
         assert!(body.get("prompt_mode").is_none());
         assert!(body.get("reasoning_effort").is_none());
     }
@@ -1000,12 +1118,16 @@ mod tests {
                     thinking_signature: None,
                     redacted: None,
                 }),
-                AssistantContentBlock::Text(TextContent { text: "Answer".into(), text_signature: None }),
+                AssistantContentBlock::Text(TextContent {
+                    text: "Answer".into(),
+                    text_signature: None,
+                }),
             ],
             api: "mistral-conversations".into(),
             provider: "mistral".into(),
             model: "codestral-latest".into(),
-            response_model: None, response_id: None,
+            response_model: None,
+            response_id: None,
             usage: Usage::default(),
             stop_reason: StopReason::Stop,
             error_message: None,
@@ -1044,7 +1166,8 @@ mod tests {
     #[test]
     fn delta_content_string_parsed() {
         // 模拟 Mistral SSE chunk 的 delta.content 是字符串
-        let chunk_json = r#"{"id":"abc","choices":[{"delta":{"content":"hello"},"finish_reason":null}]}"#;
+        let chunk_json =
+            r#"{"id":"abc","choices":[{"delta":{"content":"hello"},"finish_reason":null}]}"#;
         let chunk: Chunk = serde_json::from_str(chunk_json).unwrap();
         let content = chunk.choices[0].delta.content.as_ref().unwrap();
         assert_eq!(content.as_str().unwrap(), "hello");
@@ -1098,7 +1221,10 @@ mod tests {
         let tcs = chunk.choices[0].delta.tool_calls.as_ref().unwrap();
         assert_eq!(tcs.len(), 1);
         assert_eq!(tcs[0].id.as_deref(), Some("call_xyz"));
-        assert_eq!(tcs[0].function.as_ref().unwrap().name.as_deref(), Some("get_weather"));
+        assert_eq!(
+            tcs[0].function.as_ref().unwrap().name.as_deref(),
+            Some("get_weather")
+        );
     }
 
     // ---- process_delta_content 字符串路径 ----
@@ -1128,7 +1254,8 @@ mod tests {
                 &mut output.clone(),
                 &sender,
                 0,
-            ).await;
+            )
+            .await;
         });
         assert_eq!(text_parts, vec!["hello".to_string()]);
         assert!(reasoning_parts.is_empty());
@@ -1159,7 +1286,8 @@ mod tests {
                 &mut output.clone(),
                 &sender,
                 0,
-            ).await;
+            )
+            .await;
         });
         assert_eq!(reasoning_parts, vec!["step 1".to_string()]);
         assert_eq!(text_parts, vec!["answer".to_string()]);
@@ -1169,11 +1297,7 @@ mod tests {
 
     #[test]
     fn build_content_thinking_before_text() {
-        let content = build_assistant_content(
-            &vec!["answer".into()],
-            &vec!["thought".into()],
-            &[],
-        );
+        let content = build_assistant_content(&vec!["answer".into()], &vec!["thought".into()], &[]);
         assert_eq!(content.len(), 2);
         assert!(matches!(content[0], AssistantContentBlock::Thinking(_)));
         assert!(matches!(content[1], AssistantContentBlock::Text(_)));

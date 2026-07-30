@@ -126,13 +126,17 @@ impl SwitchProbe {
 
 #[async_trait]
 impl Extension for SwitchProbe {
-    fn name(&self) -> &str { "switch_probe" }
+    fn name(&self) -> &str {
+        "switch_probe"
+    }
 
     async fn on_session_before_switch(&self, ctx: &SessionSwitchContext) -> AgentResult<()> {
         self.trigger_count.fetch_add(1, Ordering::SeqCst);
         *self.last_action.lock().unwrap() = Some(ctx.action.clone());
         if self.veto {
-            Err(ion::agent::error::AgentError::Tool("vetoed by switch_probe".into()))
+            Err(ion::agent::error::AgentError::Tool(
+                "vetoed by switch_probe".into(),
+            ))
         } else {
             Ok(())
         }
@@ -209,10 +213,17 @@ async fn sh1_branch_triggers_hook() {
     let _ = agent.run("branch from entry_1").await;
 
     let count = trigger_count.load(Ordering::SeqCst);
-    assert!(count >= 1, "on_session_before_switch 应被触发至少 1 次，实际 {count}");
+    assert!(
+        count >= 1,
+        "on_session_before_switch 应被触发至少 1 次，实际 {count}"
+    );
 
     let action = last_action.lock().unwrap().clone();
-    assert_eq!(action.as_deref(), Some("branch"), "action 应为 branch，实际 {action:?}");
+    assert_eq!(
+        action.as_deref(),
+        Some("branch"),
+        "action 应为 branch，实际 {action:?}"
+    );
 
     let _ = std::fs::remove_dir_all(&cwd);
 }
@@ -228,12 +239,20 @@ async fn sh2_rollback_action_is_rollback() {
     let probe = SwitchProbe::new(false);
     let last_action = probe.last_action.clone();
 
-    let responses = vec![rollback_call(&entry, "wrong direction"), stop_msg(), stop_msg()];
+    let responses = vec![
+        rollback_call(&entry, "wrong direction"),
+        stop_msg(),
+        stop_msg(),
+    ];
     let mut agent = build_agent(&cwd, responses, probe);
     let _ = agent.run("rollback").await;
 
     let action = last_action.lock().unwrap().clone();
-    assert_eq!(action.as_deref(), Some("rollback"), "rollback 时 action 应为 rollback，实际 {action:?}");
+    assert_eq!(
+        action.as_deref(),
+        Some("rollback"),
+        "rollback 时 action 应为 rollback，实际 {action:?}"
+    );
 
     let _ = std::fs::remove_dir_all(&cwd);
 }
@@ -259,10 +278,13 @@ async fn sh3_veto_blocks_branch_execution() {
 
     // session 文件里不应该有 branch entry（type=="branch"）
     let content = std::fs::read_to_string(ion::session_jsonl::session_path(&cwd)).unwrap();
-    let has_branch = content.lines().any(|l| {
-        l.contains("\"type\":\"branch\"") || l.contains("\"type\":\"leaf_pointer\"")
-    });
-    assert!(!has_branch, "veto 后 session 文件不应有 branch/leaf_pointer entry");
+    let has_branch = content
+        .lines()
+        .any(|l| l.contains("\"type\":\"branch\"") || l.contains("\"type\":\"leaf_pointer\""));
+    assert!(
+        !has_branch,
+        "veto 后 session 文件不应有 branch/leaf_pointer entry"
+    );
 
     let _ = std::fs::remove_dir_all(&cwd);
 }
@@ -276,14 +298,23 @@ async fn sh4_allow_executes_branch() {
     let entry = seed_session(&cwd);
 
     let probe = SwitchProbe::new(false); // 不 veto
-    let responses = vec![branch_call(&entry, Some("alt-path")), stop_msg(), stop_msg()];
+    let responses = vec![
+        branch_call(&entry, Some("alt-path")),
+        stop_msg(),
+        stop_msg(),
+    ];
     let mut agent = build_agent(&cwd, responses, probe);
 
     let _ = agent.run("branch").await;
 
     let content = std::fs::read_to_string(ion::session_jsonl::session_path(&cwd)).unwrap();
-    let has_leaf = content.lines().any(|l| l.contains("\"type\":\"leaf_pointer\""));
-    assert!(has_leaf, "不 veto 时应正常执行 branch（有 leaf_pointer entry）");
+    let has_leaf = content
+        .lines()
+        .any(|l| l.contains("\"type\":\"leaf_pointer\""));
+    assert!(
+        has_leaf,
+        "不 veto 时应正常执行 branch（有 leaf_pointer entry）"
+    );
 
     let _ = std::fs::remove_dir_all(&cwd);
 }
@@ -316,7 +347,11 @@ async fn sh5_other_tools_dont_trigger() {
 
     let _ = agent.run("write a note").await;
 
-    assert_eq!(trigger_count.load(Ordering::SeqCst), 0, "非 branch 工具不应触发 session 钩子");
+    assert_eq!(
+        trigger_count.load(Ordering::SeqCst),
+        0,
+        "非 branch 工具不应触发 session 钩子"
+    );
 
     let _ = std::fs::remove_dir_all(&cwd);
 }

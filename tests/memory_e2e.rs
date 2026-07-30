@@ -4,10 +4,10 @@
 //! 不依赖 Manager 进程（通过 Rust API 直接调用）。
 //! 使用 new_with_root_no_global 避免全局 SQLite 污染（不依赖环境变量）。
 
+use ion::agent::extension::Extension;
+use ion::agent::memory::{MemoryEntry, MemoryExtension, MemoryStore};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use ion::agent::memory::{MemoryStore, MemoryExtension, MemoryEntry};
-use ion::agent::extension::Extension;
 
 /// 测试用临时目录（每次创建全新的，不残留）
 fn tmp_dir(name: &str) -> String {
@@ -26,7 +26,9 @@ fn tmp_dir(name: &str) -> String {
 }
 
 /// 测试用 session ID
-fn sess_id() -> String { "test_sess_001".to_string() }
+fn sess_id() -> String {
+    "test_sess_001".to_string()
+}
 
 #[tokio::test]
 async fn test_store_save_and_search() {
@@ -34,9 +36,27 @@ async fn test_store_save_and_search() {
     let store = MemoryStore::new_with_root_no_global(&root, &sess_id());
 
     // 保存 3 条记忆
-    let id1 = store.save_entry("用户喜欢 Rust", "语言偏好", "编程", &["rust".into(), "lang".into()], "auto");
-    let id2 = store.save_entry("用户喜欢 TypeScript", "语言偏好", "编程", &["ts".into(), "lang".into()], "auto");
-    store.save_entry("项目使用 Tokio", "技术选型", "技术", &["tokio".into(), "async".into()], "tech");
+    let id1 = store.save_entry(
+        "用户喜欢 Rust",
+        "语言偏好",
+        "编程",
+        &["rust".into(), "lang".into()],
+        "auto",
+    );
+    let id2 = store.save_entry(
+        "用户喜欢 TypeScript",
+        "语言偏好",
+        "编程",
+        &["ts".into(), "lang".into()],
+        "auto",
+    );
+    store.save_entry(
+        "项目使用 Tokio",
+        "技术选型",
+        "技术",
+        &["tokio".into(), "async".into()],
+        "tech",
+    );
 
     // 验证 ID 正确
     assert_eq!(id1, "mem_1", "first entry id");
@@ -78,7 +98,9 @@ async fn test_store_forget_soft_delete() {
 
     // 手动 forget
     for e in &mut all {
-        if e.id == "mem_1" { e.archived = true; }
+        if e.id == "mem_1" {
+            e.archived = true;
+        }
     }
     store.write_outline("auto", &all);
 
@@ -120,7 +142,10 @@ async fn test_extension_on_system_prompt() {
     let mut prompt = "你是助手。".to_string();
     let r = ext.on_system_prompt(&mut prompt).await;
     assert!(r.is_ok());
-    assert!(!prompt.contains("<memory_outline>"), "no memory, no outline");
+    assert!(
+        !prompt.contains("<memory_outline>"),
+        "no memory, no outline"
+    );
 
     // save 一条记忆
     let store = ext.store.lock().await;
@@ -131,7 +156,10 @@ async fn test_extension_on_system_prompt() {
     let mut prompt = "你是助手。".to_string();
     let r = ext.on_system_prompt(&mut prompt).await;
     assert!(r.is_ok());
-    assert!(prompt.contains("<memory_outline>"), "has memory, has outline");
+    assert!(
+        prompt.contains("<memory_outline>"),
+        "has memory, has outline"
+    );
     assert!(prompt.contains("auto"), "outline id visible");
 }
 
@@ -144,7 +172,13 @@ async fn test_store_pending_and_inject() {
     // 保存记忆
     {
         let mut s = store.lock().await;
-        s.save_entry("偏好 Rust 编程", "语言偏好", "技术", &["rust".into(), "lang".into()], "auto");
+        s.save_entry(
+            "偏好 Rust 编程",
+            "语言偏好",
+            "技术",
+            &["rust".into(), "lang".into()],
+            "auto",
+        );
     }
 
     // 模拟 on_input 的搜索 + pending 逻辑
@@ -153,11 +187,19 @@ async fn test_store_pending_and_inject() {
         s.turn_count += 1;
         let results = s.search("用 Rust 写代码要注意什么？", None);
         assert!(!results.is_empty(), "search should find memories");
-        let mut by_outline: std::collections::HashMap<String, Vec<ion::agent::memory::MemoryEntry>> = std::collections::HashMap::new();
-        for e in results { by_outline.entry(e.outline.clone()).or_default().push(e); }
+        let mut by_outline: std::collections::HashMap<
+            String,
+            Vec<ion::agent::memory::MemoryEntry>,
+        > = std::collections::HashMap::new();
+        for e in results {
+            by_outline.entry(e.outline.clone()).or_default().push(e);
+        }
         for (oid, entries) in &by_outline {
             let xml = s.build_context_xml(oid, entries);
-            s.pending.push(ion::agent::memory::PendingInject { outline: oid.clone(), xml });
+            s.pending.push(ion::agent::memory::PendingInject {
+                outline: oid.clone(),
+                xml,
+            });
         }
         assert_eq!(s.pending.len(), 1, "should add to pending");
         assert!(s.pending[0].xml.contains("<memory_context"));
@@ -196,7 +238,10 @@ async fn test_outline_sanitization() {
     // 合法 outline
     store.save_entry("内容", "", "", &[], "valid-outline_123");
     let idx = store.read_index();
-    assert!(idx.iter().any(|i| i.id == "valid-outline_123"), "valid outline accepted");
+    assert!(
+        idx.iter().any(|i| i.id == "valid-outline_123"),
+        "valid outline accepted"
+    );
 
     // 非法 outline（含路径穿越）→ 文字被净化，只保留字母数字_-
     store.save_entry("另一个内容", "", "", &[], "../../../etc/passwd");

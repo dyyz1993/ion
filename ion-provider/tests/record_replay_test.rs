@@ -1,15 +1,26 @@
 use ion_provider::event_stream::EventStream;
-use ion_provider::types::{StreamEvent, AssistantMessage, StopReason};
+use ion_provider::types::{AssistantMessage, StopReason, StreamEvent};
 
 fn faux_done_message(text: &str) -> AssistantMessage {
     let mut msg = AssistantMessage::new(&ion_provider::types::Model {
-        id: "test".into(), name: "T".into(), api: "x".into(), provider: "x".into(),
-        base_url: String::new(), reasoning: false, input: vec![],
+        id: "test".into(),
+        name: "T".into(),
+        api: "x".into(),
+        provider: "x".into(),
+        base_url: String::new(),
+        reasoning: false,
+        input: vec![],
         cost: ion_provider::types::Cost::default(),
-        context_window: 1, max_tokens: 1, compat: None, headers: None,
+        context_window: 1,
+        max_tokens: 1,
+        compat: None,
+        headers: None,
     });
     msg.content = vec![ion_provider::types::AssistantContentBlock::Text(
-        ion_provider::types::TextContent { text: text.into(), text_signature: None }
+        ion_provider::types::TextContent {
+            text: text.into(),
+            text_signature: None,
+        },
     )];
     msg.stop_reason = StopReason::Stop;
     msg
@@ -26,17 +37,21 @@ async fn forward_with_done_tap_captures_final_message() {
         }
     });
 
-    src_sender.push(StreamEvent::Start { partial: faux_done_message("hello") });
+    src_sender.push(StreamEvent::Start {
+        partial: faux_done_message("hello"),
+    });
     src_sender.end(faux_done_message("hello"));
 
     let result = tapped.result().await.unwrap();
     assert_eq!(result.stop_reason, StopReason::Stop);
     // Yield a few times so the spawned task runs on_done
-    for _ in 0..5 { tokio::task::yield_now().await; }
+    for _ in 0..5 {
+        tokio::task::yield_now().await;
+    }
     assert_eq!(*captured.lock().unwrap(), Some("hello".to_string()));
 }
 
-use ion_provider::registry::{ProviderFactory, BuiltinProviderFactory};
+use ion_provider::registry::{BuiltinProviderFactory, ProviderFactory};
 
 #[test]
 fn builtin_factory_creates_all_known_apis() {
@@ -48,7 +63,7 @@ fn builtin_factory_creates_all_known_apis() {
     assert!(f.create("nonexistent").is_none());
 }
 
-use ion_provider::replay::{validate_recording_id, recording_trace_path};
+use ion_provider::replay::{recording_trace_path, validate_recording_id};
 
 #[test]
 fn validate_recording_id_accepts_safe_ids() {
@@ -62,8 +77,14 @@ fn validate_recording_id_accepts_safe_ids() {
 fn validate_recording_id_rejects_path_traversal() {
     assert!(validate_recording_id("../etc/passwd").is_err());
     assert!(validate_recording_id("..").is_err());
-    assert!(validate_recording_id("a/b").is_err(), "slash must be rejected");
-    assert!(validate_recording_id("a b").is_err(), "space must be rejected");
+    assert!(
+        validate_recording_id("a/b").is_err(),
+        "slash must be rejected"
+    );
+    assert!(
+        validate_recording_id("a b").is_err(),
+        "space must be rejected"
+    );
 }
 
 #[test]
@@ -78,18 +99,28 @@ fn recording_trace_path_rejects_traversal() {
     assert!(recording_trace_path("valid-id").is_ok());
 }
 
+use ion_provider::faux::{
+    FauxContent, FauxMessageOptions, FauxProvider, FauxResponseStep, faux_assistant_message,
+};
 use ion_provider::record::RecordingProvider;
-use ion_provider::faux::{FauxProvider, FauxResponseStep, faux_assistant_message, FauxContent, FauxMessageOptions};
-use ion_provider::registry::{ApiRegistry, ApiProvider, stream};
+use ion_provider::registry::{ApiProvider, ApiRegistry, stream};
 use std::sync::Arc;
 use tempfile::tempdir;
 
 fn faux_model_with_api(api: &str) -> ion_provider::types::Model {
     ion_provider::types::Model {
-        id: "faux-1".into(), name: "Faux".into(), api: api.into(), provider: "faux".into(),
-        base_url: String::new(), reasoning: false, input: vec!["text".into()],
+        id: "faux-1".into(),
+        name: "Faux".into(),
+        api: api.into(),
+        provider: "faux".into(),
+        base_url: String::new(),
+        reasoning: false,
+        input: vec!["text".into()],
         cost: ion_provider::types::Cost::default(),
-        context_window: 128000, max_tokens: 8192, compat: None, headers: None,
+        context_window: 128000,
+        max_tokens: 8192,
+        compat: None,
+        headers: None,
     }
 }
 
@@ -100,14 +131,21 @@ async fn recording_provider_writes_trace_on_done() {
     let meta_path = tmp.path().join("meta.json");
 
     let inner_faux = Arc::new(FauxProvider::new());
-    inner_faux.set_responses(vec![FauxResponseStep::Static(
-        faux_assistant_message(FauxContent::Text("recorded hello".into()), FauxMessageOptions::default())
-    )]);
+    inner_faux.set_responses(vec![FauxResponseStep::Static(faux_assistant_message(
+        FauxContent::Text("recorded hello".into()),
+        FauxMessageOptions::default(),
+    ))]);
 
     struct InnerHandle(Arc<FauxProvider>);
     #[async_trait::async_trait]
     impl ApiProvider for InnerHandle {
-        async fn stream(&self, model: &ion_provider::types::Model, ctx: &ion_provider::types::Context, opts: Option<&ion_provider::types::StreamOptions>, cancel: Option<tokio_util::sync::CancellationToken>) -> ion_provider::error::ProviderResult<ion_provider::event_stream::EventStream> {
+        async fn stream(
+            &self,
+            model: &ion_provider::types::Model,
+            ctx: &ion_provider::types::Context,
+            opts: Option<&ion_provider::types::StreamOptions>,
+            cancel: Option<tokio_util::sync::CancellationToken>,
+        ) -> ion_provider::error::ProviderResult<ion_provider::event_stream::EventStream> {
             self.0.stream(model, ctx, opts, cancel).await
         }
     }
@@ -129,7 +167,10 @@ async fn recording_provider_writes_trace_on_done() {
     let trace = std::fs::read_to_string(&trace_path).unwrap();
     assert_eq!(trace.lines().count(), 1);
     assert!(trace.contains("recorded hello"));
-    assert!(trace.contains("request_hash"), "trace line includes request_hash");
+    assert!(
+        trace.contains("request_hash"),
+        "trace line includes request_hash"
+    );
 
     let meta = std::fs::read_to_string(&meta_path).unwrap();
     assert!(meta.contains("\"response_count\": 1"));
@@ -152,7 +193,13 @@ async fn replay_provider_round_trips_via_load_script() {
     struct H(Arc<FauxProvider>);
     #[async_trait::async_trait]
     impl ApiProvider for H {
-        async fn stream(&self, m: &ion_provider::types::Model, c: &ion_provider::types::Context, o: Option<&ion_provider::types::StreamOptions>, cancel: Option<tokio_util::sync::CancellationToken>) -> ion_provider::error::ProviderResult<ion_provider::event_stream::EventStream> {
+        async fn stream(
+            &self,
+            m: &ion_provider::types::Model,
+            c: &ion_provider::types::Context,
+            o: Option<&ion_provider::types::StreamOptions>,
+            cancel: Option<tokio_util::sync::CancellationToken>,
+        ) -> ion_provider::error::ProviderResult<ion_provider::event_stream::EventStream> {
             self.0.stream(m, c, o, cancel).await
         }
     }
@@ -164,7 +211,9 @@ async fn replay_provider_round_trips_via_load_script() {
     let mut text = None;
     while let Some(ev) = es.recv().await {
         if let ion_provider::types::StreamEvent::Done { message, .. } = ev {
-            if let Some(ion_provider::types::AssistantContentBlock::Text(t)) = message.content.first() {
+            if let Some(ion_provider::types::AssistantContentBlock::Text(t)) =
+                message.content.first()
+            {
                 text = Some(t.text.clone());
             }
         }
@@ -207,5 +256,8 @@ fn acquire_lock_overwrite_clears_existing() {
     let lock2 = acquire_recording_lock(&rec_dir, true).unwrap();
     assert!(lock2.is_some());
     // trace should be cleared
-    assert!(!rec_dir.join("trace.jsonl").exists(), "overwrite must clear stale trace");
+    assert!(
+        !rec_dir.join("trace.jsonl").exists(),
+        "overwrite must clear stale trace"
+    );
 }

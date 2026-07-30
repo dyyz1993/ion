@@ -102,7 +102,9 @@ impl ObjectStore {
         let bytes = std::fs::read(&path).ok()?;
 
         // 检测 zstd 压缩（magic bytes）
-        if bytes.starts_with(&ZSTD_MAGIC) && let Ok(decompressed) = zstd::decode_all(&bytes[..]) {
+        if bytes.starts_with(&ZSTD_MAGIC)
+            && let Ok(decompressed) = zstd::decode_all(&bytes[..])
+        {
             return Some(decompressed);
         }
         Some(bytes)
@@ -145,10 +147,12 @@ impl ObjectStore {
         let prefix_dirs = std::fs::read_dir(&objects_dir)
             .map_err(|e| format!("Failed to read objects dir: {}", e))?;
         for prefix_entry in prefix_dirs {
-            let prefix_entry = prefix_entry
-                .map_err(|e| format!("Failed to read dir entry: {}", e))?;
+            let prefix_entry =
+                prefix_entry.map_err(|e| format!("Failed to read dir entry: {}", e))?;
             let path = prefix_entry.path();
-            if path.is_dir() && let Ok(files) = std::fs::read_dir(&path) {
+            if path.is_dir()
+                && let Ok(files) = std::fs::read_dir(&path)
+            {
                 for file in files {
                     if file.is_ok() {
                         count += 1;
@@ -257,7 +261,10 @@ mod tests {
     #[test]
     fn project_key_git_repo() {
         // 当前目录是 git 仓库
-        let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         let key = project_key(&cwd);
         assert!(!key.is_empty());
         // 应该是 16 位 hex
@@ -267,7 +274,10 @@ mod tests {
     #[test]
     fn project_key_worktree_shares_with_main() {
         // 验证 project_key 在 worktree 和主仓库下一致
-        let main_cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+        let main_cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         let main_key = project_key(&main_cwd);
 
         // 造一个临时 worktree
@@ -280,8 +290,10 @@ mod tests {
         if output.is_ok() && output.as_ref().unwrap().status.success() {
             let wt_key = project_key(&wt_path);
             // worktree 的 project_key 应与主仓库一致
-            assert_eq!(main_key, wt_key,
-                "project_key 应共享: main={main_key} wt={wt_key}");
+            assert_eq!(
+                main_key, wt_key,
+                "project_key 应共享: main={main_key} wt={wt_key}"
+            );
 
             // 清理 worktree
             let _ = std::process::Command::new("git")
@@ -302,7 +314,10 @@ mod tests {
         assert!(!key.is_empty());
         assert_eq!(key.len(), 16);
         // 非 git 目录的 key 应不同于 git 仓库的 key
-        let git_cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+        let git_cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         let git_key = project_key(&git_cwd);
         assert_ne!(key, git_key, "非 git 目录 key 应不同于 git 仓库");
         std::fs::remove_dir_all(&tmp).ok();
@@ -311,7 +326,10 @@ mod tests {
     #[test]
     fn object_store_shares_between_worktrees() {
         // 验证两个 worktree 的 ObjectStore 写入相同内容 → 同一 object
-        let main_cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+        let main_cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
 
         // 用 project_key 创建 store（两个 worktree 用同一个 key → 同一目录）
         let key = project_key(&main_cwd);
@@ -386,7 +404,10 @@ mod tests {
 
         // read_object 应能读明文
         let read = store.read_object(&hash).unwrap();
-        assert_eq!(read, b"legacy plaintext data", "旧明文数据应能被读取（向后兼容）");
+        assert_eq!(
+            read, b"legacy plaintext data",
+            "旧明文数据应能被读取（向后兼容）"
+        );
 
         std::fs::remove_dir_all(&tmp).ok();
     }
@@ -407,7 +428,8 @@ mod tests {
         assert!(
             stored_size < original_size,
             "压缩后存储（{} bytes）应小于原始（{} bytes）",
-            stored_size, original_size
+            stored_size,
+            original_size
         );
 
         std::fs::remove_dir_all(&tmp).ok();

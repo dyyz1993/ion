@@ -22,7 +22,11 @@ pub trait Tool: Send + Sync {
     fn parameters(&self) -> serde_json::Value;
 
     /// Execute and return final result (non-streaming).
-    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String>;
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String>;
 
     /// Execute with streaming updates. Default: fall back to `execute`, call `on_update` once.
     /// Override for real-time streaming (e.g. BashTool reading stdout line by line).
@@ -153,7 +157,11 @@ impl Tool for CalculatorTool {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
         let expr = args
             .get("expression")
             .and_then(|v| v.as_str())
@@ -322,7 +330,11 @@ impl Tool for CalculatorAdvancedTool {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
         let operation = args
             .get("operation")
             .and_then(|v| v.as_str())
@@ -361,14 +373,20 @@ pub struct UuidGeneratorTool;
 
 #[async_trait]
 impl Tool for UuidGeneratorTool {
-    fn name(&self) -> &str { "uuid" }
+    fn name(&self) -> &str {
+        "uuid"
+    }
     fn description(&self) -> &str {
         "Generate a UUID v4 string. No arguments needed."
     }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
     }
-    async fn execute(&self, _args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
         Ok(uuid::Uuid::new_v4().to_string())
     }
 }
@@ -402,7 +420,11 @@ impl Tool for EchoTool {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
         let text = args
             .get("text")
             .and_then(|v| v.as_str())
@@ -454,7 +476,11 @@ impl Tool for BranchSessionTool {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .map_err(|e| AgentError::Tool(format!("cwd error: {}", e)))?;
@@ -462,7 +488,8 @@ impl Tool for BranchSessionTool {
         // 读当前 session 文件
         let path = crate::session_jsonl::session_path(&cwd);
         let entries: Vec<serde_json::Value> = match std::fs::read_to_string(&path) {
-            Ok(content) => content.lines()
+            Ok(content) => content
+                .lines()
                 .filter(|l| !l.trim().is_empty())
                 .filter_map(|l| serde_json::from_str(l).ok())
                 .collect(),
@@ -471,17 +498,21 @@ impl Tool for BranchSessionTool {
             }
         };
 
-        let is_rollback = args.get("is_rollback").and_then(|v| v.as_bool()).unwrap_or(false);
+        let is_rollback = args
+            .get("is_rollback")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let current_leaf = crate::session_tree::resolve_current_leaf(&entries);
 
         // 目标 entry：from_entry 参数，或当前 leaf
-        let target = args.get("from_entry")
+        let target = args
+            .get("from_entry")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .or_else(|| current_leaf.clone())
-            .ok_or_else(|| AgentError::Tool(
-                "no from_entry specified and no current leaf found".into()
-            ))?;
+            .ok_or_else(|| {
+                AgentError::Tool("no from_entry specified and no current leaf found".into())
+            })?;
 
         // 验证 entry 存在
         if !crate::session_tree::entry_exists(&entries, &target) {
@@ -504,8 +535,7 @@ impl Tool for BranchSessionTool {
                 .map_err(AgentError::Tool)?
         } else {
             let name = args.get("name").and_then(|v| v.as_str());
-            crate::session_tree::make_branch(&target, name)
-                .map_err(AgentError::Tool)?
+            crate::session_tree::make_branch(&target, name).map_err(AgentError::Tool)?
         };
 
         // 追加到文件（only-append）
@@ -516,7 +546,11 @@ impl Tool for BranchSessionTool {
         // 构造反馈
         let label = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
         let op = if is_rollback { "rollback" } else { "branch" };
-        let label_info = if label.is_empty() { String::new() } else { format!(", labeled: {}", label) };
+        let label_info = if label.is_empty() {
+            String::new()
+        } else {
+            format!(", labeled: {}", label)
+        };
         Ok(format!(
             "✅ {}: moved leaf to {}{}\nNext message will continue from this branch point.",
             op, target, label_info
@@ -570,23 +604,45 @@ fn format_lines(content: &str, offset: usize, limit: Option<usize>) -> String {
 
     // 切片时追加范围提示
     if start > 0 || end < total {
-        result.push_str(&format!("(showing lines {}-{} of {})\n", start + 1, end, total));
+        result.push_str(&format!(
+            "(showing lines {}-{} of {})\n",
+            start + 1,
+            end,
+            total
+        ));
     }
     result
 }
 
 #[async_trait]
 impl Tool for ReadTool {
-    fn name(&self) -> &str { "read" }
-    fn description(&self) -> &str { "Read the contents of a file. Supports offset (1-based start line) and limit (number of lines) to read a specific range. Output includes line numbers." }
+    fn name(&self) -> &str {
+        "read"
+    }
+    fn description(&self) -> &str {
+        "Read the contents of a file. Supports offset (1-based start line) and limit (number of lines) to read a specific range. Output includes line numbers."
+    }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"file_path":{"type":"string","description":"Path to the file to read"},"offset":{"type":"integer","description":"1-based line number to start reading from (default: 1)"},"limit":{"type":"integer","description":"Maximum number of lines to read (default: all)"}},"required":["file_path"]})
     }
-    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let path = args.get("file_path").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing file_path".into()))?;
-        let content = rt.read_file(path).await.map_err(|e| AgentError::Tool(format!("read failed: {e}")))?;
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let path = args
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing file_path".into()))?;
+        let content = rt
+            .read_file(path)
+            .await
+            .map_err(|e| AgentError::Tool(format!("read failed: {e}")))?;
         let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
-        let limit = args.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
         Ok(format_lines(&content, offset, limit))
     }
 }
@@ -599,16 +655,36 @@ pub struct GrepTool;
 
 #[async_trait]
 impl Tool for GrepTool {
-    fn name(&self) -> &str { "grep" }
-    fn description(&self) -> &str { "Search for a pattern in files. Uses ripgrep if available, otherwise grep." }
+    fn name(&self) -> &str {
+        "grep"
+    }
+    fn description(&self) -> &str {
+        "Search for a pattern in files. Uses ripgrep if available, otherwise grep."
+    }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"pattern":{"type":"string","description":"Search pattern"},"path":{"type":"string","description":"File or directory to search"}},"required":["pattern"]})
     }
-    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let pattern = args.get("pattern").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing pattern".into()))?;
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let pattern = args
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing pattern".into()))?;
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-        let cmd = format!("rg -n --max-count=50 {} {} 2>/dev/null || grep -rn --max-count=50 '{}' {} 2>/dev/null || echo '(no matches)'", shell_quote(pattern), shell_quote(path), shell_quote(pattern), shell_quote(path));
-        let (stdout, _, _) = rt.execute_command(&cmd, 30).await.map_err(AgentError::Tool)?;
+        let cmd = format!(
+            "rg -n --max-count=50 {} {} 2>/dev/null || grep -rn --max-count=50 '{}' {} 2>/dev/null || echo '(no matches)'",
+            shell_quote(pattern),
+            shell_quote(path),
+            shell_quote(pattern),
+            shell_quote(path)
+        );
+        let (stdout, _, _) = rt
+            .execute_command(&cmd, 30)
+            .await
+            .map_err(AgentError::Tool)?;
         Ok(stdout)
     }
 }
@@ -625,16 +701,34 @@ pub struct FindTool;
 
 #[async_trait]
 impl Tool for FindTool {
-    fn name(&self) -> &str { "find" }
-    fn description(&self) -> &str { "Find files matching a glob pattern." }
+    fn name(&self) -> &str {
+        "find"
+    }
+    fn description(&self) -> &str {
+        "Find files matching a glob pattern."
+    }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern (e.g. **/*.rs)"},"path":{"type":"string","description":"Starting directory"}},"required":["pattern"]})
     }
-    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let pattern = args.get("pattern").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing pattern".into()))?;
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let pattern = args
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing pattern".into()))?;
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-        let cmd = format!("find {} -name '{}' -type f 2>/dev/null | head -50", shell_quote(path), pattern);
-        let (stdout, _, _) = rt.execute_command(&cmd, 30).await.map_err(AgentError::Tool)?;
+        let cmd = format!(
+            "find {} -name '{}' -type f 2>/dev/null | head -50",
+            shell_quote(path),
+            pattern
+        );
+        let (stdout, _, _) = rt
+            .execute_command(&cmd, 30)
+            .await
+            .map_err(AgentError::Tool)?;
         Ok(stdout)
     }
 }
@@ -647,14 +741,25 @@ pub struct LsTool;
 
 #[async_trait]
 impl Tool for LsTool {
-    fn name(&self) -> &str { "ls" }
-    fn description(&self) -> &str { "List files and directories at a given path." }
+    fn name(&self) -> &str {
+        "ls"
+    }
+    fn description(&self) -> &str {
+        "List files and directories at a given path."
+    }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Directory to list"}},"required":[]})
     }
-    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
         let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-        let (stdout, _, _) = rt.execute_command(&format!("ls -la '{}'", path.replace("'", "'\''")), 30).await.map_err(AgentError::Tool)?;
+        let (stdout, _, _) = rt
+            .execute_command(&format!("ls -la '{}'", path.replace("'", "'\''")), 30)
+            .await
+            .map_err(AgentError::Tool)?;
         Ok(stdout)
     }
 }
@@ -667,23 +772,41 @@ pub struct BashTool;
 
 #[async_trait]
 impl Tool for BashTool {
-    fn name(&self) -> &str { "bash" }
-    fn description(&self) -> &str { "Execute a shell command and return its output." }
+    fn name(&self) -> &str {
+        "bash"
+    }
+    fn description(&self) -> &str {
+        "Execute a shell command and return its output."
+    }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"}},"required":["command"]})
     }
-    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let cmd = args.get("command").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing command".into()))?;
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let cmd = args
+            .get("command")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing command".into()))?;
         // BashTool 默认 180s；可通过 ION_BASH_TIMEOUT 环境变量覆盖（单位秒）。
         // improver 跑 container exec cargo build/test 时建议设 ION_BASH_TIMEOUT=1800。
         let bash_timeout = std::env::var("ION_BASH_TIMEOUT")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(180);
-        let (stdout, stderr, _exit_code) = rt.execute_command(cmd, bash_timeout).await.map_err(AgentError::Tool)?;
-        let result = if stdout.is_empty() && !stderr.is_empty() { stderr }
-            else if !stderr.is_empty() { format!("{stdout}\n{stderr}") }
-            else { stdout };
+        let (stdout, stderr, _exit_code) = rt
+            .execute_command(cmd, bash_timeout)
+            .await
+            .map_err(AgentError::Tool)?;
+        let result = if stdout.is_empty() && !stderr.is_empty() {
+            stderr
+        } else if !stderr.is_empty() {
+            format!("{stdout}\n{stderr}")
+        } else {
+            stdout
+        };
         Ok(result)
     }
 
@@ -694,13 +817,18 @@ impl Tool for BashTool {
         on_update: ToolUpdateFn,
         rt: &dyn crate::runtime::Runtime,
     ) -> AgentResult<String> {
-        let cmd = args.get("command").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing command".into()))?;
+        let cmd = args
+            .get("command")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing command".into()))?;
         let bash_timeout = std::env::var("ION_BASH_TIMEOUT")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(180);
         // 走 Runtime 的流式执行（经过 SecuredRuntime CommandGuard 检查）
-        let update_fn = |s: String| { on_update(s); };
+        let update_fn = |s: String| {
+            on_update(s);
+        };
         rt.execute_command_stream(cmd, bash_timeout, &update_fn)
             .await
             .map_err(AgentError::Tool)
@@ -715,15 +843,31 @@ pub struct WriteTool;
 
 #[async_trait]
 impl Tool for WriteTool {
-    fn name(&self) -> &str { "write" }
-    fn description(&self) -> &str { "Write content to a file, creating it if it doesn't exist." }
+    fn name(&self) -> &str {
+        "write"
+    }
+    fn description(&self) -> &str {
+        "Write content to a file, creating it if it doesn't exist."
+    }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"file_path":{"type":"string","description":"Path to write to"},"content":{"type":"string","description":"Content to write"}},"required":["file_path","content"]})
     }
-    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let path = args.get("file_path").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing file_path".into()))?;
-        let content = args.get("content").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing content".into()))?;
-        rt.write_file(path, content).await.map_err(|e| AgentError::Tool(format!("write failed: {e}")))?;
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let path = args
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing file_path".into()))?;
+        let content = args
+            .get("content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing content".into()))?;
+        rt.write_file(path, content)
+            .await
+            .map_err(|e| AgentError::Tool(format!("write failed: {e}")))?;
         Ok(format!("wrote {} bytes to {}", content.len(), path))
     }
     async fn execute_stream(
@@ -732,8 +876,14 @@ impl Tool for WriteTool {
         on_update: ToolUpdateFn,
         rt: &dyn crate::runtime::Runtime,
     ) -> AgentResult<String> {
-        let path = args.get("file_path").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing file_path".into()))?;
-        let content = args.get("content").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing content".into()))?;
+        let path = args
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing file_path".into()))?;
+        let content = args
+            .get("content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing content".into()))?;
 
         // 先读旧内容（算 diff 用）
         let old_content = rt.read_file(path).await.unwrap_or_default();
@@ -752,16 +902,35 @@ impl Tool for WriteTool {
             }
             let current_lines = written.lines().count() as i64;
             let added = current_lines;
-            let removed = if old_lines > current_lines { old_lines - current_lines } else { 0 };
-            on_update(format!("+{} -{} lines (writing {}...)", added, removed, path));
+            let removed = if old_lines > current_lines {
+                old_lines - current_lines
+            } else {
+                0
+            };
+            on_update(format!(
+                "+{} -{} lines (writing {}...)",
+                added, removed, path
+            ));
         }
 
-        rt.write_file(path, content).await.map_err(|e| AgentError::Tool(format!("write failed: {e}")))?;
+        rt.write_file(path, content)
+            .await
+            .map_err(|e| AgentError::Tool(format!("write failed: {e}")))?;
 
         let new_lines = content.lines().count() as i64;
         let added = new_lines;
-        let removed = if old_lines > new_lines { old_lines - new_lines } else { 0 };
-        Ok(format!("wrote {} bytes to {} (+{} -{} lines)", content.len(), path, added, removed))
+        let removed = if old_lines > new_lines {
+            old_lines - new_lines
+        } else {
+            0
+        };
+        Ok(format!(
+            "wrote {} bytes to {} (+{} -{} lines)",
+            content.len(),
+            path,
+            added,
+            removed
+        ))
     }
 }
 
@@ -773,16 +942,35 @@ pub struct EditTool;
 
 #[async_trait]
 impl Tool for EditTool {
-    fn name(&self) -> &str { "edit" }
-    fn description(&self) -> &str { "Search and replace text in a file (first occurrence)." }
+    fn name(&self) -> &str {
+        "edit"
+    }
+    fn description(&self) -> &str {
+        "Search and replace text in a file (first occurrence)."
+    }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"file_path":{"type":"string","description":"Path to edit"},"old":{"type":"string","description":"Text to search for"},"new":{"type":"string","description":"Replacement text"}},"required":["file_path","old","new"]})
     }
-    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let path = args.get("file_path").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing file_path".into()))?;
-        let old = args.get("old").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing old".into()))?;
-        let new = args.get("new").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing new".into()))?;
-        rt.edit_file(path, old, new).await.map_err(AgentError::Tool)?;
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let path = args
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing file_path".into()))?;
+        let old = args
+            .get("old")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing old".into()))?;
+        let new = args
+            .get("new")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing new".into()))?;
+        rt.edit_file(path, old, new)
+            .await
+            .map_err(AgentError::Tool)?;
         Ok(format!("replaced 1 occurrence in {path}"))
     }
     async fn execute_stream(
@@ -791,19 +979,36 @@ impl Tool for EditTool {
         on_update: ToolUpdateFn,
         rt: &dyn crate::runtime::Runtime,
     ) -> AgentResult<String> {
-        let path = args.get("file_path").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing file_path".into()))?;
-        let old = args.get("old").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing old".into()))?;
-        let new = args.get("new").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing new".into()))?;
+        let path = args
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing file_path".into()))?;
+        let old = args
+            .get("old")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing old".into()))?;
+        let new = args
+            .get("new")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing new".into()))?;
 
         // 推送 diff 预览
         let old_lines = old.lines().count() as i64;
         let new_lines = new.lines().count() as i64;
         let added = new_lines;
         let removed = old_lines;
-        on_update(format!("+{} -{} lines (editing {}...)", added, removed, path));
+        on_update(format!(
+            "+{} -{} lines (editing {}...)",
+            added, removed, path
+        ));
 
-        rt.edit_file(path, old, new).await.map_err(AgentError::Tool)?;
-        Ok(format!("replaced 1 occurrence in {path} (+{} -{} lines)", added, removed))
+        rt.edit_file(path, old, new)
+            .await
+            .map_err(AgentError::Tool)?;
+        Ok(format!(
+            "replaced 1 occurrence in {path} (+{} -{} lines)",
+            added, removed
+        ))
     }
 }
 
@@ -819,16 +1024,27 @@ pub struct GenericTool {
 
 #[async_trait]
 impl Tool for GenericTool {
-    fn name(&self) -> &str { &self.name }
-    fn description(&self) -> &str { &self.description }
-    fn parameters(&self) -> serde_json::Value { self.parameters.clone() }
-    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+    fn parameters(&self) -> serde_json::Value {
+        self.parameters.clone()
+    }
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
         // Return a JSON response showing the tool was called with these args
         Ok(serde_json::json!({
             "tool": self.name,
             "args": args,
             "result": "executed successfully (extension-defined tool)"
-        }).to_string())
+        })
+        .to_string())
     }
 }
 
@@ -845,11 +1061,21 @@ pub struct RemoteTool {
 
 #[async_trait]
 impl Tool for RemoteTool {
-    fn name(&self) -> &str { &self.name }
-    fn description(&self) -> &str { &self.description }
-    fn parameters(&self) -> serde_json::Value { self.parameters.clone() }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+    fn parameters(&self) -> serde_json::Value {
+        self.parameters.clone()
+    }
 
-    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
         let client = reqwest::Client::new();
         let method = match self.method.to_uppercase().as_str() {
             "GET" => reqwest::Method::GET,
@@ -866,16 +1092,20 @@ impl Tool for RemoteTool {
         // GET/DELETE: 参数作为 query string；POST/PUT: 参数作为 JSON body
         let resp = if is_get_or_delete {
             // 把 args 的字段作为 query 参数
-            let query_pairs: Vec<(String, String)> = args.as_object()
-                .map(|obj| obj.iter().filter_map(|(k, v)| {
-                    v.as_str().map(|s| (k.clone(), s.to_string()))
-                }).collect())
+            let query_pairs: Vec<(String, String)> = args
+                .as_object()
+                .map(|obj| {
+                    obj.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect()
+                })
                 .unwrap_or_default();
             req.query(&query_pairs).send().await
         } else {
             req.header("Content-Type", "application/json")
                 .body(args.to_string())
-                .send().await
+                .send()
+                .await
         };
 
         match resp {
@@ -885,10 +1115,18 @@ impl Tool for RemoteTool {
                 if status.is_success() {
                     Ok(text)
                 } else {
-                    Ok(format!("HTTP {} {}: {}", status.as_u16(), status.canonical_reason().unwrap_or(""), text))
+                    Ok(format!(
+                        "HTTP {} {}: {}",
+                        status.as_u16(),
+                        status.canonical_reason().unwrap_or(""),
+                        text
+                    ))
                 }
             }
-            Err(e) => Err(AgentError::Tool(format!("remote tool '{}' request failed: {e}", self.name))),
+            Err(e) => Err(AgentError::Tool(format!(
+                "remote tool '{}' request failed: {e}",
+                self.name
+            ))),
         }
     }
 }
@@ -909,7 +1147,10 @@ mod tests {
 
         for (json, expected) in cases {
             let args: serde_json::Value = serde_json::from_str(json).unwrap();
-            let result = tool.execute(args, &crate::runtime::LocalRuntime::new()).await.unwrap();
+            let result = tool
+                .execute(args, &crate::runtime::LocalRuntime::new())
+                .await
+                .unwrap();
             assert_eq!(result, expected, "for {json}");
         }
     }
@@ -918,7 +1159,10 @@ mod tests {
     async fn echo_tool_works() {
         let tool = EchoTool;
         let args: serde_json::Value = serde_json::json!({"text": "hello"});
-        let result = tool.execute(args, &crate::runtime::LocalRuntime::new()).await.unwrap();
+        let result = tool
+            .execute(args, &crate::runtime::LocalRuntime::new())
+            .await
+            .unwrap();
         assert_eq!(result, "echo: hello");
     }
 
@@ -998,7 +1242,8 @@ mod tests {
             }
         }
         let tool = ReadTool;
-        let args = serde_json::json!({"file_path": path.to_str().unwrap(), "offset": 10, "limit": 5});
+        let args =
+            serde_json::json!({"file_path": path.to_str().unwrap(), "offset": 10, "limit": 5});
         let rt = crate::runtime::LocalRuntime::new();
         let result = tool.execute(args, &rt).await.unwrap();
         assert!(result.contains("10\trow10"), "got: {result}");
@@ -1042,7 +1287,11 @@ mod tests_advanced_calc {
         let rt = crate::runtime::LocalRuntime::new();
         let args = serde_json::json!({"operation":"sin","value":0.0});
         let result = tool.execute(args, &rt).await.unwrap();
-        assert!(result.contains("0.000000"), "sin(0) should be 0, got {}", result);
+        assert!(
+            result.contains("0.000000"),
+            "sin(0) should be 0, got {}",
+            result
+        );
     }
 
     #[tokio::test]
@@ -1078,7 +1327,11 @@ mod tests_advanced_calc {
         let rt = crate::runtime::LocalRuntime::new();
         let args = serde_json::json!({"operation":"cos","value":0.0});
         let result = tool.execute(args, &rt).await.unwrap();
-        assert!(result.contains("1.000000"), "cos(0) should be 1, got {}", result);
+        assert!(
+            result.contains("1.000000"),
+            "cos(0) should be 1, got {}",
+            result
+        );
     }
 
     #[tokio::test]
@@ -1087,7 +1340,11 @@ mod tests_advanced_calc {
         let rt = crate::runtime::LocalRuntime::new();
         let args = serde_json::json!({"operation":"tan","value":0.0});
         let result = tool.execute(args, &rt).await.unwrap();
-        assert!(result.contains("0.000000"), "tan(0) should be 0, got {}", result);
+        assert!(
+            result.contains("0.000000"),
+            "tan(0) should be 0, got {}",
+            result
+        );
     }
 
     #[tokio::test]
@@ -1096,7 +1353,11 @@ mod tests_advanced_calc {
         let rt = crate::runtime::LocalRuntime::new();
         let args = serde_json::json!({"operation":"ln","value":1.0});
         let result = tool.execute(args, &rt).await.unwrap();
-        assert!(result.contains("0.000000"), "ln(1) should be 0, got {}", result);
+        assert!(
+            result.contains("0.000000"),
+            "ln(1) should be 0, got {}",
+            result
+        );
     }
 
     #[tokio::test]
@@ -1105,7 +1366,11 @@ mod tests_advanced_calc {
         let rt = crate::runtime::LocalRuntime::new();
         let args = serde_json::json!({"operation":"cbrt","value":8.0});
         let result = tool.execute(args, &rt).await.unwrap();
-        assert!(result.contains("2.000000"), "cbrt(8) should be 2, got {}", result);
+        assert!(
+            result.contains("2.000000"),
+            "cbrt(8) should be 2, got {}",
+            result
+        );
     }
 
     #[tokio::test]
@@ -1127,7 +1392,9 @@ pub struct SpawnWorkerTool;
 
 #[async_trait]
 impl Tool for SpawnWorkerTool {
-    fn name(&self) -> &str { "spawn_worker" }
+    fn name(&self) -> &str {
+        "spawn_worker"
+    }
 
     fn description(&self) -> &str {
         "Spawn a child or peer Worker to execute a task autonomously. Returns a JSON object.\n\
@@ -1182,20 +1449,37 @@ impl Tool for SpawnWorkerTool {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let relation_str = args.get("relation").and_then(|v| v.as_str()).unwrap_or("child");
-        let agent = args.get("agent").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let relation_str = args
+            .get("relation")
+            .and_then(|v| v.as_str())
+            .unwrap_or("child");
+        let agent = args
+            .get("agent")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| AgentError::Tool("missing required arg: agent".into()))?
             .to_string();
-        let task = args.get("task").and_then(|v| v.as_str())
+        let task = args
+            .get("task")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| AgentError::Tool("missing required arg: task".into()))?
             .to_string();
-        let report_channel = args.get("report_channel").and_then(|v| v.as_str()).map(String::from);
+        let report_channel = args
+            .get("report_channel")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         let wait = args.get("wait").and_then(|v| v.as_bool()).unwrap_or(true);
         let worktree = args.get("worktree").and_then(|v| v.as_bool());
         // 可选 model/provider：让 LLM 能给不同 worker 指定不同模型
         let model = args.get("model").and_then(|v| v.as_str()).map(String::from);
-        let provider = args.get("provider").and_then(|v| v.as_str()).map(String::from);
+        let provider = args
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .map(String::from);
 
         let relation = match relation_str {
             "peer" => crate::runtime::SpawnRelation::Peer,
@@ -1210,8 +1494,8 @@ impl Tool for SpawnWorkerTool {
             report_channel: report_channel.clone(),
             wait,
             worktree,
-            hook_depth: None,  // LLM 的 spawn_worker 不设（只有 hooks agent handler 才设）
-            system_prompt_override: None,  // 普通 spawn_worker 不覆盖
+            hook_depth: None, // LLM 的 spawn_worker 不设（只有 hooks agent handler 才设）
+            system_prompt_override: None, // 普通 spawn_worker 不覆盖
             model,
             provider,
         };
@@ -1222,7 +1506,11 @@ impl Tool for SpawnWorkerTool {
         let truncated_output = resp.first_turn_output.as_ref().map(|out| {
             let preview: String = out.chars().take(800).collect();
             if out.chars().count() > 800 {
-                format!("{}... (truncated, {} total chars)", preview, out.chars().count())
+                format!(
+                    "{}... (truncated, {} total chars)",
+                    preview,
+                    out.chars().count()
+                )
             } else {
                 preview
             }
@@ -1248,7 +1536,9 @@ pub struct SendToWorkerTool;
 
 #[async_trait]
 impl Tool for SendToWorkerTool {
-    fn name(&self) -> &str { "send_to_worker" }
+    fn name(&self) -> &str {
+        "send_to_worker"
+    }
 
     fn description(&self) -> &str {
         "Send a message to another Worker (identified by worker_id). Fire-and-forget (async): returns \
@@ -1269,13 +1559,25 @@ impl Tool for SendToWorkerTool {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let worker_id = args.get("worker_id").and_then(|v| v.as_str())
-            .ok_or_else(|| AgentError::Tool("missing required arg: worker_id".into()))?.to_string();
-        let text = args.get("text").and_then(|v| v.as_str())
-            .ok_or_else(|| AgentError::Tool("missing required arg: text".into()))?.to_string();
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let worker_id = args
+            .get("worker_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing required arg: worker_id".into()))?
+            .to_string();
+        let text = args
+            .get("text")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing required arg: text".into()))?
+            .to_string();
 
-        rt.send_to_worker(&worker_id, &text).await.map_err(AgentError::Tool)?;
+        rt.send_to_worker(&worker_id, &text)
+            .await
+            .map_err(AgentError::Tool)?;
         let result = serde_json::json!({
             "type": "message_sent",
             "target": worker_id,
@@ -1289,7 +1591,9 @@ pub struct ResumeWorkerTool;
 
 #[async_trait]
 impl Tool for ResumeWorkerTool {
-    fn name(&self) -> &str { "resume_worker" }
+    fn name(&self) -> &str {
+        "resume_worker"
+    }
 
     fn description(&self) -> &str {
         "Send a message to an existing Worker AND block until its next turn completes (synchronous resume). \
@@ -1309,17 +1613,36 @@ impl Tool for ResumeWorkerTool {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let worker_id = args.get("worker_id").and_then(|v| v.as_str())
-            .ok_or_else(|| AgentError::Tool("missing required arg: worker_id".into()))?.to_string();
-        let text = args.get("text").and_then(|v| v.as_str())
-            .ok_or_else(|| AgentError::Tool("missing required arg: text".into()))?.to_string();
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let worker_id = args
+            .get("worker_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing required arg: worker_id".into()))?
+            .to_string();
+        let text = args
+            .get("text")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing required arg: text".into()))?
+            .to_string();
 
-        let out = rt.resume_worker(&worker_id, &text).await.map_err(AgentError::Tool)?;
+        let out = rt
+            .resume_worker(&worker_id, &text)
+            .await
+            .map_err(AgentError::Tool)?;
         let truncated: String = out.chars().take(800).collect();
         let truncated = if out.chars().count() > 800 {
-            format!("{}... (truncated, {} total chars)", truncated, out.chars().count())
-        } else { truncated };
+            format!(
+                "{}... (truncated, {} total chars)",
+                truncated,
+                out.chars().count()
+            )
+        } else {
+            truncated
+        };
 
         let result = serde_json::json!({
             "type": "worker_resumed",
@@ -1335,7 +1658,9 @@ pub struct AwaitWorkerTool;
 
 #[async_trait]
 impl Tool for AwaitWorkerTool {
-    fn name(&self) -> &str { "await_worker" }
+    fn name(&self) -> &str {
+        "await_worker"
+    }
 
     fn description(&self) -> &str {
         "Block until the target Worker finishes its next turn, returns {type:'worker_awaited', \
@@ -1354,15 +1679,31 @@ impl Tool for AwaitWorkerTool {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let worker_id = args.get("worker_id").and_then(|v| v.as_str())
-            .ok_or_else(|| AgentError::Tool("missing required arg: worker_id".into()))?.to_string();
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let worker_id = args
+            .get("worker_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing required arg: worker_id".into()))?
+            .to_string();
 
-        let out = rt.await_worker(&worker_id).await.map_err(AgentError::Tool)?;
+        let out = rt
+            .await_worker(&worker_id)
+            .await
+            .map_err(AgentError::Tool)?;
         let truncated: String = out.chars().take(800).collect();
         let truncated = if out.chars().count() > 800 {
-            format!("{}... (truncated, {} total chars)", truncated, out.chars().count())
-        } else { truncated };
+            format!(
+                "{}... (truncated, {} total chars)",
+                truncated,
+                out.chars().count()
+            )
+        } else {
+            truncated
+        };
 
         let result = serde_json::json!({
             "type": "worker_awaited",
@@ -1378,7 +1719,9 @@ pub struct ChannelSendTool;
 
 #[async_trait]
 impl Tool for ChannelSendTool {
-    fn name(&self) -> &str { "channel_send" }
+    fn name(&self) -> &str {
+        "channel_send"
+    }
 
     fn description(&self) -> &str {
         "Broadcast a message to all Workers subscribed to a channel. Returns \
@@ -1398,13 +1741,25 @@ impl Tool for ChannelSendTool {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let channel = args.get("channel").and_then(|v| v.as_str())
-            .ok_or_else(|| AgentError::Tool("missing required arg: channel".into()))?.to_string();
-        let text = args.get("text").and_then(|v| v.as_str())
-            .ok_or_else(|| AgentError::Tool("missing required arg: text".into()))?.to_string();
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let channel = args
+            .get("channel")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing required arg: channel".into()))?
+            .to_string();
+        let text = args
+            .get("text")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing required arg: text".into()))?
+            .to_string();
 
-        rt.channel_send(&channel, &text).await.map_err(AgentError::Tool)?;
+        rt.channel_send(&channel, &text)
+            .await
+            .map_err(AgentError::Tool)?;
         let result = serde_json::json!({
             "type": "channel_sent",
             "channel": channel,
@@ -1418,7 +1773,9 @@ pub struct KillWorkerTool;
 
 #[async_trait]
 impl Tool for KillWorkerTool {
-    fn name(&self) -> &str { "kill_worker" }
+    fn name(&self) -> &str {
+        "kill_worker"
+    }
 
     fn description(&self) -> &str {
         "Terminate a Worker. Returns {type:'worker_killed', worker_id, status:'terminated'}. \
@@ -1435,9 +1792,16 @@ impl Tool for KillWorkerTool {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value, rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let worker_id = args.get("worker_id").and_then(|v| v.as_str())
-            .ok_or_else(|| AgentError::Tool("missing required arg: worker_id".into()))?.to_string();
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let worker_id = args
+            .get("worker_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing required arg: worker_id".into()))?
+            .to_string();
 
         rt.kill_worker(&worker_id).await.map_err(AgentError::Tool)?;
         let result = serde_json::json!({
@@ -1457,7 +1821,9 @@ pub struct GlobalMemorySearchTool;
 
 #[async_trait]
 impl Tool for GlobalMemorySearchTool {
-    fn name(&self) -> &str { "global_memory_search" }
+    fn name(&self) -> &str {
+        "global_memory_search"
+    }
 
     fn description(&self) -> &str {
         "Search the global cross-project memory database using FTS5 full-text search. \
@@ -1475,15 +1841,20 @@ impl Tool for GlobalMemorySearchTool {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let query = args.get("query").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let query = args
+            .get("query")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| AgentError::Tool("missing 'query'".into()))?;
         let project = args.get("project").and_then(|v| v.as_str());
         let db_path = crate::global_memory::GlobalMemoryStore::db_path();
         let store = crate::global_memory::GlobalMemoryStore::open(&db_path)
             .map_err(|e| AgentError::Tool(format!("open global memory: {}", e)))?;
-        let results = store.search(query, project)
-            .map_err(AgentError::Tool)?;
+        let results = store.search(query, project).map_err(AgentError::Tool)?;
         if results.is_empty() {
             return Ok("No matching memories found.".into());
         }
@@ -1491,8 +1862,11 @@ impl Tool for GlobalMemorySearchTool {
         for (i, e) in results.iter().enumerate() {
             out.push_str(&format!(
                 "{}. [{}] {} (importance:{}, category:{})\n",
-                i + 1, e.project, e.content.chars().take(80).collect::<String>(),
-                e.importance, e.category
+                i + 1,
+                e.project,
+                e.content.chars().take(80).collect::<String>(),
+                e.importance,
+                e.category
             ));
         }
         Ok(out)
@@ -1503,7 +1877,9 @@ pub struct GlobalMemorySaveTool;
 
 #[async_trait]
 impl Tool for GlobalMemorySaveTool {
-    fn name(&self) -> &str { "global_memory_save" }
+    fn name(&self) -> &str {
+        "global_memory_save"
+    }
 
     fn description(&self) -> &str {
         "Save a memory to the global cross-project database. \
@@ -1524,10 +1900,18 @@ impl Tool for GlobalMemorySaveTool {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let content = args.get("content").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let content = args
+            .get("content")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| AgentError::Tool("missing 'content'".into()))?;
-        let project = args.get("project").and_then(|v| v.as_str())
+        let project = args
+            .get("project")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| AgentError::Tool("missing 'project'".into()))?;
         let category = args.get("category").and_then(|v| v.as_str()).unwrap_or("");
         let tags = args.get("tags").and_then(|v| v.as_str()).unwrap_or("");
@@ -1535,7 +1919,8 @@ impl Tool for GlobalMemorySaveTool {
         let db_path = crate::global_memory::GlobalMemoryStore::db_path();
         let store = crate::global_memory::GlobalMemoryStore::open(&db_path)
             .map_err(|e| AgentError::Tool(format!("open global memory: {}", e)))?;
-        let id = store.save(content, category, tags, project, importance)
+        let id = store
+            .save(content, category, tags, project, importance)
             .map_err(AgentError::Tool)?;
         Ok(format!("✅ Saved to global memory: {}", id))
     }
@@ -1563,19 +1948,28 @@ impl SkillTool {
     /// - .../plugins/<mp>/<plugin>/<ver>/skills → "<plugin>"（如 cloudflare / superpowers）
     fn source_label(dir: &std::path::Path) -> String {
         let s = dir.to_string_lossy();
-        if s.contains(".agents/skills") { "agents".into() }
-        else if s.contains(".ion/agent/skills") { "ion-global".into() }
-        else if s.contains(".ion/skills") { "project".into() }
-        else if s.contains("plugins/cache") {
+        if s.contains(".agents/skills") {
+            "agents".into()
+        } else if s.contains(".ion/agent/skills") {
+            "ion-global".into()
+        } else if s.contains(".ion/skills") {
+            "project".into()
+        } else if s.contains("plugins/cache") {
             // .../plugins/cache/<marketplace>/<plugin>/<version>/skills → <plugin>
             let parts: Vec<&str> = s.split('/').collect();
             // 从 "skills" 往前找 plugin 名（skills 前是 version，再前是 plugin）
             if let Some(pos) = parts.iter().rposition(|p| *p == "skills") {
-                if pos >= 2 { return parts[pos - 2].to_string(); }
+                if pos >= 2 {
+                    return parts[pos - 2].to_string();
+                }
             }
             "plugin".into()
+        } else {
+            dir.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("skills")
+                .to_string()
         }
-        else { dir.file_name().and_then(|n| n.to_str()).unwrap_or("skills").to_string() }
     }
 
     /// 列出所有可用 skill（扫描 skill_dirs 下的 .md 文件 + 子目录/SKILL.md）
@@ -1583,14 +1977,20 @@ impl SkillTool {
         let mut entries: Vec<(String, String, String, Option<String>)> = Vec::new(); // (name, source, description, context_mode)
         for dir in &self.skill_dirs {
             let source = Self::source_label(dir);
-            let Ok(read) = std::fs::read_dir(dir) else { continue };
+            let Ok(read) = std::fs::read_dir(dir) else {
+                continue;
+            };
             for entry in read.flatten() {
                 let path = entry.path();
 
                 // 格式 1：<dir>/<name>.md（ION 格式，平铺 .md 文件）
                 if path.is_file() {
-                    let Some(fname) = path.file_name().and_then(|n| n.to_str()) else { continue };
-                    if !fname.ends_with(".md") { continue; }
+                    let Some(fname) = path.file_name().and_then(|n| n.to_str()) else {
+                        continue;
+                    };
+                    if !fname.ends_with(".md") {
+                        continue;
+                    }
                     let name = fname.trim_end_matches(".md").to_string();
                     let content = std::fs::read_to_string(&path).unwrap_or_default();
                     let desc = parse_skill_description(&content);
@@ -1601,7 +2001,9 @@ impl SkillTool {
                 else if path.is_dir() {
                     let skill_md = path.join("SKILL.md");
                     if skill_md.is_file() {
-                        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+                        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                            continue;
+                        };
                         let clean_name = strip_version_suffix(name);
                         let content = std::fs::read_to_string(&skill_md).unwrap_or_default();
                         let desc = parse_skill_description(&content);
@@ -1656,8 +2058,12 @@ impl SkillTool {
             if let Ok(read) = std::fs::read_dir(dir) {
                 for entry in read.flatten() {
                     let path = entry.path();
-                    if !path.is_dir() { continue; }
-                    let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
+                        continue;
+                    };
                     // 去掉版本后缀后是否匹配
                     let clean = strip_version_suffix(dir_name);
                     if clean == name {
@@ -1787,7 +2193,7 @@ impl Tool for SkillTool {
                 task,
                 name: Some(format!("skill-{name}")),
                 report_channel: None,
-                wait: true,  // 同步等结果
+                wait: true, // 同步等结果
                 worktree: None,
                 hook_depth: None,
                 system_prompt_override: Some(system_prompt),
@@ -1815,7 +2221,9 @@ impl Tool for SkillTool {
             // 方法：找最后一次出现的 "## Summary" 或 "### " 或 "confirmed" 等总结标志，
             // 从那里截取到末尾。如果没有标志，返回全部（兜底）。
             let final_summary = extract_final_summary(&output);
-            return Ok(format!("Skill '{name}' executed in fork mode:\n\n{final_summary}"));
+            return Ok(format!(
+                "Skill '{name}' executed in fork mode:\n\n{final_summary}"
+            ));
         }
 
         // list 模式：列出可用 skill
@@ -1882,7 +2290,10 @@ fn extract_final_summary(full_output: &str) -> String {
                 start += 1;
             }
             // 从 start 找下一个换行（避免截断行中间）
-            let start = full_output[start..].find('\n').map(|p| start + p + 1).unwrap_or(start);
+            let start = full_output[start..]
+                .find('\n')
+                .map(|p| start + p + 1)
+                .unwrap_or(start);
             full_output[start..].trim().to_string()
         } else {
             full_output.trim().to_string()
@@ -1898,9 +2309,7 @@ fn strip_version_suffix(name: &str) -> String {
     if let Some(pos) = name.rfind('-') {
         let suffix = &name[pos + 1..];
         // 版本号格式：纯数字 + 点（如 0.1.0, 1.0.0, 1）
-        if !suffix.is_empty()
-            && suffix.chars().all(|c| c.is_ascii_digit() || c == '.')
-        {
+        if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit() || c == '.') {
             return name[..pos].to_string();
         }
     }
@@ -2043,7 +2452,11 @@ impl Tool for RandomNumberTool {
         })
     }
 
-    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
         let max: u32 = args
             .get("max")
             .and_then(|v| v.as_u64())
@@ -2057,7 +2470,8 @@ impl Tool for RandomNumberTool {
         let val = (std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .subsec_nanos()) % max;
+            .subsec_nanos())
+            % max;
         Ok(val.to_string())
     }
 }
@@ -2070,7 +2484,10 @@ mod tests_random_number {
     async fn test_random_number_tool() {
         let tool = RandomNumberTool;
         let args = serde_json::json!({"max": 10});
-        let result = tool.execute(args, &crate::runtime::LocalRuntime::new()).await.unwrap();
+        let result = tool
+            .execute(args, &crate::runtime::LocalRuntime::new())
+            .await
+            .unwrap();
         let num: u32 = result.parse().unwrap();
         assert!(num < 10, "random number {} should be < 10", num);
     }

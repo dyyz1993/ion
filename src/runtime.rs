@@ -22,7 +22,10 @@ use tokio::sync::oneshot;
 /// 审计日志路径 ~/.ion/agent/audit.jsonl
 fn audit_log_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home).join(".ion").join("agent").join("audit.jsonl")
+    PathBuf::from(home)
+        .join(".ion")
+        .join("agent")
+        .join("audit.jsonl")
 }
 
 /// 审计日志条目
@@ -37,7 +40,13 @@ struct AuditEntry {
 }
 
 /// 写入一条审计日志到 ~/.ion/agent/audit.jsonl（JSONL 格式）
-fn audit_log(decision: &str, command: &str, mode: &str, risk: Option<&str>, user_action: Option<&str>) {
+fn audit_log(
+    decision: &str,
+    command: &str,
+    mode: &str,
+    risk: Option<&str>,
+    user_action: Option<&str>,
+) {
     let path = audit_log_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -67,13 +76,15 @@ fn chrono_now() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     let secs = dur.as_secs();
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
         2026u64 + secs / 31536000,
         (secs / 2592000 % 12) + 1,
         (secs / 86400 % 30) + 1,
         (secs / 3600 % 24),
         (secs / 60 % 60),
-        (secs % 60))
+        (secs % 60)
+    )
 }
 
 /// 全局待处理的 UI 确认请求（request_id → 回复通道）
@@ -90,8 +101,11 @@ pub fn pending_ui() -> &'static Mutex<HashMap<String, oneshot::Sender<String>>> 
 #[async_trait]
 pub trait Runtime: Send + Sync {
     /// 执行 shell 命令
-    async fn execute_command(&self, command: &str, timeout_secs: u64)
-        -> Result<(String, String, i32), String>;
+    async fn execute_command(
+        &self,
+        command: &str,
+        timeout_secs: u64,
+    ) -> Result<(String, String, i32), String>;
 
     /// 安全预检：检查命令是否允许执行（不实际执行）
     /// 默认：放行。SecuredRuntime 重写此方法以检查 CommandGuard。
@@ -114,7 +128,11 @@ pub trait Runtime: Send + Sync {
         on_update: &(dyn Fn(String) + Send + Sync),
     ) -> Result<String, String> {
         let (stdout, stderr, exit_code) = self.execute_command(command, timeout_secs).await?;
-        let output = if stderr.is_empty() { stdout } else { format!("{stdout}{stderr}") };
+        let output = if stderr.is_empty() {
+            stdout
+        } else {
+            format!("{stdout}{stderr}")
+        };
         on_update(output.clone());
         if exit_code != 0 {
             Err(format!("exit code {exit_code}: {output}"))
@@ -366,15 +384,23 @@ impl<R: Runtime> WorkerRuntime<R> {
 
 #[async_trait]
 impl<R: Runtime + 'static> Runtime for WorkerRuntime<R> {
-    async fn execute_command(&self, command: &str, timeout_secs: u64)
-        -> Result<(String, String, i32), String>
-    { self.inner.execute_command(command, timeout_secs).await }
+    async fn execute_command(
+        &self,
+        command: &str,
+        timeout_secs: u64,
+    ) -> Result<(String, String, i32), String> {
+        self.inner.execute_command(command, timeout_secs).await
+    }
 
     async fn execute_command_stream(
-        &self, command: &str, timeout_secs: u64,
+        &self,
+        command: &str,
+        timeout_secs: u64,
         on_update: &(dyn Fn(String) + Send + Sync),
     ) -> Result<String, String> {
-        self.inner.execute_command_stream(command, timeout_secs, on_update).await
+        self.inner
+            .execute_command_stream(command, timeout_secs, on_update)
+            .await
     }
 
     async fn read_file(&self, path: &str) -> Result<String, String> {
@@ -386,7 +412,9 @@ impl<R: Runtime + 'static> Runtime for WorkerRuntime<R> {
     async fn edit_file(&self, path: &str, old: &str, new: &str) -> Result<(), String> {
         self.inner.edit_file(path, old, new).await
     }
-    async fn path_exists(&self, path: &str) -> bool { self.inner.path_exists(path).await }
+    async fn path_exists(&self, path: &str) -> bool {
+        self.inner.path_exists(path).await
+    }
     async fn list_dir(&self, path: &str) -> Result<Vec<String>, String> {
         self.inner.list_dir(path).await
     }
@@ -444,33 +472,68 @@ impl<R: Runtime + 'static> Runtime for WorkerRuntime<R> {
         });
         let resp = self.bridge.send_command("create_worker", params).await?;
 
-        let success = resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+        let success = resp
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if !success {
-            let err = resp.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error");
+            let err = resp
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error");
             return Err(err.to_string());
         }
 
         let data = resp.get("data").cloned().unwrap_or_default();
-        let worker_id = data.get("worker_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let relation_str_back = data.get("relation").and_then(|v| v.as_str()).unwrap_or(relation_str);
-        let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("running_in_background").to_string();
-        let first_turn_output = data.get("first_turn_output").and_then(|v| v.as_str()).map(String::from);
-        let report_channel = data.get("report_channel").and_then(|v| v.as_str()).map(String::from);
+        let worker_id = data
+            .get("worker_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let relation_str_back = data
+            .get("relation")
+            .and_then(|v| v.as_str())
+            .unwrap_or(relation_str);
+        let status = data
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("running_in_background")
+            .to_string();
+        let first_turn_output = data
+            .get("first_turn_output")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let report_channel = data
+            .get("report_channel")
+            .and_then(|v| v.as_str())
+            .map(String::from);
 
         let relation = match relation_str_back {
             "peer" => SpawnRelation::Peer,
             _ => SpawnRelation::Child,
         };
 
-        Ok(SpawnWorkerResponse { worker_id, relation, status, first_turn_output, report_channel })
+        Ok(SpawnWorkerResponse {
+            worker_id,
+            relation,
+            status,
+            first_turn_output,
+            report_channel,
+        })
     }
 
     async fn send_to_worker(&self, worker_id: &str, text: &str) -> Result<(), String> {
         let params = serde_json::json!({ "target": worker_id, "text": text });
         let resp = self.bridge.send_command("send_to_worker", params).await?;
-        let success = resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+        let success = resp
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if !success {
-            let err = resp.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error");
+            let err = resp
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error");
             return Err(err.to_string());
         }
         Ok(())
@@ -480,33 +543,59 @@ impl<R: Runtime + 'static> Runtime for WorkerRuntime<R> {
         // 同步 resume：发消息 + 阻塞等下一轮 agent_end
         let params = serde_json::json!({ "target": worker_id, "text": text });
         let resp = self.bridge.send_command("resume_worker", params).await?;
-        let success = resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+        let success = resp
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if !success {
-            let err = resp.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error");
+            let err = resp
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error");
             return Err(err.to_string());
         }
         let data = resp.get("data").cloned().unwrap_or_default();
-        Ok(data.get("response_output").and_then(|v| v.as_str()).unwrap_or("").to_string())
+        Ok(data
+            .get("response_output")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string())
     }
 
     async fn await_worker(&self, worker_id: &str) -> Result<String, String> {
         let params = serde_json::json!({ "target": worker_id });
         let resp = self.bridge.send_command("await_worker", params).await?;
-        let success = resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+        let success = resp
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if !success {
-            let err = resp.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error");
+            let err = resp
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error");
             return Err(err.to_string());
         }
         let data = resp.get("data").cloned().unwrap_or_default();
-        Ok(data.get("first_turn_output").and_then(|v| v.as_str()).unwrap_or("").to_string())
+        Ok(data
+            .get("first_turn_output")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string())
     }
 
     async fn channel_send(&self, channel: &str, text: &str) -> Result<(), String> {
         let params = serde_json::json!({ "channel": channel, "msg": {"text": text} });
         let resp = self.bridge.send_command("channel_send", params).await?;
-        let success = resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+        let success = resp
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if !success {
-            let err = resp.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error");
+            let err = resp
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error");
             return Err(err.to_string());
         }
         Ok(())
@@ -515,9 +604,15 @@ impl<R: Runtime + 'static> Runtime for WorkerRuntime<R> {
     async fn kill_worker(&self, worker_id: &str) -> Result<(), String> {
         let params = serde_json::json!({ "target": worker_id });
         let resp = self.bridge.send_command("kill_worker", params).await?;
-        let success = resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+        let success = resp
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if !success {
-            let err = resp.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error");
+            let err = resp
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error");
             return Err(err.to_string());
         }
         Ok(())
@@ -560,18 +655,32 @@ impl LocalRuntime {
     }
 }
 
-impl Default for LocalRuntime { fn default() -> Self { Self::new() } }
+impl Default for LocalRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[async_trait]
 impl Runtime for LocalRuntime {
-    fn runtime_type(&self) -> String { "local".into() }
+    fn runtime_type(&self) -> String {
+        "local".into()
+    }
 
-    async fn execute_command(&self, command: &str, timeout_secs: u64) -> Result<(String, String, i32), String> {
+    async fn execute_command(
+        &self,
+        command: &str,
+        timeout_secs: u64,
+    ) -> Result<(String, String, i32), String> {
         let output = tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
-            tokio::process::Command::new("sh").args(["-c", command]).output(),
-        ).await.map_err(|_| format!("timeout after {timeout_secs}s"))?
-         .map_err(|e| format!("spawn failed: {e}"))?;
+            tokio::process::Command::new("sh")
+                .args(["-c", command])
+                .output(),
+        )
+        .await
+        .map_err(|_| format!("timeout after {timeout_secs}s"))?
+        .map_err(|e| format!("spawn failed: {e}"))?;
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         Ok((stdout, stderr, output.status.code().unwrap_or(-1)))
@@ -611,32 +720,45 @@ impl Runtime for LocalRuntime {
         }
         let status = child.wait().await.map_err(|e| format!("wait: {e}"))?;
         if !status.success() {
-            return Err(format!("exit code {}: {}", status.code().unwrap_or(-1), full));
+            return Err(format!(
+                "exit code {}: {}",
+                status.code().unwrap_or(-1),
+                full
+            ));
         }
         Ok(full)
     }
 
     async fn read_file(&self, path: &str) -> Result<String, String> {
-        tokio::fs::read_to_string(path).await.map_err(|e| format!("read {path}: {e}"))
+        tokio::fs::read_to_string(path)
+            .await
+            .map_err(|e| format!("read {path}: {e}"))
     }
 
     async fn write_file(&self, path: &str, content: &str) -> Result<(), String> {
         let target = std::path::Path::new(path);
         if let Some(parent) = target.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|e| format!("mkdir: {e}"))?;
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("mkdir: {e}"))?;
         }
         // 原子写：写到同目录临时文件 → fsync → rename（对齐 pi write.ts 的 withFileMutationQueue 安全语义）
         // 避免 abort/崩溃时留下半写文件（用户痛点：LLM 写 1000 行文件中途被中断 → 文件变 0 字节或半截）
         let tmp_path = format!(
             "{}/.ion-tmp-{}-{}",
-            target.parent().map(|p| p.to_string_lossy().to_string())
+            target
+                .parent()
+                .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| ".".into()),
-            target.file_name().map(|f| f.to_string_lossy().to_string())
+            target
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
                 .unwrap_or_else(|| "file".into()),
             std::process::id(),
         );
         // 写临时文件
-        tokio::fs::write(&tmp_path, content).await
+        tokio::fs::write(&tmp_path, content)
+            .await
             .map_err(|e| format!("write tmp {tmp_path}: {e}"))?;
         // 同步到磁盘（防止 rename 后系统崩溃仍丢数据）
         #[cfg(unix)]
@@ -646,12 +768,11 @@ impl Runtime for LocalRuntime {
             }
         }
         // 原子 rename（同 filesystem 下原子；跨设备时 tokio::fs::rename 会自动 fallback 到 copy+remove）
-        tokio::fs::rename(&tmp_path, path).await
-            .map_err(|e| {
-                // rename 失败时清理临时文件，避免遗留垃圾
-                let _ = std::fs::remove_file(&tmp_path);
-                format!("rename {tmp_path} → {path}: {e}")
-            })
+        tokio::fs::rename(&tmp_path, path).await.map_err(|e| {
+            // rename 失败时清理临时文件，避免遗留垃圾
+            let _ = std::fs::remove_file(&tmp_path);
+            format!("rename {tmp_path} → {path}: {e}")
+        })
     }
 
     async fn edit_file(&self, path: &str, old: &str, new: &str) -> Result<(), String> {
@@ -668,9 +789,15 @@ impl Runtime for LocalRuntime {
     }
 
     async fn list_dir(&self, path: &str) -> Result<Vec<String>, String> {
-        let mut entries = tokio::fs::read_dir(path).await.map_err(|e| format!("ls {path}: {e}"))?;
+        let mut entries = tokio::fs::read_dir(path)
+            .await
+            .map_err(|e| format!("ls {path}: {e}"))?;
         let mut names = Vec::new();
-        while let Some(entry) = entries.next_entry().await.map_err(|e| format!("ls {path}: {e}"))? {
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| format!("ls {path}: {e}"))?
+        {
             names.push(entry.file_name().to_string_lossy().to_string());
         }
         names.sort();
@@ -678,30 +805,55 @@ impl Runtime for LocalRuntime {
     }
 
     async fn remove_file(&self, path: &str) -> Result<(), String> {
-        tokio::fs::remove_file(path).await.map_err(|e| format!("rm {path}: {e}"))
+        tokio::fs::remove_file(path)
+            .await
+            .map_err(|e| format!("rm {path}: {e}"))
     }
 
     async fn grep_search(&self, pattern: &str, path: &str) -> Result<Vec<String>, String> {
-        let (stdout, _, _) = self.execute_command(&format!("grep -rn '{pattern}' '{path}' 2>/dev/null || true"), 30).await?;
+        let (stdout, _, _) = self
+            .execute_command(
+                &format!("grep -rn '{pattern}' '{path}' 2>/dev/null || true"),
+                30,
+            )
+            .await?;
         Ok(stdout.lines().map(String::from).collect())
     }
 
     async fn find_files(&self, path: &str, name: &str) -> Result<Vec<String>, String> {
-        let (stdout, _, _) = self.execute_command(&format!("find '{path}' -name '{name}' 2>/dev/null || true"), 30).await?;
-        Ok(stdout.lines().map(String::from).filter(|l| !l.is_empty()).collect())
+        let (stdout, _, _) = self
+            .execute_command(
+                &format!("find '{path}' -name '{name}' 2>/dev/null || true"),
+                30,
+            )
+            .await?;
+        Ok(stdout
+            .lines()
+            .map(String::from)
+            .filter(|l| !l.is_empty())
+            .collect())
     }
 
     async fn file_info(&self, path: &str) -> Result<Vec<FileEntry>, String> {
-        let (stdout, _, _) = self.execute_command(&format!("ls -la '{path}' 2>/dev/null || true"), 30).await?;
+        let (stdout, _, _) = self
+            .execute_command(&format!("ls -la '{path}' 2>/dev/null || true"), 30)
+            .await?;
         let mut entries = Vec::new();
         for line in stdout.lines().skip(1) {
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 9 {
                 let name = parts[8..].join(" ");
                 let is_dir = line.starts_with('d');
                 let size = parts[4].parse().unwrap_or(0);
-                entries.push(FileEntry { name, is_dir, size, modified: parts[5..8].join(" ") });
+                entries.push(FileEntry {
+                    name,
+                    is_dir,
+                    size,
+                    modified: parts[5..8].join(" "),
+                });
             }
         }
         Ok(entries)
@@ -719,14 +871,24 @@ impl Runtime for LocalRuntime {
         let os_pid = child.id().ok_or("no pid assigned")?;
         // 生成 bid（单调递增，6 位 hex）
         static NEXT_BID: AtomicU32 = AtomicU32::new(1);
-        let bid = format!("{:06x}", NEXT_BID.fetch_add(1, Ordering::Relaxed) & 0xFFFFFF);
+        let bid = format!(
+            "{:06x}",
+            NEXT_BID.fetch_add(1, Ordering::Relaxed) & 0xFFFFFF
+        );
 
         if req.background {
             // ── 后台模式：立即返回，存储 child 供后续 kill/send_stdin ──
             let stdin = child.stdin.take();
             let log_path = req.log_path.clone();
             let mut map = self.processes.lock().map_err(|e| e.to_string())?;
-            map.insert(os_pid, ProcessEntry { child, stdin, log_path });
+            map.insert(
+                os_pid,
+                ProcessEntry {
+                    child,
+                    stdin,
+                    log_path,
+                },
+            );
             Ok(ProcessHandle {
                 bid,
                 os_pid,
@@ -765,7 +927,10 @@ impl Runtime for LocalRuntime {
             }
         };
         if should_remove {
-            self.processes.lock().map_err(|e| e.to_string())?.remove(&os_pid);
+            self.processes
+                .lock()
+                .map_err(|e| e.to_string())?
+                .remove(&os_pid);
         }
         // fallback: 用系统 kill 命令确保终止
         let output = std::process::Command::new("kill")
@@ -788,11 +953,22 @@ impl Runtime for LocalRuntime {
     async fn send_stdin(&self, os_pid: u32, input: &str) -> Result<(), String> {
         let mut stdin = {
             let mut map = self.processes.lock().map_err(|e| e.to_string())?;
-            let entry = map.get_mut(&os_pid).ok_or_else(|| format!("process {os_pid} not found"))?;
-            entry.stdin.take().ok_or_else(|| format!("process {os_pid} has no stdin"))?
+            let entry = map
+                .get_mut(&os_pid)
+                .ok_or_else(|| format!("process {os_pid} not found"))?;
+            entry
+                .stdin
+                .take()
+                .ok_or_else(|| format!("process {os_pid} has no stdin"))?
         };
-        stdin.write_all(input.as_bytes()).await.map_err(|e| format!("stdin write: {e}"))?;
-        stdin.flush().await.map_err(|e| format!("stdin flush: {e}"))?;
+        stdin
+            .write_all(input.as_bytes())
+            .await
+            .map_err(|e| format!("stdin write: {e}"))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|e| format!("stdin flush: {e}"))?;
         // 把 stdin 放回去（cat 需要多次写入）
         let mut map = self.processes.lock().map_err(|e| e.to_string())?;
         if let Some(entry) = map.get_mut(&os_pid) {
@@ -817,10 +993,19 @@ pub struct SecuredRuntime<R: Runtime> {
 
 impl<R: Runtime> SecuredRuntime<R> {
     pub fn new(inner: R) -> Self {
-        Self { inner, permission_engine: None, command_guard: None, ui_system: None, event_bus: None }
+        Self {
+            inner,
+            permission_engine: None,
+            command_guard: None,
+            ui_system: None,
+            event_bus: None,
+        }
     }
 
-    pub fn with_permissions(mut self, engine: std::sync::Arc<crate::kernel::PermissionEngine>) -> Self {
+    pub fn with_permissions(
+        mut self,
+        engine: std::sync::Arc<crate::kernel::PermissionEngine>,
+    ) -> Self {
         self.permission_engine = Some(engine);
         self
     }
@@ -835,7 +1020,10 @@ impl<R: Runtime> SecuredRuntime<R> {
         self
     }
 
-    pub fn with_event_bus(mut self, bus: std::sync::Arc<tokio::sync::Mutex<crate::event_bus::ExtensionEventBus>>) -> Self {
+    pub fn with_event_bus(
+        mut self,
+        bus: std::sync::Arc<tokio::sync::Mutex<crate::event_bus::ExtensionEventBus>>,
+    ) -> Self {
         self.event_bus = Some(bus);
         self
     }
@@ -855,7 +1043,9 @@ impl<R: Runtime> SecuredRuntime<R> {
     }
 
     /// 获取内部 Runtime 引用
-    pub fn inner(&self) -> &R { &self.inner }
+    pub fn inner(&self) -> &R {
+        &self.inner
+    }
 
     /// 处理 Ask 结果：
     /// 1. 有 UiSystem 且有 confirm_handler → 同步确认（现有路径）
@@ -863,13 +1053,15 @@ impl<R: Runtime> SecuredRuntime<R> {
     /// 3. 都没有 → 安全优先，拒绝
     async fn resolve_ask(&self, title: &str, message: &str) -> bool {
         // 路径 1：同步确认
-        if let Some(ref ui) = self.ui_system && ui.has_confirm_handler() {
+        if let Some(ref ui) = self.ui_system
+            && ui.has_confirm_handler()
+        {
             return ui.confirm(title, message);
         }
         // 路径 2：异步 Ask 走 UI 通道
         if let Some(ref bus_arc) = self.event_bus {
             let request_id = format!("req_{}", &uuid::Uuid::new_v4().to_string()[..8]);
-            
+
             // 注册 pending request
             let (tx, rx) = oneshot::channel();
             pending_ui().lock().unwrap().insert(request_id.clone(), tx);
@@ -892,9 +1084,15 @@ impl<R: Runtime> SecuredRuntime<R> {
             };
 
             // 推 AskResolved / AskTimedOut 事件
-            let resolved_type = if response_str == "timeout" { "AskTimedOut" } else { "AskResolved" };
-            let resolved_event = crate::event_bus::ExtensionEvent::new_ui(resolved_type, title, message)
-                .with_data(serde_json::json!({"request_id": request_id, "response": response_str}));
+            let resolved_type = if response_str == "timeout" {
+                "AskTimedOut"
+            } else {
+                "AskResolved"
+            };
+            let resolved_event =
+                crate::event_bus::ExtensionEvent::new_ui(resolved_type, title, message).with_data(
+                    serde_json::json!({"request_id": request_id, "response": response_str}),
+                );
             {
                 let mut bus = bus_arc.lock().await;
                 bus.broadcast(&resolved_event);
@@ -913,7 +1111,11 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
         format!("secured({})", self.inner.runtime_type())
     }
 
-    async fn execute_command(&self, command: &str, timeout_secs: u64) -> Result<(String, String, i32), String> {
+    async fn execute_command(
+        &self,
+        command: &str,
+        timeout_secs: u64,
+    ) -> Result<(String, String, i32), String> {
         // CommandGuard 检查
         if let Some(ref guard_arc) = self.command_guard {
             let (decision, mode) = {
@@ -933,10 +1135,23 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
                 crate::command_guard::GuardDecision::Ask(p) => {
                     let msg = format!("{}\n\n命令: `{}`", p.message, command);
                     let allowed = self.resolve_ask("高危命令", &msg).await;
-                    audit_log("ask", command, &mode, Some(&p.message), Some(if allowed { "accepted" } else { "rejected" }));
+                    audit_log(
+                        "ask",
+                        command,
+                        &mode,
+                        Some(&p.message),
+                        Some(if allowed { "accepted" } else { "rejected" }),
+                    );
                     if !allowed {
-                        let hint = p.suggestion.as_ref().map(|s| format!(" 建议: {}", s)).unwrap_or_default();
-                        return Err(format!("[CommandGuard] 用户拒绝了高危命令: {}{}", p.message, hint));
+                        let hint = p
+                            .suggestion
+                            .as_ref()
+                            .map(|s| format!(" 建议: {}", s))
+                            .unwrap_or_default();
+                        return Err(format!(
+                            "[CommandGuard] 用户拒绝了高危命令: {}{}",
+                            p.message, hint
+                        ));
                     }
                     // 用户允许 → 放行
                 }
@@ -950,7 +1165,9 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
 
     /// 流式执行也走 CommandGuard 检查
     async fn execute_command_stream(
-        &self, command: &str, timeout_secs: u64,
+        &self,
+        command: &str,
+        timeout_secs: u64,
         on_update: &(dyn Fn(String) + Send + Sync),
     ) -> Result<String, String> {
         if let Some(ref guard_arc) = self.command_guard {
@@ -971,10 +1188,23 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
                 crate::command_guard::GuardDecision::Ask(p) => {
                     let msg = format!("{}\n\n命令: `{}`", p.message, command);
                     let allowed = self.resolve_ask("高危命令", &msg).await;
-                    audit_log("ask", command, &mode, Some(&p.message), Some(if allowed { "accepted" } else { "rejected" }));
+                    audit_log(
+                        "ask",
+                        command,
+                        &mode,
+                        Some(&p.message),
+                        Some(if allowed { "accepted" } else { "rejected" }),
+                    );
                     if !allowed {
-                        let hint = p.suggestion.as_ref().map(|s| format!(" 建议: {}", s)).unwrap_or_default();
-                        return Err(format!("[CommandGuard] 用户拒绝了高危命令: {}{}", p.message, hint));
+                        let hint = p
+                            .suggestion
+                            .as_ref()
+                            .map(|s| format!(" 建议: {}", s))
+                            .unwrap_or_default();
+                        return Err(format!(
+                            "[CommandGuard] 用户拒绝了高危命令: {}{}",
+                            p.message, hint
+                        ));
                     }
                 }
                 crate::command_guard::GuardDecision::Allow => {
@@ -982,7 +1212,9 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
                 }
             }
         }
-        self.inner.execute_command_stream(command, timeout_secs, on_update).await
+        self.inner
+            .execute_command_stream(command, timeout_secs, on_update)
+            .await
     }
 
     /// 安全预检：检查命令是否允许（CommandGuard）
@@ -1005,10 +1237,23 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
                 crate::command_guard::GuardDecision::Ask(p) => {
                     let msg = format!("{}\n\n命令: `{}`", p.message, command);
                     let allowed = self.resolve_ask("高危命令", &msg).await;
-                    audit_log("ask", command, &mode, Some(&p.message), Some(if allowed { "accepted" } else { "rejected" }));
+                    audit_log(
+                        "ask",
+                        command,
+                        &mode,
+                        Some(&p.message),
+                        Some(if allowed { "accepted" } else { "rejected" }),
+                    );
                     if !allowed {
-                        let hint = p.suggestion.as_ref().map(|s| format!(" 建议: {}", s)).unwrap_or_default();
-                        return Err(format!("[CommandGuard] 用户拒绝了高危命令: {}{}", p.message, hint));
+                        let hint = p
+                            .suggestion
+                            .as_ref()
+                            .map(|s| format!(" 建议: {}", s))
+                            .unwrap_or_default();
+                        return Err(format!(
+                            "[CommandGuard] 用户拒绝了高危命令: {}{}",
+                            p.message, hint
+                        ));
                     }
                 }
                 crate::command_guard::GuardDecision::Allow => {
@@ -1025,7 +1270,12 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
                 "open" => crate::command_guard::GuardMode::Open,
                 "blacklist" => crate::command_guard::GuardMode::Blacklist,
                 "whitelist" => crate::command_guard::GuardMode::Whitelist,
-                _ => return Err(format!("unknown guard mode: {} (expected: open/blacklist/whitelist)", mode)),
+                _ => {
+                    return Err(format!(
+                        "unknown guard mode: {} (expected: open/blacklist/whitelist)",
+                        mode
+                    ));
+                }
             };
             let mut guard = guard_arc.write().unwrap();
             guard.mode = new_mode;
@@ -1039,7 +1289,9 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
         if let Some(ref engine) = self.permission_engine {
             match engine.check(path, crate::kernel::Action::Read) {
                 crate::kernel::PermissionResult::Allow => {}
-                crate::kernel::PermissionResult::Deny(reason) => return Err(format!("[Permission] {reason}")),
+                crate::kernel::PermissionResult::Deny(reason) => {
+                    return Err(format!("[Permission] {reason}"));
+                }
                 crate::kernel::PermissionResult::Ask { title, message } => {
                     if !self.resolve_ask(&title, &message).await {
                         return Err(format!("[Permission] 用户拒绝了读文件: {path}"));
@@ -1054,7 +1306,9 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
         if let Some(ref engine) = self.permission_engine {
             match engine.check(path, crate::kernel::Action::Write) {
                 crate::kernel::PermissionResult::Allow => {}
-                crate::kernel::PermissionResult::Deny(reason) => return Err(format!("[Permission] {reason}")),
+                crate::kernel::PermissionResult::Deny(reason) => {
+                    return Err(format!("[Permission] {reason}"));
+                }
                 crate::kernel::PermissionResult::Ask { title, message } => {
                     if !self.resolve_ask(&title, &message).await {
                         return Err(format!("[Permission] 用户拒绝了写文件: {path}"));
@@ -1069,7 +1323,9 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
         if let Some(ref engine) = self.permission_engine {
             match engine.check(path, crate::kernel::Action::Edit) {
                 crate::kernel::PermissionResult::Allow => {}
-                crate::kernel::PermissionResult::Deny(reason) => return Err(format!("[Permission] {reason}")),
+                crate::kernel::PermissionResult::Deny(reason) => {
+                    return Err(format!("[Permission] {reason}"));
+                }
                 crate::kernel::PermissionResult::Ask { title, message } => {
                     if !self.resolve_ask(&title, &message).await {
                         return Err(format!("[Permission] 用户拒绝了编辑文件: {path}"));
@@ -1080,13 +1336,17 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
         self.inner.edit_file(path, old, new).await
     }
 
-    async fn path_exists(&self, path: &str) -> bool { self.inner.path_exists(path).await }
+    async fn path_exists(&self, path: &str) -> bool {
+        self.inner.path_exists(path).await
+    }
 
     async fn list_dir(&self, path: &str) -> Result<Vec<String>, String> {
         if let Some(ref engine) = self.permission_engine {
             match engine.check(path, crate::kernel::Action::Read) {
                 crate::kernel::PermissionResult::Allow => {}
-                crate::kernel::PermissionResult::Deny(reason) => return Err(format!("[Permission] {reason}")),
+                crate::kernel::PermissionResult::Deny(reason) => {
+                    return Err(format!("[Permission] {reason}"));
+                }
                 crate::kernel::PermissionResult::Ask { title, message } => {
                     if !self.resolve_ask(&title, &message).await {
                         return Err(format!("[Permission] 用户拒绝了: {path}"));
@@ -1101,7 +1361,9 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
         if let Some(ref engine) = self.permission_engine {
             match engine.check(path, crate::kernel::Action::Delete) {
                 crate::kernel::PermissionResult::Allow => {}
-                crate::kernel::PermissionResult::Deny(reason) => return Err(format!("[Permission] {reason}")),
+                crate::kernel::PermissionResult::Deny(reason) => {
+                    return Err(format!("[Permission] {reason}"));
+                }
                 crate::kernel::PermissionResult::Ask { title, message } => {
                     if !self.resolve_ask(&title, &message).await {
                         return Err(format!("[Permission] 用户拒绝了删除: {path}"));
@@ -1116,7 +1378,9 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
         if let Some(ref engine) = self.permission_engine {
             match engine.check(path, crate::kernel::Action::Read) {
                 crate::kernel::PermissionResult::Allow => {}
-                crate::kernel::PermissionResult::Deny(reason) => return Err(format!("[Permission] {reason}")),
+                crate::kernel::PermissionResult::Deny(reason) => {
+                    return Err(format!("[Permission] {reason}"));
+                }
                 crate::kernel::PermissionResult::Ask { title, message } => {
                     if !self.resolve_ask(&title, &message).await {
                         return Err(format!("[Permission] 用户拒绝了搜索: {path}"));
@@ -1150,7 +1414,13 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
                 }
                 crate::command_guard::GuardDecision::Ask(p) => {
                     let allowed = self.resolve_ask("command", &p.message).await;
-                    audit_log("ask", &req.command, &mode, Some(&p.message), Some(if allowed { "accepted" } else { "rejected" }));
+                    audit_log(
+                        "ask",
+                        &req.command,
+                        &mode,
+                        Some(&p.message),
+                        Some(if allowed { "accepted" } else { "rejected" }),
+                    );
                     if !allowed {
                         let sug = p.suggestion.as_deref().unwrap_or("");
                         return Err(format!("spawn denied by user: {} ({})", p.message, sug));
@@ -1204,11 +1474,32 @@ pub struct RemoteRuntime<R: Runtime> {
 }
 
 impl<R: Runtime> RemoteRuntime<R> {
-    pub fn new(inner: R, user: &str, hostname: &str, port: u16, key: &str, proxy_jump: &str) -> Self {
-        Self { inner, host_user: user.to_string(), host_hostname: hostname.to_string(), host_port: port, host_key: key.to_string(), host_proxy_jump: proxy_jump.to_string() }
+    pub fn new(
+        inner: R,
+        user: &str,
+        hostname: &str,
+        port: u16,
+        key: &str,
+        proxy_jump: &str,
+    ) -> Self {
+        Self {
+            inner,
+            host_user: user.to_string(),
+            host_hostname: hostname.to_string(),
+            host_port: port,
+            host_key: key.to_string(),
+            host_proxy_jump: proxy_jump.to_string(),
+        }
     }
     pub fn from_config(inner: R, cfg: &crate::config::RemoteHost) -> Self {
-        Self::new(inner, &cfg.user, &cfg.hostname, cfg.port, &cfg.key, &cfg.proxy_jump)
+        Self::new(
+            inner,
+            &cfg.user,
+            &cfg.hostname,
+            cfg.port,
+            &cfg.key,
+            &cfg.proxy_jump,
+        )
     }
     fn ssh_base(&self) -> String {
         let mut b = if self.host_user.is_empty() {
@@ -1217,73 +1508,184 @@ impl<R: Runtime> RemoteRuntime<R> {
             format!("ssh {}@{}", self.host_user, self.host_hostname)
         };
         // Only add -p if port is non-default (SSH config may specify a different port)
-        if self.host_port != 22 { b.push_str(&format!(" -p {}", self.host_port)); }
-        if !self.host_key.is_empty() { b.push_str(&format!(" -i {}", self.host_key)); }
-        if !self.host_proxy_jump.is_empty() { b.push_str(&format!(" -J {}", self.host_proxy_jump)); }
+        if self.host_port != 22 {
+            b.push_str(&format!(" -p {}", self.host_port));
+        }
+        if !self.host_key.is_empty() {
+            b.push_str(&format!(" -i {}", self.host_key));
+        }
+        if !self.host_proxy_jump.is_empty() {
+            b.push_str(&format!(" -J {}", self.host_proxy_jump));
+        }
         b
     }
     fn ssh_cmd(&self, remote_cmd: &str) -> String {
-        format!("{} '{}'", self.ssh_base(), remote_cmd.replace('\'', "'\\''"))
+        format!(
+            "{} '{}'",
+            self.ssh_base(),
+            remote_cmd.replace('\'', "'\\''")
+        )
     }
 }
 
 #[async_trait]
 impl<R: Runtime + 'static> Runtime for RemoteRuntime<R> {
-    fn runtime_type(&self) -> String { format!("remote({}@{})", self.host_user, self.host_hostname) }
+    fn runtime_type(&self) -> String {
+        format!("remote({}@{})", self.host_user, self.host_hostname)
+    }
 
-    async fn execute_command(&self, command: &str, timeout_secs: u64) -> Result<(String, String, i32), String> {
+    async fn execute_command(
+        &self,
+        command: &str,
+        timeout_secs: u64,
+    ) -> Result<(String, String, i32), String> {
         let ssh = self.ssh_cmd(command);
         self.inner.execute_command(&ssh, timeout_secs).await
     }
     async fn read_file(&self, path: &str) -> Result<String, String> {
-        let (o, e, c) = self.inner.execute_command(&self.ssh_cmd(&format!("cat {}", sh_quote(path))), 30).await?;
-        if c != 0 { Err(format!("remote read: {e}")) } else { Ok(o) }
+        let (o, e, c) = self
+            .inner
+            .execute_command(&self.ssh_cmd(&format!("cat {}", sh_quote(path))), 30)
+            .await?;
+        if c != 0 {
+            Err(format!("remote read: {e}"))
+        } else {
+            Ok(o)
+        }
     }
     async fn write_file(&self, path: &str, content: &str) -> Result<(), String> {
         let e = content.replace('\'', "'\\''");
-        let (_, s, c) = self.inner.execute_command(&self.ssh_cmd(&format!("cat > {} << 'IONEOF'\n{e}\nIONEOF", sh_quote(path))), 30).await?;
-        if c != 0 { Err(format!("remote write: {s}")) } else { Ok(()) }
+        let (_, s, c) = self
+            .inner
+            .execute_command(
+                &self.ssh_cmd(&format!(
+                    "cat > {} << 'IONEOF'\n{e}\nIONEOF",
+                    sh_quote(path)
+                )),
+                30,
+            )
+            .await?;
+        if c != 0 {
+            Err(format!("remote write: {s}"))
+        } else {
+            Ok(())
+        }
     }
     async fn edit_file(&self, path: &str, old: &str, new: &str) -> Result<(), String> {
-        let c = self.read_file(path).await?; self.write_file(path, &c.replace(old, new)).await
+        let c = self.read_file(path).await?;
+        self.write_file(path, &c.replace(old, new)).await
     }
     async fn path_exists(&self, path: &str) -> bool {
-        self.inner.execute_command(&self.ssh_cmd(&format!("test -e {}", sh_quote(path))), 10).await.is_ok()
+        self.inner
+            .execute_command(&self.ssh_cmd(&format!("test -e {}", sh_quote(path))), 10)
+            .await
+            .is_ok()
     }
     async fn list_dir(&self, path: &str) -> Result<Vec<String>, String> {
-        let (o, _, _) = self.inner.execute_command(&self.ssh_cmd(&format!("ls -1 {}", sh_quote(path))), 15).await?;
+        let (o, _, _) = self
+            .inner
+            .execute_command(&self.ssh_cmd(&format!("ls -1 {}", sh_quote(path))), 15)
+            .await?;
         Ok(o.lines().map(String::from).collect())
     }
     async fn remove_file(&self, path: &str) -> Result<(), String> {
-        let (_, s, c) = self.inner.execute_command(&self.ssh_cmd(&format!("rm -f {}", sh_quote(path))), 15).await?;
-        if c != 0 { Err(format!("remote rm: {s}")) } else { Ok(()) }
+        let (_, s, c) = self
+            .inner
+            .execute_command(&self.ssh_cmd(&format!("rm -f {}", sh_quote(path))), 15)
+            .await?;
+        if c != 0 {
+            Err(format!("remote rm: {s}"))
+        } else {
+            Ok(())
+        }
     }
     async fn grep_search(&self, pattern: &str, path: &str) -> Result<Vec<String>, String> {
-        let (o, _, _) = self.inner.execute_command(&self.ssh_cmd(&format!("grep -rn {} {} 2>/dev/null || true", sh_quote(pattern), sh_quote(path))), 30).await?;
+        let (o, _, _) = self
+            .inner
+            .execute_command(
+                &self.ssh_cmd(&format!(
+                    "grep -rn {} {} 2>/dev/null || true",
+                    sh_quote(pattern),
+                    sh_quote(path)
+                )),
+                30,
+            )
+            .await?;
         Ok(o.lines().map(String::from).collect())
     }
     async fn find_files(&self, path: &str, name: &str) -> Result<Vec<String>, String> {
-        let (o, _, _) = self.inner.execute_command(&self.ssh_cmd(&format!("find {} -name {} 2>/dev/null || true", sh_quote(path), sh_quote(name))), 30).await?;
-        Ok(o.lines().map(String::from).filter(|l| !l.is_empty()).collect())
+        let (o, _, _) = self
+            .inner
+            .execute_command(
+                &self.ssh_cmd(&format!(
+                    "find {} -name {} 2>/dev/null || true",
+                    sh_quote(path),
+                    sh_quote(name)
+                )),
+                30,
+            )
+            .await?;
+        Ok(o.lines()
+            .map(String::from)
+            .filter(|l| !l.is_empty())
+            .collect())
     }
     async fn file_info(&self, path: &str) -> Result<Vec<FileEntry>, String> {
-        let (o, _, _) = self.inner.execute_command(&self.ssh_cmd(&format!("ls -la {} 2>/dev/null || true", sh_quote(path))), 15).await?;
+        let (o, _, _) = self
+            .inner
+            .execute_command(
+                &self.ssh_cmd(&format!("ls -la {} 2>/dev/null || true", sh_quote(path))),
+                15,
+            )
+            .await?;
         let mut v = Vec::new();
-        for line in o.lines().skip(1) { if !line.is_empty() { let p: Vec<&str> = line.split_whitespace().collect(); if p.len() >= 9 { v.push(FileEntry { name: p[8..].join(" "), is_dir: line.starts_with('d'), size: p[4].parse().unwrap_or(0), modified: p[5..8].join(" ") }); } } }
+        for line in o.lines().skip(1) {
+            if !line.is_empty() {
+                let p: Vec<&str> = line.split_whitespace().collect();
+                if p.len() >= 9 {
+                    v.push(FileEntry {
+                        name: p[8..].join(" "),
+                        is_dir: line.starts_with('d'),
+                        size: p[4].parse().unwrap_or(0),
+                        modified: p[5..8].join(" "),
+                    });
+                }
+            }
+        }
         Ok(v)
     }
-    async fn check_command(&self, cmd: &str) -> Result<(), String> { self.inner.check_command(cmd).await }
+    async fn check_command(&self, cmd: &str) -> Result<(), String> {
+        self.inner.check_command(cmd).await
+    }
     // 进程管理方法：远程不支持，防止意外在本地执行
-    async fn spawn_process(&self, _req: SpawnProcessRequest) -> Result<ProcessHandle, String> { Err("RemoteRuntime: spawn_process not supported remotely".into()) }
-    async fn kill_process(&self, _pid: u32) -> Result<(), String> { Err("RemoteRuntime: kill_process not supported remotely".into()) }
-    async fn send_stdin(&self, _pid: u32, _input: &str) -> Result<(), String> { Err("RemoteRuntime: send_stdin not supported remotely".into()) }
+    async fn spawn_process(&self, _req: SpawnProcessRequest) -> Result<ProcessHandle, String> {
+        Err("RemoteRuntime: spawn_process not supported remotely".into())
+    }
+    async fn kill_process(&self, _pid: u32) -> Result<(), String> {
+        Err("RemoteRuntime: kill_process not supported remotely".into())
+    }
+    async fn send_stdin(&self, _pid: u32, _input: &str) -> Result<(), String> {
+        Err("RemoteRuntime: send_stdin not supported remotely".into())
+    }
     // Worker 编排：透传给 WorkerRuntime（上层处理）
-    async fn spawn_worker(&self, req: SpawnWorkerRequest) -> Result<SpawnWorkerResponse, String> { self.inner.spawn_worker(req).await }
-    async fn send_to_worker(&self, wid: &str, text: &str) -> Result<(), String> { self.inner.send_to_worker(wid, text).await }
-    async fn resume_worker(&self, wid: &str, text: &str) -> Result<String, String> { self.inner.resume_worker(wid, text).await }
-    async fn await_worker(&self, wid: &str) -> Result<String, String> { self.inner.await_worker(wid).await }
-    async fn channel_send(&self, ch: &str, text: &str) -> Result<(), String> { self.inner.channel_send(ch, text).await }
-    async fn kill_worker(&self, wid: &str) -> Result<(), String> { self.inner.kill_worker(wid).await }
+    async fn spawn_worker(&self, req: SpawnWorkerRequest) -> Result<SpawnWorkerResponse, String> {
+        self.inner.spawn_worker(req).await
+    }
+    async fn send_to_worker(&self, wid: &str, text: &str) -> Result<(), String> {
+        self.inner.send_to_worker(wid, text).await
+    }
+    async fn resume_worker(&self, wid: &str, text: &str) -> Result<String, String> {
+        self.inner.resume_worker(wid, text).await
+    }
+    async fn await_worker(&self, wid: &str) -> Result<String, String> {
+        self.inner.await_worker(wid).await
+    }
+    async fn channel_send(&self, ch: &str, text: &str) -> Result<(), String> {
+        self.inner.channel_send(ch, text).await
+    }
+    async fn kill_worker(&self, wid: &str) -> Result<(), String> {
+        self.inner.kill_worker(wid).await
+    }
 }
 
 /// 远端 shell 参数安全引用 — 防止注入
@@ -1313,7 +1715,11 @@ pub struct SandboxRuntime<R: Runtime> {
 
 impl<R: Runtime> SandboxRuntime<R> {
     pub fn new(inner: R, profile: &str, workspace: &str) -> Self {
-        Self { inner, profile: profile.to_string(), workspace: workspace.to_string() }
+        Self {
+            inner,
+            profile: profile.to_string(),
+            workspace: workspace.to_string(),
+        }
     }
 
     fn generate_profile(&self) -> String {
@@ -1336,20 +1742,44 @@ impl<R: Runtime> SandboxRuntime<R> {
         // 版本管理器路径（nvm、cargo、go、pyenv 等用户级安装）
         if let Ok(home) = std::env::var("HOME") {
             // nvm: ~/.nvm/versions/node/*/bin
-            sb.push_str(&format!("(allow process-exec (subpath \"{}/.nvm/versions\"))\n", home));
+            sb.push_str(&format!(
+                "(allow process-exec (subpath \"{}/.nvm/versions\"))\n",
+                home
+            ));
             // cargo: ~/.cargo/bin + ~/.rustup（rustup shim 调用 ~/.rustup/toolchains/*/bin）
-            sb.push_str(&format!("(allow process-exec (subpath \"{}/.cargo/bin\"))\n", home));
-            sb.push_str(&format!("(allow process-exec (subpath \"{}/.rustup\"))\n", home));
+            sb.push_str(&format!(
+                "(allow process-exec (subpath \"{}/.cargo/bin\"))\n",
+                home
+            ));
+            sb.push_str(&format!(
+                "(allow process-exec (subpath \"{}/.rustup\"))\n",
+                home
+            ));
             // rustup 的 toolchain 可能装在别处，让 ~/.rustup 可读
-            sb.push_str(&format!("(allow file-read* (subpath \"{}/.rustup\"))\n", home));
+            sb.push_str(&format!(
+                "(allow file-read* (subpath \"{}/.rustup\"))\n",
+                home
+            ));
             // go: ~/go/bin
-            sb.push_str(&format!("(allow process-exec (subpath \"{}/go/bin\"))\n", home));
+            sb.push_str(&format!(
+                "(allow process-exec (subpath \"{}/go/bin\"))\n",
+                home
+            ));
             // pyenv: ~/.pyenv/versions, ~/.pyenv/shims
-            sb.push_str(&format!("(allow process-exec (subpath \"{}/.pyenv\"))\n", home));
+            sb.push_str(&format!(
+                "(allow process-exec (subpath \"{}/.pyenv\"))\n",
+                home
+            ));
             // volta: ~/.volta/bin
-            sb.push_str(&format!("(allow process-exec (subpath \"{}/.volta/bin\"))\n", home));
+            sb.push_str(&format!(
+                "(allow process-exec (subpath \"{}/.volta/bin\"))\n",
+                home
+            ));
             // fnm: ~/Library/Application Support/fnm
-            sb.push_str(&format!("(allow process-exec (subpath \"{}/Library/Application Support/fnm\"))\n", home));
+            sb.push_str(&format!(
+                "(allow process-exec (subpath \"{}/Library/Application Support/fnm\"))\n",
+                home
+            ));
         }
 
         // ── 放行全局只读 ──
@@ -1380,7 +1810,10 @@ impl<R: Runtime> SandboxRuntime<R> {
                 tmpdir.clone()
             };
             let private_trim = private.trim_end_matches('/').to_string();
-            sb.push_str(&format!("(allow file-write* (subpath \"{}\"))\n", private_trim));
+            sb.push_str(&format!(
+                "(allow file-write* (subpath \"{}\"))\n",
+                private_trim
+            ));
         }
 
         // ── 按 profile 配置写权限和网络 ──
@@ -1394,7 +1827,10 @@ impl<R: Runtime> SandboxRuntime<R> {
             "workspace" => {
                 // workspace + /tmp 可写 + 网络允许
                 if !self.workspace.is_empty() {
-                    sb.push_str(&format!("(allow file-write* (subpath \"{}\"))\n", self.workspace));
+                    sb.push_str(&format!(
+                        "(allow file-write* (subpath \"{}\"))\n",
+                        self.workspace
+                    ));
                 }
                 sb.push_str("(allow file-write* (subpath \"/tmp\"))\n");
                 sb.push_str("(allow file-write* (subpath \"/private/tmp\"))\n");
@@ -1418,40 +1854,88 @@ impl<R: Runtime> SandboxRuntime<R> {
         let profile = self.generate_profile();
         // 内联 profile 中的特殊字符需要转义
         let escaped_profile = profile.replace('\n', " ");
-        format!("sandbox-exec -p '{}' /bin/sh -c '{}'", escaped_profile, cmd.replace('\'', "'\\''"))
+        format!(
+            "sandbox-exec -p '{}' /bin/sh -c '{}'",
+            escaped_profile,
+            cmd.replace('\'', "'\\''")
+        )
     }
 }
 
 #[async_trait]
 impl<R: Runtime + 'static> Runtime for SandboxRuntime<R> {
-    fn runtime_type(&self) -> String { format!("sandbox({})", self.profile) }
+    fn runtime_type(&self) -> String {
+        format!("sandbox({})", self.profile)
+    }
 
     /// execute_command 在 sandbox-exec 沙箱内执行
-    async fn execute_command(&self, command: &str, timeout_secs: u64) -> Result<(String, String, i32), String> {
+    async fn execute_command(
+        &self,
+        command: &str,
+        timeout_secs: u64,
+    ) -> Result<(String, String, i32), String> {
         let sb_cmd = self.sandbox_cmd(command);
         self.inner.execute_command(&sb_cmd, timeout_secs).await
     }
     // 文件操作透传给 inner（由 SecuredRuntime.PermissionEngine 控制）
-    async fn read_file(&self, path: &str) -> Result<String, String> { self.inner.read_file(path).await }
-    async fn write_file(&self, path: &str, content: &str) -> Result<(), String> { self.inner.write_file(path, content).await }
-    async fn edit_file(&self, path: &str, old: &str, new: &str) -> Result<(), String> { self.inner.edit_file(path, old, new).await }
-    async fn path_exists(&self, path: &str) -> bool { self.inner.path_exists(path).await }
-    async fn list_dir(&self, path: &str) -> Result<Vec<String>, String> { self.inner.list_dir(path).await }
-    async fn remove_file(&self, path: &str) -> Result<(), String> { self.inner.remove_file(path).await }
-    async fn grep_search(&self, pattern: &str, path: &str) -> Result<Vec<String>, String> { self.inner.grep_search(pattern, path).await }
-    async fn find_files(&self, path: &str, name: &str) -> Result<Vec<String>, String> { self.inner.find_files(path, name).await }
-    async fn file_info(&self, path: &str) -> Result<Vec<FileEntry>, String> { self.inner.file_info(path).await }
+    async fn read_file(&self, path: &str) -> Result<String, String> {
+        self.inner.read_file(path).await
+    }
+    async fn write_file(&self, path: &str, content: &str) -> Result<(), String> {
+        self.inner.write_file(path, content).await
+    }
+    async fn edit_file(&self, path: &str, old: &str, new: &str) -> Result<(), String> {
+        self.inner.edit_file(path, old, new).await
+    }
+    async fn path_exists(&self, path: &str) -> bool {
+        self.inner.path_exists(path).await
+    }
+    async fn list_dir(&self, path: &str) -> Result<Vec<String>, String> {
+        self.inner.list_dir(path).await
+    }
+    async fn remove_file(&self, path: &str) -> Result<(), String> {
+        self.inner.remove_file(path).await
+    }
+    async fn grep_search(&self, pattern: &str, path: &str) -> Result<Vec<String>, String> {
+        self.inner.grep_search(pattern, path).await
+    }
+    async fn find_files(&self, path: &str, name: &str) -> Result<Vec<String>, String> {
+        self.inner.find_files(path, name).await
+    }
+    async fn file_info(&self, path: &str) -> Result<Vec<FileEntry>, String> {
+        self.inner.file_info(path).await
+    }
     // 安全预检和进程管理：透传或明确拒绝
-    async fn check_command(&self, cmd: &str) -> Result<(), String> { self.inner.check_command(cmd).await }
-    async fn spawn_process(&self, _req: SpawnProcessRequest) -> Result<ProcessHandle, String> { Err("SandboxRuntime does not support spawn_process".into()) }
-    async fn kill_process(&self, _pid: u32) -> Result<(), String> { Err("SandboxRuntime does not support kill_process".into()) }
-    async fn send_stdin(&self, _pid: u32, _input: &str) -> Result<(), String> { Err("SandboxRuntime does not support send_stdin".into()) }
-    async fn spawn_worker(&self, req: SpawnWorkerRequest) -> Result<SpawnWorkerResponse, String> { self.inner.spawn_worker(req).await }
-    async fn send_to_worker(&self, wid: &str, text: &str) -> Result<(), String> { self.inner.send_to_worker(wid, text).await }
-    async fn resume_worker(&self, wid: &str, text: &str) -> Result<String, String> { self.inner.resume_worker(wid, text).await }
-    async fn await_worker(&self, wid: &str) -> Result<String, String> { self.inner.await_worker(wid).await }
-    async fn channel_send(&self, ch: &str, text: &str) -> Result<(), String> { self.inner.channel_send(ch, text).await }
-    async fn kill_worker(&self, wid: &str) -> Result<(), String> { self.inner.kill_worker(wid).await }
+    async fn check_command(&self, cmd: &str) -> Result<(), String> {
+        self.inner.check_command(cmd).await
+    }
+    async fn spawn_process(&self, _req: SpawnProcessRequest) -> Result<ProcessHandle, String> {
+        Err("SandboxRuntime does not support spawn_process".into())
+    }
+    async fn kill_process(&self, _pid: u32) -> Result<(), String> {
+        Err("SandboxRuntime does not support kill_process".into())
+    }
+    async fn send_stdin(&self, _pid: u32, _input: &str) -> Result<(), String> {
+        Err("SandboxRuntime does not support send_stdin".into())
+    }
+    async fn spawn_worker(&self, req: SpawnWorkerRequest) -> Result<SpawnWorkerResponse, String> {
+        self.inner.spawn_worker(req).await
+    }
+    async fn send_to_worker(&self, wid: &str, text: &str) -> Result<(), String> {
+        self.inner.send_to_worker(wid, text).await
+    }
+    async fn resume_worker(&self, wid: &str, text: &str) -> Result<String, String> {
+        self.inner.resume_worker(wid, text).await
+    }
+    async fn await_worker(&self, wid: &str) -> Result<String, String> {
+        self.inner.await_worker(wid).await
+    }
+    async fn channel_send(&self, ch: &str, text: &str) -> Result<(), String> {
+        self.inner.channel_send(ch, text).await
+    }
+    async fn kill_worker(&self, wid: &str) -> Result<(), String> {
+        self.inner.kill_worker(wid).await
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -1492,7 +1976,9 @@ mod tests {
         let r = LocalRuntime::new();
         let entries = r.list_dir(".").await.unwrap();
         assert!(!entries.is_empty());
-        assert!(entries.contains(&"src".to_string()) || entries.contains(&"Cargo.toml".to_string()));
+        assert!(
+            entries.contains(&"src".to_string()) || entries.contains(&"Cargo.toml".to_string())
+        );
     }
 
     #[tokio::test]
@@ -1507,23 +1993,29 @@ mod tests {
             priority: 100,
         });
 
-        let secured = SecuredRuntime::new(LocalRuntime::new())
-            .with_permissions(engine);
+        let secured = SecuredRuntime::new(LocalRuntime::new()).with_permissions(engine);
 
-        let result = secured.write_file("/tmp/test_blocked.txt", "should fail").await;
+        let result = secured
+            .write_file("/tmp/test_blocked.txt", "should fail")
+            .await;
         assert!(result.is_err(), "write should be blocked");
-        assert!(result.unwrap_err().contains("Permission"), "should mention Permission");
+        assert!(
+            result.unwrap_err().contains("Permission"),
+            "should mention Permission"
+        );
     }
 
     #[tokio::test]
     async fn secured_runtime_blocks_high_risk_command() {
         let guard = crate::command_guard::CommandGuard::default();
-        let secured = SecuredRuntime::new(LocalRuntime::new())
-            .with_command_guard(guard);
+        let secured = SecuredRuntime::new(LocalRuntime::new()).with_command_guard(guard);
 
         let result = secured.execute_command("rm -rf / ", 10).await;
         assert!(result.is_err(), "rm -rf / should be blocked");
-        assert!(result.unwrap_err().contains("CommandGuard"), "should mention CommandGuard");
+        assert!(
+            result.unwrap_err().contains("CommandGuard"),
+            "should mention CommandGuard"
+        );
     }
 
     #[test]
@@ -1544,9 +2036,19 @@ mod tests {
 
     #[test]
     async fn remote_runtime_ssh_command_with_key() {
-        let rt = RemoteRuntime::new(LocalRuntime::new(), "deploy", "10.0.0.1", 2222, "~/.ssh/deploy_key", "");
+        let rt = RemoteRuntime::new(
+            LocalRuntime::new(),
+            "deploy",
+            "10.0.0.1",
+            2222,
+            "~/.ssh/deploy_key",
+            "",
+        );
         let cmd = rt.ssh_cmd("kubectl get pods");
-        assert_eq!(cmd, "ssh deploy@10.0.0.1 -p 2222 -i ~/.ssh/deploy_key 'kubectl get pods'");
+        assert_eq!(
+            cmd,
+            "ssh deploy@10.0.0.1 -p 2222 -i ~/.ssh/deploy_key 'kubectl get pods'"
+        );
     }
 
     // ── PoisonRuntime: 验证 RemoteRuntime 不会回退到本地副作用操作 ──
@@ -1555,29 +2057,78 @@ mod tests {
 
     #[async_trait]
     impl Runtime for PoisonRuntime {
-        fn runtime_type(&self) -> String { "poison".into() }
+        fn runtime_type(&self) -> String {
+            "poison".into()
+        }
         // execute_command 允许通过（RemoteRuntime 用它执行 SSH 命令）
-        async fn execute_command(&self, _c: &str, _t: u64) -> Result<(String,String,i32), String> { Err("ssh not configured".into()) }
+        async fn execute_command(
+            &self,
+            _c: &str,
+            _t: u64,
+        ) -> Result<(String, String, i32), String> {
+            Err("ssh not configured".into())
+        }
         // 以下方法如果有任何透传，说明 RemoteRuntime/SandboxRuntime 有安全漏洞
-        async fn read_file(&self, _p: &str) -> Result<String, String> { panic!("unexpected local read_file") }
-        async fn write_file(&self, _p: &str, _c: &str) -> Result<(), String> { panic!("unexpected local write_file") }
-        async fn edit_file(&self, _p: &str, _o: &str, _n: &str) -> Result<(), String> { panic!("unexpected local edit_file") }
-        async fn path_exists(&self, _p: &str) -> bool { panic!("unexpected local path_exists") }
-        async fn list_dir(&self, _p: &str) -> Result<Vec<String>, String> { panic!("unexpected local list_dir") }
-        async fn remove_file(&self, _p: &str) -> Result<(), String> { panic!("unexpected local remove_file") }
-        async fn grep_search(&self, _p: &str, _path: &str) -> Result<Vec<String>, String> { panic!("unexpected local grep_search") }
-        async fn find_files(&self, _p: &str, _n: &str) -> Result<Vec<String>, String> { panic!("unexpected local find_files") }
-        async fn file_info(&self, _p: &str) -> Result<Vec<FileEntry>, String> { panic!("unexpected local file_info") }
-        async fn spawn_process(&self, _r: SpawnProcessRequest) -> Result<ProcessHandle, String> { panic!("unexpected local spawn_process") }
-        async fn kill_process(&self, _p: u32) -> Result<(), String> { panic!("unexpected local kill_process") }
-        async fn send_stdin(&self, _p: u32, _i: &str) -> Result<(), String> { panic!("unexpected local send_stdin") }
-        async fn check_command(&self, _c: &str) -> Result<(), String> { Ok(()) }
-        async fn spawn_worker(&self, _r: SpawnWorkerRequest) -> Result<SpawnWorkerResponse, String> { Err("no".into()) }
-        async fn send_to_worker(&self, _i: &str, _t: &str) -> Result<(), String> { Err("no".into()) }
-        async fn resume_worker(&self, _i: &str, _t: &str) -> Result<String, String> { Err("no".into()) }
-        async fn await_worker(&self, _i: &str) -> Result<String, String> { Err("no".into()) }
-        async fn channel_send(&self, _c: &str, _t: &str) -> Result<(), String> { Err("no".into()) }
-        async fn kill_worker(&self, _i: &str) -> Result<(), String> { Err("no".into()) }
+        async fn read_file(&self, _p: &str) -> Result<String, String> {
+            panic!("unexpected local read_file")
+        }
+        async fn write_file(&self, _p: &str, _c: &str) -> Result<(), String> {
+            panic!("unexpected local write_file")
+        }
+        async fn edit_file(&self, _p: &str, _o: &str, _n: &str) -> Result<(), String> {
+            panic!("unexpected local edit_file")
+        }
+        async fn path_exists(&self, _p: &str) -> bool {
+            panic!("unexpected local path_exists")
+        }
+        async fn list_dir(&self, _p: &str) -> Result<Vec<String>, String> {
+            panic!("unexpected local list_dir")
+        }
+        async fn remove_file(&self, _p: &str) -> Result<(), String> {
+            panic!("unexpected local remove_file")
+        }
+        async fn grep_search(&self, _p: &str, _path: &str) -> Result<Vec<String>, String> {
+            panic!("unexpected local grep_search")
+        }
+        async fn find_files(&self, _p: &str, _n: &str) -> Result<Vec<String>, String> {
+            panic!("unexpected local find_files")
+        }
+        async fn file_info(&self, _p: &str) -> Result<Vec<FileEntry>, String> {
+            panic!("unexpected local file_info")
+        }
+        async fn spawn_process(&self, _r: SpawnProcessRequest) -> Result<ProcessHandle, String> {
+            panic!("unexpected local spawn_process")
+        }
+        async fn kill_process(&self, _p: u32) -> Result<(), String> {
+            panic!("unexpected local kill_process")
+        }
+        async fn send_stdin(&self, _p: u32, _i: &str) -> Result<(), String> {
+            panic!("unexpected local send_stdin")
+        }
+        async fn check_command(&self, _c: &str) -> Result<(), String> {
+            Ok(())
+        }
+        async fn spawn_worker(
+            &self,
+            _r: SpawnWorkerRequest,
+        ) -> Result<SpawnWorkerResponse, String> {
+            Err("no".into())
+        }
+        async fn send_to_worker(&self, _i: &str, _t: &str) -> Result<(), String> {
+            Err("no".into())
+        }
+        async fn resume_worker(&self, _i: &str, _t: &str) -> Result<String, String> {
+            Err("no".into())
+        }
+        async fn await_worker(&self, _i: &str) -> Result<String, String> {
+            Err("no".into())
+        }
+        async fn channel_send(&self, _c: &str, _t: &str) -> Result<(), String> {
+            Err("no".into())
+        }
+        async fn kill_worker(&self, _i: &str) -> Result<(), String> {
+            Err("no".into())
+        }
     }
 
     #[tokio::test]
@@ -1586,28 +2137,41 @@ mod tests {
         // execute_command SHOULD use inner (to run the SSH command).
         // spawn_process/kill_process/send_stdin must NOT fall through.
         let remote = RemoteRuntime::new(PoisonRuntime, "u", "h", 22, "", "");
-        
+
         // execute_command calls inner (SSH execution) — PoisonRuntime panics here
         let r = remote.execute_command("echo ok", 5).await;
         // PoisonRuntime panics, so we expect an error (not a successful local execution)
         assert!(r.is_err() || r.is_ok());
 
         // spawn_process must NOT fall through to inner
-        let spawn = remote.spawn_process(SpawnProcessRequest {
-            command: "sleep 1".into(), timeout_secs: 1, background: false, log_path: None,
-        }).await;
+        let spawn = remote
+            .spawn_process(SpawnProcessRequest {
+                command: "sleep 1".into(),
+                timeout_secs: 1,
+                background: false,
+                log_path: None,
+            })
+            .await;
         assert!(spawn.is_err(), "remote should reject spawn_process");
-        assert!(spawn.unwrap_err().contains("not supported"), "err should mention not supported");
+        assert!(
+            spawn.unwrap_err().contains("not supported"),
+            "err should mention not supported"
+        );
     }
 
     #[tokio::test]
     async fn sandbox_runtime_rejects_local_spawn_and_kill() {
         // SandboxRuntime must NOT fall through to inner for spawn/kill/send_stdin
         let sb = SandboxRuntime::new(PoisonRuntime, "readonly", "/tmp");
-        
-        let spawn = sb.spawn_process(SpawnProcessRequest {
-            command: "sleep 1".into(), timeout_secs: 1, background: false, log_path: None,
-        }).await;
+
+        let spawn = sb
+            .spawn_process(SpawnProcessRequest {
+                command: "sleep 1".into(),
+                timeout_secs: 1,
+                background: false,
+                log_path: None,
+            })
+            .await;
         assert!(spawn.is_err());
         let spawn_err = spawn.unwrap_err();
         assert!(spawn_err.contains("does not support") || spawn_err.contains("not supported"));
@@ -1617,7 +2181,7 @@ mod tests {
     async fn secured_runtime_set_guard_mode() {
         let inner = LocalRuntime::new();
         let guard = crate::command_guard::CommandGuard::with_mode(
-            crate::command_guard::GuardMode::Whitelist
+            crate::command_guard::GuardMode::Whitelist,
         );
         let rt = SecuredRuntime::new(inner).with_command_guard(guard);
 

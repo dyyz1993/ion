@@ -104,7 +104,9 @@ pub fn host_running() -> Option<u32> {
         let content = std::fs::read_to_string(&old_pid_path).ok()?;
         let pid: u32 = content.trim().parse().ok()?;
         let rc = libc_kill(pid, 0);
-        if rc == 0 { Some(pid) } else {
+        if rc == 0 {
+            Some(pid)
+        } else {
             let _ = std::fs::remove_file(&old_pid_path);
             None
         }
@@ -112,7 +114,9 @@ pub fn host_running() -> Option<u32> {
         let content = std::fs::read_to_string(&pid_path).ok()?;
         let pid: u32 = content.trim().parse().ok()?;
         let rc = libc_kill(pid, 0);
-        if rc == 0 { Some(pid) } else {
+        if rc == 0 {
+            Some(pid)
+        } else {
             let _ = std::fs::remove_file(&pid_path);
             None
         }
@@ -132,7 +136,9 @@ fn libc_kill(pid: u32, sig: i32) -> i32 {
 }
 
 #[cfg(not(unix))]
-fn libc_kill(_pid: u32, _sig: i32) -> i32 { -1 }
+fn libc_kill(_pid: u32, _sig: i32) -> i32 {
+    -1
+}
 
 // ---------------------------------------------------------------------------
 // Agent 目录（核心配置）
@@ -297,9 +303,7 @@ pub fn bash_processes_path(cwd: &str, session_id: &str) -> PathBuf {
 /// ~/.ion/agent/extensions-data/<extName>/
 /// 扩展的全局数据（globalDataDir）— ① 全局维度
 pub fn global_data_dir(ext_name: &str) -> PathBuf {
-    agent_dir()
-        .join("extensions-data")
-        .join(ext_name)
+    agent_dir().join("extensions-data").join(ext_name)
 }
 
 /// ~/.ion/agent/project-data/<git_key>/<extName>/
@@ -326,9 +330,7 @@ pub fn cwd_data_dir(cwd: &str, ext_name: &str) -> PathBuf {
 /// ~/.ion/agent/projects/<hash>--<name>/
 /// 项目用户状态（getProjectUserStateDir）
 pub fn project_user_state_dir(project_path: &str) -> PathBuf {
-    agent_dir()
-        .join("projects")
-        .join(encode_path(project_path))
+    agent_dir().join("projects").join(encode_path(project_path))
 }
 
 /// ~/.ion/agent/projects/<hash>--<name>/skills/
@@ -359,7 +361,10 @@ pub fn extensions_dir() -> PathBuf {
 pub fn extensions_size() -> Result<u64, String> {
     let dir = extensions_dir();
     if !dir.exists() {
-        return Err(format!("extensions directory does not exist: {}", dir.display()));
+        return Err(format!(
+            "extensions directory does not exist: {}",
+            dir.display()
+        ));
     }
     let mut total: u64 = 0;
     walk_dir(&dir, &mut total).map_err(|e| format!("IO error: {}", e))?;
@@ -445,9 +450,7 @@ pub fn input_overflow_path(uuid: &str) -> PathBuf {
 
 /// ~/.ion/agent/tmp/ion-tool-results/<slug>/
 pub fn tool_results_dir(slug: &str) -> PathBuf {
-    tmp_dir()
-        .join("ion-tool-results")
-        .join(slug)
+    tmp_dir().join("ion-tool-results").join(slug)
 }
 
 // ---------------------------------------------------------------------------
@@ -650,9 +653,7 @@ pub fn system_input_overflow(uuid: &str) -> PathBuf {
 
 /// <tmp>/ion-tool-results/<slug>/  (工具结果预算溢出)
 pub fn system_tool_results_dir(slug: &str) -> PathBuf {
-    system_tmp_dir()
-        .join("ion-tool-results")
-        .join(slug)
+    system_tmp_dir().join("ion-tool-results").join(slug)
 }
 
 /// <tmp>/ion-clipboard-<uuid>.<ext>  (剪贴板粘贴图片)
@@ -789,7 +790,10 @@ mod tests {
         // bash 进程存储应在 session 维度下（④ Session 级别隔离）
         let p = bash_processes_path("/tmp/proj", "sess_001");
         assert!(p.to_str().unwrap().ends_with("processes.json"));
-        assert!(p.to_str().unwrap().contains("sess_001"), "应含 session_id 做隔离");
+        assert!(
+            p.to_str().unwrap().contains("sess_001"),
+            "应含 session_id 做隔离"
+        );
         assert!(p.to_str().unwrap().contains("bash"));
     }
 
@@ -816,7 +820,12 @@ mod tests {
     #[test]
     fn project_has_rules_and_memory() {
         assert!(project_rules_dir("/p").to_str().unwrap().ends_with("rules"));
-        assert!(project_memory_dir("/p").to_str().unwrap().ends_with("memory"));
+        assert!(
+            project_memory_dir("/p")
+                .to_str()
+                .unwrap()
+                .ends_with("memory")
+        );
     }
 
     #[test]
@@ -849,12 +858,20 @@ mod tests {
     #[test]
     fn extensions_size_returns_err_if_dir_missing() {
         // Use a non-existent temp path by overriding the agent dir
-        let tmp = std::env::temp_dir().join(format!("ion_test_ext_size_missing_{}", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("ion_test_ext_size_missing_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
-        unsafe { std::env::set_var("ION_AGENT_DIR", tmp.to_str().unwrap()); }
+        unsafe {
+            std::env::set_var("ION_AGENT_DIR", tmp.to_str().unwrap());
+        }
         let result = extensions_size();
-        unsafe { std::env::remove_var("ION_AGENT_DIR"); }
-        assert!(result.is_err(), "extensions_size should return Err if dir missing");
+        unsafe {
+            std::env::remove_var("ION_AGENT_DIR");
+        }
+        assert!(
+            result.is_err(),
+            "extensions_size should return Err if dir missing"
+        );
     }
 
     #[test]
@@ -864,16 +881,20 @@ mod tests {
         std::fs::create_dir_all(&ext_dir).unwrap();
 
         // Create known files with known sizes
-        std::fs::write(ext_dir.join("a.txt"), "hello").unwrap();             // 5 bytes
-        std::fs::write(ext_dir.join("b.txt"), "world!").unwrap();             // 6 bytes
+        std::fs::write(ext_dir.join("a.txt"), "hello").unwrap(); // 5 bytes
+        std::fs::write(ext_dir.join("b.txt"), "world!").unwrap(); // 6 bytes
         std::fs::create_dir(ext_dir.join("sub")).unwrap();
         std::fs::write(ext_dir.join("sub").join("c.txt"), "test123").unwrap(); // 7 bytes
 
         let expected: u64 = 5 + 6 + 7;
 
-        unsafe { std::env::set_var("ION_AGENT_DIR", tmp.to_str().unwrap()); }
+        unsafe {
+            std::env::set_var("ION_AGENT_DIR", tmp.to_str().unwrap());
+        }
         let size = extensions_size().expect("extensions_size should succeed");
-        unsafe { std::env::remove_var("ION_AGENT_DIR"); }
+        unsafe {
+            std::env::remove_var("ION_AGENT_DIR");
+        }
 
         assert_eq!(size, expected, "extensions_size should sum all file sizes");
 
@@ -900,7 +921,10 @@ mod tests {
     #[test]
     fn git_project_root_returns_main_repo() {
         // 当前目录（ion 项目本身）是 git 仓库
-        let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         let root = git_project_root(&cwd);
         assert!(root.is_some(), "git_project_root 应返回 Some");
         let root = root.unwrap();
@@ -915,7 +939,10 @@ mod tests {
     #[test]
     fn git_project_root_worktree_shares_main() {
         // 创建临时 worktree，验证 git_project_root 返回主仓库根
-        let main_cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+        let main_cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         let main_root = git_project_root(&main_cwd).expect("主仓库应有 root");
 
         let wt_path = format!("/tmp/ion_wt_root_test_{}", std::process::id());
@@ -946,7 +973,10 @@ mod tests {
     #[test]
     fn project_key_git_worktree_consistency() {
         // project_key_git 在主仓库和 worktree 下应返回相同 hash
-        let main_cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+        let main_cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         let main_key = project_key_git(&main_cwd);
         assert_eq!(main_key.len(), 16, "project_key_git 应返回 16 位 hex");
 
@@ -972,7 +1002,10 @@ mod tests {
     #[test]
     fn os_tmp_dir_returns_existing_path() {
         let tmp = os_tmp_dir();
-        assert!(tmp.exists(), "os_tmp_dir should return an existing directory");
+        assert!(
+            tmp.exists(),
+            "os_tmp_dir should return an existing directory"
+        );
     }
 
     #[test]
@@ -985,24 +1018,28 @@ mod tests {
         // 合并成一个测试避免并行竞态（两个测试操作同一个 env var）
         // 步骤 1：未设置 ION_PROJECT_ROOT 时，回退到 current_dir
         // SAFETY: 测试单线程内顺序操作 env var
-        unsafe { std::env::remove_var("ION_PROJECT_ROOT"); }
+        unsafe {
+            std::env::remove_var("ION_PROJECT_ROOT");
+        }
         let root = project_root_for_config();
         let cwd = std::env::current_dir().unwrap();
-        assert_eq!(
-            root, cwd,
-            "未设 ION_PROJECT_ROOT 时应回退到 current_dir"
-        );
+        assert_eq!(root, cwd, "未设 ION_PROJECT_ROOT 时应回退到 current_dir");
 
         // 步骤 2：设置 ION_PROJECT_ROOT 后，优先用它
         let test_path = "/tmp/ion_config_root_test_xyz";
-        unsafe { std::env::set_var("ION_PROJECT_ROOT", test_path); }
+        unsafe {
+            std::env::set_var("ION_PROJECT_ROOT", test_path);
+        }
         let root = project_root_for_config();
         assert_eq!(
-            root, PathBuf::from(test_path),
+            root,
+            PathBuf::from(test_path),
             "设置 ION_PROJECT_ROOT 后应优先用它"
         );
         // 清理
-        unsafe { std::env::remove_var("ION_PROJECT_ROOT"); }
+        unsafe {
+            std::env::remove_var("ION_PROJECT_ROOT");
+        }
     }
 
     #[test]

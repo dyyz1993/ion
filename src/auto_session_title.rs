@@ -75,19 +75,20 @@ impl Extension for AutoSessionTitle {
         }
 
         // Find the first user message
-        let first_user_msg = ctx.messages.iter().find_map(|msg| {
-            match msg {
-                crate::agent::messages::Message::User(u) => {
-                    let text = u.content.iter().filter_map(|b| {
-                        match b {
-                            crate::agent::messages::ContentBlock::Text(t) => Some(t.text.as_str()),
-                            _ => None,
-                        }
-                    }).collect::<Vec<_>>().join(" ");
-                    if text.is_empty() { None } else { Some(text) }
-                }
-                _ => None,
+        let first_user_msg = ctx.messages.iter().find_map(|msg| match msg {
+            crate::agent::messages::Message::User(u) => {
+                let text = u
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        crate::agent::messages::ContentBlock::Text(t) => Some(t.text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if text.is_empty() { None } else { Some(text) }
             }
+            _ => None,
         });
 
         if let Some(text) = first_user_msg {

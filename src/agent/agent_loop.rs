@@ -1,8 +1,8 @@
 use super::compact::{self, CompactConfig};
-use crate::retry::RetryConfig;
 use super::error::{AgentError, AgentResult};
 use super::extension::{ExtensionRegistry, TurnContext};
 use super::tool::{Tool, ToolRegistry};
+use crate::retry::RetryConfig;
 use ion_provider::StreamOptions;
 use ion_provider::registry::{self, ApiRegistry};
 use ion_provider::types::*;
@@ -252,10 +252,13 @@ impl Agent {
         self.tools.remove(name);
     }
 
-
     /// Return the names of all registered tools.
     pub fn list_tool_names(&self) -> Vec<String> {
-        self.tools.tool_defs().into_iter().map(|td| td.name).collect()
+        self.tools
+            .tool_defs()
+            .into_iter()
+            .map(|td| td.name)
+            .collect()
     }
 
     pub fn with_extensions(mut self, ext: ExtensionRegistry) -> Self {
@@ -293,9 +296,12 @@ impl Agent {
     /// 设 stopped=true + 唤醒 check_pause → 返回 AgentError::Aborted → 内循环 break。
     /// 同时 cancel HTTP 请求 token（真正关 TCP 连接，不等 200ms 轮询）。
     pub fn stop(&self) {
-        self.stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = self.pause_tx.send(true);
-        if let Ok(mut guard) = self.http_cancel.lock() && let Some(c) = guard.take() {
+        if let Ok(mut guard) = self.http_cancel.lock()
+            && let Some(c) = guard.take()
+        {
             c.cancel();
         }
     }
@@ -303,12 +309,14 @@ impl Agent {
     /// 设 interrupted=true，工具执行 select! 立即 break 返回 Interrupted，
     /// agent 不退出（继续下一 turn → drain steering → 注入 steer 消息）。
     pub fn interrupt(&self) {
-        self.interrupted.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.interrupted
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
     /// consume-once 检查中断（对齐 pi 重装 interruptController）。
     /// 返回 true 表示本轮被 interrupt 过，后续应 drain steering + continue。
     pub fn consume_interrupt(&self) -> bool {
-        self.interrupted.swap(false, std::sync::atomic::Ordering::SeqCst)
+        self.interrupted
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
     pub fn is_running(&self) -> bool {
         self.running
@@ -377,7 +385,12 @@ impl Agent {
     /// 第一个 index 的位置放 BranchSummary，其余移除。
     /// 直接改 self.messages → token 统计/compaction 自动正确。
     /// 触发 on_entries_invalidated 钩子通知扩展。
-    pub async fn mark_summarized(&mut self, indices: &[usize], entry_ids: &[String], summary: &str) {
+    pub async fn mark_summarized(
+        &mut self,
+        indices: &[usize],
+        entry_ids: &[String],
+        summary: &str,
+    ) {
         if indices.is_empty() {
             return;
         }
@@ -394,15 +407,19 @@ impl Agent {
 
         // 在原第一个位置插入 BranchSummary
         let insert_pos = first_pos.min(self.messages.len());
-        self.messages.insert(insert_pos, Message::BranchSummary(BranchSummaryMessage {
-            role: "branchSummary".into(),
-            summary: summary.into(),
-            from_id: entry_ids.first().cloned().unwrap_or_default(),
-            timestamp: now_ms(),
-        }));
+        self.messages.insert(
+            insert_pos,
+            Message::BranchSummary(BranchSummaryMessage {
+                role: "branchSummary".into(),
+                summary: summary.into(),
+                from_id: entry_ids.first().cloned().unwrap_or_default(),
+                timestamp: now_ms(),
+            }),
+        );
 
         for eid in entry_ids {
-            self.summarized_entry_ids.insert(eid.clone(), summary.into());
+            self.summarized_entry_ids
+                .insert(eid.clone(), summary.into());
         }
         // 通知扩展
         let _ = self.extensions.on_entries_invalidated(entry_ids).await;
@@ -435,7 +452,8 @@ impl Agent {
     /// 用 LLM 生成一批消息的摘要（供 summarize_entries RPC 在未传 summary 时调用）。
     /// 复用 compact::make_llm_summarizer 的 LLM 调用链路。
     pub async fn summarize_messages_llm(&self, indices: &[usize]) -> AgentResult<String> {
-        let messages_to_summarize: Vec<Message> = indices.iter()
+        let messages_to_summarize: Vec<Message> = indices
+            .iter()
             .filter(|&&i| i < self.messages.len())
             .map(|&i| self.messages[i].clone())
             .collect();
@@ -445,7 +463,11 @@ impl Agent {
         }
 
         let summarizer_model = self.compact_model.as_ref().unwrap_or(&self.model);
-        let summarizer = compact::make_llm_summarizer(self.registry.clone(), summarizer_model.clone(), self.config.api_key.clone());
+        let summarizer = compact::make_llm_summarizer(
+            self.registry.clone(),
+            summarizer_model.clone(),
+            self.config.api_key.clone(),
+        );
         summarizer(&messages_to_summarize).await
     }
 
@@ -590,26 +612,45 @@ impl Agent {
 
         // session 分支/回滚钩子（与 run() 循环里一致，CLI call_tool 直调时也触发）
         if name == "branch_session" {
-            let is_rollback = args.get("is_rollback").and_then(|v| v.as_bool()).unwrap_or(false);
-            let target_leaf = args.get("from_entry").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let branch_name = args.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let is_rollback = args
+                .get("is_rollback")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let target_leaf = args
+                .get("from_entry")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let branch_name = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             let switch_ctx = super::extension::SessionSwitchContext {
-                action: if is_rollback { "rollback".into() } else { "branch".into() },
+                action: if is_rollback {
+                    "rollback".into()
+                } else {
+                    "branch".into()
+                },
                 target_leaf_id: target_leaf,
                 source_leaf_id: None,
                 branch_name,
             };
-            self.extensions.on_session_before_switch(&switch_ctx).await?;
+            self.extensions
+                .on_session_before_switch(&switch_ctx)
+                .await?;
         }
 
-        let tool = self.tools.get(name)
+        let tool = self
+            .tools
+            .get(name)
             .ok_or_else(|| AgentError::Tool(format!("tool not found: {name}")))?;
 
         // 增量 save 钩子：工具执行前，让扩展有机会 save 当前 messages。
         // 解决 fork 阻塞问题：LLM 调 skill(fork) → spawn_worker 阻塞 → agent.run 不返回 →
         // 进程被杀时 messages 全丢。这个钩子在 tool.execute 前触发，至少把 user prompt +
         // assistant tool call decision 落盘。
-        self.extensions.on_before_tool_execute(name, &args, &self.messages).await?;
+        self.extensions
+            .on_before_tool_execute(name, &args, &self.messages)
+            .await?;
 
         tool.execute(args, &*self.runtime).await
     }
@@ -621,21 +662,26 @@ impl Agent {
         method: &str,
         params: serde_json::Value,
     ) -> AgentResult<serde_json::Value> {
-        self.extensions.extension_rpc(extension_name, method, params).await
+        self.extensions
+            .extension_rpc(extension_name, method, params)
+            .await
     }
 
     pub async fn run(&mut self, prompt: impl Into<String>) -> AgentResult<()> {
         self.running = true;
-        self.stopped.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.stopped
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         // turn_index 是 agent loop 内部计数器（每次 run 从 0 开始，用于 max_turns 限制）
         // 快照用独立的全局唯一 turnId（ts_xxxxxx），不依赖 turn_index
         self.turn_index = 0;
 
         // ── 生命周期顺序 (对齐 pi) ──
         // 1. session_start (会话启动)
-        self.extensions.on_session_start(&super::extension::SessionContext {
-            reason: "startup".into(),
-        }).await?;
+        self.extensions
+            .on_session_start(&super::extension::SessionContext {
+                reason: "startup".into(),
+            })
+            .await?;
 
         // 2. model_select (模型选择，扩展可覆盖)
         let mut model_ctx = super::extension::ModelSelectContext {
@@ -650,8 +696,10 @@ impl Agent {
         if model_ctx.new_model != self.model.id || model_ctx.new_provider != self.model.provider {
             let registry = ion_provider::registry::ModelRegistry::new();
             if let Some(new_model) = registry.find_model(&model_ctx.new_model) {
-                eprintln!("[model] extension changed model: {} → {}",
-                    self.model.id, new_model.id);
+                eprintln!(
+                    "[model] extension changed model: {} → {}",
+                    self.model.id, new_model.id
+                );
                 self.model = new_model.clone();
             }
         }
@@ -695,9 +743,11 @@ impl Agent {
 
         let ctx = self.build_ctx();
         self.extensions.on_agent_end(&ctx).await?;
-        self.extensions.on_session_shutdown(&super::extension::SessionContext {
-            reason: "quit".into(),
-        }).await?;
+        self.extensions
+            .on_session_shutdown(&super::extension::SessionContext {
+                reason: "quit".into(),
+            })
+            .await?;
         result
     }
 
@@ -710,24 +760,43 @@ impl Agent {
             .unwrap_or(false);
         // 文件日志（eprintln 去 stderr 文件，不确定能不能看到；直接写 /tmp 调试）
         let _ = std::fs::OpenOptions::new()
-            .create(true).append(true)
+            .create(true)
+            .append(true)
             .open("/tmp/agent_loop_debug.log")
-            .and_then(|mut f| std::io::Write::write_all(&mut f,
-                format!("[outer_loop] ENTER auto_continue={} env={}\n",
-                    auto_continue,
-                    std::env::var("ION_AUTO_CONTINUE").unwrap_or_default()).as_bytes()));
+            .and_then(|mut f| {
+                std::io::Write::write_all(
+                    &mut f,
+                    format!(
+                        "[outer_loop] ENTER auto_continue={} env={}\n",
+                        auto_continue,
+                        std::env::var("ION_AUTO_CONTINUE").unwrap_or_default()
+                    )
+                    .as_bytes(),
+                )
+            });
         let auto_continue_limit = std::env::var("ION_AUTO_CONTINUE_LIMIT")
-            .ok().and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(30);  // 默认最多自动继续 30 轮（够 workflow 10 stage 用）
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(30); // 默认最多自动继续 30 轮（够 workflow 10 stage 用）
 
         for outer_i in 0..self.config.max_outer_iterations.max(auto_continue_limit) {
             let reason = self.inner_loop().await?;
             let _ = std::fs::OpenOptions::new()
-                .create(true).append(true)
+                .create(true)
+                .append(true)
                 .open("/tmp/agent_loop_debug.log")
-                .and_then(|mut f| std::io::Write::write_all(&mut f,
-                    format!("[outer_loop] iter={} reason={:?} queue_len={}\n",
-                        outer_i, reason, self.follow_up_queue.len()).as_bytes()));
+                .and_then(|mut f| {
+                    std::io::Write::write_all(
+                        &mut f,
+                        format!(
+                            "[outer_loop] iter={} reason={:?} queue_len={}\n",
+                            outer_i,
+                            reason,
+                            self.follow_up_queue.len()
+                        )
+                        .as_bytes(),
+                    )
+                });
             match reason {
                 StopReason::Error | StopReason::Aborted => return Ok(()),
                 _ => {}
@@ -738,12 +807,15 @@ impl Agent {
                 if auto_continue && outer_i < auto_continue_limit {
                     // 检查 workflow 是否已完成：跑 ION_AUTO_CONTINUE_GATE 环境变量指定的 gate 命令
                     // 如果输出含 ION_AUTO_CONTINUE_EXPECTED（默认 ALL_DONE），停止 auto-continue
-                    let workflow_done = std::env::var("ION_AUTO_CONTINUE_GATE").ok()
+                    let workflow_done = std::env::var("ION_AUTO_CONTINUE_GATE")
+                        .ok()
                         .filter(|s| !s.is_empty())
                         .and_then(|gate_cmd| {
                             std::process::Command::new("bash")
-                                .arg("-c").arg(&gate_cmd)
-                                .output().ok()
+                                .arg("-c")
+                                .arg(&gate_cmd)
+                                .output()
+                                .ok()
                                 .map(|o| {
                                     let out = String::from_utf8_lossy(&o.stdout);
                                     let expected = std::env::var("ION_AUTO_CONTINUE_EXPECTED")
@@ -753,10 +825,14 @@ impl Agent {
                         })
                         .unwrap_or(false);
                     if workflow_done {
-                        tracing::info!("outer {outer_i}: auto-continue gate passed (workflow done), stopping");
+                        tracing::info!(
+                            "outer {outer_i}: auto-continue gate passed (workflow done), stopping"
+                        );
                         return Ok(());
                     }
-                    tracing::info!("outer {outer_i}: auto-continue (ION_AUTO_CONTINUE=1), injecting follow-up");
+                    tracing::info!(
+                        "outer {outer_i}: auto-continue (ION_AUTO_CONTINUE=1), injecting follow-up"
+                    );
                     self.follow_up_queue.push_back(Message::User(UserMessage {
                         role: "user".into(),
                         content: vec![ContentBlock::Text(TextContent {
@@ -772,18 +848,28 @@ impl Agent {
                     // Wait up to 30 minutes for async follow_up before giving up.
                     // This is critical for evolver agent: bash_run(background=true) sends
                     // follow_up when the process completes, but it arrives async.
-                    if std::env::var("ION_WAIT_BACKGROUND").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false) {
-                        tracing::info!("outer {outer_i}: follow_up empty, waiting for async background follow_up (ION_WAIT_BACKGROUND=1)");
+                    if std::env::var("ION_WAIT_BACKGROUND")
+                        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                        .unwrap_or(false)
+                    {
+                        tracing::info!(
+                            "outer {outer_i}: follow_up empty, waiting for async background follow_up (ION_WAIT_BACKGROUND=1)"
+                        );
                         // Check every 5s if follow_up_queue got messages (from follow_up_rx drain in main loop)
-                        for _wait in 0..360 { // 360 * 5s = 30 min max
+                        for _wait in 0..360 {
+                            // 360 * 5s = 30 min max
                             if !self.follow_up_queue.is_empty() {
-                                tracing::info!("outer {outer_i}: async follow_up received after waiting");
+                                tracing::info!(
+                                    "outer {outer_i}: async follow_up received after waiting"
+                                );
                                 break;
                             }
                             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                         }
                         if self.follow_up_queue.is_empty() {
-                            tracing::info!("outer {outer_i}: no async follow_up after 30 min, stopping");
+                            tracing::info!(
+                                "outer {outer_i}: no async follow_up after 30 min, stopping"
+                            );
                             return Ok(());
                         }
                     } else {
@@ -815,11 +901,11 @@ impl Agent {
         // + await each + reviewer + merger + publisher) easily exhausts max_turns before
         // the pipeline completes, leaving issues unresolved.
         const BLOCKING_TOOLS: &[&str] = &[
-            "spawn_worker",    // create subworker (wait=true blocks)
-            "await_worker",    // explicitly wait for subworker
-            "resume_worker",   // resume a paused subworker conversation
-            "send_to_worker",  // send message to async peer (fire-and-forget but conceptually "wait")
-            "channel_send",    // broadcast to channel (coordination, not active work)
+            "spawn_worker",   // create subworker (wait=true blocks)
+            "await_worker",   // explicitly wait for subworker
+            "resume_worker",  // resume a paused subworker conversation
+            "send_to_worker", // send message to async peer (fire-and-forget but conceptually "wait")
+            "channel_send",   // broadcast to channel (coordination, not active work)
         ];
 
         // Use manual counter so we can skip increment for blocking tools.
@@ -857,22 +943,23 @@ impl Agent {
                         </remind>",
                         remaining
                     );
-                    self.messages.push(Message::Custom(ion_provider::types::CustomMessage {
-                        role: "custom".into(),
-                        custom_type: "remind".into(),
-                        content: ion_provider::types::CustomContent::Text(remind_text),
-                        display: true,
-                        details: Some(serde_json::json!({
-                            "remindType": "budget",
-                            "remaining": remaining,
-                            "maxTurns": max_turns,
-                            "currentTurn": turn,
-                        })),
-                        timestamp: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs() as i64,
-                    }));
+                    self.messages
+                        .push(Message::Custom(ion_provider::types::CustomMessage {
+                            role: "custom".into(),
+                            custom_type: "remind".into(),
+                            content: ion_provider::types::CustomContent::Text(remind_text),
+                            display: true,
+                            details: Some(serde_json::json!({
+                                "remindType": "budget",
+                                "remaining": remaining,
+                                "maxTurns": max_turns,
+                                "currentTurn": turn,
+                            })),
+                            timestamp: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs() as i64,
+                        }));
                 }
             }
 
@@ -887,7 +974,11 @@ impl Agent {
             // 注入额外工作目录（add_dir 添加的，让 LLM 知道有哪些目录可访问）
             let extra = self.get_extra_cwds();
             if !extra.is_empty() {
-                let dirs_list = extra.iter().map(|d| format!("  - {d}")).collect::<Vec<_>>().join("\n");
+                let dirs_list = extra
+                    .iter()
+                    .map(|d| format!("  - {d}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 sys_prompt.push_str(&format!(
                     "\n\n## Additional Working Directories\n\
                      The following directories have been added to your workspace (via add_dir). \
@@ -921,15 +1012,19 @@ impl Agent {
             let options = StreamOptions {
                 max_tokens: Some(self.model.max_tokens),
                 api_key: self.config.api_key.clone(),
-                reasoning: self.config.thinking.as_ref().and_then(|t| match t.as_str() {
-                    "off" => Some(ion_provider::ThinkingLevel::Off),
-                    "minimal" => Some(ion_provider::ThinkingLevel::Minimal),
-                    "low" => Some(ion_provider::ThinkingLevel::Low),
-                    "medium" => Some(ion_provider::ThinkingLevel::Medium),
-                    "high" => Some(ion_provider::ThinkingLevel::High),
-                    "xhigh" => Some(ion_provider::ThinkingLevel::XHigh),
-                    _ => None,
-                }),
+                reasoning: self
+                    .config
+                    .thinking
+                    .as_ref()
+                    .and_then(|t| match t.as_str() {
+                        "off" => Some(ion_provider::ThinkingLevel::Off),
+                        "minimal" => Some(ion_provider::ThinkingLevel::Minimal),
+                        "low" => Some(ion_provider::ThinkingLevel::Low),
+                        "medium" => Some(ion_provider::ThinkingLevel::Medium),
+                        "high" => Some(ion_provider::ThinkingLevel::High),
+                        "xhigh" => Some(ion_provider::ThinkingLevel::XHigh),
+                        _ => None,
+                    }),
                 timeout_ms: None,
                 max_retries: Some(self.config.max_retries),
                 response_format: self.config.response_format.clone(),
@@ -944,10 +1039,14 @@ impl Agent {
                     turn += 1;
 
                     // Extract token usage from the Done event
-                    let usage_from_done = events.iter().rev().find_map(|e| match e {
-                        StreamEvent::Done { message, .. } => Some(message.usage.clone()),
-                        _ => None,
-                    }).unwrap_or_default();
+                    let usage_from_done = events
+                        .iter()
+                        .rev()
+                        .find_map(|e| match e {
+                            StreamEvent::Done { message, .. } => Some(message.usage.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
 
                     // Hooks: message streaming (already emitted in real-time in stream_with_retry)
                     // Just collect the text and emit final message_end here.
@@ -972,7 +1071,9 @@ impl Agent {
 
                     // Hook: message_end
                     if has_text {
-                        self.extensions.on_message_end("assistant", &text, &usage_from_done).await?;
+                        self.extensions
+                            .on_message_end("assistant", &text, &usage_from_done)
+                            .await?;
                     }
 
                     let mut content_blocks: Vec<AssistantContentBlock> = Vec::new();
@@ -1007,7 +1108,11 @@ impl Agent {
                         // 确保最终总结（没有后续工具调用的 assistant message）也会 save。
                         // 解决 fork 子 Worker 被杀时最终总结丢失的问题。
                         self.extensions
-                            .on_before_tool_execute("___assistant_message_saved", &serde_json::Value::Null, &self.messages)
+                            .on_before_tool_execute(
+                                "___assistant_message_saved",
+                                &serde_json::Value::Null,
+                                &self.messages,
+                            )
                             .await?;
                     }
 
@@ -1024,12 +1129,19 @@ impl Agent {
                         .await?;
 
                     // ── turn_summary 落盘：每一轮 turn 结束时追加结构化摘要 ──
-                    self.persist_turn_summary(turn, &events, &stop_reason, turn_start.elapsed().as_millis() as u64);
+                    self.persist_turn_summary(
+                        turn,
+                        &events,
+                        &stop_reason,
+                        turn_start.elapsed().as_millis() as u64,
+                    );
 
                     // ── 反幻觉重试：如果 LLM 没调任何工具就返回 → 重试 ──
                     // LLM 可能说"已创建文件"但实际没调 write 工具。
                     // 检测：stop_reason=Stop（不是 ToolUse）+ 没有任何 ToolCallEnd 事件
-                    let tool_calls_present = events.iter().any(|e| matches!(e, StreamEvent::ToolCallEnd { .. }));
+                    let tool_calls_present = events
+                        .iter()
+                        .any(|e| matches!(e, StreamEvent::ToolCallEnd { .. }));
                     // faux/测试模式禁用反幻觉重试（避免耗尽 faux 队列）
                     let faux_mode = std::env::var("ION_FAUX_REPLY").is_ok()
                         || std::env::var("ION_FAUX_SCRIPT").is_ok()
@@ -1043,7 +1155,8 @@ impl Agent {
                         no_tool_retries += 1;
                         tracing::warn!(
                             "LLM responded without tool calls (retry {}/{})",
-                            no_tool_retries, self.config.retry_on_no_tool_use
+                            no_tool_retries,
+                            self.config.retry_on_no_tool_use
                         );
                         self.messages.push(Message::User(UserMessage {
                             role: "user".into(),
@@ -1072,7 +1185,10 @@ impl Agent {
                     };
                     match self.extensions.check_gates(&gate_ctx).await? {
                         super::extension::GateDecision::RetryWith(msg) => {
-                            tracing::warn!("Gate check failed, forcing retry: {}", &msg[..msg.len().min(100)]);
+                            tracing::warn!(
+                                "Gate check failed, forcing retry: {}",
+                                &msg[..msg.len().min(100)]
+                            );
                             // Reset loop detection state: a gate-driven retry is
                             // intentional (goal not complete), not an infinite loop.
                             self.extensions.on_gate_retry().await;
@@ -1123,8 +1239,10 @@ impl Agent {
                     // Turns where ALL tool calls are blocking (spawn_worker/await_worker/etc)
                     // do NOT consume turn budget — they represent the agent waiting on
                     // external work, not actively using resources.
-                    let all_blocking = !tool_calls.is_empty() && tool_calls.iter()
-                        .all(|tc| BLOCKING_TOOLS.contains(&tc.name.as_str()));
+                    let all_blocking = !tool_calls.is_empty()
+                        && tool_calls
+                            .iter()
+                            .all(|tc| BLOCKING_TOOLS.contains(&tc.name.as_str()));
                     if !all_blocking {
                         actual_turns += 1;
                     }
@@ -1149,34 +1267,49 @@ impl Agent {
                         // 让扩展有机会 veto（返回 Err 则中止，工具不执行）。
                         // action 由 is_rollback 参数决定：rollback / branch。
                         if tc.name == "branch_session" {
-                            let is_rollback = tc.arguments.get("is_rollback")
-                                .and_then(|v| v.as_bool()).unwrap_or(false);
-                            let target_leaf = tc.arguments.get("from_entry")
-                                .and_then(|v| v.as_str()).map(|s| s.to_string());
-                            let branch_name = tc.arguments.get("name")
-                                .and_then(|v| v.as_str()).map(|s| s.to_string());
+                            let is_rollback = tc
+                                .arguments
+                                .get("is_rollback")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            let target_leaf = tc
+                                .arguments
+                                .get("from_entry")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            let branch_name = tc
+                                .arguments
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
                             let switch_ctx = super::extension::SessionSwitchContext {
-                                action: if is_rollback { "rollback".into() } else { "branch".into() },
+                                action: if is_rollback {
+                                    "rollback".into()
+                                } else {
+                                    "branch".into()
+                                },
                                 target_leaf_id: target_leaf,
                                 source_leaf_id: None,
                                 branch_name,
                             };
-                            self.extensions.on_session_before_switch(&switch_ctx).await?;
+                            self.extensions
+                                .on_session_before_switch(&switch_ctx)
+                                .await?;
                         }
 
                         // Hook: tool_execution_start
                         let start = std::time::Instant::now();
-                        self.extensions.on_tool_execution_start(
-                            &super::extension::ToolExecutionContext {
+                        self.extensions
+                            .on_tool_execution_start(&super::extension::ToolExecutionContext {
                                 tool_call_id: tc.id.clone(),
                                 tool_name: tc.name.clone(),
                                 args: tc.arguments.clone(),
                                 is_error: false,
                                 duration_ms: 0,
                                 result: String::new(),
-                                    is_interrupted: false,
-                            },
-                        ).await?;
+                                is_interrupted: false,
+                            })
+                            .await?;
 
                         let tc_id = tc.id.clone();
                         let tc_name = tc.name.clone();
@@ -1190,19 +1323,27 @@ impl Agent {
                             // agent.run 不返回 → 进程被杀时 messages 全丢。
                             // 这个钩子在 tool.execute_stream 前触发，把 user prompt +
                             // assistant tool call decision 落盘。
-                            self.extensions.on_before_tool_execute(&tc_name, &tc_args, &self.messages).await?;
+                            self.extensions
+                                .on_before_tool_execute(&tc_name, &tc_args, &self.messages)
+                                .await?;
 
                             let tool_ref = self.tools.get(&tc.name);
                             match tool_ref {
                                 Some(tool) => {
-                                    let (update_tx, update_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-                                    let on_update: super::tool::ToolUpdateFn = std::sync::Arc::new(
-                                        move |partial: String| { let _ = update_tx.send(partial); },
-                                    );
+                                    let (update_tx, update_rx) =
+                                        tokio::sync::mpsc::unbounded_channel::<String>();
+                                    let on_update: super::tool::ToolUpdateFn =
+                                        std::sync::Arc::new(move |partial: String| {
+                                            let _ = update_tx.send(partial);
+                                        });
 
                                     // We need to run execute_stream and drain updates concurrently.
                                     // But tool borrows self.tools. So we poll manually.
-                                    let exec_future = tool.execute_stream(tc_args.clone(), on_update, &*self.runtime);
+                                    let exec_future = tool.execute_stream(
+                                        tc_args.clone(),
+                                        on_update,
+                                        &*self.runtime,
+                                    );
                                     tokio::pin!(exec_future);
 
                                     let mut rx = update_rx;
@@ -1217,65 +1358,70 @@ impl Agent {
                                         .ok()
                                         .and_then(|s| s.parse::<u64>().ok())
                                         .unwrap_or(600);
-                                    let timeout_duration = if tc_name == "skill" || tc_name == "bash" || tc_name == "bash_run" {
+                                    let timeout_duration = if tc_name == "skill"
+                                        || tc_name == "bash"
+                                        || tc_name == "bash_run"
+                                    {
                                         std::time::Duration::from_secs(long_default)
                                     } else {
                                         std::time::Duration::from_secs(120)
                                     };
                                     let timeout_secs = timeout_duration.as_secs();
                                     // abort + interrupt 检查 ticker
-                                    let mut check_ticker = tokio::time::interval(std::time::Duration::from_millis(200));
+                                    let mut check_ticker = tokio::time::interval(
+                                        std::time::Duration::from_millis(200),
+                                    );
                                     check_ticker.tick().await;
                                     let result = loop {
                                         tokio::select! {
-                                            partial = rx.recv() => {
-                                                if let Some(p) = partial {
-                                                    self.extensions.on_tool_execution_update(
-                                                        &super::extension::ToolExecutionContext {
-                                                            tool_call_id: tc_id.clone(),
-                                                            tool_name: tc_name.clone(),
-                                                            args: tc_args.clone(),
-                                                            is_error: false,
-                                                            duration_ms: start.elapsed().as_millis() as u64,
-                                                            result: String::new(),
-                                    is_interrupted: false,
-                                                        },
-                                                        &p,
-                                                    ).await?;
+                                                partial = rx.recv() => {
+                                                    if let Some(p) = partial {
+                                                        self.extensions.on_tool_execution_update(
+                                                            &super::extension::ToolExecutionContext {
+                                                                tool_call_id: tc_id.clone(),
+                                                                tool_name: tc_name.clone(),
+                                                                args: tc_args.clone(),
+                                                                is_error: false,
+                                                                duration_ms: start.elapsed().as_millis() as u64,
+                                                                result: String::new(),
+                                        is_interrupted: false,
+                                                            },
+                                                            &p,
+                                                        ).await?;
+                                                    }
+                                                }
+                                                r = &mut exec_future => {
+                                                    while let Ok(p) = rx.try_recv() {
+                                                        self.extensions.on_tool_execution_update(
+                                                            &super::extension::ToolExecutionContext {
+                                                                tool_call_id: tc_id.clone(),
+                                                                tool_name: tc_name.clone(),
+                                                                args: tc_args.clone(),
+                                                                is_error: false,
+                                                                duration_ms: start.elapsed().as_millis() as u64,
+                                                                result: String::new(),
+                                        is_interrupted: false,
+                                                            },
+                                                            &p,
+                                                        ).await?;
+                                                    }
+                                                    break r;
+                                                }
+                                                _ = tokio::time::sleep(timeout_duration) => {
+                                                    break Err(AgentError::Tool(format!("tool execution timeout ({}s)", timeout_secs)));
+                                                }
+                                                // 每 200ms 检查硬停止（abort）和软中断（immediate steer）
+                                                _ = check_ticker.tick() => {
+                                                    if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                                                        tracing::info!("[abort] 工具执行中检测到 stopped，drop future");
+                                                        break Err(AgentError::Aborted);
+                                                    }
+                                                    if self.interrupted.load(std::sync::atomic::Ordering::SeqCst) {
+                                                        tracing::info!("[interrupt] 工具执行中检测到 interrupt，打断当前工具");
+                                                        break Err(AgentError::Interrupted);
+                                                    }
                                                 }
                                             }
-                                            r = &mut exec_future => {
-                                                while let Ok(p) = rx.try_recv() {
-                                                    self.extensions.on_tool_execution_update(
-                                                        &super::extension::ToolExecutionContext {
-                                                            tool_call_id: tc_id.clone(),
-                                                            tool_name: tc_name.clone(),
-                                                            args: tc_args.clone(),
-                                                            is_error: false,
-                                                            duration_ms: start.elapsed().as_millis() as u64,
-                                                            result: String::new(),
-                                    is_interrupted: false,
-                                                        },
-                                                        &p,
-                                                    ).await?;
-                                                }
-                                                break r;
-                                            }
-                                            _ = tokio::time::sleep(timeout_duration) => {
-                                                break Err(AgentError::Tool(format!("tool execution timeout ({}s)", timeout_secs)));
-                                            }
-                                            // 每 200ms 检查硬停止（abort）和软中断（immediate steer）
-                                            _ = check_ticker.tick() => {
-                                                if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
-                                                    tracing::info!("[abort] 工具执行中检测到 stopped，drop future");
-                                                    break Err(AgentError::Aborted);
-                                                }
-                                                if self.interrupted.load(std::sync::atomic::Ordering::SeqCst) {
-                                                    tracing::info!("[interrupt] 工具执行中检测到 interrupt，打断当前工具");
-                                                    break Err(AgentError::Interrupted);
-                                                }
-                                            }
-                                        }
                                     };
 
                                     match result {
@@ -1331,7 +1477,9 @@ impl Agent {
                                 .join(""),
                         };
 
-                        self.extensions.after_tool_call(tc, &mut tool_result).await?;
+                        self.extensions
+                            .after_tool_call(tc, &mut tool_result)
+                            .await?;
                         // 同步 after_tool_call 对 output 的修改回 tr（让消息列表也看到追加的内容）
                         if let Some(ContentBlock::Text(t)) = tr.content.get_mut(0) {
                             t.text = tool_result.output.clone();
@@ -1342,7 +1490,11 @@ impl Agent {
                         // 确保 skill fork 的返回值（toolResult）也会 save，
                         // 即使后续 agent.run 阻塞 / 被杀。
                         self.extensions
-                            .on_before_tool_execute("___tool_result_saved", &serde_json::Value::Null, &self.messages)
+                            .on_before_tool_execute(
+                                "___tool_result_saved",
+                                &serde_json::Value::Null,
+                                &self.messages,
+                            )
                             .await?;
                     }
 
@@ -1356,30 +1508,46 @@ impl Agent {
                         .await?;
 
                     // ── turn_summary 落盘（ToolUse 路径）──
-                    self.persist_turn_summary(turn, &events, &ion_provider::StopReason::ToolUse, turn_start.elapsed().as_millis() as u64);
+                    self.persist_turn_summary(
+                        turn,
+                        &events,
+                        &ion_provider::StopReason::ToolUse,
+                        turn_start.elapsed().as_millis() as u64,
+                    );
 
                     continue;
                 }
                 StopReason::Error => {
                     // ── turn_summary 落盘（Error 路径，强制记录中断 turn）──
-                    self.persist_turn_summary(turn, &events, &ion_provider::StopReason::Error, turn_start.elapsed().as_millis() as u64);
+                    self.persist_turn_summary(
+                        turn,
+                        &events,
+                        &ion_provider::StopReason::Error,
+                        turn_start.elapsed().as_millis() as u64,
+                    );
 
                     // ── 溢出恢复：检测到上下文溢出时，触发 compaction 然后重试该 turn ──
                     // 对齐 pi 的 overflow recovery：最多 compact-and-retry MAX_OVERFLOW_ROUNDS 次
-                    let error_msg = events.iter().rev().find_map(|e| match e {
-                        StreamEvent::Error { message, .. } => message.error_message.clone(),
-                        _ => None,
-                    }).unwrap_or_default();
+                    let error_msg = events
+                        .iter()
+                        .rev()
+                        .find_map(|e| match e {
+                            StreamEvent::Error { message, .. } => message.error_message.clone(),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
 
                     let is_overflow = ion_provider::is_overflow_message(&error_msg);
-                    let can_recover = is_overflow && self.overflow_recovery_attempts < MAX_OVERFLOW_ROUNDS;
+                    let can_recover =
+                        is_overflow && self.overflow_recovery_attempts < MAX_OVERFLOW_ROUNDS;
 
                     if can_recover {
                         self.overflow_recovery_attempts += 1;
                         let attempt = self.overflow_recovery_attempts;
                         tracing::warn!(
                             "[overflow recovery] attempt {}/{} — triggering compaction then retry",
-                            attempt, MAX_OVERFLOW_ROUNDS
+                            attempt,
+                            MAX_OVERFLOW_ROUNDS
                         );
 
                         // pop 掉尾部的 error assistant 消息（如果有），不让错误消息污染重试上下文
@@ -1410,7 +1578,12 @@ impl Agent {
                 }
                 StopReason::Aborted => {
                     // ── turn_summary 落盘（Aborted 路径）──
-                    self.persist_turn_summary(turn, &events, &ion_provider::StopReason::Error, turn_start.elapsed().as_millis() as u64);
+                    self.persist_turn_summary(
+                        turn,
+                        &events,
+                        &ion_provider::StopReason::Error,
+                        turn_start.elapsed().as_millis() as u64,
+                    );
                     return Ok(StopReason::Aborted);
                 }
             }
@@ -1429,13 +1602,13 @@ impl Agent {
             self.check_pause().await?;
 
             // Hook: before_provider_request
-            self.extensions.before_provider_request(
-                &super::extension::ProviderRequestContext {
+            self.extensions
+                .before_provider_request(&super::extension::ProviderRequestContext {
                     model: self.model.id.clone(),
                     provider: self.model.provider.clone(),
                     payload: serde_json::json!({"messages": "..."}),
-                },
-            ).await?;
+                })
+                .await?;
 
             // 用 select! 让 registry::stream 期间也能响应 abort
             // 200ms 超时检查 stopped,不重新发 HTTP(用 pin + loop 保持同一个 future)
@@ -1447,7 +1620,13 @@ impl Agent {
                     *guard = Some(cancel_token.clone());
                 }
             }
-            let stream_fut = registry::stream(&self.registry, &self.model, context, Some(options), Some(cancel_token));
+            let stream_fut = registry::stream(
+                &self.registry,
+                &self.model,
+                context,
+                Some(options),
+                Some(cancel_token),
+            );
             tokio::pin!(stream_fut);
             let stream_result = loop {
                 tokio::select! {
@@ -1464,14 +1643,14 @@ impl Agent {
 
             // Hook: after_provider_response
             if let Ok(ref _ev) = stream_result {
-                self.extensions.after_provider_response(
-                    &super::extension::ProviderResponseContext {
+                self.extensions
+                    .after_provider_response(&super::extension::ProviderResponseContext {
                         model: self.model.id.clone(),
                         provider: self.model.provider.clone(),
                         status: 200,
                         body_preview: "".into(),
-                    },
-                ).await?;
+                    })
+                    .await?;
             }
 
             match stream_result {
@@ -1523,7 +1702,11 @@ impl Agent {
                                 self.extensions.on_thinking_delta(delta).await?;
                             }
                             StreamEvent::ThinkingEnd { content, .. } => {
-                                let final_content = if content.is_empty() { &thinking_buf } else { content.as_str() };
+                                let final_content = if content.is_empty() {
+                                    &thinking_buf
+                                } else {
+                                    content.as_str()
+                                };
                                 self.extensions.on_thinking_end(final_content).await?;
                                 prev_was_thinking = false;
                                 thinking_buf.clear();
@@ -1554,7 +1737,10 @@ impl Agent {
                             }
                             StreamEvent::ToolCallDelta { delta, .. } => {
                                 if std::env::var("ION_STREAM_DEBUG").ok().as_deref() == Some("1") {
-                                    eprintln!("[stream-debug] agent_loop forward ToolCallDelta len={}", delta.len());
+                                    eprintln!(
+                                        "[stream-debug] agent_loop forward ToolCallDelta len={}",
+                                        delta.len()
+                                    );
                                 }
                                 self.extensions.on_tool_call_delta(delta, "").await?;
                             }
@@ -1575,7 +1761,9 @@ impl Agent {
                 Err(e) => {
                     // 上下文溢出 → 不重试，返回 StopReason::Error 让 inner_loop 做溢出恢复（compaction）
                     if e.is_context_overflow() {
-                        tracing::warn!("[overflow] context overflow detected, returning Error for recovery: {e:.120}");
+                        tracing::warn!(
+                            "[overflow] context overflow detected, returning Error for recovery: {e:.120}"
+                        );
                         let error_msg = format!("{e}");
                         // 构造一条 Error 事件供 inner_loop 提取错误文案
                         let events = vec![StreamEvent::Error {
@@ -1608,13 +1796,15 @@ impl Agent {
 
                     match crate::retry::should_retry(&err_str, attempt, retry_cfg) {
                         crate::retry::RetryDecision::AbortPermanent => {
-                            self.extensions.on_auto_retry_end(false, attempt + 1).await?;
-                            return Err(AgentError::Provider(format!(
-                                "[permanent] {e}"
-                            )));
+                            self.extensions
+                                .on_auto_retry_end(false, attempt + 1)
+                                .await?;
+                            return Err(AgentError::Provider(format!("[permanent] {e}")));
                         }
                         crate::retry::RetryDecision::TransientExhausted => {
-                            self.extensions.on_auto_retry_end(false, attempt + 1).await?;
+                            self.extensions
+                                .on_auto_retry_end(false, attempt + 1)
+                                .await?;
                             return Err(AgentError::MaxRetries(format!(
                                 "after {} attempts: {e}",
                                 attempt + 1
@@ -1632,12 +1822,16 @@ impl Agent {
                                 || err_str_lower.contains("invalid api key")
                             {
                                 tracing::warn!("Auth error, not retrying: {}", err_str);
-                                self.extensions.on_auto_retry_end(false, attempt + 1).await?;
-                                return Err(AgentError::Provider(format!(
-                                    "[auth] {e}"
-                                )));
+                                self.extensions
+                                    .on_auto_retry_end(false, attempt + 1)
+                                    .await?;
+                                return Err(AgentError::Provider(format!("[auth] {e}")));
                             }
-                            let delay = if err_str.contains("503") || err_str.contains("502") || err_str.contains("temporarily unavailable") || err_str.contains("暂时不可用") {
+                            let delay = if err_str.contains("503")
+                                || err_str.contains("502")
+                                || err_str.contains("temporarily unavailable")
+                                || err_str.contains("暂时不可用")
+                            {
                                 // Server overload: use longer backoff to give proxy time to recover
                                 // Base 5s, double each time, cap at 60s: 5s → 10s → 20s → 40s → 60s → 60s...
                                 let secs = (5u64 * 2u64.pow(attempt as u32)).min(60);
@@ -1652,7 +1846,9 @@ impl Agent {
                                 delay
                             );
                             // 通知前端：重试开始（emit 事件让 UI 显示"重试中 (N/M)..."）
-                            self.extensions.on_auto_retry_start(attempt + 1, retry_cfg.max_retries + 1).await?;
+                            self.extensions
+                                .on_auto_retry_start(attempt + 1, retry_cfg.max_retries + 1)
+                                .await?;
                             last_error = Some(e);
                             tokio::time::sleep(delay).await;
                             // sleep 结束即开始下一轮 attempt；如果是最后一轮成功，
@@ -1664,7 +1860,9 @@ impl Agent {
             }
         }
         // 所有重试用完仍失败
-        self.extensions.on_auto_retry_end(false, self.config.max_retries + 1).await?;
+        self.extensions
+            .on_auto_retry_end(false, self.config.max_retries + 1)
+            .await?;
         Err(AgentError::MaxRetries(format!(
             "after {} attempts: {:?}",
             self.config.max_retries + 1,
@@ -1710,7 +1908,11 @@ impl Agent {
         let retry_config = RetryConfig::default();
         // Use compact model if specified, otherwise use main model
         let summarizer_model = self.compact_model.as_ref().unwrap_or(&self.model);
-        let summarizer = compact::make_llm_summarizer(self.registry.clone(), summarizer_model.clone(), self.config.api_key.clone());
+        let summarizer = compact::make_llm_summarizer(
+            self.registry.clone(),
+            summarizer_model.clone(),
+            self.config.api_key.clone(),
+        );
         // 尝试用 LLM summarizer 压缩，失败则 fallback 到 emergency truncate
         // （LLM 不可用 / 没 API key / 网络错 时保证 compaction 不阻塞 agent）
         match compact::compact_batched(
@@ -1758,9 +1960,16 @@ impl Agent {
                 result.tokens_before,
                 None, // firstKeptEntryId 暂不填（内存 Message 无 id）
                 Some(&result.stage),
-                if result.batch_count > 0 { Some(result.batch_count) } else { None },
+                if result.batch_count > 0 {
+                    Some(result.batch_count)
+                } else {
+                    None
+                },
             );
-            tracing::info!("compaction entry persisted to session JSONL (stage={})", result.stage);
+            tracing::info!(
+                "compaction entry persisted to session JSONL (stage={})",
+                result.stage
+            );
         }
 
         // ── SessionIndex: compress_count +1（无论 cwd 是否设置，只要 session_id 有就更新）──
@@ -1943,18 +2152,22 @@ fn unload_consumed_skills(messages: &[Message], _current_turn: usize) -> Vec<Mes
                 }
             }) {
                 // 提取 skill 名字
-                let skill_name = tr.content.iter().find_map(|c| {
-                    if let ContentBlock::Text(TextContent { text, .. }) = c {
-                        // "Skill 'code-audit' loaded:" → "code-audit"
-                        if text.starts_with("Skill '") {
-                            let rest = &text[7..];
-                            if let Some(end) = rest.find('\'') {
-                                return Some(rest[..end].to_string());
+                let skill_name = tr
+                    .content
+                    .iter()
+                    .find_map(|c| {
+                        if let ContentBlock::Text(TextContent { text, .. }) = c {
+                            // "Skill 'code-audit' loaded:" → "code-audit"
+                            if text.starts_with("Skill '") {
+                                let rest = &text[7..];
+                                if let Some(end) = rest.find('\'') {
+                                    return Some(rest[..end].to_string());
+                                }
                             }
                         }
-                    }
-                    None
-                }).unwrap_or_default();
+                        None
+                    })
+                    .unwrap_or_default();
                 skill_positions.push((i, skill_name));
             }
         }
@@ -1965,7 +2178,10 @@ fn unload_consumed_skills(messages: &[Message], _current_turn: usize) -> Vec<Mes
     }
 
     // 保留最后一次 skill 加载的完整内容（当前 turn 可能还需要）
-    let last_skill_pos = skill_positions.last().map(|(pos, _)| *pos).unwrap_or(usize::MAX);
+    let last_skill_pos = skill_positions
+        .last()
+        .map(|(pos, _)| *pos)
+        .unwrap_or(usize::MAX);
 
     // 对每个 skill tool result（除了最后一次的），检查它后面是否有 assistant message
     let mut result = messages.to_vec();
@@ -1974,9 +2190,9 @@ fn unload_consumed_skills(messages: &[Message], _current_turn: usize) -> Vec<Mes
             continue; // 保留最后一次的完整内容
         }
         // 检查这个 skill result 后面是否有 assistant message
-        let has_following_assistant = messages[*pos + 1..].iter().any(|m| {
-            matches!(m, Message::Assistant(_))
-        });
+        let has_following_assistant = messages[*pos + 1..]
+            .iter()
+            .any(|m| matches!(m, Message::Assistant(_)));
         if has_following_assistant {
             // 替换成占位符
             if let Some(Message::ToolResult(tr)) = result.get_mut(*pos) {
@@ -1985,7 +2201,10 @@ fn unload_consumed_skills(messages: &[Message], _current_turn: usize) -> Vec<Mes
                      Use skill(skill_name='{}') to reload if needed.]",
                     skill_name, skill_name
                 );
-                tr.content = vec![ContentBlock::Text(TextContent { text: placeholder, text_signature: None })];
+                tr.content = vec![ContentBlock::Text(TextContent {
+                    text: placeholder,
+                    text_signature: None,
+                })];
             }
         }
     }
@@ -2027,7 +2246,11 @@ fn truncate_tool_output(output: &str) -> String {
     let tail_lines = TOOL_OUTPUT_MAX_LINES - head_lines;
 
     let head: Vec<&str> = lines.iter().take(head_lines).copied().collect();
-    let tail: Vec<&str> = lines.iter().skip(line_count.saturating_sub(tail_lines)).copied().collect();
+    let tail: Vec<&str> = lines
+        .iter()
+        .skip(line_count.saturating_sub(tail_lines))
+        .copied()
+        .collect();
 
     let mut result = head.join("\n");
     result.push_str(&format!(
@@ -2062,13 +2285,25 @@ mod tests {
     #[test]
     fn truncate_long_lines() {
         // 生成 3000 行
-        let input: String = (1..=3000).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        let input: String = (1..=3000)
+            .map(|i| format!("line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
         let result = truncate_tool_output(&input);
-        assert!(result.contains("truncated"), "should have truncation marker");
-        assert!(result.contains("line 1\n") || result.contains("line 1\r"), "should keep head");
+        assert!(
+            result.contains("truncated"),
+            "should have truncation marker"
+        );
+        assert!(
+            result.contains("line 1\n") || result.contains("line 1\r"),
+            "should keep head"
+        );
         assert!(result.contains("line 3000"), "should keep tail");
         // head 保留 1600 行，tail 保留 400 行 → 中间 1601~2600 被截断
-        assert!(!result.contains("line 2000\n"), "should drop middle (line 2000)");
+        assert!(
+            !result.contains("line 2000\n"),
+            "should drop middle (line 2000)"
+        );
     }
 
     #[test]
@@ -2076,14 +2311,23 @@ mod tests {
         // 生成一个 60KB 的单行
         let input = "x".repeat(60_000);
         let result = truncate_tool_output(&input);
-        assert!(result.len() <= TOOL_OUTPUT_MAX_BYTES + 100, "should be under ~50KB");
-        assert!(result.contains("truncation"), "should have truncation marker");
+        assert!(
+            result.len() <= TOOL_OUTPUT_MAX_BYTES + 100,
+            "should be under ~50KB"
+        );
+        assert!(
+            result.contains("truncation"),
+            "should have truncation marker"
+        );
     }
 
     #[test]
     fn truncate_exactly_at_limit() {
         // 刚好 2000 行——不截断
-        let input: String = (1..=2000).map(|i| format!("l{}", i)).collect::<Vec<_>>().join("\n");
+        let input: String = (1..=2000)
+            .map(|i| format!("l{}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
         let result = truncate_tool_output(&input);
         assert_eq!(result, input, "should not truncate at exact limit");
     }
@@ -2097,8 +2341,14 @@ mod tests {
         }
         let result = truncate_tool_output(&input);
         // 验证不 panic + 结果是有效字符串 + 有截断标记
-        assert!(result.contains("truncation"), "should have truncation marker");
-        assert!(result.len() <= TOOL_OUTPUT_MAX_BYTES + 100, "should be near 50KB");
+        assert!(
+            result.contains("truncation"),
+            "should have truncation marker"
+        );
+        assert!(
+            result.len() <= TOOL_OUTPUT_MAX_BYTES + 100,
+            "should be near 50KB"
+        );
     }
 
     #[test]

@@ -105,10 +105,15 @@ mod tests {
         // Point HOME at the temp directory so `cache_dir()` resolves here.
         // SAFETY: this is a single-threaded test with no other code racing on
         // the HOME environment variable.
-        unsafe { std::env::set_var("HOME", tmp.path()); }
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+        }
 
         let size = cache_size().expect("cache_size should succeed");
         let expected = (data_a.len() + data_b.len()) as u64;
-        assert_eq!(size, expected, "cache_size should sum all files recursively");
+        assert_eq!(
+            size, expected,
+            "cache_size should sum all files recursively"
+        );
     }
 }

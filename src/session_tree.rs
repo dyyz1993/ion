@@ -110,7 +110,10 @@ pub fn resolve_current_leaf(entries: &[Value]) -> Option<String> {
     // 收集所有"作为别人 parent"的 id（这些不是 leaf 候选）
     let mut parent_ids: HashSet<String> = HashSet::new();
     for e in entries {
-        if !is_header(e) && !is_leaf_pointer(e) && let Some(p) = entry_parent_id(e) {
+        if !is_header(e)
+            && !is_leaf_pointer(e)
+            && let Some(p) = entry_parent_id(e)
+        {
             parent_ids.insert(p.to_string());
         }
     }
@@ -133,8 +136,16 @@ pub fn resolve_current_leaf(entries: &[Value]) -> Option<String> {
                 Some(target_id) if !target_id.is_empty() => {
                     // leafId 非空：先在 i 之后找 target 的后代中 depth 最深的非-parent entry。
                     // 若无后代，target 本身就是 leaf（用户显式指向它，不管它是不是别人的 parent）。
-                    deepest_descendant_after(entries, target_id, &parent_ids, &by_id, &depths, i, false)
-                        .or_else(|| Some(target_id.to_string()))
+                    deepest_descendant_after(
+                        entries,
+                        target_id,
+                        &parent_ids,
+                        &by_id,
+                        &depths,
+                        i,
+                        false,
+                    )
+                    .or_else(|| Some(target_id.to_string()))
                 }
                 _ => {
                     // leafId 为空（reset）：在 i 之后找 depth 最深的非-parent entry
@@ -279,7 +290,9 @@ pub fn get_tree(entries: &[Value]) -> Vec<TreeNode> {
             }
             Some(p) => {
                 if node_map.contains_key(p) {
-                    if let Some(child) = node_map.get(id).cloned() && let Some(parent) = node_map.get_mut(p) {
+                    if let Some(child) = node_map.get(id).cloned()
+                        && let Some(parent) = node_map.get_mut(p)
+                    {
                         parent.children.push(child);
                     }
                 } else {
@@ -354,11 +367,7 @@ pub fn get_branch_path(entries: &[Value], leaf_id: &str) -> Vec<Value> {
 /// 用于 fork-from-leaf 时丢弃被压缩的前缀。
 pub fn truncate_at_compaction(path: Vec<Value>) -> Vec<Value> {
     for i in (0..path.len()).rev() {
-        if path[i]
-            .get("type")
-            .and_then(|v| v.as_str())
-            == Some("compaction")
-        {
+        if path[i].get("type").and_then(|v| v.as_str()) == Some("compaction") {
             return path[i..].to_vec();
         }
     }
@@ -458,7 +467,11 @@ pub fn make_checkout(entries: &[Value], name: &str) -> Result<Vec<Value>, String
         .map(|(_, t)| t.clone())
         .ok_or_else(|| {
             let avail: Vec<_> = branches.iter().map(|(l, _)| l.as_str()).collect();
-            format!("branch '{}' not found. Available: {}", name, avail.join(", "))
+            format!(
+                "branch '{}' not found. Available: {}",
+                name,
+                avail.join(", ")
+            )
         })?;
     let lp = serde_json::json!({
         "type": "leaf_pointer",
@@ -673,11 +686,7 @@ mod tests {
 
     #[test]
     fn get_tree_linear_chain() {
-        let entries = vec![
-            header("h"),
-            msg("m1", "h", "a"),
-            msg("m2", "m1", "b"),
-        ];
+        let entries = vec![header("h"), msg("m1", "h", "a"), msg("m2", "m1", "b")];
         let tree = get_tree(&entries);
         assert_eq!(tree.len(), 1, "single root");
         assert_eq!(entry_id(&tree[0].entry), Some("m1"));
@@ -718,10 +727,7 @@ mod tests {
     #[test]
     fn get_tree_orphan_as_root() {
         // parentId 指向不存在的 entry → 当 root
-        let entries = vec![
-            header("h"),
-            msg("m1", "nonexistent", "a"),
-        ];
+        let entries = vec![header("h"), msg("m1", "nonexistent", "a")];
         let tree = get_tree(&entries);
         assert_eq!(tree.len(), 1, "orphan treated as root");
     }
@@ -767,12 +773,9 @@ mod tests {
 
     #[test]
     fn truncate_at_compaction_with_compaction() {
-        let compaction = json!({"type": "compaction", "id": "c1", "parentId": "h", "summary": "..."});
-        let path = vec![
-            msg("m1", "h", "a"),
-            compaction,
-            msg("m2", "c1", "b"),
-        ];
+        let compaction =
+            json!({"type": "compaction", "id": "c1", "parentId": "h", "summary": "..."});
+        let path = vec![msg("m1", "h", "a"), compaction, msg("m2", "c1", "b")];
         let result = truncate_at_compaction(path);
         assert_eq!(result.len(), 2, "truncated from compaction onward");
         assert_eq!(entry_id(&result[0]), Some("c1"));
@@ -888,11 +891,7 @@ mod tests {
     #[test]
     fn branch_operation_preserves_only_append() {
         // 验证 branch 操作不修改已有 entries（only-append 不变量）
-        let entries = vec![
-            header("h"),
-            msg("m1", "h", "a"),
-            msg("m2", "m1", "b"),
-        ];
+        let entries = vec![header("h"), msg("m1", "h", "a"), msg("m2", "m1", "b")];
         let original = entries.clone();
         let _new = make_branch("m1", Some("x")).unwrap();
         // 原有 entries 不变
@@ -928,7 +927,10 @@ mod tests {
             msg("m3", "c1", "c"),
         ];
         let result = check_compaction_safety(&entries, "m1");
-        assert!(result.is_some(), "branch to m1 (before compaction) must be flagged");
+        assert!(
+            result.is_some(),
+            "branch to m1 (before compaction) must be flagged"
+        );
         assert_eq!(result.unwrap(), "c1");
     }
 
@@ -941,8 +943,14 @@ mod tests {
             compaction("c1", "m1"),
             msg("m2", "c1", "b"),
         ];
-        assert!(check_compaction_safety(&entries, "m2").is_none(), "branch to m2 (after compaction) is safe");
-        assert!(check_compaction_safety(&entries, "c1").is_none(), "branch to compaction itself is safe");
+        assert!(
+            check_compaction_safety(&entries, "m2").is_none(),
+            "branch to m2 (after compaction) is safe"
+        );
+        assert!(
+            check_compaction_safety(&entries, "c1").is_none(),
+            "branch to compaction itself is safe"
+        );
     }
 
     #[test]
@@ -966,7 +974,11 @@ mod tests {
             msg("m2", "m1", "b"),
             msg("m3", "m1", "c"),
         ];
-        assert_eq!(count_branches(&entries), 2, "fork with 2 leaves has 2 branches");
+        assert_eq!(
+            count_branches(&entries),
+            2,
+            "fork with 2 leaves has 2 branches"
+        );
 
         // Multiple levels: h → m1 → m2, h → m1 → m3 → m4
         // Leaf nodes: m2, m4 → 2 branches
@@ -987,10 +999,7 @@ mod tests {
         assert_eq!(count_branches(&entries), 0, "only header has 0 branches");
 
         // Single message → 1 (the message is a leaf)
-        let entries = vec![
-            header("h"),
-            msg("m1", "h", "a"),
-        ];
+        let entries = vec![header("h"), msg("m1", "h", "a")];
         assert_eq!(count_branches(&entries), 1, "single message has 1 branch");
 
         // With leaf pointers (should be ignored)
@@ -1002,7 +1011,11 @@ mod tests {
             leaf_ptr("lp1", Some("m2")),
             leaf_ptr("lp2", Some("m3")),
         ];
-        assert_eq!(count_branches(&entries), 2, "leaf pointers are not counted as tree nodes");
+        assert_eq!(
+            count_branches(&entries),
+            2,
+            "leaf pointers are not counted as tree nodes"
+        );
     }
 
     // ── Additional coverage tests ──
@@ -1084,14 +1097,12 @@ mod tests {
     #[test]
     fn resolve_leaf_equal_depth_siblings() {
         // h → m1, h → m2  (both depth 1, both leaves)
-        let entries = vec![
-            header("h"),
-            msg("m1", "h", "a"),
-            msg("m2", "h", "b"),
-        ];
+        let entries = vec![header("h"), msg("m1", "h", "a"), msg("m2", "h", "b")];
         let leaf = resolve_current_leaf(&entries);
-        assert!(leaf == Some("m1".into()) || leaf == Some("m2".into()),
-            "leaf must be one of the two siblings");
+        assert!(
+            leaf == Some("m1".into()) || leaf == Some("m2".into()),
+            "leaf must be one of the two siblings"
+        );
     }
 
     // 3. get_tree structure vs full mode (labels attached)
@@ -1175,8 +1186,10 @@ mod tests {
         let combined: Vec<Value> = base_entries.iter().cloned().chain(new).collect();
 
         let branches = named_branches(&combined);
-        assert!(branches.iter().any(|(l, t)| l == "feature-x" && t == "m1"),
-            "named_branches must find the label created by make_branch");
+        assert!(
+            branches.iter().any(|(l, t)| l == "feature-x" && t == "m1"),
+            "named_branches must find the label created by make_branch"
+        );
     }
 
     /// make_checkout produces a leaf_pointer whose leafId equals the label's
@@ -1208,8 +1221,10 @@ mod tests {
             leaf_ptr("lp1", Some("m1")),
             json!({"type": "branch_summary", "id": "bs1", "parentId": null, "summary": "...", "timestamp": "x"}),
         ];
-        assert!(named_branches(&entries).is_empty(),
-            "no label entries → empty result");
+        assert!(
+            named_branches(&entries).is_empty(),
+            "no label entries → empty result"
+        );
     }
 
     /// find_leaf_pointer_target returns the target of the *last* leaf_pointer in
@@ -1234,7 +1249,10 @@ mod tests {
     fn make_branch_generates_unique_ids() {
         let a = make_branch("m1", None).unwrap();
         let b = make_branch("m1", None).unwrap();
-        assert_ne!(a[0]["id"].as_str(), b[0]["id"].as_str(),
-            "consecutive make_branch calls must produce distinct ids");
+        assert_ne!(
+            a[0]["id"].as_str(),
+            b[0]["id"].as_str(),
+            "consecutive make_branch calls must produce distinct ids"
+        );
     }
 }

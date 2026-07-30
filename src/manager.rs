@@ -370,7 +370,7 @@ async fn run_task(
 /// `prompt`/`steer` RPCs are answered without spinning up the full manager.
 #[cfg(test)]
 fn test_worker_handle() -> (WorkerHandle, tokio::task::JoinHandle<()>) {
-    use crate::worker::{stub::StubWorker, WorkerCmd};
+    use crate::worker::{WorkerCmd, stub::StubWorker};
     let (tx, mut rx) = mpsc::channel(16);
     let worker_id = crate::ids::WorkerId::new(0u64);
     let handle = WorkerHandle::new(worker_id, tx);

@@ -82,11 +82,7 @@ impl Default for FileTimeGuardConfig {
             // Warn is the safe default: surface the problem without breaking
             // the agent loop in existing workflows.
             mode: GuardMode::Warn,
-            ignore_paths: vec![
-                "target/".into(),
-                ".git/".into(),
-                "node_modules/".into(),
-            ],
+            ignore_paths: vec!["target/".into(), ".git/".into(), "node_modules/".into()],
         }
     }
 }
@@ -184,15 +180,9 @@ impl FileTimeGuardExtension {
             return None; // file gone or unreadable -> allow the write
         };
         if cur_mtime != snap.mtime {
-            Some(format!(
-                "mtime changed ({} -> {})",
-                snap.mtime, cur_mtime
-            ))
+            Some(format!("mtime changed ({} -> {})", snap.mtime, cur_mtime))
         } else if cur_size != snap.size {
-            Some(format!(
-                "size changed ({} -> {})",
-                snap.size, cur_size
-            ))
+            Some(format!("size changed ({} -> {})", snap.size, cur_size))
         } else {
             None
         }
@@ -275,10 +265,7 @@ impl Extension for FileTimeGuardExtension {
                 }))
             }
             "check" => {
-                let path = params
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
                 let stale = self.check_stale(path).await;
                 Ok(serde_json::json!({
                     "path": path,
@@ -288,9 +275,7 @@ impl Extension for FileTimeGuardExtension {
             }
             // Unknown method: return the sentinel error so the registry can
             // continue dispatching to the next extension.
-            _ => Err(AgentError::Tool(
-                "extension rpc method not found".into(),
-            )),
+            _ => Err(AgentError::Tool("extension rpc method not found".into())),
         }
     }
 }
@@ -381,7 +366,10 @@ mod tests {
 
         // The default ignore list contains "target/", and the path contains
         // "target" as a substring of the directory name.
-        assert!(ext.is_ignored(&path), "path under target/ should be ignored");
+        assert!(
+            ext.is_ignored(&path),
+            "path under target/ should be ignored"
+        );
         let stale = ext.check_stale(&path).await;
         assert!(stale.is_none(), "ignored path should never be stale");
 
@@ -465,7 +453,10 @@ mod tests {
         ext.after_tool_call(&call, &mut result).await.unwrap();
 
         // The file should now be tracked.
-        let status = ext.on_extension_rpc("status", serde_json::json!({})).await.unwrap();
+        let status = ext
+            .on_extension_rpc("status", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(status["tracked_files"], 1, "read should track the file");
 
         let _ = std::fs::remove_file(&path);
@@ -477,7 +468,10 @@ mod tests {
         let ext = FileTimeGuardExtension::new();
         ext.record(&path).await;
 
-        let status = ext.on_extension_rpc("status", serde_json::json!({})).await.unwrap();
+        let status = ext
+            .on_extension_rpc("status", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(status["mode"], "warn");
         assert_eq!(status["tracked_files"], 1);
 
@@ -497,6 +491,9 @@ mod tests {
         let res = ext.on_extension_rpc("nope", serde_json::json!({})).await;
         // The sentinel error lets the registry try the next extension.
         assert!(res.is_err());
-        assert_eq!(res.unwrap_err().to_string(), "Tool call failed: extension rpc method not found");
+        assert_eq!(
+            res.unwrap_err().to_string(),
+            "Tool call failed: extension rpc method not found"
+        );
     }
 }

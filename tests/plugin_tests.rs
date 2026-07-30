@@ -106,7 +106,10 @@ fn todo_plugin_loads_and_registers_tools() {
     assert!(names.contains(&"todo_add"), "should register todo_add");
     assert!(names.contains(&"todo_list"), "should register todo_list");
     assert!(names.contains(&"todo_done"), "should register todo_done");
-    assert!(names.contains(&"todo_remove"), "should register todo_remove");
+    assert!(
+        names.contains(&"todo_remove"),
+        "should register todo_remove"
+    );
     assert!(names.contains(&"todo_clean"), "should register todo_clean");
     assert_eq!(plugin.tools.len(), 5, "should register exactly 5 tools");
 }
@@ -121,7 +124,10 @@ fn todo_plugin_create_and_list() {
     let result = plugin
         .execute_tool("todo_add", r#"{"text":"调研"}"#)
         .expect("todo_add should succeed");
-    assert!(result.contains(r#""status":"created""#), "result should be created: {result}");
+    assert!(
+        result.contains(r#""status":"created""#),
+        "result should be created: {result}"
+    );
 
     // List tasks
     let list = plugin
@@ -160,7 +166,10 @@ fn todo_plugin_nonexistent_item() {
         .execute_tool("todo_done", r#"{"id":"nonexistent"}"#)
         .expect("todo_done should succeed");
     // The plugin returns the id with status "done" for any id
-    assert!(result.contains(r#""id":"nonexistent""#), "should mention the id: {result}");
+    assert!(
+        result.contains(r#""id":"nonexistent""#),
+        "should mention the id: {result}"
+    );
 }
 
 #[test]
@@ -173,7 +182,10 @@ fn todo_plugin_edge_empty_array() {
     let result = plugin
         .execute_tool("todo_clean", "{}")
         .expect("todo_clean should succeed");
-    assert!(result.contains(r#""removed":0"#), "should report 0 removed: {result}");
+    assert!(
+        result.contains(r#""removed":0"#),
+        "should report 0 removed: {result}"
+    );
 }
 
 #[test]
@@ -183,11 +195,17 @@ fn todo_plugin_edge_large_list() {
         .expect("todo-extension should load");
 
     // Add a task
-    plugin.execute_tool("todo_add", r#"{"text":"test"}"#).unwrap();
-    plugin.execute_tool("todo_add", r#"{"text":"test2"}"#).unwrap();
+    plugin
+        .execute_tool("todo_add", r#"{"text":"test"}"#)
+        .unwrap();
+    plugin
+        .execute_tool("todo_add", r#"{"text":"test2"}"#)
+        .unwrap();
 
     // List all
-    let list = plugin.execute_tool("todo_list", r#"{"status":"all"}"#).unwrap();
+    let list = plugin
+        .execute_tool("todo_list", r#"{"status":"all"}"#)
+        .unwrap();
     assert!(list.contains("test"), "should contain test: {list}");
     assert!(list.contains("test2"), "should contain test2: {list}");
 }
@@ -201,7 +219,10 @@ fn todo_plugin_edge_special_chars() {
     let result = plugin
         .execute_tool("todo_add", r#"{"text":"hello <world> & 'rust'"}"#)
         .expect("todo_add should handle special chars");
-    assert!(result.contains(r#""status":"created""#), "result should be created: {result}");
+    assert!(
+        result.contains(r#""status":"created""#),
+        "result should be created: {result}"
+    );
 }
 
 #[test]
@@ -212,7 +233,9 @@ fn todo_plugin_edge_invalid_status() {
 
     // Schema validation should reject invalid status
     // (plugin_execute_tool returns what the plugin returns)
-    let _ = plugin.execute_tool("todo_list", r#"{"status":"invalid"}"#).unwrap_or_default();
+    let _ = plugin
+        .execute_tool("todo_list", r#"{"status":"invalid"}"#)
+        .unwrap_or_default();
     // If it errors, that's OK; just checking it doesn't panic
 }
 
@@ -226,7 +249,10 @@ fn todo_plugin_edge_update_empty_list() {
     let result = plugin
         .execute_tool("todo_clean", "{}")
         .expect("todo_clean should succeed on empty");
-    assert!(result.contains(r#""removed":0"#), "should report 0 removed: {result}");
+    assert!(
+        result.contains(r#""removed":0"#),
+        "should report 0 removed: {result}"
+    );
 }
 
 #[test]
@@ -252,12 +278,18 @@ fn plan_plugin_enter_and_exit() {
     let enter = plugin
         .execute_tool("plan_enter", r#"{"plan_path":"/tmp/test-plan.md"}"#)
         .expect("plan_enter should succeed");
-    assert!(enter.contains(r#""mode":"plan""#), "should return plan mode: {enter}");
+    assert!(
+        enter.contains(r#""mode":"plan""#),
+        "should return plan mode: {enter}"
+    );
 
     let exit = plugin
         .execute_tool("plan_exit", "{}")
         .expect("plan_exit should succeed");
-    assert!(exit.contains(r#""mode":"normal""#), "should return normal mode: {exit}");
+    assert!(
+        exit.contains(r#""mode":"normal""#),
+        "should return normal mode: {exit}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -328,9 +360,15 @@ async fn plan_extension_plan_mode_restricts_tools() {
     let result = ext
         .before_tool_call(&make_tool_call("calculator", r#"{"expression":"1+1"}"#))
         .await;
-    assert!(result.is_err(), "calculator should be rejected in plan mode");
+    assert!(
+        result.is_err(),
+        "calculator should be rejected in plan mode"
+    );
     let err = result.unwrap_err().to_string();
-    assert!(err.contains("not available in plan mode"), "error should mention plan mode: {err}");
+    assert!(
+        err.contains("not available in plan mode"),
+        "error should mention plan mode: {err}"
+    );
 }
 
 #[tokio::test]
@@ -346,19 +384,19 @@ async fn plan_extension_exit_plan_mode_restores_tools() {
     .unwrap();
 
     // Exit plan mode
-    ext.after_tool_call(
-        &make_tool_call("plan_exit", "{}"),
-        &make_tool_result(),
-    )
-    .await
-    .unwrap();
+    ext.after_tool_call(&make_tool_call("plan_exit", "{}"), &make_tool_result())
+        .await
+        .unwrap();
     assert!(!ext.is_plan_mode(), "should exit plan mode");
 
     // calculator should be allowed again
     let result = ext
         .before_tool_call(&make_tool_call("calculator", r#"{"expression":"1+1"}"#))
         .await;
-    assert!(result.is_ok(), "calculator should be allowed after plan_exit");
+    assert!(
+        result.is_ok(),
+        "calculator should be allowed after plan_exit"
+    );
 }
 
 #[tokio::test]
@@ -368,7 +406,10 @@ async fn plan_extension_injects_system_prompt_in_plan_mode() {
     // Normal mode: should not inject
     let mut prompt = "base prompt".to_string();
     ext.on_system_prompt(&mut prompt).await.unwrap();
-    assert_eq!(prompt, "base prompt", "should not modify prompt in normal mode");
+    assert_eq!(
+        prompt, "base prompt",
+        "should not modify prompt in normal mode"
+    );
 
     // Enter plan mode
     ext.after_tool_call(
@@ -381,9 +422,18 @@ async fn plan_extension_injects_system_prompt_in_plan_mode() {
     // Plan mode: should inject instructions
     let mut prompt2 = "base prompt".to_string();
     ext.on_system_prompt(&mut prompt2).await.unwrap();
-    assert!(prompt2.contains("PLAN MODE"), "should inject PLAN MODE marker: {prompt2}");
-    assert!(prompt2.contains("/tmp/my-plan.md"), "should inject plan path: {prompt2}");
-    assert!(prompt2.contains("plan_exit"), "should mention plan_exit: {prompt2}");
+    assert!(
+        prompt2.contains("PLAN MODE"),
+        "should inject PLAN MODE marker: {prompt2}"
+    );
+    assert!(
+        prompt2.contains("/tmp/my-plan.md"),
+        "should inject plan path: {prompt2}"
+    );
+    assert!(
+        prompt2.contains("plan_exit"),
+        "should mention plan_exit: {prompt2}"
+    );
 }
 
 #[tokio::test]
@@ -415,26 +465,43 @@ fn plugin_registry_add_list_remove() {
     let registry = ion::wasm_extension::Registry::new();
 
     // P1: add → should return tool defs
-    let tool_defs = registry.add(&wasm_path)
+    let tool_defs = registry
+        .add(&wasm_path)
         .expect("plugin_registry::add should load todo-extension");
     let names: Vec<&str> = tool_defs.iter().map(|t| t.name.as_str()).collect();
     assert!(names.contains(&"todo_add"), "add should register todo_add");
-    assert!(names.contains(&"todo_list"),   "add should register todo_list");
-    assert!(names.contains(&"todo_done"), "add should register todo_done");
-    assert!(names.contains(&"todo_remove"), "add should register todo_remove");
-    assert!(names.contains(&"todo_clean"), "add should register todo_clean");
+    assert!(
+        names.contains(&"todo_list"),
+        "add should register todo_list"
+    );
+    assert!(
+        names.contains(&"todo_done"),
+        "add should register todo_done"
+    );
+    assert!(
+        names.contains(&"todo_remove"),
+        "add should register todo_remove"
+    );
+    assert!(
+        names.contains(&"todo_clean"),
+        "add should register todo_clean"
+    );
     assert_eq!(tool_defs.len(), 5, "exactly 5 tools from todo-extension");
 
     // P2: list → should include the loaded plugin
     let plugins = registry.list();
     assert_eq!(plugins.len(), 1, "list should contain the loaded plugin");
     let p = &plugins[0];
-    assert!(p.path.ends_with("todo_extension.wasm"), "path should end with .wasm");
+    assert!(
+        p.path.ends_with("todo_extension.wasm"),
+        "path should end with .wasm"
+    );
     assert_eq!(p.version, 1, "todo-extension version should be 1");
     assert_eq!(p.tools.len(), 5, "plugin info should list 5 tools");
 
     // P3: remove → should return tool names and clear from list
-    let removed = registry.remove(&wasm_path)
+    let removed = registry
+        .remove(&wasm_path)
         .expect("plugin_registry::remove should succeed");
     assert_eq!(removed.len(), 5, "remove should return 5 tool names");
     assert!(removed.contains(&"todo_add".to_string()));
@@ -443,10 +510,15 @@ fn plugin_registry_add_list_remove() {
     assert_eq!(empty.len(), 0, "after remove, list should be empty");
 
     // P4: re‑add after removal works
-    let tool_defs2 = registry.add(&wasm_path)
+    let tool_defs2 = registry
+        .add(&wasm_path)
         .expect("re‑add after remove should work");
     assert_eq!(tool_defs2.len(), 5, "re‑added plugin should register tools");
-    assert_eq!(registry.list().len(), 1, "re‑added plugin should show in list");
+    assert_eq!(
+        registry.list().len(),
+        1,
+        "re‑added plugin should show in list"
+    );
 }
 
 #[test]
@@ -462,16 +534,25 @@ fn plugin_registry_reload_replaces_instance() {
     let tools_before = plugins_before[0].tools.clone();
 
     // Reload (same .wasm file, fresh instance)
-    let tool_defs = registry.reload(&wasm_path)
-        .expect("reload should succeed");
+    let tool_defs = registry.reload(&wasm_path).expect("reload should succeed");
     assert_eq!(tool_defs.len(), 5, "reload should register the same tools");
 
     // The entry should be replaced
     let plugins_after = registry.list();
-    assert_eq!(plugins_after.len(), 1, "still exactly one plugin after reload");
+    assert_eq!(
+        plugins_after.len(),
+        1,
+        "still exactly one plugin after reload"
+    );
     // Version should match (same .wasm file)
-    assert_eq!(plugins_after[0].version, version_before, "version unchanged after reload");
-    assert_eq!(plugins_after[0].tools, tools_before, "tools unchanged after reload");
+    assert_eq!(
+        plugins_after[0].version, version_before,
+        "version unchanged after reload"
+    );
+    assert_eq!(
+        plugins_after[0].tools, tools_before,
+        "tools unchanged after reload"
+    );
 }
 
 #[test]
@@ -509,8 +590,14 @@ fn plugin_registry_can_hold_multiple_plugins() {
     assert_eq!(plugins.len(), 2, "should hold 2 plugins");
 
     // Each has its own tools
-    let todo_info = plugins.iter().find(|p| p.tools.contains(&"todo_list".to_string())).unwrap();
-    let plan_info = plugins.iter().find(|p| p.tools.contains(&"plan_enter".to_string())).unwrap();
+    let todo_info = plugins
+        .iter()
+        .find(|p| p.tools.contains(&"todo_list".to_string()))
+        .unwrap();
+    let plan_info = plugins
+        .iter()
+        .find(|p| p.tools.contains(&"plan_enter".to_string()))
+        .unwrap();
     assert!(todo_info.path.contains("todo_plugin"), "todo path");
     assert!(plan_info.path.contains("plan_plugin"), "plan path");
 
@@ -528,7 +615,9 @@ fn plugin_registry_can_hold_multiple_plugins() {
 fn plugin_ext_name_from_path() {
     // file stem wins
     assert_eq!(
-        ion::wasm_extension::ext_name_from_path("/home/user/todo-extension/target/release/todo_extension.wasm"),
+        ion::wasm_extension::ext_name_from_path(
+            "/home/user/todo-extension/target/release/todo_extension.wasm"
+        ),
         "todo_extension",
     );
     assert_eq!(
@@ -546,7 +635,7 @@ fn plugin_data_dimension_paths_are_correct() {
         cwd: "/tmp/work".into(),
         project_root: "/tmp/work".into(),
         ext_name: "test-ext".into(),
-                event_bus: None,
+        event_bus: None,
         fs: None,
         tokio_handle: None,
         agent_rpc: None,
@@ -600,7 +689,7 @@ fn plugin_context_injected_into_store() {
         cwd: "/tmp".into(),
         project_root: "/tmp".into(),
         ext_name: "todo-extension".into(),
-                event_bus: None,
+        event_bus: None,
         fs: None,
         tokio_handle: None,
         agent_rpc: None,
@@ -655,7 +744,10 @@ fn plugin_write_read_delete_works_directly() {
         .filter(|e| !e.file_name().to_string_lossy().ends_with(".tmp"))
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
-    assert!(entries.contains(&"my-key.json".to_string()), "list should contain the key: {entries:?}");
+    assert!(
+        entries.contains(&"my-key.json".to_string()),
+        "list should contain the key: {entries:?}"
+    );
 
     // ── delete (simulating host_delete_project_local_data) ──
     std::fs::remove_file(&final_path).expect("delete");
@@ -672,7 +764,7 @@ fn plugin_make_exec_context_merges_registry_ctx_with_ext_name() {
         cwd: "/proj".into(),
         project_root: "/proj".into(),
         ext_name: "".into(),
-                event_bus: None,
+        event_bus: None,
         fs: None,
         tokio_handle: None,
         agent_rpc: None,

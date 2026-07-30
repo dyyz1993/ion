@@ -40,7 +40,7 @@ pub struct GuardsHit {
 
 #[derive(Debug, Clone)]
 pub struct LlmCallRecord {
-    pub purpose: String,   // "generate_checks" | "analyze_failure"
+    pub purpose: String, // "generate_checks" | "analyze_failure"
     pub model: String,
     pub checks_generated: Option<u32>,
     pub checks_quality: Option<String>,
@@ -60,7 +60,7 @@ pub struct ContextSnapshot {
 #[derive(Debug, Clone)]
 pub struct CheckRunRecord {
     pub name: String,
-    pub status: String,   // "pass" | "fail" | "error" | "skip"
+    pub status: String, // "pass" | "fail" | "error" | "skip"
     pub evidence_exit_code: Option<i64>,
 }
 
@@ -72,7 +72,7 @@ pub struct GoalRun {
     pub final_status: String,
     pub stopped_reason: String,
     pub total_iterations: u32,
-    pub outcome: String,           // "fixed" | "abandoned"
+    pub outcome: String, // "fixed" | "abandoned"
     pub diagnosis_hint: Option<String>,
 }
 
@@ -151,20 +151,33 @@ pub fn parse_goal_run(dir: &Path) -> Result<GoalRun, String> {
     let (final_status, stopped_reason, total_iterations, outcome, diagnosis_hint, goal_id) = {
         let report: serde_json::Value = std::fs::read_to_string(&report_path)
             .map_err(|e| format!("read final-report.json: {e}"))
-            .and_then(|s| serde_json::from_str(&s).map_err(|e| format!("parse final-report.json: {e}")))?;
+            .and_then(|s| {
+                serde_json::from_str(&s).map_err(|e| format!("parse final-report.json: {e}"))
+            })?;
         (
-            report["final_status"].as_str().unwrap_or("unknown").to_string(),
-            report["stopped_reason"].as_str().unwrap_or("unknown").to_string(),
+            report["final_status"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_string(),
+            report["stopped_reason"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_string(),
             report["total_iterations"].as_u64().unwrap_or(0) as u32,
             report["outcome"].as_str().unwrap_or("unknown").to_string(),
-            report["outcome_detail"]["diagnosis_hint"].as_str().map(|s| s.to_string()),
+            report["outcome_detail"]["diagnosis_hint"]
+                .as_str()
+                .map(|s| s.to_string()),
             report["goal_id"].as_str().unwrap_or("unknown").to_string(),
         )
     };
 
     // goal_id from iterations if report didn't have it.
     let goal_id = if goal_id == "unknown" {
-        iterations.first().map(|i| i.goal_id.clone()).unwrap_or_default()
+        iterations
+            .first()
+            .map(|i| i.goal_id.clone())
+            .unwrap_or_default()
     } else {
         goal_id
     };
@@ -183,45 +196,75 @@ pub fn parse_goal_run(dir: &Path) -> Result<GoalRun, String> {
 fn parse_iteration(v: &serde_json::Value) -> IterationRecord {
     let guards = v["guards_hit"].as_object();
     let guards_hit = GuardsHit {
-        repetitive: guards.and_then(|g| g.get("repetitive").and_then(|b| b.as_bool())).unwrap_or(false),
-        max_iter: guards.and_then(|g| g.get("max_iter").and_then(|b| b.as_bool())).unwrap_or(false),
-        max_duration: guards.and_then(|g| g.get("max_duration").and_then(|b| b.as_bool())).unwrap_or(false),
-        max_cost: guards.and_then(|g| g.get("max_cost").and_then(|b| b.as_bool())).unwrap_or(false),
-        low_confidence: guards.and_then(|g| g.get("low_confidence").and_then(|b| b.as_bool())).unwrap_or(false),
+        repetitive: guards
+            .and_then(|g| g.get("repetitive").and_then(|b| b.as_bool()))
+            .unwrap_or(false),
+        max_iter: guards
+            .and_then(|g| g.get("max_iter").and_then(|b| b.as_bool()))
+            .unwrap_or(false),
+        max_duration: guards
+            .and_then(|g| g.get("max_duration").and_then(|b| b.as_bool()))
+            .unwrap_or(false),
+        max_cost: guards
+            .and_then(|g| g.get("max_cost").and_then(|b| b.as_bool()))
+            .unwrap_or(false),
+        low_confidence: guards
+            .and_then(|g| g.get("low_confidence").and_then(|b| b.as_bool()))
+            .unwrap_or(false),
     };
 
-    let llm_calls = v["llm_calls"].as_array().map(|arr| {
-        arr.iter().map(|c| LlmCallRecord {
-            purpose: c["purpose"].as_str().unwrap_or("").to_string(),
-            model: c["model"].as_str().unwrap_or("").to_string(),
-            checks_generated: c["checks_generated"].as_u64().map(|n| n as u32),
-            checks_quality: c["checks_quality"].as_str().map(|s| s.to_string()),
-            analysis_used: c["analysis_used"].as_bool(),
-            led_to_fix: c["led_to_fix"].as_bool(),
-        }).collect()
-    }).unwrap_or_default();
+    let llm_calls = v["llm_calls"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .map(|c| LlmCallRecord {
+                    purpose: c["purpose"].as_str().unwrap_or("").to_string(),
+                    model: c["model"].as_str().unwrap_or("").to_string(),
+                    checks_generated: c["checks_generated"].as_u64().map(|n| n as u32),
+                    checks_quality: c["checks_quality"].as_str().map(|s| s.to_string()),
+                    analysis_used: c["analysis_used"].as_bool(),
+                    led_to_fix: c["led_to_fix"].as_bool(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     let ctx = &v["context_snapshot"];
     let context_snapshot = ContextSnapshot {
         recent_messages: ctx["recent_messages"].as_u64().unwrap_or(0) as u32,
-        file_changes: ctx["file_changes"].as_array()
-            .map(|a| a.iter().filter_map(|f| f.as_str().map(String::from)).collect())
+        file_changes: ctx["file_changes"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|f| f.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default(),
         git_diff_lines: ctx["git_diff_lines"].as_u64().unwrap_or(0),
         test_results_included: ctx["test_results_included"].as_bool().unwrap_or(false),
         skill_loaded: ctx["skill_loaded"].as_str().map(String::from),
     };
 
-    let checks_run = v["checks_run"].as_array().map(|arr| {
-        arr.iter().map(|c| CheckRunRecord {
-            name: c["name"].as_str().unwrap_or("").to_string(),
-            status: c["status"].as_str().unwrap_or("").to_string(),
-            evidence_exit_code: c["evidence"]["exit_code"].as_i64(),
-        }).collect()
-    }).unwrap_or_default();
+    let checks_run = v["checks_run"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .map(|c| CheckRunRecord {
+                    name: c["name"].as_str().unwrap_or("").to_string(),
+                    status: c["status"].as_str().unwrap_or("").to_string(),
+                    evidence_exit_code: c["evidence"]["exit_code"].as_i64(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
-    let failed_checks = v["failed_checks"].as_array()
-        .map(|a| a.iter().filter_map(|f| f.as_str().map(String::from)).collect())
+    let failed_checks = v["failed_checks"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|f| f.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
     IterationRecord {
@@ -268,22 +311,32 @@ pub fn analyze_goal_run(run: &GoalRun) -> Vec<Finding> {
 fn analyze_deadloop(run: &GoalRun) -> Vec<Finding> {
     let mut findings = Vec::new();
 
-    let repetitive_count = run.iterations.iter().filter(|i| i.guards_hit.repetitive).count();
+    let repetitive_count = run
+        .iterations
+        .iter()
+        .filter(|i| i.guards_hit.repetitive)
+        .count();
     let exhausted = run.outcome == "abandoned";
 
     // Pattern A: repetitive + abandoned = classic deadloop.
     if repetitive_count > 0 && exhausted {
         // Find which check(s) failed repeatedly.
-        let mut fail_counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+        let mut fail_counts: std::collections::HashMap<&str, u32> =
+            std::collections::HashMap::new();
         for it in &run.iterations {
             for fc in &it.failed_checks {
                 *fail_counts.entry(fc.as_str()).or_insert(0) += 1;
             }
         }
-        let stuck_check = fail_counts.iter().max_by_key(|(_, c)| **c).map(|(n, c)| (*n, *c));
+        let stuck_check = fail_counts
+            .iter()
+            .max_by_key(|(_, c)| **c)
+            .map(|(n, c)| (*n, *c));
 
         let check_detail = match stuck_check {
-            Some((name, count)) if count >= 2 => format!(" Check '{}' failed in {} iterations.", name, count),
+            Some((name, count)) if count >= 2 => {
+                format!(" Check '{}' failed in {} iterations.", name, count)
+            }
             _ => String::new(),
         };
 
@@ -328,8 +381,14 @@ fn analyze_model(run: &GoalRun) -> Vec<Finding> {
     let mut findings = Vec::new();
 
     // Check generate_checks model quality.
-    let gen_checks: Vec<&LlmCallRecord> = run.iterations.iter()
-        .flat_map(|i| i.llm_calls.iter().filter(|c| c.purpose == "generate_checks"))
+    let gen_checks: Vec<&LlmCallRecord> = run
+        .iterations
+        .iter()
+        .flat_map(|i| {
+            i.llm_calls
+                .iter()
+                .filter(|c| c.purpose == "generate_checks")
+        })
         .collect();
 
     if let Some(gc) = gen_checks.first() {
@@ -351,14 +410,26 @@ fn analyze_model(run: &GoalRun) -> Vec<Finding> {
     }
 
     // Check analyze_failure model effectiveness.
-    let analysis_calls: Vec<&LlmCallRecord> = run.iterations.iter()
-        .flat_map(|i| i.llm_calls.iter().filter(|c| c.purpose == "analyze_failure"))
+    let analysis_calls: Vec<&LlmCallRecord> = run
+        .iterations
+        .iter()
+        .flat_map(|i| {
+            i.llm_calls
+                .iter()
+                .filter(|c| c.purpose == "analyze_failure")
+        })
         .collect();
-    let never_used = analysis_calls.iter().filter(|c| c.analysis_used == Some(false)).count();
+    let never_used = analysis_calls
+        .iter()
+        .filter(|c| c.analysis_used == Some(false))
+        .count();
     let total_analysis = analysis_calls.len();
 
     if total_analysis >= 2 && never_used == total_analysis {
-        let model = analysis_calls.first().map(|c| c.model.as_str()).unwrap_or("?");
+        let model = analysis_calls
+            .first()
+            .map(|c| c.model.as_str())
+            .unwrap_or("?");
         findings.push(Finding {
             dimension: Dimension::Model,
             severity: Severity::Medium,
@@ -381,9 +452,20 @@ fn analyze_context(run: &GoalRun) -> Vec<Finding> {
     let mut findings = Vec::new();
 
     // Missing test results.
-    let no_tests = run.iterations.iter().filter(|i| !i.context_snapshot.test_results_included).count();
-    let low_conf = run.iterations.iter().filter(|i| i.guards_hit.low_confidence).count();
-    if no_tests == run.iterations.len() && !run.iterations.is_empty() && (low_conf > 0 || run.outcome == "abandoned") {
+    let no_tests = run
+        .iterations
+        .iter()
+        .filter(|i| !i.context_snapshot.test_results_included)
+        .count();
+    let low_conf = run
+        .iterations
+        .iter()
+        .filter(|i| i.guards_hit.low_confidence)
+        .count();
+    if no_tests == run.iterations.len()
+        && !run.iterations.is_empty()
+        && (low_conf > 0 || run.outcome == "abandoned")
+    {
         findings.push(Finding {
             dimension: Dimension::Context,
             severity: Severity::High,
@@ -394,7 +476,11 @@ fn analyze_context(run: &GoalRun) -> Vec<Finding> {
     }
 
     // Missing git diff.
-    let no_diff = run.iterations.iter().filter(|i| i.context_snapshot.git_diff_lines == 0).count();
+    let no_diff = run
+        .iterations
+        .iter()
+        .filter(|i| i.context_snapshot.git_diff_lines == 0)
+        .count();
     if no_diff == run.iterations.len() && !run.iterations.is_empty() && run.outcome == "abandoned" {
         findings.push(Finding {
             dimension: Dimension::Context,
@@ -521,16 +607,30 @@ mod tests {
     fn test_case_02_strict_check_finds_deadloop() {
         let run = parse_goal_run(&fixture_dir("case_02_deadloop_strict_check")).unwrap();
         let findings = analyze_goal_run(&run);
-        let deadloop_findings: Vec<_> = findings.iter().filter(|f| f.dimension == Dimension::Deadloop).collect();
-        assert!(!deadloop_findings.is_empty(), "must find deadloop finding for strict-check case");
-        assert!(deadloop_findings.iter().any(|f| f.severity == Severity::High), "should be high severity");
+        let deadloop_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.dimension == Dimension::Deadloop)
+            .collect();
+        assert!(
+            !deadloop_findings.is_empty(),
+            "must find deadloop finding for strict-check case"
+        );
+        assert!(
+            deadloop_findings
+                .iter()
+                .any(|f| f.severity == Severity::High),
+            "should be high severity"
+        );
     }
 
     #[test]
     fn test_case_03_weak_agent_finds_deadloop() {
         let run = parse_goal_run(&fixture_dir("case_03_deadloop_weak_agent")).unwrap();
         let findings = analyze_goal_run(&run);
-        assert!(findings.iter().any(|f| f.dimension == Dimension::Deadloop), "must find deadloop");
+        assert!(
+            findings.iter().any(|f| f.dimension == Dimension::Deadloop),
+            "must find deadloop"
+        );
     }
 
     // ── Q2 model ──
@@ -539,9 +639,19 @@ mod tests {
     fn test_case_04_weak_generate_checks_model() {
         let run = parse_goal_run(&fixture_dir("case_04_model_wrong_for_checks")).unwrap();
         let findings = analyze_goal_run(&run);
-        let model_findings: Vec<_> = findings.iter().filter(|f| f.dimension == Dimension::Model).collect();
-        assert!(!model_findings.is_empty(), "must flag weak generate_checks model");
-        assert!(model_findings.iter().any(|f| f.evidence.contains("deepseek-v4-flash")));
+        let model_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.dimension == Dimension::Model)
+            .collect();
+        assert!(
+            !model_findings.is_empty(),
+            "must flag weak generate_checks model"
+        );
+        assert!(
+            model_findings
+                .iter()
+                .any(|f| f.evidence.contains("deepseek-v4-flash"))
+        );
     }
 
     #[test]
@@ -549,7 +659,10 @@ mod tests {
         let run = parse_goal_run(&fixture_dir("case_05_model_wrong_for_analysis")).unwrap();
         let findings = analyze_goal_run(&run);
         assert!(
-            findings.iter().any(|f| f.dimension == Dimension::Model && f.evidence.contains("analysis_used=false")),
+            findings
+                .iter()
+                .any(|f| f.dimension == Dimension::Model
+                    && f.evidence.contains("analysis_used=false")),
             "must flag analyze_failure model never used"
         );
     }
@@ -561,7 +674,8 @@ mod tests {
         let run = parse_goal_run(&fixture_dir("case_06_missing_context_tests")).unwrap();
         let findings = analyze_goal_run(&run);
         assert!(
-            findings.iter().any(|f| f.dimension == Dimension::Context && f.evidence.contains("test_results_included=false")),
+            findings.iter().any(|f| f.dimension == Dimension::Context
+                && f.evidence.contains("test_results_included=false")),
             "must flag missing test results"
         );
     }
@@ -571,7 +685,10 @@ mod tests {
         let run = parse_goal_run(&fixture_dir("case_07_missing_context_diff")).unwrap();
         let findings = analyze_goal_run(&run);
         assert!(
-            findings.iter().any(|f| f.dimension == Dimension::Context && f.evidence.contains("git_diff_lines=0")),
+            findings
+                .iter()
+                .any(|f| f.dimension == Dimension::Context
+                    && f.evidence.contains("git_diff_lines=0")),
             "must flag missing git diff"
         );
     }
@@ -582,8 +699,15 @@ mod tests {
     fn test_case_01_healthy_no_findings() {
         let run = parse_goal_run(&fixture_dir("case_01_healthy")).unwrap();
         let findings = analyze_goal_run(&run);
-        let actionable: Vec<_> = findings.iter().filter(|f| f.severity != Severity::Low).collect();
-        assert!(actionable.is_empty(), "healthy case should produce no High/Medium findings, got: {:?}", actionable);
+        let actionable: Vec<_> = findings
+            .iter()
+            .filter(|f| f.severity != Severity::Low)
+            .collect();
+        assert!(
+            actionable.is_empty(),
+            "healthy case should produce no High/Medium findings, got: {:?}",
+            actionable
+        );
     }
 
     #[test]
@@ -591,8 +715,14 @@ mod tests {
         // case_10 had a repetitive hit but SUCCEEDED — should not be flagged as deadloop.
         let run = parse_goal_run(&fixture_dir("case_10_hard_won_success")).unwrap();
         let findings = analyze_goal_run(&run);
-        let deadloop: Vec<_> = findings.iter().filter(|f| f.dimension == Dimension::Deadloop).collect();
-        assert!(deadloop.is_empty(), "hard-won success should NOT be flagged as deadloop (repetitive guard worked correctly)");
+        let deadloop: Vec<_> = findings
+            .iter()
+            .filter(|f| f.dimension == Dimension::Deadloop)
+            .collect();
+        assert!(
+            deadloop.is_empty(),
+            "hard-won success should NOT be flagged as deadloop (repetitive guard worked correctly)"
+        );
     }
 
     // ── run_once (directory scan) ──
@@ -609,18 +739,29 @@ mod tests {
     fn test_run_once_all_fixtures() {
         let fixtures_root = env!("CARGO_MANIFEST_DIR").to_string() + "/tests/fixtures/goal-runs";
         let report = run_once(&fixtures_root).unwrap();
-        assert_eq!(report.analyzed_goals, 10, "should find all 10 fixture cases");
-        assert!(!report.issues_planned.is_empty(), "should have planned issues from problem cases");
+        assert_eq!(
+            report.analyzed_goals, 10,
+            "should find all 10 fixture cases"
+        );
+        assert!(
+            !report.issues_planned.is_empty(),
+            "should have planned issues from problem cases"
+        );
         // Healthy cases (01, 10) should not contribute issues.
         // 8 problem cases → at least 8 issues (one each minimum).
-        assert!(report.issues_planned.len() >= 6, "should plan at least 6 issues from 8 problem cases, got {}", report.issues_planned.len());
+        assert!(
+            report.issues_planned.len() >= 6,
+            "should plan at least 6 issues from 8 problem cases, got {}",
+            report.issues_planned.len()
+        );
     }
 
     // ── parse robustness ──
 
     #[test]
     fn test_parse_handles_missing_fields_gracefully() {
-        let json = serde_json::json!({"iter": 1, "goal_id": "g", "objective": "o", "all_passed": true});
+        let json =
+            serde_json::json!({"iter": 1, "goal_id": "g", "objective": "o", "all_passed": true});
         let rec = parse_iteration(&json);
         assert_eq!(rec.iter, 1);
         assert!(!rec.guards_hit.repetitive);

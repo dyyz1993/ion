@@ -293,11 +293,26 @@ mod tests {
     #[test]
     fn should_retry_aborts_on_insufficient_balance() {
         let c = RetryConfig::default();
-        assert_eq!(should_retry("Insufficient balance", 0, &c), RetryDecision::AbortPermanent);
-        assert_eq!(should_retry("insufficient_quota", 0, &c), RetryDecision::AbortPermanent);
-        assert_eq!(should_retry("402 Payment Required", 0, &c), RetryDecision::AbortPermanent);
-        assert_eq!(should_retry("quota exceeded", 0, &c), RetryDecision::AbortPermanent);
-        assert_eq!(should_retry("rate limit exceeded", 0, &c), RetryDecision::AbortPermanent);
+        assert_eq!(
+            should_retry("Insufficient balance", 0, &c),
+            RetryDecision::AbortPermanent
+        );
+        assert_eq!(
+            should_retry("insufficient_quota", 0, &c),
+            RetryDecision::AbortPermanent
+        );
+        assert_eq!(
+            should_retry("402 Payment Required", 0, &c),
+            RetryDecision::AbortPermanent
+        );
+        assert_eq!(
+            should_retry("quota exceeded", 0, &c),
+            RetryDecision::AbortPermanent
+        );
+        assert_eq!(
+            should_retry("rate limit exceeded", 0, &c),
+            RetryDecision::AbortPermanent
+        );
     }
 
     #[test]
@@ -328,28 +343,61 @@ mod tests {
         // Auth failures (401/403/invalid key) must not retry — retrying an
         // invalid or expired key wastes time and never succeeds.
         let c = RetryConfig::default();
-        assert_eq!(should_retry("HTTP 401 Unauthorized", 0, &c), RetryDecision::AbortPermanent);
-        assert_eq!(should_retry("403 Forbidden", 0, &c), RetryDecision::AbortPermanent);
-        assert_eq!(should_retry("AuthError: token expired", 0, &c), RetryDecision::AbortPermanent);
-        assert_eq!(should_retry("Invalid API key", 0, &c), RetryDecision::AbortPermanent);
+        assert_eq!(
+            should_retry("HTTP 401 Unauthorized", 0, &c),
+            RetryDecision::AbortPermanent
+        );
+        assert_eq!(
+            should_retry("403 Forbidden", 0, &c),
+            RetryDecision::AbortPermanent
+        );
+        assert_eq!(
+            should_retry("AuthError: token expired", 0, &c),
+            RetryDecision::AbortPermanent
+        );
+        assert_eq!(
+            should_retry("Invalid API key", 0, &c),
+            RetryDecision::AbortPermanent
+        );
         // Case-insensitive matching
-        assert_eq!(should_retry("invalid api key", 0, &c), RetryDecision::AbortPermanent);
+        assert_eq!(
+            should_retry("invalid api key", 0, &c),
+            RetryDecision::AbortPermanent
+        );
     }
 
     #[test]
     fn should_retry_on_timeout_and_server_errors() {
         let c = RetryConfig::default();
-        assert!(matches!(should_retry("timeout", 0, &c), RetryDecision::Retry(_)));
-        assert!(matches!(should_retry("500 Internal Server Error", 0, &c), RetryDecision::Retry(_)));
-        assert!(matches!(should_retry("connection refused", 0, &c), RetryDecision::Retry(_)));
-        assert!(matches!(should_retry("Service Unavailable", 0, &c), RetryDecision::Retry(_)));
+        assert!(matches!(
+            should_retry("timeout", 0, &c),
+            RetryDecision::Retry(_)
+        ));
+        assert!(matches!(
+            should_retry("500 Internal Server Error", 0, &c),
+            RetryDecision::Retry(_)
+        ));
+        assert!(matches!(
+            should_retry("connection refused", 0, &c),
+            RetryDecision::Retry(_)
+        ));
+        assert!(matches!(
+            should_retry("Service Unavailable", 0, &c),
+            RetryDecision::Retry(_)
+        ));
     }
 
     #[test]
     fn should_retry_transient_after_max_retries() {
         let c = RetryConfig::default();
-        assert_eq!(should_retry("timeout", 30, &c), RetryDecision::TransientExhausted);
-        assert_eq!(should_retry("timeout", 31, &c), RetryDecision::TransientExhausted);
+        assert_eq!(
+            should_retry("timeout", 30, &c),
+            RetryDecision::TransientExhausted
+        );
+        assert_eq!(
+            should_retry("timeout", 31, &c),
+            RetryDecision::TransientExhausted
+        );
     }
 
     #[test]
@@ -361,14 +409,22 @@ mod tests {
         assert!(d0 < d1, "backoff should grow: {d0:?} < {d1:?}");
         assert!(d1 < d2, "backoff should grow: {d1:?} < {d2:?}");
         // First retry at ~1s, second at ~2s, third at ~4s
-        assert!(d0.as_millis() >= 900 && d0.as_millis() <= 1100, "first ~1s: {:?}", d0);
-        assert!(d1.as_millis() >= 1800 && d1.as_millis() <= 2200, "second ~2s: {:?}", d1);
+        assert!(
+            d0.as_millis() >= 900 && d0.as_millis() <= 1100,
+            "first ~1s: {:?}",
+            d0
+        );
+        assert!(
+            d1.as_millis() >= 1800 && d1.as_millis() <= 2200,
+            "second ~2s: {:?}",
+            d1
+        );
     }
 
     #[test]
     fn backoff_caps_at_max_delay() {
         let c = RetryConfig {
-            max_delay: Duration::from_secs(60),  // cap at 1 minute for fast test
+            max_delay: Duration::from_secs(60), // cap at 1 minute for fast test
             fixed_delay: Duration::from_secs(30), // after cap, 30s
             ..Default::default()
         };
@@ -380,8 +436,14 @@ mod tests {
     #[test]
     fn should_retry_aborts_on_credit_errors() {
         let c = RetryConfig::default();
-        assert_eq!(should_retry("InsufficientBalance", 0, &c), RetryDecision::AbortPermanent);
-        assert_eq!(should_retry("insufficient balance in your account", 0, &c), RetryDecision::AbortPermanent);
+        assert_eq!(
+            should_retry("InsufficientBalance", 0, &c),
+            RetryDecision::AbortPermanent
+        );
+        assert_eq!(
+            should_retry("insufficient balance in your account", 0, &c),
+            RetryDecision::AbortPermanent
+        );
     }
 
     #[tokio::test]
@@ -411,11 +473,15 @@ mod tests {
                     Ok(42)
                 }
             }
-        }).await;
+        })
+        .await;
 
         assert_eq!(result.unwrap(), 42);
-        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 3,
-            "should have failed 2 times then succeed");
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "should have failed 2 times then succeed"
+        );
     }
 
     #[tokio::test]
@@ -427,11 +493,15 @@ mod tests {
         };
         let result = retry_async(&c, || async {
             Err::<i32, String>("Insufficient balance".into())
-        }).await;
+        })
+        .await;
 
         match result {
             Err(RetryError::Permanent { reason, .. }) => {
-                assert!(reason.contains("Insufficient"), "should mention insufficient");
+                assert!(
+                    reason.contains("Insufficient"),
+                    "should mention insufficient"
+                );
             }
             _ => panic!("should have aborted permanently"),
         }
@@ -444,14 +514,15 @@ mod tests {
             initial_delay: Duration::from_millis(1),
             ..Default::default()
         };
-        let result = retry_async(&c, || async {
-            Err::<i32, String>("timeout".into())
-        }).await;
+        let result = retry_async(&c, || async { Err::<i32, String>("timeout".into()) }).await;
 
         match result {
             Err(RetryError::Transient { attempts, .. }) => {
                 // 首次尝试 + 3 次重试 = 4 次总尝试
-                assert!(attempts >= 3, "should have attempted at least 3 times: {attempts}");
+                assert!(
+                    attempts >= 3,
+                    "should have attempted at least 3 times: {attempts}"
+                );
             }
             other => panic!("should have returned transient, got: {other:?}"),
         }
@@ -463,11 +534,15 @@ mod tests {
         // 只在封顶前验证抖动（指数退避阶段）
         // 封顶后返回 fixed_delay，没有抖动
         // max_delay=60, 2^5=32 < 60, 2^6=64 > 60 → cap at i=6
-        for i in 0..5 {  // i=5 gives 32 < 60, still exponential
+        for i in 0..5 {
+            // i=5 gives 32 < 60, still exponential
             let d = backoff_duration(i, &c);
             let expected = c.initial_delay.as_secs_f64() * c.multiplier.powi(i as i32);
             let ratio = d.as_secs_f64() / expected;
-            assert!(ratio >= 0.9 && ratio <= 1.1, "jitter out of bounds at {i}: {ratio}");
+            assert!(
+                ratio >= 0.9 && ratio <= 1.1,
+                "jitter out of bounds at {i}: {ratio}"
+            );
         }
     }
 
@@ -475,8 +550,8 @@ mod tests {
     // RetryTestHarness — 结构化重试测试框架
     // =========================================================================
 
-    use std::sync::atomic::AtomicU32;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicU32;
 
     #[derive(Debug, Clone)]
     #[allow(dead_code)]
@@ -540,20 +615,29 @@ mod tests {
                     match &decision {
                         RetryDecision::AbortPermanent => {
                             return Err(RetryError::Permanent {
-                                reason: err_msg.clone(), last_error: err_msg, attempts: attempt + 1,
+                                reason: err_msg.clone(),
+                                last_error: err_msg,
+                                attempts: attempt + 1,
                             });
                         }
                         RetryDecision::TransientExhausted => {
                             return Err(RetryError::Transient {
-                                error: err_msg, attempts: attempt + 1, last_delay: cfg.fixed_delay,
+                                error: err_msg,
+                                attempts: attempt + 1,
+                                last_delay: cfg.fixed_delay,
                             });
                         }
-                        RetryDecision::Retry(_) => { last_error = Some(err_msg); }
+                        RetryDecision::Retry(_) => {
+                            last_error = Some(err_msg);
+                        }
                         RetryDecision::Success => unreachable!(),
                     }
                 } else {
                     self.attempts.push(AttemptRecord {
-                        attempt, error: "".into(), decision: RetryDecision::Success, elapsed_ms: elapsed,
+                        attempt,
+                        error: "".into(),
+                        decision: RetryDecision::Success,
+                        elapsed_ms: elapsed,
                     });
                     return Ok(42);
                 }
@@ -561,7 +645,8 @@ mod tests {
 
             Err(RetryError::Transient {
                 error: last_error.unwrap_or_else(|| "unknown".into()),
-                attempts: 0, last_delay: cfg.fixed_delay,
+                attempts: 0,
+                last_delay: cfg.fixed_delay,
             })
         }
     }
@@ -573,20 +658,41 @@ mod tests {
     #[tokio::test]
     async fn harness_multiple_error_modes() {
         let cfg = RetryConfig {
-            max_retries: 10, initial_delay: Duration::from_millis(1),
-            max_delay: Duration::from_millis(50), fixed_delay: Duration::from_millis(30),
+            max_retries: 10,
+            initial_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(50),
+            fixed_delay: Duration::from_millis(30),
             multiplier: 2.0,
         };
-        let errs = vec!["timeout".into(), "500".into(), "conn_reset".into(), "timeout".into(), "Insufficient balance".into()];
+        let errs = vec![
+            "timeout".into(),
+            "500".into(),
+            "conn_reset".into(),
+            "timeout".into(),
+            "Insufficient balance".into(),
+        ];
         let mut h = RetryTestHarness::new(cfg, errs);
         let result = h.run_with_hook(|_, _, _| {}).await;
         match result {
-            Err(RetryError::Permanent { reason, attempts, .. }) => {
-                assert!(reason.contains("Insufficient"), "abort on insufficient: {reason}");
+            Err(RetryError::Permanent {
+                reason, attempts, ..
+            }) => {
+                assert!(
+                    reason.contains("Insufficient"),
+                    "abort on insufficient: {reason}"
+                );
                 assert!(attempts <= 5, "within 5 attempts: {attempts}");
                 assert_eq!(h.attempts.len(), 5);
-                for i in 0..4 { assert!(matches!(h.attempts[i].decision, RetryDecision::Retry(_)), "{i} retry"); }
-                assert!(matches!(h.attempts[4].decision, RetryDecision::AbortPermanent));
+                for i in 0..4 {
+                    assert!(
+                        matches!(h.attempts[i].decision, RetryDecision::Retry(_)),
+                        "{i} retry"
+                    );
+                }
+                assert!(matches!(
+                    h.attempts[4].decision,
+                    RetryDecision::AbortPermanent
+                ));
             }
             _ => panic!("should abort"),
         }
@@ -595,8 +701,10 @@ mod tests {
     #[tokio::test]
     async fn harness_backoff_grows() {
         let cfg = RetryConfig {
-            max_retries: 5, initial_delay: Duration::from_millis(5),
-            max_delay: Duration::from_millis(1000), fixed_delay: Duration::from_millis(500),
+            max_retries: 5,
+            initial_delay: Duration::from_millis(5),
+            max_delay: Duration::from_millis(1000),
+            fixed_delay: Duration::from_millis(500),
             multiplier: 2.0,
         };
         let errs = vec!["timeout".into(); 6];
@@ -604,15 +712,21 @@ mod tests {
         let _ = h.run_with_hook(|_, _, _| {}).await;
         assert!(h.attempts.len() >= 3);
         for i in 1..h.attempts.len().min(6) {
-            assert!(h.attempts[i].elapsed_ms > h.attempts[i-1].elapsed_ms,
-                "elapsed grows {i}: {} < {}", h.attempts[i-1].elapsed_ms, h.attempts[i].elapsed_ms);
+            assert!(
+                h.attempts[i].elapsed_ms > h.attempts[i - 1].elapsed_ms,
+                "elapsed grows {i}: {} < {}",
+                h.attempts[i - 1].elapsed_ms,
+                h.attempts[i].elapsed_ms
+            );
         }
     }
 
     #[tokio::test]
     async fn harness_success_stops_retrying() {
         let cfg = RetryConfig {
-            max_retries: 10, initial_delay: Duration::from_millis(1), ..Default::default()
+            max_retries: 10,
+            initial_delay: Duration::from_millis(1),
+            ..Default::default()
         };
         let mut h = RetryTestHarness::new(cfg, vec!["timeout".into(), "timeout".into()]);
         assert_eq!(h.run_with_hook(|_, _, _| {}).await.unwrap(), 42);
@@ -621,15 +735,31 @@ mod tests {
 
     #[tokio::test]
     async fn harness_no_money_variants() {
-        for err in &["insufficient_quota", "InsufficientBalance", "402 Payment Required", "quota exceeded", "rate limit exceeded"] {
+        for err in &[
+            "insufficient_quota",
+            "InsufficientBalance",
+            "402 Payment Required",
+            "quota exceeded",
+            "rate limit exceeded",
+        ] {
             let mut h = RetryTestHarness::new(RetryConfig::default(), vec![err.to_string()]);
-            assert!(matches!(h.run_with_hook(|_, _, _| {}).await, Err(RetryError::Permanent { .. })), "abort on: {err}");
+            assert!(
+                matches!(
+                    h.run_with_hook(|_, _, _| {}).await,
+                    Err(RetryError::Permanent { .. })
+                ),
+                "abort on: {err}"
+            );
         }
     }
 
     #[tokio::test]
     async fn harness_exhaustion_is_transient() {
-        let cfg = RetryConfig { max_retries: 2, initial_delay: Duration::from_millis(1), ..Default::default() };
+        let cfg = RetryConfig {
+            max_retries: 2,
+            initial_delay: Duration::from_millis(1),
+            ..Default::default()
+        };
         let mut h = RetryTestHarness::new(cfg, vec!["timeout".into(); 5]);
         let result = h.run_with_hook(|_, _, _| {}).await;
         match result {

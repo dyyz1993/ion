@@ -25,7 +25,11 @@ async fn local_runtime_spawn_foreground_echo() {
         log_path: None,
     };
     let handle: ProcessHandle = rt.spawn_process(req).await.unwrap();
-    assert!(handle.stdout.contains("hello-world"), "stdout={}", handle.stdout);
+    assert!(
+        handle.stdout.contains("hello-world"),
+        "stdout={}",
+        handle.stdout
+    );
     assert_eq!(handle.exit_code, Some(0));
 }
 
@@ -56,10 +60,17 @@ async fn local_runtime_spawn_background_and_kill() {
         log_path: None,
     };
     let handle = rt.spawn_process(req).await.unwrap();
-    assert!(handle.os_pid > 0, "os_pid should be > 0, got {}", handle.os_pid);
+    assert!(
+        handle.os_pid > 0,
+        "os_pid should be > 0, got {}",
+        handle.os_pid
+    );
     assert!(!handle.bid.is_empty(), "bid should not be empty");
     // 后台模式：exit_code 应为 None（进程仍在跑）
-    assert!(handle.exit_code.is_none(), "background: exit_code should be None");
+    assert!(
+        handle.exit_code.is_none(),
+        "background: exit_code should be None"
+    );
 
     // 终止进程
     rt.kill_process(handle.os_pid).await.unwrap();
@@ -94,7 +105,7 @@ async fn local_runtime_spawn_background_timeout() {
     let rt = LocalRuntime::new();
     let req = SpawnProcessRequest {
         command: "echo done && sleep 10".into(),
-        timeout_secs: 2,  // 2 秒超时
+        timeout_secs: 2, // 2 秒超时
         background: true,
         log_path: None,
     };

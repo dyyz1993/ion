@@ -7,12 +7,12 @@
 //!
 //! 验证链路：HooksConfig::load_fresh → handlers_for_event → matcher → run_handler(command) → interpret → HookOutcome
 
+use ion::hooks::HooksConfig;
 use ion::hooks::handler_runner::{self, HookExecContext};
 use ion::hooks::matcher;
-use ion::hooks::HooksConfig;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// 全局计数器：每次调用拿到唯一临时目录，避免并行测试互相踩同一个目录。
 static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -30,7 +30,9 @@ fn setup_test_dir() -> PathBuf {
     std::fs::create_dir_all(&scripts_dir);
 
     // hooks.json：PreToolUse + matcher=bash + command handler
-    std::fs::write(ion_dir.join("hooks.json"), r#"{
+    std::fs::write(
+        ion_dir.join("hooks.json"),
+        r#"{
   "version": 1,
   "hooks": {
     "PreToolUse": [
@@ -53,7 +55,9 @@ fn setup_test_dir() -> PathBuf {
       }
     ]
   }
-}"#).unwrap();
+}"#,
+    )
+    .unwrap();
 
     // 拦截脚本
     std::fs::write(scripts_dir.join("block_no_verify.sh"), r#"#!/bin/bash
@@ -70,7 +74,11 @@ exit 0
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(scripts_dir.join("block_no_verify.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(
+            scripts_dir.join("block_no_verify.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
     }
 
     dir
@@ -92,7 +100,11 @@ async fn e2e_config_loads_from_project_dir() {
 async fn e2e_handler_count() {
     let dir = setup_test_dir();
     let config = HooksConfig::load_fresh(Some(&dir));
-    assert_eq!(config.handler_count(), 2, "PreToolUse 1 + UserPromptSubmit 1");
+    assert_eq!(
+        config.handler_count(),
+        2,
+        "PreToolUse 1 + UserPromptSubmit 1"
+    );
 }
 
 #[tokio::test]
@@ -165,8 +177,8 @@ async fn e2e_command_handler_allows_normal_commit() {
         project_dir: dir.to_string_lossy().to_string(),
         event_name: "PreToolUse".into(),
         runtime: None,
-            registry: None,
-            model: None,
+        registry: None,
+        model: None,
         manager_bridge: None,
     };
 
@@ -197,8 +209,8 @@ async fn e2e_user_prompt_submit_injects_context() {
         project_dir: dir.to_string_lossy().to_string(),
         event_name: "UserPromptSubmit".into(),
         runtime: None,
-            registry: None,
-            model: None,
+        registry: None,
+        model: None,
         manager_bridge: None,
     };
 
@@ -207,7 +219,11 @@ async fn e2e_user_prompt_submit_injects_context() {
     // ⭐ 核心验证：不 block，但应该有 additionalContext（echo 的输出）
     assert!(!outcome.block, "UserPromptSubmit 不应该 block");
     assert!(
-        outcome.additional_context.as_deref().unwrap_or("").contains("项目约定"),
+        outcome
+            .additional_context
+            .as_deref()
+            .unwrap_or("")
+            .contains("项目约定"),
         "应该注入 echo 的输出作为 additionalContext，实际: {:?}",
         outcome.additional_context
     );
@@ -222,13 +238,17 @@ async fn e2e_hot_reload_picks_up_changes() {
     assert_eq!(config1.event_count(), 2);
 
     // 修改 hooks.json，加一个 Stop 事件
-    std::fs::write(dir.join(".ion").join("hooks.json"), r#"{
+    std::fs::write(
+        dir.join(".ion").join("hooks.json"),
+        r#"{
   "version": 1,
   "hooks": {
     "PreToolUse": [{"matcher":"bash","hooks":[{"type":"command","command":"echo hi"}]}],
     "Stop": [{"type":"command","command":"echo bye"}]
   }
-}"#).unwrap();
+}"#,
+    )
+    .unwrap();
 
     // 第二次读——不用重启，load_fresh 重新读文件
     let config2 = HooksConfig::load_fresh(Some(&dir));
@@ -242,13 +262,19 @@ async fn e2e_hot_reload_picks_up_changes() {
 /// Stop 事件：脚本 exit 2 → block + reason（模拟测试失败）
 #[tokio::test]
 async fn e2e_stop_event_blocks_with_reason() {
-    let dir = PathBuf::from(format!("/tmp/ion_hooks_b3_block_{}_{}", std::process::id(), DIR_SEQ.fetch_add(1, Ordering::SeqCst)));
+    let dir = PathBuf::from(format!(
+        "/tmp/ion_hooks_b3_block_{}_{}",
+        std::process::id(),
+        DIR_SEQ.fetch_add(1, Ordering::SeqCst)
+    ));
     let ion_dir = dir.join(".ion");
     let scripts_dir = ion_dir.join("scripts");
     std::fs::create_dir_all(&scripts_dir);
 
     // Stop 事件 + loop_limit=3
-    std::fs::write(ion_dir.join("hooks.json"), r#"{
+    std::fs::write(
+        ion_dir.join("hooks.json"),
+        r#"{
   "version": 1,
   "hooks": {
     "Stop": [
@@ -260,20 +286,30 @@ async fn e2e_stop_event_blocks_with_reason() {
       }
     ]
   }
-}"#).unwrap();
+}"#,
+    )
+    .unwrap();
 
     // 模拟测试失败的脚本（FAIL 文件存在 = 失败）
-    std::fs::write(scripts_dir.join("check_tests.sh"), r#"#!/bin/bash
+    std::fs::write(
+        scripts_dir.join("check_tests.sh"),
+        r#"#!/bin/bash
 if [ -f .ion/FAIL ]; then
     echo '{"decision":"block","reason":"测试失败，请修复"}'
     exit 2
 fi
 exit 0
-"#).unwrap();
+"#,
+    )
+    .unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(scripts_dir.join("check_tests.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(
+            scripts_dir.join("check_tests.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
     }
 
     // 创建 FAIL 文件模拟测试失败
@@ -297,8 +333,8 @@ exit 0
         project_dir: dir.to_string_lossy().to_string(),
         event_name: "Stop".into(),
         runtime: None,
-            registry: None,
-            model: None,
+        registry: None,
+        model: None,
         manager_bridge: None,
     };
 
@@ -319,7 +355,11 @@ exit 0
 /// Stop 事件：测试通过时不 block（exit 0）
 #[tokio::test]
 async fn e2e_stop_event_passes_when_tests_ok() {
-    let dir = PathBuf::from(format!("/tmp/ion_hooks_b3_pass_{}_{}", std::process::id(), DIR_SEQ.fetch_add(1, Ordering::SeqCst)));
+    let dir = PathBuf::from(format!(
+        "/tmp/ion_hooks_b3_pass_{}_{}",
+        std::process::id(),
+        DIR_SEQ.fetch_add(1, Ordering::SeqCst)
+    ));
     let ion_dir = dir.join(".ion");
     let scripts_dir = ion_dir.join("scripts");
     std::fs::create_dir_all(&scripts_dir);
@@ -332,17 +372,25 @@ async fn e2e_stop_event_passes_when_tests_ok() {
 }"#).unwrap();
 
     // 同样的脚本，但不创建 FAIL 文件（测试通过）
-    std::fs::write(scripts_dir.join("check_tests.sh"), r#"#!/bin/bash
+    std::fs::write(
+        scripts_dir.join("check_tests.sh"),
+        r#"#!/bin/bash
 if [ -f .ion/FAIL ]; then
     echo '{"decision":"block","reason":"测试失败"}'
     exit 2
 fi
 exit 0
-"#).unwrap();
+"#,
+    )
+    .unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(scripts_dir.join("check_tests.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(
+            scripts_dir.join("check_tests.sh"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
     }
     // 不创建 FAIL 文件
 
@@ -352,7 +400,14 @@ exit 0
     let stdin = serde_json::json!({"last_assistant_message":"done","session_id":"sess","cwd":dir.to_string_lossy().to_string(),"hook_event_name":"Stop"});
     // current_dir 由 handler_runner 透传（ctx.project_dir → spawn bash），
     // 不再需要进程级 set_current_dir（并发安全）。
-    let ctx = HookExecContext { project_dir: dir.to_string_lossy().to_string(), event_name: "Stop".into(), runtime: None, registry: None, model: None, manager_bridge: None };
+    let ctx = HookExecContext {
+        project_dir: dir.to_string_lossy().to_string(),
+        event_name: "Stop".into(),
+        runtime: None,
+        registry: None,
+        model: None,
+        manager_bridge: None,
+    };
 
     let outcome = handler_runner::run_handler(handler, stdin, &ctx).await;
     assert!(!outcome.block, "测试通过时 Stop 不应该 block");
@@ -371,13 +426,19 @@ async fn e2e_agent_handler_with_runtime_does_not_panic() {
 
     let handler = HookHandler {
         handler_type: HandlerType::Agent,
-        command: None, url: None,
+        command: None,
+        url: None,
         prompt: Some("读文件并报告".into()),
         agent: Some("default".into()),
-        server: None, tool: None,
-        input: None, model: None, timeout: Some(10),
+        server: None,
+        tool: None,
+        input: None,
+        model: None,
+        timeout: Some(10),
         if_clause: None,
-        r#async: false, async_rewake: false, once: false,
+        r#async: false,
+        async_rewake: false,
+        once: false,
         status_message: None,
         allowed_tools: Some(vec!["read".into()]),
         max_turns: Some(5),
@@ -395,16 +456,22 @@ async fn e2e_agent_handler_with_runtime_does_not_panic() {
         project_dir: "/tmp".into(),
         event_name: "SubagentStop".into(),
         runtime: Some(rt),
-            registry: None,
-            model: None,
+        registry: None,
+        model: None,
         manager_bridge: None,
     };
 
     // ⭐ 核心验证：不 panic，返回默认 outcome（不 block）
     let outcome = handler_runner::run_handler(&handler, stdin, &ctx).await;
-    assert!(!outcome.block, "agent handler spawn 失败时不应 block 主流程");
+    assert!(
+        !outcome.block,
+        "agent handler spawn 失败时不应 block 主流程"
+    );
     // LocalRuntime 的 spawn_worker 返回 Err，所以 outcome 是默认空值
-    assert!(outcome.additional_context.is_none(), "spawn 失败不应有 additionalContext");
+    assert!(
+        outcome.additional_context.is_none(),
+        "spawn 失败不应有 additionalContext"
+    );
 }
 
 /// agent handler：没配 prompt 时返回默认值（不 panic）
@@ -414,14 +481,22 @@ async fn e2e_agent_handler_no_prompt_returns_default() {
 
     let handler = HookHandler {
         handler_type: HandlerType::Agent,
-        command: None, url: None,
+        command: None,
+        url: None,
         prompt: None, // 没配 prompt
         agent: None,
-        server: None, tool: None,
-        input: None, model: None, timeout: None,
+        server: None,
+        tool: None,
+        input: None,
+        model: None,
+        timeout: None,
         if_clause: None,
-        r#async: false, async_rewake: false, once: false,
-        status_message: None, allowed_tools: None, max_turns: None,
+        r#async: false,
+        async_rewake: false,
+        once: false,
+        status_message: None,
+        allowed_tools: None,
+        max_turns: None,
     };
 
     let rt: Arc<dyn ion::runtime::Runtime> = Arc::new(ion::runtime::LocalRuntime::new());
@@ -429,8 +504,8 @@ async fn e2e_agent_handler_no_prompt_returns_default() {
         project_dir: "/tmp".into(),
         event_name: "Stop".into(),
         runtime: Some(rt),
-            registry: None,
-            model: None,
+        registry: None,
+        model: None,
         manager_bridge: None,
     };
 

@@ -7,9 +7,9 @@
 //! 每个 turn 有变更时写一个 step-snapshot（baseline_tree_hash + snapshot_tree_hash + diff）
 //! 回滚时读 tree 写回，O(1)，不需要回放 delta 链
 
+use super::object_store::ObjectStore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use super::object_store::ObjectStore;
 
 /// tree 条目：path → content_hash
 pub type TreeEntries = HashMap<String, String>;
@@ -19,7 +19,8 @@ pub type TreeEntries = HashMap<String, String>;
 pub fn serialize_tree(entries: &TreeEntries) -> String {
     let mut pairs: Vec<(&String, &String)> = entries.iter().collect();
     pairs.sort_by(|a, b| a.0.cmp(b.0));
-    pairs.iter()
+    pairs
+        .iter()
         .map(|(path, hash)| format!("{}\0{}", path, hash))
         .collect::<Vec<_>>()
         .join("\n")
@@ -136,8 +137,14 @@ mod tests {
     use super::*;
 
     fn tmp_store() -> (std::path::PathBuf, ObjectStore) {
-        let tmp = std::env::temp_dir().join(format!("fs_tree_test_{}_{}", std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos()));
+        let tmp = std::env::temp_dir().join(format!(
+            "fs_tree_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
         let store = ObjectStore::new_at(tmp.clone());
         (tmp, store)
     }
@@ -160,7 +167,7 @@ mod tests {
         files.insert("a.txt".into(), b"hello".to_vec());
 
         let (hash1, _) = write_tree(&store, &files);
-        let (hash2, _) = write_tree(&store, &files);  // 相同内容
+        let (hash2, _) = write_tree(&store, &files); // 相同内容
         assert_eq!(hash1, hash2, "相同文件集应产生相同 tree hash");
 
         std::fs::remove_dir_all(&tmp).ok();
@@ -185,14 +192,14 @@ mod tests {
     #[test]
     fn compute_diff_added_modified_deleted() {
         let mut old = HashMap::new();
-        old.insert("a.rs".into(), "h1".into());   // 不变
-        old.insert("b.rs".into(), "h2".into());   // 会修改
-        old.insert("c.rs".into(), "h3".into());   // 会删除
+        old.insert("a.rs".into(), "h1".into()); // 不变
+        old.insert("b.rs".into(), "h2".into()); // 会修改
+        old.insert("c.rs".into(), "h3".into()); // 会删除
 
         let mut new = HashMap::new();
-        new.insert("a.rs".into(), "h1".into());   // 不变
+        new.insert("a.rs".into(), "h1".into()); // 不变
         new.insert("b.rs".into(), "h2_new".into()); // 修改
-        new.insert("d.rs".into(), "h4".into());   // 新增
+        new.insert("d.rs".into(), "h4".into()); // 新增
 
         let diff = compute_diff(&old, &new);
         assert_eq!(diff.added, vec!["d.rs"]);
@@ -278,22 +285,36 @@ mod tests {
         //    前 5 个文件每轮变 → 100 轮 × 5 = 500 个 file object
         //    tree 对象：100 轮 + 1 baseline = 101 个 tree（每轮 tree 内容不同）
         //    理论上限约 601，但 tree 去重可能更少
-        println!("baseline: {} objects, {} bytes", baseline_count, baseline_size);
-        println!("after 100 turns: {} objects, {} bytes", final_count, final_size);
-        println!("growth: {}x objects, {}x size",
+        println!(
+            "baseline: {} objects, {} bytes",
+            baseline_count, baseline_size
+        );
+        println!(
+            "after 100 turns: {} objects, {} bytes",
+            final_count, final_size
+        );
+        println!(
+            "growth: {}x objects, {}x size",
             final_count as f64 / baseline_count.max(1) as f64,
-            final_size as f64 / baseline_size.max(1) as f64);
+            final_size as f64 / baseline_size.max(1) as f64
+        );
 
         // 核心断言：不是指数增长
         // 100 轮 × 10 文件如果是全量复制 = 1000 object
         // content-addressable 去重后应远小于此
-        assert!(final_count < 1000,
-            "object 数 ({}) 应远小于全量复制的 1000（去重生效）", final_count);
+        assert!(
+            final_count < 1000,
+            "object 数 ({}) 应远小于全量复制的 1000（去重生效）",
+            final_count
+        );
 
         // 线性增长验证：前 5 个文件每轮 1 个新 object = ~500 + 101 tree ≈ 601
         // 允许一定误差，但不应超过 700
-        assert!(final_count < 700,
-            "object 数 ({}) 应接近线性 ~600，不应指数膨胀", final_count);
+        assert!(
+            final_count < 700,
+            "object 数 ({}) 应接近线性 ~600，不应指数膨胀",
+            final_count
+        );
 
         std::fs::remove_dir_all(&tmp).ok();
     }
@@ -318,9 +339,11 @@ mod tests {
         let count50 = store.list_objects().len();
 
         // object 数完全不变（零开销）
-        assert_eq!(count1, count50,
+        assert_eq!(
+            count1, count50,
             "50 轮无变更 turn 后 object 数应不变 ({} → {})：零开销",
-            count1, count50);
+            count1, count50
+        );
 
         std::fs::remove_dir_all(&tmp).ok();
     }
@@ -357,9 +380,14 @@ mod tests {
         }
 
         let count_after_gc = store.list_objects().len();
-        println!("before GC: {} objects, after GC: {} objects", count_before_gc, count_after_gc);
-        assert!(count_after_gc < count_before_gc,
-            "GC 应回收不再引用的 object（v1 内容 + v1 tree）");
+        println!(
+            "before GC: {} objects, after GC: {} objects",
+            count_before_gc, count_after_gc
+        );
+        assert!(
+            count_after_gc < count_before_gc,
+            "GC 应回收不再引用的 object（v1 内容 + v1 tree）"
+        );
 
         // v2 tree 仍可读（active 保护的）
         let v2_tree_back = read_tree(&store, &hash_v2);

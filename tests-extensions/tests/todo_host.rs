@@ -289,8 +289,7 @@ impl Harness {
         let mut store = Store::new(&engine, ctx);
 
         // 16 pages (1 MB) of linear memory. Matches the host runtime.
-        let memory =
-            Memory::new(&mut store, MemoryType::new(16, None)).expect("Memory::new");
+        let memory = Memory::new(&mut store, MemoryType::new(16, None)).expect("Memory::new");
 
         let mut linker = build_linker(&engine);
         linker
@@ -358,7 +357,14 @@ impl Harness {
         let result_len = func
             .call(
                 &mut self.store,
-                (name_offset, name_len, args_offset, args_len, out_offset, out_capacity),
+                (
+                    name_offset,
+                    name_len,
+                    args_offset,
+                    args_len,
+                    out_offset,
+                    out_capacity,
+                ),
             )
             .expect("call execute_tool");
 
@@ -381,11 +387,31 @@ fn test_extension_registers_all_tools() {
     let mut h = Harness::load();
     h.call_init();
     let tools = h.registered_tools();
-    assert!(tools.contains(&"todo_add".to_string()), "tools: {:?}", tools);
-    assert!(tools.contains(&"todo_list".to_string()), "tools: {:?}", tools);
-    assert!(tools.contains(&"todo_done".to_string()), "tools: {:?}", tools);
-    assert!(tools.contains(&"todo_remove".to_string()), "tools: {:?}", tools);
-    assert!(tools.contains(&"todo_clean".to_string()), "tools: {:?}", tools);
+    assert!(
+        tools.contains(&"todo_add".to_string()),
+        "tools: {:?}",
+        tools
+    );
+    assert!(
+        tools.contains(&"todo_list".to_string()),
+        "tools: {:?}",
+        tools
+    );
+    assert!(
+        tools.contains(&"todo_done".to_string()),
+        "tools: {:?}",
+        tools
+    );
+    assert!(
+        tools.contains(&"todo_remove".to_string()),
+        "tools: {:?}",
+        tools
+    );
+    assert!(
+        tools.contains(&"todo_clean".to_string()),
+        "tools: {:?}",
+        tools
+    );
 }
 
 #[test]

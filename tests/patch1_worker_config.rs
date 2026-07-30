@@ -24,7 +24,12 @@ fn t01_extension_worker_config_new_fields_serialize() {
         initial_prompt: Some("扫描 docs/ 同步大纲".into()),
         worktree: None,
         relation: Some("child".into()),
-        allowed_tools: Some(vec!["read".into(), "write".into(), "edit".into(), "bash".into()]),
+        allowed_tools: Some(vec![
+            "read".into(),
+            "write".into(),
+            "edit".into(),
+            "bash".into(),
+        ]),
         disallowed_tools: Some(vec!["spawn_worker".into()]),
         max_turns: Some(100),
     };
@@ -35,11 +40,15 @@ fn t01_extension_worker_config_new_fields_serialize() {
     assert_eq!(json["relation"], "child");
     assert_eq!(json["max_turns"], 100);
 
-    let allowed = json["allowed_tools"].as_array().expect("allowed_tools is array");
+    let allowed = json["allowed_tools"]
+        .as_array()
+        .expect("allowed_tools is array");
     assert_eq!(allowed.len(), 4);
     assert_eq!(allowed[0], "read");
 
-    let disallowed = json["disallowed_tools"].as_array().expect("disallowed_tools is array");
+    let disallowed = json["disallowed_tools"]
+        .as_array()
+        .expect("disallowed_tools is array");
     assert_eq!(disallowed.len(), 1);
     assert_eq!(disallowed[0], "spawn_worker");
 }
@@ -80,7 +89,8 @@ fn t02_extension_config_to_worker_config_passthrough() {
     });
 
     // Manager 端反序列化（serde_json::from_value）
-    let worker_cfg: WorkerCreateConfig = serde_json::from_value(params).expect("deserialize to WorkerCreateConfig");
+    let worker_cfg: WorkerCreateConfig =
+        serde_json::from_value(params).expect("deserialize to WorkerCreateConfig");
 
     assert_eq!(worker_cfg.session.as_deref(), Some("sess_passthrough"));
     assert_eq!(worker_cfg.model.as_deref(), Some("pro"));
@@ -88,7 +98,10 @@ fn t02_extension_config_to_worker_config_passthrough() {
     assert_eq!(worker_cfg.parent.as_deref(), Some("wkr_root"));
     assert_eq!(worker_cfg.agent.as_deref(), Some("reviewer"));
     assert_eq!(worker_cfg.initial_prompt.as_deref(), Some("审查代码"));
-    assert_eq!(worker_cfg.allowed_tools, Some(vec!["read".into(), "grep".into()]));
+    assert_eq!(
+        worker_cfg.allowed_tools,
+        Some(vec!["read".into(), "grep".into()])
+    );
     assert_eq!(worker_cfg.max_turns, Some(50));
 }
 
@@ -104,7 +117,10 @@ fn t03_worker_create_config_defaults_none() {
     let cfg: WorkerCreateConfig = serde_json::from_value(json).expect("deserialize");
     assert_eq!(cfg.session.as_deref(), Some("sess_old"));
     assert_eq!(cfg.allowed_tools, None, "allowed_tools defaults to None");
-    assert_eq!(cfg.disallowed_tools, None, "disallowed_tools defaults to None");
+    assert_eq!(
+        cfg.disallowed_tools, None,
+        "disallowed_tools defaults to None"
+    );
     assert_eq!(cfg.max_turns, None, "max_turns defaults to None");
     assert_eq!(cfg.agent, None, "agent defaults to None");
 }

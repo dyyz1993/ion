@@ -1,8 +1,8 @@
+use crate::ApiProvider;
 use crate::env_keys::resolve_api_key;
 use crate::error::{ProviderError, ProviderResult};
-use crate::event_stream::{EventStream, EventSender};
+use crate::event_stream::{EventSender, EventStream};
 use crate::types::*;
-use crate::ApiProvider;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -43,10 +43,7 @@ impl CloudflareWorkersAIProvider {
         let (stream, sender) = EventStream::new();
 
         // Resolve API key
-        let api_key = resolve_api_key(
-            &model.provider,
-            options.and_then(|o| o.api_key.clone()),
-        )?;
+        let api_key = resolve_api_key(&model.provider, options.and_then(|o| o.api_key.clone()))?;
 
         // Build content blocks
         let mut openai_messages: Vec<CloudflareMessage> = Vec::new();
@@ -65,15 +62,22 @@ impl CloudflareWorkersAIProvider {
         for msg in &context.messages {
             match msg {
                 Message::User(u) => {
-                    let has_image = u.content.iter().any(|b| matches!(b, ContentBlock::Image(_)));
+                    let has_image = u
+                        .content
+                        .iter()
+                        .any(|b| matches!(b, ContentBlock::Image(_)));
                     if has_image {
                         // Vision: content must be an array of content parts
-                        let parts: Vec<serde_json::Value> = u.content.iter()
+                        let parts: Vec<serde_json::Value> = u
+                            .content
+                            .iter()
                             .filter_map(|b| match b {
-                                ContentBlock::Text(t) if !t.text.is_empty() => Some(serde_json::json!({
-                                    "type": "text",
-                                    "text": t.text
-                                })),
+                                ContentBlock::Text(t) if !t.text.is_empty() => {
+                                    Some(serde_json::json!({
+                                        "type": "text",
+                                        "text": t.text
+                                    }))
+                                }
                                 ContentBlock::Image(img) => Some(serde_json::json!({
                                     "type": "image_url",
                                     "image_url": {
@@ -90,7 +94,9 @@ impl CloudflareWorkersAIProvider {
                             tool_calls: None,
                         });
                     } else {
-                        let text = u.content.iter()
+                        let text = u
+                            .content
+                            .iter()
                             .filter_map(|b| match b {
                                 ContentBlock::Text(t) => Some(t.text.clone()),
                                 _ => None,
@@ -107,7 +113,9 @@ impl CloudflareWorkersAIProvider {
                 }
                 Message::Assistant(a) => {
                     // Collect text content
-                    let text: String = a.content.iter()
+                    let text: String = a
+                        .content
+                        .iter()
                         .filter_map(|b| match b {
                             AssistantContentBlock::Text(t) => Some(t.text.clone()),
                             _ => None,
@@ -116,7 +124,9 @@ impl CloudflareWorkersAIProvider {
                         .join("");
 
                     // Collect tool calls
-                    let tcs: Vec<serde_json::Value> = a.content.iter()
+                    let tcs: Vec<serde_json::Value> = a
+                        .content
+                        .iter()
                         .filter_map(|b| match b {
                             AssistantContentBlock::ToolCall(tc) => Some(serde_json::json!({
                                 "id": tc.id,
@@ -132,13 +142,19 @@ impl CloudflareWorkersAIProvider {
 
                     openai_messages.push(CloudflareMessage {
                         role: "assistant".into(),
-                        content: serde_json::Value::String(if tcs.is_empty() { text } else { String::new() }),
+                        content: serde_json::Value::String(if tcs.is_empty() {
+                            text
+                        } else {
+                            String::new()
+                        }),
                         tool_call_id: None,
                         tool_calls: if tcs.is_empty() { None } else { Some(tcs) },
                     });
                 }
                 Message::ToolResult(tr) => {
-                    let text = tr.content.iter()
+                    let text = tr
+                        .content
+                        .iter()
                         .filter_map(|b| match b {
                             ContentBlock::Text(t) => Some(t.text.clone()),
                             _ => None,
@@ -180,7 +196,8 @@ impl CloudflareWorkersAIProvider {
                 Message::Custom(c) => {
                     let text = match &c.content {
                         CustomContent::Text(s) => s.clone(),
-                        CustomContent::Blocks(blocks) => blocks.iter()
+                        CustomContent::Blocks(blocks) => blocks
+                            .iter()
                             .filter_map(|b| match b {
                                 ContentBlock::Text(t) => Some(t.text.clone()),
                                 _ => None,
@@ -224,18 +241,23 @@ impl CloudflareWorkersAIProvider {
 
         // Tools
         let tools: Option<Vec<CloudflareTool>> = context.tools.as_ref().map(|tools| {
-            tools.iter().map(|t| CloudflareTool {
-                r#type: "function".into(),
-                function: CloudflareToolFunction {
-                    name: t.name.clone(),
-                    description: t.description.clone(),
-                    parameters: t.parameters.clone(),
-                },
-            }).collect()
+            tools
+                .iter()
+                .map(|t| CloudflareTool {
+                    r#type: "function".into(),
+                    function: CloudflareToolFunction {
+                        name: t.name.clone(),
+                        description: t.description.clone(),
+                        parameters: t.parameters.clone(),
+                    },
+                })
+                .collect()
         });
 
         // Build request body (OpenAI-compatible chat/completions format)
-        let max_tokens = options.and_then(|o| o.max_tokens).unwrap_or(model.max_tokens);
+        let max_tokens = options
+            .and_then(|o| o.max_tokens)
+            .unwrap_or(model.max_tokens);
         let mut body = serde_json::json!({
             "model": model.id,
             "messages": openai_messages,
@@ -288,7 +310,9 @@ impl CloudflareWorkersAIProvider {
             {
                 tracing::warn!("API rejected response_format, falling back to prompt injection");
                 let mut fallback_body = body.clone();
-                fallback_body.as_object_mut().map(|obj| obj.remove("response_format"));
+                fallback_body
+                    .as_object_mut()
+                    .map(|obj| obj.remove("response_format"));
                 let resp = client
                     .post(&url)
                     .header("Authorization", format!("Bearer {api_key}"))
@@ -298,7 +322,10 @@ impl CloudflareWorkersAIProvider {
                 if !resp.status().is_success() {
                     let s2 = resp.status();
                     let b2 = resp.text().await.unwrap_or_default();
-                    return Err(ProviderError::HttpError { status: s2.as_u16(), body: b2 });
+                    return Err(ProviderError::HttpError {
+                        status: s2.as_u16(),
+                        body: b2,
+                    });
                 }
                 // Spawn SSE reader with fallback response
                 let cancel_clone = cancel.clone();
@@ -315,7 +342,10 @@ impl CloudflareWorkersAIProvider {
                 return Ok(stream);
             }
 
-            return Err(ProviderError::HttpError { status: s.as_u16(), body: b });
+            return Err(ProviderError::HttpError {
+                status: s.as_u16(),
+                body: b,
+            });
         }
 
         // Spawn SSE reader (cancellable: dropping resp closes the TCP connection)
@@ -424,11 +454,7 @@ struct AccTC {
     arguments: String,
 }
 
-async fn read_sse(
-    resp: reqwest::Response,
-    sender: EventSender,
-    mut output: AssistantMessage,
-) {
+async fn read_sse(resp: reqwest::Response, sender: EventSender, mut output: AssistantMessage) {
     use futures_util::StreamExt;
 
     let mut buffer = String::new();
@@ -442,13 +468,24 @@ async fn read_sse(
     tokio::spawn(async move {
         while let Some(chunk) = stream.next().await {
             match chunk {
-                Ok(b) => { if chunk_tx.send(b.to_vec()).await.is_err() { break; } }
-                Err(e) => { tracing::warn!("SSE: {e}"); break; }
+                Ok(b) => {
+                    if chunk_tx.send(b.to_vec()).await.is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("SSE: {e}");
+                    break;
+                }
             }
         }
     });
 
-    sender.send(StreamEvent::Start { partial: output.clone() }).await;
+    sender
+        .send(StreamEvent::Start {
+            partial: output.clone(),
+        })
+        .await;
 
     let stream_debug = std::env::var("ION_STREAM_DEBUG").ok().as_deref() == Some("1");
     let mut _chunk_seq: u64 = 0;
@@ -456,7 +493,10 @@ async fn read_sse(
     while let Some(bytes) = chunk_rx.recv().await {
         if stream_debug {
             _chunk_seq += 1;
-            eprintln!("[stream-debug] provider bytes_chunk #{_chunk_seq} len={}", bytes.len());
+            eprintln!(
+                "[stream-debug] provider bytes_chunk #{_chunk_seq} len={}",
+                bytes.len()
+            );
         }
         let text = String::from_utf8_lossy(&bytes);
         buffer.push_str(&text);
@@ -469,13 +509,19 @@ async fn read_sse(
             };
             let event_str = buffer[..pos].to_string();
             buffer = buffer[pos + 2..].to_string();
-            if event_str.trim().is_empty() { continue; }
+            if event_str.trim().is_empty() {
+                continue;
+            }
 
             for line in event_str.lines() {
                 let line = line.trim();
-                if !line.starts_with("data: ") { continue; }
+                if !line.starts_with("data: ") {
+                    continue;
+                }
                 let json_str = &line[6..];
-                if json_str == "[DONE]" { continue; }
+                if json_str == "[DONE]" {
+                    continue;
+                }
 
                 let chunk: Chunk = match serde_json::from_str(json_str) {
                     Ok(c) => c,
@@ -486,73 +532,116 @@ async fn read_sse(
                     let d = choice.delta;
 
                     // Reasoning content
-                    if let Some(ref rc) = d.reasoning_content && !rc.is_empty() {
+                    if let Some(ref rc) = d.reasoning_content
+                        && !rc.is_empty()
+                    {
                         reasoning_parts.push(rc.clone());
                         let mut partial = output.clone();
-                        partial.content = build_assistant_content(&text_parts, &reasoning_parts, &accs);
-                        sender.send(StreamEvent::ThinkingDelta {
-                            content_index: content_idx,
-                            delta: rc.clone(),
-                            partial,
-                        }).await;
+                        partial.content =
+                            build_assistant_content(&text_parts, &reasoning_parts, &accs);
+                        sender
+                            .send(StreamEvent::ThinkingDelta {
+                                content_index: content_idx,
+                                delta: rc.clone(),
+                                partial,
+                            })
+                            .await;
                     }
 
                     // Tool calls
                     if let Some(tcs) = d.tool_calls {
                         for tc in tcs {
                             let idx = tc.index.unwrap_or(0);
-                            let tc_name = tc.function.as_ref().and_then(|f| f.name.clone()).unwrap_or_default();
+                            let tc_name = tc
+                                .function
+                                .as_ref()
+                                .and_then(|f| f.name.clone())
+                                .unwrap_or_default();
                             if let Some(a) = accs.iter_mut().find(|a| a.index == idx) {
-                                if let Some(args) = tc.function.as_ref().and_then(|f| f.arguments.clone()) {
+                                if let Some(args) =
+                                    tc.function.as_ref().and_then(|f| f.arguments.clone())
+                                {
                                     if !args.is_empty() {
                                         a.arguments.push_str(&args);
                                         if stream_debug {
-                                            eprintln!("[stream-debug] provider emit tool_call_delta idx={idx} len={}", args.len());
+                                            eprintln!(
+                                                "[stream-debug] provider emit tool_call_delta idx={idx} len={}",
+                                                args.len()
+                                            );
                                         }
                                         let mut partial = output.clone();
-                                        partial.content = build_assistant_content(&text_parts, &reasoning_parts, &accs);
-                                        sender.send(StreamEvent::ToolCallDelta {
-                                            content_index: idx as usize,
-                                            delta: args.clone(),
-                                            partial,
-                                        }).await;
+                                        partial.content = build_assistant_content(
+                                            &text_parts,
+                                            &reasoning_parts,
+                                            &accs,
+                                        );
+                                        sender
+                                            .send(StreamEvent::ToolCallDelta {
+                                                content_index: idx as usize,
+                                                delta: args.clone(),
+                                                partial,
+                                            })
+                                            .await;
                                     }
                                 }
                             } else {
                                 let id = tc.id.unwrap_or_else(|| format!("call_{idx}"));
                                 let ct = tc.r#type.unwrap_or_else(|| "function".into());
                                 let name = tc_name.clone();
-                                let args = tc.function.as_ref().and_then(|f| f.arguments.clone()).unwrap_or_default();
-                                accs.push(AccTC { index: idx, id, call_type: ct, name, arguments: args.clone() });
+                                let args = tc
+                                    .function
+                                    .as_ref()
+                                    .and_then(|f| f.arguments.clone())
+                                    .unwrap_or_default();
+                                accs.push(AccTC {
+                                    index: idx,
+                                    id,
+                                    call_type: ct,
+                                    name,
+                                    arguments: args.clone(),
+                                });
                                 if !args.is_empty() {
                                     let mut partial = output.clone();
-                                    partial.content = build_assistant_content(&text_parts, &reasoning_parts, &accs);
-                                    sender.send(StreamEvent::ToolCallDelta {
-                                        content_index: idx as usize,
-                                        delta: args,
-                                        partial,
-                                    }).await;
+                                    partial.content = build_assistant_content(
+                                        &text_parts,
+                                        &reasoning_parts,
+                                        &accs,
+                                    );
+                                    sender
+                                        .send(StreamEvent::ToolCallDelta {
+                                            content_index: idx as usize,
+                                            delta: args,
+                                            partial,
+                                        })
+                                        .await;
                                 }
                             }
                         }
                     }
 
                     // Text content
-                    if let Some(ref content) = d.content && !content.is_empty() {
+                    if let Some(ref content) = d.content
+                        && !content.is_empty()
+                    {
                         if text_parts.is_empty() {
-                            sender.send(StreamEvent::TextStart {
-                                content_index: content_idx,
-                                partial: output.clone(),
-                            }).await;
+                            sender
+                                .send(StreamEvent::TextStart {
+                                    content_index: content_idx,
+                                    partial: output.clone(),
+                                })
+                                .await;
                         }
                         text_parts.push(content.clone());
                         let mut partial = output.clone();
-                        partial.content = build_assistant_content(&text_parts, &reasoning_parts, &accs);
-                        sender.send(StreamEvent::TextDelta {
-                            content_index: content_idx,
-                            delta: content.clone(),
-                            partial,
-                        }).await;
+                        partial.content =
+                            build_assistant_content(&text_parts, &reasoning_parts, &accs);
+                        sender
+                            .send(StreamEvent::TextDelta {
+                                content_index: content_idx,
+                                delta: content.clone(),
+                                partial,
+                            })
+                            .await;
                     }
 
                     // Finish
@@ -573,39 +662,52 @@ async fn read_sse(
                         }
 
                         // Finalize content
-                        output.content = build_assistant_content(&text_parts, &reasoning_parts, &accs);
+                        output.content =
+                            build_assistant_content(&text_parts, &reasoning_parts, &accs);
 
                         // Build tool calls
-                        let tcs: Vec<ToolCall> = accs.iter().map(|a| ToolCall {
-                            call_type: a.call_type.clone(),
-                            id: a.id.clone(),
-                            name: a.name.clone(),
-                            arguments: serde_json::from_str(&a.arguments).unwrap_or(serde_json::Value::Null),
-                            thought_signature: None,
-                        }).collect();
+                        let tcs: Vec<ToolCall> = accs
+                            .iter()
+                            .map(|a| ToolCall {
+                                call_type: a.call_type.clone(),
+                                id: a.id.clone(),
+                                name: a.name.clone(),
+                                arguments: serde_json::from_str(&a.arguments)
+                                    .unwrap_or(serde_json::Value::Null),
+                                thought_signature: None,
+                            })
+                            .collect();
 
                         if !tcs.is_empty() {
-                            sender.send(StreamEvent::ToolCallStart {
-                                content_index: content_idx,
-                                partial: output.clone(),
-                            }).await;
+                            sender
+                                .send(StreamEvent::ToolCallStart {
+                                    content_index: content_idx,
+                                    partial: output.clone(),
+                                })
+                                .await;
                         }
                         for tc in &tcs {
-                            sender.send(StreamEvent::ToolCallEnd {
-                                content_index: content_idx,
-                                tool_call: tc.clone(),
-                                partial: output.clone(),
-                            }).await;
-                            output.content.push(AssistantContentBlock::ToolCall(tc.clone()));
+                            sender
+                                .send(StreamEvent::ToolCallEnd {
+                                    content_index: content_idx,
+                                    tool_call: tc.clone(),
+                                    partial: output.clone(),
+                                })
+                                .await;
+                            output
+                                .content
+                                .push(AssistantContentBlock::ToolCall(tc.clone()));
                         }
 
                         if !text_parts.is_empty() {
                             let full_text = text_parts.join("");
-                            sender.send(StreamEvent::TextEnd {
-                                content_index: content_idx,
-                                content: full_text,
-                                partial: output.clone(),
-                            }).await;
+                            sender
+                                .send(StreamEvent::TextEnd {
+                                    content_index: content_idx,
+                                    content: full_text,
+                                    partial: output.clone(),
+                                })
+                                .await;
                         }
 
                         sender.end(output.clone());
@@ -786,8 +888,11 @@ mod tests {
     #[test]
     fn build_content_joins_multiple_text_parts() {
         // Multiple deltas are concatenated with no separator (matching join("")).
-        let content =
-            build_assistant_content(&["foo".to_string(), "bar".to_string(), "baz".to_string()], &[], &[]);
+        let content = build_assistant_content(
+            &["foo".to_string(), "bar".to_string(), "baz".to_string()],
+            &[],
+            &[],
+        );
         match &content[0] {
             AssistantContentBlock::Text(t) => assert_eq!(t.text, "foobarbaz"),
             other => panic!("expected Text, got {other:?}"),
@@ -808,11 +913,8 @@ mod tests {
     #[test]
     fn build_content_reasoning_come_before_text() {
         // Production order: Thinking first, then Text.
-        let content = build_assistant_content(
-            &["text body".to_string()],
-            &["why".to_string()],
-            &[],
-        );
+        let content =
+            build_assistant_content(&["text body".to_string()], &["why".to_string()], &[]);
         assert_eq!(content.len(), 2);
         assert!(matches!(content[0], AssistantContentBlock::Thinking(_)));
         assert!(matches!(content[1], AssistantContentBlock::Text(_)));
@@ -916,7 +1018,10 @@ mod tests {
         let tc = &chunk.choices[0].delta.tool_calls.as_ref().unwrap()[0];
         assert_eq!(tc.index, Some(0));
         assert_eq!(tc.id.as_deref(), Some("call_9"));
-        assert_eq!(tc.function.as_ref().unwrap().name.as_deref(), Some("get_weather"));
+        assert_eq!(
+            tc.function.as_ref().unwrap().name.as_deref(),
+            Some("get_weather")
+        );
     }
 
     #[test]

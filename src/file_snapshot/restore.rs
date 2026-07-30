@@ -7,7 +7,7 @@
 //! 4. before_hash = None（文件原本不存在）→ 删除文件
 //! 5. 写入 restore_point 快照（记录恢复前磁盘状态，方便撤销）
 
-use super::snapshot::{ToolSnapshot, SnapshotStore};
+use super::snapshot::{SnapshotStore, ToolSnapshot};
 use serde::{Deserialize, Serialize};
 
 /// 恢复结果
@@ -21,7 +21,7 @@ pub struct RestoreResult {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RestoredFile {
     pub path: String,
-    pub action: String,    // "restored" | "deleted" | "skipped"
+    pub action: String, // "restored" | "deleted" | "skipped"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -41,7 +41,7 @@ pub struct RestoreSummary {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RestorePoint {
     pub id: String,
-    pub turn_id: String,          // 回滚到哪个 turn
+    pub turn_id: String, // 回滚到哪个 turn
     pub timestamp: String,
     pub files: Vec<RestorePointFile>,
 }
@@ -49,7 +49,7 @@ pub struct RestorePoint {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RestorePointFile {
     pub path: String,
-    pub hash: Option<String>,     // 恢复前的磁盘内容 hash（None = 文件不存在）
+    pub hash: Option<String>, // 恢复前的磁盘内容 hash（None = 文件不存在）
 }
 
 /// 恢复代码到指定 turn 之后（撤销该 turn 之后的所有改动）
@@ -57,10 +57,7 @@ pub struct RestorePointFile {
 /// 参数：
 /// - store: 快照存储
 /// - target_turn_id: 回滚到这个 turn（该 turn 的改动保留，之后的撤销）
-pub fn restore_code_to_turn(
-    store: &SnapshotStore,
-    target_turn_id: &str,
-) -> RestoreResult {
+pub fn restore_code_to_turn(store: &SnapshotStore, target_turn_id: &str) -> RestoreResult {
     let objects = store.objects();
     let later_snaps = store.load_tool_snapshots_after(target_turn_id);
 
@@ -79,7 +76,8 @@ pub fn restore_code_to_turn(
 
     for (path, snap) in &file_targets {
         // 记录恢复前磁盘状态（restore_point）
-        let current_hash = std::fs::read(path).ok()
+        let current_hash = std::fs::read(path)
+            .ok()
             .map(|content| objects.write_object(&content).hash);
         restore_point_files.push(RestorePointFile {
             path: path.clone(),
@@ -187,7 +185,10 @@ pub fn restore_code_to_turn(
 
 /// 保存 restore_point
 fn save_restore_point(store: &SnapshotStore, rp: &RestorePoint) {
-    let path = store.snapshots_dir().join("restore").join(format!("{}.json", rp.id));
+    let path = store
+        .snapshots_dir()
+        .join("restore")
+        .join(format!("{}.json", rp.id));
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
@@ -196,7 +197,10 @@ fn save_restore_point(store: &SnapshotStore, rp: &RestorePoint) {
 
 /// 读取 restore_point（undo 回滚用）
 fn load_restore_point(store: &SnapshotStore, rp_id: &str) -> Option<RestorePoint> {
-    let path = store.snapshots_dir().join("restore").join(format!("{}.json", rp_id));
+    let path = store
+        .snapshots_dir()
+        .join("restore")
+        .join(format!("{}.json", rp_id));
     let content = std::fs::read_to_string(&path).ok()?;
     serde_json::from_str(&content).ok()
 }
@@ -224,12 +228,12 @@ pub fn restore_single_file(
         .unwrap_or_else(|_| file_path.to_string());
 
     // 记录恢复前磁盘状态（restore_point 用）
-    let current_hash = std::fs::read(file_path).ok()
+    let current_hash = std::fs::read(file_path)
+        .ok()
         .map(|content| objects.write_object(&content).hash);
 
     // 读 target tree 拿该文件的状态
-    let target_tree = super::tree_store::read_tree(objects, target_tree_hash)
-        .unwrap_or_default();
+    let target_tree = super::tree_store::read_tree(objects, target_tree_hash).unwrap_or_default();
 
     match super::tree_store::get_file_hash(&target_tree, &rel_key) {
         Some(target_hash) => {
@@ -318,8 +322,7 @@ pub fn restore_to_tree(
     preview: bool,
 ) -> RestoreResult {
     let objects = store.objects();
-    let target_tree = super::tree_store::read_tree(objects, target_tree_hash)
-        .unwrap_or_default();
+    let target_tree = super::tree_store::read_tree(objects, target_tree_hash).unwrap_or_default();
 
     // 扫描当前磁盘状态（拿到当前文件列表）
     let current_scan = super::scanner::scan_dir_fast(cwd);
@@ -336,7 +339,8 @@ pub fn restore_to_tree(
 
         // 记录 restore_point（非预览时）
         if !preview {
-            let cur_hash = std::fs::read(&abs_path).ok()
+            let cur_hash = std::fs::read(&abs_path)
+                .ok()
                 .map(|c| objects.write_object(&c).hash);
             restore_point_files.push(RestorePointFile {
                 path: abs_str.clone(),
@@ -407,7 +411,8 @@ pub fn restore_to_tree(
                 let abs_str = abs_path.to_string_lossy().to_string();
 
                 if !preview {
-                    let cur_hash = std::fs::read(&abs_path).ok()
+                    let cur_hash = std::fs::read(&abs_path)
+                        .ok()
                         .map(|c| objects.write_object(&c).hash);
                     restore_point_files.push(RestorePointFile {
                         path: abs_str.clone(),
@@ -489,7 +494,11 @@ pub fn undo_restore(store: &SnapshotStore, restore_point_id: &str) -> RestoreRes
                     reason: Some("RESTORE_POINT_NOT_FOUND".into()),
                 }],
                 restore_point_id: restore_point_id.to_string(),
-                summary: RestoreSummary { restored: 0, deleted: 0, skipped: 1 },
+                summary: RestoreSummary {
+                    restored: 0,
+                    deleted: 0,
+                    skipped: 1,
+                },
             };
         }
     };
@@ -579,9 +588,15 @@ mod tests {
 
     fn unique_id(label: &str) -> String {
         let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        format!("{}_{}_{}_{n}", label, std::process::id(),
+        format!(
+            "{}_{}_{}_{n}",
+            label,
+            std::process::id(),
             std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos())
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        )
     }
 
     #[test]
@@ -687,9 +702,15 @@ mod tests {
         assert!(test_file.exists(), "bash 改过的文件 restore 不应被删除");
         assert_eq!(result.summary.skipped, 1, "应 skipped 而非 deleted");
         assert_eq!(result.summary.deleted, 0, "绝不能 deleted");
-        let skipped_file = result.restored_files.iter().find(|f| f.path.contains("config.rs"));
+        let skipped_file = result
+            .restored_files
+            .iter()
+            .find(|f| f.path.contains("config.rs"));
         assert!(skipped_file.is_some());
-        assert_eq!(skipped_file.unwrap().reason.as_deref(), Some("before_content_not_captured"));
+        assert_eq!(
+            skipped_file.unwrap().reason.as_deref(),
+            Some("before_content_not_captured")
+        );
 
         std::fs::remove_dir_all(&tmp).ok();
     }
@@ -734,10 +755,16 @@ mod tests {
             false,
         );
         assert_eq!(result.action, "restored");
-        assert_eq!(std::fs::read_to_string(work_dir.join("a.rs")).unwrap(), "original_a");
+        assert_eq!(
+            std::fs::read_to_string(work_dir.join("a.rs")).unwrap(),
+            "original_a"
+        );
 
         // b.rs 不受影响
-        assert_eq!(std::fs::read_to_string(work_dir.join("b.rs")).unwrap(), "original_b");
+        assert_eq!(
+            std::fs::read_to_string(work_dir.join("b.rs")).unwrap(),
+            "original_b"
+        );
 
         std::fs::remove_dir_all(work_dir.parent().unwrap()).ok();
     }
@@ -779,7 +806,10 @@ mod tests {
         );
         assert_eq!(result.action, "would_restore");
         // 文件没变（preview 不写盘）
-        assert_eq!(std::fs::read_to_string(work_dir.join("a.rs")).unwrap(), "modified_a");
+        assert_eq!(
+            std::fs::read_to_string(work_dir.join("a.rs")).unwrap(),
+            "modified_a"
+        );
 
         std::fs::remove_dir_all(work_dir.parent().unwrap()).ok();
     }
@@ -793,14 +823,25 @@ mod tests {
         std::fs::write(work_dir.join("c.rs"), "new").unwrap();
 
         // 整体回滚到 baseline
-        let result = restore_to_tree(&store, &baseline_hash, work_dir.to_string_lossy().as_ref(), false);
+        let result = restore_to_tree(
+            &store,
+            &baseline_hash,
+            work_dir.to_string_lossy().as_ref(),
+            false,
+        );
         assert!(result.summary.restored >= 2, "a.rs 和 b.rs 应被恢复");
         assert_eq!(result.summary.deleted, 1, "c.rs 应被删除");
         assert!(!result.restore_point_id.is_empty());
 
         // 验证磁盘
-        assert_eq!(std::fs::read_to_string(work_dir.join("a.rs")).unwrap(), "original_a");
-        assert_eq!(std::fs::read_to_string(work_dir.join("b.rs")).unwrap(), "original_b");
+        assert_eq!(
+            std::fs::read_to_string(work_dir.join("a.rs")).unwrap(),
+            "original_a"
+        );
+        assert_eq!(
+            std::fs::read_to_string(work_dir.join("b.rs")).unwrap(),
+            "original_b"
+        );
         assert!(!work_dir.join("c.rs").exists(), "c.rs 应被删除");
 
         std::fs::remove_dir_all(work_dir.parent().unwrap()).ok();
@@ -812,10 +853,21 @@ mod tests {
 
         std::fs::write(work_dir.join("a.rs"), "changed").unwrap();
 
-        let result = restore_to_tree(&store, &baseline_hash, work_dir.to_string_lossy().as_ref(), true);
+        let result = restore_to_tree(
+            &store,
+            &baseline_hash,
+            work_dir.to_string_lossy().as_ref(),
+            true,
+        );
         // 预览：文件没变
-        assert_eq!(std::fs::read_to_string(work_dir.join("a.rs")).unwrap(), "changed");
-        assert!(result.restore_point_id.is_empty(), "预览不生成 restore_point");
+        assert_eq!(
+            std::fs::read_to_string(work_dir.join("a.rs")).unwrap(),
+            "changed"
+        );
+        assert!(
+            result.restore_point_id.is_empty(),
+            "预览不生成 restore_point"
+        );
 
         std::fs::remove_dir_all(work_dir.parent().unwrap()).ok();
     }
@@ -829,7 +881,12 @@ mod tests {
         std::fs::write(work_dir.join("c.rs"), "new").unwrap();
 
         // 整体回滚（c.rs 被删，a.rs 恢复成 original_a）
-        let result = restore_to_tree(&store, &baseline_hash, work_dir.to_string_lossy().as_ref(), false);
+        let result = restore_to_tree(
+            &store,
+            &baseline_hash,
+            work_dir.to_string_lossy().as_ref(),
+            false,
+        );
         let rp_id = result.restore_point_id.clone();
 
         // 此时 a.rs=original_a, b.rs=original_b, c.rs 不存在
@@ -838,10 +895,16 @@ mod tests {
         // undo：restore_point 记录的是回滚前状态（a.rs=changed, c.rs=new）
         // undo 把它们写回去
         let undo_result = undo_restore(&store, &rp_id);
-        assert!(undo_result.summary.restored >= 1, "a.rs/c.rs 应被恢复到回滚前内容");
+        assert!(
+            undo_result.summary.restored >= 1,
+            "a.rs/c.rs 应被恢复到回滚前内容"
+        );
 
         // 验证磁盘恢复
-        assert_eq!(std::fs::read_to_string(work_dir.join("a.rs")).unwrap(), "changed");
+        assert_eq!(
+            std::fs::read_to_string(work_dir.join("a.rs")).unwrap(),
+            "changed"
+        );
         assert!(work_dir.join("c.rs").exists(), "c.rs 应恢复");
 
         std::fs::remove_dir_all(work_dir.parent().unwrap()).ok();
@@ -857,16 +920,32 @@ mod tests {
         assert!(work_dir.join("manual.txt").exists());
 
         // full restore 到 baseline（只有 a.rs + b.rs）
-        let result = restore_to_tree(&store, &baseline_hash, work_dir.to_string_lossy().as_ref(), false);
+        let result = restore_to_tree(
+            &store,
+            &baseline_hash,
+            work_dir.to_string_lossy().as_ref(),
+            false,
+        );
 
         // manual.txt 应被删除（target_tree 没有它）
-        assert!(!work_dir.join("manual.txt").exists(),
-            "XL3: full restore 应删除 target_tree 没有的手动文件");
-        assert!(result.summary.deleted >= 1, "应至少删除 1 个文件（manual.txt）");
+        assert!(
+            !work_dir.join("manual.txt").exists(),
+            "XL3: full restore 应删除 target_tree 没有的手动文件"
+        );
+        assert!(
+            result.summary.deleted >= 1,
+            "应至少删除 1 个文件（manual.txt）"
+        );
 
         // a.rs / b.rs 恢复成 baseline 内容
-        assert_eq!(std::fs::read_to_string(work_dir.join("a.rs")).unwrap(), "original_a");
-        assert_eq!(std::fs::read_to_string(work_dir.join("b.rs")).unwrap(), "original_b");
+        assert_eq!(
+            std::fs::read_to_string(work_dir.join("a.rs")).unwrap(),
+            "original_a"
+        );
+        assert_eq!(
+            std::fs::read_to_string(work_dir.join("b.rs")).unwrap(),
+            "original_b"
+        );
 
         std::fs::remove_dir_all(work_dir.parent().unwrap()).ok();
     }
@@ -883,15 +962,31 @@ mod tests {
         std::fs::write(work_dir.join("c.rs"), "extra").unwrap();
 
         // restore 到 baseline
-        let result = restore_to_tree(&store, &baseline_hash, work_dir.to_string_lossy().as_ref(), false);
+        let result = restore_to_tree(
+            &store,
+            &baseline_hash,
+            work_dir.to_string_lossy().as_ref(),
+            false,
+        );
 
         // c.rs 应被删除（不在 baseline）
-        assert!(!work_dir.join("c.rs").exists(), "c.rs 不在 baseline 应被删除");
+        assert!(
+            !work_dir.join("c.rs").exists(),
+            "c.rs 不在 baseline 应被删除"
+        );
         // a.rs 恢复成 original_a
-        assert_eq!(std::fs::read_to_string(work_dir.join("a.rs")).unwrap(), "original_a");
+        assert_eq!(
+            std::fs::read_to_string(work_dir.join("a.rs")).unwrap(),
+            "original_a"
+        );
         // 不应有截断跳过标记（文件少，不会截断）
-        assert!(!result.restored_files.iter().any(|f| f.reason.as_deref() == Some("scan_truncated_skip_delete")),
-            "小文件量不应触发截断跳过");
+        assert!(
+            !result
+                .restored_files
+                .iter()
+                .any(|f| f.reason.as_deref() == Some("scan_truncated_skip_delete")),
+            "小文件量不应触发截断跳过"
+        );
 
         std::fs::remove_dir_all(work_dir.parent().unwrap()).ok();
     }

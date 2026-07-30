@@ -49,9 +49,9 @@ impl Rule {
     /// representative project file paths. A rule matches if ANY of its
     /// patterns matches ANY of the provided file paths.
     pub fn matches_any(&self, files: &[String]) -> bool {
-        self.apply_to.iter().any(|pattern| {
-            files.iter().any(|f| glob_match(pattern, f))
-        })
+        self.apply_to
+            .iter()
+            .any(|pattern| files.iter().any(|f| glob_match(pattern, f)))
     }
 }
 
@@ -162,7 +162,9 @@ impl Extension for RulesEngineExtension {
     /// 同时做 turn 计数清理：每 INJECTED_TTL_TURNS 轮清空 injected set（让 rule 可重新注入）。
     async fn on_system_prompt(&self, prompt: &mut String) -> AgentResult<()> {
         // Turn 计数 + 定期清理 injected set
-        let turn = self.turn_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let turn = self
+            .turn_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if turn > 0 && turn % INJECTED_TTL_TURNS == 0 {
             let mut injected = self.injected.lock().unwrap();
             injected.clear();
@@ -177,8 +179,7 @@ impl Extension for RulesEngineExtension {
         let global_rules: Vec<Rule> = rules
             .iter()
             .filter(|r| {
-                r.apply_to.is_empty()
-                    || r.apply_to.iter().any(|p| p == "**/*" || p == "**")
+                r.apply_to.is_empty() || r.apply_to.iter().any(|p| p == "**/*" || p == "**")
             })
             .cloned()
             .collect();
@@ -208,7 +209,9 @@ impl Extension for RulesEngineExtension {
         }
 
         // 从 tool args 提取访问的文件路径
-        let file_path = call.arguments.get("file_path")
+        let file_path = call
+            .arguments
+            .get("file_path")
             .or_else(|| call.arguments.get("path"))
             .or_else(|| call.arguments.get("pattern"))
             .and_then(|v| v.as_str())
@@ -219,9 +222,11 @@ impl Extension for RulesEngineExtension {
         let mut to_append: Vec<&Rule> = Vec::new();
         for rule in &rules {
             // 跳过全局 rule（已在 system prompt）
-            let is_global = rule.apply_to.is_empty()
-                || rule.apply_to.iter().any(|p| p == "**/*" || p == "**");
-            if is_global { continue; }
+            let is_global =
+                rule.apply_to.is_empty() || rule.apply_to.iter().any(|p| p == "**/*" || p == "**");
+            if is_global {
+                continue;
+            }
 
             // 匹配当前文件路径
             if !file_path.is_empty() && rule.matches_file(file_path) {
@@ -234,8 +239,11 @@ impl Extension for RulesEngineExtension {
         }
 
         if !to_append.is_empty() {
-            let rules_xml = Self::format_rules_xml(&to_append.iter().map(|r| (*r).clone()).collect::<Vec<_>>());
-            result.output.push_str("\n\n📌 [project rules for this file]");
+            let rules_xml =
+                Self::format_rules_xml(&to_append.iter().map(|r| (*r).clone()).collect::<Vec<_>>());
+            result
+                .output
+                .push_str("\n\n📌 [project rules for this file]");
             result.output.push_str(&rules_xml);
         }
         Ok(())
@@ -265,10 +273,7 @@ impl Extension for RulesEngineExtension {
                 Ok(serde_json::json!({ "rules": entries }))
             }
             "match" => {
-                let file = params
-                    .get("file")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let file = params.get("file").and_then(|v| v.as_str()).unwrap_or("");
                 let rules = self.load_rules();
                 let matched: Vec<serde_json::Value> = rules
                     .iter()
@@ -284,9 +289,7 @@ impl Extension for RulesEngineExtension {
                     .collect();
                 Ok(serde_json::json!({ "file": file, "rules": matched }))
             }
-            _ => Err(AgentError::Tool(
-                "extension rpc method not found".into(),
-            )),
+            _ => Err(AgentError::Tool("extension rpc method not found".into())),
         }
     }
 }
@@ -387,7 +390,9 @@ pub fn parse_frontmatter(content: &str) -> (Vec<String>, String) {
     let body = if body_start >= after_first_marker.len() {
         String::new()
     } else {
-        after_first_marker[body_start..].trim_start_matches(['\r', '\n']).to_string()
+        after_first_marker[body_start..]
+            .trim_start_matches(['\r', '\n'])
+            .to_string()
     };
 
     let apply_to = parse_apply_to(frontmatter);
@@ -454,8 +459,7 @@ fn parse_apply_to(frontmatter: &str) -> Vec<String> {
 
         // Detect `globs:` / `paths:` key (case-insensitive).
         // 对齐 Claude Code/OpenCode：globs 是主字段，paths 是别名。
-        let rest = strip_key(trimmed, "globs")
-            .or_else(|| strip_key(trimmed, "paths"));
+        let rest = strip_key(trimmed, "globs").or_else(|| strip_key(trimmed, "paths"));
         if let Some(rest) = rest {
             in_block_array = false;
             let val = rest.trim();
@@ -543,18 +547,16 @@ fn split_yaml_inline_array(val: &str) -> Vec<String> {
                     current.push(ch);
                 }
             }
-            None => {
-                match ch {
-                    '"' | '\'' => in_quote = Some(ch),
-                    ',' => {
-                        if !current.is_empty() {
-                            items.push(current.clone());
-                            current.clear();
-                        }
+            None => match ch {
+                '"' | '\'' => in_quote = Some(ch),
+                ',' => {
+                    if !current.is_empty() {
+                        items.push(current.clone());
+                        current.clear();
                     }
-                    _ => current.push(ch),
                 }
-            }
+                _ => current.push(ch),
+            },
         }
     }
     if !current.is_empty() {

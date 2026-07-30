@@ -132,6 +132,9 @@ async fn secured_runtime_allows_safe_spawn() {
     let result = rt.spawn_process(req).await;
     // LocalRuntime 尚未实现，返回 Err，但不是 CommandGuard 拦截的错误
     if let Err(msg) = &result {
-        assert!(!msg.contains("rejected"), "should not be rejected by guard: {msg}");
+        assert!(
+            !msg.contains("rejected"),
+            "should not be rejected by guard: {msg}"
+        );
     }
 }

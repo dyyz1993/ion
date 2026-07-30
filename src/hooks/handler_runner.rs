@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use super::{HookHandler, HookOutcome, HandlerType};
+use super::{HandlerType, HookHandler, HookOutcome};
 
 /// 执行上下文（handler 执行时需要的能力）
 #[derive(Clone)]
@@ -37,12 +37,17 @@ pub async fn run_handler(
     let result = tokio::time::timeout(
         Duration::from_secs(timeout),
         run_handler_inner(handler, stdin_data, ctx),
-    ).await;
+    )
+    .await;
 
     match result {
         Ok(outcome) => outcome,
         Err(_) => {
-            tracing::warn!("[hooks] handler timeout after {}s (event={})", timeout, ctx.event_name);
+            tracing::warn!(
+                "[hooks] handler timeout after {}s (event={})",
+                timeout,
+                ctx.event_name
+            );
             HookOutcome::default() // 超时不阻断
         }
     }
@@ -85,7 +90,10 @@ async fn run_command(
     let (stdout, stderr, exit_code) = if let Some(ref rt) = ctx.runtime {
         // Runtime::execute_command 不支持 stdin，我们用环境变量传 hook context
         // （对齐 pi 的 PI_HOOK_* 环境变量方式）
-        match rt.execute_command(&cmd, handler.timeout.unwrap_or(30) as u64).await {
+        match rt
+            .execute_command(&cmd, handler.timeout.unwrap_or(30) as u64)
+            .await
+        {
             Ok(result) => result,
             Err(e) => {
                 tracing::warn!("[hooks] command failed: {e}");
@@ -96,7 +104,14 @@ async fn run_command(
         // Fallback: 直接 spawn（开发/测试用）
         // current_dir 透传 ctx.project_dir，让 bash 在项目目录里跑（命令常用相对路径
         // 如 `bash .ion/scripts/x.sh`）。这样不依赖进程级 cwd，并发安全。
-        match spawn_command_with_stdin(&cmd, &stdin_data, handler.timeout.unwrap_or(30) as u64, &ctx.project_dir).await {
+        match spawn_command_with_stdin(
+            &cmd,
+            &stdin_data,
+            handler.timeout.unwrap_or(30) as u64,
+            &ctx.project_dir,
+        )
+        .await
+        {
             Ok(result) => result,
             Err(e) => {
                 tracing::warn!("[hooks] command spawn failed: {e}");
@@ -122,7 +137,9 @@ async fn spawn_command_with_stdin(
     use tokio::io::AsyncWriteExt;
 
     let mut command = tokio::process::Command::new("bash");
-    command.arg("-c").arg(cmd)
+    command
+        .arg("-c")
+        .arg(cmd)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -130,8 +147,7 @@ async fn spawn_command_with_stdin(
     if !current_dir.is_empty() {
         command.current_dir(current_dir);
     }
-    let mut child = command.spawn()
-        .map_err(|e| format!("spawn failed: {e}"))?;
+    let mut child = command.spawn().map_err(|e| format!("spawn failed: {e}"))?;
 
     // 写 stdin
     if let Some(mut stdin) = child.stdin.take() {
@@ -139,10 +155,8 @@ async fn spawn_command_with_stdin(
         let _ = stdin.write_all(&stdin_bytes).await;
     }
 
-    let output = tokio::time::timeout(
-        Duration::from_secs(timeout_secs),
-        child.wait_with_output(),
-    ).await;
+    let output =
+        tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait_with_output()).await;
 
     match output {
         Ok(Ok(out)) => {
@@ -169,7 +183,11 @@ async fn run_http(handler: &HookHandler, stdin_data: serde_json::Value) -> HookO
     // 安全校验：必须 https://，拒绝私网 IP
     if let Err(reason) = validate_url(&url) {
         tracing::warn!("[hooks] http handler url rejected: {reason}");
-        return HookOutcome { block: true, block_reason: Some(reason), ..Default::default() };
+        return HookOutcome {
+            block: true,
+            block_reason: Some(reason),
+            ..Default::default()
+        };
     }
 
     let timeout = handler.timeout.unwrap_or(30) as u64;
@@ -212,12 +230,35 @@ fn validate_url(url: &str) -> Result<(), String> {
         return Err("url must be https://".into());
     }
     // 拒绝常见私网 IP（简化检查）
-    let host_part = url.trim_start_matches("https://").split('/').next().unwrap_or("");
+    let host_part = url
+        .trim_start_matches("https://")
+        .split('/')
+        .next()
+        .unwrap_or("");
     let host = host_part.split(':').next().unwrap_or("");
-    for blocked in &["127.0.0.1", "localhost", "10.", "172.16.", "172.17.", "172.18.",
-                     "172.19.", "172.20.", "172.21.", "172.22.", "172.23.", "172.24.",
-                     "172.25.", "172.26.", "172.27.", "172.28.", "172.29.", "172.30.",
-                     "172.31.", "192.168.", "169.254."] {
+    for blocked in &[
+        "127.0.0.1",
+        "localhost",
+        "10.",
+        "172.16.",
+        "172.17.",
+        "172.18.",
+        "172.19.",
+        "172.20.",
+        "172.21.",
+        "172.22.",
+        "172.23.",
+        "172.24.",
+        "172.25.",
+        "172.26.",
+        "172.27.",
+        "172.28.",
+        "172.29.",
+        "172.30.",
+        "172.31.",
+        "192.168.",
+        "169.254.",
+    ] {
         if host == *blocked || host.starts_with(blocked) {
             return Err(format!("private IP rejected: {host}"));
         }
@@ -229,7 +270,11 @@ fn validate_url(url: &str) -> Result<(), String> {
 // prompt handler — callLLM 单轮（调 ApiRegistry.complete，解析 {block,reason} JSON 决策）
 // ---------------------------------------------------------------------------
 
-async fn run_prompt(handler: &HookHandler, stdin_data: serde_json::Value, ctx: &HookExecContext) -> HookOutcome {
+async fn run_prompt(
+    handler: &HookHandler,
+    stdin_data: serde_json::Value,
+    ctx: &HookExecContext,
+) -> HookOutcome {
     let prompt = match &handler.prompt {
         Some(p) => p.clone(),
         None => return HookOutcome::default(),
@@ -286,18 +331,31 @@ async fn run_prompt(handler: &HookHandler, stdin_data: serde_json::Value, ctx: &
     match ion_provider::registry::complete(&registry, &model, &context, Some(&options)).await {
         Ok(assistant_msg) => {
             // 提取文本
-            let text: String = assistant_msg.content.iter()
-                .filter_map(|c| if let ion_provider::types::AssistantContentBlock::Text(t) = c {
-                    Some(t.text.clone())
-                } else {
-                    None
+            let text: String = assistant_msg
+                .content
+                .iter()
+                .filter_map(|c| {
+                    if let ion_provider::types::AssistantContentBlock::Text(t) = c {
+                        Some(t.text.clone())
+                    } else {
+                        None
+                    }
                 })
                 .collect::<Vec<_>>()
                 .join("");
             // 解析 JSON 决策
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) && json.get("block").and_then(|v| v.as_bool()) == Some(true) {
-                let reason = json.get("reason").and_then(|v| v.as_str()).unwrap_or("blocked by prompt hook");
-                return HookOutcome { block: true, block_reason: Some(reason.into()), ..Default::default() };
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
+                && json.get("block").and_then(|v| v.as_bool()) == Some(true)
+            {
+                let reason = json
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("blocked by prompt hook");
+                return HookOutcome {
+                    block: true,
+                    block_reason: Some(reason.into()),
+                    ..Default::default()
+                };
             }
             // 不是 block 就看有没有 additionalContext
             interpret_stdout(&text)
@@ -348,23 +406,23 @@ async fn run_agent(
         // 用户可在 hooks.json 里配 "agent": "outline-syncer"
         // 指向 .ion/agents/outline-syncer.md（自定义 agent 角色）
         // 不填则用 "default"
-        agent: handler.agent.clone().unwrap_or_else(|| "default".to_string()),
+        agent: handler
+            .agent
+            .clone()
+            .unwrap_or_else(|| "default".to_string()),
         task,
         name: None,
         report_channel: None,
         wait: true, // 阻塞等首轮完成
         worktree: None,
-        hook_depth: Some(current_depth + 1),  // 子 Worker depth+1，防 agent handler 递归
+        hook_depth: Some(current_depth + 1), // 子 Worker depth+1，防 agent handler 递归
         system_prompt_override: None,
         model: None,
         provider: None,
     };
 
     let timeout = handler.timeout.unwrap_or(300) as u64;
-    let result = tokio::time::timeout(
-        Duration::from_secs(timeout),
-        rt.spawn_worker(req),
-    ).await;
+    let result = tokio::time::timeout(Duration::from_secs(timeout), rt.spawn_worker(req)).await;
 
     match result {
         Ok(Ok(resp)) => {
@@ -410,7 +468,9 @@ async fn run_mcp_tool(
     // args 合并：handler.input 为底 + stdin.tool_input 覆盖
     // （不 merge 整个 stdin_data，避免 session_id / hook_event_name 污染 MCP 工具参数）
     let mut args = handler.input.clone().unwrap_or(serde_json::json!({}));
-    if let Some(tool_input) = stdin_data.get("tool_input") && let (Some(obj), Some(input_obj)) = (args.as_object_mut(), tool_input.as_object()) {
+    if let Some(tool_input) = stdin_data.get("tool_input")
+        && let (Some(obj), Some(input_obj)) = (args.as_object_mut(), tool_input.as_object())
+    {
         for (k, v) in input_obj {
             obj.insert(k.clone(), v.clone());
         }
@@ -419,22 +479,31 @@ async fn run_mcp_tool(
     let bridge = match &ctx.manager_bridge {
         Some(b) => b.clone(),
         None => {
-            tracing::warn!("[hooks] mcp_tool handler needs manager_bridge, none available (scene 1?)");
+            tracing::warn!(
+                "[hooks] mcp_tool handler needs manager_bridge, none available (scene 1?)"
+            );
             return HookOutcome::default();
         }
     };
 
     // 通过 bridge 转发给 host 的 McpManager（方案 C：host 持有唯一 MCP 连接）
     match bridge
-        .send_command("mcp_call_tool", serde_json::json!({
-            "server": server,
-            "tool": tool,
-            "args": args,
-        }))
+        .send_command(
+            "mcp_call_tool",
+            serde_json::json!({
+                "server": server,
+                "tool": tool,
+                "args": args,
+            }),
+        )
         .await
     {
         Ok(resp) => {
-            if resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if resp
+                .get("success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
                 let output = resp
                     .get("data")
                     .and_then(|d| d.get("output"))
@@ -468,14 +537,26 @@ async fn run_mcp_tool(
 /// - exit 2 → block（reason 取 stderr 或 JSON.permissionDecisionReason）
 /// - exit 3 → ask（仅 PreToolUse，请求用户确认）
 /// - 其他 → 忽略
-pub fn interpret_exit_code(exit_code: i32, stdout: &str, stderr: &str, _handler: &HookHandler, event_name: &str) -> HookOutcome {
+pub fn interpret_exit_code(
+    exit_code: i32,
+    stdout: &str,
+    stderr: &str,
+    _handler: &HookHandler,
+    event_name: &str,
+) -> HookOutcome {
     match exit_code {
         0 => interpret_stdout(stdout),
         2 => {
             // exit 2 = 阻断（但某些事件上是非阻断通知，对齐 Claude Code）
             // SessionStart/SessionEnd/Setup/SubagentStart/Notification 上 exit-2 只记日志不阻断
             // event_name 从参数传入（HookExecContext.event_name）
-            let non_blocking_events = ["SessionStart", "SessionEnd", "Setup", "SubagentStart", "Notification"];
+            let non_blocking_events = [
+                "SessionStart",
+                "SessionEnd",
+                "Setup",
+                "SubagentStart",
+                "Notification",
+            ];
             let reason = if let Some(json) = parse_json(stdout) {
                 json.get("reason")
                     .or_else(|| json.get("message"))
@@ -484,20 +565,38 @@ pub fn interpret_exit_code(exit_code: i32, stdout: &str, stderr: &str, _handler:
                     .map(String::from)
             } else {
                 None
-            }.unwrap_or_else(|| {
-                if stderr.is_empty() { "blocked by hook".into() } else { stderr.to_string() }
+            }
+            .unwrap_or_else(|| {
+                if stderr.is_empty() {
+                    "blocked by hook".into()
+                } else {
+                    stderr.to_string()
+                }
             });
             if non_blocking_events.contains(&event_name) {
                 // 非阻断事件：exit-2 只记录 additionalContext，不 block
                 tracing::warn!("[hooks] {} exit 2 (non-blocking): {}", event_name, reason);
-                HookOutcome { block: false, block_reason: Some(reason.clone()), additional_context: Some(format!("Hook notification: {}", reason)), ..Default::default() }
+                HookOutcome {
+                    block: false,
+                    block_reason: Some(reason.clone()),
+                    additional_context: Some(format!("Hook notification: {}", reason)),
+                    ..Default::default()
+                }
             } else {
-                HookOutcome { block: true, block_reason: Some(reason), ..Default::default() }
+                HookOutcome {
+                    block: true,
+                    block_reason: Some(reason),
+                    ..Default::default()
+                }
             }
         }
         3 => {
             // exit 3 = 请求确认（仅 PreToolUse）
-            HookOutcome { ask: true, block_reason: Some(stderr.to_string()), ..Default::default() }
+            HookOutcome {
+                ask: true,
+                block_reason: Some(stderr.to_string()),
+                ..Default::default()
+            }
         }
         _ => HookOutcome::default(), // 其他退出码忽略
     }
@@ -521,7 +620,10 @@ pub fn interpret_stdout(stdout: &str) -> HookOutcome {
         // decision: "block" → 阻断
         if json.get("decision").and_then(|v| v.as_str()) == Some("block") {
             outcome.block = true;
-            outcome.block_reason = json.get("reason").and_then(|v| v.as_str()).map(String::from);
+            outcome.block_reason = json
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .map(String::from);
         }
 
         // hookSpecificOutput
@@ -531,13 +633,19 @@ pub fn interpret_stdout(stdout: &str) -> HookOutcome {
             }
             if let Some(perm) = hso.get("permissionDecision").and_then(|v| v.as_str()) {
                 match perm {
-                    "deny" => { outcome.block = true; }
-                    "ask" => { outcome.ask = true; }
-                    "allow" => { /* 显式放行：不 block 不 ask（覆盖之前的 deny/ask） */
+                    "deny" => {
+                        outcome.block = true;
+                    }
+                    "ask" => {
+                        outcome.ask = true;
+                    }
+                    "allow" => {
+                        /* 显式放行：不 block 不 ask（覆盖之前的 deny/ask） */
                         outcome.block = false;
                         outcome.ask = false;
                     }
-                    "defer" => { /* defer = 暂不决策，当 allow 处理（ION 无 defer 流程） */
+                    "defer" => {
+                        /* defer = 暂不决策，当 allow 处理（ION 无 defer 流程） */
                         outcome.block = false;
                         outcome.ask = false;
                     }
@@ -550,7 +658,9 @@ pub fn interpret_stdout(stdout: &str) -> HookOutcome {
         }
 
         // 顶层 additionalContext（简写）
-        if outcome.additional_context.is_none() && let Some(ctx) = json.get("additionalContext").and_then(|v| v.as_str()) {
+        if outcome.additional_context.is_none()
+            && let Some(ctx) = json.get("additionalContext").and_then(|v| v.as_str())
+        {
             outcome.additional_context = Some(ctx.to_string());
         }
 
@@ -578,10 +688,21 @@ mod tests {
         let handler = HookHandler {
             handler_type: HandlerType::Command,
             agent: None,
-            command: None, url: None, prompt: None, server: None, tool: None,
-            input: None, model: None, timeout: None, if_clause: None,
-            r#async: false, async_rewake: false, once: false,
-            status_message: None, allowed_tools: None, max_turns: None,
+            command: None,
+            url: None,
+            prompt: None,
+            server: None,
+            tool: None,
+            input: None,
+            model: None,
+            timeout: None,
+            if_clause: None,
+            r#async: false,
+            async_rewake: false,
+            once: false,
+            status_message: None,
+            allowed_tools: None,
+            max_turns: None,
         };
         let outcome = interpret_exit_code(0, "hello world", "", &handler, "PreToolUse");
         assert_eq!(outcome.additional_context.as_deref(), Some("hello world"));
@@ -593,10 +714,21 @@ mod tests {
         let handler = HookHandler {
             handler_type: HandlerType::Command,
             agent: None,
-            command: None, url: None, prompt: None, server: None, tool: None,
-            input: None, model: None, timeout: None, if_clause: None,
-            r#async: false, async_rewake: false, once: false,
-            status_message: None, allowed_tools: None, max_turns: None,
+            command: None,
+            url: None,
+            prompt: None,
+            server: None,
+            tool: None,
+            input: None,
+            model: None,
+            timeout: None,
+            if_clause: None,
+            r#async: false,
+            async_rewake: false,
+            once: false,
+            status_message: None,
+            allowed_tools: None,
+            max_turns: None,
         };
         let stdout = r#"{"decision":"block","reason":"forbidden"}"#;
         let outcome = interpret_exit_code(0, stdout, "", &handler, "PreToolUse");
@@ -609,10 +741,21 @@ mod tests {
         let handler = HookHandler {
             handler_type: HandlerType::Command,
             agent: None,
-            command: None, url: None, prompt: None, server: None, tool: None,
-            input: None, model: None, timeout: None, if_clause: None,
-            r#async: false, async_rewake: false, once: false,
-            status_message: None, allowed_tools: None, max_turns: None,
+            command: None,
+            url: None,
+            prompt: None,
+            server: None,
+            tool: None,
+            input: None,
+            model: None,
+            timeout: None,
+            if_clause: None,
+            r#async: false,
+            async_rewake: false,
+            once: false,
+            status_message: None,
+            allowed_tools: None,
+            max_turns: None,
         };
         let outcome = interpret_exit_code(2, "", "command not allowed", &handler, "PreToolUse");
         assert!(outcome.block);
@@ -624,10 +767,21 @@ mod tests {
         let handler = HookHandler {
             handler_type: HandlerType::Command,
             agent: None,
-            command: None, url: None, prompt: None, server: None, tool: None,
-            input: None, model: None, timeout: None, if_clause: None,
-            r#async: false, async_rewake: false, once: false,
-            status_message: None, allowed_tools: None, max_turns: None,
+            command: None,
+            url: None,
+            prompt: None,
+            server: None,
+            tool: None,
+            input: None,
+            model: None,
+            timeout: None,
+            if_clause: None,
+            r#async: false,
+            async_rewake: false,
+            once: false,
+            status_message: None,
+            allowed_tools: None,
+            max_turns: None,
         };
         let stdout = r#"{"hookSpecificOutput":{"additionalContext":"injected text"}}"#;
         let outcome = interpret_exit_code(0, stdout, "", &handler, "PreToolUse");
@@ -666,11 +820,21 @@ mod tests {
         HookHandler {
             handler_type: HandlerType::McpTool,
             agent: None,
-            command: None, url: None, prompt: None,
-            server: Some(server.into()), tool: Some(tool.into()),
-            input, model: None, timeout: Some(10), if_clause: None,
-            r#async: false, async_rewake: false, once: false,
-            status_message: None, allowed_tools: None, max_turns: None,
+            command: None,
+            url: None,
+            prompt: None,
+            server: Some(server.into()),
+            tool: Some(tool.into()),
+            input,
+            model: None,
+            timeout: Some(10),
+            if_clause: None,
+            r#async: false,
+            async_rewake: false,
+            once: false,
+            status_message: None,
+            allowed_tools: None,
+            max_turns: None,
         }
     }
 
@@ -678,7 +842,9 @@ mod tests {
         HookExecContext {
             project_dir: "/test".into(),
             event_name: "PreToolUse".into(),
-            runtime: None, registry: None, model: None,
+            runtime: None,
+            registry: None,
+            model: None,
             manager_bridge: bridge,
         }
     }
@@ -688,7 +854,10 @@ mod tests {
         let handler = mcp_handler("", "tool", None);
         let ctx = mcp_ctx(None);
         let outcome = run_mcp_tool(&handler, serde_json::json!({}), &ctx).await;
-        assert!(!outcome.block, "missing server should return default (no block)");
+        assert!(
+            !outcome.block,
+            "missing server should return default (no block)"
+        );
     }
 
     #[tokio::test]
@@ -706,7 +875,9 @@ mod tests {
             response: serde_json::json!({"success": true, "data": {"output": "search results here"}}),
         });
         let handler = mcp_handler("kb", "search", Some(serde_json::json!({"limit": 5})));
-        let ctx = mcp_ctx(Some(bridge.clone() as Arc<dyn crate::runtime::ManagerBridgeHandle>));
+        let ctx = mcp_ctx(Some(
+            bridge.clone() as Arc<dyn crate::runtime::ManagerBridgeHandle>
+        ));
 
         let outcome = run_mcp_tool(&handler, serde_json::json!({}), &ctx).await;
 
@@ -719,7 +890,13 @@ mod tests {
         assert_eq!(params["args"]["limit"], 5, "handler.input 应该传给 args");
 
         // 验证 output 被解析成 additional_context
-        assert!(outcome.additional_context.as_deref().unwrap_or("").contains("search results"));
+        assert!(
+            outcome
+                .additional_context
+                .as_deref()
+                .unwrap_or("")
+                .contains("search results")
+        );
     }
 
     #[tokio::test]
@@ -731,16 +908,24 @@ mod tests {
         // handler.input 有 limit=5；stdin 的 tool_input 有 query="rust"
         let handler = mcp_handler("kb", "search", Some(serde_json::json!({"limit": 5})));
         let stdin = serde_json::json!({"tool_input": {"query": "rust"}, "session_id": "s1"});
-        let ctx = mcp_ctx(Some(bridge.clone() as Arc<dyn crate::runtime::ManagerBridgeHandle>));
+        let ctx = mcp_ctx(Some(
+            bridge.clone() as Arc<dyn crate::runtime::ManagerBridgeHandle>
+        ));
 
         let _ = run_mcp_tool(&handler, stdin, &ctx).await;
 
         let captured = bridge.captured.lock().unwrap().clone();
         let (_, params) = captured.unwrap();
         assert_eq!(params["args"]["limit"], 5, "handler.input 的 limit 应保留");
-        assert_eq!(params["args"]["query"], "rust", "stdin.tool_input 的 query 应合并进来");
+        assert_eq!(
+            params["args"]["query"], "rust",
+            "stdin.tool_input 的 query 应合并进来"
+        );
         // session_id 不应该污染 args
-        assert!(params["args"].get("session_id").is_none(), "session_id 不应进入 args");
+        assert!(
+            params["args"].get("session_id").is_none(),
+            "session_id 不应进入 args"
+        );
     }
 
     #[tokio::test]
@@ -754,6 +939,9 @@ mod tests {
 
         let outcome = run_mcp_tool(&handler, serde_json::json!({}), &ctx).await;
         assert!(!outcome.block, "MCP 调用失败应返回 default（不 block）");
-        assert!(outcome.additional_context.is_none(), "失败时不应注入 context");
+        assert!(
+            outcome.additional_context.is_none(),
+            "失败时不应注入 context"
+        );
     }
 }

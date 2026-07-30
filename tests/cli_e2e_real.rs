@@ -57,9 +57,18 @@ fn run_ion(args: &[&str], stdin: Option<&str>) -> (bool, String) {
 #[test]
 #[ignore]
 fn e2e_basic_prompt() {
-    if !enabled() { return; }
+    if !enabled() {
+        return;
+    }
     let (ok, out) = run_ion(
-        &["-p", "say hello in 2 words", "--provider", &provider(), "--model", &model()],
+        &[
+            "-p",
+            "say hello in 2 words",
+            "--provider",
+            &provider(),
+            "--model",
+            &model(),
+        ],
         None,
     );
     assert!(ok, "ion should exit 0, got output: {out}");
@@ -70,12 +79,11 @@ fn e2e_basic_prompt() {
 #[test]
 #[ignore]
 fn e2e_provider_id_syntax() {
-    if !enabled() { return; }
+    if !enabled() {
+        return;
+    }
     let combined = format!("{}/{}", provider(), model());
-    let (ok, out) = run_ion(
-        &["-p", "say hi", "--model", &combined],
-        None,
-    );
+    let (ok, out) = run_ion(&["-p", "say hi", "--model", &combined], None);
     assert!(ok, "provider/id syntax should work, output: {out}");
     println!("e2e_provider_id_syntax: {out}");
 }
@@ -83,21 +91,35 @@ fn e2e_provider_id_syntax() {
 #[test]
 #[ignore]
 fn e2e_thinking_suffix() {
-    if !enabled() { return; }
+    if !enabled() {
+        return;
+    }
     let model_with_thinking = format!("{}:low", model());
     let (ok, out) = run_ion(
-        &["-p", "say ok", "--model", &model_with_thinking, "--provider", &provider()],
+        &[
+            "-p",
+            "say ok",
+            "--model",
+            &model_with_thinking,
+            "--provider",
+            &provider(),
+        ],
         None,
     );
     // :low thinking should parse without error
-    assert!(ok || !out.contains("error"), "thinking suffix parse failed: {out}");
+    assert!(
+        ok || !out.contains("error"),
+        "thinking suffix parse failed: {out}"
+    );
     println!("e2e_thinking_suffix: {out}");
 }
 
 #[test]
 #[ignore]
 fn e2e_piped_stdin() {
-    if !enabled() { return; }
+    if !enabled() {
+        return;
+    }
     let (ok, out) = run_ion(
         &["--provider", &provider(), "--model", &model()],
         Some("say hello in 2 words"),
@@ -114,9 +136,20 @@ fn e2e_piped_stdin() {
 #[test]
 #[ignore]
 fn e2e_mode_json() {
-    if !enabled() { return; }
+    if !enabled() {
+        return;
+    }
     let (ok, out) = run_ion(
-        &["--mode", "json", "-p", r#"output {"ok":true}"#, "--provider", &provider(), "--model", &model()],
+        &[
+            "--mode",
+            "json",
+            "-p",
+            r#"output {"ok":true}"#,
+            "--provider",
+            &provider(),
+            "--model",
+            &model(),
+        ],
         None,
     );
     assert!(ok, "--mode json should work, output: {out}");
@@ -126,18 +159,38 @@ fn e2e_mode_json() {
 #[test]
 #[ignore]
 fn e2e_continue_creates_and_resumes() {
-    if !enabled() { return; }
+    if !enabled() {
+        return;
+    }
     // First: create a session
     let sid = format!("sess_e2e_{}", std::process::id());
     let (ok1, out1) = run_ion(
-        &["--session-id", &sid, "-p", "remember the number 42", "--provider", &provider(), "--model", &model()],
+        &[
+            "--session-id",
+            &sid,
+            "-p",
+            "remember the number 42",
+            "--provider",
+            &provider(),
+            "--model",
+            &model(),
+        ],
         None,
     );
     assert!(ok1, "session create should work: {out1}");
 
     // Then: continue with a follow-up
     let (ok2, out2) = run_ion(
-        &["--session", &sid, "-p", "what number did I tell you?", "--provider", &provider(), "--model", &model()],
+        &[
+            "--session",
+            &sid,
+            "-p",
+            "what number did I tell you?",
+            "--provider",
+            &provider(),
+            "--model",
+            &model(),
+        ],
         None,
     );
     assert!(ok2, "session resume should work: {out2}");
@@ -148,9 +201,20 @@ fn e2e_continue_creates_and_resumes() {
 #[test]
 #[ignore]
 fn e2e_compact_model_flag() {
-    if !enabled() { return; }
+    if !enabled() {
+        return;
+    }
     let (ok, out) = run_ion(
-        &["--compact-model", &model(), "-p", "say hi", "--provider", &provider(), "--model", &model()],
+        &[
+            "--compact-model",
+            &model(),
+            "-p",
+            "say hi",
+            "--provider",
+            &provider(),
+            "--model",
+            &model(),
+        ],
         None,
     );
     assert!(ok, "--compact-model should not break execution: {out}");

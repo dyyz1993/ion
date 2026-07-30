@@ -90,7 +90,7 @@ pub struct MemoryStore {
     /// 全局记忆待注入队列（on_input 搜全局库写入，on_context 消费）
     pub pending_global: Vec<String>,
     /// 全局记忆去重 hash（最近注入过的 content hash，20 轮窗口）
-    pub global_injected_hashes: Vec<(String, u64)>,  // (hash, turn_when_injected)
+    pub global_injected_hashes: Vec<(String, u64)>, // (hash, turn_when_injected)
     /// V0.2 全局存储句柄（统一存储层：有则走 SQLite，无则 fallback JSON）
     pub global_store: Option<crate::global_memory::GlobalMemoryStore>,
     /// 项目名（用于 V0.2 的 project 字段）
@@ -115,7 +115,8 @@ impl MemoryStore {
         let global_store = if std::env::var("ION_MEMORY_NO_GLOBAL").is_err() {
             crate::global_memory::GlobalMemoryStore::open(
                 &crate::global_memory::GlobalMemoryStore::db_path(),
-            ).ok()
+            )
+            .ok()
         } else {
             None
         };
@@ -132,7 +133,11 @@ impl MemoryStore {
 
     /// 兼容旧签名（测试用）
     pub fn new_with_root(project_root: &str, session_id: &str) -> Self {
-        Self::new(crate::storage_context::StorageContext::new(project_root, session_id, project_root))
+        Self::new(crate::storage_context::StorageContext::new(
+            project_root,
+            session_id,
+            project_root,
+        ))
     }
 
     /// 测试专用：不打开全局 SQLite（避免测试间数据污染，不依赖环境变量）
@@ -155,7 +160,11 @@ impl MemoryStore {
 
     /// 测试专用兼容签名
     pub fn new_with_root_no_global(project_root: &str, session_id: &str) -> Self {
-        Self::new_no_global(crate::storage_context::StorageContext::new(project_root, session_id, project_root))
+        Self::new_no_global(crate::storage_context::StorageContext::new(
+            project_root,
+            session_id,
+            project_root,
+        ))
     }
 
     fn project_dir(&self) -> PathBuf {
@@ -171,7 +180,11 @@ impl MemoryStore {
         self.outlines_dir().join(format!("{oid}.json"))
     }
     fn session_dir(&self) -> PathBuf {
-        crate::paths::session_data_dir(&self.storage.config_root, &self.storage.session_id, "memory")
+        crate::paths::session_data_dir(
+            &self.storage.config_root,
+            &self.storage.session_id,
+            "memory",
+        )
     }
     fn injected_path(&self) -> PathBuf {
         self.session_dir().join("injected.json")
@@ -184,9 +197,13 @@ impl MemoryStore {
 
     pub fn read_index(&self) -> Vec<OutlineIndex> {
         let p = self.index_path();
-        if !p.exists() { return vec![]; }
-        std::fs::read_to_string(&p).ok()
-            .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        if !p.exists() {
+            return vec![];
+        }
+        std::fs::read_to_string(&p)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
     }
 
     pub fn write_index(&self, data: &[OutlineIndex]) {
@@ -197,9 +214,13 @@ impl MemoryStore {
 
     pub fn read_outline(&self, oid: &str) -> Vec<MemoryEntry> {
         let p = self.outline_path(oid);
-        if !p.exists() { return vec![]; }
-        std::fs::read_to_string(&p).ok()
-            .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        if !p.exists() {
+            return vec![];
+        }
+        std::fs::read_to_string(&p)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
     }
 
     pub fn write_outline(&self, oid: &str, entries: &[MemoryEntry]) {
@@ -208,7 +229,14 @@ impl MemoryStore {
         }
     }
 
-    pub fn save_entry(&self, content: &str, desc: &str, cat: &str, tags: &[String], outline: &str) -> String {
+    pub fn save_entry(
+        &self,
+        content: &str,
+        desc: &str,
+        cat: &str,
+        tags: &[String],
+        outline: &str,
+    ) -> String {
         // 统一存储：优先走 V0.2 全局 SQLite
         if let Some(ref gstore) = self.global_store {
             let tags_str = tags.join(",");
@@ -226,15 +254,24 @@ impl MemoryStore {
             }
         }
         // Fallback: JSON 文件存储（v0.1 原始逻辑）
-        let sanitized: String = outline.chars()
+        let sanitized: String = outline
+            .chars()
             .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
             .take(64)
             .collect();
-        let outline = if sanitized.is_empty() { "auto" } else { &sanitized };
+        let outline = if sanitized.is_empty() {
+            "auto"
+        } else {
+            &sanitized
+        };
         self.ensure_dirs();
         let mut entries = self.read_outline(outline);
-        let max_n = entries.iter()
-            .filter_map(|e| e.id.strip_prefix("mem_").and_then(|n| n.parse::<usize>().ok()))
+        let max_n = entries
+            .iter()
+            .filter_map(|e| {
+                e.id.strip_prefix("mem_")
+                    .and_then(|n| n.parse::<usize>().ok())
+            })
             .max()
             .unwrap_or(0);
         let next_id = format!("mem_{}", max_n + 1);
@@ -253,7 +290,11 @@ impl MemoryStore {
         if let Some(i) = index.iter_mut().find(|i| i.id == outline) {
             i.entry_count += 1;
         } else {
-            index.push(OutlineIndex { id: outline.to_string(), summary: cat.to_string(), entry_count: 1 });
+            index.push(OutlineIndex {
+                id: outline.to_string(),
+                summary: cat.to_string(),
+                entry_count: 1,
+            });
         }
         self.write_index(&index);
         next_id
@@ -263,26 +304,37 @@ impl MemoryStore {
         // 统一存储：优先走 V0.2 FTS5 搜索
         if let Some(ref gstore) = self.global_store {
             // FTS5 搜索当前项目（outline 参数忽略——V0.2 用 project 维度）
-            let results = gstore.search(query, Some(&self.project_name))
+            let results = gstore
+                .search(query, Some(&self.project_name))
                 .unwrap_or_default();
             // 转成 MemoryEntry 格式（保持注入链路兼容）
-            return results.into_iter().map(|g| {
-                // 从 content 里拆出 description（save 时拼进去的）
-                let (content, desc) = if let Some(idx) = g.content.find("\n\nDescription: ") {
-                    (g.content[..idx].to_string(), g.content[idx+14..].to_string())
-                } else {
-                    (g.content.clone(), String::new())
-                };
-                MemoryEntry {
-                    id: g.id,
-                    content,
-                    description: desc,
-                    category: g.category,
-                    tags: if g.tags.is_empty() { vec![] } else { g.tags.split(',').map(|s| s.to_string()).collect() },
-                    outline: g.project.clone(),
-                    archived: g.archived,
-                }
-            }).collect();
+            return results
+                .into_iter()
+                .map(|g| {
+                    // 从 content 里拆出 description（save 时拼进去的）
+                    let (content, desc) = if let Some(idx) = g.content.find("\n\nDescription: ") {
+                        (
+                            g.content[..idx].to_string(),
+                            g.content[idx + 14..].to_string(),
+                        )
+                    } else {
+                        (g.content.clone(), String::new())
+                    };
+                    MemoryEntry {
+                        id: g.id,
+                        content,
+                        description: desc,
+                        category: g.category,
+                        tags: if g.tags.is_empty() {
+                            vec![]
+                        } else {
+                            g.tags.split(',').map(|s| s.to_string()).collect()
+                        },
+                        outline: g.project.clone(),
+                        archived: g.archived,
+                    }
+                })
+                .collect();
         }
         // Fallback: v0.1 关键词双向匹配
         let q = query.to_lowercase();
@@ -294,11 +346,21 @@ impl MemoryStore {
         };
         for oid in outlines {
             for e in self.read_outline(&oid) {
-                if e.archived { continue; }
-                if q.is_empty() { results.push(e); continue; }
-                let content_match = e.content.to_lowercase().contains(&q) || q.contains(&e.content.to_lowercase());
-                let desc_match = !e.description.is_empty() && (e.description.to_lowercase().contains(&q) || q.contains(&e.description.to_lowercase()));
-                let cat_match = !e.category.is_empty() && (e.category.to_lowercase().contains(&q) || q.contains(&e.category.to_lowercase()));
+                if e.archived {
+                    continue;
+                }
+                if q.is_empty() {
+                    results.push(e);
+                    continue;
+                }
+                let content_match =
+                    e.content.to_lowercase().contains(&q) || q.contains(&e.content.to_lowercase());
+                let desc_match = !e.description.is_empty()
+                    && (e.description.to_lowercase().contains(&q)
+                        || q.contains(&e.description.to_lowercase()));
+                let cat_match = !e.category.is_empty()
+                    && (e.category.to_lowercase().contains(&q)
+                        || q.contains(&e.category.to_lowercase()));
                 let tag_match = e.tags.iter().any(|t| {
                     let tl = t.to_lowercase();
                     tl.contains(&q) || q.contains(&tl)
@@ -336,9 +398,13 @@ impl MemoryStore {
 
     pub fn read_injected(&self) -> Vec<InjectRecord> {
         let p = self.injected_path();
-        if !p.exists() { return vec![]; }
-        std::fs::read_to_string(&p).ok()
-            .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        if !p.exists() {
+            return vec![];
+        }
+        std::fs::read_to_string(&p)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
     }
 
     pub fn write_injected(&self, records: &[InjectRecord]) {
@@ -358,7 +424,9 @@ pub struct MemorySaveTool {
 
 #[async_trait]
 impl Tool for MemorySaveTool {
-    fn name(&self) -> &str { "memory_save" }
+    fn name(&self) -> &str {
+        "memory_save"
+    }
     fn description(&self) -> &str {
         "Save an important memory for future reference. Use when the user says 'remember', 'save this', or states a lasting preference. \n\
          Args: {content: string (required), description: string, category: string, tags: string[]}\n\
@@ -374,12 +442,32 @@ impl Tool for MemorySaveTool {
             },"required":["content"]
         })
     }
-    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let content = args.get("content").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing 'content'".into()))?;
-        let desc = args.get("description").and_then(|v| v.as_str()).unwrap_or("");
-        let cat = args.get("category").and_then(|v| v.as_str()).unwrap_or("general");
-        let tags: Vec<String> = args.get("tags").and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let content = args
+            .get("content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AgentError::Tool("missing 'content'".into()))?;
+        let desc = args
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let cat = args
+            .get("category")
+            .and_then(|v| v.as_str())
+            .unwrap_or("general");
+        let tags: Vec<String> = args
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
         let store = self.store.lock().await;
         let id = store.save_entry(content, desc, cat, &tags, "auto");
         let sess = store.storage.session_id.clone();
@@ -404,7 +492,9 @@ pub struct MemorySearchTool {
 
 #[async_trait]
 impl Tool for MemorySearchTool {
-    fn name(&self) -> &str { "memory_search" }
+    fn name(&self) -> &str {
+        "memory_search"
+    }
     fn description(&self) -> &str {
         "Search saved memories. Use when you need to recall previously saved information. \n\
          Args: {query: string (required), outline?: string}\n\
@@ -418,7 +508,11 @@ impl Tool for MemorySearchTool {
             },"required":["query"]
         })
     }
-    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
         let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
         let outline = args.get("outline").and_then(|v| v.as_str());
         let store = self.store.lock().await;
@@ -455,13 +549,20 @@ impl MemoryExtension {
 
     /// 兼容旧签名（测试用）
     pub fn new_with_root(project_root: &str, session_id: &str) -> Self {
-        Self::new(crate::storage_context::StorageContext::new(project_root, session_id, project_root))
+        Self::new(crate::storage_context::StorageContext::new(
+            project_root,
+            session_id,
+            project_root,
+        ))
     }
 
     /// 测试专用：不打开全局 SQLite（避免测试间数据污染）
     pub fn new_with_root_no_global(project_root: &str, session_id: &str) -> Self {
         Self {
-            store: Arc::new(Mutex::new(MemoryStore::new_with_root_no_global(project_root, session_id))),
+            store: Arc::new(Mutex::new(MemoryStore::new_with_root_no_global(
+                project_root,
+                session_id,
+            ))),
             extension_api: None,
             registry: None,
             model: None,
@@ -471,7 +572,13 @@ impl MemoryExtension {
 
     /// 使用已有的 MemoryStore（测试用）
     pub fn new_with_store(store: Arc<Mutex<MemoryStore>>) -> Self {
-        Self { store, extension_api: None, registry: None, model: None, processing_enabled: false }
+        Self {
+            store,
+            extension_api: None,
+            registry: None,
+            model: None,
+            processing_enabled: false,
+        }
     }
 
     fn emit(&self, custom_type: &str, data: serde_json::Value) {
@@ -499,26 +606,56 @@ impl MemoryExtension {
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
 
 #[async_trait]
 impl Extension for MemoryExtension {
     /// 会话结束时触发 V0.2 记忆加工（LLM 提炼精华 → 去重 → 存全局库）
-    async fn on_session_shutdown(&self, _ctx: &super::extension::SessionContext) -> AgentResult<()> {
-        if !self.processing_enabled { return Ok(()); }
-        let registry = match &self.registry { Some(r) => r.clone(), None => return Ok(()) };
-        let model = match &self.model { Some(m) => m.clone(), None => return Ok(()) };
+    async fn on_session_shutdown(
+        &self,
+        _ctx: &super::extension::SessionContext,
+    ) -> AgentResult<()> {
+        if !self.processing_enabled {
+            return Ok(());
+        }
+        let registry = match &self.registry {
+            Some(r) => r.clone(),
+            None => return Ok(()),
+        };
+        let model = match &self.model {
+            Some(m) => m.clone(),
+            None => return Ok(()),
+        };
         let (session_id, project_name, global_store) = {
             let store = self.store.lock().await;
-            (store.storage.session_id.clone(), store.project_name.clone(), store.global_store.clone())
+            (
+                store.storage.session_id.clone(),
+                store.project_name.clone(),
+                store.global_store.clone(),
+            )
         };
-        let global = match global_store { Some(g) => g, None => return Ok(()) };
+        let global = match global_store {
+            Some(g) => g,
+            None => return Ok(()),
+        };
 
         // 异步 spawn 加工，不阻塞退出
         let self_store = self.store.clone();
         tokio::spawn(async move {
-            if let Err(e) = run_memory_processing(&session_id, &project_name, &global, &registry, &model, &self_store).await {
+            if let Err(e) = run_memory_processing(
+                &session_id,
+                &project_name,
+                &global,
+                &registry,
+                &model,
+                &self_store,
+            )
+            .await
+            {
                 tracing::warn!("[memory-v2] processing failed: {e}");
             }
         });
@@ -533,18 +670,27 @@ impl Extension for MemoryExtension {
         if !index.is_empty() {
             let mut xml = String::from("\n<memory_outline>\n");
             for i in &index {
-                xml.push_str(&format!("  <category id=\"{}\" summary=\"{}\"/>\n", i.id, i.summary));
+                xml.push_str(&format!(
+                    "  <category id=\"{}\" summary=\"{}\"/>\n",
+                    i.id, i.summary
+                ));
             }
             xml.push_str("</memory_outline>");
             prompt.push_str(&xml);
         }
 
         // ── 全局记忆大纲（V0.2 Active Memory）──
-        if let Some(ref global) = store.global_store && let Ok(outlines) = global.list_outlines() && !outlines.is_empty() {
+        if let Some(ref global) = store.global_store
+            && let Ok(outlines) = global.list_outlines()
+            && !outlines.is_empty()
+        {
             let mut xml = String::from("\n<global_memory_outline>\n");
             for o in &outlines {
                 let summary_preview: String = o.summary.chars().take(100).collect();
-                xml.push_str(&format!("  {} ({} entries): {}\n", o.project, o.entry_count, summary_preview));
+                xml.push_str(&format!(
+                    "  {} ({} entries): {}\n",
+                    o.project, o.entry_count, summary_preview
+                ));
             }
             xml.push_str("</global_memory_outline>");
             prompt.push_str(&xml);
@@ -555,7 +701,9 @@ impl Extension for MemoryExtension {
     /// 用户输入 → 记录 transcript + 检索记忆 + 标记待注入
     async fn on_input(&self, ctx: &mut super::extension::InputContext) -> AgentResult<()> {
         let text = &ctx.text;
-        if text.trim().is_empty() { return Ok(()); }
+        if text.trim().is_empty() {
+            return Ok(());
+        }
         let mut store = self.store.lock().await;
         store.turn_count += 1;
 
@@ -572,12 +720,19 @@ impl Extension for MemoryExtension {
         });
         if let Ok(line) = serde_json::to_string(&entry) {
             use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&tlog) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&tlog)
+            {
                 let _ = writeln!(f, "{line}");
             }
         }
         drop(store);
-        self.emit("transcript_appended", serde_json::json!({"turn_id": text.len()}));
+        self.emit(
+            "transcript_appended",
+            serde_json::json!({"turn_id": text.len()}),
+        );
         let mut store = self.store.lock().await;
 
         // ── Consolidation：每 5 轮触发一次（项目级）──
@@ -595,39 +750,54 @@ impl Extension for MemoryExtension {
                 store.write_index(&new_idx);
             }
             // emit 不需要 drop store（emit 是 &self 方法，不需要 store）
-            self.emit("memory_consolidated", serde_json::json!({"reviewed": total}));
+            self.emit(
+                "memory_consolidated",
+                serde_json::json!({"reviewed": total}),
+            );
         }
 
         // ── Global consolidation (V0.2 Active Memory): triggered every 10 turns ──
-        if store.turn_count.is_multiple_of(10) && let Some(ref global) = store.global_store && let Ok(stats) = global.consolidate() {
-            self.emit("global_memory_consolidated", serde_json::json!({
-                "deduplicated": stats.deduplicated,
-                "archived": stats.archived,
-                "total_remaining": stats.total,
-            }));
+        if store.turn_count.is_multiple_of(10)
+            && let Some(ref global) = store.global_store
+            && let Ok(stats) = global.consolidate()
+        {
+            self.emit(
+                "global_memory_consolidated",
+                serde_json::json!({
+                    "deduplicated": stats.deduplicated,
+                    "archived": stats.archived,
+                    "total_remaining": stats.total,
+                }),
+            );
         }
 
         // 搜索匹配的记忆
         let results = store.search(text, None);
         if results.is_empty() {
             drop(store);
-            self.emit("memory_skipped", serde_json::json!({"reason":"no_match","query":text}));
+            self.emit(
+                "memory_skipped",
+                serde_json::json!({"reason":"no_match","query":text}),
+            );
             return Ok(());
         }
 
         // 按 outline 分组、算 hash、对比 injected
         let injected = store.read_injected();
-        let mut by_outline: std::collections::HashMap<String, Vec<MemoryEntry>> = std::collections::HashMap::new();
-        for e in results { by_outline.entry(e.outline.clone()).or_default().push(e); }
+        let mut by_outline: std::collections::HashMap<String, Vec<MemoryEntry>> =
+            std::collections::HashMap::new();
+        for e in results {
+            by_outline.entry(e.outline.clone()).or_default().push(e);
+        }
 
         for (oid, entries) in &by_outline {
             let hash = store.content_hash(oid);
             let already = injected.iter().find(|r| r.outline == *oid);
             let should_inject = match already {
-                None => true,                           // 从未注入
-                Some(r) if r.file_hash != hash => true,  // 内容变了
+                None => true,                                                    // 从未注入
+                Some(r) if r.file_hash != hash => true,                          // 内容变了
                 Some(r) if store.turn_count > r.last_injected_turn + 20 => true, // 窗口滚了
-                Some(_) => false,                        // 还在窗口内
+                Some(_) => false,                                                // 还在窗口内
             };
             if should_inject {
                 // 构建上下文注入文本
@@ -650,8 +820,9 @@ impl Extension for MemoryExtension {
             let turn = store.turn_count;
             store.global_injected_hashes.retain(|(_, t)| *t + 20 > turn);
 
-            let to_inject: Vec<_> = global_results.into_iter()
-                .take(5)  // 最多注入 5 条
+            let to_inject: Vec<_> = global_results
+                .into_iter()
+                .take(5) // 最多注入 5 条
                 .filter(|e| {
                     let hash = simple_hash(&e.content);
                     !store.global_injected_hashes.iter().any(|(h, _)| *h == hash)
@@ -659,7 +830,8 @@ impl Extension for MemoryExtension {
                 .collect();
 
             if !to_inject.is_empty() {
-                let xml = to_inject.iter()
+                let xml = to_inject
+                    .iter()
                     .map(|e| format!("[{}] {} (project: {})", e.category, e.content, e.project))
                     .collect::<Vec<_>>()
                     .join("\n");
@@ -683,16 +855,22 @@ impl Extension for MemoryExtension {
     /// 发 LLM 前 → 检查待注入队列 → push 到 messages
     async fn on_context(&self, messages: &mut Vec<super::messages::Message>) -> AgentResult<()> {
         let mut store = self.store.lock().await;
-        if store.pending.is_empty() && store.pending_global.is_empty() { return Ok(()); }
+        if store.pending.is_empty() && store.pending_global.is_empty() {
+            return Ok(());
+        }
 
         use super::messages::*;
 
         // ── 全局记忆注入（V0.2 Active Memory）──
         while let Some(xml) = store.pending_global.pop() {
-            let inject_text = format!("<global_memory>\n以下是跨项目相关记忆：\n{xml}\n</global_memory>");
+            let inject_text =
+                format!("<global_memory>\n以下是跨项目相关记忆：\n{xml}\n</global_memory>");
             messages.push(Message::User(UserMessage {
                 role: "user".into(),
-                content: vec![ContentBlock::Text(TextContent { text: inject_text, text_signature: None })],
+                content: vec![ContentBlock::Text(TextContent {
+                    text: inject_text,
+                    text_signature: None,
+                })],
                 timestamp: 0,
                 source: ion_provider::types::MessageSource::Prompt,
             }));
@@ -701,7 +879,10 @@ impl Extension for MemoryExtension {
         while let Some(pending) = store.pending.pop() {
             messages.push(Message::User(UserMessage {
                 role: "user".into(),
-                content: vec![ContentBlock::Text(TextContent { text: pending.xml, text_signature: None })],
+                content: vec![ContentBlock::Text(TextContent {
+                    text: pending.xml,
+                    text_signature: None,
+                })],
                 timestamp: 0,
                 source: ion_provider::types::MessageSource::Prompt,
             }));
@@ -713,14 +894,18 @@ impl Extension for MemoryExtension {
                 r.file_hash = hash;
                 r.last_injected_turn = store.turn_count;
                 r.last_injected_at = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
             } else {
                 injected.push(InjectRecord {
                     outline: pending.outline.clone(),
                     file_hash: hash,
                     last_injected_turn: store.turn_count,
                     last_injected_at: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0),
                 });
             }
             store.write_injected(&injected);
@@ -731,31 +916,62 @@ impl Extension for MemoryExtension {
     }
 
     /// 扩展私有 RPC 方法
-    async fn on_extension_rpc(&self, method: &str, params: serde_json::Value) -> AgentResult<serde_json::Value> {
+    async fn on_extension_rpc(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> AgentResult<serde_json::Value> {
         let store = self.store.lock().await;
         match method {
             "ping" => Ok(serde_json::json!({"status":"pong","extension":"memory"})),
             "debug_emit" => {
                 drop(store);
-                let msg = params.get("message").and_then(|v| v.as_str()).unwrap_or("test");
+                let msg = params
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("test");
                 self.emit("debug", serde_json::json!({"message": msg}));
                 Ok(serde_json::json!({"status":"emitted","message": msg}))
             }
             "save" => {
-                let content = params.get("content").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing 'content'".into()))?;
-                let desc = params.get("description").and_then(|v| v.as_str()).unwrap_or("");
-                let cat = params.get("category").and_then(|v| v.as_str()).unwrap_or("general");
-                let tags: Vec<String> = params.get("tags").and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
-                let outline = params.get("outline").and_then(|v| v.as_str()).unwrap_or("general");
+                let content = params
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AgentError::Tool("missing 'content'".into()))?;
+                let desc = params
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let cat = params
+                    .get("category")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("general");
+                let tags: Vec<String> = params
+                    .get("tags")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let outline = params
+                    .get("outline")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("general");
                 let id = store.save_entry(content, desc, cat, &tags, outline);
                 drop(store);
-                self.emit("memory_saved", serde_json::json!({"outline":outline,"id":id}));
+                self.emit(
+                    "memory_saved",
+                    serde_json::json!({"outline":outline,"id":id}),
+                );
                 Ok(serde_json::json!({"id":id,"status":"saved"}))
             }
             "list" => {
                 let oid = params.get("outline").and_then(|v| v.as_str()).unwrap_or("");
-                if oid.is_empty() { return Ok(serde_json::json!(store.read_index())); }
+                if oid.is_empty() {
+                    return Ok(serde_json::json!(store.read_index()));
+                }
                 Ok(serde_json::json!(store.read_outline(oid)))
             }
             "search" => {
@@ -764,8 +980,14 @@ impl Extension for MemoryExtension {
                 Ok(serde_json::json!(store.search(query, oid)))
             }
             "forget" => {
-                let id = params.get("id").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing 'id'".into()))?;
-                let oid = params.get("outline").and_then(|v| v.as_str()).unwrap_or("general");
+                let id = params
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AgentError::Tool("missing 'id'".into()))?;
+                let oid = params
+                    .get("outline")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("general");
                 let mut entries = store.read_outline(oid);
                 if let Some(e) = entries.iter_mut().find(|e| e.id == id) {
                     e.archived = true;
@@ -782,21 +1004,38 @@ impl Extension for MemoryExtension {
                 }
             }
             "inspect" => {
-                let id = params.get("id").and_then(|v| v.as_str()).ok_or_else(|| AgentError::Tool("missing 'id'".into()))?;
-                let oid = params.get("outline").and_then(|v| v.as_str()).unwrap_or("general");
+                let id = params
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AgentError::Tool("missing 'id'".into()))?;
+                let oid = params
+                    .get("outline")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("general");
                 let entries = store.read_outline(oid);
-                entries.iter().find(|e| e.id == id).map(|e| serde_json::json!(e))
+                entries
+                    .iter()
+                    .find(|e| e.id == id)
+                    .map(|e| serde_json::json!(e))
                     .ok_or_else(|| AgentError::Tool(format!("entry {id} not found")))
             }
             "transcript_search" => {
-                let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+                let query = params
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_lowercase();
                 let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
                 let tdir = store.session_dir().join("transcript");
                 let tlog = tdir.join("input.jsonl");
                 let mut results = Vec::new();
-                if tlog.exists() && let Ok(content) = std::fs::read_to_string(&tlog) {
+                if tlog.exists()
+                    && let Ok(content) = std::fs::read_to_string(&tlog)
+                {
                     for line in content.lines().rev() {
-                        if results.len() >= limit { break; }
+                        if results.len() >= limit {
+                            break;
+                        }
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
                             let text = v.get("content").and_then(|s| s.as_str()).unwrap_or("");
                             if query.is_empty() || text.to_lowercase().contains(&query) {
@@ -842,7 +1081,11 @@ async fn run_memory_processing(
     model: &ion_provider::types::Model,
     _store: &Arc<Mutex<MemoryStore>>,
 ) -> Result<(), String> {
-    tracing::info!("[memory-v2] processing session {} for project {}", session_id, project_name);
+    tracing::info!(
+        "[memory-v2] processing session {} for project {}",
+        session_id,
+        project_name
+    );
 
     // Step 1: Resolve session JSONL path.
     // Sessions live under `sessions/<cwd_subdir>/<file>.jsonl`, NOT flat `sessions/<sid>.jsonl`.
@@ -861,7 +1104,8 @@ async fn run_memory_processing(
         .map_err(|e| format!("read session file {}: {e}", session_file.display()))?;
     // Parse pi-style session JSONL (either type="message" or customType="message").
     // Reuses skill_distillation::extract_block_text so memory + skill share the same parser.
-    let messages: Vec<String> = content.lines()
+    let messages: Vec<String> = content
+        .lines()
         .filter(|l| !l.is_empty())
         .take(300)
         .filter_map(|l| {
@@ -878,7 +1122,8 @@ async fn run_memory_processing(
             }
             let (role, inner) = msg_obj.iter().next()?;
             let content_arr = inner.get("content")?.as_array()?;
-            let parts: Vec<String> = content_arr.iter()
+            let parts: Vec<String> = content_arr
+                .iter()
                 .filter_map(|block| crate::skill_distillation::extract_block_text(block))
                 .collect();
             if parts.is_empty() {
@@ -913,24 +1158,32 @@ async fn run_memory_processing(
 
     let context = ion_provider::types::Context {
         system_prompt: Some(system_prompt.into()),
-        messages: vec![ion_provider::types::Message::User(ion_provider::types::UserMessage {
-            role: "user".into(),
-            content: vec![ion_provider::types::ContentBlock::Text(ion_provider::types::TextContent {
-                text: format!("会话内容：\n{conversation_text}"),
-                text_signature: None,
-            })],
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64).unwrap_or(0),
-            source: ion_provider::types::MessageSource::Prompt,
-        })],
+        messages: vec![ion_provider::types::Message::User(
+            ion_provider::types::UserMessage {
+                role: "user".into(),
+                content: vec![ion_provider::types::ContentBlock::Text(
+                    ion_provider::types::TextContent {
+                        text: format!("会话内容：\n{conversation_text}"),
+                        text_signature: None,
+                    },
+                )],
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0),
+                source: ion_provider::types::MessageSource::Prompt,
+            },
+        )],
         tools: None,
     };
 
     let options = ion_provider::StreamOptions {
         max_tokens: Some(1024),
-        api_key: None, reasoning: None, timeout_ms: Some(60000),
-        max_retries: None, response_format: None,
+        api_key: None,
+        reasoning: None,
+        timeout_ms: Some(60000),
+        max_retries: None,
+        response_format: None,
     };
 
     let response = ion_provider::registry::complete(registry, model, &context, Some(&options))
@@ -938,10 +1191,16 @@ async fn run_memory_processing(
         .map_err(|e| format!("LLM call failed: {e}"))?;
 
     // 提取文本
-    let text: String = response.content.iter()
-        .filter_map(|c| if let ion_provider::types::AssistantContentBlock::Text(t) = c {
-            Some(t.text.clone())
-        } else { None })
+    let text: String = response
+        .content
+        .iter()
+        .filter_map(|c| {
+            if let ion_provider::types::AssistantContentBlock::Text(t) = c {
+                Some(t.text.clone())
+            } else {
+                None
+            }
+        })
         .collect();
 
     let extracted: Vec<ExtractedMemory> = serde_json::from_str(&text).unwrap_or_default();
@@ -966,8 +1225,12 @@ async fn run_memory_processing(
         saved += 1;
     }
 
-    tracing::info!("[memory-v2] processed session {}: extracted {}, saved {} (after dedup)",
-        session_id, extracted.len(), saved);
+    tracing::info!(
+        "[memory-v2] processed session {}: extracted {}, saved {} (after dedup)",
+        session_id,
+        extracted.len(),
+        saved
+    );
     Ok(())
 }
 
@@ -1098,11 +1361,8 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let storage = StorageContext::new(
-            tmp.to_str().unwrap(),
-            "test_session",
-            tmp.to_str().unwrap(),
-        );
+        let storage =
+            StorageContext::new(tmp.to_str().unwrap(), "test_session", tmp.to_str().unwrap());
         MemoryStore::new_no_global(storage)
     }
 

@@ -23,7 +23,7 @@
 //!
 //! turn_summary（ION 原生）→ custom_message（pi 可识别），让侧边栏树展示有内容。
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::Path;
 
 use crate::session_jsonl;
@@ -85,7 +85,9 @@ pub fn export_session_rich(
     let mut tools: Option<Vec<ExportToolInfo>> = None;
     let mut system_prompt: Option<String> = None;
 
-    if let Some(name) = agent_name && let Some(agent_cfg) = crate::agent_config::find_agent(name) {
+    if let Some(name) = agent_name
+        && let Some(agent_cfg) = crate::agent_config::find_agent(name)
+    {
         // Get system prompt from agent config
         let mut sp = agent_cfg.system_prompt.clone().unwrap_or_default();
         // 追加 skill 大纲（对齐 cmd_run 的 system prompt 构建逻辑，让 export 出来的
@@ -95,7 +97,9 @@ pub fn export_session_rich(
         let mut skill_dirs: Vec<std::path::PathBuf> = vec![
             crate::paths::skills_dir(),
             crate::paths::project_skills_dir(cwd),
-            std::path::PathBuf::from(&home).join(".agents").join("skills"),
+            std::path::PathBuf::from(&home)
+                .join(".agents")
+                .join("skills"),
         ];
         // ZCode plugin skills
         let plugins_cache = std::path::PathBuf::from(&home).join(".zcode/cli/plugins/cache");
@@ -107,7 +111,9 @@ pub fn export_session_rich(
                             if let Ok(ver_iter) = std::fs::read_dir(plugin_entry.path()) {
                                 for ver_entry in ver_iter.flatten() {
                                     let sd = ver_entry.path().join("skills");
-                                    if sd.is_dir() { skill_dirs.push(sd); }
+                                    if sd.is_dir() {
+                                        skill_dirs.push(sd);
+                                    }
                                 }
                             }
                         }
@@ -126,20 +132,21 @@ pub fn export_session_rich(
         // 路径匹配 rule 在实时 agent 里追加到 tool result（session.jsonl 已记录），不进 system prompt。
         {
             let rules_ext = crate::rules_engine::RulesEngineExtension::with_project_dir(
-                std::path::PathBuf::from(session_cwd)
+                std::path::PathBuf::from(session_cwd),
             );
             let rules = rules_ext.load_rules();
             // 只注入全局 rule（applyTo 为空或 **/* 或 **）
             let global_rules: Vec<crate::rules_engine::Rule> = rules
                 .iter()
                 .filter(|r| {
-                    r.apply_to.is_empty()
-                        || r.apply_to.iter().any(|p| p == "**/*" || p == "**")
+                    r.apply_to.is_empty() || r.apply_to.iter().any(|p| p == "**/*" || p == "**")
                 })
                 .cloned()
                 .collect();
             if !global_rules.is_empty() {
-                sp.push_str(&crate::rules_engine::RulesEngineExtension::format_rules_xml(&global_rules));
+                sp.push_str(
+                    &crate::rules_engine::RulesEngineExtension::format_rules_xml(&global_rules),
+                );
             }
         }
 
@@ -181,13 +188,29 @@ pub fn export_session_rich(
             .collect();
         defs.sort_by(|a, b| {
             fn group(name: &str) -> u8 {
-                if name.starts_with("mcp__") { 6 }
-                else if name.starts_with("wasm_") { 5 }
-                else if matches!(name, "spawn_worker"|"send_to_worker"|"resume_worker"|"await_worker"|"channel_send"|"kill_worker") { 4 }
-                else if name.starts_with("goal_") { 3 }
-                else if name == "skill" { 2 }
-                else if name.starts_with("git_") { 1 }
-                else { 0 }
+                if name.starts_with("mcp__") {
+                    6
+                } else if name.starts_with("wasm_") {
+                    5
+                } else if matches!(
+                    name,
+                    "spawn_worker"
+                        | "send_to_worker"
+                        | "resume_worker"
+                        | "await_worker"
+                        | "channel_send"
+                        | "kill_worker"
+                ) {
+                    4
+                } else if name.starts_with("goal_") {
+                    3
+                } else if name == "skill" {
+                    2
+                } else if name.starts_with("git_") {
+                    1
+                } else {
+                    0
+                }
             }
             (group(&a.name), &a.name).cmp(&(group(&b.name), &b.name))
         });
@@ -255,9 +278,15 @@ fn export_session_internal(
     // 这样用户在一个 HTML 里能看到"主 Worker 调 skill fork → 子 Worker 干了什么"。
     // 子 session 只在 export 主 session 时合并（避免循环）。
     let _session_type = header.get("type").and_then(|v| v.as_str()).unwrap_or("");
-    let is_main_session = header.get("parentSession").and_then(|v| v.as_str()).is_none()
+    let is_main_session = header
+        .get("parentSession")
+        .and_then(|v| v.as_str())
+        .is_none()
         && !header.get("spawnMeta").is_some();
-    if is_main_session && let Some(parent_dir) = jsonl_path.parent() && let Ok(files) = std::fs::read_dir(parent_dir) {
+    if is_main_session
+        && let Some(parent_dir) = jsonl_path.parent()
+        && let Ok(files) = std::fs::read_dir(parent_dir)
+    {
         for file in files.flatten() {
             let path = file.path();
             let name = match path.file_name().and_then(|n| n.to_str()) {
@@ -265,10 +294,15 @@ fn export_session_internal(
                 None => continue,
             };
             // 只扫 <sid>.jsonl，跳过 session.jsonl（自己）+ memory_agent + input
-            if name == "session.jsonl" || name.starts_with("sess_memory_agent") || name == "input.jsonl" {
+            if name == "session.jsonl"
+                || name.starts_with("sess_memory_agent")
+                || name == "input.jsonl"
+            {
                 continue;
             }
-            if !name.ends_with(".jsonl") { continue; }
+            if !name.ends_with(".jsonl") {
+                continue;
+            }
 
             // 读子 session header，检查 parentSession 是否匹配
             let sub_content = match std::fs::read_to_string(&path) {
@@ -284,14 +318,18 @@ fn export_session_internal(
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            let parent_match = sub_header
-                .get("parentSession")
-                .and_then(|v| v.as_str())
-                == Some(session_id);
-            if !parent_match { continue; }
+            let parent_match =
+                sub_header.get("parentSession").and_then(|v| v.as_str()) == Some(session_id);
+            if !parent_match {
+                continue;
+            }
 
             // 匹配！自动导出子 session HTML + 在主 HTML 里放可点击链接
-            let sub_sid = sub_header.get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+            let sub_sid = sub_header
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+                .to_string();
             let spawn_meta = sub_header.get("spawnMeta").cloned();
             let spawned_by = spawn_meta
                 .as_ref()
@@ -321,7 +359,8 @@ fn export_session_internal(
 
             // 自动导出子 session HTML（跟主 HTML 同目录，文件名 sub_<sid>.html）
             let sub_html_name = sub_html_filename(&sub_sid);
-            let sub_html_path = output_path.parent()
+            let sub_html_path = output_path
+                .parent()
                 .map(|p| p.join(&sub_html_name))
                 .unwrap_or_else(|| std::path::PathBuf::from(&sub_html_name));
 
@@ -332,10 +371,15 @@ fn export_session_internal(
             // 也能显示 system prompt 和工具面板。
             match export_session_rich(&sub_sid, &sub_html_path) {
                 Ok(()) => {
-                    eprintln!("[export] auto-exported {sub_kind_en} sub-session → {}", sub_html_path.display());
+                    eprintln!(
+                        "[export] auto-exported {sub_kind_en} sub-session → {}",
+                        sub_html_path.display()
+                    );
                 }
                 Err(e) => {
-                    eprintln!("[export] WARN: failed to auto-export {sub_kind_en} sub-session {sub_sid}: {e}");
+                    eprintln!(
+                        "[export] WARN: failed to auto-export {sub_kind_en} sub-session {sub_sid}: {e}"
+                    );
                 }
             }
 
@@ -384,7 +428,8 @@ fn export_session_internal(
         .filter(|e| {
             // 过滤掉 system_prompt custom entry
             if e.get("type").and_then(|v| v.as_str()) == Some("custom")
-                && e.get("customType").and_then(|v| v.as_str()) == Some(session_jsonl::CUSTOM_TYPE_SYSTEM_PROMPT)
+                && e.get("customType").and_then(|v| v.as_str())
+                    == Some(session_jsonl::CUSTOM_TYPE_SYSTEM_PROMPT)
             {
                 return false;
             }
@@ -394,7 +439,8 @@ fn export_session_internal(
             }
             // 过滤掉转换后的 turn_summary custom_message
             if e.get("type").and_then(|v| v.as_str()) == Some("custom_message")
-                && e.get("customType").and_then(|v| v.as_str()) == Some(session_jsonl::CUSTOM_TYPE_TURN_SUMMARY)
+                && e.get("customType").and_then(|v| v.as_str())
+                    == Some(session_jsonl::CUSTOM_TYPE_TURN_SUMMARY)
             {
                 return false;
             }
@@ -410,12 +456,20 @@ fn export_session_internal(
     // 修复：按原始顺序，每个 entry 的 parentId 指向前一个 entry 的 id，
     // 这样 getPath(leafId) 能返回所有 entries。
     if entries.len() > 1 {
-        let header_id = header.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let header_id = header
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         for i in 0..entries.len() {
             let parent = if i == 0 {
                 header_id.clone()
             } else {
-                entries[i - 1].get("id").and_then(|v| v.as_str()).unwrap_or(&header_id).to_string()
+                entries[i - 1]
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&header_id)
+                    .to_string()
             };
             if let Some(obj) = entries[i].as_object_mut() {
                 obj.insert("parentId".to_string(), json!(parent));
@@ -427,7 +481,8 @@ fn export_session_internal(
     // 主 Worker 没有（system_prompt 是固定的，不需要存）
     let system_prompt: Option<String> = raw_entries.iter().find_map(|e| {
         if e.get("type").and_then(|v| v.as_str()) == Some("custom")
-            && e.get("customType").and_then(|v| v.as_str()) == Some(session_jsonl::CUSTOM_TYPE_SYSTEM_PROMPT)
+            && e.get("customType").and_then(|v| v.as_str())
+                == Some(session_jsonl::CUSTOM_TYPE_SYSTEM_PROMPT)
         {
             e.get("data")
                 .and_then(|d| d.get("systemPrompt"))
@@ -444,7 +499,12 @@ fn export_session_internal(
     // 优先取最后一个 entry；若为空则回退到最后一个 message。
     let leaf_id = entries
         .last()
-        .or_else(|| entries.iter().rev().find(|e| e.get("type").and_then(|v| v.as_str()) == Some("message")))
+        .or_else(|| {
+            entries
+                .iter()
+                .rev()
+                .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("message"))
+        })
         .and_then(|e| e.get("id"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
@@ -466,9 +526,12 @@ fn export_session_internal(
     }
     // Only include tools when provided (matches pi: undefined → panel hidden)
     if let Some(tools) = tools {
-        session_data
-            .as_object_mut()
-            .map(|o| o.insert("tools".to_string(), serde_json::to_value(&tools).unwrap_or(Value::Null)));
+        session_data.as_object_mut().map(|o| {
+            o.insert(
+                "tools".to_string(),
+                serde_json::to_value(&tools).unwrap_or(Value::Null),
+            )
+        });
     }
 
     // Base64 encode
@@ -586,15 +649,23 @@ fn export_session_internal(
     );
 
     // 如果是 fork 子 session，在页面顶部注入来源标记
-    let has_parent = header.get("parentSession").and_then(|v| v.as_str()).is_some();
+    let has_parent = header
+        .get("parentSession")
+        .and_then(|v| v.as_str())
+        .is_some();
     let spawn_meta = header.get("spawnMeta").cloned();
     if has_parent || spawn_meta.is_some() {
-        let parent_session = header.get("parentSession").and_then(|v| v.as_str()).unwrap_or("");
-        let spawned_by = spawn_meta.as_ref()
+        let parent_session = header
+            .get("parentSession")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let spawned_by = spawn_meta
+            .as_ref()
             .and_then(|m| m.get("spawnedBy"))
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
-        let relation = spawn_meta.as_ref()
+        let relation = spawn_meta
+            .as_ref()
             .and_then(|m| m.get("relation"))
             .and_then(|v| v.as_str())
             .unwrap_or("child");
@@ -602,7 +673,8 @@ fn export_session_internal(
         // 计算主 HTML 的文件名（跟主 session id 同名）
         let _parent_html = "session_export.html"; // fallback
 
-        let origin_banner = format!(r#"
+        let origin_banner = format!(
+            r#"
 <div id="fork-origin-banner" style="
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: white;
@@ -623,7 +695,8 @@ fn export_session_internal(
     &nbsp;·&nbsp;
     parentSession: <code style="background:rgba(255,255,255,0.2);padding:2px 6px;border-radius:3px;">{parent_session}</code>
   </span>
-</div>"#);
+</div>"#
+        );
         // 在 <body> 后插入 banner
         if let Some(pos) = html.find("<body>") {
             html.insert_str(pos + 6, &origin_banner);
@@ -634,10 +707,19 @@ fn export_session_internal(
     let tool_counts: std::collections::HashMap<String, u32> = {
         let mut counts = std::collections::HashMap::new();
         for e in &entries {
-            if e.get("type").and_then(|v| v.as_str()) != Some("message") { continue; }
-            if let Some(content) = e.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
+            if e.get("type").and_then(|v| v.as_str()) != Some("message") {
+                continue;
+            }
+            if let Some(content) = e
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_array())
+            {
                 for c in content {
-                    if let Some(name) = c.get("type").and_then(|v| v.as_str()) && name == "toolCall" && let Some(tn) = c.get("name").and_then(|v| v.as_str()) {
+                    if let Some(name) = c.get("type").and_then(|v| v.as_str())
+                        && name == "toolCall"
+                        && let Some(tn) = c.get("name").and_then(|v| v.as_str())
+                    {
                         *counts.entry(tn.to_string()).or_insert(0) += 1;
                     }
                 }
@@ -647,25 +729,36 @@ fn export_session_internal(
     };
     let total_tool_calls: u32 = tool_counts.values().sum();
     // 模型名：只从 assistant message 的 model 字段提取（避免抓到 CSS 里的 emoji）
-    let model = entries.iter()
+    let model = entries
+        .iter()
         .find_map(|e| {
             let msg = e.get("message")?;
             // 只从 assistant 消息里取
             if msg.get("role").and_then(|v| v.as_str()) != Some("assistant") {
                 return None;
             }
-            msg.get("model").and_then(|v| v.as_str()).map(|s| s.to_string())
+            msg.get("model")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
         })
         .unwrap_or_else(|| "unknown".to_string());
 
     // session 名称：优先 header.name > agent > spawnMeta.spawnedBy > cwd 目录名
-    let session_name = header.get("name").and_then(|v| v.as_str())
+    let session_name = header
+        .get("name")
+        .and_then(|v| v.as_str())
         .or_else(|| header.get("agent").and_then(|v| v.as_str()))
-        .or_else(|| header.get("spawnMeta").and_then(|m| m.get("spawnedBy")).and_then(|v| v.as_str()))
+        .or_else(|| {
+            header
+                .get("spawnMeta")
+                .and_then(|m| m.get("spawnedBy"))
+                .and_then(|v| v.as_str())
+        })
         .map(|s| s.to_string())
         .unwrap_or_else(|| {
             // 从 cwd 推导：/Users/xxx/ion → "ion"
-            header.get("cwd")
+            header
+                .get("cwd")
                 .and_then(|v| v.as_str())
                 .and_then(|cwd| cwd.rsplit('/').next())
                 .unwrap_or("Session")
@@ -683,7 +776,8 @@ fn export_session_internal(
         ));
     }
 
-    let stats_banner = format!(r#"
+    let stats_banner = format!(
+        r#"
 <div id="ion-stats-banner" style="
   background: #1a1a2e;
   color: white;
@@ -700,7 +794,13 @@ fn export_session_internal(
   <span style="color:#aaa;">🔧 {} tool calls</span>
   <span style="color:#aaa;">📝 {} entries</span>
   <span style="display:flex;gap:4px;flex-wrap:wrap;">{}</span>
-</div>"#, session_name, model, total_tool_calls, entries.len(), tool_badges);
+</div>"#,
+        session_name,
+        model,
+        total_tool_calls,
+        entries.len(),
+        tool_badges
+    );
 
     // 在 fork-origin-banner 之后（或 body 开头）插入统计 banner
     if html.contains("fork-origin-banner") {
@@ -853,19 +953,26 @@ fn convert_message_entry(entry: &Value) -> Value {
         });
     }
     // ION ToolResult 存的是 role:"tool"，修正为 pi 的 role:"toolResult"
-    if variant == "ToolResult" && let Some(obj) = flat.as_object_mut() && obj.get("role").and_then(|v| v.as_str()) == Some("tool") {
+    if variant == "ToolResult"
+        && let Some(obj) = flat.as_object_mut()
+        && obj.get("role").and_then(|v| v.as_str()) == Some("tool")
+    {
         obj.insert("role".to_string(), json!("toolResult"));
     }
 
     // ToolResult 字段 camelCase 化
-    if variant == "ToolResult" && let Some(obj) = flat.as_object_mut() {
+    if variant == "ToolResult"
+        && let Some(obj) = flat.as_object_mut()
+    {
         rename_key(obj, "is_error", "isError");
         rename_key(obj, "tool_call_id", "toolCallId");
         rename_key(obj, "tool_name", "toolName");
     }
 
     // Assistant 字段 camelCase 化：stop_reason → stopReason, response_id → responseId, response_model → responseModel
-    if variant == "Assistant" && let Some(obj) = flat.as_object_mut() {
+    if variant == "Assistant"
+        && let Some(obj) = flat.as_object_mut()
+    {
         rename_key(obj, "stop_reason", "stopReason");
         rename_key(obj, "response_id", "responseId");
         rename_key(obj, "response_model", "responseModel");
@@ -887,10 +994,15 @@ fn convert_message_entry(entry: &Value) -> Value {
     // ION 的 skill 调用通常只有 toolCall 没 text → 侧边栏看不到 skill 调用。
     // 修复：给这种 message 注入一个描述性 text block（含工具名 + 参数），
     // 这样侧边栏能显示 "skill(context=fork, skill_name=code-audit)" 而不是空。
-    if variant == "Assistant" && let Some(content) = flat.get("content").and_then(|v| v.as_array()) {
+    if variant == "Assistant"
+        && let Some(content) = flat.get("content").and_then(|v| v.as_array())
+    {
         let has_text = content.iter().any(|c| {
             c.get("type").and_then(|v| v.as_str()) == Some("text")
-                && c.get("text").and_then(|v| v.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false)
+                && c.get("text")
+                    .and_then(|v| v.as_str())
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false)
         });
         if !has_text {
             // 没有有意义的 text —— 从 toolCall 生成描述
@@ -904,9 +1016,12 @@ fn convert_message_entry(entry: &Value) -> Value {
                         if obj.is_empty() {
                             String::new()
                         } else {
-                            let pairs: Vec<String> = obj.iter()
+                            let pairs: Vec<String> = obj
+                                .iter()
                                 .map(|(k, v)| {
-                                    let val_str = v.as_str().map(|s| s.to_string())
+                                    let val_str = v
+                                        .as_str()
+                                        .map(|s| s.to_string())
                                         .unwrap_or_else(|| v.to_string());
                                     format!("{}={}", k, val_str)
                                 })
@@ -921,7 +1036,9 @@ fn convert_message_entry(entry: &Value) -> Value {
             }
             if !descriptions.is_empty() {
                 let placeholder = descriptions.join("; ");
-                if let Some(obj) = flat.as_object_mut() && let Some(content) = obj.get_mut("content").and_then(|v| v.as_array_mut()) {
+                if let Some(obj) = flat.as_object_mut()
+                    && let Some(content) = obj.get_mut("content").and_then(|v| v.as_array_mut())
+                {
                     content.insert(0, json!({"type": "text", "text": placeholder}));
                 }
             }
@@ -942,7 +1059,9 @@ fn convert_tool_result_entry(entry: &Value) -> Value {
         rename_key(obj, "is_error", "isError");
         rename_key(obj, "tool_call_id", "toolCallId");
         rename_key(obj, "tool_name", "toolName");
-        if let Some(role) = obj.get("role").and_then(|v| v.as_str()) && role == "tool" {
+        if let Some(role) = obj.get("role").and_then(|v| v.as_str())
+            && role == "tool"
+        {
             obj.insert("role".to_string(), json!("toolResult"));
         }
         if let Some(content) = obj.get_mut("content") {
@@ -969,12 +1088,19 @@ fn convert_turn_summary_entry(entry: &Value) -> Value {
     let mut out = entry.clone();
     if let Some(obj) = out.as_object_mut() {
         obj.insert("type".to_string(), json!("custom_message"));
-        obj.insert("customType".to_string(), json!(session_jsonl::CUSTOM_TYPE_TURN_SUMMARY));
+        obj.insert(
+            "customType".to_string(),
+            json!(session_jsonl::CUSTOM_TYPE_TURN_SUMMARY),
+        );
         // content 用 string 形式（pi 支持 string | array）
         let content = if !summary.is_empty() {
             summary.clone()
         } else if !status.is_empty() {
-            format!("turn {}: {}", turn_id.map(|v| v.to_string()).unwrap_or_default(), status)
+            format!(
+                "turn {}: {}",
+                turn_id.map(|v| v.to_string()).unwrap_or_default(),
+                status
+            )
         } else {
             "(empty turn)".to_string()
         };
@@ -1076,14 +1202,20 @@ fn rename_key(obj: &mut serde_json::Map<String, Value>, from: &str, to: &str) {
 }
 
 /// Resolve a session file path, trying multiple strategies.
-fn resolve_session_file(session_id: &str) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+fn resolve_session_file(
+    session_id: &str,
+) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
     // Strategy 1: Look up session in global index → get cwd → use cwd path
     let index = crate::session_index::SessionIndex::load();
-    if let Some(meta) = index.get(session_id) && let Some(ref project) = meta.project {
+    if let Some(meta) = index.get(session_id)
+        && let Some(ref project) = meta.project
+    {
         let cwd_path = crate::session_jsonl::session_path(project);
         if cwd_path.exists() {
             // Verify the session file contains this session
-            if let Some(file) = crate::session_jsonl::SessionFile::load(project) && file.header.id == session_id {
+            if let Some(file) = crate::session_jsonl::SessionFile::load(project)
+                && file.header.id == session_id
+            {
                 return Ok(cwd_path);
             }
         }
@@ -1107,10 +1239,14 @@ fn resolve_session_file(session_id: &str) -> Result<std::path::PathBuf, Box<dyn 
     // This handles cases where the index is stale or the session was created
     // in a worktree/temp cwd that wasn't tracked in the global index.
     let sessions_root = crate::paths::sessions_dir();
-    if sessions_root.exists() && let Ok(entries) = std::fs::read_dir(&sessions_root) {
+    if sessions_root.exists()
+        && let Ok(entries) = std::fs::read_dir(&sessions_root)
+    {
         for entry in entries.flatten() {
             let dir = entry.path();
-            if !dir.is_dir() { continue; }
+            if !dir.is_dir() {
+                continue;
+            }
             // 扫目录下所有 .jsonl 文件（session.jsonl + <sid>.jsonl）
             if let Ok(files) = std::fs::read_dir(&dir) {
                 for file in files.flatten() {
@@ -1119,9 +1255,15 @@ fn resolve_session_file(session_id: &str) -> Result<std::path::PathBuf, Box<dyn 
                         Some(n) => n,
                         None => continue,
                     };
-                    if !name.ends_with(".jsonl") { continue; }
+                    if !name.ends_with(".jsonl") {
+                        continue;
+                    }
                     // Read only the first line (header) to check id
-                    if let Ok(header_line) = std::fs::read_to_string(&path) && let Some(first_line) = header_line.lines().next() && let Ok(header) = serde_json::from_str::<Value>(first_line) && header.get("id").and_then(|v| v.as_str()) == Some(session_id) {
+                    if let Ok(header_line) = std::fs::read_to_string(&path)
+                        && let Some(first_line) = header_line.lines().next()
+                        && let Ok(header) = serde_json::from_str::<Value>(first_line)
+                        && header.get("id").and_then(|v| v.as_str()) == Some(session_id)
+                    {
                         return Ok(path);
                     }
                 }
@@ -1137,8 +1279,7 @@ fn resolve_session_file(session_id: &str) -> Result<std::path::PathBuf, Box<dyn 
 }
 
 fn base64_encode(input: &str) -> String {
-    const CHARS: &[u8] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes = input.as_bytes();
     let mut result = String::new();
 
@@ -1171,36 +1312,80 @@ fn build_env_info_for_export(cwd: &str) -> String {
     use std::process::Command;
     let now_epoch = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default().as_secs();
+        .unwrap_or_default()
+        .as_secs();
     let days = now_epoch / 86400;
     let remain = now_epoch % 86400;
-    let now_human = format!("day {} ({}:{:02} UTC)", days, remain / 3600, (remain % 3600) / 60);
+    let now_human = format!(
+        "day {} ({}:{:02} UTC)",
+        days,
+        remain / 3600,
+        (remain % 3600) / 60
+    );
 
-    let project_root = Command::new("git").args(["rev-parse", "--show-toplevel"])
-        .current_dir(cwd).output().ok()
+    let project_root = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(cwd)
+        .output()
+        .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
         .unwrap_or_else(|| cwd.to_string());
-    let git_branch = Command::new("git").args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(cwd).output().ok()
-        .and_then(|o| { let b = String::from_utf8_lossy(&o.stdout).trim().to_string(); if b.is_empty() { None } else { Some(b) } });
-    let git_remote = Command::new("git").args(["remote", "get-url", "origin"])
-        .current_dir(cwd).output().ok()
-        .and_then(|o| { let r = String::from_utf8_lossy(&o.stdout).trim().to_string(); if r.is_empty() { None } else { Some(r) } });
-    let worktree = std::env::var("ION_WORKTREE_ROOT").ok().or_else(|| std::env::var("ION_WORKTREE").ok());
+    let git_branch = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(cwd)
+        .output()
+        .ok()
+        .and_then(|o| {
+            let b = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if b.is_empty() { None } else { Some(b) }
+        });
+    let git_remote = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(cwd)
+        .output()
+        .ok()
+        .and_then(|o| {
+            let r = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if r.is_empty() { None } else { Some(r) }
+        });
+    let worktree = std::env::var("ION_WORKTREE_ROOT")
+        .ok()
+        .or_else(|| std::env::var("ION_WORKTREE").ok());
 
     let mut info = String::from("\n\n--- environment ---\n## Environment\n");
-    info.push_str(&format!("- **Current Time**: {} (unix: {})\n", now_human, now_epoch));
+    info.push_str(&format!(
+        "- **Current Time**: {} (unix: {})\n",
+        now_human, now_epoch
+    ));
     info.push_str(&format!("- **Working Directory (cwd)**: `{}`\n", cwd));
     info.push_str(&format!("- **Project Root**: `{}`\n", project_root));
-    if let Some(wt) = &worktree { info.push_str(&format!("- **Worktree Path**: `{}`\n", wt)); }
-    info.push_str(&format!("- **Platform**: `{} {}`\n", std::env::consts::OS, std::env::consts::ARCH));
-    info.push_str(&format!("- **ION Version**: `{}`\n", env!("CARGO_PKG_VERSION")));
-    if let Some(b) = &git_branch { info.push_str(&format!("- **Git Branch**: `{}`\n", b)); }
-    if let Some(r) = &git_remote { info.push_str(&format!("- **Git Remote**: `{}`\n", r)); }
+    if let Some(wt) = &worktree {
+        info.push_str(&format!("- **Worktree Path**: `{}`\n", wt));
+    }
+    info.push_str(&format!(
+        "- **Platform**: `{} {}`\n",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    ));
+    info.push_str(&format!(
+        "- **ION Version**: `{}`\n",
+        env!("CARGO_PKG_VERSION")
+    ));
+    if let Some(b) = &git_branch {
+        info.push_str(&format!("- **Git Branch**: `{}`\n", b));
+    }
+    if let Some(r) = &git_remote {
+        info.push_str(&format!("- **Git Remote**: `{}`\n", r));
+    }
 
     // 最近 5 个 commit 主题
-    if let Ok(o) = Command::new("git").args(["log", "--oneline", "-5"]).current_dir(cwd).output() {
+    if let Ok(o) = Command::new("git")
+        .args(["log", "--oneline", "-5"])
+        .current_dir(cwd)
+        .output()
+    {
         if let Ok(s) = String::from_utf8(o.stdout) {
             let s = s.trim();
             if !s.is_empty() {
@@ -1212,15 +1397,25 @@ fn build_env_info_for_export(cwd: &str) -> String {
     }
     // 最近修改文件（HEAD~1..HEAD + 未提交，前 20）
     let mut recent_files: Vec<String> = Vec::new();
-    if let Ok(o) = Command::new("git").args(["diff", "--name-only", "HEAD~1", "HEAD"]).current_dir(cwd).output() {
+    if let Ok(o) = Command::new("git")
+        .args(["diff", "--name-only", "HEAD~1", "HEAD"])
+        .current_dir(cwd)
+        .output()
+    {
         if let Ok(s) = String::from_utf8(o.stdout) {
             for line in s.lines() {
                 let f = line.trim();
-                if !f.is_empty() && !recent_files.contains(&f.to_string()) { recent_files.push(f.to_string()); }
+                if !f.is_empty() && !recent_files.contains(&f.to_string()) {
+                    recent_files.push(f.to_string());
+                }
             }
         }
     }
-    if let Ok(o) = Command::new("git").args(["status", "--short"]).current_dir(cwd).output() {
+    if let Ok(o) = Command::new("git")
+        .args(["status", "--short"])
+        .current_dir(cwd)
+        .output()
+    {
         if let Ok(s) = String::from_utf8(o.stdout) {
             let s = s.trim();
             if !s.is_empty() {
@@ -1228,16 +1423,32 @@ fn build_env_info_for_export(cwd: &str) -> String {
                 info.push_str(s);
                 info.push_str("\n```\n");
                 for line in s.lines() {
-                    let f = line.trim_start_matches(|c: char| c.is_uppercase() || c == ' ' || c == '?').trim();
-                    if !f.is_empty() && !recent_files.contains(&f.to_string()) { recent_files.push(f.to_string()); }
+                    let f = line
+                        .trim_start_matches(|c: char| c.is_uppercase() || c == ' ' || c == '?')
+                        .trim();
+                    if !f.is_empty() && !recent_files.contains(&f.to_string()) {
+                        recent_files.push(f.to_string());
+                    }
                 }
             }
         }
     }
     if !recent_files.is_empty() {
-        let trunc = if recent_files.len() > 20 { format!("\n  (and {} more...)", recent_files.len() - 20) } else { String::new() };
-        let list = recent_files.iter().take(20).map(|f| format!("  - {}", f)).collect::<Vec<_>>().join("\n");
-        info.push_str(&format!("\n### Recently Modified Files\n{}\n{}\n", list, trunc));
+        let trunc = if recent_files.len() > 20 {
+            format!("\n  (and {} more...)", recent_files.len() - 20)
+        } else {
+            String::new()
+        };
+        let list = recent_files
+            .iter()
+            .take(20)
+            .map(|f| format!("  - {}", f))
+            .collect::<Vec<_>>()
+            .join("\n");
+        info.push_str(&format!(
+            "\n### Recently Modified Files\n{}\n{}\n",
+            list, trunc
+        ));
     }
     info
 }

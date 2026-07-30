@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 use super::error::AgentResult;
 use super::extension::{Extension, TurnContext};
 use super::messages::{Message, ToolCall};
-use ion_provider::types::{ToolResult, ContentBlock, TextContent};
+use ion_provider::types::{ContentBlock, TextContent, ToolResult};
 
 // ---------------------------------------------------------------------------
 // 数据结构
@@ -42,7 +42,10 @@ pub struct WriteRecord {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Freshness {
     Current,
-    Stale { overwritten_by_turn: u32, kind: WriteKind },
+    Stale {
+        overwritten_by_turn: u32,
+        kind: WriteKind,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -137,18 +140,20 @@ impl ContextIndex {
             return;
         }
         // 保留所有 Current + 最近的 Stale（到上限）
-        let current_count = reads.iter().filter(|r| r.status == Freshness::Current).count();
+        let current_count = reads
+            .iter()
+            .filter(|r| r.status == Freshness::Current)
+            .count();
         let max_stale = Self::MAX_READS_PER_FILE.saturating_sub(current_count);
         // 收集要保留的 Stale tool_call_id（clone 避免 borrow 冲突）
-        let kept_ids: std::collections::HashSet<String> = reads.iter()
+        let kept_ids: std::collections::HashSet<String> = reads
+            .iter()
             .filter(|r| r.status != Freshness::Current)
             .map(|r| r.tool_call_id.clone())
             .rev()
             .take(max_stale)
             .collect();
-        reads.retain(|r| {
-            r.status == Freshness::Current || kept_ids.contains(&r.tool_call_id)
-        });
+        reads.retain(|r| r.status == Freshness::Current || kept_ids.contains(&r.tool_call_id));
     }
 
     /// system prompt 注入的最大文件数（超出时只显示最近的 + 汇总）
@@ -176,8 +181,14 @@ impl ContextIndex {
                     Freshness::Current => {
                         format!("current · turn {}", r.turn)
                     }
-                    Freshness::Stale { overwritten_by_turn, kind } => {
-                        format!("STALE · turn {}, overwritten by turn {} ({:?})", r.turn, overwritten_by_turn, kind)
+                    Freshness::Stale {
+                        overwritten_by_turn,
+                        kind,
+                    } => {
+                        format!(
+                            "STALE · turn {}, overwritten by turn {} ({:?})",
+                            r.turn, overwritten_by_turn, kind
+                        )
                     }
                 },
                 None => "no reads".to_string(),
@@ -189,7 +200,9 @@ impl ContextIndex {
         if total > shown {
             lines.push(format!(
                 "  ... ({} more files, {} shown of {})",
-                total - shown, shown, total
+                total - shown,
+                shown,
+                total
             ));
         }
 
@@ -208,7 +221,11 @@ impl ContextIndex {
         let mut result = Vec::new();
         for (path, record) in &self.files {
             for read in &record.reads {
-                if let Freshness::Stale { overwritten_by_turn, kind } = &read.status {
+                if let Freshness::Stale {
+                    overwritten_by_turn,
+                    kind,
+                } = &read.status
+                {
                     let placeholder = format!(
                         "[ContextIndex: {} — read at turn {}, overwritten by turn {} ({:?})]\n\
                          [Re-read {} for latest content]",
@@ -246,7 +263,9 @@ fn parse_grep_paths(output: &str) -> Vec<String> {
         }
         // ripgrep 格式: path:line_num:content 或 path:line_num:content
         // 策略：从左找第一个 `:` 后面跟数字的位置
-        if let Some(path) = extract_path_before_line_num(line) && seen.insert(path.clone()) {
+        if let Some(path) = extract_path_before_line_num(line)
+            && seen.insert(path.clone())
+        {
             paths.push(path);
         }
     }
@@ -378,7 +397,9 @@ impl Extension for ContextIndexExtension {
 
         // 遍历 messages，折叠 Stale 的 ToolResult（锁外操作，不阻塞 after_tool_call）
         for msg in messages.iter_mut() {
-            if let Message::ToolResult(tr) = msg && let Some(placeholder) = fold_map.get(tr.tool_call_id.as_str()) {
+            if let Message::ToolResult(tr) = msg
+                && let Some(placeholder) = fold_map.get(tr.tool_call_id.as_str())
+            {
                 tr.content = vec![ContentBlock::Text(TextContent {
                     text: placeholder.to_string(),
                     text_signature: None,
@@ -415,9 +436,10 @@ impl Extension for ContextIndexExtension {
                     let (status, turn) = match latest {
                         Some(r) => match &r.status {
                             Freshness::Current => ("current".to_string(), r.turn),
-                            Freshness::Stale { overwritten_by_turn, .. } => {
-                                ("stale".to_string(), *overwritten_by_turn)
-                            }
+                            Freshness::Stale {
+                                overwritten_by_turn,
+                                ..
+                            } => ("stale".to_string(), *overwritten_by_turn),
                         },
                         None => ("none".to_string(), 0),
                     };
@@ -435,10 +457,7 @@ impl Extension for ContextIndexExtension {
                 }))
             }
             "ranges" => {
-                let path = params
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
                 let record = idx.files.get(path);
                 let reads = record
                     .map(|r| {
@@ -446,8 +465,13 @@ impl Extension for ContextIndexExtension {
                             .iter()
                             .map(|read| {
                                 let (status, detail) = match &read.status {
-                                    Freshness::Current => ("current".to_string(), serde_json::Value::Null),
-                                    Freshness::Stale { overwritten_by_turn, kind } => (
+                                    Freshness::Current => {
+                                        ("current".to_string(), serde_json::Value::Null)
+                                    }
+                                    Freshness::Stale {
+                                        overwritten_by_turn,
+                                        kind,
+                                    } => (
                                         "stale".to_string(),
                                         serde_json::json!({
                                             "overwrittenByTurn": overwritten_by_turn,
@@ -498,10 +522,13 @@ mod tests {
         idx.record_write("src/foo.rs", WriteKind::Write);
 
         let reads = &idx.files["src/foo.rs"].reads;
-        assert_eq!(reads[0].status, Freshness::Stale {
-            overwritten_by_turn: 5,
-            kind: WriteKind::Write,
-        });
+        assert_eq!(
+            reads[0].status,
+            Freshness::Stale {
+                overwritten_by_turn: 5,
+                kind: WriteKind::Write,
+            }
+        );
     }
 
     #[test]
@@ -512,10 +539,13 @@ mod tests {
         idx.current_turn = 4;
         idx.record_write("src/bar.rs", WriteKind::Edit);
 
-        assert_eq!(idx.files["src/bar.rs"].reads[0].status, Freshness::Stale {
-            overwritten_by_turn: 4,
-            kind: WriteKind::Edit,
-        });
+        assert_eq!(
+            idx.files["src/bar.rs"].reads[0].status,
+            Freshness::Stale {
+                overwritten_by_turn: 4,
+                kind: WriteKind::Edit,
+            }
+        );
     }
 
     #[test]
@@ -567,10 +597,13 @@ mod tests {
 
         let reads = &idx.files["x.rs"].reads;
         assert_eq!(reads.len(), 2);
-        assert_eq!(reads[0].status, Freshness::Stale {
-            overwritten_by_turn: 2,
-            kind: WriteKind::Write,
-        });
+        assert_eq!(
+            reads[0].status,
+            Freshness::Stale {
+                overwritten_by_turn: 2,
+                kind: WriteKind::Write,
+            }
+        );
         assert_eq!(reads[1].status, Freshness::Current);
     }
 
@@ -582,7 +615,8 @@ mod tests {
 
     #[test]
     fn parse_grep_paths_basic() {
-        let output = "src/main.rs:10:fn main() {\nsrc/lib.rs:5:pub mod test;\nsrc/main.rs:25:    println!()";
+        let output =
+            "src/main.rs:10:fn main() {\nsrc/lib.rs:5:pub mod test;\nsrc/main.rs:25:    println!()";
         let paths = parse_grep_paths(output);
         assert_eq!(paths.len(), 2); // 去重后只有 main.rs 和 lib.rs
         assert!(paths.contains(&"src/main.rs".to_string()));
@@ -607,7 +641,8 @@ mod tests {
     #[test]
     fn parse_grep_paths_rejects_noise() {
         // 非路径噪音行不应被解析
-        let output = "grep: permission denied: /secret:1:abc\nBinary file matches\nsrc/ok.rs:5:hello";
+        let output =
+            "grep: permission denied: /secret:1:abc\nBinary file matches\nsrc/ok.rs:5:hello";
         let paths = parse_grep_paths(output);
         // 只有 src/ok.rs 是合法路径（"grep: permission..." 的 path 部分 "grep" 虽然字母开头但不是真实路径）
         // 当前 is_valid_path_candidate 会接受 "grep" —— 这是可接受的误报率
@@ -637,7 +672,10 @@ mod tests {
     #[test]
     fn grep_not_in_untracked_sources() {
         let idx = ContextIndex::new();
-        assert!(!idx.untracked_sources.contains(&"grep".to_string()), "grep should be tracked now");
+        assert!(
+            !idx.untracked_sources.contains(&"grep".to_string()),
+            "grep should be tracked now"
+        );
     }
 
     #[test]
@@ -651,8 +689,11 @@ mod tests {
         }
         let reads = &idx.files["big.rs"].reads;
         // 不应超过 MAX_READS_PER_FILE (10)
-        assert!(reads.len() <= ContextIndex::MAX_READS_PER_FILE,
-            "reads should be trimmed, got {}", reads.len());
+        assert!(
+            reads.len() <= ContextIndex::MAX_READS_PER_FILE,
+            "reads should be trimmed, got {}",
+            reads.len()
+        );
     }
 
     #[test]
@@ -665,7 +706,10 @@ mod tests {
         }
         let reads = &idx.files["fresh.rs"].reads;
         // 所有 Current 都应该保留（不受 trim 影响）
-        let current_count = reads.iter().filter(|r| r.status == Freshness::Current).count();
+        let current_count = reads
+            .iter()
+            .filter(|r| r.status == Freshness::Current)
+            .count();
         assert_eq!(current_count, 20, "all Current reads should be kept");
     }
 
@@ -704,7 +748,9 @@ mod tests {
             tool_call_id: "tc_read".into(),
             output: "old".into(),
         };
-        ext.after_tool_call(&read_call, &mut read_result).await.unwrap();
+        ext.after_tool_call(&read_call, &mut read_result)
+            .await
+            .unwrap();
 
         let write_call = ToolCall {
             call_type: "function".into(),
@@ -717,13 +763,18 @@ mod tests {
             tool_call_id: "tc_write".into(),
             output: "wrote".into(),
         };
-        ext.after_tool_call(&write_call, &mut write_result).await.unwrap();
+        ext.after_tool_call(&write_call, &mut write_result)
+            .await
+            .unwrap();
 
         let idx = ext.index.lock().await;
-        assert_eq!(idx.files["foo.rs"].reads[0].status, Freshness::Stale {
-            overwritten_by_turn: 0,
-            kind: WriteKind::Write,
-        });
+        assert_eq!(
+            idx.files["foo.rs"].reads[0].status,
+            Freshness::Stale {
+                overwritten_by_turn: 0,
+                kind: WriteKind::Write,
+            }
+        );
     }
 
     #[tokio::test]
@@ -776,7 +827,11 @@ mod tests {
                 ContentBlock::Text(t) => &t.text,
                 _ => panic!("expected text"),
             };
-            assert!(text.contains("[ContextIndex"), "should be folded, got: {}", text);
+            assert!(
+                text.contains("[ContextIndex"),
+                "should be folded, got: {}",
+                text
+            );
             assert!(text.contains("fold.rs"));
             assert!(!text.contains("original content"));
         } else {

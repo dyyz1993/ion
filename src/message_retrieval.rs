@@ -36,7 +36,10 @@ pub fn load_entries_cached(cwd: &str) -> Vec<Value> {
     // 检查缓存
     if let Ok(mut cache_guard) = SESSION_CACHE.lock() {
         let cache = cache_guard.get_or_insert_with(HashMap::new);
-        if let Some(mtime) = mtime && let Some((cached_mtime, entries)) = cache.get(cwd) && *cached_mtime == mtime {
+        if let Some(mtime) = mtime
+            && let Some((cached_mtime, entries)) = cache.get(cwd)
+            && *cached_mtime == mtime
+        {
             return entries.clone();
         }
     }
@@ -59,7 +62,9 @@ pub fn load_entries_cached(cwd: &str) -> Vec<Value> {
 
 /// 使缓存失效（外部修改了 session 文件后调用，比如 append 操作后）。
 pub fn invalidate_cache(cwd: &str) {
-    if let Ok(mut cache_guard) = SESSION_CACHE.lock() && let Some(cache) = cache_guard.as_mut() {
+    if let Ok(mut cache_guard) = SESSION_CACHE.lock()
+        && let Some(cache) = cache_guard.as_mut()
+    {
         cache.remove(cwd);
     }
 }
@@ -230,7 +235,11 @@ pub fn retrieve_messages(entries: &[Value], params: &RetrievalParams) -> Retriev
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// 拉取逐轮概览（list_turns 的核心逻辑）
-pub fn retrieve_turns(entries: &[Value], params: &RetrievalParams, full_content: bool) -> TurnsResult {
+pub fn retrieve_turns(
+    entries: &[Value],
+    params: &RetrievalParams,
+    full_content: bool,
+) -> TurnsResult {
     // 先视点过滤（since_compaction 截断；branch 走分支路径；live/full 不过滤 turn_summary）
     let view_filtered = apply_view_filter(entries, &params.view);
 
@@ -248,18 +257,28 @@ pub fn retrieve_turns(entries: &[Value], params: &RetrievalParams, full_content:
     let total_count = all_turns.len();
 
     // 分页（按 turnId 游标）
-    let limit = if params.limit == 0 { total_count } else { params.limit };
+    let limit = if params.limit == 0 {
+        total_count
+    } else {
+        params.limit
+    };
 
     // 正向分页（after）
     let start = if let Some(ref after) = params.after {
-        all_turns.iter().position(|t| t.turn_id.as_str() > after.as_str()).unwrap_or(all_turns.len())
+        all_turns
+            .iter()
+            .position(|t| t.turn_id.as_str() > after.as_str())
+            .unwrap_or(all_turns.len())
     } else {
         0
     };
 
     // 反向分页（before）
     let (start, end) = if let Some(ref before) = params.before {
-        let before_idx = all_turns.iter().position(|t| t.turn_id.as_str() == before.as_str()).unwrap_or(all_turns.len());
+        let before_idx = all_turns
+            .iter()
+            .position(|t| t.turn_id.as_str() == before.as_str())
+            .unwrap_or(all_turns.len());
         let s = before_idx.saturating_sub(limit);
         (s, before_idx)
     } else {
@@ -284,9 +303,17 @@ pub fn retrieve_turns(entries: &[Value], params: &RetrievalParams, full_content:
     let next_cursor = if has_more && !page.is_empty() {
         if params.before.is_some() {
             // 反向分页的 nextCursor 是上一页起点（向前加载）
-            Some(page.first().map(|t| t.turn_id.to_string()).unwrap_or_default())
+            Some(
+                page.first()
+                    .map(|t| t.turn_id.to_string())
+                    .unwrap_or_default(),
+            )
         } else {
-            Some(page.last().map(|t| t.turn_id.to_string()).unwrap_or_default())
+            Some(
+                page.last()
+                    .map(|t| t.turn_id.to_string())
+                    .unwrap_or_default(),
+            )
         }
     } else {
         None
@@ -310,7 +337,8 @@ pub fn retrieve_inputs(entries: &[Value], _params: &RetrievalParams) -> InputsRe
     let visible = apply_visibility_filter(&view_filtered);
 
     // 从 turn_summary 建立 userEntryId → turnId 映射
-    let mut user_to_turn: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut user_to_turn: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     let mut auto_count: u32 = 0;
     for entry in &visible {
         if entry.get("type").and_then(|v| v.as_str()) == Some("turn_summary") {
@@ -375,16 +403,23 @@ pub struct TurnDetail {
 
 /// 拉取单轮明细（get_turn_detail 的核心逻辑）
 /// 不分页——单 turn 数据量有上限。
-pub fn retrieve_turn_detail(entries: &[Value], turn_id: &str, _include_custom: &CustomFilter) -> Option<TurnDetail> {
+pub fn retrieve_turn_detail(
+    entries: &[Value],
+    turn_id: &str,
+    _include_custom: &CustomFilter,
+) -> Option<TurnDetail> {
     let groups = group_into_turns(entries);
     let group = groups.into_iter().find(|g| {
         g.iter()
             .rev()
             .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("turn_summary"))
-            .and_then(|ts| ts.get("turnId").map(|v| {
-                v.as_str().map(|s| s.to_string())
-                    .unwrap_or_else(|| v.as_u64().map(|n| n.to_string()).unwrap_or_default())
-            }))
+            .and_then(|ts| {
+                ts.get("turnId").map(|v| {
+                    v.as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| v.as_u64().map(|n| n.to_string()).unwrap_or_default())
+                })
+            })
             == Some(turn_id.to_string())
     })?;
 
@@ -468,9 +503,7 @@ fn apply_view_filter(entries: &[Value], view: &View) -> Vec<Value> {
             // 直接在全量 entries 上截断（不走分支路径——分支 + 压缩的组合是第 2 期）。
             truncate_after_last_compaction(entries)
         }
-        View::Branch(leaf_id) => {
-            crate::session_tree::get_branch_path(entries, leaf_id)
-        }
+        View::Branch(leaf_id) => crate::session_tree::get_branch_path(entries, leaf_id),
     }
 }
 
@@ -818,9 +851,7 @@ fn extract_turn_overview(group: &[Value], full_content: bool) -> TurnOverview {
                     .and_then(|c| c.as_array())
                     .map(|arr| {
                         arr.iter()
-                            .filter(|b| {
-                                b.get("type").and_then(|t| t.as_str()) == Some("tool_use")
-                            })
+                            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
                             .count()
                     })
                     .unwrap_or(0);
@@ -836,16 +867,16 @@ fn extract_turn_overview(group: &[Value], full_content: bool) -> TurnOverview {
 }
 
 /// 从 turn_summary entry 提取概览
-fn extract_from_turn_summary(
-    ts: &Value,
-    group: &[Value],
-    full_content: bool,
-) -> TurnOverview {
+fn extract_from_turn_summary(ts: &Value, group: &[Value], full_content: bool) -> TurnOverview {
     let mut overview = TurnOverview {
-        turn_id: ts.get("turnId").map(|v| {
-            v.as_str().map(|s| s.to_string())
-                .unwrap_or_else(|| v.as_u64().map(|n| n.to_string()).unwrap_or_default())
-        }).unwrap_or_default(),
+        turn_id: ts
+            .get("turnId")
+            .map(|v| {
+                v.as_str()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| v.as_u64().map(|n| n.to_string()).unwrap_or_default())
+            })
+            .unwrap_or_default(),
         status: ts
             .get("status")
             .and_then(|v| v.as_str())
@@ -879,10 +910,7 @@ fn extract_from_turn_summary(
             .and_then(|t| t.get("output"))
             .and_then(|v| v.as_u64())
             .unwrap_or(0),
-        duration_ms: ts
-            .get("durationMs")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0),
+        duration_ms: ts.get("durationMs").and_then(|v| v.as_u64()).unwrap_or(0),
         ..Default::default()
     };
 
@@ -895,15 +923,36 @@ fn extract_from_turn_summary(
         // 或 enum tag 结构 {"Assistant":{"role":"assistant","content":[...]}}
         let msg = entry.get("message").cloned().unwrap_or_default();
         let (role, content, source_val) = if let Some(inner) = msg.get("Assistant").cloned() {
-            ("assistant".to_string(), inner.get("content").cloned().unwrap_or_default(), None)
+            (
+                "assistant".to_string(),
+                inner.get("content").cloned().unwrap_or_default(),
+                None,
+            )
         } else if let Some(inner) = msg.get("User").cloned() {
-            let s = inner.get("source").and_then(|v| v.as_str()).unwrap_or("prompt").to_string();
-            ("user".to_string(), inner.get("content").cloned().unwrap_or_default(), Some(s))
+            let s = inner
+                .get("source")
+                .and_then(|v| v.as_str())
+                .unwrap_or("prompt")
+                .to_string();
+            (
+                "user".to_string(),
+                inner.get("content").cloned().unwrap_or_default(),
+                Some(s),
+            )
         } else {
-            let s = msg.get("source").and_then(|v| v.as_str()).unwrap_or("prompt").to_string();
-            (msg.get("role").and_then(|r| r.as_str()).unwrap_or("").to_string(),
-             msg.get("content").cloned().unwrap_or_default(),
-             Some(s))
+            let s = msg
+                .get("source")
+                .and_then(|v| v.as_str())
+                .unwrap_or("prompt")
+                .to_string();
+            (
+                msg.get("role")
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                msg.get("content").cloned().unwrap_or_default(),
+                Some(s),
+            )
         };
         let text = extract_text_from_content(&content);
         match role.as_str() {
@@ -913,7 +962,9 @@ fn extract_from_turn_summary(
                 } else {
                     truncate_content(&text, 200)
                 };
-                if let Some(s) = &source_val { overview.source = s.clone(); }
+                if let Some(s) = &source_val {
+                    overview.source = s.clone();
+                }
             }
             "assistant" if overview.assistant_content.is_empty() => {
                 overview.assistant_content = if full_content {
@@ -964,7 +1015,10 @@ fn extract_text_from_content(content: &Value) -> String {
         .filter_map(|b| {
             // 扁平：{"type":"text","text":"..."}
             if b.get("text").and_then(|t| t.as_str()).is_some() {
-                return b.get("text").and_then(|t| t.as_str()).map(|s| s.to_string());
+                return b
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(|s| s.to_string());
             }
             // enum tag：{"Text":{"text":"..."}} / {"Thinking":{"thinking":"..."}}
             if let Some(obj) = b.as_object() {
@@ -1151,7 +1205,11 @@ mod tests {
         };
         let result = retrieve_messages(&entries, &params);
         // since_compaction → 只返回 compaction 之后的
-        assert!(result.total_count < 6, "since_compaction should filter out pre-compaction messages, got {}", result.total_count);
+        assert!(
+            result.total_count < 6,
+            "since_compaction should filter out pre-compaction messages, got {}",
+            result.total_count
+        );
         assert!(!result.compaction_points.is_empty());
     }
 
@@ -1224,7 +1282,9 @@ mod tests {
         let entries = make_3_turn_session();
         let result = retrieve_inputs(&entries, &RetrievalParams::default());
         assert_eq!(result.total_count, 3); // 3 条 user 消息
-        assert!(result.inputs.iter().all(|i| i.text.contains("帮我") || i.text.contains("设计") || i.text.contains("测试")));
+        assert!(result.inputs.iter().all(|i| i.text.contains("帮我")
+            || i.text.contains("设计")
+            || i.text.contains("测试")));
     }
 
     #[test]
@@ -1269,9 +1329,10 @@ mod tests {
         };
         let result = retrieve_messages(&entries, &params);
         // custom 不在 messages 里（只 message/branch_summary）
-        let has_custom = result.messages.iter().any(|e| {
-            e.get("type").and_then(|v| v.as_str()) == Some("custom")
-        });
+        let has_custom = result
+            .messages
+            .iter()
+            .any(|e| e.get("type").and_then(|v| v.as_str()) == Some("custom"));
         assert!(!has_custom, "None filter should exclude custom entries");
     }
 
@@ -1291,9 +1352,10 @@ mod tests {
         // 这里验证：All 模式不过滤 custom entry（它在过滤后的 entries 里）
         // retrieve_messages 的 messages 只含 message/branch_summary，custom 不算
         // 所以这个测试验证的是：custom 不会出现在 messages 数组里（不管 filter）
-        let has_custom = result.messages.iter().any(|e| {
-            e.get("type").and_then(|v| v.as_str()) == Some("custom")
-        });
+        let has_custom = result
+            .messages
+            .iter()
+            .any(|e| e.get("type").and_then(|v| v.as_str()) == Some("custom"));
         // custom 永远不在 messages 里（messages 只要 message/branch_summary）
         // 但 All 模式应该让它出现在结果中。当前实现 messages 只取 message/branch_summary
         // 所以这个测试验证的是当前行为：custom 不在 messages
@@ -1402,19 +1464,23 @@ mod tests {
         let entries = vec![
             msg("m1", "root", "user", "hello"),
             msg("m2", "m1", "assistant", "hi"),
-            deletion_entry("del1", &["m2"]),   // 删 m2
+            deletion_entry("del1", &["m2"]), // 删 m2
             msg("m3", "m2", "user", "bye"),
         ];
         let filtered = apply_visibility_filter(&entries);
         // m2 被删，deletion entry 本身也被隐藏
-        let ids: Vec<&str> = filtered.iter()
+        let ids: Vec<&str> = filtered
+            .iter()
             .filter_map(|e| e.get("id").and_then(|v| v.as_str()))
             .collect();
         assert!(!ids.contains(&"m2"), "m2 should be deleted, got: {:?}", ids);
         assert!(ids.contains(&"m1"), "m1 should remain");
         assert!(ids.contains(&"m3"), "m3 should remain");
         // deletion 元数据不展示
-        assert!(!ids.iter().any(|id| id.starts_with("del")), "deletion entry should be hidden");
+        assert!(
+            !ids.iter().any(|id| id.starts_with("del")),
+            "deletion entry should be hidden"
+        );
     }
 
     #[test]
@@ -1427,7 +1493,8 @@ mod tests {
             segment_summary_entry("ss1", &["m2", "m3", "m4"], "这三条被折叠了"),
         ];
         let filtered = apply_visibility_filter(&entries);
-        let ids: Vec<&str> = filtered.iter()
+        let ids: Vec<&str> = filtered
+            .iter()
             .filter_map(|e| e.get("id").and_then(|v| v.as_str()))
             .collect();
 
@@ -1438,13 +1505,19 @@ mod tests {
         // m1 保留
         assert!(ids.contains(&"m1"), "m1 should remain");
         // segment_summary entry 本身不展示（元数据隐藏）
-        assert!(!ids.iter().any(|id| id.starts_with("ss")), "segment_summary entry should be hidden");
+        assert!(
+            !ids.iter().any(|id| id.starts_with("ss")),
+            "segment_summary entry should be hidden"
+        );
 
         // 应该有一个 branch_summary 替换项
-        let has_branch_summary = filtered.iter().any(|e| {
-            e.get("type").and_then(|v| v.as_str()) == Some("branch_summary")
-        });
-        assert!(has_branch_summary, "should have a BranchSummary replacement");
+        let has_branch_summary = filtered
+            .iter()
+            .any(|e| e.get("type").and_then(|v| v.as_str()) == Some("branch_summary"));
+        assert!(
+            has_branch_summary,
+            "should have a BranchSummary replacement"
+        );
     }
 
     #[test]
@@ -1461,15 +1534,16 @@ mod tests {
     fn visibility_filter_both_deletion_and_summary() {
         let entries = vec![
             msg("m1", "root", "user", "1"),
-            msg("m2", "m1", "assistant", "2"),    // → 被 delete
-            msg("m3", "m2", "user", "3"),          // → 被 summarize
-            msg("m4", "m3", "assistant", "4"),     // → 被 summarize
+            msg("m2", "m1", "assistant", "2"), // → 被 delete
+            msg("m3", "m2", "user", "3"),      // → 被 summarize
+            msg("m4", "m3", "assistant", "4"), // → 被 summarize
             msg("m5", "m4", "user", "5"),
             deletion_entry("del1", &["m2"]),
             segment_summary_entry("ss1", &["m3", "m4"], "中间两段折叠"),
         ];
         let filtered = apply_visibility_filter(&entries);
-        let ids: Vec<&str> = filtered.iter()
+        let ids: Vec<&str> = filtered
+            .iter()
             .filter_map(|e| e.get("id").and_then(|v| v.as_str()))
             .collect();
 

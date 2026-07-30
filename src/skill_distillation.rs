@@ -16,7 +16,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::learning_extension::{analyze_session, LearningDecision};
+use crate::learning_extension::{LearningDecision, analyze_session};
 use crate::paths;
 
 /// Distill a skill from a session, writing to ~/.ion/agent/skills/.
@@ -192,10 +192,7 @@ Output (Markdown only, no JSON, no code fence around the whole thing):"#;
         .to_string();
 
     // Step 6: Skip if LLM declined
-    if skill_text.is_empty()
-        || skill_text == "NO_SKILL"
-        || skill_text.starts_with("NO_SKILL")
-    {
+    if skill_text.is_empty() || skill_text == "NO_SKILL" || skill_text.starts_with("NO_SKILL") {
         tracing::info!("[skill-distill] LLM declined (NO_SKILL or empty)");
         return Ok(None);
     }
@@ -222,8 +219,7 @@ Output (Markdown only, no JSON, no code fence around the whole thing):"#;
         ts = now_iso8601()
     );
     let full = format!("{header}{skill_text}\n");
-    std::fs::write(&skill_path, &full)
-        .map_err(|e| format!("write skill file: {e}"))?;
+    std::fs::write(&skill_path, &full).map_err(|e| format!("write skill file: {e}"))?;
 
     tracing::info!(
         "[skill-distill] skill written to {} ({} bytes)",
@@ -260,7 +256,10 @@ pub fn extract_block_text(block: &serde_json::Value) -> Option<String> {
         "ToolCall" => {
             // Summarize tool calls so the LLM sees "what was done" without dumping huge args
             let name = inner.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
-            let args = inner.get("arguments").cloned().unwrap_or(serde_json::Value::Null);
+            let args = inner
+                .get("arguments")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             let args_summary = summarize_args(&args);
             Some(format!("[tool_call:{name} {args_summary}]"))
         }
@@ -378,9 +377,13 @@ fn slugify(s: &str) -> String {
     let slug: String = s
         .chars()
         .map(|c| {
-            if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() }
-            else if c == ' ' || c == '_' { '-' }
-            else { '-' }
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else if c == ' ' || c == '_' {
+                '-'
+            } else {
+                '-'
+            }
         })
         .collect();
     // Collapse consecutive dashes, trim leading/trailing
@@ -388,7 +391,9 @@ fn slugify(s: &str) -> String {
     let mut prev_dash = false;
     for c in slug.chars() {
         if c == '-' {
-            if !prev_dash { out.push('-'); }
+            if !prev_dash {
+                out.push('-');
+            }
             prev_dash = true;
         } else {
             out.push(c);
@@ -460,7 +465,10 @@ mod tests {
 
     #[test]
     fn test_slugify_trims_dashes() {
-        assert_eq!(slugify("---leading and trailing---"), "leading-and-trailing");
+        assert_eq!(
+            slugify("---leading and trailing---"),
+            "leading-and-trailing"
+        );
     }
 
     #[test]

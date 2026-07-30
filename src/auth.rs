@@ -161,8 +161,14 @@ mod tests {
     fn test_list_providers() {
         let mut base_urls = std::collections::HashMap::new();
         base_urls.insert("openai".to_string(), "https://api.openai.com".to_string());
-        base_urls.insert("anthropic".to_string(), "https://api.anthropic.com".to_string());
-        base_urls.insert("zhipuai".to_string(), "https://open.bigmodel.cn".to_string());
+        base_urls.insert(
+            "anthropic".to_string(),
+            "https://api.anthropic.com".to_string(),
+        );
+        base_urls.insert(
+            "zhipuai".to_string(),
+            "https://open.bigmodel.cn".to_string(),
+        );
 
         let auth = AuthStorage {
             api_key: None,
@@ -179,8 +185,14 @@ mod tests {
     fn test_provider_count() {
         let mut base_urls = std::collections::HashMap::new();
         base_urls.insert("openai".to_string(), "https://api.openai.com".to_string());
-        base_urls.insert("anthropic".to_string(), "https://api.anthropic.com".to_string());
-        base_urls.insert("zhipuai".to_string(), "https://open.bigmodel.cn".to_string());
+        base_urls.insert(
+            "anthropic".to_string(),
+            "https://api.anthropic.com".to_string(),
+        );
+        base_urls.insert(
+            "zhipuai".to_string(),
+            "https://open.bigmodel.cn".to_string(),
+        );
 
         let auth = AuthStorage {
             api_key: None,

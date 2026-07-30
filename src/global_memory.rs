@@ -5,7 +5,7 @@
 //!
 //! 设计文档：docs/design/MEMORY_AGENT.md
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -180,7 +180,10 @@ impl GlobalMemoryStore {
     /// Each tuple is (content, category, tags, project, importance).
     /// Returns list of generated IDs on success.
     /// If any save fails, all inserts are rolled back.
-    pub fn batch_save(&self, entries: Vec<(&str, &str, &str, &str, i32)>) -> Result<Vec<String>, String> {
+    pub fn batch_save(
+        &self,
+        entries: Vec<(&str, &str, &str, &str, i32)>,
+    ) -> Result<Vec<String>, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         // Use savepoint for rollback capability on error
         conn.execute("SAVEPOINT batch_save", [])
@@ -216,7 +219,11 @@ impl GlobalMemoryStore {
     ///
     /// 先用 FTS5 MATCH（英文/分词语言效果好），如果结果为空则用 LIKE 模糊匹配
     /// （中文场景 fallback，因为 FTS5 默认 tokenizer 对中文不友好）。
-    pub fn search(&self, query: &str, project: Option<&str>) -> Result<Vec<GlobalMemoryEntry>, String> {
+    pub fn search(
+        &self,
+        query: &str,
+        project: Option<&str>,
+    ) -> Result<Vec<GlobalMemoryEntry>, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
 
         // 1. 先用 FTS5 MATCH
@@ -234,13 +241,17 @@ impl GlobalMemoryStore {
              WHERE entries_fts MATCH ?1 AND e.archived = 0
              ORDER BY e.importance DESC, e.updated_at DESC"
         };
-        let mut stmt = conn.prepare(fts_sql).map_err(|e| format!("prepare fts: {}", e))?;
+        let mut stmt = conn
+            .prepare(fts_sql)
+            .map_err(|e| format!("prepare fts: {}", e))?;
         let fts_rows = if let Some(p) = project {
-            stmt.query_map(params![escaped_query, p], map_entry).map_err(|e| format!("query fts: {}", e))?
+            stmt.query_map(params![escaped_query, p], map_entry)
+                .map_err(|e| format!("query fts: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| format!("row fts: {}", e))?
         } else {
-            stmt.query_map(params![escaped_query], map_entry).map_err(|e| format!("query fts: {}", e))?
+            stmt.query_map(params![escaped_query], map_entry)
+                .map_err(|e| format!("query fts: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| format!("row fts: {}", e))?
         };
@@ -255,24 +266,32 @@ impl GlobalMemoryStore {
         //    先按空格/标点拆词，再把连续中文段按 2 字滑动窗口拆（中文无空格分词）
         let mut words: Vec<String> = Vec::new();
         for part in query.split(|c: char| c.is_whitespace() || "，。、！？".contains(c)) {
-            if part.is_empty() { continue; }
+            if part.is_empty() {
+                continue;
+            }
             // 检查是否含中文字符
             let has_cjk = part.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
             if has_cjk && part.chars().count() > 2 {
                 // 连续中文：2 字滑动窗口（bigram）
                 let chars: Vec<char> = part.chars().collect();
                 for i in 0..chars.len().saturating_sub(1) {
-                    words.push(chars[i..i+2].iter().collect());
+                    words.push(chars[i..i + 2].iter().collect());
                 }
             } else {
                 words.push(part.to_string());
             }
         }
-        let words: Vec<&str> = if words.is_empty() { vec![query] } else { words.iter().map(|s| s.as_str()).collect() };
+        let words: Vec<&str> = if words.is_empty() {
+            vec![query]
+        } else {
+            words.iter().map(|s| s.as_str()).collect()
+        };
 
         let mut like_rows = Vec::new();
         for word in &words {
-            if word.chars().count() < 2 { continue; }  // 跳过单字（噪音太大，用字符数而非字节数）
+            if word.chars().count() < 2 {
+                continue;
+            } // 跳过单字（噪音太大，用字符数而非字节数）
             let like_pattern = format!("%{}%", word);
             let like_sql = if project.is_some() {
                 "SELECT id, project, content, category, tags, importance, archived, created_at, updated_at
@@ -281,13 +300,19 @@ impl GlobalMemoryStore {
                 "SELECT id, project, content, category, tags, importance, archived, created_at, updated_at
                  FROM entries WHERE archived = 0 AND (content LIKE ?1 OR category LIKE ?1 OR tags LIKE ?1)"
             };
-            let mut stmt2 = conn.prepare(like_sql).map_err(|e| format!("prepare like: {}", e))?;
+            let mut stmt2 = conn
+                .prepare(like_sql)
+                .map_err(|e| format!("prepare like: {}", e))?;
             let rows = if let Some(p) = project {
-                stmt2.query_map(params![like_pattern, p], map_entry).map_err(|e| format!("query like: {}", e))?
+                stmt2
+                    .query_map(params![like_pattern, p], map_entry)
+                    .map_err(|e| format!("query like: {}", e))?
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| format!("row like: {}", e))?
             } else {
-                stmt2.query_map(params![like_pattern], map_entry).map_err(|e| format!("query like: {}", e))?
+                stmt2
+                    .query_map(params![like_pattern], map_entry)
+                    .map_err(|e| format!("query like: {}", e))?
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| format!("row like: {}", e))?
             };
@@ -296,7 +321,11 @@ impl GlobalMemoryStore {
         // 去重（同一条可能被多个词命中）+ 按 importance 排序
         let mut seen = std::collections::HashSet::new();
         like_rows.retain(|e| seen.insert(e.id.clone()));
-        like_rows.sort_by(|a, b| b.importance.cmp(&a.importance).then(b.updated_at.cmp(&a.updated_at)));
+        like_rows.sort_by(|a, b| {
+            b.importance
+                .cmp(&a.importance)
+                .then(b.updated_at.cmp(&a.updated_at))
+        });
         Ok(like_rows)
     }
 
@@ -344,9 +373,11 @@ impl GlobalMemoryStore {
     /// 活跃条目数
     pub fn count(&self) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM entries WHERE archived=0", [], |row| row.get(0)
-        ).unwrap_or(0);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entries WHERE archived=0", [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0);
         Ok(count)
     }
 
@@ -358,29 +389,33 @@ impl GlobalMemoryStore {
     /// 统计指定项目中活跃（archived=0）的条目数。
     pub fn count_active_by_project(&self, project: &str) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM entries WHERE archived=0 AND project = ?1",
-            params![project],
-            |row| row.get(0)
-        ).unwrap_or(0);
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entries WHERE archived=0 AND project = ?1",
+                params![project],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
         Ok(count)
     }
 
     /// 所有记忆总数（含活跃和归档）
     pub fn memory_count(&self) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM entries", [], |row| row.get(0)
-        ).unwrap_or(0);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))
+            .unwrap_or(0);
         Ok(count)
     }
 
     /// 归档条目数
     pub fn archived_total(&self) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM entries WHERE archived=1", [], |row| row.get(0)
-        ).unwrap_or(0);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entries WHERE archived=1", [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0);
         Ok(count)
     }
 
@@ -389,48 +424,57 @@ impl GlobalMemoryStore {
         let total = self.memory_count()?;
         let archived = self.archived_total()?;
         let active = total - archived;
-        Ok(format!("Total: {total}, Active: {active}, Archived: {archived}"))
+        Ok(format!(
+            "Total: {total}, Active: {active}, Archived: {archived}"
+        ))
     }
 
     pub fn count_all_archived(&self) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM entries WHERE archived=1", [], |row| row.get(0)
-        ).unwrap_or(0);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entries WHERE archived=1", [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0);
         Ok(count)
     }
 
     /// 指定项目的归档条目数
     pub fn count_archived_by_project(&self, project: &str) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM entries WHERE archived=1 AND project = ?1",
-            params![project],
-            |row| row.get(0)
-        ).unwrap_or(0);
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entries WHERE archived=1 AND project = ?1",
+                params![project],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
         Ok(count)
     }
 
     /// 检查是否已有相同 content 的活跃记忆（去重用）
     pub fn has_content(&self, content: &str) -> Result<bool, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM entries WHERE content = ?1 AND archived = 0",
-            params![content],
-            |row| row.get(0),
-        ).unwrap_or(0);
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entries WHERE content = ?1 AND archived = 0",
+                params![content],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
         Ok(count > 0)
     }
 
     /// 检查指定 ID 的记忆是否存在（含活跃和已归档条目）
     pub fn entry_exists(&self, id: &str) -> Result<bool, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM entries WHERE id = ?1",
-            params![id],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entries WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
         Ok(count > 0)
     }
 
@@ -446,11 +490,15 @@ impl GlobalMemoryStore {
         };
         let mut stmt = conn.prepare(sql).map_err(|e| format!("prepare: {}", e))?;
         let rows = if let Some(p) = project {
-            stmt.query_map(params![p], map_entry).map_err(|e| format!("query: {}", e))?
-                .collect::<Result<Vec<_>, _>>().map_err(|e| format!("row: {}", e))?
+            stmt.query_map(params![p], map_entry)
+                .map_err(|e| format!("query: {}", e))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("row: {}", e))?
         } else {
-            stmt.query_map([], map_entry).map_err(|e| format!("query: {}", e))?
-                .collect::<Result<Vec<_>, _>>().map_err(|e| format!("row: {}", e))?
+            stmt.query_map([], map_entry)
+                .map_err(|e| format!("query: {}", e))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("row: {}", e))?
         };
         Ok(rows)
     }
@@ -461,15 +509,17 @@ impl GlobalMemoryStore {
         let mut stmt = conn.prepare(
             "SELECT id, summary, project, entry_count, updated_at FROM outlines ORDER BY entry_count DESC"
         ).map_err(|e| format!("prepare: {}", e))?;
-        let rows = stmt.query_map([], |row| {
-            Ok(OutlineEntry {
-                id: row.get(0)?,
-                summary: row.get(1)?,
-                project: row.get(2)?,
-                entry_count: row.get(3)?,
-                updated_at: row.get(4)?,
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(OutlineEntry {
+                    id: row.get(0)?,
+                    summary: row.get(1)?,
+                    project: row.get(2)?,
+                    entry_count: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
             })
-        }).map_err(|e| format!("query: {}", e))?;
+            .map_err(|e| format!("query: {}", e))?;
         let mut result = Vec::new();
         for r in rows {
             result.push(r.map_err(|e| format!("row: {}", e))?);
@@ -487,7 +537,8 @@ impl GlobalMemoryStore {
             let mut stmt = conn.prepare(
                 "SELECT content FROM entries WHERE archived=0 GROUP BY content HAVING COUNT(*) > 1"
             ).map_err(|e| format!("prepare dupes: {}", e))?;
-            let rows = stmt.query_map([], |row| row.get::<_, String>(0))
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))
                 .map_err(|e| format!("query dupes: {}", e))?;
             let mut dups = Vec::new();
             for r in rows {
@@ -524,7 +575,8 @@ impl GlobalMemoryStore {
         //    先 DELETE 再按 project GROUP 重建。每行 ID 用 randomblob(16) 生成唯一值。
         //    randomblob() 是非确定性函数，SQLite 会对 SELECT 输出的每一行独立求值，
         //    因此 GROUP BY project 后每个项目组都会拿到独立的 16 字节随机 ID，不会碰撞
-        conn.execute("DELETE FROM outlines", []).map_err(|e| format!("clear outlines: {}", e))?;
+        conn.execute("DELETE FROM outlines", [])
+            .map_err(|e| format!("clear outlines: {}", e))?;
         conn.execute(
             "INSERT INTO outlines (id, summary, project, entry_count, updated_at)
              SELECT
@@ -536,17 +588,20 @@ impl GlobalMemoryStore {
              FROM entries WHERE archived = 0
              GROUP BY project",
             [],
-        ).map_err(|e| format!("update outlines: {}", e))?;
+        )
+        .map_err(|e| format!("update outlines: {}", e))?;
 
         // 统计剩余活跃条数
-        stats.total = conn.query_row(
-            "SELECT COUNT(*) FROM entries WHERE archived=0", [], |row| row.get(0)
-        ).unwrap_or(0);
+        stats.total = conn
+            .query_row("SELECT COUNT(*) FROM entries WHERE archived=0", [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0);
 
         Ok(stats)
     }
 
-        // 验证返回唯一项目名称列表（按字母序）
+    // 验证返回唯一项目名称列表（按字母序）
     pub fn project_list(&self) -> Result<Vec<String>, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         let mut stmt = conn
@@ -567,9 +622,13 @@ impl GlobalMemoryStore {
     /// 返回活跃条目中唯一项目的数量。
     pub fn project_count(&self) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(DISTINCT project) FROM entries WHERE archived=0", [], |row| row.get(0)
-        ).unwrap_or(0);
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT project) FROM entries WHERE archived=0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
         Ok(count)
     }
 
@@ -578,11 +637,13 @@ impl GlobalMemoryStore {
     pub fn tag_count(&self, tag: &str) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         let pattern = format!("%{}%", tag);
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM entries WHERE archived=0 AND tags LIKE ?1",
-            params![pattern],
-            |row| row.get(0)
-        ).unwrap_or(0);
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entries WHERE archived=0 AND tags LIKE ?1",
+                params![pattern],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
         Ok(count)
     }
 
@@ -606,7 +667,11 @@ impl GlobalMemoryStore {
     }
 
     /// Return up to N most recent entries (created_at DESC) for the given project.
-    pub fn list_recent_by_project(&self, project: &str, limit: usize) -> Result<Vec<GlobalMemoryEntry>, String> {
+    pub fn list_recent_by_project(
+        &self,
+        project: &str,
+        limit: usize,
+    ) -> Result<Vec<GlobalMemoryEntry>, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         let mut stmt = conn
             .prepare(
@@ -627,18 +692,23 @@ impl GlobalMemoryStore {
     /// 返回 archived=1 的 entry 总数
     pub fn archive_count(&self) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM entries WHERE archived = 1", [], |row| row.get(0)
-        ).unwrap_or(0);
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entries WHERE archived = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
         Ok(count)
     }
 
     /// 返回最早 entry 的 created_at如果表为空返回 None）。
     pub fn oldest_entry_age(&self) -> Result<Option<i64>, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        let result: Option<i64> = conn.query_row(
-            "SELECT MIN(created_at) FROM entries", [], |row| row.get(0)
-        ).ok().flatten();
+        let result: Option<i64> = conn
+            .query_row("SELECT MIN(created_at) FROM entries", [], |row| row.get(0))
+            .ok()
+            .flatten();
         Ok(result)
     }
 
@@ -660,28 +730,35 @@ impl GlobalMemoryStore {
     pub fn count_by_tags(&self, tag: &str) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         let pattern = format!("%{}%", tag);
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM entries WHERE tags LIKE ?1",
-            params![pattern],
-            |row| row.get(0),
-        ).map_err(|e| format!("query count_by_tags: {}", e))?;
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entries WHERE tags LIKE ?1",
+                params![pattern],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("query count_by_tags: {}", e))?;
         Ok(count)
     }
 
     /// 统计指定 category 的 entry 数（精确匹配，不用 LIKE）。
     pub fn count_by_category(&self, category: &str) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM entries WHERE category = ?1",
-            params![category],
-            |row| row.get(0),
-        ).map_err(|e| format!("query count_by_category: {}", e))?;
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entries WHERE category = ?1",
+                params![category],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("query count_by_category: {}", e))?;
         Ok(count)
     }
 
     /// 返回指定 project 下 created_at 最早的 entry（一条）。
     /// 如果该 project 没有任何 entry，返回 None。
-    pub fn find_oldest_by_project(&self, project: &str) -> Result<Option<GlobalMemoryEntry>, String> {
+    pub fn find_oldest_by_project(
+        &self,
+        project: &str,
+    ) -> Result<Option<GlobalMemoryEntry>, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         let mut stmt = conn
             .prepare(
@@ -709,7 +786,7 @@ impl GlobalMemoryStore {
         Ok(deleted)
     }
 
-        /// Advanced multi-field search using FTS5 MATCH for content,
+    /// Advanced multi-field search using FTS5 MATCH for content,
     /// with optional filters for project, category, and minimum importance.
     pub fn search_advanced(
         &self,
@@ -719,17 +796,15 @@ impl GlobalMemoryStore {
         min_importance: i32,
     ) -> Result<Vec<GlobalMemoryEntry>, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        let escaped_query = format!( "\"{}\"", query.replace('"', "\"\"") );
+        let escaped_query = format!("\"{}\"", query.replace('"', "\"\""));
         let mut where_clauses = vec![
             "entries_fts MATCH ?1".to_string(),
             "e.archived = 0".to_string(),
             "e.importance >= ?2".to_string(),
         ];
         let mut param_idx = 3;
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![
-            Box::new(escaped_query),
-            Box::new(min_importance),
-        ];
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(escaped_query), Box::new(min_importance)];
         if let Some(proj) = project {
             where_clauses.push(format!("e.project = ?{}", param_idx));
             params.push(Box::new(proj.to_string()));
@@ -749,7 +824,9 @@ impl GlobalMemoryStore {
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| format!("prepare: {}", e))?;
         let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-        let rows = stmt.query_map(param_refs.as_slice(), map_entry).map_err(|e| format!("query: {}", e))?;
+        let rows = stmt
+            .query_map(param_refs.as_slice(), map_entry)
+            .map_err(|e| format!("query: {}", e))?;
         let mut results = Vec::new();
         for r in rows {
             results.push(r.map_err(|e| format!("row: {}", e))?);
@@ -757,12 +834,15 @@ impl GlobalMemoryStore {
         Ok(results)
     }
 
-/// 获取全局记忆库路径
+    /// 获取全局记忆库路径
     pub fn db_path() -> PathBuf {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| ".".into());
-        PathBuf::from(home).join(".ion").join("agent").join("global-memory.db")
+        PathBuf::from(home)
+            .join(".ion")
+            .join("agent")
+            .join("global-memory.db")
     }
 
     /// 从 V0.1 JSON 文件自动迁移到 SQLite。
@@ -777,24 +857,47 @@ impl GlobalMemoryStore {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| ".".into());
-        let project_data_root = PathBuf::from(&home).join(".ion").join("agent").join("project-data");
+        let project_data_root = PathBuf::from(&home)
+            .join(".ion")
+            .join("agent")
+            .join("project-data");
         if !project_data_root.exists() {
             tracing::info!("[global-memory] no project-data dir, skip migration");
             return Ok(0);
         }
         let mut count = 0;
         // 遍历每个项目目录
-        for project_dir in std::fs::read_dir(&project_data_root).map_err(|e| format!("read project-data: {}", e))? {
-            let project_dir = match project_dir { Ok(d) => d, Err(_) => continue };
+        for project_dir in std::fs::read_dir(&project_data_root)
+            .map_err(|e| format!("read project-data: {}", e))?
+        {
+            let project_dir = match project_dir {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
             let memory_dir = project_dir.path().join("memory").join("outlines");
-            if !memory_dir.exists() { continue; }
+            if !memory_dir.exists() {
+                continue;
+            }
             // 从目录名提取项目名（格式：--hash--name--）
             let dir_name = project_dir.file_name().to_string_lossy().to_string();
-            let project_name = dir_name.split("--").last().unwrap_or("unknown").trim_end_matches("--").to_string();
-            let project_name = if project_name.is_empty() { "unknown".into() } else { project_name };
+            let project_name = dir_name
+                .split("--")
+                .last()
+                .unwrap_or("unknown")
+                .trim_end_matches("--")
+                .to_string();
+            let project_name = if project_name.is_empty() {
+                "unknown".into()
+            } else {
+                project_name
+            };
 
             // 遍历每个 outline 文件
-            for outline_file in std::fs::read_dir(&memory_dir).into_iter().flatten().flatten() {
+            for outline_file in std::fs::read_dir(&memory_dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
                 let content = match std::fs::read_to_string(outline_file.path()) {
                     Ok(c) => c,
                     Err(_) => continue,
@@ -804,13 +907,37 @@ impl GlobalMemoryStore {
                     Err(_) => continue,
                 };
                 for entry in entries {
-                    let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let mem_content = entry.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let category = entry.get("category").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let id = entry
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let mem_content = entry
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let category = entry
+                        .get("category")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     let tags_arr = entry.get("tags").and_then(|v| v.as_array());
-                    let tags = tags_arr.map(|a| a.iter().filter_map(|t| t.as_str()).collect::<Vec<_>>().join(",")).unwrap_or_default();
-                    let archived = entry.get("archived").and_then(|v| v.as_bool()).unwrap_or(false);
-                    if mem_content.is_empty() || archived { continue; }
+                    let tags = tags_arr
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|t| t.as_str())
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        })
+                        .unwrap_or_default();
+                    let archived = entry
+                        .get("archived")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    if mem_content.is_empty() || archived {
+                        continue;
+                    }
                     // 导入
                     if let Err(e) = self.save(&mem_content, &category, &tags, &project_name, 5) {
                         tracing::warn!("[global-memory] migrate entry {} failed: {}", id, e);
@@ -829,11 +956,13 @@ impl GlobalMemoryStore {
     pub fn has_tag(&self, tag: &str) -> Result<bool, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         let pattern = format!("%{}%", tag);
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM entries WHERE tags LIKE ?1",
-            params![pattern],
-            |row| row.get(0),
-        ).unwrap_or(0);
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entries WHERE tags LIKE ?1",
+                params![pattern],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
         Ok(count > 0)
     }
 
@@ -879,7 +1008,10 @@ impl GlobalMemoryStore {
     pub fn archive_by_project(&self, project: &str) -> Result<usize, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         let updated = conn
-            .execute("UPDATE entries SET archived=1 WHERE project=?1", params![project])
+            .execute(
+                "UPDATE entries SET archived=1 WHERE project=?1",
+                params![project],
+            )
             .map_err(|e| format!("archive_by_project: {}", e))?;
         Ok(updated)
     }
@@ -887,9 +1019,11 @@ impl GlobalMemoryStore {
     /// Return total count of archived=1 entries across all projects.
     pub fn count_archived(&self) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM entries WHERE archived=1", [], |row| row.get(0)
-        ).unwrap_or(0);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entries WHERE archived=1", [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0);
         Ok(count)
     }
 
@@ -962,7 +1096,13 @@ impl GlobalMemoryStore {
 
         let mut count = 0;
         for item in &items {
-            self.save(&item.content, &item.category, &item.tags, &item.project, item.importance)?;
+            self.save(
+                &item.content,
+                &item.category,
+                &item.tags,
+                &item.project,
+                item.importance,
+            )?;
             count += 1;
         }
         Ok(count)
@@ -984,7 +1124,9 @@ impl GlobalMemoryStore {
                 false,
             )
         };
-        let mut stmt = conn.prepare(sql).map_err(|e| format!("prepare export_json: {}", e))?;
+        let mut stmt = conn
+            .prepare(sql)
+            .map_err(|e| format!("prepare export_json: {}", e))?;
         let rows = if has_filter {
             // We need the project param, extract it from the option again
             // because borrow checker can't see through the let binding above.
@@ -1022,7 +1164,11 @@ impl GlobalMemoryStore {
 
     /// Find all entries whose importance is within the given [min, max] range (inclusive).
     /// Results are ordered by importance DESC.
-    pub fn find_by_importance_range(&self, min: i32, max: i32) -> Result<Vec<GlobalMemoryEntry>, String> {
+    pub fn find_by_importance_range(
+        &self,
+        min: i32,
+        max: i32,
+    ) -> Result<Vec<GlobalMemoryEntry>, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         let mut stmt = conn
             .prepare(
@@ -1088,7 +1234,11 @@ impl GlobalMemoryStore {
     /// List entities, optionally filtered by project.
     /// Results are ordered by importance DESC then created_at DESC.
     /// The limit caps the maximum number of returned entities.
-    pub fn list_entities(&self, project: Option<&str>, limit: usize) -> Result<Vec<Entity>, String> {
+    pub fn list_entities(
+        &self,
+        project: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Entity>, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
         let mut stmt = if project.is_some() {
             conn.prepare(
@@ -1386,7 +1536,15 @@ mod tests {
     #[test]
     fn test_save_and_fts_search() {
         let store = test_store();
-        let id = store.save("用户偏好 Rust 的 async/await", "preference", "rust,async", "project-a", 8).unwrap();
+        let id = store
+            .save(
+                "用户偏好 Rust 的 async/await",
+                "preference",
+                "rust,async",
+                "project-a",
+                8,
+            )
+            .unwrap();
         assert!(id.starts_with("gmem_"));
 
         // FTS5 搜索 "rust"
@@ -1399,8 +1557,18 @@ mod tests {
     #[test]
     fn test_cross_project_search() {
         let store = test_store();
-        store.save("project uses typescript", "preference", "ts", "project-a", 5).unwrap();
-        store.save("project uses python", "preference", "py", "project-b", 5).unwrap();
+        store
+            .save(
+                "project uses typescript",
+                "preference",
+                "ts",
+                "project-a",
+                5,
+            )
+            .unwrap();
+        store
+            .save("project uses python", "preference", "py", "project-b", 5)
+            .unwrap();
 
         // 全局搜索（不指定 project）
         let results = store.search("project", None).unwrap();
@@ -1415,9 +1583,15 @@ mod tests {
     #[test]
     fn test_importance_ranking() {
         let store = test_store();
-        store.save("low importance note", "note", "test", "p", 2).unwrap();
-        store.save("high importance note", "note", "test", "p", 10).unwrap();
-        store.save("medium importance note", "note", "test", "p", 5).unwrap();
+        store
+            .save("low importance note", "note", "test", "p", 2)
+            .unwrap();
+        store
+            .save("high importance note", "note", "test", "p", 10)
+            .unwrap();
+        store
+            .save("medium importance note", "note", "test", "p", 5)
+            .unwrap();
 
         let results = store.search("note", None).unwrap();
         assert_eq!(results.len(), 3);
@@ -1430,7 +1604,9 @@ mod tests {
     #[test]
     fn test_soft_delete() {
         let store = test_store();
-        let id = store.save("entry to delete", "note", "test", "p", 5).unwrap();
+        let id = store
+            .save("entry to delete", "note", "test", "p", 5)
+            .unwrap();
         // 搜索能找到
         assert_eq!(store.search("delete", None).unwrap().len(), 1);
         // 软删除
@@ -1453,7 +1629,9 @@ mod tests {
         // 应该用 chars().count() < 2 判断字符数，确保单字被跳过。
         let store = test_store();
         store.save("编程语言对比分析", "note", "t", "p", 5).unwrap();
-        store.save("深度学习与神经网络", "note", "t", "p", 5).unwrap();
+        store
+            .save("深度学习与神经网络", "note", "t", "p", 5)
+            .unwrap();
 
         // 搜索 "编"（单字），应走 LIKE fallback 且被跳过，不返回噪音结果
         let results = store.search("编", None).unwrap();
@@ -1474,8 +1652,12 @@ mod tests {
         // Bug 2 回归: FTS5 MATCH 查询没有转义特殊字符，含 OR/AND/NOT/双引号的 query
         // 会被当 FTS5 语法处理。应该用双引号包裹 + 内部双引号双写转义。
         let store = test_store();
-        store.save("Use OR keyword in content", "note", "t", "p", 5).unwrap();
-        store.save("Normal entry without keywords", "note", "t", "p", 5).unwrap();
+        store
+            .save("Use OR keyword in content", "note", "t", "p", 5)
+            .unwrap();
+        store
+            .save("Normal entry without keywords", "note", "t", "p", 5)
+            .unwrap();
 
         // 搜索 "OR" —— 修复前会被 FTS5 当布尔运算符，导致报错或返回全部结果
         let results = store.search("OR", None).unwrap();
@@ -1487,7 +1669,9 @@ mod tests {
         assert!(results[0].content.contains("OR"));
 
         // 搜索含双引号的内容
-        store.save("Say \"hello world\" loudly", "note", "t", "p", 5).unwrap();
+        store
+            .save("Say \"hello world\" loudly", "note", "t", "p", 5)
+            .unwrap();
         let results = store.search("\"hello world\"", None).unwrap();
         assert_eq!(
             results.len(),
@@ -1530,7 +1714,6 @@ mod tests {
         assert_eq!(store.count().unwrap(), 2);
     }
 
-    
     #[test]
     fn test_memory_count() {
         let store = test_store();
@@ -1572,19 +1755,41 @@ mod tests {
         assert_eq!(store.count().unwrap(), 0);
 
         // 只向 project-a 插入条目
-        store.save("project a content 1", "note", "t", "project-a", 5).unwrap();
-        store.save("project a content 2", "note", "t", "project-a", 5).unwrap();
-        store.save("project a content 3", "note", "t", "project-a", 5).unwrap();
-        assert_eq!(store.count_by_project("project-a").unwrap(), 3, "project-a 应有 3 条");
-        assert_eq!(store.count_by_project("project-b").unwrap(), 0, "project-b 应有 0 条");
+        store
+            .save("project a content 1", "note", "t", "project-a", 5)
+            .unwrap();
+        store
+            .save("project a content 2", "note", "t", "project-a", 5)
+            .unwrap();
+        store
+            .save("project a content 3", "note", "t", "project-a", 5)
+            .unwrap();
+        assert_eq!(
+            store.count_by_project("project-a").unwrap(),
+            3,
+            "project-a 应有 3 条"
+        );
+        assert_eq!(
+            store.count_by_project("project-b").unwrap(),
+            0,
+            "project-b 应有 0 条"
+        );
 
         // 向 project-b 插入条目
-        store.save("project b content", "note", "t", "project-b", 5).unwrap();
+        store
+            .save("project b content", "note", "t", "project-b", 5)
+            .unwrap();
         assert_eq!(store.count_by_project("project-a").unwrap(), 3);
-        assert_eq!(store.count_by_project("project-b").unwrap(), 1, "project-b 应有 1 条");
+        assert_eq!(
+            store.count_by_project("project-b").unwrap(),
+            1,
+            "project-b 应有 1 条"
+        );
 
         // 向 project-a 再插入条目
-        store.save("project a content 4", "note", "t", "project-a", 5).unwrap();
+        store
+            .save("project a content 4", "note", "t", "project-a", 5)
+            .unwrap();
         assert_eq!(store.count_by_project("project-a").unwrap(), 4);
         assert_eq!(store.count_by_project("project-b").unwrap(), 1);
 
@@ -1592,8 +1797,16 @@ mod tests {
         let entries = store.list(Some("project-a")).unwrap();
         let oldest_id = entries.last().unwrap().id.clone();
         store.forget(&oldest_id).unwrap();
-        assert_eq!(store.count_by_project("project-a").unwrap(), 3, "归档后 project-a 应为 3 条");
-        assert_eq!(store.count_by_project("project-b").unwrap(), 1, "归档不影响 project-b");
+        assert_eq!(
+            store.count_by_project("project-a").unwrap(),
+            3,
+            "归档后 project-a 应为 3 条"
+        );
+        assert_eq!(
+            store.count_by_project("project-b").unwrap(),
+            1,
+            "归档不影响 project-b"
+        );
 
         // 总活跃条目数 = 3 + 1 = 4
         assert_eq!(store.count().unwrap(), 4);
@@ -1608,26 +1821,58 @@ mod tests {
         assert_eq!(store.count_active_by_project("project-b").unwrap(), 0);
 
         // 向 project-a 插入 3 条，project-b 插入 1 条
-        store.save("pa content 1", "note", "t", "project-a", 5).unwrap();
-        store.save("pa content 2", "note", "t", "project-a", 5).unwrap();
-        store.save("pa content 3", "note", "t", "project-a", 5).unwrap();
-        store.save("pb content 1", "note", "t", "project-b", 5).unwrap();
+        store
+            .save("pa content 1", "note", "t", "project-a", 5)
+            .unwrap();
+        store
+            .save("pa content 2", "note", "t", "project-a", 5)
+            .unwrap();
+        store
+            .save("pa content 3", "note", "t", "project-a", 5)
+            .unwrap();
+        store
+            .save("pb content 1", "note", "t", "project-b", 5)
+            .unwrap();
 
-        assert_eq!(store.count_active_by_project("project-a").unwrap(), 3, "project-a 应有 3 条活跃");
-        assert_eq!(store.count_active_by_project("project-b").unwrap(), 1, "project-b 应有 1 条活跃");
+        assert_eq!(
+            store.count_active_by_project("project-a").unwrap(),
+            3,
+            "project-a 应有 3 条活跃"
+        );
+        assert_eq!(
+            store.count_active_by_project("project-b").unwrap(),
+            1,
+            "project-b 应有 1 条活跃"
+        );
         assert_eq!(store.count().unwrap(), 4, "总跃条目数为 4");
 
         // 归档一条 project-a 的条目，活跃数应减少
         let pa_entries = store.list(Some("project-a")).unwrap();
         store.forget(&pa_entries[0].id).unwrap();
-        assert_eq!(store.count_active_by_project("project-a").unwrap(), 2, "归档后 project-a 活跃数应为 2");
-        assert_eq!(store.count_active_by_project("project-b").unwrap(), 1, "归档不影响 project-b");
+        assert_eq!(
+            store.count_active_by_project("project-a").unwrap(),
+            2,
+            "归档后 project-a 活跃数应为 2"
+        );
+        assert_eq!(
+            store.count_active_by_project("project-b").unwrap(),
+            1,
+            "归档不影响 project-b"
+        );
         assert_eq!(store.count().unwrap(), 3, "归档后总活跃数应为 3");
 
         // 归档不影响已归档项目的活跃计数
         store.forget(&pa_entries[1].id).unwrap();
-        assert_eq!(store.count_active_by_project("project-a").unwrap(), 1, "再归档一条后 project-a 活跃数应为 1");
-        assert_eq!(store.count_active_by_project("project-b").unwrap(), 1, "project-b 仍为 1");
+        assert_eq!(
+            store.count_active_by_project("project-a").unwrap(),
+            1,
+            "再归档一条后 project-a 活跃数应为 1"
+        );
+        assert_eq!(
+            store.count_active_by_project("project-b").unwrap(),
+            1,
+            "project-b 仍为 1"
+        );
 
         // 全部归档后，活跃数为 0
         store.forget(&pa_entries[2].id).unwrap();
@@ -1647,28 +1892,58 @@ mod tests {
         assert_eq!(store.count_archived_by_project("project-b").unwrap(), 0);
 
         // 向 project-b 插入条目
-        store.save("pa active 1", "note", "t", "project-a", 5).unwrap();
-        store.save("pa active 2", "note", "t", "project-a", 5).unwrap();
-        store.save("pb active 1", "note", "t", "project-b", 5).unwrap();
-        assert_eq!(store.count_archived_by_project("project-a").unwrap(), 0, "归档前为 0");
-        assert_eq!(store.count_archived_by_project("project-b").unwrap(), 0, "归档前为 0");
+        store
+            .save("pa active 1", "note", "t", "project-a", 5)
+            .unwrap();
+        store
+            .save("pa active 2", "note", "t", "project-a", 5)
+            .unwrap();
+        store
+            .save("pb active 1", "note", "t", "project-b", 5)
+            .unwrap();
+        assert_eq!(
+            store.count_archived_by_project("project-a").unwrap(),
+            0,
+            "归档前为 0"
+        );
+        assert_eq!(
+            store.count_archived_by_project("project-b").unwrap(),
+            0,
+            "归档前为 0"
+        );
 
         // 归档一条 project-a 的条目
         let pa_entries = store.list(Some("project-a")).unwrap();
         store.forget(&pa_entries[0].id).unwrap();
-        assert_eq!(store.count_archived_by_project("project-a").unwrap(), 1, "project-a 应有 1 条归档");
-        assert_eq!(store.count_archived_by_project("project-b").unwrap(), 0, "project-b 应仍为 0");
+        assert_eq!(
+            store.count_archived_by_project("project-a").unwrap(),
+            1,
+            "project-a 应有 1 条归档"
+        );
+        assert_eq!(
+            store.count_archived_by_project("project-b").unwrap(),
+            0,
+            "project-b 应仍为 0"
+        );
 
         // 再归档另一条 project-a 的条目
         store.forget(&pa_entries[1].id).unwrap();
-        assert_eq!(store.count_archived_by_project("project-a").unwrap(), 2, "project-a 应有 2 条归档");
+        assert_eq!(
+            store.count_archived_by_project("project-a").unwrap(),
+            2,
+            "project-a 应有 2 条归档"
+        );
         assert_eq!(store.count_archived_by_project("project-b").unwrap(), 0);
 
         // 归档一条 project-b 的条目
         let pb_entries = store.list(Some("project-b")).unwrap();
         store.forget(&pb_entries[0].id).unwrap();
         assert_eq!(store.count_archived_by_project("project-a").unwrap(), 2);
-        assert_eq!(store.count_archived_by_project("project-b").unwrap(), 1, "project-b 应有 1 条归档");
+        assert_eq!(
+            store.count_archived_by_project("project-b").unwrap(),
+            1,
+            "project-b 应有 1 条归档"
+        );
 
         // 总归档数应等于 3
         assert_eq!(store.count_all_archived().unwrap(), 3);
@@ -1706,7 +1981,9 @@ mod tests {
         assert!(!store.entry_exists("gmem_nonexistent").unwrap());
 
         // 保存一条
-        let id = store.save("test entry for exists check", "note", "t", "p", 5).unwrap();
+        let id = store
+            .save("test entry for exists check", "note", "t", "p", 5)
+            .unwrap();
 
         // 存在的 ID
         assert!(store.entry_exists(&id).unwrap());
@@ -1740,12 +2017,7 @@ mod tests {
         // 关键断言：所有 outline 的 id 必须唯一，且都以 outl_ 前缀开头（来自 randomblob）
         let ids: Vec<_> = outlines.iter().map(|o| o.id.as_str()).collect();
         let unique: std::collections::HashSet<_> = ids.iter().collect();
-        assert_eq!(
-            unique.len(),
-            ids.len(),
-            "outline ID 碰撞！ids = {:?}",
-            ids
-        );
+        assert_eq!(unique.len(), ids.len(), "outline ID 碰撞！ids = {:?}", ids);
         for id in &ids {
             assert!(
                 id.starts_with("outl_") && id.len() == "outl_".len() + 32,
@@ -1783,11 +2055,15 @@ mod tests {
         // 执行 clear_active()
         store.clear_active().unwrap();
 
-    /// 2) 清空后 count() 为 0
+        /// 2) 清空后 count() 为 0
         assert_eq!(store.count().unwrap(), 0, "clear_active 后活跃条目应为 0");
 
         // 验证 3) 清空后已 archived 的条目不受影响
-        assert_eq!(store.archived_total().unwrap(), 2, "clear_active 后归档条目仍为 2");
+        assert_eq!(
+            store.archived_total().unwrap(),
+            2,
+            "clear_active 后归档条目仍为 2"
+        );
 
         // 验证 4) 清空后 memory_count() 应等于 archived 数
         assert_eq!(
@@ -1816,7 +2092,11 @@ mod tests {
 
         // 保存 5 条活跃条目
         let ids: Vec<String> = (0..5)
-            .map(|i| store.save(&format!("entry {}", i), "note", "t", "p", 5).unwrap())
+            .map(|i| {
+                store
+                    .save(&format!("entry {}", i), "note", "t", "p", 5)
+                    .unwrap()
+            })
             .collect();
         let summary = store.entries_summary().unwrap();
         assert_eq!(summary, "Total: 5, Active: 5, Archived: 0");
@@ -1837,10 +2117,18 @@ mod tests {
         assert!(projects.is_empty(), "空库应返回空列表");
 
         // 向不同项目插入条目
-        store.save("content a1", "note", "t", "project-alpha", 5).unwrap();
-        store.save("content a2", "note", "t", "project-alpha", 5).unwrap();
-        store.save("content b1", "note", "t", "project-beta", 5).unwrap();
-        store.save("content g1", "note", "t", "project-gamma", 5).unwrap();
+        store
+            .save("content a1", "note", "t", "project-alpha", 5)
+            .unwrap();
+        store
+            .save("content a2", "note", "t", "project-alpha", 5)
+            .unwrap();
+        store
+            .save("content b1", "note", "t", "project-beta", 5)
+            .unwrap();
+        store
+            .save("content g1", "note", "t", "project-gamma", 5)
+            .unwrap();
 
         // 验证返回唯一项目名称列表（按字母序）
         let projects = store.project_list().unwrap();
@@ -1850,7 +2138,9 @@ mod tests {
         assert_eq!(projects[2], "project-gamma");
 
         // 再插入一个现有项目的新条目，不增加项目数
-        store.save("content a3", "note", "t", "project-alpha", 5).unwrap();
+        store
+            .save("content a3", "note", "t", "project-alpha", 5)
+            .unwrap();
         let projects = store.project_list().unwrap();
         assert_eq!(projects.len(), 3, "插入已存在项目后应仍为 3 个");
 
@@ -1873,16 +2163,26 @@ mod tests {
         assert_eq!(store.project_count().unwrap(), 0, "空库应返回 0");
 
         // 向不同项目插入条目
-        store.save("content a1", "note", "t", "project-alpha", 5).unwrap();
-        store.save("content a2", "note", "t", "project-alpha", 5).unwrap();
-        store.save("content b1", "note", "t", "project-beta", 5).unwrap();
-        store.save("content g1", "note", "t", "project-gamma", 5).unwrap();
+        store
+            .save("content a1", "note", "t", "project-alpha", 5)
+            .unwrap();
+        store
+            .save("content a2", "note", "t", "project-alpha", 5)
+            .unwrap();
+        store
+            .save("content b1", "note", "t", "project-beta", 5)
+            .unwrap();
+        store
+            .save("content g1", "note", "t", "project-gamma", 5)
+            .unwrap();
 
         // 应有 3 个唯一项目
         assert_eq!(store.project_count().unwrap(), 3);
 
         // 再插入已存在项目目，项目数不变
-        store.save("content a3", "note", "t", "project-alpha", 5).unwrap();
+        store
+            .save("content a3", "note", "t", "project-alpha", 5)
+            .unwrap();
         assert_eq!(store.project_count().unwrap(), 3);
 
         // 归档 project-beta 所有条目后，应剩 2 个项目
@@ -1902,18 +2202,36 @@ mod tests {
         assert_eq!(store.tag_count("python").unwrap(), 0);
 
         // 插入带标签的记忆
-        store.save("async rust info", "note", "rust,async", "p", 5).unwrap();
-        store.save("tokio runtime", "note", "rust,tokio", "p", 5).unwrap();
-        store.save("python web framework", "note", "python,django", "p", 5).unwrap();
-        store.save("python data science", "note", "python,numpy", "p", 5).unwrap();
-        store.save("typescript types", "note", "ts,type", "p", 5).unwrap();
+        store
+            .save("async rust info", "note", "rust,async", "p", 5)
+            .unwrap();
+        store
+            .save("tokio runtime", "note", "rust,tokio", "p", 5)
+            .unwrap();
+        store
+            .save("python web framework", "note", "python,django", "p", 5)
+            .unwrap();
+        store
+            .save("python data science", "note", "python,numpy", "p", 5)
+            .unwrap();
+        store
+            .save("typescript types", "note", "ts,type", "p", 5)
+            .unwrap();
 
         // 按标签计数
         assert_eq!(store.tag_count("rust").unwrap(), 2, "rust 标签应有 2 条");
-        assert_eq!(store.tag_count("python").unwrap(), 2, "python 标签应有 2 条");
+        assert_eq!(
+            store.tag_count("python").unwrap(),
+            2,
+            "python 标签应有 2 条"
+        );
         assert_eq!(store.tag_count("ts").unwrap(), 1, "ts 标签应有 1 条");
         assert_eq!(store.tag_count("tokio").unwrap(), 1, "tokio 标签应有 1 条");
-        assert_eq!(store.tag_count("nonexistent").unwrap(), 0, "不存在的标签应返回 0");
+        assert_eq!(
+            store.tag_count("nonexistent").unwrap(),
+            0,
+            "不存在的标签应返回 0"
+        );
 
         // 归档后不影响 tag_count
         let entries = store.list(Some("p")).unwrap();
@@ -1931,9 +2249,9 @@ mod tests {
         store.clear_all().unwrap();
 
         // 保存 3 条，故意让时间戳不同
-        store.save("entry one",   "note", "t", "p", 5).unwrap();
+        store.save("entry one", "note", "t", "p", 5).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        store.save("entry two",   "note", "t", "p", 5).unwrap();
+        store.save("entry two", "note", "t", "p", 5).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1100));
         store.save("entry three", "note", "t", "p", 5).unwrap();
 
@@ -1941,8 +2259,11 @@ mod tests {
         let recent = store.recent_entries(2).unwrap();
         assert_eq!(recent.len(), 2, "应返回 2 条");
         // 验证降序：先 three 后 two
-        assert_eq!(recent[0].content, "entry three", "第 1 条应为最近保存的 three");
-        assert_eq!(recent[1].content, "entry two",    "第 2 条应为 two");
+        assert_eq!(
+            recent[0].content, "entry three",
+            "第 1 条应为最近保存的 three"
+        );
+        assert_eq!(recent[1].content, "entry two", "第 2 条应为 two");
         assert!(recent[0].created_at >= recent[1].created_at, "时间应降序");
     }
 
@@ -1957,8 +2278,14 @@ mod tests {
         store.save("hello world", "note", "t", "p", 5).unwrap();
 
         // 验证存在与不存在
-        assert!(store.has_content("hello world").unwrap(), "已保存的内容应返回 true");
-        assert!(!store.has_content("not exist").unwrap(), "不存在的 content 应返回 false");
+        assert!(
+            store.has_content("hello world").unwrap(),
+            "已保存的内容应返回 true"
+        );
+        assert!(
+            !store.has_content("not exist").unwrap(),
+            "不存在的 content 应返回 false"
+        );
     }
 
     #[test]
@@ -2013,13 +2340,29 @@ mod tests {
         let store = test_store();
         store.clear_all().unwrap();
         // save 3 条带不同 tags
-        store.save("entry 1", "note", "rust,sqlite", "p", 5).unwrap();
-        store.save("entry 2", "note", "rust,memory", "p", 5).unwrap();
+        store
+            .save("entry 1", "note", "rust,sqlite", "p", 5)
+            .unwrap();
+        store
+            .save("entry 2", "note", "rust,memory", "p", 5)
+            .unwrap();
         store.save("entry 3", "note", "python", "p", 5).unwrap();
         // 验证
-        assert_eq!(store.count_by_tags("rust").unwrap(), 2, "含 rust tag 应有 2 条");
-        assert_eq!(store.count_by_tags("sqlite").unwrap(), 1, "含 sqlite tag 应有 1 条");
-        assert_eq!(store.count_by_tags("java").unwrap(), 0, "含 java tag 应有 0 条");
+        assert_eq!(
+            store.count_by_tags("rust").unwrap(),
+            2,
+            "含 rust tag 应有 2 条"
+        );
+        assert_eq!(
+            store.count_by_tags("sqlite").unwrap(),
+            1,
+            "含 sqlite tag 应有 1 条"
+        );
+        assert_eq!(
+            store.count_by_tags("java").unwrap(),
+            0,
+            "含 java tag 应有 0 条"
+        );
     }
 
     #[test]
@@ -2029,9 +2372,21 @@ mod tests {
         store.save("entry 1", "note", "t", "p", 5).unwrap();
         store.save("entry 2", "code", "t", "p", 5).unwrap();
         store.save("entry 3", "note", "t", "p", 5).unwrap();
-        assert_eq!(store.count_by_category("note").unwrap(), 2, "category=note 应有 2 条");
-        assert_eq!(store.count_by_category("code").unwrap(), 1, "category=code 应有 1 条");
-        assert_eq!(store.count_by_category("doc").unwrap(), 0, "category=doc 应有 0 条");
+        assert_eq!(
+            store.count_by_category("note").unwrap(),
+            2,
+            "category=note 应有 2 条"
+        );
+        assert_eq!(
+            store.count_by_category("code").unwrap(),
+            1,
+            "category=code 应有 1 条"
+        );
+        assert_eq!(
+            store.count_by_category("doc").unwrap(),
+            0,
+            "category=doc 应有 0 条"
+        );
     }
 
     #[test]
@@ -2040,26 +2395,47 @@ mod tests {
         store.clear_all().unwrap();
 
         // save 2 entries to project-a (sleep 1 sec between them)
-        let id_a1 = store.save("project-a first", "note", "t", "project-a", 5).unwrap();
+        let id_a1 = store
+            .save("project-a first", "note", "t", "project-a", 5)
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_secs(1));
-        let id_a2 = store.save("project-a second", "note", "t", "project-a", 5).unwrap();
+        let id_a2 = store
+            .save("project-a second", "note", "t", "project-a", 5)
+            .unwrap();
 
         // save 1 entry to project-b
-        let id_b1 = store.save("project-b first", "note", "t", "project-b", 5).unwrap();
+        let id_b1 = store
+            .save("project-b first", "note", "t", "project-b", 5)
+            .unwrap();
 
         // verify project-a returns the first one
-        let oldest_a = store.find_oldest_by_project("project-a").unwrap().expect("project-a should have an entry");
-        assert_eq!(oldest_a.id, id_a1, "oldest entry in project-a should be the first saved");
+        let oldest_a = store
+            .find_oldest_by_project("project-a")
+            .unwrap()
+            .expect("project-a should have an entry");
+        assert_eq!(
+            oldest_a.id, id_a1,
+            "oldest entry in project-a should be the first saved"
+        );
         assert_eq!(oldest_a.content, "project-a first");
 
         // verify project-b returns its only entry
-        let oldest_b = store.find_oldest_by_project("project-b").unwrap().expect("project-b should have an entry");
-        assert_eq!(oldest_b.id, id_b1, "oldest entry in project-b should be its only entry");
+        let oldest_b = store
+            .find_oldest_by_project("project-b")
+            .unwrap()
+            .expect("project-b should have an entry");
+        assert_eq!(
+            oldest_b.id, id_b1,
+            "oldest entry in project-b should be its only entry"
+        );
         assert_eq!(oldest_b.content, "project-b first");
 
         // verify non-existent project-c returns None
         let oldest_c = store.find_oldest_by_project("project-c").unwrap();
-        assert!(oldest_c.is_none(), "project-c has no entries, should return None");
+        assert!(
+            oldest_c.is_none(),
+            "project-c has no entries, should return None"
+        );
     }
 
     #[test]
@@ -2068,12 +2444,20 @@ mod tests {
         store.clear_all().unwrap();
 
         // save 3 entries to project-a
-        store.save("pa content 1", "note", "t", "project-a", 5).unwrap();
-        store.save("pa content 2", "note", "t", "project-a", 5).unwrap();
-        store.save("pa content 3", "note", "t", "project-a", 5).unwrap();
+        store
+            .save("pa content 1", "note", "t", "project-a", 5)
+            .unwrap();
+        store
+            .save("pa content 2", "note", "t", "project-a", 5)
+            .unwrap();
+        store
+            .save("pa content 3", "note", "t", "project-a", 5)
+            .unwrap();
 
         // save 1 entry to project-b
-        store.save("pb content 1", "note", "t", "project-b", 5).unwrap();
+        store
+            .save("pb content 1", "note", "t", "project-b", 5)
+            .unwrap();
 
         // verify total count == 4
         assert_eq!(store.count().unwrap(), 4);
@@ -2083,10 +2467,18 @@ mod tests {
         assert_eq!(deleted, 3, "should delete 3 entries for project-a");
 
         // verify count() == 1 (project-b still there)
-        assert_eq!(store.count().unwrap(), 1, "only project-b entries should remain");
+        assert_eq!(
+            store.count().unwrap(),
+            1,
+            "only project-b entries should remain"
+        );
 
         // verify count_by_project('project-a') == 0
-        assert_eq!(store.count_by_project("project-a").unwrap(), 0, "project-a should have 0 active entries");
+        assert_eq!(
+            store.count_by_project("project-a").unwrap(),
+            0,
+            "project-a should have 0 active entries"
+        );
     }
 
     /// Test has_tag method:
@@ -2097,9 +2489,17 @@ mod tests {
     fn test_has_tag() {
         let store = test_store();
         store.clear_all().unwrap();
-        store.save("entry with tags", "note", "rust,sqlite", "p", 5).unwrap();
-        assert!(store.has_tag("rust").unwrap(), "has_tag('rust') should be true");
-        assert!(!store.has_tag("java").unwrap(), "has_tag('java') should be false");
+        store
+            .save("entry with tags", "note", "rust,sqlite", "p", 5)
+            .unwrap();
+        assert!(
+            store.has_tag("rust").unwrap(),
+            "has_tag('rust') should be true"
+        );
+        assert!(
+            !store.has_tag("java").unwrap(),
+            "has_tag('java') should be false"
+        );
     }
 
     /// Test find_by_content_prefix method:
@@ -2114,7 +2514,11 @@ mod tests {
         store.save("hello rust", "note", "t", "p", 5).unwrap();
         store.save("goodbye", "note", "t", "p", 5).unwrap();
         let results = store.find_by_content_prefix("hello").unwrap();
-        assert_eq!(results.len(), 2, "should find 2 entries with 'hello' prefix");
+        assert_eq!(
+            results.len(),
+            2,
+            "should find 2 entries with 'hello' prefix"
+        );
         let results_empty = store.find_by_content_prefix("xyz").unwrap();
         assert!(results_empty.is_empty(), "should be empty for 'xyz' prefix");
     }
@@ -2128,19 +2532,27 @@ mod tests {
         store.clear_all().unwrap();
 
         // Save an entry and get its id
-        let id = store.save("test importance update", "note", "t", "p", 5).unwrap();
+        let id = store
+            .save("test importance update", "note", "t", "p", 5)
+            .unwrap();
 
         // Update importance to 9
         store.update_importance(&id, 9).unwrap();
 
         // Re-fetch and verify importance == 9
         let entries = store.list(None).unwrap();
-        let entry = entries.iter().find(|e| e.id == id).expect("entry should exist");
+        let entry = entries
+            .iter()
+            .find(|e| e.id == id)
+            .expect("entry should exist");
         assert_eq!(entry.importance, 9, "importance should be updated to 9");
 
         // Update importance on non-existent id should return Err
         let result = store.update_importance("nonexistent", 5);
-        assert!(result.is_err(), "update_importance on nonexistent id should return Err");
+        assert!(
+            result.is_err(),
+            "update_importance on nonexistent id should return Err"
+        );
     }
 
     /// Test archive_by_project method:
@@ -2165,10 +2577,18 @@ mod tests {
         assert_eq!(archived, 2, "should archive 2 entries for proj-a");
 
         // count_active_by_project('proj-a') == 0
-        assert_eq!(store.count_active_by_project("proj-a").unwrap(), 0, "proj-a should have 0 active entries");
+        assert_eq!(
+            store.count_active_by_project("proj-a").unwrap(),
+            0,
+            "proj-a should have 0 active entries"
+        );
 
         // count_active_by_project('proj-b') == 1
-        assert_eq!(store.count_active_by_project("proj-b").unwrap(), 1, "proj-b should have 1 active entry");
+        assert_eq!(
+            store.count_active_by_project("proj-b").unwrap(),
+            1,
+            "proj-b should have 1 active entry"
+        );
     }
 
     /// Test count_archived method:
@@ -2215,9 +2635,15 @@ mod tests {
         store.save("unique", "note", "t", "p", 5).unwrap();
 
         let result = store.find_duplicates().unwrap();
-        assert!(result.len() >= 1, "should find at least one duplicate group");
+        assert!(
+            result.len() >= 1,
+            "should find at least one duplicate group"
+        );
         for entry in &result {
-            assert_eq!(entry.content, "same content", "each duplicate entry should have content 'same content'");
+            assert_eq!(
+                entry.content, "same content",
+                "each duplicate entry should have content 'same content'"
+            );
         }
     }
 
@@ -2248,9 +2674,15 @@ mod tests {
             result[1].created_at
         );
         // Entry 3 was saved last, so it should be first
-        assert_eq!(result[0].content, "entry 3", "most recent entry should be entry 3");
+        assert_eq!(
+            result[0].content, "entry 3",
+            "most recent entry should be entry 3"
+        );
         // Entry 2 was saved before entry 3
-        assert_eq!(result[1].content, "entry 2", "second most recent entry should be entry 2");
+        assert_eq!(
+            result[1].content, "entry 2",
+            "second most recent entry should be entry 2"
+        );
     }
 
     /// Test batch_save method:
@@ -2268,7 +2700,11 @@ mod tests {
         ];
         let ids = store.batch_save(entries).unwrap();
 
-        assert_eq!(store.count().unwrap(), 3, "batch_save should save 3 entries");
+        assert_eq!(
+            store.count().unwrap(),
+            3,
+            "batch_save should save 3 entries"
+        );
         assert_eq!(ids.len(), 3, "batch_save should return 3 IDs");
     }
 
@@ -2321,11 +2757,26 @@ mod tests {
         // Verify field structure
         for entry in &parsed_all {
             assert!(entry.get("id").is_some(), "entry should have id field");
-            assert!(entry.get("content").is_some(), "entry should have content field");
-            assert!(entry.get("category").is_some(), "entry should have category field");
-            assert!(entry.get("project").is_some(), "entry should have project field");
-            assert!(entry.get("archived").is_some(), "entry should have archived field");
-            assert!(entry.get("created_at").is_some(), "entry should have created_at field");
+            assert!(
+                entry.get("content").is_some(),
+                "entry should have content field"
+            );
+            assert!(
+                entry.get("category").is_some(),
+                "entry should have category field"
+            );
+            assert!(
+                entry.get("project").is_some(),
+                "entry should have project field"
+            );
+            assert!(
+                entry.get("archived").is_some(),
+                "entry should have archived field"
+            );
+            assert!(
+                entry.get("created_at").is_some(),
+                "entry should have created_at field"
+            );
         }
     }
 
@@ -2339,15 +2790,27 @@ mod tests {
         store.clear_all().unwrap();
 
         // Save 3 entries with different importance values
-        store.save("entry with importance 5", "note", "t", "p", 5).unwrap();
-        store.save("entry with importance 1", "note", "t", "p", 1).unwrap();
-        store.save("entry with importance 9", "note", "t", "p", 9).unwrap();
+        store
+            .save("entry with importance 5", "note", "t", "p", 5)
+            .unwrap();
+        store
+            .save("entry with importance 1", "note", "t", "p", 1)
+            .unwrap();
+        store
+            .save("entry with importance 9", "note", "t", "p", 9)
+            .unwrap();
 
         // Call oldest_by_importance — should return the entry with importance == 1
         let result = store.oldest_by_importance().unwrap();
-        assert!(result.is_some(), "should return an entry when table is non-empty");
+        assert!(
+            result.is_some(),
+            "should return an entry when table is non-empty"
+        );
         let entry = result.unwrap();
-        assert_eq!(entry.importance, 1, "lowest importance entry should have importance == 1");
+        assert_eq!(
+            entry.importance, 1,
+            "lowest importance entry should have importance == 1"
+        );
     }
 
     /// Test find_by_importance_range method:
@@ -2362,28 +2825,61 @@ mod tests {
         store.clear_all().unwrap();
 
         // Save 5 entries with various importance values
-        store.save("entry importance 1", "note", "t", "p", 1).unwrap();
-        store.save("entry importance 5 first", "note", "t", "p", 5).unwrap();
-        store.save("entry importance 5 second", "note", "t", "p", 5).unwrap();
-        store.save("entry importance 9", "note", "t", "p", 9).unwrap();
-        store.save("entry importance 10", "note", "t", "p", 10).unwrap();
+        store
+            .save("entry importance 1", "note", "t", "p", 1)
+            .unwrap();
+        store
+            .save("entry importance 5 first", "note", "t", "p", 5)
+            .unwrap();
+        store
+            .save("entry importance 5 second", "note", "t", "p", 5)
+            .unwrap();
+        store
+            .save("entry importance 9", "note", "t", "p", 9)
+            .unwrap();
+        store
+            .save("entry importance 10", "note", "t", "p", 10)
+            .unwrap();
 
         // Range [5, 9] should return 3 entries: 9, 5, 5 (DESC order)
         let results = store.find_by_importance_range(5, 9).unwrap();
         assert_eq!(results.len(), 3, "range [5,9] should return 3 entries");
-        assert_eq!(results[0].importance, 9, "first result should have importance 9");
-        assert_eq!(results[1].importance, 5, "second result should have importance 5");
-        assert_eq!(results[2].importance, 5, "third result should have importance 5");
+        assert_eq!(
+            results[0].importance, 9,
+            "first result should have importance 9"
+        );
+        assert_eq!(
+            results[1].importance, 5,
+            "second result should have importance 5"
+        );
+        assert_eq!(
+            results[2].importance, 5,
+            "third result should have importance 5"
+        );
 
         // Range [1, 10] should return all 5 entries in DESC order
         let results_all = store.find_by_importance_range(1, 10).unwrap();
-        assert_eq!(results_all.len(), 5, "range [1,10] should return all 5 entries");
-        assert_eq!(results_all[0].importance, 10, "first result should have importance 10");
-        assert_eq!(results_all[4].importance, 1, "last result should have importance 1");
+        assert_eq!(
+            results_all.len(),
+            5,
+            "range [1,10] should return all 5 entries"
+        );
+        assert_eq!(
+            results_all[0].importance, 10,
+            "first result should have importance 10"
+        );
+        assert_eq!(
+            results_all[4].importance, 1,
+            "last result should have importance 1"
+        );
 
         // Range [0, 0] should return 0 entries (no entry has importance 0)
         let results_empty = store.find_by_importance_range(0, 0).unwrap();
-        assert_eq!(results_empty.len(), 0, "range [0,0] should return 0 entries");
+        assert_eq!(
+            results_empty.len(),
+            0,
+            "range [0,0] should return 0 entries"
+        );
 
         // Single-value range [9, 9] should return exactly 1 entry
         let results_single = store.find_by_importance_range(9, 9).unwrap();
@@ -2402,19 +2898,30 @@ mod tests {
         store.clear_all().unwrap();
 
         // Save an entry with initial category
-        let id = store.save("test category update", "old_cat", "t", "p", 5).unwrap();
+        let id = store
+            .save("test category update", "old_cat", "t", "p", 5)
+            .unwrap();
 
         // Update category to "new_cat"
         store.update_category(&id, "new_cat").unwrap();
 
         // Re-fetch and verify category == "new_cat"
         let entries = store.list(None).unwrap();
-        let entry = entries.iter().find(|e| e.id == id).expect("entry should exist");
-        assert_eq!(entry.category, "new_cat", "category should be updated to 'new_cat'");
+        let entry = entries
+            .iter()
+            .find(|e| e.id == id)
+            .expect("entry should exist");
+        assert_eq!(
+            entry.category, "new_cat",
+            "category should be updated to 'new_cat'"
+        );
 
         // update_category on non-existent id should return Err
         let result = store.update_category("nonexistent", "whatever");
-        assert!(result.is_err(), "update_category on nonexistent id should return Err");
+        assert!(
+            result.is_err(),
+            "update_category on nonexistent id should return Err"
+        );
     }
 
     /// Test search_advanced method:
@@ -2430,32 +2937,66 @@ mod tests {
         store.clear_all().unwrap();
 
         // Save 3 entries with mixed attributes
-        store.save("alpha design", "architecture", "t", "proj-a", 8).unwrap();
-        store.save("beta code", "implementation", "t", "proj-b", 5).unwrap();
-        store.save("alpha test", "testing", "t", "proj-a", 3).unwrap();
+        store
+            .save("alpha design", "architecture", "t", "proj-a", 8)
+            .unwrap();
+        store
+            .save("beta code", "implementation", "t", "proj-b", 5)
+            .unwrap();
+        store
+            .save("alpha test", "testing", "t", "proj-a", 3)
+            .unwrap();
 
         // search_advanced by keyword only → 2 results (importance DESC: 8 then 3)
         let results = store.search_advanced("alpha", None, None, 0).unwrap();
         assert_eq!(results.len(), 2, "keyword 'alpha' should match 2 entries");
-        assert_eq!(results[0].importance, 8, "first result should have importance 8");
-        assert_eq!(results[1].importance, 3, "second result should have importance 3");
+        assert_eq!(
+            results[0].importance, 8,
+            "first result should have importance 8"
+        );
+        assert_eq!(
+            results[1].importance, 3,
+            "second result should have importance 3"
+        );
 
         // search_advanced by keyword + project filter → 2 results (both proj-a)
-        let results_proj = store.search_advanced("alpha", Some("proj-a"), None, 0).unwrap();
-        assert_eq!(results_proj.len(), 2, "keyword 'alpha' in proj-a should match 2 entries");
+        let results_proj = store
+            .search_advanced("alpha", Some("proj-a"), None, 0)
+            .unwrap();
+        assert_eq!(
+            results_proj.len(),
+            2,
+            "keyword 'alpha' in proj-a should match 2 entries"
+        );
         for entry in &results_proj {
-            assert_eq!(entry.project, "proj-a", "all results should belong to proj-a");
+            assert_eq!(
+                entry.project, "proj-a",
+                "all results should belong to proj-a"
+            );
         }
 
         // search_advanced by keyword + category filter → 1 result
-        let results_cat = store.search_advanced("alpha", None, Some("architecture"), 0).unwrap();
-        assert_eq!(results_cat.len(), 1, "keyword 'alpha' with category 'architecture' should match 1 entry");
+        let results_cat = store
+            .search_advanced("alpha", None, Some("architecture"), 0)
+            .unwrap();
+        assert_eq!(
+            results_cat.len(),
+            1,
+            "keyword 'alpha' with category 'architecture' should match 1 entry"
+        );
         assert_eq!(results_cat[0].category, "architecture");
 
         // search_advanced by keyword + min_importance → 1 result (only importance >= 5)
         let results_min = store.search_advanced("alpha", None, None, 5).unwrap();
-        assert_eq!(results_min.len(), 1, "keyword 'alpha' with min_importance 5 should match 1 entry");
-        assert_eq!(results_min[0].importance, 8, "result should have importance >= 5");
+        assert_eq!(
+            results_min.len(),
+            1,
+            "keyword 'alpha' with min_importance 5 should match 1 entry"
+        );
+        assert_eq!(
+            results_min[0].importance, 8,
+            "result should have importance >= 5"
+        );
     }
 
     // ====================================================================
@@ -2471,7 +3012,10 @@ mod tests {
         assert!(id.starts_with("ent_"), "entity id should start with 'ent_'");
 
         // Fetch it back by name
-        let entity = store.get_entity("auth-service").unwrap().expect("entity should exist");
+        let entity = store
+            .get_entity("auth-service")
+            .unwrap()
+            .expect("entity should exist");
         assert_eq!(entity.name, "auth-service");
         assert_eq!(entity.entity_type, "service");
         assert_eq!(entity.description, "handles user login");
@@ -2545,9 +3089,15 @@ mod tests {
     #[test]
     fn test_search_entities() {
         let store = test_store();
-        store.add_entity("user-service", "service", "manages accounts", "p").unwrap();
-        store.add_entity("order-service", "service", "handles orders", "p").unwrap();
-        store.add_entity("billing-db", "database", "stores invoices", "p").unwrap();
+        store
+            .add_entity("user-service", "service", "manages accounts", "p")
+            .unwrap();
+        store
+            .add_entity("order-service", "service", "handles orders", "p")
+            .unwrap();
+        store
+            .add_entity("billing-db", "database", "stores invoices", "p")
+            .unwrap();
 
         // Search by name fragment
         let by_name = store.search_entities("service").unwrap();
@@ -2569,7 +3119,9 @@ mod tests {
         store.add_entity("beta", "s", "", "p").unwrap();
         store.add_entity("gamma", "s", "", "p").unwrap();
 
-        let r1 = store.add_relation("alpha", "beta", "depends_on", "runtime dep").unwrap();
+        let r1 = store
+            .add_relation("alpha", "beta", "depends_on", "runtime dep")
+            .unwrap();
         let r2 = store.add_relation("beta", "gamma", "calls", "").unwrap();
         assert!(r1.starts_with("rel_"));
         assert!(r2.starts_with("rel_"));
@@ -2648,7 +3200,11 @@ mod tests {
     #[test]
     fn test_entity_count() {
         let store = test_store();
-        assert_eq!(store.entity_count().unwrap(), 0, "fresh store has 0 entities");
+        assert_eq!(
+            store.entity_count().unwrap(),
+            0,
+            "fresh store has 0 entities"
+        );
         store.add_entity("a", "s", "", "p").unwrap();
         store.add_entity("b", "s", "", "p").unwrap();
         assert_eq!(store.entity_count().unwrap(), 2);
@@ -2657,7 +3213,11 @@ mod tests {
     #[test]
     fn test_relation_count() {
         let store = test_store();
-        assert_eq!(store.relation_count().unwrap(), 0, "fresh store has 0 relations");
+        assert_eq!(
+            store.relation_count().unwrap(),
+            0,
+            "fresh store has 0 relations"
+        );
         store.add_entity("a", "s", "", "p").unwrap();
         store.add_entity("b", "s", "", "p").unwrap();
         store.add_relation("a", "b", "connects", "").unwrap();

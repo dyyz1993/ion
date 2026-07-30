@@ -99,7 +99,9 @@ fn scan_recursive(
                 *truncated = true;
                 return;
             }
-            let mtime = metadata.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            let mtime = metadata
+                .modified()
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
             files.insert(rel_path, (mtime, size));
         }
     }
@@ -111,17 +113,44 @@ const DEFAULT_IGNORE: &[&str] = &[
     // VCS
     ".git",
     // 语言生态产物目录
-    "node_modules", "target", "__pycache__", ".cache",
-    ".venv", "venv", "build", "dist", "out",
-    ".next", ".nuxt", ".gradle", ".m2", "Pods",
+    "node_modules",
+    "target",
+    "__pycache__",
+    ".cache",
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+    "out",
+    ".next",
+    ".nuxt",
+    ".gradle",
+    ".m2",
+    "Pods",
     // 编译产物（按扩展名）
-    "*.pyc", "*.o", "*.so", "*.dylib", "*.dll", "*.a",
+    "*.pyc",
+    "*.o",
+    "*.so",
+    "*.dylib",
+    "*.dll",
+    "*.a",
     // 图片（二进制，diff 无意义）
-    "*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp", "*.ico",
+    "*.png",
+    "*.jpg",
+    "*.jpeg",
+    "*.gif",
+    "*.webp",
+    "*.ico",
     // 日志/锁/交换文件
-    "*.lock", "*.log", "*.swp",
+    "*.lock",
+    "*.log",
+    "*.swp",
     // 压缩包
-    "*.zip", "*.tar", "*.gz", "*.bz2", "*.7z",
+    "*.zip",
+    "*.tar",
+    "*.gz",
+    "*.bz2",
+    "*.7z",
     // WASM 二进制
     "*.wasm",
 ];
@@ -180,7 +209,8 @@ pub fn is_binary(path: &Path) -> bool {
         return true;
     }
     // 不可打印字符占比 > 30%
-    let non_printable = data.iter()
+    let non_printable = data
+        .iter()
         .filter(|&&b| b < 0x09 || (b > 0x0D && b < 0x20))
         .count();
     (non_printable as f64 / n as f64) > 0.30
@@ -253,12 +283,21 @@ mod tests {
         let result = scan_dir_fast(tmp.to_string_lossy().as_ref());
 
         // .gitignore 忽略的文本文件 —— 仍被扫到（不遵守 .gitignore）
-        assert!(result.files.contains_key(".env"), ".env 应被扫到（不遵守 gitignore）");
-        assert!(result.files.contains_key("local.conf"), "local.conf 应被扫到");
+        assert!(
+            result.files.contains_key(".env"),
+            ".env 应被扫到（不遵守 gitignore）"
+        );
+        assert!(
+            result.files.contains_key("local.conf"),
+            "local.conf 应被扫到"
+        );
         // DEFAULT_IGNORE 里的目录 —— 被跳过
         assert!(!result.files.contains_key("target/out"), "target/ 应被忽略");
         // .gitignore 文件本身也该被扫到（它是文本文件）
-        assert!(result.files.contains_key(".gitignore"), ".gitignore 应被扫到");
+        assert!(
+            result.files.contains_key(".gitignore"),
+            ".gitignore 应被扫到"
+        );
 
         std::fs::remove_dir_all(&tmp).ok();
     }

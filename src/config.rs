@@ -151,7 +151,9 @@ pub struct RuntimeConfig {
     pub command_guard: CommandGuardConfig,
 }
 
-fn default_runtime_mode() -> String { "local".into() }
+fn default_runtime_mode() -> String {
+    "local".into()
+}
 
 impl Default for RuntimeConfig {
     fn default() -> Self {
@@ -196,7 +198,9 @@ pub struct CommandGuardConfig {
     pub risk_patterns: Vec<GuardPatternConfig>,
 }
 
-fn default_guard_mode() -> String { "whitelist".into() }
+fn default_guard_mode() -> String {
+    "whitelist".into()
+}
 
 impl Default for CommandGuardConfig {
     fn default() -> Self {
@@ -296,7 +300,9 @@ pub struct BackendConfig {
     pub workspace: String,
 }
 
-fn default_container_workspace() -> String { "/workspace".into() }
+fn default_container_workspace() -> String {
+    "/workspace".into()
+}
 
 impl Default for BackendConfig {
     fn default() -> Self {
@@ -332,7 +338,12 @@ pub struct RemoteConfig {
 }
 
 impl Default for RemoteConfig {
-    fn default() -> Self { Self { default_host: String::new(), hosts: HashMap::new() } }
+    fn default() -> Self {
+        Self {
+            default_host: String::new(),
+            hosts: HashMap::new(),
+        }
+    }
 }
 
 /// A single remote host definition
@@ -358,8 +369,12 @@ pub struct RemoteHost {
     pub proxy_jump: String,
 }
 
-fn default_ssh_port() -> u16 { 22 }
-fn default_transport() -> String { "ssh".into() }
+fn default_ssh_port() -> u16 {
+    22
+}
+fn default_transport() -> String {
+    "ssh".into()
+}
 
 impl Default for RemoteHost {
     fn default() -> Self {
@@ -388,7 +403,9 @@ pub struct SandboxConfig {
     pub escape_approval_mode: String,
 }
 
-fn default_escape_mode() -> String { "ask".into() }
+fn default_escape_mode() -> String {
+    "ask".into()
+}
 
 impl Default for SandboxConfig {
     fn default() -> Self {
@@ -571,7 +588,8 @@ impl IonConfig {
         if let Some(project_cfg) = Self::load_project() {
             // runtime.default_mode 只在项目级显式设置（非空且非默认 local）时覆盖
             if !project_cfg.runtime.default_mode.is_empty()
-                && project_cfg.runtime.default_mode != "local" {
+                && project_cfg.runtime.default_mode != "local"
+            {
                 cfg.runtime.default_mode = project_cfg.runtime.default_mode.clone();
             }
             // 其他字段（provider/model 等）走通用 merge
@@ -582,8 +600,7 @@ impl IonConfig {
         // 含本地路径/密钥的配置（MCP server 等），worktree 共享，不依赖 git 同步
         if let Some(dim_cfg) = Self::load_project_dimension() {
             // runtime.default_mode 同样处理
-            if !dim_cfg.runtime.default_mode.is_empty()
-                && dim_cfg.runtime.default_mode != "local" {
+            if !dim_cfg.runtime.default_mode.is_empty() && dim_cfg.runtime.default_mode != "local" {
                 cfg.runtime.default_mode = dim_cfg.runtime.default_mode.clone();
             }
             cfg.merge_project(dim_cfg);
@@ -609,7 +626,9 @@ impl IonConfig {
             .or_else(|_| std::env::current_dir())
             .ok()?;
         let proj_path = base_dir.join(".ion").join("config.json");
-        if !proj_path.exists() { return None; }
+        if !proj_path.exists() {
+            return None;
+        }
         let content = std::fs::read_to_string(&proj_path).ok()?;
         serde_json::from_str(&content).ok()
     }
@@ -620,10 +639,13 @@ impl IonConfig {
     fn load_project_dimension() -> Option<IonConfig> {
         // 用 config_root（ION_PROJECT_ROOT 优先）算 project_key
         let config_root = crate::paths::project_root_for_config()
-            .to_string_lossy().to_string();
+            .to_string_lossy()
+            .to_string();
         let pkey = crate::paths::project_key_git(&config_root);
         let dim_path = crate::paths::project_dimension_config_path(&pkey);
-        if !dim_path.exists() { return None; }
+        if !dim_path.exists() {
+            return None;
+        }
         let content = std::fs::read_to_string(&dim_path).ok()?;
         serde_json::from_str(&content).ok()
     }
@@ -720,9 +742,13 @@ impl IonConfig {
         if project.runtime.sandbox.profile != SandboxConfig::default().profile {
             self.runtime.sandbox.profile = project.runtime.sandbox.profile;
         }
-        self.runtime.sandbox.allow_escape_with_approval = project.runtime.sandbox.allow_escape_with_approval;
-        if project.runtime.sandbox.escape_approval_mode != SandboxConfig::default().escape_approval_mode {
-            self.runtime.sandbox.escape_approval_mode = project.runtime.sandbox.escape_approval_mode;
+        self.runtime.sandbox.allow_escape_with_approval =
+            project.runtime.sandbox.allow_escape_with_approval;
+        if project.runtime.sandbox.escape_approval_mode
+            != SandboxConfig::default().escape_approval_mode
+        {
+            self.runtime.sandbox.escape_approval_mode =
+                project.runtime.sandbox.escape_approval_mode;
         }
     }
 
@@ -786,10 +812,8 @@ mod merge_tests {
         cfg.api_key = Some("global-key".into());
         cfg.tier_models.insert("fast".into(), "global/fast".into());
         cfg.tier_models.insert("pro".into(), "global/pro".into());
-        cfg.extensions.insert(
-            "memory".into(),
-            ExtensionConfig { enabled: true },
-        );
+        cfg.extensions
+            .insert("memory".into(), ExtensionConfig { enabled: true });
         cfg.runtime.backends.insert(
             "local".into(),
             BackendConfig {
@@ -807,10 +831,8 @@ mod merge_tests {
         // 全局不配 file-snapshot（默认 disabled）；项目级显式启用
         let mut g = IonConfig::default();
         let mut p = IonConfig::default();
-        p.extensions.insert(
-            "file-snapshot".into(),
-            ExtensionConfig { enabled: true },
-        );
+        p.extensions
+            .insert("file-snapshot".into(), ExtensionConfig { enabled: true });
         g.merge_project(p);
         // 合并后 file-snapshot 应该 enabled=true
         assert_eq!(
@@ -825,10 +847,8 @@ mod merge_tests {
         // 全局 memory.enabled=true；项目级覆盖为 false
         let mut g = global_config();
         let mut p = IonConfig::default();
-        p.extensions.insert(
-            "memory".into(),
-            ExtensionConfig { enabled: false },
-        );
+        p.extensions
+            .insert("memory".into(), ExtensionConfig { enabled: false });
         g.merge_project(p);
         assert_eq!(
             g.extensions.get("memory").map(|c| c.enabled),
@@ -889,7 +909,10 @@ mod merge_tests {
             },
         );
         g.merge_project(p);
-        assert!(g.runtime.backends.contains_key("local"), "全局 backend 保留");
+        assert!(
+            g.runtime.backends.contains_key("local"),
+            "全局 backend 保留"
+        );
         assert!(
             g.runtime.backends.contains_key("remote-a"),
             "项目级 backend 合入"
@@ -942,7 +965,10 @@ mod merge_tests {
         );
         g.merge_project(p);
         assert!(g.providers.contains_key("zai"), "全局 provider 保留");
-        assert!(g.providers.contains_key("anthropic"), "项目级 provider 合入");
+        assert!(
+            g.providers.contains_key("anthropic"),
+            "项目级 provider 合入"
+        );
     }
 
     #[test]

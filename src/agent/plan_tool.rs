@@ -60,7 +60,9 @@ pub struct PlanApproveTool(pub SharedPlan);
 
 #[async_trait]
 impl Tool for PlanApproveTool {
-    fn name(&self) -> &str { "plan_approve" }
+    fn name(&self) -> &str {
+        "plan_approve"
+    }
     fn description(&self) -> &str {
         "Approve a plan step (marks it as 'approved', required before plan_done can mark it 'done'). \
          In auto mode (default), this is a no-op pass-through. The host can override this to \
@@ -75,8 +77,13 @@ impl Tool for PlanApproveTool {
             "required": ["index"]
         })
     }
-    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let index = args.get("index")
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let index = args
+            .get("index")
             .and_then(|v| v.as_u64())
             .ok_or_else(|| AgentError::Tool("missing or invalid index".into()))?
             as usize;
@@ -95,7 +102,10 @@ impl Tool for PlanApproveTool {
         }
 
         if already_done {
-            return Ok(format!("{{\"status\":\"noop\",\"index\":{},\"reason\":\"already done\"}}", index));
+            return Ok(format!(
+                "{{\"status\":\"noop\",\"index\":{},\"reason\":\"already done\"}}",
+                index
+            ));
         }
         if found {
             Ok(format!("{{\"status\":\"approved\",\"index\":{}}}", index))
@@ -117,7 +127,9 @@ pub struct PlanEnterTool(pub SharedPlan);
 
 #[async_trait]
 impl Tool for PlanEnterTool {
-    fn name(&self) -> &str { "plan_enter" }
+    fn name(&self) -> &str {
+        "plan_enter"
+    }
     fn description(&self) -> &str {
         "Enter planning mode. Provide a plan_path where the final plan will be saved. \
          Resets any existing in-memory steps."
@@ -139,16 +151,24 @@ impl Tool for PlanEnterTool {
             "required": ["plan_path"]
         })
     }
-    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let path = args.get("plan_path")
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let path = args
+            .get("plan_path")
             .and_then(|v| v.as_str())
             .ok_or_else(|| AgentError::Tool("missing plan_path".into()))?
             .to_string();
         // Read optional strict_mode flag (default false — backward compat).
-        let strict = args.get("strict_mode")
+        let strict = args
+            .get("strict_mode")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        self.0.strict_mode.store(strict, std::sync::atomic::Ordering::Relaxed);
+        self.0
+            .strict_mode
+            .store(strict, std::sync::atomic::Ordering::Relaxed);
 
         // Reset steps (mirror the Extension hook's behavior).
         if let Ok(mut g) = self.0.plan_steps.lock() {
@@ -181,7 +201,9 @@ pub struct PlanExitTool(pub SharedPlan);
 
 #[async_trait]
 impl Tool for PlanExitTool {
-    fn name(&self) -> &str { "plan_exit" }
+    fn name(&self) -> &str {
+        "plan_exit"
+    }
     fn description(&self) -> &str {
         "Exit planning mode and return to normal workflow. Persists the current \
          plan to the file path set by plan_enter."
@@ -189,12 +211,19 @@ impl Tool for PlanExitTool {
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
     }
-    async fn execute(&self, _args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
         // strict_mode gate: if enabled, ALL non-empty steps must be approved
         // (or already done) before exiting. This check lives in execute()
         // (not after_tool_call) because agent.call_tool() — the RPC path —
         // doesn't invoke after_tool_call. Only agent.run() does.
-        let strict = self.0.strict_mode.load(std::sync::atomic::Ordering::Relaxed);
+        let strict = self
+            .0
+            .strict_mode
+            .load(std::sync::atomic::Ordering::Relaxed);
         if strict {
             let unapproved: Vec<usize> = self
                 .0
@@ -219,7 +248,12 @@ impl Tool for PlanExitTool {
         }
         // Persist current plan to disk.
         let path = self.0.plan_path.lock().ok().and_then(|g| g.clone());
-        let steps = self.0.plan_steps.lock().map(|g| g.clone()).unwrap_or_default();
+        let steps = self
+            .0
+            .plan_steps
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
         let body = PlanExtension::render_steps_pub(&steps);
         if let Some(p) = &path {
             let _ = std::fs::write(p, &body);
@@ -241,7 +275,9 @@ pub struct PlanAddTool(pub SharedPlan);
 
 #[async_trait]
 impl Tool for PlanAddTool {
-    fn name(&self) -> &str { "plan_add" }
+    fn name(&self) -> &str {
+        "plan_add"
+    }
     fn description(&self) -> &str {
         "Append a step to the plan. Returns the 0-based index of the new step."
     }
@@ -254,8 +290,13 @@ impl Tool for PlanAddTool {
             "required": ["step"]
         })
     }
-    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let step = args.get("step")
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let step = args
+            .get("step")
             .and_then(|v| v.as_str())
             .ok_or_else(|| AgentError::Tool("missing step".into()))?
             .to_string();
@@ -272,7 +313,12 @@ impl Tool for PlanAddTool {
         // current state, useful if the agent forgets plan_exit).
         let path = self.0.plan_path.lock().ok().and_then(|g| g.clone());
         if let Some(p) = path {
-            let steps = self.0.plan_steps.lock().map(|g| g.clone()).unwrap_or_default();
+            let steps = self
+                .0
+                .plan_steps
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_default();
             let body = PlanExtension::render_steps_pub(&steps);
             let _ = std::fs::write(&p, body);
         }
@@ -293,26 +339,49 @@ pub struct PlanListTool(pub SharedPlan);
 
 #[async_trait]
 impl Tool for PlanListTool {
-    fn name(&self) -> &str { "plan_list" }
-    fn description(&self) -> &str { "List all steps in the plan. Done steps are prefixed with [x]." }
+    fn name(&self) -> &str {
+        "plan_list"
+    }
+    fn description(&self) -> &str {
+        "List all steps in the plan. Done steps are prefixed with [x]."
+    }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
     }
-    async fn execute(&self, _args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let steps = self.0.plan_steps.lock().map(|g| g.clone()).unwrap_or_default();
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let steps = self
+            .0
+            .plan_steps
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
         // Build JSON array of step objects with status flags.
         // [x] = done, [a] = approved (not yet done), [ ] = pending.
-        let arr: Vec<String> = steps.iter().enumerate().map(|(i, s)| {
-            let mark = if s.done { "[x]" } else if s.approved { "[a]" } else { "[ ]" };
-            let rendered = format!("{} {}", mark, s.text);
-            format!(
-                "{{\"index\":{},\"text\":\"{}\",\"done\":{},\"approved\":{}}}",
-                i,
-                rendered.replace('\\', "\\\\").replace('"', "\\\""),
-                s.done,
-                s.approved
-            )
-        }).collect();
+        let arr: Vec<String> = steps
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let mark = if s.done {
+                    "[x]"
+                } else if s.approved {
+                    "[a]"
+                } else {
+                    "[ ]"
+                };
+                let rendered = format!("{} {}", mark, s.text);
+                format!(
+                    "{{\"index\":{},\"text\":\"{}\",\"done\":{},\"approved\":{}}}",
+                    i,
+                    rendered.replace('\\', "\\\\").replace('"', "\\\""),
+                    s.done,
+                    s.approved
+                )
+            })
+            .collect();
         Ok(format!(
             "{{\"steps\":[{}],\"count\":{}}}",
             arr.join(","),
@@ -329,8 +398,12 @@ pub struct PlanDoneTool(pub SharedPlan);
 
 #[async_trait]
 impl Tool for PlanDoneTool {
-    fn name(&self) -> &str { "plan_done" }
-    fn description(&self) -> &str { "Mark the step at the given 0-based index as done." }
+    fn name(&self) -> &str {
+        "plan_done"
+    }
+    fn description(&self) -> &str {
+        "Mark the step at the given 0-based index as done."
+    }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -340,8 +413,13 @@ impl Tool for PlanDoneTool {
             "required": ["index"]
         })
     }
-    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let index = args.get("index")
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let index = args
+            .get("index")
             .and_then(|v| v.as_u64())
             .ok_or_else(|| AgentError::Tool("missing or invalid index".into()))?
             as usize;
@@ -349,7 +427,10 @@ impl Tool for PlanDoneTool {
         let mut found = false;
         let not_approved_in_strict = if let Ok(g) = self.0.plan_steps.lock() {
             if index < g.len() {
-                let strict = self.0.strict_mode.load(std::sync::atomic::Ordering::Relaxed);
+                let strict = self
+                    .0
+                    .strict_mode
+                    .load(std::sync::atomic::Ordering::Relaxed);
                 if strict && !g[index].approved {
                     true
                 } else {
@@ -383,7 +464,12 @@ impl Tool for PlanDoneTool {
         // Best-effort persist.
         let path = self.0.plan_path.lock().ok().and_then(|g| g.clone());
         if let Some(p) = path {
-            let steps = self.0.plan_steps.lock().map(|g| g.clone()).unwrap_or_default();
+            let steps = self
+                .0
+                .plan_steps
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or_default();
             let body = PlanExtension::render_steps_pub(&steps);
             let _ = std::fs::write(&p, body);
         }
@@ -405,13 +491,21 @@ mod tests {
     use super::*;
     use crate::runtime::LocalRuntime;
 
-    fn rt() -> LocalRuntime { LocalRuntime::new() }
+    fn rt() -> LocalRuntime {
+        LocalRuntime::new()
+    }
 
     #[tokio::test]
     async fn plan_enter_returns_ok_and_sets_path() {
         let shared: SharedPlan = Arc::new(PlanExtension::new());
         let t = PlanEnterTool(shared.clone());
-        let r = t.execute(serde_json::json!({"plan_path": "/tmp/_test_plan.md"}), &rt()).await.unwrap();
+        let r = t
+            .execute(
+                serde_json::json!({"plan_path": "/tmp/_test_plan.md"}),
+                &rt(),
+            )
+            .await
+            .unwrap();
         assert!(r.contains("\"status\":\"ok\""));
         assert!(r.contains("\"mode\":\"plan\""));
         // path remembered
@@ -424,9 +518,15 @@ mod tests {
     async fn plan_add_appends_and_returns_index() {
         let shared: SharedPlan = Arc::new(PlanExtension::new());
         let add = PlanAddTool(shared.clone());
-        let r1 = add.execute(serde_json::json!({"step": "first"}), &rt()).await.unwrap();
+        let r1 = add
+            .execute(serde_json::json!({"step": "first"}), &rt())
+            .await
+            .unwrap();
         assert!(r1.contains("\"index\":0"));
-        let r2 = add.execute(serde_json::json!({"step": "second"}), &rt()).await.unwrap();
+        let r2 = add
+            .execute(serde_json::json!({"step": "second"}), &rt())
+            .await
+            .unwrap();
         assert!(r2.contains("\"index\":1"));
         assert_eq!(shared.plan_steps.lock().unwrap().len(), 2);
     }
@@ -435,8 +535,12 @@ mod tests {
     async fn plan_list_returns_all_steps() {
         let shared: SharedPlan = Arc::new(PlanExtension::new());
         let add = PlanAddTool(shared.clone());
-        let _ = add.execute(serde_json::json!({"step": "alpha"}), &rt()).await;
-        let _ = add.execute(serde_json::json!({"step": "beta"}), &rt()).await;
+        let _ = add
+            .execute(serde_json::json!({"step": "alpha"}), &rt())
+            .await;
+        let _ = add
+            .execute(serde_json::json!({"step": "beta"}), &rt())
+            .await;
         let list = PlanListTool(shared.clone());
         let r = list.execute(serde_json::json!({}), &rt()).await.unwrap();
         assert!(r.contains("alpha"));
@@ -448,9 +552,14 @@ mod tests {
     async fn plan_done_marks_step_and_shows_x() {
         let shared: SharedPlan = Arc::new(PlanExtension::new());
         let add = PlanAddTool(shared.clone());
-        let _ = add.execute(serde_json::json!({"step": "do thing"}), &rt()).await;
+        let _ = add
+            .execute(serde_json::json!({"step": "do thing"}), &rt())
+            .await;
         let done = PlanDoneTool(shared.clone());
-        let r = done.execute(serde_json::json!({"index": 0}), &rt()).await.unwrap();
+        let r = done
+            .execute(serde_json::json!({"index": 0}), &rt())
+            .await
+            .unwrap();
         assert!(r.contains("\"status\":\"done\""));
         // list should now show [x]
         let list = PlanListTool(shared);
@@ -462,7 +571,10 @@ mod tests {
     async fn plan_done_out_of_range_returns_error_status() {
         let shared: SharedPlan = Arc::new(PlanExtension::new());
         let done = PlanDoneTool(shared);
-        let r = done.execute(serde_json::json!({"index": 99}), &rt()).await.unwrap();
+        let r = done
+            .execute(serde_json::json!({"index": 99}), &rt())
+            .await
+            .unwrap();
         assert!(r.contains("\"status\":\"error\""));
     }
 
@@ -472,9 +584,13 @@ mod tests {
         let _ = std::fs::remove_file(path);
         let shared: SharedPlan = Arc::new(PlanExtension::new());
         let enter = PlanEnterTool(shared.clone());
-        let _ = enter.execute(serde_json::json!({"plan_path": path}), &rt()).await;
+        let _ = enter
+            .execute(serde_json::json!({"plan_path": path}), &rt())
+            .await;
         let add = PlanAddTool(shared.clone());
-        let _ = add.execute(serde_json::json!({"step": "persisted step"}), &rt()).await;
+        let _ = add
+            .execute(serde_json::json!({"step": "persisted step"}), &rt())
+            .await;
         let exit = PlanExitTool(shared);
         let r = exit.execute(serde_json::json!({}), &rt()).await.unwrap();
         assert!(r.contains("\"persisted\":true"));

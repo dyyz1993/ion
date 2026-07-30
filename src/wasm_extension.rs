@@ -123,175 +123,218 @@ impl Extension {
         // (max ~80 KB) and well within the addressable range.
         let memory = Memory::new(&mut store, MemoryType::new(16, None))?;
 
-        let tools_registered: Arc<Mutex<Vec<ToolDef>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        let tools_registered: Arc<Mutex<Vec<ToolDef>>> = Arc::new(Mutex::new(Vec::new()));
         let tools = tools_registered.clone();
 
-    // ── WASI stubs: minimal implementations for std-compiled WASM ────────
-    // std-based WASM (wasm32-wasip1) imports these from wasi_snapshot_preview1.
-    // We provide minimal stubs so the module can instantiate without wasmtime-wasi.
+        // ── WASI stubs: minimal implementations for std-compiled WASM ────────
+        // std-based WASM (wasm32-wasip1) imports these from wasi_snapshot_preview1.
+        // We provide minimal stubs so the module can instantiate without wasmtime-wasi.
 
-    // environ_sizes_get: return 0 environment variables
-    linker.func_wrap("wasi_snapshot_preview1", "environ_sizes_get",
-        |mut caller: WasmCaller, count_ptr: u32, buf_size_ptr: u32| -> u32 {
-            if let Some(mem) = mem_get(&mut caller) {
-                mem.write(&mut caller, count_ptr as usize, &0u32.to_le_bytes()).ok();
-                mem.write(&mut caller, buf_size_ptr as usize, &0u32.to_le_bytes()).ok();
-            }
-            0 // WASI errno: ESUCCESS
-        }
-    )?;
+        // environ_sizes_get: return 0 environment variables
+        linker.func_wrap(
+            "wasi_snapshot_preview1",
+            "environ_sizes_get",
+            |mut caller: WasmCaller, count_ptr: u32, buf_size_ptr: u32| -> u32 {
+                if let Some(mem) = mem_get(&mut caller) {
+                    mem.write(&mut caller, count_ptr as usize, &0u32.to_le_bytes())
+                        .ok();
+                    mem.write(&mut caller, buf_size_ptr as usize, &0u32.to_le_bytes())
+                        .ok();
+                }
+                0 // WASI errno: ESUCCESS
+            },
+        )?;
 
-    // environ_get: no environment variables to write (count=0)
-    linker.func_wrap("wasi_snapshot_preview1", "environ_get",
-        |_: WasmCaller, _environ_ptr: u32, _environ_buf_ptr: u32| -> u32 {
-            0 // ESUCCESS — no env vars
-        }
-    )?;
+        // environ_get: no environment variables to write (count=0)
+        linker.func_wrap(
+            "wasi_snapshot_preview1",
+            "environ_get",
+            |_: WasmCaller, _environ_ptr: u32, _environ_buf_ptr: u32| -> u32 {
+                0 // ESUCCESS — no env vars
+            },
+        )?;
 
-    // fd_write: discard output (stdout/stderr from std::println! etc.)
-    linker.func_wrap("wasi_snapshot_preview1", "fd_write",
-        |mut caller: WasmCaller, _fd: u32, iovs_ptr: u32, iovs_len: u32, nwritten_ptr: u32| -> u32 {
-            let mut total: u32 = 0;
-            if let Some(mem) = mem_get(&mut caller) {
-                for i in 0..iovs_len {
-                    let base = iovs_ptr as usize + (i as usize) * 8;
-                    let mut buf = [0u8; 4];
-                    if mem.read(&mut caller, base, &mut buf).is_ok() {
-                        let buf_len = u32::from_le_bytes(buf);
-                        total += buf_len;
+        // fd_write: discard output (stdout/stderr from std::println! etc.)
+        linker.func_wrap(
+            "wasi_snapshot_preview1",
+            "fd_write",
+            |mut caller: WasmCaller,
+             _fd: u32,
+             iovs_ptr: u32,
+             iovs_len: u32,
+             nwritten_ptr: u32|
+             -> u32 {
+                let mut total: u32 = 0;
+                if let Some(mem) = mem_get(&mut caller) {
+                    for i in 0..iovs_len {
+                        let base = iovs_ptr as usize + (i as usize) * 8;
+                        let mut buf = [0u8; 4];
+                        if mem.read(&mut caller, base, &mut buf).is_ok() {
+                            let buf_len = u32::from_le_bytes(buf);
+                            total += buf_len;
+                        }
                     }
+                    mem.write(&mut caller, nwritten_ptr as usize, &total.to_le_bytes())
+                        .ok();
                 }
-                mem.write(&mut caller, nwritten_ptr as usize, &total.to_le_bytes()).ok();
-            }
-            0
-        }
-    )?;
+                0
+            },
+        )?;
 
-    // proc_exit: trap the instance (wasmtime convention for WASI exit)
-    linker.func_wrap("wasi_snapshot_preview1", "proc_exit",
-        |code: u32| -> () {
+        // proc_exit: trap the instance (wasmtime convention for WASI exit)
+        linker.func_wrap("wasi_snapshot_preview1", "proc_exit", |code: u32| -> () {
             tracing::info!("[wasm] proc_exit({})", code);
-        }
-    )?;
+        })?;
 
-    // random_get: fill buffer with random bytes (used by std for HashMap seeding)
-    linker.func_wrap("wasi_snapshot_preview1", "random_get",
-        |mut caller: WasmCaller, buf_ptr: u32, buf_len: u32| -> u32 {
-            if let Some(mem) = mem_get(&mut caller) {
-                // Use a simple deterministic seed instead of crypto random
-                let mut data = vec![0u8; buf_len as usize];
-                // Fill with pseudo-random (good enough for HashMap seeding)
-                for i in 0..data.len() {
-                    data[i] = ((i as u64).wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407) >> 32) as u8;
+        // random_get: fill buffer with random bytes (used by std for HashMap seeding)
+        linker.func_wrap(
+            "wasi_snapshot_preview1",
+            "random_get",
+            |mut caller: WasmCaller, buf_ptr: u32, buf_len: u32| -> u32 {
+                if let Some(mem) = mem_get(&mut caller) {
+                    // Use a simple deterministic seed instead of crypto random
+                    let mut data = vec![0u8; buf_len as usize];
+                    // Fill with pseudo-random (good enough for HashMap seeding)
+                    for i in 0..data.len() {
+                        data[i] = ((i as u64)
+                            .wrapping_mul(6364136223846793005)
+                            .wrapping_add(1442695040888963407)
+                            >> 32) as u8;
+                    }
+                    mem.write(&mut caller, buf_ptr as usize, &data).ok();
                 }
-                mem.write(&mut caller, buf_ptr as usize, &data).ok();
-            }
-            0 // ESUCCESS
-        }
-    )?;
+                0 // ESUCCESS
+            },
+        )?;
 
-    // clock_time_get: return monotonic clock (used by std::time::Instant)
-    linker.func_wrap("wasi_snapshot_preview1", "clock_time_get",
-        |mut caller: WasmCaller, _clock_id: u32, _precision: u64, time_ptr: u32| -> u32 {
-            if let Some(mem) = mem_get(&mut caller) {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos() as u64;
-                mem.write(&mut caller, time_ptr as usize, &now.to_le_bytes()).ok();
-            }
-            0 // ESUCCESS
-        }
-    )?;
+        // clock_time_get: return monotonic clock (used by std::time::Instant)
+        linker.func_wrap(
+            "wasi_snapshot_preview1",
+            "clock_time_get",
+            |mut caller: WasmCaller, _clock_id: u32, _precision: u64, time_ptr: u32| -> u32 {
+                if let Some(mem) = mem_get(&mut caller) {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos() as u64;
+                    mem.write(&mut caller, time_ptr as usize, &now.to_le_bytes())
+                        .ok();
+                }
+                0 // ESUCCESS
+            },
+        )?;
 
-    // ── Host: register_tool ──────────────────────────────────────────────
-    linker.func_wrap("env", "host_register_tool",
-        move |mut caller: wasmtime::Caller<'_, Context>,
-              name_ptr: u32, name_len: u32,
-              desc_ptr: u32, desc_len: u32,
-              schema_ptr: u32, schema_len: u32| {
+        // ── Host: register_tool ──────────────────────────────────────────────
+        linker.func_wrap(
+            "env",
+            "host_register_tool",
+            move |mut caller: wasmtime::Caller<'_, Context>,
+                  name_ptr: u32,
+                  name_len: u32,
+                  desc_ptr: u32,
+                  desc_len: u32,
+                  schema_ptr: u32,
+                  schema_len: u32| {
                 let name = mem_read_str(&mut caller, name_ptr, name_len);
                 let desc = mem_read_str(&mut caller, desc_ptr, desc_len);
                 let schema_str = mem_read_str(&mut caller, schema_ptr, schema_len);
                 let params = serde_json::from_str(&schema_str).unwrap_or_default();
                 if let Ok(mut t) = tools.lock() {
-                    t.push(ToolDef { name, description: desc, parameters: params });
+                    t.push(ToolDef {
+                        name,
+                        description: desc,
+                        parameters: params,
+                    });
                 }
-            }
-    )?;
+            },
+        )?;
 
-    // ── Host: send_message ──────────────────────────────────────────────
-    linker.func_wrap("env", "host_send_message",
-        |mut caller: wasmtime::Caller<'_, Context>,
-         msg_ptr: u32, msg_len: u32| {
-            if msg_len == 0 { return; }
-            let msg = mem_read_str(&mut caller, msg_ptr, msg_len);
-            let event = serde_json::json!({
-                "type": "event",
-                "event": {"type": "custom", "customType": "extension_message",
-                          "data": {"text": msg}}
-            });
-            eprintln!("{}", serde_json::to_string(&event).unwrap_or_default());
-        }
-    )?;
+        // ── Host: send_message ──────────────────────────────────────────────
+        linker.func_wrap(
+            "env",
+            "host_send_message",
+            |mut caller: wasmtime::Caller<'_, Context>, msg_ptr: u32, msg_len: u32| {
+                if msg_len == 0 {
+                    return;
+                }
+                let msg = mem_read_str(&mut caller, msg_ptr, msg_len);
+                let event = serde_json::json!({
+                    "type": "event",
+                    "event": {"type": "custom", "customType": "extension_message",
+                              "data": {"text": msg}}
+                });
+                eprintln!("{}", serde_json::to_string(&event).unwrap_or_default());
+            },
+        )?;
 
-    // ── Host: channel_send ──────────────────────────────────────────────
-    linker.func_wrap("env", "host_channel_send",
-        |mut caller: wasmtime::Caller<'_, Context>,
-         ch_ptr: u32, ch_len: u32,
-         msg_ptr: u32, msg_len: u32| {
-            let channel = mem_read_str(&mut caller, ch_ptr, ch_len);
-            let msg_str = mem_read_str(&mut caller, msg_ptr, msg_len);
-            let cmd = serde_json::json!({
-                "type": "channel_send",
-                "channel": channel,
-                "msg": serde_json::from_str::<serde_json::Value>(&msg_str)
-                    .unwrap_or(serde_json::Value::String(msg_str))
-            });
-            println!("{}", serde_json::to_string(&cmd).unwrap_or_default());
-        }
-    )?;
+        // ── Host: channel_send ──────────────────────────────────────────────
+        linker.func_wrap(
+            "env",
+            "host_channel_send",
+            |mut caller: wasmtime::Caller<'_, Context>,
+             ch_ptr: u32,
+             ch_len: u32,
+             msg_ptr: u32,
+             msg_len: u32| {
+                let channel = mem_read_str(&mut caller, ch_ptr, ch_len);
+                let msg_str = mem_read_str(&mut caller, msg_ptr, msg_len);
+                let cmd = serde_json::json!({
+                    "type": "channel_send",
+                    "channel": channel,
+                    "msg": serde_json::from_str::<serde_json::Value>(&msg_str)
+                        .unwrap_or(serde_json::Value::String(msg_str))
+                });
+                println!("{}", serde_json::to_string(&cmd).unwrap_or_default());
+            },
+        )?;
 
-    // ── Host: create_worker ─────────────────────────────────────────────
-    linker.func_wrap("env", "host_create_worker",
-        |mut caller: wasmtime::Caller<'_, Context>,
-         cfg_ptr: u32, cfg_len: u32| -> u32 {
-            if cfg_len == 0 { return 0; }
-            let cfg_str = mem_read_str(&mut caller, cfg_ptr, cfg_len);
-            let cmd = serde_json::json!({
-                "type": "create_worker",
-                "config": serde_json::from_str::<serde_json::Value>(&cfg_str)
-                    .unwrap_or(serde_json::Value::Null)
-            });
-            println!("{}", serde_json::to_string(&cmd).unwrap_or_default());
-            0
-        }
-    )?;
+        // ── Host: create_worker ─────────────────────────────────────────────
+        linker.func_wrap(
+            "env",
+            "host_create_worker",
+            |mut caller: wasmtime::Caller<'_, Context>, cfg_ptr: u32, cfg_len: u32| -> u32 {
+                if cfg_len == 0 {
+                    return 0;
+                }
+                let cfg_str = mem_read_str(&mut caller, cfg_ptr, cfg_len);
+                let cmd = serde_json::json!({
+                    "type": "create_worker",
+                    "config": serde_json::from_str::<serde_json::Value>(&cfg_str)
+                        .unwrap_or(serde_json::Value::Null)
+                });
+                println!("{}", serde_json::to_string(&cmd).unwrap_or_default());
+                0
+            },
+        )?;
 
-    // ── Host: memcmp ────────────────────────────────────────────────────
-    linker.func_wrap("env", "memcmp",
-        |mut caller: wasmtime::Caller<'_, Context>,
-         ptr1: u32, ptr2: u32, n: u32| -> i32 {
+        // ── Host: memcmp ────────────────────────────────────────────────────
+        linker.func_wrap(
+            "env",
+            "memcmp",
+            |mut caller: wasmtime::Caller<'_, Context>, ptr1: u32, ptr2: u32, n: u32| -> i32 {
                 let mem = match caller.get_export("memory") {
                     Some(wasmtime::Extern::Memory(m)) => m,
                     _ => return 0,
                 };
                 let mut buf1 = vec![0u8; n as usize];
                 let mut buf2 = vec![0u8; n as usize];
-                if mem.read(&mut caller, ptr1 as usize, &mut buf1).is_err() { return 0; }
-                if mem.read(&mut caller, ptr2 as usize, &mut buf2).is_err() { return 0; }
+                if mem.read(&mut caller, ptr1 as usize, &mut buf1).is_err() {
+                    return 0;
+                }
+                if mem.read(&mut caller, ptr2 as usize, &mut buf2).is_err() {
+                    return 0;
+                }
                 for i in 0..n as usize {
                     if buf1[i] != buf2[i] {
                         return buf1[i] as i32 - buf2[i] as i32;
                     }
                 }
                 0
-            }
-	    )?;
+            },
+        )?;
 
-	    // ── Host: ui_ask ──────────────────────────────────────────────────
-	    linker.func_wrap("env", "host_ui_ask",
+        // ── Host: ui_ask ──────────────────────────────────────────────────
+        linker.func_wrap("env", "host_ui_ask",
 	        move |mut caller: wasmtime::Caller<'_, Context>,
 	              title_ptr: u32, title_len: u32,
 	              msg_ptr: u32, msg_len: u32| -> u32 {
@@ -324,8 +367,8 @@ impl Extension {
 	        }
 	    )?;
 
-	    // ── Host: ui_confirm ───────────────────────────────────────────────
-	    linker.func_wrap("env", "host_ui_confirm",
+        // ── Host: ui_confirm ───────────────────────────────────────────────
+        linker.func_wrap("env", "host_ui_confirm",
 	        move |mut caller: wasmtime::Caller<'_, Context>,
 	              title_ptr: u32, title_len: u32,
 	              msg_ptr: u32, msg_len: u32| -> u32 {
@@ -355,39 +398,47 @@ impl Extension {
 	        }
 	    )?;
 
-	    // ── Host: ui_notif ────────────────────────────────────────────────
-	    linker.func_wrap("env", "host_ui_notif",
-	        move |mut caller: wasmtime::Caller<'_, Context>,
-	              title_ptr: u32, title_len: u32,
-	              msg_ptr: u32, msg_len: u32| {
-	            let title = mem_read_str(&mut caller, title_ptr, title_len);
-	            let message = mem_read_str(&mut caller, msg_ptr, msg_len);
-	            if let Some(ref bus) = caller.data().event_bus {
-	                let event = ExtensionEvent::new_ui("Notif", &title, &message);
-	                let mut b = bus.blocking_lock();
-	                b.broadcast(&event);
-	            }
-	        }
-	    )?;
+        // ── Host: ui_notif ────────────────────────────────────────────────
+        linker.func_wrap(
+            "env",
+            "host_ui_notif",
+            move |mut caller: wasmtime::Caller<'_, Context>,
+                  title_ptr: u32,
+                  title_len: u32,
+                  msg_ptr: u32,
+                  msg_len: u32| {
+                let title = mem_read_str(&mut caller, title_ptr, title_len);
+                let message = mem_read_str(&mut caller, msg_ptr, msg_len);
+                if let Some(ref bus) = caller.data().event_bus {
+                    let event = ExtensionEvent::new_ui("Notif", &title, &message);
+                    let mut b = bus.blocking_lock();
+                    b.broadcast(&event);
+                }
+            },
+        )?;
 
-	    // ── Host: ui_alert ────────────────────────────────────────────────
-	    linker.func_wrap("env", "host_ui_alert",
-	        move |mut caller: wasmtime::Caller<'_, Context>,
-	              title_ptr: u32, title_len: u32,
-	              msg_ptr: u32, msg_len: u32| {
-	            let title = mem_read_str(&mut caller, title_ptr, title_len);
-	            let message = mem_read_str(&mut caller, msg_ptr, msg_len);
-	            if let Some(ref bus) = caller.data().event_bus {
-	                let event = ExtensionEvent::new_ui("Alert", &title, &message)
-	                    .with_data(serde_json::json!({"level": "warning"}));
-	                let mut b = bus.blocking_lock();
-	                b.broadcast(&event);
-	            }
-	        }
-	    )?;
+        // ── Host: ui_alert ────────────────────────────────────────────────
+        linker.func_wrap(
+            "env",
+            "host_ui_alert",
+            move |mut caller: wasmtime::Caller<'_, Context>,
+                  title_ptr: u32,
+                  title_len: u32,
+                  msg_ptr: u32,
+                  msg_len: u32| {
+                let title = mem_read_str(&mut caller, title_ptr, title_len);
+                let message = mem_read_str(&mut caller, msg_ptr, msg_len);
+                if let Some(ref bus) = caller.data().event_bus {
+                    let event = ExtensionEvent::new_ui("Alert", &title, &message)
+                        .with_data(serde_json::json!({"level": "warning"}));
+                    let mut b = bus.blocking_lock();
+                    b.broadcast(&event);
+                }
+            },
+        )?;
 
-	    // ── Host: ui_prompt ───────────────────────────────────────────────
-	    linker.func_wrap("env", "host_ui_prompt",
+        // ── Host: ui_prompt ───────────────────────────────────────────────
+        linker.func_wrap("env", "host_ui_prompt",
 	        move |mut caller: wasmtime::Caller<'_, Context>,
 	              title_ptr: u32, title_len: u32,
 	              msg_ptr: u32, msg_len: u32,
@@ -425,454 +476,555 @@ impl Extension {
 	        }
             )?;
 
-    // ── Host: read_file (ctx.fs 统一文件访问) ─────────────────────────────
-    // 让 WASM 扩展能读 allowed_roots 内的项目文件。
-    // 签名: host_read_file(path_ptr, path_len, out_buf, out_capacity) -> u32
-    //   返回写入的字节数；0 = 出错或文件不存在（逃逸也算不存在）。
-    linker.func_wrap("env", "host_read_file",
-        move |mut caller: WasmCaller,
-              path_ptr: u32, path_len: u32,
-              out_buf: u32, out_capacity: u32| -> u32 {
-            let path = mem_read_str(&mut caller, path_ptr, path_len);
-            if path.is_empty() { return 0; }
-            let ctx = caller.data().clone();
-
-            // 没注入 fs 或没有 tokio handle → 拒绝（返回 0 = 读不到）
-            let (fs, handle) = match (ctx.fs.as_ref(), ctx.tokio_handle.as_ref()) {
-                (Some(fs), Some(h)) => (fs.clone(), h.clone()),
-                _ => {
-                    tracing::warn!("[wasm] host_read_file: no fs capability injected");
+        // ── Host: read_file (ctx.fs 统一文件访问) ─────────────────────────────
+        // 让 WASM 扩展能读 allowed_roots 内的项目文件。
+        // 签名: host_read_file(path_ptr, path_len, out_buf, out_capacity) -> u32
+        //   返回写入的字节数；0 = 出错或文件不存在（逃逸也算不存在）。
+        linker.func_wrap(
+            "env",
+            "host_read_file",
+            move |mut caller: WasmCaller,
+                  path_ptr: u32,
+                  path_len: u32,
+                  out_buf: u32,
+                  out_capacity: u32|
+                  -> u32 {
+                let path = mem_read_str(&mut caller, path_ptr, path_len);
+                if path.is_empty() {
                     return 0;
                 }
-            };
+                let ctx = caller.data().clone();
 
-            // 在同步 host 函数里 block_on 异步 fs.read_file
-            // （与 host_ui_ask 用 blocking_recv 同理）
-            let result = tokio::task::block_in_place(|| handle.block_on(fs.read_file(&path)));
-            let content = match result {
-                Ok(c) => c,
-                Err(e) => {
-                    // 路径逃逸 / 不存在 / 权限拒绝 都当作读不到
-                    tracing::info!("[wasm] host_read_file('{}'): {e}", path);
+                // 没注入 fs 或没有 tokio handle → 拒绝（返回 0 = 读不到）
+                let (fs, handle) = match (ctx.fs.as_ref(), ctx.tokio_handle.as_ref()) {
+                    (Some(fs), Some(h)) => (fs.clone(), h.clone()),
+                    _ => {
+                        tracing::warn!("[wasm] host_read_file: no fs capability injected");
+                        return 0;
+                    }
+                };
+
+                // 在同步 host 函数里 block_on 异步 fs.read_file
+                // （与 host_ui_ask 用 blocking_recv 同理）
+                let result = tokio::task::block_in_place(|| handle.block_on(fs.read_file(&path)));
+                let content = match result {
+                    Ok(c) => c,
+                    Err(e) => {
+                        // 路径逃逸 / 不存在 / 权限拒绝 都当作读不到
+                        tracing::info!("[wasm] host_read_file('{}'): {e}", path);
+                        return 0;
+                    }
+                };
+                let bytes = content.as_bytes();
+                let len = bytes.len().min(out_capacity as usize);
+                if let Some(mem) = mem_get(&mut caller) {
+                    mem.write(&mut caller, out_buf as usize, &bytes[..len]).ok();
+                }
+                len as u32
+            },
+        )?;
+
+        // ── Host: list_dir (ctx.fs 统一文件访问) ──────────────────────────────
+        // 让 WASM 扩展能列 allowed_roots 内的目录。
+        // 签名: host_list_dir(path_ptr, path_len, out_buf, out_capacity) -> u32
+        //   返回写入的 JSON 字节数；0 = 出错或目录不存在。
+        //   JSON 格式: [{"name":"x","is_dir":false,"size":123}, ...]
+        linker.func_wrap(
+            "env",
+            "host_list_dir",
+            move |mut caller: WasmCaller,
+                  path_ptr: u32,
+                  path_len: u32,
+                  out_buf: u32,
+                  out_capacity: u32|
+                  -> u32 {
+                let path = mem_read_str(&mut caller, path_ptr, path_len);
+                if path.is_empty() {
                     return 0;
                 }
-            };
-            let bytes = content.as_bytes();
-            let len = bytes.len().min(out_capacity as usize);
-            if let Some(mem) = mem_get(&mut caller) {
-                mem.write(&mut caller, out_buf as usize, &bytes[..len]).ok();
-            }
-            len as u32
-        }
-    )?;
+                let ctx = caller.data().clone();
 
-    // ── Host: list_dir (ctx.fs 统一文件访问) ──────────────────────────────
-    // 让 WASM 扩展能列 allowed_roots 内的目录。
-    // 签名: host_list_dir(path_ptr, path_len, out_buf, out_capacity) -> u32
-    //   返回写入的 JSON 字节数；0 = 出错或目录不存在。
-    //   JSON 格式: [{"name":"x","is_dir":false,"size":123}, ...]
-    linker.func_wrap("env", "host_list_dir",
-        move |mut caller: WasmCaller,
-              path_ptr: u32, path_len: u32,
-              out_buf: u32, out_capacity: u32| -> u32 {
-            let path = mem_read_str(&mut caller, path_ptr, path_len);
-            if path.is_empty() { return 0; }
-            let ctx = caller.data().clone();
+                let (fs, handle) = match (ctx.fs.as_ref(), ctx.tokio_handle.as_ref()) {
+                    (Some(fs), Some(h)) => (fs.clone(), h.clone()),
+                    _ => {
+                        tracing::warn!("[wasm] host_list_dir: no fs capability injected");
+                        return 0;
+                    }
+                };
 
-            let (fs, handle) = match (ctx.fs.as_ref(), ctx.tokio_handle.as_ref()) {
-                (Some(fs), Some(h)) => (fs.clone(), h.clone()),
-                _ => {
-                    tracing::warn!("[wasm] host_list_dir: no fs capability injected");
-                    return 0;
+                let result = tokio::task::block_in_place(|| handle.block_on(fs.list_dir(&path)));
+                let entries = match result {
+                    Ok(e) => e,
+                    Err(e) => {
+                        tracing::info!("[wasm] host_list_dir('{}'): {e}", path);
+                        return 0;
+                    }
+                };
+                // 序列化成 JSON 数组
+                let json: Vec<serde_json::Value> = entries
+                    .iter()
+                    .map(|e| {
+                        serde_json::json!({
+                            "name": e.name, "is_dir": e.is_dir, "size": e.size,
+                        })
+                    })
+                    .collect();
+                let json_str = serde_json::to_string(&json).unwrap_or_else(|_| "[]".into());
+                let bytes = json_str.as_bytes();
+                let len = bytes.len().min(out_capacity as usize);
+                if let Some(mem) = mem_get(&mut caller) {
+                    mem.write(&mut caller, out_buf as usize, &bytes[..len]).ok();
                 }
-            };
+                len as u32
+            },
+        )?;
 
-            let result = tokio::task::block_in_place(|| handle.block_on(fs.list_dir(&path)));
-            let entries = match result {
-                Ok(e) => e,
-                Err(e) => {
-                    tracing::info!("[wasm] host_list_dir('{}'): {e}", path);
-                    return 0;
+        // ── Host: write_file (ctx.fs unified filesystem access) ──────────────
+        // Lets WASM extensions write files inside allowed_roots.
+        // Signature: host_write_file(path_ptr, path_len, content_ptr, content_len) -> u32
+        //   Return codes: 0 = success, 1 = no fs capability,
+        //                 2 = path traversal blocked, 3 = IO error.
+        linker.func_wrap(
+            "env",
+            "host_write_file",
+            move |mut caller: WasmCaller,
+                  path_ptr: u32,
+                  path_len: u32,
+                  content_ptr: u32,
+                  content_len: u32|
+                  -> u32 {
+                let path = mem_read_str(&mut caller, path_ptr, path_len);
+                if path.is_empty() {
+                    return 3;
                 }
-            };
-            // 序列化成 JSON 数组
-            let json: Vec<serde_json::Value> = entries.iter().map(|e| serde_json::json!({
-                "name": e.name, "is_dir": e.is_dir, "size": e.size,
-            })).collect();
-            let json_str = serde_json::to_string(&json).unwrap_or_else(|_| "[]".into());
-            let bytes = json_str.as_bytes();
-            let len = bytes.len().min(out_capacity as usize);
-            if let Some(mem) = mem_get(&mut caller) {
-                mem.write(&mut caller, out_buf as usize, &bytes[..len]).ok();
-            }
-            len as u32
-        }
-    )?;
+                let content = mem_read_str(&mut caller, content_ptr, content_len);
+                let ctx = caller.data().clone();
 
-    // ── Host: write_file (ctx.fs unified filesystem access) ──────────────
-    // Lets WASM extensions write files inside allowed_roots.
-    // Signature: host_write_file(path_ptr, path_len, content_ptr, content_len) -> u32
-    //   Return codes: 0 = success, 1 = no fs capability,
-    //                 2 = path traversal blocked, 3 = IO error.
-    linker.func_wrap("env", "host_write_file",
-        move |mut caller: WasmCaller,
-              path_ptr: u32, path_len: u32,
-              content_ptr: u32, content_len: u32| -> u32 {
-            let path = mem_read_str(&mut caller, path_ptr, path_len);
-            if path.is_empty() { return 3; }
-            let content = mem_read_str(&mut caller, content_ptr, content_len);
-            let ctx = caller.data().clone();
+                let (fs, handle) = match (ctx.fs.as_ref(), ctx.tokio_handle.as_ref()) {
+                    (Some(fs), Some(h)) => (fs.clone(), h.clone()),
+                    _ => {
+                        tracing::warn!("[wasm] host_write_file: no fs capability injected");
+                        return 1;
+                    }
+                };
 
-            let (fs, handle) = match (ctx.fs.as_ref(), ctx.tokio_handle.as_ref()) {
-                (Some(fs), Some(h)) => (fs.clone(), h.clone()),
-                _ => {
-                    tracing::warn!("[wasm] host_write_file: no fs capability injected");
-                    return 1;
-                }
-            };
-
-            let result = tokio::task::block_in_place(|| handle.block_on(fs.write_file(&path, &content)));
-            match result {
-                Ok(()) => 0,
-                Err(e) => {
-                    // Classify path-traversal vs generic IO error by keyword
-                    if e.contains("outside allowed roots")
-                        || e.contains("traversal")
-                        || e.contains("escape")
-                        || e.contains("null byte")
-                    {
-                        tracing::warn!("[wasm] host_write_file('{}'): path traversal blocked", path);
-                        2
-                    } else {
-                        tracing::info!("[wasm] host_write_file('{}'): {e}", path);
-                        3
+                let result =
+                    tokio::task::block_in_place(|| handle.block_on(fs.write_file(&path, &content)));
+                match result {
+                    Ok(()) => 0,
+                    Err(e) => {
+                        // Classify path-traversal vs generic IO error by keyword
+                        if e.contains("outside allowed roots")
+                            || e.contains("traversal")
+                            || e.contains("escape")
+                            || e.contains("null byte")
+                        {
+                            tracing::warn!(
+                                "[wasm] host_write_file('{}'): path traversal blocked",
+                                path
+                            );
+                            2
+                        } else {
+                            tracing::info!("[wasm] host_write_file('{}'): {e}", path);
+                            3
+                        }
                     }
                 }
-            }
-        }
-    )?;
+            },
+        )?;
 
-    // ── Host: path_exists (ctx.fs unified filesystem access) ─────────────
-    // Lets WASM extensions check whether a path exists (file or directory).
-    // Signature: host_path_exists(path_ptr, path_len) -> u32
-    //   Return codes: 1 = exists, 0 = not found, 2 = path traversal blocked.
-    linker.func_wrap("env", "host_path_exists",
-        move |mut caller: WasmCaller,
-              path_ptr: u32, path_len: u32| -> u32 {
-            let path = mem_read_str(&mut caller, path_ptr, path_len);
-            if path.is_empty() { return 0; }
-            let ctx = caller.data().clone();
-
-            let (fs, handle) = match (ctx.fs.as_ref(), ctx.tokio_handle.as_ref()) {
-                (Some(fs), Some(h)) => (fs.clone(), h.clone()),
-                _ => {
-                    tracing::warn!("[wasm] host_path_exists: no fs capability injected");
+        // ── Host: path_exists (ctx.fs unified filesystem access) ─────────────
+        // Lets WASM extensions check whether a path exists (file or directory).
+        // Signature: host_path_exists(path_ptr, path_len) -> u32
+        //   Return codes: 1 = exists, 0 = not found, 2 = path traversal blocked.
+        linker.func_wrap(
+            "env",
+            "host_path_exists",
+            move |mut caller: WasmCaller, path_ptr: u32, path_len: u32| -> u32 {
+                let path = mem_read_str(&mut caller, path_ptr, path_len);
+                if path.is_empty() {
                     return 0;
                 }
-            };
+                let ctx = caller.data().clone();
 
-            // Use read_file as a traversal probe: if it returns a traversal
-            // error we know the path is outside allowed roots. Otherwise fall
-            // through to path_exists which handles files + directories.
-            let probe = tokio::task::block_in_place(|| handle.block_on(fs.read_file(&path)));
-            match probe {
-                Ok(_) => 1, // file exists and is readable
-                Err(e) if e.contains("outside allowed roots")
-                    || e.contains("traversal")
-                    || e.contains("escape")
-                    || e.contains("null byte") => 2,
-                _ => {
-                    // Might be a directory or not found — check path_exists
-                    let exists = tokio::task::block_in_place(|| handle.block_on(fs.path_exists(&path)));
-                    if exists { 1 } else { 0 }
+                let (fs, handle) = match (ctx.fs.as_ref(), ctx.tokio_handle.as_ref()) {
+                    (Some(fs), Some(h)) => (fs.clone(), h.clone()),
+                    _ => {
+                        tracing::warn!("[wasm] host_path_exists: no fs capability injected");
+                        return 0;
+                    }
+                };
+
+                // Use read_file as a traversal probe: if it returns a traversal
+                // error we know the path is outside allowed roots. Otherwise fall
+                // through to path_exists which handles files + directories.
+                let probe = tokio::task::block_in_place(|| handle.block_on(fs.read_file(&path)));
+                match probe {
+                    Ok(_) => 1, // file exists and is readable
+                    Err(e)
+                        if e.contains("outside allowed roots")
+                            || e.contains("traversal")
+                            || e.contains("escape")
+                            || e.contains("null byte") =>
+                    {
+                        2
+                    }
+                    _ => {
+                        // Might be a directory or not found — check path_exists
+                        let exists =
+                            tokio::task::block_in_place(|| handle.block_on(fs.path_exists(&path)));
+                        if exists { 1 } else { 0 }
+                    }
                 }
-            }
-        }
-    )?;
+            },
+        )?;
 
-    // ── Host: glob (ctx.fs unified filesystem access) ────────────────────
-    // Lets WASM extensions glob-match files against a pattern.
-    // Signature: host_glob(pattern_ptr, pattern_len, out_buf, out_capacity) -> u32
-    //   Returns bytes written (JSON array), or 0 on error.
-    //   Pattern: supports * (single segment) and ** (recursive).
-    linker.func_wrap("env", "host_glob",
-        move |mut caller: WasmCaller,
-              pattern_ptr: u32, pattern_len: u32,
-              out_buf: u32, out_capacity: u32| -> u32 {
-            let pattern = mem_read_str(&mut caller, pattern_ptr, pattern_len);
-            if pattern.is_empty() { return 0; }
-            let ctx = caller.data().clone();
-
-            let (fs, handle) = match (ctx.fs.as_ref(), ctx.tokio_handle.as_ref()) {
-                (Some(fs), Some(h)) => (fs.clone(), h.clone()),
-                _ => {
-                    tracing::warn!("[wasm] host_glob: no fs capability injected");
+        // ── Host: glob (ctx.fs unified filesystem access) ────────────────────
+        // Lets WASM extensions glob-match files against a pattern.
+        // Signature: host_glob(pattern_ptr, pattern_len, out_buf, out_capacity) -> u32
+        //   Returns bytes written (JSON array), or 0 on error.
+        //   Pattern: supports * (single segment) and ** (recursive).
+        linker.func_wrap(
+            "env",
+            "host_glob",
+            move |mut caller: WasmCaller,
+                  pattern_ptr: u32,
+                  pattern_len: u32,
+                  out_buf: u32,
+                  out_capacity: u32|
+                  -> u32 {
+                let pattern = mem_read_str(&mut caller, pattern_ptr, pattern_len);
+                if pattern.is_empty() {
                     return 0;
                 }
-            };
+                let ctx = caller.data().clone();
 
-            let result = tokio::task::block_in_place(|| handle.block_on(fs.glob(&pattern)));
-            let matches = match result {
-                Ok(m) => m,
-                Err(e) => {
-                    tracing::info!("[wasm] host_glob('{}'): {e}", pattern);
+                let (fs, handle) = match (ctx.fs.as_ref(), ctx.tokio_handle.as_ref()) {
+                    (Some(fs), Some(h)) => (fs.clone(), h.clone()),
+                    _ => {
+                        tracing::warn!("[wasm] host_glob: no fs capability injected");
+                        return 0;
+                    }
+                };
+
+                let result = tokio::task::block_in_place(|| handle.block_on(fs.glob(&pattern)));
+                let matches = match result {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::info!("[wasm] host_glob('{}'): {e}", pattern);
+                        return 0;
+                    }
+                };
+                let json_str = serde_json::to_string(&matches).unwrap_or_else(|_| "[]".into());
+                let bytes = json_str.as_bytes();
+                let len = bytes.len().min(out_capacity as usize);
+                if let Some(mem) = mem_get(&mut caller) {
+                    mem.write(&mut caller, out_buf as usize, &bytes[..len]).ok();
+                }
+                len as u32
+            },
+        )?;
+
+        // ── Host: data_read (extension-specific data storage) ────────────────
+        // Read extension-specific data from the global data directory.
+        // Data is stored in: ~/.ion/agent/extensions-data/<ext_name>/<key>
+        // Signature: host_data_read(key_ptr, key_len, out_buf, out_capacity) -> u32
+        //   Returns bytes written, or 0 if not found / blocked.
+        linker.func_wrap(
+            "env",
+            "host_data_read",
+            move |mut caller: WasmCaller,
+                  key_ptr: u32,
+                  key_len: u32,
+                  out_buf: u32,
+                  out_capacity: u32|
+                  -> u32 {
+                let ctx = caller.data().clone();
+                let dir = paths::global_data_dir(&ctx.ext_name);
+                let key = mem_read_str(&mut caller, key_ptr, key_len);
+
+                let path = match safe_join(&dir, &key) {
+                    Some(p) => p,
+                    None => return 0, // blocked — treat as not found
+                };
+                let data = match std::fs::read(&path) {
+                    Ok(d) => d,
+                    Err(_) => return 0, // not found
+                };
+                let len = data.len().min(out_capacity as usize);
+                if let Some(mem) = mem_get(&mut caller) {
+                    mem.write(&mut caller, out_buf as usize, &data[..len]).ok();
+                }
+                len as u32
+            },
+        )?;
+
+        // ── Host: data_write (extension-specific data storage) ───────────────
+        // Write extension-specific data to the global data directory.
+        // Data is stored in: ~/.ion/agent/extensions-data/<ext_name>/<key>
+        // Signature: host_data_write(key_ptr, key_len, content_ptr, content_len) -> u32
+        //   Return codes: 0 = success, 1 = error (traversal blocked / IO failure).
+        linker.func_wrap(
+            "env",
+            "host_data_write",
+            move |mut caller: WasmCaller,
+                  key_ptr: u32,
+                  key_len: u32,
+                  content_ptr: u32,
+                  content_len: u32|
+                  -> u32 {
+                let ctx = caller.data().clone();
+                let dir = paths::global_data_dir(&ctx.ext_name);
+                let key = mem_read_str(&mut caller, key_ptr, key_len);
+                let data = mem_read_bytes(&mut caller, content_ptr, content_len);
+
+                let final_path = match safe_join(&dir, &key) {
+                    Some(p) => p,
+                    None => return 1, // blocked
+                };
+                let tmp = final_path.with_extension("tmp");
+
+                if !dir.exists()
+                    && let Err(e) = std::fs::create_dir_all(&dir)
+                {
+                    tracing::warn!("[wasm] host_data_write: mkdir failed: {e}");
+                    return 1;
+                }
+                if std::fs::write(&tmp, &data).is_err() {
+                    return 1;
+                }
+                if std::fs::rename(&tmp, &final_path).is_err() {
+                    return 1;
+                }
+                0 // success
+            },
+        )?;
+
+        // ── Agent state host functions (via AgentRpcHandle) ──────────────────
+        // These let WASM extensions query/modify agent state: token counts,
+        // messages, steer, LLM calls, worker status, compaction, worktrees.
+        // All use the same pattern: clone ctx → get agent_rpc → block_in_place.
+
+        // host_get_token_count(out_buf, out_cap) -> u32
+        // Returns JSON: {"total_tokens":N,"context_window":N,"usage_percent":N}
+        linker.func_wrap(
+            "env",
+            "host_get_token_count",
+            move |mut caller: WasmCaller, out_buf: u32, out_capacity: u32| -> u32 {
+                let ctx = caller.data().clone();
+                let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
+                    (Some(r), Some(h)) => (r.clone(), h.clone()),
+                    _ => return 0,
+                };
+                let result = tokio::task::block_in_place(|| {
+                    handle.block_on(async { rpc.call("get_context_usage", "{}").await })
+                });
+                write_result_to_wasm(result, &mut caller, out_buf, out_capacity)
+            },
+        )?;
+
+        // host_get_messages(out_buf, out_cap) -> u32
+        // Returns JSON array of all messages (including thinking blocks).
+        linker.func_wrap(
+            "env",
+            "host_get_messages",
+            move |mut caller: WasmCaller, out_buf: u32, out_capacity: u32| -> u32 {
+                let ctx = caller.data().clone();
+                let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
+                    (Some(r), Some(h)) => (r.clone(), h.clone()),
+                    _ => return 0,
+                };
+                let result = tokio::task::block_in_place(|| {
+                    handle.block_on(async { rpc.call("get_full_messages", "{}").await })
+                });
+                write_result_to_wasm(result, &mut caller, out_buf, out_capacity)
+            },
+        )?;
+
+        // host_get_state(out_buf, out_cap) -> u32
+        // Returns JSON: {"model":"...","message_count":N,"is_running":bool}
+        linker.func_wrap(
+            "env",
+            "host_get_state",
+            move |mut caller: WasmCaller, out_buf: u32, out_capacity: u32| -> u32 {
+                let ctx = caller.data().clone();
+                let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
+                    (Some(r), Some(h)) => (r.clone(), h.clone()),
+                    _ => return 0,
+                };
+                let result = tokio::task::block_in_place(|| {
+                    handle.block_on(async { rpc.call("get_state", "{}").await })
+                });
+                write_result_to_wasm(result, &mut caller, out_buf, out_capacity)
+            },
+        )?;
+
+        // host_steer(text_ptr, text_len) -> u32
+        // Injects a steer message into the agent's steering queue.
+        // Returns 0 on success, 1 on error.
+        linker.func_wrap(
+            "env",
+            "host_steer",
+            move |mut caller: WasmCaller, text_ptr: u32, text_len: u32| -> u32 {
+                let text = mem_read_str(&mut caller, text_ptr, text_len);
+                if text.is_empty() {
+                    return 1;
+                }
+                let ctx = caller.data().clone();
+                let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
+                    (Some(r), Some(h)) => (r.clone(), h.clone()),
+                    _ => return 1,
+                };
+                let params = serde_json::json!({"text": text}).to_string();
+                let result = tokio::task::block_in_place(|| {
+                    handle.block_on(async { rpc.call("steer", &params).await })
+                });
+                if result.is_ok() { 0 } else { 1 }
+            },
+        )?;
+
+        // host_inject_follow_up(text_ptr, text_len) -> u32
+        // Injects a follow-up message (drives outer loop continuation).
+        linker.func_wrap(
+            "env",
+            "host_inject_follow_up",
+            move |mut caller: WasmCaller, text_ptr: u32, text_len: u32| -> u32 {
+                let text = mem_read_str(&mut caller, text_ptr, text_len);
+                if text.is_empty() {
+                    return 1;
+                }
+                let ctx = caller.data().clone();
+                let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
+                    (Some(r), Some(h)) => (r.clone(), h.clone()),
+                    _ => return 1,
+                };
+                let params = serde_json::json!({"text": text}).to_string();
+                let result = tokio::task::block_in_place(|| {
+                    handle.block_on(async { rpc.call("inject_follow_up", &params).await })
+                });
+                if result.is_ok() { 0 } else { 1 }
+            },
+        )?;
+
+        // host_llm_call(prompt_ptr, prompt_len, model_ptr, model_len, out_buf, out_cap) -> u32
+        // Calls a small LLM with a one-shot prompt. Returns the response text.
+        linker.func_wrap(
+            "env",
+            "host_llm_call",
+            move |mut caller: WasmCaller,
+                  prompt_ptr: u32,
+                  prompt_len: u32,
+                  model_ptr: u32,
+                  model_len: u32,
+                  out_buf: u32,
+                  out_capacity: u32|
+                  -> u32 {
+                let prompt = mem_read_str(&mut caller, prompt_ptr, prompt_len);
+                let model = mem_read_str(&mut caller, model_ptr, model_len);
+                if prompt.is_empty() {
                     return 0;
                 }
-            };
-            let json_str = serde_json::to_string(&matches).unwrap_or_else(|_| "[]".into());
-            let bytes = json_str.as_bytes();
-            let len = bytes.len().min(out_capacity as usize);
-            if let Some(mem) = mem_get(&mut caller) {
-                mem.write(&mut caller, out_buf as usize, &bytes[..len]).ok();
-            }
-            len as u32
-        }
-    )?;
+                let ctx = caller.data().clone();
+                let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
+                    (Some(r), Some(h)) => (r.clone(), h.clone()),
+                    _ => return 0,
+                };
+                let params = serde_json::json!({
+                    "prompt": prompt,
+                    "model": if model.is_empty() { "fast" } else { &model }
+                })
+                .to_string();
+                let result = tokio::task::block_in_place(|| {
+                    handle.block_on(async { rpc.call("llm_call", &params).await })
+                });
+                write_result_to_wasm(result, &mut caller, out_buf, out_capacity)
+            },
+        )?;
 
-    // ── Host: data_read (extension-specific data storage) ────────────────
-    // Read extension-specific data from the global data directory.
-    // Data is stored in: ~/.ion/agent/extensions-data/<ext_name>/<key>
-    // Signature: host_data_read(key_ptr, key_len, out_buf, out_capacity) -> u32
-    //   Returns bytes written, or 0 if not found / blocked.
-    linker.func_wrap("env", "host_data_read",
-        move |mut caller: WasmCaller,
-              key_ptr: u32, key_len: u32,
-              out_buf: u32, out_capacity: u32| -> u32 {
-            let ctx = caller.data().clone();
-            let dir = paths::global_data_dir(&ctx.ext_name);
-            let key = mem_read_str(&mut caller, key_ptr, key_len);
+        // host_get_worker_status(id_ptr, id_len, out_buf, out_cap) -> u32
+        // Returns JSON: {"status":"...","session_id":"...","latest_output":[...]}
+        linker.func_wrap(
+            "env",
+            "host_get_worker_status",
+            move |mut caller: WasmCaller,
+                  id_ptr: u32,
+                  id_len: u32,
+                  out_buf: u32,
+                  out_capacity: u32|
+                  -> u32 {
+                let worker_id = mem_read_str(&mut caller, id_ptr, id_len);
+                if worker_id.is_empty() {
+                    return 0;
+                }
+                let ctx = caller.data().clone();
+                let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
+                    (Some(r), Some(h)) => (r.clone(), h.clone()),
+                    _ => return 0,
+                };
+                let params = serde_json::json!({"worker_id": worker_id}).to_string();
+                let result = tokio::task::block_in_place(|| {
+                    handle.block_on(async { rpc.call("get_worker_status", &params).await })
+                });
+                write_result_to_wasm(result, &mut caller, out_buf, out_capacity)
+            },
+        )?;
 
-            let path = match safe_join(&dir, &key) {
-                Some(p) => p,
-                None => return 0, // blocked — treat as not found
-            };
-            let data = match std::fs::read(&path) {
-                Ok(d) => d,
-                Err(_) => return 0, // not found
-            };
-            let len = data.len().min(out_capacity as usize);
-            if let Some(mem) = mem_get(&mut caller) {
-                mem.write(&mut caller, out_buf as usize, &data[..len]).ok();
-            }
-            len as u32
-        }
-    )?;
+        // host_compact_now() -> u32
+        // Triggers immediate context compaction. Returns 0 on success.
+        linker.func_wrap(
+            "env",
+            "host_compact_now",
+            move |caller: WasmCaller| -> u32 {
+                let ctx = caller.data().clone();
+                let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
+                    (Some(r), Some(h)) => (r.clone(), h.clone()),
+                    _ => return 1,
+                };
+                let result = tokio::task::block_in_place(|| {
+                    handle.block_on(async { rpc.call("compact_now", "{}").await })
+                });
+                if result.is_ok() { 0 } else { 1 }
+            },
+        )?;
 
-    // ── Host: data_write (extension-specific data storage) ───────────────
-    // Write extension-specific data to the global data directory.
-    // Data is stored in: ~/.ion/agent/extensions-data/<ext_name>/<key>
-    // Signature: host_data_write(key_ptr, key_len, content_ptr, content_len) -> u32
-    //   Return codes: 0 = success, 1 = error (traversal blocked / IO failure).
-    linker.func_wrap("env", "host_data_write",
-        move |mut caller: WasmCaller,
-              key_ptr: u32, key_len: u32,
-              content_ptr: u32, content_len: u32| -> u32 {
-            let ctx = caller.data().clone();
-            let dir = paths::global_data_dir(&ctx.ext_name);
-            let key = mem_read_str(&mut caller, key_ptr, key_len);
-            let data = mem_read_bytes(&mut caller, content_ptr, content_len);
-
-            let final_path = match safe_join(&dir, &key) {
-                Some(p) => p,
-                None => return 1, // blocked
-            };
-            let tmp = final_path.with_extension("tmp");
-
-            if !dir.exists() && let Err(e) = std::fs::create_dir_all(&dir) {
-                tracing::warn!("[wasm] host_data_write: mkdir failed: {e}");
-                return 1;
-            }
-            if std::fs::write(&tmp, &data).is_err() { return 1; }
-            if std::fs::rename(&tmp, &final_path).is_err() { return 1; }
-            0 // success
-        }
-    )?;
-
-    // ── Agent state host functions (via AgentRpcHandle) ──────────────────
-    // These let WASM extensions query/modify agent state: token counts,
-    // messages, steer, LLM calls, worker status, compaction, worktrees.
-    // All use the same pattern: clone ctx → get agent_rpc → block_in_place.
-
-    // host_get_token_count(out_buf, out_cap) -> u32
-    // Returns JSON: {"total_tokens":N,"context_window":N,"usage_percent":N}
-    linker.func_wrap("env", "host_get_token_count",
-        move |mut caller: WasmCaller,
-              out_buf: u32, out_capacity: u32| -> u32 {
-            let ctx = caller.data().clone();
-            let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
-                (Some(r), Some(h)) => (r.clone(), h.clone()),
-                _ => return 0,
-            };
-            let result = tokio::task::block_in_place(|| {
-                handle.block_on(async { rpc.call("get_context_usage", "{}").await })
-            });
-            write_result_to_wasm(result, &mut caller, out_buf, out_capacity)
-        }
-    )?;
-
-    // host_get_messages(out_buf, out_cap) -> u32
-    // Returns JSON array of all messages (including thinking blocks).
-    linker.func_wrap("env", "host_get_messages",
-        move |mut caller: WasmCaller,
-              out_buf: u32, out_capacity: u32| -> u32 {
-            let ctx = caller.data().clone();
-            let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
-                (Some(r), Some(h)) => (r.clone(), h.clone()),
-                _ => return 0,
-            };
-            let result = tokio::task::block_in_place(|| {
-                handle.block_on(async { rpc.call("get_full_messages", "{}").await })
-            });
-            write_result_to_wasm(result, &mut caller, out_buf, out_capacity)
-        }
-    )?;
-
-    // host_get_state(out_buf, out_cap) -> u32
-    // Returns JSON: {"model":"...","message_count":N,"is_running":bool}
-    linker.func_wrap("env", "host_get_state",
-        move |mut caller: WasmCaller,
-              out_buf: u32, out_capacity: u32| -> u32 {
-            let ctx = caller.data().clone();
-            let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
-                (Some(r), Some(h)) => (r.clone(), h.clone()),
-                _ => return 0,
-            };
-            let result = tokio::task::block_in_place(|| {
-                handle.block_on(async { rpc.call("get_state", "{}").await })
-            });
-            write_result_to_wasm(result, &mut caller, out_buf, out_capacity)
-        }
-    )?;
-
-    // host_steer(text_ptr, text_len) -> u32
-    // Injects a steer message into the agent's steering queue.
-    // Returns 0 on success, 1 on error.
-    linker.func_wrap("env", "host_steer",
-        move |mut caller: WasmCaller,
-              text_ptr: u32, text_len: u32| -> u32 {
-            let text = mem_read_str(&mut caller, text_ptr, text_len);
-            if text.is_empty() { return 1; }
-            let ctx = caller.data().clone();
-            let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
-                (Some(r), Some(h)) => (r.clone(), h.clone()),
-                _ => return 1,
-            };
-            let params = serde_json::json!({"text": text}).to_string();
-            let result = tokio::task::block_in_place(|| {
-                handle.block_on(async { rpc.call("steer", &params).await })
-            });
-            if result.is_ok() { 0 } else { 1 }
-        }
-    )?;
-
-    // host_inject_follow_up(text_ptr, text_len) -> u32
-    // Injects a follow-up message (drives outer loop continuation).
-    linker.func_wrap("env", "host_inject_follow_up",
-        move |mut caller: WasmCaller,
-              text_ptr: u32, text_len: u32| -> u32 {
-            let text = mem_read_str(&mut caller, text_ptr, text_len);
-            if text.is_empty() { return 1; }
-            let ctx = caller.data().clone();
-            let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
-                (Some(r), Some(h)) => (r.clone(), h.clone()),
-                _ => return 1,
-            };
-            let params = serde_json::json!({"text": text}).to_string();
-            let result = tokio::task::block_in_place(|| {
-                handle.block_on(async { rpc.call("inject_follow_up", &params).await })
-            });
-            if result.is_ok() { 0 } else { 1 }
-        }
-    )?;
-
-    // host_llm_call(prompt_ptr, prompt_len, model_ptr, model_len, out_buf, out_cap) -> u32
-    // Calls a small LLM with a one-shot prompt. Returns the response text.
-    linker.func_wrap("env", "host_llm_call",
-        move |mut caller: WasmCaller,
-              prompt_ptr: u32, prompt_len: u32,
-              model_ptr: u32, model_len: u32,
-              out_buf: u32, out_capacity: u32| -> u32 {
-            let prompt = mem_read_str(&mut caller, prompt_ptr, prompt_len);
-            let model = mem_read_str(&mut caller, model_ptr, model_len);
-            if prompt.is_empty() { return 0; }
-            let ctx = caller.data().clone();
-            let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
-                (Some(r), Some(h)) => (r.clone(), h.clone()),
-                _ => return 0,
-            };
-            let params = serde_json::json!({
-                "prompt": prompt,
-                "model": if model.is_empty() { "fast" } else { &model }
-            }).to_string();
-            let result = tokio::task::block_in_place(|| {
-                handle.block_on(async { rpc.call("llm_call", &params).await })
-            });
-            write_result_to_wasm(result, &mut caller, out_buf, out_capacity)
-        }
-    )?;
-
-    // host_get_worker_status(id_ptr, id_len, out_buf, out_cap) -> u32
-    // Returns JSON: {"status":"...","session_id":"...","latest_output":[...]}
-    linker.func_wrap("env", "host_get_worker_status",
-        move |mut caller: WasmCaller,
-              id_ptr: u32, id_len: u32,
-              out_buf: u32, out_capacity: u32| -> u32 {
-            let worker_id = mem_read_str(&mut caller, id_ptr, id_len);
-            if worker_id.is_empty() { return 0; }
-            let ctx = caller.data().clone();
-            let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
-                (Some(r), Some(h)) => (r.clone(), h.clone()),
-                _ => return 0,
-            };
-            let params = serde_json::json!({"worker_id": worker_id}).to_string();
-            let result = tokio::task::block_in_place(|| {
-                handle.block_on(async { rpc.call("get_worker_status", &params).await })
-            });
-            write_result_to_wasm(result, &mut caller, out_buf, out_capacity)
-        }
-    )?;
-
-    // host_compact_now() -> u32
-    // Triggers immediate context compaction. Returns 0 on success.
-    linker.func_wrap("env", "host_compact_now",
-        move |caller: WasmCaller| -> u32 {
-            let ctx = caller.data().clone();
-            let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
-                (Some(r), Some(h)) => (r.clone(), h.clone()),
-                _ => return 1,
-            };
-            let result = tokio::task::block_in_place(|| {
-                handle.block_on(async { rpc.call("compact_now", "{}").await })
-            });
-            if result.is_ok() { 0 } else { 1 }
-        }
-    )?;
-
-    // host_create_worktree(branch_ptr, branch_len, out_buf, out_cap) -> u32
-    // Creates a git worktree for isolated work. Returns the worktree path.
-    linker.func_wrap("env", "host_create_worktree",
-        move |mut caller: WasmCaller,
-              branch_ptr: u32, branch_len: u32,
-              out_buf: u32, out_capacity: u32| -> u32 {
-            let branch = mem_read_str(&mut caller, branch_ptr, branch_len);
-            let ctx = caller.data().clone();
-            let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
-                (Some(r), Some(h)) => (r.clone(), h.clone()),
-                _ => return 0,
-            };
-            let params = serde_json::json!({"branch": branch}).to_string();
-            let result = tokio::task::block_in_place(|| {
-                handle.block_on(async { rpc.call("create_worktree", &params).await })
-            });
-            write_result_to_wasm(result, &mut caller, out_buf, out_capacity)
-        }
-    )?;
+        // host_create_worktree(branch_ptr, branch_len, out_buf, out_cap) -> u32
+        // Creates a git worktree for isolated work. Returns the worktree path.
+        linker.func_wrap(
+            "env",
+            "host_create_worktree",
+            move |mut caller: WasmCaller,
+                  branch_ptr: u32,
+                  branch_len: u32,
+                  out_buf: u32,
+                  out_capacity: u32|
+                  -> u32 {
+                let branch = mem_read_str(&mut caller, branch_ptr, branch_len);
+                let ctx = caller.data().clone();
+                let (rpc, handle) = match (ctx.agent_rpc.as_ref(), ctx.tokio_handle.as_ref()) {
+                    (Some(r), Some(h)) => (r.clone(), h.clone()),
+                    _ => return 0,
+                };
+                let params = serde_json::json!({"branch": branch}).to_string();
+                let result = tokio::task::block_in_place(|| {
+                    handle.block_on(async { rpc.call("create_worktree", &params).await })
+                });
+                write_result_to_wasm(result, &mut caller, out_buf, out_capacity)
+            },
+        )?;
 
         // ── Register data dimension host functions (4 dims × 4 ops = 16) ───
-        register_dim(&mut linker, "global".into(), |ctx| paths::global_data_dir(&ctx.ext_name))?;
-        register_dim(&mut linker, "project".into(), |ctx| paths::project_data_dir(&ctx.cwd, &ctx.ext_name))?;
-        register_dim(&mut linker, "project_local".into(), |ctx| paths::project_local_data_dir(&ctx.project_root, &ctx.ext_name))?;
-        register_dim(&mut linker, "session".into(), |ctx| paths::session_data_dir(&ctx.cwd, &ctx.session_id, &ctx.ext_name))?;
+        register_dim(&mut linker, "global".into(), |ctx| {
+            paths::global_data_dir(&ctx.ext_name)
+        })?;
+        register_dim(&mut linker, "project".into(), |ctx| {
+            paths::project_data_dir(&ctx.cwd, &ctx.ext_name)
+        })?;
+        register_dim(&mut linker, "project_local".into(), |ctx| {
+            paths::project_local_data_dir(&ctx.project_root, &ctx.ext_name)
+        })?;
+        register_dim(&mut linker, "session".into(), |ctx| {
+            paths::session_data_dir(&ctx.cwd, &ctx.session_id, &ctx.ext_name)
+        })?;
 
         linker.define(&mut store, "env", "memory", memory)?;
         let instance = linker.instantiate(&mut store, &module)?;
@@ -892,7 +1044,9 @@ impl Extension {
         };
 
         // Call version (extension_version or legacy plugin_version)
-        if let Ok(func) =  ext.get_export_func::<(), u32>("version") && let Ok(ver) = func.call(&mut ext.store, ()) {
+        if let Ok(func) = ext.get_export_func::<(), u32>("version")
+            && let Ok(ver) = func.call(&mut ext.store, ())
+        {
             ext.version = ver;
             tracing::info!("[wasm] extension v{ver}");
         }
@@ -909,7 +1063,12 @@ impl Extension {
             ext.tools = t.clone();
         }
         let tool_names: Vec<&str> = ext.tools.iter().map(|t| t.name.as_str()).collect();
-        tracing::info!("[wasm] extension v{} registered {} tools: {:?}", ext.version, ext.tools.len(), tool_names);
+        tracing::info!(
+            "[wasm] extension v{} registered {} tools: {:?}",
+            ext.version,
+            ext.tools.len(),
+            tool_names
+        );
 
         Ok(ext)
     }
@@ -931,10 +1090,15 @@ impl Extension {
         Results: wasmtime::WasmResults,
     {
         let name = format!("extension_{}", short_name);
-        self.instance.get_typed_func::<Params, Results>(&mut self.store, &name)
+        self.instance
+            .get_typed_func::<Params, Results>(&mut self.store, &name)
     }
 
-    pub fn execute_tool(&mut self, name: &str, args: &str) -> Result<String, Box<dyn std::error::Error>> {
+    pub fn execute_tool(
+        &mut self,
+        name: &str,
+        args: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
         let func = self.get_export_func::<(u32, u32, u32, u32, u32, u32), u32>("execute_tool")?;
 
         let name_bytes = name.as_bytes();
@@ -946,14 +1110,26 @@ impl Extension {
         let out_offset = args_offset + args_len;
         let out_capacity = 4096u32;
 
-        self.memory.write(&mut self.store, name_offset as usize, name_bytes)?;
-        self.memory.write(&mut self.store, args_offset as usize, args_bytes)?;
+        self.memory
+            .write(&mut self.store, name_offset as usize, name_bytes)?;
+        self.memory
+            .write(&mut self.store, args_offset as usize, args_bytes)?;
 
-        let result_len = func.call(&mut self.store,
-            (name_offset, name_len, args_offset, args_len, out_offset, out_capacity))?;
+        let result_len = func.call(
+            &mut self.store,
+            (
+                name_offset,
+                name_len,
+                args_offset,
+                args_len,
+                out_offset,
+                out_capacity,
+            ),
+        )?;
 
         let mut buf = vec![0u8; result_len as usize];
-        self.memory.read(&mut self.store, out_offset as usize, &mut buf)?;
+        self.memory
+            .read(&mut self.store, out_offset as usize, &mut buf)?;
         Ok(String::from_utf8_lossy(&buf).to_string())
     }
 
@@ -995,7 +1171,10 @@ impl Extension {
             .map_err(|e| format!("mem write: {e}"))?;
 
         let result_len = func
-            .call(&mut self.store, (DATA_OFFSET, json_len, out_offset, out_capacity))
+            .call(
+                &mut self.store,
+                (DATA_OFFSET, json_len, out_offset, out_capacity),
+            )
             .map_err(|e| format!("wasm {}: {e}", hook))?;
 
         if result_len == 0 {
@@ -1031,11 +1210,7 @@ impl Extension {
     /// Call extension_rpc hook.
     /// WASM export: `extension_on_rpc` (legacy: `plugin_on_extension_rpc`).
     /// Returns Err if hook not exported or returned 0.
-    pub fn call_hook_rpc(
-        &mut self,
-        method: &str,
-        params_json: &str,
-    ) -> Result<String, String> {
+    pub fn call_hook_rpc(&mut self, method: &str, params_json: &str) -> Result<String, String> {
         let func = match self.get_export_func::<(u32, u32, u32, u32, u32, u32), u32>("on_rpc") {
             Ok(f) => f,
             Err(_) => return Err("extension rpc method not found".into()),
@@ -1049,20 +1224,33 @@ impl Extension {
         let out_offset = params_offset + params_len + 4;
         let out_capacity: u32 = 65_536;
 
-        self.memory.write(&mut self.store, method_offset as usize, method_bytes)
+        self.memory
+            .write(&mut self.store, method_offset as usize, method_bytes)
             .map_err(|e| format!("mem write: {e}"))?;
-        self.memory.write(&mut self.store, params_offset as usize, params_bytes)
+        self.memory
+            .write(&mut self.store, params_offset as usize, params_bytes)
             .map_err(|e| format!("mem write: {e}"))?;
 
-        let result_len = func.call(&mut self.store,
-            (method_offset, method_len, params_offset, params_len, out_offset, out_capacity))
+        let result_len = func
+            .call(
+                &mut self.store,
+                (
+                    method_offset,
+                    method_len,
+                    params_offset,
+                    params_len,
+                    out_offset,
+                    out_capacity,
+                ),
+            )
             .map_err(|e| format!("wasm rpc: {e}"))?;
 
         if result_len == 0 {
             return Err("extension rpc method not found".into());
         }
         let mut buf = vec![0u8; result_len as usize];
-        self.memory.read(&mut self.store, out_offset as usize, &mut buf)
+        self.memory
+            .read(&mut self.store, out_offset as usize, &mut buf)
             .map_err(|e| format!("mem read: {e}"))?;
         Ok(String::from_utf8_lossy(&buf).to_string())
     }
@@ -1249,18 +1437,36 @@ pub struct ToolAdapter {
 
 #[async_trait]
 impl Tool for ToolAdapter {
-    fn name(&self) -> &str { &self.name }
-    fn description(&self) -> &str { &self.description }
-    fn parameters(&self) -> serde_json::Value { self.parameters.clone() }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+    fn parameters(&self) -> serde_json::Value {
+        self.parameters.clone()
+    }
 
-    async fn execute(&self, args: serde_json::Value, _rt: &dyn crate::runtime::Runtime) -> AgentResult<String> {
-        let ext_arc = self.registry.get_extension(&self.extension_path)
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let ext_arc = self
+            .registry
+            .get_extension(&self.extension_path)
             .ok_or_else(|| AgentError::Tool("extension no longer loaded".into()))?;
 
-        let mut ext = ext_arc.lock().map_err(|e| AgentError::Tool(e.to_string()))?;
+        let mut ext = ext_arc
+            .lock()
+            .map_err(|e| AgentError::Tool(e.to_string()))?;
 
         // Inject context into the WASM store so data host functions can path‑resolve
-        let reg_ctx = self.registry.ctx.read().map_err(|e| AgentError::Tool(e.to_string()))?;
+        let reg_ctx = self
+            .registry
+            .ctx
+            .read()
+            .map_err(|e| AgentError::Tool(e.to_string()))?;
         let exec_ctx = make_exec_context(&reg_ctx, &self.ext_name);
         drop(reg_ctx);
         ext.set_context(&exec_ctx);
@@ -1308,18 +1514,24 @@ fn mem_get(caller: &mut WasmCaller) -> Option<wasmtime::Memory> {
 }
 
 fn mem_read_str(caller: &mut WasmCaller, ptr: u32, len: u32) -> String {
-    if len == 0 { return String::new(); }
+    if len == 0 {
+        return String::new();
+    }
     let mem = match caller.get_export("memory") {
         Some(wasmtime::Extern::Memory(m)) => m,
         _ => return String::new(),
     };
     let mut buf = vec![0u8; len as usize];
     mem.read(caller, ptr as usize, &mut buf).ok();
-    String::from_utf8_lossy(&buf).trim_end_matches('\0').to_string()
+    String::from_utf8_lossy(&buf)
+        .trim_end_matches('\0')
+        .to_string()
 }
 
 fn mem_read_bytes(caller: &mut WasmCaller, ptr: u32, len: u32) -> Vec<u8> {
-    if len == 0 { return Vec::new(); }
+    if len == 0 {
+        return Vec::new();
+    }
     let mem = match caller.get_export("memory") {
         Some(wasmtime::Extern::Memory(m)) => m,
         _ => return Vec::new(),
@@ -1364,7 +1576,12 @@ fn safe_join(dir: &std::path::Path, key: &str) -> Option<std::path::PathBuf> {
     if canon.starts_with(&dir_canon) {
         Some(canon)
     } else {
-        tracing::warn!("[extension] path traversal blocked: {} → {} (outside {})", key, canon.display(), dir_canon.display());
+        tracing::warn!(
+            "[extension] path traversal blocked: {} → {} (outside {})",
+            key,
+            canon.display(),
+            dir_canon.display()
+        );
         None
     }
 }
@@ -1407,7 +1624,9 @@ mod path_safety_tests {
         let dir = std::path::Path::new("/home/user/.ion/data");
         assert_eq!(
             safe_join(dir, "subdir/mykey"),
-            Some(std::path::PathBuf::from("/home/user/.ion/data/subdir/mykey"))
+            Some(std::path::PathBuf::from(
+                "/home/user/.ion/data/subdir/mykey"
+            ))
         );
     }
 
@@ -1465,10 +1684,7 @@ mod path_safety_tests {
     #[test]
     fn canonicalize_path_str_resolves_dots() {
         let p = std::path::Path::new("/a/b/../c/./d");
-        assert_eq!(
-            canonicalize_path_str(p),
-            std::path::PathBuf::from("/a/c/d")
-        );
+        assert_eq!(canonicalize_path_str(p), std::path::PathBuf::from("/a/c/d"));
     }
 
     // ── Host function logic tests (without WASM instantiation) ────────────
@@ -1581,10 +1797,15 @@ fn register_dim(
 
     // ── write ─────────────────────────────────────────────────────────────
     let fname_w = format!("host_write_{dim_name_write}_data");
-    linker.func_wrap("env", &fname_w,
+    linker.func_wrap(
+        "env",
+        &fname_w,
         move |mut caller: WasmCaller,
-              key_ptr: u32, key_len: u32,
-              data_ptr: u32, data_len: u32| -> u32 {
+              key_ptr: u32,
+              key_len: u32,
+              data_ptr: u32,
+              data_len: u32|
+              -> u32 {
             let ctx = caller.data().clone();
             let dir = dir_fn(&ctx);
             let key = mem_read_str(&mut caller, key_ptr, key_len);
@@ -1597,22 +1818,33 @@ fn register_dim(
             };
             let tmp = final_path.with_extension("tmp");
 
-            if !dir.exists() && let Err(e) = std::fs::create_dir_all(&dir) {
+            if !dir.exists()
+                && let Err(e) = std::fs::create_dir_all(&dir)
+            {
                 tracing::warn!("[extension] write:{dim_name_write} mkdir failed: {e}");
                 return 1;
             }
-            if std::fs::write(&tmp, &data).is_err() { return 1; }
-            if std::fs::rename(&tmp, &final_path).is_err() { return 1; }
+            if std::fs::write(&tmp, &data).is_err() {
+                return 1;
+            }
+            if std::fs::rename(&tmp, &final_path).is_err() {
+                return 1;
+            }
             0 // success
-        }
+        },
     )?;
 
     // ── read ──────────────────────────────────────────────────────────────
     let fname_r = format!("host_read_{dim_name_read}_data");
-    linker.func_wrap("env", &fname_r,
+    linker.func_wrap(
+        "env",
+        &fname_r,
         move |mut caller: WasmCaller,
-              key_ptr: u32, key_len: u32,
-              out_buf: u32, out_capacity: u32| -> u32 {
+              key_ptr: u32,
+              key_len: u32,
+              out_buf: u32,
+              out_capacity: u32|
+              -> u32 {
             let ctx = caller.data().clone();
             let dir = dir_fn(&ctx);
             let key = mem_read_str(&mut caller, key_ptr, key_len);
@@ -1631,14 +1863,15 @@ fn register_dim(
                 mem.write(&mut caller, out_buf as usize, &data[..len]).ok();
             }
             len as u32
-        }
+        },
     )?;
 
     // ── delete ────────────────────────────────────────────────────────────
     let fname_d = format!("host_delete_{dim_name_delete}_data");
-    linker.func_wrap("env", &fname_d,
-        move |mut caller: WasmCaller,
-              key_ptr: u32, key_len: u32| -> u32 {
+    linker.func_wrap(
+        "env",
+        &fname_d,
+        move |mut caller: WasmCaller, key_ptr: u32, key_len: u32| -> u32 {
             let ctx = caller.data().clone();
             let dir = dir_fn(&ctx);
             let key = mem_read_str(&mut caller, key_ptr, key_len);
@@ -1652,14 +1885,15 @@ fn register_dim(
                 Ok(_) => 0,
                 Err(_) => 1,
             }
-        }
+        },
     )?;
 
     // ── list ──────────────────────────────────────────────────────────────
     let fname_l = format!("host_list_{dim_name_list}_data");
-    linker.func_wrap("env", &fname_l,
-        move |mut caller: WasmCaller,
-              out_buf: u32, out_capacity: u32| -> u32 {
+    linker.func_wrap(
+        "env",
+        &fname_l,
+        move |mut caller: WasmCaller, out_buf: u32, out_capacity: u32| -> u32 {
             let ctx = caller.data().clone();
             let dir = dir_fn(&ctx);
             let entries: Vec<String> = match std::fs::read_dir(&dir) {
@@ -1679,7 +1913,7 @@ fn register_dim(
                 mem.write(&mut caller, out_buf as usize, &bytes[..len]).ok();
             }
             len as u32
-        }
+        },
     )?;
 
     Ok(())
@@ -1691,9 +1925,9 @@ fn register_dim(
 
 use crate::agent::agent_loop::AgentContext;
 use crate::agent::extension::{
-    Extension as ExtTrait, BeforeAgentContext, InputContext,
-    ModelSelectContext, ProviderRequestContext, ProviderResponseContext,
-    SessionContext, ToolExecutionContext, TurnContext,
+    BeforeAgentContext, Extension as ExtTrait, InputContext, ModelSelectContext,
+    ProviderRequestContext, ProviderResponseContext, SessionContext, ToolExecutionContext,
+    TurnContext,
 };
 use crate::agent::messages::Message;
 use ion_provider::types::{ToolCall, ToolResult, Usage};
@@ -1723,9 +1957,15 @@ impl HookAdapter {
     where
         F: FnOnce(&mut Extension) -> R,
     {
-        let ext_arc = self.registry
+        let ext_arc = self
+            .registry
             .get_extension(&self.canonical_path)
-            .ok_or_else(|| AgentError::Tool(format!("extension no longer loaded: {}", self.canonical_path)))?;
+            .ok_or_else(|| {
+                AgentError::Tool(format!(
+                    "extension no longer loaded: {}",
+                    self.canonical_path
+                ))
+            })?;
         let mut ext = ext_arc
             .lock()
             .map_err(|e| AgentError::Tool(e.to_string()))?;
@@ -1744,15 +1984,21 @@ impl HookAdapter {
     /// B-class: one-way notification. No-op if hook not exported.
     fn notify(&self, hook: &str, ctx_json: &serde_json::Value) -> AgentResult<()> {
         let json_str = serde_json::to_string(ctx_json).unwrap_or_default();
-        let result: Result<bool, String> = self.with_plugin(|p| p.call_hook_notify(hook, &json_str))?;
+        let result: Result<bool, String> =
+            self.with_plugin(|p| p.call_hook_notify(hook, &json_str))?;
         result.map_err(AgentError::Tool)?;
         Ok(())
     }
 
     /// A-class: mutable context. Returns modified JSON or None.
-    fn call_mut(&self, hook: &str, ctx_json: &serde_json::Value) -> AgentResult<Option<serde_json::Value>> {
+    fn call_mut(
+        &self,
+        hook: &str,
+        ctx_json: &serde_json::Value,
+    ) -> AgentResult<Option<serde_json::Value>> {
         let json_str = serde_json::to_string(ctx_json).unwrap_or_default();
-        let result: Result<Option<String>, String> = self.with_plugin(|p| p.call_hook_mut(hook, &json_str))?;
+        let result: Result<Option<String>, String> =
+            self.with_plugin(|p| p.call_hook_mut(hook, &json_str))?;
         match result.map_err(AgentError::Tool)? {
             None => Ok(None),
             Some(s) => {
@@ -1766,7 +2012,8 @@ impl HookAdapter {
     /// C-class: boolean status. Returns false if hook not exported.
     fn call_status(&self, hook: &str, ctx_json: &serde_json::Value) -> AgentResult<bool> {
         let json_str = serde_json::to_string(ctx_json).unwrap_or_default();
-        let result: Result<bool, String> = self.with_plugin(|p| p.call_hook_status(hook, &json_str))?;
+        let result: Result<bool, String> =
+            self.with_plugin(|p| p.call_hook_status(hook, &json_str))?;
         result.map_err(AgentError::Tool)
     }
 }
@@ -1779,16 +2026,28 @@ impl ExtTrait for HookAdapter {
 
     // ── Session lifecycle ──
     async fn on_session_start(&self, ctx: &SessionContext) -> AgentResult<()> {
-        self.notify("on_session_start", &serde_json::json!({"reason": &ctx.reason}))
+        self.notify(
+            "on_session_start",
+            &serde_json::json!({"reason": &ctx.reason}),
+        )
     }
 
     async fn on_session_shutdown(&self, ctx: &SessionContext) -> AgentResult<()> {
-        self.notify("on_session_shutdown", &serde_json::json!({"reason": &ctx.reason}))
+        self.notify(
+            "on_session_shutdown",
+            &serde_json::json!({"reason": &ctx.reason}),
+        )
     }
 
     async fn on_session_before_compact(&self, msgs: &mut Vec<Message>) -> AgentResult<()> {
-        let result = self.call_mut("on_session_before_compact", &serde_json::json!({"messages": msgs}))?;
-        if let Some(v) = result && let Some(m) = v.get("messages") && let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok() {
+        let result = self.call_mut(
+            "on_session_before_compact",
+            &serde_json::json!({"messages": msgs}),
+        )?;
+        if let Some(v) = result
+            && let Some(m) = v.get("messages")
+            && let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok()
+        {
             *msgs = new_msgs;
         }
         Ok(())
@@ -1796,7 +2055,10 @@ impl ExtTrait for HookAdapter {
 
     async fn on_session_compact(&self, msgs: &mut Vec<Message>) -> AgentResult<()> {
         let result = self.call_mut("on_session_compact", &serde_json::json!({"messages": msgs}))?;
-        if let Some(v) = result && let Some(m) = v.get("messages") && let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok() {
+        if let Some(v) = result
+            && let Some(m) = v.get("messages")
+            && let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok()
+        {
             *msgs = new_msgs;
         }
         Ok(())
@@ -1828,7 +2090,9 @@ impl ExtTrait for HookAdapter {
             if let Some(sp) = v.get("system_prompt").and_then(|v| v.as_str()) {
                 ctx.system_prompt = Some(sp.to_string());
             }
-            if let Some(m) = v.get("messages") && let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok() {
+            if let Some(m) = v.get("messages")
+                && let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok()
+            {
                 ctx.messages = new_msgs;
             }
         }
@@ -1836,19 +2100,25 @@ impl ExtTrait for HookAdapter {
     }
 
     async fn on_agent_start(&self, ctx: &AgentContext) -> AgentResult<()> {
-        self.notify("on_agent_start", &serde_json::json!({
-            "turn_index": ctx.turn_index,
-            "message_count": ctx.message_count,
-            "tool_call_count": ctx.tool_call_count,
-        }))
+        self.notify(
+            "on_agent_start",
+            &serde_json::json!({
+                "turn_index": ctx.turn_index,
+                "message_count": ctx.message_count,
+                "tool_call_count": ctx.tool_call_count,
+            }),
+        )
     }
 
     async fn on_agent_end(&self, ctx: &AgentContext) -> AgentResult<()> {
-        self.notify("on_agent_end", &serde_json::json!({
-            "turn_index": ctx.turn_index,
-            "message_count": ctx.message_count,
-            "tool_call_count": ctx.tool_call_count,
-        }))
+        self.notify(
+            "on_agent_end",
+            &serde_json::json!({
+                "turn_index": ctx.turn_index,
+                "message_count": ctx.message_count,
+                "tool_call_count": ctx.tool_call_count,
+            }),
+        )
     }
 
     // ── Turn lifecycle ──
@@ -1860,54 +2130,80 @@ impl ExtTrait for HookAdapter {
             "stop_reason": &ctx.stop_reason,
         });
         let result = self.call_mut("on_turn_start", &payload)?;
-        if let Some(v) = result && let Some(m) = v.get("messages") && let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok() {
+        if let Some(v) = result
+            && let Some(m) = v.get("messages")
+            && let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok()
+        {
             ctx.messages = new_msgs;
         }
         Ok(())
     }
 
     async fn on_turn_end(&self, ctx: &TurnContext) -> AgentResult<()> {
-        self.notify("on_turn_end", &serde_json::json!({
-            "turn_index": ctx.turn_index,
-            "has_tool_calls": ctx.has_tool_calls,
-            "stop_reason": &ctx.stop_reason,
-        }))
+        self.notify(
+            "on_turn_end",
+            &serde_json::json!({
+                "turn_index": ctx.turn_index,
+                "has_tool_calls": ctx.has_tool_calls,
+                "stop_reason": &ctx.stop_reason,
+            }),
+        )
     }
 
     // ── Context / Provider ──
     async fn on_context(&self, messages: &mut Vec<Message>) -> AgentResult<()> {
         let result = self.call_mut("on_context", &serde_json::json!({"messages": messages}))?;
-        if let Some(v) = result && let Some(m) = v.get("messages") && let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok() {
+        if let Some(v) = result
+            && let Some(m) = v.get("messages")
+            && let Some(new_msgs) = serde_json::from_value::<Vec<Message>>(m.clone()).ok()
+        {
             *messages = new_msgs;
         }
         Ok(())
     }
 
     async fn before_provider_request(&self, ctx: &ProviderRequestContext) -> AgentResult<()> {
-        self.notify("before_provider_request", &serde_json::json!({
-            "model": &ctx.model,
-            "provider": &ctx.provider,
-        }))
+        self.notify(
+            "before_provider_request",
+            &serde_json::json!({
+                "model": &ctx.model,
+                "provider": &ctx.provider,
+            }),
+        )
     }
 
     async fn after_provider_response(&self, ctx: &ProviderResponseContext) -> AgentResult<()> {
-        self.notify("after_provider_response", &serde_json::json!({
-            "model": &ctx.model,
-            "provider": &ctx.provider,
-            "status": ctx.status,
-        }))
+        self.notify(
+            "after_provider_response",
+            &serde_json::json!({
+                "model": &ctx.model,
+                "provider": &ctx.provider,
+                "status": ctx.status,
+            }),
+        )
     }
 
     // ── Streaming ──
     async fn on_message_start(&self, role: &str, content: &str) -> AgentResult<()> {
-        self.notify("on_message_start", &serde_json::json!({"role": role, "content": content}))
+        self.notify(
+            "on_message_start",
+            &serde_json::json!({"role": role, "content": content}),
+        )
     }
 
     async fn on_message_delta(&self, delta: &str, role: &str) -> AgentResult<()> {
-        self.notify("on_message_delta", &serde_json::json!({"delta": delta, "role": role}))
+        self.notify(
+            "on_message_delta",
+            &serde_json::json!({"delta": delta, "role": role}),
+        )
     }
 
-    async fn on_message_end(&self, role: &str, full_content: &str, usage: &Usage) -> AgentResult<()> {
+    async fn on_message_end(
+        &self,
+        role: &str,
+        full_content: &str,
+        usage: &Usage,
+    ) -> AgentResult<()> {
         self.notify("on_message_end", &serde_json::json!({
             "role": role,
             "content": full_content,
@@ -1924,7 +2220,10 @@ impl ExtTrait for HookAdapter {
     }
 
     async fn on_tool_call_delta(&self, delta: &str, name: &str) -> AgentResult<()> {
-        self.notify("on_tool_call_delta", &serde_json::json!({"delta": delta, "name": name}))
+        self.notify(
+            "on_tool_call_delta",
+            &serde_json::json!({"delta": delta, "name": name}),
+        )
     }
 
     async fn on_text_end(&self, content: &str) -> AgentResult<()> {
@@ -1932,45 +2231,64 @@ impl ExtTrait for HookAdapter {
     }
 
     async fn on_tool_call_end(&self, tool_call: &ToolCall) -> AgentResult<()> {
-        self.notify("on_tool_call_end", &serde_json::json!({
-            "id": &tool_call.id,
-            "name": &tool_call.name,
-            "arguments": &tool_call.arguments,
-        }))
+        self.notify(
+            "on_tool_call_end",
+            &serde_json::json!({
+                "id": &tool_call.id,
+                "name": &tool_call.name,
+                "arguments": &tool_call.arguments,
+            }),
+        )
     }
 
     // ── Tool execution ──
     async fn on_tool_execution_start(&self, ctx: &ToolExecutionContext) -> AgentResult<()> {
-        self.notify("on_tool_execution_start", &serde_json::json!({
-            "tool_call_id": &ctx.tool_call_id,
-            "tool_name": &ctx.tool_name,
-            "is_error": ctx.is_error,
-        }))
+        self.notify(
+            "on_tool_execution_start",
+            &serde_json::json!({
+                "tool_call_id": &ctx.tool_call_id,
+                "tool_name": &ctx.tool_name,
+                "is_error": ctx.is_error,
+            }),
+        )
     }
 
-    async fn on_tool_execution_update(&self, ctx: &ToolExecutionContext, partial: &str) -> AgentResult<()> {
-        self.notify("on_tool_execution_update", &serde_json::json!({
-            "tool_call_id": &ctx.tool_call_id,
-            "tool_name": &ctx.tool_name,
-            "partial": partial,
-        }))
+    async fn on_tool_execution_update(
+        &self,
+        ctx: &ToolExecutionContext,
+        partial: &str,
+    ) -> AgentResult<()> {
+        self.notify(
+            "on_tool_execution_update",
+            &serde_json::json!({
+                "tool_call_id": &ctx.tool_call_id,
+                "tool_name": &ctx.tool_name,
+                "partial": partial,
+            }),
+        )
     }
 
     async fn on_tool_execution_end(&self, ctx: &ToolExecutionContext) -> AgentResult<()> {
-        self.notify("on_tool_execution_end", &serde_json::json!({
-            "tool_call_id": &ctx.tool_call_id,
-            "tool_name": &ctx.tool_name,
-            "is_error": ctx.is_error,
-            "duration_ms": ctx.duration_ms,
-        }))
+        self.notify(
+            "on_tool_execution_end",
+            &serde_json::json!({
+                "tool_call_id": &ctx.tool_call_id,
+                "tool_name": &ctx.tool_name,
+                "is_error": ctx.is_error,
+                "duration_ms": ctx.duration_ms,
+            }),
+        )
     }
 
     async fn before_tool_call(&self, call: &mut ToolCall) -> AgentResult<()> {
-        let blocked = self.call_status("before_tool_call", &serde_json::json!({
-            "id": &call.id,
-            "name": &call.name,
-            "arguments": &call.arguments,
-        }))?;
+        let blocked = self.call_status(
+            "before_tool_call",
+            &serde_json::json!({
+                "id": &call.id,
+                "name": &call.name,
+                "arguments": &call.arguments,
+            }),
+        )?;
         if blocked {
             return Err(AgentError::Tool(format!(
                 "blocked by extension '{}'",
@@ -1981,45 +2299,66 @@ impl ExtTrait for HookAdapter {
     }
 
     async fn after_tool_call(&self, call: &ToolCall, result: &mut ToolResult) -> AgentResult<()> {
-        self.notify("after_tool_call", &serde_json::json!({
-            "id": &call.id,
-            "name": &call.name,
-            "result": &result.output,
-        }))
+        self.notify(
+            "after_tool_call",
+            &serde_json::json!({
+                "id": &call.id,
+                "name": &call.name,
+                "result": &result.output,
+            }),
+        )
     }
 
     // ── Model ──
     async fn on_model_select(&self, ctx: &mut ModelSelectContext) -> AgentResult<()> {
-        self.notify("on_model_select", &serde_json::json!({
-            "old_model": &ctx.old_model,
-            "new_model": &ctx.new_model,
-            "new_provider": &ctx.new_provider,
-        }))
+        self.notify(
+            "on_model_select",
+            &serde_json::json!({
+                "old_model": &ctx.old_model,
+                "new_model": &ctx.new_model,
+                "new_provider": &ctx.new_provider,
+            }),
+        )
     }
 
     async fn on_thinking_level_select(&self, level: &str, old: Option<&str>) -> AgentResult<()> {
-        self.notify("on_thinking_level_select", &serde_json::json!({
-            "level": level,
-            "old": old,
-        }))
+        self.notify(
+            "on_thinking_level_select",
+            &serde_json::json!({
+                "level": level,
+                "old": old,
+            }),
+        )
     }
 
     // ── Entries ──
     async fn on_entries_invalidated(&self, entry_ids: &[String]) -> AgentResult<()> {
-        self.notify("on_entries_invalidated", &serde_json::json!({"entry_ids": entry_ids}))
+        self.notify(
+            "on_entries_invalidated",
+            &serde_json::json!({"entry_ids": entry_ids}),
+        )
     }
 
     // ── Session navigation ──
-    async fn on_session_before_switch(&self, ctx: &super::agent::extension::SessionSwitchContext) -> AgentResult<()> {
+    async fn on_session_before_switch(
+        &self,
+        ctx: &super::agent::extension::SessionSwitchContext,
+    ) -> AgentResult<()> {
         self.notify("on_session_before_switch", &serde_json::json!({"target_leaf_id": ctx.target_leaf_id, "source_leaf_id": ctx.source_leaf_id, "branch_name": ctx.branch_name}))
     }
 
-    async fn on_session_before_fork(&self, ctx: &super::agent::extension::SessionSwitchContext) -> AgentResult<()> {
+    async fn on_session_before_fork(
+        &self,
+        ctx: &super::agent::extension::SessionSwitchContext,
+    ) -> AgentResult<()> {
         self.notify("on_session_before_fork", &serde_json::json!({"target_leaf_id": ctx.target_leaf_id, "source_leaf_id": ctx.source_leaf_id, "branch_name": ctx.branch_name}))
     }
 
     async fn on_session_before_tree(&self, target: &str) -> AgentResult<()> {
-        self.notify("on_session_before_tree", &serde_json::json!({"target": target}))
+        self.notify(
+            "on_session_before_tree",
+            &serde_json::json!({"target": target}),
+        )
     }
 
     async fn on_session_tree(&self, leaf_id: &str) -> AgentResult<()> {
@@ -2033,9 +2372,8 @@ impl ExtTrait for HookAdapter {
         params: serde_json::Value,
     ) -> AgentResult<serde_json::Value> {
         let params_str = serde_json::to_string(&params).unwrap_or_default();
-        let result: Result<String, String> = self.with_plugin(|p| {
-            p.call_hook_rpc(method, &params_str)
-        })?;
+        let result: Result<String, String> =
+            self.with_plugin(|p| p.call_hook_rpc(method, &params_str))?;
         let result_str = result.map_err(AgentError::Tool)?;
         let result_json = serde_json::from_str(&result_str)
             .map_err(|e| AgentError::Tool(format!("wasm rpc bad json: {e}")))?;
@@ -2044,12 +2382,17 @@ impl ExtTrait for HookAdapter {
 
     // ── Permission ──
     async fn on_permission_request(&self, tool: &str, args: &serde_json::Value) -> AgentResult<()> {
-        self.notify("on_permission_request", &serde_json::json!({"tool": tool, "args": args}))
+        self.notify(
+            "on_permission_request",
+            &serde_json::json!({"tool": tool, "args": args}),
+        )
     }
 
     async fn on_system_prompt(&self, prompt: &mut String) -> AgentResult<()> {
         let result = self.call_mut("on_system_prompt", &serde_json::json!({"prompt": &*prompt}))?;
-        if let Some(v) = result && let Some(p) = v.get("prompt").and_then(|v| v.as_str()) {
+        if let Some(v) = result
+            && let Some(p) = v.get("prompt").and_then(|v| v.as_str())
+        {
             *prompt = p.to_string();
         }
         Ok(())

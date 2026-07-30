@@ -47,10 +47,18 @@ impl Default for WorkflowDefaults {
     }
 }
 
-fn default_max_retries() -> u32 { 3 }
-fn default_max_loops() -> u32 { 3 }
-fn default_true() -> bool { true }
-fn default_false() -> bool { false }
+fn default_max_retries() -> u32 {
+    3
+}
+fn default_max_loops() -> u32 {
+    3
+}
+fn default_true() -> bool {
+    true
+}
+fn default_false() -> bool {
+    false
+}
 
 // ---------------------------------------------------------------------------
 // Stage
@@ -93,7 +101,9 @@ pub struct WorkflowStage {
     pub status: String,
 }
 
-fn default_status() -> String { "pending".into() }
+fn default_status() -> String {
+    "pending".into()
+}
 
 /// Gate 校验
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -105,7 +115,9 @@ pub struct WorkflowGate {
     pub max_retries: Option<u32>,
 }
 
-fn default_expected() -> String { "PASS".into() }
+fn default_expected() -> String {
+    "PASS".into()
+}
 
 /// 失败处理
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -131,8 +143,8 @@ pub struct WorkflowCleanup {
 impl WorkflowConfig {
     /// 从 YAML 字符串解析
     pub fn parse(yaml: &str) -> Result<Self, WorkflowError> {
-        let config: WorkflowConfig = serde_yaml::from_str(yaml)
-            .map_err(|e| WorkflowError::Parse(e.to_string()))?;
+        let config: WorkflowConfig =
+            serde_yaml::from_str(yaml).map_err(|e| WorkflowError::Parse(e.to_string()))?;
         config.validate()?;
         Ok(config)
     }
@@ -159,22 +171,27 @@ impl WorkflowConfig {
             let has_commands = stage.commands.is_some();
             if !has_agent && !has_commands {
                 return Err(WorkflowError::Invalid(format!(
-                    "stage '{}' missing required field: agent or commands", stage.id
+                    "stage '{}' missing required field: agent or commands",
+                    stage.id
                 )));
             }
             if has_agent && has_commands {
                 return Err(WorkflowError::Invalid(format!(
-                    "stage '{}' has both agent and commands (mutually exclusive)", stage.id
+                    "stage '{}' has both agent and commands (mutually exclusive)",
+                    stage.id
                 )));
             }
             // agent 必须有 task
             if has_agent && stage.task.is_none() {
                 return Err(WorkflowError::Invalid(format!(
-                    "stage '{}' has agent but no task", stage.id
+                    "stage '{}' has agent but no task",
+                    stage.id
                 )));
             }
             // loop_back 指向的 stage 必须存在
-            if let Some(ref on_fail) = stage.on_fail && !ids.contains(&on_fail.loop_back.as_str()) {
+            if let Some(ref on_fail) = stage.on_fail
+                && !ids.contains(&on_fail.loop_back.as_str())
+            {
                 return Err(WorkflowError::Invalid(format!(
                     "stage '{}' on_fail.loop_back='{}' but no stage with id '{}' exists",
                     stage.id, on_fail.loop_back, on_fail.loop_back
@@ -184,7 +201,8 @@ impl WorkflowConfig {
             let dup_count = ids.iter().filter(|&&id| id == stage.id).count();
             if dup_count > 1 {
                 return Err(WorkflowError::Invalid(format!(
-                    "duplicate stage id: '{}'", stage.id
+                    "duplicate stage id: '{}'",
+                    stage.id
                 )));
             }
         }
@@ -193,24 +211,32 @@ impl WorkflowConfig {
 
     /// 找第一个非 done 的 stage（用于断点恢复）
     pub fn next_pending_stage(&self) -> Option<&WorkflowStage> {
-        self.stages.iter().find(|s| s.status == "pending" || s.status == "failed")
+        self.stages
+            .iter()
+            .find(|s| s.status == "pending" || s.status == "failed")
     }
 
     /// 所有 stage 都 done？
     pub fn is_complete(&self) -> bool {
-        self.stages.iter().all(|s| s.status == "done" || s.status == "skipped")
+        self.stages
+            .iter()
+            .all(|s| s.status == "done" || s.status == "skipped")
     }
 
     /// 获取 stage 的有效 max_retries（stage > defaults）
     pub fn effective_max_retries(&self, stage: &WorkflowStage) -> u32 {
-        stage.gate.as_ref()
+        stage
+            .gate
+            .as_ref()
             .and_then(|g| g.max_retries)
             .unwrap_or(self.defaults.max_retries)
     }
 
     /// 获取 stage 的有效 max_loops
     pub fn effective_max_loops(&self, stage: &WorkflowStage) -> u32 {
-        stage.on_fail.as_ref()
+        stage
+            .on_fail
+            .as_ref()
             .and_then(|f| f.max_loops)
             .unwrap_or(self.defaults.max_loops)
     }
@@ -278,7 +304,10 @@ stages:
     #[test]
     fn test_parse_context() {
         let wf = WorkflowConfig::parse(VALID_YAML).unwrap();
-        assert_eq!(wf.context.get("project").unwrap(), &serde_json::Value::String("my-app".into()));
+        assert_eq!(
+            wf.context.get("project").unwrap(),
+            &serde_json::Value::String("my-app".into())
+        );
     }
 
     #[test]
@@ -290,7 +319,12 @@ stages:
 "#;
         let result = WorkflowConfig::parse(yaml);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("missing required field"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("missing required field")
+        );
     }
 
     #[test]
@@ -305,7 +339,12 @@ stages:
 "#;
         let result = WorkflowConfig::parse(yaml);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("mutually exclusive"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("mutually exclusive")
+        );
     }
 
     #[test]

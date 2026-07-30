@@ -25,7 +25,10 @@ fn known_patterns() -> Vec<(&'static str, &'static str)> {
         // AWS Access Key (starts with AKIA, 20 chars)
         ("AKIA[0-9A-Z]{16}", "AWS_ACCESS_KEY"),
         // AWS Secret Key (40 chars base64-ish after "aws_secret" or in key=value)
-        ("aws_secret_access_key[^a-zA-Z0-9]{1,20}[A-Za-z0-9/+=]{40}", "AWS_SECRET_KEY"),
+        (
+            "aws_secret_access_key[^a-zA-Z0-9]{1,20}[A-Za-z0-9/+=]{40}",
+            "AWS_SECRET_KEY",
+        ),
         // Anthropic API key (sk-ant-*)
         ("sk-ant-[A-Za-z0-9_\\-]{20,}", "ANTHROPIC_KEY"),
         // OpenAI API key (sk-*)
@@ -37,13 +40,22 @@ fn known_patterns() -> Vec<(&'static str, &'static str)> {
         // PEM private key header
         ("-----BEGIN[A-Z ]*PRIVATE KEY-----", "PEM_KEY"),
         // JWT (eyJ... three base64 segments)
-        ("eyJ[A-Za-z0-9_\\-]{10,}\\.eyJ[A-Za-z0-9_\\-]{10,}\\.[A-Za-z0-9_\\-]{10,}", "JWT"),
+        (
+            "eyJ[A-Za-z0-9_\\-]{10,}\\.eyJ[A-Za-z0-9_\\-]{10,}\\.[A-Za-z0-9_\\-]{10,}",
+            "JWT",
+        ),
         // Bearer token
         ("[Bb]earer\\s+[A-Za-z0-9_\\-\\.]{20,}", "BEARER_TOKEN"),
         // Database connection string (postgres://user:pass@host)
-        ("(postgres|mysql|mongodb|redis)://[^\\s:]+:[^\\s@]+@", "DB_CONNECTION"),
+        (
+            "(postgres|mysql|mongodb|redis)://[^\\s:]+:[^\\s@]+@",
+            "DB_CONNECTION",
+        ),
         // Generic API key in key=value format
-        ("(?i)(api[_\\-]?key|secret|token|password|passwd|pwd)\\s*[=:]\\s*[\"']?[A-Za-z0-9/+=_\\-]{16,}", "GENERIC_SECRET"),
+        (
+            "(?i)(api[_\\-]?key|secret|token|password|passwd|pwd)\\s*[=:]\\s*[\"']?[A-Za-z0-9/+=_\\-]{16,}",
+            "GENERIC_SECRET",
+        ),
         // Slack token
         ("xox[baprs]-[A-Za-z0-9\\-]{10,}", "SLACK_TOKEN"),
         // Google API key (AIza...)
@@ -100,7 +112,9 @@ fn is_high_entropy_secret(s: &str) -> bool {
         return false;
     }
     // Only consider strings that look like base64 or hex
-    let is_base64ish = s.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=');
+    let is_base64ish = s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=');
     let is_hexish = s.chars().all(|c| c.is_ascii_hexdigit());
     if !is_base64ish && !is_hexish {
         return false;
@@ -128,8 +142,12 @@ pub fn detect_secrets(text: &str) -> Vec<DetectedSecret> {
 
     // Layer 2: High-entropy detection
     // Split text into tokens and check each
-    for token in text.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '`' || c == ',' || c == ';') {
-        let token = token.trim_matches(|c: char| c == '"' || c == '\'' || c == '`' || c == '(' || c == ')' || c == '[' || c == ']');
+    for token in text.split(|c: char| {
+        c.is_whitespace() || c == '"' || c == '\'' || c == '`' || c == ',' || c == ';'
+    }) {
+        let token = token.trim_matches(|c: char| {
+            c == '"' || c == '\'' || c == '`' || c == '(' || c == ')' || c == '[' || c == ']'
+        });
         if is_high_entropy_secret(token) {
             // Don't double-report if already caught by known patterns
             let already = results.iter().any(|r| r.original.contains(token));
@@ -174,10 +192,13 @@ fn scan_known_prefixes(text: &str) -> Vec<(String, String)> {
 
     // OpenAI key (sk- but not sk-ant-)
     for pos in lower.match_indices("sk-") {
-        if text[pos.0..].starts_with("sk-ant-") { continue; }
+        if text[pos.0..].starts_with("sk-ant-") {
+            continue;
+        }
         let start = pos.0;
         // Extract until whitespace/newline (don't grab 50 chars blindly)
-        let candidate: String = text[start..].chars()
+        let candidate: String = text[start..]
+            .chars()
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
             .collect();
         if candidate.len() > 15 {
@@ -189,7 +210,8 @@ fn scan_known_prefixes(text: &str) -> Vec<(String, String)> {
     for prefix in &["ghp_", "gho_", "ghs_", "ghu_"] {
         for pos in lower.match_indices(prefix) {
             let start = pos.0;
-            let candidate: String = text[start..].chars()
+            let candidate: String = text[start..]
+                .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
                 .collect();
             if candidate.len() >= 40 {
@@ -201,7 +223,8 @@ fn scan_known_prefixes(text: &str) -> Vec<(String, String)> {
     // GitLab token (glpat-)
     for pos in lower.match_indices("glpat-") {
         let start = pos.0;
-        let candidate: String = text[start..].chars()
+        let candidate: String = text[start..]
+            .chars()
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
             .collect();
         if candidate.len() > 15 {
@@ -235,7 +258,9 @@ fn scan_known_prefixes(text: &str) -> Vec<(String, String)> {
     }
 
     // Generic key=value (api_key=, secret=, token=, password=)
-    for kw in &["api_key", "apikey", "api-key", "secret", "token", "password", "passwd", "pwd"] {
+    for kw in &[
+        "api_key", "apikey", "api-key", "secret", "token", "password", "passwd", "pwd",
+    ] {
         if let Some(pos) = lower.find(kw) {
             let after = &text[pos + kw.len()..];
             let trimmed = after.trim_start();
@@ -244,19 +269,30 @@ fn scan_known_prefixes(text: &str) -> Vec<(String, String)> {
                 let val_start = pos + kw.len() + val_offset;
                 if val_start < text.len() {
                     let val_text = &text[val_start..];
-                    let skip = val_text.char_indices()
+                    let skip = val_text
+                        .char_indices()
                         .skip_while(|(_, c)| c.is_whitespace() || *c == '"' || *c == '\'')
                         .next()
                         .map(|(i, _)| i)
                         .unwrap_or(0);
                     let val_start = val_start + skip;
                     if val_start < text.len() {
-                        let val_end = text[val_start..].char_indices()
-                            .find(|(_, c)| c.is_whitespace() || *c == '"' || *c == '\'' || *c == '\n' || *c == ',')
+                        let val_end = text[val_start..]
+                            .char_indices()
+                            .find(|(_, c)| {
+                                c.is_whitespace()
+                                    || *c == '"'
+                                    || *c == '\''
+                                    || *c == '\n'
+                                    || *c == ','
+                            })
                             .map(|(i, _)| val_start + i)
                             .unwrap_or(text.len());
                         if val_end > val_start + 8 {
-                            results.push((text[val_start..val_end].to_string(), "GENERIC_SECRET".into()));
+                            results.push((
+                                text[val_start..val_end].to_string(),
+                                "GENERIC_SECRET".into(),
+                            ));
                         }
                     }
                 }
@@ -268,7 +304,8 @@ fn scan_known_prefixes(text: &str) -> Vec<(String, String)> {
     for pos in lower.match_indices("eyj") {
         let start = pos.0;
         // Capture until whitespace or end of string
-        let candidate: String = text[start..].chars()
+        let candidate: String = text[start..]
+            .chars()
             .take_while(|c| !c.is_whitespace())
             .collect();
         if candidate.len() >= 20 {
@@ -282,7 +319,8 @@ fn scan_known_prefixes(text: &str) -> Vec<(String, String)> {
         if start >= text.len() {
             continue;
         }
-        let candidate: String = text[start..].chars()
+        let candidate: String = text[start..]
+            .chars()
             .take_while(|c| !c.is_whitespace())
             .collect();
         if candidate.len() >= 10 {
@@ -294,7 +332,8 @@ fn scan_known_prefixes(text: &str) -> Vec<(String, String)> {
     for scheme in &["postgres://", "mysql://", "mongodb://", "redis://"] {
         for pos in lower.match_indices(scheme) {
             let start = pos.0;
-            let candidate: String = text[start..].chars()
+            let candidate: String = text[start..]
+                .chars()
                 .take_while(|c| !c.is_whitespace())
                 .collect();
             if candidate.len() > scheme.len() {
@@ -319,7 +358,8 @@ fn scan_known_prefixes(text: &str) -> Vec<(String, String)> {
             }
             // Skip whitespace and quotes
             let val_text = &text[val_start..];
-            let skip = val_text.char_indices()
+            let skip = val_text
+                .char_indices()
                 .skip_while(|(_, c)| c.is_whitespace() || *c == '"' || *c == '\'')
                 .map(|(i, _)| i)
                 .next()
@@ -329,7 +369,8 @@ fn scan_known_prefixes(text: &str) -> Vec<(String, String)> {
                 continue;
             }
             // Take 40-char value
-            let candidate: String = text[val_start..].chars()
+            let candidate: String = text[val_start..]
+                .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '/' || *c == '+' || *c == '=')
                 .collect();
             if candidate.len() >= 20 {
@@ -383,7 +424,11 @@ mod tests {
         // ghp_ + 36 alphanumeric chars
         let token = format!("ghp_{}", "a".repeat(36));
         let secrets = detect_secrets(&token);
-        assert!(secrets.iter().any(|s| s.secret_type == "GITHUB_TOKEN"), "expected GITHUB_TOKEN in {:?}", secrets);
+        assert!(
+            secrets.iter().any(|s| s.secret_type == "GITHUB_TOKEN"),
+            "expected GITHUB_TOKEN in {:?}",
+            secrets
+        );
     }
 
     #[test]
@@ -446,17 +491,32 @@ mod tests {
         let original = "config:\n  api_key=sk-proj-abcdef1234567890abcdefghij\n  port=8080";
         let redacted = redact_secrets(original);
         // port=8080 should survive (it's not a secret)
-        assert!(redacted.contains("port=8080"), "port=8080 missing from: {}", redacted);
+        assert!(
+            redacted.contains("port=8080"),
+            "port=8080 missing from: {}",
+            redacted
+        );
         // api_key value should be redacted
-        assert!(redacted.contains("[REDACTED:"), "no redaction in: {}", redacted);
+        assert!(
+            redacted.contains("[REDACTED:"),
+            "no redaction in: {}",
+            redacted
+        );
         // The raw key should be gone
-        assert!(!redacted.contains("sk-proj-abcdef1234567890abcdefghij"), "raw key still present");
+        assert!(
+            !redacted.contains("sk-proj-abcdef1234567890abcdefghij"),
+            "raw key still present"
+        );
     }
 
     #[test]
     fn test_pem_key_detection() {
         let secrets = detect_secrets("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...");
-        assert!(secrets.iter().any(|s| s.secret_type == "PEM_KEY"), "expected PEM_KEY in {:?}", secrets);
+        assert!(
+            secrets.iter().any(|s| s.secret_type == "PEM_KEY"),
+            "expected PEM_KEY in {:?}",
+            secrets
+        );
     }
 
     #[test]
@@ -464,7 +524,11 @@ mod tests {
         // JWTs begin with eyJ and contain three base64 segments separated by dots
         let input = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
         let secrets = detect_secrets(input);
-        assert!(secrets.iter().any(|s| s.secret_type == "JWT"), "expected JWT in {:?}", secrets);
+        assert!(
+            secrets.iter().any(|s| s.secret_type == "JWT"),
+            "expected JWT in {:?}",
+            secrets
+        );
     }
 
     #[test]
@@ -472,7 +536,11 @@ mod tests {
         // Bearer token value follows the "Bearer " prefix
         let input = "Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789";
         let secrets = detect_secrets(input);
-        assert!(secrets.iter().any(|s| s.secret_type == "BEARER_TOKEN"), "expected BEARER_TOKEN in {:?}", secrets);
+        assert!(
+            secrets.iter().any(|s| s.secret_type == "BEARER_TOKEN"),
+            "expected BEARER_TOKEN in {:?}",
+            secrets
+        );
     }
 
     #[test]
@@ -480,7 +548,11 @@ mod tests {
         // Connection string with embedded credentials
         let input = "postgres://myuser:mypassword123@db.example.com:5432/mydb";
         let secrets = detect_secrets(input);
-        assert!(secrets.iter().any(|s| s.secret_type == "DB_CONNECTION"), "expected DB_CONNECTION in {:?}", secrets);
+        assert!(
+            secrets.iter().any(|s| s.secret_type == "DB_CONNECTION"),
+            "expected DB_CONNECTION in {:?}",
+            secrets
+        );
     }
 
     #[test]
@@ -488,7 +560,11 @@ mod tests {
         // AWS secret key assigned via env-style syntax
         let input = "aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
         let secrets = detect_secrets(input);
-        assert!(secrets.iter().any(|s| s.secret_type == "AWS_SECRET_KEY"), "expected AWS_SECRET_KEY in {:?}", secrets);
+        assert!(
+            secrets.iter().any(|s| s.secret_type == "AWS_SECRET_KEY"),
+            "expected AWS_SECRET_KEY in {:?}",
+            secrets
+        );
     }
 
     #[test]
@@ -496,14 +572,22 @@ mod tests {
         // GitLab personal access token with glpat- prefix
         let token = format!("glpat-{}", "a".repeat(20));
         let secrets = detect_secrets(&token);
-        assert!(secrets.iter().any(|s| s.secret_type == "GITLAB_TOKEN"), "expected GITLAB_TOKEN in {:?}", secrets);
+        assert!(
+            secrets.iter().any(|s| s.secret_type == "GITLAB_TOKEN"),
+            "expected GITLAB_TOKEN in {:?}",
+            secrets
+        );
     }
 
     #[test]
     fn test_detect_slack_token() {
         // Slack bot token with xoxb- prefix
         let secrets = detect_secrets("xoxb-1234567890-abcdefghij");
-        assert!(secrets.iter().any(|s| s.secret_type == "SLACK_TOKEN"), "expected SLACK_TOKEN in {:?}", secrets);
+        assert!(
+            secrets.iter().any(|s| s.secret_type == "SLACK_TOKEN"),
+            "expected SLACK_TOKEN in {:?}",
+            secrets
+        );
     }
 
     #[test]
@@ -511,15 +595,26 @@ mod tests {
         // Google API key with AIza prefix (39 chars total)
         let key = format!("AIza{}", "a".repeat(35));
         let secrets = detect_secrets(&key);
-        assert!(secrets.iter().any(|s| s.secret_type == "GOOGLE_KEY"), "expected GOOGLE_KEY in {:?}", secrets);
+        assert!(
+            secrets.iter().any(|s| s.secret_type == "GOOGLE_KEY"),
+            "expected GOOGLE_KEY in {:?}",
+            secrets
+        );
     }
 
     #[test]
     fn test_detect_multiple_secrets() {
         // Multiple secret types in a single input string
-        let input = "Found AWS key AKIAIOSFODNN7EXAMPLE and OpenAI key sk-proj-abcdef1234567890abcdefghij";
+        let input =
+            "Found AWS key AKIAIOSFODNN7EXAMPLE and OpenAI key sk-proj-abcdef1234567890abcdefghij";
         let secrets = detect_secrets(input);
-        assert!(secrets.iter().any(|s| s.secret_type == "AWS_ACCESS_KEY"), "expected AWS_ACCESS_KEY");
-        assert!(secrets.iter().any(|s| s.secret_type == "OPENAI_KEY"), "expected OPENAI_KEY");
+        assert!(
+            secrets.iter().any(|s| s.secret_type == "AWS_ACCESS_KEY"),
+            "expected AWS_ACCESS_KEY"
+        );
+        assert!(
+            secrets.iter().any(|s| s.secret_type == "OPENAI_KEY"),
+            "expected OPENAI_KEY"
+        );
     }
 }

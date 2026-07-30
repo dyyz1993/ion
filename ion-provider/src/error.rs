@@ -125,7 +125,9 @@ mod tests {
 
     #[test]
     fn detect_anthropic_overflow() {
-        assert!(is_overflow_message("prompt is too long: 213462 tokens > 200000 maximum"));
+        assert!(is_overflow_message(
+            "prompt is too long: 213462 tokens > 200000 maximum"
+        ));
         assert!(is_overflow_message(
             "Error: {\"type\":\"request_too_large\",\"message\":\"...\"}"
         ));
@@ -136,9 +138,7 @@ mod tests {
         assert!(is_overflow_message(
             "This model's maximum context length is 128000 tokens"
         ));
-        assert!(is_overflow_message(
-            "Request exceeds the context window"
-        ));
+        assert!(is_overflow_message("Request exceeds the context window"));
     }
 
     #[test]
@@ -153,7 +153,9 @@ mod tests {
         // 限流不是溢出
         assert!(!is_overflow_message("Rate limit exceeded, please retry"));
         assert!(!is_overflow_message("too many requests"));
-        assert!(!is_overflow_message("Throttling error: Too many tokens, please wait"));
+        assert!(!is_overflow_message(
+            "Throttling error: Too many tokens, please wait"
+        ));
         assert!(!is_overflow_message("Service unavailable"));
     }
 

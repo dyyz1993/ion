@@ -10,13 +10,15 @@ use std::sync::Arc;
 
 use ion::agent::agent_loop::{Agent, AgentConfig};
 use ion::agent::extension::ExtensionRegistry;
-use ion::agent::tool::{ToolRegistry, WriteTool};
 use ion::agent::messages::Message;
-use ion::file_snapshot::{FileSnapshotExtension, ApprovalExtension, ApprovalManager, ApprovalStatus};
+use ion::agent::tool::{ToolRegistry, WriteTool};
+use ion::file_snapshot::{
+    ApprovalExtension, ApprovalManager, ApprovalStatus, FileSnapshotExtension,
+};
 use ion::storage_context::StorageContext;
+use ion_provider::faux;
 use ion_provider::registry::ApiRegistry;
 use ion_provider::types::*;
-use ion_provider::faux;
 
 fn faux_model() -> Model {
     Model {
@@ -117,8 +119,14 @@ fn build_agent(
 async fn h1_write_creates_snapshot() {
     let cwd = tmp_cwd("h1");
 
-    let (mut agent, store, _mgr) =
-        build_agent(&cwd, vec![write_call(&cwd, "test.txt", "hello world"), stop_msg(), stop_msg()]);
+    let (mut agent, store, _mgr) = build_agent(
+        &cwd,
+        vec![
+            write_call(&cwd, "test.txt", "hello world"),
+            stop_msg(),
+            stop_msg(),
+        ],
+    );
 
     agent.run("write test.txt").await.unwrap();
 
@@ -142,8 +150,14 @@ async fn h1_write_creates_snapshot() {
 async fn h2_gate_check_triggers_pending() {
     let cwd = tmp_cwd("h2");
 
-    let (mut agent, _store, mgr) =
-        build_agent(&cwd, vec![write_call(&cwd, "gate.txt", "gate test"), stop_msg(), stop_msg()]);
+    let (mut agent, _store, mgr) = build_agent(
+        &cwd,
+        vec![
+            write_call(&cwd, "gate.txt", "gate test"),
+            stop_msg(),
+            stop_msg(),
+        ],
+    );
 
     agent.run("write gate.txt").await.unwrap();
 
@@ -164,14 +178,20 @@ async fn h3_approve_removes_from_pending() {
 
     let (mut agent, _store, mgr) = build_agent(
         &cwd,
-        vec![write_call(&cwd, "approve.txt", "v1"), stop_msg(), stop_msg()],
+        vec![
+            write_call(&cwd, "approve.txt", "v1"),
+            stop_msg(),
+            stop_msg(),
+        ],
     );
 
     agent.run("write approve.txt").await.unwrap();
 
     let pending_before = mgr.compute_pending();
     assert!(
-        pending_before.iter().any(|p| p.path.contains("approve.txt")),
+        pending_before
+            .iter()
+            .any(|p| p.path.contains("approve.txt")),
         "approve 前应在 pending"
     );
 
@@ -206,11 +226,17 @@ async fn h4_reject_rolls_back_file() {
 
     agent.run("write reject.txt").await.unwrap();
 
-    assert!(std::path::Path::new(&abs_path).exists(), "write 后文件应存在");
+    assert!(
+        std::path::Path::new(&abs_path).exists(),
+        "write 后文件应存在"
+    );
 
     let result = mgr.reject("reject.txt").unwrap();
     assert_eq!(result.action, "deleted", "reject 应回滚删除新文件");
-    assert!(!std::path::Path::new(&abs_path).exists(), "reject 后文件应被删除");
+    assert!(
+        !std::path::Path::new(&abs_path).exists(),
+        "reject 后文件应被删除"
+    );
 
     let rejected = mgr.approvals_list(Some(&ApprovalStatus::Rejected));
     assert!(rejected.iter().any(|a| a.path == "reject.txt"));
@@ -272,24 +298,45 @@ async fn h6_reject_all_rolls_back_files() {
 
     agent.run("write a.txt and b.txt").await.unwrap();
 
-    assert!(std::path::Path::new(&abs_a).exists(), "write 后 a.txt 应存在");
-    assert!(std::path::Path::new(&abs_b).exists(), "write 后 b.txt 应存在");
+    assert!(
+        std::path::Path::new(&abs_a).exists(),
+        "write 后 a.txt 应存在"
+    );
+    assert!(
+        std::path::Path::new(&abs_b).exists(),
+        "write 后 b.txt 应存在"
+    );
 
     let results = mgr.reject_all();
     assert!(
         results.iter().all(|r| r.is_ok()),
         "reject_all 应全成功。结果: {:?}",
-        results.iter().map(|r| r.as_ref().map(|rf| &rf.action).map_err(|e| e.as_str())).collect::<Vec<_>>()
+        results
+            .iter()
+            .map(|r| r.as_ref().map(|rf| &rf.action).map_err(|e| e.as_str()))
+            .collect::<Vec<_>>()
     );
 
     // 两个新文件都应被删除（action=deleted）
-    assert!(!std::path::Path::new(&abs_a).exists(), "reject_all 后 a.txt 应被删除");
-    assert!(!std::path::Path::new(&abs_b).exists(), "reject_all 后 b.txt 应被删除");
+    assert!(
+        !std::path::Path::new(&abs_a).exists(),
+        "reject_all 后 a.txt 应被删除"
+    );
+    assert!(
+        !std::path::Path::new(&abs_b).exists(),
+        "reject_all 后 b.txt 应被删除"
+    );
 
     // 两文件状态都变 rejected
     let rejected = mgr.approvals_list(Some(&ApprovalStatus::Rejected));
-    assert!(rejected.iter().any(|a| a.path == "a.txt"), "a.txt 应为 rejected");
-    assert!(rejected.iter().any(|a| a.path == "b.txt"), "b.txt 应为 rejected");
+    assert!(
+        rejected.iter().any(|a| a.path == "a.txt"),
+        "a.txt 应为 rejected"
+    );
+    assert!(
+        rejected.iter().any(|a| a.path == "b.txt"),
+        "b.txt 应为 rejected"
+    );
 
     // pending 清空
     let pending = mgr.compute_pending();
@@ -322,28 +369,52 @@ async fn h7_approvals_list_filter_by_status() {
 
     // 查全部 → 应含 keep (approved) + drop (rejected)
     let all = mgr.approvals_list(None);
-    assert!(all.iter().any(|a| a.path == "keep.txt" && a.status == ApprovalStatus::Approved),
-        "全部查询应含 keep.txt (approved)。实际: {:?}", all);
-    assert!(all.iter().any(|a| a.path == "drop.txt" && a.status == ApprovalStatus::Rejected),
-        "全部查询应含 drop.txt (rejected)。实际: {:?}", all);
+    assert!(
+        all.iter()
+            .any(|a| a.path == "keep.txt" && a.status == ApprovalStatus::Approved),
+        "全部查询应含 keep.txt (approved)。实际: {:?}",
+        all
+    );
+    assert!(
+        all.iter()
+            .any(|a| a.path == "drop.txt" && a.status == ApprovalStatus::Rejected),
+        "全部查询应含 drop.txt (rejected)。实际: {:?}",
+        all
+    );
 
     // 只查 approved → 只含 keep
     let approved_only = mgr.approvals_list(Some(&ApprovalStatus::Approved));
-    assert!(approved_only.iter().all(|a| a.status == ApprovalStatus::Approved),
-        "approved 过滤应只含 approved。实际: {:?}", approved_only);
+    assert!(
+        approved_only
+            .iter()
+            .all(|a| a.status == ApprovalStatus::Approved),
+        "approved 过滤应只含 approved。实际: {:?}",
+        approved_only
+    );
     assert!(approved_only.iter().any(|a| a.path == "keep.txt"));
 
     // 只查 rejected → 只含 drop
     let rejected_only = mgr.approvals_list(Some(&ApprovalStatus::Rejected));
-    assert!(rejected_only.iter().all(|a| a.status == ApprovalStatus::Rejected),
-        "rejected 过滤应只含 rejected。实际: {:?}", rejected_only);
+    assert!(
+        rejected_only
+            .iter()
+            .all(|a| a.status == ApprovalStatus::Rejected),
+        "rejected 过滤应只含 rejected。实际: {:?}",
+        rejected_only
+    );
     assert!(rejected_only.iter().any(|a| a.path == "drop.txt"));
 
     // approved 的有 approved_tree_hash，rejected 的为 None
     let keep_record = all.iter().find(|a| a.path == "keep.txt").unwrap();
-    assert!(keep_record.approved_tree_hash.is_some(), "approved 文件应有 baseline tree hash");
+    assert!(
+        keep_record.approved_tree_hash.is_some(),
+        "approved 文件应有 baseline tree hash"
+    );
     let drop_record = all.iter().find(|a| a.path == "drop.txt").unwrap();
-    assert!(drop_record.approved_tree_hash.is_none(), "rejected 文件应无 approved_tree_hash");
+    assert!(
+        drop_record.approved_tree_hash.is_none(),
+        "rejected 文件应无 approved_tree_hash"
+    );
 
     let _ = std::fs::remove_dir_all(&cwd);
 }
@@ -371,7 +442,10 @@ async fn h8_reject_existing_file_restores_content() {
 
     // 确认 agent 改了文件
     let content_after_write = std::fs::read_to_string(&abs_path).unwrap();
-    assert_eq!(content_after_write, "modified by agent", "agent write 后内容应改变");
+    assert_eq!(
+        content_after_write, "modified by agent",
+        "agent write 后内容应改变"
+    );
 
     // reject → 应走 restored 分支（baseline tree 有该文件）
     let result = mgr.reject("existing.txt").unwrap();
@@ -382,11 +456,15 @@ async fn h8_reject_existing_file_restores_content() {
     );
 
     // 文件仍存在，内容恢复成原始
-    assert!(std::path::Path::new(&abs_path).exists(), "restored 后文件应仍存在");
+    assert!(
+        std::path::Path::new(&abs_path).exists(),
+        "restored 后文件应仍存在"
+    );
     let content_after_reject = std::fs::read_to_string(&abs_path).unwrap();
     assert_eq!(
         content_after_reject, "original content",
-        "reject 后内容应恢复成原始。实际: {}", content_after_reject
+        "reject 后内容应恢复成原始。实际: {}",
+        content_after_reject
     );
 
     // 状态变 rejected
@@ -403,22 +481,21 @@ async fn h9_re_approval_resets_to_pending_keeps_baseline() {
 
     let (mut agent, _store, mgr) = build_agent(
         &cwd,
-        vec![
-            write_call(&cwd, "a.txt", "v1"),
-            stop_msg(),
-            stop_msg(),
-        ],
+        vec![write_call(&cwd, "a.txt", "v1"), stop_msg(), stop_msg()],
     );
 
     agent.run("write a.txt").await.unwrap();
 
     // approve → 记录 baseline tree hash
     mgr.approve("a.txt").unwrap();
-    let approved_record = mgr.approvals_list(Some(&ApprovalStatus::Approved))
+    let approved_record = mgr
+        .approvals_list(Some(&ApprovalStatus::Approved))
         .into_iter()
         .find(|a| a.path == "a.txt")
         .expect("approve 后应有 approved 记录");
-    let baseline_hash = approved_record.approved_tree_hash.clone()
+    let baseline_hash = approved_record
+        .approved_tree_hash
+        .clone()
         .expect("approved 文件应有 baseline tree hash");
 
     // 模拟 on_turn_end 检测到同文件再改 → check_re_approval
@@ -428,7 +505,8 @@ async fn h9_re_approval_resets_to_pending_keeps_baseline() {
     let pending = mgr.approvals_list(Some(&ApprovalStatus::Pending));
     assert!(
         pending.iter().any(|a| a.path == "a.txt"),
-        "re-approval 后 a.txt 应回 pending。实际 pending: {:?}", pending
+        "re-approval 后 a.txt 应回 pending。实际 pending: {:?}",
+        pending
     );
 
     // baseline tree hash 应保留（锚定不丢）

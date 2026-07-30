@@ -112,11 +112,18 @@ impl PermissionEngine {
                 PermissionPolicy::Allow => PermissionResult::Allow,
                 PermissionPolicy::Deny => PermissionResult::Deny(format!(
                     "规则 '{}' 拒绝了 {} on {}",
-                    rule.name, format!("{:?}", action).to_lowercase(), path
+                    rule.name,
+                    format!("{:?}", action).to_lowercase(),
+                    path
                 )),
                 PermissionPolicy::Ask => {
                     let title = format!("权限请求: {}", rule.name);
-                    let message = format!("工具想要 {} 路径: {}\n规则: {}", format!("{:?}", action).to_lowercase(), path, rule.name);
+                    let message = format!(
+                        "工具想要 {} 路径: {}\n规则: {}",
+                        format!("{:?}", action).to_lowercase(),
+                        path,
+                        rule.name
+                    );
                     PermissionResult::Ask { title, message }
                 }
             };
@@ -407,18 +414,24 @@ impl SecurityProfile {
             }
             SecurityProfile::Standard => {
                 engine.clear();
-                for rule in standard_rules() { engine.register_rule(rule); }
+                for rule in standard_rules() {
+                    engine.register_rule(rule);
+                }
             }
             SecurityProfile::Strict => {
                 engine.clear();
-                for rule in strict_rules() { engine.register_rule(rule); }
+                for rule in strict_rules() {
+                    engine.register_rule(rule);
+                }
             }
             SecurityProfile::Autopilot => {
                 // Autopilot: standard rules + auto-approve workspace writes.
                 // Protect sensitive files (same as standard), but allow workspace
                 // file writes without user confirmation (for self-healing).
                 engine.clear();
-                for rule in standard_rules() { engine.register_rule(rule); }
+                for rule in standard_rules() {
+                    engine.register_rule(rule);
+                }
                 // Auto-approve writes to workspace (cwd and subdirs)
                 let cwd = std::env::current_dir()
                     .map(|p| p.to_string_lossy().to_string())
@@ -438,32 +451,78 @@ impl SecurityProfile {
                     policy: PermissionPolicy::Allow,
                     priority: 110,
                 });
-                tracing::info!("[security] autopilot profile: auto-approve workspace writes, sensitive files still protected");
+                tracing::info!(
+                    "[security] autopilot profile: auto-approve workspace writes, sensitive files still protected"
+                );
             }
         }
     }
 }
 
 impl Default for SecurityProfile {
-    fn default() -> Self { Self::Standard }
+    fn default() -> Self {
+        Self::Standard
+    }
 }
 
 fn standard_rules() -> Vec<PermissionRule> {
     vec![
-        PermissionRule { name: "protect-env".into(), actions: vec![Action::Read, Action::Write], pattern: "**/.env*".into(), policy: PermissionPolicy::Deny, priority: 100 },
-        PermissionRule { name: "protect-ssh".into(), actions: vec![Action::Read, Action::Write], pattern: "**/.ssh/**".into(), policy: PermissionPolicy::Deny, priority: 100 },
-        PermissionRule { name: "protect-aws".into(), actions: vec![Action::Read, Action::Write], pattern: "**/.aws/**".into(), policy: PermissionPolicy::Deny, priority: 100 },
-        PermissionRule { name: "protect-git-config".into(), actions: vec![Action::Write], pattern: "**/.git/config".into(), policy: PermissionPolicy::Deny, priority: 100 },
+        PermissionRule {
+            name: "protect-env".into(),
+            actions: vec![Action::Read, Action::Write],
+            pattern: "**/.env*".into(),
+            policy: PermissionPolicy::Deny,
+            priority: 100,
+        },
+        PermissionRule {
+            name: "protect-ssh".into(),
+            actions: vec![Action::Read, Action::Write],
+            pattern: "**/.ssh/**".into(),
+            policy: PermissionPolicy::Deny,
+            priority: 100,
+        },
+        PermissionRule {
+            name: "protect-aws".into(),
+            actions: vec![Action::Read, Action::Write],
+            pattern: "**/.aws/**".into(),
+            policy: PermissionPolicy::Deny,
+            priority: 100,
+        },
+        PermissionRule {
+            name: "protect-git-config".into(),
+            actions: vec![Action::Write],
+            pattern: "**/.git/config".into(),
+            policy: PermissionPolicy::Deny,
+            priority: 100,
+        },
         // Allow agents to write monitor configs (intended workflow: scheduler agent generates monitors)
         // Higher priority (110) than protect-ion-config (100) — exception must win.
-        PermissionRule { name: "allow-ion-monitors".into(), actions: vec![Action::Write], pattern: "**/.ion/monitors/**".into(), policy: PermissionPolicy::Allow, priority: 110 },
-        PermissionRule { name: "protect-ion-config".into(), actions: vec![Action::Write], pattern: "**/.ion/**".into(), policy: PermissionPolicy::Deny, priority: 100 },
+        PermissionRule {
+            name: "allow-ion-monitors".into(),
+            actions: vec![Action::Write],
+            pattern: "**/.ion/monitors/**".into(),
+            policy: PermissionPolicy::Allow,
+            priority: 110,
+        },
+        PermissionRule {
+            name: "protect-ion-config".into(),
+            actions: vec![Action::Write],
+            pattern: "**/.ion/**".into(),
+            policy: PermissionPolicy::Deny,
+            priority: 100,
+        },
     ]
 }
 
 fn strict_rules() -> Vec<PermissionRule> {
     let mut rules = standard_rules();
-    rules.push(PermissionRule { name: "default-deny-write".into(), actions: vec![Action::Write, Action::Edit, Action::Delete], pattern: "**".into(), policy: PermissionPolicy::Deny, priority: 1 });
+    rules.push(PermissionRule {
+        name: "default-deny-write".into(),
+        actions: vec![Action::Write, Action::Edit, Action::Delete],
+        pattern: "**".into(),
+        policy: PermissionPolicy::Deny,
+        priority: 1,
+    });
     rules
 }
 
@@ -495,9 +554,14 @@ fn default_timeout() -> u64 {
 }
 
 /// 执行命令钩子
-pub async fn execute_command_hook(hook: &CommandHook, context: &HashMap<String, String>) -> Result<String, String> {
+pub async fn execute_command_hook(
+    hook: &CommandHook,
+    context: &HashMap<String, String>,
+) -> Result<String, String> {
     // 简单条件检查（支持 "tool === 'edit'" 格式）
-    if let Some(ref cond) = hook.condition && !evaluate_condition(cond, context) {
+    if let Some(ref cond) = hook.condition
+        && !evaluate_condition(cond, context)
+    {
         return Ok(String::new()); // 条件不满足，跳过
     }
 
@@ -511,7 +575,9 @@ pub async fn execute_command_hook(hook: &CommandHook, context: &HashMap<String, 
 
     let output = tokio::time::timeout(
         std::time::Duration::from_millis(hook.timeout_ms),
-        tokio::process::Command::new("sh").args(["-c", &cmd]).output(),
+        tokio::process::Command::new("sh")
+            .args(["-c", &cmd])
+            .output(),
     )
     .await
     .map_err(|_| format!("命令超时: {cmd}"))?
@@ -536,12 +602,16 @@ fn evaluate_condition(expr: &str, context: &HashMap<String, String>) -> bool {
 
     // 支持 || (OR)
     if expr.contains("||") {
-        return expr.split("||").any(|part| evaluate_condition(part.trim(), context));
+        return expr
+            .split("||")
+            .any(|part| evaluate_condition(part.trim(), context));
     }
 
     // 支持 && (AND)
     if expr.contains("&&") {
-        return expr.split("&&").all(|part| evaluate_condition(part.trim(), context));
+        return expr
+            .split("&&")
+            .all(|part| evaluate_condition(part.trim(), context));
     }
 
     // 解析 "key === 'value'" 或 "key === value"
@@ -650,7 +720,10 @@ mod tests {
 
         assert!(evaluate_condition("tool === 'edit'", &ctx));
         assert!(!evaluate_condition("tool === 'write'", &ctx));
-        assert!(evaluate_condition("tool === 'edit' || tool === 'write'", &ctx));
+        assert!(evaluate_condition(
+            "tool === 'edit' || tool === 'write'",
+            &ctx
+        ));
         assert!(evaluate_condition("tool !== 'bash'", &ctx));
     }
 
