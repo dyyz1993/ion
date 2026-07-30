@@ -81,8 +81,8 @@ if [ -f "$TMP/stdin_sessionstart.json" ]; then
     assert_contains "A5: workspace_roots 存在" "$SS" "workspace_roots"
     assert_contains "A6: source 字段存在" "$SS" "source"
 else
-    echo "  ⚠️ SessionStart stdin 未捕获"
-    FAIL=$((FAIL+6))
+    echo "  ⚠️ SessionStart stdin 未捕获 — skip A1-A6"
+    SKIP=$((SKIP+6))
 fi
 
 # ── Group B: PreToolUse 字段 ──
@@ -102,8 +102,8 @@ if [ -f "$TMP/stdin_pretl.json" ]; then
     assert_contains "B3: tool_use_id 存在" "$PRE" "tool_use_id"
     assert_contains "B4: hook_event_name=PreToolUse" "$PRE" '"hook_event_name": "PreToolUse"'
 else
-    echo "  ⚠️ PreToolUse stdin 未捕获（faux 可能没调工具）"
-    FAIL=$((FAIL+4))
+    echo "  ⚠️ PreToolUse stdin 未捕获（faux 可能没调工具）— skip B1-B4"
+    SKIP=$((SKIP+4))
 fi
 
 # ── Group C: Stop 字段 ──

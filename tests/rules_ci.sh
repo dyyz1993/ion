@@ -130,13 +130,14 @@ else
 fi
 
 echo ""
-echo "# 场景1 A 组可能全失败（RulesEngineExtension 未注册）— 把 A 组 FAIL 转成 SKIP
+echo "# 场景1 A 组可能全失败 — 把 A 组 FAIL 转成 SKIP"
 if [ "$FAIL" -gt 0 ] && [ "$PASS" -eq 0 ]; then
     echo "  ⚠️  A 组全失败（场景1不注册 RulesEngineExtension）— 转为 SKIP"
     SKIP=$FAIL; FAIL=0
 fi
 
---- Group C: 去重验证（路径匹配 rule 不重复注入）---"
+echo ""
+echo "--- Group C: 去重验证（路径匹配 rule 不重复注入）---"
 # C1: 直接调 RulesEngineExtension 单元测试（on_system_prompt 去重逻辑）
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DEDUP_RESULT=$(cd "$PROJECT_DIR" && cargo test --lib rules_engine::tests::test_on_system_prompt_with_matching_rule 2>&1 | tail -3)
