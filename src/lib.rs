@@ -27,7 +27,6 @@ pub mod runtime;
 pub mod pool;
 pub mod queue;
 pub mod session;
-pub mod text_utils;
 pub mod message_retrieval;
 pub mod session_index;
 pub mod session_jsonl;
