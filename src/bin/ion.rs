@@ -1547,6 +1547,27 @@ async fn cmd_run(
 
     let config = build_agent_config(eff);
 
+    // Session GC: asynchronously clean old session files (non-blocking).
+    // Mirrors file_snapshot GC — runs once at startup in a background thread,
+    // protects the active cwd, never panics.
+    {
+        let ion_cfg = ion::config::IonConfig::load();
+        let session_cfg = &ion_cfg.session;
+        if session_cfg.gc_on_start {
+            let gc = ion::session_gc::SessionGcConfig {
+                max_age_days: session_cfg.max_age_days,
+                max_sessions_per_cwd: session_cfg.max_sessions_per_cwd,
+                gc_on_start: true,
+            };
+            let cwd = std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            std::thread::spawn(move || {
+                ion::session_gc::run_gc(&gc, &cwd);
+            });
+        }
+    }
+
     let (mut tools, skill_dirs_for_prompt) = build_tools(eff);
 
     // ── Goal Supervisor：goal_set tool + shared state for extension ──

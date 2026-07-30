@@ -63,6 +63,47 @@ pub struct IonConfig {
     /// Runtime configuration (remote hosts, sandbox, routes)
     #[serde(default)]
     pub runtime: RuntimeConfig,
+
+    /// Session GC / retention (cleans old session files at startup).
+    #[serde(default)]
+    pub session: SessionConfig,
+}
+
+/// Session GC + retention configuration.
+///
+/// Default: GC on, delete files older than 30 days, keep at most 50 per cwd.
+/// All fields are `#[serde(default)]` so existing config.json files load fine.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SessionConfig {
+    /// Max age in days; session files older than this (by mtime) are deleted.
+    #[serde(default = "default_gc_max_age_days")]
+    pub max_age_days: u32,
+    /// Max session files per cwd dir; oldest beyond this are LRU-deleted.
+    #[serde(default = "default_gc_max_sessions_per_cwd")]
+    pub max_sessions_per_cwd: u32,
+    /// If false, skip GC entirely at startup.
+    #[serde(default = "default_true")]
+    pub gc_on_start: bool,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            max_age_days: default_gc_max_age_days(),
+            max_sessions_per_cwd: default_gc_max_sessions_per_cwd(),
+            gc_on_start: default_true(),
+        }
+    }
+}
+
+fn default_gc_max_age_days() -> u32 {
+    30
+}
+fn default_gc_max_sessions_per_cwd() -> u32 {
+    50
+}
+fn default_true() -> bool {
+    true
 }
 
 /// 默认 tier aliases（对齐 pi DEFAULT_TIER_ALIASES）
@@ -543,6 +584,7 @@ impl Default for IonConfig {
             security_mode: None,
             mcp_servers: HashMap::new(),
             runtime: RuntimeConfig::default(),
+            session: SessionConfig::default(),
         }
     }
 }
