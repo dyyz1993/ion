@@ -136,6 +136,22 @@ impl SessionIndex {
         self.sessions.get(id)
     }
 
+    /// Number of tracked sessions (used by GC to detect whether removal happened).
+    pub fn len(&self) -> usize {
+        self.sessions.len()
+    }
+
+    /// True if no sessions are tracked.
+    pub fn is_empty(&self) -> bool {
+        self.sessions.is_empty()
+    }
+
+    /// Remove a session entry. Used by session GC after a session file is deleted.
+    /// Returns true if the entry existed and was removed.
+    pub fn remove(&mut self, id: &str) -> bool {
+        self.sessions.remove(id).is_some()
+    }
+
     /// 查直接子会话（反向索引，O(n) 单次内存扫描，不持久化）。
     /// 血缘只一层——要看整棵血缘树前端递归调用。
     pub fn get_children(&self, parent_id: &str) -> Vec<&SessionMeta> {
