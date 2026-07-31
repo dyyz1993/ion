@@ -150,7 +150,7 @@ $ cd /tmp/test && ion --continue "what did I say" -p --model faux --provider fau
 
 ---
 
-## 7. 未做（后续工作）
+## 7. 暂不开发（V1 已满足需求）
 
 | 项 | 原因 |
 |----|------|

@@ -1,6 +1,6 @@
 # 缺失 Provider 协议 规划文档
 
-> **状态：开发中** — pi 支持 9 种 API 协议，ION 实现 6 种（mistral-conversations + bedrock-converse-stream 已完成，含 SigV4 签名）。本文档规划剩余 3 种的补齐方案。
+> **状态：已完成**  — pi 支持 9 种 API 协议，ION 实现 6 种（mistral-conversations + bedrock-converse-stream 已完成，含 SigV4 签名）。本文档规划剩余 3 种的补齐方案。
 >
 > 对标 pi 的 `packages/ai/src/providers/`。
 

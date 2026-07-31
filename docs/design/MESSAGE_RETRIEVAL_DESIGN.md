@@ -543,7 +543,7 @@ get_messages 返回 = L3(磁盘冷段) + L2(内存热段)，按 entryId 排序
 |------|-----|----|-------|
 | list_sessions | O(m) 读单 index.json | O(ΣFᵢ) 逐个全量读所有 jsonl | **ION 优** |
 | get_children（跨会话）| O(n) 扫 HashMap + 读 index | O(S) 扫已加载 session（前置 list 全盘读） | **ION 优** |
-| 全文搜索 | ❌ 未实现 | O(S×L) 线性匹配（无倒排）| pi 有但慢 |
+| 全文搜索 | ❌ 暂不开发（当前线性扫描够用，pi 也有但慢） | O(S×L) 线性匹配（无倒排）| pi 有但慢 |
 | SessionFile 加载 | **缓存命中 O(1)**，未命中 O(L) | 一次 load 进 byId Map 后内存复用 | **ION 优**（优化后）|
 | get_messages 分页 | 整盘读+O(n) 过滤+**缓存命中跳过读盘** | 内存复用 + O(d) 重建 + slice | 持平 |
 | resolve_current_leaf | **O(n) 单趟 DP**（优化后）| 无对应（byId Map 直接查）| 持平 |

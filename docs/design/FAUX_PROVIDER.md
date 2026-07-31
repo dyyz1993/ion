@@ -526,7 +526,7 @@ harness.seed("第3轮", vec![
 | `setResponses`/`appendResponses`/`getPendingResponseCount` | `set_responses`/`append_responses`/`pending_count` | 🔧 |
 | Harness 暴露原始对象（session/sessionManager） | `SessionTreeHarness` 暴露 `session_file`/`faux`/`events` | 🔧 |
 | **CLI flag 驱动** | pi 无；ION Phase 2 加（`--faux-script`） | ⚠️ 差异（ION 更重） |
-| **Prompt cache 模拟** | pi 有；ION 暂不做（Usage 全零） | ⚠️ 差异（后续补） |
+| **Prompt cache 模拟** | pi 有；ION 暂不做（Usage 全零） | ⚠️ 暂不开发（Usage 全零，不影响功能） |
 
 ---
 
