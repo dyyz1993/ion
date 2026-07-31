@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ION 扩展生命周期可视化</title>
+<style>
+  :root {
+    --bg: #0f0f1a;
+    --bg-panel: #1a1a2e;
+    --bg-card: #16213e;
+    --fg: #e0e0e0;
+    --fg-muted: #8892b0;
+    --accent: #64ffda;
+    --accent-dim: rgba(100,255,218,0.15);
+    --node: #2a2a4a;
+    --node-active: #64ffda;
+    --node-dim: #1a1a2e;
+    --edge: #2a2a4a;
+    --edge-active: rgba(100,255,218,0.6);
+    --singleton: #ff79c6;
+    --tool: #50fa7b;
+    --warn: #f1fa8c;
+    --border: #2a2a4a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── 顶部标题 ── */
+  header {
+    padding: 24px 32px 16px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, #1a1a2e 0%, transparent 100%);
+  }
+  header h1 {
+    font-size: 22px; font-weight: 700; color: var(--accent);
+    display: flex; align-items: center; gap: 10px;
+  }
+  header h1 .icon { font-size: 26px; }
+  header p { color: var(--fg-muted); font-size: 13px; margin-top: 6px; }
+  header .hint {
+    margin-top: 10px; font-size: 12px; color: var(--warn);
+    background: rgba(241,250,140,0.08); padding: 6px 12px;
+    border-radius: 6px; display: inline-block;
+    border: 1px solid rgba(241,250,140,0.2);
+  }
+
+  /* ── 三栏布局 ── */
+  .layout {
+    display: grid;
+    grid-template-columns: 240px 1fr 360px;
+    gap: 0;
+    min-height: calc(100vh - 100px);
+  }
+
+  /* ── 左栏：扩展选择器 ── */
+  .ext-list {
+    border-right: 1px solid var(--border);
+    padding: 16px 12px;
+    overflow-y: auto;
+    max-height: calc(100vh - 100px);
+  }
+  .ext-list .group-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+    color: var(--fg-muted); margin: 12px 4px 6px; font-weight: 600;
+  }
+  .ext-list .group-label:first-child { margin-top: 0; }
+  .ext-card {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 12px; margin: 3px 0; border-radius: 8px;
+    cursor: pointer; transition: all 0.2s;
+    border: 1px solid transparent;
+    background: var(--bg-card);
+  }
+  .ext-card:hover {
+    border-color: var(--accent-dim);
+    background: rgba(100,255,218,0.05);
+  }
+  .ext-card.active {
+    border-color: var(--accent);
+    background: rgba(100,255,218,0.12);
+    box-shadow: 0 0 12px rgba(100,255,218,0.15);
+  }
+  .ext-card .dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    background: var(--node);
+  }
+  .ext-card.active .dot { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .ext-card.singleton .dot { background: var(--singleton); }
+  .ext-card .name { font-size: 13px; font-weight: 500; flex: 1; }
+  .ext-card .badge {
+    font-size: 10px; padding: 1px 6px; border-radius: 8px;
+    font-family: "SF Mono", monospace;
+  }
+  .ext-card .badge.tool { background: rgba(80,250,123,0.15); color: var(--tool); }
+  .ext-card .badge.rpc { background: rgba(241,250,140,0.15); color: var(--warn); }
+
+  /* ── 中栏：生命周期主干 (3D 透视) ── */
+  /* 三层结构：.lifecycle(滚动) > .scene(perspective,不滚动) > .lifecycle-inner(3D变换) */
+  .lifecycle {
+    position: relative;
+    overflow-y: auto;
+    max-height: calc(100vh - 100px);
+    background:
+      radial-gradient(ellipse at 50% 0%, rgba(100,255,218,0.04), transparent 70%),
+      var(--bg);
+  }
+  .scene {
+    padding: 20px 30px 40px;
+    perspective: 600px;          /* 短视距 → 强透视 */
+    perspective-origin: 50% 40%;
+  }
+  .lifecycle-inner {
+    transform: rotateX(28deg) rotateY(-8deg);   /* 明显倾斜 */
+    transform-style: preserve-3d;
+    padding: 10px 0;
+  }
+  .phase-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px;
+    color: var(--fg-muted); margin: 22px 0 10px; font-weight: 600;
+    padding-left: 28px; position: relative;
+    transform: translateZ(20px);
+  }
+  .phase-label::before {
+    content: ""; position: absolute; left: 0; top: 50%;
+    width: 20px; height: 1px; background: var(--border);
+  }
+
+  /* 主干线 — 用 3D 柱体感 */
+  .spine {
+    position: absolute; left: 36px; top: 30px; bottom: 20px;
+    width: 3px; background: linear-gradient(180deg, var(--edge), rgba(100,255,218,0.2), var(--edge));
+    border-radius: 2px;
+    transform: translateZ(-30px);
+    box-shadow: 1px 0 8px rgba(100,255,218,0.08);
+    transition: background 0.4s;
+  }
+
+  /* 节点：卡片化 + 交替 translateZ 产生 3D 层次 */
+  .node {
+    display: flex; align-items: center; gap: 14px;
+    margin: 8px 0; position: relative;
+    padding: 10px 16px 10px 8px;
+    border-radius: 10px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    transition: transform 0.5s cubic-bezier(0.34,1.56,0.64,1), opacity 0.4s, box-shadow 0.4s;
+    opacity: 0.4;
+    transform-style: preserve-3d;
+    /* 奇偶交替深度由 JS 设置 --z */
+    transform: translateZ(var(--z, 0px));
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    width: calc(100% - 8px);
+    max-width: 460px;
+  }
+  .node .marker {
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--node); border: 2px solid var(--bg-card);
+    flex-shrink: 0; z-index: 2; margin-left: 19px;
+    transition: all 0.4s;
+    box-shadow: 0 0 0 0 transparent;
+  }
+  .node .label {
+    font-size: 13px; color: var(--fg-muted);
+    font-family: "SF Mono","JetBrains Mono",monospace;
+    transition: all 0.3s;
+  }
+  .node .desc {
+    font-size: 11px; color: var(--fg-muted); opacity: 0.6;
+    margin-left: 4px;
+  }
+
+  /* 激活态：浮出 + 强发光（在自身 --z 深度基础上再浮起） */
+  .node.lit {
+    opacity: 1;
+    transform: translateZ(calc(var(--z, 0px) + 90px)) scale(1.06);
+    background: linear-gradient(135deg, #1a2e3e, #16213e);
+    border-color: var(--accent);
+    box-shadow:
+      0 0 0 1px rgba(100,255,218,0.3),
+      0 8px 32px rgba(0,0,0,0.6),
+      0 0 40px rgba(100,255,218,0.25);
+    z-index: 10;
+  }
+  .node.lit .marker {
+    background: var(--node-active);
+    box-shadow: 0 0 20px 3px rgba(100,255,218,0.6);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  .node.lit .label { color: var(--accent); font-weight: 600; text-shadow: 0 0 8px rgba(100,255,218,0.4); }
+  .node.lit .desc { opacity: 1; color: var(--fg); }
+
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 14px 2px rgba(100,255,218,0.4); }
+    50% { box-shadow: 0 0 28px 6px rgba(100,255,218,0.8); }
+  }
+
+  /* 流光效果(沿主线) */
+  .flow-particle {
+    position: absolute; left: 35px; width: 4px; height: 4px;
+    border-radius: 50%; background: var(--accent);
+    box-shadow: 0 0 12px 4px var(--accent);
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.3s;
+  }
+  .flow-particle.run { animation: flow 3s linear infinite; }
+  @keyframes flow {
+    0% { top: 30px; opacity: 0; }
+    10% { opacity: 1; }
+    90% { opacity: 1; }
+    100% { top: 100%; opacity: 0; }
+  }
+
+  /* ── 右栏：详情面板 ── */
+  .detail {
+    border-left: 1px solid var(--border);
+    padding: 20px;
+    overflow-y: auto;
+    max-height: calc(100vh - 100px);
+    background: var(--bg-panel);
+  }
+  .detail .empty {
+    color: var(--fg-muted); font-size: 13px; text-align: center;
+    margin-top: 60px; line-height: 1.8;
+  }
+  .detail h2 {
+    font-size: 18px; color: var(--accent); margin-bottom: 4px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .detail .meta {
+    font-size: 11px; color: var(--fg-muted); margin-bottom: 16px;
+    font-family: monospace;
+  }
+  .detail .meta .tag {
+    display: inline-block; padding: 1px 6px; border-radius: 4px;
+    margin-right: 4px;
+  }
+  .detail .meta .tag.singleton { background: rgba(255,121,198,0.15); color: var(--singleton); }
+  .detail .meta .tag.scene { background: var(--accent-dim); color: var(--accent); }
+
+  .hook-block {
+    background: var(--bg-card); border-radius: 8px;
+    padding: 12px 14px; margin: 8px 0;
+    border-left: 3px solid var(--accent);
+  }
+  .hook-block .hook-name {
+    font-family: monospace; font-size: 13px; color: var(--accent);
+    font-weight: 600; margin-bottom: 4px;
+  }
+  .hook-block .hook-desc {
+    font-size: 12px; color: var(--fg); line-height: 1.6;
+  }
+  .tools-block {
+    margin-top: 16px; padding: 10px 14px;
+    background: rgba(80,250,123,0.06); border-radius: 8px;
+    border: 1px solid rgba(80,250,123,0.15);
+  }
+  .tools-block .tools-title {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+    color: var(--tool); margin-bottom: 6px; font-weight: 600;
+  }
+  .tools-block .tool-item {
+    font-family: monospace; font-size: 12px; color: var(--tool);
+    margin: 3px 0;
+  }
+
+  /* 隐藏滚动条美化 */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--fg-muted); }
+
+  /* 响应式 */
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+    .ext-list, .detail { max-height: none; border: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span class="icon">🔄</span> ION 扩展生命周期可视化</h1>
+  <p>选择左侧任一扩展，查看它在 Agent 生命周期中参与的钩子点（3D 透视主干）+ 调用的函数</p>
+  <span class="hint">💡 点击左侧扩展卡片 → 主干上其参与的钩子点亮发光，右侧显示细节</span>
+</header>
+
+<div class="layout">
+  <!-- 左：扩展选择器 -->
+  <aside class="ext-list" id="extList">
+    <div class="group-label">会话级扩展</div>
+    <!-- 由 JS 注入 -->
+    <div class="group-label">Host 单例扩展</div>
+    <!-- 由 JS 注入 -->
+  </aside>
+
+  <!-- 中：生命周期主干 -->
+  <div class="lifecycle">
+    <div class="scene">
+      <div class="lifecycle-inner" id="lifecycle">
+        <div class="spine"></div>
+        <div class="flow-particle" id="flowParticle"></div>
+        <!-- 由 JS 注入节点 -->
+      </div>
+    </div>
+  </div>
+
+  <!-- 右：详情面板 -->
+  <aside class="detail" id="detail">
+    <div class="empty">← 点击左侧扩展<br>查看它参与的钩子与调用</div>
+  </aside>
+</div>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// 数据：14 个扩展 + 生命周期钩子定义
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Agent 生命周期的钩子点（按顺序，分组）
+const LIFECYCLE = [
+  { phase: "会话", nodes: [
+    { id: "on_session_start", label: "on_session_start", desc: "会话启动" },
+    { id: "on_singleton_init", label: "on_singleton_init", desc: "单例初始化（仅 serve）" },
+    { id: "on_singleton_post_init", label: "on_singleton_post_init", desc: "单例后初始化" },
+  ]},
+  { phase: "输入", nodes: [
+    { id: "on_input", label: "on_input", desc: "用户消息进入" },
+    { id: "on_system_prompt", label: "on_system_prompt", desc: "系统提示词组装" },
+  ]},
+  { phase: "上下文", nodes: [
+    { id: "on_context", label: "on_context", desc: "上下文组装（注入记忆/规则/诊断）" },
+    { id: "on_model_select", label: "on_model_select", desc: "模型选择（可覆盖）" },
+  ]},
+  { phase: "工具", nodes: [
+    { id: "before_tool_call", label: "before_tool_call", desc: "工具调用前（权限/拦截）" },
+    { id: "on_tool_execution_start", label: "on_tool_execution_start", desc: "工具执行开始（快照/签名）" },
+    { id: "on_tool_execution_end", label: "on_tool_execution_end", desc: "工具执行结束（诊断/drift）" },
+    { id: "after_tool_call", label: "after_tool_call", desc: "工具调用后（规则注入/plan）" },
+  ]},
+  { phase: "交付", nodes: [
+    { id: "on_gate_check", label: "on_gate_check", desc: "目标检查（可强制重试）" },
+    { id: "on_gate_retry", label: "on_gate_retry", desc: "Gate 重试时重置" },
+  ]},
+  { phase: "结束", nodes: [
+    { id: "on_turn_end", label: "on_turn_end", desc: "轮次结束（快照/重审批）" },
+    { id: "on_session_shutdown", label: "on_session_shutdown", desc: "会话关闭（蒸馏/加工）" },
+    { id: "on_singleton_shutdown", label: "on_singleton_shutdown", desc: "单例关闭" },
+  ]},
+];
+
+// 14 个扩展（会话级）
+const EXTENSIONS = [
+  {
+    id: "bash", name: "Bash", singleton: false, scenes: "1/2/3", badge: "rpc",
+    hooks: {
+      "on_system_prompt": "注入 bash 使用指南 + 当前运行中/后台进程摘要表（bid/command/elapsed/status）",
+      "on_extension_rpc": "后台进程管理 RPC：list / inspect / kill / send / clean / remove",
+    }
+  },
+  {
+    id: "memory", name: "Memory V0.1+V0.2", singleton: false, scenes: "2/3", badge: "tool",
+    hooks: {
+      "on_system_prompt": "注入 <memory_outline>（项目级）+ <global_memory_outline>（全局）",
+      "on_input": "记录输入到 transcript；turn 计数；每 5 轮 consolidation；FTS 检索命中标记 pending 注入",
+      "on_context": "消费 pending 队列，把项目级+全局记忆作为 user message push 到 messages",
+      "on_session_shutdown": "spawn 异步记忆加工 pipeline（LLM 提炼精华→去重→存全局库）",
+      "on_extension_rpc": "ping / save / list / search / forget / inspect / transcript_search",
+    },
+    tools: ["memory_save", "memory_search"]
+  },
+  {
+    id: "plan", name: "Plan", singleton: false, scenes: "1/2/3", badge: "tool",
+    hooks: {
+      "on_system_prompt": "plan mode 时注入 [PLAN MODE] 指令块（路径、step 数、操作流程）",
+      "before_tool_call": "plan mode 下拒绝非白名单工具（edit/write/bash 被 block）",
+      "after_tool_call": "拦截 plan_enter/plan_exit 切换 plan mode（strict_mode 校验全部 step 已 approve）",
+    },
+    tools: ["plan_enter", "plan_exit", "plan_add", "plan_list", "plan_done", "plan_approve"]
+  },
+  {
+    id: "goal_supervisor", name: "GoalSupervisor", singleton: false, scenes: "1/2/3", badge: "tool",
+    hooks: {
+      "on_tool_execution_end": "把工具调用摘要 push 到 recent_tools 滑动窗口（K=10），用于 drift 监控",
+      "on_gate_check": "核心闭环：无 active goal→Allow；否则 run_all_checks→全过则 Complete；触发 guard 则 Exhausted；否则构建失败证据返回 RetryWith 强制再来一轮",
+    },
+    tools: ["goal_set", "goal_refine", "goal_diagnose"]
+  },
+  {
+    id: "lsp", name: "LSP", singleton: false, scenes: "1/2/3", badge: "tool",
+    hooks: {
+      "on_tool_execution_end": "write/edit 后置 dirty=true；异步 spawn 后台 linter（cargo check/tsc/go vet 等，超时 120s）",
+      "on_context": "后台 check 有新结果时注入 <diagnostics> XML（非阻塞）；去重+压缩旧诊断",
+      "on_extension_rpc": "check（立即跑诊断，返回 count/has_errors/diagnostics）",
+    },
+    tools: ["lsp_check"]
+  },
+  {
+    id: "hook", name: "Hooks", singleton: false, scenes: "1/2/3", badge: "rpc",
+    hooks: {
+      "on_session_start": "触发 SessionStart 事件（startup 时额外触发 Setup）",
+      "on_session_shutdown": "触发 SessionEnd 事件",
+      "on_input": "触发 UserPromptSubmit；block 时设 handled=true，追加 additional_context",
+      "before_tool_call": "触发 PreToolUse；block 返回 Err；应用 updatedInput 覆盖参数",
+      "after_tool_call": "触发 PostToolUse / PostToolUseFailure（按 output 分流）",
+      "on_agent_start": "触发 SubagentStart",
+      "on_agent_end": "触发 SubagentStop；block 时 inject_follow_up",
+      "on_turn_end": "触发 Stop；block 时 inject_follow_up",
+      "on_system_prompt": "重新触发 SessionStart（prompt_inject 模式）取 additionalContext 注入",
+      "on_permission_request": "触发 PermissionRequest；block 返回 Err",
+    },
+  },
+  {
+    id: "file_snapshot", name: "FileSnapshot", singleton: false, scenes: "1/2/3",
+    hooks: {
+      "on_session_start": "建立初始 baseline 扫描 + baseline tree hash + 写 baseline step-snapshot；异步触发 GC",
+      "on_tool_execution_start": "捕获 before-state（insert 到 before_states，按 tool_call_id 索引）",
+      "on_tool_execution_end": "取出 before-state 做 after-capture（FileCapture/DirCapture），存 snapshot",
+      "on_turn_end": "仓库内扫描兜底（delta 采集）+ tree 快照；与 baseline diff，有变更写 step-snapshot",
+    },
+  },
+  {
+    id: "file_approval", name: "FileApproval", singleton: false, scenes: "1/2/3",
+    hooks: {
+      "on_session_start": "从 session.jsonl 恢复审批状态",
+      "on_gate_check": "计算 pending 文件；非空则 emit ApprovalRequest 事件；返回 Allow（审批是 post-hoc，不阻塞 agent 停止）",
+      "on_turn_end": "re-approval 重置：读最近 step-snapshot 的 diff，把变更涉及的已批准/拒绝文件重置为 pending",
+    },
+  },
+  {
+    id: "rules_engine", name: "RulesEngine", singleton: false, scenes: "1/2/3", badge: "rpc",
+    hooks: {
+      "on_system_prompt": "turn 计数 + 每 TTL 轮清 injected set；只注入全局 rule（globs 为空/**）的 <rules> XML",
+      "after_tool_call": "对路径相关工具（read/ls/grep/find/write/edit）按文件路径匹配路径 rule，去重后追加到 tool result",
+      "on_extension_rpc": "list（返回所有 rule）/ match（按 file 路径返回匹配 rule）",
+    },
+  },
+  {
+    id: "permission", name: "Permission", singleton: false, scenes: "2/3", badge: "rpc",
+    hooks: {
+      "before_tool_call": "调 check_tool：Allow 放行 / Deny 返回 Err（[Permission] '...' denied by extension rule）",
+      "on_extension_rpc": "add_rule / list_rules / reload / store_decision / list_stored / remove_stored / clear_stored",
+    },
+  },
+  {
+    id: "learning", name: "Learning", singleton: false, scenes: "1/2/3",
+    hooks: {
+      "on_session_shutdown": "评估是否触发 skill 蒸馏；有 registry+model+session_id 时 spawn run_skill_distillation（fire-and-forget）",
+    },
+  },
+  {
+    id: "tool_loop_detector", name: "ToolLoopDetector", singleton: false, scenes: "1/2/3",
+    hooks: {
+      "on_tool_execution_start": "计算工具签名（name+args）；连续相同签名 ≥5 ABORT 返回 Err；≥3 WARN；豁免工具跳过",
+      "on_tool_execution_end": "仅当 is_error：push 到 history，统计连续相同错误 ≥2 记 error 日志",
+      "on_gate_retry": "gate 强制重试时 reset() 清空循环检测状态（避免误判 gate 重试为循环）",
+    },
+  },
+  // ── Host 单例 ──
+  {
+    id: "global_memory", name: "GlobalMemory V0.2", singleton: true, scenes: "3", badge: "tool",
+    hooks: {
+      "on_singleton_init": "打开 SQLite DB；执行 V0.1→V0.2 自动迁移",
+      "on_singleton_post_init": "读 config；若启用则 spawn Active Memory sub-agent（系统级 Worker，用 fast tier）",
+      "on_singleton_shutdown": "清理 memory-agent Worker 记录，释放 DB 句柄",
+      "on_extension_rpc": "save / search / list / forget / list_outlines / consolidate / clear_stored",
+    },
+    tools: ["global_memory_search", "global_memory_save"]
+  },
+  {
+    id: "monitor", name: "Monitor", singleton: true, scenes: "3", badge: "rpc",
+    hooks: {
+      "on_singleton_init": "加载 .ion/monitors/ 定义；恢复持久化的 active pipeline 状态",
+      "on_singleton_post_init": "捕获 WorkerRegistry 句柄；spawn 内置健康监控（每 60s 检查 dead/stale worker）；为每个 enabled monitor spawn 监控循环",
+      "on_extension_rpc": "list / add / validate / test / remove / enable / disable / status / mark_active / release_active / check_active / list_active",
+    },
+  },
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 渲染
+// ─────────────────────────────────────────────────────────────────────────────
+
+const extListEl = document.getElementById("extList");
+const lifecycleEl = document.getElementById("lifecycle");
+const detailEl = document.getElementById("detail");
+const flowEl = document.getElementById("flowParticle");
+
+// 收集所有钩子 id（用于渲染主干）
+const ALL_HOOK_IDS = new Set();
+LIFECYCLE.forEach(p => p.nodes.forEach(n => ALL_HOOK_IDS.add(n.id)));
+
+// 渲染扩展选择器
+function renderExtList() {
+  const sessionExts = EXTENSIONS.filter(e => !e.singleton);
+  const singletonExts = EXTENSIONS.filter(e => e.singleton);
+  let html = '<div class="group-label">会话级扩展（每 Worker 一份）</div>';
+  sessionExts.forEach(e => html += extCardHtml(e));
+  html += '<div class="group-label">Host 单例扩展（仅 serve 模式）</div>';
+  singletonExts.forEach(e => html += extCardHtml(e));
+  extListEl.innerHTML = html;
+
+  extListEl.querySelectorAll(".ext-card").forEach(card => {
+    card.addEventListener("click", () => selectExtension(card.dataset.id));
+  });
+}
+
+function extCardHtml(e) {
+  let badge = "";
+  if (e.badge === "tool") badge = `<span class="badge tool">tools</span>`;
+  else if (e.badge === "rpc") badge = `<span class="badge rpc">rpc</span>`;
+  return `<div class="ext-card ${e.singleton ? "singleton" : ""}" data-id="${e.id}">
+    <span class="dot"></span>
+    <span class="name">${e.name}</span>
+    ${badge}
+  </div>`;
+}
+
+// 渲染生命周期主干
+function renderLifecycle() {
+  let html = '<div class="spine"></div><div class="flow-particle" id="flowParticle"></div>';
+  let idx = 0;
+  LIFECYCLE.forEach(phase => {
+    html += `<div class="phase-label">${phase.phase}</div>`;
+    phase.nodes.forEach(n => {
+      // 交替深度：偶数 -30px（远），奇数 30px（近）→ 明显的 3D 参差
+      const z = (idx % 2 === 0) ? -30 : 30;
+      idx++;
+      html += `<div class="node" data-hook="${n.id}" style="--z:${z}px">
+        <div class="marker"></div>
+        <div>
+          <div class="label">${n.label}</div>
+          <div class="desc">${n.desc}</div>
+        </div>
+      </div>`;
+    });
+  });
+  lifecycleEl.innerHTML = html;
+}
+
+// 选择扩展 → 高亮
+function selectExtension(extId) {
+  const ext = EXTENSIONS.find(e => e.id === extId);
+  if (!ext) return;
+
+  // 更新选择器 active
+  extListEl.querySelectorAll(".ext-card").forEach(c => {
+    c.classList.toggle("active", c.dataset.id === extId);
+  });
+
+  // 高亮主干节点
+  const hookIds = Object.keys(ext.hooks);
+  lifecycleEl.querySelectorAll(".node").forEach(node => {
+    node.classList.toggle("lit", hookIds.includes(node.dataset.hook));
+  });
+
+  // 启动流光
+  flowEl.classList.add("run");
+
+  // 渲染详情
+  renderDetail(ext);
+}
+
+function renderDetail(ext) {
+  let html = `<h2>${ext.name}</h2>`;
+  html += `<div class="meta">`;
+  if (ext.singleton) html += `<span class="tag singleton">singleton</span>`;
+  html += `<span class="tag scene">场景 ${ext.scenes}</span>`;
+  html += `</div>`;
+
+  // 钩子列表
+  Object.entries(ext.hooks).forEach(([hook, desc]) => {
+    html += `<div class="hook-block">
+      <div class="hook-name">${hook}</div>
+      <div class="hook-desc">${desc}</div>
+    </div>`;
+  });
+
+  // 工具
+  if (ext.tools && ext.tools.length) {
+    html += `<div class="tools-block">
+      <div class="tools-title">提供的 LLM 工具</div>`;
+    ext.tools.forEach(t => html += `<div class="tool-item">🔧 ${t}</div>`);
+    html += `</div>`;
+  }
+
+  detailEl.innerHTML = html;
+}
+
+// 初始化
+renderExtList();
+renderLifecycle();
+
+// 默认选中 Memory（最复杂的扩展，展示效果好）
+setTimeout(() => selectExtension("memory"), 300);
+</script>
+
+</body>
+</html>
