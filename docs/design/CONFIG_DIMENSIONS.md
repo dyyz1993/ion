@@ -119,7 +119,7 @@ git rev-parse --git-common-dir
 | `tier_models` | `~/.ion/config.json` | ① | ✅ 全局 | ①②（② 支持项目级覆盖） | **merge_project 不合并 tier_models** |
 | `runtime`（backends/routes/command_guard） | `~/.ion/config.json` | ① | ✅ 全局 | ① | **merge_project 不合并 runtime 子字段**（除 default_mode） |
 | `runtime.default_mode` | 特殊处理 | ②（不从全局继承） | ✅ | ② | — |
-| **MCP servers**（设计稿） | 设计为 `~/.ion/projects/<key>/config.json` | ② | 🆕 设计为共享 | ② | 待实现 |
+| **MCP servers** ✅ 已实现 | `~/.ion/projects/<key>/config.json` | ② | ✅ 共享 | ② | ✅ 已实现 |
 | permissions rules | `~/.ion/settings.json` + `<project>/.ion/settings.json` | ①③ | ❌ worktree 读不到项目级 | ③（团队共享规则）+ ①（兜底） | **缺 worktree 回源** |
 
 ### 3.2 组件/扩展数据类

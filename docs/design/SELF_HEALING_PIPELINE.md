@@ -97,7 +97,7 @@
 | Reviewer 审查 + APPROVE/REQUEST | examples/agents/reviewer.md | ✅ 已实现 |
 | Merger 合并 + cleanup worktree | examples/agents/merger.md | ✅ 已实现 |
 | Publisher push + close issue | examples/agents/publisher.md | ✅ 已实现 |
-| **端到端闭环**（本设计） | coordinator.md 新增 §self-healing pipeline 章节 | 🔧 待补 |
+| **端到端闭环**（本设计） | coordinator.md §self-healing pipeline 章节 ✅ 已补 | ✅ 已实现 |
 
 ---
 

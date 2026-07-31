@@ -21,8 +21,8 @@
 | B1 | `**/*.rs` 匹配 src/lib.rs | `matches_file("src/lib.rs")` | true |
 | B2 | `**/*.rs` 不匹配 src/lib.py | `matches_file("src/lib.py")` | false |
 | B3 | `src/**` 匹配 src/a/b.rs | `matches_file("src/a/b.rs")` | true |
-| B4 | `*.{ts,tsx}` 花括号展开（pi 有，ION 待对齐） | `matches_file("App.tsx")` | true（待实现）|
-| B5 | `!**/*.d.ts` 排除模式（pi 有，ION 待对齐） | `matches_file("types.d.ts")` | false（待实现）|
+| B4 | `*.{ts,tsx}` 花括号展开（pi 有） | `matches_file("App.tsx")` | true（暂不开发，低优先级）|
+| B5 | `!**/*.d.ts` 排除模式（pi 有） | `matches_file("types.d.ts")` | false（暂不开发，低优先级）|
 
 ### Group C: 注入位置（双路径）
 
@@ -83,7 +83,7 @@ bash tests/rules_ci.sh
 
 覆盖 Group A（export 验证）+ Group C（注入位置）+ Group D（去重单元测试）。
 
-## 四、待补测试（对照 pi 115+ 用例）
+## 四、暂不开发的 pi 对齐项（低优先级）
 
 ION 当前 28 个单元测试，pi 有 115+。主要差距：
 

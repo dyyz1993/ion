@@ -69,7 +69,7 @@ Hooks 不是替代 WASM 扩展，而是**填补"想自定义一点行为但又�
 bash scripts/hooks_test.sh validate .ion/hooks.json   # 校验格式
 bash scripts/hooks_test.sh list                        # 看生效的 hooks
 
-# 方式 2（将来）：ion 内置命令（待实现，API 与上面脚本一致）
+# 方式 2（暂不开发）：ion 内置命令（用 scripts/hooks_test.sh 替代，API 与上面脚本一致）
 # ion hooks validate .ion/hooks.json
 # ion hooks list
 ```

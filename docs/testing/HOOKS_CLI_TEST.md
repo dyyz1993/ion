@@ -1,7 +1,7 @@
 # Hooks 系统 CLI 测试指南
 
 > **状态：已实现** — Group A（create_worker）✅ + Group B（配置/热重载）✅ + Group D（agent handler）✅ 均已验证。
-> Group C/E/F（ion hooks test/watch/trace 内置 CLI）待实现（目前用 `scripts/hooks_test.sh` 替代）。
+> Group C/E/F（ion hooks test/watch/trace 内置 CLI）暂不开发（用 `scripts/hooks_test.sh` 替代，hooks_ci 8+4+10 测试已覆盖）。
 >
 > 本文档是**纯 CLI 验证用例**（给 QA/写验证脚本的人看），含完整命令 + 请求/响应 JSON + 验证点。
 >
@@ -639,7 +639,7 @@ ion hooks log --tail 20 --failed
 ---
 ## 测试脚本登记
 
-> Group A-D 已有自动化脚本覆盖；Group E/F（ion hooks watch/trace/stats 内置 CLI）待实现。
+> Group A-D 已有自动化脚本覆盖；Group E/F（ion hooks watch/trace/stats 内置 CLI）暂不开发（scripts/hooks_test.sh 替代）。
 
 | 脚本 | 覆盖 Group | 状态 |
 |------|-----------|------|
@@ -649,6 +649,6 @@ ion hooks log --tail 20 --failed
 | `tests/hooks_e2e.rs` | 内核引擎（HooksConfig/handler_runner/matcher） | ✅ 已实现（10 passed，`--test-threads=1`） |
 | `scripts/hooks_test.sh` | 用户验证工具（validate/test/list，纯 bash） | ✅ 已实现 |
 
-**待实现**：Group E/F（`ion hooks watch/trace/stats` 内置 CLI 命令，目前用 `scripts/hooks_test.sh` 替代）
+**暂不开发**：Group E/F（`ion hooks watch/trace/stats` 内置 CLI 命令，用 `scripts/hooks_test.sh` 替代）
 
 登记到 [AGENTS.md 测试统计表](../../AGENTS.md)。

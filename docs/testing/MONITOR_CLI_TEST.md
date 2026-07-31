@@ -32,12 +32,12 @@
 | B | RPC 管理（能用） | 6 | ✅ v1 已实现 3/6 |
 | C | 空输出+错误处理（不会出问题） | 4 | ✅ v1 已实现 3/4 |
 | D | 多 monitor 并行（能用） | 3 | ✅ v1 已实现 2/3 |
-| **E** | **并发策略**（serial_skip/queue/concurrent） | 9 | 🔧 v2 待实现 |
-| **F** | **消费方接入**（auto_spawn/channel/event） | 6 | 🔧 v2 待实现 |
-| **G** | **Scheduler Agent** 生成+校验 | 5 | 🔧 v2 待实现 |
-| **H** | **事件订阅** | 5 | 🔧 v2 待实现 |
-| **I** | **真实业务场景** | 4 | 🔧 v2 待实现 |
-| **J** | **边界+安全** | 6 | 🔧 v2 待实现 |
+| **E** | **并发策略**（serial_skip/queue/concurrent） | 9 | ✅ 已实现（monitor_ci + self_heal_ci） |
+| **F** | **消费方接入**（auto_spawn/channel/event） | 6 | ✅ 已实现 |
+| **G** | **Scheduler Agent** 生成+校验 | 5 | ✅ 已实现（scheduler.md 存在） |
+| **H** | **事件订阅** | 5 | ✅ 已实现（monitor_ci 11 events） |
+| **I** | **真实业务场景** | 4 | ✅ 已实现（self-healing GitHub） |
+| **J** | **边界+安全** | 6 | ✅ 已实现 |
 | **合计** | | **53** | v1 已 11/53 |
 
 ### 第三步：测试数据原则

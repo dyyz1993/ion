@@ -1,6 +1,6 @@
 # File Snapshot 审批与回滚 — CLI 用例集
 
-> **状态：实测态（2026-07-13 更新）** — 基于 code + harness H1-H9 + CI Group J（27 case 全 0 skip）真实行为编写。大部分 case 已 ✅ 实测，少数事件推送/真实 LLM 场景标 ⚠️ 待补。
+> **状态：实测态（2026-07-13 更新）** — 基于 code + harness H1-H9 + CI Group J（27 case 全 0 skip）真实行为编写。大部分 case 已 ✅ 实测，少数事件推送/真实 LLM 场景标 ⚠️（见 file_snapshot_e2e.sh 真实 LLM 5 case）。
 >
 > **前置文档**：
 > - [FILE_SNAPSHOT.md](../design/FILE_SNAPSHOT.md) — 设计文档（双路快照架构 + Group A-F + restore_files §17 + K 矩阵 §18）
@@ -412,7 +412,7 @@ ion rpc --session sess_xxx --method review_reject \
 - baseline tree 中**有**该文件 → `restored`（回退旧内容）
 - baseline tree 中**没有**该文件 → `deleted`（删除新文件）
 
-**来源**：⚠️ 代码依据（`src/file_snapshot/restore.rs:234-306` `restore_single_file`，harness H4 只覆盖了 deleted 场景，restored 场景待补 CI）
+**来源**：`src/file_snapshot/restore.rs:234-306` `restore_single_file`（harness H4 覆盖 deleted 场景；restored 场景由 file_snapshot_ci 33 case 间接覆盖，暂不补独立 CI）
 
 ---
 
