@@ -22,7 +22,7 @@ ION 的 FauxProvider 对标它的核心设计：
 
 **两期落地**：
 - **Phase 1（本期）**：纯编程接口，对齐 pi——只能在 Rust 测试代码里用
-- **Phase 2（后续）**：加 CLI flag（`--faux-script`），让开发时也能手动跑
+- **Phase 2（已实现）**：加 CLI flag（`--faux-script`），让开发时也能手动跑
 
 ### 0.2 核心原理（无技术细节）
 

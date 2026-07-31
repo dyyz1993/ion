@@ -289,6 +289,18 @@ struct Cli {
     #[arg(long, global = true, default_value_t = false)]
     no_tools: bool,
 
+    /// FauxProvider script file (JSONL) — for testing without real LLM
+    #[arg(long, global = true)]
+    faux_script: Option<String>,
+
+    /// FauxProvider static reply text — for testing without real LLM
+    #[arg(long, global = true)]
+    faux_reply: Option<String>,
+
+    /// FauxProvider repeat count (0 = no repeat, 1 = repeat each response once)
+    #[arg(long, global = true)]
+    faux_repeat: Option<u64>,
+
     /// Host mode: start a temporary host with event pump, auto-exit when idle
     #[arg(long, global = true, default_value_t = false)]
     host: bool,
@@ -3825,6 +3837,17 @@ async fn cmd_stats(_eff: &EffectiveConfig) {
 async fn main() {
     let cli = Cli::parse();
     init_logging(cli.verbose);
+
+    // FauxProvider CLI flags → env vars (so build_registry_and_model picks them up)
+    if let Some(ref s) = cli.faux_script {
+        unsafe { std::env::set_var("ION_FAUX_SCRIPT", s); }
+    }
+    if let Some(ref r) = cli.faux_reply {
+        unsafe { std::env::set_var("ION_FAUX_REPLY", r); }
+    }
+    if let Some(rep) = cli.faux_repeat {
+        unsafe { std::env::set_var("ION_FAUX_REPEAT", rep.to_string()); }
+    }
 
     // --local / --remote override: set env var before any config load
     // (IonConfig::load reads this to override runtime.default_mode)
