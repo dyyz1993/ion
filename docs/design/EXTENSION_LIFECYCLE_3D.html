@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ION 扩展生命周期 3D 可视化</title>
+<style>
+  :root {
+    --bg: #0a0a14;
+    --bg-panel: #12121f;
+    --fg: #e0e0e0;
+    --fg-muted: #6b7290;
+    --accent: #64ffda;
+    --singleton: #ff79c6;
+    --tool: #50fa7b;
+    --border: #1e1e30;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+    font-size: 14px;
+    overflow: hidden;
+    height: 100vh;
+  }
+
+  header {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+    padding: 14px 24px;
+    background: rgba(10,10,20,0.85);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 16px;
+  }
+  header h1 {
+    font-size: 16px; color: var(--accent); font-weight: 600;
+    white-space: nowrap;
+  }
+  header .hint {
+    font-size: 12px; color: var(--fg-muted);
+  }
+  header .ctrl {
+    margin-left: auto; display: flex; gap: 8px;
+  }
+  header .ctrl button {
+    background: var(--bg-panel); color: var(--fg-muted);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 12px; font-size: 12px; cursor: pointer;
+    transition: all 0.2s;
+  }
+  header .ctrl button:hover { color: var(--accent); border-color: var(--accent); }
+  header .ctrl button.active { color: var(--accent); border-color: var(--accent); background: rgba(100,255,218,0.1); }
+
+  /* 左侧扩展面板 */
+  .ext-panel {
+    position: fixed; left: 0; top: 52px; bottom: 0;
+    width: 220px; z-index: 50;
+    background: rgba(18,18,31,0.92);
+    backdrop-filter: blur(8px);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 12px;
+  }
+  .ext-panel .group-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+    color: var(--fg-muted); margin: 10px 4px 6px; font-weight: 600;
+  }
+  .ext-card {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px; margin: 2px 0; border-radius: 7px;
+    cursor: pointer; transition: all 0.2s;
+    border: 1px solid transparent;
+  }
+  .ext-card:hover { background: rgba(100,255,218,0.06); }
+  .ext-card.active {
+    border-color: var(--accent);
+    background: rgba(100,255,218,0.12);
+  }
+  .ext-card .dot {
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+    background: #2a2a4a;
+  }
+  .ext-card.active .dot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+  .ext-card.singleton .dot { background: var(--singleton); }
+  .ext-card .name { font-size: 12px; font-weight: 500; flex: 1; }
+  .ext-card .badge {
+    font-size: 9px; padding: 1px 5px; border-radius: 6px;
+    font-family: monospace;
+  }
+  .ext-card .badge.tool { background: rgba(80,250,123,0.12); color: var(--tool); }
+  .ext-card .badge.rpc { background: rgba(241,250,140,0.12); color: #f1fa8c; }
+
+  /* 右侧详情面板 */
+  .detail-panel {
+    position: fixed; right: 0; top: 52px; bottom: 0;
+    width: 340px; z-index: 50;
+    background: rgba(18,18,31,0.92);
+    backdrop-filter: blur(8px);
+    border-left: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 16px;
+  }
+  .detail-panel .empty {
+    color: var(--fg-muted); font-size: 13px; text-align: center; margin-top: 80px;
+    line-height: 1.8;
+  }
+  .detail-panel h2 {
+    font-size: 17px; color: var(--accent); margin-bottom: 4px;
+  }
+  .detail-panel .meta {
+    font-size: 11px; color: var(--fg-muted); margin-bottom: 14px;
+    font-family: monospace;
+  }
+  .detail-panel .meta .tag {
+    display: inline-block; padding: 1px 6px; border-radius: 4px; margin-right: 4px;
+  }
+  .detail-panel .meta .tag.singleton { background: rgba(255,121,198,0.12); color: var(--singleton); }
+  .detail-panel .meta .tag.scene { background: rgba(100,255,218,0.1); color: var(--accent); }
+  .hook-block {
+    background: rgba(22,33,62,0.6); border-radius: 7px;
+    padding: 10px 12px; margin: 6px 0;
+    border-left: 3px solid var(--accent);
+  }
+  .hook-block .hook-name {
+    font-family: monospace; font-size: 12px; color: var(--accent);
+    font-weight: 600; margin-bottom: 3px;
+  }
+  .hook-block .hook-desc { font-size: 11px; color: var(--fg); line-height: 1.5; }
+  .tools-block {
+    margin-top: 12px; padding: 8px 12px;
+    background: rgba(80,250,123,0.05); border-radius: 7px;
+    border: 1px solid rgba(80,250,123,0.12);
+  }
+  .tools-block .tools-title {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+    color: var(--tool); margin-bottom: 4px; font-weight: 600;
+  }
+  .tools-block .tool-item {
+    font-family: monospace; font-size: 11px; color: var(--tool); margin: 2px 0;
+  }
+
+  /* 3D 画布 */
+  #canvas3d {
+    position: fixed; top: 52px; left: 220px; right: 340px; bottom: 0;
+    z-index: 10;
+  }
+
+  /* 底部状态 */
+  .status-bar {
+    position: fixed; bottom: 0; left: 220px; right: 340px;
+    padding: 6px 16px; z-index: 40;
+    background: rgba(10,10,20,0.85);
+    backdrop-filter: blur(8px);
+    border-top: 1px solid var(--border);
+    font-size: 11px; color: var(--fg-muted);
+    display: flex; gap: 16px; align-items: center;
+  }
+  .status-bar .stat { display: flex; align-items: center; gap: 4px; }
+  .status-bar .stat .val { color: var(--accent); font-family: monospace; }
+
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🔄 ION 扩展生命周期 · 3D</h1>
+  <span class="hint">鼠标拖动旋转 · 滚轮缩放 · 点击左侧扩展查看其钩子</span>
+  <div class="ctrl">
+    <button id="btnAutoRotate" class="active">自动旋转</button>
+    <button id="btnReset">重置视角</button>
+  </div>
+</header>
+
+<aside class="ext-panel" id="extPanel"></aside>
+<div id="canvas3d"></div>
+<aside class="detail-panel" id="detailPanel">
+  <div class="empty">点击左侧扩展<br>查看它在 3D 生命周期中的钩子</div>
+</aside>
+<div class="status-bar">
+  <span class="stat">节点: <span class="val" id="statNodes">0</span></span>
+  <span class="stat">激活: <span class="val" id="statActive">0</span></span>
+  <span class="stat">FPS: <span class="val" id="statFps">0</span></span>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/controls/OrbitControls.js"></script>
+
+<script>
+const THREE = window.THREE;
+const OrbitControls = THREE.OrbitControls;
+
+// ── 数据（同上个版本的精简版）──
+const LIFECYCLE = [
+  { phase: "会话", nodes: [
+    { id: "on_session_start", desc: "会话启动" },
+    { id: "on_singleton_init", desc: "单例初始化" },
+    { id: "on_singleton_post_init", desc: "单例后初始化" },
+  ]},
+  { phase: "输入", nodes: [
+    { id: "on_input", desc: "用户消息进入" },
+    { id: "on_system_prompt", desc: "系统提示词" },
+  ]},
+  { phase: "上下文", nodes: [
+    { id: "on_context", desc: "上下文组装" },
+    { id: "on_model_select", desc: "模型选择" },
+  ]},
+  { phase: "工具", nodes: [
+    { id: "before_tool_call", desc: "工具调用前" },
+    { id: "on_tool_execution_start", desc: "工具执行开始" },
+    { id: "on_tool_execution_end", desc: "工具执行结束" },
+    { id: "after_tool_call", desc: "工具调用后" },
+  ]},
+  { phase: "交付", nodes: [
+    { id: "on_gate_check", desc: "目标检查" },
+    { id: "on_gate_retry", desc: "Gate 重试重置" },
+  ]},
+  { phase: "结束", nodes: [
+    { id: "on_turn_end", desc: "轮次结束" },
+    { id: "on_session_shutdown", desc: "会话关闭" },
+    { id: "on_singleton_shutdown", desc: "单例关闭" },
+  ]},
+];
+
+const EXTENSIONS = [
+  { id:"bash", name:"Bash", singleton:false, hooks:{
+    "on_system_prompt":"注入 bash 使用指南 + 后台进程摘要",
+    "on_extension_rpc":"后台进程管理 RPC：list/inspect/kill/send/clean/remove" }},
+  { id:"memory", name:"Memory V0.1+V0.2", singleton:false, badge:"tool", hooks:{
+    "on_system_prompt":"注入 <memory_outline> + <global_memory_outline>",
+    "on_input":"记录 transcript；turn 计数；FTS 检索命中标记 pending",
+    "on_context":"消费 pending 队列，记忆作为 user message push",
+    "on_session_shutdown":"spawn 异步记忆加工 pipeline（LLM 提炼→去重→存库）" }},
+    tools:["memory_save","memory_search"] },
+  { id:"plan", name:"Plan", singleton:false, badge:"tool", hooks:{
+    "on_system_prompt":"plan mode 时注入 [PLAN MODE] 指令块",
+    "before_tool_call":"plan mode 下拒绝非白名单工具",
+    "after_tool_call":"拦截 plan_enter/plan_exit 切换 mode（strict 校验）" }},
+    tools:["plan_enter","plan_exit","plan_add","plan_list","plan_done","plan_approve"] },
+  { id:"goal_supervisor", name:"GoalSupervisor", singleton:false, badge:"tool", hooks:{
+    "on_tool_execution_end":"工具摘要 push 到 recent_tools 窗口（drift 监控）",
+    "on_gate_check":"核心闭环：run_all_checks→全过 Complete / guard Exhausted / 否则 RetryWith 强制再来" }},
+    tools:["goal_set","goal_refine","goal_diagnose"] },
+  { id:"lsp", name:"LSP", singleton:false, badge:"tool", hooks:{
+    "on_tool_execution_end":"write/edit 后异步 spawn linter（cargo check 等，120s）",
+    "on_context":"注入 <diagnostics> XML（非阻塞）+ 去重压缩" }},
+    tools:["lsp_check"] },
+  { id:"hook", name:"Hooks", singleton:false, badge:"rpc", hooks:{
+    "on_session_start":"触发 SessionStart（startup 额外触发 Setup）",
+    "on_session_shutdown":"触发 SessionEnd",
+    "on_input":"触发 UserPromptSubmit；block 设 handled",
+    "before_tool_call":"触发 PreToolUse；block 返回 Err",
+    "after_tool_call":"触发 PostToolUse/Failure",
+    "on_agent_start":"触发 SubagentStart",
+    "on_agent_end":"触发 SubagentStop",
+    "on_turn_end":"触发 Stop",
+    "on_system_prompt":"重新触发 SessionStart（prompt_inject）",
+    "on_permission_request":"触发 PermissionRequest" }},
+  { id:"file_snapshot", name:"FileSnapshot", singleton:false, hooks:{
+    "on_session_start":"baseline 扫描 + tree hash + 异步 GC",
+    "on_tool_execution_start":"捕获 before-state",
+    "on_tool_execution_end":"after-capture 存 snapshot",
+    "on_turn_end":"扫描兜底 + tree 快照 + diff" }},
+  { id:"file_approval", name:"FileApproval", singleton:false, hooks:{
+    "on_session_start":"从 session.jsonl 恢复审批状态",
+    "on_gate_check":"计算 pending 文件；emit ApprovalRequest；返回 Allow（post-hoc）",
+    "on_turn_end":"re-approval 重置（已批准文件被改→pending）" }},
+  { id:"rules_engine", name:"RulesEngine", singleton:false, badge:"rpc", hooks:{
+    "on_system_prompt":"注入全局 rule 的 <rules> XML",
+    "after_tool_call":"路径匹配 rule，追加到 tool result" }},
+  { id:"permission", name:"Permission", singleton:false, badge:"rpc", hooks:{
+    "before_tool_call":"check_tool：Allow 放行 / Deny 返回 Err" }},
+  { id:"learning", name:"Learning", singleton:false, hooks:{
+    "on_session_shutdown":"评估触发 skill 蒸馏；spawn run_skill_distillation" }},
+  { id:"tool_loop_detector", name:"ToolLoopDetector", singleton:false, hooks:{
+    "on_tool_execution_start":"签名计数 ≥5 ABORT / ≥3 WARN",
+    "on_tool_execution_end":"is_error 时连续错误 ≥2 记日志",
+    "on_gate_retry":"reset() 清空状态" }},
+  { id:"global_memory", name:"GlobalMemory V0.2", singleton:true, badge:"tool", scenes:"3", hooks:{
+    "on_singleton_init":"打开 SQLite + V0.1→V0.2 迁移",
+    "on_singleton_post_init":"spawn Active Memory sub-agent",
+    "on_singleton_shutdown":"清理 memory-agent + 释放 DB" }},
+    tools:["global_memory_search","global_memory_save"] },
+  { id:"monitor", name:"Monitor", singleton:true, badge:"rpc", scenes:"3", hooks:{
+    "on_singleton_init":"加载 .ion/monitors/ + 恢复 active pipeline",
+    "on_singleton_post_init":"spawn 健康监控（60s）+ 为每个 monitor spawn 循环" }},
+];
+
+// ── Three.js 场景搭建 ──
+const container = document.getElementById('canvas3d');
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x0a0a14, 30, 120);
+
+const camera = new THREE.PerspectiveCamera(55, container.clientWidth / container.clientHeight, 0.1, 500);
+camera.position.set(18, 5, 28);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setSize(container.clientWidth, container.clientHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(0x000000, 0);
+container.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.5;
+controls.minDistance = 12;
+controls.maxDistance = 80;
+
+// 光照
+scene.add(new THREE.AmbientLight(0x404060, 1.5));
+const keyLight = new THREE.DirectionalLight(0x64ffda, 0.6);
+keyLight.position.set(10, 20, 15);
+scene.add(keyLight);
+const fillLight = new THREE.PointLight(0xff79c6, 0.4, 50);
+fillLight.position.set(-15, 0, -10);
+scene.add(fillLight);
+
+// 背景星点
+const starGeo = new THREE.BufferGeometry();
+const starPositions = [];
+for (let i = 0; i < 300; i++) {
+  starPositions.push((Math.random()-0.5)*200, (Math.random()-0.5)*200, (Math.random()-0.5)*200);
+}
+starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPositions, 3));
+const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0x303050, size: 0.3, transparent: true, opacity: 0.6 }));
+scene.add(stars);
+
+// ── 构建生命周期 3D 节点 ──
+const SPACING = 4.2;
+const allNodes = [];   // { mesh, label, data, basePos }
+const phaseLabels = [];
+let totalIdx = 0;
+
+LIFECYCLE.forEach((phase, pi) => {
+  // Phase 标签（3D 文字用 sprite 模拟）
+  const phaseY = -totalIdx * SPACING + 2;
+  phaseLabels.push({ y: phaseY, name: phase.phase });
+
+  phase.nodes.forEach((n, ni) => {
+    const y = -totalIdx * SPACING;
+    const z = (ni % 2 === 0) ? 2.5 : -2.5;  // 交替前后 → 3D 螺旋感
+    const x = Math.sin(totalIdx * 0.4) * 1.5; // 轻微弯曲
+
+    // 节点球体
+    const geo = new THREE.SphereGeometry(0.55, 32, 32);
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x1a1a30, emissive: 0x000000, metalness: 0.3, roughness: 0.5,
+      transparent: true, opacity: 0.35,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(x, y, z);
+    mesh.userData = { hookId: n.id, desc: n.desc, label: n.id, basePos: {x,y,z}, active: false };
+    scene.add(mesh);
+
+    // 光晕（激活时显示）
+    const haloGeo = new THREE.SphereGeometry(0.9, 16, 16);
+    const haloMat = new THREE.MeshBasicMaterial({ color: 0x64ffda, transparent: true, opacity: 0 });
+    const halo = new THREE.Mesh(haloGeo, haloMat);
+    halo.position.copy(mesh.position);
+    scene.add(halo);
+    mesh.userData.halo = halo;
+
+    // HTML 标签（浮在 3D 节点上）
+    const labelDiv = document.createElement('div');
+    labelDiv.textContent = n.id;
+    labelDiv.style.cssText = `position:absolute;font:11px monospace;color:#6b7290;
+      pointer-events:none;transform:translate(-50%,-50%);transition:all .4s;white-space:nowrap;`;
+    container.appendChild(labelDiv);
+
+    allNodes.push({ mesh, halo, labelDiv, data: n, basePos: {x,y,z} });
+    totalIdx++;
+  });
+});
+
+// ── 主干曲线（连接所有节点的 3D 线）──
+const curvePoints = allNodes.map(n => new THREE.Vector3(n.basePos.x, n.basePos.y, n.basePos.z));
+const curve = new THREE.CatmullRomCurve3(curvePoints);
+const tubeGeo = new THREE.TubeGeometry(curve, 64, 0.06, 8, false);
+const tubeMat = new THREE.MeshBasicMaterial({ color: 0x2a2a4a, transparent: true, opacity: 0.5 });
+const tube = new THREE.Mesh(tubeGeo, tubeMat);
+scene.add(tube);
+
+// 激活连线（选中扩展时，连接其激活节点的发光路径）
+let activeLine = null;
+
+document.getElementById('statNodes').textContent = allNodes.length;
+
+// ── 扩展选择器渲染 ──
+const extPanel = document.getElementById('extPanel');
+const detailPanel = document.getElementById('detailPanel');
+
+function renderExts() {
+  const session = EXTENSIONS.filter(e => !e.singleton);
+  const singletons = EXTENSIONS.filter(e => e.singleton);
+  let html = '<div class="group-label">会话级扩展</div>';
+  session.forEach(e => html += extCard(e));
+  html += '<div class="group-label">Host 单例（仅 serve）</div>';
+  singletons.forEach(e => html += extCard(e));
+  extPanel.innerHTML = html;
+  extPanel.querySelectorAll('.ext-card').forEach(c =>
+    c.onclick = () => selectExt(c.dataset.id));
+}
+
+function extCard(e) {
+  const badge = e.badge === 'tool' ? '<span class="badge tool">tools</span>'
+              : e.badge === 'rpc' ? '<span class="badge rpc">rpc</span>' : '';
+  return `<div class="ext-card ${e.singleton?'singleton':''}" data-id="${e.id}">
+    <span class="dot"></span><span class="name">${e.name}</span>${badge}</div>`;
+}
+
+// ── 选择扩展 → 3D 联动 ──
+let currentActiveIds = [];
+
+function selectExt(id) {
+  const ext = EXTENSIONS.find(e => e.id === id);
+  if (!ext) return;
+
+  extPanel.querySelectorAll('.ext-card').forEach(c =>
+    c.classList.toggle('active', c.dataset.id === id));
+
+  currentActiveIds = Object.keys(ext.hooks);
+
+  // 更新 3D 节点
+  allNodes.forEach(({ mesh, halo, labelDiv }) => {
+    const isActive = currentActiveIds.includes(mesh.userData.hookId);
+    mesh.userData.active = isActive;
+
+    if (isActive) {
+      mesh.material.color.setHex(0x64ffda);
+      mesh.material.emissive.setHex(0x64ffda);
+      mesh.material.emissiveIntensity = 0.6;
+      mesh.material.opacity = 1;
+      mesh.scale.setScalar(1.5);
+      halo.material.opacity = 0.2;
+      labelDiv.style.color = '#64ffda';
+      labelDiv.style.fontWeight = '600';
+      labelDiv.style.fontSize = '13px';
+      labelDiv.style.textShadow = '0 0 8px #64ffda';
+    } else {
+      mesh.material.color.setHex(0x1a1a30);
+      mesh.material.emissive.setHex(0x000000);
+      mesh.material.opacity = 0.25;
+      mesh.scale.setScalar(0.8);
+      halo.material.opacity = 0;
+      labelDiv.style.color = '#3a3a50';
+      labelDiv.style.fontWeight = '400';
+      labelDiv.style.fontSize = '11px';
+      labelDiv.style.textShadow = 'none';
+    }
+  });
+
+  // 激活路径发光线
+  if (activeLine) { scene.remove(activeLine); activeLine.geometry.dispose(); }
+  const activeNodes = allNodes.filter(n => currentActiveIds.includes(n.data.id));
+  if (activeNodes.length > 1) {
+    const pts = activeNodes.map(n => new THREE.Vector3(n.basePos.x, n.basePos.y, n.basePos.z));
+    const acurve = new THREE.CatmullRomCurve3(pts);
+    const aGeo = new THREE.TubeGeometry(acurve, 48, 0.12, 8, false);
+    const aMat = new THREE.MeshBasicMaterial({ color: 0x64ffda, transparent: true, opacity: 0.7 });
+    activeLine = new THREE.Mesh(aGeo, aMat);
+    scene.add(activeLine);
+  }
+
+  document.getElementById('statActive').textContent = currentActiveIds.length;
+  renderDetail(ext);
+}
+
+function renderDetail(ext) {
+  let html = `<h2>${ext.name}</h2><div class="meta">`;
+  if (ext.singleton) html += '<span class="tag singleton">singleton</span>';
+  html += `<span class="tag scene">场景 ${ext.scenes || '1/2/3'}</span></div>`;
+  Object.entries(ext.hooks).forEach(([h, d]) => {
+    html += `<div class="hook-block"><div class="hook-name">${h}</div><div class="hook-desc">${d}</div></div>`;
+  });
+  if (ext.tools) {
+    html += '<div class="tools-block"><div class="tools-title">LLM 工具</div>';
+    ext.tools.forEach(t => html += `<div class="tool-item">🔧 ${t}</div>`);
+    html += '</div>';
+  }
+  detailPanel.innerHTML = html;
+}
+
+// ── 渲染循环 ──
+let frameCount = 0, lastFpsTime = performance.now();
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+
+  // 标签位置投影到屏幕
+  const rect = container.getBoundingClientRect();
+  allNodes.forEach(({ mesh, labelDiv }) => {
+    const pos = mesh.position.clone();
+    pos.project(camera);
+    const x = (pos.x * 0.5 + 0.5) * rect.width;
+    const y = (-pos.y * 0.5 + 0.5) * rect.height;
+    labelDiv.style.left = x + 'px';
+    labelDiv.style.top = (y - 18) + 'px';
+
+    // 激活节点光晕呼吸
+    if (mesh.userData.active && mesh.userData.halo) {
+      const t = performance.now() * 0.003;
+      mesh.userData.halo.material.opacity = 0.12 + Math.sin(t) * 0.08;
+      mesh.userData.halo.scale.setScalar(1 + Math.sin(t) * 0.15);
+    }
+  });
+
+  // 星空缓慢旋转
+  stars.rotation.y += 0.0003;
+
+  renderer.render(scene, camera);
+
+  // FPS
+  frameCount++;
+  const now = performance.now();
+  if (now - lastFpsTime > 1000) {
+    document.getElementById('statFps').textContent = Math.round(frameCount * 1000 / (now - lastFpsTime));
+    frameCount = 0; lastFpsTime = now;
+  }
+}
+
+// 窗口大小
+window.addEventListener('resize', () => {
+  camera.aspect = container.clientWidth / container.clientHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(container.clientWidth, container.clientHeight);
+});
+
+// 控制按钮
+document.getElementById('btnAutoRotate').onclick = function() {
+  controls.autoRotate = !controls.autoRotate;
+  this.classList.toggle('active', controls.autoRotate);
+};
+document.getElementById('btnReset').onclick = () => {
+  camera.position.set(18, 5, 28);
+  controls.target.set(0, -totalIdx * SPACING * 0.4, 0);
+  controls.update();
+};
+
+// 初始化
+renderExts();
+controls.target.set(0, -totalIdx * SPACING * 0.4, 0);
+animate();
+setTimeout(() => selectExt('memory'), 500);
+</script>
+
+</body>
+</html>

@@ -347,7 +347,7 @@ impl McpManager {
                 }
                 let transport = rmcp::transport::TokioChildProcess::new(cmd)?;
                 // 连接超时 25s（留 5s 给 list_tools，总共 30s 在 connect_all 的超时内）
-                tokio::time::timeout(std::time::Duration::from_secs(25), ().serve(transport))
+                tokio::time::timeout(std::time::Duration::from_secs(40), ().serve(transport))
                     .await
                     .map_err(|_| -> Box<dyn std::error::Error + Send + Sync> {
                         "stdio MCP server connect timeout (25s)".into()
@@ -356,7 +356,7 @@ impl McpManager {
             McpServerConfig::Http { url, .. } => {
                 let transport =
                     rmcp::transport::StreamableHttpClientTransport::from_uri(url.as_str());
-                tokio::time::timeout(std::time::Duration::from_secs(25), ().serve(transport))
+                tokio::time::timeout(std::time::Duration::from_secs(40), ().serve(transport))
                     .await
                     .map_err(|_| -> Box<dyn std::error::Error + Send + Sync> {
                         "http MCP server connect timeout (25s)".into()
@@ -366,7 +366,7 @@ impl McpManager {
 
         // 发现工具（超时 5s）
         let tools_result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(10),
             client.list_tools(Default::default()),
         )
         .await
@@ -393,7 +393,7 @@ impl McpManager {
 
         // 发现资源（超时 5s，失败不阻断——不是所有 server 都有 resources）
         let resources: Vec<DiscoveredResource> = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(10),
             client.list_all_resources(),
         )
         .await
@@ -412,20 +412,22 @@ impl McpManager {
         .unwrap_or_default();
 
         // 发现提示模板（超时 5s，失败不阻断）
-        let prompts: Vec<DiscoveredPrompt> =
-            tokio::time::timeout(std::time::Duration::from_secs(5), client.list_all_prompts())
-                .await
-                .ok()
-                .and_then(|r| r.ok())
-                .map(|ps| {
-                    ps.into_iter()
-                        .map(|p| DiscoveredPrompt {
-                            name: p.name.clone(),
-                            description: p.description.clone().map(|d| d.to_string()),
-                        })
-                        .collect()
+        let prompts: Vec<DiscoveredPrompt> = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            client.list_all_prompts(),
+        )
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .map(|ps| {
+            ps.into_iter()
+                .map(|p| DiscoveredPrompt {
+                    name: p.name.clone(),
+                    description: p.description.clone().map(|d| d.to_string()),
                 })
-                .unwrap_or_default();
+                .collect()
+        })
+        .unwrap_or_default();
 
         Ok(ConnectResult {
             client,
@@ -594,7 +596,12 @@ impl McpManager {
                         .iter()
                         .map(|content| match &content.raw {
                             RawContent::Text(t) => t.text.clone(),
-                            RawContent::Image(_) => "[image]".to_string(),
+                            RawContent::Image(img) => {
+                                // Save the image to disk instead of discarding it,
+                                // so the agent can view it via @file on the next turn.
+                                save_mcp_image(&img.data, &img.mime_type)
+                                    .unwrap_or_else(|_| "[image: save failed]".to_string())
+                            }
                             RawContent::Audio(_) => "[audio]".to_string(),
                             RawContent::Resource(_) => "[resource]".to_string(),
                             _ => "[unknown]".to_string(),
@@ -859,6 +866,56 @@ impl McpManager {
 /// Count the number of configured MCP servers in the given IonConfig.
 pub fn server_count_in_config(config: &IonConfig) -> usize {
     config.mcp_servers.len()
+}
+
+/// Save a base64-encoded MCP image (e.g. Playwright screenshot) to disk so
+/// the agent can view it via `@<path>` on the next turn.
+///
+/// Returns a hint string like `[Screenshot saved: /path/x.png]`.
+/// Falls back to `Err` on decode/write failure (caller falls back to `"[image]"`).
+fn save_mcp_image(base64_data: &str, mime_type: &str) -> Result<String, std::io::Error> {
+    use std::io::Write;
+
+    // Decode base64 → raw bytes.
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64_data)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+    // Determine extension from mime type.
+    let ext = match mime_type {
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => "png", // default to png
+    };
+
+    // Build path: ~/.ion/screenshots/mcp-<unix_ms>.<ext>
+    let dir = crate::paths::root().join("screenshots");
+    std::fs::create_dir_all(&dir)?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let path = dir.join(format!("mcp-{ts}.{ext}"));
+
+    // Write file.
+    let mut file = std::fs::File::create(&path)?;
+    file.write_all(&bytes)?;
+
+    tracing::info!(
+        "[mcp] screenshot saved: {} ({} bytes, {})",
+        path.display(),
+        bytes.len(),
+        mime_type
+    );
+
+    Ok(format!(
+        "[Screenshot saved: {}. Use @{} to view it in your next turn.]",
+        path.display(),
+        path.display()
+    ))
 }
 
 #[cfg(test)]
@@ -1240,5 +1297,33 @@ mod tests {
         assert!(!McpManager::is_connection_error("invalid arguments"));
         assert!(!McpManager::is_connection_error("permission denied"));
         assert!(!McpManager::is_connection_error(""));
+    }
+
+    #[test]
+    fn save_mcp_image_writes_png_and_returns_path() {
+        // A 1x1 red PNG (base64).
+        let png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==";
+        let result = save_mcp_image(png_b64, "image/png").expect("save should succeed");
+        assert!(result.contains("Screenshot saved:"), "result: {result}");
+        assert!(result.contains(".png"), "should have .png extension");
+
+        // Extract path: between "saved: " and ". Use"
+        let path = result
+            .split("saved: ")
+            .nth(1)
+            .and_then(|s| s.split(". Use").next())
+            .unwrap_or("");
+        assert!(!path.is_empty(), "extracted path empty from: {result}");
+        assert!(
+            std::path::Path::new(path).exists(),
+            "file should exist: {path}"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn save_mcp_image_invalid_base64_returns_err() {
+        let result = save_mcp_image("!!!not-base64!!!", "image/png");
+        assert!(result.is_err(), "invalid base64 should fail");
     }
 }
