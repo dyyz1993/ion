@@ -443,6 +443,10 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/design/BASH_EXTENSION.md](./docs/design/BASH_EXTENSION.md) | Bash 扩展：同步执行 + 后台进程 + 综合教程 + CLI 测试 (设计稿+已实现) |
 | [docs/design/MEMORY_EXTENSION.md](./docs/design/MEMORY_EXTENSION.md) | Memory 扩展 v0.1：大纲索引、异步检索、XML 注入、4 维存储 (已验证，搜索 bug 已修) |
 | [docs/design/MEMORY_AGENT.md](./docs/design/MEMORY_AGENT.md) | Memory V0.2 跨项目记忆 Agent：单例扩展 + SQLite/FTS5 + 引用计数 (Phase 1-8 已实现) |
+| [docs/design/LEARNING_EXTENSION.md](./docs/design/LEARNING_EXTENSION.md) | Learning Extension：session 结束后 LLM 提炼 skill + 密钥脱敏 + 幂等写入 (已完成) |
+| [docs/design/SKILL_DISTILLATION.md](./docs/design/SKILL_DISTILLATION.md) | Skill Distillation：7 步流程（session 发现→消息提取→过滤→脱敏→LLM 提炼→文件写入）(已完成) |
+| [docs/design/LSP_EXTENSION.md](./docs/design/LSP_EXTENSION.md) | LSP Extension：多语言诊断（Rust/TS/Python/Go/HTML）+ on_tool_execution_end 异步检查 + on_context 注入 (已完成) |
+| [docs/design/SECRET_DETECTOR.md](./docs/design/SECRET_DETECTOR.md) | Secret Detector：密钥检测 + 脱敏（4.5 bits/char 熵检测）+ LearningExtension 集成 (已完成) |
 | [docs/design/CRASH_RECOVERY.md](./docs/design/CRASH_RECOVERY.md) | Worker 崩溃恢复：stderr 捕获 + exit code + Dead 保留 + 父通知 (已实现) |
 | [docs/design/COMPACTION.md](./docs/design/COMPACTION.md) | Compaction 会话压缩：分批并发 + LLM summarizer + emergency fallback + CLI 测试 (已验证) |
 | [docs/design/CONTEXT_INDEX.md](./docs/design/CONTEXT_INDEX.md) | Context Index — 上下文索引与快照折叠：read 追踪 + 过期快照折叠 + pi 对标 (V1 已实现，V2 待定) |

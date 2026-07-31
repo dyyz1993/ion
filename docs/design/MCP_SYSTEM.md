@@ -1,6 +1,6 @@
 # MCP 系统（Model Context Protocol）设计文档
 
-> **状态：Phase 1-3 已实现** — Phase 1（配置 + RPC）、Phase 2（rmcp 真实连接 + 工具发现/调用）、Phase 3（自动重连 + HTTP 多 Worker 直连 + 事件推送）均已实现并验证。Phase 4（resources/prompts）待定。
+> **状态：Phase 1-4 已实现** — Phase 1（配置 + RPC）、Phase 2（rmcp 真实连接 + 工具发现/调用）、Phase 3（自动重连 + HTTP 多 Worker 直连 + 事件推送）、Phase 4（resources/prompts 探索）均已实现并验证。
 
 ## 何时使用这个文档
 
@@ -42,7 +42,7 @@ MCP（Model Context Protocol）是一个开放协议，让 AI 助手连接外部
 | 自动重连（指数退避） | ✅ 已实现（base 1s → max 30s，最多 3 次） | 3 |
 | HTTP 多 Worker 直连（方案 B） | ✅ 已实现（ION_SKIP_MCP=stdio 只跳过 stdio） | 3 |
 | 连接变更事件推送 | ✅ 已实现（mcp_connection_change 事件） | 3 |
-| resources/prompts 探索 | ❌ 待定 | 4 |
+| resources/prompts 探索 | ✅ 已实现（list_resources/list_prompts/read_resource 均可用，mcp_ci.sh 测试覆盖） | 4 |
 
 ---
 
@@ -537,7 +537,7 @@ if std::env::var("ION_SKIP_MCP").ok().as_deref() != Some("1") && !mcp_manager.is
 | **连接超时** | 30s/server | 对齐 pi connectTimeoutMs |
 | **调用超时** | 60s/tool | 对齐 pi callTimeoutMs |
 | **子 Worker 隔离** | `ION_SKIP_MCP=1` 跳过 | 对齐 pi `PI_SKIP_MCP`；多 Worker 抢同一 stdio server 会死锁 |
-| **resources/prompts** | ❌ 暂不实现 | pi 也没实现；tools 是 MCP 核心价值，resources/prompts 留 Phase 4 |
+| **resources/prompts** | ✅ 已实现 | list_resources/list_prompts/read_resource 全部可用，mcp_ci.sh 测试覆盖 |
 | **错误处理** | tool 失败返回错误文本，不中断 agent | 对齐 pi：MCP server 故障不应阻断主 agent 流程 |
 | **工具 schema** | 原样保留 MCP 返回的 JSON Schema | MCP schema 不一定符合严格格式，原样传给 LLM（对齐 pi `Type.Unsafe`） |
 | **并发连接** | `join_all`（allSettled 模式） | 单台失败不影响其它 server |
@@ -1636,7 +1636,7 @@ ion rpc --session "$SID" --method call_tool \
 | **1** | `McpServerConfig` + IonConfig 字段 + **全局(`~/.ion/`)+项目维度(`~/.ion/projects/<key>/`)两级配置（server name 浅合并，worktree 共享）** + 3 RPC 命令填充 | 无 | ~2.5h |
 | **2** | rmcp **1.x** 接入 + `McpManager` 真实连接（stdio/http）+ `McpTool` 注册 + 工具发现 + LLM 可调 | rmcp 1.x（已验证兼容 Rust 1.92） | ~4h |
 | **3** | 自动重连（指数退避）+ 连接变更事件推送 + `ION_SKIP_MCP` 子进程隔离 | Phase 2 | ~3h |
-| **4** | resources/prompts 探索 | Phase 3 | ~2h |
+| **4** | resources/prompts 探索（list_resources/list_prompts/read_resource） | Phase 3 | ~2h |
 
 ### Phase 1 验收标准 ✅
 
@@ -1698,4 +1698,4 @@ src/agent/tool.rs    ← Tool trait（已有，McpTool impl 它）
 | 支持哪些传输 | §1.3 | stdio + Streamable HTTP（不支持 SSE） |
 | 启动时机 | §2.5 | eager（agent 启动时全连接） |
 | 子进程隔离 | §2.5 | `ION_SKIP_MCP=1` 跳过 |
-| resources/prompts | §2.5 | Phase 4 再考虑 |
+| resources/prompts | §2.5 | ✅ Phase 4 已实现（list_resources/list_prompts/read_resource） |

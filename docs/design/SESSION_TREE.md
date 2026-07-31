@@ -1,6 +1,6 @@
 # Session Tree（会话分支）设计文档
 
-> **状态：设计稿** — 文件内分支（B）+ 从分支点 fork。数据模型已就绪（`parent_session` 字段已存在、entry 均带 `parentId`、扩展钩子已 stub），待实现。
+> **状态：已实现** — 文件内分支（B）+ 从分支点 fork。数据模型已就绪（`parent_session` 字段已存在、entry 均带 `parentId`、扩展钩子已 stub），已实现。
 
 ---
 
@@ -20,32 +20,32 @@
 
 | 能力 | 入口 | 状态 |
 |------|------|------|
-| leaf 指针持久化 | `LeafPointerEntry`（新 entry 类型） | 🔧 设计稿 |
-| 树构建 | `SessionFile::get_tree()` | 🔧 |
-| 分支（移动 leaf） | `ion --branch <entry-id>` / `branch_session` 工具 | 🔧 |
-| 分支命名 | `ion --branch <id> --name <name>`（复用 `LabelEntry`） | 🔧 |
-| 切换分支 | `ion --checkout <name>` | 🔧 |
-| 回滚（移 leaf 回退，路径保留） | `ion --rollback <entry-id>` | 🔧 |
-| 查看树 | `ion session tree <sid>` / `ion session branches <sid>` | 🔧 |
-| 从分支点 fork | `ion --fork-from-leaf <sid>/<entry-id>`（新 session 文件，记 `parentSession`） | 🔧 |
-| Agent 自主分叉 | `branch_session` 工具 | 🔧 |
-| 扩展钩子激活 | `on_session_before_fork` / `on_session_tree`（已 stub） | 🔧 |
+| leaf 指针持久化 | `LeafPointerEntry`（新 entry 类型） | ✅ 已实现 |
+| 树构建 | `SessionFile::get_tree()` | ✅ |
+| 分支（移动 leaf） | `ion --branch <entry-id>` / `branch_session` 工具 | ✅ |
+| 分支命名 | `ion --branch <id> --name <name>`（复用 `LabelEntry`） | ✅ |
+| 切换分支 | `ion --checkout <name>` | ✅ |
+| 回滚（移 leaf 回退，路径保留） | `ion --rollback <entry-id>` | ✅ |
+| 查看树 | `ion session tree <sid>` / `ion session branches <sid>` | ✅ |
+| 从分支点 fork | `ion --fork-from-leaf <sid>/<entry-id>`（新 session 文件，记 `parentSession`） | ✅ |
+| Agent 自主分叉 | `branch_session` 工具 | ✅ |
+| 扩展钩子激活 | `on_session_before_fork` / `on_session_tree`（已 stub） | ✅ |
 
 ### 实现状态核查清单
 
 | # | 功能 | 状态 | 验证 |
 |---|------|------|------|
-| 1.1 | `LeafPointerEntry` 结构 + 序列化 | 🔧 | `cargo test --lib session_jsonl` |
-| 1.2 | `get_tree()` 构建器 | 🔧 | 同上 |
-| 1.3 | leaf 恢复算法（load 时） | 🔧 | 同上 |
-| 2.1 | `--branch` CLI flag | 🔧 | CLI Group A |
-| 2.2 | `--branch --name` + `--checkout` + `--rollback` | 🔧 | CLI Group B |
-| 2.3 | `session tree` / `session branches` 子命令 | 🔧 | CLI Group A |
-| 3.1 | `--fork-from-leaf` 提取新 session | 🔧 | CLI Group C |
-| 4.1 | `branch_session` Agent 工具（含 rollback） | 🔧 | CLI Group D |
-| 5.1 | 扩展钩子激活 | 🔧 | CLI Group D |
-| 6.1 | compaction 安全检查 | 🔧 | CLI Group E（XFail） |
-| 7.1 | only-append 不变量验证 | 🔧 | CLI Group F（审计） |
+| 1.1 | `LeafPointerEntry` 结构 + 序列化 | ✅ | `cargo test --lib session_jsonl` |
+| 1.2 | `get_tree()` 构建器 | ✅ | 同上 |
+| 1.3 | leaf 恢复算法（load 时） | ✅ | 同上 |
+| 2.1 | `--branch` CLI flag | ✅ | CLI Group A |
+| 2.2 | `--branch --name` + `--checkout` + `--rollback` | ✅ | CLI Group B |
+| 2.3 | `session tree` / `session branches` 子命令 | ✅ | CLI Group A |
+| 3.1 | `--fork-from-leaf` 提取新 session | ✅ | CLI Group C |
+| 4.1 | `branch_session` Agent 工具（含 rollback） | ✅ | CLI Group D |
+| 5.1 | 扩展钩子激活 | ✅ | CLI Group D |
+| 6.1 | compaction 安全检查 | ✅ | CLI Group E（XFail） |
+| 7.1 | only-append 不变量验证 | ✅ | CLI Group F（审计） |
 
 ---
 
