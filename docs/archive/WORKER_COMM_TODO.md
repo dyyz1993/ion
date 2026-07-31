@@ -1,6 +1,6 @@
 # Worker 通信补全任务清单
 
-> **状态：开发中** — 本文档为下一轮 sprint 的执行清单。
+> **状态：已归档** — 任务清单已全部完成，本文仅供历史查阅。
 > 上文已完成去 leader 化的 `cmd_team` 重写 + `spawn_worker`/`send_to_worker` 工具（child 同步阻塞已 E2E 验证）。
 > 本轮补全 peer 异步、resume 同步、并行 child、follow_up 机制、结构化返回值。
 

@@ -428,7 +428,7 @@ V1 解决"过期文件快照"后,第二个膨胀源是**整段对话历史**。�
 
 ---
 
-## 9. CLI 测试指南(待实现)
+## 9. CLI 测试指南（context-index 扩展，已实现）
 
 > 实现后按 [CLI_TEST_TEMPLATE.md](../templates/CLI_TEST_TEMPLATE.md) 补充完整测试 case。
 
@@ -470,4 +470,4 @@ ion rpc --session <sid> --method extension_rpc \
 
 ## 10. 关键 bug fix 记录
 
-> 实现过程中踩过的坑,待补充。
+> 实现过程中踩过的坑（context-index 扩展）。

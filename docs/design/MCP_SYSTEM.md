@@ -1030,7 +1030,7 @@ ion rpc --session <sid> --method mcp_restart_server \
 
 **预期响应：** `success: false, error: "unknown mcp server: ghost"`
 
-### Group D — 真实连接：stdio 类型（Phase 2，依赖 rmcp，待实现）
+### Group D — 真实连接：stdio 类型（Phase 2 已实现，见 mcp_ci.sh）
 
 > 前置：有可用的 stdio MCP server（如 `npx @modelcontextprotocol/server-everything`）。
 

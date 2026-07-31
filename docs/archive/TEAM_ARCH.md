@@ -1,6 +1,6 @@
 # ION Team — 单项目自治 Agent 团队
 
-> **状态：开发中** — `ion team --project .` 已实现：
+> **状态：已归档** — `ion --host --agent coordinator` 已替代（TEAM_ORCHESTRATION.md），本文仅供历史查阅。原状态：已实现：
 > 1️⃣ 扫描 `.ion/agents/` 加载 Agent 定义
 > 2️⃣ 读取 `PRD.md`
 > 3️⃣ Spawn Leader Worker（指定 agent=leader）

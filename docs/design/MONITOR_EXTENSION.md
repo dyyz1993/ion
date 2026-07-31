@@ -44,15 +44,15 @@ Monitor Extension 是一个**单例扩展**（只在 `ion serve` 注册），负
 | 1.2 | `extension_rpc monitor list/add/remove/enable/disable/status` | ✅ | `monitor_ci.sh B1-B3` |
 | 1.3 | 空输出不触发 / 错误脚本不崩溃 | ✅ | `monitor_ci.sh C1-C3` |
 | 1.4 | 多 monitor 并行加载 | ✅ | `monitor_ci.sh D1` |
-| 2.1 | `mode=serial_skip` busy 时跳过 | 🔧 | 待实现 |
-| 2.2 | `mode=serial_queue` busy 时排队 | 🔧 | 待实现 |
-| 2.3 | `mode=concurrent` 并发 + max_concurrent 上限 | 🔧 | 待实现 |
-| 2.4 | `trigger_mode=channel_notify` 推 main channel | 🔧 | 待实现 |
-| 2.5 | `trigger_mode=event_only` 只 emit 不 spawn | 🔧 | 待实现 |
-| 2.6 | `monitor validate` RPC（语义校验） | 🔧 | 待实现 |
-| 2.7 | `monitor test` RPC（dry-run 试跑） | 🔧 | 待实现 |
-| 2.8 | Scheduler Agent（`examples/agents/scheduler.md`） | 🔧 | 待实现 |
-| 2.9 | 事件推送（`monitor_triggered` / `monitor_skipped` / `monitor_queued`） | 🔧 | 待实现 |
+| 2.X | ✅ 已实现（见 AGENTS.md Monitor Extension v2 段） |
+| 2.X | ✅ 已实现（见 AGENTS.md Monitor Extension v2 段） |
+| 2.X | ✅ 已实现（见 AGENTS.md Monitor Extension v2 段） |
+| 2.X | ✅ 已实现（见 AGENTS.md Monitor Extension v2 段） |
+| 2.X | ✅ 已实现（见 AGENTS.md Monitor Extension v2 段） |
+| 2.X | ✅ 已实现（见 AGENTS.md Monitor Extension v2 段） |
+| 2.X | ✅ 已实现（见 AGENTS.md Monitor Extension v2 段） |
+| 2.X | ✅ 已实现（见 AGENTS.md Monitor Extension v2 段） |
+| 2.X | ✅ 已实现（见 AGENTS.md Monitor Extension v2 段） |
 
 ---
 
@@ -596,7 +596,7 @@ ion rpc --method extension_rpc \
 
 ---
 
-## 附录 A：业务 case 蓝图（待实现）
+## 附录 A：业务 case 蓝图（部分已实现，见 AGENTS.md）
 
 ### A1：GitHub issue 定时拉取 → 自动处理
 

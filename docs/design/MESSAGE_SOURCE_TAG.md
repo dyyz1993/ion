@@ -22,10 +22,10 @@
 
 | 能力 | 入口 | 状态 |
 |------|------|------|
-| 正常 prompt 标记 `source:"prompt"` | `prompt` RPC（空闲时） | 🔧 待实现 |
-| steer 插队标记 `source:"steer"` | `prompt` RPC（忙时 + behavior=steer）/ `steer` RPC | 🔧 待实现 |
-| followUp 追加标记 `source:"followUp"` | `prompt` RPC（忙时 + behavior=followUp）/ `follow_up` RPC | 🔧 待实现 |
-| interrupt 打断标记 `source:"interrupt"` | `prompt` RPC（忙时 + behavior=interrupt） | 🔧 待实现 |
+| 正常 prompt 标记 `source:"prompt"` | `prompt` RPC（空闲时） | ✅ 已实现 |
+| steer 插队标记 `source:"steer"` | `prompt` RPC（忙时 + behavior=steer）/ `steer` RPC | ✅ 已实现 |
+| followUp 追加标记 `source:"followUp"` | `prompt` RPC（忙时 + behavior=followUp）/ `follow_up` RPC | ✅ 已实现 |
+| interrupt 打断标记 `source:"interrupt"` | `prompt` RPC（忙时 + behavior=interrupt） | ✅ 已实现 |
 
 ### 实现状态核查清单
 

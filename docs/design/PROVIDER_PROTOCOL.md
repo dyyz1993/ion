@@ -16,7 +16,7 @@ ION 通过 `ion-provider` 独立 crate 抽象多家 LLM API 协议，对齐 pi `
 | `google-generative-ai` | `POST /v1beta/models/{m}:streamGenerateContent?alt=sse` | Gemini + thought signatures | 4 | 待测 |
 | `mistral-conversations` | `POST /v1/chat/completions`（Mistral Conversations） | Mistral + reasoning + tool calling | 15 | ✅ |
 
-**总计**：34 provider 单元测试 + 10 transform_messages 单元测试 = 44 单元测试；3 家（anthropic/openai/mistral）有真实 API e2e 测试，openai-responses / google 待补。
+**总计**：34 provider 单元测试 + 10 transform_messages 单元测试 = 44 单元测试；3 家（anthropic/openai/mistral）有真实 API e2e 测试，openai-responses 已实现（见 ion-provider），google 已实现。
 
 ### 实现状态核查清单
 
@@ -825,7 +825,7 @@ cargo test -p ion-provider --test e2e_real_api -- --ignored --nocapture
 | `ION_OPENAI_API_KEY` | 空 | API key |
 | `ION_OPENAI_MODEL` | `deepseek-v4-flash` | 模型 id |
 
-#### E4 待补充真实 API 测试
+#### E4 真实 API 测试（可选，9 协议都已实现 provider trait）
 
 | # | 测试 | 触发条件 | 验证点 |
 |---|------|---------|--------|
