@@ -1,6 +1,6 @@
 # Message Source Tag — 消息来源标记 设计文档
 
-> **状态：开发中** — UserMessage 加 `source` 字段区分 prompt / steer / followUp / interrupt，让 UI 能渲染不同样式。
+> **状态：部分实现**  — UserMessage 加 `source` 字段区分 prompt / steer / followUp / interrupt，让 UI 能渲染不同样式。
 
 ---
 

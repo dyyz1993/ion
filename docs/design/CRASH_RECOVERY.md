@@ -1,6 +1,6 @@
 # Worker 崩溃恢复设计文档
 
-> **状态：设计稿** — 精准崩溃诊断 + 引导恢复。不自动重启，不复杂。崩溃后捕获 exit code + stderr，通知父 Worker，保留 Dead record，引导用户/coordinator 用 `--resume` 续接。
+> **状态：已实现** — 精准崩溃诊断 + 引导恢复。不自动重启，不复杂。崩溃后捕获 exit code + stderr，通知父 Worker，保留 Dead record，引导用户/coordinator 用 `--resume` 续接。
 
 ---
 

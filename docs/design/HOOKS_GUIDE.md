@@ -1,6 +1,6 @@
 # Hooks 系统 使用指南
 
-> **状态：开发中** — 本文档面向"想用 hooks 的人"（用户/QA/产品），只讲是什么/怎么用/怎么调，**不含任何实现代码**。
+> **状态：已实现** — 本文档面向"想用 hooks 的人"（用户/QA/产品），只讲是什么/怎么用/怎么调，**不含任何实现代码**。
 >
 > - 想看实现规格（数据结构/handler 引擎/改动清单）→ [HOOKS_AND_OUTLINE_SYNC.md](./HOOKS_AND_OUTLINE_SYNC.md)
 > - 想看 CLI 验证用例（Group A-H + 完整 JSON）→ [HOOKS_CLI_TEST.md](./HOOKS_CLI_TEST.md)
