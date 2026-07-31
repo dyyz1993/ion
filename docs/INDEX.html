@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ION 文档导航</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; }
+.header { text-align: center; padding: 30px 0; border-bottom: 1px solid #30363d; margin-bottom: 30px; }
+.header h1 { font-size: 2em; color: #58a6ff; margin-bottom: 10px; }
+.header p { color: #8b949e; }
+.stats { display: flex; justify-content: center; gap: 40px; margin-top: 15px; }
+.stat { text-align: center; }
+.stat .num { font-size: 1.8em; font-weight: bold; color: #58a6ff; }
+.stat .label { font-size: 0.85em; color: #8b949e; }
+.category { margin-bottom: 30px; }
+.category h2 { color: #f0883e; font-size: 1.3em; padding: 10px 0; border-bottom: 1px solid #21262d; margin-bottom: 10px; }
+.doc-list { list-style: none; }
+.doc-item { display: flex; align-items: center; padding: 8px 12px; border-radius: 6px; transition: background 0.2s; flex-wrap: wrap; gap: 8px; }
+.doc-item:hover { background: #161b22; }
+.doc-link { color: #58a6ff; text-decoration: none; font-weight: 500; }
+.doc-link:hover { text-decoration: underline; }
+.doc-lines { color: #8b949e; font-size: 0.85em; white-space: nowrap; }
+.doc-badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.75em; font-weight: 600; }
+.badge-guide { background: #1a7f37; color: #fff; }
+.badge-design { background: #8957e5; color: #fff; }
+.badge-test { background: #da3633; color: #fff; }
+.badge-template { background: #d29922; color: #000; }
+.search-box { width: 100%; max-width: 600px; padding: 10px 15px; font-size: 1em; border: 1px solid #30363d; border-radius: 8px; background: #161b22; color: #c9d1d9; margin: 0 auto 20px; display: block; }
+.search-box:focus { outline: none; border-color: #58a6ff; }
+.footer { text-align: center; padding: 30px 0; color: #484f58; font-size: 0.85em; }
+.tag { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.7em; margin-left: 5px; }
+.tag-core { background: #1f6feb; color: #fff; }
+.tag-missing { background: #da3633; color: #fff; }
+</style>
+</head>
+<body>
+<div class="header">
+    <h1>📋 ION 文档导航</h1>
+    <p>AI Agent Orchestration Platform — Rust 实现</p>
+    <div class="stats">
+        <div class="stat"><div class="num">74</div><div class="label">文档数</div></div>
+        <div class="stat"><div class="num">40,080</div><div class="label">总行数</div></div>
+        <div class="stat"><div class="num">4</div><div class="label">分类</div></div>
+    </div>
+</div>
+<input type="text" class="search-box" placeholder="🔍 搜索文档..." onkeyup="filterDocs(this.value)">
+<div id="doc-container">
+<div class="category">
+<h2>设计文档 (docs/design/)</h2>
+<ul class="doc-list">
+<li class="doc-item" data-title="apple container backend 核查清单">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/APPLE_CONTAINER_EXTENSION.md" target="_blank">Apple Container Backend 核查清单</a>
+    <span class="doc-lines">660 行 · APPLE_CONTAINER_EXTENSION.md</span>
+</li>
+<li class="doc-item" data-title="ion 总体架构">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/ARCHITECTURE.md" target="_blank">ION 总体架构</a>
+    <span class="doc-lines">695 行 · ARCHITECTURE.md</span>
+</li>
+<li class="doc-item" data-title="bash 进程管理扩展设计">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/BASH_EXTENSION.md" target="_blank">Bash 进程管理扩展设计</a>
+    <span class="doc-lines">1283 行 · BASH_EXTENSION.md</span>
+</li>
+<li class="doc-item" data-title="cli 架构设计 — 三场景验证指南">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/CLI_ARCHITECTURE.md" target="_blank">CLI 架构设计 — 三场景验证指南</a>
+    <span class="doc-lines">1085 行 · CLI_ARCHITECTURE.md</span>
+</li>
+<li class="doc-item" data-title="cli 完整落地方案">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/CLI_PLAN.md" target="_blank">CLI 完整落地方案</a>
+    <span class="doc-lines">949 行 · CLI_PLAN.md</span>
+</li>
+<li class="doc-item" data-title="cli 落地路线图">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/CLI_ROADMAP.md" target="_blank">CLI 落地路线图</a>
+    <span class="doc-lines">118 行 · CLI_ROADMAP.md</span>
+</li>
+<li class="doc-item" data-title="compaction 会话压缩系统">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/COMPACTION.md" target="_blank">Compaction 会话压缩系统</a>
+    <span class="doc-lines">720 行 · COMPACTION.md</span>
+</li>
+<li class="doc-item" data-title="配置与数据维度分析（config_dimensions）">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/CONFIG_DIMENSIONS.md" target="_blank">配置与数据维度分析（CONFIG_DIMENSIONS）</a>
+    <span class="doc-lines">474 行 · CONFIG_DIMENSIONS.md</span>
+</li>
+<li class="doc-item" data-title="context index — 上下文索引与快照折叠">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/CONTEXT_INDEX.md" target="_blank">Context Index — 上下文索引与快照折叠</a>
+    <span class="doc-lines">473 行 · CONTEXT_INDEX.md</span>
+</li>
+<li class="doc-item" data-title="worker 崩溃恢复设计文档">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/CRASH_RECOVERY.md" target="_blank">Worker 崩溃恢复设计文档</a>
+    <span class="doc-lines">374 行 · CRASH_RECOVERY.md</span>
+</li>
+<li class="doc-item" data-title="evolver 经验文档 — 问题与解决方案">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/EVOLVER_LESSONS_LEARNED.md" target="_blank">Evolver 经验文档 — 问题与解决方案</a>
+    <span class="doc-lines">281 行 · EVOLVER_LESSONS_LEARNED.md</span>
+</li>
+<li class="doc-item" data-title="extension 生态系统 — p4 验证文档">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/EXTENSION_ECOSYSTEM.md" target="_blank">Extension 生态系统 — P4 验证文档</a>
+    <span class="doc-lines">117 行 · EXTENSION_ECOSYSTEM.md</span>
+</li>
+<li class="doc-item" data-title="extension host api — ctx.fs 统一文件访问 设计文档">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/EXTENSION_HOST_API.md" target="_blank">Extension Host API — ctx.fs 统一文件访问 设计文档</a>
+    <span class="doc-lines">267 行 · EXTENSION_HOST_API.md</span>
+</li>
+<li class="doc-item" data-title="ion 扩展系统">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/EXTENSION_SYSTEM.md" target="_blank">ION 扩展系统</a>
+    <span class="doc-lines">535 行 · EXTENSION_SYSTEM.md</span>
+</li>
+<li class="doc-item" data-title="fauxprovider 设计文档">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/FAUX_PROVIDER.md" target="_blank">FauxProvider 设计文档</a>
+    <span class="doc-lines">563 行 · FAUX_PROVIDER.md</span>
+</li>
+<li class="doc-item" data-title="file snapshot 设计文档">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/FILE_SNAPSHOT.md" target="_blank">File Snapshot 设计文档</a>
+    <span class="doc-lines">1348 行 · FILE_SNAPSHOT.md</span>
+</li>
+<li class="doc-item" data-title="file snapshot &amp; review — pi 对齐清单与执行计划">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/FILE_SNAPSHOT_REVIEW_ALIGNMENT.md" target="_blank">File Snapshot &amp; Review — pi 对齐清单与执行计划</a>
+    <span class="doc-lines">1109 行 · FILE_SNAPSHOT_REVIEW_ALIGNMENT.md</span>
+</li>
+<li class="doc-item" data-title="goal supervisor — 目标驱动的自主闭环扩展">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/GOAL_SUPERVISOR.md" target="_blank">Goal Supervisor — 目标驱动的自主闭环扩展</a>
+    <span class="doc-lines">751 行 · GOAL_SUPERVISOR.md</span>
+</li>
+<li class="doc-item" data-title="goal supervisor b1 — a→b 任务规格包">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/GOAL_SUPERVISOR_B1_TASK.md" target="_blank">Goal Supervisor B1 — A→B 任务规格包</a>
+    <span class="doc-lines">447 行 · GOAL_SUPERVISOR_B1_TASK.md</span>
+</li>
+<li class="doc-item" data-title="hooks 系统 实现规格">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/HOOKS_AND_OUTLINE_SYNC.md" target="_blank">Hooks 系统 实现规格</a>
+    <span class="doc-lines">934 行 · HOOKS_AND_OUTLINE_SYNC.md</span>
+</li>
+<li class="doc-item" data-title="ion hooks 对齐 claude code — 设计文档">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/HOOKS_CLAUDE_CODE_ALIGNMENT.md" target="_blank">ION Hooks 对齐 Claude Code — 设计文档</a>
+    <span class="doc-lines">137 行 · HOOKS_CLAUDE_CODE_ALIGNMENT.md</span>
+</li>
+<li class="doc-item" data-title="hooks 系统 使用指南">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/HOOKS_GUIDE.md" target="_blank">Hooks 系统 使用指南</a>
+    <span class="doc-lines">780 行 · HOOKS_GUIDE.md</span>
+</li>
+<li class="doc-item" data-title="shell hook 系统 (trae 兼容)">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/HOOK_SYSTEM.md" target="_blank">Shell Hook 系统 (TRAE 兼容)</a>
+    <span class="doc-lines">506 行 · HOOK_SYSTEM.md</span>
+</li>
+<li class="doc-item" data-title="improver — 通用任务智能体">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/IMPROVER_AGENT.md" target="_blank">improver — 通用任务智能体</a>
+    <span class="doc-lines">172 行 · IMPROVER_AGENT.md</span>
+</li>
+<li class="doc-item" data-title="lsp extension 设计文档 — cargo check 诊断集成">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/LSP_EXTENSION.md" target="_blank">LSP Extension 设计文档 — cargo check 诊断集成</a>
+    <span class="doc-lines">330 行 · LSP_EXTENSION.md</span>
+</li>
+<li class="doc-item" data-title="mcp 方案 c 实现规格 — host 级共享池">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/MCP_PLAN_C.md" target="_blank">MCP 方案 C 实现规格 — Host 级共享池</a>
+    <span class="doc-lines">242 行 · MCP_PLAN_C.md</span>
+</li>
+<li class="doc-item" data-title="mcp 系统（model context protocol）设计文档">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/MCP_SYSTEM.md" target="_blank">MCP 系统（Model Context Protocol）设计文档</a>
+    <span class="doc-lines">1701 行 · MCP_SYSTEM.md</span>
+</li>
+<li class="doc-item" data-title="memory system — definitive design">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/MEMORY_AGENT.md" target="_blank">Memory System — Definitive Design</a>
+    <span class="doc-lines">185 行 · MEMORY_AGENT.md</span>
+</li>
+<li class="doc-item" data-title="ion 会话消息拉取 ui 设计规格说明书">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/MESSAGE_RETRIEVAL_DESIGN.md" target="_blank">ION 会话消息拉取 UI 设计规格说明书</a>
+    <span class="doc-lines">583 行 · MESSAGE_RETRIEVAL_DESIGN.md</span>
+</li>
+<li class="doc-item" data-title="message source tag — 消息来源标记 设计文档">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/MESSAGE_SOURCE_TAG.md" target="_blank">Message Source Tag — 消息来源标记 设计文档</a>
+    <span class="doc-lines">280 行 · MESSAGE_SOURCE_TAG.md</span>
+</li>
+<li class="doc-item" data-title="monitor extension v2 设计文档（调度管理 + scheduler agent）">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/MONITOR_EXTENSION.md" target="_blank">Monitor Extension v2 设计文档（调度管理 + Scheduler Agent）</a>
+    <span class="doc-lines">670 行 · MONITOR_EXTENSION.md</span>
+</li>
+<li class="doc-item" data-title="stored-decision 权限记忆 设计文档">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/PERMISSION_STORE.md" target="_blank">Stored-Decision 权限记忆 设计文档</a>
+    <span class="doc-lines">233 行 · PERMISSION_STORE.md</span>
+</li>
+<li class="doc-item" data-title="ion 权限系统设计">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/PERMISSION_SYSTEM.md" target="_blank">ION 权限系统设计</a>
+    <span class="doc-lines">1290 行 · PERMISSION_SYSTEM.md</span>
+</li>
+<li class="doc-item" data-title="pi rpc cli 对齐文档">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/PI_RPC_ALIGNMENT.md" target="_blank">pi RPC CLI 对齐文档</a>
+    <span class="doc-lines">335 行 · PI_RPC_ALIGNMENT.md</span>
+</li>
+<li class="doc-item" data-title="多 provider 协议实现">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/PROVIDER_PROTOCOL.md" target="_blank">多 Provider 协议实现</a>
+    <span class="doc-lines">908 行 · PROVIDER_PROTOCOL.md</span>
+</li>
+<li class="doc-item" data-title="缺失 provider 协议 规划文档">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/PROVIDER_PROTOCOLS_TODO.md" target="_blank">缺失 Provider 协议 规划文档</a>
+    <span class="doc-lines">247 行 · PROVIDER_PROTOCOLS_TODO.md</span>
+</li>
+<li class="doc-item" data-title="record/replay 设计文档">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/RECORD_REPLAY.md" target="_blank">Record/Replay 设计文档</a>
+    <span class="doc-lines">811 行 · RECORD_REPLAY.md</span>
+</li>
+<li class="doc-item" data-title="self-evolution — a→b architecture overview">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/SELF_EVOLUTION.md" target="_blank">Self-Evolution — A→B Architecture Overview</a>
+    <span class="doc-lines">173 行 · SELF_EVOLUTION.md</span>
+</li>
+<li class="doc-item" data-title="self-healing pipeline — monitor 驱动的自主修复闭环">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/SELF_HEALING_PIPELINE.md" target="_blank">Self-Healing Pipeline — Monitor 驱动的自主修复闭环</a>
+    <span class="doc-lines">467 行 · SELF_HEALING_PIPELINE.md</span>
+</li>
+<li class="doc-item" data-title="会话隔离与 session gc">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/SESSION_ISOLATION.md" target="_blank">会话隔离与 Session GC</a>
+    <span class="doc-lines">169 行 · SESSION_ISOLATION.md</span>
+</li>
+<li class="doc-item" data-title="session 消息系统（对齐 pi）">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/SESSION_MESSAGE.md" target="_blank">Session 消息系统（对齐 pi）</a>
+    <span class="doc-lines">689 行 · SESSION_MESSAGE.md</span>
+</li>
+<li class="doc-item" data-title="session tree（会话分支）设计文档">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/SESSION_TREE.md" target="_blank">Session Tree（会话分支）设计文档</a>
+    <span class="doc-lines">1474 行 · SESSION_TREE.md</span>
+</li>
+<li class="doc-item" data-title="skill 工具 — llm 按需调用 设计文档">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/SKILL_TOOL.md" target="_blank">Skill 工具 — LLM 按需调用 设计文档</a>
+    <span class="doc-lines">271 行 · SKILL_TOOL.md</span>
+</li>
+<li class="doc-item" data-title="软删除与软压缩设计文档">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/SOFT_DELETE_COMPACT.md" target="_blank">软删除与软压缩设计文档</a>
+    <span class="doc-lines">533 行 · SOFT_DELETE_COMPACT.md</span>
+</li>
+<li class="doc-item" data-title="team 编排 — agent.md 驱动方案">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/TEAM_ORCHESTRATION.md" target="_blank">Team 编排 — Agent.md 驱动方案</a>
+    <span class="doc-lines">379 行 · TEAM_ORCHESTRATION.md</span>
+</li>
+<li class="doc-item" data-title="turn timeline ui — 前端接口契约">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/TURN_TIMELINE_UI.md" target="_blank">Turn Timeline UI — 前端接口契约</a>
+    <span class="doc-lines">349 行 · TURN_TIMELINE_UI.md</span>
+</li>
+<li class="doc-item" data-title="看门狗安全升级（单实例滚动重启）">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/WATCHDOG_DUAL_VERSION.md" target="_blank">看门狗安全升级（单实例滚动重启）</a>
+    <span class="doc-lines">93 行 · WATCHDOG_DUAL_VERSION.md</span>
+</li>
+<li class="doc-item" data-title="workflow engine — 结构化交付流水线">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/WORKFLOW_ENGINE.md" target="_blank">Workflow Engine — 结构化交付流水线</a>
+    <span class="doc-lines">813 行 · WORKFLOW_ENGINE.md</span>
+</li>
+<li class="doc-item" data-title="workflow gate — 内核级交付校验">
+    <span class="doc-badge badge-design">设计</span>
+    <a class="doc-link" href="../docs/design/WORKFLOW_GATE.md" target="_blank">Workflow Gate — 内核级交付校验</a>
+    <span class="doc-lines">256 行 · WORKFLOW_GATE.md</span>
+</li>
+</ul>
+</div>
+<div class="category">
+<h2>使用指南 (docs/guides/)</h2>
+<ul class="doc-list">
+<li class="doc-item" data-title="agent 系统指南">
+    <span class="doc-badge badge-guide">指南</span>
+    <a class="doc-link" href="../docs/guides/AGENT_GUIDE.md" target="_blank">Agent 系统指南</a>
+    <span class="doc-lines">348 行 · AGENT_GUIDE.md</span>
+</li>
+<li class="doc-item" data-title="ion cli 标准用法">
+    <span class="doc-badge badge-guide">指南</span>
+    <a class="doc-link" href="../docs/guides/CLI_USAGE.md" target="_blank">ION CLI 标准用法</a>
+    <span class="doc-lines">583 行 · CLI_USAGE.md</span>
+</li>
+<li class="doc-item" data-title="ion 部署架构 — 配置 + 场景 + cli 验证">
+    <span class="doc-badge badge-guide">指南</span>
+    <a class="doc-link" href="../docs/guides/DEPLOY_ARCH.md" target="_blank">ION 部署架构 — 配置 + 场景 + CLI 验证</a>
+    <span class="doc-lines">436 行 · DEPLOY_ARCH.md</span>
+</li>
+<li class="doc-item" data-title="扩展开发与测试工作流">
+    <span class="doc-badge badge-guide">指南</span>
+    <a class="doc-link" href="../docs/guides/EXTENSION_WORKFLOW.md" target="_blank">扩展开发与测试工作流</a>
+    <span class="doc-lines">184 行 · EXTENSION_WORKFLOW.md</span>
+</li>
+<li class="doc-item" data-title="mcp 用法指南">
+    <span class="doc-badge badge-guide">指南</span>
+    <a class="doc-link" href="../docs/guides/MCP_USAGE.md" target="_blank">MCP 用法指南</a>
+    <span class="doc-lines">326 行 · MCP_USAGE.md</span>
+</li>
+<li class="doc-item" data-title="wasm extension development guide">
+    <span class="doc-badge badge-guide">指南</span>
+    <a class="doc-link" href="../docs/guides/WASM_EXTENSION_GUIDE.md" target="_blank">WASM Extension Development Guide</a>
+    <span class="doc-lines">689 行 · WASM_EXTENSION_GUIDE.md</span>
+</li>
+<li class="doc-item" data-title="ion workflow guide">
+    <span class="doc-badge badge-guide">指南</span>
+    <a class="doc-link" href="../docs/guides/WORKFLOW.md" target="_blank">ION Workflow Guide</a>
+    <span class="doc-lines">132 行 · WORKFLOW.md</span>
+</li>
+</ul>
+</div>
+<div class="category">
+<h2>测试文档 (docs/testing/)</h2>
+<ul class="doc-list">
+<li class="doc-item" data-title="ci matrix report">
+    <span class="doc-badge badge-test">测试</span>
+    <a class="doc-link" href="../docs/testing/CI_MATRIX_REPORT.md" target="_blank">CI Matrix Report</a>
+    <span class="doc-lines">513 行 · CI_MATRIX_REPORT.md</span>
+</li>
+<li class="doc-item" data-title="ion cli 测试指南总目录">
+    <span class="doc-badge badge-test">测试</span>
+    <a class="doc-link" href="../docs/testing/CLI_TEST_CATALOG.md" target="_blank">ION CLI 测试指南总目录</a>
+    <span class="doc-lines">205 行 · CLI_TEST_CATALOG.md</span>
+</li>
+<li class="doc-item" data-title="ion 全功能 e2e 测试规格">
+    <span class="doc-badge badge-test">测试</span>
+    <a class="doc-link" href="../docs/testing/E2E_TEST_SPEC.md" target="_blank">ION 全功能 E2E 测试规格</a>
+    <span class="doc-lines">1013 行 · E2E_TEST_SPEC.md</span>
+</li>
+<li class="doc-item" data-title="file snapshot 审批与回滚 — cli 用例集">
+    <span class="doc-badge badge-test">测试</span>
+    <a class="doc-link" href="../docs/testing/FILE_SNAPSHOT_CASES.md" target="_blank">File Snapshot 审批与回滚 — CLI 用例集</a>
+    <span class="doc-lines">1055 行 · FILE_SNAPSHOT_CASES.md</span>
+</li>
+<li class="doc-item" data-title="hooks 系统 cli 测试指南">
+    <span class="doc-badge badge-test">测试</span>
+    <a class="doc-link" href="../docs/testing/HOOKS_CLI_TEST.md" target="_blank">Hooks 系统 CLI 测试指南</a>
+    <span class="doc-lines">654 行 · HOOKS_CLI_TEST.md</span>
+</li>
+<li class="doc-item" data-title="lsp extension cli 测试指南">
+    <span class="doc-badge badge-test">测试</span>
+    <a class="doc-link" href="../docs/testing/LSP_CLI_TEST.md" target="_blank">LSP Extension CLI 测试指南</a>
+    <span class="doc-lines">346 行 · LSP_CLI_TEST.md</span>
+</li>
+<li class="doc-item" data-title="会话消息拉取 — cli 用例集">
+    <span class="doc-badge badge-test">测试</span>
+    <a class="doc-link" href="../docs/testing/MESSAGE_RETRIEVAL_CASES.md" target="_blank">会话消息拉取 — CLI 用例集</a>
+    <span class="doc-lines">1706 行 · MESSAGE_RETRIEVAL_CASES.md</span>
+</li>
+<li class="doc-item" data-title="message source tag — cli 测试指南">
+    <span class="doc-badge badge-test">测试</span>
+    <a class="doc-link" href="../docs/testing/MESSAGE_SOURCE_CLI_TEST.md" target="_blank">Message Source Tag — CLI 测试指南</a>
+    <span class="doc-lines">358 行 · MESSAGE_SOURCE_CLI_TEST.md</span>
+</li>
+<li class="doc-item" data-title="monitor extension cli 测试指南">
+    <span class="doc-badge badge-test">测试</span>
+    <a class="doc-link" href="../docs/testing/MONITOR_CLI_TEST.md" target="_blank">Monitor Extension CLI 测试指南</a>
+    <span class="doc-lines">1439 行 · MONITOR_CLI_TEST.md</span>
+</li>
+<li class="doc-item" data-title="回滚影响验证 — context / message / compaction">
+    <span class="doc-badge badge-test">测试</span>
+    <a class="doc-link" href="../docs/testing/ROLLBACK_IMPACT_CASES.md" target="_blank">回滚影响验证 — Context / Message / Compaction</a>
+    <span class="doc-lines">219 行 · ROLLBACK_IMPACT_CASES.md</span>
+</li>
+<li class="doc-item" data-title="rules engine cli/ci 测试规格">
+    <span class="doc-badge badge-test">测试</span>
+    <a class="doc-link" href="../docs/testing/RULES_CI_SPEC.md" target="_blank">Rules Engine CLI/CI 测试规格</a>
+    <span class="doc-lines">97 行 · RULES_CI_SPEC.md</span>
+</li>
+<li class="doc-item" data-title="session tree 验收规格">
+    <span class="doc-badge badge-test">测试</span>
+    <a class="doc-link" href="../docs/testing/SESSION_TREE_SPEC.md" target="_blank">Session Tree 验收规格</a>
+    <span class="doc-lines">527 行 · SESSION_TREE_SPEC.md</span>
+</li>
+<li class="doc-item" data-title="ion 测试 case 完整文档">
+    <span class="doc-badge badge-test">测试</span>
+    <a class="doc-link" href="../docs/testing/TEST_CASES.md" target="_blank">ION 测试 Case 完整文档</a>
+    <span class="doc-lines">287 行 · TEST_CASES.md</span>
+</li>
+</ul>
+</div>
+<div class="category">
+<h2>模板 (docs/templates/)</h2>
+<ul class="doc-list">
+<li class="doc-item" data-title="cli 测试指南模板">
+    <span class="doc-badge badge-template">模板</span>
+    <a class="doc-link" href="../docs/templates/CLI_TEST_TEMPLATE.md" target="_blank">CLI 测试指南模板</a>
+    <span class="doc-lines">272 行 · CLI_TEST_TEMPLATE.md</span>
+</li>
+<li class="doc-item" data-title="{功能名} 设计文档">
+    <span class="doc-badge badge-template">模板</span>
+    <a class="doc-link" href="../docs/templates/DESIGN_TEMPLATE.md" target="_blank">{功能名} 设计文档</a>
+    <span class="doc-lines">165 行 · DESIGN_TEMPLATE.md</span>
+</li>
+<li class="doc-item" data-title="{扩展名} 扩展手册">
+    <span class="doc-badge badge-template">模板</span>
+    <a class="doc-link" href="../docs/templates/EXTENSION_MANUAL_TEMPLATE.md" target="_blank">{扩展名} 扩展手册</a>
+    <span class="doc-lines">48 行 · EXTENSION_MANUAL_TEMPLATE.md</span>
+</li>
+<li class="doc-item" data-title="pi {模块名} 对齐文档">
+    <span class="doc-badge badge-template">模板</span>
+    <a class="doc-link" href="../docs/templates/PI_ALIGNMENT_TEMPLATE.md" target="_blank">pi {模块名} 对齐文档</a>
+    <span class="doc-lines">118 行 · PI_ALIGNMENT_TEMPLATE.md</span>
+</li>
+<li class="doc-item" data-title="{功能名} 测试规格">
+    <span class="doc-badge badge-template">模板</span>
+    <a class="doc-link" href="../docs/templates/TEST_SPEC_TEMPLATE.md" target="_blank">{功能名} 测试规格</a>
+    <span class="doc-lines">101 行 · TEST_SPEC_TEMPLATE.md</span>
+</li>
+</ul>
+</div>
+
+</div>
+<script>
+function filterDocs(query) {
+    query = query.toLowerCase();
+    document.querySelectorAll('.doc-item').forEach(function(item) {
+        var title = item.getAttribute('data-title');
+        item.style.display = title.includes(query) ? '' : 'none';
+    });
+}
+</script>
+<div class="footer">
+    Generated by ION · <a href="../AGENTS.md" style="color:#58a6ff">AGENTS.md</a> · 
+    <a href="https://github.com/dyyz1993/ion" style="color:#58a6ff">GitHub</a>
+</div>
+</body>
+</html>
