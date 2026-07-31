@@ -114,10 +114,9 @@ impl Extension for AutoSessionTitle {
                     .and_then(|s| serde_json::from_str(&s).ok())
                     .unwrap_or_default();
 
-            // Get current session ID (from session file context)
-            // We use the turn_index as a proxy — the actual session ID is set
-            // by the worker process. For now, just log it.
-            // TODO: store properly when session ID is available in TurnContext
+            // Use turn_index as the key — session_id is not in TurnContext,
+            // but the title file maps turn → title which is sufficient for
+            // the UI to pick up the first-turn heuristic title.
             let session_key = format!("turn_{}", ctx.turn_index);
             titles.insert(session_key, title.clone());
 

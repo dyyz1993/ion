@@ -495,6 +495,9 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/guides/CLI_USAGE.md](./docs/guides/CLI_USAGE.md) | CLI 标准用法：RPC / Subscribe / Extension RPC / Tool RPC 完整速查 (已验证) |
 | [docs/guides/AGENT_GUIDE.md](./docs/guides/AGENT_GUIDE.md) | **Agent 系统指南**：.md 格式 / 内置 Agent / 工具白名单黑名单 / MCP 工具交互 / 多智能体编排 / spawn_worker 透传 / CLI 测试 (已完成) |
 | [docs/guides/MCP_USAGE.md](./docs/guides/MCP_USAGE.md) | **MCP 用法指南**：配置(stdio/http) / CLI 命令 / LLM 工具命名 / Agent 工具限制 / 权限规则 / 自动重连 / 故障排查 (已完成) |
+| [docs/guides/PERMISSION_USAGE.md](./docs/guides/PERMISSION_USAGE.md) | **权限系统指南**：规则配置 / stored decisions / CommandGuard / CLI 命令 / Agent 工具限制 (已完成) |
+| [docs/guides/FILE_SNAPSHOT_USAGE.md](./docs/guides/FILE_SNAPSHOT_USAGE.md) | **File Snapshot 指南**：启用配置 / 5 个 RPC / restore_files / --restore-code / 审批工作流 (已完成) |
+| [docs/guides/RECORD_REPLAY_USAGE.md](./docs/guides/RECORD_REPLAY_USAGE.md) | **Record/Replay 指南**：录制(ION_RECORD) / 回放(--model replay/id) / ion recordings / 安全防护 (已完成) |
 | [docs/guides/DEPLOY_ARCH.md](./docs/guides/DEPLOY_ARCH.md) | 部署架构 — 场景 + CLI 验证 |
 | [docs/guides/EXTENSION_WORKFLOW.md](./docs/guides/EXTENSION_WORKFLOW.md) | 扩展开发测试工作流：写→build→安装→RPC 直调→LLM 引导→RPC 佐证 (已验证) |
 
