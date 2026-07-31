@@ -1,6 +1,6 @@
 # pi RPC CLI 对齐文档
 
-> **状态：开发中** — 本文记录 pi 当前 RPC 调试能力现状，以及 ion 的对齐方案。
+> **状态：已验证** — pi 66 个 RPC 全部对齐（66 ✅ / 0 ❌）。
 > 关联 issue：https://github.com/dyyz1993/pi-mono/issues/53
 >
 > **P0 调试 RPC 已完成 (2026-07-05)**：11 个 RPC 全部实现，ion-worker 编译通过，91 个 lib 测试全过。
