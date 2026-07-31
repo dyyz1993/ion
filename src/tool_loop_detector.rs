@@ -114,13 +114,11 @@ impl ToolLoopDetector {
                 format!("spawn_worker:{agent}")
             }
             _ => {
-                // For other tools, use tool name + truncated args
+                // For other tools, use tool name + truncated args.
+                // Use chars().take() to avoid panicking on multi-byte UTF-8
+                // (byte-slicing &[..100] can land inside a multi-byte char).
                 let args_str = args.to_string();
-                let truncated = if args_str.len() > 100 {
-                    &args_str[..100]
-                } else {
-                    &args_str
-                };
+                let truncated: String = args_str.chars().take(100).collect();
                 format!("{tool_name}:{truncated}")
             }
         }
@@ -315,5 +313,38 @@ mod tests {
             &serde_json::json!({"file_path": "src/a.rs", "content": "new"}),
         );
         assert_eq!(sig1, sig2); // Same file = same signature (content ignored)
+    }
+
+    #[test]
+    fn test_signature_truncates_long_ascii() {
+        // 200+ chars of pure ASCII — should truncate without panic
+        let long_text = "a".repeat(200);
+        let args = serde_json::json!({"text": long_text});
+        let sig = ToolLoopDetector::compute_signature("write_custom", &args);
+        // Signature should be reasonably sized (tool name + truncated args, not 200+ chars)
+        assert!(sig.len() < 150, "signature too long: {} chars", sig.len());
+        assert!(sig.starts_with("write_custom:"));
+    }
+
+    #[test]
+    fn test_signature_handles_multibyte_utf8() {
+        // Chinese text — each char is 3 bytes in UTF-8.
+        // Without char-safe truncation, byte index 100 lands inside a CJK char.
+        let chinese = "蒙娜丽莎".repeat(30); // 120 chars = 360 bytes
+        let args = serde_json::json!({"text": chinese});
+        let sig = ToolLoopDetector::compute_signature("write_custom", &args);
+        // Must not panic and must return a valid String
+        assert!(sig.starts_with("write_custom:"));
+        assert!(sig.contains("蒙")); // Chinese chars should be present
+    }
+
+    #[test]
+    fn test_signature_handles_emoji_and_mixed() {
+        // Emoji (4 bytes each) + Chinese (3 bytes) + ASCII (1 byte) mix
+        let mixed = "😀😊猫猫cat".repeat(20);
+        let args = serde_json::json!({"data": mixed});
+        let sig = ToolLoopDetector::compute_signature("custom_tool", &args);
+        // Must not panic
+        assert!(sig.starts_with("custom_tool:"));
     }
 }
