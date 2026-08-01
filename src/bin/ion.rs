@@ -1487,8 +1487,8 @@ async fn cmd_workflow_run(path: &str, set: &[String]) {
         abs_path
     );
 
-    // 复用 cmd_host 的逻辑
-    cmd_host(&message, Some("wf")).await;
+    // 复用 cmd_host 的逻辑（workflow run 不导出 HTML，传 None）
+    cmd_host(&message, Some("wf"), None).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -3959,7 +3959,12 @@ async fn main() {
         } else {
             effective_message
         };
-        cmd_host(&msg, cli.agent.as_deref()).await;
+        cmd_host(
+            &msg,
+            cli.agent.as_deref(),
+            export_after_run.as_deref(),
+        )
+        .await;
         return;
     }
 
@@ -5443,7 +5448,7 @@ async fn handle_manager_command_write(
 // entry Worker 通过 spawn_worker(child, ...) 工具派生子 Worker；
 // wait loop 检测递归 idle → 所有 Worker 完成后退出。
 
-async fn cmd_host(user_message: &str, agent_name: Option<&str>) {
+async fn cmd_host(user_message: &str, agent_name: Option<&str>, export_path: Option<&str>) {
     use ion::worker_registry::{WorkerCreateConfig, WorkerRegistry};
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -5686,6 +5691,21 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>) {
     // 给 Worker 时间执行退出前 save_worker_session
     tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
     eprintln!("[host] cleanup complete");
+
+    // ── Export after host run (if --export was given alongside --host) ──
+    // Mirrors cmd_run's export-after-run behavior: after the host finishes,
+    // export the entry worker's session to HTML. Without this, the combination
+    // `--host --export <path>` silently dropped the export request.
+    //
+    // entry.session_id is the entry worker's session (set by create_worker from
+    // cfg.session or the cwd-hash default). export_session_rich rebuilds the
+    // tools list from the agent config (see src/export.rs).
+    if let Some(path) = export_path {
+        match ion::export::export_session_rich(&entry.session_id, std::path::Path::new(path)) {
+            Ok(()) => println!("Exported to {path}"),
+            Err(e) => eprintln!("Export failed: {e}"),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
