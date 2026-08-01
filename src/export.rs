@@ -477,9 +477,10 @@ fn export_session_internal(
         }
     }
 
-    // 找 systemPrompt：fork 子 Worker 把它存在 custom entry (customType=system_prompt) 里
-    // 主 Worker 没有（system_prompt 是固定的，不需要存）
-    let system_prompt: Option<String> = raw_entries.iter().find_map(|e| {
+    // 找 systemPrompt：取最后一条 custom entry (customType=system_prompt)。
+    // agent loop 在 on_system_prompt 钩子跑完后会缓存最终的 system prompt（含所有
+    // 扩展动态注入，如 <dev_servers> / <memory_outline>）。取最后一条 = 最新版本。
+    let system_prompt: Option<String> = raw_entries.iter().rev().find_map(|e| {
         if e.get("type").and_then(|v| v.as_str()) == Some("custom")
             && e.get("customType").and_then(|v| v.as_str())
                 == Some(session_jsonl::CUSTOM_TYPE_SYSTEM_PROMPT)

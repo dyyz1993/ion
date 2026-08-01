@@ -105,6 +105,10 @@ pub struct Agent {
     compact_model: Option<Model>,
     /// 会话文件所在 cwd（用于 compaction/turn_summary 落盘，None = 不落盘）
     session_cwd: Option<String>,
+    /// Last system-prompt signature written to session JSONL (len + hash).
+    /// Avoids rewriting the (large) prompt snapshot every turn when nothing
+    /// changed. See the snapshot logic after on_system_prompt.
+    last_sys_prompt_sig: Option<String>,
     /// 会话 ID（用于 SessionIndex 增量统计：turn/error/compress 计数）。
     /// None = 不更新索引统计（入口 Worker 未注入时静默跳过，不崩溃）。
     session_id: Option<String>,
@@ -150,6 +154,7 @@ impl Agent {
             runtime: Arc::new(crate::runtime::LocalRuntime::new()),
             compact_model: None,
             session_cwd: None,
+            last_sys_prompt_sig: None,
             session_id: None,
             extra_cwds: std::sync::Mutex::new(Vec::new()),
             overflow_recovery_attempts: 0,
@@ -988,6 +993,36 @@ impl Agent {
                 ));
             }
             let sys_prompt = Some(sys_prompt);
+
+            // Cache the final system prompt (post-hooks, post-injections) to the
+            // session JSONL so that `ion --export` can show the real prompt the
+            // LLM actually saw — including dynamic injections from extensions
+            // like DevServerDetector (<dev_servers>), Memory (<memory_outline>),
+            // Bash (process list), etc.
+            //
+            // To avoid bloating the session file, only write when the prompt
+            // actually changes (tracked via a length+hash signature). export.rs
+            // reads the LAST matching entry to get the most recent version.
+            if let Some(ref sp) = sys_prompt
+                && let Some(cwd) = self.session_cwd.as_deref()
+            {
+                // Cheap signature: length + a rolling hash. Good enough to
+                // detect "did the prompt change since last snapshot?" without
+                // hashing the full 45KB every turn.
+                let sig = format!("{}:{}", sp.len(), simple_hash(sp));
+                if self.last_sys_prompt_sig.as_deref() != Some(sig.as_str()) {
+                    let entry = serde_json::json!({
+                        "type": "custom",
+                        "id": crate::session_jsonl::generate_id(),
+                        "parentId": self.session_id,
+                        "timestamp": crate::session_jsonl::timestamp_iso(),
+                        "customType": crate::session_jsonl::CUSTOM_TYPE_SYSTEM_PROMPT,
+                        "data": { "systemPrompt": sp },
+                    });
+                    crate::session_jsonl::append_raw_entry(cwd, &entry);
+                    self.last_sys_prompt_sig = Some(sig);
+                }
+            }
 
             // Skill 自动卸载：skill 内容（tool result）在加载后的下一轮 turn 就被"消化"了。
             // 后续 turn 不需要完整的 skill 内容——只保留标记（"skill xxx was loaded, content unloaded"）。
@@ -2211,6 +2246,17 @@ fn unload_consumed_skills(messages: &[Message], _current_turn: usize) -> Vec<Mes
     }
 
     result
+}
+
+/// Cheap non-cryptographic hash for change detection (system prompt snapshot).
+/// FNV-1a inspired: fast, no deps, good distribution for short keys.
+fn simple_hash(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
 }
 
 fn now_ms() -> i64 {
