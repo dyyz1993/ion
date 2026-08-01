@@ -4133,7 +4133,7 @@ async fn do_create_session(
     registry: &std::sync::Arc<tokio::sync::Mutex<ion::worker_registry::WorkerRegistry>>,
     source: &serde_json::Value,
 ) -> Result<String, String> {
-    use ion::worker_registry::WorkerCreateConfig;
+    use ion::worker_registry::{WorkerCreateConfig, WorkerRelation};
     let agent = source
         .get("agent")
         .and_then(|v| v.as_str())
@@ -4147,6 +4147,12 @@ async fn do_create_session(
     let mut cfg = WorkerCreateConfig::default();
     cfg.session = Some(session_id.clone());
     cfg.agent = Some(agent);
+    // Mark as Child relation so the worker uses an INDEPENDENT session file
+    // (<session_id>.jsonl) instead of the shared session.jsonl. Without this,
+    // every new session created via create_session reads/writes the same shared
+    // file, causing cross-session message pollution (critic sessions inheriting
+    // lyricist prompts). See docs/testing/SESSION_ISOLATION_BUG.md.
+    cfg.relation = Some(WorkerRelation::Child);
     cfg.project_path = source
         .get("project_path")
         .and_then(|v| v.as_str())
