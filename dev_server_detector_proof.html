@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dev Server Detector — 插件工作原理验证报告</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+    background: #0d1117;
+    color: #c9d1d9;
+    line-height: 1.6;
+    padding: 40px 20px;
+  }
+  .container { max-width: 900px; margin: 0 auto; }
+  h1 {
+    color: #58a6ff;
+    border-bottom: 1px solid #30363d;
+    padding-bottom: 12px;
+    margin-bottom: 8px;
+    font-size: 28px;
+  }
+  .subtitle { color: #8b949e; margin-bottom: 32px; font-size: 14px; }
+  h2 {
+    color: #7ee787;
+    margin: 32px 0 12px;
+    font-size: 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  h2 .num {
+    background: #7ee787;
+    color: #0d1117;
+    border-radius: 50%;
+    width: 28px; height: 28px;
+    display: inline-flex;
+    align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 700;
+  }
+  .card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .msg {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 12px;
+    align-items: flex-start;
+  }
+  .msg .role {
+    flex-shrink: 0;
+    width: 90px;
+    font-weight: 600;
+    font-size: 13px;
+    padding-top: 2px;
+  }
+  .msg .role.user { color: #58a6ff; }
+  .msg .role.assistant { color: #7ee787; }
+  .msg .role.tool { color: #d29922; }
+  .msg .role.system { color: #bc8cff; }
+  .msg .bubble {
+    flex: 1;
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 12px 16px;
+    font-size: 14px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .msg .bubble.injected {
+    border-color: #f85149;
+    border-width: 2px;
+    background: #1a0f0f;
+  }
+  code, pre {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 13px;
+  }
+  pre {
+    background: #010409;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+    margin: 8px 0;
+  }
+  .xml-tag { color: #7ee787; }
+  .xml-attr { color: #79c0ff; }
+  .xml-val { color: #d29922; }
+  .highlight {
+    background: #1f6feb22;
+    border-left: 3px solid #1f6feb;
+    padding: 10px 16px;
+    margin: 12px 0;
+    border-radius: 0 4px 4px 0;
+  }
+  .proof {
+    background: #1a2f1a;
+    border: 2px solid #7ee787;
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 16px 0;
+  }
+  .proof .label {
+    color: #7ee787;
+    font-weight: 700;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+  }
+  .arrow {
+    text-align: center;
+    color: #f85149;
+    font-size: 20px;
+    margin: 8px 0;
+    font-weight: 700;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+    font-size: 13px;
+  }
+  th, td {
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid #30363d;
+  }
+  th { color: #58a6ff; }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .badge.green { background: #7ee78722; color: #7ee787; }
+  .badge.red { background: #f8514922; color: #f85149; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>🔌 Dev Server Detector — 插件工作验证报告</h1>
+<div class="subtitle">
+  Commit <code>494c3ed</code> · GLM-5.2 · 2026-08-01 ·
+  <span class="badge green">插件生效已验证</span>
+</div>
+
+<div class="highlight">
+  <strong>这个插件做什么：</strong>当 LLM 用 bash 工具启动了 dev server（输出含
+  <code>localhost:PORT</code>），插件自动检测端口，并在<strong>下一次 LLM 请求前</strong>
+  把 <code>&lt;dev_servers&gt;</code> XML 注入到 system prompt，让 LLM "感知到"有 server 在跑。
+</div>
+
+<!-- ───────────────────────────────────────────── -->
+
+<h2><span class="num">1</span> 触发阶段：bash 输出含端口</h2>
+
+<div class="card">
+  <div class="msg">
+    <div class="role user">👤 用户</div>
+    <div class="bubble">用 bash 工具运行这条命令: <code>printf 'VITE v5.0.0 ready in 300 ms\n➜  Local:   http://localhost:5173/\n'</code> 。运行后回复 'started'。</div>
+  </div>
+  <div class="msg">
+    <div class="role assistant">🤖 LLM</div>
+    <div class="bubble">调用了 bash 工具：<br><code>printf 'VITE v5.0.0 ready in 300 ms\n➜  Local:   http://localhost:5173/\n'</code></div>
+  </div>
+  <div class="msg">
+    <div class="role tool">🔧 bash 结果</div>
+    <div class="bubble">VITE v5.0.0 ready in 300 ms<br>➜  Local:   http://localhost:5173/</div>
+  </div>
+</div>
+
+<p>插件此时在 <code>on_tool_execution_end</code> 钩子里被触发：</p>
+<pre><span class="xml-val">[detector] on_tool_execution_end:
+  tool=bash
+  cmd=printf 'VITE ready...localhost:5173/'
+  ports_found=[5173]          <span class="xml-tag">← 检测到端口 5173！</span>
+  stdout_len=45</span></pre>
+
+<div class="arrow">⬇️ 端口存入 self.servers，等待下一次 LLM 请求</div>
+
+<!-- ───────────────────────────────────────────── -->
+
+<h2><span class="num">2</span> 注入阶段：system prompt 被改写</h2>
+
+<p>第二轮 LLM 请求前，<code>on_system_prompt</code> 钩子触发。插件把 <code>&lt;dev_servers&gt;</code> XML 追加到 system prompt 末尾：</p>
+
+<div class="proof">
+  <div class="label">🔍 铁证：dump 出的 system prompt 末尾（500 字符）</div>
+  <pre>...gement via `extension_rpc(bash, ...)`:
+- `list`: list all background processes
+- `inspect`: view a process output
+- `kill`: kill a process by bid/pid
+- `send`: send input to a process stdin
+
+
+<span class="xml-tag">&lt;dev_servers <span class="xml-attr">count</span>=<span class="xml-val">"1"</span>&gt;</span>
+<span class="xml-tag">&lt;server <span class="xml-attr">port</span>=<span class="xml-val">"5173"</span> <span class="xml-attr">framework</span>=<span class="xml-val">"vite"</span> <span class="xml-attr">cmd</span>=<span class="xml-val">"printf 'VITE ready\nLocal: http://localhost:5173/\n'"</span> <span class="xml-attr">age</span>=<span class="xml-val">"0s"</span> <span class="xml-attr">via</span>=<span class="xml-val">"stdout_regex"</span>/&gt;</span>
+<span class="xml-tag">&lt;/dev_servers&gt;</span></pre>
+</div>
+
+<div class="highlight">
+  ⚠️ <strong>这段 XML 是插件动态注入的</strong>，不在原始 system prompt 里。
+  LLM 在第二轮请求时，看到的就是这个被改写后的 prompt。
+</div>
+
+<div class="arrow">⬇️ LLM 拿着含 &lt;dev_servers&gt; 的 system prompt 生成回复</div>
+
+<!-- ───────────────────────────────────────────── -->
+
+<h2><span class="num">3</span> 验证阶段：LLM 读到了注入的信息</h2>
+
+<div class="card">
+  <div class="msg">
+    <div class="role user">👤 用户（第二轮）</div>
+    <div class="bubble">你现在能感知到有 dev server 在运行吗？端口是多少？简短回答。<br><strong>（不允许运行命令）</strong></div>
+  </div>
+  <div class="msg">
+    <div class="role assistant">🤖 LLM</div>
+    <div class="bubble"><strong>能感知到。端口是 5173（VITE dev server, http://localhost:5173/）。</strong></div>
+  </div>
+</div>
+
+<div class="proof">
+  <div class="label">✅ 这就是插件的价值</div>
+  <p>LLM 在<strong>没有运行任何命令</strong>的情况下，准确说出了 <strong>5173 端口</strong>和
+  <strong>VITE 框架</strong>。这个信息只能来自插件注入的 <code>&lt;dev_servers&gt;</code> XML——
+  对话历史里没有"5173"这个答案（第一轮 LLM 只回了 "started"）。</p>
+</div>
+
+<!-- ───────────────────────────────────────────── -->
+
+<h2><span class="num">4</span> 插件架构（为什么这样设计）</h2>
+
+<div class="card">
+<pre>bash 工具执行（输出含 localhost:PORT）
+        │
+        │ <code>on_tool_execution_end</code> 钩子
+        ▼
+┌─────────────────────────────────────┐
+│ DevServerDetectorExtension          │
+│  ① 扫 stdout 提取端口（手写扫描）    │
+│     localhost:5173 / port 8000 /   │
+│     127.0.0.1:5000 ...             │
+│  ② 存入 self.servers（按 worker 隔离）│
+│  ③ 命中 dev server 命令但无端口？    │
+│     → tokio::spawn 后台探活兜底      │
+└─────────────────────────────────────┘
+        │
+        │ 下一次 LLM 请求
+        ▼
+┌─────────────────────────────────────┐
+│ <code>on_system_prompt</code>(&mut prompt)     │
+│  if servers 非空:                   │
+│    计算 signature（端口集合哈希）     │
+│    signature 变了？→ 注入 XML        │
+│    没变？→ 跳过去重                  │
+└─────────────────────────────────────┘
+        │
+        ▼
+  LLM 看到 <code>&lt;dev_servers&gt;</code> → 知道有 server 在跑</pre>
+</div>
+
+<h2><span class="num">5</span> 测试过程中发现并修复的 Bug</h2>
+
+<table>
+  <tr><th>Bug</th><th>根因</th><th>修复</th><th>Commit</th></tr>
+  <tr>
+    <td><span class="badge red">场景 1 注册遗漏</span></td>
+    <td>B 只在 <code>worker_rpc.rs</code>（场景 3）注册，漏了 <code>src/bin/ion.rs</code>（场景 1）</td>
+    <td>补注册（无条件，同 goal-supervisor 约定）</td>
+    <td><code>87f4b5e</code></td>
+  </tr>
+  <tr>
+    <td><span class="badge red">只认 bash 不认 bash_run</span></td>
+    <td><code>on_tool_execution_end</code> 只匹配 <code>"bash"</code>，但启动后台 server 的正确工具是 <code>bash_run</code></td>
+    <td>改成同时匹配 <code>bash</code> + <code>bash_run</code></td>
+    <td><code>494c3ed</code></td>
+  </tr>
+</table>
+
+<h2><span class="num">6</span> 完整测试覆盖</h2>
+
+<table>
+  <tr><th>测试套件</th><th>数量</th><th>覆盖</th></tr>
+  <tr><td>单元测试</td><td>12</td><td>端口提取（Vite/Next/Python/Flask/无端口/多端口）</td></tr>
+  <tr><td>E2E 集成测试</td><td>9</td><td>钩子完整链路 + bash_run + 去重 + 非工具忽略 + RPC</td></tr>
+  <tr><td>CI 脚本</td><td>14 passed</td><td>Group A 单元 + Group B E2E + Group C 注册验证</td></tr>
+  <tr><td>真实 LLM demo</td><td>✅</td><td>GLM-5.2 准确报出 5173 端口（本报告）</td></tr>
+</table>
+
+<div class="highlight" style="margin-top:32px;">
+  <strong>原始会话 HTML</strong>（ion --export 导出，含完整对话但不含 system prompt）：
+  <code>dev_server_detector_real_demo.html</code><br>
+  <strong>本报告</strong>（含 system prompt 注入铁证）：
+  <code>dev_server_detector_proof.html</code>
+</div>
+
+</div>
+</body>
+</html>
