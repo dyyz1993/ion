@@ -1011,15 +1011,15 @@ impl Agent {
                 // hashing the full 45KB every turn.
                 let sig = format!("{}:{}", sp.len(), simple_hash(sp));
                 if self.last_sys_prompt_sig.as_deref() != Some(sig.as_str()) {
-                    let entry = serde_json::json!({
-                        "type": "custom",
-                        "id": crate::session_jsonl::generate_id(),
-                        "parentId": self.session_id,
-                        "timestamp": crate::session_jsonl::timestamp_iso(),
-                        "customType": crate::session_jsonl::CUSTOM_TYPE_SYSTEM_PROMPT,
-                        "data": { "systemPrompt": sp },
-                    });
-                    crate::session_jsonl::append_raw_entry(cwd, &entry);
+                    // Write system prompt to a SIDE-CAR file (not the session
+                    // JSONL, which gets fully rewritten by SessionHeader::save
+                    // and would overwrite this). export.rs reads this file.
+                    // Path: <session_dir>/<session_id>.system-prompt.txt
+                    if let Some(ref sid) = self.session_id {
+                        let sidecar = crate::paths::session_jsonl_path_by_id(cwd, sid)
+                            .with_extension("system-prompt.txt");
+                        let _ = std::fs::write(&sidecar, sp);
+                    }
                     self.last_sys_prompt_sig = Some(sig);
                 }
             }

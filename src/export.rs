@@ -480,21 +480,31 @@ fn export_session_internal(
         }
     }
 
-    // 找 systemPrompt：取最后一条 custom entry (customType=system_prompt)。
-    // agent loop 在 on_system_prompt 钩子跑完后会缓存最终的 system prompt（含所有
-    // 扩展动态注入，如 <dev_servers> / <memory_outline>）。取最后一条 = 最新版本。
-    let system_prompt: Option<String> = raw_entries.iter().rev().find_map(|e| {
-        if e.get("type").and_then(|v| v.as_str()) == Some("custom")
-            && e.get("customType").and_then(|v| v.as_str())
-                == Some(session_jsonl::CUSTOM_TYPE_SYSTEM_PROMPT)
-        {
-            e.get("data")
-                .and_then(|d| d.get("systemPrompt"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        } else {
-            None
-        }
+    // 找 systemPrompt：优先从 sidecar 文件读（agent loop 运行时缓存的最终版，
+    // 含所有扩展动态注入如 <dev_servers>）。Sidecar 是 <sid>.system-prompt.txt，
+    // 跟 session JSONL 同目录。Sidecar 不会被 SessionHeader::save 覆盖（独立文件）。
+    let system_prompt: Option<String> = {
+        // Sidecar: same dir + base name as the session JSONL, but .system-prompt.txt
+        // Written by agent_loop after on_system_prompt hooks run (contains the
+        // real prompt with all dynamic injections like <dev_servers>).
+        let sidecar = jsonl_path.with_extension("system-prompt.txt");
+        std::fs::read_to_string(&sidecar).ok().filter(|s| !s.is_empty())
+    }
+    .or_else(|| {
+        // Fallback: legacy — 从 session JSONL 里找 custom entry
+        raw_entries.iter().rev().find_map(|e| {
+            if e.get("type").and_then(|v| v.as_str()) == Some("custom")
+                && e.get("customType").and_then(|v| v.as_str())
+                    == Some(session_jsonl::CUSTOM_TYPE_SYSTEM_PROMPT)
+            {
+                e.get("data")
+                    .and_then(|d| d.get("systemPrompt"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            }
+        })
     });
 
     // Find leaf id — template uses getPath(leafId) 决定主体内容显示哪些 entry。
