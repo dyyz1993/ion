@@ -1972,6 +1972,12 @@ impl SkillTool {
         }
     }
 
+    /// Max description length (in chars) for skill outline in system prompt.
+    /// Longer descriptions are truncated to avoid bloating the prompt with
+    /// verbose "Use when..." trigger lists. Full detail is available via the
+    /// skill tool on demand.
+    const MAX_SKILL_DESC_LEN: usize = 150;
+
     /// 列出所有可用 skill（扫描 skill_dirs 下的 .md 文件 + 子目录/SKILL.md）
     pub fn list_skills(&self) -> String {
         let mut entries: Vec<(String, String, String, Option<String>)> = Vec::new(); // (name, source, description, context_mode)
@@ -2018,7 +2024,10 @@ impl SkillTool {
             return "No skills available.".to_string();
         }
 
-        // 按名字去重（全局 + 项目可能同名，保留先出现的）
+        // 按名字去重：同名 skill 可能从多个来源发现（agents/ vs superpowers/ vs plugins/）。
+        // 保留 description 最长的那个（信息量最大），而不是先出现的。
+        // 注意：Vec::dedup_by 只合并相邻重复，必须先 sort 才能去重干净。
+        entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.2.len().cmp(&a.2.len())));
         entries.dedup_by(|a, b| a.0 == b.0);
 
         let mut out = String::from("Available skills:\n");
@@ -2026,6 +2035,13 @@ impl SkillTool {
             let mode_tag = match mode {
                 Some(m) => format!(" (推荐:{})", m),
                 None => String::new(),
+            };
+            // 截断过长的 description，避免单个 skill 占用过多 token
+            let desc = if desc.chars().count() > Self::MAX_SKILL_DESC_LEN {
+                let truncated: String = desc.chars().take(Self::MAX_SKILL_DESC_LEN).collect();
+                format!("{truncated}…")
+            } else {
+                desc.clone()
             };
             if desc.is_empty() {
                 out.push_str(&format!("  - {name}{mode_tag} [{source}]\n"));
@@ -2336,14 +2352,43 @@ fn parse_skill_content(content: &str) -> (String, String) {
 }
 
 /// 从 frontmatter 提取 description 字段（用于 list 输出）
+///
+/// 支持三种 YAML 值格式：
+/// 1. 单行：`description: "一些文字"` 或 `description: 一些文字`
+/// 2. 折叠块（folded）：`description: >` 后续缩进行用空格连接
+/// 3. 保留块（literal）：`description: |` 后续缩进行保留换行
 fn parse_skill_description(content: &str) -> String {
     let (frontmatter, _) = parse_skill_content(content);
-    for line in frontmatter.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("description:") {
-            let val = rest.trim().trim_matches(|c| c == '"' || c == '\'');
-            if !val.is_empty() {
-                return val.to_string();
+    let lines: Vec<&str> = frontmatter.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(rest) = line.trim_start().strip_prefix("description:") {
+            let val = rest.trim();
+            // 格式 1：单行值（含引号或裸值）
+            if !val.is_empty() && val != ">" && val != "|" {
+                return val.trim_matches(|c| c == '"' || c == '\'').to_string();
+            }
+            // 格式 2/3：YAML block scalar（> 或 |），收集后续缩进行
+            if val == ">" || val == "|" {
+                let mut parts: Vec<String> = Vec::new();
+                for cont_line in &lines[i + 1..] {
+                    // block scalar 内容必须比 description: 更深缩进（至少 2 spaces）
+                    // 遇到非缩进行（如下一个 frontmatter key）就结束
+                    if cont_line.starts_with("  ") || cont_line.starts_with("\t") {
+                        parts.push(cont_line.trim().to_string());
+                    } else if cont_line.trim().is_empty() {
+                        continue; // 空行容忍
+                    } else {
+                        break; // 缩进回到 key 级别，block 结束
+                    }
+                }
+                if !parts.is_empty() {
+                    let joined = if val == ">" {
+                        parts.join(" ") // folded: 空格连接
+                    } else {
+                        parts.join("\n") // literal: 保留换行
+                    };
+                    return joined.trim().to_string();
+                }
             }
         }
     }

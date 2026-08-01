@@ -1918,10 +1918,10 @@ async fn cmd_run(
     });
 
     // Snapshot system prompt for --export-after-run（export 时复用完整 system prompt）。
-    // 补一次 bash_tool_guide：cmd_run 注册了 BashExtension，它的 on_system_prompt 会在
-    // agent.run 每轮注入 guide，但 snapshot 在 agent.run 之前拍，拍不到。这里先补一次静态
-    // guide（动态进程摘要在 agent.run 内部注入，export 快照本就拍不到实时状态）。
-    sys_prompt.push_str(&ion::agent::bash::bash_tool_guide());
+    // 注意：不再在这里预补 bash_tool_guide。agent loop 运行时会在 on_system_prompt 钩子里
+    // 注入它（BashExtension），而且我们现在缓存运行时最终 prompt 到 session JSONL
+    // （commit 6a8e99f），export 读的是运行时快照，不需要这里预补。
+    // 之前预补会导致 guide 在最终 prompt 里出现 2 次（这里 1 次 + agent loop 每轮 1 次）。
     // 补一次全局 rules（只全局 rule 进 system prompt；路径匹配 rule 走 tool result，不进 SP）
     {
         let rules_ext = ion::rules_engine::RulesEngineExtension::new();
@@ -6706,14 +6706,15 @@ pub fn build_env_info(cwd: &str) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    // 人类可读时间（本地时区）
+    // 人类可读时间（ISO 日期 + UTC 时分，比 "day 20666" 更直观）
     let now_human = {
-        let secs = now_epoch;
-        let days = secs / 86400;
-        let remain = secs % 86400;
+        let days = now_epoch / 86400;
+        let remain = now_epoch % 86400;
         let h = remain / 3600;
         let m = (remain % 3600) / 60;
-        format!("day {} ({}:{:02} UTC)", days, h, m)
+        // 1970-01-01 + days → 粗略年月日（不处理闰年的精确算法，够用）
+        let (y, mo, d) = epoch_days_to_ymd(days as i64);
+        format!("{y}-{mo:02}-{d:02} {h:02}:{m:02} UTC")
     };
 
     let project_root = Command::new("git")
@@ -6754,10 +6755,7 @@ pub fn build_env_info(cwd: &str) -> String {
     // 注意：这里不直接读 index（build_env_info 是无状态函数），由调用方决定是否注入 initial_cwd。
 
     let mut info = String::from("\n\n--- environment ---\n## Environment\n");
-    info.push_str(&format!(
-        "- **Current Time**: {} (unix: {})\n",
-        now_human, now_epoch
-    ));
+    info.push_str(&format!("- **Current Time**: {}\n", now_human));
     info.push_str(&format!("- **Working Directory (cwd)**: `{}`\n", cwd));
     info.push_str(&format!("- **Project Root**: `{}`\n", project_root));
     if let Some(wt) = &worktree {
@@ -6791,24 +6789,21 @@ pub fn build_env_info(cwd: &str) -> String {
         }
     }
 
-    // 最近修改的文件（最近 1 次 commit 改动的文件 + 未提交的改动合并去重，前 20 个）
-    let mut recent_files: Vec<String> = Vec::new();
-    // 最近 commit 的文件
-    if let Ok(o) = Command::new("git")
-        .args(["diff", "--name-only", "HEAD~1", "HEAD"])
-        .current_dir(cwd)
-        .output()
-    {
-        if let Ok(s) = String::from_utf8(o.stdout) {
-            for line in s.lines() {
-                let f = line.trim();
-                if !f.is_empty() && !recent_files.contains(&f.to_string()) {
-                    recent_files.push(f.to_string());
-                }
-            }
-        }
-    }
-    // 未提交的改动（M/A/D 标记）
+    // 未提交的改动（过滤噪音后展示，与 Recently Modified 合并避免重复）
+    // 噪音过滤：二进制/测试产物后缀对 LLM 无用，且容易占用大量行数
+    const NOISE_SUFFIXES: &[&str] = &[
+        ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".bmp", ".webp",
+        ".mp4", ".mov", ".avi", ".mp3", ".wav",
+        ".zip", ".tar", ".gz", ".lock",
+    ];
+    let is_noise = |path: &str| -> bool {
+        let lower = path.to_lowercase();
+        NOISE_SUFFIXES.iter().any(|s| lower.ends_with(s))
+        // 也过滤常见测试产物目录
+        || lower.contains("test-results/")
+        || lower.contains(".playwright-mcp/")
+    };
+
     let uncommitted_raw = Command::new("git")
         .args(["status", "--short"])
         .current_dir(cwd)
@@ -6818,38 +6813,59 @@ pub fn build_env_info(cwd: &str) -> String {
         .map(|s| s.trim().to_string());
     if let Some(changes) = &uncommitted_raw {
         if !changes.is_empty() {
-            info.push_str("\n### Uncommitted Changes\n```\n");
-            info.push_str(changes);
-            info.push_str("\n```\n");
-            // 同时收集到 recent_files
-            for line in changes.lines() {
-                let f = line
-                    .trim_start_matches(|c: char| c.is_uppercase() || c == ' ' || c == '?')
-                    .trim();
-                if !f.is_empty() && !recent_files.contains(&f.to_string()) {
-                    recent_files.push(f.to_string());
-                }
+            // 过滤噪音行，保留代码/文档/配置文件
+            let filtered: Vec<&str> = changes
+                .lines()
+                .filter(|line| {
+                    // 从 git status 行提取路径（剥掉 XY 状态码 + 空格）
+                    let path_part = line
+                        .trim_start_matches(|c: char| c.is_alphabetic() || c == ' ' || c == '?')
+                        .trim();
+                    !is_noise(path_part)
+                })
+                .collect();
+            if !filtered.is_empty() {
+                let shown = if filtered.len() > 15 {
+                    let more = filtered.len() - 15;
+                    format!("\n# (and {} more...)", more)
+                } else {
+                    String::new()
+                };
+                let display = filtered.iter().take(15).cloned().collect::<Vec<_>>().join("\n");
+                info.push_str(&format!(
+                    "\n### Workspace Changes\n```\n{display}{shown}\n```\n"
+                ));
             }
         }
     }
-    // 最近修改文件汇总（前 20，压缩）
-    if !recent_files.is_empty() {
-        let truncated = if recent_files.len() > 20 {
-            format!("\n  (and {} more...)", recent_files.len() - 20)
-        } else {
-            String::new()
-        };
-        let files_list = recent_files
-            .iter()
-            .take(20)
-            .map(|f| format!("  - {}", f))
-            .collect::<Vec<_>>()
-            .join("\n");
-        info.push_str(&format!(
-            "\n### Recently Modified Files\n{}\n{}\n",
-            files_list, truncated
-        ));
-    }
-
     info
+}
+
+/// 把 epoch 天数（1970-01-01 = 0）转成 (year, month, day)。
+/// 简化算法（够用，不追求闰年精确到秒级）：
+/// 365.2425 天/年（格里高利历平均值）。
+fn epoch_days_to_ymd(days: i64) -> (i64, u32, u32) {
+    let year = 1970 + days / 365;
+    // 剩余天数（粗略，闰年偏差靠 is_leap 校正月内日期）
+    let mut remaining = days % 365;
+    // 简单的月份表（平年）
+    let month_days = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let is_leap = |y: i64| (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let mut month = 1u32;
+    let mut day = 1u32;
+    while remaining > 0 {
+        let md = if month == 2 && is_leap(year) { 29 } else { month_days[(month - 1) as usize] };
+        if remaining >= md as i64 {
+            remaining -= md as i64;
+            month += 1;
+            if month > 12 {
+                month = 1;
+                // 不重新算 year（粗略够了）
+            }
+        } else {
+            day = (remaining + 1) as u32;
+            remaining = 0;
+        }
+    }
+    (year, month, day)
 }
