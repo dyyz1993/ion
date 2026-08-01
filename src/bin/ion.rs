@@ -2101,6 +2101,16 @@ async fn cmd_run(
     ext_reg.register(Box::new(goal_ext));
     tracing::info!("[extension] goal-supervisor registered (on_gate_check closed loop)");
 
+    // ── Dev Server Detector（detect dev server ports from bash output）──
+    // 对齐 worker_rpc.rs 的注册：场景 1 也需要，否则 on_tool_execution_end /
+    // on_system_prompt 钩子在 ion "prompt" 单次执行时不触发。
+    // 场景 1 无条件注册（同 goal-supervisor / learning-extension 约定，
+    // config gate 在场景 3 的 worker_rpc.rs 做）。
+    ext_reg.register(Box::new(
+        ion::dev_server_detector::DevServerDetectorExtension::new(),
+    ));
+    tracing::info!("[extension] dev_server_detector registered");
+
     agent = agent.with_extensions(ext_reg);
 
     tracing::info!("Running agent...");
