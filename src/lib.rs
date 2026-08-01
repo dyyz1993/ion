@@ -52,6 +52,7 @@ pub mod goal_supervisor_extension;
 pub mod ids;
 pub mod learning_extension;
 pub mod lsp_extension;
+pub mod dev_server_detector;
 pub mod secret_detector;
 pub mod skill_distillation;
 pub mod tool_loop_detector;

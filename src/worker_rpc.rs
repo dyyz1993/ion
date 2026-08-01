@@ -971,6 +971,16 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             tracing::info!("[extension] lsp disabled by config");
         }
 
+        // Dev Server Detector Extension (detect dev server ports from bash output)
+        if ion_cfg.is_extension_enabled("dev_server_detector") {
+            ext_reg.register(Box::new(
+                crate::dev_server_detector::DevServerDetectorExtension::new(),
+            ));
+            tracing::info!("[extension] dev_server_detector enabled");
+        } else {
+            tracing::info!("[extension] dev_server_detector disabled by config");
+        }
+
         // File Time Guard Extension（detect externally-modified files before write/edit）
         if ion_cfg.is_extension_enabled("file-time-guard") {
             ext_reg.register(Box::new(
