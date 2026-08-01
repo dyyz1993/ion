@@ -67,6 +67,27 @@ pub struct IonConfig {
     /// Session GC / retention (cleans old session files at startup).
     #[serde(default)]
     pub session: SessionConfig,
+
+    /// Skill loading control — disable specific skills by name (blacklist).
+    /// Applied as union across global + project config (both take effect).
+    /// Default: empty (load all discovered skills).
+    ///
+    /// Example:
+    /// ```json
+    /// { "skills": { "disabled": ["seo", "copywriting"] } }
+    /// ```
+    #[serde(default)]
+    pub skills: SkillsConfig,
+}
+
+/// Skill blacklist configuration.
+/// Disabled skills are not loaded into system prompt and not available
+/// via the skill tool. Lists from global + project config are merged as union.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct SkillsConfig {
+    /// Skill names to disable. Merged as union across config dimensions.
+    #[serde(default)]
+    pub disabled: Vec<String>,
 }
 
 /// Session GC + retention configuration.
@@ -585,6 +606,7 @@ impl Default for IonConfig {
             mcp_servers: HashMap::new(),
             runtime: RuntimeConfig::default(),
             session: SessionConfig::default(),
+            skills: SkillsConfig::default(),
         }
     }
 }
@@ -737,6 +759,13 @@ impl IonConfig {
         // mcp_servers：按 server name 合并（项目维度覆盖全局同名）
         for (k, v) in project.mcp_servers {
             self.mcp_servers.insert(k, v);
+        }
+        // skills.disabled：union 合并（全局 + 项目维度的禁用列表都生效）
+        {
+            let mut merged: std::collections::HashSet<String> =
+                self.skills.disabled.iter().cloned().collect();
+            merged.extend(project.skills.disabled.iter().cloned());
+            self.skills.disabled = merged.into_iter().collect();
         }
 
         // runtime 字段：default_mode 已在 load() 单独处理（不从全局继承），其余合并
@@ -1048,5 +1077,51 @@ mod merge_tests {
             Some(&"custom/model".to_string()),
             "项目级 serde 默认值不该覆盖全局的显式 tier_models"
         );
+    }
+
+    #[test]
+    fn test_skills_disabled_default_empty() {
+        let cfg = IonConfig::default();
+        assert!(cfg.skills.disabled.is_empty());
+    }
+
+    #[test]
+    fn test_skills_disabled_deserialize() {
+        let json = r#"{"skills": {"disabled": ["seo", "copywriting"]}}"#;
+        let cfg: IonConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.skills.disabled, vec!["seo", "copywriting"]);
+    }
+
+    #[test]
+    fn test_skills_disabled_merge_union() {
+        // Global disables "seo" + "copywriting"
+        let mut g = IonConfig::default();
+        g.skills.disabled = vec!["seo".into(), "copywriting".into()];
+        // Project disables "copywriting" (overlap) + "miniprogram"
+        let mut p = IonConfig::default();
+        p.skills.disabled = vec!["copywriting".into(), "miniprogram".into()];
+        g.merge_project(p);
+        // Union: seo + copywriting + miniprogram (3 unique, deduped)
+        let mut sorted = g.skills.disabled.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec!["copywriting", "miniprogram", "seo"]);
+    }
+
+    #[test]
+    fn test_skills_disabled_merge_empty_project() {
+        // Global disables some, project disables none → global preserved
+        let mut g = IonConfig::default();
+        g.skills.disabled = vec!["seo".into()];
+        let p = IonConfig::default();
+        g.merge_project(p);
+        assert_eq!(g.skills.disabled, vec!["seo"]);
+    }
+
+    #[test]
+    fn test_skills_disabled_old_config_without_field() {
+        // Old config files without "skills" field should still deserialize
+        let json = r#"{"default_provider": "zai"}"#;
+        let cfg: IonConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.skills.disabled.is_empty());
     }
 }

@@ -1128,7 +1128,12 @@ fn build_tools(eff: &EffectiveConfig) -> (ToolRegistry, Option<Vec<std::path::Pa
             }
             // 保存 skill_dirs 到外层，供后面 system prompt 注入大纲用
             skill_dirs_for_prompt = Some(skill_dirs.clone());
-            tools.register(Box::new(ion::agent::tool::SkillTool { skill_dirs }));
+            // Read skill blacklist from config (global + project merged)
+            let skill_disabled = ion::config::IonConfig::load().skills.disabled;
+            tools.register(Box::new(ion::agent::tool::SkillTool {
+                skill_dirs,
+                disabled: skill_disabled,
+            }));
         }
     }
     // Apply tool filtering (--tools allowlist)
@@ -1782,6 +1787,7 @@ async fn cmd_run(
     if let Some(ref dirs) = skill_dirs_for_prompt {
         let skill_tool = ion::agent::tool::SkillTool {
             skill_dirs: dirs.clone(),
+            disabled: ion::config::IonConfig::load().skills.disabled,
         };
         let outline = skill_tool.list_skills();
         if !outline.contains("No skills available") {

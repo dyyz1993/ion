@@ -1938,6 +1938,9 @@ impl Tool for GlobalMemorySaveTool {
 pub struct SkillTool {
     /// skill 根目录（全局 `~/.ion/agent/skills/` + 项目级 `<project>/.ion/skills/`）
     pub skill_dirs: Vec<PathBuf>,
+    /// Skill names to exclude (blacklist from config skills.disabled).
+    /// Empty = load all discovered skills.
+    pub disabled: Vec<String>,
 }
 
 impl SkillTool {
@@ -2018,6 +2021,13 @@ impl SkillTool {
             return "No skills available.".to_string();
         }
 
+        // Apply blacklist: skip disabled skills (from config skills.disabled)
+        if !self.disabled.is_empty() {
+            let dis: std::collections::HashSet<&str> =
+                self.disabled.iter().map(|s| s.as_str()).collect();
+            entries.retain(|(name, _, _, _)| !dis.contains(name.as_str()));
+        }
+
         // 按名字去重：同名 skill 可能从多个来源发现（agents/ vs superpowers/ vs plugins/）。
         // 保留 description 最长的那个（信息量最大），而不是先出现的。
         // 注意：Vec::dedup_by 只合并相邻重复，必须先 sort 才能去重干净。
@@ -2048,6 +2058,10 @@ impl SkillTool {
     /// 1. <dir>/<name>.md（ION 格式）
     /// 2. <dir>/<name>/SKILL.md（~/.agents/skills/ 格式，可能有版本后缀）
     fn find_skill(&self, name: &str) -> Option<PathBuf> {
+        // Blacklist check: disabled skills cannot be loaded
+        if self.disabled.iter().any(|d| d == name) {
+            return None;
+        }
         for dir in &self.skill_dirs {
             // 格式 1：平铺 .md
             let candidate = dir.join(format!("{name}.md"));
@@ -2444,6 +2458,7 @@ mod skill_tests {
     fn test_skill_tool_list_empty() {
         let tool = SkillTool {
             skill_dirs: vec![PathBuf::from("/nonexistent/path")],
+            disabled: vec![],
         };
         let out = tool.list_skills();
         assert!(out.contains("No skills available"));
@@ -2453,8 +2468,63 @@ mod skill_tests {
     fn test_skill_tool_find_not_found() {
         let tool = SkillTool {
             skill_dirs: vec![PathBuf::from("/nonexistent/path")],
+            disabled: vec![],
         };
         assert!(tool.find_skill("ghost").is_none());
+    }
+
+    #[test]
+    fn test_list_skills_filters_disabled() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!(
+            "skill_filter_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in &["keep-me", "disable-me", "also-keep"] {
+            let path = dir.join(format!("{name}.md"));
+            let mut f = std::fs::File::create(&path).unwrap();
+            writeln!(f, "---\nname: {name}\ndescription: test skill\n---\nbody").unwrap();
+        }
+        let tool = SkillTool {
+            skill_dirs: vec![dir.clone()],
+            disabled: vec!["disable-me".into()],
+        };
+        let result = tool.list_skills();
+        assert!(result.contains("keep-me"), "non-disabled skill should appear");
+        assert!(result.contains("also-keep"), "non-disabled skill should appear");
+        assert!(
+            !result.contains("disable-me"),
+            "disabled skill should be filtered out"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_find_skill_rejects_disabled() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!(
+            "skill_find_disabled_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("blocked.md");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, "---\nname: blocked\ndescription: test\n---\nbody").unwrap();
+        let tool = SkillTool {
+            skill_dirs: vec![dir.clone()],
+            disabled: vec!["blocked".into()],
+        };
+        assert!(tool.find_skill("blocked").is_none(), "disabled skill should not be found");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
 

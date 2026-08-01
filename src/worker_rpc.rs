@@ -388,7 +388,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         crate::paths::project_skills_dir(&config_root),
         agents_skills,
     ];
-    tools.register(Box::new(SkillTool { skill_dirs }));
+    tools.register(Box::new(SkillTool {
+        skill_dirs,
+        disabled: crate::config::IonConfig::load().skills.disabled,
+    }));
 
     // 加载 API key
     let api_key = crate::auth::AuthStorage::resolve_api_key(None, &provider);
