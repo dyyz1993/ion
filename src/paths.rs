@@ -85,13 +85,40 @@ pub fn root() -> PathBuf {
 // Host 运行时文件（Unix socket / PID）
 // ---------------------------------------------------------------------------
 
-/// ~/.ion/host.sock — Host 的 Unix socket 入口
+/// ~/.ion/host.sock — Host 的 Unix socket 入口。
+///
+/// 支持并发：设置 `ION_HOST_SOCKET` 环境变量可覆盖默认路径，
+/// 让多个 `ion serve` / `ion --host` 实例同时运行（各自独立 socket）。
+/// 用法：`ION_HOST_SOCKET=/tmp/ion_taskA.sock ion --host "task A"`
 pub fn host_socket_path() -> PathBuf {
+    if let Ok(custom) = std::env::var("ION_HOST_SOCKET") {
+        let p = std::path::PathBuf::from(&custom);
+        if p.parent().map(|p| p.as_os_str().is_empty()).unwrap_or(true) {
+            return root().join(&custom);
+        }
+        return p;
+    }
     root().join("host.sock")
 }
 
-/// ~/.ion/host.pid — Host 的 PID 文件（防重复启动）
+/// Host 的 PID 文件（防重复启动）。
+///
+/// 默认 `~/.ion/host.pid`。当 `ION_HOST_SOCKET` 自定义时，pid 文件名
+/// 基于 socket 路径派生（每个并发 host 有独立 pid 文件）。
 pub fn host_pid_path() -> PathBuf {
+    if std::env::var("ION_HOST_SOCKET").is_ok() {
+        let sock = host_socket_path();
+        let pid_name = sock
+            .file_stem()
+            .map(|s| format!("{}.pid", s.to_string_lossy()))
+            .unwrap_or_else(|| "host.pid".to_string());
+        if let Some(parent) = sock.parent() {
+            if !parent.as_os_str().is_empty() {
+                return parent.join(&pid_name);
+            }
+        }
+        return root().join(&pid_name);
+    }
     root().join("host.pid")
 }
 
