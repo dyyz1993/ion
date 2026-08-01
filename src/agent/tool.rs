@@ -1972,12 +1972,6 @@ impl SkillTool {
         }
     }
 
-    /// Max description length (in chars) for skill outline in system prompt.
-    /// Longer descriptions are truncated to avoid bloating the prompt with
-    /// verbose "Use when..." trigger lists. Full detail is available via the
-    /// skill tool on demand.
-    const MAX_SKILL_DESC_LEN: usize = 150;
-
     /// 列出所有可用 skill（扫描 skill_dirs 下的 .md 文件 + 子目录/SKILL.md）
     pub fn list_skills(&self) -> String {
         let mut entries: Vec<(String, String, String, Option<String>)> = Vec::new(); // (name, source, description, context_mode)
@@ -2036,13 +2030,9 @@ impl SkillTool {
                 Some(m) => format!(" (推荐:{})", m),
                 None => String::new(),
             };
-            // 截断过长的 description，避免单个 skill 占用过多 token
-            let desc = if desc.chars().count() > Self::MAX_SKILL_DESC_LEN {
-                let truncated: String = desc.chars().take(Self::MAX_SKILL_DESC_LEN).collect();
-                format!("{truncated}…")
-            } else {
-                desc.clone()
-            };
+            // 注意：不截断 description。description 的触发词（"Use when..."）对 LLM
+            // 判断何时加载 skill 至关重要，截断可能丢失关键信息。
+            // 控制长度的责任交给 skill 作者（写简洁的 frontmatter）。
             if desc.is_empty() {
                 out.push_str(&format!("  - {name}{mode_tag} [{source}]\n"));
             } else {
