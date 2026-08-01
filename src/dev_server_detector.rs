@@ -112,8 +112,10 @@ impl Extension for DevServerDetectorExtension {
     // ── Hook 1: detect ports from bash output ──────────────────────────
 
     async fn on_tool_execution_end(&self, ctx: &ToolExecutionContext) -> AgentResult<()> {
-        // Step 1: only care about the bash tool
-        if ctx.tool_name != "bash" {
+        // Step 1: care about both bash (sync) and bash_run (background) tools.
+        // bash_run is the correct tool for starting dev servers (non-blocking),
+        // so we must detect ports from its output too.
+        if ctx.tool_name != "bash" && ctx.tool_name != "bash_run" {
             return Ok(());
         }
 
