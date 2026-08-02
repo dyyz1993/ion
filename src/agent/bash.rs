@@ -121,12 +121,12 @@ impl Tool for BashRunTool {
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "The shell command to execute"},
-                "description": {"type": "string", "description": "Human-readable description of what this command does (optional, recommended for background tasks)"},
+                "description": {"type": "string", "description": "A clear, human-readable description of what this command does. ALWAYS provide this."},
                 "timeout": {"type": "number", "description": "Timeout in seconds for foreground execution", "default": 30},
                 "background": {"type": "boolean", "description": "If true, run in background and return immediately with a process bid", "default": false},
                 "timeoutBackground": {"type": "boolean", "description": "If true, start foreground but auto-move to background on timeout", "default": false}
             },
-            "required": ["command"]
+            "required": ["command", "description"]
         })
     }
 
