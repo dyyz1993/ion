@@ -283,6 +283,13 @@ pub trait Extension: Send + Sync {
     ) -> AgentResult<()> {
         Ok(())
     }
+    /// Register this extension's tools into the registry.
+    /// Default: no-op. Override to expose extension-specific tools
+    /// (e.g. BashExtension registers bash_run/bash_kill/bash_send/bash_bg).
+    /// Called by worker startup AND export tool-reconstruction, so the tool
+    /// panel always reflects every enabled extension (self-describing).
+    fn register_tools(&self, _registry: &mut crate::agent::tool::ToolRegistry) {}
+
     /// Called before each LLM request to allow extensions to modify the system prompt.
     /// The `prompt` string starts as the agent's current system prompt.
     async fn on_system_prompt(&self, _prompt: &mut String) -> AgentResult<()> {
@@ -804,6 +811,12 @@ impl ExtensionRegistry {
     }
     pub fn len(&self) -> usize {
         self.extensions.len()
+    }
+
+    /// Iterate over all registered extensions (borrows). Used by worker startup
+    /// and export tool-reconstruction to call `register_tools` on each.
+    pub fn iter_extensions(&self) -> impl Iterator<Item = &dyn Extension> {
+        self.extensions.iter().map(|b| b.as_ref())
     }
 
     /// 列出所有扩展名（get_extensions RPC 用）

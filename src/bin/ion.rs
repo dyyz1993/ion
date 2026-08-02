@@ -2118,6 +2118,8 @@ async fn cmd_run(
     tracing::info!("[extension] dev_server_detector registered");
 
     agent = agent.with_extensions(ext_reg);
+    // Let each extension self-describe its tools (bash_run/skill/etc.)
+    agent.register_extension_tools();
 
     tracing::info!("Running agent...");
 

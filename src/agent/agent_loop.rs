@@ -252,6 +252,17 @@ impl Agent {
         self.tools.register(tool);
     }
 
+    /// Let each extension self-describe and register its tools into this agent.
+    /// Replaces scattered hand-written `register_tool` calls. Extensions impl
+    /// `register_tools(&self, &mut ToolRegistry)` (default no-op).
+    pub fn register_extension_tools(&mut self) {
+        let ext_refs: Vec<&dyn crate::agent::extension::Extension> =
+            self.extensions.iter_extensions().collect();
+        for ext in ext_refs {
+            ext.register_tools(&mut self.tools);
+        }
+    }
+
     /// Remove a tool by name (used by extension_remove RPC).
     pub fn remove_tool(&mut self, name: &str) {
         self.tools.remove(name);

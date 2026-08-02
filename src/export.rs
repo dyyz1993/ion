@@ -171,6 +171,12 @@ pub fn export_session_rich(
             skill_dirs: skill_dirs.clone(),
             disabled: crate::config::IonConfig::load().skills.disabled,
         }));
+        // Let BashExtension self-describe its tools (bash_run/bash_kill/
+        // bash_send/bash_bg). Uses a dummy instance — register_tools only
+        // clones Arc fields, never executes commands during export.
+        let bash_ext: &dyn crate::agent::extension::Extension =
+            &crate::agent::bash::BashExtension::new_for_export();
+        bash_ext.register_tools(&mut registry);
 
         // Apply allowlist: agent_cfg.tools is a list of tool names
         if let Some(ref allowed) = agent_cfg.tools {

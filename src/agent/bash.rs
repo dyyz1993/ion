@@ -744,6 +744,19 @@ impl BashExtension {
             cwd, session_id, cwd,
         ))
     }
+
+    /// Dummy constructor for export-only contexts (no live worker loop).
+    /// `register_tools` only clones the Arc fields, so a fresh empty state is
+    /// enough — the resulting tools are never executed during export.
+    pub fn new_for_export() -> Self {
+        Self {
+            process_map: Arc::new(Mutex::new(HashMap::new())),
+            stdin_map: new_stdin_map(),
+            notify_map: Arc::new(Mutex::new(HashMap::new())),
+            follow_up_tx: None,
+            storage: crate::storage_context::StorageContext::new(".", "export", "."),
+        }
+    }
 }
 
 fn parse_pid(params: &serde_json::Value) -> String {
@@ -756,8 +769,33 @@ fn parse_pid(params: &serde_json::Value) -> String {
 
 #[async_trait]
 impl Extension for BashExtension {
-    fn name(&self) -> &str {
-        "bash"
+    /// Self-describing tool registration. Worker startup and export
+    /// tool-reconstruction both call this, so the bash tools (bash_run,
+    /// bash_kill, bash_send, bash_bg) always appear in the available tools.
+    fn register_tools(&self, registry: &mut crate::agent::tool::ToolRegistry) {
+        registry.register(Box::new(BashRunTool {
+            process_map: self.process_map.clone(),
+            stdin_map: self.stdin_map.clone(),
+            notify_map: self.notify_map.clone(),
+            follow_up_tx: self.follow_up_tx.clone(),
+            storage: self.storage.clone(),
+        }));
+        registry.register(Box::new(BashKillTool {
+            process_map: self.process_map.clone(),
+            follow_up_tx: self.follow_up_tx.clone(),
+            storage: self.storage.clone(),
+        }));
+        registry.register(Box::new(BashSendTool {
+            stdin_map: self.stdin_map.clone(),
+        }));
+        registry.register(Box::new(BashBackgroundTool {
+            notify_map: self.notify_map.clone(),
+            process_map: self.process_map.clone(),
+            storage: self.storage.clone(),
+        }));
+    }
+
+    fn name(&self) -> &str {        "bash"
     }
 
     async fn on_extension_rpc(

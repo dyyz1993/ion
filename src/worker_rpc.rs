@@ -827,8 +827,6 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     // 先创建 follow_up 通道（bash 插件后台进程完成时用来注入消息）
     let (follow_up_tx, mut follow_up_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
     let mut process_map = None;
-    let mut stdin_map = None;
-    let mut notify_map = None;
     let mut lsp_shared: Option<(
         std::sync::Arc<tokio::sync::Mutex<Vec<crate::lsp_extension::Diagnostic>>>,
         std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -925,8 +923,6 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         if ion_cfg.is_extension_enabled("bash") {
             let bash_ext = crate::agent::bash::BashExtension::new(storage_ctx.clone());
             process_map = Some(bash_ext.process_map.clone());
-            stdin_map = Some(bash_ext.stdin_map.clone());
-            notify_map = Some(bash_ext.notify_map.clone());
             ext_reg.register(Box::new(bash_ext));
         } else {
             tracing::info!("[extension] bash disabled by config");
@@ -1104,33 +1100,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
         agent = agent.with_extensions(ext_reg);
 
-        // 注册 bash 工具（仅当 bash extension 启用时）
-        if let (Some(pm), Some(sm), Some(nm)) = (&process_map, &stdin_map, &notify_map) {
-            let bash_run_tool = crate::agent::bash::BashRunTool {
-                process_map: pm.clone(),
-                stdin_map: sm.clone(),
-                notify_map: nm.clone(),
-                follow_up_tx: Some(follow_up_tx.clone()),
-                storage: storage_ctx.clone(),
-            };
-            let bash_kill_tool = crate::agent::bash::BashKillTool {
-                process_map: pm.clone(),
-                follow_up_tx: Some(follow_up_tx.clone()),
-                storage: storage_ctx.clone(),
-            };
-            let bash_send_tool = crate::agent::bash::BashSendTool {
-                stdin_map: sm.clone(),
-            };
-            let bash_bg_tool = crate::agent::bash::BashBackgroundTool {
-                notify_map: nm.clone(),
-                process_map: pm.clone(),
-                storage: storage_ctx.clone(),
-            };
-            agent.register_tool(Box::new(bash_run_tool));
-            agent.register_tool(Box::new(bash_kill_tool));
-            agent.register_tool(Box::new(bash_send_tool));
-            agent.register_tool(Box::new(bash_bg_tool));
-        }
+        // Let each extension self-describe its tools (e.g. BashExtension
+        // registers bash_run/bash_kill/bash_send/bash_bg). Replaces the old
+        // hand-written `agent.register_tool(...)` block below.
+        agent.register_extension_tools();
 
         // Register LspCheckTool if lsp extension was enabled (shares diagnostics handles)
         if let Some((diags, dirty, has_errs)) = &lsp_shared {
