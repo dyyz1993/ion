@@ -79,6 +79,9 @@ pub struct Agent {
     messages: Vec<Message>,
     steering_queue: VecDeque<Message>,
     follow_up_queue: VecDeque<Message>,
+    /// Optional receiver for async follow-up messages (e.g. bash background
+    /// process completion). Drained into follow_up_queue after each inner_loop.
+    follow_up_rx: Option<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Message>>>,
     registry: Arc<ApiRegistry>,
     model: Model,
     tools: ToolRegistry,
@@ -138,6 +141,7 @@ impl Agent {
             messages: Vec::new(),
             steering_queue: VecDeque::new(),
             follow_up_queue: VecDeque::new(),
+            follow_up_rx: None,
             registry,
             model,
             tools,
@@ -347,6 +351,15 @@ impl Agent {
     }
     pub fn follow_up(&mut self, msg: Message) {
         self.follow_up_queue.push_back(msg);
+    }
+    /// Wire up the async follow-up channel (bash background process completion).
+    /// outer_loop drains this into follow_up_queue after each inner_loop, so
+    /// completed background tasks can trigger a new agent turn.
+    pub fn set_follow_up_rx(
+        &mut self,
+        rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
+    ) {
+        self.follow_up_rx = Some(tokio::sync::Mutex::new(rx));
     }
     /// 把 follow_up_queue 里第 index 条消息提升到 steering_queue（对齐 pi promote）。
     /// index 从 0 计。如果越界则静默忽略。
@@ -818,6 +831,38 @@ impl Agent {
             match reason {
                 StopReason::Error | StopReason::Aborted => return Ok(()),
                 _ => {}
+            }
+            // Drain async follow-up channel (bash background completions) into
+            // the follow_up_queue before checking it. Without this, messages
+            // sent by spawn_watcher during inner_loop sit in the channel
+            // unread (only drained post-run in worker_rpc), so completed
+            // background tasks never trigger a new turn.
+            if let Some(ref rx_lock) = self.follow_up_rx {
+                let mut rx = rx_lock.lock().await;
+                while let Ok(msg) = rx.try_recv() {
+                    self.follow_up_queue.push_back(msg);
+                }
+                // If queue is still empty after immediate drain, the agent may
+                // have Stop'd while background processes are still running.
+                // Block-wait up to BACKGROUND_WAIT_TIMEOUT for the next
+                // completion message, so the agent doesn't exit prematurely
+                // and miss the <bash_result> notification.
+                if self.follow_up_queue.is_empty() {
+                    const BACKGROUND_WAIT_TIMEOUT: u64 = 30; // 30s: covers short bg tasks
+                    if let Ok(Some(msg)) =
+                        tokio::time::timeout(
+                            std::time::Duration::from_secs(BACKGROUND_WAIT_TIMEOUT),
+                            rx.recv(),
+                        )
+                        .await
+                    {
+                        self.follow_up_queue.push_back(msg);
+                        // Drain any more that arrived meanwhile.
+                        while let Ok(msg) = rx.try_recv() {
+                            self.follow_up_queue.push_back(msg);
+                        }
+                    }
+                }
             }
             if self.follow_up_queue.is_empty() {
                 // auto_continue 模式：注入"继续"follow-up 让 agent 跑下一个 turn

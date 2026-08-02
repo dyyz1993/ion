@@ -913,6 +913,14 @@ impl BashExtension {
         ))
     }
 
+    /// Set the follow_up channel sender. Background processes (spawn_watcher)
+    /// use this to inject <bash_result> messages back into the agent loop
+    /// when they complete. Must be called after new() in worker startup,
+    /// before register_tools() so that BashRunTool/BashManageTool get the tx.
+    pub fn set_follow_up_tx(&mut self, tx: tokio::sync::mpsc::UnboundedSender<Message>) {
+        self.follow_up_tx = Some(tx);
+    }
+
     /// Dummy constructor for export-only contexts (no live worker loop).
     /// `register_tools` only clones the Arc fields, so a fresh empty state is
     /// enough — the resulting tools are never executed during export.

@@ -825,7 +825,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
     // ── 注册内置 Extension（Memory / Bash / Streaming），可通过 config.json 关闭 ──
     // 先创建 follow_up 通道（bash 插件后台进程完成时用来注入消息）
-    let (follow_up_tx, mut follow_up_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
+    let (follow_up_tx, follow_up_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
     let mut process_map = None;
     let mut lsp_shared: Option<(
         std::sync::Arc<tokio::sync::Mutex<Vec<crate::lsp_extension::Diagnostic>>>,
@@ -921,7 +921,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
         // Bash Extension（后台进程管理）
         if ion_cfg.is_extension_enabled("bash") {
-            let bash_ext = crate::agent::bash::BashExtension::new(storage_ctx.clone());
+            let mut bash_ext = crate::agent::bash::BashExtension::new(storage_ctx.clone());
+            // Wire up the follow_up channel so background processes can inject
+            // <bash_result> messages into the agent loop on completion.
+            bash_ext.set_follow_up_tx(follow_up_tx.clone());
             process_map = Some(bash_ext.process_map.clone());
             ext_reg.register(Box::new(bash_ext));
         } else {
@@ -1104,6 +1107,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         // registers bash_run/bash_kill/bash_send/bash_bg). Replaces the old
         // hand-written `agent.register_tool(...)` block below.
         agent.register_extension_tools();
+        // Wire the follow_up receiver into the agent so background process
+        // completions (bash background=true) are drained into follow_up_queue
+        // during outer_loop, triggering a new turn with <bash_result> message.
+        agent.set_follow_up_rx(follow_up_rx);
 
         // Register LspCheckTool if lsp extension was enabled (shares diagnostics handles)
         if let Some((diags, dirty, has_errs)) = &lsp_shared {
@@ -5208,10 +5215,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             }
         }
 
-        // Drain bash follow_up messages (background process completions)
-        while let Ok(msg) = follow_up_rx.try_recv() {
-            agent.follow_up(msg);
-        }
+        // Note: follow_up_rx was moved into the agent via set_follow_up_rx().
+        // outer_loop drains it internally after each inner_loop, so completed
+        // background bash processes inject <bash_result> messages as new turns.
     }
 
     // 退出前保存会话
