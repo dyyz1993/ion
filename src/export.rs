@@ -252,6 +252,10 @@ pub fn export_session_rich(
             skill_dirs,
             disabled: crate::config::IonConfig::load().skills.disabled,
         }));
+        // BashExtension registers the unified `bash` tool (sync + background).
+        let bash_ext: &dyn crate::agent::extension::Extension =
+            &crate::agent::bash::BashExtension::new_for_export();
+        bash_ext.register_tools(&mut registry);
         let mut defs: Vec<ExportToolInfo> = registry
             .tool_defs()
             .into_iter()

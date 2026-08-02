@@ -97,7 +97,9 @@ fn allocate_pid(map: &HashMap<String, ProcessInfo>) -> String {
 // Tools
 // ============================================================================
 
-/// bash_run — run a shell command (sync / background / timeout-background).
+/// bash — run a shell command (sync / background / timeout-background).
+/// Unified tool: replaces the old separate bash_run. Management operations
+/// (kill/send/inspect) are exposed via extension_rpc(bash, ...).
 pub struct BashRunTool {
     pub process_map: ProcessMap,
     pub stdin_map: StdinMap,
@@ -109,22 +111,22 @@ pub struct BashRunTool {
 #[async_trait]
 impl Tool for BashRunTool {
     fn name(&self) -> &str {
-        "bash_run"
+        "bash"
     }
     fn description(&self) -> &str {
-        "Execute a bash command. Use `background=true` for long-running commands. Always provide a clear `description`."
+        "Execute a shell command and return its output. For long-running commands (dev servers, builds, watches), set background=true to return immediately with a process ID. To manage background processes, use extension_rpc(bash, kill|send|inspect|list, {bid})."
     }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "The shell command to execute"},
-                "description": {"type": "string", "description": "Human-readable description"},
-                "timeout": {"type": "number", "description": "Timeout in seconds", "default": 30},
-                "background": {"type": "boolean", "default": false},
-                "timeoutBackground": {"type": "boolean", "default": false}
+                "description": {"type": "string", "description": "Human-readable description of what this command does (optional, recommended for background tasks)"},
+                "timeout": {"type": "number", "description": "Timeout in seconds for foreground execution", "default": 30},
+                "background": {"type": "boolean", "description": "If true, run in background and return immediately with a process bid", "default": false},
+                "timeoutBackground": {"type": "boolean", "description": "If true, start foreground but auto-move to background on timeout", "default": false}
             },
-            "required": ["command", "description"]
+            "required": ["command"]
         })
     }
 
@@ -161,7 +163,7 @@ impl Tool for BashRunTool {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         if command.is_empty() {
-            return Err(AgentError::Tool("bash_run: missing 'command'".into()));
+            return Err(AgentError::Tool("bash: missing 'command'".into()));
         }
 
         // ── Common setup ──
@@ -292,7 +294,7 @@ impl Tool for BashRunTool {
             let (stdout, stderr, exit_code) = rt
                 .execute_command(&command, timeout)
                 .await
-                .map_err(|e| AgentError::Tool(format!("bash_run: {e}")))?;
+                .map_err(|e| AgentError::Tool(format!("bash: {e}")))?;
             let os_pid = 0; // execute_command 不返回 pid
 
             // 更新进程状态
@@ -769,28 +771,19 @@ fn parse_pid(params: &serde_json::Value) -> String {
 
 #[async_trait]
 impl Extension for BashExtension {
-    /// Self-describing tool registration. Worker startup and export
-    /// tool-reconstruction both call this, so the bash tools (bash_run,
-    /// bash_kill, bash_send, bash_bg) always appear in the available tools.
+    /// Self-describing tool registration. Registers a single unified `bash`
+    /// tool (sync + background via parameter). Process management operations
+    /// (kill/send/background/inspect/list) are exposed via extension_rpc,
+    /// not as separate tools — keeping the LLM tool list minimal.
+    /// The registered BashRunTool (named "bash") overwrites the simpler
+    /// built-in BashTool from register_builtins(), since register_tools
+    /// runs after register_builtins() in the startup sequence.
     fn register_tools(&self, registry: &mut crate::agent::tool::ToolRegistry) {
         registry.register(Box::new(BashRunTool {
             process_map: self.process_map.clone(),
             stdin_map: self.stdin_map.clone(),
             notify_map: self.notify_map.clone(),
             follow_up_tx: self.follow_up_tx.clone(),
-            storage: self.storage.clone(),
-        }));
-        registry.register(Box::new(BashKillTool {
-            process_map: self.process_map.clone(),
-            follow_up_tx: self.follow_up_tx.clone(),
-            storage: self.storage.clone(),
-        }));
-        registry.register(Box::new(BashSendTool {
-            stdin_map: self.stdin_map.clone(),
-        }));
-        registry.register(Box::new(BashBackgroundTool {
-            notify_map: self.notify_map.clone(),
-            process_map: self.process_map.clone(),
             storage: self.storage.clone(),
         }));
     }
@@ -1012,8 +1005,10 @@ pub fn bash_tool_guide() -> String {
     format!(
         "\n\n--- bash-tool-guide ---\n\
 ## Bash Tool\n\
-- `bash` tool: execute shell command (timeout {bash_timeout}s, override via `ION_BASH_TIMEOUT`).\n\
-- `bash_run` tool: run long/background commands (returns bid for management).\n\
+- `bash` tool: execute shell command. Supports `background=true` for long-running\n\
+  commands (dev servers, builds, watches) — returns immediately with a process `bid`.\n\
+  Foreground timeout: {bash_timeout}s (override via `ION_BASH_TIMEOUT`), or set `timeout` param.\n\
+  Use `timeoutBackground=true` to auto-move to background on timeout.\n\
 - Background process management via `extension_rpc(bash, ...)`:\n\
   - `list`: list all background processes (bid/command/elapsed/status)\n\
   - `inspect`: view a process output (supports `tail`/`offset`+`limit` for pagination)\n\
@@ -1112,7 +1107,7 @@ mod tests {
             follow_up_tx: None,
             storage: crate::storage_context::StorageContext::new("/tmp", "sid", "/tmp"),
         };
-        assert_eq!(tool.name(), "bash_run");
+        assert_eq!(tool.name(), "bash");
     }
 
     #[test]
