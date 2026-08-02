@@ -159,6 +159,12 @@ pub fn export_session_rich(
             sp.push_str("\n\n--- available-skills ---\n");
             sp.push_str(&outline);
         }
+        // Inject available-agents outline (mirrors cmd_run's system prompt).
+        let agents_outline = crate::agent_config::agents_outline();
+        if !agents_outline.is_empty() {
+            sp.push_str("\n\n--- available-agents ---\n");
+            sp.push_str(&agents_outline);
+        }
         system_prompt = Some(sp);
 
         // Reconstruct tool definitions by instantiating all built-in tools,

@@ -163,6 +163,75 @@ pub fn count_builtin_agents() -> usize {
     builtin_agents().len()
 }
 
+/// Collect ALL available agents: built-in + global (~/.ion/agents/) +
+/// project-level (<project>/.ion/agents/). Used for system prompt injection
+/// (available-agents outline, mirroring the skill outline) and `ion agents` listing.
+/// Returns agents in priority order: project > global > builtin (later entries
+/// are shadowed by earlier ones with the same name).
+pub fn list_all_agents() -> Vec<AgentConfig> {
+    let mut agents: Vec<AgentConfig> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Project-level agents (highest priority)
+    if let Some(proj_dir) = project_agents_dir() {
+        if proj_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&proj_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().map(|e| e == "md").unwrap_or(false) {
+                        if let Some(a) = parse_agent_file(&path) {
+                            if seen.insert(a.name.clone()) {
+                                agents.push(a);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Global agents (~/.ion/agents/)
+    let global_dir = global_agents_dir();
+    if global_dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(&global_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map(|e| e == "md").unwrap_or(false) {
+                    if let Some(a) = parse_agent_file(&path) {
+                        if seen.insert(a.name.clone()) {
+                            agents.push(a);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Built-in agents (lowest priority, only added if not already defined above)
+    for a in builtin_agents() {
+        if seen.insert(a.name.clone()) {
+            agents.push(a);
+        }
+    }
+
+    agents
+}
+
+/// Format all agents as an outline string for system prompt injection
+/// (mirrors skill outline format: "name — description").
+pub fn agents_outline() -> String {
+    let agents = list_all_agents();
+    if agents.is_empty() {
+        return String::new();
+    }
+    let mut lines: Vec<String> = agents
+        .iter()
+        .map(|a| format!("- {} — {}", a.name, a.description))
+        .collect();
+    lines.sort();
+    lines.join("\n")
+}
+
 // ---------------------------------------------------------------------------
 // Discovery paths
 // ---------------------------------------------------------------------------

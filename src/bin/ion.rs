@@ -1795,6 +1795,16 @@ async fn cmd_run(
             sys_prompt.push_str(&outline);
         }
     }
+
+    // Inject available-agents outline（builtin + ~/.ion/agents + <project>/.ion/agents）。
+    // 让 LLM 启动就知道有哪些 agent 可用、各自擅长什么，需要时可 spawn_worker 对应 agent。
+    {
+        let agents_outline = ion::agent_config::agents_outline();
+        if !agents_outline.is_empty() {
+            sys_prompt.push_str("\n\n--- available-agents ---\n");
+            sys_prompt.push_str(&agents_outline);
+        }
+    }
     // Apply skill prompts (--skill 指定的完整 skill 正文)
     for skill_path in &eff.skill {
         if let Ok(content) = std::fs::read_to_string(skill_path) {
