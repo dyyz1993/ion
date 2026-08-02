@@ -151,7 +151,7 @@ pub fn export_session_rich(
         }
 
         let skill_tool = crate::agent::tool::SkillTool {
-            skill_dirs,
+            skill_dirs: skill_dirs.clone(),
             disabled: crate::config::IonConfig::load().skills.disabled,
         };
         let outline = skill_tool.list_skills();
@@ -165,6 +165,12 @@ pub fn export_session_rich(
         // then applying the agent config's allowlist and blocklist.
         let mut registry = crate::agent::tool::ToolRegistry::new();
         registry.register_builtins();
+        // SkillTool is skipped by register_builtins() (it requires skill_dirs),
+        // so register it explicitly here for the export tools panel.
+        registry.register(Box::new(crate::agent::tool::SkillTool {
+            skill_dirs: skill_dirs.clone(),
+            disabled: crate::config::IonConfig::load().skills.disabled,
+        }));
 
         // Apply allowlist: agent_cfg.tools is a list of tool names
         if let Some(ref allowed) = agent_cfg.tools {
@@ -218,6 +224,38 @@ pub fn export_session_rich(
             (group(&a.name), &a.name).cmp(&(group(&b.name), &b.name))
         });
 
+        if !defs.is_empty() {
+            tools = Some(defs);
+        }
+    } else {
+        // Default agent (e.g. "build") has no .md config file, so find_agent()
+        // returned None and the block above was skipped. Reconstruct the full
+        // built-in tool set (no allowlist filter) so the export tools panel
+        // still shows the tools the agent actually had available.
+        let home = std::env::var("HOME").unwrap_or_default();
+        let cwd = header.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
+        let skill_dirs: Vec<std::path::PathBuf> = vec![
+            crate::paths::skills_dir(),
+            crate::paths::project_skills_dir(cwd),
+            std::path::PathBuf::from(&home).join(".agents").join("skills"),
+        ];
+        let mut registry = crate::agent::tool::ToolRegistry::new();
+        registry.register_builtins();
+        // SkillTool requires skill_dirs — register explicitly (same as above).
+        registry.register(Box::new(crate::agent::tool::SkillTool {
+            skill_dirs,
+            disabled: crate::config::IonConfig::load().skills.disabled,
+        }));
+        let mut defs: Vec<ExportToolInfo> = registry
+            .tool_defs()
+            .into_iter()
+            .map(|td| ExportToolInfo {
+                name: td.name,
+                description: td.description,
+                parameters: td.parameters,
+            })
+            .collect();
+        defs.sort_by(|a, b| a.name.cmp(&b.name));
         if !defs.is_empty() {
             tools = Some(defs);
         }
@@ -546,6 +584,81 @@ fn export_session_internal(
                 serde_json::to_value(&tools).unwrap_or(Value::Null),
             )
         });
+    }
+
+    // ── Flatten Rust enum externally-tagged message format for pi template ──
+    // ion stores messages as {"message": {"User": {"role":...,"content":[...]}}}
+    // (Rust enum externally-tagged serialization), but pi's template.js expects
+    // the flat format {"message": {"role":...,"content":[...]}}. Without this
+    // flattening, entry.message.role is undefined and template.js renders nothing.
+    // We only transform the export output, not the on-disk session format.
+    if let Some(entries) = session_data
+        .get_mut("entries")
+        .and_then(|v| v.as_array_mut())
+    {
+        const MSG_WRAPPERS: &[&str] = &[
+            "User",
+            "Assistant",
+            "ToolResult",
+            "BashExecution",
+            "Custom",
+            "BranchSummary",
+            "CompactionSummary",
+        ];
+        // content block: {"Text":{"text":...}} -> {"type":"text","text":...}
+        const BLOCK_MAP: &[(&str, &str)] = &[
+            ("Text", "text"),
+            ("ToolUse", "toolCall"),
+            ("ToolCall", "toolCall"),
+            ("ToolResult", "toolResult"),
+            ("Thinking", "thinking"),
+            ("Image", "image"),
+        ];
+
+        for entry in entries.iter_mut() {
+            // Step 1: flatten message wrapper {"User":{role,content}} -> {role,content}
+            let is_message = entry.get("type").and_then(|v| v.as_str()) == Some("message");
+            if is_message {
+                if let Some(msg) = entry.get_mut("message").and_then(|m| m.as_object_mut()) {
+                    let wrappers: Vec<String> = msg
+                        .keys()
+                        .filter(|k| MSG_WRAPPERS.contains(&k.as_str()))
+                        .cloned()
+                        .collect();
+                    for wrapper in wrappers {
+                        if let Some(inner) = msg.remove(&wrapper) {
+                            if let Some(inner_obj) = inner.as_object() {
+                                for (k, v) in inner_obj {
+                                    msg.insert(k.clone(), v.clone());
+                                }
+                            }
+                        }
+                    }
+
+                    // Step 2: flatten content blocks {Text:{text}} -> {type:"text",text}
+                    if let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut()) {
+                        for block in content.iter_mut() {
+                            if let Some(block_obj) = block.as_object_mut() {
+                                for (wrapper, type_name) in BLOCK_MAP {
+                                    if let Some(inner) = block_obj.remove(*wrapper) {
+                                        block_obj.insert(
+                                            "type".to_string(),
+                                            Value::String(type_name.to_string()),
+                                        );
+                                        if let Some(inner_obj) = inner.as_object() {
+                                            for (k, v) in inner_obj {
+                                                block_obj.insert(k.clone(), v.clone());
+                                            }
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Base64 encode
