@@ -649,6 +649,21 @@ async fn apply_compaction(
         new_msgs.push(first.clone());
     }
 
+    // Protect the first user message (usually the task spec) from compaction.
+    // Without this, a long task's original spec gets lossy-summarized away,
+    // causing the agent to lose task focus after repeated compactions.
+    // We find the first User message and keep it verbatim alongside the summary.
+    let first_user_idx = messages
+        .iter()
+        .position(|m| matches!(m, Message::User(_)));
+    if let Some(idx) = first_user_idx {
+        // start = boundary between compacted region and keep region.
+        // Only protect if the first user msg would otherwise be compacted.
+        if idx > 0 && idx < start {
+            new_msgs.push(messages[idx].clone());
+        }
+    }
+
     // 加入压缩总结
     new_msgs.push(Message::CompactionSummary(CompactionSummaryMessage {
         role: "compactionSummary".into(),

@@ -38,6 +38,12 @@ const LOOP_EXEMPT_TOOLS: &[&str] = &[
     "extension_rpc",
 ];
 
+/// Tools exempt from ERROR_ABORT (consecutive-error abort).
+/// bash/bash_run failures are common during iterative development
+/// (fix compile error → re-run), so they should not trigger early abort.
+/// They are still subject to the normal ABORT_THRESHOLD (5 identical calls).
+const ERROR_ABORT_EXEMPT: &[&str] = &["bash", "bash_run"];
+
 /// Max consecutive identical tool calls before warning.
 const WARN_THRESHOLD: u32 = 3;
 
@@ -212,8 +218,13 @@ impl Extension for ToolLoopDetector {
     }
 
     async fn on_tool_execution_end(&self, ctx: &ToolExecutionContext) -> AgentResult<()> {
-        // Track error results for error-based abort
-        if ctx.is_error && !LOOP_EXEMPT_TOOLS.contains(&ctx.tool_name.as_str()) {
+        // Track error results for error-based abort.
+        // Skip bash/bash_run: iterative dev (fix error → re-run) causes legit
+        // consecutive failures that should not trigger early abort.
+        if ctx.is_error
+            && !LOOP_EXEMPT_TOOLS.contains(&ctx.tool_name.as_str())
+            && !ERROR_ABORT_EXEMPT.contains(&ctx.tool_name.as_str())
+        {
             let mut history = self.history.lock().await;
             let sig = Self::compute_signature(&ctx.tool_name, &ctx.args);
             let sig_ref = sig.clone();
