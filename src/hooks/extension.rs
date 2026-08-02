@@ -41,7 +41,7 @@ pub struct HookExtension {
     /// once 去重（per session）
     once_fired: std::sync::Mutex<std::collections::HashSet<String>>,
     /// follow_up_tx（block Stop/SubagentStop 时注入 reason 作为新 query）
-    follow_up_tx: Option<tokio::sync::mpsc::UnboundedSender<Message>>,
+    follow_up_tx: Option<crate::agent::bash::FollowUpSender>,
 }
 
 impl HookExtension {
@@ -51,7 +51,7 @@ impl HookExtension {
         registry: Option<Arc<ion_provider::registry::ApiRegistry>>,
         model: Option<ion_provider::types::Model>,
         manager_bridge: Option<Arc<dyn crate::runtime::ManagerBridgeHandle>>,
-        follow_up_tx: Option<tokio::sync::mpsc::UnboundedSender<Message>>,
+        follow_up_tx: Option<crate::agent::bash::FollowUpSender>,
     ) -> Self {
         Self {
             project_dir,
@@ -224,7 +224,7 @@ impl HookExtension {
                     .unwrap_or(0),
                 source: ion_provider::types::MessageSource::Prompt,
             });
-            let _ = tx.send(msg);
+            let _ = tx.send((msg, crate::agent::agent_loop::DeliverAs::Steer));
         }
     }
 
@@ -597,7 +597,7 @@ mod tests {
     #[test]
     fn test_new_with_follow_up_channel() {
         // Provide a real mpsc sender; construction must succeed.
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<(Message, crate::agent::agent_loop::DeliverAs)>();
         let ext = HookExtension::new(
             PathBuf::from("/tmp/ion-ext-test-channel"),
             None,

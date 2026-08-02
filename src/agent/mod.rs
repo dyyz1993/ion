@@ -1,5 +1,6 @@
 pub mod agent_loop;
 pub mod bash;
+pub mod bash_executor;
 pub mod compact;
 pub mod context_index;
 pub mod error;

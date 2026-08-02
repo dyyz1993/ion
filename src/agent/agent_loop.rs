@@ -75,13 +75,33 @@ pub enum TurnEvent {
 // Agent
 // ---------------------------------------------------------------------------
 
+/// 异步消息（如 bash 后台进程完成通知）的投递时机。
+/// 对齐 pi `sendMessage({deliverAs: "steer"|"followUp"|"nextTurn"})`。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeliverAs {
+    /// 立即中断当前 LLM turn（→ steering_queue，inner_loop 检测后中断）。
+    /// 用于：用户主动 kill 后台进程、外部 steer 指令。
+    Steer,
+    /// 当前 turn 结束后下个 turn 触发（→ follow_up_queue，outer_loop drain）。
+    /// 默认值。用于：bash background=true 完成通知。
+    FollowUp,
+    /// agent.run 完成后才触发新 turn（→ next_turn_queue，worker_rpc 在 run 返回后处理）。
+    /// 用于：低优先级通知，不抢当前任务。
+    NextTurn,
+}
+
 pub struct Agent {
     messages: Vec<Message>,
     steering_queue: VecDeque<Message>,
     follow_up_queue: VecDeque<Message>,
+    /// NextTurn 投递的消息：等 agent.run 完成后才触发新 turn。
+    /// 对齐 pi `sendMessage({deliverAs: "nextTurn"})`。
+    next_turn_queue: VecDeque<Message>,
     /// Optional receiver for async follow-up messages (e.g. bash background
     /// process completion). Drained into follow_up_queue after each inner_loop.
-    follow_up_rx: Option<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Message>>>,
+    /// 元组第二个元素是投递时机（DeliverAs），让调用方控制消息何时入对话。
+    follow_up_rx:
+        Option<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<(Message, DeliverAs)>>>,
     registry: Arc<ApiRegistry>,
     model: Model,
     tools: ToolRegistry,
@@ -141,6 +161,7 @@ impl Agent {
             messages: Vec::new(),
             steering_queue: VecDeque::new(),
             follow_up_queue: VecDeque::new(),
+            next_turn_queue: VecDeque::new(),
             follow_up_rx: None,
             registry,
             model,
@@ -357,12 +378,16 @@ impl Agent {
     /// completed background tasks can trigger a new agent turn.
     pub fn set_follow_up_rx(
         &mut self,
-        rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
+        rx: tokio::sync::mpsc::UnboundedReceiver<(Message, DeliverAs)>,
     ) {
         self.follow_up_rx = Some(tokio::sync::Mutex::new(rx));
     }
 
-    /// 非阻塞 drain follow_up_rx，把消息追加到 follow_up_queue。
+    /// 非阻塞 drain follow_up_rx，按 DeliverAs 分发到对应队列。
+    /// - Steer → steering_queue（中断当前 turn）
+    /// - FollowUp → follow_up_queue（默认，下个 turn）
+    /// - NextTurn → next_turn_queue（agent.run 完成后）
+    ///
     /// 用于 call_tool 路径（绕过 outer_loop）：让后台进程完成消息也能被消费，
     /// 而不是堆积在 channel 里无人读取。
     /// 返回 drain 出的消息数。
@@ -370,8 +395,12 @@ impl Agent {
         let mut count = 0;
         if let Some(ref rx_lock) = self.follow_up_rx {
             let mut rx = rx_lock.lock().await;
-            while let Ok(msg) = rx.try_recv() {
-                self.follow_up_queue.push_back(msg);
+            while let Ok((msg, mode)) = rx.try_recv() {
+                match mode {
+                    DeliverAs::Steer => self.steering_queue.push_back(msg),
+                    DeliverAs::FollowUp => self.follow_up_queue.push_back(msg),
+                    DeliverAs::NextTurn => self.next_turn_queue.push_back(msg),
+                }
                 count += 1;
             }
         }
@@ -382,6 +411,17 @@ impl Agent {
     /// 调用方负责把它们写入对话历史 / session.jsonl。
     pub fn drain_follow_up_queue(&mut self) -> Vec<Message> {
         self.follow_up_queue.drain(..).collect()
+    }
+
+    /// 从 next_turn_queue 弹出所有消息（drain）。
+    /// worker_rpc 在 agent.run 返回后调用，触发新一轮 run。
+    pub fn drain_next_turn_queue(&mut self) -> Vec<Message> {
+        self.next_turn_queue.drain(..).collect()
+    }
+
+    /// next_turn_queue 当前长度（用于状态查询）。
+    pub fn next_turn_queue_len(&self) -> usize {
+        self.next_turn_queue.len()
     }
     /// 把 follow_up_queue 里第 index 条消息提升到 steering_queue（对齐 pi promote）。
     /// index 从 0 计。如果越界则静默忽略。
@@ -861,8 +901,12 @@ impl Agent {
             // background tasks never trigger a new turn.
             if let Some(ref rx_lock) = self.follow_up_rx {
                 let mut rx = rx_lock.lock().await;
-                while let Ok(msg) = rx.try_recv() {
-                    self.follow_up_queue.push_back(msg);
+                while let Ok((msg, mode)) = rx.try_recv() {
+                    match mode {
+                        DeliverAs::Steer => self.steering_queue.push_back(msg),
+                        DeliverAs::FollowUp => self.follow_up_queue.push_back(msg),
+                        DeliverAs::NextTurn => self.next_turn_queue.push_back(msg),
+                    }
                 }
                 // If queue is still empty after immediate drain, the agent may
                 // have Stop'd while background processes are still running.
@@ -871,17 +915,25 @@ impl Agent {
                 // and miss the <bash_result> notification.
                 if self.follow_up_queue.is_empty() {
                     const BACKGROUND_WAIT_TIMEOUT: u64 = 30; // 30s: covers short bg tasks
-                    if let Ok(Some(msg)) =
+                    if let Ok(Some((msg, mode))) =
                         tokio::time::timeout(
                             std::time::Duration::from_secs(BACKGROUND_WAIT_TIMEOUT),
                             rx.recv(),
                         )
                         .await
                     {
-                        self.follow_up_queue.push_back(msg);
+                        match mode {
+                            DeliverAs::Steer => self.steering_queue.push_back(msg),
+                            DeliverAs::FollowUp => self.follow_up_queue.push_back(msg),
+                            DeliverAs::NextTurn => self.next_turn_queue.push_back(msg),
+                        }
                         // Drain any more that arrived meanwhile.
-                        while let Ok(msg) = rx.try_recv() {
-                            self.follow_up_queue.push_back(msg);
+                        while let Ok((msg, mode)) = rx.try_recv() {
+                            match mode {
+                                DeliverAs::Steer => self.steering_queue.push_back(msg),
+                                DeliverAs::FollowUp => self.follow_up_queue.push_back(msg),
+                                DeliverAs::NextTurn => self.next_turn_queue.push_back(msg),
+                            }
                         }
                     }
                 }

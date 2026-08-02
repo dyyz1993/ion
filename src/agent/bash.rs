@@ -2,12 +2,17 @@ use crate::agent::error::{AgentError, AgentResult};
 use crate::agent::extension::*;
 use crate::agent::tool::Tool;
 use async_trait::async_trait;
+use crate::agent::agent_loop::DeliverAs;
 use ion_provider::types::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+/// follow_up channel 的消息 + 投递时机。
+/// 类型别名避免 `UnboundedSender<(Message, DeliverAs)>` 嵌套尖括号 `>>` 解析问题。
+pub type FollowUpSender = tokio::sync::mpsc::UnboundedSender<(Message, DeliverAs)>;
 
 // ============================================================================
 // ProcessInfo
@@ -32,10 +37,10 @@ pub struct ProcessInfo {
 pub type ProcessMap = Arc<Mutex<HashMap<String, ProcessInfo>>>;
 
 /// Stdin channels keyed by hex PID.
-type StdinMap = Arc<Mutex<HashMap<String, tokio::sync::mpsc::Sender<String>>>>;
+pub(super) type StdinMap = Arc<Mutex<HashMap<String, tokio::sync::mpsc::Sender<String>>>>;
 
 /// Background notify channels keyed by hex PID.
-type NotifyMap = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>>;
+pub(super) type NotifyMap = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>>;
 
 fn new_stdin_map() -> StdinMap {
     Arc::new(Mutex::new(HashMap::new()))
@@ -56,7 +61,7 @@ fn save_processes(map: &HashMap<String, ProcessInfo>, cwd: &str, session_id: &st
     }
 }
 
-fn save_process_map_arc(map: &ProcessMap, cwd: &str, session_id: &str) {
+pub(super) fn save_process_map_arc(map: &ProcessMap, cwd: &str, session_id: &str) {
     if let Ok(locked) = map.try_lock() {
         save_processes(&locked, cwd, session_id);
     }
@@ -104,7 +109,7 @@ pub struct BashRunTool {
     pub process_map: ProcessMap,
     pub stdin_map: StdinMap,
     pub notify_map: NotifyMap,
-    pub follow_up_tx: Option<tokio::sync::mpsc::UnboundedSender<Message>>,
+    pub follow_up_tx: Option<FollowUpSender>,
     pub storage: crate::storage_context::StorageContext,
 }
 
@@ -115,7 +120,7 @@ pub struct BashRunTool {
 pub struct BashManageTool {
     pub process_map: ProcessMap,
     pub stdin_map: StdinMap,
-    pub follow_up_tx: Option<tokio::sync::mpsc::UnboundedSender<Message>>,
+    pub follow_up_tx: Option<FollowUpSender>,
     pub storage: crate::storage_context::StorageContext,
 }
 
@@ -257,7 +262,7 @@ impl Tool for BashRunTool {
                 nm.insert(pid.clone(), notify_tx);
             }
 
-            tokio::spawn(spawn_watcher(
+            tokio::spawn(crate::agent::bash_executor::spawn_watcher(
                 self.process_map.clone(),
                 self.stdin_map.clone(),
                 self.notify_map.clone(),
@@ -368,181 +373,6 @@ impl Tool for BashRunTool {
     }
 }
 
-/// Shared watcher task for background and foreground modes.
-/// Reads stdout line by line, emits `process_output` events every ~1s,
-/// writes to log file, and sends completion notification.
-async fn spawn_watcher(
-    map: ProcessMap,
-    smap: StdinMap,
-    nmap: NotifyMap,
-    tx: Option<tokio::sync::mpsc::UnboundedSender<Message>>,
-    pid: String,
-    command: String,
-    description: String,
-    mut child: tokio::process::Child,
-    mut stdin_rx: tokio::sync::mpsc::Receiver<String>,
-    timeout: u64,
-    cwd: String,
-    session_id: String,
-) {
-    let started = std::time::Instant::now();
-    let log_dir = std::path::Path::new("/tmp").join("ion-bash");
-    let _ = std::fs::create_dir_all(&log_dir);
-    let log_path = log_dir.join(format!("{pid}.log"));
-
-    // Forward stdin
-    if let Some(mut child_stdin) = child.stdin.take() {
-        tokio::spawn(async move {
-            use tokio::io::AsyncWriteExt;
-            while let Some(input) = stdin_rx.recv().await {
-                let _ = child_stdin.write_all(input.as_bytes()).await;
-                let _ = child_stdin.write_all(b"\n").await;
-            }
-        });
-    }
-
-    // Read stdout line by line via BufReader
-    use tokio::io::{AsyncBufReadExt, BufReader};
-    let mut full_output = String::new();
-    let mut line_buf: Vec<String> = Vec::new();
-    let mut last_flush = std::time::Instant::now();
-    let mut log_f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .ok();
-
-    if let Some(stdout) = child.stdout.take() {
-        let mut reader = BufReader::new(stdout).lines();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
-
-        loop {
-            if std::time::Instant::now() >= deadline {
-                break; // overall timeout
-            }
-
-            // Try to read a line with 200ms timeout
-            let line =
-                tokio::time::timeout(std::time::Duration::from_millis(200), reader.next_line())
-                    .await;
-
-            match line {
-                Ok(Ok(Some(text))) => {
-                    full_output.push_str(&text);
-                    full_output.push('\n');
-                    if let Some(ref mut f) = log_f {
-                        use std::io::Write;
-                        let _ = writeln!(f, "{text}");
-                    }
-                    line_buf.push(text);
-                    last_flush = std::time::Instant::now();
-                }
-                Ok(Ok(None)) => break, // EOF
-                Ok(Err(_)) => break,   // read error
-                Err(_) => {
-                    // Timeout: flush pending output and continue
-                    if !line_buf.is_empty() && last_flush.elapsed().as_secs() >= 1 {
-                        let batch = line_buf.join("\n");
-                        emit_extension_event(
-                            "process_output",
-                            &serde_json::json!({
-                                "bid": pid, "output": batch, "lines": line_buf.len(),
-                            }),
-                        );
-                        line_buf.clear();
-                    }
-                    continue;
-                }
-            }
-        }
-    }
-
-    // Flush remaining output
-    if !line_buf.is_empty() {
-        let batch = line_buf.join("\n");
-        emit_extension_event(
-            "process_output",
-            &serde_json::json!({
-                "bid": pid, "output": batch, "lines": line_buf.len(),
-            }),
-        );
-        line_buf.clear();
-    }
-
-    // Wait for the process to fully exit (collect exit code)
-    smap.lock().await.remove(&pid);
-    let elapsed = started.elapsed().as_secs();
-    let exit_status = child.wait().await;
-    let (exit_code, event_type) = match exit_status {
-        Ok(status) => (
-            status.code(),
-            if status.success() {
-                "process_completed"
-            } else {
-                "process_completed"
-            },
-        ),
-        Err(_) => (None, "process_error"),
-    };
-    let stdout_stderr = full_output.clone();
-
-    // Write full output (should be redundant but safe)
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-    {
-        use std::io::Write;
-        let _ = write!(f, "{}", stdout_stderr);
-    }
-    {
-        let mut pm = map.lock().await;
-        if let Some(entry) = pm.get_mut(&pid) {
-            // 不要覆盖 bash_kill 标记的 killed 状态
-            if entry.status != "killed" {
-                entry.status = event_type.trim_start_matches("process_").to_string();
-            }
-            entry.exit_code = exit_code;
-            entry.output = stdout_stderr.clone();
-            entry.elapsed_secs = elapsed;
-        }
-    }
-    save_process_map_arc(&map, &cwd, &session_id);
-    nmap.lock().await.remove(&pid);
-
-    emit_extension_event(
-        event_type,
-        &serde_json::json!({
-            "bid": pid, "command": command, "description": description,
-            "exit_code": exit_code, "elapsed_secs": elapsed, "log_path": log_path.to_string_lossy(),
-            "reason": if exit_code == Some(0) { "completed" } else if exit_code.is_some() { "abnormal" } else { event_type.trim_start_matches("process_") },
-        }),
-    );
-
-    if let Some(ref tx) = tx {
-        let content = format!(
-            "<bash_result>\n✅ `{}` completed (pid={}, exit_code={:?}, {}s)\n{}\n</bash_result>",
-            command,
-            pid,
-            exit_code,
-            elapsed,
-            if stdout_stderr.len() > 500 {
-                format!("{}...[truncated]", &stdout_stderr[..500])
-            } else {
-                stdout_stderr
-            }
-        );
-        let msg = Message::Custom(CustomMessage {
-            role: "custom".into(),
-            custom_type: "bash_result".into(),
-            content: CustomContent::Text(content),
-            display: true,
-            details: None,
-            timestamp: now_ms(),
-        });
-        let _ = tx.send(msg);
-    }
-}
 
 // ============================================================================
 // BashExtension — plugin_rpc
@@ -707,7 +537,7 @@ pub struct BashExtension {
     pub process_map: ProcessMap,
     pub stdin_map: StdinMap,
     pub notify_map: NotifyMap,
-    pub follow_up_tx: Option<tokio::sync::mpsc::UnboundedSender<Message>>,
+    pub follow_up_tx: Option<FollowUpSender>,
     pub storage: crate::storage_context::StorageContext,
 }
 
@@ -734,7 +564,7 @@ impl BashExtension {
     /// use this to inject <bash_result> messages back into the agent loop
     /// when they complete. Must be called after new() in worker startup,
     /// before register_tools() so that BashRunTool/BashManageTool get the tx.
-    pub fn set_follow_up_tx(&mut self, tx: tokio::sync::mpsc::UnboundedSender<Message>) {
+    pub fn set_follow_up_tx(&mut self, tx: FollowUpSender) {
         self.follow_up_tx = Some(tx);
     }
 
@@ -884,7 +714,8 @@ impl Extension for BashExtension {
                             details: None,
                             timestamp: now_ms(),
                         });
-                        let _ = tx.send(msg);
+                        // kill 是用户主动操作，用 Steer 中断当前 turn（让 LLM 立即看到 kill 通知）
+                        let _ = tx.send((msg, DeliverAs::Steer));
                     }
                     Ok(serde_json::json!({"status": "killed"}))
                 } else {
@@ -1017,14 +848,14 @@ pub fn bash_tool_guide() -> String {
 // Helpers
 // ============================================================================
 
-fn now_ms() -> i64 {
+pub(super) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
 }
 
-fn emit_extension_event(event_type: &str, data: &serde_json::Value) {
+pub(super) fn emit_extension_event(event_type: &str, data: &serde_json::Value) {
     // 注意：Manager 的 stdout 路由只识别 "type":"event"，
     // 所以 plugin_event 需要嵌在 event.type 里才能到达 subscriber
     let msg = serde_json::json!({
