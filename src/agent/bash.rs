@@ -108,13 +108,24 @@ pub struct BashRunTool {
     pub storage: crate::storage_context::StorageContext,
 }
 
+/// bash_manage — manage background bash processes (list/inspect/kill/send).
+/// Shares the same process_map state as the `bash` tool (BashRunTool).
+/// This tool exists because management verbs are NOT available via
+/// extension_rpc inside worker sessions (extension_rpc is a CLI-only command).
+pub struct BashManageTool {
+    pub process_map: ProcessMap,
+    pub stdin_map: StdinMap,
+    pub follow_up_tx: Option<tokio::sync::mpsc::UnboundedSender<Message>>,
+    pub storage: crate::storage_context::StorageContext,
+}
+
 #[async_trait]
 impl Tool for BashRunTool {
     fn name(&self) -> &str {
         "bash"
     }
     fn description(&self) -> &str {
-        "Execute a shell command and return its output. For long-running commands (dev servers, builds, watches), set background=true to return immediately with a process ID. To manage background processes, use extension_rpc(bash, kill|send|inspect|list, {bid})."
+        "Execute a shell command and return its output. For long-running commands (dev servers, builds, watches), set background=true to return immediately with a process bid. To manage background processes (list/inspect/kill/send), use the bash_manage tool."
     }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
@@ -720,6 +731,161 @@ impl Tool for BashBackgroundTool {
 // BashExtension — plugin_rpc
 // ============================================================================
 
+#[async_trait]
+impl Tool for BashManageTool {
+    fn name(&self) -> &str {
+        "bash_manage"
+    }
+    fn description(&self) -> &str {
+        "Manage background bash processes started by the `bash` tool (background=true). Actions: list (show all), inspect (view output), kill (terminate), send (write to stdin)."
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "inspect", "kill", "send"], "description": "Management action to perform"},
+                "bid": {"type": "string", "description": "Process bash ID (from bash background=true). Required for inspect/kill/send."},
+                "input": {"type": "string", "description": "Text to send to process stdin (action=send only)"},
+                "tail": {"type": "number", "description": "inspect: return last N bytes of output", "default": 0},
+                "offset": {"type": "number", "description": "inspect: seek from start (bytes)", "default": 0},
+                "limit": {"type": "number", "description": "inspect: max bytes to return", "default": 2000}
+            },
+            "required": ["action"]
+        })
+    }
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
+        let result = self.on_manage(action, &args).await;
+        Ok(serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()))
+    }
+}
+
+impl BashManageTool {
+    /// Dispatch management actions. Mirrors BashExtension::on_extension_rpc logic,
+    /// but operates on the shared Arc state directly.
+    async fn on_manage(&self, action: &str, params: &serde_json::Value) -> serde_json::Value {
+        match action {
+            "list" => {
+                let map = self.process_map.lock().await;
+                let processes: Vec<serde_json::Value> = map
+                    .values()
+                    .map(|p| {
+                        serde_json::json!({
+                            "bid": p.bid, "command": p.command,
+                            "description": p.description, "status": p.status,
+                            "background": p.background, "elapsed_secs": p.elapsed_secs,
+                        })
+                    })
+                    .collect();
+                serde_json::json!({"processes": processes, "count": processes.len()})
+            }
+            "inspect" => {
+                let pid = parse_pid(params);
+                let tail = params.get("tail").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(2000) as usize;
+                let map = self.process_map.lock().await;
+                match map.get(&pid) {
+                    Some(info) => {
+                        let output = &info.output;
+                        let preview = if tail > 0 && output.len() > tail {
+                            format!(
+                                "...[truncated {} bytes]\n{}",
+                                output.len() - tail,
+                                &output[output.len().saturating_sub(tail)..]
+                            )
+                        } else if offset < output.len() {
+                            let end = (offset + limit).min(output.len());
+                            let snippet = &output[offset..end];
+                            if offset > 0 {
+                                format!("[offset {offset}]\n{snippet}")
+                            } else {
+                                snippet.to_string()
+                            }
+                        } else {
+                            String::new()
+                        };
+                        serde_json::json!({
+                            "bid": info.bid, "command": info.command,
+                            "description": info.description, "status": info.status,
+                            "exit_code": info.exit_code, "background": info.background,
+                            "elapsed_secs": info.elapsed_secs, "output_preview": preview,
+                            "output_len": output.len(),
+                        })
+                    }
+                    None => serde_json::json!({"error": "process not found"}),
+                }
+            }
+            "kill" => {
+                let pid = parse_pid(params);
+                if pid.is_empty() {
+                    return serde_json::json!({"error": "missing bid"});
+                }
+                let os_pid = {
+                    let mut map = self.process_map.lock().await;
+                    if let Some(info) = map.get_mut(&pid) {
+                        info.status = "killed".into();
+                        info.os_pid
+                    } else {
+                        0
+                    }
+                };
+                if os_pid == 0 {
+                    return serde_json::json!({"error": "no OS PID"});
+                }
+                let killed = std::process::Command::new("kill")
+                    .args([&os_pid.to_string()])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                if killed {
+                    let mut map = self.process_map.lock().await;
+                    if let Some(info) = map.get_mut(&pid) {
+                        info.status = "killed".into();
+                    }
+                    save_processes(&map, &self.storage.cwd, &self.storage.session_id);
+                    let mut sm = self.stdin_map.lock().await;
+                    sm.remove(&pid);
+                    serde_json::json!({"status": "killed", "bid": pid})
+                } else {
+                    serde_json::json!({"error": "kill failed"})
+                }
+            }
+            "send" => {
+                let pid = parse_pid(params);
+                let input = params
+                    .get("input")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if pid.is_empty() {
+                    return serde_json::json!({"error": "missing bid"});
+                }
+                if input.is_empty() {
+                    return serde_json::json!({"error": "missing input"});
+                }
+                let mut sm = self.stdin_map.lock().await;
+                match sm.get(&pid) {
+                    Some(tx) => {
+                        if tx.send(input.clone()).await.is_err() {
+                            sm.remove(&pid);
+                            serde_json::json!({"error": "stdin closed"})
+                        } else {
+                            serde_json::json!({"status": "delivered", "bid": pid, "input": input})
+                        }
+                    }
+                    None => serde_json::json!({"error": "process not found or no stdin channel"}),
+                }
+            }
+            _ => serde_json::json!({"error": format!("unknown action: {action}. Use list/inspect/kill/send.")}),
+        }
+    }
+}
+
 pub struct BashExtension {
     pub process_map: ProcessMap,
     pub stdin_map: StdinMap,
@@ -771,18 +937,22 @@ fn parse_pid(params: &serde_json::Value) -> String {
 
 #[async_trait]
 impl Extension for BashExtension {
-    /// Self-describing tool registration. Registers a single unified `bash`
-    /// tool (sync + background via parameter). Process management operations
-    /// (kill/send/background/inspect/list) are exposed via extension_rpc,
-    /// not as separate tools — keeping the LLM tool list minimal.
-    /// The registered BashRunTool (named "bash") overwrites the simpler
-    /// built-in BashTool from register_builtins(), since register_tools
-    /// runs after register_builtins() in the startup sequence.
+    /// Self-describing tool registration. Registers two tools:
+    /// 1. `bash` — run commands (sync + background via parameter)
+    /// 2. `bash_manage` — manage background processes (list/inspect/kill/send)
+    /// Management is a separate tool because extension_rpc is CLI-only and
+    /// not available as an LLM tool inside worker sessions.
     fn register_tools(&self, registry: &mut crate::agent::tool::ToolRegistry) {
         registry.register(Box::new(BashRunTool {
             process_map: self.process_map.clone(),
             stdin_map: self.stdin_map.clone(),
             notify_map: self.notify_map.clone(),
+            follow_up_tx: self.follow_up_tx.clone(),
+            storage: self.storage.clone(),
+        }));
+        registry.register(Box::new(BashManageTool {
+            process_map: self.process_map.clone(),
+            stdin_map: self.stdin_map.clone(),
             follow_up_tx: self.follow_up_tx.clone(),
             storage: self.storage.clone(),
         }));
@@ -1009,11 +1179,11 @@ pub fn bash_tool_guide() -> String {
   commands (dev servers, builds, watches) — returns immediately with a process `bid`.\n\
   Foreground timeout: {bash_timeout}s (override via `ION_BASH_TIMEOUT`), or set `timeout` param.\n\
   Use `timeoutBackground=true` to auto-move to background on timeout.\n\
-- Background process management via `extension_rpc(bash, ...)`:\n\
-  - `list`: list all background processes (bid/command/elapsed/status)\n\
-  - `inspect`: view a process output (supports `tail`/`offset`+`limit` for pagination)\n\
-  - `kill`: kill a process by bid/pid\n\
-  - `send`: send input to a process stdin\n\
+- Background process management via the `bash_manage` tool:\n\
+  - `bash_manage(action=\"list\")`: list all background processes\n\
+  - `bash_manage(action=\"inspect\", bid=...)`: view output (tail/offset/limit)\n\
+  - `bash_manage(action=\"kill\", bid=...)`: kill a process\n\
+  - `bash_manage(action=\"send\", bid=..., input=...)`: write to stdin\n\
 - Commands run in cwd; use absolute paths for files outside cwd.\n"
     )
 }
