@@ -3622,6 +3622,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     output_error_response(&id, "call_tool", "missing 'tool'");
                     continue;
                 }
+                // 注意：call_tool 不在这里 drain follow_up_rx —— 后台进程完成通知
+                // 需要外部主动调 drain_follow_ups RPC（避免 agent 锁竞争死锁）。
                 match agent.call_tool(&tool_name, tool_args).await {
                     Ok(result) => output_response(
                         &id,
@@ -3635,6 +3637,44 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         "error": format!("call_tool {tool_name}: {e}"),
                     })),
                 }
+            }
+            "drain_follow_ups" => {
+                // 主动 drain follow_up_rx（用于 call_tool 路径下后台进程完成通知的写入）。
+                // 典型用法：bash_run background=true → sleep N → drain_follow_ups → jsonl 里有 <bash_result>
+                // --params '{"wait_ms": 1000}'  // 可选：先 sleep 再 drain（等长任务完成）
+                let wait_ms = params
+                    .get("wait_ms")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                if wait_ms > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+                }
+                let drained_count = agent.try_drain_follow_up_rx().await;
+                let msgs = agent.drain_follow_up_queue();
+                let mut written: Vec<serde_json::Value> = Vec::new();
+                for msg in &msgs {
+                    let entry = serde_json::json!({
+                        "id": session_jsonl::generate_id(),
+                        "parentId": sid,
+                        "timestamp": session_jsonl::timestamp_iso(),
+                        "type": "message",
+                        "message": msg,
+                    });
+                    session_jsonl::append_raw_entry(&worker_cwd, &entry);
+                    written.push(serde_json::to_value(msg).unwrap_or(serde_json::Value::Null));
+                }
+                for msg in msgs {
+                    agent.push_message(msg);
+                }
+                output_response(
+                    &id,
+                    "drain_follow_ups",
+                    &serde_json::json!({
+                        "drained": drained_count,
+                        "written": written.len(),
+                        "messages": written,
+                    }),
+                )
             }
             "set_follow_up_mode" => {
                 output_response(&id, "set_follow_up_mode", &serde_json::Value::Null)

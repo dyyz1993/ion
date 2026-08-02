@@ -1,5 +1,28 @@
 # Bash 进程管理扩展设计
 
+> ## ⚠️ 0.4.0 重构变更（2026-08-02）
+>
+> 下列章节描述的是 v0.1.0 设计稿。v0.4.0 已对 bash 工具做了重大重构，本文档部分内容过时，**实际行为以源码 `src/agent/bash.rs` 为准**。
+>
+> | 维度 | 旧文档（v0.1.0） | 现状（v0.4.0） |
+> |---|---|---|
+> | **LLM 工具数** | 4 个：`bash_run` / `bash_kill` / `bash_send` / `bash_background` | **2 个**：`bash`（执行，含 background/timeoutBackground 参数）+ `bash_manage`（list/inspect/kill/send 合一）。`BashKillTool`/`BashSendTool`/`BashBackgroundTool` 已删除。 |
+> | **参数 key** | `pid`（文档 §6/§7） | **`bid`**（src/agent/bash.rs:551/632/690，3 处 schema `required:["bid"]`）。`parse_pid()` 也只读 bid。 |
+> | **CLI 启动** | `ion manager start`（§A.2） | **`ion serve start`**（`ion manager start` 现在被 agent 解释为任务） |
+> | **Socket 路径** | `~/.ion/manager.sock` | **`~/.ion/host.sock`**（`paths::host_socket_path()`） |
+> | **同步执行是否入 list** | 文档没说 | `call_tool bash`（同步）**不入 list**，进程完成后从 process_map 移除。只有 `background=true` 或 `timeoutBackground=true` 才留在 map（bash.rs 前台分支末尾 `map.remove(&pid)`）。 |
+> | **后台完成通知注入** | 通过 `follow_up_tx` → outer_loop drain → `<bash_result>` Custom 消息 | 同上，但 `call_tool` 路径下 outer_loop 不跑。**v0.4.0 新增 `drain_follow_ups` RPC**（worker_rpc.rs）让外部主动 drain，覆盖 call_tool 路径的 follow_up 闭环。 |
+> | **`bash_command` 同步 RPC** | `bash_command`（A1） | 不变，仍走 `Message::BashExecution` 入历史。 |
+> | **`!cmd` 前缀拦截** | prompt RPC text 以 `!` 开头（A2） | 不变。 |
+>
+> **新增 RPC**：
+>
+> - `drain_follow_ups`（`{"wait_ms": 1000}`）— 主动 drain `follow_up_rx`，把消息 push 到 in-memory messages + 写入 session.jsonl。用于 call_tool 路径下让后台完成通知被持久化。
+>
+> **死代码清理**：`BashKillTool` / `BashSendTool` / `BashBackgroundTool` 三个 struct 已从源码删除（之前定义了但未注册给 LLM，是死代码）。
+>
+> ---
+>
 > **状态：设计稿（后台进程管理）+ 已实现（同步直接执行）+ 综合教程**
 >
 > 本文档三部分：

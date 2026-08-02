@@ -308,30 +308,31 @@ impl Tool for BashRunTool {
                 .map_err(|e| AgentError::Tool(format!("bash: {e}")))?;
             let os_pid = 0; // execute_command 不返回 pid
 
-            // 更新进程状态
-            let mut map = self.process_map.lock().await;
-            if let Some(entry) = map.get_mut(&pid) {
-                entry.os_pid = os_pid;
-                entry.status = if exit_code == 0 {
-                    "completed".into()
-                } else {
-                    "error".into()
-                };
-                entry.exit_code = Some(exit_code);
-                let output = if stderr.is_empty() {
+            // 更新进程状态（用于 emit process_completed 事件载荷完整性）
+            let output_for_event = {
+                let mut map = self.process_map.lock().await;
+                if let Some(entry) = map.get_mut(&pid) {
+                    entry.os_pid = os_pid;
+                    entry.status = if exit_code == 0 {
+                        "completed".into()
+                    } else {
+                        "error".into()
+                    };
+                    entry.exit_code = Some(exit_code);
+                    let output = if stderr.is_empty() {
+                        stdout.clone()
+                    } else {
+                        format!("{stdout}\n{stderr}")
+                    };
+                    entry.output = output.clone();
+                    entry.elapsed_secs = ((now_ms() - now) / 1000) as u64;
+                }
+                if stderr.is_empty() {
                     stdout.clone()
                 } else {
                     format!("{stdout}\n{stderr}")
-                };
-                entry.output = output.clone();
-                entry.elapsed_secs = ((now_ms() - now) / 1000) as u64;
-            }
-            drop(map);
-            save_process_map_arc(
-                &self.process_map,
-                &self.storage.cwd,
-                &self.storage.session_id,
-            );
+                }
+            };
 
             emit_extension_event(
                 "process_completed",
@@ -340,14 +341,25 @@ impl Tool for BashRunTool {
                 }),
             );
 
+            // 前台同步执行完毕：从 process_map / stdin_map 移除，避免出现在 list / inspect / processes.json。
+            // 仅 background=true 或 timeoutBackground=true 的进程才应留在 map 里供后续管理。
+            {
+                let mut map = self.process_map.lock().await;
+                map.remove(&pid);
+            }
+            {
+                let mut sm = self.stdin_map.lock().await;
+                sm.remove(&pid);
+            }
+            save_process_map_arc(
+                &self.process_map,
+                &self.storage.cwd,
+                &self.storage.session_id,
+            );
+
             if exit_code != 0 {
-                let output = if stderr.is_empty() {
-                    stdout
-                } else {
-                    format!("{stdout}\n{stderr}")
-                };
                 Err(AgentError::Tool(format!(
-                    "exit code {exit_code}:\n{output}"
+                    "exit code {exit_code}:\n{output_for_event}"
                 )))
             } else {
                 Ok(stdout)
@@ -529,201 +541,6 @@ async fn spawn_watcher(
             timestamp: now_ms(),
         });
         let _ = tx.send(msg);
-    }
-}
-
-/// bash_kill — kill a process by hex PID.
-pub struct BashKillTool {
-    pub process_map: ProcessMap,
-    pub follow_up_tx: Option<tokio::sync::mpsc::UnboundedSender<Message>>,
-    pub storage: crate::storage_context::StorageContext,
-}
-
-#[async_trait]
-impl Tool for BashKillTool {
-    fn name(&self) -> &str {
-        "bash_kill"
-    }
-    fn description(&self) -> &str {
-        "Kill a running process by PID."
-    }
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{"bid":{"type":"string","description":"Process bash ID (bid)"}},"required":["pid"]})
-    }
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        rt: &dyn crate::runtime::Runtime,
-    ) -> AgentResult<String> {
-        let pid = args
-            .get("bid")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        if pid.is_empty() {
-            return Err(AgentError::Tool("bash_kill: missing 'pid'".into()));
-        }
-        // 先标记为 killed（防止 watcher 竞争覆盖成 completed）
-        let os_pid = {
-            let mut map = self.process_map.lock().await;
-            if let Some(info) = map.get_mut(&pid) {
-                info.status = "killed".into();
-                info.os_pid
-            } else {
-                0
-            }
-        };
-        if os_pid == 0 {
-            return Err(AgentError::Tool(format!("Process #{pid} has no OS PID")));
-        }
-        // 走 Runtime 的 kill_process（经过 SecuredRuntime 检查）
-        let killed = rt.kill_process(os_pid).await.is_ok();
-        if killed {
-            let mut map = self.process_map.lock().await;
-            if let Some(info) = map.get_mut(&pid) {
-                info.status = "killed".into();
-            }
-            let _ = std::fs::write(
-                format!("/tmp/ion-bash/{pid}.log"),
-                "[killed by bash_kill]\n",
-            );
-            // Notify LLM: inject a custom message into conversation history
-            if let Some(ref tx) = self.follow_up_tx {
-                let content = format!(
-                    "<bash_result>\n🛑 Process #{} (`{}`) was killed by user.\n</bash_result>",
-                    pid, os_pid,
-                );
-                let msg = Message::Custom(CustomMessage {
-                    role: "custom".into(),
-                    custom_type: "bash_result".into(),
-                    content: CustomContent::Text(content),
-                    display: true,
-                    details: None,
-                    timestamp: now_ms(),
-                });
-                let _ = tx.send(msg);
-            }
-            Ok(format!("✅ Process #{pid} killed"))
-        } else {
-            Err(AgentError::Tool(format!(
-                "Failed to kill process #{pid} (os_pid={os_pid})"
-            )))
-        }
-    }
-}
-
-/// bash_send — send stdin to a background process.
-pub struct BashSendTool {
-    pub stdin_map: StdinMap,
-}
-
-#[async_trait]
-impl Tool for BashSendTool {
-    fn name(&self) -> &str {
-        "bash_send"
-    }
-    fn description(&self) -> &str {
-        "Send input to the stdin of a running background process."
-    }
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{
-            "bid":{"type":"string","description":"Process bash ID (bid)"},
-            "input":{"type":"string","description":"Input text"}
-        },"required":["pid","input"]})
-    }
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _rt: &dyn crate::runtime::Runtime,
-    ) -> AgentResult<String> {
-        let pid = args
-            .get("bid")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let input = args
-            .get("input")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        if pid.is_empty() {
-            return Err(AgentError::Tool("bash_send: missing 'pid'".into()));
-        }
-        if input.is_empty() {
-            return Err(AgentError::Tool("bash_send: missing 'input'".into()));
-        }
-        let mut sm = self.stdin_map.lock().await;
-        match sm.get(&pid) {
-            Some(tx) => {
-                if tx.send(input.clone()).await.is_err() {
-                    sm.remove(&pid);
-                    Err(AgentError::Tool(format!(
-                        "Process #{pid} has ended (stdin closed)"
-                    )))
-                } else {
-                    Ok(format!("✅ Sent to process #{pid}: {input}"))
-                }
-            }
-            None => Err(AgentError::Tool(format!(
-                "Process #{pid} not found or has no stdin channel"
-            ))),
-        }
-    }
-}
-
-/// bash_background — move a running foreground process to background.
-pub struct BashBackgroundTool {
-    pub notify_map: NotifyMap,
-    pub process_map: ProcessMap,
-    pub storage: crate::storage_context::StorageContext,
-}
-
-#[async_trait]
-impl Tool for BashBackgroundTool {
-    fn name(&self) -> &str {
-        "bash_background"
-    }
-    fn description(&self) -> &str {
-        "Move a running foreground process to background."
-    }
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{"bid":{"type":"string","description":"Process bash ID (bid)"}},"required":["pid"]})
-    }
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _rt: &dyn crate::runtime::Runtime,
-    ) -> AgentResult<String> {
-        let pid = args
-            .get("bid")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        if pid.is_empty() {
-            return Err(AgentError::Tool("bash_background: missing 'pid'".into()));
-        }
-        let mut nm = self.notify_map.lock().await;
-        match nm.remove(&pid) {
-            Some(tx) => {
-                let _ = tx.send(());
-                let mut map = self.process_map.lock().await;
-                if let Some(info) = map.get_mut(&pid) {
-                    info.background = true;
-                }
-                save_processes(&map, &self.storage.cwd, &self.storage.session_id);
-                Ok(format!("✅ Process #{pid} moved to background"))
-            }
-            None => {
-                let map = self.process_map.lock().await;
-                if map.contains_key(&pid) {
-                    Err(AgentError::Tool(format!(
-                        "Process #{pid} is not waiting (already bg/completed)"
-                    )))
-                } else {
-                    Err(AgentError::Tool(format!("Process #{pid} not found")))
-                }
-            }
-        }
     }
 }
 
@@ -1286,34 +1103,6 @@ mod tests {
             storage: crate::storage_context::StorageContext::new("/tmp", "sid", "/tmp"),
         };
         assert_eq!(tool.name(), "bash");
-    }
-
-    #[test]
-    fn test_bash_kill_tool_name() {
-        let tool = BashKillTool {
-            process_map: Arc::new(Mutex::new(HashMap::new())),
-            follow_up_tx: None,
-            storage: crate::storage_context::StorageContext::new("/tmp", "sid", "/tmp"),
-        };
-        assert_eq!(tool.name(), "bash_kill");
-    }
-
-    #[test]
-    fn test_bash_send_tool_name() {
-        let tool = BashSendTool {
-            stdin_map: new_stdin_map(),
-        };
-        assert_eq!(tool.name(), "bash_send");
-    }
-
-    #[test]
-    fn test_bash_background_tool_name() {
-        let tool = BashBackgroundTool {
-            notify_map: Arc::new(Mutex::new(HashMap::new())),
-            process_map: Arc::new(Mutex::new(HashMap::new())),
-            storage: crate::storage_context::StorageContext::new("/tmp", "sid", "/tmp"),
-        };
-        assert_eq!(tool.name(), "bash_background");
     }
 
     // ── 7. Pure utility functions ─────────────────────────────────────────

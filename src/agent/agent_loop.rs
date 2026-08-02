@@ -361,6 +361,28 @@ impl Agent {
     ) {
         self.follow_up_rx = Some(tokio::sync::Mutex::new(rx));
     }
+
+    /// 非阻塞 drain follow_up_rx，把消息追加到 follow_up_queue。
+    /// 用于 call_tool 路径（绕过 outer_loop）：让后台进程完成消息也能被消费，
+    /// 而不是堆积在 channel 里无人读取。
+    /// 返回 drain 出的消息数。
+    pub async fn try_drain_follow_up_rx(&mut self) -> usize {
+        let mut count = 0;
+        if let Some(ref rx_lock) = self.follow_up_rx {
+            let mut rx = rx_lock.lock().await;
+            while let Ok(msg) = rx.try_recv() {
+                self.follow_up_queue.push_back(msg);
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// 从 follow_up_queue 弹出所有消息（drain）。
+    /// 调用方负责把它们写入对话历史 / session.jsonl。
+    pub fn drain_follow_up_queue(&mut self) -> Vec<Message> {
+        self.follow_up_queue.drain(..).collect()
+    }
     /// 把 follow_up_queue 里第 index 条消息提升到 steering_queue（对齐 pi promote）。
     /// index 从 0 计。如果越界则静默忽略。
     pub fn promote_follow_up(&mut self, index: usize) {
