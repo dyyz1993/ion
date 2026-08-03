@@ -432,6 +432,66 @@ impl Agent {
             self.next_turn_queue.len(),
         )
     }
+
+    /// agent.run() 返回后的"优雅退出"drain：再等一段时间收 follow_up_rx 里的残留消息。
+    ///
+    /// 场景：bash 后台进程在 agent.run() 期间启动，agent 决定 Stop 后 outer_loop 等 30s，
+    /// 如果 30s 内进程没完成就 break outer_loop → on_agent_end → on_session_shutdown。
+    /// 但 spawn_watcher 还在后台跑，进程完成时发的 follow_up 消息没人接收 → 丢失。
+    ///
+    /// 这个方法在 agent.run() 之后由 worker_rpc 调用，再 drain 一段时间（默认 60s），
+    /// 期间收到的消息全部返回（worker_rpc 负责写盘）。不触发新 turn，因为 LLM 已经 end。
+    ///
+    /// 早退条件：
+    /// - timeout_ms 超时
+    /// - 累计收到的消息数 ≥ max_messages（防止无限循环）
+    pub async fn graceful_drain_follow_ups(
+        &mut self,
+        timeout_ms: u64,
+        max_messages: usize,
+    ) -> Vec<Message> {
+        let mut collected: Vec<Message> = Vec::new();
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.max(100));
+
+        // 先 drain 当前 queue + channel 里已有的（立即返回，不等）
+        let _ = self.try_drain_follow_up_rx().await;
+        collected.extend(self.drain_follow_up_queue());
+        collected.extend(self.drain_next_turn_queue());
+        // steering_queue 不 drain（那些是给当前 turn 中断用的，agent 已 end 无意义）
+
+        // 如果已经有消息或达到上限，直接返回
+        if collected.len() >= max_messages.max(1) {
+            return collected;
+        }
+
+        // 否则 block-wait 直到 deadline 或收到新消息
+        while collected.len() < max_messages.max(1) {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            if let Some(ref rx_lock) = self.follow_up_rx {
+                let mut rx = rx_lock.lock().await;
+                match tokio::time::timeout(remaining, rx.recv()).await {
+                    Ok(Some((msg, _mode))) => {
+                        collected.push(msg);
+                        // 顺便 drain 同时到达的其他消息
+                        while let Ok((m, _)) = rx.try_recv() {
+                            collected.push(m);
+                            if collected.len() >= max_messages.max(1) {
+                                break;
+                            }
+                        }
+                    }
+                    _ => break, // channel closed or timeout
+                }
+            } else {
+                break;
+            }
+        }
+        collected
+    }
     /// 把 follow_up_queue 里第 index 条消息提升到 steering_queue（对齐 pi promote）。
     /// index 从 0 计。如果越界则静默忽略。
     pub fn promote_follow_up(&mut self, index: usize) {

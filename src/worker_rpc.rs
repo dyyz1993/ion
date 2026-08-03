@@ -2111,6 +2111,42 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             }
                         }
                     }
+
+                    // ── Graceful drain：agent.run() 返回后再收一会儿 follow_up ──
+                    // 解决"bash 后台进程在 agent.run 期间启动但未完成，agent 已退出 →
+                    // 进程完成时发的 follow_up 消息丢失"的问题。
+                    //
+                    // 流程：agent.run() 内部 outer_loop 已经等了 30s（BACKGROUND_WAIT_TIMEOUT），
+                    // 这里再等 ION_GRACEFUL_DRAIN_MS（默认 60s），期间收到的 bash_result
+                    // 等消息全部写入 session.jsonl，让下次 prompt 时 LLM 能看到。
+                    //
+                    // 不触发新 turn（LLM 已经 agent_end），只持久化。
+                    {
+                        let drain_ms = std::env::var("ION_GRACEFUL_DRAIN_MS")
+                            .ok()
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .unwrap_or(60_000);
+                        let drained_msgs = agent
+                            .graceful_drain_follow_ups(drain_ms, 50)
+                            .await;
+                        for msg in &drained_msgs {
+                            let entry = serde_json::json!({
+                                "id": session_jsonl::generate_id(),
+                                "parentId": sid,
+                                "timestamp": session_jsonl::timestamp_iso(),
+                                "type": "message",
+                                "message": msg,
+                            });
+                            session_jsonl::append_raw_entry(&worker_cwd, &entry);
+                            agent.push_message(msg.clone());
+                        }
+                        if !drained_msgs.is_empty() {
+                            tracing::info!(
+                                "[graceful-drain] captured {} follow_up messages after agent.run()",
+                                drained_msgs.len()
+                            );
+                        }
+                    }
                 }
             }
             "steer" => {
