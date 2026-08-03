@@ -588,8 +588,17 @@ fn export_session_internal(
         .map(|s| s.to_string());
 
     // Build SessionData JSON (matching pi's format)
+    // 给 header 注入 ionVersion 字段，让顶部信息卡片能显示生成 HTML 的 ion 版本。
+    // 不修改 session.jsonl 落盘的 header（只在 export 时注入到 session_data）。
+    let mut header_for_export = header.clone();
+    if let Some(obj) = header_for_export.as_object_mut() {
+        obj.insert(
+            "ionVersion".to_string(),
+            json!(env!("CARGO_PKG_VERSION")),
+        );
+    }
     let mut session_data = json!({
-        "header": header,
+        "header": header_for_export,
         "entries": entries,
         "leafId": leaf_id,
     });
@@ -741,6 +750,29 @@ fn export_session_internal(
             1,
         );
     }
+
+    // ION 扩展：在 Models 行后面追加 ION Version 行，让顶部信息卡片能直接看到生成版本。
+    // header.ionVersion 在 export_session_internal 里注入（env!("CARGO_PKG_VERSION")）。
+    let js_models_anchor = r#"<div class="info-item"><span class="info-label">Messages:</span>"#;
+    let ion_version_str = env!("CARGO_PKG_VERSION");
+    let js_ion_version_row = format!(
+        r#"<div class="info-item"><span class="info-label">ION Version:</span><span class="info-value">${{escapeHtml(header?.ionVersion || '{}')}}</span></div>"#,
+        ion_version_str
+    );
+    if js.contains(js_models_anchor) {
+        js = js.replacen(
+            js_models_anchor,
+            &format!("{}\n              {}", js_ion_version_row, js_models_anchor),
+            1,
+        );
+    }
+
+    // ION 扩展：修 Models 显示，没 assistant 消息时 fallback 到 header.model + header.provider。
+    // pi 原逻辑：globalStats.models 从 assistant 消息累加，没 assistant 就显示 'unknown'。
+    // ion 场景：call_tool 测试/extension_rpc 调试时 session 可能没 assistant 消息，但 header.model 已写。
+    let js_models_original = r#"globalStats.models.join(', ') || 'unknown'"#;
+    let js_models_fixed = r#"(globalStats.models.size > 0 ? [...globalStats.models].join(', ') : (header?.model ? (header?.provider ? header.provider + '/' + header.model : header.model) : 'unknown'))"#;
+    js = js.replace(js_models_original, js_models_fixed);
 
     // Replace placeholders
     html = html.replace("{{CSS}}", &css);
