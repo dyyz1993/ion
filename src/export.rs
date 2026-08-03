@@ -816,6 +816,18 @@ fn export_session_internal(
               <div style="display:none">"#;
     js = js.replace(tail_inject_old, tail_inject_new);
 
+    // ION 扩展：default 工具不展示参数 JSON（入参对用户没用，只显示工具名 + 结果）。
+    let default_args_old = r#"html += `<div class="tool-header"><span class="tool-name">${escapeHtml(name)}</span></div>`;
+              html += `<div class="tool-output"><pre>${escapeHtml(JSON.stringify(args, null, 2))}</pre></div>`;
+              if (result) {
+                const output = getResultText();
+                if (output) html += formatExpandableOutput(output, 10);"#;
+    let default_args_new = r#"html += `<div class="tool-header"><span class="tool-name">${escapeHtml(name)}</span></div>`;
+              if (result) {
+                const output = getResultText();
+                if (output) html += formatExpandableOutput(output, 10);"#;
+    js = js.replace(default_args_old, default_args_new);
+
     // Replace placeholders
     html = html.replace("{{CSS}}", &css);
     html = html.replace("{{SESSION_DATA}}", &session_data_b64);

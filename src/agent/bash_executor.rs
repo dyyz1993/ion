@@ -197,8 +197,14 @@ pub async fn spawn_watcher(
         // 格式精简：bid/exit/elapsed 放 XML 属性，content 只放进程输出（不重复 command）。
         // LLM 调 background=true 时已经知道命令内容，不需要在 result 里重复。
         // bid 让 LLM 能映射回是哪个后台进程。
+        // ★ 输出截断策略：头 300 字节 + ...[truncated N bytes]... + 尾 200 字节。
+        // 之前只截头（前 500 字节 + ...[truncated]），尾部信息丢失。
+        // 但尾部往往更重要（错误信息、最终结果都在末尾）。
         let output_text = if stdout_stderr.len() > 500 {
-            format!("{}...[truncated]", &stdout_stderr[..500])
+            let head = &stdout_stderr[..300];
+            let tail = &stdout_stderr[stdout_stderr.len() - 200..];
+            let middle = stdout_stderr.len() - 500;
+            format!("{}\n...[truncated {} bytes]...\n{}", head, middle, tail)
         } else {
             stdout_stderr.clone()
         };

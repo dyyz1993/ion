@@ -641,8 +641,7 @@ impl BashManageTool {
                             "output_tail": output_tail,
                             "output_truncated": output_truncated,
                             // 向后兼容
-                            "output_preview": preview,
-                            "output_len": output_bytes,
+
                         })
                     }
                     None => serde_json::json!({"error": "process not found"}),
@@ -917,8 +916,7 @@ impl Extension for BashExtension {
                             "output_head": output_head,
                             "output_tail": output_tail,
                             "output_truncated": output_truncated,
-                            "output_preview": preview,
-                            "output_len": output_bytes,
+
                         }))
                     }
                     None => Ok(serde_json::json!({"error": "process not found"})),
