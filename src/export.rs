@@ -592,10 +592,16 @@ fn export_session_internal(
     // 不修改 session.jsonl 落盘的 header（只在 export 时注入到 session_data）。
     let mut header_for_export = header.clone();
     if let Some(obj) = header_for_export.as_object_mut() {
-        obj.insert(
-            "ionVersion".to_string(),
-            json!(env!("CARGO_PKG_VERSION")),
-        );
+        let ion_full_version = format!(
+                "{}+{} ({})",
+                env!("CARGO_PKG_VERSION"),
+                env!("ION_GIT_HASH"),
+                env!("ION_BUILD_DATE"),
+            );
+            obj.insert(
+                "ionVersion".to_string(),
+                json!(ion_full_version),
+            );
     }
     let mut session_data = json!({
         "header": header_for_export,
@@ -776,7 +782,7 @@ fn export_session_internal(
     // ION 扩展：在 Models 行后面追加 ION Version 行，让顶部信息卡片能直接看到生成版本。
     // header.ionVersion 在 export_session_internal 里注入（env!("CARGO_PKG_VERSION")）。
     let js_models_anchor = r#"<div class="info-item"><span class="info-label">Messages:</span>"#;
-    let ion_version_str = env!("CARGO_PKG_VERSION");
+    let ion_version_str = format!("{}+{} ({})", env!("CARGO_PKG_VERSION"), env!("ION_GIT_HASH"), env!("ION_BUILD_DATE"));
     let js_ion_version_row = format!(
         r#"<div class="info-item"><span class="info-label">ION Version:</span><span class="info-value">${{escapeHtml(header?.ionVersion || '{}')}}</span></div>"#,
         ion_version_str
