@@ -275,6 +275,16 @@ pub fn export_session_rich(
         if !defs.is_empty() {
             tools = Some(defs);
         }
+
+        // 构造最小 system prompt（含 env_info + bash_tool_guide），让导出 HTML 能显示
+        // ION Version / Platform / Git Branch / 最近 commit 等元信息。
+        // 之前没这段：standalone ion --export（没 --agent 参数）走这个 else 分支，
+        // system_prompt 保持 None，HTML 里 systemPrompt 字段为空，无法追溯生成版本。
+        let session_cwd = header.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
+        let mut sp = String::new();
+        sp.push_str(&build_env_info_for_export(session_cwd));
+        sp.push_str(&crate::agent::bash::bash_tool_guide());
+        system_prompt = Some(sp);
     }
 
     // Delegate to internal export with tools + system_prompt
