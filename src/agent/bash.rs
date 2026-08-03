@@ -291,7 +291,11 @@ impl Tool for BashRunTool {
                 description.clone(),
                 child,
                 stdin_rx,
-                timeout,
+                // ★ background=true 时不应该有 timeout（让进程跑到自然结束）。
+                // 之前传 timeout 导致 sleep 35 在 30s 时被 spawn_watcher 提前 break，
+                // 后续的 echo 输出读不到 + 进程状态被错误标记为 completed。
+                // timeoutBackground 路径保留 timeout（用于触发"超时切后台"语义）。
+                if background { 86400 } else { timeout },
                 self.storage.cwd.clone(),
                 self.storage.session_id.clone(),
                 deliver_as,
