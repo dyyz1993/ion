@@ -717,6 +717,28 @@ fn export_session_internal(
                             }
                         }
                     }
+
+                    // Step 4: BashExecution 字段名 snake_case → camelCase（pi 模板对齐）。
+                    // ion 落盘：exit_code / full_output_path / exclude_from_context
+                    // pi 模板读：exitCode / fullOutputPath / excludeFromContext
+                    // 不转换的话模板显示 "(exit undefined)"（因为 msg.exitCode === undefined）。
+                    let is_bash_exec = msg
+                        .get("role")
+                        .and_then(|v| v.as_str())
+                        .map(|r| r == "bashExecution")
+                        .unwrap_or(false);
+                    if is_bash_exec {
+                        const SNAKE_TO_CAMEL: &[(&str, &str)] = &[
+                            ("exit_code", "exitCode"),
+                            ("full_output_path", "fullOutputPath"),
+                            ("exclude_from_context", "excludeFromContext"),
+                        ];
+                        for (snake, camel) in SNAKE_TO_CAMEL {
+                            if let Some(val) = msg.remove(*snake) {
+                                msg.insert(camel.to_string(), val);
+                            }
+                        }
+                    }
                 }
             }
         }

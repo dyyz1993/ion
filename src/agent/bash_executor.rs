@@ -171,11 +171,20 @@ pub async fn spawn_watcher(
     );
 
     if let Some(ref tx) = tx {
+        // exit_code 是 Option<i32>，按 None/Some(0)/Some(N) 友好格式化：
+        // - None → "unknown"（未拿到退出码，比如 spawn 失败/超时）
+        // - Some(0) → "0"
+        // - Some(N) → "N"
+        // 之前用 {:?} 直接 debug，会显示成 "None" / "Some(0)"，对前端不友好。
+        let exit_code_str = match exit_code {
+            None => "unknown".to_string(),
+            Some(code) => code.to_string(),
+        };
         let content = format!(
-            "<bash_result>\n✅ `{}` completed (pid={}, exit_code={:?}, {}s)\n{}\n</bash_result>",
+            "<bash_result>\n✅ `{}` completed (pid={}, exit_code={}, {}s)\n{}\n</bash_result>",
             command,
             pid,
-            exit_code,
+            exit_code_str,
             elapsed,
             if stdout_stderr.len() > 500 {
                 format!("{}...[truncated]", &stdout_stderr[..500])
