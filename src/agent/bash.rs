@@ -467,18 +467,23 @@ impl BashManageTool {
                 let tail = params.get("tail").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                 let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                 let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(2000) as usize;
+                let head_lines = params.get("head").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+                let tail_lines = params.get("tailLines").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
                 let map = self.process_map.lock().await;
                 match map.get(&pid) {
                     Some(info) => {
                         let output = &info.output;
-                        let preview = if tail > 0 && output.len() > tail {
+                        let output_bytes = output.len();
+
+                        // ── output_preview（保留向后兼容，支持 tail/offset 模式）──
+                        let preview = if tail > 0 && output_bytes > tail {
                             format!(
                                 "...[truncated {} bytes]\n{}",
-                                output.len() - tail,
-                                &output[output.len().saturating_sub(tail)..]
+                                output_bytes - tail,
+                                &output[output_bytes.saturating_sub(tail)..]
                             )
-                        } else if offset < output.len() {
-                            let end = (offset + limit).min(output.len());
+                        } else if offset < output_bytes {
+                            let end = (offset + limit).min(output_bytes);
                             let snippet = &output[offset..end];
                             if offset > 0 {
                                 format!("[offset {offset}]\n{snippet}")
@@ -488,12 +493,82 @@ impl BashManageTool {
                         } else {
                             String::new()
                         };
+
+                        // ── 头尾行预览（用户期望：头几行 + 尾几行 + 中间截断标记）──
+                        let all_lines: Vec<&str> = output.lines().collect();
+                        let total_lines = all_lines.len();
+                        let (output_head, output_tail, output_truncated) =
+                            if total_lines > head_lines + tail_lines {
+                                // 超长：头 N 行 + ...[truncated M lines]... + 尾 N 行
+                                let head_joined = all_lines[..head_lines].join("\n");
+                                let tail_joined = all_lines[total_lines - tail_lines..].join("\n");
+                                let middle_lines = total_lines - head_lines - tail_lines;
+                                (
+                                    head_joined,
+                                    format!("...[truncated {} lines]...\n{}", middle_lines, tail_joined),
+                                    true,
+                                )
+                            } else {
+                                (output.clone(), String::new(), false)
+                            };
+
+                        // ── 友好的输出大小 ──
+                        let output_size_human = if output_bytes < 1024 {
+                            format!("{} B", output_bytes)
+                        } else if output_bytes < 1024 * 1024 {
+                            format!("{:.1} KB", output_bytes as f64 / 1024.0)
+                        } else {
+                            format!("{:.1} MB", output_bytes as f64 / (1024.0 * 1024.0))
+                        };
+
+                        // ── started_at 转 ISO（从 unix ms）──
+                        let started_at_iso = {
+                            let secs = info.started_at / 1000;
+                            let millis = info.started_at % 1000;
+                            let days_since_epoch = secs / 86400;
+                            let time_secs = secs % 86400;
+                            let h = time_secs / 3600;
+                            let m = (time_secs % 3600) / 60;
+                            let s = time_secs % 60;
+                            let mut y = 2025i64;
+                            let mut days_remaining = days_since_epoch.saturating_sub(20089);
+                            loop {
+                                let diy = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 366 } else { 365 };
+                                if days_remaining < diy { break; }
+                                days_remaining -= diy;
+                                y += 1;
+                            }
+                            let md = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+                                [31,29,31,30,31,30,31,31,30,31,30,31]
+                            } else {
+                                [31,28,31,30,31,30,31,31,30,31,30,31]
+                            };
+                            let mut mo = 1i64;
+                            for &d in &md {
+                                if days_remaining < d { break; }
+                                days_remaining -= d;
+                                mo += 1;
+                            }
+                            format!("{y:04}-{mo:02}-{}T{h:02}:{m:02}:{s:02}.{millis:03}Z", days_remaining + 1)
+                        };
+
                         serde_json::json!({
                             "bid": info.bid, "command": info.command,
                             "description": info.description, "status": info.status,
                             "exit_code": info.exit_code, "background": info.background,
-                            "elapsed_secs": info.elapsed_secs, "output_preview": preview,
-                            "output_len": output.len(),
+                            "elapsed_secs": info.elapsed_secs,
+                            "started_at": started_at_iso,
+                            // 输出大小
+                            "output_bytes": output_bytes,
+                            "output_size": output_size_human,
+                            "output_lines": total_lines,
+                            // 头尾预览（新格式：头 N 行 + 尾 N 行 + 中间截断）
+                            "output_head": output_head,
+                            "output_tail": output_tail,
+                            "output_truncated": output_truncated,
+                            // 向后兼容
+                            "output_preview": preview,
+                            "output_len": output_bytes,
                         })
                     }
                     None => serde_json::json!({"error": "process not found"}),
@@ -668,20 +743,23 @@ impl Extension for BashExtension {
                 let tail = params.get("tail").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                 let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                 let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(2000) as usize;
+                let head_lines = params.get("head").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+                let tail_lines = params.get("tailLines").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
                 let map = self.process_map.lock().await;
                 match map.get(&pid) {
                     Some(info) => {
                         let output = &info.output;
-                        let preview = if tail > 0 && output.len() > tail {
-                            // tail mode: return last N bytes
+                        let output_bytes = output.len();
+
+                        // ── output_preview（保留向后兼容）──
+                        let preview = if tail > 0 && output_bytes > tail {
                             format!(
                                 "...[truncated {} bytes]\n{}",
-                                output.len() - tail,
-                                &output[output.len().saturating_sub(tail)..]
+                                output_bytes - tail,
+                                &output[output_bytes.saturating_sub(tail)..]
                             )
-                        } else if offset < output.len() {
-                            // offset+limit mode: "seek" from start
-                            let end = (offset + limit).min(output.len());
+                        } else if offset < output_bytes {
+                            let end = (offset + limit).min(output_bytes);
                             let snippet = &output[offset..end];
                             if offset > 0 {
                                 format!("[offset {offset}]\n{snippet}")
@@ -691,12 +769,78 @@ impl Extension for BashExtension {
                         } else {
                             String::new()
                         };
+
+                        // ── 头尾行预览 ──
+                        let all_lines: Vec<&str> = output.lines().collect();
+                        let total_lines = all_lines.len();
+                        let (output_head, output_tail, output_truncated) =
+                            if total_lines > head_lines + tail_lines {
+                                let head_joined = all_lines[..head_lines].join("\n");
+                                let tail_joined = all_lines[total_lines - tail_lines..].join("\n");
+                                let middle_lines = total_lines - head_lines - tail_lines;
+                                (
+                                    head_joined,
+                                    format!("...[truncated {} lines]...\n{}", middle_lines, tail_joined),
+                                    true,
+                                )
+                            } else {
+                                (output.clone(), String::new(), false)
+                            };
+
+                        // ── 友好的输出大小 ──
+                        let output_size_human = if output_bytes < 1024 {
+                            format!("{} B", output_bytes)
+                        } else if output_bytes < 1024 * 1024 {
+                            format!("{:.1} KB", output_bytes as f64 / 1024.0)
+                        } else {
+                            format!("{:.1} MB", output_bytes as f64 / (1024.0 * 1024.0))
+                        };
+
+                        // ── started_at ISO ──
+                        let started_at_iso = {
+                            let secs = info.started_at / 1000;
+                            let millis = info.started_at % 1000;
+                            let days_since_epoch = secs / 86400;
+                            let time_secs = secs % 86400;
+                            let h = time_secs / 3600;
+                            let m = (time_secs % 3600) / 60;
+                            let s = time_secs % 60;
+                            let mut y = 2025i64;
+                            let mut days_remaining = days_since_epoch.saturating_sub(20089);
+                            loop {
+                                let diy = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 366 } else { 365 };
+                                if days_remaining < diy { break; }
+                                days_remaining -= diy;
+                                y += 1;
+                            }
+                            let md = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+                                [31,29,31,30,31,30,31,31,30,31,30,31]
+                            } else {
+                                [31,28,31,30,31,30,31,31,30,31,30,31]
+                            };
+                            let mut mo = 1i64;
+                            for &d in &md {
+                                if days_remaining < d { break; }
+                                days_remaining -= d;
+                                mo += 1;
+                            }
+                            format!("{y:04}-{mo:02}-{}T{h:02}:{m:02}:{s:02}.{millis:03}Z", days_remaining + 1)
+                        };
+
                         Ok(serde_json::json!({
                             "bid": info.bid, "command": info.command,
                             "description": info.description, "status": info.status,
                             "exit_code": info.exit_code, "background": info.background,
-                            "elapsed_secs": info.elapsed_secs, "output_preview": preview,
-                            "output_len": output.len(),
+                            "elapsed_secs": info.elapsed_secs,
+                            "started_at": started_at_iso,
+                            "output_bytes": output_bytes,
+                            "output_size": output_size_human,
+                            "output_lines": total_lines,
+                            "output_head": output_head,
+                            "output_tail": output_tail,
+                            "output_truncated": output_truncated,
+                            "output_preview": preview,
+                            "output_len": output_bytes,
                         }))
                     }
                     None => Ok(serde_json::json!({"error": "process not found"})),
