@@ -2608,13 +2608,66 @@ mod tests {
         assert!(result.contains("truncation"));
     }
 
+    fn faux_model() -> Model {
+        Model {
+            id: "faux-test".into(),
+            name: "Faux Test".into(),
+            api: "faux".into(),
+            provider: "faux".into(),
+            base_url: "".into(),
+            reasoning: false,
+            input: vec!["text".into()],
+            cost: Cost::default(),
+            context_window: 128000,
+            max_tokens: 4096,
+            compat: None,
+            headers: None,
+        }
+    }
+
+    fn build_test_agent() -> Agent {
+        let registry = Arc::new(ApiRegistry::new());
+        let tools = ToolRegistry::new();
+        let config = AgentConfig {
+            max_retries: 0,
+            ..Default::default()
+        };
+        Agent::new(registry, faux_model(), None, tools, config)
+    }
+
+    fn user_msg(text: &str) -> Message {
+        Message::User(UserMessage {
+            role: "user".into(),
+            content: vec![ContentBlock::Text(TextContent {
+                text: text.into(),
+                text_signature: None,
+            })],
+            timestamp: 0,
+            source: MessageSource::Prompt,
+        })
+    }
+
     #[test]
     fn test_current_message_count() {
-        // Agent::new requires many args, so just test the signature compiles
-        // by checking the method exists. We can use a simpler approach:
-        // verify the method is accessible via type system.
-        // Since Agent::new is complex, this test just ensures compilation.
-        assert!(true, "current_message_count method compiles");
+        let mut agent = build_test_agent();
+
+        // Fresh agent has no messages.
+        assert_eq!(agent.current_message_count(), 0);
+
+        // Push a few messages and verify the count tracks correctly.
+        agent.push_message(user_msg("hello"));
+        assert_eq!(agent.current_message_count(), 1);
+
+        agent.push_message(user_msg("world"));
+        agent.push_message(user_msg("again"));
+        assert_eq!(agent.current_message_count(), 3);
+
+        // with_messages also reflects on the count.
+        let agent2 = build_test_agent().with_messages(vec![
+            user_msg("a"),
+            user_msg("b"),
+        ]);
+        assert_eq!(agent2.current_message_count(), 2);
     }
 }
 
