@@ -286,8 +286,31 @@ except UnicodeDecodeError as e:
     git worktree remove "$wt_dir" 2>/dev/null
     git branch -d "$branch" 2>/dev/null
 
+    # Step 7: 导出 agent 会话 HTML（agent 跑任务的全过程可视化）
+    # agent session 在 ~/.ion/agent/sessions/--<hash>--SE-XX-- 下（按 cwd hash）
+    # 找最新创建的 session 目录（agent 跑任务期间创建）
+    local session_html="$REPORT_DIR/${task_id}_session.html"
+    local agent_session_dir
+    agent_session_dir=$(ls -dt ~/.ion/agent/sessions/*${task_id}* 2>/dev/null | head -1)
+    if [ -n "$agent_session_dir" ]; then
+        local agent_session_jsonl
+        agent_session_jsonl=$(ls "$agent_session_dir"/sess_*.jsonl "$agent_session_dir"/session.jsonl 2>/dev/null | head -1)
+        if [ -n "$agent_session_jsonl" ]; then
+            local agent_session_id
+            agent_session_id=$(head -1 "$agent_session_jsonl" | python3 -c "import json,sys;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+            if [ -n "$agent_session_id" ]; then
+                if "$ION_BIN" --export "$session_html" --session "$agent_session_id" 2>/dev/null | grep -q "Exported"; then
+                    green "  ✓ agent 会话 HTML: $session_html"
+                else
+                    yellow "  ⚠ agent 会话导出失败（不影响任务结果）"
+                fi
+            fi
+        fi
+    fi
+
     green "════════════════════════════════════════════════════════════"
     green "  ✅ 任务 $task_id 完成（commit $merged_commit）"
+    [ -f "$session_html" ] && green "  📄 会话 HTML: $session_html"
     green "════════════════════════════════════════════════════════════"
     echo ""
 
@@ -405,6 +428,45 @@ main() {
     blue "════════════════════════════════════════════════════════════"
     blue "  汇总: PASS=$pass FAIL=$fail"
     blue "════════════════════════════════════════════════════════════"
+
+    # ── 所有任务跑完后，跑 bash 21 case 端到端回归 ──
+    # 目的：确保自循环改动（加方法/测试）没破坏 bash 工具的端到端功能
+    # 复用 /tmp/bash_test_runner.py（21 case）+ /tmp/bash_followup_test.py（F1/F2）
+    if [ "$pass" -gt 0 ] && [ -f /tmp/bash_test_runner.py ]; then
+        echo ""
+        blue "▶ 全部任务完成后：bash 21 case 端到端回归"
+        # 确保 serve 在跑
+        if [ ! -S ~/.ion/host.sock ]; then
+            "$ION_BIN" serve start >/tmp/ion_evolve_serve.log 2>&1 &
+            sleep 6
+        fi
+        local regression_dir="/tmp/ion-evolve-regression"
+        mkdir -p "$regression_dir"
+        rm -rf ~/.ion/agent/sessions/*ion-evolve-regression* 2>/dev/null
+        local reg_sid
+        reg_sid=$(ion rpc --session x --method create_worker --params "{\"cwd\":\"$regression_dir\"}" 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['sessionId'])" 2>/dev/null)
+        if [ -n "$reg_sid" ]; then
+            SID="$reg_sid" python3 /tmp/bash_test_runner.py 2>&1 | tail -1
+            # 让 session 落盘（触发 prompt）
+            (cd "$regression_dir" && timeout 20 ion "hi" --resume "$reg_sid" >/dev/null 2>&1)
+            SID="$reg_sid" python3 /tmp/bash_followup_test.py 2>&1 | tail -1
+            python3 -c "
+import json
+data = json.load(open('/tmp/bash_test_results.json'))
+total = len(data)
+passed = sum(1 for r in data if r['status'] == 'PASS')
+failed = sum(1 for r in data if r['status'] == 'FAIL')
+skipped = sum(1 for r in data if r['status'] == 'SKIP')
+print(f'  bash 回归: total={total} PASS={passed} FAIL={failed} SKIP={skipped}')
+if failed > 0:
+    print('  ⚠ 有 FAIL，建议检查改动是否破坏 bash 功能')
+"
+        else
+            yellow "  ⚠ 无法创建回归 worker，跳过 bash 回归"
+        fi
+    else
+        yellow "  （跳过 bash 回归：要么没有 PASS 任务，要么 /tmp/bash_test_runner.py 不存在）"
+    fi
 
     [ "$fail" -eq 0 ]
 }
