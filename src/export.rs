@@ -672,6 +672,32 @@ fn export_session_internal(
                             }
                         }
                     }
+
+                    // Step 3: Custom messages (e.g. <bash_result>) — pi template.js
+                    // only renders user/assistant/toolResult/bashExecution roles.
+                    // Custom messages are system-injected (like background process
+                    // completion), semantically equivalent to user messages.
+                    // Remap role=custom -> role=user and wrap string content into
+                    // the array format pi expects.
+                    let is_custom = msg
+                        .get("role")
+                        .and_then(|v| v.as_str())
+                        .map(|r| r == "custom")
+                        .unwrap_or(false);
+                    if is_custom {
+                        msg.insert("role".to_string(), Value::String("user".into()));
+                        // Wrap string content into [{type:"text",text:"..."}]
+                        if let Some(content_val) = msg.remove("content") {
+                            if !content_val.is_array() {
+                                msg.insert(
+                                    "content".to_string(),
+                                    serde_json::json!([{"type":"text","text":content_val}]),
+                                );
+                            } else {
+                                msg.insert("content".to_string(), content_val);
+                            }
+                        }
+                    }
                 }
             }
         }
