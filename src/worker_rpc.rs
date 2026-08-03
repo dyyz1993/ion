@@ -2130,10 +2130,22 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             .graceful_drain_follow_ups(drain_ms, 50)
                             .await;
                         for msg in &drained_msgs {
+                            // ★ 用消息自带的 timestamp（进程完成时间），而非写入时间。
+                            // 之前用 timestamp_iso() 导致所有 drained 消息的时间戳都是
+                            // "写入时间"（agent.run 返回后），而不是进程真正完成的时间。
+                            let msg_ts = match msg {
+                                ion_provider::Message::Custom(c) => c.timestamp,
+                                _ => 0,
+                            };
+                            let ts_iso = if msg_ts > 0 {
+                                session_jsonl::timestamp_iso_from_ms(msg_ts)
+                            } else {
+                                session_jsonl::timestamp_iso()
+                            };
                             let entry = serde_json::json!({
                                 "id": session_jsonl::generate_id(),
                                 "parentId": sid,
-                                "timestamp": session_jsonl::timestamp_iso(),
+                                "timestamp": ts_iso,
                                 "type": "message",
                                 "message": msg,
                             });

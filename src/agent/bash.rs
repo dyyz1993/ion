@@ -724,11 +724,11 @@ impl Extension for BashExtension {
                     save_processes(&map, &self.storage.cwd, &self.storage.session_id);
                     let mut sm = self.stdin_map.lock().await;
                     sm.remove(&pid);
-                    // Notify LLM
+                    // Notify LLM: kill 通知也精简，bid 放属性，content 只放状态
                     if let Some(ref tx) = self.follow_up_tx {
                         let content = format!(
-                            "<bash_result>\n🛑 Process #{} (`{}`) was killed by user.\n</bash_result>",
-                            pid, os_pid,
+                            "<bash_result bid=\"{}\" exit=\"killed\">\n🛑 Process killed by user\n</bash_result>",
+                            pid,
                         );
                         let msg = Message::Custom(CustomMessage {
                             role: "custom".into(),

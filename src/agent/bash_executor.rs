@@ -181,17 +181,20 @@ pub async fn spawn_watcher(
             None => "unknown".to_string(),
             Some(code) => code.to_string(),
         };
+        // 格式精简：bid/exit/elapsed 放 XML 属性，content 只放进程输出（不重复 command）。
+        // LLM 调 background=true 时已经知道命令内容，不需要在 result 里重复。
+        // bid 让 LLM 能映射回是哪个后台进程。
+        let output_text = if stdout_stderr.len() > 500 {
+            format!("{}...[truncated]", &stdout_stderr[..500])
+        } else {
+            stdout_stderr.clone()
+        };
         let content = format!(
-            "<bash_result>\n✅ `{}` completed (pid={}, exit_code={}, {}s)\n{}\n</bash_result>",
-            command,
+            "<bash_result bid=\"{}\" exit=\"{}\" elapsed=\"{}s\">\n{}\n</bash_result>",
             pid,
             exit_code_str,
             elapsed,
-            if stdout_stderr.len() > 500 {
-                format!("{}...[truncated]", &stdout_stderr[..500])
-            } else {
-                stdout_stderr
-            }
+            output_text,
         );
         let msg = Message::Custom(CustomMessage {
             role: "custom".into(),

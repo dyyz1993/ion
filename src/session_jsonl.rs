@@ -380,6 +380,49 @@ pub fn timestamp_iso() -> String {
     format!("{y:04}-{mo:02}-{day:02}T{h:02}:{m:02}:{s:02}.{millis:03}Z")
 }
 
+/// 从 unix 毫秒时间戳生成 ISO 字符串（跟 timestamp_iso 同逻辑，但接受指定时间）。
+/// 用于 graceful_drain 写入消息时保留消息自带的完成时间（而非写入时间）。
+pub fn timestamp_iso_from_ms(ms: i64) -> String {
+    if ms <= 0 {
+        return timestamp_iso();
+    }
+    let secs = (ms / 1000) as u64;
+    let millis = (ms % 1000) as u64;
+
+    let days_since_epoch = secs / 86400;
+    let time_secs = secs % 86400;
+    let h = time_secs / 3600;
+    let m = (time_secs % 3600) / 60;
+    let s = time_secs % 60;
+
+    let mut y = 2025u64;
+    let mut days_remaining = days_since_epoch.saturating_sub(20089);
+    loop {
+        let days_in_year = if is_leap(y) { 366 } else { 365 };
+        if days_remaining < days_in_year {
+            break;
+        }
+        days_remaining -= days_in_year;
+        y += 1;
+    }
+    let month_days = if is_leap(y) {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+    let mut mo = 1u64;
+    for &md in &month_days {
+        if days_remaining < md {
+            break;
+        }
+        days_remaining -= md;
+        mo += 1;
+    }
+    let day = days_remaining + 1;
+
+    format!("{y:04}-{mo:02}-{day:02}T{h:02}:{m:02}:{s:02}.{millis:03}Z")
+}
+
 fn is_leap(y: u64) -> bool {
     (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
 }
