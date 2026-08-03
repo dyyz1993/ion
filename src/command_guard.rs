@@ -25,10 +25,10 @@ pub enum RiskLevel {
 pub enum GuardMode {
     /// 全部放行（除了高危 Deny）
     Open,
-    /// 默认放行 + 黑名单拦截（旧行为）
-    Blacklist,
-    /// 只放行白名单 + 风险拦截 + 未知命令 Ask（推荐）
+    /// 默认放行 + 黑名单拦截（推荐默认：宽松但拦高危命令）
     #[default]
+    Blacklist,
+    /// 只放行白名单 + 风险拦截 + 未知命令 Ask（严格模式：生产环境用）
     Whitelist,
 }
 
