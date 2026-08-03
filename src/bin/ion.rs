@@ -2039,11 +2039,22 @@ async fn cmd_run(
     ext_reg = ext_reg.with_storage(storage_ctx.clone());
     tracing::info!("[extension] StorageContext injected (data_dirs available)");
 
+    // ── follow_up channel（cmd_run 路径专用）──
+    // 让 background bash 完成通知能注入对话历史。之前 cmd_run 不设这个，
+    // spawn_watcher 完成时 tx=None 直接丢弃 → bash_result 永远不进 session.jsonl。
+    // 对齐 worker_rpc.rs:828/927/1113 的做法。
+    let (cmd_run_follow_up_tx, cmd_run_follow_up_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(
+            ion_provider::Message,
+            ion::agent::agent_loop::DeliverAs,
+        )>();
+
     // ── 注册 BashExtension（让 bash 工具的 guide + 后台进程摘要通过 on_system_prompt
     //    自动注入，跟 memory/plan/rules_engine 等扩展一致，而非内核硬编码调用）──
-    ext_reg.register(Box::new(ion::agent::bash::BashExtension::new(
-        storage_ctx.clone(),
-    )));
+    // ★ 注入 follow_up_tx，让 spawn_watcher 能发完成通知
+    let mut cmd_run_bash_ext = ion::agent::bash::BashExtension::new(storage_ctx.clone());
+    cmd_run_bash_ext.set_follow_up_tx(cmd_run_follow_up_tx);
+    ext_reg.register(Box::new(cmd_run_bash_ext));
 
     // ── 注册 RulesEngineExtension（扫描 <project>/.ion/rules/*.md，匹配的项目规则
     //    通过 on_system_prompt 注入 <rules> XML）──
@@ -2128,6 +2139,9 @@ async fn cmd_run(
     tracing::info!("[extension] dev_server_detector registered");
 
     agent = agent.with_extensions(ext_reg);
+    // 把 follow_up_rx 注入 agent（cmd_run_follow_up_rx 在前面 BashExtension 注册时创建）。
+    // 让 outer_loop 能 drain background bash 完成通知，对齐 worker_rpc 路径。
+    agent.set_follow_up_rx(cmd_run_follow_up_rx);
     // Let each extension self-describe its tools (bash_run/skill/etc.)
     agent.register_extension_tools();
 
@@ -2159,6 +2173,35 @@ async fn cmd_run(
 
         match agent.run(prompt).await {
             Ok(()) => {
+                // ★ Graceful drain：捕获 background bash 完成通知，避免长任务（>30s）完成消息丢失。
+                // agent.run 内部 outer_loop 等 30s，超时退出 → on_agent_end。如果后台进程
+                // 还在跑（比如 sleep 35），完成时发的 follow_up 没人接收。这里再等 60s
+                // 兜底，期间收到的 bash_result 等消息写入 session.jsonl。
+                let drain_ms = std::env::var("ION_GRACEFUL_DRAIN_MS")
+                    .ok()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(60_000);
+                let drained = agent.graceful_drain_follow_ups(drain_ms, 50).await;
+                if !drained.is_empty() {
+                    for msg in &drained {
+                        let entry = serde_json::json!({
+                            "id": ion::session_jsonl::generate_id(),
+                            "parentId": session_id,
+                            "timestamp": ion::session_jsonl::timestamp_iso(),
+                            "type": "message",
+                            "message": msg,
+                        });
+                        ion::session_jsonl::append_raw_entry(&run_cwd, &entry);
+                    }
+                    for msg in drained {
+                        agent.push_message(msg);
+                    }
+                    tracing::info!(
+                        "[graceful-drain] cmd_run captured {} follow_up messages after agent.run()",
+                        0
+                    );
+                }
+
                 let output =
                     extract_assistant_text(&agent).unwrap_or_else(|| "(no response)".into());
 
