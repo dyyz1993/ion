@@ -11,7 +11,7 @@
 //! 2. 异步操作: set_model → await → 返回
 //! 3. 流式:     prompt → 触发(不 await) → 事件推送
 
-use crate::agent::agent_loop::{Agent, AgentConfig};
+use crate::agent::agent_loop::{Agent, AgentConfig, DeliverAs};
 use crate::agent::compact::CompactConfig;
 use crate::agent::tool::{
     AwaitWorkerTool, BashTool, BranchSessionTool, CalculatorTool, ChannelSendTool, EchoTool,
@@ -825,7 +825,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
     // ── 注册内置 Extension（Memory / Bash / Streaming），可通过 config.json 关闭 ──
     // 先创建 follow_up 通道（bash 插件后台进程完成时用来注入消息）
-    let (follow_up_tx, follow_up_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
+    let (follow_up_tx, follow_up_rx) = tokio::sync::mpsc::unbounded_channel::<(ion_provider::Message, DeliverAs)>();
     let mut process_map = None;
     let mut lsp_shared: Option<(
         std::sync::Arc<tokio::sync::Mutex<Vec<crate::lsp_extension::Diagnostic>>>,
