@@ -113,10 +113,10 @@ pub struct BashRunTool {
     pub storage: crate::storage_context::StorageContext,
 }
 
-/// bash_manage — manage background bash processes (list/inspect/kill/send).
-/// Shares the same process_map state as the `bash` tool (BashRunTool).
-/// This tool exists because management verbs are NOT available via
-/// extension_rpc inside worker sessions (extension_rpc is a CLI-only command).
+/// BashManageTool — shared engine for background process management.
+/// Not exposed to LLM directly; wrapped by GetBackgroundProcessTool /
+/// KillProcessTool / WriteStdinTool (pi-aligned names).
+#[derive(Clone)]
 pub struct BashManageTool {
     pub process_map: ProcessMap,
     pub stdin_map: StdinMap,
@@ -410,26 +410,35 @@ impl Tool for BashRunTool {
 // BashExtension — plugin_rpc
 // ============================================================================
 
+// ════════════════════════════════════════════════════════════════════════════
+// 3 个独立 LLM 工具（对标 pi），包装 BashManageTool 的 on_manage 逻辑
+// ════════════════════════════════════════════════════════════════════════════
+
+/// get_background_process — 查询后台进程状态/输出（对标 pi get_background_process）。
+/// 不传 bid 时列所有进程；传 bid 时查单个进程详情（含头尾行截断 + 输出大小）。
+pub struct GetBackgroundProcessTool {
+    manage: BashManageTool,
+}
+
 #[async_trait]
-impl Tool for BashManageTool {
+impl Tool for GetBackgroundProcessTool {
     fn name(&self) -> &str {
-        "bash_manage"
+        "get_background_process"
     }
     fn description(&self) -> &str {
-        "Manage background bash processes started by the `bash` tool (background=true). Actions: list (show all), inspect (view output), kill (terminate), send (write to stdin)."
+        "Get background process status and output. Without bid: list all processes. With bid: inspect a single process (returns status, exit code, elapsed, started_at, output size, head/tail lines with truncation)."
     }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["list", "inspect", "kill", "send"], "description": "Management action to perform"},
-                "bid": {"type": "string", "description": "Process bash ID (from bash background=true). Required for inspect/kill/send."},
-                "input": {"type": "string", "description": "Text to send to process stdin (action=send only)"},
-                "tail": {"type": "number", "description": "inspect: return last N bytes of output", "default": 0},
-                "offset": {"type": "number", "description": "inspect: seek from start (bytes)", "default": 0},
-                "limit": {"type": "number", "description": "inspect: max bytes to return", "default": 2000}
-            },
-            "required": ["action"]
+                "bid": {"type": "string", "description": "Process bash ID. Omit to list all processes."},
+                "head": {"type": "number", "description": "Number of head lines to show (default 5)", "default": 5},
+                "tailLines": {"type": "number", "description": "Number of tail lines to show (default 5)", "default": 5},
+                "tail": {"type": "number", "description": "Tail mode: return last N bytes of output", "default": 0},
+                "offset": {"type": "number", "description": "Offset mode: seek from start (bytes)", "default": 0},
+                "limit": {"type": "number", "description": "Max bytes to return in offset mode", "default": 2000}
+            }
         })
     }
     async fn execute(
@@ -437,8 +446,73 @@ impl Tool for BashManageTool {
         args: serde_json::Value,
         _rt: &dyn crate::runtime::Runtime,
     ) -> AgentResult<String> {
-        let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
-        let result = self.on_manage(action, &args).await;
+        let action = if args.get("bid").is_some() { "inspect" } else { "list" };
+        let result = self.manage.on_manage(action, &args).await;
+        Ok(serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()))
+    }
+}
+
+/// kill_process — 终止后台进程（对标 pi channel kill）。
+pub struct KillProcessTool {
+    manage: BashManageTool,
+}
+
+#[async_trait]
+impl Tool for KillProcessTool {
+    fn name(&self) -> &str {
+        "kill_process"
+    }
+    fn description(&self) -> &str {
+        "Kill a background process by its bash ID."
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "bid": {"type": "string", "description": "Process bash ID to kill"}
+            },
+            "required": ["bid"]
+        })
+    }
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let result = self.manage.on_manage("kill", &args).await;
+        Ok(serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()))
+    }
+}
+
+/// write_stdin — 向后台进程的标准输入写入数据（对标 pi channel write_stdin）。
+pub struct WriteStdinTool {
+    manage: BashManageTool,
+}
+
+#[async_trait]
+impl Tool for WriteStdinTool {
+    fn name(&self) -> &str {
+        "write_stdin"
+    }
+    fn description(&self) -> &str {
+        "Write text to the stdin of a running background process."
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "bid": {"type": "string", "description": "Process bash ID"},
+                "input": {"type": "string", "description": "Text to send to process stdin"}
+            },
+            "required": ["bid", "input"]
+        })
+    }
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _rt: &dyn crate::runtime::Runtime,
+    ) -> AgentResult<String> {
+        let result = self.manage.on_manage("send", &args).await;
         Ok(serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()))
     }
 }
@@ -712,12 +786,16 @@ impl Extension for BashExtension {
             follow_up_tx: self.follow_up_tx.clone(),
             storage: self.storage.clone(),
         }));
-        registry.register(Box::new(BashManageTool {
+        // 3 个独立管理工具（对标 pi），共享 BashManageTool 引擎
+        let manage = BashManageTool {
             process_map: self.process_map.clone(),
             stdin_map: self.stdin_map.clone(),
             follow_up_tx: self.follow_up_tx.clone(),
             storage: self.storage.clone(),
-        }));
+        };
+        registry.register(Box::new(GetBackgroundProcessTool { manage: manage.clone() }));
+        registry.register(Box::new(KillProcessTool { manage: manage.clone() }));
+        registry.register(Box::new(WriteStdinTool { manage }));
     }
 
     fn name(&self) -> &str {        "bash"
