@@ -64,12 +64,14 @@ pub async fn spawn_watcher(
         .open(&log_path)
         .ok();
 
+    let mut timed_out = false;
     if let Some(stdout) = child.stdout.take() {
         let mut reader = BufReader::new(stdout).lines();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
 
         loop {
             if std::time::Instant::now() >= deadline {
+                timed_out = true;
                 break; // overall timeout
             }
 
@@ -122,18 +124,25 @@ pub async fn spawn_watcher(
     }
 
     // Wait for the process to fully exit (collect exit code)
+    // 如果超时了（timed_out=true），先 kill child 再 wait
     smap.lock().await.remove(&pid);
     let elapsed = started.elapsed().as_secs();
-    let exit_status = child.wait().await;
+    let exit_status = if timed_out {
+        let _ = child.kill().await;
+        child.wait().await
+    } else {
+        child.wait().await
+    };
     let (exit_code, event_type) = match exit_status {
-        Ok(status) => (
-            status.code(),
-            if status.success() {
-                "process_completed"
+        Ok(status) => {
+            if timed_out {
+                (None, "process_timeout")
+            } else if status.success() {
+                (status.code(), "process_completed")
             } else {
-                "process_completed"
-            },
-        ),
+                (status.code(), "process_completed")
+            }
+        }
         Err(_) => (None, "process_error"),
     };
     let stdout_stderr = full_output.clone();
@@ -177,9 +186,13 @@ pub async fn spawn_watcher(
         // - Some(0) → "0"
         // - Some(N) → "N"
         // 之前用 {:?} 直接 debug，会显示成 "None" / "Some(0)"，对前端不友好。
-        let exit_code_str = match exit_code {
-            None => "unknown".to_string(),
-            Some(code) => code.to_string(),
+        let exit_code_str = if timed_out {
+            "timeout".to_string()
+        } else {
+            match exit_code {
+                None => "unknown".to_string(),
+                Some(code) => code.to_string(),
+            }
         };
         // 格式精简：bid/exit/elapsed 放 XML 属性，content 只放进程输出（不重复 command）。
         // LLM 调 background=true 时已经知道命令内容，不需要在 result 里重复。

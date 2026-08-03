@@ -141,6 +141,7 @@ impl Tool for BashRunTool {
                 "timeout": {"type": "number", "description": "Timeout in seconds for foreground execution", "default": 30},
                 "background": {"type": "boolean", "description": "If true, run in background and return immediately with a process bid", "default": false},
                 "timeoutBackground": {"type": "boolean", "description": "If true, start foreground but auto-move to background on timeout", "default": false},
+                "bgTimeout": {"type": "number", "description": "Background timeout in seconds. Only with background=true. 0=no timeout (run until natural exit). >0=kill process after N seconds and report exit=timeout. Default: 0", "default": 0},
                 "deliverAs": {
                     "type": "string",
                     "enum": ["steer", "followUp", "nextTurn"],
@@ -187,6 +188,11 @@ impl Tool for BashRunTool {
         // 解析 deliverAs：调用方控制 background 完成通知的投递时机。
         // 仅在 background=true 或 timeoutBackground=true 时生效。
         // 前台同步执行（background=false）不发 follow_up，deliverAs 无意义。
+        // bgTimeout: 后台进程超时秒数。0=无限（默认），>0=N 秒后杀进程报 exit=timeout。
+        let bg_timeout = args
+            .get("bgTimeout")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         let deliver_as: DeliverAs = args
             .get("deliverAs")
             .and_then(|v| v.as_str())
@@ -291,11 +297,13 @@ impl Tool for BashRunTool {
                 description.clone(),
                 child,
                 stdin_rx,
-                // ★ background=true 时不应该有 timeout（让进程跑到自然结束）。
-                // 之前传 timeout 导致 sleep 35 在 30s 时被 spawn_watcher 提前 break，
-                // 后续的 echo 输出读不到 + 进程状态被错误标记为 completed。
+                // ★ background=true 时的 timeout 策略：
+                // - bgTimeout=0（默认）：用 86400（实质无限，让进程跑到自然结束）
+                // - bgTimeout>0：用 bgTimeout（N 秒后 spawn_watcher 超时 break，进程被杀）
                 // timeoutBackground 路径保留 timeout（用于触发"超时切后台"语义）。
-                if background { 86400 } else { timeout },
+                if background {
+                    if bg_timeout > 0 { bg_timeout } else { 86400 }
+                } else { timeout },
                 self.storage.cwd.clone(),
                 self.storage.session_id.clone(),
                 deliver_as,
