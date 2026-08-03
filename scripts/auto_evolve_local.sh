@@ -21,7 +21,8 @@
 #   ION_TIMEOUT (默认 1800) — agent 单任务超时秒数
 #   ION_SKIP_MERGE (默认 0) — 设 1 只跑不 merge（验证模式）
 
-set -uo pipefail
+set -o pipefail
+# 注意：不用 set -u，因为 task_prompt 字符串插值 + 多个局部变量在 set -u 下会误报 unbound
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
@@ -75,7 +76,11 @@ EOF
 list_tasks() {
     blue "可用任务（${#TASKS[@]} 个）:"
     for task in "${TASKS[@]}"; do
-        IFS='|' read -r id file method _ _ commit <<< "$task"
+        local id file method commit
+        id=$(echo "$task"     | cut -d'|' -f1)
+        file=$(echo "$task"   | cut -d'|' -f2)
+        method=$(echo "$task" | cut -d'|' -f3)
+        commit=$(echo "$task" | cut -d'|' -f6)
         echo "  $id  →  $file"
         echo "       方法: ${method:0:80}..."
         echo "       commit: $commit"
@@ -104,7 +109,14 @@ check_prereqs() {
 # ── 跑单个任务 ──
 run_task() {
     local task_str="$1"
-    IFS='|' read -r task_id target_file method_spec test_spec test_name commit_msg <<< "$task_str"
+    # 用 cut 解析（IFS='|' read 在 here-string + set -u 下不稳）
+    local task_id target_file method_spec test_spec test_name commit_msg
+    task_id=$(echo "$task_str"      | cut -d'|' -f1)
+    target_file=$(echo "$task_str"  | cut -d'|' -f2)
+    method_spec=$(echo "$task_str"  | cut -d'|' -f3)
+    test_spec=$(echo "$task_str"    | cut -d'|' -f4)
+    test_name=$(echo "$task_str"    | cut -d'|' -f5)
+    commit_msg=$(echo "$task_str"   | cut -d'|' -f6)
 
     green "════════════════════════════════════════════════════════════"
     green "  任务 $task_id: $commit_msg"
@@ -137,33 +149,61 @@ run_task() {
     # Step 2: 在 worktree 跑 agent
     blue "▶ Step 2: 跑 ion agent (cwd=$wt_dir, model=$ION_MODEL, profile=$ION_SECURITY_PROFILE)"
     local agent_log="$REPORT_DIR/${task_id}_agent.log"
-    local task_prompt="实现任务 $task_id 的代码改动。
+    # prompt 写到临时文件，用 @file 引用（避免命令行 UTF-8 / 长度问题）
+    # ★ 用 python3 写文件而非 cat heredoc：
+    #   bash heredoc 在处理含特殊字节的内容（如非 ASCII 字符、NEL 等）时可能丢字节，
+    #   导致文件 invalid UTF-8 → ion ReadTool 报错 "stream did not contain valid UTF-8"。
+    #   python3 write + 显式 encoding='utf-8' 保证文件始终是合法 UTF-8。
+    # ★ 写完后立即用 python3 再校验一遍，invalid 则 abort（防御性）。
+    local prompt_file="$REPORT_DIR/${task_id}_prompt.txt"
+    python3 -c "
+import sys
+prompt = '''Implement task $task_id code change.
 
-【目标文件】$target_file
+[Target file] $target_file
 
-【方法实现要求】
+[Method spec]
 $method_spec
 
-【测试要求】
+[Test spec]
 $test_spec
 
-【执行步骤（必须按顺序）】
-1. 用 read 工具读 $target_file，理解现有代码结构
-2. 用 edit 工具加方法实现
-3. 用 edit 工具加单元测试（#[test] fn $test_name）
-4. 用 bash 工具跑：cargo test --lib $test_name 2>&1
-   - 如果失败，看错误，修代码再跑，最多重试 3 次
-5. 全部通过后，用 bash 工具跑：
-   git add $target_file && git commit -m '$commit_msg'
+[Steps (in order)]
+1. Use the read tool to read $target_file and understand existing code
+2. Use the edit tool to add the method implementation
+3. Use the edit tool to add a unit test (#[test] fn $test_name)
+4. Use the bash tool to run: cargo test --lib $test_name 2>&1
+   - If it fails, read the error, fix the code, retry up to 3 times
+5. After all tests pass, use the bash tool to run:
+   git add $target_file && git commit -m \"$commit_msg\"
 
-完成后回复 DONE。"
+When done, reply with DONE.
+'''
+with open('$prompt_file', 'w', encoding='utf-8') as f:
+    f.write(prompt)
+# Validate UTF-8 (defense in depth)
+with open('$prompt_file', 'rb') as f:
+    data = f.read()
+try:
+    data.decode('utf-8')
+except UnicodeDecodeError as e:
+    print(f'ERROR: prompt file is not valid UTF-8 after write: {e}', file=sys.stderr)
+    sys.exit(1)
+"
+    if [ $? -ne 0 ]; then
+        red "  ✗ prompt 文件 UTF-8 校验失败，跳过此任务"
+        git worktree remove --force "$wt_dir" 2>/dev/null
+        git branch -D "$branch" 2>/dev/null
+        write_report "$task_id" "FAILED" "prompt file UTF-8 invalid" 0 "" ""
+        return 1
+    fi
 
     (
         cd "$wt_dir"
         ION_SECURITY_PROFILE="$ION_SECURITY_PROFILE" \
         timeout "$ION_TIMEOUT" \
         "$ION_BIN" --agent developer --model "$ION_MODEL" --provider "$ION_PROVIDER" \
-            "$task_prompt" 2>&1 | tee "$agent_log"
+            "@$prompt_file" 2>&1 | tee "$agent_log"
     )
     local agent_rc=${PIPESTATUS[0]}
     echo ""
