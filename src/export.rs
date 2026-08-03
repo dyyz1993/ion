@@ -796,6 +796,26 @@ fn export_session_internal(
     let js_models_fixed = r#"(globalStats.models.size > 0 ? [...globalStats.models].join(', ') : (header?.model ? (header?.provider ? header.provider + '/' + header.model : header.model) : 'unknown'))"#;
     js = js.replace(js_models_original, js_models_fixed);
 
+    // ION 扩展：formatExpandableOutput 改成"头 N 行 + 尾 N 行（中间压缩）"。
+    // pi 原版只显示头 N 行 + 展开按钮看全部。用户反馈：尾部内容往往更重要
+    // （错误信息、最终结果都在末尾），不应该折叠尾部。
+    // 新格式：头 maxLines 行 → ...[N lines collapsed]... → 尾 maxLines 行。
+    let expandable_old = r#"const displayLines = lines.slice(0, maxLines);
+        const remaining = lines.length - maxLines;"#;
+    let expandable_new = r#"const headCount = maxLines;
+        const tailCount = Math.min(maxLines, Math.floor(lines.length / 2));
+        const displayLines = lines.slice(0, headCount);
+        const tailLines = lines.length > headCount + tailCount ? lines.slice(-tailCount) : [];
+        const remaining = lines.length - headCount - tailLines.length;"#;
+    js = js.replace(expandable_old, expandable_new);
+
+    // 在 expandable 输出里追加 tailLines
+    let tail_inject_old = r#"<div class="expand-hint">... (${remaining} more lines)</div>"#;
+    let tail_inject_new = r#"<div class="expand-hint">... (${remaining} lines collapsed, click to expand)</div></div>
+              <div class="output-tail"><pre>${tailLines.length > 0 ? escapeHtml(tailLines.join('\n')) : ''}</pre></div>
+              <div style="display:none">"#;
+    js = js.replace(tail_inject_old, tail_inject_new);
+
     // Replace placeholders
     html = html.replace("{{CSS}}", &css);
     html = html.replace("{{SESSION_DATA}}", &session_data_b64);
@@ -869,6 +889,27 @@ fn export_session_internal(
       padding: 12px 16px !important;
       border-radius: 4px !important;
       margin-bottom: 8px !important;
+    }
+    /* ION: 每个 toolCall 独立一行 + 间距 + 背景色（对标 toolResult） */
+    .assistant-message .tool-execution {
+      display: block !important;
+      margin-bottom: 8px !important;
+      padding: 8px 12px !important;
+      border-radius: 4px !important;
+      border-left: 3px solid #f59e0b !important;
+      background: #fffbeb !important;
+    }
+    .assistant-message .tool-execution.error {
+      border-left-color: #dc2626 !important;
+      background: #fef2f2 !important;
+    }
+    .assistant-message .tool-execution.success {
+      border-left-color: #10b981 !important;
+      background: #f0fdf4 !important;
+    }
+    /* ION: 输出折叠——头 N 行 + 尾 N 行（中间压缩，不是只折叠尾部） */
+    .expandable-output .output-tail {
+      display: block !important;
     }
     "#;
     if let Some(pos) = html.rfind("</style>") {
