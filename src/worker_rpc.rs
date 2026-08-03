@@ -3666,6 +3666,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 for msg in msgs {
                     agent.push_message(msg);
                 }
+                // 各 queue 当前长度（用于确认 Steer/NextTurn 消息也按 mode 分发到位）。
+                // 注意：drain_follow_up_queue 只取 follow_up_queue 写盘。
+                // Steer 消息入 steering_queue 由 outer_loop 处理；NextTurn 入 next_turn_queue 由 worker_rpc 在 agent.run 返回后处理。
+                let (steering_len, followup_len, next_turn_len) = agent.queue_lengths();
                 output_response(
                     &id,
                     "drain_follow_ups",
@@ -3673,6 +3677,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         "drained": drained_count,
                         "written": written.len(),
                         "messages": written,
+                        "queue_lengths": {
+                            "steering": steering_len,
+                            "followUp": followup_len,
+                            "nextTurn": next_turn_len,
+                        },
                     }),
                 )
             }

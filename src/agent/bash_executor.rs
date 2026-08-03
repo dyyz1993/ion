@@ -35,6 +35,7 @@ pub async fn spawn_watcher(
     timeout: u64,
     cwd: String,
     session_id: String,
+    deliver_as: DeliverAs,
 ) {
     let started = std::time::Instant::now();
     let log_dir = std::path::Path::new("/tmp").join("ion-bash");
@@ -200,6 +201,6 @@ pub async fn spawn_watcher(
             details: None,
             timestamp: now_ms(),
         });
-        let _ = tx.send((msg, DeliverAs::FollowUp));
+        let _ = tx.send((msg, deliver_as));
     }
 }

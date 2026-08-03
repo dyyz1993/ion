@@ -423,6 +423,15 @@ impl Agent {
     pub fn next_turn_queue_len(&self) -> usize {
         self.next_turn_queue.len()
     }
+
+    /// 三个 queue 的当前长度（steering / followUp / nextTurn），用于诊断 DeliverAs 分发。
+    pub fn queue_lengths(&self) -> (usize, usize, usize) {
+        (
+            self.steering_queue.len(),
+            self.follow_up_queue.len(),
+            self.next_turn_queue.len(),
+        )
+    }
     /// 把 follow_up_queue 里第 index 条消息提升到 steering_queue（对齐 pi promote）。
     /// index 从 0 计。如果越界则静默忽略。
     pub fn promote_follow_up(&mut self, index: usize) {

@@ -140,7 +140,13 @@ impl Tool for BashRunTool {
                 "description": {"type": "string", "description": "A clear, human-readable description of what this command does. ALWAYS provide this."},
                 "timeout": {"type": "number", "description": "Timeout in seconds for foreground execution", "default": 30},
                 "background": {"type": "boolean", "description": "If true, run in background and return immediately with a process bid", "default": false},
-                "timeoutBackground": {"type": "boolean", "description": "If true, start foreground but auto-move to background on timeout", "default": false}
+                "timeoutBackground": {"type": "boolean", "description": "If true, start foreground but auto-move to background on timeout", "default": false},
+                "deliverAs": {
+                    "type": "string",
+                    "enum": ["steer", "followUp", "nextTurn"],
+                    "description": "How to deliver the <bash_result> notification when this background process completes. Only effective with background=true or timeoutBackground=true. 'steer'=interrupt current LLM turn immediately (use when the result is urgent and the current task should yield); 'followUp'=inject at the start of the next turn (default, non-interrupting); 'nextTurn'=wait until agent.run completes before triggering a new run (lowest priority).",
+                    "default": "followUp"
+                }
             },
             "required": ["command", "description"]
         })
@@ -178,6 +184,19 @@ impl Tool for BashRunTool {
             .get("timeoutBackground")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        // 解析 deliverAs：调用方控制 background 完成通知的投递时机。
+        // 仅在 background=true 或 timeoutBackground=true 时生效。
+        // 前台同步执行（background=false）不发 follow_up，deliverAs 无意义。
+        let deliver_as: DeliverAs = args
+            .get("deliverAs")
+            .and_then(|v| v.as_str())
+            .and_then(|s| match s {
+                "steer" => Some(DeliverAs::Steer),
+                "followUp" => Some(DeliverAs::FollowUp),
+                "nextTurn" => Some(DeliverAs::NextTurn),
+                _ => None,
+            })
+            .unwrap_or(DeliverAs::FollowUp);
         if command.is_empty() {
             return Err(AgentError::Tool("bash: missing 'command'".into()));
         }
@@ -275,6 +294,7 @@ impl Tool for BashRunTool {
                 timeout,
                 self.storage.cwd.clone(),
                 self.storage.session_id.clone(),
+                deliver_as,
             ));
 
             if background {
