@@ -2592,5 +2592,196 @@ mod tests {
         // Cleanup test artifact.
         let _ = std::fs::remove_file(&path);
     }
+
+    // ── on_gate_check closed-loop tests (false-finish interception) ──
+
+    fn make_turn_ctx_with_assistant(plan: &str) -> crate::agent::extension::TurnContext {
+        use crate::agent::messages::{ContentBlock, Message, TextContent, UserMessage};
+        use ion_provider::types::{
+            AssistantContentBlock, AssistantMessage, MessageSource, StopReason,
+            TextContent as ProvText,
+        };
+        // One assistant message carrying the agent's "I'm done" claim.
+        // The Text block content is used for repetition detection.
+        let assistant = AssistantMessage {
+            role: "assistant".into(),
+            content: vec![AssistantContentBlock::Text(ProvText {
+                text: plan.into(),
+                text_signature: None,
+            })],
+            api: String::new(),
+            provider: String::new(),
+            model: String::new(),
+            response_model: None,
+            response_id: None,
+            usage: Default::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            timestamp: 0,
+        };
+        crate::agent::extension::TurnContext {
+            turn_index: 0,
+            messages: vec![
+                Message::User(UserMessage {
+                    role: "user".into(),
+                    content: vec![ContentBlock::Text(TextContent {
+                        text: "fix the bug".into(),
+                        text_signature: None,
+                    })],
+                    timestamp: 0,
+                    source: MessageSource::Prompt,
+                }),
+                Message::Assistant(assistant),
+            ],
+            has_tool_calls: false,
+            stop_reason: Some("Stop".into()),
+            session_id: None,
+            session_cwd: None,
+        }
+    }
+
+    /// Build an extension with a goal already set, using given checks.
+    /// Uses a unique session id so log_iteration / final_report don't clash.
+    fn make_ext_with_goal(checks: Vec<Check>) -> GoalSupervisorExtension {
+        let session = format!("test_gate_{}", now_epoch_ms());
+        let ext = GoalSupervisorExtension::new().with_session_id(session);
+        {
+            let mut guard = ext.state.lock().unwrap();
+            *guard = Some(GoalState {
+                goal_id: "g_test".into(),
+                objective: "test objective".into(),
+                checks,
+                status: GoalStatus::Running,
+                iteration_count: 0,
+                started_at: format!("epoch:{}", now_epoch_ms() / 1000),
+                total_cost_usd: 0.0,
+                last_action_plan: None,
+                recent_tools: vec![],
+                goal_plan: GoalPlan::default(),
+            });
+        }
+        ext
+    }
+
+    #[tokio::test]
+    async fn test_on_gate_check_no_goal_allows_stop() {
+        // No active goal -> Allow (no checks run).
+        let ext = GoalSupervisorExtension::new();
+        let ctx = make_turn_ctx_with_assistant("done");
+        let decision = ext.on_gate_check(&ctx).await.expect("gate check ok");
+        assert!(
+            matches!(decision, crate::agent::extension::GateDecision::Allow),
+            "no goal should Allow, got {decision:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_on_gate_check_all_pass_completes_goal() {
+        // All checks pass -> status becomes Complete + Allow stop.
+        let ext = make_ext_with_goal(vec![
+            make_check("c1", "true", PassCriteria::ExitCode { expected: 0 }),
+        ]);
+        let ctx = make_turn_ctx_with_assistant("I fixed it, all checks pass");
+        let decision = ext.on_gate_check(&ctx).await.expect("gate check ok");
+        assert!(
+            matches!(decision, crate::agent::extension::GateDecision::Allow),
+            "all-pass should Allow, got {decision:?}"
+        );
+        // Confirm status flipped to Complete.
+        let status = ext
+            .state
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| s.status.clone())
+            .unwrap_or(GoalStatus::Running);
+        assert_eq!(status, GoalStatus::Complete, "status should be Complete");
+    }
+
+    #[tokio::test]
+    async fn test_on_gate_check_failing_check_triggers_retry_with_evidence() {
+        // ★ False-finish interception: agent claims "done" but a check fails.
+        // Expected: RetryWith(message containing the failed check name + evidence).
+        let ext = make_ext_with_goal(vec![
+            // Force a failure: `false` exits 1, but we expect 0.
+            make_check("must_pass_unit_tests", "false", PassCriteria::ExitCode { expected: 0 }),
+        ]);
+        let ctx = make_turn_ctx_with_assistant("done, all tests pass");
+        let decision = ext.on_gate_check(&ctx).await.expect("gate check ok");
+
+        match decision {
+            crate::agent::extension::GateDecision::RetryWith(msg) => {
+                // Message must name the failing check.
+                assert!(
+                    msg.contains("must_pass_unit_tests"),
+                    "RetryWith msg must name failing check, got: {msg}"
+                );
+                // Message must include the goal-not-complete header.
+                assert!(
+                    msg.contains("Goal not complete") || msg.contains("failed"),
+                    "msg should explain goal isn't complete, got: {msg}"
+                );
+                // Message should include the fix instruction.
+                assert!(
+                    msg.contains("Fix"),
+                    "msg should tell agent to fix, got: {msg}"
+                );
+            }
+            other => panic!(
+                "failing check must trigger RetryWith, got {other:?}"
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_on_gate_check_max_iter_exhausts_allows_stop() {
+        // After max_iterations, the guard trips -> Exhausted + Allow stop
+        // (so we don't retry forever on a stuck goal).
+        let session = format!("test_gate_max_{}", now_epoch_ms());
+        let cfg = GoalSupervisorConfig {
+            max_iterations: 2, // trip after 2 iterations
+            ..GoalSupervisorConfig::default()
+        };
+        let ext = GoalSupervisorExtension::new()
+            .with_session_id(session)
+            .with_config(cfg);
+        {
+            let mut guard = ext.state.lock().unwrap();
+            *guard = Some(GoalState {
+                goal_id: "g_max".into(),
+                objective: "never satisfied".into(),
+                checks: vec![make_check(
+                    "never_passes",
+                    "false",
+                    PassCriteria::ExitCode { expected: 0 },
+                )],
+                status: GoalStatus::Running,
+                iteration_count: 2, // already at the cap
+                started_at: format!("epoch:{}", now_epoch_ms() / 1000),
+                total_cost_usd: 0.0,
+                last_action_plan: None,
+                recent_tools: vec![],
+                goal_plan: GoalPlan::default(),
+            });
+        }
+        let ctx = make_turn_ctx_with_assistant("done");
+        let decision = ext.on_gate_check(&ctx).await.expect("gate check ok");
+        // Guard should trip -> Allow (not RetryWith), status = Exhausted.
+        assert!(
+            matches!(decision, crate::agent::extension::GateDecision::Allow),
+            "max_iter guard should Allow (stop retrying), got {decision:?}"
+        );
+        let status = ext
+            .state
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| s.status.clone())
+            .unwrap_or(GoalStatus::Running);
+        assert_eq!(
+            status, GoalStatus::Exhausted,
+            "status should be Exhausted after guard trips"
+        );
+    }
 }
 // CI stability check 1785373861
