@@ -620,18 +620,36 @@ fn export_session_internal(
     // 给 header 注入 ionVersion 字段，让顶部信息卡片能显示生成 HTML 的 ion 版本。
     // 不修改 session.jsonl 落盘的 header（只在 export 时注入到 session_data）。
     // 生成 session name（标题）：
-    // 1. 优先从 session.jsonl entries 里找最后一条 session_name custom entry
-    //    （AutoSessionTitle 在 on_turn_end 时写入）
+    // 1. 优先从 session.jsonl entries 里找最后一条 session_name custom_message entry
+    //    （cmd_run 在 save_session 后追加，AutoSessionTitle 也可能写）
     // 2. 找不到才 fallback 到首条 user message（export 时即时生成）
     let session_name = raw_entries
         .iter()
         .rev()
         .find_map(|e| {
-            if e.get("type").and_then(|v| v.as_str()) == Some("session_name") {
-                e.get("name").and_then(|v| v.as_str()).map(|s| s.to_string())
-            } else {
-                None
+            // 兼容两种格式：
+            //   - 老: type=session_name, name=...
+            //   - 新: type=custom_message, customType=session_name, content="📝 Session title: ..."
+            let is_session_name_entry = e.get("type").and_then(|v| v.as_str())
+                == Some("session_name")
+                || (e.get("type").and_then(|v| v.as_str()) == Some("custom_message")
+                    && e.get("customType").and_then(|v| v.as_str()) == Some("session_name"));
+            if !is_session_name_entry {
+                return None;
             }
+            // 优先用 name 字段，没有就从 content 解析 "📝 Session title: XXX"
+            if let Some(name) = e.get("name").and_then(|v| v.as_str()) {
+                return Some(name.to_string());
+            }
+            if let Some(content) = e.get("content").and_then(|v| v.as_str()) {
+                // 去掉 "📝 Session title: " 前缀
+                let prefix = "📝 Session title: ";
+                if let Some(stripped) = content.strip_prefix(prefix) {
+                    return Some(stripped.to_string());
+                }
+                return Some(content.to_string());
+            }
+            None
         })
         .or_else(|| {
             // Fallback: 从首条 user message 生成
@@ -878,6 +896,25 @@ fn export_session_internal(
     );
     // 追加 JS：设置 document.title
     js += "\ntry{document.title=header?.name||header?.id||'Session';}catch(e){}";
+    // 追加 JS：给 session_name 卡片加专属 class（让 CSS 能用 .session-name-card 选）
+    // pi template 渲染所有 custom_message 都用 .hook-message，没法在 CSS 里区分
+    // session_name 跟其他 custom_message（如 turn_summary / sub_session_separator）。
+    // 这里在 DOMContentLoaded 后扫描 .hook-type 文本，给 session_name 卡片加 class。
+    js += r#"
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('.hook-message, .hook-type').forEach(function(el) {
+    var parent = el.classList.contains('hook-message') ? el : el.closest('.hook-message, .custom-message');
+    if (!parent) return;
+    var typeEl = parent.querySelector('.hook-type');
+    if (!typeEl) return;
+    var t = (typeEl.textContent || '').trim();
+    if (t === '[session_name]') {
+      parent.classList.add('session-name-card');
+      parent.setAttribute('data-custom-type', 'session_name');
+    }
+  });
+});
+"#;
 
     // ION 扩展：formatExpandableOutput 改成"头 N 行 + 尾 N 行（中间压缩）"。
     // pi 原版只显示头 N 行 + 展开按钮看全部。用户反馈：尾部内容往往更重要
@@ -986,6 +1023,21 @@ fn export_session_internal(
       padding: 12px 16px !important;
       border-radius: 4px !important;
       margin-bottom: 8px !important;
+    }
+    /* session_name 卡片：用更显著的渐变背景，区别于普通 custom_message */
+    .custom-message[data-custom-type="session_name"],
+    .custom-message.session-name-card {
+      border-left: 3px solid #0891b2 !important;
+      background: linear-gradient(90deg, #ecfeff 0%, #cffafe 100%) !important;
+      padding: 10px 16px !important;
+      border-radius: 6px !important;
+      margin: 8px 0 !important;
+      font-size: 13px !important;
+    }
+    /* tree-view 里 session_name 节点也用青色高亮 */
+    .tree-node[data-custom-type="session_name"] .tree-custom {
+      color: #0891b2 !important;
+      font-weight: 600 !important;
     }
     /* ION: 每个 toolCall 独立一行 + 间距 + 背景色（对标 toolResult） */
     .assistant-message .tool-execution {

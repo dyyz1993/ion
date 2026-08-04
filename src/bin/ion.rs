@@ -2520,10 +2520,10 @@ async fn cmd_run(
         }
     } // end for
 
-    // ★ save_session 后插入 session_name custom entry（在 header 之后、第一条消息之前）
+    // ★ save_session 后追加 session_name custom entry（按时间顺序，append 到末尾）
     // 必须在 save_session 之后，否则会被覆盖。
-    // parentId = session header id → session_name 出现在对话流顶部（标题在第一）。
-    // 同时把第一条 message 的 parentId 改为 session_name 的 id，保持链不断。
+    // parentId = 当前最后一条 entry 的 id（按时间顺序串接，不强制放顶部）。
+    // 去重：如果已有 session_name entry，更新内容 + timestamp，不再追加新的。
     {
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
@@ -2532,18 +2532,11 @@ async fn cmd_run(
 
         // 读已有 entries
         let content = std::fs::read_to_string(&path).unwrap_or_default();
-        let entries: Vec<serde_json::Value> = content
+        let mut entries: Vec<serde_json::Value> = content
             .lines()
             .filter(|l| !l.trim().is_empty())
             .filter_map(|l| serde_json::from_str(l).ok())
             .collect();
-
-        // 找 session header id（第一条 type=session）
-        let header_id = entries.iter()
-            .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("session"))
-            .and_then(|e| e.get("id").and_then(|v| v.as_str()))
-            .unwrap_or(session_id)
-            .to_string();
 
         // 从首条 user message 生成标题
         let title = agent
@@ -2578,40 +2571,42 @@ async fn cmd_run(
             })
             .unwrap_or_else(|| "Untitled".to_string());
 
-        let session_name_id = ion::session_jsonl::generate_id();
-        let session_name_entry = serde_json::json!({
-            "type": "custom_message",
-            "customType": "session_name",
-            "content": format!("📝 Session title: {title}"),
-            "display": true,
-            "id": session_name_id,
-            "parentId": header_id,
-            "timestamp": ion::session_jsonl::timestamp_iso(),
+        let new_content = format!("📝 Session title: {title}");
+        let now_iso = ion::session_jsonl::timestamp_iso();
+
+        // 去重：如果已存在 session_name entry，更新内容（不再追加新的）
+        let existing_idx = entries.iter().position(|e| {
+            e.get("type").and_then(|v| v.as_str()) == Some("custom_message")
+                && e.get("customType").and_then(|v| v.as_str()) == Some("session_name")
         });
 
-        // 找第一条 message 的位置，把它的 parentId 改为 session_name_id
-        let mut inserted = false;
-        let mut new_entries: Vec<serde_json::Value> = Vec::new();
-        for e in entries {
-            let is_first_message = !inserted
-                && e.get("type").and_then(|v| v.as_str()) == Some("message");
-            if is_first_message {
-                // 在第一条 message 之前插入 session_name
-                new_entries.push(session_name_entry.clone());
-                inserted = true;
-                // 修改这条 message 的 parentId
-                let mut modified = e.clone();
-                if let Some(obj) = modified.as_object_mut() {
-                    obj.insert("parentId".into(), serde_json::json!(session_name_id));
-                }
-                new_entries.push(modified);
-            } else {
-                new_entries.push(e);
+        if let Some(idx) = existing_idx {
+            // 更新已有 entry
+            if let Some(obj) = entries[idx].as_object_mut() {
+                obj.insert("content".into(), serde_json::json!(new_content));
+                obj.insert("timestamp".into(), serde_json::json!(now_iso));
             }
-        }
-        // 如果没有 message（空会话），直接追加
-        if !inserted {
-            new_entries.push(session_name_entry);
+            tracing::info!("[cmd_run] updated existing session_name entry: \"{title}\"");
+        } else {
+            // 找当前最后一条 entry 的 id（作为新 entry 的 parentId）
+            let last_id = entries.iter()
+                .filter_map(|e| e.get("id").and_then(|v| v.as_str()))
+                .last()
+                .unwrap_or(session_id)
+                .to_string();
+
+            let session_name_id = ion::session_jsonl::generate_id();
+            let session_name_entry = serde_json::json!({
+                "type": "custom_message",
+                "customType": "session_name",
+                "content": new_content,
+                "display": true,
+                "id": session_name_id,
+                "parentId": last_id,
+                "timestamp": now_iso,
+            });
+            entries.push(session_name_entry);
+            tracing::info!("[cmd_run] appended session_name entry: \"{title}\"");
         }
 
         // 重写文件
@@ -2622,12 +2617,11 @@ async fn cmd_run(
             .truncate(true)
             .open(&path)
         {
-            for (i, e) in new_entries.iter().enumerate() {
+            for (i, e) in entries.iter().enumerate() {
                 if i > 0 { let _ = writeln!(f); }
                 let _ = write!(f, "{}", serde_json::to_string(e).unwrap_or_default());
             }
         }
-        tracing::info!("[cmd_run] inserted session_name entry at top: \"{title}\"");
 
         ion::session_index::SessionIndex::set_name(session_id, &title);
     }
