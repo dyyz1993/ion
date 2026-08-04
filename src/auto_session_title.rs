@@ -1,17 +1,15 @@
 //! Auto Session Title — automatically generate a title for each session.
 //!
-//! After the first turn (user prompt + LLM response), generates a short
-//! title (≤100 chars) via LLM and stores it in the session metadata.
-//! This makes `ion sessions` list human-readable instead of just IDs.
-//!
-//! Aligns with pi's `extensions/auto-session-title/` (80 lines).
+//! After the first turn, generates a short title and writes it to:
+//! 1. session.jsonl as a custom entry (type=session_name) — export 读这个
+//! 2. session index — ion sessions 列表显示
+//! 3. session-titles.json — 兼容旧格式
 
 use crate::agent::error::AgentResult;
 use crate::agent::extension::{Extension, TurnContext};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct AutoSessionTitle {
-    /// True = title already generated for this session (only do once).
     done: AtomicBool,
     name: String,
 }
@@ -30,19 +28,13 @@ impl AutoSessionTitle {
         }
     }
 
-    /// Generate a title from the user's first message.
-    /// Simple heuristic: take first 80 chars of first user message, clean up.
-    /// For LLM-based generation, we'd call the model — but that's expensive
-    /// and adds latency. Heuristic is good enough for most cases.
     fn generate_title_heuristic(first_message: &str) -> String {
         let trimmed = first_message.trim();
 
-        // If it's a file path or command, use that
         if trimmed.starts_with('/') || trimmed.starts_with('!') {
             return trimmed.chars().take(80).collect();
         }
 
-        // Take first sentence or first line
         let first_line = trimmed.lines().next().unwrap_or(trimmed);
         let first_sentence = first_line
             .split(['.', '。', '!', '?'])
@@ -51,7 +43,6 @@ impl AutoSessionTitle {
 
         let title = first_sentence.trim();
 
-        // Truncate to 80 chars, add ellipsis if needed
         if title.chars().count() > 80 {
             let truncated: String = title.chars().take(77).collect();
             format!("{truncated}...")
@@ -69,18 +60,15 @@ impl Extension for AutoSessionTitle {
         &self.name
     }
 
-    /// After the first turn completes, generate and store a title.
     async fn on_turn_end(&self, ctx: &TurnContext) -> AgentResult<()> {
         if self.done.load(Ordering::SeqCst) {
             return Ok(());
         }
 
-        // Only generate after the first turn (turn_index == 0)
         if ctx.turn_index > 0 {
             return Ok(());
         }
 
-        // Find the first user message
         let first_user_msg = ctx.messages.iter().find_map(|msg| match msg {
             crate::agent::messages::Message::User(u) => {
                 let text = u
@@ -101,26 +89,32 @@ impl Extension for AutoSessionTitle {
             let title = Self::generate_title_heuristic(&text);
             tracing::info!("[auto-session-title] generated: \"{}\"", title);
 
-            // Store title in session metadata
-            // Write to ~/.ion/agent/session-titles.json (simple key-value store)
+            // ★ 写入 session.jsonl 作为 custom entry（type=session_name）
+            // 这样 export 时能从 entries 里读到最后一条 session_name。
+            if let (Some(cwd), Some(sid)) = (ctx.session_cwd.as_ref(), ctx.session_id.as_ref()) {
+                let entry = serde_json::json!({
+                    "type": "session_name",
+                    "name": title,
+                    "session_id": sid,
+                });
+                crate::session_jsonl::append_raw_entry(cwd, &entry);
+                tracing::info!("[auto-session-title] wrote session_name entry to jsonl");
+
+                // 同时更新 session index（让 ion sessions 显示标题）
+                crate::session_index::SessionIndex::set_name(sid, &title);
+            }
+
+            // 兼容：也写 session-titles.json（用 session_id 做 key，不再用 turn_N）
             let titles_path = crate::paths::root()
                 .join("agent")
                 .join("session-titles.json");
-
-            // Read existing titles
             let mut titles: std::collections::HashMap<String, String> =
                 std::fs::read_to_string(&titles_path)
                     .ok()
                     .and_then(|s| serde_json::from_str(&s).ok())
                     .unwrap_or_default();
-
-            // Use turn_index as the key — session_id is not in TurnContext,
-            // but the title file maps turn → title which is sufficient for
-            // the UI to pick up the first-turn heuristic title.
-            let session_key = format!("turn_{}", ctx.turn_index);
+            let session_key = ctx.session_id.clone().unwrap_or_else(|| format!("turn_{}", ctx.turn_index));
             titles.insert(session_key, title.clone());
-
-            // Persist
             if let Ok(json) = serde_json::to_string_pretty(&titles) {
                 let _ = std::fs::write(&titles_path, json);
             }

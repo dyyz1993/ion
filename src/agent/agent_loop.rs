@@ -1127,6 +1127,8 @@ impl Agent {
                 messages: vec![],
                 has_tool_calls: false,
                 stop_reason: None,
+                session_id: self.session_id.clone(),
+                session_cwd: self.session_cwd.clone(),
             };
             self.extensions
                 .on_turn_start(&mut (turn_ctx.clone()))
@@ -1361,6 +1363,8 @@ impl Agent {
                             messages: self.messages.clone(),
                             has_tool_calls: false,
                             stop_reason: Some(format!("{stop_reason:?}")),
+                            session_id: self.session_id.clone(),
+                            session_cwd: self.session_cwd.clone(),
                         })
                         .await?;
 
@@ -1418,6 +1422,8 @@ impl Agent {
                         messages: self.messages.clone(),
                         has_tool_calls: false,
                         stop_reason: Some(format!("{stop_reason:?}")),
+                        session_id: self.session_id.clone(),
+                        session_cwd: self.session_cwd.clone(),
                     };
                     match self.extensions.check_gates(&gate_ctx).await? {
                         super::extension::GateDecision::RetryWith(msg) => {
@@ -1740,6 +1746,8 @@ impl Agent {
                             messages: self.messages.clone(),
                             has_tool_calls: true,
                             stop_reason: Some("tool_calls".into()),
+                            session_id: self.session_id.clone(),
+                            session_cwd: self.session_cwd.clone(),
                         })
                         .await?;
 

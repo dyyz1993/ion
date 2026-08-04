@@ -15,6 +15,10 @@ pub struct TurnContext {
     pub messages: Vec<Message>,
     pub has_tool_calls: bool,
     pub stop_reason: Option<String>,
+    /// Session ID（让扩展能写 session.jsonl custom entry）。
+    pub session_id: Option<String>,
+    /// Session cwd（让扩展能定位 session.jsonl 路径）。
+    pub session_cwd: Option<String>,
 }
 
 #[derive(Clone, Debug)]

@@ -156,6 +156,8 @@ mod tests {
             messages: vec![],
             has_tool_calls: false,
             stop_reason: Some("Stop".into()),
+            session_id: None,
+            session_cwd: None,
         }
     }
 

@@ -590,27 +590,41 @@ fn export_session_internal(
     // Build SessionData JSON (matching pi's format)
     // 给 header 注入 ionVersion 字段，让顶部信息卡片能显示生成 HTML 的 ion 版本。
     // 不修改 session.jsonl 落盘的 header（只在 export 时注入到 session_data）。
-    // 从第一条 user message 生成 session name（标题）
+    // 生成 session name（标题）：
+    // 1. 优先从 session.jsonl entries 里找最后一条 session_name custom entry
+    //    （AutoSessionTitle 在 on_turn_end 时写入）
+    // 2. 找不到才 fallback 到首条 user message（export 时即时生成）
     let session_name = raw_entries
         .iter()
+        .rev()
         .find_map(|e| {
-            if e.get("type").and_then(|v| v.as_str()) != Some("message") { return None; }
-            let msg = e.get("message")?;
-            let user_msg = msg.get("User")?;
-            let content = user_msg.get("content")?;
-            let arr = content.as_array()?;
-            for block in arr {
-                if let Some(text) = block.get("Text").and_then(|t| t.get("text")).and_then(|t| t.as_str()) {
-                    let trimmed = text.trim();
-                    if !trimmed.is_empty() {
-                        let title: String = trimmed.chars().take(60)
-                            .map(|c| if c.is_whitespace() { ' ' } else { c }).collect();
-                        let title = title.trim();
-                        if !title.is_empty() { return Some(title.to_string()); }
+            if e.get("type").and_then(|v| v.as_str()) == Some("session_name") {
+                e.get("name").and_then(|v| v.as_str()).map(|s| s.to_string())
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            // Fallback: 从首条 user message 生成
+            raw_entries.iter().find_map(|e| {
+                if e.get("type").and_then(|v| v.as_str()) != Some("message") { return None; }
+                let msg = e.get("message")?;
+                let user_msg = msg.get("User")?;
+                let content = user_msg.get("content")?;
+                let arr = content.as_array()?;
+                for block in arr {
+                    if let Some(text) = block.get("Text").and_then(|t| t.get("text")).and_then(|t| t.as_str()) {
+                        let trimmed = text.trim();
+                        if !trimmed.is_empty() {
+                            let title: String = trimmed.chars().take(60)
+                                .map(|c| if c.is_whitespace() { ' ' } else { c }).collect();
+                            let title = title.trim();
+                            if !title.is_empty() { return Some(title.to_string()); }
+                        }
                     }
                 }
-            }
-            None
+                None
+            })
         })
         .unwrap_or_else(|| header.get("id").and_then(|v| v.as_str()).unwrap_or("Session").to_string());
 
