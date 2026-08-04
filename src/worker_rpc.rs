@@ -894,9 +894,14 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         ext_reg.register(Box::new(crate::tool_loop_detector::ToolLoopDetector::new()));
         tracing::info!("[extension] tool-loop-detector registered");
 
-        // Auto Session Title（首轮自动生成会话标题）
-        ext_reg.register(Box::new(crate::auto_session_title::AutoSessionTitle::new()));
-        tracing::info!("[extension] auto-session-title registered");
+        // Auto Session Title（首轮自动生成会话标题，用 fast model）
+        ext_reg.register(Box::new(
+            crate::auto_session_title::AutoSessionTitle::with_registry(
+                Arc::clone(&registry),
+                model.clone(),
+            ),
+        ));
+        tracing::info!("[extension] auto-session-title registered (with fast model)");
 
         // Learning Extension（会话结束时自动提炼记忆，先脱敏再 LLM 提炼）
         // 注入 registry + model，让 on_session_shutdown 能 spawn LLM 蒸馏 skill

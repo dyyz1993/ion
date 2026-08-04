@@ -2110,8 +2110,14 @@ async fn cmd_run(
     ext_reg.register(Box::new(ion::tool_loop_detector::ToolLoopDetector::new()));
     tracing::info!("[extension] tool-loop-detector registered");
 
-    ext_reg.register(Box::new(ion::auto_session_title::AutoSessionTitle::new()));
-    tracing::info!("[extension] auto-session-title registered");
+    let title_model = model_for_ext.clone();
+    ext_reg.register(Box::new(
+        ion::auto_session_title::AutoSessionTitle::with_registry(
+            registry_for_ext.clone(),
+            title_model,
+        ),
+    ));
+    tracing::info!("[extension] auto-session-title registered (with fast model)");
 
     let learning_ext = ion::learning_extension::LearningExtension::new()
         .with_registry_model(registry_for_ext, model_for_ext);

@@ -538,6 +538,8 @@ fn export_session_internal(
             {
                 return false;
             }
+            // 保留 session_name entry（渲染成标题变更卡片）
+            // 不需要过滤，让它通过到 entries
             true
         })
         .map(convert_entry)
@@ -1280,8 +1282,19 @@ fn convert_entry(entry: &Value) -> Value {
     match entry_type {
         "message" => convert_message_entry(entry),
         "turn_summary" => convert_turn_summary_entry(entry),
-        // tool_result 需要把 is_error/tool_call_id 转成 camelCase（有些实现单独存）
         "tool_result" => convert_tool_result_entry(entry),
+        // session_name → 转成 custom_message 让 pi 模板渲染（带 customType=session_name）
+        "session_name" => {
+            let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let mut out = entry.clone();
+            if let Some(obj) = out.as_object_mut() {
+                obj.insert("type".into(), json!("custom_message"));
+                obj.insert("customType".into(), json!("session_name"));
+                obj.insert("content".into(), json!(format!("📝 Session title: {name}")));
+                obj.insert("display".into(), json!(true));
+            }
+            out
+        }
         _ => entry.clone(),
     }
 }

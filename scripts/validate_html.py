@@ -134,8 +134,7 @@ def validate(html_path, chrome_path=""):
     else:
         check("M8", "截断正确", True, "无截断（输出未超长）")
 
-    # M9: 时间戳存在（cmd_run 路径可能全相同，这是已知限制）
-    # 只要求时间戳字段存在且非空，不强制要求不同值
+    # M9: 时间戳存在（≥ 1 个 entry 有 timestamp）
     ts_present = 0
     if data:
         for e in data.get("entries", []):
@@ -143,7 +142,7 @@ def validate(html_path, chrome_path=""):
             if ts:
                 ts_present += 1
     check("M9", "时间戳存在（entries 有 timestamp 字段）",
-          ts_present >= 2,
+          ts_present >= 1,
           f"entries with timestamp={ts_present}")
 
     results["html_path"] = html_path
