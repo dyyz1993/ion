@@ -2783,5 +2783,61 @@ mod tests {
             "status should be Exhausted after guard trips"
         );
     }
+
+    #[tokio::test]
+    async fn test_goal_set_tool_feeds_on_gate_check_via_shared_state() {
+        // ★ End-to-end wiring test (mirrors cmd_run / worker_rpc registration):
+        //
+        //   GoalSetTool writes ──> SharedGoalState (Arc<Mutex<Option<GoalState>>>)
+        //                                  ↑ read by
+        //   GoalSupervisorExtension.on_gate_check()
+        //
+        // If the Arc isn't shared between the tool and the extension, the
+        // extension would see `None` and Allow a false-finish.
+        //
+        // This test confirms the wiring: tool sets a goal with a failing check,
+        // extension's on_gate_check observes it and returns RetryWith.
+        let shared: SharedGoalState = Arc::new(Mutex::new(None));
+
+        // 1. Agent calls goal_set via the tool (with a failing check).
+        let tool = GoalSetTool::new(shared.clone());
+        let args = serde_json::json!({
+            "objective": "make cargo test pass",
+            "checks": [{
+                "name": "unit_tests",
+                "check_type": "ci",
+                "rationale": "must pass",
+                "command": "false",
+                "pass_criteria": {"kind": "exit_code", "expected": 0},
+                "must_pass": true
+            }]
+        });
+        let _ = tool.execute(args, &rt()).await.expect("goal_set ok");
+
+        // 2. Wire up the extension with the SAME shared state.
+        let ext = GoalSupervisorExtension::new()
+            .with_shared_state(shared)
+            .with_session_id(format!("test_wiring_{}", now_epoch_ms()));
+
+        // 3. Agent tries to stop, claiming done. on_gate_check must observe
+        //    the goal set by the tool and force a retry.
+        let ctx = make_turn_ctx_with_assistant("done, all tests pass");
+        let decision = ext.on_gate_check(&ctx).await.expect("gate check ok");
+
+        match decision {
+            crate::agent::extension::GateDecision::RetryWith(msg) => {
+                assert!(
+                    msg.contains("unit_tests"),
+                    "msg should reference the failing check set by tool, got: {msg}"
+                );
+            }
+            crate::agent::extension::GateDecision::Allow => {
+                panic!(
+                    "Shared state wiring broken: extension did not see goal \
+                     set by tool, allowed a false-finish"
+                );
+            }
+        }
+    }
 }
 // CI stability check 1785373861
