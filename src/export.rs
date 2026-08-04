@@ -332,9 +332,36 @@ fn export_session_internal(
         return Err("empty session file".into());
     }
 
-    // Split: first line is header, rest are entries
-    let header: Value = serde_json::from_str(lines[0])?;
-    let mut raw_entries: Vec<Value> = lines[1..]
+    // 找 session header（type=session），不在第一行也行（cmd_run 的 per-session 文件可能没有 header）
+    let (header, raw_start): (Value, usize) = {
+        let mut found_header: Option<Value> = None;
+        let mut header_line = 0;
+        for (i, line) in lines.iter().enumerate() {
+            if let Ok(val) = serde_json::from_str::<Value>(line) {
+                if val.get("type").and_then(|v| v.as_str()) == Some("session") {
+                    found_header = Some(val);
+                    header_line = i;
+                    break;
+                }
+            }
+        }
+        match found_header {
+            Some(h) => (h, header_line + 1),
+            None => {
+                // No session header found — create synthetic one from file name
+                let sid = jsonl_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown");
+                let ts = session_jsonl::timestamp_iso();
+                (
+                    json!({"type": "session", "version": 3, "id": sid, "timestamp": ts, "cwd": "."}),
+                    0, // include all lines as entries (even if first is session_name)
+                )
+            }
+        }
+    };
+    let mut raw_entries: Vec<Value> = lines[raw_start..]
         .iter()
         .filter_map(|l| serde_json::from_str(l).ok())
         .collect();
@@ -1565,6 +1592,23 @@ fn resolve_session_file(
     let legacy_path = crate::paths::sessions_dir().join(format!("{session_id}.jsonl"));
     if legacy_path.exists() {
         return Ok(legacy_path);
+    }
+
+    // Strategy 2b: Per-session files: sessions/--hash--name--/{session_id}.jsonl
+    // cmd_run 每次运行创建独立 <sid>.jsonl 文件，header 可能不含标准 session 类型
+    // 但文件名就是 session_id，直接按文件名匹配。
+    let sessions_root = crate::paths::sessions_dir();
+    if sessions_root.exists()
+        && let Ok(entries) = std::fs::read_dir(&sessions_root)
+    {
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            if !dir.is_dir() { continue; }
+            let per_session_file = dir.join(format!("{session_id}.jsonl"));
+            if per_session_file.exists() {
+                return Ok(per_session_file);
+            }
+        }
     }
 
     // Strategy 3: Treat session_id as a cwd path (encoded)

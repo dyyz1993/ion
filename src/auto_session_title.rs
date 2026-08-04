@@ -65,10 +65,6 @@ impl Extension for AutoSessionTitle {
             return Ok(());
         }
 
-        if ctx.turn_index > 0 {
-            return Ok(());
-        }
-
         let first_user_msg = ctx.messages.iter().find_map(|msg| match msg {
             crate::agent::messages::Message::User(u) => {
                 let text = u
