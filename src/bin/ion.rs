@@ -2473,6 +2473,76 @@ async fn cmd_run(
         }
     } // end for
 
+    // ★ save_session 后追加 session_name custom entry
+    // 必须在 save_session 之后，否则会被覆盖。
+    // parentId 连接到消息链末尾（leaf），这样 pi 模板的 getPath(leafId) 能找到它。
+    {
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let path = ion::session_jsonl::resolve_session_file(&cwd);
+        // 读已有 entries 找 leaf id
+        let leaf_id = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|content| {
+                let entries: Vec<serde_json::Value> = content
+                    .lines()
+                    .filter(|l| !l.trim().is_empty())
+                    .filter_map(|l| serde_json::from_str(l).ok())
+                    .collect();
+                ion::session_tree::resolve_current_leaf(&entries)
+            })
+            .unwrap_or_else(|| session_id.to_string());
+
+        // 从首条 user message 生成标题（跟 AutoSessionTitle 同逻辑）
+        let title = agent
+            .messages()
+            .iter()
+            .find_map(|msg| match msg {
+                Message::User(u) => {
+                    let text = u.content.iter()
+                        .filter_map(|b| match b {
+                            ion::agent::messages::ContentBlock::Text(t) => Some(t.text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if text.is_empty() { None } else {
+                        let t = text.trim();
+                        let first_line = t.lines().next().unwrap_or(t);
+                        let first_sentence = first_line
+                            .split(['.', '。', '!', '?'])
+                            .next()
+                            .unwrap_or(first_line)
+                            .trim();
+                        if first_sentence.is_empty() { None }
+                        else if first_sentence.chars().count() > 60 {
+                            Some(first_sentence.chars().take(57).collect::<String>() + "...")
+                        } else {
+                            Some(first_sentence.to_string())
+                        }
+                    }
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| "Untitled".to_string());
+
+        let entry = serde_json::json!({
+            "type": "custom_message",
+            "customType": "session_name",
+            "content": format!("📝 Session title: {title}"),
+            "display": true,
+            "id": ion::session_jsonl::generate_id(),
+            "parentId": leaf_id,
+            "timestamp": ion::session_jsonl::timestamp_iso(),
+        });
+        ion::session_jsonl::append_raw_entry(&cwd, &entry);
+        tracing::info!("[cmd_run] appended session_name entry: \"{title}\" (parentId={})", leaf_id);
+
+        // 更新索引
+        ion::session_index::SessionIndex::set_name(session_id, &title);
+    }
+
     // Print summary (verbose or schema mode)
     if eff.json_schema.is_some() {
         let msg_count = agent.messages().len();

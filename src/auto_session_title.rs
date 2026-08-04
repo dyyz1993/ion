@@ -116,37 +116,6 @@ impl AutoSessionTitle {
             title.to_string()
         }
     }
-
-    /// 写入 session.jsonl custom entry + 更新索引
-    fn write_title(
-        &self,
-        title: &str,
-        session_id: &str,
-        session_cwd: &str,
-    ) {
-        let entry = serde_json::json!({
-            "type": "session_name",
-            "name": title,
-            "session_id": session_id,
-            "timestamp": crate::session_jsonl::timestamp_iso(),
-        });
-        crate::session_jsonl::append_raw_entry(session_cwd, &entry);
-        tracing::info!("[auto-session-title] wrote session_name entry: \"{title}\"");
-
-        crate::session_index::SessionIndex::set_name(session_id, title);
-
-        // 兼容旧格式
-        let titles_path = crate::paths::root().join("agent").join("session-titles.json");
-        let mut titles: std::collections::HashMap<String, String> =
-            std::fs::read_to_string(&titles_path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default();
-        titles.insert(session_id.to_string(), title.to_string());
-        if let Ok(json) = serde_json::to_string_pretty(&titles) {
-            let _ = std::fs::write(&titles_path, json);
-        }
-    }
 }
 
 #[async_trait::async_trait]
@@ -190,12 +159,28 @@ impl Extension for AutoSessionTitle {
 
             tracing::info!("[auto-session-title] generated: \"{title}\"");
 
-            // 写入 session.jsonl + 索引
-            if let (Some(cwd), Some(sid)) = (ctx.session_cwd.as_ref(), ctx.session_id.as_ref()) {
-                self.write_title(&title, sid, cwd);
+            // 更新索引（让 ion sessions 显示标题）
+            if let Some(sid) = ctx.session_id.as_ref() {
+                crate::session_index::SessionIndex::set_name(sid, &title);
+            }
+
+            // 兼容 session-titles.json
+            let titles_path = crate::paths::root().join("agent").join("session-titles.json");
+            let mut titles: std::collections::HashMap<String, String> =
+                std::fs::read_to_string(&titles_path)
+                    .ok()
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or_default();
+            let session_key = ctx.session_id.clone().unwrap_or_else(|| format!("turn_{}", ctx.turn_index));
+            titles.insert(session_key, title.clone());
+            if let Ok(json) = serde_json::to_string_pretty(&titles) {
+                let _ = std::fs::write(&titles_path, json);
             }
 
             self.done.store(true, Ordering::SeqCst);
+
+            // ★ 不在这里 append_raw_entry（会被 save_session 覆盖）。
+            // 标题通过 system prompt 注入 + export 时从 user message fallback 读取。
         }
 
         Ok(())
