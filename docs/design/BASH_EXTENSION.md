@@ -6,7 +6,7 @@
 >
 > | 维度 | 旧文档（v0.1.0） | 现状（v0.4.0） |
 > |---|---|---|
-> | **LLM 工具数** | 4 个：`bash_run` / `bash_kill` / `bash_send` / `bash_background` | **2 个**：`bash`（执行，含 background/timeoutBackground 参数）+ `bash_manage`（list/inspect/kill/send 合一）。`BashKillTool`/`BashSendTool`/`BashBackgroundTool` 已删除。 |
+> | **LLM 工具数** | 4 个：`bash_run` / `bash_kill` / `bash_send` / `bash_background` | **4 个**（对标 pi）：`bash`（执行，含 background/timeoutBackground/bgTimeout/deliverAs 参数）+ `get_background_process`（查状态/输出）+ `kill_process`（杀进程）+ `write_stdin`（发 stdin）。旧 `bash_manage(action)` 已拆成 3 个独立工具。 |
 > | **参数 key** | `pid`（文档 §6/§7） | **`bid`**（src/agent/bash.rs:551/632/690，3 处 schema `required:["bid"]`）。`parse_pid()` 也只读 bid。 |
 > | **CLI 启动** | `ion manager start`（§A.2） | **`ion serve start`**（`ion manager start` 现在被 agent 解释为任务） |
 > | **Socket 路径** | `~/.ion/manager.sock` | **`~/.ion/host.sock`**（`paths::host_socket_path()`） |
@@ -672,7 +672,7 @@ kill $(cat ~/.ion/manager.pid)
 
 | 类型 | 数量 | 列表 |
 |------|------|------|
-| LLM Tools | 4 | `bash_run`, `bash_background`, `bash_kill`, `bash_send` |
+| LLM Tools | 4 | `bash`, `get_background_process`, `kill_process`, `write_stdin` |
 | Extension RPC | 5 | `list`, `kill`, `send`, `inspect`, `clean` |
 | Subscribe | 1 | 长连接事件推送（不是方法） |
 | Events | 6 | `process_started`, `process_completed`, `process_background`, `process_output`, `process_killed`, `process_error` |
