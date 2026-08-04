@@ -911,6 +911,8 @@ fn export_session_internal(
 
     // Replace placeholders
     html = html.replace("{{CSS}}", &css);
+    // 用 session name 替换 <title>（template.html 里写死的是 "Session Export"）
+    html = html.replace("<title>Session Export</title>", &format!("<title>{}</title>", session_name));
     html = html.replace("{{SESSION_DATA}}", &session_data_b64);
     html = html.replace("{{MARKED_JS}}", &marked_js);
     html = html.replace("{{HIGHLIGHT_JS}}", &highlight_js);
