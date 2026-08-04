@@ -109,17 +109,20 @@ def validate(html_path, chrome_path=""):
     check("M6", "toolCall 可见（tool-execution + tool-header）",
           tool_total >= 1, f"tool-execution={tool_exec}, tool-header={tool_header}")
 
-    # M7: bash_result 格式正确（如果有 bash_result 的话）
-    bash_result_count = dom.count("bash_result")
-    if bash_result_count > 0:
-        has_bid_attr = bool(re.search(r'bid="\w+"', dom))
-        has_exit_attr = bool(re.search(r'exit="[\w]+"', dom))
-        check("M7", "bash_result 格式正确（bid + exit 属性）",
-              has_bid_attr and has_exit_attr,
-              f"bash_result={bash_result_count}, bid_attr={has_bid_attr}, exit_attr={has_exit_attr}")
+    # M7: bash_result 格式正确（只检查实际 Custom bash_result 消息，排除 JS 源码）
+    dom_no_script = re.sub(r'<script[^>]*>[\s\S]*?</script>', '', dom)
+    # 只检查渲染后的 bash_result（在 markdown-content 或 user-message 内）
+    actual_bash_results = re.findall(r'&lt;bash_result\s+bid="(\w+)"\s+exit="([\w]+)"', dom_no_script)
+    has_old_format = bool(re.search(r'completed\s*\(pid=', dom_no_script))
+    if actual_bash_results:
+        check("M7", f"bash_result 格式正确（{len(actual_bash_results)} 条，bid+exit 属性）",
+              not has_old_format,
+              f"found={len(actual_bash_results)}, old_format={has_old_format}")
+    elif has_old_format:
+        check("M7", "bash_result 格式正确", False, "检测到旧格式 completed(pid=)")
     else:
         check("M7", "bash_result 格式正确", True,
-              "无 bash_result（该扩展不涉及 bash）")
+              "无 bash_result（该扩展不涉及 bash 后台）")
 
     # M8: 截断正确（如果有截断的话）
     truncated_count = len(re.findall(r'truncated \d+ bytes', dom))
