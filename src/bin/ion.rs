@@ -2473,28 +2473,32 @@ async fn cmd_run(
         }
     } // end for
 
-    // ★ save_session 后追加 session_name custom entry
+    // ★ save_session 后插入 session_name custom entry（在 header 之后、第一条消息之前）
     // 必须在 save_session 之后，否则会被覆盖。
-    // parentId 连接到消息链末尾（leaf），这样 pi 模板的 getPath(leafId) 能找到它。
+    // parentId = session header id → session_name 出现在对话流顶部（标题在第一）。
+    // 同时把第一条 message 的 parentId 改为 session_name 的 id，保持链不断。
     {
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
         let path = ion::session_jsonl::resolve_session_file(&cwd);
-        // 读已有 entries 找 leaf id
-        let leaf_id = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|content| {
-                let entries: Vec<serde_json::Value> = content
-                    .lines()
-                    .filter(|l| !l.trim().is_empty())
-                    .filter_map(|l| serde_json::from_str(l).ok())
-                    .collect();
-                ion::session_tree::resolve_current_leaf(&entries)
-            })
-            .unwrap_or_else(|| session_id.to_string());
 
-        // 从首条 user message 生成标题（跟 AutoSessionTitle 同逻辑）
+        // 读已有 entries
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        let entries: Vec<serde_json::Value> = content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+
+        // 找 session header id（第一条 type=session）
+        let header_id = entries.iter()
+            .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("session"))
+            .and_then(|e| e.get("id").and_then(|v| v.as_str()))
+            .unwrap_or(session_id)
+            .to_string();
+
+        // 从首条 user message 生成标题
         let title = agent
             .messages()
             .iter()
@@ -2527,19 +2531,57 @@ async fn cmd_run(
             })
             .unwrap_or_else(|| "Untitled".to_string());
 
-        let entry = serde_json::json!({
+        let session_name_id = ion::session_jsonl::generate_id();
+        let session_name_entry = serde_json::json!({
             "type": "custom_message",
             "customType": "session_name",
             "content": format!("📝 Session title: {title}"),
             "display": true,
-            "id": ion::session_jsonl::generate_id(),
-            "parentId": leaf_id,
+            "id": session_name_id,
+            "parentId": header_id,
             "timestamp": ion::session_jsonl::timestamp_iso(),
         });
-        ion::session_jsonl::append_raw_entry(&cwd, &entry);
-        tracing::info!("[cmd_run] appended session_name entry: \"{title}\" (parentId={})", leaf_id);
 
-        // 更新索引
+        // 找第一条 message 的位置，把它的 parentId 改为 session_name_id
+        let mut inserted = false;
+        let mut new_entries: Vec<serde_json::Value> = Vec::new();
+        for e in entries {
+            let is_first_message = !inserted
+                && e.get("type").and_then(|v| v.as_str()) == Some("message");
+            if is_first_message {
+                // 在第一条 message 之前插入 session_name
+                new_entries.push(session_name_entry.clone());
+                inserted = true;
+                // 修改这条 message 的 parentId
+                let mut modified = e.clone();
+                if let Some(obj) = modified.as_object_mut() {
+                    obj.insert("parentId".into(), serde_json::json!(session_name_id));
+                }
+                new_entries.push(modified);
+            } else {
+                new_entries.push(e);
+            }
+        }
+        // 如果没有 message（空会话），直接追加
+        if !inserted {
+            new_entries.push(session_name_entry);
+        }
+
+        // 重写文件
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)
+        {
+            for (i, e) in new_entries.iter().enumerate() {
+                if i > 0 { let _ = writeln!(f); }
+                let _ = write!(f, "{}", serde_json::to_string(e).unwrap_or_default());
+            }
+        }
+        tracing::info!("[cmd_run] inserted session_name entry at top: \"{title}\"");
+
         ion::session_index::SessionIndex::set_name(session_id, &title);
     }
 
@@ -6478,7 +6520,6 @@ async fn launch_dashboard() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::error::ErrorKind;
 
     // ── -p / --print ──
     #[test]
@@ -6822,6 +6863,9 @@ mod tests {
                     token_output: 0,
                     token_cache_read: 0,
                     token_cache_write: 0,
+                    user_prompt_count: 0,
+                    llm_request_count: 0,
+                    total_duration_ms: 0,
                     compress_count: 0,
                     message_count: 0,
                     turn_count: 0,
@@ -6833,6 +6877,11 @@ mod tests {
                     last_entry_id: None,
                     parent_session: None,
                     parent_type: None,
+                    initial_cwd: None,
+                    last_cwd: None,
+                    extra_cwds: Vec::new(),
+                    tier_models: None,
+                    security_profile: None,
                 },
             );
         }
