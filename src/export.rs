@@ -590,6 +590,30 @@ fn export_session_internal(
     // Build SessionData JSON (matching pi's format)
     // 给 header 注入 ionVersion 字段，让顶部信息卡片能显示生成 HTML 的 ion 版本。
     // 不修改 session.jsonl 落盘的 header（只在 export 时注入到 session_data）。
+    // 从第一条 user message 生成 session name（标题）
+    let session_name = raw_entries
+        .iter()
+        .find_map(|e| {
+            if e.get("type").and_then(|v| v.as_str()) != Some("message") { return None; }
+            let msg = e.get("message")?;
+            let user_msg = msg.get("User")?;
+            let content = user_msg.get("content")?;
+            let arr = content.as_array()?;
+            for block in arr {
+                if let Some(text) = block.get("Text").and_then(|t| t.get("text")).and_then(|t| t.as_str()) {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        let title: String = trimmed.chars().take(60)
+                            .map(|c| if c.is_whitespace() { ' ' } else { c }).collect();
+                        let title = title.trim();
+                        if !title.is_empty() { return Some(title.to_string()); }
+                    }
+                }
+            }
+            None
+        })
+        .unwrap_or_else(|| header.get("id").and_then(|v| v.as_str()).unwrap_or("Session").to_string());
+
     let mut header_for_export = header.clone();
     if let Some(obj) = header_for_export.as_object_mut() {
         let ion_full_version = format!(
@@ -602,6 +626,8 @@ fn export_session_internal(
                 "ionVersion".to_string(),
                 json!(ion_full_version),
             );
+        // 注入 session name（从第一条 user message 提取）
+        obj.insert("name".to_string(), json!(session_name));
     }
     let mut session_data = json!({
         "header": header_for_export,
@@ -801,6 +827,14 @@ fn export_session_internal(
     let js_models_original = r#"globalStats.models.join(', ') || 'unknown'"#;
     let js_models_fixed = r#"(globalStats.models.size > 0 ? [...globalStats.models].join(', ') : (header?.model ? (header?.provider ? header.provider + '/' + header.model : header.model) : 'unknown'))"#;
     js = js.replace(js_models_original, js_models_fixed);
+
+    // ION: h1 和 title 用 session name（header.name）
+    js = js.replace(
+        "Session: ${escapeHtml(header?.id || 'unknown')}",
+        "${escapeHtml(header?.name || header?.id || 'Session')}"
+    );
+    // 追加 JS：设置 document.title
+    js += "\ntry{document.title=header?.name||header?.id||'Session';}catch(e){}";
 
     // ION 扩展：formatExpandableOutput 改成"头 N 行 + 尾 N 行（中间压缩）"。
     // pi 原版只显示头 N 行 + 展开按钮看全部。用户反馈：尾部内容往往更重要
