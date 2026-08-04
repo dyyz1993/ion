@@ -1033,7 +1033,10 @@ pub fn default_ci_checks() -> Vec<Check> {
             name: "cargo_build".into(),
             check_type: CheckType::Ci,
             rationale: "Code must compile".into(),
-            command: "cargo build --lib 2>&1 | tail -1".into(),
+            // pipefail so the pipeline exits with cargo's status, not tail's.
+            // Without this, `cargo build ... | tail -1` always returns 0
+            // (tail's exit code) even when cargo fails — silently passing checks.
+            command: "set -o pipefail; cargo build --lib 2>&1 | tail -5".into(),
             pass_criteria: PassCriteria::ExitCode { expected: 0 },
             must_pass: true,
         },
@@ -1041,7 +1044,7 @@ pub fn default_ci_checks() -> Vec<Check> {
             name: "cargo_test".into(),
             check_type: CheckType::Ci,
             rationale: "Tests must pass".into(),
-            command: "cargo test --lib 2>&1 | tail -1".into(),
+            command: "set -o pipefail; cargo test --lib 2>&1 | tail -10".into(),
             pass_criteria: PassCriteria::ExitCode { expected: 0 },
             must_pass: true,
         },
@@ -1266,6 +1269,11 @@ impl Extension for GoalSupervisorExtension {
             return Ok(GateDecision::Allow);
         }
 
+        tracing::info!(
+            "[goal-supervisor] on_gate_check (turn={}, msgs={}): running checks",
+            ctx.turn_index, ctx.messages.len()
+        );
+
         // 1. Run all checks (deterministic execution + evidence collection).
         let results = self.run_all_checks().await.map_err(AgentError::Tool)?;
 
@@ -1277,6 +1285,7 @@ impl Extension for GoalSupervisorExtension {
         if all_pass {
             self.set_status(GoalStatus::Complete);
             let _ = self.write_final_report("complete", "all_checks_passed");
+            tracing::info!("[goal-supervisor] all checks passed → Allow (goal complete)");
             return Ok(GateDecision::Allow);
         }
 
@@ -1305,6 +1314,7 @@ impl Extension for GoalSupervisorExtension {
         if let Some(reason) = self.check_guards(current_plan.as_deref()) {
             self.set_status(GoalStatus::Exhausted);
             let _ = self.write_final_report("exhausted", &reason);
+            tracing::info!("[goal-supervisor] guard tripped ({reason}) → Allow (Exhausted)");
             // Guard tripped -> stop the loop (don't retry forever).
             return Ok(GateDecision::Allow);
         }
@@ -1365,6 +1375,11 @@ impl Extension for GoalSupervisorExtension {
         }
 
         self.set_status(GoalStatus::Running);
+        tracing::info!(
+            "[goal-supervisor] {} check(s) failed → RetryWith ({} bytes)",
+            failed.len(),
+            msg.len()
+        );
         Ok(GateDecision::RetryWith(msg))
     }
 }
