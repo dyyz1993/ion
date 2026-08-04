@@ -569,7 +569,7 @@ impl GoalSupervisorExtension {
                     });
                     let all_bash_read = recent.iter().all(|(name, _)| {
                         name == "bash"
-                            || name == "bash_run"
+                            
                             || name == "read"
                             || name == "read_file"
                     });
@@ -1202,7 +1202,7 @@ impl Extension for GoalSupervisorExtension {
     ) -> AgentResult<()> {
         // Extract a summary of what the tool touched.
         let summary = match ctx.tool_name.as_str() {
-            "bash" | "bash_run" => ctx
+            "bash" => ctx
                 .args
                 .get("command")
                 .and_then(|v| v.as_str())

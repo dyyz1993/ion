@@ -130,7 +130,7 @@ impl Tool for BashRunTool {
         "bash"
     }
     fn description(&self) -> &str {
-        "Execute a shell command and return its output. For long-running commands (dev servers, builds, watches), set background=true to return immediately with a process bid. To manage background processes (list/inspect/kill/send), use the bash_manage tool."
+        "Execute a shell command and return its output. For long-running commands (dev servers, builds, watches), set background=true to return immediately with a process bid. To manage background processes, use get_background_process (view status/output), kill_process (terminate), or write_stdin (send input)."
     }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
@@ -774,7 +774,7 @@ fn parse_pid(params: &serde_json::Value) -> String {
 impl Extension for BashExtension {
     /// Self-describing tool registration. Registers two tools:
     /// 1. `bash` — run commands (sync + background via parameter)
-    /// 2. `bash_manage` — manage background processes (list/inspect/kill/send)
+    /// 2. `get_background_process` / `kill_process` / `write_stdin` — manage background processes
     /// Management is a separate tool because extension_rpc is CLI-only and
     /// not available as an LLM tool inside worker sessions.
     fn register_tools(&self, registry: &mut crate::agent::tool::ToolRegistry) {
@@ -1087,11 +1087,10 @@ pub fn bash_tool_guide() -> String {
   commands (dev servers, builds, watches) — returns immediately with a process `bid`.\n\
   Foreground timeout: {bash_timeout}s (override via `ION_BASH_TIMEOUT`), or set `timeout` param.\n\
   Use `timeoutBackground=true` to auto-move to background on timeout.\n\
-- Background process management via the `bash_manage` tool:\n\
-  - `bash_manage(action=\"list\")`: list all background processes\n\
-  - `bash_manage(action=\"inspect\", bid=...)`: view output (tail/offset/limit)\n\
-  - `bash_manage(action=\"kill\", bid=...)`: kill a process\n\
-  - `bash_manage(action=\"send\", bid=..., input=...)`: write to stdin\n\
+- Background process management via 3 dedicated tools:\n\
+  - `get_background_process(bid=...)`: view status + output (head/tail truncation). Omit bid to list all.\n\
+  - `kill_process(bid=...)`: kill a background process\n\
+  - `write_stdin(bid=..., input=...)`: write text to process stdin\n\
 - Commands run in cwd; use absolute paths for files outside cwd.\n"
     )
 }

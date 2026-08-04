@@ -1,0 +1,154 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 900" width="600" height="900">
+  <defs>
+    <linearGradient id="skyGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#5a5048"/>
+      <stop offset="25%" stop-color="#7a6e58"/>
+      <stop offset="55%" stop-color="#9a8a64"/>
+      <stop offset="100%" stop-color="#b89858"/>
+    </linearGradient>
+    <linearGradient id="robeGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#3e2c1e"/>
+      <stop offset="40%" stop-color="#2a1c12"/>
+      <stop offset="100%" stop-color="#140d08"/>
+    </linearGradient>
+    <radialGradient id="faceGrad" cx="0.5" cy="0.42" r="0.52">
+      <stop offset="0%"  stop-color="#f2d8b2"/>
+      <stop offset="55%" stop-color="#dcba8c"/>
+      <stop offset="100%" stop-color="#a47858"/>
+    </radialGradient>
+    <radialGradient id="vignette" cx="0.5" cy="0.48" r="0.66">
+      <stop offset="0%"  stop-color="#000" stop-opacity="0"/>
+      <stop offset="70%" stop-color="#000" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#000" stop-opacity="0.38"/>
+    </radialGradient>
+    <linearGradient id="veilGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#6a5848" stop-opacity="0.30"/>
+      <stop offset="100%" stop-color="#3a2c20" stop-opacity="0.26"/>
+    </linearGradient>
+    <filter id="sfumatoBlur" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="1.4"/>
+    </filter>
+    <filter id="hazeBlur" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="3.2"/>
+    </filter>
+    <filter id="smileBlur" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="1.1"/>
+    </filter>
+  </defs>
+
+  <!-- BACKGROUND -->
+  <rect width="600" height="900" fill="url(#skyGrad)"/>
+  <path d="M 0 500 Q 80 460 160 488 Q 240 512 320 478 Q 400 448 480 482 Q 540 502 600 488 L 600 560 L 0 560 Z" fill="#6a6c60" opacity="0.5" filter="url(#hazeBlur)"/>
+  <path d="M 0 558 Q 100 518 200 548 Q 300 578 380 538 Q 450 508 600 546 L 600 900 L 0 900 Z" fill="#566048" opacity="0.6" filter="url(#sfumatoBlur)"/>
+  <path d="M 0 600 Q 90 540 160 575 Q 210 600 185 625 Q 165 645 145 620" fill="none" stroke="#b8a878" stroke-width="13" stroke-opacity="0.6" stroke-linecap="round" filter="url(#sfumatoBlur)"/>
+  <path d="M 348 562 Q 410 520 472 565" fill="none" stroke="#8a7a5a" stroke-width="11" stroke-opacity="0.7" filter="url(#sfumatoBlur)"/>
+  <path d="M 372 566 Q 410 542 448 567" fill="none" stroke="#5a4e38" stroke-width="5" stroke-opacity="0.6"/>
+  <path d="M 348 572 Q 410 576 472 572" fill="none" stroke="#8aa0a0" stroke-width="7" stroke-opacity="0.55" filter="url(#sfumatoBlur)"/>
+  <path d="M 0 640 Q 80 610 170 628 Q 260 648 350 618 Q 440 592 600 622 L 600 900 L 0 900 Z" fill="#3e4e30" opacity="0.66" filter="url(#sfumatoBlur)"/>
+  <path d="M 0 700 Q 120 672 250 692 Q 370 710 500 678 Q 560 662 600 682 L 600 900 L 0 900 Z" fill="#2c3a22" opacity="0.7" filter="url(#sfumatoBlur)"/>
+  <rect x="62"  y="610" width="18" height="160" fill="#241810" opacity="0.8"/>
+  <rect x="520" y="610" width="18" height="160" fill="#241810" opacity="0.8"/>
+  <path d="M 60 770 L 540 770" stroke="#241810" stroke-width="4" opacity="0.55"/>
+
+  <!-- FIGURE -->
+  <path d="M 80 900 Q 90 700 175 620 Q 210 580 300 575 Q 390 580 425 620 Q 510 700 520 900 Z" fill="url(#robeGrad)"/>
+  <path d="M 175 622 Q 150 660 130 760 Q 145 700 175 660 Z" fill="#4e3a2a" opacity="0.6"/>
+  <path d="M 425 622 Q 450 660 470 760 Q 455 700 425 660 Z" fill="#4e3a2a" opacity="0.6"/>
+  <ellipse cx="300" cy="545" rx="48" ry="55" fill="url(#faceGrad)"/>
+  <path d="M 268 560 Q 300 585 332 560 Q 320 578 300 582 Q 280 578 268 560 Z" fill="#a07858" opacity="0.4"/>
+  <ellipse cx="300" cy="430" rx="95" ry="112" fill="url(#faceGrad)"/>
+
+  <!-- HAIR -->
+  <path d="M 205 420 Q 195 330 250 295 Q 300 270 350 295 Q 405 330 395 420 Q 398 380 390 350 Q 370 300 300 285 Q 230 300 210 350 Q 202 380 205 420 Z" fill="#1a1208"/>
+  <path d="M 210 360 Q 218 330 235 310" fill="none" stroke="#3a2810" stroke-width="2" opacity="0.5"/>
+  <path d="M 206 390 Q 216 350 232 325" fill="none" stroke="#3a2810" stroke-width="2" opacity="0.5"/>
+  <path d="M 390 360 Q 382 330 365 310" fill="none" stroke="#3a2810" stroke-width="2" opacity="0.5"/>
+  <path d="M 394 390 Q 384 350 368 325" fill="none" stroke="#3a2810" stroke-width="2" opacity="0.5"/>
+
+  <!-- VEIL -->
+  <path d="M 212 370 Q 205 320 245 292 Q 300 272 355 292 Q 395 320 388 370 Q 380 350 360 335 Q 330 320 300 318 Q 270 320 240 335 Q 220 350 212 370 Z" fill="url(#veilGrad)"/>
+  <path d="M 205 360 Q 192 400 188 470 Q 186 540 210 580 Q 222 595 248 600 Q 228 560 224 500 Q 214 430 220 380 Z" fill="url(#veilGrad)"/>
+  <path d="M 395 360 Q 408 400 412 470 Q 414 540 390 580 Q 378 595 352 600 Q 372 560 376 500 Q 386 430 380 380 Z" fill="url(#veilGrad)"/>
+  <path d="M 215 305 Q 260 282 300 280 Q 340 282 385 305" fill="none" stroke="#8a7858" stroke-width="1.2" opacity="0.35"/>
+
+  <!-- EYEBROWS -->
+  <path d="M 248 392 Q 265 386 282 393" fill="none" stroke="#6a4a2a" stroke-width="2.5" opacity="0.3" stroke-linecap="round"/>
+  <path d="M 318 393 Q 335 386 352 392" fill="none" stroke="#6a4a2a" stroke-width="2.5" opacity="0.3" stroke-linecap="round"/>
+
+  <!-- EYES -->
+  <ellipse cx="265" cy="410" rx="22" ry="10" fill="#b89870" opacity="0.3"/>
+  <ellipse cx="265" cy="410" rx="18" ry="8" fill="#ece0c8"/>
+  <path d="M 247 406 Q 265 400 283 407" fill="none" stroke="#3a2418" stroke-width="3.2" opacity="0.5" stroke-linecap="round"/>
+  <circle cx="268" cy="410" r="7.5" fill="#6a4828"/>
+  <circle cx="268" cy="410" r="5.5" fill="#3a2410"/>
+  <circle cx="268" cy="410" r="3.2" fill="#0a0805"/>
+  <circle cx="270" cy="408" r="1.8" fill="#ffffff" opacity="0.95"/>
+  <circle cx="266" cy="412" r="0.9" fill="#ffffff" opacity="0.7"/>
+  <ellipse cx="335" cy="410" rx="22" ry="10" fill="#b89870" opacity="0.3"/>
+  <ellipse cx="335" cy="410" rx="18" ry="8" fill="#ece0c8"/>
+  <path d="M 317 407 Q 335 400 353 406" fill="none" stroke="#3a2418" stroke-width="3.2" opacity="0.5" stroke-linecap="round"/>
+  <circle cx="332" cy="410" r="7.5" fill="#6a4828"/>
+  <circle cx="332" cy="410" r="5.5" fill="#3a2410"/>
+  <circle cx="332" cy="410" r="3.2" fill="#0a0805"/>
+  <circle cx="334" cy="408" r="1.8" fill="#ffffff" opacity="0.95"/>
+  <circle cx="330" cy="412" r="0.9" fill="#ffffff" opacity="0.7"/>
+
+  <!-- ★ V5 CROW'S FEET — eye-corner wrinkles activated by genuine smile (Duchenne) -->
+  <path d="M 242 406 Q 236 402 231 400" fill="none" stroke="#a07850" stroke-width="1.1" opacity="0.4" stroke-linecap="round"/>
+  <path d="M 240 412 Q 233 412 228 412" fill="none" stroke="#a07850" stroke-width="1.0" opacity="0.35" stroke-linecap="round"/>
+  <path d="M 358 406 Q 364 402 369 400" fill="none" stroke="#a07850" stroke-width="1.1" opacity="0.4" stroke-linecap="round"/>
+  <path d="M 360 412 Q 367 412 372 412" fill="none" stroke="#a07850" stroke-width="1.0" opacity="0.35" stroke-linecap="round"/>
+
+  <!-- NOSE -->
+  <path d="M 296 420 Q 293 445 290 465" fill="none" stroke="#a8825a" stroke-width="4" opacity="0.35" stroke-linecap="round"/>
+  <path d="M 300 420 Q 300 445 300 463" fill="none" stroke="#f4e0bc" stroke-width="3" opacity="0.4" stroke-linecap="round"/>
+  <ellipse cx="300" cy="468" rx="9" ry="6" fill="#c8a070" opacity="0.5"/>
+  <ellipse cx="293" cy="475" rx="3" ry="2" fill="#6a4830" opacity="0.4"/>
+  <ellipse cx="307" cy="475" rx="3" ry="2" fill="#6a4830" opacity="0.4"/>
+
+  <!-- ★ V5 CHEEK BLUSH — LIFTED UPWARD (zygomatic major contraction pulls cheeks up in a real smile) -->
+  <ellipse cx="248" cy="440" rx="26" ry="20" fill="#d09060" opacity="0.26"/>
+  <ellipse cx="352" cy="440" rx="26" ry="20" fill="#d09060" opacity="0.26"/>
+
+  <!-- ★★★ V5 RADICAL SMILE SURROUND — the SMILE is in the SHADING, not just the mouth ★★★ -->
+  <!-- (A) NASOLABIAL FOLDS — diagonal shadow grooves from nose to mouth corners, deepened and clearly visible -->
+  <path d="M 280 478 Q 268 495 256 512" fill="none" stroke="#7a5230" stroke-width="4" opacity="0.42" stroke-linecap="round" filter="url(#smileBlur)"/>
+  <path d="M 320 478 Q 332 495 344 512" fill="none" stroke="#7a5230" stroke-width="4" opacity="0.42" stroke-linecap="round" filter="url(#smileBlur)"/>
+  <!-- (B) BULGED CHEEK PADS above mouth corners — a real smile puffs the cheeks outward -->
+  <ellipse cx="252" cy="496" rx="14" ry="9" fill="#e0a878" opacity="0.32" filter="url(#smileBlur)"/>
+  <ellipse cx="348" cy="496" rx="14" ry="9" fill="#e0a878" opacity="0.32" filter="url(#smileBlur)"/>
+  <!-- (C) SHADOW UNDER CHEEK PAD (defines the lifted cheek bulge from below) -->
+  <ellipse cx="250" cy="510" rx="12" ry="6" fill="#8a5832" opacity="0.30"/>
+  <ellipse cx="350" cy="510" rx="12" ry="6" fill="#8a5832" opacity="0.30"/>
+
+  <!-- MOUTH (kept fuller/warmer) -->
+  <path d="M 290 498 L 300 492 L 310 498" fill="none" stroke="#8a6038" stroke-width="1.6" opacity="0.4" stroke-linecap="round"/>
+  <!-- Mouth shape — clearly raised at BOTH corners (the smile curve) -->
+  <path d="M 256 514 Q 300 498 344 514 Q 324 526 300 525 Q 276 526 256 514 Z" fill="#c06a52" opacity="0.74"/>
+  <path d="M 266 511 Q 278 505 288 507 Q 294 505 300 507 Q 306 505 312 507 Q 322 505 334 511" fill="none" stroke="#6a2810" stroke-width="1.4" opacity="0.55" stroke-linecap="round"/>
+  <path d="M 274 518 Q 300 527 326 518 Q 312 523 300 523 Q 288 523 274 518 Z" fill="#dc8c6c" opacity="0.6"/>
+  <!-- strong corner upturns (the smile) -->
+  <path d="M 256 514 Q 262 520 270 512" fill="none" stroke="#5a2810" stroke-width="2.2" opacity="0.7" stroke-linecap="round"/>
+  <path d="M 344 514 Q 338 520 330 512" fill="none" stroke="#5a2810" stroke-width="2.2" opacity="0.7" stroke-linecap="round"/>
+  <ellipse cx="252" cy="506" rx="6" ry="3.5" fill="#9a6038" opacity="0.30"/>
+  <ellipse cx="348" cy="506" rx="6" ry="3.5" fill="#9a6038" opacity="0.30"/>
+  <ellipse cx="300" cy="528" rx="28" ry="6" fill="#8a5a38" opacity="0.3"/>
+
+  <!-- CHIN SHADOW -->
+  <ellipse cx="300" cy="536" rx="30" ry="10" fill="#8a6840" opacity="0.2"/>
+
+  <!-- HANDS -->
+  <ellipse cx="265" cy="755" rx="48" ry="28" fill="url(#faceGrad)" transform="rotate(-12 265 755)"/>
+  <ellipse cx="250" cy="748" rx="14" ry="10" fill="#d0b080" opacity="0.6"/>
+  <path d="M 235 750 Q 225 755 222 762" fill="none" stroke="#a88a60" stroke-width="6" stroke-linecap="round" opacity="0.5"/>
+  <path d="M 245 762 Q 238 768 236 775" fill="none" stroke="#a88a60" stroke-width="6" stroke-linecap="round" opacity="0.5"/>
+  <ellipse cx="315" cy="760" rx="50" ry="26" fill="url(#faceGrad)" transform="rotate(8 315 760)"/>
+  <path d="M 295 752 Q 285 758 282 765" fill="none" stroke="#b89868" stroke-width="7" stroke-linecap="round" opacity="0.55"/>
+  <path d="M 310 756 Q 302 762 300 769" fill="none" stroke="#b89868" stroke-width="7" stroke-linecap="round" opacity="0.55"/>
+  <path d="M 325 758 Q 320 765 318 772" fill="none" stroke="#b89868" stroke-width="7" stroke-linecap="round" opacity="0.55"/>
+  <path d="M 230 735 Q 260 720 300 718 Q 340 720 370 735" fill="none" stroke="#3a2c20" stroke-width="3" opacity="0.5"/>
+
+  <!-- OVERLAYS -->
+  <rect width="600" height="900" fill="url(#vignette)"/>
+  <rect width="600" height="900" fill="#8a6e38" opacity="0.09"/>
+</svg>

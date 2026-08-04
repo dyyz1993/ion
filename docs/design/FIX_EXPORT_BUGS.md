@@ -1,3 +1,5 @@
+> ⚠️ **本文档中的 bash_run / bash_manage 已过时。** 当前工具名：`bash`（执行）+ `get_background_process`（查状态）+ `kill_process`（杀进程）+ `write_stdin`（发 stdin）。详见 BASH_EXTENSION.md。
+
 # FIX: Session 导出 HTML 的 3 个 Bug（工具面板缺 skill + 消息内容不渲染）
 
 > **状态：开发中** — spec 已写好，待 developer 实现。

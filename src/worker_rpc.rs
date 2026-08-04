@@ -609,7 +609,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             }
             tracing::info!("[worker] loaded agent '{}' from config", agent_cfg.name);
             // auto-continue: wf/improver 需要（workflow 多 stage）
-            // evolver 不需要 auto_continue——它用 bash_run background + follow_up
+            // evolver 不需要 auto_continue——它用 bash background + follow_up
             if matches!(current_agent_name.as_str(), "wf" | "improver")
                 && std::env::var("ION_AUTO_CONTINUE").is_err()
             {
@@ -621,7 +621,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     current_agent_name
                 );
             }
-            // evolver: 等 bash_run 后台进程的异步 follow_up
+            // evolver: 等 bash 后台进程的异步 follow_up
             if current_agent_name == "evolver" {
                 unsafe {
                     std::env::set_var("ION_WAIT_BACKGROUND", "1");
@@ -1104,7 +1104,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         agent = agent.with_extensions(ext_reg);
 
         // Let each extension self-describe its tools (e.g. BashExtension
-        // registers bash_run/bash_kill/bash_send/bash_bg). Replaces the old
+        // registers bash/bash_kill/bash_send/bash_bg). Replaces the old
         // hand-written `agent.register_tool(...)` block below.
         agent.register_extension_tools();
         // Wire the follow_up receiver into the agent so background process
@@ -3658,8 +3658,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             }
             "call_tool" => {
                 // Directly call an LLM-registered tool by name (bypass LLM).
-                // 用于 CLI 测试工具如 bash_run/bash_kill/bash_send。
-                // --params '{"tool":"bash_run","args":{"command":"echo hi","description":"test"}}'
+                // 用于 CLI 测试工具如 bash/bash_kill/bash_send。
+                // --params '{"tool":"bash","args":{"command":"echo hi","description":"test"}}'
                 let tool_name = params
                     .get("tool")
                     .and_then(|v| v.as_str())
@@ -3688,7 +3688,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             }
             "drain_follow_ups" => {
                 // 主动 drain follow_up_rx（用于 call_tool 路径下后台进程完成通知的写入）。
-                // 典型用法：bash_run background=true → sleep N → drain_follow_ups → jsonl 里有 <bash_result>
+                // 典型用法：bash background=true → sleep N → drain_follow_ups → jsonl 里有 <bash_result>
                 // --params '{"wait_ms": 1000}'  // 可选：先 sleep 再 drain（等长任务完成）
                 let wait_ms = params
                     .get("wait_ms")

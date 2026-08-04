@@ -39,10 +39,10 @@ const LOOP_EXEMPT_TOOLS: &[&str] = &[
 ];
 
 /// Tools exempt from ERROR_ABORT (consecutive-error abort).
-/// bash/bash_run failures are common during iterative development
+/// bash failures are common during iterative development
 /// (fix compile error → re-run), so they should not trigger early abort.
 /// They are still subject to the normal ABORT_THRESHOLD (5 identical calls).
-const ERROR_ABORT_EXEMPT: &[&str] = &["bash", "bash_run"];
+const ERROR_ABORT_EXEMPT: &[&str] = &["bash"];
 
 /// Max consecutive identical tool calls before warning.
 const WARN_THRESHOLD: u32 = 3;
@@ -101,7 +101,7 @@ impl ToolLoopDetector {
                 let path = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
                 format!("{tool_name}:{path}")
             }
-            "bash" | "bash_run" => {
+            "bash" => {
                 let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
                 // Normalize: collapse echo/noop variations
                 let normalized = normalize_bash_command(cmd);
@@ -219,7 +219,7 @@ impl Extension for ToolLoopDetector {
 
     async fn on_tool_execution_end(&self, ctx: &ToolExecutionContext) -> AgentResult<()> {
         // Track error results for error-based abort.
-        // Skip bash/bash_run: iterative dev (fix error → re-run) causes legit
+        // Skip bash: iterative dev (fix error → re-run) causes legit
         // consecutive failures that should not trigger early abort.
         if ctx.is_error
             && !LOOP_EXEMPT_TOOLS.contains(&ctx.tool_name.as_str())

@@ -285,7 +285,7 @@ pub trait Extension: Send + Sync {
     }
     /// Register this extension's tools into the registry.
     /// Default: no-op. Override to expose extension-specific tools
-    /// (e.g. BashExtension registers bash_run/bash_kill/bash_send/bash_bg).
+    /// (e.g. BashExtension registers bash/get_background_process/kill_process/write_stdin).
     /// Called by worker startup AND export tool-reconstruction, so the tool
     /// panel always reflects every enabled extension (self-describing).
     fn register_tools(&self, _registry: &mut crate::agent::tool::ToolRegistry) {}

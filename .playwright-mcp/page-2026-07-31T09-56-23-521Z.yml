@@ -1,0 +1,78 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - heading "🔄 ION 扩展生命周期 · 3D Cube" [level=1] [ref=e3]
+    - generic [ref=e4]: 🖱️ 拖动 · 滚轮缩放 · ⌨️ WASD移动 · 方向键旋转 · 空格暂停 · R重置 · 1-9跳扩展
+    - generic [ref=e5]:
+      - button "自动旋转" [ref=e6] [cursor=pointer]
+      - button "重置" [ref=e7] [cursor=pointer]
+  - complementary [ref=e8]:
+    - generic [ref=e9]: 会话级
+    - generic [ref=e10] [cursor=pointer]: Bash
+    - generic [ref=e13] [cursor=pointer]:
+      - generic [ref=e15]: Memory
+      - generic [ref=e16]: ⚙
+    - generic [ref=e17] [cursor=pointer]:
+      - generic [ref=e19]: Plan
+      - generic [ref=e20]: ⚙
+    - generic [ref=e21] [cursor=pointer]:
+      - generic [ref=e23]: GoalSupervisor
+      - generic [ref=e24]: ⚙
+    - generic [ref=e25] [cursor=pointer]:
+      - generic [ref=e27]: LSP
+      - generic [ref=e28]: ⚙
+    - generic [ref=e29] [cursor=pointer]:
+      - generic [ref=e31]: Hooks
+      - generic [ref=e32]: ⚙
+    - generic [ref=e33] [cursor=pointer]: FileSnapshot
+    - generic [ref=e36] [cursor=pointer]: FileApproval
+    - generic [ref=e39] [cursor=pointer]:
+      - generic [ref=e41]: RulesEngine
+      - generic [ref=e42]: ⚙
+    - generic [ref=e43] [cursor=pointer]:
+      - generic [ref=e45]: Permission
+      - generic [ref=e46]: ⚙
+    - generic [ref=e47] [cursor=pointer]: Learning
+    - generic [ref=e50] [cursor=pointer]: ToolLoopDetector
+    - generic [ref=e53]: Host 单例
+    - generic [ref=e54] [cursor=pointer]:
+      - generic [ref=e56]: GlobalMemory
+      - generic [ref=e57]: ⚙
+    - generic [ref=e58] [cursor=pointer]:
+      - generic [ref=e60]: Monitor
+      - generic [ref=e61]: ⚙
+  - generic [ref=e62]:
+    - generic: on_session_start
+    - generic: on_singleton_init
+    - generic: on_singleton_post_init
+    - generic: on_input
+    - generic: on_system_prompt
+    - generic: on_context
+    - generic: on_model_select
+    - generic: before_tool_call
+    - generic: on_tool_execution_start
+    - generic: on_tool_execution_end
+    - generic: after_tool_call
+    - generic: on_gate_check
+    - generic: on_gate_retry
+    - generic: on_turn_end
+    - generic: on_session_shutdown
+    - generic: on_singleton_shutdown
+    - generic: 会话
+    - generic: 输入
+    - generic: 上下文
+    - generic: 工具
+    - generic: 交付
+    - generic: 结束
+  - generic [ref=e64]:
+    - generic [ref=e65]: 会话
+    - generic [ref=e67]: 输入
+    - generic [ref=e69]: 上下文
+    - generic [ref=e71]: 工具
+    - generic [ref=e73]: 交付
+    - generic [ref=e75]: 结束
+  - complementary [ref=e77]:
+    - generic [ref=e78]: 点击左侧扩展查看它在 3D Cube 中的钩子
+  - generic [ref=e79]:
+    - generic [ref=e80]: "节点: 16"
+    - generic [ref=e81]: "激活: 0"
+    - generic [ref=e82]: "FPS: 0"

@@ -1,0 +1,947 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>歌词改编工坊 · ion</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1e222b;
+    --border: #2a2f3a;
+    --text: #e6e8ee;
+    --muted: #8b93a4;
+    --accent: #7c5cff;
+    --accent-2: #4cc2ff;
+    --green: #4ade80;
+    --red: #f87171;
+    --orange: #fb923c;
+    --yellow: #fbbf24;
+    --user: #4cc2ff;
+    --assistant: #4ade80;
+    --tool: #fb923c;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.6 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden; /* body 不滚，滚动交给左右面板 */
+  }
+  header {
+    padding: 12px 20px;
+    background: linear-gradient(90deg, rgba(124,92,255,.15), rgba(76,194,255,.08));
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  header .dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--muted); box-shadow: 0 0 0 3px rgba(255,255,255,.04);
+  }
+  header .dot.live { background: var(--green); }
+  header .meta { margin-left: auto; color: var(--muted); font-size: 12px; font-family: var(--mono); }
+  header .meta a { color: var(--accent-2); text-decoration: none; }
+
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: minmax(300px, 380px) 1fr;
+    grid-template-rows: minmax(0, 1fr); /* 【滚动修复关键】约束行高 */
+    gap: 0;
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  /* ---- Left: input + history panel ---- */
+  .left {
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;          /* 左侧整体可滚 */
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .left-section {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .left-section h3 {
+    margin: 0 0 10px;
+    font-size: 12px;
+    color: var(--muted);
+    font-weight: 600;
+    letter-spacing: .5px;
+    text-transform: uppercase;
+  }
+  .field { margin-bottom: 12px; }
+  .field:last-child { margin-bottom: 0; }
+  .field label {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 6px;
+    font-weight: 500;
+  }
+  textarea, input[type=text], input[type=number], select {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 9px 11px;
+    font: inherit;
+    resize: vertical;
+    outline: none;
+    transition: border-color .15s;
+  }
+  textarea:focus, input:focus, select:focus { border-color: var(--accent); }
+  textarea { min-height: 130px; font-family: var(--mono); font-size: 13px; line-height: 1.7; }
+  .presets { display: flex; flex-wrap: wrap; gap: 6px; }
+  .presets button {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all .15s;
+  }
+  .presets button:hover { color: var(--text); border-color: var(--accent); }
+
+  .actions { display: flex; gap: 8px; }
+  button.primary {
+    flex: 1;
+    background: var(--accent);
+    border: none;
+    color: white;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all .15s;
+  }
+  button.primary:hover { filter: brightness(1.1); }
+  button.primary:disabled { opacity: .45; cursor: not-allowed; }
+  button.ghost {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 10px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  button.ghost:hover { color: var(--text); border-color: var(--accent); }
+  button.small {
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--muted);
+    padding: 3px 9px; border-radius: 5px; font-size: 11px; cursor: pointer;
+  }
+  button.small:hover { color: var(--text); border-color: var(--accent-2); }
+
+  .status-box {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 11px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    min-height: 18px;
+    margin-top: 10px;
+  }
+  .status-box.busy { color: var(--accent-2); border-color: var(--accent); }
+
+  /* config row */
+  .config-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  .config-row input[type=number] { width: 60px; padding: 5px 8px; }
+
+  /* history list */
+  .hist-list {
+    display: flex; flex-direction: column; gap: 4px;
+    max-height: 320px; overflow-y: auto;
+  }
+  .hist-item {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 8px 10px;
+    cursor: pointer;
+    transition: all .12s;
+  }
+  .hist-item:hover { border-color: var(--accent); background: rgba(124,92,255,.08); }
+  .hist-item.active { border-color: var(--accent-2); background: rgba(76,194,255,.08); }
+  .hist-item .h-title { font-size: 13px; color: var(--text); margin-bottom: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hist-item .h-meta { font-size: 11px; color: var(--muted); font-family: var(--mono); display: flex; gap: 8px; }
+  .hist-item .h-meta .tag { background: rgba(124,92,255,.2); color: var(--accent); padding: 0 6px; border-radius: 3px; }
+  .hist-empty { color: var(--muted); font-size: 12px; font-style: italic; padding: 8px 0; }
+
+  /* ---- Right: output panel ---- */
+  .right {
+    overflow-y: auto;          /* 右侧可滚 */
+    min-height: 0;             /* 【滚动修复关键】覆盖 grid item 默认 min-height:auto */
+    padding: 18px 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    align-content: start;      /* 【滚动修复关键】flex 子项不拉伸撑高父容器 */
+  }
+  .section {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    flex-shrink: 0;            /* 【滚动修复关键】卡片不被压缩，超出则触发父级滚动 */
+  }
+  .section > .head {
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--muted);
+    font-weight: 600;
+    letter-spacing: .5px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--panel-2);
+  }
+  .section > .head .badge {
+    margin-left: auto;
+    font-size: 11px; padding: 1px 8px; border-radius: 999px; font-weight: 600;
+  }
+  .badge.ok { background: rgba(74,222,128,.15); color: var(--green); }
+  .badge.warn { background: rgba(251,191,36,.15); color: var(--yellow); }
+  .badge.bad { background: rgba(248,113,113,.15); color: var(--red); }
+  .section > .body { padding: 13px; }
+
+  /* live streaming text */
+  .stream {
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.75;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+    min-height: 20px;
+    max-height: 280px;
+    overflow-y: auto;
+  }
+  .tool-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    background: rgba(251,146,60,.12);
+    border: 1px solid rgba(251,146,60,.4);
+    color: var(--orange);
+    padding: 3px 9px;
+    border-radius: 6px;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+
+  /* lyric result table */
+  table.lyric { width: 100%; border-collapse: collapse; }
+  table.lyric th, table.lyric td {
+    padding: 8px 11px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    vertical-align: top;
+  }
+  table.lyric th {
+    font-size: 11px; color: var(--muted); font-weight: 600;
+    text-transform: uppercase; letter-spacing: .5px;
+  }
+  table.lyric td.line { color: var(--muted); font-family: var(--mono); width: 32px; }
+  table.lyric td.syl { color: var(--muted); font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+  .origin { color: var(--muted); }
+  .adapted { color: var(--text); }
+  tr.violation { background: rgba(248,113,113,.08); }
+  tr.violation .adapted::before { content: "⚠ "; color: var(--red); }
+  .section-tag {
+    font-size: 11px; padding: 2px 8px; border-radius: 4px;
+    margin-right: 6px; font-weight: 600;
+  }
+  .section-tag.verse { background: rgba(76,194,255,.15); color: var(--accent-2); }
+  .section-tag.chorus { background: rgba(124,92,255,.15); color: var(--accent); }
+  .section-tag.bridge { background: rgba(251,191,36,.15); color: var(--yellow); }
+
+  /* checks */
+  .checks { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+  .check {
+    background: var(--panel-2);
+    border-radius: 8px;
+    padding: 9px 11px;
+    border-left: 3px solid var(--border);
+  }
+  .check.ok { border-left-color: var(--green); }
+  .check.bad { border-left-color: var(--red); }
+  .check .title { font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+  .check .val { font-size: 14px; font-weight: 600; }
+  .check.ok .val { color: var(--green); }
+  .check.bad .val { color: var(--red); }
+  .check ul { margin: 5px 0 0; padding-left: 16px; font-size: 11px; color: var(--muted); }
+
+  /* round timeline */
+  .round-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .round-card.approved { border-color: rgba(74,222,128,.4); }
+  .round-card.changes { border-color: rgba(251,191,36,.4); }
+  .round-head {
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+    background: var(--panel-2);
+    cursor: pointer;
+  }
+  .round-num {
+    width: 24px; height: 24px; border-radius: 50%;
+    background: var(--accent); color: white;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; flex-shrink: 0;
+  }
+  .round-card.approved .round-num { background: var(--green); }
+  .round-card.changes .round-num { background: var(--yellow); color: #1a1a1a; }
+  .round-title { font-size: 13px; font-weight: 500; flex: 1; }
+  .round-verdict-mini { font-size: 12px; color: var(--muted); }
+  .round-body { padding: 13px; }
+  .round-card.collapsed .round-body { display: none; }
+  .round-diff { font-size: 12px; color: var(--muted); margin-bottom: 8px; font-family: var(--mono); }
+
+  /* verdict */
+  .verdict {
+    padding: 11px 15px;
+    border-radius: 10px;
+    font-weight: 600;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .verdict.approve { background: rgba(74,222,128,.12); color: var(--green); border: 1px solid rgba(74,222,128,.4); }
+  .verdict.request { background: rgba(248,113,113,.12); color: var(--red); border: 1px solid rgba(248,113,113,.4); }
+  .verdict .reasons { font-weight: 400; color: var(--muted); font-size: 13px; }
+
+  .empty { color: var(--muted); font-style: italic; padding: 30px 20px; text-align: center; }
+  .hidden { display: none !important; }
+  .hint { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+  /* raw event toggle */
+  details.raw { margin-top: 8px; }
+  details.raw summary { cursor: pointer; color: var(--muted); font-size: 11px; user-select: none; }
+  details.raw pre {
+    background: var(--panel-2); padding: 8px; border-radius: 6px;
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+    overflow-x: auto; max-height: 160px; overflow-y: auto;
+  }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="connDot"></span>
+  <h1>🎼 歌词改编工坊</h1>
+  <span class="meta">
+    <span id="connState">连接中…</span>
+    · <span id="gatewayHint">gateway</span>
+  </span>
+</header>
+
+<main>
+  <!-- ============ LEFT ============ -->
+  <aside class="left">
+    <!-- 输入区 -->
+    <div class="left-section">
+      <h3>✍️ 改编输入</h3>
+      <div class="field">
+        <label>原歌词</label>
+        <textarea id="origin" placeholder="粘贴原曲歌词，每段之间空一行…"></textarea>
+      </div>
+      <div class="field">
+        <label>改编主题</label>
+        <input type="text" id="theme" placeholder="例：程序员日常 / 赛博朋克 / 毕业季" />
+        <div class="presets" style="margin-top:6px">
+          <button data-theme="程序员日常">程序员日常</button>
+          <button data-theme="赛博朋克">赛博朋克</button>
+          <button data-theme="毕业季">毕业季</button>
+          <button data-theme="打工人">打工人</button>
+          <button data-theme="古风武侠">古风武侠</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>创作 agent</label>
+        <select id="agent">
+          <option value="lyricist">lyricist（改编师）</option>
+          <option value="build">build（通用）</option>
+        </select>
+      </div>
+      <div class="field config-row">
+        <label style="margin:0">最大迭代轮数</label>
+        <input type="number" id="maxRounds" value="3" min="1" max="10" />
+        <span class="hint">（critic 不过则自动回改，直到通过或达上限）</span>
+      </div>
+      <div class="actions">
+        <button class="primary" id="runBtn">✍️ 开始改编</button>
+        <button class="ghost" id="clearBtn">清空</button>
+      </div>
+      <div class="status-box" id="status">就绪</div>
+      <details class="raw">
+        <summary>原始事件流</summary>
+        <pre id="rawEvents"></pre>
+      </details>
+    </div>
+
+    <!-- 历史记录区 -->
+    <div class="left-section">
+      <h3>📜 历史改编 <button class="small" id="refreshHist" style="float:right">刷新</button></h3>
+      <div class="hist-list" id="histList">
+        <div class="hist-empty">加载中…</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============ RIGHT ============ -->
+  <section class="right" id="output">
+    <div class="empty" id="placeholder">输入原歌词和主题，点「开始改编」——改编师改写后，审查员自动校验押韵/音节；不通过会自动回改，右侧展示每轮迭代。</div>
+
+    <!-- live streaming -->
+    <div class="section hidden" id="streamSection">
+      <div class="head">⚡ 实时生成 <span id="streamLabel"></span></div>
+      <div class="body">
+        <div class="tool-chips" id="toolChips"></div>
+        <div class="stream" id="stream"></div>
+      </div>
+    </div>
+
+    <!-- round timeline -->
+    <div class="section hidden" id="timelineSection">
+      <div class="head">🔄 迭代轮次 <span class="badge" id="finalBadge"></span></div>
+      <div class="body" id="timelineBody" style="display:flex;flex-direction:column;gap:12px"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, html) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html != null) e.innerHTML = html;
+  return e;
+};
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => (
+  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+));
+const sidShort = (s) => (s || "").slice(-8);
+
+// ---- state ----------------------------------------------------------------
+let currentSid = null;        // 当前活跃 lyricist session（用于循环回灌）
+let ws = null;                // 当前活跃 WebSocket
+let liveBuffer = "";          // 当前 agent turn 的累积文本
+let rounds = [];              // [{round, lyricText, lyricResult, verdict, reasons}]
+let runAbort = false;         // 用户中断标志
+const STREAM_ROLE = { stream: "lyricist" }; // 标记当前 stream 属于谁
+
+// ---- presets / buttons ----------------------------------------------------
+document.querySelectorAll(".presets button").forEach((b) => {
+  b.addEventListener("click", () => ($("theme").value = b.dataset.theme));
+});
+$("clearBtn").addEventListener("click", () => {
+  $("origin").value = ""; $("theme").value = ""; resetOutput();
+});
+$("refreshHist").addEventListener("click", refreshHistory);
+
+// ---- UI helpers -----------------------------------------------------------
+function setConn(state, live = false) {
+  $("connDot").classList.toggle("live", live);
+  $("connState").textContent = state;
+}
+function setStatus(text, busy = false) {
+  $("status").textContent = text;
+  $("status").classList.toggle("busy", busy);
+}
+function resetOutput() {
+  $("placeholder").classList.remove("hidden");
+  $("streamSection").classList.add("hidden");
+  $("timelineSection").classList.add("hidden");
+  $("stream").textContent = "";
+  $("toolChips").innerHTML = "";
+  $("timelineBody").innerHTML = "";
+  $("finalBadge").textContent = "";
+  $("finalBadge").className = "badge";
+  $("rawEvents").textContent = "";
+  liveBuffer = "";
+  rounds = [];
+  runAbort = false;
+}
+
+// ---- RPC ------------------------------------------------------------------
+async function rpc(method, params, session) {
+  const body = { method, params };
+  if (session) body.session = session;
+  const res = await fetch("/rpc", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json();
+  if (!res.ok || json.error) throw new Error(json.error || `HTTP ${res.status}`);
+  return json;
+}
+
+// ---- WebSocket subscribe --------------------------------------------------
+function openStream(sid, onEvent) {
+  return new Promise((resolve, reject) => {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const url = `${proto}//${location.host}/ws?session=${encodeURIComponent(sid)}`;
+    const sock = new WebSocket(url);
+    let subscribed = false;
+    sock.onopen = () => setConn("已连接", true);
+    sock.onmessage = (ev) => {
+      let obj;
+      try { obj = JSON.parse(ev.data); } catch { return; }
+      if (obj.type === "gateway_subscribed") { subscribed = true; resolve(sock); return; }
+      if (obj.type === "gateway_error" || obj.type === "gateway_closed") {
+        if (!subscribed) reject(new Error(obj.error || "gateway closed"));
+        return;
+      }
+      onEvent(obj);
+    };
+    sock.onerror = () => setConn("连接错误");
+    sock.onclose = () => {
+      setConn("已断开");
+      if (!subscribed) reject(new Error("ws closed before subscribe"));
+    };
+  });
+}
+
+// ---- event handling（统一 handler 工厂，修复 bug-a：critic 也走 verdict 检测）----
+function makeHandler(role) {
+  return function (obj) {
+    appendRaw(obj);
+    const inner = obj.event || obj;
+    const type = inner.type || obj.type;
+    if (type === "text_delta") {
+      liveBuffer += inner.delta || "";
+      renderStream();
+    } else if (type === "agent_start") {
+      liveBuffer = "";
+      renderStream();
+      setStatus(role === "critic" ? "审查员分析中…" : "改编师生成中…", true);
+    } else if (type === "tool_call" || type === "tool_call_delta") {
+      const name = inner.tool || inner.tool_name;
+      if (name) addToolChip(name);
+    }
+  };
+}
+
+function appendRaw(obj) {
+  const pre = $("rawEvents");
+  pre.textContent += JSON.stringify(obj) + "\n";
+  pre.scrollTop = pre.scrollHeight;
+}
+function addToolChip(name) {
+  if (!name) return;
+  const chips = $("toolChips");
+  if ([...chips.children].some((c) => c.dataset.tool === name)) return;
+  const chip = el("span", "chip", `${escapeHtml(name)}`);
+  chip.dataset.tool = name;
+  chips.appendChild(chip);
+}
+function renderStream() {
+  $("stream").textContent = liveBuffer;
+  $("stream").scrollTop = $("stream").scrollHeight;
+}
+
+// ---- 等 agent 跑完（订阅 + prompt + 收 agent_end），返回完整文本 ----------
+// 这是循环编排的核心原语：跑一个 agent turn，拿到完整输出文本
+async function runAgentTurn({ agent, prompt, session, role }) {
+  // 1. 建/复用 session
+  let sid = session;
+  if (!sid) {
+    const resp = await rpc("create_session", { agent });
+    sid = resp.data?.session_id;
+    if (!sid) throw new Error(`create_session(${agent}) 无 session_id`);
+  }
+  // 2. 订阅（prompt 前订阅，避免漏事件）
+  liveBuffer = "";
+  $("stream").textContent = "";
+  $("toolChips").innerHTML = "";
+  $("streamLabel").textContent = `· ${role}`;
+  $("streamSection").classList.remove("hidden");
+  $("placeholder").classList.add("hidden");
+  // 复用现有 ws 或新建
+  if (ws) { try { ws.close(); } catch {} ws = null; }
+  ws = await openStream(sid, makeHandler(role));
+
+  // 3. prompt（fire-and-forget）
+  await rpc("prompt", { text: prompt }, sid);
+  setStatus(role === "critic" ? "审查员分析中…" : "改编师生成中…", true);
+
+  // 4. 等 agent_end（最多 120s）
+  const fullText = await new Promise((resolve) => {
+    let resolved = false;
+    const origOnMsg = ws.onmessage;
+    ws.onmessage = (ev) => {
+      let obj; try { obj = JSON.parse(ev.data); } catch { return; }
+      // 继续喂给 handler（累积 text_delta）
+      makeHandler(role)(obj);
+      const inner = obj.event || obj;
+      if ((inner.type === "agent_end" || inner.type === "agent_stopped") && !resolved) {
+        resolved = true;
+        resolve(liveBuffer);
+      }
+    };
+    setTimeout(() => { if (!resolved) { resolved = true; resolve(liveBuffer); } }, 120000);
+  });
+  return { sid, text: fullText };
+}
+
+// ---- 解析 <lyric_result> ----
+function parseLyricXml(xml) {
+  const pick = (re) => { const m = xml.match(re); return m ? m[1].trim() : ""; };
+  const theme = pick(/<lyric_result[^>]*theme="([^"]*)"/);
+  const notes = pick(/<notes>([\s\S]*?)<\/notes>/);
+  const sections = [];
+  const secRe = /<section[^>]*type="([^"]*)"[^>]*rhyme="([^"]*)"[^>]*>([\s\S]*?)<\/section>/g;
+  let secM;
+  while ((secM = secRe.exec(xml))) {
+    const section = { type: secM[1], rhyme: secM[2], lines: [] };
+    const lineRe = /<line[^>]*n="(\d+)"[^>]*origin_syllables="(\d+)"[^>]*adapted_syllables="(\d+)"[^>]*>([\s\S]*?)<\/line>/g;
+    let lm;
+    while ((lm = lineRe.exec(secM[3]))) {
+      const origin = (lm[4].match(/<origin>([\s\S]*?)<\/origin>/) || [, ""])[1].trim();
+      const adapted = (lm[4].match(/<adapted>([\s\S]*?)<\/adapted>/) || [, ""])[1].trim();
+      section.lines.push({ n: +lm[1], originSyl: +lm[2], adaptedSyl: +lm[3], origin, adapted });
+    }
+    sections.push(section);
+  }
+  const rhymeBlock = pick(/<rhyme_check>([\s\S]*?)<\/rhyme_check>/);
+  const rhymeVios = [];
+  let vm; const vioRe = /<violation[^>]*line="(\d+)"[^>]*reason="([^"]*)"/g;
+  while ((vm = vioRe.exec(rhymeBlock))) rhymeVios.push({ line: +vm[1], reason: vm[2] });
+  const rhymeSummary = (rhymeBlock.match(/<summary>([\s\S]*?)<\/summary>/) || [, ""])[1].trim();
+  const sylBlock = pick(/<syllable_check>([\s\S]*?)<\/syllable_check>/);
+  const sylVios = [];
+  const sylVioRe = /<violation[^>]*line="(\d+)"[^>*(?:origin="(\d+)")?[^>*(?:adapted="(\d+)")?[^>]*reason="([^"]*)"/g;
+  let sm;
+  while ((sm = sylVioRe.exec(sylBlock))) sylVios.push({ line: +sm[1], origin: sm[2], adapted: sm[3], reason: sm[4] });
+  const sylSummary = (sylBlock.match(/<summary>([\s\S]*?)<\/summary>/) || [, ""])[1].trim();
+  return { theme, sections, notes, rhyme: { violations: rhymeVios, summary: rhymeSummary }, syllable: { violations: sylVios, summary: sylSummary } };
+}
+
+// ---- 渲染一轮的对照表 + 检查 ----
+function renderLyricInto(container, r) {
+  container.innerHTML = "";
+  if (!r) { container.innerHTML = '<div class="empty">未解析到歌词结果</div>'; return; }
+  // checks
+  const rhymeBad = r.rhyme.violations.length > 0;
+  const sylBad = r.syllable.violations.length > 0;
+  const checks = el("div", "checks");
+  checks.appendChild(makeCheck("押韵（十三辙）", rhymeBad, r.rhyme.summary || (rhymeBad ? `${r.rhyme.violations.length} 处不符` : "全部通过"), r.rhyme.violations.map(v => `第${v.line}行: ${v.reason}`)));
+  checks.appendChild(makeCheck("音节（±1）", sylBad, r.syllable.summary || (sylBad ? `${r.syllable.violations.length} 处超标` : "全部通过"), r.syllable.violations.map(v => `第${v.line}行: ${v.reason}`)));
+  container.appendChild(checks);
+  // table
+  const vlines = new Set([...r.rhyme.violations.map(v=>v.line), ...r.syllable.violations.map(v=>v.line)]);
+  const wrap = el("div");
+  for (const sec of r.sections) {
+    const head = el("div", null, `<span class="section-tag ${sec.type}">${sec.type}</span><span style="color:var(--muted);font-size:12px">押韵：${escapeHtml(sec.rhyme) || "—"}</span>`);
+    head.style.cssText = "padding:8px 0 5px;border-bottom:1px solid var(--border);margin-bottom:4px;";
+    wrap.appendChild(head);
+    const table = el("table", "lyric");
+    table.innerHTML = `<thead><tr><th>#</th><th>原文</th><th>改编</th><th>音节</th></tr></thead>`;
+    const tbody = el("tbody");
+    for (const ln of sec.lines) {
+      const tr = el("tr");
+      if (vlines.has(ln.n)) tr.className = "violation";
+      tr.innerHTML = `<td class="line">${ln.n}</td><td class="origin">${escapeHtml(ln.origin)}</td><td class="adapted">${escapeHtml(ln.adapted)}</td><td class="syl">${ln.originSyl}→${ln.adaptedSyl}</td>`;
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody); wrap.appendChild(table);
+  }
+  if (r.notes) {
+    wrap.appendChild(el("div", null, `<div style="margin-top:10px;color:var(--muted);font-size:12px;border-top:1px solid var(--border);padding-top:8px;">${escapeHtml(r.notes)}</div>`));
+  }
+  container.appendChild(wrap);
+}
+function makeCheck(title, bad, summary, reasons) {
+  const c = el("div", "check " + (bad ? "bad" : "ok"));
+  let html = `<div class="title">${escapeHtml(title)}</div><div class="val">${escapeHtml(summary || (bad?"有问题":"通过"))}</div>`;
+  if (reasons && reasons.length) html += `<ul>${reasons.slice(0,5).map(r=>`<li>${escapeHtml(r)}</li>`).join("")}</ul>`;
+  c.innerHTML = html; return c;
+}
+
+// ---- 渲染轮次时间线 ----
+function renderTimeline() {
+  $("timelineSection").classList.remove("hidden");
+  const body = $("timelineBody");
+  body.innerHTML = "";
+  // 倒序：最新轮次在最上面
+  [...rounds].reverse().forEach((rd, idx) => {
+    const isLatest = idx === 0;
+    const card = el("div", "round-card " + (rd.verdict === "APPROVE" ? "approved" : "changes"));
+    if (!isLatest) card.classList.add("collapsed");
+    const verdictTxt = rd.verdict === "APPROVE" ? "✅ APPROVE" : (rd.verdict === "REQUEST_CHANGES" ? "⚠️ REQUEST_CHANGES" : "（未审查）");
+    const head = el("div", "round-head", `<span class="round-num">${rd.round}</span><span class="round-title">第 ${rd.round} 轮改编</span><span class="round-verdict-mini">${verdictTxt}</span>`);
+    head.onclick = () => card.classList.toggle("collapsed");
+    const rb = el("div", "round-body");
+    // diff 摘要
+    if (rd.round > 1 && rounds[rd.round - 2]?.lyricResult) {
+      const prev = rounds[rd.round - 2].lyricResult;
+      const changed = countChangedLines(prev, rd.lyricResult);
+      rb.appendChild(el("div", "round-diff", `↺ 根据上轮反馈：${changed} 句有改动`));
+    }
+    if (rd.reasons) {
+      rb.appendChild(el("div", "verdict " + (rd.verdict === "APPROVE" ? "approve" : "request"), `<span>${verdictTxt}</span><span class="reasons">${escapeHtml(rd.reasons)}</span>`));
+    }
+    const lyricBox = el("div");
+    renderLyricInto(lyricBox, rd.lyricResult);
+    rb.appendChild(lyricBox);
+    // 「以此为起点重跑」按钮
+    const rerun = el("button", "small", "↻ 以此版本重新改编");
+    rerun.style.marginTop = "8px";
+    rerun.onclick = () => fillBackFromRound(rd);
+    rb.appendChild(rerun);
+    card.appendChild(head); card.appendChild(rb);
+    body.appendChild(card);
+  });
+  // 最终 badge
+  const last = rounds[rounds.length - 1];
+  const badge = $("finalBadge");
+  if (last?.verdict === "APPROVE") {
+    badge.textContent = `${rounds.length} 轮通过`; badge.className = "badge ok";
+  } else if (rounds.length >= +$("maxRounds").value) {
+    badge.textContent = `${rounds.length} 轮（达上限）`; badge.className = "badge warn";
+  } else {
+    badge.textContent = `${rounds.length} 轮`; badge.className = "badge";
+  }
+}
+function countChangedLines(a, b) {
+  if (!a?.sections || !b?.sections) return 0;
+  let n = 0;
+  const am = new Map();
+  a.sections.forEach(s => s.lines.forEach(l => am.set(l.n, l.adapted)));
+  b.sections.forEach(s => s.lines.forEach(l => { if (am.get(l.n) !== l.adapted) n++; }));
+  return n;
+}
+function fillBackFromRound(rd) {
+  // 把该轮的改编填回输入框（原文用 round 的 sections，主题用 theme）
+  if (rd.lyricResult) {
+    const origin = rd.lyricResult.sections.flatMap(s => s.lines.map(l => l.origin)).join("\n");
+    $("origin").value = origin;
+    $("theme").value = rd.lyricResult.theme || $("theme").value;
+  }
+  $("origin").scrollIntoView({ behavior: "smooth" });
+  setStatus(`已填回第 ${rd.round} 轮结果，点「开始改编」重跑`);
+}
+
+// ---- 历史记录 ----
+async function refreshHistory() {
+  try {
+    const resp = await rpc("list_all_sessions", {});
+    const list = $("histList");
+    list.innerHTML = "";
+    const sessions = (resp.data?.sessions || []).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    if (!sessions.length) { list.innerHTML = '<div class="hist-empty">暂无历史</div>'; return; }
+    // 改编 session（名字含 🎵）排前面，其它折叠到底
+    const lyric = sessions.filter(s => (s.name || "").includes("🎵") || (s.firstMessage || "").includes("🎵"));
+    const other = sessions.filter(s => !lyric.includes(s));
+    const render = (arr, dim) => arr.slice(0, dim ? 5 : 50).forEach(s => {
+      const title = s.name || s.firstMessage || sidShort(s.id);
+      const item = el("div", "hist-item" + (s.id === currentSid ? " active" : ""));
+      const time = s.updatedAt ? new Date(s.updatedAt).toLocaleString("zh-CN", { month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit" }) : "";
+      item.innerHTML = `<div class="h-title">${escapeHtml(title)}</div><div class="h-meta"><span>${escapeHtml(s.model||"")}</span><span>${time}</span>${s.turnCount?`<span class="tag">${s.turnCount}轮</span>`:""}</div>`;
+      item.onclick = () => openHistory(s.id);
+      list.appendChild(item);
+    });
+    render(lyric, false);
+    if (other.length) {
+      list.appendChild(el("div", "hist-empty", `（另有 ${other.length} 个非改编会话，已折叠）`));
+    }
+  } catch (e) {
+    $("histList").innerHTML = `<div class="hist-empty">加载失败: ${escapeHtml(e.message)}</div>`;
+  }
+}
+async function openHistory(sid) {
+  try {
+    setStatus("加载历史…", true);
+    const resp = await rpc("get_messages", { view: "full", limit: 200 }, sid);
+    const msgs = resp.data?.messages || [];
+    // 提取所有 assistant 文本 + 首条 user 文本
+    let userText = "", lyricXml = "";
+    for (const m of msgs) {
+      const A = m.message?.Assistant; const U = m.message?.User;
+      if (U && !userText) {
+        userText = (U.content || []).map(c => c.Text?.text || "").join("");
+      }
+      if (A) {
+        const t = (A.content || []).map(c => c.Text?.text || "").join("");
+        const mm = t.match(/<lyric_result[\s\S]*?<\/lyric_result>/);
+        if (mm) lyricXml = mm[0];
+      }
+    }
+    // 标记当前
+    currentSid = sid;
+    refreshHistory();
+    // 渲染：把历史结果作为单轮展示
+    resetOutput();
+    rounds = [{ round: 1, lyricText: lyricXml, lyricResult: lyricXml ? parseLyricXml(lyricXml) : null, verdict: null, reasons: null }];
+    renderTimeline();
+    // 提供两个操作：填回重跑 / 继续对话
+    const ops = el("div", "section");
+    ops.innerHTML = `<div class="head">📂 历史 session ${sidShort(sid)}</div><div class="body" style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="primary" id="histFillBack">↩ 填回输入框重跑</button>
+      <button class="ghost" id="histResume">💬 在此 session 继续对话</button></div>`;
+    $("output").insertBefore(ops, $("placeholder"));
+    $("placeholder").classList.add("hidden");
+    $("histFillBack").onclick = () => {
+      const r = rounds[0]?.lyricResult;
+      if (r) {
+        $("origin").value = r.sections.flatMap(s=>s.lines.map(l=>l.origin)).join("\n");
+        $("theme").value = r.theme || "";
+      }
+      setStatus("已填回，点「开始改编」重跑");
+    };
+    $("histResume").onclick = () => {
+      currentSid = sid;
+      const msg = prompt(`向 session ${sidShort(sid)} 发送消息：`);
+      if (msg) continueOnSession(msg);
+    };
+    setStatus("已加载历史");
+  } catch (e) {
+    setStatus("加载历史失败: " + e.message);
+  }
+}
+
+// ---- 在 currentSid 上继续对话（历史 resume）----
+async function continueOnSession(text) {
+  try {
+    liveBuffer = ""; $("stream").textContent = ""; $("toolChips").innerHTML = "";
+    $("streamSection").classList.remove("hidden");
+    if (ws) { try { ws.close(); } catch {} }
+    ws = await openStream(currentSid, makeHandler("lyricist"));
+    await rpc("prompt", { text }, currentSid);
+    setStatus("继续对话中…", true);
+  } catch (e) {
+    setStatus("继续对话失败: " + e.message);
+  }
+}
+
+// ============ 主编排：lyricist ↔ critic 迭代循环 ============
+async function run() {
+  const origin = $("origin").value.trim();
+  const theme = $("theme").value.trim();
+  const agent = $("agent").value;
+  const maxRounds = Math.max(1, Math.min(10, +$("maxRounds").value || 3));
+  if (!origin) { alert("请输入原歌词"); return; }
+  if (!theme) { alert("请输入改编主题"); return; }
+
+  resetOutput();
+  $("runBtn").disabled = true;
+  $("timelineSection").classList.remove("hidden");
+  setStatus("创建改编会话…", true);
+
+  let lyricSid = null;
+  let lastLyricText = "";
+  try {
+    // ---- 第 1 轮：lyricist 改编 ----
+    const turn1 = await runAgentTurn({
+      agent, role: "lyricist",
+      prompt: `请把下面这首歌词改编成「${theme}」主题，保持可唱性（押韵、音节），严格按你的输出格式给出 <lyric_result>（含 sections/rhyme_check/syllable_check），并 write 到 lyrics_output.md。\n\n原歌词：\n${origin}`,
+    });
+    lyricSid = turn1.sid;
+    lastLyricText = turn1.text;
+    currentSid = lyricSid;
+
+    // 命名 session（持久化，用于历史列表）
+    const firstLine = origin.split("\n").find(l => l.trim()) || "";
+    const niceName = `🎵${theme}·${firstLine.slice(0, 10)}`;
+    try { await rpc("append_session_name", { name: niceName }, lyricSid); } catch {}
+
+    // 解析 + 记录第 1 轮
+    const xml1 = (lastLyricText.match(/<lyric_result[\s\S]*?<\/lyric_result>/) || [])[0] || "";
+    rounds.push({ round: 1, lyricText: lastLyricText, lyricResult: xml1 ? parseLyricXml(xml1) : null, verdict: null, reasons: null });
+    renderTimeline();
+
+    // ---- 迭代循环：critic 审查 → 不通过则 lyricist 回改 ----
+    for (let round = 1; round <= maxRounds; round++) {
+      setStatus(`第 ${round} 轮审查中…`, true);
+      // critic 审查（修复 bug-b：直接把歌词文本喂给 critic，不依赖文件）
+      const ct = await runAgentTurn({
+        agent: "critic", role: "critic",
+        prompt: `下面是 lyricist 的改编结果（第 ${round} 版），请按你的 checklist 审查押韵（十三辙）、音节（±1）、主题切合、可唱性，给出结论。输出必须以 VERDICT: APPROVE 或 VERDICT: REQUEST_CHANGES: <原因> 结尾。\n\n${lastLyricText}`,
+      });
+      // 取【最后一个】VERDICT 作为最终结论（critic 可能在分析中先说 APPROVE 再改口）
+      const allVerdicts = [...ct.text.matchAll(/VERDICT:\s*(APPROVE|REQUEST_CHANGES)[:：]?\s*([^\n]*)/gi)];
+      const lastV = allVerdicts[allVerdicts.length - 1];
+      const verdict = lastV ? lastV[1].toUpperCase() : "REQUEST_CHANGES";
+      const reasons = lastV ? (lastV[2] || "").trim() : "（未识别到 VERDICT）";
+      rounds[round - 1].verdict = verdict;
+      rounds[round - 1].reasons = reasons;
+      renderTimeline();
+
+      // 终止条件（防 critic 抖动）：
+      //  - APPROVE 直接通过
+      //  - 连续两轮都 REQUEST_CHANGES 且第二轮原因与第一轮高度相似 → 视为"改不动了"，停止避免无谓拉扯
+      if (verdict === "APPROVE") {
+        setStatus(`✅ 第 ${round} 轮审查通过`);
+        break;
+      }
+      if (round >= 2 && rounds[round - 2]?.verdict === "REQUEST_CHANGES") {
+        // 比较两轮 reasons 的相似度（简单词重叠率）
+        const prev = (rounds[round - 2].reasons || "").split(/[，,；;。\s]+/).filter(s => s.length > 2);
+        const curr = (reasons || "").split(/[，,；;。\s]+/).filter(s => s.length > 2);
+        const overlap = curr.filter(w => prev.includes(w)).length;
+        if (overlap >= Math.min(3, curr.length) && curr.length > 0) {
+          setStatus(`⚠️ 第 ${round} 轮问题与上轮高度重复（critic 判定停滞），停止循环。最后版本可供手动修改。`);
+          break;
+        }
+      }
+      if (round >= maxRounds) {
+        setStatus(`⚠️ 已达最大轮数 ${maxRounds}，仍未通过，请手动接手`);
+        break;
+      }
+      // 回灌 critic 反馈，让 lyricist 在同一 session 修正
+      setStatus(`第 ${round} 轮未通过，根据反馈回改中…`, true);
+      const rt = await runAgentTurn({
+        agent, role: "lyricist", session: lyricSid,
+        prompt: `审查员对上一版提出了以下问题：\n${reasons}\n\n请据此修正歌词，重新输出完整的 <lyric_result>，并 write 到 lyrics_output.md。`,
+      });
+      lastLyricText = rt.text;
+      const xmlN = (lastLyricText.match(/<lyric_result[\s\S]*?<\/lyric_result>/) || [])[0] || "";
+      rounds.push({ round: round + 1, lyricText: lastLyricText, lyricResult: xmlN ? parseLyricXml(xmlN) : null, verdict: null, reasons: null });
+      renderTimeline();
+    }
+    // 刷新历史
+    refreshHistory();
+  } catch (e) {
+    setStatus("出错: " + e.message);
+    setConn("错误");
+    console.error(e);
+  } finally {
+    $("runBtn").disabled = false;
+    if (ws) { try { ws.close(); } catch {} ws = null; }
+  }
+}
+$("runBtn").addEventListener("click", run);
+
+// ---- init ----
+(async function init() {
+  try {
+    const h = await fetch("/healthz").then(r => r.json());
+    if (h.ok) { setConn("已连接 host", true); $("gatewayHint").textContent = `sock ok`; }
+  } catch { setConn("网关未就绪"); }
+  refreshHistory();
+})();
+</script>
+</body>
+</html>

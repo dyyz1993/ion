@@ -1050,9 +1050,9 @@ impl Agent {
                     }));
                 } else {
                     // No auto_continue, no follow_up in queue.
-                    // But bash_run background process might send follow_up asynchronously.
+                    // But bash background process might send follow_up asynchronously.
                     // Wait up to 30 minutes for async follow_up before giving up.
-                    // This is critical for evolver agent: bash_run(background=true) sends
+                    // This is critical for evolver agent: bash(background=true) sends
                     // follow_up when the process completes, but it arrives async.
                     if std::env::var("ION_WAIT_BACKGROUND")
                         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -1596,7 +1596,7 @@ impl Agent {
                                         .unwrap_or(600);
                                     let timeout_duration = if tc_name == "skill"
                                         || tc_name == "bash"
-                                        || tc_name == "bash_run"
+                                        
                                     {
                                         std::time::Duration::from_secs(long_default)
                                     } else {

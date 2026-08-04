@@ -1,0 +1,15 @@
+{
+  "name": "ion-lyric-webui",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Web UI gateway for the ion lyric-remixer agents. Bridges browser HTTP/WebSocket to ion serve's Unix socket.",
+  "type": "module",
+  "main": "gateway.mjs",
+  "scripts": {
+    "start": "node gateway.mjs",
+    "start:8787": "node gateway.mjs --port 8787"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

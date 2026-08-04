@@ -59,7 +59,7 @@ const WORK_TOOLS: &[&str] = &[
     "write",
     "edit",
     "bash",
-    "bash_run",
+    "bash",
     "read",
     "grep",
     "find",

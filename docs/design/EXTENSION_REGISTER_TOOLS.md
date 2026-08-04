@@ -1,3 +1,5 @@
+> ⚠️ **本文档中的 bash_run / bash_manage 已过时。** 当前工具名：`bash`（执行）+ `get_background_process`（查状态）+ `kill_process`（杀进程）+ `write_stdin`（发 stdin）。详见 BASH_EXTENSION.md。
+
 # FEAT: Extension trait 加 register_tools 钩子（工具自描述）
 
 > **状态：开发中** — spec 已写好，待实现。

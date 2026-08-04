@@ -1,3 +1,5 @@
+> ⚠️ **本文档中的 bash_run / bash_manage 已过时。** 当前工具名：`bash`（执行）+ `get_background_process`（查状态）+ `kill_process`（杀进程）+ `write_stdin`（发 stdin）。详见 BASH_EXTENSION.md。
+
 # Extension 生态系统 — P4 验证文档
 
 > **状态：已验证** — 2026-07-07 全部通过

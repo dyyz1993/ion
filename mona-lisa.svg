@@ -1,0 +1,183 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 900" width="600" height="900">
+  <defs>
+    <!-- Sky / aerial perspective gradient (sfumato) -->
+    <linearGradient id="skyGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#3a4a5e"/>
+      <stop offset="30%" stop-color="#5a6a6e"/>
+      <stop offset="60%" stop-color="#7a8070"/>
+      <stop offset="100%" stop-color="#9a9078"/>
+    </linearGradient>
+
+    <!-- Landscape mid-ground gradient -->
+    <linearGradient id="landGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#6a7050" stop-opacity="0.75"/>
+      <stop offset="100%" stop-color="#3a4530" stop-opacity="0.55"/>
+    </linearGradient>
+
+    <!-- Dark robe gradient -->
+    <linearGradient id="robeGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#2a1f18"/>
+      <stop offset="40%" stop-color="#1a1410"/>
+      <stop offset="100%" stop-color="#0d0a08"/>
+    </linearGradient>
+
+    <!-- Skin tone gradient -->
+    <radialGradient id="faceGrad" cx="0.5" cy="0.42" r="0.5">
+      <stop offset="0%"  stop-color="#e8cfa8"/>
+      <stop offset="55%" stop-color="#d4b489"/>
+      <stop offset="100%" stop-color="#a08060"/>
+    </radialGradient>
+
+    <!-- Soft vignette for sfumato edges -->
+    <radialGradient id="vignette" cx="0.5" cy="0.48" r="0.62">
+      <stop offset="0%"  stop-color="#000" stop-opacity="0"/>
+      <stop offset="72%" stop-color="#000" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#000" stop-opacity="0.35"/>
+    </radialGradient>
+
+    <!-- Head veil gradient -->
+    <linearGradient id="veilGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#3a3028" stop-opacity="0.85"/>
+      <stop offset="100%" stop-color="#1a1510" stop-opacity="0.7"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ========== BACKGROUND ========== -->
+  <rect width="600" height="900" fill="url(#skyGrad)"/>
+
+  <!-- Distant winding path / road (left) -->
+  <path d="M 0 560 Q 120 500 180 540 Q 230 570 200 600" fill="none" stroke="#8a8868" stroke-width="14" stroke-opacity="0.45" stroke-linecap="round"/>
+  <!-- Distant arch bridge (right) -->
+  <path d="M 360 540 Q 420 500 480 545" fill="none" stroke="#7a7460" stroke-width="10" stroke-opacity="0.5"/>
+  <path d="M 385 545 Q 420 520 455 548" fill="none" stroke="#6a6450" stroke-width="5" stroke-opacity="0.4"/>
+
+  <!-- Rolling hills / mountains (sfumato layers) -->
+  <path d="M 0 580 Q 100 530 200 565 Q 300 595 380 555 Q 450 525 600 560 L 600 900 L 0 900 Z" fill="#4a5a48" opacity="0.5"/>
+  <path d="M 0 620 Q 80 590 160 610 Q 250 635 340 605 Q 430 580 600 615 L 600 900 L 0 900 Z" fill="#3a4838" opacity="0.55"/>
+  <path d="M 0 680 Q 120 650 240 672 Q 360 692 480 660 Q 560 645 600 665 L 600 900 L 0 900 Z" fill="#2a3a28" opacity="0.6"/>
+
+  <!-- Foreground loggia / balcony rail posts (Leonardo's architectural motif) -->
+  <rect x="62"  y="610" width="18" height="160" fill="#2a2018" opacity="0.7"/>
+  <rect x="520" y="610" width="18" height="160" fill="#2a2018" opacity="0.7"/>
+
+  <!-- ========== FIGURE: GOLDEN PYRAMID COMPOSITION ========== -->
+
+  <!-- Robe / shoulders (pyramid base) -->
+  <path d="M 80 900 Q 90 700 175 620 Q 210 580 300 575 Q 390 580 425 620 Q 510 700 520 900 Z" fill="url(#robeGrad)"/>
+
+  <!-- Left shoulder fold highlight -->
+  <path d="M 175 622 Q 150 660 130 760 Q 145 700 175 660 Z" fill="#3a2c20" opacity="0.6"/>
+  <!-- Right shoulder fold highlight -->
+  <path d="M 425 622 Q 450 660 470 760 Q 455 700 425 660 Z" fill="#3a2c20" opacity="0.6"/>
+
+  <!-- Neck -->
+  <ellipse cx="300" cy="545" rx="48" ry="55" fill="url(#faceGrad)"/>
+  <!-- Neck shadow (under chin) -->
+  <path d="M 268 560 Q 300 585 332 560 Q 320 578 300 582 Q 280 578 268 560 Z" fill="#9a7050" opacity="0.4"/>
+
+  <!-- Head veil (dark sheer fabric draping) -->
+  <path d="M 210 360 Q 200 340 205 310 Q 185 300 180 410 Q 170 480 200 560 Q 210 580 250 600 Q 230 560 225 500 Q 215 430 220 380 Z" fill="url(#veilGrad)"/>
+  <path d="M 390 360 Q 400 340 395 310 Q 415 300 420 410 Q 430 480 400 560 Q 390 580 350 600 Q 370 560 375 500 Q 385 430 380 380 Z" fill="url(#veilGrad)"/>
+
+  <!-- ====== FACE ====== -->
+  <!-- Face base (oval, pyramidal apex region) -->
+  <ellipse cx="300" cy="430" rx="95" ry="112" fill="url(#faceGrad)"/>
+
+  <!-- Hair — framing the face -->
+  <path d="M 205 420 Q 195 330 250 295 Q 300 270 350 295 Q 405 330 395 420 Q 398 380 390 350 Q 370 300 300 285 Q 230 300 210 350 Q 202 380 205 420 Z" fill="#1a1208"/>
+  <!-- Hair strands texture (left) -->
+  <path d="M 210 360 Q 218 330 235 310" fill="none" stroke="#3a2810" stroke-width="2" opacity="0.5"/>
+  <path d="M 206 390 Q 216 350 232 325" fill="none" stroke="#3a2810" stroke-width="2" opacity="0.5"/>
+  <!-- Hair strands texture (right) -->
+  <path d="M 390 360 Q 382 330 365 310" fill="none" stroke="#3a2810" stroke-width="2" opacity="0.5"/>
+  <path d="M 394 390 Q 384 350 368 325" fill="none" stroke="#3a2810" stroke-width="2" opacity="0.5"/>
+
+  <!-- ===== EYEBROWS (faint, Leonardo-style) ===== -->
+  <path d="M 248 392 Q 265 386 282 393" fill="none" stroke="#5a3a20" stroke-width="2.5" opacity="0.35" stroke-linecap="round"/>
+  <path d="M 318 393 Q 335 386 352 392" fill="none" stroke="#5a3a20" stroke-width="2.5" opacity="0.35" stroke-linecap="round"/>
+
+  <!-- ===== EYES (almond-shaped, looking at viewer) ===== -->
+  <!-- Left eye socket shadow -->
+  <ellipse cx="265" cy="410" rx="22" ry="10" fill="#b89870" opacity="0.3"/>
+  <!-- Left eye whites -->
+  <ellipse cx="265" cy="410" rx="18" ry="8" fill="#e8d8c0"/>
+  <!-- Left iris -->
+  <circle cx="268" cy="410" r="7.5" fill="#3a2a18"/>
+  <!-- Left pupil -->
+  <circle cx="268" cy="410" r="3.5" fill="#0a0805"/>
+  <!-- Left eye highlight -->
+  <circle cx="270" cy="408" r="1.5" fill="#ffffff" opacity="0.8"/>
+  <!-- Left upper eyelid line -->
+  <path d="M 247 408 Q 265 402 283 409" fill="none" stroke="#4a3020" stroke-width="1.8" opacity="0.55" stroke-linecap="round"/>
+  <!-- Left lower lid (faint) -->
+  <path d="M 250 416 Q 265 420 281 415" fill="none" stroke="#8a6840" stroke-width="1" opacity="0.3" stroke-linecap="round"/>
+
+  <!-- Right eye socket shadow -->
+  <ellipse cx="335" cy="410" rx="22" ry="10" fill="#b89870" opacity="0.3"/>
+  <!-- Right eye whites -->
+  <ellipse cx="335" cy="410" rx="18" ry="8" fill="#e8d8c0"/>
+  <!-- Right iris -->
+  <circle cx="332" cy="410" r="7.5" fill="#3a2a18"/>
+  <!-- Right pupil -->
+  <circle cx="332" cy="410" r="3.5" fill="#0a0805"/>
+  <!-- Right eye highlight -->
+  <circle cx="334" cy="408" r="1.5" fill="#ffffff" opacity="0.8"/>
+  <!-- Right upper eyelid -->
+  <path d="M 317 409 Q 335 402 353 408" fill="none" stroke="#4a3020" stroke-width="1.8" opacity="0.55" stroke-linecap="round"/>
+  <!-- Right lower lid (faint) -->
+  <path d="M 319 415 Q 335 420 351 416" fill="none" stroke="#8a6840" stroke-width="1" opacity="0.3" stroke-linecap="round"/>
+
+  <!-- ===== NOSE (soft shading, sfumato) ===== -->
+  <!-- Nose bridge shadow -->
+  <path d="M 296 420 Q 293 445 290 465" fill="none" stroke="#a8825a" stroke-width="4" opacity="0.35" stroke-linecap="round"/>
+  <!-- Nose bridge highlight -->
+  <path d="M 300 420 Q 300 445 300 463" fill="none" stroke="#f0dcb8" stroke-width="3" opacity="0.4" stroke-linecap="round"/>
+  <!-- Nose tip -->
+  <ellipse cx="300" cy="468" rx="9" ry="6" fill="#c8a070" opacity="0.5"/>
+  <!-- Nostrils (very faint) -->
+  <ellipse cx="293" cy="475" rx="3" ry="2" fill="#6a4830" opacity="0.4"/>
+  <ellipse cx="307" cy="475" rx="3" ry="2" fill="#6a4830" opacity="0.4"/>
+
+  <!-- ===== CHEEK BLUSH / WARMTH (sfumato) ===== -->
+  <ellipse cx="245" cy="450" rx="22" ry="16" fill="#d09060" opacity="0.18"/>
+  <ellipse cx="355" cy="450" rx="22" ry="16" fill="#d09060" opacity="0.18"/>
+
+  <!-- ===== THE ENIGMATIC SMILE (subtle upturn at lip corners) ===== -->
+  <!-- Upper lip shadow dip (philtrum to lip) -->
+  <path d="M 290 500 L 300 494 L 310 500" fill="none" stroke="#9a7048" stroke-width="1.5" opacity="0.3" stroke-linecap="round"/>
+  <!-- Mouth — the famous subtle smile -->
+  <path d="M 270 508 Q 300 500 330 508 Q 315 516 300 515 Q 285 516 270 508 Z" fill="#a86848" opacity="0.55"/>
+  <!-- Upper lip line -->
+  <path d="M 275 506 Q 288 502 300 504 Q 312 502 325 506" fill="none" stroke="#7a4830" stroke-width="1.2" opacity="0.4" stroke-linecap="round"/>
+  <!-- Subtle smile curve — corners slightly up -->
+  <path d="M 270 510 Q 280 514 285 509" fill="none" stroke="#8a5030" stroke-width="1" opacity="0.35" stroke-linecap="round"/>
+  <path d="M 330 510 Q 320 514 315 509" fill="none" stroke="#8a5030" stroke-width="1" opacity="0.35" stroke-linecap="round"/>
+  <!-- Shadow under lower lip (depth) -->
+  <ellipse cx="300" cy="522" rx="26" ry="6" fill="#9a6a40" opacity="0.25"/>
+
+  <!-- ===== CHIN SHADOW ===== -->
+  <ellipse cx="300" cy="530" rx="30" ry="10" fill="#8a6840" opacity="0.2"/>
+
+  <!-- ========== HANDS (folded, pyramid front) ========== -->
+  <!-- Left hand -->
+  <ellipse cx="265" cy="755" rx="48" ry="28" fill="url(#faceGrad)" transform="rotate(-12 265 755)"/>
+  <ellipse cx="250" cy="748" rx="14" ry="10" fill="#c8a880" opacity="0.6"/>
+  <!-- Fingers (left) -->
+  <path d="M 235 750 Q 225 755 222 762" fill="none" stroke="#a88a60" stroke-width="6" stroke-linecap="round" opacity="0.5"/>
+  <path d="M 245 762 Q 238 768 236 775" fill="none" stroke="#a88a60" stroke-width="6" stroke-linecap="round" opacity="0.5"/>
+
+  <!-- Right hand resting on left -->
+  <ellipse cx="315" cy="760" rx="50" ry="26" fill="url(#faceGrad)" transform="rotate(8 315 760)"/>
+  <!-- Fingers (right hand, draped over left) -->
+  <path d="M 295 752 Q 285 758 282 765" fill="none" stroke="#b89868" stroke-width="7" stroke-linecap="round" opacity="0.55"/>
+  <path d="M 310 756 Q 302 762 300 769" fill="none" stroke="#b89868" stroke-width="7" stroke-linecap="round" opacity="0.55"/>
+  <path d="M 325 758 Q 320 765 318 772" fill="none" stroke="#b89868" stroke-width="7" stroke-linecap="round" opacity="0.55"/>
+  <!-- Cuff / sleeve edge -->
+  <path d="M 230 735 Q 260 720 300 718 Q 340 720 370 735" fill="none" stroke="#3a2c20" stroke-width="3" opacity="0.5"/>
+
+  <!-- ========== SFUMATO VIGNETTE (applied over everything) ========== -->
+  <rect width="600" height="900" fill="url(#vignette)"/>
+
+  <!-- Global warm-tone atmospheric overlay -->
+  <rect width="600" height="900" fill="#6a5a38" opacity="0.06"/>
+</svg>

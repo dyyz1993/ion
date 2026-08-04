@@ -2142,7 +2142,7 @@ async fn cmd_run(
     // 把 follow_up_rx 注入 agent（cmd_run_follow_up_rx 在前面 BashExtension 注册时创建）。
     // 让 outer_loop 能 drain background bash 完成通知，对齐 worker_rpc 路径。
     agent.set_follow_up_rx(cmd_run_follow_up_rx);
-    // Let each extension self-describe its tools (bash_run/skill/etc.)
+    // Let each extension self-describe its tools (bash/skill/etc.)
     agent.register_extension_tools();
 
     tracing::info!("Running agent...");

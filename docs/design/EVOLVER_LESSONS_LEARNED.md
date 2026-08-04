@@ -1,3 +1,5 @@
+> ⚠️ **本文档中的 bash_run / bash_manage 已过时。** 当前工具名：`bash`（执行）+ `get_background_process`（查状态）+ `kill_process`（杀进程）+ `write_stdin`（发 stdin）。详见 BASH_EXTENSION.md。
+
 # Evolver 经验文档 — 问题与解决方案
 
 > **状态：持续更新** — 每次 A→B 自进化过程中遇到的问题和解决方案。

@@ -97,7 +97,7 @@ pub enum UiPermissionResult {
 /// 工具名 → subject 映射
 fn tool_to_subject(tool: &str) -> &str {
     match tool {
-        "bash" | "bash_run" | "bash_kill" | "bash_send" => "command.run",
+        "bash" => "command.run",
         "read" | "grep" | "find" | "ls" => "file.read",
         "write" | "edit" => "file.write",
         "remove_file" => "file.delete",

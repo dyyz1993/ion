@@ -1,0 +1,102 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - heading "🔄 ION 扩展生命周期可视化" [level=1] [ref=e3]:
+      - generic [ref=e4]: 🔄
+      - text: ION 扩展生命周期可视化
+    - paragraph [ref=e5]: 选择左侧任一扩展，查看它在 Agent 生命周期中参与的钩子点（3D 透视主干）+ 调用的函数
+    - generic [ref=e6]: 💡 点击左侧扩展卡片 → 主干上其参与的钩子点亮发光，右侧显示细节
+  - generic [ref=e7]:
+    - complementary [ref=e8]:
+      - generic [ref=e9]: 会话级扩展（每 Worker 一份）
+      - generic [ref=e10] [cursor=pointer]:
+        - generic [ref=e12]: Bash
+        - generic [ref=e13]: rpc
+      - generic [ref=e14] [cursor=pointer]:
+        - generic [ref=e16]: Memory V0.1+V0.2
+        - generic [ref=e17]: tools
+      - generic [ref=e18] [cursor=pointer]:
+        - generic [ref=e20]: Plan
+        - generic [ref=e21]: tools
+      - generic [ref=e22] [cursor=pointer]:
+        - generic [ref=e24]: GoalSupervisor
+        - generic [ref=e25]: tools
+      - generic [ref=e26] [cursor=pointer]:
+        - generic [ref=e28]: LSP
+        - generic [ref=e29]: tools
+      - generic [ref=e30] [cursor=pointer]:
+        - generic [ref=e32]: Hooks
+        - generic [ref=e33]: rpc
+      - generic [ref=e34] [cursor=pointer]: FileSnapshot
+      - generic [ref=e37] [cursor=pointer]: FileApproval
+      - generic [ref=e40] [cursor=pointer]:
+        - generic [ref=e42]: RulesEngine
+        - generic [ref=e43]: rpc
+      - generic [ref=e44] [cursor=pointer]:
+        - generic [ref=e46]: Permission
+        - generic [ref=e47]: rpc
+      - generic [ref=e48] [cursor=pointer]: Learning
+      - generic [ref=e51] [cursor=pointer]: ToolLoopDetector
+      - generic [ref=e54]: Host 单例扩展（仅 serve 模式）
+      - generic [ref=e55] [cursor=pointer]:
+        - generic [ref=e57]: GlobalMemory V0.2
+        - generic [ref=e58]: tools
+      - generic [ref=e59] [cursor=pointer]:
+        - generic [ref=e61]: Monitor
+        - generic [ref=e62]: rpc
+    - generic [ref=e65]:
+      - generic [ref=e67]: 会话
+      - generic [ref=e70]:
+        - generic [ref=e71]: on_session_start
+        - generic [ref=e72]: 会话启动
+      - generic [ref=e75]:
+        - generic [ref=e76]: on_singleton_init
+        - generic [ref=e77]: 单例初始化（仅 serve）
+      - generic [ref=e80]:
+        - generic [ref=e81]: on_singleton_post_init
+        - generic [ref=e82]: 单例后初始化
+      - generic [ref=e83]: 输入
+      - generic [ref=e86]:
+        - generic [ref=e87]: on_input
+        - generic [ref=e88]: 用户消息进入
+      - generic [ref=e91]:
+        - generic [ref=e92]: on_system_prompt
+        - generic [ref=e93]: 系统提示词组装
+      - generic [ref=e94]: 上下文
+      - generic [ref=e97]:
+        - generic [ref=e98]: on_context
+        - generic [ref=e99]: 上下文组装（注入记忆/规则/诊断）
+      - generic [ref=e102]:
+        - generic [ref=e103]: on_model_select
+        - generic [ref=e104]: 模型选择（可覆盖）
+      - generic [ref=e105]: 工具
+      - generic [ref=e108]:
+        - generic [ref=e109]: before_tool_call
+        - generic [ref=e110]: 工具调用前（权限/拦截）
+      - generic [ref=e113]:
+        - generic [ref=e114]: on_tool_execution_start
+        - generic [ref=e115]: 工具执行开始（快照/签名）
+      - generic [ref=e118]:
+        - generic [ref=e119]: on_tool_execution_end
+        - generic [ref=e120]: 工具执行结束（诊断/drift）
+      - generic [ref=e123]:
+        - generic [ref=e124]: after_tool_call
+        - generic [ref=e125]: 工具调用后（规则注入/plan）
+      - generic [ref=e126]: 交付
+      - generic [ref=e129]:
+        - generic [ref=e130]: on_gate_check
+        - generic [ref=e131]: 目标检查（可强制重试）
+      - generic [ref=e134]:
+        - generic [ref=e135]: on_gate_retry
+        - generic [ref=e136]: Gate 重试时重置
+      - generic [ref=e137]: 结束
+      - generic [ref=e140]:
+        - generic [ref=e141]: on_turn_end
+        - generic [ref=e142]: 轮次结束（快照/重审批）
+      - generic [ref=e145]:
+        - generic [ref=e146]: on_session_shutdown
+        - generic [ref=e147]: 会话关闭（蒸馏/加工）
+      - generic [ref=e150]:
+        - generic [ref=e151]: on_singleton_shutdown
+        - generic [ref=e152]: 单例关闭
+    - complementary [ref=e153]:
+      - generic [ref=e154]: ← 点击左侧扩展查看它参与的钩子与调用

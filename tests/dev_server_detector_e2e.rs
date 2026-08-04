@@ -147,14 +147,14 @@ async fn test_non_bash_tool_ignored() {
 }
 
 #[tokio::test]
-async fn test_bash_run_tool_detected() {
-    // bash_run is the correct tool for starting background dev servers.
-    // The extension must detect ports from bash_run output too, not just bash.
+async fn test_bash_tool_detected() {
+    // bash is the correct tool for starting background dev servers.
+    // The extension must detect ports from bash output too, not just bash.
     let ext = DevServerDetectorExtension::new();
 
     let ctx = ToolExecutionContext {
         tool_call_id: "test".to_string(),
-        tool_name: "bash_run".to_string(),  // bash_run, NOT bash
+        tool_name: "bash".to_string(),  // bash, NOT bash
         args: json!({"command": "python3 -m http.server 8000"}),
         is_error: false,
         duration_ms: 100,
@@ -168,13 +168,13 @@ async fn test_bash_run_tool_detected() {
 
     assert!(
         prompt.contains("<dev_servers"),
-        "bash_run tool should trigger detection: {prompt}"
+        "bash tool should trigger detection: {prompt}"
     );
     assert!(
         prompt.contains(r#"port="8000"#),
-        "should detect port 8000 from bash_run: {prompt}"
+        "should detect port 8000 from bash: {prompt}"
     );
-    println!("✅ bash_run tool correctly detected: {prompt}");
+    println!("✅ bash tool correctly detected: {prompt}");
 }
 
 #[tokio::test]

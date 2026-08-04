@@ -64,8 +64,8 @@ SID=$($RPC --method create_session --params '{"session":"p4-events"}' 2>/dev/nul
 
 # ── Phase 4: Run bash background process (triggers extension events) ──
 $RPC --session "$SID" --method call_tool \
-    --params '{"tool":"bash_run","args":{"command":"sleep 0.2; echo event-test-done","description":"p4-event-test","background":true}}' 2>/dev/null
-pass "bash_run background process started"
+    --params '{"tool":"bash","args":{"command":"sleep 0.2; echo event-test-done","description":"p4-event-test","background":true}}' 2>/dev/null
+pass "bash background process started"
 
 # ── Phase 5: Wait for events to arrive ──
 sleep 2

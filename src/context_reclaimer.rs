@@ -58,7 +58,7 @@ const KEEP_RECENT: usize = 6;
 const MIN_RECLAIM_CHARS: usize = 200;
 
 /// Tools whose output is lowest value (reclaimed first).
-const LOW_VALUE_TOOLS: &[&str] = &["bash", "bash_run"];
+const LOW_VALUE_TOOLS: &[&str] = &["bash"];
 
 /// Tools whose output is medium value (reclaimed second).
 const MEDIUM_VALUE_TOOLS: &[&str] = &["grep", "find", "ls", "glob"];
@@ -521,7 +521,7 @@ mod tests {
     #[test]
     fn test_tool_tier_classification() {
         assert_eq!(ContextReclaimer::tool_tier("bash"), 1);
-        assert_eq!(ContextReclaimer::tool_tier("bash_run"), 1);
+        assert_eq!(ContextReclaimer::tool_tier("bash"), 1);
         assert_eq!(ContextReclaimer::tool_tier("grep"), 2);
         assert_eq!(ContextReclaimer::tool_tier("find"), 2);
         assert_eq!(ContextReclaimer::tool_tier("read"), 3);

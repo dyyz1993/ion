@@ -1,0 +1,83 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - heading "🔄 ION 扩展生命周期 · 3D" [level=1] [ref=e3]
+    - generic [ref=e4]: 🖱️拖动 · ⌨️ WASD移动 · 方向键旋转 · 点击节点看详情
+    - generic [ref=e5]:
+      - combobox [ref=e6] [cursor=pointer]:
+        - 'option "场景: 基础对话" [selected]'
+        - 'option "场景: 工具调用"'
+        - 'option "场景: 审批流程"'
+        - 'option "场景: 完整生命周期"'
+      - button "▶ 播放" [ref=e7] [cursor=pointer]
+      - button "重置" [ref=e8] [cursor=pointer]
+  - complementary [ref=e9]:
+    - generic [ref=e10]: 会话级
+    - generic [ref=e11] [cursor=pointer]: Bash
+    - generic [ref=e14] [cursor=pointer]:
+      - generic [ref=e16]: Memory
+      - generic [ref=e17]: ⚙
+    - generic [ref=e18] [cursor=pointer]:
+      - generic [ref=e20]: Plan
+      - generic [ref=e21]: ⚙
+    - generic [ref=e22] [cursor=pointer]:
+      - generic [ref=e24]: GoalSupervisor
+      - generic [ref=e25]: ⚙
+    - generic [ref=e26] [cursor=pointer]:
+      - generic [ref=e28]: LSP
+      - generic [ref=e29]: ⚙
+    - generic [ref=e30] [cursor=pointer]:
+      - generic [ref=e32]: Hooks
+      - generic [ref=e33]: ⚙
+    - generic [ref=e34] [cursor=pointer]: FileSnapshot
+    - generic [ref=e37] [cursor=pointer]: FileApproval
+    - generic [ref=e40] [cursor=pointer]:
+      - generic [ref=e42]: RulesEngine
+      - generic [ref=e43]: ⚙
+    - generic [ref=e44] [cursor=pointer]:
+      - generic [ref=e46]: Permission
+      - generic [ref=e47]: ⚙
+    - generic [ref=e48] [cursor=pointer]: Learning
+    - generic [ref=e51] [cursor=pointer]: ToolLoopDetector
+    - generic [ref=e54]: Host 单例
+    - generic [ref=e55] [cursor=pointer]:
+      - generic [ref=e57]: GlobalMemory
+      - generic [ref=e58]: ⚙
+    - generic [ref=e59] [cursor=pointer]:
+      - generic [ref=e61]: Monitor
+      - generic [ref=e62]: ⚙
+  - generic [ref=e63]:
+    - generic: 会话
+    - generic: 输入
+    - generic: 上下文
+    - generic: 工具
+    - generic: 交付
+    - generic: 结束
+    - generic: on_session_start
+    - generic: on_singleton_init
+    - generic: on_singleton_post_init
+    - generic: on_input
+    - generic: on_system_prompt
+    - generic: on_context
+    - generic: on_model_select
+    - generic: before_tool_call
+    - generic: on_tool_execution_start
+    - generic: on_tool_execution_end
+    - generic: after_tool_call
+    - generic: on_gate_check
+    - generic: on_gate_retry
+    - generic: on_turn_end
+    - generic: on_session_shutdown
+    - generic: on_singleton_shutdown
+  - generic [ref=e65]:
+    - generic [ref=e66]: 会话
+    - generic [ref=e68]: 输入
+    - generic [ref=e70]: 上下文
+    - generic [ref=e72]: 工具
+    - generic [ref=e74]: 交付
+    - generic [ref=e76]: 结束
+  - complementary [ref=e79]:
+    - generic [ref=e80]: 点击左侧扩展 或 点击 3D 节点查看详情
+  - generic [ref=e81]:
+    - generic [ref=e82]: "节点: 16"
+    - generic [ref=e83]: "激活: 0"
+    - generic [ref=e84]: "FPS: 0"
