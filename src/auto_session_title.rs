@@ -92,6 +92,7 @@ impl Extension for AutoSessionTitle {
                     "type": "session_name",
                     "name": title,
                     "session_id": sid,
+                    "timestamp": crate::session_jsonl::timestamp_iso(),
                 });
                 crate::session_jsonl::append_raw_entry(cwd, &entry);
                 tracing::info!("[auto-session-title] wrote session_name entry to jsonl");
