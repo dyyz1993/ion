@@ -485,6 +485,8 @@ def check_ext_05(dom, entries, results, html_path=""):
 
     # 05-M3: on_context 注入 diagnostics custom message
     # 注入格式: Message::Custom { custom_type: "diagnostics", content: "[diagnostics history]..." }
+    # **重要语义**：LSP 设计上有 dedup，干净代码（0 errors 0 warnings）不会注入。
+    # 所以这个指标只在「有错误」的场景才能真正 PASS；干净代码场景下标 INFO。
     diag_injected = False
     diag_count = 0
     for e in entries:
@@ -503,12 +505,27 @@ def check_ext_05(dom, entries, results, html_path=""):
                 diag_injected = True
                 diag_count += 1
     # 也检查 dom 里有 diagnostics 关键字（注入后的 user message 含 [diagnostics history]）
+    diag_in_dom = ("[diagnostics history]" in dom
+                   or "diagnostics history" in dom
+                   or "error(s)" in dom)
     if not diag_injected:
-        diag_injected = ("[diagnostics history]" in dom
-                         or "diagnostics history" in dom
-                         or "error(s)" in dom)
-    check("05-M3", "on_context 注入 <diagnostics> 到 messages", diag_injected,
-          f"diag_messages={diag_count}, in_dom={'diagnostics' in dom.lower()}")
+        diag_injected = diag_in_dom
+
+    # 判断是否有 error/warning 痕迹（决定是「该注入但没注入」还是「干净不需要注入」）
+    has_errors_in_dom = bool(re.search(r'error\[E\d{4}\]|error\(s\)', dom))
+    has_warnings_in_dom = "warning" in dom.lower()
+
+    if diag_injected:
+        check("05-M3", "on_context 注入 <diagnostics> 到 messages", True,
+              f"diag_messages={diag_count}, in_dom={diag_in_dom}")
+    elif has_errors_in_dom or has_warnings_in_dom:
+        # 有错误痕迹但没注入 → 真 fail
+        check("05-M3", "on_context 注入 <diagnostics> 到 messages", False,
+              f"FAIL: errors/warnings present but no injection (diag_msg={diag_count})")
+    else:
+        # 干净代码场景：dedup 跳过注入是正确行为，标 INFO（仍 PASS）
+        check("05-M3", "on_context 注入（dedup: 干净代码不注入，正确）", True,
+              f"clean_code=True, diag_messages={diag_count} (expected 0)")
 
     # 05-M4: 注入的 diagnostics 含 error 或 warning 计数
     has_error_or_warning = bool(re.search(r'\d+\s+error\(s\)|\d+\s+warning\(s\)|error\[E\d{4}\]|warning:', dom))
