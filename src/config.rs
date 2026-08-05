@@ -560,29 +560,62 @@ impl IonConfig {
     /// `ion_provider::types::Model` by looking up `tier_models[tier]`
     /// (format: "provider/model_id") and matching against `providers[provider].models`.
     ///
-    /// Returns None if:
-    /// - tier not in tier_models
-    /// - format isn't "provider/model_id"
-    /// - provider not in providers map
-    /// - model_id not found in provider's models list
+    /// **Fallback**: if tier is not configured in `tier_models`, falls back
+    /// to `default_model` + `default_provider` (user's main model). This way
+    /// users who don't bother configuring tiers still get a working title
+    /// generator / goal planner / etc. — three tiers all point at the same
+    /// default model.
     ///
-    /// Used by extensions that need a specific tier (AutoSessionTitle wants
-    /// "fast" to avoid burning the expensive pro/max model on title generation).
+    /// Returns None only if neither tier nor default is resolvable
+    /// (truly broken config).
     pub fn resolve_tier_model(&self, tier: &str) -> Option<ion_provider::types::Model> {
-        let tier_str = self.tier_models.get(tier)?;
-        let parts: Vec<&str> = tier_str.splitn(2, '/').collect();
-        if parts.len() != 2 {
-            return None;
+        // 1. Try tier_models first
+        if let Some(tier_str) = self.tier_models.get(tier) {
+            let parts: Vec<&str> = tier_str.splitn(2, '/').collect();
+            if parts.len() == 2 {
+                let provider = parts[0];
+                let model_id = parts[1];
+                if let Some(p) = self.providers.get(provider) {
+                    if let Some(m) = p.models.iter().find(|m| m.id == model_id) {
+                        return Some(ion_provider::types::Model {
+                            id: m.id.clone(),
+                            name: m.name.clone().unwrap_or_else(|| m.id.clone()),
+                            api: p.api.clone(),
+                            provider: provider.to_string(),
+                            base_url: p.base_url.clone(),
+                            reasoning: m.reasoning.unwrap_or(false),
+                            input: vec!["text".into()],
+                            cost: ion_provider::types::Cost::default(),
+                            context_window: m.context_window.unwrap_or(128000),
+                            max_tokens: m.max_tokens.unwrap_or(32000),
+                            compat: None,
+                            headers: p.headers.clone(),
+                        });
+                    }
+                }
+            }
+            // tier_models[tier] exists but malformed → log and continue to default
+            tracing::warn!(
+                "[config] tier_models['{tier}'] = '{tier_str}' could not be resolved \
+                 (expected 'provider/model_id' with provider+model in providers map), \
+                 falling back to default_model"
+            );
         }
-        let provider = parts[0];
-        let model_id = parts[1];
-        let p = self.providers.get(provider)?;
-        let m = p.models.iter().find(|m| m.id == model_id)?;
+
+        // 2. Fallback: default_model + default_provider
+        let default_provider = self.default_provider.as_deref()?;
+        let default_model_id = self.default_model.as_deref()?;
+        let p = self.providers.get(default_provider)?;
+        let m = p.models.iter().find(|m| m.id == default_model_id)?;
+        tracing::info!(
+            "[config] tier '{tier}' not in tier_models, using default \
+             ({default_provider}/{default_model_id})"
+        );
         Some(ion_provider::types::Model {
             id: m.id.clone(),
             name: m.name.clone().unwrap_or_else(|| m.id.clone()),
             api: p.api.clone(),
-            provider: provider.to_string(),
+            provider: default_provider.to_string(),
             base_url: p.base_url.clone(),
             reasoning: m.reasoning.unwrap_or(false),
             input: vec!["text".into()],

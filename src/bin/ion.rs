@@ -357,15 +357,16 @@ enum Commands {
         #[arg(long, default_value = "{}")]
         params: String,
     },
-    /// Quick-test the internal complete_tier() LLM helper.
-    /// Reads tier_models[tier] from config.json → resolves Model + api_key
-    /// → calls LLM → prints response.
+    /// One-shot LLM call — quick-test the internal complete_tier() helper.
+    /// Reads tier_models[tier] from config.json (falls back to default_model)
+    /// → resolves Model + api_key → calls LLM → prints response.
     ///
     /// Examples:
-    ///   ion complete --tier fast "hello"
-    ///   ion complete --tier pro --json --system "Reply JSON {greeting}" "user X"
-    ///   ion complete --tier max --system "Summarize" "long text..."
-    Complete {
+    ///   ion llm --tier fast "hello"
+    ///   ion llm --tier pro --json --system "Reply JSON {greeting}" "user X"
+    ///   ion llm --tier max --system "Summarize" "long text..."
+    ///   ion llm "hi"                    (default tier=fast)
+    Llm {
         /// Tier name: fast / pro / max
         #[arg(long, default_value = "fast")]
         tier: String,
@@ -3613,9 +3614,16 @@ async fn cmd_complete(tier: &str, system: Option<&str>, json: bool, message: &st
     registry.register_builtins();
     let registry = std::sync::Arc::new(registry);
 
-    // Show what model was resolved
+    // Show what model was resolved (with fallback info)
+    let tier_in_models = cfg.tier_models.get(tier).is_some();
     match cfg.resolve_tier_model(tier) {
         Some(m) => {
+            let source = if tier_in_models {
+                format!("tier_models['{tier}']")
+            } else {
+                format!("default (tier '{tier}' not configured, using default_model)")
+            };
+            println!("📍 source: {source}");
             println!(
                 "🤖 model: {} ({}, base_url={}, has_api_key={})",
                 m.id,
@@ -3626,7 +3634,9 @@ async fn cmd_complete(tier: &str, system: Option<&str>, json: bool, message: &st
         }
         None => {
             eprintln!(
-                "❌ tier '{tier}' not resolvable — check config.json tier_models['{tier}']"
+                "❌ tier '{tier}' not resolvable AND no default_model/default_provider \
+                 configured. Set tier_models['{tier}'] OR default_model+default_provider \
+                 in config.json."
             );
             std::process::exit(1);
         }
@@ -4312,7 +4322,7 @@ async fn main() {
             replay,
         }) => cmd_subscribe(session.as_deref(), extension.as_deref(), *ui, *replay).await,
         Some(Commands::ListAgents) => cmd_list_agents().await,
-        Some(Commands::Complete { tier, system, json, message }) => {
+        Some(Commands::Llm { tier, system, json, message }) => {
             cmd_complete(tier, system.as_deref(), *json, message).await;
         }
         Some(Commands::ListModels { search }) => cmd_list_models(search).await,
