@@ -837,7 +837,7 @@ impl Default for GoalSupervisorExtension {
 /// objective. On any failure (LLM error, parse error), returns None → CI fallback.
 pub async fn generate_checks_via_llm(
     registry: &ion_provider::registry::ApiRegistry,
-    model: &ion_provider::types::Model,
+    _model: &ion_provider::types::Model,
     objective: &str,
 ) -> Option<Vec<Check>> {
     let system_prompt = format!(
@@ -850,31 +850,12 @@ pub async fn generate_checks_via_llm(
          - Commands must be shell-safe.\n- Output ONLY the JSON array, no markdown.\n\n\
          Objective: {objective}"
     );
-    let context = ion_provider::types::Context {
-        system_prompt: Some(system_prompt),
-        messages: vec![],
-        tools: None,
-    };
-    let options = ion_provider::types::StreamOptions {
-        max_tokens: Some(2000),
-        api_key: None,
-        reasoning: None,
-        timeout_ms: None,
-        max_retries: None,
-        response_format: None,
-    };
-    let msg = ion_provider::registry::complete(registry, model, &context, Some(&options))
+    // ★ 迁移到 query_tier：之前 api_key=None 导致 LLM 调用失败（MissingApiKey）。
+    // query_tier 自动从 config.json resolve tier + api_key。
+    let text = crate::config::IonConfig::load()
+        .query_tier(registry, "fast", &system_prompt, objective, false)
         .await
         .ok()?;
-    let text: String = msg
-        .content
-        .iter()
-        .filter_map(|c| match c {
-            ion_provider::types::AssistantContentBlock::Text(t) => Some(t.text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("");
     // Strip markdown fences.
     let text = text
         .trim()
@@ -916,7 +897,7 @@ pub async fn generate_checks_via_llm(
 /// Returns (GoalPlan, Vec<Check>) on success, or None on failure.
 pub async fn generate_goal_plan(
     registry: &ion_provider::registry::ApiRegistry,
-    model: &ion_provider::types::Model,
+    _model: &ion_provider::types::Model,
     objective: &str,
 ) -> Option<(GoalPlan, Vec<Check>)> {
     let system_prompt = format!(
@@ -935,32 +916,11 @@ pub async fn generate_goal_plan(
          - Output ONLY the JSON object, no markdown fences\n\n\
          Objective: {objective}"
     );
-    let context = ion_provider::types::Context {
-        system_prompt: Some(system_prompt),
-        messages: vec![],
-        tools: None,
-    };
-    let options = ion_provider::types::StreamOptions {
-        max_tokens: Some(3000),
-        api_key: None,
-        reasoning: None,
-        timeout_ms: None,
-        max_retries: None,
-        response_format: None,
-    };
-
-    let msg = ion_provider::registry::complete(registry, model, &context, Some(&options))
+    // ★ 迁移到 query_tier（同 generate_checks_via_llm）
+    let text: String = crate::config::IonConfig::load()
+        .query_tier(registry, "fast", &system_prompt, objective, false)
         .await
         .ok()?;
-    let text: String = msg
-        .content
-        .iter()
-        .filter_map(|c| match c {
-            ion_provider::types::AssistantContentBlock::Text(t) => Some(t.text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("");
 
     // Strip markdown fences.
     let text = text

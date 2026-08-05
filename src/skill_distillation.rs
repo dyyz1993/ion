@@ -29,7 +29,7 @@ pub async fn run_skill_distillation(
     session_id: &str,
     project_name: &str,
     registry: &Arc<ion_provider::registry::ApiRegistry>,
-    model: &ion_provider::types::Model,
+    _model: &ion_provider::types::Model,
 ) -> Result<Option<PathBuf>, String> {
     tracing::info!(
         "[skill-distill] processing session {} for project {}",
@@ -375,35 +375,6 @@ fn now_iso8601() -> String {
 ///   1. Environment variable (e.g. ZAI_API_KEY / ION_API_KEY)
 ///   2. config.json `providers[provider].api_key`
 ///   3. auth.json `provider_api_keys[provider]` and top-level `api_key`
-///
-/// Returns None if no key is found — caller will get a MissingApiKey error
-/// from the provider (which is logged but doesn't crash).
-fn resolve_api_key_for(provider: &str) -> Option<String> {
-    // 1. Env var (reuse ion-provider' resolver)
-    if let Some(k) = ion_provider::env_keys::get_env_api_key(provider) {
-        return Some(k);
-    }
-    // 2. config.json providers.<name>.api_key
-    let cfg = crate::config::IonConfig::load();
-    if let Some(p) = cfg.providers.get(provider)
-        && let Some(k) = &p.api_key
-        && !k.is_empty()
-    {
-        return Some(k.clone());
-    }
-    // 3. auth.json (legacy field structure)
-    let auth = crate::auth::AuthStorage::load();
-    if let Some(k) = auth.provider_api_keys.get(provider) {
-        return Some(k.clone());
-    }
-    if let Some(k) = &auth.api_key
-        && !k.is_empty()
-    {
-        return Some(k.clone());
-    }
-    None
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Unit tests — pure functions only (no LLM, no filesystem)
 // ═══════════════════════════════════════════════════════════════════════════
