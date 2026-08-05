@@ -137,56 +137,21 @@ Rules:
 
 Output (Markdown only, no JSON, no code fence around the whole thing):"#;
 
-    let context = ion_provider::types::Context {
-        system_prompt: Some(system_prompt.into()),
-        messages: vec![ion_provider::types::Message::User(
-            ion_provider::types::UserMessage {
-                role: "user".into(),
-                content: vec![ion_provider::types::ContentBlock::Text(
-                    ion_provider::types::TextContent {
-                        text: format!(
-                            "Project: {project_name}\nSession ID: {session_id}\n\nTranscript:\n{conversation_text}"
-                        ),
-                        text_signature: None,
-                    },
-                )],
-                timestamp: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0),
-                source: ion_provider::types::MessageSource::Prompt,
-            },
-        )],
-        tools: None,
-    };
-
-    let options = ion_provider::StreamOptions {
-        max_tokens: Some(2048),
-        api_key: resolve_api_key_for(&model.provider),
-        reasoning: None,
-        timeout_ms: Some(90000),
-        max_retries: None,
-        response_format: None,
-    };
-
-    let response = ion_provider::registry::complete(registry, model, &context, Some(&options))
-        .await
-        .map_err(|e| format!("LLM call failed: {e}"))?;
-
-    // Extract text from response
-    let skill_text: String = response
-        .content
-        .iter()
-        .filter_map(|c| {
-            if let ion_provider::types::AssistantContentBlock::Text(t) = c {
-                Some(t.text.clone())
-            } else {
-                None
-            }
-        })
-        .collect::<String>()
-        .trim()
-        .to_string();
+    // ★ Migrated to IonConfig::query_tier (was 50 lines of manual Context +
+    // StreamOptions + complete + text extraction). query_tier handles tier
+    // resolution + api_key + options construction internally.
+    let user_msg = format!(
+        "Project: {project_name}\nSession ID: {session_id}\n\nTranscript:\n{conversation_text}"
+    );
+    let skill_text = crate::config::IonConfig::load()
+        .query_tier(
+            registry,
+            "fast",  // skill 蒸馏用 fast tier（经济）
+            &system_prompt,
+            &user_msg,
+            false,   // 不需要 JSON
+        )
+        .await?;
 
     // Step 6: Skip if LLM declined
     if skill_text.is_empty() || skill_text == "NO_SKILL" || skill_text.starts_with("NO_SKILL") {
