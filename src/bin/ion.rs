@@ -2526,18 +2526,15 @@ async fn cmd_run(
         }
     } // end for
 
-    // ★ 生成 session 标题并写入 SessionIndex（让 ion sessions 命令看到标题）。
-    // **不**写 custom_message entry 到 session.jsonl——顶部 banner 已经从
-    // 首条 user message 提取标题展示了，对话流底部再来一条 session_name
-    // custom entry 是冗余信息（用户反馈：标题不该在底部）。
+    // ★ 生成 session 标题，写入 SessionIndex + session.jsonl（可溯源）。
+    // session.jsonl 里的 custom_message entry 是**溯源记录**——让 export 能
+    // 从数据里追踪到 "title 是什么时候、由什么生成的"。
+    // HTML 渲染时这个 entry 用 CSS display:none 隐藏（不污染对话流），
+    // 但数据层必须存在。
     //
-    // ★★ 优先级（用户反馈：「title 的修改怎么没看到呢」）：
+    // 优先级：
     //   1. SessionIndex 已有 name（AutoSessionTitle 扩展用 LLM 生成的简短标题）→ 用这个
     //   2. 否则 fallback 到首条 user message（截断到 60 字符）
-    //
-    // 之前不管 SessionIndex 有没 LLM 标题，都强制用首条 user message 覆盖，
-    // 导致 HTML <title> 显示成 "按以下 10 步顺序执行：1. 用 bash background=true 启..."
-    // 这种长 prompt 片段，而不是 LLM 生成的简短标题（如 "DevServer 多端口验证"）。
     {
         // 1. 优先用 SessionIndex 已有 name（LLM 生成的）
         let existing_name = ion::session_index::SessionIndex::load()
@@ -2586,6 +2583,67 @@ async fn cmd_run(
 
         ion::session_index::SessionIndex::set_name(session_id, &title);
         tracing::info!("[cmd_run] set session name in index: \"{title}\"");
+
+        // ★ 写 session_name custom entry 到 session.jsonl（可溯源）。
+        // 去重：如果已有 session_name entry，更新 content + timestamp，不重复追加。
+        // HTML 渲染时这个 entry 用 CSS display:none 隐藏——数据在但不污染对话流。
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let path = ion::session_jsonl::resolve_session_file(&cwd);
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut entries: Vec<serde_json::Value> = content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+
+        let now_iso = ion::session_jsonl::timestamp_iso();
+        let new_content_str = format!("📝 Session title: {title}");
+
+        // 去重：找已有的 session_name entry
+        let existing_idx = entries.iter().position(|e| {
+            e.get("type").and_then(|v| v.as_str()) == Some("custom_message")
+                && e.get("customType").and_then(|v| v.as_str()) == Some("session_name")
+        });
+
+        if let Some(idx) = existing_idx {
+            if let Some(obj) = entries[idx].as_object_mut() {
+                obj.insert("content".into(), serde_json::json!(new_content_str));
+                obj.insert("timestamp".into(), serde_json::json!(now_iso));
+            }
+        } else {
+            let last_id = entries.iter()
+                .filter_map(|e| e.get("id").and_then(|v| v.as_str()))
+                .last()
+                .unwrap_or(session_id)
+                .to_string();
+            let entry = serde_json::json!({
+                "type": "custom_message",
+                "customType": "session_name",
+                "content": new_content_str,
+                "display": false,
+                "id": ion::session_jsonl::generate_id(),
+                "parentId": last_id,
+                "timestamp": now_iso,
+            });
+            entries.push(entry);
+        }
+
+        // 重写文件
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)
+        {
+            for (i, e) in entries.iter().enumerate() {
+                if i > 0 { let _ = writeln!(f); }
+                let _ = write!(f, "{}", serde_json::to_string(e).unwrap_or_default());
+            }
+        }
+        tracing::info!("[cmd_run] wrote session_name custom entry to session.jsonl (display=false)");
     }
 
     // Print summary (verbose or schema mode)
