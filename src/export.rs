@@ -1243,27 +1243,22 @@ document.addEventListener('DOMContentLoaded', function() {
         })
         .unwrap_or_else(|| "unknown".to_string());
 
-    // session 名称：优先 header.name > agent > spawnMeta.spawnedBy > cwd 目录名
-    let session_name = header
-        .get("name")
-        .and_then(|v| v.as_str())
-        .or_else(|| header.get("agent").and_then(|v| v.as_str()))
-        .or_else(|| {
-            header
-                .get("spawnMeta")
-                .and_then(|m| m.get("spawnedBy"))
-                .and_then(|v| v.as_str())
-        })
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            // 从 cwd 推导：/Users/xxx/ion → "ion"
-            header
-                .get("cwd")
-                .and_then(|v| v.as_str())
-                .and_then(|cwd| cwd.rsplit('/').next())
-                .unwrap_or("Session")
-                .to_string()
-        });
+    // ★ banner title：直接用前面解析的 session_name 变量（line 662），
+    // 不再从 header 重新提取。之前这里定义了同名变量覆盖了正确的
+    // LLM 生成的标题（从 SessionIndex 拿到的），导致 banner 显示
+    // agent name "developer" 而不是真正的 session title。
+    // session_name 变量已经 fallback 链完整（session.jsonl entry →
+    // SessionIndex → 首条 user message），不需要重复提取。
+    let banner_title = session_name.clone();
+    let banner_title = if banner_title.is_empty() {
+        header
+            .get("agent")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Session")
+            .to_string()
+    } else {
+        banner_title
+    };
 
     // 构造统计 banner HTML
     let mut tool_badges = String::new();
@@ -1295,7 +1290,7 @@ document.addEventListener('DOMContentLoaded', function() {
   <span style="color:#aaa;">📝 {} entries</span>
   <span style="display:flex;gap:4px;flex-wrap:wrap;">{}</span>
 </div>"#,
-        session_name,
+        banner_title,
         model,
         total_tool_calls,
         entries.len(),
