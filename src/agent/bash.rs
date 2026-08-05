@@ -46,6 +46,23 @@ fn new_stdin_map() -> StdinMap {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
+/// Wrap a shell command so stderr is merged into stdout (commit a699d58).
+///
+/// Why: spawn_watcher only reads child.stdout. stderr was piped but
+/// discarded, so commands like `python3 -m http.server 9999` (port
+/// already in use) returned exit=1 with empty body — the OSError
+/// traceback was on stderr.
+///
+/// Fix: prepend `exec 2>&1 ;` so the shell redirects its own stderr fd
+/// to stdout before running the command. Shell-layer merge is simpler
+/// than Rust Arc<Mutex> parallel reader and preserves original order.
+///
+/// Public(crate) so tests can verify the wrapping logic without spawning
+/// real processes.
+pub(crate) fn merge_stderr_to_stdout(command: &str) -> String {
+    format!("exec 2>&1 ; {}", command)
+}
+
 /// Path to processes.json — session 级别（每个 session 独立存储）。
 fn processes_json_path(cwd: &str, session_id: &str) -> PathBuf {
     crate::paths::bash_processes_path(cwd, session_id)
@@ -258,7 +275,7 @@ impl Tool for BashRunTool {
             // 之前 stderr 被 piped 但 spawn_watcher 不读 → 错误信息全丢
             // （exit=1 时端口占用/命令不存在的错误全在 stderr）。
             // Shell 层合并比 Rust 层 Arc<Mutex> 简单，且保持原始输出顺序。
-            let merged_command = format!("exec 2>&1 ; {}", command);
+            let merged_command = merge_stderr_to_stdout(&command);
             let child = match tokio::process::Command::new("sh")
                 .args(["-c", &merged_command])
                 .stdin(std::process::Stdio::piped())
@@ -1244,5 +1261,66 @@ mod tests {
         // Non-string bid → empty string.
         let params = serde_json::json!({"bid": 42});
         assert_eq!(parse_pid(&params), "");
+    }
+
+    // ── stderr merge tests (commit a699d58) ──
+
+    #[test]
+    fn test_merge_stderr_to_stdout_basic() {
+        let result = merge_stderr_to_stdout("echo hello");
+        assert_eq!(result, "exec 2>&1 ; echo hello");
+    }
+
+    #[test]
+    fn test_merge_stderr_to_stdout_preserves_complex_commands() {
+        // 含 ; & | 等特殊字符的 command 也能正确拼接
+        let cmd = "python3 -m http.server 9999 ; echo done";
+        let result = merge_stderr_to_stdout(cmd);
+        assert_eq!(result, format!("exec 2>&1 ; {}", cmd));
+    }
+
+    #[test]
+    fn test_merge_stderr_to_stdout_empty_command() {
+        // 空 command 也应该能拼接（边界情况）
+        let result = merge_stderr_to_stdout("");
+        assert_eq!(result, "exec 2>&1 ; ");
+    }
+
+    /// End-to-end: 用 tokio spawn 真实验证 stderr 被 redirect 到 stdout。
+    /// 这是「为什么这个函数存在」的回归测试——如果有人移除了 exec 2>&1，
+    /// 这测试会立刻 fail（因为 stderr 不会出现在 stdout pipe 里）。
+    #[tokio::test]
+    async fn test_stderr_actually_merged_in_real_spawn() {
+        let merged = merge_stderr_to_stdout("echo STDOUT_LINE; echo STDERR_LINE >&2");
+        let output = tokio::process::Command::new("sh")
+            .args(["-c", &merged])
+            .output()
+            .await
+            .expect("sh should spawn");
+        let combined = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            combined.contains("STDOUT_LINE"),
+            "stdout should contain STDOUT_LINE: {combined:?}"
+        );
+        // ★ 关键断言：STDERR_LINE 也在 stdout pipe 里（被 exec 2>&1 重定向）
+        assert!(
+            combined.contains("STDERR_LINE"),
+            "stderr should be merged into stdout: {combined:?}"
+        );
+    }
+
+    /// 反向验证：不加 exec 2>&1 时，stderr 不会出现在 stdout（证明 merge 起作用）。
+    #[tokio::test]
+    async fn test_stderr_not_merged_without_wrapper() {
+        let output = tokio::process::Command::new("sh")
+            .args(["-c", "echo STDOUT_LINE; echo STDERR_LINE >&2"])
+            .output()
+            .await
+            .expect("sh should spawn");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stdout.contains("STDOUT_LINE"));
+        assert!(!stdout.contains("STDERR_LINE"), "without merge, stderr should NOT be in stdout");
+        assert!(stderr.contains("STDERR_LINE"), "without merge, stderr should be in stderr pipe");
     }
 }

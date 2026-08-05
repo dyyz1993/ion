@@ -3561,22 +3561,25 @@ async fn cmd_recordings() {
     }
 }
 
-async fn cmd_list_agents() {
-    // 颜色名 → ANSI code（让 list-agents 输出有颜色，匹配 agent 配置的 color 字段）
-    fn color_ansi(name: &Option<String>) -> &'static str {
-        match name.as_deref().unwrap_or("") {
-            "green" | "bright_green" => "\x1b[32m",
-            "red" | "bright_red" => "\x1b[31m",
-            "yellow" | "bright_yellow" => "\x1b[33m",
-            "blue" | "bright_blue" => "\x1b[34m",
-            "magenta" | "purple" | "bright_magenta" => "\x1b[35m",
-            "cyan" | "bright_cyan" => "\x1b[36m",
-            "white" | "bright_white" => "\x1b[37m",
-            "orange" => "\x1b[38;5;208m", // 256-color orange
-            "gray" | "grey" => "\x1b[90m",
-            _ => "\x1b[0m", // 默认无色
-        }
+/// Map agent color name (from frontmatter `color:` field) to ANSI escape code.
+/// Used by cmd_list_agents to colorize the NAME column.
+/// Public(crate) so tests in this binary's tests module can exercise it.
+pub(crate) fn color_ansi(name: &Option<String>) -> &'static str {
+    match name.as_deref().unwrap_or("") {
+        "green" | "bright_green" => "\x1b[32m",
+        "red" | "bright_red" => "\x1b[31m",
+        "yellow" | "bright_yellow" => "\x1b[33m",
+        "blue" | "bright_blue" => "\x1b[34m",
+        "magenta" | "purple" | "bright_magenta" => "\x1b[35m",
+        "cyan" | "bright_cyan" => "\x1b[36m",
+        "white" | "bright_white" => "\x1b[37m",
+        "orange" => "\x1b[38;5;208m", // 256-color orange
+        "gray" | "grey" => "\x1b[90m",
+        _ => "\x1b[0m", // 默认无色
     }
+}
+
+async fn cmd_list_agents() {
     const RESET: &str = "\x1b[0m";
 
     fn print_agent(a: &ion::agent_config::AgentConfig, suffix: &str) {
@@ -6886,6 +6889,49 @@ mod tests {
             }
         }
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    // ── color_ansi tests (commit d5b636a) ──
+    // list-agents NAME 列颜色映射。验证所有支持的 color 名 + 默认 fallback。
+
+    #[test]
+    fn test_color_ansi_basic_8() {
+        assert_eq!(color_ansi(&Some("green".into())), "\x1b[32m");
+        assert_eq!(color_ansi(&Some("red".into())), "\x1b[31m");
+        assert_eq!(color_ansi(&Some("yellow".into())), "\x1b[33m");
+        assert_eq!(color_ansi(&Some("blue".into())), "\x1b[34m");
+        assert_eq!(color_ansi(&Some("magenta".into())), "\x1b[35m");
+        assert_eq!(color_ansi(&Some("cyan".into())), "\x1b[36m");
+        assert_eq!(color_ansi(&Some("white".into())), "\x1b[37m");
+    }
+
+    #[test]
+    fn test_color_ansi_aliases() {
+        // purple 是 magenta 的别名（用户常用）
+        assert_eq!(color_ansi(&Some("purple".into())), "\x1b[35m");
+        // gray / grey 都映射到 bright black (90)
+        assert_eq!(color_ansi(&Some("gray".into())), "\x1b[90m");
+        assert_eq!(color_ansi(&Some("grey".into())), "\x1b[90m");
+        // bright_ 前缀也支持
+        assert_eq!(color_ansi(&Some("bright_green".into())), "\x1b[32m");
+        assert_eq!(color_ansi(&Some("bright_red".into())), "\x1b[31m");
+    }
+
+    #[test]
+    fn test_color_ansi_orange_256color() {
+        // orange 不在基本 8 色里，用 256-color 208
+        assert_eq!(color_ansi(&Some("orange".into())), "\x1b[38;5;208m");
+    }
+
+    #[test]
+    fn test_color_ansi_none_and_unknown() {
+        // None（agent 没设 color）→ 默认无色
+        assert_eq!(color_ansi(&None), "\x1b[0m");
+        // 空字符串 → 默认
+        assert_eq!(color_ansi(&Some(String::new())), "\x1b[0m");
+        // 未识别的颜色名 → 默认（不 panic）
+        assert_eq!(color_ansi(&Some("hotpink".into())), "\x1b[0m");
+        assert_eq!(color_ansi(&Some("rainbow".into())), "\x1b[0m");
     }
 }
 

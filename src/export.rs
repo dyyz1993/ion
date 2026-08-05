@@ -2202,6 +2202,110 @@ mod tests {
         assert!(msg.get("is_error").is_none());
     }
 
+    // ── Custom variant conversion tests ──
+    // Covers commit e388e0d: Custom variant must be flattened to type=custom_message
+    // so pi template's renderEntry (which checks entry.type === 'custom_message')
+    // actually renders bash_result / dev_servers / diagnostics as hook-message cards.
+    // Without this, all Custom messages were silently dropped from exported HTML.
+
+    #[test]
+    fn test_convert_custom_variant_sets_role_custom() {
+        // Custom variant 必须设 role="custom"，否则 pi template 不识别。
+        let entry = json!({
+            "type": "message",
+            "id": "e1",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {
+                "Custom": {
+                    "role": "custom",
+                    "customType": "bash_result",
+                    "content": "<bash_result bid=\"100000\" exit=\"0\">output</bash_result>",
+                    "display": true
+                }
+            }
+        });
+        let pi = convert_entry(&entry);
+        let msg = pi.get("message").unwrap();
+        // role 应该是 "custom"（之前漏了这个分支，导致 role 为 undefined）
+        assert_eq!(msg.get("role").unwrap(), &json!("custom"));
+        assert!(msg.get("Custom").is_none(), "variant wrapper should be flattened");
+    }
+
+    #[test]
+    fn test_convert_custom_bash_result_preserves_content() {
+        // bash_result content 不能丢——LLM/用户靠它看输出。
+        let entry = json!({
+            "type": "message",
+            "id": "e1",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {
+                "Custom": {
+                    "role": "custom",
+                    "customType": "bash_result",
+                    "content": "Traceback ... OSError: Address already in use",
+                    "display": true
+                }
+            }
+        });
+        let pi = convert_entry(&entry);
+        let msg = pi.get("message").unwrap();
+        assert_eq!(
+            msg.get("content").unwrap(),
+            &json!("Traceback ... OSError: Address already in use")
+        );
+        assert_eq!(msg.get("customType").unwrap(), &json!("bash_result"));
+        assert_eq!(msg.get("display").unwrap(), &json!(true));
+    }
+
+    #[test]
+    fn test_convert_custom_dev_servers() {
+        // dev_servers XML 注入也是 Custom 变体
+        let entry = json!({
+            "type": "message",
+            "id": "e1",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {
+                "Custom": {
+                    "role": "custom",
+                    "customType": "dev_servers",
+                    "content": "<dev_servers><server port=\"8765\"/></dev_servers>",
+                    "display": true
+                }
+            }
+        });
+        let pi = convert_entry(&entry);
+        let msg = pi.get("message").unwrap();
+        assert_eq!(msg.get("role").unwrap(), &json!("custom"));
+        assert_eq!(msg.get("customType").unwrap(), &json!("dev_servers"));
+        assert!(msg.get("content").unwrap().as_str().unwrap().contains("8765"));
+    }
+
+    #[test]
+    fn test_convert_custom_diagnostics() {
+        // diagnostics 含 error/warning 分类信息
+        let entry = json!({
+            "type": "message",
+            "id": "e1",
+            "parentId": null,
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {
+                "Custom": {
+                    "role": "custom",
+                    "customType": "diagnostics",
+                    "content": "<diagnostics count=\"2\" has_errors=\"true\">...</diagnostics>",
+                    "display": true
+                }
+            }
+        });
+        let pi = convert_entry(&entry);
+        let msg = pi.get("message").unwrap();
+        assert_eq!(msg.get("customType").unwrap(), &json!("diagnostics"));
+        assert!(msg.get("content").unwrap().as_str().unwrap().contains("has_errors"));
+    }
+
     #[test]
     fn test_convert_turn_summary() {
         let entry = json!({

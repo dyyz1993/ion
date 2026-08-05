@@ -112,6 +112,14 @@ impl LspExtension {
         Arc::clone(&self.has_errors)
     }
 
+    /// Test-only: set bg_check_ready flag (simulates background cargo check
+    /// having fresh results ready to inject). Without this, on_context returns
+    /// early and tests can't exercise the injection path.
+    #[doc(hidden)]
+    pub fn set_bg_check_ready_for_test(&self, v: bool) {
+        self.bg_check_ready.store(v, Ordering::SeqCst);
+    }
+
     /// Create an LspExtension with shared diagnostics (for LspCheckTool).
     pub fn new_with_shared(
         diagnostics: Arc<Mutex<Vec<Diagnostic>>>,
@@ -1423,5 +1431,100 @@ mod tests {
         let diags = LspExtension::parse_cargo_check_json(input);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].suggestion, "");
+    }
+
+    // ── on_context injection tests (commit 715b887) ──
+    // User feedback: '0 errors 不用展示出来，有就有没有就没有'
+    // Fix: on_context returns early if diags.is_empty(), even when bg_check_ready=true.
+    // Before fix: every successful build injected <diagnostics count=0> noise.
+
+    #[tokio::test]
+    async fn test_on_context_no_inject_when_bg_check_not_ready() {
+        // bg_check_ready=false（默认）→ 不注入，不阻塞 LLM
+        let ext = LspExtension::new();
+        let mut messages: Vec<crate::agent::messages::Message> = Vec::new();
+        let before = messages.len();
+        ext.on_context(&mut messages).await.expect("on_context ok");
+        assert_eq!(messages.len(), before, "no injection when bg_check_ready=false");
+    }
+
+    #[tokio::test]
+    async fn test_on_context_no_inject_when_diagnostics_empty() {
+        // ★ 核心修复：bg_check_ready=true 但 diags 空 → 也不注入
+        // 之前这里会注入 <diagnostics count=0>，污染对话。
+        let ext = LspExtension::new();
+        ext.set_bg_check_ready_for_test(true);
+        // diagnostics 默认空（new() 初始化为 vec![]）
+        let mut messages: Vec<crate::agent::messages::Message> = Vec::new();
+        ext.on_context(&mut messages).await.expect("on_context ok");
+        assert_eq!(
+            messages.len(),
+            0,
+            "clean build (empty diags) must NOT inject — user feedback: 有就有，没有就没有"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_on_context_injects_when_diagnostics_present() {
+        // diags 非空 + bg_check_ready=true → 应该注入 Custom message
+        let ext = LspExtension::new();
+        let diags_handle = ext.get_shared_diagnostics();
+        diags_handle.lock().await.push(Diagnostic {
+            severity: "error".into(),
+            file: "src/lib.rs".into(),
+            line: 42,
+            column: 5,
+            code: "E0308".into(),
+            message: "mismatched types".into(),
+            suggestion: String::new(),
+        });
+        ext.set_bg_check_ready_for_test(true);
+
+        let mut messages: Vec<crate::agent::messages::Message> = Vec::new();
+        ext.on_context(&mut messages).await.expect("on_context ok");
+        assert_eq!(
+            messages.len(),
+            1,
+            "non-empty diags should inject exactly one Custom message"
+        );
+        // 验证注入的是 Custom 类型
+        match &messages[0] {
+            crate::agent::messages::Message::Custom(c) => {
+                assert_eq!(c.custom_type, "diagnostics");
+                match &c.content {
+                    ion_provider::types::CustomContent::Text(s) => {
+                        assert!(s.contains("E0308"), "content should reference error code");
+                    }
+                    other => panic!("expected Text content, got {other:?}"),
+                }
+            }
+            other => panic!("expected Custom, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_on_context_dedup_skips_identical() {
+        // diags 跟上次一样 → 应该 dedup 跳过（不重复注入）
+        let ext = LspExtension::new();
+        let diags_handle = ext.get_shared_diagnostics();
+        diags_handle.lock().await.push(Diagnostic {
+            severity: "error".into(),
+            file: "src/lib.rs".into(),
+            line: 1,
+            column: 1,
+            code: "E0308".into(),
+            message: "err".into(),
+            suggestion: String::new(),
+        });
+        ext.set_bg_check_ready_for_test(true);
+
+        let mut messages: Vec<crate::agent::messages::Message> = Vec::new();
+        // 第一次注入
+        ext.on_context(&mut messages).await.expect("ok");
+        assert_eq!(messages.len(), 1, "first call should inject");
+        // 重置 ready，再次调用——diags 没变，应该 dedup
+        ext.set_bg_check_ready_for_test(true);
+        ext.on_context(&mut messages).await.expect("ok");
+        assert_eq!(messages.len(), 1, "second call with same diags should dedup");
     }
 }
