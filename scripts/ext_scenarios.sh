@@ -28,11 +28,11 @@ EXT04_SCENARIOS=(
     "04-S3|EXT-04|编辑后 diff|请用 write 创建 /tmp/snap_diff.txt 内容 hello。然后再用 write 覆盖为 world。||04-M1,04-M4,04-M5"
 )
 
-# ── EXT-05 Lsp 场景 ──
+# ── EXT-05 Lsp 场景（钩子驱动：write/edit 后自动 cargo check，不暴露 lsp_check 给 LLM）──
 EXT05_SCENARIOS=(
-    "05-S1|EXT-05|干净代码无错|请用 write 工具在 /tmp/lsp_test/ 创建一个简单的 Rust lib（Cargo.toml + src/lib.rs），写一个正确的 add 函数。然后调 lsp_check 工具。||05-M1,05-M6"
-    "05-S2|EXT-05|捕获类型错误|先创建一个 Rust lib，然后故意写错：let x: i32 = \"string\";。然后调 lsp_check 看错误。||05-M1,05-M3,05-M6"
-    "05-S3|EXT-05|修复后清零|先引入错误（同 S2），调 lsp_check 看到错误。然后修复，再调 lsp_check，确认错误减少。||05-M1,05-M4"
+    "05-S1|EXT-05|干净代码无错|请用 write 工具在 /tmp/lsp_test/ 创建一个简单的 Rust lib（Cargo.toml + src/lib.rs），写一个正确的 add 函数。完成后告诉我代码已经写好了。||05-M1,05-M3,05-M6"
+    "05-S2|EXT-05|捕获类型错误|先创建一个 Rust lib（Cargo.toml + src/lib.rs），然后故意写错：let x: i32 = \"string\";。完成后告诉我代码已经写好了。||05-M1,05-M3,05-M4,05-M6"
+    "05-S3|EXT-05|修复后清零|先引入错误（同 S2），写完后告诉 LLM 错误，然后用 write 修复，再告诉 LLM 修复完成。||05-M1,05-M3"
 )
 
 # ── EXT-06 Hook 场景（每个场景配不同的 hooks.json）──

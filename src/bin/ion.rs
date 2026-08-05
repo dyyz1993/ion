@@ -2144,24 +2144,16 @@ async fn cmd_run(
     ));
     tracing::info!("[extension] dev_server_detector registered");
 
-    // ── LSP Extension + 共享 handles（cmd_run 路径补注册，对齐 worker_rpc:967-979）──
-    // 之前 cmd_run 没注册 LspExtension，LLM 调不到 lsp_check 工具 → EXT-05 测试空跑。
+    // ── LSP Extension（cmd_run 路径补注册，对齐 worker_rpc:967-979）──
+    // LSP 是钩子驱动：on_tool_execution_end 检测 write/edit → 后台启 cargo check
+    // → on_context 注入 `<diagnostics>` XML 到 messages。
+    // **不应该暴露 LspCheckTool 给 LLM**（用户设计纠正：LSP 不需要 LLM 主动调）。
     let ion_cfg_for_lsp = ion::config::IonConfig::load();
-    let cmd_run_lsp_handles: Option<(
-        std::sync::Arc<tokio::sync::Mutex<Vec<ion::lsp_extension::Diagnostic>>>,
-        std::sync::Arc<std::sync::atomic::AtomicBool>,
-        std::sync::Arc<std::sync::atomic::AtomicBool>,
-    )> = if ion_cfg_for_lsp.is_extension_enabled("lsp") {
+    if ion_cfg_for_lsp.is_extension_enabled("lsp") {
         let lsp_ext = ion::lsp_extension::LspExtension::new();
-        let diags = lsp_ext.get_shared_diagnostics();
-        let dirty = lsp_ext.get_shared_dirty();
-        let has_errs = lsp_ext.get_shared_has_errors();
         ext_reg.register(Box::new(lsp_ext));
-        tracing::info!("[extension] lsp registered (cmd_run, cargo check diagnostics)");
-        Some((diags, dirty, has_errs))
-    } else {
-        None
-    };
+        tracing::info!("[extension] lsp registered (cmd_run, auto-trigger on write/edit)");
+    }
 
     agent = agent.with_extensions(ext_reg);
     // 把 follow_up_rx 注入 agent（cmd_run_follow_up_rx 在前面 BashExtension 注册时创建）。
@@ -2186,16 +2178,6 @@ async fn cmd_run(
             store: cmd_run_memory_store.clone(),
         }));
         tracing::info!("[tools] memory_save + memory_search registered (cmd_run)");
-    }
-
-    // ── LspCheckTool（共享 LspExtension 的 diagnostics handles）──
-    if let Some((diags, dirty, has_errs)) = &cmd_run_lsp_handles {
-        agent.register_tool(Box::new(ion::lsp_extension::LspCheckTool::new(
-            std::sync::Arc::clone(diags),
-            std::sync::Arc::clone(dirty),
-            std::sync::Arc::clone(has_errs),
-        )));
-        tracing::info!("[tools] lsp_check registered (cmd_run)");
     }
 
     tracing::info!("Running agent...");

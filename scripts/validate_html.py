@@ -455,48 +455,84 @@ def check_ext_04(dom, entries, results, html_path=""):
 
 
 def check_ext_05(dom, entries, results, html_path=""):
-    """EXT-05 LspExtension"""
+    """EXT-05 LspExtension — hook-driven, NOT LLM-invoked.
+
+    LSP 真实工作模式：
+    - on_tool_execution_end 检测 write/edit → 标 dirty + 后台启 cargo check（非阻塞）
+    - on_context（下次 LLM 调用前）把 `<diagnostics>` XML 注入到 messages
+
+    所以指标应该测「自动触发 + 注入」，不是「LLM 调用 lsp_check」。
+    """
     def check(mid, name, passed, detail=""):
         results["checks"].append({"id": mid, "name": name,
                                   "status": "PASS" if passed else "FAIL",
                                   "detail": detail})
         results["passed" if passed else "failed"] += 1
 
-    lsp_check_count = _count_tool_calls(entries, "lsp_check")
-    check("05-M1", "lsp_check 工具被调用", lsp_check_count >= 1,
-          f"lsp_check_count={lsp_check_count}")
+    # 05-M1: write/edit 触发（LSP 自动检测的前提）
+    write_count = _count_tool_calls(entries, "write") + _count_tool_calls(entries, "edit")
+    check("05-M1", "write/edit 被调用（触发 LSP 自动检测）", write_count >= 1,
+          f"write+edit={write_count}")
 
-    has_cargo_check = "cargo check" in dom or "cargo_check" in dom
-    check("05-M2", "cargo check 真实执行", has_cargo_check,
-          f"cargo_check_in_dom={has_cargo_check}")
+    # 05-M2: cargo check 在后台执行（dom 里有 cargo check 痕迹）
+    # 注意：cargo check 是后台跑的，可能不出现在 bash_result 里。
+    # 但 on_context 注入的 diagnostics 里会有 "error[E####]" 或 "warning:"
+    has_cargo_run = ("cargo check" in dom or "cargo_check" in dom
+                     or "error[E" in dom or "warning:" in dom
+                     or "diagnostics" in dom.lower())
+    check("05-M2", "cargo check 后台执行（痕迹出现在 HTML）", has_cargo_run,
+          f"cargo_check_traces={has_cargo_run}")
 
-    lsp_results = _find_tool_results(entries, "lsp_check")
-    all_lsp_text = " ".join(r["text"] for r in lsp_results)
-    has_errors = bool(re.search(r'error\[E\d{4}\]', all_lsp_text))
-    check("05-M3", "编译错误能被捕获（如果有错代码）", True,
-          f"has_e_errors={has_errors}（场景相关）")
+    # 05-M3: on_context 注入 diagnostics custom message
+    # 注入格式: Message::Custom { custom_type: "diagnostics", content: "[diagnostics history]..." }
+    diag_injected = False
+    diag_count = 0
+    for e in entries:
+        # session.jsonl: 直接看 custom_type
+        if e.get("type") == "custom" and e.get("customType") == "diagnostics":
+            diag_injected = True
+            diag_count += 1
+        # session.jsonl: type=custom_message
+        elif e.get("type") == "custom_message" and e.get("customType") == "diagnostics":
+            diag_injected = True
+            diag_count += 1
+        # HTML pi format: 看 message.role=="custom" + customType
+        if e.get("type") == "message":
+            m = e.get("message", {})
+            if m.get("role") == "custom" and m.get("customType") == "diagnostics":
+                diag_injected = True
+                diag_count += 1
+    # 也检查 dom 里有 diagnostics 关键字（注入后的 user message 含 [diagnostics history]）
+    if not diag_injected:
+        diag_injected = ("[diagnostics history]" in dom
+                         or "diagnostics history" in dom
+                         or "error(s)" in dom)
+    check("05-M3", "on_context 注入 <diagnostics> 到 messages", diag_injected,
+          f"diag_messages={diag_count}, in_dom={'diagnostics' in dom.lower()}")
 
-    # 05-M4: 多次 lsp_check 时，第二次错误数应该 ≤ 第一次（如果 agent 修了）
-    if len(lsp_results) >= 2:
-        e1 = len(re.findall(r'error\[E\d{4}\]', lsp_results[0]["text"]))
-        e2 = len(re.findall(r'error\[E\d{4}\]', lsp_results[1]["text"]))
-        check("05-M4", "多次 lsp_check 后错误减少或持平", e2 <= e1,
-              f"first={e1}, second={e2}")
-    else:
-        check("05-M4", "多次 lsp_check（仅一次，跳过）", True,
-              f"lsp_check_count={len(lsp_results)}")
+    # 05-M4: 注入的 diagnostics 含 error 或 warning 计数
+    has_error_or_warning = bool(re.search(r'\d+\s+error\(s\)|\d+\s+warning\(s\)|error\[E\d{4}\]|warning:', dom))
+    check("05-M4", "diagnostics 含 error/warning 分类", has_error_or_warning,
+          f"classification_visible={has_error_or_warning}")
 
-    has_warning = "warning" in all_lsp_text.lower() or "WARN" in all_lsp_text
-    check("05-M5", "warning 分类正确", True,
-          f"has_warning={has_warning}")
+    # 05-M5: write 后 dirty flag（看 session.jsonl 或 dom）
+    # 注：dirty 是内部状态，外部难直接看。但 dirty 触发后下次 on_context 会注入。
+    # 用「write 后下一次 LLM 调用前有 diagnostics」作为代理指标。
+    check("05-M5", "write 后 dirty → 触发 cargo check（同 M3 代理）",
+          diag_injected, f"same_as_M3={diag_injected}")
 
-    lsp_visible = ("lsp_check" in dom or "diagnostic" in dom.lower()
-                   or "cargo check" in dom.lower())
+    # 05-M6: HTML 里 LSP 输出可见
+    lsp_visible = ("diagnostic" in dom.lower() or "cargo check" in dom.lower()
+                   or "error[E" in dom)
     check("05-M6", "HTML 里 lsp 输出可见", lsp_visible,
           f"lsp_visible={lsp_visible}")
 
-    lsp_errors = [r for r in lsp_results if r["is_error"]]
-    check("05-M7", "无 'lsp not initialized' 错误", len(lsp_errors) == 0,
+    # 05-M7: 无 LSP 相关错误（注入失败 / cargo 不可用等）
+    # 检查 ToolResult 错误（虽然 LSP 不该被 LLM 调，但兜底验证）
+    all_results = _all_tool_results_text(entries)
+    lsp_errors = [r for r in all_results if r["is_error"]
+                  and ("lsp" in r["text"].lower() or "cargo" in r["text"].lower())]
+    check("05-M7", "无 LSP/cargo 错误", len(lsp_errors) == 0,
           f"lsp_errors={len(lsp_errors)}")
 
 
