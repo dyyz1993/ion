@@ -281,3 +281,69 @@ pub async fn spawn_watcher(
         let _ = tx.send((msg, deliver_as));
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    /// 验证 Unix 下 ExitStatus::signal() 能区分信号类型。
+    /// 用户反馈：「怎么还有未知的类型的？」——之前 exit="unknown" 包揽了
+    /// 信号杀死/spawn 失败/wait 异常三种情况，现在用 signal() 区分。
+    ///
+    /// 这些测试证明底层 ExitStatusExt 在 SIGKILL/SIGTERM 等场景下
+    /// 确实返回对应的 signal 号，bash_executor 的格式化逻辑能拿到。
+    #[test]
+    #[cfg(unix)]
+    fn test_sigkill_produces_signal_9() {
+        use std::os::unix::process::ExitStatusExt;
+        // sh -c 'kill -9 $$' 让进程自杀（SIGKILL）
+        let status = std::process::Command::new("sh")
+            .args(["-c", "kill -9 $$"])
+            .status()
+            .expect("sh should spawn");
+        assert!(
+            !status.success(),
+            "self-kill should not be success: {:?}",
+            status
+        );
+        // code() 应该 None（被信号杀死，没正常退出）
+        assert_eq!(status.code(), None, "SIGKILL -> code() should be None");
+        // signal() 应该 Some(9)
+        assert_eq!(status.signal(), Some(9), "SIGKILL -> signal() should be 9");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_sigterm_produces_signal_15() {
+        use std::os::unix::process::ExitStatusExt;
+        let status = std::process::Command::new("sh")
+            .args(["-c", "kill -15 $$"])
+            .status()
+            .expect("sh should spawn");
+        assert_eq!(status.code(), None);
+        assert_eq!(status.signal(), Some(15), "SIGTERM -> signal() should be 15");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_normal_exit_has_code_no_signal() {
+        use std::os::unix::process::ExitStatusExt;
+        let status = std::process::Command::new("sh")
+            .args(["-c", "exit 0"])
+            .status()
+            .expect("sh should spawn");
+        assert_eq!(status.code(), Some(0));
+        assert_eq!(status.signal(), None, "normal exit -> signal() should be None");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_nonzero_exit_has_code_no_signal() {
+        use std::os::unix::process::ExitStatusExt;
+        let status = std::process::Command::new("sh")
+            .args(["-c", "exit 42"])
+            .status()
+            .expect("sh should spawn");
+        assert_eq!(status.code(), Some(42));
+        assert_eq!(status.signal(), None);
+    }
+}
