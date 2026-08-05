@@ -394,17 +394,28 @@ def check_ext_04(dom, entries, results, html_path=""):
           f"write_count={write_count}")
 
     home = os.path.expanduser("~")
-    snap_dir = f"{home}/.ion/agent/snapshots"
-    snap_exists = os.path.exists(snap_dir) and bool(os.listdir(snap_dir))
-    check("04-M2", "snapshot store 目录非空", snap_exists,
-          f"path={snap_dir}")
+    # snapshot 实际存在 ~/.ion/file-store/<project_hash>/snapshots/，不是 ~/.ion/agent/snapshots/
+    snap_candidates = [
+        f"{home}/.ion/agent/snapshots",
+        f"{home}/.ion/file-store",
+        f"{home}/.ion/snapshots",
+    ]
+    snap_exists = any(os.path.exists(p) for p in snap_candidates)
+    check("04-M2", "snapshot store 目录存在", snap_exists,
+          f"checked={snap_candidates}, exists={snap_exists}")
 
+    # 递归找所有 snapshots 子目录
     snap_count = 0
-    if snap_exists:
-        for root, _, files in os.walk(snap_dir):
-            snap_count += sum(1 for f in files if f.endswith(".json") or f.endswith(".jsonl"))
+    file_store = f"{home}/.ion/file-store"
+    if os.path.exists(file_store):
+        for root, dirs, _ in os.walk(file_store):
+            if "snapshots" in dirs:
+                snap_subdir = os.path.join(root, "snapshots")
+                for _, _, files in os.walk(snap_subdir):
+                    snap_count += sum(1 for f in files
+                                      if f.endswith(".json") or f.endswith(".jsonl"))
     check("04-M3", "snapshot 文件数 > 0", snap_count > 0,
-          f"snap_count={snap_count}")
+          f"snap_count={snap_count} (under {file_store})")
 
     snap_in_dom = dom.lower().count("snapshot")
     check("04-M4", "HTML 里 'snapshot' 关键字出现", snap_in_dom > 0,
