@@ -357,6 +357,27 @@ enum Commands {
         #[arg(long, default_value = "{}")]
         params: String,
     },
+    /// Quick-test the internal complete_tier() LLM helper.
+    /// Reads tier_models[tier] from config.json → resolves Model + api_key
+    /// → calls LLM → prints response.
+    ///
+    /// Examples:
+    ///   ion complete --tier fast "hello"
+    ///   ion complete --tier pro --json --system "Reply JSON {greeting}" "user X"
+    ///   ion complete --tier max --system "Summarize" "long text..."
+    Complete {
+        /// Tier name: fast / pro / max
+        #[arg(long, default_value = "fast")]
+        tier: String,
+        /// System prompt (optional)
+        #[arg(long)]
+        system: Option<String>,
+        /// Force JSON response format
+        #[arg(long)]
+        json: bool,
+        /// User message (positional)
+        message: String,
+    },
     /// Subscribe to real-time events.
     ///   ion subscribe --session sess_xxx
     ///   ion subscribe --session sess_xxx --extension memory
@@ -3576,6 +3597,61 @@ pub(crate) fn color_ansi(name: &Option<String>) -> &'static str {
     }
 }
 
+/// CLI handler for `ion complete` — quick-test complete_tier helper.
+/// Bypasses session/agent flow, directly calls IonConfig::complete_tier.
+async fn cmd_complete(tier: &str, system: Option<&str>, json: bool, message: &str) {
+    let cfg = ion::config::IonConfig::load();
+    let tier_str = cfg
+        .tier_models
+        .get(tier)
+        .map(|s| s.clone())
+        .unwrap_or_else(|| "(not configured)".to_string());
+    println!("📚 tier '{tier}' → {tier_str}");
+
+    // Build a minimal registry (only needs to route the resolved model)
+    let mut registry = ion_provider::registry::ApiRegistry::new();
+    registry.register_builtins();
+    let registry = std::sync::Arc::new(registry);
+
+    // Show what model was resolved
+    match cfg.resolve_tier_model(tier) {
+        Some(m) => {
+            println!(
+                "🤖 model: {} ({}, base_url={}, has_api_key={})",
+                m.id,
+                m.provider,
+                m.base_url,
+                cfg.resolve_provider_api_key(&m.provider).is_some()
+            );
+        }
+        None => {
+            eprintln!(
+                "❌ tier '{tier}' not resolvable — check config.json tier_models['{tier}']"
+            );
+            std::process::exit(1);
+        }
+    }
+
+    let system_prompt = system.unwrap_or("You are a helpful assistant.");
+    println!("📤 calling LLM (json={json})...");
+    println!("{}", "-".repeat(60));
+
+    match cfg
+        .complete_tier(&registry, tier, system_prompt, message, json)
+        .await
+    {
+        Ok(text) => {
+            println!("{text}");
+            println!("{}", "-".repeat(60));
+            println!("✅ done");
+        }
+        Err(e) => {
+            eprintln!("❌ LLM call failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 async fn cmd_list_agents() {
     const RESET: &str = "\x1b[0m";
 
@@ -4236,6 +4312,9 @@ async fn main() {
             replay,
         }) => cmd_subscribe(session.as_deref(), extension.as_deref(), *ui, *replay).await,
         Some(Commands::ListAgents) => cmd_list_agents().await,
+        Some(Commands::Complete { tier, system, json, message }) => {
+            cmd_complete(tier, system.as_deref(), *json, message).await;
+        }
         Some(Commands::ListModels { search }) => cmd_list_models(search).await,
         Some(Commands::Extension { action }) => cmd_extension(action.clone()).await,
         None => {
