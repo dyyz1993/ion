@@ -10,7 +10,7 @@
 # ── EXT-02 GlobalMemory 场景 ──
 EXT02_SCENARIOS=(
     "02-S1|EXT-02|save+search round-trip|请记住：我喜欢 Rust 语言。然后搜索记忆里关于语言偏好的内容。||02-M1,02-M2,02-M3,02-M4"
-    "02-S2|EXT-02|空查询不报错|搜索一个肯定没有的关键字：zzqqxxww。然后告诉我搜到了什么。||02-M1,02-M3,02-M8"
+    "02-S2|EXT-02|空查询不报错|搜索一个肯定没有的关键字：zzqqxxww。然后告诉我搜到了什么。||02-M3,02-M8"
     "02-S3|EXT-02|tags 多关键字检索|请记住这条经验：用 tokio 跑异步任务时要注意生命周期，tags 加上 async/tokio/rust。然后搜 'tokio'。||02-M1,02-M2,02-M3,02-M4"
 )
 
