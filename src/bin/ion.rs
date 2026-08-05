@@ -3562,6 +3562,40 @@ async fn cmd_recordings() {
 }
 
 async fn cmd_list_agents() {
+    // 颜色名 → ANSI code（让 list-agents 输出有颜色，匹配 agent 配置的 color 字段）
+    fn color_ansi(name: &Option<String>) -> &'static str {
+        match name.as_deref().unwrap_or("") {
+            "green" | "bright_green" => "\x1b[32m",
+            "red" | "bright_red" => "\x1b[31m",
+            "yellow" | "bright_yellow" => "\x1b[33m",
+            "blue" | "bright_blue" => "\x1b[34m",
+            "magenta" | "purple" | "bright_magenta" => "\x1b[35m",
+            "cyan" | "bright_cyan" => "\x1b[36m",
+            "white" | "bright_white" => "\x1b[37m",
+            "orange" => "\x1b[38;5;208m", // 256-color orange
+            "gray" | "grey" => "\x1b[90m",
+            _ => "\x1b[0m", // 默认无色
+        }
+    }
+    const RESET: &str = "\x1b[0m";
+
+    fn print_agent(a: &ion::agent_config::AgentConfig, suffix: &str) {
+        let tool_count = a.tools.as_ref().map(|t| t.len()).unwrap_or(0);
+        let tier = a.tier.as_deref().unwrap_or("-");
+        let color = color_ansi(&a.color);
+        let name_display = if color.is_empty() || color == "\x1b[0m" {
+            format!("{:<16}", a.name)
+        } else {
+            // 颜色码占字符位（不被 {:<16} 计入显示宽度），用 pad 补齐
+            format!("{color}{:<16}{}", a.name, RESET)
+        };
+        println!(
+            "{} {:<12} {:<8}  {}{}",
+            name_display, tier, tool_count, a.description,
+            if suffix.is_empty() { String::new() } else { format!(" ({suffix})") }
+        );
+    }
+
     let agents = ion::agent_config::builtin_agents();
     println!(
         "{:<16} {:<12} {:<8}  {}",
@@ -3569,12 +3603,7 @@ async fn cmd_list_agents() {
     );
     println!("{}", "-".repeat(90));
     for a in &agents {
-        let tool_count = a.tools.as_ref().map(|t| t.len()).unwrap_or(0);
-        let tier = a.tier.as_deref().unwrap_or("-");
-        println!(
-            "{:<16} {:<12} {:<8}  {}",
-            a.name, tier, tool_count, a.description
-        );
+        print_agent(a, "");
     }
     // Check global agents dir
     let global_dir = ion::agent_config::global_agents_dir();
@@ -3584,12 +3613,7 @@ async fn cmd_list_agents() {
                 let path = entry.path();
                 if path.extension().map(|e| e == "md").unwrap_or(false) {
                     if let Some(agent) = ion::agent_config::parse_agent_file(&path) {
-                        let tc = agent.tools.as_ref().map(|t| t.len()).unwrap_or(0);
-                        let tier = agent.tier.as_deref().unwrap_or("-");
-                        println!(
-                            "{:<16} {:<12} {:<8}  {} (global)",
-                            agent.name, tier, tc, agent.description
-                        );
+                        print_agent(&agent, "global");
                     }
                 }
             }
@@ -3603,12 +3627,7 @@ async fn cmd_list_agents() {
                     let path = entry.path();
                     if path.extension().map(|e| e == "md").unwrap_or(false) {
                         if let Some(agent) = ion::agent_config::parse_agent_file(&path) {
-                            let tc = agent.tools.as_ref().map(|t| t.len()).unwrap_or(0);
-                            let tier = agent.tier.as_deref().unwrap_or("-");
-                            println!(
-                                "{:<16} {:<12} {:<8}  {} (project)",
-                                agent.name, tier, tc, agent.description
-                            );
+                            print_agent(&agent, "project");
                         }
                     }
                 }
