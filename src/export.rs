@@ -1238,6 +1238,156 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
+    // ── 扩展视角统计 + 时间线可视化（ion 增强版）──
+    // 在 stats-banner 后插入一个容器，页面加载后由 JS 填充：
+    //   1. 按扩展分组工具调用（memory_*/bash/lsp_*/write/edit 等）
+    //   2. 调用时间线条形图（每个 entry 一个矩形条，按时间排序）
+    let ext_visualization_script = r#"
+<script>
+(function() {
+  function buildExtVisualization() {
+    // pi template 不暴露 SESSION_DATA 到 window，自己解码 session-data script
+    var dataEl = document.getElementById('session-data');
+    if (!dataEl) return;
+    var entries;
+    try {
+      var b64 = dataEl.textContent.trim();
+      var bin = atob(b64);
+      var bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      var decoded = JSON.parse(new TextDecoder('utf-8').decode(bytes));
+      entries = decoded.entries;
+    } catch (e) { return; }
+    if (!entries || !entries.length) return;
+
+    // ── 1. 扩展分组统计 ──
+    var extGroups = {
+      'EXT-02 Memory': { tools: ['memory_save', 'memory_search', 'global_memory_save', 'global_memory_search'], color: '#0891b2', count: 0 },
+      'EXT-01 Bash':   { tools: ['bash', 'get_background_process', 'kill_process', 'write_stdin'], color: '#f59e0b', count: 0 },
+      'EXT-04 FileSnap': { tools: ['write', 'edit', 'rollback', 'snapshot'], color: '#10b981', count: 0 },
+      'EXT-05 LSP':     { tools: ['lsp_check'], color: '#8b5cf6', count: 0 },
+      'EXT-03 DevSrv':  { tools: ['dev_server'], color: '#ec4899', count: 0 },
+      'EXT-06 Hook':    { tools: ['hook'], color: '#ef4444', count: 0 },
+      'Other':          { tools: [], color: '#6b7280', count: 0 }
+    };
+
+    var toolCounts = {};
+    entries.forEach(function(e) {
+      if (e.type !== 'message') return;
+      var msg = e.message || {};
+      var content = msg.content || [];
+      if (!Array.isArray(content)) return;
+      content.forEach(function(c) {
+        // pi format: {type: 'toolCall', name: ...}
+        if (c.type === 'toolCall' && c.name) {
+          toolCounts[c.name] = (toolCounts[c.name] || 0) + 1;
+        }
+        // session.jsonl format: {ToolCall: {name: ...}}
+        if (c.ToolCall && c.ToolCall.name) {
+          toolCounts[c.ToolCall.name] = (toolCounts[c.ToolCall.name] || 0) + 1;
+        }
+      });
+    });
+
+    Object.keys(extGroups).forEach(function(g) {
+      var grp = extGroups[g];
+      if (g === 'Other') {
+        var known = new Set();
+        Object.keys(extGroups).forEach(function(gg) {
+          if (gg !== 'Other') extGroups[gg].tools.forEach(function(t) { known.add(t); });
+        });
+        Object.keys(toolCounts).forEach(function(t) {
+          if (!known.has(t)) grp.count += toolCounts[t];
+        });
+      } else {
+        grp.tools.forEach(function(t) { grp.count += toolCounts[t] || 0; });
+      }
+    });
+
+    var totalCalls = Object.keys(toolCounts).reduce(function(s, k) { return s + toolCounts[k]; }, 0);
+    var activeGroups = Object.keys(extGroups).filter(function(g) { return extGroups[g].count > 0; });
+    if (totalCalls === 0) return;
+
+    var groupBadges = activeGroups.map(function(g) {
+      var grp = extGroups[g];
+      var pct = totalCalls > 0 ? Math.round(100 * grp.count / totalCalls) : 0;
+      return '<span style="background:' + grp.color + '22;color:' + grp.color +
+             ';border:1px solid ' + grp.color + ';padding:3px 10px;border-radius:12px;' +
+             'font-size:11px;font-weight:600;">' + g + ' ×' + grp.count +
+             ' <span style="opacity:0.7;font-weight:400">(' + pct + '%)</span></span>';
+    }).join('');
+
+    // ── 2. 时间线（每个 entry 一个条）──
+    var timelineEntries = entries.filter(function(e) {
+      return e.type === 'message' || e.type === 'custom_message' || e.type === 'turn_summary';
+    }).slice(0, 50);  // 最多 50 个，避免太长
+
+    // 找时间范围
+    var ts = timelineEntries.map(function(e) {
+      return new Date(e.timestamp || 0).getTime();
+    }).filter(function(t) { return !isNaN(t) && t > 0; });
+    if (ts.length < 2) return;  // 单点无法画时间线
+    var tMin = Math.min.apply(null, ts);
+    var tMax = Math.max.apply(null, ts);
+    var tRange = Math.max(tMax - tMin, 1);
+
+    var bars = timelineEntries.map(function(e) {
+      var t = new Date(e.timestamp || 0).getTime();
+      if (isNaN(t) || t === 0) return '';
+      var left = ((t - tMin) / tRange * 100).toFixed(2);
+      var msg = e.message || {};
+      var role = msg.role || (msg.Assistant ? 'assistant' : msg.User ? 'user' : e.type);
+      var color = '#6b7280';
+      if (role === 'user' || role === 'User') color = '#3b82f6';
+      else if (role === 'assistant' || role === 'Assistant') color = '#10b981';
+      else if (role === 'toolResult' || role === 'tool') color = '#f59e0b';
+      else if (e.type === 'custom_message') color = '#8b5cf6';
+      else if (e.type === 'turn_summary') color = '#aaa';
+      var tip = (e.id || '').slice(0, 8) + ' · ' + role;
+      return '<div title="' + tip + '" style="position:absolute;left:' + left +
+             '%;top:0;width:3px;height:24px;background:' + color +
+             ';border-radius:1px;"></div>';
+    }).join('');
+
+    var legend = [
+      ['user', '#3b82f6'], ['assistant', '#10b981'], ['toolResult', '#f59e0b'],
+      ['custom', '#8b5cf6'], ['summary', '#aaa']
+    ].map(function(l) {
+      return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:#666;">' +
+             '<span style="width:8px;height:8px;background:' + l[1] + ';border-radius:1px;"></span>' +
+             l[0] + '</span>';
+    }).join('  ');
+
+    var html =
+      '<div id="ion-ext-viz" style="background:#fafafa;border-bottom:1px solid #eee;padding:10px 20px;font-family:system-ui,sans-serif;">' +
+        '<div style="font-size:11px;color:#666;margin-bottom:6px;font-weight:600;">EXTENSION BREAKDOWN (' + totalCalls + ' calls)</div>' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">' + groupBadges + '</div>' +
+        '<div style="font-size:11px;color:#666;margin-bottom:4px;font-weight:600;">TIMELINE (' + timelineEntries.length + ' entries)</div>' +
+        '<div style="position:relative;height:24px;background:#fff;border:1px solid #e5e7eb;border-radius:3px;overflow:hidden;">' + bars + '</div>' +
+        '<div style="margin-top:4px;font-size:9px;color:#999;display:flex;justify-content:space-between;">' +
+          '<span>' + new Date(tMin).toLocaleTimeString() + '</span>' +
+          '<span>' + legend + '</span>' +
+          '<span>' + new Date(tMax).toLocaleTimeString() + '</span>' +
+        '</div>' +
+      '</div>';
+
+    var existing = document.getElementById('ion-ext-viz');
+    if (existing) existing.remove();
+    var banner = document.getElementById('ion-stats-banner');
+    if (banner && banner.parentNode) {
+      banner.insertAdjacentHTML('afterend', html);
+    }
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', buildExtVisualization);
+  } else {
+    buildExtVisualization();
+  }
+})();
+</script>
+"#;
+    html = html.replacen("</body>", &format!("{}\n</body>", ext_visualization_script), 1);
+
     // 子 session 的文件名（sub_<sid>.html / 旧版 fork_<sid>.html）在 base64 编码的
     // session-data 里，HTML 写入前替换看不到明文。改为在 HTML 末尾注入一段 JavaScript：
     // 页面加载后，遍历 DOM 把 "sub_xxxxxxxxxxxx.html" / "fork_xxxxxxxxxxxx.html" 文本替换成可点击链接。
