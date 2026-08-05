@@ -60,7 +60,7 @@ with open('$prompt_file', 'w', encoding='utf-8') as f:
     (
         cd "$work_dir"
         ION_PROJECT_DIR="$work_dir" \
-        timeout 180 \
+        timeout 600 \
         "$ION_BIN" --agent developer --model "$ION_MODEL" --provider "$ION_PROVIDER" \
             "@$prompt_file" 2>&1 | tail -3
     )
@@ -151,7 +151,9 @@ main() {
     local scenarios_to_run=()
 
     if [ "$1" = "--all" ]; then
-        mapfile -t scenarios_to_run < <(get_scenarios_for_ext "")
+        while IFS= read -r line; do
+            [ -n "$line" ] && scenarios_to_run+=("$line")
+        done < <(get_scenarios_for_ext "")
     elif [[ "$1" =~ ^EXT- ]]; then
         local ext_id="$1"
         if [ -n "$2" ]; then
@@ -167,7 +169,9 @@ main() {
                 exit 1
             fi
         else
-            mapfile -t scenarios_to_run < <(get_scenarios_for_ext "$ext_id")
+            while IFS= read -r line; do
+                [ -n "$line" ] && scenarios_to_run+=("$line")
+            done < <(get_scenarios_for_ext "$ext_id")
         fi
     else
         red "未知参数: $1"

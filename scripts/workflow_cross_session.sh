@@ -39,7 +39,7 @@ with open('$PROMPT_A','w',encoding='utf-8') as f:
 START=$(date +%s)
 (
     cd "$WORK_A"
-    timeout 120 "$ION_BIN" --agent developer --model "$ION_MODEL" --provider "$ION_PROVIDER" \
+    timeout 600 "$ION_BIN" --agent developer --model "$ION_MODEL" --provider "$ION_PROVIDER" \
         "@$PROMPT_A" 2>&1 | tail -3
 )
 RC=$?
@@ -90,7 +90,7 @@ with open('$PROMPT_B','w',encoding='utf-8') as f:
 START=$(date +%s)
 (
     cd "$WORK_B"
-    timeout 120 "$ION_BIN" --agent developer --model "$ION_MODEL" --provider "$ION_PROVIDER" \
+    timeout 600 "$ION_BIN" --agent developer --model "$ION_MODEL" --provider "$ION_PROVIDER" \
         "@$PROMPT_B" 2>&1 | tail -3
 )
 ELAPSED_B=$(( $(date +%s) - START ))
