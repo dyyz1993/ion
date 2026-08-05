@@ -299,14 +299,16 @@ def check_ext_02(dom, entries, results, html_path=""):
     # 02-M5: 全局库文件（多种可能路径）
     home = os.path.expanduser("~")
     db_candidates = [
-        f"{home}/.ion/agent/global_memory.db",
+        f"{home}/.ion/agent/global_memory.db",       # underscore
+        f"{home}/.ion/agent/global-memory.db",       # hyphen (actual production path)
         f"{home}/.ion/agent/global_memory.jsonl",
         f"{home}/.ion/agent/data/global_memory.db",
         f"{home}/.ion/agent/storage/global_memory.db",
+        f"{home}/.ion/global-memory.db",
     ]
-    db_exists = any(os.path.exists(p) for p in db_candidates)
-    check("02-M5", "全局库文件存在", db_exists,
-          f"checked={db_candidates}, exists={db_exists}")
+    db_exists_paths = [p for p in db_candidates if os.path.exists(p)]
+    check("02-M5", "全局库文件存在", len(db_exists_paths) > 0,
+          f"found={db_exists_paths}")
 
     # 02-M6: 持久化（跨 session）—— multi-session 场景验证
     check("02-M6", "持久化（跨 session）", True,
