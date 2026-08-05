@@ -2506,38 +2506,59 @@ async fn cmd_run(
     // **不**写 custom_message entry 到 session.jsonl——顶部 banner 已经从
     // 首条 user message 提取标题展示了，对话流底部再来一条 session_name
     // custom entry 是冗余信息（用户反馈：标题不该在底部）。
+    //
+    // ★★ 优先级（用户反馈：「title 的修改怎么没看到呢」）：
+    //   1. SessionIndex 已有 name（AutoSessionTitle 扩展用 LLM 生成的简短标题）→ 用这个
+    //   2. 否则 fallback 到首条 user message（截断到 60 字符）
+    //
+    // 之前不管 SessionIndex 有没 LLM 标题，都强制用首条 user message 覆盖，
+    // 导致 HTML <title> 显示成 "按以下 10 步顺序执行：1. 用 bash background=true 启..."
+    // 这种长 prompt 片段，而不是 LLM 生成的简短标题（如 "DevServer 多端口验证"）。
     {
-        let title = agent
-            .messages()
-            .iter()
-            .find_map(|msg| match msg {
-                Message::User(u) => {
-                    let text = u.content.iter()
-                        .filter_map(|b| match b {
-                            ion::agent::messages::ContentBlock::Text(t) => Some(t.text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    if text.is_empty() { None } else {
-                        let t = text.trim();
-                        let first_line = t.lines().next().unwrap_or(t);
-                        let first_sentence = first_line
-                            .split(['.', '。', '!', '?'])
-                            .next()
-                            .unwrap_or(first_line)
-                            .trim();
-                        if first_sentence.is_empty() { None }
-                        else if first_sentence.chars().count() > 60 {
-                            Some(first_sentence.chars().take(57).collect::<String>() + "...")
-                        } else {
-                            Some(first_sentence.to_string())
+        // 1. 优先用 SessionIndex 已有 name（LLM 生成的）
+        let existing_name = ion::session_index::SessionIndex::load()
+            .sessions
+            .get(session_id)
+            .cloned()
+            .and_then(|meta| meta.name)
+            .filter(|n| !n.trim().is_empty());
+
+        let title = if let Some(name) = existing_name {
+            name
+        } else {
+            // 2. Fallback: 从首条 user message 提取
+            agent
+                .messages()
+                .iter()
+                .find_map(|msg| match msg {
+                    Message::User(u) => {
+                        let text = u.content.iter()
+                            .filter_map(|b| match b {
+                                ion::agent::messages::ContentBlock::Text(t) => Some(t.text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        if text.is_empty() { None } else {
+                            let t = text.trim();
+                            let first_line = t.lines().next().unwrap_or(t);
+                            let first_sentence = first_line
+                                .split(['.', '。', '!', '?'])
+                                .next()
+                                .unwrap_or(first_line)
+                                .trim();
+                            if first_sentence.is_empty() { None }
+                            else if first_sentence.chars().count() > 60 {
+                                Some(first_sentence.chars().take(57).collect::<String>() + "...")
+                            } else {
+                                Some(first_sentence.to_string())
+                            }
                         }
                     }
-                }
-                _ => None,
-            })
-            .unwrap_or_else(|| "Untitled".to_string());
+                    _ => None,
+                })
+                .unwrap_or_else(|| "Untitled".to_string())
+        };
 
         ion::session_index::SessionIndex::set_name(session_id, &title);
         tracing::info!("[cmd_run] set session name in index: \"{title}\"");

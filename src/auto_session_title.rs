@@ -100,8 +100,11 @@ impl AutoSessionTitle {
         }
 
         let first_line = trimmed.lines().next().unwrap_or(trimmed);
+        // ★ 加 '：' ':' 到 split——中文 prompt 经常「按以下步骤执行：1. ...」
+        // 之前只按 .。!? 切，会拿到「按以下 10 步顺序执行：1」这种片段。
+        // 加冒号后能拿到「按以下 10 步顺序执行」更干净。
         let first_sentence = first_line
-            .split(['.', '。', '!', '?'])
+            .split(['.', '。', '!', '?', ':', '：'])
             .next()
             .unwrap_or(first_line);
 
@@ -233,5 +236,23 @@ mod tests {
     fn test_chinese() {
         let title = AutoSessionTitle::generate_title_heuristic("修复解析器的 bug。然后更新文档。");
         assert_eq!(title, "修复解析器的 bug");
+    }
+
+    #[test]
+    fn test_chinese_colon_truncation() {
+        // 用户反馈：title 显示「按以下 10 步顺序执行：1」——冒号后还继续
+        // 加 '：' ':' 到 split 后，应该在冒号处切，拿到「按以下 10 步顺序执行」
+        let title = AutoSessionTitle::generate_title_heuristic(
+            "按以下 10 步顺序执行：1. 用 bash background=true 启 python3",
+        );
+        assert_eq!(title, "按以下 10 步顺序执行");
+    }
+
+    #[test]
+    fn test_english_colon_truncation() {
+        let title = AutoSessionTitle::generate_title_heuristic(
+            "Steps: 1. do X 2. do Y",
+        );
+        assert_eq!(title, "Steps");
     }
 }

@@ -654,8 +654,11 @@ fn export_session_internal(
     // 不修改 session.jsonl 落盘的 header（只在 export 时注入到 session_data）。
     // 生成 session name（标题）：
     // 1. 优先从 session.jsonl entries 里找最后一条 session_name custom_message entry
-    //    （cmd_run 在 save_session 后追加，AutoSessionTitle 也可能写）
-    // 2. 找不到才 fallback 到首条 user message（export 时即时生成）
+    //    （历史路径：cmd_run 之前会写这种 entry）
+    // 2. 找不到 → 从 SessionIndex 读（cmd_run 现在只更新 SessionIndex.set_name，
+    //    AutoSessionTitle 扩展也写这里，含 LLM 生成的简短标题）
+    // 3. 还找不到 → fallback 到首条 user message（截断到 60 字符）
+    let session_id_for_lookup = header.get("id").and_then(|v| v.as_str()).unwrap_or("");
     let session_name = raw_entries
         .iter()
         .rev()
@@ -683,6 +686,19 @@ fn export_session_internal(
                 return Some(content.to_string());
             }
             None
+        })
+        .or_else(|| {
+            // ★ 新增：从 SessionIndex 读 cmd_run / AutoSessionTitle 写的 name
+            // （之前只看 session.jsonl 的 session_name entry，但 cmd_run 改成
+            // 不写 entry 后这里就拿不到了，导致 HTML title 显示成 prompt 片段）
+            if session_id_for_lookup.is_empty() {
+                return None;
+            }
+            crate::session_index::SessionIndex::load()
+                .sessions
+                .get(session_id_for_lookup)
+                .and_then(|meta| meta.name.clone())
+                .filter(|n| !n.trim().is_empty())
         })
         .or_else(|| {
             // Fallback: 从首条 user message 生成
