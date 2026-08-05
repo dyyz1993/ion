@@ -772,7 +772,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     .with_session_cwd(Some(worker_cwd.clone()))
     .with_session_id(Some(sid.clone()));
 
-    // LSP tool registration deferred to inside extension block (lsp_shared set there)
+    // LSP tool registration deferred to inside extension block
 
     // 应用初始 agent 的工具限制（必须在 Agent 构造后调用）
     if let Some(ref agent_name) = initial_agent
@@ -827,11 +827,6 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     // 先创建 follow_up 通道（bash 插件后台进程完成时用来注入消息）
     let (follow_up_tx, follow_up_rx) = tokio::sync::mpsc::unbounded_channel::<(ion_provider::Message, DeliverAs)>();
     let mut process_map = None;
-    let mut lsp_shared: Option<(
-        std::sync::Arc<tokio::sync::Mutex<Vec<crate::lsp_extension::Diagnostic>>>,
-        std::sync::Arc<std::sync::atomic::AtomicBool>,
-        std::sync::Arc<std::sync::atomic::AtomicBool>,
-    )> = None;
     {
         let mut ext_reg = crate::agent::extension::ExtensionRegistry::new();
 
@@ -964,16 +959,12 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         }
 
         // LSP Extension（cargo check diagnostics — LLM 编译错误反馈）
+        // 钩子驱动：on_tool_execution_end 检测 write/edit → 后台 cargo check →
+        // on_context 注入 <diagnostics>。LLM 不需要主动调 lsp_check。
         if ion_cfg.is_extension_enabled("lsp") {
             let lsp_ext = crate::lsp_extension::LspExtension::new();
-            let diags = lsp_ext.get_shared_diagnostics();
-            let dirty = lsp_ext.get_shared_dirty();
-            let has_errs = lsp_ext.get_shared_has_errors();
             ext_reg.register(Box::new(lsp_ext));
-            // Store handles for LspCheckTool registration (registered after Agent::new,
-            // since tools is moved into Agent at that point — we add it via agent.add_tool)
-            lsp_shared = Some((diags, dirty, has_errs));
-            tracing::info!("[extension] lsp enabled (cargo check diagnostics)");
+            tracing::info!("[extension] lsp enabled (auto-trigger on write/edit, no LLM tool)");
         } else {
             tracing::info!("[extension] lsp disabled by config");
         }
@@ -1117,15 +1108,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         // during outer_loop, triggering a new turn with <bash_result> message.
         agent.set_follow_up_rx(follow_up_rx);
 
-        // Register LspCheckTool if lsp extension was enabled (shares diagnostics handles)
-        if let Some((diags, dirty, has_errs)) = &lsp_shared {
-            agent.register_tool(Box::new(crate::lsp_extension::LspCheckTool::new(
-                Arc::clone(diags),
-                Arc::clone(dirty),
-                Arc::clone(has_errs),
-            )));
-            tracing::info!("[lsp] LspCheckTool registered");
-        }
+        // LspCheckTool 不再暴露给 LLM（设计纠正：LSP 是钩子驱动，write/edit 后自动触发）
     }
 
     // 发 ready 信号
