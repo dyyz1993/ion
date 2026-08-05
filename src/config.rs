@@ -654,7 +654,7 @@ impl IonConfig {
     /// json: true → forces response_format="json_object" (OpenAI providers)
     ///
     /// Returns the assistant's text content (concatenated Text blocks).
-    pub async fn complete_tier(
+    pub async fn query_tier(
         &self,
         registry: &ion_provider::registry::ApiRegistry,
         tier: &str,

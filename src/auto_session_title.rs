@@ -33,7 +33,7 @@ impl AutoSessionTitle {
     }
 
     /// Backwards-compat: 接受 registry + model 但忽略 model
-    /// （model 改用 complete_tier("fast") 从 config 解析，更准确）。
+    /// （model 改用 query_tier("fast") 从 config 解析，更准确）。
     pub fn with_registry(registry: Arc<registry::ApiRegistry>, _title_model: Model) -> Self {
         Self {
             done: AtomicBool::new(false),
@@ -42,7 +42,7 @@ impl AutoSessionTitle {
         }
     }
 
-    /// Backwards-compat: api_key 现在由 complete_tier 自动 resolve，no-op
+    /// Backwards-compat: api_key 现在由 query_tier 自动 resolve，no-op
     pub fn with_api_key(self, _key: Option<String>) -> Self {
         self
     }
@@ -50,7 +50,7 @@ impl AutoSessionTitle {
     /// LLM 生成标题：用 fast tier 调一次，返回 ≤50 字符的标题。
     /// 任何错误都静默吃掉，返回 None。
     ///
-    /// ★ 简化版：用 IonConfig::complete_tier("fast", ...) 一行调用，
+    /// ★ 简化版：用 IonConfig::query_tier("fast", ...) 一行调用，
     /// 不用自己 resolve tier / api_key / 构造 StreamOptions。
     async fn generate_title_llm(
         registry: &registry::ApiRegistry,
@@ -58,7 +58,7 @@ impl AutoSessionTitle {
     ) -> Option<String> {
         let cfg = crate::config::IonConfig::load();
         let result = cfg
-            .complete_tier(
+            .query_tier(
                 registry,
                 "fast",
                 "You are a title generator. Generate a concise title (max 50 chars, no quotes, no period at end) summarizing the user's request. Reply with ONLY the title, nothing else.",

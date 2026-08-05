@@ -357,7 +357,7 @@ enum Commands {
         #[arg(long, default_value = "{}")]
         params: String,
     },
-    /// One-shot LLM call — quick-test the internal complete_tier() helper.
+    /// One-shot LLM call — quick-test the internal query_tier() helper.
     /// Reads tier_models[tier] from config.json (falls back to default_model)
     /// → resolves Model + api_key → calls LLM → prints response.
     ///
@@ -366,7 +366,7 @@ enum Commands {
     ///   ion llm --tier pro --json --system "Reply JSON {greeting}" "user X"
     ///   ion llm --tier max --system "Summarize" "long text..."
     ///   ion llm "hi"                    (default tier=fast)
-    Llm {
+    Query {
         /// Tier name: fast / pro / max
         #[arg(long, default_value = "fast")]
         tier: String,
@@ -3598,8 +3598,8 @@ pub(crate) fn color_ansi(name: &Option<String>) -> &'static str {
     }
 }
 
-/// CLI handler for `ion complete` — quick-test complete_tier helper.
-/// Bypasses session/agent flow, directly calls IonConfig::complete_tier.
+/// CLI handler for `ion complete` — quick-test query_tier helper.
+/// Bypasses session/agent flow, directly calls IonConfig::query_tier.
 async fn cmd_complete(tier: &str, system: Option<&str>, json: bool, message: &str) {
     let cfg = ion::config::IonConfig::load();
     let tier_str = cfg
@@ -3647,7 +3647,7 @@ async fn cmd_complete(tier: &str, system: Option<&str>, json: bool, message: &st
     println!("{}", "-".repeat(60));
 
     match cfg
-        .complete_tier(&registry, tier, system_prompt, message, json)
+        .query_tier(&registry, tier, system_prompt, message, json)
         .await
     {
         Ok(text) => {
@@ -4322,7 +4322,7 @@ async fn main() {
             replay,
         }) => cmd_subscribe(session.as_deref(), extension.as_deref(), *ui, *replay).await,
         Some(Commands::ListAgents) => cmd_list_agents().await,
-        Some(Commands::Llm { tier, system, json, message }) => {
+        Some(Commands::Query { tier, system, json, message }) => {
             cmd_complete(tier, system.as_deref(), *json, message).await;
         }
         Some(Commands::ListModels { search }) => cmd_list_models(search).await,
