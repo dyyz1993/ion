@@ -254,8 +254,13 @@ impl Tool for BashRunTool {
             // 安全预检：走 Runtime check_command（经过 SecuredRuntime CommandGuard）
             rt.check_command(&command).await.map_err(AgentError::Tool)?;
 
+            // ★ 在 command 前加 `exec 2>&1` 让 stderr 重定向到 stdout。
+            // 之前 stderr 被 piped 但 spawn_watcher 不读 → 错误信息全丢
+            // （exit=1 时端口占用/命令不存在的错误全在 stderr）。
+            // Shell 层合并比 Rust 层 Arc<Mutex> 简单，且保持原始输出顺序。
+            let merged_command = format!("exec 2>&1 ; {}", command);
             let child = match tokio::process::Command::new("sh")
-                .args(["-c", &command])
+                .args(["-c", &merged_command])
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
