@@ -1451,6 +1451,27 @@ mod tests {
     }
 
     #[test]
+    fn store_search_with_scope_does_not_panic_for_both_modes() {
+        // Regression: Bug A fix — search_with_scope must accept global=true
+        // without panicking even when global_store is None (fallback path).
+        // The actual cross-project behavior is exercised by X-2 workflow.
+        let store = make_store_no_global();
+        // global=false (default, project-scoped)
+        let _r1 = store.search_with_scope("anything", None, false);
+        // global=true (cross-project)
+        let _r2 = store.search_with_scope("anything", None, true);
+        // Both should complete without panic; result vec may be empty
+    }
+
+    #[test]
+    fn store_legacy_search_still_works() {
+        // The legacy search(query, outline) entry point must still work
+        // (delegates to search_with_scope with global=false).
+        let store = make_store_no_global();
+        let _ = store.search("anything", None);
+    }
+
+    #[test]
     fn store_read_injected_returns_empty_when_no_file() {
         let store = make_store_no_global();
         assert!(store.read_injected().is_empty());
