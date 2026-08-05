@@ -2111,13 +2111,18 @@ async fn cmd_run(
     tracing::info!("[extension] tool-loop-detector registered");
 
     let title_model = model_for_ext.clone();
+    // ★ 传 api_key 给 AutoSessionTitle——之前没传 → LLM 调用走 env var →
+    // MissingApiKey → fallback 到 heuristic → 标题变成 prompt 片段而非 LLM 生成。
+    // api_key 从 AgentConfig 拿（build_agent_config 里设的 eff.api_key）。
+    let title_api_key = eff.api_key.clone();
     ext_reg.register(Box::new(
         ion::auto_session_title::AutoSessionTitle::with_registry(
             registry_for_ext.clone(),
             title_model,
-        ),
+        )
+        .with_api_key(title_api_key),
     ));
-    tracing::info!("[extension] auto-session-title registered (with fast model)");
+    tracing::info!("[extension] auto-session-title registered (with fast model + api_key)");
 
     let learning_ext = ion::learning_extension::LearningExtension::new()
         .with_registry_model(registry_for_ext, model_for_ext);

@@ -18,6 +18,10 @@ pub struct AutoSessionTitle {
     registry: Option<Arc<registry::ApiRegistry>>,
     /// Fast model（用于标题生成，比主模型便宜/快）
     title_model: Option<Model>,
+    /// API key（从 AgentConfig.api_key 传过来）。
+    /// 之前没传 → openai.rs 拿不到 options.api_key → 走 env var → 找不到 →
+    /// "API key not found for provider: zai" → fallback 到 heuristic。
+    api_key: Option<String>,
 }
 
 impl Default for AutoSessionTitle {
@@ -33,7 +37,16 @@ impl AutoSessionTitle {
             name: "auto-session-title".into(),
             registry: None,
             title_model: None,
+            api_key: None,
         }
+    }
+
+    /// Inject API key (resolved from AgentConfig / config.json custom provider).
+    /// Without this, registry::complete falls back to env var lookup, which
+    /// fails for providers configured only in config.json (not in env).
+    pub fn with_api_key(mut self, key: Option<String>) -> Self {
+        self.api_key = key;
+        self
     }
 
     pub fn with_registry(registry: Arc<registry::ApiRegistry>, title_model: Model) -> Self {
@@ -42,6 +55,7 @@ impl AutoSessionTitle {
             name: "auto-session-title".into(),
             registry: Some(registry),
             title_model: Some(title_model),
+            api_key: None,
         }
     }
 
@@ -51,6 +65,7 @@ impl AutoSessionTitle {
         registry: &registry::ApiRegistry,
         model: &Model,
         first_user_msg: &str,
+        api_key: Option<&str>,
     ) -> Option<String> {
         let system_prompt = "You are a title generator. Generate a concise title (max 50 chars, no quotes, no period at end) summarizing the user's request. Reply with ONLY the title, nothing else.";
         let context = Context::new(
@@ -66,7 +81,18 @@ impl AutoSessionTitle {
             })],
         );
 
-        match registry::complete(registry, model, &context, None).await {
+        // ★ 关键：传 api_key！之前传 None → openai.rs 走 env var →
+        // ZAI_API_KEY 没设 → MissingApiKey → fallback 到 heuristic。
+        let options = ion_provider::types::StreamOptions {
+            max_tokens: Some(100),
+            api_key: api_key.map(|s| s.to_string()),
+            reasoning: None,
+            timeout_ms: Some(30_000),
+            max_retries: Some(1),
+            response_format: None,
+        };
+
+        match registry::complete(registry, model, &context, Some(&options)).await {
             Ok(assistant) => {
                 let text = assistant
                     .content
@@ -152,7 +178,7 @@ impl Extension for AutoSessionTitle {
         if let Some(text) = first_user_msg {
             // ★ 用 fast model 生成标题（错误静默吃掉）
             let title = if let (Some(reg), Some(model)) = (&self.registry, &self.title_model) {
-                match Self::generate_title_llm(reg, model, &text).await {
+                match Self::generate_title_llm(reg, model, &text, self.api_key.as_deref()).await {
                     Some(t) => t,
                     None => Self::generate_title_heuristic(&text),
                 }
