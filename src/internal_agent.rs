@@ -196,13 +196,122 @@ pub async fn run_agent(
         agent.set_messages(snapshot);
     }
 
-    // 8. Run the agent loop
-    agent
-        .run(&req.prompt)
-        .await
-        .map_err(|e| format!("agent.run() failed: {e}"))?;
+    // 8. Run agent loop — with schema retry if json_schema is set.
+    //    Schema retry mirrors cmd_run (src/bin/ion.rs:2184-2402):
+    //    1. Run agent.run(prompt)
+    //    2. Extract output
+    //    3. If schema set: validate → fail → inject error as new prompt → re-run
+    //    4. Repeat up to schema_retries+1 total attempts
+    let max_attempts = if req.json_schema.is_some() {
+        req.schema_retries + 1
+    } else {
+        1
+    };
 
-    // 9. Extract result
+    let mut current_prompt = req.prompt.clone();
+    let mut last_output = String::new();
+    let mut last_error: Option<String> = None;
+
+    for attempt in 1..=max_attempts {
+        // Run agent loop
+        agent
+            .run(&current_prompt)
+            .await
+            .map_err(|e| format!("agent.run() failed: {e}"))?;
+
+        // Extract last assistant text
+        last_output = agent
+            .messages()
+            .iter()
+            .rev()
+            .find_map(|m| match m {
+                Message::Assistant(a) => {
+                    let text: String = a
+                        .content
+                        .iter()
+                        .filter_map(|b| match b {
+                            ion_provider::types::AssistantContentBlock::Text(t) => {
+                                Some(t.text.as_str())
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if text.trim().is_empty() { None } else { Some(text) }
+                }
+                _ => None,
+            })
+            .unwrap_or_default();
+
+        // No schema → done
+        if req.json_schema.is_none() {
+            break;
+        }
+
+        // Schema validation
+        let schema = req.json_schema.as_ref().unwrap();
+        let parsed_result = serde_json::from_str::<serde_json::Value>(last_output.trim());
+        match parsed_result {
+            Err(e) => {
+                last_error = Some(format!("not valid JSON: {e}"));
+                if attempt < max_attempts {
+                    let schema_str = serde_json::to_string_pretty(schema)
+                        .unwrap_or_else(|_| schema.to_string());
+                    current_prompt = format!(
+                        "Your previous output was not valid JSON.\n\
+                         Error: {e}\n\n\
+                         Your output:\n```\n{last_output}\n```\n\n\
+                         Please reply with valid JSON matching this schema:\n```json\n{schema_str}\n```"
+                    );
+                    tracing::warn!(
+                        "[run_agent] JSON parse fail attempt {attempt}/{max_attempts}: {e}"
+                    );
+                    continue;
+                }
+            }
+            Ok(parsed) => {
+                let validator = jsonschema::Validator::new(schema)
+                    .map_err(|e| format!("invalid schema: {e}"))?;
+                match validator.validate(&parsed) {
+                    Ok(()) => {
+                        // Schema pass!
+                        last_error = None;
+                        break;
+                    }
+                    Err(e) => {
+                        let err_msg = e.to_string();
+                        last_error = Some(format!("schema mismatch: {err_msg}"));
+                        if attempt < max_attempts {
+                            let schema_str = serde_json::to_string_pretty(schema)
+                                .unwrap_or_else(|_| schema.to_string());
+                            current_prompt = format!(
+                                "Your previous output did not match the schema.\n\
+                                 Error: {err_msg}\n\n\
+                                 Your output:\n```json\n{last_output}\n```\n\n\
+                                 Fix it to match this schema:\n```json\n{schema_str}\n```"
+                            );
+                            tracing::warn!(
+                                "[run_agent] schema mismatch attempt {attempt}/{max_attempts}: {err_msg}"
+                            );
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // If schema was requested and all attempts failed, return error
+    if req.json_schema.is_some() && last_error.is_some() {
+        return Err(format!(
+            "schema mismatch after {max_attempts} attempts: {}\n\
+             last output: {}",
+            last_error.unwrap(),
+            last_output
+        ));
+    }
+
+    // 9. Extract final result
     let messages = agent.messages().to_vec();
     let turn_count = agent.current_message_count() as u64;
     let tool_call_count = messages
@@ -210,42 +319,8 @@ pub async fn run_agent(
         .filter(|m| matches!(m, Message::ToolResult(_)))
         .count() as u64;
 
-    // Extract last assistant text
-    let output = messages
-        .iter()
-        .rev()
-        .find_map(|m| match m {
-            Message::Assistant(a) => {
-                let text: String = a
-                    .content
-                    .iter()
-                    .filter_map(|b| match b {
-                        ion_provider::types::AssistantContentBlock::Text(t) => {
-                            Some(t.text.as_str())
-                        }
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                if text.trim().is_empty() { None } else { Some(text) }
-            }
-            _ => None,
-        })
-        .unwrap_or_default();
-
-    // 10. Schema validation (if requested)
-    if let Some(ref schema) = req.json_schema {
-        let parsed: serde_json::Value = serde_json::from_str(output.trim())
-            .map_err(|e| format!("output is not valid JSON: {e}"))?;
-        let validator = jsonschema::Validator::new(schema)
-            .map_err(|e| format!("invalid schema: {e}"))?;
-        validator
-            .validate(&parsed)
-            .map_err(|e| format!("schema mismatch: {e}"))?;
-    }
-
     Ok(RunAgentResult {
-        output,
+        output: last_output,
         messages,
         turn_count,
         tool_call_count,
