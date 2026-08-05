@@ -907,10 +907,16 @@ document.addEventListener('DOMContentLoaded', function() {
     if (!parent) return;
     var typeEl = parent.querySelector('.hook-type');
     if (!typeEl) return;
-    var t = (typeEl.textContent || '').trim();
-    if (t === '[session_name]') {
-      parent.classList.add('session-name-card');
-      parent.setAttribute('data-custom-type', 'session_name');
+    // 提取 [xxx] 里的 customType 名（如 [diagnostics] / [bash_result] / [session_name]）
+    var t = (typeEl.textContent || '').trim().replace(/^\[|\]$/g, '');
+    if (!t) return;
+    parent.setAttribute('data-custom-type', t);
+    // 如果是 diagnostics，再标 has-errors 属性（区分有错/无错）
+    if (t === 'diagnostics') {
+      var content = parent.querySelector('.markdown-content');
+      var txt = content ? (content.textContent || '') : '';
+      var hasErrors = /has_errors="true"|error\[E\d{4}\]|error\(s\)|severity="error"/.test(txt);
+      parent.setAttribute('data-has-errors', hasErrors ? 'true' : 'false');
     }
   });
 });
@@ -1023,6 +1029,28 @@ document.addEventListener('DOMContentLoaded', function() {
       padding: 12px 16px !important;
       border-radius: 4px !important;
       margin-bottom: 8px !important;
+    }
+    /* 不同 customType 用不同颜色（用户反馈：自定义插入应有视觉区分）*/
+    .hook-message[data-custom-type="diagnostics"] {
+      border-left-color: #dc2626 !important;
+      background: #fef2f2 !important;
+    }
+    .hook-message[data-custom-type="diagnostics"][data-has-errors="false"] {
+      border-left-color: #10b981 !important;
+      background: #f0fdf4 !important;
+    }
+    .hook-message[data-custom-type="bash_result"] {
+      border-left-color: #f59e0b !important;
+      background: #fffbeb !important;
+      font-family: 'Menlo', 'Monaco', monospace !important;
+      font-size: 12px !important;
+    }
+    .hook-message[data-custom-type="dev_servers"] {
+      border-left-color: #ec4899 !important;
+      background: #fdf2f8 !important;
+    }
+    .hook-message[data-custom-type="session_name"] {
+      display: none !important;
     }
     /* session_name 卡片：用更显著的渐变背景，区别于普通 custom_message */
     .custom-message[data-custom-type="session_name"],

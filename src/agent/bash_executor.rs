@@ -208,6 +208,22 @@ pub async fn spawn_watcher(
         } else {
             stdout_stderr.clone()
         };
+        // ★ exit=unknown（SIGKILL / spawn 失败 / 进程没正常退出）+ 输出为空时，
+        // 给个 fallback 内容，避免 bash_result 整个 body 空白。
+        // 之前 stdout_stderr 为空 + exit_code None → 整个 content 是空行，
+        // LLM 和用户都看不出发生了什么。
+        let output_text = if output_text.trim().is_empty()
+            && (exit_code.is_none() || timed_out)
+        {
+            let reason = if timed_out {
+                "(no output captured; process timed out and was killed)"
+            } else {
+                "(no output captured; process exited abnormally — likely killed by signal or spawn failed)"
+            };
+            reason.to_string()
+        } else {
+            output_text
+        };
         let content = format!(
             "<bash_result bid=\"{}\" exit=\"{}\" elapsed=\"{}s\">\n{}\n</bash_result>",
             pid,

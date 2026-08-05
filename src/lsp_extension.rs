@@ -1070,6 +1070,16 @@ impl Extension for LspExtension {
 
         let diags = self.diagnostics.lock().await.clone();
 
+        // ── SKIP CLEAN: Don't inject when there's nothing to report ──
+        // User feedback: "0 errors / clean build" is noise — only inject when
+        // there are actual errors or warnings worth surfacing to the LLM.
+        // Without this, every successful write triggers a "Project compiles
+        // cleanly" announcement that pollutes the conversation.
+        if diags.is_empty() {
+            tracing::info!("[lsp] no diagnostics (clean), skipping injection");
+            return Ok(());
+        }
+
         // ── DEDUP: Skip injection if identical to last injected diagnostics ──
         // Compare with the most recent diagnostics in messages
         for msg in messages.iter().rev() {
