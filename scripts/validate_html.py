@@ -333,17 +333,28 @@ def check_ext_03(dom, entries, results, html_path=""):
                                   "detail": detail})
         results["passed" if passed else "failed"] += 1
 
-    # 03-M1: bash background=true 被调用
+    # 03-M1: bash background=true 被调用（兼容两种格式）
     bg_bash = 0
     for e in entries:
         if e.get("type") != "message":
             continue
         m = e.get("message", {})
-        if "Assistant" not in m:
-            continue
-        for c in m["Assistant"].get("content", []):
+        content = []
+        # session.jsonl 格式: m["Assistant"]["content"][i]["ToolCall"]
+        if "Assistant" in m:
+            content = m["Assistant"].get("content", [])
+        # HTML pi 格式: m["role"]=="assistant", m["content"][i]["type"]=="toolCall"
+        elif m.get("role") == "assistant":
+            content = m.get("content", [])
+        for c in content:
+            # session.jsonl
             if "ToolCall" in c and c["ToolCall"].get("name") == "bash":
                 args = c["ToolCall"].get("arguments", {})
+                if args.get("background") is True or args.get("bg") is True:
+                    bg_bash += 1
+            # HTML pi
+            elif c.get("type") == "toolCall" and c.get("name") == "bash":
+                args = c.get("arguments") or c.get("input") or {}
                 if args.get("background") is True or args.get("bg") is True:
                     bg_bash += 1
     check("03-M1", "bash background=true 被调用", bg_bash >= 1,
