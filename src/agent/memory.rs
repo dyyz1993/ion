@@ -300,11 +300,34 @@ impl MemoryStore {
     }
 
     pub fn search(&self, query: &str, outline: Option<&str>) -> Vec<MemoryEntry> {
+        self.search_with_scope(query, outline, false)
+    }
+
+    /// Search with optional global scope.
+    ///
+    /// `global=false` (default): only entries from current project (cwd hash).
+    /// `global=true`: search across ALL projects (true "global" memory).
+    ///
+    /// Background: MemoryStore has always been named "GlobalMemory" but the
+    /// underlying search hardcoded `Some(project_name)`, making entries
+    /// invisible across sessions in different cwds. The X-2 cross-session
+    /// workflow exposed this. `global=true` is the explicit override.
+    pub fn search_with_scope(
+        &self,
+        query: &str,
+        _outline: Option<&str>,
+        global: bool,
+    ) -> Vec<MemoryEntry> {
         // 统一存储：优先走 V0.2 FTS5 搜索
         if let Some(ref gstore) = self.global_store {
-            // FTS5 搜索当前项目（outline 参数忽略——V0.2 用 project 维度）
+            // global=true → None (no project filter); global=false → 当前 project
+            let project_filter: Option<&str> = if global {
+                None
+            } else {
+                Some(self.project_name.as_str())
+            };
             let results = gstore
-                .search(query, Some(&self.project_name))
+                .search(query, project_filter)
                 .unwrap_or_default();
             // 转成 MemoryEntry 格式（保持注入链路兼容）
             return results
@@ -338,11 +361,7 @@ impl MemoryStore {
         // Fallback: v0.1 关键词双向匹配
         let q = query.to_lowercase();
         let mut results = Vec::new();
-        let outlines: Vec<String> = if let Some(oid) = outline {
-            vec![oid.to_string()]
-        } else {
-            self.read_index().into_iter().map(|i| i.id).collect()
-        };
+        let outlines: Vec<String> = self.read_index().into_iter().map(|i| i.id).collect();
         for oid in outlines {
             for e in self.read_outline(&oid) {
                 if e.archived {
@@ -496,14 +515,14 @@ impl Tool for MemorySearchTool {
     }
     fn description(&self) -> &str {
         "Search saved memories. Use when you need to recall previously saved information. \n\
-         Args: {query: string (required), outline?: string}\n\
+         Args: {query: string (required), global?: bool (default false — only current project; true — search across ALL projects)}\n\
          Returns: [{id, content, description, category, tags}]"
     }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type":"object","properties":{
                 "query":{"type":"string","description":"Search keywords"},
-                "outline":{"type":"string","description":"Optional outline filter"}
+                "global":{"type":"boolean","description":"If true, search across all projects (not just current cwd). Default: false.","default":false}
             },"required":["query"]
         })
     }
@@ -513,9 +532,9 @@ impl Tool for MemorySearchTool {
         _rt: &dyn crate::runtime::Runtime,
     ) -> AgentResult<String> {
         let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-        let outline = args.get("outline").and_then(|v| v.as_str());
+        let global = args.get("global").and_then(|v| v.as_bool()).unwrap_or(false);
         let store = self.store.lock().await;
-        let results = store.search(query, outline);
+        let results = store.search_with_scope(query, None, global);
         Ok(serde_json::to_string(&results).unwrap_or_else(|_| "[]".into()))
     }
 }

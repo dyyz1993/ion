@@ -146,9 +146,13 @@ fn normalize_bash_command(cmd: &str) -> String {
         }
         "pwd" => "pwd".to_string(),
         _ => {
-            // For other commands, truncate to 50 chars (enough to detect identical repeats)
-            if trimmed.len() > 50 {
-                trimmed[..50].to_string()
+            // For other commands, truncate to 50 CHARS (not bytes).
+            // Must use char_indices to avoid splitting multi-byte UTF-8 sequences
+            // (e.g. Chinese characters — bug found by EXT-03 S2 scenario causing
+            // panic "end byte index 50 is not a char boundary; it is inside '无'")
+            if trimmed.chars().count() > 50 {
+                // Take first 50 chars by iterating, then collect
+                trimmed.chars().take(50).collect::<String>()
             } else {
                 trimmed.to_string()
             }
@@ -304,6 +308,30 @@ mod tests {
     fn test_normalize_bash_noop() {
         assert_eq!(normalize_bash_command("true"), "noop");
         assert_eq!(normalize_bash_command(":"), "noop");
+    }
+
+    #[test]
+    fn test_normalize_bash_utf8_multibyte_no_panic() {
+        // Regression: previously used byte-slicing trimmed[..50] which panicked
+        // when byte 50 landed inside a multi-byte CJK char (e.g. '无' is 3 bytes).
+        // Must use chars().take(50) to slice on char boundaries.
+        //
+        // Use a command NOT in the normalize table (so it falls into the
+        // truncate branch) and contains enough CJK chars to span byte 50.
+        let cmd = "python3 -c \"print('".to_string() + &"无".repeat(60) + "')\"";
+        let result = normalize_bash_command(&cmd);
+        assert!(
+            !result.is_empty(),
+            "should return non-empty signature, got: {result:?}"
+        );
+        // Should be truncated to 50 chars (not bytes)
+        assert_eq!(
+            result.chars().count(),
+            50,
+            "should truncate to 50 chars, got {} ({} bytes): {result:?}",
+            result.chars().count(),
+            result.len()
+        );
     }
 
     #[test]
