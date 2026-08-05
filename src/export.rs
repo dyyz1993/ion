@@ -545,6 +545,39 @@ fn export_session_internal(
         .map(convert_entry)
         .collect();
 
+    // ★ pi template 的 renderEntry 要求 entry.type === "custom_message" 才渲染 hook-message 卡片。
+    // 之前 ION 把 Custom 变体 message 扁平化为 type:"message" + role:"custom" →
+    // pi template 不识别 → bash_result / dev_servers / diagnostics 全部不显示。
+    // 修复：Custom 变体 → 把 type 改为 "custom_message" + 把 customType / content 提到顶层。
+    for e in entries.iter_mut() {
+        let is_custom_message = e.get("message")
+            .and_then(|m| m.get("role"))
+            .and_then(|v| v.as_str()) == Some("custom");
+        if !is_custom_message { continue; }
+        if let Some(obj) = e.as_object_mut() {
+            // 先 clone 出 message 内层字段（避免 borrow 冲突）
+            let (ct, content, display) = obj.get("message")
+                .and_then(|v| v.as_object())
+                .map(|m| (
+                    m.get("customType").cloned(),
+                    m.get("content").cloned(),
+                    m.get("display").cloned(),
+                ))
+                .unwrap_or((None, None, None));
+            if let Some(ct) = ct {
+                obj.insert("customType".to_string(), ct);
+            }
+            if let Some(content) = content {
+                obj.insert("content".to_string(), content);
+            }
+            if let Some(display) = display {
+                obj.insert("display".to_string(), display);
+            }
+            // type 改为 custom_message
+            obj.insert("type".to_string(), json!("custom_message"));
+        }
+    }
+
     // 重建 parentId 链：让所有 entries 串成一条线。
     // pi template 的主体内容只显示 getPath(leafId) 返回的 parentId 链上的 entries。
     // ION 的 session 可能有多条 parentId 链（turn_summary 的 parentId=None 断链、
@@ -1557,6 +1590,10 @@ fn convert_message_entry(entry: &Value) -> Value {
         "Assistant" => Some("assistant"),
         "User" => Some("user"),
         "ToolResult" => Some("toolResult"),
+        // ★ Custom 变体（bash_result / dev_servers / diagnostics / session_name 等）
+        // 之前没设 role → pi template 找不到 role 直接丢弃 → bash_result 完全消失。
+        // 设 role="custom" + 保留 customType 让模板能按类型渲染（hook-message 卡片）。
+        "Custom" => Some("custom"),
         _ => None,
     };
     if let Some(role) = role_for_variant {
