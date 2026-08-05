@@ -183,17 +183,50 @@ pub async fn spawn_watcher(
     );
 
     if let Some(ref tx) = tx {
-        // exit_code 是 Option<i32>，按 None/Some(0)/Some(N) 友好格式化：
-        // - None → "unknown"（未拿到退出码，比如 spawn 失败/超时）
-        // - Some(0) → "0"
-        // - Some(N) → "N"
-        // 之前用 {:?} 直接 debug，会显示成 "None" / "Some(0)"，对前端不友好。
+        // exit_code 友好格式化（按用户反馈迭代）：
+        // - timed_out=true → "timeout"（我们主动 kill）
+        // - exit_code = Some(n) → "n"（正常退出或失败）
+        // - signal = Some(n) → "signal:N (SIGKILL/...)"（被信号杀死，比"unknown"具体）
+        // - 都没有 → "unknown"（极少见，spawn 失败之类）
+        //
+        // 之前 exit="unknown" 包揽了「信号杀死」「spawn 失败」「wait 异常」三种情况，
+        // 用户看不到具体原因。Unix 下 ExitStatus.signal() 能区分信号，加进来。
         let exit_code_str = if timed_out {
             "timeout".to_string()
         } else {
             match exit_code {
-                None => "unknown".to_string(),
                 Some(code) => code.to_string(),
+                None => {
+                    // Unix 下尝试拿信号号（被 SIGKILL/SIGTERM 杀死的情况）
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::ExitStatusExt;
+                        if let Ok(status) = exit_status {
+                            if let Some(sig) = status.signal() {
+                                let name = match sig {
+                                    1 => "SIGHUP",
+                                    2 => "SIGINT",
+                                    3 => "SIGQUIT",
+                                    4 => "SIGILL",
+                                    6 => "SIGABRT",
+                                    9 => "SIGKILL",
+                                    11 => "SIGSEGV",
+                                    13 => "SIGPIPE",
+                                    14 => "SIGALRM",
+                                    15 => "SIGTERM",
+                                    _ => "SIGNAL",
+                                };
+                                format!("signal:{} ({})", sig, name)
+                            } else {
+                                "unknown".to_string()
+                            }
+                        } else {
+                            "unknown".to_string()
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    "unknown".to_string()
+                }
             }
         };
         // 格式精简：bid/exit/elapsed 放 XML 属性，content 只放进程输出（不重复 command）。
@@ -210,19 +243,23 @@ pub async fn spawn_watcher(
         } else {
             stdout_stderr.clone()
         };
-        // ★ exit=unknown（SIGKILL / spawn 失败 / 进程没正常退出）+ 输出为空时，
-        // 给个 fallback 内容，避免 bash_result 整个 body 空白。
-        // 之前 stdout_stderr 为空 + exit_code None → 整个 content 是空行，
-        // LLM 和用户都看不出发生了什么。
+        // ★ exit=signal:* / unknown（被 SIGKILL/SIGTERM 杀 / spawn 失败）+ 输出空时，
+        // 给个 fallback 内容说明发生了什么，避免整个 body 空白。
         let output_text = if output_text.trim().is_empty()
             && (exit_code.is_none() || timed_out)
         {
-            let reason = if timed_out {
-                "(no output captured; process timed out and was killed)"
+            if timed_out {
+                "(no output captured; process timed out and was killed by ion)".to_string()
+            } else if exit_code_str.starts_with("signal:") {
+                format!(
+                    "(no output captured; process terminated by {} — \
+                     likely OOM kill, manual kill, or system signal)",
+                    exit_code_str
+                )
             } else {
-                "(no output captured; process exited abnormally — likely killed by signal or spawn failed)"
-            };
-            reason.to_string()
+                "(no output captured; process spawn failed or wait error — \
+                 no exit code and no signal captured)".to_string()
+            }
         } else {
             output_text
         };
