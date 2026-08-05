@@ -1594,37 +1594,7 @@ async fn cmd_run(
     );
     // Resolve fast-tier model for goal plan generation (avoids reasoning token waste).
     let fast_model: Option<ion_provider::types::Model> = {
-        let cfg = ion::config::IonConfig::load();
-        cfg.tier_models.get("fast").and_then(|s| {
-            // Parse "provider/model_id" format.
-            let parts: Vec<&str> = s.splitn(2, '/').collect();
-            if parts.len() == 2 {
-                let provider = parts[0];
-                let model_id = parts[1];
-                // Look up in config.json providers (custom models not in builtin registry).
-                cfg.providers.get(provider).and_then(|p| {
-                    p.models
-                        .iter()
-                        .find(|m| m.id == model_id)
-                        .map(|m| ion_provider::types::Model {
-                            id: m.id.clone(),
-                            name: m.name.clone().unwrap_or_else(|| m.id.clone()),
-                            api: p.api.clone(),
-                            provider: provider.to_string(),
-                            base_url: p.base_url.clone(),
-                            reasoning: m.reasoning.unwrap_or(false),
-                            input: vec!["text".into()],
-                            cost: ion_provider::types::Cost::default(),
-                            context_window: m.context_window.unwrap_or(128000),
-                            max_tokens: m.max_tokens.unwrap_or(32000),
-                            compat: None,
-                            headers: p.headers.clone(),
-                        })
-                })
-            } else {
-                None
-            }
-        })
+        ion::config::IonConfig::load().resolve_tier_model("fast")
     };
 
     tools.register(Box::new(
@@ -2110,11 +2080,12 @@ async fn cmd_run(
     ext_reg.register(Box::new(ion::tool_loop_detector::ToolLoopDetector::new()));
     tracing::info!("[extension] tool-loop-detector registered");
 
-    let title_model = model_for_ext.clone();
-    // ★ 传 api_key 给 AutoSessionTitle——之前没传 → LLM 调用走 env var →
-    // MissingApiKey → fallback 到 heuristic → 标题变成 prompt 片段而非 LLM 生成。
-    // api_key 从 AgentConfig 拿（build_agent_config 里设的 eff.api_key）。
-    let title_api_key = eff.api_key.clone();
+    let title_model = ion::config::IonConfig::load()
+        .resolve_tier_model("fast")
+        .unwrap_or_else(|| model_for_ext.clone());
+    let title_api_key = ion::config::IonConfig::load()
+        .resolve_provider_api_key(&title_model.provider)
+        .or_else(|| eff.api_key.clone());
     ext_reg.register(Box::new(
         ion::auto_session_title::AutoSessionTitle::with_registry(
             registry_for_ext.clone(),
@@ -2122,7 +2093,7 @@ async fn cmd_run(
         )
         .with_api_key(title_api_key),
     ));
-    tracing::info!("[extension] auto-session-title registered (with fast model + api_key)");
+    tracing::info!("[extension] auto-session-title registered (fast tier + api_key)");
 
     let learning_ext = ion::learning_extension::LearningExtension::new()
         .with_registry_model(registry_for_ext, model_for_ext);

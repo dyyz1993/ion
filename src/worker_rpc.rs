@@ -889,14 +889,22 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         ext_reg.register(Box::new(crate::tool_loop_detector::ToolLoopDetector::new()));
         tracing::info!("[extension] tool-loop-detector registered");
 
-        // Auto Session Title（首轮自动生成会话标题，用 fast model）
+        // Auto Session Title（首轮自动生成会话标题，用 fast tier 而非主模型）
+        // 之前用 model.clone()（主模型）→ 烧贵的 pro/max 配额做 title 生成。
+        // 改用 resolve_tier_model("fast") 拿 fast tier；fallback 到主模型。
+        let title_model = crate::config::IonConfig::load()
+            .resolve_tier_model("fast")
+            .unwrap_or_else(|| model.clone());
+        let title_api_key = crate::config::IonConfig::load()
+            .resolve_provider_api_key(&title_model.provider);
         ext_reg.register(Box::new(
             crate::auto_session_title::AutoSessionTitle::with_registry(
                 Arc::clone(&registry),
-                model.clone(),
-            ),
+                title_model,
+            )
+            .with_api_key(title_api_key),
         ));
-        tracing::info!("[extension] auto-session-title registered (with fast model)");
+        tracing::info!("[extension] auto-session-title registered (fast tier + api_key)");
 
         // Learning Extension（会话结束时自动提炼记忆，先脱敏再 LLM 提炼）
         // 注入 registry + model，让 on_session_shutdown 能 spawn LLM 蒸馏 skill

@@ -555,6 +555,123 @@ impl IonConfig {
             .map(|c| c.enabled)
             .unwrap_or(!Self::DEFAULT_DISABLED.contains(&name))
     }
+
+    /// Resolve a tier name (e.g. "fast" / "pro" / "max") into a concrete
+    /// `ion_provider::types::Model` by looking up `tier_models[tier]`
+    /// (format: "provider/model_id") and matching against `providers[provider].models`.
+    ///
+    /// Returns None if:
+    /// - tier not in tier_models
+    /// - format isn't "provider/model_id"
+    /// - provider not in providers map
+    /// - model_id not found in provider's models list
+    ///
+    /// Used by extensions that need a specific tier (AutoSessionTitle wants
+    /// "fast" to avoid burning the expensive pro/max model on title generation).
+    pub fn resolve_tier_model(&self, tier: &str) -> Option<ion_provider::types::Model> {
+        let tier_str = self.tier_models.get(tier)?;
+        let parts: Vec<&str> = tier_str.splitn(2, '/').collect();
+        if parts.len() != 2 {
+            return None;
+        }
+        let provider = parts[0];
+        let model_id = parts[1];
+        let p = self.providers.get(provider)?;
+        let m = p.models.iter().find(|m| m.id == model_id)?;
+        Some(ion_provider::types::Model {
+            id: m.id.clone(),
+            name: m.name.clone().unwrap_or_else(|| m.id.clone()),
+            api: p.api.clone(),
+            provider: provider.to_string(),
+            base_url: p.base_url.clone(),
+            reasoning: m.reasoning.unwrap_or(false),
+            input: vec!["text".into()],
+            cost: ion_provider::types::Cost::default(),
+            context_window: m.context_window.unwrap_or(128000),
+            max_tokens: m.max_tokens.unwrap_or(32000),
+            compat: None,
+            headers: p.headers.clone(),
+        })
+    }
+
+    /// Resolve the API key for a provider (custom provider's api_key, falling
+    /// back to env var lookup). Used by extensions that need to pass api_key
+    /// to StreamOptions (registry::complete needs it for non-env-configured
+    /// providers like custom proxies).
+    pub fn resolve_provider_api_key(&self, provider: &str) -> Option<String> {
+        // Custom provider's api_key (config.json)
+        let from_config = self.providers.get(provider).and_then(|p| p.api_key.clone());
+        if from_config.is_some() {
+            return from_config;
+        }
+        // Env var fallback
+        let var_name = format!("{}_API_KEY", provider.to_uppercase());
+        std::env::var(&var_name).ok()
+    }
+
+    /// One-line LLM call for extensions — wraps registry::complete with all
+    /// the boilerplate (tier resolution, api_key lookup, StreamOptions,
+    /// Context construction, response text extraction).
+    ///
+    /// This is the "scene 1 capability wrapper" the user asked for:
+    /// extensions shouldn't need to redo resolve_tier_model + resolve_api_key
+    /// + build StreamOptions + extract text every time.
+    ///
+    /// tier: "fast" / "pro" / "max" (falls back to main if tier not configured)
+    /// json: true → forces response_format="json_object" (OpenAI providers)
+    ///
+    /// Returns the assistant's text content (concatenated Text blocks).
+    pub async fn complete_tier(
+        &self,
+        registry: &ion_provider::registry::ApiRegistry,
+        tier: &str,
+        system_prompt: &str,
+        user_msg: &str,
+        json: bool,
+    ) -> Result<String, String> {
+        use ion_provider::types::*;
+
+        let model = self.resolve_tier_model(tier)
+            .ok_or_else(|| format!("tier '{tier}' not configured in tier_models"))?;
+        let api_key = self.resolve_provider_api_key(&model.provider);
+
+        let options = StreamOptions {
+            max_tokens: Some(1024),
+            api_key,
+            reasoning: None,
+            timeout_ms: Some(60_000),
+            max_retries: Some(1),
+            response_format: if json { Some("json_object".into()) } else { None },
+        };
+
+        let context = Context::new(
+            Some(system_prompt.into()),
+            vec![Message::User(UserMessage {
+                role: "user".into(),
+                content: vec![ContentBlock::Text(TextContent {
+                    text: user_msg.into(),
+                    text_signature: None,
+                })],
+                timestamp: 0,
+                source: MessageSource::Prompt,
+            })],
+        );
+
+        let result = ion_provider::registry::complete(registry, &model, &context, Some(&options))
+            .await
+            .map_err(|e| format!("LLM call failed: {e}"))?;
+
+        let text: String = result
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                AssistantContentBlock::Text(t) => Some(t.text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        Ok(text)
+    }
 }
 
 /// A custom provider definition (matches the pi reference models.json schema)

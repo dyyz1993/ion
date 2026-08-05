@@ -14,14 +14,7 @@ use std::sync::Arc;
 pub struct AutoSessionTitle {
     done: AtomicBool,
     name: String,
-    /// ApiRegistry（让扩展能调 fast model 生成标题）
     registry: Option<Arc<registry::ApiRegistry>>,
-    /// Fast model（用于标题生成，比主模型便宜/快）
-    title_model: Option<Model>,
-    /// API key（从 AgentConfig.api_key 传过来）。
-    /// 之前没传 → openai.rs 拿不到 options.api_key → 走 env var → 找不到 →
-    /// "API key not found for provider: zai" → fallback 到 heuristic。
-    api_key: Option<String>,
 }
 
 impl Default for AutoSessionTitle {
@@ -36,73 +29,46 @@ impl AutoSessionTitle {
             done: AtomicBool::new(false),
             name: "auto-session-title".into(),
             registry: None,
-            title_model: None,
-            api_key: None,
         }
     }
 
-    /// Inject API key (resolved from AgentConfig / config.json custom provider).
-    /// Without this, registry::complete falls back to env var lookup, which
-    /// fails for providers configured only in config.json (not in env).
-    pub fn with_api_key(mut self, key: Option<String>) -> Self {
-        self.api_key = key;
-        self
-    }
-
-    pub fn with_registry(registry: Arc<registry::ApiRegistry>, title_model: Model) -> Self {
+    /// Backwards-compat: 接受 registry + model 但忽略 model
+    /// （model 改用 complete_tier("fast") 从 config 解析，更准确）。
+    pub fn with_registry(registry: Arc<registry::ApiRegistry>, _title_model: Model) -> Self {
         Self {
             done: AtomicBool::new(false),
             name: "auto-session-title".into(),
             registry: Some(registry),
-            title_model: Some(title_model),
-            api_key: None,
         }
     }
 
-    /// LLM 生成标题：用 fast model 调一次，返回 ≤50 字符的标题。
+    /// Backwards-compat: api_key 现在由 complete_tier 自动 resolve，no-op
+    pub fn with_api_key(self, _key: Option<String>) -> Self {
+        self
+    }
+
+    /// LLM 生成标题：用 fast tier 调一次，返回 ≤50 字符的标题。
     /// 任何错误都静默吃掉，返回 None。
+    ///
+    /// ★ 简化版：用 IonConfig::complete_tier("fast", ...) 一行调用，
+    /// 不用自己 resolve tier / api_key / 构造 StreamOptions。
     async fn generate_title_llm(
         registry: &registry::ApiRegistry,
-        model: &Model,
         first_user_msg: &str,
-        api_key: Option<&str>,
     ) -> Option<String> {
-        let system_prompt = "You are a title generator. Generate a concise title (max 50 chars, no quotes, no period at end) summarizing the user's request. Reply with ONLY the title, nothing else.";
-        let context = Context::new(
-            Some(system_prompt.into()),
-            vec![Message::User(UserMessage {
-                role: "user".into(),
-                content: vec![ContentBlock::Text(TextContent {
-                    text: first_user_msg.chars().take(500).collect(),
-                    text_signature: None,
-                })],
-                timestamp: 0,
-                source: MessageSource::Prompt,
-            })],
-        );
+        let cfg = crate::config::IonConfig::load();
+        let result = cfg
+            .complete_tier(
+                registry,
+                "fast",
+                "You are a title generator. Generate a concise title (max 50 chars, no quotes, no period at end) summarizing the user's request. Reply with ONLY the title, nothing else.",
+                &first_user_msg.chars().take(500).collect::<String>(),
+                false, // 不需要 JSON
+            )
+            .await;
 
-        // ★ 关键：传 api_key！之前传 None → openai.rs 走 env var →
-        // ZAI_API_KEY 没设 → MissingApiKey → fallback 到 heuristic。
-        let options = ion_provider::types::StreamOptions {
-            max_tokens: Some(100),
-            api_key: api_key.map(|s| s.to_string()),
-            reasoning: None,
-            timeout_ms: Some(30_000),
-            max_retries: Some(1),
-            response_format: None,
-        };
-
-        match registry::complete(registry, model, &context, Some(&options)).await {
-            Ok(assistant) => {
-                let text = assistant
-                    .content
-                    .iter()
-                    .filter_map(|b| match b {
-                        AssistantContentBlock::Text(t) => Some(t.text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ");
+        match result {
+            Ok(text) => {
                 let title = text.trim().trim_matches('"').trim();
                 if title.is_empty() || title.len() > 100 {
                     None
@@ -177,8 +143,8 @@ impl Extension for AutoSessionTitle {
 
         if let Some(text) = first_user_msg {
             // ★ 用 fast model 生成标题（错误静默吃掉）
-            let title = if let (Some(reg), Some(model)) = (&self.registry, &self.title_model) {
-                match Self::generate_title_llm(reg, model, &text, self.api_key.as_deref()).await {
+            let title = if let Some(reg) = &self.registry {
+                match Self::generate_title_llm(reg, &text).await {
                     Some(t) => t,
                     None => Self::generate_title_heuristic(&text),
                 }
