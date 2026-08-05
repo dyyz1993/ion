@@ -53,7 +53,9 @@ pub async fn spawn_watcher(
         });
     }
 
-    // Read stdout line by line via BufReader
+    // Read stdout line by line via BufReader.
+    // ★ stderr 合并在 bash.rs 的 spawn 处用 `exec 2>&1` 完成（shell 层重定向，
+    //   比 Rust 层 Arc<Mutex> 简单且不会丢顺序）。
     use tokio::io::{AsyncBufReadExt, BufReader};
     let mut full_output = String::new();
     let mut line_buf: Vec<String> = Vec::new();
