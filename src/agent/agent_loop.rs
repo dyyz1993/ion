@@ -225,6 +225,12 @@ impl Agent {
     }
 
     /// 动态设置 session cwd（worker 启动后设置）。
+    /// Set messages directly (for internal_agent::run_agent — prepopulates
+    /// the agent with a context snapshot before running the prompt).
+    pub fn set_messages(&mut self, msgs: Vec<Message>) {
+        self.messages = msgs;
+    }
+
     pub fn set_session_cwd(&mut self, cwd: Option<String>) {
         self.session_cwd = cwd;
     }

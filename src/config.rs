@@ -654,6 +654,14 @@ impl IonConfig {
     /// json: true → forces response_format="json_object" (OpenAI providers)
     ///
     /// Returns the assistant's text content (concatenated Text blocks).
+    /// One-line LLM call with optional JSON Schema validation (matches
+    /// cmd_run's scene 1 schema behavior — jsonschema::Validator + retry).
+    ///
+    /// - `schema`: Some(JSON Schema as serde_json::Value) → 输出必须符合，
+    ///   不符合自动 retry（最多 `max_attempts` 次），把错误信息作为新 prompt
+    ///   注入让 LLM 修正。全失败 → 返回最后一次错误。
+    /// - `json`: true → response_format=json_object（OpenAI providers 强制 JSON 输出）
+    /// - 如果同时传 schema 和 json=true，schema 优先（json 自动 true）
     pub async fn query_tier(
         &self,
         registry: &ion_provider::registry::ApiRegistry,
@@ -665,7 +673,7 @@ impl IonConfig {
         use ion_provider::types::*;
 
         let model = self.resolve_tier_model(tier)
-            .ok_or_else(|| format!("tier '{tier}' not configured in tier_models"))?;
+            .ok_or_else(|| format!("tier '{tier}' not configured and no default_model available"))?;
         let api_key = self.resolve_provider_api_key(&model.provider);
 
         let options = StreamOptions {
@@ -704,6 +712,131 @@ impl IonConfig {
             .collect::<Vec<_>>()
             .join(" ");
         Ok(text)
+    }
+
+    /// Like query_tier, but validates output against JSON Schema with retry.
+    pub async fn query_tier_with_schema(
+        &self,
+        registry: &ion_provider::registry::ApiRegistry,
+        tier: &str,
+        system_prompt: &str,
+        user_msg: &str,
+        schema: &serde_json::Value,
+        max_attempts: u32,
+    ) -> Result<String, String> {
+        use ion_provider::types::*;
+
+        let model = self.resolve_tier_model(tier)
+            .ok_or_else(|| format!("tier '{tier}' not configured and no default_model available"))?;
+        let api_key = self.resolve_provider_api_key(&model.provider);
+
+        let validator = jsonschema::Validator::new(schema)
+            .map_err(|e| format!("invalid schema: {e}"))?;
+
+        let options = StreamOptions {
+            max_tokens: Some(2048),
+            api_key,
+            reasoning: None,
+            timeout_ms: Some(60_000),
+            max_retries: Some(1),
+            // schema 模式强制 JSON 输出
+            response_format: Some("json_object".into()),
+        };
+
+        let schema_str = serde_json::to_string_pretty(schema)
+            .unwrap_or_else(|_| schema.to_string());
+
+        let mut current_user_msg = user_msg.to_string();
+        let mut last_err: Option<String> = None;
+        let mut last_output: Option<String> = None;
+
+        for attempt in 1..=max_attempts {
+            let context = Context::new(
+                Some(format!(
+                    "{system_prompt}\n\n\
+                     Reply with a JSON object that matches this schema:\n\
+                     ```json\n{schema_str}\n```\n\n\
+                     Reply with ONLY the JSON, no markdown, no explanation."
+                )),
+                vec![Message::User(UserMessage {
+                    role: "user".into(),
+                    content: vec![ContentBlock::Text(TextContent {
+                        text: current_user_msg.clone(),
+                        text_signature: None,
+                    })],
+                    timestamp: 0,
+                    source: MessageSource::Prompt,
+                })],
+            );
+
+            let result = ion_provider::registry::complete(registry, &model, &context, Some(&options))
+                .await
+                .map_err(|e| format!("LLM call failed: {e}"))?;
+
+            let output: String = result
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    AssistantContentBlock::Text(t) => Some(t.text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            last_output = Some(output.clone());
+
+            // Parse as JSON
+            let parsed = match serde_json::from_str::<serde_json::Value>(output.trim()) {
+                Ok(v) => v,
+                Err(e) => {
+                    last_err = Some(format!("not valid JSON: {e}"));
+                    if attempt < max_attempts {
+                        current_user_msg = format!(
+                            "Your previous output was not valid JSON.\n\
+                             Error: {e}\n\n\
+                             Your output:\n```\n{output}\n```\n\n\
+                             Please reply with valid JSON matching the schema."
+                        );
+                        tracing::warn!(
+                            "[query_tier_with_schema] JSON parse fail attempt {attempt}/{max_attempts}: {e}"
+                        );
+                        continue;
+                    }
+                    break;
+                }
+            };
+
+            // Validate against schema
+            match validator.validate(&parsed) {
+                Ok(()) => {
+                    // 成功！返回原始 JSON 字符串（保持 LLM 的格式）
+                    return Ok(output);
+                }
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    last_err = Some(format!("schema mismatch: {err_msg}"));
+                    if attempt < max_attempts {
+                        current_user_msg = format!(
+                            "Your previous output did not match the schema.\n\
+                             Error: {err_msg}\n\n\
+                             Your output:\n```json\n{output}\n```\n\n\
+                             Fix it to match this schema:\n```json\n{schema_str}\n```"
+                        );
+                        tracing::warn!(
+                            "[query_tier_with_schema] schema mismatch attempt {attempt}/{max_attempts}: {err_msg}"
+                        );
+                        continue;
+                    }
+                    break;
+                }
+            }
+        }
+
+        Err(format!(
+            "schema mismatch after {max_attempts} attempts: {}\n\
+             last output: {}",
+            last_err.unwrap_or_else(|| "unknown error".to_string()),
+            last_output.unwrap_or_else(|| "(none)".to_string())
+        ))
     }
 }
 
