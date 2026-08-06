@@ -205,7 +205,7 @@ for line in sys.stdin:
     echo ""
     echo "  Next steps:"
     echo "    A should review these issues and decide:"
-    echo "    - Fix via: NO_PR=1 bash scripts/evolve_auto.sh \"fix: <issue>\""
+    echo "    - Fix via: bash scripts/evolve_self.sh (A→B self-evolution)"
     echo "    - Or reject (mark as known issue)"
 else
     echo ""
