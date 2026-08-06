@@ -126,10 +126,11 @@ with open('$prompt_file', 'w', encoding='utf-8') as f:
         return 1
     fi
 
-    # Validate
+    # Validate (pass --session-jsonl so validate_html.py can read entries for deep checks)
     local report_json="$REPORT_DIR/${sid}_report.json"
     python3 "$PROJECT_DIR/scripts/validate_html.py" "$html_file" \
-        --chrome "$CHROME" --ext "$ext_id" > /dev/null 2>"$report_json"
+        --chrome "$CHROME" --ext "$ext_id" \
+        --session-jsonl "$jsonl_file" > /dev/null 2>"$report_json"
 
     # Judge: expected metrics all pass?
     local metric_status
