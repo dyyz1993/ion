@@ -1287,16 +1287,19 @@ impl Extension for GoalSupervisorExtension {
             .iter()
             .filter(|r| r.status != CheckStatus::Pass)
             .collect();
-        let mut msg = String::from("Goal not complete. The following checks failed:\n");
+        let mut body = String::new();
+
+        // Failed checks section.
+        body.push_str("Goal not complete. The following checks failed:\n");
         for r in &failed {
             let evidence_excerpt = r
                 .evidence
                 .as_ref()
                 .and_then(|e| e.stdout_excerpt.as_deref())
                 .unwrap_or("(no evidence)");
-            msg.push_str(&format!("- {} (evidence: {})\n", r.name, evidence_excerpt));
+            body.push_str(&format!("- {} (evidence: {})\n", r.name, evidence_excerpt));
         }
-        msg.push_str("Fix the failing checks before stopping.");
+        body.push_str("Fix the failing checks before stopping.");
 
         // Execution plan: show remaining steps (Deep Task 3).
         {
@@ -1304,15 +1307,15 @@ impl Extension for GoalSupervisorExtension {
             if let Some(state) = guard.as_ref().and_then(|g| g.as_ref()) {
                 let pending = state.goal_plan.pending_step_descriptions();
                 if !pending.is_empty() {
-                    msg.push_str(&format!("\n📋 Remaining steps ({}):\n", pending.len()));
+                    body.push_str(&format!("\nRemaining steps ({}):\n", pending.len()));
                     for p in &pending {
-                        msg.push_str(&format!("  - {}\n", p));
+                        body.push_str(&format!("  - {}\n", p));
                     }
                 }
                 if !state.goal_plan.acceptance_criteria.is_empty() {
-                    msg.push_str("\n✅ Acceptance criteria:\n");
+                    body.push_str("\nAcceptance criteria:\n");
                     for c in &state.goal_plan.acceptance_criteria {
-                        msg.push_str(&format!("  - {}\n", c));
+                        body.push_str(&format!("  - {}\n", c));
                     }
                 }
             }
@@ -1320,8 +1323,8 @@ impl Extension for GoalSupervisorExtension {
 
         // Progress analysis (Task 1 deepening): classify trend + give recommendation.
         let progress = self.analyze_progress(current_plan.as_deref());
-        msg.push_str(&format!(
-            "\n📊 Progress: {:?}. {}",
+        body.push_str(&format!(
+            "\nProgress: {:?}. {}",
             progress.trend, progress.recommendation
         ));
 
@@ -1331,8 +1334,12 @@ impl Extension for GoalSupervisorExtension {
             .map(|p| self.check_guards(Some(p)).as_deref() == Some("repetitive"))
             .unwrap_or(false)
         {
-            msg.push_str(" NOTE: previous attempt was similar. Try a different approach.");
+            body.push_str(" NOTE: previous attempt was similar. Try a different approach.");
         }
+
+        // Wrap in single outer XML tag for consistency with other injected
+        // messages (memory/hooks/rules/diagnostics all use XML envelopes).
+        let msg = format!("<goal_feedback>\n{}\n</goal_feedback>", body);
 
         self.set_status(GoalStatus::Running);
         tracing::info!(
