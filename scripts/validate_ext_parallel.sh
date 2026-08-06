@@ -331,22 +331,52 @@ main() {
     for w in $(seq 1 "$max_waves"); do
         c_blue "-------- Wave $w/$max_waves --------"
 
-        while IFS='|' read -r wnum sline; do
+        # Collect this Wave's scenarios into a plain array first (avoid process
+        # substitution issues with jobs -rp in bash 3.2)
+        local wave_scenarios=()
+        while IFS= read -r wline; do
+            wave_scenarios+=("$wline")
+        done < "$WAVES_FILE"
+
+        local idx=0
+        local total=${#wave_scenarios[@]}
+        local pids=()
+
+        for wline in "${wave_scenarios[@]}"; do
+            IFS='|' read -r wnum rest <<< "$wline"
             [ "$wnum" != "$w" ] && continue
             local sid
-            sid=$(echo "$sline" | cut -d'|' -f1)
+            sid=$(echo "$rest" | cut -d'|' -f1)
 
-            # Throttle parallelism
-            while [ "$(jobs -rp | wc -l)" -ge "$MAX_PARALLEL" ]; do
+            # Throttle: count running background jobs via kill -0 polling
+            while true; do
+                local running=0
+                for p in ${pids[*]:-}; do
+                    kill -0 "$p" 2>/dev/null && running=$((running + 1))
+                done
+                [ "$running" -lt "$MAX_PARALLEL" ] && break
                 sleep 2
             done
 
-            echo "  > launch $sid ..."
-            run_one_scenario "$sline" &
-        done < <(grep "^${w}|" "$WAVES_FILE")
+            # Cleanup dead pids from array
+            local alive_pids=()
+            for p in ${pids[*]:-}; do
+                kill -0 "$p" 2>/dev/null && alive_pids+=("$p")
+            done
+            pids=("${alive_pids[@]:-}")
 
-        wait
-        c_blue "  Wave $w done"
+            echo "  > launch $sid ..."
+            run_one_scenario "$rest" &
+            pids+=($!)
+            idx=$((idx + 1))
+        done
+
+        # Wait for all remaining background jobs in this Wave
+        for p in ${pids[*]:-}; do
+            wait "$p" 2>/dev/null
+        done
+
+        c_blue "  Wave $w done ($idx scenarios)"
         echo ""
     done
 
