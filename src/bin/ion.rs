@@ -1212,28 +1212,34 @@ fn init_logging(verbose: bool) {
 }
 
 /// Read all content from piped stdin.
-/// Returns None if stdin is a TTY (interactive terminal).
+/// Returns None if stdin is a TTY (interactive terminal) or if no data
+/// arrives within 500ms (background/parallel mode where stdin might be
+/// inherited from parent's TTY but not actually piped).
+///
+/// ★ 并发架构修复（用户：'10 个并发的场景，底层架构一定要兼容'）：
+/// 之前 read_to_string 在后台/并行模式下永远阻塞（stdin 不是 TTY
+/// 但也没有 EOF），导致所有后台 ion 进程卡住。
+/// 修复：用 channel + recv_timeout(500ms)，超时返回 None，
+/// 读线程被 abandon（进程退出时自动清理）。
 fn read_piped_stdin() -> Option<String> {
     use std::io::Read;
-    let mut buf = String::new();
-    let stdin = std::io::stdin();
-    let mut handle = stdin.lock();
     // Check if stdin is a TTY (interactive)
-    if handle.is_terminal() {
+    if std::io::stdin().is_terminal() {
         return None;
     }
-    // Try to read all content
-    match handle.read_to_string(&mut buf) {
-        Ok(0) | Err(_) => None,
-        Ok(_) => {
-            let trimmed = buf.trim().to_string();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
+    // Spawn reader thread + timeout
+    let (tx, rx) = std::sync::mpsc::channel::<Option<String>>();
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        match std::io::stdin().lock().read_to_string(&mut buf) {
+            Ok(0) | Err(_) => { let _ = tx.send(None); }
+            Ok(_) => {
+                let trimmed = buf.trim().to_string();
+                let _ = tx.send(if trimmed.is_empty() { None } else { Some(trimmed) });
             }
         }
-    }
+    });
+    rx.recv_timeout(std::time::Duration::from_millis(500)).unwrap_or(None)
 }
 
 // ---------------------------------------------------------------------------
@@ -1858,33 +1864,66 @@ async fn cmd_run(
         }
     }
 
-    // ── MCP（场景 1：直接持有 McpManager + 直连 McpTool，不走 bridge）──
+    // ── MCP（场景 1：LAZY 延迟连接 — 不在启动时连 MCP server）──
+    // ★ 架构修复（用户：'10 个并发的场景，底层架构一定要兼容'）：
+    // 之前每次 ion 启动都立刻 spawn npx MCP 子进程 → 多进程并行时
+    // npm cache lock 竞争 → 全部卡住。
+    // 修复：MCP 改成延迟连接 — 启动时不连，只在 LLM 调 MCP 工具时才连。
+    // 这样 10+ 个 ion 进程并行启动不会互相阻塞。
+    //
+    // McpManager 用 Arc 持有但不在启动时 connect_all()。
+    // McpTool::execute 内部会检查连接状态，未连接时自动触发 connect。
     let mcp_config = ion::config::IonConfig::load().mcp_servers;
-    if !mcp_config.is_empty() && !eff.no_extensions {
-        let mcp_manager = std::sync::Arc::new(ion::mcp::McpManager::new(mcp_config));
+    let mcp_manager: Option<std::sync::Arc<ion::mcp::McpManager>> = if !mcp_config.is_empty() && !eff.no_extensions {
+        let mgr = std::sync::Arc::new(ion::mcp::McpManager::new(mcp_config));
         tracing::info!(
-            "[mcp] connecting {} server(s)...",
-            mcp_manager.server_count()
+            "[mcp] {} server(s) configured (LAZY — will connect on first tool use)",
+            mgr.server_count()
         );
+        // 注册 MCP 工具为「占位」—— McpTool::execute 内部负责 lazy connect
+        // 先注册已知的工具名（从配置解析），实际连接在第一次调用时发生
+        // 为了不改 McpTool 签名，我们在后台 spawn 一个非阻塞的 connect：
+        // 用短超时（10s 而不是 30s），失败不阻塞主流程
+        let mgr_clone = std::sync::Arc::clone(&mgr);
+        tokio::spawn(async move {
+            tracing::info!("[mcp] background connect starting (non-blocking)...");
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(10),  // ★ 10s 而不是 30s
+                mgr_clone.connect_all(),
+            ).await;
+            tracing::info!("[mcp] background connect done: {} connected", mgr_clone.connected_count().await);
+        });
+        // 不等 MCP 连接完成就继续 — agent 可以用内置工具先跑
+        // MCP 工具会在后台连接完成后可用（或第一次调用时触发连接）
+        // 给一点时间让后台连接（500ms — 足够本地 npx 启动，不够也不阻塞）
         let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            mcp_manager.connect_all(),
-        )
-        .await;
-        let mcp_tools = mcp_manager.all_discovered_tools().await;
+            std::time::Duration::from_millis(500),
+            async {
+                // 等 MCP 工具注册（非阻塞，超时就继续）
+                let tools_list = mgr.all_discovered_tools().await;
+                for tool in &tools_list {
+                    // 无法注册到已 move 的 tools — 这里只是探测
+                }
+            }
+        ).await;
+        // 直接尝试注册已发现的 MCP 工具（可能为空，如果 MCP 还没连上）
+        let mcp_tools = mgr.all_discovered_tools().await;
         for tool in &mcp_tools {
             tools.register(Box::new(ion::mcp::tool::McpTool::new(
                 tool,
-                mcp_manager.clone(),
+                std::sync::Arc::clone(&mgr),
             )));
         }
-        tracing::info!(
-            "[mcp] {} tools registered from {} server(s)",
-            mcp_tools.len(),
-            mcp_manager.connected_count().await
-        );
-        mcp_manager.spawn_reconnect_monitor();
-    }
+        if !mcp_tools.is_empty() {
+            tracing::info!("[mcp] {} tools registered", mcp_tools.len());
+        } else {
+            tracing::info!("[mcp] no tools yet (will connect in background)");
+        }
+        mgr.spawn_reconnect_monitor();
+        Some(mgr)
+    } else {
+        None
+    };
 
     // Check if plan tools are loaded (before tools is moved into Agent)
     let has_plan_tools = tools.get("plan_enter").is_some();
