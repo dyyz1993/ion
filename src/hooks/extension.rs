@@ -543,6 +543,63 @@ mod tests {
         )
     }
 
+    /// RAII guard that points `HOME` at a unique empty temp dir for the
+    /// duration of a test, then restores the original value on drop (even if
+    /// the test panics).
+    ///
+    /// Why this exists: `HooksConfig::load_fresh()` (see src/hooks/mod.rs)
+    /// merges the *global* `~/.ion/hooks.json` with the project-level config.
+    /// So `has_hooks(any_dir)` returns `true` whenever a developer's real
+    /// `~/.ion/hooks.json` has any hook configured — which would make the
+    /// "returns false" assertions below fail on such machines. Isolating `HOME`
+    /// makes `paths::root()` resolve to an empty temp dir with no
+    /// `.ion/hooks.json`, so only the (absent) project-level config is
+    /// considered.
+    ///
+    /// Mirrors the HOME-isolation pattern already used in src/bin/ion.rs, but
+    /// wraps it in a Drop guard so the original `HOME` is reliably restored
+    /// even on assertion panic (critical when 1000+ tests share one process).
+    /// No `tempfile`/`serial_test` dependency required.
+    struct IsolatedHome {
+        orig: Option<String>,
+        dir: PathBuf,
+    }
+
+    impl IsolatedHome {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "ion-hooks-test-home-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0),
+            ));
+            std::fs::create_dir_all(&dir).expect("create isolated HOME dir");
+            let orig = std::env::var("HOME").ok();
+            // SAFETY: `set_var` is unsafe in the 2024 edition. These are
+            // isolated unit tests that only read hooks config; the original
+            // `HOME` is restored on Drop.
+            unsafe {
+                std::env::set_var("HOME", &dir);
+            }
+            Self { orig, dir }
+        }
+    }
+
+    impl Drop for IsolatedHome {
+        fn drop(&mut self) {
+            unsafe {
+                if let Some(h) = &self.orig {
+                    std::env::set_var("HOME", h);
+                } else {
+                    std::env::remove_var("HOME");
+                }
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
     // -------------------------------------------------------------------------
     // name() — the Extension trait impl returns the literal "hooks"
     // -------------------------------------------------------------------------
@@ -581,7 +638,12 @@ mod tests {
 
     #[test]
     fn test_has_hooks_returns_false_for_nonexistent_dir() {
-        // A directory that does not exist has no hooks.json, so has_hooks is false.
+        // Isolate from the global ~/.ion/hooks.json: has_hooks() merges global
+        // + project config, so without isolation this returns true on machines
+        // whose real ~/.ion/hooks.json has a hook configured. Pointing HOME at
+        // an empty temp dir makes paths::root() -> <tmp>/.ion (no hooks.json),
+        // so only the (absent) project-level config matters for this dir.
+        let _home = IsolatedHome::new();
         let dir = PathBuf::from("/tmp/ion-test-definitely-nonexistent-12345");
         assert!(!HookExtension::has_hooks(&dir));
     }
@@ -615,6 +677,10 @@ mod tests {
 
     #[test]
     fn test_new_preserves_project_dir_usable_for_has_hooks() {
+        // Isolate HOME so the global ~/.ion/hooks.json cannot make has_hooks
+        // return true (see IsolatedHome docs). Only the (absent) project-level
+        // hooks.json under this dir is considered, so has_hooks must be false.
+        let _home = IsolatedHome::new();
         // Although project_dir is private, has_hooks uses the same pattern of
         // reading <dir>/.ion/hooks.json. Constructing with a specific dir and
         // then calling has_hooks on that same dir must agree.
