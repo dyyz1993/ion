@@ -342,6 +342,15 @@ impl McpManager {
                 for (k, v) in env {
                     cmd.env(k, v);
                 }
+                // ★ 并发安全：加 npm 环境变量避免多进程 npx 缓存竞争。
+                // npx -y 默认每次检查/下载包 → npm cache lock 冲突 → 多个 ion
+                // 进程并行时互相阻塞。prefer_offline 让 npx 优先用缓存（不下载），
+                // audit=false 跳过安全审计（也是网络请求，会竞争）。
+                if command == "npx" || command == "npm" {
+                    cmd.env("npm_config_prefer_offline", "true");
+                    cmd.env("npm_config_audit", "false");
+                    cmd.env("npm_config_fund", "false");
+                }
                 if let Some(cwd) = cwd {
                     cmd.current_dir(cwd);
                 }
