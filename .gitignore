@@ -17,3 +17,4 @@ hello_test.txt
 system_response.txt
 *.txt
 !Cargo.toml
+__pycache__/
