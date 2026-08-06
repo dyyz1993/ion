@@ -235,11 +235,34 @@ pub async fn spawn_watcher(
         // ★ 输出截断策略：头 300 字节 + ...[truncated N bytes]... + 尾 200 字节。
         // 之前只截头（前 500 字节 + ...[truncated]），尾部信息丢失。
         // 但尾部往往更重要（错误信息、最终结果都在末尾）。
+        //
+        // ★★ 用户反馈：截断掉的中间部分不能丢，必须写到 /tmp/ 临时文件。
+        // bash_result entry 里加 artifact 字段指向完整文件。
+        // HTML 折叠了内容但用户能通过 artifact 路径查完整信息。
+        let artifact_path = if stdout_stderr.len() > 500 {
+            // 写完整输出到 /tmp/ion-results/<bid>.txt
+            let artifact_dir = std::path::Path::new("/tmp/ion-results");
+            let _ = std::fs::create_dir_all(artifact_dir);
+            let artifact_file = artifact_dir.join(format!("{pid}.txt"));
+            if std::fs::write(&artifact_file, &stdout_stderr).is_ok() {
+                Some(artifact_file.to_string_lossy().to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let output_text = if stdout_stderr.len() > 500 {
             let head = &stdout_stderr[..300];
             let tail = &stdout_stderr[stdout_stderr.len() - 200..];
             let middle = stdout_stderr.len() - 500;
-            format!("{}\n...[truncated {} bytes]...\n{}", head, middle, tail)
+            let truncation_note = if let Some(ref path) = artifact_path {
+                format!("\n[full output: {}]", path)
+            } else {
+                String::new()
+            };
+            format!("{}\n...[truncated {} bytes]...\n{}{}", head, middle, tail, truncation_note)
         } else {
             stdout_stderr.clone()
         };
