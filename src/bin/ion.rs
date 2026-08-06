@@ -2149,16 +2149,24 @@ async fn cmd_run(
 
     // ── MemoryExtension（cmd_run 路径补注册，对齐 worker_rpc:915）──
     // 之前 cmd_run 只注册了 GlobalMemoryExtension（singleton），没注册 MemoryExtension。
-    // MemoryExtension 负责把 <memories> XML 注入 system prompt（on_system_prompt hook），
+    // MemoryExtension 负责把 <memory_outline> XML 注入 system prompt（on_system_prompt hook），
     // 让 LLM 在后续对话中看到历史记忆。不注册 → XML 不注入 → LLM 看不到记忆。
+    //
+    // ★ 关键：MemoryExtension.store 必须和 MemorySaveTool.store 共享同一个 Arc，
+    // 否则 memory_save 写入的数据 on_system_prompt 读不到（两个独立的 store）。
+    // 之前创建了两个独立的 memory_store，导致 save 写一个、prompt 读另一个。
+    // 修复：在 build_tools 之后、agent 创建之前统一创建一个 shared store。
+    //（下面 Memory 工具注册时复用同一个 store）
+    let cmd_run_shared_memory_store: std::sync::Arc<
+        tokio::sync::Mutex<ion::agent::memory::MemoryStore>,
+    > = std::sync::Arc::new(tokio::sync::Mutex::new(
+        ion::agent::memory::MemoryStore::new(storage_ctx.clone()),
+    ));
     {
-        let memory_store = std::sync::Arc::new(tokio::sync::Mutex::new(
-            ion::agent::memory::MemoryStore::new(storage_ctx.clone()),
-        ));
         let mut mem_ext = ion::agent::memory::MemoryExtension::new(storage_ctx.clone());
-        mem_ext.store = memory_store.clone();
+        mem_ext.store = std::sync::Arc::clone(&cmd_run_shared_memory_store);
         ext_reg.register(Box::new(mem_ext));
-        tracing::info!("[extension] memory (MemoryExtension) registered — <memories> XML injection enabled");
+        tracing::info!("[extension] memory (MemoryExtension) registered — <memory_outline> XML injection enabled");
     }
 
     // Auto-register PlanExtension if plan_enter tool was loaded from a WASM plugin
@@ -2240,21 +2248,16 @@ async fn cmd_run(
     agent.register_extension_tools();
 
     // ── Memory 工具（cmd_run 路径补注册，对齐 worker_rpc:367-375）──
-    // 之前 cmd_run 只注册 GlobalMemoryExtension（singleton，RPC 接口），LLM 拿不到
-    // memory_save / memory_search 工具 → EXT-02 测试空跑。
+    // ★ 复用上面 MemoryExtension 的 shared store（不是创建新的）。
+    // 这样 memory_save 写入 → on_system_prompt 读取 → <memory_outline> 注入。
     {
-        let cmd_run_memory_store: std::sync::Arc<
-            tokio::sync::Mutex<ion::agent::memory::MemoryStore>,
-        > = std::sync::Arc::new(tokio::sync::Mutex::new(
-            ion::agent::memory::MemoryStore::new(storage_ctx.clone()),
-        ));
         agent.register_tool(Box::new(ion::agent::memory::MemorySaveTool {
-            store: cmd_run_memory_store.clone(),
+            store: std::sync::Arc::clone(&cmd_run_shared_memory_store),
         }));
         agent.register_tool(Box::new(ion::agent::memory::MemorySearchTool {
-            store: cmd_run_memory_store.clone(),
+            store: std::sync::Arc::clone(&cmd_run_shared_memory_store),
         }));
-        tracing::info!("[tools] memory_save + memory_search registered (cmd_run)");
+        tracing::info!("[tools] memory_save + memory_search registered (shared store with MemoryExtension)");
     }
 
     tracing::info!("Running agent...");
