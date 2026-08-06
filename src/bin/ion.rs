@@ -1176,12 +1176,9 @@ fn build_tools(eff: &EffectiveConfig) -> (ToolRegistry, Option<Vec<std::path::Pa
             }
             // 保存 skill_dirs 到外层，供后面 system prompt 注入大纲用
             skill_dirs_for_prompt = Some(skill_dirs.clone());
-            // Read skill blacklist from config (global + project merged)
-            let skill_disabled = ion::config::IonConfig::load().skills.disabled;
-            tools.register(Box::new(ion::agent::tool::SkillTool {
-                skill_dirs,
-                disabled: skill_disabled,
-            }));
+            // ★ 不注册 SkillTool 给 LLM（用户：'禁止提供 skill list 的能力给到 LLM，
+            // 因为默认都注入到系统提示词'）。Skill 大纲已在 system prompt 里展示，
+            // LLM 不需要主动调用 skill 工具来发现/加载 skill。
         }
     }
     // Apply tool filtering (--tools allowlist)

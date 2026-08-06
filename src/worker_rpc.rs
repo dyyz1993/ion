@@ -388,10 +388,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         crate::paths::project_skills_dir(&config_root),
         agents_skills,
     ];
-    tools.register(Box::new(SkillTool {
-        skill_dirs,
-        disabled: crate::config::IonConfig::load().skills.disabled,
-    }));
+    // ★ 不注册 SkillTool 给 LLM（用户：'禁止提供 skill list 的能力给到 LLM，
+    // 因为默认都注入到系统提示词'）。Skill 大纲已在 system prompt 里展示。
+    // skill_dirs 仍然保留（供 system prompt 注入大纲用），只是不暴露 tool。
 
     // 加载 API key
     let api_key = crate::auth::AuthStorage::resolve_api_key(None, &provider);
