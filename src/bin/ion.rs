@@ -2147,6 +2147,20 @@ async fn cmd_run(
         ext_reg.register(e);
     }
 
+    // ── MemoryExtension（cmd_run 路径补注册，对齐 worker_rpc:915）──
+    // 之前 cmd_run 只注册了 GlobalMemoryExtension（singleton），没注册 MemoryExtension。
+    // MemoryExtension 负责把 <memories> XML 注入 system prompt（on_system_prompt hook），
+    // 让 LLM 在后续对话中看到历史记忆。不注册 → XML 不注入 → LLM 看不到记忆。
+    {
+        let memory_store = std::sync::Arc::new(tokio::sync::Mutex::new(
+            ion::agent::memory::MemoryStore::new(storage_ctx.clone()),
+        ));
+        let mut mem_ext = ion::agent::memory::MemoryExtension::new(storage_ctx.clone());
+        mem_ext.store = memory_store.clone();
+        ext_reg.register(Box::new(mem_ext));
+        tracing::info!("[extension] memory (MemoryExtension) registered — <memories> XML injection enabled");
+    }
+
     // Auto-register PlanExtension if plan_enter tool was loaded from a WASM plugin
     if has_plan_tools {
         ext_reg.register(Box::new(ion::agent::plan_extension::PlanExtension::new()));
