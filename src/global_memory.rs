@@ -246,6 +246,33 @@ impl GlobalMemoryStore {
     ) -> Result<Vec<GlobalMemoryEntry>, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
 
+        // ★ 空 query 短路：直接 SELECT 最近 20 条（不走 FTS5 MATCH ""）
+        // 之前 query="" 时 FTS5 MATCH "" 返回空 → on_system_prompt 拿不到记忆
+        if query.is_empty() {
+            let sql = if project.is_some() {
+                "SELECT id, project, content, category, tags, importance, archived, created_at, updated_at
+                 FROM entries WHERE archived = 0 AND project = ?1
+                 ORDER BY importance DESC, updated_at DESC LIMIT 20"
+            } else {
+                "SELECT id, project, content, category, tags, importance, archived, created_at, updated_at
+                 FROM entries WHERE archived = 0
+                 ORDER BY importance DESC, updated_at DESC LIMIT 20"
+            };
+            let mut stmt = conn.prepare(sql).map_err(|e| format!("prepare empty: {}", e))?;
+            let rows = if let Some(p) = project {
+                stmt.query_map(params![p], map_entry)
+                    .map_err(|e| format!("query empty: {}", e))?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| format!("row empty: {}", e))?
+            } else {
+                stmt.query_map([], map_entry)
+                    .map_err(|e| format!("query empty nop: {}", e))?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| format!("row empty nop: {}", e))?
+            };
+            return Ok(rows);
+        }
+
         // 1. 先用 FTS5 MATCH
         //    将用户 query 用双引号包裹使其成为字面字符串短语，
         //    query 内部的双引号用双写 ("") 转义，防止注入 FTS5 语法。

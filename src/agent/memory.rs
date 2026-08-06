@@ -684,7 +684,31 @@ impl Extension for MemoryExtension {
     async fn on_system_prompt(&self, prompt: &mut String) -> AgentResult<()> {
         let store = self.store.lock().await;
         let index = store.read_index();
-        // ── 项目级大纲（V0.1）──
+
+        // ── V0.2 全局记忆（SQLite）—— 从 global_store 直接读最近记忆 ──
+        // 之前只从 V0.1 本地 index 读，但 memory_save 写的是 global_store (SQLite)。
+        // 导致 save 成功但 on_system_prompt 永远读不到 → memory_outline 永远空。
+        // 修复：如果 global_store 有数据，也从那里读最近 N 条注入。
+        if let Some(ref global) = store.global_store {
+            tracing::info!("[memory] on_system_prompt: global_store exists, project={}", store.project_name);
+            if let Ok(entries) = global.search("", Some(&store.project_name)) {
+                tracing::info!("[memory] on_system_prompt: found {} entries from global_store", entries.len());
+                if !entries.is_empty() {
+                    let mut xml = String::from("\n<memory_outline>\n");
+                    for e in entries.iter().take(10) {
+                        let summary: String = e.content.chars().take(80).collect();
+                        xml.push_str(&format!(
+                            "  <memory id=\"{}\" category=\"{}\" summary=\"{}\"/>\n",
+                            e.id, e.category, summary.replace('"', "'")
+                        ));
+                    }
+                    xml.push_str("</memory_outline>");
+                    prompt.push_str(&xml);
+                }
+            }
+        }
+
+        // ── V0.1 项目级大纲（本地 index）── fallback
         if !index.is_empty() {
             let mut xml = String::from("\n<memory_outline>\n");
             for i in &index {
