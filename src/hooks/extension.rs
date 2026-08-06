@@ -209,8 +209,31 @@ impl HookExtension {
         combined
     }
 
+    /// Write a hook event custom entry to session.jsonl (for traceability).
+    /// User: 'hooks 触发我怎么没有看到拦截的？任何能够复现、能够溯源的东西，
+    /// 都会在 session.jsonl 里面插入。'
+    ///
+    /// Records: PreToolUse block / updatedInput / Stop block+inject.
+    /// Does NOT record: allow (too noisy — only record meaningful actions).
+    fn write_hook_entry(&self, event: &str, outcome: &str, detail: &str) {
+        let cwd = self.project_dir.to_string_lossy().to_string();
+        let entry = serde_json::json!({
+            "type": "custom_message",
+            "customType": "hook_event",
+            "content": format!("[hook] {} {}: {}", event, outcome, detail),
+            "display": true,
+            "id": crate::session_jsonl::generate_id(),
+            "parentId": null,
+            "timestamp": crate::session_jsonl::timestamp_iso(),
+        });
+        crate::session_jsonl::append_raw_entry(&cwd, &entry);
+        tracing::info!("[hooks] wrote hook_event entry: {} {} → {}", event, outcome, &detail[..detail.len().min(60)]);
+    }
+
     /// block Stop/SubagentStop 时，把 reason 作为新 query 注入
     fn inject_follow_up(&self, reason: &str) {
+        // ★ 写 hook 拦截的 custom entry 到 session.jsonl（可溯源）
+        self.write_hook_entry("Stop", "block+inject", reason);
         if let Some(ref tx) = self.follow_up_tx {
             let msg = Message::User(UserMessage {
                 role: "user".into(),
@@ -345,10 +368,16 @@ impl Extension for HookExtension {
         let stdin = stdin_builder::pre_tool_use(&call.name, &call.arguments, &call.id);
         let outcome = self.process_event("PreToolUse", stdin).await;
         if outcome.block {
+            // ★ 写 hook 拦截的 custom entry 到 session.jsonl（可溯源）
+            let reason = outcome.block_reason.unwrap_or_default();
+            self.write_hook_entry(
+                "PreToolUse",
+                "block",
+                &format!("tool '{}' blocked: {}", call.name, reason),
+            );
             return Err(AgentError::Tool(format!(
                 "tool '{}' blocked by hook: {}",
-                call.name,
-                outcome.block_reason.unwrap_or_default()
+                call.name, reason
             )));
         }
         // ask（exit 3）暂不处理（需要 UI 确认，后续接入 PermissionEngine）
@@ -360,6 +389,12 @@ impl Extension for HookExtension {
                 call.arguments[k.as_str()] = v.clone();
             }
             tracing::info!("[hooks] PreToolUse updatedInput applied to {}", call.name);
+            // ★ 写参数修改的 custom entry（可溯源）
+            self.write_hook_entry(
+                "PreToolUse",
+                "updatedInput",
+                &format!("tool '{}' args modified by hook", call.name),
+            );
         }
         Ok(())
     }
