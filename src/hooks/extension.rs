@@ -180,29 +180,36 @@ impl HookExtension {
             .collect();
 
         // 并行执行所有匹配的 handler（对齐 Claude Code "所有匹配的 hook 并行运行"）
-        let outcomes: Vec<HookOutcome> = {
+        let paired: Vec<(super::HookHandler, HookOutcome)> = {
             let exec_ctx = std::sync::Arc::new(exec_ctx);
-            let mut tasks: Vec<tokio::task::JoinHandle<HookOutcome>> = Vec::new();
+            let mut tasks: Vec<tokio::task::JoinHandle<(super::HookHandler, HookOutcome)>> = Vec::new();
             for (_, handler) in &handler_futs {
-                let h = std::sync::Arc::new(handler.clone());
+                let h = handler.clone();
+                let h_arc = std::sync::Arc::new(handler.clone());
                 let s = stdin.clone();
                 let ctx = std::sync::Arc::clone(&exec_ctx);
                 tasks.push(tokio::spawn(async move {
-                    handler_runner::run_handler(&h, s, &ctx).await
+                    let outcome = handler_runner::run_handler(&h_arc, s, &ctx).await;
+                    (h, outcome)
                 }));
             }
             let mut results = Vec::new();
             for task in tasks {
                 match task.await {
-                    Ok(outcome) => results.push(outcome),
+                    Ok(pair) => results.push(pair),
                     Err(e) => tracing::error!("[hooks] handler task panicked: {e}"),
                 }
             }
             results
         };
 
+        // Emit handler_executed event for each handler (observability for CI/subscribe)
+        for (handler, outcome) in &paired {
+            self.emit_handler_executed(event, handler, outcome);
+        }
+
         // 合并结果（任一 block 则整体 block）
-        for outcome in outcomes {
+        for (_, outcome) in paired {
             combined = combined.merge(outcome);
         }
 

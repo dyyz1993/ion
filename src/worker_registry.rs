@@ -271,6 +271,7 @@ impl WorkerRegistry {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default()
         });
+
         let project_name = std::path::Path::new(&project_path)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -362,6 +363,7 @@ impl WorkerRegistry {
 
         // ── Set env vars (same as original create_worker) ──
         child_cmd.env("ION_PROJECT_ROOT", &project_path);
+        child_cmd.env("ION_WORKER_CWD", &worktree_path);
         if let Some(ref mode) = config.skip_mcp
             && !mode.is_empty()
         {
@@ -572,6 +574,7 @@ impl WorkerRegistry {
         // 传 ION_PROJECT_ROOT 让子进程能找到项目级 .ion/config.json
         // （worktree 目录没有 .ion/，子进程需要知道原始项目路径来读 config）
         child_cmd.env("ION_PROJECT_ROOT", &project_path);
+        child_cmd.env("ION_WORKER_CWD", &worktree_path);
 
         // 子 Worker 跳过 MCP 连接（方案 A：防止多 Worker 抢同一个 stdio MCP server 死锁）
         // 只有 LLM 通过 spawn_worker 工具创建的子 worker 才跳过（config.skip_mcp=true）。

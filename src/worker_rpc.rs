@@ -354,9 +354,14 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     tools.register(Box::new(KillWorkerTool));
 
     // ── 基础路径变量（Memory/Extension 构造前需要）──
-    let worker_cwd = std::env::current_dir()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
+    let worker_cwd = std::env::var("ION_WORKER_CWD")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default()
+        });
     let config_root = crate::paths::project_root_for_config()
         .to_string_lossy()
         .to_string();
