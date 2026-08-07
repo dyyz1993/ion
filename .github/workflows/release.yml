@@ -94,8 +94,9 @@ jobs:
 
       - name: Verify binary
         run: |
-          file target/release/ion
-          target/release/ion --version || target/release/ion --help 2>&1 | head -3
+          # 不用 file 命令（容器里没装）。用 readelf 看 interpreter + 冒烟。
+          readelf -p .comment target/release/ion 2>/dev/null | grep -m1 GCC || true
+          (target/release/ion --version 2>&1 || target/release/ion --help 2>&1) | head -3
 
       - name: Package tarball
         run: |
