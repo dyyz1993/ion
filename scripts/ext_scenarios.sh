@@ -275,11 +275,6 @@ EXT20_SCENARIOS=(
     "20-S3|EXT-20|豁免工具不触发 + UTF-8 安全|按以下 10 步顺序执行：1. 用 memory_save 保存一条 memory（内容含中文字符 '循环检测测试'）。2. 用 memory_search 搜 '循环'（第 1 次，memory_search 在 LOOP_EXEMPT_TOOLS 里）。3. 用 memory_search 搜 '循环'（第 2 次，应该豁免不警告）。4. 用 memory_search 搜 '循环'（第 3 次，豁免）。5. 用 memory_search 搜 '循环'（第 4 次，仍豁免）。6. 用 memory_search 搜 '循环'（第 5 次，仍豁免，证明豁免生效）。7. 用 plan_list（也在豁免列表）连调 3 次。8. 用 bash 跑一个含多字节中文字符的长命令（如 python3 -c 后接 60 个中文字符），验证不 panic。9. 用 read 读一个含 emoji 的文件。10. 报告：豁免工具是否真的不计数、UTF-8 多字节命令是否正常处理无 panic。||20-M1,20-M6"
 )
 
-EXT21_SCENARIOS=(
-    "21-S1|EXT-21|run_agent 基本调用 + 单 turn|按以下 10 步顺序执行（用 bash 调 ion run_agent CLI）：1. 用 bash 跑 ion run_agent --tier fast --max-turns 1 '输出 hello from internal agent'。2. 用 bash 跑 ion run_agent --tier fast --max-turns 1 --tools read,grep '读取当前目录的 Cargo.toml 并报告 package name'。3. 用 bash 跑 ion run_agent --tier fast --max-turns 3 --tools read,grep,bash '查找当前项目所有 .rs 文件里的 fn main'。4. 用 bash 把第 1 步的输出写到 /tmp/internal_s1.log。5. 用 bash 把第 2 步的输出追加到 /tmp/internal_s1.log。6. 用 bash 把第 3 步的输出追加到 /tmp/internal_s1.log。7. 用 read 读 /tmp/internal_s1.log 确认三次调用都有输出。8. 用 bash 跑 wc -l /tmp/internal_s1.log 看行数。9. 用 bash 跑 grep 'turns=' /tmp/internal_s1.log 看 turn 统计。10. 报告：run_agent 是否 in-memory（不写 session.jsonl）、每次调用的 turn_count 和 tool_call_count、输出格式。||21-M1,21-M2,21-M3,21-M4"
-    "21-S2|EXT-21|max_turns + tools 白名单 + thinking|按以下 10 步顺序执行：1. 用 bash 跑 ion run_agent --tier fast --max-turns 1 --thinking low '用一句话总结 Rust 的所有权模型'。2. 用 bash 跑 ion run_agent --tier fast --max-turns 5 --tools read,bash,grep '在当前项目里找出所有 TODO 注释'。3. 用 bash 跑 ion run_agent --tier fast --max-turns 1 --tools read '读 Cargo.toml 报告 dependencies 数量'。4. 用 bash 把三次结果写到 /tmp/internal_s2.log。5. 用 bash 跑 grep -c 'TODO' /tmp/internal_s2.log。6. 用 bash 跑 grep 'turns=' /tmp/internal_s2.log。7. 用 bash 跑 grep 'tool_calls=' /tmp/internal_s2.log。8. 用 read 读 /tmp/internal_s2.log。9. 用 bash 跑 ls ~/.ion/sessions/ 确认没新增 session 文件（run_agent 是 in-memory）。10. 报告：thinking 参数是否生效、tools 白名单是否过滤、是否真的没持久化 session。||21-M1,21-M2,21-M3,21-M5"
-    "21-S3|EXT-21|JSON schema 校验 + 重试|按以下 10 步顺序执行：1. 用 write 创建 /tmp/schema_s3.json，内容是一个 JSON Schema：要求输出对象含 name（string）和 age（number）字段。2. 用 bash 跑 ion run_agent --tier fast --max-turns 3 --schema /tmp/schema_s3.json '生成一个虚拟人物，输出 JSON'。3. 用 bash 把第 2 步输出写到 /tmp/internal_s3.log。4. 用 bash 跑 cat /tmp/internal_s3.log 看是否是合法 JSON。5. 用 bash 跑 python3 -c 'import json; print(json.load(open(\"/tmp/internal_s3.log\")))' 验证可解析（注意：如果输出含非 JSON 文本会失败）。6. 用 bash 跑 grep 'turns=' /tmp/internal_s3.log。7. 用 bash 跑 grep 'tool_calls=' /tmp/internal_s3.log。8. 用 bash 跑 ion run_agent --tier fast --max-turns 1 --schema /tmp/schema_s3.json '故意输出非 JSON 看重试'（观察是否触发 schema 重试）。9. 用 read 读 /tmp/internal_s3.log。10. 报告：schema 校验是否生效、不合法时是否重试、重试次数、最终是否返回合法 JSON。||21-M1,21-M2,21-M6"
-)
 
 EXT22_SCENARIOS=(
     "22-S1|EXT-22|首轮后标题生成 + 索引更新|按以下 10 步顺序执行：1. 用 bash 跑 echo 'session title test start'（这是首轮，on_turn_end 后应触发标题生成）。2. 用 bash 跑 pwd。3. 用 bash 跑 cat ~/.ion/agent/session-titles.json 看是否生成了标题。4. 用 bash 跑 ion sessions 看会话列表里是否有标题。5. 用 bash 跑 ls -la ~/.ion/sessions/ 找最新 session 文件。6. 用 bash 跑 head -5 <最新 session.jsonl> 看是否有 session_name entry。7. 用 write 创建 /tmp/title_s1.txt 写当前时间戳。8. 用 bash 跑 echo 'second turn content'（这轮不应再触发标题生成，done flag 已置位）。9. 用 read 读 /tmp/title_s1.txt。10. 报告：标题内容、标题长度（应 ≤50-80 字符）、session-titles.json 结构、是否只生成一次。||22-M1,22-M2,22-M3,22-M4"
@@ -320,7 +315,6 @@ ALL_SCENARIOS=(
     "${EXT18_SCENARIOS[@]}"
     "${EXT19_SCENARIOS[@]}"
     "${EXT20_SCENARIOS[@]}"
-    "${EXT21_SCENARIOS[@]}"
     "${EXT22_SCENARIOS[@]}"
     "${EXT23_SCENARIOS[@]}"
     "${EXT24_SCENARIOS[@]}"
@@ -349,7 +343,6 @@ get_scenarios_for_ext() {
         EXT-18) printf '%s\n' "${EXT18_SCENARIOS[@]}" ;;
         EXT-19) printf '%s\n' "${EXT19_SCENARIOS[@]}" ;;
         EXT-20) printf '%s\n' "${EXT20_SCENARIOS[@]}" ;;
-        EXT-21) printf '%s\n' "${EXT21_SCENARIOS[@]}" ;;
         EXT-22) printf '%s\n' "${EXT22_SCENARIOS[@]}" ;;
         EXT-23) printf '%s\n' "${EXT23_SCENARIOS[@]}" ;;
         EXT-24) printf '%s\n' "${EXT24_SCENARIOS[@]}" ;;

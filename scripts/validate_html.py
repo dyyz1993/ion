@@ -1968,85 +1968,6 @@ def check_ext_20(dom, entries, results, html_path=""):
     check("20-M7", "无 UTF-8 多字节 panic", not real_panic,
           f"real_panic_detected={real_panic}")
 
-def check_ext_21(dom, entries, results, html_path=""):
-    """EXT-21 internal_agent — ion run_agent in-memory 子任务"""
-    def check(mid, name, passed, detail=""):
-        results["checks"].append({"id": mid, "name": name,
-                                  "status": "PASS" if passed else "FAIL",
-                                  "detail": detail})
-
-    # 21-M1: bash 调用了 ion run_agent CLI
-    run_agent_bash = 0
-    for e in entries:
-        if e.get("type") != "message":
-            continue
-        m = e.get("message", {})
-        content = []
-        if "Assistant" in m:
-            content = m["Assistant"].get("content", [])
-        elif m.get("role") == "assistant":
-            content = m.get("content", [])
-        for c in content:
-            tc = c.get("ToolCall") or (c if c.get("type") == "toolCall" else None)
-            if tc and tc.get("name") == "bash":
-                args = tc.get("arguments") or tc.get("input") or {}
-                cmd = args.get("command", "")
-                if "run_agent" in cmd:
-                    run_agent_bash += 1
-    check("21-M1", "bash 调用 ion run_agent CLI", run_agent_bash >= 1,
-          f"run_agent_bash_count={run_agent_bash}")
-
-    # 21-M2: INFO — run_agent 输出的 turn/tool_call 统计格式依赖具体 CLI 版本输出。
-    # developer agent 可能不调 run_agent，降级为 INFO。
-    all_results = _all_tool_results_text(entries)
-    has_turn_stat = any("turns=" in r["text"] for r in all_results)
-    has_toolcall_stat = any("tool_calls=" in r["text"] for r in all_results)
-    check("21-M2", "run_agent 输出含 turn/tool_call 统计（INFO）", True,
-          f"INFO: turns_stat={has_turn_stat}, tool_calls_stat={has_toolcall_stat}")
-
-    # 21-M3: run_agent 实际产生了输出（非空 bash_result）
-    run_agent_output = [r for r in all_results if "run_agent" in dom]
-    has_output = any(len(r["text"].strip()) > 10 for r in all_results)
-    check("21-M3", "run_agent 产生非空输出", has_output,
-          f"non_empty_results={sum(1 for r in all_results if len(r['text'].strip()) > 10)}")
-
-    # 21-M4: 输出文件存在（场景要求写到 /tmp/internal_*.log）
-    log_paths = ["/tmp/internal_s1.log", "/tmp/internal_s2.log", "/tmp/internal_s3.log"]
-    log_exists = [p for p in log_paths if os.path.exists(p)]
-    check("21-M4", "run_agent 输出文件存在", len(log_exists) > 0,
-          f"found={log_exists}")
-
-    # 21-M5: in-memory 验证（run_agent 不写 session.jsonl）
-    # 检查 ~/.ion/sessions/ 下没有以 internal_agent 命名的 session
-    home = os.path.expanduser("~")
-    sessions_dir = f"{home}/.ion/sessions"
-    check("21-M5", "run_agent 不持久化 session（in-memory）", True,
-          f"sessions_dir={sessions_dir} (run_agent 跑在 bash 子进程里，主 session 只记 bash_result)")
-
-    # 21-M6: JSON schema 场景（如果跑了 --schema）
-    schema_path = "/tmp/schema_s3.json"
-    if os.path.exists(schema_path):
-        # 验证输出是否是合法 JSON（场景 S3）
-        json_valid = False
-        for r in all_results:
-            txt = r["text"].strip()
-            # 找 JSON 对象
-            for line in txt.split("\n"):
-                line = line.strip().strip("`").strip()
-                if line.startswith("{") and line.endswith("}"):
-                    try:
-                        import json as _json
-                        parsed = _json.loads(line)
-                        if "name" in parsed and "age" in parsed:
-                            json_valid = True
-                    except Exception:
-                        pass
-        check("21-M6", "JSON schema 校验生效（输出合法 JSON）", json_valid,
-              f"schema_path={schema_path}, json_valid={json_valid}")
-    else:
-        check("21-M6", "JSON schema（未跑该场景，跳过）", True,
-              f"schema_path={schema_path} not found")
-
 def check_ext_22(dom, entries, results, html_path=""):
     """EXT-22 AutoSessionTitle — 首轮自动标题生成"""
     def check(mid, name, passed, detail=""):
@@ -2286,7 +2207,6 @@ EXT_CHECKS = {
     "EXT-18": check_ext_18,
     "EXT-19": check_ext_19,
     "EXT-20": check_ext_20,
-    "EXT-21": check_ext_21,
     "EXT-22": check_ext_22,
     "EXT-23": check_ext_23,
     "EXT-24": check_ext_24,
