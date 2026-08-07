@@ -4584,6 +4584,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
             ion::global_memory_ext::GlobalMemoryExtension::new(),
         ));
         reg.register_singleton(Box::new(ion::monitor_extension::MonitorExtension::new()));
+        reg.register_singleton(Box::new(ion::rules_engine::RulesEngineExtension::new()));
         reg.init_singletons().await;
     }
     // post_init（释放 lock 后调，让单例能 create_worker spawn 系统级 agent）
@@ -5960,6 +5961,7 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>, export_path: Opt
             ion::global_memory_ext::GlobalMemoryExtension::new(),
         ));
         reg.register_singleton(Box::new(ion::monitor_extension::MonitorExtension::new()));
+        reg.register_singleton(Box::new(ion::rules_engine::RulesEngineExtension::new()));
         reg.init_singletons().await;
 
         match reg.create_worker(cfg, &registry).await {
