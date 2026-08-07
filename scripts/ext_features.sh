@@ -112,7 +112,7 @@ FP_07A=(
 
 FP_07B=(
     "FP-07B|EXT-07|闭环迭代 + gate 拦截|07-M1,07-M4,07-M5"
-    "先用 goal_set 设定目标：创建 greet.rs 并写一个 greet 函数，然后开始实现"
+    "必须先调用 goal_set 工具设定目标：objective 是创建 greet.rs 并写 greet 函数。然后再用 write 实现"
     "做完想停的时候，系统会跑 check 验证，如果没过会拦住你，继续修直到通过"
 )
 
@@ -172,7 +172,7 @@ FP_09C=(
 
 FP_09D=(
     "FP-09D|EXT-09|timeoutBackground + stderr 合并|09-M1"
-    "跑一个会超时的命令 sleep 100，用 timeoutBackground=true 让它超时后自动转后台"
+    "必须使用 bash 工具并设置 background=true 参数来启动命令 sleep 100，用 timeoutBackground=true 让它超时后自动转后台"
     "跑一个 python3 -c 'print(\"out\"); import sys; sys.stderr.write(\"err\\n\")'，确认 stderr 也被合并到输出里了"
 )
 
