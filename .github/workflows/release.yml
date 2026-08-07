@@ -52,6 +52,7 @@ jobs:
 
       - name: Read version from Cargo.toml
         id: version
+        shell: bash   # 容器默认 sh 不支持 [[ ]] 和 ${var::n}
         run: |
           # 优先用 dispatch 输入，否则 push tag 名，否则 Cargo.toml
           if [ -n "${{ inputs.version }}" ]; then
@@ -61,7 +62,7 @@ jobs:
           else
             V=$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"(.*)"/\1/')
             # 手动触发且没填 version，加个 build 后缀避免占用正式号
-            V="${V}-$(date -u +%Y%m%d%H%M)-${GITHUB_SHA::7}"
+            V="${V}-$(date -u +%Y%m%d%H%M)-${GITHUB_SHA:0:7}"
           fi
           echo "version=${V}" >> "$GITHUB_OUTPUT"
           echo "Publishing version: ${V}"
