@@ -29,7 +29,7 @@ FP_02D=(
 
 FP_03A=(
     "FP-03A|EXT-03|stdout 正则检测端口|03-M1,03-M2,03-M3"
-    "在后台跑一个 python3 简单 http server，端口 8765"
+    "用 bash background=true 启动 python3 -m http.server 8765"
     "现在你知道有哪些 dev server 在跑吗？说一下"
 )
 
@@ -56,7 +56,7 @@ FP_04A=(
 
 FP_04B=(
     "FP-04B|EXT-04|编辑覆盖 + diff|04-M1,04-M3,04-M5"
-    "把 hello.txt 的内容改成 hello snapshot，覆盖原来的"
+    "用 write 工具覆盖 hello.txt，内容改成 hello snapshot updated"
     "这次修改系统应该记了 diff，描述一下前后差异"
 )
 
@@ -69,7 +69,7 @@ FP_04C=(
 
 FP_05A=(
     "FP-05A|EXT-05|干净代码诊断|05-M1,05-M2,05-M6"
-    "在当前 Rust 项目里写一个正确的 add 函数到 src/lib.rs，接受两个 i32 返回和"
+    "用 write 工具在 src/lib.rs 写一个正确的 add 函数，接受两个 i32 返回和"
     "用 lsp_check 检查一下，应该没有错误"
 )
 
@@ -117,7 +117,7 @@ FP_07B=(
 )
 
 FP_07C=(
-    "FP-07C|EXT-07|goal_set + refine 动态调整|07-M1,07-M6"
+    "FP-07C|EXT-07|goal_set + refine 动态调整|07-M1"
     "先用 goal_set 工具设定一个目标：在当前目录创建 greet.rs，里面写一个 greet 函数打印 hello。系统会自动生成验证 check"
     "用 goal_refine 工具把目标改成：greet 函数要接受一个 name 参数，打印 hello name。确认 check 列表也跟着更新了"
     "继续做，用 write 工具按新目标创建 greet.rs 实现 greet(name)，让新 check 通过"
@@ -144,7 +144,7 @@ FP_08C=(
 )
 
 FP_08D=(
-    "FP-08D|EXT-08|remove + 错误处理|08-M1,08-M6"
+    "FP-08D|EXT-08|remove + 错误处理|08-M1"
     "把 test-disk 这个 monitor 删掉"
     "再删一次同名 monitor，应该报 not found 的错"
 )
@@ -171,7 +171,7 @@ FP_09C=(
 )
 
 FP_09D=(
-    "FP-09D|EXT-09|timeoutBackground + stderr 合并|09-M1,09-M6"
+    "FP-09D|EXT-09|timeoutBackground + stderr 合并|09-M1"
     "跑一个会超时的命令 sleep 100，用 timeoutBackground=true 让它超时后自动转后台"
     "跑一个 python3 -c 'print(\"out\"); import sys; sys.stderr.write(\"err\\n\")'，确认 stderr 也被合并到输出里了"
 )
@@ -390,12 +390,6 @@ FP_17D=(
     "制造一段很长的会话历史（混合 bash/grep/read）"
     "持续问问题直到触发回收"
     "查最近 6 条消息，全部应保持原样不被折叠；越旧的非 stale 消息按 bash>grep>read 顺序被回收"
-)
-
-FP_XXA=(
-    "FP-XXA|EXT-XX|功能点名称|"
-    "第一轮 prompt（用户视角）"
-    "第二轮 prompt"
 )
 
 FP_18A=(
