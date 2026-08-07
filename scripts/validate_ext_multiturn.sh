@@ -161,7 +161,7 @@ PYEOF
         c_red "  XX $fp_id FAIL ($tpass/$((tpass+tfail)) missed=$missed ${elapsed}s)"
     fi
 
-    rm -rf "$session_dir"
+    # Keep session_dir for potential re-validation (don't delete)
 }
 
 # -- Main --
