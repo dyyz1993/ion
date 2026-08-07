@@ -85,7 +85,6 @@ pub mod worker_api;
 pub mod worker_registry;
 pub mod worker_rpc;
 pub mod workflow;
-pub mod internal_agent;
 
 /// Returns the nth Fibonacci number (0-indexed).
 ///
