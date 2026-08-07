@@ -75,7 +75,7 @@ FP_05A=(
 
 FP_05B=(
     "FP-05B|EXT-05|编译错误捕获 + 修复闭环|05-M1,05-M3,05-M4"
-    "改一下 src/lib.rs，加一行 let x: i32 = \"string\"; 故意制造一个类型错误"
+    "使用 write 工具覆盖 src/lib.rs 文件，内容只需一行：fn main() { let x: i32 = \"string\"; }"
     "用 lsp_check 看看能不能报出来这个错误"
     "把这个错误修掉，再 lsp_check 确认错误清零"
 )
@@ -106,7 +106,7 @@ FP_06C=(
 
 FP_07A=(
     "FP-07A|EXT-07|goal_set + 自动 check 生成|07-M1,07-M2,07-M3"
-    "用 goal_set 设一个目标：在当前目录创建一个 greet.rs 文件，里面写一个 greet 函数打印 hello"
+    "第一步必须调用 goal_set 工具（不是可选的），设定目标 objective 为：在当前目录创建 greet.rs 写 greet 函数"
     "目标设好了之后，系统应该自动生成了验证 check，列一下有哪些 check"
 )
 
@@ -151,7 +151,7 @@ FP_08D=(
 
 FP_09A=(
     "FP-09A|EXT-09|后台 bash + 进程管理|09-M1,09-M2"
-    "用 bash 工具（参数 background=true）后台启动一个 python3 -m http.server 8888，确认返回了一个 bid 进程号"
+    "请调用 bash 工具，在参数里设置 background=true，命令是 python3 -m http.server 8888"
     "用 get_background_process 列出所有后台进程，把刚才那个 bid 的状态告诉我"
     "用 kill_process 把那个 bid 停掉，确认进程已经退出"
 )
