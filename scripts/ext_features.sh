@@ -49,8 +49,8 @@ FP_03C=(
 
 FP_04A=(
     "FP-04A|EXT-04|单文件创建快照|04-M1,04-M2,04-M3,04-M4"
-    "在当前目录创建一个文件 hello.txt，内容写 hello world"
-    "再创建一个 test.rs，写一行注释 // snapshot test"
+    "用 write 工具创建文件 hello.txt，内容写 hello world"
+    "用 write 工具创建 test.rs，写一行注释 // snapshot test"
     "你刚才创建文件的时候，系统有没有自动记录快照？说一下"
 )
 
@@ -112,7 +112,7 @@ FP_07A=(
 
 FP_07B=(
     "FP-07B|EXT-07|闭环迭代 + gate 拦截|07-M1,07-M4,07-M5"
-    "现在开始实现这个目标，创建 greet.rs 并写 greet 函数"
+    "先用 goal_set 设定目标：创建 greet.rs 并写一个 greet 函数，然后开始实现"
     "做完想停的时候，系统会跑 check 验证，如果没过会拦住你，继续修直到通过"
 )
 
@@ -158,7 +158,7 @@ FP_09A=(
 
 FP_09B=(
     "FP-09B|EXT-09|后台进程 + 管理|09-M1,09-M3,09-M4"
-    "后台启动一个 sleep 300 命令"
+    "用 bash background=true 启动一个 sleep 300 后台命令"
     "用 get_background_process 列一下后台进程，拿到 bid"
     "用 inspect 看那个 bid 的详情，再用 kill_process 停掉它"
 )
