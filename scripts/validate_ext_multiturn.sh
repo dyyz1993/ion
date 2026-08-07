@@ -75,6 +75,7 @@ run_feature() {
                 cd "$work_dir"
                 ION_SESSION_DIR="$session_dir" \
                 ION_HOST_SOCKET="$RUN_DIR/host_${fp_id}.sock" \
+                ION_SKIP_MCP=1 \
                 timeout 300 \
                 "$ION_BIN" --agent developer \
                     --model "$ION_MODEL" --provider "$ION_PROVIDER" \
@@ -96,6 +97,7 @@ run_feature() {
                 cd "$work_dir"
                 ION_SESSION_DIR="$session_dir" \
                 ION_HOST_SOCKET="$RUN_DIR/host_${fp_id}.sock" \
+                ION_SKIP_MCP=1 \
                 timeout 300 \
                 "$ION_BIN" --resume "$sid" \
                     --model "$ION_MODEL" --provider "$ION_PROVIDER" \
