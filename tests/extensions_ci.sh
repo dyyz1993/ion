@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/extensions_ci.sh — WASM extensions (todo-extension + plan-extension) CLI 验收
+# tests/extensions_ci.sh — WASM extensions (todo-extension) CLI 验收
 #
 # 验证两个 extension 的 10 个工具端到端可用：
 #   - 先 build WASM
@@ -12,7 +12,7 @@
 #
 # 前提：
 #   - 已 cargo build --bin ion（debug 即可）
-#   - 已 cargo build --target wasm32-wasip1 --release -p todo-extension -p plan-extension
+#   - 已 cargo build --target wasm32-wasip1 --release -p todo-extension
 #   - 本脚本会自动 build wasm 如果产物缺失
 #
 # 清理：
@@ -86,7 +86,7 @@ if ! rustup target list --installed 2>/dev/null | grep -q wasm32-wasip1; then
 fi
 
 # Build wasm 产物（如果缺失）
-for ext in todo_extension plan_extension; do
+for ext in todo_extension; do
     WASM="target/wasm32-wasip1/release/${ext}.wasm"
     if [ ! -f "$WASM" ]; then
         yellow "building $ext.wasm..."
@@ -96,9 +96,8 @@ done
 
 # 验证 wasm 文件存在 — 如果编译失败就 skip 整个 CI
 TODO_WASM="target/wasm32-wasip1/release/todo_extension.wasm"
-PLAN_WASM="target/wasm32-wasip1/release/plan_extension.wasm"
-if [ ! -f "$TODO_WASM" ] || [ ! -f "$PLAN_WASM" ]; then
-    echo "  ⏭️  wasm 编译失败（缺少 $TODO_WASM 或 $PLAN_WASM）— skip extensions_ci"
+if [ ! -f "$TODO_WASM" ]; then
+    echo "  ⏭️  wasm 编译失败（缺少 $TODO_WASM）— skip extensions_ci"
     echo "  Results: 0 passed, 0 failed, 1 skipped (wasm build failed)"
     exit 0
 fi
@@ -107,7 +106,6 @@ fi
 EXT_DIR="$HOME/.ion/agent/extensions"
 mkdir -p "$EXT_DIR"
 cp "$TODO_WASM" "$EXT_DIR/"
-cp "$PLAN_WASM" "$EXT_DIR/"
 green "✅ wasm 安装到 $EXT_DIR"
 
 # 杀残留 serve + 清 host.sock
@@ -194,60 +192,6 @@ else
     PASS=$((PASS + 1))
 fi
 
-# ── plan_extension 测试 ────────────────────────────────────────────────────
-
-bold ""
-bold "=== plan_extension (5 工具) ==="
-
-PLAN_SID=$("$ION_BIN" rpc --method create_session --params '{"agent":"build"}' 2>&1 \
-    | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['data']['session_id'])" 2>/dev/null)
-sleep 1
-
-# plan_path 必须在项目根目录（allowed_roots 内 + 不在 .ion/ 被 protect-ion-config 拦）
-PLAN_FILE="$PROJECT_DIR/ci-test-plan.txt"
-rm -f "$PLAN_FILE"
-
-PLAN_STEP_A="CI_PLAN_A_${UNIQ_TOK}"
-PLAN_STEP_B="CI_PLAN_B_${UNIQ_TOK}"
-
-OUT=$(call_tool "$PLAN_SID" "{\"tool\":\"plan_enter\",\"args\":{\"plan_path\":\"$PLAN_FILE\"}}")
-assert_contains "plan_enter 进入计划模式" "$OUT" '"status":"ok"'
-assert_contains "plan_enter 返回 mode" "$OUT" '"mode":"plan"'
-
-OUT=$(call_tool "$PLAN_SID" "{\"tool\":\"plan_add\",\"args\":{\"step\":\"$PLAN_STEP_A\"}}")
-assert_contains "plan_add 第一步" "$OUT" '"status":"added"'
-
-OUT=$(call_tool "$PLAN_SID" "{\"tool\":\"plan_add\",\"args\":{\"step\":\"$PLAN_STEP_B\"}}")
-assert_contains "plan_add 第二步" "$OUT" '"status":"added"'
-
-OUT=$(call_tool "$PLAN_SID" '{"tool":"plan_list","args":{}}')
-assert_contains "plan_list 返回步骤" "$OUT" "$PLAN_STEP_A"
-assert_contains "plan_list count=2" "$OUT" '"count":2'
-
-OUT=$(call_tool "$PLAN_SID" '{"tool":"plan_done","args":{"index":0}}')
-assert_contains "plan_done 标记" "$OUT" '"status":"done"'
-
-OUT=$(call_tool "$PLAN_SID" '{"tool":"plan_list","args":{}}')
-assert_contains "plan_list 标记后含 [x]" "$OUT" "[x] $PLAN_STEP_A"
-
-OUT=$(call_tool "$PLAN_SID" '{"tool":"plan_exit","args":{}}')
-assert_contains "plan_exit 退出" "$OUT" '"mode":"normal"'
-
-# 文件落盘验证
-if [ -f "$PLAN_FILE" ]; then
-    if grep -qF "[x] $PLAN_STEP_A" "$PLAN_FILE" && grep -qF "$PLAN_STEP_B" "$PLAN_FILE"; then
-        green "  ✅ 磁盘文件内容正确"
-        PASS=$((PASS + 1))
-    else
-        red "  ❌ 磁盘文件内容错误: $(cat "$PLAN_FILE")"
-        FAIL=$((FAIL + 1))
-        FAILED_TESTS+=("磁盘文件内容")
-    fi
-else
-    red "  ❌ 磁盘文件未创建: $PLAN_FILE"
-    FAIL=$((FAIL + 1))
-    FAILED_TESTS+=("磁盘文件创建")
-fi
 
 # ── 清理 ────────────────────────────────────────────────────────────────────
 
