@@ -49,8 +49,8 @@ FP_03C=(
 
 FP_04A=(
     "FP-04A|EXT-04|单文件创建快照|04-M1,04-M2,04-M3,04-M4"
-    "用 write 工具创建文件 hello.txt，内容写 hello world"
-    "用 write 工具创建 test.rs，写一行注释 // snapshot test"
+    "请使用 write 工具（不是 bash）创建文件 hello.txt，内容是 hello world"
+    "请使用 write 工具（不是 bash）创建文件 test.rs，内容是 // snapshot test"
     "你刚才创建文件的时候，系统有没有自动记录快照？说一下"
 )
 
