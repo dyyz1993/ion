@@ -379,32 +379,6 @@ enum Commands {
         /// User message (positional)
         message: String,
     },
-    /// Run a full agent loop (multi-turn, tools, thinking, schema) — in-memory, no session.
-    ///   ion run_agent --tier pro "analyze this code and suggest improvements"
-    ///   ion run_agent --tier fast --max-turns 5 --tools read,grep,bash "find all TODO comments"
-    ///   ion run_agent --tier max --thinking high --max-turns 10 "refactor the error handling"
-    RunAgent {
-        /// Tier: fast / pro / max
-        #[arg(long, default_value = "fast")]
-        tier: String,
-        /// System prompt (optional)
-        #[arg(long)]
-        system: Option<String>,
-        /// Max agent turns (default unlimited)
-        #[arg(long)]
-        max_turns: Option<u64>,
-        /// Tool whitelist (comma-separated, e.g. "read,grep,bash")
-        #[arg(long)]
-        tools: Option<String>,
-        /// Thinking level: off/minimal/low/medium/high/xhigh
-        #[arg(long)]
-        thinking: Option<String>,
-        /// JSON Schema file path (validates output against schema with retry)
-        #[arg(long)]
-        schema: Option<String>,
-        /// User prompt (positional)
-        prompt: String,
-    },
     /// Subscribe to real-time events.
     ///   ion subscribe --session sess_xxx
     ///   ion subscribe --session sess_xxx --extension memory
@@ -3735,83 +3709,6 @@ pub(crate) fn color_ansi(name: &Option<String>) -> &'static str {
     }
 }
 
-/// CLI handler for `ion run_agent` — full agent loop, in-memory (no session).
-async fn cmd_run_agent_cli(
-    tier: &str,
-    system: Option<&str>,
-    max_turns: Option<u64>,
-    tools_str: Option<&str>,
-    thinking: Option<&str>,
-    schema_path: Option<&str>,
-    prompt: &str,
-) {
-    let cfg = ion::config::IonConfig::load();
-    let tier_str = cfg
-        .tier_models
-        .get(tier)
-        .cloned()
-        .unwrap_or_else(|| "(not configured, using default)".to_string());
-    println!("📚 tier '{tier}' → {tier_str}");
-
-    match cfg.resolve_tier_model(tier) {
-        Some(m) => println!("🤖 model: {} ({})", m.id, m.provider),
-        None => {
-            eprintln!("❌ tier '{tier}' not resolvable");
-            std::process::exit(1);
-        }
-    }
-
-    let mut req = ion::internal_agent::RunAgentRequest::new(tier, prompt);
-    if let Some(sp) = system { req = req.with_system_prompt(sp); }
-    if let Some(n) = max_turns { req = req.with_max_turns(n); }
-    if let Some(t) = thinking { req = req.with_thinking(t); }
-    if let Some(tools_csv) = tools_str {
-        let tools: Vec<String> = tools_csv.split(',').map(|s| s.trim().to_string()).collect();
-        req = req.with_tools(tools);
-    }
-    if let Some(path) = schema_path {
-        let schema_str = std::fs::read_to_string(path).unwrap_or_else(|e| {
-            eprintln!("❌ cannot read schema file '{path}': {e}");
-            std::process::exit(1);
-        });
-        let schema: serde_json::Value = serde_json::from_str(&schema_str).unwrap_or_else(|e| {
-            eprintln!("❌ invalid JSON schema in '{path}': {e}");
-            std::process::exit(1);
-        });
-        req = req.with_json_schema(schema);
-    }
-
-    let mut registry = ion_provider::registry::ApiRegistry::new();
-    registry.register_builtins();
-    let registry = std::sync::Arc::new(registry);
-    let mut tools_reg = ion::agent::tool::ToolRegistry::new();
-    use ion::agent::tool::*;
-    tools_reg.register(Box::new(ReadTool));
-    tools_reg.register(Box::new(GrepTool));
-    tools_reg.register(Box::new(FindTool));
-    tools_reg.register(Box::new(LsTool));
-    tools_reg.register(Box::new(BashTool));
-    tools_reg.register(Box::new(WriteTool));
-    tools_reg.register(Box::new(EditTool));
-    tools_reg.register(Box::new(CalculatorTool));
-    tools_reg.register(Box::new(EchoTool));
-
-    println!("📤 running agent (max_turns={:?}, tools={:?}, thinking={:?}, schema={})...",
-        max_turns, tools_str, thinking, schema_path.is_some());
-    println!("{}", "=".repeat(60));
-
-    match ion::internal_agent::run_agent(&registry, tools_reg, req).await {
-        Ok(result) => {
-            println!("{}", result.output);
-            println!("{}", "=".repeat(60));
-            println!("✅ done (turns={}, tool_calls={})", result.turn_count, result.tool_call_count);
-        }
-        Err(e) => {
-            eprintln!("❌ agent failed: {e}");
-            std::process::exit(1);
-        }
-    }
-}
 
 /// CLI handler for `ion complete` — quick-test query_tier helper.
 /// Bypasses session/agent flow, directly calls IonConfig::query_tier.
@@ -4539,9 +4436,6 @@ async fn main() {
         Some(Commands::ListAgents) => cmd_list_agents().await,
         Some(Commands::Query { tier, system, json, message }) => {
             cmd_complete(tier, system.as_deref(), *json, message).await;
-        }
-        Some(Commands::RunAgent { tier, system, max_turns, tools, thinking, schema, prompt }) => {
-            cmd_run_agent_cli(tier, system.as_deref(), *max_turns, tools.as_deref(), thinking.as_deref(), schema.as_deref(), prompt).await;
         }
         Some(Commands::ListModels { search }) => cmd_list_models(search).await,
         Some(Commands::Extension { action }) => cmd_extension(action.clone()).await,
