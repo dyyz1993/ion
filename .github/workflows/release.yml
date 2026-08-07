@@ -1,0 +1,114 @@
+name: Release
+
+# 编译 Linux x86_64 release 二进制并发布到 GitHub Releases。
+# 触发方式：
+#   1. 手动触发（Actions → Release → Run workflow，可填 version，默认取 Cargo.toml）
+#   2. push tag v* 触发
+#
+# 产物：ion-x86_64-unknown-linux-gnu.tar.gz
+#   ├── ion              ← 主二进制
+#   └── install.sh       ← 一键安装脚本（解压到 ~/.local/bin）
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本 tag（留空则用 Cargo.toml 的 version）'
+        required: false
+        default: ''
+      prerelease:
+        description: '标记为 prerelease'
+        required: false
+        type: boolean
+        default: true
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: write   # softprops/action-gh-release 需要写 Release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Read version from Cargo.toml
+        id: version
+        run: |
+          # 优先用 dispatch 输入，否则 push tag 名，否则 Cargo.toml
+          if [ -n "${{ inputs.version }}" ]; then
+            V="${{ inputs.version }}"
+          elif [ -n "${GITHUB_REF_NAME}" ] && [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            V="${GITHUB_REF_NAME}"
+          else
+            V=$(grep -m1 '^version' Cargo.toml | sed -E 's/version *= *"(.*)"/\1/')
+            # 手动触发且没填 version，加个 build 后缀避免占用正式号
+            V="${V}-$(date -u +%Y%m%d%H%M)-${GITHUB_SHA::7}"
+          fi
+          echo "version=${V}" >> "$GITHUB_OUTPUT"
+          echo "Publishing version: ${V}"
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: release-linux-x86_64-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            release-linux-x86_64-
+
+      - name: Build release binary
+        run: cargo build --release --bin ion
+
+      - name: Verify binary
+        run: |
+          file target/release/ion
+          target/release/ion --version || target/release/ion --help 2>&1 | head -3
+
+      - name: Package tarball
+        run: |
+          mkdir -p dist
+          cp target/release/ion dist/ion
+          cp .github/assets/install.sh dist/install.sh
+          chmod +x dist/ion dist/install.sh
+          ARTIFACT="ion-x86_64-unknown-linux-gnu-${{ steps.version.outputs.version }}.tar.gz"
+          echo "artifact=${ARTIFACT}" >> "$GITHUB_ENV"
+          tar -C dist -czf "${ARTIFACT}" ion install.sh
+          ls -la "${ARTIFACT}"
+
+      - name: Create / update Release and upload asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ion ${{ steps.version.outputs.version }}
+          prerelease: ${{ inputs.prerelease != false }}
+          files: |
+            ${{ env.artifact }}
+          body: |
+            ## ion ${{ steps.version.outputs.version }}
+
+            Linux x86_64 (Debian 12 / glibc 2.36 verified) release binary.
+
+            ### 一键安装
+            ```bash
+            curl -fsSL https://github.com/dyyz1993/ion/releases/download/${{ steps.version.outputs.version }}/ion-x86_64-unknown-linux-gnu-${{ steps.version.outputs.version }}.tar.gz \
+              | tar -xz -C ~/.local/bin ion
+            ```
+
+            或下载安装脚本：
+            ```bash
+            curl -fsSL https://github.com/dyyz1993/ion/releases/download/${{ steps.version.outputs.version }}/ion-x86_64-unknown-linux-gnu-${{ steps.version.outputs.version }}.tar.gz \
+              | tar -xz -C /tmp
+            /tmp/install.sh
+            ```
+          fail_on_unmatched_files: true
