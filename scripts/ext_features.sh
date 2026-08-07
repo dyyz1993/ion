@@ -16,9 +16,9 @@ FP_02B=(
 
 FP_02C=(
     "FP-02C|EXT-02|list + forget 生命周期|02-M1,02-M3,02-M7"
-    "列出现在所有记忆，看看有几条"
-    "把刚才那条不重要的记忆忘掉，用 memory_forget 删掉它"
-    "再 list 一下确认删没了"
+    "先用 memory_save 工具保存一条记忆：内容是「临时测试条目，可删」，tags 设为 temp,test（这条等下用来演示删除）"
+    "用 memory_search 搜一下 temp，把刚才保存的那条列出来"
+    "把刚才那条 temp 记忆忘掉，用 memory_forget（或 memory_delete）删掉它，再搜一次 temp 确认已经删没了"
 )
 
 FP_02D=(
@@ -117,9 +117,10 @@ FP_07B=(
 )
 
 FP_07C=(
-    "FP-07C|EXT-07|goal_refine 动态调整|07-M1,07-M6"
-    "用 goal_refine 把目标改成：greet 函数要接受一个 name 参数，打印 hello name"
-    "调整后继续做，让新 check 通过"
+    "FP-07C|EXT-07|goal_set + refine 动态调整|07-M1,07-M6"
+    "先用 goal_set 工具设定一个目标：在当前目录创建 greet.rs，里面写一个 greet 函数打印 hello。系统会自动生成验证 check"
+    "用 goal_refine 工具把目标改成：greet 函数要接受一个 name 参数，打印 hello name。确认 check 列表也跟着更新了"
+    "继续做，用 write 工具按新目标创建 greet.rs 实现 greet(name)，让新 check 通过"
 )
 
 FP_08A=(
@@ -149,9 +150,10 @@ FP_08D=(
 )
 
 FP_09A=(
-    "FP-09A|EXT-09|前台执行 + 退出码|09-M1,09-M2"
-    "跑一个 echo "hello bash" 看看输出"
-    "再跑一个会失败的命令 ls /nonexistent，看错误怎么报"
+    "FP-09A|EXT-09|后台 bash + 进程管理|09-M1,09-M2"
+    "用 bash 工具（参数 background=true）后台启动一个 python3 -m http.server 8888，确认返回了一个 bid 进程号"
+    "用 get_background_process 列出所有后台进程，把刚才那个 bid 的状态告诉我"
+    "用 kill_process 把那个 bid 停掉，确认进程已经退出"
 )
 
 FP_09B=(
@@ -175,331 +177,331 @@ FP_09D=(
 )
 
 FP_10A=(
-    "FP-10A|EXT-10|记忆保存与检索|memory_save 返回 id；memory_search 能命中刚保存的内容"
+    "FP-10A|EXT-10|记忆保存与检索|"
     "请记住一条偏好：这个项目所有新增的 Rust 函数都要写 doc comment，类别标 rust-convention，标签 rust、doc"
     "我刚才让你记的那条关于 doc comment 的偏好，能帮我查出来吗？"
     "搜一下 'doc comment'，看能不能匹配到"
 )
 
 FP_10B=(
-    "FP-10B|EXT-10|被动上下文注入|on_input 命中记忆后下一轮在 <memory_context> 注入；不命中时跳过"
+    "FP-10B|EXT-10|被动上下文注入|"
     "帮我记一下：数据库连接串格式是 postgres://user:pass@host:5432/db，标签 database"
     "我想连数据库，连接串格式是什么来着？"
     "再问个无关的：今天天气怎么样？"
 )
 
 FP_10C=(
-    "FP-10C|EXT-10|RPC 管理接口|extension_rpc list/forget/inspect 正常工作；forget 后 search 不再返回"
+    "FP-10C|EXT-10|RPC 管理接口|"
     "用 extension_rpc memory list 看看当前有哪些记忆条目"
     "把我刚才记的那条数据库连接串记忆 forget 掉"
     "再 list 一次确认它已经被归档了"
 )
 
 FP_10D=(
-    "FP-10D|EXT-10|跨项目全局搜索|memory_search 带 global=true 能搜到其他项目保存的记忆"
+    "FP-10D|EXT-10|跨项目全局搜索|"
     "搜一下 'ci pipeline 配置'，只在本项目里搜"
     "同样这个关键词，改成跨项目全局搜（global=true）"
     "对比两次结果，全局搜应该多出其他项目的命中"
 )
 
 FP_11A=(
-    "FP-11A|EXT-11|全局规则注入 system prompt|globs 为 ** 或空的 rule 出现在每轮 system prompt 的 <project_rules> 里"
+    "FP-11A|EXT-11|全局规则注入 system prompt|"
     "我在 .ion/rules/global.md 写了一条 globs: '**' 的规则：'回答前先复述用户问题'。新建会话后问我 1+1 等于几"
     "确认第一轮回答里能看到这条规则被遵循了"
 )
 
 FP_11B=(
-    "FP-11B|EXT-11|路径匹配规则按需注入|globs: '**/*.rs' 的 rule 不在 system prompt，只在 read/grep .rs 文件后追加到 tool result"
+    "FP-11B|EXT-11|路径匹配规则按需注入|"
     "我在 .ion/rules/rust.md 写了 globs: '**/*.rs'，内容是 'Rust 文件必须用 snake_case'。然后帮我读一下 src/lib.rs"
     "读完后，tool result 末尾应该追加这条 rust 规则（📌 [project rules for this file]）"
     "再读一个 .md 文件，确认不会追加 rust 规则"
 )
 
 FP_11C=(
-    "FP-11C|EXT-11|RPC 查询规则|extension_rpc rules-engine list 列出全部；match 按 file 过滤"
+    "FP-11C|EXT-11|RPC 查询规则|"
     "用 extension_rpc 调 rules-engine 的 list 方法，列出所有规则"
     "用 match 方法查 'src/main.rs' 命中哪些规则"
     "用 match 方法查 'README.md'，应该不命中 rust 规则"
 )
 
 FP_11D=(
-    "FP-11D|EXT-11|规则热重载|编辑 .ion/rules/*.md 后无需重启，下一轮 on_system_prompt 立即生效"
+    "FP-11D|EXT-11|规则热重载|"
     "先 list 一下当前规则"
     "现在我去 .ion/rules/ 新建一个 hot.md（globs: '**'，内容 '热重载测试'），再问你一句话"
     "再次 list，应该能看到新增的 hot 规则；system prompt 里也应该注入了"
 )
 
 FP_12A=(
-    "FP-12A|EXT-12|实质工作会话触发提炼|含 write/edit + 技术内容的会话 shutdown 后产生 skill 蒸馏产物（或日志显示尝试）"
+    "FP-12A|EXT-12|实质工作会话触发提炼|"
     "帮我读 src/lib.rs 看看结构，然后把里面的 main 函数名改成 run_main"
     "再帮我加一个测试用例验证 run_main 能被调用"
     "好的结束吧，我去查 skill distillation 的日志和产物目录"
 )
 
 FP_12B=(
-    "FP-12B|EXT-12|短会话/问候跳过提炼|纯问候或 <4 消息的会话 shutdown 后日志显示 'skip'，不产生 skill"
+    "FP-12B|EXT-12|短会话/问候跳过提炼|"
     "hi"
     "ok thanks"
     # 退出后日志应显示 skip: too few messages 或 all messages are greetings
 )
 
 FP_12C=(
-    "FP-12C|EXT-12|secret 自动脱敏|会话里粘贴 API key，提炼流程会先 redact 再送 LLM（日志或 redacted 标记可验证）"
+    "FP-12C|EXT-12|secret 自动脱敏|"
     "我这里有个 key sk-proj-abcdef1234567890ABCDEFGHIJ，帮我存到 .env 文件里"
     "再读一下这个 .env 确认存好了"
     "退出后查日志，应该看到 [learning] redacted N secret(s) from message"
 )
 
 FP_13A=(
-    "FP-13A|EXT-13|添加规则并自动生效|session/project 级 allow/deny 规则添加后，before_tool_call 立即拦截或放行"
+    "FP-13A|EXT-13|添加规则并自动生效|"
     "用 extension_rpc permission add_rule 加一条：subject=file.read, pattern=*.env, decision=deny, scope=session"
     "然后帮我读一下 .env 文件"
     "再读一个普通文件 like Cargo.toml，应该正常"
 )
 
 FP_13B=(
-    "FP-13B|EXT-13|stored-decision 持久化|store_decision 选 project scope 后写入 settings.json，list_stored 能看到 source=stored"
+    "FP-13B|EXT-13|stored-decision 持久化|"
     "用 store_decision 存一条：command.run, git status, allow, project"
     "list_stored 看一下，应该有 source=stored 的条目"
     "退出后去项目 .ion/settings.json 确认持久化了"
 )
 
 FP_13C=(
-    "FP-13C|EXT-13|撤销 stored 决策|remove_stored 按 id 删除单条；clear_stored 清空所有 stored（不动 Config 规则）"
+    "FP-13C|EXT-13|撤销 stored 决策|"
     "先 store_decision 两条 allow 规则（不同 pattern）"
     "list_stored 拿到第一条的 id，用 remove_stored 删掉它"
     "再 clear_stored 清剩下的，最后 list_stored 应为空、list_rules 里 Config 规则还在"
 )
 
 FP_13D=(
-    "FP-13D|EXT-13|settings.json 热重载|手动改 .ion/settings.json 加一条 allow 规则，下一轮 before_tool_call 自动识别（无需 reload）"
+    "FP-13D|EXT-13|settings.json 热重载|"
     "先 list_rules 看当前规则"
     "我手动在 .ion/settings.json 的 permissions.rules 里加一条 allow bash 'echo hi' 的规则。现在帮我跑 echo hi"
     "应该不再弹权限确认（自动 allow）；再 list_rules 应该多出这条"
 )
 
 FP_14A=(
-    "FP-14A|EXT-14|变更列出与 pending 计算|agent 改完文件后 on_gate_check 推 ApprovalRequest 事件，pending 列表准确（added/modified/deleted + diff_stat）"
-    "帮我在项目根新建一个 scratch.rs 文件，内容写个 hello world"
-    "再去改一下 src/lib.rs，加一行注释"
+    "FP-14A|EXT-14|变更列出与 pending 计算|"
+    "用 write 工具在项目根创建文件 scratch.rs，内容写一行 fn main() { println!(\"hello\"); }"
+    "再用 write 工具改一下 src/lib.rs，在文件末尾追加一行注释 // touched"
     "停下，用 extension_rpc 查 file-approval 的 pending 列表，应该有两个文件（added + modified）"
 )
 
 FP_14B=(
-    "FP-14B|EXT-14|approve 锚定 baseline|approve 单文件后该文件不再出现在 pending；后续同文件改动 diff 从 approved baseline 算"
-    "接上轮，approve 掉 src/lib.rs"
-    "再 list pending，src/lib.rs 应该不在了"
-    "现在再去改一下 src/lib.rs 加第二行注释，然后查 pending，diff 应该只显示这第二行（baseline 已锚定到上次 approve）"
+    "FP-14B|EXT-14|approve 锚定 baseline|"
+    "先用 write 工具创建文件 /tmp/fa_b_demo.txt，内容写 baseline content"
+    "用 extension_rpc 调 file-approval approve，参数 path=/tmp/fa_b_demo.txt，把这条变更批准掉"
+    "再用 write 工具覆盖 /tmp/fa_b_demo.txt，改成 second content，然后查 pending，diff 应该只显示这次新写入的内容（baseline 已锚定到上次 approve）"
 )
 
 FP_14C=(
-    "FP-14C|EXT-14|reject 单文件回滚|reject 后文件回滚到 baseline（added 删除 / modified 还原），事件 ApprovalResolved decision=rejected"
-    "新建一个 temp_reject.txt 写点内容"
-    "查 pending 确认有这个 added 文件"
-    "reject 掉 temp_reject.txt，文件应该从磁盘消失了"
+    "FP-14C|EXT-14|reject 单文件回滚|"
+    "用 write 工具新建文件 /tmp/fa_c_reject.txt，内容写点 will be rejected"
+    "用 extension_rpc 查 file-approval pending 确认有这个 added 文件"
+    "用 extension_rpc 调 file-approval reject，参数 path=/tmp/fa_c_reject.txt，文件应该从磁盘消失了"
 )
 
 FP_14D=(
-    "FP-14D|EXT-14|re-approval 重置|已 approve 的文件被新 turn 改动后，on_turn_end 自动回 pending 并推 ApprovalReset 事件"
-    "approve 一个文件"
-    "在同一会话里再改它一次"
-    "查 pending，这个文件应该重新出现（status=pending），并能看到 ApprovalReset 事件"
+    "FP-14D|EXT-14|re-approval 重置|"
+    "先用 write 工具创建文件 /tmp/fa_d_reset.txt 内容写 first version"
+    "用 extension_rpc 调 file-approval approve，参数 path=/tmp/fa_d_reset.txt 把它批准掉"
+    "再用 write 工具覆盖 /tmp/fa_d_reset.txt 改成 second version；用 extension_rpc 查 pending，这个文件应该重新出现（status=pending），并能看到 ApprovalReset 事件"
 )
 
 FP_15A=(
-    "FP-15A|EXT-15|read 建立索引并注入 tree|read 后 system prompt 出现 <context_index>，对应文件状态 current"
+    "FP-15A|EXT-15|read 建立索引并注入 tree|"
     "帮我读 src/lib.rs 和 src/main.rs 两个文件"
     "用 extension_rpc context-index tree 查一下，这两个文件应该都在索引里，status=current"
     "system prompt 里应该能看到 <context_index> 块列出这两个文件"
 )
 
 FP_15B=(
-    "FP-15B|EXT-15|write 后旧 read 折叠|write/edit 文件后，之前的 read 记录标 stale，on_context 把旧 ToolResult 替换成 [ContextIndex: ...] 占位符"
+    "FP-15B|EXT-15|write 后旧 read 折叠|"
     "先读 src/lib.rs"
     "现在 edit 一下 src/lib.rs 改点东西"
     "用 context-index ranges 查 src/lib.rs，应该有 stale 记录；之后再读它时旧的 ToolResult 已被折叠成占位符"
 )
 
 FP_15C=(
-    "FP-15C|EXT-15|grep 输出进索引|grep 工具的命中文件会被解析并加入索引（content_hash=0，status=current）"
+    "FP-15C|EXT-15|grep 输出进索引|"
     "用 grep 搜一下 'fn main' 这个关键词"
     "用 context-index tree 查，被 grep 命中的文件应该都在索引里"
     "确认 untracked 列表里没有 grep（只有 bash/find）"
 )
 
 FP_15D=(
-    "FP-15D|EXT-15|RPC ranges 查询|context-index ranges 按 path 返回该文件全部 read 记录（turn/status/detail）"
+    "FP-15D|EXT-15|RPC ranges 查询|"
     "读同一个文件两次（不同 turn）"
     "edit 一次该文件"
     "用 ranges 查这个 path，应该看到两条 read（一条 current 一条 stale）+ stale 的 overwrittenByTurn"
 )
 
 FP_16A=(
-    "FP-16A|EXT-16|会话列表与项目过滤|ion sessions 默认只显示当前主仓库会话；--all 显示全部；--json 输出完整字段"
+    "FP-16A|EXT-16|会话列表与项目过滤|"
     "跑 ion sessions，看看当前项目的会话列表"
     "跑 ion sessions --all，应该能看到其他项目的会话"
     "跑 ion sessions --json --limit 5，确认 JSON 字段完整（token/turn_count/created_at 等）"
 )
 
 FP_16B=(
-    "FP-16B|EXT-16|会话命名与重命名|--name 创建时命名；后续 set_name 改名；first_name 保留首次名字"
+    "FP-16B|EXT-16|会话命名与重命名|"
     "新建会话时用 --name feature-x 启动"
     "跑 ion sessions 确认名字显示为 feature-x"
     "用 extension_rpc 把它重命名为 feature-x-v2，再 list 确认 name 变了、first_name 还是 feature-x"
 )
 
 FP_16C=(
-    "FP-16C|EXT-16|统计增量与累计|每轮 turn 结束后 token_input/output、turn_count、user_prompt_count、duration 累计更新"
+    "FP-16C|EXT-16|统计增量与累计|"
     "新建一个会话，先问一句简单的话记录基线"
     "再连续问 2-3 个会触发工具调用的问题"
     "用 ion sessions --json 查这个会话，turn_count/token_input 应该累加正确，大于第一轮"
 )
 
 FP_16D=(
-    "FP-16D|EXT-16|父子血缘|fork 出来的子会话 parent_session/parent_type 正确记录；ion session tree 能看到派发关系"
+    "FP-16D|EXT-16|父子血缘|"
     "在当前会话里 fork 一个子任务（spawn_worker 或类似）"
     "用 ion sessions --json 查子会话，parent_session 应指向当前会话 id"
     "跑 ion session tree <当前会话id>，应该能看到子会话节点"
 )
 
 FP_17A=(
-    "FP-17A|EXT-17|大量 bash 输出触发回收|连续多轮大 bash 输出累积超过 60% 阈值后，旧的 bash ToolResult 被替换成 [reclaimed: bash output was N chars]，tracing 日志记录 saved tokens"
+    "FP-17A|EXT-17|大量 bash 输出触发回收|"
     "连续跑 10 次 cat 一个大文件（每次输出几百行）"
     "再跑几次 ls -la 列大量文件"
     "现在回看最早几轮的 bash 结果，应该已经被折叠成 [reclaimed: ...] 占位符；查 tracing 日志应该有 [reclaimer] X → Y tokens (saved Z)"
 )
 
 FP_17B=(
-    "FP-17B|EXT-17|thinking block 自动剥离|无论是否超阈值，每轮 on_context 都剥离 Assistant 消息里的 Thinking 块"
+    "FP-17B|EXT-17|thinking block 自动剥离|"
     "用一个会触发 thinking 的中难度问题（比如让它推理一个算法），开 medium thinking"
     "再连续问几个问题让上下文变长"
     "回看会话历史，Assistant 消息里不应该再保留 thinking 块（被剥离）；tracing 日志 thinking_blocks_removed > 0"
 )
 
 FP_17C=(
-    "FP-17C|EXT-17|stale read 即使在 heat window 内也回收|read 后 write 同一文件，下一轮 on_context 把旧 read 折叠（reason=stale），不受 heat window 保护"
+    "FP-17C|EXT-17|stale read 即使在 heat window 内也回收|"
     "读一个大文件（比如 src/lib.rs）"
     "紧接着 edit 这个文件"
     "继续问几轮别的问题让上下文滚动，然后查最早那个 read 的 ToolResult —— 即使在 heat window 内也应该被标 stale 并折叠（reason 里是 stale 不是 old）"
 )
 
 FP_17D=(
-    "FP-17D|EXT-17|heat window 保护最近消息|最近 KEEP_RECENT=6 条消息以及占 context window 30% 的 hot 区域不被回收"
+    "FP-17D|EXT-17|heat window 保护最近消息|"
     "制造一段很长的会话历史（混合 bash/grep/read）"
     "持续问问题直到触发回收"
     "查最近 6 条消息，全部应保持原样不被折叠；越旧的非 stale 消息按 bash>grep>read 顺序被回收"
 )
 
 FP_XXA=(
-    "FP-XXA|EXT-XX|功能点名称|期望指标"
+    "FP-XXA|EXT-XX|功能点名称|"
     "第一轮 prompt（用户视角）"
     "第二轮 prompt"
 )
 
 FP_18A=(
-    "FP-18A|EXT-18|Warn 模式默认：read 后外部修改触发 stale 警告|stderr 出现 [file-time-guard] WARNING，且 write 不被拒绝"
+    "FP-18A|EXT-18|Warn 模式默认：read 后外部修改触发 stale 警告|"
     "帮我读一下 /tmp/ftg_demo.txt 这个文件，告诉我里面写了什么内容。"
     "现在帮我在 /tmp/ftg_demo.txt 末尾追加一行 'agent updated'。"
 )
 
 FP_18B=(
-    "FP-18B|EXT-18|ignore_paths：target/ 路径下文件变更不报警|无 [file-time-guard] 警告输出，write 正常完成"
+    "FP-18B|EXT-18|ignore_paths：target/ 路径下文件变更不报警|"
     "读一下 /tmp/ftg_target_demo/target/x.rs，确认文件存在。"
     "帮我把 /tmp/ftg_target_demo/target/x.rs 内容改成 '// regenerated'。"
 )
 
 FP_18C=(
-    "FP-18C|EXT-18|RPC status/check：查询 guard 模式与 staleness|status 返回 mode=warn、tracked_files>=1；check 返回 stale 布尔"
+    "FP-18C|EXT-18|RPC status/check：查询 guard 模式与 staleness|"
     "用 extension_rpc 调用 'file-time-guard' 扩展的 status 方法，把返回的 mode 和 tracked_files 报给我。"
     "再用 extension_rpc 调用 check 方法，参数 path='/tmp/ftg_rpc_demo.txt'，告诉我 stale 是 true 还是 false。"
 )
 
 FP_19A=(
-    "FP-19A|EXT-19|完整 plan 流程：enter→add×3→list→approve→done→exit→落盘|/tmp/ion_plan_a.md 存在且含 [x] 前缀，plan_list 返回 count=3"
+    "FP-19A|EXT-19|完整 plan 流程：enter→add×3→list→approve→done→exit→落盘|"
     "进入 plan mode，plan_path 用 /tmp/ion_plan_a.md，然后依次 plan_add 三个步骤：'分析需求'、'写代码'、'跑测试'。加完后 plan_list 给我看一眼。"
     "把第 0 步 plan_approve 一下，再 plan_done 标记完成，最后 plan_exit 退出 plan mode。退出后读 /tmp/ion_plan_a.md 确认内容写进去了。"
 )
 
 FP_19B=(
-    "FP-19B|EXT-19|plan mode 下 write/edit/bash 被拦截|tool 调用返回 'not available in plan mode' 错误"
+    "FP-19B|EXT-19|plan mode 下 write/edit/bash 被拦截|"
     "先用 plan_enter 进入 plan mode（plan_path=/tmp/ion_plan_b.md）。然后尝试直接 write 一个 /tmp/blocked_in_plan.txt 文件，把结果告诉我。"
     "现在 plan_exit 退出 plan mode，退出后重新 write /tmp/blocked_in_plan.txt 写一句 'now allowed'，应该就能成功了。"
 )
 
 FP_19C=(
-    "FP-19C|EXT-19|strict_mode 闸门：未 approve 不能 exit|plan_exit 返回 status=blocked，approve 后再 exit 返回 ok"
+    "FP-19C|EXT-19|strict_mode 闸门：未 approve 不能 exit|"
     "plan_enter 进入 plan mode，带上参数 strict_mode=true，plan_path=/tmp/ion_plan_c.md。然后 plan_add 两个步骤：'step one'、'step two'，先不要 approve。"
     "现在尝试 plan_exit，应该会被 strict_mode 拦下。接着 plan_approve 第 0 步和第 1 步，再 plan_exit，这次应该能成功退出。"
 )
 
 FP_20A=(
-    "FP-20A|EXT-20|连续 read 同一文件触发 ABORT|第 5 次相同 read 返回 'Tool loop detected' 错误，循环被打断"
+    "FP-20A|EXT-20|连续 read 同一文件触发 ABORT|"
     "请连续 6 次读取 /tmp/loop_target.txt 这个文件，每次读完都说一句 'read again'，直到系统阻止你。"
     "刚才是不是被 loop detector 拦下了？用 grep 搜一下 'loop' 关键字，确认一下行为日志里有没有 WARN/ABORT 记录。"
 )
 
 FP_20B=(
-    "FP-20B|EXT-20|豁免工具 plan_list 连续调用不触发|连续 6 次 plan_list 全部成功，无 loop 错误"
+    "FP-20B|EXT-20|豁免工具 plan_list 连续调用不触发|"
     "先 plan_enter 进入 plan mode（plan_path=/tmp/ion_loop_exempt.md），加一个步骤 'demo step'。然后连续调用 plan_list 6 次给我看，每次都把结果报一遍。"
     "好的，现在 plan_exit 退出。整轮下来你应该没收到任何 'Tool loop detected' 的错误，对吧？"
 )
 
 FP_20C=(
-    "FP-20C|EXT-20|连续相同 bash echo 归一化触发 ABORT（验证 normalize）|第 5 次 echo 被打断，证明 echo 变体被归一"
+    "FP-20C|EXT-20|连续相同 bash echo 归一化触发 ABORT（验证 normalize）|"
     "连续执行 6 次 bash 命令，每次 echo 一句不同的话（比如 echo one、echo two、echo three …），每次都告诉我返回了什么，直到被拦下。"
     "被拦之后，改成连续 6 次 ls /tmp（同一条命令），观察是不是也会被拦。"
 )
 
 FP_22A=(
-    "FP-22A|EXT-22|LLM 生成会话标题|ion sessions --json 该 session 的 name 字段非空且 ≤50 字符，语义贴合首条 prompt"
+    "FP-22A|EXT-22|LLM 生成会话标题|"
     "用 Rust 写一个最简单的 TCP echo server，监听 127.0.0.1:7878，把收到的字节原样回写。"
     "再补一段注释说明为什么用 std::net::TcpListener 而不是 tokio。"
 )
 
 FP_22B=(
-    "FP-22B|EXT-22|启发式 fallback：中文冒号截断|标题恰好在中文冒号处切断，不残留冒号后的步骤编号"
+    "FP-22B|EXT-22|启发式 fallback：中文冒号截断|"
     "按以下 10 步顺序执行：1. 用 bash 创建文件 2. 写入内容 3. 读回来核对"
     "等一下，先别执行，我想先看看你打算怎么做。"
 )
 
 FP_22C=(
-    "FP-22C|EXT-22|启发式 fallback：命令前缀原样保留|标题保留首行前缀（!ls -la 之类），不截断到首词"
+    "FP-22C|EXT-22|启发式 fallback：命令前缀原样保留|"
     "!ls -la /tmp 看看里面都有什么文件"
     "!rm -rf /tmp/acceptance_scratch 2>/dev/null; 现在再看一遍 !ls /tmp"
 )
 
 FP_23A=(
-    "FP-23A|EXT-23|gate 失败触发 RetryWith 强制继续|agent 不直接停，收到 'GATE CHECK FAILED' 注入后继续工作直到 gate 通过"
+    "FP-23A|EXT-23|gate 失败触发 RetryWith 强制继续|"
     "（前置：--agent /tmp/wf_fail.md，其 workflow.gate_command='ls /tmp/wf_done_marker'，gate_expected='wf_done_marker'）请完成任务：确保 /tmp/wf_done_marker 这个标记文件被创建。"
     "现在重新检查一次 gate，确认它已经 PASS。"
 )
 
 FP_23B=(
-    "FP-23B|EXT-23|max_retries 耗尽后放行（防死循环）|达到 max_retries 后即使 gate 仍失败也 Allow 停止"
+    "FP-23B|EXT-23|max_retries 耗尽后放行（防死循环）|"
     "（前置：--agent /tmp/wf_exhaust.md，gate_command='echo NOPE'，gate_expected='YES'，max_retries=2）随便回答一句 'done' 就行，不用真的做什么。"
     "再发一句 'really done'，确认会话能正常结束。"
 )
 
 FP_23C=(
-    "FP-23C|EXT-23|gate 通过后缓存：后续检查直接 Allow|第一次 PASS 后 passed=true，后续 on_gate_check 立即 Allow 不再执行 gate_command"
+    "FP-23C|EXT-23|gate 通过后缓存：后续检查直接 Allow|"
     "（前置：--agent /tmp/wf_pass.md，gate_command='echo PASS'，gate_expected='PASS'）回复一句 'hello' 就好。"
     "再说一句 'world'。"
 )
 
 FP_24A=(
-    "FP-24A|EXT-24|subscribe --session 按 sessionId 过滤|订阅流中每条事件的 sessionId == 目标 SID，无串台"
+    "FP-24A|EXT-24|subscribe --session 按 sessionId 过滤|"
     "（评测并行起一个 'ion subscribe --session <SID>' 后台进程）读一下 README.md 的前 50 行，告诉我这个项目大概在做什么。"
     "再用 grep 搜一下 'StreamingExtension' 在 src/worker_rpc.rs 里的位置。"
 )
 
 FP_24B=(
-    "FP-24B|EXT-24|事件类型完整性：start/delta/end 全链路|按序捕获 agent_start→message_start→text_delta→tool_execution_start/end→message_end→agent_end"
+    "FP-24B|EXT-24|事件类型完整性：start/delta/end 全链路|"
     "用 bash 执行 'echo streaming_check'，把输出报给我。"
     "再读一下 Cargo.toml 的 [package] 段。"
 )
 
 FP_24C=(
-    "FP-24C|EXT-24|tool_call_delta 增量透传|启用 ION_STREAM_DEBUG=1 时，工具参数以增量 delta 形式多次推送，toolName 字段正确"
+    "FP-24C|EXT-24|tool_call_delta 增量透传|"
     "（前置：环境变量 ION_STREAM_DEBUG=1）写一个文件 /tmp/stream_delta_demo.txt，内容是一段 200 字以上的长文本（你随便编），用 write 工具。"
     "再把刚才写的文件 read 回来确认。"
 )
