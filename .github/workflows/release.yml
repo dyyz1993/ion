@@ -43,7 +43,9 @@ jobs:
       - name: Install build deps (in 20.04 container)
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config libssl-dev
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config libssl-dev \
+            cmake golang-go   # aws-lc-sys (rustls crypto backend) 需要 cmake + go
 
       - uses: actions/checkout@v4
 
