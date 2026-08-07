@@ -39,13 +39,17 @@ jobs:
       contents: write   # softprops/action-gh-release 需要写 Release
     env:
       DEBIAN_FRONTEND: noninteractive   # 容器内 apt 不交互
+      AWS_LC_SYS_PREGENERATED_BINDINGS: "1"   # 优先用预生成绑定，减少对 libclang 的依赖
     steps:
       - name: Install build deps (in 20.04 container)
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
             ca-certificates curl git build-essential pkg-config libssl-dev \
-            cmake golang-go   # aws-lc-sys (rustls crypto backend) 需要 cmake + go
+            cmake golang-go libclang-dev clang
+          # aws-lc-sys（被 jsonschema/rmcp 经 reqwest 0.13 → rustls 间接拉入）
+          # 在 20.04 上没命中预编译产物，回退源码编译 AWS-LC 需要：
+          #   cmake + go（构建 AWS-LC 本体）+ libclang（bindgen 生成 Rust 绑定）
 
       - uses: actions/checkout@v4
 
