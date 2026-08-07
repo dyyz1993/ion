@@ -46,10 +46,15 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             ca-certificates curl git build-essential pkg-config libssl-dev \
-            cmake golang-go libclang-dev clang
-          # aws-lc-sys（被 jsonschema/rmcp 经 reqwest 0.13 → rustls 间接拉入）
-          # 在 20.04 上没命中预编译产物，回退源码编译 AWS-LC 需要：
-          #   cmake + go（构建 AWS-LC 本体）+ libclang（bindgen 生成 Rust 绑定）
+            cmake golang-go libclang-dev clang \
+            gcc-10 g++-10
+          # ubuntu:20.04 默认 gcc-9 有 memcmp 代码生成 bug (gcc#95189)，
+          # aws-lc-sys 检测到会拒绝编译。装 gcc-10 并设为默认 CC。
+          update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-10 100
+          update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-10 100
+          update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-10 100
+          update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-10 100
+          cc --version | head -1
 
       - uses: actions/checkout@v4
 
