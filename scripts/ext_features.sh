@@ -106,7 +106,7 @@ FP_06C=(
 
 FP_07A=(
     "FP-07A|EXT-07|goal_set + 自动 check 生成|07-M1,07-M2,07-M3"
-    "第一步必须调用 goal_set 工具（不是可选的），设定目标 objective 为：在当前目录创建 greet.rs 写 greet 函数"
+    "请立即调用 goal_set 工具，参数 objective 设为 create greet.rs with greet function。不要做其他事，先调 goal_set。"
     "目标设好了之后，系统应该自动生成了验证 check，列一下有哪些 check"
 )
 
