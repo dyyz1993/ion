@@ -1398,7 +1398,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     var totalCalls = Object.keys(toolCounts).reduce(function(s, k) { return s + toolCounts[k]; }, 0);
     var activeGroups = Object.keys(extGroups).filter(function(g) { return extGroups[g].count > 0; });
-    if (totalCalls === 0) return;
+    // Don't return on totalCalls === 0 — still render timeline for non-tool entries
 
     var groupBadges = activeGroups.map(function(g) {
       var grp = extGroups[g];
