@@ -1414,30 +1414,47 @@ document.addEventListener('DOMContentLoaded', function() {
       return e.type === 'message' || e.type === 'custom_message' || e.type === 'turn_summary';
     }).slice(0, 50);  // 最多 50 个，避免太长
 
-    // 找时间范围
+    // 找时间范围（fallback to index-based if timestamps missing）
     var ts = timelineEntries.map(function(e) {
-      return new Date(e.timestamp || 0).getTime();
-    }).filter(function(t) { return !isNaN(t) && t > 0; });
-    if (ts.length < 2) return;  // 单点无法画时间线
-    var tMin = Math.min.apply(null, ts);
-    var tMax = Math.max.apply(null, ts);
-    var tRange = Math.max(tMax - tMin, 1);
-
-    var bars = timelineEntries.map(function(e) {
       var t = new Date(e.timestamp || 0).getTime();
-      if (isNaN(t) || t === 0) return '';
-      var left = ((t - tMin) / tRange * 100).toFixed(2);
+      return (isNaN(t) || t === 0) ? null : t;
+    });
+    var validTs = ts.filter(function(t) { return t !== null; });
+    var useIndexFallback = validTs.length < 2;
+    var tMin, tMax, tRange;
+    if (useIndexFallback) {
+      tMin = 0; tMax = Math.max(timelineEntries.length - 1, 1); tRange = tMax;
+    } else {
+      tMin = Math.min.apply(null, validTs);
+      tMax = Math.max.apply(null, validTs);
+      tRange = Math.max(tMax - tMin, 1);
+    }
+
+    var bars = timelineEntries.map(function(e, idx) {
+      var left;
+      if (useIndexFallback) {
+        left = (idx / tRange * 100).toFixed(2);
+      } else {
+        var t = new Date(e.timestamp || 0).getTime();
+        if (isNaN(t) || t === 0) {
+          left = (idx / Math.max(timelineEntries.length, 1) * 100).toFixed(2);
+        } else {
+          left = ((t - tMin) / tRange * 100).toFixed(2);
+        }
+      }
       var msg = e.message || {};
       var role = msg.role || (msg.Assistant ? 'assistant' : msg.User ? 'user' : e.type);
+      if (role === 'ToolResult') role = 'toolResult';
       var color = '#6b7280';
       if (role === 'user' || role === 'User') color = '#3b82f6';
       else if (role === 'assistant' || role === 'Assistant') color = '#10b981';
       else if (role === 'toolResult' || role === 'tool') color = '#f59e0b';
       else if (e.type === 'custom_message') color = '#8b5cf6';
       else if (e.type === 'turn_summary') color = '#aaa';
-      var tip = (e.id || '').slice(0, 8) + ' · ' + role;
+      var ct = e.customType ? ' [' + e.customType + ']' : '';
+      var tip = (e.id || '').slice(0, 8) + ' · ' + role + ct;
       return '<div title="' + tip + '" style="position:absolute;left:' + left +
-             '%;top:0;width:3px;height:24px;background:' + color +
+             '%;top:0;width:3px;height:20px;background:' + color +
              ';border-radius:1px;"></div>';
     }).join('');
 
