@@ -18,3 +18,8 @@ system_response.txt
 *.txt
 !Cargo.toml
 __pycache__/
+
+# 测试报告 / playwright 产物（误提交过，体积大且每次跑会变，不入库）
+docs/reports/
+.playwright-cli/
+output/
