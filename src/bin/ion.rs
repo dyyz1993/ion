@@ -2039,6 +2039,15 @@ async fn cmd_run(
     }
     let mut ext_reg = ion::agent::extension::ExtensionRegistry::new();
 
+    // Scene 1 (direct `ion "prompt"`) has no worker StreamingExtension, but
+    // pre-tool Hooks can append audit entries before the final save_session().
+    // Persist message checkpoints first so a rejected call is written in the
+    // same order and branch as the provider conversation:
+    // User -> Assistant(tool call) -> hook_event -> ToolResult(error).
+    ext_reg.register(Box::new(CmdRunSessionPersistenceExtension::new(
+        session_id,
+    )));
+
     // ── 注入 ctx.fs 统一文件访问能力（RuntimeFileSystem）──
     // 场景 1（直接执行）：用 LocalRuntime（本地 fs）+ allowed_roots 白名单。
     // 内置扩展通过 registry.filesystem() 拿到，WASM 扩展通过 host_read_file 拿到。
@@ -6095,13 +6104,9 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>, export_path: Opt
 // Session management (pi JSONL v3)
 // ---------------------------------------------------------------------------
 
-fn save_session(
-    id: &str,
-    messages: &[ion::agent::messages::Message],
-    model: &str,
-    provider: &str,
-    name: Option<&str>,
-) {
+/// Append missing messages and preserve the current session branch without
+/// touching SessionIndex counters. Used by incremental checkpoints.
+fn save_session_messages(id: &str, messages: &[ion::agent::messages::Message]) {
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
@@ -6210,6 +6215,18 @@ fn save_session(
     }
 
     let _ = std::fs::write(ion::session_jsonl::last_session_path(), id);
+}
+
+/// Final session save: persist any remaining messages, then update the index
+/// exactly once with the complete conversation totals.
+fn save_session(
+    id: &str,
+    messages: &[ion::agent::messages::Message],
+    model: &str,
+    provider: &str,
+    name: Option<&str>,
+) {
+    save_session_messages(id, messages);
     let total_input: u64 = messages
         .iter()
         .filter_map(|m| match m {
@@ -6224,20 +6241,58 @@ fn save_session(
             _ => None,
         })
         .sum();
-    ion::session_index::SessionIndex::update(
-        id,
-        model,
-        provider,
-        "default",
-        name,
-        total_input,
-        total_output,
-        messages.len() as u32,
-        messages
-            .iter()
-            .filter(|m| matches!(m, ion::agent::messages::Message::Assistant(_)))
-            .count() as u32,
-    );
+    let total_cache_read: u64 = messages
+        .iter()
+        .filter_map(|m| match m {
+            ion::agent::messages::Message::Assistant(a) => Some(a.usage.cache_read),
+            _ => None,
+        })
+        .sum();
+    let total_cache_write: u64 = messages
+        .iter()
+        .filter_map(|m| match m {
+            ion::agent::messages::Message::Assistant(a) => Some(a.usage.cache_write),
+            _ => None,
+        })
+        .sum();
+    let user_prompt_count = messages
+        .iter()
+        .filter(|m| {
+            matches!(
+                m,
+                ion::agent::messages::Message::User(u)
+                    if u.source == ion_provider::types::MessageSource::Prompt
+            )
+        })
+        .count() as u32;
+    let assistant_count = messages
+        .iter()
+        .filter(|m| matches!(m, ion::agent::messages::Message::Assistant(_)))
+        .count() as u32;
+    let agent_name = std::env::var("ION_SESSION_AGENT").unwrap_or_else(|_| "default".into());
+
+    // `SessionIndex::update` is additive and is appropriate for deltas. Here
+    // `messages` is the complete live conversation, so write absolute totals;
+    // otherwise repeated checkpoints/final saves inflate the export header.
+    ion::session_index::SessionIndex::patch_meta(id, |meta| {
+        meta.model = model.to_string();
+        meta.provider = provider.to_string();
+        meta.agent = agent_name;
+        if let Some(session_name) = name {
+            if meta.first_name.is_none() {
+                meta.first_name = Some(session_name.to_string());
+            }
+            meta.name = Some(session_name.to_string());
+        }
+        meta.token_input = total_input;
+        meta.token_output = total_output;
+        meta.token_cache_read = total_cache_read;
+        meta.token_cache_write = total_cache_write;
+        meta.user_prompt_count = user_prompt_count;
+        meta.llm_request_count = assistant_count;
+        meta.message_count = messages.len() as u32;
+        meta.turn_count = assistant_count;
+    });
 }
 
 fn load_session(id: &str) -> Option<Vec<ion::agent::messages::Message>> {
@@ -6532,6 +6587,35 @@ fn print_output(output: &str, json_mode: bool) {
 // ---------------------------------------------------------------------------
 
 use ion::agent::extension::Extension;
+
+struct CmdRunSessionPersistenceExtension {
+    session_id: String,
+}
+
+impl CmdRunSessionPersistenceExtension {
+    fn new(session_id: &str) -> Self {
+        Self {
+            session_id: session_id.to_string(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Extension for CmdRunSessionPersistenceExtension {
+    fn name(&self) -> &str {
+        "cmd-run-session-persistence"
+    }
+
+    async fn on_before_tool_execute(
+        &self,
+        _tool_name: &str,
+        _args: &serde_json::Value,
+        messages: &[ion::agent::messages::Message],
+    ) -> ion::agent::error::AgentResult<()> {
+        save_session_messages(&self.session_id, messages);
+        Ok(())
+    }
+}
 
 struct SessionIndexExtension {
     session_id: String,
