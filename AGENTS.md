@@ -500,6 +500,7 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/guides/FILE_SNAPSHOT_USAGE.md](./docs/guides/FILE_SNAPSHOT_USAGE.md) | **File Snapshot 指南**：启用配置 / 5 个 RPC / restore_files / --restore-code / 审批工作流 (已完成) |
 | [docs/guides/RECORD_REPLAY_USAGE.md](./docs/guides/RECORD_REPLAY_USAGE.md) | **Record/Replay 指南**：录制(ION_RECORD) / 回放(--model replay/id) / ion recordings / 安全防护 (已完成) |
 | [docs/guides/DEPLOY_ARCH.md](./docs/guides/DEPLOY_ARCH.md) | 部署架构 — 场景 + CLI 验证 |
+| [docs/guides/SERVER_DEPLOY.md](./docs/guides/SERVER_DEPLOY.md) | **Linux 服务器部署指南**：CI 发 Release / 单二进制安装 / supervisord 守护场景三 / 7 个踩坑记录 / 资源实测 (已验证) |
 | [docs/guides/EXTENSION_WORKFLOW.md](./docs/guides/EXTENSION_WORKFLOW.md) | 扩展开发测试工作流：写→build→安装→RPC 直调→LLM 引导→RPC 佐证 (已验证) |
 
 ### 测试（docs/testing/）
