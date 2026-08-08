@@ -743,9 +743,29 @@ pub fn encode_path(path: &str) -> String {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// 跨模块共享的 env 测试串行锁。
+///
+/// `ION_AGENT_DIR` / `ION_SESSION_DIR` / `ION_PROJECT_ROOT` / `SESSION_FILE_OVERRIDE`
+/// 等都是进程级状态——并发测试下互相污染会导致随机失败。
+/// 任何修改这些状态的测试都应 `let _guard = env_test_lock();` 拿锁。
+#[cfg(test)]
+pub fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ION_AGENT_DIR / ION_SESSION_DIR / ION_PROJECT_ROOT 等环境变量是进程级状态。
+    // 任何修改这些 env 的测试必须串行执行，否则并发下互相污染。
+    // 跨模块共享：用相同的 OnceLock key 保证全局唯一。
+    fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        super::env_test_lock()
+    }
 
     #[test]
     fn root_is_under_dot_ion() {
@@ -884,6 +904,7 @@ mod tests {
 
     #[test]
     fn extensions_size_returns_err_if_dir_missing() {
+        let _guard = env_test_lock();
         // Use a non-existent temp path by overriding the agent dir
         let tmp =
             std::env::temp_dir().join(format!("ion_test_ext_size_missing_{}", std::process::id()));
@@ -903,6 +924,7 @@ mod tests {
 
     #[test]
     fn extensions_size_matches_known_files() {
+        let _guard = env_test_lock();
         let tmp = std::env::temp_dir().join(format!("ion_test_ext_size_{}", std::process::id()));
         let ext_dir = tmp.join("extensions");
         std::fs::create_dir_all(&ext_dir).unwrap();
@@ -1042,6 +1064,7 @@ mod tests {
 
     #[test]
     fn project_root_for_config_env_and_cwd_fallback() {
+        let _guard = env_test_lock();
         // 合并成一个测试避免并行竞态（两个测试操作同一个 env var）
         // 步骤 1：未设置 ION_PROJECT_ROOT 时，回退到 current_dir
         // SAFETY: 测试单线程内顺序操作 env var

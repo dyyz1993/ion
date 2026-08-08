@@ -259,6 +259,7 @@ mod tests {
 
     #[test]
     fn run_gc_deletes_old_and_lru_in_isolated_dir() {
+        let _guard = crate::paths::env_test_lock();
         // End-to-end run_gc test against an isolated sessions dir (via
         // ION_SESSION_DIR). Each test gets a unique dir to avoid parallel runs
         // clobbering each other; we restore the env var at the end.

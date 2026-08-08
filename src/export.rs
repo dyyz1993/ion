@@ -41,6 +41,184 @@ pub struct ExportToolInfo {
     pub parameters: Value,
 }
 
+#[derive(Debug)]
+struct ExportEntrySelection {
+    entries: Vec<Value>,
+    active_leaf_id: Option<String>,
+    source_entry_count: usize,
+    omitted_branch_entry_count: usize,
+}
+
+fn entry_id(entry: &Value) -> Option<&str> {
+    entry.get("id").and_then(|value| value.as_str())
+}
+
+fn entry_parent_id(entry: &Value) -> Option<&str> {
+    entry.get("parentId").and_then(|value| value.as_str())
+}
+
+fn is_message_entry(entry: &Value) -> bool {
+    entry.get("type").and_then(|value| value.as_str()) == Some("message")
+}
+
+fn is_descendant_of_entry(
+    entries_by_id: &std::collections::HashMap<&str, &Value>,
+    id: &str,
+    ancestor: &str,
+) -> bool {
+    let mut current = Some(id);
+    let mut visited = std::collections::HashSet::new();
+    while let Some(current_id) = current {
+        if !visited.insert(current_id) {
+            return false;
+        }
+        if current_id == ancestor {
+            return true;
+        }
+        current = entries_by_id
+            .get(current_id)
+            .and_then(|entry| entry_parent_id(entry));
+    }
+    false
+}
+
+/// Resolve the conversational leaf used by export.
+///
+/// `session_tree::resolve_current_leaf` intentionally considers every tree entry.
+/// An audit entry such as a rollback `branch_summary` may be appended after a
+/// `leaf_pointer`, though, and must not pull the exported conversation back onto
+/// the abandoned branch. After the last pointer, only message descendants advance
+/// the conversational leaf; the pointer target remains the fallback.
+fn resolve_export_active_leaf(entries: &[Value]) -> Option<String> {
+    let last_pointer = entries.iter().rposition(|entry| {
+        entry.get("type").and_then(|value| value.as_str()) == Some("leaf_pointer")
+    });
+    let Some(pointer_index) = last_pointer else {
+        return crate::session_tree::resolve_current_leaf(entries);
+    };
+
+    let pointer_target = entries[pointer_index]
+        .get("leafId")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty());
+    let entries_by_id: std::collections::HashMap<&str, &Value> = entries
+        .iter()
+        .filter_map(|entry| entry_id(entry).map(|id| (id, entry)))
+        .collect();
+
+    if let Some(target) = pointer_target {
+        let latest_message = entries
+            .iter()
+            .skip(pointer_index + 1)
+            .filter(|entry| is_message_entry(entry))
+            .filter_map(entry_id)
+            .filter(|id| is_descendant_of_entry(&entries_by_id, id, target))
+            .last();
+        return latest_message.or(Some(target)).map(str::to_string);
+    }
+
+    entries
+        .iter()
+        .skip(pointer_index + 1)
+        .filter(|entry| is_message_entry(entry))
+        .filter_map(entry_id)
+        .last()
+        .map(str::to_string)
+}
+
+/// Select the body stream for a standalone HTML export.
+///
+/// Linear sessions retain every JSONL entry. Branched sessions retain the active
+/// root-to-leaf message path, global/audit entries, and one structural record per
+/// branch operation (`leaf_pointer`, `label`, `branch_summary`). Content scoped to
+/// an abandoned message subtree is omitted.
+fn select_entries_for_export(entries: &[Value], session_id: &str) -> ExportEntrySelection {
+    use std::collections::{HashMap, HashSet};
+
+    let source_entry_count = entries.len();
+    let active_leaf_id = resolve_export_active_leaf(entries);
+    let has_leaf_pointer = entries
+        .iter()
+        .any(|entry| entry.get("type").and_then(|value| value.as_str()) == Some("leaf_pointer"));
+    let mut message_children: HashMap<&str, usize> = HashMap::new();
+    for entry in entries.iter().filter(|entry| is_message_entry(entry)) {
+        let parent = entry_parent_id(entry).unwrap_or("");
+        *message_children.entry(parent).or_default() += 1;
+    }
+    let has_message_fork = message_children.values().any(|count| *count > 1);
+
+    if !has_leaf_pointer && !has_message_fork {
+        return ExportEntrySelection {
+            entries: entries.to_vec(),
+            active_leaf_id,
+            source_entry_count,
+            omitted_branch_entry_count: 0,
+        };
+    }
+
+    let Some(active_leaf) = active_leaf_id.as_deref() else {
+        return ExportEntrySelection {
+            entries: entries.to_vec(),
+            active_leaf_id,
+            source_entry_count,
+            omitted_branch_entry_count: 0,
+        };
+    };
+    let active_path = crate::session_tree::get_branch_path(entries, active_leaf);
+    if active_path.is_empty() {
+        return ExportEntrySelection {
+            entries: entries.to_vec(),
+            active_leaf_id,
+            source_entry_count,
+            omitted_branch_entry_count: 0,
+        };
+    }
+
+    let active_ids: HashSet<String> = active_path
+        .iter()
+        .filter_map(entry_id)
+        .map(str::to_string)
+        .collect();
+    let mut active_scope_ids = active_ids.clone();
+    active_scope_ids.insert(session_id.to_string());
+    let mut selected = Vec::with_capacity(entries.len());
+
+    for entry in entries {
+        let entry_type = entry
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let id = entry_id(entry);
+        let parent = entry_parent_id(entry);
+        let is_branch_record = matches!(entry_type, "leaf_pointer" | "label" | "branch_summary");
+        let is_global =
+            parent.is_none_or(|parent_id| parent_id.is_empty() || parent_id == session_id);
+        let include = if is_message_entry(entry) {
+            id.is_some_and(|entry_id| active_ids.contains(entry_id))
+        } else if is_branch_record {
+            true
+        } else {
+            id.is_some_and(|entry_id| active_ids.contains(entry_id))
+                || is_global
+                || parent.is_some_and(|parent_id| active_scope_ids.contains(parent_id))
+        };
+
+        if include {
+            selected.push(entry.clone());
+            if !is_branch_record && let Some(entry_id) = id {
+                active_scope_ids.insert(entry_id.to_string());
+            }
+        }
+    }
+
+    ExportEntrySelection {
+        omitted_branch_entry_count: source_entry_count.saturating_sub(selected.len()),
+        entries: selected,
+        active_leaf_id,
+        source_entry_count,
+    }
+}
+
 /// Export a session to HTML using pi's template system.
 ///
 /// Resolves session by:
@@ -249,7 +427,9 @@ pub fn export_session_rich(
         let skill_dirs: Vec<std::path::PathBuf> = vec![
             crate::paths::skills_dir(),
             crate::paths::project_skills_dir(cwd),
-            std::path::PathBuf::from(&home).join(".agents").join("skills"),
+            std::path::PathBuf::from(&home)
+                .join(".agents")
+                .join("skills"),
         ];
         let mut registry = crate::agent::tool::ToolRegistry::new();
         registry.register_builtins();
@@ -512,57 +692,49 @@ fn export_session_internal(
         }
     }
 
+    // 先按 Session Tree 选择当前 active branch。线性会话保留 JSONL 的全部数据；
+    // 分支会话只保留 root→active leaf 的消息、全局审计 entry，以及每次分叉的
+    // leaf_pointer / label / branch_summary 记录。被废弃分支的正文不应重新出现。
+    let all_raw_entries = raw_entries.clone();
+    let header_session_id = header
+        .get("id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let branch_selection = select_entries_for_export(&raw_entries, header_session_id);
+    raw_entries = branch_selection.entries;
+
     // Convert ION Rust-enum format → pi flat format.
-    // 排除以下 entries（它们是内部记录，不是真正的对话内容）：
-    // - system_prompt custom entry（已提取到顶层 systemPrompt 字段）
-    // - turn_summary custom_message（ION 内部的 turn 摘要，对用户没意义，
-    //   会污染主体内容的"入参→响应值"流程）
-    let mut entries: Vec<Value> = raw_entries
-        .iter()
-        .filter(|e| {
-            // 过滤掉 system_prompt custom entry
-            if e.get("type").and_then(|v| v.as_str()) == Some("custom")
-                && e.get("customType").and_then(|v| v.as_str())
-                    == Some(session_jsonl::CUSTOM_TYPE_SYSTEM_PROMPT)
-            {
-                return false;
-            }
-            // 过滤掉 turn_summary（原始类型）
-            if e.get("type").and_then(|v| v.as_str()) == Some("turn_summary") {
-                return false;
-            }
-            // 过滤掉转换后的 turn_summary custom_message
-            if e.get("type").and_then(|v| v.as_str()) == Some("custom_message")
-                && e.get("customType").and_then(|v| v.as_str())
-                    == Some(session_jsonl::CUSTOM_TYPE_TURN_SUMMARY)
-            {
-                return false;
-            }
-            // 保留 session_name entry（渲染成标题变更卡片）
-            // 不需要过滤，让它通过到 entries
-            true
-        })
-        .map(convert_entry)
-        .collect();
+    // Timeline 是所选正文分支的完整索引：除嵌套在 Assistant 卡片里的 ToolResult 外，
+    // 每条 timeline entry 都必须在正文里有可见卡片和稳定锚点。
+    let timeline_entry_count = raw_entries.len();
+    let timeline_entries = raw_entries.clone();
+    let mut entries: Vec<Value> = raw_entries.iter().map(convert_entry).collect();
 
     // ★ pi template 的 renderEntry 要求 entry.type === "custom_message" 才渲染 hook-message 卡片。
     // 之前 ION 把 Custom 变体 message 扁平化为 type:"message" + role:"custom" →
     // pi template 不识别 → bash_result / dev_servers / diagnostics 全部不显示。
     // 修复：Custom 变体 → 把 type 改为 "custom_message" + 把 customType / content 提到顶层。
     for e in entries.iter_mut() {
-        let is_custom_message = e.get("message")
+        let is_custom_message = e
+            .get("message")
             .and_then(|m| m.get("role"))
-            .and_then(|v| v.as_str()) == Some("custom");
-        if !is_custom_message { continue; }
+            .and_then(|v| v.as_str())
+            == Some("custom");
+        if !is_custom_message {
+            continue;
+        }
         if let Some(obj) = e.as_object_mut() {
             // 先 clone 出 message 内层字段（避免 borrow 冲突）
-            let (ct, content, display) = obj.get("message")
+            let (ct, content, display) = obj
+                .get("message")
                 .and_then(|v| v.as_object())
-                .map(|m| (
-                    m.get("customType").cloned(),
-                    m.get("content").cloned(),
-                    m.get("display").cloned(),
-                ))
+                .map(|m| {
+                    (
+                        m.get("customType").cloned(),
+                        m.get("content").cloned(),
+                        m.get("display").cloned(),
+                    )
+                })
                 .unwrap_or((None, None, None));
             if let Some(ct) = ct {
                 obj.insert("customType".to_string(), ct);
@@ -614,11 +786,13 @@ fn export_session_internal(
         // Written by agent_loop after on_system_prompt hooks run (contains the
         // real prompt with all dynamic injections like <dev_servers>).
         let sidecar = jsonl_path.with_extension("system-prompt.txt");
-        std::fs::read_to_string(&sidecar).ok().filter(|s| !s.is_empty())
+        std::fs::read_to_string(&sidecar)
+            .ok()
+            .filter(|s| !s.is_empty())
     }
     .or_else(|| {
         // Fallback: legacy — 从 session JSONL 里找 custom entry
-        raw_entries.iter().rev().find_map(|e| {
+        all_raw_entries.iter().rev().find_map(|e| {
             if e.get("type").and_then(|v| v.as_str()) == Some("custom")
                 && e.get("customType").and_then(|v| v.as_str())
                     == Some(session_jsonl::CUSTOM_TYPE_SYSTEM_PROMPT)
@@ -659,7 +833,18 @@ fn export_session_internal(
     //    AutoSessionTitle 扩展也写这里，含 LLM 生成的简短标题）
     // 3. 还找不到 → fallback 到首条 user message（截断到 60 字符）
     let session_id_for_lookup = header.get("id").and_then(|v| v.as_str()).unwrap_or("");
-    let session_name = raw_entries
+    // SessionIndex 是会话级元信息的权威入口。把命中的快照随导出数据一起带上，
+    // 让离线 HTML 和后续可视化无需再次扫描索引文件；消息角色明细等索引中
+    // 尚未细分的统计仍由当前 session entries 精确计算。
+    let session_index_meta = if session_id_for_lookup.is_empty() {
+        None
+    } else {
+        crate::session_index::SessionIndex::load()
+            .sessions
+            .get(session_id_for_lookup)
+            .cloned()
+    };
+    let session_name = all_raw_entries
         .iter()
         .rev()
         .find_map(|e| {
@@ -694,55 +879,78 @@ fn export_session_internal(
             if session_id_for_lookup.is_empty() {
                 return None;
             }
-            crate::session_index::SessionIndex::load()
-                .sessions
-                .get(session_id_for_lookup)
+            session_index_meta
+                .as_ref()
                 .and_then(|meta| meta.name.clone())
                 .filter(|n| !n.trim().is_empty())
         })
         .or_else(|| {
             // Fallback: 从首条 user message 生成
-            raw_entries.iter().find_map(|e| {
-                if e.get("type").and_then(|v| v.as_str()) != Some("message") { return None; }
+            all_raw_entries.iter().find_map(|e| {
+                if e.get("type").and_then(|v| v.as_str()) != Some("message") {
+                    return None;
+                }
                 let msg = e.get("message")?;
                 let user_msg = msg.get("User")?;
                 let content = user_msg.get("content")?;
                 let arr = content.as_array()?;
                 for block in arr {
-                    if let Some(text) = block.get("Text").and_then(|t| t.get("text")).and_then(|t| t.as_str()) {
+                    if let Some(text) = block
+                        .get("Text")
+                        .and_then(|t| t.get("text"))
+                        .and_then(|t| t.as_str())
+                    {
                         let trimmed = text.trim();
                         if !trimmed.is_empty() {
-                            let title: String = trimmed.chars().take(60)
-                                .map(|c| if c.is_whitespace() { ' ' } else { c }).collect();
+                            let title: String = trimmed
+                                .chars()
+                                .take(60)
+                                .map(|c| if c.is_whitespace() { ' ' } else { c })
+                                .collect();
                             let title = title.trim();
-                            if !title.is_empty() { return Some(title.to_string()); }
+                            if !title.is_empty() {
+                                return Some(title.to_string());
+                            }
                         }
                     }
                 }
                 None
             })
         })
-        .unwrap_or_else(|| header.get("id").and_then(|v| v.as_str()).unwrap_or("Session").to_string());
+        .unwrap_or_else(|| {
+            header
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Session")
+                .to_string()
+        });
 
     let mut header_for_export = header.clone();
     if let Some(obj) = header_for_export.as_object_mut() {
         let ion_full_version = format!(
-                "{}+{} ({})",
-                env!("CARGO_PKG_VERSION"),
-                env!("ION_GIT_HASH"),
-                env!("ION_BUILD_DATE"),
-            );
-            obj.insert(
-                "ionVersion".to_string(),
-                json!(ion_full_version),
-            );
+            "{}+{} ({})",
+            env!("CARGO_PKG_VERSION"),
+            env!("ION_GIT_HASH"),
+            env!("ION_BUILD_DATE"),
+        );
+        obj.insert("ionVersion".to_string(), json!(ion_full_version));
         // 注入 session name（从第一条 user message 提取）
         obj.insert("name".to_string(), json!(session_name));
+        if let Some(meta) = session_index_meta {
+            obj.insert(
+                "indexMeta".to_string(),
+                serde_json::to_value(meta).unwrap_or(Value::Null),
+            );
+        }
     }
     let mut session_data = json!({
         "header": header_for_export,
         "entries": entries,
+        "timelineEntries": timeline_entries,
         "leafId": leaf_id,
+        "activeLeafId": branch_selection.active_leaf_id,
+        "sourceEntryCount": branch_selection.source_entry_count,
+        "omittedBranchEntryCount": branch_selection.omitted_branch_entry_count,
     });
     // systemPrompt（fork 子 Worker 的 skill 内容，让 HTML 顶部能显示）
     // If the session data already has a system_prompt (from fork sub-workers), use it.
@@ -896,7 +1104,8 @@ fn export_session_internal(
         std::fs::read_to_string(&path).unwrap_or_default()
     };
 
-    let css = read_file("template.css") + r#"
+    let css = read_file("template.css")
+        + r#"
 /* ION: collapse non-expandable tool outputs (pi's .expandable already handled) */
 .tool-output:not(.expandable):not(.expanded) {
   max-height: 100px;
@@ -938,7 +1147,12 @@ fn export_session_internal(
     // ION 扩展：在 Models 行后面追加 ION Version 行，让顶部信息卡片能直接看到生成版本。
     // header.ionVersion 在 export_session_internal 里注入（env!("CARGO_PKG_VERSION")）。
     let js_models_anchor = r#"<div class="info-item"><span class="info-label">Messages:</span>"#;
-    let ion_version_str = format!("{}+{} ({})", env!("CARGO_PKG_VERSION"), env!("ION_GIT_HASH"), env!("ION_BUILD_DATE"));
+    let ion_version_str = format!(
+        "{}+{} ({})",
+        env!("CARGO_PKG_VERSION"),
+        env!("ION_GIT_HASH"),
+        env!("ION_BUILD_DATE")
+    );
     let js_ion_version_row = format!(
         r#"<div class="info-item"><span class="info-label">ION Version:</span><span class="info-value">${{escapeHtml(header?.ionVersion || '{}')}}</span></div>"#,
         ion_version_str
@@ -961,7 +1175,7 @@ fn export_session_internal(
     // ION: h1 和 title 用 session name（header.name）
     js = js.replace(
         "Session: ${escapeHtml(header?.id || 'unknown')}",
-        "${escapeHtml(header?.name || header?.id || 'Session')}"
+        "${escapeHtml(header?.name || header?.id || 'Session')}",
     );
     // 追加 JS：设置 document.title
     js += "\ntry{document.title=header?.name||header?.id||'Session';}catch(e){}";
@@ -990,6 +1204,48 @@ document.addEventListener('DOMContentLoaded', function() {
   });
 });
 "#;
+
+    // pi 只认识少数内置 entry type，遇到 thinking_level_change、agent_change、
+    // system_event、deletion 等会直接 return ''。Timeline 需要为完整 entry 流提供
+    // 正文锚点，因此把最终 fallback 改成一张紧凑的内置 Entry 卡片。
+    // ToolResult 仍由对应 Assistant 的 tool call 卡片承载，避免重复渲染。
+    let generic_entry_fallback_old = r#"        return '';
+      }
+
+      // ============================================================
+      // HEADER / STATS"#;
+    let generic_entry_fallback_new = r#"        const genericType = entry.customType || entry.type || 'entry';
+        let genericText = '';
+        if (entry.type === 'custom' && entry.customType === 'system_prompt') {
+          genericText = 'System prompt is rendered in the System Prompt panel above.';
+        } else if (typeof entry.content === 'string') {
+          genericText = entry.content;
+        } else if (typeof entry.summary === 'string' && entry.summary) {
+          genericText = entry.summary;
+        } else if (entry.data !== undefined) {
+          genericText = typeof entry.data === 'string' ? entry.data : JSON.stringify(entry.data, null, 2);
+        } else {
+          const compactEntry = {...entry};
+          delete compactEntry.id;
+          delete compactEntry.parentId;
+          delete compactEntry.timestamp;
+          genericText = JSON.stringify(compactEntry, null, 2);
+        }
+        genericText = String(genericText || 'No additional details');
+        if (genericText.length > 4000) genericText = genericText.slice(0, 4000) + '\n…';
+        return `<div class="ion-generic-entry" id="${entryDomId}" data-entry-type="${escapeHtml(genericType)}">${copyBtnHtml}${tsHtml}
+          <div class="ion-generic-entry-type">[${escapeHtml(genericType)}]</div>
+          <div class="ion-generic-entry-content">${escapeHtml(genericText)}</div>
+        </div>`;
+      }
+
+      // ============================================================
+      // HEADER / STATS"#;
+    if js.contains(generic_entry_fallback_old) {
+        js = js.replacen(generic_entry_fallback_old, generic_entry_fallback_new, 1);
+    } else {
+        tracing::warn!("pi export template changed: generic entry fallback anchor not found");
+    }
 
     // ION 扩展：formatExpandableOutput 改成"头 N 行 + 尾 N 行（中间压缩）"。
     // pi 原版只显示头 N 行 + 展开按钮看全部。用户反馈：尾部内容往往更重要
@@ -1026,7 +1282,10 @@ document.addEventListener('DOMContentLoaded', function() {
     // Replace placeholders
     html = html.replace("{{CSS}}", &css);
     // 用 session name 替换 <title>（template.html 里写死的是 "Session Export"）
-    html = html.replace("<title>Session Export</title>", &format!("<title>{}</title>", session_name));
+    html = html.replace(
+        "<title>Session Export</title>",
+        &format!("<title>{}</title>", session_name),
+    );
     html = html.replace("{{SESSION_DATA}}", &session_data_b64);
     html = html.replace("{{MARKED_JS}}", &marked_js);
     html = html.replace("{{HIGHLIGHT_JS}}", &highlight_js);
@@ -1193,13 +1452,13 @@ document.addEventListener('DOMContentLoaded', function() {
       font: 600 10px/1.4 "SFMono-Regular", Menlo, monospace;
     }
 
-    /* Extension breakdown and timeline share one centered overview row. */
+    /* Entry filters sit above a full-width, time-proportional timeline. */
     #ion-ext-viz {
       width: min(100%, var(--ion-shell-max));
       margin: 18px auto 0;
       padding: 0 28px;
       display: grid;
-      grid-template-columns: minmax(250px, 0.38fr) minmax(440px, 1fr);
+      grid-template-columns: 1fr;
       gap: 12px;
     }
     .ion-overview-panel {
@@ -1226,58 +1485,163 @@ document.addEventListener('DOMContentLoaded', function() {
       font: 500 10px/1.4 "SFMono-Regular", Menlo, monospace;
       white-space: nowrap;
     }
-    .ion-extension-groups,
-    .ion-timeline-legend {
+    .ion-entry-type-controls {
       display: flex;
       flex-wrap: wrap;
       gap: 6px;
     }
-    .ion-extension-badge {
-      padding: 4px 9px;
-      border: 1px solid color-mix(in srgb, var(--group-color) 58%, white);
+    .ion-entry-filter,
+    .ion-entry-filter-reset {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 9px;
+      border: 1px solid color-mix(in srgb, var(--entry-color) 48%, white);
       border-radius: 999px;
-      color: color-mix(in srgb, var(--group-color) 82%, #101828);
-      background: color-mix(in srgb, var(--group-color) 10%, white);
+      color: color-mix(in srgb, var(--entry-color) 82%, #101828);
+      background: color-mix(in srgb, var(--entry-color) 9%, white);
       font: 650 10px/1.4 "SFMono-Regular", Menlo, monospace;
+      cursor: pointer;
+      transition: opacity 120ms ease, background 120ms ease, border-color 120ms ease;
     }
-    .ion-extension-badge small { opacity: 0.68; font-weight: 500; }
-    .ion-empty-state { color: var(--muted); font-size: 11px; }
+    .ion-entry-filter:hover { background: color-mix(in srgb, var(--entry-color) 16%, white); }
+    .ion-entry-filter[aria-pressed="false"] { opacity: 0.36; filter: grayscale(0.6); }
+    .ion-entry-filter-count { opacity: 0.64; font-weight: 550; }
+    .ion-entry-filter-reset {
+      --entry-color: #667085;
+      color: #475467;
+      border-color: #d0d5dd;
+      background: #fff;
+    }
+    .ion-entry-filter-reset:disabled { opacity: 0.35; cursor: default; }
+    .ion-entry-swatch {
+      width: 8px;
+      height: 8px;
+      border-radius: 2px;
+      background: var(--entry-color);
+      box-shadow: 0 0 0 1px rgba(16, 24, 40, 0.08);
+    }
+    .ion-timeline-scroll {
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 2px 0 4px;
+      scrollbar-width: thin;
+      scrollbar-color: #cbd5e1 transparent;
+    }
     .ion-timeline-track {
       position: relative;
-      height: 26px;
-      overflow: hidden;
+      width: max(100%, var(--timeline-min-width));
+      height: 32px;
+      overflow: visible;
       border: 1px solid #e4e7ec;
       border-radius: 7px;
-      background:
-        repeating-linear-gradient(90deg, transparent 0, transparent calc(10% - 1px), #eef1f4 calc(10% - 1px), #eef1f4 10%),
-        #f8fafc;
+      background: #fbfcfd;
     }
     .ion-timeline-bar {
       position: absolute;
-      top: 4px;
+      top: 3px;
       left: var(--bar-left);
-      width: var(--bar-width);
-      min-width: 3px;
-      height: 16px;
-      border-radius: 3px;
-      background: var(--bar-color);
-      opacity: 0.88;
-      transition: opacity 120ms ease, transform 120ms ease;
+      width: 9px;
+      height: 26px;
+      padding: 0;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      cursor: pointer;
+      transform: translateX(-50%);
+      z-index: 1;
     }
-    .ion-timeline-bar:hover { opacity: 1; transform: scaleY(1.18); }
-    .ion-timeline-legend { justify-content: flex-end; margin-top: 8px; }
-    .ion-legend-item {
+    .ion-timeline-bar::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 3px;
+      width: 3px;
+      border-radius: 2px;
+      background: var(--bar-color);
+      opacity: 0.9;
+      transition: opacity 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+    }
+    .ion-timeline-bar:hover,
+    .ion-timeline-bar:focus-visible {
+      z-index: 3;
+      outline: none;
+    }
+    .ion-timeline-bar:hover::before,
+    .ion-timeline-bar:focus-visible::before {
+      opacity: 1;
+      transform: scaleX(1.7);
+      box-shadow: 0 0 0 2px #fff, 0 0 0 3px var(--bar-color);
+    }
+    .ion-timeline-empty {
+      display: flex;
+      align-items: center;
+      height: 100%;
+      padding: 0 12px;
+      color: var(--muted);
+      font-size: 10px;
+    }
+    .ion-timeline-axis {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 6px;
+      color: #98a2b3;
+      font: 500 9px/1.4 "SFMono-Regular", Menlo, monospace;
+    }
+    .ion-timeline-notice {
+      min-height: 16px;
+      margin-top: 4px;
+      color: #667085;
+      font: 500 9px/1.4 "SFMono-Regular", Menlo, monospace;
+      text-align: center;
+    }
+    .ion-entry-jump-target {
+      scroll-margin-block: 96px;
+      animation: ion-entry-jump-flash 1.8s ease-out;
+    }
+    @keyframes ion-entry-jump-flash {
+      0%, 24% { box-shadow: 0 0 0 4px rgba(6, 182, 212, 0.34); }
+      100% { box-shadow: 0 0 0 0 rgba(6, 182, 212, 0); }
+    }
+    .ion-timeline-tooltip {
+      position: fixed;
+      z-index: 1000;
+      width: min(340px, calc(100vw - 24px));
+      padding: 12px 13px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 10px;
+      color: #f8fafc;
+      background: rgba(16, 24, 40, 0.96);
+      box-shadow: 0 16px 40px rgba(16, 24, 40, 0.24);
+      backdrop-filter: blur(10px);
+      pointer-events: none;
+      opacity: 0;
+      transform: translateY(4px);
+      transition: opacity 100ms ease, transform 100ms ease;
+    }
+    .ion-timeline-tooltip.is-visible { opacity: 1; transform: translateY(0); }
+    .ion-tooltip-type {
       display: inline-flex;
       align-items: center;
-      gap: 4px;
-      color: var(--muted);
-      font-size: 9px;
+      gap: 6px;
+      margin-bottom: 6px;
+      color: #fff;
+      font: 700 10px/1.3 "SFMono-Regular", Menlo, monospace;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
     }
-    .ion-legend-swatch {
-      width: 7px;
-      height: 7px;
-      border-radius: 2px;
-      background: var(--group-color);
+    .ion-tooltip-meta {
+      margin-bottom: 7px;
+      color: #9fb0c8;
+      font: 500 9px/1.45 "SFMono-Regular", Menlo, monospace;
+    }
+    .ion-tooltip-summary {
+      color: #e4e7ec;
+      font-size: 11px;
+      line-height: 1.55;
+      overflow-wrap: anywhere;
     }
 
     /* Center the whole workspace and keep the navigation/content ratio useful. */
@@ -1378,6 +1742,42 @@ document.addEventListener('DOMContentLoaded', function() {
     .info-value { min-width: 0; color: #172033; overflow-wrap: anywhere; }
     #messages { gap: 12px; }
 
+    /* Long Entries keep their real rendered content visible for a few lines. */
+    #messages > [id^="entry-"].ion-entry-fold {
+      position: relative;
+      overflow: hidden;
+    }
+    .ion-entry-fold-content {
+      display: block;
+      overflow: hidden;
+      max-height: var(--ion-entry-preview-height, 132px);
+    }
+    .ion-entry-fold-hint {
+      display: block;
+      width: max-content;
+      max-width: 100%;
+      margin: 7px 0 0;
+      padding: 4px 7px;
+      border: 0;
+      border-radius: 5px;
+      color: #667085;
+      background: transparent;
+      font: italic 500 11px/1.4 "SFMono-Regular", Menlo, monospace;
+      text-align: left;
+      cursor: pointer;
+    }
+    .ion-entry-fold-hint:hover { color: #0e7490; background: rgba(14, 116, 144, 0.07); }
+    .ion-entry-fold-hint:focus-visible {
+      outline: 2px solid var(--ion-entry-accent, #0e7490);
+      outline-offset: 1px;
+    }
+    .ion-entry-fold-hint[hidden] { display: none; }
+    .ion-entry-fold[data-ion-entry-expanded="true"] .ion-entry-fold-content {
+      max-height: none;
+    }
+    .ion-entry-fold.compaction .compaction-collapsed { display: none !important; }
+    .ion-entry-fold.compaction .compaction-content { display: block !important; }
+
     /* Message roles: quiet cards with an unmistakable edge marker. */
     .user-message {
       background: #edf6ff !important;
@@ -1459,8 +1859,17 @@ document.addEventListener('DOMContentLoaded', function() {
       border-left-color: #ec4899 !important;
       background: #fdf2f8 !important;
     }
+    .hook-message[data-custom-type="turn_summary"] {
+      border: 1px solid #e2e8f0 !important;
+      border-left: 3px solid #94a3b8 !important;
+      background: #f8fafc !important;
+      padding: 9px 12px !important;
+      border-radius: 9px !important;
+      color: #475467 !important;
+    }
     .hook-message[data-custom-type="session_name"] {
-      display: none !important;
+      border-left-color: #0891b2 !important;
+      background: #ecfeff !important;
     }
     /* session_name 卡片：用更显著的渐变背景，区别于普通 custom_message */
     .custom-message[data-custom-type="session_name"],
@@ -1476,6 +1885,48 @@ document.addEventListener('DOMContentLoaded', function() {
     .tree-node[data-custom-type="session_name"] .tree-custom {
       color: #0891b2 !important;
       font-weight: 600 !important;
+    }
+    .ion-generic-entry {
+      position: relative;
+      padding: 10px 13px;
+      border: 1px solid #e2e8f0;
+      border-left: 3px solid #667085;
+      border-radius: 9px;
+      background: #f8fafc;
+      color: #344054;
+    }
+    .ion-generic-entry-type {
+      margin-bottom: 4px;
+      color: #475467;
+      font: 700 10px/1.35 "SFMono-Regular", Menlo, monospace;
+      letter-spacing: 0.03em;
+    }
+    .ion-generic-entry-content {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font: 500 11px/1.55 "SFMono-Regular", Menlo, monospace;
+    }
+    .ion-entry-nested-events {
+      display: grid;
+      gap: 6px;
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px dashed #d0d5dd;
+    }
+    .ion-entry-nested-events > .hook-message {
+      margin: 0 !important;
+      padding: 7px 9px !important;
+      border: 1px solid #ddd6fe !important;
+      border-left: 3px solid #8b5cf6 !important;
+      border-radius: 7px !important;
+      background: #f5f3ff !important;
+      font-size: 11px !important;
+    }
+    .ion-entry-nested-events > .hook-message .message-timestamp {
+      margin-bottom: 3px;
+    }
+    .ion-entry-nested-events > .hook-message .hook-type {
+      font-size: 9px;
     }
     /* ION: 每个 toolCall 独立一行 + 间距 + 背景色（对标 toolResult） */
     .assistant-message .tool-execution {
@@ -1512,6 +1963,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     @media (max-width: 900px) {
       .ion-stats-inner { min-height: 0; padding: 18px 20px; }
+      .ion-title-block { padding-left: 44px; }
       .ion-session-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .ion-session-metric, .ion-session-metric--model { min-width: 0; }
       #ion-ext-viz { margin-top: 12px; padding: 0 12px; }
@@ -1719,7 +2171,7 @@ document.addEventListener('DOMContentLoaded', function() {
         escape_html_text(&banner_title),
         escape_html_text(&model),
         total_tool_calls,
-        entries.len(),
+        timeline_entry_count,
         tool_badges
     );
 
@@ -1736,11 +2188,11 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
-    // ── 扩展视角统计 + 时间线可视化（ion 增强版）──
+    // ── 完整 Entry Timeline（ion 增强版）──
     // 在 stats-banner 后插入一个容器，页面加载后由 JS 填充：
-    //   1. 按扩展分组工具调用（memory_*/bash/lsp_*/write/edit 等）
-    //   2. 调用时间线条形图（每个 entry 一个矩形条，按时间排序）
-    let ext_visualization_script = r#"
+    //   1. 全量 entry 类型筛选（内核 entry 保留真实 type，Extension custom 统一归类）
+    //   2. 每条 entry 独立着色，悬停/聚焦展示时间、ID 与内容概要
+    let _legacy_ext_visualization_script = r#"
 <script>
 (function() {
   function escapeVizHtml(value) {
@@ -1752,89 +2204,151 @@ document.addEventListener('DOMContentLoaded', function() {
       .replace(/'/g, '&#39;');
   }
 
+  function compactPreview(value, limit) {
+    var text = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+    return text.length > limit ? text.slice(0, limit - 1) + '…' : text;
+  }
+
+  function unwrapMessage(entry) {
+    var msg = entry && entry.message ? entry.message : {};
+    var wrappers = ['User', 'Assistant', 'ToolResult', 'Custom'];
+    for (var i = 0; i < wrappers.length; i++) {
+      if (msg[wrappers[i]]) {
+        var unwrapped = msg[wrappers[i]];
+        if (!unwrapped.role) unwrapped.role = wrappers[i];
+        return unwrapped;
+      }
+    }
+    return msg;
+  }
+
+  function entryCategory(entry) {
+    var rawType = String((entry && entry.type) || 'other');
+    if (rawType === 'custom' || rawType === 'custom_message') return 'custom';
+    if (rawType !== 'message') return rawType;
+    var role = String(unwrapMessage(entry).role || 'message').toLowerCase();
+    if (role === 'tool' || role === 'toolresult' || role === 'tool_result') return 'toolResult';
+    if (role === 'custom') return 'custom';
+    if (role === 'user' || role === 'assistant') return role;
+    return 'message';
+  }
+
+  function entryLabel(category) {
+    var labels = {
+      user: 'user', assistant: 'assistant', toolResult: 'tool result', custom: 'custom',
+      turn_summary: 'turn summary', branch_summary: 'branch summary', segment_summary: 'segment summary',
+      model_change: 'model change', thinking_level_change: 'thinking change', agent_change: 'agent change',
+      session_info: 'session info', system_event: 'system event', active_tools_change: 'tools change',
+      leaf_pointer: 'leaf pointer'
+    };
+    return labels[category] || String(category || 'other').replace(/_/g, ' ');
+  }
+
+  function entryColor(category) {
+    var colors = {
+      user: '#3b82f6', assistant: '#10b981', toolResult: '#f59e0b', custom: '#8b5cf6',
+      compaction: '#ef4444', turn_summary: '#94a3b8', branch_summary: '#d946ef',
+      segment_summary: '#c026d3', model_change: '#06b6d4', thinking_level_change: '#0ea5e9',
+      agent_change: '#14b8a6', session_info: '#6366f1', system_event: '#f97316',
+      active_tools_change: '#a855f7', label: '#eab308', deletion: '#dc2626',
+      restoration: '#22c55e', leaf_pointer: '#64748b', message: '#475467', other: '#6b7280'
+    };
+    if (colors[category]) return colors[category];
+    var palette = ['#2563eb', '#0f766e', '#b45309', '#7c3aed', '#be123c', '#4f46e5', '#15803d'];
+    var hash = 0;
+    for (var i = 0; i < category.length; i++) hash = ((hash << 5) - hash + category.charCodeAt(i)) | 0;
+    return palette[Math.abs(hash) % palette.length];
+  }
+
+  function previewValue(value, depth) {
+    if (value == null || depth > 3) return '';
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+    if (Array.isArray(value)) {
+      return value.slice(0, 6).map(function(v) { return previewValue(v, depth + 1); }).filter(Boolean).join(' · ');
+    }
+    if (value.Text) return previewValue(value.Text.text, depth + 1);
+    if (value.Thinking) return previewValue(value.Thinking.thinking, depth + 1);
+    if (value.ToolCall) {
+      return 'tool call ' + (value.ToolCall.name || '') + ' ' + previewValue(value.ToolCall.arguments, depth + 1);
+    }
+    if (value.Image || value.type === 'image') return '[image]';
+    if (value.type === 'toolCall') {
+      return 'tool call ' + (value.name || '') + ' ' + previewValue(value.arguments, depth + 1);
+    }
+    var preferred = ['text', 'thinking', 'summary', 'content', 'label', 'name', 'reason', 'status', 'data', 'details'];
+    var parts = [];
+    preferred.forEach(function(key) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) {
+        var part = previewValue(value[key], depth + 1);
+        if (part) parts.push(part);
+      }
+    });
+    if (parts.length) return parts.join(' · ');
+    return Object.keys(value).filter(function(key) {
+      return !['id', 'parentId', 'timestamp', 'type', 'display'].includes(key);
+    }).slice(0, 4).map(function(key) {
+      var part = previewValue(value[key], depth + 1);
+      return part ? key + ': ' + part : '';
+    }).filter(Boolean).join(' · ');
+  }
+
+  function entrySummary(entry) {
+    var category = entryCategory(entry);
+    var source = entry;
+    if (entry && entry.type === 'message') source = unwrapMessage(entry);
+    var preview = previewValue(source, 0);
+    if (!preview && category === 'custom') preview = previewValue(entry.content || entry.data || entry.details, 0);
+    return compactPreview(preview || 'No preview available', 240);
+  }
+
   function buildExtVisualization() {
     // pi template 不暴露 SESSION_DATA 到 window，自己解码 session-data script
     var dataEl = document.getElementById('session-data');
     if (!dataEl) return;
-    var entries;
+    var timelineEntries;
     try {
       var b64 = dataEl.textContent.trim();
       var bin = atob(b64);
       var bytes = new Uint8Array(bin.length);
       for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
       var decoded = JSON.parse(new TextDecoder('utf-8').decode(bytes));
-      entries = decoded.entries;
+      timelineEntries = Array.isArray(decoded.timelineEntries) ? decoded.timelineEntries : (decoded.entries || []);
     } catch (e) { return; }
-    if (!entries || !entries.length) return;
+    if (!timelineEntries.length) return;
 
-    // ── 1. 扩展分组统计 ──
-    var extGroups = {
-      'EXT-02 Memory': { tools: ['memory_save', 'memory_search', 'global_memory_save', 'global_memory_search'], color: '#0891b2', count: 0 },
-      'EXT-01 Bash':   { tools: ['bash', 'get_background_process', 'kill_process', 'write_stdin'], color: '#f59e0b', count: 0 },
-      'EXT-04 FileSnap': { tools: ['write', 'edit', 'rollback', 'snapshot'], color: '#10b981', count: 0 },
-      'EXT-05 LSP':     { tools: ['lsp_check'], color: '#8b5cf6', count: 0 },
-      'EXT-03 DevSrv':  { tools: ['dev_server'], color: '#ec4899', count: 0 },
-      'EXT-06 Hook':    { tools: ['hook'], color: '#ef4444', count: 0 },
-      'Other':          { tools: [], color: '#6b7280', count: 0 }
-    };
-
-    var toolCounts = {};
-    entries.forEach(function(e) {
-      if (e.type !== 'message') return;
-      var msg = e.message || {};
-      var content = msg.content || [];
-      if (!Array.isArray(content)) return;
-      content.forEach(function(c) {
-        // pi format: {type: 'toolCall', name: ...}
-        if (c.type === 'toolCall' && c.name) {
-          toolCounts[c.name] = (toolCounts[c.name] || 0) + 1;
-        }
-        // session.jsonl format: {ToolCall: {name: ...}}
-        if (c.ToolCall && c.ToolCall.name) {
-          toolCounts[c.ToolCall.name] = (toolCounts[c.ToolCall.name] || 0) + 1;
-        }
-      });
-    });
-
-    Object.keys(extGroups).forEach(function(g) {
-      var grp = extGroups[g];
-      if (g === 'Other') {
-        var known = new Set();
-        Object.keys(extGroups).forEach(function(gg) {
-          if (gg !== 'Other') extGroups[gg].tools.forEach(function(t) { known.add(t); });
-        });
-        Object.keys(toolCounts).forEach(function(t) {
-          if (!known.has(t)) grp.count += toolCounts[t];
-        });
-      } else {
-        grp.tools.forEach(function(t) { grp.count += toolCounts[t] || 0; });
-      }
-    });
-
-    var totalCalls = Object.keys(toolCounts).reduce(function(s, k) { return s + toolCounts[k]; }, 0);
-    var activeGroups = Object.keys(extGroups).filter(function(g) { return extGroups[g].count > 0; });
-    // Don't return on totalCalls === 0 — still render timeline for non-tool entries
-
-    var groupBadges = activeGroups.map(function(g) {
-      var grp = extGroups[g];
-      var pct = totalCalls > 0 ? Math.round(100 * grp.count / totalCalls) : 0;
-      return '<span class="ion-extension-badge" style="--group-color:' + grp.color + '">' +
-             escapeVizHtml(g) + ' ×' + grp.count + ' <small>(' + pct + '%)</small></span>';
-    }).join('');
-    if (!groupBadges) groupBadges = '<span class="ion-empty-state">No extension calls in this session</span>';
-
-    // ── 2. 时间线（每个 entry 一个条）──
-    var timelineEntries = entries.filter(function(e) {
-      return e.type === 'message' || e.type === 'custom_message' || e.type === 'turn_summary';
-    }).slice(0, 50);  // 最多 50 个，避免太长
-
-    // bar 的 x 位置一律按 index 均匀分布（不依赖时间戳粒度，
-    // 否则同 turn 内的 user/assistant/toolResult 共享时间戳会全挤到两端）
+    // Timeline 保留所有 entry。内核 entry 使用真实 type；Extension 产生的
+    // custom/custom_message 统一归为 custom，不按 customType 继续细分。
     var n = timelineEntries.length;
-    var slotPct = 100 / Math.max(n, 1); // 每个槽位宽度
-    var barWPct = Math.max(slotPct * 0.7, 0.5);  // 槽位的 70%，最少 0.5%
+    var timelineItems = timelineEntries.map(function(entry, index) {
+      var category = entryCategory(entry);
+      return {
+        index: index,
+        entry: entry,
+        category: category,
+        label: entryLabel(category),
+        color: entryColor(category),
+        summary: entrySummary(entry)
+      };
+    });
 
-    // 时间范围（仅用于标签显示，不用于定位）
+    var categoryCounts = {};
+    timelineItems.forEach(function(item) {
+      categoryCounts[item.category] = (categoryCounts[item.category] || 0) + 1;
+    });
+    var priority = ['user', 'assistant', 'toolResult', 'custom', 'compaction', 'turn_summary', 'branch_summary'];
+    var categories = Object.keys(categoryCounts).sort(function(a, b) {
+      var ai = priority.indexOf(a), bi = priority.indexOf(b);
+      if (ai === -1) ai = 999;
+      if (bi === -1) bi = 999;
+      return ai - bi || entryLabel(a).localeCompare(entryLabel(b));
+    });
+    var hiddenCategories = new Set();
+
+    // 时间范围只用于首尾标签；线条位置按 Entry 顺序紧凑排列，避免空闲时间
+    // 在可视化中制造大片空白。
     var ts = timelineEntries.map(function(e) {
       var t = new Date(e.timestamp || 0).getTime();
       return (isNaN(t) || t === 0) ? null : t;
@@ -1842,51 +2356,31 @@ document.addEventListener('DOMContentLoaded', function() {
     var validTs = ts.filter(function(t) { return t !== null; });
     var tMin = validTs.length ? Math.min.apply(null, validTs) : 0;
     var tMax = validTs.length ? Math.max.apply(null, validTs) : 0;
-
-    var bars = timelineEntries.map(function(e, idx) {
-      var left = (idx * slotPct + slotPct / 2 - barWPct / 2).toFixed(2);
-      var msg = e.message || {};
-      var role = msg.role || (msg.Assistant ? 'assistant' : msg.User ? 'user' : e.type);
-      if (role === 'ToolResult') role = 'toolResult';
-      var color = '#6b7280';
-      if (role === 'user' || role === 'User') color = '#3b82f6';
-      else if (role === 'assistant' || role === 'Assistant') color = '#10b981';
-      else if (role === 'toolResult' || role === 'tool') color = '#f59e0b';
-      else if (e.type === 'custom_message') color = '#8b5cf6';
-      else if (e.type === 'turn_summary') color = '#aaa';
-      var ct = e.customType ? ' [' + e.customType + ']' : '';
-      var tip = '#' + idx + ' ' + (e.id || '').slice(0, 8) + ' · ' + role + ct;
-      return '<div class="ion-timeline-bar" title="' + escapeVizHtml(tip) +
-             '" style="--bar-left:' + left + '%;--bar-width:' + barWPct.toFixed(2) +
-             '%;--bar-color:' + color + '"></div>';
-    }).join('');
-
-    var legend = [
-      ['user', '#3b82f6'], ['assistant', '#10b981'], ['toolResult', '#f59e0b'],
-      ['custom', '#8b5cf6'], ['summary', '#aaa']
-    ].map(function(l) {
-      return '<span class="ion-legend-item"><span class="ion-legend-swatch" style="--group-color:' +
-             l[1] + '"></span>' + l[0] + '</span>';
-    }).join('');
-
     var timeLabel = '';
+    var timeStart = '';
+    var timeEnd = '';
     if (tMin > 0 && tMax > 0) {
-      timeLabel = new Date(tMin).toLocaleTimeString() + ' → ' + new Date(tMax).toLocaleTimeString();
+      timeStart = new Date(tMin).toLocaleTimeString();
+      timeEnd = new Date(tMax).toLocaleTimeString();
+      timeLabel = timeStart + ' → ' + timeEnd;
     }
 
     var html =
       '<div id="ion-ext-viz" aria-label="Session overview">' +
         '<section class="ion-overview-panel">' +
-          '<div class="ion-overview-heading"><div><span class="ion-overview-kicker">Extensions</span><strong>Tool breakdown</strong></div>' +
-          '<span class="ion-overview-meta">' + totalCalls + ' calls</span></div>' +
-          '<div class="ion-extension-groups">' + groupBadges + '</div>' +
+          '<div class="ion-overview-heading"><div><span class="ion-overview-kicker">Entries</span><strong>Type filters</strong></div>' +
+          '<span class="ion-overview-meta">' + categories.length + ' types</span></div>' +
+          '<div class="ion-entry-type-controls" id="ion-entry-type-controls"></div>' +
         '</section>' +
         '<section class="ion-overview-panel">' +
-          '<div class="ion-overview-heading"><div><span class="ion-overview-kicker">Sequence</span><strong>Session timeline</strong></div>' +
-          '<span class="ion-overview-meta">' + n + ' entries' + (timeLabel ? ' · ' + timeLabel : '') + '</span></div>' +
-          '<div class="ion-timeline-track">' + bars + '</div>' +
-          '<div class="ion-timeline-legend">' + legend + '</div>' +
+          '<div class="ion-overview-heading"><div><span class="ion-overview-kicker">Sequence</span><strong>Complete timeline</strong></div>' +
+          '<span class="ion-overview-meta" id="ion-timeline-meta"></span></div>' +
+          '<div class="ion-timeline-scroll"><div class="ion-timeline-track" id="ion-timeline-track"></div></div>' +
+          '<div class="ion-timeline-axis"><span>' + escapeVizHtml(timeStart || 'start') + '</span><span>' +
+            escapeVizHtml(timeEnd || 'end') + '</span></div>' +
+          '<div class="ion-timeline-notice" id="ion-timeline-notice" aria-live="polite">Hover for a summary · click to jump to the entry</div>' +
         '</section>' +
+        '<div class="ion-timeline-tooltip" id="ion-timeline-tooltip" role="tooltip"></div>' +
       '</div>';
 
     var existing = document.getElementById('ion-ext-viz');
@@ -1895,6 +2389,161 @@ document.addEventListener('DOMContentLoaded', function() {
     if (banner && banner.parentNode) {
       banner.insertAdjacentHTML('afterend', html);
     }
+
+    var root = document.getElementById('ion-ext-viz');
+    var controls = document.getElementById('ion-entry-type-controls');
+    var track = document.getElementById('ion-timeline-track');
+    var meta = document.getElementById('ion-timeline-meta');
+    var notice = document.getElementById('ion-timeline-notice');
+    var tooltip = document.getElementById('ion-timeline-tooltip');
+    if (!root || !controls || !track || !meta || !notice || !tooltip) return;
+
+    function renderControls() {
+      controls.innerHTML = categories.map(function(category) {
+        var visible = !hiddenCategories.has(category);
+        return '<button type="button" class="ion-entry-filter" data-entry-category="' +
+          escapeVizHtml(category) + '" aria-pressed="' + visible + '" style="--entry-color:' +
+          entryColor(category) + '"><span class="ion-entry-swatch"></span><span>' +
+          escapeVizHtml(entryLabel(category)) + '</span><span class="ion-entry-filter-count">' +
+          categoryCounts[category] + '</span></button>';
+      }).join('') + '<button type="button" class="ion-entry-filter-reset" data-entry-reset' +
+        (hiddenCategories.size ? '' : ' disabled') + '>Show all</button>';
+    }
+
+    function renderTimeline() {
+      var visibleItems = timelineItems.filter(function(item) {
+        return !hiddenCategories.has(item.category);
+      });
+      // 所有 Entry 按原始顺序等距、连续铺开，不把墙钟空闲时间渲染成空白。
+      // 使用完整 n 计算位置，因此筛选类型不会让剩余 Entry 重新排布。
+      track.style.setProperty('--timeline-min-width', Math.max(640, n * 10) + 'px');
+      timelineItems.forEach(function(item) {
+        item.displayPosition = n > 1
+          ? 0.25 + (item.index / (n - 1)) * 99.5
+          : 50;
+      });
+      if (!visibleItems.length) {
+        track.innerHTML = '<div class="ion-timeline-empty">All entry types are hidden. Use “Show all” to restore them.</div>';
+      } else {
+        track.innerHTML = visibleItems.map(function(item) {
+          var aria = item.label + ', entry ' + (item.index + 1) + ' of ' + n + ', ' + item.summary + ', click to jump';
+          return '<button type="button" class="ion-timeline-bar" data-entry-index="' + item.index +
+            '" style="--bar-color:' + item.color + ';--bar-left:' + item.displayPosition +
+            '%" aria-label="' + escapeVizHtml(aria) + '"></button>';
+        }).join('');
+      }
+      meta.textContent = (visibleItems.length === n ? n : visibleItems.length + ' / ' + n) +
+        ' entries' + (timeLabel ? ' · ' + timeLabel : '');
+      tooltip.classList.remove('is-visible');
+    }
+
+    function tooltipPosition(clientX, clientY) {
+      var rect = tooltip.getBoundingClientRect();
+      var left = Math.min(clientX + 12, window.innerWidth - rect.width - 8);
+      left = Math.max(8, left);
+      var top = clientY - rect.height - 12;
+      if (top < 8) top = Math.min(window.innerHeight - rect.height - 8, clientY + 16);
+      tooltip.style.left = left + 'px';
+      tooltip.style.top = Math.max(8, top) + 'px';
+    }
+
+    function showTooltip(bar, clientX, clientY) {
+      var item = timelineItems[Number(bar.getAttribute('data-entry-index'))];
+      if (!item) return;
+      var entry = item.entry || {};
+      var time = entry.timestamp ? new Date(entry.timestamp) : null;
+      var timeText = time && !isNaN(time.getTime()) ? time.toLocaleString() : 'time unknown';
+      var idText = entry.id ? ' · ' + String(entry.id).slice(0, 12) : '';
+      tooltip.innerHTML =
+        '<div class="ion-tooltip-type" style="--entry-color:' + item.color + '">' +
+          '<span class="ion-entry-swatch"></span>' + escapeVizHtml(item.label) +
+        '</div>' +
+        '<div class="ion-tooltip-meta">#' + (item.index + 1) + ' / ' + n + ' · ' +
+          escapeVizHtml(timeText + idText) + '</div>' +
+        '<div class="ion-tooltip-summary">' + escapeVizHtml(item.summary) + '</div>';
+      tooltip.classList.add('is-visible');
+      tooltipPosition(clientX, clientY);
+    }
+
+    function findEntryTarget(entry) {
+      if (!entry) return null;
+      var id = entry.id == null ? '' : String(entry.id);
+      if (id) {
+        var direct = document.getElementById('entry-' + id);
+        if (direct) return direct;
+      }
+      if (entry.type === 'message') {
+        var message = unwrapMessage(entry);
+        var role = String(message.role || '').toLowerCase();
+        if (role === 'toolresult' || role === 'tool_result' || role === 'tool') {
+          var toolCallId = message.toolCallId || message.tool_call_id;
+          if (toolCallId) return document.getElementById('tool-call-' + toolCallId);
+        }
+      }
+      return null;
+    }
+
+    function jumpToEntry(bar) {
+      var item = timelineItems[Number(bar.getAttribute('data-entry-index'))];
+      if (!item) return;
+      var target = findEntryTarget(item.entry);
+      if (!target) {
+        notice.textContent = 'Entry #' + (item.index + 1) + ' body target is unavailable. The export may be incomplete.';
+        return;
+      }
+      target.classList.remove('ion-entry-jump-target');
+      void target.offsetWidth;
+      target.classList.add('ion-entry-jump-target');
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      notice.textContent = 'Jumped to entry #' + (item.index + 1) + ' · ' + item.label;
+      window.setTimeout(function() { target.classList.remove('ion-entry-jump-target'); }, 1900);
+    }
+
+    controls.addEventListener('click', function(event) {
+      var reset = event.target.closest('[data-entry-reset]');
+      if (reset) {
+        hiddenCategories.clear();
+      } else {
+        var button = event.target.closest('[data-entry-category]');
+        if (!button) return;
+        var category = button.getAttribute('data-entry-category');
+        if (hiddenCategories.has(category)) hiddenCategories.delete(category);
+        else hiddenCategories.add(category);
+      }
+      renderControls();
+      renderTimeline();
+    });
+
+    root.addEventListener('pointerover', function(event) {
+      var bar = event.target.closest('.ion-timeline-bar');
+      if (bar) showTooltip(bar, event.clientX, event.clientY);
+    });
+    root.addEventListener('pointermove', function(event) {
+      if (event.target.closest('.ion-timeline-bar') && tooltip.classList.contains('is-visible')) {
+        tooltipPosition(event.clientX, event.clientY);
+      }
+    });
+    root.addEventListener('pointerout', function(event) {
+      if (event.target.closest('.ion-timeline-bar')) tooltip.classList.remove('is-visible');
+    });
+    root.addEventListener('focusin', function(event) {
+      var bar = event.target.closest('.ion-timeline-bar');
+      if (!bar) return;
+      var rect = bar.getBoundingClientRect();
+      showTooltip(bar, rect.left + rect.width / 2, rect.top);
+    });
+    root.addEventListener('focusout', function(event) {
+      if (event.target.closest('.ion-timeline-bar')) tooltip.classList.remove('is-visible');
+    });
+    root.addEventListener('click', function(event) {
+      var bar = event.target.closest('.ion-timeline-bar');
+      if (!bar) return;
+      tooltip.classList.remove('is-visible');
+      jumpToEntry(bar);
+    });
+
+    renderControls();
+    renderTimeline();
   }
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', buildExtVisualization);
@@ -1904,20 +2553,482 @@ document.addEventListener('DOMContentLoaded', function() {
 })();
 </script>
 "#;
-    html = html.replacen("</body>", &format!("{}\n</body>", ext_visualization_script), 1);
-
-    // ION: tool output click to expand/collapse (CSS max-height approach)
-    let tool_fold_script = r#"
+    let compact_timeline_script = r#"
 <script>
-document.addEventListener('click', function(e) {
-  var to = e.target.closest('.tool-output:not(.expandable)');
-  if (to && !window.getSelection().toString()) {
-    to.classList.toggle('expanded');
+(function() {
+  function esc(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
+  function compact(value, limit) {
+    var text = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+    return text.length > limit ? text.slice(0, limit - 1) + '…' : text;
+  }
+  function message(entry) {
+    var msg = entry && entry.message ? entry.message : {};
+    var variants = ['User', 'Assistant', 'ToolResult', 'Custom'];
+    for (var i = 0; i < variants.length; i++) {
+      if (msg[variants[i]]) {
+        var value = msg[variants[i]];
+        if (!value.role) value.role = variants[i];
+        return value;
+      }
+    }
+    return msg;
+  }
+  function category(entry) {
+    var type = String((entry && entry.type) || 'other');
+    if (type === 'custom' || type === 'custom_message') return 'custom';
+    if (type !== 'message') return type;
+    var role = String(message(entry).role || 'message').toLowerCase();
+    if (role === 'toolresult' || role === 'tool_result' || role === 'tool') return 'toolResult';
+    if (role === 'custom') return 'custom';
+    return role === 'user' || role === 'assistant' ? role : 'message';
+  }
+  function label(type) {
+    var labels = { toolResult: 'tool result', turn_summary: 'turn summary', branch_summary: 'branch summary',
+      model_change: 'model change', thinking_level_change: 'thinking change', active_tools_change: 'tools change' };
+    return labels[type] || String(type).replace(/_/g, ' ');
+  }
+  function color(type) {
+    var colors = { user:'#3b82f6', assistant:'#10b981', toolResult:'#f59e0b', custom:'#8b5cf6',
+      compaction:'#ef4444', turn_summary:'#94a3b8', branch_summary:'#d946ef', model_change:'#06b6d4',
+      thinking_level_change:'#0ea5e9', active_tools_change:'#a855f7', deletion:'#dc2626', restoration:'#22c55e' };
+    if (colors[type]) return colors[type];
+    var palette = ['#2563eb','#0f766e','#b45309','#7c3aed','#be123c','#4f46e5','#15803d'];
+    var hash = 0;
+    for (var i = 0; i < type.length; i++) hash = ((hash << 5) - hash + type.charCodeAt(i)) | 0;
+    return palette[Math.abs(hash) % palette.length];
+  }
+  function previewValue(value, depth) {
+    if (value == null || depth > 3) return '';
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+    if (Array.isArray(value)) return value.slice(0, 6).map(function(v) { return previewValue(v, depth + 1); }).filter(Boolean).join(' · ');
+    if (value.Text) return previewValue(value.Text.text, depth + 1);
+    if (value.Thinking) return previewValue(value.Thinking.thinking, depth + 1);
+    if (value.ToolCall) return 'tool call ' + (value.ToolCall.name || '');
+    if (value.type === 'toolCall') return 'tool call ' + (value.name || '');
+    var keys = ['text','thinking','summary','content','label','name','reason','status','data','details'];
+    var parts = [];
+    keys.forEach(function(key) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) {
+        var part = previewValue(value[key], depth + 1);
+        if (part) parts.push(part);
+      }
+    });
+    return parts.join(' · ');
+  }
+  function summary(entry) {
+    var source = entry && entry.type === 'message' ? message(entry) : entry;
+    return compact(previewValue(source, 0) || 'No preview available', 240);
+  }
+  function build() {
+    var dataEl = document.getElementById('session-data');
+    if (!dataEl) return;
+    var decoded;
+    try {
+      var bin = atob(dataEl.textContent.trim());
+      var bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      decoded = JSON.parse(new TextDecoder('utf-8').decode(bytes));
+    } catch (error) { return; }
+    var entries = Array.isArray(decoded.timelineEntries) ? decoded.timelineEntries : (decoded.entries || []);
+    if (!entries.length) return;
+    var n = entries.length;
+    var items = entries.map(function(entry, index) {
+      var type = category(entry);
+      return { entry:entry, index:index, type:type, label:label(type), color:color(type), summary:summary(entry) };
+    });
+    var counts = {};
+    items.forEach(function(item) { counts[item.type] = (counts[item.type] || 0) + 1; });
+    var order = ['user','assistant','toolResult','custom','compaction','turn_summary','branch_summary'];
+    var types = Object.keys(counts).sort(function(a, b) {
+      var ai = order.indexOf(a), bi = order.indexOf(b);
+      if (ai < 0) ai = 999;
+      if (bi < 0) bi = 999;
+      return ai - bi || label(a).localeCompare(label(b));
+    });
+    var times = entries.map(function(entry) { var t = new Date(entry.timestamp || 0); return isNaN(t.getTime()) ? null : t; }).filter(Boolean);
+    var start = times.length ? times[0].toLocaleTimeString() : '';
+    var end = times.length ? times[times.length - 1].toLocaleTimeString() : '';
+    var hidden = new Set();
+    var html = '<div id="ion-ext-viz" aria-label="Session overview">' +
+      '<section class="ion-overview-panel"><div class="ion-overview-heading"><div><span class="ion-overview-kicker">Entries</span><strong>Type filters</strong></div>' +
+      '<span class="ion-overview-meta">' + types.length + ' types</span></div><div class="ion-entry-type-controls" id="ion-entry-type-controls"></div></section>' +
+      '<section class="ion-overview-panel"><div class="ion-overview-heading"><div><span class="ion-overview-kicker">Sequence</span><strong>Complete timeline</strong></div>' +
+      '<span class="ion-overview-meta" id="ion-timeline-meta"></span></div><div class="ion-timeline-scroll"><div class="ion-timeline-track" id="ion-timeline-track"></div></div>' +
+      '<div class="ion-timeline-axis"><span>' + esc(start || 'start') + '</span><span>' + esc(end || 'end') + '</span></div>' +
+      '<div class="ion-timeline-notice" id="ion-timeline-notice" aria-live="polite">Hover for a summary · click to jump to the entry</div></section>' +
+      '<div class="ion-timeline-tooltip" id="ion-timeline-tooltip" role="tooltip"></div></div>';
+    var old = document.getElementById('ion-ext-viz');
+    if (old) old.remove();
+    var banner = document.getElementById('ion-stats-banner');
+    if (!banner) return;
+    banner.insertAdjacentHTML('afterend', html);
+    var root = document.getElementById('ion-ext-viz');
+    var controls = document.getElementById('ion-entry-type-controls');
+    var track = document.getElementById('ion-timeline-track');
+    var meta = document.getElementById('ion-timeline-meta');
+    var notice = document.getElementById('ion-timeline-notice');
+    var tooltip = document.getElementById('ion-timeline-tooltip');
+    function renderControls() {
+      controls.innerHTML = types.map(function(type) {
+        return '<button type="button" class="ion-entry-filter" data-entry-category="' + esc(type) + '" aria-pressed="' + (!hidden.has(type)) + '" style="--entry-color:' + color(type) + '">' +
+          '<span class="ion-entry-swatch"></span><span>' + esc(label(type)) + '</span><span class="ion-entry-filter-count">' + counts[type] + '</span></button>';
+      }).join('') + '<button type="button" class="ion-entry-filter-reset" data-entry-reset' + (hidden.size ? '' : ' disabled') + '>Show all</button>';
+    }
+    function renderTimeline() {
+      var visible = items.filter(function(item) { return !hidden.has(item.type); });
+      track.style.setProperty('--timeline-min-width', Math.max(640, n * 10) + 'px');
+      track.innerHTML = visible.map(function(item) {
+        var position = n > 1 ? 0.25 + (item.index / (n - 1)) * 99.5 : 50;
+        var aria = item.label + ', entry ' + (item.index + 1) + ' of ' + n + ', ' + item.summary + ', click to jump';
+        return '<button type="button" class="ion-timeline-bar" data-entry-index="' + item.index + '" style="--bar-color:' + item.color + ';--bar-left:' + position + '%" aria-label="' + esc(aria) + '"></button>';
+      }).join('');
+      meta.textContent = (visible.length === n ? n : visible.length + ' / ' + n) + ' entries' + (start && end ? ' · ' + start + ' → ' + end : '');
+      tooltip.classList.remove('is-visible');
+    }
+    function showTooltip(bar, x, y) {
+      var item = items[Number(bar.getAttribute('data-entry-index'))];
+      if (!item) return;
+      var entry = item.entry;
+      var time = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : 'time unknown';
+      tooltip.innerHTML = '<div class="ion-tooltip-type"><span class="ion-entry-swatch" style="--entry-color:' + item.color + '"></span>' + esc(item.label) + '</div>' +
+        '<div class="ion-tooltip-meta">#' + (item.index + 1) + ' / ' + n + ' · ' + esc(time + (entry.id ? ' · ' + String(entry.id).slice(0, 12) : '')) + '</div>' +
+        '<div class="ion-tooltip-summary">' + esc(item.summary) + '</div>';
+      tooltip.classList.add('is-visible');
+      var rect = tooltip.getBoundingClientRect();
+      tooltip.style.left = Math.max(8, Math.min(x + 12, innerWidth - rect.width - 8)) + 'px';
+      tooltip.style.top = Math.max(8, y - rect.height - 12) + 'px';
+    }
+    function targetFor(entry, index) {
+      var direct = entry.id ? document.getElementById('entry-' + entry.id) : null;
+      if (direct) return direct;
+      if (entry.type === 'message') {
+        var msg = message(entry);
+        var toolCallId = msg.toolCallId || msg.tool_call_id;
+        if (toolCallId) return document.getElementById('tool-call-' + toolCallId);
+      }
+      return document.getElementById('ion-timeline-entry-' + index);
+    }
+    controls.addEventListener('click', function(event) {
+      if (event.target.closest('[data-entry-reset]')) hidden.clear();
+      else {
+        var button = event.target.closest('[data-entry-category]');
+        if (!button) return;
+        var type = button.getAttribute('data-entry-category');
+        if (hidden.has(type)) hidden.delete(type); else hidden.add(type);
+      }
+      renderControls(); renderTimeline();
+    });
+    root.addEventListener('pointerover', function(event) {
+      var bar = event.target.closest('.ion-timeline-bar');
+      if (bar) showTooltip(bar, event.clientX, event.clientY);
+    });
+    root.addEventListener('pointermove', function(event) {
+      var bar = event.target.closest('.ion-timeline-bar');
+      if (bar && tooltip.classList.contains('is-visible')) showTooltip(bar, event.clientX, event.clientY);
+    });
+    root.addEventListener('pointerout', function(event) {
+      if (event.target.closest('.ion-timeline-bar')) tooltip.classList.remove('is-visible');
+    });
+    root.addEventListener('focusin', function(event) {
+      var bar = event.target.closest('.ion-timeline-bar');
+      if (bar) { var rect = bar.getBoundingClientRect(); showTooltip(bar, rect.left, rect.top); }
+    });
+    root.addEventListener('click', function(event) {
+      var bar = event.target.closest('.ion-timeline-bar');
+      if (!bar) return;
+      var item = items[Number(bar.getAttribute('data-entry-index'))];
+      var target = item && targetFor(item.entry, item.index);
+      tooltip.classList.remove('is-visible');
+      if (!target) { notice.textContent = 'Entry #' + (item.index + 1) + ' body target is unavailable. The export may be incomplete.'; return; }
+      var foldedEntry = target.closest('.ion-entry-fold');
+      if (foldedEntry && window.ionSetEntryExpanded) window.ionSetEntryExpanded(foldedEntry, true);
+      target.classList.remove('ion-entry-jump-target'); void target.offsetWidth;
+      target.classList.add('ion-entry-jump-target');
+      target.scrollIntoView({ behavior:'smooth', block:'center' });
+      notice.textContent = 'Jumped to entry #' + (item.index + 1) + ' · ' + item.label;
+      setTimeout(function() { target.classList.remove('ion-entry-jump-target'); }, 1900);
+    });
+    renderControls(); renderTimeline();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', build); else build();
+})();
+</script>
+"#;
+    html = html.replacen(
+        "</body>",
+        &format!("{}\n</body>", compact_timeline_script),
+        1,
+    );
+
+    // Guarantee the central contract of the export: every Timeline item resolves
+    // to a visible body target. Native types unsupported by pi are rendered by the
+    // generic fallback above; ToolResult points to its nested tool call. Hook events
+    // remain addressable but are grouped under the following turn summary (or a
+    // structured tool target) instead of becoming noisy top-level cards.
+    let complete_entry_body_script = r#"
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  var messages = document.getElementById('messages');
+  var dataEl = document.getElementById('session-data');
+  if (!messages || !dataEl) return;
+
+  function decodeData() {
+    try {
+      var bin = atob(dataEl.textContent.trim());
+      var bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return JSON.parse(new TextDecoder('utf-8').decode(bytes));
+    } catch (error) { return {}; }
+  }
+  function message(entry) {
+    var msg = entry && entry.message || {};
+    return msg.User || msg.Assistant || msg.ToolResult || msg.Custom || msg;
+  }
+  function customType(entry) {
+    var msg = message(entry);
+    return entry.customType || entry.custom_type || msg.customType || msg.custom_type || '';
+  }
+  function toolCallId(entry) {
+    var msg = message(entry);
+    return msg.toolCallId || msg.tool_call_id || entry.toolCallId || entry.tool_call_id ||
+      (entry.data && (entry.data.toolCallId || entry.data.tool_call_id)) ||
+      (entry.details && (entry.details.toolCallId || entry.details.tool_call_id)) || '';
+  }
+  function targetFor(entry, index) {
+    var direct = entry && entry.id ? document.getElementById('entry-' + entry.id) : null;
+    if (direct) return direct;
+    var callId = toolCallId(entry || {});
+    if (callId) {
+      var tool = document.getElementById('tool-call-' + callId);
+      if (tool) return tool;
+    }
+    return document.getElementById('ion-timeline-entry-' + index);
+  }
+  function topLevelTarget(node) {
+    if (!node) return null;
+    var current = node;
+    while (current.parentElement && current.parentElement !== messages) current = current.parentElement;
+    return current.parentElement === messages ? current : null;
+  }
+  function compact(value) {
+    var text = '';
+    if (typeof value === 'string') text = value;
+    else if (value !== undefined) {
+      try { text = JSON.stringify(value); } catch (error) { text = String(value); }
+    }
+    text = text.replace(/\s+/g, ' ').trim();
+    return text.length > 320 ? text.slice(0, 319) + '…' : text;
+  }
+  function summary(entry) {
+    var msg = message(entry || {});
+    return compact(entry.summary || entry.content || msg.content || entry.data || entry.status || 'No additional details');
+  }
+  function label(entry) {
+    var msg = message(entry || {});
+    if (entry.type === 'message') {
+      var role = String(msg.role || '').toLowerCase();
+      if (role === 'toolresult' || role === 'tool') return 'tool result';
+      if (role) return role;
+    }
+    return customType(entry) || entry.type || 'entry';
+  }
+  function makeFallback(entry, index) {
+    var card = document.createElement('div');
+    card.className = 'ion-generic-entry';
+    card.id = entry.id ? 'entry-' + entry.id : 'ion-timeline-entry-' + index;
+    card.setAttribute('data-entry-type', label(entry));
+    var typeEl = document.createElement('div');
+    typeEl.className = 'ion-generic-entry-type';
+    typeEl.textContent = '[' + label(entry) + ']';
+    var contentEl = document.createElement('div');
+    contentEl.className = 'ion-generic-entry-content';
+    contentEl.textContent = summary(entry);
+    card.append(typeEl, contentEl);
+    return card;
+  }
+
+  var decoded = decodeData();
+  var entries = Array.isArray(decoded.timelineEntries) ? decoded.timelineEntries : (decoded.entries || []);
+
+  // A missing target usually means an orphan ToolResult. Preserve it as a compact
+  // body card instead of leaving a dead Timeline marker.
+  entries.forEach(function(entry, index) {
+    if (targetFor(entry, index)) return;
+    var card = makeFallback(entry, index);
+    var nextTop = null;
+    for (var next = index + 1; next < entries.length; next++) {
+      nextTop = topLevelTarget(targetFor(entries[next], next));
+      if (nextTop) break;
+    }
+    if (nextTop) messages.insertBefore(card, nextTop); else messages.appendChild(card);
+  });
+
+  function nestedContainer(owner) {
+    var container = owner.querySelector(':scope > .ion-entry-nested-events');
+    if (!container) {
+      container = document.createElement('div');
+      container.className = 'ion-entry-nested-events';
+      container.setAttribute('aria-label', 'Related entries');
+      owner.appendChild(container);
+    }
+    return container;
+  }
+
+  // Stop/SubagentStop hooks are turn lifecycle records. Their next turn_summary is
+  // the owning body card. Tool-correlated hooks can opt into an exact ToolResult by
+  // carrying toolCallId; older entries without correlation data use turn grouping.
+  entries.forEach(function(entry, index) {
+    if (customType(entry) !== 'hook_event' || !entry.id) return;
+    var hook = document.getElementById('entry-' + entry.id);
+    if (!hook) return;
+    var owner = null;
+    var callId = toolCallId(entry);
+    if (callId) owner = document.getElementById('tool-call-' + callId);
+    if (!owner) {
+      for (var next = index + 1; next < entries.length; next++) {
+        if (entries[next].type === 'turn_summary' || customType(entries[next]) === 'turn_summary') {
+          owner = targetFor(entries[next], next);
+          if (owner) break;
+        }
+      }
+    }
+    if (!owner) {
+      for (var previous = index - 1; previous >= 0; previous--) {
+        owner = topLevelTarget(targetFor(entries[previous], previous));
+        if (owner && owner !== hook) break;
+        owner = null;
+      }
+    }
+    if (owner && owner !== hook && !hook.contains(owner)) nestedContainer(owner).appendChild(hook);
+  });
+
+  var missing = [];
+  entries.forEach(function(entry, index) {
+    if (!targetFor(entry, index)) missing.push(index);
+  });
+  window.ionEntryBodyCoverage = { total: entries.length, resolved: entries.length - missing.length, missing: missing };
+  messages.setAttribute('data-ion-body-coverage', missing.length ? 'incomplete' : 'complete');
+  document.dispatchEvent(new CustomEvent('ion-body-targets-ready', { detail: window.ionEntryBodyCoverage }));
 });
 </script>
 "#;
-    html = html.replacen("</body>", &format!("{}\n</body>", tool_fold_script), 1);
+    html = html.replacen(
+        "</body>",
+        &format!("{}\n</body>", complete_entry_body_script),
+        1,
+    );
+
+    // ION: long Entries show their first rendered lines instead of collapsing into
+    // a synthetic one-line summary. The hint reports the approximate hidden visual
+    // line count and expands the original DOM in place.
+    // A MutationObserver reapplies the wrapper after pi's branch navigation rerenders
+    // #messages from cached DOM nodes.
+    let entry_fold_script = r#"
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  var messages = document.getElementById('messages');
+  if (!messages) return;
+  var previewLines = 6;
+
+  function entryKind(entry) {
+    if (entry.classList.contains('user-message') || entry.classList.contains('skill-user-entry')) return ['User', '#2e90fa'];
+    if (entry.classList.contains('assistant-message')) return ['Assistant', '#12b76a'];
+    if (entry.classList.contains('tool-execution')) return ['Tool Result', '#f79009'];
+    if (entry.classList.contains('hook-message') || entry.classList.contains('custom-message')) return ['Custom', '#8b5cf6'];
+    if (entry.classList.contains('compaction')) return ['Compaction', '#ef4444'];
+    if (entry.classList.contains('branch-summary')) return ['Branch Summary', '#d946ef'];
+    if (entry.classList.contains('model-change')) return ['Model Change', '#06b6d4'];
+    return ['Entry', '#667085'];
+  }
+
+  function setExpanded(entry, expanded) {
+    var hint = entry.querySelector(':scope > .ion-entry-fold-hint');
+    if (!hint) return;
+    entry.setAttribute('data-ion-entry-expanded', expanded ? 'true' : 'false');
+    hint.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    hint.textContent = expanded
+      ? '↑ Collapse'
+      : '... (' + (hint.dataset.hiddenLines || '1') + ' more lines, click to expand)';
+    hint.setAttribute('aria-label', entryKind(entry)[0] + (expanded ? ', collapse content' : ', expand remaining content'));
+    if (entry.classList.contains('compaction')) entry.classList.toggle('expanded', expanded);
+  }
+  window.ionSetEntryExpanded = setExpanded;
+
+  function measureEntry(entry) {
+    var content = entry.querySelector(':scope > .ion-entry-fold-content');
+    var hint = entry.querySelector(':scope > .ion-entry-fold-hint');
+    if (!content || !hint) return;
+    var lineHeight = parseFloat(getComputedStyle(content).lineHeight) || 20;
+    var previewHeight = Math.ceil(lineHeight * previewLines);
+    var expanded = entry.getAttribute('data-ion-entry-expanded') === 'true';
+    entry.style.setProperty('--ion-entry-preview-height', previewHeight + 'px');
+    var hiddenHeight = Math.max(0, content.scrollHeight - previewHeight);
+    var hiddenLines = Math.max(1, Math.ceil(hiddenHeight / lineHeight));
+    hint.dataset.hiddenLines = String(hiddenLines);
+    hint.hidden = hiddenHeight <= 2;
+    setExpanded(entry, expanded && !hint.hidden);
+  }
+
+  function decorateEntry(entry) {
+    if (!entry || entry.dataset.ionEntryFoldReady === 'true') return;
+    var kind = entryKind(entry);
+    var content = document.createElement('div');
+    content.className = 'ion-entry-fold-content';
+    content.id = entry.id + '-fold-content';
+    while (entry.firstChild) content.appendChild(entry.firstChild);
+
+    var hint = document.createElement('button');
+    hint.type = 'button';
+    hint.className = 'ion-entry-fold-hint';
+    hint.setAttribute('aria-expanded', 'false');
+    hint.setAttribute('aria-controls', content.id);
+    hint.textContent = '... (more lines, click to expand)';
+
+    entry.removeAttribute('onclick');
+    entry.dataset.ionEntryFoldReady = 'true';
+    entry.classList.add('ion-entry-fold');
+    entry.style.setProperty('--ion-entry-accent', kind[1]);
+    entry.append(content, hint);
+    requestAnimationFrame(function() { measureEntry(entry); });
+  }
+
+  function decorateEntries() {
+    messages.querySelectorAll(':scope > [id^="entry-"]').forEach(decorateEntry);
+  }
+
+  messages.addEventListener('click', function(event) {
+    var hint = event.target.closest('.ion-entry-fold-hint');
+    if (hint) {
+      event.stopPropagation();
+      var entry = hint.closest('.ion-entry-fold');
+      setExpanded(entry, entry.getAttribute('data-ion-entry-expanded') !== 'true');
+      return;
+    }
+    var output = event.target.closest('.tool-output:not(.expandable)');
+    if (output && !window.getSelection().toString()) {
+      output.classList.toggle('expanded');
+      var owner = output.closest('.ion-entry-fold');
+      if (owner) requestAnimationFrame(function() { measureEntry(owner); });
+    }
+  });
+
+  decorateEntries();
+  new MutationObserver(decorateEntries).observe(messages, { childList: true });
+  var resizeTimer;
+  window.addEventListener('resize', function() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function() {
+      messages.querySelectorAll(':scope > .ion-entry-fold').forEach(measureEntry);
+    }, 120);
+  });
+});
+</script>
+"#;
+    html = html.replacen("</body>", &format!("{}\n</body>", entry_fold_script), 1);
 
     // 子 session 的文件名（sub_<sid>.html / 旧版 fork_<sid>.html）在 base64 编码的
     // session-data 里，HTML 写入前替换看不到明文。改为在 HTML 末尾注入一段 JavaScript：
@@ -2355,7 +3466,9 @@ fn resolve_session_file(
     {
         for entry in entries.flatten() {
             let dir = entry.path();
-            if !dir.is_dir() { continue; }
+            if !dir.is_dir() {
+                continue;
+            }
             let per_session_file = dir.join(format!("{session_id}.jsonl"));
             if per_session_file.exists() {
                 return Ok(per_session_file);
@@ -2602,6 +3715,53 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn test_export_selects_current_branch_and_keeps_branch_record() {
+        let entries = vec![
+            json!({"type":"message","id":"m1","parentId":"session-1","message":{"role":"user","content":"root"}}),
+            json!({"type":"message","id":"m2","parentId":"m1","message":{"role":"assistant","content":[]}}),
+            json!({"type":"message","id":"old-3","parentId":"m2","message":{"role":"user","content":"old branch"}}),
+            json!({"type":"message","id":"old-4","parentId":"old-3","message":{"role":"assistant","content":[]}}),
+            json!({"type":"leaf_pointer","id":"lp-1","parentId":null,"leafId":"m2"}),
+            json!({"type":"message","id":"m5","parentId":"m2","message":{"role":"user","content":"active branch"}}),
+            json!({"type":"turn_summary","id":"ts-1","parentId":null,"userEntryId":"m5","summary":"active summary"}),
+            json!({"type":"custom_message","id":"hook-1","parentId":null,"customType":"hook_event","content":"active hook"}),
+            json!({"type":"custom_message","id":"old-note","parentId":"old-4","customType":"diagnostics","content":"old branch detail"}),
+            json!({"type":"branch_summary","id":"bs-1","parentId":"old-4","fromId":"old-4","summary":"abandoned branch"}),
+        ];
+
+        let selection = select_entries_for_export(&entries, "session-1");
+        let ids: Vec<&str> = selection
+            .entries
+            .iter()
+            .filter_map(|entry| entry.get("id").and_then(|id| id.as_str()))
+            .collect();
+
+        assert_eq!(selection.active_leaf_id.as_deref(), Some("m5"));
+        assert_eq!(selection.source_entry_count, 10);
+        assert_eq!(selection.omitted_branch_entry_count, 3);
+        assert_eq!(
+            ids,
+            vec!["m1", "m2", "lp-1", "m5", "ts-1", "hook-1", "bs-1"]
+        );
+        assert!(!ids.contains(&"old-3"));
+        assert!(!ids.contains(&"old-4"));
+        assert!(!ids.contains(&"old-note"));
+    }
+
+    #[test]
+    fn test_export_keeps_full_linear_session() {
+        let entries = vec![
+            json!({"type":"message","id":"m1","parentId":"session-1","message":{"role":"user","content":"hello"}}),
+            json!({"type":"turn_summary","id":"ts-1","parentId":null,"summary":"turn"}),
+            json!({"type":"message","id":"m2","parentId":"m1","message":{"role":"assistant","content":[]}}),
+        ];
+
+        let selection = select_entries_for_export(&entries, "session-1");
+        assert_eq!(selection.entries, entries);
+        assert_eq!(selection.omitted_branch_entry_count, 0);
+    }
+
+    #[test]
     fn test_escape_html_text_for_export_shell() {
         assert_eq!(
             escape_html_text(r#"<session name='one'>& "two""#),
@@ -2717,7 +3877,10 @@ mod tests {
         let msg = pi.get("message").unwrap();
         // role 应该是 "custom"（之前漏了这个分支，导致 role 为 undefined）
         assert_eq!(msg.get("role").unwrap(), &json!("custom"));
-        assert!(msg.get("Custom").is_none(), "variant wrapper should be flattened");
+        assert!(
+            msg.get("Custom").is_none(),
+            "variant wrapper should be flattened"
+        );
     }
 
     #[test]
@@ -2768,7 +3931,13 @@ mod tests {
         let msg = pi.get("message").unwrap();
         assert_eq!(msg.get("role").unwrap(), &json!("custom"));
         assert_eq!(msg.get("customType").unwrap(), &json!("dev_servers"));
-        assert!(msg.get("content").unwrap().as_str().unwrap().contains("8765"));
+        assert!(
+            msg.get("content")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .contains("8765")
+        );
     }
 
     #[test]
@@ -2791,7 +3960,13 @@ mod tests {
         let pi = convert_entry(&entry);
         let msg = pi.get("message").unwrap();
         assert_eq!(msg.get("customType").unwrap(), &json!("diagnostics"));
-        assert!(msg.get("content").unwrap().as_str().unwrap().contains("has_errors"));
+        assert!(
+            msg.get("content")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .contains("has_errors")
+        );
     }
 
     #[test]

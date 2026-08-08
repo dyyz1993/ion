@@ -452,6 +452,7 @@ mod tests {
 
     #[test]
     fn test_resolve_session_file_forked_match() {
+        let _guard = crate::paths::env_test_lock();
         // Create a temp sessions dir, search for a forked file by session_id
         let tmp = std::env::temp_dir().join(format!("ion-skill-test-{}", std::process::id()));
         let subdir = tmp.join("sessions").join("--abc--foo--");
@@ -476,6 +477,7 @@ mod tests {
 
     #[test]
     fn test_resolve_session_file_main_fallback() {
+        let _guard = crate::paths::env_test_lock();
         // No forked file by id — should match via session header's `id` field
         let tmp = std::env::temp_dir().join(format!("ion-skill-test2-{}", std::process::id()));
         let subdir = tmp.join("sessions").join("--def--bar--");
@@ -499,6 +501,7 @@ mod tests {
 
     #[test]
     fn test_resolve_session_file_not_found() {
+        let _guard = crate::paths::env_test_lock();
         let tmp = std::env::temp_dir().join(format!("ion-skill-test3-{}", std::process::id()));
         std::fs::create_dir_all(tmp.join("sessions")).unwrap();
 
@@ -517,6 +520,7 @@ mod tests {
 
     #[test]
     fn test_resolve_session_file_path_traversal_safe() {
+        let _guard = crate::paths::env_test_lock();
         // session_id with path-traversal chars gets filtered
         let tmp = std::env::temp_dir().join(format!("ion-skill-test4-{}", std::process::id()));
         std::fs::create_dir_all(tmp.join("sessions")).unwrap();

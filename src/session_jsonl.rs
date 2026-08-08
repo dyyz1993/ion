@@ -1126,6 +1126,7 @@ mod tests {
 
     #[test]
     fn test_append_compaction_without_optional_fields() {
+        let _guard = override_test_lock();
         let cwd = test_cwd("compaction_min");
         write_header(&cwd);
 
@@ -1315,8 +1316,16 @@ mod tests {
 
     // ── Session isolation: ensure_session_header honors override ──
 
+    // SESSION_FILE_OVERRIDE 是进程级全局状态。两个 override 相关的测试
+    // 必须串行执行（否则并发下互相覆盖 override → legacy 状态）。
+    // 复用 paths::env_test_lock 统一一个跨模块锁。
+    fn override_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::paths::env_test_lock()
+    }
+
     #[test]
     fn ensure_session_header_uses_override_when_set() {
+        let _guard = override_test_lock();
         // When set_session_file_override is set, ensure_session_header must write
         // to the override path (<sid>.jsonl), NOT the legacy session.jsonl.
         let cwd = test_cwd("override_header");
@@ -1349,6 +1358,7 @@ mod tests {
 
     #[test]
     fn ensure_session_header_falls_back_to_session_jsonl_without_override() {
+        let _guard = override_test_lock();
         // Without override, behavior is unchanged: writes session.jsonl.
         let cwd = test_cwd("no_override_header");
         cleanup(&cwd);
