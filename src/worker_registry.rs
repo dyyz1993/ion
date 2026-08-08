@@ -2231,7 +2231,7 @@ impl WorkerRegistry {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let params = cmd_msg.get("params").cloned().unwrap_or_default();
+            let mut params = cmd_msg.get("params").cloned().unwrap_or_default();
             let from_worker = params
                 .get("_from_worker")
                 .and_then(|v| v.as_str())
@@ -2245,17 +2245,30 @@ impl WorkerRegistry {
 
             match command.as_str() {
                 "create_worker" => {
-                    // 字段误用检测：用户常把 initial_prompt 写成 message，后者会被 serde 静默
+                    // 字段兼容：用户常把 initial_prompt 写成 message，后者会被 serde 静默
                     // 忽略（WorkerCreateConfig 没有该字段），导致 worker 创建了但不执行任务。
-                    if let Some(msg) = params.get("message").and_then(|v| v.as_str())
-                        && !msg.is_empty()
-                        && params.get("initial_prompt").is_none()
-                    {
+                    // 这里把 message 作为 initial_prompt 的 fallback 注入，保持向后兼容。
+                    let msg_fallback: Option<String> = if params.get("initial_prompt").is_none() {
+                        params
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string())
+                    } else {
+                        None
+                    };
+                    if let Some(msg) = msg_fallback {
                         tracing::warn!(
-                            "[manager] create_worker received 'message' field which is not a \
-                             valid field; did you mean 'initial_prompt'? The 'message' value \
-                             will be IGNORED."
+                            "[manager] create_worker: 'message' field is deprecated/unsupported, \
+                             using it as initial_prompt fallback. Use 'initial_prompt' explicitly \
+                             to silence this."
                         );
+                        if let Some(obj) = params.as_object_mut() {
+                            obj.insert(
+                                "initial_prompt".to_string(),
+                                serde_json::Value::String(msg),
+                            );
+                        }
                     }
                     let relation = params
                         .get("relation")

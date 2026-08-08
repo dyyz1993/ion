@@ -1414,34 +1414,23 @@ document.addEventListener('DOMContentLoaded', function() {
       return e.type === 'message' || e.type === 'custom_message' || e.type === 'turn_summary';
     }).slice(0, 50);  // 最多 50 个，避免太长
 
-    // 找时间范围（fallback to index-based if timestamps missing）
+    // bar 的 x 位置一律按 index 均匀分布（不依赖时间戳粒度，
+    // 否则同 turn 内的 user/assistant/toolResult 共享时间戳会全挤到两端）
+    var n = timelineEntries.length;
+    var slotPct = 100 / n;           // 每个槽位宽度
+    var barWPct = Math.max(slotPct * 0.7, 0.5);  // 槽位的 70%，最少 0.5%
+
+    // 时间范围（仅用于标签显示，不用于定位）
     var ts = timelineEntries.map(function(e) {
       var t = new Date(e.timestamp || 0).getTime();
       return (isNaN(t) || t === 0) ? null : t;
     });
     var validTs = ts.filter(function(t) { return t !== null; });
-    var useIndexFallback = validTs.length < 2;
-    var tMin, tMax, tRange;
-    if (useIndexFallback) {
-      tMin = 0; tMax = Math.max(timelineEntries.length - 1, 1); tRange = tMax;
-    } else {
-      tMin = Math.min.apply(null, validTs);
-      tMax = Math.max.apply(null, validTs);
-      tRange = Math.max(tMax - tMin, 1);
-    }
+    var tMin = validTs.length ? Math.min.apply(null, validTs) : 0;
+    var tMax = validTs.length ? Math.max.apply(null, validTs) : 0;
 
     var bars = timelineEntries.map(function(e, idx) {
-      var left;
-      if (useIndexFallback) {
-        left = (idx / tRange * 100).toFixed(2);
-      } else {
-        var t = new Date(e.timestamp || 0).getTime();
-        if (isNaN(t) || t === 0) {
-          left = (idx / Math.max(timelineEntries.length, 1) * 100).toFixed(2);
-        } else {
-          left = ((t - tMin) / tRange * 100).toFixed(2);
-        }
-      }
+      var left = (idx * slotPct + slotPct / 2 - barWPct / 2).toFixed(2);
       var msg = e.message || {};
       var role = msg.role || (msg.Assistant ? 'assistant' : msg.User ? 'user' : e.type);
       if (role === 'ToolResult') role = 'toolResult';
@@ -1452,10 +1441,10 @@ document.addEventListener('DOMContentLoaded', function() {
       else if (e.type === 'custom_message') color = '#8b5cf6';
       else if (e.type === 'turn_summary') color = '#aaa';
       var ct = e.customType ? ' [' + e.customType + ']' : '';
-      var tip = (e.id || '').slice(0, 8) + ' · ' + role + ct;
+      var tip = '#' + idx + ' ' + (e.id || '').slice(0, 8) + ' · ' + role + ct;
       return '<div title="' + tip + '" style="position:absolute;left:' + left +
-             '%;top:0;width:3px;height:20px;background:' + color +
-             ';border-radius:1px;"></div>';
+             '%;top:1px;width:' + barWPct.toFixed(2) + '%;min-width:2px;height:18px;background:' + color +
+             ';border-radius:2px;opacity:0.85;"></div>';
     }).join('');
 
     var legend = [
@@ -1467,17 +1456,18 @@ document.addEventListener('DOMContentLoaded', function() {
              l[0] + '</span>';
     }).join('  ');
 
+    var timeLabel = '';
+    if (tMin > 0 && tMax > 0) {
+      timeLabel = ' · ' + new Date(tMin).toLocaleTimeString() + ' → ' + new Date(tMax).toLocaleTimeString();
+    }
+
     var html =
       '<div id="ion-ext-viz" style="background:#fafafa;border-bottom:1px solid #eee;padding:6px 16px;font-family:system-ui,sans-serif;">' +
         '<div style="font-size:10px;color:#666;margin-bottom:3px;font-weight:600;">EXTENSION BREAKDOWN (' + totalCalls + ' calls)</div>' +
         '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px;">' + groupBadges + '</div>' +
-        '<div style="font-size:10px;color:#666;margin-bottom:2px;font-weight:600;">TIMELINE (' + timelineEntries.length + ' entries)</div>' +
+        '<div style="font-size:10px;color:#666;margin-bottom:2px;font-weight:600;">TIMELINE (' + n + ' entries' + timeLabel + ')</div>' +
         '<div style="position:relative;height:20px;background:#fff;border:1px solid #e5e7eb;border-radius:3px;overflow:hidden;">' + bars + '</div>' +
-        '<div style="margin-top:2px;font-size:9px;color:#999;display:flex;justify-content:space-between;">' +
-          '<span>' + new Date(tMin).toLocaleTimeString() + '</span>' +
-          '<span>' + legend + '</span>' +
-          '<span>' + new Date(tMax).toLocaleTimeString() + '</span>' +
-        '</div>' +
+        '<div style="margin-top:2px;font-size:9px;color:#999;text-align:right;">' + legend + '</div>' +
       '</div>';
 
     var existing = document.getElementById('ion-ext-viz');
