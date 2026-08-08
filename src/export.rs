@@ -897,34 +897,25 @@ fn export_session_internal(
     };
 
     let css = read_file("template.css") + r#"
-/* ION: tool output default folded via CSS max-height */
-.tool-output {
-  max-height: 120px;
+/* ION: collapse non-expandable tool outputs (pi's .expandable already handled) */
+.tool-output:not(.expandable):not(.expanded) {
+  max-height: 100px;
   overflow: hidden;
   position: relative;
-  transition: max-height 0.3s ease;
+  cursor: pointer;
 }
-.tool-output.expanded {
-  max-height: none;
-}
-.tool-output::after {
-  content: '▼ click to expand';
+.tool-output:not(.expandable):not(.expanded)::after {
+  content: '▼ 展开详情';
   position: absolute;
   bottom: 0; left: 0; right: 0;
-  height: 24px;
-  background: linear-gradient(transparent, #f6f8fa 60%);
+  height: 20px;
+  background: linear-gradient(transparent, rgba(246,248,250,0.95) 60%);
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 11px;
-  color: #8b949e;
-  cursor: pointer;
+  color: #58a6ff;
 }
-.tool-output.expanded::after {
-  content: '▲ click to collapse';
-  background: #f6f8fa;
-}
-.tool-output:has(.expand-hint)::after { display: none; }
 "#;
     let mut js = read_file("template.js");
     let marked_js = read_file("vendor/marked.min.js");
@@ -1493,7 +1484,7 @@ document.addEventListener('DOMContentLoaded', function() {
     let tool_fold_script = r#"
 <script>
 document.addEventListener('click', function(e) {
-  var to = e.target.closest('.tool-output');
+  var to = e.target.closest('.tool-output:not(.expandable)');
   if (to && !window.getSelection().toString()) {
     to.classList.toggle('expanded');
   }
