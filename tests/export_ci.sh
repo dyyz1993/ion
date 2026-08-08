@@ -10,8 +10,8 @@
 #
 # 这个 CI 脚本验证转换链路：
 #   Group A:  真实 ion 跑一个对话 → 导出 HTML → 解码 base64 → 检查转换正确
-#   Group B:  直接拿现有 session 文件 → 导出 → 检查 message/custom_message/turn_summary 转换
-#   Group C:  边界场景：空 session / 缺 message 字段 / turn_summary 无 summary
+#   Group B:  含 turn_summary 的 session → 导出 → 检查内部元数据与可见事件分流
+#   Group C:  边界场景：空 session / 缺 message 字段
 #
 # 用法：bash tests/export_ci.sh
 # ──────────────────────────────────────────────────────────
@@ -185,66 +185,47 @@ fi
 rm -rf "$WORKDIR"
 
 # ═════════════════════════════════════════════════════════
-# Group B: 现有 session 文件 → 导出 → 验证 turn_summary 转换
+# Group B: turn_summary 作为内部元数据打包，但不渲染
 # ═════════════════════════════════════════════════════════
 echo ""
-echo "── Group B: 现有 session 导出（turn_summary 转换） ──"
+echo "── Group B: turn_summary 内部元数据分流 ──"
 
-# 找一个有 turn_summary 的现有 session
-TS_DIR=""
-for d in "$HOME/.ion/agent/sessions/"*; do
-    SF="$d/session.jsonl"
-    [ ! -f "$SF" ] && continue
-    if grep -q '"type":"turn_summary"' "$SF" 2>/dev/null; then
-        TS_DIR="$SF"
-        break
-    fi
-done
+TS_SESSION_ROOT=$(mktemp -d)
+mkdir -p "$TS_SESSION_ROOT/exact"
+TS_SESSION_FILE="$TS_SESSION_ROOT/exact/session.jsonl"
+printf '%s\n' \
+    '{"type":"session","version":3,"id":"turn_summary_internal","timestamp":"2026-08-08T08:00:00Z","cwd":"/test"}' \
+    '{"type":"message","id":"m1","parentId":"turn_summary_internal","timestamp":"2026-08-08T08:00:01Z","message":{"User":{"role":"user","content":[{"Text":{"text":"run a tool"}}]}}}' \
+    '{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-08-08T08:00:02Z","message":{"Assistant":{"role":"assistant","content":[{"Text":{"text":"done"}}]}}}' \
+    '{"type":"turn_summary","id":"ts-1","parentId":null,"timestamp":"2026-08-08T08:00:03Z","turnId":"turn-1","userEntryId":"m1","summary":"done","keySteps":["bash"],"toolCallCount":1,"tokens":{"input":10,"output":20},"durationMs":30,"entryRange":["m1","m2"],"status":"completed"}' \
+    > "$TS_SESSION_FILE"
 
-if [ -n "$TS_DIR" ]; then
-    # 从文件路径推 sid
-    # session.jsonl 第一行有真实 sid
-    SID=$(head -1 "$TS_DIR" | jq -r '.id // empty' 2>/dev/null)
+HTML_B=$(mktemp -t export_ci_B).html
+ION_SESSION_DIR="$TS_SESSION_ROOT" \
+    "$ION_BIN" --export "$HTML_B" --session turn_summary_internal 2>&1 | grep -q "Exported" && \
+    pass "B1 export 含 turn_summary 的 session" || fail "B1 export 失败"
 
-    # 测试数据里可能有多个同名 sid（例如 test_session）。把命中的源文件
-    # 隔离到独立 session root，确保 export 验证的是上面实际找到的文件。
-    TS_SESSION_ROOT=$(mktemp -d)
-    mkdir -p "$TS_SESSION_ROOT/exact"
-    cp "$TS_DIR" "$TS_SESSION_ROOT/exact/session.jsonl"
-
-    HTML_B=$(mktemp -t export_ci_B).html
-    if [ -n "$SID" ]; then
-        ION_SESSION_DIR="$TS_SESSION_ROOT" \
-            "$ION_BIN" --export "$HTML_B" --session "$SID" 2>&1 | grep -q "Exported" && \
-            pass "B1 export 现有 session（$SID）" || fail "B1 export 失败"
-
-        DATA_B=$(decode_session_data "$HTML_B" 2>/dev/null)
-        if [ -n "$DATA_B" ]; then
-            # turn_summary 必须进入正文，并转换成 pi 可渲染的 custom_message。
-            # Timeline 仍保留原始类型，便于独立筛选和着色。
-            RAW_TS=$(echo "$DATA_B" | jq '[.entries[] | select(.type=="turn_summary")] | length')
-            CONVERTED_TS=$(echo "$DATA_B" | jq '[.entries[] | select(.type=="custom_message" and .customType=="turn_summary")] | length')
-            [ "$RAW_TS" -eq 0 ] && \
-                pass "B2 raw turn_summary 已转换（剩余 $RAW_TS）" || \
-                fail "B2 仍有 $RAW_TS 条 raw turn_summary 未转换"
-            [ "$CONVERTED_TS" -gt 0 ] && \
-                pass "B3 turn_summary 已生成正文卡片数据（$CONVERTED_TS 条）" || \
-                fail "B3 正文缺少 turn_summary custom_message"
-            TIMELINE_TS=$(echo "$DATA_B" | jq '[.timelineEntries[] | select(.type=="turn_summary")] | length')
-            [ "$TIMELINE_TS" -eq "$CONVERTED_TS" ] && \
-                pass "B4 Timeline/正文 turn_summary 一一对应（$TIMELINE_TS 条）" || \
-                fail "B4 Timeline/正文 turn_summary 数量不一致"
-        else
-            fail "B2 数据解码失败"
-        fi
-    else
-        fail "B1 session sid 提取失败"
-    fi
-    rm -f "$HTML_B"
-    rm -r "$TS_SESSION_ROOT"
+DATA_B=$(decode_session_data "$HTML_B" 2>/dev/null)
+if [ -n "$DATA_B" ]; then
+    BODY_TS=$(echo "$DATA_B" | jq '[.entries[] | select(.type=="turn_summary" or (.type=="custom_message" and .customType=="turn_summary"))] | length')
+    TIMELINE_TS=$(echo "$DATA_B" | jq '[.timelineEntries[] | select(.type=="turn_summary")] | length')
+    INTERNAL_TS=$(echo "$DATA_B" | jq '[.internalEntries[] | select(.type=="turn_summary")] | length')
+    [ "$BODY_TS" -eq 0 ] && pass "B2 正文不渲染 turn_summary" || fail "B2 正文仍有 $BODY_TS 条 turn_summary"
+    [ "$TIMELINE_TS" -eq 0 ] && pass "B3 Timeline 不渲染 turn_summary" || fail "B3 Timeline 仍有 $TIMELINE_TS 条 turn_summary"
+    [ "$INTERNAL_TS" -eq 1 ] && pass "B4 turn_summary 保留在 internalEntries" || fail "B4 internalEntries 未保留 turn_summary"
+    echo "$DATA_B" | jq -e '
+        .internalEntries[0]
+        | .status == "completed"
+          and .toolCallCount == 1
+          and .tokens == {"input":10,"output":20}
+          and .durationMs == 30
+          and .entryRange == ["m1","m2"]
+    ' >/dev/null && pass "B5 内部回合状态、工具数量、Token、耗时和范围完整" || fail "B5 turn_summary 字段丢失"
 else
-    echo "  ⚠️ 跳过 Group B：没有找到含 turn_summary 的 session 文件"
+    fail "B2 数据解码失败"
 fi
+rm -f "$HTML_B"
+rm -r "$TS_SESSION_ROOT"
 
 # ═════════════════════════════════════════════════════════
 # Group E: compaction → Timeline 与正文都必须展示

@@ -21,7 +21,7 @@
 //! - `tool_name` → `toolName`
 //! - `role:"tool"` → `role:"toolResult"`
 //!
-//! turn_summary（ION 原生）→ custom_message（pi 可识别），让侧边栏树展示有内容。
+//! turn_summary（ION 原生）作为内部元数据嵌入，不交给模板渲染。
 
 use serde_json::{Value, json};
 use std::path::Path;
@@ -703,9 +703,15 @@ fn export_session_internal(
     let branch_selection = select_entries_for_export(&raw_entries, header_session_id);
     raw_entries = branch_selection.entries;
 
+    // turn_summary 是回合边界、统计和还原使用的内部元数据，不是会话正文事件。
+    // 它仍打包进单文件 HTML 的 internalEntries，供数据检查和后续还原使用，
+    // 但不进入正文、类型筛选或 Timeline，避免重复显示 Assistant 文本。
+    let (visible_raw_entries, internal_entries) = partition_export_entries(raw_entries);
+    raw_entries = visible_raw_entries;
+
     // Convert ION Rust-enum format → pi flat format.
-    // Timeline 是所选正文分支的完整索引：除嵌套在 Assistant 卡片里的 ToolResult 外，
-    // 每条 timeline entry 都必须在正文里有可见卡片和稳定锚点。
+    // Timeline 是所选正文分支的完整可见事件索引：除嵌套在 Assistant 卡片里的
+    // ToolResult 外，每条 timeline entry 都必须在正文里有可见卡片和稳定锚点。
     let timeline_entry_count = raw_entries.len();
     let timeline_entries = raw_entries.clone();
     let mut entries: Vec<Value> = raw_entries.iter().map(convert_entry).collect();
@@ -752,8 +758,8 @@ fn export_session_internal(
 
     // 重建 parentId 链：让所有 entries 串成一条线。
     // pi template 的主体内容只显示 getPath(leafId) 返回的 parentId 链上的 entries。
-    // ION 的 session 可能有多条 parentId 链（turn_summary 的 parentId=None 断链、
-    // 增量 save 的 parentId 不连续），导致部分 entries 不在路径上 → 主体内容看不到。
+    // ION 的 session 可能有多条 parentId 链（审计 entry 的 parentId=None、增量
+    // save 的 parentId 不连续），导致部分 entries 不在路径上 → 主体内容看不到。
     // 修复：按原始顺序，每个 entry 的 parentId 指向前一个 entry 的 id，
     // 这样 getPath(leafId) 能返回所有 entries。
     if entries.len() > 1 {
@@ -947,6 +953,7 @@ fn export_session_internal(
         "header": header_for_export,
         "entries": entries,
         "timelineEntries": timeline_entries,
+        "internalEntries": internal_entries,
         "leafId": leaf_id,
         "activeLeafId": branch_selection.active_leaf_id,
         "sourceEntryCount": branch_selection.source_entry_count,
@@ -1181,7 +1188,7 @@ fn export_session_internal(
     js += "\ntry{document.title=header?.name||header?.id||'Session';}catch(e){}";
     // 追加 JS：给 session_name 卡片加专属 class（让 CSS 能用 .session-name-card 选）
     // pi template 渲染所有 custom_message 都用 .hook-message，没法在 CSS 里区分
-    // session_name 跟其他 custom_message（如 turn_summary / sub_session_separator）。
+    // session_name 跟其他 custom_message（如 sub_session_separator）。
     // 这里在 DOMContentLoaded 后扫描 .hook-type 文本，给 session_name 卡片加 class。
     js += r#"
 document.addEventListener('DOMContentLoaded', function() {
@@ -1859,14 +1866,6 @@ document.addEventListener('DOMContentLoaded', function() {
       border-left-color: #ec4899 !important;
       background: #fdf2f8 !important;
     }
-    .hook-message[data-custom-type="turn_summary"] {
-      border: 1px solid #e2e8f0 !important;
-      border-left: 3px solid #94a3b8 !important;
-      background: #f8fafc !important;
-      padding: 9px 12px !important;
-      border-radius: 9px !important;
-      color: #475467 !important;
-    }
     .hook-message[data-custom-type="session_name"] {
       border-left-color: #0891b2 !important;
       background: #ecfeff !important;
@@ -2237,7 +2236,7 @@ document.addEventListener('DOMContentLoaded', function() {
   function entryLabel(category) {
     var labels = {
       user: 'user', assistant: 'assistant', toolResult: 'tool result', custom: 'custom',
-      turn_summary: 'turn summary', branch_summary: 'branch summary', segment_summary: 'segment summary',
+      branch_summary: 'branch summary', segment_summary: 'segment summary',
       model_change: 'model change', thinking_level_change: 'thinking change', agent_change: 'agent change',
       session_info: 'session info', system_event: 'system event', active_tools_change: 'tools change',
       leaf_pointer: 'leaf pointer'
@@ -2248,7 +2247,7 @@ document.addEventListener('DOMContentLoaded', function() {
   function entryColor(category) {
     var colors = {
       user: '#3b82f6', assistant: '#10b981', toolResult: '#f59e0b', custom: '#8b5cf6',
-      compaction: '#ef4444', turn_summary: '#94a3b8', branch_summary: '#d946ef',
+      compaction: '#ef4444', branch_summary: '#d946ef',
       segment_summary: '#c026d3', model_change: '#06b6d4', thinking_level_change: '#0ea5e9',
       agent_change: '#14b8a6', session_info: '#6366f1', system_event: '#f97316',
       active_tools_change: '#a855f7', label: '#eab308', deletion: '#dc2626',
@@ -2338,7 +2337,7 @@ document.addEventListener('DOMContentLoaded', function() {
     timelineItems.forEach(function(item) {
       categoryCounts[item.category] = (categoryCounts[item.category] || 0) + 1;
     });
-    var priority = ['user', 'assistant', 'toolResult', 'custom', 'compaction', 'turn_summary', 'branch_summary'];
+    var priority = ['user', 'assistant', 'toolResult', 'custom', 'compaction', 'branch_summary'];
     var categories = Object.keys(categoryCounts).sort(function(a, b) {
       var ai = priority.indexOf(a), bi = priority.indexOf(b);
       if (ai === -1) ai = 999;
@@ -2587,13 +2586,13 @@ document.addEventListener('DOMContentLoaded', function() {
     return role === 'user' || role === 'assistant' ? role : 'message';
   }
   function label(type) {
-    var labels = { toolResult: 'tool result', turn_summary: 'turn summary', branch_summary: 'branch summary',
+    var labels = { toolResult: 'tool result', branch_summary: 'branch summary',
       model_change: 'model change', thinking_level_change: 'thinking change', active_tools_change: 'tools change' };
     return labels[type] || String(type).replace(/_/g, ' ');
   }
   function color(type) {
     var colors = { user:'#3b82f6', assistant:'#10b981', toolResult:'#f59e0b', custom:'#8b5cf6',
-      compaction:'#ef4444', turn_summary:'#94a3b8', branch_summary:'#d946ef', model_change:'#06b6d4',
+      compaction:'#ef4444', branch_summary:'#d946ef', model_change:'#06b6d4',
       thinking_level_change:'#0ea5e9', active_tools_change:'#a855f7', deletion:'#dc2626', restoration:'#22c55e' };
     if (colors[type]) return colors[type];
     var palette = ['#2563eb','#0f766e','#b45309','#7c3aed','#be123c','#4f46e5','#15803d'];
@@ -2642,7 +2641,7 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     var counts = {};
     items.forEach(function(item) { counts[item.type] = (counts[item.type] || 0) + 1; });
-    var order = ['user','assistant','toolResult','custom','compaction','turn_summary','branch_summary'];
+    var order = ['user','assistant','toolResult','custom','compaction','branch_summary'];
     var types = Object.keys(counts).sort(function(a, b) {
       var ai = order.indexOf(a), bi = order.indexOf(b);
       if (ai < 0) ai = 999;
@@ -2766,9 +2765,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Guarantee the central contract of the export: every Timeline item resolves
     // to a visible body target. Native types unsupported by pi are rendered by the
-    // generic fallback above; ToolResult points to its nested tool call. Hook events
-    // remain addressable but are grouped under the following turn summary (or a
-    // structured tool target) instead of becoming noisy top-level cards.
+    // generic fallback above; ToolResult points to its nested tool call. Correlated
+    // Hook events are grouped under that tool target; lifecycle Hooks fall back to
+    // the preceding visible card instead of relying on internal turn metadata.
     let complete_entry_body_script = r#"
 <script>
 document.addEventListener('DOMContentLoaded', function() {
@@ -2878,9 +2877,8 @@ document.addEventListener('DOMContentLoaded', function() {
     return container;
   }
 
-  // Stop/SubagentStop hooks are turn lifecycle records. Their next turn_summary is
-  // the owning body card. Tool-correlated hooks can opt into an exact ToolResult by
-  // carrying toolCallId; older entries without correlation data use turn grouping.
+  // Tool-correlated hooks belong to the exact ToolResult. Older lifecycle hooks
+  // without correlation data fall back to the preceding visible body card.
   entries.forEach(function(entry, index) {
     if (customType(entry) !== 'hook_event' || !entry.id) return;
     var hook = document.getElementById('entry-' + entry.id);
@@ -2888,14 +2886,6 @@ document.addEventListener('DOMContentLoaded', function() {
     var owner = null;
     var callId = toolCallId(entry);
     if (callId) owner = document.getElementById('tool-call-' + callId);
-    if (!owner) {
-      for (var next = index + 1; next < entries.length; next++) {
-        if (entries[next].type === 'turn_summary' || customType(entries[next]) === 'turn_summary') {
-          owner = targetFor(entries[next], next);
-          if (owner) break;
-        }
-      }
-    }
     if (!owner) {
       for (var previous = index - 1; previous >= 0; previous--) {
         owner = topLevelTarget(targetFor(entries[previous], previous));
@@ -3117,15 +3107,20 @@ fn sub_html_filename(sid: &str) -> String {
     format!("{SUB_HTML_PREFIX}{short}.html")
 }
 
+/// 将内部元数据和用户可见事件分流。内部记录仍嵌入导出文件，但不交给模板渲染。
+fn partition_export_entries(entries: Vec<Value>) -> (Vec<Value>, Vec<Value>) {
+    entries.into_iter().partition(|entry| {
+        entry.get("type").and_then(|value| value.as_str()) != Some("turn_summary")
+    })
+}
+
 /// Handles:
 /// - `message`: unwrap the `Assistant`/`User`/`ToolResult` variant, flatten into pi's `{role, content}` form
-/// - `turn_summary` (ION-only): rewrite to `custom_message` so pi template renders it in the tree
 /// - others: passed through (already match pi schema)
 fn convert_entry(entry: &Value) -> Value {
     let entry_type = entry.get("type").and_then(|v| v.as_str()).unwrap_or("");
     match entry_type {
         "message" => convert_message_entry(entry),
-        "turn_summary" => convert_turn_summary_entry(entry),
         "tool_result" => convert_tool_result_entry(entry),
         // session_name → 转成 custom_message 让 pi 模板渲染（带 customType=session_name）
         "session_name" => {
@@ -3297,45 +3292,6 @@ fn convert_tool_result_entry(entry: &Value) -> Value {
         if let Some(content) = obj.get_mut("content") {
             *content = convert_content_blocks(content);
         }
-    }
-    out
-}
-
-/// Convert ION turn_summary entry → pi custom_message (so the tree shows the summary text).
-///
-/// pi template 的 `getTreeNodeDisplayHtml` 不认识 `turn_summary`，
-/// 但认识 `custom_message`。我们把 summary 当成 custom_message 的 content，
-/// 这样侧边栏会显示 "[turn_summary]: <摘要>" 而不是 undefined。
-fn convert_turn_summary_entry(entry: &Value) -> Value {
-    let summary = entry
-        .get("summary")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let status = entry.get("status").and_then(|v| v.as_str()).unwrap_or("");
-    let turn_id = entry.get("turnId");
-
-    let mut out = entry.clone();
-    if let Some(obj) = out.as_object_mut() {
-        obj.insert("type".to_string(), json!("custom_message"));
-        obj.insert(
-            "customType".to_string(),
-            json!(session_jsonl::CUSTOM_TYPE_TURN_SUMMARY),
-        );
-        // content 用 string 形式（pi 支持 string | array）
-        let content = if !summary.is_empty() {
-            summary.clone()
-        } else if !status.is_empty() {
-            format!(
-                "turn {}: {}",
-                turn_id.map(|v| v.to_string()).unwrap_or_default(),
-                status
-            )
-        } else {
-            "(empty turn)".to_string()
-        };
-        obj.insert("content".to_string(), json!(content));
-        obj.insert("display".to_string(), json!(true));
     }
     out
 }
@@ -3970,21 +3926,30 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_turn_summary() {
-        let entry = json!({
+    fn test_turn_summary_is_internal_export_metadata() {
+        let turn_summary = json!({
             "type": "turn_summary",
             "id": "ts1",
-            "parentId": null,
-            "timestamp": "2026-01-01T00:00:00Z",
             "summary": "Did some work",
             "status": "completed",
-            "turnId": 0
+            "turnId": 0,
+            "keySteps": ["bash"],
+            "toolCallCount": 1,
+            "tokens": {"input": 10, "output": 20},
+            "durationMs": 30,
+            "entryRange": ["m1", "m2"]
         });
-        let pi = convert_entry(&entry);
-        assert_eq!(pi.get("type").unwrap(), &json!("custom_message"));
-        assert_eq!(pi.get("customType").unwrap(), &json!("turn_summary"));
-        assert_eq!(pi.get("content").unwrap(), &json!("Did some work"));
-        assert_eq!(pi.get("display").unwrap(), &json!(true));
+        let message = json!({"type": "message", "id": "m1"});
+        let compaction = json!({"type": "compaction", "id": "c1"});
+
+        let (visible, internal) = partition_export_entries(vec![
+            message.clone(),
+            turn_summary.clone(),
+            compaction.clone(),
+        ]);
+
+        assert_eq!(visible, vec![message, compaction]);
+        assert_eq!(internal, vec![turn_summary]);
     }
 
     #[test]
@@ -4025,23 +3990,6 @@ mod tests {
     fn test_string_content_passthrough() {
         let content = json!("plain string content");
         assert_eq!(convert_content_blocks(&content), content);
-    }
-
-    #[test]
-    fn test_empty_summary_turn_falls_back_to_status() {
-        let entry = json!({
-            "type": "turn_summary",
-            "id": "ts1",
-            "parentId": null,
-            "timestamp": "2026-01-01T00:00:00Z",
-            "summary": "",
-            "status": "aborted",
-            "turnId": 3
-        });
-        let pi = convert_entry(&entry);
-        // Empty summary → fall back to status
-        let content = pi.get("content").unwrap().as_str().unwrap();
-        assert!(content.contains("aborted"));
     }
 
     #[test]

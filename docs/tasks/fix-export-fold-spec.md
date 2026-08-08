@@ -68,9 +68,13 @@ timeline 里每个事件之间间距太大，一屏显示不了几个。
 
 ## 改动 3: 完整 Entry Timeline + 交互筛选
 
-Timeline 保留原始类型的 `timelineEntries`，正文 `entries` 使用同一条完整 Entry
-流并做模板兼容转换。因此 `turn_summary`、`compaction`、状态切换等审计 entry
-既出现在 Timeline，也必须在正文中拥有可见展示和稳定锚点。
+Timeline 的 `timelineEntries` 与正文 `entries` 使用同一条完整的用户可见事件流，
+并按模板需要做格式转换。`compaction`、状态切换等真实生命周期 entry 既出现在
+Timeline，也必须在正文中拥有可见展示和稳定锚点。
+
+`turn_summary` 是回合边界、状态、工具数量、Token、耗时和还原定位使用的内部元数据，
+不是独立的会话事件。导出时原样保存在 `internalEntries` 中，确保单文件 HTML 不丢数据，
+但不进入正文、Timeline 或类型筛选，也不得转换成 `custom_message`。
 
 分支会话先通过最后一条 `leaf_pointer` 解析 active leaf。正文与 Timeline 只使用
 `root → active leaf` 的当前消息路径，同时保留全局审计 Entry，以及
@@ -79,8 +83,9 @@ Timeline 保留原始类型的 `timelineEntries`，正文 `entries` 使用同一
 
 分类规则：
 
-- 内核原生 entry 保留真实类型，例如 `compaction`、`turn_summary`、
-  `branch_summary`、`model_change`、`deletion` 和 `restoration`。
+- 用户可见的内核原生 entry 保留真实类型，例如 `compaction`、`branch_summary`、
+  `model_change`、`deletion` 和 `restoration`。
+- 内部元数据 `turn_summary` 只进入 `internalEntries`，不参与可见类型分类。
 - `message` 按 `user`、`assistant`、`tool result` 三种角色显示。
 - Extension 产生的 `custom` / `custom_message` 统一显示为 `custom`，不按
   `customType` 拆分颜色或筛选项。

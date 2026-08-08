@@ -31,8 +31,6 @@ use std::path::{Path, PathBuf};
 pub const CUSTOM_TYPE_SYSTEM_PROMPT: &str = "system_prompt";
 /// custom_message：子 session 分隔标记（export HTML 主 session 中插入）
 pub const CUSTOM_TYPE_SUB_SESSION_SEPARATOR: &str = "sub_session_separator";
-/// custom_message：turn 摘要（compaction 后插入，让用户看到压缩了什么）
-pub const CUSTOM_TYPE_TURN_SUMMARY: &str = "turn_summary";
 
 // ---------------------------------------------------------------------------
 // Session entry types (pi JSONL spec v3)
