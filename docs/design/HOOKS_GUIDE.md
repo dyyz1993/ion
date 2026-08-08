@@ -195,6 +195,20 @@ bash scripts/hooks_test.sh test UserPromptSubmit --stdin '{"prompt":"你好"}'
 - `ION_HOOK_EVENT` — 事件名
 - `CLAUDE_PROJECT_DIR` — 项目根目录（兼容 pi 脚本）
 
+#### `PreToolUse` 拒绝后的会话结构
+
+`PreToolUse` 返回 `block` 时，ION 把它视为“工具调用失败”，不会把整个 Agent 回合异常终止。会话与导出保持下面的完整顺序：
+
+```text
+User
+  → Assistant（包含 ToolCall）
+  → hook_event（审计记录，与 ToolCall 使用同一个 toolCallId）
+  → ToolResult（is_error=true，正文是 Hook 的拒绝原因）
+  → Assistant（模型读取失败结果后继续回答）
+```
+
+被拒绝的工具不会执行，也不会触发 `PostToolUse`；`hook_event` 是可追溯审计信息，真正返回给模型的是错误 `ToolResult`。HTML 导出会把这条 Hook 审计记录归到对应的工具卡片下，而不是塞进 `turn_summary`。
+
 #### `http` — POST 到 URL
 
 ```json

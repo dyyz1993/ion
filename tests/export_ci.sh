@@ -124,6 +124,38 @@ fi
             N=$(echo "$DATA" | jq '.entries | length')
             [ "$N" -gt 0 ] && pass "A4 entries 非空（$N 条）" || fail "A4 entries 为空"
 
+            # Timeline 使用独立的完整 entry 流，不能被正文过滤规则截断
+            TIMELINE_N=$(echo "$DATA" | jq '.timelineEntries | length')
+            [ "$TIMELINE_N" -gt 0 ] && \
+                pass "A13 timelineEntries 非空（$TIMELINE_N 条）" || \
+                fail "A13 timelineEntries 缺失或为空"
+            [ "$TIMELINE_N" -eq "$N" ] && \
+                pass "A14 Timeline 与正文使用同一完整 Entry 流（$TIMELINE_N 条）" || \
+                fail "A14 Timeline/正文 Entry 数不一致（$TIMELINE_N != $N）"
+            grep -q 'data-entry-category' "$HTML" && grep -q 'ion-timeline-tooltip' "$HTML" && \
+                pass "A15 Timeline 包含类型筛选与悬停概要" || \
+                fail "A15 Timeline 交互结构缺失"
+            INDEX_META=$(echo "$DATA" | jq '.header.indexMeta | type == "object"')
+            [ "$INDEX_META" = "true" ] && \
+                pass "A16 SessionIndex 元信息快照已注入导出数据" || \
+                fail "A16 header.indexMeta 缺失"
+            grep -q 'item.index / (n - 1)' "$HTML" && grep -q 'scrollIntoView' "$HTML" && \
+                pass "A17 Timeline 按 Entry 顺序紧凑排列且支持点击跳转" || \
+                fail "A17 Timeline 紧凑排列或跳转逻辑缺失"
+            grep -q 'ion-entry-fold-hint' "$HTML" && \
+                grep -q '#messages > \[id\^="entry-"\]' "$HTML" && \
+                grep -q 'more lines, click to expand' "$HTML" && \
+                grep -q 'aria-expanded' "$HTML" && \
+                pass "A18 长 Entry 默认显示多行内容预览、剩余行数及展开入口" || \
+                fail "A18 缺少渐进式 Entry 折叠交互"
+            TIMELINE_IDS=$(echo "$DATA" | jq -r '[.timelineEntries[] | .id // ""] | sort | .[]')
+            BODY_IDS=$(echo "$DATA" | jq -r '[.entries[] | .id // ""] | sort | .[]')
+            [ "$TIMELINE_IDS" = "$BODY_IDS" ] && \
+                grep -q 'ionEntryBodyCoverage' "$HTML" && \
+                grep -q 'ion-entry-nested-events' "$HTML" && \
+                pass "A19 每条 Timeline Entry 都声明正文目标，Hook 支持归组" || \
+                fail "A19 Timeline Entry 正文目标覆盖不完整"
+
             # 检查 message 是否已 flatten（没有 Assistant/User/ToolResult wrapper）
             WRAPPED=$(echo "$DATA" | jq '[.entries[] | select(.type=="message") | .message | select(has("Assistant") or has("User") or has("ToolResult"))] | length')
             [ "$WRAPPED" -eq 0 ] && pass "A5 message 已 flatten（无 enum wrapper）" || fail "A5 仍有 $WRAPPED 条 message 带 enum wrapper"
@@ -171,27 +203,37 @@ done
 
 if [ -n "$TS_DIR" ]; then
     # 从文件路径推 sid
-    DIR_NAME=$(basename "$(dirname "$TS_DIR")")
     # session.jsonl 第一行有真实 sid
     SID=$(head -1 "$TS_DIR" | jq -r '.id // empty' 2>/dev/null)
 
+    # 测试数据里可能有多个同名 sid（例如 test_session）。把命中的源文件
+    # 隔离到独立 session root，确保 export 验证的是上面实际找到的文件。
+    TS_SESSION_ROOT=$(mktemp -d)
+    mkdir -p "$TS_SESSION_ROOT/exact"
+    cp "$TS_DIR" "$TS_SESSION_ROOT/exact/session.jsonl"
+
     HTML_B=$(mktemp -t export_ci_B).html
     if [ -n "$SID" ]; then
-        "$ION_BIN" --export "$HTML_B" --session "$SID" 2>&1 | grep -q "Exported" && \
+        ION_SESSION_DIR="$TS_SESSION_ROOT" \
+            "$ION_BIN" --export "$HTML_B" --session "$SID" 2>&1 | grep -q "Exported" && \
             pass "B1 export 现有 session（$SID）" || fail "B1 export 失败"
 
         DATA_B=$(decode_session_data "$HTML_B" 2>/dev/null)
         if [ -n "$DATA_B" ]; then
-            # turn_summary 应该被完全过滤掉（既不是 raw turn_summary，也不转成 custom_message）
-            # 它们是内部记录，会污染主体内容的"入参→响应值"流程
+            # turn_summary 必须进入正文，并转换成 pi 可渲染的 custom_message。
+            # Timeline 仍保留原始类型，便于独立筛选和着色。
             RAW_TS=$(echo "$DATA_B" | jq '[.entries[] | select(.type=="turn_summary")] | length')
             CONVERTED_TS=$(echo "$DATA_B" | jq '[.entries[] | select(.type=="custom_message" and .customType=="turn_summary")] | length')
             [ "$RAW_TS" -eq 0 ] && \
-                pass "B2 raw turn_summary 已过滤（剩余 $RAW_TS）" || \
-                fail "B2 仍有 $RAW_TS 条 raw turn_summary 未过滤"
-            [ "$CONVERTED_TS" -eq 0 ] && \
-                pass "B3 turn_summary custom_message 已过滤（不再污染主体内容）" || \
-                fail "B3 仍有 $CONVERTED_TS 条 turn_summary custom_message"
+                pass "B2 raw turn_summary 已转换（剩余 $RAW_TS）" || \
+                fail "B2 仍有 $RAW_TS 条 raw turn_summary 未转换"
+            [ "$CONVERTED_TS" -gt 0 ] && \
+                pass "B3 turn_summary 已生成正文卡片数据（$CONVERTED_TS 条）" || \
+                fail "B3 正文缺少 turn_summary custom_message"
+            TIMELINE_TS=$(echo "$DATA_B" | jq '[.timelineEntries[] | select(.type=="turn_summary")] | length')
+            [ "$TIMELINE_TS" -eq "$CONVERTED_TS" ] && \
+                pass "B4 Timeline/正文 turn_summary 一一对应（$TIMELINE_TS 条）" || \
+                fail "B4 Timeline/正文 turn_summary 数量不一致"
         else
             fail "B2 数据解码失败"
         fi
@@ -199,9 +241,106 @@ if [ -n "$TS_DIR" ]; then
         fail "B1 session sid 提取失败"
     fi
     rm -f "$HTML_B"
+    rm -r "$TS_SESSION_ROOT"
 else
     echo "  ⚠️ 跳过 Group B：没有找到含 turn_summary 的 session 文件"
 fi
+
+# ═════════════════════════════════════════════════════════
+# Group E: compaction → Timeline 与正文都必须展示
+# ═════════════════════════════════════════════════════════
+echo ""
+echo "── Group E: 压缩 Entry 完整展示 ──"
+
+COMPACTION_SOURCE=""
+for d in "$HOME/.ion/agent/sessions/"*; do
+    SF="$d/session.jsonl"
+    [ ! -f "$SF" ] && continue
+    if head -1 "$SF" | grep -q '"type":"session"' && grep -q '"type":"compaction"' "$SF" 2>/dev/null; then
+        COMPACTION_SOURCE="$SF"
+        break
+    fi
+done
+
+if [ -n "$COMPACTION_SOURCE" ]; then
+    COMPACTION_ROOT=$(mktemp -d)
+    mkdir -p "$COMPACTION_ROOT/exact"
+    cp "$COMPACTION_SOURCE" "$COMPACTION_ROOT/exact/session.jsonl"
+    COMPACTION_SID=$(head -1 "$COMPACTION_SOURCE" | jq -r '.id // empty')
+    HTML_E=$(mktemp -t export_ci_E).html
+    ION_SESSION_DIR="$COMPACTION_ROOT" \
+        "$ION_BIN" --export "$HTML_E" --session "$COMPACTION_SID" 2>&1 | grep -q "Exported" && \
+        pass "E1 export compaction session（$COMPACTION_SID）" || fail "E1 compaction session export 失败"
+    DATA_E=$(decode_session_data "$HTML_E" 2>/dev/null)
+    TIMELINE_COMPACTION=$(echo "$DATA_E" | jq '[.timelineEntries[] | select(.type=="compaction")] | length')
+    BODY_COMPACTION=$(echo "$DATA_E" | jq '[.entries[] | select(.type=="compaction")] | length')
+    [ "$TIMELINE_COMPACTION" -gt 0 ] && [ "$TIMELINE_COMPACTION" -eq "$BODY_COMPACTION" ] && \
+        pass "E2 Compaction 在 Timeline 与正文一一对应（$BODY_COMPACTION 条）" || \
+        fail "E2 Compaction Timeline/正文展示不一致"
+    grep -q "entry.type === 'compaction'" "$HTML_E" && \
+        pass "E3 Compaction 使用独立内置卡片渲染" || \
+        fail "E3 缺少 Compaction 内置卡片渲染"
+    rm -f "$HTML_E"
+    rm -r "$COMPACTION_ROOT"
+else
+    echo "  ⚠️ 跳过 Group E：没有找到含 compaction 的 session 文件"
+fi
+
+# ═════════════════════════════════════════════════════════
+# Group F: 分支 session → 只导出 active branch + 分叉记录
+# ═════════════════════════════════════════════════════════
+echo ""
+echo "── Group F: 当前分支导出 ──"
+
+BRANCH_ROOT=$(mktemp -d)
+mkdir -p "$BRANCH_ROOT/exact"
+BRANCH_SESSION="$BRANCH_ROOT/exact/session.jsonl"
+apply_branch_fixture() {
+    printf '%s\n' \
+        '{"type":"session","version":3,"id":"branch_export","timestamp":"2026-08-08T08:00:00Z","cwd":"/test"}' \
+        '{"type":"message","id":"m1","parentId":"branch_export","timestamp":"2026-08-08T08:00:01Z","message":{"User":{"role":"user","content":[{"Text":{"text":"root"}}]}}}' \
+        '{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-08-08T08:00:02Z","message":{"Assistant":{"role":"assistant","content":[{"Text":{"text":"base"}}]}}}' \
+        '{"type":"message","id":"old-3","parentId":"m2","timestamp":"2026-08-08T08:00:03Z","message":{"User":{"role":"user","content":[{"Text":{"text":"old branch"}}]}}}' \
+        '{"type":"message","id":"old-4","parentId":"old-3","timestamp":"2026-08-08T08:00:04Z","message":{"Assistant":{"role":"assistant","content":[{"Text":{"text":"abandoned"}}]}}}' \
+        '{"type":"leaf_pointer","id":"lp-1","parentId":null,"timestamp":"2026-08-08T08:00:05Z","leafId":"m2"}' \
+        '{"type":"message","id":"m5","parentId":"m2","timestamp":"2026-08-08T08:00:06Z","message":{"User":{"role":"user","content":[{"Text":{"text":"active branch"}}]}}}' \
+        '{"type":"turn_summary","id":"ts-1","parentId":null,"timestamp":"2026-08-08T08:00:07Z","userEntryId":"m5","summary":"active summary"}' \
+        '{"type":"custom_message","id":"hook-1","parentId":null,"timestamp":"2026-08-08T08:00:08Z","customType":"hook_event","content":"active hook","display":true}' \
+        '{"type":"custom_message","id":"old-note","parentId":"old-4","timestamp":"2026-08-08T08:00:09Z","customType":"diagnostics","content":"old branch detail","display":true}' \
+        '{"type":"branch_summary","id":"bs-1","parentId":"old-4","timestamp":"2026-08-08T08:00:10Z","fromId":"old-4","summary":"abandoned branch"}' \
+        > "$BRANCH_SESSION"
+}
+apply_branch_fixture
+
+HTML_F=$(mktemp -t export_ci_F).html
+ION_SESSION_DIR="$BRANCH_ROOT" \
+    "$ION_BIN" --export "$HTML_F" --session branch_export 2>&1 | grep -q "Exported" && \
+    pass "F1 分支 session 导出成功" || fail "F1 分支 session 导出失败"
+DATA_F=$(decode_session_data "$HTML_F" 2>/dev/null)
+ACTIVE_IDS=$(echo "$DATA_F" | jq -r '[.entries[].id] | join(",")')
+if echo ",$ACTIVE_IDS," | grep -q ',m1,' && \
+   echo ",$ACTIVE_IDS," | grep -q ',m2,' && \
+   echo ",$ACTIVE_IDS," | grep -q ',m5,' && \
+   ! echo ",$ACTIVE_IDS," | grep -q ',old-3,' && \
+   ! echo ",$ACTIVE_IDS," | grep -q ',old-4,' && \
+   ! echo ",$ACTIVE_IDS," | grep -q ',old-note,'; then
+    pass "F2 正文只保留 root→active leaf，废弃分支内容已排除"
+else
+    fail "F2 active branch 选择错误（$ACTIVE_IDS）"
+fi
+BRANCH_RECORDS=$(echo "$DATA_F" | jq '[.timelineEntries[] | select(.type=="leaf_pointer")] | length')
+[ "$BRANCH_RECORDS" -eq 1 ] && \
+    pass "F3 分叉保留为一条 leaf_pointer 记录" || \
+    fail "F3 分叉记录数量错误（$BRANCH_RECORDS）"
+ACTIVE_LEAF=$(echo "$DATA_F" | jq -r '.activeLeafId // empty')
+SOURCE_COUNT=$(echo "$DATA_F" | jq -r '.sourceEntryCount // 0')
+OMITTED_COUNT=$(echo "$DATA_F" | jq -r '.omittedBranchEntryCount // 0')
+[ "$ACTIVE_LEAF" = "m5" ] && [ "$SOURCE_COUNT" -eq 10 ] && [ "$OMITTED_COUNT" -eq 3 ] && \
+    pass "F4 导出记录 active leaf 与省略分支统计" || \
+    fail "F4 分支元数据错误（leaf=$ACTIVE_LEAF source=$SOURCE_COUNT omitted=$OMITTED_COUNT）"
+
+rm -f "$HTML_F"
+rm -r "$BRANCH_ROOT"
 
 # ═════════════════════════════════════════════════════════
 # Group D: --export + prompt → tools 面板应有内容

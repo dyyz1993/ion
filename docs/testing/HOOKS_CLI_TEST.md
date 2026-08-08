@@ -487,6 +487,45 @@ ion hooks test SubagentStop --stdin '{}' --handler 1
 **验证点：**
 - ✅ 只跑指定 handler（--handler 参数）
 
+### C5 PreToolUse 拒绝保持完整消息链（✅ 已验证）
+
+```bash
+bash tests/hooks_pretool_deny_ci.sh
+```
+
+脚本用 FauxProvider 发起一个 Bash ToolCall，并用项目级 `PreToolUse` command handler 返回：
+
+```json
+{"decision":"block","reason":"CLI Hook 拒绝执行 Bash"}
+```
+
+落盘的关键 ToolResult：
+
+```json
+{
+  "role": "tool",
+  "tool_call_id": "call_xxx",
+  "tool_name": "bash",
+  "is_error": true,
+  "content": [{"Text":{"text":"Error: tool 'bash' denied by PreToolUse Hook: CLI Hook 拒绝执行 Bash"}}],
+  "details": {
+    "status": "denied",
+    "source": "hook",
+    "hookEvent": "PreToolUse",
+    "toolCallId": "call_xxx",
+    "toolName": "bash",
+    "reason": "CLI Hook 拒绝执行 Bash"
+  }
+}
+```
+
+**验证点：**
+- ✅ 被拒绝的 Bash 没有执行
+- ✅ 当前分支顺序为 User → Assistant(ToolCall) → hook_event → ToolResult(error) → Assistant
+- ✅ hook_event、ToolCall、ToolResult 的 `toolCallId` 完全一致
+- ✅ SessionIndex 计数准确：1 user prompt、2 LLM requests、4 messages、2 turns
+- ✅ 可导出为不依赖服务器的单文件 HTML
+
 ---
 
 ## Group D：agent handler（真调工具）（✅ 已验证 — hooks_agent_ci.sh Group E）
@@ -646,6 +685,8 @@ ion hooks log --tail 20 --failed
 | `tests/patch1_worker_config.rs` | A（create_worker 增强） | ✅ 已实现（5 passed） |
 | `tests/hooks_ci.sh` | B（配置/热重载）+ B.1/B.2/B.3（command handler 教程） | ✅ 已实现（8 passed） |
 | `tests/hooks_agent_ci.sh` | D（agent handler 真能 spawn + 死循环防护） | ✅ 已实现（4 passed） |
+| `tests/pre_tool_denial_harness.rs` | PreToolUse/扩展 veto 的 Agent 消息闭环 | ✅ 已实现（1 passed） |
+| `tests/hooks_pretool_deny_ci.sh` | PreToolUse 拒绝的 CLI + session JSONL + SessionIndex + 单文件 HTML | ✅ 已实现（7 passed） |
 | `tests/hooks_e2e.rs` | 内核引擎（HooksConfig/handler_runner/matcher） | ✅ 已实现（10 passed，`--test-threads=1`） |
 | `scripts/hooks_test.sh` | 用户验证工具（validate/test/list，纯 bash） | ✅ 已实现 |
 

@@ -736,10 +736,12 @@ ion --mode rpc           → 内部 Worker 子进程 (JSONL over stdin/stdout)
 
 > **完整状态快照**（功能清单 + 测试统计 + 路线图 + A→B 教程）已外移到 [docs/STATUS.md](./docs/STATUS.md)。
 >
-> 快速概览（2026-08-06 实测）：
+> 快速概览（2026-08-08 实测）：
 > - **代码规模**：99,682 行 Rust（src 82,912）
 > - **lib 测试**：1013 passed / 2 failed（2 个 hooks 测试逻辑缺陷，非产品 bug，待修）
 > - **已完成**：核心内核 + 15+ 扩展系统 + 三场景引擎 + A→B 自进化
+> - **HTML Export**：线性 JSONL 全量正文 + active branch 筛选/分叉记录 + Timeline 完整映射 + Hook 归组 + Compaction 独立卡片（`tests/export_ci.sh` 37/37）
+> - **PreToolUse 拒绝闭环**：拒绝转错误 ToolResult、Agent 继续、Hook 审计与 toolCallId/当前分支关联、SessionIndex 准确计数（Harness 1/1 + `tests/hooks_pretool_deny_ci.sh` 7/7）
 >
 > 历史改动看 `git log`，功能设计看 `docs/design/`，每个功能的测试看对应 `tests/*_ci.sh`。
 

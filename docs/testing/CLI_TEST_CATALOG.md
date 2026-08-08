@@ -65,7 +65,7 @@
 | 消息拉取 | [MESSAGE_RETRIEVAL_CASES](MESSAGE_RETRIEVAL_CASES.md) | `message_retrieval_ci.sh` | 13 | 55 | ✅ 已对齐 |
 | Message Source Tag | [MESSAGE_SOURCE_TAG](../design/MESSAGE_SOURCE_TAG.md) §6 | `message_source_ci.sh` | 5 | 9 | ✅ 已对齐 |
 | SSE 事件 | — | `sse_events_ci.sh` | 5 | 13 | 📋 仅 CI |
-| 导出 (export) | — | `export_ci.sh` | 4 | 18 | 📋 仅 CI |
+| 导出 (export) | [fix-export-fold-spec](../tasks/fix-export-fold-spec.md) | `export_ci.sh` | 6 | 37 | ✅ 已验证 |
 
 ---
 
