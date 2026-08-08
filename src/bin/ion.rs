@@ -4221,6 +4221,13 @@ async fn main() {
     let cli = Cli::parse();
     init_logging(cli.verbose);
 
+    // 安装 rustls crypto provider（必须在任何 reqwest/rustls Client build 之前）。
+    // reqwest 0.13（被 rmcp 间接依赖）用 rustls-no-provider feature，若不显式 install
+    // provider，build Client 时会 panic：'No rustls crypto provider is configured'。
+    // 配了 HTTP MCP server（rmcp 连接）时会触发，故必须在 main 最早期执行。
+    // install_default 幂等：已装过返回 Err，忽略即可。
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     // FauxProvider CLI flags → env vars (so build_registry_and_model picks them up)
     if let Some(ref s) = cli.faux_script {
         unsafe { std::env::set_var("ION_FAUX_SCRIPT", s); }
