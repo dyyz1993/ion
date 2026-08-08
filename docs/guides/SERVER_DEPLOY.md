@@ -280,7 +280,83 @@ systemctl status ion
 
 ---
 
-## 6. 日常运维速查
+## 6. 配置 MCP server（让 agent 用外部工具）
+
+ion 的 MCP 客户端支持 stdio（子进程）和 http（远程）两类 server。配好后 agent 在任务中能自动调用 MCP 工具（工具名 `mcp__<server>__<tool>`），不需要用户手动指定。
+
+### 6.1 配置格式
+
+`~/.ion/config.json` 的 `mcp_servers` 字段，每个 server 一个 entry：
+
+```jsonc
+{
+  "mcp_servers": {
+    // stdio 类：本地子进程（npx / node / bun 启动）
+    "zai-mcp-server": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@z_ai/mcp-server"],
+      "env": { "Z_AI_API_KEY": "你的key", "Z_AI_MODE": "ZHIPU" }
+    },
+    // http 类：远程 MCP endpoint（只需 URL + headers，不需本地运行时）
+    "web-search-prime": {
+      "type": "http",
+      "url": "https://your-mcp-endpoint/mcp",
+      "headers": { "Authorization": "Bearer xxx" }
+    }
+  }
+}
+```
+
+> ⚠️ 改完 `mcp_servers` 后必须**重启 ion serve**（supervisord 会自动拉起）。MCP 连接在启动时建立，热改不生效。
+
+### 6.2 选哪些 MCP（按环境适配）
+
+从本地（开发机）迁到服务器时，不是所有 MCP 都能直接搬：
+
+| MCP 类型 | 服务器能不能跑 | 注意点 |
+|---------|--------------|--------|
+| **http 类**（zread / web-search-prime / web-reader）| ✅ 几乎都能 | 只需服务器能访问那个 URL，零本地依赖。**最该配、最容易测**。|
+| **stdio + npx 类**（zai-mcp-server）| ✅ 要装 node+npx | Ubuntu/Debian: `apt install -y nodejs npm`；镜像里通常已有 |
+| **stdio + npx + 浏览器**（playwright）| ⚠️ 要装 chromium | 重，非必要别配。`npx playwright install --with-deps chromium` |
+| **stdio + 本地路径 env**（knowledge-base）| ⚠️ 要改路径 | env 里 `KB_DIR`/`KB_DATA_DIR` 通常是开发机绝对路径（如 `/Users/x/...`），服务器上要改成实际路径 |
+
+### 6.3 验证 MCP 连通
+
+重启 serve 后，看日志确认 `[mcp] N server(s) connected`：
+
+```bash
+grep -i "mcp.*connected\|mcp.*error\|mcp.*fail" /var/log/ion-serve.log | tail
+```
+
+> ion **没有独立的 `ion mcp list` 子命令**，也没有 `get_mcp_servers` / `call_mcp_tool` 这样的 host RPC——MCP 工具是在 **worker agent loop 里调用**的（工具名带 `mcp__` 前缀）。要验证端到端，让 agent 真去用：
+
+```bash
+# 让 agent 调用 MCP 工具完成任务（场景三）
+ion rpc --method create_worker --params '{
+  "agent": "build",
+  "initial_prompt": "用 mcp__web-search-prime__web_search_prime 工具搜索 hello world，告诉我前 3 个结果"
+}'
+# 等 1-2 分钟（GLM-5.2 思考 + MCP 工具往返），看 serve 日志里的 tool_execution / text_delta
+tail -f /var/log/ion-serve.log | grep -E "tool_execution|mcp__|text_delta"
+```
+
+### 6.4 踩过的坑：rustls crypto provider panic（配 HTTP MCP 时启动崩）
+
+**现象**：config 一加 HTTP 类 MCP server，`ion serve` 启动立刻 panic 退出（exit 101）：
+```
+thread 'main' panicked: No rustls crypto provider is configured.
+When using the rustls-no-provider feature you must install a crypto provider
+before building a Client.
+```
+
+**根因**：`reqwest 0.13`（被 `rmcp` 间接依赖，HTTP MCP 连接用它）启用了 `rustls-no-provider` feature，但 ion 之前从没 install crypto provider。没配 HTTP MCP 时这条代码路径不走，所以一直没暴露。
+
+**修复**（已在代码里，commit `0ec50d7`）：`main()` 最早期 `install_default()` aws-lc-rs provider，幂等。worker 子进程也走 main，自动覆盖。**2026-08-08 起的二进制都含此修复，新部署不用管。**
+
+---
+
+## 7. 日常运维速查
 
 ```bash
 # 查 ion 进程（注意：别用宽泛的 pkill -f ion，会误杀含 "ion" 字样的进程如 LogiOptionsPlus）
@@ -312,7 +388,7 @@ kill -9 $(pgrep -f "/usr/local/bin/ion serve")
 
 ---
 
-## 7. 踩坑记录（实战总结）
+## 8. 踩坑记录（实战总结）
 
 ### 坑 1：gcc-9 的 memcmp bug 导致 aws-lc-sys 编译失败
 - 现象：CI 编译时 `cc_builder.rs:872 panic, ERROR: (空)`
@@ -349,9 +425,19 @@ kill -9 $(pgrep -f "/usr/local/bin/ion serve")
 - 根因：主配置文件没有 `[include] files = /etc/supervisor/conf.d/*.conf` 段
 - 修复：直接把 `[program:ion]` 段追加到主配置 `/etc/supervisord.conf` 末尾
 
+### 坑 8：配 HTTP MCP server 后 ion serve 启动 panic（crypto provider）
+- 现象：config 一加 HTTP 类 MCP（type: http），`ion serve` 启动立刻崩：`No rustls crypto provider is configured`
+- 根因：`reqwest 0.13`（rmcp 经它连 HTTP MCP）启用 `rustls-no-provider` feature，但 ion 从没 install crypto provider。不配 HTTP MCP 不触发，一配就崩
+- 修复：2026-08-08 起的二进制在 main 最早期 install aws-lc-rs default provider（commit `0ec50d7`），新部署不用管
+
+### 坑 9：worker 卡 Busy/Stale 不清理（场景三长时间运行）
+- 现象：list_workers 返回的 worker 列表越来越长，状态卡在 Busy 或 Stale 不回收
+- 根因（5 个耦合点）：① stdout reader 只认 agent_end 转 Idle，不认 error 事件（agent.run 返回 Err 时永久卡 Busy）② last_heartbeat 创建后从不更新 ③ Busy 状态被心跳豁免 ④ Stale GC 阈值 >5 太松 ⑤ gc_dead_workers 主进程不调
+- 修复：2026-08-08 起的版本彻底重构（commit `22d3696`）——加 set_status helper 统一维护时间戳、error 事件转 Idle、text_delta 更新心跳、Busy 超 10 分钟转 Dead、新增 reap_workers RPC。新部署不用管，老版本可手动 `ion rpc --method reap_workers` 清理
+
 ---
 
-## 8. 资源占用实测（2026-08-08, tx 容器）
+## 9. 资源占用实测（2026-08-08, tx 容器）
 
 | 项目 | 数值 |
 |------|------|
@@ -366,7 +452,7 @@ kill -9 $(pgrep -f "/usr/local/bin/ion serve")
 
 ---
 
-## 9. 回滚
+## 10. 回滚
 
 ### 卸载 ion
 ```bash
