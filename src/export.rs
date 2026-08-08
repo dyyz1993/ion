@@ -896,7 +896,17 @@ fn export_session_internal(
         std::fs::read_to_string(&path).unwrap_or_default()
     };
 
-    let css = read_file("template.css");
+    let css = read_file("template.css") + r#"
+/* ION: tool result default folded */
+.tool-result-fold { margin: 2px 0; }
+.tool-result-fold > summary { cursor: pointer; color: #8b949e; font-size: 12px; padding: 2px 8px; background: #f6f8fa; border-radius: 4px; list-style: none; }
+.tool-result-fold > summary::-webkit-details-marker { display: none; }
+.tool-result-fold > summary::before { content: '▶ '; font-size: 9px; }
+.tool-result-fold[open] > summary::before { content: '▼ '; }
+.tool-result-fold > summary:hover { background: #e1e4e8; }
+.tool-result-fold[open] > summary { margin-bottom: 4px; }
+.tool-output-fold-inner { overflow-x: auto; }
+"#;
     let mut js = read_file("template.js");
     let marked_js = read_file("vendor/marked.min.js");
     let highlight_js = read_file("vendor/highlight.min.js");
@@ -1000,7 +1010,13 @@ document.addEventListener('DOMContentLoaded', function() {
     let default_args_new = r#"html += `<div class="tool-header"><span class="tool-name">${escapeHtml(name)}</span></div>`;
               if (result) {
                 const output = getResultText();
-                if (output) html += formatExpandableOutput(output, 10);"#;
+                if (output) {
+                  const preview = output.substring(0, 100).replace(/\n/g, ' ').trim();
+                  html += `<details class="tool-result-fold"><summary class="tool-result-preview">${escapeHtml(preview)}${output.length > 100 ? '...' : ''}</summary><div class="tool-output-fold-inner">`;
+                  html += formatExpandableOutput(output, 10);
+                  html += `</div></details>`;
+                }
+              }"#;
     js = js.replace(default_args_old, default_args_new);
 
     // Replace placeholders
@@ -1431,12 +1447,12 @@ document.addEventListener('DOMContentLoaded', function() {
     }).join('  ');
 
     var html =
-      '<div id="ion-ext-viz" style="background:#fafafa;border-bottom:1px solid #eee;padding:10px 20px;font-family:system-ui,sans-serif;">' +
-        '<div style="font-size:11px;color:#666;margin-bottom:6px;font-weight:600;">EXTENSION BREAKDOWN (' + totalCalls + ' calls)</div>' +
-        '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">' + groupBadges + '</div>' +
-        '<div style="font-size:11px;color:#666;margin-bottom:4px;font-weight:600;">TIMELINE (' + timelineEntries.length + ' entries)</div>' +
-        '<div style="position:relative;height:24px;background:#fff;border:1px solid #e5e7eb;border-radius:3px;overflow:hidden;">' + bars + '</div>' +
-        '<div style="margin-top:4px;font-size:9px;color:#999;display:flex;justify-content:space-between;">' +
+      '<div id="ion-ext-viz" style="background:#fafafa;border-bottom:1px solid #eee;padding:6px 16px;font-family:system-ui,sans-serif;">' +
+        '<div style="font-size:10px;color:#666;margin-bottom:3px;font-weight:600;">EXTENSION BREAKDOWN (' + totalCalls + ' calls)</div>' +
+        '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px;">' + groupBadges + '</div>' +
+        '<div style="font-size:10px;color:#666;margin-bottom:2px;font-weight:600;">TIMELINE (' + timelineEntries.length + ' entries)</div>' +
+        '<div style="position:relative;height:20px;background:#fff;border:1px solid #e5e7eb;border-radius:3px;overflow:hidden;">' + bars + '</div>' +
+        '<div style="margin-top:2px;font-size:9px;color:#999;display:flex;justify-content:space-between;">' +
           '<span>' + new Date(tMin).toLocaleTimeString() + '</span>' +
           '<span>' + legend + '</span>' +
           '<span>' + new Date(tMax).toLocaleTimeString() + '</span>' +
