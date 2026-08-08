@@ -41,14 +41,26 @@ def load_results():
         parts = line.split("|")
         if len(parts) < 6:
             continue
-        sid, status, tpass, tfail, elapsed, html = parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
+        # Multi-turn format: fp_id|status|pass|fail|elapsed|ext_id|name|turns
+        # Old format: sid|status|pass|fail|elapsed|html
+        sid = parts[0]
+        status = parts[1]
+        tpass = parts[2]
+        tfail = parts[3]
+        elapsed = parts[4]
+        # Detect format: if parts[5] starts with "EXT-" it's multi-turn format
+        if parts[5].startswith("EXT-"):
+            ext_id = parts[5]
+            html = f"{sid}_{ext_id}.html"
+        else:
+            html = os.path.basename(parts[5]) if parts[5] else ""
         results.append({
             "sid": sid,
             "status": status,
             "pass": int(tpass) if tpass.isdigit() else 0,
             "fail": int(tfail) if tfail.isdigit() else 0,
             "elapsed": elapsed,
-            "html": os.path.basename(html) if html else "",
+            "html": html,
         })
     return results
 
@@ -125,7 +137,7 @@ def summarize_scenario(result, desc, report, tool_stats):
     return "。".join(parts) + "。"
 
 def generate_html(results, descs):
-    """生成汇总 HTML"""
+    """生成紧凑汇总 HTML - 表格布局 + hover tooltip + 模块过滤"""
     npass = sum(1 for r in results if r["status"] == "PASS")
     nfail = sum(1 for r in results if r["status"] == "FAIL")
     nerror = sum(1 for r in results if r["status"] == "ERROR")
@@ -136,29 +148,26 @@ def generate_html(results, descs):
     # Group by module
     by_mod = defaultdict(list)
     for r in results:
-        ext = r["sid"].split("-")[0]
-        by_mod[ext].append(r)
+        ext_num = r["sid"].split("-")[1] if "-" in r["sid"] else "?"
+        by_mod[ext_num].append(r)
 
-    # Module summary
-    mod_rows = []
+    ext_names = {"02":"global-memory","03":"dev_server","04":"file_snapshot","05":"lsp",
+                 "06":"hooks","07":"goal_supervisor","08":"MonitorExt","09":"bash",
+                 "10":"Memory v0.1","11":"rules-engine","12":"learning","13":"permission",
+                 "14":"file-approval","15":"context-index","16":"SessionIndex","17":"ContextReclaimer",
+                 "18":"file-time-guard","19":"PlanExt","20":"ToolLoopDetector",
+                 "22":"auto-session-title","23":"WorkflowExt","24":"streaming"}
+
+    # Build filter buttons
+    filter_btns = '<button class="filter-btn active" onclick="filterExt(\'ALL\')">全部</button>'
     for ext in sorted(by_mod):
-        mod_results = by_mod[ext]
-        mp = sum(1 for r in mod_results if r["status"] == "PASS")
-        mf = sum(1 for r in mod_results if r["status"] == "FAIL")
-        me = sum(1 for r in mod_results if r["status"] == "ERROR")
-        mt = len(mod_results)
-        ext_name = {"02":"global-memory","03":"dev_server","04":"file_snapshot","05":"lsp",
-                     "06":"hooks","07":"goal_supervisor","08":"MonitorExtension","09":"bash",
-                     "10":"MemoryExt-v0.1","11":"rules-engine","12":"learning","13":"permission",
-                     "14":"file-approval","15":"context-index","16":"SessionIndex","17":"ContextReclaimer",
-                     "18":"file-time-guard","19":"PlanExtension","20":"ToolLoopDetector","21":"internal_agent",
-                     "22":"auto-session-title","23":"WorkflowExtension","24":"streaming"}.get(ext, ext)
-        rate_m = mp * 100 // mt if mt else 0
-        badge = "✅" if mf == 0 and me == 0 else "⚠️" if mp > 0 else "❌"
-        mod_rows.append(f'<tr><td>{badge} EXT-{ext}</td><td>{ext_name}</td><td>{mp}/{mt}</td><td>{rate_m}%</td></tr>')
+        name = ext_names.get(ext, ext)
+        mp = sum(1 for r in by_mod[ext] if r["status"] == "PASS")
+        mt = len(by_mod[ext])
+        filter_btns += f'<button class="filter-btn" onclick="filterExt(\'EXT-{ext}\')">EXT-{ext} {name}</button>'
 
-    # Scenario rows with summaries
-    scenario_rows = []
+    # Build table rows
+    rows_html = ""
     for r in results:
         sid = r["sid"]
         desc = descs.get(sid, {})
@@ -166,97 +175,115 @@ def generate_html(results, descs):
         html_path = os.path.join(REPORT_DIR, r["html"]) if r["html"] else ""
         tool_stats = extract_tool_stats(html_path)
         summary = summarize_scenario(r, desc, report, tool_stats)
-        status_class = f"status-{r['status']}"
-        html_link = f'<a href="{r["html"]}">{r["html"] or "-"}</a>' if r["html"] else "-"
+        # Clean summary for tooltip (remove HTML tags)
+        import html as html_mod
+        tooltip = html_mod.escape(summary.replace("<b>","").replace("</b>",""))[:200]
 
-        # Detailed checks (expandable)
-        checks_html = ""
-        for c in report.get("checks", []):
-            icon = {"PASS": "✅", "FAIL": "❌", "INFO": "ℹ️"}.get(c.get("status",""), "❓")
-            checks_html += f'<span class="check {c.get("status","").lower()}">{icon} {c["id"]}: {c["name"]}</span>'
+        ext_num = sid.split("-")[1] if "-" in sid else "?"
+        ext_name = ext_names.get(ext_num, ext_num)
+        status_icon = {"PASS": "✅", "FAIL": "❌", "ERROR": "⚠️"}.get(r["status"], "?")
+        checks = report.get("checks", [])
+        check_summary = " ".join(
+            {"PASS":"🟢","FAIL":"🔴","INFO":"⚪"}.get(c.get("status",""),"⚪") + c["id"]
+            for c in checks[:8]
+        )
 
-        scenario_rows.append(f'''
-        <div class="scenario-card {status_class}">
-          <div class="scenario-header">
-            <span class="sid">{sid}</span>
-            <span class="status-badge {status_class}">{r["status"]}</span>
-            <span class="metrics">{r["pass"]}/{r["pass"]+r["fail"]}</span>
-            <span class="elapsed">{r["elapsed"]}s</span>
-            <a class="html-link" href="{r["html"]}">📄 HTML</a>
-          </div>
-          <div class="summary">{summary}</div>
-          <div class="checks">{checks_html}</div>
-        </div>''')
+        # Tool summary for hover
+        tool_str = ", ".join(f"{k}×{v}" for k,v in tool_stats.items() if not k.startswith("_"))
 
-    html = f'''<!DOCTYPE html>
+        rows_html += f'''<tr class="fp-row" data-ext="EXT-{ext_num}" title="{tooltip}">
+          <td class="col-status">{status_icon}</td>
+          <td class="col-fp">{sid}</td>
+          <td class="col-ext">EXT-{ext_num}</td>
+          <td class="col-name">{desc.get("name", "")}</td>
+          <td class="col-metrics">{r["pass"]}/{r["pass"]+r["fail"]}</td>
+          <td class="col-time">{r["elapsed"]}s</td>
+          <td class="col-turns">{desc.get("name","") and tool_str or ""}</td>
+          <td class="col-checks">{check_summary}</td>
+          <td class="col-html">{f'<a href="{r["html"]}">📄</a>' if r["html"] else "-"}</td>
+        </tr>'''
+
+    # Module summary rows
+    mod_rows = ""
+    for ext in sorted(by_mod):
+        mod_results = by_mod[ext]
+        mp = sum(1 for r in mod_results if r["status"] == "PASS")
+        mt = len(mod_results)
+        name = ext_names.get(ext, ext)
+        badge = "✅" if mp == mt else "⚠️"
+        mod_rows += f'<span class="mod-chip" onclick="filterExt(\'EXT-{ext}\')">{badge} EXT-{ext} {name} {mp}/{mt}</span>'
+
+    return f'''<!DOCTYPE html>
 <html lang="zh"><head><meta charset="utf-8">
-<title>ION 扩展全量验收报告 {timestamp}</title>
+<title>ION 验收报告 {timestamp}</title>
 <style>
-* {{ margin: 0; padding: 0; box-sizing: border-box; }}
-body {{ font-family: -apple-system, "PingFang SC", sans-serif; background: #f6f8fa; color: #24292e; line-height: 1.6; }}
-.container {{ max-width: 1200px; margin: 0 auto; padding: 40px 20px; }}
-h1 {{ font-size: 28px; margin-bottom: 8px; }}
-.meta {{ color: #586069; margin-bottom: 24px; }}
-.overview {{ display: flex; gap: 16px; margin-bottom: 32px; flex-wrap: wrap; }}
-.stat-card {{ background: white; padding: 20px 28px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); text-align: center; min-width: 120px; }}
-.stat-card .num {{ font-size: 2.2em; font-weight: 700; }}
-.stat-card .label {{ color: #586069; font-size: 0.9em; }}
-.stat-pass .num {{ color: #28a745; }}
-.stat-fail .num {{ color: #cb2431; }}
-.stat-error .num {{ color: #d73a49; }}
-.stat-rate .num {{ color: #0366d6; }}
-
-h2 {{ font-size: 20px; margin: 32px 0 12px; border-bottom: 2px solid #e1e4e8; padding-bottom: 8px; }}
-
-table {{ width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }}
-th, td {{ padding: 10px 14px; text-align: left; border-bottom: 1px solid #e1e4e8; }}
-th {{ background: #f1f8ff; font-weight: 600; }}
-
-.scenario-card {{ background: white; border-radius: 8px; padding: 16px 20px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); border-left: 4px solid #e1e4e8; }}
-.scenario-card.status-PASS {{ border-left-color: #28a745; }}
-.scenario-card.status-FAIL {{ border-left-color: #cb2431; }}
-.scenario-card.status-ERROR {{ border-left-color: #d73a49; }}
-.scenario-header {{ display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }}
-.sid {{ font-weight: 700; font-size: 1.1em; min-width: 60px; }}
-.status-badge {{ padding: 2px 10px; border-radius: 12px; font-size: 0.85em; font-weight: 600; }}
-.status-badge.status-PASS {{ background: #dcfce7; color: #166534; }}
-.status-badge.status-FAIL {{ background: #fee2e2; color: #991b1b; }}
-.status-badge.status-ERROR {{ background: #fce7f3; color: #9d174d; }}
-.metrics {{ color: #586069; font-size: 0.9em; }}
-.elapsed {{ color: #586069; font-size: 0.85em; }}
-.html-link {{ margin-left: auto; color: #0366d6; text-decoration: none; font-size: 0.9em; }}
-.html-link:hover {{ text-decoration: underline; }}
-.summary {{ font-size: 0.95em; color: #24292e; margin-bottom: 8px; }}
-.checks {{ display: flex; flex-wrap: wrap; gap: 6px; }}
-.check {{ font-size: 0.8em; padding: 2px 8px; border-radius: 4px; background: #f6f8fa; }}
-.check.pass {{ color: #166534; }}
-.check.fail {{ color: #991b1b; background: #fef2f2; }}
-.check.info {{ color: #586069; }}
+* {{ margin:0; padding:0; box-sizing:border-box; }}
+body {{ font-family:-apple-system,"PingFang SC",monospace; background:#0d1117; color:#c9d1d9; font-size:13px; }}
+.header {{ background:#161b22; padding:16px 24px; border-bottom:1px solid #30363d; position:sticky; top:0; z-index:100; }}
+.header h1 {{ font-size:18px; color:#58a6ff; margin-bottom:4px; }}
+.header .stats {{ display:flex; gap:20px; font-size:13px; }}
+.header .stat {{ color:#8b949e; }}
+.header .stat b {{ color:#c9d1d9; font-size:15px; }}
+.header .stat.pass b {{ color:#3fb950; }}
+.header .stat.fail b {{ color:#f85149; }}
+.header .stat.rate b {{ color:#58a6ff; }}
+.filters {{ padding:8px 24px; background:#161b22; border-bottom:1px solid #30363d; display:flex; gap:6px; flex-wrap:wrap; }}
+.filter-btn {{ background:#21262d; color:#8b949e; border:1px solid #30363d; border-radius:6px; padding:3px 10px; font-size:11px; cursor:pointer; transition:all 0.15s; }}
+.filter-btn:hover {{ background:#30363d; color:#c9d1d9; }}
+.filter-btn.active {{ background:#1f6feb; color:white; border-color:#1f6feb; }}
+.mod-chips {{ padding:8px 24px; display:flex; gap:6px; flex-wrap:wrap; }}
+.mod-chip {{ background:#21262d; color:#8b949e; border:1px solid #30363d; border-radius:12px; padding:2px 10px; font-size:11px; cursor:pointer; }}
+.mod-chip:hover {{ background:#30363d; }}
+table {{ width:100%; border-collapse:collapse; }}
+th {{ background:#161b22; color:#8b949e; font-weight:600; text-align:left; padding:6px 12px; font-size:11px; text-transform:uppercase; border-bottom:1px solid #30363d; position:sticky; top:90px; }}
+td {{ padding:4px 12px; border-bottom:1px solid #21262d; font-size:12px; }}
+tr:hover {{ background:#161b22; }}
+.col-status {{ width:30px; text-align:center; }}
+.col-fp {{ width:70px; color:#58a6ff; font-weight:600; }}
+.col-ext {{ width:60px; color:#8b949e; }}
+.col-name {{ min-width:120px; }}
+.col-metrics {{ width:50px; text-align:center; color:#3fb950; }}
+.col-time {{ width:50px; text-align:right; color:#8b949e; }}
+.col-turns {{ max-width:150px; color:#8b949e; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+.col-checks {{ max-width:200px; font-size:10px; }}
+.col-html {{ width:30px; text-align:center; }}
+.col-html a {{ text-decoration:none; font-size:14px; }}
+.fp-row {{ cursor:pointer; }}
+.fp-row.hidden {{ display:none; }}
 </style></head><body>
-<div class="container">
-  <h1>ION 扩展全量验收报告</h1>
-  <div class="meta">{timestamp} | 模型 glm-5.2/zai | 5 并发 × 3 Wave DAG 调度</div>
-
-  <div class="overview">
-    <div class="stat-card"><div class="num">{total}</div><div class="label">总场景</div></div>
-    <div class="stat-card stat-pass"><div class="num">{npass}</div><div class="label">通过</div></div>
-    <div class="stat-card stat-fail"><div class="num">{nfail}</div><div class="label">失败</div></div>
-    <div class="stat-card stat-error"><div class="num">{nerror}</div><div class="label">错误</div></div>
-    <div class="stat-card stat-rate"><div class="num">{rate}%</div><div class="label">通过率</div></div>
+<div class="header">
+  <h1>ION Extension Validation Report</h1>
+  <div class="stats">
+    <span class="stat">Total: <b>{total}</b></span>
+    <span class="stat pass">PASS: <b>{npass}</b></span>
+    <span class="stat fail">FAIL: <b>{nfail}</b></span>
+    <span class="stat">ERROR: <b>{nerror}</b></span>
+    <span class="stat rate">Rate: <b>{rate}%</b></span>
+    <span class="stat" style="margin-left:auto">{timestamp}</span>
   </div>
-
-  <h2>模块通过率总览</h2>
-  <table>
-    <tr><th>模块</th><th>名称</th><th>通过</th><th>率</th></tr>
-    {''.join(mod_rows)}
-  </table>
-
-  <h2>场景详情（{total} 个）</h2>
-  {''.join(scenario_rows)}
 </div>
+<div class="filters">{filter_btns}</div>
+<div class="mod-chips">{mod_rows}</div>
+<table>
+  <thead><tr>
+    <th></th><th>FP ID</th><th>Module</th><th>Feature</th><th>Checks</th><th>Time</th><th>Tools</th><th>Details</th><th>HTML</th>
+  </tr></thead>
+  <tbody>{rows_html}</tbody>
+</table>
+<script>
+function filterExt(ext) {{
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  document.querySelectorAll('.fp-row').forEach(row => {{
+    if (ext === 'ALL' || row.dataset.ext === ext) {{
+      row.classList.remove('hidden');
+    }} else {{
+      row.classList.add('hidden');
+    }}
+  }});
+}}
+</script>
 </body></html>'''
-
-    return html
 
 def main():
     descs = load_scenario_descriptions()

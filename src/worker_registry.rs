@@ -104,6 +104,12 @@ pub struct WorkerRecord {
     pub children: Vec<String>,
     pub started_at: i64,
     pub last_heartbeat: i64,
+    /// Worker 进入当前状态的时间戳（用于 Busy 超时判断、Stale 时间 GC）。
+    /// 在 set_status 里自动维护，不要手动赋值。
+    pub status_since: i64,
+    /// Worker 变 Dead 的时间戳（gc 按 died_at 判断而非 started_at）。
+    /// None 表示未退出过。
+    pub died_at: Option<i64>,
     pub child_process: Option<Child>,
     pub stdin: Option<ChildStdin>,
     pub pending: HashMap<String, oneshot::Sender<serde_json::Value>>,
@@ -160,12 +166,11 @@ pub struct WorktreeInfo {
 pub enum WorkerStatus {
     Idle,
     Busy,
-    Paused,
     Dead,
     Stale,
-    /// Worker registered but child process not yet spawned.
-    /// all_workers_idle treats this as NOT idle (prevents premature host exit).
-    Spawning,
+    // 历史变体 Paused / Spawning 已移除：全代码库无任何赋值点（只在测试和 match 臂
+    // 引用，属死代码）。如需恢复"注册未 spawn"的语义，建议用独立字段而非新 enum 变体，
+    // 避免再触发大量 match 臂的穷尽性维护负担。
 }
 
 impl std::fmt::Display for WorkerStatus {
@@ -189,6 +194,19 @@ pub struct SingletonEntry {
 impl Default for WorkerRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl WorkerRecord {
+    /// 统一的状态变更入口：同步更新 status 和 status_since，并在转 Dead 时记录 died_at。
+    /// 所有状态变更都应走这里，保证 status_since / died_at 不被遗忘。
+    /// 注意：Dead 是终态，一旦 Dead 不再被覆盖（避免 GC 期间被误改回其他状态）。
+    pub fn set_status(&mut self, new_status: WorkerStatus) {
+        if self.status != WorkerStatus::Dead && new_status == WorkerStatus::Dead {
+            self.died_at = Some(now_ms());
+        }
+        self.status = new_status;
+        self.status_since = now_ms();
     }
 }
 
@@ -720,7 +738,7 @@ impl WorkerRegistry {
             session_id: session_id.clone(),
             project: project_name.clone(),
             project_path: project_path.clone(),
-            model: config.model.clone().unwrap_or_default(),
+            model: model.clone(),   // 用 547 行已 resolve 的 model（含 default_model 兜底），而非 config.model（可能为空）
             agent: config.agent.clone().unwrap_or_default(),
             status: WorkerStatus::Idle,
             channels: config.channels.clone().unwrap_or_default(),
@@ -728,6 +746,8 @@ impl WorkerRegistry {
             children: Vec::new(),
             started_at: now_ms(),
             last_heartbeat: now_ms(),
+            status_since: now_ms(),
+            died_at: None,
             ready_tx: None,
             stdout_rx: None,
             response_rx: None,
@@ -959,17 +979,43 @@ impl WorkerRegistry {
                                             record.latest_output.pop_front();
                                         }
                                         record.log_short = Some(truncated);
+                                        // worker 正在产出文本，刷新心跳避免被误判 Stale
+                                        record.last_heartbeat = now_ms();
                                     }
                                 }
                             } else if ev_type == "agent_end" || ev_type == "agent_stopped" {
                                 drop(reg);
                                 let mut reg2 = sub_registry.lock().await;
                                 if let Some(record) = reg2.workers.get_mut(&sub_wid) {
-                                    record.status = WorkerStatus::Idle;
+                                    record.set_status(WorkerStatus::Idle);
                                 }
                                 drop(reg2);
                                 let rc = Arc::clone(&sub_registry);
                                 let _w = sub_wid.clone();
+                                tokio::spawn(async move {
+                                    let mut r = rc.lock().await;
+                                    r.broadcast_overview();
+                                });
+                            } else if ev_type == "error" {
+                                // agent.run() 返回 Err 时 worker 发 error 事件（而非 agent_end）。
+                                // 不转 Idle 会让 worker 永久卡 Busy。这里兜底转 Idle，
+                                // 让用户能看到任务结束、能重新派活。
+                                let err_msg = msg
+                                    .get("event")
+                                    .and_then(|e| e.get("message"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("(no message)");
+                                tracing::warn!(
+                                    "[{}] worker error event (agent.run failed?): {}",
+                                    sub_wid, err_msg
+                                );
+                                drop(reg);
+                                let mut reg2 = sub_registry.lock().await;
+                                if let Some(record) = reg2.workers.get_mut(&sub_wid) {
+                                    record.set_status(WorkerStatus::Idle);
+                                }
+                                drop(reg2);
+                                let rc = Arc::clone(&sub_registry);
                                 tokio::spawn(async move {
                                     let mut r = rc.lock().await;
                                     r.broadcast_overview();
@@ -1030,7 +1076,7 @@ impl WorkerRegistry {
                 // 非零退出 → 崩溃！标 Dead，保留 record
                 let (crash_parent, crash_session, crash_reason, crash_channels) = {
                     if let Some(record) = reg.workers.get_mut(&sub_wid) {
-                        record.status = WorkerStatus::Dead;
+                        record.set_status(WorkerStatus::Dead);
                         // 读 stderr 日志最后几行作为 exit_reason
                         if let Some(ref stderr_path) = record.stderr_path {
                             if let Ok(content) = std::fs::read_to_string(stderr_path) {
@@ -1242,6 +1288,8 @@ impl WorkerRegistry {
             children: Vec::new(),
             started_at: now_ms(),
             last_heartbeat: now_ms(),
+            status_since: now_ms(),
+            died_at: None,
             ready_tx: None,
             stdout_rx: None,
             response_rx: None,
@@ -1434,16 +1482,28 @@ impl WorkerRegistry {
                                 for chunk in buf.split('\n').next_back().unwrap_or("").lines() {
                                     record.latest_output.push_back(chunk.to_string());
                                 }
+                                // worker 在产出，刷新心跳
+                                record.last_heartbeat = now_ms();
                             }
                             if (ev_type == "agent_end" || ev_type == "agent_stopped")
                                 && let Some(record) = reg.workers.get_mut(&sub_wid)
                             {
-                                record.status = WorkerStatus::Idle;
+                                record.set_status(WorkerStatus::Idle);
+                            }
+                            // agent.run() 返回 Err 时的兜底：error 事件也转 Idle，避免永久卡 Busy
+                            if ev_type == "error"
+                                && let Some(record) = reg.workers.get_mut(&sub_wid)
+                            {
+                                tracing::warn!(
+                                    "[{}] worker error event, marking Idle (agent.run failed?)",
+                                    sub_wid
+                                );
+                                record.set_status(WorkerStatus::Idle);
                             }
                             if ev_type == "agent_start"
                                 && let Some(record) = reg.workers.get_mut(&sub_wid)
                             {
-                                record.status = WorkerStatus::Busy;
+                                record.set_status(WorkerStatus::Busy);
                             }
                         }
 
@@ -1493,7 +1553,7 @@ impl WorkerRegistry {
                 }
             } else {
                 if let Some(record) = reg.workers.get_mut(&sub_wid) {
-                    record.status = WorkerStatus::Dead;
+                    record.set_status(WorkerStatus::Dead);
                     if let Some(ref stderr_path) = record.stderr_path {
                         if let Ok(content) = std::fs::read_to_string(stderr_path) {
                             let tail: Vec<&str> =
@@ -1839,7 +1899,7 @@ impl WorkerRegistry {
                 }
             }
         }
-        record.status = WorkerStatus::Busy;
+        record.set_status(WorkerStatus::Busy);
         Ok(req_id)
     }
 
@@ -1956,7 +2016,7 @@ impl WorkerRegistry {
                 .map_err(|e| format!("write stdin: {e}"))?;
             stdin.flush().await.map_err(|e| format!("flush: {e}"))?;
         }
-        record.status = WorkerStatus::Busy;
+        record.set_status(WorkerStatus::Busy);
         let (tx, rx) = oneshot::channel();
         record.pending.insert(req_id.clone(), tx);
         Ok(rx)
@@ -2185,6 +2245,18 @@ impl WorkerRegistry {
 
             match command.as_str() {
                 "create_worker" => {
+                    // 字段误用检测：用户常把 initial_prompt 写成 message，后者会被 serde 静默
+                    // 忽略（WorkerCreateConfig 没有该字段），导致 worker 创建了但不执行任务。
+                    if let Some(msg) = params.get("message").and_then(|v| v.as_str())
+                        && !msg.is_empty()
+                        && params.get("initial_prompt").is_none()
+                    {
+                        tracing::warn!(
+                            "[manager] create_worker received 'message' field which is not a \
+                             valid field; did you mean 'initial_prompt'? The 'message' value \
+                             will be IGNORED."
+                        );
+                    }
                     let relation = params
                         .get("relation")
                         .and_then(|v| v.as_str())
@@ -2938,16 +3010,48 @@ impl WorkerRegistry {
         })
     }
 
-    /// Remove dead workers older than max_age_secs.
+    /// Remove dead workers older than max_age_secs（按 died_at 判断，而非 started_at）。
     pub fn gc_dead_workers(&mut self, max_age_secs: u64) {
         let now = now_ms();
         let deadline = now - (max_age_secs * 1000) as i64;
         self.workers.retain(|_id, record| {
             if record.status == WorkerStatus::Dead {
-                return record.started_at >= deadline;
+                // died_at 为 None（理论上不该，转 Dead 时一定设了）则保留，避免误删
+                return record.died_at.map(|t| t >= deadline).unwrap_or(true);
             }
             true
         });
+    }
+
+    /// 清理 Dead 和超过 max_age 的 Stale worker（用于心跳任务定期调用）。
+    /// 返回清理的数量。
+    pub fn gc_workers(&mut self, max_age_secs: u64) -> usize {
+        let now = now_ms();
+        let deadline = now - (max_age_secs * 1000) as i64;
+        let to_remove: Vec<String> = self
+            .workers
+            .iter()
+            .filter(|(_, w)| match w.status {
+                WorkerStatus::Dead => true,
+                WorkerStatus::Stale => w.status_since < deadline,
+                _ => false,
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        let n = to_remove.len();
+        for id in &to_remove {
+            self.workers.remove(id);
+            for subs in self.channels.values_mut() {
+                subs.retain(|s| s != id);
+            }
+        }
+        n
+    }
+
+    /// 手动清理 RPC（reap_workers）的底层：清理所有 Dead + 超过 max_age 的 Stale。
+    /// 与 gc_workers 的区别：这个是为 RPC 暴露的，语义更明确（"收割"）。
+    pub fn reap_workers(&mut self, max_age_secs: u64) -> usize {
+        self.gc_workers(max_age_secs)
     }
 
     // ── Singleton management（host 级单例扩展，引用计数）──
@@ -3173,7 +3277,7 @@ async fn read_worker_stdout(
                     "agent_end" => {
                         let mut reg = registry.lock().await;
                         if let Some(record) = reg.workers.get_mut(&worker_id) {
-                            record.status = WorkerStatus::Idle;
+                            record.set_status(WorkerStatus::Idle);
                         }
                         // Forward to event subscribers
                         if let Some(record) = reg.workers.get(&worker_id) {
@@ -3279,7 +3383,7 @@ async fn read_worker_stdout(
     // Worker stdout closed → mark as dead
     let mut reg = registry.lock().await;
     if let Some(record) = reg.workers.get_mut(&worker_id) {
-        record.status = WorkerStatus::Dead;
+        record.set_status(WorkerStatus::Dead);
     }
     tracing::warn!("[{worker_id}] stdout closed, marked dead");
 }
@@ -3549,7 +3653,6 @@ mod tests {
         assert_eq!(WorkerStatus::Busy.to_string(), "Busy");
         assert_eq!(WorkerStatus::Dead.to_string(), "Dead");
         // Bonus: other variants should also render their Debug name.
-        assert_eq!(WorkerStatus::Paused.to_string(), "Paused");
         assert_eq!(WorkerStatus::Stale.to_string(), "Stale");
     }
 

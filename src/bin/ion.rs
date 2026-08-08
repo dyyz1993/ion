@@ -5222,48 +5222,40 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                 .as_millis() as i64;
             let mut changed = false;
             for record in reg.workers.values_mut() {
-                if record.status != ion::worker_registry::WorkerStatus::Dead
-                    && record.status != ion::worker_registry::WorkerStatus::Stale
-                {
-                    // Only mark Idle workers as Stale. Busy workers are actively
-                    // working (or waiting on spawn_worker wait=true), and must not
-                    // be marked stale even if they haven't sent output recently.
-                    // Without this exemption, a coordinator waiting on a long-running
-                    // developer (5+ min task) gets marked Stale after 180s, breaking
-                    // the self-healing pipeline.
-                    if record.status == ion::worker_registry::WorkerStatus::Idle
-                        && now - record.last_heartbeat > 180_000
-                    {
-                        record.status = ion::worker_registry::WorkerStatus::Stale;
-                        changed = true;
+                match record.status {
+                    ion::worker_registry::WorkerStatus::Dead | ion::worker_registry::WorkerStatus::Stale => {
+                        // 终态/僵尸，由后面 gc_workers 按时间清理，这里跳过
                     }
+                    ion::worker_registry::WorkerStatus::Idle => {
+                        // Idle 超过 180s 无心跳 → Stale。
+                        // 注意：Busy 不在此列（coordinator 等长任务不能误杀），Busy 有单独超时见下。
+                        if now - record.last_heartbeat > 180_000 {
+                            record.set_status(ion::worker_registry::WorkerStatus::Stale);
+                            changed = true;
+                        }
+                    }
+                    ion::worker_registry::WorkerStatus::Busy => {
+                        // Busy 超过 10 分钟视为僵死（agent_end 丢失 / agent.run panic / error 事件漏处理）。
+                        // 10 分钟足够覆盖正常长任务（coordinator 等 5 分钟 developer 仍留余量），
+                        // 但能兜住"永久卡 Busy"的死锁。转 Dead 后由 gc_workers 清理。
+                        if now - record.status_since > 600_000 {
+                            tracing::warn!(
+                                "[heartbeat] worker {} Busy for >{}s, marking Dead (agent_end lost?)",
+                                record.worker_id,
+                                (now - record.status_since) / 1000
+                            );
+                            record.set_status(ion::worker_registry::WorkerStatus::Dead);
+                            changed = true;
+                        }
+                    }
+                    _ => {}
                 }
             }
-            // Auto-GC: remove Stale workers older than 10 minutes to prevent
-            // zombie accumulation during long-running auto-heal sessions.
-            // Without this, stale coordinator/developer/reviewer workers pile up
-            // and eventually overwhelm the registry.
-            let stale_count = reg
-                .workers
-                .values()
-                .filter(|w| w.status == ion::worker_registry::WorkerStatus::Stale)
-                .count();
-            if stale_count > 5 {
-                tracing::info!("[gc] {} stale workers, cleaning up", stale_count);
-                let stale_ids: Vec<String> = reg
-                    .workers
-                    .iter()
-                    .filter(|(_, w)| w.status == ion::worker_registry::WorkerStatus::Stale)
-                    .map(|(id, _)| id.clone())
-                    .collect();
-                for id in &stale_ids {
-                    reg.workers.remove(id);
-                    // Clean up channels
-                    for subs in reg.channels.values_mut() {
-                        subs.retain(|s| s != id);
-                    }
-                }
-                tracing::info!("[gc] removed {} stale workers", stale_ids.len());
+            // 定期 GC：清理 Dead 全部 + Stale 超 10 分钟的。每 tick（30s）调一次，
+            // 不再依赖 monitor extension 或 stale_count > 5 阈值。
+            let reaped = reg.gc_workers(600);
+            if reaped > 0 {
+                tracing::info!("[gc] reaped {} dead/stale workers", reaped);
                 changed = true;
             }
             if changed {
@@ -5595,6 +5587,14 @@ async fn handle_manager_command_write(
                 .unwrap_or("");
             reg.kill_worker(target)
                 .map(|_| serde_json::json!({"killed": true}))
+        }
+        "reap_workers" | "gc_workers" => {
+            // 手动清理 Dead + 超时 Stale worker，返回清理数量。
+            // maxAgeSecs 控制 Stale 的清理年龄阈值（默认 600s = 10 分钟）；Dead 一律清。
+            let max_age = cmd.get("maxAgeSecs").and_then(|v| v.as_u64()).unwrap_or(600);
+            let n = reg.reap_workers(max_age);
+            tracing::info!("[gc] reaped {} workers via RPC", n);
+            Ok(serde_json::json!({"reaped": n}))
         }
         "channel_send" => {
             let channel = cmd

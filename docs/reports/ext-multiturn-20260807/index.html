@@ -1,0 +1,914 @@
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8">
+<title>ION 扩展全量验收报告 2026-08-07 15:07</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, "PingFang SC", sans-serif; background: #f6f8fa; color: #24292e; line-height: 1.6; }
+.container { max-width: 1200px; margin: 0 auto; padding: 40px 20px; }
+h1 { font-size: 28px; margin-bottom: 8px; }
+.meta { color: #586069; margin-bottom: 24px; }
+.overview { display: flex; gap: 16px; margin-bottom: 32px; flex-wrap: wrap; }
+.stat-card { background: white; padding: 20px 28px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); text-align: center; min-width: 120px; }
+.stat-card .num { font-size: 2.2em; font-weight: 700; }
+.stat-card .label { color: #586069; font-size: 0.9em; }
+.stat-pass .num { color: #28a745; }
+.stat-fail .num { color: #cb2431; }
+.stat-error .num { color: #d73a49; }
+.stat-rate .num { color: #0366d6; }
+
+h2 { font-size: 20px; margin: 32px 0 12px; border-bottom: 2px solid #e1e4e8; padding-bottom: 8px; }
+
+table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid #e1e4e8; }
+th { background: #f1f8ff; font-weight: 600; }
+
+.scenario-card { background: white; border-radius: 8px; padding: 16px 20px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); border-left: 4px solid #e1e4e8; }
+.scenario-card.status-PASS { border-left-color: #28a745; }
+.scenario-card.status-FAIL { border-left-color: #cb2431; }
+.scenario-card.status-ERROR { border-left-color: #d73a49; }
+.scenario-header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.sid { font-weight: 700; font-size: 1.1em; min-width: 60px; }
+.status-badge { padding: 2px 10px; border-radius: 12px; font-size: 0.85em; font-weight: 600; }
+.status-badge.status-PASS { background: #dcfce7; color: #166534; }
+.status-badge.status-FAIL { background: #fee2e2; color: #991b1b; }
+.status-badge.status-ERROR { background: #fce7f3; color: #9d174d; }
+.metrics { color: #586069; font-size: 0.9em; }
+.elapsed { color: #586069; font-size: 0.85em; }
+.html-link { margin-left: auto; color: #0366d6; text-decoration: none; font-size: 0.9em; }
+.html-link:hover { text-decoration: underline; }
+.summary { font-size: 0.95em; color: #24292e; margin-bottom: 8px; }
+.checks { display: flex; flex-wrap: wrap; gap: 6px; }
+.check { font-size: 0.8em; padding: 2px 8px; border-radius: 4px; background: #f6f8fa; }
+.check.pass { color: #166534; }
+.check.fail { color: #991b1b; background: #fef2f2; }
+.check.info { color: #586069; }
+</style></head><body>
+<div class="container">
+  <h1>ION 扩展全量验收报告</h1>
+  <div class="meta">2026-08-07 15:07 | 模型 glm-5.2/zai | 5 并发 × 3 Wave DAG 调度</div>
+
+  <div class="overview">
+    <div class="stat-card"><div class="num">77</div><div class="label">总场景</div></div>
+    <div class="stat-card stat-pass"><div class="num">14</div><div class="label">通过</div></div>
+    <div class="stat-card stat-fail"><div class="num">62</div><div class="label">失败</div></div>
+    <div class="stat-card stat-error"><div class="num">1</div><div class="label">错误</div></div>
+    <div class="stat-card stat-rate"><div class="num">18%</div><div class="label">通过率</div></div>
+  </div>
+
+  <h2>模块通过率总览</h2>
+  <table>
+    <tr><th>模块</th><th>名称</th><th>通过</th><th>率</th></tr>
+    <tr><td>⚠️ EXT-FP</td><td>FP</td><td>14/77</td><td>18%</td></tr>
+  </table>
+
+  <h2>场景详情（77 个）</h2>
+  
+        <div class="scenario-card status-PASS">
+          <div class="scenario-header">
+            <span class="sid">FP-02A</span>
+            <span class="status-badge status-PASS">PASS</span>
+            <span class="metrics">17/17</span>
+            <span class="elapsed">236s</span>
+            <a class="html-link" href="EXT-02">📄 HTML</a>
+          </div>
+          <div class="summary"><b>PASS</b> — ?。17/17 项指标全部通过。耗时 236s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 02-M1: memory_save 工具被调用 ≥ 1 次</span><span class="check pass">✅ 02-M2: save 返回 gmem_<uuid> 格式 ID</span><span class="check pass">✅ 02-M3: memory_search 工具被调用 ≥ 1 次</span><span class="check pass">✅ 02-M4: save 后 search 命中相同 ID</span><span class="check pass">✅ 02-M5: 全局库文件存在</span><span class="check pass">✅ 02-M6: 持久化（跨 session）</span><span class="check pass">✅ 02-M7: HTML 里 memory 调用可见</span><span class="check pass">✅ 02-M8: 无 memory_* 工具错误</span></div>
+        </div>
+        <div class="scenario-card status-PASS">
+          <div class="scenario-header">
+            <span class="sid">FP-02B</span>
+            <span class="status-badge status-PASS">PASS</span>
+            <span class="metrics">17/17</span>
+            <span class="elapsed">323s</span>
+            <a class="html-link" href="EXT-02">📄 HTML</a>
+          </div>
+          <div class="summary"><b>PASS</b> — ?。17/17 项指标全部通过。耗时 323s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 02-M1: memory_save 工具被调用 ≥ 1 次</span><span class="check pass">✅ 02-M2: save 返回 gmem_<uuid> 格式 ID</span><span class="check pass">✅ 02-M3: memory_search 工具被调用 ≥ 1 次</span><span class="check pass">✅ 02-M4: save 后 search 命中相同 ID</span><span class="check pass">✅ 02-M5: 全局库文件存在</span><span class="check pass">✅ 02-M6: 持久化（跨 session）</span><span class="check pass">✅ 02-M7: HTML 里 memory 调用可见</span><span class="check pass">✅ 02-M8: 无 memory_* 工具错误</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-02C</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">16/17</span>
+            <span class="elapsed">345s</span>
+            <a class="html-link" href="EXT-02">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。16/17 通过，1 项未过（02-M1）。耗时 345s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check fail">❌ 02-M1: memory_save 工具被调用 ≥ 1 次</span><span class="check pass">✅ 02-M2: save 返回 gmem_<uuid> 格式 ID</span><span class="check pass">✅ 02-M3: memory_search 工具被调用 ≥ 1 次</span><span class="check pass">✅ 02-M4: save 后 search 命中相同 ID</span><span class="check pass">✅ 02-M5: 全局库文件存在</span><span class="check pass">✅ 02-M6: 持久化（跨 session）</span><span class="check pass">✅ 02-M7: HTML 里 memory 调用可见</span><span class="check pass">✅ 02-M8: 无 memory_* 工具错误</span></div>
+        </div>
+        <div class="scenario-card status-PASS">
+          <div class="scenario-header">
+            <span class="sid">FP-02D</span>
+            <span class="status-badge status-PASS">PASS</span>
+            <span class="metrics">16/17</span>
+            <span class="elapsed">215s</span>
+            <a class="html-link" href="EXT-02">📄 HTML</a>
+          </div>
+          <div class="summary"><b>PASS</b> — ?。16/17 项指标全部通过。耗时 215s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 02-M1: memory_save 工具被调用 ≥ 1 次</span><span class="check pass">✅ 02-M2: save 返回 gmem_<uuid> 格式 ID</span><span class="check pass">✅ 02-M3: memory_search 工具被调用 ≥ 1 次</span><span class="check fail">❌ 02-M4: save 后 search 命中相同 ID</span><span class="check pass">✅ 02-M5: 全局库文件存在</span><span class="check pass">✅ 02-M6: 持久化（跨 session）</span><span class="check pass">✅ 02-M7: HTML 里 memory 调用可见</span><span class="check pass">✅ 02-M8: 无 memory_* 工具错误</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-03A</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">12/15</span>
+            <span class="elapsed">228s</span>
+            <a class="html-link" href="EXT-03">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。12/15 通过，3 项未过（03-M1, 03-M4, 03-M5）。耗时 228s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check fail">❌ 03-M1: bash background=true 被调用</span><span class="check pass">✅ 03-M2: 端口号出现在 HTML（任意 4-5 位端口）</span><span class="check pass">✅ 03-M3: dev_server 信息出现</span><span class="check fail">❌ 03-M4: PID 被记录（或进程跟踪痕迹）</span><span class="check fail">❌ 03-M5: assistant 提到 dev server</span><span class="check pass">✅ 03-M6: 无 'no dev server' 误报</span></div>
+        </div>
+        <div class="scenario-card status-PASS">
+          <div class="scenario-header">
+            <span class="sid">FP-03B</span>
+            <span class="status-badge status-PASS">PASS</span>
+            <span class="metrics">15/15</span>
+            <span class="elapsed">350s</span>
+            <a class="html-link" href="EXT-03">📄 HTML</a>
+          </div>
+          <div class="summary"><b>PASS</b> — ?。15/15 项指标全部通过。耗时 350s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 03-M1: bash background=true 被调用</span><span class="check pass">✅ 03-M2: 端口号出现在 HTML（任意 4-5 位端口）</span><span class="check pass">✅ 03-M3: dev_server 信息出现</span><span class="check pass">✅ 03-M4: PID 被记录（或进程跟踪痕迹）</span><span class="check pass">✅ 03-M5: assistant 提到 dev server</span><span class="check pass">✅ 03-M6: 无 'no dev server' 误报</span></div>
+        </div>
+        <div class="scenario-card status-PASS">
+          <div class="scenario-header">
+            <span class="sid">FP-03C</span>
+            <span class="status-badge status-PASS">PASS</span>
+            <span class="metrics">14/15</span>
+            <span class="elapsed">517s</span>
+            <a class="html-link" href="EXT-03">📄 HTML</a>
+          </div>
+          <div class="summary"><b>PASS</b> — ?。14/15 项指标全部通过。耗时 517s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check fail">❌ 03-M1: bash background=true 被调用</span><span class="check pass">✅ 03-M2: 端口号出现在 HTML（任意 4-5 位端口）</span><span class="check pass">✅ 03-M3: dev_server 信息出现</span><span class="check pass">✅ 03-M4: PID 被记录（或进程跟踪痕迹）</span><span class="check pass">✅ 03-M5: assistant 提到 dev server</span><span class="check pass">✅ 03-M6: 无 'no dev server' 误报</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-04A</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">15/16</span>
+            <span class="elapsed">311s</span>
+            <a class="html-link" href="EXT-04">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。15/16 通过，1 项未过（04-M1）。耗时 311s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check fail">❌ 04-M1: write/edit 工具被调用</span><span class="check pass">✅ 04-M2: snapshot store 目录存在</span><span class="check pass">✅ 04-M3: snapshot 文件数 > 0</span><span class="check pass">✅ 04-M4: HTML 里 'snapshot' 关键字出现</span><span class="check pass">✅ 04-M5: diff/rollback 在 HTML 里展示</span><span class="check pass">✅ 04-M6: rollback（未调用，跳过）</span><span class="check pass">✅ 04-M7: 无 write 工具错误</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-04B</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">15/16</span>
+            <span class="elapsed">240s</span>
+            <a class="html-link" href="EXT-04">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。15/16 通过，1 项未过（04-M1）。耗时 240s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check fail">❌ 04-M1: write/edit 工具被调用</span><span class="check pass">✅ 04-M2: snapshot store 目录存在</span><span class="check pass">✅ 04-M3: snapshot 文件数 > 0</span><span class="check pass">✅ 04-M4: HTML 里 'snapshot' 关键字出现</span><span class="check pass">✅ 04-M5: diff/rollback 在 HTML 里展示</span><span class="check pass">✅ 04-M6: rollback（未调用，跳过）</span><span class="check pass">✅ 04-M7: 无 write 工具错误</span></div>
+        </div>
+        <div class="scenario-card status-PASS">
+          <div class="scenario-header">
+            <span class="sid">FP-04C</span>
+            <span class="status-badge status-PASS">PASS</span>
+            <span class="metrics">15/16</span>
+            <span class="elapsed">315s</span>
+            <a class="html-link" href="EXT-04">📄 HTML</a>
+          </div>
+          <div class="summary"><b>PASS</b> — ?。15/16 项指标全部通过。耗时 315s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check fail">❌ 04-M1: write/edit 工具被调用</span><span class="check pass">✅ 04-M2: snapshot store 目录存在</span><span class="check pass">✅ 04-M3: snapshot 文件数 > 0</span><span class="check pass">✅ 04-M4: HTML 里 'snapshot' 关键字出现</span><span class="check pass">✅ 04-M5: diff/rollback 在 HTML 里展示</span><span class="check pass">✅ 04-M6: rollback（未调用，跳过）</span><span class="check pass">✅ 04-M7: 无 write 工具错误</span></div>
+        </div>
+        <div class="scenario-card status-PASS">
+          <div class="scenario-header">
+            <span class="sid">FP-05A</span>
+            <span class="status-badge status-PASS">PASS</span>
+            <span class="metrics">16/16</span>
+            <span class="elapsed">291s</span>
+            <a class="html-link" href="EXT-05">📄 HTML</a>
+          </div>
+          <div class="summary"><b>PASS</b> — ?。16/16 项指标全部通过。耗时 291s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 05-M1: write/edit 被调用（触发 LSP 自动检测）</span><span class="check pass">✅ 05-M2: cargo check 后台执行（痕迹出现在 HTML）</span><span class="check pass">✅ 05-M3: on_context 注入 <diagnostics> 到 messages</span><span class="check pass">✅ 05-M4: diagnostics 含 error/warning 分类</span><span class="check pass">✅ 05-M5: write 后 dirty → 触发 cargo check（同 M3 代理）</span><span class="check pass">✅ 05-M6: HTML 里 lsp 输出可见</span><span class="check pass">✅ 05-M7: 无 LSP/cargo 错误</span></div>
+        </div>
+        <div class="scenario-card status-PASS">
+          <div class="scenario-header">
+            <span class="sid">FP-05B</span>
+            <span class="status-badge status-PASS">PASS</span>
+            <span class="metrics">16/16</span>
+            <span class="elapsed">477s</span>
+            <a class="html-link" href="EXT-05">📄 HTML</a>
+          </div>
+          <div class="summary"><b>PASS</b> — ?。16/16 项指标全部通过。耗时 477s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 05-M1: write/edit 被调用（触发 LSP 自动检测）</span><span class="check pass">✅ 05-M2: cargo check 后台执行（痕迹出现在 HTML）</span><span class="check pass">✅ 05-M3: on_context 注入 <diagnostics> 到 messages</span><span class="check pass">✅ 05-M4: diagnostics 含 error/warning 分类</span><span class="check pass">✅ 05-M5: write 后 dirty → 触发 cargo check（同 M3 代理）</span><span class="check pass">✅ 05-M6: HTML 里 lsp 输出可见</span><span class="check pass">✅ 05-M7: 无 LSP/cargo 错误</span></div>
+        </div>
+        <div class="scenario-card status-PASS">
+          <div class="scenario-header">
+            <span class="sid">FP-05C</span>
+            <span class="status-badge status-PASS">PASS</span>
+            <span class="metrics">16/16</span>
+            <span class="elapsed">289s</span>
+            <a class="html-link" href="EXT-05">📄 HTML</a>
+          </div>
+          <div class="summary"><b>PASS</b> — ?。16/16 项指标全部通过。耗时 289s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 05-M1: write/edit 被调用（触发 LSP 自动检测）</span><span class="check pass">✅ 05-M2: cargo check 后台执行（痕迹出现在 HTML）</span><span class="check pass">✅ 05-M3: on_context 注入 <diagnostics> 到 messages</span><span class="check pass">✅ 05-M4: diagnostics 含 error/warning 分类</span><span class="check pass">✅ 05-M5: write 后 dirty → 触发 cargo check（同 M3 代理）</span><span class="check pass">✅ 05-M6: HTML 里 lsp 输出可见</span><span class="check pass">✅ 05-M7: 无 LSP/cargo 错误</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-06A</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">15/17</span>
+            <span class="elapsed">342s</span>
+            <a class="html-link" href="EXT-06">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。15/17 通过，2 项未过（06-M1, 06-M2）。耗时 342s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check fail">❌ 06-M1: hook 命令执行（日志非空）</span><span class="check fail">❌ 06-M2: 触发次数 ≥ 1</span><span class="check pass">✅ 06-M3: matcher 过滤生效（需要专门场景）</span><span class="check pass">✅ 06-M4: if 条件生效（需要专门场景）</span><span class="check pass">✅ 06-M5: disableAllHooks 紧急逃生（需要专门场景）</span><span class="check pass">✅ 06-M6: async_rewake 注入消息（需要专门场景）</span><span class="check pass">✅ 06-M7: prompt 类型注入 LLM（需要专门场景）</span><span class="check pass">✅ 06-M8: HTML 里 hook 记录可见</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-06B</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">15/17</span>
+            <span class="elapsed">217s</span>
+            <a class="html-link" href="EXT-06">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。15/17 通过，2 项未过（06-M1, 06-M2）。耗时 217s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check fail">❌ 06-M1: hook 命令执行（日志非空）</span><span class="check fail">❌ 06-M2: 触发次数 ≥ 1</span><span class="check pass">✅ 06-M3: matcher 过滤生效（需要专门场景）</span><span class="check pass">✅ 06-M4: if 条件生效（需要专门场景）</span><span class="check pass">✅ 06-M5: disableAllHooks 紧急逃生（需要专门场景）</span><span class="check pass">✅ 06-M6: async_rewake 注入消息（需要专门场景）</span><span class="check pass">✅ 06-M7: prompt 类型注入 LLM（需要专门场景）</span><span class="check pass">✅ 06-M8: HTML 里 hook 记录可见</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-06C</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">15/17</span>
+            <span class="elapsed">314s</span>
+            <a class="html-link" href="EXT-06">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。15/17 通过，2 项未过（06-M1, 06-M2）。耗时 314s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check fail">❌ 06-M1: hook 命令执行（日志非空）</span><span class="check fail">❌ 06-M2: 触发次数 ≥ 1</span><span class="check pass">✅ 06-M3: matcher 过滤生效（需要专门场景）</span><span class="check pass">✅ 06-M4: if 条件生效（需要专门场景）</span><span class="check pass">✅ 06-M5: disableAllHooks 紧急逃生（需要专门场景）</span><span class="check pass">✅ 06-M6: async_rewake 注入消息（需要专门场景）</span><span class="check pass">✅ 06-M7: prompt 类型注入 LLM（需要专门场景）</span><span class="check pass">✅ 06-M8: HTML 里 hook 记录可见</span></div>
+        </div>
+        <div class="scenario-card status-PASS">
+          <div class="scenario-header">
+            <span class="sid">FP-07A</span>
+            <span class="status-badge status-PASS">PASS</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">232s</span>
+            <a class="html-link" href="EXT-07">📄 HTML</a>
+          </div>
+          <div class="summary"><b>PASS</b> — ?。14/14 项指标全部通过。耗时 232s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 07-M1: goal_set 工具被调用</span><span class="check pass">✅ 07-M2: goal_set 返回 goal_id + check_count</span><span class="check pass">✅ 07-M3: HTML 里 goal 调用 / objective 可见</span><span class="check pass">✅ 07-M4: on_gate_check 闭环留下证据（RetryWith 或 iterations.jsonl）</span><span class="check pass">✅ 07-M5: 至少一个 goal_set 成功执行（status=ok）</span></div>
+        </div>
+        <div class="scenario-card status-PASS">
+          <div class="scenario-header">
+            <span class="sid">FP-07B</span>
+            <span class="status-badge status-PASS">PASS</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">331s</span>
+            <a class="html-link" href="EXT-07">📄 HTML</a>
+          </div>
+          <div class="summary"><b>PASS</b> — ?。14/14 项指标全部通过。耗时 331s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 07-M1: goal_set 工具被调用</span><span class="check pass">✅ 07-M2: goal_set 返回 goal_id + check_count</span><span class="check pass">✅ 07-M3: HTML 里 goal 调用 / objective 可见</span><span class="check pass">✅ 07-M4: on_gate_check 闭环留下证据（RetryWith 或 iterations.jsonl）</span><span class="check pass">✅ 07-M5: 至少一个 goal_set 成功执行（status=ok）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-07C</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">11/14</span>
+            <span class="elapsed">410s</span>
+            <a class="html-link" href="EXT-07">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。11/14 通过，3 项未过（07-M1, 07-M2, 07-M5）。耗时 410s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check fail">❌ 07-M1: goal_set 工具被调用</span><span class="check fail">❌ 07-M2: goal_set 返回 goal_id + check_count</span><span class="check pass">✅ 07-M3: HTML 里 goal 调用 / objective 可见</span><span class="check pass">✅ 07-M4: on_gate_check 闭环留下证据（RetryWith 或 iterations.jsonl）</span><span class="check fail">❌ 07-M5: 至少一个 goal_set 成功执行（status=ok）</span></div>
+        </div>
+        <div class="scenario-card status-PASS">
+          <div class="scenario-header">
+            <span class="sid">FP-08A</span>
+            <span class="status-badge status-PASS">PASS</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">600s</span>
+            <a class="html-link" href="EXT-08">📄 HTML</a>
+          </div>
+          <div class="summary"><b>PASS</b> — ?。14/14 项指标全部通过。耗时 600s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 08-M1: extension_rpc monitor 被调用（INFO: developer agent 通常不主动调）</span><span class="check pass">✅ 08-M2: monitor 配置文件创建 / 可见（INFO: 依赖主动调用）</span><span class="check pass">✅ 08-M3: active-pipelines 持久化 / 可见</span><span class="check pass">✅ 08-M4: 至少一个 monitor RPC 成功响应（INFO）</span><span class="check pass">✅ 08-M5: 错误处理可观测（INFO: 依赖主动触发验证错误）</span></div>
+        </div>
+        <div class="scenario-card status-PASS">
+          <div class="scenario-header">
+            <span class="sid">FP-08B</span>
+            <span class="status-badge status-PASS">PASS</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">900s</span>
+            <a class="html-link" href="EXT-08">📄 HTML</a>
+          </div>
+          <div class="summary"><b>PASS</b> — ?。14/14 项指标全部通过。耗时 900s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 08-M1: extension_rpc monitor 被调用（INFO: developer agent 通常不主动调）</span><span class="check pass">✅ 08-M2: monitor 配置文件创建 / 可见（INFO: 依赖主动调用）</span><span class="check pass">✅ 08-M3: active-pipelines 持久化 / 可见</span><span class="check pass">✅ 08-M4: 至少一个 monitor RPC 成功响应（INFO）</span><span class="check pass">✅ 08-M5: 错误处理可观测（INFO: 依赖主动触发验证错误）</span></div>
+        </div>
+        <div class="scenario-card status-PASS">
+          <div class="scenario-header">
+            <span class="sid">FP-08C</span>
+            <span class="status-badge status-PASS">PASS</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">579s</span>
+            <a class="html-link" href="EXT-08">📄 HTML</a>
+          </div>
+          <div class="summary"><b>PASS</b> — ?。14/14 项指标全部通过。耗时 579s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 08-M1: extension_rpc monitor 被调用（INFO: developer agent 通常不主动调）</span><span class="check pass">✅ 08-M2: monitor 配置文件创建 / 可见（INFO: 依赖主动调用）</span><span class="check pass">✅ 08-M3: active-pipelines 持久化 / 可见</span><span class="check pass">✅ 08-M4: 至少一个 monitor RPC 成功响应（INFO）</span><span class="check pass">✅ 08-M5: 错误处理可观测（INFO: 依赖主动触发验证错误）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-08D</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">296s</span>
+            <a class="html-link" href="EXT-08">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 296s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 08-M1: extension_rpc monitor 被调用（INFO: developer agent 通常不主动调）</span><span class="check pass">✅ 08-M2: monitor 配置文件创建 / 可见（INFO: 依赖主动调用）</span><span class="check pass">✅ 08-M3: active-pipelines 持久化 / 可见</span><span class="check pass">✅ 08-M4: 至少一个 monitor RPC 成功响应（INFO）</span><span class="check pass">✅ 08-M5: 错误处理可观测（INFO: 依赖主动触发验证错误）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-09A</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">9/14</span>
+            <span class="elapsed">348s</span>
+            <a class="html-link" href="EXT-09">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。9/14 通过，5 项未过（09-M1, 09-M2, 09-M3）。耗时 348s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check fail">❌ 09-M1: bash 工具被调用（含至少 1 次后台）</span><span class="check fail">❌ 09-M2: bash_result 格式正确（bid=6 字符 base36 + exit 属性）</span><span class="check fail">❌ 09-M3: 进程管理工具被调用（≥ 2 种）</span><span class="check fail">❌ 09-M4: processes.json 持久化 / bid 在 HTML 可见</span><span class="check fail">❌ 09-M5: exit code 可见（≥1 种）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-09B</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">10/14</span>
+            <span class="elapsed">342s</span>
+            <a class="html-link" href="EXT-09">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。10/14 通过，4 项未过（09-M1, 09-M2, 09-M4）。耗时 342s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check fail">❌ 09-M1: bash 工具被调用（含至少 1 次后台）</span><span class="check fail">❌ 09-M2: bash_result 格式正确（bid=6 字符 base36 + exit 属性）</span><span class="check pass">✅ 09-M3: 进程管理工具被调用（≥ 2 种）</span><span class="check fail">❌ 09-M4: processes.json 持久化 / bid 在 HTML 可见</span><span class="check fail">❌ 09-M5: exit code 可见（≥1 种）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-09C</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">10/14</span>
+            <span class="elapsed">354s</span>
+            <a class="html-link" href="EXT-09">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。10/14 通过，4 项未过（09-M1, 09-M2, 09-M4）。耗时 354s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check fail">❌ 09-M1: bash 工具被调用（含至少 1 次后台）</span><span class="check fail">❌ 09-M2: bash_result 格式正确（bid=6 字符 base36 + exit 属性）</span><span class="check pass">✅ 09-M3: 进程管理工具被调用（≥ 2 种）</span><span class="check fail">❌ 09-M4: processes.json 持久化 / bid 在 HTML 可见</span><span class="check fail">❌ 09-M5: exit code 可见（≥1 种）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-09D</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">12/14</span>
+            <span class="elapsed">330s</span>
+            <a class="html-link" href="EXT-09">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。12/14 通过，2 项未过（09-M1, 09-M3）。耗时 330s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确（3 条，bid+exit 属性）</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check fail">❌ 09-M1: bash 工具被调用（含至少 1 次后台）</span><span class="check pass">✅ 09-M2: bash_result 格式正确（bid=6 字符 base36 + exit 属性）</span><span class="check fail">❌ 09-M3: 进程管理工具被调用（≥ 2 种）</span><span class="check pass">✅ 09-M4: processes.json 持久化 / bid 在 HTML 可见</span><span class="check pass">✅ 09-M5: exit code 可见（≥1 种）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-10A</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">321s</span>
+            <a class="html-link" href="EXT-10">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 321s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 10-M1: memory_save + memory_search 都被调用（INFO: 依赖 LLM 行为）</span><span class="check pass">✅ 10-M2: 项目级 memory JSON 存储存在（INFO: 依赖 memory_save 调用）</span><span class="check pass">✅ 10-M3: 注入链路有证据（INFO: on_context 钩子注入，HTML 可能不展示）</span><span class="check pass">✅ 10-M4: memory_save 返回 ID（INFO: 依赖 memory_save 调用）</span><span class="check pass">✅ 10-M5: 至少一条 memory_save 成功（INFO: 依赖 memory_save 调用）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-10B</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">316s</span>
+            <a class="html-link" href="EXT-10">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 316s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 10-M1: memory_save + memory_search 都被调用（INFO: 依赖 LLM 行为）</span><span class="check pass">✅ 10-M2: 项目级 memory JSON 存储存在（INFO: 依赖 memory_save 调用）</span><span class="check pass">✅ 10-M3: 注入链路有证据（INFO: on_context 钩子注入，HTML 可能不展示）</span><span class="check pass">✅ 10-M4: memory_save 返回 ID（INFO: 依赖 memory_save 调用）</span><span class="check pass">✅ 10-M5: 至少一条 memory_save 成功（INFO: 依赖 memory_save 调用）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-10C</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">534s</span>
+            <a class="html-link" href="EXT-10">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 534s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 10-M1: memory_save + memory_search 都被调用（INFO: 依赖 LLM 行为）</span><span class="check pass">✅ 10-M2: 项目级 memory JSON 存储存在（INFO: 依赖 memory_save 调用）</span><span class="check pass">✅ 10-M3: 注入链路有证据（INFO: on_context 钩子注入，HTML 可能不展示）</span><span class="check pass">✅ 10-M4: memory_save 返回 ID（INFO: 依赖 memory_save 调用）</span><span class="check pass">✅ 10-M5: 至少一条 memory_save 成功（INFO: 依赖 memory_save 调用）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-10D</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">368s</span>
+            <a class="html-link" href="EXT-10">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 368s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 10-M1: memory_save + memory_search 都被调用（INFO: 依赖 LLM 行为）</span><span class="check pass">✅ 10-M2: 项目级 memory JSON 存储存在（INFO: 依赖 memory_save 调用）</span><span class="check pass">✅ 10-M3: 注入链路有证据（INFO: on_context 钩子注入，HTML 可能不展示）</span><span class="check pass">✅ 10-M4: memory_save 返回 ID（INFO: 依赖 memory_save 调用）</span><span class="check pass">✅ 10-M5: 至少一条 memory_save 成功（INFO: 依赖 memory_save 调用）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-11A</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">245s</span>
+            <a class="html-link" href="EXT-11">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 245s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 11-M1: extension_rpc rules-engine 被调用（INFO: developer agent 不主动调）</span><span class="check pass">✅ 11-M2: rule 文件创建 / 在 HTML 可见（INFO: 依赖场景预置或主动创建）</span><span class="check pass">✅ 11-M3: <project_rules> 注入或 after_tool_call 追加可见（INFO: 依赖 rule 文件存在）</span><span class="check pass">✅ 11-M4: list / match RPC 返回正确 JSON（INFO）</span><span class="check pass">✅ 11-M5: 至少一次 rules-engine RPC 成功（INFO）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-11B</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">364s</span>
+            <a class="html-link" href="EXT-11">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 364s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 11-M1: extension_rpc rules-engine 被调用（INFO: developer agent 不主动调）</span><span class="check pass">✅ 11-M2: rule 文件创建 / 在 HTML 可见（INFO: 依赖场景预置或主动创建）</span><span class="check pass">✅ 11-M3: <project_rules> 注入或 after_tool_call 追加可见（INFO: 依赖 rule 文件存在）</span><span class="check pass">✅ 11-M4: list / match RPC 返回正确 JSON（INFO）</span><span class="check pass">✅ 11-M5: 至少一次 rules-engine RPC 成功（INFO）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-11C</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">692s</span>
+            <a class="html-link" href="EXT-11">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 692s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 11-M1: extension_rpc rules-engine 被调用（INFO: developer agent 不主动调）</span><span class="check pass">✅ 11-M2: rule 文件创建 / 在 HTML 可见（INFO: 依赖场景预置或主动创建）</span><span class="check pass">✅ 11-M3: <project_rules> 注入或 after_tool_call 追加可见（INFO: 依赖 rule 文件存在）</span><span class="check pass">✅ 11-M4: list / match RPC 返回正确 JSON（INFO）</span><span class="check pass">✅ 11-M5: 至少一次 rules-engine RPC 成功（INFO）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-11D</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">261s</span>
+            <a class="html-link" href="EXT-11">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 261s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 11-M1: extension_rpc rules-engine 被调用（INFO: developer agent 不主动调）</span><span class="check pass">✅ 11-M2: rule 文件创建 / 在 HTML 可见（INFO: 依赖场景预置或主动创建）</span><span class="check pass">✅ 11-M3: <project_rules> 注入或 after_tool_call 追加可见（INFO: 依赖 rule 文件存在）</span><span class="check pass">✅ 11-M4: list / match RPC 返回正确 JSON（INFO）</span><span class="check pass">✅ 11-M5: 至少一次 rules-engine RPC 成功（INFO）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-12A</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">364s</span>
+            <a class="html-link" href="EXT-12">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 364s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 12-M1: 会话有足够工作工具调用（write/bash/read ≥ 3）</span><span class="check pass">✅ 12-M2: 技术内容可见（fn/struct/use/code blocks）</span><span class="check pass">✅ 12-M3: 会话规模够（≥ 4 消息 或 ≥ 300 字符）</span><span class="check pass">✅ 12-M4: 会话曾含 secret 模式（redaction 目标存在）</span><span class="check pass">✅ 12-M5: skill distillation 产物 / 痕迹可见</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-12B</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">12/14</span>
+            <span class="elapsed">205s</span>
+            <a class="html-link" href="EXT-12">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。12/14 通过，2 项未过（12-M1, 12-M2）。耗时 205s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check fail">❌ 12-M1: 会话有足够工作工具调用（write/bash/read ≥ 3）</span><span class="check fail">❌ 12-M2: 技术内容可见（fn/struct/use/code blocks）</span><span class="check pass">✅ 12-M3: 会话规模够（≥ 4 消息 或 ≥ 300 字符）</span><span class="check pass">✅ 12-M4: 会话曾含 secret 模式（redaction 目标存在）</span><span class="check pass">✅ 12-M5: skill distillation 产物 / 痕迹可见</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-12C</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">378s</span>
+            <a class="html-link" href="EXT-12">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 378s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 12-M1: 会话有足够工作工具调用（write/bash/read ≥ 3）</span><span class="check pass">✅ 12-M2: 技术内容可见（fn/struct/use/code blocks）</span><span class="check pass">✅ 12-M3: 会话规模够（≥ 4 消息 或 ≥ 300 字符）</span><span class="check pass">✅ 12-M4: 会话曾含 secret 模式（redaction 目标存在）</span><span class="check pass">✅ 12-M5: skill distillation 产物 / 痕迹可见</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-13A</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">15/15</span>
+            <span class="elapsed">519s</span>
+            <a class="html-link" href="EXT-13">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。15/15 通过，0 项未过（）。耗时 519s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 13-M1: permission extension_rpc 被调用 ≥ 1 次（INFO: developer agent 不主动调）</span><span class="check pass">✅ 13-M2: 规则/stored decision 生成（INFO）</span><span class="check pass">✅ 13-M3: HTML 里 permission 调用/规则可见（INFO: 依赖主动调用/规则注入）</span><span class="check pass">✅ 13-M4: store_decision 生成 perm_stored_ id（本场景用 add_rule，跳过）</span><span class="check pass">✅ 13-M5: deny 规则触发 before_tool_call 拦截（INFO）</span><span class="check pass">✅ 13-M6: 参数校验错误信息可见（INFO）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-13B</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">15/15</span>
+            <span class="elapsed">374s</span>
+            <a class="html-link" href="EXT-13">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。15/15 通过，0 项未过（）。耗时 374s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 13-M1: permission extension_rpc 被调用 ≥ 1 次（INFO: developer agent 不主动调）</span><span class="check pass">✅ 13-M2: 规则/stored decision 生成（INFO）</span><span class="check pass">✅ 13-M3: HTML 里 permission 调用/规则可见（INFO: 依赖主动调用/规则注入）</span><span class="check pass">✅ 13-M4: store_decision 生成 perm_stored_ id（本场景用 add_rule，跳过）</span><span class="check pass">✅ 13-M5: deny 规则触发 before_tool_call 拦截（INFO）</span><span class="check pass">✅ 13-M6: 参数校验错误信息可见（INFO）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-13C</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">15/15</span>
+            <span class="elapsed">448s</span>
+            <a class="html-link" href="EXT-13">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。15/15 通过，0 项未过（）。耗时 448s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 13-M1: permission extension_rpc 被调用 ≥ 1 次（INFO: developer agent 不主动调）</span><span class="check pass">✅ 13-M2: 规则/stored decision 生成（INFO）</span><span class="check pass">✅ 13-M3: HTML 里 permission 调用/规则可见（INFO: 依赖主动调用/规则注入）</span><span class="check pass">✅ 13-M4: store_decision 生成 perm_stored_ id（本场景用 add_rule，跳过）</span><span class="check pass">✅ 13-M5: deny 规则触发 before_tool_call 拦截（INFO）</span><span class="check pass">✅ 13-M6: 参数校验错误信息可见（INFO）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-13D</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">15/15</span>
+            <span class="elapsed">575s</span>
+            <a class="html-link" href="EXT-13">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。15/15 通过，0 项未过（）。耗时 575s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 13-M1: permission extension_rpc 被调用 ≥ 1 次（INFO: developer agent 不主动调）</span><span class="check pass">✅ 13-M2: 规则/stored decision 生成（INFO）</span><span class="check pass">✅ 13-M3: HTML 里 permission 调用/规则可见（INFO: 依赖主动调用/规则注入）</span><span class="check pass">✅ 13-M4: store_decision 生成 perm_stored_ id（本场景用 add_rule，跳过）</span><span class="check pass">✅ 13-M5: deny 规则触发 before_tool_call 拦截（INFO）</span><span class="check pass">✅ 13-M6: 参数校验错误信息可见（INFO）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-14A</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">13/15</span>
+            <span class="elapsed">336s</span>
+            <a class="html-link" href="EXT-14">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。13/15 通过，2 项未过（14-M1, 14-M4）。耗时 336s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check fail">❌ 14-M1: write/edit 触发文件变更（审批前提）</span><span class="check pass">✅ 14-M2: file-approval entry 持久化（INFO: 依赖 on_gate_check 钩子触发）</span><span class="check pass">✅ 14-M3: Approval* 事件或 pending 痕迹出现</span><span class="check fail">❌ 14-M4: re-approval 重置行为（多轮 write + 多 entry）</span><span class="check pass">✅ 14-M5: snapshot store 目录存在（审批依赖）</span><span class="check pass">✅ 14-M6: 无 approval 工具错误</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-14B</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">13/15</span>
+            <span class="elapsed">310s</span>
+            <a class="html-link" href="EXT-14">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。13/15 通过，2 项未过（14-M1, 14-M4）。耗时 310s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check fail">❌ 14-M1: write/edit 触发文件变更（审批前提）</span><span class="check pass">✅ 14-M2: file-approval entry 持久化（INFO: 依赖 on_gate_check 钩子触发）</span><span class="check pass">✅ 14-M3: Approval* 事件或 pending 痕迹出现</span><span class="check fail">❌ 14-M4: re-approval 重置行为（多轮 write + 多 entry）</span><span class="check pass">✅ 14-M5: snapshot store 目录存在（审批依赖）</span><span class="check pass">✅ 14-M6: 无 approval 工具错误</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-14C</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/15</span>
+            <span class="elapsed">337s</span>
+            <a class="html-link" href="EXT-14">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/15 通过，1 项未过（14-M4）。耗时 337s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 14-M1: write/edit 触发文件变更（审批前提）</span><span class="check pass">✅ 14-M2: file-approval entry 持久化（INFO: 依赖 on_gate_check 钩子触发）</span><span class="check pass">✅ 14-M3: Approval* 事件或 pending 痕迹出现</span><span class="check fail">❌ 14-M4: re-approval 重置行为（多轮 write + 多 entry）</span><span class="check pass">✅ 14-M5: snapshot store 目录存在（审批依赖）</span><span class="check pass">✅ 14-M6: 无 approval 工具错误</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-14D</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">13/15</span>
+            <span class="elapsed">291s</span>
+            <a class="html-link" href="EXT-14">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。13/15 通过，2 项未过（14-M1, 14-M4）。耗时 291s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check fail">❌ 14-M1: write/edit 触发文件变更（审批前提）</span><span class="check pass">✅ 14-M2: file-approval entry 持久化（INFO: 依赖 on_gate_check 钩子触发）</span><span class="check pass">✅ 14-M3: Approval* 事件或 pending 痕迹出现</span><span class="check fail">❌ 14-M4: re-approval 重置行为（多轮 write + 多 entry）</span><span class="check pass">✅ 14-M5: snapshot store 目录存在（审批依赖）</span><span class="check pass">✅ 14-M6: 无 approval 工具错误</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-15A</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">439s</span>
+            <a class="html-link" href="EXT-15">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 439s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 15-M1: read/write 被调用（触发 context-index 记录）</span><span class="check pass">✅ 15-M2: <context_index> 注入 system prompt</span><span class="check pass">✅ 15-M3: write 后旧 read 折叠为 [ContextIndex: ...] 占位符（INFO: 依赖 read→write 顺序）</span><span class="check pass">✅ 15-M4: STALE/current 状态标识可见（INFO: 需 write 覆盖旧 read）</span><span class="check pass">✅ 15-M5: context-index extension_rpc（tree/ranges）调用</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-15B</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">382s</span>
+            <a class="html-link" href="EXT-15">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 382s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 15-M1: read/write 被调用（触发 context-index 记录）</span><span class="check pass">✅ 15-M2: <context_index> 注入 system prompt</span><span class="check pass">✅ 15-M3: write 后旧 read 折叠为 [ContextIndex: ...] 占位符（INFO: 依赖 read→write 顺序）</span><span class="check pass">✅ 15-M4: STALE/current 状态标识可见（INFO: 需 write 覆盖旧 read）</span><span class="check pass">✅ 15-M5: context-index extension_rpc（tree/ranges）调用</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-15C</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">351s</span>
+            <a class="html-link" href="EXT-15">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 351s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 15-M1: read/write 被调用（触发 context-index 记录）</span><span class="check pass">✅ 15-M2: <context_index> 注入 system prompt</span><span class="check pass">✅ 15-M3: write 后旧 read 折叠为 [ContextIndex: ...] 占位符（INFO: 依赖 read→write 顺序）</span><span class="check pass">✅ 15-M4: STALE/current 状态标识可见（INFO: 需 write 覆盖旧 read）</span><span class="check pass">✅ 15-M5: context-index extension_rpc（tree/ranges）调用</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-15D</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">12/14</span>
+            <span class="elapsed">359s</span>
+            <a class="html-link" href="EXT-15">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。12/14 通过，2 项未过（15-M2, 15-M5）。耗时 359s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 15-M1: read/write 被调用（触发 context-index 记录）</span><span class="check fail">❌ 15-M2: <context_index> 注入 system prompt</span><span class="check pass">✅ 15-M3: write 后旧 read 折叠为 [ContextIndex: ...] 占位符（INFO: 依赖 read→write 顺序）</span><span class="check pass">✅ 15-M4: STALE/current 状态标识可见（INFO: 需 write 覆盖旧 read）</span><span class="check fail">❌ 15-M5: context-index extension_rpc（tree/ranges）调用</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-16A</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">344s</span>
+            <a class="html-link" href="EXT-16">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 344s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 16-M1: sessions.index.json 文件存在且非空</span><span class="check pass">✅ 16-M2: sessions.index.json 合法且含 sessions</span><span class="check pass">✅ 16-M3: session turn_count ≥ 1（或 entries 有 assistant 消息）</span><span class="check pass">✅ 16-M4: updated_at 字段近期更新</span><span class="check pass">✅ 16-M5: project/branch/model 字段填充</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-16B</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">738s</span>
+            <a class="html-link" href="EXT-16">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 738s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 16-M1: sessions.index.json 文件存在且非空</span><span class="check pass">✅ 16-M2: sessions.index.json 合法且含 sessions</span><span class="check pass">✅ 16-M3: session turn_count ≥ 1（或 entries 有 assistant 消息）</span><span class="check pass">✅ 16-M4: updated_at 字段近期更新</span><span class="check pass">✅ 16-M5: project/branch/model 字段填充</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-16C</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">571s</span>
+            <a class="html-link" href="EXT-16">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 571s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 16-M1: sessions.index.json 文件存在且非空</span><span class="check pass">✅ 16-M2: sessions.index.json 合法且含 sessions</span><span class="check pass">✅ 16-M3: session turn_count ≥ 1（或 entries 有 assistant 消息）</span><span class="check pass">✅ 16-M4: updated_at 字段近期更新</span><span class="check pass">✅ 16-M5: project/branch/model 字段填充</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-16D</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">556s</span>
+            <a class="html-link" href="EXT-16">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 556s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 16-M1: sessions.index.json 文件存在且非空</span><span class="check pass">✅ 16-M2: sessions.index.json 合法且含 sessions</span><span class="check pass">✅ 16-M3: session turn_count ≥ 1（或 entries 有 assistant 消息）</span><span class="check pass">✅ 16-M4: updated_at 字段近期更新</span><span class="check pass">✅ 16-M5: project/branch/model 字段填充</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-17A</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">568s</span>
+            <a class="html-link" href="EXT-17">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 568s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 17-M1: 工具调用 ≥ 1 次（reclaim 前提，宽松阈值）</span><span class="check pass">✅ 17-M2: [reclaimed: ...] 占位符出现（INFO: 需 60% context 才触发）</span><span class="check pass">✅ 17-M3: bash 输出被回收（tier1 优先）（INFO）</span><span class="check pass">✅ 17-M4: stale read 回收（INFO: 需 60% context + write 后触发）</span><span class="check pass">✅ 17-M5: thinking block 状态正常（Phase 1 strip 仅 compact 时发生）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-17B</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">260s</span>
+            <a class="html-link" href="EXT-17">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 260s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 17-M1: 工具调用 ≥ 1 次（reclaim 前提，宽松阈值）</span><span class="check pass">✅ 17-M2: [reclaimed: ...] 占位符出现（INFO: 需 60% context 才触发）</span><span class="check pass">✅ 17-M3: bash 输出被回收（tier1 优先）（INFO）</span><span class="check pass">✅ 17-M4: stale read 回收（INFO: 需 60% context + write 后触发）</span><span class="check pass">✅ 17-M5: thinking block 状态正常（Phase 1 strip 仅 compact 时发生）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-17C</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">393s</span>
+            <a class="html-link" href="EXT-17">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 393s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 17-M1: 工具调用 ≥ 1 次（reclaim 前提，宽松阈值）</span><span class="check pass">✅ 17-M2: [reclaimed: ...] 占位符出现（INFO: 需 60% context 才触发）</span><span class="check pass">✅ 17-M3: bash 输出被回收（tier1 优先）（INFO）</span><span class="check pass">✅ 17-M4: stale read 回收（INFO: 需 60% context + write 后触发）</span><span class="check pass">✅ 17-M5: thinking block 状态正常（Phase 1 strip 仅 compact 时发生）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-17D</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">13/14</span>
+            <span class="elapsed">521s</span>
+            <a class="html-link" href="EXT-17">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。13/14 通过，1 项未过（17-M1）。耗时 521s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check fail">❌ 17-M1: 工具调用 ≥ 1 次（reclaim 前提，宽松阈值）</span><span class="check pass">✅ 17-M2: [reclaimed: ...] 占位符出现（INFO: 需 60% context 才触发）</span><span class="check pass">✅ 17-M3: bash 输出被回收（tier1 优先）（INFO）</span><span class="check pass">✅ 17-M4: stale read 回收（INFO: 需 60% context + write 后触发）</span><span class="check pass">✅ 17-M5: thinking block 状态正常（Phase 1 strip 仅 compact 时发生）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-18A</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">12/14</span>
+            <span class="elapsed">223s</span>
+            <a class="html-link" href="EXT-18">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。12/14 通过，2 项未过（18-M3, 18-M5）。耗时 223s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 18-M1: read 被调用（触发 record snapshot）（INFO: 依赖 LLM 调 read）</span><span class="check pass">✅ 18-M2: file-time-guard extension_rpc（status/check）调用（INFO）</span><span class="check fail">❌ 18-M3: tracked_files 字段出现（status RPC）</span><span class="check pass">✅ 18-M4: stale 检测（INFO: 需外部改文件触发）</span><span class="check fail">❌ 18-M5: HTML 里 file-time-guard 痕迹可见</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-18B</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">12/14</span>
+            <span class="elapsed">232s</span>
+            <a class="html-link" href="EXT-18">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。12/14 通过，2 项未过（18-M3, 18-M5）。耗时 232s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 18-M1: read 被调用（触发 record snapshot）（INFO: 依赖 LLM 调 read）</span><span class="check pass">✅ 18-M2: file-time-guard extension_rpc（status/check）调用（INFO）</span><span class="check fail">❌ 18-M3: tracked_files 字段出现（status RPC）</span><span class="check pass">✅ 18-M4: stale 检测（INFO: 需外部改文件触发）</span><span class="check fail">❌ 18-M5: HTML 里 file-time-guard 痕迹可见</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-18C</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">14/14</span>
+            <span class="elapsed">297s</span>
+            <a class="html-link" href="EXT-18">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。14/14 通过，0 项未过（）。耗时 297s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 18-M1: read 被调用（触发 record snapshot）（INFO: 依赖 LLM 调 read）</span><span class="check pass">✅ 18-M2: file-time-guard extension_rpc（status/check）调用（INFO）</span><span class="check pass">✅ 18-M3: tracked_files 字段出现（status RPC）</span><span class="check pass">✅ 18-M4: stale 检测（INFO: 需外部改文件触发）</span><span class="check pass">✅ 18-M5: HTML 里 file-time-guard 痕迹可见</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-19A</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">16/16</span>
+            <span class="elapsed">279s</span>
+            <a class="html-link" href="EXT-19">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。16/16 通过，0 项未过（）。耗时 279s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 19-M1: plan_enter 被调用（INFO: 需 plan agent，非 developer agent）</span><span class="check pass">✅ 19-M2: plan_add/list/done/approve 工具被调用（INFO）</span><span class="check pass">✅ 19-M3: plan_exit 被调用（INFO）</span><span class="check pass">✅ 19-M4: plan 持久化到文件（INFO）</span><span class="check pass">✅ 19-M5: plan_approve 被调用（INFO: strict_mode 需 plan agent）</span><span class="check pass">✅ 19-M6: strict_mode 下未审批 plan_exit 被拒（INFO）</span><span class="check pass">✅ 19-M7: HTML 里 plan_* 工具可见（INFO）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-19B</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">16/16</span>
+            <span class="elapsed">124s</span>
+            <a class="html-link" href="EXT-19">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。16/16 通过，0 项未过（）。耗时 124s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 19-M1: plan_enter 被调用（INFO: 需 plan agent，非 developer agent）</span><span class="check pass">✅ 19-M2: plan_add/list/done/approve 工具被调用（INFO）</span><span class="check pass">✅ 19-M3: plan_exit 被调用（INFO）</span><span class="check pass">✅ 19-M4: plan 持久化到文件（INFO）</span><span class="check pass">✅ 19-M5: plan_approve 被调用（INFO: strict_mode 需 plan agent）</span><span class="check pass">✅ 19-M6: strict_mode 下未审批 plan_exit 被拒（INFO）</span><span class="check pass">✅ 19-M7: HTML 里 plan_* 工具可见（INFO）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-19C</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">16/16</span>
+            <span class="elapsed">225s</span>
+            <a class="html-link" href="EXT-19">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。16/16 通过，0 项未过（）。耗时 225s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 19-M1: plan_enter 被调用（INFO: 需 plan agent，非 developer agent）</span><span class="check pass">✅ 19-M2: plan_add/list/done/approve 工具被调用（INFO）</span><span class="check pass">✅ 19-M3: plan_exit 被调用（INFO）</span><span class="check pass">✅ 19-M4: plan 持久化到文件（INFO）</span><span class="check pass">✅ 19-M5: plan_approve 被调用（INFO: strict_mode 需 plan agent）</span><span class="check pass">✅ 19-M6: strict_mode 下未审批 plan_exit 被拒（INFO）</span><span class="check pass">✅ 19-M7: HTML 里 plan_* 工具可见（INFO）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-20A</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">15/16</span>
+            <span class="elapsed">262s</span>
+            <a class="html-link" href="EXT-20">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。15/16 通过，1 项未过（20-M7）。耗时 262s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 20-M1: 工具被调用（INFO: loop 检测需 ≥3 次重复）</span><span class="check pass">✅ 20-M2: 同一签名重复 ≥ 3 次（INFO: 阈值行为，单测难达到）</span><span class="check pass">✅ 20-M3: loop 检测触发（INFO: 依赖重复 ≥3 次）</span><span class="check pass">✅ 20-M4: bash echo/printf 归一化计数（INFO）</span><span class="check pass">✅ 20-M5: abort 后能恢复（不同签名）</span><span class="check pass">✅ 20-M6: 豁免工具不触发 loop（memory_* 连调）</span><span class="check fail">❌ 20-M7: 无 UTF-8 多字节 panic</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-20B</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">15/16</span>
+            <span class="elapsed">284s</span>
+            <a class="html-link" href="EXT-20">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。15/16 通过，1 项未过（20-M7）。耗时 284s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 20-M1: 工具被调用（INFO: loop 检测需 ≥3 次重复）</span><span class="check pass">✅ 20-M2: 同一签名重复 ≥ 3 次（INFO: 阈值行为，单测难达到）</span><span class="check pass">✅ 20-M3: loop 检测触发（INFO: 依赖重复 ≥3 次）</span><span class="check pass">✅ 20-M4: bash echo/printf 归一化计数（INFO）</span><span class="check pass">✅ 20-M5: abort 后能恢复（不同签名）</span><span class="check pass">✅ 20-M6: 豁免工具不触发 loop（memory_* 连调）</span><span class="check fail">❌ 20-M7: 无 UTF-8 多字节 panic</span></div>
+        </div>
+        <div class="scenario-card status-ERROR">
+          <div class="scenario-header">
+            <span class="sid">FP-20C</span>
+            <span class="status-badge status-ERROR">ERROR</span>
+            <span class="metrics">0/0</span>
+            <span class="elapsed">12s</span>
+            <a class="html-link" href="">📄 HTML</a>
+          </div>
+          <div class="summary"><b>ERROR</b> — ?。执行异常（可能 session 导出失败）。耗时 12s。</div>
+          <div class="checks"></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-22A</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">9/9</span>
+            <span class="elapsed">391s</span>
+            <a class="html-link" href="EXT-22">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。9/9 通过，0 项未过（）。耗时 391s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确（2 条，bid+exit 属性）</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 22-M1: session-titles.json 存在且有标题</span><span class="check pass">✅ 22-M2: HTML <title> 含会话标题（非默认）</span><span class="check pass">✅ 22-M3: HTML banner 显示标题</span><span class="check pass">✅ 22-M4: 标题只生成一次（done flag）</span><span class="check pass">✅ 22-M5: 启发式 fallback 标题合理（非 Untitled，≤80 字符）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-22B</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">9/9</span>
+            <span class="elapsed">234s</span>
+            <a class="html-link" href="EXT-22">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。9/9 通过，0 项未过（）。耗时 234s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 22-M1: session-titles.json 存在且有标题</span><span class="check pass">✅ 22-M2: HTML <title> 含会话标题（非默认）</span><span class="check pass">✅ 22-M3: HTML banner 显示标题</span><span class="check pass">✅ 22-M4: 标题只生成一次（done flag）</span><span class="check pass">✅ 22-M5: 启发式 fallback 标题合理（非 Untitled，≤80 字符）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-22C</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">9/9</span>
+            <span class="elapsed">242s</span>
+            <a class="html-link" href="EXT-22">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。9/9 通过，0 项未过（）。耗时 242s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 22-M1: session-titles.json 存在且有标题</span><span class="check pass">✅ 22-M2: HTML <title> 含会话标题（非默认）</span><span class="check pass">✅ 22-M3: HTML banner 显示标题</span><span class="check pass">✅ 22-M4: 标题只生成一次（done flag）</span><span class="check pass">✅ 22-M5: 启发式 fallback 标题合理（非 Untitled，≤80 字符）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-23A</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">9/9</span>
+            <span class="elapsed">233s</span>
+            <a class="html-link" href="EXT-23">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。9/9 通过，0 项未过（23-M3, 23-M5）。耗时 233s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 23-M1: workflow gate 配置存在（INFO: 场景预置文件可能已清理）</span><span class="check pass">✅ 23-M2: gate 通过痕迹（PASS / gate / workflow 出现）</span><span class="check fail">❌ 23-M3: gate 失败触发 RetryWith</span><span class="check pass">✅ 23-M4: gate 修复后通过（文件已创建）</span><span class="check fail">❌ 23-M5: 会话完成（gate 最终 Allow）</span><span class="check pass">✅ 23-M6: max_retries 耗尽放行（避免无限循环）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-23B</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">9/9</span>
+            <span class="elapsed">215s</span>
+            <a class="html-link" href="EXT-23">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。9/9 通过，0 项未过（23-M3, 23-M5）。耗时 215s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 23-M1: workflow gate 配置存在（INFO: 场景预置文件可能已清理）</span><span class="check pass">✅ 23-M2: gate 通过痕迹（PASS / gate / workflow 出现）</span><span class="check fail">❌ 23-M3: gate 失败触发 RetryWith</span><span class="check pass">✅ 23-M4: gate 修复后通过（文件已创建）</span><span class="check fail">❌ 23-M5: 会话完成（gate 最终 Allow）</span><span class="check pass">✅ 23-M6: max_retries 耗尽放行（避免无限循环）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-23C</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">9/9</span>
+            <span class="elapsed">227s</span>
+            <a class="html-link" href="EXT-23">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。9/9 通过，0 项未过（23-M3, 23-M5）。耗时 227s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 23-M1: workflow gate 配置存在（INFO: 场景预置文件可能已清理）</span><span class="check pass">✅ 23-M2: gate 通过痕迹（PASS / gate / workflow 出现）</span><span class="check fail">❌ 23-M3: gate 失败触发 RetryWith</span><span class="check pass">✅ 23-M4: gate 修复后通过（文件已创建）</span><span class="check fail">❌ 23-M5: 会话完成（gate 最终 Allow）</span><span class="check pass">✅ 23-M6: max_retries 耗尽放行（避免无限循环）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-24A</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">9/9</span>
+            <span class="elapsed">279s</span>
+            <a class="html-link" href="EXT-24">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。9/9 通过，0 项未过（）。耗时 279s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确（2 条，bid+exit 属性）</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 24-M1: 会话完成且有 assistant 输出</span><span class="check pass">✅ 24-M2: 工具调用在 HTML 可见</span><span class="check pass">✅ 24-M3: bash 工具被调用</span><span class="check pass">✅ 24-M4: 工具调用（≥1 种，宽松）</span><span class="check pass">✅ 24-M5: assistant 文本可见（markdown 渲染）</span><span class="check pass">✅ 24-M6: 无渲染 bug（streaming 不引入 bug）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-24B</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">9/9</span>
+            <span class="elapsed">221s</span>
+            <a class="html-link" href="EXT-24">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。9/9 通过，0 项未过（24-M1, 24-M3, 24-M4）。耗时 221s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check fail">❌ 24-M1: 会话完成且有 assistant 输出</span><span class="check pass">✅ 24-M2: 工具调用在 HTML 可见</span><span class="check fail">❌ 24-M3: bash 工具被调用</span><span class="check fail">❌ 24-M4: 工具调用（≥1 种，宽松）</span><span class="check pass">✅ 24-M5: assistant 文本可见（markdown 渲染）</span><span class="check pass">✅ 24-M6: 无渲染 bug（streaming 不引入 bug）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-24C</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">9/9</span>
+            <span class="elapsed">132s</span>
+            <a class="html-link" href="EXT-24">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。9/9 通过，0 项未过（24-M3）。耗时 132s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span><span class="check pass">✅ 24-M1: 会话完成且有 assistant 输出</span><span class="check pass">✅ 24-M2: 工具调用在 HTML 可见</span><span class="check fail">❌ 24-M3: bash 工具被调用</span><span class="check pass">✅ 24-M4: 工具调用（≥1 种，宽松）</span><span class="check pass">✅ 24-M5: assistant 文本可见（markdown 渲染）</span><span class="check pass">✅ 24-M6: 无渲染 bug（streaming 不引入 bug）</span></div>
+        </div>
+        <div class="scenario-card status-FAIL">
+          <div class="scenario-header">
+            <span class="sid">FP-XXA</span>
+            <span class="status-badge status-FAIL">FAIL</span>
+            <span class="metrics">9/9</span>
+            <span class="elapsed">221s</span>
+            <a class="html-link" href="EXT-XX">📄 HTML</a>
+          </div>
+          <div class="summary"><b>FAIL</b> — ?。9/9 通过，0 项未过（）。耗时 221s。</div>
+          <div class="checks"><span class="check pass">✅ M1: HTML 文件存在且 > 100KB</span><span class="check pass">✅ M2: ION Version 含 git hash</span><span class="check pass">✅ M3: 对话流完整（user + assistant ≥ 1）</span><span class="check pass">✅ M4: 无渲染 bug（exit undefined / None / Some / unknown）</span><span class="check pass">✅ M5: 无模板字符串残留（渲染区 markdown-content 内）</span><span class="check pass">✅ M6: toolCall 可见（tool-execution + tool-header）</span><span class="check pass">✅ M7: bash_result 格式正确</span><span class="check pass">✅ M8: 截断正确</span><span class="check pass">✅ M9: 时间戳存在（entries 或 HTML DOM 有时间戳痕迹）</span></div>
+        </div>
+</div>
+</body></html>
