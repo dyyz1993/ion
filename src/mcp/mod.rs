@@ -267,8 +267,16 @@ impl McpManager {
         }
     }
 
+    /// 安装 rustls 默认 crypto provider（幂等）。
+    /// rmcp 的 HTTP transport 用 rustls-no-provider，需在首次构建 reqwest Client 前安装。
+    fn ensure_rustls_provider() {
+        // try_install_default 返回 Err 表示已安装（幂等），无需处理
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    }
+
     /// 并发连接所有 enabled server（allSettled 模式，单台失败不阻断）
     pub async fn connect_all(&self) {
+        Self::ensure_rustls_provider();
         let to_connect: Vec<(String, McpServerConfig)> = {
             let servers = self.servers.lock().await;
             self.config
@@ -947,6 +955,7 @@ mod tests {
                 args: vec![],
                 env: [].into(),
                 cwd: None,
+                enabled: None,
                 disabled: false,
             },
         );
@@ -956,6 +965,7 @@ mod tests {
                 kind: "streamable-http".to_string(),
                 url: "http://localhost:8080/mcp".to_string(),
                 headers: [].into(),
+                enabled: None,
                 disabled: false,
             },
         );
@@ -1055,6 +1065,7 @@ mod tests {
             args: vec!["hi".to_string()],
             env: [("KEY".to_string(), "VAL".to_string())].into(),
             cwd: Some("/tmp".to_string()),
+            enabled: None,
             disabled: false,
         };
         let json = serde_json::to_value(&cfg).unwrap();
@@ -1071,6 +1082,7 @@ mod tests {
             kind: "streamable-http".to_string(),
             url: "http://localhost:8080/mcp".to_string(),
             headers: [("Authorization".to_string(), "Bearer x".to_string())].into(),
+            enabled: None,
             disabled: true,
         };
         let json = serde_json::to_value(&cfg).unwrap();
@@ -1093,8 +1105,10 @@ mod tests {
                 args,
                 env,
                 cwd,
+                enabled,
                 disabled,
             } => {
+                let _ = enabled; // ignore in this test
                 assert_eq!(command, "node");
                 assert_eq!(args, vec!["server.js".to_string()]);
                 assert!(env.is_empty());
@@ -1115,8 +1129,10 @@ mod tests {
                 kind,
                 url,
                 headers,
+                enabled,
                 disabled,
             } => {
+                let _ = enabled; // ignore in this test
                 assert_eq!(kind, "streamable-http");
                 assert_eq!(url, "http://example.com/mcp");
                 assert!(headers.is_empty());
@@ -1135,6 +1151,7 @@ mod tests {
             args: vec![],
             env: [].into(),
             cwd: None,
+            enabled: None,
             disabled: false,
         };
         assert!(!enabled.is_disabled());
@@ -1144,6 +1161,7 @@ mod tests {
             args: vec![],
             env: [].into(),
             cwd: None,
+            enabled: None,
             disabled: true,
         };
         assert!(disabled.is_disabled());
@@ -1152,6 +1170,7 @@ mod tests {
             kind: "streamable-http".to_string(),
             url: "http://localhost:8080".to_string(),
             headers: [].into(),
+            enabled: None,
             disabled: false,
         };
         assert!(!http_enabled.is_disabled());
@@ -1160,6 +1179,7 @@ mod tests {
             kind: "streamable-http".to_string(),
             url: "http://localhost:8080".to_string(),
             headers: [].into(),
+            enabled: None,
             disabled: true,
         };
         assert!(http_disabled.is_disabled());
@@ -1172,6 +1192,7 @@ mod tests {
             args: vec![],
             env: [].into(),
             cwd: None,
+            enabled: None,
             disabled: false,
         };
         assert_eq!(stdio.transport(), "stdio");
@@ -1180,6 +1201,7 @@ mod tests {
             kind: "streamable-http".to_string(),
             url: "http://localhost:8080".to_string(),
             headers: [].into(),
+            enabled: None,
             disabled: false,
         };
         assert_eq!(http.transport(), "streamable-http");
@@ -1205,6 +1227,7 @@ mod tests {
                 args: vec![],
                 env: [].into(),
                 cwd: None,
+                enabled: None,
                 disabled: false,
             },
         );
@@ -1214,6 +1237,7 @@ mod tests {
                 kind: "streamable-http".to_string(),
                 url: "http://localhost:9999/mcp".to_string(),
                 headers: [].into(),
+                enabled: None,
                 disabled: false,
             },
         );

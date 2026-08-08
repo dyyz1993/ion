@@ -60,6 +60,11 @@ pub struct IonConfig {
     #[serde(default)]
     pub mcp_servers: HashMap<String, McpServerConfig>,
 
+    /// zcode 兼容：嵌套格式 `{"mcp": {"servers": {...}}}`。
+    /// load() 后合并进 mcp_servers（平铺 mcp_servers 优先于嵌套 mcp.servers）。
+    #[serde(default)]
+    pub mcp: Option<McpNestedWrapper>,
+
     /// Runtime configuration (remote hosts, sandbox, routes)
     #[serde(default)]
     pub runtime: RuntimeConfig,
@@ -140,6 +145,9 @@ fn default_tier_models() -> HashMap<String, String> {
 /// 两种传输方式用 untagged enum 区分（兼容 pi 配置格式）：
 /// - 有 `command` 字段 → stdio（spawn 子进程）
 /// - 有 `type: "streamable-http"` → HTTP 远程 server
+///
+/// 兼容 zcode 配置：额外字段（如 `type:"stdio"`、`timeoutMs`）被静默忽略；
+/// `enabled` 字段优先于 `disabled`（zcode 用 enabled，ion 用 disabled）。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub enum McpServerConfig {
@@ -152,28 +160,47 @@ pub enum McpServerConfig {
         env: HashMap<String, String>,
         #[serde(default)]
         cwd: Option<String>,
+        /// zcode 兼容：enabled 优先于 disabled（Some(true)→启用，Some(false)→禁用，None→看 disabled）
+        #[serde(default)]
+        enabled: Option<bool>,
         #[serde(default)]
         disabled: bool,
     },
     /// Streamable HTTP 传输：远程 server
     Http {
-        /// 必须是 "streamable-http"
+        /// 必须是 "streamable-http"（zcode 的 "http" 也接受——kind 不校验值）
         #[serde(rename = "type")]
         kind: String,
         url: String,
         #[serde(default)]
         headers: HashMap<String, String>,
+        /// zcode 兼容：enabled 优先于 disabled
+        #[serde(default)]
+        enabled: Option<bool>,
         #[serde(default)]
         disabled: bool,
     },
 }
 
+/// zcode 嵌套格式兼容包装：`{"mcp": {"servers": {...}}}`
+/// 仅用于反序列化捕获，load() 后合并进 mcp_servers（平铺优先）。
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct McpNestedWrapper {
+    #[serde(default)]
+    pub servers: HashMap<String, McpServerConfig>,
+}
+
 impl McpServerConfig {
-    /// 是否被禁用
+    /// 是否被禁用。
+    /// enabled 字段优先（zcode 兼容）：Some(true)→false，Some(false)→true，None→看 disabled。
     pub fn is_disabled(&self) -> bool {
         match self {
-            McpServerConfig::Stdio { disabled, .. } => *disabled,
-            McpServerConfig::Http { disabled, .. } => *disabled,
+            McpServerConfig::Stdio { enabled, disabled, .. } => {
+                enabled.map(|e| !e).unwrap_or(*disabled)
+            }
+            McpServerConfig::Http { enabled, disabled, .. } => {
+                enabled.map(|e| !e).unwrap_or(*disabled)
+            }
         }
     }
 
@@ -887,6 +914,7 @@ impl Default for IonConfig {
             tier_models: default_tier_models(),
             security_mode: None,
             mcp_servers: HashMap::new(),
+            mcp: None,
             runtime: RuntimeConfig::default(),
             session: SessionConfig::default(),
             skills: SkillsConfig::default(),
@@ -903,6 +931,16 @@ impl IonConfig {
         PathBuf::from(home).join(".ion").join("config.json")
     }
 
+    /// 把嵌套的 zcode 格式 `mcp.servers` 合并进平铺的 `mcp_servers`。
+    /// 平铺优先：同名 server 已存在时不覆盖（保证 ion 原生 mcp_servers 格式优先于嵌套）。
+    fn merge_nested_mcp(&mut self) {
+        if let Some(nested) = self.mcp.take() {
+            for (name, srv) in nested.servers {
+                self.mcp_servers.entry(name).or_insert(srv);
+            }
+        }
+    }
+
     /// Load config from file, or return defaults if not found.
     pub fn load() -> Self {
         let path = Self::path();
@@ -916,6 +954,9 @@ impl IonConfig {
             }),
             Err(_) => IonConfig::default(),
         };
+
+        // 兼容 zcode 嵌套格式 mcp.servers → 合并进 mcp_servers（平铺优先，不覆盖已有）
+        cfg.merge_nested_mcp();
 
         // runtime.default_mode 是项目级设置，不从全局继承。
         // 默认 local，只有项目级 .ion/config.json 显式设置或 --remote flag 才能改。
@@ -998,6 +1039,8 @@ impl IonConfig {
     ///   其余子字段（backends/routes/command_guard/default/remote/sandbox）走合并
     /// - `api_key`：走 auth.json 链，不在 config 合并里污染
     fn merge_project(&mut self, mut project: IonConfig) {
+        // 先把项目维度的嵌套 mcp.servers 合并进其 mcp_servers（在任何 move 之前）
+        project.merge_nested_mcp();
         // Option 字段：项目级 Some 时覆盖
         if project.default_provider.is_some() {
             self.default_provider = project.default_provider;
@@ -1406,5 +1449,286 @@ mod merge_tests {
         let json = r#"{"default_provider": "zai"}"#;
         let cfg: IonConfig = serde_json::from_str(json).unwrap();
         assert!(cfg.skills.disabled.is_empty());
+    }
+
+    // ─────────────────────────────────────────────
+    // zcode MCP 配置兼容测试（嵌套 mcp.servers + enabled 字段）
+    // ─────────────────────────────────────────────
+
+    #[test]
+    fn test_mcp_zcode_nested_stdio_parse() {
+        // zcode stdio 格式：有 type:"stdio" + command。untagged enum 靠 command 匹配 Stdio，type 被忽略。
+        let json = r#"{
+            "mcp": {
+                "servers": {
+                    "kb": {
+                        "type": "stdio",
+                        "command": "npx",
+                        "args": ["-y", "@dyyz1993/kb-mcp"],
+                        "env": {"KB_DIR": "/tmp/kb"}
+                    }
+                }
+            }
+        }"#;
+        let cfg: IonConfig = serde_json::from_str(json).unwrap();
+        let nested = cfg.mcp.expect("mcp 嵌套字段应存在");
+        let srv = nested.servers.get("kb").expect("kb server 应存在");
+        match srv {
+            McpServerConfig::Stdio { command, args, env, .. } => {
+                assert_eq!(command, "npx", "command 应为 npx");
+                assert_eq!(args.len(), 2, "args 应有 2 个元素");
+                assert_eq!(env.get("KB_DIR").unwrap(), "/tmp/kb", "env KB_DIR 应正确");
+            }
+            _ => panic!("应为 Stdio 变体，type:\"stdio\" 被忽略"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_zcode_nested_http_parse() {
+        // zcode http 格式：type:"http" + url。untagged enum 匹配 Http 变体，kind 不校验值所以 "http" 可接受。
+        let json = r#"{
+            "mcp": {
+                "servers": {
+                    "zread": {
+                        "type": "http",
+                        "url": "https://example.com/mcp",
+                        "headers": {"Authorization": "Bearer 111"}
+                    }
+                }
+            }
+        }"#;
+        let cfg: IonConfig = serde_json::from_str(json).unwrap();
+        let nested = cfg.mcp.expect("mcp 嵌套字段应存在");
+        let srv = nested.servers.get("zread").expect("zread server 应存在");
+        match srv {
+            McpServerConfig::Http { kind, url, headers, .. } => {
+                assert_eq!(kind, "http", "kind 应为 http（zcode 格式，未校验）");
+                assert_eq!(url, "https://example.com/mcp", "url 应正确");
+                assert_eq!(
+                    headers.get("Authorization").unwrap(),
+                    "Bearer 111",
+                    "headers 应正确"
+                );
+            }
+            _ => panic!("应为 Http 变体"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_nested_merges_to_flat() {
+        // merge_nested_mcp() 应把嵌套 mcp.servers 合并进 mcp_servers
+        let mut cfg = IonConfig::default();
+        cfg.mcp = Some(McpNestedWrapper {
+            servers: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "kb".into(),
+                    McpServerConfig::Stdio {
+                        command: "npx".into(),
+                        args: vec![],
+                        env: HashMap::new(),
+                        cwd: None,
+                        enabled: None,
+                        disabled: false,
+                    },
+                );
+                m
+            },
+        });
+        assert!(cfg.mcp_servers.is_empty(), "合并前 mcp_servers 应为空");
+        cfg.merge_nested_mcp();
+        assert_eq!(cfg.mcp_servers.len(), 1, "合并后应有 1 个 server");
+        assert!(cfg.mcp_servers.contains_key("kb"), "应包含 kb server");
+        assert!(cfg.mcp.is_none(), "合并后 mcp 应被 take 掉");
+    }
+
+    #[test]
+    fn test_mcp_flat_overrides_nested() {
+        // 同名 server：平铺 mcp_servers 优先于嵌套 mcp.servers（or_insert 不覆盖）
+        let mut cfg = IonConfig::default();
+        cfg.mcp_servers.insert(
+            "srv".into(),
+            McpServerConfig::Stdio {
+                command: "flat-cmd".into(),
+                args: vec![],
+                env: HashMap::new(),
+                cwd: None,
+                enabled: None,
+                disabled: false,
+            },
+        );
+        cfg.mcp = Some(McpNestedWrapper {
+            servers: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "srv".into(),
+                    McpServerConfig::Stdio {
+                        command: "nested-cmd".into(),
+                        args: vec![],
+                        env: HashMap::new(),
+                        cwd: None,
+                        enabled: None,
+                        disabled: false,
+                    },
+                );
+                m
+            },
+        });
+        cfg.merge_nested_mcp();
+        // 平铺优先：command 应仍是 flat-cmd
+        match cfg.mcp_servers.get("srv").unwrap() {
+            McpServerConfig::Stdio { command, .. } => {
+                assert_eq!(command, "flat-cmd", "平铺 mcp_servers 应优先于嵌套 mcp.servers");
+            }
+            _ => panic!("应为 Stdio 变体"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_enabled_true() {
+        // enabled:true → is_disabled() 返回 false
+        let srv = McpServerConfig::Stdio {
+            command: "npx".into(),
+            args: vec![],
+            env: HashMap::new(),
+            cwd: None,
+            enabled: Some(true),
+            disabled: false,
+        };
+        assert!(!srv.is_disabled(), "enabled:true → is_disabled 应为 false");
+    }
+
+    #[test]
+    fn test_mcp_enabled_false() {
+        // enabled:false → is_disabled() 返回 true（zcode 的 enabled:false 映射到 ion 的 disabled:true）
+        let srv = McpServerConfig::Stdio {
+            command: "npx".into(),
+            args: vec![],
+            env: HashMap::new(),
+            cwd: None,
+            enabled: Some(false),
+            disabled: false,
+        };
+        assert!(srv.is_disabled(), "enabled:false → is_disabled 应为 true");
+    }
+
+    #[test]
+    fn test_mcp_enabled_overrides_disabled() {
+        // enabled 优先于 disabled：enabled:true + disabled:true → is_disabled 返回 false
+        let srv = McpServerConfig::Stdio {
+            command: "npx".into(),
+            args: vec![],
+            env: HashMap::new(),
+            cwd: None,
+            enabled: Some(true),
+            disabled: true, // 如果看 disabled 就会是 true，但 enabled 优先
+        };
+        assert!(
+            !srv.is_disabled(),
+            "enabled:true 应优先于 disabled:true → is_disabled 应为 false"
+        );
+    }
+
+    #[test]
+    fn test_mcp_no_enabled_uses_disabled() {
+        // 没有 enabled（None）→ 看 disabled（向后兼容 ion 原生格式）
+        let srv_on = McpServerConfig::Stdio {
+            command: "npx".into(),
+            args: vec![],
+            env: HashMap::new(),
+            cwd: None,
+            enabled: None,
+            disabled: false,
+        };
+        assert!(!srv_on.is_disabled(), "enabled:None + disabled:false → false");
+
+        let srv_off = McpServerConfig::Stdio {
+            command: "npx".into(),
+            args: vec![],
+            env: HashMap::new(),
+            cwd: None,
+            enabled: None,
+            disabled: true,
+        };
+        assert!(srv_off.is_disabled(), "enabled:None + disabled:true → true");
+    }
+
+    #[test]
+    fn test_mcp_timeoutms_ignored() {
+        // zcode 的 timeoutMs 字段应被静默忽略（无 deny_unknown_fields），不报错
+        let json = r#"{
+            "command": "npx",
+            "args": ["server.js"],
+            "timeoutMs": 5000
+        }"#;
+        let srv: McpServerConfig = serde_json::from_str(json).expect("timeoutMs 应被忽略，不报错");
+        match srv {
+            McpServerConfig::Stdio { command, .. } => {
+                assert_eq!(command, "npx");
+            }
+            _ => panic!("应为 Stdio 变体"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_zcode_full_5server_config() {
+        // 完整复制 zcode 的 5-server 配置片段，验证全部能解析
+        let json = r#"{
+            "mcp": {
+                "servers": {
+                    "knowledge-base": {
+                        "type": "stdio",
+                        "command": "npx",
+                        "args": ["-y", "@dyyz1993/kb-mcp", "--stdio"],
+                        "env": {"KB_DIR": "/Users/x/.knowledge", "KB_DATA_DIR": "/Users/x/.kb-chat"}
+                    },
+                    "zai-mcp-server": {
+                        "type": "stdio",
+                        "command": "npx",
+                        "args": ["-y", "@z_ai/mcp-server"],
+                        "env": {"Z_AI_API_KEY": "1111"}
+                    },
+                    "zread": {
+                        "type": "http",
+                        "url": "https://example.com/zread/mcp",
+                        "headers": {"Authorization": "Bearer 111"}
+                    },
+                    "web-search-prime": {
+                        "type": "http",
+                        "url": "https://example.com/web_search_prime/mcp",
+                        "headers": {"Authorization": "Bearer 111"}
+                    },
+                    "web-reader": {
+                        "type": "http",
+                        "url": "https://example.com/web_reader/mcp",
+                        "headers": {"Authorization": "Bearer 111"}
+                    }
+                }
+            }
+        }"#;
+        let cfg: IonConfig = serde_json::from_str(json).expect("zcode 5-server 配置应完整解析");
+        let nested = cfg.mcp.expect("mcp 字段应存在");
+        assert_eq!(nested.servers.len(), 5, "应有 5 个 server");
+        // 2 个 stdio
+        let stdio_count = nested
+            .servers
+            .values()
+            .filter(|s| matches!(s, McpServerConfig::Stdio { .. }))
+            .count();
+        assert_eq!(stdio_count, 2, "应有 2 个 stdio server");
+        // 3 个 http
+        let http_count = nested
+            .servers
+            .values()
+            .filter(|s| matches!(s, McpServerConfig::Http { .. }))
+            .count();
+        assert_eq!(http_count, 3, "应有 3 个 http server");
+        // 验证每个 server 都存在
+        for name in &["knowledge-base", "zai-mcp-server", "zread", "web-search-prime", "web-reader"] {
+            assert!(
+                nested.servers.contains_key(*name),
+                "server '{name}' 应存在"
+            );
+        }
     }
 }
