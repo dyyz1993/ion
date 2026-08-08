@@ -98,6 +98,19 @@ fi
 if [ -f "$HTML" ]; then
     SIZE=$(stat -f%z "$HTML" 2>/dev/null || stat -c%s "$HTML" 2>/dev/null)
     [ "$SIZE" -gt 1500 ] && pass "A2 HTML 文件大小正常（$SIZE bytes）" || fail "A2 HTML 太小（$SIZE bytes）"
+
+    grep -q 'class="ion-stats-inner"' "$HTML" && \
+        pass "A9 顶部统计区使用结构化 masthead" || \
+        fail "A9 缺少 ion-stats-inner"
+    grep -q 'class="ion-overview-panel"' "$HTML" && \
+        pass "A10 Extension/Timeline 使用统一概览卡" || \
+        fail "A10 缺少 ion-overview-panel"
+    grep -q 'grid-template-columns: var(--ion-sidebar-width)' "$HTML" && \
+        pass "A11 主体使用响应式双栏网格" || \
+        fail "A11 缺少响应式双栏样式"
+    grep -q -- '--text: #172033;' "$HTML" && \
+        pass "A12 离线主题变量完整注入" || \
+        fail "A12 缺少离线主题变量"
 else
     fail "A2 HTML 文件不存在"
 fi

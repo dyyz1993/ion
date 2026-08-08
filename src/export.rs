@@ -1031,7 +1031,55 @@ document.addEventListener('DOMContentLoaded', function() {
     html = html.replace("{{MARKED_JS}}", &marked_js);
     html = html.replace("{{HIGHLIGHT_JS}}", &highlight_js);
     html = html.replace("{{JS}}", &js);
-    html = html.replace("{{THEME_VARS}}", "");
+    // pi 的模板依赖一组主题变量。ION 之前把占位符替换成空串，导致大量
+    // `var(--text)` / `var(--border)` 声明失效，只能靠浏览器默认值兜底。
+    // 导出文件需要离线可读，因此在这里提供一套稳定的浅色主题。
+    html = html.replace(
+        "{{THEME_VARS}}",
+        r#"
+      --text: #172033;
+      --muted: #667085;
+      --dim: #98a2b3;
+      --accent: #0e7490;
+      --success: #059669;
+      --warning: #b45309;
+      --error: #dc2626;
+      --border: #d9e0e8;
+      --borderAccent: #0e7490;
+      --selectedBg: #e7f3f5;
+      --hover: #f2f6f8;
+      --userMessageBg: #eef6ff;
+      --userMessageText: #172033;
+      --thinkingText: #667085;
+      --toolPendingBg: #fff7ed;
+      --toolSuccessBg: #ecfdf3;
+      --toolErrorBg: #fff1f2;
+      --toolOutput: #344054;
+      --toolDiffAdded: #067647;
+      --toolDiffRemoved: #b42318;
+      --toolDiffContext: #667085;
+      --customMessageBg: #f4f3ff;
+      --customMessageLabel: #6941c6;
+      --customMessageText: #344054;
+      --mdHeading: #101828;
+      --mdLink: #0e7490;
+      --mdCode: #344054;
+      --mdCodeBlockBorder: #d0d5dd;
+      --mdQuote: #475467;
+      --mdQuoteBorder: #98a2b3;
+      --mdListBullet: #0e7490;
+      --mdHr: #e4e7ec;
+      --syntaxComment: #667085;
+      --syntaxKeyword: #9e165f;
+      --syntaxNumber: #175cd3;
+      --syntaxString: #067647;
+      --syntaxFunction: #6941c6;
+      --syntaxType: #b54708;
+      --syntaxVariable: #344054;
+      --syntaxOperator: #475467;
+      --syntaxPunctuation: #667085;
+      "#,
+    );
     html = html.replace("{{BODY_BG}}", "#fafafa");
     html = html.replace("{{CONTAINER_BG}}", "#ffffff");
     html = html.replace("{{INFO_BG}}", "#f5f5f5");
@@ -1039,50 +1087,343 @@ document.addEventListener('DOMContentLoaded', function() {
     // ION 自定义 CSS：给不同角色加淡背景色，提高可读性。
     // 在 </style> 前插入（覆盖 pi template 的默认样式）。
     let ion_custom_css = r#"
-    /* ION: 角色背景色区分 */
+    /* ION export shell: self-contained, responsive and optimized for long sessions. */
+    :root {
+      --ion-shell-max: 1560px;
+      --ion-sidebar-width: 320px;
+      --ion-radius-sm: 8px;
+      --ion-radius-lg: 16px;
+      --ion-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 12px 32px rgba(16, 24, 40, 0.06);
+      --line-height: 20px;
+      --sidebar-width: var(--ion-sidebar-width);
+    }
+    body {
+      min-width: 320px;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 8% 0%, rgba(14, 116, 144, 0.08), transparent 28rem),
+        #f3f5f7;
+      font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+      font-size: 13px;
+      line-height: var(--line-height);
+    }
+    code, pre, .tree-container, .info-value, .tool-output {
+      font-family: "SFMono-Regular", "Cascadia Code", Menlo, Consolas, monospace;
+    }
+
+    /* Top session masthead */
+    #ion-stats-banner {
+      color: #f8fafc;
+      background:
+        radial-gradient(circle at 82% -80%, rgba(45, 212, 191, 0.28), transparent 26rem),
+        linear-gradient(112deg, #101828 0%, #17233b 62%, #12394a 100%);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    }
+    .ion-stats-inner {
+      width: min(100%, var(--ion-shell-max));
+      min-height: 112px;
+      margin: 0 auto;
+      padding: 22px 28px;
+      display: grid;
+      grid-template-columns: minmax(300px, 1fr) auto;
+      gap: 18px 36px;
+      align-items: center;
+    }
+    .ion-title-kicker,
+    .ion-overview-kicker {
+      display: block;
+      margin-bottom: 5px;
+      color: #67e8f9;
+      font: 700 10px/1.2 "SFMono-Regular", Menlo, monospace;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+    .ion-session-title {
+      margin: 0;
+      color: #fff;
+      font-family: Charter, "Iowan Old Style", Georgia, serif;
+      font-size: clamp(21px, 2vw, 30px);
+      font-weight: 650;
+      line-height: 1.25;
+      letter-spacing: -0.02em;
+      overflow-wrap: anywhere;
+    }
+    .ion-session-metrics {
+      display: flex;
+      align-items: stretch;
+      gap: 8px;
+    }
+    .ion-session-metric {
+      min-width: 104px;
+      padding: 10px 12px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.06);
+      backdrop-filter: blur(8px);
+    }
+    .ion-session-metric--model { min-width: 180px; }
+    .ion-metric-label {
+      display: block;
+      margin-bottom: 3px;
+      color: #9fb0c8;
+      font: 700 9px/1.2 "SFMono-Regular", Menlo, monospace;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+    .ion-session-metric strong {
+      display: block;
+      color: #f8fafc;
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .ion-tool-badges {
+      grid-column: 1 / -1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: -8px;
+    }
+    .ion-tool-badge {
+      padding: 3px 9px;
+      border: 1px solid rgba(103, 232, 249, 0.2);
+      border-radius: 999px;
+      color: #c8f7ff;
+      background: rgba(14, 116, 144, 0.2);
+      font: 600 10px/1.4 "SFMono-Regular", Menlo, monospace;
+    }
+
+    /* Extension breakdown and timeline share one centered overview row. */
+    #ion-ext-viz {
+      width: min(100%, var(--ion-shell-max));
+      margin: 18px auto 0;
+      padding: 0 28px;
+      display: grid;
+      grid-template-columns: minmax(250px, 0.38fr) minmax(440px, 1fr);
+      gap: 12px;
+    }
+    .ion-overview-panel {
+      min-width: 0;
+      padding: 16px 18px;
+      border: 1px solid #e1e6ec;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: 0 1px 2px rgba(16, 24, 40, 0.03);
+    }
+    .ion-overview-heading {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .ion-overview-heading strong {
+      color: #101828;
+      font-size: 12px;
+    }
+    .ion-overview-meta {
+      margin-left: auto;
+      color: var(--muted);
+      font: 500 10px/1.4 "SFMono-Regular", Menlo, monospace;
+      white-space: nowrap;
+    }
+    .ion-extension-groups,
+    .ion-timeline-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .ion-extension-badge {
+      padding: 4px 9px;
+      border: 1px solid color-mix(in srgb, var(--group-color) 58%, white);
+      border-radius: 999px;
+      color: color-mix(in srgb, var(--group-color) 82%, #101828);
+      background: color-mix(in srgb, var(--group-color) 10%, white);
+      font: 650 10px/1.4 "SFMono-Regular", Menlo, monospace;
+    }
+    .ion-extension-badge small { opacity: 0.68; font-weight: 500; }
+    .ion-empty-state { color: var(--muted); font-size: 11px; }
+    .ion-timeline-track {
+      position: relative;
+      height: 26px;
+      overflow: hidden;
+      border: 1px solid #e4e7ec;
+      border-radius: 7px;
+      background:
+        repeating-linear-gradient(90deg, transparent 0, transparent calc(10% - 1px), #eef1f4 calc(10% - 1px), #eef1f4 10%),
+        #f8fafc;
+    }
+    .ion-timeline-bar {
+      position: absolute;
+      top: 4px;
+      left: var(--bar-left);
+      width: var(--bar-width);
+      min-width: 3px;
+      height: 16px;
+      border-radius: 3px;
+      background: var(--bar-color);
+      opacity: 0.88;
+      transition: opacity 120ms ease, transform 120ms ease;
+    }
+    .ion-timeline-bar:hover { opacity: 1; transform: scaleY(1.18); }
+    .ion-timeline-legend { justify-content: flex-end; margin-top: 8px; }
+    .ion-legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 9px;
+    }
+    .ion-legend-swatch {
+      width: 7px;
+      height: 7px;
+      border-radius: 2px;
+      background: var(--group-color);
+    }
+
+    /* Center the whole workspace and keep the navigation/content ratio useful. */
+    #app {
+      width: min(100%, var(--ion-shell-max));
+      min-height: 0;
+      margin: 0 auto;
+      padding: 18px 28px 40px;
+      display: grid;
+      grid-template-columns: var(--ion-sidebar-width) minmax(0, 1fr);
+      gap: 18px;
+      align-items: start;
+    }
+    #sidebar {
+      width: 100%;
+      min-width: 0;
+      max-width: none;
+      height: calc(100vh - 36px);
+      top: 18px;
+      overflow: hidden;
+      border: 1px solid #e1e6ec;
+      border-radius: var(--ion-radius-lg);
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: var(--ion-shadow);
+    }
+    #sidebar-resizer { display: none; }
+    .sidebar-header {
+      padding: 18px 14px 8px;
+      border-bottom: 1px solid #edf0f3;
+    }
+    .sidebar-header::before {
+      content: "SESSION MAP";
+      display: block;
+      padding: 0 8px 8px;
+      color: #475467;
+      font: 700 10px/1.2 "SFMono-Regular", Menlo, monospace;
+      letter-spacing: 0.13em;
+    }
+    .sidebar-controls { padding: 0 8px 5px; }
+    .sidebar-search {
+      padding: 8px 10px;
+      border-color: #d9e0e8;
+      border-radius: 8px;
+      background: #f8fafc;
+    }
+    .sidebar-filters { gap: 5px; padding: 5px 8px 8px; }
+    .filter-btn { border: 0; border-radius: 6px; padding: 4px 7px; }
+    .filter-btn.active { color: #fff; background: #0e7490; }
+    .tree-container { padding: 10px 5px; }
+    .tree-node { padding: 2px 10px; line-height: 16px; border-radius: 5px; }
+    .tree-status { padding: 8px 14px; border-top: 1px solid #edf0f3; }
+
+    #content {
+      width: 100%;
+      min-width: 0;
+      overflow: visible;
+      padding: 0;
+      align-items: stretch;
+    }
+    #content > * { width: 100%; max-width: none; }
+    .header {
+      padding: 20px;
+      border: 1px solid #e1e6ec;
+      border-radius: var(--ion-radius-lg);
+      margin-bottom: 14px;
+      background: rgba(255, 255, 255, 0.96);
+      box-shadow: var(--ion-shadow);
+    }
+    .header h1 { display: none; }
+    .help-bar {
+      margin-bottom: 14px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid #edf0f3;
+      color: var(--muted);
+    }
+    .help-hint { font: 500 10px/1.4 "SFMono-Regular", Menlo, monospace; }
+    .help-actions { gap: 6px; }
+    .header-toggle-btn,
+    .download-json-btn {
+      padding: 5px 9px;
+      border-color: #d9e0e8;
+      border-radius: 7px;
+      color: #344054;
+      background: #fff;
+    }
+    .header-info {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 7px;
+    }
+    .info-item {
+      min-width: 0;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: #f7f9fb;
+    }
+    .info-label { min-width: 92px; color: #667085; }
+    .info-value { min-width: 0; color: #172033; overflow-wrap: anywhere; }
+    #messages { gap: 12px; }
+
+    /* Message roles: quiet cards with an unmistakable edge marker. */
     .user-message {
-      background: #eef4fb !important;
-      border-left: 3px solid #3b82f6 !important;
-      padding: 12px 16px !important;
-      border-radius: 4px !important;
-      margin-bottom: 8px !important;
+      background: #edf6ff !important;
+      border: 1px solid #d6e8f8 !important;
+      border-left: 3px solid #2e90fa !important;
+      padding: 14px 16px !important;
+      border-radius: 12px !important;
+      margin-bottom: 0 !important;
     }
     .user-message::before {
-      content: "👤 User";
+      content: "USER";
       display: block;
       font-size: 11px;
       font-weight: 600;
-      color: #3b82f6;
+      color: #175cd3;
       margin-bottom: 6px;
       text-transform: uppercase;
       letter-spacing: 0.5px;
     }
     .assistant-message {
-      padding: 12px 16px !important;
-      border-left: 3px solid #10b981 !important;
-      background: #f0fdf4 !important;
-      border-radius: 4px !important;
-      margin-bottom: 8px !important;
+      padding: 14px 16px !important;
+      border: 1px solid #dce7e3 !important;
+      border-left: 3px solid #12b76a !important;
+      background: #fbfefc !important;
+      border-radius: 12px !important;
+      margin-bottom: 0 !important;
     }
     .assistant-message::before {
-      content: "🤖 Assistant";
+      content: "ASSISTANT";
       display: block;
       font-size: 11px;
       font-weight: 600;
-      color: #10b981;
+      color: #067647;
       margin-bottom: 6px;
       text-transform: uppercase;
       letter-spacing: 0.5px;
     }
     .tool-execution {
-      border-left: 3px solid #f59e0b !important;
+      border-left: 3px solid #f79009 !important;
       background: #fffbeb !important;
       padding: 8px 12px !important;
-      border-radius: 4px !important;
+      border-radius: 8px !important;
       margin-bottom: 8px !important;
     }
     .tool-execution::before {
-      content: "🔧 Tool Result";
+      content: "TOOL RESULT";
       display: block;
       font-size: 11px;
       font-weight: 600;
@@ -1096,7 +1437,7 @@ document.addEventListener('DOMContentLoaded', function() {
       border-left: 3px solid #8b5cf6 !important;
       background: #f5f3ff !important;
       padding: 12px 16px !important;
-      border-radius: 4px !important;
+      border-radius: 10px !important;
       margin-bottom: 8px !important;
     }
     /* 不同 customType 用不同颜色（用户反馈：自定义插入应有视觉区分）*/
@@ -1141,7 +1482,7 @@ document.addEventListener('DOMContentLoaded', function() {
       display: block !important;
       margin-bottom: 8px !important;
       padding: 8px 12px !important;
-      border-radius: 4px !important;
+      border-radius: 8px !important;
       border-left: 3px solid #f59e0b !important;
       background: #fffbeb !important;
     }
@@ -1156,6 +1497,64 @@ document.addEventListener('DOMContentLoaded', function() {
     /* ION: 输出折叠——头 N 行 + 尾 N 行（中间压缩，不是只折叠尾部） */
     .expandable-output .output-tail {
       display: block !important;
+    }
+    .tool-output:not(.expandable):not(.expanded)::after {
+      color: #0e7490;
+      background: linear-gradient(transparent, rgba(248, 250, 252, 0.98) 56%);
+    }
+
+    @media (max-width: 1100px) {
+      .ion-stats-inner { grid-template-columns: 1fr; }
+      .ion-session-metrics { flex-wrap: wrap; }
+      .ion-tool-badges { grid-column: auto; margin-top: -6px; }
+      #ion-ext-viz { grid-template-columns: 1fr; }
+      #app { grid-template-columns: 280px minmax(0, 1fr); }
+    }
+    @media (max-width: 900px) {
+      .ion-stats-inner { min-height: 0; padding: 18px 20px; }
+      .ion-session-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .ion-session-metric, .ion-session-metric--model { min-width: 0; }
+      #ion-ext-viz { margin-top: 12px; padding: 0 12px; }
+      #app { display: block; padding: 12px 12px 28px; }
+      #sidebar {
+        width: min(var(--sidebar-width), calc(100vw - 24px));
+        min-width: min(var(--sidebar-width), calc(100vw - 24px));
+        max-width: min(var(--sidebar-width), calc(100vw - 24px));
+        height: 100vh;
+        top: 0;
+        border-radius: 0 14px 14px 0;
+      }
+      #content { padding: 0; }
+      #hamburger {
+        top: 12px;
+        left: 12px;
+        padding: 7px 9px;
+        border-color: rgba(255, 255, 255, 0.3);
+        color: #fff;
+        background: rgba(16, 24, 40, 0.76);
+        backdrop-filter: blur(8px);
+      }
+      .header-info { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 560px) {
+      .ion-session-title { font-size: 20px; }
+      .ion-session-metrics { grid-template-columns: 1fr; }
+      .ion-overview-panel { padding: 14px; }
+      .header { padding: 14px; border-radius: 12px; }
+      .help-hint { display: none; }
+      .help-actions { width: 100%; }
+      .header-toggle-btn, .download-json-btn { flex: 1; }
+      .info-item { display: block; }
+      .info-label { display: block; min-width: 0; margin: 0 0 2px; }
+    }
+    @media print {
+      #ion-stats-banner { background: #fff !important; color: #101828; border-bottom: 2px solid #101828; }
+      .ion-session-title, .ion-session-metric strong { color: #101828; }
+      #ion-ext-viz, #app { width: 100%; max-width: none; padding-left: 0; padding-right: 0; }
+      #ion-ext-viz { display: block; }
+      .ion-overview-panel { margin-bottom: 10px; box-shadow: none; }
+      #content { display: block; }
+      .header, .user-message, .assistant-message { box-shadow: none; break-inside: avoid; }
     }
     "#;
     if let Some(pos) = html.rfind("</style>") {
@@ -1283,35 +1682,42 @@ document.addEventListener('DOMContentLoaded', function() {
     // 构造统计 banner HTML
     let mut tool_badges = String::new();
     let mut sorted_tools: Vec<(&String, &u32)> = tool_counts.iter().collect();
-    sorted_tools.sort_by(|a, b| b.1.cmp(a.1));
+    sorted_tools.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
     for (name, count) in &sorted_tools {
         tool_badges.push_str(&format!(
-            r#"<span style="background:rgba(255,255,255,0.15);padding:2px 8px;border-radius:10px;font-size:11px;">{} ×{}</span>"#,
-            name, count
+            r#"<span class="ion-tool-badge">{} ×{}</span>"#,
+            escape_html_text(name),
+            count
         ));
     }
 
     let stats_banner = format!(
         r#"
-<div id="ion-stats-banner" style="
-  background: #1a1a2e;
-  color: white;
-  padding: 12px 20px;
-  font-size: 13px;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  border-bottom: 2px solid #16213e;
-  flex-wrap: wrap;
-">
-  <span style="font-size: 16px; font-weight: 700;">📋 {}</span>
-  <span style="color:#7ec8e3;">🤖 {}</span>
-  <span style="color:#aaa;">🔧 {} tool calls</span>
-  <span style="color:#aaa;">📝 {} entries</span>
-  <span style="display:flex;gap:4px;flex-wrap:wrap;">{}</span>
-</div>"#,
-        banner_title,
-        model,
+<header id="ion-stats-banner">
+  <div class="ion-stats-inner">
+    <div class="ion-title-block">
+      <span class="ion-title-kicker">ION / Session export</span>
+      <h1 class="ion-session-title">{}</h1>
+    </div>
+    <div class="ion-session-metrics" role="list" aria-label="Session metrics">
+      <div class="ion-session-metric ion-session-metric--model" role="listitem">
+        <span class="ion-metric-label">Model</span>
+        <strong>{}</strong>
+      </div>
+      <div class="ion-session-metric" role="listitem">
+        <span class="ion-metric-label">Tool calls</span>
+        <strong>{}</strong>
+      </div>
+      <div class="ion-session-metric" role="listitem">
+        <span class="ion-metric-label">Entries</span>
+        <strong>{}</strong>
+      </div>
+    </div>
+    <div class="ion-tool-badges" aria-label="Tools used">{}</div>
+  </div>
+</header>"#,
+        escape_html_text(&banner_title),
+        escape_html_text(&model),
         total_tool_calls,
         entries.len(),
         tool_badges
@@ -1337,6 +1743,15 @@ document.addEventListener('DOMContentLoaded', function() {
     let ext_visualization_script = r#"
 <script>
 (function() {
+  function escapeVizHtml(value) {
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   function buildExtVisualization() {
     // pi template 不暴露 SESSION_DATA 到 window，自己解码 session-data script
     var dataEl = document.getElementById('session-data');
@@ -1403,11 +1818,10 @@ document.addEventListener('DOMContentLoaded', function() {
     var groupBadges = activeGroups.map(function(g) {
       var grp = extGroups[g];
       var pct = totalCalls > 0 ? Math.round(100 * grp.count / totalCalls) : 0;
-      return '<span style="background:' + grp.color + '22;color:' + grp.color +
-             ';border:1px solid ' + grp.color + ';padding:3px 10px;border-radius:12px;' +
-             'font-size:11px;font-weight:600;">' + g + ' ×' + grp.count +
-             ' <span style="opacity:0.7;font-weight:400">(' + pct + '%)</span></span>';
+      return '<span class="ion-extension-badge" style="--group-color:' + grp.color + '">' +
+             escapeVizHtml(g) + ' ×' + grp.count + ' <small>(' + pct + '%)</small></span>';
     }).join('');
+    if (!groupBadges) groupBadges = '<span class="ion-empty-state">No extension calls in this session</span>';
 
     // ── 2. 时间线（每个 entry 一个条）──
     var timelineEntries = entries.filter(function(e) {
@@ -1417,7 +1831,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // bar 的 x 位置一律按 index 均匀分布（不依赖时间戳粒度，
     // 否则同 turn 内的 user/assistant/toolResult 共享时间戳会全挤到两端）
     var n = timelineEntries.length;
-    var slotPct = 100 / n;           // 每个槽位宽度
+    var slotPct = 100 / Math.max(n, 1); // 每个槽位宽度
     var barWPct = Math.max(slotPct * 0.7, 0.5);  // 槽位的 70%，最少 0.5%
 
     // 时间范围（仅用于标签显示，不用于定位）
@@ -1442,32 +1856,37 @@ document.addEventListener('DOMContentLoaded', function() {
       else if (e.type === 'turn_summary') color = '#aaa';
       var ct = e.customType ? ' [' + e.customType + ']' : '';
       var tip = '#' + idx + ' ' + (e.id || '').slice(0, 8) + ' · ' + role + ct;
-      return '<div title="' + tip + '" style="position:absolute;left:' + left +
-             '%;top:1px;width:' + barWPct.toFixed(2) + '%;min-width:2px;height:18px;background:' + color +
-             ';border-radius:2px;opacity:0.85;"></div>';
+      return '<div class="ion-timeline-bar" title="' + escapeVizHtml(tip) +
+             '" style="--bar-left:' + left + '%;--bar-width:' + barWPct.toFixed(2) +
+             '%;--bar-color:' + color + '"></div>';
     }).join('');
 
     var legend = [
       ['user', '#3b82f6'], ['assistant', '#10b981'], ['toolResult', '#f59e0b'],
       ['custom', '#8b5cf6'], ['summary', '#aaa']
     ].map(function(l) {
-      return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:#666;">' +
-             '<span style="width:8px;height:8px;background:' + l[1] + ';border-radius:1px;"></span>' +
-             l[0] + '</span>';
-    }).join('  ');
+      return '<span class="ion-legend-item"><span class="ion-legend-swatch" style="--group-color:' +
+             l[1] + '"></span>' + l[0] + '</span>';
+    }).join('');
 
     var timeLabel = '';
     if (tMin > 0 && tMax > 0) {
-      timeLabel = ' · ' + new Date(tMin).toLocaleTimeString() + ' → ' + new Date(tMax).toLocaleTimeString();
+      timeLabel = new Date(tMin).toLocaleTimeString() + ' → ' + new Date(tMax).toLocaleTimeString();
     }
 
     var html =
-      '<div id="ion-ext-viz" style="background:#fafafa;border-bottom:1px solid #eee;padding:6px 16px;font-family:system-ui,sans-serif;">' +
-        '<div style="font-size:10px;color:#666;margin-bottom:3px;font-weight:600;">EXTENSION BREAKDOWN (' + totalCalls + ' calls)</div>' +
-        '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px;">' + groupBadges + '</div>' +
-        '<div style="font-size:10px;color:#666;margin-bottom:2px;font-weight:600;">TIMELINE (' + n + ' entries' + timeLabel + ')</div>' +
-        '<div style="position:relative;height:20px;background:#fff;border:1px solid #e5e7eb;border-radius:3px;overflow:hidden;">' + bars + '</div>' +
-        '<div style="margin-top:2px;font-size:9px;color:#999;text-align:right;">' + legend + '</div>' +
+      '<div id="ion-ext-viz" aria-label="Session overview">' +
+        '<section class="ion-overview-panel">' +
+          '<div class="ion-overview-heading"><div><span class="ion-overview-kicker">Extensions</span><strong>Tool breakdown</strong></div>' +
+          '<span class="ion-overview-meta">' + totalCalls + ' calls</span></div>' +
+          '<div class="ion-extension-groups">' + groupBadges + '</div>' +
+        '</section>' +
+        '<section class="ion-overview-panel">' +
+          '<div class="ion-overview-heading"><div><span class="ion-overview-kicker">Sequence</span><strong>Session timeline</strong></div>' +
+          '<span class="ion-overview-meta">' + n + ' entries' + (timeLabel ? ' · ' + timeLabel : '') + '</span></div>' +
+          '<div class="ion-timeline-track">' + bars + '</div>' +
+          '<div class="ion-timeline-legend">' + legend + '</div>' +
+        '</section>' +
       '</div>';
 
     var existing = document.getElementById('ion-ext-viz');
@@ -1995,6 +2414,16 @@ fn resolve_session_file(
     .into())
 }
 
+/// Escape text inserted into the export shell itself (outside the base64 session payload).
+fn escape_html_text(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
 fn base64_encode(input: &str) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes = input.as_bytes();
@@ -2171,6 +2600,14 @@ fn build_env_info_for_export(cwd: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn test_escape_html_text_for_export_shell() {
+        assert_eq!(
+            escape_html_text(r#"<session name='one'>& "two""#),
+            "&lt;session name=&#39;one&#39;&gt;&amp; &quot;two&quot;"
+        );
+    }
 
     #[test]
     fn test_convert_text_content_block() {

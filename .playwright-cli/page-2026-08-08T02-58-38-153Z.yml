@@ -1,0 +1,181 @@
+- generic [active] [ref=f1e1]:
+  - banner [ref=f1e2]:
+    - generic [ref=f1e3]:
+      - generic [ref=f1e4]:
+        - generic [ref=f1e5]: ION / Session export
+        - heading "Greeting" [level=1] [ref=f1e6]
+      - list "Session metrics" [ref=f1e7]:
+        - listitem [ref=f1e8]:
+          - generic [ref=f1e9]: Model
+          - strong [ref=f1e10]: glm-5.2
+        - listitem [ref=f1e11]:
+          - generic [ref=f1e12]: Tool calls
+          - strong [ref=f1e13]: "0"
+        - listitem [ref=f1e14]:
+          - generic [ref=f1e15]: Entries
+          - strong [ref=f1e16]: "3"
+      - generic "Tools used"
+  - generic "Session overview" [ref=f1e17]:
+    - generic [ref=f1e18]:
+      - generic [ref=f1e19]:
+        - generic [ref=f1e20]:
+          - generic [ref=f1e21]: Extensions
+          - strong [ref=f1e22]: Tool breakdown
+        - generic [ref=f1e23]: 0 calls
+      - generic [ref=f1e24]: No extension calls in this session
+    - generic [ref=f1e26]:
+      - generic [ref=f1e27]:
+        - generic [ref=f1e28]:
+          - generic [ref=f1e29]: Sequence
+          - strong [ref=f1e30]: Session timeline
+        - generic [ref=f1e31]: 3 entries · 10:53:21 → 10:53:21
+      - generic [ref=f1e32]:
+        - generic "#0 ea48ce78 · user" [ref=f1e33]
+        - generic "#1 ea4937f0 · assistant" [ref=f1e34]
+        - generic "#2 ee3f8800 · custom_message [session_name]" [ref=f1e35]
+      - generic [ref=f1e36]:
+        - generic [ref=f1e37]: user
+        - generic [ref=f1e39]: assistant
+        - generic [ref=f1e41]: toolResult
+        - generic [ref=f1e43]: custom
+        - generic [ref=f1e45]: summary
+  - generic [ref=f1e47]:
+    - complementary [ref=f1e48]:
+      - generic [ref=f1e49]:
+        - text: SESSION MAP
+        - textbox "Search..." [ref=f1e51]
+        - generic [ref=f1e52]:
+          - button "Default" [ref=f1e53] [cursor=pointer]
+          - button "No-tools" [ref=f1e54] [cursor=pointer]
+          - button "User" [ref=f1e55] [cursor=pointer]
+          - button "Labeled" [ref=f1e56] [cursor=pointer]
+          - button "All" [ref=f1e57] [cursor=pointer]
+      - generic [ref=f1e58]:
+        - generic [ref=f1e59] [cursor=pointer]:
+          - generic [ref=f1e60]: •
+          - generic [ref=f1e61]: "user: hello"
+        - generic [ref=f1e62] [cursor=pointer]:
+          - generic [ref=f1e63]: •
+          - generic [ref=f1e64]: "assistant: test response for export"
+        - generic [ref=f1e65] [cursor=pointer]:
+          - generic [ref=f1e66]: •
+          - generic [ref=f1e67]: "[session_name]: 📝 Session title: Greeting"
+      - generic [ref=f1e68]: 3 / 3 entries
+    - main [ref=f1e69]:
+      - generic [ref=f1e70]:
+        - generic [ref=f1e71]:
+          - generic [ref=f1e72]:
+            - generic [ref=f1e73]: T toggle thinking · O toggle tools
+            - generic [ref=f1e74]:
+              - button "Toggle thinking" [ref=f1e75] [cursor=pointer]
+              - button "Toggle tools" [ref=f1e76] [cursor=pointer]
+              - button "↓ JSONL" [ref=f1e77] [cursor=pointer]
+          - generic [ref=f1e78]:
+            - generic [ref=f1e79]:
+              - generic [ref=f1e80]: "Agent:"
+              - generic [ref=f1e81]: "-"
+            - generic [ref=f1e82]:
+              - generic [ref=f1e83]: "Date:"
+              - generic [ref=f1e84]: 2026/8/8 10:53:21
+            - generic [ref=f1e85]:
+              - generic [ref=f1e86]: "Models:"
+              - generic [ref=f1e87]: zai/glm-5.2
+            - generic [ref=f1e88]:
+              - generic [ref=f1e89]: "ION Version:"
+              - generic [ref=f1e90]: 0.4.0+c5401ff (2026-08-08)
+            - generic [ref=f1e91]:
+              - generic [ref=f1e92]: "Messages:"
+              - generic [ref=f1e93]: 1 user, 1 assistant, 1 custom
+            - generic [ref=f1e94]:
+              - generic [ref=f1e95]: "Tool Calls:"
+              - generic [ref=f1e96]: "0"
+            - generic [ref=f1e97]:
+              - generic [ref=f1e98]: "Tokens:"
+              - generic [ref=f1e99]: "0"
+            - generic [ref=f1e100]:
+              - generic [ref=f1e101]: "Cost:"
+              - generic [ref=f1e102]: $0.000
+        - generic [ref=f1e103] [cursor=pointer]:
+          - generic [ref=f1e104]: System Prompt
+          - generic [ref=f1e105]: "You are a helpful AI assistant with access to tools. --- environment --- ## Environment - **Current Time**: 2026-08-22 02:51 UTC - **Working Directory (cwd)**: `/private/var/folders/j9/bv0n54t96556fycmy511r2rc0000gn/T/tmp.R8l90FQDZZ` - **Project Root**: `/private/var/folders/j9/bv0n54t96556fycmy511r2rc0000gn/T/tmp.R8l90FQDZZ` - **Platform**: `macos aarch64` - **ION Version**: `0.4.0`"
+          - generic [ref=f1e106]: ... (419 more lines, click to expand)
+        - generic [ref=f1e107]:
+          - generic [ref=f1e108]: Available Tools
+          - generic [ref=f1e109]:
+            - generic [ref=f1e110] [cursor=pointer]:
+              - text: "await_worker - Block until the target Worker finishes its next turn, returns {type:'worker_awaited', worker_id, status:'turn_completed', first_turn_output}. Use this to collect results from children spawned with wait=false. Pair with spawn_worker(child, wait=false) for parallel work: spawn N children non-blocking, then call await_worker on each."
+              - generic [ref=f1e111]: "[click to show parameters]"
+            - generic [ref=f1e112] [cursor=pointer]:
+              - text: bash - Execute a shell command and return its output. For long-running commands (dev servers, builds, watches), set background=true to return immediately with a process bid. To manage background processes, use get_background_process (view status/output), kill_process (terminate), or write_stdin (send input).
+              - generic [ref=f1e113]: "[click to show parameters]"
+            - generic [ref=f1e114] [cursor=pointer]:
+              - text: branch_session - Branch or rollback within the current session's message tree. The original path is preserved (only-append). Use this to explore alternative approaches or undo a wrong direction.
+              - generic [ref=f1e115]: "[click to show parameters]"
+            - generic [ref=f1e116] [cursor=pointer]:
+              - text: calculator - Evaluate a mathematical expression and return the result.
+              - generic [ref=f1e117]: "[click to show parameters]"
+            - generic [ref=f1e118] [cursor=pointer]:
+              - text: "channel_send - Broadcast a message to all Workers subscribed to a channel. Returns {type:'channel_sent', channel, status:'broadcast'}. Use for fan-out announcements, status updates, or coordinating multiple peers. Subscribers receive the message as a follow_up (auto-processed next turn)."
+              - generic [ref=f1e119]: "[click to show parameters]"
+            - generic [ref=f1e120] [cursor=pointer]:
+              - text: echo - Echo back the input text.
+              - generic [ref=f1e121]: "[click to show parameters]"
+            - generic [ref=f1e122] [cursor=pointer]:
+              - text: edit - Search and replace text in a file (first occurrence).
+              - generic [ref=f1e123]: "[click to show parameters]"
+            - generic [ref=f1e124] [cursor=pointer]:
+              - text: find - Find files matching a glob pattern.
+              - generic [ref=f1e125]: "[click to show parameters]"
+            - generic [ref=f1e126] [cursor=pointer]:
+              - text: "get_background_process - Get background process status and output. Without bid: list all processes. With bid: inspect a single process (returns status, exit code, elapsed, started_at, output size, head/tail lines with truncation)."
+              - generic [ref=f1e127]: "[click to show parameters]"
+            - generic [ref=f1e128] [cursor=pointer]:
+              - text: global_memory_save - Save a memory to the global cross-project database. Use for cross-session/cross-project knowledge that should persist.
+              - generic [ref=f1e129]: "[click to show parameters]"
+            - generic [ref=f1e130] [cursor=pointer]:
+              - text: global_memory_search - Search the global cross-project memory database using FTS5 full-text search. Available in serve mode (ion serve). Returns matching entries from all projects.
+              - generic [ref=f1e131]: "[click to show parameters]"
+            - generic [ref=f1e132] [cursor=pointer]:
+              - text: grep - Search for a pattern in files. Uses ripgrep if available, otherwise grep.
+              - generic [ref=f1e133]: "[click to show parameters]"
+            - generic [ref=f1e134] [cursor=pointer]:
+              - text: kill_process - Kill a background process by its bash ID.
+              - generic [ref=f1e135]: "[click to show parameters]"
+            - generic [ref=f1e136] [cursor=pointer]:
+              - text: "kill_worker - Terminate a Worker. Returns {type:'worker_killed', worker_id, status:'terminated'}. Use when a worker is stuck, redundant, or its work is no longer needed."
+              - generic [ref=f1e137]: "[click to show parameters]"
+            - generic [ref=f1e138] [cursor=pointer]:
+              - text: ls - List files and directories at a given path.
+              - generic [ref=f1e139]: "[click to show parameters]"
+            - generic [ref=f1e140] [cursor=pointer]:
+              - text: read - Read the contents of a file. Supports offset (1-based start line) and limit (number of lines) to read a specific range. Output includes line numbers.
+              - generic [ref=f1e141]: "[click to show parameters]"
+            - generic [ref=f1e142] [cursor=pointer]:
+              - text: "resume_worker - Send a message to an existing Worker AND block until its next turn completes (synchronous resume). Returns {type:'worker_resumed', worker_id, status:'turn_completed', response_output}. Use this to continue a conversation with a child worker started via spawn_worker(child), or to follow up with any worker when you need its response."
+              - generic [ref=f1e143]: "[click to show parameters]"
+            - generic [ref=f1e144] [cursor=pointer]:
+              - text: "send_to_worker - Send a message to another Worker (identified by worker_id). Fire-and-forget (async): returns immediately as {type:'message_sent', status:'delivered_async'}, does NOT wait for target to respond. Use cases: (1) parent → child additional instructions, (2) peer-to-peer async chat, (3) coordinator → peer additional task. To SYNCHRONOUSLY continue a child conversation and get the response, use resume_worker instead."
+              - generic [ref=f1e145]: "[click to show parameters]"
+            - generic [ref=f1e146] [cursor=pointer]:
+              - text: "skill - Load a specialized skill by name. Skills encode domain-specific workflows (code-audit, deployment, testing, etc.) that guide multi-step tasks. IMPORTANT: When the user's request matches an available skill, you SHOULD call this tool FIRST instead of manually using bash/read/write — the skill provides a proven workflow that's better than ad-hoc tool use. Two modes: - inject (default): load skill instructions into your current context, then execute the workflow yourself with bash/read/write/etc. - fork: spawn an isolated sub-worker to execute the skill (keeps your main context clean). Use fork for long-running or complex skills. Pass skill_name='list' to see all available skills with their descriptions."
+              - generic [ref=f1e147]: "[click to show parameters]"
+            - generic [ref=f1e148] [cursor=pointer]:
+              - text: "spawn_worker - Spawn a child or peer Worker to execute a task autonomously. Returns a JSON object. - relation='child' + wait=true (default): BLOCKS until the child finishes its first turn, returns {status:'first_turn_completed', first_turn_output}. - relation='child' + wait=false: returns IMMEDIATELY with worker_id, call await_worker(worker_id) later to collect output (use for parallel children). - relation='peer': returns IMMEDIATELY with worker_id, peer auto-reports to creator via follow_up when done (no polling needed). The spawned worker remains alive after first turn — use resume_worker to continue conversation."
+              - generic [ref=f1e149]: "[click to show parameters]"
+            - generic [ref=f1e150] [cursor=pointer]:
+              - text: write - Write content to a file, creating it if it doesn't exist.
+              - generic [ref=f1e151]: "[click to show parameters]"
+            - generic [ref=f1e152] [cursor=pointer]:
+              - text: write_stdin - Write text to the stdin of a running background process.
+              - generic [ref=f1e153]: "[click to show parameters]"
+      - generic [ref=f1e154]:
+        - generic [ref=f1e155]:
+          - text: USER
+          - button "Copy link to this message" [ref=f1e156] [cursor=pointer]
+          - generic [ref=f1e160]: 10:53:21
+          - paragraph [ref=f1e162]: hello
+        - generic [ref=f1e163]:
+          - text: ASSISTANT
+          - button "Copy link to this message" [ref=f1e164] [cursor=pointer]
+          - generic [ref=f1e168]: 10:53:21
+          - paragraph [ref=f1e170]: test response for export

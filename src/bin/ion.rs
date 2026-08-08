@@ -5410,11 +5410,31 @@ async fn handle_manager_command_write(
         "create_worker" => {
             // 兼容两种格式：扁平（cmd 字段直接是 config）和 嵌套（cmd.params 里是 config）
             // RPC client 发的是嵌套格式 {method, params: {...}}，stdin 命令发的是扁平
-            let cfg_source = if cmd.get("params").map(|v| v.is_object()).unwrap_or(false) {
+            let mut cfg_source = if cmd.get("params").map(|v| v.is_object()).unwrap_or(false) {
                 cmd.get("params").cloned().unwrap_or_default()
             } else {
                 cmd.clone()
             };
+            // message → initial_prompt fallback：用户常误用 message 字段（serde 会静默忽略），
+            // 这里自动把 message 注入 initial_prompt，保持向后兼容。
+            let msg_fallback: Option<String> = if cfg_source.get("initial_prompt").is_none() {
+                cfg_source
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            };
+            if let Some(msg) = msg_fallback {
+                tracing::warn!(
+                    "[rpc] create_worker: 'message' field used as initial_prompt fallback. \
+                     Use 'initial_prompt' explicitly to silence this."
+                );
+                if let Some(obj) = cfg_source.as_object_mut() {
+                    obj.insert("initial_prompt".to_string(), serde_json::Value::String(msg));
+                }
+            }
             let mut cfg: WorkerCreateConfig =
                 serde_json::from_value(cfg_source.clone()).unwrap_or_default();
             // 支持从 params 显式传 session（重建 worker 时保留 SID）
