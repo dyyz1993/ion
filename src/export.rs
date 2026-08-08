@@ -897,15 +897,34 @@ fn export_session_internal(
     };
 
     let css = read_file("template.css") + r#"
-/* ION: tool result default folded */
-.tool-result-fold { margin: 2px 0; }
-.tool-result-fold > summary { cursor: pointer; color: #8b949e; font-size: 12px; padding: 2px 8px; background: #f6f8fa; border-radius: 4px; list-style: none; }
-.tool-result-fold > summary::-webkit-details-marker { display: none; }
-.tool-result-fold > summary::before { content: '▶ '; font-size: 9px; }
-.tool-result-fold[open] > summary::before { content: '▼ '; }
-.tool-result-fold > summary:hover { background: #e1e4e8; }
-.tool-result-fold[open] > summary { margin-bottom: 4px; }
-.tool-output-fold-inner { overflow-x: auto; }
+/* ION: tool output default folded via CSS max-height */
+.tool-output {
+  max-height: 120px;
+  overflow: hidden;
+  position: relative;
+  transition: max-height 0.3s ease;
+}
+.tool-output.expanded {
+  max-height: none;
+}
+.tool-output::after {
+  content: '▼ click to expand';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 24px;
+  background: linear-gradient(transparent, #f6f8fa 60%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: #8b949e;
+  cursor: pointer;
+}
+.tool-output.expanded::after {
+  content: '▲ click to collapse';
+  background: #f6f8fa;
+}
+.tool-output:has(.expand-hint)::after { display: none; }
 "#;
     let mut js = read_file("template.js");
     let marked_js = read_file("vendor/marked.min.js");
@@ -1010,13 +1029,7 @@ document.addEventListener('DOMContentLoaded', function() {
     let default_args_new = r#"html += `<div class="tool-header"><span class="tool-name">${escapeHtml(name)}</span></div>`;
               if (result) {
                 const output = getResultText();
-                if (output) {
-                  const preview = output.substring(0, 100).replace(/\n/g, ' ').trim();
-                  html += `<details class="tool-result-fold"><summary class="tool-result-preview">${escapeHtml(preview)}${output.length > 100 ? '...' : ''}</summary><div class="tool-output-fold-inner">`;
-                  html += formatExpandableOutput(output, 10);
-                  html += `</div></details>`;
-                }
-              }"#;
+                if (output) html += formatExpandableOutput(output, 10);"#;
     js = js.replace(default_args_old, default_args_new);
 
     // Replace placeholders
@@ -1475,6 +1488,19 @@ document.addEventListener('DOMContentLoaded', function() {
 </script>
 "#;
     html = html.replacen("</body>", &format!("{}\n</body>", ext_visualization_script), 1);
+
+    // ION: tool output click to expand/collapse (CSS max-height approach)
+    let tool_fold_script = r#"
+<script>
+document.addEventListener('click', function(e) {
+  var to = e.target.closest('.tool-output');
+  if (to && !window.getSelection().toString()) {
+    to.classList.toggle('expanded');
+  }
+});
+</script>
+"#;
+    html = html.replacen("</body>", &format!("{}\n</body>", tool_fold_script), 1);
 
     // 子 session 的文件名（sub_<sid>.html / 旧版 fork_<sid>.html）在 base64 编码的
     // session-data 里，HTML 写入前替换看不到明文。改为在 HTML 末尾注入一段 JavaScript：
