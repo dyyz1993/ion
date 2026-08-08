@@ -11,6 +11,16 @@ pub enum AgentError {
     #[error("Tool call failed: {0}")]
     Tool(String),
 
+    /// A policy/extension rejected a tool before execution.  Unlike a runtime
+    /// tool failure, this is converted into a synthetic error ToolResult so the
+    /// provider conversation remains structurally valid and can continue.
+    #[error("tool '{tool}' denied by {origin}: {reason}")]
+    ToolDenied {
+        tool: String,
+        origin: String,
+        reason: String,
+    },
+
     #[error("Tool not found: {0}")]
     ToolNotFound(String),
 

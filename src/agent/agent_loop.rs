@@ -1508,7 +1508,89 @@ impl Agent {
                         // （execute_command / read_file / write_file / spawn_process 等）
                         // agent_loop 只负责调用 Extension 钩子和工具执行
 
-                        self.extensions.before_tool_call(tc).await?;
+                        // Persist the assistant's tool-call decision before any
+                        // pre-tool extension can veto it.  A denial must still
+                        // leave a complete provider sequence on disk:
+                        // Assistant(tool call) -> ToolResult(error).
+                        self.extensions
+                            .on_before_tool_execute(&tc.name, &tc.arguments, &self.messages)
+                            .await?;
+
+                        let pre_tool_error = match self.extensions.before_tool_call(tc).await {
+                            Ok(()) => None,
+                            Err(AgentError::Aborted) => return Err(AgentError::Aborted),
+                            Err(AgentError::Interrupted) => return Err(AgentError::Interrupted),
+                            Err(AgentError::Paused) => return Err(AgentError::Paused),
+                            Err(error) => Some(error),
+                        };
+
+                        if let Some(error) = pre_tool_error {
+                            let (source, reason) = match error {
+                                AgentError::ToolDenied { origin, reason, .. } => (origin, reason),
+                                other => ("extension".to_string(), other.to_string()),
+                            };
+                            let hook_event = if source == "hook" {
+                                serde_json::Value::String("PreToolUse".into())
+                            } else {
+                                serde_json::Value::Null
+                            };
+                            let output = if source == "hook" {
+                                format!(
+                                    "Error: tool '{}' denied by PreToolUse Hook: {}",
+                                    tc.name, reason
+                                )
+                            } else {
+                                format!(
+                                    "Error: tool '{}' denied before execution by {}: {}",
+                                    tc.name, source, reason
+                                )
+                            };
+                            let details = serde_json::json!({
+                                "status": "denied",
+                                "source": source,
+                                "stage": "before_tool_call",
+                                "hookEvent": hook_event,
+                                "toolCallId": tc.id,
+                                "toolName": tc.name,
+                                "reason": reason,
+                            });
+
+                            // A denied call did not start, so do not run the
+                            // actual tool or PostToolUse.  It still has a
+                            // terminal execution event for live subscribers.
+                            self.extensions
+                                .on_tool_execution_end(&super::extension::ToolExecutionContext {
+                                    tool_call_id: tc.id.clone(),
+                                    tool_name: tc.name.clone(),
+                                    args: tc.arguments.clone(),
+                                    is_error: true,
+                                    duration_ms: 0,
+                                    result: output.clone(),
+                                    is_interrupted: false,
+                                })
+                                .await?;
+
+                            self.messages.push(Message::ToolResult(ToolResultMessage {
+                                role: "tool".into(),
+                                tool_call_id: tc.id.clone(),
+                                tool_name: tc.name.clone(),
+                                content: vec![ContentBlock::Text(TextContent {
+                                    text: output,
+                                    text_signature: None,
+                                })],
+                                details: Some(details),
+                                is_error: true,
+                                timestamp: now_ms(),
+                            }));
+                            self.extensions
+                                .on_before_tool_execute(
+                                    "___tool_result_saved",
+                                    &serde_json::Value::Null,
+                                    &self.messages,
+                                )
+                                .await?;
+                            continue;
+                        }
 
                         // ── session 分支/回滚钩子（branch_session 工具）──
                         // LLM 调 branch_session 时，在执行前触发 on_session_before_switch，
@@ -1566,15 +1648,6 @@ impl Agent {
                         // Execute tool with streaming updates via tokio channel.
                         // Use select! to forward updates to extensions concurrently while tool runs.
                         let output = {
-                            // 增量 save 钩子：工具执行前 save 当前 messages。
-                            // 解决 fork 阻塞问题——LLM 调 skill(fork) → spawn_worker 阻塞 →
-                            // agent.run 不返回 → 进程被杀时 messages 全丢。
-                            // 这个钩子在 tool.execute_stream 前触发，把 user prompt +
-                            // assistant tool call decision 落盘。
-                            self.extensions
-                                .on_before_tool_execute(&tc_name, &tc_args, &self.messages)
-                                .await?;
-
                             let tool_ref = self.tools.get(&tc.name);
                             match tool_ref {
                                 Some(tool) => {
@@ -1708,7 +1781,7 @@ impl Agent {
                                 text_signature: None,
                             })],
                             details: None,
-                            is_error: false,
+                            is_error: exec_ctx.is_error,
                             timestamp: now_ms(),
                         };
 

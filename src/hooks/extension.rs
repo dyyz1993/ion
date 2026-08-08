@@ -223,18 +223,44 @@ impl HookExtension {
     /// Records: PreToolUse block / updatedInput / Stop block+inject.
     /// Does NOT record: allow (too noisy — only record meaningful actions).
     fn write_hook_entry(&self, event: &str, outcome: &str, detail: &str) {
+        self.write_hook_entry_with_details(event, outcome, detail, None);
+    }
+
+    fn write_hook_entry_with_details(
+        &self,
+        event: &str,
+        outcome: &str,
+        detail: &str,
+        details: Option<serde_json::Value>,
+    ) {
         let cwd = self.project_dir.to_string_lossy().to_string();
+        let parent_id = std::fs::read_to_string(crate::session_jsonl::resolve_session_file(&cwd))
+            .ok()
+            .map(|content| {
+                content
+                    .lines()
+                    .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                    .collect::<Vec<_>>()
+            })
+            .and_then(|entries| crate::session_tree::resolve_current_leaf(&entries));
         let entry = serde_json::json!({
             "type": "custom_message",
             "customType": "hook_event",
             "content": format!("[hook] {} {}: {}", event, outcome, detail),
             "display": true,
+            "details": details,
             "id": crate::session_jsonl::generate_id(),
-            "parentId": null,
+            "parentId": parent_id,
             "timestamp": crate::session_jsonl::timestamp_iso(),
         });
         crate::session_jsonl::append_raw_entry(&cwd, &entry);
-        tracing::info!("[hooks] wrote hook_event entry: {} {} → {}", event, outcome, &detail[..detail.len().min(60)]);
+        let preview: String = detail.chars().take(60).collect();
+        tracing::info!(
+            "[hooks] wrote hook_event entry: {} {} → {}",
+            event,
+            outcome,
+            preview
+        );
     }
 
     /// block Stop/SubagentStop 时，把 reason 作为新 query 注入
@@ -377,15 +403,24 @@ impl Extension for HookExtension {
         if outcome.block {
             // ★ 写 hook 拦截的 custom entry 到 session.jsonl（可溯源）
             let reason = outcome.block_reason.unwrap_or_default();
-            self.write_hook_entry(
+            self.write_hook_entry_with_details(
                 "PreToolUse",
                 "block",
                 &format!("tool '{}' blocked: {}", call.name, reason),
+                Some(serde_json::json!({
+                    "source": "hook",
+                    "hookEvent": "PreToolUse",
+                    "decision": "block",
+                    "toolCallId": call.id,
+                    "toolName": call.name,
+                    "reason": reason,
+                })),
             );
-            return Err(AgentError::Tool(format!(
-                "tool '{}' blocked by hook: {}",
-                call.name, reason
-            )));
+            return Err(AgentError::ToolDenied {
+                tool: call.name.clone(),
+                origin: "hook".into(),
+                reason,
+            });
         }
         // ask（exit 3）暂不处理（需要 UI 确认，后续接入 PermissionEngine）
         // updatedInput：hook 返回参数覆盖 → 就地应用到 call.arguments
@@ -397,10 +432,17 @@ impl Extension for HookExtension {
             }
             tracing::info!("[hooks] PreToolUse updatedInput applied to {}", call.name);
             // ★ 写参数修改的 custom entry（可溯源）
-            self.write_hook_entry(
+            self.write_hook_entry_with_details(
                 "PreToolUse",
                 "updatedInput",
                 &format!("tool '{}' args modified by hook", call.name),
+                Some(serde_json::json!({
+                    "source": "hook",
+                    "hookEvent": "PreToolUse",
+                    "decision": "updatedInput",
+                    "toolCallId": call.id,
+                    "toolName": call.name,
+                })),
             );
         }
         Ok(())
