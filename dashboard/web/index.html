@@ -140,6 +140,23 @@ function connect() {
 
 // ─── 处理 ion 发来的消息（事件 + 响应）──────────────────────────
 function handleIonMessage(msg) {
+  // 调试：打印每条消息的 type 和 customType（IAB 开发者工具 console 可见）
+  console.log('[ion-msg]', msg.type, msg.customType || '', msg.event?.type || '');
+
+  // 去重：同一事件可能被 reader + pump + session SUB 重复转发。
+  // 用 timestamp + type 去重（同一毫秒的同类型事件只处理第一条）。
+  const dedupKey = (msg.timestamp || msg.data?.event?.timestamp || '') + '|' + (msg.customType || msg.event?.type || msg.data?.event?.type || '');
+  if (dedupKey && dedupKey !== '|') {
+    if (window._lastDedupKeys && window._lastDedupKeys.has(dedupKey)) return;
+    window._lastDedupKeys = window._lastDedupKeys || new Set();
+    window._lastDedupKeys.add(dedupKey);
+    // 保留最近 200 个 key，防止内存涨
+    if (window._lastDedupKeys.size > 200) {
+      const arr = Array.from(window._lastDedupKeys);
+      window._lastDedupKeys = new Set(arr.slice(-200));
+    }
+  }
+
   // ion 的事件格式（实测）：
   //   全局订阅推的 extension_event: { type:"extension_event", customType:"text_delta",
   //                                    extension:"worker", data:{ event:{ delta:"Hi", type:"text_delta" } } }
