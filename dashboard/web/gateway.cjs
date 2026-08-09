@@ -171,15 +171,37 @@ const server = http.createServer((req, res) => {
     const sid = urlPath.replace('/api/session/', '');
     const ionDir = path.join(process.env.HOME, '.ion');
     const sessDir = path.join(ionDir, 'agent', 'sessions');
-    // 在所有项目目录下找 <sid>.jsonl
+    // session_id 可能是 UUID（create_worker 返回的），也可能是 sess_xxx（文件名）。
+    // 先按文件名找，再按内容里的 sessionId 匹配 UUID。
     fs.readdir(sessDir, (e, projects) => {
       if (e) { res.writeHead(500); res.end(JSON.stringify({error: e.message})); return; }
       let found = null;
+      // 1. 直接按文件名找（sess_xxx.jsonl）
       for (const proj of projects) {
         const candidate = path.join(sessDir, proj, sid + '.jsonl');
         if (fs.existsSync(candidate)) { found = candidate; break; }
       }
-      if (!found) { res.writeHead(404); res.end(JSON.stringify({error: 'session not found', sid})); return; }
+      // 2. 按内容匹配（UUID → 找 JSONL 里 sessionId 字段等于 sid 的文件）
+      if (!found) {
+        for (const proj of projects) {
+          const projDir = path.join(sessDir, proj);
+          if (!fs.existsSync(projDir)) continue;
+          for (const f of fs.readdirSync(projDir)) {
+            if (!f.endsWith('.jsonl')) continue;
+            const fp = path.join(projDir, f);
+            try {
+              // 只读前几行找 sessionId（header 或第一条消息）
+              const fd = fs.openSync(fp, 'r');
+              const buf = Buffer.alloc(2048);
+              fs.readSync(fd, buf, 0, 2048, 0);
+              fs.closeSync(fd);
+              if (buf.toString('utf8').includes(sid)) { found = fp; break; }
+            } catch {}
+          }
+          if (found) break;
+        }
+      }
+      if (!found) { res.writeHead(404); res.end(JSON.stringify({error: 'session not found', sid, searched: projects.length + ' projects'})); return; }
       // 逐行解析 JSONL，提取消息
       const lines = fs.readFileSync(found, 'utf8').split('\n').filter(l => l.trim());
       const messages = [];
