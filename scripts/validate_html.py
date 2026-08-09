@@ -276,8 +276,8 @@ def check_ext_02(dom, entries, results, html_path=""):
                                   "detail": detail})
         results["passed" if passed else "failed"] += 1
 
-    save_count = _count_tool_calls(entries, "memory_save")
-    search_count = _count_tool_calls(entries, "memory_search")
+    save_count = _count_tool_calls(entries, "memory_save") + _count_tool_calls(entries, "global_memory_save")
+    search_count = _count_tool_calls(entries, "memory_search") + _count_tool_calls(entries, "global_memory_search")
     all_results = _all_tool_results_text(entries)
 
     check("02-M1", "memory_save 工具被调用 ≥ 1 次", save_count >= 1,
@@ -955,8 +955,8 @@ def check_ext_10(dom, entries, results, html_path=""):
                                   "detail": detail})
         results["passed" if passed else "failed"] += 1
 
-    save_count = _count_tool_calls(entries, "memory_save")
-    search_count = _count_tool_calls(entries, "memory_search")
+    save_count = _count_tool_calls(entries, "memory_save") + _count_tool_calls(entries, "global_memory_save")
+    search_count = _count_tool_calls(entries, "memory_search") + _count_tool_calls(entries, "global_memory_search")
     all_results = _all_tool_results_text(entries)
 
     # 10-M1: memory_save + memory_search 都被调用
@@ -2021,8 +2021,8 @@ def check_ext_20(dom, entries, results, html_path=""):
           f"loop_triggered={loop_error or loop_in_dom}, recovered={recovered}")
 
     # 20-M6: 豁免工具不触发（memory_* / plan_list 等连调不计数）
-    memory_search_count = _count_tool_calls(entries, "memory_search")
-    memory_save_count = _count_tool_calls(entries, "memory_save")
+    memory_search_count = _count_tool_calls(entries, "memory_search") + _count_tool_calls(entries, "global_memory_search")
+    memory_save_count = _count_tool_calls(entries, "memory_save") + _count_tool_calls(entries, "global_memory_save")
     exempt_called = memory_search_count + memory_save_count
     # 如果调了豁免工具 ≥ 3 次但没触发 loop abort，说明豁免生效
     exempt_ok = (exempt_called >= 3 and not loop_error) or exempt_called < 3
