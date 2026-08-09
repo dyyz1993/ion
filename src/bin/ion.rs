@@ -5288,12 +5288,15 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
     });
 
     // 后台任务 2：处理 Worker 发来的 manager_command（create_worker / channel_send）
+    // ⚠️ 用 try_lock：process_pending_commands 内部 create_worker 持锁较久，
+    // try_lock 失败就跳过这轮，给 socket handler 的 list_sessions 留出 lock 窗口。
     let cmd_registry = Arc::clone(&registry);
     tokio::spawn(async move {
         loop {
             {
-                let mut reg = cmd_registry.lock().await;
-                reg.process_pending_commands(&cmd_registry).await;
+                if let Ok(mut reg) = cmd_registry.try_lock() {
+                    reg.process_pending_commands(&cmd_registry).await;
+                }
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
@@ -5444,8 +5447,12 @@ async fn handle_manager_command(
         // ── Fast read paths (short lock, snapshot then release) ──
         "list_sessions" => {
             let sessions: Vec<_> = {
-                let reg = registry.lock().await;
-                eprintln!("[lock] list_sessions got lock, {} workers", reg.workers.len());
+                let reg = loop {
+                    if let Ok(g) = registry.try_lock() {
+                        break g;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                };
                 reg.workers.values().map(|w| serde_json::json!({
                     "session_id": w.session_id,
                     "agent": w.agent,
