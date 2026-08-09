@@ -946,6 +946,14 @@ impl WorkerRegistry {
                                 eprintln!("[stream-debug] host forward event type=tool_call_delta");
                             }
                             let mut reg = sub_registry.lock().await;
+                            // 拿 EventBus 句柄（如果有），用于把 worker 事件广播到全局订阅者。
+                            // 在持 reg 锁期间只 clone Arc，不锁 EventBus（避免 reg+bus 双锁死锁）。
+                            let bus_clone = reg.event_bus.clone();
+                            let session_id_for_bus = reg
+                                .workers
+                                .get(&sub_wid)
+                                .map(|w| w.session_id.clone())
+                                .unwrap_or_default();
                             if let Some(record) = reg.workers.get_mut(&sub_wid) {
                                 // 转发给实时订阅者
                                 for sub in &record.event_subscribers {
@@ -1021,6 +1029,28 @@ impl WorkerRegistry {
                                     let mut r = rc.lock().await;
                                     r.broadcast_overview();
                                 });
+                            }
+                            // 把 worker 事件广播到全局 EventBus，让 subscribe_all（无 session/extension）
+                            // 也能收到 text_delta / agent_start / agent_end / tool_execution_*。
+                            // 对齐 pi 的全局流式行为。此时 reg 已在各分支内 drop，这里 bus_clone 和
+                            // session_id_for_bus 是之前 clone 出来的（不依赖 reg 锁）。
+                            if let Some(bus) = bus_clone
+                                && matches!(
+                                    ev_type,
+                                    "text_delta" | "agent_start" | "agent_end" | "agent_stopped"
+                                        | "tool_execution_start" | "tool_execution_end"
+                                        | "tool_call" | "tool_call_delta"
+                                )
+                            {
+                                let mut event = crate::event_bus::ExtensionEvent::new(
+                                    "worker", ev_type,
+                                )
+                                .with_data(msg.clone());
+                                if !session_id_for_bus.is_empty() {
+                                    event = event.with_session(&session_id_for_bus);
+                                }
+                                let mut bus_guard = bus.lock().await;
+                                bus_guard.broadcast(&event);
                             }
                         }
                         // 所有消息也转发到 stdout_tx（给 send_to_worker）
@@ -1460,6 +1490,12 @@ impl WorkerRegistry {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
                             let mut reg = sub_registry.lock().await;
+                            let bus_clone2 = reg.event_bus.clone();
+                            let session_id_for_bus2 = reg
+                                .workers
+                                .get(&sub_wid)
+                                .map(|w| w.session_id.clone())
+                                .unwrap_or_default();
                             if let Some(record) = reg.workers.get_mut(&sub_wid) {
                                 for sub in &record.event_subscribers {
                                     let _ = sub.try_send(msg.clone());
@@ -1505,6 +1541,26 @@ impl WorkerRegistry {
                                 && let Some(record) = reg.workers.get_mut(&sub_wid)
                             {
                                 record.set_status(WorkerStatus::Busy);
+                            }
+                            drop(reg);
+                            // 同 reader #1：广播 worker 事件到全局 EventBus，让 subscribe_all 也能收到
+                            if let Some(bus) = bus_clone2
+                                && matches!(
+                                    ev_type,
+                                    "text_delta" | "agent_start" | "agent_end" | "agent_stopped"
+                                        | "tool_execution_start" | "tool_execution_end"
+                                        | "tool_call" | "tool_call_delta"
+                                )
+                            {
+                                let mut event = crate::event_bus::ExtensionEvent::new(
+                                    "worker", ev_type,
+                                )
+                                .with_data(msg.clone());
+                                if !session_id_for_bus2.is_empty() {
+                                    event = event.with_session(&session_id_for_bus2);
+                                }
+                                let mut bus_guard = bus.lock().await;
+                                bus_guard.broadcast(&event);
                             }
                         }
 
