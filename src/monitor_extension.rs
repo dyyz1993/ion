@@ -1002,22 +1002,24 @@ impl MonitorExtension {
                         let stats_for_spawn = Arc::clone(&stats);
                         let monitor_name_for_spawn = name.clone();
                         tokio::spawn(async move {
-                            let mut reg_guard = reg_for_spawn.lock().await;
-                            match reg_guard
-                                .create_worker(
-                                    crate::worker_registry::WorkerCreateConfig {
-                                        agent: Some(agent_for_spawn.clone()),
-                                        initial_prompt: Some(to_send.clone()),
-                                        relation: Some(
-                                            crate::worker_registry::WorkerRelation::System,
-                                        ),
-                                        hook_depth: Some(0),
-                                        ..Default::default()
-                                    },
-                                    &reg_for_spawn,
-                                )
-                                .await
-                            {
+                            // ⚠️ Lock split: prepare (no lock) → register (short lock)
+                            // 旧版 reg.lock().await.create_worker() 持有 lock 整个 spawn 过程，
+                            // 阻塞所有 RPC（list_sessions 等）直到子进程启动完成。
+                            let cfg = crate::worker_registry::WorkerCreateConfig {
+                                agent: Some(agent_for_spawn.clone()),
+                                initial_prompt: Some(to_send.clone()),
+                                relation: Some(
+                                    crate::worker_registry::WorkerRelation::System,
+                                ),
+                                hook_depth: Some(0),
+                                ..Default::default()
+                            };
+                            match crate::worker_registry::WorkerRegistry::prepare_worker_spawn(&cfg).await {
+                                Ok(prepared) => {
+                                    match reg_for_spawn.lock().await
+                                        .register_prepared_worker(prepared, &cfg, &reg_for_spawn_clone)
+                                        .await
+                                    {
                                 Ok(info) => {
                                     Self::emit_event(
                                         "monitor_spawned",
@@ -1035,7 +1037,13 @@ impl MonitorExtension {
                                     }
                                 }
                                 Err(e) => tracing::error!(
-                                    "[monitor] failed to spawn worker for {}: {e}",
+                                    "[monitor] failed to register worker for {}: {e}",
+                                    monitor_name_for_spawn
+                                ),
+                            }
+                                }
+                                Err(e) => tracing::error!(
+                                    "[monitor] failed to prepare worker spawn for {}: {e}",
                                     monitor_name_for_spawn
                                 ),
                             }

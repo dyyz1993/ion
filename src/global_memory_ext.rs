@@ -129,19 +129,33 @@ impl Extension for GlobalMemoryExtension {
         };
 
         tracing::info!("[global-memory] spawning Active Memory sub-agent...");
-        let mut reg = registry.lock().await;
-        match reg.create_worker(config, registry).await {
-            Ok(info) => {
-                let wid = info.worker_id.clone();
-                tracing::info!(
-                    "[global-memory] Active Memory sub-agent started: {} (session: {})",
-                    wid,
-                    info.session_id
-                );
-                *self.active_memory_worker.lock().unwrap() = Some(wid);
+        // ⚠️ 不能用 `registry.lock().await.create_worker()` — 它持有 lock 整个 spawn 过程，
+        // 会阻塞所有 RPC（list_sessions 等）直到 memory-agent 子进程启动完成。
+        // 用 lock split（prepare_worker_spawn 不持锁，register 持短锁）。
+        match crate::worker_registry::WorkerRegistry::prepare_worker_spawn(&config).await {
+            Ok(prepared) => {
+                let result = registry
+                    .lock()
+                    .await
+                    .register_prepared_worker(prepared, &config, registry)
+                    .await;
+                match result {
+                    Ok(info) => {
+                        let wid = info.worker_id.clone();
+                        tracing::info!(
+                            "[global-memory] Active Memory sub-agent started: {} (session: {})",
+                            wid,
+                            info.session_id
+                        );
+                        *self.active_memory_worker.lock().unwrap() = Some(wid);
+                    }
+                    Err(e) => {
+                        tracing::error!("[global-memory] failed to register memory-agent: {}", e);
+                    }
+                }
             }
             Err(e) => {
-                tracing::error!("[global-memory] failed to spawn memory-agent: {}", e);
+                tracing::error!("[global-memory] failed to prepare memory-agent spawn: {}", e);
                 // 不报错（memory-agent 是可选增强，spawn 失败不应阻断 host 启动）
             }
         }
