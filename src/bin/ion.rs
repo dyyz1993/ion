@@ -4650,7 +4650,12 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
         reg.init_singletons().await;
     }
     // post_init（释放 lock 后调，让单例能 create_worker spawn 系统级 agent）
-    ion::worker_registry::WorkerRegistry::post_init_singletons(&registry).await;
+    // ⚠️ 必须 tokio::spawn！post_init 内部 create_worker(memory-agent) 会调真实 LLM，
+    // 如果 await 会阻塞主线程 → socket accept loop 启动不了 → RPC 全部 timeout。
+    let post_init_registry = Arc::clone(&registry);
+    tokio::spawn(async move {
+        ion::worker_registry::WorkerRegistry::post_init_singletons(&post_init_registry).await;
+    });
 
     // ── Host 单例检查 + Unix socket 启动 ──
     // PID 文件防重复启动；Unix socket 让外部 `ion rpc` 能连进来。
@@ -4693,6 +4698,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
             );
             // 异步连，不阻塞 socket accept loop
             let mcp_for_connect = std::sync::Arc::clone(&mcp_manager);
+            let mcp_registry = Arc::clone(&registry);
             tokio::spawn(async move {
                 let _ = tokio::time::timeout(
                     std::time::Duration::from_secs(30),
@@ -4704,8 +4710,9 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                     mcp_for_connect.connected_count().await
                 );
                 mcp_for_connect.spawn_reconnect_monitor();
+                // set_mcp_manager 在 connect 后（短锁，不阻塞主线程）
+                mcp_registry.lock().await.set_mcp_manager(mcp_for_connect);
             });
-            registry.lock().await.set_mcp_manager(mcp_manager);
         }
     }
 
@@ -4748,7 +4755,8 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                         let (read_half, mut write_half) = stream.into_split();
                         let mut reader = BufReader::new(read_half);
                         let mut line = String::new();
-                        if reader.read_line(&mut line).await.is_ok() {
+                        let read_result = reader.read_line(&mut line).await;
+                        if read_result.is_ok() {
                             let line = line.trim().to_string();
                             if !line.is_empty() {
                                 let cmd: serde_json::Value = match serde_json::from_str(&line) {
@@ -5137,6 +5145,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                     let resp = handle_manager_command(&reg, cmd).await;
                                     let _ =
                                         write_half.write_all(format!("{resp}\n").as_bytes()).await;
+                                    let _ = write_half.flush().await;
                                 }
                             }
                         }
@@ -5436,6 +5445,7 @@ async fn handle_manager_command(
         "list_sessions" => {
             let sessions: Vec<_> = {
                 let reg = registry.lock().await;
+                eprintln!("[lock] list_sessions got lock, {} workers", reg.workers.len());
                 reg.workers.values().map(|w| serde_json::json!({
                     "session_id": w.session_id,
                     "agent": w.agent,

@@ -300,25 +300,31 @@ impl WorkerRegistry {
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
         // ── Worktree creation (SLOW: git init/add/commit, 1-3s) ──
+        // ⚠️ 用 tokio::process::Command（异步），避免阻塞 tokio runtime。
+        // 之前用 std::process::Command::output() 是同步阻塞，会卡住整个 runtime，
+        // 导致 socket handler 无法响应 RPC。
         let (worktree_path, worktree_info) = if let Some(ref wt_config) = config.worktree {
             let repo = std::path::Path::new(&project_path);
             if !repo.join(".git").exists() {
                 tracing::info!("[worktree] project is not a git repo, initializing");
-                let init = std::process::Command::new("git")
+                let init = tokio::process::Command::new("git")
                     .args(["-C", &project_path, "init", "-b", "main"])
                     .output()
+                    .await
                     .map_err(|e| format!("git init failed: {e}"))?;
                 if !init.status.success() {
                     let stderr = String::from_utf8_lossy(&init.stderr);
                     return Err(format!("git init failed: {stderr}"));
                 }
-                let _add = std::process::Command::new("git")
+                let _add = tokio::process::Command::new("git")
                     .args(["-C", &project_path, "add", "."])
                     .output()
+                    .await
                     .map_err(|e| format!("git add failed: {e}"))?;
-                let _commit = std::process::Command::new("git")
+                let _commit = tokio::process::Command::new("git")
                     .args(["-C", &project_path, "commit", "-m", "ion: initial commit"])
                     .output()
+                    .await
                     .map_err(|e| format!("git commit failed: {e}"))?;
                 tracing::info!("[worktree] git init + initial commit done");
             }
