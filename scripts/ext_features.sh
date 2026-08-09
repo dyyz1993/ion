@@ -16,9 +16,9 @@ FP_02B=(
 
 FP_02C=(
     "FP-02C|EXT-02|list + forget 生命周期|02-M1,02-M3,02-M7"
-    "先用 memory_save 工具保存一条记忆：内容是「临时测试条目，可删」，tags 设为 temp,test（这条等下用来演示删除）"
-    "用 memory_search 搜一下 temp，把刚才保存的那条列出来"
-    "把刚才那条 temp 记忆忘掉，用 memory_forget（或 memory_delete）删掉它，再搜一次 temp 确认已经删没了"
+    "先用 global_memory_save 工具保存一条记忆：content 是「临时测试条目，可删」，tags 设为 temp,test（这条等下用来演示删除）"
+    "用 global_memory_search 搜 temp，把刚才保存的那条列出来，记下它的 id"
+    "用 bash 工具执行：ion rpc extension_rpc '{\"extension\":\"global-memory\",\"method\":\"forget\",\"args\":{\"id\":\"刚才那条的id\"}}' 删掉它，再用 global_memory_search 搜 temp 确认已删"
 )
 
 FP_02D=(
@@ -112,8 +112,8 @@ FP_07A=(
 
 FP_07B=(
     "FP-07B|EXT-07|闭环迭代 + gate 拦截|07-M1,07-M4,07-M5"
-    "必须先调用 goal_set 工具设定目标：objective 是创建 greet.rs 并写 greet 函数。然后再用 write 实现"
-    "做完想停的时候，系统会跑 check 验证，如果没过会拦住你，继续修直到通过"
+    "第一步调用 goal_set 工具：参数 objective 设为「在当前目录创建 greet.rs 文件，里面写一个 pub fn greet(name: &str) -> String 函数返回 Hello, {{name}}!」，checks 数组给一个 {\"description\":\"greet.rs 存在且包含 greet 函数\",\"command\":\"test -f greet.rs && grep -q 'fn greet' greet.rs\"}。然后第二步用 write 工具创建文件实现目标。"
+    "目标完成后直接结束。系统的 gate 会自动跑 check 验证 greet.rs，没过会拦截并告诉你失败原因，你照着修就行。"
 )
 
 FP_07C=(

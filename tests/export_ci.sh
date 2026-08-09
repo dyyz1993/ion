@@ -144,10 +144,17 @@ fi
                 fail "A17 Timeline 紧凑排列或跳转逻辑缺失"
             grep -q 'ion-entry-fold-hint' "$HTML" && \
                 grep -q '#messages > \[id\^="entry-"\]' "$HTML" && \
+                grep -q 'minimumVisibleContentLines = 3' "$HTML" && \
+                grep -q 'minimumHiddenContentLines = 3' "$HTML" && \
+                grep -q 'hiddenLines > minimumHiddenContentLines' "$HTML" && \
+                grep -q 'data-ion-output-foldable' "$HTML" && \
+                grep -q 'shouldFold = remaining > minimumHiddenLines' "$HTML" && \
+                grep -q 'collectVisualLines' "$HTML" && \
+                grep -q 'data-ion-entry-foldable' "$HTML" && \
                 grep -q 'more lines, click to expand' "$HTML" && \
                 grep -q 'aria-expanded' "$HTML" && \
-                pass "A18 长 Entry 默认显示多行内容预览、剩余行数及展开入口" || \
-                fail "A18 缺少渐进式 Entry 折叠交互"
+                pass "A18 仅在展开可新增超过 3 行正文时折叠" || \
+                fail "A18 缺少隐藏正文超过三行的折叠门槛"
             TIMELINE_IDS=$(echo "$DATA" | jq -r '[.timelineEntries[] | .id // ""] | sort | .[]')
             BODY_IDS=$(echo "$DATA" | jq -r '[.entries[] | .id // ""] | sort | .[]')
             [ "$TIMELINE_IDS" = "$BODY_IDS" ] && \

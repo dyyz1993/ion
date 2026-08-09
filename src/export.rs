@@ -1113,15 +1113,15 @@ fn export_session_internal(
 
     let css = read_file("template.css")
         + r#"
-/* ION: collapse non-expandable tool outputs (pi's .expandable already handled) */
-.tool-output:not(.expandable):not(.expanded) {
-  max-height: 100px;
+/* ION: only collapse tool output when opening it reveals more than three lines. */
+.tool-output:not(.expandable)[data-ion-output-foldable="true"]:not(.expanded) {
+  max-height: var(--ion-tool-output-preview-height, 100px);
   overflow: hidden;
   position: relative;
   cursor: pointer;
 }
-.tool-output:not(.expandable):not(.expanded)::after {
-  content: '▼ 展开详情';
+.tool-output:not(.expandable)[data-ion-output-foldable="true"]:not(.expanded)::after {
+  content: '▼ 查看剩余 ' attr(data-ion-output-hidden-lines) ' 行';
   position: absolute;
   bottom: 0; left: 0; right: 0;
   height: 20px;
@@ -1261,11 +1261,18 @@ document.addEventListener('DOMContentLoaded', function() {
     let expandable_old = r#"const displayLines = lines.slice(0, maxLines);
         const remaining = lines.length - maxLines;"#;
     let expandable_new = r#"const headCount = maxLines;
-        const tailCount = Math.min(maxLines, Math.floor(lines.length / 2));
+        const minimumHiddenLines = 3;
+        const tailCount = Math.min(maxLines, Math.max(0, lines.length - headCount - minimumHiddenLines - 1));
         const displayLines = lines.slice(0, headCount);
-        const tailLines = lines.length > headCount + tailCount ? lines.slice(-tailCount) : [];
-        const remaining = lines.length - headCount - tailLines.length;"#;
+        const tailLines = tailCount > 0 ? lines.slice(-tailCount) : [];
+        const remaining = lines.length - headCount - tailLines.length;
+        const shouldFold = remaining > minimumHiddenLines;"#;
     js = js.replace(expandable_old, expandable_new);
+    js = js.replace("if (remaining > 0)", "if (shouldFold)");
+    js = js.replace(
+        "for (const line of displayLines) {\n          out += `<div>${escapeHtml(replaceTabs(line))}</div>`;\n        }\n        out += '</div>';\n        return out;",
+        "for (const line of lines) {\n          out += `<div>${escapeHtml(replaceTabs(line))}</div>`;\n        }\n        out += '</div>';\n        return out;",
+    );
 
     // 在 expandable 输出里追加 tailLines
     let tail_inject_old = r#"<div class="expand-hint">... (${remaining} more lines)</div>"#;
@@ -1782,6 +1789,9 @@ document.addEventListener('DOMContentLoaded', function() {
     .ion-entry-fold[data-ion-entry-expanded="true"] .ion-entry-fold-content {
       max-height: none;
     }
+    .ion-entry-fold[data-ion-entry-foldable="false"] .ion-entry-fold-content {
+      max-height: none;
+    }
     .ion-entry-fold.compaction .compaction-collapsed { display: none !important; }
     .ion-entry-fold.compaction .compaction-content { display: block !important; }
 
@@ -1948,7 +1958,7 @@ document.addEventListener('DOMContentLoaded', function() {
     .expandable-output .output-tail {
       display: block !important;
     }
-    .tool-output:not(.expandable):not(.expanded)::after {
+    .tool-output:not(.expandable)[data-ion-output-foldable="true"]:not(.expanded)::after {
       color: #0e7490;
       background: linear-gradient(transparent, rgba(248, 250, 252, 0.98) 56%);
     }
@@ -2912,9 +2922,11 @@ document.addEventListener('DOMContentLoaded', function() {
         1,
     );
 
-    // ION: long Entries show their first rendered lines instead of collapsing into
-    // a synthetic one-line summary. The hint reports the approximate hidden visual
-    // line count and expands the original DOM in place.
+    // ION: long Entries show at least three rendered content lines instead of
+    // counting role labels, timestamps and card controls as preview lines. Folding is
+    // only useful when expanding reveals more than three additional content lines;
+    // shorter remainders stay fully visible. The hint reports those hidden visual lines
+    // and expands the original DOM in place.
     // A MutationObserver reapplies the wrapper after pi's branch navigation rerenders
     // #messages from cached DOM nodes.
     let entry_fold_script = r#"
@@ -2922,7 +2934,8 @@ document.addEventListener('DOMContentLoaded', function() {
 document.addEventListener('DOMContentLoaded', function() {
   var messages = document.getElementById('messages');
   if (!messages) return;
-  var previewLines = 6;
+  var minimumVisibleContentLines = 3;
+  var minimumHiddenContentLines = 3;
 
   function entryKind(entry) {
     if (entry.classList.contains('user-message') || entry.classList.contains('skill-user-entry')) return ['User', '#2e90fa'];
@@ -2948,19 +2961,94 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   window.ionSetEntryExpanded = setExpanded;
 
+  function foldContentRoots(content) {
+    var selectors = [
+      ':scope > .markdown-content',
+      ':scope > .assistant-text',
+      ':scope > .thinking-block',
+      ':scope > .tool-execution',
+      ':scope > .tool-command',
+      ':scope > .tool-header',
+      ':scope > .tool-output',
+      ':scope > .tool-images',
+      ':scope > .compaction-content',
+      ':scope > .error-text',
+      ':scope > .skill-invocation',
+      ':scope > .user-message'
+    ];
+    var roots = Array.from(content.querySelectorAll(selectors.join(',')));
+    return roots.length ? roots : [content];
+  }
+
+  function collectVisualLines(content) {
+    var rects = [];
+    foldContentRoots(content).forEach(function(root) {
+      var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) {
+        var node = walker.currentNode;
+        if (!node.nodeValue || !node.nodeValue.trim()) continue;
+        var parent = node.parentElement;
+        if (!parent || parent.closest('button, .copy-link, .expand-hint')) continue;
+        var range = document.createRange();
+        range.selectNodeContents(node);
+        Array.from(range.getClientRects()).forEach(function(rect) {
+          if (rect.width > 0 && rect.height > 0) rects.push({ top: rect.top, bottom: rect.bottom });
+        });
+        range.detach();
+      }
+    });
+    rects.sort(function(a, b) { return a.top - b.top || a.bottom - b.bottom; });
+    return rects.reduce(function(lines, rect) {
+      var line = lines[lines.length - 1];
+      if (!line || Math.abs(line.top - rect.top) > 2) {
+        lines.push({ top: rect.top, bottom: rect.bottom });
+      } else {
+        line.bottom = Math.max(line.bottom, rect.bottom);
+      }
+      return lines;
+    }, []);
+  }
+
   function measureEntry(entry) {
     var content = entry.querySelector(':scope > .ion-entry-fold-content');
     var hint = entry.querySelector(':scope > .ion-entry-fold-hint');
     if (!content || !hint) return;
-    var lineHeight = parseFloat(getComputedStyle(content).lineHeight) || 20;
-    var previewHeight = Math.ceil(lineHeight * previewLines);
+    var visualLines = collectVisualLines(content);
+    var contentRect = content.getBoundingClientRect();
+    var previewLine = visualLines[minimumVisibleContentLines - 1];
+    var previewHeight = previewLine
+      ? Math.ceil(previewLine.bottom - contentRect.top + 2)
+      : content.scrollHeight;
     var expanded = entry.getAttribute('data-ion-entry-expanded') === 'true';
     entry.style.setProperty('--ion-entry-preview-height', previewHeight + 'px');
     var hiddenHeight = Math.max(0, content.scrollHeight - previewHeight);
-    var hiddenLines = Math.max(1, Math.ceil(hiddenHeight / lineHeight));
+    var hiddenLines = Math.max(0, visualLines.length - minimumVisibleContentLines);
+    var foldable = hiddenLines > minimumHiddenContentLines && hiddenHeight > 2;
+    entry.setAttribute('data-ion-entry-foldable', foldable ? 'true' : 'false');
     hint.dataset.hiddenLines = String(hiddenLines);
-    hint.hidden = hiddenHeight <= 2;
-    setExpanded(entry, expanded && !hint.hidden);
+    hint.hidden = !foldable;
+    setExpanded(entry, expanded && foldable);
+  }
+
+  function configureToolOutput(output) {
+    if (!output || output.classList.contains('expandable')) return;
+    output.removeAttribute('data-ion-output-foldable');
+    output.style.removeProperty('--ion-tool-output-preview-height');
+    var visualLines = collectVisualLines(output);
+    var previewLine = visualLines[minimumVisibleContentLines - 1];
+    var outputRect = output.getBoundingClientRect();
+    var previewHeight = previewLine
+      ? Math.ceil(previewLine.bottom - outputRect.top + 2)
+      : output.scrollHeight;
+    var hiddenLines = Math.max(0, visualLines.length - minimumVisibleContentLines);
+    var foldable = hiddenLines > minimumHiddenContentLines && output.scrollHeight - previewHeight > 2;
+    output.setAttribute('data-ion-output-foldable', foldable ? 'true' : 'false');
+    output.setAttribute('data-ion-output-hidden-lines', String(hiddenLines));
+    if (foldable) {
+      output.style.setProperty('--ion-tool-output-preview-height', previewHeight + 'px');
+    } else {
+      output.classList.remove('expanded');
+    }
   }
 
   function decorateEntry(entry) {
@@ -2987,6 +3075,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   function decorateEntries() {
+    messages.querySelectorAll('.tool-output:not(.expandable)').forEach(configureToolOutput);
     messages.querySelectorAll(':scope > [id^="entry-"]').forEach(decorateEntry);
   }
 
@@ -2998,7 +3087,7 @@ document.addEventListener('DOMContentLoaded', function() {
       setExpanded(entry, entry.getAttribute('data-ion-entry-expanded') !== 'true');
       return;
     }
-    var output = event.target.closest('.tool-output:not(.expandable)');
+    var output = event.target.closest('.tool-output:not(.expandable)[data-ion-output-foldable="true"]');
     if (output && !window.getSelection().toString()) {
       output.classList.toggle('expanded');
       var owner = output.closest('.ion-entry-fold');
@@ -3012,6 +3101,7 @@ document.addEventListener('DOMContentLoaded', function() {
   window.addEventListener('resize', function() {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(function() {
+      messages.querySelectorAll('.tool-output:not(.expandable)').forEach(configureToolOutput);
       messages.querySelectorAll(':scope > .ion-entry-fold').forEach(measureEntry);
     }, 120);
   });

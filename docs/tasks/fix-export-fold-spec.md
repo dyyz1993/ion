@@ -113,7 +113,9 @@ Timeline，也必须在正文中拥有可见展示和稳定锚点。
 ## 改动 4: 所有正文 Entry 统一渐进折叠
 
 - `#messages` 下所有带 `entry-*` ID 的可见 Entry 保留真实渲染内容。
-- 默认展示前 6 个视觉行；短 Entry 完整显示，不出现多余的展开按钮。
+- 角色标题、时间和复制按钮不计入折叠阈值；折叠预览默认展示 3 个正文视觉行。
+- 隐藏部分不超过 3 个视觉行时，Entry 直接完整显示；只有展开后能新增超过 3 行正文时才折叠。
+- Tool Result 内层的“查看剩余内容”与 `formatExpandableOutput` 使用同一门槛，禁止详情只有 1～3 行时仍显示展开操作。
 - 长 Entry 在预览下方显示近似剩余视觉行数及 `click to expand` 提示。
 - User、Assistant、Tool Result、Custom、Compaction、Branch Summary、Model Change
   使用各自的类型标签和颜色，但共享同一套交互。
@@ -140,7 +142,7 @@ cargo check 2>&1 | tail -3
 # 2. 导出一个测试 HTML 看效果
 target/debug/ion --session <any-sid> --export /tmp/test_fold.html
 
-# 3. 打开看长 Entry 是否保留 6 行内容预览 + timeline 是否紧凑
+# 3. 打开看长 Entry 是否至少保留 3 行正文预览 + timeline 是否紧凑
 open /tmp/test_fold.html
 
 # 4. 测试通过
@@ -150,6 +152,6 @@ cargo test --lib export 2>&1 | tail -5
 ## 守门
 
 - ✅ `cargo check` 无错误
-- ✅ `tests/export_ci.sh` 37/37
+- ✅ `tests/export_ci.sh` 38/38
 - ✅ 导出脚本可由 `node --check` 解析
 - ✅ 无 U+FFFD

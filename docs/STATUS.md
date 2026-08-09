@@ -57,7 +57,7 @@
 - **Record/Replay** — LLM 决策录制回放（复用 FauxProvider）
 - **FauxProvider** — 架构级 LLM Mock（FIFO 队列 + 工厂响应 + 流式分块）
 - **Worker 崩溃恢复** — stderr 捕获 + exit code + Dead 保留 + 父通知
-- **HTML Export** — pi 模板 + 会话元信息卡 + tools 列表 + 完整可见事件 Timeline（类型筛选、悬停概要、点击跳转）；内部 `turn_summary` 原样打包但不渲染
+- **HTML Export** — pi 模板 + 会话元信息卡 + tools 列表 + 完整可见事件 Timeline（类型筛选、悬停概要、点击跳转）；内部 `turn_summary` 原样打包但不渲染；仅当隐藏正文超过 3 行时折叠，预览保留 3 行正文
 - **Apple Container 后端** — 真隔离 Linux VM，同端口并行
 - **A→B 自进化** — A 调度 B 改代码 + CI + 合并 + PR（14 脚本，24 agent 模板）
 
