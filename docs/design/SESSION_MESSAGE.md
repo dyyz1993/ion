@@ -166,7 +166,7 @@ LLM 上下文与实时 UI 受众。导出页同时展示固定目录总数和当
 
 > **状态：已验证** — 已按 pi 的 parented message tree 与 `step-snapshot` 语义完成迁移。
 
-对照 pi 源码及 FileSnapshot 参考 PR（初始实现 PR #1、tree-hash 修正 PR #8），其
+对照 pi 源码及 FileSnapshot 参考 PR（[初始实现 PR #1](https://github.com/dyyz1993/pi-mono/pull/1)、[tree-hash 修正 PR #8](https://github.com/dyyz1993/pi-mono/pull/8)），其
 `SessionEntry` 联合中没有独立回合摘要类型。ION 现在也不再写这种重复 Entry。
 
 pi 以 `message` 的 `id` / `parentId` 消息树确定回合边界；文件快照在实际发生变化时

@@ -3910,8 +3910,7 @@ fn build_export_flow_summary(entries: &[Value]) -> Value {
         };
         let raw_type = entry.get("type").and_then(Value::as_str).unwrap_or("entry");
         *raw_entry_types.entry(raw_type.to_string()).or_default() += 1;
-        if let Some(filter_type) = meta.get("filterType").and_then(Value::as_str)
-        {
+        if let Some(filter_type) = meta.get("filterType").and_then(Value::as_str) {
             *visible_types.entry(filter_type.to_string()).or_default() += 1;
         }
         if let Some(role) = export_message_role(entry) {

@@ -1034,6 +1034,7 @@ impl WorkerRegistry {
                             // 也能收到 text_delta / agent_start / agent_end / tool_execution_*。
                             // 对齐 pi 的全局流式行为。此时 reg 已在各分支内 drop，这里 bus_clone 和
                             // session_id_for_bus 是之前 clone 出来的（不依赖 reg 锁）。
+                            let bus_present = bus_clone.is_some();
                             if let Some(bus) = bus_clone
                                 && matches!(
                                     ev_type,

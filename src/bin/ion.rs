@@ -2216,12 +2216,31 @@ async fn cmd_run(
     ));
     tracing::info!("[extension] dev_server_detector registered");
 
+    // ── File Snapshot + Approval（cmd_run 路径对齐 worker_rpc）──
+    // Direct/offline runs previously registered the tools but not the lifecycle
+    // extension, so a real write produced no parented step-snapshot in JSONL.
+    let cmd_run_ion_cfg = ion::config::IonConfig::load();
+    if cmd_run_ion_cfg.is_extension_enabled("file-snapshot") {
+        let (snapshot_ext, snapshot_store) =
+            ion::file_snapshot::FileSnapshotExtension::new_pair(storage_ctx.clone());
+        ext_reg.register(Box::new(snapshot_ext));
+        let approval_mgr = std::sync::Arc::new(ion::file_snapshot::approval::ApprovalManager::new(
+            snapshot_store,
+            storage_ctx.clone(),
+        ));
+        ext_reg.register(Box::new(
+            ion::file_snapshot::approval::ApprovalExtension::new(approval_mgr),
+        ));
+        tracing::info!("[extension] file-snapshot + file-approval registered (cmd_run)");
+    } else {
+        tracing::info!("[extension] file-snapshot disabled by config (cmd_run)");
+    }
+
     // ── LSP Extension（cmd_run 路径补注册，对齐 worker_rpc:967-979）──
     // LSP 是钩子驱动：on_tool_execution_end 检测 write/edit → 后台启 cargo check
     // → on_context 注入 `<diagnostics>` XML 到 messages。
     // **不应该暴露 LspCheckTool 给 LLM**（用户设计纠正：LSP 不需要 LLM 主动调）。
-    let ion_cfg_for_lsp = ion::config::IonConfig::load();
-    if ion_cfg_for_lsp.is_extension_enabled("lsp") {
+    if cmd_run_ion_cfg.is_extension_enabled("lsp") {
         let lsp_ext = ion::lsp_extension::LspExtension::new();
         ext_reg.register(Box::new(lsp_ext));
         tracing::info!("[extension] lsp registered (cmd_run, auto-trigger on write/edit)");
@@ -3342,10 +3361,7 @@ fn apply_session_tree_ops(cli: &Cli, session_id: &str) {
                                 result.summary.deleted,
                                 result.summary.skipped
                             );
-                            eprintln!(
-                                "[restore-code] restore_point: {}",
-                                result.restore_point_id
-                            );
+                            eprintln!("[restore-code] restore_point: {}", result.restore_point_id);
                             true
                         } else {
                             false
@@ -3362,11 +3378,12 @@ fn apply_session_tree_ops(cli: &Cli, session_id: &str) {
                         );
                         eprintln!(
                             "[restore-code:tree] restored {} files (deleted {}, skipped {})",
-                            result.summary.restored,
-                            result.summary.deleted,
-                            result.summary.skipped
+                            result.summary.restored, result.summary.deleted, result.summary.skipped
                         );
-                        eprintln!("[restore-code:tree] restore_point: {}", result.restore_point_id);
+                        eprintln!(
+                            "[restore-code:tree] restore_point: {}",
+                            result.restore_point_id
+                        );
                     }
                 }
                 None => {
@@ -5949,6 +5966,18 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>, export_path: Opt
                                 if delta.is_empty() {
                                     continue;
                                 }
+                                // 广播到全局 EventBus，让 subscribe CLI 无参数也能收到 worker 流式
+                                {
+                                    let mut reg = pump_registry.lock().await;
+                                    if let Some(bus_arc) = reg.event_bus.clone() {
+                                        let session_id = reg.workers.get(wid).map(|w| w.session_id.clone()).unwrap_or_default();
+                                        drop(reg);
+                                        let mut ev_obj = ExtensionEvent::new("worker", "text_delta").with_data(ev.clone());
+                                        if !session_id.is_empty() { ev_obj = ev_obj.with_session(&session_id); }
+                                        let mut bus = bus_arc.lock().await;
+                                        bus.broadcast(&ev_obj);
+                                    }
+                                }
                                 let buf = line_bufs.entry(wid.clone()).or_default();
                                 buf.push_str(delta);
                                 // Flush complete lines
@@ -6315,6 +6344,10 @@ fn save_session(
             )
         })
         .count() as u32;
+    let user_message_count = messages
+        .iter()
+        .filter(|m| matches!(m, ion::agent::messages::Message::User(_)))
+        .count() as u32;
     let assistant_count = messages
         .iter()
         .filter(|m| matches!(m, ion::agent::messages::Message::Assistant(_)))
@@ -6341,7 +6374,9 @@ fn save_session(
         meta.user_prompt_count = user_prompt_count;
         meta.llm_request_count = assistant_count;
         meta.message_count = messages.len() as u32;
-        meta.turn_count = assistant_count;
+        // A conversational turn is rooted at a real user message. Tool loops
+        // may create multiple Assistant messages without creating more turns.
+        meta.turn_count = user_message_count;
     });
 }
 
@@ -6663,6 +6698,17 @@ impl Extension for CmdRunSessionPersistenceExtension {
         messages: &[ion::agent::messages::Message],
     ) -> ion::agent::error::AgentResult<()> {
         save_session_messages(&self.session_id, messages);
+        Ok(())
+    }
+
+    async fn on_turn_end(
+        &self,
+        ctx: &ion::agent::extension::TurnContext,
+    ) -> ion::agent::error::AgentResult<()> {
+        // Persist the complete user/assistant/tool-result chain before later
+        // lifecycle extensions append parented custom entries such as
+        // step-snapshot. Registry hooks run in registration order.
+        save_session_messages(&self.session_id, &ctx.messages);
         Ok(())
     }
 }

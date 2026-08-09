@@ -551,6 +551,65 @@ rm -rf "$K_DIR" /tmp/faux_k*.jsonl 2>/dev/null
 
 # ──────────────────────────────────────────────────────────
 echo ""
+echo "Group K0: 场景 1 直接 CLI + FauxProvider parented step-snapshot"
+# ──────────────────────────────────────────────────────────
+
+DIRECT_DIR=$(mktemp -d /tmp/fs_direct_XXXX)
+DIRECT_SCRIPT="/tmp/fs_direct_faux_$$.jsonl"
+DIRECT_LOG="/tmp/fs_direct_$$.log"
+sed "s|__WORKDIR__|$DIRECT_DIR|g" \
+    "$PROJECT_DIR/tests/fixtures/file_snapshot/faux_write.jsonl" > "$DIRECT_SCRIPT"
+
+if (
+    cd "$DIRECT_DIR"
+    ION_FAUX_SCRIPT="$DIRECT_SCRIPT" ION_GRACEFUL_DRAIN_MS=50 \
+        timeout 90 "$PROJECT_DIR/target/debug/ion" --offline --agent build \
+        -p "create the snapshot proof file" > "$DIRECT_LOG" 2>&1
+); then
+    DIRECT_BASE=$(basename "$DIRECT_DIR")
+    DIRECT_SESSION=$(find "$ION_SESSION_DIR" -path "*${DIRECT_BASE}*" -name '*.jsonl' -type f 2>/dev/null | head -1)
+    if [ -n "$DIRECT_SESSION" ] && python3 - "$DIRECT_SESSION" <<'PY'
+import json, sys
+entries = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+by_id = {entry.get("id"): entry for entry in entries}
+snapshots = [entry for entry in entries if entry.get("customType") == "step-snapshot"]
+assert len(snapshots) == 1
+snapshot = snapshots[0]
+parent = by_id[snapshot["parentId"]]
+child = next(entry for entry in entries if entry.get("parentId") == snapshot["id"])
+assert parent.get("type") == "message" and "ToolResult" in parent.get("message", {})
+assert child.get("type") == "message" and "Assistant" in child.get("message", {})
+data = snapshot["data"]
+assert data.get("baselineTreeHash") and data.get("snapshotTreeHash")
+assert data.get("diff", {}).get("added") == ["snapshot-proof.txt"]
+assert not any(entry.get("type") == "turn_summary" for entry in entries)
+PY
+    then
+        pass "K6: 直接 CLI 写出 ToolResult → step-snapshot → Assistant 完整父链"
+        DIRECT_SID=$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["id"])' "$DIRECT_SESSION")
+        if jq --arg sid "$DIRECT_SID" -e \
+            '.sessions[$sid] | .user_prompt_count==1 and .llm_request_count==2 and .turn_count==1 and .message_count==4' \
+            "$HOME/.ion/agent/sessions.index.json" >/dev/null 2>&1; then
+            pass "K7: SessionIndex 区分 1 个用户回合与 2 次 LLM 调用"
+        else
+            fail "K7: SessionIndex 回合/LLM 统计错误"
+        fi
+        grep -q '"customType":"step-snapshot"' "$DIRECT_SESSION" && \
+            ! grep -q '"type":"turn_summary"' "$DIRECT_SESSION" && \
+            pass "K8: JSONL 保留 File Snapshot 且无重复回合摘要" || \
+            fail "K8: JSONL snapshot/摘要契约错误"
+    else
+        fail "K6: 直接 CLI session 缺少合法 parented step-snapshot"
+        skip "K7-K8: K6 未形成可验证 session"
+    fi
+else
+    fail "K6: 直接 CLI FauxProvider 执行失败"
+    skip "K7-K8: K6 执行失败"
+fi
+rm -rf "$DIRECT_DIR" "$DIRECT_SCRIPT" "$DIRECT_LOG" 2>/dev/null
+
+# ──────────────────────────────────────────────────────────
+echo ""
 echo "Group L: 真实 LLM 审批 + parented step-snapshot（需 ION_E2E=1，默认 skip）"
 # ──────────────────────────────────────────────────────────
 

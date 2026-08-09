@@ -9,8 +9,8 @@
 use std::sync::Arc;
 
 use ion::agent::agent_loop::{Agent, AgentConfig};
-use ion::agent::extension::ExtensionRegistry;
 use ion::agent::extension::Extension;
+use ion::agent::extension::ExtensionRegistry;
 use ion::agent::messages::Message;
 use ion::agent::tool::{ToolRegistry, WriteTool};
 use ion::file_snapshot::{
@@ -168,7 +168,12 @@ async fn h0_factory_agent_persists_parented_step_snapshot_without_duplicate_turn
     let responses = vec![
         faux::FauxResponseStep::Factory(Box::new(move |context, _, state, _| {
             assert_eq!(state.call_count, 0);
-            assert!(context.messages.iter().any(|message| matches!(message, Message::User(_))));
+            assert!(
+                context
+                    .messages
+                    .iter()
+                    .any(|message| matches!(message, Message::User(_)))
+            );
             faux::faux_assistant_message(
                 faux::FauxContent::Single(faux::faux_tool_call(
                     "write",
@@ -182,10 +187,12 @@ async fn h0_factory_agent_persists_parented_step_snapshot_without_duplicate_turn
         })),
         faux::FauxResponseStep::Factory(Box::new(|context, _, state, _| {
             assert_eq!(state.call_count, 1);
-            assert!(context
-                .messages
-                .iter()
-                .any(|message| matches!(message, Message::ToolResult(_))));
+            assert!(
+                context
+                    .messages
+                    .iter()
+                    .any(|message| matches!(message, Message::ToolResult(_)))
+            );
             faux::faux_assistant_message(
                 faux::FauxContent::Text("factory write complete".into()),
                 faux::FauxMessageOptions {
@@ -200,10 +207,12 @@ async fn h0_factory_agent_persists_parented_step_snapshot_without_duplicate_turn
     agent.run("create factory.txt").await.unwrap();
 
     let session = ion::session_jsonl::SessionFile::load(&cwd).unwrap();
-    assert!(!session
-        .entries
-        .iter()
-        .any(|entry| entry.get("type").and_then(|v| v.as_str()) == Some("turn_summary")));
+    assert!(
+        !session
+            .entries
+            .iter()
+            .any(|entry| entry.get("type").and_then(|v| v.as_str()) == Some("turn_summary"))
+    );
     let snapshot = session
         .entries
         .iter()

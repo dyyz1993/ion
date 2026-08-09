@@ -1,0 +1,2 @@
+{"tool_call":{"name":"write","input":{"file_path":"__WORKDIR__/snapshot-proof.txt","content":"parented tree snapshot proof"}}}
+{"text":"done"}

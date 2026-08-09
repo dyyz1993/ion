@@ -57,7 +57,7 @@
 - **Record/Replay** — LLM 决策录制回放（复用 FauxProvider）
 - **FauxProvider** — 架构级 LLM Mock（FIFO 队列 + 工厂响应 + 流式分块）
 - **Worker 崩溃恢复** — stderr 捕获 + exit code + Dead 保留 + 父通知
-- **HTML Export** — ION 自有单文件离线模板 + 会话元信息卡 + Flow Summary + tools 列表 + 完整可见事件 Timeline（17 种固定 Entry、25 种已识别内置 Custom、当前会话类型统计、运行时 Extension 开放类型、筛选/悬停/点击跳转）；真实消息、Compaction 与 parented File Snapshot 在正文/Timeline 一一对应；仅当隐藏正文超过 3 行时折叠，预览保留 3 行正文（`tests/export_ci.sh`）
+- **HTML Export** — ION 自有单文件离线模板 + 会话元信息卡 + Flow Summary + tools 列表 + 完整可见事件 Timeline（17 种固定 Entry、25 种已识别内置 Custom、当前会话类型统计、运行时 Extension 开放类型、筛选/悬停/点击跳转）；真实消息、Compaction 与 parented File Snapshot 在正文/Timeline 一一对应；仅当隐藏正文超过 3 行时折叠，预览保留 3 行正文（`tests/export_ci.sh` 54/54）
 - **Apple Container 后端** — 真隔离 Linux VM，同端口并行
 - **A→B 自进化** — A 调度 B 改代码 + CI + 合并 + PR（14 脚本，24 agent 模板）
 

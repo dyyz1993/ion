@@ -455,11 +455,8 @@ fn t1_user_entry_ids_are_turn_ids() {
     );
 
     let entries = load_all(&cwd);
-    let turns = ion::message_retrieval::retrieve_turns(
-        &entries,
-        &RetrievalParams::default(),
-        false,
-    );
+    let turns =
+        ion::message_retrieval::retrieve_turns(&entries, &RetrievalParams::default(), false);
     assert_eq!(turns.turns.len(), 2);
     assert_eq!(turns.turns[0].turn_id, ids[1]);
     assert_eq!(turns.turns[1].turn_id, ids[3]);

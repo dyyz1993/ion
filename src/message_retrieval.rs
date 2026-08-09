@@ -590,10 +590,7 @@ fn apply_custom_filter(entries: &[Value], filter: &CustomFilter) -> Vec<Value> {
             .filter(|e| {
                 let t = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 // 默认只返回对话与内置会话控制 entry；custom 由 include_custom 控制。
-                t == "message"
-                    || t == "branch_summary"
-                    || t == "compaction"
-                    || t == "leaf_pointer"
+                t == "message" || t == "branch_summary" || t == "compaction" || t == "leaf_pointer"
             })
             .cloned()
             .collect(),
@@ -721,11 +718,7 @@ fn group_by_user_boundary(entries: &[Value]) -> Vec<Vec<Value>> {
             }
         }
         // header / 全局游标操作不属于某个用户回合；其余流程 entry 都随回合保留。
-        if !current.is_empty()
-            && t != "session"
-            && t != "leaf_pointer"
-            && t != "label"
-        {
+        if !current.is_empty() && t != "session" && t != "leaf_pointer" && t != "label" {
             current.push(entry.clone());
         } else if t == "message" && message_role(entry) == "user" {
             current.push(entry.clone());
@@ -844,10 +837,7 @@ fn message_role(entry: &Value) -> &str {
     if message.get("ToolResult").is_some() {
         return "toolResult";
     }
-    message
-        .get("role")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
+    message.get("role").and_then(|v| v.as_str()).unwrap_or("")
 }
 
 fn extract_tool_names(message: &Value) -> Vec<String> {
@@ -858,11 +848,19 @@ fn extract_tool_names(message: &Value) -> Vec<String> {
         .flatten()
         .filter_map(|block| {
             if let Some(inner) = block.get("ToolCall") {
-                return inner.get("name").and_then(|v| v.as_str()).map(str::to_string);
+                return inner
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
             }
             let kind = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
             matches!(kind, "tool_use" | "toolCall" | "tool_call")
-                .then(|| block.get("name").and_then(|v| v.as_str()).map(str::to_string))
+                .then(|| {
+                    block
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
                 .flatten()
         })
         .collect()
@@ -1238,10 +1236,12 @@ mod tests {
         let entries = make_3_turn_session();
         let result = retrieve_inputs(&entries, &RetrievalParams::default());
         assert_eq!(result.total_count, 3); // 3 条 user 消息
-        assert!(result
-            .inputs
-            .iter()
-            .all(|item| item.turn_id.as_deref() == Some(item.entry_id.as_str())));
+        assert!(
+            result
+                .inputs
+                .iter()
+                .all(|item| item.turn_id.as_deref() == Some(item.entry_id.as_str()))
+        );
         assert!(result.inputs.iter().all(|i| i.text.contains("帮我")
             || i.text.contains("设计")
             || i.text.contains("测试")));

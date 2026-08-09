@@ -894,9 +894,7 @@ impl Agent {
             // A user turn starts here exactly once, while the inner loop may make
             // multiple LLM calls because of tool use.
             if let Some(ref sid) = self.session_id {
-                crate::session_index::SessionIndex::increment_turn_stats(
-                    sid, 1, 0, 0, 0, 0, false,
-                );
+                crate::session_index::SessionIndex::increment_turn_stats(sid, 1, 0, 0, 0, 0, false);
             }
         }
 

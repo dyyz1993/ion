@@ -967,13 +967,17 @@ pub fn resolve_step_snapshot_for_entry(
 
     let by_id: HashMap<&str, &serde_json::Value> = entries
         .iter()
-        .filter_map(|entry| entry.get("id").and_then(|v| v.as_str()).map(|id| (id, entry)))
+        .filter_map(|entry| {
+            entry
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(|id| (id, entry))
+        })
         .collect();
 
     let parse_snapshot = |entry: &serde_json::Value, baseline: bool| {
         if entry.get("type").and_then(|v| v.as_str()) != Some("custom")
-            || entry.get("customType").and_then(|v| v.as_str())
-                != Some(CUSTOM_TYPE_STEP_SNAPSHOT)
+            || entry.get("customType").and_then(|v| v.as_str()) != Some(CUSTOM_TYPE_STEP_SNAPSHOT)
         {
             return None;
         }
@@ -1256,8 +1260,14 @@ mod tests {
             .expect("step-snapshot entry should exist");
         assert_eq!(parent_id, "msg_007");
         assert_eq!(entry["parentId"].as_str(), Some("msg_007"));
-        assert_eq!(entry["customType"].as_str(), Some(CUSTOM_TYPE_STEP_SNAPSHOT));
-        assert_eq!(entry["data"]["snapshotTreeHash"].as_str(), Some("tree_after"));
+        assert_eq!(
+            entry["customType"].as_str(),
+            Some(CUSTOM_TYPE_STEP_SNAPSHOT)
+        );
+        assert_eq!(
+            entry["data"]["snapshotTreeHash"].as_str(),
+            Some("tree_after")
+        );
 
         cleanup(&cwd);
     }

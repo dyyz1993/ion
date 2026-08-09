@@ -155,7 +155,7 @@ Timeline，也必须在正文中拥有可见展示和稳定锚点。
 - state: 单文件离线导出；Timeline 与正文包含 active branch 的真实消息及 File Snapshot
 - browser evidence: Playwright 验证 Flow Summary、17/25 类型目录、筛选、Custom 悬停来源概要、点击跳转与正文 provenance；导出本身无需服务器
 - interaction evidence: Custom 筛选后 Timeline 从 7 条变 6 条，正文对应 weather Custom 同步隐藏；悬停显示 `source weather`、`audit only`、`hidden in live UI`
-- final result: passed
+- final result: `tests/export_ci.sh` 54/54 passed；真实 ION/Faux CLI 均验证 parented File Snapshot
 
 ## 验证
 
