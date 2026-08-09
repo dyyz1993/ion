@@ -5443,15 +5443,17 @@ async fn handle_manager_command(
     // (which now uses prepare/register split) from blocking status queries.
     //
     // Write commands acquire the lock inside their own branch as needed.
+    // ⚠️ 所有 lock 都加 5s timeout：如果后台 task 持锁不放，返回错误而不是死等。
     let result: Result<serde_json::Value, String> = match method {
         // ── Fast read paths (short lock, snapshot then release) ──
         "list_sessions" => {
             let sessions: Vec<_> = {
-                let reg = loop {
-                    if let Ok(g) = registry.try_lock() {
-                        break g;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                let reg = match tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    registry.lock(),
+                ).await {
+                    Ok(g) => g,
+                    Err(_) => return serde_json::json!({"type":"response","id":id,"success":false,"error":"lock timeout (5s): registry busy"}),
                 };
                 reg.workers.values().map(|w| serde_json::json!({
                     "session_id": w.session_id,
@@ -5566,11 +5568,18 @@ async fn handle_manager_command_write(
                 }
             }
             drop(reg);
-            match registry.lock().await.create_worker(cfg, &registry).await {
-                Ok(info) => Ok(serde_json::json!({
-                    "workerId": info.worker_id,
-                    "sessionId": info.session_id,
-                })),
+            // ⚠️ Lock split: prepare (no lock) → register (short lock)
+            // 旧版 registry.lock().await.create_worker() 持锁整个 spawn 过程。
+            match ion::worker_registry::WorkerRegistry::prepare_worker_spawn(&cfg).await {
+                Ok(prepared) => {
+                    match registry.lock().await.register_prepared_worker(prepared, &cfg, &registry).await {
+                        Ok(info) => Ok(serde_json::json!({
+                            "workerId": info.worker_id,
+                            "sessionId": info.session_id,
+                        })),
+                        Err(e) => Err(e),
+                    }
+                }
                 Err(e) => Err(e),
             }
         }
@@ -6050,12 +6059,15 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>, export_path: Opt
     });
 
     // 2. Manager command processing loop
+    // ⚠️ try_lock: process_pending_commands 内部 create_worker 持锁较久，
+    // try_lock 失败就跳过，给 socket handler 留出 lock 窗口。
     let cmd_registry = Arc::clone(&registry);
     tokio::spawn(async move {
         loop {
             {
-                let mut reg = cmd_registry.lock().await;
-                reg.process_pending_commands(&cmd_registry).await;
+                if let Ok(mut reg) = cmd_registry.try_lock() {
+                    reg.process_pending_commands(&cmd_registry).await;
+                }
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
