@@ -129,14 +129,16 @@ server.on('upgrade', (req, socket) => {
 
   ionSock = connectIonSock(
     (line) => {
+      console.error(`[gw] ion→ws line: ${line.slice(0, 120)}`);
       // ion 的每一行 JSON 原样转发给浏览器
       let parsed;
       try { parsed = JSON.parse(line); } catch { sendToBrowser({ type: 'raw', line }); return; }
       sendToBrowser(parsed);
     },
-    (err) => sendToBrowser({ type: 'ion_error', message: err.message }),
-    () => sendToBrowser({ type: 'ion_closed' })
+    (err) => { console.error(`[gw] ion sock error: ${err.message}`); sendToBrowser({ type: 'ion_error', message: err.message }); },
+    () => { console.error('[gw] ion sock closed'); sendToBrowser({ type: 'ion_closed' }); }
   );
+  ionSock.on('connect', () => console.error('[gw] ion socket connected'));
 
   // 处理浏览器发来的消息
   let wsBuf = Buffer.alloc(0);
@@ -152,6 +154,7 @@ server.on('upgrade', (req, socket) => {
       }
       if (frame.opcode !== 0x1) continue; // 只处理文本帧
       const text = frame.payload.toString('utf8');
+      console.error(`[gw] ws→ion text: ${text.slice(0, 120)}`);
       let msg;
       try { msg = JSON.parse(text); } catch { sendToBrowser({ type: 'error', message: 'invalid json from browser' }); continue; }
 
@@ -160,7 +163,8 @@ server.on('upgrade', (req, socket) => {
         const id = msg.id || ('ws-' + Date.now());
         const req = { id, method: msg.method, params: msg.params || {} };
         if (msg.session) req.session = msg.session;
-        ionSock.write(JSON.stringify(req) + '\n');
+        const wrote = ionSock.write(JSON.stringify(req) + '\n');
+        console.error(`[gw] forwarded to ion (method=${msg.method}, wrote=${wrote})`);
         sendToBrowser({ type: 'rpc_sent', id, method: msg.method });
       } else if (msg.type === 'subscribe') {
         // 发一个 subscribe 命令让 ion 推事件流
