@@ -109,9 +109,9 @@ cp "$TODO_WASM" "$EXT_DIR/"
 green "✅ wasm 安装到 $EXT_DIR"
 
 # 杀残留 serve + 清 host.sock
-lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null || true
+lsof -ti "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" 2>/dev/null | xargs kill 2>/dev/null || true
 sleep 1
-rm -f "$HOME/.ion/host.sock" "$HOME/.ion/host.pid" 2>/dev/null
+rm -f "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" "$HOME/.ion/host.pid" 2>/dev/null
 
 # 启动 serve（后台）
 SERVE_LOG=$(mktemp /tmp/ion-ext-ci.XXXXXX)

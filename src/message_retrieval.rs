@@ -230,13 +230,13 @@ pub fn retrieve_turns(
     params: &RetrievalParams,
     full_content: bool,
 ) -> TurnsResult {
-    // 先视点过滤（since_compaction 截断；branch 走分支路径；live/full 不过滤 turn_summary）
+    // 先视点过滤（since_compaction 截断；branch 走分支路径）
     let view_filtered = apply_view_filter(entries, &params.view);
 
     // 可见性过滤
     let visible = apply_visibility_filter(&view_filtered);
 
-    // 按 turn_summary entry 或 user→assistant 边界分组
+    // 真实 user message entry 是稳定的 turn 锚点。
     let groups = group_into_turns(&visible);
 
     let all_turns: Vec<TurnOverview> = groups
@@ -326,31 +326,13 @@ pub fn retrieve_inputs(entries: &[Value], _params: &RetrievalParams) -> InputsRe
     let view_filtered = apply_view_filter(entries, &View::Live);
     let visible = apply_visibility_filter(&view_filtered);
 
-    // 从 turn_summary 建立 userEntryId → turnId 映射
-    let mut user_to_turn: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    let mut auto_count: u32 = 0;
-    for entry in &visible {
-        if entry.get("type").and_then(|v| v.as_str()) == Some("turn_summary") {
-            let turn_id = entry.get("turnId").and_then(|v| v.as_str());
-            let user_eid = entry.get("userEntryId").and_then(|v| v.as_str());
-            if let (Some(tid), Some(uid)) = (turn_id, user_eid) {
-                user_to_turn.insert(uid.to_string(), tid.to_string());
-            }
-        }
-    }
-
     let mut inputs = Vec::new();
     for entry in &visible {
         if entry.get("type").and_then(|v| v.as_str()) != Some("message") {
             continue;
         }
         // 检查 role == user
-        let role = entry
-            .get("message")
-            .and_then(|m| m.get("role"))
-            .and_then(|r| r.as_str())
-            .unwrap_or("");
+        let role = message_role(entry);
         if role != "user" {
             continue;
         }
@@ -360,15 +342,8 @@ pub fn retrieve_inputs(entries: &[Value], _params: &RetrievalParams) -> InputsRe
             .unwrap_or("")
             .to_string();
         let text = extract_message_text(entry);
-        // 关联 turn_id：优先从 turn_summary 查，查不到用 fallback
-        let turn_id = if let Some(tid) = user_to_turn.get(&entry_id) {
-            Some(tid.clone())
-        } else {
-            auto_count += 1;
-            Some(format!("auto_{}", auto_count))
-        };
         inputs.push(InputItem {
-            turn_id,
+            turn_id: Some(entry_id.clone()),
             entry_id,
             text,
         });
@@ -399,19 +374,9 @@ pub fn retrieve_turn_detail(
     _include_custom: &CustomFilter,
 ) -> Option<TurnDetail> {
     let groups = group_into_turns(entries);
-    let group = groups.into_iter().find(|g| {
-        g.iter()
-            .rev()
-            .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("turn_summary"))
-            .and_then(|ts| {
-                ts.get("turnId").map(|v| {
-                    v.as_str()
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| v.as_u64().map(|n| n.to_string()).unwrap_or_default())
-                })
-            })
-            == Some(turn_id.to_string())
-    })?;
+    let group = groups
+        .into_iter()
+        .find(|g| extract_turn_id(g).as_deref() == Some(turn_id))?;
 
     let overview = extract_turn_overview(&group, true); // get_turn_detail 始终 full_content
     Some(TurnDetail {
@@ -484,7 +449,7 @@ fn apply_view_filter(entries: &[Value], view: &View) -> Vec<Value> {
                     entries.to_vec()
                 }
             } else {
-                // 无 leaf_pointer：无分支，返回全部（含 turn_summary/compaction 等非链 entry）
+                // 无 leaf_pointer：线性会话，返回全部正文与生命周期 entry。
                 entries.to_vec()
             }
         }
@@ -624,11 +589,10 @@ fn apply_custom_filter(entries: &[Value], filter: &CustomFilter) -> Vec<Value> {
             .iter()
             .filter(|e| {
                 let t = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                // 只保留 message / branch_summary / compaction / turn_summary / leaf_pointer
+                // 默认只返回对话与内置会话控制 entry；custom 由 include_custom 控制。
                 t == "message"
                     || t == "branch_summary"
                     || t == "compaction"
-                    || t == "turn_summary"
                     || t == "leaf_pointer"
             })
             .cloned()
@@ -734,39 +698,15 @@ fn apply_pagination(
     )
 }
 
-/// 按 turn 分组：优先用 turn_summary entry 切分，否则按 user→assistant 边界
+/// 按真实 user message entry 分组。
+///
+/// 一个用户回合可以包含多次 LLM 调用、工具调用、toolResult 以及穿插的 custom
+/// entry；直到下一条 user message 才开始下一回合。
 fn group_into_turns(entries: &[Value]) -> Vec<Vec<Value>> {
-    // 如果有 turn_summary entry，用它作为 turn 边界
-    let has_turn_summary = entries
-        .iter()
-        .any(|e| e.get("type").and_then(|v| v.as_str()) == Some("turn_summary"));
-
-    if has_turn_summary {
-        group_by_turn_summary(entries)
-    } else {
-        group_by_user_boundary(entries)
-    }
+    group_by_user_boundary(entries)
 }
 
-/// 用 turn_summary entry 切分 turn
-fn group_by_turn_summary(entries: &[Value]) -> Vec<Vec<Value>> {
-    let mut groups = Vec::new();
-    let mut current = Vec::new();
-
-    for entry in entries {
-        let t = entry.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        current.push(entry.clone());
-        if t == "turn_summary" {
-            groups.push(std::mem::take(&mut current));
-        }
-    }
-    if !current.is_empty() {
-        groups.push(current);
-    }
-    groups
-}
-
-/// 无 turn_summary 时，按 user→assistant 边界切分
+/// 按 user message 边界切分；非消息 entry 保留在所属回合内。
 fn group_by_user_boundary(entries: &[Value]) -> Vec<Vec<Value>> {
     let mut groups = Vec::new();
     let mut current = Vec::new();
@@ -774,18 +714,20 @@ fn group_by_user_boundary(entries: &[Value]) -> Vec<Vec<Value>> {
     for entry in entries {
         let t = entry.get("type").and_then(|v| v.as_str()).unwrap_or("");
         if t == "message" {
-            let role = entry
-                .get("message")
-                .and_then(|m| m.get("role"))
-                .and_then(|r| r.as_str())
-                .unwrap_or("");
+            let role = message_role(entry);
             // 新 user 消息 = 新 turn 开始（除非是第一条）
             if role == "user" && !current.is_empty() {
                 groups.push(std::mem::take(&mut current));
             }
         }
-        // 跳过非 message entry（compaction / custom 等不参与 turn 分组）
-        if t == "message" || t == "branch_summary" {
+        // header / 全局游标操作不属于某个用户回合；其余流程 entry 都随回合保留。
+        if !current.is_empty()
+            && t != "session"
+            && t != "leaf_pointer"
+            && t != "label"
+        {
+            current.push(entry.clone());
+        } else if t == "message" && message_role(entry) == "user" {
             current.push(entry.clone());
         }
     }
@@ -797,31 +739,33 @@ fn group_by_user_boundary(entries: &[Value]) -> Vec<Vec<Value>> {
 
 /// 从一组 entry 提取 turn 概览
 fn extract_turn_overview(group: &[Value], full_content: bool) -> TurnOverview {
-    // 如果组末尾有 turn_summary，用它
-    if let Some(ts) = group
-        .iter()
-        .rev()
-        .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("turn_summary"))
-    {
-        return extract_from_turn_summary(ts, group, full_content);
-    }
-
-    // 否则从 message 提取
     let mut overview = TurnOverview::default();
+    let mut last_stop_reason = None;
 
     for entry in group {
         if entry.get("type").and_then(|v| v.as_str()) != Some("message") {
             continue;
         }
-        let role = entry
-            .get("message")
-            .and_then(|m| m.get("role"))
-            .and_then(|r| r.as_str())
-            .unwrap_or("");
+        let role = message_role(entry);
+        let payload = message_payload(entry).unwrap_or(&Value::Null);
 
         let text = extract_message_text(entry);
         match role {
             "user" => {
+                if overview.turn_id.is_empty() {
+                    let entry_id = entry
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    overview.turn_id = entry_id.clone();
+                    overview.user_entry_id = Some(entry_id);
+                    overview.source = payload
+                        .get("source")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("prompt")
+                        .to_string();
+                }
                 overview.user_content = if full_content {
                     text
                 } else {
@@ -834,156 +778,113 @@ fn extract_turn_overview(group: &[Value], full_content: bool) -> TurnOverview {
                 } else {
                     truncate_content(&text, 200)
                 };
-                // 统计 tool_calls
-                let has_tool = entry
-                    .get("message")
-                    .and_then(|m| m.get("content"))
-                    .and_then(|c| c.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
-                            .count()
-                    })
-                    .unwrap_or(0);
-                overview.tool_call_count += has_tool as u32;
-            }
-            _ => {}
-        }
-    }
-
-    overview.status = "completed".to_string();
-    overview.summary = truncate_content(&overview.assistant_content, 200);
-    overview
-}
-
-/// 从 turn_summary entry 提取概览
-fn extract_from_turn_summary(ts: &Value, group: &[Value], full_content: bool) -> TurnOverview {
-    let mut overview = TurnOverview {
-        turn_id: ts
-            .get("turnId")
-            .map(|v| {
-                v.as_str()
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| v.as_u64().map(|n| n.to_string()).unwrap_or_default())
-            })
-            .unwrap_or_default(),
-        status: ts
-            .get("status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("completed")
-            .to_string(),
-        summary: ts
-            .get("summary")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        key_steps: ts
-            .get("keySteps")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default(),
-        tool_call_count: ts
-            .get("toolCallCount")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32,
-        tokens_input: ts
-            .get("tokens")
-            .and_then(|t| t.get("input"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0),
-        tokens_output: ts
-            .get("tokens")
-            .and_then(|t| t.get("output"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0),
-        duration_ms: ts.get("durationMs").and_then(|v| v.as_u64()).unwrap_or(0),
-        ..Default::default()
-    };
-
-    // 从 group 里的 message 补充 user_content / assistant_content
-    for entry in group {
-        if entry.get("type").and_then(|v| v.as_str()) != Some("message") {
-            continue;
-        }
-        // message 可能是扁平结构 {"role":"assistant","content":[...]}
-        // 或 enum tag 结构 {"Assistant":{"role":"assistant","content":[...]}}
-        let msg = entry.get("message").cloned().unwrap_or_default();
-        let (role, content, source_val) = if let Some(inner) = msg.get("Assistant").cloned() {
-            (
-                "assistant".to_string(),
-                inner.get("content").cloned().unwrap_or_default(),
-                None,
-            )
-        } else if let Some(inner) = msg.get("User").cloned() {
-            let s = inner
-                .get("source")
-                .and_then(|v| v.as_str())
-                .unwrap_or("prompt")
-                .to_string();
-            (
-                "user".to_string(),
-                inner.get("content").cloned().unwrap_or_default(),
-                Some(s),
-            )
-        } else {
-            let s = msg
-                .get("source")
-                .and_then(|v| v.as_str())
-                .unwrap_or("prompt")
-                .to_string();
-            (
-                msg.get("role")
-                    .and_then(|r| r.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                msg.get("content").cloned().unwrap_or_default(),
-                Some(s),
-            )
-        };
-        let text = extract_text_from_content(&content);
-        match role.as_str() {
-            "user" if overview.user_content.is_empty() => {
-                overview.user_content = if full_content {
-                    text
-                } else {
-                    truncate_content(&text, 200)
-                };
-                if let Some(s) = &source_val {
-                    overview.source = s.clone();
+                for tool_name in extract_tool_names(payload) {
+                    overview.tool_call_count += 1;
+                    overview.key_steps.push(tool_name);
                 }
-            }
-            "assistant" if overview.assistant_content.is_empty() => {
-                overview.assistant_content = if full_content {
-                    text
-                } else {
-                    truncate_content(&text, 200)
-                };
+                if let Some(usage) = payload.get("usage") {
+                    overview.tokens_input += usage_u64(usage, "input", "inputTokens");
+                    overview.tokens_output += usage_u64(usage, "output", "outputTokens");
+                }
+                last_stop_reason = payload
+                    .get("stop_reason")
+                    .or_else(|| payload.get("stopReason"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
             }
             _ => {}
         }
     }
 
-    // Fallback：如果 group 里没找到 message（serve 模式下 turn_summary 先于 message 落盘，
-    // 导致 group 里只有 turn_summary），用 summary 字段填充 assistant_content。
-    // summary 本身就是 assistant 回复的摘要（前 200 字），语义一致。
-    if overview.assistant_content.is_empty() && !overview.summary.is_empty() {
-        overview.assistant_content = if full_content {
-            overview.summary.clone()
-        } else {
-            truncate_content(&overview.summary, 200)
-        };
-    }
-
-    // source 兜底：如果 group 里没找到 user message，默认 prompt
+    overview.status = status_from_stop_reason(last_stop_reason.as_deref());
+    overview.summary = truncate_content(&overview.assistant_content, 200);
     if overview.source.is_empty() {
         overview.source = "prompt".to_string();
     }
-
     overview
+}
+
+fn extract_turn_id(group: &[Value]) -> Option<String> {
+    group.iter().find_map(|entry| {
+        (entry.get("type").and_then(|v| v.as_str()) == Some("message")
+            && message_role(entry) == "user")
+            .then(|| entry.get("id").and_then(|v| v.as_str()).map(str::to_string))
+            .flatten()
+    })
+}
+
+fn message_payload(entry: &Value) -> Option<&Value> {
+    let message = entry.get("message")?;
+    for key in [
+        "User",
+        "Assistant",
+        "ToolResult",
+        "BashExecution",
+        "Custom",
+        "BranchSummary",
+        "CompactionSummary",
+    ] {
+        if let Some(inner) = message.get(key) {
+            return Some(inner);
+        }
+    }
+    Some(message)
+}
+
+fn message_role(entry: &Value) -> &str {
+    let Some(message) = entry.get("message") else {
+        return "";
+    };
+    if message.get("User").is_some() {
+        return "user";
+    }
+    if message.get("Assistant").is_some() {
+        return "assistant";
+    }
+    if message.get("ToolResult").is_some() {
+        return "toolResult";
+    }
+    message
+        .get("role")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+}
+
+fn extract_tool_names(message: &Value) -> Vec<String> {
+    message
+        .get("content")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|block| {
+            if let Some(inner) = block.get("ToolCall") {
+                return inner.get("name").and_then(|v| v.as_str()).map(str::to_string);
+            }
+            let kind = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            matches!(kind, "tool_use" | "toolCall" | "tool_call")
+                .then(|| block.get("name").and_then(|v| v.as_str()).map(str::to_string))
+                .flatten()
+        })
+        .collect()
+}
+
+fn usage_u64(usage: &Value, snake_case: &str, camel_case: &str) -> u64 {
+    usage
+        .get(snake_case)
+        .or_else(|| usage.get(camel_case))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+}
+
+fn status_from_stop_reason(reason: Option<&str>) -> String {
+    match reason.unwrap_or("Stop").to_ascii_lowercase().as_str() {
+        "tooluse" | "tool_use" | "tool_calls" => "tool_use",
+        "length" | "max_turns" => "max_turns",
+        "error" => "error",
+        "aborted" => "aborted",
+        _ => "completed",
+    }
+    .to_string()
 }
 
 /// 从 content(可能是字符串、扁平数组、或 enum tag 数组)提取文本
@@ -1071,17 +972,65 @@ mod tests {
         })
     }
 
-    fn turn_summary(turn_id: &str, summary: &str, status: &str) -> Value {
+    fn assistant_with_tool(
+        id: &str,
+        parent: &str,
+        text: &str,
+        tool_name: &str,
+        input: u64,
+        output: u64,
+        stop_reason: &str,
+    ) -> Value {
         json!({
-            "type": "turn_summary",
-            "id": format!("ts_{turn_id}"),
-            "parentId": null,
-            "turnId": turn_id,
-            "summary": summary,
-            "keySteps": ["read", "edit"],
-            "toolCallCount": 2,
-            "tokens": {"input": 100, "output": 50},
-            "status": status
+            "type": "message",
+            "id": id,
+            "parentId": parent,
+            "message": {
+                "Assistant": {
+                    "role": "assistant",
+                    "content": [
+                        {"Text": {"text": text, "text_signature": null}},
+                        {"ToolCall": {
+                            "type": "toolCall",
+                            "id": "call_1",
+                            "name": tool_name,
+                            "arguments": {},
+                            "thought_signature": null
+                        }}
+                    ],
+                    "api": "openai-completions",
+                    "provider": "zai",
+                    "model": "glm-5.2",
+                    "usage": {
+                        "input": input,
+                        "output": output,
+                        "cache_read": 0,
+                        "cache_write": 0,
+                        "total_tokens": input + output
+                    },
+                    "stop_reason": stop_reason,
+                    "timestamp": 1
+                }
+            }
+        })
+    }
+
+    fn tool_result(id: &str, parent: &str, tool_name: &str, text: &str) -> Value {
+        json!({
+            "type": "message",
+            "id": id,
+            "parentId": parent,
+            "message": {
+                "ToolResult": {
+                    "role": "toolResult",
+                    "tool_call_id": "call_1",
+                    "tool_name": tool_name,
+                    "content": [{"Text": {"text": text, "text_signature": null}}],
+                    "details": null,
+                    "is_error": false,
+                    "timestamp": 2
+                }
+            }
         })
     }
 
@@ -1099,13 +1048,10 @@ mod tests {
         vec![
             msg("msg_001", "", "user", "帮我重构接口"),
             msg("msg_002", "msg_001", "assistant", "好的我来分析"),
-            turn_summary("ts_0", "分析了现有代码", "completed"),
             msg("msg_003", "msg_002", "user", "设计方案"),
             msg("msg_004", "msg_003", "assistant", "用游标分页"),
-            turn_summary("ts_1", "设计了游标分页方案", "completed"),
             msg("msg_005", "msg_004", "user", "写测试"),
             msg("msg_006", "msg_005", "assistant", "测试写好了"),
-            turn_summary("ts_2", "写了单元测试", "completed"),
         ]
     }
 
@@ -1120,7 +1066,7 @@ mod tests {
             ..Default::default()
         };
         let result = retrieve_messages(&entries, &params);
-        assert_eq!(result.total_count, 6); // 6 条 message（不含 turn_summary）
+        assert_eq!(result.total_count, 6);
         assert!(!result.has_more);
         assert!(result.next_cursor.is_none());
     }
@@ -1243,7 +1189,6 @@ mod tests {
         let entries = vec![
             msg("msg_001", "", "user", &long_text),
             msg("msg_002", "msg_001", "assistant", "ok"),
-            turn_summary("ts_0", "summary", "completed"),
         ];
         let result = retrieve_turns(&entries, &RetrievalParams::default(), false);
         assert!(result.turns[0].user_content.ends_with("..."));
@@ -1255,14 +1200,35 @@ mod tests {
     }
 
     #[test]
-    fn test_retrieve_turns_from_summary() {
-        let entries = make_3_turn_session();
+    fn test_retrieve_turns_derives_metadata_from_messages() {
+        let entries = vec![
+            msg("msg_001", "", "user", "读取项目"),
+            assistant_with_tool("msg_002", "msg_001", "我先读取", "read", 100, 25, "ToolUse"),
+            tool_result("msg_003", "msg_002", "read", "文件内容"),
+            msg("msg_004", "msg_003", "assistant", "读取完成"),
+        ];
         let result = retrieve_turns(&entries, &RetrievalParams::default(), false);
-        // turn_summary 的字段应该被提取
-        assert_eq!(result.turns[0].turn_id, "ts_0");
-        assert!(result.turns[0].summary.contains("分析了现有代码"));
-        assert_eq!(result.turns[0].tool_call_count, 2);
+        assert_eq!(result.turns[0].turn_id, "msg_001");
+        assert_eq!(result.turns[0].user_entry_id.as_deref(), Some("msg_001"));
+        assert!(result.turns[0].summary.contains("读取完成"));
+        assert_eq!(result.turns[0].key_steps, vec!["read"]);
+        assert_eq!(result.turns[0].tool_call_count, 1);
         assert_eq!(result.turns[0].tokens_input, 100);
+        assert_eq!(result.turns[0].tokens_output, 25);
+        assert_eq!(result.turns[0].status, "completed");
+    }
+
+    #[test]
+    fn test_tool_loop_stays_in_one_user_turn() {
+        let entries = vec![
+            msg("msg_001", "", "user", "读取项目"),
+            assistant_with_tool("msg_002", "msg_001", "我先读取", "read", 100, 25, "ToolUse"),
+            tool_result("msg_003", "msg_002", "read", "文件内容"),
+            msg("msg_004", "msg_003", "assistant", "读取完成"),
+        ];
+        let result = retrieve_turns(&entries, &RetrievalParams::default(), false);
+        assert_eq!(result.total_count, 1);
+        assert_eq!(result.turns[0].turn_id, "msg_001");
     }
 
     // ── retrieve_inputs 测试 ──
@@ -1272,6 +1238,10 @@ mod tests {
         let entries = make_3_turn_session();
         let result = retrieve_inputs(&entries, &RetrievalParams::default());
         assert_eq!(result.total_count, 3); // 3 条 user 消息
+        assert!(result
+            .inputs
+            .iter()
+            .all(|item| item.turn_id.as_deref() == Some(item.entry_id.as_str())));
         assert!(result.inputs.iter().all(|i| i.text.contains("帮我")
             || i.text.contains("设计")
             || i.text.contains("测试")));
@@ -1290,19 +1260,18 @@ mod tests {
     #[test]
     fn test_retrieve_turn_detail_found() {
         let entries = make_3_turn_session();
-        let detail = retrieve_turn_detail(&entries, "ts_1", &CustomFilter::None);
+        let detail = retrieve_turn_detail(&entries, "msg_003", &CustomFilter::None);
         assert!(detail.is_some());
         let d = detail.unwrap();
-        assert_eq!(d.turn_id, "ts_1");
+        assert_eq!(d.turn_id, "msg_003");
         assert!(d.overview.user_content.contains("设计方案"));
-        assert!(d.overview.summary.contains("设计了游标分页方案"));
-        assert_eq!(d.overview.tool_call_count, 2);
+        assert!(d.overview.summary.contains("用游标分页"));
     }
 
     #[test]
     fn test_retrieve_turn_detail_not_found() {
         let entries = make_3_turn_session();
-        let detail = retrieve_turn_detail(&entries, "ts_99", &CustomFilter::None);
+        let detail = retrieve_turn_detail(&entries, "msg_999", &CustomFilter::None);
         assert!(detail.is_none());
     }
 

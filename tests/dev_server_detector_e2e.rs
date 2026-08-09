@@ -55,20 +55,33 @@ async fn test_multiple_frameworks() {
     ext.on_tool_execution_end(&bash_ctx(
         "▲ Next.js 14.0.0\n▲ Local:   http://localhost:3000\n",
         "next dev",
-    )).await.unwrap();
+    ))
+    .await
+    .unwrap();
 
     // Python http.server
     ext.on_tool_execution_end(&bash_ctx(
         "Serving HTTP on 0.0.0.0 port 8000 ...",
         "python3 -m http.server",
-    )).await.unwrap();
+    ))
+    .await
+    .unwrap();
 
     let mut prompt = String::new();
     ext.on_system_prompt(&mut prompt).await.unwrap();
 
-    assert!(prompt.contains(r#"port="3000"#), "should detect 3000: {prompt}");
-    assert!(prompt.contains(r#"port="8000"#), "should detect 8000: {prompt}");
-    assert!(prompt.contains(r#"count="2""#), "should show count=2: {prompt}");
+    assert!(
+        prompt.contains(r#"port="3000"#),
+        "should detect 3000: {prompt}"
+    );
+    assert!(
+        prompt.contains(r#"port="8000"#),
+        "should detect 8000: {prompt}"
+    );
+    assert!(
+        prompt.contains(r#"count="2""#),
+        "should show count=2: {prompt}"
+    );
     println!("✅ Multiple frameworks:\n{prompt}");
 }
 
@@ -77,10 +90,9 @@ async fn test_non_server_command_no_injection() {
     let ext = DevServerDetectorExtension::new();
 
     // ls command — should NOT trigger detection
-    ext.on_tool_execution_end(&bash_ctx(
-        "file1.rs\nfile2.rs\nREADME.md",
-        "ls -la",
-    )).await.unwrap();
+    ext.on_tool_execution_end(&bash_ctx("file1.rs\nfile2.rs\nREADME.md", "ls -la"))
+        .await
+        .unwrap();
 
     let mut prompt = String::from("base prompt");
     ext.on_system_prompt(&mut prompt).await.unwrap();
@@ -98,10 +110,9 @@ async fn test_dedup_same_signature_no_reinject() {
     let ext = DevServerDetectorExtension::new();
 
     // First detection
-    ext.on_tool_execution_end(&bash_ctx(
-        "Local: http://localhost:5173/",
-        "vite",
-    )).await.unwrap();
+    ext.on_tool_execution_end(&bash_ctx("Local: http://localhost:5173/", "vite"))
+        .await
+        .unwrap();
 
     let mut prompt1 = String::new();
     ext.on_system_prompt(&mut prompt1).await.unwrap();
@@ -127,7 +138,7 @@ async fn test_non_bash_tool_ignored() {
     // A read tool that happens to contain localhost in output
     let ctx = ToolExecutionContext {
         tool_call_id: "test".to_string(),
-        tool_name: "read".to_string(),  // NOT bash
+        tool_name: "read".to_string(), // NOT bash
         args: json!({"file_path": "/tmp/x"}),
         is_error: false,
         duration_ms: 5,
@@ -154,7 +165,7 @@ async fn test_bash_tool_detected() {
 
     let ctx = ToolExecutionContext {
         tool_call_id: "test".to_string(),
-        tool_name: "bash".to_string(),  // bash, NOT bash
+        tool_name: "bash".to_string(), // bash, NOT bash
         args: json!({"command": "python3 -m http.server 8000"}),
         is_error: false,
         duration_ms: 100,
@@ -184,12 +195,17 @@ async fn test_flask_format() {
     ext.on_tool_execution_end(&bash_ctx(
         " * Running on http://127.0.0.1:5000",
         "flask run",
-    )).await.unwrap();
+    ))
+    .await
+    .unwrap();
 
     let mut prompt = String::new();
     ext.on_system_prompt(&mut prompt).await.unwrap();
 
-    assert!(prompt.contains(r#"port="5000"#), "should detect Flask 5000: {prompt}");
+    assert!(
+        prompt.contains(r#"port="5000"#),
+        "should detect Flask 5000: {prompt}"
+    );
     println!("✅ Flask format (127.0.0.1): {prompt}");
 }
 
@@ -198,16 +214,12 @@ async fn test_extension_rpc_list() {
     let ext = DevServerDetectorExtension::new();
 
     // Detect a port first
-    ext.on_tool_execution_end(&bash_ctx(
-        "Local: http://localhost:3000/",
-        "npm start",
-    )).await.unwrap();
-
-    // Query via extension_rpc "list"
-    let result = ext
-        .on_extension_rpc("list", json!({}))
+    ext.on_tool_execution_end(&bash_ctx("Local: http://localhost:3000/", "npm start"))
         .await
         .unwrap();
+
+    // Query via extension_rpc "list"
+    let result = ext.on_extension_rpc("list", json!({})).await.unwrap();
 
     let result_str = result.to_string();
     assert!(
@@ -226,10 +238,9 @@ async fn test_extension_rpc_clear() {
     let ext = DevServerDetectorExtension::new();
 
     // Detect then clear
-    ext.on_tool_execution_end(&bash_ctx(
-        "Local: http://localhost:3000/",
-        "npm start",
-    )).await.unwrap();
+    ext.on_tool_execution_end(&bash_ctx("Local: http://localhost:3000/", "npm start"))
+        .await
+        .unwrap();
 
     let _ = ext.on_extension_rpc("clear", json!({})).await.unwrap();
 

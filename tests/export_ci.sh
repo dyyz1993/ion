@@ -4,14 +4,18 @@
 #
 # 背景：ION session JSONL 存的是 Rust enum 序列化形式
 # ({"message":{"Assistant":{...}}} / content blocks {"Text":{"text":...}}),
-# 而 pi export-html 模板期望扁平形式
+# 而 ION 的离线 HTML 渲染层使用扁平形式
 # ({"message":{"role":"assistant",...}} / {"type":"text","text":...}).
 # 之前缺这层转换，导致侧边栏大量 [undefined]。
 #
 # 这个 CI 脚本验证转换链路：
 #   Group A:  真实 ion 跑一个对话 → 导出 HTML → 解码 base64 → 检查转换正确
-#   Group B:  含 turn_summary 的 session → 导出 → 检查内部元数据与可见事件分流
-#   Group C:  边界场景：空 session / 缺 message 字段
+#   Group B:  含 step-snapshot 的 session → 导出 → 检查正文与 Timeline 完整展示
+#   Group C:  边界场景：缺失/损坏 session 与退出码
+#   Group D:  export-after-run 工具定义
+#   Group E:  确定性 compaction fixture
+#   Group F:  active branch 选择
+#   Group G:  LLM/Tool/Custom/Extension 流程语义
 #
 # 用法：bash tests/export_ci.sh
 # ──────────────────────────────────────────────────────────
@@ -26,6 +30,10 @@ fail() { FAIL=$((FAIL+1)); red "$1"; }
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 ION_BIN="$PROJECT_DIR/target/debug/ion"
+EXPORT_CI_SESSION_DIR=$(mktemp -d)
+export ION_SESSION_DIR="$EXPORT_CI_SESSION_DIR"
+export ION_SKIP_MCP=1
+trap 'rm -rf "$EXPORT_CI_SESSION_DIR"' EXIT
 
 if ! command -v jq &>/dev/null; then
     echo "❌ 需要 jq"
@@ -64,7 +72,7 @@ echo "── Group A: 真实对话导出（FauxProvider 驱动） ──"
 
 WORKDIR=$(mktemp -d)
 HTML="$WORKDIR/out.html"
-SOCK="$HOME/.ion/host.sock"
+SOCK="${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
 # 清理上次 host 残留
 # Reuse existing host if available
 if "$ION_BIN" rpc --method list_sessions 2>/dev/null | grep -q sessions; then
@@ -77,16 +85,31 @@ sleep 1
 cd "$WORKDIR"
 # FauxProvider 驱动一次对话（无需真实 API）
 # Use a longer response so the exported HTML has enough content to validate.
+ION_GRACEFUL_DRAIN_MS=50 \
 ION_FAUX_REPLY="Hello from faux export test. This is a multi-word response that generates sufficient HTML content for the export validation checks to pass. The quick brown fox jumps over the lazy dog. Lorem ipsum dolor sit amet consectetur adipiscing elit." \
-    "$ION_BIN" -p "hi" 2>&1 >/dev/null || true
+    "$ION_BIN" --offline --no-extensions -p "hi" 2>&1 >/dev/null || true
 
-# 找最近这次会话的 sid（先从 last_session，再 fallback 到最近改的 session.jsonl）
-LAST_SID=$(cat "$HOME/.ion/agent/last_session" 2>/dev/null)
-if [ -z "$LAST_SID" ]; then
-    # fallback：扫最近改的 session.jsonl 取 header.id
-    LATEST_SF=$(ls -t "$HOME/.ion/agent/sessions/"*/session.jsonl 2>/dev/null | head -1)
-    [ -n "$LATEST_SF" ] && LAST_SID=$(head -1 "$LATEST_SF" | jq -r '.id // empty' 2>/dev/null)
-fi
+# 只从本用例隔离的 ION_SESSION_DIR 查找刚生成的会话，避免读取用户的
+# ~/.ion/agent/last_session 而串到另一个并发任务。
+LAST_SID=$(python3 - "$ION_SESSION_DIR" <<'PYEOF'
+import json
+from pathlib import Path
+import sys
+
+sessions = []
+for path in Path(sys.argv[1]).rglob("*.jsonl"):
+    try:
+        with path.open() as handle:
+            for line in handle:
+                value = json.loads(line)
+                if value.get("type") == "session" and value.get("id"):
+                    sessions.append((path.stat().st_mtime, value["id"]))
+                    break
+    except (OSError, ValueError):
+        pass
+print(max(sessions)[1] if sessions else "")
+PYEOF
+)
 
 if [ -n "$LAST_SID" ]; then
     "$ION_BIN" --export "$HTML" --session "$LAST_SID" 2>&1 | grep -q "Exported" && \
@@ -139,7 +162,7 @@ fi
             [ "$INDEX_META" = "true" ] && \
                 pass "A16 SessionIndex 元信息快照已注入导出数据" || \
                 fail "A16 header.indexMeta 缺失"
-            grep -q 'item.index / (n - 1)' "$HTML" && grep -q 'scrollIntoView' "$HTML" && \
+            grep -q -- '--timeline-content-width' "$HTML" && grep -q 'visible.length \* 12' "$HTML" && grep -q 'scrollIntoView' "$HTML" && \
                 pass "A17 Timeline 按 Entry 顺序紧凑排列且支持点击跳转" || \
                 fail "A17 Timeline 紧凑排列或跳转逻辑缺失"
             grep -q 'ion-entry-fold-hint' "$HTML" && \
@@ -162,6 +185,31 @@ fi
                 grep -q 'ion-entry-nested-events' "$HTML" && \
                 pass "A19 每条 Timeline Entry 都声明正文目标，Hook 支持归组" || \
                 fail "A19 Timeline Entry 正文目标覆盖不完整"
+            SOURCE_N=$(echo "$DATA" | jq '.sourceEntries | length')
+            INTERNAL_N=$(echo "$DATA" | jq '.internalEntries | length')
+            [ "$SOURCE_N" -eq $((TIMELINE_N + INTERNAL_N)) ] && \
+                pass "A20 sourceEntries 保留当前分支完整有序数据（$SOURCE_N 条）" || \
+                fail "A20 sourceEntries 数量不完整"
+            META_N=$(echo "$DATA" | jq '[.timelineEntries[] | select(.ionMeta | type == "object")] | length')
+            [ "$META_N" -eq "$TIMELINE_N" ] && \
+                pass "A21 所有 Timeline Entry 都有统一 ionMeta" || \
+                fail "A21 只有 $META_N/$TIMELINE_N 条 Entry 有 ionMeta"
+            FLOW_OK=$(echo "$DATA" | jq '.flowSummary.entries == (.sourceEntries | length) and (.flowSummary.llmCalls >= 1)')
+            [ "$FLOW_OK" = "true" ] && \
+                pass "A22 flowSummary 汇总 LLM/Tool/Custom 流程" || \
+                fail "A22 flowSummary 缺失或计数错误"
+            grep -q 'What happened in this session' "$HTML" && \
+                grep -q 'ion-entry-provenance' "$HTML" && \
+                grep -q 'LLM context · included' "$HTML" && \
+                pass "A23 正文与 Timeline 渲染同一份流程语义" || \
+                fail "A23 流程语义 UI 缺失"
+            ! grep -q '/Users/xuyingzhou/Project/temporary/pi-momo-fork' "$PROJECT_DIR/src/export.rs" && \
+                grep -Fq 'include_str!("export_assets/template.html")' "$PROJECT_DIR/src/export.rs" && \
+                pass "A24 导出资源由 ION 编译内置，不依赖 pi checkout" || \
+                fail "A24 仍存在外部模板依赖"
+            grep -q "replace(/</g, '&lt;')" "$HTML" && \
+                pass "A25 Markdown 原始 HTML 在离线模板中被转义" || \
+                fail "A25 缺少导出内容 XSS 防护"
 
             # 检查 message 是否已 flatten（没有 Assistant/User/ToolResult wrapper）
             WRAPPED=$(echo "$DATA" | jq '[.entries[] | select(.type=="message") | .message | select(has("Assistant") or has("User") or has("ToolResult"))] | length')
@@ -192,42 +240,41 @@ fi
 rm -rf "$WORKDIR"
 
 # ═════════════════════════════════════════════════════════
-# Group B: turn_summary 作为内部元数据打包，但不渲染
+# Group B: step-snapshot 在正文与 Timeline 都展示
 # ═════════════════════════════════════════════════════════
 echo ""
-echo "── Group B: turn_summary 内部元数据分流 ──"
+echo "── Group B: step-snapshot 完整展示 ──"
 
 TS_SESSION_ROOT=$(mktemp -d)
 mkdir -p "$TS_SESSION_ROOT/exact"
 TS_SESSION_FILE="$TS_SESSION_ROOT/exact/session.jsonl"
 printf '%s\n' \
-    '{"type":"session","version":3,"id":"turn_summary_internal","timestamp":"2026-08-08T08:00:00Z","cwd":"/test"}' \
-    '{"type":"message","id":"m1","parentId":"turn_summary_internal","timestamp":"2026-08-08T08:00:01Z","message":{"User":{"role":"user","content":[{"Text":{"text":"run a tool"}}]}}}' \
-    '{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-08-08T08:00:02Z","message":{"Assistant":{"role":"assistant","content":[{"Text":{"text":"done"}}]}}}' \
-    '{"type":"turn_summary","id":"ts-1","parentId":null,"timestamp":"2026-08-08T08:00:03Z","turnId":"turn-1","userEntryId":"m1","summary":"done","keySteps":["bash"],"toolCallCount":1,"tokens":{"input":10,"output":20},"durationMs":30,"entryRange":["m1","m2"],"status":"completed"}' \
+    '{"type":"session","version":3,"id":"snapshot_visible","timestamp":"2026-08-08T08:00:00Z","cwd":"/test"}' \
+    '{"type":"message","id":"m1","parentId":"snapshot_visible","timestamp":"2026-08-08T08:00:01Z","message":{"User":{"role":"user","content":[{"Text":{"text":"run a tool"}}]}}}' \
+    '{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-08-08T08:00:02Z","message":{"Assistant":{"role":"assistant","content":[{"Text":{"text":"done"}}],"usage":{"input":10,"output":20},"stop_reason":"stop"}}}' \
+    '{"type":"custom","id":"snap-1","parentId":"m2","timestamp":"2026-08-08T08:00:03Z","customType":"step-snapshot","data":{"baselineTreeHash":"tree0","snapshotTreeHash":"tree1","toolSnapshotTurnId":"ts-1","turnIndex":1,"diff":{"added":["src/a.rs"],"modified":[],"deleted":[]}}}' \
     > "$TS_SESSION_FILE"
 
 HTML_B=$(mktemp -t export_ci_B).html
 ION_SESSION_DIR="$TS_SESSION_ROOT" \
-    "$ION_BIN" --export "$HTML_B" --session turn_summary_internal 2>&1 | grep -q "Exported" && \
-    pass "B1 export 含 turn_summary 的 session" || fail "B1 export 失败"
+    "$ION_BIN" --export "$HTML_B" --session snapshot_visible 2>&1 | grep -q "Exported" && \
+    pass "B1 export 含 step-snapshot 的 session" || fail "B1 export 失败"
 
 DATA_B=$(decode_session_data "$HTML_B" 2>/dev/null)
 if [ -n "$DATA_B" ]; then
-    BODY_TS=$(echo "$DATA_B" | jq '[.entries[] | select(.type=="turn_summary" or (.type=="custom_message" and .customType=="turn_summary"))] | length')
-    TIMELINE_TS=$(echo "$DATA_B" | jq '[.timelineEntries[] | select(.type=="turn_summary")] | length')
-    INTERNAL_TS=$(echo "$DATA_B" | jq '[.internalEntries[] | select(.type=="turn_summary")] | length')
-    [ "$BODY_TS" -eq 0 ] && pass "B2 正文不渲染 turn_summary" || fail "B2 正文仍有 $BODY_TS 条 turn_summary"
-    [ "$TIMELINE_TS" -eq 0 ] && pass "B3 Timeline 不渲染 turn_summary" || fail "B3 Timeline 仍有 $TIMELINE_TS 条 turn_summary"
-    [ "$INTERNAL_TS" -eq 1 ] && pass "B4 turn_summary 保留在 internalEntries" || fail "B4 internalEntries 未保留 turn_summary"
+    BODY_SNAP=$(echo "$DATA_B" | jq '[.entries[] | select(.customType=="step-snapshot")] | length')
+    TIMELINE_SNAP=$(echo "$DATA_B" | jq '[.timelineEntries[] | select(.customType=="step-snapshot")] | length')
+    INTERNAL_COUNT=$(echo "$DATA_B" | jq '.internalEntries | length')
+    [ "$BODY_SNAP" -eq 1 ] && pass "B2 正文展示 step-snapshot" || fail "B2 正文 step-snapshot 数量错误（$BODY_SNAP）"
+    [ "$TIMELINE_SNAP" -eq 1 ] && pass "B3 Timeline 展示 step-snapshot" || fail "B3 Timeline step-snapshot 数量错误（$TIMELINE_SNAP）"
+    [ "$INTERNAL_COUNT" -eq 0 ] && pass "B4 无脱离消息树的内部回合记录" || fail "B4 internalEntries 非空（$INTERNAL_COUNT）"
     echo "$DATA_B" | jq -e '
-        .internalEntries[0]
-        | .status == "completed"
-          and .toolCallCount == 1
-          and .tokens == {"input":10,"output":20}
-          and .durationMs == 30
-          and .entryRange == ["m1","m2"]
-    ' >/dev/null && pass "B5 内部回合状态、工具数量、Token、耗时和范围完整" || fail "B5 turn_summary 字段丢失"
+        .timelineEntries[] | select(.id=="snap-1") |
+        .parentId=="m2" and
+        .data.baselineTreeHash=="tree0" and
+        .data.snapshotTreeHash=="tree1" and
+        .ionMeta.displayType=="File Snapshot"
+    ' >/dev/null && pass "B5 快照关联、tree hash 与语义标签完整" || fail "B5 step-snapshot 字段丢失"
 else
     fail "B2 数据解码失败"
 fi
@@ -240,39 +287,35 @@ rm -r "$TS_SESSION_ROOT"
 echo ""
 echo "── Group E: 压缩 Entry 完整展示 ──"
 
-COMPACTION_SOURCE=""
-for d in "$HOME/.ion/agent/sessions/"*; do
-    SF="$d/session.jsonl"
-    [ ! -f "$SF" ] && continue
-    if head -1 "$SF" | grep -q '"type":"session"' && grep -q '"type":"compaction"' "$SF" 2>/dev/null; then
-        COMPACTION_SOURCE="$SF"
-        break
-    fi
-done
+COMPACTION_ROOT=$(mktemp -d)
+mkdir -p "$COMPACTION_ROOT/exact"
+COMPACTION_SESSION="$COMPACTION_ROOT/exact/session.jsonl"
+printf '%s\n' \
+    '{"type":"session","version":3,"id":"compaction_export","timestamp":"2026-08-08T09:00:00Z","cwd":"/test"}' \
+    '{"type":"message","id":"cm1","parentId":"compaction_export","timestamp":"2026-08-08T09:00:01Z","message":{"User":{"role":"user","content":[{"Text":{"text":"long conversation"}}],"source":"prompt"}}}' \
+    '{"type":"compaction","id":"compact-1","parentId":"cm1","timestamp":"2026-08-08T09:00:02Z","summary":"Earlier work was compacted","tokensBefore":42000,"batchCount":2,"stage":"batched_merged"}' \
+    '{"type":"message","id":"cm2","parentId":"compact-1","timestamp":"2026-08-08T09:00:03Z","message":{"Assistant":{"role":"assistant","provider":"zai","model":"glm-5.2","api":"openai-completions","usage":{"input":100,"output":30},"stop_reason":"stop","content":[{"Text":{"text":"continued after compaction"}}]}}}' \
+    > "$COMPACTION_SESSION"
 
-if [ -n "$COMPACTION_SOURCE" ]; then
-    COMPACTION_ROOT=$(mktemp -d)
-    mkdir -p "$COMPACTION_ROOT/exact"
-    cp "$COMPACTION_SOURCE" "$COMPACTION_ROOT/exact/session.jsonl"
-    COMPACTION_SID=$(head -1 "$COMPACTION_SOURCE" | jq -r '.id // empty')
-    HTML_E=$(mktemp -t export_ci_E).html
-    ION_SESSION_DIR="$COMPACTION_ROOT" \
-        "$ION_BIN" --export "$HTML_E" --session "$COMPACTION_SID" 2>&1 | grep -q "Exported" && \
-        pass "E1 export compaction session（$COMPACTION_SID）" || fail "E1 compaction session export 失败"
-    DATA_E=$(decode_session_data "$HTML_E" 2>/dev/null)
-    TIMELINE_COMPACTION=$(echo "$DATA_E" | jq '[.timelineEntries[] | select(.type=="compaction")] | length')
-    BODY_COMPACTION=$(echo "$DATA_E" | jq '[.entries[] | select(.type=="compaction")] | length')
-    [ "$TIMELINE_COMPACTION" -gt 0 ] && [ "$TIMELINE_COMPACTION" -eq "$BODY_COMPACTION" ] && \
-        pass "E2 Compaction 在 Timeline 与正文一一对应（$BODY_COMPACTION 条）" || \
-        fail "E2 Compaction Timeline/正文展示不一致"
-    grep -q "entry.type === 'compaction'" "$HTML_E" && \
-        pass "E3 Compaction 使用独立内置卡片渲染" || \
-        fail "E3 缺少 Compaction 内置卡片渲染"
-    rm -f "$HTML_E"
-    rm -r "$COMPACTION_ROOT"
-else
-    echo "  ⚠️ 跳过 Group E：没有找到含 compaction 的 session 文件"
-fi
+HTML_E=$(mktemp -t export_ci_E).html
+ION_SESSION_DIR="$COMPACTION_ROOT" \
+    "$ION_BIN" --export "$HTML_E" --session compaction_export 2>&1 | grep -q "Exported" && \
+    pass "E1 export 确定性 compaction session" || fail "E1 compaction session export 失败"
+DATA_E=$(decode_session_data "$HTML_E" 2>/dev/null)
+TIMELINE_COMPACTION=$(echo "$DATA_E" | jq '[.timelineEntries[] | select(.type=="compaction")] | length')
+BODY_COMPACTION=$(echo "$DATA_E" | jq '[.entries[] | select(.type=="compaction")] | length')
+[ "$TIMELINE_COMPACTION" -eq 1 ] && [ "$TIMELINE_COMPACTION" -eq "$BODY_COMPACTION" ] && \
+    pass "E2 Compaction 在 Timeline 与正文一一对应（$BODY_COMPACTION 条）" || \
+    fail "E2 Compaction Timeline/正文展示不一致"
+COMPACTION_META=$(echo "$DATA_E" | jq -r '.timelineEntries[] | select(.type=="compaction") | .ionMeta.displayType')
+[ "$COMPACTION_META" = "Compaction" ] && \
+    pass "E3 Compaction 使用独立流程语义" || \
+    fail "E3 Compaction ionMeta 缺失"
+grep -q "entry.type === 'compaction'" "$HTML_E" && \
+    pass "E4 Compaction 使用独立内置卡片渲染" || \
+    fail "E4 缺少 Compaction 内置卡片渲染"
+rm -f "$HTML_E"
+rm -r "$COMPACTION_ROOT"
 
 # ═════════════════════════════════════════════════════════
 # Group F: 分支 session → 只导出 active branch + 分叉记录
@@ -292,7 +335,7 @@ apply_branch_fixture() {
         '{"type":"message","id":"old-4","parentId":"old-3","timestamp":"2026-08-08T08:00:04Z","message":{"Assistant":{"role":"assistant","content":[{"Text":{"text":"abandoned"}}]}}}' \
         '{"type":"leaf_pointer","id":"lp-1","parentId":null,"timestamp":"2026-08-08T08:00:05Z","leafId":"m2"}' \
         '{"type":"message","id":"m5","parentId":"m2","timestamp":"2026-08-08T08:00:06Z","message":{"User":{"role":"user","content":[{"Text":{"text":"active branch"}}]}}}' \
-        '{"type":"turn_summary","id":"ts-1","parentId":null,"timestamp":"2026-08-08T08:00:07Z","userEntryId":"m5","summary":"active summary"}' \
+        '{"type":"custom","id":"snap-1","parentId":"m5","timestamp":"2026-08-08T08:00:07Z","customType":"step-snapshot","data":{"baselineTreeHash":"tree0","snapshotTreeHash":"tree1","turnIndex":1,"diff":{"added":[],"modified":[],"deleted":[]}}}' \
         '{"type":"custom_message","id":"hook-1","parentId":null,"timestamp":"2026-08-08T08:00:08Z","customType":"hook_event","content":"active hook","display":true}' \
         '{"type":"custom_message","id":"old-note","parentId":"old-4","timestamp":"2026-08-08T08:00:09Z","customType":"diagnostics","content":"old branch detail","display":true}' \
         '{"type":"branch_summary","id":"bs-1","parentId":"old-4","timestamp":"2026-08-08T08:00:10Z","fromId":"old-4","summary":"abandoned branch"}' \
@@ -331,6 +374,79 @@ rm -f "$HTML_F"
 rm -r "$BRANCH_ROOT"
 
 # ═════════════════════════════════════════════════════════
+# Group G: 完整流程语义（LLM → Tool → Hook → ToolResult → Custom）
+# ═════════════════════════════════════════════════════════
+echo ""
+echo "── Group G: LLM / Tool / Custom / Extension 流程语义 ──"
+
+FLOW_ROOT=$(mktemp -d)
+mkdir -p "$FLOW_ROOT/exact"
+FLOW_SESSION="$FLOW_ROOT/exact/session.jsonl"
+cp "$PROJECT_DIR/tests/fixtures/export/flow_semantics/session.jsonl" "$FLOW_SESSION"
+
+HTML_G=$(mktemp -t export_ci_G).html
+ION_SESSION_DIR="$FLOW_ROOT" \
+    "$ION_BIN" --export "$HTML_G" --session flow_semantics 2>&1 | grep -q "Exported" && \
+    pass "G1 完整流程 fixture 导出成功" || fail "G1 完整流程 fixture 导出失败"
+DATA_G=$(decode_session_data "$HTML_G" 2>/dev/null)
+echo "$DATA_G" | jq -e '
+    .flowSummary.llmCalls == 2 and
+    .flowSummary.toolCalls == 1 and
+    .flowSummary.toolResults == 1 and
+    .flowSummary.customEntries == 4 and
+    .flowSummary.contextInjections == 1
+' >/dev/null && pass "G2 Flow Summary 统计 LLM/Tool/Custom/注入" || fail "G2 Flow Summary 计数错误"
+echo "$DATA_G" | jq -e '
+    .flowSummary.typeInventory.supported.entryTypes == 17 and
+    .flowSummary.typeInventory.supported.builtInCustomTypes == 25 and
+    (.flowSummary.typeInventory.supported.entryTypeNames | length) == 17 and
+    (.flowSummary.typeInventory.supported.builtInCustomTypeNames | length) == 25 and
+    .flowSummary.typeInventory.current.rawEntryTypes == 3 and
+    .flowSummary.typeInventory.current.visibleTypes == 7 and
+    .flowSummary.typeInventory.current.messageRoles == 4 and
+    .flowSummary.typeInventory.current.customTypes == 4 and
+    .flowSummary.typeInventory.current.builtInCustomTypes == 3 and
+    .flowSummary.typeInventory.current.extensionCustomTypes == 1 and
+    .flowSummary.typeInventory.current.unknownCustomTypes == 0 and
+    .flowSummary.typeInventory.current.extensions == 4
+' >/dev/null && pass "G8 类型目录区分 ION 支持总数与当前会话实际类型" || fail "G8 类型目录统计错误"
+echo "$DATA_G" | jq -e '
+    .timelineEntries[] | select(.id=="fh1") |
+    .ionMeta.displayType=="Hook" and
+    .ionMeta.source.name=="hooks" and
+    .ionMeta.source.confidence=="recorded" and
+    .ionMeta.audience.llmContext=="not_in_context"
+' >/dev/null && pass "G3 Hook 明确标记为旁路审计而非 ToolResult" || fail "G3 Hook 语义错误"
+echo "$DATA_G" | jq -e '
+    .timelineEntries[] | select(.id=="fc1") |
+    .ionMeta.displayType=="Diagnostics" and
+    .ionMeta.source.name=="lsp" and
+    .ionMeta.audience.llmContext=="input"
+' >/dev/null && pass "G4 LSP Custom 标记来源且进入 LLM 上下文" || fail "G4 LSP Custom 语义错误"
+echo "$DATA_G" | jq -e '
+    .timelineEntries[] | select(.id=="fw1") |
+    .ionMeta.displayType=="Custom" and
+    .ionMeta.customClass=="extension" and
+    .ionMeta.source.name=="weather" and
+    .ionMeta.audience.liveUi==false
+' >/dev/null && pass "G5 运行时 Extension Custom 统一命名且保留精确来源" || fail "G5 运行时 Custom 语义错误"
+SOURCE_G=$(echo "$DATA_G" | jq '.sourceEntries | length')
+[ "$SOURCE_G" -eq 8 ] && \
+    echo "$DATA_G" | jq -e '.sourceEntries[-1].customType=="step-snapshot"' >/dev/null && \
+    pass "G6 sourceEntries 保留完整正文原始穿插顺序" || \
+    fail "G6 sourceEntries 未保留完整有序数据"
+grep -q 'builtin:' "$HTML_G" && \
+    grep -q 'sourceConfidence' "$PROJECT_DIR/docs/tasks/fix-export-fold-spec.md" && \
+    grep -q 'Current types' "$HTML_G" && \
+    grep -q 'ION catalog' "$HTML_G" && \
+    grep -q 'live UI · hidden' "$HTML_G" && \
+    pass "G7 内置 Custom 筛选与来源/受众 UI 已打包" || \
+    fail "G7 流程语义 UI 缺失"
+
+rm -f "$HTML_G"
+rm -r "$FLOW_ROOT"
+
+# ═════════════════════════════════════════════════════════
 # Group D: --export + prompt → tools 面板应有内容
 # ═════════════════════════════════════════════════════════
 echo ""
@@ -341,8 +457,9 @@ HTML_D="$WORKDIR_D/with_tools.html"
 
 cd "$WORKDIR_D"
 # 用 FauxProvider 跑一次对话 + 同时 export
+ION_GRACEFUL_DRAIN_MS=50 \
 ION_FAUX_REPLY="test response for export" \
-    "$ION_BIN" --export "$HTML_D" -p "hello" 2>&1 >/dev/null || true
+    "$ION_BIN" --offline --no-extensions --export "$HTML_D" -p "hello" 2>&1 >/dev/null || true
 
 if [ -f "$HTML_D" ]; then
     DATA_D=$(decode_session_data "$HTML_D" 2>/dev/null)
@@ -381,17 +498,37 @@ WORKDIR_C=$(mktemp -d)
 HTML_C="$WORKDIR_C/empty.html"
 
 # C1: 不存在的 session → 应报错
-ERR=$("$ION_BIN" --export "$HTML_C" --session "sess_definitely_does_not_exist_xyz" 2>&1)
-if echo "$ERR" | grep -qi "not found\|error\|失败"; then
-    pass "C1 不存在的 session 报错（不静默成功）"
+"$ION_BIN" --export "$HTML_C" --session "sess_definitely_does_not_exist_xyz" >"$WORKDIR_C/missing.log" 2>&1
+MISSING_STATUS=$?
+ERR=$(cat "$WORKDIR_C/missing.log")
+if [ "$MISSING_STATUS" -ne 0 ] && echo "$ERR" | grep -qi "not found\|error\|失败"; then
+    pass "C1 不存在的 session 报错并返回非零退出码"
 else
-    fail "C1 不存在的 session 没有报错：$ERR"
+    fail "C1 不存在的 session 退出状态错误（status=$MISSING_STATUS）：$ERR"
 fi
 
 # C2: 没指定 --session（用 last_session 或当前 cwd）→ 应该有合理行为
 "$ION_BIN" --export "$WORKDIR_C/auto.html" 2>&1 | grep -q "Exported" && \
     pass "C2 不带 --session 时自动选最近 session" || \
     echo "  ⚠️ C2 跳过（可能 last_session 不可用）"
+
+# C3: JSONL 中任意损坏行必须带文件和行号失败，禁止静默丢 Entry。
+BROKEN_ROOT=$(mktemp -d)
+mkdir -p "$BROKEN_ROOT/exact"
+printf '%s\n' \
+    '{"type":"session","version":3,"id":"broken_export","timestamp":"2026-08-08T11:00:00Z","cwd":"/test"}' \
+    '{"type":"message","id":"ok","parentId":"broken_export","message":{"User":{"role":"user","content":[]}}}' \
+    '{this line is broken json' \
+    > "$BROKEN_ROOT/exact/session.jsonl"
+ION_SESSION_DIR="$BROKEN_ROOT" \
+    "$ION_BIN" --export "$WORKDIR_C/broken.html" --session broken_export >"$WORKDIR_C/broken.log" 2>&1
+BROKEN_STATUS=$?
+if [ "$BROKEN_STATUS" -ne 0 ] && grep -q 'invalid session JSONL.*:3:' "$WORKDIR_C/broken.log"; then
+    pass "C3 损坏 JSONL 带行号失败，不静默丢 Entry"
+else
+    fail "C3 损坏 JSONL 处理错误（status=$BROKEN_STATUS）"
+fi
+rm -rf "$BROKEN_ROOT"
 
 rm -rf "$WORKDIR_C"
 

@@ -3,7 +3,7 @@
 # Rollback Impact CI — 回滚对 Context / Message / Compaction 的影响
 #
 # 前置修复（已合入）：
-#   Bug 1: worker 启动时 ensure_session_header（防 turn_summary 抢占第一行）
+#   Bug 1: worker 启动时 ensure_session_header（确保消息/custom 都有合法根）
 #   Bug 2: create_worker 后写 SessionIndex（让 --resume/--rollback 能找到 session）
 #   Bug 3: apply_session_tree_ops 用 session 真实 cwd（不是 CLI 进程 cwd）
 #
@@ -45,7 +45,7 @@ except: print(0)
 }
 
 start_serve() {
-    lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null || true
+    lsof -ti "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" 2>/dev/null | xargs kill 2>/dev/null || true
     sleep 1
     rm -f ~/.ion/host.sock ~/.ion/host.pid 2>/dev/null
     ION_FAUX_REPLY="ok" ION_FAUX_REPEAT=1 "$ION_BIN" serve >/tmp/ion_rb_serve.log 2>&1 &
@@ -267,7 +267,7 @@ echo "── 结果 ──"
 echo "  PASS=$PASS  FAIL=$FAIL  SKIP=$SKIP"
 echo ""
 echo "已修复的 bug（本 CI 前置条件）："
-echo "  Bug 1: ensure_session_header（防 turn_summary 抢占第一行）"
+echo "  Bug 1: ensure_session_header（确保消息/custom 都有合法根）"
 echo "  Bug 2: create_worker 写 SessionIndex"
 echo "  Bug 3: apply_session_tree_ops 用 session 真实 cwd"
 echo ""

@@ -1203,14 +1203,21 @@ fn read_piped_stdin() -> Option<String> {
     std::thread::spawn(move || {
         let mut buf = String::new();
         match std::io::stdin().lock().read_to_string(&mut buf) {
-            Ok(0) | Err(_) => { let _ = tx.send(None); }
+            Ok(0) | Err(_) => {
+                let _ = tx.send(None);
+            }
             Ok(_) => {
                 let trimmed = buf.trim().to_string();
-                let _ = tx.send(if trimmed.is_empty() { None } else { Some(trimmed) });
+                let _ = tx.send(if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                });
             }
         }
     });
-    rx.recv_timeout(std::time::Duration::from_millis(500)).unwrap_or(None)
+    rx.recv_timeout(std::time::Duration::from_millis(500))
+        .unwrap_or(None)
 }
 
 // ---------------------------------------------------------------------------
@@ -1618,9 +1625,8 @@ async fn cmd_run(
         std::sync::Mutex::new(None::<ion::goal_supervisor_extension::GoalState>),
     );
     // Resolve fast-tier model for goal plan generation (avoids reasoning token waste).
-    let fast_model: Option<ion_provider::types::Model> = {
-        ion::config::IonConfig::load().resolve_tier_model("fast")
-    };
+    let fast_model: Option<ion_provider::types::Model> =
+        { ion::config::IonConfig::load().resolve_tier_model("fast") };
 
     tools.register(Box::new(
         ion::goal_supervisor_extension::GoalSetTool::with_llm(
@@ -1845,56 +1851,59 @@ async fn cmd_run(
     // McpManager 用 Arc 持有但不在启动时 connect_all()。
     // McpTool::execute 内部会检查连接状态，未连接时自动触发 connect。
     let mcp_config = ion::config::IonConfig::load().mcp_servers;
-    let mcp_manager: Option<std::sync::Arc<ion::mcp::McpManager>> = if !mcp_config.is_empty() && !eff.no_extensions {
-        let mgr = std::sync::Arc::new(ion::mcp::McpManager::new(mcp_config));
-        tracing::info!(
-            "[mcp] {} server(s) configured (LAZY — will connect on first tool use)",
-            mgr.server_count()
-        );
-        // 注册 MCP 工具为「占位」—— McpTool::execute 内部负责 lazy connect
-        // 先注册已知的工具名（从配置解析），实际连接在第一次调用时发生
-        // 为了不改 McpTool 签名，我们在后台 spawn 一个非阻塞的 connect：
-        // 用短超时（10s 而不是 30s），失败不阻塞主流程
-        let mgr_clone = std::sync::Arc::clone(&mgr);
-        tokio::spawn(async move {
-            tracing::info!("[mcp] background connect starting (non-blocking)...");
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(10),  // ★ 10s 而不是 30s
-                mgr_clone.connect_all(),
-            ).await;
-            tracing::info!("[mcp] background connect done: {} connected", mgr_clone.connected_count().await);
-        });
-        // 不等 MCP 连接完成就继续 — agent 可以用内置工具先跑
-        // MCP 工具会在后台连接完成后可用（或第一次调用时触发连接）
-        // 给一点时间让后台连接（500ms — 足够本地 npx 启动，不够也不阻塞）
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_millis(500),
-            async {
+    let mcp_manager: Option<std::sync::Arc<ion::mcp::McpManager>> =
+        if !mcp_config.is_empty() && !eff.no_extensions {
+            let mgr = std::sync::Arc::new(ion::mcp::McpManager::new(mcp_config));
+            tracing::info!(
+                "[mcp] {} server(s) configured (LAZY — will connect on first tool use)",
+                mgr.server_count()
+            );
+            // 注册 MCP 工具为「占位」—— McpTool::execute 内部负责 lazy connect
+            // 先注册已知的工具名（从配置解析），实际连接在第一次调用时发生
+            // 为了不改 McpTool 签名，我们在后台 spawn 一个非阻塞的 connect：
+            // 用短超时（10s 而不是 30s），失败不阻塞主流程
+            let mgr_clone = std::sync::Arc::clone(&mgr);
+            tokio::spawn(async move {
+                tracing::info!("[mcp] background connect starting (non-blocking)...");
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(10), // ★ 10s 而不是 30s
+                    mgr_clone.connect_all(),
+                )
+                .await;
+                tracing::info!(
+                    "[mcp] background connect done: {} connected",
+                    mgr_clone.connected_count().await
+                );
+            });
+            // 不等 MCP 连接完成就继续 — agent 可以用内置工具先跑
+            // MCP 工具会在后台连接完成后可用（或第一次调用时触发连接）
+            // 给一点时间让后台连接（500ms — 足够本地 npx 启动，不够也不阻塞）
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(500), async {
                 // 等 MCP 工具注册（非阻塞，超时就继续）
                 let tools_list = mgr.all_discovered_tools().await;
                 for tool in &tools_list {
                     // 无法注册到已 move 的 tools — 这里只是探测
                 }
+            })
+            .await;
+            // 直接尝试注册已发现的 MCP 工具（可能为空，如果 MCP 还没连上）
+            let mcp_tools = mgr.all_discovered_tools().await;
+            for tool in &mcp_tools {
+                tools.register(Box::new(ion::mcp::tool::McpTool::new(
+                    tool,
+                    std::sync::Arc::clone(&mgr),
+                )));
             }
-        ).await;
-        // 直接尝试注册已发现的 MCP 工具（可能为空，如果 MCP 还没连上）
-        let mcp_tools = mgr.all_discovered_tools().await;
-        for tool in &mcp_tools {
-            tools.register(Box::new(ion::mcp::tool::McpTool::new(
-                tool,
-                std::sync::Arc::clone(&mgr),
-            )));
-        }
-        if !mcp_tools.is_empty() {
-            tracing::info!("[mcp] {} tools registered", mcp_tools.len());
+            if !mcp_tools.is_empty() {
+                tracing::info!("[mcp] {} tools registered", mcp_tools.len());
+            } else {
+                tracing::info!("[mcp] no tools yet (will connect in background)");
+            }
+            mgr.spawn_reconnect_monitor();
+            Some(mgr)
         } else {
-            tracing::info!("[mcp] no tools yet (will connect in background)");
-        }
-        mgr.spawn_reconnect_monitor();
-        Some(mgr)
-    } else {
-        None
-    };
+            None
+        };
 
     // Check if plan tools are loaded (before tools is moved into Agent)
     let has_plan_tools = tools.get("plan_enter").is_some();
@@ -1987,9 +1996,8 @@ async fn cmd_run(
     let mut agent =
         Agent::new(registry, model, Some(sys_prompt), tools, config).with_runtime(Box::new(rt));
 
-    // ── 注入 session_cwd + session_id（让场景1 也写 turn_summary + 更新 SessionIndex 统计）──
-    // 之前 cmd_run 不设这俩，导致场景1 的 turn_summary 全丢、索引统计字段全 0。
-    // session_cwd 让 persist_turn_summary/persist_compaction 能落盘；
+    // ── 注入 session_cwd + session_id（让场景1写生命周期 entry + 更新 SessionIndex）──
+    // session_cwd 让 compaction / step-snapshot 等 entry 能落盘；
     // session_id 让 increment_turn_stats/increment_compress_count 能更新索引。
     let run_cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
@@ -2044,9 +2052,7 @@ async fn cmd_run(
     // Persist message checkpoints first so a rejected call is written in the
     // same order and branch as the provider conversation:
     // User -> Assistant(tool call) -> hook_event -> ToolResult(error).
-    ext_reg.register(Box::new(CmdRunSessionPersistenceExtension::new(
-        session_id,
-    )));
+    ext_reg.register(Box::new(CmdRunSessionPersistenceExtension::new(session_id)));
 
     // ── 注入 ctx.fs 统一文件访问能力（RuntimeFileSystem）──
     // 场景 1（直接执行）：用 LocalRuntime（本地 fs）+ allowed_roots 白名单。
@@ -2080,11 +2086,10 @@ async fn cmd_run(
     // 让 background bash 完成通知能注入对话历史。之前 cmd_run 不设这个，
     // spawn_watcher 完成时 tx=None 直接丢弃 → bash_result 永远不进 session.jsonl。
     // 对齐 worker_rpc.rs:828/927/1113 的做法。
-    let (cmd_run_follow_up_tx, cmd_run_follow_up_rx) =
-        tokio::sync::mpsc::unbounded_channel::<(
-            ion_provider::Message,
-            ion::agent::agent_loop::DeliverAs,
-        )>();
+    let (cmd_run_follow_up_tx, cmd_run_follow_up_rx) = tokio::sync::mpsc::unbounded_channel::<(
+        ion_provider::Message,
+        ion::agent::agent_loop::DeliverAs,
+    )>();
 
     // ── 注册 BashExtension（让 bash 工具的 guide + 后台进程摘要通过 on_system_prompt
     //    自动注入，跟 memory/plan/rules_engine 等扩展一致，而非内核硬编码调用）──
@@ -2146,7 +2151,9 @@ async fn cmd_run(
         let mut mem_ext = ion::agent::memory::MemoryExtension::new(storage_ctx.clone());
         mem_ext.store = std::sync::Arc::clone(&cmd_run_shared_memory_store);
         ext_reg.register(Box::new(mem_ext));
-        tracing::info!("[extension] memory (MemoryExtension) registered — <memory_outline> XML injection enabled");
+        tracing::info!(
+            "[extension] memory (MemoryExtension) registered — <memory_outline> XML injection enabled"
+        );
     }
 
     // Auto-register PlanExtension if plan_enter tool was loaded from a WASM plugin
@@ -2237,7 +2244,9 @@ async fn cmd_run(
         agent.register_tool(Box::new(ion::agent::memory::MemorySearchTool {
             store: std::sync::Arc::clone(&cmd_run_shared_memory_store),
         }));
-        tracing::info!("[tools] memory_save + memory_search registered (shared store with MemoryExtension)");
+        tracing::info!(
+            "[tools] memory_save + memory_search registered (shared store with MemoryExtension)"
+        );
     }
 
     tracing::info!("Running agent...");
@@ -2589,14 +2598,20 @@ async fn cmd_run(
                 .iter()
                 .find_map(|msg| match msg {
                     Message::User(u) => {
-                        let text = u.content.iter()
+                        let text = u
+                            .content
+                            .iter()
                             .filter_map(|b| match b {
-                                ion::agent::messages::ContentBlock::Text(t) => Some(t.text.as_str()),
+                                ion::agent::messages::ContentBlock::Text(t) => {
+                                    Some(t.text.as_str())
+                                }
                                 _ => None,
                             })
                             .collect::<Vec<_>>()
                             .join(" ");
-                        if text.is_empty() { None } else {
+                        if text.is_empty() {
+                            None
+                        } else {
                             let t = text.trim();
                             let first_line = t.lines().next().unwrap_or(t);
                             let first_sentence = first_line
@@ -2604,8 +2619,9 @@ async fn cmd_run(
                                 .next()
                                 .unwrap_or(first_line)
                                 .trim();
-                            if first_sentence.is_empty() { None }
-                            else if first_sentence.chars().count() > 60 {
+                            if first_sentence.is_empty() {
+                                None
+                            } else if first_sentence.chars().count() > 60 {
                                 Some(first_sentence.chars().take(57).collect::<String>() + "...")
                             } else {
                                 Some(first_sentence.to_string())
@@ -2649,7 +2665,8 @@ async fn cmd_run(
                 obj.insert("timestamp".into(), serde_json::json!(now_iso));
             }
         } else {
-            let last_id = entries.iter()
+            let last_id = entries
+                .iter()
                 .filter_map(|e| e.get("id").and_then(|v| v.as_str()))
                 .last()
                 .unwrap_or(session_id)
@@ -2675,11 +2692,15 @@ async fn cmd_run(
             .open(&path)
         {
             for (i, e) in entries.iter().enumerate() {
-                if i > 0 { let _ = writeln!(f); }
+                if i > 0 {
+                    let _ = writeln!(f);
+                }
                 let _ = write!(f, "{}", serde_json::to_string(e).unwrap_or_default());
             }
         }
-        tracing::info!("[cmd_run] wrote session_name custom entry to session.jsonl (display=false)");
+        tracing::info!(
+            "[cmd_run] wrote session_name custom entry to session.jsonl (display=false)"
+        );
     }
 
     // Print summary (verbose or schema mode)
@@ -2738,7 +2759,10 @@ async fn cmd_run(
             Some(sys_prompt_snapshot.clone()),
         ) {
             Ok(()) => println!("Exported to {export_path}"),
-            Err(e) => eprintln!("Export failed: {e}"),
+            Err(e) => {
+                eprintln!("Export failed: {e}");
+                std::process::exit(1);
+            }
         }
     }
 }
@@ -3254,14 +3278,18 @@ fn apply_session_tree_ops(cli: &Cli, session_id: &str) {
                 );
                 eprintln!("   (快照层独立于压缩，代码可以恢复；但消息无法回滚到压缩点之前)");
                 // 只走代码恢复，不走消息回滚
-                let target_turn_id: Option<String> =
-                    ion::session_jsonl::find_turn_id_for_entry(&cwd, rollback_to);
-                match target_turn_id {
-                    Some(turn_id) => {
+                let target_snapshot =
+                    ion::session_jsonl::resolve_step_snapshot_from_file(&cwd, rollback_to);
+                match target_snapshot {
+                    Some(snapshot) => {
                         let pk = ion::file_snapshot::project_key(&cwd);
                         let store = ion::file_snapshot::SnapshotStore::new(&pk);
-                        let result =
-                            ion::file_snapshot::restore::restore_code_to_turn(&store, &turn_id);
+                        let result = ion::file_snapshot::restore::restore_to_tree(
+                            &store,
+                            &snapshot.tree_hash,
+                            &cwd,
+                            false,
+                        );
                         eprintln!(
                             "[restore-code] restored {} files (deleted {}, skipped {})",
                             result.summary.restored, result.summary.deleted, result.summary.skipped
@@ -3270,7 +3298,7 @@ fn apply_session_tree_ops(cli: &Cli, session_id: &str) {
                     }
                     None => {
                         eprintln!(
-                            "[restore-code] ⚠️  cannot find turnId for entry '{}' — skipping code restore",
+                            "[restore-code] ⚠️  cannot find step-snapshot for entry '{}' — skipping code restore",
                             rollback_to
                         );
                     }
@@ -3293,72 +3321,57 @@ fn apply_session_tree_ops(cli: &Cli, session_id: &str) {
 
         // --restore-code：先恢复代码文件，再回滚消息
         if cli.restore_code {
-            // 找到 rollback_to 所属的 turn_summary → 得到 turnId（不靠 entryRange，用位置回溯）
-            let target_turn_id: Option<String> =
-                ion::session_jsonl::find_turn_id_for_entry(&cwd, rollback_to);
+            let target_snapshot =
+                ion::session_jsonl::resolve_step_snapshot_from_file(&cwd, rollback_to);
 
-            match target_turn_id {
-                Some(turn_id) => {
+            match target_snapshot {
+                Some(snapshot) => {
                     let pk = ion::file_snapshot::project_key(&cwd);
                     let store = ion::file_snapshot::SnapshotStore::new(&pk);
-                    // XL3: --restore-mode full 走 restore_to_tree（完整磁盘状态），否则走 delta
+                    // full 模式或目标落在某次快照之前时，直接使用 JSONL 里的 tree hash。
+                    // 后者不能用 tool turn ID 表达，正是 pi PR #8 修复的 ID 错配场景。
                     let is_full = cli.restore_mode.as_deref() == Some("full");
-                    if is_full {
-                        // full mode：按 turn_id 找 tree_hash → restore_to_tree
-                        match store.find_tree_hash_by_turn_id(&turn_id) {
-                            Some(tree_hash) => {
-                                let result = ion::file_snapshot::restore::restore_to_tree(
-                                    &store, &tree_hash, &cwd, false,
-                                );
-                                eprintln!(
-                                    "[restore-code:full] restored {} files (deleted {}, skipped {})",
-                                    result.summary.restored,
-                                    result.summary.deleted,
-                                    result.summary.skipped
-                                );
-                                eprintln!(
-                                    "[restore-code:full] restore_point: {}",
-                                    result.restore_point_id
-                                );
-                                // 检查是否有截断跳过
-                                if result.restored_files.iter().any(|f| {
-                                    f.reason.as_deref() == Some("scan_truncated_skip_delete")
-                                }) {
-                                    eprintln!(
-                                        "[restore-code:full] ⚠️  scan truncated — deletion phase skipped to avoid data loss"
-                                    );
-                                }
-                            }
-                            None => {
-                                eprintln!(
-                                    "[restore-code:full] ⚠️  cannot find tree for turn '{}' — falling back to delta mode",
-                                    turn_id
-                                );
-                                let result = ion::file_snapshot::restore::restore_code_to_turn(
-                                    &store, &turn_id,
-                                );
-                                eprintln!(
-                                    "[restore-code:delta] restored {} files (deleted {}, skipped {})",
-                                    result.summary.restored,
-                                    result.summary.deleted,
-                                    result.summary.skipped
-                                );
-                            }
+                    let restored_with_delta = if !is_full && !snapshot.uses_baseline {
+                        if let Some(turn_id) = snapshot.tool_snapshot_turn_id.as_deref() {
+                            // delta mode（默认）：只恢复被工具快照追踪的文件改动
+                            let result =
+                                ion::file_snapshot::restore::restore_code_to_turn(&store, turn_id);
+                            eprintln!(
+                                "[restore-code] restored {} files (deleted {}, skipped {})",
+                                result.summary.restored,
+                                result.summary.deleted,
+                                result.summary.skipped
+                            );
+                            eprintln!(
+                                "[restore-code] restore_point: {}",
+                                result.restore_point_id
+                            );
+                            true
+                        } else {
+                            false
                         }
                     } else {
-                        // delta mode（默认）：只恢复被快照追踪的文件改动
-                        let result =
-                            ion::file_snapshot::restore::restore_code_to_turn(&store, &turn_id);
-                        eprintln!(
-                            "[restore-code] restored {} files (deleted {}, skipped {})",
-                            result.summary.restored, result.summary.deleted, result.summary.skipped
+                        false
+                    };
+                    if !restored_with_delta {
+                        let result = ion::file_snapshot::restore::restore_to_tree(
+                            &store,
+                            &snapshot.tree_hash,
+                            &cwd,
+                            false,
                         );
-                        eprintln!("[restore-code] restore_point: {}", result.restore_point_id);
+                        eprintln!(
+                            "[restore-code:tree] restored {} files (deleted {}, skipped {})",
+                            result.summary.restored,
+                            result.summary.deleted,
+                            result.summary.skipped
+                        );
+                        eprintln!("[restore-code:tree] restore_point: {}", result.restore_point_id);
                     }
                 }
                 None => {
                     eprintln!(
-                        "[restore-code] ⚠️  cannot find turnId for entry '{}' — skipping code restore",
+                        "[restore-code] ⚠️  cannot find step-snapshot for entry '{}' — skipping code restore",
                         rollback_to
                     );
                 }
@@ -3718,7 +3731,6 @@ pub(crate) fn color_ansi(name: &Option<String>) -> &'static str {
     }
 }
 
-
 /// CLI handler for `ion complete` — quick-test query_tier helper.
 /// Bypasses session/agent flow, directly calls IonConfig::query_tier.
 async fn cmd_complete(tier: &str, system: Option<&str>, json: bool, message: &str) {
@@ -3798,8 +3810,15 @@ async fn cmd_list_agents() {
         };
         println!(
             "{} {:<12} {:<8}  {}{}",
-            name_display, tier, tool_count, a.description,
-            if suffix.is_empty() { String::new() } else { format!(" ({suffix})") }
+            name_display,
+            tier,
+            tool_count,
+            a.description,
+            if suffix.is_empty() {
+                String::new()
+            } else {
+                format!(" ({suffix})")
+            }
         );
     }
 
@@ -4230,13 +4249,19 @@ async fn main() {
 
     // FauxProvider CLI flags → env vars (so build_registry_and_model picks them up)
     if let Some(ref s) = cli.faux_script {
-        unsafe { std::env::set_var("ION_FAUX_SCRIPT", s); }
+        unsafe {
+            std::env::set_var("ION_FAUX_SCRIPT", s);
+        }
     }
     if let Some(ref r) = cli.faux_reply {
-        unsafe { std::env::set_var("ION_FAUX_REPLY", r); }
+        unsafe {
+            std::env::set_var("ION_FAUX_REPLY", r);
+        }
     }
     if let Some(rep) = cli.faux_repeat {
-        unsafe { std::env::set_var("ION_FAUX_REPEAT", rep.to_string()); }
+        unsafe {
+            std::env::set_var("ION_FAUX_REPEAT", rep.to_string());
+        }
     }
 
     // --local / --remote override: set env var before any config load
@@ -4309,13 +4334,17 @@ async fn main() {
             };
             if session_id.is_empty() {
                 eprintln!("No session to export. Run a prompt first, or use --session <id>.");
+                std::process::exit(1);
             } else {
                 match ion::export::export_session_rich(
                     &session_id,
                     std::path::Path::new(export_path),
                 ) {
                     Ok(()) => println!("Exported to {export_path}"),
-                    Err(e) => eprintln!("Export failed: {e}"),
+                    Err(e) => {
+                        eprintln!("Export failed: {e}");
+                        std::process::exit(1);
+                    }
                 }
             }
             return;
@@ -4333,12 +4362,7 @@ async fn main() {
         } else {
             effective_message
         };
-        cmd_host(
-            &msg,
-            cli.agent.as_deref(),
-            export_after_run.as_deref(),
-        )
-        .await;
+        cmd_host(&msg, cli.agent.as_deref(), export_after_run.as_deref()).await;
         return;
     }
 
@@ -4450,7 +4474,12 @@ async fn main() {
             replay,
         }) => cmd_subscribe(session.as_deref(), extension.as_deref(), *ui, *replay).await,
         Some(Commands::ListAgents) => cmd_list_agents().await,
-        Some(Commands::Query { tier, system, json, message }) => {
+        Some(Commands::Query {
+            tier,
+            system,
+            json,
+            message,
+        }) => {
             cmd_complete(tier, system.as_deref(), *json, message).await;
         }
         Some(Commands::ListModels { search }) => cmd_list_models(search).await,
@@ -4606,32 +4635,10 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
     // post_init（释放 lock 后调，让单例能 create_worker spawn 系统级 agent）
     ion::worker_registry::WorkerRegistry::post_init_singletons(&registry).await;
 
-    // ── Host 级 MCP 管理器（方案 C：host 持有连接，所有 Worker 代理调用）──
-    {
-        let ion_cfg = ion::config::IonConfig::load();
-        let mcp_config = ion_cfg.mcp_servers.clone();
-        if !mcp_config.is_empty() {
-            let mcp_manager = std::sync::Arc::new(ion::mcp::McpManager::new(mcp_config));
-            eprintln!(
-                "[mcp] host connecting {} server(s)...",
-                mcp_manager.server_count()
-            );
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(30),
-                mcp_manager.connect_all(),
-            )
-            .await;
-            eprintln!(
-                "[mcp] {} server(s) connected",
-                mcp_manager.connected_count().await
-            );
-            mcp_manager.spawn_reconnect_monitor();
-            registry.lock().await.set_mcp_manager(mcp_manager);
-        }
-    }
-
     // ── Host 单例检查 + Unix socket 启动 ──
     // PID 文件防重复启动；Unix socket 让外部 `ion rpc` 能连进来。
+    // ⚠️ socket bind 必须在 MCP connect 之前——否则 MCP 30s 超时会阻塞 socket 创建，
+    // 导致 CI 并发时 host 起不来（rpc 连不上）。
     if let Some(pid) = ion::paths::host_running() {
         eprintln!(
             "❌ Host already running (pid {pid}). Stop it first or use `ion rpc` to connect."
@@ -4655,6 +4662,35 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
     let pid_path = ion::paths::host_pid_path();
     let _ = std::fs::write(&pid_path, std::process::id().to_string());
     eprintln!("🔌 Host listening on Unix socket: {}", sock_path.display());
+
+    // ── Host 级 MCP 管理器（方案 C：host 持有连接，所有 Worker 代理调用）──
+    // 放 socket bind 之后异步连，不阻塞 host 启动（CI 并发友好）。
+    {
+        let ion_cfg = ion::config::IonConfig::load();
+        let mcp_config = ion_cfg.mcp_servers.clone();
+        if !mcp_config.is_empty() {
+            let mcp_manager = std::sync::Arc::new(ion::mcp::McpManager::new(mcp_config));
+            eprintln!(
+                "[mcp] host connecting {} server(s)...",
+                mcp_manager.server_count()
+            );
+            // 异步连，不阻塞 socket accept loop
+            let mcp_for_connect = std::sync::Arc::clone(&mcp_manager);
+            tokio::spawn(async move {
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    mcp_for_connect.connect_all(),
+                )
+                .await;
+                eprintln!(
+                    "[mcp] {} server(s) connected",
+                    mcp_for_connect.connected_count().await
+                );
+                mcp_for_connect.spawn_reconnect_monitor();
+            });
+            registry.lock().await.set_mcp_manager(mcp_manager);
+        }
+    }
 
     // 自动创建一个默认 build session，让首次 RPC 不用先 create_session（修复 #1）
     // 对齐 pi：pi 启动后默认有一个 SessionManager.create 出的 session
@@ -5239,7 +5275,8 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
             let mut changed = false;
             for record in reg.workers.values_mut() {
                 match record.status {
-                    ion::worker_registry::WorkerStatus::Dead | ion::worker_registry::WorkerStatus::Stale => {
+                    ion::worker_registry::WorkerStatus::Dead
+                    | ion::worker_registry::WorkerStatus::Stale => {
                         // 终态/僵尸，由后面 gc_workers 按时间清理，这里跳过
                     }
                     ion::worker_registry::WorkerStatus::Idle => {
@@ -5627,7 +5664,10 @@ async fn handle_manager_command_write(
         "reap_workers" | "gc_workers" => {
             // 手动清理 Dead + 超时 Stale worker，返回清理数量。
             // maxAgeSecs 控制 Stale 的清理年龄阈值（默认 600s = 10 分钟）；Dead 一律清。
-            let max_age = cmd.get("maxAgeSecs").and_then(|v| v.as_u64()).unwrap_or(600);
+            let max_age = cmd
+                .get("maxAgeSecs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(600);
             let n = reg.reap_workers(max_age);
             tracing::info!("[gc] reaped {} workers via RPC", n);
             Ok(serde_json::json!({"reaped": n}))
@@ -6102,7 +6142,10 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>, export_path: Opt
     if let Some(path) = export_path {
         match ion::export::export_session_rich(&entry.session_id, std::path::Path::new(path)) {
             Ok(()) => println!("Exported to {path}"),
-            Err(e) => eprintln!("Export failed: {e}"),
+            Err(e) => {
+                eprintln!("Export failed: {e}");
+                std::process::exit(1);
+            }
         }
     }
 }
@@ -6649,52 +6692,14 @@ impl Extension for SessionIndexExtension {
         if self.session_id.is_empty() {
             return Ok(());
         }
-        let total_input: u64 = ctx
-            .messages
-            .iter()
-            .filter_map(|m| match m {
-                ion::agent::messages::Message::Assistant(a) => Some(a.usage.input),
-                _ => None,
-            })
-            .sum();
-        let total_output: u64 = ctx
-            .messages
-            .iter()
-            .filter_map(|m| match m {
-                ion::agent::messages::Message::Assistant(a) => Some(a.usage.output),
-                _ => None,
-            })
-            .sum();
-        ion::session_index::SessionIndex::update(
+        // The message tree is a current snapshot. User/LLM/token/duration
+        // counters are incremented once by Agent::run/record_llm_stats.
+        ion::session_index::SessionIndex::sync_message_tree(
             &self.session_id,
             &self.model,
             &self.provider,
             "default",
-            None,
-            total_input,
-            total_output,
             ctx.messages.len() as u32,
-            ctx.messages
-                .iter()
-                .filter(|m| matches!(m, ion::agent::messages::Message::Assistant(_)))
-                .count() as u32,
-        );
-        // 增量统计新字段（cmd_run 路径走这里，不走 persist_turn_summary）：
-        // - user_prompt_count: 本轮 +1（on_turn_end 每 turn 一次）
-        // - llm_request_count: 本轮新增的 Assistant 数（delta，不是 sum）
-        // - total_duration_ms: TurnContext 无 duration，传 0（不影响其他字段）
-        // - error: stop_reason == "Error" 时 +1
-        let user_prompts = 1u32;
-        let llm_calls_delta = 1u32; // 每 turn 至少 1 次 LLM 调用（on_turn_end 粒度）
-        let is_error = ctx.stop_reason.as_deref() == Some("Error");
-        ion::session_index::SessionIndex::increment_turn_stats(
-            &self.session_id,
-            user_prompts,
-            llm_calls_delta,
-            0,
-            0,
-            0, // token 已由上面的 update 全量写入，这里不重复累加
-            is_error,
         );
         Ok(())
     }
@@ -7342,9 +7347,8 @@ pub fn build_env_info(cwd: &str) -> String {
     // 未提交的改动（过滤噪音后展示，与 Recently Modified 合并避免重复）
     // 噪音过滤：二进制/测试产物后缀对 LLM 无用，且容易占用大量行数
     const NOISE_SUFFIXES: &[&str] = &[
-        ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".bmp", ".webp",
-        ".mp4", ".mov", ".avi", ".mp3", ".wav",
-        ".zip", ".tar", ".gz", ".lock",
+        ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".bmp", ".webp", ".mp4", ".mov", ".avi",
+        ".mp3", ".wav", ".zip", ".tar", ".gz", ".lock",
     ];
     let is_noise = |path: &str| -> bool {
         let lower = path.to_lowercase();
@@ -7381,7 +7385,12 @@ pub fn build_env_info(cwd: &str) -> String {
                 } else {
                     String::new()
                 };
-                let display = filtered.iter().take(15).cloned().collect::<Vec<_>>().join("\n");
+                let display = filtered
+                    .iter()
+                    .take(15)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 info.push_str(&format!(
                     "\n### Workspace Changes\n```\n{display}{shown}\n```\n"
                 ));
@@ -7404,7 +7413,11 @@ fn epoch_days_to_ymd(days: i64) -> (i64, u32, u32) {
     let mut month = 1u32;
     let mut day = 1u32;
     while remaining > 0 {
-        let md = if month == 2 && is_leap(year) { 29 } else { month_days[(month - 1) as usize] };
+        let md = if month == 2 && is_leap(year) {
+            29
+        } else {
+            month_days[(month - 1) as usize]
+        };
         if remaining >= md as i64 {
             remaining -= md as i64;
             month += 1;

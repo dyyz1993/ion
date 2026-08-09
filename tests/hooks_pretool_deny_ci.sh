@@ -13,6 +13,21 @@ FAIL=0
 pass() { printf '  ✅ %s\n' "$1"; PASS=$((PASS + 1)); }
 fail() { printf '  ❌ %s\n' "$1"; FAIL=$((FAIL + 1)); }
 
+decode_session_data() {
+    python3 - "$1" <<'PYEOF'
+import base64
+import json
+import re
+import sys
+
+html = open(sys.argv[1]).read()
+match = re.search(r'<script id="session-data"[^>]*>([^<]+)</script>', html)
+if not match:
+    sys.exit(1)
+print(json.dumps(json.loads(base64.b64decode(match.group(1).strip()).decode("utf-8"))))
+PYEOF
+}
+
 TEST_ROOT="$(mktemp -d /tmp/ion-hooks-pretool-deny-XXXXXX)"
 TEST_HOME="$TEST_ROOT/home"
 TEST_PROJECT="$TEST_ROOT/project"
@@ -149,6 +164,19 @@ if [ -s "$HTML" ] && grep -q 'id="session-data"' "$HTML"; then
     pass "单文件 HTML 导出成功"
 else
     fail "单文件 HTML 导出成功"
+fi
+
+EXPORTED_DATA="$(decode_session_data "$HTML" 2>/dev/null)"
+if [ -n "$EXPORTED_DATA" ] && echo "$EXPORTED_DATA" | jq -e '
+  .flowSummary.typeInventory.supported.entryTypes == 18
+  and .flowSummary.typeInventory.supported.builtInCustomTypes == 24
+  and .flowSummary.typeInventory.current.builtInCustomTypes >= 1
+  and (.flowSummary.typeInventory.visibleTypes | any(.name == "builtin:Hook"))
+  and (.flowSummary.customTypes | any(.customType == "hook_event" and .source == "hooks"))
+' >/dev/null; then
+    pass "真实 Hook 会话进入 ION 类型目录并保留 Extension 来源"
+else
+    fail "真实 Hook 会话进入 ION 类型目录并保留 Extension 来源"
 fi
 
 printf '\nResult: %s passed, %s failed\n' "$PASS" "$FAIL"

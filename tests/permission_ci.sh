@@ -26,7 +26,7 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 
 # Resolve HOME-aware paths (do NOT hardcode /Users/xuyingzhou — breaks isolation).
-HOST_SOCK="$HOME/.ion/host.sock"
+HOST_SOCK="${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
 HOST_PID_FILE="$HOME/.ion/host.pid"
 HOST_LOG="/tmp/ion-ci-perm-host-${$}.log"
 LIB_LOG="/tmp/ion-ci-perm-lib-${$}.log"

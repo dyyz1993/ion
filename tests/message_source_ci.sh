@@ -38,8 +38,8 @@ echo "════════════════════════�
 cargo build --bin ion 2>/dev/null && pass "build" || { fail "build"; exit 1; }
 
 # 清理残留（精确 PID，不用 pkill 避免误杀并行 CI 的 host）
-lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null || true
-rm -f "$HOME/.ion/host.sock"
+lsof -ti "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" 2>/dev/null | xargs kill 2>/dev/null || true
+rm -f "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
 sleep 1
 
 # 起 host
@@ -166,8 +166,8 @@ fi
 # ──────────────────────────────────────────────────────────
 kill "$HOST_PID" 2>/dev/null || true
 wait "$HOST_PID" 2>/dev/null || true
-rm -f "$HOME/.ion/host.sock" 2>/dev/null
-rm -f "$HOME/.ion/host.sock"
+rm -f "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" 2>/dev/null
+rm -f "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
 rm -rf "$D"
 
 echo ""

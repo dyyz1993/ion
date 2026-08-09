@@ -38,7 +38,7 @@ pub struct SessionMeta {
     /// LLM 循环次数（= Assistant message 数 = LLM API 调用次数）
     #[serde(default)]
     pub llm_request_count: u32,
-    /// 总耗时（毫秒，turn_summary.durationMs 累加）
+    /// 总耗时（毫秒，Agent 单次 LLM 调用耗时累加）
     #[serde(default)]
     pub total_duration_ms: u64,
     /// Number of context compressions
@@ -308,6 +308,26 @@ impl SessionIndex {
         index.save();
     }
 
+    /// Synchronize fields that describe the current persisted message tree.
+    ///
+    /// Unlike [`Self::increment_turn_stats`], these values are snapshots rather
+    /// than counters. Keeping the two paths separate prevents each turn from
+    /// adding the complete historical token/message totals again.
+    pub fn sync_message_tree(
+        id: &str,
+        model: &str,
+        provider: &str,
+        agent: &str,
+        message_count: u32,
+    ) {
+        Self::patch_meta(id, |meta| {
+            meta.model = model.to_string();
+            meta.provider = provider.to_string();
+            meta.agent = agent.to_string();
+            meta.message_count = message_count;
+        });
+    }
+
     /// Patch specific fields on an existing session meta without rebuilding the whole entry.
     /// Used by append_* RPCs to keep the index in sync (e.g. thinking level, active tools, name).
     /// If the session isn't yet in the index, creates a minimal entry first.
@@ -438,10 +458,8 @@ impl SessionIndex {
             m.total_duration_ms = m.total_duration_ms.saturating_add(duration_ms);
             m.token_input = m.token_input.saturating_add(tok_in);
             m.token_output = m.token_output.saturating_add(tok_out);
-            m.turn_count = m.turn_count.saturating_add(1);
-            m.message_count = m
-                .message_count
-                .saturating_add(llm_calls.saturating_add(user_prompts));
+            // turn_count 与真实用户输入一一对应；一次用户回合可能包含多次 LLM 调用。
+            m.turn_count = m.turn_count.saturating_add(user_prompts);
             if is_error {
                 m.error_count = m.error_count.saturating_add(1);
             }

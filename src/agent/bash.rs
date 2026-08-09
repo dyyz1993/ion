@@ -1,8 +1,8 @@
+use crate::agent::agent_loop::DeliverAs;
 use crate::agent::error::{AgentError, AgentResult};
 use crate::agent::extension::*;
 use crate::agent::tool::Tool;
 use async_trait::async_trait;
-use crate::agent::agent_loop::DeliverAs;
 use ion_provider::types::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -206,10 +206,7 @@ impl Tool for BashRunTool {
         // 仅在 background=true 或 timeoutBackground=true 时生效。
         // 前台同步执行（background=false）不发 follow_up，deliverAs 无意义。
         // bgTimeout: 后台进程超时秒数。0=无限（默认），>0=N 秒后杀进程报 exit=timeout。
-        let bg_timeout = args
-            .get("bgTimeout")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let bg_timeout = args.get("bgTimeout").and_then(|v| v.as_u64()).unwrap_or(0);
         let deliver_as: DeliverAs = args
             .get("deliverAs")
             .and_then(|v| v.as_str())
@@ -325,7 +322,9 @@ impl Tool for BashRunTool {
                 // timeoutBackground 路径保留 timeout（用于触发"超时切后台"语义）。
                 if background {
                     if bg_timeout > 0 { bg_timeout } else { 86400 }
-                } else { timeout },
+                } else {
+                    timeout
+                },
                 self.storage.cwd.clone(),
                 self.storage.session_id.clone(),
                 deliver_as,
@@ -427,7 +426,6 @@ impl Tool for BashRunTool {
     }
 }
 
-
 // ============================================================================
 // BashExtension — plugin_rpc
 // ============================================================================
@@ -468,7 +466,11 @@ impl Tool for GetBackgroundProcessTool {
         args: serde_json::Value,
         _rt: &dyn crate::runtime::Runtime,
     ) -> AgentResult<String> {
-        let action = if args.get("bid").is_some() { "inspect" } else { "list" };
+        let action = if args.get("bid").is_some() {
+            "inspect"
+        } else {
+            "list"
+        };
         let result = self.manage.on_manage(action, &args).await;
         Ok(serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".into()))
     }
@@ -564,7 +566,10 @@ impl BashManageTool {
                 let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                 let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(2000) as usize;
                 let head_lines = params.get("head").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
-                let tail_lines = params.get("tailLines").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+                let tail_lines = params
+                    .get("tailLines")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(5) as usize;
                 let map = self.process_map.lock().await;
                 match map.get(&pid) {
                     Some(info) => {
@@ -601,7 +606,10 @@ impl BashManageTool {
                                 let middle_lines = total_lines - head_lines - tail_lines;
                                 (
                                     head_joined,
-                                    format!("...[truncated {} lines]...\n{}", middle_lines, tail_joined),
+                                    format!(
+                                        "...[truncated {} lines]...\n{}",
+                                        middle_lines, tail_joined
+                                    ),
                                     true,
                                 )
                             } else {
@@ -629,23 +637,34 @@ impl BashManageTool {
                             let mut y = 2025i64;
                             let mut days_remaining = days_since_epoch.saturating_sub(20089);
                             loop {
-                                let diy = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 366 } else { 365 };
-                                if days_remaining < diy { break; }
+                                let diy = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+                                    366
+                                } else {
+                                    365
+                                };
+                                if days_remaining < diy {
+                                    break;
+                                }
                                 days_remaining -= diy;
                                 y += 1;
                             }
                             let md = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
-                                [31,29,31,30,31,30,31,31,30,31,30,31]
+                                [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
                             } else {
-                                [31,28,31,30,31,30,31,31,30,31,30,31]
+                                [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
                             };
                             let mut mo = 1i64;
                             for &d in &md {
-                                if days_remaining < d { break; }
+                                if days_remaining < d {
+                                    break;
+                                }
                                 days_remaining -= d;
                                 mo += 1;
                             }
-                            format!("{y:04}-{mo:02}-{}T{h:02}:{m:02}:{s:02}.{millis:03}Z", days_remaining + 1)
+                            format!(
+                                "{y:04}-{mo:02}-{}T{h:02}:{m:02}:{s:02}.{millis:03}Z",
+                                days_remaining + 1
+                            )
                         };
 
                         serde_json::json!({
@@ -730,7 +749,9 @@ impl BashManageTool {
                     None => serde_json::json!({"error": "process not found or no stdin channel"}),
                 }
             }
-            _ => serde_json::json!({"error": format!("unknown action: {action}. Use list/inspect/kill/send.")}),
+            _ => {
+                serde_json::json!({"error": format!("unknown action: {action}. Use list/inspect/kill/send.")})
+            }
         }
     }
 }
@@ -814,12 +835,17 @@ impl Extension for BashExtension {
             follow_up_tx: self.follow_up_tx.clone(),
             storage: self.storage.clone(),
         };
-        registry.register(Box::new(GetBackgroundProcessTool { manage: manage.clone() }));
-        registry.register(Box::new(KillProcessTool { manage: manage.clone() }));
+        registry.register(Box::new(GetBackgroundProcessTool {
+            manage: manage.clone(),
+        }));
+        registry.register(Box::new(KillProcessTool {
+            manage: manage.clone(),
+        }));
         registry.register(Box::new(WriteStdinTool { manage }));
     }
 
-    fn name(&self) -> &str {        "bash"
+    fn name(&self) -> &str {
+        "bash"
     }
 
     async fn on_extension_rpc(
@@ -843,7 +869,10 @@ impl Extension for BashExtension {
                 let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                 let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(2000) as usize;
                 let head_lines = params.get("head").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
-                let tail_lines = params.get("tailLines").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+                let tail_lines = params
+                    .get("tailLines")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(5) as usize;
                 let map = self.process_map.lock().await;
                 match map.get(&pid) {
                     Some(info) => {
@@ -879,7 +908,10 @@ impl Extension for BashExtension {
                                 let middle_lines = total_lines - head_lines - tail_lines;
                                 (
                                     head_joined,
-                                    format!("...[truncated {} lines]...\n{}", middle_lines, tail_joined),
+                                    format!(
+                                        "...[truncated {} lines]...\n{}",
+                                        middle_lines, tail_joined
+                                    ),
                                     true,
                                 )
                             } else {
@@ -907,23 +939,34 @@ impl Extension for BashExtension {
                             let mut y = 2025i64;
                             let mut days_remaining = days_since_epoch.saturating_sub(20089);
                             loop {
-                                let diy = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 366 } else { 365 };
-                                if days_remaining < diy { break; }
+                                let diy = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+                                    366
+                                } else {
+                                    365
+                                };
+                                if days_remaining < diy {
+                                    break;
+                                }
                                 days_remaining -= diy;
                                 y += 1;
                             }
                             let md = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
-                                [31,29,31,30,31,30,31,31,30,31,30,31]
+                                [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
                             } else {
-                                [31,28,31,30,31,30,31,31,30,31,30,31]
+                                [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
                             };
                             let mut mo = 1i64;
                             for &d in &md {
-                                if days_remaining < d { break; }
+                                if days_remaining < d {
+                                    break;
+                                }
                                 days_remaining -= d;
                                 mo += 1;
                             }
-                            format!("{y:04}-{mo:02}-{}T{h:02}:{m:02}:{s:02}.{millis:03}Z", days_remaining + 1)
+                            format!(
+                                "{y:04}-{mo:02}-{}T{h:02}:{m:02}:{s:02}.{millis:03}Z",
+                                days_remaining + 1
+                            )
                         };
 
                         Ok(serde_json::json!({
@@ -1320,7 +1363,13 @@ mod tests {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stdout.contains("STDOUT_LINE"));
-        assert!(!stdout.contains("STDERR_LINE"), "without merge, stderr should NOT be in stdout");
-        assert!(stderr.contains("STDERR_LINE"), "without merge, stderr should be in stderr pipe");
+        assert!(
+            !stdout.contains("STDERR_LINE"),
+            "without merge, stderr should NOT be in stdout"
+        );
+        assert!(
+            stderr.contains("STDERR_LINE"),
+            "without merge, stderr should be in stderr pipe"
+        );
     }
 }

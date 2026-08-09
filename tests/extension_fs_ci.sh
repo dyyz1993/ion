@@ -65,7 +65,7 @@ cleanup() {
 trap cleanup EXIT
 
 # ── 启动 host（cwd=TEST_DIR → allowed_roots[0]=TEST_DIR）──
-SOCK="$HOME/.ion/host.sock"
+SOCK="${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
 rm -f "$SOCK" 2>/dev/null
 
 ION_FAUX_REPLY="ctx.fs probe noop" \

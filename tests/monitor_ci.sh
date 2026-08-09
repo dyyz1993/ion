@@ -109,13 +109,13 @@ cleanup_serve() {
     # 3. Force kill stragglers (SIGKILL)
     ps aux | grep "study-rust/ion/target/debug/ion" | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null
     # 4. Clean up socket + pidfile so next serve can bind cleanly
-    rm -f "$HOME/.ion/host.sock" "$HOME/.ion/host.pid"
+    rm -f "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" "$HOME/.ion/host.pid"
     # 5. Verify socket is gone (sometimes OS holds it briefly)
     for _ in 1 2 3 4 5; do
-        [ -S "$HOME/.ion/host.sock" ] || break
+        [ -S "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" ] || break
         sleep 1
     done
-    rm -f "$HOME/.ion/host.sock"
+    rm -f "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
 }
 
 echo "=========================================="

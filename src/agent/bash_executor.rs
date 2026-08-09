@@ -14,8 +14,8 @@
 
 use crate::agent::agent_loop::DeliverAs;
 use crate::agent::bash::{
-    emit_extension_event, now_ms, save_process_map_arc, FollowUpSender, NotifyMap, ProcessMap,
-    StdinMap,
+    FollowUpSender, NotifyMap, ProcessMap, StdinMap, emit_extension_event, now_ms,
+    save_process_map_arc,
 };
 use ion_provider::types::{CustomContent, CustomMessage, Message};
 
@@ -262,15 +262,16 @@ pub async fn spawn_watcher(
             } else {
                 String::new()
             };
-            format!("{}\n...[truncated {} bytes]...\n{}{}", head, middle, tail, truncation_note)
+            format!(
+                "{}\n...[truncated {} bytes]...\n{}{}",
+                head, middle, tail, truncation_note
+            )
         } else {
             stdout_stderr.clone()
         };
         // ★ exit=signal:* / unknown（被 SIGKILL/SIGTERM 杀 / spawn 失败）+ 输出空时，
         // 给个 fallback 内容说明发生了什么，避免整个 body 空白。
-        let output_text = if output_text.trim().is_empty()
-            && (exit_code.is_none() || timed_out)
-        {
+        let output_text = if output_text.trim().is_empty() && (exit_code.is_none() || timed_out) {
             if timed_out {
                 "(no output captured; process timed out and was killed by ion)".to_string()
             } else if exit_code_str.starts_with("signal:") {
@@ -281,17 +282,15 @@ pub async fn spawn_watcher(
                 )
             } else {
                 "(no output captured; process spawn failed or wait error — \
-                 no exit code and no signal captured)".to_string()
+                 no exit code and no signal captured)"
+                    .to_string()
             }
         } else {
             output_text
         };
         let content = format!(
             "<bash_result bid=\"{}\" exit=\"{}\" elapsed=\"{}s\">\n{}\n</bash_result>",
-            pid,
-            exit_code_str,
-            elapsed,
-            output_text,
+            pid, exit_code_str, elapsed, output_text,
         );
         let msg = Message::Custom(CustomMessage {
             role: "custom".into(),
@@ -343,7 +342,11 @@ mod tests {
             .status()
             .expect("sh should spawn");
         assert_eq!(status.code(), None);
-        assert_eq!(status.signal(), Some(15), "SIGTERM -> signal() should be 15");
+        assert_eq!(
+            status.signal(),
+            Some(15),
+            "SIGTERM -> signal() should be 15"
+        );
     }
 
     #[test]
@@ -355,7 +358,11 @@ mod tests {
             .status()
             .expect("sh should spawn");
         assert_eq!(status.code(), Some(0));
-        assert_eq!(status.signal(), None, "normal exit -> signal() should be None");
+        assert_eq!(
+            status.signal(),
+            None,
+            "normal exit -> signal() should be None"
+        );
     }
 
     #[test]

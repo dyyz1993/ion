@@ -567,12 +567,9 @@ impl GoalSupervisorExtension {
                             || name == "write_file"
                             || name == "edit_file"
                     });
-                    let all_bash_read = recent.iter().all(|(name, _)| {
-                        name == "bash"
-                            
-                            || name == "read"
-                            || name == "read_file"
-                    });
+                    let all_bash_read = recent
+                        .iter()
+                        .all(|(name, _)| name == "bash" || name == "read" || name == "read_file");
                     !has_write && all_bash_read
                 }
                 _ => false,
@@ -1231,7 +1228,8 @@ impl Extension for GoalSupervisorExtension {
 
         tracing::info!(
             "[goal-supervisor] on_gate_check (turn={}, msgs={}): running checks",
-            ctx.turn_index, ctx.messages.len()
+            ctx.turn_index,
+            ctx.messages.len()
         );
 
         // 1. Run all checks (deterministic execution + evidence collection).
@@ -2660,9 +2658,11 @@ mod tests {
     #[tokio::test]
     async fn test_on_gate_check_all_pass_completes_goal() {
         // All checks pass -> status becomes Complete + Allow stop.
-        let ext = make_ext_with_goal(vec![
-            make_check("c1", "true", PassCriteria::ExitCode { expected: 0 }),
-        ]);
+        let ext = make_ext_with_goal(vec![make_check(
+            "c1",
+            "true",
+            PassCriteria::ExitCode { expected: 0 },
+        )]);
         let ctx = make_turn_ctx_with_assistant("I fixed it, all checks pass");
         let decision = ext.on_gate_check(&ctx).await.expect("gate check ok");
         assert!(
@@ -2686,7 +2686,11 @@ mod tests {
         // Expected: RetryWith(message containing the failed check name + evidence).
         let ext = make_ext_with_goal(vec![
             // Force a failure: `false` exits 1, but we expect 0.
-            make_check("must_pass_unit_tests", "false", PassCriteria::ExitCode { expected: 0 }),
+            make_check(
+                "must_pass_unit_tests",
+                "false",
+                PassCriteria::ExitCode { expected: 0 },
+            ),
         ]);
         let ctx = make_turn_ctx_with_assistant("done, all tests pass");
         let decision = ext.on_gate_check(&ctx).await.expect("gate check ok");
@@ -2709,9 +2713,7 @@ mod tests {
                     "msg should tell agent to fix, got: {msg}"
                 );
             }
-            other => panic!(
-                "failing check must trigger RetryWith, got {other:?}"
-            ),
+            other => panic!("failing check must trigger RetryWith, got {other:?}"),
         }
     }
 
@@ -2761,7 +2763,8 @@ mod tests {
             .map(|s| s.status.clone())
             .unwrap_or(GoalStatus::Running);
         assert_eq!(
-            status, GoalStatus::Exhausted,
+            status,
+            GoalStatus::Exhausted,
             "status should be Exhausted after guard trips"
         );
     }

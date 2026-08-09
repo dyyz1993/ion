@@ -8,8 +8,8 @@ use crate::agent::error::AgentResult;
 use crate::agent::extension::{Extension, TurnContext};
 use ion_provider::registry;
 use ion_provider::types::*;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct AutoSessionTitle {
     done: AtomicBool,
@@ -160,13 +160,18 @@ impl Extension for AutoSessionTitle {
             }
 
             // 兼容 session-titles.json
-            let titles_path = crate::paths::root().join("agent").join("session-titles.json");
+            let titles_path = crate::paths::root()
+                .join("agent")
+                .join("session-titles.json");
             let mut titles: std::collections::HashMap<String, String> =
                 std::fs::read_to_string(&titles_path)
                     .ok()
                     .and_then(|s| serde_json::from_str(&s).ok())
                     .unwrap_or_default();
-            let session_key = ctx.session_id.clone().unwrap_or_else(|| format!("turn_{}", ctx.turn_index));
+            let session_key = ctx
+                .session_id
+                .clone()
+                .unwrap_or_else(|| format!("turn_{}", ctx.turn_index));
             titles.insert(session_key, title.clone());
             if let Ok(json) = serde_json::to_string_pretty(&titles) {
                 let _ = std::fs::write(&titles_path, json);
@@ -242,9 +247,7 @@ mod tests {
 
     #[test]
     fn test_english_colon_truncation() {
-        let title = AutoSessionTitle::generate_title_heuristic(
-            "Steps: 1. do X 2. do Y",
-        );
+        let title = AutoSessionTitle::generate_title_heuristic("Steps: 1. do X 2. do Y");
         assert_eq!(title, "Steps");
     }
 }

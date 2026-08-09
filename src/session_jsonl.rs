@@ -29,8 +29,35 @@ use std::path::{Path, PathBuf};
 
 /// custom entry：system prompt 全文（fork 子 Worker 第二行 + 主 session agent 切换时）
 pub const CUSTOM_TYPE_SYSTEM_PROMPT: &str = "system_prompt";
+/// custom entry：文件树快照锚点（仅有文件变化时写入，正文可见且不进入 LLM context）
+pub const CUSTOM_TYPE_STEP_SNAPSHOT: &str = "step-snapshot";
 /// custom_message：子 session 分隔标记（export HTML 主 session 中插入）
 pub const CUSTOM_TYPE_SUB_SESSION_SEPARATOR: &str = "sub_session_separator";
+
+/// Canonical JSONL entry types owned by the ION session layer.
+///
+/// Keep this list aligned with the typed structs and append-only operational
+/// entries below. Export uses it to distinguish the complete ION catalog from
+/// the subset that actually appears in one session.
+pub const SESSION_ENTRY_TYPES: &[&str] = &[
+    "session",
+    "message",
+    "model_change",
+    "thinking_level_change",
+    "agent_change",
+    "session_info",
+    "compaction",
+    "branch_summary",
+    "deletion",
+    "segment_summary",
+    "restoration",
+    "custom",
+    "custom_message",
+    "system_event",
+    "label",
+    "active_tools_change",
+    "leaf_pointer",
+];
 
 // ---------------------------------------------------------------------------
 // Session entry types (pi JSONL spec v3)
@@ -613,7 +640,7 @@ fn filter_messages_on_live_path(
 }
 
 /// 如果文件不存在或第一行不是 session header，在文件开头插入 header。
-/// 这防止 turn_summary / message 在 header 之前被追加（worker 启动时调用）。
+/// 这防止 message / custom entry 在 header 之前被追加（worker 启动时调用）。
 ///
 /// 返回 true 如果新建了 header（之前不存在），false 如果已存在。
 pub fn ensure_session_header(cwd: &str, sid: &str) -> bool {
@@ -690,7 +717,7 @@ pub fn ensure_session_header(cwd: &str, sid: &str) -> bool {
 /// 使用单次 write_all 避免 \n 和 JSON 之间的交错（并发安全）。
 /// 全局 session 文件路径覆盖。
 /// ion_worker 启动时设置（fork 子 Worker 用 <sid>.jsonl 而不是 session.jsonl）。
-/// 如果设了，append_raw_entry / append_turn_summary 用这个路径。
+/// 如果设了，所有 session append helper 都使用这个路径。
 static SESSION_FILE_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<std::path::PathBuf>>> =
     std::sync::OnceLock::new();
 
@@ -753,6 +780,41 @@ pub fn append_raw_entry(cwd: &str, entry: &serde_json::Value) {
         };
         let _ = f.write_all(payload.as_bytes());
     }
+    crate::message_retrieval::invalidate_cache(cwd);
+}
+
+/// 追加一个不进入 LLM context 的 custom entry，并让它成为当前 leaf。
+/// 返回 `(entry_id, parent_id)`；parent_id 是追加前的真实消息树 leaf。
+pub fn append_custom_entry(
+    cwd: &str,
+    custom_type: &str,
+    data: serde_json::Value,
+) -> Option<(String, String)> {
+    let path = resolve_session_file(cwd);
+    let content = std::fs::read_to_string(&path).ok()?;
+    let entries: Vec<serde_json::Value> = content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    let parent_id = crate::session_tree::resolve_current_leaf(&entries).or_else(|| {
+        entries
+            .first()
+            .filter(|entry| entry.get("type").and_then(|v| v.as_str()) == Some("session"))
+            .and_then(|entry| entry.get("id").and_then(|v| v.as_str()))
+            .map(str::to_string)
+    })?;
+    let entry_id = generate_id();
+    let entry = serde_json::json!({
+        "type": "custom",
+        "id": entry_id,
+        "parentId": parent_id,
+        "timestamp": timestamp_iso(),
+        "customType": custom_type,
+        "data": data,
+    });
+    append_raw_entry(cwd, &entry);
+    Some((entry_id, parent_id))
 }
 
 /// 追加一条 leaf_pointer entry（移动光标到 leaf_id）。
@@ -874,7 +936,7 @@ pub fn append_compaction(
 
 /// 读取 session.jsonl 最后一个 entry 的 id（用于 compaction 的 parentId）
 fn last_entry_id(cwd: &str) -> Option<String> {
-    let path = session_path(cwd);
+    let path = resolve_session_file(cwd);
     let content = std::fs::read_to_string(&path).ok()?;
     content
         .lines()
@@ -884,129 +946,105 @@ fn last_entry_id(cwd: &str) -> Option<String> {
         .and_then(|e| e.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
 }
 
-/// 追加一条 turn_summary entry（每轮 turn 结束时的结构化摘要）。
-pub fn append_turn_summary(
-    cwd: &str,
-    turn_id: u64,
-    user_entry_id: &str,
-    summary: &str,
-    key_steps: &[String],
-    tool_call_count: u32,
-    tokens_input: u64,
-    tokens_output: u64,
-    duration_ms: u64,
-    entry_range: &[String],
-    status: &str,
-) {
-    let entry = serde_json::json!({
-        "type": "turn_summary",
-        "id": generate_id(),
-        "parentId": null,
-        "timestamp": timestamp_iso(),
-        "turnId": turn_id,
-        "userEntryId": user_entry_id,
-        "summary": summary,
-        "keySteps": key_steps,
-        "toolCallCount": tool_call_count,
-        "tokens": { "input": tokens_input, "output": tokens_output },
-        "durationMs": duration_ms,
-        "entryRange": entry_range,
-        "status": status,
-    });
-    append_raw_entry(cwd, &entry);
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedStepSnapshot {
+    pub snapshot_entry_id: String,
+    pub tree_hash: String,
+    pub tool_snapshot_turn_id: Option<String>,
+    /// true 表示目标位于快照之前，必须恢复到该快照的 baseline。
+    pub uses_baseline: bool,
 }
 
-/// 读取上一条 turn_summary 之后所有 message entry 的 id（即本轮新增的消息 entry）。
+/// 按 pi 的 entry-tree 语义，为任意正文 entry 解析对应文件树状态。
 ///
-/// 用于 persist_turn_summary 填 entryRange。
-pub fn read_last_turn_entry_range(cwd: &str) -> Option<Vec<String>> {
-    let path = session_path(cwd);
-    let content = std::fs::read_to_string(&path).ok()?;
-    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+/// - 目标本身或祖先路径已有 step-snapshot：使用 snapshotTreeHash；
+/// - 目标的直接子节点/首个后代才出现 step-snapshot：使用 baselineTreeHash。
+pub fn resolve_step_snapshot_for_entry(
+    entries: &[serde_json::Value],
+    target_entry_id: &str,
+) -> Option<ResolvedStepSnapshot> {
+    use std::collections::{HashMap, HashSet, VecDeque};
 
-    // 从后往前找最后一个 turn_summary
-    let last_ts_index = lines.iter().enumerate().rev().find_map(|(i, line)| {
-        serde_json::from_str::<serde_json::Value>(line)
-            .ok()
-            .and_then(|val| {
-                if val.get("type").and_then(|v| v.as_str()) == Some("turn_summary") {
-                    Some(i)
-                } else {
-                    None
-                }
-            })
-    });
+    let by_id: HashMap<&str, &serde_json::Value> = entries
+        .iter()
+        .filter_map(|entry| entry.get("id").and_then(|v| v.as_str()).map(|id| (id, entry)))
+        .collect();
 
-    let start = last_ts_index.map(|i| i + 1).unwrap_or(0);
-    let mut ids = Vec::new();
-    for line in &lines[start..] {
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line)
-            && val.get("type").and_then(|v| v.as_str()) == Some("message")
-            && let Some(id) = val.get("id").and_then(|v| v.as_str())
+    let parse_snapshot = |entry: &serde_json::Value, baseline: bool| {
+        if entry.get("type").and_then(|v| v.as_str()) != Some("custom")
+            || entry.get("customType").and_then(|v| v.as_str())
+                != Some(CUSTOM_TYPE_STEP_SNAPSHOT)
         {
-            ids.push(id.to_string());
+            return None;
+        }
+        let data = entry.get("data")?;
+        let hash_field = if baseline {
+            "baselineTreeHash"
+        } else {
+            "snapshotTreeHash"
+        };
+        Some(ResolvedStepSnapshot {
+            snapshot_entry_id: entry.get("id")?.as_str()?.to_string(),
+            tree_hash: data.get(hash_field)?.as_str()?.to_string(),
+            tool_snapshot_turn_id: data
+                .get("toolSnapshotTurnId")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            uses_baseline: baseline,
+        })
+    };
+
+    // 目标 → root：最近的 path snapshot 代表目标时已经提交的文件状态。
+    let mut current = Some(target_entry_id);
+    let mut visited = HashSet::new();
+    while let Some(id) = current {
+        if !visited.insert(id) {
+            break;
+        }
+        let Some(entry) = by_id.get(id) else {
+            break;
+        };
+        if let Some(snapshot) = parse_snapshot(entry, false) {
+            return Some(snapshot);
+        }
+        current = entry.get("parentId").and_then(|v| v.as_str());
+    }
+
+    // 没有 path snapshot：找最近的后代 snapshot，回到它的 baseline。
+    let mut children: HashMap<&str, Vec<&serde_json::Value>> = HashMap::new();
+    for entry in entries {
+        if let Some(parent_id) = entry.get("parentId").and_then(|v| v.as_str()) {
+            children.entry(parent_id).or_default().push(entry);
         }
     }
-    if ids.is_empty() { None } else { Some(ids) }
-}
-
-/// 给定 entry_id，找到它所属 turn_summary 的 turnId。
-///
-/// 策略 1：entryRange 包含 entry_id → 直接返回
-/// 策略 2：entry_id 在文件中的位置之后，第一个 turn_summary 就是它所属的 turn
-pub fn find_turn_id_for_entry(cwd: &str, entry_id: &str) -> Option<String> {
-    let path = session_path(cwd);
-    let content = std::fs::read_to_string(&path).ok()?;
-    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
-
-    // 策略 1：entryRange 包含
-    for line in &lines {
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line)
-            && val.get("type").and_then(|v| v.as_str()) == Some("turn_summary")
-        {
-            let in_range = val
-                .get("entryRange")
-                .and_then(|v| v.as_array())
-                .is_some_and(|arr| arr.iter().any(|a| a.as_str() == Some(entry_id)));
-            if in_range {
-                return val
-                    .get("turnId")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
+    let mut queue = VecDeque::from([target_entry_id]);
+    let mut visited = HashSet::new();
+    while let Some(id) = queue.pop_front() {
+        if !visited.insert(id) {
+            continue;
+        }
+        if let Some(descendants) = children.get(id) {
+            for child in descendants {
+                if let Some(snapshot) = parse_snapshot(child, true) {
+                    return Some(snapshot);
+                }
+                if let Some(child_id) = child.get("id").and_then(|v| v.as_str()) {
+                    queue.push_back(child_id);
+                }
             }
         }
     }
-
-    // 策略 2：位置回溯
-    let entry_pos = lines.iter().position(|line| {
-        serde_json::from_str::<serde_json::Value>(line)
-            .ok()
-            .and_then(|v| {
-                if v.get("type").and_then(|t| t.as_str()) == Some("message") {
-                    v.get("id")
-                        .and_then(|v| v.as_str())
-                        .map(|id| id == entry_id)
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(false)
-    });
-
-    if let Some(pos) = entry_pos {
-        for line in &lines[pos..] {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(line)
-                && val.get("type").and_then(|v| v.as_str()) == Some("turn_summary")
-            {
-                return val
-                    .get("turnId")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-            }
-        }
-    }
-
     None
+}
+
+pub fn resolve_step_snapshot_from_file(cwd: &str, entry_id: &str) -> Option<ResolvedStepSnapshot> {
+    let content = std::fs::read_to_string(resolve_session_file(cwd)).ok()?;
+    let entries: Vec<serde_json::Value> = content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    resolve_step_snapshot_for_entry(&entries, entry_id)
 }
 
 /// Convert a Message to a JSONL entry value with id/parentId chain.
@@ -1185,73 +1223,69 @@ mod tests {
     }
 
     #[test]
-    fn test_append_turn_summary_writes_entry() {
-        let cwd = test_cwd("turn_summary");
+    fn test_append_custom_entry_links_to_current_leaf() {
+        let cwd = test_cwd("step_snapshot_parent");
         write_header(&cwd);
-
-        append_turn_summary(
+        append_raw_entry(
             &cwd,
-            3,
-            "msg_007",
-            "重构了消息拉取接口",
-            &["read".into(), "edit".into(), "bash".into()],
-            3,
-            1200,
-            800,
-            5200,
-            &["msg_007".into(), "msg_008".into()],
-            "completed",
+            &serde_json::json!({
+                "type":"message", "id":"msg_007", "parentId":"test_session",
+                "timestamp": timestamp_iso(),
+                "message":{"role":"assistant","content":"done"}
+            }),
         );
+
+        let (entry_id, parent_id) = append_custom_entry(
+            &cwd,
+            CUSTOM_TYPE_STEP_SNAPSHOT,
+            serde_json::json!({
+                "baselineTreeHash":"tree_before",
+                "snapshotTreeHash":"tree_after",
+                "toolSnapshotTurnId":"ts_abc",
+                "turnIndex":3,
+                "diff":{"added":["a.rs"],"modified":[],"deleted":[]}
+            }),
+        )
+        .expect("custom entry should append");
 
         let file = SessionFile::load(&cwd).expect("file should exist");
         let entry = file
             .entries
             .iter()
-            .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("turn_summary"));
-        assert!(entry.is_some(), "turn_summary entry should exist");
-        let entry = entry.unwrap();
-        assert_eq!(entry["turnId"].as_u64(), Some(3));
-        assert_eq!(entry["userEntryId"].as_str(), Some("msg_007"));
-        assert_eq!(entry["summary"].as_str(), Some("重构了消息拉取接口"));
-        assert_eq!(entry["toolCallCount"].as_u64(), Some(3));
-        assert_eq!(entry["tokens"]["input"].as_u64(), Some(1200));
-        assert_eq!(entry["tokens"]["output"].as_u64(), Some(800));
-        assert_eq!(entry["status"].as_str(), Some("completed"));
-        let steps = entry["keySteps"].as_array().unwrap();
-        assert_eq!(steps.len(), 3);
-        assert_eq!(steps[0].as_str(), Some("read"));
+            .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(entry_id.as_str()))
+            .expect("step-snapshot entry should exist");
+        assert_eq!(parent_id, "msg_007");
+        assert_eq!(entry["parentId"].as_str(), Some("msg_007"));
+        assert_eq!(entry["customType"].as_str(), Some(CUSTOM_TYPE_STEP_SNAPSHOT));
+        assert_eq!(entry["data"]["snapshotTreeHash"].as_str(), Some("tree_after"));
 
         cleanup(&cwd);
     }
 
     #[test]
-    fn test_append_turn_summary_aborted_status() {
-        let cwd = test_cwd("turn_abort");
-        write_header(&cwd);
+    fn test_resolve_step_snapshot_uses_path_snapshot_or_descendant_baseline() {
+        let entries = vec![
+            serde_json::json!({"type":"message","id":"u1","parentId":"root"}),
+            serde_json::json!({"type":"message","id":"a1","parentId":"u1"}),
+            serde_json::json!({
+                "type":"custom","id":"snap1","parentId":"a1",
+                "customType":"step-snapshot",
+                "data":{
+                    "baselineTreeHash":"tree0","snapshotTreeHash":"tree1",
+                    "toolSnapshotTurnId":"ts_1"
+                }
+            }),
+            serde_json::json!({"type":"message","id":"u2","parentId":"snap1"}),
+        ];
 
-        append_turn_summary(
-            &cwd,
-            8,
-            "msg_015",
-            "好的我来重构这",
-            &[],
-            0,
-            340,
-            0,
-            100,
-            &[],
-            "aborted",
-        );
+        let before = resolve_step_snapshot_for_entry(&entries, "a1").unwrap();
+        assert_eq!(before.tree_hash, "tree0");
+        assert!(before.uses_baseline);
 
-        let file = SessionFile::load(&cwd).expect("file should exist");
-        let entry = file
-            .entries
-            .iter()
-            .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("turn_summary"))
-            .unwrap();
-        assert_eq!(entry["status"].as_str(), Some("aborted"));
-
-        cleanup(&cwd);
+        let after = resolve_step_snapshot_for_entry(&entries, "u2").unwrap();
+        assert_eq!(after.tree_hash, "tree1");
+        assert!(!after.uses_baseline);
+        assert_eq!(after.tool_snapshot_turn_id.as_deref(), Some("ts_1"));
     }
 
     #[test]
@@ -1279,14 +1313,12 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let file_path = dir.join("session.jsonl");
 
-        // Write known entries: 1 session, 3 messages, 2 turn_summary, 1 compaction, 1 custom
+        // Write known entries: 1 session, 3 messages, 1 compaction, 1 custom
         let entries = vec![
             r#"{"type":"session","version":3,"id":"s1","cwd":"/tmp","timestamp":"2025-01-01T00:00:00Z"}"#,
             r#"{"type":"message","id":"m1","parentId":"s1","message":{"role":"user","content":"hi"}}"#,
             r#"{"type":"message","id":"m2","parentId":"m1","message":{"role":"assistant","content":"hello"}}"#,
-            r#"{"type":"turn_summary","id":"t1","turnId":1,"summary":"first turn"}"#,
             r#"{"type":"message","id":"m3","parentId":"m2","message":{"role":"user","content":"bye"}}"#,
-            r#"{"type":"turn_summary","id":"t2","turnId":2,"summary":"second turn"}"#,
             r#"{"type":"compaction","id":"c1","summary":"compressed","tokensBefore":100}"#,
             r#"{"type":"custom","id":"x1","customType":"my_custom","data":{"key":"val"}}"#,
         ];
@@ -1296,10 +1328,6 @@ mod tests {
         // Verify counts
         assert_eq!(count_entries_by_type(&file_path, "session").unwrap(), 1);
         assert_eq!(count_entries_by_type(&file_path, "message").unwrap(), 3);
-        assert_eq!(
-            count_entries_by_type(&file_path, "turn_summary").unwrap(),
-            2
-        );
         assert_eq!(count_entries_by_type(&file_path, "compaction").unwrap(), 1);
         assert_eq!(count_entries_by_type(&file_path, "custom").unwrap(), 1);
         // Non-existent type should return 0

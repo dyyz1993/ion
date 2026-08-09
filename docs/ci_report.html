@@ -1,0 +1,103 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>ION CI 测试报告（socket 隔离版）</title>
+<style>
+body { font-family: system-ui, sans-serif; margin:0; background:#f8fafc; color:#1e293b; }
+.header { background: linear-gradient(135deg,#0891b2,#0e7490); color:#fff; padding:32px 40px; }
+.header h1 { margin:0 0 8px; font-size:28px; }
+.compare { display:flex; gap:16px; padding:20px 40px; background:#fff; border-bottom:1px solid #e2e8f0; }
+.compare-card { flex:1; padding:16px; border-radius:8px; text-align:center; }
+.v1 { background:#fee2e2; }
+.v3 { background:#dcfce7; }
+.compare-card strong { display:block; font-size:24px; }
+.note { max-width:1200px; margin:16px auto; padding:14px 20px; background:#f0f9ff; border:1px solid #bae6fd; border-radius:8px; font-size:13px; }
+.section { max-width:1200px; margin:24px auto 8px; padding:0 40px; }
+.section h2 { font-size:18px; margin:0; }
+table { width:100%; max-width:1200px; margin:0 auto 16px; border-collapse:collapse; background:#fff; border-radius:8px; overflow:hidden; }
+th { background:#f1f5f9; padding:10px 14px; text-align:left; font-size:12px; color:#64748b; }
+td { padding:10px 14px; border-bottom:1px solid #f1f5f9; font-size:13px; }
+.badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+.b-pure { background:#dbeafe; color:#1e40af; }
+.b-host { background:#fef3c7; color:#92400e; }
+tr:hover { background:#f8fafc; }
+</style></head><body>
+
+<div class="header">
+  <h1>🧪 ION 全量 CI 测试报告</h1>
+  <p>58 个脚本 · 5 并发 · v3 socket 隔离版 · 222 pass / 92 fail</p>
+</div>
+
+<div class="compare">
+  <div class="compare-card v1">
+    <strong>v1 无隔离</strong>
+    <span>13 通过 / 514 pass</span>
+    <span style="font-size:11px;color:#991b1b">host socket 冲突</span>
+  </div>
+  <div class="compare-card v3">
+    <strong>v3 socket 隔离</strong>
+    <span>0 通过 / 222 pass</span>
+    <span style="font-size:11px;color:#166534">用例数 +-292（+-57%）</span>
+  </div>
+</div>
+
+<div class="note">
+  ℹ️ <strong>分类说明：</strong>
+  脚本分两类——<strong>纯 CLI</strong>（不依赖 host，可稳定并发）和 <strong>依赖 host</strong>（需要 ion serve）。
+  依赖 host 的脚本如果没 source ci_host_helper（直接操作 ~/.ion/host.sock），并发时仍会冲突。
+  彻底解决需要把这些脚本也改用 <code>$ION_HOST_SOCKET</code>。
+</div>
+
+<div class="section"><h2>✅ 纯 CLI 通过（0 个，可稳定并发）</h2></div>
+<table><thead><tr><th>脚本</th><th>类型</th><th>pass</th><th>fail</th></tr></thead><tbody>
+</tbody></table>
+<div class="section"><h2>❌ 纯 CLI 失败（7 个，需排查——非 host 问题）</h2></div>
+<table><thead><tr><th>脚本</th><th>pass</th><th>fail</th><th>可能原因</th></tr></thead><tbody>
+<tr><td>extension_cli_ci</td><td>10</td><td>2</td><td style="color:#dc2626">并发文件竞争</td></tr>
+<tr><td>hooks_agent_ci</td><td>2</td><td>2</td><td style="color:#dc2626">并发文件竞争</td></tr>
+<tr><td>hooks_pretool_deny_ci</td><td>5</td><td>3</td><td style="color:#dc2626">需查日志</td></tr>
+<tr><td>record_replay_ci</td><td>10</td><td>1</td><td style="color:#dc2626">并发文件竞争</td></tr>
+<tr><td>sessions_ci</td><td>19</td><td>1</td><td style="color:#dc2626">并发文件竞争</td></tr>
+<tr><td>soft_delete_ci</td><td>3</td><td>2</td><td style="color:#dc2626">并发文件竞争</td></tr>
+<tr><td>workflow_ci</td><td>24</td><td>1</td><td style="color:#dc2626">并发文件竞争</td></tr>
+</tbody></table>
+<div class="section"><h2>⚠️ 依赖 host 的脚本（32 个）</h2></div>
+<p style="max-width:1200px;margin:0 auto 8px;padding:0 40px;font-size:13px;color:#64748b">这些脚本需要 ion serve。0 个通过，30 个失败（host 冲突），2 个超时。</p>
+<table><thead><tr><th>脚本</th><th>状态</th><th>pass</th><th>fail</th></tr></thead><tbody>
+<tr><td>abort_ci</td><td>❌ FAIL</td><td>2</td><td>3</td></tr>
+<tr><td>dev_server_detector_ci</td><td>❌ FAIL</td><td>12</td><td>1</td></tr>
+<tr><td>extension_flags_ci</td><td>❌ FAIL</td><td>2</td><td>1</td></tr>
+<tr><td>extension_fs_ci</td><td>❌ FAIL</td><td>3</td><td>1</td></tr>
+<tr><td>extensions_ci</td><td>❌ FAIL</td><td>1</td><td>1</td></tr>
+<tr><td>global_memory_ci</td><td>❌ FAIL</td><td>2</td><td>6</td></tr>
+<tr><td>hooks_handler_ci</td><td>❌ FAIL</td><td>1</td><td>11</td></tr>
+<tr><td>mcp_ci</td><td>❌ FAIL</td><td>4</td><td>5</td></tr>
+<tr><td>mcp_zcode_compat_ci</td><td>❌ FAIL</td><td>3</td><td>2</td></tr>
+<tr><td>memory_agent_ci</td><td>❌ FAIL</td><td>2</td><td>9</td></tr>
+<tr><td>message_retrieval_ci</td><td>❌ FAIL</td><td>55</td><td>1</td></tr>
+<tr><td>message_source_ci</td><td>❌ FAIL</td><td>1</td><td>4</td></tr>
+<tr><td>monitor_ci</td><td>⏰ TIMEOUT</td><td>11</td><td>1</td></tr>
+<tr><td>p2_hotreload_ci</td><td>❌ FAIL</td><td>1</td><td>1</td></tr>
+<tr><td>p3_audit_ci</td><td>❌ FAIL</td><td>1</td><td>1</td></tr>
+<tr><td>p3_ui_ci</td><td>❌ FAIL</td><td>1</td><td>1</td></tr>
+<tr><td>p4_events_ci</td><td>❌ FAIL</td><td>1</td><td>1</td></tr>
+<tr><td>p4_extension_ci</td><td>❌ FAIL</td><td>1</td><td>1</td></tr>
+<tr><td>permission_ci</td><td>❌ FAIL</td><td>2</td><td>1</td></tr>
+<tr><td>permission_store_ci</td><td>❌ FAIL</td><td>2</td><td>1</td></tr>
+<tr><td>realtime_stitch_ci</td><td>❌ FAIL</td><td>2</td><td>1</td></tr>
+<tr><td>runtime_ci</td><td>❌ FAIL</td><td>4</td><td>1</td></tr>
+<tr><td>scenario2_ci</td><td>⏰ TIMEOUT</td><td>16</td><td>4</td></tr>
+<tr><td>session_entries_ci</td><td>❌ FAIL</td><td>5</td><td>1</td></tr>
+<tr><td>session_hook_ci</td><td>❌ FAIL</td><td>2</td><td>1</td></tr>
+<tr><td>skill_tool_ci</td><td>❌ FAIL</td><td>2</td><td>1</td></tr>
+<tr><td>soft_interrupt_ci</td><td>❌ FAIL</td><td>2</td><td>2</td></tr>
+<tr><td>sse_events_ci</td><td>❌ FAIL</td><td>1</td><td>8</td></tr>
+<tr><td>streaming_replay_ci</td><td>❌ FAIL</td><td>2</td><td>4</td></tr>
+<tr><td>streaming_throughput_ci</td><td>❌ FAIL</td><td>1</td><td>1</td></tr>
+<tr><td>tier_models_ci</td><td>❌ FAIL</td><td>1</td><td>1</td></tr>
+<tr><td>ui_integration_ci</td><td>❌ FAIL</td><td>1</td><td>1</td></tr>
+</tbody></table>
+
+<div style="text-align:center;padding:32px;color:#94a3b8;font-size:12px">
+  生成时间: 2026-08-09 · ION CI Report v3<br>
+  下一步：把依赖 host 的脚本改用 ION_HOST_SOCKET 隔离
+</div>
+</body></html>

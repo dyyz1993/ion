@@ -32,7 +32,7 @@ cd "$PROJECT_DIR"
 
 ION_BIN="$PROJECT_DIR/target/debug/ion"
 DB_PATH="$HOME/.ion/agent/global-memory.db"
-SOCK_PATH="$HOME/.ion/host.sock"
+SOCK_PATH="${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
 
 # --- pass/fail helpers (all counters & messages in English) ---
 PASS=0

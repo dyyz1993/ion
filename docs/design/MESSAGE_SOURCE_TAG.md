@@ -34,7 +34,7 @@
 | 1.1 | UserMessage 加 source 字段 | 🔧 | `grep source ion-provider/src/types.rs` |
 | 1.2 | 4 个入口打标记 | 🔧 | `cargo test --lib message_source` |
 | 2.1 | list_turns / get_messages 返回 source | 🔧 | `ion rpc --method list_turns` |
-| 2.2 | turn_summary 记录 source | 🔧 | jsonl 含 `"source":"steer"` |
+| 2.2 | list_turns 从真实 UserMessage 派生 source | ✅ | jsonl user message 含 `"source":"steer"` |
 | 3.1 | CLI 验证 4 种 source | 🔧 | `tests/message_source_ci.sh` |
 
 ---

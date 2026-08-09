@@ -528,8 +528,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         let mut p = SESSION_FILE_PATH.lock().unwrap();
         *p = Some(session_file_path.clone());
     }
-    // 设置 lib 层全局覆盖（让 append_raw_entry / append_turn_summary 也用正确路径）
-    // 这样 fork 子 Worker 的 turn_summary 不会写到主 session.jsonl
+    // 设置 lib 层全局覆盖（让所有 append helper 使用正确的子会话路径）
     crate::session_jsonl::set_session_file_override(Some(session_file_path.clone()));
     // 存 sid + cwd 到全局，on_before_tool_execute 钩子用
     {
@@ -547,7 +546,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         std::env::set_var("ION_SESSION_PROVIDER", &provider);
     }
 
-    // 先确保 session header 存在（防 turn_summary 在 header 之前被追加，导致文件第一行不是 header）
+    // 先确保 session header 存在（防 message/custom 在 header 之前被追加）
     if is_fork_child {
         ensure_fork_session_header(&session_file_path, &worker_cwd, &sid);
     } else {
@@ -829,7 +828,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
     // ── 注册内置 Extension（Memory / Bash / Streaming），可通过 config.json 关闭 ──
     // 先创建 follow_up 通道（bash 插件后台进程完成时用来注入消息）
-    let (follow_up_tx, follow_up_rx) = tokio::sync::mpsc::unbounded_channel::<(ion_provider::Message, DeliverAs)>();
+    let (follow_up_tx, follow_up_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(ion_provider::Message, DeliverAs)>();
     let mut process_map = None;
     {
         let mut ext_reg = crate::agent::extension::ExtensionRegistry::new();
@@ -899,8 +899,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         let title_model = crate::config::IonConfig::load()
             .resolve_tier_model("fast")
             .unwrap_or_else(|| model.clone());
-        let title_api_key = crate::config::IonConfig::load()
-            .resolve_provider_api_key(&title_model.provider);
+        let title_api_key =
+            crate::config::IonConfig::load().resolve_provider_api_key(&title_model.provider);
         ext_reg.register(Box::new(
             crate::auto_session_title::AutoSessionTitle::with_registry(
                 Arc::clone(&registry),
@@ -1531,7 +1531,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     _ => crate::message_retrieval::CustomFilter::None,
                 };
 
-                // 从磁盘读 entries（含 turn_summary/compaction 等非 message entry）
+                // 从磁盘读 entries（含 compaction/custom 等非 message entry）
                 let entries: Vec<serde_json::Value> =
                     crate::message_retrieval::load_entries_cached(&worker_cwd);
 
@@ -2126,9 +2126,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             .ok()
                             .and_then(|s| s.parse::<u64>().ok())
                             .unwrap_or(60_000);
-                        let drained_msgs = agent
-                            .graceful_drain_follow_ups(drain_ms, 50)
-                            .await;
+                        let drained_msgs = agent.graceful_drain_follow_ups(drain_ms, 50).await;
                         for msg in &drained_msgs {
                             // ★ 用消息自带的 timestamp（进程完成时间），而非写入时间。
                             // 之前用 timestamp_iso() 导致所有 drained 消息的时间戳都是
@@ -2642,7 +2640,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                 "id": e.get("id").and_then(|v| v.as_str()).unwrap_or(""),
                                 "parentId": e.get("parentId").and_then(|v| v.as_str()),
                                 "type": e.get("type").and_then(|v| v.as_str()).unwrap_or(""),
-                                "turnId": e.get("turnId").and_then(|v| v.as_u64()),
+                                "customType": e.get("customType").and_then(|v| v.as_str()),
                             })
                         })
                         .collect();
@@ -2654,12 +2652,16 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         }),
                     );
                 } else {
-                    // structure 模式：只返回 compaction + leaf_pointer + 分支末端
+                    // structure 模式：返回压缩点、分支指针与文件快照锚点。
                     let struct_nodes: Vec<_> = entries
                         .iter()
                         .filter(|e| {
                             let t = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                            t == "compaction" || t == "leaf_pointer" || t == "turn_summary"
+                            t == "compaction"
+                                || t == "leaf_pointer"
+                                || (t == "custom"
+                                    && e.get("customType").and_then(|v| v.as_str())
+                                        == Some(crate::session_jsonl::CUSTOM_TYPE_STEP_SNAPSHOT))
                         })
                         .cloned()
                         .collect();
@@ -3690,10 +3692,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 // 主动 drain follow_up_rx（用于 call_tool 路径下后台进程完成通知的写入）。
                 // 典型用法：bash background=true → sleep N → drain_follow_ups → jsonl 里有 <bash_result>
                 // --params '{"wait_ms": 1000}'  // 可选：先 sleep 再 drain（等长任务完成）
-                let wait_ms = params
-                    .get("wait_ms")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
+                let wait_ms = params.get("wait_ms").and_then(|v| v.as_u64()).unwrap_or(0);
                 if wait_ms > 0 {
                     tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
                 }
@@ -6977,7 +6976,7 @@ mod tests {
         let entries = vec![
             mk_msg("a", None),
             mk_msg("b", Some("a")),
-            serde_json::json!({"type": "turn_summary", "id": "s1"}),
+            serde_json::json!({"type": "system_event", "id": "s1"}),
         ];
         assert_eq!(count_live_messages(&entries), 2);
     }
@@ -7027,7 +7026,7 @@ mod tests {
             entries.push(mk_msg(&format!("m{}", i), parent.as_deref()));
             // Sprinkle a non-message entry sharing an id-free shape; it must
             // not break the id index.
-            entries.push(serde_json::json!({"type": "turn_summary", "id": format!("s{}", i)}));
+            entries.push(serde_json::json!({"type": "system_event", "id": format!("s{}", i)}));
         }
         let start = std::time::Instant::now();
         let count = count_live_messages(&entries);

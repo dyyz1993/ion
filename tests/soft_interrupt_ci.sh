@@ -23,7 +23,7 @@ fail() { FAIL=$((FAIL+1)); red   "$1"; }
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 ION_BIN="$PROJECT_DIR/target/debug/ion"
-SOCK="$HOME/.ion/host.sock"
+SOCK="${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
 
 echo "=========================================="
 echo "  Soft Interrupt CI (Phase 4b)"

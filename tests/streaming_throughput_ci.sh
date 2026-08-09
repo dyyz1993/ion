@@ -45,7 +45,7 @@ count_matches() {
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 ION_BIN="$PROJECT_DIR/target/debug/ion"
-SOCK="$HOME/.ion/host.sock"
+SOCK="${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
 
 # 临时禁用 global-memory + file-snapshot 扩展（避免 memory-agent 消耗 FauxProvider 队列、
 # 避免 file-approval 弹审批阻塞测试流程）。

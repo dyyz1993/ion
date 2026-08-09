@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use ion::agent::agent_loop::{Agent, AgentConfig};
 use ion::agent::extension::ExtensionRegistry;
+use ion::agent::extension::Extension;
 use ion::agent::messages::Message;
 use ion::agent::tool::{ToolRegistry, WriteTool};
 use ion::file_snapshot::{
@@ -19,6 +20,43 @@ use ion::storage_context::StorageContext;
 use ion_provider::faux;
 use ion_provider::registry::ApiRegistry;
 use ion_provider::types::*;
+
+struct HarnessSessionPersistence {
+    cwd: String,
+    session_id: String,
+    saved_messages: std::sync::Mutex<usize>,
+}
+
+#[async_trait::async_trait]
+impl Extension for HarnessSessionPersistence {
+    fn name(&self) -> &str {
+        "harness-session-persistence"
+    }
+
+    async fn on_before_tool_execute(
+        &self,
+        _tool_name: &str,
+        _args: &serde_json::Value,
+        messages: &[Message],
+    ) -> ion::agent::error::AgentResult<()> {
+        let mut saved = self.saved_messages.lock().unwrap();
+        if messages.len() <= *saved {
+            return Ok(());
+        }
+        let entries = ion::session_jsonl::SessionFile::load(&self.cwd)
+            .map(|file| file.entries)
+            .unwrap_or_default();
+        let mut parent_id = ion::session_tree::resolve_current_leaf(&entries)
+            .unwrap_or_else(|| self.session_id.clone());
+        for message in &messages[*saved..] {
+            let entry = ion::session_jsonl::message_to_entry(message, &parent_id);
+            parent_id = entry["id"].as_str().unwrap().to_string();
+            ion::session_jsonl::append_raw_entry(&self.cwd, &entry);
+        }
+        *saved = messages.len();
+        Ok(())
+    }
+}
 
 fn faux_model() -> Model {
     Model {
@@ -98,6 +136,12 @@ fn build_agent(
     let storage = StorageContext::new(cwd, "fs_harness_sess", cwd);
     let mgr = Arc::new(ApprovalManager::new(store.clone(), storage));
     let mut ext_reg = ExtensionRegistry::new();
+    ion::session_jsonl::ensure_session_header(cwd, "fs_harness_sess");
+    ext_reg.register(Box::new(HarnessSessionPersistence {
+        cwd: cwd.to_string(),
+        session_id: "fs_harness_sess".into(),
+        saved_messages: std::sync::Mutex::new(0),
+    }));
     ext_reg.register(Box::new(fs_ext));
     ext_reg.register(Box::new(ApprovalExtension::new(mgr.clone())));
 
@@ -109,9 +153,85 @@ fn build_agent(
     };
     let agent = Agent::new(Arc::new(registry), faux_model(), None, tools, config)
         .with_extensions(ext_reg)
-        .with_session_cwd(Some(cwd.to_string()));
+        .with_session_cwd(Some(cwd.to_string()))
+        .with_session_id(Some("fs_harness_sess".into()));
 
     (agent, store, mgr)
+}
+
+/// H0：Factory FauxProvider 驱动真实消息树，验证回合与 step-snapshot 共用一套 entry 链。
+#[tokio::test]
+async fn h0_factory_agent_persists_parented_step_snapshot_without_duplicate_turn_entry() {
+    let cwd = tmp_cwd("h0_parented");
+    let target = format!("{cwd}/factory.txt");
+    let first_target = target.clone();
+    let responses = vec![
+        faux::FauxResponseStep::Factory(Box::new(move |context, _, state, _| {
+            assert_eq!(state.call_count, 0);
+            assert!(context.messages.iter().any(|message| matches!(message, Message::User(_))));
+            faux::faux_assistant_message(
+                faux::FauxContent::Single(faux::faux_tool_call(
+                    "write",
+                    serde_json::json!({"file_path":first_target,"content":"factory"}),
+                )),
+                faux::FauxMessageOptions {
+                    stop_reason: Some(StopReason::ToolUse),
+                    error_message: None,
+                },
+            )
+        })),
+        faux::FauxResponseStep::Factory(Box::new(|context, _, state, _| {
+            assert_eq!(state.call_count, 1);
+            assert!(context
+                .messages
+                .iter()
+                .any(|message| matches!(message, Message::ToolResult(_))));
+            faux::faux_assistant_message(
+                faux::FauxContent::Text("factory write complete".into()),
+                faux::FauxMessageOptions {
+                    stop_reason: Some(StopReason::Stop),
+                    error_message: None,
+                },
+            )
+        })),
+    ];
+
+    let (mut agent, _store, _manager) = build_agent(&cwd, responses);
+    agent.run("create factory.txt").await.unwrap();
+
+    let session = ion::session_jsonl::SessionFile::load(&cwd).unwrap();
+    assert!(!session
+        .entries
+        .iter()
+        .any(|entry| entry.get("type").and_then(|v| v.as_str()) == Some("turn_summary")));
+    let snapshot = session
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.get("customType").and_then(|v| v.as_str())
+                == Some(ion::session_jsonl::CUSTOM_TYPE_STEP_SNAPSHOT)
+        })
+        .expect("changed turn must append step-snapshot");
+    let parent_id = snapshot["parentId"].as_str().unwrap();
+    assert!(session.entries.iter().any(|entry| {
+        entry.get("id").and_then(|v| v.as_str()) == Some(parent_id)
+            && entry.get("type").and_then(|v| v.as_str()) == Some("message")
+    }));
+    assert!(snapshot["data"]["snapshotTreeHash"].is_string());
+
+    let turns = ion::message_retrieval::retrieve_turns(
+        &session.entries,
+        &ion::message_retrieval::RetrievalParams::default(),
+        false,
+    );
+    assert_eq!(turns.total_count, 1);
+    assert_eq!(turns.turns[0].tool_call_count, 1);
+    assert_eq!(
+        turns.turns[0].turn_id,
+        turns.turns[0].user_entry_id.clone().unwrap()
+    );
+
+    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 /// H1：write 工具执行后 SnapshotStore 有记录（采集链路）
@@ -527,7 +647,7 @@ async fn h9_re_approval_resets_to_pending_keeps_baseline() {
 ///
 /// 运行方式：
 /// ```bash
-/// ION_E2E=1 bash tests/file_snapshot_ci.sh   # 跑 Group L（L1-L5）
+/// ION_E2E=1 bash tests/file_snapshot_ci.sh   # 跑 Group L（L1-L6）
 /// ```
 ///
 /// 这个 Rust 测试保留作为占位，未来如果需要在 harness 层（不走 host）
@@ -536,5 +656,5 @@ async fn h9_re_approval_resets_to_pending_keeps_baseline() {
 #[ignore]
 async fn e1_real_agent_approval_workflow() {
     // 已由 CI Group L 覆盖（tests/file_snapshot_ci.sh）
-    // ION_E2E=1 bash tests/file_snapshot_ci.sh → 跑 L1-L5
+    // ION_E2E=1 bash tests/file_snapshot_ci.sh → 跑 L1-L6
 }

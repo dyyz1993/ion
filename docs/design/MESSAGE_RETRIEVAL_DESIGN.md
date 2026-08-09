@@ -24,7 +24,7 @@ interface Message {
   isComplete?: boolean;   // false = 中断（半截消息）
   display?: boolean;      // 旁路数据：是否前端展示
   timestamp?: string;     // ISO 8601
-  turnId?: number;        // 所属轮次
+  turnId?: string;        // 所属轮次，等于 root user message entryId
 }
 ```
 
@@ -32,7 +32,7 @@ interface Message {
 
 ```typescript
 interface Turn {
-  turnId: number;
+  turnId: string;            // 真实 user message entryId
   userId: string;            // 用户消息 entryId
   assistantId?: string;      // 最后一条 assistant 的 entryId
   userContent: string;       // 用户提问（真实消息正文）
@@ -52,7 +52,9 @@ interface ToolStep {
 }
 ```
 
-> **强制约束**：每个 turn（含 abort/error/max_turns）都必须有对应的 turn_summary entry，status 标对应值。abort 时 agent_loop 退出前必须追加 turn_summary，确保 `list_turns` 能看到所有 turn（不会因为中断而漏）。
+> **强制约束**：每个 turn 由当前分支上的真实 user message 开始，直到下一条 user message
+> 之前结束。abort/error/max_turns 通过实际 Assistant stopReason 派生，因此即使没有完整
+> assistant 文本也不会从 `list_turns` 漏掉；禁止为此复制写入额外摘要 Entry。
 
 ### 1.3 Tree Node（会话树/分支拓扑）
 
@@ -61,14 +63,14 @@ interface TreeNode {
   id: string;                // entryId
   parentId: string | null;
   type: "message" | "compaction" | "leaf_pointer" | "custom";
-  turnId?: number;
+  turnId?: string;           // 所属 root user entryId
   label?: string;            // 可读简称
 }
 
 interface BranchInfo {
   id: string;                // 该分支末端 entryId
   label: string;
-  turnRange: [number, number];
+  turnRange: [string, string];
   abandoned?: boolean;       // true = 已被回滚
   active?: boolean;          // true = 当前分支
 }
@@ -191,7 +193,7 @@ interface LiveEvent {
 ```json
 {
   "turns": [{
-    "turnId": 1, "userId": "msg_001", "userContent": "帮我重构",
+    "turnId": "msg_001", "userId": "msg_001", "userContent": "帮我重构",
     "assistantId": "msg_002", "assistantContent": "好的，我来...",
     "keySteps": [{"tool": "read", "path": "src/session_jsonl.rs"}],
     "toolCallCount": 1, "tokens": {"input": 150, "output": 200},
@@ -210,7 +212,7 @@ interface LiveEvent {
 **返回**：
 ```json
 {
-  "inputs": [{"turnId": 1, "entryId": "msg_001", "text": "帮我重构..."}],
+  "inputs": [{"turnId": "msg_001", "entryId": "msg_001", "text": "帮我重构..."}],
   "hasMore": false, "totalCount": 10, "nextCursor": null
 }
 ```
@@ -219,12 +221,12 @@ interface LiveEvent {
 
 **用途**：展开某轮看全部 entry（含 tool_call/tool_result/thinking）。**不分页**。
 
-**参数**：`turnId: number`, `include_custom?: string`
+**参数**：`turnId: string`（真实 user entryId）, `include_custom?: string`
 
 **返回**：
 ```json
 {
-  "turnId": 3,
+  "turnId": "msg_003",
   "entries": [{ "entryId", "type", "role", "content", "toolCall", "isError" }],
   "overview": { "userContent", "assistantContent", "keySteps", "toolCallCount", "tokens", "durationMs", "status", "modifiedFiles": ["src/rpc.rs", "src/session_jsonl.rs"] }
 }
@@ -344,7 +346,7 @@ interface LiveEvent {
 | `memory_search` | ❌ | ❌ | 自动检索（背后执行） |
 | `memory_injected` | ✅ | ❌ | 记忆注入（模型看到、用户不看到） |
 
-插件 customType 由扩展自行声明，不占用内核命名空间。
+运行时 Extension customType 由扩展自行声明，不占用内核命名空间。
 
 ### 4.3 include_custom 参数
 
@@ -519,12 +521,12 @@ get_messages 返回 = L3(磁盘冷段) + L2(内存热段)，按 entryId 排序
 | 分页方式 | 游标（after/before） | compaction/branch 让 offset 漂移 |
 | 默认分页 | limit=50（不是全量） | >100MB 大会话安全默认 |
 | turn 完整性 | complete_turn=true（默认） | 前端 UI 渲染不切半截 turn |
-| **abort/error turn** | **强制有 turn_summary** | 中断的 turn 不能从 list_turns 漏掉 |
+| **abort/error turn** | **从 user 边界 + Assistant stopReason 派生** | 中断回合不漏掉，也不复制正文 |
 | **list_turns content** | **默认截断 200 字** | 用户贴大文件不撑爆响应；full_content:true 取全 |
 | 血缘模型 | 只一层直接 parent | 不传递祖先链，fork 是独立会话 |
 | copy vs fork | copy 消解进 fork | fork 不填 parentEntry = copy 当前上下文 |
 | **get_children** | **只直接子，不递归** | recursive 由前端递归调用实现 |
-| customType 定义 | 内核不独占命名空间 | 插件扩展自己声明 |
+| customType 定义 | 内核不独占命名空间 | 运行时 Extension 自己声明 |
 | 旁路过滤 | 两维正交（进LLM? + 展示?） | 4 种组合覆盖所有场景 |
 | 可见性过滤 | 默认生效，view:full 绕过 | 用户自然顺序，审计全量可选 |
 | 历史 vs 实时 | entryId 去重拼接 | 同一 ID 体系，安全合并 |
@@ -573,7 +575,7 @@ get_messages 返回 = L3(磁盘冷段) + L2(内存热段)，按 entryId 排序
 
 1. ✅ get_tree 双模式（structure 轻量 / full 分页）
 2. ✅ list_turns content 默认截断 200 字 + full_content 参数
-3. ✅ abort/error turn 强制有 turn_summary
+3. ✅ abort/error turn 从真实消息树派生，不写重复摘要
 4. ✅ list_inputs 分页结构统一（加 nextCursor）
 5. ✅ get_children 去掉 recursive
 6. ✅ SessionMeta 加 lastEntryId

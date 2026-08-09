@@ -115,7 +115,7 @@ impl Extension for DevServerDetectorExtension {
         // Step 1: care about both bash (sync) and bash (background) tools.
         // bash is the correct tool for starting dev servers (non-blocking),
         // so we must detect ports from its output too.
-        if ctx.tool_name != "bash"  {
+        if ctx.tool_name != "bash" {
             return Ok(());
         }
 
@@ -369,12 +369,7 @@ fn is_dev_server_command(cmd: &str) -> bool {
 }
 
 /// Add a server to the list only if the port is not already recorded.
-fn add_server_if_new(
-    servers: &mut Vec<DetectedServer>,
-    port: u16,
-    source_cmd: &str,
-    via: &str,
-) {
+fn add_server_if_new(servers: &mut Vec<DetectedServer>, port: u16, source_cmd: &str, via: &str) {
     // Skip if port already in the list
     if servers.iter().any(|s| s.port == port) {
         return;
@@ -514,7 +509,8 @@ mod tests {
 
     #[test]
     fn test_extract_ports_vite() {
-        let stdout = "  VITE v5.0.0\n  Local:   http://localhost:5173/\n  Network: http://192.168.1.5:5173/";
+        let stdout =
+            "  VITE v5.0.0\n  Local:   http://localhost:5173/\n  Network: http://192.168.1.5:5173/";
         let ports = extract_ports_from_stdout(stdout);
         assert_eq!(ports, vec![5173]);
     }
@@ -609,7 +605,10 @@ mod tests {
             alive: true,
         }];
         let xml = format_dev_servers_xml(&servers);
-        assert!(xml.contains("<dev_servers"), "missing <dev_servers> in:\n{xml}");
+        assert!(
+            xml.contains("<dev_servers"),
+            "missing <dev_servers> in:\n{xml}"
+        );
         assert!(
             xml.contains("port=\"3000\""),
             "missing port=\"3000\" in:\n{xml}"

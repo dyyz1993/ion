@@ -28,7 +28,7 @@ cargo build --bin ion 2>/dev/null || { echo "❌ build failed"; exit 1; }
 pass "build ion"
 
 # ── 准备隔离测试目录 ──
-# HOME=临时目录 → socket 路径 $HOME/.ion/host.sock 隔离，不污染用户真实 ~/.ion/
+# HOME=临时目录 → socket 路径 ${ION_HOST_SOCKET:-$HOME/.ion/host.sock} 隔离，不污染用户真实 ~/.ion/
 TEST_TMP="$(mktemp -d)"
 trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$TEST_TMP"' EXIT
 

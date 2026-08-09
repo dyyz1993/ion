@@ -6,7 +6,7 @@
 # 与 docs/testing/MESSAGE_RETRIEVAL_CASES.md 文档的
 # Group A-M「场景分组」是两套独立编号，内容交叉覆盖：
 #
-#   脚本 Group A-G  → 文档 A/B/D（CLI 基础 + 分页 + turn_summary + compaction + 字段）
+#   脚本 Group A-G  → 文档 A/B/D（CLI 基础 + 分页 + 消息树派生 + compaction）
 #   脚本 Group H    → 文档 H（turn 完整性）
 #   脚本 Group J    → 文档 J（中断态/错误态）
 #   脚本 Group K    → 文档 K（统计聚合）
@@ -79,7 +79,7 @@ fi
 echo ""
 echo "Group B: session 文件 + ion history 分页"
 
-# 手动构造一个含多轮对话 + turn_summary + compaction 的 session 文件
+# 手动构造一个含多轮对话 + step-snapshot + compaction 的 session 文件
 # （FauxProvider 模式落盘时机不确定，直接造文件更可靠）
 SESSION_DIR="$TEST_DIR/.ion_test_session"
 mkdir -p "$SESSION_DIR"
@@ -88,18 +88,16 @@ SESSION_FILE="$SESSION_DIR/session.jsonl"
 # 写 header
 echo '{"type":"session","version":3,"id":"test_mr_ci","timestamp":"2026-07-09T10:00:00Z","cwd":"/tmp/test"}' > "$SESSION_FILE"
 
-# 写 6 条 message（3 轮对话）+ turn_summary
+# 写 6 条 message（3 个真实用户回合）+ parented step-snapshot
 cat >> "$SESSION_FILE" << 'JSONL'
 {"type":"message","id":"msg_001","parentId":"","timestamp":"2026-07-09T10:00:01Z","message":{"role":"user","content":[{"type":"text","text":"帮我重构接口"}]}}
-{"type":"message","id":"msg_002","parentId":"msg_001","timestamp":"2026-07-09T10:00:02Z","message":{"role":"assistant","content":[{"type":"text","text":"好的我来分析"}]}}
-{"type":"turn_summary","id":"ts_001","parentId":null,"timestamp":"2026-07-09T10:00:02Z","turnId":0,"userEntryId":"msg_001","summary":"分析了现有代码","keySteps":["read"],"toolCallCount":1,"tokens":{"input":150,"output":200},"durationMs":1200,"entryRange":["msg_001"],"status":"completed"}
+{"type":"message","id":"msg_002","parentId":"msg_001","timestamp":"2026-07-09T10:00:02Z","message":{"role":"assistant","content":[{"type":"text","text":"好的我来分析"},{"type":"tool_use","id":"call_1","name":"read","arguments":{}}],"usage":{"input":150,"output":200},"stopReason":"ToolUse"}}
 {"type":"message","id":"msg_003","parentId":"msg_002","timestamp":"2026-07-09T10:00:03Z","message":{"role":"user","content":[{"type":"text","text":"设计方案"}]}}
-{"type":"message","id":"msg_004","parentId":"msg_003","timestamp":"2026-07-09T10:00:04Z","message":{"role":"assistant","content":[{"type":"text","text":"用游标分页"}]}}
-{"type":"turn_summary","id":"ts_002","parentId":null,"timestamp":"2026-07-09T10:00:04Z","turnId":1,"userEntryId":"msg_003","summary":"设计了方案","keySteps":["read"],"toolCallCount":1,"tokens":{"input":180,"output":90},"durationMs":800,"entryRange":["msg_003"],"status":"completed"}
-{"type":"compaction","id":"cmp_001","parentId":null,"timestamp":"2026-07-09T10:00:05Z","summary":"前1轮压缩","tokensBefore":32000,"firstKeptEntryId":"msg_003","stage":"single"}
-{"type":"message","id":"msg_005","parentId":"msg_004","timestamp":"2026-07-09T10:00:06Z","message":{"role":"user","content":[{"type":"text","text":"写测试"}]}}
-{"type":"message","id":"msg_006","parentId":"msg_005","timestamp":"2026-07-09T10:00:07Z","message":{"role":"assistant","content":[{"type":"text","text":"测试写好了"}]}}
-{"type":"turn_summary","id":"ts_003","parentId":null,"timestamp":"2026-07-09T10:00:07Z","turnId":2,"userEntryId":"msg_005","summary":"写了测试","keySteps":["edit","bash"],"toolCallCount":2,"tokens":{"input":200,"output":100},"durationMs":1500,"entryRange":["msg_005"],"status":"completed"}
+{"type":"message","id":"msg_004","parentId":"msg_003","timestamp":"2026-07-09T10:00:04Z","message":{"role":"assistant","content":[{"type":"text","text":"用游标分页"}],"usage":{"input":180,"output":90},"stopReason":"Stop"}}
+{"type":"custom","id":"snap_001","parentId":"msg_004","timestamp":"2026-07-09T10:00:05Z","customType":"step-snapshot","data":{"baselineTreeHash":"tree0","snapshotTreeHash":"tree1","toolSnapshotTurnId":"ts_001","turnIndex":1,"diff":{"added":[],"modified":["src/lib.rs"],"deleted":[]}}}
+{"type":"compaction","id":"cmp_001","parentId":"snap_001","timestamp":"2026-07-09T10:00:05Z","summary":"前1轮压缩","tokensBefore":32000,"firstKeptEntryId":"msg_003","stage":"single"}
+{"type":"message","id":"msg_005","parentId":"cmp_001","timestamp":"2026-07-09T10:00:06Z","message":{"role":"user","content":[{"type":"text","text":"写测试"}]}}
+{"type":"message","id":"msg_006","parentId":"msg_005","timestamp":"2026-07-09T10:00:07Z","message":{"role":"assistant","content":[{"type":"text","text":"测试写好了"},{"type":"tool_use","id":"call_2","name":"bash","arguments":{}}],"usage":{"input":200,"output":100},"stopReason":"Stop"}}
 JSONL
 
 # B1: session 文件已创建
@@ -143,35 +141,31 @@ else
 fi
 
 # ──────────────────────────────────────────────────────────
-# Group C: turn_summary 落盘验证
+# Group C: 正文数据契约验证
 # ──────────────────────────────────────────────────────────
 echo ""
-echo "Group C: turn_summary 落盘"
+echo "Group C: 消息树 + step-snapshot"
 
-# C1: grep session.jsonl 确认有 turn_summary entry
-TS_COUNT=$(grep -c '"type":"turn_summary"' "$SESSION_FILE" 2>/dev/null || echo 0)
-if [ "$TS_COUNT" -ge 1 ]; then
-    pass "C1: session 文件含 $TS_COUNT 条 turn_summary entry"
+# C1: canonical JSONL 不再复制 assistant 内容到额外回合摘要 entry
+TS_COUNT=$(grep -c '"type":"turn_summary"' "$SESSION_FILE" 2>/dev/null || true)
+TS_COUNT=${TS_COUNT:-0}
+if [ "$TS_COUNT" -eq 0 ]; then
+    pass "C1: session 文件无冗余回合摘要 entry"
 else
-    # faux 模式可能不走 turn 结束落盘路径，检查是否有其他原因
-    fail "C1: session 文件无 turn_summary entry"
+    fail "C1: session 文件仍有 $TS_COUNT 条冗余回合摘要 entry"
 fi
 
-# C2: turn_summary 含必要字段
-if [ "$TS_COUNT" -ge 1 ]; then
-    TS_LINE=$(grep '"type":"turn_summary"' "$SESSION_FILE" | head -1)
-    if echo "$TS_LINE" | grep -q '"turnId"'; then
-        pass "C2: turn_summary 含 turnId 字段"
-    else
-        fail "C2: turn_summary 缺 turnId 字段"
-    fi
-    if echo "$TS_LINE" | grep -q '"status"'; then
-        pass "C3: turn_summary 含 status 字段"
-    else
-        fail "C3: turn_summary 缺 status 字段"
-    fi
+# C2-C3: step-snapshot 是真实 leaf 的 child，并直接携带 tree hash
+SNAP_LINE=$(grep '"customType":"step-snapshot"' "$SESSION_FILE" | head -1)
+if echo "$SNAP_LINE" | grep -q '"parentId":"msg_004"'; then
+    pass "C2: step-snapshot parentId 对齐真实消息 entry"
 else
-    skip "C2-C3: 无 turn_summary，跳过字段验证"
+    fail "C2: step-snapshot 未关联真实消息 entry"
+fi
+if echo "$SNAP_LINE" | grep -q '"baselineTreeHash"' && echo "$SNAP_LINE" | grep -q '"snapshotTreeHash"'; then
+    pass "C3: step-snapshot 含 baseline/snapshot tree hash"
+else
+    fail "C3: step-snapshot tree hash 字段不完整"
 fi
 
 # ──────────────────────────────────────────────────────────
@@ -234,31 +228,31 @@ else
 fi
 
 # ──────────────────────────────────────────────────────────
-# Group F: turn_summary 字段完整性 + 数据结构验证
+# Group F: 可派生字段 + 数据结构验证
 # ──────────────────────────────────────────────────────────
 echo ""
-echo "Group F: turn_summary / compaction 字段完整性"
+echo "Group F: Assistant / step-snapshot / compaction 字段完整性"
 
-# F1: turn_summary 含 keySteps
-TS_LINE=$(grep '"type":"turn_summary"' "$SESSION_FILE" | head -1)
-if echo "$TS_LINE" | grep -q "keySteps"; then
-    pass "F1: turn_summary 含 keySteps 字段"
+# F1: 工具步骤从 Assistant tool_use 派生
+ASST_LINE=$(grep '"id":"msg_002"' "$SESSION_FILE" | head -1)
+if echo "$ASST_LINE" | grep -q '"name":"read"'; then
+    pass "F1: Assistant 保留工具调用名称"
 else
-    fail "F1: turn_summary 缺 keySteps 字段"
+    fail "F1: Assistant 工具调用字段缺失"
 fi
 
-# F2: turn_summary 含 tokens
-if echo "$TS_LINE" | grep -q "tokens"; then
-    pass "F2: turn_summary 含 tokens 字段"
+# F2: token 直接来自 Assistant usage
+if echo "$ASST_LINE" | grep -q '"usage"'; then
+    pass "F2: Assistant 含 usage 字段"
 else
-    fail "F2: turn_summary 缺 tokens 字段"
+    fail "F2: Assistant 缺 usage 字段"
 fi
 
-# F3: turn_summary 含 toolCallCount
-if echo "$TS_LINE" | grep -q "toolCallCount"; then
-    pass "F3: turn_summary 含 toolCallCount 字段"
+# F3: 文件 diff 来自 step-snapshot
+if echo "$SNAP_LINE" | grep -q '"modified"'; then
+    pass "F3: step-snapshot 含文件 diff"
 else
-    fail "F3: turn_summary 缺 toolCallCount 字段"
+    fail "F3: step-snapshot 缺文件 diff"
 fi
 
 # F4: compaction entry 含 stage + tokensBefore
@@ -303,20 +297,19 @@ fi
 echo ""
 echo "Group H: turn 完整性（complete_turn）"
 
-# H1: turn_summary 的 entryRange 字段存在（turn 边界信息）
-TS_LINE=$(grep '"type":"turn_summary"' "$SESSION_FILE" | head -1)
-if echo "$TS_LINE" | grep -q "entryRange"; then
-    pass "H1: turn_summary 含 entryRange（turn 边界标记）"
+# H1: 每个 user entry 自身就是稳定 turn 边界
+USER_IDS=$(grep '"role":"user"' "$SESSION_FILE" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | tr '\n' ' ')
+if [ "$USER_IDS" = "msg_001 msg_003 msg_005 " ]; then
+    pass "H1: user entry id 是稳定 turn 边界"
 else
-    fail "H1: turn_summary 缺 entryRange 字段"
+    fail "H1: user turn 边界异常（$USER_IDS）"
 fi
 
-# H2: turn_summary 的 entryRange 是数组
-ENTRY_RANGE=$(echo "$TS_LINE" | sed 's/.*"entryRange":\[/[/' | sed 's/\].*/]/' | head -c 100)
-if echo "$ENTRY_RANGE" | grep -q "^\["; then
-    pass "H2: entryRange 是数组格式"
+# H2: 不再维护会漂移的 entryRange
+if ! grep -q '"entryRange"' "$SESSION_FILE"; then
+    pass "H2: JSONL 无冗余 entryRange"
 else
-    fail "H2: entryRange 格式异常"
+    fail "H2: JSONL 仍含冗余 entryRange"
 fi
 
 # H3: 分页 limit=2 时，complete_turn 应保证返回的 turn 完整
@@ -398,39 +391,46 @@ fi
 echo ""
 echo "Group K: 统计聚合"
 
-# K1: turn_summary 含 tokens 对象
-TS_LINE=$(grep '"type":"turn_summary"' "$SESSION_FILE" | head -1)
-if echo "$TS_LINE" | grep -q '"tokens"'; then
-    pass "K1: turn_summary 含 tokens 字段"
+# K1: Assistant 含 usage 对象
+if echo "$ASST_LINE" | grep -q '"usage"'; then
+    pass "K1: Assistant 含 usage 字段"
 else
-    fail "K1: turn_summary 缺 tokens 字段"
+    fail "K1: Assistant 缺 usage 字段"
 fi
 
 # K2: tokens 含 input + output
-if echo "$TS_LINE" | grep -q '"input"' && echo "$TS_LINE" | grep -q '"output"'; then
-    pass "K2: tokens 含 input + output"
+if echo "$ASST_LINE" | grep -q '"input"' && echo "$ASST_LINE" | grep -q '"output"'; then
+    pass "K2: usage 含 input + output"
 else
-    fail "K2: tokens 缺 input/output"
+    fail "K2: usage 缺 input/output"
 fi
 
-# K3: turn_summary 含 durationMs
-if echo "$TS_LINE" | grep -q '"durationMs"'; then
-    pass "K3: turn_summary 含 durationMs"
+# K3: 正文不重复保存聚合耗时
+if ! grep -q '"durationMs"' "$SESSION_FILE"; then
+    pass "K3: 正文不重复保存聚合耗时"
 else
-    fail "K3: turn_summary 缺 durationMs"
+    fail "K3: 正文仍有冗余聚合耗时"
 fi
 
-# K4: 多轮 tokens 聚合（手算 vs 文件里各 turn 的 tokens）
-# 验证每条 turn_summary 都有独立 tokens（前端可求和）
-TS_COUNT=$(grep -c '"type":"turn_summary"' "$SESSION_FILE" 2>/dev/null || echo 0)
-if [ "$TS_COUNT" -ge 2 ]; then
-    pass "K4: 有 $TS_COUNT 条 turn_summary（可按 turn 聚合成本）"
+# K4: 每次 LLM 响应都有独立 usage
+USAGE_COUNT=$(grep -c '"usage"' "$SESSION_FILE" 2>/dev/null || echo 0)
+if [ "$USAGE_COUNT" -eq 3 ]; then
+    pass "K4: 3 次 Assistant 响应均有 usage"
 else
-    fail "K4: turn_summary 不足（$TS_COUNT < 2）"
+    fail "K4: Assistant usage 数量异常（$USAGE_COUNT）"
 fi
 
-# K5: 累加验证 — 所有 turn 的 tokens.output 之和
-TOTAL_OUTPUT=$(grep '"type":"turn_summary"' "$SESSION_FILE" | sed 's/.*"output":\([0-9]*\).*/\1/' | awk '{s+=$1} END{print s}')
+# K5: 累加验证 — 所有 Assistant usage.output 之和
+TOTAL_OUTPUT=$(python3 - "$SESSION_FILE" <<'PY'
+import json, sys
+total = 0
+for line in open(sys.argv[1], encoding="utf-8"):
+    entry = json.loads(line)
+    message = entry.get("message", {})
+    total += message.get("usage", {}).get("output", 0)
+print(total)
+PY
+)
 EXPECTED_TOTAL=390  # 200 + 90 + 100
 if [ "$TOTAL_OUTPUT" = "$EXPECTED_TOTAL" ]; then
     pass "K5: tokens 聚合正确（$TOTAL_OUTPUT = $EXPECTED_TOTAL）"
@@ -490,11 +490,11 @@ else
     fail "N4: 缺内核 customType"
 fi
 
-# N5: 插件 customType（memory_search/memory_saved）— 不占内核命名空间
+# N5: Extension customType（memory_search/memory_saved）— 不占内核命名空间
 if grep -q '"customType":"memory_search"' "$CUSTOM_FILE"; then
-    pass "N5: 插件 customType 存在（memory_search，插件自定义）"
+    pass "N5: Extension customType 存在（memory_search，扩展自定义）"
 else
-    fail "N5: 缺插件 customType"
+    fail "N5: 缺 Extension customType"
 fi
 
 # N6: ion history 能读含旁路数据的 session（不崩溃）
@@ -640,19 +640,19 @@ fi
 
 # ──────────────────────────────────────────────────────────
 # Group P: list_turns / get_turn_detail RPC 响应含 durationMs
-# 用 FauxProvider 跑真实 agent loop 产生 turn_summary，再调 RPC 验证响应字段
+# 用 FauxProvider 跑真实 agent loop，再调 RPC 验证消息树派生字段
 # ──────────────────────────────────────────────────────────
 echo ""
 echo "Group P: list_turns / get_turn_detail RPC durationMs"
 echo "  注：FauxProvider 不走网络，turn 常 <1ms，durationMs 可能为 0；"
 echo "  本组验证「字段存在 + 类型正确」，真实耗时由真实 LLM 场景验证。"
 
-# P1: 起 host + faux + prompt 产生 turn_summary
+# P1: 起 host + faux + prompt 产生真实 user/assistant message
 P_DIR=$(mktemp -d)
 P_HOST_LOG="/tmp/ion_mr_p_host.log"
 # 清理可能残留的 host（前面 Group 的 host 或手动测试残留）
-lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null || true
-rm -f "$HOME/.ion/host.sock"
+lsof -ti "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" 2>/dev/null | xargs kill 2>/dev/null || true
+rm -f "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
 sleep 1
 # 不用 timeout（会被递归 idle 关或脚本末尾手动 kill）
 ION_FAUX_REPEAT=1 ION_FAUX_REPLY="P group faux reply" "$ION_BIN" serve >"$P_HOST_LOG" 2>&1 &
@@ -663,7 +663,7 @@ P_SID=$(timeout 15 "$ION_BIN" rpc --method create_session --params "{\"cwd\":\"$
 
 if [ -n "$P_SID" ]; then
     pass "P1: serve + create_session ($P_SID)"
-    # 发 prompt 触发 agent loop（会产生 turn_summary entry）
+    # 发 prompt 触发 agent loop
     timeout 30 "$ION_BIN" rpc --session "$P_SID" --method prompt --params '{"text":"hello"}' >/dev/null 2>&1 || true
     sleep 3
 
@@ -697,8 +697,8 @@ fi
 # 清理 host（精确 PID 优先 + 完整路径兜底，按 AGENTS.md 规范）
 kill "$P_HOST_PID" 2>/dev/null || true
 wait "$P_HOST_PID" 2>/dev/null || true
-lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null || true
-rm -f "$HOME/.ion/host.sock"
+lsof -ti "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" 2>/dev/null | xargs kill 2>/dev/null || true
+rm -f "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
 rm -rf "$P_DIR"
 
 # ──────────────────────────────────────────────────────────

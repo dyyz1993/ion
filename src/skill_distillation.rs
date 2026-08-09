@@ -146,10 +146,10 @@ Output (Markdown only, no JSON, no code fence around the whole thing):"#;
     let skill_text = crate::config::IonConfig::load()
         .query_tier(
             registry,
-            "fast",  // skill 蒸馏用 fast tier（经济）
+            "fast", // skill 蒸馏用 fast tier（经济）
             &system_prompt,
             &user_msg,
-            false,   // 不需要 JSON
+            false, // 不需要 JSON
         )
         .await?;
 

@@ -28,7 +28,7 @@ count_matches() {
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 ION_BIN="$PROJECT_DIR/target/debug/ion"
-SOCK="$HOME/.ion/host.sock"
+SOCK="${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
 
 echo "=========================================="
 echo "  SSE Events CI (Phase 4a)"

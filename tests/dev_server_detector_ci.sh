@@ -108,7 +108,7 @@ echo "C2: 场景 3 注册验证（serve host）"
 # 杀残留 host
 "$ION_BIN" serve stop 2>/dev/null
 sleep 1
-rm -f "$HOME/.ion/host.sock"
+rm -f "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
 
 nohup "$ION_BIN" serve >/tmp/ion_detector_ci_serve.log 2>&1 &
 HOST_PID=$!

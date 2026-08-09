@@ -395,7 +395,7 @@ pub enum HandlerType {
 - `UserPromptSubmit` 被 block → 返回错误消息给用户，不进入 agent 处理
 - `PreToolUse` exit 2 → 不执行工具，生成同 `toolCallId` 的 `is_error=true` ToolResult，并让 Agent 继续；exit 3 → 弹出 UI 确认（走 PermissionEngine）
 - `PreToolUse` 的 `hook_event` 携带 `details.source=hook`、`hookEvent=PreToolUse`、`decision`、`toolCallId`、`toolName`、`reason`，父链位于当前分支；导出时归入对应工具卡片
-- 拒绝结构固定为 `User → Assistant(ToolCall) → hook_event → ToolResult(error) → Assistant`；`turn_summary` 只记录回合摘要，不承载拒绝响应
+- 拒绝结构固定为 `User → Assistant(ToolCall) → hook_event → ToolResult(error) → Assistant`；回合概览从该真实消息链派生，不另写摘要
 - `loop_count >= loop_limit` → 跳过该 HookGroup（防死循环）
 
 ### 3.4 Handler 执行引擎

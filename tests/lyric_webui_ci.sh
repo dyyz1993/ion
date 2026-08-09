@@ -58,7 +58,7 @@ echo ""
 echo "── Group A: 基础 HTTP 服务 ──"
 
 # 起一个干净的 host（用 FauxProvider 兜底，避免真 LLM）
-SOCK="$HOME/.ion/host.sock"
+SOCK="${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
 # 清理残留 host：按 pid 文件 + socket 精确清理（不用宽泛 pkill —— 见 AGENTS.md CI 规范）
 # 必须彻底清，否则老 host 占着 socket，CI 会误以为自己的 host 起来了（复用老 host）。
 cleanup_stale_host() {

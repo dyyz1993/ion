@@ -1,6 +1,6 @@
 # 会话消息拉取 — CLI 用例集
 
-> **状态:设计定稿(2026-07-09)** — 经系统审查确认 8 个调整已落实,9 个接口定稿,可进入实现阶段。
+> **状态：已验证（2026-08-09）** — 9 个接口已实现；回合由真实 user entry 划分，Assistant usage/tool calls 派生概览，File Snapshot 以 parented custom 出现在消息树。
 >
 > 基于 `get_messages` / `list_turns` / `list_inputs` / `get_turn_detail` / `get_tree` 五个核心拉取接口,加 `list_sessions` / `get_session_stats` / `subscribe` / `get_children` 四个配套接口的 CLI 验证用例(共 12 个 Group A-L)。
 >
@@ -185,7 +185,7 @@ ion rpc --session sess_demo --method list_turns --params '{"limit": 0}'
   "data": {
     "turns": [
       {
-        "turnId": 1,
+        "turnId": "msg_001",
         "userId": "msg_001",
         "userContent": "帮我列出项目结构",
         "assistantId": "msg_002",
@@ -198,7 +198,7 @@ ion rpc --session sess_demo --method list_turns --params '{"limit": 0}'
         "status": "completed"
       },
       {
-        "turnId": 2,
+        "turnId": "msg_003",
         "userId": "msg_003",
         "userContent": "再加一个测试目录",
         "assistantId": "msg_004",
@@ -254,8 +254,8 @@ ion rpc --session sess_demo --method list_inputs --params '{"limit": 0}'
   "success": true,
   "data": {
     "inputs": [
-      { "turnId": 1, "entryId": "msg_001", "text": "帮我列出项目结构" },
-      { "turnId": 2, "entryId": "msg_003", "text": "再加一个测试目录" }
+      { "turnId": "msg_001", "entryId": "msg_001", "text": "帮我列出项目结构" },
+      { "turnId": "msg_003", "entryId": "msg_003", "text": "再加一个测试目录" }
     ],
     "hasMore": false,
     "totalCount": 2,
@@ -955,7 +955,7 @@ ion rpc --session sess_custom --method get_turn_detail \
 | `retry_exceeded` | 不进 | 不展示 | 重试达上限(内部状态) |
 | `process_started` | 不进 | 不展示 | bash 后台进程启动(内部状态) |
 
-**插件 customType**(各扩展自定义,**不占用内核命名空间**,由扩展自己声明进 LLM?/展示?):
+**运行时 Extension customType**（各扩展自定义，**不占用内核命名空间**，由扩展自己声明进 LLM?/展示?）：
 
 | 来源 | customType(举例) | 进 LLM? | 展示? | 说明 |
 |------|-----------------|---------|-------|------|
@@ -964,7 +964,7 @@ ion rpc --session sess_custom --method get_turn_detail \
 | Memory 扩展 | `memory_injected` | 进 | 不展示 | on_context 注入 `<memory_context>`(模型看,用户不看到) |
 | 任意扩展 | `<extension>_<event>` | 由扩展声明 | 由扩展声明 | 扩展在自己的 MANUAL.md 里定义 |
 
-> **关键**:G5 表里的"进 LLM?/展示?"是**建议值**,不是死规定。插件 customType 的两维属性由**扩展自己声明**(在扩展的 MANUAL.md 里),内核不替插件决定。内核只管自己的 customType。拉取时,`include_custom` 过滤依据这两维:
+> **关键**：G5 表里的“进 LLM?/展示?”是建议值。运行时 Extension customType 的两维属性由扩展在自己的 MANUAL.md 中声明，内核只管内置 customType。拉取时，`include_custom` 过滤依据这两维：
 > - `none`:全过滤
 > - `display_only`:只带"展示"的
 > - `all`:全带(含不展示的内部状态)

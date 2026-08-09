@@ -40,7 +40,7 @@ echo ""
 echo "Group T: Tier Models（模型分层别名）"
 
 # T1: get_tier_models 返回默认值（需 host）
-SOCK="$HOME/.ion/host.sock"
+SOCK="${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
 rm -f "$SOCK" 2>/dev/null
 
 ION_FAUX_REPLY="tier test" $ION_BIN serve >/tmp/ion_tier_host.log 2>&1 &

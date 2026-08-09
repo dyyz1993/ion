@@ -372,7 +372,7 @@ impl Agent {
   7. transform_messages（跨 provider 规范化）
      对齐 pi: convertToLlm
   8. provider 调用（LLM API）
-  9. on_turn_end → persist_turn_summary
+  9. on_turn_end → 生命周期 Extension（如 changed turn 的 parented step-snapshot）
 
 外层 post-run 循环（跳出重进机制，对齐 pi _runPostAgentLoop）:
   while (_handlePostAgentRun()) {     // 检查是否需要继续

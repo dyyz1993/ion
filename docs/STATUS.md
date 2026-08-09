@@ -38,7 +38,7 @@
 - **5 类 hooks 系统** — command/http/prompt/agent/mcp_tool（2975 行，热重载）
 - **MCP 系统** — rmcp 1.x + host→worker 工具发现 + 重连监控 + resources/prompts
 - **Memory V0.2** — 单例扩展 + SQLite/FTS5 + 跨项目检索 + 中文 LIKE fallback
-- **File Snapshot** — 双路快照（object + tree）+ zstd 压缩 + 三级 GC + restore/approval
+- **File Snapshot** — 双路快照（object + tree）+ parented `step-snapshot` + tree-hash restore + zstd 压缩 + 三级 GC + approval
 - **Goal Supervisor** — `on_gate_check` 证据驱动目标闭环 + 6 道防线 + 趋势分析 + goal_refine/diagnose
 - **Goal Evolver** — 日志分析进化（3 维度：deadloop/model/context）→ Issue 计划
 - **LSP Extension** — 5 语言诊断（Rust/TS/Python/Go/HTML，基于编译器 JSON 输出，非 rust-analyzer）
@@ -57,7 +57,7 @@
 - **Record/Replay** — LLM 决策录制回放（复用 FauxProvider）
 - **FauxProvider** — 架构级 LLM Mock（FIFO 队列 + 工厂响应 + 流式分块）
 - **Worker 崩溃恢复** — stderr 捕获 + exit code + Dead 保留 + 父通知
-- **HTML Export** — pi 模板 + 会话元信息卡 + tools 列表 + 完整可见事件 Timeline（类型筛选、悬停概要、点击跳转）；内部 `turn_summary` 原样打包但不渲染；仅当隐藏正文超过 3 行时折叠，预览保留 3 行正文
+- **HTML Export** — ION 自有单文件离线模板 + 会话元信息卡 + Flow Summary + tools 列表 + 完整可见事件 Timeline（17 种固定 Entry、25 种已识别内置 Custom、当前会话类型统计、运行时 Extension 开放类型、筛选/悬停/点击跳转）；真实消息、Compaction 与 parented File Snapshot 在正文/Timeline 一一对应；仅当隐藏正文超过 3 行时折叠，预览保留 3 行正文（`tests/export_ci.sh`）
 - **Apple Container 后端** — 真隔离 Linux VM，同端口并行
 - **A→B 自进化** — A 调度 B 改代码 + CI + 合并 + PR（14 脚本，24 agent 模板）
 

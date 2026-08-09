@@ -5,7 +5,7 @@
 //!
 //! 断言策略：按文档描述的期望行为断言。
 //!   - 会暴露 F1（SessionFile::load 不过滤 leaf_pointer）
-//!   - 会暴露 F3（turnId 重置——通过 turn_summary entry 观察）
+//!   - 验证 user entry turn 锚点与 parented step-snapshot 回滚解析
 //!
 //! 参照 tests/file_snapshot_harness.rs 的 tmp_cwd 模式（唯一 cwd 隔离）。
 
@@ -68,25 +68,6 @@ fn msg_entry(parent_id: &str, role: &str, text: &str) -> serde_json::Value {
         "parentId": parent_id,
         "timestamp": session_jsonl::timestamp_iso(),
         "message": msg_val,
-    })
-}
-
-/// 构造 turn_summary entry（模拟 persist_turn_summary）
-fn turn_summary_entry(turn_id: &str, entry_range: &[String]) -> serde_json::Value {
-    serde_json::json!({
-        "type": "turn_summary",
-        "id": session_jsonl::generate_id(),
-        "parentId": null,
-        "timestamp": session_jsonl::timestamp_iso(),
-        "turnId": turn_id,
-        "userEntryId": format!("turn_{}", turn_id),
-        "summary": format!("turn {}", turn_id),
-        "keySteps": [],
-        "toolCallCount": 0,
-        "tokens": {"input": 10, "output": 20},
-        "durationMs": 100,
-        "entryRange": entry_range,
-        "status": "completed",
     })
 }
 
@@ -455,16 +436,14 @@ fn k2_rollback_across_compaction_rejected() {
 }
 
 // ════════════════════════════════════════════════════════
-// Group T: turnId 唯一性 + entryRange 填充（F2/F3 修复验证）
+// Group T: user entry turn 锚点 + step-snapshot 关联
 // ════════════════════════════════════════════════════════
 
-/// T1: turn_summary 的 turnId 是全局唯一的 hex 字符串（F3 已修复）
-///
-/// 验证：手写多个 turn_summary，turnId 都是唯一 hex（ts_ 前缀），不重复
+/// T1: 真实 user message entry id 就是 turn id，不再生成第二套编号。
 #[test]
-fn t1_turnid_unique_hex() {
+fn t1_user_entry_ids_are_turn_ids() {
     let cwd = tmp_cwd("t1");
-    let _ids = seed_session(
+    let ids = seed_session(
         &cwd,
         "sess_t1",
         &[
@@ -475,116 +454,69 @@ fn t1_turnid_unique_hex() {
         ],
     );
 
-    // 写两个 turn_summary，用唯一 hex turnId（模拟修复后的 persist_turn_summary）
-    let ts1 = turn_summary_entry("ts_aabb0011", &[] as &[String]);
-    let ts2 = turn_summary_entry("ts_ccdd2233", &[] as &[String]);
-    session_jsonl::append_raw_entry(&cwd, &ts1);
-    session_jsonl::append_raw_entry(&cwd, &ts2);
-
     let entries = load_all(&cwd);
-    let turn_ids: Vec<String> = entries
-        .iter()
-        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("turn_summary"))
-        .filter_map(|e| {
-            e.get("turnId")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        })
-        .collect();
-
-    // 验证：每个 turnId 都是 ts_ 前缀的 hex
-    for tid in &turn_ids {
-        assert!(tid.starts_with("ts_"), "T1: turnId '{}' 应以 ts_ 开头", tid);
-    }
-
-    // 验证：无重复
-    let mut seen = std::collections::HashSet::new();
-    for tid in &turn_ids {
-        assert!(seen.insert(tid.clone()), "T1: turnId '{}' 重复", tid);
-    }
-
-    println!("T1 PASS: turnId 全局唯一 hex: {:?}", turn_ids);
+    let turns = ion::message_retrieval::retrieve_turns(
+        &entries,
+        &RetrievalParams::default(),
+        false,
+    );
+    assert_eq!(turns.turns.len(), 2);
+    assert_eq!(turns.turns[0].turn_id, ids[1]);
+    assert_eq!(turns.turns[1].turn_id, ids[3]);
 }
 
-/// T2: entryRange 正确填充（F2 已修复）
-///
-/// 验证：read_last_turn_entry_range 能正确读取上一条 turn_summary 之后的消息 entry id
+/// T2: step-snapshot 是当前消息 leaf 的直接 child。
 #[test]
-fn t2_entry_range_filled() {
+fn t2_step_snapshot_is_parented_to_current_leaf() {
     let cwd = tmp_cwd("t2");
     let ids = seed_session(
         &cwd,
         "sess_t2",
         &[("user", "msg1"), ("assistant", "reply1")],
     );
-    // ids: [session_id, msg1_id, reply1_id]
-
-    // 写第一条 turn_summary（覆盖 msg1 + reply1）
-    let ts1 = turn_summary_entry("ts_first", &[ids[1].clone(), ids[2].clone()]);
-    session_jsonl::append_raw_entry(&cwd, &ts1);
-
-    // 追加第二轮消息
-    let m3 = msg_entry(&ids[2], "user", "msg2");
-    let m3_id = m3["id"].as_str().unwrap().to_string();
-    session_jsonl::append_raw_entry(&cwd, &m3);
-    let m4 = msg_entry(&m3_id, "assistant", "reply2");
-    let m4_id = m4["id"].as_str().unwrap().to_string();
-    session_jsonl::append_raw_entry(&cwd, &m4);
-
-    // read_last_turn_entry_range 应返回 [m3_id, m4_id]（上一条 ts 之后的 message）
-    let range = session_jsonl::read_last_turn_entry_range(&cwd);
-    assert!(range.is_some(), "T2: entryRange 应非空");
-    let range = range.unwrap();
-    assert_eq!(range.len(), 2, "T2: 应有 2 个 entry id（msg2 + reply2）");
-    assert!(range.contains(&m3_id), "T2: entryRange 应含 msg2 id");
-    assert!(range.contains(&m4_id), "T2: entryRange 应含 reply2 id");
-
-    println!("T2 PASS: entryRange 正确填充: {:?}", range);
+    let (_snapshot_id, parent_id) = session_jsonl::append_custom_entry(
+        &cwd,
+        session_jsonl::CUSTOM_TYPE_STEP_SNAPSHOT,
+        serde_json::json!({
+            "baselineTreeHash":"tree0", "snapshotTreeHash":"tree1",
+            "toolSnapshotTurnId":"ts_1", "turnIndex":1,
+            "diff":{"added":[],"modified":[],"deleted":[]}
+        }),
+    )
+    .unwrap();
+    assert_eq!(parent_id, ids[2]);
 }
 
-/// T3: find_turn_id_for_entry 正确查找（F2 修复核心）
-///
-/// 验证：给定一个 message entry id，能找到它所属 turn_summary 的 turnId
+/// T3: 回滚到快照前的 entry 用 baseline；快照后的 entry 用 snapshot tree。
 #[test]
-fn t3_find_turn_id_for_entry() {
+fn t3_resolve_tree_hash_from_parented_snapshot() {
     let cwd = tmp_cwd("t3");
     let ids = seed_session(
         &cwd,
         "sess_t3",
-        &[
-            ("user", "msg1"),
-            ("assistant", "reply1"),
-            ("user", "msg2"),
-            ("assistant", "reply2"),
-        ],
+        &[("user", "msg1"), ("assistant", "reply1")],
     );
+    let (snapshot_id, _) = session_jsonl::append_custom_entry(
+        &cwd,
+        session_jsonl::CUSTOM_TYPE_STEP_SNAPSHOT,
+        serde_json::json!({
+            "baselineTreeHash":"tree0", "snapshotTreeHash":"tree1",
+            "toolSnapshotTurnId":"ts_1", "turnIndex":1,
+            "diff":{"added":[],"modified":[],"deleted":[]}
+        }),
+    )
+    .unwrap();
+    let next_user = msg_entry(&snapshot_id, "user", "msg2");
+    let next_user_id = next_user["id"].as_str().unwrap().to_string();
+    session_jsonl::append_raw_entry(&cwd, &next_user);
 
-    // turn_summary 覆盖前两条（msg1 + reply1）
-    let ts1 = turn_summary_entry("ts_turn0", &[ids[1].clone(), ids[2].clone()]);
-    session_jsonl::append_raw_entry(&cwd, &ts1);
-    // turn_summary 覆盖后两条（msg2 + reply2）
-    let ts2 = turn_summary_entry("ts_turn1", &[ids[3].clone(), ids[4].clone()]);
-    session_jsonl::append_raw_entry(&cwd, &ts2);
-
-    // 策略 1：entryRange 包含 → 直接找到
-    let found1 = session_jsonl::find_turn_id_for_entry(&cwd, &ids[1]);
-    assert_eq!(
-        found1.as_deref(),
-        Some("ts_turn0"),
-        "T3: msg1 应属于 ts_turn0"
-    );
-
-    let found2 = session_jsonl::find_turn_id_for_entry(&cwd, &ids[3]);
-    assert_eq!(
-        found2.as_deref(),
-        Some("ts_turn1"),
-        "T3: msg2 应属于 ts_turn1"
-    );
-
-    println!(
-        "T3 PASS: find_turn_id_for_entry 正确: msg1→{:?}, msg2→{:?}",
-        found1, found2
-    );
+    let entries = load_all(&cwd);
+    let before = session_jsonl::resolve_step_snapshot_for_entry(&entries, &ids[2]).unwrap();
+    assert_eq!(before.tree_hash, "tree0");
+    assert!(before.uses_baseline);
+    let after = session_jsonl::resolve_step_snapshot_for_entry(&entries, &next_user_id).unwrap();
+    assert_eq!(after.tree_hash, "tree1");
+    assert!(!after.uses_baseline);
 }
 
 // ════════════════════════════════════════════════════════

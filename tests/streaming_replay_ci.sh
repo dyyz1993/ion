@@ -42,7 +42,7 @@ count_matches() {
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 ION_BIN="$PROJECT_DIR/target/debug/ion"
-SOCK="$HOME/.ion/host.sock"
+SOCK="${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
 FIXTURE_DIR="$PROJECT_DIR/tests/fixtures/recordings/stream_demo"
 RECORDING_DIR="$HOME/.ion/recordings/stream_demo"
 

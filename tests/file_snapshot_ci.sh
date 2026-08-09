@@ -28,6 +28,12 @@ skip() { SKIP=$((SKIP+1)); yellow "$1"; }
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 
+if [ -n "${ION_HOST_SOCKET:-}" ]; then
+    HOST_PID_FILE="$(dirname "$ION_HOST_SOCKET")/$(basename "$ION_HOST_SOCKET" .sock).pid"
+else
+    HOST_PID_FILE="$HOME/.ion/host.pid"
+fi
+
 echo "════════════════════════════════════════════════════"
 echo "  File Snapshot CI — $(date)"
 echo "════════════════════════════════════════════════════"
@@ -106,7 +112,7 @@ echo "Group F: RPC 接口（需 host 模式）"
 # ──────────────────────────────────────────────────────────
 
 # 启动 host + 测试 RPC
-SOCK="$HOME/.ion/host.sock"
+SOCK="${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
 rm -f "$SOCK" 2>/dev/null
 
 ION_FAUX_REPEAT=1 ION_FAUX_REPLY="snapshot test" ./target/debug/ion serve >/tmp/ion_fs_host.log 2>&1 &
@@ -240,7 +246,7 @@ else
 fi
 
 # H2: restore_files RPC（如果 host 可用）
-SOCK2="$HOME/.ion/host.sock"
+SOCK2="${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
 rm -f "$SOCK2" 2>/dev/null
 ION_FAUX_REPEAT=1 ION_FAUX_REPLY="restore test" ./target/debug/ion serve >/tmp/ion_fs_h2.log 2>&1 &
 HOST2_PID=$!
@@ -327,7 +333,7 @@ with open('$ION_CONFIG', 'w') as f: json.dump(cfg, f, indent=2)
 J2_HOST_STARTED=0
 if ! ./target/debug/ion rpc --method list_sessions >/dev/null 2>&1; then
     # 没有 host 在跑，清理可能的残留 socket/pid，启动一个
-    rm -f "$HOME/.ion/host.sock" "$HOME/.ion/host.pid" 2>/dev/null
+    rm -f "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" "$HOST_PID_FILE" 2>/dev/null
     ION_FAUX_SCRIPT=/tmp/faux_approval_ci_real.jsonl \
         ./target/debug/ion serve >/tmp/ion_fs_j2.log 2>&1 &
     J2_PID=$!
@@ -450,8 +456,8 @@ cat > /tmp/faux_k.jsonl << JSONL
 JSONL
 
 # 启动独立 host（file-snapshot config 已在 J2 段开启，这里仍生效）
-rm -f "$HOME/.ion/host.sock" "$HOME/.ion/host.pid" 2>/dev/null
-lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null; sleep 1
+rm -f "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" "$HOST_PID_FILE" 2>/dev/null
+lsof -ti "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" 2>/dev/null | xargs kill 2>/dev/null; sleep 1
 
 ION_FAUX_SCRIPT=/tmp/faux_k.jsonl ./target/debug/ion serve >/tmp/ion_k_host.log 2>&1 &
 K_HOST_PID=$!
@@ -545,15 +551,15 @@ rm -rf "$K_DIR" /tmp/faux_k*.jsonl 2>/dev/null
 
 # ──────────────────────────────────────────────────────────
 echo ""
-echo "Group L: 真实 LLM 审批闭环（需 ION_E2E=1 + API key，默认 skip）"
+echo "Group L: 真实 LLM 审批 + parented step-snapshot（需 ION_E2E=1，默认 skip）"
 # ──────────────────────────────────────────────────────────
 
 if [ "${ION_E2E:-0}" = "1" ]; then
     # 用项目子目录做测试（避免 cwd 问题，agent write 相对路径也能找到）
     L_DIR=$(mktemp -d /tmp/l_real_XXXX)
 
-    lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null; sleep 1
-    rm -f "$HOME/.ion/host.sock" "$HOME/.ion/host.pid" 2>/dev/null
+    lsof -ti "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" 2>/dev/null | xargs kill 2>/dev/null; sleep 1
+    rm -f "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" "$HOST_PID_FILE" 2>/dev/null
 
     # 启动 host（真实 LLM，不用 faux）
     ./target/debug/ion serve >/tmp/l_host.log 2>&1 &
@@ -580,6 +586,14 @@ if [ "${ION_E2E:-0}" = "1" ]; then
                 pass "L1: 真实 LLM write 后 review_pending 含文件"
             else
                 skip "L1: review_pending 无文件（LLM 可能没 write 或用了别的文件名）"
+            fi
+
+            # L6: 从外部 RPC 观察到消息树上的 step-snapshot（不读取内部 SnapshotStore）
+            L_TREE=$(./target/debug/ion rpc --session "$L_SID" --method get_tree --params '{"mode":"full"}' 2>/dev/null)
+            if echo "$L_TREE" | grep -q '"customType":"step-snapshot"'; then
+                pass "L6: 真实 LLM write 后 get_tree 可观察 parented step-snapshot"
+            else
+                fail "L6: get_tree 未观察到 step-snapshot"
             fi
 
             # L2: approve（从 pending 取第一个文件 approve）
@@ -631,19 +645,19 @@ if [ "${ION_E2E:-0}" = "1" ]; then
                 skip "L5: approvals 无记录"
             fi
         else
-            skip "L1-L5: 建会话失败"
+            skip "L1-L6: 建会话失败"
         fi
 
         kill $L_HOST_PID 2>/dev/null
     else
-        skip "L1-L5: L host 启动失败"
+        skip "L1-L6: L host 启动失败"
         kill $L_HOST_PID 2>/dev/null
     fi
     rm -rf "$L_DIR" 2>/dev/null
     # 清理项目目录可能残留的测试文件
     rm -f greeting.txt reject_me.txt 2>/dev/null
 else
-    skip "L1-L5: 真实 LLM 测试需 ION_E2E=1（成本高，默认 skip）"
+    skip "L1-L6: 真实 LLM 测试需 ION_E2E=1（成本高，默认 skip）"
 fi
 
 # 恢复 config.json（撤销 file-snapshot 临时开启）

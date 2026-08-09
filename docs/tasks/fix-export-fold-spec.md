@@ -1,6 +1,6 @@
 # Task Spec: 导出 HTML 的长 Entry 渐进折叠 + Timeline 紧凑
 
-> **状态：开发中** — 渐进折叠、响应式布局与完整 Entry Timeline 已通过 CLI 验证，视觉验收待手动刷新本地文件完成。
+> **状态：已验证** — ION 自有单文件模板、完整 Entry Timeline、流程语义、Custom 来源、受众标记与渐进折叠均已完成，并通过 CLI 与浏览器交互验证。
 
 ## 背景
 
@@ -9,9 +9,32 @@
 2. **timeline 区域（id="ion-ext-viz"）内容太散**——间距大、不够紧凑
 3. **只有 tool result 会折叠**——User、Assistant、Custom 等 Entry 仍完整展开，正文密度不一致
 
+## 改动 0：ION 自有模板与流程还原
+
+导出 HTML 是 ION Session JSONL 的离线审计视图，不依赖开发机上的 pi 源码目录。pi 仅作为交互和数据呈现参考；模板、样式、脚本及第三方离线资源必须纳入 ION 并编译进二进制。
+
+每条可见 Entry 在导出数据中增加只读的 `ionMeta`（不改写 Session JSONL），至少包含：
+
+- `phase`：用户输入、上下文注入、LLM 响应、工具请求、工具结果、Extension 事件或 Session 控制。
+- `source`：用户、LLM、工具、内核或具体 Extension。
+- `sourceConfidence`：`recorded` / `inferred` / `unknown`，历史数据来源不完整时禁止猜测成确定事实。
+- `audience`：是否进入 LLM 上下文、是否在实时 UI 展示、是否作为审计数据保留。
+- `customType` 与 `displayType`：内置 Custom 使用具体名称；无法识别的运行时 Extension Custom 统一显示为 `Custom`。
+
+语义约束：
+
+- `message.User`：用户或注入输入，进入 LLM 上下文。
+- `message.Assistant`：一次 LLM 响应，展示 provider/model/API、Token、stop reason 与工具请求。
+- `message.ToolResult`：工具响应；若被 Hook 拒绝，拒绝信息仍位于 ToolResult，Hook Entry 只是旁路审计。
+- `message.Custom`：会话上下文中的 Custom，可被后续 LLM 调用看到；`display` 仅控制实时 UI。
+- 顶层 `custom_message`：当前 ION 恢复逻辑不把它装载进模型消息，按 UI/审计记录处理。
+- 顶层 `custom`、`system_event`：旁路或内部元数据，不宣称被 LLM 消费。
+
+页面顶部提供流程摘要：LLM 调用数、工具请求/结果数、Custom 数、涉及的 Extension；Timeline 悬浮与正文卡片必须使用同一份 `ionMeta`。类型目录必须同时展示 ION 固定的 17 种 Session Entry、导出器识别的 25 种内置 Custom，以及当前会话实际出现的 raw Entry、可见类型、Message role、Custom 和 Extension 数；运行时 Extension Custom 明确标记为开放集合。
+
 ## 改动 1: tool result 默认折叠
 
-在 `src/export.rs` 的 pi 模板 JS 里，找到 toolResult 的渲染逻辑，用 `<details>` 标签包裹完整输出。
+在 ION 内置的导出模板 JS 中，找到 toolResult 的渲染逻辑，用 `<details>` 标签包裹完整输出。
 
 ### 当前行为
 tool result 的输出直接渲染，超长时用 `formatExpandableOutput(output, 10)` 做头尾折叠（但仍占大量空间）。
@@ -72,9 +95,9 @@ Timeline 的 `timelineEntries` 与正文 `entries` 使用同一条完整的用�
 并按模板需要做格式转换。`compaction`、状态切换等真实生命周期 entry 既出现在
 Timeline，也必须在正文中拥有可见展示和稳定锚点。
 
-`turn_summary` 是回合边界、状态、工具数量、Token、耗时和还原定位使用的内部元数据，
-不是独立的会话事件。导出时原样保存在 `internalEntries` 中，确保单文件 HTML 不丢数据，
-但不进入正文、Timeline 或类型筛选，也不得转换成 `custom_message`。
+回合边界使用真实 user message entry；状态、工具数量和 Token 从 Assistant/ToolResult
+消息派生，会话总量来自 SessionIndex。文件还原定位使用消息树上的 parented
+`customType: "step-snapshot"`，它是独立生命周期事实，必须进入正文、Timeline 和类型筛选。
 
 分支会话先通过最后一条 `leaf_pointer` 解析 active leaf。正文与 Timeline 只使用
 `root → active leaf` 的当前消息路径，同时保留全局审计 Entry，以及
@@ -85,17 +108,18 @@ Timeline，也必须在正文中拥有可见展示和稳定锚点。
 
 - 用户可见的内核原生 entry 保留真实类型，例如 `compaction`、`branch_summary`、
   `model_change`、`deletion` 和 `restoration`。
-- 内部元数据 `turn_summary` 只进入 `internalEntries`，不参与可见类型分类。
+- `custom:step-snapshot` 显示为 File Snapshot，并在悬停概要中展示文件数和 tree hash。
 - `message` 按 `user`、`assistant`、`tool result` 三种角色显示。
-- Extension 产生的 `custom` / `custom_message` 统一显示为 `custom`，不按
-  `customType` 拆分颜色或筛选项。
+- 已知的内置 Custom（如 Hook、Diagnostics、Memory、Compaction）使用具体名称、
+  稳定颜色与独立筛选项；无法识别的运行时 Extension Custom 统一显示为 `Custom`，
+  同时保留原始 `customType` 与准确的 Extension 来源。
 - 未知类型自动生成稳定颜色并加入筛选区，不能从 Timeline 消失。
 
 交互要求：
 
 - 每条 entry 对应一根按原始顺序紧凑排列的时间线细竖线，不限制最多 50 条；
   timestamp 只用于首尾范围和悬停详情，不能把会话中的空闲时间渲染成大片空白。
-- 筛选后保留原始 Entry 槽位，不重新压缩顺序，便于看出被隐藏类型穿插的位置。
+- 筛选同时作用于 Timeline 与正文；剩余 Entry 保持原始相对顺序并紧凑排列。
 - 鼠标悬停、键盘聚焦时，显示 entry 类型、序号、时间、ID 和
   截断后的内容概要。
 - 点击任意竖线时，平滑滚动到对应正文内容并短暂高亮；不允许存在只有 Timeline
@@ -121,17 +145,17 @@ Timeline，也必须在正文中拥有可见展示和稳定锚点。
   使用各自的类型标签和颜色，但共享同一套交互。
 - 点击提示展开原始内容，再次点击 `Collapse` 收起；按钮同步维护 `aria-expanded`。
 - 原始 Markdown、图片、复制链接、Thinking 与工具输出节点保留在折叠内容区，不重新序列化。
-- pi 的分支导航会重建 `#messages`，使用 `MutationObserver` 为新节点重新应用折叠包装。
+- 模板的分支导航会重建 `#messages`，使用 `MutationObserver` 为新节点重新应用折叠包装。
 - Timeline 跳转到嵌套 Tool Result 时，先展开所属 Entry，再滚动和高亮目标。
 
-### Design QA（2026-08-08）
+### Design QA（2026-08-09）
 
-- source visual truth: `codex-clipboard-f6ba1a3f-0088-4c12-be43-15d3f56e7589.png`
-- implementation: `output/playwright/export-timeline-large.html`
-- state: 长 Entry 默认预览、尚未展开
-- browser evidence: 本地 `file://` 页面自动重载被 Browser 安全策略阻止，无法取得同视口实现截图
-- interaction evidence: CLI 结构检查与 JavaScript 语法检查通过；视觉点击待用户手动刷新验证
-- final result: blocked
+- representative fixture: `tests/fixtures/export/flow_semantics/session.jsonl`
+- implementation: `output/playwright/export-flow-complete-20260809.html`
+- state: 单文件离线导出；Timeline 与正文包含 active branch 的真实消息及 File Snapshot
+- browser evidence: Playwright 验证 Flow Summary、17/25 类型目录、筛选、Custom 悬停来源概要、点击跳转与正文 provenance；导出本身无需服务器
+- interaction evidence: Custom 筛选后 Timeline 从 7 条变 6 条，正文对应 weather Custom 同步隐藏；悬停显示 `source weather`、`audit only`、`hidden in live UI`
+- final result: passed
 
 ## 验证
 
@@ -152,6 +176,11 @@ cargo test --lib export 2>&1 | tail -5
 ## 守门
 
 - ✅ `cargo check` 无错误
-- ✅ `tests/export_ci.sh` 38/38
+- ✅ `tests/export_ci.sh` 54/54（含真实 ION host + FauxProvider + CLI 导出与类型目录）
+- ✅ `cargo test --lib export::tests` 23/23
+- ✅ `tests/hooks_pretool_deny_ci.sh` 8/8（真实 ION Hook 拒绝链路 + 类型目录来源）
+- ✅ Extension `on_context` 来源标记与 Memory Custom 注入测试通过
+- ✅ Playwright：悬停、筛选、跳转、正文来源标签通过
+- ✅ 真实 LLM case 已登记：`ION_E2E_CLI=1 cargo test --test cli_e2e_real e2e_html_export_flow -- --ignored --nocapture`
 - ✅ 导出脚本可由 `node --check` 解析
 - ✅ 无 U+FFFD

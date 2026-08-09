@@ -186,7 +186,7 @@ impl Extension for FileSnapshotExtension {
         Ok(())
     }
 
-    async fn on_turn_end(&self, _ctx: &TurnContext) -> AgentResult<()> {
+    async fn on_turn_end(&self, ctx: &TurnContext) -> AgentResult<()> {
         // turn_end 仓库内扫描兜底 + tree 快照
         let turn_id = self.current_turn_id.lock().unwrap().clone();
         let prev_scan = self.last_scan.lock().unwrap().take();
@@ -230,7 +230,29 @@ impl Extension for FileSnapshotExtension {
                     diff,
                     timestamp: crate::session_jsonl::timestamp_iso(),
                 };
+                // 与 pi 一致：文件状态是消息树中的 parented custom entry。
+                // 它不进入 LLM context，但 export / timeline / rollback 都能看到并定位。
+                let data = serde_json::json!({
+                    "baselineTreeHash": step.baseline_tree_hash,
+                    "snapshotTreeHash": step.snapshot_tree_hash,
+                    "diff": step.diff,
+                    "turnIndex": ctx.turn_index,
+                    "toolSnapshotTurnId": step.turn_id,
+                });
+                if crate::session_jsonl::append_custom_entry(
+                    &self.storage.cwd,
+                    crate::session_jsonl::CUSTOM_TYPE_STEP_SNAPSHOT,
+                    data,
+                )
+                .is_none()
+                {
+                    tracing::warn!(
+                        "file snapshot tree changed but no session leaf was available; JSONL step-snapshot was not appended"
+                    );
+                }
                 self.store.save_step_snapshot(&step);
+                // 下一轮只比较自上次已提交快照以来的变化，避免每轮重复累计 diff。
+                *self.baseline_tree_hash.lock().unwrap() = Some(current_tree_hash.clone());
             }
         }
 
@@ -301,6 +323,87 @@ impl Extension for FileSnapshotExtension {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn changed_turn_appends_parented_step_snapshot_once() {
+        let _guard = crate::paths::env_test_lock();
+        let root = std::env::temp_dir().join(format!(
+            "ion_step_snapshot_{}_{}",
+            std::process::id(),
+            crate::session_jsonl::generate_id()
+        ));
+        let cwd = root.join("work");
+        let session_path = root.join("session.jsonl");
+        std::fs::create_dir_all(&cwd).unwrap();
+        crate::session_jsonl::set_session_file_override(Some(session_path.clone()));
+        let cwd_str = cwd.to_string_lossy().to_string();
+        crate::session_jsonl::ensure_session_header(&cwd_str, "sess_test");
+        crate::session_jsonl::append_raw_entry(
+            &cwd_str,
+            &serde_json::json!({
+                "type":"message", "id":"msg_1", "parentId":"sess_test",
+                "timestamp":crate::session_jsonl::timestamp_iso(),
+                "message":{"role":"assistant","content":"write file"}
+            }),
+        );
+
+        let (extension, store) = FileSnapshotExtension::new_pair_with_cwd(&cwd_str);
+        extension
+            .on_session_start(&SessionContext {
+                reason: "test".into(),
+                session_id: Some("sess_test".into()),
+            })
+            .await
+            .unwrap();
+        std::fs::write(cwd.join("changed.txt"), "changed").unwrap();
+        let mut ctx = TurnContext {
+            turn_index: 1,
+            messages: vec![],
+            has_tool_calls: true,
+            stop_reason: Some("tool_calls".into()),
+            session_id: Some("sess_test".into()),
+            session_cwd: Some(cwd_str.clone()),
+        };
+        extension.on_turn_start(&mut ctx).await.unwrap();
+        extension.on_turn_end(&ctx).await.unwrap();
+
+        let read_entries = || {
+            std::fs::read_to_string(&session_path)
+                .unwrap()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .collect::<Vec<_>>()
+        };
+        let entries = read_entries();
+        let snapshots: Vec<_> = entries
+            .iter()
+            .filter(|entry| {
+                entry.get("customType").and_then(|v| v.as_str())
+                    == Some(crate::session_jsonl::CUSTOM_TYPE_STEP_SNAPSHOT)
+            })
+            .collect();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0]["parentId"].as_str(), Some("msg_1"));
+        assert_eq!(snapshots[0]["data"]["turnIndex"].as_u64(), Some(1));
+        assert_eq!(store.load_all_step_snapshots().len(), 2); // baseline + changed turn
+
+        // 同一文件状态再结束一轮，不应重复写 step-snapshot。
+        ctx.turn_index = 2;
+        extension.on_turn_start(&mut ctx).await.unwrap();
+        extension.on_turn_end(&ctx).await.unwrap();
+        let entries = read_entries();
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.get("customType").and_then(|v| v.as_str())
+                    == Some(crate::session_jsonl::CUSTOM_TYPE_STEP_SNAPSHOT))
+                .count(),
+            1
+        );
+
+        crate::session_jsonl::set_session_file_override(None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// gen_turn_id should always produce a string with the "ts_" prefix.
     #[test]

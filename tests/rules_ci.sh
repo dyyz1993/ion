@@ -12,7 +12,7 @@
 set -euo pipefail
 
 ION_BIN="${ION_BIN:-$(cd "$(dirname "$0")/.." && pwd)/target/debug/ion}"
-HOST_SOCK="$HOME/.ion/host.sock"
+HOST_SOCK="${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
 PASS=0
 SKIP=0; FAIL=0
 

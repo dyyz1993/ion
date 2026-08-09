@@ -1445,7 +1445,11 @@ mod tests {
         let mut messages: Vec<crate::agent::messages::Message> = Vec::new();
         let before = messages.len();
         ext.on_context(&mut messages).await.expect("on_context ok");
-        assert_eq!(messages.len(), before, "no injection when bg_check_ready=false");
+        assert_eq!(
+            messages.len(),
+            before,
+            "no injection when bg_check_ready=false"
+        );
     }
 
     #[tokio::test]
@@ -1525,6 +1529,10 @@ mod tests {
         // 重置 ready，再次调用——diags 没变，应该 dedup
         ext.set_bg_check_ready_for_test(true);
         ext.on_context(&mut messages).await.expect("ok");
-        assert_eq!(messages.len(), 1, "second call with same diags should dedup");
+        assert_eq!(
+            messages.len(),
+            1,
+            "second call with same diags should dedup"
+        );
     }
 }

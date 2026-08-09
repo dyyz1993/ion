@@ -913,7 +913,33 @@ impl ExtensionRegistry {
     }
     pub async fn on_context(&self, msgs: &mut Vec<Message>) -> AgentResult<()> {
         for ext in &self.extensions {
+            let before_len = msgs.len();
             ext.on_context(msgs).await?;
+            // Provenance is infrastructure: every built-in or runtime Extension
+            // uses the same hook and newly injected Custom messages must carry
+            // their exact producer. Export/UI can then distinguish recorded
+            // origin from legacy inference without requiring each Extension to
+            // remember a private metadata convention.
+            for message in msgs.iter_mut().skip(before_len) {
+                if let Message::Custom(custom) = message {
+                    let mut details = custom
+                        .details
+                        .take()
+                        .unwrap_or_else(|| serde_json::json!({}));
+                    if !details.is_object() {
+                        details = serde_json::json!({"extensionDetails": details});
+                    }
+                    if let Some(object) = details.as_object_mut() {
+                        object
+                            .entry("sourceExtension")
+                            .or_insert_with(|| serde_json::json!(ext.name()));
+                        object
+                            .entry("sourceHook")
+                            .or_insert_with(|| serde_json::json!("on_context"));
+                    }
+                    custom.details = Some(details);
+                }
+            }
         }
         Ok(())
     }
@@ -1543,5 +1569,53 @@ mod loaded_extension_names_tests {
         assert!(names.contains(&"ext-alpha".to_string()));
         assert!(names.contains(&"ext-beta".to_string()));
         assert!(names.contains(&"ext-gamma".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod context_provenance_tests {
+    use super::*;
+    use ion_provider::types::{CustomContent, CustomMessage};
+
+    struct InjectingExtension;
+
+    #[async_trait]
+    impl Extension for InjectingExtension {
+        fn name(&self) -> &str {
+            "runtime-weather"
+        }
+
+        async fn on_context(&self, messages: &mut Vec<Message>) -> AgentResult<()> {
+            messages.push(Message::Custom(CustomMessage {
+                role: "custom".into(),
+                custom_type: "forecast_refreshed".into(),
+                content: CustomContent::Text("sunny".into()),
+                display: false,
+                details: None,
+                timestamp: 1,
+            }));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn on_context_records_exact_extension_origin_for_new_custom_messages() {
+        let mut registry = ExtensionRegistry::new();
+        registry.register(Box::new(InjectingExtension));
+        let mut messages = Vec::new();
+
+        registry.on_context(&mut messages).await.unwrap();
+
+        let Message::Custom(custom) = &messages[0] else {
+            panic!("expected Custom message");
+        };
+        assert_eq!(
+            custom.details.as_ref().unwrap()["sourceExtension"],
+            serde_json::json!("runtime-weather")
+        );
+        assert_eq!(
+            custom.details.as_ref().unwrap()["sourceHook"],
+            serde_json::json!("on_context")
+        );
     }
 }

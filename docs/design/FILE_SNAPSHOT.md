@@ -1,6 +1,6 @@
 # File Snapshot 设计文档
 
-> **状态：已实现** — 双路快照系统（工具级 before/after + 目录扫描 + turn_end 兜底）+ tree 快照模型 + per-file 审批 + 回滚升级 + 事件推送。47 单元测试 + 5 harness 测试通过。
+> **状态：已验证** — 双路快照系统 + parented `step-snapshot` + tree hash 回滚 + per-file 审批与事件推送；已覆盖 FauxProvider Factory、CLI 与真实 case 入口。
 
 ---
 
@@ -903,78 +903,64 @@ du -sh ~/.ion/file-store/<project_key>/
 
 ---
 
-## 19. turn_id 全局唯一性 + ID 关联（多次交替操作的前提）
+## 19. 消息树与 step-snapshot 的 ID 关联（2026-08-09 已实现）
 
-### 19.1 问题：两个层面的 turnId 都会重复
+### 19.1 旧问题：两个独立 turnId 会重复且无法可靠关联
 
 | 层面 | turnId 来源 | 问题 |
 |------|-----------|------|
-| `turn_summary` entry | agent loop 的 `for turn in 0..N` | 每次 run 从 0 开始 |
+| 回合摘要 Entry | agent loop 的 `for turn in 0..N` | 每次 run 从 0 开始，且复制消息事实 |
 | `ToolSnapshot` | FileSnapshotExtension 的 `current_turn` | 每次 run 从 0 开始 |
 
 导致：回滚后继续 / `--continue` / 回滚再回滚 → **turnId 重复 → 快照文件名冲突 → 覆盖历史**。
 
-### 19.2 解决方案：全局递增 turnId + ID 关联（不用下标）
+### 19.2 解决方案：parented custom + tree hash（对齐 pi）
 
-**核心思路（用户提出）：每一轮 turn 插入一个 turn_summary entry，它带全局唯一的 turnId；快照用同一个 turnId 存。回滚时通过 entry_id → turn_summary → turnId 查快照，纯 ID 驱动。**
+不再新造一套回合 ID。回合直接使用真实 user message entry id；发生文件变化时，
+FileSnapshotExtension 在当前 leaf 后追加 `customType: "step-snapshot"`，用 parentId 接入
+同一棵消息树，并保存变化前后的 tree hash。
 
 ```
 session.jsonl（消息层）
 ════════════════════════════════════════
 msg_001  user "帮我重构"
-msg_002  assistant "好的..."
-ts_001   turn_summary {
-           id: "ts_001",           ← entry 唯一 ID
-           turnId: 0,              ← 全局递增（改后）
-           userEntryId: "msg_001", ← 消息关联
-           entryRange: ["msg_001","msg_002"]
+msg_002  assistant "好的..." parentId=msg_001
+snap_01  custom {
+           parentId: "msg_002",
+           customType: "step-snapshot",
+           data: {
+             baselineTreeHash: "tree_before",
+             snapshotTreeHash: "tree_after",
+             diff: {...}
+           }
          }
-                                         ↑ turnId
-                                         │ = 关联桥梁
-snapshots/tool/0.jsonl（快照层） ◄──────┘
 ════════════════════════════════════════
 { turnId: 0, path: "src/main.rs", beforeHash: null, afterHash: "abc" }
 ```
 
-### 19.3 回滚时的查找链（纯 ID 驱动，不用下标）
+### 19.3 回滚时的查找链
 
 ```
 用户：回滚到 msg_001（entry_id）
 
-  ① msg_001 → 查 session.jsonl 找所属 turn_summary
-     ts_001.userEntryId == "msg_001" → 命中
-     ts_001.turnId = 0
-
-  ② turnId=0 → 查快照层
-     读 snapshots/tool/ 找所有 turnId > 0 的 ToolSnapshot
-     逐个恢复（restore_code）
+  ① 沿 active branch 查找目标 msg_001 的祖先/后代 step-snapshot
+  ② 目标路径已有 snapshot → 使用 snapshotTreeHash
+     目标之后首个 snapshot → 使用 baselineTreeHash
+  ③ restore_to_tree(treeHash) 精确恢复文件树
 
   ③ 追加 leaf_pointer（消息层回滚）
 ```
 
 **全程通过 ID 关联，不依赖 0,1,2,3 下标。**
 
-### 19.4 实现改动
+### 19.4 已实现改动
 
-1. **Agent.turn_index 改全局递增**：
-   - run() 开始时不重置为 0，而是从 session.jsonl 里读最大的 turnId + 1
-   - `for turn in global_start..global_start + max_turns`
-
-2. **turn_summary.turnId 跟着全局递增**：
-   - `persist_turn_summary(turn, ...)` 的 turn 参数已是全局值
-
-3. **FileSnapshotExtension.current_turn 同步全局递增**：
-   - `new_pair()` 时从 `SnapshotStore.max_turn_id()` 读最大值 + 1
-
-4. **SnapshotStore.max_turn_id()**：
-   ```rust
-   fn max_turn_id(&self) -> u32 {
-       read_dir(snapshots/tool/)
-           .filter_map(|e| e.file_name().parse::<u32>().ok())
-           .max()
-           .unwrap_or(0)
-   }
-   ```
+1. `append_custom_entry` 读取当前 leaf 并写入 parentId。
+2. changed turn 只写一次 `step-snapshot`，无变化不写。
+3. 每次 snapshot 后推进 baseline，使 diff 为增量而非累计。
+4. `resolve_step_snapshot_for_entry` 根据消息树选择 baseline/snapshot tree hash。
+5. `--restore-code --restore-mode full` 直接按解析出的 tree hash 恢复。
+6. 独立 ToolSnapshot 仍保留用于文件级历史与 delta 能力，但不再承担消息身份。
 
 ### 19.5 修复后的交替操作流转
 
@@ -1345,4 +1331,3 @@ ion --resume <sid> --rollback <id> --restore-code --restore-mode full
 **新增 API**：
 - `load_tool_snapshots_by_session(session_id)` — 按 session 过滤加载
 - `load_tool_snapshots_after_by_session(turn_id, session_id)` — 按 session 过滤的 restore 查询
-

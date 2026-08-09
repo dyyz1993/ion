@@ -14,8 +14,8 @@ record_pass() { echo "  ✅ PASS"; PASS=$((PASS+1)); }
 record_fail() { echo "  ❌ FAIL: $1"; echo "{\"test\":\"$2\",\"issue\":\"$1\"}" >> "$ISSUES_FILE"; FAIL=$((FAIL+1)); }
 
 start_serve() {
-    lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null
-    rm -f "$HOME/.ion/host.sock" "$HOME/.ion/host.pid"
+    lsof -ti "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" 2>/dev/null | xargs kill 2>/dev/null
+    rm -f "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" "$HOME/.ion/host.pid"
     sleep 1
     "$ION" serve > /dev/null 2>&1 &
     SERVE_PID=$!
@@ -23,8 +23,8 @@ start_serve() {
 }
 
 stop_serve() {
-    lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null
-    rm -f "$HOME/.ion/host.sock" "$HOME/.ion/host.pid"
+    lsof -ti "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" 2>/dev/null | xargs kill 2>/dev/null
+    rm -f "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" "$HOME/.ion/host.pid"
     sleep 1
 }
 

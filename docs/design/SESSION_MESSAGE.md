@@ -28,6 +28,16 @@
 
 由扩展或内部逻辑直接调用 session 的 append 方法，不走完整 prompt 流程。
 
+> **当前恢复边界（2026-08-09）**：是否被 LLM 消费不能仅看 `customType` 或
+> `display`。只有 `SessionEntry::Message(Message::Custom)` 位于 Agent 的消息链中，
+> 会进入后续模型上下文；顶层 `custom_message` / `custom` / `system_event` 目前只作为
+> UI、审计或内部状态记录，不会在恢复时自动装入模型上下文。HTML 导出据此分别标记
+> `LLM context · included`、`audit only` 与 `live UI · hidden`，不得把持久化记录猜成模型输入。
+
+> Extension 通过 `on_context` 新增 `Message::Custom` 时，内核统一在
+> `details.sourceExtension` 和 `details.sourceHook` 记录准确来源；历史数据没有来源字段时，
+> 导出层只能标记 `inferred` 或 `unknown`，不能伪造确定来源。
+
 ### （A）LLM 可见 + UI 有特殊呈现
 
 | 方法 | Entry type | role（给 LLM ） | UI 呈现 | 用途举例 |
@@ -100,6 +110,10 @@ custom → user: 原样 content
 
 ## 五、对照：现有 ION Entry 类型
 
+ION Session JSONL 的固定 Entry 目录共 **17 种**。`bashExecution` 是 `message`
+内部的 Message role，不是额外的顶层 Entry type。回合边界直接由当前分支上的真实
+user message entry 确定，不再写一条重复的回合摘要 Entry。
+
 | ION type | 对应 pi Entry | 当前状态 |
 |----------|-------------|---------|
 | `session` | SessionHeader | ✅ 有 |
@@ -110,12 +124,78 @@ custom → user: 原样 content
 | `session_info` | SessionInfoEntry | ✅ 有 |
 | `compaction` | CompactionEntry | ✅ 有 |
 | `branch_summary` | BranchSummaryEntry | ✅ 有 |
+| `deletion` | DeletionEntry | ✅ 有 |
+| `segment_summary` | SegmentSummaryEntry | ✅ 有 |
+| `restoration` | RestorationEntry | ✅ 有 |
 | `custom` | CustomEntry | ✅ 有 |
-| `bash_execution` | 无独立 type（走 message+bashExecution role） | ✅ 有 Message::BashExecution 变体 |
 | `custom_message` | CustomMessageEntry | ✅ 有 |
 | `system_event` | SystemEventEntry | ✅ 有 |
 | `label` | LabelEntry | ✅ 有 |
 | `active_tools_change` | ActiveToolsChangeEntry | ✅ 有（新增） |
+| `leaf_pointer` | LeafPointerEntry | ✅ 有 |
+
+### 5.1 导出器识别的内置 Custom 目录
+
+Custom 的原始 `customType` 本身是开放字段。导出器当前识别 **24 种内置
+Custom 语义**，按稳定的展示类型、颜色和 Extension 来源渲染：
+
+| 导出展示类型 | 原始 `customType` | 数量 |
+|-------------|-------------------|------|
+| Hook | `hook_event`, `hook_handler_executed` | 2 |
+| Diagnostics | `diagnostics` | 1 |
+| Background Bash Result | `bash_result` | 1 |
+| Dev Server Context | `dev_servers` | 1 |
+| Budget Reminder | `remind` | 1 |
+| System Prompt Snapshot | `system_prompt` | 1 |
+| Session Title | `session_name` | 1 |
+| Sub-session | `sub_session_separator` | 1 |
+| File Approval | `file-approval` | 1 |
+| Review Rejection | `approval_deny` | 1 |
+| Memory | `memory_injected`, `memory_saved`, `memory_search`, `memory_searching`, `memory_consolidate`, `memory_search_stat` | 6 |
+| LLM Retry | `llm_retry`, `retry_exceeded` | 2 |
+| Compaction Event | `compacting`, `compaction_done` | 2 |
+| Background Process | `process_started`, `process_completed`, `process_killed` | 3 |
+| File Snapshot | `step-snapshot` | 1 |
+
+运行时 Extension 可以产生任意新的 `customType`，因此这部分**没有全局固定总数**。
+未识别的类型统一显示为 `Custom`，但保留原始 `customType`、Extension 名称、来源置信度、
+LLM 上下文与实时 UI 受众。导出页同时展示固定目录总数和当前会话实际出现的类型数，
+避免把“ION 能识别多少种”和“本次会话出现多少种”混在一起。
+
+### 5.2 pi 对标审计：移除 `turn_summary`（2026-08-09）
+
+> **状态：已验证** — 已按 pi 的 parented message tree 与 `step-snapshot` 语义完成迁移。
+
+对照 pi 源码及 FileSnapshot 参考 PR（初始实现 PR #1、tree-hash 修正 PR #8），其
+`SessionEntry` 联合中没有独立回合摘要类型。ION 现在也不再写这种重复 Entry。
+
+pi 以 `message` 的 `id` / `parentId` 消息树确定回合边界；文件快照在实际发生变化时
+写为带父子关系的 `customType: "step-snapshot"`，并直接保存 tree hash。它不需要额外的
+顶层回合摘要来连接消息与快照。
+
+旧 ION 回合摘要的字段存在以下问题：
+
+- `summary` 是最后一条 assistant 文本的前 200 字，`toolCalls` 和 tokens 也可从
+  assistant message 派生，均不是新的会话事实。
+- 每次 `Agent::run()` 会重置 `turn_index`；两次连续 CLI 输入实测均写出
+  `turnId: 1`。
+- `userEntryId` 当前是 `turn_1` 形式的占位符，`entryRange` 恒为空，未关联真实
+  message entry。
+- 写盘的 `turnId` 与 File Snapshot 独立生成的 `ts_*` 不属于同一套身份，不能作为
+  可靠的还原关联键。
+- `message_retrieval` 已有按 user message 边界分组的 fallback；SessionIndex 也已保存
+  会话级聚合统计。
+
+当前实现如下：
+
+- 回合 ID 使用真实 user entry id；一次用户输入后的多次 assistant/toolResult 循环仍属于同一回合。
+- `summary`、工具调用、token、status 从真实 Assistant/ToolResult 消息派生。
+- 会话级用户提问数、LLM 请求数、token、耗时与错误数继续由 SessionIndex 保存，导出头部直接读取。
+- 文件发生变化时追加 parented `customType: "step-snapshot"`，保存
+  `baselineTreeHash` / `snapshotTreeHash`；消息回滚通过祖先/后代关系选择正确 tree hash。
+- 导出正文和 Timeline 展示该 snapshot；不再产生或隐藏重复摘要。
+
+对照报告：`output/playwright/ion-pi-turn-summary-alignment.html`。
 
 ## 六、对齐 pi 需要的改动
 

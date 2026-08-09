@@ -478,7 +478,7 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/design/SESSION_ISOLATION.md](./docs/design/SESSION_ISOLATION.md) | **会话隔离 + Session GC**：主会话默认 `<sid>.jsonl`（不再共享）+ 启动时 GC 清旧文件 + distillation 并发修复 (已验证) |
 | [docs/design/MCP_SYSTEM.md](./docs/design/MCP_SYSTEM.md) | MCP 系统：rmcp 1.x + 方案 C 共享池 + 权限控制 + resources/prompts + 热更新 (Phase 1-4 全部实现) |
 | [docs/design/CONFIG_DIMENSIONS.md](./docs/design/CONFIG_DIMENSIONS.md) | 配置与数据维度分析：5 类存储划分 + 组件归属全表 + worktree 副本预期 + StorageContext 统一抽象 + 新扩展开发指南 (已实现) |
-| [docs/design/FILE_SNAPSHOT.md](./docs/design/FILE_SNAPSHOT.md) | File Snapshot：双路快照（工具级 before/after + 目录扫描 + turn_end 兜底），restore_files + --restore-code 联动回滚，不遵守 .gitignore (已实现 + 2026-07-11 修复 5 个正确性问题) |
+| [docs/design/FILE_SNAPSHOT.md](./docs/design/FILE_SNAPSHOT.md) | File Snapshot：双路快照 + parented `step-snapshot` + tree-hash restore，restore_files + --restore-code 联动回滚，不遵守 .gitignore (已验证) |
 | [docs/design/FILE_SNAPSHOT_REVIEW_ALIGNMENT.md](./docs/design/FILE_SNAPSHOT_REVIEW_ALIGNMENT.md) | File Snapshot & Review 对齐清单：ION vs pi 全维度对比 + tree 快照模型升级路线 + per-file 审批 + 4 步执行计划 (已实现步骤 1-4，e2e 待补) |
 | [docs/design/MESSAGE_RETRIEVAL_DESIGN.md](./docs/design/MESSAGE_RETRIEVAL_DESIGN.md) | 消息拉取 UI 设计规格：TypeScript 接口定义 + 6 种 UI 风格 + 3 层数据架构 (设计定稿) |
 | [docs/design/SOFT_DELETE_COMPACT.md](./docs/design/SOFT_DELETE_COMPACT.md) | 软删除/软压缩内核机制：mark_deleted/summarized/restore + on_context 时序 (已实现) |
@@ -740,8 +740,8 @@ ion --mode rpc           → 内部 Worker 子进程 (JSONL over stdin/stdout)
 > - **代码规模**：99,682 行 Rust（src 82,912）
 > - **lib 测试**：1013 passed / 2 failed（2 个 hooks 测试逻辑缺陷，非产品 bug，待修）
 > - **已完成**：核心内核 + 15+ 扩展系统 + 三场景引擎 + A→B 自进化
-> - **HTML Export**：线性 JSONL 可见事件正文 + active branch 筛选/分叉记录 + Timeline 完整映射 + Hook 归组 + Compaction 独立卡片；`turn_summary` 原样保存在 `internalEntries`，不进入正文或 Timeline；仅当隐藏正文超过 3 行时折叠，预览保留 3 行正文（`tests/export_ci.sh` 38/38）
-> - **PreToolUse 拒绝闭环**：拒绝转错误 ToolResult、Agent 继续、Hook 审计与 toolCallId/当前分支关联、SessionIndex 准确计数（Harness 1/1 + `tests/hooks_pretool_deny_ci.sh` 7/7）
+> - **HTML Export**：ION 自有单文件离线模板 + active branch 完整有序 `sourceEntries` + Flow Summary + Timeline/正文完整映射；目录展示 17 种固定 Entry、25 种已识别内置 Custom 与当前会话实际类型，运行时 Extension Custom 统一显示为 `Custom` 并保留来源、LLM 上下文与实时 UI 受众；Hook 归组、Compaction 与 parented File Snapshot 独立卡片；仅当隐藏正文超过 3 行时折叠（`tests/export_ci.sh`）
+> - **PreToolUse 拒绝闭环**：拒绝转错误 ToolResult、Agent 继续、Hook 审计与 toolCallId/当前分支关联、SessionIndex 准确计数，导出类型目录保留 Hook/Extension 来源（Harness 1/1 + `tests/hooks_pretool_deny_ci.sh` 8/8）
 >
 > 历史改动看 `git log`，功能设计看 `docs/design/`，每个功能的测试看对应 `tests/*_ci.sh`。
 

@@ -738,7 +738,7 @@ impl WorkerRegistry {
             session_id: session_id.clone(),
             project: project_name.clone(),
             project_path: project_path.clone(),
-            model: model.clone(),   // 用 547 行已 resolve 的 model（含 default_model 兜底），而非 config.model（可能为空）
+            model: model.clone(), // 用 547 行已 resolve 的 model（含 default_model 兜底），而非 config.model（可能为空）
             agent: config.agent.clone().unwrap_or_default(),
             status: WorkerStatus::Idle,
             channels: config.channels.clone().unwrap_or_default(),
@@ -1007,7 +1007,8 @@ impl WorkerRegistry {
                                     .unwrap_or("(no message)");
                                 tracing::warn!(
                                     "[{}] worker error event (agent.run failed?): {}",
-                                    sub_wid, err_msg
+                                    sub_wid,
+                                    err_msg
                                 );
                                 drop(reg);
                                 let mut reg2 = sub_registry.lock().await;

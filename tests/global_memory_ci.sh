@@ -32,7 +32,7 @@ rm -f ~/.ion/agent/global-memory.db
 
 # 如果已有 host 在跑，复用它；否则起新的
 if ! "$ION_BIN" rpc --method list_sessions 2>/dev/null | grep -q "sessions"; then
-    lsof -ti "$HOME/.ion/host.sock" 2>/dev/null | xargs kill 2>/dev/null; sleep 1
+    lsof -ti "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" 2>/dev/null | xargs kill 2>/dev/null; sleep 1
     timeout 60 "$ION_BIN" serve >/tmp/mem-serve.log 2>&1 &
     SERVE_PID=$!
     sleep 4

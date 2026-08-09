@@ -1,6 +1,6 @@
 # 回滚影响验证 — Context / Message / Compaction
 
-> **状态：已修复（2026-07-16）** — F1/F2/F3 全部修复。Rust harness 19 case 全过（验证修复）。Bash CI S1/S2 全过。serve/CLI 层 3 个 bug（header/index/cwd）已修复。
+> **状态：已验证（2026-08-09）** — 活跃分支过滤、真实 user 回合边界与 parented `step-snapshot` tree-hash 回滚已完成；不再依赖重复的回合摘要 Entry。
 
 ---
 
@@ -31,22 +31,22 @@
 | **影响修复** | context 不含被回滚消息 + token 正确 + compaction 不误触发 |
 | **验证测试** | `c2_load_filters_leaf_pointer` / `k1_messages_count_excludes_rolled_back` / `tc1-tc3,tc6` |
 
-### F2：`turn_summary.entryRange` 恒为空 ✅ 已修复
+### F2：重复摘要无法可靠关联消息与快照 ✅ 已替换
 
 | 维度 | 内容 |
 |------|------|
-| **原问题** | `persist_turn_summary` 硬编码 `entryRange: &[]` → `--restore-code` 靠 entryRange 匹配找 turnId 失败 |
-| **修复** | (1) `session_jsonl.rs` 新增 `read_last_turn_entry_range`：读上一条 turn_summary 之后的消息 entry id 填入 entryRange；(2) 新增 `find_turn_id_for_entry`：双策略查找（entryRange 匹配 + 位置回溯）；(3) `ion.rs` 的 `--restore-code` 改用 `find_turn_id_for_entry` |
-| **验证测试** | `t2_entry_range_filled` / `t3_find_turn_id_for_entry` |
+| **原问题** | 额外摘要复制 assistant 内容，`entryRange` 与快照 ID 又不属于同一套消息树，回滚关联不可靠 |
+| **修复** | 移除重复摘要；FileSnapshotExtension 把 `custom:step-snapshot` parent 到当前 leaf，并保存 `baselineTreeHash` / `snapshotTreeHash`；`--restore-code` 沿消息树解析目标 tree hash |
+| **验证测试** | `t2_step_snapshot_is_parented_to_current_leaf` / `t3_resolve_step_snapshot_uses_baseline_or_snapshot_tree` |
 
-### F3：turnId 每次 run 从 0 重置 ✅ 已修复
+### F3：turnId 每次 run 从 0 重置 ✅ 已消除
 
 | 维度 | 内容 |
 |------|------|
-| **原问题** | `turn_index` 每次 run 重置为 0 → turn_summary 的 turnId 重复 |
-| **修复** | turn_summary 的 turnId 改用全局唯一 hex（`ts_` + 8 位 hex，复用 `generate_id`），不依赖 `turn_index`。`turn_index` 继续管 max_turns 限制，职责分离 |
-| **改动范围** | `session_jsonl.rs`（append_turn_summary 签名）+ `agent_loop.rs`（生成 hex）+ `message_retrieval.rs`（TurnOverview/InputItem/TurnDetail 的 turn_id 从 u64 → String，分页游标改字符串匹配）+ `ion_worker.rs`（RPC 输出） |
-| **验证测试** | `t1_turnid_unique_hex` |
+| **原问题** | 内存 turn 计数同时承担运行限制和持久化身份，跨 run 会重复 |
+| **修复** | 持久化回合 ID 直接使用真实 user message entry id；内存 `turn_index` 只负责 agent loop，不再是跨层关联键 |
+| **改动范围** | `message_retrieval.rs`（真实 user 边界）+ `session_jsonl.rs`（parented custom / tree-hash 解析）+ `file_snapshot/mod.rs` + `ion.rs` |
+| **验证测试** | `t1_real_user_entry_ids_are_turn_ids` |
 
 ### 附：serve session 持久化 bug（Bash CI 不可用的原因）
 
@@ -198,13 +198,13 @@ cargo test --test rollback_harness -- --nocapture
 | **影响** | 即使 G1 修了（函数层加 preview），RPC 层也需要暴露 preview 参数让 UI 调用 |
 | **修复** | `restore_files` RPC 的 params 加 `"preview": true`，传给 `restore_code_to_turn` |
 
-### G3：`--restore-code` 与 F2 的交互
+### G3：`--restore-code` 与消息树快照的交互
 
 | 维度 | 内容 |
 |------|------|
-| **现状** | `--rollback <id> --restore-code` 的代码路径（`ion.rs:2125-2134`）靠 `entryRange` 匹配 entry → 找 turnId → 调 `restore_code_to_turn` |
-| **影响** | F2（entryRange 恒空）导致这条路径永远找不到 turnId → 跳过代码恢复。用户点"回滚消息+代码"按钮，实际只有消息回滚了 |
-| **修复** | 修 F2（persist_turn_summary 时填 entryRange），或改为用 entry id 直接查 turnId（不依赖 entryRange） |
+| **现状** | `--rollback <id> --restore-code` 先从 active branch 解析目标 entry 对应的 `step-snapshot` tree hash |
+| **行为** | 目标路径已有 snapshot 时恢复其 `snapshotTreeHash`；snapshot 在目标之后时恢复其 `baselineTreeHash` |
+| **验证** | Rust Harness 同时覆盖目标位于 snapshot 前、后的两条路径；CLI 通过 `get_tree mode=full` 可观察 parented snapshot |
 
 ---
 

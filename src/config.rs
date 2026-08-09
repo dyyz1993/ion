@@ -195,12 +195,12 @@ impl McpServerConfig {
     /// enabled 字段优先（zcode 兼容）：Some(true)→false，Some(false)→true，None→看 disabled。
     pub fn is_disabled(&self) -> bool {
         match self {
-            McpServerConfig::Stdio { enabled, disabled, .. } => {
-                enabled.map(|e| !e).unwrap_or(*disabled)
-            }
-            McpServerConfig::Http { enabled, disabled, .. } => {
-                enabled.map(|e| !e).unwrap_or(*disabled)
-            }
+            McpServerConfig::Stdio {
+                enabled, disabled, ..
+            } => enabled.map(|e| !e).unwrap_or(*disabled),
+            McpServerConfig::Http {
+                enabled, disabled, ..
+            } => enabled.map(|e| !e).unwrap_or(*disabled),
         }
     }
 
@@ -699,8 +699,9 @@ impl IonConfig {
     ) -> Result<String, String> {
         use ion_provider::types::*;
 
-        let model = self.resolve_tier_model(tier)
-            .ok_or_else(|| format!("tier '{tier}' not configured and no default_model available"))?;
+        let model = self.resolve_tier_model(tier).ok_or_else(|| {
+            format!("tier '{tier}' not configured and no default_model available")
+        })?;
         let api_key = self.resolve_provider_api_key(&model.provider);
 
         let options = StreamOptions {
@@ -709,7 +710,11 @@ impl IonConfig {
             reasoning: None,
             timeout_ms: Some(60_000),
             max_retries: Some(1),
-            response_format: if json { Some("json_object".into()) } else { None },
+            response_format: if json {
+                Some("json_object".into())
+            } else {
+                None
+            },
         };
 
         let context = Context::new(
@@ -753,12 +758,13 @@ impl IonConfig {
     ) -> Result<String, String> {
         use ion_provider::types::*;
 
-        let model = self.resolve_tier_model(tier)
-            .ok_or_else(|| format!("tier '{tier}' not configured and no default_model available"))?;
+        let model = self.resolve_tier_model(tier).ok_or_else(|| {
+            format!("tier '{tier}' not configured and no default_model available")
+        })?;
         let api_key = self.resolve_provider_api_key(&model.provider);
 
-        let validator = jsonschema::Validator::new(schema)
-            .map_err(|e| format!("invalid schema: {e}"))?;
+        let validator =
+            jsonschema::Validator::new(schema).map_err(|e| format!("invalid schema: {e}"))?;
 
         let options = StreamOptions {
             max_tokens: Some(2048),
@@ -770,8 +776,8 @@ impl IonConfig {
             response_format: Some("json_object".into()),
         };
 
-        let schema_str = serde_json::to_string_pretty(schema)
-            .unwrap_or_else(|_| schema.to_string());
+        let schema_str =
+            serde_json::to_string_pretty(schema).unwrap_or_else(|_| schema.to_string());
 
         let mut current_user_msg = user_msg.to_string();
         let mut last_err: Option<String> = None;
@@ -796,9 +802,10 @@ impl IonConfig {
                 })],
             );
 
-            let result = ion_provider::registry::complete(registry, &model, &context, Some(&options))
-                .await
-                .map_err(|e| format!("LLM call failed: {e}"))?;
+            let result =
+                ion_provider::registry::complete(registry, &model, &context, Some(&options))
+                    .await
+                    .map_err(|e| format!("LLM call failed: {e}"))?;
 
             let output: String = result
                 .content
@@ -1474,7 +1481,9 @@ mod merge_tests {
         let nested = cfg.mcp.expect("mcp 嵌套字段应存在");
         let srv = nested.servers.get("kb").expect("kb server 应存在");
         match srv {
-            McpServerConfig::Stdio { command, args, env, .. } => {
+            McpServerConfig::Stdio {
+                command, args, env, ..
+            } => {
                 assert_eq!(command, "npx", "command 应为 npx");
                 assert_eq!(args.len(), 2, "args 应有 2 个元素");
                 assert_eq!(env.get("KB_DIR").unwrap(), "/tmp/kb", "env KB_DIR 应正确");
@@ -1501,7 +1510,9 @@ mod merge_tests {
         let nested = cfg.mcp.expect("mcp 嵌套字段应存在");
         let srv = nested.servers.get("zread").expect("zread server 应存在");
         match srv {
-            McpServerConfig::Http { kind, url, headers, .. } => {
+            McpServerConfig::Http {
+                kind, url, headers, ..
+            } => {
                 assert_eq!(kind, "http", "kind 应为 http（zcode 格式，未校验）");
                 assert_eq!(url, "https://example.com/mcp", "url 应正确");
                 assert_eq!(
@@ -1578,7 +1589,10 @@ mod merge_tests {
         // 平铺优先：command 应仍是 flat-cmd
         match cfg.mcp_servers.get("srv").unwrap() {
             McpServerConfig::Stdio { command, .. } => {
-                assert_eq!(command, "flat-cmd", "平铺 mcp_servers 应优先于嵌套 mcp.servers");
+                assert_eq!(
+                    command, "flat-cmd",
+                    "平铺 mcp_servers 应优先于嵌套 mcp.servers"
+                );
             }
             _ => panic!("应为 Stdio 变体"),
         }
@@ -1640,7 +1654,10 @@ mod merge_tests {
             enabled: None,
             disabled: false,
         };
-        assert!(!srv_on.is_disabled(), "enabled:None + disabled:false → false");
+        assert!(
+            !srv_on.is_disabled(),
+            "enabled:None + disabled:false → false"
+        );
 
         let srv_off = McpServerConfig::Stdio {
             command: "npx".into(),
@@ -1724,11 +1741,14 @@ mod merge_tests {
             .count();
         assert_eq!(http_count, 3, "应有 3 个 http server");
         // 验证每个 server 都存在
-        for name in &["knowledge-base", "zai-mcp-server", "zread", "web-search-prime", "web-reader"] {
-            assert!(
-                nested.servers.contains_key(*name),
-                "server '{name}' 应存在"
-            );
+        for name in &[
+            "knowledge-base",
+            "zai-mcp-server",
+            "zread",
+            "web-search-prime",
+            "web-reader",
+        ] {
+            assert!(nested.servers.contains_key(*name), "server '{name}' 应存在");
         }
     }
 }

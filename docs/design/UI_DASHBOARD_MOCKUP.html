@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>ION Host Dashboard — 界面原型</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #0d1117; color: #c9d1d9;
+    display: grid; grid-template-columns: 280px 1fr; height: 100vh;
+  }
+  /* ===== 左侧栏 ===== */
+  .sidebar { background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; }
+  .sidebar-header { padding: 16px; border-bottom: 1px solid #30363d; }
+  .sidebar-header h1 { font-size: 18px; color: #58a6ff; margin-bottom: 4px; }
+  .sidebar-header .status { font-size: 12px; color: #3fb950; }
+  .sidebar-header .status .dot { display: inline-block; width: 8px; height: 8px; background: #3fb950; border-radius: 50%; margin-right: 4px; }
+  .new-task { padding: 12px; border-bottom: 1px solid #30363d; }
+  .new-task button { width: 100%; padding: 8px; background: #238636; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .new-task button:hover { background: #2ea043; }
+  .session-list { flex: 1; overflow-y: auto; }
+  .session-list h3 { padding: 12px 16px 6px; font-size: 11px; color: #8b949e; text-transform: uppercase; }
+  .session-item { padding: 10px 16px; border-bottom: 1px solid #21262d; cursor: pointer; font-size: 13px; }
+  .session-item:hover { background: #1f2428; }
+  .session-item.active { background: #1f6feb; }
+  .session-item .title { display: block; margin-bottom: 2px; }
+  .session-item .meta { font-size: 11px; color: #8b949e; }
+
+  /* ===== 主区 ===== */
+  .main { display: flex; flex-direction: column; overflow: hidden; }
+  .topbar { padding: 12px 20px; border-bottom: 1px solid #30363d; display: flex; justify-content: space-between; align-items: center; }
+  .topbar h2 { font-size: 15px; }
+  .topbar .workers { font-size: 12px; color: #8b949e; }
+  .topbar .workers .badge { display: inline-block; padding: 2px 8px; background: #21262d; border-radius: 10px; margin-left: 6px; }
+
+  /* 会话内容区 */
+  .conversation { flex: 1; overflow-y: auto; padding: 20px; }
+  .msg { margin-bottom: 16px; max-width: 80%; }
+  .msg.user { margin-left: auto; }
+  .msg-bubble { padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.6; }
+  .msg.user .msg-bubble { background: #1f6feb; color: white; }
+  .msg.assistant .msg-bubble { background: #21262d; }
+  .msg .role { font-size: 11px; color: #8b949e; margin-bottom: 4px; }
+
+  /* 工具调用卡片 */
+  .tool-card { background: #161b22; border: 1px solid #30363d; border-left: 3px solid #f78166; border-radius: 6px; padding: 10px; margin: 8px 0; font-size: 12px; }
+  .tool-card .tool-name { color: #f78166; font-weight: 600; margin-bottom: 4px; }
+  .tool-card .tool-args { color: #8b949e; font-family: monospace; }
+  .tool-card .tool-result { margin-top: 6px; padding-top: 6px; border-top: 1px solid #30363d; color: #3fb950; }
+
+  /* 思考中指示 */
+  .thinking { font-size: 12px; color: #d29922; padding: 8px 0; }
+  .thinking::after { content: " ●"; animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: 0.3; } }
+
+  /* 输入栏 */
+  .composer { padding: 16px 20px; border-top: 1px solid #30363d; display: flex; gap: 10px; }
+  .composer input { flex: 1; padding: 10px 12px; background: #21262d; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; font-size: 14px; }
+  .composer button { padding: 10px 20px; background: #238636; color: white; border: none; border-radius: 6px; cursor: pointer; }
+
+  /* ===== 右下角 worker 状态浮窗（可选）===== */
+  .worker-tray { position: fixed; right: 16px; bottom: 80px; width: 240px; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 10px; font-size: 12px; }
+  .worker-tray h4 { color: #58a6ff; margin-bottom: 8px; font-size: 12px; }
+  .worker-row { display: flex; justify-content: space-between; padding: 3px 0; }
+  .worker-row .name { color: #c9d1d9; }
+  .worker-row .state { font-size: 11px; }
+  .state.idle { color: #8b949e; } .state.busy { color: #d29922; } .state.dead { color: #f85149; } .state.stale { color: #a371f7; }
+</style>
+</head>
+<body>
+
+<!-- ===== 左侧栏：会话列表（对 ion list_sessions）===== -->
+<div class="sidebar">
+  <div class="sidebar-header">
+    <h1>ION Host</h1>
+    <div class="status"><span class="dot"></span> serve 运行中 · 4 MCP 已连</div>
+  </div>
+  <div class="new-task">
+    <button>+ 新建任务</button>
+  </div>
+  <div class="session-list">
+    <h3>会话（list_sessions）</h3>
+    <div class="session-item active">
+      <span class="title">Rust 1.80 新特性总结</span>
+      <span class="meta">wkr_bdbef725 · 2 分钟前</span>
+    </div>
+    <div class="session-item">
+      <span class="title">读 /etc/hostname</span>
+      <span class="meta">wkr_d7d2d1a5 · 1 小时前</span>
+    </div>
+    <div class="session-item">
+      <span class="title">查 hello world</span>
+      <span class="meta">wkr_aef05bef · 昨天</span>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 主区：对话视图（对 subscribe 事件流渲染）===== -->
+<div class="main">
+  <div class="topbar">
+    <h2>Rust 1.80 新特性总结</h2>
+    <div class="workers">
+      Workers
+      <span class="badge" style="color:#8b949e">Idle 2</span>
+      <span class="badge" style="color:#d29922">Busy 1</span>
+    </div>
+  </div>
+
+  <div class="conversation">
+    <!-- 用户消息 -->
+    <div class="msg user">
+      <div class="msg-bubble">用 web-search 查 Rust 1.80 release notes，读几个网页，总结主要新特性。</div>
+    </div>
+
+    <!-- 思考中 -->
+    <div class="thinking">GLM-5.2 思考中（reasoning model，预计 30-120s）</div>
+
+    <!-- 工具调用卡片（对应 tool_call / tool_execution_end 事件）-->
+    <div class="tool-card">
+      <div class="tool-name">🔧 mcp__web-search-prime__web_search_prime</div>
+      <div class="tool-args">{ "search_query": "Rust 1.80 release notes", "location": "us" }</div>
+      <div class="tool-result">✓ 返回 10 条结果（含 blog.rust-lang.org、releases.rs）</div>
+    </div>
+
+    <div class="tool-card">
+      <div class="tool-name">📖 mcp__web-reader__webReader</div>
+      <div class="tool-args">{ "url": "https://blog.rust-lang.org/2024/07/25/Rust-1.80.0.html" }</div>
+      <div class="tool-result">✓ 读完（18.2 KB）</div>
+    </div>
+
+    <div class="tool-card">
+      <div class="tool-name">📖 mcp__web-reader__webReader</div>
+      <div class="tool-args">{ "url": "https://releases.rs/docs/1.80.0/" }</div>
+      <div class="tool-result">✓ 读完（24.1 KB）</div>
+    </div>
+
+    <!-- assistant 流式回复（对应 text_delta 事件，逐字渲染）-->
+    <div class="msg assistant">
+      <div class="role">GLM-5.2 · 已完成</div>
+      <div class="msg-bubble">
+        Rust 1.80.0（2024-07-25）主要新特性：<br>
+        1. <b>LazyCell / LazyLock</b> — 惰性初始化进入标准库<br>
+        2. <b>cfg 检查</b> — 编译期自动捕获 #[cfg] 拼写错误<br>
+        3. <b>排他范围模式</b> — match 里可用 <code>a..b</code>（不再只有 a..=b）<br>
+        4. <b>~60 个新标准库 API</b> — Option::take_if、Duration::div_duration 等<br>
+        5. <b>C23 可变参数</b>、size_of 进 prelude 等编译器改进
+      </div>
+    </div>
+  </div>
+
+  <!-- 输入栏（对应 create_worker 的 initial_prompt）-->
+  <div class="composer">
+    <input placeholder="给 agent 派新任务（如：用 web-search 查 xxx 并总结）…">
+    <button>派活</button>
+  </div>
+</div>
+
+<!-- ===== 右下浮窗：worker 实时状态（对 list_workers 轮询）===== -->
+<div class="worker-tray">
+  <h4>Worker 状态（list_workers）</h4>
+  <div class="worker-row"><span class="name">wkr_bdbef725</span> <span class="state busy">● busy</span></div>
+  <div class="worker-row"><span class="name">wkr_d7d2d1a5</span> <span class="state idle">● idle</span></div>
+  <div class="worker-row"><span class="name">memory-agent</span> <span class="state idle">● idle</span></div>
+</div>
+
+</body>
+</html>

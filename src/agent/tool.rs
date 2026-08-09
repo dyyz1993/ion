@@ -2495,8 +2495,14 @@ mod skill_tests {
             disabled: vec!["disable-me".into()],
         };
         let result = tool.list_skills();
-        assert!(result.contains("keep-me"), "non-disabled skill should appear");
-        assert!(result.contains("also-keep"), "non-disabled skill should appear");
+        assert!(
+            result.contains("keep-me"),
+            "non-disabled skill should appear"
+        );
+        assert!(
+            result.contains("also-keep"),
+            "non-disabled skill should appear"
+        );
         assert!(
             !result.contains("disable-me"),
             "disabled skill should be filtered out"
@@ -2523,7 +2529,10 @@ mod skill_tests {
             skill_dirs: vec![dir.clone()],
             disabled: vec!["blocked".into()],
         };
-        assert!(tool.find_skill("blocked").is_none(), "disabled skill should not be found");
+        assert!(
+            tool.find_skill("blocked").is_none(),
+            "disabled skill should not be found"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

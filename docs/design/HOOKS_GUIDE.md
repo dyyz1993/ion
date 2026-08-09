@@ -207,7 +207,7 @@ User
   → Assistant（模型读取失败结果后继续回答）
 ```
 
-被拒绝的工具不会执行，也不会触发 `PostToolUse`；`hook_event` 是可追溯审计信息，真正返回给模型的是错误 `ToolResult`。HTML 导出会把这条 Hook 审计记录归到对应的工具卡片下，而不是塞进 `turn_summary`。
+被拒绝的工具不会执行，也不会触发 `PostToolUse`；`hook_event` 是可追溯审计信息，真正返回给模型的是错误 `ToolResult`。HTML 导出会把这条 Hook 审计记录归到对应的工具卡片下，回合概览则从真实消息链派生。
 
 #### `http` — POST 到 URL
 

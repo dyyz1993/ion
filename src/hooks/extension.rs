@@ -182,7 +182,8 @@ impl HookExtension {
         // 并行执行所有匹配的 handler（对齐 Claude Code "所有匹配的 hook 并行运行"）
         let paired: Vec<(super::HookHandler, HookOutcome)> = {
             let exec_ctx = std::sync::Arc::new(exec_ctx);
-            let mut tasks: Vec<tokio::task::JoinHandle<(super::HookHandler, HookOutcome)>> = Vec::new();
+            let mut tasks: Vec<tokio::task::JoinHandle<(super::HookHandler, HookOutcome)>> =
+                Vec::new();
             for (_, handler) in &handler_futs {
                 let h = handler.clone();
                 let h_arc = std::sync::Arc::new(handler.clone());
@@ -747,7 +748,9 @@ mod tests {
     #[test]
     fn test_new_with_follow_up_channel() {
         // Provide a real mpsc sender; construction must succeed.
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<(Message, crate::agent::agent_loop::DeliverAs)>();
+        let (tx, _rx) =
+            tokio::sync::mpsc::unbounded_channel::<(Message, crate::agent::agent_loop::DeliverAs)>(
+            );
         let ext = HookExtension::new(
             PathBuf::from("/tmp/ion-ext-test-channel"),
             None,

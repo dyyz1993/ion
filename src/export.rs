@@ -1,13 +1,11 @@
-//! Export a session to HTML using pi's template system.
+//! Export an ION session as one self-contained, offline HTML file.
 //!
-//! 引用: /Users/xuyingzhou/Project/temporary/pi-momo-fork/packages/coding-agent/src/core/export-html/
+//! ## ION 存储格式与导出渲染格式
 //!
-//! ## ION vs pi 格式差异
-//!
-//! ION 存的是 Rust enum 序列化形式（externally tagged），pi 期望扁平形式：
+//! ION 的 JSONL 使用 Rust enum 序列化形式（externally tagged），导出渲染器使用扁平形式：
 //!
 //! ION: `{"message": {"Assistant": {"role":"assistant", "content":[{"Text":{"text":"..."}}]}}}`
-//! pi:  `{"message": {"role":"assistant",   "content":[{"type":"text", "text":"..."}]}}`
+//! HTML: `{"message": {"role":"assistant",   "content":[{"type":"text", "text":"..."}]}}`
 //!
 //! Content blocks 也是 enum tagged：
 //! - `{Text:{text}}`        → `{"type":"text", "text"}`
@@ -21,7 +19,7 @@
 //! - `tool_name` → `toolName`
 //! - `role:"tool"` → `role:"toolResult"`
 //!
-//! turn_summary（ION 原生）作为内部元数据嵌入，不交给模板渲染。
+//! 回合概览从真实消息树派生；文件变化以 parented `custom:step-snapshot` 展示。
 
 use serde_json::{Value, json};
 use std::path::Path;
@@ -29,11 +27,15 @@ use std::path::Path;
 use crate::session_jsonl;
 use crate::worker_registry::WorkerRelation;
 
-/// Paths to pi's export template files
-const PI_EXPORT_DIR: &str =
-    "/Users/xuyingzhou/Project/temporary/pi-momo-fork/packages/coding-agent/src/core/export-html";
+// ION owns the offline export bundle. pi remains a design reference only;
+// exporting must never depend on another checkout or on a local web server.
+const EXPORT_TEMPLATE_HTML: &str = include_str!("export_assets/template.html");
+const EXPORT_TEMPLATE_CSS: &str = include_str!("export_assets/template.css");
+const EXPORT_TEMPLATE_JS: &str = include_str!("export_assets/template.js");
+const EXPORT_MARKED_JS: &str = include_str!("export_assets/vendor/marked.min.js");
+const EXPORT_HIGHLIGHT_JS: &str = include_str!("export_assets/vendor/highlight.min.js");
 
-/// Tool info for export (matches pi's ToolDefinition shape: name/description/parameters).
+/// Tool definition snapshot embedded into the exported HTML.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ExportToolInfo {
     pub name: String,
@@ -253,8 +255,11 @@ pub fn export_session_rich(
     // Read session file to get header
     let jsonl_path = resolve_session_file(session_id)?;
     let content = std::fs::read_to_string(&jsonl_path)?;
-    let first_line = content.lines().next().unwrap_or("{}");
-    let header: Value = serde_json::from_str(first_line)?;
+    let header: Value = content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|entry| entry.get("type").and_then(Value::as_str) == Some("session"))
+        .unwrap_or_else(|| json!({}));
 
     // Extract agent name from header
     let agent_name = header.get("agent").and_then(|v| v.as_str());
@@ -543,8 +548,18 @@ fn export_session_internal(
     };
     let mut raw_entries: Vec<Value> = lines[raw_start..]
         .iter()
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .collect();
+        .enumerate()
+        .map(|(offset, line)| {
+            serde_json::from_str(line).map_err(|error| {
+                format!(
+                    "invalid session JSONL at {}:{}: {}",
+                    jsonl_path.display(),
+                    raw_start + offset + 1,
+                    error
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     // ── 合并 fork 子 session 的 entries ──
     // 扫同目录下的 <sid>.jsonl 文件，找 parentSession == 当前 session_id 的，
@@ -703,10 +718,15 @@ fn export_session_internal(
     let branch_selection = select_entries_for_export(&raw_entries, header_session_id);
     raw_entries = branch_selection.entries;
 
-    // turn_summary 是回合边界、统计和还原使用的内部元数据，不是会话正文事件。
-    // 它仍打包进单文件 HTML 的 internalEntries，供数据检查和后续还原使用，
-    // 但不进入正文、类型筛选或 Timeline，避免重复显示 Assistant 文本。
-    let (visible_raw_entries, internal_entries) = partition_export_entries(raw_entries);
+    // Preserve the selected branch in its original order and attach a read-only
+    // semantic layer for the offline audit UI. `sourceEntries` remains the
+    // canonical selected JSONL stream; Timeline and body are derived from the
+    // same annotations.
+    let source_entries = annotate_export_entries(&raw_entries);
+    let flow_summary = build_export_flow_summary(&source_entries);
+
+    // 当前格式没有脱离消息树的内部回合记录；所有所选 entry 都进入正文与 Timeline。
+    let (visible_raw_entries, internal_entries) = partition_export_entries(source_entries.clone());
     raw_entries = visible_raw_entries;
 
     // Convert ION Rust-enum format → pi flat format.
@@ -731,7 +751,7 @@ fn export_session_internal(
         }
         if let Some(obj) = e.as_object_mut() {
             // 先 clone 出 message 内层字段（避免 borrow 冲突）
-            let (ct, content, display) = obj
+            let (ct, content, display, details) = obj
                 .get("message")
                 .and_then(|v| v.as_object())
                 .map(|m| {
@@ -739,9 +759,10 @@ fn export_session_internal(
                         m.get("customType").cloned(),
                         m.get("content").cloned(),
                         m.get("display").cloned(),
+                        m.get("details").cloned(),
                     )
                 })
-                .unwrap_or((None, None, None));
+                .unwrap_or((None, None, None, None));
             if let Some(ct) = ct {
                 obj.insert("customType".to_string(), ct);
             }
@@ -750,6 +771,9 @@ fn export_session_internal(
             }
             if let Some(display) = display {
                 obj.insert("display".to_string(), display);
+            }
+            if let Some(details) = details {
+                obj.insert("details".to_string(), details);
             }
             // type 改为 custom_message
             obj.insert("type".to_string(), json!("custom_message"));
@@ -954,6 +978,8 @@ fn export_session_internal(
         "entries": entries,
         "timelineEntries": timeline_entries,
         "internalEntries": internal_entries,
+        "sourceEntries": source_entries,
+        "flowSummary": flow_summary,
         "leafId": leaf_id,
         "activeLeafId": branch_selection.active_leaf_id,
         "sourceEntryCount": branch_selection.source_entry_count,
@@ -1105,13 +1131,9 @@ fn export_session_internal(
     let session_data_json = serde_json::to_string(&session_data)?;
     let session_data_b64 = base64_encode(&session_data_json);
 
-    // Read template files
-    let read_file = |name: &str| -> String {
-        let path = format!("{PI_EXPORT_DIR}/{name}");
-        std::fs::read_to_string(&path).unwrap_or_default()
-    };
-
-    let css = read_file("template.css")
+    // Compile-time embedded assets keep the generated HTML portable and make a
+    // missing renderer a build error instead of a silent empty export.
+    let css = EXPORT_TEMPLATE_CSS.to_string()
         + r#"
 /* ION: only collapse tool output when opening it reveals more than three lines. */
 .tool-output:not(.expandable)[data-ion-output-foldable="true"]:not(.expanded) {
@@ -1133,10 +1155,10 @@ fn export_session_internal(
   color: #58a6ff;
 }
 "#;
-    let mut js = read_file("template.js");
-    let marked_js = read_file("vendor/marked.min.js");
-    let highlight_js = read_file("vendor/highlight.min.js");
-    let mut html = read_file("template.html");
+    let mut js = EXPORT_TEMPLATE_JS.to_string();
+    let marked_js = EXPORT_MARKED_JS;
+    let highlight_js = EXPORT_HIGHLIGHT_JS;
+    let mut html = EXPORT_TEMPLATE_HTML.to_string();
 
     // ION 扩展：在 pi template 的 stats 区块（Date/Models/...）最前面插入 Agent 行。
     // session header 已含 agent 字段（ion_worker/ion.rs 写入），缺失时显示 '-'。
@@ -1298,7 +1320,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // 用 session name 替换 <title>（template.html 里写死的是 "Session Export"）
     html = html.replace(
         "<title>Session Export</title>",
-        &format!("<title>{}</title>", session_name),
+        &format!("<title>{}</title>", escape_html_text(&session_name)),
     );
     html = html.replace("{{SESSION_DATA}}", &session_data_b64);
     html = html.replace("{{MARKED_JS}}", &marked_js);
@@ -1466,7 +1488,7 @@ document.addEventListener('DOMContentLoaded', function() {
       font: 600 10px/1.4 "SFMono-Regular", Menlo, monospace;
     }
 
-    /* Entry filters sit above a full-width, time-proportional timeline. */
+    /* Entry filters sit above an order-proportional, gap-free timeline. */
     #ion-ext-viz {
       width: min(100%, var(--ion-shell-max));
       margin: 18px auto 0;
@@ -1498,6 +1520,63 @@ document.addEventListener('DOMContentLoaded', function() {
       color: var(--muted);
       font: 500 10px/1.4 "SFMono-Regular", Menlo, monospace;
       white-space: nowrap;
+    }
+    .ion-flow-metrics {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(96px, 1fr));
+      gap: 8px;
+    }
+    .ion-flow-metric {
+      min-width: 0;
+      padding: 9px 10px;
+      border: 1px solid #e4e7ec;
+      border-radius: 9px;
+      background: #f8fafc;
+    }
+    .ion-flow-metric strong {
+      display: block;
+      color: #101828;
+      font: 700 17px/1.2 "SFMono-Regular", Menlo, monospace;
+    }
+    .ion-flow-metric span {
+      display: block;
+      margin-top: 3px;
+      color: #667085;
+      font: 600 9px/1.35 "SFMono-Regular", Menlo, monospace;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .ion-flow-groups {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .ion-flow-group {
+      display: flex;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .ion-flow-group-label {
+      width: 78px;
+      padding-top: 4px;
+      color: #667085;
+      font: 650 9px/1.4 "SFMono-Regular", Menlo, monospace;
+      text-transform: uppercase;
+    }
+    .ion-flow-chip,
+    .ion-entry-provenance-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      max-width: 100%;
+      padding: 3px 7px;
+      border: 1px solid #d0d5dd;
+      border-radius: 999px;
+      color: #475467;
+      background: #fff;
+      font: 600 9px/1.35 "SFMono-Regular", Menlo, monospace;
+      overflow-wrap: anywhere;
     }
     .ion-entry-type-controls {
       display: flex;
@@ -1544,7 +1623,9 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     .ion-timeline-track {
       position: relative;
-      width: max(100%, var(--timeline-min-width));
+      display: flex;
+      width: var(--timeline-content-width, 12px);
+      min-width: 12px;
       height: 32px;
       overflow: visible;
       border: 1px solid #e4e7ec;
@@ -1552,17 +1633,16 @@ document.addEventListener('DOMContentLoaded', function() {
       background: #fbfcfd;
     }
     .ion-timeline-bar {
-      position: absolute;
+      position: relative;
+      flex: 0 0 12px;
       top: 3px;
-      left: var(--bar-left);
-      width: 9px;
+      width: 12px;
       height: 26px;
       padding: 0;
       border: 0;
-      border-radius: 4px;
+      border-radius: 0;
       background: transparent;
       cursor: pointer;
-      transform: translateX(-50%);
       z-index: 1;
     }
     .ion-timeline-bar::before {
@@ -1570,9 +1650,10 @@ document.addEventListener('DOMContentLoaded', function() {
       position: absolute;
       top: 0;
       bottom: 0;
-      left: 3px;
-      width: 3px;
-      border-radius: 2px;
+      left: 0;
+      width: 100%;
+      border-right: 1px solid rgba(255, 255, 255, 0.72);
+      border-radius: 0;
       background: var(--bar-color);
       opacity: 0.9;
       transition: opacity 120ms ease, transform 120ms ease, box-shadow 120ms ease;
@@ -1585,7 +1666,7 @@ document.addEventListener('DOMContentLoaded', function() {
     .ion-timeline-bar:hover::before,
     .ion-timeline-bar:focus-visible::before {
       opacity: 1;
-      transform: scaleX(1.7);
+      transform: scaleY(1.08);
       box-shadow: 0 0 0 2px #fff, 0 0 0 3px var(--bar-color);
     }
     .ion-timeline-empty {
@@ -1598,7 +1679,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     .ion-timeline-axis {
       display: flex;
-      justify-content: space-between;
+      justify-content: flex-start;
       gap: 12px;
       margin-top: 6px;
       color: #98a2b3;
@@ -1915,6 +1996,35 @@ document.addEventListener('DOMContentLoaded', function() {
       overflow-wrap: anywhere;
       font: 500 11px/1.55 "SFMono-Regular", Menlo, monospace;
     }
+    .ion-entry-provenance {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin: 7px 0 5px;
+      padding-top: 7px;
+      border-top: 1px dashed #d0d5dd;
+    }
+    .ion-entry-provenance-chip[data-kind="phase"] {
+      color: #175cd3;
+      border-color: #b2ddff;
+      background: #eff8ff;
+    }
+    .ion-entry-provenance-chip[data-kind="source"] {
+      color: #6941c6;
+      border-color: #d9d6fe;
+      background: #f4f3ff;
+    }
+    .ion-entry-provenance-chip[data-kind="llm"] {
+      color: #027a48;
+      border-color: #abefc6;
+      background: #ecfdf3;
+    }
+    .ion-entry-provenance-chip[data-kind="hidden"] {
+      color: #b54708;
+      border-color: #fedf89;
+      background: #fffaeb;
+    }
+    .ion-entry-filter-hidden { display: none !important; }
     .ion-entry-nested-events {
       display: grid;
       gap: 6px;
@@ -2001,6 +2111,7 @@ document.addEventListener('DOMContentLoaded', function() {
       .ion-session-title { font-size: 20px; }
       .ion-session-metrics { grid-template-columns: 1fr; }
       .ion-overview-panel { padding: 14px; }
+      .ion-flow-metrics { grid-template-columns: repeat(3, minmax(86px, 1fr)); }
       .header { padding: 14px; border-radius: 12px; }
       .help-hint { display: none; }
       .help-actions { width: 100%; }
@@ -2234,6 +2345,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
   function entryCategory(entry) {
     var rawType = String((entry && entry.type) || 'other');
+    var semantic = entry && entry.ionMeta;
+    if (semantic && semantic.filterType) return semantic.filterType;
     if (rawType === 'custom' || rawType === 'custom_message') return 'custom';
     if (rawType !== 'message') return rawType;
     var role = String(unwrapMessage(entry).role || 'message').toLowerCase();
@@ -2306,6 +2419,15 @@ document.addEventListener('DOMContentLoaded', function() {
 
   function entrySummary(entry) {
     var category = entryCategory(entry);
+    if (entry && entry.customType === 'step-snapshot' && entry.data) {
+      var diff = entry.data.diff || {};
+      var added = Array.isArray(diff.added) ? diff.added : [];
+      var modified = Array.isArray(diff.modified) ? diff.modified : [];
+      var deleted = Array.isArray(diff.deleted) ? diff.deleted : [];
+      var files = added.concat(modified, deleted).slice(0, 5).join(', ');
+      return 'Files +' + added.length + ' ~' + modified.length + ' -' + deleted.length +
+        (files ? ' · ' + files : '') + ' · tree ' + String(entry.data.snapshotTreeHash || '').slice(0, 12);
+    }
     var source = entry;
     if (entry && entry.type === 'message') source = unwrapMessage(entry);
     var preview = previewValue(source, 0);
@@ -2385,8 +2507,9 @@ document.addEventListener('DOMContentLoaded', function() {
           '<div class="ion-overview-heading"><div><span class="ion-overview-kicker">Sequence</span><strong>Complete timeline</strong></div>' +
           '<span class="ion-overview-meta" id="ion-timeline-meta"></span></div>' +
           '<div class="ion-timeline-scroll"><div class="ion-timeline-track" id="ion-timeline-track"></div></div>' +
-          '<div class="ion-timeline-axis"><span>' + escapeVizHtml(timeStart || 'start') + '</span><span>' +
-            escapeVizHtml(timeEnd || 'end') + '</span></div>' +
+          '<div class="ion-timeline-axis"><span>' + escapeVizHtml(
+            timeStart && timeEnd ? timeStart + ' → ' + timeEnd : 'time unavailable'
+          ) + '</span></div>' +
           '<div class="ion-timeline-notice" id="ion-timeline-notice" aria-live="polite">Hover for a summary · click to jump to the entry</div>' +
         '</section>' +
         '<div class="ion-timeline-tooltip" id="ion-timeline-tooltip" role="tooltip"></div>' +
@@ -2423,22 +2546,16 @@ document.addEventListener('DOMContentLoaded', function() {
       var visibleItems = timelineItems.filter(function(item) {
         return !hiddenCategories.has(item.category);
       });
-      // 所有 Entry 按原始顺序等距、连续铺开，不把墙钟空闲时间渲染成空白。
-      // 使用完整 n 计算位置，因此筛选类型不会让剩余 Entry 重新排布。
-      track.style.setProperty('--timeline-min-width', Math.max(640, n * 10) + 'px');
-      timelineItems.forEach(function(item) {
-        item.displayPosition = n > 1
-          ? 0.25 + (item.index / (n - 1)) * 99.5
-          : 50;
-      });
+      // 每个 Entry 占一个相邻的固定宽度色块。顺序连续、没有墙钟时间造成的
+      // 空白；数据量大时由外层横向滚动，筛选后按原始相对顺序重新紧凑排列。
+      track.style.setProperty('--timeline-content-width', Math.max(12, visibleItems.length * 12) + 'px');
       if (!visibleItems.length) {
         track.innerHTML = '<div class="ion-timeline-empty">All entry types are hidden. Use “Show all” to restore them.</div>';
       } else {
         track.innerHTML = visibleItems.map(function(item) {
           var aria = item.label + ', entry ' + (item.index + 1) + ' of ' + n + ', ' + item.summary + ', click to jump';
           return '<button type="button" class="ion-timeline-bar" data-entry-index="' + item.index +
-            '" style="--bar-color:' + item.color + ';--bar-left:' + item.displayPosition +
-            '%" aria-label="' + escapeVizHtml(aria) + '"></button>';
+            '" style="--bar-color:' + item.color + '" aria-label="' + escapeVizHtml(aria) + '"></button>';
         }).join('');
       }
       meta.textContent = (visibleItems.length === n ? n : visibleItems.length + ' / ' + n) +
@@ -2588,6 +2705,12 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   function category(entry) {
     var type = String((entry && entry.type) || 'other');
+    var semantic = entry && entry.ionMeta;
+    if (semantic && semantic.filterType) return semantic.filterType;
+    if (semantic && semantic.customType) {
+      if (semantic.customClass === 'builtin') return 'builtin:' + semantic.displayType;
+      return 'custom';
+    }
     if (type === 'custom' || type === 'custom_message') return 'custom';
     if (type !== 'message') return type;
     var role = String(message(entry).role || 'message').toLowerCase();
@@ -2596,6 +2719,7 @@ document.addEventListener('DOMContentLoaded', function() {
     return role === 'user' || role === 'assistant' ? role : 'message';
   }
   function label(type) {
+    if (String(type).indexOf('builtin:') === 0) return String(type).slice(8);
     var labels = { toolResult: 'tool result', branch_summary: 'branch summary',
       model_change: 'model change', thinking_level_change: 'thinking change', active_tools_change: 'tools change' };
     return labels[type] || String(type).replace(/_/g, ' ');
@@ -2629,8 +2753,92 @@ document.addEventListener('DOMContentLoaded', function() {
     return parts.join(' · ');
   }
   function summary(entry) {
+    if (entry && entry.customType === 'step-snapshot' && entry.data) {
+      var diff = entry.data.diff || {};
+      var added = Array.isArray(diff.added) ? diff.added : [];
+      var modified = Array.isArray(diff.modified) ? diff.modified : [];
+      var deleted = Array.isArray(diff.deleted) ? diff.deleted : [];
+      var files = added.concat(modified, deleted).slice(0, 5).join(', ');
+      return 'Files +' + added.length + ' ~' + modified.length + ' -' + deleted.length +
+        (files ? ' · ' + files : '') + ' · tree ' + String(entry.data.snapshotTreeHash || '').slice(0, 12);
+    }
     var source = entry && entry.type === 'message' ? message(entry) : entry;
     return compact(previewValue(source, 0) || 'No preview available', 240);
+  }
+  function semanticSummary(entry) {
+    var meta = entry && entry.ionMeta;
+    if (!meta) return '';
+    var parts = [String(meta.phase || '').replace(/_/g, ' ')];
+    if (meta.source && meta.source.name) {
+      var confidence = meta.source.confidence && meta.source.confidence !== 'recorded'
+        ? ' (' + meta.source.confidence + ')' : '';
+      parts.push('source ' + meta.source.name + confidence);
+    }
+    if (meta.customType) parts.push('custom ' + meta.customType);
+    if (meta.audience) {
+      var llm = meta.audience.llmContext;
+      if (llm === 'input') parts.push('LLM context input');
+      else if (llm === 'output') parts.push('LLM output');
+      else if (llm === 'excluded') parts.push('excluded from LLM context');
+      else parts.push('audit only');
+      if (!meta.audience.liveUi) parts.push('hidden in live UI');
+    }
+    if (meta.llmCall) parts.push('LLM call #' + meta.llmCall);
+    return parts.filter(Boolean).join(' · ');
+  }
+  function flowSummaryHtml(flow) {
+    flow = flow || {};
+    var metrics = [
+      ['Entries', flow.entries || 0],
+      ['LLM calls', flow.llmCalls || 0],
+      ['Tool calls', flow.toolCalls || 0],
+      ['Tool results', flow.toolResults || 0],
+      ['Context inserts', flow.contextInjections || 0],
+      ['Custom', flow.customEntries || 0]
+    ];
+    var extensions = Array.isArray(flow.extensions) ? flow.extensions : [];
+    var customs = Array.isArray(flow.customTypes) ? flow.customTypes : [];
+    var inventory = flow.typeInventory || {};
+    var current = inventory.current || {};
+    var supported = inventory.supported || {};
+    var entryTypeNames = Array.isArray(supported.entryTypeNames) ? supported.entryTypeNames : [];
+    var builtInCustomTypeNames = Array.isArray(supported.builtInCustomTypeNames) ? supported.builtInCustomTypeNames : [];
+    var currentTypeTitle = [
+      'raw Entry: ' + (current.rawEntryTypes || 0),
+      'visible: ' + (current.visibleTypes || 0),
+      'message roles: ' + (current.messageRoles || 0),
+      'Custom: ' + (current.customTypes || 0),
+      'Extensions: ' + (current.extensions || 0)
+    ].join(' · ');
+    return '<section class="ion-overview-panel ion-flow-summary" aria-label="Execution flow summary">' +
+      '<div class="ion-overview-heading"><div><span class="ion-overview-kicker">Flow</span><strong>What happened in this session</strong></div>' +
+      '<span class="ion-overview-meta">active branch</span></div>' +
+      '<div class="ion-flow-metrics">' + metrics.map(function(item) {
+        return '<div class="ion-flow-metric"><strong>' + esc(item[1]) + '</strong><span>' + esc(item[0]) + '</span></div>';
+      }).join('') + '</div>' +
+      '<div class="ion-flow-groups">' +
+      '<div class="ion-flow-group"><span class="ion-flow-group-label">Extensions</span>' +
+      (extensions.length ? extensions.map(function(item) {
+        return '<span class="ion-flow-chip">' + esc(item.name) + ' ×' + esc(item.count) + '</span>';
+      }).join('') : '<span class="ion-flow-chip">none recorded</span>') + '</div>' +
+      '<div class="ion-flow-group"><span class="ion-flow-group-label">Custom</span>' +
+      (customs.length ? customs.map(function(item) {
+        var source = item.source && item.source !== 'unknown' ? ' · ' + item.source : '';
+        return '<span class="ion-flow-chip" title="' + esc(item.customType) + '">' + esc(item.displayType) + source + ' ×' + esc(item.count) + '</span>';
+      }).join('') : '<span class="ion-flow-chip">none</span>') + '</div>' +
+      '<div class="ion-flow-group"><span class="ion-flow-group-label">Current types</span>' +
+      '<span class="ion-flow-chip" title="' + esc(currentTypeTitle) + '">visible ' + esc(current.visibleTypes || 0) + '</span>' +
+      '<span class="ion-flow-chip">raw Entry ' + esc(current.rawEntryTypes || 0) + '</span>' +
+      '<span class="ion-flow-chip">message roles ' + esc(current.messageRoles || 0) + '</span>' +
+      '<span class="ion-flow-chip">Custom ' + esc(current.customTypes || 0) + '</span>' +
+      '<span class="ion-flow-chip">built-in Custom ' + esc(current.builtInCustomTypes || 0) + '</span>' +
+      '<span class="ion-flow-chip">Extension Custom ' + esc(current.extensionCustomTypes || 0) + '</span>' +
+      '<span class="ion-flow-chip">Extensions ' + esc(current.extensions || 0) + '</span></div>' +
+      '<div class="ion-flow-group"><span class="ion-flow-group-label">ION catalog</span>' +
+      '<span class="ion-flow-chip" title="' + esc(entryTypeNames.join(', ')) + '">Entry ' + esc(supported.entryTypes || 0) + '</span>' +
+      '<span class="ion-flow-chip" title="' + esc(builtInCustomTypeNames.join(', ')) + '">built-in Custom ' + esc(supported.builtInCustomTypes || 0) + '</span>' +
+      '<span class="ion-flow-chip">Extension Custom is open-ended</span></div>' +
+      '</div></section>';
   }
   function build() {
     var dataEl = document.getElementById('session-data');
@@ -2662,12 +2870,12 @@ document.addEventListener('DOMContentLoaded', function() {
     var start = times.length ? times[0].toLocaleTimeString() : '';
     var end = times.length ? times[times.length - 1].toLocaleTimeString() : '';
     var hidden = new Set();
-    var html = '<div id="ion-ext-viz" aria-label="Session overview">' +
+    var html = '<div id="ion-ext-viz" aria-label="Session overview">' + flowSummaryHtml(decoded.flowSummary) +
       '<section class="ion-overview-panel"><div class="ion-overview-heading"><div><span class="ion-overview-kicker">Entries</span><strong>Type filters</strong></div>' +
       '<span class="ion-overview-meta">' + types.length + ' types</span></div><div class="ion-entry-type-controls" id="ion-entry-type-controls"></div></section>' +
       '<section class="ion-overview-panel"><div class="ion-overview-heading"><div><span class="ion-overview-kicker">Sequence</span><strong>Complete timeline</strong></div>' +
       '<span class="ion-overview-meta" id="ion-timeline-meta"></span></div><div class="ion-timeline-scroll"><div class="ion-timeline-track" id="ion-timeline-track"></div></div>' +
-      '<div class="ion-timeline-axis"><span>' + esc(start || 'start') + '</span><span>' + esc(end || 'end') + '</span></div>' +
+      '<div class="ion-timeline-axis"><span>' + esc(start && end ? start + ' → ' + end : 'time unavailable') + '</span></div>' +
       '<div class="ion-timeline-notice" id="ion-timeline-notice" aria-live="polite">Hover for a summary · click to jump to the entry</div></section>' +
       '<div class="ion-timeline-tooltip" id="ion-timeline-tooltip" role="tooltip"></div></div>';
     var old = document.getElementById('ion-ext-viz');
@@ -2689,14 +2897,17 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     function renderTimeline() {
       var visible = items.filter(function(item) { return !hidden.has(item.type); });
-      track.style.setProperty('--timeline-min-width', Math.max(640, n * 10) + 'px');
+      track.style.setProperty('--timeline-content-width', Math.max(12, visible.length * 12) + 'px');
       track.innerHTML = visible.map(function(item) {
-        var position = n > 1 ? 0.25 + (item.index / (n - 1)) * 99.5 : 50;
         var aria = item.label + ', entry ' + (item.index + 1) + ' of ' + n + ', ' + item.summary + ', click to jump';
-        return '<button type="button" class="ion-timeline-bar" data-entry-index="' + item.index + '" style="--bar-color:' + item.color + ';--bar-left:' + position + '%" aria-label="' + esc(aria) + '"></button>';
+        return '<button type="button" class="ion-timeline-bar" data-entry-index="' + item.index + '" style="--bar-color:' + item.color + '" aria-label="' + esc(aria) + '"></button>';
       }).join('');
       meta.textContent = (visible.length === n ? n : visible.length + ' / ' + n) + ' entries' + (start && end ? ' · ' + start + ' → ' + end : '');
       tooltip.classList.remove('is-visible');
+      items.forEach(function(item) {
+        var target = targetFor(item.entry, item.index);
+        if (target) target.classList.toggle('ion-entry-filter-hidden', hidden.has(item.type));
+      });
     }
     function showTooltip(bar, x, y) {
       var item = items[Number(bar.getAttribute('data-entry-index'))];
@@ -2705,6 +2916,7 @@ document.addEventListener('DOMContentLoaded', function() {
       var time = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : 'time unknown';
       tooltip.innerHTML = '<div class="ion-tooltip-type"><span class="ion-entry-swatch" style="--entry-color:' + item.color + '"></span>' + esc(item.label) + '</div>' +
         '<div class="ion-tooltip-meta">#' + (item.index + 1) + ' / ' + n + ' · ' + esc(time + (entry.id ? ' · ' + String(entry.id).slice(0, 12) : '')) + '</div>' +
+        '<div class="ion-tooltip-meta">' + esc(semanticSummary(entry)) + '</div>' +
         '<div class="ion-tooltip-summary">' + esc(item.summary) + '</div>';
       tooltip.classList.add('is-visible');
       var rect = tooltip.getBoundingClientRect();
@@ -2922,6 +3134,119 @@ document.addEventListener('DOMContentLoaded', function() {
         1,
     );
 
+    // Render the exact same semantic metadata used by Timeline on each body
+    // target. This turns the export into an execution audit: users can see who
+    // produced an entry, whether it reached LLM context, whether the live UI hid
+    // it, and which provider/model/tool/Extension was involved.
+    let entry_semantics_script = r#"
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  function decodeData() {
+    var el = document.getElementById('session-data');
+    if (!el) return {};
+    try {
+      var bin = atob(el.textContent.trim());
+      var bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return JSON.parse(new TextDecoder('utf-8').decode(bytes));
+    } catch (error) { return {}; }
+  }
+  function message(entry) {
+    var msg = entry && entry.message ? entry.message : {};
+    var variants = ['User','Assistant','ToolResult','BashExecution','Custom','BranchSummary','CompactionSummary'];
+    for (var i = 0; i < variants.length; i++) if (msg[variants[i]]) return msg[variants[i]];
+    return msg;
+  }
+  function toolCallId(entry) {
+    var msg = message(entry || {});
+    return msg.toolCallId || msg.tool_call_id || entry.toolCallId || entry.tool_call_id ||
+      (entry.details && (entry.details.toolCallId || entry.details.tool_call_id)) || '';
+  }
+  function targetFor(entry, index) {
+    var direct = entry.id ? document.getElementById('entry-' + entry.id) : null;
+    if (direct) return direct;
+    var callId = toolCallId(entry);
+    if (callId) return document.getElementById('tool-call-' + callId);
+    return document.getElementById('ion-timeline-entry-' + index);
+  }
+  function phaseLabel(phase) {
+    return ({
+      user_input:'User input', context_injection:'Context injection', context_snapshot:'Context snapshot',
+      llm_response:'LLM response', tool_request:'LLM tool request', tool_result:'Tool result',
+      extension_event:'Extension event', custom_event:'Custom audit', session_control:'Session control'
+    })[phase] || String(phase || 'entry').replace(/_/g, ' ');
+  }
+  function addChip(strip, text, kind, title) {
+    if (!text) return;
+    var chip = document.createElement('span');
+    chip.className = 'ion-entry-provenance-chip';
+    chip.dataset.kind = kind || 'meta';
+    chip.textContent = text;
+    if (title) chip.title = title;
+    strip.appendChild(chip);
+  }
+  function tokenText(usage) {
+    if (!usage || typeof usage !== 'object') return '';
+    var input = usage.input == null ? '?' : usage.input;
+    var output = usage.output == null ? '?' : usage.output;
+    return 'tokens ↑' + input + ' ↓' + output;
+  }
+  function decorate(entry, index) {
+    var meta = entry && entry.ionMeta;
+    var target = targetFor(entry, index);
+    if (!meta || !target || target.querySelector(':scope > .ion-entry-provenance[data-entry-sequence="' + meta.sequence + '"]')) return;
+    var strip = document.createElement('div');
+    strip.className = 'ion-entry-provenance';
+    strip.dataset.entrySequence = String(meta.sequence || index + 1);
+    strip.setAttribute('aria-label', 'Entry provenance');
+    addChip(strip, phaseLabel(meta.phase), 'phase');
+    if (meta.source && meta.source.name) {
+      var confidence = meta.source.confidence && meta.source.confidence !== 'recorded'
+        ? ' · ' + meta.source.confidence : '';
+      addChip(strip, meta.source.kind + ' · ' + meta.source.name + confidence, 'source',
+        meta.source.confidence === 'inferred' ? 'Source inferred from an ION built-in Custom type' : 'Source recorded by session data');
+    }
+    if (meta.customType) addChip(strip, 'customType · ' + meta.customType, 'custom');
+    if (meta.audience) {
+      var llm = meta.audience.llmContext;
+      if (llm === 'input') addChip(strip, 'LLM context · included', 'llm');
+      else if (llm === 'output') addChip(strip, 'LLM output', 'llm');
+      else if (llm === 'excluded') addChip(strip, 'LLM context · excluded', 'hidden');
+      else addChip(strip, 'LLM context · no', 'hidden');
+      if (!meta.audience.liveUi) addChip(strip, 'live UI · hidden', 'hidden');
+    }
+    if (meta.llmCall) addChip(strip, 'LLM call #' + meta.llmCall, 'llm');
+    if (meta.llm) {
+      var identity = [meta.llm.provider, meta.llm.model].filter(Boolean).join('/');
+      addChip(strip, identity, 'llm');
+      addChip(strip, tokenText(meta.llm.usage), 'llm');
+      if (meta.llm.stopReason) addChip(strip, 'stop · ' + meta.llm.stopReason, 'llm');
+    }
+    if (Array.isArray(meta.toolCalls) && meta.toolCalls.length) {
+      addChip(strip, 'tools · ' + meta.toolCalls.map(function(call) { return call.name || 'tool'; }).join(', '), 'tool');
+    }
+    target.appendChild(strip);
+    target.dataset.ionPhase = meta.phase || '';
+    target.dataset.ionSource = meta.source && meta.source.name || '';
+    target.dataset.ionLlmContext = meta.audience && meta.audience.llmContext || '';
+  }
+  var data = decodeData();
+  var entries = Array.isArray(data.timelineEntries) ? data.timelineEntries : [];
+  entries.forEach(decorate);
+  window.ionEntrySemantics = {
+    total: entries.length,
+    decorated: document.querySelectorAll('.ion-entry-provenance').length
+  };
+  document.dispatchEvent(new CustomEvent('ion-entry-semantics-ready', { detail: window.ionEntrySemantics }));
+});
+</script>
+"#;
+    html = html.replacen(
+        "</body>",
+        &format!("{}\n</body>", entry_semantics_script),
+        1,
+    );
+
     // ION: long Entries show at least three rendered content lines instead of
     // counting role labels, timestamps and card controls as preview lines. Folding is
     // only useful when expanding reveals more than three additional content lines;
@@ -2974,7 +3299,8 @@ document.addEventListener('DOMContentLoaded', function() {
       ':scope > .compaction-content',
       ':scope > .error-text',
       ':scope > .skill-invocation',
-      ':scope > .user-message'
+      ':scope > .user-message',
+      ':scope > .ion-generic-entry-content'
     ];
     var roots = Array.from(content.querySelectorAll(selectors.join(',')));
     return roots.length ? roots : [content];
@@ -3197,11 +3523,529 @@ fn sub_html_filename(sid: &str) -> String {
     format!("{SUB_HTML_PREFIX}{short}.html")
 }
 
-/// 将内部元数据和用户可见事件分流。内部记录仍嵌入导出文件，但不交给模板渲染。
-fn partition_export_entries(entries: Vec<Value>) -> (Vec<Value>, Vec<Value>) {
-    entries.into_iter().partition(|entry| {
-        entry.get("type").and_then(|value| value.as_str()) != Some("turn_summary")
+/// Return the inner message payload for both ION's externally-tagged enum
+/// representation and the already-flat representation used by older fixtures.
+fn export_message_payload(entry: &Value) -> Option<&Value> {
+    let message = entry.get("message")?;
+    for wrapper in [
+        "User",
+        "Assistant",
+        "ToolResult",
+        "BashExecution",
+        "Custom",
+        "BranchSummary",
+        "CompactionSummary",
+    ] {
+        if let Some(inner) = message.get(wrapper) {
+            return Some(inner);
+        }
+    }
+    Some(message)
+}
+
+fn export_message_role(entry: &Value) -> Option<&str> {
+    let message = entry.get("message")?;
+    if let Some(role) = export_message_payload(entry)
+        .and_then(|payload| payload.get("role"))
+        .and_then(Value::as_str)
+    {
+        return Some(role);
+    }
+    for (wrapper, role) in [
+        ("User", "user"),
+        ("Assistant", "assistant"),
+        ("ToolResult", "toolResult"),
+        ("BashExecution", "bashExecution"),
+        ("Custom", "custom"),
+        ("BranchSummary", "branchSummary"),
+        ("CompactionSummary", "compactionSummary"),
+    ] {
+        if message.get(wrapper).is_some() {
+            return Some(role);
+        }
+    }
+    None
+}
+
+fn export_custom_type(entry: &Value) -> Option<&str> {
+    entry
+        .get("customType")
+        .or_else(|| entry.get("custom_type"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            let message = export_message_payload(entry)?;
+            message
+                .get("customType")
+                .or_else(|| message.get("custom_type"))
+                .and_then(Value::as_str)
+        })
+}
+
+/// Custom types owned by ION. The tuple is `(customType, display label, source)`.
+/// Runtime Extension types are intentionally absent and therefore render as
+/// generic `Custom` while retaining their recorded Extension source.
+const BUILT_IN_CUSTOM_TYPE_CATALOG: &[(&str, &str, &str)] = &[
+    ("hook_event", "Hook", "hooks"),
+    ("hook_handler_executed", "Hook", "hooks"),
+    ("diagnostics", "Diagnostics", "lsp"),
+    ("bash_result", "Background Bash Result", "bash"),
+    ("dev_servers", "Dev Server Context", "dev-server-detector"),
+    ("remind", "Budget Reminder", "kernel"),
+    ("system_prompt", "System Prompt Snapshot", "kernel"),
+    ("session_name", "Session Title", "session"),
+    ("sub_session_separator", "Sub-session", "orchestration"),
+    ("file-approval", "File Approval", "file-snapshot"),
+    ("step-snapshot", "File Snapshot", "file-snapshot"),
+    ("approval_deny", "Review Rejection", "review"),
+    ("memory_injected", "Memory", "memory"),
+    ("memory_saved", "Memory", "memory"),
+    ("memory_search", "Memory", "memory"),
+    ("memory_searching", "Memory", "memory"),
+    ("memory_consolidate", "Memory", "memory"),
+    ("memory_search_stat", "Memory", "memory"),
+    ("llm_retry", "LLM Retry", "retry"),
+    ("retry_exceeded", "LLM Retry", "retry"),
+    ("compacting", "Compaction Event", "compaction"),
+    ("compaction_done", "Compaction Event", "compaction"),
+    ("process_started", "Background Process", "bash"),
+    ("process_completed", "Background Process", "bash"),
+    ("process_killed", "Background Process", "bash"),
+];
+
+/// Known ION-owned Custom types get their own semantic label. Unknown runtime
+/// Extension types deliberately remain `Custom`; the renderer may still show a
+/// recorded Extension name without inventing a type taxonomy for third parties.
+fn built_in_custom_semantics(custom_type: &str) -> Option<(&'static str, &'static str)> {
+    BUILT_IN_CUSTOM_TYPE_CATALOG
+        .iter()
+        .find(|(name, _, _)| *name == custom_type)
+        .map(|(_, display, source)| (*display, *source))
+}
+
+fn normalize_export_source(source: &str) -> String {
+    match source {
+        "hook" => "hooks".into(),
+        "dev_server" | "dev-server" => "dev-server-detector".into(),
+        other => other.to_string(),
+    }
+}
+
+fn recorded_custom_source(entry: &Value) -> Option<String> {
+    let payload = export_message_payload(entry);
+    let candidates = [
+        entry.get("extension"),
+        entry.get("sourceExtension"),
+        entry.get("source_extension"),
+        payload.and_then(|value| value.get("extension")),
+        payload.and_then(|value| value.get("sourceExtension")),
+        entry
+            .get("details")
+            .and_then(|value| value.get("extension")),
+        entry
+            .get("details")
+            .and_then(|value| value.get("sourceExtension")),
+        entry.get("details").and_then(|value| value.get("source")),
+        payload
+            .and_then(|value| value.get("details"))
+            .and_then(|value| value.get("extension")),
+        payload
+            .and_then(|value| value.get("details"))
+            .and_then(|value| value.get("sourceExtension")),
+        payload
+            .and_then(|value| value.get("details"))
+            .and_then(|value| value.get("source")),
+        entry.get("data").and_then(|value| value.get("extension")),
+        entry
+            .get("data")
+            .and_then(|value| value.get("sourceExtension")),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .find_map(Value::as_str)
+        .filter(|source| !source.trim().is_empty())
+        .map(normalize_export_source)
+}
+
+fn export_tool_calls(entry: &Value) -> Vec<Value> {
+    let Some(content) = export_message_payload(entry)
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    content
+        .iter()
+        .filter_map(|block| {
+            let call = block
+                .get("ToolCall")
+                .or_else(|| block.get("ToolUse"))
+                .or_else(|| {
+                    (block.get("type").and_then(Value::as_str) == Some("toolCall")).then_some(block)
+                })?;
+            Some(json!({
+                "id": call.get("id").cloned().unwrap_or(Value::Null),
+                "name": call.get("name").cloned().unwrap_or(json!("tool")),
+                "arguments": call.get("arguments").cloned().unwrap_or_else(|| json!({})),
+            }))
+        })
+        .collect()
+}
+
+fn annotate_export_entries(entries: &[Value]) -> Vec<Value> {
+    let mut llm_call_number = 0_u64;
+    entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let entry_type = entry.get("type").and_then(Value::as_str).unwrap_or("entry");
+            let role = export_message_role(entry).unwrap_or("");
+            let custom_type = export_custom_type(entry).unwrap_or("");
+            let built_in_custom = built_in_custom_semantics(custom_type);
+            let recorded_source = recorded_custom_source(entry);
+
+            let is_custom_message = role.eq_ignore_ascii_case("custom");
+            let is_tool_result = role.eq_ignore_ascii_case("toolresult")
+                || role.eq_ignore_ascii_case("tool")
+                || entry_type == "tool_result";
+            let is_assistant = role.eq_ignore_ascii_case("assistant");
+            let is_user = role.eq_ignore_ascii_case("user");
+            let is_bash_execution = role.eq_ignore_ascii_case("bashExecution");
+            let tool_calls = if is_assistant {
+                export_tool_calls(entry)
+            } else {
+                Vec::new()
+            };
+            if is_assistant {
+                llm_call_number += 1;
+            }
+
+            let (display_type, phase, actor) = if is_user {
+                ("User", "user_input", "user")
+            } else if is_assistant && !tool_calls.is_empty() {
+                ("LLM Tool Request", "tool_request", "llm")
+            } else if is_assistant {
+                ("LLM Response", "llm_response", "llm")
+            } else if is_tool_result {
+                ("Tool Result", "tool_result", "tool")
+            } else if is_bash_execution {
+                ("Bash Execution", "tool_result", "tool")
+            } else if !custom_type.is_empty() {
+                let label = built_in_custom.map(|item| item.0).unwrap_or("Custom");
+                let phase = if custom_type == "hook_event" || custom_type == "hook_handler_executed" {
+                    "extension_event"
+                } else if is_custom_message {
+                    "context_injection"
+                } else if custom_type == "system_prompt" {
+                    "context_snapshot"
+                } else {
+                    "custom_event"
+                };
+                (label, phase, if is_custom_message { "extension" } else { "audit" })
+            } else {
+                let label = match entry_type {
+                    "compaction" => "Compaction",
+                    "branch_summary" => "Branch Summary",
+                    "model_change" => "Model Change",
+                    "thinking_level_change" => "Thinking Change",
+                    "agent_change" => "Agent Change",
+                    "active_tools_change" => "Tools Change",
+                    "leaf_pointer" => "Branch Pointer",
+                    "deletion" => "Deletion",
+                    "segment_summary" => "Segment Summary",
+                    "system_event" => "System Event",
+                    _ => "Entry",
+                };
+                (label, "session_control", "kernel")
+            };
+
+            let (source_kind, source_name, source_confidence) = if let Some(source) = recorded_source {
+                ("extension", source, "recorded")
+            } else if let Some((_, extension)) = built_in_custom {
+                let kind = if extension == "kernel" || extension == "session" {
+                    "kernel"
+                } else {
+                    "extension"
+                };
+                (kind, extension.to_string(), "inferred")
+            } else if is_assistant {
+                let message = export_message_payload(entry).unwrap_or(&Value::Null);
+                let provider = message.get("provider").and_then(Value::as_str).unwrap_or("llm");
+                let model = message.get("model").and_then(Value::as_str).unwrap_or("unknown");
+                ("llm", format!("{provider}/{model}"), "recorded")
+            } else if is_tool_result || is_bash_execution {
+                let message = export_message_payload(entry).unwrap_or(entry);
+                let tool_name = message
+                    .get("toolName")
+                    .or_else(|| message.get("tool_name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(if is_bash_execution { "bash" } else { "tool" });
+                ("tool", tool_name.to_string(), "recorded")
+            } else if is_user {
+                let source = export_message_payload(entry)
+                    .and_then(|message| message.get("source"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("prompt");
+                ("user", source.to_string(), "recorded")
+            } else if !custom_type.is_empty() {
+                ("unknown", "unknown".into(), "unknown")
+            } else {
+                ("kernel", "ion".into(), "inferred")
+            };
+
+            let payload = export_message_payload(entry);
+            let display = entry
+                .get("display")
+                .or_else(|| payload.and_then(|value| value.get("display")))
+                .and_then(Value::as_bool)
+                .unwrap_or(entry_type == "message");
+            let excluded = payload
+                .and_then(|value| {
+                    value
+                        .get("excludeFromContext")
+                        .or_else(|| value.get("exclude_from_context"))
+                })
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let llm_context = if excluded {
+                "excluded"
+            } else if is_assistant {
+                "output"
+            } else if entry_type == "message" {
+                "input"
+            } else {
+                "not_in_context"
+            };
+            let filter_type = if !custom_type.is_empty() {
+                if built_in_custom.is_some() {
+                    format!("builtin:{display_type}")
+                } else {
+                    "custom".into()
+                }
+            } else if is_user {
+                "user".into()
+            } else if is_assistant {
+                "assistant".into()
+            } else if is_tool_result {
+                "toolResult".into()
+            } else if is_bash_execution {
+                "bashExecution".into()
+            } else {
+                entry_type.into()
+            };
+
+            let mut meta = json!({
+                "sequence": index + 1,
+                "phase": phase,
+                "displayType": display_type,
+                "filterType": filter_type,
+                "actor": actor,
+                "source": {
+                    "kind": source_kind,
+                    "name": source_name,
+                    "confidence": source_confidence,
+                },
+                "audience": {
+                    "llmContext": llm_context,
+                    "liveUi": display,
+                    "audit": true,
+                },
+                "customType": if custom_type.is_empty() { Value::Null } else { json!(custom_type) },
+                "customClass": if custom_type.is_empty() {
+                    Value::Null
+                } else if built_in_custom.is_some() {
+                    json!("builtin")
+                } else if source_confidence == "recorded" {
+                    json!("extension")
+                } else {
+                    json!("custom")
+                },
+                "toolCalls": tool_calls,
+            });
+            if is_assistant {
+                let message = export_message_payload(entry).unwrap_or(&Value::Null);
+                if let Some(object) = meta.as_object_mut() {
+                    object.insert("llmCall".into(), json!(llm_call_number));
+                    object.insert(
+                        "llm".into(),
+                        json!({
+                            "provider": message.get("provider").cloned().unwrap_or(Value::Null),
+                            "model": message.get("model").cloned().unwrap_or(Value::Null),
+                            "api": message.get("api").cloned().unwrap_or(Value::Null),
+                            "stopReason": message.get("stopReason").or_else(|| message.get("stop_reason")).cloned().unwrap_or(Value::Null),
+                            "usage": message.get("usage").cloned().unwrap_or(Value::Null),
+                            "responseId": message.get("responseId").or_else(|| message.get("response_id")).cloned().unwrap_or(Value::Null),
+                        }),
+                    );
+                }
+            }
+
+            let mut annotated = entry.clone();
+            if let Some(object) = annotated.as_object_mut() {
+                object.insert("ionMeta".into(), meta);
+            }
+            annotated
+        })
+        .collect()
+}
+
+fn build_export_flow_summary(entries: &[Value]) -> Value {
+    let mut llm_calls = 0_u64;
+    let mut tool_calls = 0_u64;
+    let mut tool_results = 0_u64;
+    let mut custom_entries = 0_u64;
+    let mut context_injections = 0_u64;
+    let mut extensions = std::collections::BTreeMap::<String, u64>::new();
+    let mut custom_types = std::collections::BTreeMap::<String, (String, String, u64)>::new();
+    let mut raw_entry_types = std::collections::BTreeMap::<String, u64>::new();
+    let mut visible_types = std::collections::BTreeMap::<String, u64>::new();
+    let mut message_roles = std::collections::BTreeMap::<String, u64>::new();
+    let mut built_in_custom_types = std::collections::BTreeSet::<String>::new();
+    let mut extension_custom_types = std::collections::BTreeSet::<String>::new();
+    let mut unknown_custom_types = std::collections::BTreeSet::<String>::new();
+
+    for entry in entries {
+        let Some(meta) = entry.get("ionMeta") else {
+            continue;
+        };
+        let raw_type = entry.get("type").and_then(Value::as_str).unwrap_or("entry");
+        *raw_entry_types.entry(raw_type.to_string()).or_default() += 1;
+        if let Some(filter_type) = meta.get("filterType").and_then(Value::as_str)
+        {
+            *visible_types.entry(filter_type.to_string()).or_default() += 1;
+        }
+        if let Some(role) = export_message_role(entry) {
+            *message_roles.entry(role.to_string()).or_default() += 1;
+        }
+        if meta.get("llmCall").is_some() {
+            llm_calls += 1;
+        }
+        tool_calls += meta
+            .get("toolCalls")
+            .and_then(Value::as_array)
+            .map(|calls| calls.len() as u64)
+            .unwrap_or(0);
+        if meta.get("phase").and_then(Value::as_str) == Some("tool_result") {
+            tool_results += 1;
+        }
+        if meta.get("phase").and_then(Value::as_str) == Some("context_injection") {
+            context_injections += 1;
+        }
+        let source = meta.get("source");
+        if source
+            .and_then(|value| value.get("kind"))
+            .and_then(Value::as_str)
+            == Some("extension")
+            && let Some(name) = source
+                .and_then(|value| value.get("name"))
+                .and_then(Value::as_str)
+            && name != "unknown"
+        {
+            *extensions.entry(name.to_string()).or_default() += 1;
+        }
+        if let Some(custom_type) = meta.get("customType").and_then(Value::as_str) {
+            custom_entries += 1;
+            let display = meta
+                .get("displayType")
+                .and_then(Value::as_str)
+                .unwrap_or("Custom")
+                .to_string();
+            let source_name = source
+                .and_then(|value| value.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+            let item =
+                custom_types
+                    .entry(custom_type.to_string())
+                    .or_insert((display, source_name, 0));
+            item.2 += 1;
+            match meta.get("customClass").and_then(Value::as_str) {
+                Some("builtin") => {
+                    built_in_custom_types.insert(custom_type.to_string());
+                }
+                Some("extension") => {
+                    extension_custom_types.insert(custom_type.to_string());
+                }
+                _ => {
+                    unknown_custom_types.insert(custom_type.to_string());
+                }
+            }
+        }
+    }
+
+    let current_custom_type_count = custom_types.len();
+    let current_extension_count = extensions.len();
+    let raw_entry_type_count = raw_entry_types.len();
+    let visible_type_count = visible_types.len();
+    let message_role_count = message_roles.len();
+    let extension_items = extensions
+        .into_iter()
+        .map(|(name, count)| json!({"name":name,"count":count}))
+        .collect::<Vec<_>>();
+    let custom_type_items = custom_types
+        .into_iter()
+        .map(|(custom_type, (display, source, count))| {
+            json!({
+                "customType": custom_type,
+                "displayType": display,
+                "source": source,
+                "count": count,
+            })
+        })
+        .collect::<Vec<_>>();
+    let raw_entry_type_items = raw_entry_types
+        .into_iter()
+        .map(|(name, count)| json!({"name":name,"count":count}))
+        .collect::<Vec<_>>();
+    let visible_type_items = visible_types
+        .into_iter()
+        .map(|(name, count)| json!({"name":name,"count":count}))
+        .collect::<Vec<_>>();
+    let message_role_items = message_roles
+        .into_iter()
+        .map(|(name, count)| json!({"name":name,"count":count}))
+        .collect::<Vec<_>>();
+
+    json!({
+        "entries": entries.len(),
+        "llmCalls": llm_calls,
+        "toolCalls": tool_calls,
+        "toolResults": tool_results,
+        "customEntries": custom_entries,
+        "contextInjections": context_injections,
+        "extensions": extension_items,
+        "customTypes": custom_type_items,
+        "typeInventory": {
+            "supported": {
+                "entryTypes": session_jsonl::SESSION_ENTRY_TYPES.len(),
+                "builtInCustomTypes": BUILT_IN_CUSTOM_TYPE_CATALOG.len(),
+                "entryTypeNames": session_jsonl::SESSION_ENTRY_TYPES,
+                "builtInCustomTypeNames": BUILT_IN_CUSTOM_TYPE_CATALOG
+                    .iter()
+                    .map(|(name, _, _)| *name)
+                    .collect::<Vec<_>>(),
+            },
+            "current": {
+                "rawEntryTypes": raw_entry_type_count,
+                "visibleTypes": visible_type_count,
+                "messageRoles": message_role_count,
+                "customTypes": current_custom_type_count,
+                "builtInCustomTypes": built_in_custom_types.len(),
+                "extensionCustomTypes": extension_custom_types.len(),
+                "unknownCustomTypes": unknown_custom_types.len(),
+                "extensions": current_extension_count,
+            },
+            "entryTypes": raw_entry_type_items,
+            "visibleTypes": visible_type_items,
+            "messageRoles": message_role_items,
+        },
     })
+}
+
+/// 保留字段是为了稳定离线 HTML data contract；当前格式没有隐藏的内部 entry。
+fn partition_export_entries(entries: Vec<Value>) -> (Vec<Value>, Vec<Value>) {
+    (entries, Vec::new())
 }
 
 /// Handles:
@@ -3769,7 +4613,7 @@ mod tests {
             json!({"type":"message","id":"old-4","parentId":"old-3","message":{"role":"assistant","content":[]}}),
             json!({"type":"leaf_pointer","id":"lp-1","parentId":null,"leafId":"m2"}),
             json!({"type":"message","id":"m5","parentId":"m2","message":{"role":"user","content":"active branch"}}),
-            json!({"type":"turn_summary","id":"ts-1","parentId":null,"userEntryId":"m5","summary":"active summary"}),
+            json!({"type":"custom","id":"snap-1","parentId":"m5","customType":"step-snapshot","data":{"baselineTreeHash":"t0","snapshotTreeHash":"t1","diff":{"added":[],"modified":[],"deleted":[]},"turnIndex":1}}),
             json!({"type":"custom_message","id":"hook-1","parentId":null,"customType":"hook_event","content":"active hook"}),
             json!({"type":"custom_message","id":"old-note","parentId":"old-4","customType":"diagnostics","content":"old branch detail"}),
             json!({"type":"branch_summary","id":"bs-1","parentId":"old-4","fromId":"old-4","summary":"abandoned branch"}),
@@ -3787,7 +4631,7 @@ mod tests {
         assert_eq!(selection.omitted_branch_entry_count, 3);
         assert_eq!(
             ids,
-            vec!["m1", "m2", "lp-1", "m5", "ts-1", "hook-1", "bs-1"]
+            vec!["m1", "m2", "lp-1", "m5", "snap-1", "hook-1", "bs-1"]
         );
         assert!(!ids.contains(&"old-3"));
         assert!(!ids.contains(&"old-4"));
@@ -3798,7 +4642,7 @@ mod tests {
     fn test_export_keeps_full_linear_session() {
         let entries = vec![
             json!({"type":"message","id":"m1","parentId":"session-1","message":{"role":"user","content":"hello"}}),
-            json!({"type":"turn_summary","id":"ts-1","parentId":null,"summary":"turn"}),
+            json!({"type":"custom","id":"snap-1","parentId":"m1","customType":"step-snapshot","data":{"baselineTreeHash":"t0","snapshotTreeHash":"t1"}}),
             json!({"type":"message","id":"m2","parentId":"m1","message":{"role":"assistant","content":[]}}),
         ];
 
@@ -4016,30 +4860,30 @@ mod tests {
     }
 
     #[test]
-    fn test_turn_summary_is_internal_export_metadata() {
-        let turn_summary = json!({
-            "type": "turn_summary",
-            "id": "ts1",
-            "summary": "Did some work",
-            "status": "completed",
-            "turnId": 0,
-            "keySteps": ["bash"],
-            "toolCallCount": 1,
-            "tokens": {"input": 10, "output": 20},
-            "durationMs": 30,
-            "entryRange": ["m1", "m2"]
+    fn test_step_snapshot_is_visible_export_flow_entry() {
+        let step_snapshot = json!({
+            "type": "custom",
+            "id": "snap1",
+            "parentId": "m1",
+            "customType": "step-snapshot",
+            "data": {
+                "baselineTreeHash": "tree0",
+                "snapshotTreeHash": "tree1",
+                "diff": {"added":["a.rs"],"modified":[],"deleted":[]},
+                "turnIndex": 1
+            }
         });
         let message = json!({"type": "message", "id": "m1"});
         let compaction = json!({"type": "compaction", "id": "c1"});
 
         let (visible, internal) = partition_export_entries(vec![
             message.clone(),
-            turn_summary.clone(),
+            step_snapshot.clone(),
             compaction.clone(),
         ]);
 
-        assert_eq!(visible, vec![message, compaction]);
-        assert_eq!(internal, vec![turn_summary]);
+        assert_eq!(visible, vec![message, step_snapshot, compaction]);
+        assert!(internal.is_empty());
     }
 
     #[test]
@@ -4102,5 +4946,125 @@ mod tests {
         });
         let pi = convert_entry(&entry);
         assert_eq!(pi, entry);
+    }
+
+    #[test]
+    fn test_export_semantics_marks_llm_custom_injection_with_recorded_source() {
+        let entries = annotate_export_entries(&[json!({
+            "type": "message",
+            "id": "custom-1",
+            "message": {"Custom": {
+                "role": "custom",
+                "customType": "diagnostics",
+                "content": "<diagnostics />",
+                "display": true,
+                "details": {"source": "lsp"}
+            }}
+        })]);
+        let meta = &entries[0]["ionMeta"];
+        assert_eq!(meta["displayType"], json!("Diagnostics"));
+        assert_eq!(meta["phase"], json!("context_injection"));
+        assert_eq!(meta["source"]["name"], json!("lsp"));
+        assert_eq!(meta["source"]["confidence"], json!("recorded"));
+        assert_eq!(meta["audience"]["llmContext"], json!("input"));
+        assert_eq!(meta["audience"]["liveUi"], json!(true));
+    }
+
+    #[test]
+    fn test_export_semantics_marks_hook_as_audit_not_llm_context() {
+        let entries = annotate_export_entries(&[json!({
+            "type": "custom_message",
+            "id": "hook-1",
+            "customType": "hook_event",
+            "content": "blocked",
+            "display": true,
+            "details": {"source": "hook", "toolCallId": "call-1"}
+        })]);
+        let meta = &entries[0]["ionMeta"];
+        assert_eq!(meta["displayType"], json!("Hook"));
+        assert_eq!(meta["phase"], json!("extension_event"));
+        assert_eq!(meta["source"]["name"], json!("hooks"));
+        assert_eq!(meta["source"]["confidence"], json!("recorded"));
+        assert_eq!(meta["audience"]["llmContext"], json!("not_in_context"));
+    }
+
+    #[test]
+    fn test_runtime_extension_custom_keeps_generic_label_and_exact_origin() {
+        let entries = annotate_export_entries(&[json!({
+            "type": "custom_message",
+            "id": "weather-1",
+            "customType": "forecast_refreshed",
+            "extension": "weather",
+            "content": "sunny",
+            "display": true
+        })]);
+        let meta = &entries[0]["ionMeta"];
+        assert_eq!(meta["displayType"], json!("Custom"));
+        assert_eq!(meta["customClass"], json!("extension"));
+        assert_eq!(meta["source"]["name"], json!("weather"));
+        assert_eq!(meta["source"]["confidence"], json!("recorded"));
+    }
+
+    #[test]
+    fn test_export_flow_summary_counts_llm_tools_custom_and_extensions() {
+        let entries = annotate_export_entries(&[
+            json!({"type":"message","id":"u1","message":{"User":{"role":"user","content":[],"source":"prompt"}}}),
+            json!({"type":"message","id":"a1","message":{"Assistant":{
+                "role":"assistant","provider":"zai","model":"glm-5.2","api":"openai-completions",
+                "usage":{"input":10,"output":4},"stop_reason":"tool_use",
+                "content":[{"ToolCall":{"id":"call-1","name":"bash","arguments":{"command":"pwd"}}}]
+            }}}),
+            json!({"type":"message","id":"t1","message":{"ToolResult":{"role":"toolResult","tool_call_id":"call-1","tool_name":"bash","content":[]}}}),
+            json!({"type":"message","id":"c1","message":{"Custom":{"role":"custom","customType":"diagnostics","content":"x","display":true,"details":{"source":"lsp"}}}}),
+        ]);
+        let summary = build_export_flow_summary(&entries);
+        assert_eq!(summary["entries"], json!(4));
+        assert_eq!(summary["llmCalls"], json!(1));
+        assert_eq!(summary["toolCalls"], json!(1));
+        assert_eq!(summary["toolResults"], json!(1));
+        assert_eq!(summary["customEntries"], json!(1));
+        assert_eq!(summary["contextInjections"], json!(1));
+        assert_eq!(summary["extensions"][0]["name"], json!("lsp"));
+        assert_eq!(
+            summary["typeInventory"]["supported"]["entryTypes"],
+            json!(17)
+        );
+        assert_eq!(
+            summary["typeInventory"]["supported"]["builtInCustomTypes"],
+            json!(25)
+        );
+        assert_eq!(
+            summary["typeInventory"]["current"]["rawEntryTypes"],
+            json!(1)
+        );
+        assert_eq!(
+            summary["typeInventory"]["current"]["visibleTypes"],
+            json!(4)
+        );
+        assert_eq!(
+            summary["typeInventory"]["current"]["messageRoles"],
+            json!(4)
+        );
+        assert_eq!(summary["typeInventory"]["current"]["customTypes"], json!(1));
+        assert_eq!(
+            summary["typeInventory"]["current"]["builtInCustomTypes"],
+            json!(1)
+        );
+        assert_eq!(
+            summary["typeInventory"]["current"]["extensionCustomTypes"],
+            json!(0)
+        );
+        assert_eq!(summary["typeInventory"]["current"]["extensions"], json!(1));
+    }
+
+    #[test]
+    fn test_export_assets_are_embedded_and_markdown_escapes_raw_html() {
+        assert!(EXPORT_TEMPLATE_HTML.contains("{{SESSION_DATA}}"));
+        assert!(EXPORT_TEMPLATE_CSS.len() > 10_000);
+        assert!(EXPORT_TEMPLATE_JS.contains("function safeMarkedParse"));
+        assert!(EXPORT_TEMPLATE_JS.contains(".replace(/</g, '&lt;')"));
+        assert!(!EXPORT_TEMPLATE_JS.contains("PI_EXPORT_DIR"));
+        assert!(!EXPORT_MARKED_JS.is_empty());
+        assert!(!EXPORT_HIGHLIGHT_JS.is_empty());
     }
 }

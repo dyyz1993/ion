@@ -89,8 +89,8 @@ ion --resume sess_xxx --rollback msg_005 --restore-code
 ```
 
 **执行顺序**（重要）：
-1. 解析 `msg_005` → 找到所属 `turn_summary` → 得到 `turnId`
-2. `restore_code_to_turn(turnId)` — **先恢复磁盘**（撤销该 turn 之后的所有文件改动）
+1. 解析 `msg_005` → 沿当前消息树找到对应 `step-snapshot` tree hash
+2. `restore_to_tree(treeHash)` — **先恢复磁盘**（恢复到该消息点对应的完整文件树）
 3. `make_rollback(msg_005)` — **再回滚消息**（追加 leaf_pointer）
 4. 记录 `restore_point`（可用于 undo_restore 撤销恢复）
 
@@ -130,19 +130,19 @@ ion --resume sess_xxx --rollback msg_005 \
 
 ### R4 回滚后继续对话（turnId 全局递增）
 
-**场景**：回滚到某个点后继续聊，新 turn 的 turnId 接续全局最大值（不覆盖历史快照）。
+**场景**：回滚到某个点后继续聊，新回合使用新的 user message entry id，历史 snapshot 不会被覆盖。
 
 ```bash
-# 第一次 run: turnId 0,1,2,3,4
-ion --resume sess_xxx --rollback msg_003   # 回滚到 turnId=2
+# 第一次 run 形成 msg_001..msg_005 与 parented step-snapshot
+ion --resume sess_xxx --rollback msg_003
 
-# 第二次 run: turnId 从 5 开始（全局 max=4 + 1）
+# 第二次 run 追加新的 user entry 分支
 ion --resume sess_xxx "继续，换种方式实现"
 ```
 
 **验证点：**
-- ✅ 第二次 run 的 turn_summary turnId=5,6,7...（不重复 0,1,2）
-- ✅ `snapshots/tool/5.jsonl` 不覆盖 `snapshots/tool/0.jsonl`
+- ✅ 第二次 run 的回合 ID 等于新 user entry id，不会与旧分支重复
+- ✅ 新 `step-snapshot` parent 到新分支当前 leaf，不覆盖历史 custom entry
 - ✅ 回滚后的新 write，`before_hash` 是恢复后的内容（磁盘已恢复）
 
 **来源**：⚠️ 代码依据（[FILE_SNAPSHOT.md §19](../design/FILE_SNAPSHOT.md) turn_id 全局唯一性设计）
@@ -187,7 +187,7 @@ ion rpc --session sess_xxx --method restore_files \
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `toTurn` | string | 是 | 目标 turnId（turn_summary entry 的 id，如 `"ts_003"`） |
+| `toTurn` | string | 是 | 目标快照标识（delta RPC 保留）；消息联动回滚优先使用 `--rollback <entryId> --restore-code` 的 tree-hash 路径 |
 
 **响应 JSON（成功）：**
 

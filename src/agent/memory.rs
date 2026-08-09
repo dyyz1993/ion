@@ -326,9 +326,7 @@ impl MemoryStore {
             } else {
                 Some(self.project_name.as_str())
             };
-            let results = gstore
-                .search(query, project_filter)
-                .unwrap_or_default();
+            let results = gstore.search(query, project_filter).unwrap_or_default();
             // 转成 MemoryEntry 格式（保持注入链路兼容）
             return results
                 .into_iter()
@@ -532,7 +530,10 @@ impl Tool for MemorySearchTool {
         _rt: &dyn crate::runtime::Runtime,
     ) -> AgentResult<String> {
         let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-        let global = args.get("global").and_then(|v| v.as_bool()).unwrap_or(false);
+        let global = args
+            .get("global")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let store = self.store.lock().await;
         let results = store.search_with_scope(query, None, global);
         Ok(serde_json::to_string(&results).unwrap_or_else(|_| "[]".into()))
@@ -690,16 +691,24 @@ impl Extension for MemoryExtension {
         // 导致 save 成功但 on_system_prompt 永远读不到 → memory_outline 永远空。
         // 修复：如果 global_store 有数据，也从那里读最近 N 条注入。
         if let Some(ref global) = store.global_store {
-            tracing::info!("[memory] on_system_prompt: global_store exists, project={}", store.project_name);
+            tracing::info!(
+                "[memory] on_system_prompt: global_store exists, project={}",
+                store.project_name
+            );
             if let Ok(entries) = global.search("", Some(&store.project_name)) {
-                tracing::info!("[memory] on_system_prompt: found {} entries from global_store", entries.len());
+                tracing::info!(
+                    "[memory] on_system_prompt: found {} entries from global_store",
+                    entries.len()
+                );
                 if !entries.is_empty() {
                     let mut xml = String::from("\n<memory_outline>\n");
                     for e in entries.iter().take(10) {
                         let summary: String = e.content.chars().take(80).collect();
                         xml.push_str(&format!(
                             "  <memory id=\"{}\" category=\"{}\" summary=\"{}\"/>\n",
-                            e.id, e.category, summary.replace('"', "'")
+                            e.id,
+                            e.category,
+                            summary.replace('"', "'")
                         ));
                     }
                     xml.push_str("</memory_outline>");
@@ -907,26 +916,31 @@ impl Extension for MemoryExtension {
         while let Some(xml) = store.pending_global.pop() {
             let inject_text =
                 format!("<global_memory>\n以下是跨项目相关记忆：\n{xml}\n</global_memory>");
-            messages.push(Message::User(UserMessage {
-                role: "user".into(),
-                content: vec![ContentBlock::Text(TextContent {
-                    text: inject_text,
-                    text_signature: None,
-                })],
+            messages.push(Message::Custom(CustomMessage {
+                role: "custom".into(),
+                custom_type: "memory_injected".into(),
+                content: CustomContent::Text(inject_text),
+                display: false,
+                details: Some(serde_json::json!({
+                    "source": "memory",
+                    "scope": "global",
+                })),
                 timestamp: 0,
-                source: ion_provider::types::MessageSource::Prompt,
             }));
         }
 
         while let Some(pending) = store.pending.pop() {
-            messages.push(Message::User(UserMessage {
-                role: "user".into(),
-                content: vec![ContentBlock::Text(TextContent {
-                    text: pending.xml,
-                    text_signature: None,
-                })],
+            messages.push(Message::Custom(CustomMessage {
+                role: "custom".into(),
+                custom_type: "memory_injected".into(),
+                content: CustomContent::Text(pending.xml),
+                display: false,
+                details: Some(serde_json::json!({
+                    "source": "memory",
+                    "scope": "project",
+                    "outline": pending.outline.clone(),
+                })),
                 timestamp: 0,
-                source: ion_provider::types::MessageSource::Prompt,
             }));
 
             // 更新 injected.json（只更新这个 outline）

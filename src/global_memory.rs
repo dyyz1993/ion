@@ -258,7 +258,9 @@ impl GlobalMemoryStore {
                  FROM entries WHERE archived = 0
                  ORDER BY importance DESC, updated_at DESC LIMIT 20"
             };
-            let mut stmt = conn.prepare(sql).map_err(|e| format!("prepare empty: {}", e))?;
+            let mut stmt = conn
+                .prepare(sql)
+                .map_err(|e| format!("prepare empty: {}", e))?;
             let rows = if let Some(p) = project {
                 stmt.query_map(params![p], map_entry)
                     .map_err(|e| format!("query empty: {}", e))?

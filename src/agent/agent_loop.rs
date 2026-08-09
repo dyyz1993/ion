@@ -126,7 +126,7 @@ pub struct Agent {
     pub runtime: Arc<dyn crate::runtime::Runtime>,
     /// 独立压缩模型（可选，默认使用主模型）
     compact_model: Option<Model>,
-    /// 会话文件所在 cwd（用于 compaction/turn_summary 落盘，None = 不落盘）
+    /// 会话文件所在 cwd（用于 compaction / snapshot 等 entry 落盘，None = 不落盘）
     session_cwd: Option<String>,
     /// Last system-prompt signature written to session JSONL (len + hash).
     /// Avoids rewriting the (large) prompt snapshot every turn when nothing
@@ -211,7 +211,7 @@ impl Agent {
         self
     }
 
-    /// 设置会话文件所在 cwd（用于 compaction/turn_summary 落盘到 JSONL）。
+    /// 设置会话文件所在 cwd（用于生命周期 entry 落盘到 JSONL）。
     pub fn with_session_cwd(mut self, cwd: Option<String>) -> Self {
         self.session_cwd = cwd;
         self
@@ -890,6 +890,14 @@ impl Agent {
                 timestamp: now_ms(),
                 source: ion_provider::types::MessageSource::Prompt,
             }));
+            // SessionIndex is the durable aggregate for user/LLM counters.
+            // A user turn starts here exactly once, while the inner loop may make
+            // multiple LLM calls because of tool use.
+            if let Some(ref sid) = self.session_id {
+                crate::session_index::SessionIndex::increment_turn_stats(
+                    sid, 1, 0, 0, 0, 0, false,
+                );
+            }
         }
 
         // 4. before_agent_start (注入消息/修改 system prompt)
@@ -990,12 +998,11 @@ impl Agent {
                 // and miss the <bash_result> notification.
                 if self.follow_up_queue.is_empty() {
                     const BACKGROUND_WAIT_TIMEOUT: u64 = 30; // 30s: covers short bg tasks
-                    if let Ok(Some((msg, mode))) =
-                        tokio::time::timeout(
-                            std::time::Duration::from_secs(BACKGROUND_WAIT_TIMEOUT),
-                            rx.recv(),
-                        )
-                        .await
+                    if let Ok(Some((msg, mode))) = tokio::time::timeout(
+                        std::time::Duration::from_secs(BACKGROUND_WAIT_TIMEOUT),
+                        rx.recv(),
+                    )
+                    .await
                     {
                         match mode {
                             DeliverAs::Steer => self.steering_queue.push_back(msg),
@@ -1374,9 +1381,7 @@ impl Agent {
                         })
                         .await?;
 
-                    // ── turn_summary 落盘：每一轮 turn 结束时追加结构化摘要 ──
-                    self.persist_turn_summary(
-                        turn,
+                    self.record_llm_stats(
                         &events,
                         &stop_reason,
                         turn_start.elapsed().as_millis() as u64,
@@ -1679,14 +1684,12 @@ impl Agent {
                                         .ok()
                                         .and_then(|s| s.parse::<u64>().ok())
                                         .unwrap_or(600);
-                                    let timeout_duration = if tc_name == "skill"
-                                        || tc_name == "bash"
-                                        
-                                    {
-                                        std::time::Duration::from_secs(long_default)
-                                    } else {
-                                        std::time::Duration::from_secs(120)
-                                    };
+                                    let timeout_duration =
+                                        if tc_name == "skill" || tc_name == "bash" {
+                                            std::time::Duration::from_secs(long_default)
+                                        } else {
+                                            std::time::Duration::from_secs(120)
+                                        };
                                     let timeout_secs = timeout_duration.as_secs();
                                     // abort + interrupt 检查 ticker
                                     let mut check_ticker = tokio::time::interval(
@@ -1830,9 +1833,7 @@ impl Agent {
                         })
                         .await?;
 
-                    // ── turn_summary 落盘（ToolUse 路径）──
-                    self.persist_turn_summary(
-                        turn,
+                    self.record_llm_stats(
                         &events,
                         &ion_provider::StopReason::ToolUse,
                         turn_start.elapsed().as_millis() as u64,
@@ -1841,9 +1842,7 @@ impl Agent {
                     continue;
                 }
                 StopReason::Error => {
-                    // ── turn_summary 落盘（Error 路径，强制记录中断 turn）──
-                    self.persist_turn_summary(
-                        turn,
+                    self.record_llm_stats(
                         &events,
                         &ion_provider::StopReason::Error,
                         turn_start.elapsed().as_millis() as u64,
@@ -1900,11 +1899,9 @@ impl Agent {
                     return Ok(StopReason::Error);
                 }
                 StopReason::Aborted => {
-                    // ── turn_summary 落盘（Aborted 路径）──
-                    self.persist_turn_summary(
-                        turn,
+                    self.record_llm_stats(
                         &events,
-                        &ion_provider::StopReason::Error,
+                        &ion_provider::StopReason::Aborted,
                         turn_start.elapsed().as_millis() as u64,
                     );
                     return Ok(StopReason::Aborted);
@@ -2301,80 +2298,21 @@ impl Agent {
         }
     }
 
-    /// 将本轮 turn 的结构化摘要落盘到 session JSONL（turn_summary entry）。
-    /// 纯结构化提取，不调 LLM。含 abort/error turn 也调用此方法。
-    fn persist_turn_summary(
+    /// 把单次 LLM 调用的聚合统计写入 SessionIndex。
+    ///
+    /// 会话正文只保存真实消息与生命周期 entry；回合概览从消息树派生，
+    /// 不再额外写一条复制 assistant 文本的回合摘要 entry。
+    fn record_llm_stats(
         &self,
-        turn: u64,
         events: &[ion_provider::StreamEvent],
         stop_reason: &ion_provider::StopReason,
         duration_ms: u64,
     ) {
-        let Some(ref cwd) = self.session_cwd else {
-            return;
-        };
-
-        // 提取本轮 tool_calls
-        let tool_calls: Vec<_> = events
-            .iter()
-            .filter_map(|e| match e {
-                ion_provider::StreamEvent::ToolCallEnd { tool_call, .. } => {
-                    Some(tool_call.name.clone())
-                }
-                _ => None,
-            })
-            .collect();
-        let tool_call_count = tool_calls.len() as u32;
-
-        // 从 messages 找最后一条 user（本轮用户提问）和 assistant（本轮回复）
-        let last_user = self.messages.iter().rev().find_map(|m| match m {
-            Message::User(u) => Some(u.clone()),
-            _ => None,
-        });
+        // usage 已经保存在 AssistantMessage 中；这里仅维护无需进入正文的聚合索引。
         let last_asst = self.messages.iter().rev().find_map(|m| match m {
             Message::Assistant(a) => Some(a.clone()),
             _ => None,
         });
-
-        // userContent（截断到 200 字符，对齐 list_turns 的 full_content=false 语义）
-        let _user_content = last_user
-            .as_ref()
-            .map(|u| {
-                u.content
-                    .iter()
-                    .filter_map(|b| match b {
-                        ion_provider::ContentBlock::Text(t) => Some(t.text.clone()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("")
-            })
-            .unwrap_or_default();
-
-        // assistantContent（截断到 200 字符）
-        let asst_content = last_asst
-            .as_ref()
-            .map(|a| {
-                a.content
-                    .iter()
-                    .filter_map(|b| match b {
-                        ion_provider::AssistantContentBlock::Text(t) => Some(t.text.clone()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("")
-            })
-            .unwrap_or_default();
-
-        // summary = assistantContent 前 200 字（纯结构化，不调 LLM）
-        let summary = if asst_content.chars().count() > 200 {
-            asst_content.chars().take(200).collect::<String>() + "..."
-        } else {
-            asst_content.clone()
-        };
-
-        // userEntryId：内存 Message 无 entryId，暂用 turn 序号占位
-        let user_entry_id = format!("turn_{}", turn);
 
         // tokens
         let (tok_in, tok_out) = last_asst
@@ -2382,32 +2320,6 @@ impl Agent {
             .map(|a| (a.usage.input, a.usage.output))
             .unwrap_or((0, 0));
 
-        // status
-        let status = match stop_reason {
-            ion_provider::StopReason::Stop => "completed",
-            ion_provider::StopReason::ToolUse => "tool_use",
-            ion_provider::StopReason::Length => "max_turns",
-            ion_provider::StopReason::Error => "error",
-            ion_provider::StopReason::Aborted => "aborted",
-        };
-
-        crate::session_jsonl::append_turn_summary(
-            cwd,
-            turn,
-            &user_entry_id,
-            &summary,
-            &tool_calls,
-            tool_call_count,
-            tok_in,
-            tok_out,
-            duration_ms,
-            &[], // entryRange 暂空（内存 Message 无 entryId）
-            status,
-        );
-
-        // ── SessionIndex 增量统计（turn 结束时一次性 flush）──
-        // 每轮 turn +1、LLM 调用数（StreamEvent::Done 计数）、耗时累加、token 累加。
-        // 若本轮以 Error 结束，error_count +1（turn 级去重，不按 API 重试次数算）。
         if let Some(ref sid) = self.session_id {
             // 本轮 LLM 调用次数 = StreamEvent::Done 出现次数（每次完整 LLM 响应一个 Done）
             let llm_calls_this_turn = events
@@ -2417,7 +2329,7 @@ impl Agent {
             let is_error = matches!(stop_reason, ion_provider::StopReason::Error);
             crate::session_index::SessionIndex::increment_turn_stats(
                 sid,
-                1, // user_prompt_count: 每 turn 一次用户提问
+                0, // user prompt 在 run() 接收输入时只计一次
                 llm_calls_this_turn,
                 duration_ms,
                 tok_in,
@@ -2750,10 +2662,7 @@ mod tests {
         assert_eq!(agent.current_message_count(), 3);
 
         // with_messages also reflects on the count.
-        let agent2 = build_test_agent().with_messages(vec![
-            user_msg("a"),
-            user_msg("b"),
-        ]);
+        let agent2 = build_test_agent().with_messages(vec![user_msg("a"), user_msg("b")]);
         assert_eq!(agent2.current_message_count(), 2);
     }
 }

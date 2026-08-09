@@ -10,6 +10,7 @@
 
 #![cfg(test)]
 
+use base64::Engine as _;
 use std::process::Command;
 
 fn enabled() -> bool {
@@ -219,4 +220,84 @@ fn e2e_compact_model_flag() {
     );
     assert!(ok, "--compact-model should not break execution: {out}");
     println!("e2e_compact_model: {out}");
+}
+
+#[test]
+#[ignore]
+fn e2e_html_export_flow() {
+    if !enabled() {
+        return;
+    }
+
+    let provider = provider();
+    let model = model();
+    let export_path = std::env::temp_dir().join(format!(
+        "ion-export-e2e-{}-{}.html",
+        std::process::id(),
+        model.replace('/', "-")
+    ));
+    let export_arg = export_path.to_string_lossy().to_string();
+    let (ok, out) = run_ion(
+        &[
+            "--no-extensions",
+            "-p",
+            "Reply with exactly: export flow verified",
+            "--provider",
+            &provider,
+            "--model",
+            &model,
+            "--export",
+            &export_arg,
+        ],
+        None,
+    );
+    assert!(ok, "real LLM export should exit 0: {out}");
+
+    let html = std::fs::read_to_string(&export_path).unwrap_or_else(|error| {
+        panic!("export HTML missing at {}: {error}", export_path.display())
+    });
+    let marker = r#"<script id="session-data" type="application/json">"#;
+    let encoded = html
+        .split_once(marker)
+        .and_then(|(_, tail)| tail.split_once("</script>"))
+        .map(|(value, _)| value.trim())
+        .expect("export must embed session-data");
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .expect("session-data must be valid base64");
+    let data: serde_json::Value =
+        serde_json::from_slice(&bytes).expect("session-data must be valid JSON");
+
+    assert!(
+        data["flowSummary"]["llmCalls"].as_u64().unwrap_or(0) >= 1,
+        "flow summary should contain a real LLM call: {data}"
+    );
+    assert_eq!(
+        data["flowSummary"]["typeInventory"]["supported"]["entryTypes"], 18,
+        "export should declare the complete ION Session Entry catalog"
+    );
+    assert_eq!(
+        data["flowSummary"]["typeInventory"]["supported"]["builtInCustomTypes"], 24,
+        "export should declare the complete built-in Custom catalog"
+    );
+    assert!(
+        data["flowSummary"]["typeInventory"]["current"]["visibleTypes"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 2,
+        "a real prompt/response export should contain user and assistant visible types"
+    );
+    assert!(
+        data["timelineEntries"]
+            .as_array()
+            .is_some_and(|entries| entries.iter().all(|entry| entry.get("ionMeta").is_some())),
+        "every visible entry should carry export semantics"
+    );
+    assert!(
+        html.contains("--timeline-content-width") && html.contains("What happened in this session"),
+        "single-file export should contain the compact timeline and flow summary"
+    );
+
+    let _ = std::fs::remove_file(&export_path);
+    println!("e2e_html_export_flow: verified real LLM export");
 }
