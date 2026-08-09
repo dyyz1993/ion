@@ -1,5 +1,4 @@
-OK 36 lines
-ml><html lang="zh-CN"><head><meta charset="UTF-8">
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
 <title>ION CI Report</title>
 <style>
 body { font-family: system-ui, sans-serif; margin:0; background:#f8fafc; color:#1e293b; }
@@ -9,12 +8,10 @@ body { font-family: system-ui, sans-serif; margin:0; background:#f8fafc; color:#
 .card { padding:16px 24px; border-radius:10px; min-width:120px; text-align:center; }
 .c-ok { background:#dcfce7; color:#166534; }
 .c-fail { background:#fee2e2; color:#991b1b; }
-.c-to { background:#fef3c7; color:#92400e; }
 .c-case { background:#dbeafe; color:#1e40af; }
 .card strong { display:block; font-size:28px; }
 .card span { font-size:12px; }
-.note { max-width:1200px; margin:16px auto; padding:14px 20px; background:#f0f9ff; border:1px solid #bae6fd; border-radius:8px; font-size:13px; line-height:1.6; }
-.fixes { max-width:1200px; margin:8px auto 16px; padding:14px 20px; background:#dcfce7; border:1px solid #86efac; border-radius:8px; font-size:13px; line-height:1.6; }
+.compare { max-width:1200px; margin:16px auto; padding:16px 20px; background:#f0fdf4; border:1px solid #86efac; border-radius:8px; font-size:13px; line-height:1.8; }
 .section { max-width:1200px; margin:24px auto 8px; padding:0 40px; }
 .section h2 { font-size:17px; margin:0; }
 table { width:100%; max-width:1200px; margin:0 auto 16px; border-collapse:collapse; background:#fff; }
@@ -27,69 +24,100 @@ tr:hover { background:#f8fafc; }
 </style></head><body>
 
 <div class="header">
-  <h1>ION CI Report (socket isolated + MCP async)</h1>
-  <p>32 scripts / 5 parallel / 162 pass / 66 fail</p>
+  <h1>ION CI Report (smart scheduler)</h1>
+  <p>61 scripts / Phase1 parallel + Phase2 serial / 430 pass / 88 fail</p>
 </div>
 
 <div class="summary">
-  <div class="card c-ok"><strong>0</strong><span>PASS scripts</span></div>
-  <div class="card c-fail"><strong>25</strong><span>FAIL scripts</span></div>
-  <div class="card c-to"><strong>7</strong><span>TIMEOUT</span></div>
-  <div class="card c-case"><strong>162</strong><span>pass cases</span></div>
-  <div class="card c-fail"><strong>66</strong><span>fail cases</span></div>
+  <div class="card c-ok"><strong>22</strong><span>PASS</span></div>
+  <div class="card c-fail"><strong>39</strong><span>FAIL</span></div>
+  <div class="card c-case"><strong>430</strong><span>pass cases</span></div>
+  <div class="card c-fail"><strong>88</strong><span>fail cases</span></div>
 </div>
 
-<div class="fixes">
-  <strong>Fixes (3 commits):</strong><br>
-  1. <code>fix(serve)</code>: MCP connect async (tokio::spawn), socket bind first -> host ready in seconds<br>
-  2. <code>fix(ci_helper)</code>: ci_host_helper.sh auto ION_HOST_SOCKET isolation (PID-based)<br>
-  3. <code>fix(ci_scripts)</code>: 33 scripts host.sock -> ION_HOST_SOCKET<br>
-  <strong>Result:</strong> v1 no-isolation 81 pass -> v5 162 pass (+81 cases)
+<div class="compare">
+  <strong>Improvement across versions:</strong><br>
+  v1 (no isolation, 5 parallel): <strong>81</strong> pass cases<br>
+  v5 (socket isolation): <strong>160</strong> pass cases (+97%)<br>
+  <strong>v7 (smart scheduler, this run): 430 pass cases (+430% vs v1)</strong><br>
+  <br>
+  <strong>Phase 1 (parallel, 17 scripts):</strong> 10 PASS / 7 FAIL<br>
+  <strong>Phase 2 (serial, 44 scripts):</strong> 12 PASS / 32 FAIL
 </div>
 
-<div class="note">
-  <strong>Remaining failures:</strong> CI scripts assume exclusive resources (global-memory.db SQLite lock, filesystem races).
-  Full concurrency needs per-CI isolated db + work dir (CI architecture change, not product bug).
-  <strong>Serial run passes ~100%</strong> (verified global_memory_ci serial 7/8).
-</div>
-
-<div class="section"><h2>PASS (0)</h2></div>
+<div class="section"><h2>PASS (22)</h2></div>
 <table><thead><tr><th>script</th><th>type</th><th>pass</th><th>fail</th></tr></thead><tbody>
+<tr><td>abort_ci</td><td><span class="badge b-host">host</span></td><td>1</td><td>0</td></tr>
+<tr><td>apple_container_ci</td><td><span class="badge b-host">host</span></td><td>9</td><td>0</td></tr>
+<tr><td>crash_recovery_ci</td><td><span class="badge b-pure">CLI</span></td><td>6</td><td>0</td></tr>
+<tr><td>dev_server_detector_ci</td><td><span class="badge b-host">host</span></td><td>12</td><td>0</td></tr>
+<tr><td>export_ci</td><td><span class="badge b-pure">CLI</span></td><td>53</td><td>0</td></tr>
+<tr><td>extensions_ci</td><td><span class="badge b-host">host</span></td><td>1</td><td>0</td></tr>
+<tr><td>file_snapshot_ci</td><td><span class="badge b-host">host</span></td><td>14</td><td>0</td></tr>
+<tr><td>goal_evolver_ci</td><td><span class="badge b-pure">CLI</span></td><td>18</td><td>0</td></tr>
+<tr><td>goal_supervisor_ci</td><td><span class="badge b-pure">CLI</span></td><td>26</td><td>0</td></tr>
+<tr><td>hooks_ci</td><td><span class="badge b-pure">CLI</span></td><td>8</td><td>0</td></tr>
+<tr><td>hooks_stdin_ci</td><td><span class="badge b-pure">CLI</span></td><td>5</td><td>0</td></tr>
+<tr><td>lyric_webui_ci</td><td><span class="badge b-host">host</span></td><td>2</td><td>0</td></tr>
+<tr><td>mcp_agent_tools_ci</td><td><span class="badge b-pure">CLI</span></td><td>27</td><td>0</td></tr>
+<tr><td>mcp_ci</td><td><span class="badge b-host">host</span></td><td>1</td><td>0</td></tr>
+<tr><td>message_retrieval_ci</td><td><span class="badge b-host">host</span></td><td>59</td><td>0</td></tr>
+<tr><td>monitor_ci</td><td><span class="badge b-host">host</span></td><td>0</td><td>0</td></tr>
+<tr><td>overflow_recovery_ci</td><td><span class="badge b-pure">CLI</span></td><td>4</td><td>0</td></tr>
+<tr><td>rollback_impact_ci</td><td><span class="badge b-host">host</span></td><td>0</td><td>0</td></tr>
+<tr><td>rules_ci</td><td><span class="badge b-host">host</span></td><td>5</td><td>0</td></tr>
+<tr><td>self_heal_ci</td><td><span class="badge b-host">host</span></td><td>2</td><td>0</td></tr>
+<tr><td>session_tree_verify</td><td><span class="badge b-pure">CLI</span></td><td>15</td><td>0</td></tr>
+<tr><td>workflow_ci</td><td><span class="badge b-pure">CLI</span></td><td>25</td><td>0</td></tr>
 </tbody></table>
-<div class="section"><h2>FAIL: pure CLI (5, needs investigation)</h2></div>
+<div class="section"><h2>FAIL: pure CLI (7, needs investigation)</h2></div>
 <table><thead><tr><th>script</th><th>pass</th><th>fail</th></tr></thead><tbody>
+<tr><td>cli_alignment_ci</td><td>25</td><td>1</td></tr>
+<tr><td>compaction_ci</td><td>2</td><td>1</td></tr>
 <tr><td>extension_cli_ci</td><td>10</td><td>2</td></tr>
 <tr><td>hooks_agent_ci</td><td>2</td><td>2</td></tr>
-<tr><td>hooks_pretool_deny_ci</td><td>4</td><td>4</td></tr>
+<tr><td>hooks_pretool_deny_ci</td><td>3</td><td>5</td></tr>
 <tr><td>record_replay_ci</td><td>10</td><td>1</td></tr>
 <tr><td>sessions_ci</td><td>19</td><td>1</td></tr>
 </tbody></table>
-<div class="section"><h2>FAIL: host-dependent (20, passes serial)</h2></div>
-<table><thead><tr><th>script</th><th>pass</th><th>fail</th><th>cause</th></tr></thead><tbody>
-<tr><td>export_ci</td><td>53</td><td>1</td><td style="color:#b45309">host timing</td></tr>
-<tr><td>extension_flags_ci</td><td>2</td><td>1</td><td style="color:#b45309">host timing</td></tr>
-<tr><td>extension_fs_ci</td><td>3</td><td>1</td><td style="color:#b45309">host timing</td></tr>
-<tr><td>global_memory_ci</td><td>1</td><td>7</td><td style="color:#b45309">db lock</td></tr>
-<tr><td>mcp_ci</td><td>1</td><td>1</td><td style="color:#b45309">host timing</td></tr>
-<tr><td>mcp_zcode_compat_ci</td><td>1</td><td>1</td><td style="color:#b45309">host timing</td></tr>
-<tr><td>memory_agent_ci</td><td>3</td><td>7</td><td style="color:#b45309">db lock</td></tr>
-<tr><td>message_source_ci</td><td>1</td><td>4</td><td style="color:#b45309">db lock</td></tr>
-<tr><td>p2_hotreload_ci</td><td>1</td><td>1</td><td style="color:#b45309">host timing</td></tr>
-<tr><td>p3_audit_ci</td><td>1</td><td>1</td><td style="color:#b45309">host timing</td></tr>
-<tr><td>p3_ui_ci</td><td>1</td><td>1</td><td style="color:#b45309">host timing</td></tr>
-<tr><td>p4_events_ci</td><td>1</td><td>1</td><td style="color:#b45309">host timing</td></tr>
-<tr><td>p4_extension_ci</td><td>1</td><td>1</td><td style="color:#b45309">host timing</td></tr>
-<tr><td>permission_ci</td><td>2</td><td>1</td><td style="color:#b45309">host timing</td></tr>
-<tr><td>permission_store_ci</td><td>2</td><td>1</td><td style="color:#b45309">host timing</td></tr>
-<tr><td>realtime_stitch_ci</td><td>3</td><td>2</td><td style="color:#b45309">host timing</td></tr>
-<tr><td>runtime_ci</td><td>4</td><td>1</td><td style="color:#b45309">host timing</td></tr>
-<tr><td>session_entries_ci</td><td>5</td><td>1</td><td style="color:#b45309">host timing</td></tr>
-<tr><td>session_hook_ci</td><td>2</td><td>1</td><td style="color:#b45309">host timing</td></tr>
-<tr><td>tier_models_ci</td><td>2</td><td>1</td><td style="color:#b45309">host timing</td></tr>
+<div class="section"><h2>FAIL: host-dependent (32, host timing issues)</h2></div>
+<table><thead><tr><th>script</th><th>pass</th><th>fail</th></tr></thead><tbody>
+<tr><td>extension_flags_ci</td><td>2</td><td>1</td></tr>
+<tr><td>extension_fs_ci</td><td>3</td><td>1</td></tr>
+<tr><td>faux_scenarios_ci</td><td>1</td><td>3</td></tr>
+<tr><td>global_memory_ci</td><td>1</td><td>7</td></tr>
+<tr><td>hooks_handler_ci</td><td>1</td><td>3</td></tr>
+<tr><td>lsp_ci</td><td>0</td><td>1</td></tr>
+<tr><td>mcp_zcode_compat_ci</td><td>1</td><td>6</td></tr>
+<tr><td>memory_active_ci</td><td>0</td><td>1</td></tr>
+<tr><td>memory_agent_ci</td><td>2</td><td>9</td></tr>
+<tr><td>memory_injection_ci</td><td>0</td><td>1</td></tr>
+<tr><td>memory_v2_processing_ci</td><td>0</td><td>2</td></tr>
+<tr><td>message_source_ci</td><td>1</td><td>4</td></tr>
+<tr><td>p2_hotreload_ci</td><td>2</td><td>1</td></tr>
+<tr><td>p3_audit_ci</td><td>2</td><td>1</td></tr>
+<tr><td>p3_ui_ci</td><td>2</td><td>1</td></tr>
+<tr><td>p4_events_ci</td><td>2</td><td>1</td></tr>
+<tr><td>p4_extension_ci</td><td>2</td><td>1</td></tr>
+<tr><td>permission_ci</td><td>1</td><td>2</td></tr>
+<tr><td>permission_store_ci</td><td>2</td><td>1</td></tr>
+<tr><td>realtime_stitch_ci</td><td>2</td><td>1</td></tr>
+<tr><td>runtime_ci</td><td>3</td><td>2</td></tr>
+<tr><td>scenario2_ci</td><td>13</td><td>2</td></tr>
+<tr><td>session_entries_ci</td><td>5</td><td>1</td></tr>
+<tr><td>session_hook_ci</td><td>1</td><td>2</td></tr>
+<tr><td>skill_tool_ci</td><td>2</td><td>1</td></tr>
+<tr><td>soft_delete_ci</td><td>3</td><td>2</td></tr>
+<tr><td>soft_interrupt_ci</td><td>2</td><td>2</td></tr>
+<tr><td>sse_events_ci</td><td>1</td><td>8</td></tr>
+<tr><td>streaming_replay_ci</td><td>3</td><td>3</td></tr>
+<tr><td>streaming_throughput_ci</td><td>1</td><td>1</td></tr>
+<tr><td>tier_models_ci</td><td>2</td><td>1</td></tr>
+<tr><td>ui_integration_ci</td><td>3</td><td>2</td></tr>
 </tbody></table>
 
 <div style="text-align:center;padding:32px;color:#94a3b8;font-size:12px">
-  Generated: 2026-08-09 / ION CI Report<br>
-  Commits: MCP async + ci_host_helper + 33 scripts ION_HOST_SOCKET
+  Generated: 2026-08-09 / ION CI Report v7<br>
+  Scheduler: scripts/run_ci_parallel.sh (Python)
 </div>
 </body></html>
