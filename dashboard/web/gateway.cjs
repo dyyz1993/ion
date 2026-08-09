@@ -1,15 +1,13 @@
 #!/usr/bin/env node
-// ION Dashboard WebSocket 网关
-// 把浏览器的 WebSocket 连接桥接到 ion serve 的 Unix socket。
+// ION Dashboard WebSocket 网关 v2
 //
-// 协议：
-//   浏览器 → 网关（WebSocket 消息）：{"type":"rpc","method":"...","params":{...}}
-//   网关 → 浏览器：ion socket 的每一行 JSON 原样转发（事件 + 响应）
+// 关键架构修正：ion host 的每个 socket 连接只读一行就关闭（subscribe 除外）。
+// 所以网关要维护两类连接：
+//   1. 一个长连接 SUB socket：发 {"method":"subscribe"} 走 subscribe_all，
+//      持续收所有 worker 的事件流，转发给所有浏览器。
+//   2. 每次浏览器 RPC 请求 → 临时开一个 socket 发命令、读响应、关闭。
 //
-// 还 serve 静态文件（dashboard/index.html）供浏览器加载。
-//
-// 用法：node gateway.js [--sock ~/.ion/host.sock] [--port 8080]
-// 无外部依赖，纯 Node 内置模块。
+// 用法：PORT=8080 node gateway.cjs
 
 const http = require('http');
 const fs = require('fs');
@@ -17,172 +15,163 @@ const path = require('path');
 const net = require('net');
 const crypto = require('crypto');
 
-const SOCK = process.env.ION_HOST_SOCK || '~/.ion/host.sock'.replace('~', process.env.HOME);
+const SOCK = process.env.ION_HOST_SOCK || path.join(process.env.HOME, '.ion', 'host.sock');
 const PORT = parseInt(process.env.PORT || '8080', 10);
-const STATIC_DIR = __dirname; // dashboard/ 目录，含 index.html
+const STATIC_DIR = __dirname;
 
-// ─── 极简 WebSocket 实现（Node 内置，不装 ws 库）──────────────────────
+// ─── WebSocket 帧编解码（同 v1）─────────────────────────────────────
 const WS_MAGIC = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
-
-function wsAccept(key) {
-  return crypto.createHash('sha1').update(key + WS_MAGIC).digest('base64');
-}
-
-// 解析一个 WebSocket 帧（支持文本帧 + mask）。返回 {payload, opcode} 或 null（数据不够）。
+function wsAccept(key) { return crypto.createHash('sha1').update(key + WS_MAGIC).digest('base64'); }
 function parseFrame(buf) {
   if (buf.length < 2) return null;
   const b0 = buf[0], b1 = buf[1];
-  const fin = (b0 & 0x80) !== 0;
-  const opcode = b0 & 0x0f;
-  let mask = (b1 & 0x80) !== 0;
-  let len = b1 & 0x7f;
-  let offset = 2;
+  const fin = (b0 & 0x80) !== 0, opcode = b0 & 0x0f, mask = (b1 & 0x80) !== 0;
+  let len = b1 & 0x7f, offset = 2;
   if (len === 126) { if (buf.length < 4) return null; len = buf.readUInt16BE(2); offset = 4; }
   else if (len === 127) { if (buf.length < 10) return null; len = Number(buf.readBigUInt64BE(2)); offset = 10; }
   let maskKey = null;
   if (mask) { if (buf.length < offset + 4) return null; maskKey = buf.slice(offset, offset + 4); offset += 4; }
   if (buf.length < offset + len) return null;
   let payload = buf.slice(offset, offset + len);
-  if (mask && maskKey) {
-    const p = Buffer.allocUnsafe(len);
-    for (let i = 0; i < len; i++) p[i] = payload[i] ^ maskKey[i % 4];
-    payload = p;
-  }
+  if (mask && maskKey) { const p = Buffer.allocUnsafe(len); for (let i = 0; i < len; i++) p[i] = payload[i] ^ maskKey[i % 4]; payload = p; }
   return { fin, opcode, payload, consumed: offset + len };
 }
-
-// 编码一个 WebSocket 文本帧（服务端→客户端，不 mask）。
 function encodeFrame(text) {
-  const payload = Buffer.from(text, 'utf8');
-  const len = payload.length;
-  let header;
-  if (len < 126) {
-    header = Buffer.allocUnsafe(2);
-    header[1] = len;
-  } else if (len < 65536) {
-    header = Buffer.allocUnsafe(4);
-    header[1] = 126; header.writeUInt16BE(len, 2);
-  } else {
-    header = Buffer.allocUnsafe(10);
-    header[1] = 127; header.writeBigUInt64BE(BigInt(len), 2);
-  }
-  header[0] = 0x81; // FIN + text
+  const payload = Buffer.from(text, 'utf8'); const len = payload.length; let header;
+  if (len < 126) { header = Buffer.allocUnsafe(2); header[1] = len; }
+  else if (len < 65536) { header = Buffer.allocUnsafe(4); header[1] = 126; header.writeUInt16BE(len, 2); }
+  else { header = Buffer.allocUnsafe(10); header[1] = 127; header.writeBigUInt64BE(BigInt(len), 2); }
+  header[0] = 0x81;
   return Buffer.concat([header, payload]);
 }
 
-// ─── 连 ion socket 的辅助：发一条 RPC，返回 socket（持续读事件转发）───
-// 每个浏览器 WS 连接独占一个 ion socket 连接，便于把事件流分流给对应的浏览器。
-function connectIonSock(onLine, onError, onClose) {
-  const sock = net.createConnection(SOCK);
-  let buf = Buffer.alloc(0);
-  sock.on('data', (chunk) => {
-    buf = Buffer.concat([buf, chunk]);
-    let nl;
-    while ((nl = buf.indexOf(10)) >= 0) { // 按 \n 分行
-      const line = buf.slice(0, nl).toString('utf8').trim();
-      buf = buf.slice(nl + 1);
-      if (line) onLine(line);
-    }
-  });
-  sock.on('error', onError);
-  sock.on('close', onClose);
-  return sock;
+// ─── 浏览器连接管理 ─────────────────────────────────────────────────
+const browsers = new Set(); // Set<net.Socket> 浏览器 WS 连接
+
+function broadcastToBrowsers(obj) {
+  const frame = encodeFrame(JSON.stringify(obj));
+  for (const ws of browsers) {
+    try { ws.write(frame); } catch {}
+  }
 }
 
-// ─── HTTP 服务：serve 静态 HTML + 升级 WebSocket ──────────────────────
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml' };
+// ─── SUB 长连接：订阅全局事件流 ─────────────────────────────────────
+function startSubscriptionLoop() {
+  const sub = net.createConnection(SOCK);
+  sub.on('connect', () => {
+    console.error('[gw] SUB socket connected, sending subscribe');
+    sub.write(JSON.stringify({ method: 'subscribe' }) + '\n');
+  });
+  let buf = Buffer.alloc(0);
+  sub.on('data', (chunk) => {
+    buf = Buffer.concat([buf, chunk]);
+    let nl;
+    while ((nl = buf.indexOf(10)) >= 0) {
+      const line = buf.slice(0, nl).toString('utf8').trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      let parsed;
+      try { parsed = JSON.parse(line); } catch { continue; }
+      // 把 ion 事件转发给所有浏览器
+      broadcastToBrowsers(parsed);
+    }
+  });
+  sub.on('error', (e) => console.error('[gw] SUB socket error:', e.message));
+  sub.on('close', () => {
+    console.error('[gw] SUB socket closed, reconnecting in 3s');
+    setTimeout(startSubscriptionLoop, 3000);
+  });
+  return sub;
+}
 
+// ─── RPC 短连接：发一条命令，读响应，关闭 ───────────────────────────
+function rpc(method, params, session) {
+  return new Promise((resolve, reject) => {
+    const sock = net.createConnection(SOCK);
+    let buf = Buffer.alloc(0);
+    let done = false;
+    const timeout = setTimeout(() => { if (!done) { done = true; try { sock.end(); } catch {} reject(new Error('rpc timeout 30s')); } }, 30000);
+    sock.on('connect', () => {
+      const req = { id: 'gw-' + Date.now(), method, params: params || {} };
+      if (session) req.session = session;
+      sock.write(JSON.stringify(req) + '\n');
+    });
+    sock.on('data', (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      let nl;
+      while ((nl = buf.indexOf(10)) >= 0) {
+        const line = buf.slice(0, nl).toString('utf8').trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        // 把事件也广播给浏览器（RPC 连接上可能也收到事件）
+        try { broadcastToBrowsers(JSON.parse(line)); } catch {}
+        // 找带 id 的响应
+        try {
+          const m = JSON.parse(line);
+          if (m.id) {
+            done = true;
+            clearTimeout(timeout);
+            try { sock.end(); } catch {}
+            resolve(m);
+            return;
+          }
+        } catch {}
+      }
+    });
+    sock.on('error', (e) => { if (!done) { done = true; clearTimeout(timeout); reject(e); } });
+    sock.on('close', () => { if (!done) { done = true; clearTimeout(timeout); resolve(null); } });
+  });
+}
+
+// ─── HTTP + WebSocket 服务 ──────────────────────────────────────────
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml' };
 const server = http.createServer((req, res) => {
-  // 简单 CORS + 首页指向 index.html
-  res.setHeader('Access-Control-Allow-Origin', '*');
   let urlPath = decodeURIComponent(req.url.split('?')[0]);
   if (urlPath === '/') urlPath = '/index.html';
-  // 防目录穿越
   const filePath = path.join(STATIC_DIR, path.normalize(urlPath).replace(/^(\.\.[/\\])+/, ''));
   if (!filePath.startsWith(STATIC_DIR)) { res.writeHead(403); res.end('forbidden'); return; }
   fs.readFile(filePath, (err, data) => {
     if (err) { res.writeHead(404); res.end('not found: ' + urlPath); return; }
-    const ext = path.extname(filePath).toLowerCase();
-    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+    res.writeHead(200, { 'Content-Type': MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream' });
     res.end(data);
   });
 });
 
-// WebSocket 升级
 server.on('upgrade', (req, socket) => {
   const key = req.headers['sec-websocket-key'];
   if (!key) { socket.destroy(); return; }
-  socket.write(
-    'HTTP/1.1 101 Switching Protocols\r\n' +
-    'Upgrade: websocket\r\n' +
-    'Connection: Upgrade\r\n' +
-    'Sec-WebSocket-Accept: ' + wsAccept(key) + '\r\n\r\n'
-  );
+  socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ' + wsAccept(key) + '\r\n\r\n');
+  browsers.add(socket);
+  console.error(`[gw] browser connected (total ${browsers.size})`);
 
-  // 为这个浏览器连接开一个 ion socket
-  let ionSock = null;
-  let ionBuf = Buffer.alloc(0);
-
-  const sendToBrowser = (obj) => {
-    socket.write(encodeFrame(JSON.stringify(obj)));
-  };
-
-  ionSock = connectIonSock(
-    (line) => {
-      console.error(`[gw] ion→ws line: ${line.slice(0, 120)}`);
-      // ion 的每一行 JSON 原样转发给浏览器
-      let parsed;
-      try { parsed = JSON.parse(line); } catch { sendToBrowser({ type: 'raw', line }); return; }
-      sendToBrowser(parsed);
-    },
-    (err) => { console.error(`[gw] ion sock error: ${err.message}`); sendToBrowser({ type: 'ion_error', message: err.message }); },
-    () => { console.error('[gw] ion sock closed'); sendToBrowser({ type: 'ion_closed' }); }
-  );
-  ionSock.on('connect', () => console.error('[gw] ion socket connected'));
-
-  // 处理浏览器发来的消息
   let wsBuf = Buffer.alloc(0);
   socket.on('data', (chunk) => {
     wsBuf = Buffer.concat([wsBuf, chunk]);
     let frame;
     while ((frame = parseFrame(wsBuf))) {
       wsBuf = wsBuf.slice(frame.consumed);
-      if (frame.opcode === 0x8) { // close
-        try { ionSock.end(); } catch {}
-        socket.end();
-        return;
-      }
-      if (frame.opcode !== 0x1) continue; // 只处理文本帧
+      if (frame.opcode === 0x8) { try { socket.end(); } catch {} return; }
+      if (frame.opcode !== 0x1) continue;
       const text = frame.payload.toString('utf8');
-      console.error(`[gw] ws→ion text: ${text.slice(0, 120)}`);
-      let msg;
-      try { msg = JSON.parse(text); } catch { sendToBrowser({ type: 'error', message: 'invalid json from browser' }); continue; }
-
-      // 收到浏览器的 RPC 请求 → 转成 ion socket 格式写入
+      let msg; try { msg = JSON.parse(text); } catch { continue; }
+      // 浏览器的 RPC 请求 → 开短连接发
       if (msg.type === 'rpc' || msg.method) {
-        const id = msg.id || ('ws-' + Date.now());
-        const req = { id, method: msg.method, params: msg.params || {} };
-        if (msg.session) req.session = msg.session;
-        const wrote = ionSock.write(JSON.stringify(req) + '\n');
-        console.error(`[gw] forwarded to ion (method=${msg.method}, wrote=${wrote})`);
-        sendToBrowser({ type: 'rpc_sent', id, method: msg.method });
-      } else if (msg.type === 'subscribe') {
-        // 发一个 subscribe 命令让 ion 推事件流
-        const id = 'ws-' + Date.now();
-        ionSock.write(JSON.stringify({ id, method: 'subscribe', params: {} }) + '\n');
+        console.error(`[gw] RPC: ${msg.method}`);
+        rpc(msg.method, msg.params || {}, msg.session)
+          .then((resp) => { if (resp) { try { socket.write(encodeFrame(JSON.stringify(resp))); } catch {} } })
+          .catch((e) => { try { socket.write(encodeFrame(JSON.stringify({ type: 'rpc_error', method: msg.method, message: e.message }))); } catch {} });
       }
     }
   });
-
-  socket.on('error', () => { try { ionSock.end(); } catch {} });
-  socket.on('close', () => { try { ionSock.end(); } catch {} });
+  const cleanup = () => { browsers.delete(socket); console.error(`[gw] browser disconnected (total ${browsers.size})`); };
+  socket.on('error', cleanup);
+  socket.on('close', cleanup);
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`ION Dashboard 网关已启动:`);
-  console.log(`  HTTP:     http://localhost:${PORT}/`);
-  console.log(`  WebSocket: ws://localhost:${PORT}/ (浏览器自动连)`);
-  console.log(`  ion sock: ${SOCK}`);
-  console.log(`  静态目录: ${STATIC_DIR}`);
-  console.log(`按 Ctrl+C 退出。`);
+  console.error(`ION Dashboard 网关 v2 已启动:`);
+  console.error(`  HTTP:  http://localhost:${PORT}/`);
+  console.error(`  ion sock: ${SOCK}`);
+  console.error(`  架构: 1 SUB 长连接 + N RPC 短连接`);
+  startSubscriptionLoop();
 });
