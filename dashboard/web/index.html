@@ -140,12 +140,17 @@ function connect() {
 
 // ─── 处理 ion 发来的消息（事件 + 响应）──────────────────────────
 function handleIonMessage(msg) {
-  // ion 的事件：{ type: "event", event: { type: "...", ... } }
-  // ion 的响应：{ type: "response", id, success, data }
+  // ion 的事件格式（实测）：
+  //   全局订阅推的 extension_event: { type:"extension_event", customType:"text_delta",
+  //                                    extension:"worker", data:{ event:{ delta:"Hi", type:"text_delta" } } }
+  //   worker 原始事件: { type:"event", event:{ type:"text_delta", delta:"..." } }
+  //   RPC 响应: { type:"response", id, success, data }
   if (msg.type === 'event' && msg.event) {
     handleEvent(msg.event);
+  } else if (msg.type === 'extension_event' && msg.data && msg.data.event) {
+    // 全局订阅收到的 worker 事件（customType=原始类型，data.event=完整事件）
+    handleEvent(msg.data.event);
   } else if (msg.event && msg.event.type) {
-    // 有些事件直接平铺
     handleEvent(msg.event);
   } else if (msg.type === 'response' || msg.id) {
     handleResponse(msg);
