@@ -163,6 +163,53 @@ function rpc(method, params, session) {
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml' };
 const server = http.createServer((req, res) => {
   let urlPath = decodeURIComponent(req.url.split('?')[0]);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+
+  // ── API: 读 session 历史消息 ──
+  // GET /api/session/:sessionId → 从 JSONL 文件解析 user/assistant/tool 消息
+  if (urlPath.startsWith('/api/session/')) {
+    const sid = urlPath.replace('/api/session/', '');
+    const ionDir = path.join(process.env.HOME, '.ion');
+    const sessDir = path.join(ionDir, 'agent', 'sessions');
+    // 在所有项目目录下找 <sid>.jsonl
+    fs.readdir(sessDir, (e, projects) => {
+      if (e) { res.writeHead(500); res.end(JSON.stringify({error: e.message})); return; }
+      let found = null;
+      for (const proj of projects) {
+        const candidate = path.join(sessDir, proj, sid + '.jsonl');
+        if (fs.existsSync(candidate)) { found = candidate; break; }
+      }
+      if (!found) { res.writeHead(404); res.end(JSON.stringify({error: 'session not found', sid})); return; }
+      // 逐行解析 JSONL，提取消息
+      const lines = fs.readFileSync(found, 'utf8').split('\n').filter(l => l.trim());
+      const messages = [];
+      for (const line of lines) {
+        try {
+          const m = JSON.parse(line);
+          const role = m.role;
+          if (role === 'user') {
+            messages.push({ role: 'user', content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content).slice(0, 500) });
+          } else if (role === 'assistant') {
+            const content = typeof m.content === 'string' ? m.content : (m.content?.[0]?.text || '');
+            if (content) messages.push({ role: 'assistant', content: content.slice(0, 2000) });
+            // tool calls
+            if (m.tool_calls) {
+              for (const tc of m.tool_calls) {
+                messages.push({ role: 'tool', name: tc.function?.name || '?', content: tc.function?.arguments?.slice(0, 200) || '' });
+              }
+            }
+          } else if (role === 'tool') {
+            const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+            messages.push({ role: 'tool_result', content: content.slice(0, 300) });
+          }
+        } catch {}
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ sid, messages, count: messages.length }));
+    });
+    return;
+  }
+
   if (urlPath === '/') urlPath = '/index.html';
   const filePath = path.join(STATIC_DIR, path.normalize(urlPath).replace(/^(\.\.[/\\])+/, ''));
   if (!filePath.startsWith(STATIC_DIR)) { res.writeHead(403); res.end('forbidden'); return; }

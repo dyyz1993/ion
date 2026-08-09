@@ -361,11 +361,51 @@ function renderOverview(data) {
 function renderSessions(sessions) {
   const list = document.getElementById('session-list');
   if (!sessions.length) { list.innerHTML = '<div class="empty">（无会话）</div>'; return; }
-  list.innerHTML = sessions.slice(0, 20).map(s => {
-    const sid = (s.session_id || s.sessionId || '?').slice(0, 20);
+  list.innerHTML = sessions.slice(0, 20).map((s, idx) => {
+    const sid = (s.session_id || s.sessionId || '?');
     const wid = (s.worker_id || s.workerId || '?').slice(0, 14);
-    return '<div class="session-item"><span class="title">' + escapeHtml(sid) + '</span><span class="meta">' + escapeHtml(wid) + '</span></div>';
+    const display = sid.length > 20 ? sid.slice(0, 20) + '…' : sid;
+    return '<div class="session-item" data-sid="' + escapeHtml(sid) + '" onclick="loadSession(\'' + escapeHtml(sid) + '\')"><span class="title">' + escapeHtml(display) + '</span><span class="meta">' + escapeHtml(wid) + '</span></div>';
   }).join('');
+}
+
+// 点击会话 → 加载历史消息
+async function loadSession(sid) {
+  // 高亮选中
+  document.querySelectorAll('.session-item').forEach(el => el.classList.remove('active'));
+  const target = document.querySelector('.session-item[data-sid="' + sid + '"]');
+  if (target) target.classList.add('active');
+  // 调网关 API 读 JSONL
+  const conv = document.getElementById('conversation');
+  conv.innerHTML = '<div class="empty">加载中…</div>';
+  document.getElementById('task-title').textContent = '会话: ' + sid.slice(0, 20);
+  try {
+    const resp = await fetch('/api/session/' + encodeURIComponent(sid));
+    const data = await resp.json();
+    if (data.error) { conv.innerHTML = '<div class="empty">⚠ ' + data.error + '</div>'; return; }
+    conv.innerHTML = '';
+    currentAssistantBubble = null;
+    for (const msg of data.messages) {
+      if (msg.role === 'user') {
+        appendUser(msg.content);
+      } else if (msg.role === 'assistant') {
+        const div = document.createElement('div');
+        div.className = 'msg assistant';
+        div.innerHTML = '<div class="role">GLM-5.2 · 历史消息</div><div class="msg-bubble"></div>';
+        div.querySelector('.msg-bubble').textContent = msg.content;
+        conv.appendChild(div);
+      } else if (msg.role === 'tool') {
+        addToolCard(msg.name, msg.content);
+      } else if (msg.role === 'tool_result') {
+        const cards = conv.querySelectorAll('.tool-card .tool-result');
+        if (cards.length) cards[cards.length - 1].textContent = '✓ ' + msg.content;
+      }
+    }
+    if (!data.messages.length) conv.innerHTML = '<div class="empty">（此会话无消息）</div>';
+    scrollConv();
+  } catch (e) {
+    conv.innerHTML = '<div class="empty">⚠ 加载失败: ' + e.message + '</div>';
+  }
 }
 
 function scrollConv() {
