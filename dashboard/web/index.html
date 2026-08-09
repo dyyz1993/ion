@@ -81,8 +81,8 @@
     <div class="empty">在下方输入框给 agent 派活，或点「+ 新建任务」。</div>
   </div>
   <div class="composer">
-    <input id="prompt-input" placeholder="给 agent 派任务（如：用 web-search 查 xxx 并总结）…" onkeydown="if(event.key==='Enter')sendPrompt()">
-    <button id="send-btn" onclick="sendPrompt()" disabled>派活</button>
+    <input id="prompt-input" placeholder="给 agent 派任务（如：用 web-search 查 xxx 并总结）…">
+    <button id="send-btn" disabled>派活</button>
   </div>
 </div>
 
@@ -123,6 +123,13 @@ function connect() {
     setInterval(refreshWorkers, 3000);
     setInterval(refreshSessions, 10000);
     setInterval(refreshOverview, 5000);
+
+    // 绑定输入框 Enter + 按钮点击（用 addEventListener，比 inline onkeydown 更健壮，
+    // 某些浏览器自动化/WebView 对 inline handler 的事件模拟不到位）
+    const inp = document.getElementById('prompt-input');
+    const btn = document.getElementById('send-btn');
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.keyCode === 13) sendPrompt(); });
+    btn.addEventListener('click', () => sendPrompt());
   };
   ws.onmessage = (ev) => {
     let msg;
