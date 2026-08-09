@@ -181,27 +181,40 @@ const server = http.createServer((req, res) => {
         const candidate = path.join(sessDir, proj, sid + '.jsonl');
         if (fs.existsSync(candidate)) { found = candidate; break; }
       }
-      // 2. 按内容匹配（UUID → 找 JSONL 里 sessionId 字段等于 sid 的文件）
+      // 2. UUID 可能出现在目录路径里（data/<UUID>/memory/transcript/input.jsonl）
+      //    或文件内容里。递归搜索整个项目目录。
       if (!found) {
         for (const proj of projects) {
           const projDir = path.join(sessDir, proj);
           if (!fs.existsSync(projDir)) continue;
-          for (const f of fs.readdirSync(projDir)) {
-            if (!f.endsWith('.jsonl')) continue;
-            const fp = path.join(projDir, f);
+          // 递归找所有 .jsonl
+          function walk(dir) {
+            if (found) return;
             try {
-              // 只读前几行找 sessionId（header 或第一条消息）
-              const fd = fs.openSync(fp, 'r');
-              const buf = Buffer.alloc(2048);
-              fs.readSync(fd, buf, 0, 2048, 0);
-              fs.closeSync(fd);
-              if (buf.toString('utf8').includes(sid)) { found = fp; break; }
+              for (const f of fs.readdirSync(dir)) {
+                if (found) return;
+                const fp = path.join(dir, f);
+                const stat = fs.statSync(fp);
+                if (stat.isDirectory()) { walk(fp); continue; }
+                if (!f.endsWith('.jsonl')) continue;
+                // 路径包含 sid（data/<UUID>/...）
+                if (fp.includes(sid)) { found = fp; return; }
+                // 或内容前 2KB 包含 sid
+                try {
+                  const fd = fs.openSync(fp, 'r');
+                  const buf = Buffer.alloc(2048);
+                  fs.readSync(fd, buf, 0, 2048, 0);
+                  fs.closeSync(fd);
+                  if (buf.toString('utf8').includes(sid)) { found = fp; return; }
+                } catch {}
+              }
             } catch {}
           }
+          walk(projDir);
           if (found) break;
         }
       }
-      if (!found) { res.writeHead(404); res.end(JSON.stringify({error: 'session not found', sid, searched: projects.length + ' projects'})); return; }
+      if (!found) { res.writeHead(404); res.end(JSON.stringify({error: 'session not found', sid, hint: 'tried filename + recursive content match'})); return; }
       // 逐行解析 JSONL，提取消息
       const lines = fs.readFileSync(found, 'utf8').split('\n').filter(l => l.trim());
       const messages = [];
