@@ -84,6 +84,42 @@ function startSubscriptionLoop() {
   return sub;
 }
 
+// ─── 按 session 订阅特定 worker 的事件流（instance subscribe）────────
+// ion 的 worker 原始事件（text_delta / agent_start / agent_end / tool_*）
+// 只能通过 subscribe --session <sid> 收到，subscribe_all 收不到。
+// 所以 create_worker 拿到 sessionId 后，网关自动开一个 session SUB 连接。
+const sessionSubs = new Map(); // sid → net.Socket
+function subscribeSession(sid) {
+  if (sessionSubs.has(sid)) return; // 已订阅
+  const sub = net.createConnection(SOCK);
+  sub.on('connect', () => {
+    console.error(`[gw] SESSION SUB connected for ${sid}`);
+    sub.write(JSON.stringify({ method: 'subscribe', session: sid }) + '\n');
+  });
+  let buf = Buffer.alloc(0);
+  sub.on('data', (chunk) => {
+    buf = Buffer.concat([buf, chunk]);
+    let nl;
+    while ((nl = buf.indexOf(10)) >= 0) {
+      const line = buf.slice(0, nl).toString('utf8').trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      let parsed;
+      try { parsed = JSON.parse(line); } catch { continue; }
+      // instance_event 格式：{ type: "instance_event", session, event: {...} }
+      // 把里面的 event 提取出来，包成浏览器能理解的格式广播
+      const evt = parsed.event || parsed;
+      broadcastToBrowsers({ type: 'event', event: evt, session: sid });
+    }
+  });
+  sub.on('error', (e) => console.error(`[gw] SESSION SUB ${sid} error:`, e.message));
+  sub.on('close', () => {
+    console.error(`[gw] SESSION SUB ${sid} closed`);
+    sessionSubs.delete(sid);
+  });
+  sessionSubs.set(sid, sub);
+}
+
 // ─── RPC 短连接：发一条命令，读响应，关闭 ───────────────────────────
 function rpc(method, params, session) {
   return new Promise((resolve, reject) => {
@@ -158,7 +194,16 @@ server.on('upgrade', (req, socket) => {
       if (msg.type === 'rpc' || msg.method) {
         console.error(`[gw] RPC: ${msg.method}`);
         rpc(msg.method, msg.params || {}, msg.session)
-          .then((resp) => { if (resp) { try { socket.write(encodeFrame(JSON.stringify(resp))); } catch {} } })
+          .then((resp) => {
+            if (resp) {
+              try { socket.write(encodeFrame(JSON.stringify(resp))); } catch {}
+              // create_worker 成功后，拿 sessionId 自动订阅该 worker 的事件流
+              // （ion 的 text_delta 等只通过 subscribe --session 推送，全局订阅收不到）
+              if (msg.method === 'create_worker' && resp.data && resp.data.sessionId) {
+                subscribeSession(resp.data.sessionId);
+              }
+            }
+          })
           .catch((e) => { try { socket.write(encodeFrame(JSON.stringify({ type: 'rpc_error', method: msg.method, message: e.message }))); } catch {} });
       }
     }
