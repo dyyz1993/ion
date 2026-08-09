@@ -5243,11 +5243,32 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                         });
                         println!("{}", out);
                     } else {
+                        let inner_ev = msg.get("event").cloned().unwrap_or(msg.clone());
+                        let inner_type = inner_ev.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        // 广播 worker 原始事件到全局 EventBus，让 subscribe（无参数）也能收到
+                        // text_delta / agent_start / agent_end / tool_execution_* 等流式输出。
+                        // 之前只 println 到 serve stdout，全局订阅收不到。对齐 pi 行为。
+                        if matches!(
+                            inner_type,
+                            "text_delta" | "agent_start" | "agent_end" | "agent_stopped"
+                                | "tool_execution_start" | "tool_execution_end"
+                                | "tool_call" | "tool_call_delta"
+                        ) {
+                            let mut ev_obj = ion::event_bus::ExtensionEvent::new(
+                                "worker", inner_type,
+                            )
+                            .with_data(inner_ev.clone());
+                            if !session_id.is_empty() {
+                                ev_obj = ev_obj.with_session(session_id);
+                            }
+                            let mut bus = pump_event_bus.lock().await;
+                            bus.broadcast(&ev_obj);
+                        }
                         let out = serde_json::json!({
                             "type": "event",
                             "worker_id": wid,
                             "session_id": session_id,
-                            "event": msg.get("event").cloned().unwrap_or(msg.clone()),
+                            "event": inner_ev,
                         });
                         println!("{}", out);
                     }
@@ -5965,18 +5986,6 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>, export_path: Opt
                             if let Some(delta) = ev.get("delta").and_then(|v| v.as_str()) {
                                 if delta.is_empty() {
                                     continue;
-                                }
-                                // 广播到全局 EventBus，让 subscribe CLI 无参数也能收到 worker 流式
-                                {
-                                    let mut reg = pump_registry.lock().await;
-                                    if let Some(bus_arc) = reg.event_bus.clone() {
-                                        let session_id = reg.workers.get(wid).map(|w| w.session_id.clone()).unwrap_or_default();
-                                        drop(reg);
-                                        let mut ev_obj = ExtensionEvent::new("worker", "text_delta").with_data(ev.clone());
-                                        if !session_id.is_empty() { ev_obj = ev_obj.with_session(&session_id); }
-                                        let mut bus = bus_arc.lock().await;
-                                        bus.broadcast(&ev_obj);
-                                    }
                                 }
                                 let buf = line_bufs.entry(wid.clone()).or_default();
                                 buf.push_str(delta);

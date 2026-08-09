@@ -37,11 +37,15 @@ def run_ci(script, session_dir):
     out_file = f"{RESULTS_DIR}/{name}.out"
     os.makedirs(session_dir, exist_ok=True)
     
+    # Build env: inherit parent + override session dir
+    env = os.environ.copy()
+    env["ION_SESSION_DIR"] = session_dir
+    
     with open(out_file, "w") as outf:
         try:
             subprocess.run(
-                ["timeout", str(TIMEOUT), "env", f"ION_SESSION_DIR={session_dir}", "bash", script],
-                stdout=outf, stderr=subprocess.STDOUT, timeout=TIMEOUT+10
+                ["timeout", str(TIMEOUT), "bash", script],
+                env=env, stdout=outf, stderr=subprocess.STDOUT, timeout=TIMEOUT+10
             )
         except subprocess.TimeoutExpired:
             pass
@@ -88,13 +92,84 @@ with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as pool:
         icon = "✅" if status=="PASS" else "❌"
         print(f"  {icon} {name:30s} pass={p:<4} fail={f}")
 
-# Phase 2: serial
-print(f"\n── Phase 2: Serial ({len(serial)} scripts, shared host) ──")
+# Phase 2: serial with persistent shared host
+print(f"\n── Phase 2: Serial ({len(serial)} scripts, persistent shared host) ──")
+
+# Start ONE persistent host that all serial CI scripts reuse.
+# CI scripts that call `ci_host_helper.sh ensure_host` will detect this host and reuse it.
+# CI scripts that kill+restart host will only affect this shared host (not other phases).
+import signal
+
+phase2_sock = "/tmp/ci_phase2.sock"
+phase2_session = "/tmp/ci_phase2_sessions"
+os.system(f"rm -f {phase2_sock}")
+os.makedirs(phase2_session, exist_ok=True)
+
+# Start persistent host
+print("  [host] starting persistent shared host...")
+host_proc = subprocess.Popen(
+    ["env", f"ION_HOST_SOCKET={phase2_sock}", f"ION_SESSION_DIR={phase2_session}",
+     "ION_FAUX_REPLY=ci host ready", "target/debug/ion", "serve"],
+    stdout=open("/tmp/ci_phase2_host.log", "w"), stderr=subprocess.STDOUT
+)
+
+# Wait for host ready
+import time
+host_ready = False
+for _ in range(30):
+    time.sleep(1)
+    try:
+        r = subprocess.run(
+            ["env", f"ION_HOST_SOCKET={phase2_sock}", "target/debug/ion", "rpc", "--method", "list_sessions"],
+            capture_output=True, text=True, timeout=5
+        )
+        if "sessions" in r.stdout:
+            host_ready = True
+            break
+    except subprocess.TimeoutExpired:
+        continue
+if host_ready:
+    print(f"  [host] ready (PID={host_proc.pid}, socket={phase2_sock})")
+    # Set ION_HOST_SOCKET in THIS process so all run_ci children inherit it
+    os.environ["ION_HOST_SOCKET"] = phase2_sock
+else:
+    print("  [host] WARNING: host not ready after 30s, continuing anyway")
+
+# Run all serial scripts with the shared host
 for i, s in enumerate(serial):
-    status, p, f, name = run_ci(s, "/tmp/ci_serial_shared")
+    status, p, f, name = run_ci(s, phase2_session)
     results.append((status, p, f, name))
     icon = "✅" if status=="PASS" else "❌"
     print(f"  {icon} {name:30s} pass={p:<4} fail={f}")
+    
+    # Check if persistent host is still alive (CI scripts may kill it)
+    if host_proc.poll() is not None:
+        # Host was killed by a CI script — restart it
+        print(f"  [host] was killed by {name}, restarting...")
+        os.system(f"rm -f {phase2_sock}")
+        host_proc = subprocess.Popen(
+            ["env", f"ION_HOST_SOCKET={phase2_sock}", f"ION_SESSION_DIR={phase2_session}",
+             "ION_FAUX_REPLY=ci host ready", "target/debug/ion", "serve"],
+            stdout=open("/tmp/ci_phase2_host.log", "a"), stderr=subprocess.STDOUT
+        )
+        for _ in range(15):
+            time.sleep(1)
+            try:
+                r = subprocess.run(
+                    ["env", f"ION_HOST_SOCKET={phase2_sock}", "target/debug/ion", "rpc", "--method", "list_sessions"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if "sessions" in r.stdout:
+                    print(f"  [host] restarted (PID={host_proc.pid})")
+                    break
+            except subprocess.TimeoutExpired:
+                continue
+
+# Kill persistent host
+print("  [host] shutting down persistent host...")
+host_proc.send_signal(signal.SIGTERM)
+host_proc.wait(timeout=10)
+os.system(f"rm -f {phase2_sock}")
 
 # Summary
 print(f"\n══════════════════════════════════════════════════════")
