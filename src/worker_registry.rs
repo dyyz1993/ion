@@ -2365,11 +2365,19 @@ impl WorkerRegistry {
                         .report_channel
                         .clone()
                         .unwrap_or_else(|| "main".to_string());
-                    match self.create_worker(config, registry_arc).await {
-                        Ok(info) => {
-                            let child_id = info.worker_id.clone();
-                            let session_id = info.session_id.clone();
-                            let creator_id = from_worker.clone();
+                    // ⚠️ Lock split: prepare (不持锁) → register (短锁)
+                    // 旧版 self.create_worker() 持有 lock 整个 spawn 过程，
+                    // 阻塞所有 RPC（list_sessions / create_session 等）。
+                    let cfg_clone = config.clone();
+                    match Self::prepare_worker_spawn(&cfg_clone).await {
+                        Ok(prepared) => {
+                            // register 持短锁
+                            let info_result = self.register_prepared_worker(prepared, &config, registry_arc).await;
+                            match info_result {
+                                Ok(info) => {
+                                    let child_id = info.worker_id.clone();
+                                    let session_id = info.session_id.clone();
+                                    let creator_id = from_worker.clone();
 
                             match (relation, wait) {
                                 (WorkerRelation::Child, true) => {
@@ -2466,7 +2474,20 @@ impl WorkerRegistry {
                                 serde_json::json!({
                                     "_reply_to": reply_to,
                                     "success": false,
-                                    "error": e,
+                                    "error": format!("register failed: {e}"),
+                                }),
+                            )
+                            .await;
+                        }
+                            }
+                        }
+                        Err(e) => {
+                            self.write_manager_response(
+                                &from_worker,
+                                serde_json::json!({
+                                    "_reply_to": reply_to,
+                                    "success": false,
+                                    "error": format!("prepare spawn failed: {e}"),
                                 }),
                             )
                             .await;
