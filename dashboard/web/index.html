@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>ION Host Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #0d1117; color: #c9d1d9; display: grid; grid-template-columns: 280px 1fr; height: 100vh; }
+  .sidebar { background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; }
+  .sidebar-header { padding: 16px; border-bottom: 1px solid #30363d; }
+  .sidebar-header h1 { font-size: 18px; color: #58a6ff; margin-bottom: 4px; }
+  .status { font-size: 12px; }
+  .status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+  .status.ok { color: #3fb950; } .status.ok .dot { background: #3fb950; }
+  .status.err { color: #f85149; } .status.err .dot { background: #f85149; }
+  .status.con { color: #d29922; } .status.con .dot { background: #d29922; }
+  .new-task { padding: 12px; border-bottom: 1px solid #30363d; }
+  .new-task button { width: 100%; padding: 8px; background: #238636; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .new-task button:hover { background: #2ea043; }
+  .session-list { flex: 1; overflow-y: auto; }
+  .session-list h3 { padding: 12px 16px 6px; font-size: 11px; color: #8b949e; text-transform: uppercase; }
+  .session-item { padding: 10px 16px; border-bottom: 1px solid #21262d; cursor: pointer; font-size: 13px; }
+  .session-item:hover { background: #1f2428; }
+  .session-item.active { background: #1f6feb; }
+  .session-item .title { display: block; margin-bottom: 2px; }
+  .session-item .meta { font-size: 11px; color: #8b949e; }
+  .main { display: flex; flex-direction: column; overflow: hidden; }
+  .topbar { padding: 12px 20px; border-bottom: 1px solid #30363d; display: flex; justify-content: space-between; align-items: center; }
+  .topbar h2 { font-size: 15px; }
+  .workers-badges { font-size: 12px; color: #8b949e; }
+  .workers-badges .badge { display: inline-block; padding: 2px 8px; background: #21262d; border-radius: 10px; margin-left: 6px; }
+  .conversation { flex: 1; overflow-y: auto; padding: 20px; }
+  .msg { margin-bottom: 16px; max-width: 80%; }
+  .msg.user { margin-left: auto; }
+  .msg-bubble { padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+  .msg.user .msg-bubble { background: #1f6feb; color: white; }
+  .msg.assistant .msg-bubble { background: #21262d; min-height: 20px; }
+  .msg .role { font-size: 11px; color: #8b949e; margin-bottom: 4px; }
+  .tool-card { background: #161b22; border: 1px solid #30363d; border-left: 3px solid #f78166; border-radius: 6px; padding: 10px; margin: 8px 0; font-size: 12px; }
+  .tool-card .tool-name { color: #f78166; font-weight: 600; margin-bottom: 4px; }
+  .tool-card .tool-args { color: #8b949e; font-family: monospace; white-space: pre-wrap; word-break: break-all; }
+  .tool-card .tool-result { margin-top: 6px; padding-top: 6px; border-top: 1px solid #30363d; color: #3fb950; }
+  .thinking { font-size: 12px; color: #d29922; padding: 8px 0; }
+  .thinking::after { content: " ●"; animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: 0.3; } }
+  .composer { padding: 16px 20px; border-top: 1px solid #30363d; display: flex; gap: 10px; }
+  .composer input { flex: 1; padding: 10px 12px; background: #21262d; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; font-size: 14px; }
+  .composer button { padding: 10px 20px; background: #238636; color: white; border: none; border-radius: 6px; cursor: pointer; }
+  .composer button:disabled { background: #21262d; color: #8b949e; cursor: not-allowed; }
+  .worker-tray { position: fixed; right: 16px; bottom: 80px; width: 240px; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 10px; font-size: 12px; max-height: 50vh; overflow-y: auto; }
+  .worker-tray h4 { color: #58a6ff; margin-bottom: 8px; font-size: 12px; }
+  .worker-row { display: flex; justify-content: space-between; padding: 3px 0; }
+  .worker-row .name { color: #c9d1d9; }
+  .worker-row .state { font-size: 11px; }
+  .state.idle { color: #8b949e; } .state.busy { color: #d29922; } .state.dead { color: #f85149; } .state.stale { color: #a371f7; }
+  .empty { color: #8b949e; text-align: center; padding: 40px; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+  <div class="sidebar-header">
+    <h1>ION Host</h1>
+    <div class="status con" id="status"><span class="dot"></span> <span id="status-text">连接中…</span></div>
+  </div>
+  <div class="new-task">
+    <button onclick="newTask()">+ 新建任务</button>
+  </div>
+  <div class="session-list">
+    <h3>会话（list_sessions）</h3>
+    <div id="session-list"><div class="empty">（连接后加载）</div></div>
+  </div>
+</div>
+
+<div class="main">
+  <div class="topbar">
+    <h2 id="task-title">尚无任务</h2>
+    <div class="workers-badges" id="workers-badges">Workers <span class="badge">?</span></div>
+  </div>
+  <div class="conversation" id="conversation">
+    <div class="empty">在下方输入框给 agent 派活，或点「+ 新建任务」。</div>
+  </div>
+  <div class="composer">
+    <input id="prompt-input" placeholder="给 agent 派任务（如：用 web-search 查 xxx 并总结）…" onkeydown="if(event.key==='Enter')sendPrompt()">
+    <button id="send-btn" onclick="sendPrompt()" disabled>派活</button>
+  </div>
+</div>
+
+<div class="worker-tray">
+  <h4>Worker 状态</h4>
+  <div id="worker-list"><div class="empty">（无）</div></div>
+</div>
+
+<script>
+// ─── WebSocket 连接 ─────────────────────────────────────────────
+// 浏览器连当前页面的 /ws（同源，不需要绝对 URL）。但本网关实现里 WS 走的是同端口
+// 的 upgrade，所以直接连 ws://当前host/。
+let ws = null;
+let connected = false;
+let pendingToolCards = {}; // toolCallId → DOM 元素，等结果回来填进去
+let currentAssistantBubble = null; // 当前正在流式拼接的 assistant 气泡
+
+function setStatus(cls, text) {
+  const s = document.getElementById('status');
+  s.className = 'status ' + cls;
+  document.getElementById('status-text').textContent = text;
+}
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/');
+
+  ws.onopen = () => {
+    connected = true;
+    setStatus('ok', '已连接');
+    document.getElementById('send-btn').disabled = false;
+    // 连上后立即 subscribe 事件流 + 拉一次状态
+    ws.send(JSON.stringify({ type: 'subscribe' }));
+    refreshOverview();
+    refreshSessions();
+    refreshWorkers();
+    // 定期刷新 worker / session 列表
+    setInterval(refreshWorkers, 3000);
+    setInterval(refreshSessions, 10000);
+    setInterval(refreshOverview, 5000);
+  };
+  ws.onmessage = (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    handleIonMessage(msg);
+  };
+  ws.onclose = () => {
+    connected = false;
+    setStatus('err', '已断开（5s 后重连）');
+    document.getElementById('send-btn').disabled = true;
+    setTimeout(connect, 5000);
+  };
+  ws.onerror = () => setStatus('err', '连接错误');
+}
+
+// ─── 处理 ion 发来的消息（事件 + 响应）──────────────────────────
+function handleIonMessage(msg) {
+  // ion 的事件：{ type: "event", event: { type: "...", ... } }
+  // ion 的响应：{ type: "response", id, success, data }
+  if (msg.type === 'event' && msg.event) {
+    handleEvent(msg.event);
+  } else if (msg.event && msg.event.type) {
+    // 有些事件直接平铺
+    handleEvent(msg.event);
+  } else if (msg.type === 'response' || msg.id) {
+    handleResponse(msg);
+  } else if (msg.type === 'ion_error') {
+    appendSystem('⚠ ion socket 错误: ' + (msg.message || ''));
+  } else if (msg.type === 'ion_closed') {
+    appendSystem('⚠ ion socket 关闭');
+  } else if (msg.type === 'rpc_sent') {
+    // 网关确认收到，不显示
+  } else if (msg.type === 'raw') {
+    // 无法解析的行
+  }
+}
+
+function handleEvent(ev) {
+  const t = ev.type;
+  if (t === 'text_delta') {
+    // 流式拼接 assistant 回复
+    ensureAssistantBubble();
+    if (currentAssistantBubble) {
+      currentAssistantBubble.textContent += (ev.delta || '');
+      scrollConv();
+    }
+  } else if (t === 'agent_start' || t === 'process_started') {
+    showThinking();
+  } else if (t === 'agent_end' || t === 'agent_stopped') {
+    hideThinking();
+    finalizeAssistantBubble();
+  } else if (t === 'message_end') {
+    hideThinking();
+  } else if (t === 'tool_execution_start' || ev.toolCallId && ev.toolName) {
+    hideThinking();
+    const card = addToolCard(ev.toolName, ev.arguments || ev.args || {});
+    if (ev.toolCallId) pendingToolCards[ev.toolCallId] = card;
+  } else if (t === 'tool_execution_end') {
+    hideThinking();
+    const card = ev.toolCallId && pendingToolCards[ev.toolCallId];
+    if (card) {
+      const res = card.querySelector('.tool-result');
+      const ok = ev.isError ? '✗' : '✓';
+      const resultStr = typeof ev.result === 'string' ? ev.result.slice(0, 200) : JSON.stringify(ev.result).slice(0, 200);
+      res.textContent = ok + ' ' + resultStr;
+      delete pendingToolCards[ev.toolCallId];
+    }
+  } else if (t === 'error') {
+    appendSystem('⚠ ' + (ev.message || JSON.stringify(ev)));
+  } else if (t === 'worker_created' || t === 'worker_destroyed' || t === 'project_changed') {
+    refreshWorkers();
+    refreshOverview();
+  }
+  // 其他事件类型静默（process_completed, customType: memory_* 等不显示）
+}
+
+function handleResponse(msg) {
+  // list_workers / get_overview / list_sessions 的响应
+  if (msg.method === 'list_workers' || (msg.data && msg.data.workers)) {
+    renderWorkers(msg.data && msg.data.workers || []);
+  } else if (msg.method === 'get_overview' || (msg.data && 'total_workers' in msg.data)) {
+    renderOverview(msg.data || {});
+  } else if (msg.method === 'list_sessions' || (msg.data && msg.data.sessions)) {
+    renderSessions(msg.data && msg.data.sessions || []);
+  }
+}
+
+// ─── RPC 调用 ───────────────────────────────────────────────────
+function rpc(method, params) {
+  if (!connected) return;
+  ws.send(JSON.stringify({ type: 'rpc', method, params: params || {} }));
+}
+function refreshWorkers() { rpc('list_workers', {}); }
+function refreshOverview() { rpc('get_overview', {}); }
+function refreshSessions() { rpc('list_sessions', {}); }
+
+// ─── 派活（创建 worker）────────────────────────────────────────
+function sendPrompt() {
+  const input = document.getElementById('prompt-input');
+  const text = input.value.trim();
+  if (!text || !connected) return;
+  input.value = '';
+  document.getElementById('task-title').textContent = text.slice(0, 40);
+  appendUser(text);
+  rpc('create_worker', { agent: 'build', initial_prompt: text });
+}
+
+function newTask() {
+  document.getElementById('prompt-input').focus();
+}
+
+// ─── DOM 渲染辅助 ──────────────────────────────────────────────
+function appendUser(text) {
+  const conv = document.getElementById('conversation');
+  if (conv.querySelector('.empty')) conv.innerHTML = '';
+  const div = document.createElement('div');
+  div.className = 'msg user';
+  div.innerHTML = '<div class="msg-bubble"></div>';
+  div.querySelector('.msg-bubble').textContent = text;
+  conv.appendChild(div);
+  currentAssistantBubble = null;
+  scrollConv();
+}
+
+function ensureAssistantBubble() {
+  hideThinking();
+  if (currentAssistantBubble) return;
+  const conv = document.getElementById('conversation');
+  const div = document.createElement('div');
+  div.className = 'msg assistant';
+  div.innerHTML = '<div class="role">GLM-5.2 · 流式输出中</div><div class="msg-bubble"></div>';
+  conv.appendChild(div);
+  currentAssistantBubble = div.querySelector('.msg-bubble');
+  scrollConv();
+}
+
+function finalizeAssistantBubble() {
+  if (currentAssistantBubble) {
+    const role = currentAssistantBubble.parentElement.querySelector('.role');
+    if (role) role.textContent = 'GLM-5.2 · 已完成';
+    currentAssistantBubble = null;
+  }
+}
+
+function addToolCard(name, args) {
+  const conv = document.getElementById('conversation');
+  if (conv.querySelector('.empty')) conv.innerHTML = '';
+  const card = document.createElement('div');
+  card.className = 'tool-card';
+  card.innerHTML = '<div class="tool-name">🔧 ' + escapeHtml(name) + '</div>' +
+                   '<div class="tool-args"></div>' +
+                   '<div class="tool-result">执行中…</div>';
+  card.querySelector('.tool-args').textContent = JSON.stringify(args, null, 2);
+  conv.appendChild(card);
+  scrollConv();
+  return card;
+}
+
+function showThinking() {
+  let t = document.getElementById('thinking-indicator');
+  if (!t) {
+    const conv = document.getElementById('conversation');
+    t = document.createElement('div');
+    t.id = 'thinking-indicator';
+    t.className = 'thinking';
+    t.textContent = 'agent 处理中';
+    conv.appendChild(t);
+  }
+  scrollConv();
+}
+function hideThinking() {
+  const t = document.getElementById('thinking-indicator');
+  if (t) t.remove();
+}
+
+function appendSystem(text) {
+  const conv = document.getElementById('conversation');
+  const div = document.createElement('div');
+  div.className = 'msg';
+  div.innerHTML = '<div class="msg-bubble" style="background:#3d1f1f;color:#f85149"></div>';
+  div.querySelector('.msg-bubble').textContent = text;
+  conv.appendChild(div);
+  scrollConv();
+}
+
+function renderWorkers(workers) {
+  const list = document.getElementById('worker-list');
+  if (!workers.length) { list.innerHTML = '<div class="empty">（无 worker）</div>'; return; }
+  list.innerHTML = workers.map(w => {
+    const st = (w.status || 'idle').toLowerCase();
+    return '<div class="worker-row"><span class="name">' + escapeHtml((w.workerId || '?').slice(0, 14)) + '</span><span class="state ' + st + '">● ' + st + '</span></div>';
+  }).join('');
+  // 顶栏徽标
+  const counts = {};
+  workers.forEach(w => { const s = (w.status || 'idle').toLowerCase(); counts[s] = (counts[s] || 0) + 1; });
+  const badges = Object.entries(counts).map(([s, n]) => '<span class="badge">' + s + ' ' + n + '</span>').join('');
+  document.getElementById('workers-badges').innerHTML = 'Workers ' + badges;
+}
+
+function renderOverview(data) {
+  // 状态栏显示 total / mcp 连接数（如果有）
+  const txt = 'serve ' + (data.total_workers || 0) + ' workers · ' + (data.total_dead || 0) + ' dead';
+  // 不覆盖连接状态，只在 ok 时附加上下文
+  if (connected) document.getElementById('status-text').textContent = txt;
+}
+
+function renderSessions(sessions) {
+  const list = document.getElementById('session-list');
+  if (!sessions.length) { list.innerHTML = '<div class="empty">（无会话）</div>'; return; }
+  list.innerHTML = sessions.slice(0, 20).map(s => {
+    const sid = (s.session_id || s.sessionId || '?').slice(0, 20);
+    const wid = (s.worker_id || s.workerId || '?').slice(0, 14);
+    return '<div class="session-item"><span class="title">' + escapeHtml(sid) + '</span><span class="meta">' + escapeHtml(wid) + '</span></div>';
+  }).join('');
+}
+
+function scrollConv() {
+  const conv = document.getElementById('conversation');
+  conv.scrollTop = conv.scrollHeight;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// 启动
+connect();
+</script>
+</body>
+</html>

@@ -23,3 +23,6 @@ __pycache__/
 docs/reports/
 .playwright-cli/
 output/
+
+# dashboard/web 是纯静态网关，无依赖，不需要 node_modules
+dashboard/web/node_modules/
