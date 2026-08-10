@@ -349,7 +349,7 @@ pub trait Extension: Send + Sync {
     /// 默认空实现（向后兼容，不影响现有单例）。
     async fn on_singleton_post_init(
         &self,
-        _registry: &std::sync::Arc<tokio::sync::Mutex<crate::worker_registry::WorkerRegistry>>,
+        _registry: &std::sync::Arc<parking_lot::Mutex<crate::worker_registry::WorkerRegistry>>,
     ) -> AgentResult<()> {
         let _ = _registry; // 避免 unused warning
         Ok(())

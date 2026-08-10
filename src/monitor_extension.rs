@@ -227,7 +227,7 @@ pub struct MonitorExtension {
     /// Registry reference — captured from `on_singleton_post_init` so that
     /// the `add` RPC (which goes through `on_extension_rpc` and has no
     /// registry parameter) can spawn new monitor loops at runtime.
-    registry: OnceCell<Arc<tokio::sync::Mutex<crate::worker_registry::WorkerRegistry>>>,
+    registry: OnceCell<Arc<parking_lot::Mutex<crate::worker_registry::WorkerRegistry>>>,
     name: String,
 }
 
@@ -347,13 +347,13 @@ impl MonitorExtension {
 
     /// Health monitor event emitter (reuses emit_event but with different extension name).
     async fn emit_health_event(
-        registry: &Arc<tokio::sync::Mutex<crate::worker_registry::WorkerRegistry>>,
+        registry: &Arc<parking_lot::Mutex<crate::worker_registry::WorkerRegistry>>,
         custom_type: &str,
         data: serde_json::Value,
     ) {
         tracing::warn!("[health] {}: {}", custom_type, data);
         let bus_opt = {
-            let reg = registry.lock().await;
+            let reg = registry.lock();
             reg.event_bus.clone()
         };
         if let Some(bus) = bus_opt {
@@ -371,13 +371,13 @@ impl MonitorExtension {
     async fn emit_event(
         custom_type: &str,
         data: serde_json::Value,
-        registry: &Arc<tokio::sync::Mutex<crate::worker_registry::WorkerRegistry>>,
+        registry: &Arc<parking_lot::Mutex<crate::worker_registry::WorkerRegistry>>,
     ) {
         // Always log first (cheap, useful for debugging even without subscribers).
         tracing::info!("[monitor] {}: {}", custom_type, data);
 
         let bus_opt = {
-            let reg = registry.lock().await;
+            let reg = registry.lock();
             reg.event_bus.clone()
         };
         if let Some(bus) = bus_opt {
@@ -557,7 +557,7 @@ impl MonitorExtension {
     /// `trigger_mode` and `mode`.
     async fn spawn_monitor_for_def(
         def: MonitorDef,
-        registry: Arc<tokio::sync::Mutex<crate::worker_registry::WorkerRegistry>>,
+        registry: Arc<parking_lot::Mutex<crate::worker_registry::WorkerRegistry>>,
         statuses: Arc<Mutex<HashMap<String, MonitorStatus>>>,
     ) {
         let reg = registry;
@@ -746,7 +746,7 @@ impl MonitorExtension {
                         // already-running coordinator/developer to pick up.
                         // If no subscribers exist, degrade to event_only.
                         let has_sub = {
-                            let reg_guard = reg.lock().await;
+                            let reg_guard = reg.lock();
                             reg_guard
                                 .channels
                                 .get("main")
@@ -754,14 +754,15 @@ impl MonitorExtension {
                                 .unwrap_or(false)
                         };
                         if has_sub {
-                            let mut reg_guard = reg.lock().await;
-                            reg_guard
-                                .channel_send(
-                                    "main",
-                                    &format!("monitor:{name}"),
-                                    serde_json::json!({ "text": prompt }),
-                                )
-                                .await;
+                            // ⚠️ parking_lot: channel_send 持 &mut self + .await，
+                            // 改用 channel_send_arc（自管锁，不持 guard 跨 await）。
+                            crate::worker_registry::WorkerRegistry::channel_send_arc(
+                                &reg,
+                                "main",
+                                &format!("monitor:{name}"),
+                                serde_json::json!({ "text": prompt }),
+                            )
+                            .await;
                             Self::emit_event(
                                 "monitor_channel_notify",
                                 serde_json::json!({
@@ -806,7 +807,7 @@ impl MonitorExtension {
                             if let Some(st) = s_guard.get(&name) {
                                 if let Some(ref wid) = st.last_spawned_worker {
                                     // Check if this worker id still exists in registry
-                                    let reg_guard = reg.lock().await;
+                                    let reg_guard = reg.lock();
                                     reg_guard.workers.contains_key(wid)
                                         && reg_guard
                                             .workers
@@ -884,29 +885,19 @@ impl MonitorExtension {
                             // CRITICAL: the lock guard must be dropped before calling emit_event,
                             // because emit_event itself acquires the registry lock (to read event_bus).
                             // Holding the guard across emit_event → deadlock.
+                            //
+                            // NOTE: parking_lot::Mutex::lock() is synchronous and non-blocking
+                            // (does not await), so no timeout wrapper is needed here. The prior
+                            // tokio::time::timeout wrapper existed because tokio::sync::Mutex::lock()
+                            // can await indefinitely if another task holds the lock.
                             let spawn_result = {
-                                let mut reg_guard = match tokio::time::timeout(
-                                    std::time::Duration::from_secs(5),
-                                    reg_for_spawn_clone.lock(),
-                                )
-                                .await
-                                {
-                                    Ok(g) => g,
-                                    Err(_) => {
-                                        tracing::warn!(
-                                            "[monitor] timeout waiting for registry lock (register phase), skipping spawn for {}",
-                                            monitor_name_for_spawn
-                                        );
-                                        return;
-                                    }
-                                };
+                                let mut reg_guard = reg_for_spawn_clone.lock();
                                 reg_guard
                                     .register_prepared_worker(
                                         prepared,
                                         &spawn_config,
                                         &reg_for_spawn_clone,
                                     )
-                                    .await
                             }; // reg_guard dropped here — lock released
                             match spawn_result {
                                 Ok(info) => {
@@ -940,7 +931,7 @@ impl MonitorExtension {
                             let s_guard = stats.lock().await;
                             if let Some(st) = s_guard.get(&name) {
                                 if let Some(ref wid) = st.last_spawned_worker {
-                                    let reg_guard = reg.lock().await;
+                                    let reg_guard = reg.lock();
                                     reg_guard
                                         .workers
                                         .get(wid)
@@ -1016,10 +1007,14 @@ impl MonitorExtension {
                             };
                             match crate::worker_registry::WorkerRegistry::prepare_worker_spawn(&cfg).await {
                                 Ok(prepared) => {
-                                    match reg_for_spawn.lock().await
-                                        .register_prepared_worker(prepared, &cfg, &reg_for_spawn_clone)
-                                        .await
-                                    {
+                                    // ⚠️ parking_lot: register_prepared_worker 是 sync，
+                                    // 但 lock guard 不是 Send，不能跨下面的 emit_event .await。
+                                    // 用独立 block 限制 guard 作用域。
+                                    let register_result = {
+                                        reg_for_spawn.lock()
+                                            .register_prepared_worker(prepared, &cfg, &reg_for_spawn_clone)
+                                    };
+                                    match register_result {
                                 Ok(info) => {
                                     Self::emit_event(
                                         "monitor_spawned",
@@ -1068,36 +1063,39 @@ impl MonitorExtension {
                             let reg_for_spawn_clone = Arc::clone(&reg_for_spawn);
                             tokio::spawn(async move {
                                 let _ac = ActiveGuard::new(ac, ac_name.clone());
-                                let mut reg_guard = reg_for_spawn.lock().await;
-                                match reg_guard
-                                    .create_worker(
-                                        crate::worker_registry::WorkerCreateConfig {
-                                            agent: Some(agent_for_spawn.clone()),
-                                            model: None,
-                                            provider: None,
-                                            session: None,
-                                            project_path: None,
-                                            worktree: None,
-                                            relation: Some(
-                                                crate::worker_registry::WorkerRelation::System,
-                                            ),
-                                            channels: None,
-                                            parent: None,
-                                            creator: None,
-                                            report_channel: None,
-                                            report_to: None,
-                                            initial_prompt: Some(prompt_for_spawn),
-                                            skip_mcp: None,
-                                            allowed_tools: None,
-                                            disallowed_tools: None,
-                                            max_turns: None,
-                                            hook_depth: Some(0),
-                                            system_prompt_override: None,
-                                        },
-                                        &reg_for_spawn,
-                                    )
-                                    .await
-                                {
+                                // ⚠️ parking_lot: create_worker 持 &mut self + .await，
+                                // 改用 prepare_worker_spawn（不持锁）+ register_prepared_worker（sync，持短锁）。
+                                let cfg = crate::worker_registry::WorkerCreateConfig {
+                                    agent: Some(agent_for_spawn.clone()),
+                                    model: None,
+                                    provider: None,
+                                    session: None,
+                                    project_path: None,
+                                    worktree: None,
+                                    relation: Some(
+                                        crate::worker_registry::WorkerRelation::System,
+                                    ),
+                                    channels: None,
+                                    parent: None,
+                                    creator: None,
+                                    report_channel: None,
+                                    report_to: None,
+                                    initial_prompt: Some(prompt_for_spawn),
+                                    skip_mcp: None,
+                                    allowed_tools: None,
+                                    disallowed_tools: None,
+                                    max_turns: None,
+                                    hook_depth: Some(0),
+                                    system_prompt_override: None,
+                                };
+                                let create_result = match crate::worker_registry::WorkerRegistry::prepare_worker_spawn(&cfg).await {
+                                    Ok(prepared) => {
+                                        // register 持短锁（sync），用独立 block 限制 guard 作用域
+                                        reg_for_spawn.lock().register_prepared_worker(prepared, &cfg, &reg_for_spawn_clone)
+                                    }
+                                    Err(e) => Err(e),
+                                };
+                                match create_result {
                                     Ok(info) => {
                                         Self::emit_event(
                                             "monitor_spawned",
@@ -1194,7 +1192,7 @@ impl Extension for MonitorExtension {
 
     async fn on_singleton_post_init(
         &self,
-        registry: &Arc<tokio::sync::Mutex<crate::worker_registry::WorkerRegistry>>,
+        registry: &Arc<parking_lot::Mutex<crate::worker_registry::WorkerRegistry>>,
     ) -> AgentResult<()> {
         // Capture the registry so the `add` RPC (which has no registry param)
         // can spawn new monitor loops at runtime.
@@ -1216,7 +1214,7 @@ impl Extension for MonitorExtension {
                 loop {
                     ticker.tick().await;
                     let (dead, stale, busy, idle, total) = {
-                        let g = reg.lock().await;
+                        let g = reg.lock();
                         let workers: Vec<_> = g.workers.values().collect();
                         let dead = workers
                             .iter()
@@ -1243,8 +1241,12 @@ impl Extension for MonitorExtension {
                             "[health] {} dead workers, triggering gc_dead_workers",
                             dead
                         );
-                        let mut g = reg.lock().await;
-                        g.gc_dead_workers(300); // remove dead workers older than 5 min
+                        // ⚠️ parking_lot: gc_dead_workers 是同步方法（持短锁），
+                        // emit_health_event 内部自管锁。先 drop g 再 await emit_health_event。
+                        {
+                            let mut g = reg.lock();
+                            g.gc_dead_workers(300); // remove dead workers older than 5 min
+                        }
                         Self::emit_health_event(
                             &reg,
                             "monitor_serve_unhealthy",

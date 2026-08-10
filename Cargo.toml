@@ -33,6 +33,7 @@ similar = "2"
 rmcp = { version = "1", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "ring"] }
 zstd = "0.13"
+parking_lot = "0.12"
 
 [[bin]]
 name = "ion"

@@ -4118,33 +4118,38 @@ pub extern "C" fn extension_execute_tool(name_ptr: *const u8, name_len: usize, _
 async fn cmd_submit(eff: &EffectiveConfig, message: &str, _workers: usize, _max_workers: usize) {
     use ion::worker_registry::{WorkerCreateConfig, WorkerRegistry};
     use std::sync::Arc;
-    use tokio::sync::Mutex;
+    use parking_lot::Mutex;
 
     let registry = Arc::new(Mutex::new(WorkerRegistry::new()));
-    registry.lock().await.set_self_ref(&registry);
+    registry.lock().set_self_ref(&registry);
     tracing::info!("Submitting: {}", message);
     {
-        let w = registry
-            .lock()
-            .await
-            .create_worker(
-                WorkerCreateConfig {
-                    model: Some(eff.model.clone()),
-                    provider: Some(eff.provider.clone()),
-                    ..Default::default()
-                },
-                &registry,
-            )
-            .await
-            .unwrap_or_else(|e| panic!("{e}"));
+        // ⚠️ parking_lot: create_worker / send_to_worker 内部 .await，
+        // 不能持锁调用。改用 prepare + register 两阶段，send_to_worker 用短锁 prepare。
+        let cfg = WorkerCreateConfig {
+            model: Some(eff.model.clone()),
+            provider: Some(eff.provider.clone()),
+            ..Default::default()
+        };
+        let w = match ion::worker_registry::WorkerRegistry::prepare_worker_spawn(&cfg).await {
+            Ok(prepared) => registry
+                .lock()
+                .register_prepared_worker(prepared, &cfg, &registry)
+                .unwrap_or_else(|e| panic!("{e}")),
+            Err(e) => panic!("{e}"),
+        };
         tracing::info!("Worker: {}", w.worker_id);
 
         // Send prompt
-        let _ = registry
-            .lock()
-            .await
-            .send_to_worker(&w.worker_id, "prompt", serde_json::json!({"text": message}))
-            .await;
+        // ⚠️ parking_lot: send_to_worker_prepare 是 async（内部 stdin write），
+        // 不能持锁调用。改用 WorkerRegistry::send_async（自管锁）。
+        let _ = ion::worker_registry::WorkerRegistry::send_async(
+            &registry,
+            &w.worker_id,
+            "prompt",
+            serde_json::json!({"text": message}),
+        )
+        .await;
     }
 
     // Wait for execution
@@ -4152,7 +4157,7 @@ async fn cmd_submit(eff: &EffectiveConfig, message: &str, _workers: usize, _max_
 
     // Get result
     {
-        let mut reg = registry.lock().await;
+        let mut reg = registry.lock();
         let workers = reg.list_workers();
         if let Some(w) = workers.first() {
             match reg
@@ -4574,7 +4579,7 @@ async fn cmd_serve_status() {
 ///
 /// 成功返回 session_id。
 async fn do_create_session(
-    registry: &std::sync::Arc<tokio::sync::Mutex<ion::worker_registry::WorkerRegistry>>,
+    registry: &std::sync::Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>>,
     source: &serde_json::Value,
 ) -> Result<String, String> {
     use ion::worker_registry::{WorkerCreateConfig, WorkerRelation};
@@ -4614,31 +4619,29 @@ async fn do_create_session(
         .map(String::from);
 
     // Lock split: prepare (no lock) → register (short lock).
-    // The old `registry.lock().await.create_worker(...)` held the lock for the
+    // The old `registry.lock().create_worker(...)` held the lock for the
     // entire worktree+spawn duration, blocking ALL RPCs (including list_sessions).
     let prepared = ion::worker_registry::WorkerRegistry::prepare_worker_spawn(&cfg).await?;
     registry
         .lock()
-        .await
-        .register_prepared_worker(prepared, &cfg, registry)
-        .await?;
+        .register_prepared_worker(prepared, &cfg, registry)?;
     Ok(session_id)
 }
 
 async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_workers: usize) {
     use ion::worker_registry::WorkerRegistry;
     use std::sync::Arc;
-    use tokio::sync::Mutex;
+    use parking_lot::Mutex;
 
     let registry = Arc::new(Mutex::new(WorkerRegistry::new()));
-    registry.lock().await.set_self_ref(&registry);
+    registry.lock().set_self_ref(&registry);
     let event_bus = Arc::new(tokio::sync::Mutex::new(
         ion::event_bus::ExtensionEventBus::new(),
     ));
 
     // ── 注册单例扩展（host 级，只在 serve 模式）──
     {
-        let mut reg = registry.lock().await;
+        let mut reg = registry.lock();
         // Inject EventBus so Monitor/GlobalMemory singletons can broadcast events
         // (otherwise subscribe CLI cannot see monitor_triggered etc.)
         reg.set_event_bus(Arc::clone(&event_bus));
@@ -4711,7 +4714,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                 );
                 mcp_for_connect.spawn_reconnect_monitor();
                 // set_mcp_manager 在 connect 后（短锁，不阻塞主线程）
-                mcp_registry.lock().await.set_mcp_manager(mcp_for_connect);
+                mcp_registry.lock().set_mcp_manager(mcp_for_connect);
             });
         }
     }
@@ -4795,32 +4798,33 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                         // ── Instance subscribe：订阅 worker 原始事件流 ──
                                         // 无 --plugin 有 --session → 收 text_delta / agent_start / agent_end 等
                                         let sid = session.as_ref().unwrap();
-                                        let mut inner_reg = reg.lock().await;
-                                        let worker_opt = inner_reg
-                                            .workers
-                                            .values()
-                                            .find(|w| w.session_id == *sid)
-                                            .map(|w| w.worker_id.clone());
-                                        if let Some(wid) = worker_opt {
-                                            // 支持 replay 参数(刷新时恢复之前的事件)
-                                            let replay = cmd
-                                                .get("replay")
-                                                .and_then(|v| v.as_u64())
-                                                .unwrap_or(0)
-                                                as usize;
-                                            let (mut rx, replay_events) = match inner_reg
-                                                .subscribe_with_replay(&wid, replay)
-                                            {
-                                                Ok(r) => r,
-                                                Err(e) => {
-                                                    let resp = serde_json::json!({"type":"error","error":e});
-                                                    let _ = write_half
-                                                        .write_all(format!("{resp}\n").as_bytes())
-                                                        .await;
-                                                    return;
+                                        // ⚠️ parking_lot: 把 inner_reg 限制在独立 block 内，
+                                        // block 结束 guard 必然 drop，不跨下面的 write_all .await。
+                                        let subscribe_result: Result<_, String> = {
+                                            let mut inner_reg = reg.lock();
+                                            let worker_opt = inner_reg
+                                                .workers
+                                                .values()
+                                                .find(|w| w.session_id == *sid)
+                                                .map(|w| w.worker_id.clone());
+                                            match worker_opt {
+                                                Some(wid) => {
+                                                    // 支持 replay 参数(刷新时恢复之前的事件)
+                                                    let replay = cmd
+                                                        .get("replay")
+                                                        .and_then(|v| v.as_u64())
+                                                        .unwrap_or(0)
+                                                        as usize;
+                                                    inner_reg
+                                                        .subscribe_with_replay(&wid, replay)
+                                                        .map(|(rx, ev)| (rx, ev, wid))
                                                 }
-                                            };
-                                            drop(inner_reg);
+                                                None => Err("worker not found for session".into()),
+                                            }
+                                        }; // inner_reg dropped here
+                                        match subscribe_result {
+                                            Ok((rx, replay_events, _wid)) => {
+                                                let mut rx = rx;
                                             let ack = serde_json::json!({"type":"subscribed","session":sid,"stream":"instance","replayed":replay_events.len()});
                                             let _ = write_half
                                                 .write_all(format!("{ack}\n").as_bytes())
@@ -4865,11 +4869,13 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                                     None => break,
                                                 }
                                             }
-                                        } else {
-                                            let resp = serde_json::json!({"type":"error","error":"session not found"});
-                                            let _ = write_half
-                                                .write_all(format!("{resp}\n").as_bytes())
-                                                .await;
+                                            }
+                                            Err(e) => {
+                                                let resp = serde_json::json!({"type":"error","error":e});
+                                                let _ = write_half
+                                                    .write_all(format!("{resp}\n").as_bytes())
+                                                    .await;
+                                            }
                                         }
                                         return;
                                     }
@@ -5011,7 +5017,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                 // ── Overview stream: subscribe_overview ──
                                 if method == "subscribe_overview" {
                                     let (initial, rx) = {
-                                        let mut reg = reg.lock().await;
+                                        let mut reg = reg.lock();
                                         let overview = reg.get_overview();
                                         let rx = reg.subscribe_overview();
                                         (overview, rx)
@@ -5064,68 +5070,37 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                     .and_then(|v| v.as_str())
                                     .map(|s| s.to_string());
                                 if let Some(ref sid) = session {
-                                    let mut inner_reg = reg.lock().await;
-                                    // 找到 worker
-                                    if let Some(wid) = inner_reg
-                                        .workers
-                                        .values()
-                                        .find(|w| w.session_id == *sid)
-                                        .map(|w| w.worker_id.clone())
-                                    {
-                                        // 订阅 worker 事件
-                                        let _rx = match inner_reg.subscribe(&wid) {
-                                            Ok(rx) => rx,
-                                            Err(e) => {
-                                                let resp = serde_json::json!({
-                                                    "type":"response","id":cmd.get("id"),
-                                                    "success":false,"error":e
-                                                });
-                                                let _ = write_half
-                                                    .write_all(format!("{resp}\n").as_bytes())
-                                                    .await;
-                                                return;
-                                            }
-                                        };
-                                        // Step 1: send command + register oneshot (brief lock)
+                                    // ⚠️ parking_lot: send_command 持 &mut self + .await（stdin write），
+                                    // 不能持锁调用。改用 WorkerRegistry::send_async（自管锁）。
+                                    // 先短锁查 worker_id（subscribe 在此同步完成）。
+                                    let wid_opt = {
+                                        let inner_reg = reg.lock();
+                                        inner_reg
+                                            .workers
+                                            .values()
+                                            .find(|w| w.session_id == *sid)
+                                            .map(|w| w.worker_id.clone())
+                                    };
+                                    if let Some(wid) = wid_opt {
+                                        // subscribe（短锁，同步）
+                                        let _ = { reg.lock().subscribe(&wid) };
+                                        // send_async 自管锁 + await oneshot
                                         let params = cmd.get("params").cloned().unwrap_or_default();
-                                        let send_result =
-                                            inner_reg.send_command(&wid, &method, params).await;
-                                        let rx = send_result
-                                            .ok()
-                                            .and_then(|rid| inner_reg.register_pending(&wid, &rid));
-                                        drop(inner_reg); // RELEASE LOCK
-
-                                        match rx {
-                                            Some(rx) => {
-                                                // Step 2: wait for oneshot (NO lock held)
-                                                match tokio::time::timeout(
-                                                    std::time::Duration::from_secs(300),
-                                                    rx,
-                                                )
-                                                .await
-                                                {
-                                                    Ok(Ok(resp)) => {
-                                                        let mut r = resp.clone();
-                                                        if let Some(id) = cmd.get("id") {
-                                                            r["id"] = id.clone();
-                                                        }
-                                                        let _ = write_half
-                                                            .write_all(format!("{r}\n").as_bytes())
-                                                            .await;
-                                                        let _ = write_half.flush().await;
-                                                    }
-                                                    _ => {
-                                                        let resp = serde_json::json!({"type":"response","id":cmd.get("id"),"success":false,"error":"timeout"});
-                                                        let _ = write_half
-                                                            .write_all(
-                                                                format!("{resp}\n").as_bytes(),
-                                                            )
-                                                            .await;
-                                                    }
+                                        match ion::worker_registry::WorkerRegistry::send_async(
+                                            &reg, &wid, &method, params,
+                                        ).await {
+                                            Ok(resp) => {
+                                                let mut r = resp.clone();
+                                                if let Some(id) = cmd.get("id") {
+                                                    r["id"] = id.clone();
                                                 }
+                                                let _ = write_half
+                                                    .write_all(format!("{r}\n").as_bytes())
+                                                    .await;
+                                                let _ = write_half.flush().await;
                                             }
-                                            None => {
-                                                let resp = serde_json::json!({"type":"response","id":cmd.get("id"),"success":false,"error":"send failed"});
+                                            Err(e) => {
+                                                let resp = serde_json::json!({"type":"response","id":cmd.get("id"),"success":false,"error":e});
                                                 let _ = write_half
                                                     .write_all(format!("{resp}\n").as_bytes())
                                                     .await;
@@ -5133,8 +5108,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                         }
                                         return;
                                     } else {
-                                        // session 不存在？创建？不，让 handle_manager_command 处理
-                                        drop(inner_reg);
+                                        // session 不存在？让 handle_manager_command 处理
                                         let resp = handle_manager_command(&reg, cmd).await;
                                         let _ = write_half
                                             .write_all(format!("{resp}\n").as_bytes())
@@ -5161,7 +5135,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
     });
 
     // 订阅全局事件（worker_created / worker_destroyed / project_changed）
-    let global_rx = registry.lock().await.subscribe_global();
+    let global_rx = registry.lock().subscribe_global();
 
     // 后台任务 1：事件 pump — 遍历所有 worker，drain_events 推送到 stdout + EventBus
     let pump_registry = Arc::clone(&registry);
@@ -5175,7 +5149,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
         loop {
             // 1. 检查新 worker（短暂锁，subscribe + drain_events）
             {
-                let mut reg = pump_registry.lock().await;
+                let mut reg = pump_registry.lock();
                 let current_ids: Vec<String> = reg.workers.keys().cloned().collect();
                 for wid in &current_ids {
                     if !subs.contains_key(wid) {
@@ -5290,16 +5264,27 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
     // 后台任务 2：处理 Worker 发来的 manager_command（create_worker / channel_send）
     // ⚠️ 用 try_lock：process_pending_commands 内部 create_worker 持锁较久，
     // try_lock 失败就跳过这轮，给 socket handler 的 list_sessions 留出 lock 窗口。
+    //
+    // ⚠️ parking_lot: process_pending_commands 是 &mut self + .await，
+    // guard 不是 Send，不能直接 tokio::spawn。改在独立线程 + 单线程 runtime +
+    // LocalSet 里跑（spawn_local 不要求 Send）。
     let cmd_registry = Arc::clone(&registry);
-    tokio::spawn(async move {
-        loop {
-            {
-                if let Ok(mut reg) = cmd_registry.try_lock() {
-                    reg.process_pending_commands(&cmd_registry).await;
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build cmd-loop runtime");
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async move {
+            loop {
+                {
+                    if let Some(mut reg) = cmd_registry.try_lock() {
+                        reg.process_pending_commands(&cmd_registry).await;
+                    }
                 }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
+        });
     });
 
     // 后台任务 3：转发全局事件到 stdout
@@ -5317,7 +5302,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            let mut reg = hb_registry.lock().await;
+            let mut reg = hb_registry.lock();
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -5428,7 +5413,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
 /// 返回完整的 JSON response（含 id/success/data 字段）。
 /// 被 cmd_serve_start 的 stdin 主循环和 socket accept loop 共用。
 async fn handle_manager_command(
-    registry: &Arc<tokio::sync::Mutex<ion::worker_registry::WorkerRegistry>>,
+    registry: &Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>>,
     cmd: serde_json::Value,
 ) -> serde_json::Value {
     let id = cmd.get("id").cloned().unwrap_or(serde_json::Value::Null);
@@ -5448,7 +5433,7 @@ async fn handle_manager_command(
         "list_sessions" => {
             let sessions: Vec<_> = {
                 let reg = loop {
-                    if let Ok(g) = registry.try_lock() {
+                    if let Some(g) = registry.try_lock() {
                         break g;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -5468,7 +5453,7 @@ async fn handle_manager_command(
         }
         "list_workers" => {
             let workers: Vec<_> = {
-                let reg = registry.lock().await;
+                let reg = registry.lock();
                 reg.list_workers()
                     .iter()
                     .map(|w| {
@@ -5506,14 +5491,16 @@ async fn handle_manager_command(
 /// Write-path command handler. Each branch acquires the registry lock as needed
 /// (and releases it before any long-running await where possible).
 async fn handle_manager_command_write(
-    registry: &Arc<tokio::sync::Mutex<ion::worker_registry::WorkerRegistry>>,
+    registry: &Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>>,
     cmd: serde_json::Value,
     _id: serde_json::Value,
     method: &str,
 ) -> Result<serde_json::Value, String> {
     use ion::worker_registry::WorkerCreateConfig;
 
-    let mut reg = registry.lock().await;
+    // ⚠️ parking_lot: 不在顶部持锁——各分支按需 lock + 释放。
+    // 之前的 `let mut reg = registry.lock();` 贯穿整个 match，跨多个 .await 编译失败
+    // （parking_lot guard 不是 Send，不能跨 await 持有）。
     let result: Result<serde_json::Value, String> = match method {
         "create_worker" => {
             // 兼容两种格式：扁平（cmd 字段直接是 config）和 嵌套（cmd.params 里是 config）
@@ -5565,16 +5552,21 @@ async fn handle_manager_command_write(
                     }
                 }
             }
-            drop(reg);
-            match registry.lock().await.create_worker(cfg, &registry).await {
-                Ok(info) => Ok(serde_json::json!({
-                    "workerId": info.worker_id,
-                    "sessionId": info.session_id,
-                })),
+            // ⚠️ parking_lot: create_worker 内部有 .await（spawn 子进程等），
+            // 不能持锁调用。改用 prepare_worker_spawn（不持锁）+ register_prepared_worker（sync）。
+            match ion::worker_registry::WorkerRegistry::prepare_worker_spawn(&cfg).await {
+                Ok(prepared) => match registry.lock().register_prepared_worker(prepared, &cfg, &registry) {
+                    Ok(info) => Ok(serde_json::json!({
+                        "workerId": info.worker_id,
+                        "sessionId": info.session_id,
+                    })),
+                    Err(e) => Err(e),
+                },
                 Err(e) => Err(e),
             }
         }
         "list_workers" => {
+            let mut reg = registry.lock();
             let workers: Vec<_> = reg
                 .list_workers()
                 .iter()
@@ -5595,6 +5587,7 @@ async fn handle_manager_command_write(
         }
         // 对外 API：列 sessions（不暴露 worker_id）
         "list_sessions" => {
+            let mut reg = registry.lock();
             let sessions: Vec<_> = reg.workers.values().map(|w| serde_json::json!({
                 "session_id": w.session_id,
                 "agent": w.agent,
@@ -5646,7 +5639,7 @@ async fn handle_manager_command_write(
                 .and_then(|v| v.as_str())
                 .unwrap_or("build")
                 .to_string();
-            drop(reg); // 必须先放锁，do_create_session 内部会重新 lock
+            // ⚠️ parking_lot: do_create_session 内部会 lock，不持外层锁。
             match do_create_session(&registry, &source).await {
                 Ok(session_id) => Ok(serde_json::json!({
                     "session_id": session_id,
@@ -5656,25 +5649,28 @@ async fn handle_manager_command_write(
                 Err(e) => Err(e),
             }
         }
-        "get_overview" => Ok(reg.get_overview()),
+        "get_overview" => Ok(registry.lock().get_overview()),
         "send" | "send_to_session" => {
-            let session = cmd.get("session").and_then(|v| v.as_str()).unwrap_or("");
+            let session = cmd.get("session").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let rpc_method = cmd
                 .get("rpc_method")
                 .and_then(|v| v.as_str())
                 .or_else(|| cmd.get("method").and_then(|v| v.as_str()))
-                .unwrap_or("get_state");
+                .unwrap_or("get_state")
+                .to_string();
             let params = cmd.get("params").cloned().unwrap_or(serde_json::json!({}));
-            // 检查 session 对应的 worker 是否存在，不存在则自动创建（修复 #2）
-            let exists = reg.workers.values().any(|w| w.session_id == session);
+            // ⚠️ parking_lot: 检查 session 存在性 + 后续 send_to_session/do_create_session 都有 .await。
+            // 先在独立 block 内短锁查 exists，drop reg 后再 await。
+            let exists = {
+                let reg = registry.lock();
+                reg.workers.values().any(|w| w.session_id == session)
+            }; // reg dropped here
             if exists {
-                drop(reg); // release lock — send_to_session locks internally
                 ion::worker_registry::WorkerRegistry::send_to_session(
-                    &registry, session, rpc_method, params,
+                    &registry, &session, &rpc_method, params,
                 )
                 .await
             } else {
-                drop(reg); // 放锁，让 do_create_session 能重新 lock
                 tracing::info!("[send_to_session] session {session} not found, auto-creating");
                 match do_create_session(
                     &registry,
@@ -5688,7 +5684,7 @@ async fn handle_manager_command_write(
                     Ok(_) => {
                         // 创建后立即转发原请求（关联函数，内部自己 lock）
                         ion::worker_registry::WorkerRegistry::send_to_session(
-                            &registry, session, rpc_method, params,
+                            &registry, &session, &rpc_method, params,
                         )
                         .await
                     }
@@ -5697,23 +5693,28 @@ async fn handle_manager_command_write(
             }
         }
         "send_to_worker" => {
-            let worker_id = cmd.get("workerId").and_then(|v| v.as_str()).unwrap_or("");
+            let worker_id = cmd.get("workerId").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let rpc_method = cmd
                 .get("rpc_method")
                 .and_then(|v| v.as_str())
-                .unwrap_or("get_state");
+                .unwrap_or("get_state")
+                .to_string();
             let params = cmd.get("params").cloned().unwrap_or(serde_json::json!({}));
-            reg.send_command(worker_id, rpc_method, params)
-                .await
-                .map(|_| serde_json::json!({"queued": true}))
+            // ⚠️ parking_lot: send_command 持 &mut self + .await，改用 send_async（自管锁）。
+            ion::worker_registry::WorkerRegistry::send_async(
+                registry, &worker_id, &rpc_method, params,
+            )
+            .await
+            .map(|_| serde_json::json!({"queued": true}))
         }
         "kill" | "kill_worker" => {
             let target = cmd
                 .get("workerId")
                 .and_then(|v| v.as_str())
                 .or_else(|| cmd.get("target").and_then(|v| v.as_str()))
-                .unwrap_or("");
-            reg.kill_worker(target)
+                .unwrap_or("")
+                .to_string();
+            registry.lock().kill_worker(&target)
                 .map(|_| serde_json::json!({"killed": true}))
         }
         "reap_workers" | "gc_workers" => {
@@ -5723,7 +5724,7 @@ async fn handle_manager_command_write(
                 .get("maxAgeSecs")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(600);
-            let n = reg.reap_workers(max_age);
+            let n = registry.lock().reap_workers(max_age);
             tracing::info!("[gc] reaped {} workers via RPC", n);
             Ok(serde_json::json!({"reaped": n}))
         }
@@ -5739,7 +5740,8 @@ async fn handle_manager_command_write(
                 .unwrap_or("manager")
                 .to_string();
             let msg = cmd.get("msg").cloned().unwrap_or(serde_json::json!({}));
-            reg.channel_send(&channel, &from, msg).await;
+            // ⚠️ parking_lot: channel_send_arc 自管锁。
+            ion::worker_registry::WorkerRegistry::channel_send_arc(registry, &channel, &from, msg).await;
             Ok(serde_json::json!({"sent": true}))
         }
         "channel_subscribe" => {
@@ -5753,6 +5755,7 @@ async fn handle_manager_command_write(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            let mut reg = registry.lock();
             if let Some(record) = reg.workers.get_mut(&worker_id) {
                 if !record.channels.contains(&channel) {
                     record.channels.push(channel.clone());
@@ -5766,13 +5769,13 @@ async fn handle_manager_command_write(
                 Err("worker not found".into())
             }
         }
-        "stats" => Ok(serde_json::json!({"workers": reg.list_workers().len()})),
+        "stats" => Ok(serde_json::json!({"workers": registry.lock().list_workers().len()})),
         "health" => {
             // Manager-level health check for watchdog.sh.
             // Returns immediately (<10ms): no DB, no network.
             Ok(serde_json::json!({
                 "status": "ok",
-                "workers": reg.list_workers().len(),
+                "workers": registry.lock().list_workers().len(),
                 "version": env!("CARGO_PKG_VERSION"),
             }))
         }
@@ -5806,10 +5809,14 @@ async fn handle_manager_command_write(
                 .unwrap_or("");
             let method = params.get("method").and_then(|v| v.as_str()).unwrap_or("");
             let args = params.get("args").cloned().unwrap_or_default();
-            drop(reg); // 释放锁，让扩展能工作
-            let mut reg2 = registry.lock().await;
-            if let Some(entry) = reg2.singletons.get_mut(extension) {
-                match entry.instance.on_extension_rpc(method, args).await {
+            // ⚠️ parking_lot: 不持外层锁，各分支按需 lock + 释放。
+            // singleton extension: 短锁取 instance Arc，drop lock 后调 on_extension_rpc（async）。
+            let singleton_instance = {
+                let reg = registry.lock();
+                reg.singletons.get(extension).map(|e| e.instance.clone())
+            };
+            if let Some(instance) = singleton_instance {
+                match instance.on_extension_rpc(method, args).await {
                     Ok(val) => Ok(val),
                     Err(e) => Err(format!("{:?}", e)),
                 }
@@ -5830,7 +5837,6 @@ async fn handle_manager_command_write(
                 // Worker-level extensions: forward to session's worker
                 let session_id = cmd.get("session").and_then(|v| v.as_str());
                 if let Some(sid) = session_id {
-                    drop(reg2);
                     // Forward to worker via send_to_session (associated fn, locks internally)
                     ion::worker_registry::WorkerRegistry::send_to_session(
                         &registry,
@@ -5857,14 +5863,18 @@ async fn handle_manager_command_write(
             // 默认分支：如果 cmd 里有 session 字段，转发到对应 worker
             let session_id = cmd.get("session").and_then(|v| v.as_str());
             if let Some(sid) = session_id {
+                let sid = sid.to_string();
                 let params = cmd.get("params").cloned().unwrap_or_default();
 
                 // 检查 session 是否存在，不存在则自动创建（修复 #2 的另一条路径）
                 // 对齐 pi：pi 用 SessionManager 隐式管理，永远有 session
-                let exists = reg.workers.values().any(|w| w.session_id == sid);
+                // ⚠️ parking_lot: 短锁查 exists，drop 后再 await。
+                let exists = {
+                    let reg = registry.lock();
+                    reg.workers.values().any(|w| w.session_id == sid)
+                };
                 if !exists {
                     tracing::info!("[forward] session {sid} not found, auto-creating");
-                    drop(reg); // 放锁，让 do_create_session 能重新 lock
                     if let Err(e) = do_create_session(
                         &registry,
                         &serde_json::json!({
@@ -5876,7 +5886,6 @@ async fn handle_manager_command_write(
                     {
                         return Err(format!("auto-create session failed: {e}"));
                     }
-                    reg = registry.lock().await;
                 }
 
                 // prompt/abort/steer 用 fire-and-forget(不等 oneshot)——
@@ -5884,26 +5893,16 @@ async fn handle_manager_command_write(
                 // Manager 锁不释放,后续命令(如 abort)进不来。
                 // 这些命令的 worker handler 会在 agent.run 前立刻 output_response(null)
                 if method == "prompt" || method == "abort" || method == "steer" {
-                    // 找 worker_id,用 send_command(fire-and-forget)
-                    let wid = reg
-                        .workers
-                        .iter()
-                        .find(|(_, w)| w.session_id == sid)
-                        .map(|(id, _)| id.clone());
-                    match wid {
-                        Some(wid) => reg
-                            .send_command(&wid, &method, params)
-                            .await
-                            .map(|_| serde_json::json!({"status": "forwarded", "session": sid})),
-                        None => Err(format!(
-                            "worker not found for session: {sid} (auto-create should have made it)"
-                        )),
-                    }
+                    // ⚠️ parking_lot: send_command 持 &mut self + .await，改用 send_async（自管锁）。
+                    ion::worker_registry::WorkerRegistry::send_async(
+                        &registry, &sid, method, params,
+                    )
+                    .await
+                    .map(|_| serde_json::json!({"status": "forwarded", "session": sid}))
                 } else {
                     // 其他命令等响应(list_turns/get_messages/abort 等)
-                    drop(reg); // release lock — send_to_session locks internally
                     match ion::worker_registry::WorkerRegistry::send_to_session(
-                        &registry, sid, method, params,
+                        &registry, &sid, method, params,
                     )
                     .await
                     {
@@ -5944,7 +5943,7 @@ async fn handle_manager_command_write(
 async fn cmd_host(user_message: &str, agent_name: Option<&str>, export_path: Option<&str>) {
     use ion::worker_registry::{WorkerCreateConfig, WorkerRegistry};
     use std::sync::Arc;
-    use tokio::sync::Mutex;
+    use parking_lot::Mutex;
 
     let ion_cfg = ion::config::IonConfig::load();
     let model = ion_cfg
@@ -5964,7 +5963,7 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>, export_path: Opt
     eprintln!("[host] Starting WorkerRegistry");
 
     let registry = Arc::new(Mutex::new(WorkerRegistry::new()));
-    registry.lock().await.set_self_ref(&registry);
+    registry.lock().set_self_ref(&registry);
 
     // 1. Event pump → stdout
     let pump_registry = Arc::clone(&registry);
@@ -5979,7 +5978,7 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>, export_path: Opt
             std::collections::HashMap::new();
         loop {
             {
-                let mut reg = pump_registry.lock().await;
+                let mut reg = pump_registry.lock();
                 let ids: Vec<String> = reg.workers.keys().cloned().collect();
                 for wid in &ids {
                     if !subs.contains_key(wid) {
@@ -6050,15 +6049,24 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>, export_path: Opt
     });
 
     // 2. Manager command processing loop
+    // ⚠️ parking_lot: process_pending_commands 持 &mut self + .await，guard 不是 Send。
+    // 在独立线程 + 单线程 runtime + LocalSet 里跑（spawn_local 不要求 Send）。
     let cmd_registry = Arc::clone(&registry);
-    tokio::spawn(async move {
-        loop {
-            {
-                let mut reg = cmd_registry.lock().await;
-                reg.process_pending_commands(&cmd_registry).await;
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build cmd-loop runtime");
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async move {
+            loop {
+                {
+                    let mut reg = cmd_registry.lock();
+                    reg.process_pending_commands(&cmd_registry).await;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
+        });
     });
 
     // 3. Spawn entry Worker (lock released before set_entry_worker to avoid deadlock)
@@ -6079,7 +6087,7 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>, export_path: Opt
     }
 
     let entry = {
-        let mut reg = registry.lock().await;
+        let mut reg = registry.lock();
 
         // ── 注册单例扩展（scene 2 也需要，跟 cmd_serve_start 一致）──
         // 否则 scheduler agent 通过 extension_rpc 调 monitor validate/add 会失败。
@@ -6093,22 +6101,30 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>, export_path: Opt
         ));
         reg.register_singleton(Box::new(ion::monitor_extension::MonitorExtension::new()));
         reg.register_singleton(Box::new(ion::rules_engine::RulesEngineExtension::new()));
-        reg.init_singletons().await;
+        drop(reg); // ⚠️ parking_lot: init_singletons / create_worker 内部有 .await，不能持锁
+        WorkerRegistry::init_singletons_arc(&registry).await;
 
-        match reg.create_worker(cfg, &registry).await {
-            Ok(info) => {
-                eprintln!("[host] spawned {} ({})", &info.worker_id[..12], agent);
-                info
-            }
+        // ⚠️ create_worker 持 &mut self + .await → 改用 prepare + register 两阶段。
+        match ion::worker_registry::WorkerRegistry::prepare_worker_spawn(&cfg).await {
+            Ok(prepared) => match registry.lock().register_prepared_worker(prepared, &cfg, &registry) {
+                Ok(info) => {
+                    eprintln!("[host] spawned {} ({})", &info.worker_id[..12], agent);
+                    info
+                }
+                Err(e) => {
+                    eprintln!("[host] ❌ Failed to spawn worker: {e}");
+                    return;
+                }
+            },
             Err(e) => {
-                eprintln!("[host] ❌ Failed to spawn worker: {e}");
+                eprintln!("[host] ❌ Failed to prepare spawn: {e}");
                 return;
             }
         }
     };
 
     // Set entry worker for recursive idle detection
-    registry.lock().await.set_entry_worker(&entry.worker_id);
+    registry.lock().set_entry_worker(&entry.worker_id);
 
     // 启动单例扩展的后初始化（关键：让 Monitor interval loop 真的跑起来）
     // 否则 monitor 配置加载了但不会触发，因为 on_singleton_post_init 没被调用。
@@ -6137,7 +6153,7 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>, export_path: Opt
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
         let all_idle = {
-            let reg = registry.lock().await;
+            let reg = registry.lock();
             match reg.entry_worker_id.as_ref() {
                 Some(eid) => reg.all_workers_idle(eid).unwrap_or(false),
                 None => true,
@@ -6173,7 +6189,7 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>, export_path: Opt
     // 5. Cleanup — 通知所有 Worker shutdown（让它们执行退出前 save_worker_session）
     eprintln!("[host] cleaning up, notifying workers to save & exit");
     {
-        let mut reg = registry.lock().await;
+        let mut reg = registry.lock();
         let wids: Vec<String> = reg.workers.keys().cloned().collect();
         for wid in &wids {
             // 发 shutdown 命令（ion_worker 收到后 break 主循环 → 执行退出前 save）

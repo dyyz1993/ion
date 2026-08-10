@@ -71,7 +71,7 @@ impl Extension for GlobalMemoryExtension {
     /// memory-agent 是一个带 LLM 的常驻 Worker，其他 Worker 通过 send_to_worker 查询它。
     async fn on_singleton_post_init(
         &self,
-        registry: &std::sync::Arc<tokio::sync::Mutex<crate::worker_registry::WorkerRegistry>>,
+        registry: &std::sync::Arc<parking_lot::Mutex<crate::worker_registry::WorkerRegistry>>,
     ) -> AgentResult<()> {
         // 读 config 拿 model/provider（memory-agent 用默认模型）
         let cfg = crate::config::IonConfig::load();
@@ -129,16 +129,18 @@ impl Extension for GlobalMemoryExtension {
         };
 
         tracing::info!("[global-memory] spawning Active Memory sub-agent...");
-        // ⚠️ 不能用 `registry.lock().await.create_worker()` — 它持有 lock 整个 spawn 过程，
+        // ⚠️ 不能用 `registry.lock().create_worker()` — 它持有 lock 整个 spawn 过程，
         // 会阻塞所有 RPC（list_sessions 等）直到 memory-agent 子进程启动完成。
         // 用 lock split（prepare_worker_spawn 不持锁，register 持短锁）。
         match crate::worker_registry::WorkerRegistry::prepare_worker_spawn(&config).await {
             Ok(prepared) => {
-                let result = registry
-                    .lock()
-                    .await
-                    .register_prepared_worker(prepared, &config, registry)
-                    .await;
+                // ⚠️ parking_lot: register_prepared_worker 内部不再有直接 .await，
+                // 但 &mut self 借用自 guard，guard 仍可能在 async fn 的 future 跨 await。
+                // 用独立 block：先 take guard 借用 + 调用，block 结束 guard drop。
+                let result = {
+                    let mut reg = registry.lock();
+                    reg.register_prepared_worker(prepared, &config, registry)
+                };
                 match result {
                     Ok(info) => {
                         let wid = info.worker_id.clone();

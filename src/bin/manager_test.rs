@@ -1,6 +1,6 @@
 use ion::worker_registry::{WorkerCreateConfig, WorkerRegistry};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use parking_lot::Mutex;
 
 #[tokio::main]
 async fn main() {
@@ -19,22 +19,22 @@ async fn main() {
     tracing::info!("项目路径: {}", cwd);
 
     // 创建带 worktree 隔离的 Worker
+    // ⚠️ parking_lot: create_worker / send_to_worker 内部有 .await，不能持锁调用。
+    // 改用 prepare + register 两阶段；send_to_worker 用 prepare + await_oneshot。
+    let cfg = WorkerCreateConfig {
+        session: Some("worktree-test".into()),
+        project_path: Some(cwd.clone()),
+        worktree: Some(ion::worker_registry::WorktreeConfig {
+            branch: "test-branch".into(),
+            base: None,
+        }),
+        ..Default::default()
+    };
     let wid = {
-        let mut reg = registry.lock().await;
-        let w = reg
-            .create_worker(
-                WorkerCreateConfig {
-                    session: Some("worktree-test".into()),
-                    project_path: Some(cwd.clone()),
-                    worktree: Some(ion::worker_registry::WorktreeConfig {
-                        branch: "test-branch".into(),
-                        base: None,
-                    }),
-                    ..Default::default()
-                },
-                &registry,
-            )
-            .await
+        let prepared = WorkerRegistry::prepare_worker_spawn(&cfg).await.unwrap();
+        let w = registry
+            .lock()
+            .register_prepared_worker(prepared, &cfg, &registry)
             .unwrap();
         w.worker_id
     };
@@ -42,9 +42,11 @@ async fn main() {
     // 在 worktree 里执行 git_status
     tracing::info!("在 worktree 里执行 git_status...");
     {
-        let mut reg = registry.lock().await;
-        match reg.send_to_worker(&wid, "prompt",
-            serde_json::json!({"text":"Use git_status to check the status of this repo. Just report the output."})).await {
+        // ⚠️ parking_lot: send_to_worker_prepare 是 async，不能持锁调用。用 send_async。
+        match WorkerRegistry::send_async(
+            &registry, &wid, "prompt",
+            serde_json::json!({"text":"Use git_status to check the status of this repo. Just report the output."}),
+        ).await {
             Ok(_) => tracing::info!("✅ prompt 发送成功"),
             Err(e) => tracing::warn!("❌ {e}"),
         }
@@ -54,18 +56,16 @@ async fn main() {
 
     // 查结果
     {
-        let mut reg = registry.lock().await;
-        match reg
-            .send_to_worker(&wid, "get_last_assistant_text", serde_json::json!({}))
-            .await
-        {
+        match WorkerRegistry::send_async(
+            &registry, &wid, "get_last_assistant_text", serde_json::json!({}),
+        ).await {
             Ok(r) => tracing::info!(
                 "✅ 结果: {}",
                 r.get("data").and_then(|v| v.as_str()).unwrap_or("(empty)")
             ),
             Err(e) => tracing::warn!("❌ {e}"),
         }
-        let _ = reg.kill_worker(&wid);
+        let _ = registry.lock().kill_worker(&wid);
     }
 
     // 检查 worktree 是否创建

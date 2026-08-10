@@ -45,7 +45,8 @@ fn find_ion_binary() -> String {
     "ion-worker".to_string() // last resort: rely on PATH
 }
 use tokio::process::{Child, ChildStdin, ChildStdout};
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
+use parking_lot::Mutex;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -88,7 +89,7 @@ pub struct WorkerRegistry {
     /// Set by `new_in_arc` / `set_self_ref` after construction. Used by
     /// `send_to_session` to auto-start workers (which needs the Arc to pass to
     /// `create_worker`). Weak avoids a reference cycle.
-    self_ref: std::sync::Weak<tokio::sync::Mutex<WorkerRegistry>>,
+    self_ref: std::sync::Weak<Mutex<WorkerRegistry>>,
 }
 
 pub struct WorkerRecord {
@@ -236,9 +237,9 @@ impl WorkerRegistry {
     /// Example:
     /// ```ignore
     /// let registry = Arc::new(Mutex::new(WorkerRegistry::new()));
-    /// registry.lock().await.set_self_ref(&registry);
+    /// registry.lock().set_self_ref(&registry);
     /// ```
-    pub fn set_self_ref(&mut self, arc: &std::sync::Arc<tokio::sync::Mutex<WorkerRegistry>>) {
+    pub fn set_self_ref(&mut self, arc: &std::sync::Arc<Mutex<WorkerRegistry>>) {
         self.self_ref = std::sync::Arc::downgrade(arc);
     }
 
@@ -901,8 +902,28 @@ impl WorkerRegistry {
         // ── singleton 引用计数：新 Worker 创建后通知所有单例 ──
         // System Worker（如 memory-agent）不触发 user_join（它本身就是单例的提供者，不是用户）。
         // 只有普通用户 Worker（Child/Peer）才 join。
+        //
+        // ⚠️ parking_lot: 不在持 &mut self 状态下调 on_user_join().await（guard 不是 Send）。
+        // 这里 self 已经是 &mut self（调用方持锁），但 on_user_join 是 &self trait 方法，
+        // 实例是 Arc → 先 sync 收集 instances（改 users 集），但调用方仍然持锁。
+        // 由于 create_worker 整体是 &mut self 方法，调用方必须在 await 前 drop lock。
+        // 这里把 callback 调用延迟到 create_worker 返回后由调用方触发不现实（API 复杂）。
+        // 折中：create_worker 是 &mut self，调用方持锁 → 整个 create_worker 期间锁被持有。
+        // 如果 create_worker 内部有 .await，那调用方持锁跨 await，编译失败。
+        // 唯一干净方案：让 create_worker 不再是 &mut self，而是接受 Arc 自管锁。
+        // 但那是大重构。这里采用：把 singleton callback 调用放到 spawn task 里（不持当前 lock）。
         if config.relation != Some(WorkerRelation::System) {
-            self.singleton_user_join(&worker_id).await;
+            let instances = self.singleton_user_join_sync(&worker_id);
+            if !instances.is_empty() {
+                let wid_clone = worker_id.clone();
+                tokio::spawn(async move {
+                    for ext in instances {
+                        if let Err(e) = ext.on_user_join(&wid_clone).await {
+                            tracing::warn!("[singleton] user_join {} failed: {:?}", wid_clone, e);
+                        }
+                    }
+                });
+            }
         }
 
         // Start stdout reader task (小助手 + 对讲机)
@@ -931,7 +952,7 @@ impl WorkerRegistry {
 
                         // Response with ID → match pending oneshot（不经过 stdout_tx）
                         if msg_type == "response" && !msg_id.is_empty() {
-                            let mut reg = sub_registry.lock().await;
+                            let mut reg = sub_registry.lock();
                             if let Some(record) = reg.workers.get_mut(&sub_wid)
                                 && let Some(tx) = record.pending.remove(&msg_id)
                             {
@@ -951,96 +972,95 @@ impl WorkerRegistry {
                             if stream_debug && ev_type == "tool_call_delta" {
                                 eprintln!("[stream-debug] host forward event type=tool_call_delta");
                             }
-                            let mut reg = sub_registry.lock().await;
-                            // 拿 EventBus 句柄（如果有），用于把 worker 事件广播到全局订阅者。
-                            // 在持 reg 锁期间只 clone Arc，不锁 EventBus（避免 reg+bus 双锁死锁）。
-                            let bus_clone = reg.event_bus.clone();
-                            let session_id_for_bus = reg
-                                .workers
-                                .get(&sub_wid)
-                                .map(|w| w.session_id.clone())
-                                .unwrap_or_default();
-                            if let Some(record) = reg.workers.get_mut(&sub_wid) {
-                                // 转发给实时订阅者
-                                for sub in &record.event_subscribers {
-                                    if let Err(_) = sub.try_send(msg.clone())
-                                        && stream_debug
-                                    {
-                                        eprintln!(
-                                            "[stream-debug] host DROP event type=tool_call_delta (subscriber channel full)"
-                                        );
-                                    }
-                                }
-                                // 写入 ring buffer（用于 subscribe --replay）
-                                record.event_history.push_back(msg.clone());
-                                while record.event_history.len() > record.event_history_cap {
-                                    record.event_history.pop_front();
-                                }
-                            }
-                            // 更新 latest_output / status
-                            if ev_type == "text_delta" {
-                                if let Some(delta) = msg
-                                    .get("event")
-                                    .and_then(|e| e.get("delta"))
-                                    .and_then(|v| v.as_str())
-                                {
-                                    drop(reg);
-                                    let mut reg2 = sub_registry.lock().await;
-                                    if let Some(record) = reg2.workers.get_mut(&sub_wid) {
-                                        let truncated: String = delta.chars().take(60).collect();
-                                        record.latest_output.push_back(truncated.clone());
-                                        while record.latest_output.len() > 5 {
-                                            record.latest_output.pop_front();
+                            // ⚠️ 用独立 block 把 reg（parking_lot guard，不是 Send）的作用域限制在
+                            // 同步代码段内——block 结束 reg 必然 drop，不会跨下面的 bus.lock().await。
+                            let (bus_clone, session_id_for_bus, need_overview_broadcast) = {
+                                let mut reg = sub_registry.lock();
+                                // 拿 EventBus 句柄（如果有），用于把 worker 事件广播到全局订阅者。
+                                // 在持 reg 锁期间只 clone Arc，不锁 EventBus（避免 reg+bus 双锁死锁）。
+                                let bus_clone = reg.event_bus.clone();
+                                let session_id_for_bus = reg
+                                    .workers
+                                    .get(&sub_wid)
+                                    .map(|w| w.session_id.clone())
+                                    .unwrap_or_default();
+                                if let Some(record) = reg.workers.get_mut(&sub_wid) {
+                                    // 转发给实时订阅者
+                                    for sub in &record.event_subscribers {
+                                        if let Err(_) = sub.try_send(msg.clone())
+                                            && stream_debug
+                                        {
+                                            eprintln!(
+                                                "[stream-debug] host DROP event type=tool_call_delta (subscriber channel full)"
+                                            );
                                         }
-                                        record.log_short = Some(truncated);
-                                        // worker 正在产出文本，刷新心跳避免被误判 Stale
-                                        record.last_heartbeat = now_ms();
+                                    }
+                                    // 写入 ring buffer（用于 subscribe --replay）
+                                    record.event_history.push_back(msg.clone());
+                                    while record.event_history.len() > record.event_history_cap {
+                                        record.event_history.pop_front();
                                     }
                                 }
-                            } else if ev_type == "agent_end" || ev_type == "agent_stopped" {
-                                drop(reg);
-                                let mut reg2 = sub_registry.lock().await;
-                                if let Some(record) = reg2.workers.get_mut(&sub_wid) {
-                                    record.set_status(WorkerStatus::Idle);
+                                // 更新 latest_output / status
+                                let mut need_overview_broadcast = false;
+                                if ev_type == "text_delta" {
+                                    if let Some(delta) = msg
+                                        .get("event")
+                                        .and_then(|e| e.get("delta"))
+                                        .and_then(|v| v.as_str())
+                                    {
+                                        let truncated: String = delta.chars().take(60).collect();
+                                        if let Some(record) = reg.workers.get_mut(&sub_wid) {
+                                            record.latest_output.push_back(truncated.clone());
+                                            while record.latest_output.len() > 5 {
+                                                record.latest_output.pop_front();
+                                            }
+                                            record.log_short = Some(truncated);
+                                            // worker 正在产出文本，刷新心跳避免被误判 Stale
+                                            record.last_heartbeat = now_ms();
+                                        }
+                                    }
+                                } else if ev_type == "agent_end" || ev_type == "agent_stopped" {
+                                    if let Some(record) = reg.workers.get_mut(&sub_wid) {
+                                        record.set_status(WorkerStatus::Idle);
+                                    }
+                                    need_overview_broadcast = true;
+                                } else if ev_type == "error" {
+                                    // agent.run() 返回 Err 时 worker 发 error 事件（而非 agent_end）。
+                                    // 不转 Idle 会让 worker 永久卡 Busy。这里兜底转 Idle，
+                                    // 让用户能看到任务结束、能重新派活。
+                                    let err_msg = msg
+                                        .get("event")
+                                        .and_then(|e| e.get("message"))
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("(no message)");
+                                    tracing::warn!(
+                                        "[{}] worker error event (agent.run failed?): {}",
+                                        sub_wid,
+                                        err_msg
+                                    );
+                                    if let Some(record) = reg.workers.get_mut(&sub_wid) {
+                                        record.set_status(WorkerStatus::Idle);
+                                    }
+                                    need_overview_broadcast = true;
                                 }
-                                drop(reg2);
-                                let rc = Arc::clone(&sub_registry);
-                                let _w = sub_wid.clone();
-                                tokio::spawn(async move {
-                                    let mut r = rc.lock().await;
-                                    r.broadcast_overview();
-                                });
-                            } else if ev_type == "error" {
-                                // agent.run() 返回 Err 时 worker 发 error 事件（而非 agent_end）。
-                                // 不转 Idle 会让 worker 永久卡 Busy。这里兜底转 Idle，
-                                // 让用户能看到任务结束、能重新派活。
-                                let err_msg = msg
-                                    .get("event")
-                                    .and_then(|e| e.get("message"))
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("(no message)");
-                                tracing::warn!(
-                                    "[{}] worker error event (agent.run failed?): {}",
-                                    sub_wid,
-                                    err_msg
-                                );
-                                drop(reg);
-                                let mut reg2 = sub_registry.lock().await;
-                                if let Some(record) = reg2.workers.get_mut(&sub_wid) {
-                                    record.set_status(WorkerStatus::Idle);
-                                }
-                                drop(reg2);
+                                // reg 在 block 结束时自动 drop（parking_lot guard 不是 Send，
+                                // 不能跨 await 持有）。
+                                (bus_clone, session_id_for_bus, need_overview_broadcast)
+                            };
+                            // agent_end / error 需要广播 overview（在 drop(reg) 之后重新 lock）。
+                            if need_overview_broadcast {
                                 let rc = Arc::clone(&sub_registry);
                                 tokio::spawn(async move {
-                                    let mut r = rc.lock().await;
+                                    let mut r = rc.lock();
                                     r.broadcast_overview();
                                 });
                             }
                             // 把 worker 事件广播到全局 EventBus，让 subscribe_all（无 session/extension）
                             // 也能收到 text_delta / agent_start / agent_end / tool_execution_*。
-                            // 对齐 pi 的全局流式行为。此时 reg 已在各分支内 drop，这里 bus_clone 和
+                            // 对齐 pi 的全局流式行为。此时 reg 已 drop，bus_clone 和
                             // session_id_for_bus 是之前 clone 出来的（不依赖 reg 锁）。
-                            let bus_present = bus_clone.is_some();
+                            let _ = stream_debug; // 抑制未使用警告
                             if let Some(bus) = bus_clone
                                 && matches!(
                                     ev_type,
@@ -1079,115 +1099,131 @@ impl WorkerRegistry {
             }
             // Worker exited — clean up registry
             tracing::warn!("[{wid}] stdout closed, cleaning up");
-            let mut reg = sub_registry.lock().await;
-            // 先读 exit code
-            let exit_code = reg
-                .workers
-                .get_mut(&sub_wid)
-                .and_then(|r| r.child_process.as_mut())
-                .and_then(|c| c.try_wait().ok().flatten())
-                .and_then(|s| s.code());
-            if let Some(record) = reg.workers.get_mut(&sub_wid) {
-                record.exit_code = exit_code;
-            }
+            // ⚠️ parking_lot: 整个 exit cleanup 包在独立 block 内，确保 reg（guard，不是 Send）
+            // 在 block 结束时必然 drop，不会跨下面的 singleton callback await。
+            {
+                let mut reg = sub_registry.lock();
+                // 先读 exit code
+                let exit_code = reg
+                    .workers
+                    .get_mut(&sub_wid)
+                    .and_then(|r| r.child_process.as_mut())
+                    .and_then(|c| c.try_wait().ok().flatten())
+                    .and_then(|s| s.code());
+                if let Some(record) = reg.workers.get_mut(&sub_wid) {
+                    record.exit_code = exit_code;
+                }
 
-            // exit_code == 0/None → 正常退出，清理（同现状）
-            // exit_code != 0 → 崩溃，标 Dead + 保留 + 通知父
-            if exit_code == Some(0) || exit_code.is_none() {
-                // 正常退出或未知 → 清理
-                if let Some(mut record) = reg.workers.remove(&sub_wid) {
-                    if let Some(ref mut child) = record.child_process {
-                        let _ = child.start_kill();
-                    }
-                    for ch in &record.channels {
-                        if let Some(subs) = reg.channels.get_mut(ch) {
-                            subs.retain(|id| id != &sub_wid);
+                // exit_code == 0/None → 正常退出，清理（同现状）
+                // exit_code != 0 → 崩溃，标 Dead + 保留 + 通知父
+                if exit_code == Some(0) || exit_code.is_none() {
+                    // 正常退出或未知 → 清理
+                    if let Some(mut record) = reg.workers.remove(&sub_wid) {
+                        if let Some(ref mut child) = record.child_process {
+                            let _ = child.start_kill();
+                        }
+                        for ch in &record.channels {
+                            if let Some(subs) = reg.channels.get_mut(ch) {
+                                subs.retain(|id| id != &sub_wid);
+                            }
+                        }
+                        if let Some(ref parent_id) = record.parent
+                            && let Some(parent) = reg.workers.get_mut(parent_id)
+                        {
+                            parent.children.retain(|id| id != &sub_wid);
                         }
                     }
-                    if let Some(ref parent_id) = record.parent
-                        && let Some(parent) = reg.workers.get_mut(parent_id)
-                    {
-                        parent.children.retain(|id| id != &sub_wid);
-                    }
-                }
-            } else {
-                // 非零退出 → 崩溃！标 Dead，保留 record
-                let (crash_parent, crash_session, crash_reason, crash_channels) = {
-                    if let Some(record) = reg.workers.get_mut(&sub_wid) {
-                        record.set_status(WorkerStatus::Dead);
-                        // 读 stderr 日志最后几行作为 exit_reason
-                        if let Some(ref stderr_path) = record.stderr_path {
-                            if let Ok(content) = std::fs::read_to_string(stderr_path) {
-                                let tail: Vec<&str> =
-                                    content.lines().rev().take(10).collect::<Vec<_>>();
-                                let tail: Vec<&str> = tail.into_iter().rev().collect();
-                                let snippet = tail.join("\n");
-                                if !snippet.is_empty() {
-                                    record.exit_reason = Some(format!(
-                                        "exit={}: {}",
-                                        exit_code.unwrap_or(-1),
-                                        snippet
-                                    ));
+                } else {
+                    // 非零退出 → 崩溃！标 Dead，保留 record
+                    let (crash_parent, crash_session, crash_reason, crash_channels) = {
+                        if let Some(record) = reg.workers.get_mut(&sub_wid) {
+                            record.set_status(WorkerStatus::Dead);
+                            // 读 stderr 日志最后几行作为 exit_reason
+                            if let Some(ref stderr_path) = record.stderr_path {
+                                if let Ok(content) = std::fs::read_to_string(stderr_path) {
+                                    let tail: Vec<&str> =
+                                        content.lines().rev().take(10).collect::<Vec<_>>();
+                                    let tail: Vec<&str> = tail.into_iter().rev().collect();
+                                    let snippet = tail.join("\n");
+                                    if !snippet.is_empty() {
+                                        record.exit_reason = Some(format!(
+                                            "exit={}: {}",
+                                            exit_code.unwrap_or(-1),
+                                            snippet
+                                        ));
+                                    } else {
+                                        record.exit_reason =
+                                            Some(format!("exit={}", exit_code.unwrap_or(-1)));
+                                    }
                                 } else {
                                     record.exit_reason =
                                         Some(format!("exit={}", exit_code.unwrap_or(-1)));
                                 }
                             } else {
-                                record.exit_reason =
-                                    Some(format!("exit={}", exit_code.unwrap_or(-1)));
+                                record.exit_reason = Some(format!("exit={}", exit_code.unwrap_or(-1)));
                             }
+                            (
+                                record.parent.clone(),
+                                record.session_id.clone(),
+                                record.exit_reason.clone(),
+                                record.channels.clone(),
+                            )
                         } else {
-                            record.exit_reason = Some(format!("exit={}", exit_code.unwrap_or(-1)));
+                            (None, String::new(), None, Vec::new())
                         }
-                        (
-                            record.parent.clone(),
-                            record.session_id.clone(),
-                            record.exit_reason.clone(),
-                            record.channels.clone(),
-                        )
-                    } else {
-                        (None, String::new(), None, Vec::new())
-                    }
-                }; // record mutable borrow ends here
+                    }; // record mutable borrow ends here
 
-                // 推送 child_crashed 事件到 event_subscribers
-                let crash_event = serde_json::json!({
-                    "type": "child_crashed",
-                    "worker_id": sub_wid,
-                    "session_id": crash_session,
-                    "exit_code": exit_code,
-                    "exit_reason": crash_reason,
-                });
-                // 推给 event_subscribers（需要重新 get 记录）
-                if let Some(record) = reg.workers.get(&sub_wid) {
-                    for sub in &record.event_subscribers {
-                        let _ = sub.try_send(crash_event.clone());
+                    // 推送 child_crashed 事件到 event_subscribers
+                    let crash_event = serde_json::json!({
+                        "type": "child_crashed",
+                        "worker_id": sub_wid,
+                        "session_id": crash_session,
+                        "exit_code": exit_code,
+                        "exit_reason": crash_reason,
+                    });
+                    // 推给 event_subscribers（需要重新 get 记录）
+                    if let Some(record) = reg.workers.get(&sub_wid) {
+                        for sub in &record.event_subscribers {
+                            let _ = sub.try_send(crash_event.clone());
+                        }
+                    }
+                    // 也通过 parent_event_tx 通知父
+                    if let Some(ref parent_id) = crash_parent {
+                        if let Some(parent) = reg.workers.get(parent_id.as_str())
+                            && let Some(ref tx) = parent.parent_event_tx
+                        {
+                            let _ = tx.try_send(crash_event.clone());
+                        }
+                        // 从父的 children 列表中移除
+                        if let Some(parent) = reg.workers.get_mut(parent_id.as_str()) {
+                            parent.children.retain(|id| id != &sub_wid);
+                        }
+                    }
+                    // 从 channels 移除
+                    for ch in &crash_channels {
+                        if let Some(subs) = reg.channels.get_mut(ch.as_str()) {
+                            subs.retain(|id| id != &sub_wid);
+                        }
                     }
                 }
-                // 也通过 parent_event_tx 通知父
-                if let Some(ref parent_id) = crash_parent {
-                    if let Some(parent) = reg.workers.get(parent_id.as_str())
-                        && let Some(ref tx) = parent.parent_event_tx
-                    {
-                        let _ = tx.try_send(crash_event.clone());
-                    }
-                    // 从父的 children 列表中移除
-                    if let Some(parent) = reg.workers.get_mut(parent_id.as_str()) {
-                        parent.children.retain(|id| id != &sub_wid);
-                    }
-                }
-                // 从 channels 移除
-                for ch in &crash_channels {
-                    if let Some(subs) = reg.channels.get_mut(ch.as_str()) {
-                        subs.retain(|id| id != &sub_wid);
-                    }
+                reg.broadcast_overview();
+            } // reg dropped here — lock released
+            // 通知单例扩展：这个 Worker 不再使用它们（引用计数-1）
+            // ⚠️ parking_lot: 用 sync 版本收集 instances，drop lock 后再调 callbacks（不持锁 await）
+            let (leave_calls, last_gone_calls) = {
+                let mut reg2 = sub_registry.lock();
+                reg2.singleton_user_leave_sync(&sub_wid)
+            };
+            for ext in leave_calls {
+                if let Err(e) = ext.on_user_leave(&sub_wid).await {
+                    tracing::warn!("[singleton] user_leave {} failed: {:?}", sub_wid, e);
                 }
             }
-            reg.broadcast_overview();
-            drop(reg); // 释放 lock，让 singleton_user_leave 能重新获取
-            // 通知单例扩展：这个 Worker 不再使用它们（引用计数-1）
-            let mut reg2 = sub_registry.lock().await;
-            reg2.singleton_user_leave(&sub_wid).await;
+            for ext in last_gone_calls {
+                if let Err(e) = ext.on_last_user_gone().await {
+                    tracing::warn!("[singleton] last_user_gone failed: {:?}", e);
+                }
+            }
         });
 
         // ── Peer 模式：内核自动追加"汇报指令段"到 initial_prompt ──
@@ -1242,17 +1278,52 @@ impl WorkerRegistry {
             tokio::spawn(async move {
                 // 等子进程 ready（不持锁，不阻塞 reader task）
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                // 短暂持锁写 stdin（fire-and-forget，不等响应）
-                let mut reg = prompt_registry.lock().await;
-                if let Err(e) = reg
-                    .send_command(
-                        &wid_for_prompt,
-                        "prompt",
-                        serde_json::json!({"text": prompt_text}),
-                    )
-                    .await
-                {
-                    tracing::warn!("[{wid_for_prompt}] failed to inject initial_prompt: {e}");
+                // ⚠️ parking_lot: send_command 持 &mut self + .await（stdin write），
+                // 不能持锁调用。改为：持锁 take 出 stdin + 标记 Busy，drop lock，
+                // 然后 write stdin，再 put back。
+                let req_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+                let write_line = format!(
+                    "{}\n",
+                    serde_json::json!({
+                        "id": &req_id,
+                        "method": "prompt",
+                        "params": serde_json::json!({"text": prompt_text})
+                    })
+                );
+                // 持短锁：take stdin + 标记 Busy
+                let stdin_opt = {
+                    let mut reg = prompt_registry.lock();
+                    let stdin = match reg.workers.get_mut(&wid_for_prompt) {
+                        Some(record) => {
+                            record.stdin.take()
+                        }
+                        None => {
+                            tracing::warn!("[{wid_for_prompt}] not found for initial_prompt");
+                            return;
+                        }
+                    };
+                    if let Some(record) = reg.workers.get_mut(&wid_for_prompt) {
+                        record.set_status(WorkerStatus::Busy);
+                    }
+                    stdin
+                }; // lock dropped
+                // 不持锁写 stdin（带 2s timeout，buffer 满不阻塞锁）
+                if let Some(mut stdin) = stdin_opt {
+                    use tokio::io::AsyncWriteExt;
+                    let result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                        stdin.write_all(write_line.as_bytes()).await?;
+                        stdin.flush().await?;
+                        Ok::<(), std::io::Error>(())
+                    })
+                    .await;
+                    // 把 stdin 放回去
+                    let mut reg = prompt_registry.lock();
+                    if let Some(record) = reg.workers.get_mut(&wid_for_prompt) {
+                        record.stdin = Some(stdin);
+                    }
+                    if let Err(e) = result {
+                        tracing::warn!("[{wid_for_prompt}] failed to inject initial_prompt: {e:?}");
+                    }
                 }
             });
         }
@@ -1268,7 +1339,7 @@ impl WorkerRegistry {
     /// Takes a `PreparedSpawn` (child process already forked, no lock needed for that)
     /// and registers it in the registry. This is the fast path — only takes microseconds
     /// under the lock (vs seconds for the full create_worker).
-    pub async fn register_prepared_worker(
+    pub fn register_prepared_worker(
         &mut self,
         spawn: PreparedSpawn,
         config: &WorkerCreateConfig,
@@ -1455,9 +1526,19 @@ impl WorkerRegistry {
             }
         }
 
-        // singleton user join
+        // singleton user join（同 create_worker：用 spawn 避免持锁 await）
         if config.relation != Some(WorkerRelation::System) {
-            self.singleton_user_join(&worker_id).await;
+            let instances = self.singleton_user_join_sync(&worker_id);
+            if !instances.is_empty() {
+                let wid_clone = worker_id.clone();
+                tokio::spawn(async move {
+                    for ext in instances {
+                        if let Err(e) = ext.on_user_join(&wid_clone).await {
+                            tracing::warn!("[singleton] user_join {} failed: {:?}", wid_clone, e);
+                        }
+                    }
+                });
+            }
         }
 
         // stdout reader task
@@ -1482,7 +1563,7 @@ impl WorkerRegistry {
                             .to_string();
 
                         if msg_type == "response" && !msg_id.is_empty() {
-                            let mut reg = sub_registry.lock().await;
+                            let mut reg = sub_registry.lock();
                             if let Some(record) = reg.workers.get_mut(&sub_wid)
                                 && let Some(tx) = record.pending.remove(&msg_id)
                             {
@@ -1496,60 +1577,73 @@ impl WorkerRegistry {
                                 .and_then(|e| e.get("type"))
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
-                            let mut reg = sub_registry.lock().await;
-                            let bus_clone2 = reg.event_bus.clone();
-                            let session_id_for_bus2 = reg
-                                .workers
-                                .get(&sub_wid)
-                                .map(|w| w.session_id.clone())
-                                .unwrap_or_default();
-                            if let Some(record) = reg.workers.get_mut(&sub_wid) {
-                                for sub in &record.event_subscribers {
-                                    let _ = sub.try_send(msg.clone());
+                            // ⚠️ 用独立 block 把 reg 作用域限制在同步代码段（parking_lot guard 不是 Send）。
+                            let (bus_clone2, session_id_for_bus2, need_overview_broadcast) = {
+                                let mut reg = sub_registry.lock();
+                                let bus_clone2 = reg.event_bus.clone();
+                                let session_id_for_bus2 = reg
+                                    .workers
+                                    .get(&sub_wid)
+                                    .map(|w| w.session_id.clone())
+                                    .unwrap_or_default();
+                                if let Some(record) = reg.workers.get_mut(&sub_wid) {
+                                    for sub in &record.event_subscribers {
+                                        let _ = sub.try_send(msg.clone());
+                                    }
+                                    record.event_history.push_back(msg.clone());
+                                    while record.event_history.len() > record.event_history_cap {
+                                        record.event_history.pop_front();
+                                    }
                                 }
-                                record.event_history.push_back(msg.clone());
-                                while record.event_history.len() > record.event_history_cap {
-                                    record.event_history.pop_front();
+                                let mut need_overview_broadcast = false;
+                                if ev_type == "text_delta"
+                                    && let Some(delta) = msg
+                                        .get("event")
+                                        .and_then(|e| e.get("delta"))
+                                        .and_then(|v| v.as_str())
+                                    && let Some(record) = reg.workers.get_mut(&sub_wid)
+                                {
+                                    let mut buf: String =
+                                        record.latest_output.iter().cloned().collect();
+                                    buf.push_str(delta);
+                                    record.latest_output.clear();
+                                    for chunk in buf.split('\n').next_back().unwrap_or("").lines() {
+                                        record.latest_output.push_back(chunk.to_string());
+                                    }
+                                    // worker 在产出，刷新心跳
+                                    record.last_heartbeat = now_ms();
                                 }
-                            }
-                            if ev_type == "text_delta"
-                                && let Some(delta) = msg
-                                    .get("event")
-                                    .and_then(|e| e.get("delta"))
-                                    .and_then(|v| v.as_str())
-                                && let Some(record) = reg.workers.get_mut(&sub_wid)
-                            {
-                                let mut buf: String =
-                                    record.latest_output.iter().cloned().collect();
-                                buf.push_str(delta);
-                                record.latest_output.clear();
-                                for chunk in buf.split('\n').next_back().unwrap_or("").lines() {
-                                    record.latest_output.push_back(chunk.to_string());
+                                if (ev_type == "agent_end" || ev_type == "agent_stopped")
+                                    && let Some(record) = reg.workers.get_mut(&sub_wid)
+                                {
+                                    record.set_status(WorkerStatus::Idle);
+                                    need_overview_broadcast = true;
                                 }
-                                // worker 在产出，刷新心跳
-                                record.last_heartbeat = now_ms();
+                                // agent.run() 返回 Err 时的兜底：error 事件也转 Idle，避免永久卡 Busy
+                                if ev_type == "error"
+                                    && let Some(record) = reg.workers.get_mut(&sub_wid)
+                                {
+                                    tracing::warn!(
+                                        "[{}] worker error event, marking Idle (agent.run failed?)",
+                                        sub_wid
+                                    );
+                                    record.set_status(WorkerStatus::Idle);
+                                    need_overview_broadcast = true;
+                                }
+                                if ev_type == "agent_start"
+                                    && let Some(record) = reg.workers.get_mut(&sub_wid)
+                                {
+                                    record.set_status(WorkerStatus::Busy);
+                                }
+                                (bus_clone2, session_id_for_bus2, need_overview_broadcast)
+                            };
+                            if need_overview_broadcast {
+                                let rc = Arc::clone(&sub_registry);
+                                tokio::spawn(async move {
+                                    let mut r = rc.lock();
+                                    r.broadcast_overview();
+                                });
                             }
-                            if (ev_type == "agent_end" || ev_type == "agent_stopped")
-                                && let Some(record) = reg.workers.get_mut(&sub_wid)
-                            {
-                                record.set_status(WorkerStatus::Idle);
-                            }
-                            // agent.run() 返回 Err 时的兜底：error 事件也转 Idle，避免永久卡 Busy
-                            if ev_type == "error"
-                                && let Some(record) = reg.workers.get_mut(&sub_wid)
-                            {
-                                tracing::warn!(
-                                    "[{}] worker error event, marking Idle (agent.run failed?)",
-                                    sub_wid
-                                );
-                                record.set_status(WorkerStatus::Idle);
-                            }
-                            if ev_type == "agent_start"
-                                && let Some(record) = reg.workers.get_mut(&sub_wid)
-                            {
-                                record.set_status(WorkerStatus::Busy);
-                            }
-                            drop(reg);
                             // 同 reader #1：广播 worker 事件到全局 EventBus，让 subscribe_all 也能收到
                             if let Some(bus) = bus_clone2
                                 && matches!(
@@ -1589,81 +1683,98 @@ impl WorkerRegistry {
             }
             // Worker exited
             tracing::warn!("[{wid}] stdout closed, cleaning up");
-            let mut reg = sub_registry.lock().await;
-            let exit_code = reg
-                .workers
-                .get_mut(&sub_wid)
-                .and_then(|r| r.child_process.as_mut())
-                .and_then(|c| c.try_wait().ok().flatten())
-                .and_then(|s| s.code());
-            if let Some(record) = reg.workers.get_mut(&sub_wid) {
-                record.exit_code = exit_code;
-            }
-            if exit_code == Some(0) || exit_code.is_none() {
-                if let Some(mut record) = reg.workers.remove(&sub_wid) {
-                    if let Some(ref mut child) = record.child_process {
-                        let _ = child.start_kill();
-                    }
-                    for ch in &record.channels {
-                        if let Some(subs) = reg.channels.get_mut(ch) {
-                            subs.retain(|id| id != &sub_wid);
-                        }
-                    }
-                    if let Some(ref parent_id) = record.parent
-                        && let Some(parent) = reg.workers.get_mut(parent_id)
-                    {
-                        parent.children.retain(|id| id != &sub_wid);
-                    }
-                }
-            } else {
+            // ⚠️ parking_lot: 整个 exit cleanup 包在独立 block 内（guard 不是 Send）。
+            // 收集需要在 drop lock 后 await 的 parent_event_tx + crash payload，
+            // block 结束后（lock 释放）再 .send().await。
+            let pending_parent_notify: Option<(String, serde_json::Value)> = {
+                let mut reg = sub_registry.lock();
+                let exit_code = reg
+                    .workers
+                    .get_mut(&sub_wid)
+                    .and_then(|r| r.child_process.as_mut())
+                    .and_then(|c| c.try_wait().ok().flatten())
+                    .and_then(|s| s.code());
                 if let Some(record) = reg.workers.get_mut(&sub_wid) {
-                    record.set_status(WorkerStatus::Dead);
-                    if let Some(ref stderr_path) = record.stderr_path {
-                        if let Ok(content) = std::fs::read_to_string(stderr_path) {
-                            let tail: Vec<&str> =
-                                content.lines().rev().take(10).collect::<Vec<_>>();
-                            let tail: Vec<&str> = tail.into_iter().rev().collect();
-                            let snippet = tail.join("\n");
-                            record.exit_reason = if !snippet.is_empty() {
-                                Some(format!("exit={}: {}", exit_code.unwrap_or(-1), snippet))
+                    record.exit_code = exit_code;
+                }
+                let mut notify = None;
+                if exit_code == Some(0) || exit_code.is_none() {
+                    if let Some(mut record) = reg.workers.remove(&sub_wid) {
+                        if let Some(ref mut child) = record.child_process {
+                            let _ = child.start_kill();
+                        }
+                        for ch in &record.channels {
+                            if let Some(subs) = reg.channels.get_mut(ch) {
+                                subs.retain(|id| id != &sub_wid);
+                            }
+                        }
+                        if let Some(ref parent_id) = record.parent
+                            && let Some(parent) = reg.workers.get_mut(parent_id)
+                        {
+                            parent.children.retain(|id| id != &sub_wid);
+                        }
+                    }
+                } else {
+                    if let Some(record) = reg.workers.get_mut(&sub_wid) {
+                        record.set_status(WorkerStatus::Dead);
+                        if let Some(ref stderr_path) = record.stderr_path {
+                            if let Ok(content) = std::fs::read_to_string(stderr_path) {
+                                let tail: Vec<&str> =
+                                    content.lines().rev().take(10).collect::<Vec<_>>();
+                                let tail: Vec<&str> = tail.into_iter().rev().collect();
+                                let snippet = tail.join("\n");
+                                record.exit_reason = if !snippet.is_empty() {
+                                    Some(format!("exit={}: {}", exit_code.unwrap_or(-1), snippet))
+                                } else {
+                                    Some(format!("exit={}", exit_code.unwrap_or(-1)))
+                                };
                             } else {
-                                Some(format!("exit={}", exit_code.unwrap_or(-1)))
-                            };
-                        } else {
-                            record.exit_reason = Some(format!("exit={}", exit_code.unwrap_or(-1)));
+                                record.exit_reason = Some(format!("exit={}", exit_code.unwrap_or(-1)));
+                            }
+                        }
+                    }
+                    if let Some(record) = reg.workers.get(&sub_wid) {
+                        let crash_parent = record.parent.clone();
+                        let crash_session = record.session_id.clone();
+                        let crash_reason = record.exit_reason.clone().unwrap_or_default();
+                        let crash_channels = record.channels.clone();
+                        // 不在这里 await send（持 reg 锁）——收集 parent_id + payload，
+                        // drop lock 后再 send。
+                        if let Some(ref parent_id) = crash_parent {
+                            notify = Some((
+                                parent_id.clone(),
+                                serde_json::json!({
+                                    "type": "event",
+                                    "event": {
+                                        "type": "child_crashed",
+                                        "session_id": crash_session,
+                                        "exit_reason": crash_reason,
+                                    }
+                                }),
+                            ));
+                        }
+                        for ch in &crash_channels {
+                            if let Some(subs) = reg.channels.get_mut(ch) {
+                                subs.retain(|id| id != &sub_wid);
+                            }
                         }
                     }
                 }
-                if let Some(record) = reg.workers.get(&sub_wid) {
-                    let crash_parent = record.parent.clone();
-                    let crash_session = record.session_id.clone();
-                    let crash_reason = record.exit_reason.clone().unwrap_or_default();
-                    let crash_channels = record.channels.clone();
-                    if let Some(ref parent_id) = crash_parent
-                        && let Some(parent) = reg.workers.get_mut(parent_id)
-                        && let Some(ref tx) = parent.parent_event_tx
-                    {
-                        let _ = tx
-                            .send(serde_json::json!({
-                                "type": "event",
-                                "event": {
-                                    "type": "child_crashed",
-                                    "session_id": crash_session,
-                                    "exit_reason": crash_reason,
-                                }
-                            }))
-                            .await;
-                    }
-                    for ch in &crash_channels {
-                        if let Some(subs) = reg.channels.get_mut(ch) {
-                            subs.retain(|id| id != &sub_wid);
-                        }
-                    }
+                notify
+            }; // reg dropped here — lock released
+            // drop lock 后再 await send（避免跨 await 持有 parking_lot guard）
+            if let Some((parent_id, payload)) = pending_parent_notify {
+                let tx_opt = {
+                    let reg = sub_registry.lock();
+                    reg.workers.get(&parent_id).and_then(|p| p.parent_event_tx.clone())
+                };
+                if let Some(tx) = tx_opt {
+                    let _ = tx.send(payload).await;
                 }
             }
             let rc = Arc::clone(&sub_registry);
             tokio::spawn(async move {
-                let mut r = rc.lock().await;
+                let mut r = rc.lock();
                 r.broadcast_overview();
             });
         });
@@ -1801,7 +1912,7 @@ impl WorkerRegistry {
     ) -> Result<serde_json::Value, String> {
         // Phase 1: look for an existing worker for this session.
         let existing = {
-            let reg = registry_arc.lock().await;
+            let reg = registry_arc.lock();
             reg.workers
                 .iter()
                 .find(|(_, w)| w.session_id == session_id)
@@ -1809,12 +1920,10 @@ impl WorkerRegistry {
         };
 
         if let Some(wid) = existing {
-            // Worker exists — send directly (lock → write stdin → drop lock → await oneshot).
-            let rx = {
-                let mut reg = registry_arc.lock().await;
-                reg.send_to_worker_prepare(&wid, method, params).await?
-            };
-            return Self::await_oneshot_timeout(rx).await;
+            // Worker exists — send directly via send_async (manages its own lock).
+            // ⚠️ parking_lot: send_to_worker_prepare 持 &mut self + .await（stdin write），
+            // 不能持锁调用。send_async 内部 take stdin → drop lock → write → put back。
+            return Self::send_async(registry_arc, &wid, method, params).await;
         }
 
         // Phase 2: worker not found → auto-start. Lock briefly to create.
@@ -1840,25 +1949,28 @@ impl WorkerRegistry {
             hook_depth: None,
             system_prompt_override: None,
         };
-        {
-            let mut reg = registry_arc.lock().await;
-            reg.create_worker(config, registry_arc).await?;
-        } // lock dropped here — create_worker's reader task can now lock freely.
+        // ⚠️ parking_lot: create_worker 持 &mut self + .await（spawn 等），
+        // 不能持锁调用。改用 prepare + register 两阶段。
+        match Self::prepare_worker_spawn(&config).await {
+            Ok(prepared) => {
+                let mut reg = registry_arc.lock();
+                reg.register_prepared_worker(prepared, &config, registry_arc)?;
+            }
+            Err(e) => return Err(e),
+        }
 
         // Phase 3: find the freshly created worker and send the command.
         let wid = {
-            let reg = registry_arc.lock().await;
+            let reg = registry_arc.lock();
             reg.workers
                 .iter()
                 .find(|(_, w)| w.session_id == session_id)
                 .map(|(id, _)| id.clone())
                 .ok_or_else(|| format!("auto-started worker for {session_id} vanished"))?
         };
-        let rx = {
-            let mut reg = registry_arc.lock().await;
-            reg.send_to_worker_prepare(&wid, method, params).await?
-        };
-        Self::await_oneshot_timeout(rx).await
+        // Phase 3: find the freshly created worker and send the command.
+        // ⚠️ 同上：用 send_async（自管锁）。
+        Self::send_async(registry_arc, &wid, method, params).await
     }
 
     /// Drain pending events from a worker's stdout_rx.
@@ -1988,31 +2100,73 @@ impl WorkerRegistry {
 
     /// 线程安全的 send_to_worker：短暂持锁写 stdin + 注册 oneshot，然后放锁等响应。
     /// reader task 需要在锁外才能匹配 pending response，避免死锁。
+    ///
+    /// ⚠️ parking_lot: 此方法自管锁——不要求调用方持锁。
+    /// 内部用 send_command_prepare（async，stdin write）的方式：
+    /// take stdin → drop lock → write stdin → put back → 短锁 register_pending。
     pub async fn send_async(
-        registry: &Arc<tokio::sync::Mutex<Self>>,
+        registry: &Arc<Mutex<Self>>,
         worker_id: &str,
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
-        let (req_id, rx) = {
-            let mut reg = registry.lock().await;
-            let req_id = reg.send_command(worker_id, method, params).await?;
-            let rx = reg
-                .register_pending(worker_id, &req_id)
-                .ok_or_else(|| format!("worker not found: {worker_id}"))?;
-            (req_id, rx)
+        // Phase 1: 短锁 take stdin + 标记 Busy + 构造 req_id/line
+        let req_id = Uuid::new_v4().to_string()[..8].to_string();
+        let line = serde_json::json!({
+            "id": req_id,
+            "method": method,
+            "params": params,
+        })
+        .to_string();
+        let write_line = format!("{line}\n");
+        let stdin_opt = {
+            let mut reg = registry.lock();
+            let stdin = match reg.workers.get_mut(worker_id) {
+                Some(record) => record.stdin.take(),
+                None => return Err(format!("worker not found: {worker_id}")),
+            };
+            if let Some(record) = reg.workers.get_mut(worker_id) {
+                record.set_status(WorkerStatus::Busy);
+            }
+            stdin
+        }; // lock dropped
+        // Phase 2: write stdin（不持锁）
+        if let Some(mut stdin) = stdin_opt {
+            use tokio::io::AsyncWriteExt;
+            let result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                stdin.write_all(write_line.as_bytes()).await?;
+                stdin.flush().await?;
+                Ok::<(), std::io::Error>(())
+            })
+            .await;
+            // put stdin back（短锁）
+            let mut reg = registry.lock();
+            if let Some(record) = reg.workers.get_mut(worker_id) {
+                record.stdin = Some(stdin);
+            }
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => return Err(format!("write stdin: {e}")),
+                Err(_) => return Err(format!("timeout: worker {worker_id} stdin blocked")),
+            }
+        }
+        // Phase 3: register pending oneshot（短锁）
+        let rx = {
+            let mut reg = registry.lock();
+            reg.register_pending(worker_id, &req_id)
+                .ok_or_else(|| format!("worker not found: {worker_id}"))?
         };
 
         match tokio::time::timeout(std::time::Duration::from_secs(300), rx).await {
             Ok(Ok(resp)) => Ok(resp),
             Ok(Err(_)) => {
-                if let Ok(mut reg) = registry.try_lock() {
+                if let Some(mut reg) = registry.try_lock() {
                     reg.cleanup_pending(worker_id, &req_id);
                 }
                 Err("worker dropped response channel".into())
             }
             Err(_) => {
-                if let Ok(mut reg) = registry.try_lock() {
+                if let Some(mut reg) = registry.try_lock() {
                     reg.cleanup_pending(worker_id, &req_id);
                 }
                 Err("timeout waiting for response".into())
@@ -2029,7 +2183,7 @@ impl WorkerRegistry {
     /// 安全的调用模式（与 socket handler 一致）：
     /// ```ignore
     /// let (req_id, rx) = {
-    ///     let mut reg = registry.lock().await;
+    ///     let mut reg = registry.lock();
     ///     let req_id = reg.send_command(&wid, method, params).await?;
     ///     let rx = reg.register_pending(&wid, &req_id).unwrap();
     ///     (req_id, rx)
@@ -2189,7 +2343,54 @@ impl WorkerRegistry {
     /// Forward a channel message to all subscribers.
     /// CRITICAL: This must NOT block on stdin writes. Uses 200ms timeout per subscriber.
     /// If a subscriber's stdin buffer is full, the message is dropped (better than deadlock).
+    ///
+    /// ⚠️ parking_lot: 此方法是 `async fn(&mut self)`，调用方若持 parking_lot guard 跨此 .await
+    /// 会编译失败（guard 不是 Send）。请在**不持锁**的场景调用（如 runtime.rs 的 bridge 调用）。
+    /// 持锁场景请用 `channel_send_arc(registry, ...)`。
     pub async fn channel_send(&mut self, channel: &str, from: &str, msg: serde_json::Value) {
+        let write_line = {
+            let channel_msg = serde_json::json!({
+                "type": "channel_msg",
+                "channel": channel,
+                "from": from,
+                "msg": msg,
+            });
+            let line = serde_json::to_string(&channel_msg).unwrap_or_default();
+            format!("{line}\n")
+        };
+        let sub_ids: Vec<String> = self.channels.get(channel).cloned().unwrap_or_default();
+        // take stdins（sync，&mut self 借用在此 block 内结束）
+        let mut stdins: Vec<(String, tokio::process::ChildStdin)> = Vec::new();
+        for sub_id in &sub_ids {
+            if let Some(record) = self.workers.get_mut(sub_id) {
+                if let Some(stdin) = record.stdin.take() {
+                    stdins.push((sub_id.clone(), stdin));
+                }
+            }
+        }
+        // write stdin（&mut self 不再被借用，但参数 self 仍在作用域——Send 检查器看参数类型）
+        // 为彻底绕开，调用方应改用 channel_send_arc。
+        use tokio::io::AsyncWriteExt;
+        for (id, mut stdin) in stdins {
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(200), async {
+                let _ = stdin.write_all(write_line.as_bytes()).await;
+                let _ = stdin.flush().await;
+            })
+            .await;
+            // put stdin back
+            if let Some(record) = self.workers.get_mut(&id) {
+                record.stdin = Some(stdin);
+            }
+        }
+    }
+
+    /// 同步阶段：构造 channel_msg 行 + 返回 subscriber_ids。
+    pub fn channel_send_prepare(
+        &mut self,
+        channel: &str,
+        from: &str,
+        msg: serde_json::Value,
+    ) -> (String, Vec<String>) {
         let channel_msg = serde_json::json!({
             "type": "channel_msg",
             "channel": channel,
@@ -2198,21 +2399,47 @@ impl WorkerRegistry {
         });
         let line = serde_json::to_string(&channel_msg).unwrap_or_default();
         let write_line = format!("{line}\n");
-
         let subscriber_ids: Vec<String> = self.channels.get(channel).cloned().unwrap_or_default();
+        (write_line, subscriber_ids)
+    }
 
-        for sub_id in subscriber_ids {
-            if let Some(record) = self.workers.get_mut(&sub_id)
-                && let Some(ref mut stdin) = record.stdin
-            {
-                use tokio::io::AsyncWriteExt;
-                // 200ms hard timeout per subscriber write.
-                // If buffer full, drop the message — never block the registry lock.
-                let _ = tokio::time::timeout(std::time::Duration::from_millis(200), async {
-                    let _ = stdin.write_all(write_line.as_bytes()).await;
-                    let _ = stdin.flush().await;
-                })
-                .await;
+    /// 异步阶段：take stdins from registry（短锁），write stdin（不持锁），put back（短锁）。
+    /// 用于 parking_lot 场景下替代 channel_send（不在持 &mut self/guard 期间 await）。
+    pub async fn channel_send_arc(
+        registry: &Arc<Mutex<WorkerRegistry>>,
+        channel: &str,
+        from: &str,
+        msg: serde_json::Value,
+    ) {
+        // Phase 1: prepare（短锁，sync）
+        let (write_line, sub_ids) = {
+            let mut reg = registry.lock();
+            reg.channel_send_prepare(channel, from, msg)
+        };
+        // Phase 2: take stdins（短锁，sync）
+        let mut stdins: Vec<(String, tokio::process::ChildStdin)> = Vec::new();
+        {
+            let mut reg = registry.lock();
+            for sub_id in &sub_ids {
+                if let Some(record) = reg.workers.get_mut(sub_id) {
+                    if let Some(stdin) = record.stdin.take() {
+                        stdins.push((sub_id.clone(), stdin));
+                    }
+                }
+            }
+        }
+        // Phase 3: write stdin（不持锁，async）
+        use tokio::io::AsyncWriteExt;
+        for (id, mut stdin) in stdins {
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(200), async {
+                let _ = stdin.write_all(write_line.as_bytes()).await;
+                let _ = stdin.flush().await;
+            })
+            .await;
+            // Phase 4: put back（短锁）
+            let mut reg = registry.lock();
+            if let Some(record) = reg.workers.get_mut(&id) {
+                record.stdin = Some(stdin);
             }
         }
     }
@@ -2372,7 +2599,7 @@ impl WorkerRegistry {
                     match Self::prepare_worker_spawn(&cfg_clone).await {
                         Ok(prepared) => {
                             // register 持短锁
-                            let info_result = self.register_prepared_worker(prepared, &config, registry_arc).await;
+                            let info_result = self.register_prepared_worker(prepared, &config, registry_arc);
                             match info_result {
                                 Ok(info) => {
                                     let child_id = info.worker_id.clone();
@@ -2649,7 +2876,8 @@ impl WorkerRegistry {
                         .get("from")
                         .and_then(|v| v.as_str())
                         .unwrap_or(from_worker.as_str());
-                    self.channel_send(&channel, from, msg).await;
+                    // ⚠️ parking_lot: channel_send 持 &mut self + .await，改用 channel_send_arc（自管锁）。
+                    Self::channel_send_arc(registry_arc, &channel, from, msg).await;
                     if !reply_to.is_empty() {
                         self.write_manager_response(
                             &from_worker,
@@ -3175,17 +3403,64 @@ impl WorkerRegistry {
 
     /// 初始化所有未初始化的单例（调用 on_singleton_init）。
     /// 在 host 启动后、用户 Worker 创建前调用。
+    /// Initialize all uninitialized singletons (calls on_singleton_init).
+    /// Called after host startup, before user Workers are created.
+    ///
+    /// ⚠️ parking_lot: 此方法签名保持 `&mut self`（向后兼容），但内部不在持锁状态下
+    /// await。它先把所有需要初始化的 instance Arc 收集起来（同步），然后在函数体内
+    /// 直接 await（此时调用方虽然仍持有 guard，但只要调用方在调用前后立即 drop lock
+    /// 即可——见调用方模式）。实际安全用法见 `init_singletons_arc`。
     pub async fn init_singletons(&mut self) {
-        let keys: Vec<String> = self.singletons.keys().cloned().collect();
-        for key in keys {
-            let entry = self.singletons.get_mut(&key).unwrap();
-            if !entry.initialized {
-                if let Err(e) = entry.instance.on_singleton_init().await {
-                    tracing::error!("[singleton:{}] init failed: {:?}", key, e);
-                } else {
-                    entry.initialized = true;
-                    tracing::info!("[singleton:{}] initialized", key);
+        let to_init: Vec<(String, Arc<dyn crate::agent::extension::Extension>)> = {
+            let keys: Vec<String> = self.singletons.keys().cloned().collect();
+            let mut out = Vec::new();
+            for key in keys {
+                let entry = self.singletons.get_mut(&key).unwrap();
+                if !entry.initialized {
+                    out.push((key.clone(), entry.instance.clone()));
                 }
+            }
+            out
+        };
+        for (key, instance) in to_init {
+            if let Err(e) = instance.on_singleton_init().await {
+                tracing::error!("[singleton:{}] init failed: {:?}", key, e);
+            } else {
+                if let Some(entry) = self.singletons.get_mut(&key) {
+                    entry.initialized = true;
+                }
+                tracing::info!("[singleton:{}] initialized", key);
+            }
+        }
+    }
+
+    /// Associated-function version of init_singletons that manages its own lock
+    /// scope. Use this when the caller cannot easily drop its own guard before
+    /// awaiting (e.g. cmd_host). Acquires lock briefly to collect instances,
+    /// releases, awaits callbacks, then re-acquires to mark initialized.
+    pub async fn init_singletons_arc(registry: &Arc<Mutex<WorkerRegistry>>) {
+        let to_init: Vec<(String, Arc<dyn crate::agent::extension::Extension>)> = {
+            let reg = registry.lock();
+            let keys: Vec<String> = reg.singletons.keys().cloned().collect();
+            let mut out = Vec::new();
+            for key in keys {
+                if let Some(entry) = reg.singletons.get(&key)
+                    && !entry.initialized
+                {
+                    out.push((key.clone(), entry.instance.clone()));
+                }
+            }
+            out
+        };
+        for (key, instance) in to_init {
+            if let Err(e) = instance.on_singleton_init().await {
+                tracing::error!("[singleton:{}] init failed: {:?}", key, e);
+            } else {
+                let mut reg = registry.lock();
+                if let Some(entry) = reg.singletons.get_mut(&key) {
+                    entry.initialized = true;
+                }
+                tracing::info!("[singleton:{}] initialized", key);
             }
         }
     }
@@ -3198,7 +3473,7 @@ impl WorkerRegistry {
     pub async fn post_init_singletons(registry: &Arc<Mutex<WorkerRegistry>>) {
         // 持 lock 时快速 clone 所有 instance 的 Arc，释放 lock 后调 post_init（避免死锁）
         let instances: Vec<Arc<dyn crate::agent::extension::Extension>> = {
-            let reg = registry.lock().await;
+            let reg = registry.lock();
             reg.singletons
                 .values()
                 .map(|e| e.instance.clone())
@@ -3262,6 +3537,51 @@ impl WorkerRegistry {
                 tracing::info!("[singleton:{}] last user gone ({})", key, worker_id);
             }
         }
+    }
+
+    /// 同步阶段：更新引用计数 + clone 出需要调用的 extension instances。
+    /// 调用方在 drop lock 后再调 instances 上的 on_user_join().await。
+    ///
+    /// 这是为 parking_lot::Mutex（guard 不是 Send，不能跨 await 持有）准备的：
+    /// 把原本持锁 await 的 singleton_user_join 拆成 sync（改 users 集合）+ async（调 callback）。
+    pub fn singleton_user_join_sync(&mut self, worker_id: &str) -> Vec<Arc<dyn crate::agent::extension::Extension>> {
+        let mut to_call = Vec::new();
+        let keys: Vec<String> = self.singletons.keys().cloned().collect();
+        for key in keys {
+            let entry = self.singletons.get_mut(&key).unwrap();
+            if entry.users.insert(worker_id.to_string()) {
+                to_call.push(entry.instance.clone());
+            }
+        }
+        to_call
+    }
+
+    /// 同步阶段：update users 集合 + collect 需要调用的 callbacks。
+    /// 返回 (user_leave_instances, last_user_gone_instances)。
+    pub fn singleton_user_leave_sync(
+        &mut self,
+        worker_id: &str,
+    ) -> (Vec<Arc<dyn crate::agent::extension::Extension>>, Vec<Arc<dyn crate::agent::extension::Extension>>) {
+        let mut leave_calls = Vec::new();
+        let mut last_gone_calls = Vec::new();
+        let keys: Vec<String> = self.singletons.keys().cloned().collect();
+        for key in keys {
+            let was_last = {
+                let entry = self.singletons.get_mut(&key).unwrap();
+                if entry.users.remove(worker_id) {
+                    leave_calls.push(entry.instance.clone());
+                    entry.users.is_empty()
+                } else {
+                    false
+                }
+            };
+            if was_last {
+                let entry = self.singletons.get_mut(&key).unwrap();
+                last_gone_calls.push(entry.instance.clone());
+                tracing::info!("[singleton:{}] last user gone ({})", key, worker_id);
+            }
+        }
+        (leave_calls, last_gone_calls)
     }
 
     /// 关闭所有单例（host shutdown 时调用）。
@@ -3354,7 +3674,7 @@ async fn read_worker_stdout(
             // Response with ID → match pending request
             "response" => {
                 if let Some(id) = msg_id {
-                    let mut reg = registry.lock().await;
+                    let mut reg = registry.lock();
                     if let Some(record) = reg.workers.get_mut(&worker_id)
                         && let Some(tx) = record.pending.remove(&id)
                     {
@@ -3373,7 +3693,7 @@ async fn read_worker_stdout(
 
                 match ev_type {
                     "agent_end" => {
-                        let mut reg = registry.lock().await;
+                        let mut reg = registry.lock();
                         if let Some(record) = reg.workers.get_mut(&worker_id) {
                             record.set_status(WorkerStatus::Idle);
                         }
@@ -3395,12 +3715,12 @@ async fn read_worker_stdout(
                         let reg_clone = Arc::clone(&registry);
                         let _wid = worker_id.clone();
                         tokio::spawn(async move {
-                            let mut r = reg_clone.lock().await;
+                            let mut r = reg_clone.lock();
                             r.broadcast_overview();
                         });
                     }
                     "text_delta" => {
-                        let mut reg = registry.lock().await;
+                        let mut reg = registry.lock();
                         if let Some(delta) = msg
                             .get("event")
                             .and_then(|e| e.get("delta"))
@@ -3430,7 +3750,7 @@ async fn read_worker_stdout(
                         }
                     }
                     _ => {
-                        let reg = registry.lock().await;
+                        let reg = registry.lock();
                         let event_json = msg.clone();
 
                         // Forward to event subscribers
@@ -3458,10 +3778,10 @@ async fn read_worker_stdout(
                 tracing::info!("[{worker_id}] create_worker request");
             }
             "channel_send" => {
-                let channel = msg.get("channel").and_then(|v| v.as_str()).unwrap_or("");
+                let channel = msg.get("channel").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let channel_msg = msg.get("msg").cloned().unwrap_or(serde_json::Value::Null);
-                let mut reg = registry.lock().await;
-                reg.channel_send(channel, &worker_id, channel_msg).await;
+                // ⚠️ parking_lot: channel_send_arc 自管锁，不在持 guard 状态下 await。
+                WorkerRegistry::channel_send_arc(&registry, &channel, &worker_id, channel_msg).await;
             }
 
             // Ready signal
@@ -3479,7 +3799,7 @@ async fn read_worker_stdout(
     }
 
     // Worker stdout closed → mark as dead
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     if let Some(record) = reg.workers.get_mut(&worker_id) {
         record.set_status(WorkerStatus::Dead);
     }
