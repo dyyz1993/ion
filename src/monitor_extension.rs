@@ -10,6 +10,7 @@
 
 use crate::agent::error::{AgentError, AgentResult};
 use crate::agent::extension::Extension;
+use crate::worker_registry::WorkerRegistry;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -658,14 +659,12 @@ impl Extension for MonitorExtension {
                                     .unwrap_or(false)
                             };
                             if has_sub {
-                                let mut reg_guard = reg.lock();
-                                reg_guard
-                                    .channel_send(
-                                        "main",
-                                        &format!("monitor:{name}"),
-                                        serde_json::json!({ "text": prompt }),
-                                    )
-                                    .await;
+                                WorkerRegistry::channel_send_arc(
+                                    &reg,
+                                    "main",
+                                    &format!("monitor:{name}"),
+                                    serde_json::json!({ "text": prompt }),
+                                ).await;
                                 Self::emit_event("monitor_channel_notify", serde_json::json!({
                                     "name": &name, "channel": "main"
                                 }), &reg).await;
@@ -732,27 +731,30 @@ impl Extension for MonitorExtension {
                             let prompt_for_spawn = prompt.clone();
                             let agent_for_spawn = agent.clone();
                             let reg_for_spawn = Arc::clone(&reg);
+                            let reg_for_spawn_clone = Arc::clone(&reg_for_spawn);
                             let stats_for_spawn = Arc::clone(&stats);
                             let monitor_name_for_spawn = name.clone();
                             tokio::spawn(async move {
-                                let mut reg_guard = reg_for_spawn.lock();
-                                match reg_guard.create_worker(
-                                    crate::worker_registry::WorkerCreateConfig {
-                                        agent: Some(agent_for_spawn.clone()),
-                                        initial_prompt: Some(prompt_for_spawn.clone()),
-                                        relation: Some(crate::worker_registry::WorkerRelation::System),
-                                        hook_depth: Some(0),
-                                        ..Default::default()
-                                    },
-                                    &reg_for_spawn,
-                                ).await {
+                                // Lock split: prepare (no lock) → register (short lock, no await)
+                                let cfg = crate::worker_registry::WorkerCreateConfig {
+                                    agent: Some(agent_for_spawn.clone()),
+                                    initial_prompt: Some(prompt_for_spawn.clone()),
+                                    relation: Some(crate::worker_registry::WorkerRelation::System),
+                                    hook_depth: Some(0),
+                                    ..Default::default()
+                                };
+                                let spawn_result = WorkerRegistry::prepare_worker_spawn(&cfg).await;
+                                let info_result = match spawn_result {
+                                    Ok(prepared) => reg_for_spawn.lock().register_prepared_worker(prepared, &cfg, &reg_for_spawn_clone),
+                                    Err(e) => Err(e),
+                                };
+                                match info_result {
                                     Ok(info) => {
                                         Self::emit_event("monitor_spawned", serde_json::json!({
                                             "name": &monitor_name_for_spawn,
                                             "worker_id": &info.worker_id,
                                             "mode": "serial_skip"
                                         }), &reg_for_spawn).await;
-                                        // Record the spawned worker id so next tick can check it.
                                         let mut s = stats_for_spawn.lock().await;
                                         if let Some(st) = s.get_mut(&monitor_name_for_spawn) {
                                             st.last_spawned_worker = Some(info.worker_id.clone());
@@ -821,20 +823,23 @@ impl Extension for MonitorExtension {
                             // Spawn new worker for this prompt.
                             let agent_for_spawn = agent.clone();
                             let reg_for_spawn = Arc::clone(&reg);
+                            let reg_for_spawn_clone = Arc::clone(&reg_for_spawn);
                             let stats_for_spawn = Arc::clone(&stats);
                             let monitor_name_for_spawn = name.clone();
                             tokio::spawn(async move {
-                                let mut reg_guard = reg_for_spawn.lock();
-                                match reg_guard.create_worker(
-                                    crate::worker_registry::WorkerCreateConfig {
-                                        agent: Some(agent_for_spawn.clone()),
-                                        initial_prompt: Some(to_send.clone()),
-                                        relation: Some(crate::worker_registry::WorkerRelation::System),
-                                        hook_depth: Some(0),
-                                        ..Default::default()
-                                    },
-                                    &reg_for_spawn,
-                                ).await {
+                                let cfg = crate::worker_registry::WorkerCreateConfig {
+                                    agent: Some(agent_for_spawn.clone()),
+                                    initial_prompt: Some(to_send.clone()),
+                                    relation: Some(crate::worker_registry::WorkerRelation::System),
+                                    hook_depth: Some(0),
+                                    ..Default::default()
+                                };
+                                let spawn_result = WorkerRegistry::prepare_worker_spawn(&cfg).await;
+                                let info_result = match spawn_result {
+                                    Ok(prepared) => reg_for_spawn.lock().register_prepared_worker(prepared, &cfg, &reg_for_spawn_clone),
+                                    Err(e) => Err(e),
+                                };
+                                match info_result {
                                     Ok(info) => {
                                         Self::emit_event("monitor_spawned", serde_json::json!({
                                             "name": &monitor_name_for_spawn,
@@ -871,33 +876,35 @@ impl Extension for MonitorExtension {
                                 let prompt_for_spawn = prompt.clone();
                                 let agent_for_spawn = agent.clone();
                                 let reg_for_spawn = Arc::clone(&reg);
+                                let reg_for_spawn_clone = Arc::clone(&reg_for_spawn);
                                 tokio::spawn(async move {
                                     let _ac = ActiveGuard::new(ac, ac_name.clone());
-                                    let mut reg_guard = reg_for_spawn.lock();
-                                    match reg_guard.create_worker(
-                                        crate::worker_registry::WorkerCreateConfig {
-                                            agent: Some(agent_for_spawn.clone()),
-                                            model: None,
-                                            provider: None,
-                                            session: None,
-                                            project_path: None,
-                                            worktree: None,
-                                            relation: Some(crate::worker_registry::WorkerRelation::System),
-                                            channels: None,
-                                            parent: None,
-                                            creator: None,
-                                            report_channel: None,
-                                            report_to: None,
-                                            initial_prompt: Some(prompt_for_spawn),
-                                            skip_mcp: None,
-                                            allowed_tools: None,
-                                            disallowed_tools: None,
-                                            max_turns: None,
-                                            hook_depth: Some(0),
-                                            system_prompt_override: None,
-                                        },
-                                        &reg_for_spawn,
-                                    ).await {
+                                    let cfg = crate::worker_registry::WorkerCreateConfig {
+                                        agent: Some(agent_for_spawn.clone()),
+                                        model: None,
+                                        provider: None,
+                                        session: None,
+                                        project_path: None,
+                                        worktree: None,
+                                        relation: Some(crate::worker_registry::WorkerRelation::System),
+                                        channels: None,
+                                        parent: None,
+                                        creator: None,
+                                        report_channel: None,
+                                        report_to: None,
+                                        initial_prompt: Some(prompt_for_spawn),
+                                        skip_mcp: None,
+                                        allowed_tools: None,
+                                        disallowed_tools: None,
+                                        max_turns: None,
+                                        hook_depth: Some(0),
+                                        system_prompt_override: None,
+                                    };
+                                    let info_result = match WorkerRegistry::prepare_worker_spawn(&cfg).await {
+                                        Ok(prepared) => reg_for_spawn.lock().register_prepared_worker(prepared, &cfg, &reg_for_spawn_clone),
+                                        Err(e) => Err(e),
+                                    };
+                                    match info_result {
                                         Ok(info) => Self::emit_event("monitor_spawned", serde_json::json!({
                                             "name": &ac_name,
                                             "worker_id": &info.worker_id,
