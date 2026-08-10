@@ -874,6 +874,9 @@ fn export_session_internal(
             .get(session_id_for_lookup)
             .cloned()
     };
+    // 提取 token 统计（在 session_index_meta 被 move 之前）
+    let total_token_input = session_index_meta.as_ref().map(|m| m.token_input).unwrap_or(0);
+    let total_token_output = session_index_meta.as_ref().map(|m| m.token_output).unwrap_or(0);
     let session_name = all_raw_entries
         .iter()
         .rev()
@@ -2371,6 +2374,10 @@ document.addEventListener('DOMContentLoaded', function() {
         <span class="ion-metric-label">Entries</span>
         <strong>{}</strong>
       </div>
+      <div class="ion-session-metric" role="listitem">
+        <span class="ion-metric-label">Tokens ↑↓</span>
+        <strong>{} / {}</strong>
+      </div>
     </div>
     <div class="ion-tool-badges" aria-label="Tools used">{}</div>
   </div>
@@ -2379,6 +2386,8 @@ document.addEventListener('DOMContentLoaded', function() {
         escape_html_text(&model),
         total_tool_calls,
         timeline_entry_count,
+        format_tokens(total_token_input),
+        format_tokens(total_token_output),
         tool_badges
     );
 
@@ -4504,6 +4513,16 @@ fn resolve_session_file(
 }
 
 /// Escape text inserted into the export shell itself (outside the base64 session payload).
+fn format_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
 fn escape_html_text(input: &str) -> String {
     input
         .replace('&', "&amp;")
