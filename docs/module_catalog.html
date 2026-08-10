@@ -1,30 +1,225 @@
-<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>ION 模块清单</title>
-<style>body{font-family:system-ui;margin:0;background:#f8fafc;color:#1e293b}.header{background:linear-gradient(135deg,#0e7490,#0891b2);color:#fff;padding:32px 40px}.header h1{margin:0 0 8px;font-size:28px}table{width:100%;max-width:1400px;margin:0 auto;border-collapse:collapse;background:#fff}th{background:#f1f5f9;padding:12px 16px;text-align:left;font-size:12px;color:#64748b;position:sticky;top:0}td{padding:12px 16px;border-bottom:1px solid #f1f5f9;font-size:13px}tr:hover{background:#f0f9ff}.badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:600;background:#dbeafe;color:#1e40af}.fp-link{color:#0e7490;text-decoration:none;font-size:11px;margin:2px;display:inline-block;padding:3px 10px;background:#ecfeff;border-radius:6px;border:1px solid #a5f3fc}.fp-link:hover{background:#0e7490;color:#fff}.fp-link.fail{background:#fef3c7;border-color:#fbbf24}</style>
-</head><body>
-<div class="header"><h1>📋 ION 模块清单 + 会话导出溯源</h1><p>22 模块 · 76 FP · 69 PASS / 7 FAIL (90%)</p></div>
-<table><thead><tr><th>#</th><th>编号</th><th>模块名</th><th>说明</th><th>FP</th><th>会话导出（点击）</th></tr></thead><tbody>
-<tr><td><strong>1</strong></td><td>EXT-02</td><td>GlobalMemory <span class="badge">扩展</span></td><td style="color:#64748b">SQLite+FTS5</td><td>4</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-02A_EXT-02.html">FP-02A</a><a class="fp-link" href="reports/ext-multiturn-new/FP-02B_EXT-02.html">FP-02B</a><a class="fp-link fail" href="reports/ext-multiturn-new/FP-02C_FAIL.html">FP-02C</a><a class="fp-link" href="reports/ext-multiturn-new/FP-02D_EXT-02.html">FP-02D</a></td></tr>
-<tr><td><strong>2</strong></td><td>EXT-03</td><td>DevServerDetector <span class="badge">扩展</span></td><td style="color:#64748b">端口检测</td><td>3</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-03A_PASS.html">FP-03A</a><a class="fp-link" href="reports/ext-multiturn-new/FP-03B_PASS.html">FP-03B</a><a class="fp-link" href="reports/ext-multiturn-new/FP-03C_PASS.html">FP-03C</a></td></tr>
-<tr><td><strong>3</strong></td><td>EXT-04</td><td>FileSnapshot <span class="badge">扩展</span></td><td style="color:#64748b">快照回滚</td><td>3</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-04A_PASS.html">FP-04A</a><a class="fp-link" href="reports/ext-multiturn-new/FP-04B_PASS.html">FP-04B</a><a class="fp-link" href="reports/ext-multiturn-new/FP-04C_PASS.html">FP-04C</a></td></tr>
-<tr><td><strong>4</strong></td><td>EXT-05</td><td>LSP <span class="badge">扩展</span></td><td style="color:#64748b">代码诊断</td><td>3</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-05A_PASS.html">FP-05A</a><a class="fp-link fail" href="reports/ext-multiturn-new/FP-05B_FAIL.html">FP-05B</a><a class="fp-link" href="reports/ext-multiturn-new/FP-05C_PASS.html">FP-05C</a></td></tr>
-<tr><td><strong>5</strong></td><td>EXT-06</td><td>Hooks <span class="badge">扩展</span></td><td style="color:#64748b">钩子系统</td><td>3</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-06A_PASS.html">FP-06A</a><a class="fp-link" href="reports/ext-multiturn-new/FP-06B_PASS.html">FP-06B</a><a class="fp-link" href="reports/ext-multiturn-new/FP-06C_PASS.html">FP-06C</a></td></tr>
-<tr><td><strong>6</strong></td><td>EXT-07</td><td>GoalSupervisor <span class="badge">扩展</span></td><td style="color:#64748b">目标监督</td><td>3</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-07A_PASS.html">FP-07A</a><a class="fp-link" href="reports/ext-multiturn-new/FP-07B_PASS.html">FP-07B</a><a class="fp-link fail" href="reports/ext-multiturn-new/FP-07C_FAIL.html">FP-07C</a></td></tr>
-<tr><td><strong>7</strong></td><td>EXT-08</td><td>Monitor <span class="badge">扩展</span></td><td style="color:#64748b">定时监控</td><td>4</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-08A_PASS.html">FP-08A</a><a class="fp-link" href="reports/ext-multiturn-new/FP-08B_PASS.html">FP-08B</a><a class="fp-link" href="reports/ext-multiturn-new/FP-08C_PASS.html">FP-08C</a><a class="fp-link" href="reports/ext-multiturn-new/FP-08D_PASS.html">FP-08D</a></td></tr>
-<tr><td><strong>8</strong></td><td>EXT-09</td><td>Bash <span class="badge">扩展</span></td><td style="color:#64748b">命令执行</td><td>4</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-09A_PASS.html">FP-09A</a><a class="fp-link" href="reports/ext-multiturn-new/FP-09B_PASS.html">FP-09B</a><a class="fp-link fail" href="reports/ext-multiturn-new/FP-09C_FAIL.html">FP-09C</a><a class="fp-link" href="reports/ext-multiturn-new/FP-09D_PASS.html">FP-09D</a></td></tr>
-<tr><td><strong>9</strong></td><td>EXT-10</td><td>Memory v0.1 <span class="badge">扩展</span></td><td style="color:#64748b">注入</td><td>4</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-10A_PASS.html">FP-10A</a><a class="fp-link" href="reports/ext-multiturn-new/FP-10B_PASS.html">FP-10B</a><a class="fp-link" href="reports/ext-multiturn-new/FP-10C_PASS.html">FP-10C</a><a class="fp-link" href="reports/ext-multiturn-new/FP-10D_PASS.html">FP-10D</a></td></tr>
-<tr><td><strong>10</strong></td><td>EXT-11</td><td>RulesEngine <span class="badge">扩展</span></td><td style="color:#64748b">规则注入</td><td>4</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-11A_PASS.html">FP-11A</a><a class="fp-link" href="reports/ext-multiturn-new/FP-11B_PASS.html">FP-11B</a><a class="fp-link" href="reports/ext-multiturn-new/FP-11C_PASS.html">FP-11C</a><a class="fp-link" href="reports/ext-multiturn-new/FP-11D_PASS.html">FP-11D</a></td></tr>
-<tr><td><strong>11</strong></td><td>EXT-12</td><td>Learning <span class="badge">扩展</span></td><td style="color:#64748b">学习提炼</td><td>3</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-12A_PASS.html">FP-12A</a><a class="fp-link" href="reports/ext-multiturn-new/FP-12B_PASS.html">FP-12B</a><a class="fp-link" href="reports/ext-multiturn-new/FP-12C_PASS.html">FP-12C</a></td></tr>
-<tr><td><strong>12</strong></td><td>EXT-13</td><td>Permission <span class="badge">扩展</span></td><td style="color:#64748b">权限引擎</td><td>4</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-13A_PASS.html">FP-13A</a><a class="fp-link" href="reports/ext-multiturn-new/FP-13B_PASS.html">FP-13B</a><a class="fp-link" href="reports/ext-multiturn-new/FP-13C_PASS.html">FP-13C</a><a class="fp-link" href="reports/ext-multiturn-new/FP-13D_PASS.html">FP-13D</a></td></tr>
-<tr><td><strong>13</strong></td><td>EXT-14</td><td>FileApproval <span class="badge">扩展</span></td><td style="color:#64748b">审批</td><td>4</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-14A_PASS.html">FP-14A</a><a class="fp-link" href="reports/ext-multiturn-new/FP-14B_PASS.html">FP-14B</a><a class="fp-link" href="reports/ext-multiturn-new/FP-14C_PASS.html">FP-14C</a><a class="fp-link" href="reports/ext-multiturn-new/FP-14D_PASS.html">FP-14D</a></td></tr>
-<tr><td><strong>14</strong></td><td>EXT-15</td><td>ContextIndex <span class="badge">扩展</span></td><td style="color:#64748b">上下文索引</td><td>4</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-15A_PASS.html">FP-15A</a><a class="fp-link" href="reports/ext-multiturn-new/FP-15B_PASS.html">FP-15B</a><a class="fp-link" href="reports/ext-multiturn-new/FP-15C_PASS.html">FP-15C</a><a class="fp-link" href="reports/ext-multiturn-new/FP-15D_PASS.html">FP-15D</a></td></tr>
-<tr><td><strong>15</strong></td><td>EXT-16</td><td>SessionIndex <span class="badge">扩展</span></td><td style="color:#64748b">会话索引</td><td>4</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-16A_PASS.html">FP-16A</a><a class="fp-link" href="reports/ext-multiturn-new/FP-16B_PASS.html">FP-16B</a><a class="fp-link" href="reports/ext-multiturn-new/FP-16C_PASS.html">FP-16C</a><a class="fp-link" href="reports/ext-multiturn-new/FP-16D_PASS.html">FP-16D</a></td></tr>
-<tr><td><strong>16</strong></td><td>EXT-17</td><td>ContextReclaimer <span class="badge">扩展</span></td><td style="color:#64748b">上下文回收</td><td>4</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-17A_PASS.html">FP-17A</a><a class="fp-link" href="reports/ext-multiturn-new/FP-17B_PASS.html">FP-17B</a><a class="fp-link" href="reports/ext-multiturn-new/FP-17C_PASS.html">FP-17C</a><a class="fp-link" href="reports/ext-multiturn-new/FP-17D_PASS.html">FP-17D</a></td></tr>
-<tr><td><strong>17</strong></td><td>EXT-18</td><td>FileTimeGuard <span class="badge">扩展</span></td><td style="color:#64748b">修改检测</td><td>3</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-18A_PASS.html">FP-18A</a><a class="fp-link" href="reports/ext-multiturn-new/FP-18B_PASS.html">FP-18B</a><a class="fp-link" href="reports/ext-multiturn-new/FP-18C_PASS.html">FP-18C</a></td></tr>
-<tr><td><strong>18</strong></td><td>EXT-19</td><td>Plan <span class="badge">扩展</span></td><td style="color:#64748b">计划模式</td><td>3</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-19A_PASS.html">FP-19A</a><a class="fp-link" href="reports/ext-multiturn-new/FP-19B_PASS.html">FP-19B</a><a class="fp-link" href="reports/ext-multiturn-new/FP-19C_PASS.html">FP-19C</a></td></tr>
-<tr><td><strong>19</strong></td><td>EXT-20</td><td>ToolLoopDetector <span class="badge">扩展</span></td><td style="color:#64748b">循环检测</td><td>3</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-20A_PASS.html">FP-20A</a><a class="fp-link" href="reports/ext-multiturn-new/FP-20B_PASS.html">FP-20B</a><a class="fp-link" href="reports/ext-multiturn-new/FP-20C_PASS.html">FP-20C</a></td></tr>
-<tr><td><strong>20</strong></td><td>EXT-22</td><td>AutoSessionTitle <span class="badge">扩展</span></td><td style="color:#64748b">标题生成</td><td>3</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-22A_PASS.html">FP-22A</a><a class="fp-link" href="reports/ext-multiturn-new/FP-22B_PASS.html">FP-22B</a><a class="fp-link" href="reports/ext-multiturn-new/FP-22C_PASS.html">FP-22C</a></td></tr>
-<tr><td><strong>21</strong></td><td>EXT-23</td><td>Workflow <span class="badge">扩展</span></td><td style="color:#64748b">工作流</td><td>3</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-23A_PASS.html">FP-23A</a><a class="fp-link" href="reports/ext-multiturn-new/FP-23B_PASS.html">FP-23B</a><a class="fp-link" href="reports/ext-multiturn-new/FP-23C_PASS.html">FP-23C</a></td></tr>
-<tr><td><strong>22</strong></td><td>EXT-24</td><td>Streaming <span class="badge">扩展</span></td><td style="color:#64748b">流式输出</td><td>3</td><td><a class="fp-link" href="reports/ext-multiturn-new/FP-24A_PASS.html">FP-24A</a><a class="fp-link" href="reports/ext-multiturn-new/FP-24B_PASS.html">FP-24B</a><a class="fp-link" href="reports/ext-multiturn-new/FP-24C_PASS.html">FP-24C</a></td></tr>
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>ION 模块清单 + 任务完成状态</title>
+<style>
+body{font-family:system-ui;margin:0;background:#f8fafc;color:#1e293b}
+.header{background:linear-gradient(135deg,#0e7490,#0891b2);color:#fff;padding:32px 40px}
+.header h1{margin:0 0 8px;font-size:28px}
+table{width:100%;max-width:1400px;margin:0 auto;border-collapse:collapse;background:#fff}
+th{background:#f1f5f9;padding:12px 16px;text-align:left;font-size:12px;color:#64748b;position:sticky;top:0}
+td{padding:12px 16px;border-bottom:1px solid #f1f5f9;font-size:13px}
+tr:hover{background:#f0f9ff}
+.badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:600;background:#dbeafe;color:#1e40af}
+.fp-link{color:#0e7490;text-decoration:none;font-size:11px;margin:2px;display:inline-block;padding:3px 10px;border-radius:6px;border:1px solid #a5f3fc}
+.fp-link:hover{background:#0e7490;color:#fff}
+.fp-link.ok{background:#dcfce7;border-color:#86efac}
+.fp-link.warn{background:#fef3c7;border-color:#fbbf24}
+.fp-link.fail{background:#fee2e2;border-color:#fca5a5}
+.stat-ok{color:#10b981;font-weight:700}
+.stat-warn{color:#f59e0b;font-weight:700}
+.stat-fail{color:#ef4444;font-weight:700}
+</style></head><body>
+<div class="header"><h1>📋 ION 模块清单 + 任务完成状态</h1>
+<p>22 模块 · 76 FP · <span class="stat-ok">✅完成 42</span> · <span class="stat-warn">⚠️部分 14</span> · <span class="stat-fail">❌未完成 20</span></p>
+<p>点击 FP 查看会话导出 HTML · 绿=完成 黄=部分 红=未完成</p></div>
+<table><thead><tr>
+<th>#</th><th>编号</th><th>模块名</th><th>✅</th><th>⚠️</th><th>❌</th><th>会话导出 + 完成状态</th>
+</tr></thead><tbody>
+<tr><td><strong>1</strong></td>
+<td>EXT-02</td>
+<td>GlobalMemory <span class="badge">扩展</span></td>
+<td class="stat-ok">2</td>
+<td class="stat-warn">1</td>
+<td class="stat-fail">1</td>
+<td><a class="fp-link ok" href="reports/ext-multiturn-new/FP-02A_EXT-02.html" title="调了 2/4 个预期工具 + 成功结果 + LLM 回答">✅ FP-02A</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-02B_EXT-02.html" title="调了 2/4 个预期工具 + 成功结果 + LLM 回答">✅ FP-02B</a> <a class="fp-link fail" href="reports/ext-multiturn-new/FP-02C_FAIL.html" title="空会话（导出无内容）">❌ FP-02C</a> <a class="fp-link warn" href="reports/ext-multiturn-new/FP-02D_EXT-02.html" title="调了 1/4 个预期工具，部分完成">⚠️ FP-02D</a></td></tr>
+<tr><td><strong>2</strong></td>
+<td>EXT-03</td>
+<td>DevServerDetector <span class="badge">扩展</span></td>
+<td class="stat-ok">3</td>
+<td class="stat-warn">0</td>
+<td class="stat-fail">0</td>
+<td><a class="fp-link ok" href="reports/ext-multiturn-new/FP-03A_PASS.html" title="调了工具 + 有回答">✅ FP-03A</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-03B_PASS.html" title="调了工具 + 有回答">✅ FP-03B</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-03C_PASS.html" title="调了工具 + 有回答">✅ FP-03C</a></td></tr>
+<tr><td><strong>3</strong></td>
+<td>EXT-04</td>
+<td>FileSnapshot <span class="badge">扩展</span></td>
+<td class="stat-ok">3</td>
+<td class="stat-warn">0</td>
+<td class="stat-fail">0</td>
+<td><a class="fp-link ok" href="reports/ext-multiturn-new/FP-04A_PASS.html" title="调了工具 + 有回答">✅ FP-04A</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-04B_PASS.html" title="调了工具 + 有回答">✅ FP-04B</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-04C_PASS.html" title="调了工具 + 有回答">✅ FP-04C</a></td></tr>
+<tr><td><strong>4</strong></td>
+<td>EXT-05</td>
+<td>LSP <span class="badge">扩展</span></td>
+<td class="stat-ok">3</td>
+<td class="stat-warn">0</td>
+<td class="stat-fail">0</td>
+<td><a class="fp-link ok" href="reports/ext-multiturn-new/FP-05A_PASS.html" title="调了工具 + 有回答">✅ FP-05A</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-05B_FAIL.html" title="调了工具 + 有回答">✅ FP-05B</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-05C_PASS.html" title="调了工具 + 有回答">✅ FP-05C</a></td></tr>
+<tr><td><strong>5</strong></td>
+<td>EXT-06</td>
+<td>Hooks <span class="badge">扩展</span></td>
+<td class="stat-ok">3</td>
+<td class="stat-warn">0</td>
+<td class="stat-fail">0</td>
+<td><a class="fp-link ok" href="reports/ext-multiturn-new/FP-06A_PASS.html" title="LLM 完成了对话">✅ FP-06A</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-06B_PASS.html" title="LLM 完成了对话">✅ FP-06B</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-06C_PASS.html" title="LLM 完成了对话">✅ FP-06C</a></td></tr>
+<tr><td><strong>6</strong></td>
+<td>EXT-07</td>
+<td>GoalSupervisor <span class="badge">扩展</span></td>
+<td class="stat-ok">3</td>
+<td class="stat-warn">0</td>
+<td class="stat-fail">0</td>
+<td><a class="fp-link ok" href="reports/ext-multiturn-new/FP-07A_PASS.html" title="调了 2/3 个预期工具 + 成功结果 + LLM 回答">✅ FP-07A</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-07B_PASS.html" title="调了 2/3 个预期工具 + 成功结果 + LLM 回答">✅ FP-07B</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-07C_FAIL.html" title="调了 2/3 个预期工具 + 成功结果 + LLM 回答">✅ FP-07C</a></td></tr>
+<tr><td><strong>7</strong></td>
+<td>EXT-08</td>
+<td>Monitor <span class="badge">扩展</span></td>
+<td class="stat-ok">3</td>
+<td class="stat-warn">0</td>
+<td class="stat-fail">1</td>
+<td><a class="fp-link ok" href="reports/ext-multiturn-new/FP-08A_PASS.html" title="通过 bash ion rpc 完成">✅ FP-08A</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-08B_PASS.html" title="通过 bash ion rpc 完成">✅ FP-08B</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-08C_PASS.html" title="通过 bash ion rpc 完成">✅ FP-08C</a> <a class="fp-link fail" href="reports/ext-multiturn-new/FP-08D_PASS.html" title="空会话（导出无内容）">❌ FP-08D</a></td></tr>
+<tr><td><strong>8</strong></td>
+<td>EXT-09</td>
+<td>Bash <span class="badge">扩展</span></td>
+<td class="stat-ok">4</td>
+<td class="stat-warn">0</td>
+<td class="stat-fail">0</td>
+<td><a class="fp-link ok" href="reports/ext-multiturn-new/FP-09A_PASS.html" title="调了工具 + 有回答">✅ FP-09A</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-09B_PASS.html" title="调了工具 + 有回答">✅ FP-09B</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-09C_FAIL.html" title="调了工具 + 有回答">✅ FP-09C</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-09D_PASS.html" title="调了工具 + 有回答">✅ FP-09D</a></td></tr>
+<tr><td><strong>9</strong></td>
+<td>EXT-10</td>
+<td>Memory v0.1 <span class="badge">扩展</span></td>
+<td class="stat-ok">0</td>
+<td class="stat-warn">0</td>
+<td class="stat-fail">4</td>
+<td><a class="fp-link fail" href="reports/ext-multiturn-new/FP-10A_PASS.html" title="未调预期工具（需要: ['extension_rpc']，实际: ['memory_save', 'memory_sea">❌ FP-10A</a> <a class="fp-link fail" href="reports/ext-multiturn-new/FP-10B_PASS.html" title="未调预期工具（需要: ['extension_rpc']，实际: ['memory_save']）">❌ FP-10B</a> <a class="fp-link fail" href="reports/ext-multiturn-new/FP-10C_PASS.html" title="空会话（导出无内容）">❌ FP-10C</a> <a class="fp-link fail" href="reports/ext-multiturn-new/FP-10D_PASS.html" title="未调预期工具（需要: ['extension_rpc']，实际: ['memory_search']）">❌ FP-10D</a></td></tr>
+<tr><td><strong>10</strong></td>
+<td>EXT-11</td>
+<td>RulesEngine <span class="badge">扩展</span></td>
+<td class="stat-ok">0</td>
+<td class="stat-warn">0</td>
+<td class="stat-fail">4</td>
+<td><a class="fp-link fail" href="reports/ext-multiturn-new/FP-11A_PASS.html" title="未调预期工具（需要: ['extension_rpc']，实际: ['read', 'ls', 'bash']）">❌ FP-11A</a> <a class="fp-link fail" href="reports/ext-multiturn-new/FP-11B_PASS.html" title="未调预期工具（需要: ['extension_rpc']，实际: ['bash', 'write', 'read']）">❌ FP-11B</a> <a class="fp-link fail" href="reports/ext-multiturn-new/FP-11C_PASS.html" title="空会话（导出无内容）">❌ FP-11C</a> <a class="fp-link fail" href="reports/ext-multiturn-new/FP-11D_PASS.html" title="未调预期工具（需要: ['extension_rpc']，实际: ['ls', 'bash', 'read']）">❌ FP-11D</a></td></tr>
+<tr><td><strong>11</strong></td>
+<td>EXT-12</td>
+<td>Learning <span class="badge">扩展</span></td>
+<td class="stat-ok">0</td>
+<td class="stat-warn">2</td>
+<td class="stat-fail">1</td>
+<td><a class="fp-link warn" href="reports/ext-multiturn-new/FP-12A_PASS.html" title="调了 2/4 个预期工具，部分完成">⚠️ FP-12A</a> <a class="fp-link fail" href="reports/ext-multiturn-new/FP-12B_PASS.html" title="未调预期工具（需要: ['write', 'edit', 'bash']，实际: []）">❌ FP-12B</a> <a class="fp-link warn" href="reports/ext-multiturn-new/FP-12C_PASS.html" title="调了 3/4 个预期工具，部分完成">⚠️ FP-12C</a></td></tr>
+<tr><td><strong>12</strong></td>
+<td>EXT-13</td>
+<td>Permission <span class="badge">扩展</span></td>
+<td class="stat-ok">1</td>
+<td class="stat-warn">0</td>
+<td class="stat-fail">3</td>
+<td><a class="fp-link fail" href="reports/ext-multiturn-new/FP-13A_PASS.html" title="未调预期工具（需要: ['extension_rpc']，实际: []）">❌ FP-13A</a> <a class="fp-link fail" href="reports/ext-multiturn-new/FP-13B_PASS.html" title="未调预期工具（需要: ['extension_rpc']，实际: ['memory_save', 'memory_sea">❌ FP-13B</a> <a class="fp-link fail" href="reports/ext-multiturn-new/FP-13C_PASS.html" title="未调预期工具（需要: ['extension_rpc']，实际: ['bash', 'memory_search', '">❌ FP-13C</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-13D_PASS.html" title="通过 bash ion rpc 完成">✅ FP-13D</a></td></tr>
+<tr><td><strong>13</strong></td>
+<td>EXT-14</td>
+<td>FileApproval <span class="badge">扩展</span></td>
+<td class="stat-ok">0</td>
+<td class="stat-warn">3</td>
+<td class="stat-fail">1</td>
+<td><a class="fp-link warn" href="reports/ext-multiturn-new/FP-14A_PASS.html" title="调了 1/2 个预期工具，部分完成">⚠️ FP-14A</a> <a class="fp-link warn" href="reports/ext-multiturn-new/FP-14B_PASS.html" title="调了 1/2 个预期工具，部分完成">⚠️ FP-14B</a> <a class="fp-link fail" href="reports/ext-multiturn-new/FP-14C_PASS.html" title="空会话（导出无内容）">❌ FP-14C</a> <a class="fp-link warn" href="reports/ext-multiturn-new/FP-14D_PASS.html" title="调了 1/2 个预期工具，部分完成">⚠️ FP-14D</a></td></tr>
+<tr><td><strong>14</strong></td>
+<td>EXT-15</td>
+<td>ContextIndex <span class="badge">扩展</span></td>
+<td class="stat-ok">0</td>
+<td class="stat-warn">3</td>
+<td class="stat-fail">1</td>
+<td><a class="fp-link warn" href="reports/ext-multiturn-new/FP-15A_PASS.html" title="调了 1/4 个预期工具，部分完成">⚠️ FP-15A</a> <a class="fp-link warn" href="reports/ext-multiturn-new/FP-15B_PASS.html" title="调了 1/4 个预期工具，部分完成">⚠️ FP-15B</a> <a class="fp-link fail" href="reports/ext-multiturn-new/FP-15C_PASS.html" title="未调预期工具（需要: ['read', 'write', 'edit']，实际: ['grep', 'bash']）">❌ FP-15C</a> <a class="fp-link warn" href="reports/ext-multiturn-new/FP-15D_PASS.html" title="调了 3/4 个预期工具，部分完成">⚠️ FP-15D</a></td></tr>
+<tr><td><strong>15</strong></td>
+<td>EXT-16</td>
+<td>SessionIndex <span class="badge">扩展</span></td>
+<td class="stat-ok">0</td>
+<td class="stat-warn">0</td>
+<td class="stat-fail">4</td>
+<td><a class="fp-link fail" href="reports/ext-multiturn-new/FP-16A_PASS.html" title="未调预期工具（需要: ['extension_rpc']，实际: ['bash']）">❌ FP-16A</a> <a class="fp-link fail" href="reports/ext-multiturn-new/FP-16B_PASS.html" title="未调预期工具（需要: ['extension_rpc']，实际: ['bash', 'memory_search', '">❌ FP-16B</a> <a class="fp-link fail" href="reports/ext-multiturn-new/FP-16C_PASS.html" title="未调预期工具（需要: ['extension_rpc']，实际: ['bash']）">❌ FP-16C</a> <a class="fp-link fail" href="reports/ext-multiturn-new/FP-16D_PASS.html" title="未调预期工具（需要: ['extension_rpc']，实际: ['bash']）">❌ FP-16D</a></td></tr>
+<tr><td><strong>16</strong></td>
+<td>EXT-17</td>
+<td>ContextReclaimer <span class="badge">扩展</span></td>
+<td class="stat-ok">4</td>
+<td class="stat-warn">0</td>
+<td class="stat-fail">0</td>
+<td><a class="fp-link ok" href="reports/ext-multiturn-new/FP-17A_PASS.html" title="调了工具 + 有回答">✅ FP-17A</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-17B_PASS.html" title="调了工具 + 有回答">✅ FP-17B</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-17C_PASS.html" title="调了工具 + 有回答">✅ FP-17C</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-17D_PASS.html" title="调了工具 + 有回答">✅ FP-17D</a></td></tr>
+<tr><td><strong>17</strong></td>
+<td>EXT-18</td>
+<td>FileTimeGuard <span class="badge">扩展</span></td>
+<td class="stat-ok">3</td>
+<td class="stat-warn">0</td>
+<td class="stat-fail">0</td>
+<td><a class="fp-link ok" href="reports/ext-multiturn-new/FP-18A_PASS.html" title="调了工具 + 有回答">✅ FP-18A</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-18B_PASS.html" title="调了工具 + 有回答">✅ FP-18B</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-18C_PASS.html" title="调了工具 + 有回答">✅ FP-18C</a></td></tr>
+<tr><td><strong>18</strong></td>
+<td>EXT-19</td>
+<td>Plan <span class="badge">扩展</span></td>
+<td class="stat-ok">2</td>
+<td class="stat-warn">1</td>
+<td class="stat-fail">0</td>
+<td><a class="fp-link ok" href="reports/ext-multiturn-new/FP-19A_PASS.html" title="调了 3/6 个预期工具 + 成功结果 + LLM 回答">✅ FP-19A</a> <a class="fp-link warn" href="reports/ext-multiturn-new/FP-19B_PASS.html" title="调了 2/6 个预期工具，部分完成">⚠️ FP-19B</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-19C_PASS.html" title="调了 4/6 个预期工具 + 成功结果 + LLM 回答">✅ FP-19C</a></td></tr>
+<tr><td><strong>19</strong></td>
+<td>EXT-20</td>
+<td>ToolLoopDetector <span class="badge">扩展</span></td>
+<td class="stat-ok">1</td>
+<td class="stat-warn">2</td>
+<td class="stat-fail">0</td>
+<td><a class="fp-link warn" href="reports/ext-multiturn-new/FP-20A_PASS.html" title="调了 2/2 个预期工具，部分完成">⚠️ FP-20A</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-20B_PASS.html" title="调了 1/2 个预期工具 + 成功结果 + LLM 回答">✅ FP-20B</a> <a class="fp-link warn" href="reports/ext-multiturn-new/FP-20C_PASS.html" title="调了 1/2 个预期工具，部分完成">⚠️ FP-20C</a></td></tr>
+<tr><td><strong>20</strong></td>
+<td>EXT-22</td>
+<td>AutoSessionTitle <span class="badge">扩展</span></td>
+<td class="stat-ok">3</td>
+<td class="stat-warn">0</td>
+<td class="stat-fail">0</td>
+<td><a class="fp-link ok" href="reports/ext-multiturn-new/FP-22A_PASS.html" title="LLM 完成了对话">✅ FP-22A</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-22B_PASS.html" title="LLM 完成了对话">✅ FP-22B</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-22C_PASS.html" title="LLM 完成了对话">✅ FP-22C</a></td></tr>
+<tr><td><strong>21</strong></td>
+<td>EXT-23</td>
+<td>Workflow <span class="badge">扩展</span></td>
+<td class="stat-ok">1</td>
+<td class="stat-warn">2</td>
+<td class="stat-fail">0</td>
+<td><a class="fp-link ok" href="reports/ext-multiturn-new/FP-23A_PASS.html" title="LLM 完成了对话">✅ FP-23A</a> <a class="fp-link warn" href="reports/ext-multiturn-new/FP-23B_PASS.html" title="LLM 回答太短">⚠️ FP-23B</a> <a class="fp-link warn" href="reports/ext-multiturn-new/FP-23C_PASS.html" title="LLM 回答太短">⚠️ FP-23C</a></td></tr>
+<tr><td><strong>22</strong></td>
+<td>EXT-24</td>
+<td>Streaming <span class="badge">扩展</span></td>
+<td class="stat-ok">3</td>
+<td class="stat-warn">0</td>
+<td class="stat-fail">0</td>
+<td><a class="fp-link ok" href="reports/ext-multiturn-new/FP-24A_PASS.html" title="LLM 完成了对话">✅ FP-24A</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-24B_PASS.html" title="LLM 完成了对话">✅ FP-24B</a> <a class="fp-link ok" href="reports/ext-multiturn-new/FP-24C_PASS.html" title="LLM 完成了对话">✅ FP-24C</a></td></tr>
 </tbody></table>
-<div style="text-align:center;padding:32px;color:#94a3b8;font-size:12px">ION Module Catalog · 69/76 PASS (90%) · 点击 FP 查看会话导出</div>
-</body></html>
+<div style="max-width:1400px;margin:24px auto;padding:0 40px">
+<h2 style="font-size:17px">❌ 未完成清单（20 个）</h2>
+<table><thead><tr><th>FP</th><th>模块</th><th>功能</th><th>原因</th><th>详情</th></tr></thead><tbody>
+<tr><td>FP-02C</td><td>EXT-02</td><td>list + forget 生命周期</td><td>空会话（导出无内容）</td><td>工具: 无</td></tr>
+<tr><td>FP-08D</td><td>EXT-08</td><td>remove + 错误处理</td><td>空会话（导出无内容）</td><td>工具: 无</td></tr>
+<tr><td>FP-10A</td><td>EXT-10</td><td>记忆保存与检索</td><td>未调预期工具（需要: ['extension_rpc']，实际: ['memory_save', 'memory_search']）</td><td>工具: memory_save×1, memory_search×1</td></tr>
+<tr><td>FP-10B</td><td>EXT-10</td><td>被动上下文注入</td><td>未调预期工具（需要: ['extension_rpc']，实际: ['memory_save']）</td><td>工具: memory_save×1</td></tr>
+<tr><td>FP-10C</td><td>EXT-10</td><td>RPC 管理接口</td><td>空会话（导出无内容）</td><td>工具: 无</td></tr>
+<tr><td>FP-10D</td><td>EXT-10</td><td>跨项目全局搜索</td><td>未调预期工具（需要: ['extension_rpc']，实际: ['memory_search']）</td><td>工具: memory_search×2</td></tr>
+<tr><td>FP-11A</td><td>EXT-11</td><td>全局规则注入 system prompt</td><td>未调预期工具（需要: ['extension_rpc']，实际: ['read', 'ls', 'bash']）</td><td>工具: read×1, ls×1, bash×4, write×1, get_background_proc</td></tr>
+<tr><td>FP-11B</td><td>EXT-11</td><td>路径匹配规则按需注入</td><td>未调预期工具（需要: ['extension_rpc']，实际: ['bash', 'write', 'read']）</td><td>工具: bash×6, write×3, read×2</td></tr>
+<tr><td>FP-11C</td><td>EXT-11</td><td>RPC 查询规则</td><td>空会话（导出无内容）</td><td>工具: 无</td></tr>
+<tr><td>FP-11D</td><td>EXT-11</td><td>规则热重载</td><td>未调预期工具（需要: ['extension_rpc']，实际: ['ls', 'bash', 'read']）</td><td>工具: ls×2, bash×10, read×2</td></tr>
+<tr><td>FP-12B</td><td>EXT-12</td><td>短会话/问候跳过提炼</td><td>未调预期工具（需要: ['write', 'edit', 'bash']，实际: []）</td><td>工具: 无</td></tr>
+<tr><td>FP-13A</td><td>EXT-13</td><td>添加规则并自动生效</td><td>未调预期工具（需要: ['extension_rpc']，实际: []）</td><td>工具: 无</td></tr>
+<tr><td>FP-13B</td><td>EXT-13</td><td>stored-decision 持久化</td><td>未调预期工具（需要: ['extension_rpc']，实际: ['memory_save', 'memory_search', 'bash']）</td><td>工具: memory_save×1, memory_search×3, bash×2</td></tr>
+<tr><td>FP-13C</td><td>EXT-13</td><td>撤销 stored 决策</td><td>未调预期工具（需要: ['extension_rpc']，实际: ['bash', 'memory_search', 'memory_save']）</td><td>工具: bash×22, memory_search×12, memory_save×2</td></tr>
+<tr><td>FP-14C</td><td>EXT-14</td><td>reject 单文件回滚</td><td>空会话（导出无内容）</td><td>工具: 无</td></tr>
+<tr><td>FP-15C</td><td>EXT-15</td><td>grep 输出进索引</td><td>未调预期工具（需要: ['read', 'write', 'edit']，实际: ['grep', 'bash']）</td><td>工具: grep×2, bash×4</td></tr>
+<tr><td>FP-16A</td><td>EXT-16</td><td>会话列表与项目过滤</td><td>未调预期工具（需要: ['extension_rpc']，实际: ['bash']）</td><td>工具: bash×3</td></tr>
+<tr><td>FP-16B</td><td>EXT-16</td><td>会话命名与重命名</td><td>未调预期工具（需要: ['extension_rpc']，实际: ['bash', 'memory_search', 'memory_save']）</td><td>工具: bash×26, memory_search×2, memory_save×1, get_backg</td></tr>
+<tr><td>FP-16C</td><td>EXT-16</td><td>统计增量与累计</td><td>未调预期工具（需要: ['extension_rpc']，实际: ['bash']）</td><td>工具: bash×9</td></tr>
+<tr><td>FP-16D</td><td>EXT-16</td><td>父子血缘</td><td>未调预期工具（需要: ['extension_rpc']，实际: ['bash']）</td><td>工具: bash×2</td></tr>
+</tbody></table>
+<h2 style="font-size:17px">⚠️ 部分完成清单（14 个）</h2>
+<table><thead><tr><th>FP</th><th>模块</th><th>原因</th></tr></thead><tbody>
+<tr><td>FP-02D</td><td>EXT-02</td><td>调了 1/4 个预期工具，部分完成</td></tr>
+<tr><td>FP-12A</td><td>EXT-12</td><td>调了 2/4 个预期工具，部分完成</td></tr>
+<tr><td>FP-12C</td><td>EXT-12</td><td>调了 3/4 个预期工具，部分完成</td></tr>
+<tr><td>FP-14A</td><td>EXT-14</td><td>调了 1/2 个预期工具，部分完成</td></tr>
+<tr><td>FP-14B</td><td>EXT-14</td><td>调了 1/2 个预期工具，部分完成</td></tr>
+<tr><td>FP-14D</td><td>EXT-14</td><td>调了 1/2 个预期工具，部分完成</td></tr>
+<tr><td>FP-15A</td><td>EXT-15</td><td>调了 1/4 个预期工具，部分完成</td></tr>
+<tr><td>FP-15B</td><td>EXT-15</td><td>调了 1/4 个预期工具，部分完成</td></tr>
+<tr><td>FP-15D</td><td>EXT-15</td><td>调了 3/4 个预期工具，部分完成</td></tr>
+<tr><td>FP-19B</td><td>EXT-19</td><td>调了 2/6 个预期工具，部分完成</td></tr>
+<tr><td>FP-20A</td><td>EXT-20</td><td>调了 2/2 个预期工具，部分完成</td></tr>
+<tr><td>FP-20C</td><td>EXT-20</td><td>调了 1/2 个预期工具，部分完成</td></tr>
+<tr><td>FP-23B</td><td>EXT-23</td><td>LLM 回答太短</td></tr>
+<tr><td>FP-23C</td><td>EXT-23</td><td>LLM 回答太短</td></tr>
+</tbody></table></div>
+<div style="text-align:center;padding:32px;color:#94a3b8;font-size:12px">
+ION Task Completion Report · 2026-08-10 · 42 完成 / 14 部分 / 20 未完成
+</div></body></html>
