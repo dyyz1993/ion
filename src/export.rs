@@ -1214,6 +1214,21 @@ fn export_session_internal(
     // 这里在 DOMContentLoaded 后扫描 .hook-type 文本，给 session_name 卡片加 class。
     js += r#"
 document.addEventListener('DOMContentLoaded', function() {
+  // ── Memory/context injection 折叠 ──
+  document.querySelectorAll('.user-message').forEach(function(el) {
+    var content = el.querySelector('.markdown-content');
+    var text = content ? (content.textContent || '') : (el.textContent || '');
+    // 检测 memory/context 注入标记
+    if (text.trim().startsWith('<global_memory>') ||
+        text.trim().startsWith('<memory_context') ||
+        text.trim().startsWith('<goal_feedback>')) {
+      el.classList.add('memory-injection');
+      el.addEventListener('click', function() {
+        el.classList.toggle('expanded');
+      });
+    }
+  });
+
   document.querySelectorAll('.hook-message, .hook-type').forEach(function(el) {
     var parent = el.classList.contains('hook-message') ? el : el.closest('.hook-message, .custom-message');
     if (!parent) return;
@@ -1885,6 +1900,35 @@ document.addEventListener('DOMContentLoaded', function() {
       border-radius: 12px !important;
       margin-bottom: 0 !important;
     }
+    /* Memory/context injection: collapse by default to avoid visual repetition */
+    .user-message.memory-injection {
+      background: #f8fafc !important;
+      border-left: 3px solid #94a3b8 !important;
+      border-color: #e2e8f0 !important;
+      max-height: 60px;
+      overflow: hidden;
+      position: relative;
+      cursor: pointer;
+    }
+    .user-message.memory-injection::after {
+      content: '📝 Memory 注入（点击展开）';
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      height: 24px;
+      background: linear-gradient(transparent, #f8fafc 60%);
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      font-size: 11px;
+      color: #64748b;
+      padding-bottom: 2px;
+    }
+    .user-message.memory-injection.expanded {
+      max-height: none;
+    }
+    .user-message.memory-injection.expanded::after {
+      display: none;
+    }
     .user-message::before {
       content: "USER";
       display: block;
@@ -1975,6 +2019,49 @@ document.addEventListener('DOMContentLoaded', function() {
     .tree-node[data-custom-type="session_name"] .tree-custom {
       color: #0891b2 !important;
       font-weight: 600 !important;
+    }
+    /* hook_event 审计卡片：判断方式 / Agent 推理过程 */
+    .hook-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 6px;
+      padding-top: 6px;
+      border-top: 1px solid #e2e8f0;
+    }
+    .hook-meta-item {
+      font-size: 12px;
+      color: #64748b;
+      background: #f1f5f9;
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+    .hook-meta-item b {
+      color: #475569;
+      font-weight: 600;
+    }
+    .hook-reasoning {
+      margin-top: 6px;
+    }
+    .hook-reasoning summary {
+      font-size: 12px;
+      color: #6366f1;
+      cursor: pointer;
+      user-select: none;
+    }
+    .hook-reasoning summary:hover {
+      text-decoration: underline;
+    }
+    .hook-reasoning-text {
+      margin-top: 6px;
+      padding: 8px 10px;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      font-size: 12px;
+      color: #475569;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
     .ion-generic-entry {
       position: relative;
