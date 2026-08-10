@@ -1,0 +1,59 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>session_tree_verify 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #10b981; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>✅ session_tree_verify (15 pass / 0 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  Session Tree + 消息拉取 验证 — Mon Aug 10 10:13:22 CST 2026
+════════════════════════════════════════════════════
+[32m  ✅ build ion[0m
+
+── Group A: 树展示（CLI 只读）──
+[32m  ✅ A1: ion session tree 显示了消息节点[0m
+[32m  ✅ A2: 树展示有分支结构（└─/├─）[0m
+
+── Group B: branch/rollback 单元测试（已验证 only-append）──
+[32m  ✅ B1: session_tree 单元测试全过（��[0m
+
+── Group C: 消息拉取分支视点（CLI）──
+[32m  ✅ C1: view=live 包含活跃分支数据[0m
+[32m  ✅ C2: view=full 包含被回滚的数据（m3/m4 可见）[0m
+[32m  ✅ C3: view=since_compaction 正常返回（无 compaction 点时等同 full）[0m
+
+── Group D: 分页（CLI）──
+[32m  ✅ D1: 分页正常（limit=2 返回少量结果）[0m
+[32m  ✅ D2: limit=0 返回全量（8 行 &gt; 分页 7 行）[0m
+
+── Group E: only-append 红线（文件指纹验证）──
+[32m  ✅ E1: 只读操作后文件指纹不变（only-append 安全）[0m
+
+── Group F: 边界情况 ──
+[32m  ✅ F1: ion session branches 可执行[0m
+[32m  ✅ F2: 不存在的文件正确报错[0m
+[32m  ✅ F3: ion session tree 不存在的文件正确处理[0m
+
+── Group G: SESSION_TREE_SPEC P0 验收映射（单元测试覆盖）──
+  （branch/rollback 是写操作，CLI 需要 message+session_path 匹配，
+   P0 端到端通过 session_tree_test.rs 单元测试覆盖）
+[32m  ✅ G1: session_tree_test 全过（��— 覆盖 P0.1 分叉/P0.2 回滚/P0.3 only-append[0m
+[32m  ✅ G2: session_tree 内联单元测试全过（��— 覆盖 resolve_current_leaf/get_tree/compaction_safety[0m
+
+  P0 验收点映射：
+    P0.1 分叉后原路径保留     → branch_appends_leaf_pointer_and_preserves_old_entries
+    P0.2 回滚后被回滚消息不丢 → rollback_appends_tombstone_and_preserves_old_entries
+    P0.3 完整操作序列 only-append → full_branch_rollback_checkout_sequence_preserves_only_append
+    P0.4 branch 后新消息接 leaf  → branch_then_new_message_parents_off_leaf
+    P0.5 resolve_current_leaf    → session_tree 内联单元测试（compute_depths O(n)）
+
+════════════════════════════════════════
+  PASS=15  FAIL=0
+════════════════════════════════════════
+🎉 全部通过
+</pre>
+</body></html>

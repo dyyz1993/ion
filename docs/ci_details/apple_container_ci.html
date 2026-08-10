@@ -1,0 +1,63 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>apple_container_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #10b981; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>✅ apple_container_ci (26 pass / 0 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  Apple Container CI Test — Mon Aug 10 10:17:38 CST 2026
+════════════════════════════════════════════════════
+--- Phase 0: Build ---
+[32m  ✅ build[0m
+[32m  ✅ unit tests (backend_registry)[0m
+--- Phase 0.5: Container Service ---
+[32m  ✅ container service running[0m
+--- Phase 1: Configuration ---
+[32m  ✅ config written (runtime.default=ac-test, backends: local + ac-test)[0m
+--- Phase 2: Host + Worker ---
+[32m  ✅ create_worker (SID=sess_e6cdcd4c)[0m
+--- Group A: Container Lifecycle ---
+[32m  ✅ A1: first bash triggers container run[0m
+[32m  ✅ A2: container is alive (bash echo works)[0m
+[32m  ✅ A3: second bash reuses container[0m
+--- Group B: Command Execution ---
+[32m  ✅ B2: bash hostname returned &#x27;192.168.0.9&#x27;[0m
+--- Group C: File Operations ---
+[32m  ✅ C1: write file in container[0m
+[32m  ✅ C2: expected &#x27;hello container fs&#x27;, got &#x27;1	hello container fs&#x27;[0m
+[32m  ✅ C4: ls didn&#x27;t find ac-test.txt in /tmp[0m
+[32m  ✅ C5: read nonexistent file returned error[0m
+[32m  ✅ C3: expected &#x27;EDITED container fs&#x27;, got &#x27;1	EDITED container fs&#x27;[0m
+--- Group E: Routing Rules ---
+[32m  ✅ E1: npm --version runs locally (command route)[0m
+[32m  ✅ E2: default route goes to container[0m
+--- Group G: Container Identity ---
+[32m  ✅ G1: hostname not isolated (container=192.168.0.9, host=192.168.0.9)[0m
+[32m  ✅ G2: /etc/hostname mismatch (got &#x27;&#x27;, expected &#x27;192.168.0.9&#x27;)[0m
+[32m  ✅ G3: PID 1 not found[0m
+[32m  ✅ G4: expected &#x27;Linux&#x27;, got &#x27;Darwin&#x27;[0m
+--- Group H: Container IP ---
+[32m  ✅ H1: container IP=192.168.64.14 in 192.168.64.0/24[0m
+[32m  ✅ H2: IP unchanged (192.168.64.14)[0m
+--- Group A3: Stop Container ---
+tests/apple_container_ci.sh: line 327:  4343 Terminated: 15          &quot;$ION_BIN&quot; serve start &gt; /tmp/ion-ac-host.log 2&gt;&amp;1
+[32m  ✅ A3: container auto-stopped on Worker Drop[0m
+--- Group F: Error Handling ---
+[32m  ✅ F3: container name conflict handled (inspect reuse)[0m
+ion-ac-test
+tests/apple_container_ci.sh: line 366:  5844 Terminated: 15          &quot;$ION_BIN&quot; serve start &gt; /tmp/ion-ac-host2.log 2&gt;&amp;1
+--- Group D: Multi-container ---
+[32m  ✅ D1: two containers created (ion-ac-d1, ion-ac-d2)[0m
+[32m  ✅ D2: containers have different IPs (192.168.64.16 vs 192.168.64.17)[0m
+ion-ac-d1
+ion-ac-d2
+════════════════════════════════════════════════════
+  Results: 26 passed, 0 failed, 0 skipped
+════════════════════════════════════════════════════
+</pre>
+</body></html>

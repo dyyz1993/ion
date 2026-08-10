@@ -1,0 +1,35 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>global_memory_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #10b981; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>✅ global_memory_ci (8 pass / 0 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>── Phase 0: Build ──
+warning: `ion` (bin &quot;ion&quot;) generated 5 warnings (run `cargo fix --bin &quot;ion&quot; -p ion` to apply 4 suggestions)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.49s
+  (started new host PID=19577)
+
+── Group A: 单例生命周期 ──
+[32m✅ PASS: A1 global-memory.db 创建（on_singleton_init）[0m
+[32m✅ PASS: A2 extension_rpc 可用（单例已初始化）[0m
+
+── Group B: 记忆检索 ──
+[32m✅ PASS: B1 save 返回 gmem ID[0m
+[32m✅ PASS: B2 FTS5 搜索命中[0m
+[32m✅ PASS: B3 跨项目检索（2 条结果）[0m
+
+── Group C: 软删除 + 边界 ──
+[32m✅ PASS: C1 forget 软删除[0m
+[32m✅ PASS: C2 软删除后 list 不含此条目[0m
+[32m✅ PASS: C3 未知方法报错[0m
+
+── 结果 ──
+PASS=8 FAIL=0
+[32m全部通过[0m
+</pre>
+</body></html>

@@ -1,0 +1,53 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>goal_evolver_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #10b981; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>✅ goal_evolver_ci (18 pass / 0 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  Goal Evolver CI — Mon Aug 10 10:12:10 CST 2026
+════════════════════════════════════════════════════
+[32m  ✅ build ion[0m
+
+Group A: 单元测试（12 个，覆盖全部 10 fixture + 解析健壮性）
+[32m  ✅ A1: goal_evolver 单元测试全过（��[0m
+
+Group B: 问题场景必须报（5 维度，8 个问题 case）
+[32m  ✅ B1: case_02 死循环检测（strict check）[0m
+[32m  ✅ B2: case_03 死循环检测（weak agent）[0m
+[32m  ✅ B3: case_04 模型检测（generate_checks 弱）[0m
+[32m  ✅ B4: case_05 模型检测（analyze_failure 弱）[0m
+[32m  ✅ B5: case_06 上下文检测（缺测试结果）[0m
+[32m  ✅ B6: case_07 上下文检测（缺 git diff）[0m
+
+Group C: 健康场景不误报（2 个健康 case）
+[32m  ✅ C1: case_01 健康不误报[0m
+[32m  ✅ C2: case_10 repetitive guard 验证（不误报 deadloop）[0m
+
+Group D: run_once 全量扫描（10 场景）
+[32m  ✅ D1: run_once 全量扫描（10 goal）[0m
+[32m  ✅ D2: 解析健壮性（缺字段 graceful）[0m
+[32m  ✅ D3: 不存在目录正确报错[0m
+
+Group E: RPC 接口（goal_evolver_run_once 可用性）
+[32m  ✅ E1: goal_evolver_run_once RPC 已注册[0m
+[32m  ✅ E2: RPC 在 get_commands help 列表[0m
+[32m  ✅ E3: dry_run 默认 true（安全，不误提交 Issue）[0m
+
+Group F: fixture 数据完整性（10 场景全在）
+[32m  ✅ F1: 10 个 fixture 场景目录齐全[0m
+[32m  ✅ F2: 全部 fixture 文件完整（iterations + final-report）[0m
+
+════════════════════════════════════════════════════
+  Goal Evolver CI Summary
+════════════════════════════════════════════════════
+  Passed: 18
+  Failed: 0
+════════════════════════════════════════════════════
+</pre>
+</body></html>

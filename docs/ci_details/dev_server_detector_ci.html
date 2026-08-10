@@ -1,0 +1,45 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>dev_server_detector_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #10b981; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>✅ dev_server_detector_ci (14 pass / 0 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  Dev Server Detector CI — Mon Aug 10 10:18:24 CST 2026
+════════════════════════════════════════════════════
+[32m  ✅ build ion[0m
+
+── Group A：Rust 单元测试（端口提取）──
+[32m  ✅ A: 单元测试全过（12 passed）[0m
+
+── Group B：E2E 集成测试（on_tool_execution_end → on_system_prompt）──
+[32m  ✅ B: E2E 集成测试全过（9 passed）[0m
+[32m  ✅ B1: Vite 端口检测 + XML 注入[0m
+[32m  ✅ B2: 多框架同时检测（count=2）[0m
+[32m  ✅ B3: 非 server 命令不注入[0m
+[32m  ✅ B4: signature 去重[0m
+[32m  ✅ B5: 非 bash 工具忽略[0m
+[32m  ✅ B6: Flask 格式 (127.0.0.1)[0m
+[32m  ✅ B7: extension_rpc list[0m
+[32m  ✅ B8: extension_rpc clear[0m
+
+── Group C：扩展注册验证（场景 1）──
+[32m  ✅ C1: 场景 1 扩展注册成功（[extension] dev_server_detector registered）[0m
+
+C2: 场景 3 注册验证（serve host）
+✘ Host not running
+[32m  ✅ C2: serve host 启动成功[0m
+[32m  ✅ C2: 场景 3 session 创建成功（��[0m
+[33m  ⏭️  C2: 场景 3 worker 注册日志未捕获（worker 日志可能在子进程 stderr，不影响功能）[0m
+
+════════════════════════════════════════════════════
+  Result: 14 passed, 0 failed, 1 skipped
+════════════════════════════════════════════════════
+tests/dev_server_detector_ci.sh: line 159: 10059 Terminated: 15          nohup &quot;$ION_BIN&quot; serve &gt; /tmp/ion_detector_ci_serve.log 2&gt;&amp;1
+</pre>
+</body></html>

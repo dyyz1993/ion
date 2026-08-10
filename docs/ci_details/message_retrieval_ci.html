@@ -1,0 +1,110 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>message_retrieval_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #10b981; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>✅ message_retrieval_ci (59 pass / 0 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  ION Message Retrieval CI Test — Mon Aug 10 10:29:00 CST 2026
+════════════════════════════════════════════════════
+[32m  ✅ build ion[0m
+
+Group A: ion history CLI
+[32m  ✅ A1: ion history 命令在 help 中可见[0m
+[32m  ✅ A2: ion history --help 格式正确[0m
+[32m  ✅ A3: ion history 不存在的 session 正确报错[0m
+
+Group B: session 文件 + ion history 分页
+[32m  ✅ B1: session 文件已创建[0m
+[32m  ✅ B2: session JSONL header 格式正确[0m
+[32m  ✅ B3: session 文件含 6 条 message entry[0m
+[32m  ✅ B4: ion history 成功读取 session[0m
+[32m  ✅ B5: ion history 显示了消息内容[0m
+
+Group C: 消息树 + step-snapshot
+[32m  ✅ C1: session 文件无冗余回合摘要 entry[0m
+[32m  ✅ C2: step-snapshot parentId 对齐真实消息 entry[0m
+[32m  ✅ C3: step-snapshot 含 baseline/snapshot tree hash[0m
+
+Group D: 分页逻辑验证（通过 ion history）
+[32m  ✅ D1: ion history --limit 1 正确分页[0m
+[32m  ✅ D2: ion history --view full 正常[0m
+[32m  ✅ D3: ion history --view since_compaction 正常[0m
+
+Group E: CompactionEntry 结构验证
+[32m  ✅ E1: session 含 compaction entry（1 条）[0m
+[32m  ✅ E2: compaction entry 含 firstKeptEntryId[0m
+
+Group F: Assistant / step-snapshot / compaction 字段完整性
+[32m  ✅ F1: Assistant 保留工具调用名称[0m
+[32m  ✅ F2: Assistant 含 usage 字段[0m
+[32m  ✅ F3: step-snapshot 含文件 diff[0m
+[32m  ✅ F4: compaction 含 stage 字段[0m
+[32m  ✅ F5: compaction 含 tokensBefore 字段[0m
+
+Group G: 分页边界
+[32m  ✅ G1: limit 0 返回全量 6 条[0m
+[32m  ✅ G2: limit 100 返回全部[0m
+
+Group H: turn 完整性（complete_turn）
+[32m  ✅ H1: user entry id 是稳定 turn 边界[0m
+[32m  ✅ H2: JSONL 无冗余 entryRange[0m
+[32m  ✅ H3: 分页 limit=2 返回 ≥2 条（complete_turn 可能多带）[0m
+
+Group J: 中断态 / 错误态
+[32m  ✅ J1: stopReason=aborted 字段存在[0m
+[32m  ✅ J2: isComplete=false 字段存在（区分中断）[0m
+[32m  ✅ J3: toolResult isError=true 字段存在[0m
+[32m  ✅ J4: stopReason=error 字段存在[0m
+[32m  ✅ J5: ion history 能读取含错误态的 session[0m
+[32m  ✅ J6: 错误态消息内容可见（不丢已输出部分）[0m
+
+Group K: 统计聚合
+[32m  ✅ K1: Assistant 含 usage 字段[0m
+[32m  ✅ K2: usage 含 input + output[0m
+[32m  ✅ K3: 正文不重复保存聚合耗时[0m
+[32m  ✅ K4: 3 次 Assistant 响应均有 usage[0m
+[32m  ✅ K5: tokens 聚合正确（390 = ��[0m
+  [debug] TOTAL_OUTPUT=390 EXPECTED=390
+
+Group N: 旁路数据（customType 两维属性）
+[32m  ✅ N1: custom/system_event entry 含 customType 字段[0m
+[32m  ✅ N2: display:true 字段存在（可展示的旁路）[0m
+[32m  ✅ N3: display:false 字段存在（隐藏的旁路）[0m
+[32m  ✅ N4: 内核 customType 存在（model_change）[0m
+[32m  ✅ N5: Extension customType 存在（memory_search，扩展自定义）[0m
+[32m  ✅ N6: ion history 能读取含旁路数据的 session[0m
+[32m  ✅ N7: 默认拉取含正常消息内容（c3 可见，c1/c2 被折叠/删除）[0m
+[32m  ✅ N8: deletion entry 含 targetIds（软删除标记）[0m
+[32m  ✅ N9: segment_summary entry 存在（折叠替换标记）[0m
+[32m  ✅ N10: 两维属性数据充分（display:true ×2, false ×��[0m
+
+Group M: 性能验证（缓存 + O(n)）
+[32m  ✅ M1: 连续两次 ion history 结果一致（缓存不改变数据）[0m
+[32m  ✅ M2: 追加 entry 后文件变化（mtime 更新触发缓存失效）[0m
+[32m  ✅ M3: session_tree 单元测试全过（��resolve_current_leaf O(n) 不回归）[0m
+[32m  ✅ M4: 100 条长链 session 读取 &lt;5s（实际 869ms，O(n) 生效）[0m
+
+Group L: 血缘字段
+[32m  ✅ L1: 根会话 header 无 parentSession（Option::None 正确 skip）[0m
+[32m  ✅ L2: fork 会话 header 含 parentSession 指向源会话[0m
+[32m  ✅ L3: ion history 能读取 fork 会话[0m
+
+Group P: list_turns / get_turn_detail RPC durationMs
+  注：FauxProvider 不走网络，turn 常 &lt;1ms，durationMs 可能为 0；
+  本组验证「字段存在 + 类型正确」，真实耗时由真实 LLM 场景验证。
+[32m  ✅ P1: serve + create_session (sess_4c64c6aa)[0m
+[32m  ✅ P2: list_turns 响应每条 turn 含 durationMs[0m
+[32m  ✅ P3: durationMs 是数值类型[0m
+[32m  ✅ P4: get_turn_detail overview 含 durationMs[0m
+
+════════════════════════════════════════
+  PASS=59  FAIL=0  SKIP=0
+════════════════════════════════════════
+</pre>
+</body></html>

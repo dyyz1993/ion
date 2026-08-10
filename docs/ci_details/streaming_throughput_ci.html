@@ -1,0 +1,54 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>streaming_throughput_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #10b981; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>✅ streaming_throughput_ci (19 pass / 0 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>==========================================
+  Streaming Throughput CI (FauxProvider)
+==========================================
+
+[Phase 0] Build ion...
+[32m  ✅ build OK[0m
+
+[Group A] 大 tool_call args 流式不丢事件
+-----------------------------------------
+[32m  ✅ A: host 启动 + FauxProvider 加载 script[0m
+[32m  ✅ A1: subscribe 收到 130 个 tool_call_delta (预期下限 37, args=303 字节)[0m
+[A2] OK: args JSON 完整 (file_path + content, total 357 bytes, 130 deltas)
+[32m  ✅ A2: delta 拼接后 args JSON 完整（file_path + content 字段都在）[0m
+[32m  ✅ A3: DROP 比例 0% (0/130) - subscriber 跟得上 (&lt;=60% 即健康)[0m
+[32m  ✅ A4: tool_execution_end 收到（流程完整跑通）[0m
+
+[Group B] 单次响应内多个 tool_call 不串台
+-------------------------------------------
+[32m  ✅ B: host 启动[0m
+[32m  ✅ B1: 两次 tool_call 总 delta = 130（≥10，未丢）[0m
+[32m  ✅ B2: 收到 2 个 tool_execution_start（两次 tool_call 都执行了）[0m
+[32m  ✅ B3: 多 tool_call DROP 比例 0% (0/130) - 健康[0m
+
+[Group C] 边界场景（极小 args / 单字符 delta）
+---------------------------------------------
+[32m  ✅ C: host 启动（极小 args 场景）[0m
+[32m  ✅ C1: 极小 args 也收到 6 个 delta（不丢空）[0m
+[32m  ✅ C2: 极小 args 流程完整（tool_execution_end 收到）[0m
+
+[Group D] write/edit 工具的 tool_execution_update 事件（+N -M 跳动）
+-----------------------------------------------------------------
+[32m  ✅ D: host 启动[0m
+[32m  ✅ D1: write 30 行触发 10 个 tool_execution_update（≥5，预期 ~10）[0m
+[32m  ✅ D2: partialResult 包含 +N -M lines 格式（前端跳动数据源）[0m
+[32m  ✅ D3: +N 数字递增（分块流式，不是单次 dump）[0m
+[32m  ✅ D4: 最后一个 update 的 +N=30（接近总行数 30，update 流完整）[0m
+[32m  ✅ D5: 文件写入       30 行（≈30，工具真实执行）[0m
+
+==========================================
+  汇总: PASS=14  FAIL=0  SKIP=0
+==========================================
+</pre>
+</body></html>

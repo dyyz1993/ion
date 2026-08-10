@@ -1,0 +1,51 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>extension_fs_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #10b981; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>✅ extension_fs_ci (24 pass / 0 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  Extension Host API (ctx.fs) CI — Mon Aug 10 10:20:19 CST 2026
+════════════════════════════════════════════════════
+[32m  ✅ build ion[0m
+[32m  ✅ Rust 单元测试 extension::fs_tests 全过（read/write/list/exists/glob/safe_join）[0m
+[32m  ✅ F0: host 启动成功[0m
+[32m  ✅ F0: create_session 成功（cwd=/var/folders/j9/bv0n54t96556fycmy511r2rc0000gn/T/tmp.T5jftsAXw3 → allowed_roots[0]）[0m
+
+── Group A：ctx.fs 读文件（相对路径 + 绝对路径）──
+[32m  ✅ A1: 相对路径 read_file(&#x27;target.txt&#x27;) 读到内容[0m
+[32m  ✅ A2: 绝对路径（allowed_roots 内）read_file 读到内容[0m
+[32m  ✅ A3: list_dir(&#x27;.&#x27;) 返回 target.txt + sub[0m
+[32m  ✅ A4: list_dir(&#x27;sub&#x27;) 返回 inner.md[0m
+[32m  ✅ A5: path_exists(&#x27;target.txt&#x27;) = true[0m
+[32m  ✅ A6: path_exists(&#x27;nope.txt&#x27;) = false[0m
+[32m  ✅ A7: glob(&#x27;*.txt&#x27;) 匹配 target.txt[0m
+[32m  ✅ A8: write_file + read_file roundtrip[0m
+
+── Group C：路径逃逸防护（allowed_roots 之外一律拒绝）──
+[32m  ✅ C1: &#x27;../../../etc/passwd&#x27; 被拒（outside allowed roots）[0m
+[32m  ✅ C2: &#x27;sub/../../etc/passwd&#x27; 被拒[0m
+[32m  ✅ C3: allowed_roots 外的绝对路径被拒[0m
+[32m  ✅ C4: null byte 路径被拒[0m
+[32m  ✅ C5: path_exists(逃逸路径) = false（不报错）[0m
+[32m  ✅ C6: list_dir(逃逸路径) 被拒[0m
+
+── Group D：ExtensionDataDirs（4 级数据目录）──
+[32m  ✅ D1: data_dirs 返回 4 级目录（global/project/cwd/session）[0m
+[32m  ✅ D2: 各级目录路径含 ext_name（my-ext）[0m
+[32m  ✅ D3: global 目录在 extensions-data 下[0m
+[32m  ✅ D4: session 目录含当前 session_id（��[0m
+[32m  ✅ D5: 不同 ext_name 目录隔离（my-ext ≠ other-ext）[0m
+
+════════════════════════════════════════════════════
+  结果: PASS=23  FAIL=0  SKIP=0
+════════════════════════════════════════════════════
+✅ extension_fs_ci 全部通过
+tests/extension_fs_ci.sh: line 60: 11318 Terminated: 15          ION_FAUX_REPLY=&quot;ctx.fs probe noop&quot; &quot;$ION_BIN&quot; serve &gt; /tmp/ion_fs_host.log 2&gt;&amp;1
+</pre>
+</body></html>

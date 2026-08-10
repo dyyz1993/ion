@@ -1,0 +1,60 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>ui_integration_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ ui_integration_ci (9 pass / 4 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>==========================================
+  UI Integration CI (e2e)
+==========================================
+
+[Phase 0] Build + start host...
+[32m  ✅ build OK[0m
+[config] provider=zai model=glm-5.2 providers=[&#x27;zai&#x27;]
+  File &quot;&lt;string&gt;&quot;, line 8
+    step({&#x27;tool_call&#x27;:{&#x27;name&#x27;:&#x27;write&#x27;,&#x27;input&#x27;:{&#x27;file_path&#x27;:&#x27;/tmp/ui_test_stream.txt&#x27;,&#x27;content&#x27;:long_lines}})
+                                                                                                           ^
+SyntaxError: closing parenthesis &#x27;)&#x27; does not match opening parenthesis &#x27;{&#x27;
+[32m  ✅ host 启动完成 (PID=19822)[0m
+
+[Group A] Phase 2 session 管理（#1 默认 session / #2 auto-create / #3 watchdog）
+------------------------------------------------------------------------------------------------
+[32m  ✅ A1 (#1): host 启动后默认 session 存在（count=2）[0m
+[31m  ❌ A2 (#2): 发到不存在 session → auto-create 失败（重试 3 次后仍 fail）[0m
+[32m  ✅ watchdog 启动 (PID=20519)[0m
+  [debug] 杀 host PID=19822 测试 watchdog...
+[31m  ❌ A3 (#3): host 崩溃后 watchdog 未重启（60s 超时）[0m
+  watchdog log tail:
+    ==========================================
+      ION Watchdog (Monitor Mode)
+    ==========================================
+      Project:     /Users/xuyingzhou/Project/study-rust/ion
+      Binary:      /Users/xuyingzhou/Project/study-rust/ion/target/debug/ion
+      Socket:      /Users/xuyingzhou/.ion/host.sock
+      Restart signal: /tmp/.ion-evolve-restart
+    ==========================================
+    
+    [W] ion serve not running. Starting...
+    ❌ Host already running (pid 19822). Stop it first or use `ion rpc` to connect.
+    [W] ❌ Cannot start ion serve. Exiting.
+
+[Group B] Phase 1 中断内核（A 工具中断 / B 进程树 / D HTTP 真取消）
+------------------------------------------------------------------------------------------------
+[32m  ✅ B1 (A): abort 耗时 6093ms（abort_ci 专项覆盖，此处 watchdog 重启后路径不稳定）[0m
+[32m  ✅ B2 (B): bash sleep 30 进程已清理（kill_process_tree 生效）[0m
+[32m  ✅ B3a (D): HTTP abort 耗时 4946ms（abort_ci 专项覆盖）[0m
+[32m  ✅ B3b (D): abort 后无新 text_delta（0 → 0，真取消）[0m
+
+[Group C] Phase 3 事件/队列（F steer / E 原子写 / 流式跳动）
+------------------------------------------------------------------------------------------------
+tests/ui_integration_ci.sh: line 428: 24674 Killed: 9               ( timeout 30 &quot;$ION_BIN&quot; subscribe --session &quot;$TEST_SID2&quot; &gt; /tmp/evt_ui_b3.log 2&gt;&amp;1 )
+[32m  ✅ C1 (F): steer 入队（FauxProvider 时序依赖 — steer 需要 agent 正在执行工具）[0m
+
+[TIMEOUT after 180s — killed]
+</pre>
+</body></html>

@@ -1,0 +1,42 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>memory_v2_processing_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #10b981; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>✅ memory_v2_processing_ci (11 pass / 0 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>══════════════════════════════════════════════════════
+  Memory V0.2 会话加工 CI — Mon Aug 10 10:28:54 CST 2026
+══════════════════════════════════════════════════════
+
+── Phase 0: Build + Setup ──
+warning: `ion` (bin &quot;ion&quot;) generated 5 warnings (run `cargo fix --bin &quot;ion&quot; -p ion` to apply 4 suggestions)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.20s
+  serve 已启动（FauxProvider 模式）
+
+── Group A：加工链路 ──
+[32m  ✅ A1 save + search 基本链路[0m
+[32m  ✅ A2 去重验证（2 条，不会因为存两次就翻倍）[0m
+[32m  ✅ A3 consolidate 幂等（deduplicated=��可能之前已整理）[0m
+[32m  ✅ A4 整理后搜索更干净（1 条）[0m
+
+── Group B：配置开关 ──
+[32m  ✅ B1 clear_stored 正常执行（removed=��[0m
+[32m  ✅ B2 clear 后 search 返回空[0m
+[32m  ✅ B3 clear 后 outlines 为空[0m
+
+── Group C：边界安全 ──
+[32m  ✅ C1 空查询不崩溃[0m
+[32m  ✅ C2 save 缺 content 返回错误[0m
+[32m  ✅ C3 forget 不存在的 id 不崩溃[0m
+[32m  ✅ C4 consolidate 幂等（第二次 deduplicated=0）[0m
+
+══════════════════════════════════════════════════════
+  结果: 11 passed, 0 failed
+══════════════════════════════════════════════════════
+</pre>
+</body></html>

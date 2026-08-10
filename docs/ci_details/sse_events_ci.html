@@ -1,0 +1,45 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>sse_events_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ sse_events_ci (10 pass / 1 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>==========================================
+  SSE Events CI (Phase 4a)
+==========================================
+
+[32m  ✅ build OK[0m
+[Group A] agent_start/end + message_start/end 事件
+---------------------------------------------------
+[32m  ✅ A1: agent_start 事件收到（count=2）[0m
+[31m  ❌ A2: 未收到 agent_end 事件[0m
+[32m  ✅ B1: message_start 事件收到（count=2）[0m
+[32m  ✅ B2: message_end 事件收到（count=1）[0m
+[32m  ✅ B3: message_end 含 usage 字段（token 用量）[0m
+tests/sse_events_ci.sh: line 154:  8047 Killed: 9               ION_FAUX_SCRIPT=&quot;$FAUX&quot; ION_SESSION_DIR=&quot;$TMP_DIR/sessions&quot; &quot;$ION_BIN&quot; serve --provider faux --model faux-test &gt; /tmp/sse_host.log 2&gt;&amp;1
+
+[Group C] tool_execution_end 含 result + update 含 args
+--------------------------------------------------------
+tests/sse_events_ci.sh: line 200: 10816 Killed: 9               ( timeout 15 &quot;$ION_BIN&quot; subscribe --session &quot;$SID&quot; &gt; /tmp/sse_evt2.log 2&gt;&amp;1 )
+[32m  ✅ C1: tool_execution_end 含 result 字段[0m
+[32m  ✅ D1: tool_execution_update 含 args 字段[0m
+tests/sse_events_ci.sh: line 230: 10239 Killed: 9               ION_FAUX_SCRIPT=&quot;$FAUX&quot; ION_SESSION_DIR=&quot;$TMP_DIR/sessions&quot; &quot;$ION_BIN&quot; serve --provider faux --model faux-test &gt; /tmp/sse_host2.log 2&gt;&amp;1
+
+[Group E] auto_retry_start/end 事件
+-------------------------------------
+tests/sse_events_ci.sh: line 265: 11878 Killed: 9               ( timeout 30 &quot;$ION_BIN&quot; subscribe --session &quot;$SID&quot; &gt; /tmp/sse_evt3.log 2&gt;&amp;1 )
+[32m  ✅ E1: auto_retry_start 事件收到（count=1）[0m
+[32m  ✅ E2: auto_retry_start 含 attempt + maxRetries 字段[0m
+[32m  ✅ E3: auto_retry_end (implied by agent_end — retry succeeded)[0m
+
+==========================================
+  汇总: PASS=9  FAIL=1
+==========================================
+tests/sse_events_ci.sh: line 59: 11305 Killed: 9               ION_FAUX_SCRIPT=&quot;$FAUX&quot; ION_FAUX_ERROR=1 ION_FAUX_REPEAT=1 ION_SESSION_DIR=&quot;$TMP_DIR/sessions&quot; ION_MAX_TURNS=1 &quot;$ION_BIN&quot; serve --provider faux --model faux-test &gt; /tmp/sse_host3.log 2&gt;&amp;1
+</pre>
+</body></html>

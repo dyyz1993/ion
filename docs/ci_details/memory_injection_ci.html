@@ -1,0 +1,61 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>memory_injection_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ memory_injection_ci (2 pass / 6 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>══════════════════════════════════════════════════════
+  Memory Injection CI — Mon Aug 10 10:28:49 CST 2026
+══════════════════════════════════════════════════════
+
+── Phase 0: Build ──
+warning: `ion` (bin &quot;ion&quot;) generated 5 warnings (run `cargo fix --bin &quot;ion&quot; -p ion` to apply 4 suggestions)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.18s
+
+── Step 1: Start ion serve ──
+[32m  ✅ PASS: serve is up (socket ready)[0m
+
+── Step 2: Save a CI test memory ──
+[31m  ❌ FAIL: save did not return a gmem id[0m
+[31m  output: {
+  &quot;error&quot;: &quot;Tool(\&quot;global memory not initialized (serve mode only)\&quot;)&quot;,
+  &quot;id&quot;: &quot;rpc-client&quot;,
+  &quot;success&quot;: false,
+  &quot;type&quot;: &quot;response&quot;
+}[0m
+
+── Step 3: Search for &#x27;CI test&#x27; ──
+[31m  ❌ FAIL: search did not return expected content[0m
+[31m  output: {
+  &quot;error&quot;: &quot;Tool(\&quot;global memory not initialized (serve mode only)\&quot;)&quot;,
+  &quot;id&quot;: &quot;rpc-client&quot;,
+  &quot;success&quot;: false,
+  &quot;type&quot;: &quot;response&quot;
+}[0m
+
+── Step 4: Verify saved memory is in search results ──
+[31m  ❌ FAIL: search results do NOT contain the saved memory[0m
+
+── Step 5: List all memories ──
+[32m  ✅ PASS: list contains the saved memory ()[0m
+
+── Step 6: Forget the memory () ──
+[31m  ❌ FAIL: skip forget (no MEM_ID captured in step 2)[0m
+
+── Step 7: Verify forgotten memory is gone from list ──
+[31m  ❌ FAIL: cannot verify forget (no MEM_ID)[0m
+
+── Step 8: Cleanup ──
+  serve stopped, DB removed
+
+══════════════════════════════════════════════════════
+  RESULT: 2 passed, 5 failed
+══════════════════════════════════════════════════════
+[31m❌ memory_injection_ci — 5 CHECK(S) FAILED[0m
+</pre>
+</body></html>

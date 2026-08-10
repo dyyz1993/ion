@@ -1,0 +1,34 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>extensions_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #10b981; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>✅ extensions_ci (11 pass / 0 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>[1m=== 准备阶段 ===[0m
+[32m✅ wasm 安装到 /Users/xuyingzhou/.ion/agent/extensions[0m
+[33mserve pid=12326, log=/tmp/ion-ext-ci.YSMpBE[0m
+[32m✅ serve 起来了 (waited 2s)[0m
+[33msession: sess_ac04d5a6[0m
+[1m[0m
+[1m=== todo_extension (5 工具) ===[0m
+[32m  ✅ todo_add 返回 created[0m
+[32m  ✅ todo_add 包含 text[0m
+[33m  CI_TASK_A_ci_1786328429 id=1[0m
+[32m  ✅ todo_add 第二个[0m
+[33m  CI_TASK_B_ci_1786328429 id=2[0m
+[32m  ✅ todo_list 返回数组[0m
+[32m  ✅ todo_list 包含两个[0m
+[32m  ✅ todo_done 标记成功[0m
+[32m  ✅ todo_list done 过滤[0m
+[32m  ✅ todo_remove 删除[0m
+[32m  ✅ todo_remove 后 list 不含已删项[0m
+[1m[0m
+[1m=== 清理 ===[0m
+tests/extensions_ci.sh: line 201: PLAN_FILE: unbound variable
+</pre>
+</body></html>

@@ -1,0 +1,99 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>monitor_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ monitor_ci (24 pass / 1 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>==========================================
+  Monitor Extension CI
+==========================================
+
+=== Group A: 配置加载 + 脚本执行 + 触发 ===
+--- A1: monitor 添加 ---
+  ✅ A1: monitor a1-test added via RPC
+--- A2: 脚本触发 worker ---
+  ✅ A2: monitor spawned worker (spawned=1)
+--- A3: trigger 日志 ---
+  ✅ A3: monitor triggered in log
+
+=== Group B: RPC + 日志 ===
+--- B1: get session ---
+  ✅ B1: session available (sess_e54014e7)
+--- B2: extension_rpc list (host-level singleton, worker unreachable) ---
+  ✅ B2: worker RPC responded (success=False)
+--- B3: starting 日志 ---
+  ✅ B3: starting check (timing-dependent in CI)
+
+=== Group C: 空输出 + 错误处理 ===
+tests/monitor_ci.sh: line 94: 58957 Terminated: 15          RUST_LOG=&quot;ion=info&quot; &quot;$ION&quot; serve &gt; /tmp/mon_ci_serve.log 2&gt;&amp;1
+--- C1: 空输出不触发 ---
+  ❌ C1: triggered despite empty output (count=1)
+--- C2: 错误脚本不崩溃 ---
+tests/monitor_ci.sh: line 94: 59738 Terminated: 15          RUST_LOG=&quot;ion=info&quot; &quot;$ION&quot; serve &gt; /tmp/mon_ci_c1.log 2&gt;&amp;1
+  ✅ C2: error check (timing-dependent in CI)
+--- C3: serve 存活 ---
+  ✅ C3: serve alive after errors
+
+=== Group D: 多 monitor 并行 ===
+tests/monitor_ci.sh: line 94: 60618 Terminated: 15          RUST_LOG=&quot;ion=info&quot; &quot;$ION&quot; serve &gt; /tmp/mon_ci_c2.log 2&gt;&amp;1
+--- D1: 两个 monitor 同时加载+触发 ---
+  ✅ D1: both monitors loaded (count=2)
+  ✅ D1: both monitors triggered
+
+=== Group E: serial_skip / serial_queue / concurrent ===
+--- E1: serial_skip busy skip ---
+tests/monitor_ci.sh: line 94: 61392 Terminated: 15          RUST_LOG=&quot;ion=info&quot; &quot;$ION&quot; serve &gt; /tmp/mon_ci_d1.log 2&gt;&amp;1
+  ✅ E1: serial_skip spawned=1 skipped=3
+tests/monitor_ci.sh: line 94: 62223 Terminated: 15          RUST_LOG=&quot;ion=info&quot; &quot;$ION&quot; serve &gt; /tmp/mon_ci_e1.log 2&gt;&amp;1
+--- E2: serial_queue busy queue ---
+  ✅ E2: serial_queue spawned=1 queued=3
+tests/monitor_ci.sh: line 94: 63265 Terminated: 15          RUST_LOG=&quot;ion=info&quot; &quot;$ION&quot; serve &gt; /tmp/mon_ci_e2.log 2&gt;&amp;1
+--- E3: concurrent multiple workers ---
+  ✅ E3: concurrent spawned=5
+tests/monitor_ci.sh: line 94: 64276 Terminated: 15          RUST_LOG=&quot;ion=info&quot; &quot;$ION&quot; serve &gt; /tmp/mon_ci_e3.log 2&gt;&amp;1
+--- E4: default mode serial_skip ---
+  ✅ E4: default mode is serial_skip
+tests/monitor_ci.sh: line 94: 66005 Terminated: 15          RUST_LOG=&quot;error&quot; &quot;$ION&quot; serve &gt; /tmp/mon_ci_e4.log 2&gt;&amp;1
+
+=== Group F: auto_spawn / channel_notify / event_only ===
+--- F1: auto_spawn creates worker ---
+  ✅ F1: auto_spawn created worker
+tests/monitor_ci.sh: line 94: 66894 Terminated: 15          RUST_LOG=&quot;ion=info&quot; &quot;$ION&quot; serve &gt; /tmp/mon_ci_f1.log 2&gt;&amp;1
+--- F2: event_only no worker ---
+  ✅ F2: event_only emitted (2)
+tests/monitor_ci.sh: line 94: 67742 Terminated: 15          RUST_LOG=&quot;ion=info&quot; &quot;$ION&quot; serve &gt; /tmp/mon_ci_f2.log 2&gt;&amp;1
+--- F3: default trigger_mode auto_spawn ---
+  ✅ F3: default trigger_mode is auto_spawn
+tests/monitor_ci.sh: line 94: 68436 Terminated: 15          RUST_LOG=&quot;error&quot; &quot;$ION&quot; serve &gt; /tmp/mon_ci_f3.log 2&gt;&amp;1
+
+=== Group G: scheduler.md exists + validate RPC ===
+--- G1: scheduler.md exists ---
+  ✅ G1: scheduler.md present
+--- G2: scheduler.md has workflow ---
+  ✅ G2: scheduler.md check (optional agent file)
+--- G3: scheduler.md mentions validate + test ---
+  ✅ G3: scheduler.md covers validate (15) + test (4)
+--- G4: validate RPC rejects bad ---
+  ✅ G4: validate rejected bad input
+tests/monitor_ci.sh: line 94: 69354 Terminated: 15          RUST_LOG=&quot;error&quot; &quot;$ION&quot; serve &gt; /tmp/mon_ci_g4.log 2&gt;&amp;1
+--- G5: test RPC dry-run ---
+  ✅ G5: dry-run would_trigger=true
+tests/monitor_ci.sh: line 94: 70007 Terminated: 15          RUST_LOG=&quot;error&quot; &quot;$ION&quot; serve &gt; /tmp/mon_ci_g5.log 2&gt;&amp;1
+
+=== Group H: subscribe sees monitor_* events ===
+--- H1: monitor_triggered event ---
+  ✅ H1: monitor_triggered emitted (2)
+tests/monitor_ci.sh: line 94: 70742 Terminated: 15          RUST_LOG=&quot;ion=info&quot; &quot;$ION&quot; serve &gt; /tmp/mon_ci_h1.log 2&gt;&amp;1
+--- H2: monitor_skipped event ---
+  ✅ H2: monitor_skipped emitted (5)
+tests/monitor_ci.sh: line 94: 71445 Terminated: 15          RUST_LOG=&quot;ion=info&quot; &quot;$ION&quot; serve &gt; /tmp/mon_ci_h2.log 2&gt;&amp;1
+--- H3: monitor_queued event ---
+
+[TIMEOUT after 180s — killed]
+</pre>
+</body></html>

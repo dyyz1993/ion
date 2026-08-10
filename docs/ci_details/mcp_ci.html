@@ -1,0 +1,111 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>mcp_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ mcp_ci (14 pass / 21 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  MCP CI (Phase 1+2) — Mon Aug 10 10:25:07 CST 2026
+════════════════════════════════════════════════════
+[32m  ✅ build ion[0m
+
+Group A: 配置加载（disabled，不触发真实连接）
+[32m  ✅ A1: 空配置 get_mcp_servers 返回空数组[0m
+tests/mcp_ci.sh: line 63: 26484 Terminated: 15          ION_FAUX_REPLY=&quot;mcp test&quot; ION_FAUX_REPEAT=1 $ION_BIN serve &gt; /tmp/ion_mcp_host.log 2&gt;&amp;1
+[31m  ❌ A2: stdio server 未出现[0m
+  输出: {
+  &quot;command&quot;: &quot;get_mcp_servers&quot;,
+  &quot;data&quot;: [],
+  &quot;id&quot;: &quot;rpc-client&quot;,
+  &quot;success&quot;: true,
+[31m  ❌ A2b: disabled 标记错误[0m
+[31m  ❌ A2c: disabled server 应为 disconnected[0m
+tests/mcp_ci.sh: line 63: 27633 Terminated: 15          ION_FAUX_REPLY=&quot;mcp test&quot; ION_FAUX_REPEAT=1 $ION_BIN serve &gt; /tmp/ion_mcp_host.log 2&gt;&amp;1
+[31m  ❌ A3: http server 未正确识别[0m
+  输出: {
+  &quot;command&quot;: &quot;get_mcp_servers&quot;,
+  &quot;data&quot;: [],
+  &quot;id&quot;: &quot;rpc-client&quot;,
+  &quot;success&quot;: true,
+tests/mcp_ci.sh: line 63: 28748 Terminated: 15          ION_FAUX_REPLY=&quot;mcp test&quot; ION_FAUX_REPEAT=1 $ION_BIN serve &gt; /tmp/ion_mcp_host.log 2&gt;&amp;1
+[31m  ❌ A4: 应有 2 个 server，实际 0[0m
+tests/mcp_ci.sh: line 63: 29981 Terminated: 15          ION_FAUX_REPLY=&quot;mcp test&quot; ION_FAUX_REPEAT=1 $ION_BIN serve &gt; /tmp/ion_mcp_host.log 2&gt;&amp;1
+
+Group B: 运行时 toggle
+[31m  ❌ B1: toggle 关闭失败[0m
+  输出: {
+  &quot;command&quot;: &quot;mcp_toggle_server&quot;,
+  &quot;error&quot;: &quot;mcp not available&quot;,
+[32m  ✅ B2: toggle 不存在 server 报错[0m
+[32m  ✅ B3: 缺 enabled 参数报错[0m
+
+Group C: restart
+[32m  ✅ C1: restart toggle-test（返回状态）[0m
+[32m  ✅ C2: restart 不存在 server 报错[0m
+tests/mcp_ci.sh: line 63: 31149 Terminated: 15          ION_FAUX_REPLY=&quot;mcp test&quot; ION_FAUX_REPEAT=1 $ION_BIN serve &gt; /tmp/ion_mcp_host.log 2&gt;&amp;1
+
+Group D: 错误处理（真实连接错误）
+[31m  ❌ D1: 应为 error 状态[0m
+  输出: {
+  &quot;command&quot;: &quot;get_mcp_servers&quot;,
+  &quot;data&quot;: [],
+  &quot;id&quot;: &quot;rpc-client&quot;,
+  &quot;success&quot;: true,
+[31m  ❌ D2: 应有 error 字段[0m
+tests/mcp_ci.sh: line 63: 32408 Terminated: 15          ION_FAUX_REPLY=&quot;mcp test&quot; ION_FAUX_REPEAT=1 $ION_BIN serve &gt; /tmp/ion_mcp_host.log 2&gt;&amp;1
+
+Group E: 真实连接（需要 mcp-server-everything）
+[32m  ✅ E1: mcp-server-everything 连接成功 (status=connected)[0m
+[32m  ✅ E2: 工具发现成功 (13 个工具)[0m
+[31m  ❌ E3: echo 工具调用失败[0m
+  输出: {
+  &quot;error&quot;: &quot;call_tool mcp__everything__echo: Tool call failed: tool not found: mcp__everything__echo&quot;,
+  &quot;id&quot;: &quot;rpc-client&quot;,
+[31m  ❌ E4: get-sum 工具调用失败[0m
+[32m  ✅ E5: 工具名格式 mcp__server__tool 正确[0m
+tests/mcp_ci.sh: line 63: 33638 Terminated: 15          ION_FAUX_REPLY=&quot;mcp test&quot; ION_FAUX_REPEAT=1 $ION_BIN serve &gt; /tmp/ion_mcp_host.log 2&gt;&amp;1
+
+Group F: 方案 C 进程共享（host 持有 MCP，Worker bridge 代理）
+[31m  ❌ F1: 应为 connected，实际 [0m
+[31m  ❌ F2: MCP 工具数应为 &gt;0，实际 0[0m
+[31m  ❌ F3: 代理调用失败[0m
+  输出: {
+  &quot;error&quot;: &quot;call_tool mcp__everything__echo: Tool call failed: tool not found: mcp__everything__echo&quot;,
+  &quot;id&quot;: &quot;rpc-client&quot;,
+[32m  ✅ F4: 只 spawn 1 份 MCP server 进程（进程共享）[0m
+tests/mcp_ci.sh: line 63: 35534 Terminated: 15          ION_FAUX_REPLY=&quot;mcp test&quot; ION_FAUX_REPEAT=1 $ION_BIN serve &gt; /tmp/ion_mcp_host.log 2&gt;&amp;1
+
+Group G: 场景 1 MCP 支持（cmd_run 直连）
+[31m  ❌ G1: 场景 1 MCP 未生效[0m
+  输出: [2m2026-08-10T02:25:51.074715Z[0m [32m INFO[0m [mcp] 2 server(s) configured (LAZY — will connect on first tool use)
+[2m2026-08-10T02:25:51.074746Z[0m [32m INFO[0m [mcp] no tools yet (will connect in background)
+[2m2026-08-10T02:25:51.074776Z[0m [32m INFO[0m [mcp] background connect starting (non-blocking)...
+[31m  ❌ G2: 场景 1 空配置异常[0m
+
+Group H: MCP 工具权限控制（permission rules 管 mcp__*）
+[32m  ✅ H1: echo 被拦截（success=false）[0m
+[31m  ❌ H2: get-sum 应正常[0m
+[32m  ✅ H3: 通配符 mcp__everything__* 禁用全部工具[0m
+tests/mcp_ci.sh: line 63: 37955 Terminated: 15          ION_FAUX_REPLY=&quot;mcp test&quot; ION_FAUX_REPEAT=1 $ION_BIN serve &gt; /tmp/ion_mcp_host.log 2&gt;&amp;1
+
+Group I: resources/prompts 发现 + read_resource 调用
+[31m  ❌ I1: resources 应 &gt;0，实际 0[0m
+[31m  ❌ I2: prompts 应 &gt;0，实际 0[0m
+[31m  ❌ I3: MCP 工具调用异常[0m
+[31m  ❌ I4: resources URI 无效[0m
+tests/mcp_ci.sh: line 63: 39510 Terminated: 15          ION_FAUX_REPLY=&quot;mcp test&quot; ION_FAUX_REPEAT=1 $ION_BIN serve &gt; /tmp/ion_mcp_host.log 2&gt;&amp;1
+
+Group J: mcp_reload 配置热更新
+[32m  ✅ J1a: 初始无 MCP server[0m
+[31m  ❌ J1b: reload 应加载 1 个，实际 2[0m
+[32m  ✅ J1c: reload 后 MCP server 出现并连接（status=��[0m
+tests/mcp_ci.sh: line 63: 41013 Terminated: 15          ION_FAUX_REPLY=&quot;mcp test&quot; ION_FAUX_REPEAT=1 $ION_BIN serve &gt; /tmp/ion_mcp_host.log 2&gt;&amp;1
+
+[TIMEOUT after 180s — killed]
+</pre>
+</body></html>

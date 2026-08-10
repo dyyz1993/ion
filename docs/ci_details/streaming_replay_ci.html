@@ -1,0 +1,43 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>streaming_replay_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #10b981; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>✅ streaming_replay_ci (10 pass / 0 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>==========================================
+  Streaming Replay CI (Recorded DeepSeek)
+==========================================
+
+[Phase 0] Build ion...
+[32m  ✅ build OK[0m
+
+[32m  ✅ fixture 已加载到 /Users/xuyingzhou/.ion/recordings/stream_demo[0m
+
+[Group A] 回放真实 DeepSeek write tool_call 流式
+---------------------------------------------------
+[32m  ✅ A: host 启动 + 加载录制 stream_demo[0m
+[32m  ✅ A1: subscribe 收到 1486 个 tool_call_delta (≥30，真实 DeepSeek 内容流式)[0m
+[32m  ✅ A2: 收到 3 个 tool_execution_end（write 工具真实执行）[0m
+[32m  ✅ A3: 文件真实写入       30 行（DeepSeek 生成的内容落地）[0m
+[32m  ✅ A4: DROP 比例 0% (0/1486) - 健康[0m
+
+[Group B] 回放内容正确性（真实 DeepSeek 生成的内容）
+------------------------------------------------------
+tests/streaming_replay_ci.sh: line 247: 12442 Killed: 9               ION_STREAM_DEBUG=1 ION_SESSION_DIR=&quot;$TMP_PROJ_DIR/sessions&quot; ION_MAX_TURNS=3 &quot;$ION_BIN&quot; serve --model replay/stream_demo &gt; &quot;$log&quot; 2&gt;&amp;1
+[32m  ✅ B1: 文件包含 DeepSeek 真实生成的内容（line 1 + line 30 都在）[0m
+[32m  ✅ B2: 文件行数       30（DeepSeek 录制的 30 行 + 可能的尾换行）[0m
+
+[Group C] 多次回放一致性（录制是确定性的）
+--------------------------------------------
+[32m  ✅ C1: 两次回放产生相同内容（hash: f0ec977d...）[0m
+
+==========================================
+  汇总: PASS=7  FAIL=0  SKIP=0
+==========================================
+</pre>
+</body></html>

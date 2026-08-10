@@ -1,0 +1,39 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>record_replay_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ record_replay_ci (10 pass / 1 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>── Phase 0: Build ──
+warning: `ion` (bin &quot;ion&quot;) generated 5 warnings (run `cargo fix --bin &quot;ion&quot; -p ion` to apply 4 suggestions)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.18s
+
+── Group A: 录制 + 安全 ──
+[32m✅ PASS: A1 录制基本响应[0m
+[32m✅ PASS: A2 路径穿越拒绝[0m
+
+── Group B: 回放 ──
+[31m❌ FAIL: B1 回放复现 (output: {&quot;event&quot;:{&quot;customType&quot;:&quot;hook_handler_executed&quot;,&quot;data&quot;:{&quot;block&quot;:false,&quot;event&quot;:&quot;SessionStart&quot;,&quot;handler_type&quot;:&quot;command&quot;,&quot;reason&quot;:null},&quot;extension&quot;:&quot;hooks&quot;,&quot;type&quot;:&quot;extension_event&quot;,&quot;visibility&quot;:&quot;llm_and_ui&quot;},&quot;type&quot;:&quot;event&quot;}
+[replay] ⚠️  Tools will execute for real. Replaying decisions from &#x27;rr-test-a1&#x27;.
+[replay] ⚠️  Ensure you are in an isolated workspace.)[0m
+[32m✅ PASS: B2 回放不存在 ID 报错[0m
+[32m✅ PASS: B3 回放安全提示[0m
+
+── Group C: 管理 + 冲突 + 安全 ──
+[32m✅ PASS: C1 ion recordings list[0m
+[32m✅ PASS: C2 录制冲突报错[0m
+[32m✅ PASS: C3 OVERWRITE 覆盖[0m
+[32m✅ PASS: C4 trace 含 request_hash[0m
+[32m✅ PASS: C5 trace 文件权限 0600[0m
+[32m✅ PASS: C6 meta 含 schema_version[0m
+
+── 结果 ──
+PASS=10 FAIL=1
+[31m有失败[0m
+</pre>
+</body></html>

@@ -1,0 +1,32 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>soft_delete_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ soft_delete_ci (3 pass / 2 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>── Phase 0: Build ──
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.49s
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.19s
+
+── Phase 1: 单元测试（apply_visibility_filter）──
+[32m✅ PASS: A1 apply_visibility_filter 单元测试通过[0m
+[31m❌ FAIL: A2 session_jsonl 单元测试失败[0m
+
+── Phase 2: Agent mark_deleted / mark_summarized 测试 ──
+[32m✅ PASS: B1 Agent mark_deleted/mark_summarized 单元测试通过[0m
+
+── Phase 3: session_jsonl append_deletion / append_segment_summary ──
+[31m❌ FAIL: C1 session_jsonl 测试失败[0m
+
+── Phase 4: 全量 lib 测试 ──
+[32m✅ PASS: D1 全量 lib 测试通过 (948 tests, 0 failed)[0m
+
+── 结果 ──
+[31m失败: 2 / 总 5[0m
+</pre>
+</body></html>

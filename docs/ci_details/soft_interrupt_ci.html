@@ -1,0 +1,34 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>soft_interrupt_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ soft_interrupt_ci (3 pass / 1 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>==========================================
+  Soft Interrupt CI (Phase 4b)
+==========================================
+
+[32m  ✅ build OK[0m
+[Group A] interrupt 中断工具（&lt; 500ms）
+-------------------------------------------
+[31m  ❌ A1: interrupt 花了 6219ms（&gt; 3000ms）[0m
+tests/soft_interrupt_ci.sh: line 123:  6325 Killed: 9               ( timeout 30 &quot;$ION_BIN&quot; subscribe --session &quot;$SID&quot; &gt; /tmp/softint_evt.log 2&gt;&amp;1 )
+[32m  ✅ A2: bash sleep 30 已清理（残留=5657\{LEFT\}）[0m
+tests/soft_interrupt_ci.sh: line 132:  5734 Killed: 9               ION_FAUX_SCRIPT=&quot;$FAUX_A&quot; ION_SESSION_DIR=&quot;$TMP_DIR/sessions&quot; &quot;$ION_BIN&quot; serve --provider faux --model faux-test &gt; /tmp/softint_host.log 2&gt;&amp;1
+
+[Group B] 默认 behavior=steer（不打断 agent）
+----------------------------------------------
+[32m  ✅ B1: agent 跑时发新消息 → steer 入队（success=true，不报 busy）[0m
+[34m  ℹ️  B2: steering_queue=0[0m
+tests/soft_interrupt_ci.sh: line 185:  7025 Killed: 9               ION_FAUX_SCRIPT=&quot;$FAUX_A&quot; ION_SESSION_DIR=&quot;$TMP_DIR/sessions&quot; &quot;$ION_BIN&quot; serve --provider faux --model faux-test &gt; /tmp/softint_host2.log 2&gt;&amp;1
+
+==========================================
+  汇总: PASS=2  FAIL=1
+==========================================
+</pre>
+</body></html>

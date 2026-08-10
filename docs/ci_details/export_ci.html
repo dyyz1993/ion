@@ -1,0 +1,92 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>export_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #10b981; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>✅ export_ci (54 pass / 0 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  Export CI — Mon Aug 10 10:12:09 CST 2026
+════════════════════════════════════════════════════
+[32m  ✅ build ion[0m
+
+── Group A: 真实对话导出（FauxProvider 驱动） ──
+[faux] enabled: 1 responses queued
+[faux] model.api forced to &#x27;faux&#x27;
+[32m  ✅ A1 export 命令成功（sid=��[0m
+[32m  ✅ A2 HTML 文件大小正常（429648 bytes）[0m
+[32m  ✅ A9 顶部统计区使用结构化 masthead[0m
+[32m  ✅ A10 Extension/Timeline 使用统一概览卡[0m
+[32m  ✅ A11 主体使用响应式双栏网格[0m
+[32m  ✅ A12 离线主题变量完整注入[0m
+[32m  ✅ A3 base64 数据可解码[0m
+[32m  ✅ A4 entries 非空（3 条）[0m
+[32m  ✅ A13 timelineEntries 非空（3 条）[0m
+[32m  ✅ A14 Timeline 与正文使用同一完整 Entry 流（3 条）[0m
+[32m  ✅ A15 Timeline 包含类型筛选与悬停概要[0m
+[32m  ✅ A16 SessionIndex 元信息快照已注入导出数据[0m
+[32m  ✅ A17 Timeline 按 Entry 顺序紧凑排列且支持点击跳转[0m
+[32m  ✅ A18 仅在展开可新增超过 3 行正文时折叠[0m
+[32m  ✅ A19 每条 Timeline Entry 都声明正文目标，Hook 支持归组[0m
+[32m  ✅ A20 sourceEntries 保留当前分支完整有序数据（3 条）[0m
+[32m  ✅ A21 所有 Timeline Entry 都有统一 ionMeta[0m
+[32m  ✅ A22 flowSummary 汇总 LLM/Tool/Custom 流程[0m
+[32m  ✅ A23 正文与 Timeline 渲染同一份流程语义[0m
+[32m  ✅ A24 导出资源由 ION 编译内置，不依赖 pi checkout[0m
+[32m  ✅ A25 Markdown 原始 HTML 在离线模板中被转义[0m
+[32m  ✅ A5 message 已 flatten（无 enum wrapper）[0m
+[32m  ✅ A6 所有 message 都有 role 字段[0m
+[32m  ✅ A7 content blocks 已 flatten（无 enum variant）[0m
+[32m  ✅ A8 leafId 字段存在（��[0m
+
+── Group B: step-snapshot 完整展示 ──
+[32m  ✅ B1 export 含 step-snapshot 的 session[0m
+[32m  ✅ B2 正文展示 step-snapshot[0m
+[32m  ✅ B3 Timeline 展示 step-snapshot[0m
+[32m  ✅ B4 无脱离消息树的内部回合记录[0m
+[32m  ✅ B5 快照关联、tree hash 与语义标签完整[0m
+
+── Group E: 压缩 Entry 完整展示 ──
+[32m  ✅ E1 export 确定性 compaction session[0m
+[32m  ✅ E2 Compaction 在 Timeline 与正文一一对应（1 条）[0m
+[32m  ✅ E3 Compaction 使用独立流程语义[0m
+[32m  ✅ E4 Compaction 使用独立内置卡片渲染[0m
+
+── Group F: 当前分支导出 ──
+[32m  ✅ F1 分支 session 导出成功[0m
+[32m  ✅ F2 正文只保留 root→active leaf，废弃分支内容已排除[0m
+[32m  ✅ F3 分叉保留为一条 leaf_pointer 记录[0m
+[32m  ✅ F4 导出记录 active leaf 与省略分支统计[0m
+
+── Group G: LLM / Tool / Custom / Extension 流程语义 ──
+[32m  ✅ G1 完整流程 fixture 导出成功[0m
+[32m  ✅ G2 Flow Summary 统计 LLM/Tool/Custom/注入[0m
+[32m  ✅ G8 类型目录区分 ION 支持总数与当前会话实际类型[0m
+[32m  ✅ G3 Hook 明确标记为旁路审计而非 ToolResult[0m
+[32m  ✅ G4 LSP Custom 标记来源且进入 LLM 上下文[0m
+[32m  ✅ G5 运行时 Extension Custom 统一命名且保留精确来源[0m
+[32m  ✅ G6 sourceEntries 保留完整正文原始穿插顺序[0m
+[32m  ✅ G7 内置 Custom 筛选与来源/受众 UI 已打包[0m
+
+-- Group D: export-after-run 工具面板 ──
+[faux] enabled: 1 responses queued
+[faux] model.api forced to &#x27;faux&#x27;
+[32m  ✅ D1 export-after-run 包含 tools 字段（18 个工具）[0m
+[32m  ✅ D2 bash 工具在列表中[0m
+[32m  ✅ D3 read 工具在列表中[0m
+[32m  ✅ D4 所有 tool 都有 name/description/parameters[0m
+
+── Group C: 边界场景 ──
+[32m  ✅ C1 不存在的 session 报错并返回非零退出码[0m
+[32m  ✅ C2 不带 --session 时自动选最近 session[0m
+[32m  ✅ C3 损坏 JSONL 带行号失败，不静默丢 Entry[0m
+
+══════════════════════════════════════════════════════
+  结果: 54 passed, 0 failed
+══════════════════════════════════════════════════════
+</pre>
+</body></html>

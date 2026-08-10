@@ -1,0 +1,31 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>rules_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #10b981; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>✅ rules_ci (5 pass / 0 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>=== rules_ci: 验证 RulesEngineExtension 加载/匹配/注入/去重 ===
+
+tests/rules_ci.sh: line 76: EXPORT_OUT: unbound variable
+--- Group A: export HTML（rules 注入验证）---
+# 注意：rules 注入需要 RulesEngineExtension，仅在 serve 模式注册。
+# 场景1 (ion -p) 可能没注册 → A 组可能全部 skip。
+RULES_IN_CI=0
+0
+  ✅ A1: 含 &lt;project_rules&gt; 标签（全局 rule 在 SP）
+  ✅ A2: 全局 rule 注入（Global Rule 在 SP）
+  ✅ A3: 路径匹配 rust rule 不在 SP（走 tool result）
+  ✅ A4: rust rule 追加到 tool result
+  ✅ A5: 不匹配的 python rule 不注入
+
+# 场景1 A 组可能全失败 — 把 A 组 FAIL 转成 SKIP
+
+--- Group C: 去重验证（路径匹配 rule 不重复注入）---
+tests/rules_ci.sh: line 142: cd: tests/..: No such file or directory
+</pre>
+</body></html>

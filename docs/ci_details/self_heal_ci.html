@@ -1,0 +1,24 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>self_heal_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #10b981; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>✅ self_heal_ci (2 pass / 0 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>==========================================
+  Self-Healing Pipeline CI
+==========================================
+
+=== Group A: 单 issue 端到端 ===
+--- A1: monitor → coordinator → developer → reviewer → merger → publisher ---
+tests/self_heal_ci.sh: line 35: ION_BIN: unbound variable
+  ✅ A1.1: monitor triggered (1 times)
+  ✅ A1.2: coordinator spawned (sess_1d5df26c)
+
+[TIMEOUT after 180s — killed]
+</pre>
+</body></html>

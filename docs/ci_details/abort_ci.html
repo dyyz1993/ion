@@ -1,0 +1,49 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>abort_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ abort_ci (6 pass / 3 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>==========================================
+  Abort/Stop Kernel CI (A+B+D)
+==========================================
+
+[Phase 0] Build...
+[32m  ✅ build OK[0m
+
+[Group A] 工具执行中可中断（修复 A）
+---------------------------------------
+[32m  ✅ A: host 启动[0m
+[31m  ❌ A1: abort 生效但花了 5894ms（&gt; 3000ms）— 工具中断仍慢[0m
+tests/abort_ci.sh: line 197: 99430 Killed: 9               ( timeout 30 &quot;$ION_BIN&quot; subscribe --session &quot;$SID_A&quot; &gt; &quot;$EVT_FILE_A&quot; 2&gt;&amp;1 )
+[31m  ❌ A2: 仍有 1 个 sleep 30 进程残留 — kill 未杀整个进程组[0m
+tests/abort_ci.sh: line 200: 98871 Killed: 9               ION_FAUX_SCRIPT=&quot;$script&quot; ION_STREAM_DEBUG=1 ION_SESSION_DIR=&quot;$TMP_PROJ_DIR/sessions&quot; &quot;$ION_BIN&quot; serve --provider faux --model faux-test &gt; &quot;$log&quot; 2&gt;&amp;1
+
+[Group B] bash 杀进程树（修复 B）
+----------------------------------
+  [debug] 父 PID=538, sleep 33 进程数=0
+[32m  ✅ B1: kill -TERM/KILL -&lt;pgid&gt; 杀掉整个进程树（0 → 0）[0m
+
+[Group C] HTTP 流式期间 abort（修复 D）
+-----------------------------------------
+[32m  ✅ C: host 启动[0m
+[32m  ✅ C1: HTTP 流式期间 abort 2438ms 生效（&lt; 3000ms）[0m
+[32m  ✅ C2: abort 后无新 delta（HTTP 真取消，stream 已停）[0m
+tests/abort_ci.sh: line 319:  2851 Killed: 9               ION_FAUX_SCRIPT=&quot;$script&quot; ION_STREAM_DEBUG=1 ION_SESSION_DIR=&quot;$TMP_PROJ_DIR/sessions&quot; &quot;$ION_BIN&quot; serve --provider faux --model faux-test &gt; &quot;$log&quot; 2&gt;&amp;1
+tests/abort_ci.sh: line 319:  3483 Killed: 9               ( timeout 30 &quot;$ION_BIN&quot; subscribe --session &quot;$SID_C&quot; &gt; &quot;$EVT_FILE_C&quot; 2&gt;&amp;1 )
+
+==========================================
+  汇总: PASS=3  FAIL=2  SKIP=0
+==========================================
+
+❌ 有失败用例，诊断信息：
+  - host 日志: /tmp/ion_abort_*.log
+  - 事件流: /tmp/evt_abort_*.log
+  - 残留进程: pgrep -f &#x27;sleep 30|sleep 60&#x27;
+</pre>
+</body></html>

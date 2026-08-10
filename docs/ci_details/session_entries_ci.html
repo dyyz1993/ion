@@ -1,0 +1,164 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>session_entries_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ session_entries_ci (17 pass / 4 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  ION Session Entry CI Test
+  Mon Aug 10 10:44:11 CST 2026
+════════════════════════════════════════════════════
+
+── Phase 0: Build ──
+[32m  ✅ cargo build ion[0m
+[32m  ✅ cargo build agent-demo[0m
+  使用 binary: /Users/xuyingzhou/Project/study-rust/ion/target/debug/ion
+
+── Phase 1: Unit Tests ──
+warning: unused import: `SkillTool`
+  --&gt; src/worker_rpc.rs:19:59
+   |
+19 |     LsTool, ReadTool, ResumeWorkerTool, SendToWorkerTool, SkillTool, SpawnWorkerTool, ToolRegistry,
+   |                                                           ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `preview`
+   --&gt; src/agent/bash.rs:580:29
+    |
+580 |                         let preview = if tail &gt; 0 &amp;&amp; output_bytes &gt; tail {
+    |                             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_preview`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `preview`
+   --&gt; src/agent/bash.rs:883:29
+    |
+883 |                         let preview = if tail &gt; 0 &amp;&amp; output_bytes &gt; tail {
+    |                             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_preview`
+
+warning: value assigned to `system_prompt` is never read
+   --&gt; src/export.rs:269:45
+    |
+269 |     let mut system_prompt: Option&lt;String&gt; = None;
+    |                                             ^^^^ this value is reassigned later and never used
+...
+351 |         system_prompt = Some(sp);
+    |         ------------- `system_prompt` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `dupes`
+   --&gt; src/global_memory.rs:290:13
+    |
+290 |         let dupes: Vec&lt;(String, usize)&gt; = {
+    |             ^^^^^ help: if this is intentional, prefix it with an underscore: `_dupes`
+
+warning: unused variable: `result`
+    --&gt; src/goal_supervisor_extension.rs:1994:13
+     |
+1994 |         let result = tool.execute(args, &amp;rt()).await.expect(&quot;goal_set ok&quot;);
+     |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_result`
+
+warning: unused variable: `ext`
+    --&gt; src/goal_supervisor_extension.rs:2334:13
+     |
+2334 |         let ext = GoalSupervisorExtension::new().with_config(GoalSupervisorConfig::default());
+     |             ^^^ help: if this is intentional, prefix it with an underscore: `_ext`
+
+warning: unused variable: `params`
+   --&gt; src/lsp_extension.rs:962:9
+    |
+962 |         params: serde_json::Value,
+    |         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_params`
+
+warning: variable does not need to be mutable
+   --&gt; src/file_time_guard.rs:442:13
+    |
+442 |         let mut call = ToolCall {
+    |             ----^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `skill_dirs`
+   --&gt; src/worker_rpc.rs:391:9
+    |
+391 |     let skill_dirs = vec![
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_skill_dirs`
+
+warning: `ion` (lib test) generated 10 warnings (run `cargo fix --lib -p ion --tests` to apply 9 suggestions)
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.17s
+     Running unittests src/lib.rs (target/debug/deps/ion-26cab6fb43812bb3)
+[32m  ✅ cargo test --lib[0m
+warning: function `make_user_text` is never used
+   --&gt; ion-provider/src/provider/mistral.rs:951:8
+    |
+951 |     fn make_user_text(text: &amp;str) -&gt; Message {
+    |        ^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ion-provider` (lib test) generated 1 warning
+warning: variable does not need to be mutable
+  --&gt; ion-provider/tests/e2e_real_api.rs:73:9
+   |
+73 |     let mut had_done = false;
+   |         ----^^^^^^^^
+   |         |
+   |         help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ion-provider` (test &quot;e2e_real_api&quot;) generated 1 warning (run `cargo fix --test &quot;e2e_real_api&quot; -p ion-provider` to apply 1 suggestion)
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.15s
+     Running unittests src/lib.rs (target/debug/deps/ion_provider-4ff49df4314d2c05)
+     Running tests/e2e_real_api.rs (target/debug/deps/e2e_real_api-3152b1e96bdecacf)
+     Running tests/faux_test.rs (target/debug/deps/faux_test-a33d37ce0b952abf)
+     Running tests/overflow_test.rs (target/debug/deps/overflow_test-582d322e777b10da)
+     Running tests/record_replay_test.rs (target/debug/deps/record_replay_test-f31317c4fb249050)
+     Running tests/sse_parse_test.rs (target/debug/deps/sse_parse_test-899a959fdbd29591)
+     Running tests/unicode_test.rs (target/debug/deps/unicode_test-c9b010d58c0198a3)
+   Doc-tests ion_provider
+[32m  ✅ cargo test -p ion-provider[0m
+
+── Phase 2: Manager &amp; Worker ──
+[32m  ✅ serve start[0m
+[32m  ✅ create_worker (sid=75296e36...)[0m
+
+── Phase 3: RPC Handlers ──
+[32m  ✅ append_custom_message[0m
+[32m  ✅ append_custom_entry[0m
+[32m  ✅ append_system_event[0m
+[32m  ✅ append_model_change[0m
+[32m  ✅ append_thinking_level_change[0m
+[32m  ✅ append_agent_change[0m
+[32m  ✅ append_session_name[0m
+[32m  ✅ append_label[0m
+[32m  ✅ append_active_tools_change[0m
+[32m  ✅ send_custom_message[0m
+
+── Phase 4: Field Flattening Verification ──
+[32m  ✅ session.jsonl found[0m
+[31m  ❌   active_tools_change entry exists (sid=75296e36-e712-4f5e-8503-1a5399fb1ac9)[0m
+[31m  ❌   custom_message entry exists (sid=75296e36-e712-4f5e-8503-1a5399fb1ac9)[0m
+[31m  ❌   system_event entry exists (sid=75296e36-e712-4f5e-8503-1a5399fb1ac9)[0m
+[31m  ❌   label entry exists (sid=75296e36-e712-4f5e-8503-1a5399fb1ac9)[0m
+
+── Phase 5: LLM Prompt (skipped, use --with-llm)
+
+── Cleanup ──
+tests/session_entries_ci.sh: line 226:   310 Terminated: 15          cargo run --bin ion -- serve start &gt; /tmp/ion-ci-host.log 2&gt;&amp;1
+  Cleaned up
+
+════════════════════════════════════════════════════
+  Results: 17 passed, 4 failed
+════════════════════════════════════════════════════
+</pre>
+</body></html>

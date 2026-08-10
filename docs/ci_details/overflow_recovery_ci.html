@@ -1,0 +1,26 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>overflow_recovery_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #10b981; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>✅ overflow_recovery_ci (4 pass / 0 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>── Phase 0: Build ──
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.25s
+
+── Phase 1: 单元测试（溢出检测 + retry 拦截）──
+[32m✅ PASS: A1 ProviderError::is_context_overflow 检测[0m
+[32m✅ PASS: A2 retry::should_retry 溢出拦截 (abort, 不重试)[0m
+
+── Phase 2: E2E — FauxProvider 注入溢出错误 ──
+[32m✅ PASS: A3 FauxProvider 溢出错误被检测到[0m
+[32m✅ PASS: A4 溢出后恢复尝试触发 FauxProvider 队列耗尽（证明 recovery 循环运行了）[0m
+
+── 结果 ──
+[32m全部通过: 4/4[0m
+</pre>
+</body></html>

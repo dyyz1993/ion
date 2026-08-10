@@ -1,0 +1,44 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>runtime_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #10b981; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>✅ runtime_ci (15 pass / 0 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  ION Runtime CI Test — Mon Aug 10 10:37:55 CST 2026
+════════════════════════════════════════════════════
+[32m  ✅ build[0m
+[32m  ✅ cargo test --lib[0m
+[32m  ✅ runtime_tests[0m
+[32m  ✅ serve start[0m
+[32m  ✅ create_worker[0m
+
+═══ Group A: LocalRuntime ═══
+[32m  ✅ A1: bash echo[0m
+[32m  ✅ A2: read file[0m
+[32m  ✅ A3: write file[0m
+[32m  ✅ A4: CommandGuard rm -rf[0m
+
+═══ Group B: 沙箱 ═══
+[32m  ✅ B1: sandbox-exec[0m
+[32m  ✅ B2: readonly sandbox[0m
+[32m  ✅ B3: workspace sandbox write[0m
+
+═══ Group C: RemoteRuntime ═══
+[32m  ✅ C1: SSH format (tested in unit tests)[0m
+[33m  ⏭️  C2: SSH not reachable[0m
+
+═══ Group D: 组合场景 ═══
+[32m  ✅ D1: SecuredRuntime+ LocalRuntime[0m
+[32m  ✅ D2: background process[0m
+
+═══ Results ═══
+  15 passed, 0 failed, 1 skipped
+tests/runtime_ci.sh: line 9: 89335 Terminated: 15          &quot;$ION_BIN&quot; serve start &gt; /tmp/ion-ci-rt-host.log 2&gt;&amp;1
+</pre>
+</body></html>

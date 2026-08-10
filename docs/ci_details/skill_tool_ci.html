@@ -1,0 +1,73 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>skill_tool_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ skill_tool_ci (10 pass / 6 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  Skill Tool CI — Mon Aug 10 10:44:47 CST 2026
+════════════════════════════════════════════════════
+[32m  ✅ build ion[0m
+[32m  ✅ S0: host 启动成功（FauxProvider + 隔离 skill 目录）[0m
+[32m  ✅ S0: create_session 成功 (sid=sess_1bbbb0a...)[0m
+
+Group S: Skill 工具（list / inject / fork / get_skills）
+[31m  ❌ S1: skill list 未列出预期 skill[0m
+  输出: {
+  &quot;error&quot;: &quot;call_tool skill: Tool call failed: tool not found: skill&quot;,
+  &quot;id&quot;: &quot;rpc-client&quot;,
+  &quot;success&quot;: false,
+  &quot;type&quot;: &quot;response&quot;
+[31m  ❌ S2: skill list 缺 description[0m
+[31m  ❌ S3: skill inject 未返回正文[0m
+  输出: {
+  &quot;error&quot;: &quot;call_tool skill: Tool call failed: tool not found: skill&quot;,
+  &quot;id&quot;: &quot;rpc-client&quot;,
+  &quot;success&quot;: false,
+  &quot;type&quot;: &quot;response&quot;
+[31m  ❌ S4: skill inject 默认模式失败[0m
+[33m  ⏭️  S5: skill fork 跳过（需真实 spawn_worker 环境）[0m
+[32m  ✅ S6: 加载不存在的 skill 正确报错[0m
+[32m  ✅ S7: 缺 skill_name 参数正确报错[0m
+[32m  ✅ S8: get_skills RPC 正常（已有 RPC 不受 skill 工具影响）[0m
+[31m  ❌ S9: 加载全局 skill 失败[0m
+  输出: {
+  &quot;error&quot;: &quot;call_tool skill: Tool call failed: tool not found: skill&quot;,
+  &quot;id&quot;: &quot;rpc-client&quot;,
+  &quot;success&quot;: false,
+  &quot;type&quot;: &quot;response&quot;
+
+Group E: 边界场景
+[31m  ❌ E1: 无 skill 时未返回正确提示[0m
+  输出: {
+  &quot;error&quot;: &quot;call_tool skill: Tool call failed: tool not found: skill&quot;,
+  &quot;id&quot;: &quot;rpc-client&quot;,
+
+Group R: skill 工具注册到 build_tools（LLM 可见性）
+[faux] enabled: 1 responses queued
+[faux] model.api forced to &#x27;faux&#x27;
+[2m2026-08-10T02:44:53.638035Z[0m [33m WARN[0m [config] tier_models[&#x27;fast&#x27;] = &#x27;deepseek/deepseek-v4-flash&#x27; could not be resolved (expected &#x27;provider/model_id&#x27; with provider+model in providers map), falling back to default_model
+[2m2026-08-10T02:44:53.734523Z[0m [33m WARN[0m [config] tier_models[&#x27;fast&#x27;] = &#x27;deepseek/deepseek-v4-flash&#x27; could not be resolved (expected &#x27;provider/model_id&#x27; with provider+model in providers map), falling back to default_model
+[2m2026-08-10T02:44:53.737303Z[0m [33m WARN[0m [config] tier_models[&#x27;fast&#x27;] = &#x27;deepseek/deepseek-v4-flash&#x27; could not be resolved (expected &#x27;provider/model_id&#x27; with provider+model in providers map), falling back to default_model
+[2m2026-08-10T02:44:53.737315Z[0m [33m WARN[0m [auto-session-title] LLM call failed (silently swallowed): tier &#x27;fast&#x27; not configured and no default_model available
+[33m  ⏭️  R1: skill 工具不在列表（CI FauxProvider 不完整）[0m
+  实际工具: [&quot;bash&quot;, &quot;calculator&quot;, &quot;echo&quot;, &quot;edit&quot;, &quot;find&quot;, &quot;grep&quot;, &quot;ls&quot;, &quot;plan_add&quot;, &quot;plan_approve&quot;, &quot;plan_done&quot;, &quot;plan_enter&quot;, &quot;plan_exit&quot;, &quot;plan_list&quot;, &quot;read&quot;, &quot;write&quot;, &quot;goal_diagnose&quot;, &quot;goal_refine&quot;, &quot;goal_set&quot;]
+[32m  ✅ R2-read: read 工具仍在列表里[0m
+[32m  ✅ R2-write: write 工具仍在列表里[0m
+[32m  ✅ R2-bash: bash 工具仍在列表里[0m
+[32m  ✅ R2-edit: edit 工具仍在列表里[0m
+[faux] enabled: 1 responses queued
+[faux] model.api forced to &#x27;faux&#x27;
+[2m2026-08-10T02:46:24.140544Z[0m [33m WARN[0m [config] tier_models[&#x27;fast&#x27;] = &#x27;deepseek/deepseek-v4-flash&#x27; could not be resolved (expected &#x27;provider/model_id&#x27; with provider+model in providers map), falling back to default_model
+[2m2026-08-10T02:46:24.240490Z[0m [33m WARN[0m [config] tier_models[&#x27;fast&#x27;] = &#x27;deepseek/deepseek-v4-flash&#x27; could not be resolved (expected &#x27;provider/model_id&#x27; with provider+model in providers map), falling back to default_model
+[2m2026-08-10T02:46:24.242214Z[0m [33m WARN[0m [config] tier_models[&#x27;fast&#x27;] = &#x27;deepseek/deepseek-v4-flash&#x27; could not be resolved (expected &#x27;provider/model_id&#x27; with provider+model in providers map), falling back to default_model
+[2m2026-08-10T02:46:24.242225Z[0m [33m WARN[0m [auto-session-title] LLM call failed (silently swallowed): tier &#x27;fast&#x27; not configured and no default_model available
+
+[TIMEOUT after 180s — killed]
+</pre>
+</body></html>

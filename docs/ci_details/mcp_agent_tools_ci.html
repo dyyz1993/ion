@@ -1,0 +1,63 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>mcp_agent_tools_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #10b981; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>✅ mcp_agent_tools_ci (27 pass / 0 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  MCP + Agent 工具限制 CI — Mon Aug 10 10:12:51 CST 2026
+════════════════════════════════════════════════════
+[32m  ✅ build ion[0m
+
+── Group A: 白名单不含 MCP → MCP 工具被移除 ──
+[32m  ✅ A1: restrict_to 只保留白名单工具[0m
+[32m  ✅ A2: agent .md 的 tools 字段触发 restrict_to[0m
+[32m  ✅ A3: AgentConfig 有 tools 字段[0m
+[32m  ✅ A4: AgentConfig 有 disallowed_tools 字段[0m
+
+── Group B: 白名单逻辑验证 ──
+[32m  ✅ B1: 白名单优先于黑名单（先 restrict 再 remove）[0m
+[32m  ✅ B2: 黑名单在白名单之后执行[0m
+
+── Group C: 环境变量工具限制（hooks/spawn_worker）──
+[32m  ✅ C1: ION_ALLOWED_TOOLS 环境变量支持[0m
+[32m  ✅ C2: ION_DISALLOWED_TOOLS 环境变量支持[0m
+[32m  ✅ C3: 环境变量叠加在 agent.md 之后（只能收紧）[0m
+
+── Group D: MCP 工具命名 ──
+[32m  ✅ D1: MCP 工具命名格式 mcp__server__tool[0m
+[32m  ✅ D2: MCP 工具注册到 ToolRegistry[0m
+[32m  ✅ D3: MCP 工具受白名单影响（filter 用 retain）[0m
+
+── Group E: 权限规则控制 MCP ──
+[32m  ✅ E1: 权限规则支持 mcp__ 通配符[0m
+[32m  ✅ E2: MCP 工具的 subject 是 mcp_tool[0m
+
+── Group F: Agent .md 定义验证 ──
+[32m  ✅ F: agent mcp-test-readonly.md 已创建[0m
+[32m  ✅ F: agent mcp-test-mcp.md 已创建[0m
+[32m  ✅ F: agent mcp-test-blocked.md 已创建[0m
+[32m  ✅ F: agent mcp-test-open.md 已创建[0m
+[32m  ✅ F5: find_agent 能找到自定义 agent[0m
+[32m  ✅ F6: 内置 agent 有正确的 tools 配置[0m
+
+── Group G: --tools CLI flag ──
+[32m  ✅ G1: --tools flag 支持[0m
+[32m  ✅ G2: --tools 触发 filter()[0m
+[32m  ✅ G3: --exclude-tools 支持[0m
+
+── Group H: spawn_worker 工具限制透传 ──
+[32m  ✅ H1: ExtensionWorkerConfig 有 allowed_tools[0m
+[32m  ✅ H2: ExtensionWorkerConfig 有 disallowed_tools[0m
+[32m  ✅ H3: spawn_worker 透传 allowed_tools 到子 Worker[0m
+
+════════════════════════════════════════════════════
+  Summary: Pass=27  Fail=0
+════════════════════════════════════════════════════
+</pre>
+</body></html>

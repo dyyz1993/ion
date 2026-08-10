@@ -1,0 +1,57 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>faux_scenarios_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ faux_scenarios_ci (0 pass / 4 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>── Phase 0: Build ──
+
+warning: `ion` (bin &quot;ion&quot;) generated 5 warnings (run `cargo fix --bin &quot;ion&quot; -p ion` to apply 4 suggestions)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.22s
+
+── Group A: 场景 1 直接执行 (ion &quot;msg&quot;) ──
+[31m❌ FAIL: A1 场景1 基本文本回放 (output: [faux] enabled: 1 responses queued
+[faux] model.api forced to &#x27;faux&#x27;
+{&quot;event&quot;:{&quot;customType&quot;:&quot;hook_handler_executed&quot;,&quot;data&quot;:{&quot;block&quot;:false,&quot;event&quot;:&quot;SessionStart&quot;,&quot;handler_type&quot;:&quot;command&quot;,&quot;reason&quot;:null},&quot;extension&quot;:&quot;hooks&quot;,&quot;type&quot;:&quot;extension_event&quot;,&quot;visibility&quot;:&quot;llm_and_ui&quot;},&quot;type&quot;:&quot;event&quot;}
+{&quot;customType&quot;:&quot;transcript_appended&quot;,&quot;data&quot;:{&quot;turn_id&quot;:6},&quot;extension&quot;:&quot;memory&quot;,&quot;session&quot;:&quot;sess_540c3250&quot;,&quot;timestamp&quot;:1786328432289,&quot;type&quot;:&quot;extension_event&quot;}
+{&quot;customType&quot;:&quot;memory_skipped&quot;,&quot;data&quot;:{&quot;query&quot;:&quot;say hi&quot;,&quot;reason&quot;:&quot;no_match&quot;},&quot;extension&quot;:&quot;memory&quot;,&quot;session&quot;:&quot;sess_540c3250&quot;,&quot;timestamp&quot;:1786328432290,&quot;type&quot;:&quot;extension_event&quot;}
+{&quot;event&quot;:{&quot;customType&quot;:&quot;hook_handler_executed&quot;,&quot;data&quot;:{&quot;block&quot;:false,&quot;event&quot;:&quot;SessionStart&quot;,&quot;handler_type&quot;:&quot;command&quot;,&quot;reason&quot;:null},&quot;extension&quot;:&quot;hooks&quot;,&quot;type&quot;:&quot;extension_event&quot;,&quot;visibility&quot;:&quot;llm_and_ui&quot;},&quot;type&quot;:&quot;event&quot;})[0m
+[31m❌ FAIL: A2 场景1 script 文件 (output: [faux] enabled: 2 responses queued
+[faux] model.api forced to &#x27;faux&#x27;
+{&quot;event&quot;:{&quot;customType&quot;:&quot;hook_handler_executed&quot;,&quot;data&quot;:{&quot;block&quot;:false,&quot;event&quot;:&quot;SessionStart&quot;,&quot;handler_type&quot;:&quot;command&quot;,&quot;reason&quot;:null},&quot;extension&quot;:&quot;hooks&quot;,&quot;type&quot;:&quot;extension_event&quot;,&quot;visibility&quot;:&quot;llm_and_ui&quot;},&quot;type&quot;:&quot;event&quot;}
+{&quot;customType&quot;:&quot;transcript_appended&quot;,&quot;data&quot;:{&quot;turn_id&quot;:2},&quot;extension&quot;:&quot;memory&quot;,&quot;session&quot;:&quot;sess_e925cc18&quot;,&quot;timestamp&quot;:1786328460474,&quot;type&quot;:&quot;extension_event&quot;}
+{&quot;customType&quot;:&quot;memory_skipped&quot;,&quot;data&quot;:{&quot;query&quot;:&quot;m1&quot;,&quot;reason&quot;:&quot;no_match&quot;},&quot;extension&quot;:&quot;memory&quot;,&quot;session&quot;:&quot;sess_e925cc18&quot;,&quot;timestamp&quot;:1786328460475,&quot;type&quot;:&quot;extension_event&quot;}
+{&quot;event&quot;:{&quot;customType&quot;:&quot;hook_handler_executed&quot;,&quot;data&quot;:{&quot;block&quot;:false,&quot;event&quot;:&quot;SessionStart&quot;,&quot;handler_type&quot;:&quot;command&quot;,&quot;reason&quot;:null},&quot;extension&quot;:&quot;hooks&quot;,&quot;type&quot;:&quot;extension_event&quot;,&quot;visibility&quot;:&quot;llm_and_ui&quot;},&quot;type&quot;:&quot;event&quot;})[0m
+
+── Group B: 场景 2 快速编排 (ion --host) ──
+[31m❌ FAIL: B1 场景2 host + faux (output: [host] Starting WorkerRegistry
+[pump] spawning...
+[host] spawned wkr_34e47172 (build)
+[pump] 订阅新 worker: wkr_34e47172
+[host] waiting for workers to complete... (timeout 30s)
+[host] timeout reached, forcing exit
+[host] cleaning up, notifying workers to save &amp; exit
+[host] cleanup complete)[0m
+
+── Group C: 场景 3 常驻服务 (ion serve) ──
+[31m❌ FAIL: C1 场景3 serve + faux (get_last_assistant_text output: {
+  &quot;command&quot;: &quot;get_last_assistant_text&quot;,
+  &quot;data&quot;: {
+    &quot;error&quot;: &quot;agent is running, please wait&quot;,
+    &quot;status&quot;: &quot;busy&quot;
+  },
+  &quot;id&quot;: &quot;rpc-client&quot;,
+  &quot;success&quot;: true,
+  &quot;type&quot;: &quot;response&quot;
+})[0m
+
+── 结果 ──
+PASS=0 FAIL=4
+[31m有失败[0m
+</pre>
+</body></html>

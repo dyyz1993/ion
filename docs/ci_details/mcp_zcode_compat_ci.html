@@ -1,0 +1,60 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>mcp_zcode_compat_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ mcp_zcode_compat_ci (2 pass / 7 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  MCP zcode 兼容 CI — Mon Aug 10 10:28:07 CST 2026
+════════════════════════════════════════════════════
+[32m  ✅ build ion[0m
+
+Group A: 嵌套格式 mcp.servers 加载（disabled，不触发真实连接）
+[31m  ❌ A1: 嵌套 stdio 未加载 — {
+  &quot;command&quot;: &quot;get_mcp_servers&quot;,
+  &quot;data&quot;: [],
+  &quot;id&quot;: &quot;rpc-client&quot;,
+  &quot;success&quot;: true,
+  &quot;type&quot;: &quot;response&quot;
+}[0m
+[31m  ❌ A2: 嵌套 http 未加载 — {
+  &quot;command&quot;: &quot;get_mcp_servers&quot;,
+  &quot;data&quot;: [],
+  &quot;id&quot;: &quot;rpc-client&quot;,
+  &quot;success&quot;: true,
+  &quot;type&quot;: &quot;response&quot;
+}[0m
+
+Group B: enabled/disabled 字段兼容
+[31m  ❌ B1: enabled:false 未生效 — {
+  &quot;command&quot;: &quot;get_mcp_servers&quot;,
+  &quot;data&quot;: [],
+  &quot;id&quot;: &quot;rpc-client&quot;,
+  &quot;success&quot;: true,
+  &quot;type&quot;: &quot;response&quot;
+}[0m
+[31m  ❌ B2: enabled 优先级未生效 — {
+  &quot;command&quot;: &quot;get_mcp_servers&quot;,
+  &quot;data&quot;: [],
+  &quot;id&quot;: &quot;rpc-client&quot;,
+  &quot;success&quot;: true,
+  &quot;type&quot;: &quot;response&quot;
+}[0m
+
+Group C: 嵌套 + 平铺混用
+[31m  ❌ C1: 混用加载失败 — flat:0 nested:0[0m
+[31m  ❌ C2: 平铺优先未生效 — transport=&#x27;&#x27;（期望 stdio）[0m
+
+Group D: 跳过（用 &#x27;bash tests/mcp_zcode_compat_ci.sh D&#x27; 启用真实连接测试）
+[33m  ⏭️  Group D（4 个真实 server 连接 + 实调）[0m
+
+════════════════════════════════════════════════════
+  结果：✅ 1  ❌ 6  ⏭️  1
+════════════════════════════════════════════════════
+</pre>
+</body></html>

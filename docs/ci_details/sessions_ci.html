@@ -1,0 +1,49 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>sessions_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #10b981; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>✅ sessions_ci (20 pass / 0 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  Sessions CI — Mon Aug 10 10:13:34 CST 2026
+════════════════════════════════════════════════════
+[32m  ✅ build ion[0m
+
+Group A: 基础过滤（当前项目 vs --all）
+[32m  ✅ A1: --all 列出全部 3 条会话[0m
+[32m  ✅ A2: 当前主仓库过滤出 2 条（main + wt，不含 other）[0m
+[32m  ✅ A3: other 仓库只看到 1 条（不含主仓库的）[0m
+[32m  ✅ A4: other 仓库正确过滤掉 sess_main_001[0m
+
+Group B: JSON 输出字段完整性（含 tokenCacheRead/Write）
+[32m  ✅ B1: --json 输出可被 jq 解析[0m
+[32m  ✅ B2: JSON project 含 cwd + projectKey[0m
+[32m  ✅ B3: JSON 含 tokenCacheRead / tokenCacheWrite 字段[0m
+[32m  ✅ B4: sess_main_001 tokenCacheRead=500（值正确）[0m
+[32m  ✅ B5: JSON 含全部 13 个核心字段[0m
+[32m  ✅ B6: --all --json 时 project 为 null[0m
+
+Group C: worktree 聚合正确性
+[32m  ✅ C1: 主仓库能看到 worktree 会话 sess_wt_001[0m
+[32m  ✅ C2: worktree 目录同时看到主仓库 + worktree 会话（2 条）[0m
+[32m  ✅ C3: 主仓库和 worktree 的 projectKey 相同（��[0m
+[32m  ✅ C4: worktree 目录会话数 = 主仓库会话数（聚合一致）[0m
+
+Group D: 表格格式 + 边界情况
+[32m  ✅ D1: 表格 TOKENS 列为 IN/OUT/CA 格式[0m
+[32m  ✅ D2: 表格 Total 行含 cache 统计[0m
+[32m  ✅ D3: worktree 会话 worktree=true（表格会显示 🌿）[0m
+[32m  ✅ D4: --limit 1 限制表格数据行（显示 1 行）[0m
+[32m  ✅ D5: 非 git 目录不匹配 git 仓库会话（0 条）[0m
+
+════════════════════════════════════════
+  PASS=20  FAIL=0  SKIP=0
+════════════════════════════════════════
+🎉 全部通过
+</pre>
+</body></html>

@@ -1,0 +1,37 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>hooks_handler_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #10b981; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>✅ hooks_handler_ci (9 pass / 0 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  Hooks Handler CI — Mon Aug 10 10:23:26 CST 2026
+════════════════════════════════════════════════════
+[32m  ✅ build ion[0m
+
+── Group A：command handler ──
+[32m  ✅ A1: command handler 执行（subscribe 收到 hook_handler_executed + handler_type=command）[0m
+
+── Group B：http handler 安全校验 ──
+[32m  ✅ B1: http handler 触发（handler_type=http）[0m
+[32m  ✅ B2: http 非 HTTPS URL → block[0m
+[32m  ✅ B3: http localhost → block（私网拒绝）[0m
+
+── Group C：prompt handler ──
+[32m  ✅ C1: prompt handler 触发（handler_type=prompt）[0m
+
+── Group D：mcp_tool handler ──
+[32m  ✅ D1: mcp_tool handler 触发（handler_type=mcp_tool）[0m
+[32m  ✅ D2: mcp_tool handler 调 echo 成功（block=false）[0m
+
+════════════════════════════════════════════════════
+  结果: PASS=8  FAIL=0  SKIP=0
+════════════════════════════════════════════════════
+✅ hooks_handler_ci 全部通过
+</pre>
+</body></html>

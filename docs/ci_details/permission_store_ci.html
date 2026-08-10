@@ -1,0 +1,72 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>permission_store_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ permission_store_ci (22 pass / 1 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  ION Stored-Decision Permission CI Test
+  Mon Aug 10 10:33:06 CST 2026
+  test project: /tmp/ion-perm-store-test-78738
+════════════════════════════════════════════════════
+
+── Phase 0: Build ──
+[32m  ✅ cargo build ion[0m
+  使用 binary: /Users/xuyingzhou/Project/study-rust/ion/target/debug/ion
+
+── Phase 1: Manager &amp; Worker ──
+[32m  ✅ serve start[0m
+[32m  ✅ create_worker (sid=sess_bf8...)[0m
+
+── Group A: Stored-Decision 基本流程 ──
+[32m  ✅ A1 store_decision (id=perm_stored_9f5a571f)[0m
+[32m  ✅ A1b settings.json 含 source=stored 规则[0m
+[32m  ✅ A2 list_stored (count=1)[0m
+[31m  ❌ A3 自动放行: git status (OUT={
+  &quot;error&quot;: &quot;call_tool bash: Tool call failed: exit code 128:
+
+fatal: not a git repository (or any of the parent directories): .git
+&quot;,
+  &quot;id&quot;: &quot;rpc-client&quot;,
+  &quot;success&quot;: false,
+  &quot;type&quot;: &quot;response&quot;
+})[0m
+[32m  ✅ A4 remove_stored (removed=perm_stored_9f5a571f)[0m
+[32m  ✅ A4b remove 后 list_stored count=0[0m
+[32m  ✅ A4c remove_stored 不存在 id → 报错[0m
+[32m  ✅ A5 clear_stored (removed=2)[0m
+[32m  ✅ A5b clear 后 list_stored count=0[0m
+
+── A6: source 隔离（Config 规则不受影响）──
+[32m  ✅ A6a add_rule(Config) + store_decision(Stored) = 2 条[0m
+[32m  ✅ A6b clear_stored 后 Config 规则保留（剩 1 条）[0m
+[32m  ✅ A6c 剩余规则 source=config（未被误删）[0m
+
+── A7: session scope stored ──
+[32m  ✅ A7 session scope stored (count=1)[0m
+[32m  ✅ A7b session stored scope=session[0m
+
+── A8: extension_rpc 等价路径（与顶层 RPC 一致）──
+[32m  ✅ A8a extension_rpc store_decision 等价[0m
+[32m  ✅ A8b extension_rpc list_stored 等价 (count=2)[0m
+[32m  ✅ A8c extension_rpc clear_stored 等价 (removed=2)[0m
+
+── A9: 错误处理 ──
+[32m  ✅ A9a store_decision 非法 decision → 报错[0m
+[32m  ✅ A9b store_decision 非法 scope → 报错[0m
+[32m  ✅ A9c remove_stored 缺 id → 报错[0m
+
+── Cleanup ──
+tests/permission_store_ci.sh: line 377: 78859 Terminated: 15          cargo run --bin ion -- serve start &gt; /tmp/ion-perm-store-host.log 2&gt;&amp;1
+  Cleaned up (含测试目录 /tmp/ion-perm-store-test-78738)
+
+════════════════════════════════════════════════════
+  Results: 22 passed, 1 failed
+════════════════════════════════════════════════════
+</pre>
+</body></html>

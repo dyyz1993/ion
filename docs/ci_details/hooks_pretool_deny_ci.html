@@ -1,0 +1,26 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>hooks_pretool_deny_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ hooks_pretool_deny_ci (3 pass / 5 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  PreToolUse deny CLI
+════════════════════════════════════════════════════
+  ✅ ion 构建成功
+  ✅ 被拒绝的 Bash 没有执行
+  ❌ session.jsonl 已生成
+  ❌ 消息顺序完整且 ToolResult 是拒绝错误
+  ❌ Hook 审计记录与 ToolResult 使用同一 toolCallId 且位于当前分支
+  ❌ SessionIndex 使用完整会话的准确计数
+  ✅ 单文件 HTML 导出成功
+  ❌ 真实 Hook 会话进入 ION 类型目录并保留 Extension 来源
+
+Result: 3 passed, 5 failed
+</pre>
+</body></html>

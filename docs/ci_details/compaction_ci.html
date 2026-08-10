@@ -1,0 +1,36 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>compaction_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ compaction_ci (2 pass / 1 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  ION Compaction CI Test — Mon Aug 10 10:12:09 CST 2026
+════════════════════════════════════════════════════
+[32m  ✅ build ion[0m
+
+Group A: 基础 flag 兼容性
+[32m  ✅ A1: --compact-model flag 在 help 中可见[0m
+
+Group B: session 持久化验证
+{&quot;event&quot;:{&quot;customType&quot;:&quot;hook_handler_executed&quot;,&quot;data&quot;:{&quot;block&quot;:false,&quot;event&quot;:&quot;SessionStart&quot;,&quot;handler_type&quot;:&quot;command&quot;,&quot;reason&quot;:null},&quot;extension&quot;:&quot;hooks&quot;,&quot;type&quot;:&quot;extension_event&quot;,&quot;visibility&quot;:&quot;llm_and_ui&quot;},&quot;type&quot;:&quot;event&quot;}
+{&quot;customType&quot;:&quot;transcript_appended&quot;,&quot;data&quot;:{&quot;turn_id&quot;:45},&quot;extension&quot;:&quot;memory&quot;,&quot;session&quot;:&quot;sess_compact_ci_1786327932&quot;,&quot;timestamp&quot;:1786327934623,&quot;type&quot;:&quot;extension_event&quot;}
+{&quot;customType&quot;:&quot;memory_skipped&quot;,&quot;data&quot;:{&quot;query&quot;:&quot;hello world\n--model\nfaux-test\n--provider\nfaux&quot;,&quot;reason&quot;:&quot;no_match&quot;},&quot;extension&quot;:&quot;memory&quot;,&quot;session&quot;:&quot;sess_compact_ci_1786327932&quot;,&quot;timestamp&quot;:1786327934624,&quot;type&quot;:&quot;extension_event&quot;}
+{&quot;event&quot;:{&quot;customType&quot;:&quot;hook_handler_executed&quot;,&quot;data&quot;:{&quot;block&quot;:false,&quot;event&quot;:&quot;SessionStart&quot;,&quot;handler_type&quot;:&quot;command&quot;,&quot;reason&quot;:null},&quot;extension&quot;:&quot;hooks&quot;,&quot;type&quot;:&quot;extension_event&quot;,&quot;visibility&quot;:&quot;llm_and_ui&quot;},&quot;type&quot;:&quot;event&quot;}
+compaction test ok
+[31m  ❌ B1: 未找到 session 文件[0m
+{&quot;event&quot;:{&quot;customType&quot;:&quot;hook_handler_executed&quot;,&quot;data&quot;:{&quot;block&quot;:false,&quot;event&quot;:&quot;SessionStart&quot;,&quot;handler_type&quot;:&quot;command&quot;,&quot;reason&quot;:null},&quot;extension&quot;:&quot;hooks&quot;,&quot;type&quot;:&quot;extension_event&quot;,&quot;visibility&quot;:&quot;llm_and_ui&quot;},&quot;type&quot;:&quot;event&quot;}
+{&quot;customType&quot;:&quot;transcript_appended&quot;,&quot;data&quot;:{&quot;turn_id&quot;:59},&quot;extension&quot;:&quot;memory&quot;,&quot;session&quot;:&quot;sess_compact_ci_1786327932&quot;,&quot;timestamp&quot;:1786328029774,&quot;type&quot;:&quot;extension_event&quot;}
+{&quot;customType&quot;:&quot;memory_skipped&quot;,&quot;data&quot;:{&quot;query&quot;:&quot;continue this\n--model\ndeepseek-v4-flash\n--provider\nopencode&quot;,&quot;reason&quot;:&quot;no_match&quot;},&quot;extension&quot;:&quot;memory&quot;,&quot;session&quot;:&quot;sess_compact_ci_1786327932&quot;,&quot;timestamp&quot;:1786328029775,&quot;type&quot;:&quot;extension_event&quot;}
+{&quot;event&quot;:{&quot;customType&quot;:&quot;hook_handler_executed&quot;,&quot;data&quot;:{&quot;block&quot;:false,&quot;event&quot;:&quot;SessionStart&quot;,&quot;handler_type&quot;:&quot;command&quot;,&quot;reason&quot;:null},&quot;extension&quot;:&quot;hooks&quot;,&quot;type&quot;:&quot;extension_event&quot;,&quot;visibility&quot;:&quot;llm_and_ui&quot;},&quot;type&quot;:&quot;event&quot;}
+{&quot;event&quot;:{&quot;customType&quot;:&quot;hook_handler_executed&quot;,&quot;data&quot;:{&quot;block&quot;:false,&quot;event&quot;:&quot;PostToolUse&quot;,&quot;handler_type&quot;:&quot;command&quot;,&quot;reason&quot;:null},&quot;extension&quot;:&quot;hooks&quot;,&quot;type&quot;:&quot;extension_event&quot;,&quot;visibility&quot;:&quot;llm_and_ui&quot;},&quot;type&quot;:&quot;event&quot;}
+{&quot;event&quot;:{&quot;customType&quot;:&quot;hook_handler_executed&quot;,&quot;data&quot;:{&quot;block&quot;:false,&quot;event&quot;:&quot;SessionStart&quot;,&quot;handler_type&quot;:&quot;command&quot;,&quot;reason&quot;:null},&quot;extension&quot;:&quot;hooks&quot;,&quot;type&quot;:&quot;extension_event&quot;,&quot;visibility&quot;:&quot;llm_and_ui&quot;},&quot;type&quot;:&quot;event&quot;}
+
+[TIMEOUT after 180s — killed]
+</pre>
+</body></html>

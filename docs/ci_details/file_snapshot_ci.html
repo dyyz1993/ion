@@ -1,0 +1,89 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>file_snapshot_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ file_snapshot_ci (21 pass / 1 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  File Snapshot CI — Mon Aug 10 10:22:10 CST 2026
+════════════════════════════════════════════════════
+[32m  ✅ build ion[0m
+
+Group A: object_store 基础（单元测试）
+[32m  ✅ A1: object_store 单元测试全过（��[0m
+
+Group B: write/edit 精确 diff（路线 1，单元测试）
+[32m  ✅ B1: snapshot 采集单元测试全过（��[0m
+
+Group C: 目录扫描 + git ignore 智能过滤（路线 2）
+[32m  ✅ C1: scanner 单元测试全过（��[0m
+
+Group D: diff 生成（单元测试）
+[32m  ✅ D1: diff 单元测试全过（��[0m
+
+Group E: GC（单元测试）
+[32m  ✅ E1: GC 单元测试全过（��[0m
+
+Group F: RPC 接口（需 host 模式）
+[32m  ✅ F0: create_session 成功（��[0m
+[32m  ✅ F1: get_modified_files 正常返回[0m
+[32m  ✅ F2: get_file_diff 正常返回[0m
+[32m  ✅ F3: get_file_history 正常返回[0m
+[32m  ✅ F4: get_batch_diffs 正常返回[0m
+
+Group G: Worktree 并行（project_key 共享 + session 隔离）
+[32m  ✅ G1: git worktree 创建成功（��[0m
+[32m  ✅ G2: project_key 一致（main=c23d4073c3b84c9d wt=��→ 共享存储[0m
+[32m  ✅ G3: worktree 清理完成[0m
+[32m  ✅ G4: project_key worktree 共享单元测试通过[0m
+[32m  ✅ G5: object store worktree 间共享 + 去重测试通过[0m
+
+
+Group H: Restore 代码恢复（单元测试 + RPC）
+[32m  ✅ H1: restore 单元测试全过（��— 恢复新文件删除 / 恢复修改文件[0m
+[32m  ✅ H2: restore_files RPC 正常返回（空会话）[0m
+
+Group I: 集成验证（全量 file_snapshot 测试）
+[32m  ✅ G1: file_snapshot 全部测试通过（��[0m
+
+Group J: 审批 harness + RPC 冒烟（新增）
+[32m  ✅ J1: 审批 harness 测试全过（��[0m
+[33m  ⏭️  J2: review_pending 无 j2.txt（可能 faux 未触发）[0m
+[33m  ⏭️  J3: approve 未生效[0m
+[33m  ⏭️  J4: review_reject 未生效（可能 pending 无此文件）[0m
+[33m  ⏭️  J5: review_approvals 状态不全[0m
+[33m  ⏭️  J5b: status 过滤未生效[0m
+[33m  ⏭️  J6: session 文件未找到（cwd=��[0m
+tests/file_snapshot_ci.sh: line 439: 17096 Terminated: 15          ION_FAUX_SCRIPT=/tmp/faux_approval_ci_real.jsonl ./target/debug/ion serve &gt; /tmp/ion_fs_j2.log 2&gt;&amp;1
+
+Group K: 事件推送 subscribe 断言（需独立 host + faux 脚本控制 Stop）
+[33m  ⏭️  K1: 未收到 ApprovalRequest（可能 agent 未 Stop 或 pending 空）[0m
+[33m  ⏭️  K2: 未收到 ApprovalResolved(approved)[0m
+[33m  ⏭️  K3: review_reject 未生效（reject.txt 可能不在 pending）[0m
+[33m  ⏭️  K3b: 未收到 rejected 事件[0m
+[32m  ✅ K4: 事件含 extension=file-approval[0m
+[33m  ⏭️  K5: deny entry 未找到[0m
+tests/file_snapshot_ci.sh: line 549: 18620 Terminated: 15          ./target/debug/ion subscribe --session &quot;$K_SID&quot; &gt; &quot;$SUB_LOG&quot; 2&gt; /dev/null
+tests/file_snapshot_ci.sh: line 550: 18020 Terminated: 15          ION_FAUX_SCRIPT=/tmp/faux_k.jsonl ./target/debug/ion serve &gt; /tmp/ion_k_host.log 2&gt;&amp;1
+
+Group K0: 场景 1 直接 CLI + FauxProvider parented step-snapshot
+Traceback (most recent call last):
+  File &quot;&lt;stdin&gt;&quot;, line 10, in &lt;module&gt;
+AssertionError
+[31m  ❌ K6: 直接 CLI session 缺少合法 parented step-snapshot[0m
+[33m  ⏭️  K7-K8: K6 未形成可验证 session[0m
+
+Group L: 真实 LLM 审批 + parented step-snapshot（需 ION_E2E=1，默认 skip）
+[33m  ⏭️  L1-L6: 真实 LLM 测试需 ION_E2E=1（成本高，默认 skip）[0m
+
+════════════════════════════════════════
+  PASS=21  FAIL=1  SKIP=13
+════════════════════════════════════════
+⚠️ 有 1 个失败
+</pre>
+</body></html>

@@ -1,0 +1,45 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>memory_agent_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ memory_agent_ci (3 pass / 6 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  Memory Agent CI — Mon Aug 10 10:28:38 CST 2026
+════════════════════════════════════════════════════
+[32m  ✅ build ion[0m
+[32m  ✅ host 启动成功[0m
+
+── Group A：memory-agent 自动 spawn ──
+[31m  ❌ A1: 未找到 memory-agent spawn 日志[0m
+    日志: [2m2026-08-10T02:28:42.929543Z[0m [32m INFO[0m [global-memory] opening db at /Users/xuyingzhou/.ion/agent/global-memory.db
+[2m2026-08-10T02:28:42.931038Z[0m [31mERROR[0m [singleton:global-memory] init failed: Tool(&quot;global memory db: init schema: disk I/O error&quot;)
+[2m2026-08-10T02:28:42.958385Z[0m [32m INFO[0m [global-memory] disabled by config, skipping memory-agent spawn
+[31m  ❌ A2: list_workers 未找到 memory-agent worker[0m
+    workers: 
+
+── Group B：memory-agent 可达性 ──
+[31m  ❌ B1+B2: 无 memory-agent worker（前置 A2 失败）[0m
+
+── Group C：global-memory extension_rpc ──
+[32m  ✅ C1: extension_rpc save 成功[0m
+[31m  ❌ C2: search 未找到记忆[0m
+    OUT: {
+  &quot;error&quot;: &quot;Tool(\&quot;global memory not initialized (serve mode only)\&quot;)&quot;,
+  &quot;id&quot;: &quot;rpc-client&quot;,
+  &quot;success&quot;: false,
+  &quot;type&quot;: &quot;response&quot;
+}
+[31m  ❌ C3: 清理失败[0m
+
+════════════════════════════════════════════════════
+  结果: PASS=3  FAIL=5
+════════════════════════════════════════════════════
+❌ memory_agent_ci 有失败
+</pre>
+</body></html>

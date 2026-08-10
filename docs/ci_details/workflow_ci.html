@@ -1,0 +1,52 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>workflow_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ workflow_ci (12 pass / 6 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  ION Workflow CI Test — Mon Aug 10 10:13:38 CST 2026
+════════════════════════════════════════════════════
+[32m  ✅ build[0m
+
+Group W1: DSL 校验
+[32m  ✅ W1-1: 合法 workflow 通过校验[0m
+[32m  ✅ W1-2: 缺 agent/commands 报错[0m
+[32m  ✅ W1-3: 坏 loop_back 报错[0m
+[32m  ✅ W1-4: agent+commands 互斥报错[0m
+
+Group W2: 单 stage 执行
+[32m  ✅ W2-1: 单 stage gate 通过 → COMPLETE[0m
+[31m  ❌ W2-1b: hello.py 未创建[0m
+
+Group W3: 条件分支
+[32m  ✅ W3-2: if=false → skip → COMPLETE[0m
+[31m  ❌ W3-2b: 文件状态不对[0m
+
+Group W4: 上下文传递
+[31m  ❌ W4-2: myctx.py 未创建[0m
+
+Group W5: 多 stage 串联
+[32m  ✅ W5-1: develop → merge → COMPLETE[0m
+[31m  ❌ W5-1b: calc.py 不在 master[0m
+
+Group W7: 持久化 / 断点恢复
+[32m  ✅ W7-1: 从 pending step2 恢复 → COMPLETE[0m
+[31m  ❌ W7-1b: b.py 未创建[0m
+[31m  ❌ W7-2: 状态不对[0m
+
+Group W2+: gate 失败 + loop_back
+[32m  ✅ W2-2a: retry workflow 校验通过[0m
+[32m  ✅ W2-3a: abort workflow 校验通过[0m
+[32m  ✅ W2-3b: loop_back 配置可见[0m
+
+Group W4+: 上下文 outputs 传递
+
+[TIMEOUT after 180s — killed]
+</pre>
+</body></html>

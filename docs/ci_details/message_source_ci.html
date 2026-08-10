@@ -1,0 +1,33 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>message_source_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ message_source_ci (6 pass / 1 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  ION Message Source CI Test — Mon Aug 10 10:29:14 CST 2026
+════════════════════════════════════════════════════
+[32m  ✅ build[0m
+
+Group A: prompt source
+[32m  ✅ A0: create_session (sess_f8f94a3b)[0m
+[32m  ✅ A1: list_turns source = prompt[0m
+[32m  ✅ A2: get_messages User.source = prompt[0m
+
+Group B: steer/followUp RPC
+[32m  ✅ B1: steer RPC 成功[0m
+[32m  ✅ B2: follow_up RPC 成功[0m
+
+Group C: jsonl 落盘
+[31m  ❌ C1-C3: 找不到 session.jsonl[0m
+
+════════════════════════════════════════
+  PASS=6  FAIL=1
+════════════════════════════════════════
+</pre>
+</body></html>

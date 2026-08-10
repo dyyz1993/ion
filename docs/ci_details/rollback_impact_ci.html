@@ -1,0 +1,47 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>rollback_impact_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ rollback_impact_ci (11 pass / 4 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>════════════════════════════════════════════════════
+  ION Rollback Impact CI — Mon Aug 10 10:33:21 CST 2026
+════════════════════════════════════════════════════
+── Phase 0: Build ──
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.41s
+
+── Scenario 1: 修改后回滚→继续聊 ──
+[32m  ✅ S1.0 serve 启动[0m
+[32m  ✅ S1.0b session: sess_47d81f90[0m
+[32m  ✅ S1.1 Turn1 闲聊[0m
+[31m  ❌ S1.2 a.txt 未写 V1[0m
+[31m  ❌ S1.3 a.txt 未写 V2[0m
+  回滚前: live=2, ctx_msg=0
+[32m  ✅ S1.4 Turn1 entry=23918b98[0m
+[32m  ✅ S1.5 rollback 成功[0m
+  leaf_pointer: 0
+[31m  ❌ S1.6 无 leaf_pointer[0m
+  ── 验证面 1: Context（F1）──
+  ctx_msg: 0 → 2
+[32m  ✅ S1.7 F1 现状: context 不因回滚减少[0m
+  ── 验证面 2: Message 检索 ──
+  live=2, full=2
+[32m  ✅ S1.8 retrieval 状态记录（live=2, full=��[0m
+  ── 验证 turnId（F3）──
+  turnId: 23918b98, 重复组=0
+[32m  ✅ S1.9 turnId 无重复[0m
+
+── Scenario 2: 先闲聊→改代码→回滚闲聊 ──
+[32m  ✅ S2.0 session: sess_df864a38[0m
+[32m  ✅ S2.1 Turn1 闲聊[0m
+[31m  ❌ S2.2 c.txt 未写 V2[0m
+[32m  ✅ S2.3 Turn1 entry=24e8f6d8[0m
+
+[TIMEOUT after 180s — killed]
+</pre>
+</body></html>

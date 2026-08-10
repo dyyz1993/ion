@@ -1,28 +1,36 @@
 <!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
-<title>ION CI Report (parking_lot)</title>
+<title>ION CI Report (parking_lot) — 可点击详情</title>
 <style>
 body { font-family: system-ui, sans-serif; margin:0; background:#f8fafc; color:#1e293b; }
 .header { background: linear-gradient(135deg,#0891b2,#0e7490); color:#fff; padding:32px 40px; }
 .header h1 { margin:0 0 8px; font-size:28px; }
 .summary { display:flex; gap:16px; padding:20px 40px; background:#fff; border-bottom:1px solid #e2e8f0; flex-wrap:wrap; }
-.card { padding:16px 24px; border-radius:10px; min-width:120px; text-align:center; }
+.card { padding:16px 24px; border-radius:10px; min-width:120px; text-align:center; cursor:pointer; }
 .c-ok { background:#dcfce7; color:#166534; }
 .c-fail { background:#fee2e2; color:#991b1b; }
 .c-case { background:#dbeafe; color:#1e40af; }
 .card strong { display:block; font-size:28px; }
 .card span { font-size:12px; }
-.compare { max-width:1200px; margin:16px auto; padding:16px 20px; background:#f0fdf4; border:1px solid #86efac; border-radius:8px; font-size:13px; line-height:1.8; }
+.filters { padding:16px 40px; background:#fff; border-bottom:1px solid #e2e8f0; display:flex; gap:8px; flex-wrap:wrap; }
+.filter-btn { padding:6px 16px; border:1px solid #cbd5e1; border-radius:20px; background:#fff; cursor:pointer; font-size:13px; }
+.filter-btn.active { background:#0e7490; color:#fff; border-color:#0e7490; }
 .section { max-width:1200px; margin:24px auto 8px; padding:0 40px; }
 .section h2 { font-size:17px; margin:0; }
-table { width:100%; max-width:1200px; margin:0 auto 16px; border-collapse:collapse; background:#fff; }
+table { width:100%; max-width:1200px; margin:0 auto 16px; border-collapse:collapse; background:#fff; border-radius:8px; overflow:hidden; }
 th { background:#f1f5f9; padding:10px 14px; text-align:left; font-size:12px; color:#64748b; }
 td { padding:10px 14px; border-bottom:1px solid #f1f5f9; font-size:13px; }
-tr:hover { background:#f8fafc; }
+tr { cursor:pointer; }
+tr:hover { background:#f0f9ff; }
+.ci-link { color:#0e7490; text-decoration:none; font-weight:600; }
+.ci-link:hover { text-decoration:underline; }
+.badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+.b-pass { background:#dcfce7; color:#166534; }
+.b-fail { background:#fee2e2; color:#991b1b; }
 </style></head><body>
 
 <div class="header">
-  <h1>🧪 ION CI Report (parking_lot::Mutex 重构后)</h1>
-  <p>61 scripts / v8 isolated / 686 pass / 113 fail</p>
+  <h1>🧪 ION CI Report (parking_lot::Mutex)</h1>
+  <p>61 scripts · 26 PASS · 686 pass cases · serve RPC 秒响应 ✅</p>
 </div>
 
 <div class="summary">
@@ -32,87 +40,87 @@ tr:hover { background:#f8fafc; }
   <div class="card c-fail"><strong>113</strong><span>fail cases</span></div>
 </div>
 
-<div class="compare">
-  <strong>parking_lot::Mutex 重构效果：</strong><br>
-  tokio::sync::Mutex: 29 PASS / <strong>417</strong> pass 用例 / serve RPC ❌ 完全不响应<br>
-  <strong>parking_lot::Mutex: 26 PASS / 686 pass 用例 / serve RPC ✅ 秒响应</strong><br>
-  用例提升: +269 (+64%) / RPC 从死锁到秒响应<br>
-  <br>
-  <strong>核心修复：tokio::sync::Mutex → parking_lot::Mutex（同步锁，不跨 await 持有）</strong><br>
-  + 所有 create_worker 改 lock split（prepare/register 分离）<br>
-  + MCP connect 异步化 + post_init spawn + git async<br>
+<div class="filters">
+  <button class="filter-btn active" onclick="filterStatus('')">全部 (61)</button>
+  <button class="filter-btn" onclick="filterStatus('PASS')">✅ 通过 (26)</button>
+  <button class="filter-btn" onclick="filterStatus('FAIL')">❌ 失败 (35)</button>
 </div>
 
-<div class="section"><h2>✅ PASS (26)</h2></div>
-<table><thead><tr><th>script</th><th>pass</th><th>fail</th></tr></thead><tbody>
-<tr><td>apple_container_ci</td><td>26</td><td>0</td></tr>
-<tr><td>cli_alignment_ci</td><td>9</td><td>0</td></tr>
-<tr><td>crash_recovery_ci</td><td>6</td><td>0</td></tr>
-<tr><td>dev_server_detector_ci</td><td>14</td><td>0</td></tr>
-<tr><td>export_ci</td><td>54</td><td>0</td></tr>
-<tr><td>extension_fs_ci</td><td>24</td><td>0</td></tr>
-<tr><td>extensions_ci</td><td>11</td><td>0</td></tr>
-<tr><td>global_memory_ci</td><td>8</td><td>0</td></tr>
-<tr><td>goal_evolver_ci</td><td>18</td><td>0</td></tr>
-<tr><td>goal_supervisor_ci</td><td>26</td><td>0</td></tr>
-<tr><td>hooks_ci</td><td>8</td><td>0</td></tr>
-<tr><td>hooks_handler_ci</td><td>9</td><td>0</td></tr>
-<tr><td>hooks_stdin_ci</td><td>5</td><td>0</td></tr>
-<tr><td>mcp_agent_tools_ci</td><td>27</td><td>0</td></tr>
-<tr><td>memory_active_ci</td><td>25</td><td>0</td></tr>
-<tr><td>memory_v2_processing_ci</td><td>11</td><td>0</td></tr>
-<tr><td>message_retrieval_ci</td><td>59</td><td>0</td></tr>
-<tr><td>overflow_recovery_ci</td><td>4</td><td>0</td></tr>
-<tr><td>rules_ci</td><td>5</td><td>0</td></tr>
-<tr><td>runtime_ci</td><td>15</td><td>0</td></tr>
-<tr><td>self_heal_ci</td><td>2</td><td>0</td></tr>
-<tr><td>session_hook_ci</td><td>9</td><td>0</td></tr>
-<tr><td>session_tree_verify</td><td>15</td><td>0</td></tr>
-<tr><td>sessions_ci</td><td>20</td><td>0</td></tr>
-<tr><td>streaming_replay_ci</td><td>10</td><td>0</td></tr>
-<tr><td>streaming_throughput_ci</td><td>19</td><td>0</td></tr>
-</tbody></table>
-<div class="section"><h2>❌ FAIL (35)</h2></div>
-<table><thead><tr><th>script</th><th>pass</th><th>fail</th></tr></thead><tbody>
-<tr><td>abort_ci</td><td>6</td><td>3</td></tr>
-<tr><td>compaction_ci</td><td>2</td><td>1</td></tr>
-<tr><td>extension_cli_ci</td><td>9</td><td>3</td></tr>
-<tr><td>extension_flags_ci</td><td>2</td><td>1</td></tr>
-<tr><td>faux_scenarios_ci</td><td>0</td><td>4</td></tr>
-<tr><td>file_snapshot_ci</td><td>21</td><td>1</td></tr>
-<tr><td>hooks_agent_ci</td><td>1</td><td>3</td></tr>
-<tr><td>hooks_pretool_deny_ci</td><td>3</td><td>5</td></tr>
-<tr><td>lsp_ci</td><td>7</td><td>2</td></tr>
-<tr><td>lyric_webui_ci</td><td>9</td><td>4</td></tr>
-<tr><td>mcp_ci</td><td>14</td><td>21</td></tr>
-<tr><td>mcp_zcode_compat_ci</td><td>2</td><td>7</td></tr>
-<tr><td>memory_agent_ci</td><td>3</td><td>6</td></tr>
-<tr><td>memory_injection_ci</td><td>2</td><td>6</td></tr>
-<tr><td>message_source_ci</td><td>6</td><td>1</td></tr>
-<tr><td>monitor_ci</td><td>24</td><td>1</td></tr>
-<tr><td>p2_hotreload_ci</td><td>1</td><td>1</td></tr>
-<tr><td>p3_audit_ci</td><td>1</td><td>1</td></tr>
-<tr><td>p3_ui_ci</td><td>1</td><td>1</td></tr>
-<tr><td>p4_events_ci</td><td>1</td><td>1</td></tr>
-<tr><td>p4_extension_ci</td><td>1</td><td>1</td></tr>
-<tr><td>permission_ci</td><td>11</td><td>1</td></tr>
-<tr><td>permission_store_ci</td><td>22</td><td>1</td></tr>
-<tr><td>realtime_stitch_ci</td><td>2</td><td>1</td></tr>
-<tr><td>record_replay_ci</td><td>10</td><td>1</td></tr>
-<tr><td>rollback_impact_ci</td><td>11</td><td>4</td></tr>
-<tr><td>scenario2_ci</td><td>9</td><td>6</td></tr>
-<tr><td>session_entries_ci</td><td>17</td><td>4</td></tr>
-<tr><td>skill_tool_ci</td><td>10</td><td>6</td></tr>
-<tr><td>soft_delete_ci</td><td>3</td><td>2</td></tr>
-<tr><td>soft_interrupt_ci</td><td>3</td><td>1</td></tr>
-<tr><td>sse_events_ci</td><td>10</td><td>1</td></tr>
-<tr><td>tier_models_ci</td><td>2</td><td>1</td></tr>
-<tr><td>ui_integration_ci</td><td>9</td><td>4</td></tr>
-<tr><td>workflow_ci</td><td>12</td><td>6</td></tr>
+<div class="section"><h2>所有脚本（点击查看详情）</h2></div>
+<table id="tbl"><thead><tr><th>状态</th><th>脚本名</th><th>pass</th><th>fail</th><th>详情</th></tr></thead><tbody>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>abort_ci</td><td>6</td><td>3</td><td><a class="ci-link" href="ci_details/abort_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>apple_container_ci</td><td>26</td><td>0</td><td><a class="ci-link" href="ci_details/apple_container_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>cli_alignment_ci</td><td>9</td><td>0</td><td><a class="ci-link" href="ci_details/cli_alignment_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>compaction_ci</td><td>2</td><td>1</td><td><a class="ci-link" href="ci_details/compaction_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>crash_recovery_ci</td><td>6</td><td>0</td><td><a class="ci-link" href="ci_details/crash_recovery_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>dev_server_detector_ci</td><td>14</td><td>0</td><td><a class="ci-link" href="ci_details/dev_server_detector_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>export_ci</td><td>54</td><td>0</td><td><a class="ci-link" href="ci_details/export_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>extension_cli_ci</td><td>9</td><td>3</td><td><a class="ci-link" href="ci_details/extension_cli_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>extension_flags_ci</td><td>2</td><td>1</td><td><a class="ci-link" href="ci_details/extension_flags_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>extension_fs_ci</td><td>24</td><td>0</td><td><a class="ci-link" href="ci_details/extension_fs_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>extensions_ci</td><td>11</td><td>0</td><td><a class="ci-link" href="ci_details/extensions_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>faux_scenarios_ci</td><td>0</td><td>4</td><td><a class="ci-link" href="ci_details/faux_scenarios_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>file_snapshot_ci</td><td>21</td><td>1</td><td><a class="ci-link" href="ci_details/file_snapshot_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>global_memory_ci</td><td>8</td><td>0</td><td><a class="ci-link" href="ci_details/global_memory_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>goal_evolver_ci</td><td>18</td><td>0</td><td><a class="ci-link" href="ci_details/goal_evolver_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>goal_supervisor_ci</td><td>26</td><td>0</td><td><a class="ci-link" href="ci_details/goal_supervisor_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>hooks_agent_ci</td><td>1</td><td>3</td><td><a class="ci-link" href="ci_details/hooks_agent_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>hooks_ci</td><td>8</td><td>0</td><td><a class="ci-link" href="ci_details/hooks_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>hooks_handler_ci</td><td>9</td><td>0</td><td><a class="ci-link" href="ci_details/hooks_handler_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>hooks_pretool_deny_ci</td><td>3</td><td>5</td><td><a class="ci-link" href="ci_details/hooks_pretool_deny_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>hooks_stdin_ci</td><td>5</td><td>0</td><td><a class="ci-link" href="ci_details/hooks_stdin_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>lsp_ci</td><td>7</td><td>2</td><td><a class="ci-link" href="ci_details/lsp_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>lyric_webui_ci</td><td>9</td><td>4</td><td><a class="ci-link" href="ci_details/lyric_webui_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>mcp_agent_tools_ci</td><td>27</td><td>0</td><td><a class="ci-link" href="ci_details/mcp_agent_tools_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>mcp_ci</td><td>14</td><td>21</td><td><a class="ci-link" href="ci_details/mcp_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>mcp_zcode_compat_ci</td><td>2</td><td>7</td><td><a class="ci-link" href="ci_details/mcp_zcode_compat_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>memory_active_ci</td><td>25</td><td>0</td><td><a class="ci-link" href="ci_details/memory_active_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>memory_agent_ci</td><td>3</td><td>6</td><td><a class="ci-link" href="ci_details/memory_agent_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>memory_injection_ci</td><td>2</td><td>6</td><td><a class="ci-link" href="ci_details/memory_injection_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>memory_v2_processing_ci</td><td>11</td><td>0</td><td><a class="ci-link" href="ci_details/memory_v2_processing_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>message_retrieval_ci</td><td>59</td><td>0</td><td><a class="ci-link" href="ci_details/message_retrieval_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>message_source_ci</td><td>6</td><td>1</td><td><a class="ci-link" href="ci_details/message_source_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>monitor_ci</td><td>24</td><td>1</td><td><a class="ci-link" href="ci_details/monitor_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>overflow_recovery_ci</td><td>4</td><td>0</td><td><a class="ci-link" href="ci_details/overflow_recovery_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>p2_hotreload_ci</td><td>1</td><td>1</td><td><a class="ci-link" href="ci_details/p2_hotreload_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>p3_audit_ci</td><td>1</td><td>1</td><td><a class="ci-link" href="ci_details/p3_audit_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>p3_ui_ci</td><td>1</td><td>1</td><td><a class="ci-link" href="ci_details/p3_ui_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>p4_events_ci</td><td>1</td><td>1</td><td><a class="ci-link" href="ci_details/p4_events_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>p4_extension_ci</td><td>1</td><td>1</td><td><a class="ci-link" href="ci_details/p4_extension_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>permission_ci</td><td>11</td><td>1</td><td><a class="ci-link" href="ci_details/permission_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>permission_store_ci</td><td>22</td><td>1</td><td><a class="ci-link" href="ci_details/permission_store_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>realtime_stitch_ci</td><td>2</td><td>1</td><td><a class="ci-link" href="ci_details/realtime_stitch_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>record_replay_ci</td><td>10</td><td>1</td><td><a class="ci-link" href="ci_details/record_replay_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>rollback_impact_ci</td><td>11</td><td>4</td><td><a class="ci-link" href="ci_details/rollback_impact_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>rules_ci</td><td>5</td><td>0</td><td><a class="ci-link" href="ci_details/rules_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>runtime_ci</td><td>15</td><td>0</td><td><a class="ci-link" href="ci_details/runtime_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>scenario2_ci</td><td>9</td><td>6</td><td><a class="ci-link" href="ci_details/scenario2_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>self_heal_ci</td><td>2</td><td>0</td><td><a class="ci-link" href="ci_details/self_heal_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>session_entries_ci</td><td>17</td><td>4</td><td><a class="ci-link" href="ci_details/session_entries_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>session_hook_ci</td><td>9</td><td>0</td><td><a class="ci-link" href="ci_details/session_hook_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>session_tree_verify</td><td>15</td><td>0</td><td><a class="ci-link" href="ci_details/session_tree_verify.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>sessions_ci</td><td>20</td><td>0</td><td><a class="ci-link" href="ci_details/sessions_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>skill_tool_ci</td><td>10</td><td>6</td><td><a class="ci-link" href="ci_details/skill_tool_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>soft_delete_ci</td><td>3</td><td>2</td><td><a class="ci-link" href="ci_details/soft_delete_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>soft_interrupt_ci</td><td>3</td><td>1</td><td><a class="ci-link" href="ci_details/soft_interrupt_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>sse_events_ci</td><td>10</td><td>1</td><td><a class="ci-link" href="ci_details/sse_events_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>streaming_replay_ci</td><td>10</td><td>0</td><td><a class="ci-link" href="ci_details/streaming_replay_ci.html">查看 →</a></td></tr>
+<tr data-status="PASS"><td><span class="badge b-pass">PASS</span></td><td>streaming_throughput_ci</td><td>19</td><td>0</td><td><a class="ci-link" href="ci_details/streaming_throughput_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>tier_models_ci</td><td>2</td><td>1</td><td><a class="ci-link" href="ci_details/tier_models_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>ui_integration_ci</td><td>9</td><td>4</td><td><a class="ci-link" href="ci_details/ui_integration_ci.html">查看 →</a></td></tr>
+<tr data-status="FAIL"><td><span class="badge b-fail">FAIL</span></td><td>workflow_ci</td><td>12</td><td>6</td><td><a class="ci-link" href="ci_details/workflow_ci.html">查看 →</a></td></tr>
 </tbody></table>
 
+<script>
+function filterStatus(status) {
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  document.querySelectorAll('tbody tr').forEach(tr => {
+    tr.style.display = (!status || tr.dataset.status === status) ? '' : 'none';
+  });
+}
+</script>
 <div style="text-align:center;padding:32px;color:#94a3b8;font-size:12px">
-  Generated: 2026-08-10 / ION CI Report (parking_lot final)<br>
-  Commits: 4dd79da (parking_lot refactor) + 45d40dc (monitor lock split)
+  Generated: 2026-08-10 / parking_lot::Mutex 重构后
 </div>
 </body></html>

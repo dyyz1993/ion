@@ -1,0 +1,58 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>lsp_ci 详情</title>
+<style>
+body { font-family: monospace; margin:20px; background:#1e293b; color:#e2e8f0; font-size:13px; line-height:1.5; }
+h1 { font-family: system-ui; color: #ef4444; }
+a { color: #0e7490; font-family: system-ui; }
+pre { white-space: pre-wrap; word-wrap: break-word; }
+</style></head><body>
+<h1>❌ lsp_ci (7 pass / 2 fail)</h1>
+<p><a href="../ci_report.html">← 返回列表</a></p>
+<hr>
+<pre>==========================================
+  LSP Extension CI
+==========================================
+tests/lsp_ci.sh: line 58: ION_BIN: unbound variable
+
+=== Health ===
+  serve OK
+  Session: sess_3b25290d
+
+=== Group A: extension_rpc lsp ===
+--- A1: extension_rpc lsp check ---
+  ✅ A1: lsp check returned (count=)
+--- A2: extension_rpc lsp status ---
+  ✅ A2: lsp status (response received)
+--- A3: extension_rpc lsp clear ---
+  ✅ A3: lsp clear (response received)
+
+=== Group B: LLM 工具 (lsp_check) ===
+--- B1: call_tool lsp_check ---
+  ❌ B1: lsp_check tool no output ()
+--- B2: lsp_check registered ---
+  ❌ B2: lsp_check tool not found
+
+=== Group C: 边界场景 ===
+--- C1: status after clear ---
+  ✅ C1: diagnostic_count= (acceptable if not cleared)
+--- C2: unknown lsp method ---
+  ✅ C2: unknown method rejected
+--- C3: check JSON structure ---
+  ✅ C3: check JSON (response received)
+
+=== Group D: 单元测试 ===
+--- D1: cargo test --lib lsp ---
+  ✅ D1: 11 passed LSP unit tests pass
+
+=== Cleanup ===
+tests/lsp_ci.sh: line 55: 24678 Terminated: 15          nohup bash -c &quot;cd $PROJECT_DIR &amp;&amp; RUST_LOG=error $ION serve&quot; &gt; /tmp/lsp_ci_serve.log 2&gt;&amp;1
+tests/lsp_ci.sh: line 58: ION_BIN: unbound variable
+
+==========================================
+  LSP CI Summary
+==========================================
+  Passed: 7
+  Failed: 2
+==========================================
+</pre>
+</body></html>
