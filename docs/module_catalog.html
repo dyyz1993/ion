@@ -1,760 +1,231 @@
-<!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="UTF-8">
-<title>ION 模块清单 + 测试覆盖</title>
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<title>ION 模块清单 + 会话导出</title>
 <style>
 body { font-family: system-ui, sans-serif; margin: 0; background: #f8fafc; color: #1e293b; }
 .header { background: linear-gradient(135deg,#0e7490,#0891b2); color: #fff; padding: 32px 40px; }
 .header h1 { margin: 0 0 8px; font-size: 28px; }
-.header .stats { display: flex; gap: 24px; margin-top: 16px; }
-.stat { background: rgba(255,255,255,0.15); padding: 12px 20px; border-radius: 8px; }
-.stat strong { display: block; font-size: 24px; }
-.stat span { font-size: 12px; opacity: 0.85; }
-.filters { padding: 16px 40px; background: #fff; border-bottom: 1px solid #e2e8f0; display: flex; gap: 8px; flex-wrap: wrap; }
-.filter-btn { padding: 6px 16px; border: 1px solid #cbd5e1; border-radius: 20px; background: #fff; cursor: pointer; font-size: 13px; }
-.filter-btn.active { background: #0e7490; color: #fff; border-color: #0e7490; }
 table { width: 100%; max-width: 1400px; margin: 0 auto; border-collapse: collapse; background: #fff; }
-th { background: #f1f5f9; padding: 12px 16px; text-align: left; font-size: 12px; text-transform: uppercase; color: #64748b; border-bottom: 2px solid #e2e8f0; position: sticky; top: 0; }
-td { padding: 14px 16px; border-bottom: 1px solid #f1f5f9; font-size: 14px; }
-tr:hover { background: #f8fafc; }
-.num { { text-align: right; font-variant-numeric: tabular-nums; } }
-.badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; }
-.badge-ext { background: #dbeafe; color: #1e40af; }
-.badge-core { background: #fef3c7; color: #92400e; }
-.badge-other { background: #e0e7ff; color: #3730a3; }
-.loc-bar { display: inline-block; height: 16px; background: #0e7490; border-radius: 2px; vertical-align: middle; min-width: 2px; }
-.need-ci { background: #fef2f2 !important; }
-.need-ci td:first-child { border-left: 3px solid #dc2626; }
-.ci-link { color: #0e7490; text-decoration: none; font-size: 12px; }
-.ci-link:hover { text-decoration: underline; }
-.fp-count { background: #ecfdf5; color: #065f46; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
-.legend { max-width: 1400px; margin: 16px auto; padding: 0 40px; font-size: 12px; color: #64748b; }
+th { background: #f1f5f9; padding: 12px 16px; text-align: left; font-size: 12px; color: #64748b; position: sticky; top: 0; }
+td { padding: 12px 16px; border-bottom: 1px solid #f1f5f9; font-size: 13px; }
+tr:hover { background: #f0f9ff; }
+.badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; background: #dbeafe; color: #1e40af; }
+.loc-bar { display: inline-block; height: 14px; background: #0e7490; border-radius: 2px; vertical-align: middle; min-width: 2px; }
+.fp-link { color: #0e7490; text-decoration: none; font-size: 11px; margin: 2px; display: inline-block; padding: 2px 8px; background: #f0f9ff; border-radius: 6px; border: 1px solid #bae6fd; }
+.fp-link:hover { background: #0e7490; color: #fff; }
 </style></head><body>
 
 <div class="header">
-  <h1>📋 ION 模块清单 + 测试覆盖矩阵</h1>
-  <p style="margin:4px 0 0;opacity:0.9">63 个模块 · 代码 87,056 行 · 单元测试 947 个 · CI 用例 116 个 · 多轮对话 FP 0 个</p>
-  <div class="stats">
-    <div class="stat"><strong>22</strong><span>扩展模块</span></div>
-    <div class="stat"><strong>22</strong><span>核心模块</span></div>
-    <div class="stat"><strong>4</strong><span>其他模块</span></div>
-    <div class="stat"><strong style="color:#fbbf24">14</strong><span>缺 CI（红色行）</span></div>
-  </div>
+  <h1>📋 ION 模块清单 + 会话导出</h1>
+  <p>22 个扩展模块 · 点击 FP 编号查看 export.rs 导出的会话 HTML（带 Timeline + 折叠）</p>
 </div>
 
-<div class="filters">
-  <button class="filter-btn active" onclick="filterCat('')">全部 (63)</button>
-  <button class="filter-btn" onclick="filterCat('扩展')">扩展 (23)</button>
-  <button class="filter-btn" onclick="filterCat('核心')">核心 (22)</button>
-  <button class="filter-btn" onclick="filterCat('其他')">其他 (4)</button>
-  <button class="filter-btn" onclick="filterNeed()" style="border-color:#dc2626;color:#dc2626">⚠️ 缺 CI (14)</button>
-</div>
-
-<div class="legend">💡 红色行 = 代码 >500 行但没有 CI 脚本（需要补 case）。LOC 条 = 代码量可视化（最大 16770 行）。点击列头可排序。</div>
-
-<table id="tbl">
+<table>
 <thead><tr>
   <th>#</th><th>编号</th><th>模块名</th><th>说明</th>
-  <th class="num">代码行</th><th class="num">单测</th><th class="num">CI 用例</th><th class="num">FP</th>
-  <th>CI 脚本</th>
+  <th>代码行</th><th>FP</th><th>会话导出（点击查看）</th>
 </tr></thead>
 <tbody>
-<tr data-cat="扩展" data-needs="false">
+<tr>
   <td><strong>1</strong></td>
-  <td>EXT-04</td>
-  <td>FileSnapshot 文件快照回滚 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">双路快照 + diff + restore</td>
-  <td class="num">4,503 <span class="loc-bar" style="width:32px"></span></td>
-  <td class="num">69</td>
-  <td class="num">4</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/file_snapshot_ci.sh">file_snapshot_ci.sh</a><br><a class="ci-link" href="../tests/file_snapshot_e2e.sh">file_snapshot_e2e.sh</a></td>
-</tr>
-<tr data-cat="扩展" data-needs="false">
-  <td><strong>2</strong></td>
   <td>EXT-02</td>
-  <td>GlobalMemory 全局记忆 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">SQLite + FTS5 跨项目检索</td>
-  <td class="num">3,626 <span class="loc-bar" style="width:25px"></span></td>
-  <td class="num">57</td>
-  <td class="num">10</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/global_memory_ci.sh">global_memory_ci.sh</a><br><a class="ci-link" href="../tests/memory_agent_ci.sh">memory_agent_ci.sh</a><br><a class="ci-link" href="../tests/memory_active_ci.sh">memory_active_ci.sh</a><br><a class="ci-link" href="../tests/memory_injection_ci.sh">memory_injection_ci.sh</a><br><a class="ci-link" href="../tests/memory_v2_processing_ci.sh">memory_v2_processing_ci.sh</a></td>
+  <td>GlobalMemory 全局记忆 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">SQLite + FTS5 跨项目检索</td>
+  <td>856 <span class="loc-bar" style="width:22px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-02A_EXT-02.html">FP-02A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-02B_EXT-02.html">FP-02B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-02C_EXT-02.html">FP-02C</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-02D_EXT-02.html">FP-02D</a></td>
 </tr>
-<tr data-cat="扩展" data-needs="false">
+<tr>
+  <td><strong>2</strong></td>
+  <td>EXT-03</td>
+  <td>DevServerDetector 开发服务器检测 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">bash 启动 dev server 自动检测端口</td>
+  <td>647 <span class="loc-bar" style="width:16px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-03A_EXT-03.html">FP-03A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-03B_EXT-03.html">FP-03B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-03C_EXT-03.html">FP-03C</a></td>
+</tr>
+<tr>
   <td><strong>3</strong></td>
-  <td>EXT-07</td>
-  <td>GoalSupervisor 目标监督 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">证据驱动 + gate 拦截 + 6 道防线</td>
-  <td class="num">3,604 <span class="loc-bar" style="width:25px"></span></td>
-  <td class="num">29</td>
-  <td class="num">8</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/goal_supervisor_ci.sh">goal_supervisor_ci.sh</a><br><a class="ci-link" href="../tests/goal_supervisor_e2e.sh">goal_supervisor_e2e.sh</a><br><a class="ci-link" href="../tests/goal_supervisor_real.sh">goal_supervisor_real.sh</a><br><a class="ci-link" href="../tests/goal_evolver_ci.sh">goal_evolver_ci.sh</a></td>
+  <td>EXT-04</td>
+  <td>FileSnapshot 文件快照回滚 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">双路快照 + diff + restore</td>
+  <td>4,606 <span class="loc-bar" style="width:120px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-04A_EXT-04.html">FP-04A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-04B_EXT-04.html">FP-04B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-04C_EXT-04.html">FP-04C</a></td>
 </tr>
-<tr data-cat="扩展" data-needs="false">
+<tr>
   <td><strong>4</strong></td>
-  <td>EXT-06</td>
-  <td>Hooks 钩子系统 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">5 handler + 12 事件 + 热重载</td>
-  <td class="num">3,093 <span class="loc-bar" style="width:22px"></span></td>
-  <td class="num">64</td>
-  <td class="num">12</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/hooks_ci.sh">hooks_ci.sh</a><br><a class="ci-link" href="../tests/hooks_handler_ci.sh">hooks_handler_ci.sh</a><br><a class="ci-link" href="../tests/hooks_agent_ci.sh">hooks_agent_ci.sh</a><br><a class="ci-link" href="../tests/hooks_pretool_deny_ci.sh">hooks_pretool_deny_ci.sh</a><br><a class="ci-link" href="../tests/hooks_stdin_ci.sh">hooks_stdin_ci.sh</a><br><a class="ci-link" href="../tests/hooks_agent_real.sh">hooks_agent_real.sh</a><br><a class="ci-link" href="../tests/session_hook_ci.sh">session_hook_ci.sh</a></td>
-</tr>
-<tr class="need-ci" data-cat="扩展" data-needs="true">
-  <td><strong>5</strong></td>
-  <td>EXT-08</td>
-  <td>Monitor 定时监控 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">场景 3 定时脚本 + 自主修复</td>
-  <td class="num">2,085 <span class="loc-bar" style="width:14px"></span></td>
-  <td class="num">23</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/monitor_ci.sh">monitor_ci.sh</a><br><a class="ci-link" href="../tests/self_heal_ci.sh">self_heal_ci.sh</a></td>
-</tr>
-<tr class="need-ci" data-cat="扩展" data-needs="true">
-  <td><strong>6</strong></td>
-  <td>EXT-09</td>
-  <td>Bash 命令执行 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">同步 + 后台进程 + write_stdin</td>
-  <td class="num">1,754 <span class="loc-bar" style="width:12px"></span></td>
-  <td class="num">15</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><span style="color:#dc2626">⚠️ 无</span></td>
-</tr>
-<tr class="need-ci" data-cat="扩展" data-needs="true">
-  <td><strong>7</strong></td>
-  <td>EXT-12</td>
-  <td>Learning 学习提炼 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">session 分析 + skill distillation + 密钥脱敏</td>
-  <td class="num">1,655 <span class="loc-bar" style="width:11px"></span></td>
-  <td class="num">55</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/learning_e2e.sh">learning_e2e.sh</a></td>
-</tr>
-<tr class="need-ci" data-cat="扩展" data-needs="true">
-  <td><strong>8</strong></td>
-  <td>EXT-10</td>
-  <td>Memory v0.1 会话记忆 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">on_input → on_context 注入链路</td>
-  <td class="num">1,572 <span class="loc-bar" style="width:11px"></span></td>
-  <td class="num">17</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/memory_e2e.rs">memory_e2e.rs</a></td>
-</tr>
-<tr class="need-ci" data-cat="扩展" data-needs="true">
-  <td><strong>9</strong></td>
   <td>EXT-05</td>
-  <td>LSP 代码诊断 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">cargo check / tsc / go vet 多语言</td>
-  <td class="num">1,538 <span class="loc-bar" style="width:11px"></span></td>
-  <td class="num">14</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/lsp_ci.sh">lsp_ci.sh</a></td>
+  <td>LSP 代码诊断 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">cargo check / tsc / go vet</td>
+  <td>1,194 <span class="loc-bar" style="width:31px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-05A_EXT-05.html">FP-05A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-05B_EXT-05.html">FP-05B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-05C_EXT-05.html">FP-05C</a></td>
 </tr>
-<tr class="need-ci" data-cat="扩展" data-needs="true">
+<tr>
+  <td><strong>5</strong></td>
+  <td>EXT-06</td>
+  <td>Hooks 钩子系统 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">5 handler + 12 事件 + 热重载</td>
+  <td>3,124 <span class="loc-bar" style="width:81px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-06A_EXT-06.html">FP-06A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-06B_EXT-06.html">FP-06B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-06C_EXT-06.html">FP-06C</a></td>
+</tr>
+<tr>
+  <td><strong>6</strong></td>
+  <td>EXT-07</td>
+  <td>GoalSupervisor 目标监督 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">证据驱动 + gate 拦截</td>
+  <td>3,604 <span class="loc-bar" style="width:93px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-07A_EXT-07.html">FP-07A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-07B_EXT-07.html">FP-07B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-07C_EXT-07.html">FP-07C</a></td>
+</tr>
+<tr>
+  <td><strong>7</strong></td>
+  <td>EXT-08</td>
+  <td>Monitor 定时监控 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">场景 3 定时脚本监控</td>
+  <td>1,288 <span class="loc-bar" style="width:33px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-08A_EXT-08.html">FP-08A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-08B_EXT-08.html">FP-08B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-08C_EXT-08.html">FP-08C</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-08D_EXT-08.html">FP-08D</a></td>
+</tr>
+<tr>
+  <td><strong>8</strong></td>
+  <td>EXT-09</td>
+  <td>Bash 命令执行 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">同步 + 后台进程 + write_stdin</td>
+  <td>1,754 <span class="loc-bar" style="width:45px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-09A_EXT-09.html">FP-09A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-09B_EXT-09.html">FP-09B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-09C_EXT-09.html">FP-09C</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-09D_EXT-09.html">FP-09D</a></td>
+</tr>
+<tr>
+  <td><strong>9</strong></td>
+  <td>EXT-10</td>
+  <td>Memory v0.1 会话记忆 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">on_input / on_context 注入</td>
+  <td>1,572 <span class="loc-bar" style="width:40px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-10A_EXT-10.html">FP-10A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-10B_EXT-10.html">FP-10B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-10C_EXT-10.html">FP-10C</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-10D_EXT-10.html">FP-10D</a></td>
+</tr>
+<tr>
   <td><strong>10</strong></td>
   <td>EXT-11</td>
-  <td>RulesEngine 规则注入 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">.ion/rules/*.md frontmatter glob</td>
-  <td class="num">1,091 <span class="loc-bar" style="width:7px"></span></td>
-  <td class="num">23</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/rules_ci.sh">rules_ci.sh</a></td>
+  <td>RulesEngine 规则注入 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">.ion/rules/*.md frontmatter</td>
+  <td>1,091 <span class="loc-bar" style="width:28px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-11A_EXT-11.html">FP-11A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-11B_EXT-11.html">FP-11B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-11C_EXT-11.html">FP-11C</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-11D_EXT-11.html">FP-11D</a></td>
 </tr>
-<tr class="need-ci" data-cat="扩展" data-needs="true">
+<tr>
   <td><strong>11</strong></td>
-  <td>EXT-19</td>
-  <td>Plan 计划模式 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">plan_enter/exit/add/list/done/approve + strict</td>
-  <td class="num">1,061 <span class="loc-bar" style="width:7px"></span></td>
-  <td class="num">11</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><span style="color:#dc2626">⚠️ 无</span></td>
+  <td>EXT-12</td>
+  <td>Learning 学习提炼 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">skill distillation + 密钥脱敏</td>
+  <td>1,655 <span class="loc-bar" style="width:43px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-12A_EXT-12.html">FP-12A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-12B_EXT-12.html">FP-12B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-12C_EXT-12.html">FP-12C</a></td>
 </tr>
-<tr data-cat="扩展" data-needs="false">
+<tr>
   <td><strong>12</strong></td>
   <td>EXT-13</td>
-  <td>Permission 权限引擎 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">路径/命令权限 + stored decision</td>
-  <td class="num">981 <span class="loc-bar" style="width:7px"></span></td>
-  <td class="num">13</td>
-  <td class="num">6</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/permission_ci.sh">permission_ci.sh</a><br><a class="ci-link" href="../tests/permission_store_ci.sh">permission_store_ci.sh</a><br><a class="ci-link" href="../tests/p2_hotreload_ci.sh">p2_hotreload_ci.sh</a></td>
+  <td>Permission 权限引擎 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">路径/命令权限 + stored decision</td>
+  <td>981 <span class="loc-bar" style="width:25px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-13A_EXT-13.html">FP-13A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-13B_EXT-13.html">FP-13B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-13C_EXT-13.html">FP-13C</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-13D_EXT-13.html">FP-13D</a></td>
 </tr>
-<tr class="need-ci" data-cat="扩展" data-needs="true">
+<tr>
   <td><strong>13</strong></td>
   <td>EXT-14</td>
-  <td>FileApproval 文件审批 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">write/edit 审批 + restore_files</td>
-  <td class="num">899 <span class="loc-bar" style="width:6px"></span></td>
-  <td class="num">9</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><span style="color:#dc2626">⚠️ 无</span></td>
+  <td>FileApproval 文件审批 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">write/edit 审批 + restore_files</td>
+  <td>899 <span class="loc-bar" style="width:23px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-14A_EXT-14.html">FP-14A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-14B_EXT-14.html">FP-14B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-14C_EXT-14.html">FP-14C</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-14D_EXT-14.html">FP-14D</a></td>
 </tr>
-<tr class="need-ci" data-cat="扩展" data-needs="true">
+<tr>
   <td><strong>14</strong></td>
   <td>EXT-15</td>
-  <td>ContextIndex 上下文索引 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">read 追踪 + 过期快照折叠</td>
-  <td class="num">841 <span class="loc-bar" style="width:6px"></span></td>
-  <td class="num">17</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><span style="color:#dc2626">⚠️ 无</span></td>
+  <td>ContextIndex 上下文索引 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">read 追踪 + 过期快照折叠</td>
+  <td>841 <span class="loc-bar" style="width:21px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-15A_EXT-15.html">FP-15A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-15B_EXT-15.html">FP-15B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-15C_EXT-15.html">FP-15C</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-15D_EXT-15.html">FP-15D</a></td>
 </tr>
-<tr data-cat="扩展" data-needs="false">
+<tr>
   <td><strong>15</strong></td>
   <td>EXT-16</td>
-  <td>SessionIndex 会话索引 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">session 元信息 + name + token cache</td>
-  <td class="num">733 <span class="loc-bar" style="width:5px"></span></td>
-  <td class="num">6</td>
-  <td class="num">2</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/sessions_ci.sh">sessions_ci.sh</a></td>
+  <td>SessionIndex 会话索引 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">session 元信息 + name cache</td>
+  <td>751 <span class="loc-bar" style="width:19px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-16A_EXT-16.html">FP-16A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-16B_EXT-16.html">FP-16B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-16C_EXT-16.html">FP-16C</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-16D_EXT-16.html">FP-16D</a></td>
 </tr>
-<tr data-cat="扩展" data-needs="false">
+<tr>
   <td><strong>16</strong></td>
-  <td>EXT-23</td>
-  <td>Workflow 工作流引擎 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">结构化 DSL + gate 校验</td>
-  <td class="num">703 <span class="loc-bar" style="width:5px"></span></td>
-  <td class="num">15</td>
-  <td class="num">2</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/workflow_ci.sh">workflow_ci.sh</a></td>
-</tr>
-<tr data-cat="扩展" data-needs="false">
-  <td><strong>17</strong></td>
-  <td>EXT-03</td>
-  <td>DevServerDetector 开发服务器检测 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">bash 启动 dev server 自动检测端口</td>
-  <td class="num">647 <span class="loc-bar" style="width:4px"></span></td>
-  <td class="num">12</td>
-  <td class="num">2</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/dev_server_detector_ci.sh">dev_server_detector_ci.sh</a></td>
-</tr>
-<tr class="need-ci" data-cat="扩展" data-needs="true">
-  <td><strong>18</strong></td>
   <td>EXT-17</td>
-  <td>ContextReclaimer 上下文回收 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">大 bash 输出触发回收</td>
-  <td class="num">642 <span class="loc-bar" style="width:4px"></span></td>
-  <td class="num">8</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/reclaimer_stress.sh">reclaimer_stress.sh</a></td>
+  <td>ContextReclaimer 上下文回收 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">大 bash 输出触发回收</td>
+  <td>642 <span class="loc-bar" style="width:16px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-17A_EXT-17.html">FP-17A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-17B_EXT-17.html">FP-17B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-17C_EXT-17.html">FP-17C</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-17D_EXT-17.html">FP-17D</a></td>
 </tr>
-<tr data-cat="扩展" data-needs="false">
-  <td><strong>19</strong></td>
+<tr>
+  <td><strong>17</strong></td>
   <td>EXT-18</td>
-  <td>FileTimeGuard 文件时间守卫 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">read 后外部修改检测</td>
-  <td class="num">499 <span class="loc-bar" style="width:3px"></span></td>
-  <td class="num">0</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><span style="color:#dc2626">⚠️ 无</span></td>
+  <td>FileTimeGuard 文件时间守卫 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">read 后外部修改检测</td>
+  <td>499 <span class="loc-bar" style="width:13px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-18A_EXT-18.html">FP-18A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-18B_EXT-18.html">FP-18B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-18C_EXT-18.html">FP-18C</a></td>
 </tr>
-<tr data-cat="扩展" data-needs="false">
-  <td><strong>20</strong></td>
+<tr>
+  <td><strong>18</strong></td>
+  <td>EXT-19</td>
+  <td>Plan 计划模式 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">plan_enter/exit/add + strict</td>
+  <td>1,061 <span class="loc-bar" style="width:27px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-19A_EXT-19.html">FP-19A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-19B_EXT-19.html">FP-19B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-19C_EXT-19.html">FP-19C</a></td>
+</tr>
+<tr>
+  <td><strong>19</strong></td>
   <td>EXT-20</td>
-  <td>ToolLoopDetector 工具循环检测 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">防 LLM 重复调用死循环</td>
-  <td class="num">389 <span class="loc-bar" style="width:2px"></span></td>
-  <td class="num">10</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><span style="color:#dc2626">⚠️ 无</span></td>
+  <td>ToolLoopDetector 工具循环检测 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">防 LLM 重复调用死循环</td>
+  <td>264 <span class="loc-bar" style="width:6px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-20A_EXT-20.html">FP-20A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-20B_EXT-20.html">FP-20B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-20C_EXT-20.html">FP-20C</a></td>
 </tr>
-<tr data-cat="扩展" data-needs="false">
-  <td><strong>21</strong></td>
+<tr>
+  <td><strong>20</strong></td>
   <td>EXT-22</td>
-  <td>AutoSessionTitle 自动标题 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">首轮启发式标题生成</td>
-  <td class="num">253 <span class="loc-bar" style="width:2px"></span></td>
-  <td class="num">9</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><span style="color:#dc2626">⚠️ 无</span></td>
+  <td>AutoSessionTitle 自动标题 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">首轮启发式标题生成</td>
+  <td>253 <span class="loc-bar" style="width:6px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-22A_EXT-22.html">FP-22A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-22B_EXT-22.html">FP-22B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-22C_EXT-22.html">FP-22C</a></td>
 </tr>
-<tr data-cat="扩展" data-needs="false">
+<tr>
+  <td><strong>21</strong></td>
+  <td>EXT-23</td>
+  <td>Workflow 工作流引擎 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">结构化 DSL + gate 校验</td>
+  <td>703 <span class="loc-bar" style="width:18px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-23A_EXT-23.html">FP-23A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-23B_EXT-23.html">FP-23B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-23C_EXT-23.html">FP-23C</a></td>
+</tr>
+<tr>
   <td><strong>22</strong></td>
   <td>EXT-24</td>
-  <td>Streaming 流式输出 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">text_delta / tool_call_delta 流式事件</td>
-  <td class="num">0 <span class="loc-bar" style="width:2px"></span></td>
-  <td class="num">0</td>
-  <td class="num">6</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/sse_events_ci.sh">sse_events_ci.sh</a><br><a class="ci-link" href="../tests/streaming_replay_ci.sh">streaming_replay_ci.sh</a><br><a class="ci-link" href="../tests/streaming_throughput_ci.sh">streaming_throughput_ci.sh</a></td>
+  <td>Streaming 流式输出 <span class="badge">扩展</span></td>
+  <td style="color:#64748b">text_delta / tool_call_delta</td>
+  <td>0 <span class="loc-bar" style="width:2px"></span></td>
+  <td>0</td>
+  <td><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-24A_EXT-24.html">FP-24A</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-24B_EXT-24.html">FP-24B</a><a class="fp-link" href="docs/reports/ext-multiturn-final/FP-24C_EXT-24.html">FP-24C</a></td>
 </tr>
-<tr data-cat="核心" data-needs="false">
-  <td><strong>23</strong></td>
-  <td>CORE-01</td>
-  <td>Provider 多协议抽象 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">34 Provider + 9 协议</td>
-  <td class="num">16,770 <span class="loc-bar" style="width:120px"></span></td>
-  <td class="num">179</td>
-  <td class="num">2</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/faux_scenarios_ci.sh">faux_scenarios_ci.sh</a></td>
-</tr>
-<tr data-cat="核心" data-needs="false">
-  <td><strong>24</strong></td>
-  <td>CORE-03</td>
-  <td>CLI 命令入口 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">45+ 参数 + 3 场景</td>
-  <td class="num">7,477 <span class="loc-bar" style="width:53px"></span></td>
-  <td class="num">42</td>
-  <td class="num">4</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/cli_alignment_ci.sh">cli_alignment_ci.sh</a><br><a class="ci-link" href="../tests/scenario2_ci.sh">scenario2_ci.sh</a></td>
-</tr>
-<tr class="need-ci" data-cat="核心" data-needs="true">
-  <td><strong>25</strong></td>
-  <td>CORE-04</td>
-  <td>WorkerRpc Worker 通信 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">~120 RPC 命令</td>
-  <td class="num">7,040 <span class="loc-bar" style="width:50px"></span></td>
-  <td class="num">19</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><span style="color:#dc2626">⚠️ 无</span></td>
-</tr>
-<tr data-cat="核心" data-needs="false">
-  <td><strong>26</strong></td>
-  <td>CORE-07</td>
-  <td>Export HTML 导出 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">pi 模板 + timeline + 折叠</td>
-  <td class="num">5,057 <span class="loc-bar" style="width:36px"></span></td>
-  <td class="num">23</td>
-  <td class="num">2</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/export_ci.sh">export_ci.sh</a></td>
-</tr>
-<tr data-cat="核心" data-needs="false">
-  <td><strong>27</strong></td>
-  <td>CORE-05</td>
-  <td>WorkerRegistry Worker 管理 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">spawn + 事件转发 + 崩溃恢复</td>
-  <td class="num">3,891 <span class="loc-bar" style="width:27px"></span></td>
-  <td class="num">14</td>
-  <td class="num">2</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/crash_recovery_ci.sh">crash_recovery_ci.sh</a></td>
-</tr>
-<tr class="need-ci" data-cat="核心" data-needs="true">
-  <td><strong>28</strong></td>
-  <td>CORE-02</td>
-  <td>Agent 循环引擎 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">内层+外层+45 钩子</td>
-  <td class="num">2,837 <span class="loc-bar" style="width:20px"></span></td>
-  <td class="num">7</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/edge_cases.sh">edge_cases.sh</a></td>
-</tr>
-<tr class="need-ci" data-cat="核心" data-needs="true">
-  <td><strong>29</strong></td>
-  <td>CORE-15</td>
-  <td>Config 配置系统 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">config.json + 5 维存储</td>
-  <td class="num">1,754 <span class="loc-bar" style="width:12px"></span></td>
-  <td class="num">25</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><span style="color:#dc2626">⚠️ 无</span></td>
-</tr>
-<tr data-cat="核心" data-needs="false">
-  <td><strong>30</strong></td>
-  <td>CORE-13</td>
-  <td>ExtensionRegistry 扩展注册 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">36 钩子 + 27 host fn + WASM</td>
-  <td class="num">1,621 <span class="loc-bar" style="width:11px"></span></td>
-  <td class="num">7</td>
-  <td class="num">6</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/extensions_ci.sh">extensions_ci.sh</a><br><a class="ci-link" href="../tests/extension_cli_ci.sh">extension_cli_ci.sh</a><br><a class="ci-link" href="../tests/extension_flags_ci.sh">extension_flags_ci.sh</a><br><a class="ci-link" href="../tests/extension_fs_ci.sh">extension_fs_ci.sh</a></td>
-</tr>
-<tr data-cat="核心" data-needs="false">
-  <td><strong>31</strong></td>
-  <td>CORE-08</td>
-  <td>MessageRetrieval 消息拉取 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">9 接口 + 分页 + turn 聚合</td>
-  <td class="num">1,546 <span class="loc-bar" style="width:11px"></span></td>
-  <td class="num">27</td>
-  <td class="num">6</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/message_retrieval_ci.sh">message_retrieval_ci.sh</a><br><a class="ci-link" href="../tests/message_source_ci.sh">message_source_ci.sh</a><br><a class="ci-link" href="../tests/realtime_stitch_ci.sh">realtime_stitch_ci.sh</a></td>
-</tr>
-<tr data-cat="核心" data-needs="false">
-  <td><strong>32</strong></td>
-  <td>CORE-06</td>
-  <td>MCP 协议客户端 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">rmcp + 方案 C 共享池</td>
-  <td class="num">1,420 <span class="loc-bar" style="width:10px"></span></td>
-  <td class="num">18</td>
-  <td class="num">6</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/mcp_ci.sh">mcp_ci.sh</a><br><a class="ci-link" href="../tests/mcp_zcode_compat_ci.sh">mcp_zcode_compat_ci.sh</a><br><a class="ci-link" href="../tests/mcp_agent_tools_ci.sh">mcp_agent_tools_ci.sh</a></td>
-</tr>
-<tr data-cat="核心" data-needs="false">
-  <td><strong>33</strong></td>
-  <td>CORE-11</td>
-  <td>SessionJsonl 会话存储 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">JSONL v3 + 实时索引</td>
-  <td class="num">1,398 <span class="loc-bar" style="width:10px"></span></td>
-  <td class="num">9</td>
-  <td class="num">2</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/session_entries_ci.sh">session_entries_ci.sh</a></td>
-</tr>
-<tr data-cat="核心" data-needs="false">
-  <td><strong>34</strong></td>
-  <td>CORE-10</td>
-  <td>SessionTree 会话分支 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">only-append + leaf 指针</td>
-  <td class="num">1,258 <span class="loc-bar" style="width:9px"></span></td>
-  <td class="num">42</td>
-  <td class="num">4</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/session_tree_verify.sh">session_tree_verify.sh</a><br><a class="ci-link" href="../tests/rollback_impact_ci.sh">rollback_impact_ci.sh</a></td>
-</tr>
-<tr data-cat="核心" data-needs="false">
-  <td><strong>35</strong></td>
-  <td>CORE-14</td>
-  <td>BackendRegistry 后端路由 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">Local/Sandbox/Remote/Container</td>
-  <td class="num">1,198 <span class="loc-bar" style="width:8px"></span></td>
-  <td class="num">20</td>
-  <td class="num">2</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/runtime_ci.sh">runtime_ci.sh</a></td>
-</tr>
-<tr class="need-ci" data-cat="核心" data-needs="true">
-  <td><strong>36</strong></td>
-  <td>CORE-16</td>
-  <td>Paths 路径管理 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">encode_path + project_key_git</td>
-  <td class="num">1,101 <span class="loc-bar" style="width:7px"></span></td>
-  <td class="num">28</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><span style="color:#dc2626">⚠️ 无</span></td>
-</tr>
-<tr data-cat="核心" data-needs="false">
-  <td><strong>37</strong></td>
-  <td>CORE-20</td>
-  <td>SessionGC 会话清理 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">7天→1天→可达性分析</td>
-  <td class="num">346 <span class="loc-bar" style="width:2px"></span></td>
-  <td class="num">6</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><span style="color:#dc2626">⚠️ 无</span></td>
-</tr>
-<tr data-cat="核心" data-needs="false">
-  <td><strong>38</strong></td>
-  <td>CORE-17</td>
-  <td>StorageContext 存储上下文 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">5 维 + worktree 透明</td>
-  <td class="num">173 <span class="loc-bar" style="width:2px"></span></td>
-  <td class="num">5</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><span style="color:#dc2626">⚠️ 无</span></td>
-</tr>
-<tr data-cat="核心" data-needs="false">
-  <td><strong>39</strong></td>
-  <td>CORE-09</td>
-  <td>Compaction 会话压缩 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">分批并发 + LLM summarizer</td>
-  <td class="num">0 <span class="loc-bar" style="width:2px"></span></td>
-  <td class="num">0</td>
-  <td class="num">2</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/compaction_ci.sh">compaction_ci.sh</a></td>
-</tr>
-<tr data-cat="核心" data-needs="false">
-  <td><strong>40</strong></td>
-  <td>CORE-18</td>
-  <td>RecordReplay 录制回放 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">ION_RECORD + replay/<id></td>
-  <td class="num">0 <span class="loc-bar" style="width:2px"></span></td>
-  <td class="num">0</td>
-  <td class="num">2</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/record_replay_ci.sh">record_replay_ci.sh</a></td>
-</tr>
-<tr data-cat="核心" data-needs="false">
-  <td><strong>41</strong></td>
-  <td>CORE-19</td>
-  <td>FauxProvider Mock <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">FIFO 队列 + 工厂响应</td>
-  <td class="num">0 <span class="loc-bar" style="width:2px"></span></td>
-  <td class="num">0</td>
-  <td class="num">2</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/faux_scenarios_ci.sh">faux_scenarios_ci.sh</a></td>
-</tr>
-<tr data-cat="核心" data-needs="false">
-  <td><strong>42</strong></td>
-  <td>CORE-21</td>
-  <td>SoftDelete 软删除/软压缩 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">mark_deleted + restore</td>
-  <td class="num">0 <span class="loc-bar" style="width:2px"></span></td>
-  <td class="num">0</td>
-  <td class="num">2</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/soft_delete_ci.sh">soft_delete_ci.sh</a></td>
-</tr>
-<tr data-cat="核心" data-needs="false">
-  <td><strong>43</strong></td>
-  <td>CORE-22</td>
-  <td>Abort/Steer 中断控制 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">immediate steer + killpg</td>
-  <td class="num">0 <span class="loc-bar" style="width:2px"></span></td>
-  <td class="num">0</td>
-  <td class="num">6</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/abort_ci.sh">abort_ci.sh</a><br><a class="ci-link" href="../tests/soft_interrupt_ci.sh">soft_interrupt_ci.sh</a><br><a class="ci-link" href="../tests/overflow_recovery_ci.sh">overflow_recovery_ci.sh</a></td>
-</tr>
-<tr data-cat="核心" data-needs="false">
-  <td><strong>44</strong></td>
-  <td>CORE-23</td>
-  <td>TierModels 模型分层 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">fast/pro/max 别名</td>
-  <td class="num">0 <span class="loc-bar" style="width:2px"></span></td>
-  <td class="num">0</td>
-  <td class="num">2</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/tier_models_ci.sh">tier_models_ci.sh</a></td>
-</tr>
-<tr data-cat="其他" data-needs="false">
-  <td><strong>45</strong></td>
-  <td>OTHER-01</td>
-  <td>AppleContainer 容器隔离 <span class="badge badge-other">其他</span></td>
-  <td style="color:#64748b;font-size:13px">Linux VM 同端口并行</td>
-  <td class="num">0 <span class="loc-bar" style="width:2px"></span></td>
-  <td class="num">0</td>
-  <td class="num">2</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/apple_container_ci.sh">apple_container_ci.sh</a></td>
-</tr>
-<tr data-cat="其他" data-needs="false">
-  <td><strong>46</strong></td>
-  <td>OTHER-02</td>
-  <td>UI 集成通知 <span class="badge badge-other">其他</span></td>
-  <td style="color:#64748b;font-size:13px">subscribe --ui + ui_respond</td>
-  <td class="num">0 <span class="loc-bar" style="width:2px"></span></td>
-  <td class="num">0</td>
-  <td class="num">6</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/ui_integration_ci.sh">ui_integration_ci.sh</a><br><a class="ci-link" href="../tests/p3_ui_ci.sh">p3_ui_ci.sh</a><br><a class="ci-link" href="../tests/p3_audit_ci.sh">p3_audit_ci.sh</a></td>
-</tr>
-<tr data-cat="其他" data-needs="false">
-  <td><strong>47</strong></td>
-  <td>OTHER-03</td>
-  <td>Team 多智能体编排 <span class="badge badge-other">其他</span></td>
-  <td style="color:#64748b;font-size:13px">coordinator + developer + merger</td>
-  <td class="num">0 <span class="loc-bar" style="width:2px"></span></td>
-  <td class="num">0</td>
-  <td class="num">2</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/team_e2e.sh">team_e2e.sh</a></td>
-</tr>
-<tr data-cat="其他" data-needs="false">
-  <td><strong>48</strong></td>
-  <td>OTHER-04</td>
-  <td>SkillTool 技能工具 <span class="badge badge-other">其他</span></td>
-  <td style="color:#64748b;font-size:13px">list/inject/fork 模式</td>
-  <td class="num">0 <span class="loc-bar" style="width:2px"></span></td>
-  <td class="num">0</td>
-  <td class="num">2</td>
-  <td class="num">—</td>
-  <td><a class="ci-link" href="../tests/skill_tool_ci.sh">skill_tool_ci.sh</a></td>
-</tr>
-<tr class="need-ci" data-cat="核心" data-needs="true">
-  <td><strong>49</strong></td>
-  <td>CORE-24</td>
-  <td>AgentTool 工具注册 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">Tool trait + read/write/edit/bash 等 27 工具</td>
-  <td class="num">2,608 <span class="loc-bar" style="width:30px"></span></td>
-  <td class="num">14</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><span style="color:#dc2626">⚠️ 无</span></td>
-</tr><tr data-cat="核心" data-needs="false">
-  <td><strong>50</strong></td>
-  <td>CORE-25</td>
-  <td>WasmExtension WASM 扩展 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">动态加载 .wasm + 27 host fn</td>
-  <td class="num">2,385 <span class="loc-bar" style="width:27px"></span></td>
-  <td class="num">13</td>
-  <td class="num">2</td>
-  <td class="num">—</td>
-  <td><a class="ci-link">extension_cli_ci.sh</a><br><a class="ci-link">extensions_ci.sh</a></td>
-</tr><tr data-cat="核心" data-needs="false">
-  <td><strong>51</strong></td>
-  <td>CORE-26</td>
-  <td>Runtime 编排层 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">Local/Sandbox/Remote 三模式 + SecuredRuntime</td>
-  <td class="num">2,238 <span class="loc-bar" style="width:25px"></span></td>
-  <td class="num">3</td>
-  <td class="num">8</td>
-  <td class="num">—</td>
-  <td><a class="ci-link">runtime_ci.sh</a><br><a class="ci-link">abort_ci.sh</a><br><a class="ci-link">soft_interrupt_ci.sh</a><br><a class="ci-link">overflow_recovery_ci.sh</a></td>
-</tr><tr data-cat="核心" data-needs="false">
-  <td><strong>52</strong></td>
-  <td>CORE-27</td>
-  <td>CommandGuard 命令守卫 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">黑白名单 + 50+ 风险模式检测</td>
-  <td class="num">1,007 <span class="loc-bar" style="width:11px"></span></td>
-  <td class="num">21</td>
-  <td class="num">2</td>
-  <td class="num">—</td>
-  <td><a class="ci-link">p3_audit_ci.sh</a></td>
-</tr><tr class="need-ci" data-cat="核心" data-needs="true">
-  <td><strong>53</strong></td>
-  <td>CORE-28</td>
-  <td>Kernel 会话内核 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">消息调度 + tool 派发 + event 总线</td>
-  <td class="num">770 <span class="loc-bar" style="width:8px"></span></td>
-  <td class="num">7</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><span style="color:#dc2626">⚠️ 无</span></td>
-</tr><tr class="need-ci" data-cat="核心" data-needs="true">
-  <td><strong>54</strong></td>
-  <td>CORE-29</td>
-  <td>Retry 重试系统 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">指数退避 + max_retries + gate 缓存</td>
-  <td class="num">770 <span class="loc-bar" style="width:8px"></span></td>
-  <td class="num">10</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><span style="color:#dc2626">⚠️ 无</span></td>
-</tr><tr class="need-ci" data-cat="核心" data-needs="true">
-  <td><strong>55</strong></td>
-  <td>CORE-30</td>
-  <td>WorkerPool 进程池 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">并发 slot + 复用 + 回收</td>
-  <td class="num">675 <span class="loc-bar" style="width:7px"></span></td>
-  <td class="num">8</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><span style="color:#dc2626">⚠️ 无</span></td>
-</tr><tr class="need-ci" data-cat="核心" data-needs="true">
-  <td><strong>56</strong></td>
-  <td>CORE-31</td>
-  <td>Manager 守护进程 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">监听 host.sock + spawn + 热重启</td>
-  <td class="num">655 <span class="loc-bar" style="width:7px"></span></td>
-  <td class="num">7</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><span style="color:#dc2626">⚠️ 无</span></td>
-</tr><tr data-cat="核心" data-needs="false">
-  <td><strong>57</strong></td>
-  <td>CORE-32</td>
-  <td>Worker 子进程 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">spawn child + stdin/stdout JSON + 心跳</td>
-  <td class="num">987 <span class="loc-bar" style="width:11px"></span></td>
-  <td class="num">20</td>
-  <td class="num">2</td>
-  <td class="num">—</td>
-  <td><a class="ci-link">crash_recovery_ci.sh</a></td>
-</tr><tr data-cat="核心" data-needs="false">
-  <td><strong>58</strong></td>
-  <td>CORE-33</td>
-  <td>EventBus 事件总线 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">publish/subscribe + 按 sessionId 过滤</td>
-  <td class="num">342 <span class="loc-bar" style="width:3px"></span></td>
-  <td class="num">12</td>
-  <td class="num">2</td>
-  <td class="num">—</td>
-  <td><a class="ci-link">p4_events_ci.sh</a></td>
-</tr><tr data-cat="核心" data-needs="false">
-  <td><strong>59</strong></td>
-  <td>CORE-34</td>
-  <td>AgentConfig Agent 配置 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">每个 agent 名对应不同 prompt/工具白名单</td>
-  <td class="num">448 <span class="loc-bar" style="width:5px"></span></td>
-  <td class="num">2</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><span style="color:#dc2626">⚠️ 无</span></td>
-</tr><tr class="need-ci" data-cat="核心" data-needs="true">
-  <td><strong>60</strong></td>
-  <td>CORE-35</td>
-  <td>TransformMessages 消息转换 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">跨 provider 消息规范化（对齐 pi）</td>
-  <td class="num">1,578 <span class="loc-bar" style="width:18px"></span></td>
-  <td class="num">31</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><span style="color:#dc2626">⚠️ 无</span></td>
-</tr><tr data-cat="核心" data-needs="false">
-  <td><strong>61</strong></td>
-  <td>CORE-36</td>
-  <td>Auth 鉴权 <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">API key / OAuth token + provider 凭证</td>
-  <td class="num">222 <span class="loc-bar" style="width:2px"></span></td>
-  <td class="num">3</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><span style="color:#dc2626">⚠️ 无</span></td>
-</tr><tr class="need-ci" data-cat="核心" data-needs="true">
-  <td><strong>62</strong></td>
-  <td>CORE-37</td>
-  <td>Provider 适配层（9 协议） <span class="badge badge-core">核心</span></td>
-  <td style="color:#64748b;font-size:13px">OpenAI/Anthropic/Google/Bedrock/Mistral/Azure/Vertex/Cloudflare/Codex</td>
-  <td class="num">10,397 <span class="loc-bar" style="width:120px"></span></td>
-  <td class="num">97</td>
-  <td class="num">0</td>
-  <td class="num">—</td>
-  <td><span style="color:#dc2626">⚠️ 无</span></td>
-</tr><tr data-cat="扩展" data-needs="false">
-  <td><strong>63</strong></td>
-  <td>EXT-25</td>
-  <td>SkillTool 技能工具 <span class="badge badge-ext">扩展</span></td>
-  <td style="color:#64748b;font-size:13px">list/inject/fork 模式</td>
-  <td class="num">0 <span class="loc-bar" style="width:2px"></span></td>
-  <td class="num">0</td>
-  <td class="num">2</td>
-  <td class="num">—</td>
-  <td><a class="ci-link">skill_tool_ci.sh</a></td>
-</tr></tbody></table>
+</tbody></table>
 <div style="text-align:center;padding:32px;color:#94a3b8;font-size:12px">
-  生成时间: 2026-08-09 · ION Module Catalog<br>
-  点击 ⚠️ 缺 CI 按钮看需要补测试的模块
+  ION Module Catalog + Session Exports · 2026-08-10 · parking_lot::Mutex<br>
+  会话导出由 <code>ion --export</code>（export.rs pi 模板）生成
 </div>
-<script>
-function filterCat(cat) {
-  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-  event.target.classList.add('active');
-  document.querySelectorAll('tbody tr').forEach(tr => {
-    tr.style.display = (!cat || tr.dataset.cat === cat) ? '' : 'none';
-  });
-}
-function filterNeed() {
-  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-  event.target.classList.add('active');
-  document.querySelectorAll('tbody tr').forEach(tr => {
-    tr.style.display = tr.dataset.needs === 'true' ? '' : 'none';
-  });
-}
-</script>
 </body></html>
