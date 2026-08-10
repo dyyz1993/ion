@@ -1,11 +1,11 @@
 [package]
 name = "ion"
-version = "0.4.0"
+version = "0.1.0"
 edition = "2024"
 description = "ION CLI — Agent orchestration and AI agent loop"
 
 [workspace]
-members = ["todo-extension", "tests-extensions"]
+members = []
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -20,7 +20,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
 futures-util = "0.3"
-ion-provider = { path = "./ion-provider" }
+ion-provider = { path = "ion-provider" }
 clap = { version = "4", features = ["derive"] }
 axum = { version = "0.7", features = ["macros"] }
 tower-http = { version = "0.6", features = ["cors"] }
@@ -31,9 +31,9 @@ which = "8.0.4"
 base64 = "0.22"
 similar = "2"
 rmcp = { version = "1", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
-rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "ring"] }
 zstd = "0.13"
 parking_lot = "0.12"
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "ring"] }
 
 [[bin]]
 name = "ion"
@@ -54,6 +54,10 @@ path = "src/bin/agent_demo.rs"
 [[bin]]
 name = "manager-test"
 path = "src/bin/manager_test.rs"
+
+[[bin]]
+name = "ion-worker"
+path = "src/bin/ion_worker.rs"
 
 [profile.dev]
 opt-level = 1

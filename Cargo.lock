@@ -1317,7 +1317,7 @@ dependencies = [
 
 [[package]]
 name = "ion"
-version = "0.4.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -2714,14 +2714,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tests-extensions"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "wasmtime",
-]
-
-[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2794,14 +2786,6 @@ name = "tinyvec_macros"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
-
-[[package]]
-name = "todo-extension"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "wasmtime",
-]
 
 [[package]]
 name = "tokio"

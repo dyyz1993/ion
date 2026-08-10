@@ -20,8 +20,8 @@
 use crate::agent::error::{AgentError, AgentResult};
 use crate::agent::extension::{Extension, ToolExecutionContext};
 use crate::agent::tool::Tool;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 
 // ── Diagnostic struct ──────────────────────────────────────────
@@ -35,9 +35,6 @@ pub struct Diagnostic {
     pub severity: String, // "error" | "warning"
     pub message: String,
     pub code: String, // "E0308" | "unused_variables" etc
-    /// Machine-applicable fix suggestion extracted from the compiler message.
-    /// Empty string when no suggestion is available.
-    pub suggestion: String,
 }
 
 // ── LspExtension ──────────────────────────────────────────────
@@ -69,12 +66,6 @@ pub struct LspExtension {
     name: String,
 }
 
-impl Default for LspExtension {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl LspExtension {
     pub fn new() -> Self {
         Self {
@@ -91,12 +82,6 @@ impl LspExtension {
         }
     }
 
-    /// Whether LSP diagnostics are enabled for this extension instance.
-    /// Currently always true once constructed; reserved for future config-driven disable.
-    pub fn enabled(&self) -> bool {
-        true
-    }
-
     /// Get shared diagnostics handle (for LspCheckTool registration).
     pub fn get_shared_diagnostics(&self) -> Arc<Mutex<Vec<Diagnostic>>> {
         Arc::clone(&self.diagnostics)
@@ -110,14 +95,6 @@ impl LspExtension {
     /// Get shared has_errors flag (for LspCheckTool registration).
     pub fn get_shared_has_errors(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.has_errors)
-    }
-
-    /// Test-only: set bg_check_ready flag (simulates background cargo check
-    /// having fresh results ready to inject). Without this, on_context returns
-    /// early and tests can't exercise the injection path.
-    #[doc(hidden)]
-    pub fn set_bg_check_ready_for_test(&self, v: bool) {
-        self.bg_check_ready.store(v, Ordering::SeqCst);
     }
 
     /// Create an LspExtension with shared diagnostics (for LspCheckTool).
@@ -174,18 +151,15 @@ impl LspExtension {
 
         // Rust: Cargo.toml
         if path.join("Cargo.toml").exists() {
-            return Some((
-                "rust".into(),
-                "cargo clippy --message-format=json 2>/dev/null".into(),
-            ));
+            return Some(("rust".into(),
+                "cargo check --message-format=json 2>/dev/null".into()));
         }
 
         // TypeScript/JavaScript: package.json + tsconfig.json or .ts files
         if path.join("package.json").exists() || path.join("tsconfig.json").exists() {
             // Prefer tsc if available, fall back to npx tsc
             let cmd = if std::process::Command::new("which")
-                .arg("tsc")
-                .output()
+                .arg("tsc").output()
                 .map(|o| o.status.success())
                 .unwrap_or(false)
             {
@@ -204,8 +178,7 @@ impl LspExtension {
             // Use py_compile for syntax check (always available in Python 3)
             // Or ruff if available for linting
             let cmd = if std::process::Command::new("which")
-                .arg("ruff")
-                .output()
+                .arg("ruff").output()
                 .map(|o| o.status.success())
                 .unwrap_or(false)
             {
@@ -218,21 +191,15 @@ impl LspExtension {
 
         // Go: go.mod
         if path.join("go.mod").exists() {
-            return Some(("go".into(), "go vet ./... 2>&1".into()));
+            return Some(("go".into(),
+                "go vet ./... 2>&1".into()));
         }
 
         // HTML: index.html or *.html files
         if path.join("index.html").exists()
-            || std::fs::read_dir(path)
-                .ok()
-                .map(|entries| {
-                    entries.filter_map(|e| e.ok()).any(|e| {
-                        e.path()
-                            .extension()
-                            .map(|ext| ext == "html" || ext == "htm")
-                            .unwrap_or(false)
-                    })
-                })
+            || std::fs::read_dir(path).ok()
+                .map(|entries| entries.filter_map(|e| e.ok())
+                    .any(|e| e.path().extension().map(|ext| ext == "html" || ext == "htm").unwrap_or(false)))
                 .unwrap_or(false)
         {
             return Some(("html".into(),
@@ -269,54 +236,47 @@ impl LspExtension {
         let mut diags = Vec::new();
         for line in stdout.lines() {
             // Pattern: file.ts(line,col): error TS1234: message
-            if let Some(rest) = line.strip_suffix("")
-                && let Some(close_paren) = rest.find("):")
-            {
-                let before = &rest[..close_paren];
-                let after = &rest[close_paren + 2..];
+            if let Some(rest) = line.strip_suffix("") {
+                if let Some(close_paren) = rest.find("):") {
+                    let before = &rest[..close_paren];
+                    let after = &rest[close_paren + 2..];
 
-                // Extract file + line + col from "file.ts(line,col"
-                if let Some(open_paren) = before.rfind('(') {
-                    let file = &before[..open_paren];
-                    let pos = &before[open_paren + 1..];
-                    let parts: Vec<&str> = pos.split(',').collect();
-                    let line_num: u32 = parts
-                        .first()
-                        .and_then(|s| s.trim().parse::<u32>().ok())
-                        .unwrap_or(0);
-                    let col: u32 = parts
-                        .get(1)
-                        .and_then(|s| s.trim().parse::<u32>().ok())
-                        .unwrap_or(0);
+                    // Extract file + line + col from "file.ts(line,col"
+                    if let Some(open_paren) = before.rfind('(') {
+                        let file = &before[..open_paren];
+                        let pos = &before[open_paren + 1..];
+                        let parts: Vec<&str> = pos.split(',').collect();
+                        let line_num: u32 = parts.first()
+                            .and_then(|s| s.trim().parse::<u32>().ok())
+                            .unwrap_or(0);
+                        let col: u32 = parts.get(1)
+                            .and_then(|s| s.trim().parse::<u32>().ok())
+                            .unwrap_or(0);
 
-                    let (severity, rest_msg) = if after.starts_with(" error") {
-                        ("error", &after[6..])
-                    } else if after.starts_with(" warning") {
-                        ("warning", &after[9..])
-                    } else {
-                        ("warning", after)
-                    };
+                        let (severity, rest_msg) = if after.starts_with(" error") {
+                            ("error", &after[6..])
+                        } else if after.starts_with(" warning") {
+                            ("warning", &after[9..])
+                        } else {
+                            ("warning", after)
+                        };
 
-                    // Extract code (TS1234)
-                    let (code, message) = if let Some(colon) = rest_msg.find(": ") {
-                        (
-                            rest_msg[..colon].trim().to_string(),
-                            rest_msg[colon + 2..].trim().to_string(),
-                        )
-                    } else {
-                        (String::new(), rest_msg.trim().to_string())
-                    };
+                        // Extract code (TS1234)
+                        let (code, message) = if let Some(colon) = rest_msg.find(": ") {
+                            (rest_msg[..colon].trim().to_string(), rest_msg[colon + 2..].trim().to_string())
+                        } else {
+                            (String::new(), rest_msg.trim().to_string())
+                        };
 
-                    diags.push(Diagnostic {
-                        file: file.to_string(),
-                        line: line_num,
-                        column: col,
-                        severity: severity.into(),
-                        message,
-                        code,
-                        // TSC output does not carry fix suggestions.
-                        suggestion: String::new(),
-                    });
+                        diags.push(Diagnostic {
+                            file: file.to_string(),
+                            line: line_num,
+                            column: col,
+                            severity: severity.into(),
+                            message,
+                            code,
+                        });
+                    }
                 }
             }
         }
@@ -326,42 +286,21 @@ impl LspExtension {
     /// Parse `ruff check --output-format=json` output.
     fn parse_ruff_json(stdout: &str) -> Vec<Diagnostic> {
         let parsed: Vec<serde_json::Value> = serde_json::from_str(stdout).unwrap_or_default();
-        parsed
-            .iter()
-            .filter_map(|item| {
-                let location = item.get("location")?;
-                Some(Diagnostic {
-                    file: item
-                        .get("filename")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                        .to_string(),
-                    line: location.get("row").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                    column: location.get("column").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                    severity: if item
-                        .get("url")
-                        .map(|u| u.as_str().unwrap_or("").contains("error"))
-                        .unwrap_or(false)
-                    {
-                        "error".into()
-                    } else {
-                        "warning".into()
-                    },
-                    message: item
-                        .get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    code: item
-                        .get("code")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    // Ruff output does not carry fix suggestions in this format.
-                    suggestion: String::new(),
-                })
+        parsed.iter().filter_map(|item| {
+            let location = item.get("location")?;
+            Some(Diagnostic {
+                file: item.get("filename").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
+                line: location.get("row").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                column: location.get("column").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                severity: if item.get("url").map(|u| u.as_str().unwrap_or("").contains("error")).unwrap_or(false) {
+                    "error".into()
+                } else {
+                    "warning".into()
+                },
+                message: item.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                code: item.get("code").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             })
-            .collect()
+        }).collect()
     }
 
     /// Parse `python3 -m py_compile` output.
@@ -376,11 +315,7 @@ impl LspExtension {
                 let file = &line[start..end];
                 if let Some(line_pos) = line.find(", line ") {
                     let rest = &line[line_pos + 7..];
-                    let line_num = rest
-                        .split(',')
-                        .next()
-                        .and_then(|s| s.trim().parse().ok())
-                        .unwrap_or(0);
+                    let line_num = rest.split(',').next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
                     diags.push(Diagnostic {
                         file: file.to_string(),
                         line: line_num,
@@ -388,8 +323,6 @@ impl LspExtension {
                         severity: "error".into(),
                         message: "SyntaxError".into(),
                         code: "syntax".into(),
-                        // py_compile output does not carry fix suggestions.
-                        suggestion: String::new(),
                     });
                 }
             } else if line.starts_with("SyntaxError:") || line.starts_with("IndentationError:") {
@@ -421,8 +354,6 @@ impl LspExtension {
                     severity: "warning".into(),
                     message,
                     code: "go_vet".into(),
-                    // go vet output does not carry fix suggestions.
-                    suggestion: String::new(),
                 });
             }
         }
@@ -452,10 +383,10 @@ impl LspExtension {
         // Cooldown (min 3s between checks)
         {
             let last = self.last_check_time.lock().await;
-            if let Some(t) = *last
-                && t.elapsed() < std::time::Duration::from_secs(3)
-            {
-                return Ok(self.diagnostics.lock().await.clone());
+            if let Some(t) = *last {
+                if t.elapsed() < std::time::Duration::from_secs(3) {
+                    return Ok(self.diagnostics.lock().await.clone());
+                }
             }
         }
         *self.last_check_time.lock().await = Some(std::time::Instant::now());
@@ -464,19 +395,12 @@ impl LspExtension {
         let (root, language, check_cmd) = match self.detect_project().await {
             Some(info) => info,
             None => {
-                tracing::info!(
-                    "[lsp] no recognized project found (no Cargo.toml/package.json/pyproject.toml/go.mod/index.html)"
-                );
+                tracing::info!("[lsp] no recognized project found (no Cargo.toml/package.json/pyproject.toml/go.mod/index.html)");
                 return Ok(Vec::new());
             }
         };
 
-        tracing::info!(
-            "[lsp] detected {} project at {}, running: {}",
-            language,
-            root,
-            check_cmd
-        );
+        tracing::info!("[lsp] detected {} project at {}, running: {}", language, root, check_cmd);
 
         // Run with timeout + measure duration
         let check_start = std::time::Instant::now();
@@ -485,8 +409,11 @@ impl LspExtension {
             .arg(&check_cmd)
             .output();
 
-        let result =
-            tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), output).await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            output,
+        )
+        .await;
 
         let check_duration_ms = check_start.elapsed().as_millis();
 
@@ -500,7 +427,12 @@ impl LspExtension {
             }
             _ => 0,
         };
-        log_check_metrics(&language, check_duration_ms, timed_out, diag_count);
+        log_check_metrics(
+            &language,
+            check_duration_ms,
+            timed_out,
+            diag_count,
+        );
 
         let stdout = match result {
             Ok(Ok(output)) => String::from_utf8_lossy(&output.stdout).to_string(),
@@ -521,21 +453,14 @@ impl LspExtension {
         let changed = self.changed_files.lock().await;
         if !changed.is_empty() {
             all_diags.sort_by_key(|d| {
-                if changed.iter().any(|f| d.file.contains(f.as_str())) {
-                    0
-                } else {
-                    1
-                }
+                if changed.iter().any(|f| d.file.contains(f.as_str())) { 0 } else { 1 }
             });
-            let prioritized = all_diags
-                .iter()
+            let prioritized = all_diags.iter()
                 .filter(|d| changed.iter().any(|f| d.file.contains(f.as_str())))
                 .count();
             tracing::info!(
                 "[lsp] {} check: {} diagnostics ({} prioritized for changed files)",
-                language,
-                all_diags.len(),
-                prioritized
+                language, all_diags.len(), prioritized
             );
         } else {
             tracing::info!("[lsp] {} check: {} diagnostics", language, all_diags.len());
@@ -603,7 +528,10 @@ impl LspExtension {
                         .and_then(|v| v.as_str())
                         .unwrap_or("unknown")
                         .to_string();
-                    let l = span.get("line_start").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    let l = span
+                        .get("line_start")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as u32;
                     let c = span
                         .get("column_start")
                         .and_then(|v| v.as_u64())
@@ -619,51 +547,10 @@ impl LspExtension {
                 severity,
                 message,
                 code,
-                suggestion: Self::extract_fix_suggestion(msg),
             });
         }
 
         diagnostics
-    }
-
-    /// Extract a machine-applicable fix suggestion from a cargo check JSON message.
-    ///
-    /// Looks first at `spans[].suggested_replacement` where the span's
-    /// `suggestion_applicability == "MachineApplicable"` (highest confidence —
-    /// safe to auto-apply). Falls back to the first `help`-level child message
-    /// when no machine-applicable span suggestion is present.
-    ///
-    /// Returns an empty string when no suggestion can be extracted.
-    fn extract_fix_suggestion(msg: &serde_json::Value) -> String {
-        // Primary: a span with a machine-applicable suggested replacement.
-        if let Some(spans) = msg.get("spans").and_then(|s| s.as_array()) {
-            for span in spans {
-                let applicability = span
-                    .get("suggestion_applicability")
-                    .and_then(|v| v.as_str());
-                if applicability == Some("MachineApplicable")
-                    && let Some(repl) = span.get("suggested_replacement").and_then(|v| v.as_str())
-                    && !repl.is_empty()
-                {
-                    return repl.to_string();
-                }
-            }
-        }
-
-        // Fallback: first help-level child message.
-        if let Some(children) = msg.get("children").and_then(|c| c.as_array()) {
-            for child in children {
-                let level = child.get("level").and_then(|v| v.as_str());
-                if level == Some("help")
-                    && let Some(message) = child.get("message").and_then(|v| v.as_str())
-                    && !message.is_empty()
-                {
-                    return message.to_string();
-                }
-            }
-        }
-
-        String::new()
     }
 
     /// Format diagnostics as XML block for context injection.
@@ -674,14 +561,8 @@ impl LspExtension {
             return "<diagnostics count=\"0\" status=\"clean\">\nProject compiles cleanly.\n</diagnostics>".into();
         }
 
-        let errors: Vec<&Diagnostic> = diagnostics
-            .iter()
-            .filter(|d| d.severity == "error")
-            .collect();
-        let warnings: Vec<&Diagnostic> = diagnostics
-            .iter()
-            .filter(|d| d.severity == "warning")
-            .collect();
+        let errors: Vec<&Diagnostic> = diagnostics.iter().filter(|d| d.severity == "error").collect();
+        let warnings: Vec<&Diagnostic> = diagnostics.iter().filter(|d| d.severity == "warning").collect();
 
         let has_errors = !errors.is_empty();
 
@@ -693,38 +574,20 @@ impl LspExtension {
 
         // Inject ALL errors (these block compilation — LLM must fix them)
         for d in &errors {
-            let code_part = if d.code.is_empty() {
-                String::new()
-            } else {
-                format!(" code=\"{}\"", d.code)
-            };
-            let suggestion_part = if d.suggestion.is_empty() {
-                String::new()
-            } else {
-                format!("\n<suggestion>{}</suggestion>", d.suggestion)
-            };
+            let code_part = if d.code.is_empty() { String::new() } else { format!(" code=\"{}\"", d.code) };
             xml.push_str(&format!(
-                "<error file=\"{}\" line=\"{}\" col=\"{}\"{}>\n{}\n{}</error>\n",
-                d.file, d.line, d.column, code_part, d.message, suggestion_part
+                "<error file=\"{}\" line=\"{}\" col=\"{}\"{}>\n{}\n</error>\n",
+                d.file, d.line, d.column, code_part, d.message
             ));
         }
 
         // Inject first 5 warnings only (excess = token waste)
         const MAX_WARNINGS: usize = 5;
         for d in warnings.iter().take(MAX_WARNINGS) {
-            let code_part = if d.code.is_empty() {
-                String::new()
-            } else {
-                format!(" code=\"{}\"", d.code)
-            };
-            let suggestion_part = if d.suggestion.is_empty() {
-                String::new()
-            } else {
-                format!("\n<suggestion>{}</suggestion>", d.suggestion)
-            };
+            let code_part = if d.code.is_empty() { String::new() } else { format!(" code=\"{}\"", d.code) };
             xml.push_str(&format!(
-                "<warning file=\"{}\" line=\"{}\" col=\"{}\"{}>\n{}\n{}</warning>\n",
-                d.file, d.line, d.column, code_part, d.message, suggestion_part
+                "<warning file=\"{}\" line=\"{}\" col=\"{}\"{}>\n{}\n</warning>\n",
+                d.file, d.line, d.column, code_part, d.message
             ));
         }
 
@@ -753,60 +616,32 @@ impl LspExtension {
             return "✅ No diagnostics. Project compiles cleanly.".into();
         }
 
-        let errors: Vec<&Diagnostic> = diagnostics
-            .iter()
-            .filter(|d| d.severity == "error")
-            .collect();
-        let warnings: Vec<&Diagnostic> = diagnostics
-            .iter()
-            .filter(|d| d.severity == "warning")
-            .collect();
+        let errors: Vec<&Diagnostic> = diagnostics.iter().filter(|d| d.severity == "error").collect();
+        let warnings: Vec<&Diagnostic> = diagnostics.iter().filter(|d| d.severity == "warning").collect();
 
         let mut text = format!(
             "📋 Diagnostics ({} issue(s)): {} error(s), {} warning(s)\n\n",
-            diagnostics.len(),
-            errors.len(),
-            warnings.len()
+            diagnostics.len(), errors.len(), warnings.len()
         );
 
         // All errors
         for d in &errors {
-            let suggestion_part = if d.suggestion.is_empty() {
-                String::new()
-            } else {
-                format!("\n  💡 suggestion: {}", d.suggestion)
-            };
             text.push_str(&format!(
-                "🔴 {}:{}:{} [{}] {}{}\n",
-                d.file,
-                d.line,
-                d.column,
+                "🔴 {}:{}:{} [{}] {}\n",
+                d.file, d.line, d.column,
                 if d.code.is_empty() { "error" } else { &d.code },
-                d.message,
-                suggestion_part
+                d.message
             ));
         }
 
         // First 10 warnings
         const MAX_TEXT_WARNINGS: usize = 10;
         for d in warnings.iter().take(MAX_TEXT_WARNINGS) {
-            let suggestion_part = if d.suggestion.is_empty() {
-                String::new()
-            } else {
-                format!("\n  💡 suggestion: {}", d.suggestion)
-            };
             text.push_str(&format!(
-                "🟡 {}:{}:{} [{}] {}{}\n",
-                d.file,
-                d.line,
-                d.column,
-                if d.code.is_empty() {
-                    "warning"
-                } else {
-                    &d.code
-                },
-                d.message,
-                suggestion_part
+                "🟡 {}:{}:{} [{}] {}\n",
+                d.file, d.line, d.column,
+                if d.code.is_empty() { "warning" } else { &d.code },
+                d.message
             ));
         }
 
@@ -882,22 +717,17 @@ fn log_check_metrics(language: &str, duration_ms: u128, timed_out: bool, diag_co
     if timed_out {
         tracing::warn!(
             "[lsp] CHECK_TIMEOUT: language={} duration={}ms (exceeded limit)",
-            language,
-            duration_ms
+            language, duration_ms
         );
     } else if duration_ms > 30000 {
         tracing::warn!(
             "[lsp] CHECK_SLOW: language={} duration={}ms diagnostics={} (>30s, consider optimizing)",
-            language,
-            duration_ms,
-            diag_count
+            language, duration_ms, diag_count
         );
     } else {
         tracing::info!(
             "[lsp] CHECK_DONE: language={} duration={}ms diagnostics={}",
-            language,
-            duration_ms,
-            diag_count
+            language, duration_ms, diag_count
         );
     }
 
@@ -911,9 +741,9 @@ fn log_check_metrics(language: &str, duration_ms: u128, timed_out: bool, diag_co
         error_count,
     };
 
-    let metrics_path =
-        std::path::Path::new(&std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
-            .join(".ion/agent/lsp-metrics.jsonl");
+    let metrics_path = std::path::Path::new(
+        &std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())
+    ).join(".ion/agent/lsp-metrics.jsonl");
 
     // Append (don't read whole file — just append one line)
     if let Ok(line) = serde_json::to_string(&metric) {
@@ -994,19 +824,12 @@ impl Extension for LspExtension {
                             if let Some(ref cwd) = cwd {
                                 let mut dir = cwd.as_path();
                                 loop {
-                                    if let Some((_, cmd)) = LspExtension::detect_language_command(
-                                        &dir.to_string_lossy(),
-                                    ) {
+                                    if let Some((_, cmd)) = LspExtension::detect_language_command(&dir.to_string_lossy()) {
                                         break Some(cmd);
                                     }
-                                    dir = match dir.parent() {
-                                        Some(p) => p,
-                                        None => break None,
-                                    };
+                                    dir = match dir.parent() { Some(p) => p, None => break None };
                                 }
-                            } else {
-                                None
-                            }
+                            } else { None }
                         }
                     };
 
@@ -1020,18 +843,12 @@ impl Extension for LspExtension {
                     };
 
                     let timeout_secs: u64 = std::env::var("ION_LSP_TIMEOUT")
-                        .ok()
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(120);
+                        .ok().and_then(|v| v.parse().ok()).unwrap_or(120);
 
                     let result = tokio::time::timeout(
                         std::time::Duration::from_secs(timeout_secs),
-                        tokio::process::Command::new("sh")
-                            .arg("-c")
-                            .arg(&cmd)
-                            .output(),
-                    )
-                    .await;
+                        tokio::process::Command::new("sh").arg("-c").arg(&cmd).output()
+                    ).await;
 
                     let diags = match result {
                         Ok(Ok(output)) => {
@@ -1055,10 +872,7 @@ impl Extension for LspExtension {
 
                     bg_ready.store(true, Ordering::SeqCst);
                     bg_running.store(false, Ordering::SeqCst);
-                    tracing::info!(
-                        "[lsp] bg check done: {} diagnostics ready for next turn",
-                        diags.len()
-                    );
+                    tracing::info!("[lsp] bg check done: {} diagnostics ready for next turn", diags.len());
                 });
             }
         }
@@ -1066,10 +880,7 @@ impl Extension for LspExtension {
     }
 
     /// Inject <diagnostics> XML into messages — NON-BLOCKING + DEDUP.
-    async fn on_context(
-        &self,
-        messages: &mut Vec<crate::agent::messages::Message>,
-    ) -> AgentResult<()> {
+    async fn on_context(&self, messages: &mut Vec<crate::agent::messages::Message>) -> AgentResult<()> {
         // ── NON-BLOCKING: Only inject if bg check has fresh results ──
         if !self.bg_check_ready.load(Ordering::SeqCst) {
             return Ok(()); // No fresh results yet — don't block the LLM call
@@ -1078,44 +889,34 @@ impl Extension for LspExtension {
 
         let diags = self.diagnostics.lock().await.clone();
 
-        // ── SKIP CLEAN: Don't inject when there's nothing to report ──
-        // User feedback: "0 errors / clean build" is noise — only inject when
-        // there are actual errors or warnings worth surfacing to the LLM.
-        // Without this, every successful write triggers a "Project compiles
-        // cleanly" announcement that pollutes the conversation.
-        if diags.is_empty() {
-            tracing::info!("[lsp] no diagnostics (clean), skipping injection");
-            return Ok(());
-        }
-
         // ── DEDUP: Skip injection if identical to last injected diagnostics ──
         // Compare with the most recent diagnostics in messages
         for msg in messages.iter().rev() {
-            if let crate::agent::messages::Message::Custom(c) = msg
-                && c.custom_type == "diagnostics"
-            {
-                let last_summary = extract_diag_summary(&c.content);
-                let current_summary = format!(
-                    "[diagnostics history] {} issues ({} error(s), {} warning(s))",
-                    diags.len(),
-                    diags.iter().filter(|d| d.severity == "error").count(),
-                    diags.iter().filter(|d| d.severity == "warning").count(),
-                );
-                if last_summary == current_summary {
-                    tracing::info!("[lsp] diagnostics unchanged, skipping injection (dedup)");
-                    return Ok(());
+            if let crate::agent::messages::Message::Custom(c) = msg {
+                if c.custom_type == "diagnostics" {
+                    let last_summary = extract_diag_summary(&c.content);
+                    let current_summary = format!(
+                        "[diagnostics history] {} issues ({} error(s), {} warning(s))",
+                        diags.len(),
+                        diags.iter().filter(|d| d.severity == "error").count(),
+                        diags.iter().filter(|d| d.severity == "warning").count(),
+                    );
+                    if last_summary == current_summary {
+                        tracing::info!("[lsp] diagnostics unchanged, skipping injection (dedup)");
+                        return Ok(());
+                    }
+                    break; // Found last diagnostics — it's different, proceed
                 }
-                break; // Found last diagnostics — it's different, proceed
             }
         }
 
         // ── Compress old diagnostics: keep 2 recent, rest → summary ──
         let mut diag_indices: Vec<usize> = Vec::new();
         for (i, msg) in messages.iter().enumerate() {
-            if let crate::agent::messages::Message::Custom(c) = msg
-                && c.custom_type == "diagnostics"
-            {
-                diag_indices.push(i);
+            if let crate::agent::messages::Message::Custom(c) = msg {
+                if c.custom_type == "diagnostics" {
+                    diag_indices.push(i);
+                }
             }
         }
         if diag_indices.len() > 2 {
@@ -1126,15 +927,12 @@ impl Extension for LspExtension {
                     c.content = ion_provider::types::CustomContent::Text(summary);
                 }
             }
-            tracing::info!(
-                "[lsp] compressed {} old diagnostics to summaries",
-                to_compress
-            );
+            tracing::info!("[lsp] compressed {} old diagnostics to summaries", to_compress);
         }
 
         // ── Inject new diagnostics ──
         let xml = Self::format_diagnostics_xml(&diags);
-        use ion_provider::types::{CustomContent, CustomMessage};
+        use ion_provider::types::{CustomMessage, CustomContent};
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1161,11 +959,11 @@ impl Extension for LspExtension {
     async fn on_extension_rpc(
         &self,
         method: &str,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> AgentResult<serde_json::Value> {
         match method {
             "check" => {
-                let diags = self.do_check().await.map_err(AgentError::Tool)?;
+                let diags = self.do_check().await.map_err(|e| AgentError::Tool(e))?;
                 Ok(serde_json::json!({
                     "count": diags.len(),
                     "has_errors": diags.iter().any(|d| d.severity == "error"),
@@ -1253,7 +1051,7 @@ impl Tool for LspCheckTool {
             Arc::clone(&self.has_errors),
         );
 
-        let diags = ext.do_check().await.map_err(AgentError::Tool)?;
+        let diags = ext.do_check().await.map_err(|e| AgentError::Tool(e))?;
         Ok(LspExtension::format_diagnostics_text(&diags))
     }
 }
@@ -1337,7 +1135,6 @@ mod tests {
                 severity: "error".into(),
                 message: "type mismatch".into(),
                 code: "E0308".into(),
-                suggestion: String::new(),
             },
             Diagnostic {
                 file: "src/main.rs".into(),
@@ -1346,7 +1143,6 @@ mod tests {
                 severity: "warning".into(),
                 message: "unused variable".into(),
                 code: "unused_variables".into(),
-                suggestion: String::new(),
             },
         ];
         let xml = LspExtension::format_diagnostics_xml(&diags);
@@ -1374,7 +1170,6 @@ mod tests {
             severity: "error".into(),
             message: "type mismatch".into(),
             code: "E0308".into(),
-            suggestion: String::new(),
         }];
         let text = LspExtension::format_diagnostics_text(&diags);
         assert!(text.contains("🔴"));
@@ -1392,147 +1187,8 @@ mod tests {
             severity: "error".into(),
             message: "test".into(),
             code: "E0001".into(),
-            suggestion: String::new(),
         };
         let b = a.clone();
         assert_eq!(a, b);
-    }
-
-    /// Extracting a suggestion from a machine-applicable span replacement.
-    #[test]
-    fn test_parse_with_machine_applicable_suggestion() {
-        let input = r#"{"reason":"compiler-message","message":{"level":"error","code":{"code":"E0308"},"message":"mismatched types","spans":[{"file_name":"src/lib.rs","line_start":42,"column_start":5,"suggested_replacement":"foo","suggestion_applicability":"MachineApplicable"}]}}"#;
-        let diags = LspExtension::parse_cargo_check_json(input);
-        assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].suggestion, "foo");
-
-        // A non-MachineApplicable applicability must not be picked up.
-        let input_unsure = r#"{"reason":"compiler-message","message":{"level":"error","code":{"code":"E0308"},"message":"mismatched types","spans":[{"file_name":"src/lib.rs","line_start":42,"column_start":5,"suggested_replacement":"maybe","suggestion_applicability":"MaybeIncorrect"}]}}"#;
-        let diags_unsure = LspExtension::parse_cargo_check_json(input_unsure);
-        assert_eq!(diags_unsure.len(), 1);
-        assert_eq!(diags_unsure[0].suggestion, "");
-    }
-
-    /// When no machine-applicable span suggestion exists, fall back to the
-    /// first help-level child message.
-    #[test]
-    fn test_parse_with_help_child_fallback() {
-        let input = r#"{"reason":"compiler-message","message":{"level":"error","code":{"code":"E0308"},"message":"mismatched types","spans":[{"file_name":"src/lib.rs","line_start":42,"column_start":5}],"children":[{"level":"note","message":"expected u32"},{"level":"help","message":"consider using `as u32`"},{"level":"help","message":"ignored help"}]}}"#;
-        let diags = LspExtension::parse_cargo_check_json(input);
-        assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].suggestion, "consider using `as u32`");
-    }
-
-    /// When neither a span suggestion nor a help child is present, the
-    /// suggestion field must be empty.
-    #[test]
-    fn test_parse_no_suggestion_yields_empty() {
-        let input = r#"{"reason":"compiler-message","message":{"level":"error","code":{"code":"E0308"},"message":"mismatched types","spans":[{"file_name":"src/lib.rs","line_start":42,"column_start":5}]}}"#;
-        let diags = LspExtension::parse_cargo_check_json(input);
-        assert_eq!(diags.len(), 1);
-        assert_eq!(diags[0].suggestion, "");
-    }
-
-    // ── on_context injection tests (commit 715b887) ──
-    // User feedback: '0 errors 不用展示出来，有就有没有就没有'
-    // Fix: on_context returns early if diags.is_empty(), even when bg_check_ready=true.
-    // Before fix: every successful build injected <diagnostics count=0> noise.
-
-    #[tokio::test]
-    async fn test_on_context_no_inject_when_bg_check_not_ready() {
-        // bg_check_ready=false（默认）→ 不注入，不阻塞 LLM
-        let ext = LspExtension::new();
-        let mut messages: Vec<crate::agent::messages::Message> = Vec::new();
-        let before = messages.len();
-        ext.on_context(&mut messages).await.expect("on_context ok");
-        assert_eq!(
-            messages.len(),
-            before,
-            "no injection when bg_check_ready=false"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_on_context_no_inject_when_diagnostics_empty() {
-        // ★ 核心修复：bg_check_ready=true 但 diags 空 → 也不注入
-        // 之前这里会注入 <diagnostics count=0>，污染对话。
-        let ext = LspExtension::new();
-        ext.set_bg_check_ready_for_test(true);
-        // diagnostics 默认空（new() 初始化为 vec![]）
-        let mut messages: Vec<crate::agent::messages::Message> = Vec::new();
-        ext.on_context(&mut messages).await.expect("on_context ok");
-        assert_eq!(
-            messages.len(),
-            0,
-            "clean build (empty diags) must NOT inject — user feedback: 有就有，没有就没有"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_on_context_injects_when_diagnostics_present() {
-        // diags 非空 + bg_check_ready=true → 应该注入 Custom message
-        let ext = LspExtension::new();
-        let diags_handle = ext.get_shared_diagnostics();
-        diags_handle.lock().await.push(Diagnostic {
-            severity: "error".into(),
-            file: "src/lib.rs".into(),
-            line: 42,
-            column: 5,
-            code: "E0308".into(),
-            message: "mismatched types".into(),
-            suggestion: String::new(),
-        });
-        ext.set_bg_check_ready_for_test(true);
-
-        let mut messages: Vec<crate::agent::messages::Message> = Vec::new();
-        ext.on_context(&mut messages).await.expect("on_context ok");
-        assert_eq!(
-            messages.len(),
-            1,
-            "non-empty diags should inject exactly one Custom message"
-        );
-        // 验证注入的是 Custom 类型
-        match &messages[0] {
-            crate::agent::messages::Message::Custom(c) => {
-                assert_eq!(c.custom_type, "diagnostics");
-                match &c.content {
-                    ion_provider::types::CustomContent::Text(s) => {
-                        assert!(s.contains("E0308"), "content should reference error code");
-                    }
-                    other => panic!("expected Text content, got {other:?}"),
-                }
-            }
-            other => panic!("expected Custom, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_on_context_dedup_skips_identical() {
-        // diags 跟上次一样 → 应该 dedup 跳过（不重复注入）
-        let ext = LspExtension::new();
-        let diags_handle = ext.get_shared_diagnostics();
-        diags_handle.lock().await.push(Diagnostic {
-            severity: "error".into(),
-            file: "src/lib.rs".into(),
-            line: 1,
-            column: 1,
-            code: "E0308".into(),
-            message: "err".into(),
-            suggestion: String::new(),
-        });
-        ext.set_bg_check_ready_for_test(true);
-
-        let mut messages: Vec<crate::agent::messages::Message> = Vec::new();
-        // 第一次注入
-        ext.on_context(&mut messages).await.expect("ok");
-        assert_eq!(messages.len(), 1, "first call should inject");
-        // 重置 ready，再次调用——diags 没变，应该 dedup
-        ext.set_bg_check_ready_for_test(true);
-        ext.on_context(&mut messages).await.expect("ok");
-        assert_eq!(
-            messages.len(),
-            1,
-            "second call with same diags should dedup"
-        );
     }
 }

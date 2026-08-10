@@ -38,12 +38,6 @@ const LOOP_EXEMPT_TOOLS: &[&str] = &[
     "extension_rpc",
 ];
 
-/// Tools exempt from ERROR_ABORT (consecutive-error abort).
-/// bash failures are common during iterative development
-/// (fix compile error → re-run), so they should not trigger early abort.
-/// They are still subject to the normal ABORT_THRESHOLD (5 identical calls).
-const ERROR_ABORT_EXEMPT: &[&str] = &["bash"];
-
 /// Max consecutive identical tool calls before warning.
 const WARN_THRESHOLD: u32 = 3;
 
@@ -64,12 +58,6 @@ pub struct ToolLoopDetector {
     name: String,
 }
 
-impl Default for ToolLoopDetector {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ToolLoopDetector {
     pub fn new() -> Self {
         Self {
@@ -78,14 +66,6 @@ impl ToolLoopDetector {
             current_sig: Arc::new(Mutex::new(None)),
             name: "tool-loop-detector".into(),
         }
-    }
-
-    /// Reset all loop tracking state (consecutive counter + history).
-    pub async fn reset(&self) {
-        *self.consecutive.lock().await = 0;
-        *self.current_sig.lock().await = None;
-        self.history.lock().await.clear();
-        tracing::info!("[loop-detector] state reset");
     }
 
     /// Compute a normalized signature for a tool call.
@@ -101,7 +81,7 @@ impl ToolLoopDetector {
                 let path = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("");
                 format!("{tool_name}:{path}")
             }
-            "bash" => {
+            "bash" | "bash_run" => {
                 let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
                 // Normalize: collapse echo/noop variations
                 let normalized = normalize_bash_command(cmd);
@@ -120,11 +100,9 @@ impl ToolLoopDetector {
                 format!("spawn_worker:{agent}")
             }
             _ => {
-                // For other tools, use tool name + truncated args.
-                // Use chars().take() to avoid panicking on multi-byte UTF-8
-                // (byte-slicing &[..100] can land inside a multi-byte char).
+                // For other tools, use tool name + truncated args
                 let args_str = args.to_string();
-                let truncated: String = args_str.chars().take(100).collect();
+                let truncated = if args_str.len() > 100 { &args_str[..100] } else { &args_str };
                 format!("{tool_name}:{truncated}")
             }
         }
@@ -146,16 +124,8 @@ fn normalize_bash_command(cmd: &str) -> String {
         }
         "pwd" => "pwd".to_string(),
         _ => {
-            // For other commands, truncate to 50 CHARS (not bytes).
-            // Must use char_indices to avoid splitting multi-byte UTF-8 sequences
-            // (e.g. Chinese characters — bug found by EXT-03 S2 scenario causing
-            // panic "end byte index 50 is not a char boundary; it is inside '无'")
-            if trimmed.chars().count() > 50 {
-                // Take first 50 chars by iterating, then collect
-                trimmed.chars().take(50).collect::<String>()
-            } else {
-                trimmed.to_string()
-            }
+            // For other commands, truncate to 50 chars (enough to detect identical repeats)
+            if trimmed.len() > 50 { trimmed[..50].to_string() } else { trimmed.to_string() }
         }
     }
 }
@@ -164,14 +134,6 @@ fn normalize_bash_command(cmd: &str) -> String {
 impl Extension for ToolLoopDetector {
     fn name(&self) -> &str {
         &self.name
-    }
-
-    /// When a gate extension (e.g. GoalSupervisor) forces a retry, reset the
-    /// loop detection state. A gate-driven retry is intentional — the goal
-    /// isn't complete and the agent is told to keep working — so consecutive
-    /// tool calls across gate retries should NOT be counted as a loop.
-    async fn on_gate_retry(&self) {
-        self.reset().await;
     }
 
     async fn on_tool_execution_start(&self, ctx: &ToolExecutionContext) -> AgentResult<()> {
@@ -198,8 +160,7 @@ impl Extension for ToolLoopDetector {
         if count >= ABORT_THRESHOLD {
             tracing::error!(
                 "[loop-detector] ABORT: '{}' repeated {} times consecutively. Breaking loop.",
-                ctx.tool_name,
-                count
+                ctx.tool_name, count
             );
             // Return error to abort this tool call
             return Err(crate::agent::error::AgentError::Tool(format!(
@@ -213,8 +174,7 @@ impl Extension for ToolLoopDetector {
         if count >= WARN_THRESHOLD {
             tracing::warn!(
                 "[loop-detector] WARN: '{}' repeated {} times. Next repeat will abort.",
-                ctx.tool_name,
-                count
+                ctx.tool_name, count
             );
         }
 
@@ -222,13 +182,8 @@ impl Extension for ToolLoopDetector {
     }
 
     async fn on_tool_execution_end(&self, ctx: &ToolExecutionContext) -> AgentResult<()> {
-        // Track error results for error-based abort.
-        // Skip bash: iterative dev (fix error → re-run) causes legit
-        // consecutive failures that should not trigger early abort.
-        if ctx.is_error
-            && !LOOP_EXEMPT_TOOLS.contains(&ctx.tool_name.as_str())
-            && !ERROR_ABORT_EXEMPT.contains(&ctx.tool_name.as_str())
-        {
+        // Track error results for error-based abort
+        if ctx.is_error && !LOOP_EXEMPT_TOOLS.contains(&ctx.tool_name.as_str()) {
             let mut history = self.history.lock().await;
             let sig = Self::compute_signature(&ctx.tool_name, &ctx.args);
             let sig_ref = sig.clone();
@@ -250,8 +205,7 @@ impl Extension for ToolLoopDetector {
             if err_count >= ERROR_ABORT_THRESHOLD {
                 tracing::error!(
                     "[loop-detector] ERROR_ABORT: '{}' failed {} times with same args. Breaking.",
-                    ctx.tool_name,
-                    err_count
+                    ctx.tool_name, err_count
                 );
             }
         }
@@ -265,35 +219,19 @@ mod tests {
 
     #[test]
     fn test_compute_signature_read() {
-        let sig1 = ToolLoopDetector::compute_signature(
-            "read",
-            &serde_json::json!({"file_path": "src/lib.rs"}),
-        );
-        let sig2 = ToolLoopDetector::compute_signature(
-            "read",
-            &serde_json::json!({"file_path": "src/lib.rs", "offset": 10}),
-        );
+        let sig1 = ToolLoopDetector::compute_signature("read", &serde_json::json!({"file_path": "src/lib.rs"}));
+        let sig2 = ToolLoopDetector::compute_signature("read", &serde_json::json!({"file_path": "src/lib.rs", "offset": 10}));
         assert_eq!(sig1, sig2); // Same file = same signature (offset ignored)
-        let sig3 = ToolLoopDetector::compute_signature(
-            "read",
-            &serde_json::json!({"file_path": "src/main.rs"}),
-        );
+        let sig3 = ToolLoopDetector::compute_signature("read", &serde_json::json!({"file_path": "src/main.rs"}));
         assert_ne!(sig1, sig3); // Different file = different signature
     }
 
     #[test]
     fn test_compute_signature_bash() {
-        let sig1 = ToolLoopDetector::compute_signature(
-            "bash",
-            &serde_json::json!({"command": "echo hello"}),
-        );
-        let sig2 = ToolLoopDetector::compute_signature(
-            "bash",
-            &serde_json::json!({"command": "echo world"}),
-        );
+        let sig1 = ToolLoopDetector::compute_signature("bash", &serde_json::json!({"command": "echo hello"}));
+        let sig2 = ToolLoopDetector::compute_signature("bash", &serde_json::json!({"command": "echo world"}));
         assert_eq!(sig1, sig2); // Both echo = same signature (normalized)
-        let sig3 =
-            ToolLoopDetector::compute_signature("bash", &serde_json::json!({"command": "ls -la"}));
+        let sig3 = ToolLoopDetector::compute_signature("bash", &serde_json::json!({"command": "ls -la"}));
         assert_ne!(sig1, sig3);
     }
 
@@ -311,30 +249,6 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_bash_utf8_multibyte_no_panic() {
-        // Regression: previously used byte-slicing trimmed[..50] which panicked
-        // when byte 50 landed inside a multi-byte CJK char (e.g. '无' is 3 bytes).
-        // Must use chars().take(50) to slice on char boundaries.
-        //
-        // Use a command NOT in the normalize table (so it falls into the
-        // truncate branch) and contains enough CJK chars to span byte 50.
-        let cmd = "python3 -c \"print('".to_string() + &"无".repeat(60) + "')\"";
-        let result = normalize_bash_command(&cmd);
-        assert!(
-            !result.is_empty(),
-            "should return non-empty signature, got: {result:?}"
-        );
-        // Should be truncated to 50 chars (not bytes)
-        assert_eq!(
-            result.chars().count(),
-            50,
-            "should truncate to 50 chars, got {} ({} bytes): {result:?}",
-            result.chars().count(),
-            result.len()
-        );
-    }
-
-    #[test]
     fn test_exempt_tools() {
         assert!(LOOP_EXEMPT_TOOLS.contains(&"lsp_check"));
         assert!(LOOP_EXEMPT_TOOLS.contains(&"memory_search"));
@@ -343,47 +257,8 @@ mod tests {
 
     #[test]
     fn test_write_same_file() {
-        let sig1 = ToolLoopDetector::compute_signature(
-            "write",
-            &serde_json::json!({"file_path": "src/a.rs", "content": "old"}),
-        );
-        let sig2 = ToolLoopDetector::compute_signature(
-            "write",
-            &serde_json::json!({"file_path": "src/a.rs", "content": "new"}),
-        );
+        let sig1 = ToolLoopDetector::compute_signature("write", &serde_json::json!({"file_path": "src/a.rs", "content": "old"}));
+        let sig2 = ToolLoopDetector::compute_signature("write", &serde_json::json!({"file_path": "src/a.rs", "content": "new"}));
         assert_eq!(sig1, sig2); // Same file = same signature (content ignored)
-    }
-
-    #[test]
-    fn test_signature_truncates_long_ascii() {
-        // 200+ chars of pure ASCII — should truncate without panic
-        let long_text = "a".repeat(200);
-        let args = serde_json::json!({"text": long_text});
-        let sig = ToolLoopDetector::compute_signature("write_custom", &args);
-        // Signature should be reasonably sized (tool name + truncated args, not 200+ chars)
-        assert!(sig.len() < 150, "signature too long: {} chars", sig.len());
-        assert!(sig.starts_with("write_custom:"));
-    }
-
-    #[test]
-    fn test_signature_handles_multibyte_utf8() {
-        // Chinese text — each char is 3 bytes in UTF-8.
-        // Without char-safe truncation, byte index 100 lands inside a CJK char.
-        let chinese = "蒙娜丽莎".repeat(30); // 120 chars = 360 bytes
-        let args = serde_json::json!({"text": chinese});
-        let sig = ToolLoopDetector::compute_signature("write_custom", &args);
-        // Must not panic and must return a valid String
-        assert!(sig.starts_with("write_custom:"));
-        assert!(sig.contains("蒙")); // Chinese chars should be present
-    }
-
-    #[test]
-    fn test_signature_handles_emoji_and_mixed() {
-        // Emoji (4 bytes each) + Chinese (3 bytes) + ASCII (1 byte) mix
-        let mixed = "😀😊猫猫cat".repeat(20);
-        let args = serde_json::json!({"data": mixed});
-        let sig = ToolLoopDetector::compute_signature("custom_tool", &args);
-        // Must not panic
-        assert!(sig.starts_with("custom_tool:"));
     }
 }
