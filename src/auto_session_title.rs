@@ -119,7 +119,15 @@ impl Extension for AutoSessionTitle {
         &self.name
     }
 
+    /// 在每轮对话**结束时**检查。只在前 2 轮生成标题。
+    /// on_turn_start 时 messages 为空（user message 还没添加），所以必须用 on_turn_end。
+    /// turn_index 从 1 开始，所以用 > 2 跳过后续轮。
+    /// 标题写入 session.jsonl 后会出现在对话流中（不在底部——export 按 entry 顺序渲染）。
     async fn on_turn_end(&self, ctx: &TurnContext) -> AgentResult<()> {
+        // 只在前 2 轮生成标题（turn_index 从 1 开始）
+        if ctx.turn_index > 2 {
+            return Ok(());
+        }
         if self.done.load(Ordering::SeqCst) {
             return Ok(());
         }
@@ -179,8 +187,23 @@ impl Extension for AutoSessionTitle {
 
             self.done.store(true, Ordering::SeqCst);
 
-            // ★ 不在这里 append_raw_entry（会被 save_session 覆盖）。
-            // 标题通过 system prompt 注入 + export 时从 user message fallback 读取。
+            // ★ 把标题写入 session.jsonl 作为 session_name entry。
+            // 用 ctx.session_cwd（不是 current_dir），确保 worktree/隔离 session 正确。
+            let cwd = ctx.session_cwd.clone().unwrap_or_else(|| {
+                std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            });
+            let entry = serde_json::json!({
+                "type": "custom_message",
+                "customType": "session_name",
+                "content": title.clone(),
+                "display": false,
+                "id": crate::session_jsonl::generate_id(),
+                "parentId": null,
+                "timestamp": crate::session_jsonl::timestamp_iso(),
+            });
+            crate::session_jsonl::append_raw_entry(&cwd, &entry);
         }
 
         Ok(())
