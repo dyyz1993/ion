@@ -55,6 +55,10 @@ run_feature() {
     rm -rf "$session_dir" "$work_dir"
     mkdir -p "$session_dir" "$work_dir"
 
+    # 给工作目录配 file-snapshot（EXT-04 等需要快照功能的模块）
+    mkdir -p "$work_dir/.ion"
+    echo '{"file-snapshot":{"enabled":true}}' > "$work_dir/.ion/settings.json"
+
     local start_ts
     start_ts=$(date +%s)
 
