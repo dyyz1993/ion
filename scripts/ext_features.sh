@@ -30,7 +30,7 @@ FP_02D=(
 FP_03A=(
     "FP-03A|EXT-03|stdout 正则检测端口|03-M1,03-M2,03-M3"
     "用 bash background=true 启动 python3 -m http.server 8765"
-    "现在你知道有哪些 dev server 在跑吗？说一下"
+    "用 bash 工具执行 ion rpc --method extension_rpc --params '{\"extension\":\"dev-server-detector\",\"method\":\"status\",\"args\":{}}' 查看检测到的 dev server 列表。把返回的 JSON 贴出来。"
 )
 
 FP_03B=(
@@ -51,20 +51,20 @@ FP_04A=(
     "FP-04A|EXT-04|单文件创建快照|04-M1,04-M2,04-M3,04-M4"
     "请使用 write 工具（不是 bash）创建文件 hello.txt，内容是 hello world"
     "请使用 write 工具（不是 bash）创建文件 test.rs，内容是 // snapshot test"
-    "你刚才创建文件的时候，系统有没有自动记录快照？说一下"
+    "用 bash 工具执行 ion rpc --method extension_rpc --params '{\"extension\":\"file-approval\",\"method\":\"pending\",\"args\":{}}' 查看系统有没有记录刚才的文件变更快照。把返回的 JSON 贴出来。"
 )
 
 FP_04B=(
     "FP-04B|EXT-04|编辑覆盖 + diff|04-M1,04-M3,04-M5"
     "用 write 工具覆盖 hello.txt，内容改成 hello snapshot updated"
-    "这次修改系统应该记了 diff，描述一下前后差异"
+    "用 bash 工具执行 ion rpc --method get_file_diff --params '{\"filePath\":\"hello.txt\"}' 查看 diff。把返回的 JSON 贴出来，确认 diff 显示了前后内容差异。"
 )
 
 FP_04C=(
     "FP-04C|EXT-04|bash 兜底 + 删除捕获|04-M2,04-M3,04-M7"
     "用 bash 命令直接删掉 test.rs 这个文件"
     "用 bash echo 追加一行到 hello.txt（绕过 write 工具）"
-    "系统应该也能捕获到 bash 改的文件，确认一下"
+    "用 bash 工具执行 ion rpc --method get_modified_files 查看系统是否捕获了 bash 操作引起的变更。把返回的 JSON 贴出来。"
 )
 
 FP_05A=(
@@ -95,13 +95,13 @@ FP_06A=(
 FP_06B=(
     "FP-06B|EXT-06|PreToolUse matcher 过滤|06-M2,06-M3"
     "你的 hook 配了只匹配 bash 工具，现在跑一个 bash 命令 echo hello"
-    "再写一个文件（write 工具），这个不应该触发 bash-only 的 hook，确认一下"
+    "再写一个文件（write 工具），这个不应该触发 bash-only 的 hook。写完后用 bash 执行 cat .ion/hooks.log 查看日志，确认只有 bash 触发了 hook，write 没有。"
 )
 
 FP_06C=(
     "FP-06C|EXT-06|Stop 事件 + block 注入|06-M1,06-M6,06-M8"
     "你配了 Stop hook 会 block，试着结束任务看看会不会被拦回来"
-    "如果被拦回来了，说一下 hook 给的理由是什么"
+    "如果被拦回来了，用 bash 执行 cat .ion/hooks.log 查看 hook 的拒绝理由，把日志内容贴出来。"
 )
 
 FP_07A=(
