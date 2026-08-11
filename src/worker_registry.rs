@@ -389,6 +389,13 @@ impl WorkerRegistry {
         // ── Set env vars (same as original create_worker) ──
         child_cmd.env("ION_PROJECT_ROOT", &project_path);
         child_cmd.env("ION_WORKER_CWD", &worktree_path);
+        // ★ 传 model/provider 到子进程（否则 worker 用 config 默认值，不是 create_session 指定的）
+        if let Some(ref m) = config.model {
+            child_cmd.env("ION_SESSION_MODEL", m);
+        }
+        if let Some(ref p) = config.provider {
+            child_cmd.env("ION_SESSION_PROVIDER", p);
+        }
         if let Some(ref mode) = config.skip_mcp
             && !mode.is_empty()
         {
@@ -415,6 +422,7 @@ impl WorkerRegistry {
             "ION_FAUX_REPLY",
             "ION_FAUX_REPEAT",
             "ION_FAUX_ERROR",
+            "ION_GRACEFUL_DRAIN_MS",
         ] {
             if let Ok(val) = std::env::var(var) {
                 child_cmd.env(var, &val);
@@ -640,6 +648,7 @@ impl WorkerRegistry {
             "ION_FAUX_REPLY",
             "ION_FAUX_REPEAT",
             "ION_FAUX_ERROR",
+            "ION_GRACEFUL_DRAIN_MS",
         ] {
             if let Ok(val) = std::env::var(var) {
                 child_cmd.env(var, &val);
@@ -1778,6 +1787,88 @@ impl WorkerRegistry {
                 r.broadcast_overview();
             });
         });
+
+        // ── 注入 initial_prompt（延迟到 spawn task，避免持锁等子进程 ready 导致死锁）──
+        // ⚠️ register_prepared_worker 是 create_worker 的 split 版本（parking_lot 重构后
+        // cmd_host / cmd_serve 用 prepare + register 两阶段）。initial_prompt 注入逻辑必须
+        // 在这里也有一份，否则 --host 模式下 worker 启动了但永远收不到 prompt（Idle 到超时）。
+        let mut effective_prompt = config.initial_prompt.clone();
+        let is_peer = matches!(config.relation, Some(WorkerRelation::Peer));
+        if is_peer {
+            let creator_id = config
+                .creator
+                .as_deref()
+                .or(config.report_to.as_deref())
+                .unwrap_or("(unknown)");
+            let ch = config.report_channel.as_deref().unwrap_or("main");
+            let report_seg = format!(
+                "\n\n---\n## 通信约定（内核自动注入，请严格遵守）\n\
+                 你是被 {creator} 创建的同级 Worker。\n\
+                 - 任务完成后必须输出（单独一行）：`CHANNEL_SEND {ch} DONE <简短摘要>`\n\
+                 - 需要帮助时输出：`CHANNEL_SEND {ch} HELP <问题描述>`\n\
+                 - 你的创建者 worker_id：{creator}\n\
+                 - 汇报频道：{ch}\n",
+                creator = creator_id,
+                ch = ch,
+            );
+            match &mut effective_prompt {
+                Some(p) => p.push_str(&report_seg),
+                None => effective_prompt = Some(report_seg),
+            }
+        }
+        if let Some(prompt_text) = effective_prompt {
+            let wid_for_prompt = worker_id.clone();
+            let prompt_registry = Arc::clone(registry_arc);
+            tokio::spawn(async move {
+                // 等子进程 ready（不持锁，不阻塞 reader task）
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                // ⚠️ parking_lot: send_command 持 &mut self + .await（stdin write），
+                // 不能持锁调用。改为：持锁 take 出 stdin + 标记 Busy，drop lock，
+                // 然后 write stdin，再 put back。
+                let req_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+                let write_line = format!(
+                    "{}\n",
+                    serde_json::json!({
+                        "id": &req_id,
+                        "method": "prompt",
+                        "params": serde_json::json!({"text": prompt_text})
+                    })
+                );
+                // 持短锁：take stdin + 标记 Busy
+                let stdin_opt = {
+                    let mut reg = prompt_registry.lock();
+                    let stdin = match reg.workers.get_mut(&wid_for_prompt) {
+                        Some(record) => record.stdin.take(),
+                        None => {
+                            tracing::warn!("[{wid_for_prompt}] not found for initial_prompt");
+                            return;
+                        }
+                    };
+                    if let Some(record) = reg.workers.get_mut(&wid_for_prompt) {
+                        record.set_status(WorkerStatus::Busy);
+                    }
+                    stdin
+                }; // lock dropped
+                // 不持锁写 stdin（带 2s timeout，buffer 满不阻塞锁）
+                if let Some(mut stdin) = stdin_opt {
+                    use tokio::io::AsyncWriteExt;
+                    let result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                        stdin.write_all(write_line.as_bytes()).await?;
+                        stdin.flush().await?;
+                        Ok::<(), std::io::Error>(())
+                    })
+                    .await;
+                    // 把 stdin 放回去
+                    let mut reg = prompt_registry.lock();
+                    if let Some(record) = reg.workers.get_mut(&wid_for_prompt) {
+                        record.stdin = Some(stdin);
+                    }
+                    if let Err(e) = result {
+                        tracing::warn!("[{wid_for_prompt}] failed to inject initial_prompt: {e:?}");
+                    }
+                }
+            });
+        }
 
         self.broadcast_overview();
         Ok(info)
