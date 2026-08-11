@@ -139,8 +139,12 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         channels,
         initial_agent,
     } = args;
-    let mut model_id = model_id.unwrap_or_else(|| "deepseek-v4-flash".to_string());
-    let mut provider = provider.unwrap_or_else(|| "opencode".to_string());
+    let mut model_id = model_id.unwrap_or_else(|| {
+        std::env::var("ION_SESSION_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".to_string())
+    });
+    let mut provider = provider.unwrap_or_else(|| {
+        std::env::var("ION_SESSION_PROVIDER").unwrap_or_else(|_| "opencode".to_string())
+    });
     let initial_agent = initial_agent;
 
     let sid = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -180,19 +184,21 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         model_id = model_id["replay/".len()..].to_string();
     }
     let mut model = model_reg.find_model(&model_id).cloned().unwrap_or_else(|| {
-        // 从 auth.json 读 base_url 和 api_key
-        let auth_url = crate::auth::AuthStorage::load()
-            .provider_base_urls
-            .get(&provider)
-            .cloned();
+        // 从 config.json 或 auth.json 读 base_url 和 api_key
+        let cfg = crate::config::IonConfig::load();
+        let auth = crate::auth::AuthStorage::load();
+        let auth_url = auth.provider_base_urls.get(&provider).cloned();
+        // 从 config.json 的 providers.X.base_url 读（auth.json 可能没有）
+        let config_url = cfg.providers.get(&provider).map(|p| p.base_url.clone());
+        let base_url = auth_url
+            .or(config_url)
+            .unwrap_or_else(|| "https://opencode.ai/zen/go/v1".into());
         Model {
             id: model_id.clone(),
             name: model_id.clone(),
             api: "openai-completions".into(),
             provider: provider.clone(),
-            base_url: auth_url
-                .clone()
-                .unwrap_or_else(|| "https://opencode.ai/zen/go/v1".into()),
+            base_url,
             reasoning: false,
             input: vec!["text".into()],
             cost: Cost {
