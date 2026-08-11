@@ -21,7 +21,8 @@ docs/
 ├── guides/                             ← 用户/开发者使用指南
 │   ├── CLI_USAGE.md                   ← 命令速查
 │   ├── DEPLOY_ARCH.md                 ← 部署场景
-│   └── EXTENSION_WORKFLOW.md          ← 扩展开发工作流
+│   ├── EXTENSION_WORKFLOW.md          ← 扩展开发工作流
+│   └── HOOKS_ION_KILL.md             ← zcode hook: 防止误杀 ion 进程
 │
 ├── design/                             ← 功能设计文档（每个子系统一份）
 │   ├── EXTENSION_SYSTEM.md            ← WASM 扩展系统

@@ -403,19 +403,33 @@ impl Extension for HookExtension {
         let outcome = self.process_event("PreToolUse", stdin).await;
         if outcome.block {
             // ★ 写 hook 拦截的 custom entry 到 session.jsonl（可溯源）
-            let reason = outcome.block_reason.unwrap_or_default();
+            let reason = outcome.block_reason.clone().unwrap_or_default();
+            // 审计元信息：哪种 handler 判断的、agent 角色名、LLM 推理原文
+            let mut details = serde_json::json!({
+                "source": "hook",
+                "hookEvent": "PreToolUse",
+                "decision": "block",
+                "toolCallId": call.id,
+                "toolName": call.name,
+                "reason": reason,
+            });
+            if let Some(ref ht) = outcome.handler_type {
+                details["handlerType"] = serde_json::Value::String(ht.clone());
+            }
+            if let Some(ref an) = outcome.agent_name {
+                details["agentName"] = serde_json::Value::String(an.clone());
+            }
+            if let Some(ref m) = outcome.model {
+                details["model"] = serde_json::Value::String(m.clone());
+            }
+            if let Some(ref reasoning) = outcome.agent_reasoning {
+                details["agentReasoning"] = serde_json::Value::String(reasoning.clone());
+            }
             self.write_hook_entry_with_details(
                 "PreToolUse",
                 "block",
                 &format!("tool '{}' blocked: {}", call.name, reason),
-                Some(serde_json::json!({
-                    "source": "hook",
-                    "hookEvent": "PreToolUse",
-                    "decision": "block",
-                    "toolCallId": call.id,
-                    "toolName": call.name,
-                    "reason": reason,
-                })),
+                Some(details),
             );
             return Err(AgentError::ToolDenied {
                 tool: call.name.clone(),

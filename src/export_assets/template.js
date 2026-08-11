@@ -1307,9 +1307,27 @@
         }
 
         if (entry.type === 'custom_message' && entry.display) {
+          // hook_event 类型：额外渲染 details 里的 handlerType / agentName / agentReasoning
+          let detailsHtml = '';
+          if (entry.customType === 'hook_event' && entry.details) {
+            const d = entry.details;
+            const parts = [];
+            if (d.handlerType) parts.push(`<span class="hook-meta-item"><b>判断方式</b> ${escapeHtml(d.handlerType)}</span>`);
+            if (d.model) parts.push(`<span class="hook-meta-item"><b>模型</b> ${escapeHtml(d.model)}</span>`);
+            if (d.agentName) parts.push(`<span class="hook-meta-item"><b>Agent</b> ${escapeHtml(d.agentName)}</span>`);
+            if (d.decision) parts.push(`<span class="hook-meta-item"><b>决策</b> ${escapeHtml(d.decision)}</span>`);
+            if (parts.length) {
+              detailsHtml += `<div class="hook-meta">${parts.join('')}</div>`;
+            }
+            if (d.agentReasoning) {
+              const reasoning = escapeHtml(d.agentReasoning);
+              detailsHtml += `<details class="hook-reasoning"><summary>Agent 推理过程</summary><pre class="hook-reasoning-text">${reasoning}</pre></details>`;
+            }
+          }
           return `<div class="hook-message" id="${entryDomId}">${tsHtml}
             <div class="hook-type">[${escapeHtml(entry.customType)}]</div>
             <div class="markdown-content">${safeMarkedParse(typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content))}</div>
+            ${detailsHtml}
           </div>`;
         }
 

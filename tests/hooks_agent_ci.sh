@@ -90,6 +90,9 @@ EOF
 
 cd "$TEST_DIR"
 OUTPUT=$(ION_FAUX_SCRIPT="$TEST_DIR/faux_script.jsonl" \
+         ION_FAUX_REPEAT=1 \
+         ION_GRACEFUL_DRAIN_MS=0 \
+         ION_HOST_IDLE_GRACE=3 \
          ION_HOST_TIMEOUT=30 \
          timeout 60 "$ION_BIN" --no-session --host "测试 agent handler" 2>&1)
 

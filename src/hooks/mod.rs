@@ -254,6 +254,15 @@ pub struct HookOutcome {
     pub additional_context: Option<String>,
     /// 工具参数覆盖（PreToolUse 的 updatedInput）
     pub updated_input: Option<serde_json::Value>,
+    // ── 审计元信息（写入 hook_event，供 HTML 导出展示）──
+    /// 哪种 handler 做的判断：command / prompt / agent
+    pub handler_type: Option<String>,
+    /// agent handler 用的 agent 角色名（如 "security-reviewer"），其他 handler 为 None
+    pub agent_name: Option<String>,
+    /// agent/prompt handler 的 LLM 推理原文（子 Agent 的最终输出文本）
+    pub agent_reasoning: Option<String>,
+    /// 用的哪个模型（如 "zai/glm-5.2"、"faux-test"），command handler 为 None
+    pub model: Option<String>,
 }
 
 impl HookOutcome {
@@ -270,6 +279,10 @@ impl HookOutcome {
                 (None, None) => None,
             },
             updated_input: other.updated_input.or(self.updated_input),
+            handler_type: other.handler_type.or(self.handler_type),
+            agent_name: other.agent_name.or(self.agent_name),
+            agent_reasoning: other.agent_reasoning.or(self.agent_reasoning),
+            model: other.model.or(self.model),
         }
     }
 

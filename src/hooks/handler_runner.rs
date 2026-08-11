@@ -295,18 +295,30 @@ async fn run_prompt(
         }
     };
 
-    // 构造 context：system prompt = handler.prompt，user message = stdin 上下文
+    // 构造 context：system prompt = handler.prompt（用户写的判断逻辑）+ 内置 schema 约束，
+    // user message = stdin 上下文（tool_name/tool_input/prompt 等事件数据）。
+    //
+    // 内置决策 schema（用户不需要自己写格式约定）：
+    //   允许 → {"decision":"allow"}
+    //   阻断 → {"decision":"block","reason":"简短原因"}
+    //   请求确认 → {"decision":"ask","reason":"为什么需要用户确认"}
+    // 这个格式与 interpret_stdout / command handler 的 JSON 协议完全一致。
     let system = format!(
-        "{prompt}\n\n---\nHook context ({ }):\n{}",
-        ctx.event_name,
-        serde_json::to_string_pretty(&stdin_data).unwrap_or_default()
+        "{prompt}\n\n---\nHook context ({event}):\n{stdin}\n\n---\n\
+         ## 输出格式（必须严格遵守）\n\
+         只输出一个 JSON 对象，不要有任何额外文字：\n\
+         - 允许执行：{{\"decision\":\"allow\"}}\n\
+         - 阻断执行：{{\"decision\":\"block\",\"reason\":\"简短说明阻断原因\"}}\n\
+         - 请求用户确认：{{\"decision\":\"ask\",\"reason\":\"为什么需要确认\"}}",
+        event = ctx.event_name,
+        stdin = serde_json::to_string_pretty(&stdin_data).unwrap_or_default(),
     );
     let context = ion_provider::types::Context {
         system_prompt: Some(system),
         messages: vec![ion_provider::types::Message::User(ion_provider::types::UserMessage {
             role: "user".into(),
             content: vec![ion_provider::types::ContentBlock::Text(ion_provider::types::TextContent {
-                text: "Respond with JSON: {\"block\": false} or {\"block\": true, \"reason\": \"...\"}".into(),
+                text: "请根据上述规则判断，输出决策 JSON。".into(),
                 text_signature: None,
             })],
             timestamp: std::time::SystemTime::now()
@@ -343,22 +355,14 @@ async fn run_prompt(
                 })
                 .collect::<Vec<_>>()
                 .join("");
-            // 解析 JSON 决策
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
-                && json.get("block").and_then(|v| v.as_bool()) == Some(true)
-            {
-                let reason = json
-                    .get("reason")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("blocked by prompt hook");
-                return HookOutcome {
-                    block: true,
-                    block_reason: Some(reason.into()),
-                    ..Default::default()
-                };
-            }
-            // 不是 block 就看有没有 additionalContext
-            interpret_stdout(&text)
+            // 统一用 interpret_stdout 解析（支持 decision/permissionDecision/additionalContext）
+            // 这与 command handler / agent handler 走同一条解析路径，格式一致。
+            let mut outcome = interpret_stdout(&text);
+            // 填充审计元信息：prompt handler 的判断 LLM 原文
+            outcome.handler_type = Some("prompt".into());
+            outcome.agent_reasoning = Some(text);
+            outcome.model = Some(format!("{}/{}", model.provider, model.id));
+            outcome
         }
         Err(e) => {
             tracing::warn!("[hooks] prompt handler LLM call failed: {e}");
@@ -428,7 +432,16 @@ async fn run_agent(
         Ok(Ok(resp)) => {
             // 子 Worker 完成首轮，解析输出判断 block
             let output = resp.first_turn_output.unwrap_or_default();
-            interpret_stdout(&output)
+            let mut outcome = interpret_stdout(&output);
+            // 填充审计元信息：agent handler 的判断 Agent 角色 + 推理原文
+            outcome.handler_type = Some("agent".into());
+            outcome.agent_name = Some(handler.agent.clone().unwrap_or_else(|| "default".into()));
+            // model：handler 显式配了就用它，否则标注继承会话模型
+            outcome.model = Some(handler.model.clone().unwrap_or_else(|| "(session default)".into()));
+            if !output.is_empty() {
+                outcome.agent_reasoning = Some(output);
+            }
+            outcome
         }
         Ok(Err(e)) => {
             tracing::warn!("[hooks] agent handler spawn_worker failed: {e}");

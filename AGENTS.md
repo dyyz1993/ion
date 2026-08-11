@@ -502,6 +502,7 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/guides/DEPLOY_ARCH.md](./docs/guides/DEPLOY_ARCH.md) | 部署架构 — 场景 + CLI 验证 |
 | [docs/guides/SERVER_DEPLOY.md](./docs/guides/SERVER_DEPLOY.md) | **Linux 服务器部署指南**：CI 发 Release / 单二进制安装 / supervisord 守护场景三 / 7 个踩坑记录 / 资源实测 (已验证) |
 | [docs/guides/EXTENSION_WORKFLOW.md](./docs/guides/EXTENSION_WORKFLOW.md) | 扩展开发测试工作流：写→build→安装→RPC 直调→LLM 引导→RPC 佐证 (已验证) |
+| [docs/guides/HOOKS_ION_KILL.md](./docs/guides/HOOKS_ION_KILL.md) | **zcode hook 防误杀**：PreToolUse 拦截 kill/pkill，三层防御（格式 + PID 查询 + `# ion-safe` 注释），防止 AI 误杀罗技驱动/macOS 服务 (已验证) |
 
 ### 测试（docs/testing/）
 
