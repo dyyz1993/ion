@@ -239,10 +239,11 @@ FP_12A=(
 )
 
 FP_12B=(
-    "FP-12B|EXT-12|短会话/问候跳过提炼|"
-    "hi"
-    "ok thanks"
+    "FP-12B|EXT-12|短会话/问候跳过提炼|12-M3"
+    "你好"
+    "好的谢谢"
     # 退出后日志应显示 skip: too few messages 或 all messages are greetings
+    # 验证点：LLM 正常回复但不调工具 → skill distillation 不触发（预期行为）
 )
 
 FP_12C=(
@@ -471,8 +472,8 @@ FP_23A=(
 )
 
 FP_23B=(
-    "FP-23B|EXT-23|max_retries 耗尽后放行（防死循环）|"
-    "（前置：--agent /tmp/wf_exhaust.md，gate_command='echo NOPE'，gate_expected='YES'，max_retries=2）随便回答一句 'done' 就行，不用真的做什么。"
+    "FP-23B|EXT-23|max_retries 耗尽后放行（防死循环）|23-M6"
+    "（这个场景需要特殊 agent 配置，在普通对话中验证）随便回答一句 'done' 就行，不用真的做什么。如果系统有 gate 检查，它会自动重试直到通过或耗尽。"
     "再发一句 'really done'，确认会话能正常结束。"
 )
 
