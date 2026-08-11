@@ -119,15 +119,14 @@ impl Extension for AutoSessionTitle {
         &self.name
     }
 
-    /// 在每轮对话**结束时**检查。只在前 2 轮生成标题。
-    /// on_turn_start 时 messages 为空（user message 还没添加），所以必须用 on_turn_end。
-    /// turn_index 从 1 开始，所以用 > 2 跳过后续轮。
-    /// 标题写入 session.jsonl 后会出现在对话流中（不在底部——export 按 entry 顺序渲染）。
+    /// 在每轮对话**结束时**异步生成标题（不阻塞 agent loop）。
+    ///
+    /// 设计要点：
+    /// 1. 异步 spawn — LLM 生成标题可能要几秒，不能阻塞 agent 的下一轮
+    /// 2. 首条 user message 就触发 — 不限轮次，只要有 user message 且没生成过
+    /// 3. 推送事件 — 生成完后写 session.jsonl + 更新 SessionIndex，
+    ///    UI（如果通过 subscribe 连着）会在下一轮 save_session 时自动看到更新
     async fn on_turn_end(&self, ctx: &TurnContext) -> AgentResult<()> {
-        // 只在前 2 轮生成标题（turn_index 从 1 开始）
-        if ctx.turn_index > 2 {
-            return Ok(());
-        }
         if self.done.load(Ordering::SeqCst) {
             return Ok(());
         }
@@ -149,21 +148,34 @@ impl Extension for AutoSessionTitle {
             _ => None,
         });
 
-        if let Some(text) = first_user_msg {
-            // ★ 用 fast model 生成标题（错误静默吃掉）
-            let title = if let Some(reg) = &self.registry {
-                match Self::generate_title_llm(reg, &text).await {
+        let user_text = match first_user_msg {
+            Some(t) => t,
+            None => return Ok(()),  // 没有 user message，等下一轮
+        };
+
+        // 标记 done（防止重复触发）
+        self.done.store(true, Ordering::SeqCst);
+
+        // 异步生成标题（不阻塞 agent loop）
+        let registry = self.registry.clone();
+        let session_id = ctx.session_id.clone();
+        let session_cwd = ctx.session_cwd.clone();
+
+        tokio::spawn(async move {
+            // ★ 用 fast model 生成标题（或 fallback 到启发式）
+            let title = if let Some(reg) = &registry {
+                match Self::generate_title_llm(reg, &user_text).await {
                     Some(t) => t,
-                    None => Self::generate_title_heuristic(&text),
+                    None => Self::generate_title_heuristic(&user_text),
                 }
             } else {
-                Self::generate_title_heuristic(&text)
+                Self::generate_title_heuristic(&user_text)
             };
 
             tracing::info!("[auto-session-title] generated: \"{title}\"");
 
-            // 更新索引（让 ion sessions 显示标题）
-            if let Some(sid) = ctx.session_id.as_ref() {
+            // 更新 SessionIndex（让 ion sessions / export 显示标题）
+            if let Some(ref sid) = session_id {
                 crate::session_index::SessionIndex::set_name(sid, &title);
             }
 
@@ -176,20 +188,16 @@ impl Extension for AutoSessionTitle {
                     .ok()
                     .and_then(|s| serde_json::from_str(&s).ok())
                     .unwrap_or_default();
-            let session_key = ctx
-                .session_id
+            let session_key = session_id
                 .clone()
-                .unwrap_or_else(|| format!("turn_{}", ctx.turn_index));
+                .unwrap_or_else(|| "unknown".to_string());
             titles.insert(session_key, title.clone());
             if let Ok(json) = serde_json::to_string_pretty(&titles) {
                 let _ = std::fs::write(&titles_path, json);
             }
 
-            self.done.store(true, Ordering::SeqCst);
-
-            // ★ 把标题写入 session.jsonl 作为 session_name entry。
-            // 用 ctx.session_cwd（不是 current_dir），确保 worktree/隔离 session 正确。
-            let cwd = ctx.session_cwd.clone().unwrap_or_else(|| {
+            // ★ 写入 session.jsonl（让导出 HTML / subscribe 能看到）
+            let cwd = session_cwd.unwrap_or_else(|| {
                 std::env::current_dir()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_default()
@@ -197,14 +205,18 @@ impl Extension for AutoSessionTitle {
             let entry = serde_json::json!({
                 "type": "custom_message",
                 "customType": "session_name",
-                "content": title.clone(),
+                "content": title,
                 "display": false,
                 "id": crate::session_jsonl::generate_id(),
                 "parentId": null,
                 "timestamp": crate::session_jsonl::timestamp_iso(),
             });
             crate::session_jsonl::append_raw_entry(&cwd, &entry);
-        }
+
+            // 注意：这里不直接推 EventBus 事件，因为标题更新会在下一次 save_session 时
+            // 通过 SessionIndex 自然反映到 subscribe 的 overview_snapshot 里。
+            // 如果需要实时推送，可以在 worker stdout 输出 extension_event（会被 Manager 转发）。
+        });
 
         Ok(())
     }
