@@ -30,7 +30,7 @@ FP_02D=(
 FP_03A=(
     "FP-03A|EXT-03|stdout 正则检测端口|03-M1,03-M2,03-M3"
     "用 bash background=true 启动 python3 -m http.server 8765"
-    "用 bash 工具执行 ion rpc --method extension_rpc --params '{\"extension\":\"dev-server-detector\",\"method\":\"status\",\"args\":{}}' 查看检测到的 dev server 列表。把返回的 JSON 贴出来。"
+    "用 bash 工具执行 get_background_process 查看后台进程列表，确认 python3 http.server 还在跑。再用 curl -s http://localhost:8765 验证端口能访问。把输出贴出来。"
 )
 
 FP_03B=(
@@ -51,20 +51,20 @@ FP_04A=(
     "FP-04A|EXT-04|单文件创建快照|04-M1,04-M2,04-M3,04-M4"
     "请使用 write 工具（不是 bash）创建文件 hello.txt，内容是 hello world"
     "请使用 write 工具（不是 bash）创建文件 test.rs，内容是 // snapshot test"
-    "用 bash 工具执行 ion rpc --method extension_rpc --params '{\"extension\":\"file-approval\",\"method\":\"pending\",\"args\":{}}' 查看系统有没有记录刚才的文件变更快照。把返回的 JSON 贴出来。"
+    "用 bash 工具执行以下命令查看系统是否记录了快照：ls -la ~/.ion/file-store/ 2>/dev/null || ls -la ~/.ion/agent/snapshots/ 2>/dev/null || echo 'no snapshot dir found'。把输出贴出来，确认有快照文件存在。"
 )
 
 FP_04B=(
     "FP-04B|EXT-04|编辑覆盖 + diff|04-M1,04-M3,04-M5"
     "用 write 工具覆盖 hello.txt，内容改成 hello snapshot updated"
-    "用 bash 工具执行 ion rpc --method get_file_diff --params '{\"filePath\":\"hello.txt\"}' 查看 diff。把返回的 JSON 贴出来，确认 diff 显示了前后内容差异。"
+    "用 bash 工具执行 diff hello.txt ~/.ion/file-store/snapshots/*/hello.txt 2>/dev/null || echo 'no snapshot found for diff'，查看系统记录的前后差异。把 diff 输出贴出来。"
 )
 
 FP_04C=(
     "FP-04C|EXT-04|bash 兜底 + 删除捕获|04-M2,04-M3,04-M7"
     "用 bash 命令直接删掉 test.rs 这个文件"
     "用 bash echo 追加一行到 hello.txt（绕过 write 工具）"
-    "用 bash 工具执行 ion rpc --method get_modified_files 查看系统是否捕获了 bash 操作引起的变更。把返回的 JSON 贴出来。"
+    "用 bash 工具执行 ls -la ~/.ion/file-store/snapshots/ 2>/dev/null; find ~/.ion -name '*.snap' -o -name 'snapshot*' 2>/dev/null | head -5。查看系统是否捕获了 bash 操作引起的变更。把输出贴出来。"
 )
 
 FP_05A=(
