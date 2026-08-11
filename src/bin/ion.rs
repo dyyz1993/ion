@@ -2108,11 +2108,11 @@ async fn cmd_run(
     if ion::hooks::extension::HookExtension::has_hooks(&hooks_project_dir) {
         ext_reg.register(Box::new(ion::hooks::extension::HookExtension::new(
             hooks_project_dir,
-            None,
-            None,
-            None,
-            None,
-            None, // cmd_run 场景：无 runtime/registry/model/bridge（handler 需要时再补）
+            None,                               // runtime — 场景 1 无 host 引擎，agent handler 不可用
+            Some(std::sync::Arc::clone(&registry_for_ext)), // prompt handler 调 LLM 用
+            Some(model_for_ext.clone()),        // prompt handler 用当前会话模型
+            None,                               // manager_bridge — 场景 1 无 MCP 转发
+            None,                               // follow_up_tx — 场景 1 无 follow_up 通道
         )));
         tracing::info!("[extension] HookExtension registered (hooks.json detected)");
     }
@@ -4596,6 +4596,15 @@ async fn do_create_session(
     let mut cfg = WorkerCreateConfig::default();
     cfg.session = Some(session_id.clone());
     cfg.agent = Some(agent);
+    // 从 create_session 参数提取 model/provider（如果没传则用 config 默认值）
+    cfg.model = source
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    cfg.provider = source
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .map(String::from);
     // Mark as Child relation so the worker uses an INDEPENDENT session file
     // (<session_id>.jsonl) instead of the shared session.jsonl. Without this,
     // every new session created via create_session reads/writes the same shared
