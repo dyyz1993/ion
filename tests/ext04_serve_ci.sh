@@ -18,9 +18,23 @@ set -uo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ION_BIN="$PROJECT_DIR/target/debug/ion"
 PASS=0; FAIL=0
+_CI_COUNT=0
 
-pass() { printf '  ✅ %s\n' "$1"; PASS=$((PASS + 1)); }
-fail() { printf '  ❌ %s\n' "$1"; FAIL=$((FAIL + 1)); }
+# pass/fail 同时写入 session.jsonl（通过 append_entry RPC，HTML 可见）
+_ci_write() {
+    local ctype="$1"
+    local message="$2"
+    [ -z "$SID" ] && return
+    # 用 append_entry RPC（不再直接 hack 写文件）
+    CI_CTYPE="$ctype" CI_MSG="$message" "$ION_BIN" rpc --session "$SID" --method append_entry \
+      --params "$(CI_CTYPE="$ctype" CI_MSG="$message" python3 -c '
+import json, os
+print(json.dumps({"type":"custom_message","customType":os.environ["CI_CTYPE"],"content":os.environ["CI_MSG"],"display":True}))
+')" 2>/dev/null > /dev/null
+}
+
+pass() { printf '  ✅ %s\n' "$1"; PASS=$((PASS + 1)); _ci_write "ci_pass" "✅ $1"; }
+fail() { printf '  ❌ %s\n' "$1"; FAIL=$((FAIL + 1)); _ci_write "ci_fail" "❌ $1"; }
 
 TEST_ROOT="$(mktemp -d /tmp/ion-ext04-serve-XXXXXX)"
 TEST_PROJECT="$TEST_ROOT/calc-project"

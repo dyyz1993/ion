@@ -3706,6 +3706,8 @@ const BUILT_IN_CUSTOM_TYPE_CATALOG: &[(&str, &str, &str)] = &[
     ("process_started", "Background Process", "bash"),
     ("process_completed", "Background Process", "bash"),
     ("process_killed", "Background Process", "bash"),
+    ("ci_pass", "CI Check Passed", "ci"),
+    ("ci_fail", "CI Check Failed", "ci"),
 ];
 
 /// Known ION-owned Custom types get their own semantic label. Unknown runtime

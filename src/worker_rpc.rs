@@ -5085,6 +5085,57 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     &serde_json::json!({"status":"appended"}),
                 );
             }
+            "append_entry" => {
+                // 统一追加入口 — 对齐 pi 的 appendCustomEntry/appendCustomMessage
+                let entry_type = params.get("type").and_then(|v| v.as_str()).unwrap_or("custom");
+                let inject_to_llm = params.get("injectToLlm").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                // 根据 type 构建对应格式的 entry_data
+                let entry_data = match entry_type {
+                    "custom" => serde_json::json!({
+                        "customType": params.get("customType").unwrap_or(&serde_json::json!("")),
+                        "data": params.get("data").unwrap_or(&serde_json::json!({})),
+                    }),
+                    "custom_message" => serde_json::json!({
+                        "customType": params.get("customType").unwrap_or(&serde_json::json!("")),
+                        "content": params.get("content").unwrap_or(&serde_json::json!("")),
+                        "display": params.get("display").unwrap_or(&serde_json::json!(true)),
+                        "details": params.get("details").unwrap_or(&serde_json::Value::Null),
+                    }),
+                    "system_event" => serde_json::json!({
+                        "customType": params.get("customType").unwrap_or(&serde_json::json!("")),
+                        "label": params.get("label").unwrap_or(&serde_json::json!("")),
+                        "display": params.get("display").unwrap_or(&serde_json::json!(true)),
+                    }),
+                    // 其他类型（label, model_change 等）直接透传 params
+                    _ => params.clone(),
+                };
+
+                // 写入 session.jsonl
+                append_session_entry(&worker_cwd, &sid, entry_type, &entry_data);
+
+                // 如果 injectToLlm=true，同时推入 live messages（对齐 pi 的 custom_message 语义）
+                let mut injected = false;
+                if inject_to_llm && entry_type == "custom_message" {
+                    let ctype = params.get("customType").and_then(|v| v.as_str()).unwrap_or("");
+                    let content_text = params.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                    agent.push_message(Message::Custom(CustomMessage {
+                        role: "custom".into(),
+                        custom_type: ctype.into(),
+                        content: CustomContent::Text(content_text.into()),
+                        display: params.get("display").and_then(|v| v.as_bool()).unwrap_or(true),
+                        details: params.get("details").cloned(),
+                        timestamp: now_ms(),
+                    }));
+                    injected = true;
+                }
+
+                output_response(
+                    &id,
+                    "append_entry",
+                    &serde_json::json!({"status":"appended","injected":injected}),
+                );
+            }
             "send_custom_message" => {
                 let ctype: String = params
                     .get("type")
@@ -6348,6 +6399,8 @@ fn append_session_entry(cwd: &str, sid: &str, entry_type: &str, entry_data: &ser
         }
         let _ = write!(f, "{}", serde_json::to_string(&line).unwrap_or_default());
     }
+    // 刷新检索缓存（与 session_jsonl::append_raw_entry 保持一致）
+    crate::message_retrieval::invalidate_cache(cwd);
 }
 
 /// Ensure the fork sub-worker session header exists at the given path.
