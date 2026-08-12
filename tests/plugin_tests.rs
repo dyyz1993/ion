@@ -16,12 +16,6 @@ fn build_todo_plugin() -> String {
     build_wasm_plugin("todo-extension", "todo_extension.wasm")
 }
 
-fn build_plan_plugin() -> String {
-    // WASM plan-extension was removed in commit 501697e — replaced by
-    // the builtin PlanExtension. Return a sentinel that callers should
-    // skip with #[ignore]'d tests. Kept for API compatibility.
-    String::new()
-}
 
 fn build_wasm_plugin(pkg_dir: &str, wasm_file: &str) -> String {
     use std::sync::Once;
@@ -251,43 +245,6 @@ fn todo_plugin_edge_update_empty_list() {
     assert!(
         result.contains(r#""removed":0"#),
         "should report 0 removed: {result}"
-    );
-}
-
-#[test]
-#[ignore = "WASM plan-extension removed in 501697e; covered by builtin PlanExtension tests below"]
-fn plan_plugin_loads_and_registers_tools() {
-    let wasm_path = build_plan_plugin();
-    let plugin = ion::wasm_extension::Extension::load(std::path::Path::new(&wasm_path))
-        .expect("plan-plugin should load");
-
-    let names: Vec<&str> = plugin.tools.iter().map(|t| t.name.as_str()).collect();
-    assert!(names.contains(&"plan_enter"), "should register plan_enter");
-    assert!(names.contains(&"plan_exit"), "should register plan_exit");
-    assert_eq!(plugin.tools.len(), 2, "should register exactly 2 tools");
-}
-
-#[test]
-#[ignore = "WASM plan-extension removed in 501697e; covered by builtin PlanExtension"]
-fn plan_plugin_enter_and_exit() {
-    let wasm_path = build_plan_plugin();
-    let mut plugin = ion::wasm_extension::Extension::load(std::path::Path::new(&wasm_path))
-        .expect("plan-plugin should load");
-
-    let enter = plugin
-        .execute_tool("plan_enter", r#"{"plan_path":"/tmp/test-plan.md"}"#)
-        .expect("plan_enter should succeed");
-    assert!(
-        enter.contains(r#""mode":"plan""#),
-        "should return plan mode: {enter}"
-    );
-
-    let exit = plugin
-        .execute_tool("plan_exit", "{}")
-        .expect("plan_exit should succeed");
-    assert!(
-        exit.contains(r#""mode":"normal""#),
-        "should return normal mode: {exit}"
     );
 }
 
@@ -575,36 +532,6 @@ fn plugin_registry_remove_nonexistent_returns_error() {
     assert!(result.is_err(), "remove of nonexistent path should fail");
 }
 
-#[test]
-#[ignore = "WASM plan-extension removed in 501697e; multi-plugin path now needs a second extension crate"]
-fn plugin_registry_can_hold_multiple_plugins() {
-    let todo_path = build_todo_plugin();
-    let plan_path = build_plan_plugin();
-    let registry = ion::wasm_extension::Registry::new();
-
-    registry.add(&todo_path).expect("load todo");
-    registry.add(&plan_path).expect("load plan");
-
-    let plugins = registry.list();
-    assert_eq!(plugins.len(), 2, "should hold 2 plugins");
-
-    // Each has its own tools
-    let todo_info = plugins
-        .iter()
-        .find(|p| p.tools.contains(&"todo_list".to_string()))
-        .unwrap();
-    let plan_info = plugins
-        .iter()
-        .find(|p| p.tools.contains(&"plan_enter".to_string()))
-        .unwrap();
-    assert!(todo_info.path.contains("todo_plugin"), "todo path");
-    assert!(plan_info.path.contains("plan_plugin"), "plan path");
-
-    // Remove one, the other remains
-    registry.remove(&plan_path).expect("remove plan");
-    assert_eq!(registry.list().len(), 1, "only todo remains");
-    assert_eq!(registry.list()[0].tools.len(), 5, "todo still has 5 tools");
-}
 
 // ---------------------------------------------------------------------------
 // Plugin data dimensions — paths, context injection, ext_name derivation
