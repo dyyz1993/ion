@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ION 全模块验收大纲</title>
+<style>
+:root {
+  --bg: #fafafa; --card: #fff; --border: #e4e7ec; --text: #172033;
+  --muted: #667085; --accent: #0e7490; --green: #059669; --greenBg: #ecfdf3;
+  --yellow: #b45309; --yellowBg: #fff7ed; --red: #dc2626; --redBg: #fef2f2;
+  --blue: #2563eb; --blueBg: #eff6ff;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif; font-size: 14px; line-height: 1.6; color: var(--text); background: var(--bg); }
+.container { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+h1 { font-size: 28px; margin-bottom: 8px; }
+h1 .sub { font-size: 14px; color: var(--muted); font-weight: normal; }
+h2 { font-size: 20px; margin: 40px 0 16px; padding-bottom: 8px; border-bottom: 2px solid var(--accent); }
+h3 { font-size: 16px; margin: 24px 0 12px; color: var(--accent); }
+h4 { font-size: 14px; margin: 16px 0 8px; }
+
+/* Summary banner */
+.summary { display: flex; gap: 16px; margin: 24px 0; flex-wrap: wrap; }
+.stat { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px 28px; text-align: center; min-width: 120px; }
+.stat .num { font-size: 32px; font-weight: 700; }
+.stat .label { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.stat.green .num { color: var(--green); }
+.stat.yellow .num { color: var(--yellow); }
+.stat.blue .num { color: var(--accent); }
+
+/* Table */
+table { width: 100%; border-collapse: collapse; margin: 12px 0 24px; background: var(--card); border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+th { background: #f0f5f8; padding: 10px 14px; text-align: left; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+td { padding: 10px 14px; border-top: 1px solid var(--border); vertical-align: top; font-size: 13px; }
+tr:hover td { background: #f8fafb; }
+
+/* Status badges */
+.badge { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.badge.green { background: var(--greenBg); color: var(--green); }
+.badge.yellow { background: var(--yellowBg); color: var(--yellow); }
+.badge.blue { background: var(--blueBg); color: var(--blue); }
+
+/* Domain group */
+.domain { background: var(--card); border: 1px solid var(--border); border-radius: 12px; margin: 16px 0; overflow: hidden; }
+.domain-header { padding: 14px 18px; font-size: 16px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 10px; user-select: none; }
+.domain-header .icon { font-size: 20px; }
+.domain-header .count { margin-left: auto; font-size: 13px; color: var(--muted); }
+.domain-header:hover { background: #f8fafb; }
+.domain-body { display: block; }
+.domain.collapsed .domain-body { display: none; }
+.domain-header::after { content: '▼'; font-size: 10px; color: var(--muted); margin-left: 8px; transition: transform 0.2s; }
+.domain.collapsed .domain-header::after { transform: rotate(-90deg); }
+
+/* Phase flow */
+.flow { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 16px 0; }
+.phase { display: flex; gap: 12px; margin: 12px 0; align-items: flex-start; }
+.phase-num { flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+.phase-content { flex: 1; }
+.phase-title { font-weight: 600; margin-bottom: 4px; }
+.phase-detail { font-size: 13px; color: var(--muted); }
+.phase-check { font-size: 13px; color: var(--green); margin-top: 4px; }
+.phase-prompt { background: #f0f5f8; border-left: 3px solid var(--accent); padding: 8px 12px; margin: 6px 0; font-size: 13px; border-radius: 0 6px 6px 0; font-family: monospace; }
+.arrow { text-align: center; color: var(--border); font-size: 16px; margin: 4px 0; }
+
+/* Priority table */
+.p0 { border-left: 3px solid var(--red); }
+.p1 { border-left: 3px solid var(--yellow); }
+.p2 { border-left: 3px solid var(--blue); }
+.p3 { border-left: 3px solid var(--border); }
+
+/* Nav */
+.nav { position: sticky; top: 0; background: var(--card); border-bottom: 1px solid var(--border); padding: 12px 0; margin: -32px -24px 24px; z-index: 10; }
+.nav-inner { max-width: 1052px; margin: 0 auto; padding: 0 24px; display: flex; gap: 16px; flex-wrap: wrap; }
+.nav a { font-size: 13px; color: var(--accent); text-decoration: none; }
+.nav a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<div class="container">
+
+<div class="nav"><div class="nav-inner">
+  <a href="#summary">总览</a>
+  <a href="#verified">已验证模块</a>
+  <a href="#A">🅰 文件与代码</a>
+  <a href="#B">🅱 记忆与学习</a>
+  <a href="#C">🅲 安全与权限</a>
+  <a href="#D">🅳 编排与工作流</a>
+  <a href="#E">🅴 会话与消息</a>
+  <a href="#F">🅵 外部集成</a>
+  <a href="#G">🅶 核心引擎</a>
+  <a href="#priority">验收优先级</a>
+</div></div>
+
+<h1>ION 全模块验收大纲
+  <div class="sub">逐模块看清"有什么功能 → 有什么测试 → 每步验证什么 → 状态如何"</div>
+</h1>
+
+<!-- ============ SUMMARY ============ -->
+<div id="summary">
+<div class="summary">
+  <div class="stat blue"><div class="num">27</div><div class="label">模块总数</div></div>
+  <div class="stat green"><div class="num">5</div><div class="label">已验证 ✅</div></div>
+  <div class="stat yellow"><div class="num">22</div><div class="label">待验收 ⚠️</div></div>
+  <div class="stat blue"><div class="num">71</div><div class="label">CI 脚本</div></div>
+  <div class="stat blue"><div class="num">23</div><div class="label">Rust 集成测试</div></div>
+</div>
+</div>
+
+<!-- ============ VERIFIED MODULES ============ -->
+<h2 id="verified">已验证模块 — 详细步骤拆解</h2>
+
+<!-- EXT-04 -->
+<h3>EXT-04 FileSnapshot（18/0 ✅）— Rust 计算器项目</h3>
+<div class="flow">
+  <div class="phase"><div class="phase-num">0</div><div class="phase-content">
+    <div class="phase-title">Build + git 项目 + file-snapshot:enabled</div>
+  </div></div>
+  <div class="arrow">↓</div>
+  <div class="phase"><div class="phase-num">3</div><div class="phase-content">
+    <div class="phase-title">LLM 用 write 创建 Rust 计算器项目</div>
+    <div class="phase-prompt">Prompt: "创建 Cargo.toml + src/main.rs，实现 add/sub/mul/div 计算器"</div>
+    <div class="phase-check">✅ Cargo.toml 含 "calc" + src/main.rs 含 "fn main"</div>
+  </div></div>
+  <div class="arrow">↓</div>
+  <div class="phase"><div class="phase-num">4</div><div class="phase-content">
+    <div class="phase-title">review_pending + 部分审批</div>
+    <div class="phase-check">✅ V1 review_pending: 2 个 pending (Cargo.toml + src/main.rs)</div>
+    <div class="phase-check">✅ V2 review_approve Cargo.toml: approved (锚定 baseline)</div>
+    <div class="phase-check">✅ 部分审批: src/main.rs 仍在 pending</div>
+  </div></div>
+  <div class="arrow">↓</div>
+  <div class="phase"><div class="phase-num">5</div><div class="phase-content">
+    <div class="phase-title">LLM 用 write 添加 mod 功能</div>
+    <div class="phase-prompt">Prompt: "给计算器添加取模运算 (mod) 支持"</div>
+    <div class="phase-check">✅ src/main.rs 含 mod/取模 代码</div>
+  </div></div>
+  <div class="arrow">↓</div>
+  <div class="phase"><div class="phase-num">6</div><div class="phase-content">
+    <div class="phase-title">re-approval + review_reject（回滚 mod）</div>
+    <div class="phase-check">✅ L2 re-approval: src/main.rs 自动回到 pending</div>
+    <div class="phase-check">✅ V3 review_reject: action=deleted, rolledBack=yes</div>
+  </div></div>
+  <div class="arrow">↓</div>
+  <div class="phase"><div class="phase-num">6b</div><div class="phase-content">
+    <div class="phase-title">LLM 验证回滚（HTML 可见）</div>
+    <div class="phase-prompt">Prompt: "用 read 读 src/main.rs + cargo run -- mod 验证 mod 是否被回滚"</div>
+    <div class="phase-check">✅ HTML: read tool result + LLM 确认回滚成功</div>
+  </div></div>
+  <div class="arrow">↓</div>
+  <div class="phase"><div class="phase-num">7</div><div class="phase-content">
+    <div class="phase-title">LLM 用 bash 编译验证</div>
+    <div class="phase-prompt">Prompt: "cargo build + cargo run -- add 10 20 + cargo run -- sub 15 5"</div>
+    <div class="phase-check">✅ HTML: bash output (编译成功 + 运算结果正确)</div>
+  </div></div>
+  <div class="arrow">↓</div>
+  <div class="phase"><div class="phase-num">8-9</div><div class="phase-content">
+    <div class="phase-title">get_modified_files + get_file_diff + 导出 HTML</div>
+  </div></div>
+</div>
+
+<!-- EXT-02 -->
+<h3>EXT-02 GlobalMemory（18/0 ✅）— 架构知识库</h3>
+<div class="flow">
+  <div class="phase"><div class="phase-num">3</div><div class="phase-content">
+    <div class="phase-title">确定性 save 3 条丰富记忆</div>
+    <div class="phase-check">✅ 架构决策: "parking_lot::Mutex 替代 tokio::sync::Mutex 解决死锁"</div>
+    <div class="phase-check">✅ bugfix: "Rust UTF-8 切片 panic，用 chars().take(N) 替代"</div>
+    <div class="phase-check">✅ 性能模式: "FauxProvider Factory 闭包，零成本测试"</div>
+  </div></div>
+  <div class="arrow">↓</div>
+  <div class="phase"><div class="phase-num">4</div><div class="phase-content">
+    <div class="phase-title">多角度 search（英文 FTS5 + 中文 bigram + 语义）</div>
+    <div class="phase-check">✅ 英文: "deadlock mutex" → 架构决策</div>
+    <div class="phase-check">✅ 中文: "死锁 异步" → 架构决策</div>
+    <div class="phase-check">✅ 语义: "testing mock" → 性能模式</div>
+  </div></div>
+  <div class="arrow">↓</div>
+  <div class="phase"><div class="phase-num">5</div><div class="phase-content">
+    <div class="phase-title">LLM 自主保存 (global_memory_save 工具)</div>
+    <div class="phase-prompt">Prompt: "保存你对测试项目的理解"</div>
+    <div class="phase-check">✅ search 找到 LLM 保存的记忆</div>
+  </div></div>
+  <div class="arrow">↓</div>
+  <div class="phase"><div class="phase-num">6</div><div class="phase-content">
+    <div class="phase-title">LLM 搜索总结 (global_memory_search 工具)</div>
+    <div class="phase-prompt">Prompt: "搜索 deadlock/mutex 记忆，总结 parking_lot 解决了什么问题"</div>
+  </div></div>
+  <div class="arrow">↓</div>
+  <div class="phase"><div class="phase-num">7</div><div class="phase-content">
+    <div class="phase-title">forget + bash 验证</div>
+    <div class="phase-check">✅ forget ok (软删除) + list 验证已消失</div>
+  </div></div>
+</div>
+
+<!-- EXT-06 -->
+<h3>EXT-06 Hooks（13/0 ✅）— 安全防护 Hook</h3>
+<div class="flow">
+  <div class="phase"><div class="phase-num">0</div><div class="phase-content">
+    <div class="phase-title">配置 hooks.json（3 类 Hook）</div>
+    <div class="phase-detail">SessionStart → 日志记录</div>
+    <div class="phase-detail">PreToolUse(bash) → grep "rm -rf" → exit 2 (block)</div>
+    <div class="phase-detail">PostToolUse(write/bash) → 文件写入审计</div>
+  </div></div>
+  <div class="arrow">↓</div>
+  <div class="phase"><div class="phase-num">3</div><div class="phase-content">
+    <div class="phase-title">SessionStart hook 验证</div>
+    <div class="phase-check">✅ hook.log 有 "SessionStart-fired"</div>
+  </div></div>
+  <div class="arrow">↓</div>
+  <div class="phase"><div class="phase-num">4</div><div class="phase-content">
+    <div class="phase-title">LLM 尝试 rm -rf → PreToolUse 拦截</div>
+    <div class="phase-prompt">Prompt: "用 bash 执行 rm -rf /tmp/xxx"</div>
+    <div class="phase-check">✅ hook.log 有 "PreToolUse-BLOCKED-rm-rf" (exit 2)</div>
+  </div></div>
+  <div class="arrow">↓</div>
+  <div class="phase"><div class="phase-num">5</div><div class="phase-content">
+    <div class="phase-title">LLM 用 write 创建文件 → PostToolUse 审计</div>
+    <div class="phase-check">✅ hook.log 有 "PostToolUse-write-fired"</div>
+  </div></div>
+  <div class="arrow">↓</div>
+  <div class="phase"><div class="phase-num">6</div><div class="phase-content">
+    <div class="phase-title">LLM read hook 日志验证（HTML 可见）</div>
+    <div class="phase-prompt">Prompt: "用 read 读 hook 日志，总结哪些 hook 触发了"</div>
+    <div class="phase-check">✅ HTML: read tool result (SessionStart/PreToolUse/PostToolUse 各几次)</div>
+  </div></div>
+</div>
+
+<!-- EXT-07 -->
+<h3>EXT-07 GoalSupervisor（13/0 ✅）— Python 冒泡排序</h3>
+<div class="flow">
+  <div class="phase"><div class="phase-num">3</div><div class="phase-content">
+    <div class="phase-title">goal_evolver_run_once 分析 fixture（确定性）</div>
+    <div class="phase-check">✅ evolver(healthy): 分析成功</div>
+    <div class="phase-check">✅ evolver(deadloop): 分析成功</div>
+  </div></div>
+  <div class="arrow">↓</div>
+  <div class="phase"><div class="phase-num">4-5</div><div class="phase-content">
+    <div class="phase-title">LLM goal_set + write sort.py</div>
+    <div class="phase-prompt">Prompt: "1. goal_set 目标 'create bubble sort' + CI checks [script_exists, script_runs]"</div>
+    <div class="phase-prompt">Prompt: "2. write 创建 sort.py 实现冒泡排序"</div>
+    <div class="phase-check">✅ sort.py 已创建 + 含排序逻辑</div>
+  </div></div>
+  <div class="arrow">↓</div>
+  <div class="phase"><div class="phase-num">6</div><div class="phase-content">
+    <div class="phase-title">on_gate_check 验证</div>
+    <div class="phase-check">✅ goal-runs/ 目录存在 (on_gate_check 已触发)</div>
+    <div class="phase-check">✅ iterations.jsonl: CI checks 已执行</div>
+    <div class="phase-check">✅ final-report.json: status=complete</div>
+  </div></div>
+  <div class="arrow">↓</div>
+  <div class="phase"><div class="phase-num">6b</div><div class="phase-content">
+    <div class="phase-title">LLM 验证目标完成（HTML 可见）</div>
+    <div class="phase-prompt">Prompt: "用 read 读 sort.py + bash python3 sort.py 确认输出"</div>
+    <div class="phase-check">✅ HTML: read + bash result (排序结果 [11, 12, 22, 25, 34, 64, 90])</div>
+  </div></div>
+</div>
+
+<!-- ============ ALL MODULES ============ -->
+
+<h2 id="A">🅰 文件与代码</h2>
+<div class="domain"><div class="domain-header"><span class="icon">📁</span> 文件与代码<span class="count">3 模块 · 1 已验证 · 2 待验收</span></div><div class="domain-body">
+<table>
+<tr><th>#</th><th>模块</th><th>功能</th><th>测试脚本</th><th>步骤</th><th>状态</th></tr>
+<tr><td>1</td><td><b>FileSnapshot</b></td><td>双路快照 + 审批 + 回滚</td><td>file_snapshot_ci.sh (14组) + ext04_serve_ci.sh + e2e + rollback</td><td>14+18+5+1</td><td><span class="badge green">✅ 已验证</span></td></tr>
+<tr><td>2</td><td><b>LSP Extension</b></td><td>多语言诊断 (Rust/TS/Python/Go/HTML)</td><td>lsp_ci.sh (12组)</td><td>12</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+<tr><td>3</td><td><b>Bash</b></td><td>同步执行 + 后台进程</td><td>abort_ci.sh (6组)</td><td>6</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+</table>
+</div></div>
+
+<h2 id="B">🅱 记忆与学习</h2>
+<div class="domain"><div class="domain-header"><span class="icon">🧠</span> 记忆与学习<span class="count">5 模块 · 1 已验证 · 4 待验收</span></div><div class="domain-body">
+<table>
+<tr><th>#</th><th>模块</th><th>功能</th><th>测试脚本</th><th>步骤</th><th>状态</th></tr>
+<tr><td>4</td><td><b>GlobalMemory</b></td><td>跨项目 SQLite+FTS5 记忆库</td><td>global_memory_ci.sh + memory_agent_ci.sh + memory_active_ci.sh + memory_v2_processing_ci.sh + ext02_serve_ci.sh</td><td>3+6+12+6+18</td><td><span class="badge green">✅ 已验证</span></td></tr>
+<tr><td>5</td><td><b>Memory V0.1</b></td><td>项目级 outline 索引记忆</td><td>memory_injection_ci.sh</td><td>2</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+<tr><td>6</td><td><b>Learning Extension</b></td><td>Session 分析 + 密钥脱敏</td><td>learning_e2e.sh</td><td>—</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+<tr><td>7</td><td><b>Skill Distillation</b></td><td>LLM 提炼技能</td><td>skill_tool_ci.sh (9组)</td><td>9</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+<tr><td>8</td><td><b>Secret Detector</b></td><td>API key/token 检测</td><td>(集成在 Learning 中)</td><td>—</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+</table>
+</div></div>
+
+<h2 id="C">🅲 安全与权限</h2>
+<div class="domain"><div class="domain-header"><span class="icon">🔒</span> 安全与权限<span class="count">2 模块 · 0 已验证 · 2 待验收</span></div><div class="domain-body">
+<table>
+<tr><th>#</th><th>模块</th><th>功能</th><th>测试脚本</th><th>步骤</th><th>状态</th></tr>
+<tr><td>9</td><td><b>Permission</b></td><td>5 种权限模式 + 路径权限 + stored decisions</td><td>permission_ci.sh (11阶段) + permission_store_ci.sh (3组)</td><td>11+4+3</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+<tr><td>10</td><td><b>CommandGuard</b></td><td>危险命令拦截</td><td>(集成在 permission_ci.sh)</td><td>—</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+</table>
+</div></div>
+
+<h2 id="D">🅳 编排与工作流</h2>
+<div class="domain"><div class="domain-header"><span class="icon">⚙️</span> 编排与工作流<span class="count">5 模块 · 2 已验证 · 3 待验收</span></div><div class="domain-body">
+<table>
+<tr><th>#</th><th>模块</th><th>功能</th><th>测试脚本</th><th>步骤</th><th>状态</th></tr>
+<tr><td>11</td><td><b>Hooks</b></td><td>5 种 handler + 热更新 + outline sync</td><td>hooks_ci.sh (12组) + hooks_handler_ci.sh (5组) + hooks_stdin_ci.sh (10组) + hooks_pretool_deny_ci.sh (8组) + ext06_serve_ci.sh + 4 more</td><td>12+5+10+8+13+4</td><td><span class="badge green">✅ 已验证</span></td></tr>
+<tr><td>12</td><td><b>GoalSupervisor</b></td><td>证据驱动目标闭环 + 6 道防线</td><td>goal_supervisor_ci.sh (8组) + goal_evolver_ci.sh (9组) + ext07_serve_ci.sh + 2 e2e</td><td>8+9+13+2</td><td><span class="badge green">✅ 已验证</span></td></tr>
+<tr><td>13</td><td><b>Workflow Engine</b></td><td>结构化交付流水线 DSL</td><td>workflow_ci.sh (21组)</td><td>21</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+<tr><td>14</td><td><b>Plan</b></td><td>plan_enter/exit/add/list/done/approve</td><td>(plugin_tests.rs)</td><td>—</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+<tr><td>15</td><td><b>Monitor</b></td><td>定时监控→触发 LLM 对话</td><td>monitor_ci.sh (24组) + self_heal_ci.sh (10组)</td><td>24+10</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+</table>
+</div></div>
+
+<h2 id="E">🅴 会话与消息</h2>
+<div class="domain"><div class="domain-header"><span class="icon">💬</span> 会话与消息<span class="count">4 模块 · 0 已验证 · 4 待验收</span></div><div class="domain-body">
+<table>
+<tr><th>#</th><th>模块</th><th>功能</th><th>测试脚本</th><th>步骤</th><th>状态</th></tr>
+<tr><td>16</td><td><b>SessionTree</b></td><td>文件内分支 + 回滚</td><td>session_tree_ci.sh (4组) + session_tree_verify.sh</td><td>4</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+<tr><td>17</td><td><b>MessageRetrieval</b></td><td>9 接口拉取/分页/过滤</td><td>message_retrieval_ci.sh (37组)</td><td>37</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+<tr><td>18</td><td><b>Compaction</b></td><td>会话压缩 + LLM summarizer</td><td>compaction_ci.sh (9组)</td><td>9</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+<tr><td>19</td><td><b>SoftDelete</b></td><td>软删除/恢复</td><td>soft_delete_ci.sh (5阶段)</td><td>5</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+</table>
+</div></div>
+
+<h2 id="F">🅵 外部集成</h2>
+<div class="domain"><div class="domain-header"><span class="icon">🔌</span> 外部集成<span class="count">3 模块 · 0 已验证 · 3 待验收</span></div><div class="domain-body">
+<table>
+<tr><th>#</th><th>模块</th><th>功能</th><th>测试脚本</th><th>步骤</th><th>状态</th></tr>
+<tr><td>20</td><td><b>MCP</b></td><td>rmcp 客户端 + 工具发现 + 自动重连</td><td>mcp_ci.sh (16组) + mcp_agent_tools_ci.sh (13组)</td><td>16+13</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+<tr><td>21</td><td><b>Record/Replay</b></td><td>LLM 录制回放</td><td>record_replay_ci.sh (3组) + streaming_replay_ci.sh (7组)</td><td>3+7</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+<tr><td>22</td><td><b>DevServerDetector</b></td><td>bash 启动 dev server 端口检测</td><td>dev_server_detector_ci.sh (9组)</td><td>9</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+</table>
+</div></div>
+
+<h2 id="G">🅶 核心引擎</h2>
+<div class="domain"><div class="domain-header"><span class="icon">🔧</span> 核心引擎<span class="count">5 模块 · 1 已验证 · 4 待验收</span></div><div class="domain-body">
+<table>
+<tr><th>#</th><th>模块</th><th>功能</th><th>测试脚本</th><th>步骤</th><th>状态</th></tr>
+<tr><td>23</td><td><b>RPC 协议</b></td><td>JSONL over stdin/stdout</td><td>cli_alignment_ci.sh (16组) + unit_rpc_test.rs (25组)</td><td>16+25</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+<tr><td>24</td><td><b>HTML Export</b></td><td>单文件离线导出</td><td>export_ci.sh (54/54)</td><td>54</td><td><span class="badge green">✅ 已验证</span></td></tr>
+<tr><td>25</td><td><b>Runtime/Backend</b></td><td>Local/Sandbox/Remote/Container</td><td>runtime_ci.sh (8组) + apple_container_ci.sh (19组)</td><td>8+19</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+<tr><td>26</td><td><b>WASM Extension</b></td><td>热更新运行时扩展</td><td>extensions_ci.sh + extension_cli_ci.sh (8组) + extension_fs_ci.sh (9组)</td><td>8+9</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+<tr><td>27</td><td><b>UI EventBus</b></td><td>多终端实时同步</td><td>ui_integration_ci.sh (17阶段) + sse_events_ci.sh (6组)</td><td>17+6</td><td><span class="badge yellow">⚠️ 待验收</span></td></tr>
+</table>
+</div></div>
+
+<!-- ============ PRIORITY ============ -->
+<h2 id="priority">验收优先级</h2>
+<table>
+<tr><th>优先级</th><th>模块</th><th>测试脚本</th><th>建议验收方式</th></tr>
+<tr class="p0"><td><span class="badge" style="background:var(--redBg);color:var(--red)">P0</span></td><td><b>Permission</b></td><td>permission_ci.sh (11阶段)</td><td>跑 CI + 导出 HTML</td></tr>
+<tr class="p0"><td><span class="badge" style="background:var(--redBg);color:var(--red)">P0</span></td><td><b>SessionTree</b></td><td>session_tree_ci.sh + verify</td><td>跑 CI + 验证分支/回滚</td></tr>
+<tr class="p0"><td><span class="badge" style="background:var(--redBg);color:var(--red)">P0</span></td><td><b>Compaction</b></td><td>compaction_ci.sh (9组)</td><td>跑 CI + 验证压缩前后</td></tr>
+<tr class="p0"><td><span class="badge" style="background:var(--redBg);color:var(--red)">P0</span></td><td><b>MCP</b></td><td>mcp_ci.sh (16组)</td><td>跑 CI + 验证工具发现</td></tr>
+<tr class="p1"><td><span class="badge yellow">P1</span></td><td><b>Workflow</b></td><td>workflow_ci.sh (21组)</td><td>跑 CI + 验证 DSL 执行</td></tr>
+<tr class="p1"><td><span class="badge yellow">P1</span></td><td><b>LSP</b></td><td>lsp_ci.sh (12组)</td><td>跑 CI + 验证诊断注入</td></tr>
+<tr class="p1"><td><span class="badge yellow">P1</span></td><td><b>MessageRetrieval</b></td><td>message_retrieval_ci.sh (37组)</td><td>跑 CI + 验证分页/过滤</td></tr>
+<tr class="p1"><td><span class="badge yellow">P1</span></td><td><b>Monitor</b></td><td>monitor_ci.sh (24组)</td><td>跑 CI + 验证定时触发</td></tr>
+</table>
+
+<div style="margin-top:40px;padding:20px;background:var(--card);border-radius:12px;border:1px solid var(--border);font-size:13px;color:var(--muted);">
+  <b>验收流程模板：</b> 1. 跑 CI 脚本 → 2. 检查 PASS/FAIL → 3. 导出 HTML → 4. 检查 Flow Summary + Timeline + 关键验证点 → 5. 记录验收结果
+</div>
+
+</div>
+
+<script>
+// Collapsible domains
+document.querySelectorAll('.domain-header').forEach(h => {
+  h.addEventListener('click', () => h.parentElement.classList.toggle('collapsed'));
+});
+</script>
+</body>
+</html>

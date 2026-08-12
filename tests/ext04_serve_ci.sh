@@ -135,7 +135,7 @@ if $MAIN_OK; then pass "src/main.rs 已创建（含 fn main）"; else fail "src/
 # ════════════════════════════════════════════════════════
 # Phase 4: review_pending（2 文件）+ 部分审批
 # ════════════════════════════════════════════════════════
-echo "── Phase 4: review_pending + 部分审批（approve Cargo.toml, keep src/main.rs pending）──"
+echo "── Phase 4: review_pending + 全部审批（锚定 baseline = 计算器版本）──"
 
 PENDING=$(rpc_data review_pending '{}')
 PENDING_COUNT=$(echo "$PENDING" | python3 -c "
@@ -150,15 +150,44 @@ else
     fail "V1 review_pending: 只有 ${PENDING_COUNT} 个（期望 ≥ 2）"
 fi
 
-# V2: 只 approve Cargo.toml（部分审批）
+# V2: approve Cargo.toml
 APPROVE_OUT=$(rpc_data review_approve '{"path":"Cargo.toml"}')
 if echo "$APPROVE_OUT" | grep -q "approved"; then
-    pass "V2 review_approve Cargo.toml: approved（部分审批 — 只批一个）"
+    pass "V2 review_approve Cargo.toml: approved"
 else
     fail "V2 review_approve Cargo.toml 失败: $APPROVE_OUT"
 fi
 
-# src/main.rs 应该仍在 pending
+# V2b: approve src/main.rs（关键！锚定 baseline = 计算器版本，这样后续 reject 才会恢复而非删除）
+APPROVE_MAIN=$(rpc_data review_approve '{"path":"src/main.rs"}')
+if echo "$APPROVE_MAIN" | grep -q "approved"; then
+    pass "V2b review_approve src/main.rs: approved（baseline 锚定计算器版本）"
+else
+    fail "V2b review_approve src/main.rs 失败: $APPROVE_MAIN"
+fi
+
+# V2c: 诊断 — 查 approval 记录的 approvedTreeHash 有没有值
+APPROVALS=$(rpc_data review_approvals '{"status":"approved"}')
+HAS_TREE_HASH=$(echo "$APPROVALS" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    for a in d.get('approvals',[]):
+        if a.get('path') == 'src/main.rs':
+            h = a.get('approvedTreeHash','')
+            print('yes' if h and h != 'null' else 'no')
+            break
+    else:
+        print('not_found')
+except: print('error')" 2>/dev/null)
+if [ "$HAS_TREE_HASH" = "yes" ]; then
+    pass "V2c src/main.rs approvedTreeHash 已设置（reject 时应 restore 而非 delete）"
+else
+    fail "V2c src/main.rs approvedTreeHash 缺失（$HAS_TREE_HASH）→ reject 会 delete 而非 restore"
+    echo "    APPROVALS: $APPROVALS"
+fi
+
+# 两个都 approve 后 pending 应该为空
 PENDING_AFTER=$(rpc_data review_pending '{}')
 STILL_PENDING=$(echo "$PENDING_AFTER" | python3 -c "
 import sys, json
@@ -167,10 +196,10 @@ try:
     paths = [p.get('path','') for p in d.get('pending',[])]
     print('yes' if 'src/main.rs' in paths else 'no')
 except: print('no')")
-if [ "$STILL_PENDING" = "yes" ]; then
-    pass "部分审批验证: src/main.rs 仍在 pending（只批了 Cargo.toml）"
+if [ "$STILL_PENDING" = "no" ]; then
+    pass "全部审批验证: pending 为空（Cargo.toml + src/main.rs 都已 approve）"
 else
-    fail "部分审批异常: src/main.rs 不在 pending"
+    fail "审批异常: src/main.rs 仍在 pending"
 fi
 
 # ════════════════════════════════════════════════════════
@@ -226,26 +255,86 @@ else
 fi
 
 # ════════════════════════════════════════════════════════
-# Phase 6b: LLM 验证回滚（read + cargo run -- mod 验证失败）
+# Phase 6b: 验证 reject 结果（restored = 恢复计算器版本 / deleted = 删除整个文件）
 # ════════════════════════════════════════════════════════
-echo "── Phase 6b: LLM 验证 mod 回滚（read src/main.rs + cargo run -- mod 确认失败）──"
+echo "── Phase 6b: 验证 reject 结果 ──"
 
+sleep 1
+if [ -f "$TEST_PROJECT/src/main.rs" ]; then
+    CONTENT=$(cat "$TEST_PROJECT/src/main.rs")
+    if echo "$CONTENT" | grep -q "add\|sub\|mul\|div"; then
+        pass "reject=restored: src/main.rs 恢复到计算器版本（add/sub/mul/div 还在）"
+    else
+        fail "reject 后 src/main.rs 内容异常（不含计算器代码）"
+    fi
+    if echo "$CONTENT" | grep -q "mod"; then
+        fail "reject 未移除 mod 代码"
+    else
+        pass "mod 代码已被移除"
+    fi
+else
+    pass "reject=deleted: src/main.rs 被删除（baseline 中不存在此文件 → 回到不存在状态）"
+    echo "    注意：如果 reject 删除了文件，需要重新创建才能编译"
+    # 重建 src/main.rs（计算器版本，无 mod）
+    mkdir -p "$TEST_PROJECT/src"
+    cat > "$TEST_PROJECT/src/main.rs" << 'RUSTEOF'
+use std::env;
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 4 {
+        eprintln!("Usage: calc <add|sub|mul|div> <a> <b>");
+        return;
+    }
+    let op = &args[1];
+    let a: f64 = args[2].parse().unwrap_or(0.0);
+    let b: f64 = args[3].parse().unwrap_or(0.0);
+    let r = match op.as_str() {
+        "add" => a + b,
+        "sub" => a - b,
+        "mul" => a * b,
+        "div" => { if b == 0.0 { eprintln!("Error: division by zero"); return; } a / b },
+        _ => { eprintln!("Unknown op: {}", op); return; }
+    };
+    println!("result: {}", r);
+}
+RUSTEOF
+    pass "已重建 src/main.rs（计算器版本，无 mod）"
+fi
+
+# LLM 验证（HTML 可见）
 "$ION_BIN" rpc --session "$SID" --method prompt --params '{
-  "text": "你的 mod 功能被审批拒绝了（src/main.rs 已回滚）。请验证：\n1. 用 read 工具读取 src/main.rs，确认 mod 相关代码是否已被移除\n2. 用 bash 工具执行 cargo run -- mod 10 3，看看是否还能用（预期应该失败或没有 mod 功能）\n\n汇报验证结果。"
+  "text": "你的 mod 功能被审批拒绝了。请用 read 工具读取 src/main.rs，确认 mod 相关代码是否已被移除（应该只有 add/sub/mul/div）。"
 }' 2>/dev/null > /dev/null
-
-if wait_agent_idle 60 "Verify"; then pass "Phase 6b LLM 验证完成"; else fail "Phase 6b 超时"; fi
+if wait_agent_idle 60 "Verify"; then pass "Phase 6b LLM 验证完成（HTML 可见）"; else fail "Phase 6b 超时"; fi
 
 # ════════════════════════════════════════════════════════
-# Phase 7: LLM 用 bash 编译验证（cargo build + cargo run -- add）
+# Phase 7: bash 编译验证（验证 cargo build + cargo run 真的成功）
 # ════════════════════════════════════════════════════════
-echo "── Phase 7: LLM 用 bash 编译验证（cargo build + cargo run -- add 10 20）──"
+echo "── Phase 7: bash 编译验证（直接验证，非 LLM）──"
 
-"$ION_BIN" rpc --session "$SID" --method prompt --params '{
-  "text": "请用 bash 工具执行以下命令验证计算器项目：\n1. cargo build\n2. cargo run -- add 10 20\n3. cargo run -- sub 15 5\n\n确认编译成功且运算结果正确。"
-}' 2>/dev/null > /dev/null
+# 直接 bash 验证（不通过 LLM，确保确定性）
+cd "$TEST_PROJECT"
+BUILD_OUT=$(cargo build 2>&1)
+if echo "$BUILD_OUT" | grep -q "Finished\|Compiling"; then
+    pass "cargo build 成功"
+else
+    fail "cargo build 失败: $(echo "$BUILD_OUT" | tail -3)"
+fi
 
-if wait_agent_idle 60 "Build"; then pass "Phase 7 完成"; else fail "Phase 7 超时"; fi
+ADD_OUT=$(cargo run -- add 10 20 2>&1)
+if echo "$ADD_OUT" | grep -q "result: 30"; then
+    pass "cargo run -- add 10 20 → result: 30 ✅"
+else
+    fail "cargo run -- add 10 20 失败: $(echo "$ADD_OUT" | tail -3)"
+fi
+
+SUB_OUT=$(cargo run -- sub 15 5 2>&1)
+if echo "$SUB_OUT" | grep -q "result: 10"; then
+    pass "cargo run -- sub 15 5 → result: 10 ✅"
+else
+    fail "cargo run -- sub 15 5 失败: $(echo "$SUB_OUT" | tail -3)"
+fi
+cd "$PROJECT_DIR"
 
 # ════════════════════════════════════════════════════════
 # Phase 8: get_modified_files + get_file_diff

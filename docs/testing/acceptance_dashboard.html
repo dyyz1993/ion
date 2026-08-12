@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ION 验收看板 — 脚本步骤详情</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'SF Mono','PingFang SC',Menlo,monospace;font-size:13px;line-height:1.6;color:#172033;background:#f5f6f8}
+.wrap{max-width:1000px;margin:0 auto;padding:24px 16px 80px}
+h1{font-size:22px;margin-bottom:4px}
+.sub{font-size:13px;color:#667085;margin-bottom:20px}
+
+/* Module selector */
+.tabs{display:flex;gap:4px;margin-bottom:20px;flex-wrap:wrap}
+.tab{padding:6px 14px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;border:1px solid #e4e7ec;background:#fff;white-space:nowrap}
+.tab.active{background:#0e7490;color:#fff;border-color:#0e7490}
+.tab.done{border-color:#059669}
+.tab.done::before{content:'✅ '}
+.tab.todo::before{content:'⚠️ '}
+
+/* Steps */
+.panel{display:none}
+.panel.active{display:block}
+.phase-box{background:#fff;border:1px solid #e4e7ec;border-radius:10px;margin-bottom:8px;overflow:hidden}
+.phase-head{padding:10px 16px;font-weight:700;font-size:14px;cursor:pointer;display:flex;align-items:center;gap:8px}
+.phase-head:hover{background:#f8fafb}
+.phase-head .num{width:22px;height:22px;border-radius:50%;background:#0e7490;color:#fff;font-size:11px;display:flex;align-items:center;justify-content:center}
+.phase-head .arrow{margin-left:auto;font-size:10px;color:#999;transition:transform .2s}
+.phase-box.open .phase-head .arrow{transform:rotate(90deg)}
+.phase-body{display:none;padding:0 16px 12px;border-top:1px solid #f0f2f5}
+.phase-box.open .phase-body{display:block}
+
+/* Command + check rows */
+.cmd{background:#1e293b;color:#94a3b8;padding:8px 12px;border-radius:6px;font-size:12px;margin:8px 0;overflow-x:auto;white-space:pre}
+.cmd::before{content:'$ ';color:#64748b}
+.check{padding:6px 0;font-size:13px}
+.check .ico{display:inline-block;width:18px}
+.check.pass{color:#059669}
+.check.fail{color:#dc2626}
+.prompt{background:#f0f5f8;border-left:3px solid #0e7490;padding:8px 12px;border-radius:0 6px 6px 0;font-size:12px;margin:8px 0;color:#344054}
+.prompt::before{content:'💬 Prompt: ';font-weight:700;color:#0e7490}
+
+/* Action bar */
+.actions{display:flex;gap:8px;margin-top:16px;padding:12px 0;border-top:2px solid #e4e7ec}
+.btn{padding:6px 14px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;border:1px solid;text-decoration:none}
+.btn-cmd{background:#fff;border-color:#e4e7ec;color:#344054}
+.btn-html{background:#eff6ff;border-color:#bfdbfe;color:#2563eb}
+.result-line{padding:8px 12px;background:#ecfdf3;border-radius:6px;font-weight:700;color:#059669;margin-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>ION 验收看板</h1>
+<div class="sub">每个模块的脚本实际步骤：执行什么命令 → 检查什么条件 → 通过/失败标准</div>
+
+<!-- Tabs -->
+<div class="tabs" id="tabs"></div>
+<div id="panels"></div>
+
+</div>
+
+<script>
+// ══════════════════════════════════════════════
+// DATA: 每个模块的完整步骤
+// ══════════════════════════════════════════════
+const modules = [
+
+// ── EXT-04 FileSnapshot ──
+{
+  id:'ext04', name:'FileSnapshot', done:true, score:'18/0', icon:'📁',
+  script:'bash tests/ext04_serve_ci.sh',
+  desc:'Rust 计算器项目 + 部分审批 + mod 回滚 + cargo 验证',
+  phases:[
+    {t:'Build + 准备项目', steps:[
+      {cmd:'cargo build --bin ion'},
+      {cmd:'mkdir -p $TEST_PROJECT/.ion\necho \'{"file-snapshot":{"enabled":true}}\' > .ion/settings.json\ngit init && git commit -m init'},
+    ]},
+    {t:'启动 serve (zai/glm-5.2)', steps:[
+      {cmd:'ION_SKIP_MCP=1 ion serve > serve.log &\n# 等待 ready\nion rpc --method list_sessions | grep sessions'},
+      {check:'pass',text:'serve ready (PID=$SERVE_PID)'},
+      {check:'fail',text:'serve 未启动 → kill + exit 1'},
+    ]},
+    {t:'create_session', steps:[
+      {cmd:'ion rpc --method create_session \\\n  --params \'{"agent":"build","cwd":"$TEST_PROJECT","model":"glm-5.2","provider":"zai"}\''},
+      {check:'pass',text:'create_session: $SID (非空)'},
+      {check:'fail',text:'create_session 失败 → kill + exit 1'},
+    ]},
+    {t:'LLM 创建 Rust 计算器项目', steps:[
+      {prompt:'用 write 创建 Cargo.toml + src/main.rs，实现 add/sub/mul/div 命令行计算器（div 除零报错）。例如 cargo run -- add 3 5 输出 result: 8'},
+      {cmd:'# 等 agent idle (轮询 review_pending 不再返回 busy)\nwait_agent_idle 60'},
+      {cmd:'# 磁盘验证\ntest -f Cargo.toml && grep -q calc Cargo.toml  → CARGO_OK=true\ntest -f src/main.rs && grep -q "fn main" src/main.rs  → MAIN_OK=true'},
+      {check:'pass',text:'Cargo.toml 已创建（含 calc 包名）'},
+      {check:'pass',text:'src/main.rs 已创建（含 fn main）'},
+      {check:'fail',text:'文件缺失或内容不对'},
+    ]},
+    {t:'review_pending + 部分审批', steps:[
+      {cmd:'# V1: 查 pending 列表\nion rpc --session $SID --method review_pending --params \'{}\''},
+      {check:'pass',text:'V1 review_pending: ≥2 个 pending（Cargo.toml + src/main.rs）'},
+      {check:'fail',text:'V1: <2 个 pending'},
+      {cmd:'# V2: 只 approve Cargo.toml（部分审批）\nion rpc --session $SID --method review_approve \\\n  --params \'{"path":"Cargo.toml"}\''},
+      {check:'pass',text:'V2 approve Cargo.toml: status=approved（锚定 baseline）'},
+      {check:'fail',text:'V2 approve 失败'},
+      {cmd:'# 验证 src/main.rs 仍在 pending\nion rpc --session $SID --method review_pending --params \'{}\'\n# 检查 paths 包含 "src/main.rs"'},
+      {check:'pass',text:'部分审批: src/main.rs 仍在 pending'},
+      {check:'fail',text:'部分审批异常: src/main.rs 不在 pending'},
+    ]},
+    {t:'LLM 添加 mod 功能 → re-approval', steps:[
+      {prompt:'用 write 修改 src/main.rs，添加取模运算（mod）支持。mod 0 也要报错。例如 cargo run -- mod 10 3 输出 result: 1'},
+      {cmd:'wait_agent_idle 60'},
+      {cmd:'# 验证 mod 代码\nsrc/main.rs grep "mod\\|Mod\\|%\\|rem"'},
+      {check:'pass',text:'src/main.rs 含 mod/取模 相关代码'},
+      {check:'fail',text:'src/main.rs 未添加 mod 功能'},
+    ]},
+    {t:'review_reject → 自动回滚 mod', steps:[
+      {cmd:'# L2: re-approval 验证（src/main.rs 应回到 pending）\nion rpc --session $SID --method review_pending --params \'{}\'\n# 检查 paths 包含 "src/main.rs"'},
+      {check:'pass',text:'L2 re-approval: src/main.rs 回到 pending（修改后自动重置）'},
+      {check:'fail',text:'L2: src/main.rs 未回到 pending'},
+      {cmd:'# V3: reject src/main.rs\nion rpc --session $SID --method review_reject \\\n  --params \'{"path":"src/main.rs"}\''},
+      {check:'pass',text:'V3 reject: action=$REJECT_ACTION, rolledBack=yes'},
+      {check:'fail',text:'V3 reject 失败'},
+    ]},
+    {t:'LLM 验证回滚（HTML 可见）', steps:[
+      {prompt:'你的 mod 功能被审批拒绝了（src/main.rs 已回滚）。请验证：\n1. 用 read 工具读取 src/main.rs，确认 mod 代码是否已移除\n2. 用 bash 执行 cargo run -- mod 10 3，确认是否还能用'},
+      {cmd:'wait_agent_idle 60'},
+      {note:'✅ 这一步的 read + bash 结果会出现在导出的 HTML 里，可以看到 LLM 确认了回滚'},
+    ]},
+    {t:'LLM bash 编译验证', steps:[
+      {prompt:'用 bash 执行：\n1. cargo build\n2. cargo run -- add 10 20\n3. cargo run -- sub 15 5\n确认编译成功且运算结果正确'},
+      {cmd:'wait_agent_idle 60'},
+      {note:'✅ HTML 可见: bash 输出编译成功 + result: 30 / result: 10'},
+    ]},
+    {t:'get_modified_files + get_file_diff + 导出 HTML', steps:[
+      {cmd:'# 查变更文件\nion rpc --session $SID --method get_modified_files --params \'{}\'\n# 查 diff\nion rpc --session $SID --method get_file_diff --params \'{"filePath":"Cargo.toml"}\''},
+      {cmd:'# 关闭 serve（确保 session.jsonl 完全 flush）\nkill $SERVE_PID; wait; sleep 1'},
+      {cmd:'# 导出 HTML\nION_SESSION_DIR=$TEST_ROOT/sessions ion --export export.html --session $SID'},
+      {check:'pass',text:'导出 HTML: >100KB'},
+      {check:'fail',text:'HTML 太小或导出失败'},
+      {result:'PASS=18 FAIL=0'},
+    ]},
+  ]
+},
+
+// ── EXT-02 GlobalMemory ──
+{
+  id:'ext02', name:'GlobalMemory', done:true, score:'18/0', icon:'🧠',
+  script:'bash tests/ext02_serve_ci.sh',
+  desc:'架构知识库 + 多角度检索 + LLM 自主存取',
+  phases:[
+    {t:'启动 serve + create_session', steps:[
+      {cmd:'ion rpc --method create_session \\\n  --params \'{"model":"glm-5.2","provider":"zai","cwd":"$TEST_PROJECT"}\''},
+      {check:'pass',text:'create_session: $SID'},
+    ]},
+    {t:'save 3 条丰富记忆', steps:[
+      {cmd:'# save 架构决策\nion rpc --method extension_rpc \\\n  --params \'{"extension":"global-memory","method":"save","args":\n    {"content":"ION 用 parking_lot::Mutex 替代 tokio::sync::Mutex，解决 serve RPC 死锁",\n     "project":"ext02-complex-$$","category":"architecture","importance":9}}\''},
+      {check:'pass',text:'save 架构决策: gmem_xxx（非空 ID）'},
+      {cmd:'# save bugfix\nion rpc --method extension_rpc \\\n  --params \'{"extension":"global-memory","method":"save","args":\n    {"content":"Rust UTF-8 切片 panic：用 chars().take(N) 替代 &s[..n]",\n     "category":"bugfix","importance":8}}\''},
+      {check:'pass',text:'save bugfix: gmem_xxx'},
+      {cmd:'# save 性能模式\nion rpc --method extension_rpc \\\n  --params \'{"extension":"global-memory","method":"save","args":\n    {"content":"FauxProvider Factory 闭包，零成本测试多轮交互",\n     "category":"performance","importance":7}}\''},
+      {check:'pass',text:'save 性能模式: gmem_xxx'},
+    ]},
+    {t:'多角度 search', steps:[
+      {cmd:'# 英文 FTS5\nion rpc --method extension_rpc \\\n  --params \'{"extension":"global-memory","method":"search",\n  "args":{"query":"deadlock mutex parking_lot","project":"ext02-complex-$$"}}\''},
+      {check:'pass',text:'search 英文 FTS5: ≥1 条 → 架构决策'},
+      {cmd:'# 中文 bigram\nion rpc --method extension_rpc \\\n  --params \'{"extension":"global-memory","method":"search",\n  "args":{"query":"死锁 异步 锁","project":"ext02-complex-$$"}}\''},
+      {check:'pass',text:'search 中文 bigram: ≥1 条'},
+      {cmd:'# 语义匹配\nion rpc --method extension_rpc \\\n  --params \'{"extension":"global-memory","method":"search",\n  "args":{"query":"testing mock factory","project":"ext02-complex-$$"}}\''},
+      {check:'pass',text:'search 语义: ≥1 条 → 性能模式'},
+      {cmd:'# list\nion rpc --method extension_rpc \\\n  --params \'{"extension":"global-memory","method":"list",\n  "args":{"project":"ext02-complex-$$"}}\''},
+      {check:'pass',text:'list: ≥3 条'},
+    ]},
+    {t:'LLM 自主保存 (global_memory_save 工具)', steps:[
+      {prompt:'用 global_memory_save 工具保存一条关于测试项目的观察，project=ext02-complex-$$，category=observation'},
+      {cmd:'wait_agent_idle 120'},
+      {cmd:'# 验证 LLM 保存了\nion rpc --method extension_rpc \\\n  --params \'{"extension":"global-memory","method":"search",\n  "args":{"query":"ION AI Agent 测试"}}\''},
+      {check:'pass',text:'LLM save 生效: 找到 LLM 保存的记忆（或 soft-pass）'},
+    ]},
+    {t:'LLM 搜索总结 (global_memory_search 工具)', steps:[
+      {prompt:'用 global_memory_search 搜索 "deadlock mutex" 记忆，总结 parking_lot::Mutex 解决了什么问题'},
+      {cmd:'wait_agent_idle 120'},
+    ]},
+    {t:'forget + 验证消失', steps:[
+      {cmd:'# forget 架构决策\nion rpc --method extension_rpc \\\n  --params \'{"extension":"global-memory","method":"forget",\n  "args":{"id":"$ID1"}}\''},
+      {check:'pass',text:'forget: ok（软删除）'},
+      {cmd:'# 验证已消失\nion rpc --method extension_rpc \\\n  --params \'{"extension":"global-memory","method":"list",\n  "args":{"project":"ext02-complex-$$"}}\n# 检查 $ID1 不在 entries 中'},
+      {check:'pass',text:'forget 验证: $ID1 已从 list 消失'},
+    ]},
+    {t:'导出 HTML + 清理', steps:[
+      {cmd:'# 等 session 文件稳定\nfor i in $(seq 1 60); do sleep 3; [ 文件大小不变 ] && break; done\n# kill serve + 导出'},
+      {check:'pass',text:'导出 HTML: >50KB'},
+      {result:'PASS=18 FAIL=0'},
+    ]},
+  ]
+},
+
+// ── EXT-06 Hooks ──
+{
+  id:'ext06', name:'Hooks', done:true, score:'13/0', icon:'🪝',
+  script:'bash tests/ext06_serve_ci.sh',
+  desc:'安全防护 Hook + rm -rf 拦截 + PostToolUse 审计',
+  phases:[
+    {t:'配置 hooks.json（3 类 Hook）', steps:[
+      {cmd:'# 写 .ion/hooks.json\n{\n  "SessionStart": [\n    {"type":"command","command":"echo SessionStart-fired >> $HOOK_LOG"}\n  ],\n  "PreToolUse": [\n    {"matcher":"bash","hooks":[\n      {"type":"command","command":"INPUT=$(cat); echo $INPUT | grep -q \'rm -rf\' && exit 2; echo ALLOWED >> $HOOK_LOG; exit 0"}\n    ]}\n  ],\n  "PostToolUse": [\n    {"matcher":"write","hooks":[{"type":"command","command":"echo PostToolUse-write >> $HOOK_LOG"}]},\n    {"matcher":"bash","hooks":[{"type":"command","command":"echo PostToolUse-bash >> $HOOK_LOG"}]}\n  ]\n}'},
+      {note:'SessionStart=日志 / PreToolUse(bash)=拦截 rm -rf (exit 2) / PostToolUse=审计'},
+    ]},
+    {t:'启动 serve + create_session', steps:[
+      {check:'pass',text:'serve ready + create_session: $SID'},
+    ]},
+    {t:'SessionStart hook 验证', steps:[
+      {cmd:'# 重试等待 worker 启动\nfor i in $(seq 1 30); do\n  sleep 1\n  grep -q "SessionStart-fired" $HOOK_LOG && break\ndone'},
+      {check:'pass',text:'SessionStart hook 触发'},
+      {check:'softpass',text:'Phase 3 未检测到（将在 Phase 6 统一验证）'},
+    ]},
+    {t:'LLM 尝试 rm -rf → PreToolUse 拦截', steps:[
+      {prompt:'用 bash 执行 rm -rf /tmp/hook-test-should-be-blocked'},
+      {cmd:'wait_agent_idle 50'},
+      {cmd:'# 检查 hook 日志\ngrep -q "PreToolUse-BLOCKED-rm-rf" $HOOK_LOG'},
+      {check:'pass',text:'PreToolUse 拦截: rm -rf 被 hook block（exit 2）'},
+      {check:'softpass',text:'LLM 拒绝执行 rm -rf（安全训练）— soft-pass'},
+    ]},
+    {t:'LLM write 文件 → PostToolUse 审计', steps:[
+      {prompt:'用 write 创建 config.json，内容 {"name":"test","version":"1.0"}'},
+      {cmd:'wait_agent_idle 50'},
+      {cmd:'grep -q "PostToolUse-write" $HOOK_LOG'},
+      {check:'pass',text:'PostToolUse(write) hook 触发: 文件写入被审计'},
+      {check:'softpass',text:'LLM 可能用了 bash 替代 write'},
+    ]},
+    {t:'LLM bash + read hook 日志（HTML 可见）', steps:[
+      {prompt:'先 bash echo safe-ok > safe-test.txt，然后 read $HOOK_LOG 总结哪些 hook 触发了'},
+      {cmd:'wait_agent_idle 50'},
+      {cmd:'# 统计 hook 触发次数\nSS_COUNT=grep -c "SessionStart" $HOOK_LOG\nPT_COUNT=grep -c "PreToolUse" $HOOK_LOG\nPO_COUNT=grep -c "PostToolUse" $HOOK_LOG'},
+      {check:'pass',text:'SessionStart: $SS_COUNT 次'},
+      {check:'pass',text:'PreToolUse: $PT_COUNT 次'},
+      {check:'pass',text:'PostToolUse: $PO_COUNT 次'},
+      {note:'✅ HTML 可见: LLM 的 read 结果列出所有 hook 触发记录'},
+    ]},
+    {t:'导出 HTML', steps:[
+      {cmd:'kill $SERVE_PID; sleep 1\nion --export export.html --session $SID'},
+      {check:'pass',text:'导出 HTML: >50KB'},
+      {result:'PASS=13 FAIL=0'},
+    ]},
+  ]
+},
+
+// ── EXT-07 GoalSupervisor ──
+{
+  id:'ext07', name:'GoalSupervisor', done:true, score:'13/0', icon:'🎯',
+  script:'bash tests/ext07_serve_ci.sh',
+  desc:'Python 冒泡排序 + CI checks + on_gate_check',
+  phases:[
+    {t:'evolver 分析 fixture（确定性）', steps:[
+      {cmd:'# 分析 healthy fixture\nion rpc --session $SID --method goal_evolver_run_once \\\n  --params \'{"data_dir":"tests/fixtures/goal-runs/case_01_healthy","dry_run":true}\''},
+      {check:'pass',text:'evolver(healthy): 分析成功'},
+      {cmd:'# 分析 deadloop fixture\nion rpc --session $SID --method goal_evolver_run_once \\\n  --params \'{"data_dir":"tests/fixtures/goal-runs/case_02_deadloop_strict_check","dry_run":true}\''},
+      {check:'pass',text:'evolver(deadloop): 分析成功'},
+    ]},
+    {t:'LLM goal_set + write sort.py', steps:[
+      {prompt:'1. 用 goal_set 设定目标 "create bubble sort script"\n   checks: [{name:script_exists, command:"test -f sort.py"}, {name:script_runs, command:"python3 sort.py"}]\n2. 用 write 创建 sort.py，实现冒泡排序\n   列表 [64,34,25,12,22,11,90] → 打印排序前后'},
+      {cmd:'wait_agent_idle 60'},
+      {cmd:'# 验证\ntest -f sort.py && grep -q "for.*range\\|while\\|bubble" sort.py'},
+      {check:'pass',text:'sort.py 已创建 + 含排序逻辑'},
+      {check:'fail',text:'sort.py 未创建'},
+    ]},
+    {t:'on_gate_check 验证', steps:[
+      {cmd:'# 检查 goal-runs 目录\nls ~/.ion/agent/goal-runs/$SID/\n  iterations.jsonl  → CI checks 执行记录\n  final-report.json → 最终状态'},
+      {check:'pass',text:'goal-runs 目录存在: on_gate_check 已触发'},
+      {check:'pass',text:'iterations.jsonl: ≥1 行（CI checks 已执行）'},
+      {check:'pass',text:'final-report.json: status=complete'},
+    ]},
+    {t:'LLM 验证目标完成（HTML 可见）', steps:[
+      {prompt:'用 read 读 sort.py 确认代码逻辑 + bash python3 sort.py 确认输出含排序结果 [11,12,22,25,34,64,90]'},
+      {cmd:'wait_agent_idle 60'},
+      {note:'✅ HTML 可见: read + bash result（排序结果正确）'},
+    ]},
+    {t:'导出 HTML', steps:[
+      {result:'PASS=13 FAIL=0'},
+    ]},
+  ]
+},
+
+// ── 待验收模块（简化卡片）──
+{
+  id:'lsp', name:'LSP', done:false, icon:'🔍', script:'bash tests/lsp_ci.sh',
+  desc:'多语言诊断 (12 组)',
+  phases:[{t:'待验收', steps:[{note:'运行 bash tests/lsp_ci.sh 后查看结果'}]}]
+},
+{
+  id:'perm', name:'Permission', done:false, icon:'🔒', script:'bash tests/permission_ci.sh',
+  desc:'5 种权限模式 + stored decisions (11 阶段)',
+  phases:[{t:'待验收', steps:[{note:'运行 bash tests/permission_ci.sh 后查看结果'}]}]
+},
+{
+  id:'stree', name:'SessionTree', done:false, icon:'🌲', script:'bash tests/session_tree_ci.sh',
+  desc:'文件内分支 + 回滚 (4 组)',
+  phases:[{t:'待验收', steps:[{note:'运行 bash tests/session_tree_ci.sh'}]}]
+},
+{
+  id:'compact', name:'Compaction', done:false, icon:'🗜️', script:'bash tests/compaction_ci.sh',
+  desc:'会话压缩 + LLM summarizer (9 组)',
+  phases:[{t:'待验收', steps:[{note:'运行 bash tests/compaction_ci.sh'}]}]
+},
+{
+  id:'mcp', name:'MCP', done:false, icon:'🔌', script:'bash tests/mcp_ci.sh',
+  desc:'rmcp 客户端 + 工具发现 (16 组)',
+  phases:[{t:'待验收', steps:[{note:'运行 bash tests/mcp_ci.sh'}]}]
+},
+{
+  id:'wf', name:'Workflow', done:false, icon:'📋', script:'bash tests/workflow_ci.sh',
+  desc:'结构化交付 DSL (21 组)',
+  phases:[{t:'待验收', steps:[{note:'运行 bash tests/workflow_ci.sh'}]}]
+},
+{
+  id:'msg', name:'MessageRetrieval', done:false, icon:'📨', script:'bash tests/message_retrieval_ci.sh',
+  desc:'9 接口拉取/分页/过滤 (37 组)',
+  phases:[{t:'待验收', steps:[{note:'运行 bash tests/message_retrieval_ci.sh'}]}]
+},
+{
+  id:'mon', name:'Monitor', done:false, icon:'📊', script:'bash tests/monitor_ci.sh',
+  desc:'定时监控→触发 LLM (24 组)',
+  phases:[{t:'待验收', steps:[{note:'运行 bash tests/monitor_ci.sh'}]}]
+},
+
+]; // end modules
+
+// ══════════════════════════════════════════════
+// RENDER
+// ══════════════════════════════════════════════
+const tabs = document.getElementById('tabs');
+const panels = document.getElementById('panels');
+
+modules.forEach((m, i) => {
+  // Tab
+  const tab = document.createElement('div');
+  tab.className = `tab ${m.done ? 'done' : 'todo'}` + (i === 0 ? ' active' : '');
+  tab.textContent = `${m.icon} ${m.name}`;
+  tab.onclick = () => switchModule(i);
+  tabs.appendChild(tab);
+
+  // Panel
+  const panel = document.createElement('div');
+  panel.className = 'panel' + (i === 0 ? ' active' : '');
+  panel.id = `panel-${i}`;
+
+  let html = `<div style="background:#fff;border:1px solid #e4e7ec;border-radius:10px;padding:16px 20px;margin-bottom:16px">
+    <div style="font-size:18px;font-weight:700">${m.icon} ${m.name}
+      <span style="font-size:13px;color:#667085;font-weight:400;margin-left:8px">${m.desc}</span>
+    </div>
+    <div style="margin-top:8px;font-size:13px">
+      <span class="${m.done ? '' : ''}" style="padding:2px 10px;border-radius:20px;font-size:12px;font-weight:600;${m.done ? 'background:#ecfdf3;color:#059669' : 'background:#fff7ed;color:#b45309'}">${m.done ? '✅ 已验证 ' + m.score : '⚠️ 待验收'}</span>
+    </div>
+  </div>`;
+
+  m.phases.forEach((p, pi) => {
+    html += `<div class="phase-box${pi === 0 ? ' open' : ''}" id="phase-${i}-${pi}">
+      <div class="phase-head" onclick="togglePhase(${i},${pi})">
+        <span class="num">${pi}</span> ${p.t}
+        <span class="arrow">▶</span>
+      </div>
+      <div class="phase-body">`;
+
+    p.steps.forEach(s => {
+      if (s.cmd) html += `<div class="cmd">${s.cmd}</div>`;
+      if (s.prompt) html += `<div class="prompt">${s.prompt}</div>`;
+      if (s.check === 'pass') html += `<div class="check pass"><span class="ico">✅</span> ${s.text}</div>`;
+      if (s.check === 'fail') html += `<div class="check fail"><span class="ico">❌</span> ${s.text}</div>`;
+      if (s.check === 'softpass') html += `<div class="check" style="color:#b45309"><span class="ico">⚠️</span> ${s.text}</div>`;
+      if (s.note) html += `<div class="check" style="color:#0e7490"><span class="ico">📌</span> ${s.note}</div>`;
+      if (s.result) html += `<div class="result-line">${s.result}</div>`;
+    });
+
+    html += `</div></div>`;
+  });
+
+  // Actions
+  html += `<div class="actions">
+    <a class="btn btn-cmd" href="#" onclick="copyCmd('${m.script}');return false">📋 ${m.script}</a>
+    ${m.done ? `<a class="btn btn-html" href="../verification-results/${m.id}.html" target="_blank">📂 打开结果 HTML</a>` : ''}
+  </div>`;
+
+  panel.innerHTML = html;
+  panels.appendChild(panel);
+});
+
+function switchModule(idx) {
+  document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', i === idx));
+  document.querySelectorAll('.panel').forEach((p, i) => p.classList.toggle('active', i === idx));
+}
+
+function togglePhase(mi, pi) {
+  document.getElementById(`phase-${mi}-${pi}`).classList.toggle('open');
+}
+
+function copyCmd(cmd) {
+  navigator.clipboard.writeText(cmd).then(() => {
+    event.target.textContent = '✅ 已复制!';
+    setTimeout(() => event.target.textContent = '📋 ' + cmd, 1500);
+  });
+}
+</script>
+</body>
+</html>

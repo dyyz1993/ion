@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FileSnapshot 测试目录</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'PingFang SC',sans-serif;font-size:14px;line-height:1.6;color:#172033;background:#f5f6f8}
+.wrap{max-width:1100px;margin:0 auto;padding:24px 16px 80px}
+h1{font-size:22px;margin-bottom:4px}
+.sub{font-size:13px;color:#667085;margin-bottom:24px}
+
+.summary{display:flex;gap:16px;margin-bottom:24px;flex-wrap:wrap}
+.s-card{background:#fff;border:1px solid #e4e7ec;border-radius:10px;padding:16px 24px;text-align:center;min-width:100px}
+.s-card .n{font-size:28px;font-weight:700}
+.s-card .l{font-size:12px;color:#667085}
+
+.script-box{background:#fff;border:1px solid #e4e7ec;border-radius:10px;margin-bottom:12px;overflow:hidden}
+.script-head{padding:12px 18px;display:flex;align-items:center;gap:10px;cursor:pointer;font-weight:600;font-size:15px}
+.script-head:hover{background:#f8fafb}
+.script-head .cmd{font-family:monospace;font-size:12px;color:#0e7490;background:#f0f5f8;padding:2px 8px;border-radius:4px}
+.script-head .cnt{margin-left:auto;font-size:12px;color:#667085}
+.script-head .arrow{font-size:10px;color:#999;transition:transform .2s}
+.script-box.open .arrow{transform:rotate(90deg)}
+.script-body{display:none;border-top:1px solid #f0f2f5}
+.script-box.open .script-body{display:block}
+
+.group{padding:12px 18px;border-bottom:1px solid #f5f6f8}
+.group:last-child{border-bottom:none}
+.group-title{font-weight:700;font-size:13px;color:#0e7490;margin-bottom:6px}
+.case{display:flex;gap:8px;padding:4px 0;font-size:13px;align-items:flex-start}
+.case .id{flex-shrink:0;width:36px;font-weight:600;font-family:monospace;font-size:12px;color:#667085}
+.case .check{flex-shrink:0;width:20px;text-align:center}
+.case .desc{flex:1}
+.case .cmd{font-family:monospace;font-size:11px;color:#0e7490;background:#f0f5f8;padding:1px 6px;border-radius:3px;margin-left:4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>📁 FileSnapshot 完整测试目录</h1>
+<div class="sub">7 个测试脚本 · 12 个 Group · ~100 个测试断言 · 10 个 harness + 19 个 rollback 单元测试</div>
+
+<div class="summary">
+<div class="s-card"><div class="n" style="color:#0e7490">7</div><div class="l">测试脚本</div></div>
+<div class="s-card"><div class="n" style="color:#0e7490">12</div><div class="l">Group (A-L)</div></div>
+<div class="s-card"><div class="n" style="color:#059669">41</div><div class="l">pass 断言</div></div>
+<div class="s-card"><div class="n" style="color:#059669">10</div><div class="l">harness 测试</div></div>
+<div class="s-card"><div class="n" style="color:#059669">19</div><div class="l">rollback 单元测试</div></div>
+<div class="s-card"><div class="n" style="color:#dc2626">18</div><div class="l">复杂场景步骤</div></div>
+</div>
+
+<!-- ════════════════════════════════════════════════ -->
+<!-- 脚本 1: file_snapshot_ci.sh -->
+<!-- ════════════════════════════════════════════════ -->
+<div class="script-box open">
+<div class="script-head" onclick="this.parentElement.classList.toggle('open')">
+  📄 <span class="cmd">file_snapshot_ci.sh</span>
+  Group A-L（12 组，~41 断言）
+  <span class="cnt">主 CI · cargo test 驱动</span>
+  <span class="arrow">▶</span>
+</div>
+<div class="script-body">
+
+<div class="group">
+<div class="group-title">Group A: object_store 基础（单元测试）</div>
+<div class="case"><span class="id">A1</span><span class="check">✅</span><span class="desc">object_store 单元测试全过（内容寻址存储 write/read/list）<span class="cmd">cargo test object_store</span></span></div>
+</div>
+
+<div class="group">
+<div class="group-title">Group B: write/edit 精确 diff（路线 1，单元测试）</div>
+<div class="case"><span class="id">B1</span><span class="check">✅</span><span class="desc">snapshot 采集单元测试全过（before/after hash + parented step-snapshot）<span class="cmd">cargo test snapshot::</span></span></div>
+</div>
+
+<div class="group">
+<div class="group-title">Group C: 目录扫描 + git ignore 智能过滤（路线 2）</div>
+<div class="case"><span class="id">C1</span><span class="check">✅</span><span class="desc">scanner 单元测试全过（git ignore 过滤 + 不遵守 .gitignore 的快照扫描）<span class="cmd">cargo test scanner::</span></span></div>
+</div>
+
+<div class="group">
+<div class="group-title">Group D: diff 生成（单元测试）</div>
+<div class="case"><span class="id">D1</span><span class="check">✅</span><span class="desc">diff 单元测试全过（行级 diff + diffStat 格式 "path | N+M-"）<span class="cmd">cargo test diff::</span></span></div>
+</div>
+
+<div class="group">
+<div class="group-title">Group E: GC 垃圾回收（单元测试）</div>
+<div class="case"><span class="id">E1</span><span class="check">✅</span><span class="desc">GC 单元测试全过（3 级回收：session 级 / project 级 / global 级）<span class="cmd">cargo test gc::</span></span></div>
+</div>
+
+<div class="group">
+<div class="group-title">Group F: RPC 接口（需 host 模式）</div>
+<div class="case"><span class="id">F0</span><span class="check">✅</span><span class="desc">create_session 成功<span class="cmd">ion rpc --method create_session</span></span></div>
+<div class="case"><span class="id">F1</span><span class="check">✅/❌</span><span class="desc">get_modified_files 正常返回（变更文件列表）<span class="cmd">ion rpc --method get_modified_files</span></span></div>
+<div class="case"><span class="id">F2</span><span class="check">✅/❌</span><span class="desc">get_file_diff 正常返回（指定文件的 diff 内容）<span class="cmd">ion rpc --method get_file_diff</span></span></div>
+<div class="case"><span class="id">F3</span><span class="check">✅/❌</span><span class="desc">get_file_history 正常返回（文件历史版本列表）<span class="cmd">ion rpc --method get_file_history</span></span></div>
+<div class="case"><span class="id">F4</span><span class="check">✅/❌</span><span class="desc">get_batch_diffs 正常返回（批量 diff）<span class="cmd">ion rpc --method get_batch_diffs</span></span></div>
+</div>
+
+<div class="group">
+<div class="group-title">Group G: Worktree 并行（project_key 共享 + session 隔离）</div>
+<div class="case"><span class="id">G1</span><span class="check">✅/⏭️</span><span class="desc">git worktree 创建成功<span class="cmd">git worktree add</span></span></div>
+<div class="case"><span class="id">G2</span><span class="check">✅/❌</span><span class="desc">project_key 一致（main repo 和 worktree 算出同一 key → 共享存储）<span class="cmd">cargo test project_key</span></span></div>
+<div class="case"><span class="id">G3</span><span class="check">✅</span><span class="desc">worktree 清理完成</div>
+<div class="case"><span class="id">G4</span><span class="check">✅/❌</span><span class="desc">project_key worktree 共享单元测试通过<span class="cmd">cargo test worktree</span></span></div>
+<div class="case"><span class="id">G5</span><span class="check">✅/❌</span><span class="desc">object store worktree 间共享 + 去重测试通过<span class="cmd">cargo test object_store_sharing</span></span></div>
+</div>
+
+<div class="group">
+<div class="group-title">Group H: Restore 代码恢复（单元测试 + RPC）</div>
+<div class="case"><span class="id">H1</span><span class="check">✅/❌</span><span class="desc">restore 单元测试全过（恢复新文件→删除 / 恢复修改文件→回退内容）<span class="cmd">cargo test restore::</span></span></div>
+<div class="case"><span class="id">H2</span><span class="check">✅/❌</span><span class="desc">restore_files RPC 正常返回（空会话场景验证）<span class="cmd">ion rpc --method restore_files</span></span></div>
+</div>
+
+<div class="group">
+<div class="group-title">Group I: 集成验证（全量 file_snapshot 测试）</div>
+<div class="case"><span class="id">I1</span><span class="check">✅/❌</span><span class="desc">file_snapshot 全部测试通过（汇总）<span class="cmd">cargo test file_snapshot</span></span></div>
+</div>
+
+<div class="group">
+<div class="group-title">Group J: 审批 harness + RPC 冒烟（核心审批流程）</div>
+<div class="case"><span class="id">J1</span><span class="check">✅/❌</span><span class="desc">审批 harness 全过（H1-H9: snapshot→pending→approve→reject→re-approval）<span class="cmd">cargo test --test file_snapshot_harness</span></span></div>
+<div class="case"><span class="id">J2</span><span class="check">✅/⏭️</span><span class="desc">review_pending 含变更文件（j2.txt）<span class="cmd">ion rpc --method review_pending</span></span></div>
+<div class="case"><span class="id">J3</span><span class="check">✅/⏭️</span><span class="desc">review_approve 生效（status=approved）<span class="cmd">ion rpc --method review_approve</span></span></div>
+<div class="case"><span class="id">J4</span><span class="check">✅/⏭️</span><span class="desc">review_reject 返回 rejected + rolledBack + 磁盘文件已删除<span class="cmd">ion rpc --method review_reject</span></span></div>
+<div class="case"><span class="id">J5</span><span class="check">✅/⏭️</span><span class="desc">review_approvals 含 approved + rejected 记录<span class="cmd">ion rpc --method review_approvals</span></span></div>
+<div class="case"><span class="id">J5b</span><span class="check">✅/⏭️</span><span class="desc">review_approvals status=approved 过滤生效</div>
+<div class="case"><span class="id">J6</span><span class="check">✅/⏭️</span><span class="desc">deny 消息已注入 session.jsonl（grep approval_deny entry）</div>
+</div>
+
+<div class="group">
+<div class="group-title">Group K: 事件推送 subscribe 断言（需 FauxProvider 精确控制 Stop）</div>
+<div class="case"><span class="id">K1</span><span class="check">✅/⏭️</span><span class="desc">subscribe 收到 ApprovalRequest 事件（agent Stop + pending 非空时推送）<span class="cmd">ion subscribe --ui</span></span></div>
+<div class="case"><span class="id">K2</span><span class="check">✅/⏭️</span><span class="desc">subscribe 收到 ApprovalResolved(approved) 事件</div>
+<div class="case"><span class="id">K3</span><span class="check">✅/⏭️</span><span class="desc">review_reject 成功 + reject.txt 回滚<span class="cmd">ion rpc --method review_reject</span></span></div>
+<div class="case"><span class="id">K3b</span><span class="check">✅/⏭️</span><span class="desc">subscribe 收到 ApprovalResolved(rejected) 事件</div>
+<div class="case"><span class="id">K4</span><span class="check">✅/⏭️</span><span class="desc">事件含 extension=file-approval 标识</div>
+<div class="case"><span class="id">K5</span><span class="check">✅/⏭️</span><span class="desc">deny entry 写入 session.jsonl（agent 下一轮可见 XML 消息）</div>
+</div>
+
+<div class="group">
+<div class="group-title">Group K0: 场景 1 直接 CLI + FauxProvider（parented step-snapshot）</div>
+<div class="case"><span class="id">K6</span><span class="check">✅/❌</span><span class="desc">直接 CLI 写出 ToolResult → step-snapshot → Assistant 完整父链<span class="cmd">ION_FAUX_SCRIPT=... ion "test"</span></span></div>
+<div class="case"><span class="id">K7</span><span class="check">✅/❌</span><span class="desc">SessionIndex 区分 1 个用户回合与 2 次 LLM 调用（不重复计数）</div>
+<div class="case"><span class="id">K8</span><span class="check">✅/❌</span><span class="desc">JSONL 保留 File Snapshot entry 且无重复回合摘要</div>
+</div>
+
+<div class="group">
+<div class="group-title">Group L: 真实 LLM 审批 + parented step-snapshot（ION_E2E=1）</div>
+<div class="case"><span class="id">L1</span><span class="check">✅/⏭️</span><span class="desc">真实 LLM write 后 review_pending 含文件</div>
+<div class="case"><span class="id">L2</span><span class="check">✅/⏭️</span><span class="desc">review_approve 成功 + 锚定 baseline</div>
+<div class="case"><span class="id">L3</span><span class="check">✅/⏭️</span><span class="desc">approve 后文件从 pending 移除</div>
+<div class="case"><span class="id">L4</span><span class="check">✅/⏭️</span><span class="desc">review_reject 成功（第二个文件回滚）</div>
+<div class="case"><span class="id">L5</span><span class="check">✅/⏭️</span><span class="desc">review_approvals 含 approved + rejected 记录</div>
+<div class="case"><span class="id">L6</span><span class="check">✅/❌</span><span class="desc">get_tree 可观察 parented step-snapshot</div>
+</div>
+
+</div>
+</div>
+
+<!-- ════════════════════════════════════════════════ -->
+<!-- 脚本 2: file_snapshot_harness.rs -->
+<!-- ════════════════════════════════════════════════ -->
+<div class="script-box">
+<div class="script-head" onclick="this.parentElement.classList.toggle('open')">
+  📄 <span class="cmd">file_snapshot_harness.rs</span>
+  H0-H9（10 个 FauxProvider 集成测试）
+  <span class="cnt">cargo test --test file_snapshot_harness</span>
+  <span class="arrow">▶</span>
+</div>
+<div class="script-body">
+<div class="group">
+<div class="case"><span class="id">H0</span><span class="check">✅</span><span class="desc">factory_agent 持久化 parented step-snapshot 且不产生重复回合 entry</span></div>
+<div class="case"><span class="id">H1</span><span class="check">✅</span><span class="desc">write 工具创建 step-snapshot（before_hash + after_hash 记录）</span></div>
+<div class="case"><span class="id">H2</span><span class="check">✅</span><span class="desc">on_gate_check 触发 → pending 列表非空（agent Stop 时自动收集变更）</span></div>
+<div class="case"><span class="id">H3</span><span class="check">✅</span><span class="desc">review_approve → 文件从 pending 移除 + 锚定 approvedTreeHash</span></div>
+<div class="case"><span class="id">H4</span><span class="check">✅</span><span class="desc">review_reject → 新文件被删除（磁盘文件不存在）+ rolledBack=true</span></div>
+<div class="case"><span class="id">H5</span><span class="check">✅</span><span class="desc">review_approve_all → 批量批准后 pending 为空</span></div>
+<div class="case"><span class="id">H6</span><span class="check">✅</span><span class="desc">review_reject_all → 批量拒绝 + 每个文件回滚</span></div>
+<div class="case"><span class="id">H7</span><span class="check">✅</span><span class="desc">review_approvals → 按 status 过滤（approved/rejected/pending）</span></div>
+<div class="case"><span class="id">H8</span><span class="check">✅</span><span class="desc">reject 已有文件 → action=restored（内容回退到 baseline，不是删除）</span></div>
+<div class="case"><span class="id">H9</span><span class="check">✅</span><span class="desc">re-approval → 已批准文件再改 → 自动回 pending + 保留 approvedTreeHash</span></div>
+</div>
+</div>
+</div>
+
+<!-- ════════════════════════════════════════════════ -->
+<!-- 脚本 3: rollback_harness.rs -->
+<!-- ════════════════════════════════════════════════ -->
+<div class="script-box">
+<div class="script-head" onclick="this.parentElement.classList.toggle('open')">
+  📄 <span class="cmd">rollback_harness.rs</span>
+  19 个单元测试（回滚对 context/message/compaction 的影响）
+  <span class="cnt">cargo test --test rollback_harness</span>
+  <span class="arrow">▶</span>
+</div>
+<div class="script-body">
+<div class="group">
+<div class="case"><span class="check">✅</span><span class="desc">19 个测试覆盖：rollback 后消息不可见（only-append 不变量）</span></div>
+<div class="case"><span class="check">✅</span><span class="desc">leaf 指针移动正确 + parent 链完整</span></div>
+<div class="case"><span class="check">✅</span><span class="desc">rollback 穿越压缩点被拒绝</span></div>
+<div class="case"><span class="check">✅</span><span class="desc">restore-code 先恢复磁盘再回滚消息（执行顺序）</span></div>
+<div class="case"><span class="check">✅</span><span class="desc">tombstone entry 含 reason 文本</span></div>
+<div class="case"><span class="desc" style="color:#667085">…等 19 个测试（详见 cargo test --test rollback_harness 输出）</span></div>
+</div>
+</div>
+</div>
+
+<!-- ════════════════════════════════════════════════ -->
+<!-- 脚本 4: ext04_serve_ci.sh（复杂场景） -->
+<!-- ════════════════════════════════════════════════ -->
+<div class="script-box">
+<div class="script-head" onclick="this.parentElement.classList.toggle('open')">
+  📄 <span class="cmd">ext04_serve_ci.sh</span>
+  Rust 计算器项目（18 步复杂场景）
+  <span class="cnt">已验证 18/0 ✅</span>
+  <span class="arrow">▶</span>
+</div>
+<div class="script-body">
+<div class="group">
+<div class="case"><span class="id">P3</span><span class="check">✅</span><span class="desc">LLM write 创建 Cargo.toml + src/main.rs（add/sub/mul/div 计算器）</span></div>
+<div class="case"><span class="id">P4</span><span class="check">✅</span><span class="desc">review_pending (2 文件) → approve Cargo.toml → src/main.rs 仍 pending（部分审批）</span></div>
+<div class="case"><span class="id">P5</span><span class="check">✅</span><span class="desc">LLM write 添加 mod 功能 → src/main.rs 回到 pending（re-approval L2）</span></div>
+<div class="case"><span class="id">P6</span><span class="check">✅</span><span class="desc">review_reject src/main.rs → mod 功能回滚（action=deleted/restored）</span></div>
+<div class="case"><span class="id">P6b</span><span class="check">✅</span><span class="desc">LLM read src/main.rs + cargo run -- mod 验证回滚（HTML 可见）</span></div>
+<div class="case"><span class="id">P7</span><span class="check">✅</span><span class="desc">LLM bash: cargo build + cargo run -- add 10 20 + sub 15 5（编译+运算验证）</span></div>
+<div class="case"><span class="id">P8</span><span class="check">✅</span><span class="desc">get_modified_files + get_file_diff（RPC 查询验证）</span></div>
+<div class="case"><span class="id">P9</span><span class="check">✅</span><span class="desc">导出 HTML（kill serve → 等文件稳定 → export）</span></div>
+</div>
+<div style="padding:12px 18px;border-top:1px solid #f0f2f5">
+  <a href="../verification-results/ext04_snapshot.html" target="_blank" style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;color:#2563eb;font-weight:600;text-decoration:none;font-size:13px">
+    📂 打开结果 HTML（641KB · 18/0 pass）
+  </a>
+</div>
+</div>
+</div>
+
+<!-- ════════════════════════════════════════════════ -->
+<!-- 脚本 5-7: 其他脚本 -->
+<!-- ════════════════════════════════════════════════ -->
+<div class="script-box">
+<div class="script-head" onclick="this.parentElement.classList.toggle('open')">
+  📄 <span class="cmd">ext04_deep_ci.sh</span> + <span class="cmd">file_snapshot_e2e.sh</span> + <span class="cmd">rollback_impact_ci.sh</span>
+  <span class="cnt">深度验证 + e2e + 回滚影响</span>
+  <span class="arrow">▶</span>
+</div>
+<div class="script-body">
+<div class="group">
+<div class="group-title">ext04_deep_ci.sh — 场景 3 深度验证</div>
+<div class="case"><span class="check">✅</span><span class="desc">get_modified_files 检测到 hello.txt</div>
+<div class="case"><span class="check">✅</span><span class="desc">snapshot 目录有记录（agent write 触发）</div>
+<div class="case"><span class="check">✅</span><span class="desc">get_file_diff + review_pending 有响应</div>
+<div class="case"><span class="check">✅</span><span class="desc">覆盖后 get_file_diff 有 diff</div>
+</div>
+<div class="group">
+<div class="group-title">file_snapshot_e2e.sh — 真实 LLM 端到端</div>
+<div class="case"><span class="check">✅</span><span class="desc">snapshot 采集成功（LLM write 后触发）</div>
+<div class="case"><span class="check">✅</span><span class="desc">代码被修改（LLM 正确写入代码）</div>
+<div class="case"><span class="check">✅</span><span class="desc">get_modified_files RPC 成功</div>
+</div>
+<div class="group">
+<div class="group-title">rollback_impact_ci.sh — 回滚对上下文的影响</div>
+<div class="case"><span class="check">✅</span><span class="desc">S1.0 serve 启动 + create_session</div>
+<div class="case"><span class="check">✅</span><span class="desc">S1.2 a.txt=V1 → S1.3 a.txt=V2（两轮 write）</div>
+<div class="case"><span class="check">✅</span><span class="desc">S1.5 rollback 成功（leaf 移动 + 消息隐藏）</div>
+</div>
+</div>
+</div>
+
+<div style="margin-top:24px;padding:16px;background:#fff;border:1px solid #e4e7ec;border-radius:10px;font-size:13px;color:#667085">
+<b>图例：</b>
+<span style="color:#059669">✅</span> = pass 断言 &nbsp;
+<span style="color:#dc2626">❌</span> = fail 断言 &nbsp;
+⏭️ = skip（条件不满足时跳过） &nbsp;
+<span class="cmd" style="font-family:monospace;font-size:11px;color:#0e7490;background:#f0f5f8;padding:1px 6px;border-radius:3px">ion rpc</span> = 实际执行的命令
+<br><br>
+<b>运行方式：</b>
+<code style="background:#1e293b;color:#94a3b8;padding:2px 8px;border-radius:4px;font-size:12px">bash tests/file_snapshot_ci.sh</code> &nbsp;（主 CI，~2 分钟）<br>
+<code style="background:#1e293b;color:#94a3b8;padding:2px 8px;border-radius:4px;font-size:12px">cargo test --test file_snapshot_harness</code> &nbsp;（harness，秒级）<br>
+<code style="background:#1e293b;color:#94a3b8;padding:2px 8px;border-radius:4px;font-size:12px">ION_E2E=1 bash tests/file_snapshot_ci.sh</code> &nbsp;（含真实 LLM，~10 分钟）
+</div>
+
+</div>
+</body>
+</html>
