@@ -223,6 +223,13 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         model.base_url = override_url.clone();
     }
 
+    // config.json 里的 provider base_url 也需要覆盖 builtin model 的直连 URL。
+    if let Some(ref cfg_provider) = crate::config::IonConfig::load().providers.get(&provider) {
+        if !cfg_provider.base_url.is_empty() {
+            model.base_url = cfg_provider.base_url.clone();
+        }
+    }
+
     // faux 模式：强制 model.api 指向 faux provider（覆盖任何真实 API 路由）
     if using_faux {
         model.api = "faux".into();
@@ -4217,9 +4224,15 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     match mgr.reject(path) {
                         Ok(rf) => {
                             // deny 消息注入 session.jsonl（下一轮 agent 可见）
+                            // 使用 XML 信封，与 <goal_feedback> / <memory_outline> 等保持一致
                             let deny_msg = format!(
-                                "📋 审批拒绝：文件 {} 已回滚（action: {}）。用户不认可这次改动，请重新处理。",
-                                path, rf.action
+                                "<approval_feedback decision=\"rejected\">\n  \
+                                 <file path=\"{path}\" action=\"{action}\" rolled_back=\"true\"/>\n  \
+                                 <reason>用户不认可这次改动</reason>\n  \
+                                 <instruction>文件已回滚到 baseline 状态。请重新评估需求，用不同的方式实现。</instruction>\n\
+                                 </approval_feedback>",
+                                path = path,
+                                action = rf.action,
                             );
                             let entry = serde_json::json!({
                                 "type": "message",
@@ -4280,13 +4293,47 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             "review_reject_all" => {
                 if let Some(ref mgr) = approval_mgr {
                     let results = mgr.reject_all();
-                    let ok_count = results.iter().filter(|r| r.is_ok()).count();
+                    let ok_results: Vec<_> = results.iter().filter_map(|r| r.as_ref().ok()).collect();
+                    let ok_count = ok_results.len();
                     let err_count = results.len() - ok_count;
+
+                    // 批量 deny 消息注入（一条 XML 含所有被拒文件）
+                    if !ok_results.is_empty() {
+                        let mut files_xml = String::new();
+                        for rf in &ok_results {
+                            files_xml.push_str(&format!(
+                                "  <file path=\"{}\" action=\"{}\" rolled_back=\"true\"/>\n",
+                                rf.path, rf.action
+                            ));
+                        }
+                        let deny_msg = format!(
+                            "<approval_feedback decision=\"rejected\">\n{}  \
+                             <reason>用户不认可这些改动</reason>\n  \
+                             <instruction>以上 {} 个文件已全部回滚。请重新评估需求。</instruction>\n\
+                             </approval_feedback>",
+                            files_xml, ok_count,
+                        );
+                        let entry = serde_json::json!({
+                            "type": "message",
+                            "id": format!("approval_deny_{}", std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)),
+                            "parentId": null,
+                            "timestamp": crate::session_jsonl::timestamp_iso(),
+                            "message": {
+                                "role": "user",
+                                "content": [{"type": "text", "text": deny_msg}],
+                            },
+                            "customType": "approval_deny",
+                        });
+                        crate::session_jsonl::append_raw_entry(&worker_cwd, &entry);
+                    }
+
                     output_response(
                         &id,
                         "review_reject_all",
                         &serde_json::json!({
                             "rejected": ok_count, "errors": err_count, "total": results.len(),
+                            "denyMessageInjected": ok_count > 0,
                         }),
                     );
                 } else {

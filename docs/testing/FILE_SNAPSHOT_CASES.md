@@ -599,7 +599,7 @@ ion rpc --session sess_xxx --method review_reject \
 tail -1 ~/.ion/agent/sessions/sess_xxx.jsonl | jq .
 ```
 
-**注入的 entry 结构：**
+**注入的 entry 结构（XML 信封，与 `<goal_feedback>` 等保持一致）：**
 
 ```json
 {
@@ -612,7 +612,7 @@ tail -1 ~/.ion/agent/sessions/sess_xxx.jsonl | jq .
     "content": [
       {
         "type": "text",
-        "text": "📋 审批拒绝：文件 reject.rs 已回滚（action: deleted）。用户不认可这次改动，请重新处理。"
+        "text": "<approval_feedback decision=\"rejected\">\n  <file path=\"reject.rs\" action=\"deleted\" rolled_back=\"true\"/>\n  <reason>用户不认可这次改动</reason>\n  <instruction>文件已回滚到 baseline 状态。请重新评估需求，用不同的方式实现。</instruction>\n</approval_feedback>"
       }
     ]
   },
@@ -620,15 +620,32 @@ tail -1 ~/.ion/agent/sessions/sess_xxx.jsonl | jq .
 }
 ```
 
+**为什么用 XML 而不是纯文本：**
+- ION 所有注入 LLM 的结构化消息都用 XML 信封（`<goal_feedback>` / `<memory_outline>` / `<dev_servers>` / `<project_rules>`）
+- LLM 可以从 XML 标签可靠解析 `path` / `action` / `instruction`，而不是从自然语言中猜
+- UI / 导出 HTML 可以一眼区分"系统注入"和"真人输入"
+
+**`review_reject_all` 的批量 deny XML（多文件合并为一条 entry）：**
+
+```xml
+<approval_feedback decision="rejected">
+  <file path="a.rs" action="restored" rolled_back="true"/>
+  <file path="b.txt" action="deleted" rolled_back="true"/>
+  <reason>用户不认可这些改动</reason>
+  <instruction>以上 2 个文件已全部回滚。请重新评估需求。</instruction>
+</approval_feedback>
+```
+
 **验证点：**
 - ✅ entry id 格式 `approval_deny_{unix_millis}`
 - ✅ `customType: "approval_deny"`
 - ✅ message.role=`user`（让 agent 当作用户消息处理）
-- ✅ deny 文本包含 path 和 action
-- ✅ agent 下一轮 prompt 时，这条消息在 context 里（LLM 会看到"用户拒绝了 reject.rs"）
-- ✅ `review_reject_all` 每个文件都会注入一条 deny entry
+- ✅ deny 文本使用 `<approval_feedback>` XML 信封，含 `<file>` / `<reason>` / `<instruction>`
+- ✅ agent 下一轮 prompt 时，这条消息在 context 里（LLM 会看到 XML 结构化的拒绝反馈）
+- ✅ `review_reject_all` 注入一条合并 XML（所有被拒文件在同一个 `<approval_feedback>` 内）
+- ✅ `review_reject_all` 响应包含 `denyMessageInjected: true`
 
-**来源**：⚠️ 代码依据（`src/bin/ion_worker.rs:2191-2207`，无独立 harness 断言）
+**来源**：✅ 实测（`src/worker_rpc.rs:4219-4246` 单文件 reject + `4286-4338` reject_all，ext04_serve_ci.sh 20/20 验证通过）
 
 ---
 
