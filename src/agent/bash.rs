@@ -273,11 +273,21 @@ impl Tool for BashRunTool {
             // （exit=1 时端口占用/命令不存在的错误全在 stderr）。
             // Shell 层合并比 Rust 层 Arc<Mutex> 简单，且保持原始输出顺序。
             let merged_command = merge_stderr_to_stdout(&command);
-            let child = match tokio::process::Command::new("sh")
+            // 使用 process_group(0) 让子进程有自己的进程组，
+            // 这样 kill 时可以用 kill -- -$PID 杀整个进程组（含子进程）
+            let mut std_cmd = std::process::Command::new("sh");
+            std_cmd
                 .args(["-c", &merged_command])
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            // Unix: 设置独立进程组
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                std_cmd.process_group(0);
+            }
+            let child = match tokio::process::Command::from(std_cmd)
                 .spawn()
             {
                 Ok(c) => c,
@@ -705,8 +715,10 @@ impl BashManageTool {
                 if os_pid == 0 {
                     return serde_json::json!({"error": "no OS PID"});
                 }
+                // kill 整个进程组（负 PID = kill -- -$PGID）
+                let pgid_arg = format!("-{}", os_pid);
                 let killed = std::process::Command::new("kill")
-                    .args([&os_pid.to_string()])
+                    .args([&pgid_arg])
                     .output()
                     .map(|o| o.status.success())
                     .unwrap_or(false);
@@ -1004,8 +1016,10 @@ impl Extension for BashExtension {
                 if os_pid == 0 {
                     return Ok(serde_json::json!({"error": "no OS PID"}));
                 }
+                // kill 整个进程组（负 PID = kill -- -$PGID）
+                let pgid_arg = format!("-{}", os_pid);
                 let killed = std::process::Command::new("kill")
-                    .args([&os_pid.to_string()])
+                    .args([&pgid_arg])
                     .output()
                     .map(|o| o.status.success())
                     .unwrap_or(false);
