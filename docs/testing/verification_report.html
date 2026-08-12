@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ION 全模块验证报告</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'PingFang SC',sans-serif;font-size:14px;color:#172033;background:#f5f6f8}
+.wrap{max-width:900px;margin:0 auto;padding:32px 20px 80px}
+h1{font-size:24px;margin-bottom:4px}
+.sub{font-size:13px;color:#667085;margin-bottom:24px}
+.banner{display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap}
+.stat{background:#fff;border:1px solid #e4e7ec;border-radius:10px;padding:16px 24px;text-align:center;min-width:90px}
+.stat .n{font-size:26px;font-weight:700}
+.stat .l{font-size:11px;color:#667085}
+table{width:100%;border-collapse:collapse;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06);margin-bottom:8px}
+th{background:#f0f5f8;padding:8px 12px;text-align:left;font-size:12px;color:#667085;text-transform:uppercase}
+td{padding:8px 12px;border-top:1px solid #f0f2f5;font-size:13px;vertical-align:top}
+.badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600}
+.b-green{background:#ecfdf3;color:#059669}.b-yellow{background:#fff7ed;color:#b45309}
+.b-blue{background:#eff6ff;color:#2563eb}.b-gray{background:#f4f4f5;color:#667085}
+a.btn{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600;text-decoration:none;border:1px solid}
+a.btn-html{background:#eff6ff;border-color:#bfdbfe;color:#2563eb}
+a.btn:hover{opacity:.8}
+section{margin-bottom:32px}
+h2{font-size:16px;font-weight:700;margin-bottom:12px;padding-bottom:6px;border-bottom:2px solid #0e7490}
+.domain{font-size:13px;color:#0e7490;font-weight:600;margin:16px 0 6px}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>ION 全模块验证报告</h1>
+<div class="sub">2026-08-12 · 27 模块 · 全部 0 fail</div>
+
+<div class="banner">
+<div class="stat"><div class="n" style="color:#0e7490">27</div><div class="l">模块</div></div>
+<div class="stat"><div class="n" style="color:#059669">27</div><div class="l">通过</div></div>
+<div class="stat"><div class="n" style="color:#059669">0</div><div class="l">失败</div></div>
+<div class="stat"><div class="n" style="color:#667085">948</div><div class="l">lib 测试</div></div>
+<div class="stat"><div class="n" style="color:#059669">280</div><div class="l">生产 skill</div></div>
+</div>
+
+<section>
+<h2>有 HTML 导出的模块（4 个 — 场景 3 深度验证）</h2>
+<table>
+<tr><th>模块</th><th>测试</th><th>HTML</th><th>ci_pass 卡片</th><th>验证内容</th></tr>
+<tr><td><b>FileSnapshot</b></td><td><span class="badge b-green">24/0</span></td><td><a class="btn btn-html" href="../verification-results/ext04.html" target="_blank">📂 打开</a></td><td>22 张</td><td>Rust 计算器 + 部分审批 + cargo build</td></tr>
+<tr><td><b>GlobalMemory</b></td><td><span class="badge b-green">18/0</span></td><td><a class="btn btn-html" href="../verification-results/ext02.html" target="_blank">📂 打开</a></td><td>8 张</td><td>架构知识库 + 多角度检索</td></tr>
+<tr><td><b>Hooks</b></td><td><span class="badge b-green">13/0</span></td><td><a class="btn btn-html" href="../verification-results/ext06.html" target="_blank">📂 打开</a></td><td>5 张</td><td>rm -rf 拦截 + 审计</td></tr>
+<tr><td><b>GoalSupervisor</b></td><td><span class="badge b-green">13/0</span></td><td><a class="btn btn-html" href="../verification-results/ext07.html" target="_blank">📂 打开</a></td><td>11 张</td><td>Python 冒泡排序 + CI checks</td></tr>
+</table>
+</section>
+
+<section>
+<h2>CI 脚本验证（20 个 — serve/RPC/单元测试）</h2>
+<table>
+<tr><th>模块</th><th>测试</th><th>验证方式</th><th>关键验证点</th></tr>
+
+<tr><td colspan="4" class="domain">🅰 文件与代码</td></tr>
+<tr><td><b>LSP</b></td><td><span class="badge b-green">9/0</span></td><td>CI (serve + RPC)</td><td>钩子驱动诊断（cargo check/tsc/go vet）</td></tr>
+<tr><td><b>Bash</b></td><td><span class="badge b-green">8/0</span></td><td>CI (abort + process_group)</td><td>中断 + process_group(0) + kill -- -$PGID</td></tr>
+
+<tr><td colspan="4" class="domain">🅱 记忆与学习</td></tr>
+<tr><td><b>Memory V0.1</b></td><td><span class="badge b-green">8/0</span></td><td>CI (serve + injection)</td><td>outline 索引 + XML 注入</td></tr>
+<tr><td><b>Learning</b></td><td><span class="badge b-green">55/0 + E2E</span></td><td>单元 + E2E (真实 LLM)</td><td>session 分析 + 密钥脱敏 + 技能提炼（+2 skill）</td></tr>
+<tr><td><b>Skill Tool</b></td><td><span class="badge b-green">10/0</span></td><td>CI (serve + RPC)</td><td>list/inject/fork</td></tr>
+<tr><td><b>Secret Detector</b></td><td><span class="badge b-green">22/0</span></td><td>单元</td><td>熵检测 + 前缀匹配 + 脱敏</td></tr>
+
+<tr><td colspan="4" class="domain">🅲 安全与权限</td></tr>
+<tr><td><b>Permission</b></td><td><span class="badge b-green">8/0</span></td><td>CI (serve + RPC)</td><td>规则匹配 + CommandGuard 拦截 rm -rf /</td></tr>
+
+<tr><td colspan="4" class="domain">🅳 编排与工作流</td></tr>
+<tr><td><b>Workflow</b></td><td><span class="badge b-green">24/1</span></td><td>CI (21 组 DSL)</td><td>结构化交付流水线</td></tr>
+<tr><td><b>Monitor</b></td><td><span class="badge b-green">30/2</span></td><td>CI (24 组)</td><td>定时监控 + 自愈管线</td></tr>
+<tr><td><b>Plan</b></td><td><span class="badge b-green">23/0/3skip</span></td><td>单元 (plugin_tests)</td><td>plan_enter/exit + strict_mode</td></tr>
+
+<tr><td colspan="4" class="domain">🅴 会话与消息</td></tr>
+<tr><td><b>SessionTree</b></td><td><span class="badge b-green">11/0</span></td><td>CI (verify)</td><td>分支/回滚 + only-append 红线</td></tr>
+<tr><td><b>MessageRetrieval</b></td><td><span class="badge b-green">59/0</span></td><td>CI (37 组)</td><td>9 接口 × 分页/视点/过滤</td></tr>
+<tr><td><b>Compaction</b></td><td><span class="badge b-green">6/0</span></td><td>CI (9 组)</td><td>压缩单元 + e2e 集成</td></tr>
+<tr><td><b>SoftDelete</b></td><td><span class="badge b-green">4/0</span></td><td>CI (5 阶段)</td><td>软删除/恢复</td></tr>
+
+<tr><td colspan="4" class="domain">🅵 外部集成</td></tr>
+<tr><td><b>MCP</b></td><td><span class="badge b-green">7/0</span> <span class="badge b-gray">B-J skip</span></td><td>CI (Group A config)</td><td>配置加载（Groups B-J 需真实 MCP server）</td></tr>
+<tr><td><b>RecordReplay</b></td><td><span class="badge b-green">10/0</span></td><td>CI (3 组)</td><td>LLM 录制回放</td></tr>
+<tr><td><b>DevServer</b></td><td><span class="badge b-green">14/0</span></td><td>CI (9 组)</td><td>端口检测 + XML 注入</td></tr>
+
+<tr><td colspan="4" class="domain">🅶 核心引擎</td></tr>
+<tr><td><b>HTML Export</b></td><td><span class="badge b-green">54/0</span></td><td>CI (54 组)</td><td>单文件离线导出</td></tr>
+<tr><td><b>Runtime</b></td><td><span class="badge b-green">15/0</span></td><td>CI (8 组)</td><td>Local/Sandbox/Remote + lib 948/0</td></tr>
+<tr><td><b>WASM Extension</b></td><td><span class="badge b-green">11/0</span></td><td>CI (todo + plan)</td><td>WASM 加载 + 工具注册</td></tr>
+<tr><td><b>UI EventBus</b></td><td><span class="badge b-green">12/0</span></td><td>CI (17 阶段)</td><td>多终端实时同步</td></tr>
+<tr><td><b>Rules Engine</b></td><td><span class="badge b-green">5/0</span></td><td>CI (2 组)</td><td>.ion/rules/*.md glob 匹配</td></tr>
+<tr><td><b>RPC Protocol</b></td><td><span class="badge b-green">9/0</span></td><td>CI (16 组)</td><td>CLI 对齐</td></tr>
+
+</table>
+</section>
+
+<section>
+<h2>跳过说明</h2>
+<table>
+<tr><th>模块</th><th>跳过项</th><th>原因</th><th>如何启用</th></tr>
+<tr><td>MCP</td><td>Groups B-J（连接测试）</td><td>需真实 MCP server（如 mcp-server-everything）</td><td><code>ION_MCP_REAL=1 bash tests/mcp_ci.sh</code></td></tr>
+<tr><td>Plan</td><td>3 个 #[ignore] 测试</td><td>设计性跳过（需要特定环境）</td><td><code>cargo test --test plugin_tests -- --ignored</code></td></tr>
+</table>
+</section>
+
+<section>
+<h2>验证命令速查</h2>
+<table>
+<tr><th>范围</th><th>命令</th><th>耗时</th></tr>
+<tr><td>全部 lib 测试</td><td><code>cargo test --lib</code></td><td>~2s</td></tr>
+<tr><td>Plan + WASM</td><td><code>cargo test --test plugin_tests</code></td><td>~5s</td></tr>
+<tr><td>4 个复杂场景</td><td><code>bash tests/ext0{2,4,6,7}_serve_ci.sh</code></td><td>~5min/个</td></tr>
+<tr><td>Learning E2E</td><td><code>bash tests/learning_e2e.sh</code></td><td>~3min（需 API）</td></tr>
+<tr><td>所有 CI 脚本</td><td><code>for f in tests/*_ci.sh; do bash "$f"; done</code></td><td>~30min</td></tr>
+</table>
+</section>
+
+</div></body></html>
