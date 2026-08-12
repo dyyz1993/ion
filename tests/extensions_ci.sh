@@ -85,17 +85,20 @@ if ! rustup target list --installed 2>/dev/null | grep -q wasm32-wasip1; then
     rustup target add wasm32-wasip1 2>/dev/null || true
 fi
 
-# Build wasm 产物（如果缺失）
-for ext in todo_extension; do
-    WASM="target/wasm32-wasip1/release/${ext}.wasm"
-    if [ ! -f "$WASM" ]; then
-        yellow "building $ext.wasm..."
-        cargo build --target wasm32-wasip1 --release -p "${ext%_extension}-extension" 2>&1 | tail -2
-    fi
-done
+# Build wasm 产物（如果缺失）— 从 todo-extension 目录编译（独立 workspace）
+TODO_DIR="$PROJECT_DIR/todo-extension"
+TODO_WASM="$TODO_DIR/target/wasm32-wasip1/release/todo_extension.wasm"
+if [ ! -f "$TODO_WASM" ]; then
+    yellow "building todo_extension.wasm..."
+    (cd "$TODO_DIR" && cargo build --target wasm32-wasip1 --release) 2>&1 | tail -2
+fi
 
 # 验证 wasm 文件存在 — 如果编译失败就 skip 整个 CI
-TODO_WASM="target/wasm32-wasip1/release/todo_extension.wasm"
+if [ ! -f "$TODO_WASM" ]; then
+    echo "  ⏭️  wasm 编译失败（缺少 $TODO_WASM）— skip extensions_ci"
+    echo "  Results: 0 passed, 0 failed, 1 skipped (wasm build failed)"
+    exit 0
+fi
 if [ ! -f "$TODO_WASM" ]; then
     echo "  ⏭️  wasm 编译失败（缺少 $TODO_WASM）— skip extensions_ci"
     echo "  Results: 0 passed, 0 failed, 1 skipped (wasm build failed)"

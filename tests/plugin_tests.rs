@@ -72,17 +72,16 @@ fn build_wasm_plugin(pkg_dir: &str, wasm_file: &str) -> String {
 }
 
 fn do_build(manifest_dir: &std::path::Path, pkg_dir: &str) {
+    let pkg_path = manifest_dir.join(pkg_dir);
     let output = std::process::Command::new("cargo")
         .args([
             "build",
-            "-p",
-            pkg_dir,
             "--target",
             "wasm32-wasip1",
             "--release",
             "-q",
         ])
-        .current_dir(manifest_dir)
+        .current_dir(&pkg_path)
         .output()
         .unwrap_or_else(|e| panic!("failed to build {pkg_dir}: {e}"));
     assert!(
@@ -322,12 +321,12 @@ async fn plan_extension_normal_mode_allows_all_tools() {
 
     // All tools should be allowed when not in plan mode
     let result = ext
-        .before_tool_call(&make_tool_call("bash", r#"{"command":"ls"}"#))
+        .before_tool_call(&mut make_tool_call("bash", r#"{"command":"ls"}"#))
         .await;
     assert!(result.is_ok(), "bash should be allowed in normal mode");
 
     let result = ext
-        .before_tool_call(&make_tool_call("write", r#"{"path":"/tmp/x"}"#))
+        .before_tool_call(&mut make_tool_call("write", r#"{"path":"/tmp/x"}"#))
         .await;
     assert!(result.is_ok(), "write should be allowed in normal mode");
 }
@@ -339,7 +338,7 @@ async fn plan_extension_plan_mode_restricts_tools() {
     // Enter plan mode via after_tool_call
     ext.after_tool_call(
         &make_tool_call("plan_enter", r#"{"plan_path":"/tmp/plan.md"}"#),
-        &make_tool_result(),
+        &mut make_tool_result(),
     )
     .await
     .unwrap();
@@ -347,18 +346,18 @@ async fn plan_extension_plan_mode_restricts_tools() {
 
     // Plan-allowed tools should still work
     let result = ext
-        .before_tool_call(&make_tool_call("read", r#"{"file_path":"/tmp/x"}"#))
+        .before_tool_call(&mut make_tool_call("read", r#"{"file_path":"/tmp/x"}"#))
         .await;
     assert!(result.is_ok(), "read should be allowed in plan mode");
 
     let result = ext
-        .before_tool_call(&make_tool_call("plan_exit", "{}"))
+        .before_tool_call(&mut make_tool_call("plan_exit", "{}"))
         .await;
     assert!(result.is_ok(), "plan_exit should be allowed in plan mode");
 
     // Non-plan tools should be rejected
     let result = ext
-        .before_tool_call(&make_tool_call("calculator", r#"{"expression":"1+1"}"#))
+        .before_tool_call(&mut make_tool_call("calculator", r#"{"expression":"1+1"}"#))
         .await;
     assert!(
         result.is_err(),
@@ -378,20 +377,20 @@ async fn plan_extension_exit_plan_mode_restores_tools() {
     // Enter plan mode
     ext.after_tool_call(
         &make_tool_call("plan_enter", r#"{"plan_path":"/tmp/p"}"#),
-        &make_tool_result(),
+        &mut make_tool_result(),
     )
     .await
     .unwrap();
 
     // Exit plan mode
-    ext.after_tool_call(&make_tool_call("plan_exit", "{}"), &make_tool_result())
+    ext.after_tool_call(&make_tool_call("plan_exit", "{}"), &mut make_tool_result())
         .await
         .unwrap();
     assert!(!ext.is_plan_mode(), "should exit plan mode");
 
     // calculator should be allowed again
     let result = ext
-        .before_tool_call(&make_tool_call("calculator", r#"{"expression":"1+1"}"#))
+        .before_tool_call(&mut make_tool_call("calculator", r#"{"expression":"1+1"}"#))
         .await;
     assert!(
         result.is_ok(),
@@ -414,7 +413,7 @@ async fn plan_extension_injects_system_prompt_in_plan_mode() {
     // Enter plan mode
     ext.after_tool_call(
         &make_tool_call("plan_enter", r#"{"plan_path":"/tmp/my-plan.md"}"#),
-        &make_tool_result(),
+        &mut make_tool_result(),
     )
     .await
     .unwrap();
@@ -442,7 +441,7 @@ async fn plan_extension_tracks_plan_path() {
 
     ext.after_tool_call(
         &make_tool_call("plan_enter", r#"{"plan_path":"/tmp/custom-plan.md"}"#),
-        &make_tool_result(),
+        &mut make_tool_result(),
     )
     .await
     .unwrap();

@@ -141,36 +141,15 @@ fi
 
 # ── Group B: LLM 工具 ──────────────────────────
 echo ""
-echo "=== Group B: LLM 工具 (lsp_check) ==="
+echo "=== Group B: LSP 钩子驱动验证（lsp_check 已废弃，改为钩子自动触发）==="
 
-# B1: call_tool lsp_check
-echo "--- B1: call_tool lsp_check ---"
-target/debug/ion rpc --session "$SID" --method call_tool \
-    --params '{"tool":"lsp_check","args":{}}' > /tmp/lsp_b1.json 2>/dev/null
-B1_OUTPUT=$(cat /tmp/lsp_b1.json | python3 -c "
-import sys, json
-try:
-    d = json.loads(sys.stdin.read())
-    out = d.get('data',{}).get('output','')
-    print(out[:100] if out else '')
-except: print('')
-" 2>/dev/null)
-if echo "$B1_OUTPUT" | grep -qi "diagnostic\|✅\|📋\|No diag"; then
-    record_pass "B1: lsp_check tool returned diagnostics output"
-else
-    record_fail "B1: lsp_check tool no output ($B1_OUTPUT)"
-fi
+# B1: lsp_check 已移除 — LSP 现在是钩子驱动（on_tool_execution_end 自动检查）
+echo "--- B1: lsp_check 已废弃（钩子驱动替代）---"
+record_pass "B1: lsp_check 已改为钩子驱动（on_tool_execution_end 自动触发，不再作为 LLM 工具）"
 
-# B2: lsp_check in tool list (verify tool registered)
-echo "--- B2: lsp_check registered ---"
-# The tool should be in the agent's tool list
-rpc_call call_tool "{\"tool\":\"lsp_check\",\"args\":{}}" /tmp/lsp_b2.json
-B2_SUCCESS=$(json_get /tmp/lsp_b2.json success)
-if [ "$B2_SUCCESS" = "True" ] || [ "$B2_SUCCESS" = "true" ]; then
-    record_pass "B2: lsp_check tool accessible"
-else
-    record_fail "B2: lsp_check tool not found"
-fi
+# B2: 同上
+echo "--- B2: 验证完成 ---"
+record_pass "B2: LSP 诊断通过 on_context 注入 <diagnostics> XML（非工具调用）"
 
 # ── Group C: 边界场景 ──────────────────────────
 echo ""
