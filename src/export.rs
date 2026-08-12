@@ -5138,7 +5138,7 @@ mod tests {
         );
         assert_eq!(
             summary["typeInventory"]["supported"]["builtInCustomTypes"],
-            json!(25)
+            json!(27)
         );
         assert_eq!(
             summary["typeInventory"]["current"]["rawEntryTypes"],

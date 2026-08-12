@@ -39,14 +39,8 @@ echo "════════════════════════�
 # ── Phase 0: Build ──
 cargo build --bin ion 2>/dev/null && pass "build" || { fail "build"; exit 1; }
 
-# ── Phase 1: 单元测试（接受已知 hooks test bug ≤1 fail）──
-TEST_OUT=$(RUST_LOG=error cargo test --lib 2>&1)
-FAILED_COUNT=$(echo "$TEST_OUT" | grep "test result:" | grep -oE '[0-9]+ failed' | grep -oE '^[0-9]+' || echo "0")
-if [ "$FAILED_COUNT" -le 1 ]; then
-    pass "cargo test --lib (${FAILED_COUNT} known hooks bug)"
-else
-    fail "cargo test --lib (${FAILED_COUNT} failures)"
-fi
+# ── Phase 1: 单元测试 ──
+RUST_LOG=error cargo test --lib 2>&1 | grep -q "test result: ok" && pass "cargo test --lib" || fail "cargo test --lib"
 RUST_LOG=error cargo test --test runtime_tests 2>&1 | grep -q "test result:" && pass "runtime_tests" || fail "runtime_tests"
 
 # ── Phase 2: Manager + Worker ──
