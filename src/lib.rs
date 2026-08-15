@@ -58,6 +58,7 @@ pub mod skill_distillation;
 pub mod tool_loop_detector;
 pub mod types;
 
+pub mod context_files_extension;
 pub mod context_reclaimer;
 pub mod file_snapshot;
 pub mod file_time_guard;

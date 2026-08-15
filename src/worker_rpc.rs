@@ -20,7 +20,7 @@ use crate::agent::tool::{
     WriteTool,
 };
 use crate::session_jsonl;
-use crate::wasm_extension::{Registry, ToolAdapter};
+use crate::wasm_extension::{WasmExtensionRegistry, WasmToolAdapter};
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::Arc;
@@ -464,13 +464,13 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
     let registry = Arc::new(registry);
 
-    // WASM 插件注册表（RPC 热更新用）
-    let wasm_ext_registry = Arc::new(Registry::new());
+    // WASM Extension 注册表（RPC 热更新用）
+    let wasm_ext_registry = Arc::new(WasmExtensionRegistry::new());
 
-    // 记录已加载的 WASM 路径（用于后续创建 HookAdapter）
+    // Keep loaded WASM paths so trait adapters can be registered below.
     let mut loaded_wasm_paths: Vec<String> = Vec::new();
 
-    // ── WASM 插件自动发现（Agent 构造前，注册到 tools）──
+    // ── WASM Extension 自动发现（Agent 构造前，注册到 tools）──
     // 扫描 ~/.ion/agent/extensions/ 和 {project_root}/.ion/extensions/ 下的 .wasm 文件
     // project_root 用 project_root_for_config()（worktree 场景回源到主仓库，缺口 #2）
     {
@@ -492,20 +492,20 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         let canonical_str = std::fs::canonicalize(&path)
                             .map(|p| p.to_string_lossy().to_string())
                             .unwrap_or_else(|_| path.to_string_lossy().to_string());
-                        let ext_name = crate::wasm_extension::ext_name_from_path(&canonical_str);
+                        let extension_id = crate::wasm_extension::extension_id_from_path(&canonical_str);
                         match wasm_ext_registry.add(&canonical_str) {
                             Ok(tool_defs) => {
                                 for td in &tool_defs {
-                                    tools.register(Box::new(ToolAdapter {
+                                    tools.register(Box::new(WasmToolAdapter {
                                         name: td.name.clone(),
                                         description: td.description.clone(),
                                         parameters: td.parameters.clone(),
                                         extension_path: canonical_str.clone(),
-                                        ext_name: ext_name.clone(),
+                                        extension_id: extension_id.clone(),
                                         registry: wasm_ext_registry.clone(),
                                     }));
                                     tracing::info!(
-                                        "[wasm] auto-discovered {ext_name}: {}",
+                                        "[wasm] auto-discovered {extension_id}: {}",
                                         td.name
                                     );
                                 }
@@ -840,12 +840,15 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     }
 
     // ── 注册内置 Extension（Memory / Bash / Streaming），可通过 config.json 关闭 ──
-    // 先创建 follow_up 通道（bash 插件后台进程完成时用来注入消息）
+    // 先创建 follow_up 通道（Bash Extension 后台进程完成时用来注入消息）
+    // 活跃后台 watcher 计数（bash 后台进程）：bash 扩展与 agent_loop 共享，
+    // outer_loop 只在 >0 时等待后台完成（否则零等待收尾）
+    let bg_pending = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (follow_up_tx, follow_up_rx) =
         tokio::sync::mpsc::unbounded_channel::<(ion_provider::Message, DeliverAs)>();
     let mut process_map = None;
     {
-        let mut ext_reg = crate::agent::extension::ExtensionRegistry::new();
+        let mut ext_reg = crate::agent::extension::ExtensionRunner::new();
 
         // ── 注入 ctx.fs 统一文件访问能力（RuntimeFileSystem）──
         // 内置扩展通过 registry.filesystem() 拿到，WASM 扩展通过 host_read_file / host_list_dir 拿到。
@@ -950,6 +953,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             // Wire up the follow_up channel so background processes can inject
             // <bash_result> messages into the agent loop on completion.
             bash_ext.set_follow_up_tx(follow_up_tx.clone());
+            // 活跃 watcher 计数与 agent_loop 共享（outer_loop 据此决定是否等待后台）
+            bash_ext.set_bg_pending(bg_pending.clone());
             process_map = Some(bash_ext.process_map.clone());
             ext_reg.register(Box::new(bash_ext));
         } else {
@@ -1022,6 +1027,14 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             tracing::info!("[extension] rules-engine disabled by config");
         }
 
+        // Context Files Extension (AGENTS.md / CLAUDE.md loading)
+        if !crate::context_files_extension::ContextFilesExtension::is_disabled_by_env() {
+            ext_reg.register(Box::new(
+                crate::context_files_extension::ContextFilesExtension::new(),
+            ));
+            tracing::info!("[extension] context-files enabled");
+        }
+
         // Goal Supervisor Extension (on_gate_check closed loop: run checks,
         // RetryWith on fail, until goal complete or guard trips).
         // Shares state with GoalSetTool (registered above in the tools section).
@@ -1074,11 +1087,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             None
         };
 
-        // ── 注册 WASM Extension 的 HookAdapter（让 WASM 也能实现 29 个钩子）──
+        // Register adapters so runtime WASM modules participate in Extension hooks.
         for wasm_path in &loaded_wasm_paths {
             if let Some(hook_adapter) = wasm_ext_registry.create_hook_adapter(wasm_path) {
                 ext_reg.register(Box::new(hook_adapter));
-                tracing::info!("[wasm] registered HookAdapter for {}", wasm_path);
+                tracing::info!("[wasm] registered Extension adapter for {}", wasm_path);
             }
         }
 
@@ -1132,6 +1145,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         // completions (bash background=true) are drained into follow_up_queue
         // during outer_loop, triggering a new turn with <bash_result> message.
         agent.set_follow_up_rx(follow_up_rx);
+        agent.set_bg_pending(bg_pending.clone());
 
         // LspCheckTool 不再暴露给 LLM（设计纠正：LSP 是钩子驱动，write/edit 后自动触发）
     }
@@ -1889,10 +1903,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 if !skip {
                     output_response(&id, "prompt", &serde_json::Value::Null);
                     // agent_start / text_delta / agent_end 由 StreamingExtension 实时推送，
-                    // 不需要这里再发（避免重复）
-                    output(
-                        &serde_json::json!({"type":"event","event":{"type":"agent_start","sessionId":sid,"timestamp":now_ms()}}),
-                    );
+                    // 这里不再内联发送（历史 bug：曾双发 agent_start）
                     {
                         let mut ctx = wasm_ext_registry.ctx.write().unwrap();
                         ctx.session_id = sid.clone();
@@ -2018,6 +2029,24 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                                 None => output_response(&bg_id, "get_turn_detail", &serde_json::json!({"error": "turn not found", "turnId": turn_id})),
                                             }
                                         }
+                                        // review_pending → agent.run 期间也能查审批队列
+                                        // （compute_pending 是纯内存计算 + 磁盘读，不碰 agent）
+                                        "review_pending" => {
+                                            let result = if let Some(ref mgr) = approval_mgr {
+                                                let pending = mgr.compute_pending();
+                                                serde_json::json!({
+                                                    "pending": pending.iter().map(|p| serde_json::json!({
+                                                        "path": p.path,
+                                                        "status": format!("{:?}", p.status).to_lowercase(),
+                                                        "diffStat": p.diff_stat,
+                                                    })).collect::<Vec<_>>(),
+                                                    "summary": {"total": pending.len()},
+                                                })
+                                            } else {
+                                                serde_json::json!({"pending": [], "summary": {"total": 0}})
+                                            };
+                                            output_response(&bg_id, "review_pending", &result);
+                                        }
                                         // get_session_info / get_state → agent.run 期间不能读 messages(&mut 冲突)
                                         // 返回简化版(只有 model/provider/is_running)
                                         "get_session_info" | "get_state" => {
@@ -2088,22 +2117,20 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                 .filter_map(|m| serde_json::to_value(m).ok())
                                 .collect();
                             save_worker_session(&sid, &worker_cwd, &msgs_json);
-                            // 区分正常完成 vs 被中止
+                            // 正常完成的 agent_end 由 StreamingExtension 发（曾双发）；
+                            // 中止（agent_stopped）扩展版不发，仅此处发
                             let was_stopped =
                                 stopped_handle.load(std::sync::atomic::Ordering::SeqCst);
-                            let (evt_type, reason) = if was_stopped {
-                                ("agent_stopped", "user_abort")
-                            } else {
-                                ("agent_end", "completed")
-                            };
-                            output(&serde_json::json!({
-                                "type":"event","event":{
-                                    "type":evt_type,
-                                    "sessionId":sid,
-                                    "timestamp":now_ms(),
-                                    "reason":reason
-                                }
-                            }));
+                            if was_stopped {
+                                output(&serde_json::json!({
+                                    "type":"event","event":{
+                                        "type":"agent_stopped",
+                                        "sessionId":sid,
+                                        "timestamp":now_ms(),
+                                        "reason":"user_abort"
+                                    }
+                                }));
+                            }
                         }
                         Err(e) => {
                             output(&serde_json::json!({
@@ -2134,13 +2161,23 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     // 等消息全部写入 session.jsonl，让下次 prompt 时 LLM 能看到。
                     //
                     // 不触发新 turn（LLM 已经 agent_end），只持久化。
+                    // 只在有活跃后台 watcher 时才 graceful drain——否则每轮
+                    // prompt 结束都白等 60s（worker busy 不复位、RPC 超时的直接
+                    // 原因；同 outer_loop 的 BACKGROUND_WAIT_TIMEOUT 修复）
+                    let drained_msgs = if agent
+                        .bg_pending
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                        > 0
                     {
                         let drain_ms = std::env::var("ION_GRACEFUL_DRAIN_MS")
                             .ok()
                             .and_then(|s| s.parse::<u64>().ok())
                             .unwrap_or(60_000);
-                        let drained_msgs = agent.graceful_drain_follow_ups(drain_ms, 50).await;
-                        for msg in &drained_msgs {
+                        agent.graceful_drain_follow_ups(drain_ms, 50).await
+                    } else {
+                        Vec::new()
+                    };
+                    for msg in &drained_msgs {
                             // ★ 用消息自带的 timestamp（进程完成时间），而非写入时间。
                             // 之前用 timestamp_iso() 导致所有 drained 消息的时间戳都是
                             // "写入时间"（agent.run 返回后），而不是进程真正完成的时间。
@@ -2163,12 +2200,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             session_jsonl::append_raw_entry(&worker_cwd, &entry);
                             agent.push_message(msg.clone());
                         }
-                        if !drained_msgs.is_empty() {
-                            tracing::info!(
-                                "[graceful-drain] captured {} follow_up messages after agent.run()",
-                                drained_msgs.len()
-                            );
-                        }
+                    if !drained_msgs.is_empty() {
+                        tracing::info!(
+                            "[graceful-drain] captured {} follow_up messages after agent.run()",
+                            drained_msgs.len()
+                        );
                     }
                 }
             }
@@ -2541,7 +2577,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 );
             }
             "get_extensions" => {
-                // 列出已加载的扩展（从 ExtensionRegistry）
+                // 列出已加载的扩展（从 ExtensionRunner）
                 let exts: Vec<_> = agent.extensions().names();
                 output_response(
                     &id,
@@ -2869,11 +2905,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 );
             }
             "get_flags" => {
-                let ext_name = params
+                let extension_id = params
                     .get("extension")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                if ext_name.is_empty() {
+                if extension_id.is_empty() {
                     // 无参数 → 返回所有扩展的 flag
                     let names = agent.extensions().names();
                     let mut all_flags = serde_json::Map::new();
@@ -2882,12 +2918,12 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     }
                     output_response(&id, "get_flags", &serde_json::Value::Object(all_flags));
                 } else {
-                    let flags = agent.extensions().get_flags(ext_name);
+                    let flags = agent.extensions().get_flags(extension_id);
                     output_response(
                         &id,
                         "get_flags",
                         &serde_json::json!({
-                            "extension": ext_name,
+                            "extension": extension_id,
                             "flags": flags,
                         }),
                     );
@@ -3640,7 +3676,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 output_response(&id, "set_steering_mode", &serde_json::Value::Null)
             }
             "extension_rpc" => {
-                // 调插件私有 RPC 方法（给 CLI/外部调试用）。
+                // 调 Extension 私有 RPC 方法（给 CLI/外部调试用）。
                 // 用于：ion rpc --session <id> --method extension_rpc
                 //   --params '{"method":"ping","args":{}}'
                 //   --params '{"extension":"bash","method":"list"}'
@@ -3768,15 +3804,15 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                     agent.remove_tool(old_name);
                                 }
                                 let canonical_str = p.path.clone();
-                                let ext_name =
-                                    crate::wasm_extension::ext_name_from_path(&canonical_str);
+                                let extension_id =
+                                    crate::wasm_extension::extension_id_from_path(&canonical_str);
                                 for td in &tool_defs {
-                                    agent.register_tool(Box::new(ToolAdapter {
+                                    agent.register_tool(Box::new(WasmToolAdapter {
                                         name: td.name.clone(),
                                         description: td.description.clone(),
                                         parameters: td.parameters.clone(),
                                         extension_path: canonical_str.clone(),
-                                        ext_name: ext_name.clone(),
+                                        extension_id: extension_id.clone(),
                                         registry: wasm_ext_registry.clone(),
                                     }));
                                 }
@@ -4152,12 +4188,12 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     let pending_json: Vec<_> = pending
                         .iter()
                         .map(|p| {
+                            // 只回摘要字段；oldContent/newContent 会让响应达到几十 MB
+                            // （695 文件 ≈ 55MB），按需走 get_file_diff 单文件拉取
                             serde_json::json!({
                                 "path": p.path,
                                 "status": p.status,
                                 "diffStat": p.diff_stat,
-                                "oldContent": p.old_content,
-                                "newContent": p.new_content,
                             })
                         })
                         .collect();
@@ -4443,7 +4479,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             "get_all_tools" => output_response(&id, "get_all_tools", &serde_json::json!([])),
             "get_flag_values" => output_response(&id, "get_flag_values", &serde_json::json!({})),
             "set_flag" => {
-                let ext_name = params
+                let extension_id = params
                     .get("extension")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
@@ -4452,7 +4488,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     .get("value")
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
-                if ext_name.is_empty() || flag_name.is_empty() {
+                if extension_id.is_empty() || flag_name.is_empty() {
                     output_response(
                         &id,
                         "set_flag",
@@ -4463,12 +4499,12 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 } else {
                     agent
                         .extensions()
-                        .set_flag(ext_name, flag_name, value.clone());
+                        .set_flag(extension_id, flag_name, value.clone());
                     output_response(
                         &id,
                         "set_flag",
                         &serde_json::json!({
-                            "extension": ext_name,
+                            "extension": extension_id,
                             "flag": flag_name,
                             "value": value,
                             "set": true,
@@ -4828,7 +4864,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 );
             }
 
-            // ── WASM 插件热更新 ──
+            // ── WASM Extension 热更新 ──
             "extension_add" => {
                 let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
                 if path.is_empty() {
@@ -4846,14 +4882,14 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
                 match wasm_ext_registry.add(&canonical_str) {
                     Ok(tool_defs) => {
-                        let ext_name = crate::wasm_extension::ext_name_from_path(&canonical_str);
+                        let extension_id = crate::wasm_extension::extension_id_from_path(&canonical_str);
                         for td in &tool_defs {
-                            agent.register_tool(Box::new(ToolAdapter {
+                            agent.register_tool(Box::new(WasmToolAdapter {
                                 name: td.name.clone(),
                                 description: td.description.clone(),
                                 parameters: td.parameters.clone(),
                                 extension_path: canonical_str.clone(),
-                                ext_name: ext_name.clone(),
+                                extension_id: extension_id.clone(),
                                 registry: wasm_ext_registry.clone(),
                             }));
                         }
@@ -4921,16 +4957,16 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 }
 
                 // 重新加载
-                let ext_name = crate::wasm_extension::ext_name_from_path(&canonical_str);
+                let extension_id = crate::wasm_extension::extension_id_from_path(&canonical_str);
                 match wasm_ext_registry.add(&canonical_str) {
                     Ok(tool_defs) => {
                         for td in &tool_defs {
-                            agent.register_tool(Box::new(ToolAdapter {
+                            agent.register_tool(Box::new(WasmToolAdapter {
                                 name: td.name.clone(),
                                 description: td.description.clone(),
                                 parameters: td.parameters.clone(),
                                 extension_path: canonical_str.clone(),
-                                ext_name: ext_name.clone(),
+                                extension_id: extension_id.clone(),
                                 registry: wasm_ext_registry.clone(),
                             }));
                         }
@@ -6139,15 +6175,15 @@ impl crate::agent::extension::Extension for FsProbeExtension {
             }
             "data_dirs" => {
                 // 返回 4 级数据目录（验证 StorageContext 注入）
-                let ext_name = params
-                    .get("ext_name")
+                let extension_id = params
+                    .get("extension_id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("fs_probe");
                 let dirs = crate::agent::extension::ExtensionDataDirs {
-                    global: self.storage.global_dir(ext_name),
-                    project: self.storage.project_dir(ext_name),
-                    cwd: self.storage.cwd_dir(ext_name),
-                    session: self.storage.session_dir(ext_name),
+                    global: self.storage.global_dir(extension_id),
+                    project: self.storage.project_dir(extension_id),
+                    cwd: self.storage.cwd_dir(extension_id),
+                    session: self.storage.session_dir(extension_id),
                 };
                 Ok(serde_json::json!({
                     "global": dirs.global.to_string_lossy(),

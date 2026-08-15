@@ -135,7 +135,7 @@ struct Cli {
     #[arg(long, global = true, default_value_t = false)]
     offline: bool,
 
-    /// Load extension file (can be used multiple times)
+    /// Load a WASM Extension file (can be used multiple times)
     #[arg(long, short = 'e', global = true)]
     extension: Vec<String>,
 
@@ -389,7 +389,7 @@ enum Commands {
         /// Session to subscribe to
         #[arg(long)]
         session: Option<String>,
-        /// Plugin/extension name to filter (omit for all events)
+        /// Extension ID to filter (omit for all events)
         #[arg(long)]
         extension: Option<String>,
         /// Subscribe to UI events (Ask/Confirm/Notif/Alert/Prompt)
@@ -547,9 +547,9 @@ enum ExtensionAction {
         /// Extension name (filename without .wasm)
         name: String,
     },
-    /// Create a new extension scaffold (Cargo project) with minimal boilerplate
+    /// Create a new WASM extension scaffold
     Create {
-        /// Extension name (used as directory and crate name)
+        /// Extension name in lower kebab-case (used as directory and crate name)
         name: String,
     },
     /// List installed WASM extensions
@@ -1643,11 +1643,12 @@ async fn cmd_run(
         shared_goal_state.clone(),
     )));
 
-    // WASM plugin registry (hot‑pluggable — used by worker RPC too)
-    let wasm_ext_registry = std::sync::Arc::new(ion::wasm_extension::Registry::new());
+    // Runtime-loadable WASM Extension registry (also used by worker RPC).
+    let wasm_ext_registry =
+        std::sync::Arc::new(ion::wasm_extension::WasmExtensionRegistry::new());
     let mut loaded_wasm_paths: Vec<String> = Vec::new();
 
-    // ── WASM 插件自动发现（优先于 --extension）──
+    // Auto-discover WASM Extensions before processing explicit --extension paths.
     // 扫描 ~/.ion/agent/extensions/ 和 {cwd}/.ion/extensions/ 下的 .wasm 文件
     if !eff.no_extensions {
         let cwd = std::env::current_dir()
@@ -1668,21 +1669,23 @@ async fn cmd_run(
                         let canonical =
                             std::fs::canonicalize(&path).unwrap_or_else(|_| path.to_path_buf());
                         let canonical_str = canonical.to_string_lossy().to_string();
-                        let ext_name = ion::wasm_extension::ext_name_from_path(&canonical_str);
+                        let extension_id = ion::wasm_extension::extension_id_from_path(&canonical_str);
                         match wasm_ext_registry.add(&canonical_str) {
                             Ok(tool_defs) => {
                                 loaded_wasm_paths.push(canonical_str.clone());
                                 for td in &tool_defs {
-                                    tools.register(Box::new(ion::wasm_extension::ToolAdapter {
+                                    tools.register(Box::new(
+                                        ion::wasm_extension::WasmToolAdapter {
                                         name: td.name.clone(),
                                         description: td.description.clone(),
                                         parameters: td.parameters.clone(),
                                         extension_path: canonical_str.clone(),
-                                        ext_name: ext_name.clone(),
+                                        extension_id: extension_id.clone(),
                                         registry: wasm_ext_registry.clone(),
-                                    }));
+                                        },
+                                    ));
                                     tracing::info!(
-                                        "[wasm] auto-discovered {ext_name}: {}",
+                                        "[wasm] auto-discovered {extension_id}: {}",
                                         td.name
                                     );
                                 }
@@ -1697,65 +1700,38 @@ async fn cmd_run(
         }
     }
 
-    // Load WASM plugins via the registry (from --extension flags)
+    // Load WASM Extensions passed through --extension.
     for ext_path in &eff.extension {
-        if ext_path.ends_with(".wasm") {
-            let abs = std::path::Path::new(ext_path);
-            // Determine canonical path before calling wasm_ext_registry.add(),
-            // so ToolAdapter holds the canonicalised path.
-            let canonical = std::fs::canonicalize(abs).unwrap_or_else(|_| abs.to_path_buf());
-            let canonical_str = canonical.to_string_lossy().to_string();
+        if !ext_path.ends_with(".wasm") {
+            eprintln!("❌ --extension only accepts .wasm files: {ext_path}");
+            std::process::exit(2);
+        }
 
-            match wasm_ext_registry.add(&canonical_str) {
-                Ok(tool_defs) => {
-                    let ext_name = ion::wasm_extension::ext_name_from_path(&canonical_str);
-                    loaded_wasm_paths.push(canonical_str.clone());
-                    for td in &tool_defs {
-                        tools.register(Box::new(ion::wasm_extension::ToolAdapter {
-                            name: td.name.clone(),
-                            description: td.description.clone(),
-                            parameters: td.parameters.clone(),
-                            extension_path: canonical_str.clone(),
-                            ext_name: ext_name.clone(),
-                            registry: wasm_ext_registry.clone(),
-                        }));
-                        tracing::info!("[wasm] registered tool: {} (WASM-backed)", td.name);
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("[wasm] failed: {e}");
+        let abs = std::path::Path::new(ext_path);
+        // Determine canonical path before calling wasm_ext_registry.add(),
+        // so WasmToolAdapter holds the canonicalized path.
+        let canonical = std::fs::canonicalize(abs).unwrap_or_else(|_| abs.to_path_buf());
+        let canonical_str = canonical.to_string_lossy().to_string();
+
+        match wasm_ext_registry.add(&canonical_str) {
+            Ok(tool_defs) => {
+                let extension_id = ion::wasm_extension::extension_id_from_path(&canonical_str);
+                loaded_wasm_paths.push(canonical_str.clone());
+                for td in &tool_defs {
+                    tools.register(Box::new(ion::wasm_extension::WasmToolAdapter {
+                        name: td.name.clone(),
+                        description: td.description.clone(),
+                        parameters: td.parameters.clone(),
+                        extension_path: canonical_str.clone(),
+                        extension_id: extension_id.clone(),
+                        registry: wasm_ext_registry.clone(),
+                    }));
+                    tracing::info!("[wasm] registered tool: {} (WASM-backed)", td.name);
                 }
             }
-        }
-    }
-
-    // Register extension tools into the tool registry (before Agent takes ownership)
-    for ext_path in &eff.extension {
-        if let Ok(content) = std::fs::read_to_string(ext_path) {
-            if let Ok(def) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(tool_defs) = def.get("tools").and_then(|v| v.as_array()) {
-                    for tool_def in tool_defs {
-                        let name = tool_def
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown")
-                            .to_string();
-                        let desc = tool_def
-                            .get("description")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let params = tool_def
-                            .get("parameters")
-                            .cloned()
-                            .unwrap_or(serde_json::Value::Null);
-                        tools.register(Box::new(ion::agent::tool::GenericTool {
-                            name,
-                            description: desc,
-                            parameters: params,
-                        }));
-                    }
-                }
+            Err(e) => {
+                eprintln!("❌ failed to load WASM Extension '{ext_path}': {e}");
+                std::process::exit(2);
             }
         }
     }
@@ -2045,7 +2021,7 @@ async fn cmd_run(
     if !initial_messages.is_empty() {
         agent = agent.with_messages(initial_messages);
     }
-    let mut ext_reg = ion::agent::extension::ExtensionRegistry::new();
+    let mut ext_reg = ion::agent::extension::ExtensionRunner::new();
 
     // Scene 1 (direct `ion "prompt"`) has no worker StreamingExtension, but
     // pre-tool Hooks can append audit entries before the final save_session().
@@ -2102,6 +2078,11 @@ async fn cmd_run(
     //    通过 on_system_prompt 注入 <rules> XML）──
     ext_reg.register(Box::new(ion::rules_engine::RulesEngineExtension::new()));
 
+    // ── 注册 ContextFilesExtension（加载 AGENTS.md/CLAUDE.md，--no-context-files 关闭）
+    if !ion::context_files_extension::ContextFilesExtension::is_disabled_by_env() {
+        ext_reg.register(Box::new(ion::context_files_extension::ContextFilesExtension::new()));
+    }
+
     // ── 注册 HookExtension（扫描 .ion/hooks.json，command/http/prompt/agent handler
     //    通过事件钩子触发，对齐 Claude Code hooks 系统）──
     let hooks_project_dir = std::path::PathBuf::from(&cwd);
@@ -2124,12 +2105,6 @@ async fn cmd_run(
             &eff.model,
             &eff.provider,
         )));
-    }
-
-    // Load extensions from --extension flags
-    let exts = ion::agent::extension::load_extensions(&eff.extension);
-    for e in exts {
-        ext_reg.register(e);
     }
 
     // ── MemoryExtension（cmd_run 路径补注册，对齐 worker_rpc:915）──
@@ -2156,17 +2131,17 @@ async fn cmd_run(
         );
     }
 
-    // Auto-register PlanExtension if plan_enter tool was loaded from a WASM plugin
+    // Auto-register PlanExtension if plan_enter was loaded from a WASM Extension.
     if has_plan_tools {
         ext_reg.register(Box::new(ion::agent::plan_extension::PlanExtension::new()));
         tracing::info!("[plan] PlanExtension auto-registered (plan tools detected)");
     }
 
-    // ── 注册 WASM Extension 的 HookAdapter（让 WASM 也能实现 29 个钩子）──
+    // Register WASM adapters so runtime modules participate in Extension hooks.
     for wasm_path in &loaded_wasm_paths {
         if let Some(hook_adapter) = wasm_ext_registry.create_hook_adapter(wasm_path) {
             ext_reg.register(Box::new(hook_adapter));
-            tracing::info!("[wasm] registered HookAdapter for {}", wasm_path);
+            tracing::info!("[wasm] registered Extension adapter for {}", wasm_path);
         }
     }
 
@@ -2278,7 +2253,7 @@ async fn cmd_run(
     };
     let mut retry_prompt = message.to_string();
 
-    // Inject session context into the plugin registry so WASM plugin data
+    // Inject session context into the WASM Extension registry so Extension data
     // host functions know where to read/write.
     {
         let mut ctx = wasm_ext_registry.ctx.write().unwrap();
@@ -2879,7 +2854,7 @@ async fn cmd_rpc(session: Option<&str>, method: &str, params: &str) {
     }
 }
 
-/// Subscribe to real-time events from a session or plugin.
+/// Subscribe to real-time events from a session or Extension.
 /// Connects to Manager socket, sends subscribe, prints events line by line.
 async fn cmd_subscribe(
     session: Option<&str>,
@@ -3913,7 +3888,162 @@ async fn cmd_list_models(search: &Option<String>) {
     println!("Use --provider <name> to select a provider.");
 }
 
-/// Extension management: install / remove / list WASM extensions.
+fn validate_extension_name(name: &str) -> Result<(), &'static str> {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return Err("extension name cannot be empty");
+    };
+    if !first.is_ascii_lowercase() {
+        return Err("extension name must start with a lowercase ASCII letter");
+    }
+    if !chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-') {
+        return Err("extension name must use lower kebab-case (a-z, 0-9, '-')");
+    }
+    if name.ends_with('-') || name.contains("--") {
+        return Err("extension name cannot end with '-' or contain '--'");
+    }
+    Ok(())
+}
+
+fn extension_scaffold(name: &str) -> (String, String, String) {
+    let artifact_name = name.replace('-', "_");
+    let cargo_toml = format!(
+        r#"[package]
+name = "{name}"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[workspace]
+"#,
+    );
+    let lib_rs = format!(
+        r##"//! {name} — ION WASM Extension.
+//!
+//! Build:
+//!   cargo build --release --target wasm32-wasip1
+
+#![no_std]
+
+#[link(wasm_import_module = "env")]
+extern "C" {{
+    fn host_register_tool(
+        name_ptr: *const u8,
+        name_len: u32,
+        description_ptr: *const u8,
+        description_len: u32,
+        schema_ptr: *const u8,
+        schema_len: u32,
+    );
+}}
+
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {{
+    loop {{}}
+}}
+
+fn register_tool(name: &str, description: &str, schema: &str) {{
+    unsafe {{
+        host_register_tool(
+            name.as_ptr(),
+            name.len() as u32,
+            description.as_ptr(),
+            description.len() as u32,
+            schema.as_ptr(),
+            schema.len() as u32,
+        );
+    }}
+}}
+
+fn write_output(bytes: &[u8], out_buf: *mut u8, out_capacity: u32) -> u32 {{
+    let len = bytes.len().min(out_capacity as usize);
+    unsafe {{ core::ptr::copy_nonoverlapping(bytes.as_ptr(), out_buf, len) }};
+    len as u32
+}}
+
+/// ION WASM Extension ABI version.
+#[no_mangle]
+pub extern "C" fn extension_version() -> u32 {{
+    1
+}}
+
+/// Called once after the module is loaded. Register tools here.
+#[no_mangle]
+pub extern "C" fn extension_init() {{
+    register_tool(
+        "hello",
+        "Return a greeting from {name}.",
+        r#"{{"type":"object","properties":{{}}}}"#,
+    );
+}}
+
+/// Execute a tool and write a JSON response into the host-provided buffer.
+#[no_mangle]
+pub extern "C" fn extension_execute_tool(
+    name_ptr: *const u8,
+    name_len: u32,
+    _args_ptr: *const u8,
+    _args_len: u32,
+    out_buf: *mut u8,
+    out_capacity: u32,
+) -> u32 {{
+    let tool_name = unsafe {{
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+            name_ptr,
+            name_len as usize,
+        ))
+    }};
+
+    match tool_name {{
+        "hello" => write_output(br#"{{"greeting":"Hello from {name}!"}}"#, out_buf, out_capacity),
+        _ => write_output(br#"{{"error":"unknown tool"}}"#, out_buf, out_capacity),
+    }}
+}}
+"##,
+    );
+    let manual = format!(
+        r#"# {name} 手册
+
+> **状态：开发中** — 脚手架已生成，待补充业务能力与验证。
+>
+> **类型：** 运行时 WASM Extension
+>
+> **Extension ID：** `{artifact_name}`
+>
+> **ABI 版本：** `1`
+> **发行版本：** `0.1.0`
+
+## 能力与边界
+
+当前提供 `hello` 示例工具。实现业务能力后更新本节。
+
+## 构建与安装
+
+```bash
+cargo build --target wasm32-wasip1 --release
+ion extension install ./target/wasm32-wasip1/release/{artifact_name}.wasm
+```
+
+## 工具
+
+| 名称 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `hello` | `{{}}` | `{{"greeting":"..."}}` | 验证 Extension ABI 与工具调用链路 |
+
+## 验证
+
+```bash
+ion rpc --session <sid> --method call_tool \
+  --params '{{"tool":"hello","args":{{}}}}'
+```
+"#,
+    );
+    (cargo_toml, lib_rs, manual)
+}
+
+/// Extension management: create / install / remove / list WASM extensions.
 ///
 /// 扩展安装到全局目录 `~/.ion/agent/extensions/`，启动时自动发现。
 /// 对齐 AGENTS.md「命令行可验证原则」：每个功能都能从 CLI 操作。
@@ -3976,7 +4106,12 @@ async fn cmd_extension(action: ExtensionAction) {
             }
         }
         ExtensionAction::Create { name } => {
-            // Create scaffold: <name>/Cargo.toml + <name>/src/lib.rs
+            if let Err(message) = validate_extension_name(&name) {
+                eprintln!("❌ invalid extension name '{name}': {message}");
+                std::process::exit(1);
+            }
+
+            // Create scaffold: <name>/Cargo.toml + <name>/src/lib.rs + MANUAL.md
             let dir = std::path::Path::new(&name);
             if dir.exists() {
                 eprintln!("❌ directory already exists: {name}");
@@ -3988,72 +4123,7 @@ async fn cmd_extension(action: ExtensionAction) {
                 std::process::exit(1);
             }
 
-            // Cargo.toml — cdylib so it can be compiled to WASM
-            let cargo_toml = format!(
-                r#"[package]
-name = "{name}"
-version = "0.1.0"
-edition = "2021"
-
-[lib]
-crate-type = ["cdylib"]
-
-[dependencies]
-serde = {{ version = "1", features = ["derive"] }}
-"#,
-                name = name,
-            );
-            let lib_rs = format!(
-                r#"//! {name} — ion extension scaffold.
-//!
-//! Build the WASM artifact with:
-//!   cargo build --release --target wasm32-wasi
-
-use serde::{{Deserialize, Serialize}};
-
-/// Version reported by the extension.
-#[no_mangle]
-pub extern "C" fn extension_version() -> *const u8 {{
-    static VERSION: &[u8] = b"0.1.0\0";
-    VERSION.as_ptr()
-}}
-
-/// Called once when the extension is loaded.
-#[no_mangle]
-pub extern "C" fn extension_init() {{
-    println!("[{name}] initialized");
-}}
-
-/// Serialized tool-execution result.
-#[derive(Serialize, Deserialize)]
-pub struct ToolResult {{
-    pub ok: bool,
-    pub output: String,
-}}
-
-/// Handle a named tool invocation.
-/// Currently supports one tool: "hello" → returns "Hello!".
-#[no_mangle]
-pub extern "C" fn extension_execute_tool(name_ptr: *const u8, name_len: usize, _args_ptr: *const u8, _args_len: usize) -> *mut ToolResult {{
-    let name = if name_ptr.is_null() {{
-        String::new()
-    }} else {{
-        unsafe {{
-            let slice = std::slice::from_raw_parts(name_ptr, name_len);
-            String::from_utf8_lossy(slice).to_string()
-        }}
-    }};
-
-    let output = match name.as_str() {{
-        "hello" => "Hello!".to_string(),
-        other => format!("unknown tool: {{other}}"),
-    }};
-
-    Box::into_raw(Box::new(ToolResult {{ ok: true, output }}))
-}}
-"#,
-                name = name,
-            );
+            let (cargo_toml, lib_rs, manual) = extension_scaffold(&name);
 
             // Write files
             if let Err(e) = std::fs::write(dir.join("Cargo.toml"), cargo_toml) {
@@ -4064,15 +4134,23 @@ pub extern "C" fn extension_execute_tool(name_ptr: *const u8, name_len: usize, _
                 eprintln!("❌ failed to write src/lib.rs: {e}");
                 std::process::exit(1);
             }
+            if let Err(e) = std::fs::write(dir.join("MANUAL.md"), manual) {
+                eprintln!("❌ failed to write MANUAL.md: {e}");
+                std::process::exit(1);
+            }
 
             println!("✅ scaffolded extension: {name}/");
             println!("   {name}/Cargo.toml");
             println!("   {name}/src/lib.rs");
+            println!("   {name}/MANUAL.md");
             println!();
             println!("Next steps:");
             println!("  cd {name}");
-            println!("  cargo build --release --target wasm32-wasi");
-            println!("  ion extension install ./target/wasm32-wasi/release/{name}.wasm");
+            println!("  cargo build --release --target wasm32-wasip1");
+            println!(
+                "  ion extension install ./target/wasm32-wasip1/release/{}.wasm",
+                name.replace('-', "_")
+            );
         }
         ExtensionAction::List => {
             if !ext_dir.exists() {
@@ -4297,6 +4375,11 @@ async fn main() {
         unsafe {
             std::env::set_var("ION_RUNTIME_OVERRIDE", "remote");
         }
+    }
+
+    // --no-context-files → env var (cmd_run + spawned workers both read it)
+    if cli.no_context_files {
+        unsafe { std::env::set_var("ION_NO_CONTEXT_FILES", "1"); }
     }
 
     let mut eff = resolve_effective(&cli);
@@ -4805,7 +4888,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
 
                                     if extension.is_empty() && session.is_some() {
                                         // ── Instance subscribe：订阅 worker 原始事件流 ──
-                                        // 无 --plugin 有 --session → 收 text_delta / agent_start / agent_end 等
+                                        // 无 --extension 有 --session → 收 text_delta / agent_start / agent_end 等
                                         let sid = session.as_ref().unwrap();
                                         // ⚠️ parking_lot: 把 inner_reg 限制在独立 block 内，
                                         // block 结束 guard 必然 drop，不跨下面的 write_all .await。
@@ -4928,7 +5011,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                         return;
                                     }
 
-                                    // ── Plugin subscribe：通过 EventBus ──
+                                    // ── Extension subscribe：通过 EventBus ──
                                     let mut bus = ev_bus.lock().await;
                                     let rx = if !extension.is_empty() {
                                         if let Some(ref sid) = session {
@@ -7176,6 +7259,38 @@ mod tests {
                 action: ConfigAction::List
             })
         ));
+    }
+
+    // ── ion extension create ──
+    #[test]
+    fn extension_name_requires_lower_kebab_case() {
+        assert!(validate_extension_name("hello-extension").is_ok());
+        assert!(validate_extension_name("extension2").is_ok());
+        assert!(validate_extension_name("").is_err());
+        assert!(validate_extension_name("Hello").is_err());
+        assert!(validate_extension_name("../escape").is_err());
+        assert!(validate_extension_name("hello_extension").is_err());
+        assert!(validate_extension_name("hello--extension").is_err());
+        assert!(validate_extension_name("hello-").is_err());
+    }
+
+    #[test]
+    fn extension_scaffold_matches_wasm_abi_v1() {
+        let (cargo_toml, lib_rs, manual) = extension_scaffold("hello-extension");
+
+        assert!(cargo_toml.contains("crate-type = [\"cdylib\"]"));
+        assert!(cargo_toml.contains("[workspace]"));
+        assert!(lib_rs.contains("#![no_std]"));
+        assert!(lib_rs.contains("fn extension_version() -> u32"));
+        assert!(lib_rs.contains("fn extension_init()"));
+        assert!(lib_rs.contains("fn extension_execute_tool("));
+        assert!(lib_rs.contains("wasm_import_module = \"env\""));
+        assert!(lib_rs.contains("out_buf: *mut u8"));
+        assert!(lib_rs.contains("out_capacity: u32"));
+        assert!(lib_rs.contains("wasm32-wasip1"));
+        assert!(!lib_rs.contains("plugin_"));
+        assert!(!lib_rs.contains("wasm32-wasi\n"));
+        assert!(manual.contains("Extension ID：** `hello_extension`"));
     }
 
     // ── --compact-model flag ──
