@@ -150,19 +150,20 @@ impl ApprovalManager {
             .as_ref()
             .and_then(|h| tree_store::read_tree(objects, h));
         let empty_tree: tree_store::TreeEntries = HashMap::new();
-        // 少数文件有自己的 approved baseline（批准后又改过），按需读取 + 单槽 memo
-        let mut per_file_tree: Option<(String, tree_store::TreeEntries)> = None;
+        // 有 approved baseline 的文件按需读树，按 hash 记忆——
+        // 不同文件可能锚定在不同批次的 tree（分批批准），单槽 memo 会反复失效
+        let mut anchor_trees: HashMap<String, tree_store::TreeEntries> = HashMap::new();
 
         for (path, new_hash) in &current_tree {
             // 状态判断：优先该文件的 approved baseline，否则 session baseline
             let baseline_tree: &tree_store::TreeEntries = if let Some(appr) = approvals.get(path)
                 && let Some(ref h) = appr.approved_tree_hash
             {
-                if per_file_tree.as_ref().is_none_or(|(ph, _)| ph != h) {
-                    per_file_tree =
-                        Some((h.clone(), tree_store::read_tree(objects, h).unwrap_or_default()));
+                if !anchor_trees.contains_key(h) {
+                    anchor_trees
+                        .insert(h.clone(), tree_store::read_tree(objects, h).unwrap_or_default());
                 }
-                &per_file_tree.as_ref().expect("just set").1
+                anchor_trees.get(h).expect("just inserted")
             } else {
                 session_baseline_tree.as_ref().unwrap_or(&empty_tree)
             };
@@ -1131,6 +1132,104 @@ mod tests {
             "reject 后 baseline 应仍是上次批准的 v1（增量），不能退回 session 起点 original"
         );
         assert_eq!(a.new_content, Some("v3".to_string()));
+
+        std::fs::remove_dir_all(work_dir.parent().unwrap()).ok();
+    }
+
+    /// 锚点链：每次批准都把基准推进到刚批准的状态。
+    /// v1 批准 → v2 批准 → v3 改动，pending 必须显示 v2→v3（不是 v1→v3）
+    #[test]
+    fn anchor_advances_each_approval() {
+        let (work_dir, store, mgr) = setup();
+
+        // session 起点：a.rs = original
+        write_current_tree(&store, &work_dir, &[("a.rs", "original")]);
+        // 第一轮批准 v1（锚点 = v1）
+        write_current_tree(&store, &work_dir, &[("a.rs", "v1")]);
+        mgr.check_re_approval(&["a.rs".into()]);
+        mgr.approve("a.rs").unwrap();
+        // 第二轮批准 v2（锚点应推进到 v2）
+        write_current_tree(&store, &work_dir, &[("a.rs", "v2")]);
+        mgr.check_re_approval(&["a.rs".into()]);
+        mgr.approve("a.rs").unwrap();
+        // 第三轮改 v3 → pending
+        write_current_tree(&store, &work_dir, &[("a.rs", "v3")]);
+        mgr.check_re_approval(&["a.rs".into()]);
+
+        let pending = mgr.compute_pending();
+        let a = pending.iter().find(|p| p.path == "a.rs").expect("a.rs 应回 pending");
+        assert_eq!(
+            a.old_content,
+            Some("v2".to_string()),
+            "锚点必须随每次批准推进到 v2，不是停在第一次的 v1"
+        );
+        assert_eq!(a.new_content, Some("v3".to_string()));
+
+        std::fs::remove_dir_all(work_dir.parent().unwrap()).ok();
+    }
+
+    /// 从未审批过的文件：diff 以 session 起点为基准
+    #[test]
+    fn never_approved_uses_session_baseline() {
+        let (work_dir, store, mgr) = setup();
+
+        // session 起点
+        write_current_tree(&store, &work_dir, &[("a.rs", "original"), ("b.rs", "stable")]);
+        // a.rs 改动，从未审批
+        write_current_tree(&store, &work_dir, &[("a.rs", "changed"), ("b.rs", "stable")]);
+
+        let pending = mgr.compute_pending();
+        let a = pending.iter().find(|p| p.path == "a.rs").expect("a.rs 应 pending");
+        assert_eq!(a.old_content, Some("original".to_string()));
+        assert_eq!(a.new_content, Some("changed".to_string()));
+        assert!(pending.iter().find(|p| p.path == "b.rs").is_none(), "b.rs 没变不应 pending");
+
+        std::fs::remove_dir_all(work_dir.parent().unwrap()).ok();
+    }
+
+    /// 性能回归：多文件 × 多轮审批循环（含不同批次锚点）必须保持快速。
+    /// 锚点查找是 HashMap + 树按 hash 记忆；若退化成每文件全量重读快照，
+    /// 这里会到分钟级。宽松上界 10s 防 CI 抖动。
+    #[test]
+    fn many_approval_cycles_stay_fast() {
+        let (work_dir, store, mgr) = setup();
+        let n = 60;
+        let files: Vec<String> = (0..n).map(|i| format!("f{i}.rs")).collect();
+
+        let snap = |contents: &[(String, String)]| {
+            let refs: Vec<(&str, &str)> = contents.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+            write_current_tree(&store, &work_dir, &refs);
+        };
+        // session 起点
+        snap(&files.iter().map(|f| (f.clone(), "init".to_string())).collect::<Vec<_>>());
+
+        let start = std::time::Instant::now();
+        for round in 0..4 {
+            // 偶数文件先改 → 批准（锚点=树A）；奇数文件后改 → 批准（锚点=树B）
+            // 两个不同锚点批次，覆盖 anchor_trees HashMap memo
+            for parity in [0usize, 1] {
+                let modified: Vec<_> = files
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| i % 2 == parity)
+                    .map(|(i, f)| (f.clone(), format!("r{round}p{parity}-{i}")))
+                    .collect();
+                snap(&modified);
+                let changed: Vec<String> =
+                    modified.iter().map(|(f, _)| f.clone()).collect();
+                mgr.check_re_approval(&changed);
+                let results = mgr.approve_all();
+                assert!(results.iter().all(|r| r.is_ok()), "第 {round} 轮 parity{parity} 批准应全部成功");
+            }
+            // 全部批准后 pending 应为空；查询两次（第二次命中缓存）
+            assert!(mgr.compute_pending().is_empty());
+            assert!(mgr.compute_pending().is_empty());
+        }
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed.as_secs() < 10,
+            "4 轮 × {n} 文件（双锚点批次）审批循环耗时 {elapsed:?}，疑似性能退化"
+        );
 
         std::fs::remove_dir_all(work_dir.parent().unwrap()).ok();
     }
