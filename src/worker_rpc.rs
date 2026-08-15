@@ -1080,6 +1080,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             ext_reg.register(Box::new(
                 crate::file_snapshot::approval::ApprovalExtension::new(mgr.clone()),
             ));
+            // worker 启动即恢复审批状态——on_session_start 只在 agent.run(prompt)
+            // 里触发，复活后未发消息的空闲 worker 查 review_pending 会拿到空审批表，
+            // 已批文件全部显示回 pending
+            mgr.restore_from_session();
             tracing::info!("[extension] file-approval enabled");
             Some(mgr)
         } else {

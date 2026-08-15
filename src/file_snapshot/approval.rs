@@ -538,7 +538,14 @@ impl ApprovalManager {
         ever_approved.clear();
 
         for entry in entries {
-            if entry.get("type").and_then(|v| v.as_str()) == Some("file-approval")
+            // 兼容两种来源：
+            // - persist_approval 落盘格式：type="custom" + customType="file-approval"（session.jsonl）
+            // - to_entries 序列化格式：type="file-approval"（内存快照/测试）
+            // 原来只认后者，worker 重启后审批状态全部丢失 → 已批文件回到 pending
+            let is_approval_entry = entry.get("type").and_then(|v| v.as_str())
+                == Some("file-approval")
+                || entry.get("customType").and_then(|v| v.as_str()) == Some("file-approval");
+            if is_approval_entry
                 && let Some(data) = entry.get("data")
             {
                 let path = data.get("path").and_then(|v| v.as_str()).unwrap_or("");
@@ -1046,6 +1053,48 @@ mod tests {
 
         let approved = mgr2.approvals_list(Some(&ApprovalStatus::Approved));
         assert_eq!(approved.len(), 1);
+        assert_eq!(approved[0].path, "a.rs");
+
+        std::fs::remove_dir_all(work_dir.parent().unwrap()).ok();
+    }
+
+    /// 回归：persist_approval 的落盘格式是 type="custom" + customType="file-approval"，
+    /// 而 restore_from_entries 原来只认 type="file-approval"（to_entries 格式）——
+    /// 导致 worker 重启后审批状态全部丢失、已批文件回到 pending
+    #[test]
+    fn restore_from_persist_format() {
+        let (work_dir, store, _mgr) = setup();
+
+        write_current_tree(&store, &work_dir, &[("a.rs", "v1"), ("b.rs", "stable")]);
+
+        // 模拟 session.jsonl 里 persist_approval 写出的 entry
+        let persisted = vec![serde_json::json!({
+            "type": "custom",
+            "id": "fa_123",
+            "parentId": null,
+            "customType": "file-approval",
+            "data": {
+                "path": "a.rs",
+                "status": "approved",
+                "timestamp": 123u64,
+                "approved_tree_hash": serde_json::Value::Null,
+            },
+        })];
+
+        let storage2 = crate::storage_context::StorageContext::new(
+            work_dir.to_string_lossy().as_ref(),
+            "approval_test",
+            work_dir.to_string_lossy().as_ref(),
+        );
+        let mgr2 = ApprovalManager::new(store.clone(), storage2);
+        mgr2.restore_from_entries(&persisted);
+
+        let approved = mgr2.approvals_list(Some(&ApprovalStatus::Approved));
+        assert_eq!(
+            approved.len(),
+            1,
+            "落盘格式（type=custom + customType）的审批记录必须能恢复"
+        );
         assert_eq!(approved[0].path, "a.rs");
 
         std::fs::remove_dir_all(work_dir.parent().unwrap()).ok();
