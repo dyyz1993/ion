@@ -65,6 +65,12 @@ pub struct ApprovalManager {
     /// 统一存储上下文（持久化审批 entry 到 session.jsonl 用）
     #[allow(dead_code)]
     storage: crate::storage_context::StorageContext,
+    /// 审批状态代数：approvals/ever_approved 每次变更 +1，
+    /// 用作 pending_cache 的失效键（避免读锁比较整个 map）
+    approval_gen: std::sync::atomic::AtomicU64,
+    /// compute_pending 结果缓存：(current_tree_hash, gen, 结果)。
+    /// tree 或审批状态没变时重复查询直接命中（大仓库 695 文件首次 ~秒级，命中 0ms）
+    pending_cache: Mutex<Option<(String, u64, std::sync::Arc<Vec<PendingFile>>)>>,
 }
 
 impl ApprovalManager {
@@ -78,6 +84,8 @@ impl ApprovalManager {
             store,
             cwd: storage.cwd.clone(),
             storage,
+            approval_gen: std::sync::atomic::AtomicU64::new(0),
+            pending_cache: Mutex::new(None),
         }
     }
 
@@ -109,11 +117,25 @@ impl ApprovalManager {
     }
 
     /// 计算 pending 列表（对比 baseline → current tree 的 diff + 过滤）
-    pub fn compute_pending(&self) -> Vec<PendingFile> {
+    ///
+    /// 结果按 (current_tree_hash, 审批代数) 记忆化：同一轮快照内重复查询 0ms。
+    /// 首次计算也只解析一次 baseline（原来每个文件都重复读 step snapshots + tree）。
+    pub fn compute_pending(&self) -> std::sync::Arc<Vec<PendingFile>> {
         let current_hash = match self.current_tree_hash() {
             Some(h) => h,
-            None => return vec![],
+            None => return std::sync::Arc::new(vec![]),
         };
+        let approval_gen = self.approval_gen.load(std::sync::atomic::Ordering::Acquire);
+        {
+            let cache = self.pending_cache.lock().unwrap();
+            if let Some((ref h, g, ref cached)) = *cache
+                && *h == current_hash
+                && g == approval_gen
+            {
+                return cached.clone();
+            }
+        }
+
         let current_tree =
             tree_store::read_tree(self.store.objects(), &current_hash).unwrap_or_default();
 
@@ -121,13 +143,30 @@ impl ApprovalManager {
         let mut pending = Vec::new();
         let approvals = self.approvals.lock().unwrap();
 
+        // baseline 整体只解析一次（load_all_step_snapshots + read_tree 原来在
+        // 每个文件的 baseline_for_path 里重复执行，N 文件 = N 次全量磁盘解析）
+        let session_baseline = self.session_baseline_tree_hash();
+        let session_baseline_tree = session_baseline
+            .as_ref()
+            .and_then(|h| tree_store::read_tree(objects, h));
+        let empty_tree: tree_store::TreeEntries = HashMap::new();
+        // 少数文件有自己的 approved baseline（批准后又改过），按需读取 + 单槽 memo
+        let mut per_file_tree: Option<(String, tree_store::TreeEntries)> = None;
+
         for (path, new_hash) in &current_tree {
-            // 状态判断
-            let baseline_hash = self.baseline_for_path(path, &approvals);
-            let old_tree = baseline_hash
-                .as_ref()
-                .and_then(|h| tree_store::read_tree(objects, h));
-            let old_hash = old_tree.as_ref().and_then(|t| t.get(path));
+            // 状态判断：优先该文件的 approved baseline，否则 session baseline
+            let baseline_tree: &tree_store::TreeEntries = if let Some(appr) = approvals.get(path)
+                && let Some(ref h) = appr.approved_tree_hash
+            {
+                if per_file_tree.as_ref().is_none_or(|(ph, _)| ph != h) {
+                    per_file_tree =
+                        Some((h.clone(), tree_store::read_tree(objects, h).unwrap_or_default()));
+                }
+                &per_file_tree.as_ref().expect("just set").1
+            } else {
+                session_baseline_tree.as_ref().unwrap_or(&empty_tree)
+            };
+            let old_hash = baseline_tree.get(path);
 
             let (status, old_content, new_content) = match old_hash {
                 None => {
@@ -184,10 +223,9 @@ impl ApprovalManager {
             });
         }
 
-        // 也检查被删除的文件（baseline 有，current 没有）
-        let session_baseline = self.session_baseline_tree_hash();
-        if let Some(ref bh) = session_baseline {
-            let baseline_tree = tree_store::read_tree(objects, bh).unwrap_or_default();
+        // 也检查被删除的文件（baseline 有，current 没有）——复用上面解析好的 baseline
+        if let Some(ref _bh) = session_baseline {
+            let baseline_tree = session_baseline_tree.as_ref().unwrap_or(&empty_tree);
             for path in baseline_tree.keys() {
                 if !current_tree.contains_key(path) {
                     // 文件被删除了
@@ -213,12 +251,21 @@ impl ApprovalManager {
                 }
             }
         }
+        drop(approvals);
 
-        pending
+        let result = std::sync::Arc::new(pending);
+        *self.pending_cache.lock().unwrap() = Some((current_hash, approval_gen, result.clone()));
+        result
     }
 
     /// approve 单个文件（锚定 baseline + 持久化到 session.jsonl）
     pub fn approve(&self, path: &str) -> Result<FileApproval, String> {
+        self.approve_inner(path, false)
+    }
+
+    /// silent=true 时不推 ApprovalResolved（批量操作由调用方聚合成一条汇总事件，
+    /// 否则 approve_all 批 N 个文件会刷 N 条事件）
+    fn approve_inner(&self, path: &str, silent: bool) -> Result<FileApproval, String> {
         let current_hash = self
             .current_tree_hash()
             .ok_or("No current tree snapshot available")?;
@@ -238,19 +285,22 @@ impl ApprovalManager {
         approvals.insert(path.to_string(), approval.clone());
         drop(approvals);
         drop(ever_approved);
+        self.approval_gen.fetch_add(1, std::sync::atomic::Ordering::Release);
 
         // 持久化到 session.jsonl
         self.persist_approval(&approval);
 
-        // 推送 ApprovalResolved 事件（UI 收到后更新状态）
-        emit_approval_event(
-            "ApprovalResolved",
-            &serde_json::json!({
-                "path": path,
-                "decision": "approved",
-                "approvedTreeHash": current_hash,
-            }),
-        );
+        // 推送 ApprovalResolved 事件（UI 收到后更新状态；批量时静默）
+        if !silent {
+            emit_approval_event(
+                "ApprovalResolved",
+                &serde_json::json!({
+                    "path": path,
+                    "decision": "approved",
+                    "approvedTreeHash": current_hash,
+                }),
+            );
+        }
 
         Ok(approval)
     }
@@ -284,6 +334,7 @@ impl ApprovalManager {
         let mut approvals = self.approvals.lock().unwrap();
         approvals.insert(path.to_string(), approval.clone());
         drop(approvals);
+        self.approval_gen.fetch_add(1, std::sync::atomic::Ordering::Release);
 
         // 持久化到 session.jsonl
         self.persist_approval(&approval);
@@ -302,16 +353,41 @@ impl ApprovalManager {
         Ok(result)
     }
 
-    /// approve 全部 pending 文件
+    /// approve 全部 pending 文件（逐文件静默，仅推一条汇总事件）
     pub fn approve_all(&self) -> Vec<Result<FileApproval, String>> {
         let pending = self.compute_pending();
-        pending.iter().map(|p| self.approve(&p.path)).collect()
+        let results: Vec<_> = pending
+            .iter()
+            .map(|p| self.approve_inner(&p.path, true))
+            .collect();
+        let approved = results.iter().filter(|r| r.is_ok()).count();
+        let failed = results.len() - approved;
+        emit_approval_event(
+            "ApprovalResolved",
+            &serde_json::json!({
+                "batch": "approve_all",
+                "approved": approved,
+                "failed": failed,
+                "total": results.len(),
+            }),
+        );
+        results
     }
 
-    /// reject 全部 pending 文件
+    /// reject 全部 pending 文件（逐文件静默，仅推一条汇总事件）
     pub fn reject_all(&self) -> Vec<Result<super::restore::RestoredFile, String>> {
         let pending = self.compute_pending();
-        pending.iter().map(|p| self.reject(&p.path)).collect()
+        let results: Vec<_> = pending.iter().map(|p| self.reject(&p.path)).collect();
+        let rejected = results.iter().filter(|r| r.is_ok()).count();
+        emit_approval_event(
+            "ApprovalResolved",
+            &serde_json::json!({
+                "batch": "reject_all",
+                "rejected": rejected,
+                "total": results.len(),
+            }),
+        );
+        results
     }
 
     /// 查询审批状态
@@ -348,6 +424,7 @@ impl ApprovalManager {
         }
         // 推送 ApprovalReset 事件（UI 收到后刷新审批状态）
         if !reset_paths.is_empty() {
+            self.approval_gen.fetch_add(1, std::sync::atomic::Ordering::Release);
             emit_approval_event(
                 "ApprovalReset",
                 &serde_json::json!({
@@ -401,6 +478,7 @@ impl ApprovalManager {
                 );
             }
         }
+        self.approval_gen.fetch_add(1, std::sync::atomic::Ordering::Release);
     }
 
     /// 暴露 step-snapshot 给 Extension 用（re-approval 重置）

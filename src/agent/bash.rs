@@ -127,6 +127,7 @@ pub struct BashRunTool {
     pub stdin_map: StdinMap,
     pub notify_map: NotifyMap,
     pub follow_up_tx: Option<FollowUpSender>,
+    pub bg_pending: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pub storage: crate::storage_context::StorageContext,
 }
 
@@ -321,6 +322,7 @@ impl Tool for BashRunTool {
                 self.stdin_map.clone(),
                 self.notify_map.clone(),
                 self.follow_up_tx.clone(),
+                self.bg_pending.clone(),
                 pid.clone(),
                 command.clone(),
                 description.clone(),
@@ -437,7 +439,7 @@ impl Tool for BashRunTool {
 }
 
 // ============================================================================
-// BashExtension — plugin_rpc
+// BashExtension — extension_rpc
 // ============================================================================
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -773,6 +775,7 @@ pub struct BashExtension {
     pub stdin_map: StdinMap,
     pub notify_map: NotifyMap,
     pub follow_up_tx: Option<FollowUpSender>,
+    pub bg_pending: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pub storage: crate::storage_context::StorageContext,
 }
 
@@ -784,8 +787,15 @@ impl BashExtension {
             stdin_map: new_stdin_map(),
             notify_map: Arc::new(Mutex::new(HashMap::new())),
             follow_up_tx: None,
+            bg_pending: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             storage,
         }
+    }
+
+    /// Wire the active-watcher counter (shared with agent_loop): outer_loop
+    /// waits for background completions only when this is > 0.
+    pub fn set_bg_pending(&mut self, pending: std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        self.bg_pending = pending;
     }
 
     /// 兼容旧签名（测试用）
@@ -812,6 +822,7 @@ impl BashExtension {
             stdin_map: new_stdin_map(),
             notify_map: Arc::new(Mutex::new(HashMap::new())),
             follow_up_tx: None,
+            bg_pending: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             storage: crate::storage_context::StorageContext::new(".", "export", "."),
         }
     }
@@ -838,6 +849,7 @@ impl Extension for BashExtension {
             stdin_map: self.stdin_map.clone(),
             notify_map: self.notify_map.clone(),
             follow_up_tx: self.follow_up_tx.clone(),
+            bg_pending: self.bg_pending.clone(),
             storage: self.storage.clone(),
         }));
         // 3 个独立管理工具（对标 pi），共享 BashManageTool 引擎
@@ -1187,7 +1199,7 @@ pub(super) fn now_ms() -> i64 {
 
 pub(super) fn emit_extension_event(event_type: &str, data: &serde_json::Value) {
     // 注意：Manager 的 stdout 路由只识别 "type":"event"，
-    // 所以 plugin_event 需要嵌在 event.type 里才能到达 subscriber
+    // 所以 extension_event 需要嵌在 event.type 里才能到达 subscriber
     let msg = serde_json::json!({
         "type": "event",
         "event": {
@@ -1261,6 +1273,7 @@ mod tests {
             stdin_map: new_stdin_map(),
             notify_map: Arc::new(Mutex::new(HashMap::new())),
             follow_up_tx: None,
+            bg_pending: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             storage: crate::storage_context::StorageContext::new("/tmp", "sid", "/tmp"),
         };
         assert_eq!(tool.name(), "bash");
