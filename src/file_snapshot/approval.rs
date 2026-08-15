@@ -354,7 +354,10 @@ impl ApprovalManager {
             path: path.to_string(),
             status: ApprovalStatus::Rejected,
             timestamp: now_ts(),
-            approved_tree_hash: None,
+            // 保留锚点：reject 把文件回滚到锚点内容，锚点仍然有效。
+            // 清掉会让下一轮 diff 退回 session 起点，已批准的改动被重新拿来审
+            // （违背"以上一次审批为基准"的增量语义）
+            approved_tree_hash: Some(baseline_hash.clone()),
             approved_turn_id: None,
         };
         let mut approvals = self.approvals.lock().unwrap();
@@ -1096,6 +1099,38 @@ mod tests {
             "落盘格式（type=custom + customType）的审批记录必须能恢复"
         );
         assert_eq!(approved[0].path, "a.rs");
+
+        std::fs::remove_dir_all(work_dir.parent().unwrap()).ok();
+    }
+
+    /// 回归：reject 后锚点必须保留 —— 批准 B、拒绝 C 之后文件再改成 D，
+    /// pending 应显示 B→D（以上次批准为基准的增量），
+    /// 而不是 session 起点 A→D（会把已批准的 B 部分重新拿来审）
+    #[test]
+    fn reject_keeps_anchor_for_next_cycle() {
+        let (work_dir, store, mgr) = setup();
+
+        // session 起点：a.rs = original
+        write_current_tree(&store, &work_dir, &[("a.rs", "original")]);
+        // 第一轮：original → v1，批准（锚点 = v1）
+        write_current_tree(&store, &work_dir, &[("a.rs", "v1")]);
+        mgr.approve("a.rs").unwrap();
+        // 第二轮：v1 → v2，拒绝（文件回滚到 v1）
+        write_current_tree(&store, &work_dir, &[("a.rs", "v2")]);
+        mgr.check_re_approval(&["a.rs".into()]);
+        mgr.reject("a.rs").unwrap();
+        // 第三轮：v1 → v3，再进 pending
+        write_current_tree(&store, &work_dir, &[("a.rs", "v3")]);
+        mgr.check_re_approval(&["a.rs".into()]);
+
+        let pending = mgr.compute_pending();
+        let a = pending.iter().find(|p| p.path == "a.rs").expect("a.rs 应回 pending");
+        assert_eq!(
+            a.old_content,
+            Some("v1".to_string()),
+            "reject 后 baseline 应仍是上次批准的 v1（增量），不能退回 session 起点 original"
+        );
+        assert_eq!(a.new_content, Some("v3".to_string()));
 
         std::fs::remove_dir_all(work_dir.parent().unwrap()).ok();
     }
