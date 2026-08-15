@@ -2047,6 +2047,18 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                             };
                                             output_response(&bg_id, "review_pending", &result);
                                         }
+                                        // 单文件 diff（与 review_pending 同源，复用其缓存）
+                                        "review_file_diff" => {
+                                            let path = bg_params.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                                            let result = if let Some(ref mgr) = approval_mgr {
+                                                mgr.file_diff(path).unwrap_or(serde_json::json!({
+                                                    "error": "file not in pending list", "path": path,
+                                                }))
+                                            } else {
+                                                serde_json::json!({"error": "approval not enabled"})
+                                            };
+                                            output_response(&bg_id, "review_file_diff", &result);
+                                        }
                                         // get_session_info / get_state → agent.run 期间不能读 messages(&mut 冲突)
                                         // 返回简化版(只有 model/provider/is_running)
                                         "get_session_info" | "get_state" => {
@@ -4214,6 +4226,32 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     output_response(
                         &id,
                         "review_pending",
+                        &serde_json::json!({"error": "approval not enabled (requires file-snapshot)"}),
+                    );
+                }
+            }
+            // 单文件 diff（与 review_pending 同源：tree 快照 + 同一 baseline 语义）
+            "review_file_diff" => {
+                let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                if path.is_empty() {
+                    output_response(
+                        &id,
+                        "review_file_diff",
+                        &serde_json::json!({"error": "missing 'path'"}),
+                    );
+                } else if let Some(ref mgr) = approval_mgr {
+                    match mgr.file_diff(path) {
+                        Some(diff) => output_response(&id, "review_file_diff", &diff),
+                        None => output_response(
+                            &id,
+                            "review_file_diff",
+                            &serde_json::json!({"error": "file not in pending list", "path": path}),
+                        ),
+                    }
+                } else {
+                    output_response(
+                        &id,
+                        "review_file_diff",
                         &serde_json::json!({"error": "approval not enabled (requires file-snapshot)"}),
                     );
                 }

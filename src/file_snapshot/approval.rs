@@ -391,6 +391,55 @@ impl ApprovalManager {
     }
 
     /// 查询审批状态
+    /// 单文件 diff（与 compute_pending 同源同 baseline 语义）。
+    /// 复用 pending 缓存里的 old/new content —— 通常零额外磁盘读。
+    /// 注意不要用 get_file_diff（tool-snapshot 历史）替代：
+    /// pending 列表基于 tree 快照，两者数据源不一致会出现"列在 pending 但查不到 diff"。
+    pub fn file_diff(&self, path: &str) -> Option<serde_json::Value> {
+        let pending = self.compute_pending();
+        let p = pending.iter().find(|p| p.path == path)?;
+        // deleted 条目在 pending 列表里不带内容（避免缓存整块旧文件），按需读一次
+        let (old, new) = if p.status == "deleted"
+            && p.old_content.is_none()
+            && p.new_content.is_none()
+        {
+            let approvals = self.approvals.lock().unwrap();
+            let baseline_hash = self.baseline_for_path(path, &approvals);
+            drop(approvals);
+            let content = baseline_hash
+                .and_then(|h| tree_store::read_tree(self.store.objects(), &h))
+                .and_then(|t| t.get(path).cloned())
+                .and_then(|blob| self.store.objects().read_object_text(&blob));
+            (content, None)
+        } else {
+            (p.old_content.clone(), p.new_content.clone())
+        };
+        let diff = match (&old, &new) {
+            (Some(b), Some(a)) => super::diff::unified_diff(b, a, path),
+            (None, Some(a)) => format!("+++ new file\n{}", a),
+            (Some(b), None) => format!("--- deleted file\n{}", b),
+            _ => String::new(),
+        };
+        // 整文件新增/删除的特例格式里内容行没有 +/- 前缀，count_diff 数不出，
+        // 直接按行数计
+        let (added, removed) = if old.is_none() || new.is_none() {
+            (
+                new.as_ref().map(|a| a.lines().count()).unwrap_or(0),
+                old.as_ref().map(|b| b.lines().count()).unwrap_or(0),
+            )
+        } else {
+            super::diff::count_diff(&diff)
+        };
+        Some(serde_json::json!({
+            "path": path,
+            "status": p.status,
+            "diff": diff,
+            "diffAvailable": true,
+            "added": added,
+            "removed": removed,
+        }))
+    }
+
     pub fn approvals_list(&self, status_filter: Option<&ApprovalStatus>) -> Vec<FileApproval> {
         let approvals = self.approvals.lock().unwrap();
         approvals
