@@ -269,7 +269,18 @@ impl ApprovalManager {
         let current_hash = self
             .current_tree_hash()
             .ok_or("No current tree snapshot available")?;
+        self.approve_hashed(path, silent, &current_hash)
+    }
 
+    /// approve 的批量快速路径：current_hash 由调用方算一次传入。
+    /// （current_tree_hash → load_all_step_snapshots 读整个 tree/ 目录，
+    /// 695 文件逐个重算 = 28 万次文件读，是批量审批慢的根因）
+    fn approve_hashed(
+        &self,
+        path: &str,
+        silent: bool,
+        current_hash: &str,
+    ) -> Result<FileApproval, String> {
         let mut approvals = self.approvals.lock().unwrap();
         let mut ever_approved = self.ever_approved.lock().unwrap();
 
@@ -279,7 +290,7 @@ impl ApprovalManager {
             path: path.to_string(),
             status: ApprovalStatus::Approved,
             timestamp: now_ts(),
-            approved_tree_hash: Some(current_hash.clone()),
+            approved_tree_hash: Some(current_hash.to_string()),
             approved_turn_id: None,
         };
         approvals.insert(path.to_string(), approval.clone());
@@ -307,9 +318,24 @@ impl ApprovalManager {
 
     /// reject 单个文件（回滚到 baseline + 更新状态 + 持久化）
     pub fn reject(&self, path: &str) -> Result<super::restore::RestoredFile, String> {
+        let session_baseline = self.session_baseline_tree_hash();
+        self.reject_with_baseline(path, session_baseline.as_deref())
+    }
+
+    /// reject 的批量快速路径：session baseline 由调用方算一次传入
+    /// （session_baseline_tree_hash 同样每文件重读全部 step snapshots）
+    fn reject_with_baseline(
+        &self,
+        path: &str,
+        session_baseline: Option<&str>,
+    ) -> Result<super::restore::RestoredFile, String> {
         let baseline_hash = {
             let approvals = self.approvals.lock().unwrap();
-            self.baseline_for_path(path, &approvals)
+            // 优先该文件自己的 approved baseline，否则 session baseline
+            approvals
+                .get(path)
+                .and_then(|a| a.approved_tree_hash.clone())
+                .or_else(|| session_baseline.map(|s| s.to_string()))
         }
         .ok_or("No baseline tree available")?;
 
@@ -353,13 +379,24 @@ impl ApprovalManager {
         Ok(result)
     }
 
-    /// approve 全部 pending 文件（逐文件静默，仅推一条汇总事件）
+    /// approve 全部 pending 文件（逐文件静默，仅推一条汇总事件）。
+    /// 空批次直接返回不推事件（避免 0/0 噪音刷屏）。
     pub fn approve_all(&self) -> Vec<Result<FileApproval, String>> {
         let pending = self.compute_pending();
-        let results: Vec<_> = pending
-            .iter()
-            .map(|p| self.approve_inner(&p.path, true))
-            .collect();
+        if pending.is_empty() {
+            return vec![];
+        }
+        // hash 只算一次（原来每个文件重读全部 step snapshots）
+        let results: Vec<_> = match self.current_tree_hash() {
+            Some(h) => pending
+                .iter()
+                .map(|p| self.approve_hashed(&p.path, true, &h))
+                .collect(),
+            None => pending
+                .iter()
+                .map(|_| Err("No current tree snapshot available".to_string()))
+                .collect(),
+        };
         let approved = results.iter().filter(|r| r.is_ok()).count();
         let failed = results.len() - approved;
         emit_approval_event(
@@ -374,10 +411,19 @@ impl ApprovalManager {
         results
     }
 
-    /// reject 全部 pending 文件（逐文件静默，仅推一条汇总事件）
+    /// reject 全部 pending 文件（逐文件静默，仅推一条汇总事件）。
+    /// 空批次直接返回不推事件。
     pub fn reject_all(&self) -> Vec<Result<super::restore::RestoredFile, String>> {
         let pending = self.compute_pending();
-        let results: Vec<_> = pending.iter().map(|p| self.reject(&p.path)).collect();
+        if pending.is_empty() {
+            return vec![];
+        }
+        // session baseline 只算一次（原来每个文件重读全部 step snapshots）
+        let session_baseline = self.session_baseline_tree_hash();
+        let results: Vec<_> = pending
+            .iter()
+            .map(|p| self.reject_with_baseline(&p.path, session_baseline.as_deref()))
+            .collect();
         let rejected = results.iter().filter(|r| r.is_ok()).count();
         emit_approval_event(
             "ApprovalResolved",
