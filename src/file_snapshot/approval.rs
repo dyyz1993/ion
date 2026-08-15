@@ -1234,6 +1234,78 @@ mod tests {
         std::fs::remove_dir_all(work_dir.parent().unwrap()).ok();
     }
 
+    /// 计时/计量测算：分阶段耗时（批量审批 / 冷算 pending / 缓存命中）+ 缓存空间占用。
+    /// 数字用 `cargo test perf_measurements -- --nocapture` 查看；
+    /// 断言的是宽松上界（实测值的 10-50 倍），防的是复杂度退化（如每文件全量重读）。
+    #[test]
+    fn perf_measurements_time_and_space() {
+        let (work_dir, store, mgr) = setup();
+        let n = 100usize;
+        let files: Vec<String> = (0..n).map(|i| format!("f{i}.rs")).collect();
+        // 每个文件 ~2KB 内容，让空间计量有实感
+        let body = "x".repeat(2048);
+
+        let snap = |round: usize| {
+            let refs: Vec<(&str, &str)> = files
+                .iter()
+                .enumerate()
+                .map(|(i, f)| (f.as_str(), Box::leak(format!("{round}-{i}-{body}").into_boxed_str()) as &str))
+                .collect();
+            write_current_tree(&store, &work_dir, &refs)
+        };
+        snap(0); // session 起点
+
+        // ── 阶段1：批量审批耗时（含逐文件持久化写盘）──
+        let t0 = std::time::Instant::now();
+        let results = mgr.approve_all();
+        let t_approve = t0.elapsed();
+        assert!(results.iter().all(|r| r.is_ok()));
+        assert!(mgr.compute_pending().is_empty(), "全部批准后 pending 应为空");
+
+        // ── 阶段2：冷算耗时（改动一半文件 → 审批代数变化 → 缓存失效）──
+        snap(1);
+        let half: Vec<String> = files.iter().take(n / 2).cloned().collect();
+        mgr.check_re_approval(&half);
+        let t1 = std::time::Instant::now();
+        let pending = mgr.compute_pending();
+        let t_cold = t1.elapsed();
+        assert_eq!(pending.len(), n / 2, "只有改动的半数文件应 pending");
+
+        // ── 阶段3：缓存命中耗时（状态没变，直接复用）──
+        let t2 = std::time::Instant::now();
+        let _ = mgr.compute_pending();
+        let t_warm = t2.elapsed();
+
+        // ── 空间：pending 缓存实际持有的数据量（路径+diff统计+新旧内容+结构）──
+        let cached_bytes: usize = pending.iter().map(|p| {
+            p.path.len() + p.status.len() + p.diff_stat.len()
+                + p.old_content.as_ref().map_or(0, |s| s.len())
+                + p.new_content.as_ref().map_or(0, |s| s.len())
+                + std::mem::size_of::<PendingFile>()
+        }).sum();
+        // 磁盘上当前内容总量（=每个待审文件的新内容）
+        let raw_bytes: usize = pending.len() * (2_048 + 16);
+
+        println!("┌─ 审批性能测算（{n} 文件 × ~2KB）");
+        println!("│ 批量审批（含持久化写盘） : {t_approve:?}");
+        println!("│ compute_pending 冷算     : {t_cold:?}");
+        println!("│ compute_pending 缓存命中 : {t_warm:?}");
+        println!("│ pending 缓存空间         : {} bytes（{n}/2 文件，当前内容 {} bytes）", cached_bytes, raw_bytes);
+        println!("└─");
+
+        // 宽松上界（实测的 10-50 倍；退化成 O(文件×快照全量读) 时会爆到分钟级）
+        assert!(t_approve < std::time::Duration::from_secs(5), "批量审批 {t_approve:?} 疑似退化");
+        assert!(t_cold < std::time::Duration::from_secs(2), "冷算 {t_cold:?} 疑似退化");
+        assert!(t_warm < std::time::Duration::from_millis(200), "缓存命中 {t_warm:?} 疑似未命中");
+        // 空间上界：缓存 ≈ 新旧两份内容 + 元数据，不允许出现重复膨胀
+        assert!(
+            cached_bytes <= raw_bytes * 2 + pending.len() * 1024,
+            "缓存 {cached_bytes} bytes 超过 新旧两份内容+元数据 的合理上界，疑似重复持有"
+        );
+
+        std::fs::remove_dir_all(work_dir.parent().unwrap()).ok();
+    }
+
     #[test]
     fn no_op_filter() {
         let (work_dir, store, mgr) = setup();
