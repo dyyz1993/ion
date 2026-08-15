@@ -2059,6 +2059,51 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                             };
                                             output_response(&bg_id, "review_file_diff", &result);
                                         }
+                                        // 单 turn 变更摘要（只读磁盘，安全）；
+                                        // turnId 省略 → 本 session 最新 ts_ turn
+                                        "turn_changes" => {
+                                            let turn_id_param = bg_params.get("turnId").and_then(|v| v.as_str()).unwrap_or("");
+                                            let result = if let Some(ref store) = snapshot_store {
+                                                let all_snaps = store.load_all_tool_snapshots();
+                                                let mine: Vec<&crate::file_snapshot::ToolSnapshot> =
+                                                    all_snaps.iter().filter(|s| s.session_id == sid).collect();
+                                                let turn_id = if turn_id_param.is_empty() {
+                                                    mine.iter().max_by(|a, b| a.timestamp.cmp(&b.timestamp)).map(|s| s.turn_id.clone())
+                                                } else { Some(turn_id_param.to_string()) };
+                                                match turn_id {
+                                                    None => serde_json::json!({"turnId": null, "files": [],
+                                                        "summary": {"files": 0, "added": 0, "removed": 0}}),
+                                                    Some(tid) => {
+                                                        use std::collections::HashMap;
+                                                        let mut grouped: HashMap<String, Vec<&crate::file_snapshot::ToolSnapshot>> = HashMap::new();
+                                                        for s in &mine {
+                                                            if s.turn_id == tid { grouped.entry(s.path.clone()).or_default().push(s); }
+                                                        }
+                                                        let mut files = Vec::new();
+                                                        let (mut ta, mut tr) = (0usize, 0usize);
+                                                        for (path, group) in &grouped {
+                                                            let first = group.first().unwrap();
+                                                            let last = group.last().unwrap();
+                                                            let before = first.before_hash.as_ref().and_then(|h| store.objects().read_object_text(h));
+                                                            let after = last.after_hash.as_ref().and_then(|h| store.objects().read_object_text(h));
+                                                            let (status, added, removed) = match (&before, &after) {
+                                                                (Some(b), Some(a)) => { let (ad, rm) = crate::file_snapshot::count_changes(b, a); ("modified", ad, rm) }
+                                                                (None, Some(a)) => ("added", a.lines().count(), 0),
+                                                                (Some(b), None) => ("deleted", 0, b.lines().count()),
+                                                                _ => ("modified", 0, 0),
+                                                            };
+                                                            ta += added; tr += removed;
+                                                            files.push(serde_json::json!({"path": path, "status": status, "added": added, "removed": removed}));
+                                                        }
+                                                        serde_json::json!({"turnId": tid, "files": files,
+                                                            "summary": {"files": grouped.len(), "added": ta, "removed": tr}})
+                                                    }
+                                                }
+                                            } else {
+                                                serde_json::json!({"error": "file-snapshot not enabled"})
+                                            };
+                                            output_response(&bg_id, "turn_changes", &result);
+                                        }
                                         // get_session_info / get_state → agent.run 期间不能读 messages(&mut 冲突)
                                         // 返回简化版(只有 model/provider/is_running)
                                         "get_session_info" | "get_state" => {
@@ -4018,6 +4063,93 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     output_response(
                         &id,
                         "get_file_diff",
+                        &serde_json::json!({"error": "file-snapshot not enabled"}),
+                    );
+                }
+            }
+            // 单 turn 变更摘要（会话底部折叠卡数据源）：
+            // 只回 path/状态/行数计数，不带 diff 文本（大 turn 也不膨胀）；
+            // 单文件详情按需走 get_file_diff {filePath, fromTurn, toTurn}。
+            // turnId 省略时取当前 session 最新的 ts_ turn（agent_end 刚落盘的那轮）
+            "turn_changes" => {
+                let turn_id_param = params.get("turnId").and_then(|v| v.as_str()).unwrap_or("");
+                if let Some(ref store) = snapshot_store {
+                    let all_snaps = store.load_all_tool_snapshots();
+                    // store 按项目共享（聚合了所有 session），先过滤本 session
+                    let mine: Vec<&crate::file_snapshot::ToolSnapshot> = all_snaps
+                        .iter()
+                        .filter(|s| s.session_id == sid)
+                        .collect();
+                    let turn_id = if turn_id_param.is_empty() {
+                        mine.iter()
+                            .max_by(|a, b| a.timestamp.cmp(&b.timestamp))
+                            .map(|s| s.turn_id.clone())
+                    } else {
+                        Some(turn_id_param.to_string())
+                    };
+                    let turn_id = match turn_id {
+                        Some(t) => t,
+                        None => {
+                            output_response(
+                                &id,
+                                "turn_changes",
+                                &serde_json::json!({"turnId": null, "files": [],
+                                    "summary": {"files": 0, "added": 0, "removed": 0}}),
+                            );
+                            return;
+                        }
+                    };
+                    use std::collections::HashMap;
+                    let mut grouped: HashMap<String, Vec<&crate::file_snapshot::ToolSnapshot>> =
+                        HashMap::new();
+                    for s in &mine {
+                        if s.turn_id == turn_id {
+                            grouped.entry(s.path.clone()).or_default().push(s);
+                        }
+                    }
+                    let mut files = Vec::new();
+                    let mut total_added = 0usize;
+                    let mut total_removed = 0usize;
+                    for (path, group) in &grouped {
+                        let first = group.first().unwrap();
+                        let last = group.last().unwrap();
+                        let before = first
+                            .before_hash
+                            .as_ref()
+                            .and_then(|h| store.objects().read_object_text(h));
+                        let after = last
+                            .after_hash
+                            .as_ref()
+                            .and_then(|h| store.objects().read_object_text(h));
+                        let (status, added, removed) = match (&before, &after) {
+                            (Some(b), Some(a)) => {
+                                let (ad, rm) = crate::file_snapshot::count_changes(b, a);
+                                ("modified", ad, rm)
+                            }
+                            (None, Some(a)) => ("added", a.lines().count(), 0),
+                            (Some(b), None) => ("deleted", 0, b.lines().count()),
+                            _ => ("modified", 0, 0),
+                        };
+                        total_added += added;
+                        total_removed += removed;
+                        files.push(serde_json::json!({
+                            "path": path, "status": status, "added": added, "removed": removed,
+                        }));
+                    }
+                    files.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+                    output_response(
+                        &id,
+                        "turn_changes",
+                        &serde_json::json!({
+                            "turnId": turn_id,
+                            "files": files,
+                            "summary": {"files": grouped.len(), "added": total_added, "removed": total_removed},
+                        }),
+                    );
+                } else {
+                    output_response(
+                        &id,
+                        "turn_changes",
                         &serde_json::json!({"error": "file-snapshot not enabled"}),
                     );
                 }

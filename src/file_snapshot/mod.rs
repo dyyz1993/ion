@@ -20,7 +20,7 @@ pub mod snapshot;
 pub mod tree_store;
 
 pub use approval::{ApprovalExtension, ApprovalManager, ApprovalStatus, FileApproval, PendingFile};
-pub use diff::{count_diff, unified_diff};
+pub use diff::{count_changes, count_diff, unified_diff};
 pub use object_store::{ObjectStore, content_hash, project_key};
 pub use scanner::{DirScanResult, is_binary, scan_dir_fast};
 pub use snapshot::{
