@@ -1729,12 +1729,15 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     .unwrap_or(&provider);
                 model_id = new_model.to_string();
                 provider = new_provider.to_string();
+                // SettingsChanged 事件
+                crate::file_snapshot::approval::emit_public_event(
+                    "SettingsChanged",
+                    &serde_json::json!({"key":"model","value":model_id,"provider":provider}),
+                );
                 output_response(
                     &id,
                     "get_state",
-                    &serde_json::json!({
-                        "model": model_id, "provider": provider
-                    }),
+                    &serde_json::json!({"model": model_id, "provider": provider}),
                 );
             }
 
@@ -1743,6 +1746,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     .get("level")
                     .and_then(|v| v.as_str())
                     .unwrap_or("off");
+                crate::file_snapshot::approval::emit_public_event(
+                    "SettingsChanged",
+                    &serde_json::json!({"key":"thinking_level","value":level}),
+                );
                 output_response(
                     &id,
                     "set_thinking_level",
@@ -1752,6 +1759,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
             "set_session_name" => {
                 let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                // SessionRenamed 事件
+                crate::file_snapshot::approval::emit_public_event(
+                    "SessionRenamed",
+                    &serde_json::json!({"name": name, "sessionId": sid}),
+                );
                 output_response(&id, "set_session_name", &serde_json::json!({"name": name}));
             }
 
@@ -2332,11 +2344,20 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         source: ion_provider::types::MessageSource::Steer,
                     }));
                 }
+                // QueueChanged 事件
+                crate::file_snapshot::approval::emit_public_event(
+                    "QueueChanged",
+                    &serde_json::json!({"action":"promote","index":index,"text":text}),
+                );
                 output_response(&id, "promote_follow_up", &serde_json::Value::Null);
             }
             "remove_follow_up" => {
                 let index = params.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                 let removed = agent.remove_follow_up(index);
+                crate::file_snapshot::approval::emit_public_event(
+                    "QueueChanged",
+                    &serde_json::json!({"action":"remove","index":index,"removed":removed.is_some()}),
+                );
                 output_response(
                     &id,
                     "remove_follow_up",
@@ -2899,6 +2920,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             }
             "clear_queue" => {
                 agent.clear_queues();
+                crate::file_snapshot::approval::emit_public_event(
+                    "QueueChanged",
+                    &serde_json::json!({"action":"clear_all"}),
+                );
                 output_response(
                     &id,
                     "clear_queue",
@@ -3010,6 +3035,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     })
                     .unwrap_or_default();
                 agent.restrict_tools(tools_arr.clone());
+                // SettingsChanged 事件
+                crate::file_snapshot::approval::emit_public_event(
+                    "SettingsChanged",
+                    &serde_json::json!({"key":"active_tools","value":tools_arr,"count":tools_arr.len()}),
+                );
                 output_response(
                     &id,
                     "set_active_tools",
@@ -3570,14 +3600,18 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     );
                 } else {
                     match agent.runtime().set_guard_mode(mode) {
-                        Ok(()) => output_response(
-                            &id,
-                            "set_permission_mode",
-                            &serde_json::json!({
-                                "mode": mode,
-                                "success": true,
-                            }),
-                        ),
+                        Ok(()) => {
+                            // SettingsChanged 事件：模式切换后通知所有终端
+                            crate::file_snapshot::approval::emit_public_event(
+                                "SettingsChanged",
+                                &serde_json::json!({"key":"permission_mode","value":mode}),
+                            );
+                            output_response(
+                                &id,
+                                "set_permission_mode",
+                                &serde_json::json!({"mode": mode, "success": true}),
+                            )
+                        }
                         Err(e) => output_response(
                             &id,
                             "set_permission_mode",

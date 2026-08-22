@@ -225,8 +225,11 @@ impl Extension for GlobalMemoryExtension {
 
             "list" => {
                 let project = params.get("project").and_then(|v| v.as_str());
+                let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
                 let results = store.list(project).map_err(AgentError::Tool)?;
-                Ok(serde_json::json!({"entries": serialize_entries(&results)}))
+                let total = results.len();
+                let entries: Vec<_> = results.into_iter().take(limit).collect();
+                Ok(serde_json::json!({"entries": serialize_entries(&entries), "totalCount": total, "returned": entries.len()}))
             }
 
             "forget" => {
@@ -236,6 +239,15 @@ impl Extension for GlobalMemoryExtension {
                     .ok_or_else(|| AgentError::Tool("missing 'id'".into()))?;
                 store.forget(id).map_err(AgentError::Tool)?;
                 Ok(serde_json::json!({"ok": true}))
+            }
+
+            "unarchive" => {
+                let id = params
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AgentError::Tool("missing 'id'".into()))?;
+                store.unarchive(id).map_err(AgentError::Tool)?;
+                Ok(serde_json::json!({"ok": true, "id": id}))
             }
 
             "list_outlines" => {
@@ -256,7 +268,7 @@ impl Extension for GlobalMemoryExtension {
             }
 
             _ => Err(AgentError::Tool(format!(
-                "unknown method '{}'. Available: save, search, list, forget, list_outlines, consolidate, clear_stored",
+                "unknown method '{}'. Available: save, search, list, forget, unarchive, list_outlines, consolidate, clear_stored",
                 method
             ))),
         }

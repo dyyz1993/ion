@@ -209,6 +209,14 @@ impl GlobalMemoryStore {
         Ok(())
     }
 
+    /// 恢复被 forget 的条目（archived=1 → 0），使其重新出现在搜索/列表中
+    pub fn unarchive(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
+        conn.execute("UPDATE entries SET archived=0 WHERE id=?1", params![id])
+            .map_err(|e| format!("unarchive: {}", e))?;
+        Ok(())
+    }
+
     /// 批量清空（测试用，DELETE + 清 FTS5 索引 + 清 outlines）
     pub fn clear_all(&self) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
