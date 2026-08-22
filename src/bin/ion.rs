@@ -4891,6 +4891,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
     // serve 起来了但所有 RPC 都 timeout（"Manager did not respond"）。
     // 用 spawn 后，socket loop 立即启动，默认 session 在后台异步创建。
     let default_session_registry = Arc::clone(&registry);
+    let default_session_event_bus = Arc::clone(&event_bus);
     tokio::spawn(async move {
         match do_create_session(
             &default_session_registry,
@@ -4898,7 +4899,13 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
         )
         .await
         {
-            Ok(sid) => eprintln!("🌱 Default session ready: {sid}"),
+            Ok(sid) => {
+                eprintln!("🌱 Default session ready: {sid}");
+                // SessionListChanged 事件
+                let mut bus = default_session_event_bus.lock().await;
+                bus.broadcast_raw("host", "SessionListChanged",
+                    serde_json::json!({"action": "created", "sessionId": sid}));
+            }
             Err(e) => eprintln!("⚠️  Default session 创建失败（后续 RPC 会按需创建）: {e}"),
         }
     });
@@ -5876,6 +5883,40 @@ async fn handle_manager_command_write(
                     .then(b["updatedAt"].as_u64().cmp(&a["updatedAt"].as_u64()))
             });
             Ok(serde_json::json!({"results": results, "totalMatches": results.len(), "query": query, "searchContent": search_content}))
+        }
+        // 对外 API：跨会话 Token 用量统计（从 SessionIndex 聚合）
+        "token_usage_summary" => {
+            let index = ion::session_index::SessionIndex::load();
+            let mut total_input: u64 = 0;
+            let mut total_output: u64 = 0;
+            let mut by_model: std::collections::HashMap<String, (u64, u64)> = std::collections::HashMap::new();
+            let mut by_project: std::collections::HashMap<String, (u64, u64)> = std::collections::HashMap::new();
+            let mut session_count = 0u64;
+            for (_id, m) in &index.sessions {
+                session_count += 1;
+                total_input += m.token_input;
+                total_output += m.token_output;
+                let mi = m.token_input;
+                let mo = m.token_output;
+                let model_key = m.model.clone();
+                let e = by_model.entry(model_key).or_insert((0, 0));
+                e.0 += mi; e.1 += mo;
+                let proj = m.project.clone().unwrap_or_else(|| "unknown".to_string());
+                let e2 = by_project.entry(proj).or_insert((0, 0));
+                e2.0 += mi; e2.1 += mo;
+            }
+            Ok(serde_json::json!({
+                "sessions": session_count,
+                "totalInput": total_input,
+                "totalOutput": total_output,
+                "totalTokens": total_input + total_output,
+                "byModel": by_model.into_iter().map(|(k,(i,o))| serde_json::json!({
+                    "model": k, "input": i, "output": o, "total": i + o
+                })).collect::<Vec<_>>(),
+                "byProject": by_project.into_iter().map(|(k,(i,o))| serde_json::json!({
+                    "project": k, "input": i, "output": o, "total": i + o
+                })).collect::<Vec<_>>(),
+            }))
         }
         // 对外 API：创建 session（自动 spawn worker，返回 session_id）
         "create_session" => {
