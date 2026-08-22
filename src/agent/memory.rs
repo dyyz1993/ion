@@ -9,7 +9,7 @@
 //! | LLM Tool | `memory_save` / `memory_search` | LLM 直接调用 |
 //! | Extension RPC | `extension_rpc memory save/search/list/forget/inspect` | CLI 调试 |
 //! | 被动注入 | `on_input` → `on_context` | 自动检索 + 注入上下文 |
-//! | 事件推送 | `emit_plugin_event()` → EventBus | subscribe 实时监听 |
+//! | 事件推送 | Extension event → EventBus | subscribe 实时监听 |
 //!
 //! # 注入流程
 //!
@@ -488,7 +488,7 @@ impl Tool for MemorySaveTool {
         let id = store.save_entry(content, desc, cat, &tags, "auto");
         let sess = store.storage.session_id.clone();
         drop(store);
-        // 发射 plugin_event（带 session，EventBus 过滤用）
+        // 发射 Extension 事件（带 session，EventBus 过滤用）
         let ev = serde_json::json!({
             "type": "extension_event",
             "extension": "memory",
@@ -1287,6 +1287,18 @@ async fn run_memory_processing(
         extracted.len(),
         saved
     );
+    // MemoryDistilled 事件：session 提炼完成后通知所有终端
+    if saved > 0 {
+        crate::file_snapshot::approval::emit_public_event(
+            "MemoryDistilled",
+            &serde_json::json!({
+                "sessionId": session_id,
+                "project": project_name,
+                "extracted": extracted.len(),
+                "saved": saved,
+            }),
+        );
+    }
     Ok(())
 }
 
