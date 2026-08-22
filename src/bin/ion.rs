@@ -4720,6 +4720,77 @@ async fn do_create_session(
     Ok(session_id)
 }
 
+/// `get_session_snapshot`：刷新/重连恢复用（设计文档 §3.2）。
+
+
+/// `get_session_snapshot`：刷新/重连恢复用（设计文档 §3.2）。
+/// 元数据 + workspace 信息 + worker 运行态 + 最近消息，一个接口拿全。
+async fn do_get_session_snapshot(
+    registry: &std::sync::Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>>,
+    source: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    use ion::session_workspace::WorkspaceStatus;
+
+    let session_id = source
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or("session_id is required")?;
+
+    // worker 运行态（null = 不在运行）
+    let worker = registry.lock().workers.values().find(|w| w.session_id == session_id).map(|w| {
+        serde_json::json!({
+            "workerId": w.worker_id,
+            "status": format!("{:?}", w.status).to_lowercase(),
+        })
+    });
+
+    // workspace 元数据（含运行态合并：worker Busy → running / Idle → idle）
+    let mut workspace = ion::session_workspace::WorkspaceSession::from_index(session_id);
+    if let (Some(ws), Some(w)) = (&mut workspace, &worker) {
+        let busy = w["status"] == "busy";
+        if ws.status == WorkspaceStatus::Ready {
+            ws.status = if busy { WorkspaceStatus::Running } else { WorkspaceStatus::Idle };
+        }
+    }
+
+    // 最近消息：直读 session JSONL（worker 不在运行也能恢复），取最后 N 条 message 类 entry。
+    // 子会话在 <sid>.jsonl，主会话在共享 session.jsonl——按 id 优先、共享兜底。
+    let session_file = ion::session_index::SessionIndex::load()
+        .get(session_id)
+        .and_then(|meta| meta.project.clone())
+        .map(|cwd| {
+            let by_id = ion::paths::session_jsonl_path_by_id(&cwd, session_id);
+            if by_id.exists() {
+                by_id
+            } else {
+                ion::paths::session_jsonl_path(&cwd)
+            }
+        });
+    let recent_messages: Vec<serde_json::Value> = session_file
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .map(|content| {
+            content
+                .lines()
+                .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+                .filter(|e| e.get("type").and_then(|t| t.as_str()) == Some("message"))
+                .collect::<Vec<_>>()
+        })
+        .map(|mut msgs| {
+            let n = msgs.len().saturating_sub(20);
+            msgs.drain(n..).collect()
+        })
+        .unwrap_or_default();
+
+    Ok(serde_json::json!({
+        "sessionId": session_id,
+        "workspace": workspace,
+        "worker": worker,
+        "messageCount": recent_messages.len(),
+        "recentMessages": recent_messages,
+    }))
+}
+
 async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_workers: usize) {
     use ion::worker_registry::WorkerRegistry;
     use std::sync::Arc;
@@ -5623,7 +5694,8 @@ async fn handle_manager_command_write(
                 }
             }
             let mut cfg: WorkerCreateConfig =
-                serde_json::from_value(cfg_source.clone()).unwrap_or_default();
+                serde_json::from_value(cfg_source.clone())
+                    .map_err(|e| format!("invalid create_worker params: {e}"))?;
             // 支持从 params 显式传 session（重建 worker 时保留 SID）
             if cfg.session.is_none() {
                 cfg.session = cfg_source
@@ -5647,13 +5719,31 @@ async fn handle_manager_command_write(
             // ⚠️ parking_lot: create_worker 内部有 .await（spawn 子进程等），
             // 不能持锁调用。改用 prepare_worker_spawn（不持锁）+ register_prepared_worker（sync）。
             match ion::worker_registry::WorkerRegistry::prepare_worker_spawn(&cfg).await {
-                Ok(prepared) => match registry.lock().register_prepared_worker(prepared, &cfg, &registry) {
-                    Ok(info) => Ok(serde_json::json!({
-                        "workerId": info.worker_id,
-                        "sessionId": info.session_id,
-                    })),
-                    Err(e) => Err(e),
-                },
+                Ok(prepared) => {
+                    // register 拿走所有权前抓 worktree 元数据（响应带给 caller，UI 渲染卡片用）
+                    let ws_meta = prepared.worktree_info.as_ref().map(|w| {
+                        serde_json::json!({
+                            "worktree_path": w.path,
+                            "worktree_branch": w.branch,
+                        })
+                    });
+                    match registry.lock().register_prepared_worker(prepared, &cfg, &registry) {
+                        Ok(info) => {
+                            let mut data = serde_json::json!({
+                                "workerId": info.worker_id,
+                                "sessionId": info.session_id,
+                            });
+                            if let Some(ws) = ws_meta
+                                && let Some(obj) = data.as_object_mut()
+                            {
+                                obj.insert("worktree_path".to_string(), ws["worktree_path"].clone());
+                                obj.insert("worktree_branch".to_string(), ws["worktree_branch"].clone());
+                            }
+                            Ok(data)
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
                 Err(e) => Err(e),
             }
         }
@@ -5718,6 +5808,75 @@ async fn handle_manager_command_write(
                 .collect();
             Ok(serde_json::json!({"sessions": sessions, "totalCount": sessions.len()}))
         }
+        // 对外 API：搜索 session（标题匹配 + 可选内容搜索）
+        // params: { query: string, searchContent?: bool, limit?: number }
+        "search_sessions" => {
+            let source = if cmd.get("params").map(|v| v.is_object()).unwrap_or(false) {
+                cmd.get("params").cloned().unwrap_or_default()
+            } else {
+                cmd.clone()
+            };
+            let query = source.get("query").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+            let search_content = source.get("searchContent").and_then(|v| v.as_bool()).unwrap_or(false);
+            let limit = source.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+            if query.is_empty() { return Err("missing 'query'".to_string()); }
+            let index = ion::session_index::SessionIndex::load();
+            let mut results: Vec<serde_json::Value> = Vec::new();
+            for (id, meta) in &index.sessions {
+                let title_match = meta.name.as_ref().map_or(false, |n| n.to_lowercase().contains(&query))
+                    || meta.first_name.as_ref().map_or(false, |n| n.to_lowercase().contains(&query))
+                    || meta.project.as_ref().map_or(false, |p| p.to_lowercase().contains(&query));
+                let mut content_matches: Vec<String> = Vec::new();
+                let mut total_hits = 0u64;
+                if search_content {
+                    // 逐 session 目录查找（不依赖 cwd 字段，直接扫 sessions_dir）
+                    let sdir = ion::paths::sessions_dir();
+                    if let Ok(entries) = std::fs::read_dir(&sdir) {
+                        for entry in entries.flatten() {
+                            let f = entry.path().join(format!("{id}.jsonl"));
+                            if f.exists() {
+                                if let Ok(content) = std::fs::read_to_string(&f) {
+                                    for line in content.lines() {
+                                        if line.to_lowercase().contains(&query) {
+                                            total_hits += 1;
+                                            if content_matches.len() < 3 {
+                                                if let Some(pos) = line.to_lowercase().find(&query) {
+                                                    let s = pos.saturating_sub(30);
+                                                    let e = (pos + query.len() + 30).min(line.len());
+                                                    content_matches.push(line[s..e].to_string());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if total_hits > 0 { break; }
+                        }
+                    }
+                }
+                if title_match || total_hits > 0 {
+                    results.push(serde_json::json!({
+                        "id": id,
+                        "name": meta.name.as_deref().unwrap_or(""),
+                        "firstMessage": meta.first_name.as_deref().unwrap_or(""),
+                        "project": meta.project.as_deref().unwrap_or(""),
+                        "model": meta.model, "messageCount": meta.message_count,
+                        "updatedAt": meta.updated_at,
+                        "matchType": if title_match {"title"} else {"content"},
+                        "contentHits": total_hits, "snippets": content_matches,
+                    }));
+                    if results.len() >= limit { break; }
+                }
+            }
+            results.sort_by(|a, b| {
+                let at = a["matchType"].as_str() == Some("title");
+                let bt = b["matchType"].as_str() == Some("title");
+                bt.cmp(&at)
+                    .then(b["contentHits"].as_u64().cmp(&a["contentHits"].as_u64()))
+                    .then(b["updatedAt"].as_u64().cmp(&a["updatedAt"].as_u64()))
+            });
+            Ok(serde_json::json!({"results": results, "totalMatches": results.len(), "query": query, "searchContent": search_content}))
+        }
         // 对外 API：创建 session（自动 spawn worker，返回 session_id）
         "create_session" => {
             // 兼容嵌套格式（RPC client）和扁平（stdin）
@@ -5742,6 +5901,14 @@ async fn handle_manager_command_write(
             }
         }
         "get_overview" => Ok(registry.lock().get_overview()),
+        "get_session_snapshot" => {
+            let source = if cmd.get("params").map(|v| v.is_object()).unwrap_or(false) {
+                cmd.get("params").cloned().unwrap_or_default()
+            } else {
+                cmd.clone()
+            };
+            do_get_session_snapshot(&registry, &source).await
+        }
         "send" | "send_to_session" => {
             let session = cmd.get("session").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let rpc_method = cmd
@@ -5800,14 +5967,32 @@ async fn handle_manager_command_write(
             .map(|_| serde_json::json!({"queued": true}))
         }
         "kill" | "kill_worker" => {
-            let target = cmd
+            // 兼容嵌套 params（RPC client）与扁平（stdin）两种格式
+            let source = if cmd.get("params").map(|v| v.is_object()).unwrap_or(false) {
+                cmd.get("params").cloned().unwrap_or_default()
+            } else {
+                cmd.clone()
+            };
+            let target = source
                 .get("workerId")
                 .and_then(|v| v.as_str())
-                .or_else(|| cmd.get("target").and_then(|v| v.as_str()))
+                .or_else(|| source.get("target").and_then(|v| v.as_str()))
+                .or_else(|| cmd.get("workerId").and_then(|v| v.as_str()))
                 .unwrap_or("")
                 .to_string();
-            registry.lock().kill_worker(&target)
-                .map(|_| serde_json::json!({"killed": true}))
+            // worktree 清理策略：默认删目录留分支（对齐 workspace 语义）
+            let cleanup_worktree = source
+                .get("cleanupWorktree")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let delete_branch = source
+                .get("deleteBranch")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            registry
+                .lock()
+                .kill_worker_inner(&target, cleanup_worktree, delete_branch)
+                .map(|_| serde_json::json!({"killed": true, "cleanupWorktree": cleanup_worktree, "deleteBranch": delete_branch}))
         }
         "reap_workers" | "gc_workers" => {
             // 手动清理 Dead + 超时 Stale worker，返回清理数量。

@@ -656,6 +656,11 @@ fn now_ts() -> u64 {
 /// 事件经 Worker stdout → Manager event-pump → ExtensionEventBus → CLI subscribe
 /// customType: ApprovalRequest（有待审批）/ ApprovalResolved（审批完成）/ ApprovalReset（re-approval 重置）
 fn emit_approval_event(custom_type: &str, data: &serde_json::Value) {
+    emit_public_event(custom_type, data);
+}
+
+/// 公开的事件发射：任何模块都可用（restore_files / extension / mcp 等）
+pub fn emit_public_event(custom_type: &str, data: &serde_json::Value) {
     let msg = serde_json::json!({
         "type": "event",
         "event": {

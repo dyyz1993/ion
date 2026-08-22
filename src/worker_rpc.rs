@@ -3603,10 +3603,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             "success": true, "data": output,
                         }),
                     ),
-                    Err(e) => output(&serde_json::json!({
-                        "type": "response", "id": id, "success": false,
-                        "error": format!("permission_store_decision: {e}"),
-                    })),
+                    Err(e) => output_error_response(&id, "permission_store_decision", &format!("permission_store_decision: {e}")),
                 }
             }
             "permission_list_stored" => {
@@ -3621,10 +3618,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             "success": true, "data": output,
                         }),
                     ),
-                    Err(e) => output(&serde_json::json!({
-                        "type": "response", "id": id, "success": false,
-                        "error": format!("permission_list_stored: {e}"),
-                    })),
+                    Err(e) => output_error_response(&id, "permission_list_stored", &format!("permission_list_stored: {e}")),
                 }
             }
             "permission_remove_stored" => {
@@ -3639,10 +3633,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             "success": true, "data": output,
                         }),
                     ),
-                    Err(e) => output(&serde_json::json!({
-                        "type": "response", "id": id, "success": false,
-                        "error": format!("permission_remove_stored: {e}"),
-                    })),
+                    Err(e) => output_error_response(&id, "permission_remove_stored", &format!("permission_remove_stored: {e}")),
                 }
             }
             "permission_clear_stored" => {
@@ -3657,10 +3648,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             "success": true, "data": output,
                         }),
                     ),
-                    Err(e) => output(&serde_json::json!({
-                        "type": "response", "id": id, "success": false,
-                        "error": format!("permission_clear_stored: {e}"),
-                    })),
+                    Err(e) => output_error_response(&id, "permission_clear_stored", &format!("permission_clear_stored: {e}")),
                 }
             }
             "set_auto_retry" => {
@@ -3762,10 +3750,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             "method": rpc_method, "output": output,
                         }),
                     ),
-                    Err(e) => output(&serde_json::json!({
-                        "type": "response", "id": id, "success": false,
-                        "error": format!("extension_rpc {rpc_method}: {e}"),
-                    })),
+                    Err(e) => output_error_response(&id, "extension_rpc", &format!("extension_rpc {rpc_method}: {e}")),
                 }
             }
             "call_tool" => {
@@ -3792,10 +3777,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             "tool": tool_name, "output": result,
                         }),
                     ),
-                    Err(e) => output(&serde_json::json!({
-                        "type": "response", "id": id, "success": false,
-                        "error": format!("call_tool {tool_name}: {e}"),
-                    })),
+                    Err(e) => output_error_response(&id, "call_tool", &format!("call_tool {tool_name}: {e}")),
                 }
             }
             "drain_follow_ups" => {
@@ -4299,6 +4281,16 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 } else if let Some(ref store) = snapshot_store {
                     let result =
                         crate::file_snapshot::restore::restore_code_to_turn(store, to_turn);
+                    // FilesRestored 事件：回滚完成后通知所有终端同步
+                    crate::file_snapshot::approval::emit_public_event(
+                        "FilesRestored",
+                        &serde_json::json!({
+                            "toTurn": to_turn,
+                            "restored": result.summary.restored,
+                            "deleted": result.summary.deleted,
+                            "skipped": result.summary.skipped,
+                        }),
+                    );
                     output_response(
                         &id,
                         "restore_files",
@@ -4484,12 +4476,26 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 if let Some(ref mgr) = approval_mgr {
                     let results = mgr.approve_all();
                     let ok_count = results.iter().filter(|r| r.is_ok()).count();
-                    let err_count = results.len() - ok_count;
+                    // failures[]：部分失败的明细（path + 原因）
+                    let failures: Vec<serde_json::Value> = results
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, r)| r.is_err())
+                        .map(|(i, r)| {
+                            serde_json::json!({
+                                "index": i,
+                                "error": r.as_ref().err().map(|e| e.to_string()).unwrap_or_default(),
+                            })
+                        })
+                        .collect();
                     output_response(
                         &id,
                         "review_approve_all",
                         &serde_json::json!({
-                            "approved": ok_count, "errors": err_count, "total": results.len(),
+                            "approved": ok_count,
+                            "errors": results.len() - ok_count,
+                            "total": results.len(),
+                            "failures": failures,
                         }),
                     );
                 } else {
@@ -4740,6 +4746,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false)
                         {
+                            // McpServerStatusChanged 事件
+                            crate::file_snapshot::approval::emit_public_event(
+                                "McpServerStatusChanged",
+                                &serde_json::json!({"name": name, "enabled": enabled}),
+                            );
                             output_response(
                                 &id,
                                 "mcp_toggle_server",
@@ -5068,6 +5079,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             }));
                         }
                         let names: Vec<&str> = tool_defs.iter().map(|t| t.name.as_str()).collect();
+                        // ExtensionListChanged 事件
+                        crate::file_snapshot::approval::emit_public_event(
+                            "ExtensionListChanged",
+                            &serde_json::json!({"action":"add","path":canonical_str,"tools":names}),
+                        );
                         output_response(&id, "extension_add", &serde_json::json!({"tools": names}));
                     }
                     Err(e) => {
@@ -5087,6 +5103,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         for name in &tool_names {
                             agent.remove_tool(name);
                         }
+                        // ExtensionListChanged 事件
+                        crate::file_snapshot::approval::emit_public_event(
+                            "ExtensionListChanged",
+                            &serde_json::json!({"action":"remove","path":path,"removed_tools":tool_names}),
+                        );
                         output_response(
                             &id,
                             "extension_remove",
@@ -5614,13 +5635,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 if !reply_to.is_empty() {
                     manager_bridge.deliver_response(&reply_to, cmd).await;
                 } else {
-                    output(&serde_json::json!({
-                        "id": id,
-                        "type": "response",
-                        "command": method,
-                        "success": false,
-                        "error": format!("Unknown command: {method}")
-                    }));
+                    output_error_response(&id, &method, &format!("Unknown command: {method}"));
                 }
             }
         }
@@ -6431,6 +6446,7 @@ fn output_response(id: &str, command: &str, data: &serde_json::Value) {
         "success": true,
         "data": data,
     }));
+    emit_rpc_response_event(id, command, true, None);
 }
 
 fn output_error_response(id: &str, command: &str, error: &str) {
@@ -6441,6 +6457,33 @@ fn output_error_response(id: &str, command: &str, error: &str) {
         "success": false,
         "error": error,
     }));
+    emit_rpc_response_event(id, command, false, Some(error));
+}
+
+/// 每条用户触发的 RPC 完成后广播一条 `rpc_response` 事件。
+///
+/// 目的：多终端实时同步——所有 UI 对同一个 worker 发起的任何操作（点击审批、
+/// 切模型、改权限、查询刷新……）都会以事件形式广播，其他终端无需轮询即可感知。
+/// 只带摘要（method/id/success/error 截断），不带响应体——get_messages 等响应
+/// 可达几十 MB，进事件流会把慢订阅者挤掉（EventBus bounded 1000 条）。
+fn emit_rpc_response_event(id: &str, command: &str, success: bool, error: Option<&str>) {
+    let session_id = SESSION_SID
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_default();
+    let mut event = serde_json::json!({
+        "type": "rpc_response",
+        "id": id,
+        "method": command,
+        "success": success,
+        "sessionId": session_id,
+        "timestamp": now_ms(),
+    });
+    if let Some(err) = error {
+        event["error"] = serde_json::Value::String(err.chars().take(200).collect());
+    }
+    output(&serde_json::json!({ "type": "event", "event": event }));
 }
 
 // ---------------------------------------------------------------------------
