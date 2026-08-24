@@ -79,6 +79,7 @@ pub mod session_gc;
 pub mod session_index;
 pub mod session_jsonl;
 pub mod session_tree;
+pub mod session_workspace;
 pub mod storage_context;
 pub mod wasm_extension;
 pub mod worker;

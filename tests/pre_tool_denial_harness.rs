@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 use ion::agent::agent_loop::{Agent, AgentConfig};
 use ion::agent::error::{AgentError, AgentResult};
-use ion::agent::extension::{Extension, ExtensionRegistry};
+use ion::agent::extension::{Extension, ExtensionRunner};
 use ion::agent::messages::Message;
 use ion::agent::tool::{Tool, ToolRegistry};
 use ion_provider::faux;
@@ -112,7 +112,7 @@ async fn pre_tool_veto_becomes_error_tool_result_and_agent_continues() {
         executions: executions.clone(),
     }));
 
-    let mut extensions = ExtensionRegistry::new();
+    let mut extensions = ExtensionRunner::new();
     extensions.register(Box::new(DenyBeforeTool));
 
     let config = AgentConfig {

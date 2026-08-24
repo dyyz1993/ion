@@ -880,6 +880,7 @@ impl Extension for MonitorExtension {
                                 tokio::spawn(async move {
                                     let _ac = ActiveGuard::new(ac, ac_name.clone());
                                     let cfg = crate::worker_registry::WorkerCreateConfig {
+                                        require_clean: None,
                                         agent: Some(agent_for_spawn.clone()),
                                         model: None,
                                         provider: None,

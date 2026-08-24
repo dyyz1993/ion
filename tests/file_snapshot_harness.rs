@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use ion::agent::agent_loop::{Agent, AgentConfig};
 use ion::agent::extension::Extension;
-use ion::agent::extension::ExtensionRegistry;
+use ion::agent::extension::ExtensionRunner;
 use ion::agent::messages::Message;
 use ion::agent::tool::{ToolRegistry, WriteTool};
 use ion::file_snapshot::{
@@ -135,7 +135,7 @@ fn build_agent(
     let (fs_ext, store) = FileSnapshotExtension::new_pair_with_cwd(cwd);
     let storage = StorageContext::new(cwd, "fs_harness_sess", cwd);
     let mgr = Arc::new(ApprovalManager::new(store.clone(), storage));
-    let mut ext_reg = ExtensionRegistry::new();
+    let mut ext_reg = ExtensionRunner::new();
     ion::session_jsonl::ensure_session_header(cwd, "fs_harness_sess");
     ext_reg.register(Box::new(HarnessSessionPersistence {
         cwd: cwd.to_string(),

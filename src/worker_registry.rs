@@ -306,6 +306,17 @@ impl WorkerRegistry {
         // 导致 socket handler 无法响应 RPC。
         let (worktree_path, worktree_info) = if let Some(ref wt_config) = config.worktree {
             let repo = std::path::Path::new(&project_path);
+            // require_clean：已是 git 仓库且工作区有未提交改动 → 拒绝（防脏状态进基准）
+            if config.require_clean.unwrap_or(false) && repo.join(".git").exists() {
+                let status = tokio::process::Command::new("git")
+                    .args(["-C", &project_path, "status", "--porcelain"])
+                    .output()
+                    .await
+                    .map_err(|e| format!("git status failed: {e}"))?;
+                if !status.stdout.is_empty() {
+                    return Err("source branch has uncommitted changes".to_string());
+                }
+            }
             if !repo.join(".git").exists() {
                 tracing::info!("[worktree] project is not a git repo, initializing");
                 let init = tokio::process::Command::new("git")
@@ -457,7 +468,13 @@ impl WorkerRegistry {
         // ── Spawn child process (SLOW: fork+exec, 50-200ms) ──
         let mut child = child_cmd
             .spawn()
-            .map_err(|e| format!("failed to spawn worker: {e}"))?;
+            .map_err(|e| {
+                // 回滚：worktree 已建但子进程起不来 → 清掉半成品（分支保留）
+                if let Some(wt) = &worktree_info {
+                    let _ = remove_worktree(&wt.path, &wt.source_repo);
+                }
+                format!("failed to spawn worker: {e}")
+            })?;
 
         let stdin = child.stdin.take().ok_or("no stdin")?;
         let stdout = child.stdout.take().ok_or("no stdout")?;
@@ -506,6 +523,16 @@ impl WorkerRegistry {
         let (worktree_path, worktree_info) = if let Some(ref wt_config) = config.worktree {
             // 如果请求了 worktree 隔离，先确保项目是 git 仓库
             let repo = std::path::Path::new(&project_path);
+            // require_clean：已是 git 仓库且工作区有未提交改动 → 拒绝
+            if config.require_clean.unwrap_or(false) && repo.join(".git").exists() {
+                let status = std::process::Command::new("git")
+                    .args(["-C", &project_path, "status", "--porcelain"])
+                    .output()
+                    .map_err(|e| format!("git status failed: {e}"))?;
+                if !status.stdout.is_empty() {
+                    return Err("source branch has uncommitted changes".to_string());
+                }
+            }
             if !repo.join(".git").exists() {
                 tracing::info!("[worktree] project is not a git repo, initializing");
                 let init = std::process::Command::new("git")
@@ -713,7 +740,13 @@ impl WorkerRegistry {
 
         let mut child = child_cmd
             .spawn()
-            .map_err(|e| format!("failed to spawn worker: {e}"))?;
+            .map_err(|e| {
+                // 回滚：worktree 已建但子进程起不来 → 清掉半成品（分支保留）
+                if let Some(wt) = &worktree_info {
+                    let _ = remove_worktree(&wt.path, &wt.source_repo);
+                }
+                format!("failed to spawn worker: {e}")
+            })?;
 
         let stdin = child.stdin.take().ok_or("no stdin")?;
         let stdout = child.stdout.take().ok_or("no stdout")?;
@@ -772,7 +805,7 @@ impl WorkerRegistry {
             pending: HashMap::new(),
             event_subscribers: Vec::new(),
             parent_event_tx: parent_tx,
-            worktree: worktree_info,
+            worktree: worktree_info.clone(),
             latest_output: VecDeque::with_capacity(5),
             log_short: None,
             model_size: None,
@@ -829,6 +862,11 @@ impl WorkerRegistry {
             record.stderr_path = Some(stderr_path.to_string_lossy().to_string());
         }
 
+        // worktree 快照（索引写入用；worktree_info 稍后被 move 进 record）
+        let worktree_branch_snapshot = worktree_info.as_ref().map(|w| w.branch.clone());
+        let worktree_path_snapshot = worktree_info.as_ref().map(|w| w.path.clone());
+        let worktree_info_present = worktree_info.is_some();
+
         // ── 写 SessionIndex（让 ion --resume / --rollback 能通过 SID 找到 session 文件）──
         // serve 模式的 create_session → create_worker 之前不写 index，
         // 导致 CLI 层的 --resume/--rollback 找不到 session（依赖 index 查 cwd）。
@@ -862,7 +900,9 @@ impl WorkerRegistry {
                     project: Some(worktree_path.clone()),
                     project_name: Some(project_name.clone()),
                     worktree: config.worktree.is_some(),
-                    branch: None,
+                    branch: worktree_branch_snapshot.clone(),
+                    workspace_path: worktree_path_snapshot.clone(),
+                    workspace_status: worktree_info_present.then(|| "ready".to_string()),
                     model: model.clone(),
                     agent: agent_name.clone(),
                     provider: provider.clone(),
@@ -1069,13 +1109,14 @@ impl WorkerRegistry {
                             // 也能收到 text_delta / agent_start / agent_end / tool_execution_*。
                             // 对齐 pi 的全局流式行为。此时 reg 已 drop，bus_clone 和
                             // session_id_for_bus 是之前 clone 出来的（不依赖 reg 锁）。
+                            // rpc_response：用户触发的每条 RPC 都广播（多终端实时同步）。
                             let _ = stream_debug; // 抑制未使用警告
                             if let Some(bus) = bus_clone
                                 && matches!(
                                     ev_type,
                                     "text_delta" | "agent_start" | "agent_end" | "agent_stopped"
                                         | "tool_execution_start" | "tool_execution_end"
-                                        | "tool_call" | "tool_call_delta"
+                                        | "tool_call" | "tool_call_delta" | "rpc_response"
                                 )
                             {
                                 let mut event = crate::event_bus::ExtensionEvent::new(
@@ -1270,6 +1311,17 @@ impl WorkerRegistry {
             "project": info.project,
             "parent": info.parent,
         }));
+        // 任何会话产生必广播到 EventBus（session_created）：接收方接不接收是它的事
+        self.broadcast_ui_event(
+            "session_created",
+            serde_json::json!({
+                "sessionId": info.session_id,
+                "workerId": info.worker_id,
+                "project": info.project,
+                "parentSession": info.parent,
+            }),
+            Some(&info.session_id),
+        );
         self.emit_global(serde_json::json!({
             "type": "project_changed",
             "project": info.project,
@@ -1356,6 +1408,7 @@ impl WorkerRegistry {
     ) -> Result<WorkerInfo, String> {
         let worker_id = spawn.worker_id.clone();
         let session_id = spawn.session_id.clone();
+        let ws_info = spawn.worktree_info.clone();
         let project_name = spawn.project_name.clone();
         let project_path = spawn.project_path.clone();
         let worktree_path = spawn.worktree_path.clone();
@@ -1494,7 +1547,9 @@ impl WorkerRegistry {
                     project: Some(worktree_path.clone()),
                     project_name: Some(project_name.clone()),
                     worktree: config.worktree.is_some(),
-                    branch: None,
+                    branch: ws_info.as_ref().map(|w| w.branch.clone()),
+                    workspace_path: ws_info.as_ref().map(|w| w.path.clone()),
+                    workspace_status: ws_info.as_ref().map(|_| "ready".to_string()),
                     model: model.clone(),
                     agent: agent_name.clone(),
                     provider: provider.clone(),
@@ -1870,6 +1925,118 @@ impl WorkerRegistry {
             });
         }
 
+        // 任何会话产生必广播到 EventBus（session_created）——锁拆分快速路径的发射点
+        self.broadcast_ui_event(
+            "session_created",
+            serde_json::json!({
+                "sessionId": info.session_id,
+                "workerId": info.worker_id,
+                "project": info.project,
+                "parentSession": info.parent,
+            }),
+            Some(&info.session_id),
+        );
+        // worktree 子会话：统一持久化 + workspace_session_created 事件
+        // （无论 LLM spawn、create_worker RPC 还是 create_session 触发，同一条管线）
+        if let Some(wt) = &ws_info {
+            // creator 可为 worker id 或 session id（host RPC 传 session id，bridge 传 worker id）
+            let parent_sid = config.creator.as_ref().and_then(|c| {
+                self.workers
+                    .get(c)
+                    .map(|w| w.session_id.clone())
+                    .or_else(|| {
+                        self.workers
+                            .values()
+                            .find(|w| &w.session_id == c)
+                            .map(|w| w.session_id.clone())
+                    })
+            });
+            let title: String = config
+                .initial_prompt
+                .as_deref()
+                .map(|p: &str| p.chars().take(24).collect::<String>())
+                .filter(|s: &String| !s.is_empty())
+                .unwrap_or_else(|| wt.branch.clone());
+            let ws = crate::session_workspace::WorkspaceSession {
+                session_id: session_id.clone(),
+                parent_session_id: parent_sid.clone().unwrap_or_default(),
+                project_path: wt.source_repo.clone(),
+                workspace_path: wt.path.clone(),
+                branch: wt.branch.clone(),
+                base_ref: config.worktree.as_ref().and_then(|w| w.base.clone()),
+                title,
+                status: crate::session_workspace::WorkspaceStatus::Ready,
+                route: format!("#/sessions/{session_id}"),
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
+                error: None,
+            };
+            let _ = ws.upsert_index(); // 存储落位原则：热字段进 SessionIndex
+            // 原则另一半：完整可还原细节以 custom entry 留痕进**父会话** JSONL
+            // （创建是父时间线的事件且父文件必然存在；子会话文件此刻尚未由 worker 创建）
+            // 注意：WorkerRecord.project 是项目名不是路径——父 cwd 只从 SessionIndex 取（真路径）
+            let parent_cwd = parent_sid
+                .as_ref()
+                .and_then(|ps| {
+                    crate::session_index::SessionIndex::load()
+                        .get(ps)
+                        .and_then(|m| m.project.clone())
+                });
+            if let (Some(pc), Some(ps)) = (&parent_cwd, &parent_sid) {
+                // register 时刻父会话文件可能尚未写 header（worker 异步初始化）→ 延迟重试追加
+                let file = crate::paths::session_jsonl_path_by_id(pc, ps);
+                let data = serde_json::json!({
+                    "event": "created",
+                    "sessionId": ws.session_id,
+                    "parentSessionId": ws.parent_session_id,
+                    "projectPath": ws.project_path,
+                    "branch": ws.branch,
+                    "baseRef": ws.base_ref,
+                    "title": ws.title,
+                    "route": ws.route,
+                    "createdAt": ws.created_at,
+                });
+                let sid_for_log = session_id.clone();
+                tokio::spawn(async move {
+                    for _ in 0..8 {
+                        if file.exists()
+                            && crate::session_jsonl::append_custom_entry_to_file(
+                                &file,
+                                "workspace_session",
+                                data.clone(),
+                            )
+                            .is_some()
+                        {
+                            return;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    }
+                    tracing::warn!("[workspace] JSONL 创建留痕失败: session={sid_for_log}");
+                });
+            }
+            if let Some(psid) = parent_sid {
+                let payload = serde_json::json!({ "workspaceSession": ws });
+                let evt = serde_json::json!({
+                    "type": "event",
+                    "event": {
+                        "type": "extension_event",
+                        "extension": "workspace",
+                        "customType": "workspace_session_created",
+                        "visibility": "llm_and_ui",
+                        "session": psid,
+                        "data": payload,
+                    },
+                });
+                let _ = self.push_session_event(&psid, evt);
+                self.broadcast_ui_event(
+                    "workspace_session_created",
+                    payload,
+                    Some(&psid),
+                );
+            }
+        }
         self.broadcast_overview();
         Ok(info)
     }
@@ -1907,6 +2074,19 @@ impl WorkerRegistry {
     }
 
     pub fn kill_worker(&mut self, worker_id: &str) -> Result<(), String> {
+        self.kill_worker_inner(worker_id, true, false)
+    }
+
+    /// kill_worker 的可控变体：
+    /// - cleanup_worktree=false 时保留 worktree 目录
+    /// - delete_branch=true 时连分支一起删（要求目录已清理）
+    /// workspace 会话（store 有记录）关闭时自动落盘 closed + 广播事件。
+    pub fn kill_worker_inner(
+        &mut self,
+        worker_id: &str,
+        cleanup_worktree: bool,
+        delete_branch: bool,
+    ) -> Result<(), String> {
         if let Some(mut record) = self.workers.remove(worker_id) {
             // Capture info for event emission before consuming record
             let killed_worker_id = record.worker_id.clone();
@@ -1940,6 +2120,16 @@ impl WorkerRegistry {
                 "project": killed_project,
                 "parent": killed_parent,
             }));
+            // 会话终止同样广播（对称性：产生必推，终止也必推）
+            self.broadcast_ui_event(
+                "session_closed",
+                serde_json::json!({
+                    "sessionId": killed_session,
+                    "workerId": killed_worker_id,
+                    "project": killed_project,
+                }),
+                Some(&killed_session),
+            );
             self.emit_global(serde_json::json!({
                 "type": "project_changed",
                 "project": killed_project,
@@ -1951,8 +2141,77 @@ impl WorkerRegistry {
             self.broadcast_overview();
 
             // Clean up worktree directory if present (branch preserved)
-            if let Some(ref wt) = wt_info {
+            if cleanup_worktree
+                && let Some(ref wt) = wt_info
+            {
                 let _ = remove_worktree(&wt.path, &wt.source_repo);
+                // 分支删除仅在与目录清理同时请求时生效（目录留着时分支被 checkout 无法删）
+                if delete_branch {
+                    let _ = std::process::Command::new("git")
+                        .args(["-C", &wt.source_repo, "branch", "-D", &wt.branch])
+                        .output();
+                }
+            }
+            // workspace 会话关闭：落盘 closed + 广播（store 无记录则跳过——非 workspace 的普通 kill 不受影响）
+            if wt_info.is_some() {
+                if let Some(mut ws) = crate::session_workspace::WorkspaceSession::from_index(&killed_session) {
+                    if ws.status != crate::session_workspace::WorkspaceStatus::Closed {
+                        ws.status = crate::session_workspace::WorkspaceStatus::Closed;
+                        let _ = ws.upsert_index();
+                        // 关闭事件同样留痕父会话 JSONL（重放可还原清理策略）
+                        let parent_cwd = crate::session_index::SessionIndex::load()
+                            .get(&ws.parent_session_id)
+                            .and_then(|m| m.project.clone());
+                        if let Some(pc) = parent_cwd {
+                            let pfile = crate::paths::session_jsonl_path_by_id(
+                                &pc,
+                                &ws.parent_session_id,
+                            );
+                            let _ = crate::session_jsonl::append_custom_entry_to_file(
+                                &pfile,
+                                "workspace_session",
+                                serde_json::json!({
+                                    "event": "closed",
+                                    "sessionId": killed_session,
+                                    "cleanupWorktree": cleanup_worktree,
+                                    "deleteBranch": delete_branch,
+                                    "branchPreserved": !delete_branch,
+                                }),
+                            );
+                        }
+                        let branch_preserved = wt_info
+                            .as_ref()
+                            .map(|w| !delete_branch)
+                            .unwrap_or(true);
+                        // 双路推送：EventBus（ui 订阅者）+ 父会话实例流（subscribe --session 父）
+                        let payload = serde_json::json!({
+                            "sessionId": killed_session,
+                            "cleanupWorktree": cleanup_worktree,
+                            "deleteBranch": delete_branch,
+                            "branchPreserved": branch_preserved,
+                        });
+                        let parent_sid = ws.parent_session_id.clone();
+                        if !parent_sid.is_empty() {
+                            let evt = serde_json::json!({
+                                "type": "event",
+                                "event": {
+                                    "type": "extension_event",
+                                    "extension": "workspace",
+                                    "customType": "workspace_session_closed",
+                                    "visibility": "llm_and_ui",
+                                    "session": parent_sid,
+                                    "data": payload,
+                                },
+                            });
+                            let _ = self.push_session_event(&parent_sid, evt);
+                        }
+                        self.broadcast_ui_event(
+                            "workspace_session_closed",
+                            payload,
+                            Some(&killed_session),
+                        );
+                    }
+                }
             }
 
             Ok(())
@@ -2020,6 +2279,7 @@ impl WorkerRegistry {
         // Phase 2: worker not found → auto-start. Lock briefly to create.
         tracing::info!("[session] auto-starting worker for {session_id}");
         let config = WorkerCreateConfig {
+            require_clean: None,
             worktree: None,
             session: Some(session_id.to_string()),
             project_path: None,
@@ -2126,6 +2386,36 @@ impl WorkerRegistry {
             Vec::new()
         };
         Ok((rx, history))
+    }
+
+    /// 向指定 session 的实例事件流注入 host 级事件（workspace_session_* 等）。
+    /// 同时写入 event_history，让后续 subscribe --replay 能回放到。
+    /// 该 session 的 worker 不在运行时返回 Err（无实例流可投递，调用方降级 EventBus）。
+    pub fn push_session_event(
+        &mut self,
+        session_id: &str,
+        event: serde_json::Value,
+    ) -> Result<(), String> {
+        // 同一 session 可能存在多个 worker 记录（如 prompt 自动复活产生的新旧两条），
+        // 必须推给所有匹配者——只推第一个会把事件投进没有订阅者的死缓冲。
+        let mut delivered = false;
+        for record in self.workers.values_mut() {
+            if record.session_id == session_id {
+                for sub in &record.event_subscribers {
+                    let _ = sub.try_send(event.clone());
+                }
+                record.event_history.push_back(event.clone());
+                while record.event_history.len() > record.event_history_cap {
+                    record.event_history.pop_front();
+                }
+                delivered = true;
+            }
+        }
+        if delivered {
+            Ok(())
+        } else {
+            Err(format!("worker not found for session: {session_id}"))
+        }
     }
 
     /// 非阻塞发送命令（只写 stdin，返回 req_id）。
@@ -2663,8 +2953,23 @@ impl WorkerRegistry {
                         .unwrap_or(WorkerRelation::Child);
                     let wait = params.get("wait").and_then(|v| v.as_bool()).unwrap_or(true);
 
-                    let mut config: WorkerCreateConfig =
-                        serde_json::from_value(params).unwrap_or_default();
+                    // 坏参数必须响亮失败（旧实现 unwrap_or_default 会静默丢掉
+                    // worktree/initial_prompt/project_path，RPC 却报成功）
+                    let mut config = match serde_json::from_value::<WorkerCreateConfig>(params) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            let err = format!("invalid create_worker params: {e}");
+                            tracing::warn!("[create_worker] {err}");
+                            self.write_manager_response(
+                                &from_worker,
+                                serde_json::json!({
+                                    "_reply_to": reply_to, "success": false, "error": err,
+                                }),
+                            )
+                            .await;
+                            continue;
+                        }
+                    };
                     // 把 from_worker（spawn 调用者）注入 config.creator 和 config.parent，
                     // 让 create_worker 内部能查到 parent_session_id 并传给子进程环境变量。
                     // 入口 Worker（host 直接 create_session 创建的）没有 from_worker → creator/parent 保持 None。
@@ -2689,6 +2994,16 @@ impl WorkerRegistry {
                     let cfg_clone = config.clone();
                     match Self::prepare_worker_spawn(&cfg_clone).await {
                         Ok(prepared) => {
+                            // 在 register 拿走所有权前抓取 worktree 元数据（响应要带给 caller）
+                            let ws_meta = prepared.worktree_info.as_ref().map(|w| {
+                                serde_json::json!({
+                                    "worktree_path": w.path,
+                                    "worktree_branch": w.branch,
+                                })
+                            });
+                            // LLM 路径（spawn_worker worktree:true）与显式 create_workspace_session
+                            // 统一：worktree 子会话同样持久化 + 发 workspace_session_created 事件，
+                            // 让"输入框一句话"也能驱动卡片/侧栏（SESSION_WORKSPACE_CHAT §2.3）
                             // register 持短锁
                             let info_result = self.register_prepared_worker(prepared, &config, registry_arc);
                             match info_result {
@@ -2696,6 +3011,18 @@ impl WorkerRegistry {
                                     let child_id = info.worker_id.clone();
                                     let session_id = info.session_id.clone();
                                     let creator_id = from_worker.clone();
+                                    // worktree 元数据注入：让 caller（父 Worker / UI）知道
+                                    // 工作空间目录和分支，而不是拿到一个黑盒 worker_id
+                                    let with_ws = |mut v: serde_json::Value| -> serde_json::Value {
+                                        if let Some(ws) = ws_meta.as_ref()
+                                            && let Some(obj) =
+                                                v.get_mut("data").and_then(|d| d.as_object_mut())
+                                        {
+                                            obj.insert("worktree_path".to_string(), ws["worktree_path"].clone());
+                                            obj.insert("worktree_branch".to_string(), ws["worktree_branch"].clone());
+                                        }
+                                        v
+                                    };
 
                             match (relation, wait) {
                                 (WorkerRelation::Child, true) => {
@@ -2717,6 +3044,10 @@ impl WorkerRegistry {
                                             "status": "first_turn_completed",
                                             "output_field": "first_turn_output",
                                             "rx_present": rx_opt.is_some(),
+                                            "worktree_path": ws_meta.as_ref()
+                                                .and_then(|w| w.get("worktree_path")).cloned(),
+                                            "worktree_branch": ws_meta.as_ref()
+                                                .and_then(|w| w.get("worktree_branch")).cloned(),
                                         }
                                     }));
                                     // 注意：rx_opt 不能跨 await 边界传给 task（lifetime），
@@ -2726,7 +3057,7 @@ impl WorkerRegistry {
                                 (WorkerRelation::Child, false) => {
                                     self.write_manager_response(
                                         &from_worker,
-                                        serde_json::json!({
+                                        with_ws(serde_json::json!({
                                             "_reply_to": reply_to,
                                             "success": true,
                                             "data": {
@@ -2735,7 +3066,7 @@ impl WorkerRegistry {
                                                 "relation": "child",
                                                 "status": "running_in_background",
                                             }
-                                        }),
+                                        })),
                                     )
                                     .await;
                                 }
@@ -2743,7 +3074,7 @@ impl WorkerRegistry {
                                     // ── peer：立即返回 + 后台 follow_up ──
                                     self.write_manager_response(
                                         &from_worker,
-                                        serde_json::json!({
+                                        with_ws(serde_json::json!({
                                             "_reply_to": reply_to,
                                             "success": true,
                                             "data": {
@@ -2753,7 +3084,7 @@ impl WorkerRegistry {
                                                 "status": "running_in_background",
                                                 "report_channel": report_channel.clone(),
                                             }
-                                        }),
+                                        })),
                                     )
                                     .await;
                                     let tx = self.manager_cmd_tx.clone();
@@ -2771,7 +3102,7 @@ impl WorkerRegistry {
                                     // 立即返回 worker_id，不注入汇报指令，不 follow_up
                                     self.write_manager_response(
                                         &from_worker,
-                                        serde_json::json!({
+                                        with_ws(serde_json::json!({
                                             "_reply_to": reply_to,
                                             "success": true,
                                             "data": {
@@ -2780,7 +3111,7 @@ impl WorkerRegistry {
                                                 "relation": "system",
                                                 "status": "running_in_background",
                                             }
-                                        }),
+                                        })),
                                     )
                                     .await;
                                 }
@@ -2849,6 +3180,14 @@ impl WorkerRegistry {
                         .and_then(|v| v.as_str())
                         .unwrap_or("first_turn_output")
                         .to_string();
+                    let ws_path = params
+                        .get("worktree_path")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    let ws_branch = params
+                        .get("worktree_branch")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
 
                     // subscribe（持 lock）
                     let rx_opt = self.subscribe_for_wait(&wait_worker).ok();
@@ -2871,6 +3210,8 @@ impl WorkerRegistry {
                                     "session_id": session_id,
                                     "relation": relation,
                                     "status": status,
+                                    "worktree_path": ws_path,
+                                    "worktree_branch": ws_branch,
                                     output_field: output,
                                 }
                             }
@@ -3352,6 +3693,30 @@ impl WorkerRegistry {
     }
 
     /// Emit a global event to all subscribers.
+    /// 会话生命周期事件广播到 EventBus（route=ui）——"一定会推"的通道：
+    /// 任何已连接接收方（subscribe --ui / 网关 / webui）都能收到，
+    /// 接不接收、怎么消费是接收方的事。
+    /// register/kill 是同步上下文且 EventBus 是 tokio Mutex：
+    /// 用 Handle::try_current + spawn；无 runtime（单元测试）时静默跳过。
+    fn broadcast_ui_event(
+        &self,
+        custom_type: &str,
+        data: serde_json::Value,
+        session: Option<&str>,
+    ) {
+        let Some(bus) = self.event_bus.clone() else { return };
+        let mut ev = crate::event_bus::ExtensionEvent::new("session", custom_type).with_data(data);
+        if let Some(s) = session {
+            ev = ev.with_session(s);
+        }
+        ev = ev.with_route("ui");
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                bus.lock().await.broadcast(&ev);
+            });
+        }
+    }
+
     fn emit_global(&self, event: serde_json::Value) {
         for sub in &self.global_subscribers {
             let _ = sub.try_send(event.clone());
@@ -3922,6 +4287,10 @@ pub struct WorkerCreateConfig {
     /// Worktree isolation config. If Some, creates a git worktree.
     #[serde(default)]
     pub worktree: Option<WorktreeConfig>,
+    /// worktree 隔离时是否要求源目录干净（git status --porcelain 非空则拒绝）。
+    /// 默认 false（兼容既有行为）。防脏状态进 worktree 基准。
+    #[serde(default)]
+    pub require_clean: Option<bool>,
     pub session: Option<String>,
     pub project_path: Option<String>,
     pub model: Option<String>,
@@ -4111,13 +4480,77 @@ pub fn create_worktree_advanced(
         Ok((worktree_dir.to_string_lossy().to_string(), branch_name))
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // If worktree already exists, reuse
+        // 分支/worktree 已存在：必须解析"真实存在"的 worktree 路径。
+        // 旧实现直接返回 worktree_dir（从未被 git 填充，连子目录都不存在），
+        // 导致子进程 current_dir ENOENT → spawn "No such file or directory"。
         if stderr.contains("already exists") || stderr.contains("already checked out") {
-            tracing::info!("[worktree] reusing existing: {}", worktree_dir.display());
-            return Ok((worktree_dir.to_string_lossy().to_string(), branch_name));
+            if let Some(existing) = find_worktree_by_branch(project_path, &branch_name)
+                && std::path::Path::new(&existing).exists()
+            {
+                tracing::info!(
+                    "[worktree] reusing existing: {} (branch: {})",
+                    existing,
+                    branch_name
+                );
+                return Ok((existing, branch_name));
+            }
+            // 分支存在但没有可复用的 worktree（未 checkout 或注册失效）：
+            // prune 掉失效注册后，用"checkout 已有分支"语义重试（不带 -b）
+            let _ = std::process::Command::new("git")
+                .args(["-C", project_path, "worktree", "prune"])
+                .output();
+            let checkout_args = vec![
+                "-C".to_string(),
+                project_path.to_string(),
+                "worktree".to_string(),
+                "add".to_string(),
+                worktree_dir.to_string_lossy().to_string(),
+                branch_name.clone(),
+            ];
+            let retry = std::process::Command::new("git")
+                .args(&checkout_args)
+                .output()
+                .map_err(|e| format!("git worktree failed: {e}"))?;
+            if retry.status.success() {
+                tracing::info!(
+                    "[worktree] checked out existing branch into new worktree: {} (branch: {})",
+                    worktree_dir.display(),
+                    branch_name
+                );
+                return Ok((worktree_dir.to_string_lossy().to_string(), branch_name));
+            }
+            return Err(format!(
+                "git worktree add failed (branch {branch_name} already exists, no reusable worktree): {}",
+                String::from_utf8_lossy(&retry.stderr)
+            ));
         }
         Err(format!("git worktree add failed: {stderr}"))
     }
+}
+
+/// 在 git worktree 注册表里找"checkout 了指定分支"的 worktree 路径。
+fn find_worktree_by_branch(project_path: &str, branch: &str) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["-C", project_path, "worktree", "list", "--porcelain"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    for block in text.split("\n\n") {
+        let mut path: Option<String> = None;
+        let mut br: Option<String> = None;
+        for line in block.lines() {
+            if let Some(p) = line.strip_prefix("worktree ") {
+                path = Some(p.to_string());
+            }
+            if let Some(b) = line.strip_prefix("branch ") {
+                br = Some(b.trim_start_matches("refs/heads/").to_string());
+            }
+        }
+        if br.as_deref() == Some(branch) {
+            return path;
+        }
+    }
+    None
 }
 
 /// Remove a git worktree directory (cleanup). Branch is preserved.

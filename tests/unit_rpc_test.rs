@@ -3,7 +3,7 @@
 //! U1-U15: RPC 协议测试（远程 worker 进程）
 //! U16: 75 命令全覆盖
 //! U17-U20: 会话存储测试（本地，无需子进程）
-//! U21-U25: 插件测试（在 plugin_tests.rs 中已有 17 个测试覆盖）
+//! U21-U25: Extension 测试（由 wasm_extension_tests.rs 覆盖）
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};

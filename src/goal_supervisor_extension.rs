@@ -1699,6 +1699,8 @@ impl Tool for GoalDiagnoseTool {
             report_channel: None,
             wait: true,
             worktree: None,
+            worktree_branch: None,
+            worktree_base: None,
             hook_depth: Some(1),
             system_prompt_override: None,
             model: None,

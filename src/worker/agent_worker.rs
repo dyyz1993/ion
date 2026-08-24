@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::agent::agent_loop::{Agent, AgentConfig};
-use crate::agent::extension::ExtensionRegistry;
+use crate::agent::extension::ExtensionRunner;
 use crate::agent::tool::ToolRegistry;
 use crate::error::IonError;
 use crate::types::{SessionState, TaskResult};
@@ -16,7 +16,7 @@ pub struct AgentWorker {
     model: Model,
     tools: ToolRegistry,
     config: AgentConfig,
-    extensions: ExtensionRegistry,
+    extensions: ExtensionRunner,
     system_prompt: Option<String>,
 }
 
@@ -28,7 +28,7 @@ impl AgentWorker {
             model,
             tools: ToolRegistry::new(),
             config: AgentConfig::default(),
-            extensions: ExtensionRegistry::new(),
+            extensions: ExtensionRunner::new(),
             system_prompt,
         }
     }
@@ -36,7 +36,7 @@ impl AgentWorker {
         self.tools = tools;
         self
     }
-    pub fn with_extensions(mut self, extensions: ExtensionRegistry) -> Self {
+    pub fn with_extensions(mut self, extensions: ExtensionRunner) -> Self {
         self.extensions = extensions;
         self
     }

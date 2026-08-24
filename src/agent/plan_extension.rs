@@ -307,7 +307,7 @@ impl Extension for PlanExtension {
 
 /// Wrapper that lets an `Arc<PlanExtension>` be registered as an `Extension`.
 ///
-/// We need this because `ExtensionRegistry::register` takes `Box<dyn Extension>`,
+/// We need this because `ExtensionRunner::register` takes `Box<dyn Extension>`,
 /// but the plan Tools hold a `SharedPlan = Arc<PlanExtension>`. To make the
 /// Extension's hooks (before/after_tool_call for plan mode) operate on the
 /// SAME state the Tools mutate, both sides must share one Arc — this wrapper

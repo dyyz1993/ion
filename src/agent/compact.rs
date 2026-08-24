@@ -14,7 +14,7 @@
 //!   - 批次数 > 10：emergency truncation（太复杂）
 
 use super::error::{AgentError, AgentResult};
-use crate::agent::extension::ExtensionRegistry;
+use crate::agent::extension::ExtensionRunner;
 use crate::retry::RetryConfig;
 use ion_provider::types::*;
 use std::future::Future;
@@ -316,7 +316,7 @@ pub struct CompactionResult {
 pub async fn compact_batched(
     messages: &mut Vec<Message>,
     config: &CompactConfig,
-    extensions: &ExtensionRegistry,
+    extensions: &ExtensionRunner,
     summarizer: Option<SummarizerFn>,
     retry_config: RetryConfig,
 ) -> AgentResult<CompactionResult> {
@@ -616,7 +616,7 @@ fn build_merged_input(
 async fn apply_compaction(
     messages: &mut Vec<Message>,
     config: &CompactConfig,
-    extensions: &ExtensionRegistry,
+    extensions: &ExtensionRunner,
     summary: &str,
     tokens_before: u64,
 ) -> AgentResult<()> {
@@ -693,7 +693,7 @@ fn is_turn_boundary(msg: &Message) -> bool {
 async fn emergency_truncate(
     messages: &mut Vec<Message>,
     config: &CompactConfig,
-    extensions: &ExtensionRegistry,
+    extensions: &ExtensionRunner,
     tokens_before: u64,
 ) -> AgentResult<CompactionResult> {
     tracing::warn!(
@@ -726,7 +726,7 @@ async fn emergency_truncate(
 async fn single_batch_compact(
     messages: &mut Vec<Message>,
     config: &CompactConfig,
-    extensions: &ExtensionRegistry,
+    extensions: &ExtensionRunner,
     summarizer: SummarizerFn,
     total: u64,
     retry_config: RetryConfig,
@@ -771,7 +771,7 @@ async fn single_batch_compact(
 pub async fn compact(
     messages: &mut Vec<Message>,
     config: &CompactConfig,
-    extensions: &ExtensionRegistry,
+    extensions: &ExtensionRunner,
     summarizer: Option<SummarizerFn>,
 ) -> AgentResult<()> {
     if !needs_compact(messages, config) {
@@ -1010,7 +1010,7 @@ mod tests {
             keep_recent_tokens: 100,
             ..Default::default()
         };
-        let ext = ExtensionRegistry::new();
+        let ext = ExtensionRunner::new();
         let retry = RetryConfig::default();
         let result = compact_batched(&mut msgs, &cfg, &ext, None, retry)
             .await
@@ -1033,7 +1033,7 @@ mod tests {
             keep_recent_tokens: 4, // 只保留 1 条消息，留出空间给 summarizer
             ..Default::default()
         };
-        let ext = ExtensionRegistry::new();
+        let ext = ExtensionRunner::new();
         let summarizer: SummarizerFn =
             Arc::new(|_msgs: &[Message]| Box::pin(async { Ok("test summary".to_string()) }));
         let retry = RetryConfig::default();
@@ -1173,7 +1173,7 @@ mod tests {
             keep_recent_tokens: 8, // keep_count = 8/4 = 2 → 保留区从 index 3 开始
             ..Default::default()
         };
-        let ext = ExtensionRegistry::new();
+        let ext = ExtensionRunner::new();
 
         // 用 emergency truncate（summarizer=None），直接测 apply_compaction 逻辑
         let result = emergency_truncate(&mut msgs, &config, &ext, 100).await;

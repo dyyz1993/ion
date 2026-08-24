@@ -1,6 +1,6 @@
 use super::compact::{self, CompactConfig};
 use super::error::{AgentError, AgentResult};
-use super::extension::{ExtensionRegistry, TurnContext};
+use super::extension::{ExtensionRunner, TurnContext};
 use super::tool::{Tool, ToolRegistry};
 use crate::retry::RetryConfig;
 use ion_provider::StreamOptions;
@@ -97,6 +97,9 @@ pub struct Agent {
     /// NextTurn 投递的消息：等 agent.run 完成后才触发新 turn。
     /// 对齐 pi `sendMessage({deliverAs: "nextTurn"})`。
     next_turn_queue: VecDeque<Message>,
+    /// 活跃后台 watcher 数（bash 后台进程）。outer_loop 收尾时只在 >0 才等待
+    /// 后台完成消息，否则零等待（曾无条件等 30s，拖慢每轮 agent_end）。
+    pub bg_pending: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Optional receiver for async follow-up messages (e.g. bash background
     /// process completion). Drained into follow_up_queue after each inner_loop.
     /// 元组第二个元素是投递时机（DeliverAs），让调用方控制消息何时入对话。
@@ -105,7 +108,7 @@ pub struct Agent {
     registry: Arc<ApiRegistry>,
     model: Model,
     tools: ToolRegistry,
-    extensions: ExtensionRegistry,
+    extensions: ExtensionRunner,
     config: AgentConfig,
     system_prompt: Option<String>,
     turn_index: u64,
@@ -160,13 +163,14 @@ impl Agent {
         Self {
             messages: Vec::new(),
             steering_queue: VecDeque::new(),
+            bg_pending: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             follow_up_queue: VecDeque::new(),
             next_turn_queue: VecDeque::new(),
             follow_up_rx: None,
             registry,
             model,
             tools,
-            extensions: ExtensionRegistry::new(),
+            extensions: ExtensionRunner::new(),
             config,
             system_prompt,
             turn_index: 0,
@@ -308,7 +312,7 @@ impl Agent {
             .collect()
     }
 
-    pub fn with_extensions(mut self, ext: ExtensionRegistry) -> Self {
+    pub fn with_extensions(mut self, ext: ExtensionRunner) -> Self {
         self.extensions = ext;
         // Hook: thinking_level_select if thinking is configured
         if let Some(ref level) = self.config.thinking {
@@ -382,6 +386,9 @@ impl Agent {
     /// Wire up the async follow-up channel (bash background process completion).
     /// outer_loop drains this into follow_up_queue after each inner_loop, so
     /// completed background tasks can trigger a new agent turn.
+    pub fn set_bg_pending(&mut self, pending: std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        self.bg_pending = pending;
+    }
     pub fn set_follow_up_rx(
         &mut self,
         rx: tokio::sync::mpsc::UnboundedReceiver<(Message, DeliverAs)>,
@@ -669,7 +676,7 @@ impl Agent {
     }
 
     /// 访问 extensions（get_extensions RPC 用）
-    pub fn extensions(&self) -> &ExtensionRegistry {
+    pub fn extensions(&self) -> &ExtensionRunner {
         &self.extensions
     }
 
@@ -821,7 +828,7 @@ impl Agent {
         tool.execute(args, &*self.runtime).await
     }
 
-    /// 调插件私有 RPC 方法（给 CLI/外部调试用）。
+    /// 调 Extension 私有 RPC 方法（给 CLI/外部调试用）。
     pub async fn extension_rpc(
         &self,
         extension_name: &str,
@@ -994,7 +1001,10 @@ impl Agent {
                 // Block-wait up to BACKGROUND_WAIT_TIMEOUT for the next
                 // completion message, so the agent doesn't exit prematurely
                 // and miss the <bash_result> notification.
-                if self.follow_up_queue.is_empty() {
+                // 只有确实有活跃后台 watcher 时才等（否则零等待收尾）
+                if self.follow_up_queue.is_empty()
+                    && self.bg_pending.load(std::sync::atomic::Ordering::SeqCst) > 0
+                {
                     const BACKGROUND_WAIT_TIMEOUT: u64 = 30; // 30s: covers short bg tasks
                     if let Ok(Some((msg, mode))) = tokio::time::timeout(
                         std::time::Duration::from_secs(BACKGROUND_WAIT_TIMEOUT),
@@ -1978,6 +1988,7 @@ impl Agent {
                     let mut prev_was_thinking = false;
                     let mut thinking_buf = String::new();
 
+                    let mut idle_ms: u128 = 0;
                     loop {
                         // 用 select! 让 stopped 检查不被 recv().await 阻塞
                         // 每 200ms 检查一次 stopped,确保 abort < 1 秒生效
@@ -1989,9 +2000,22 @@ impl Agent {
                                     final_reason = StopReason::Aborted;
                                     break;
                                 }
+                                // 空闲超时：长时间无任何 chunk = 上游挂起（TCP 半开/
+                                // 代理僵死）。无此兜底时 recv() 永不返回，worker 卡
+                                // Busy 且 agent_end 不发。收到 chunk 即复位计时。
+                                idle_ms += 200;
+                                if idle_ms >= 120_000 {
+                                    tracing::error!(
+                                        "[timeout] LLM 流空闲 {}s，判定上游挂死，中断本轮",
+                                        idle_ms / 1000
+                                    );
+                                    final_reason = StopReason::Error;
+                                    break;
+                                }
                                 continue; // 没收到 chunk,也没 abort,继续等
                             }
                         };
+                        idle_ms = 0;
                         let event = match event_opt {
                             Some(event) => event,
                             None => break, // stream 结束

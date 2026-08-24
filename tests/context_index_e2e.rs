@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use ion::agent::agent_loop::{Agent, AgentConfig};
 use ion::agent::context_index::{ContextIndexExtension, WriteKind};
-use ion::agent::extension::{Extension, ExtensionRegistry};
+use ion::agent::extension::{Extension, ExtensionRunner};
 use ion::agent::messages::Message;
 use ion::agent::tool::{ReadTool, ToolRegistry, WriteTool};
 use ion_provider::faux;
@@ -92,7 +92,7 @@ async fn context_index_records_read_and_write() {
     tools.register(Box::new(WriteTool));
 
     let ext = ContextIndexExtension::new();
-    let mut ext_reg = ExtensionRegistry::new();
+    let mut ext_reg = ExtensionRunner::new();
     ext_reg.register(Box::new(ext));
 
     let config = AgentConfig {

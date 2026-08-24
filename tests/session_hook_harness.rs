@@ -12,7 +12,7 @@ use async_trait::async_trait;
 
 use ion::agent::agent_loop::{Agent, AgentConfig};
 use ion::agent::error::AgentResult;
-use ion::agent::extension::{Extension, ExtensionRegistry, SessionSwitchContext};
+use ion::agent::extension::{Extension, ExtensionRunner, SessionSwitchContext};
 use ion::agent::tool::{BranchSessionTool, ToolRegistry, WriteTool};
 use ion_provider::faux;
 use ion_provider::registry::ApiRegistry;
@@ -153,7 +153,7 @@ fn build_agent(cwd: &str, responses: Vec<faux::FauxResponseStep>, probe: SwitchP
     tools.register(Box::new(BranchSessionTool));
     tools.register(Box::new(WriteTool));
 
-    let mut ext_reg = ExtensionRegistry::new();
+    let mut ext_reg = ExtensionRunner::new();
     ext_reg.register(Box::new(probe));
 
     let config = AgentConfig {

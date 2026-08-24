@@ -106,6 +106,30 @@ fn tool_to_subject(tool: &str) -> &str {
     }
 }
 
+/// 推送权限规则变更事件到 Manager（仿 BashExtension stdout JSON 模式）
+///
+/// 事件经 Worker stdout → Manager event-pump → ExtensionEventBus → CLI subscribe / Web UI。
+/// customType: permission_changed；action 区分：rule_added / decision_stored /
+/// stored_removed / stored_cleared。
+/// 发射点放在公开方法内部（而非 on_extension_rpc），这样 extension_rpc 调用和
+/// UI 确认（store_from_ui_result，用户点"始终允许"）两条路径都会广播。
+fn emit_permission_event(action: &str, data: &serde_json::Value) {
+    let msg = serde_json::json!({
+        "type": "event",
+        "event": {
+            "type": "extension_event",
+            "extension": "permission",
+            "customType": "permission_changed",
+            "visibility": "llm_and_ui",
+            "data": {
+                "action": action,
+                "detail": data,
+            },
+        },
+    });
+    println!("{}", serde_json::to_string(&msg).unwrap_or_default());
+}
+
 /// PermissionExtension — 权限策略扩展
 pub struct PermissionExtension {
     /// 项目级规则（持久化）
@@ -355,6 +379,11 @@ impl PermissionExtension {
             created_at: chrono_now(),
         };
 
+        let event_detail = serde_json::json!({
+            "id": rule.id, "subject": rule.subject, "pattern": rule.pattern,
+            "decision": decision_str(&decision), "scope": scope_str(&scope),
+        });
+
         match scope {
             Scope::Session => {
                 self.session_rules.lock().unwrap().push(rule);
@@ -364,6 +393,8 @@ impl PermissionExtension {
                 self.save_project_rules();
             }
         }
+
+        emit_permission_event("rule_added", &event_detail);
 
         Ok(format!(
             "rule added: {} {} {} {}",
@@ -441,6 +472,11 @@ impl PermissionExtension {
             created_at: chrono_now(),
         };
 
+        let event_detail = serde_json::json!({
+            "id": id, "subject": subject, "pattern": pattern,
+            "decision": decision_str(&decision), "scope": scope_str(&scope),
+        });
+
         match scope {
             Scope::Session => {
                 self.session_rules.lock().unwrap().push(rule);
@@ -450,6 +486,8 @@ impl PermissionExtension {
                 self.save_project_rules();
             }
         }
+
+        emit_permission_event("decision_stored", &event_detail);
 
         Ok(format!(
             "stored: {} {} {} {} ({})",
@@ -492,7 +530,9 @@ impl PermissionExtension {
                 .position(|r| r.id == id && r.source == DecisionSource::Stored)
         {
             let removed = session.remove(pos);
-            return Some(rule_to_json(&removed, "session"));
+            let json = rule_to_json(&removed, "session");
+            emit_permission_event("stored_removed", &json);
+            return Some(json);
         }
         // 2. 再在 project 级找（删后需持久化）
         if let Ok(mut project) = self.project_rules.write()
@@ -503,7 +543,9 @@ impl PermissionExtension {
             let removed = project.remove(pos);
             drop(project);
             self.save_project_rules();
-            return Some(rule_to_json(&removed, "project"));
+            let json = rule_to_json(&removed, "project");
+            emit_permission_event("stored_removed", &json);
+            return Some(json);
         }
         None
     }
@@ -529,6 +571,9 @@ impl PermissionExtension {
         }
         if project_changed {
             self.save_project_rules();
+        }
+        if removed > 0 {
+            emit_permission_event("stored_cleared", &serde_json::json!({ "removed": removed }));
         }
         removed
     }

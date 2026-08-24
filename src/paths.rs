@@ -275,11 +275,11 @@ pub fn session_lock_path(cwd: &str) -> PathBuf {
 
 /// sessions/--cwd_hash--cwd_name--/data/<sessionId>/<extName>/
 /// 扩展的 session 级数据（sessionDataDir）
-pub fn session_data_dir(cwd: &str, session_id: &str, ext_name: &str) -> PathBuf {
+pub fn session_data_dir(cwd: &str, session_id: &str, extension_id: &str) -> PathBuf {
     session_cwd_dir(cwd)
         .join("data")
         .join(session_id)
-        .join(ext_name)
+        .join(extension_id)
 }
 
 /// ~/.ion/agent/sessions.index.json
@@ -323,14 +323,14 @@ pub fn bash_processes_path(cwd: &str, session_id: &str) -> PathBuf {
 // │ 项目配置  │ project_dimension_dir()   │ ② 项目级（git_key）               │
 // └──────────┴────────────────────────────┴───────────────────────────────────┘
 //
-// 关键：调用方只管选维度（传 cwd/session_id/ext_name），
+// 关键：调用方只管选维度（传 cwd/session_id/extension_id），
 //       路径函数内部处理 worktree 回源（project_key_git）。
 //       worktree 对调用方透明。
 
 /// ~/.ion/agent/extensions-data/<extName>/
 /// 扩展的全局数据（globalDataDir）— ① 全局维度
-pub fn global_data_dir(ext_name: &str) -> PathBuf {
-    agent_dir().join("extensions-data").join(ext_name)
+pub fn global_data_dir(extension_id: &str) -> PathBuf {
+    agent_dir().join("extensions-data").join(extension_id)
 }
 
 /// ~/.ion/agent/project-data/<git_key>/<extName>/
@@ -338,20 +338,20 @@ pub fn global_data_dir(ext_name: &str) -> PathBuf {
 ///
 /// 用 `project_key_git(cwd)` 做 key：主仓库和 worktree 算出同一个 key → 共享存储。
 /// 非 git 目录 fallback 到 cwd hash（不共享，但没有 worktree 概念所以不影响）。
-pub fn project_data_dir(cwd: &str, ext_name: &str) -> PathBuf {
+pub fn project_data_dir(cwd: &str, extension_id: &str) -> PathBuf {
     agent_dir()
         .join("project-data")
         .join(project_key_git(cwd))
-        .join(ext_name)
+        .join(extension_id)
 }
 
 /// ~/.ion/agent/cwd-data/<hash>--<name>/<extName>/
 /// 扩展的 cwd 级数据（cwdDataDir）
-pub fn cwd_data_dir(cwd: &str, ext_name: &str) -> PathBuf {
+pub fn cwd_data_dir(cwd: &str, extension_id: &str) -> PathBuf {
     agent_dir()
         .join("cwd-data")
         .join(encode_path(cwd))
-        .join(ext_name)
+        .join(extension_id)
 }
 
 /// ~/.ion/agent/projects/<hash>--<name>/
@@ -368,8 +368,8 @@ pub fn project_private_skills_dir(project_path: &str) -> PathBuf {
 
 /// <project>/.ion/<extName>/
 /// 扩展的本地项目数据（写在项目目录里，可 git 提交）
-pub fn project_local_data_dir(project_root: &str, ext_name: &str) -> PathBuf {
-    project_config_dir(project_root).join(ext_name)
+pub fn project_local_data_dir(project_root: &str, extension_id: &str) -> PathBuf {
+    project_config_dir(project_root).join(extension_id)
 }
 
 // ---------------------------------------------------------------------------

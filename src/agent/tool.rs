@@ -1443,6 +1443,14 @@ impl Tool for SpawnWorkerTool {
                     "type": "boolean",
                     "default": false,
                     "description": "If true, run this worker in an isolated git worktree (new branch). Useful for developers so they don't pollute the main branch."
+                },
+                "branch": {
+                    "type": "string",
+                    "description": "(with worktree=true) Branch name for the isolated worktree, e.g. 'feat/widget-layout-editor'. Auto-generated (ion-worker-*) if omitted."
+                },
+                "base": {
+                    "type": "string",
+                    "description": "(with worktree=true) Base ref to cut the worktree branch from. Defaults to HEAD."
                 }
             },
             "required": ["relation", "agent", "task"]
@@ -1474,6 +1482,11 @@ impl Tool for SpawnWorkerTool {
             .map(String::from);
         let wait = args.get("wait").and_then(|v| v.as_bool()).unwrap_or(true);
         let worktree = args.get("worktree").and_then(|v| v.as_bool());
+        // worktree 命名/基准（可选）：LLM 可指定分支名与切出基准
+        let worktree_branch = args.get("branch").and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty()).map(String::from);
+        let worktree_base = args.get("base").and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty()).map(String::from);
         // 可选 model/provider：让 LLM 能给不同 worker 指定不同模型
         let model = args.get("model").and_then(|v| v.as_str()).map(String::from);
         let provider = args
@@ -1494,6 +1507,8 @@ impl Tool for SpawnWorkerTool {
             report_channel: report_channel.clone(),
             wait,
             worktree,
+            worktree_branch,
+            worktree_base,
             hook_depth: None, // LLM 的 spawn_worker 不设（只有 hooks agent handler 才设）
             system_prompt_override: None, // 普通 spawn_worker 不覆盖
             model,
@@ -1527,6 +1542,10 @@ impl Tool for SpawnWorkerTool {
             "status": resp.status,
             "first_turn_output": truncated_output,
             "report_channel": resp.report_channel,
+            // worktree 隔离元数据：让父 LLM / UI 知道工作空间目录与分支
+            "worktree_path": resp.worktree_path,
+            "worktree_branch": resp.worktree_branch,
+            "session_id": resp.session_id,
         });
         Ok(result.to_string())
     }
@@ -2215,6 +2234,8 @@ impl Tool for SkillTool {
                 report_channel: None,
                 wait: true, // 同步等结果
                 worktree: None,
+                worktree_branch: None,
+                worktree_base: None,
                 hook_depth: None,
                 system_prompt_override: Some(system_prompt),
                 model: None,

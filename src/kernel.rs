@@ -41,7 +41,7 @@ pub enum PermissionResult {
     Ask { title: String, message: String },
 }
 
-/// 权限规则（由插件注册）
+/// 权限规则（由 Extension 注册）
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PermissionRule {
     /// 规则名
@@ -83,7 +83,7 @@ impl PermissionEngine {
         }
     }
 
-    /// 注册一条规则（插件调这个）
+    /// 注册一条规则（Extension 调用）
     pub fn register_rule(&self, rule: PermissionRule) {
         let mut rules = self.rules.write().unwrap();
         rules.push(rule);
@@ -289,11 +289,11 @@ impl UiEvent {
     }
 }
 
-/// UI 事件系统（内核暴露给插件）
+/// UI 事件系统（内核暴露给 Extension）
 pub struct UiSystem {
     /// 事件订阅者
     subscribers: Arc<RwLock<Vec<tokio::sync::mpsc::Sender<UiEvent>>>>,
-    /// 确认回调（UI 层设置，插件调用）
+    /// 确认回调（UI 层设置，Extension 调用）
     #[allow(clippy::type_complexity)]
     confirm_handler: Arc<RwLock<Option<Box<dyn Fn(&str, &str) -> bool + Send + Sync>>>>,
 }

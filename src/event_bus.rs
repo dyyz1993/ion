@@ -1,10 +1,10 @@
 //! Extension EventBus — 扩展事件总线
 //!
-//! 插件的所有事件通过这里广播给订阅者（socket subscriber / CLI / Gateway）。
-//! 插件只管 `emit_plugin_event()`，不碰传输层。
+//! Extension 的所有事件通过这里广播给订阅者（socket subscriber / CLI / Gateway）。
+//! Extension 只负责发射事件，不接触传输层。
 //!
 //! ## 订阅方式
-//! - 按 `plugin` 过滤：`subscribe("memory")` → 只收 memory 事件
+//! - 按 `extension` 过滤：`subscribe("memory")` → 只收 memory 事件
 //! - 按 `session` 过滤：`subscribe_with_session("memory", "sess_xxx")` → 只收某 session
 //!
 //! ## 背压处理
@@ -12,7 +12,7 @@
 
 use tokio::sync::mpsc;
 
-/// 插件事件的优先级/可见性
+/// Extension 事件的优先级/可见性
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EventVisibility {
     /// 发给 LLM 也发给订阅者
@@ -21,12 +21,12 @@ pub enum EventVisibility {
     UiOnly,
 }
 
-/// 一条插件事件
+/// 一条 Extension 事件
 #[derive(Clone, Debug)]
 pub struct ExtensionEvent {
     /// 事件路由: "extension" | "ui"
     pub route: String,
-    /// 来源插件名（"memory", "todo" 等）
+    /// 来源 Extension ID（"memory", "todo" 等）
     pub extension: String,
     /// 自定义类型（"memory_saved", "Ask", "Confirm" 等）
     pub custom_type: String,
@@ -109,7 +109,7 @@ struct Subscriber {
     tx: mpsc::Sender<ExtensionEvent>,
 }
 
-/// 插件事件总线
+/// Extension 事件总线
 #[derive(Default)]
 pub struct ExtensionEventBus {
     subscribers: Vec<Subscriber>,
@@ -122,7 +122,7 @@ impl ExtensionEventBus {
         }
     }
 
-    /// 订阅指定插件的所有事件（不限制 session）
+    /// 订阅指定 Extension 的所有事件（不限制 session）
     pub fn subscribe(&mut self, extension: &str) -> mpsc::Receiver<ExtensionEvent> {
         self.subscribe_with_filter(SubFilter {
             route: Some("extension".into()),
@@ -131,7 +131,7 @@ impl ExtensionEventBus {
         })
     }
 
-    /// 订阅指定插件 + session 的事件
+    /// 订阅指定 Extension + session 的事件
     pub fn subscribe_with_session(
         &mut self,
         extension: &str,

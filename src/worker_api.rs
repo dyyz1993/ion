@@ -166,7 +166,7 @@ pub enum ManagerCommand {
     },
 }
 
-/// ExtensionApi — the API available to plugins running inside a Worker.
+/// ExtensionApi — the API available to Extensions running inside a Worker.
 ///
 /// Extensions use this to:
 /// - Create child Workers
@@ -321,8 +321,8 @@ impl ExtensionApi {
         println!("{}", serde_json::to_string(&msg).unwrap_or_default());
     }
 
-    /// 发射一条插件事件（通过 stdout → Manager EventBus → subscriber）。
-    /// 插件只管 emit，不碰传输层。
+    /// 发射一条 Extension 事件（通过 stdout → Manager EventBus → subscriber）。
+    /// Extension 只负责 emit，不接触传输层。
     pub fn emit_extension_event(&self, event: crate::event_bus::ExtensionEvent) {
         let msg = serde_json::json!({
             "type": "extension_event",

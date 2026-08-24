@@ -1,4 +1,4 @@
-//! Memory 插件 E2E 集成测试
+//! Memory Extension E2E 集成测试
 //!
 //! 直接测试 MemoryStore 数据层 + MemoryExtension 生命周期钩子，
 //! 不依赖 Manager 进程（通过 Rust API 直接调用）。

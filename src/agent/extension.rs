@@ -267,9 +267,9 @@ pub trait Extension: Send + Sync {
     }
 
     // ── Extension RPC ──
-    /// 插件私有 RPC 方法（给 CLI/外部调试用）。
+    /// Extension 私有 RPC 方法（给 CLI/外部调试用）。
     /// 外部通过 `extension_rpc memory save {...}` 调用此方法。
-    /// 默认返回 method_not_found，插件覆盖需要的分支。
+    /// 默认返回 method_not_found，Extension 覆盖需要的分支。
     async fn on_extension_rpc(
         &self,
         _method: &str,
@@ -399,7 +399,7 @@ pub enum GateDecision {
 /// 扩展的 4 级数据目录（对齐 pi ExtensionContext，EXTENSION_HOST_API.md §2.5）。
 ///
 /// 内置 Rust 扩展通过 `registry.data_dirs(self.name())` 拿到自己的 4 级目录。
-/// 每一级按 ext_name 隔离，互不干扰。WASM 扩展走散装 host 函数（host_read_global_data 等）。
+/// 每一级按 extension_id 隔离，互不干扰。WASM 扩展走散装 host 函数（host_read_global_data 等）。
 ///
 /// | 级别 | 路径 | 隔离维度 |
 /// |------|------|---------|
@@ -694,10 +694,10 @@ fn wildcard_match(pattern: &str, text: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// ExtensionRegistry
+// ExtensionRunner
 // ---------------------------------------------------------------------------
 
-pub struct ExtensionRegistry {
+pub struct ExtensionRunner {
     extensions: Vec<Box<dyn Extension>>,
     /// 内核权限引擎（可选，用于工具执行前权限检查）
     pub permission_engine: Option<crate::kernel::PermissionEngine>,
@@ -707,20 +707,19 @@ pub struct ExtensionRegistry {
     pub fs: Option<std::sync::Arc<dyn FileSystemCapability>>,
     /// 存储上下文（可选）。扩展通过 registry.data_dirs(name) 拿 4 级数据目录。
     pub storage: Option<crate::storage_context::StorageContext>,
-    /// 运行时 flag 值（extension_name → flag_name → value）
-    /// 静态定义在 ExtensionDef.flags，运行时值覆盖 default
+    /// Runtime flag values (`extension_name -> flag_name -> value`).
     runtime_flags: std::sync::Mutex<
         std::collections::HashMap<String, std::collections::HashMap<String, serde_json::Value>>,
     >,
 }
 
-impl Default for ExtensionRegistry {
+impl Default for ExtensionRunner {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ExtensionRegistry {
+impl ExtensionRunner {
     pub fn new() -> Self {
         Self {
             extensions: Vec::new(),
@@ -762,17 +761,17 @@ impl ExtensionRegistry {
         self
     }
 
-    /// 按 ext_name 计算扩展的 4 级数据目录（global/project/cwd/session）。
+    /// 按 extension_id 计算扩展的 4 级数据目录（global/project/cwd/session）。
     ///
     /// 复用 StorageContext 已有的 4 个目录方法（委托 paths.rs）。
     /// 没注入 storage 时返回 None（调用方安全降级）。
-    pub fn data_dirs(&self, ext_name: &str) -> Option<ExtensionDataDirs> {
+    pub fn data_dirs(&self, extension_id: &str) -> Option<ExtensionDataDirs> {
         let s = self.storage.as_ref()?;
         Some(ExtensionDataDirs {
-            global: s.global_dir(ext_name),
-            project: s.project_dir(ext_name),
-            cwd: s.cwd_dir(ext_name),
-            session: s.session_dir(ext_name),
+            global: s.global_dir(extension_id),
+            project: s.project_dir(extension_id),
+            cwd: s.cwd_dir(extension_id),
+            session: s.session_dir(extension_id),
         })
     }
 
@@ -783,9 +782,8 @@ impl ExtensionRegistry {
         self.extensions.is_empty()
     }
 
-    /// 获取扩展的 flag 值（运行时值优先，否则 default）
+    /// Return runtime flag values for an Extension.
     pub fn get_flags(&self, extension_name: &str) -> serde_json::Value {
-        // 先从运行时存储取
         let runtime = self.runtime_flags.lock().unwrap();
         if let Some(ext_flags) = runtime.get(extension_name) {
             return serde_json::Value::Object(
@@ -795,7 +793,7 @@ impl ExtensionRegistry {
                     .collect(),
             );
         }
-        // 没有 → 返回空对象（静态定义在 ExtensionDef 里，运行时不一定能拿到）
+        // No runtime values have been set for this Extension.
         serde_json::json!({})
     }
 
@@ -889,13 +887,19 @@ impl ExtensionRegistry {
     }
     pub async fn on_agent_start(&self, ctx: &AgentContext) -> AgentResult<()> {
         for ext in &self.extensions {
-            ext.on_agent_start(ctx).await?;
+            // 错误隔离：单个扩展失败只记日志，不阻断后续扩展（否则
+            // StreamingExtension 的生命周期事件会被吞，事件流缺失）
+            if let Err(e) = ext.on_agent_start(ctx).await {
+                tracing::error!("[extension] {} on_agent_start failed: {e}", ext.name());
+            }
         }
         Ok(())
     }
     pub async fn on_agent_end(&self, ctx: &AgentContext) -> AgentResult<()> {
         for ext in &self.extensions {
-            ext.on_agent_end(ctx).await?;
+            if let Err(e) = ext.on_agent_end(ctx).await {
+                tracing::error!("[extension] {} on_agent_end failed: {e}", ext.name());
+            }
         }
         Ok(())
     }
@@ -1154,100 +1158,6 @@ impl ExtensionRegistry {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Extension loader — JSON definition files
-// ---------------------------------------------------------------------------
-
-/// Load extensions from `--extension <path>` arguments.
-/// Expects JSON files with the following structure:
-/// ```json
-/// {
-///   "name": "my-extension",
-///   "description": "...",
-///   "tools": [ ... ],          // Optional: tools to register
-///   "systemPrompt": "...",     // Optional: appended to system prompt
-///   "flags": { ... }           // Optional: CLI flags
-/// }
-/// ```
-pub fn load_extensions(paths: &[String]) -> Vec<Box<dyn Extension>> {
-    let mut exts: Vec<Box<dyn Extension>> = Vec::new();
-    for path in paths {
-        match std::fs::read_to_string(path) {
-            Ok(content) => match serde_json::from_str::<ExtensionDef>(&content) {
-                Ok(def) => {
-                    tracing::info!("loaded extension: {} ({})", def.name, path);
-                    exts.push(Box::new(GenericExtension { def }));
-                }
-                Err(e) => {
-                    tracing::warn!("failed to parse extension {path}: {e}");
-                }
-            },
-            Err(e) => {
-                tracing::warn!("failed to read extension {path}: {e}");
-            }
-        }
-    }
-    exts
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct ExtensionDef {
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub system_prompt: Option<String>,
-    #[serde(default)]
-    pub tools: Vec<ToolDefEntry>,
-    #[serde(default)]
-    pub flags: std::collections::HashMap<String, FlagDef>,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct ToolDefEntry {
-    pub name: String,
-    pub description: String,
-    pub parameters: serde_json::Value,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct FlagDef {
-    pub description: String,
-    #[serde(default)]
-    pub r#type: String,
-    #[serde(default)]
-    pub default: Option<serde_json::Value>,
-}
-
-/// A generic extension loaded from a JSON file.
-/// Injects system prompt and can define tools.
-struct GenericExtension {
-    def: ExtensionDef,
-}
-
-#[async_trait]
-impl Extension for GenericExtension {
-    async fn before_agent_start(&self, ctx: &mut BeforeAgentContext) -> AgentResult<()> {
-        if let Some(ref sp) = self.def.system_prompt {
-            if let Some(ref mut existing) = ctx.system_prompt {
-                existing.push('\n');
-                existing.push_str(sp);
-            } else {
-                ctx.system_prompt = Some(sp.clone());
-            }
-        }
-        Ok(())
-    }
-
-    async fn on_input(&self, ctx: &mut InputContext) -> AgentResult<()> {
-        // Handle custom commands from the extension
-        if ctx.text.starts_with('/') && ctx.text[1..].starts_with(&self.def.name) {
-            ctx.handled = true;
-        }
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod fs_tests {
     use super::*;
@@ -1480,15 +1390,15 @@ mod data_dirs_tests {
 
     #[test]
     fn data_dirs_returns_none_without_storage() {
-        let reg = ExtensionRegistry::new();
+        let reg = ExtensionRunner::new();
         assert!(reg.data_dirs("my-ext").is_none());
     }
 
     #[test]
-    fn data_dirs_returns_four_levels_with_ext_name() {
+    fn data_dirs_returns_four_levels_with_extension_id() {
         let storage =
             crate::storage_context::StorageContext::new("/proj/myapp", "sess_abc", "/proj/myapp");
-        let reg = ExtensionRegistry::new().with_storage(storage);
+        let reg = ExtensionRunner::new().with_storage(storage);
         let dirs = reg
             .data_dirs("my-ext")
             .expect("data_dirs should return Some");
@@ -1499,7 +1409,7 @@ mod data_dirs_tests {
         assert!(!dirs.cwd.as_os_str().is_empty(), "cwd empty");
         assert!(!dirs.session.as_os_str().is_empty(), "session empty");
 
-        // 每级路径都含 ext_name
+        // 每级路径都含 extension_id
         let g = dirs.global.to_string_lossy();
         let p = dirs.project.to_string_lossy();
         let c = dirs.cwd.to_string_lossy();
@@ -1518,9 +1428,9 @@ mod data_dirs_tests {
     }
 
     #[test]
-    fn data_dirs_different_ext_names_isolate() {
+    fn data_dirs_different_extension_ids_isolate() {
         let storage = crate::storage_context::StorageContext::new("/p", "s1", "/p");
-        let reg = ExtensionRegistry::new().with_storage(storage);
+        let reg = ExtensionRunner::new().with_storage(storage);
         let a = reg.data_dirs("ext-a").unwrap();
         let b = reg.data_dirs("ext-b").unwrap();
         assert_ne!(
@@ -1557,7 +1467,7 @@ mod loaded_extension_names_tests {
 
     #[test]
     fn loaded_extension_names_returns_registered_names() {
-        let mut registry = ExtensionRegistry::new();
+        let mut registry = ExtensionRunner::new();
         assert!(registry.loaded_extension_names().is_empty());
 
         registry.register(Box::new(TestExt::new("ext-alpha")));
@@ -1600,7 +1510,7 @@ mod context_provenance_tests {
 
     #[tokio::test]
     async fn on_context_records_exact_extension_origin_for_new_custom_messages() {
-        let mut registry = ExtensionRegistry::new();
+        let mut registry = ExtensionRunner::new();
         registry.register(Box::new(InjectingExtension));
         let mut messages = Vec::new();
 

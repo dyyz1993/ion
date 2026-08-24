@@ -31,7 +31,7 @@ fn ui_event_has_correct_route() {
     let ext_event = ExtensionEvent::new("memory", "memory_saved");
     assert_eq!(
         ext_event.route, "extension",
-        "plugin events should have route=extension"
+        "Extension events should have route=extension"
     );
 
     let ui_event = ExtensionEvent::new_ui("Notif", "标题", "消息");
@@ -45,10 +45,10 @@ fn subscribe_ui_only_receives_ui_events() {
     let mut bus = ExtensionEventBus::new();
     let mut rx = bus.subscribe_ui();
 
-    // 发一个插件事件（应该收不到）
-    let plugin_event =
+    // 发一个 Extension 事件（应该收不到）
+    let extension_event =
         ExtensionEvent::new("memory", "memory_saved").with_data(serde_json::json!({"key": "val"}));
-    bus.broadcast(&plugin_event);
+    bus.broadcast(&extension_event);
 
     // 发一个 UI 事件（应该能收到）
     let ui_event = ExtensionEvent::new_ui("Ask", "测试", "测试消息");
@@ -64,18 +64,18 @@ fn subscribe_ui_only_receives_ui_events() {
         Err(_) => panic!("subscribe_ui should have received the UI event"),
     }
 
-    // 不应再有消息（plugin_event 被过滤了）
+    // 不应再有消息（extension_event 被过滤了）
     let extra = rx.try_recv();
     assert!(
         extra.is_err(),
-        "should not receive plugin event through subscribe_ui"
+        "should not receive Extension event through subscribe_ui"
     );
 }
 
 // ── 普通 subscribe 不受 UI 事件影响 ────────────────────────────────────────
 
 #[test]
-fn plugin_subscribe_does_not_receive_ui_events() {
+fn extension_subscribe_does_not_receive_ui_events() {
     let mut bus = ExtensionEventBus::new();
     let mut rx = bus.subscribe("memory");
 
@@ -83,11 +83,11 @@ fn plugin_subscribe_does_not_receive_ui_events() {
     let ui_event = ExtensionEvent::new_ui("Ask", "测试", "消息");
     bus.broadcast(&ui_event);
 
-    // 插件事件
-    let plugin_event = ExtensionEvent::new("memory", "memory_saved");
-    bus.broadcast(&plugin_event);
+    // Extension 事件
+    let extension_event = ExtensionEvent::new("memory", "memory_saved");
+    bus.broadcast(&extension_event);
 
-    // memory 订阅者应该只收到插件事件
+    // memory 订阅者应该只收到 Extension 事件
     let received = rx.try_recv();
     match received {
         Ok(ev) => {
@@ -97,7 +97,7 @@ fn plugin_subscribe_does_not_receive_ui_events() {
             );
             assert_eq!(ev.custom_type, "memory_saved");
         }
-        Err(_) => panic!("subscribe memory should have received the plugin event"),
+        Err(_) => panic!("subscribe memory should have received the Extension event"),
     }
 }
 
@@ -111,8 +111,8 @@ fn subscribe_all_receives_both_routes() {
     let ui_event = ExtensionEvent::new_ui("Alert", "告警", "资源不足");
     bus.broadcast(&ui_event);
 
-    let plugin_event = ExtensionEvent::new("todo", "task_done");
-    bus.broadcast(&plugin_event);
+    let extension_event = ExtensionEvent::new("todo", "task_done");
+    bus.broadcast(&extension_event);
 
     // 应该收到两条
     let first = rx.try_recv().expect("should receive first event");

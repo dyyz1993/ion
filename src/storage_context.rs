@@ -1,7 +1,7 @@
 //! StorageContext — 统一存储路径访问抽象
 //!
 //! 所有扩展通过 StorageContext 拿 5 维路径，不用自己 import paths 现算。
-//! StorageContext 不认识任何具体扩展——它只是路径计算器，扩展自己传 ext_name。
+//! StorageContext 不认识任何具体扩展——它只是路径计算器，扩展自己传 extension_id。
 //!
 //! 使用方式：
 //! ```ignore
@@ -43,36 +43,36 @@ impl StorageContext {
     // ── ① 全局维度：所有项目共享 ──
 
     /// ① 全局：`~/.ion/agent/extensions-data/<ext>/`
-    pub fn global_dir(&self, ext_name: &str) -> PathBuf {
-        crate::paths::global_data_dir(ext_name)
+    pub fn global_dir(&self, extension_id: &str) -> PathBuf {
+        crate::paths::global_data_dir(extension_id)
     }
 
     // ── ② 项目维度：worktree 共享（git common dir hash）──
 
     /// ② 项目：`~/.ion/agent/project-data/<git_key>/<ext>/`
     /// 主仓库和 worktree 算出同一个 key → 共享存储
-    pub fn project_dir(&self, ext_name: &str) -> PathBuf {
-        crate::paths::project_data_dir(&self.cwd, ext_name)
+    pub fn project_dir(&self, extension_id: &str) -> PathBuf {
+        crate::paths::project_data_dir(&self.cwd, extension_id)
     }
 
     // ── ③ 仓库内维度：走 git checkout（worktree 回源 config_root）──
 
     /// ③ 仓库内：`<config_root>/.ion/<ext>/`
     /// worktree 通过 ION_PROJECT_ROOT 回源主仓库
-    pub fn project_local_dir(&self, ext_name: &str) -> PathBuf {
-        crate::paths::project_local_data_dir(&self.config_root, ext_name)
+    pub fn project_local_dir(&self, extension_id: &str) -> PathBuf {
+        crate::paths::project_local_data_dir(&self.config_root, extension_id)
     }
 
     /// CWD 级：`~/.ion/agent/cwd-data/<encoded-cwd>/<ext>/`（worktree 独立）
-    pub fn cwd_dir(&self, ext_name: &str) -> PathBuf {
-        crate::paths::cwd_data_dir(&self.cwd, ext_name)
+    pub fn cwd_dir(&self, extension_id: &str) -> PathBuf {
+        crate::paths::cwd_data_dir(&self.cwd, extension_id)
     }
 
     // ── ④ Session 维度：session 隔离 ──
 
     /// ④ Session：`sessions/<hash>/data/<sid>/<ext>/`
-    pub fn session_dir(&self, ext_name: &str) -> PathBuf {
-        crate::paths::session_data_dir(&self.cwd, &self.session_id, ext_name)
+    pub fn session_dir(&self, extension_id: &str) -> PathBuf {
+        crate::paths::session_data_dir(&self.cwd, &self.session_id, extension_id)
     }
 
     // ── 特殊约定路径（扩展按需使用）──

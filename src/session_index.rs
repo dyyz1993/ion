@@ -83,6 +83,41 @@ pub struct SessionMeta {
     /// 权限模式（permissive/standard/strict/autopilot/readonly，创建时记录）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub security_profile: Option<String>,
+    /// 工作空间目录（worktree 子会话的绝对路径，创建时随索引顺便写入；恢复/清理用）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_path: Option<String>,
+    /// 工作空间生命周期（ready/closed/failed；关闭时更新）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_status: Option<String>,
+}
+
+impl SessionIndex {
+    /// 工作空间字段部分更新（branch/workspace_path/workspace_status）。
+    /// 遵循存储落位原则：工作空间绑定随生命周期顺便更新进索引，不建 sidecar 文件。
+    pub fn update_workspace(
+        &mut self,
+        session_id: &str,
+        branch: Option<&str>,
+        workspace_path: Option<&str>,
+        workspace_status: Option<&str>,
+    ) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        if let Some(meta) = self.sessions.get_mut(session_id) {
+            if let Some(b) = branch {
+                meta.branch = Some(b.to_string());
+            }
+            if let Some(p) = workspace_path {
+                meta.workspace_path = Some(p.to_string());
+            }
+            if let Some(s) = workspace_status {
+                meta.workspace_status = Some(s.to_string());
+            }
+            meta.updated_at = now;
+        }
+    }
 }
 
 /// Index of all sessions, stored in sessions.index.json
@@ -245,6 +280,8 @@ impl SessionIndex {
             project_name,
             worktree: is_worktree,
             branch,
+            workspace_path: existing.as_ref().and_then(|e| e.workspace_path.clone()),
+            workspace_status: existing.as_ref().and_then(|e| e.workspace_status.clone()),
             model: model.to_string(),
             agent: agent.to_string(),
             provider: provider.to_string(),
@@ -361,6 +398,8 @@ impl SessionIndex {
                     project_name: Some(project_name),
                     worktree: false,
                     branch: None,
+                    workspace_path: None,
+                    workspace_status: None,
                     model: String::new(),
                     agent: "default".to_string(),
                     provider: String::new(),
@@ -544,6 +583,8 @@ mod tests {
             project: None,
             project_name: None,
             worktree: false,
+            workspace_path: None,
+            workspace_status: None,
             branch: None,
             model: "test".into(),
             agent: "default".into(),

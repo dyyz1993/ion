@@ -1129,12 +1129,12 @@ async fn perm03_glob_matching() {
 }
 
 // =========================================================================
-// PERM4: ExtensionRegistry 可以绑定 PermissionEngine
+// PERM4: ExtensionRunner 可以绑定 PermissionEngine
 // =========================================================================
 
 #[tokio::test]
 async fn perm04_extension_registry_with_permissions() {
-    use ion::agent::extension::ExtensionRegistry;
+    use ion::agent::extension::ExtensionRunner;
     use ion::kernel::*;
 
     let engine = PermissionEngine::new();
@@ -1146,7 +1146,7 @@ async fn perm04_extension_registry_with_permissions() {
         priority: 100,
     });
 
-    let registry = ExtensionRegistry::new().with_permissions(engine);
+    let registry = ExtensionRunner::new().with_permissions(engine);
 
     assert!(
         registry.permission_engine.is_some(),

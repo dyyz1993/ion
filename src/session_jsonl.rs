@@ -785,6 +785,46 @@ pub fn append_raw_entry(cwd: &str, entry: &serde_json::Value) {
 
 /// 追加一个不进入 LLM context 的 custom entry，并让它成为当前 leaf。
 /// 返回 `(entry_id, parent_id)`；parent_id 是追加前的真实消息树 leaf。
+/// 追加 custom entry 到显式指定的会话文件。
+/// host 侧（register/kill）调用：host 进程无 SESSION_FILE_OVERRIDE，
+/// resolve_session_file 会解析到共享 session.jsonl，必须显式给 <sid>.jsonl 路径。
+pub fn append_custom_entry_to_file(
+    path: &std::path::Path,
+    custom_type: &str,
+    data: serde_json::Value,
+) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let entries: Vec<serde_json::Value> = content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    let parent_id = crate::session_tree::resolve_current_leaf(&entries).or_else(|| {
+        entries
+            .first()
+            .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("session"))
+            .and_then(|e| e.get("id").and_then(|v| v.as_str()))
+            .map(str::to_string)
+    })?;
+    let entry_id = generate_id();
+    let entry = serde_json::json!({
+        "type": "custom",
+        "id": entry_id,
+        "parentId": parent_id,
+        "timestamp": timestamp_iso(),
+        "customType": custom_type,
+        "data": data,
+    });
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .ok()?;
+    writeln!(f, "{entry}").ok()?;
+    Some(entry_id)
+}
+
 pub fn append_custom_entry(
     cwd: &str,
     custom_type: &str,
@@ -1136,6 +1176,7 @@ mod tests {
 
     #[test]
     fn test_append_compaction_writes_entry() {
+        let _guard = override_test_lock(); // resolve_session_file 读全局 override，须与 override 测试互斥
         let cwd = test_cwd("compaction");
         write_header(&cwd);
 
@@ -1188,6 +1229,7 @@ mod tests {
 
     #[test]
     fn test_append_compaction_parentid_links_to_last_entry() {
+        let _guard = override_test_lock(); // resolve_session_file 读全局 override，须与 override 测试互斥
         // XL1 修复：compaction 的 parentId 应指向压缩前最后一个 entry（不是 null）
         // 这样 check_compaction_safety 才能拦住穿越压缩点的回滚
         let cwd = test_cwd("compaction_parentid");
@@ -1228,6 +1270,7 @@ mod tests {
 
     #[test]
     fn test_append_custom_entry_links_to_current_leaf() {
+        let _guard = override_test_lock(); // resolve_session_file 读全局 override，须与 override 测试互斥
         let cwd = test_cwd("step_snapshot_parent");
         write_header(&cwd);
         append_raw_entry(
@@ -1352,9 +1395,10 @@ mod tests {
 
     // ── Session isolation: ensure_session_header honors override ──
 
-    // SESSION_FILE_OVERRIDE 是进程级全局状态。两个 override 相关的测试
-    // 必须串行执行（否则并发下互相覆盖 override → legacy 状态）。
-    // 复用 paths::env_test_lock 统一一个跨模块锁。
+    // SESSION_FILE_OVERRIDE 是进程级全局状态，override 测试持有 override 的
+    // 窗口内，任何并发调 resolve_session_file（append_* / SessionFile::load）
+    // 的测试都会解析到错误路径（曾致 compaction parentId 测试 flaky）。
+    // 因此本模块所有走 cwd 解析路径的测试 + 两个 override 测试都必须拿同一把锁。
     fn override_test_lock() -> std::sync::MutexGuard<'static, ()> {
         crate::paths::env_test_lock()
     }

@@ -419,6 +419,8 @@ async fn run_agent(
         report_channel: None,
         wait: true, // 阻塞等首轮完成
         worktree: None,
+        worktree_branch: None,
+        worktree_base: None,
         hook_depth: Some(current_depth + 1), // 子 Worker depth+1，防 agent handler 递归
         system_prompt_override: None,
         model: None,

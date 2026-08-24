@@ -14,14 +14,14 @@ use crate::paths;
 use crate::runtime::pending_ui;
 
 /// Offset into linear memory where the host places tool name / args / output
-/// for the WASM plugin. Must be high enough to avoid the WASM module's data
+/// for the WASM Extension. Must be high enough to avoid the WASM module's data
 /// section (HEAP at low addresses) but low enough to avoid the stack
 /// (which grows downward from ~1 MB).
 const DATA_OFFSET: u32 = 100_000; // 100 KB — past HEAP, before stack
 
 // ---------------------------------------------------------------------------
 // Context — injected into the WASM store so host functions know where
-// to read/write plugin data files.
+// to read/write Extension data files.
 // ---------------------------------------------------------------------------
 
 /// Context injected into the WASM store before every tool execution.
@@ -37,7 +37,7 @@ pub struct Context {
     /// Project root directory (used for project-local paths).
     pub project_root: String,
     /// Extension name (the subdirectory name inside each data dir).
-    pub ext_name: String,
+    pub extension_id: String,
     /// EventBus for UI events (host_ui_ask/confirm/notif/alert/prompt).
     pub event_bus: Option<std::sync::Arc<tokio::sync::Mutex<crate::event_bus::ExtensionEventBus>>>,
     /// ctx.fs 统一文件访问能力（host_read_file / host_list_dir 用）。
@@ -67,26 +67,26 @@ impl std::fmt::Debug for Context {
             .field("session_id", &self.session_id)
             .field("cwd", &self.cwd)
             .field("project_root", &self.project_root)
-            .field("ext_name", &self.ext_name)
+            .field("extension_id", &self.extension_id)
             .finish()
     }
 }
 
 // ---------------------------------------------------------------------------
-// Extension
+// Loaded WASM Extension instance
 // ---------------------------------------------------------------------------
 
-/// A loaded WASM plugin instance with registered tools.
+/// A loaded WASM Extension instance with its registered tools.
 #[allow(dead_code)]
-pub struct Extension {
+pub struct WasmExtensionInstance {
     engine: Engine,
     store: Store<Context>,
     instance: wasmtime::Instance,
     memory: Memory,
-    /// Tools registered by the plugin during init.
+    /// Tools registered by the Extension during init.
     pub tools: Vec<ToolDef>,
-    /// Version number returned by plugin_version().
-    pub version: u32,
+    /// ABI version returned by `extension_version()`.
+    pub abi_version: u32,
 }
 
 #[derive(Clone)]
@@ -96,7 +96,7 @@ pub struct ToolDef {
     pub parameters: serde_json::Value,
 }
 
-impl Extension {
+impl WasmExtensionInstance {
     pub fn load(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let engine = Engine::default();
         let module = Module::from_file(&engine, path)?;
@@ -712,7 +712,7 @@ impl Extension {
 
         // ── Host: data_read (extension-specific data storage) ────────────────
         // Read extension-specific data from the global data directory.
-        // Data is stored in: ~/.ion/agent/extensions-data/<ext_name>/<key>
+        // Data is stored in: ~/.ion/agent/extensions-data/<extension_id>/<key>
         // Signature: host_data_read(key_ptr, key_len, out_buf, out_capacity) -> u32
         //   Returns bytes written, or 0 if not found / blocked.
         linker.func_wrap(
@@ -725,7 +725,7 @@ impl Extension {
                   out_capacity: u32|
                   -> u32 {
                 let ctx = caller.data().clone();
-                let dir = paths::global_data_dir(&ctx.ext_name);
+                let dir = paths::global_data_dir(&ctx.extension_id);
                 let key = mem_read_str(&mut caller, key_ptr, key_len);
 
                 let path = match safe_join(&dir, &key) {
@@ -746,7 +746,7 @@ impl Extension {
 
         // ── Host: data_write (extension-specific data storage) ───────────────
         // Write extension-specific data to the global data directory.
-        // Data is stored in: ~/.ion/agent/extensions-data/<ext_name>/<key>
+        // Data is stored in: ~/.ion/agent/extensions-data/<extension_id>/<key>
         // Signature: host_data_write(key_ptr, key_len, content_ptr, content_len) -> u32
         //   Return codes: 0 = success, 1 = error (traversal blocked / IO failure).
         linker.func_wrap(
@@ -759,7 +759,7 @@ impl Extension {
                   content_len: u32|
                   -> u32 {
                 let ctx = caller.data().clone();
-                let dir = paths::global_data_dir(&ctx.ext_name);
+                let dir = paths::global_data_dir(&ctx.extension_id);
                 let key = mem_read_str(&mut caller, key_ptr, key_len);
                 let data = mem_read_bytes(&mut caller, content_ptr, content_len);
 
@@ -999,16 +999,16 @@ impl Extension {
 
         // ── Register data dimension host functions (4 dims × 4 ops = 16) ───
         register_dim(&mut linker, "global".into(), |ctx| {
-            paths::global_data_dir(&ctx.ext_name)
+            paths::global_data_dir(&ctx.extension_id)
         })?;
         register_dim(&mut linker, "project".into(), |ctx| {
-            paths::project_data_dir(&ctx.cwd, &ctx.ext_name)
+            paths::project_data_dir(&ctx.cwd, &ctx.extension_id)
         })?;
         register_dim(&mut linker, "project_local".into(), |ctx| {
-            paths::project_local_data_dir(&ctx.project_root, &ctx.ext_name)
+            paths::project_local_data_dir(&ctx.project_root, &ctx.extension_id)
         })?;
         register_dim(&mut linker, "session".into(), |ctx| {
-            paths::session_data_dir(&ctx.cwd, &ctx.session_id, &ctx.ext_name)
+            paths::session_data_dir(&ctx.cwd, &ctx.session_id, &ctx.extension_id)
         })?;
 
         linker.define(&mut store, "env", "memory", memory)?;
@@ -1025,18 +1025,18 @@ impl Extension {
             instance,
             memory: instance_memory,
             tools: Vec::new(),
-            version: 0,
+            abi_version: 0,
         };
 
-        // Call version (extension_version or legacy plugin_version)
+        // Read the ION Extension ABI version.
         if let Ok(func) = ext.get_export_func::<(), u32>("version")
             && let Ok(ver) = func.call(&mut ext.store, ())
         {
-            ext.version = ver;
-            tracing::info!("[wasm] extension v{ver}");
+            ext.abi_version = ver;
+            tracing::info!("[wasm] extension ABI v{ver}");
         }
 
-        // Call init (extension_init or legacy plugin_init) — triggers host_register_tool
+        // Call extension_init(), which may register tools through host_register_tool.
         if let Ok(func) = ext.get_export_func::<(), ()>("init") {
             func.call(&mut ext.store, ())?;
         }
@@ -1050,7 +1050,7 @@ impl Extension {
         let tool_names: Vec<&str> = ext.tools.iter().map(|t| t.name.as_str()).collect();
         tracing::info!(
             "[wasm] extension v{} registered {} tools: {:?}",
-            ext.version,
+            ext.abi_version,
             ext.tools.len(),
             tool_names
         );
@@ -1119,7 +1119,7 @@ impl Extension {
     }
 
     /// Call a B-class hook: one-way notification, no return data.
-    /// WASM export: `extension_on_<hook>` (legacy: `plugin_on_<hook>`).
+    /// WASM export: `extension_on_<hook>`.
     /// Returns Ok(false) if the hook is not exported (extension chose not to implement it).
     pub fn call_hook_notify(&mut self, hook: &str, ctx_json: &str) -> Result<bool, String> {
         let short = format!("on_{}", hook);
@@ -1174,7 +1174,7 @@ impl Extension {
 
     /// Call a C-class hook: returns a status code (0 or non-zero).
     /// Used by `before_tool_call` where 0=allow, non-zero=block.
-    /// WASM export: `extension_<hook>` (legacy: `plugin_<hook>`).
+    /// WASM export: `extension_<hook>`.
     /// Returns false if hook not exported (don't block).
     pub fn call_hook_status(&mut self, hook: &str, ctx_json: &str) -> Result<bool, String> {
         let func = match self.get_export_func::<(u32, u32), u32>(hook) {
@@ -1193,7 +1193,7 @@ impl Extension {
     }
 
     /// Call extension_rpc hook.
-    /// WASM export: `extension_on_rpc` (legacy: `plugin_on_extension_rpc`).
+    /// WASM export: `extension_on_rpc`.
     /// Returns Err if hook not exported or returned 0.
     pub fn call_hook_rpc(&mut self, method: &str, params_json: &str) -> Result<String, String> {
         let func = match self.get_export_func::<(u32, u32, u32, u32, u32, u32), u32>("on_rpc") {
@@ -1245,11 +1245,11 @@ impl Extension {
 // Context injection helpers
 // ---------------------------------------------------------------------------
 
-/// Return a `Context` with the registry's shared context + the given ext_name.
-/// This is what `ToolAdapter::execute()` uses before calling the plugin.
-pub fn make_exec_context(registry_ctx: &Context, ext_name: &str) -> Context {
+/// Return a `Context` with the registry's shared context + the given extension_id.
+/// This is what `WasmToolAdapter::execute()` uses before calling the Extension.
+pub fn make_exec_context(registry_ctx: &Context, extension_id: &str) -> Context {
     let mut ctx = registry_ctx.clone();
-    ctx.ext_name = ext_name.to_string();
+    ctx.extension_id = extension_id.to_string();
     ctx
 }
 
@@ -1258,7 +1258,7 @@ pub fn make_exec_context(registry_ctx: &Context, ext_name: &str) -> Context {
 /// Examples:
 /// - `todo_plugin.wasm` → `todo_plugin`
 /// - `stock_plugin.wasm` → `stock_plugin`
-pub fn ext_name_from_path(canonical_path: &str) -> String {
+pub fn extension_id_from_path(canonical_path: &str) -> String {
     Path::new(canonical_path)
         .file_stem()
         .map(|n| n.to_string_lossy().to_string())
@@ -1266,52 +1266,53 @@ pub fn ext_name_from_path(canonical_path: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Registry — central registry for hot-pluggable WASM plugin instances
+// Registry — central registry for runtime-loadable WASM Extension instances
 // ---------------------------------------------------------------------------
 
-/// Information about a loaded plugin, returned by [`Registry::list()`].
+/// Information about a loaded WASM Extension.
 #[derive(Clone, Debug, Serialize)]
-pub struct Info {
+pub struct LoadedWasmExtensionInfo {
     pub path: String,
-    pub version: u32,
+    pub abi_version: u32,
     pub tools: Vec<String>,
 }
 
 struct Entry {
-    extension: Arc<Mutex<Extension>>,
-    version: u32,
+    extension: Arc<Mutex<WasmExtensionInstance>>,
+    abi_version: u32,
     tool_names: Vec<String>,
     canonical_path: String,
-    ext_name: String,
+    extension_id: String,
 }
 
-/// Central registry for WASM plugin instances with hot‑reload support.
+/// Central registry for WASM Extension instances with hot-reload support.
 ///
-/// Each loaded plugin is wrapped in `Arc<Mutex<Extension>>`. `ToolAdapter`
+/// Each loaded instance is wrapped in `Arc<Mutex<WasmExtensionInstance>>`.
+/// `WasmToolAdapter`
 /// holds a reference to the registry + canonical path, so add/remove/reload
 /// swap out the underlying instance without invalidating tool references.
-pub struct Registry {
-    plugins: RwLock<HashMap<String, Entry>>,
+pub struct WasmExtensionRegistry {
+    extensions: RwLock<HashMap<String, Entry>>,
     /// Shared session-level context (cwd, session_id, project_root).
     /// Updated from outside (CLI / Worker) before each prompt execution.
     pub ctx: RwLock<Context>,
 }
 
-impl Default for Registry {
+impl Default for WasmExtensionRegistry {
     fn default() -> Self {
         Self {
-            plugins: RwLock::new(HashMap::new()),
+            extensions: RwLock::new(HashMap::new()),
             ctx: RwLock::new(Context::default()),
         }
     }
 }
 
-impl Registry {
+impl WasmExtensionRegistry {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Add (or reload) a plugin from the given path.
+    /// Add (or reload) a WASM Extension from the given path.
     ///
     /// If the path was already registered, the old instance is replaced.
     /// Returns the tool definitions that should be registered in `ToolRegistry`.
@@ -1319,80 +1320,89 @@ impl Registry {
         let canonical = std::fs::canonicalize(path)?;
         let canonical_str = canonical.to_string_lossy().to_string();
 
-        let ext = Extension::load(&canonical)?;
-        let version = ext.version;
+        let ext = WasmExtensionInstance::load(&canonical)?;
+        let abi_version = ext.abi_version;
         let tool_defs = ext.tools.clone();
         let tool_names: Vec<String> = tool_defs.iter().map(|t| t.name.clone()).collect();
-        let ext_name = ext_name_from_path(&canonical_str);
+        let extension_id = extension_id_from_path(&canonical_str);
 
         let entry = Entry {
             extension: Arc::new(Mutex::new(ext)),
-            version,
+            abi_version,
             tool_names,
             canonical_path: canonical_str.clone(),
-            ext_name,
+            extension_id,
         };
 
-        self.plugins.write().unwrap().insert(canonical_str, entry);
+        self.extensions
+            .write()
+            .unwrap()
+            .insert(canonical_str, entry);
         Ok(tool_defs)
     }
 
-    /// Remessagea plugin by path. Returns the names of tools that were unregistered.
+    /// Remove an Extension by path. Returns the names of tools that were unregistered.
     pub fn remove(&self, path: &str) -> Result<Vec<String>, String> {
         let canonical = std::fs::canonicalize(path)
             .map_err(|e| format!("bad extension path: {e}"))?
             .to_string_lossy()
             .to_string();
 
-        let mut map = self.plugins.write().map_err(|e| e.to_string())?;
+        let mut map = self.extensions.write().map_err(|e| e.to_string())?;
         match map.remove(&canonical) {
             Some(entry) => Ok(entry.tool_names),
             None => Err(format!("extension not found: {canonical}")),
         }
     }
 
-    /// Reload a plugin from disk (re‑initialize the WASM module).
+    /// Reload an Extension from disk (re-initialize the WASM module).
     pub fn reload(&self, path: &str) -> Result<Vec<ToolDef>, Box<dyn std::error::Error>> {
         let canonical = std::fs::canonicalize(path)?;
         let canonical_str = canonical.to_string_lossy().to_string();
-        let _ = self.plugins.write().unwrap().remove(&canonical_str);
+        let _ = self.extensions.write().unwrap().remove(&canonical_str);
         self.add(&canonical_str)
     }
 
-    /// List all currently loaded plugins.
-    pub fn list(&self) -> Vec<Info> {
-        let map = self.plugins.read().unwrap();
+    /// List all currently loaded WASM Extensions.
+    pub fn list(&self) -> Vec<LoadedWasmExtensionInfo> {
+        let map = self.extensions.read().unwrap();
         map.values()
-            .map(|entry| Info {
+            .map(|entry| LoadedWasmExtensionInfo {
                 path: entry.canonical_path.clone(),
-                version: entry.version,
+                abi_version: entry.abi_version,
                 tools: entry.tool_names.clone(),
             })
             .collect()
     }
 
-    /// Lookup the ext_name for a plugin by its canonical path.
-    pub fn get_ext_name(&self, canonical_path: &str) -> Option<String> {
-        let map = self.plugins.read().ok()?;
-        map.get(canonical_path).map(|entry| entry.ext_name.clone())
+    /// Look up the Extension name for a canonical module path.
+    pub fn get_extension_id(&self, canonical_path: &str) -> Option<String> {
+        let map = self.extensions.read().ok()?;
+        map.get(canonical_path).map(|entry| entry.extension_id.clone())
     }
 
-    /// Lookup an `Arc` to a plugin by its canonical path.
-    pub fn get_extension(&self, canonical_path: &str) -> Option<Arc<Mutex<Extension>>> {
-        let map = self.plugins.read().ok()?;
+    /// Look up a loaded Extension instance by its canonical module path.
+    pub fn get_extension(
+        &self,
+        canonical_path: &str,
+    ) -> Option<Arc<Mutex<WasmExtensionInstance>>> {
+        let map = self.extensions.read().ok()?;
         map.get(canonical_path).map(|entry| entry.extension.clone())
     }
 
-    /// Create a HookAdapter for a loaded WASM extension.
+    /// Create a trait adapter for a loaded WASM Extension.
     ///
-    /// The adapter implements the `Extension` trait, forwarding all 29 hooks
-    /// to optional WASM exports (`plugin_on_*`). Hooks not exported by the
+    /// The adapter implements the `Extension` trait, forwarding lifecycle hooks
+    /// to optional WASM exports (`extension_on_*`). Hooks not exported by the
     /// WASM module are silently skipped.
-    pub fn create_hook_adapter(self: &Arc<Self>, canonical_path: &str) -> Option<HookAdapter> {
-        let map = self.plugins.read().ok()?;
+    pub fn create_hook_adapter(
+        self: &Arc<Self>,
+        canonical_path: &str,
+    ) -> Option<WasmExtensionAdapter> {
+        let map = self.extensions.read().ok()?;
         let entry = map.get(canonical_path)?;
-        Some(HookAdapter {
-            name: entry.ext_name.clone(),
+        Some(WasmExtensionAdapter {
+            name: entry.extension_id.clone(),
             canonical_path: canonical_path.to_string(),
             registry: self.clone(),
         })
@@ -1400,28 +1410,29 @@ impl Registry {
 }
 
 // ---------------------------------------------------------------------------
-// ToolAdapter — routes LLM tool calls to WASM plugin execution
+// WasmToolAdapter — routes LLM tool calls to WASM Extension execution
 // ---------------------------------------------------------------------------
 
-/// A tool whose execution is routed back to a WASM plugin via [`Registry`].
+/// A tool whose execution is routed to a WASM Extension through
+/// [`WasmExtensionRegistry`].
 ///
 /// Before each execution the shared context (`registry.ctx`) is merged with
-/// the tool‑specific `ext_name` and injected into the WASM store, so that
+/// the tool‑specific `extension_id` and injected into the WASM store, so that
 /// data‑oriented host functions (write/read/delete/list) can compute paths.
-pub struct ToolAdapter {
+pub struct WasmToolAdapter {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
     /// Canonical path of the `.wasm` file (used as the registry key).
     pub extension_path: String,
-    /// Extension name derived from the plugin path (used for data dirs).
-    pub ext_name: String,
-    /// Shared registry to look up the current plugin instance and context.
-    pub registry: Arc<Registry>,
+    /// Extension name derived from the module path (used for data dirs).
+    pub extension_id: String,
+    /// Shared registry to look up the current Extension instance and context.
+    pub registry: Arc<WasmExtensionRegistry>,
 }
 
 #[async_trait]
-impl Tool for ToolAdapter {
+impl Tool for WasmToolAdapter {
     fn name(&self) -> &str {
         &self.name
     }
@@ -1452,7 +1463,7 @@ impl Tool for ToolAdapter {
             .ctx
             .read()
             .map_err(|e| AgentError::Tool(e.to_string()))?;
-        let exec_ctx = make_exec_context(&reg_ctx, &self.ext_name);
+        let exec_ctx = make_exec_context(&reg_ctx, &self.extension_id);
         drop(reg_ctx);
         ext.set_context(&exec_ctx);
 
@@ -1679,7 +1690,7 @@ mod path_safety_tests {
     #[test]
     fn test_host_write_and_read_file() {
         // Simulate the host_data_write + host_data_read round-trip logic.
-        // The host functions use paths::global_data_dir(ext_name) + safe_join.
+        // The host functions use paths::global_data_dir(extension_id) + safe_join.
         let tmp = std::env::temp_dir().join(format!(
             "ion_wasm_test_wr_{}_{}",
             std::process::id(),
@@ -1739,8 +1750,8 @@ mod path_safety_tests {
     fn test_host_data_write_and_read() {
         // Full round-trip using paths::global_data_dir to mirror exactly
         // what host_data_write / host_data_read do at runtime.
-        let ext_name = format!("test_ext_{}", &uuid::Uuid::new_v4().to_string()[..8]);
-        let dir = paths::global_data_dir(&ext_name);
+        let extension_id = format!("test_ext_{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let dir = paths::global_data_dir(&extension_id);
 
         // Write (mirror host_data_write logic)
         let key = "round_trip_key";
@@ -1905,7 +1916,7 @@ fn register_dim(
 }
 
 // ===========================================================================
-// HookAdapter — adapts a WASM Extension into the Extension trait (29 hooks)
+// WasmExtensionAdapter — adapts a WASM module into the Extension trait
 // ===========================================================================
 
 use crate::agent::agent_loop::AgentContext;
@@ -1920,27 +1931,27 @@ use ion_provider::types::{ToolCall, ToolResult, Usage};
 /// Adapts a loaded WASM Extension into the `Extension` trait.
 ///
 /// Each hook checks whether the WASM module exports the corresponding
-/// `plugin_on_<hook>` function. If it does, the hook serializes its context
+/// `extension_on_<hook>` function. If it does, the hook serializes its context
 /// to JSON, writes it into WASM linear memory, calls the export, and (for
 /// mutable hooks) reads back the modified JSON.
 ///
 /// Hooks that the WASM module does NOT export are silently skipped
 /// (return `Ok(())`), so a WASM extension only needs to export the hooks
 /// it cares about.
-pub struct HookAdapter {
+pub struct WasmExtensionAdapter {
     /// Extension name (used for extension_rpc routing + data dirs).
     pub name: String,
     /// Canonical path of the `.wasm` file (registry key).
     pub canonical_path: String,
     /// Shared registry (for context lookup).
-    pub registry: Arc<Registry>,
+    pub registry: Arc<WasmExtensionRegistry>,
 }
 
-impl HookAdapter {
-    /// Lock the WASM Extension and inject the current session context.
+impl WasmExtensionAdapter {
+    /// Lock the WASM Extension instance and inject the current session context.
     fn with_plugin<F, R>(&self, f: F) -> AgentResult<R>
     where
-        F: FnOnce(&mut Extension) -> R,
+        F: FnOnce(&mut WasmExtensionInstance) -> R,
     {
         let ext_arc = self
             .registry
@@ -2004,7 +2015,7 @@ impl HookAdapter {
 }
 
 #[async_trait]
-impl ExtTrait for HookAdapter {
+impl ExtTrait for WasmExtensionAdapter {
     fn name(&self) -> &str {
         &self.name
     }

@@ -22,11 +22,22 @@ use ion_provider::types::{CustomContent, CustomMessage, Message};
 /// Shared watcher task for background and foreground modes.
 /// Reads stdout line by line, emits `process_output` events every ~1s,
 /// writes to log file, and sends completion notification.
+/// 活跃后台 watcher 计数 guard：spawn_watcher 存续期内 +1，结束（任何路径）自动 -1。
+/// outer_loop 据此判断"有没有后台任务值得等"——没有就零等待收尾，
+/// 避免每轮对话结束后白等 BACKGROUND_WAIT_TIMEOUT（曾硬等 30s）。
+pub struct WatcherGuard(pub std::sync::Arc<std::sync::atomic::AtomicUsize>);
+impl Drop for WatcherGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 pub async fn spawn_watcher(
     map: ProcessMap,
     smap: StdinMap,
     nmap: NotifyMap,
     tx: Option<FollowUpSender>,
+    pending: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pid: String,
     command: String,
     description: String,
@@ -37,6 +48,10 @@ pub async fn spawn_watcher(
     session_id: String,
     deliver_as: DeliverAs,
 ) {
+    let _guard = {
+        pending.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        WatcherGuard(pending)
+    };
     let started = std::time::Instant::now();
     let log_dir = std::path::Path::new("/tmp").join("ion-bash");
     let _ = std::fs::create_dir_all(&log_dir);

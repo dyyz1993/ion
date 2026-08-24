@@ -276,6 +276,10 @@ pub struct SpawnWorkerRequest {
     /// 是否在独立 git worktree 中运行（隔离文件改动）。
     /// true = 创建新分支 + worktree，developer 在隔离目录工作。
     pub worktree: Option<bool>,
+    /// （worktree=true 时可选）指定分支名；缺省自动生成 ion-worker-*。
+    pub worktree_branch: Option<String>,
+    /// （worktree=true 时可选）切出基准 ref；缺省 HEAD。
+    pub worktree_base: Option<String>,
     /// hooks 递归深度（防 agent handler 死循环）。
     /// hooks 的 run_agent spawn 时设为当前 depth+1，Manager 传给子进程 ION_HOOK_DEPTH。
     /// 默认 None = 不设（普通 spawn_worker 工具调用不设）。
@@ -310,6 +314,12 @@ pub struct SpawnWorkerResponse {
     pub first_turn_output: Option<String>,
     /// Peer 模式下汇报频道。
     pub report_channel: Option<String>,
+    /// worktree 隔离时的目录路径（未启用隔离为 None）。
+    pub worktree_path: Option<String>,
+    /// worktree 隔离时的分支名（未启用隔离为 None）。
+    pub worktree_branch: Option<String>,
+    /// 子 Worker 的 session id（UI 订阅/快照用）。
+    pub session_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -442,14 +452,18 @@ impl<R: Runtime + 'static> Runtime for WorkerRuntime<R> {
         };
         // 如果请求了 worktree 隔离，附加 worktree config
         let worktree_json = if req.worktree.unwrap_or(false) {
-            // 用 worker_id 后 8 位作为分支名后缀（id 在 manager 侧分配，这里用时间戳兜底）
-            let suffix = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis()
-                & 0xFFFFFFFF;
+            // 分支名：显式指定优先；缺省用时间戳生成 ion-worker-*
+            let branch = req.worktree_branch.clone().unwrap_or_else(|| {
+                let suffix = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+                    & 0xFFFFFFFF;
+                format!("ion-worker-{suffix:08x}")
+            });
             serde_json::json!({
-                "branch": format!("ion-worker-{suffix:08x}"),
+                "branch": branch,
+                "base": req.worktree_base,
             })
         } else {
             serde_json::Value::Null
@@ -469,6 +483,11 @@ impl<R: Runtime + 'static> Runtime for WorkerRuntime<R> {
             "model": req.model,
             "provider": req.provider,
             // 方案 C：所有 Worker 都通过 bridge 代理，不需要 skip_mcp
+            // project_path：透传当前 Worker 的项目目录，避免 Manager 回退到 host cwd
+            // （否则子 worker 项目落在 host 工作目录；非 git 目录还会触发自动 git init）
+            "project_path": std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .ok(),
         });
         let resp = self.bridge.send_command("create_worker", params).await?;
 
@@ -507,6 +526,19 @@ impl<R: Runtime + 'static> Runtime for WorkerRuntime<R> {
             .get("report_channel")
             .and_then(|v| v.as_str())
             .map(String::from);
+        // worktree 元数据：Manager 建完 worktree 后带回（未隔离时字段缺失 → None）
+        let worktree_path = data
+            .get("worktree_path")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let worktree_branch = data
+            .get("worktree_branch")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let child_session_id = data
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(String::from);
 
         let relation = match relation_str_back {
             "peer" => SpawnRelation::Peer,
@@ -519,6 +551,9 @@ impl<R: Runtime + 'static> Runtime for WorkerRuntime<R> {
             status,
             first_turn_output,
             report_channel,
+            worktree_path,
+            worktree_branch,
+            session_id: child_session_id,
         })
     }
 
@@ -2213,6 +2248,8 @@ mod tests {
             report_channel: None,
             wait: true,
             worktree: None,
+            worktree_branch: None,
+            worktree_base: None,
             hook_depth: None,
             system_prompt_override: None,
             model: None,
@@ -2228,11 +2265,143 @@ mod tests {
             report_channel: None,
             wait: true,
             worktree: None,
+            worktree_branch: None,
+            worktree_base: None,
             hook_depth: None,
             system_prompt_override: None,
             model: None,
             provider: None,
         };
         assert!(!child_req.is_peer());
+    }
+
+    // ---- spawn_worker bridge：project_path 透传 + worktree 元数据解析 ----
+
+    /// 捕获发给 Manager 的参数并返回预置响应（测试桩）
+    struct CaptureBridge {
+        captured: std::sync::Mutex<Option<serde_json::Value>>,
+        response: serde_json::Value,
+    }
+
+    #[async_trait]
+    impl ManagerBridgeHandle for CaptureBridge {
+        async fn send_command(
+            &self,
+            _command: &str,
+            params: serde_json::Value,
+        ) -> Result<serde_json::Value, String> {
+            *self.captured.lock().unwrap() = Some(params);
+            Ok(self.response.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_worker_bridge_propagates_project_path_and_worktree_meta() {
+        let bridge = std::sync::Arc::new(CaptureBridge {
+            captured: std::sync::Mutex::new(None),
+            response: serde_json::json!({
+                "success": true,
+                "data": {
+                    "worker_id": "wkr_test",
+                    "session_id": "sess_test",
+                    "relation": "child",
+                    "status": "first_turn_completed",
+                    "first_turn_output": "done",
+                    "worktree_path": "/tmp/wt/x",
+                    "worktree_branch": "ion-worker-deadbeef",
+                }
+            }),
+        });
+        let rt = WorkerRuntime::new(LocalRuntime::new(), bridge.clone());
+        let resp = rt
+            .spawn_worker(SpawnWorkerRequest {
+                relation: SpawnRelation::Child,
+                agent: "developer".into(),
+                task: "test task".into(),
+                name: None,
+                report_channel: None,
+                wait: true,
+                worktree: Some(true),
+                worktree_branch: Some("feat/test-branch".into()),
+                worktree_base: Some("main".into()),
+                hook_depth: None,
+                system_prompt_override: None,
+                model: None,
+                provider: None,
+            })
+            .await
+            .expect("spawn_worker should succeed");
+
+        // ① project_path 必须透传当前 Worker 的 cwd，
+        //    否则 Manager 回退 host cwd（子项目错位 + 非 git 目录被自动 git init）
+        let captured = bridge.captured.lock().unwrap().clone().unwrap();
+        let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+        assert_eq!(
+            captured.get("project_path").and_then(|v| v.as_str()),
+            Some(cwd.as_str()),
+            "bridge 必须把 worker cwd 作为 project_path 发给 Manager"
+        );
+        // ⑧ 显式指定的 branch/base 必须透传（LLM 可命名工作区分支）
+        assert_eq!(
+            captured["worktree"]["branch"].as_str(),
+            Some("feat/test-branch")
+        );
+        assert_eq!(captured["worktree"]["base"].as_str(), Some("main"));
+
+        // ② 响应必须解析出 Manager 带回的 worktree 元数据
+        assert_eq!(resp.worktree_path.as_deref(), Some("/tmp/wt/x"));
+        assert_eq!(
+            resp.worktree_branch.as_deref(),
+            Some("ion-worker-deadbeef")
+        );
+        assert_eq!(resp.status, "first_turn_completed");
+    }
+
+    #[tokio::test]
+    async fn spawn_worker_bridge_without_worktree_meta_keeps_none() {
+        let bridge = std::sync::Arc::new(CaptureBridge {
+            captured: std::sync::Mutex::new(None),
+            response: serde_json::json!({
+                "success": true,
+                "data": {
+                    "worker_id": "wkr_plain",
+                    "session_id": "sess_plain",
+                    "relation": "child",
+                    "status": "running_in_background",
+                }
+            }),
+        });
+        let rt = WorkerRuntime::new(LocalRuntime::new(), bridge.clone());
+        let resp = rt
+            .spawn_worker(SpawnWorkerRequest {
+                relation: SpawnRelation::Child,
+                agent: "developer".into(),
+                task: "t".into(),
+                name: None,
+                report_channel: None,
+                wait: false,
+                worktree: Some(true), // 隔离但未命名分支
+                worktree_branch: None,
+                worktree_base: None,
+                hook_depth: None,
+                system_prompt_override: None,
+                model: None,
+                provider: None,
+            })
+            .await
+            .expect("spawn_worker should succeed");
+        // 未命名时自动生成 ion-worker-* 分支、base 为 null
+        let captured = bridge.captured.lock().unwrap().clone().unwrap();
+        assert!(
+            captured["worktree"]["branch"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("ion-worker-"),
+            "未指定分支名时应自动生成 ion-worker-*"
+        );
+        assert!(captured["worktree"]["base"].is_null());
+        // Manager 没带回元数据时响应保持 None
+        assert!(resp.worktree_path.is_none());
+        assert!(resp.worktree_branch.is_none());
     }
 }
