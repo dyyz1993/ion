@@ -187,8 +187,8 @@ src/
 │       ├── tree.rs         # 左栏项目树
 │       ├── kanban.rs       # 卡片网格
 │       ├── detail.rs       # 详情/聊天
-│       ├── todo_panel.rs   # Todo 插件面板
-│       └── mem_panel.rs    # Memory 插件面板
+│       ├── todo_panel.rs   # Todo Extension 面板
+│       └── mem_panel.rs    # Memory Extension 面板
 ├── bin/
 │   └── ion.rs              # + "dashboard" 子命令
 ```

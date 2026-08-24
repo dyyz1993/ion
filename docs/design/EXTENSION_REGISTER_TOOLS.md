@@ -83,7 +83,7 @@ agent.register_tool(Box::new(bash_bg_tool));
 
 **改为**：删掉这些手动注册，在扩展注册完成后，遍历扩展调 `register_tools`。
 
-在 worker 启动流程里（扩展都 register 进 ExtensionRegistry 之后），加：
+在 worker 启动流程里（扩展都 register 进 ExtensionRunner 之后），加：
 ```rust
 // Let each extension register its own tools (self-describing).
 for ext in ext_reg.iter_extensions() {
@@ -91,7 +91,7 @@ for ext in ext_reg.iter_extensions() {
 }
 ```
 
-**注意**：需要确认 ExtensionRegistry 有没有 `iter_extensions()` 或类似遍历方法。如果没有，加一个（`src/agent/extension.rs` 的 ExtensionRegistry impl 里）。实现前先读 ExtensionRegistry 的结构（约行 689-799）。
+**注意**：需要确认 ExtensionRunner 有没有 `iter_extensions()` 或类似遍历方法。如果没有，加一个（`src/agent/extension.rs` 的 ExtensionRunner impl 里）。实现前先读 ExtensionRunner 的结构（约行 689-799）。
 
 同理 `src/bin/ion.rs` 的 `build_tools`（约行 1058-1152）如果有手动注册扩展工具，也改成遍历。
 
@@ -102,7 +102,7 @@ for ext in ext_reg.iter_extensions() {
 **改为**：
 1. 保留 `register_builtins()`
 2. 删掉手动 SkillTool 注册 + else 分支
-3. 改为：构造一个临时 ExtensionRegistry，注册所有需要的扩展，然后遍历调 `register_tools`
+3. 改为：构造一个临时 ExtensionRunner，注册所有需要的扩展，然后遍历调 `register_tools`
 
 但 export 时不跑真实 worker，没有完整的扩展实例化环境。**简化方案**：export 专门建一个 helper，手动实例化 BashExtension + SkillTool（跟 worker 一样但用 dummy storage），调它们的 register_tools。
 
@@ -161,7 +161,7 @@ cargo test --lib 2>&1 | grep "test result"
 1. ALL COMMENTS IN ENGLISH ONLY
 2. 不改 BashRunTool 等工具的 struct 定义（只改注册位置）
 3. 不改 ToolRegistry 的接口（只加调用方）
-4. ExtensionRegistry 如果没有 iter_extensions，加一个（返回 `Vec<&dyn Extension>` 或 `impl Iterator`）
+4. ExtensionRunner 如果没有 iter_extensions，加一个（返回 `Vec<&dyn Extension>` 或 `impl Iterator`）
 5. BashExtension::new_for_export 是 dummy 实例，register_tools 只 clone Arc 不执行命令，安全
 6. 删掉 worker_rpc.rs:1109-1132 的手动注册后，确认没有其他地方依赖那些局部变量（bash_run_tool 等）
 
@@ -171,7 +171,7 @@ cargo test --lib 2>&1 | grep "test result"
 - [ ] 改动 2: BashExtension impl register_tools（bash.rs）
 - [ ] 改动 3: worker 启动遍历扩展注册（worker_rpc.rs + ion.rs，删手动注册）
 - [ ] 改动 4: export 遍历扩展注册（export.rs，删手动 SkillTool + else 分支）
-- [ ] ExtensionRegistry 加 iter_extensions（如果缺）
+- [ ] ExtensionRunner 加 iter_extensions（如果缺）
 - [ ] BashExtension 加 new_for_export（dummy 构造）
 - [ ] cargo build + cargo test --lib 通过
 - [ ] 命令行验证：export 含 bash_run + skill；worker bash_run 可用

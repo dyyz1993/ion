@@ -33,7 +33,7 @@
 
 ### 扩展系统
 
-- **WASM 扩展** — 热更新 + 4 维数据存储 + 27 host functions + 36 生命周期钩子
+- **WASM Extension** — `WasmExtensionRegistry` 热更新 + ABI v1 + 4 维数据存储；内置生命周期由 `ExtensionRunner` 调度
 - **Extension Host API** — `ctx.fs` 统一文件访问 + `safe_join` 路径逃逸防护
 - **5 类 hooks 系统** — command/http/prompt/agent/mcp_tool（2975 行，热重载）
 - **MCP 系统** — rmcp 1.x + host→worker 工具发现 + 重连监控 + resources/prompts
@@ -87,6 +87,10 @@
 |------|------|------|
 | **lib tests** | **1013 passed / 2 failed** | 全部核心逻辑（含 2 个 hooks 测试逻辑缺陷，待修） |
 | unit_rpc_test | 20 | RPC 协议 U1-U20 |
+| wasm_extension_tests | 24 | ABI、工具调用、热更新、4 维存储与 Plan 生命周期 |
+| extension_cli_ci | 16 | install/remove/list/create + 可构建脚手架 |
+| extension_fs_ci | 23 | ctx.fs、安全边界与 `extension_id` 存储隔离 |
+| rpc_event_push_ci | 18 | 用户触发的每条 RPC 推送 `rpc_response` 事件 + 权限变更 `permission_changed` 类型化事件 + 双终端实时同步 |
 | CI 脚本 | 30+ 个 `tests/*_ci.sh` | CLI 外部验证（MCP/hooks/extensions/snapshot/goal/memory 等） |
 
 **2 个失败测试详情**：

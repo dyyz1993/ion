@@ -419,7 +419,7 @@ grep -rn "ION_PROJECT_ROOT" src/
 
 ### 设计
 
-`StorageContext` 包含 3 个字段 + 5 维路径快捷方法。**不认识任何具体扩展**——它只是路径计算器，扩展自己传 ext_name。
+`StorageContext` 包含 3 个字段 + 5 维路径快捷方法。**不认识任何具体扩展**——它只是路径计算器，扩展自己传 extension_id。
 
 ```rust
 pub struct StorageContext {

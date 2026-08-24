@@ -21,7 +21,7 @@ docs/
 ├── guides/                             ← 用户/开发者使用指南
 │   ├── CLI_USAGE.md                   ← 命令速查
 │   ├── DEPLOY_ARCH.md                 ← 部署场景
-│   ├── EXTENSION_WORKFLOW.md          ← 扩展开发工作流
+│   ├── EXTENSION_WORKFLOW.md          ← Extension 创建、构建、安装与验证的唯一入口
 │   └── HOOKS_ION_KILL.md             ← zcode hook: 防止误杀 ion 进程
 │
 ├── design/                             ← 功能设计文档（每个子系统一份）
@@ -111,9 +111,11 @@ docs/
 
 ### 我想开发 WASM 扩展
 
-- [guides/EXTENSION_WORKFLOW.md](guides/EXTENSION_WORKFLOW.md) — 开发测试闭环
+- [guides/EXTENSION_WORKFLOW.md](guides/EXTENSION_WORKFLOW.md) — **唯一操作入口**：创建、构建、安装、加载与测试
 - [templates/EXTENSION_MANUAL_TEMPLATE.md](templates/EXTENSION_MANUAL_TEMPLATE.md) — 手册模板
-- [design/EXTENSION_SYSTEM.md](design/EXTENSION_SYSTEM.md) — 系统设计
+- [design/EXTENSION_SYSTEM.md](design/EXTENSION_SYSTEM.md) — 架构、ABI 与生命周期
+
+`archive/WASM_EXTENSION_GUIDE.md` 是未落地早期 ABI 的历史文档，不得用于实现。
 
 ### 我想写新功能的设计文档
 
@@ -161,6 +163,8 @@ docs/
 | MEMORY_EXTENSION.md / MEMORY_SPEC.md | design/MEMORY_EXTENSION.md | 2 文档合并 |
 | RPC_DIFF_REPORT.md | design/PI_RPC_ALIGNMENT.md | 被替代 |
 | WORKER_COMM_TODO.md | — | 任务已完成 |
+| WASM_EXTENSION_GUIDE.md | guides/EXTENSION_WORKFLOW.md + design/EXTENSION_SYSTEM.md | 旧 ABI 与构建命令已失效 |
+| code-audit-report.md / test-skill-execution.md | docs/STATUS.md | 一次性历史快照，且不应放在仓库根目录 |
 
 ---
 

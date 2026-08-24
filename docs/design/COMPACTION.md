@@ -69,7 +69,7 @@ pub struct CompactConfig {
 pub async fn compact_batched(
     messages: &mut Vec<Message>,
     config: &CompactConfig,
-    extensions: &ExtensionRegistry,
+    extensions: &ExtensionRunner,
     summarizer: Option<SummarizerFn>,
     retry_config: RetryConfig,
 ) -> AgentResult<CompactionResult>

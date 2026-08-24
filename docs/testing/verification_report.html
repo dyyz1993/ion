@@ -72,7 +72,7 @@ h2{font-size:16px;font-weight:700;margin-bottom:12px;padding-bottom:6px;border-b
 <tr><td colspan="4" class="domain">🅳 编排与工作流</td></tr>
 <tr><td><b>Workflow</b></td><td><span class="badge b-green">24/1</span></td><td>CI (21 组 DSL)</td><td>结构化交付流水线</td></tr>
 <tr><td><b>Monitor</b></td><td><span class="badge b-green">30/2</span></td><td>CI (24 组)</td><td>定时监控 + 自愈管线</td></tr>
-<tr><td><b>Plan</b></td><td><span class="badge b-green">23/0/3skip</span></td><td>单元 (plugin_tests)</td><td>plan_enter/exit + strict_mode</td></tr>
+<tr><td><b>Plan</b></td><td><span class="badge b-green">23/0/3skip</span></td><td>单元 (wasm_extension_tests)</td><td>plan_enter/exit + strict_mode</td></tr>
 
 <tr><td colspan="4" class="domain">🅴 会话与消息</td></tr>
 <tr><td><b>SessionTree</b></td><td><span class="badge b-green">11/0</span></td><td>CI (verify)</td><td>分支/回滚 + only-append 红线</td></tr>
@@ -101,7 +101,7 @@ h2{font-size:16px;font-weight:700;margin-bottom:12px;padding-bottom:6px;border-b
 <table>
 <tr><th>模块</th><th>跳过项</th><th>原因</th><th>如何启用</th></tr>
 <tr><td>MCP</td><td>Groups B-J（连接测试）</td><td>需真实 MCP server（如 mcp-server-everything）</td><td><code>ION_MCP_REAL=1 bash tests/mcp_ci.sh</code></td></tr>
-<tr><td>Plan</td><td>3 个 #[ignore] 测试</td><td>设计性跳过（需要特定环境）</td><td><code>cargo test --test plugin_tests -- --ignored</code></td></tr>
+<tr><td>Plan</td><td>3 个 #[ignore] 测试</td><td>设计性跳过（需要特定环境）</td><td><code>cargo test --test wasm_extension_tests -- --ignored</code></td></tr>
 </table>
 </section>
 
@@ -110,7 +110,7 @@ h2{font-size:16px;font-weight:700;margin-bottom:12px;padding-bottom:6px;border-b
 <table>
 <tr><th>范围</th><th>命令</th><th>耗时</th></tr>
 <tr><td>全部 lib 测试</td><td><code>cargo test --lib</code></td><td>~2s</td></tr>
-<tr><td>Plan + WASM</td><td><code>cargo test --test plugin_tests</code></td><td>~5s</td></tr>
+<tr><td>Plan + WASM</td><td><code>cargo test --test wasm_extension_tests</code></td><td>~5s</td></tr>
 <tr><td>4 个复杂场景</td><td><code>bash tests/ext0{2,4,6,7}_serve_ci.sh</code></td><td>~5min/个</td></tr>
 <tr><td>Learning E2E</td><td><code>bash tests/learning_e2e.sh</code></td><td>~3min（需 API）</td></tr>
 <tr><td>所有 CI 脚本</td><td><code>for f in tests/*_ci.sh; do bash "$f"; done</code></td><td>~30min</td></tr>

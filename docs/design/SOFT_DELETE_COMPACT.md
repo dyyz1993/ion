@@ -516,7 +516,7 @@ self.extensions.on_entries_invalidated(&self.messages).await?;
 | **P0** | delete_entries RPC（entryId 映射 + 落 DeletionEntry）| ✅ 已完成 |
 | **P1** | summarize_entries RPC（LLM 生成摘要 + 替换成 BranchSummary）| ✅ 已完成 |
 | **P1** | apply_visibility_filter 补完 segment_summary + restoration 过滤 | ✅ 已完成 |
-| **P1** | on_entries_invalidated 触发（ExtensionRegistry fan-out）| ✅ 已完成 |
+| **P1** | on_entries_invalidated 触发（ExtensionRunner fan-out）| ✅ 已完成 |
 | **P2** | 软删除/折叠可逆（restore_entries RPC + restoration entry）| ✅ 已完成 |
 
 ---

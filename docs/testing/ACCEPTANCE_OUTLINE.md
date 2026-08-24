@@ -40,7 +40,7 @@
 | 11 | **Hooks** | 5 种 handler + 热更新 | `hooks_ci.sh` (12 组) + `hooks_handler_ci.sh` (5 组) + `hooks_stdin_ci.sh` (10 组) + `hooks_pretool_deny_ci.sh` (8 组) + `ext06_serve_ci.sh` (**复杂场景**) + 4 more | 12+5+10+8+13+4 | ✅ 已验证 |
 | 12 | **GoalSupervisor** | 证据驱动目标闭环 (on_gate_check) | `goal_supervisor_ci.sh` (8 组) + `goal_evolver_ci.sh` (9 组) + `ext07_serve_ci.sh` (**复杂场景**) + 2 e2e | 8+9+13+2 | ✅ 已验证 |
 | 13 | **Workflow Engine** | 结构化交付流水线 DSL | `workflow_ci.sh` (21 组) | 21 | ⚠️ 待验收 |
-| 14 | **Plan** | plan_enter/exit/add/list/done/approve | (plugin_tests.rs) | — | ⚠️ 待验收 |
+| 14 | **Plan** | plan_enter/exit/add/list/done/approve | (wasm_extension_tests.rs) | — | ⚠️ 待验收 |
 | 15 | **Monitor** | 定时监控→触发 LLM 对话 | `monitor_ci.sh` (24 组) + `self_heal_ci.sh` (10 组) | 24+10 | ⚠️ 待验收 |
 
 ### 🅴 会话与消息
@@ -225,7 +225,7 @@ Phase 7: 导出 HTML
 | P2 | Runtime/Backend | `runtime_ci.sh` |
 | P3 | Learning/Skill | `learning_e2e.sh` + `skill_tool_ci.sh` |
 | P3 | SoftDelete | `soft_delete_ci.sh` |
-| P3 | Plan | `plugin_tests.rs` |
+| P3 | Plan | `wasm_extension_tests.rs` |
 | P3 | Rules Engine | `rules_ci.sh` |
 
 ---

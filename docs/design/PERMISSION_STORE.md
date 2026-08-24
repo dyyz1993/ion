@@ -113,6 +113,28 @@ ion rpc --session <sid> --method permission_remove_stored \
 ion rpc --session <sid> --method permission_clear_stored
 ```
 
+### 2.5 变更事件推送（permission_changed）
+
+权限规则的每次**变更**（存储/删除/清空，含 `add_rule` 与 UI 确认选"始终允许"两条路径）都会广播
+`permission_changed` 类型化事件，多终端实时同步；查询类（list）不广播：
+
+```json
+{
+  "type": "extension_event",
+  "extension": "permission",
+  "customType": "permission_changed",
+  "visibility": "llm_and_ui",
+  "data": {
+    "action": "decision_stored",
+    "detail": { "id": "perm_stored_xxx", "subject": "command.run", "pattern": "git status*", "decision": "allow", "scope": "session" }
+  }
+}
+```
+
+action 取值：`rule_added` / `decision_stored` / `stored_removed` / `stored_cleared`。
+发射点在 `PermissionExtension` 公开方法内部（`emit_permission_event`），因此 extension_rpc 调用与
+`store_from_ui_result`（用户在 UI 点"始终允许"）都会触发。验证：`tests/rpc_event_push_ci.sh` Group B。
+
 ## 3. 改动文件清单
 
 | 文件 | 改动 | 行数 |

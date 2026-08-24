@@ -95,7 +95,7 @@
 **场景 3：**
 
 ```
-外部 UI / TUI / IDE 插件               常驻 host
+外部 UI / TUI / IDE 客户端              常驻 host
 ┌─────────────────┐   ┌───────────────────────────────────────┐
 │        socket    │   │  WorkerRegistry + 命令循环            │
 │  Web UI          │   │  Unix socket → ~/.ion/host.sock      │

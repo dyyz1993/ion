@@ -910,7 +910,7 @@ ion session send sess_b "hello"
 
 ### Group A3-4：外部 UI 接入
 
-> 外层 CLI `ion session` 提供了完整的命令行接口。外部 UI（Web/TUI/IDE 插件）只需连接到 socket 即可获取相同的事件流。
+> 外层 CLI `ion session` 提供了完整的命令行接口。外部 UI（Web/TUI/IDE 客户端）只需连接到 socket 即可获取相同的事件流。
 
 #### A3-4-1 外部 UI 看到同步任务
 

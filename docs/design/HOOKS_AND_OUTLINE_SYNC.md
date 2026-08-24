@@ -53,7 +53,7 @@ ION 目前有两个能力短板，导致用户想做"自定义编排"时被迫�
 | 1.1 | `ExtensionWorkerConfig` 补 agent/initial_prompt/worktree 字段 | 🔧 | `cargo test extension_worker_config` |
 | 1.2 | `create_worker` 实现透传新字段到 Manager | 🔧 | FauxProvider harness：spawn 的子 Worker 带 tools |
 | 2.1 | `HooksConfig` 数据结构 + 全局/项目级合并 | 🔧 | `ion hooks validate .ion/hooks.json` |
-| 2.2 | `HookExtension` 注册到 ExtensionRegistry | 🔧 | `ion hooks list` |
+| 2.2 | `HookExtension` 注册到 ExtensionRunner | 🔧 | `ion hooks list` |
 | 2.3 | command handler（spawn bash + stdin/stdout/退出码） | 🔧 | hooks_ci：扫描脚本注入测试 |
 | 2.4 | agent handler（spawn 带 tools 的子 Worker） | 🔧 | hooks_ci：子 Worker 真改文件 |
 | 2.5 | 12 事件全部触发 | 🔧 | hooks_ci：每事件至少 1 case |

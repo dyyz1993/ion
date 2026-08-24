@@ -156,19 +156,20 @@ Use any provider by configuring ~/.ion/config.json.
 
 ## WASM Extensions
 
-ION supports hot-pluggable WASM extensions. Drop a `.wasm` file into `~/.ion/agent/extensions/` and it's auto-discovered — no recompilation needed.
+ION has two Extension forms: built-in Rust Extensions and runtime-loaded WASM Extensions. Third-party capabilities use WASM and do not require recompiling ION.
 
 ### Install Pre-built Extensions
 
 ```bash
-# Rules Engine — inject project rules into system prompt based on file globs
-cp extensions/rules-engine/rules_engine.wasm ~/.ion/agent/extensions/
+# Install globally; all projects can discover it
+ion extension install extensions/rules-engine/rules_engine.wasm
 
-# File Time Guard — block writes to stale files (prevents clobbering user edits)
-cp extensions/file-time-guard/file_time_guard.wasm ~/.ion/agent/extensions/
+# Or install for only the current project
+mkdir -p .ion/extensions
+cp extensions/file-time-guard/file_time_guard.wasm .ion/extensions/
 
-# Session Supervisor — auto-scan for TODO/FIXME after agent finishes
-cp extensions/session-supervisor/session_supervisor.wasm ~/.ion/agent/extensions/
+# List installed global artifacts
+ion extension list
 ```
 
 ### Use Rules Engine
@@ -188,7 +189,16 @@ The rules are automatically injected into the agent's system prompt when it work
 
 ### Write Your Own Extension
 
-WASM extensions have access to **27 host functions** and **36 lifecycle hooks**:
+Start with the ABI-compatible scaffold:
+
+```bash
+ion extension create my-extension
+cd my-extension
+cargo build --target wasm32-wasip1 --release
+ion extension install ./target/wasm32-wasip1/release/my_extension.wasm
+```
+
+Runtime WASM Extensions can use these host capability groups:
 
 | Category | Host Functions |
 |----------|---------------|
@@ -199,7 +209,7 @@ WASM extensions have access to **27 host functions** and **36 lifecycle hooks**:
 | UI | `host_ui_ask`, `host_ui_confirm`, `host_ui_notif`, `host_ui_alert`, `host_ui_prompt` |
 | Tools | `host_register_tool` |
 
-See `extensions/rules-engine/src/lib.rs` for a complete example.
+See [Extension development workflow](docs/guides/EXTENSION_WORKFLOW.md) for the canonical create, install, RPC verification, test, and MANUAL process. All runtime examples live under `extensions/`; start with `extensions/hello-extension/` and `extensions/todo-extension/`.
 
 ---
 
@@ -232,6 +242,7 @@ ion history <session-id>  # view conversation history
 ### Learn more
 - [CHANGELOG.md](CHANGELOG.md) — What's new in each version
 - [CLI_USAGE.md](docs/guides/CLI_USAGE.md) — Full CLI reference
+- [EXTENSION_WORKFLOW.md](docs/guides/EXTENSION_WORKFLOW.md) — Extension development and integration
 - [WORKFLOW.md](docs/guides/WORKFLOW.md) — Development workflows
 - [CONTRIBUTING.md](CONTRIBUTING.md) — How to contribute
 

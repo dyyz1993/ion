@@ -138,17 +138,17 @@ fn default_allowed_roots(project_root: &Path) -> Vec<PathBuf> {
 
 给 Extension trait 的钩子方法加一个可选的 `fs: Option<&dyn FileSystemCapability>` 参数。但这会改所有钩子签名（影响面大）。
 
-**更轻量的方案**——不改 trait，而是给 ExtensionRegistry 持有一个 `Arc<FileSystemCapability>`，扩展通过 registry 拿：
+**更轻量的方案**——不改 trait，而是给 ExtensionRunner 持有一个 `Arc<FileSystemCapability>`，扩展通过 registry 拿：
 
 ```rust
-// ExtensionRegistry 新增
-pub struct ExtensionRegistry {
+// ExtensionRunner 新增
+pub struct ExtensionRunner {
     extensions: Vec<Box<dyn Extension>>,
     // ... 现有字段
     fs: Option<Arc<dyn FileSystemCapability>>,  // 新增
 }
 
-impl ExtensionRegistry {
+impl ExtensionRunner {
     pub fn filesystem(&self) -> Option<&Arc<dyn FileSystemCapability>> {
         self.fs.as_ref()
     }
@@ -195,7 +195,7 @@ pub struct ExtensionDataDirs {
 
 | 文件 | 改动 | 行数 |
 |------|------|------|
-| `src/agent/extension.rs` | FileSystemCapability trait + RuntimeFileSystem + ExtensionRegistry.fs | ~120 |
+| `src/agent/extension.rs` | FileSystemCapability trait + RuntimeFileSystem + ExtensionRunner.fs | ~120 |
 | `src/wasm_extension.rs` | host_read_file / host_list_dir 宿主函数 | ~80 |
 | `src/bin/ion_worker.rs` | 构造 RuntimeFileSystem 并注入 registry | ~20 |
 | `tests/extension_fs_ci.sh` | CLI 测试 | ~60 |
@@ -232,7 +232,7 @@ ion rpc --session <sid> --method prompt --params '{"text":"读 package.json 的 
 - 改动集中在 `extension.rs`（新 trait + 实现）+ `wasm_extension.rs`（新宿主函数）+ `ion_worker.rs`（注入）
 - 与 PERMISSION_STORE.md 有轻微交叉（都碰 permission），但改的函数不同，不冲突
 - 与 SKILL_TOOL.md 完全不重叠
-- **注意**：改 ExtensionRegistry 结构会影响所有扩展注册，编译时注意——但只加了 Option 字段，向后兼容
+- **注意**：改 ExtensionRunner 结构会影响所有扩展注册，编译时注意——但只加了 Option 字段，向后兼容
 
 ## 6. 对标 pi
 
@@ -242,19 +242,19 @@ ion rpc --session <sid> --method prompt --params '{"text":"读 package.json 的 
 | 路由 | 本地/远程透明 | Runtime trait（对齐，更强——多了沙箱/容器） |
 | 权限 | 走 PermissionProvider | 走 PermissionEngine（对齐） |
 | 路径安全 | 有 | safe_join（已实现：字符串级规范化拦截 `../` + fs-canonicalize 对齐符号链接坐标系） |
-| 4 级数据目录 | ✅ ExtensionContext | ✅ `ExtensionDataDirs` struct + `ExtensionRegistry.data_dirs()`（已实现，内置扩展可拿 4 级目录） |
+| 4 级数据目录 | ✅ ExtensionContext | ✅ `ExtensionDataDirs` struct + `ExtensionRunner.data_dirs()`（已实现，内置扩展可拿 4 级目录） |
 | WASM 文件访问 | N/A（pi 无 WASM） | ✅ host_read_file / host_list_dir 宿主函数（已实现，ION 独有） |
 
 ## 7. 实现清单（已落地）
 
 | 文件 | 改动 | 状态 |
 |------|------|------|
-| `src/agent/extension.rs` | `FileSystemCapability` trait + `DirEntry` + `RuntimeFileSystem` + `safe_join` + `resolve_symlinks` + `canonicalize_path_buf` + `glob_walk` + `ExtensionRegistry.fs` 字段 + `with_filesystem()` / `filesystem()` + `ExtensionDataDirs` struct + `ExtensionRegistry.storage` 字段 + `with_storage()` / `data_dirs()` | ✅ |
+| `src/agent/extension.rs` | `FileSystemCapability` trait + `DirEntry` + `RuntimeFileSystem` + `safe_join` + `resolve_symlinks` + `canonicalize_path_buf` + `glob_walk` + `ExtensionRunner.fs` 字段 + `with_filesystem()` / `filesystem()` + `ExtensionDataDirs` struct + `ExtensionRunner.storage` 字段 + `with_storage()` / `data_dirs()` | ✅ |
 | `src/wasm_extension.rs` | `Context.fs` / `Context.tokio_handle` 字段 + `host_read_file` / `host_list_dir` 宿主函数 | ✅ |
 | `src/storage_context.rs` | 补 `cwd_dir()` 方法（之前缺 CWD 级，只有 global/project/project_local/session） | ✅ |
 | `src/bin/ion_worker.rs` | 构造 `RuntimeFileSystem` + 注入 registry + 注入 WASM Context + `FsProbeExtension`（extension_rpc 暴露 read/write/list/exists/glob/data_dirs）+ 注入 `StorageContext` | ✅ |
 | `src/bin/ion.rs` | 场景 1 同样注入 `RuntimeFileSystem` + `StorageContext` | ✅ |
-| `tests/plugin_tests.rs` | `Context` 字面量补 `fs` / `tokio_handle` 字段 | ✅ |
+| `tests/wasm_extension_tests.rs` | `Context` 字面量补 `fs` / `tokio_handle` 字段 | ✅ |
 | `tests/extension_fs_ci.sh` | CLI 测试：Group A（读/写/列/exists/glob）+ Group C（路径逃逸防护 6 case）+ Group D（ExtensionDataDirs 4 级目录 5 case） | ✅ 23 测试全过 |
 
 **验证**：

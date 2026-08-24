@@ -48,7 +48,7 @@ PROMPT
 | **Check / CheckResult / Evidence** | 同上 | 数据结构 |
 | **run_all_checks** | 同上 | 确定性执行检测项 + 收证据 |
 | **日志** | 同上 | iterations.jsonl + goal.json |
-| **注册** | `src/agent/extension.rs` | 加入 ExtensionRegistry |
+| **注册** | `src/agent/extension.rs` | 加入 ExtensionRunner |
 | **config** | `src/config.rs`（或现有 config 结构） | `goal_supervisor.enabled` 开关 |
 | **单元测试** | 同 `src/goal_supervisor_extension.rs` 底部 | 状态机/防线/日志 schema |
 | **harness 脚本** | `tests/goal_supervisor_ci.sh` | 场景 A1/A2/B1（FauxProvider） |
@@ -342,7 +342,7 @@ impl Tool for GoalSetTool {
 
 ### 2.5 注册（`src/agent/extension.rs`）
 
-- 在 ExtensionRegistry 初始化处，读 config.goal_supervisor.enabled
+- 在 ExtensionRunner 初始化处，读 config.goal_supervisor.enabled
 - enabled=true 时注册 GoalSupervisorExtension + GoalSetTool
 - 复用 SharedPlanExtension 的共享模式（extension 和 tool 共享 state）
 

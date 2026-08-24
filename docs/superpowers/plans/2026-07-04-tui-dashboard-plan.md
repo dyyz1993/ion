@@ -2496,7 +2496,7 @@ pub fn render<B: Backend>(f: &mut Frame<B>, state: &AppState, area: Rect, theme:
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border_inactive))
             .style(Style::default().bg(theme.panel_bg));
-        let todo_para = Paragraph::new("(todo plugin)")
+        let todo_para = Paragraph::new("(todo extension)")
             .block(todo_block)
             .style(Style::default().fg(theme.subtext));
         f.render_widget(todo_para, side);

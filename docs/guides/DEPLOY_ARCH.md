@@ -228,7 +228,7 @@ ion "do something"     # any client connects to the running host
 ```
 
 An always-on host listening on a Unix domain socket. External UI / TUI / IDE
-plugins connect and stay connected. Multiple CLI invocations talk to the same
+clients connect and stay connected. Multiple CLI invocations talk to the same
 long-lived host. The host does **not** auto-exit — it requires manual shutdown.
 
 ```

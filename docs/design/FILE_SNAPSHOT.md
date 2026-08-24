@@ -548,7 +548,7 @@ src/file_snapshot/
 └── gc.rs               ← 垃圾回收（enforceLimit / pruneOldObjects / gc）
 ```
 
-接入方式：`FileSnapshotExtension` 实现 `Extension` trait，注册到 agent 的 ExtensionRegistry，通过 `on_tool_execution_start/end` 钩子触发采集。
+接入方式：`FileSnapshotExtension` 实现 `Extension` trait，注册到 agent 的 ExtensionRunner，通过 `on_tool_execution_start/end` 钩子触发采集。
 
 ---
 

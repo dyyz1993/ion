@@ -1,184 +1,162 @@
-# 扩展开发与测试工作流
+# Extension 开发与接入工作流
 
-> **状态：已验证** — todo-plugin 已完整走通此流程。
+> **状态：已验证** — 本文是 ION 运行时 WASM Extension 的唯一开发入口；ABI 细节以 `docs/design/EXTENSION_SYSTEM.md` 和加载器实现为准。
 
-## 开发测试闭环
+ION 只有两类 Extension：编译进内核的内置 Extension，以及运行时加载的 WASM Extension。第三方能力应实现为 WASM Extension；基础设施能力应进入内核，再通过 host functions 暴露给 Extension。
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  1. 写代码                                    todo-plugin/   │
-│     └── #![no_std] WASM crate + host fn 声明                 │
-├──────────────────────────────────────────────────────────────┤
-│  2. Build                                     cargo build    │
-│     └── wasm32-wasip1 release → todo_plugin.wasm             │
-├──────────────────────────────────────────────────────────────┤
-│  3. 安装                                       cp *.wasm     │
-│     └── {project}/.ion/extensions/  或  ~/.ion/agent/ext/    │
-├──────────────────────────────────────────────────────────────┤
-│  4. RPC 直调验证（不经过 LLM）                    call_tool   │
-│     └── 快速验证每个工具的正常/异常路径                       │
-├──────────────────────────────────────────────────────────────┤
-│  5. LLM 引导调用                               prompt        │
-│     └── LLM 自主识别工具、参数并调用                          │
-├──────────────────────────────────────────────────────────────┤
-│  6. RPC 佐证验证                               call_tool     │
-│     └── 查数据是否按预期持久化                                │
-│     └── 遍历所有工具组合                                      │
-└──────────────────────────────────────────────────────────────┘
+## 1. 最短闭环
+
+```text
+ion extension create
+  -> 编写 Extension
+  -> wasm32-wasip1 release build
+  -> ion extension install 或项目级复制
+  -> extension_list 确认已加载
+  -> call_tool / extension_rpc 直调
+  -> subscribe 验证事件
+  -> Harness + ignored e2e + CLI CI
 ```
 
-## 1. 扩展源码结构
-
-```
-ion/todo-plugin/                  ← 扩展 crate 目录
-├── Cargo.toml                    ← crate-type = ["cdylib"]
-└── src/
-    └── lib.rs                    ← #![no_std], WASM 入口
-```
-
-**要点：**
-- `#![no_std]` — WASM 环境无标准库
-- `#[panic_handler]` — 必须提供
-- 宿主函数用 `extern "C"` 声明（详见 [EXTENSION_SYSTEM.md](./EXTENSION_SYSTEM.md)）
-- `plugin_version()` / `plugin_init()` / `plugin_execute_tool()` — 三个入口函数
-
-## 2. Build
+## 2. 创建 Extension
 
 ```bash
-cd ion && cargo build --target wasm32-wasip1 --release -p <crate-name>
-# 产物：target/wasm32-wasip1/release/<name>.wasm
+ion extension create hello-extension
+cd hello-extension
 ```
 
-**添加到 workspace**（如果尚未）：
-```toml
-# ion/Cargo.toml
-[workspace]
-members = ["<crate-name>"]
+脚手架包含三个基础 ABI 入口：
+
+- `extension_version() -> u32`：当前 ABI 版本，必须返回 `1`
+- `extension_init()`：注册工具并初始化状态
+- `extension_execute_tool(...) -> u32`：处理工具调用并把 JSON 写入输出缓冲区
+
+生命周期钩子统一使用 `extension_` 前缀，例如：
+
+```rust
+#[unsafe(no_mangle)]
+pub extern "C" fn extension_on_input(
+    json_ptr: u32,
+    json_len: u32,
+    out_buf: u32,
+    out_capacity: u32,
+) -> u32 {
+    // 返回 0 表示不修改输入；返回正数表示写入了新的 JSON。
+    0
+}
 ```
 
-## 3. 安装路径
+完整 ABI、钩子分类和 host functions 见 [Extension 系统设计](../design/EXTENSION_SYSTEM.md)。不要声明 `plugin_*` 符号。
 
-| 级别 | 路径 | 作用域 |
-|------|------|--------|
-| **项目级** | `<project>/.ion/extensions/<name>.wasm` | 当前项目 |
-| **全局** | `~/.ion/agent/extensions/<name>.wasm` | 所有项目 |
+## 3. 构建
 
-**自动发现**：启动时扫描以上两个目录的 `*.wasm`。`--no-extensions` 禁用。
+每个示例 Extension 当前都是独立 Cargo workspace，因此在它自己的目录内构建：
 
 ```bash
-cp target/wasm32-wasip1/release/todo_plugin.wasm <project>/.ion/extensions/
-# 重启 Manager 或 reload 即可加载
+rustup target add wasm32-wasip1
+cargo build --target wasm32-wasip1 --release
 ```
 
-## 4. 扩展数据存储（4 维）
+产物位于：
 
-数据通过宿主函数读写，路径由内核管理：
+```text
+target/wasm32-wasip1/release/<crate_name>.wasm
+```
 
-| 维度 | 宿主函数 | 存储路径 |
-|------|---------|---------|
-| **session** | `host_read/write/delete/list_session_data` | `~/.ion/agent/sessions/{cwd_hash}/data/{sid}/{ext_name}/{key}` |
-| **project** | `host_read/write/delete/list_project_data` | `~/.ion/agent/project-data/{hash}--{name}/{ext_name}/{key}` |
-| **global** | `host_read/write/delete/list_global_data` | `~/.ion/agent/extensions-data/{ext_name}/{key}` |
-| **project_local** | `host_read/write/delete/list_project_local_data` | `~/.ion/agent/tmp/extensions/{ext_name}/{key}` |
+不要使用已经废弃的 `wasm32-wasi`，也不要使用与当前 host ABI 不匹配的 `wasm32-unknown-unknown`。
 
-**持久化保证**：
-- session 维度：session 不删数据就在，Manager/Worker 重启不丢
-- project 维度：项目路径不变数据就在
-- global 维度：全局数据，所有项目可见
-- project_local：临时数据，可回收
+## 4. 安装与加载
 
-详见 [EXTENSION_SYSTEM.md](./EXTENSION_SYSTEM.md) 的宿主函数签名。
-
-## 5. 测试工作流（核心）
-
-### 5.1 RPC 直调验证
-
-不经过 LLM，直接触发工具，验证返回值：
+### 全局安装
 
 ```bash
-# 启动 Host
-ion serve start
+ion extension install ./target/wasm32-wasip1/release/hello_extension.wasm
+ion extension list
+```
 
+全局目录是 `~/.ion/agent/extensions/`，会被所有项目自动发现。
+
+### 项目级安装
+
+```bash
+mkdir -p <project>/.ion/extensions
+cp ./target/wasm32-wasip1/release/hello_extension.wasm \
+  <project>/.ion/extensions/
+```
+
+项目目录只对当前项目生效。`--no-extensions` 可以关闭自动发现。
+
+### 单次加载或运行时热加载
+
+```bash
+# 单次 CLI 进程加载
+ion --extension /absolute/path/to/hello_extension.wasm "调用 hello 工具"
+
+# 已有 session 中热加载
+ion rpc --session <sid> --method extension_add \
+  --params '{"path":"/absolute/path/to/hello_extension.wasm"}'
+```
+
+术语约定：
+
+- **installed**：`.wasm` 已存在于全局或项目扩展目录
+- **loaded**：当前 Worker 已实例化该 Extension
+- **enabled**：配置允许自动发现或内置 Extension 启用
+
+`ion extension list` 查看已安装产物；RPC `extension_list` 查看当前 Worker 已加载实例。
+
+## 5. 不经过 LLM 的核心验证
+
+先验证 RPC/运行时闭环，再验证 LLM 是否会自主选择工具。
+
+```bash
 # 创建 session
 ion rpc --method create_session --params '{"agent":"developer"}'
-# → sess_xxx
 
-# 直调每个工具
-ion rpc --session sess_xxx --method call_tool \
-  --params '{"tool":"todo_add","args":{"text":"测试任务"}}'
-# → {"id":"1","text":"测试任务","status":"created"}
+# 查看当前 Worker 真正加载的 WASM Extension
+ion rpc --session <sid> --method extension_list
 
-ion rpc --session sess_xxx --method call_tool \
-  --params '{"tool":"todo_list","args":{"status":"all"}}'
-# → [{"id":"1","text":"测试任务","done":false}]
+# 直接调用工具
+ion rpc --session <sid> --method call_tool \
+  --params '{"tool":"hello","args":{}}'
 
-ion rpc --session sess_xxx --method call_tool \
-  --params '{"tool":"todo_done","args":{"id":"1"}}'
-# → {"id":"1","status":"done"}
+# 调用 Extension 私有 RPC
+ion rpc --session <sid> --method extension_rpc \
+  --params '{"extension":"hello_extension","method":"status","params":{}}'
 
-ion rpc --session sess_xxx --method call_tool \
-  --params '{"tool":"todo_remove","args":{"id":"1"}}'
-# → {"id":"1","status":"removed"}
+# 订阅 Extension 事件
+ion subscribe --session <sid> --extension hello_extension
 ```
 
-**验证点**：返回值 JSON 格式正确、数据写入存储、错误路径有合理错误信息。
+至少验证：正常参数、错误参数、未知工具、输出缓冲区边界、重启后的持久化和多终端事件同步。
 
-### 5.2 LLM 引导调用
+## 6. 存储维度
 
-让 LLM 自主使用工具：
+| 维度 | Host functions | 用途 |
+|------|----------------|------|
+| `global` | `host_{read,write,delete,list}_global_data` | 所有项目共享的本机数据 |
+| `project` | `host_{read,write,delete,list}_project_data` | 项目私有但不提交 Git 的数据 |
+| `project_local` | `host_{read,write,delete,list}_project_local_data` | 项目目录中的可移植数据 |
+| `session` | `host_{read,write,delete,list}_session_data` | 单 session 数据 |
 
-```bash
-ion rpc --session sess_xxx --method prompt \
-  --params '{"text":"请用 todo_add 创建三个任务：A、B、C"}'
-# → LLM 会识别的 todo_add 工具并调用
-```
+路径必须由内核计算；Extension 不应自行拼接 `~/.ion` 路径。文件能力和安全边界见 [Extension Host API](../design/EXTENSION_HOST_API.md)。
 
-**验证点**：LLM 能正确识别工具名、参数 JSON schema、在合适的上下文调用。
+## 7. 必须完成的验证
 
-### 5.3 RPC 佐证
+每个新 Extension 都要具备：
 
-LLM 调用后，用 RPC 查存储确认：
+1. FauxProvider Factory 驱动的 Harness 集成测试。
+2. `#[ignore]` 真实 LLM case，由 `ION_E2E=1` 触发。
+3. `tests/<extension>_ci.sh`，从命令行启动 host、调用 RPC、订阅事件并断言。
+4. 源码目录下的 `MANUAL.md`，使用 [Extension 手册模板](../templates/EXTENSION_MANUAL_TEMPLATE.md)。
+5. Push、Pull、多终端同步三个对外能力；不适用时在 MANUAL 中说明原因。
 
-```bash
-ion rpc --session sess_xxx --method call_tool \
-  --params '{"tool":"todo_list","args":{"status":"all"}}'
-# → 确认 3 个任务都已创建
+CI 脚本必须保存启动进程的精确 PID 并按 PID 清理，禁止使用宽泛的 `pkill -f "ion"`。
 
-ion rpc --session sess_xxx --method call_tool \
-  --params '{"tool":"todo_list","args":{"status":"active"}}'
-# → 确认 done:false 的过滤正确
-```
+## 8. 参考实现
 
-**验证点**：LLM 操作确实写入了 session 存储、数据格式正确、持久化正常。
+- [`extensions/hello-extension/`](../../extensions/hello-extension/)：最小工具注册与调用示例
+- [`extensions/todo-extension/`](../../extensions/todo-extension/)：带 session 存储、MANUAL 和 host 集成测试的完整示例
+- [`extensions/file-time-guard/`](../../extensions/file-time-guard/)：生命周期钩子与 `extension_on_rpc` 示例
+- [`extensions/session-supervisor/`](../../extensions/session-supervisor/)：Agent 生命周期与主动 steer 示例
 
-### 5.4 持久化验证
-
-```bash
-# 关 Manager
-kill $(cat ~/.ion/manager.pid)
-
-# 重启
-ion serve start
-
-# 数据还在
-ion rpc --session sess_xxx --method call_tool \
-  --params '{"tool":"todo_list","args":{"status":"all"}}'
-# → 之前的数据仍在
-```
-
-## 6. 完整验证清单
-
-| 阶段 | 操作 | 验证项 |
-|------|------|--------|
-| RPC 直调 | 每个工具调一次 | 返回 JSON 格式、字段名、类型 |
-| RPC 直调 | 错误参数 | 错误信息合理 |
-| LLM 引导 | prompt 描述场景 | LLM 正确选工具、填参数 |
-| RPC 佐证 | 查存储状态 | 数据写入正确 |
-| 持久化 | 关 → 开 Manager | 数据不丢失 |
-| 遍历 | 所有工具组合 | create → done → list → remove → clean |
-
-## 7. 参考
-
-- [EXTENSION_SYSTEM.md](./EXTENSION_SYSTEM.md) — WASM 宿主函数、热更新、4D 存储实现
-- [stock-plugin/](./stock-plugin/) — 最小 WASM 扩展示例
-- [todo-plugin/](./todo-plugin/) — 完整 TODO 扩展（session 维度）
+设计决策看 `EXTENSION_SYSTEM.md`，具体扩展的使用方式只看该扩展自己的 `MANUAL.md`。

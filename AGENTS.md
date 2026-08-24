@@ -10,6 +10,43 @@
 - 测试或开发产生的旧 session 文件可直接清理（`rm -rf ~/.ion/agent/sessions/`）
 - 如果旧数据导致反序列化失败，直接删除重建即可，不需要 fallback 容错
 
+## ⚠️ 存储落位原则：禁止为会话派生数据新建独立文件
+
+**会话的派生状态（title、工作空间绑定、当前模型等）不允许放到额外的 sidecar 文件维护**（如单独的 xxx.json）。落位只有两处：
+
+1. **热字段 → SessionIndex**（`sessions.index.json`）：随会话生命周期顺便更新。例如 name/title、worktree/branch/workspace_path/workspace_status、model/provider——创建、spawn worktree、关闭时直接写进对应 SessionMeta 字段，刷新/重启恢复直接读索引。
+2. **完整可还原元信息 → 会话 JSONL**：需要完整历史细节（何时创建、参数、事件）时，以 custom entry 追加进会话文件本身，恢复时重放还原。
+
+判断标准：**两个会话天然共享一份的东西（索引）放索引；属于单个会话轨迹的东西放它的 JSONL；两者都不是就放进内存，宁可丢也不建新文件**。新增任何"持久化到新文件"的设计前，先按此原则自查。
+
+### 哪些字段进 SessionIndex、怎么进
+
+**判断什么进索引**（索引 = 摘要/目录，不是数据仓库）：
+- ✅ 进：UI 列表/刷新恢复要**直接读**的热字段——title/name、project、血缘（parent_session/parent_type）、model/provider/agent、token/turn 统计、worktree/branch/workspace_path/workspace_status
+- ❌ 不进：大对象、列表、历史细节、可重放的轨迹（这些进会话 JSONL 的 custom 条目）；字段要**小且可枚举**（string/数字/bool）
+
+**怎么加一个索引字段**（四步，漏一步编译会提醒你）：
+1. `SessionMeta` 加字段，必须带 `#[serde(default, skip_serializing_if = "Option::is_none")]`（老索引文件无此字段靠 default 兜底，None 不落盘保持文件干净）
+2. 补所有 `SessionMeta` 构造点：`Default`/`build()`/测试里的 `make_meta()` 等（编译器会逐个报 E0063）
+3. 在**生命周期事件发生处顺便写入**：创建/注册时随 `idx.upsert(&sid, SessionMeta{...})` 填初值；后续变化用**部分更新方法**（参考 `update_workspace`：`load() → 改字段 → save()`，避免全量替换覆盖其他字段）
+4. ⚠️ `upsert` 是**整个 SessionMeta 替换**（`sessions.insert`）——任何"重建 meta"的路径必须从 `existing` 带回旧值（`build()` 内部就是这么做的），否则字段会被清空
+
+**写入时机原则**：跟着事件走，不做后台同步——创建时写、状态变化时更新、关闭时收尾。读写都是整文件 load/save（sessions.index.json 很小，可接受）。
+
+### JSONL 扩展条目选型：custom vs custom_message（对齐 pi 定义）
+
+JSONL 每种条目的字段是固定的，扩展只走两种官方槽位条目，按"**要不要进 LLM 上下文**"选：
+
+| 条目 | 扩展槽位 | 进 LLM 上下文？ | 适用 |
+|------|---------|----------------|------|
+| `custom` | `customType` + **`data`** | ❌ 不进（旁路/审计） | 留痕、可还原元信息：workspace_session 创建/关闭、审批记录、审计事件 |
+| `custom_message` | `customType` + `content` + **`details`** + `display` | ✅ 进（`display:true` 时） | 需要让 LLM 看到的扩展消息：extension 注入的提示、工具结果增强 |
+
+- `details` **只属于 `custom_message`**（及 compaction/branch_summary）；`custom` 的 payload 字段是 `data`——不要混用
+- 两种条目都是完整树节点（推进 leaf、导出不丢、compaction 不删）
+- `custom` 的 `data` 结构自定义（自由 JSON）；`custom_message` 的 `content` 是 string 或 Text/Image 内容数组
+- 写入 API：`custom` 用 `session_jsonl::append_custom_entry`（worker 侧）/ `append_custom_entry_to_file`（host 侧，显式路径版）；`custom_message` 走 worker RPC `append_custom_message`（经 `append_entry` 统一入口，自动接树）
+
 ## ⚠️ 术语规范：统一使用 Extension，禁止使用 Plugin
 
 **本项目所有可扩展能力统称为 Extension。禁止使用 "plugin"、"插件" 这两个词。**
@@ -35,7 +72,7 @@ WASM 模块导出的 C 函数必须使用 `extension_` 前缀：
 ### 检查清单
 
 写代码/文档时自查：
-- ❌ `PluginRegistry` → ✅ `ExtensionRegistry` / `Registry`
+- ❌ `PluginRegistry` → ✅ `ExtensionRunner` / `Registry`
 - ❌ `plugin_rpc` → ✅ `extension_rpc`
 - ❌ `--plugin <name>` → ✅ `--extension <name>`
 - ❌ `PluginEvent` / `PluginEventBus` → ✅ `ExtensionEvent` / `ExtensionEventBus`
@@ -228,7 +265,7 @@ docs/
 
 ### UI 交互架构规范（每个对外功能必须遵守）
 
-ION 支持多终端（CLI / Web UI / IDE 插件）同时连接同一个 host。每个对外功能（审批、回滚、文件快照等）**必须**同时提供以下三种能力，缺一不可：
+ION 支持多终端（CLI / Web UI / IDE 客户端）同时连接同一个 host。每个对外功能（审批、回滚、文件快照等）**必须**同时提供以下三种能力，缺一不可：
 
 | 能力 | 要求 | 实现方式 |
 |------|------|---------|
@@ -246,6 +283,8 @@ ION 支持多终端（CLI / Web UI / IDE 插件）同时连接同一个 host。�
 2. ✅ 有 RPC 拉取接口吗？（新终端能获取当前状态）
 3. ✅ 推送事件的 customType 统一了吗？（如 `ApprovalRequest` / `ApprovalResolved` / `ApprovalReset`）
 4. ✅ 事件 data 包含足够信息让 UI 渲染吗？（文件列表、diff 摘要、操作结果）
+
+**通用 RPC 推送兜底（rpc_response）**：除各功能的类型化事件外，**worker 处理的每条用户 RPC（成功/失败/未知命令）都会自动广播一条 `rpc_response` 事件**（`worker_rpc.rs` 的 `output_response` / `output_error_response` 汇聚点统一发射，勿绕过它们直接 `output()` 写响应）。事件只带摘要（method/id/success/error 截断/sessionId），不带响应体（防大响应挤爆订阅者队列）。这保证任何新 RPC 天然具备多终端实时同步能力，无需逐个补事件。验证：`tests/rpc_event_push_ci.sh`。
 
 **推送事件模式（仿 BashExtension）**：
 ```rust
@@ -397,10 +436,10 @@ ion rpc --session sess_xxx --method get_flags \
 | 格式 | 参照模板，覆盖工具/存储/事件/测试四节 |
 | 构建 | `cargo build --target wasm32-wasip1 --release` |
 | 安装 | `.wasm` 放入 `<project>/.ion/extensions/` 自动发现 |
-| 集合 | 用户可通过 `ion extension list --docs` 浏览所有已安装扩展的手册 |
+| 集合 | 源码仓库通过 `docs/guides/EXTENSION_WORKFLOW.md` 导航；`ion extension list` 当前只列已安装 `.wasm`，不承诺打包源码侧 MANUAL |
 
 现有扩展手册：
-- [todo-extension/MANUAL.md](./todo-extension/MANUAL.md) — 待办任务管理 (WASM)
+- [extensions/todo-extension/MANUAL.md](./extensions/todo-extension/MANUAL.md) — 待办任务管理 (WASM)
 - **plan 工具**（内核内置，非 WASM）— plan_enter/exit/add/list/done/approve，支持 strict_mode 强制用户审批
 - MEMORY 扩展手册（内核内置，见 [docs/design/MEMORY_EXTENSION.md](./docs/design/MEMORY_EXTENSION.md)）
 
@@ -439,7 +478,7 @@ ion rpc --session sess_xxx --method get_flags \
 | 文档 | 内容 |
 |------|------|
 | [docs/design/ARCHITECTURE.md](./docs/design/ARCHITECTURE.md) | **总体架构总览**：5 层架构大图 + 三场景对比 + Worker 内部结构 + Agent 循环钩子时序 + 多智能体编排 + 5 维存储 + 6 条 ADR (已完成) |
-| [docs/design/EXTENSION_SYSTEM.md](./docs/design/EXTENSION_SYSTEM.md) | WASM 扩展系统：热更新、4 维数据存储、27 个 host functions + 36 个生命周期钩子 + WASI stubs (已完成) |
+| [docs/design/EXTENSION_SYSTEM.md](./docs/design/EXTENSION_SYSTEM.md) | 两类 Extension 边界、Runner/Registry 命名、WASM ABI、热更新与 4 维数据存储（已验证） |
 | [docs/design/BASH_EXTENSION.md](./docs/design/BASH_EXTENSION.md) | Bash 扩展：同步执行 + 后台进程 + 综合教程 + CLI 测试 (设计稿+已实现) |
 | [docs/design/MEMORY_EXTENSION.md](./docs/design/MEMORY_EXTENSION.md) | Memory 扩展 v0.1：大纲索引、异步检索、XML 注入、4 维存储 (已验证，搜索 bug 已修) |
 | [docs/design/MEMORY_AGENT.md](./docs/design/MEMORY_AGENT.md) | Memory V0.2 跨项目记忆 Agent：单例扩展 + SQLite/FTS5 + 引用计数 (Phase 1-8 已实现) |
@@ -488,6 +527,7 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/design/SELF_EVOLUTION.md](./docs/design/SELF_EVOLUTION.md) | **自我进化闭环** — evolver agent + worktree + Apple Container 双重隔离 + ION 子实例改代码 + 测试 + 开 PR（开发中） |
 | [docs/design/GOAL_SUPERVISOR.md](./docs/design/GOAL_SUPERVISOR.md) | **Goal Supervisor** — 证据驱动的目标闭环（on_gate_check + 6 道防线 + 日志 + 进化系统）+ A→B 任务规格 (B1 已完成) |
 | [docs/design/DEV_SERVER_DETECTOR.md](./docs/design/DEV_SERVER_DETECTOR.md) | **Dev Server Detector** — bash 启动 dev server 时自动检测端口（stdout 扫描 + 探活兜底）+ on_system_prompt 注入 `<dev_servers>` XML（待定） |
+| [docs/design/SESSION_WORKSPACE_CHAT.md](./docs/design/SESSION_WORKSPACE_CHAT.md) | **Session Workspace Chat** — 会话内创建独立 worktree 子会话：create/close/get_session_snapshot RPC + workspace_session_* 事件 + HTML 原型（内核闭环已完成，`tests/session_workspace_ci.sh` 26/26） |
 
 ### 使用指南（docs/guides/）
 
@@ -541,8 +581,9 @@ ion rpc --session sess_xxx --method get_flags \
 | `src/worker_api.rs` | WorkerHandle + ExtensionApi (扩展 API) |
 | `src/agent/` | Agent 循环 (内层+外层+扩展钩子) |
 | `ion-provider/` | Provider 抽象独立 crate (OpenAI SSE + tool_calls) |
-| `src/extension.rs` | WASM 扩展加载器（[详情](./docs/design/EXTENSION_SYSTEM.md)） |
-| `stock-extension/` | WASM 扩展示例 |
+| `src/agent/extension.rs` | `Extension` trait + 内置生命周期 `ExtensionRunner` |
+| `src/wasm_extension.rs` | `WasmExtensionRegistry` + `WasmExtensionInstance` + ABI/Host API（[详情](./docs/design/EXTENSION_SYSTEM.md)） |
+| `extensions/stock-extension/` | WASM Extension 示例 |
 | `examples/agents/` | Agent 模板（wf/orchestrator/coordinator/developer/merger/reviewer/publisher） |
 | `examples/workflows/` | Workflow YAML 示例（delivery.wf.yaml） |
 | `src/session_tree.rs` | Session Tree 核心数据层（leaf 指针/树构建/branch/rollback/checkout） |
@@ -552,6 +593,7 @@ ion rpc --session sess_xxx --method get_flags \
 | `src/message_retrieval.rs` | 消息拉取核心逻辑（retrieve_messages/turns/inputs/turn_detail + view/过滤/分页） |
 | `src/global_memory.rs` | 全局记忆库（SQLite + FTS5，跨项目检索） |
 | `src/global_memory_ext.rs` | GlobalMemoryExtension（单例扩展，on_singleton_init + extension_rpc） |
+| `src/session_workspace.rs` | **Workspace Session**（工作空间会话模型 + `~/.ion/agent/workspaces.json` 持久化，[详情](./docs/design/SESSION_WORKSPACE_CHAT.md)） |
 | `src/monitor_extension.rs` | MonitorExtension（单例扩展，场景 3 定时脚本监控→触发 LLM 对话） |
 | `src/goal_supervisor_extension.rs` | GoalSupervisorExtension（证据驱动目标闭环：on_gate_check + 6 道防线 + 日志，[详情](./docs/design/GOAL_SUPERVISOR.md)） |
 | `src/goal_evolver.rs` | Goal Evolver（日志分析进化：3 维度分析 + Issue 计划 + run_once，[详情](./docs/design/GOAL_SUPERVISOR.md §8)） |
@@ -650,7 +692,7 @@ ion rpc --session sess_xxx --method get_flags \
 ### 场景 3 流程图
 
 ```
-外部 UI / TUI / IDE 插件               常驻 host
+外部 UI / TUI / IDE 客户端              常驻 host
 ┌─────────────────┐   ┌───────────────────────────────────────┐
 │        socket    │   │  WorkerRegistry + 命令循环            │
 │  Web UI          │   │  Unix socket → ~/.ion/host.sock      │
@@ -743,6 +785,7 @@ ion --mode rpc           → 内部 Worker 子进程 (JSONL over stdin/stdout)
 > - **已完成**：核心内核 + 15+ 扩展系统 + 三场景引擎 + A→B 自进化
 > - **HTML Export**：ION 自有单文件离线模板 + active branch 完整有序 `sourceEntries` + Flow Summary + Timeline/正文完整映射；目录展示 17 种固定 Entry、25 种已识别内置 Custom 与当前会话实际类型，运行时 Extension Custom 统一显示为 `Custom` 并保留来源、LLM 上下文与实时 UI 受众；Hook 归组、Compaction 与 parented File Snapshot 独立卡片；仅当隐藏正文超过 3 行时折叠（`tests/export_ci.sh` 54/54）
 > - **PreToolUse 拒绝闭环**：拒绝转错误 ToolResult、Agent 继续、Hook 审计与 toolCallId/当前分支关联、SessionIndex 准确计数，导出类型目录保留 Hook/Extension 来源（Harness 1/1 + `tests/hooks_pretool_deny_ci.sh` 8/8）
+> - **Session Workspace Chat**：会话内创建独立 worktree 子会话——`create_workspace_session`（原子：worktree+session+worker，require_clean 脏源拒绝，失败回滚）/`close_workspace_session`（默认删目录留分支）/`get_session_snapshot`（Pull 恢复）+ `workspace_session_*` 五类事件（实例流+EventBus 双路）+ spawn_worker 暴露 branch/base + project_path 透传修复（`src/session_workspace.rs` + `tests/session_workspace_ci.sh` 26/26，[设计](./docs/design/SESSION_WORKSPACE_CHAT.md)）
 >
 > 历史改动看 `git log`，功能设计看 `docs/design/`，每个功能的测试看对应 `tests/*_ci.sh`。
 
@@ -761,7 +804,7 @@ ion --mode rpc           → 内部 Worker 子进程 (JSONL over stdin/stdout)
 │   ├── skills/                   ← 全局技能
 │   ├── prompts/                  ← 全局提示模板
 │   ├── extensions-data/          ← 扩展全局数据
-│   │   └── {ext_name}/
+│   │   └── {extension_id}/
 │   ├── project-data/             ← 扩展项目级数据
 │   │   └── {hash}--{name}/
 │   └── cache/                    ← 缓存
@@ -847,3 +890,17 @@ ion "hello"                        # 直接运行
 ```
 
 自我进化 Container 环境详见 [docs/design/SELF_EVOLUTION.md](./docs/design/SELF_EVOLUTION.md)。
+
+---
+
+## 临时记忆：ion-webui（Web UI 项目）
+
+> ⚠️ 临时章节 — Web UI 稳定后移除。
+
+ION 的 Web UI（Python 网关 + 浏览器实时对话）在 **`~/Project/study-rust/ion-webui/`** 开发，
+其**协议约束、刷新恢复仲裁规则、RPC 参数坑、测试命令、用户验收清单**全部记录在该项目的
+[AGENTS.md](../ion-webui/AGENTS.md)——涉及 Web UI / host socket 协议 / 事件流的工作，
+**必须先读它**（大量实测踩坑结论：每连接一行命令、600s 订阅超时、事件名以 StreamingExtension
+为准、faux 桩不发 agent_end、刷新恢复"已完成只信 get_messages"铁律等）。
+
+GPUI 桌面原型（已暂停）：`~/Project/study-rust/ion-orbit`（保留参考）。

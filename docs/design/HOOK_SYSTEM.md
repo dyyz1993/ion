@@ -469,7 +469,7 @@ enum HookOutput {
 ## 与现有系统的集成
 
 ```
-Agent Loop → ExtensionRegistry
+Agent Loop → ExtensionRunner
                ├── WASM Extension (已有)
                ├── JSON Extension (已有)
                ├── Plan Extension (已有)

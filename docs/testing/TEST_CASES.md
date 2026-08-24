@@ -42,7 +42,7 @@
 | # | Case | 验证点 |
 |---|------|--------|
 | U21 | JSON 扩展加载 | system_prompt 注入成功 |
-| U22 | WASM 扩展加载 | plugin_version/plugin_init 调用 |
+| U22 | WASM 扩展加载 | extension_version/extension_init 调用 |
 | U23 | WASM 工具注册 | Agent 可见 get_stock_price |
 | U24 | Skill 加载 | markdown body 注入 system_prompt |
 | U25 | --agent explore | 只读工具，无 edit/write |

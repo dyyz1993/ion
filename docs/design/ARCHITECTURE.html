@@ -283,7 +283,7 @@
     </table>
   </div>
   <blockquote>
-    <p><strong>术语约定</strong>：本项目所有可扩展能力统称 <strong>Extension</strong>，禁止使用 "plugin/插件"。内置 Extension 与运行时 WASM Extension 共享同一套 trait 接口（36 钩子 + 27 host functions），唯一区别是"代码住哪"。</p>
+    <p><strong>术语约定</strong>：本项目所有可扩展能力统称 <strong>Extension</strong>。内置 Extension 与运行时 WASM Extension 共享生命周期语义，唯一区别是代码的装载位置；具体钩子与 Host API 以实现和 EXTENSION_SYSTEM.md 为准。</p>
   </blockquote>
 </section>
 
@@ -324,7 +324,7 @@
 │  │   ├─ Agent 循环保护: Tool Loop Detector / Tool-Use 重试 / GoalSupervisor │  │
 │  │   └─ Context 管理: on_context 注入 / Compaction / SoftDelete             │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
-│  ┌─ Extension 注册中心 (ExtensionRegistry)                                   │  │
+│  ┌─ Extension 注册中心 (ExtensionRunner)                                   │  │
 │  │   内置: Bash / Memory / Plan / GoalSupervisor / LSP / Monitor /          │  │
 │  │         RulesEngine / Learning / Hooks / Permission / FileSnapshot        │  │
 │  │   WASM: 运行时加载 .wasm (todo / stock / 第三方)                          │  │
@@ -431,7 +431,7 @@
     ❌ 没有 socket，外部工具接不了（权限拦截需预配 allow 规则）</pre>
 
   <h3>2.3 场景 3：常驻服务（serve）</h3>
-<pre>外部 UI / TUI / IDE 插件               常驻 host
+<pre>外部 UI / TUI / IDE 客户端              常驻 host
 ┌─────────────────┐   ┌───────────────────────────────────────┐
 │        socket    │   │  WorkerRegistry + 命令循环            │
 │  Web UI          │   │  Unix socket → ~/.ion/host.sock      │
@@ -504,7 +504,7 @@
 │       {"type":"event","event":{"type":"text_delta",...}} (事件, host 转发给 subscriber)                   │
 │       {"type":"event","event":{"type":"extension_event",...}} (扩展自定义事件)                            │
 │                                                                                                           │
-│  ┌─ ExtensionRegistry ──────────────────────────────────────────────────────────────────────────┐          │
+│  ┌─ ExtensionRunner ──────────────────────────────────────────────────────────────────────────┐          │
 │  │  内置扩展 (编译进内核, config.enabled 控制开关):                                                │          │
 │  │    Bash / Memory(V0.1+V0.2) / Plan / GoalSupervisor / Monitor / LSP /                         │          │
 │  │    RulesEngine / Learning / Hooks / Permission / FileSnapshot / GlobalMemory(单例)             │          │
