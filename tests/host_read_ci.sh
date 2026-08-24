@@ -110,5 +110,34 @@ OK=$(echo "$R" | jf '.success'); ERR=$(echo "$R" | jf '.error')
 [ "$OK" = "false" ] && echo "$ERR" | grep -qi "session"; check $? "C2 缺 session 参数报错 (err=$ERR)"
 
 echo ""
+echo "── Group D: 空闲会话状态合成（无 worker 不 auto-create）──"
+
+# D1 get_settings：host 读全局配置，api_key 脱敏
+R=$("$ION_BIN" rpc --method get_settings --params "{\"session\":\"$SESS_FILE\"}")
+OK=$(echo "$R" | jf '.success'); AK=$(echo "$R" | jf '.data.api_key')
+DM=$(echo "$R" | jf '.data.default_model')
+[ "$OK" = "true" ] && [ "$AK" = "***" ] && [ -n "$DM" ]; check $? "D1 get_settings 全局配置 + api_key 脱敏 (ak=$AK)"
+
+# D2 get_queue：空闲态空队列
+R=$("$ION_BIN" rpc --method get_queue --params "{\"session\":\"$SESS_FILE\"}")
+OK=$(echo "$R" | jf '.success'); SC=$(echo "$R" | jf '.data.steeringCount'); FC=$(echo "$R" | jf '.data.followUpCount')
+[ "$OK" = "true" ] && [ "$SC" = "0" ] && [ "$FC" = "0" ]; check $? "D2 get_queue 空队列 (sc=$SC fc=$FC)"
+
+# D3 get_active_tools：不在 index 的会话返回空工具（不报错）
+R=$("$ION_BIN" rpc --method get_active_tools --params "{\"session\":\"$SESS_FILE\"}")
+OK=$(echo "$R" | jf '.success')
+[ "$OK" = "true" ]; check $? "D3 get_active_tools 空闲态 (ok=$OK)"
+
+# D4 get_session_info：不在 SessionIndex 的会话报 not found（不 auto-create）
+R=$("$ION_BIN" rpc --method get_session_info --params '{"session":"sess_not_in_index_ci"}')
+OK=$(echo "$R" | jf '.success'); ERR=$(echo "$R" | jf '.error')
+[ "$OK" = "false" ] && echo "$ERR" | grep -q "not found"; check $? "D4 get_session_info 未索引会话报 not found"
+
+# D5 全部状态查询后 worker 数零增长
+sleep 1
+AFTER2=$(worker_count)
+[ "$AFTER2" = "$WORKERS_BEFORE" ]; check $? "D5 状态查询零新增 worker (before=$WORKERS_BEFORE after=$AFTER2)"
+
+echo ""
 echo "═══ host_read CI: $PASS passed / $FAIL failed ═══"
 [ "$FAIL" -eq 0 ]

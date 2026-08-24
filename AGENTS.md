@@ -786,7 +786,7 @@ ion --mode rpc           → 内部 Worker 子进程 (JSONL over stdin/stdout)
 > - **HTML Export**：ION 自有单文件离线模板 + active branch 完整有序 `sourceEntries` + Flow Summary + Timeline/正文完整映射；目录展示 17 种固定 Entry、25 种已识别内置 Custom 与当前会话实际类型，运行时 Extension Custom 统一显示为 `Custom` 并保留来源、LLM 上下文与实时 UI 受众；Hook 归组、Compaction 与 parented File Snapshot 独立卡片；仅当隐藏正文超过 3 行时折叠（`tests/export_ci.sh` 54/54）
 > - **PreToolUse 拒绝闭环**：拒绝转错误 ToolResult、Agent 继续、Hook 审计与 toolCallId/当前分支关联、SessionIndex 准确计数，导出类型目录保留 Hook/Extension 来源（Harness 1/1 + `tests/hooks_pretool_deny_ci.sh` 8/8）
 > - **Session Workspace Chat**：会话内创建独立 worktree 子会话——`create_workspace_session`（原子：worktree+session+worker，require_clean 脏源拒绝，失败回滚）/`close_workspace_session`（默认删目录留分支）/`get_session_snapshot`（Pull 恢复）+ `workspace_session_*` 五类事件（实例流+EventBus 双路）+ spawn_worker 暴露 branch/base + project_path 透传修复（`src/session_workspace.rs` + `tests/session_workspace_ci.sh` 26/26，[设计](./docs/design/SESSION_WORKSPACE_CHAT.md)）
-> - **Host 级会话直读**：`get_session_messages` / `list_session_turns` — host 纯磁盘读 JSONL 不拉起 worker（响应形状与 worker 级一致，session 兼容 id/文件路径；实测 RPC 2.5ms）；旧命令名 `get_messages`/`list_turns` 带 session 自动拦截直读、不 auto-create worker（`tests/host_read_ci.sh` 10/10）
+> - **Host 级会话直读**：`get_session_messages` / `list_session_turns` — host 纯磁盘读 JSONL 不拉起 worker（响应形状与 worker 级一致，session 兼容 id/文件路径；实测 RPC 2.5ms）；旧命令名 `get_messages`/`list_turns` 带 session 自动拦截直读、不 auto-create worker；get_session_info/get_settings/get_queue/get_context_usage/get_active_tools 无 worker 时合成空闲态响应不 auto-create、有 worker 照旧转发（`tests/host_read_ci.sh` 15/15）
 >
 > 历史改动看 `git log`，功能设计看 `docs/design/`，每个功能的测试看对应 `tests/*_ci.sh`。
 

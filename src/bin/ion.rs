@@ -5765,6 +5765,93 @@ fn host_direct_session_read(
     }
 }
 
+/// Host 级空闲会话状态合成：session 无活跃 worker 时，只读状态类 RPC
+/// （get_session_info / get_settings / get_queue / get_context_usage / get_active_tools）
+/// 不再 auto-create worker，而是从 SessionIndex / 全局配置合成「空闲态」响应——
+/// 读一个历史会话的状态不应该拉起进程。字段形状与 worker 级一致；
+/// 有活跃 worker 时调用方走原转发路径拿真实运行态。
+fn host_idle_session_read(
+    cmd: &serde_json::Value,
+    method: &str,
+) -> Result<serde_json::Value, String> {
+    let params = cmd.get("params").cloned().unwrap_or_default();
+    let sid = params
+        .get("session")
+        .or_else(|| params.get("session_id"))
+        .and_then(|v| v.as_str())
+        .or_else(|| cmd.get("session").and_then(|v| v.as_str()))
+        .ok_or_else(|| "missing 'session' param".to_string())?
+        .to_string();
+    match method {
+        // 与 worker 级一致：读全局配置并脱敏 api_key（空闲会话的 settings 不依赖 worker 状态）
+        "get_settings" => {
+            let cfg = ion::config::IonConfig::load();
+            let mut cfg_json = serde_json::to_value(&cfg).unwrap_or_default();
+            if cfg_json.get("api_key").is_some_and(|v| !v.is_null()) {
+                cfg_json["api_key"] = serde_json::json!("***");
+            }
+            Ok(cfg_json)
+        }
+        "get_queue" => Ok(serde_json::json!({
+            "steering": [], "followUp": [], "steeringCount": 0, "followUpCount": 0,
+        })),
+        "get_active_tools" => {
+            // 空闲会话无注册工具；SessionMeta 记录了最后一次 active tools，作参考返回
+            let index = ion::session_index::SessionIndex::load();
+            let tools: Vec<String> = index
+                .get(&sid)
+                .and_then(|m| m.last_active_tools.clone())
+                .unwrap_or_default();
+            Ok(serde_json::json!({"tools": tools, "count": tools.len()}))
+        }
+        "get_session_info" | "get_context_usage" => {
+            let index = ion::session_index::SessionIndex::load();
+            let meta = index
+                .get(&sid)
+                .ok_or_else(|| format!("session not found: {sid}"))?;
+            let (ctx_window, max_tokens) = ion_provider::registry::ModelRegistry::new()
+                .find_model(&meta.model)
+                .map(|m| (m.context_window, m.max_tokens))
+                .unwrap_or((0, 0));
+            if method == "get_session_info" {
+                Ok(serde_json::json!({
+                    "session_id": sid,
+                    "model": meta.model,
+                    "provider": meta.provider,
+                    "agent": meta.agent,
+                    "is_running": false,
+                    "is_stopped": false,
+                    "message_count": meta.message_count,
+                    "user_messages": meta.user_prompt_count,
+                    "assistant_messages": meta.llm_request_count,
+                    "tokens": {
+                        "input": meta.token_input,
+                        "output": meta.token_output,
+                        "total": meta.token_input + meta.token_output,
+                    },
+                    "steering_queue": 0,
+                    "follow_up_queue": 0,
+                    "context_window": ctx_window,
+                    "max_tokens": max_tokens,
+                }))
+            } else {
+                let total = meta.token_input + meta.token_output;
+                Ok(serde_json::json!({
+                    "messageCount": meta.message_count,
+                    "estimatedTokens": meta.token_input,
+                    "contextWindow": ctx_window,
+                    "usagePercent": if ctx_window > 0 { (meta.token_input * 100 / ctx_window as u64) as u32 } else { 0 },
+                    "totalInputTokens": meta.token_input,
+                    "totalOutputTokens": meta.token_output,
+                    "autoCompaction": false,
+                    "totalTokens": total,
+                }))
+            }
+        }
+        _ => Err(format!("not an idle-read method: {method}")),
+    }
+}
+
 /// Write-path command handler. Each branch acquires the registry lock as needed
 /// (and releases it before any long-running await where possible).
 async fn handle_manager_command_write(
@@ -6298,6 +6385,34 @@ async fn handle_manager_command_write(
                         &cmd,
                         if method == "list_turns" { "turns" } else { "messages" },
                     );
+                }
+            }
+            // 只读状态类命令：session 无活跃 worker 时合成空闲态响应，不 auto-create；
+            // 有活跃 worker 则照旧转发拿真实运行态（is_running/队列/实时工具）
+            if matches!(
+                method,
+                "get_session_info"
+                    | "get_settings"
+                    | "get_queue"
+                    | "get_context_usage"
+                    | "get_active_tools"
+            ) {
+                let p = cmd.get("params");
+                let sid = cmd
+                    .get("session")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| p.and_then(|p| p.get("session")).and_then(|v| v.as_str()))
+                    .or_else(|| {
+                        p.and_then(|p| p.get("session_id")).and_then(|v| v.as_str())
+                    });
+                if let Some(sid) = sid {
+                    let has_live = {
+                        let reg = registry.lock();
+                        reg.workers.values().any(|w| w.session_id == sid)
+                    };
+                    if !has_live {
+                        return host_idle_session_read(&cmd, method);
+                    }
                 }
             }
             // 默认分支：如果 cmd 里有 session 字段，转发到对应 worker

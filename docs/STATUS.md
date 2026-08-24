@@ -60,7 +60,7 @@
 - **HTML Export** — ION 自有单文件离线模板 + 会话元信息卡 + Flow Summary + tools 列表 + 完整可见事件 Timeline（17 种固定 Entry、25 种已识别内置 Custom、当前会话类型统计、运行时 Extension 开放类型、筛选/悬停/点击跳转）；真实消息、Compaction 与 parented File Snapshot 在正文/Timeline 一一对应；仅当隐藏正文超过 3 行时折叠，预览保留 3 行正文（`tests/export_ci.sh` 54/54）
 - **Apple Container 后端** — 真隔离 Linux VM，同端口并行
 - **A→B 自进化** — A 调度 B 改代码 + CI + 合并 + PR（14 脚本，24 agent 模板）
-- **Host 级会话直读** — `get_session_messages` / `list_session_turns`：host 纯磁盘读 JSONL（append-only 线性增长，冷读毫秒级），UI 浏览历史会话零 worker；旧命令名 `get_messages`/`list_turns` 带 session 自动拦截直读、不 auto-create worker（`tests/host_read_ci.sh` 10/10）
+- **Host 级会话直读** — `get_session_messages` / `list_session_turns`：host 纯磁盘读 JSONL（append-only 线性增长，冷读毫秒级），UI 浏览历史会话零 worker；旧命令名 `get_messages`/`list_turns` 带 session 自动拦截直读、不 auto-create worker；空闲会话状态合成——get_session_info/get_settings/get_queue/get_context_usage/get_active_tools 无 worker 时从 SessionIndex/全局配置合成响应、不 auto-create，有 worker 照旧转发（`tests/host_read_ci.sh` 15/15）
 
 ---
 
