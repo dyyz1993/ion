@@ -2975,7 +2975,16 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     })
                     .sum();
                 let context_window = agent.model().context_window;
-                let estimated_tokens = (ctx_chars / 4) as u64;
+                // 优先用最后一次 LLM 调用的 usage.input（最准：含 system prompt/
+                // 工具 schema/tool result），无 usage 时退回字符估算
+                let estimated_tokens = msgs
+                    .iter()
+                    .rev()
+                    .find_map(|m| match m {
+                        Message::Assistant(a) if a.usage.input > 0 => Some(a.usage.input),
+                        _ => None,
+                    })
+                    .unwrap_or((ctx_chars / 4) as u64);
                 output_response(
                     &id,
                     "get_context_usage",
@@ -3295,7 +3304,168 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             }
             "export_html" => output_response(&id, "export_html", &serde_json::json!({"path":""})),
             "switch_session" => output_response(&id, "switch_session", &serde_json::Value::Null),
-            "fork" => output_response(&id, "fork", &serde_json::json!({"sessionId":sid})),
+            "fork" => {
+                // 从指定 turn 之后分叉：make_branch（leaf_pointer + label）落盘。
+                // 后续新消息 parentId 接到 leaf 上，message_retrieval 自动只读分支内容。
+                // ⚠️ 此 match 在 worker 主循环里，错误路径禁止 return（会杀死进程）——
+                // 用闭包收 Result 再统一 output。
+                let resp = (|| -> Result<serde_json::Value, String> {
+                    let turn_id = params.get("turnId").and_then(|v| v.as_u64());
+                    let name = params.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let Some(turn_id) = turn_id else {
+                        return Err("missing param: turnId (number)".into());
+                    };
+                    let entries: Vec<serde_json::Value> =
+                        crate::message_retrieval::load_entries_cached(&worker_cwd);
+                    // 该 turnId 范围内最后一条 entry（分叉点）
+                    let fork_point = entries
+                        .iter()
+                        .filter(|e| e.get("turnId").and_then(|v| v.as_u64()) == Some(turn_id))
+                        .next_back()
+                        .and_then(|e| e.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()));
+                    let from_id = fork_point
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| format!("turn {} not found in session entries", turn_id))?;
+                    let label = name.unwrap_or_else(|| {
+                        format!("branch-{}", crate::session_tree::named_branches(&entries).len() + 1)
+                    });
+                    let new_entries =
+                        crate::session_tree::make_branch(&from_id, Some(&label))?;
+                    for ne in &new_entries {
+                        crate::session_jsonl::append_raw_entry(&worker_cwd, ne);
+                    }
+                    Ok(serde_json::json!({
+                        "sessionId": sid,
+                        "branch": label,
+                        "forkFromEntry": from_id,
+                        "appended": new_entries.len(),
+                    }))
+                })();
+                match resp {
+                    Ok(data) => output_response(&id, "fork", &data),
+                    Err(e) => output_error_response(&id, "fork", &e),
+                }
+            }
+            "get_branches" => {
+                // 分支富列表（侧栏分叉树数据源）：每分支 label/消息数/最后消息摘要/是否当前
+                let entries: Vec<serde_json::Value> =
+                    crate::message_retrieval::load_entries_cached(&worker_cwd);
+                let current_leaf = crate::session_tree::resolve_current_leaf(&entries);
+                let branches = crate::session_tree::named_branches(&entries);
+                let branch_items: Vec<_> = branches
+                    .iter()
+                    .map(|(label, target)| {
+                        let path = crate::session_tree::get_branch_path(&entries, target);
+                        let msg_count = path
+                            .iter()
+                            .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("message"))
+                            .count();
+                        let brief = path
+                            .iter()
+                            .rev()
+                            .find(|e| {
+                                e.get("type").and_then(|v| v.as_str()) == Some("message")
+                                    && e.get("message")
+                                        .and_then(|m| m.get("content"))
+                                        .and_then(|c| c.as_str())
+                                        .map(|s| !s.is_empty())
+                                        .unwrap_or(false)
+                            })
+                            .and_then(|e| {
+                                e.get("message")
+                                    .and_then(|m| m.get("content"))
+                                    .and_then(|c| c.as_str())
+                                    .map(|s: &str| s.chars().take(24).collect::<String>())
+                            })
+                            .unwrap_or_else(|| "…".into());
+                        let updated_at = path
+                            .iter()
+                            .rev()
+                            .find_map(|e| e.get("timestamp").and_then(|v| v.as_str()))
+                            .unwrap_or("");
+                        // 当前分支：leaf 恰为该分支 target（checkout 后 leaf == label.target）
+                        let is_current = current_leaf.as_deref() == Some(target.as_str());
+                        serde_json::json!({
+                            "name": label,
+                            "targetId": target,
+                            "messages": msg_count,
+                            "brief": brief,
+                            "updatedAt": updated_at,
+                            "current": is_current,
+                        })
+                    })
+                    .collect();
+                // 主干（无任何 label 的原始路径）也作为一项，便于未命名会话显示。
+                // target = 时间上最新的消息链尾（与 checkout_branch 的 main 特判同源）；
+                // current = 当前 leaf 不落在任何命名分支上
+                let main_tip = entries
+                    .iter()
+                    .rev()
+                    .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("message"))
+                    .and_then(|e| e.get("id").and_then(|v| v.as_str()))
+                    .map(|s| s.to_string());
+                let main_item = serde_json::json!({
+                    "name": "main",
+                    "targetId": main_tip,
+                    "messages": entries
+                        .iter()
+                        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("message"))
+                        .count(),
+                    "brief": "当前活跃路径",
+                    "current": branches
+                        .iter()
+                        .all(|(_, t)| current_leaf.as_deref() != Some(t.as_str())),
+                });
+                output_response(
+                    &id,
+                    "get_branches",
+                    &serde_json::json!({
+                        "sessionId": sid,
+                        "currentLeaf": current_leaf,
+                        "main": main_item,
+                        "branches": branch_items,
+                    }),
+                );
+            }
+            "checkout_branch" => {
+                // 切换分支：make_checkout（新 leaf_pointer）落盘；之后 get_messages 只返回该分支。
+                // "main" 是 get_branches 合成的虚拟主干项（无 label entry）→ 特判：
+                // leaf 指向时间上最新的消息链尾（原始主干的生长点）。
+                // ⚠️ 同 fork：错误路径禁止 return（主循环内），闭包收 Result。
+                let resp = (|| -> Result<serde_json::Value, String> {
+                    let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    if name.is_empty() {
+                        return Err("missing param: name".into());
+                    }
+                    let entries: Vec<serde_json::Value> =
+                        crate::message_retrieval::load_entries_cached(&worker_cwd);
+                    let new_entries = if name == "main" {
+                        let main_tip = entries
+                            .iter()
+                            .rev()
+                            .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("message"))
+                            .and_then(|e| e.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                            .ok_or("no message entries: nothing to check out")?;
+                        crate::session_tree::make_branch(&main_tip, None)?
+                    } else {
+                        crate::session_tree::make_checkout(&entries, name)?
+                    };
+                    for ne in &new_entries {
+                        crate::session_jsonl::append_raw_entry(&worker_cwd, ne);
+                    }
+                    let current_leaf = crate::session_tree::resolve_current_leaf(&entries);
+                    Ok(serde_json::json!({
+                        "sessionId": sid,
+                        "branch": name,
+                        "appended": new_entries.len(),
+                        "previousLeaf": current_leaf,
+                    }))
+                })();
+                match resp {
+                    Ok(data) => output_response(&id, "checkout_branch", &data),
+                    Err(e) => output_error_response(&id, "checkout_branch", &e),
+                }
+            }
             "navigate_tree" => {
                 // 返回树的可导航线性结构（id/parentId/role/content 截断/leaf 标记）
                 let entries: Vec<serde_json::Value> =
