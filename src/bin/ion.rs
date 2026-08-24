@@ -5642,6 +5642,9 @@ async fn handle_manager_command(
             };
             Ok(serde_json::json!({"workers": workers}))
         }
+        // Host 级会话直读：纯磁盘读 JSONL，不拉起 worker（UI 浏览历史会话用，毫秒级）
+        "get_session_messages" => host_direct_session_read(&cmd, "messages"),
+        "list_session_turns" => host_direct_session_read(&cmd, "turns"),
         _ => {
             // Fall through to write-path handling below (acquires lock per-branch).
             handle_manager_command_write(registry, cmd.clone(), id.clone(), method).await
@@ -5656,6 +5659,110 @@ async fn handle_manager_command(
         resp["session"] = serde_json::json!(sid);
     }
     resp
+}
+
+/// Host 级会话直读：不拉起 worker，纯磁盘读 JSONL 后用 message_retrieval 检索。
+/// JSONL 是 append-only（每条事件落盘一次），活跃 worker 写入中也安全——读到截至目前的完整条目。
+/// 响应形状与 worker 级 get_messages / list_turns 完全一致，UI 无需区分两条路径。
+/// `kind`: "messages"（对应 get_messages）或 "turns"（对应 list_turns）。
+fn host_direct_session_read(
+    cmd: &serde_json::Value,
+    kind: &str,
+) -> Result<serde_json::Value, String> {
+    let params = cmd.get("params").cloned().unwrap_or_default();
+    let sid = params
+        .get("session")
+        .or_else(|| params.get("session_id"))
+        .and_then(|v| v.as_str())
+        .or_else(|| cmd.get("session").and_then(|v| v.as_str()))
+        .ok_or_else(|| "missing 'session' param".to_string())?
+        .to_string();
+    let entries =
+        load_session_entries(&sid).ok_or_else(|| format!("session not found on disk: {sid}"))?;
+
+    match kind {
+        "turns" => {
+            let full_content = params
+                .get("full_content")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let limit = params
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .unwrap_or(50);
+            let rp = ion::message_retrieval::RetrievalParams {
+                limit,
+                ..Default::default()
+            };
+            let result = ion::message_retrieval::retrieve_turns(&entries, &rp, full_content);
+            Ok(serde_json::json!({
+                "turns": result.turns.iter().map(|t| serde_json::json!({
+                    "turnId": t.turn_id,
+                    "userContent": t.user_content,
+                    "assistantContent": t.assistant_content,
+                    "keySteps": t.key_steps,
+                    "toolCallCount": t.tool_call_count,
+                    "tokens": {"input": t.tokens_input, "output": t.tokens_output},
+                    "status": t.status,
+                    "summary": t.summary,
+                    "durationMs": t.duration_ms,
+                    "source": t.source,
+                })).collect::<Vec<_>>(),
+                "hasMore": result.has_more,
+                "totalCount": result.total_count,
+                "nextCursor": result.next_cursor,
+            }))
+        }
+        _ => {
+            let view = match params.get("view").and_then(|v| v.as_str()).unwrap_or("live") {
+                "since_compaction" => ion::message_retrieval::View::SinceCompaction,
+                "full" => ion::message_retrieval::View::Full,
+                s if s.starts_with("branch:") => {
+                    ion::message_retrieval::View::Branch(s[7..].to_string())
+                }
+                _ => ion::message_retrieval::View::Live,
+            };
+            let rp = ion::message_retrieval::RetrievalParams {
+                view,
+                after: params
+                    .get("after")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                before: params
+                    .get("before")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                limit: params
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .unwrap_or(50),
+                complete_turn: params
+                    .get("complete_turn")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true),
+                include_custom: match params
+                    .get("include_custom")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("none")
+                {
+                    "display_only" => ion::message_retrieval::CustomFilter::DisplayOnly,
+                    "all" => ion::message_retrieval::CustomFilter::All,
+                    _ => ion::message_retrieval::CustomFilter::None,
+                },
+            };
+            let result = ion::message_retrieval::retrieve_messages(&entries, &rp);
+            Ok(serde_json::json!({
+                "messages": result.messages,
+                "hasMore": result.has_more,
+                "totalCount": result.total_count,
+                "nextCursor": result.next_cursor,
+                "view": result.view,
+                "compactionPoints": result.compaction_points,
+            }))
+        }
+    }
 }
 
 /// Write-path command handler. Each branch acquires the registry lock as needed
@@ -6178,6 +6285,21 @@ async fn handle_manager_command_write(
             }
         }
         _ => {
+            // 只读命令（get_messages / list_turns）走磁盘直读，不 auto-create worker——
+            // 读历史会话不应该拉起一个进程（首次冷启动几百 ms + 24MB 常驻）。
+            // JSONL append-only 保证读到截至目前的完整内容。session 兼容顶层和 params 两种位置。
+            if method == "get_messages" || method == "list_turns" {
+                let p = cmd.get("params");
+                let has_session = cmd.get("session").is_some()
+                    || p.and_then(|p| p.get("session")).is_some()
+                    || p.and_then(|p| p.get("session_id")).is_some();
+                if has_session {
+                    return host_direct_session_read(
+                        &cmd,
+                        if method == "list_turns" { "turns" } else { "messages" },
+                    );
+                }
+            }
             // 默认分支：如果 cmd 里有 session 字段，转发到对应 worker
             let session_id = cmd.get("session").and_then(|v| v.as_str());
             if let Some(sid) = session_id {

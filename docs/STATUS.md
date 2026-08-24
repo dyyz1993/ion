@@ -60,6 +60,7 @@
 - **HTML Export** — ION 自有单文件离线模板 + 会话元信息卡 + Flow Summary + tools 列表 + 完整可见事件 Timeline（17 种固定 Entry、25 种已识别内置 Custom、当前会话类型统计、运行时 Extension 开放类型、筛选/悬停/点击跳转）；真实消息、Compaction 与 parented File Snapshot 在正文/Timeline 一一对应；仅当隐藏正文超过 3 行时折叠，预览保留 3 行正文（`tests/export_ci.sh` 54/54）
 - **Apple Container 后端** — 真隔离 Linux VM，同端口并行
 - **A→B 自进化** — A 调度 B 改代码 + CI + 合并 + PR（14 脚本，24 agent 模板）
+- **Host 级会话直读** — `get_session_messages` / `list_session_turns`：host 纯磁盘读 JSONL（append-only 线性增长，冷读毫秒级），UI 浏览历史会话零 worker；旧命令名 `get_messages`/`list_turns` 带 session 自动拦截直读、不 auto-create worker（`tests/host_read_ci.sh` 10/10）
 
 ---
 
@@ -91,6 +92,7 @@
 | extension_cli_ci | 16 | install/remove/list/create + 可构建脚手架 |
 | extension_fs_ci | 23 | ctx.fs、安全边界与 `extension_id` 存储隔离 |
 | rpc_event_push_ci | 18 | 用户触发的每条 RPC 推送 `rpc_response` 事件 + 权限变更 `permission_changed` 类型化事件 + 双终端实时同步 |
+| host_read_ci | 10 | Host 级会话直读：get_session_messages/list_session_turns 响应形状与 worker 级一致 + 只读拦截零 worker + 错误语义 |
 | CI 脚本 | 30+ 个 `tests/*_ci.sh` | CLI 外部验证（MCP/hooks/extensions/snapshot/goal/memory 等） |
 
 **2 个失败测试详情**：

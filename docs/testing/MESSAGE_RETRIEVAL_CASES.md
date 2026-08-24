@@ -31,6 +31,15 @@
 | `get_children` | 查直接子会话(反向索引 O(1),**只一层不递归**) | Group L2 |
 | `subscribe` | 实时事件流(push,与历史拉取拼接) | Group I |
 
+**Host 级直读接口(2 个,不拉起 worker)**:
+
+| 接口 | 等价 worker 接口 | 用途 |
+|------|----------------|------|
+| `get_session_messages` | `get_messages` | host 纯磁盘读 JSONL,响应形状与 worker 级完全一致;UI 浏览历史会话毫秒级、零 worker |
+| `list_session_turns` | `list_turns` | 同上,turn 概览 |
+
+> 直读语义:纯只读、永不 auto-create worker;session 支持文件路径(`.jsonl` 结尾)或 session id;JSONL append-only 保证活跃 worker 写入中也安全。旧命令名 `get_messages`/`list_turns` 带 session 时同样被拦截走直读(见 Group M)。
+
 **公共参数(所有接口可选)**:
 
 | 参数 | 类型 | 默认 | 说明 |
@@ -1704,3 +1713,39 @@ ion rpc --session "$SID" --method list_inputs
 | **P1** | **L(会话血缘)** | fork 来源标记 + 跨会话跳转(元信息,非核心拉取) |
 | **P2** | E(分支) | 依赖 SESSION_TREE 落地 |
 | **P3** | F(其余组合) | 上述就绪后自然支持 |
+
+## Group M:Host 级直读(不拉起 worker)
+
+> **已实现(2026-08-24)** — `src/bin/ion.rs` `host_direct_session_read` + 只读拦截。验证:`tests/host_read_ci.sh` 10/10。
+
+**动机**:浏览历史会话不该拉起 worker 进程(冷启动几百 ms + ~24MB 常驻)。JSONL 是 append-only 事件流(每条事件只落盘一次,线性增长),host 直读冷解析毫秒级——ION 会话实测 96% < 10KB,最大 416KB。
+
+**链路**:`socket 请求 → handle_manager_command → host_direct_session_read(sid) → load_session_entries(支持 path/sid) → message_retrieval::retrieve_messages/turns → 直接响应`。全程零 worker、零锁竞争(不碰 WorkerRegistry)。
+
+### M1 新命令直读消息
+
+**请求:**
+```bash
+ion rpc --method get_session_messages --params '{"session":"sess_xxx","limit":20}'
+# session 也支持文件路径(以 .jsonl 结尾)
+```
+
+**响应 JSON(成功):**
+```json
+{"success":true,"data":{"messages":[...],"hasMore":false,"totalCount":4,"nextCursor":null,"view":"live","compactionPoints":[]}}
+```
+
+**响应 JSON(失败):**
+```json
+{"success":false,"error":"session not found on disk: sess_not_exist"}
+```
+
+### M2 旧命令名拦截(不 auto-create worker)
+
+`get_messages` / `list_turns` 带 session(session 顶层或 params 均可)时走直读,不再自动拉起 worker;不带 session 仍报错。响应形状与 worker 级一致,UI 两条路径无差别。
+
+### 验证点(host_read_ci.sh,10 case)
+
+- ✅ A1-A5:get_session_messages 全量/分页/响应形状、list_session_turns 轮次识别、延迟 <500ms(实测 RPC 2.5ms)
+- ✅ B1-B3:旧命令名两种 session 位置均拦截直读、读全程零新增 worker
+- ✅ C1-C2:不存在 session 报 not found(不静默创建)、缺参数报错

@@ -80,6 +80,10 @@ ion rpc --method create_worker --params '{...}'
 # → 直接创建 worker + 注入 initial_prompt
 
 ion rpc --method kill --params '{"workerId":"wkr_xxx"}'
+
+ion rpc --method get_session_messages --params '{"session":"sess_xxx","limit":20}'
+# → host 级直读：纯磁盘读会话 JSONL，不拉起 worker（响应形状同 get_messages）
+# session 也可传文件路径（.jsonl 结尾）；list_session_turns 同理（同 list_turns）
 ```
 
 ### Instance 级（查 Worker 状态）
