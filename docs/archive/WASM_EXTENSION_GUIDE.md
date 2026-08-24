@@ -1,5 +1,7 @@
 # WASM Extension Development Guide
 
+> **状态：已归档** — 本文描述的是未落地的早期 ABI，不得作为开发依据。当前入口见 `docs/guides/EXTENSION_WORKFLOW.md`，真实 ABI 见 `docs/design/EXTENSION_SYSTEM.md`。
+
 This guide explains how to write, build, and ship a WebAssembly (WASM)
 extension for the Ion runtime. WASM extensions are sandboxed plugins that
 can hook into the agent lifecycle, expose custom tools, and read data from

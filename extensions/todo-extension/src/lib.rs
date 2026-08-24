@@ -1,7 +1,7 @@
 //! TODO Extension -- session-scoped task management.
 //!
 //! Data is stored in session-scoped storage at
-//!   `~/.ion/agent/sessions/--hash--name--/data/{session_id}/todo-extension/tasks`
+//!   `~/.ion/agent/sessions/--hash--name--/data/{session_id}/todo_extension/tasks`
 //! Format: a JSON array of objects: [{id, text, done, created_at}].
 //!
 //! Tools:
@@ -19,6 +19,7 @@
 
 // ── Host functions (provided by the ION worker) ─────────────────────────────
 
+#[link(wasm_import_module = "env")]
 extern "C" {
     // Tool registration.
     fn host_register_tool(

@@ -1,5 +1,5 @@
 [package]
-name = "stock-plugin"
+name = "stock-extension"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,3 +8,5 @@ crate-type = ["cdylib"]
 
 # For WASM: build with:
 # cargo build --target wasm32-wasip1 --release
+
+[workspace]

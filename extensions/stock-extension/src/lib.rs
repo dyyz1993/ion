@@ -1,6 +1,7 @@
 #![no_std]
 
-// 宿主函数（ion 提供给 WASM 插件调用）
+// Host functions provided by ION to the WASM Extension.
+#[link(wasm_import_module = "env")]
 extern "C" {
     fn host_register_tool(
         name_ptr: *const u8, name_len: u32,
@@ -48,8 +49,7 @@ pub extern "C" fn extension_init() {
         "Get current stock price for a ticker symbol (e.g. AAPL)",
         r#"{"type":"object","properties":{"ticker":{"type":"string","description":"Stock ticker"}},"required":["ticker"]}"#,
     );
-    // 通知宿主：插件已初始化
-    host_send_msg("stock plugin initialized");
+    host_send_msg("stock-extension initialized");
 }
 
 #[no_mangle]
@@ -59,7 +59,7 @@ pub extern "C" fn extension_execute_tool(
     out_buf: *mut u8, out_capacity: u32,
 ) -> u32 {
     // 执行工具 → 返回结果
-    let result = b"{\"symbol\":\"AAPL\",\"price\":198.50,\"source\":\"WASM plugin\"}";
+    let result = b"{\"symbol\":\"AAPL\",\"price\":198.50,\"source\":\"WASM Extension\"}";
     let len = result.len().min(out_capacity as usize);
     unsafe { core::ptr::copy_nonoverlapping(result.as_ptr(), out_buf, len); }
     

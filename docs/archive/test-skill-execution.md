@@ -1,5 +1,7 @@
 # Test-Skill Execution Report
 
+> **状态：已归档** — 2025-07-19 的一次性执行记录，不代表当前测试结果。
+
 ## Execution Date
 2025-07-19
 

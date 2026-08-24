@@ -6,7 +6,7 @@
 //!   * `extension_version()`  → returns the ABI version (1)
 //!   * `extension_init()`     → registers tools with the host
 //!   * `extension_execute_tool()` → handles tool invocations
-//!   * `on_input()`           → lifecycle hook (fires on every user message)
+//!   * `extension_on_input()` → lifecycle hook (fires on every user message)
 //!
 //! Build:
 //!   cargo build --target wasm32-wasip1 --release
@@ -17,6 +17,7 @@
 
 // ── Host functions provided by the ION WASM runtime ─────────────────────────
 
+#[link(wasm_import_module = "env")]
 extern "C" {
     /// Register a tool with the host.
     /// Arguments are raw pointer + length pairs for name, description, and
@@ -130,7 +131,7 @@ pub extern "C" fn extension_execute_tool(
 /// Here we simply print a notification to stdout and pass the input through
 /// unchanged so the agent sees it as-is.
 #[no_mangle]
-pub extern "C" fn on_input(
+pub extern "C" fn extension_on_input(
     json_ptr: *const u8, json_len: u32,
     out_buf: *mut u8, out_cap: u32,
 ) -> u32 {

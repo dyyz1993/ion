@@ -15,6 +15,7 @@ use std::sync::{Mutex, OnceLock};
 // Imported from "env"; resolved by wasmtime at instantiation time. All operate
 // on (ptr, len) pairs inside this module's own WASM linear memory.
 
+#[link(wasm_import_module = "env")]
 extern "C" {
     /// Write the full conversation (JSON) into `out_buf`.
     /// Returns bytes written; 0 means no messages or buffer too small.

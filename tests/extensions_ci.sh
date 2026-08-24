@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/extensions_ci.sh — WASM extensions (todo-extension) CLI 验收
 #
-# 验证两个 extension 的 10 个工具端到端可用：
+# 验证 todo Extension 的 5 个工具端到端可用：
 #   - 先 build WASM
 #   - 装 .wasm 到 ~/.ion/agent/extensions/
 #   - 起 ion serve
@@ -12,7 +12,7 @@
 #
 # 前提：
 #   - 已 cargo build --bin ion（debug 即可）
-#   - 已 cargo build --target wasm32-wasip1 --release -p todo-extension
+#   - 已在 extensions/todo-extension 中构建 wasm32-wasip1 release 产物
 #   - 本脚本会自动 build wasm 如果产物缺失
 #
 # 清理：
@@ -35,7 +35,7 @@ FAIL=0
 if [ -z "${ION_SESSION_DIR:-}" ]; then
     export ION_SESSION_DIR="$HOME/.ion/agent/sessions/_ci_$(basename "$0" .sh)_$$"
     mkdir -p "$ION_SESSION_DIR"
-    trap 'rm -rf "$ION_SESSION_DIR"' EXIT
+    CREATED_SESSION_DIR=1
 fi
 FAILED_TESTS=()
 
@@ -86,7 +86,7 @@ if ! rustup target list --installed 2>/dev/null | grep -q wasm32-wasip1; then
 fi
 
 # Build wasm 产物（如果缺失）— 从 todo-extension 目录编译（独立 workspace）
-TODO_DIR="$PROJECT_DIR/todo-extension"
+TODO_DIR="$PROJECT_DIR/extensions/todo-extension"
 TODO_WASM="$TODO_DIR/target/wasm32-wasip1/release/todo_extension.wasm"
 if [ ! -f "$TODO_WASM" ]; then
     yellow "building todo_extension.wasm..."
@@ -108,16 +108,37 @@ fi
 # 安装到全局 extensions 目录（ION worker 只扫这里）
 EXT_DIR="$HOME/.ion/agent/extensions"
 mkdir -p "$EXT_DIR"
-cp "$TODO_WASM" "$EXT_DIR/"
+INSTALLED_WASM="$EXT_DIR/todo_extension.wasm"
+BACKUP_WASM=""
+if [ -f "$INSTALLED_WASM" ]; then
+    BACKUP_WASM=$(mktemp /tmp/ion-todo-extension-backup.XXXXXX)
+    cp "$INSTALLED_WASM" "$BACKUP_WASM"
+fi
+cp "$TODO_WASM" "$INSTALLED_WASM"
 green "✅ wasm 安装到 $EXT_DIR"
 
-# 杀残留 serve + 清 host.sock
-lsof -ti "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" 2>/dev/null | xargs kill 2>/dev/null || true
-sleep 1
-rm -f "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" "$HOME/.ion/host.pid" 2>/dev/null
+# 使用本测试专属 socket，不触碰用户正在运行的 host。
+export ION_HOST_SOCKET="${ION_HOST_SOCKET:-$(mktemp -u /tmp/ion-ext-ci.sock.XXXXXX)}"
+rm -f "$ION_HOST_SOCKET" 2>/dev/null
 
 # 启动 serve（后台）
 SERVE_LOG=$(mktemp /tmp/ion-ext-ci.XXXXXX)
+SERVE_PID=""
+cleanup() {
+    if [ -n "${SERVE_PID:-}" ]; then
+        kill "$SERVE_PID" 2>/dev/null || true
+    fi
+    rm -f "$ION_HOST_SOCKET" "${SERVE_LOG:-}" 2>/dev/null || true
+    if [ -n "${BACKUP_WASM:-}" ] && [ -f "$BACKUP_WASM" ]; then
+        mv "$BACKUP_WASM" "$INSTALLED_WASM"
+    else
+        rm -f "$INSTALLED_WASM"
+    fi
+    if [ "${CREATED_SESSION_DIR:-0}" = "1" ]; then
+        rm -rf "$ION_SESSION_DIR"
+    fi
+}
+trap cleanup EXIT
 nohup "$ION_BIN" serve > "$SERVE_LOG" 2>&1 &
 SERVE_PID=$!
 yellow "serve pid=$SERVE_PID, log=$SERVE_LOG"
@@ -200,8 +221,8 @@ fi
 
 bold ""
 bold "=== 清理 ==="
-kill "$SERVE_PID" 2>/dev/null
-rm -f "$PLAN_FILE" "$SERVE_LOG"
+cleanup
+trap - EXIT
 green "✅ 清理完成"
 
 # ── 汇总 ────────────────────────────────────────────────────────────────────

@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "stock-plugin"
+name = "stock-extension"
 version = "0.1.0"

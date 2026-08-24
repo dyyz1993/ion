@@ -21,7 +21,7 @@ PASS=0; FAIL=0; SKIP=0
 if [ -z "${ION_SESSION_DIR:-}" ]; then
     export ION_SESSION_DIR="$HOME/.ion/agent/sessions/_ci_$(basename "$0" .sh)_$$"
     mkdir -p "$ION_SESSION_DIR"
-    trap 'rm -rf "$ION_SESSION_DIR"' EXIT
+    CREATED_SESSION_DIR=1
 fi
 green() { echo -e "\033[32m  ✅ $1\033[0m"; }
 red()   { echo -e "\033[31m  ❌ $1\033[0m"; }
@@ -58,14 +58,20 @@ OUTSIDE=$(mktemp)
 echo "secret" > "$OUTSIDE"
 
 cleanup() {
-    kill "$HOST_PID" 2>/dev/null
+    if [ -n "${HOST_PID:-}" ]; then
+        kill "$HOST_PID" 2>/dev/null
+    fi
     rm -f "$SOCK" "$OUTSIDE" 2>/dev/null
     rm -rf "$TEST_DIR" 2>/dev/null
+    if [ "${CREATED_SESSION_DIR:-0}" = "1" ]; then
+        rm -rf "$ION_SESSION_DIR"
+    fi
 }
 trap cleanup EXIT
 
 # ── 启动 host（cwd=TEST_DIR → allowed_roots[0]=TEST_DIR）──
-SOCK="${ION_HOST_SOCKET:-$HOME/.ion/host.sock}"
+export ION_HOST_SOCKET="${ION_HOST_SOCKET:-$TEST_DIR/ion-host.sock}"
+SOCK="$ION_HOST_SOCKET"
 rm -f "$SOCK" 2>/dev/null
 
 ION_FAUX_REPLY="ctx.fs probe noop" \
@@ -242,7 +248,7 @@ echo ""
 echo "── Group D：ExtensionDataDirs（4 级数据目录）──"
 
 # D1 data_dirs 返回 4 级目录
-OUT=$(fs_rpc data_dirs '{"ext_name":"my-ext"}')
+OUT=$(fs_rpc data_dirs '{"extension_id":"my-ext"}')
 if echo "$OUT" | grep -q "global" && echo "$OUT" | grep -q "project" && echo "$OUT" | grep -q "cwd" && echo "$OUT" | grep -q "session"; then
     pass "D1: data_dirs 返回 4 级目录（global/project/cwd/session）"
 else
@@ -250,11 +256,11 @@ else
     echo "    OUT: $OUT"
 fi
 
-# D2 每级路径含 ext_name
+# D2 每级路径含 extension_id
 if echo "$OUT" | grep -o '"global"[^,]*' | grep -q "my-ext" && echo "$OUT" | grep -o '"session"[^}]*' | grep -q "my-ext"; then
-    pass "D2: 各级目录路径含 ext_name（my-ext）"
+    pass "D2: 各级目录路径含 extension_id（my-ext）"
 else
-    fail "D2: 路径未含 ext_name"
+    fail "D2: 路径未含 extension_id"
     echo "    OUT: $OUT"
 fi
 
@@ -275,14 +281,14 @@ else
     echo "    OUT: $OUT"
 fi
 
-# D5 不同 ext_name 隔离
-OUT2=$(fs_rpc data_dirs '{"ext_name":"other-ext"}')
+# D5 不同 extension_id 隔离
+OUT2=$(fs_rpc data_dirs '{"extension_id":"other-ext"}')
 G1=$(echo "$OUT" | grep -o '"global"[^,]*' | head -1)
 G2=$(echo "$OUT2" | grep -o '"global"[^,]*' | head -1)
 if [ "$G1" != "$G2" ]; then
-    pass "D5: 不同 ext_name 目录隔离（my-ext ≠ other-ext）"
+    pass "D5: 不同 extension_id 目录隔离（my-ext ≠ other-ext）"
 else
-    fail "D5: ext_name 未隔离"
+    fail "D5: extension_id 未隔离"
     echo "    G1: $G1  G2: $G2"
 fi
 

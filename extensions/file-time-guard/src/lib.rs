@@ -21,6 +21,7 @@ use std::sync::{Mutex, OnceLock};
 // These are imported from the "env" module. The runtime links them before the
 // extension's `_start` / init runs.
 
+#[link(wasm_import_module = "env")]
 extern "C" {
     /// Check whether a path exists inside the allowed roots.
     /// Return codes: 1 = exists, 0 = not found, 2 = traversal blocked.

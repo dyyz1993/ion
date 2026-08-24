@@ -1,4 +1,6 @@
-## Code Audit Summary
+# Code Audit Summary
+
+> **状态：已归档** — 旧版一次性审计快照，目录与依赖信息不再作为当前架构依据。
 
 **Project:** ion
 **Dependencies Count:** 26 (excluding workspace members)
