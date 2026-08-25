@@ -122,6 +122,9 @@ pub fn get_file_hash<'a>(tree: &'a TreeEntries, path: &str) -> Option<&'a String
 pub struct StepSnapshot {
     /// 快照 ID（turn_id）
     pub turn_id: String,
+    /// 所属 session（审批 baseline 按会话归位用；旧数据为空串回退全局兜底）
+    #[serde(default)]
+    pub session_id: String,
     /// 上一轮的 tree hash（baseline）
     pub baseline_tree_hash: String,
     /// 本轮的 tree hash

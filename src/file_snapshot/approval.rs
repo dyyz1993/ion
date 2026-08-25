@@ -106,9 +106,19 @@ impl ApprovalManager {
     }
 
     /// session start 的 baseline tree hash
+    ///
+    /// 优先取**本会话**的 step snapshot（on_session_start 写入的 ts_session_start），
+    /// 保证审批 baseline 锚定在本会话启动时的工作区状态——项目级存储里混着所有
+    /// 会话的快照，不过滤会把"项目史上第一个快照"当 baseline，跨会话/用户手改
+    /// 的文件全涌进 pending（实测 705 文件的根因）。
+    /// 旧数据（无 session_id）回退全局第一个，行为同旧版。
     fn session_baseline_tree_hash(&self) -> Option<String> {
         let steps = self.store.load_all_step_snapshots();
-        steps.first().map(|s| s.baseline_tree_hash.clone())
+        steps
+            .iter()
+            .find(|s| !self.storage.session_id.is_empty() && s.session_id == self.storage.session_id)
+            .or_else(|| steps.first())
+            .map(|s| s.baseline_tree_hash.clone())
     }
 
     /// 当前最新 tree hash
@@ -823,6 +833,7 @@ mod tests {
         // 写入的 ts_000001/ts_000002... 之前，否则 .last() 会误取 session
         // start 作为"最新"step（这是 Linux CI 上同秒写入导致 flaky 的根因）。
         let step = tree_store::StepSnapshot {
+            session_id: String::new(),
             turn_id: "ts_000000".into(),
             baseline_tree_hash: baseline_hash.clone(),
             snapshot_tree_hash: baseline_hash.clone(), // session start 无变更
@@ -871,6 +882,7 @@ mod tests {
 
         let seq = SEQ.fetch_add(1, Ordering::SeqCst);
         let step = tree_store::StepSnapshot {
+            session_id: String::new(),
             turn_id: format!("ts_{:06}", seq),
             baseline_tree_hash: baseline,
             snapshot_tree_hash: hash.clone(),

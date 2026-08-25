@@ -160,6 +160,7 @@ impl Extension for FileSnapshotExtension {
 
         // 写 baseline step-snapshot（让 current_tree_hash 从一开始就有值）
         let step = tree_store::StepSnapshot {
+            session_id: self.storage.session_id.clone(),
             turn_id: "ts_session_start".to_string(),
             baseline_tree_hash: tree_hash.clone(),
             snapshot_tree_hash: tree_hash,
@@ -224,6 +225,7 @@ impl Extension for FileSnapshotExtension {
             let diff = tree_store::compute_diff(&old_tree, &new_tree);
             if !diff.is_empty() {
                 let step = tree_store::StepSnapshot {
+                    session_id: self.storage.session_id.clone(),
                     turn_id: turn_id.clone(),
                     baseline_tree_hash: baseline_hash.clone(),
                     snapshot_tree_hash: current_tree_hash.clone(),
