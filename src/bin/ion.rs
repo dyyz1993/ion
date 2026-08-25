@@ -5809,10 +5809,34 @@ fn host_idle_session_read(
             let meta = index
                 .get(&sid)
                 .ok_or_else(|| format!("session not found: {sid}"))?;
-            let (ctx_window, max_tokens) = ion_provider::registry::ModelRegistry::new()
-                .find_model(&meta.model)
-                .map(|m| (m.context_window, m.max_tokens))
-                .unwrap_or((0, 0));
+            let (ctx_window, max_tokens) = {
+                // 三级查找：registry(models.json) → provider/id → config.json providers
+                let reg = ion_provider::registry::ModelRegistry::new();
+                let with_provider = if meta.provider.is_empty() {
+                    None
+                } else {
+                    Some(format!("{}/{}", meta.provider, meta.model))
+                };
+                let m = with_provider
+                    .as_deref()
+                    .and_then(|k| reg.find_model(k))
+                    .or_else(|| reg.find_model(&meta.model));
+                if let Some(m) = m {
+                    (m.context_window, m.max_tokens)
+                } else {
+                    let cfg = ion::config::IonConfig::load();
+                    cfg.providers
+                        .get(&meta.provider)
+                        .and_then(|p| p.models.iter().find(|m| m.id == meta.model))
+                        .map(|m| {
+                            (
+                                m.context_window.unwrap_or(128_000),
+                                m.max_tokens.unwrap_or(0),
+                            )
+                        })
+                        .unwrap_or((0, 0))
+                }
+            };
             if method == "get_session_info" {
                 Ok(serde_json::json!({
                     "session_id": sid,
@@ -5835,12 +5859,67 @@ fn host_idle_session_read(
                     "max_tokens": max_tokens,
                 }))
             } else {
+                // 与 worker 级同口径：优先取最后一次 LLM 调用的 usage.input
+                // （最准，含 system prompt/工具 schema/tool result），无则字符/4 估算
+                let estimated = load_session_entries(&sid)
+                    .map(|entries| {
+                        let last_input = entries.iter().rev().find_map(|e| {
+                            let u = e
+                                .get("message")?
+                                .get("Assistant")?
+                                .get("usage")?
+                                .get("input")?
+                                .as_u64()?;
+                            (u > 0).then_some(u)
+                        });
+                        if let Some(u) = last_input {
+                            return u;
+                        }
+                        let chars: usize = entries
+                            .iter()
+                            .filter_map(|e| {
+                                let m = e.get("message")?;
+                                let mut len = 0usize;
+                                // User.content: string 或 Text 块数组
+                                if let Some(u) = m.get("User").and_then(|u| u.get("content")) {
+                                    if let Some(s) = u.as_str() {
+                                        len += s.len();
+                                    } else if let Some(arr) = u.as_array() {
+                                        for b in arr {
+                                            len += b
+                                                .get("Text")
+                                                .and_then(|t| t.get("text"))
+                                                .and_then(|t| t.as_str())
+                                                .map_or(0, str::len);
+                                        }
+                                    }
+                                }
+                                // Assistant.content: Text 块数组
+                                if let Some(arr) = m
+                                    .get("Assistant")
+                                    .and_then(|a| a.get("content"))
+                                    .and_then(|c| c.as_array())
+                                {
+                                    for b in arr {
+                                        len += b
+                                            .get("Text")
+                                            .and_then(|t| t.get("text"))
+                                            .and_then(|t| t.as_str())
+                                            .map_or(0, str::len);
+                                    }
+                                }
+                                (len > 0).then_some(len)
+                            })
+                            .sum();
+                        (chars / 4) as u64
+                    })
+                    .unwrap_or(meta.token_input);
                 let total = meta.token_input + meta.token_output;
                 Ok(serde_json::json!({
                     "messageCount": meta.message_count,
-                    "estimatedTokens": meta.token_input,
+                    "estimatedTokens": estimated,
                     "contextWindow": ctx_window,
-                    "usagePercent": if ctx_window > 0 { (meta.token_input * 100 / ctx_window as u64) as u32 } else { 0 },
+                    "usagePercent": if ctx_window > 0 { (estimated * 100 / ctx_window as u64) as u32 } else { 0 },
                     "totalInputTokens": meta.token_input,
                     "totalOutputTokens": meta.token_output,
                     "autoCompaction": false,
@@ -6430,15 +6509,19 @@ async fn handle_manager_command_write(
                 };
                 if !exists {
                     tracing::info!("[forward] session {sid} not found, auto-creating");
-                    if let Err(e) = do_create_session(
-                        &registry,
-                        &serde_json::json!({
-                            "session_id": sid,
-                            "agent": "build",
-                        }),
-                    )
-                    .await
-                    {
+                    // project_path 兜底：从 SessionIndex 取原项目（否则 fallback 到
+                    // host 进程 cwd，消息会写进错误项目目录的同名文件）
+                    let project = ion::session_index::SessionIndex::load()
+                        .get(&sid)
+                        .and_then(|m| m.project.clone());
+                    let mut create = serde_json::json!({
+                        "session_id": sid,
+                        "agent": "build",
+                    });
+                    if let Some(p) = project {
+                        create["project_path"] = serde_json::json!(p);
+                    }
+                    if let Err(e) = do_create_session(&registry, &create).await {
                         return Err(format!("auto-create session failed: {e}"));
                     }
                 }
