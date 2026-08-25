@@ -4261,6 +4261,98 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             // 只回 path/状态/行数计数，不带 diff 文本（大 turn 也不膨胀）；
             // 单文件详情按需走 get_file_diff {filePath, fromTurn, toTurn}。
             // turnId 省略时取当前 session 最新的 ts_ turn（agent_end 刚落盘的那轮）
+            // 单 turn 单文件 diff：base 参数选对比基准——
+            //   before(默认)=该轮首 before；prev=上一轮末 after；disk=当前磁盘内容。
+            //   after 端固定为该轮末状态（TurnRecord / 审查面板的"打开看 diff"用）
+            "turn_file_diff" => {
+                let turn_id = params.get("turnId").and_then(|v| v.as_str()).unwrap_or("");
+                let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                let base = params.get("base").and_then(|v| v.as_str()).unwrap_or("before");
+                if turn_id.is_empty() || path.is_empty() {
+                    output_response(
+                        &id,
+                        "turn_file_diff",
+                        &serde_json::json!({"error": "missing turnId/path"}),
+                    );
+                } else if let Some(ref store) = snapshot_store {
+                    let all_snaps = store.load_all_tool_snapshots();
+                    // 该文件全部快照（本 session），按时间排序
+                    let mut file_snaps: Vec<&crate::file_snapshot::ToolSnapshot> = all_snaps
+                        .iter()
+                        .filter(|s| s.session_id == sid && s.path == path)
+                        .collect();
+                    file_snaps.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+                    // 目标轮在该文件的快照组
+                    let mut group: Vec<&crate::file_snapshot::ToolSnapshot> = file_snaps
+                        .iter()
+                        .copied()
+                        .filter(|s| s.turn_id == turn_id)
+                        .collect();
+                    group.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+                    let after = group
+                        .last()
+                        .and_then(|l| l.after_hash.as_ref())
+                        .and_then(|h| store.objects().read_object_text(h));
+                    let before = match base {
+                        "prev" => {
+                            // 上一轮末：目标轮首条时间戳之前、该文件的最后一个 after
+                            let target_ts = group.first().map(|f| f.timestamp.as_str()).unwrap_or("");
+                            file_snaps
+                                .iter()
+                                .filter(|s| s.timestamp.as_str() < target_ts)
+                                .last()
+                                .and_then(|p| p.after_hash.as_ref())
+                                .and_then(|h| store.objects().read_object_text(h))
+                        }
+                        "disk" => {
+                            // 当前磁盘内容（worker cwd = 项目根；相对路径 resolve）
+                            let p = std::path::Path::new(path);
+                            let abs = if p.is_absolute() {
+                                p.to_path_buf()
+                            } else {
+                                std::env::current_dir()
+                                    .unwrap_or_default()
+                                    .join(p)
+                            };
+                            std::fs::read_to_string(abs).ok()
+                        }
+                        _ => group
+                            .first()
+                            .and_then(|f| f.before_hash.as_ref())
+                            .and_then(|h| store.objects().read_object_text(h)),
+                    };
+                    let (diff, added, removed) = match (&before, &after) {
+                        (Some(b), Some(a)) => {
+                            let d = crate::file_snapshot::unified_diff(b, a, path);
+                            let (ad, rm) = crate::file_snapshot::count_changes(b, a);
+                            (d, ad, rm)
+                        }
+                        (None, Some(a)) => {
+                            let n = a.lines().count();
+                            (format!("+++ new file\n{a}"), n, 0)
+                        }
+                        (Some(b), None) => {
+                            let n = b.lines().count();
+                            (format!("--- deleted file\n{b}"), 0, n)
+                        }
+                        _ => (String::new(), 0, 0),
+                    };
+                    output_response(
+                        &id,
+                        "turn_file_diff",
+                        &serde_json::json!({
+                            "turnId": turn_id, "path": path,
+                            "diff": diff, "added": added, "removed": removed,
+                        }),
+                    );
+                } else {
+                    output_response(
+                        &id,
+                        "turn_file_diff",
+                        &serde_json::json!({"error": "file-snapshot not enabled"}),
+                    );
+                }
+            }
             "turn_changes" => {
                 let turn_id_param = params.get("turnId").and_then(|v| v.as_str()).unwrap_or("");
                 if let Some(ref store) = snapshot_store {
@@ -7186,7 +7278,60 @@ fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
             saved_msg_count,
             msgs.len() - live_msg_count
         );
-        &msgs[live_msg_count..]
+        // 重放保护：复活 worker 会把内存里 replay 的历史以当前时间戳整段重写
+        // （实测 66 条污染，user/assistant ts 全变成保存时刻，树窗口全乱）。
+        // 判定：尾巴首条 user 消息的文本已在磁盘上存在 → 视为重放，整段丢弃。
+        let tail = &msgs[live_msg_count..];
+        let first_user_text = tail.iter().find_map(|m| {
+            let is_user = m
+                .get("role")
+                .and_then(|r| r.as_str())
+                .is_some_and(|r| r == "user");
+            if !is_user {
+                return None;
+            }
+            let c = m.get("content")?;
+            if let Some(t) = c.as_str() {
+                return Some(t.chars().take(80).collect::<String>());
+            }
+            c.as_array().and_then(|arr| {
+                arr.iter().find_map(|b| {
+                    b.get("text")
+                        .or_else(|| b.get("Text").and_then(|t| t.get("text")))
+                        .and_then(|t| t.as_str())
+                        .map(|t| t.chars().take(80).collect::<String>())
+                })
+            })
+        });
+        if let Some(sig) = &first_user_text {
+            let dup_on_disk = all_entries.iter().any(|e| {
+                let Some(u) = e.get("message").and_then(|m| m.get("User")) else {
+                    return false;
+                };
+                let c = u.get("content");
+                let disk_sig = if let Some(t) = c.and_then(|v| v.as_str()) {
+                    Some(t.chars().take(80).collect::<String>())
+                } else {
+                    c.and_then(|v| v.as_array()).and_then(|arr| {
+                        arr.iter().find_map(|b| {
+                            b.get("Text")
+                                .and_then(|t| t.get("text"))
+                                .and_then(|t| t.as_str())
+                                .map(|t| t.chars().take(80).collect::<String>())
+                        })
+                    })
+                };
+                disk_sig.as_deref() == Some(sig.as_str())
+            });
+            if dup_on_disk {
+                eprintln!(
+                    "[save-debug] REPLAY DETECTED: first user of tail already on disk, dropping {} msgs",
+                    tail.len()
+                );
+                return;
+            }
+        }
+        tail
     } else if msgs.len() < live_msg_count {
         // 回滚后再加消息：msgs 比 live 短，说明 leaf 已经回退到比 msgs 还早的位置。
         // 这种情况理论上不该发生（resume 后 agent.messages 应该 ≥ live），但如果发生了

@@ -771,6 +771,16 @@ impl Runtime for LocalRuntime {
     }
 
     async fn write_file(&self, path: &str, content: &str) -> Result<(), String> {
+        // 相对路径 resolve 到进程 cwd：裸文件名的 parent 是空串，
+        // 会拼出 "/.ion-tmp-..." 写向只读根目录（os error 30）
+        let resolved;
+        let path = if std::path::Path::new(path).is_absolute() {
+            path
+        } else {
+            let cwd = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
+            resolved = cwd.join(path).to_string_lossy().to_string();
+            resolved.as_str()
+        };
         let target = std::path::Path::new(path);
         if let Some(parent) = target.parent() {
             tokio::fs::create_dir_all(parent)
