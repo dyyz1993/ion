@@ -5772,7 +5772,50 @@ fn fast_messages(
         .map(|v| v == "head")
         .unwrap_or(false);
 
-    // 复用现有纯函数在 metas 上跑过滤管线
+    // ── O(1) 快速路径：Live 视图（默认）+ 无游标过滤的简单分页 → 预计算索引直接切片 ──
+    // 只有 view=Live 且无 after/before/custom 时才走（覆盖 UI 打开/翻页/head 的 90%+ 场景）
+    let is_live_simple = matches!(view, ion::message_retrieval::View::Live)
+        && after.is_none()
+        && before.is_none();
+    if is_live_simple {
+        let idxs = &idx.live_message_idxs;
+        let total = idxs.len();
+        let (start, end) = if from_head {
+            (0, limit.min(total))
+        } else if limit == 0 {
+            (0, total)
+        } else {
+            (total.saturating_sub(limit), total)
+        };
+        let has_more = if from_head {
+            total > end
+        } else {
+            start > 0
+        };
+        let messages: Vec<serde_json::Value> = idxs[start..end]
+            .iter()
+            .filter_map(|&i| idx.parse_entry(i))
+            .collect();
+        let next_cursor = if has_more {
+            if from_head {
+                messages.last()?.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())
+            } else {
+                messages.first()?.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())
+            }
+        } else {
+            None
+        };
+        return Some(serde_json::json!({
+            "messages": messages,
+            "hasMore": has_more,
+            "totalCount": total,
+            "nextCursor": next_cursor,
+            "view": "live",
+            "compactionPoints": [],
+        }));
+    }
+
+    // ── 通用路径（非 Live 视图 / after/before 游标 / custom 过滤）──
     let rp = ion::message_retrieval::RetrievalParams {
         view,
         after,
@@ -5784,9 +5827,6 @@ fn fast_messages(
     };
     let result = ion::message_retrieval::retrieve_messages(metas, &rp);
 
-    // 返回页的条目来自 metas（小对象），已含 id/parentId 等完整元数据——
-    // 纯元数据即可返回（含 content 的完整消息由 parse_entry 按需补全时才用）。
-    // 但 UI 需要 content，所以：每页条目 → 找到对应 file 行 → parse_entry 全量
     let messages: Vec<serde_json::Value> = result
         .messages
         .iter()

@@ -170,6 +170,11 @@ pub struct FileIndex {
     pub id_to_idx: HashMap<String, usize>,
     /// 扫描期遇到的坏行数（截断/半行）
     pub bad_lines: usize,
+    /// 预计算：live 视点过滤 + visibility 过滤后的 message 序列（索引到 heads 的下标）。
+    /// 构建时一次算完 → 翻页 O(slice)；分支/compaction 视图仍走全量管线（罕见路径）
+    pub live_message_idxs: Vec<usize>,
+    /// live 视点的 totalCount（= live_message_idxs.len()）
+    pub live_total: usize,
 }
 
 impl FileIndex {
@@ -185,10 +190,39 @@ impl FileIndex {
             metas: Vec::new(),
             id_to_idx: HashMap::new(),
             bad_lines: 0,
+            live_message_idxs: Vec::new(),
+            live_total: 0,
         };
         let mut reader = BufReader::new(file);
         idx.scan_from(&mut reader, 0)?;
+        idx.precompute_live_view();
         Ok(idx)
+    }
+
+    /// 预计算 live 视点的过滤后消息序列（一次，构建/refresh 后调用）
+    fn precompute_live_view(&mut self) {
+        let metas = std::mem::take(&mut self.metas);
+        // view=Live（解析 leaf → root→leaf 路径）
+        let view_filtered = crate::message_retrieval::apply_view_filter(
+            &metas,
+            &crate::message_retrieval::View::Live,
+        );
+        // visibility（deletion/segment/restoration）
+        let visible = crate::message_retrieval::apply_visibility_filter(&view_filtered);
+        // 只留 message 类型
+        self.live_message_idxs = visible
+            .iter()
+            .filter(|e| {
+                let t = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                t == "message"
+            })
+            .filter_map(|e| {
+                let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                self.id_to_idx.get(id).copied()
+            })
+            .collect();
+        self.live_total = self.live_message_idxs.len();
+        self.metas = metas; // 归还
     }
 
     /// 增量刷新：文件 append 后只扫新增区。返回 false = 需全量重建
