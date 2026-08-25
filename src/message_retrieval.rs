@@ -106,6 +106,8 @@ pub struct RetrievalParams {
     pub after: Option<String>,
     pub before: Option<String>,
     pub limit: usize, // 0 = 全量
+    /// 从最早一条正向取 N 条（顶部直跳）；默认 false = 取最新 N 条（底部首屏）
+    pub from_head: bool,
     pub complete_turn: bool,
     pub include_custom: CustomFilter,
 }
@@ -207,7 +209,13 @@ pub fn retrieve_messages(entries: &[Value], params: &RetrievalParams) -> Retriev
 
     // 6. 分页
     let (page, next_cursor, has_more, page_info) =
-        apply_pagination(&messages_only, &params.after, &params.before, params.limit);
+        apply_pagination(
+        &messages_only,
+        &params.after,
+        &params.before,
+        params.limit,
+        params.from_head,
+    );
 
     RetrievalResult {
         messages: page,
@@ -598,11 +606,13 @@ fn apply_custom_filter(entries: &[Value], filter: &CustomFilter) -> Vec<Value> {
 }
 
 /// 分页（after/before 游标 + limit）
+#[allow(clippy::too_many_arguments)]
 fn apply_pagination(
     messages: &[Value],
     after: &Option<String>,
     before: &Option<String>,
     limit: usize,
+    from_head: bool,
 ) -> (Vec<Value>, Option<String>, bool, Option<PageInfo>) {
     // limit == 0 表示全量
     if limit == 0 {
@@ -613,6 +623,29 @@ fn apply_pagination(
             Some(PageInfo {
                 requested_limit: 0,
                 actual_count: messages.len(),
+                completed_turn_boundary: None,
+            }),
+        );
+    }
+
+    // head 直跳：从最早一条正向取 limit 条（next_cursor 指向尾部，支持继续正向翻页）
+    if from_head {
+        let end = limit.min(messages.len());
+        let page = messages[..end].to_vec();
+        let has_more = messages.len() > end;
+        let next_cursor = if has_more {
+            page.last()
+                .and_then(|e| e.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        } else {
+            None
+        };
+        return (
+            page,
+            next_cursor,
+            has_more,
+            Some(PageInfo {
+                requested_limit: limit,
+                actual_count: end,
                 completed_turn_boundary: None,
             }),
         );

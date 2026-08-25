@@ -1552,6 +1552,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     .get("complete_turn")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true);
+                let from_head = params
+                    .get("from")
+                    .and_then(|v| v.as_str())
+                    .map(|v| v == "head")
+                    .unwrap_or(false);
                 let custom_str = params
                     .get("include_custom")
                     .and_then(|v| v.as_str())
@@ -1571,6 +1576,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     after,
                     before,
                     limit,
+                    from_head,
                     complete_turn,
                     include_custom,
                 };
@@ -2001,7 +2007,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                             };
                                             let entries: Vec<serde_json::Value> = crate::message_retrieval::load_entries_cached(&worker_cwd);
                                             let rp = crate::message_retrieval::RetrievalParams {
-                                                view, after, before, limit, complete_turn, include_custom,
+                                                view, after, before, limit,
+                                                from_head: params.get("from").and_then(|v| v.as_str()).map(|v| v == "head").unwrap_or(false),
+                                                complete_turn, include_custom,
                                             };
                                             let result = crate::message_retrieval::retrieve_messages(&entries, &rp);
                                             output_response(&bg_id, "get_messages", &serde_json::json!({

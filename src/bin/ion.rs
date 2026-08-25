@@ -4970,78 +4970,77 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                         let sid = session.as_ref().unwrap();
                                         // ⚠️ parking_lot: 把 inner_reg 限制在独立 block 内，
                                         // block 结束 guard 必然 drop，不跨下面的 write_all .await。
-                                        let subscribe_result: Result<_, String> = {
-                                            let mut inner_reg = reg.lock();
-                                            let worker_opt = inner_reg
-                                                .workers
-                                                .values()
-                                                .find(|w| w.session_id == *sid)
-                                                .map(|w| w.worker_id.clone());
-                                            match worker_opt {
-                                                Some(wid) => {
-                                                    // 支持 replay 参数(刷新时恢复之前的事件)
-                                                    let replay = cmd
-                                                        .get("replay")
-                                                        .and_then(|v| v.as_u64())
-                                                        .unwrap_or(0)
-                                                        as usize;
-                                                    inner_reg
-                                                        .subscribe_with_replay(&wid, replay)
-                                                        .map(|(rx, ev)| (rx, ev, wid))
-                                                }
-                                                None => Err("worker not found for session".into()),
-                                            }
-                                        }; // inner_reg dropped here
-                                        match subscribe_result {
-                                            Ok((rx, replay_events, _wid)) => {
-                                                let mut rx = rx;
-                                            let ack = serde_json::json!({"type":"subscribed","session":sid,"stream":"instance","replayed":replay_events.len()});
-                                            let _ = write_half
-                                                .write_all(format!("{ack}\n").as_bytes())
-                                                .await;
-                                            // 先发送回放的历史事件
-                                            for evt in &replay_events {
-                                                let out = serde_json::json!({
-                                                    "type": "instance_event",
-                                                    "session": sid,
-                                                    "event": evt.get("event").cloned().unwrap_or(evt.clone()),
-                                                    "replayed": true,
+                                        // ── session 级订阅（D 修复）：订阅按 session 绑定而非 worker 实例 ──
+                                        // ① worker 未拉起时挂起等待（60s）而非直接报错——
+                                        //    此前"订阅先于 worker 建立即失效"，UI 只能 prompt 后重订绕过
+                                        // ② worker 死亡/GC 后 rx 结束，自动重接新 worker（10s），
+                                        //    不行才断开让客户端退避重连
+                                        let replay_n = cmd
+                                            .get("replay")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(0)
+                                            as usize;
+                                        let first = attach_session_sub(&reg, sid, replay_n, 120).await;
+                                        match first {
+                                            Some((mut rx, replay_events)) => {
+                                                let ack = serde_json::json!({
+                                                    "type":"subscribed","session":sid,
+                                                    "stream":"instance","replayed":replay_events.len()
                                                 });
-                                                if write_half
-                                                    .write_all(format!("{out}\n").as_bytes())
-                                                    .await
-                                                    .is_err()
-                                                {
-                                                    return;
+                                                let _ = write_half
+                                                    .write_all(format!("{ack}\n").as_bytes())
+                                                    .await;
+                                                for evt in &replay_events {
+                                                    let out = serde_json::json!({
+                                                        "type": "instance_event",
+                                                        "session": sid,
+                                                        "event": evt.get("event").cloned().unwrap_or(evt.clone()),
+                                                        "replayed": true,
+                                                    });
+                                                    if write_half
+                                                        .write_all(format!("{out}\n").as_bytes())
+                                                        .await
+                                                        .is_err()
+                                                    {
+                                                        return;
+                                                    }
                                                 }
-                                            }
-                                            let _ = write_half.flush().await;
-                                            // 然后转发实时事件
-                                            loop {
-                                                match rx.recv().await {
-                                                    Some(msg) => {
+                                                let _ = write_half.flush().await;
+                                                loop {
+                                                    // 转发实时事件直到 rx 结束
+                                                    while let Some(msg) = rx.recv().await {
                                                         let out = serde_json::json!({
                                                             "type": "instance_event",
                                                             "session": sid,
                                                             "event": msg.get("event").cloned().unwrap_or(msg),
                                                         });
                                                         if write_half
-                                                            .write_all(
-                                                                format!("{out}\n").as_bytes(),
-                                                            )
+                                                            .write_all(format!("{out}\n").as_bytes())
                                                             .await
                                                             .is_err()
                                                         {
-                                                            break;
+                                                            return;
                                                         }
                                                         let _ = write_half.flush().await;
                                                     }
-                                                    None => break,
+                                                    // rx 结束：worker 死亡/被 GC → 重接新 worker（session 级）
+                                                    let notice = serde_json::json!({
+                                                        "type": "resubscribed", "session": sid
+                                                    });
+                                                    let _ = write_half
+                                                        .write_all(format!("{notice}\n").as_bytes())
+                                                        .await;
+                                                    match attach_session_sub(&reg, sid, 0, 20).await {
+                                                        Some((rx2, _)) => rx = rx2,
+                                                        None => break,
+                                                    }
                                                 }
                                             }
-                                            }
-                                            Err(e) => {
-                                                let resp = serde_json::json!({"type":"error","error":e});
+                                            None => {
+                                                let resp = serde_json::json!({
+                                                    "type":"error",
+                                                    "error":"no worker for session within 60s"
+                                                });
                                                 let _ = write_half
                                                     .write_all(format!("{resp}\n").as_bytes())
                                                     .await;
@@ -5661,6 +5660,40 @@ async fn handle_manager_command(
     resp
 }
 
+
+/// session 级订阅挂接：等 worker 出现（wait_polls × 500ms）并 subscribe。
+/// 返回 None = 超时未出现。锁在每轮短持，不跨 await。
+async fn attach_session_sub(
+    reg: &std::sync::Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>>,
+    sid: &str,
+    replay: usize,
+    wait_polls: usize,
+) -> Option<(
+    tokio::sync::mpsc::Receiver<serde_json::Value>,
+    Vec<serde_json::Value>,
+)> {
+    let polls = wait_polls.max(1);
+    for i in 0..polls {
+        {
+            let mut inner_reg = reg.lock();
+            let wid_opt = inner_reg
+                .workers
+                .values()
+                .find(|w| w.session_id == sid)
+                .map(|w| w.worker_id.clone());
+            if let Some(wid) = wid_opt
+                && let Ok((rx, ev)) = inner_reg.subscribe_with_replay(&wid, replay)
+            {
+                return Some((rx, ev));
+            }
+        } // guard dropped——sleep 不持锁
+        if i + 1 < polls {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    }
+    None
+}
+
 /// Host 级会话直读：不拉起 worker，纯磁盘读 JSONL 后用 message_retrieval 检索。
 /// JSONL 是 append-only（每条事件落盘一次），活跃 worker 写入中也安全——读到截至目前的完整条目。
 /// 响应形状与 worker 级 get_messages / list_turns 完全一致，UI 无需区分两条路径。
@@ -5738,6 +5771,11 @@ fn host_direct_session_read(
                     .and_then(|v| v.as_u64())
                     .map(|v| v as usize)
                     .unwrap_or(50),
+                from_head: params
+                    .get("from")
+                    .and_then(|v| v.as_str())
+                    .map(|v| v == "head")
+                    .unwrap_or(false),
                 complete_turn: params
                     .get("complete_turn")
                     .and_then(|v| v.as_bool())
@@ -6454,7 +6492,10 @@ async fn handle_manager_command_write(
             // 只读命令（get_messages / list_turns）走磁盘直读，不 auto-create worker——
             // 读历史会话不应该拉起一个进程（首次冷启动几百 ms + 24MB 常驻）。
             // JSONL append-only 保证读到截至目前的完整内容。session 兼容顶层和 params 两种位置。
-            if method == "get_messages" || method == "list_turns" {
+            if matches!(
+                method,
+                "get_messages" | "list_turns" | "get_session_messages" | "list_session_turns"
+            ) {
                 let p = cmd.get("params");
                 let has_session = cmd.get("session").is_some()
                     || p.and_then(|p| p.get("session")).is_some()
@@ -6462,8 +6503,66 @@ async fn handle_manager_command_write(
                 if has_session {
                     return host_direct_session_read(
                         &cmd,
-                        if method == "list_turns" { "turns" } else { "messages" },
+                        if matches!(method, "list_turns" | "list_session_turns") {
+                            "turns"
+                        } else {
+                            "messages"
+                        },
                     );
+                }
+            }
+            // list_inputs / get_turn_detail：同为纯函数检索，host 直读磁盘
+            // （此前无拦截 → 浏览历史会话点大纲会 auto-create worker）
+            if matches!(method, "list_inputs" | "get_turn_detail") {
+                let p = cmd.get("params");
+                let sid = cmd
+                    .get("session")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| p.and_then(|p| p.get("session")).and_then(|v| v.as_str()))
+                    .or_else(|| {
+                        p.and_then(|p| p.get("session_id")).and_then(|v| v.as_str())
+                    })
+                    .map(|s| s.to_string());
+                if let Some(sid) = sid {
+                    if let Some(entries) = load_session_entries(&sid) {
+                        if method == "list_inputs" {
+                            let r =
+                                ion::message_retrieval::retrieve_inputs(&entries, &Default::default());
+                            let inputs: Vec<_> = r
+                                .inputs
+                                .iter()
+                                .map(|i| {
+                                    serde_json::json!({"turnId": i.turn_id, "entryId": i.entry_id, "text": i.text})
+                                })
+                                .collect();
+                            return Ok(serde_json::json!({
+                                "inputs": inputs, "hasMore": r.has_more,
+                                "totalCount": r.total_count, "nextCursor": r.next_cursor,
+                            }));
+                        }
+                        let turn_id =
+                            p.and_then(|p| p.get("turnId")).and_then(|v| v.as_str()).unwrap_or("");
+                        return match ion::message_retrieval::retrieve_turn_detail(
+                            &entries,
+                            turn_id,
+                            &ion::message_retrieval::CustomFilter::None,
+                        ) {
+                            Some(d) => Ok(serde_json::json!({
+                                "turnId": d.turn_id, "entries": d.entries,
+                                "overview": {
+                                    "userContent": d.overview.user_content,
+                                    "assistantContent": d.overview.assistant_content,
+                                    "keySteps": d.overview.key_steps,
+                                    "toolCallCount": d.overview.tool_call_count,
+                                    "tokens": {"input": d.overview.tokens_input, "output": d.overview.tokens_output},
+                                    "status": d.overview.status, "durationMs": d.overview.duration_ms,
+                                    "source": d.overview.source,
+                                },
+                            })),
+                            None => Ok(serde_json::json!({"error": "turn not found", "turnId": turn_id})),
+                        };
+                    }
+                    return Err(format!("session not found on disk: {sid}"));
                 }
             }
             // 只读状态类命令：session 无活跃 worker 时合成空闲态响应，不 auto-create；
