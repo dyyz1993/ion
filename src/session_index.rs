@@ -211,7 +211,36 @@ impl SessionIndex {
             .count()
     }
 
-    pub fn upsert(&mut self, id: &str, meta: SessionMeta) {
+    /// upsert 是整个 SessionMeta 替换。为防任何"重建 meta"路径清掉历史
+    /// （AGENTS.md 存储落位原则），在唯一汇聚点做兜底保护：
+    /// - 有意义的旧标题（≠ 裸 sid）不被 sid 覆盖
+    /// - 计数取 max、created_at 取 min——单调量只增不减
+    /// 调用方仍应尽量部分更新（update_workspace / patch_meta / increment_*）。
+    pub fn upsert(&mut self, id: &str, mut meta: SessionMeta) {
+        if let Some(old) = self.sessions.get(id) {
+            if old.name.as_deref().is_some_and(|n| n != id)
+                && meta.name.as_deref() == Some(id)
+            {
+                meta.name = old.name.clone();
+                if meta.first_name.is_none() {
+                    meta.first_name = old.first_name.clone();
+                }
+            }
+            meta.token_input = meta.token_input.max(old.token_input);
+            meta.token_output = meta.token_output.max(old.token_output);
+            meta.token_cache_read = meta.token_cache_read.max(old.token_cache_read);
+            meta.token_cache_write = meta.token_cache_write.max(old.token_cache_write);
+            meta.user_prompt_count = meta.user_prompt_count.max(old.user_prompt_count);
+            meta.llm_request_count = meta.llm_request_count.max(old.llm_request_count);
+            meta.total_duration_ms = meta.total_duration_ms.max(old.total_duration_ms);
+            meta.compress_count = meta.compress_count.max(old.compress_count);
+            meta.message_count = meta.message_count.max(old.message_count);
+            meta.turn_count = meta.turn_count.max(old.turn_count);
+            meta.error_count = meta.error_count.max(old.error_count);
+            if old.created_at > 0 {
+                meta.created_at = meta.created_at.min(old.created_at);
+            }
+        }
         self.sessions.insert(id.to_string(), meta);
     }
 

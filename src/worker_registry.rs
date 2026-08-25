@@ -4,6 +4,60 @@ use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+/// 复活/重注册会话时，从 existing SessionMeta 带回历史热字段
+/// （AGENTS.md 存储落位原则：upsert 是整替换，重建 meta 必须带回旧值，
+///   否则 create_session 复活会把 name/计数/created_at 全部清零）。
+fn merge_existing_meta(
+    idx: &crate::session_index::SessionIndex,
+    sid: &str,
+    mut meta: crate::session_index::SessionMeta,
+) -> crate::session_index::SessionMeta {
+    let Some(old) = idx.get(sid) else {
+        return meta; // 全新会话，直接用新 meta
+    };
+    // 标题：旧 name 是有意义的标题（≠ 裸 sid）时保留
+    if old.name.as_deref().is_some_and(|n| n != sid) {
+        meta.name = old.name.clone();
+        if old.first_name.is_some() {
+            meta.first_name = old.first_name.clone();
+        }
+    }
+    // 计数/时间戳：历史累计带回
+    meta.token_input = old.token_input;
+    meta.token_output = old.token_output;
+    meta.token_cache_read = old.token_cache_read;
+    meta.token_cache_write = old.token_cache_write;
+    meta.user_prompt_count = old.user_prompt_count;
+    meta.llm_request_count = old.llm_request_count;
+    meta.total_duration_ms = old.total_duration_ms;
+    meta.compress_count = old.compress_count;
+    meta.message_count = old.message_count;
+    meta.turn_count = old.turn_count;
+    meta.error_count = old.error_count;
+    meta.created_at = old.created_at;
+    // project 归属带回：复活时的 cwd 可能不是原项目（否则直读按新 project 找不到会话文件）
+    if old.project.is_some() {
+        meta.project = old.project.clone();
+        meta.project_name = old.project_name.clone().or(meta.project_name.clone());
+    }
+    // last_* 运行态快照带回
+    meta.last_thinking_level = old.last_thinking_level.clone();
+    meta.last_active_tools = old.last_active_tools.clone();
+    meta.last_entry_id = old.last_entry_id.clone();
+    // 血缘/分支：新值缺失时用旧值兜底
+    if meta.parent_session.is_none() {
+        meta.parent_session = old.parent_session.clone();
+        meta.parent_type = old.parent_type.clone();
+    }
+    if meta.branch.is_none() {
+        meta.branch = old.branch.clone();
+    }
+    if old.initial_cwd.is_some() && meta.initial_cwd.is_none() {
+        meta.initial_cwd = old.initial_cwd.clone();
+    }
+    meta
+}
+
 /// Result of `prepare_worker_spawn` — contains spawned child process + all data
 /// needed to register the worker in the registry (under lock, fast).
 pub struct PreparedSpawn {
@@ -892,7 +946,8 @@ impl WorkerRegistry {
                 (None, None)
             };
             let mut idx = SessionIndex::load();
-            idx.upsert(
+            let meta = merge_existing_meta(
+                &idx,
                 &session_id,
                 SessionMeta {
                     name: Some(session_id.clone()),
@@ -931,6 +986,7 @@ impl WorkerRegistry {
                     security_profile: None,
                 },
             );
+            idx.upsert(&session_id, meta);
             idx.save();
             // 写 tier_models + security_profile 快照（创建时从全局 config 读）
             let cfg = crate::config::IonConfig::load();
@@ -1539,7 +1595,8 @@ impl WorkerRegistry {
                 (None, None)
             };
             let mut idx = SessionIndex::load();
-            idx.upsert(
+            let meta = merge_existing_meta(
+                &idx,
                 &session_id,
                 SessionMeta {
                     name: Some(session_id.clone()),
@@ -1578,6 +1635,7 @@ impl WorkerRegistry {
                     security_profile: None,
                 },
             );
+            idx.upsert(&session_id, meta);
             idx.save();
             // tier_models + security_profile 快照
             let cfg = crate::config::IonConfig::load();
