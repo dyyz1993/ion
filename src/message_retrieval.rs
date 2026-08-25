@@ -436,7 +436,7 @@ pub fn count_turns(messages: &[serde_json::Value]) -> usize {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// 视点过滤：根据 view 返回 entry 子集
-fn apply_view_filter(entries: &[Value], view: &View) -> Vec<Value> {
+pub fn apply_view_filter(entries: &[Value], view: &View) -> Vec<Value> {
     match view {
         View::Full => entries.to_vec(),
         View::Live => {
@@ -486,7 +486,7 @@ fn truncate_after_last_compaction(entries: &[Value]) -> Vec<Value> {
 /// 同时隐藏 deletion/segment_summary/restoration 元数据 entry 本身。
 ///
 /// 单次遍历构建元数据，单次遍历过滤（原 5 次遍历优化为 2 次）。
-fn apply_visibility_filter(entries: &[Value]) -> Vec<Value> {
+pub fn apply_visibility_filter(entries: &[Value]) -> Vec<Value> {
     use std::collections::{HashMap, HashSet};
 
     // ── 第 1 次遍历：构建所有元数据集合 ──
@@ -607,7 +607,7 @@ fn apply_custom_filter(entries: &[Value], filter: &CustomFilter) -> Vec<Value> {
 
 /// 分页（after/before 游标 + limit）
 #[allow(clippy::too_many_arguments)]
-fn apply_pagination(
+pub fn apply_pagination(
     messages: &[Value],
     after: &Option<String>,
     before: &Option<String>,
@@ -732,7 +732,7 @@ fn apply_pagination(
 ///
 /// 一个用户回合可以包含多次 LLM 调用、工具调用、toolResult 以及穿插的 custom
 /// entry；直到下一条 user message 才开始下一回合。
-fn group_into_turns(entries: &[Value]) -> Vec<Vec<Value>> {
+pub fn group_into_turns(entries: &[Value]) -> Vec<Vec<Value>> {
     group_by_user_boundary(entries)
 }
 
@@ -764,7 +764,7 @@ fn group_by_user_boundary(entries: &[Value]) -> Vec<Vec<Value>> {
 }
 
 /// 从一组 entry 提取 turn 概览
-fn extract_turn_overview(group: &[Value], full_content: bool) -> TurnOverview {
+pub fn extract_turn_overview(group: &[Value], full_content: bool) -> TurnOverview {
     let mut overview = TurnOverview::default();
     let mut last_stop_reason = None;
 
@@ -857,7 +857,7 @@ fn message_payload(entry: &Value) -> Option<&Value> {
     Some(message)
 }
 
-fn message_role(entry: &Value) -> &str {
+pub fn message_role(entry: &Value) -> &str {
     let Some(message) = entry.get("message") else {
         return "";
     };

@@ -5694,6 +5694,209 @@ async fn attach_session_sub(
     None
 }
 
+
+// ── B 线 fast path：FileIndex 缓存 + 路径解析（不读全文） ──
+static FILE_INDEX_CACHE: std::sync::OnceLock<
+    parking_lot::Mutex<std::collections::HashMap<std::path::PathBuf, Arc<ion::file_index::FileIndex>>>,
+> = std::sync::OnceLock::new();
+
+/// 获取（或增量刷新）指定路径的 FileIndex；失败返回 None
+fn get_file_index(path: &std::path::Path) -> Option<Arc<ion::file_index::FileIndex>> {
+    let cache = FILE_INDEX_CACHE.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+    let mut guard = cache.lock();
+    if let Some(idx) = guard.get(path) {
+        // 文件没变（len+mtime 相同）→ 直接命中缓存
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.len() == idx.file_len && meta.modified().ok() == idx.mtime {
+                return Some(Arc::clone(idx));
+            }
+        }
+        // 文件变了：read 端优先——先给旧缓存（可能稍滞后但安全），
+        // 后台重建（这里简单同步重建，后续可改 spawn）
+    }
+    // 全量重建
+    match ion::file_index::FileIndex::build(path) {
+        Ok(new_idx) => {
+            let arc = Arc::new(new_idx);
+            guard.insert(path.to_path_buf(), Arc::clone(&arc));
+            Some(arc)
+        }
+        Err(_) => None,
+    }
+}
+
+/// sid → 会话 JSONL 文件路径（不读全文——用 header 前几行校验）
+fn resolve_session_path(sid: &str) -> Option<std::path::PathBuf> {
+    if sid.contains('/') || sid.ends_with(".jsonl") {
+        let p = std::path::PathBuf::from(sid);
+        return p.exists().then_some(p);
+    }
+    let index = ion::session_index::SessionIndex::load();
+    let meta = index.get(sid)?;
+    let cwd = meta.project.as_deref()?;
+    let main_path = ion::session_jsonl::session_path(cwd);
+    if ion::session_jsonl::read_session_header(&main_path).is_some_and(|h| h.id == sid) {
+        return Some(main_path);
+    }
+    let own = ion::paths::session_jsonl_path_by_id(cwd, sid);
+    own.exists().then_some(own)
+}
+
+/// fast_messages：索引层过滤+分页，只对返回页 read_at 解析
+fn fast_messages(
+    path: &std::path::Path,
+    params: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    let idx = get_file_index(path)?;
+    let metas: &[serde_json::Value] = &idx.metas;
+
+    // 参数
+    let view = match params.get("view").and_then(|v| v.as_str()).unwrap_or("live") {
+        "since_compaction" => ion::message_retrieval::View::SinceCompaction,
+        "full" => ion::message_retrieval::View::Full,
+        s if s.starts_with("branch:") => {
+            ion::message_retrieval::View::Branch(s[7..].to_string())
+        }
+        _ => ion::message_retrieval::View::Live,
+    };
+    let after = params.get("after").and_then(|v| v.as_str()).map(String::from);
+    let before = params.get("before").and_then(|v| v.as_str()).map(String::from);
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(50);
+    let from_head = params
+        .get("from")
+        .and_then(|v| v.as_str())
+        .map(|v| v == "head")
+        .unwrap_or(false);
+
+    // 复用现有纯函数在 metas 上跑过滤管线
+    let rp = ion::message_retrieval::RetrievalParams {
+        view,
+        after,
+        before,
+        limit,
+        from_head,
+        complete_turn: true,
+        include_custom: ion::message_retrieval::CustomFilter::None,
+    };
+    let result = ion::message_retrieval::retrieve_messages(metas, &rp);
+
+    // 返回页的条目来自 metas（小对象），已含 id/parentId 等完整元数据——
+    // 纯元数据即可返回（含 content 的完整消息由 parse_entry 按需补全时才用）。
+    // 但 UI 需要 content，所以：每页条目 → 找到对应 file 行 → parse_entry 全量
+    let messages: Vec<serde_json::Value> = result
+        .messages
+        .iter()
+        .map(|m| {
+            let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if id.is_empty() {
+                return m.clone(); // branch_summary 等合成条目
+            }
+            match idx.id_to_idx.get(id) {
+                Some(&i) => idx.parse_entry(i).unwrap_or_else(|| m.clone()),
+                None => m.clone(),
+            }
+        })
+        .collect();
+
+    Some(serde_json::json!({
+        "messages": messages,
+        "hasMore": result.has_more,
+        "totalCount": result.total_count,
+        "nextCursor": result.next_cursor,
+        "view": result.view,
+        "compactionPoints": result.compaction_points,
+    }))
+}
+
+/// fast_turns：索引层 turn 分组 + 概览（仅 User/Assistant 预览），返回页按需解析
+fn fast_turns(
+    path: &std::path::Path,
+    params: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    let idx = get_file_index(path)?;
+    let metas: &[serde_json::Value] = &idx.metas;
+
+    let full_content = params
+        .get("full_content")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(50);
+
+    // turn 分组在 metas 上（只需 type + role）
+    let turns = ion::message_retrieval::group_into_turns(metas);
+    let total_count = turns.len();
+    let has_more = total_count > limit;
+    let page_turns: Vec<_> = if limit > 0 && total_count > limit {
+        turns[total_count - limit..].to_vec() // 最新 N 轮
+    } else {
+        turns
+    };
+    let next_cursor = if has_more {
+        page_turns
+            .first()
+            .and_then(|g| g.first())
+            .and_then(|e| e.get("id").and_then(|v| v.as_str()))
+            .map(|s| s.to_string())
+    } else {
+        None
+    };
+
+    let turn_json: Vec<serde_json::Value> = page_turns
+        .iter()
+        .map(|group| {
+            let turn_id = group
+                .first()
+                .and_then(|e| e.get("id").and_then(|v| v.as_str()))
+                .unwrap_or("");
+            // 概览：从索引 heads 直接取（不用全量解析）
+            let user_content = group
+                .first()
+                .and_then(|e| idx.id_to_idx.get(e.get("id").and_then(|v| v.as_str()).unwrap_or("")))
+                .and_then(|&i| idx.heads[i].user_head.clone())
+                .unwrap_or_default();
+            let assistant_content = group
+                .last()
+                .and_then(|e| idx.id_to_idx.get(e.get("id").and_then(|v| v.as_str()).unwrap_or("")))
+                .and_then(|&i| idx.heads[i].asst_head.clone())
+                .unwrap_or_default();
+            let tool_count = group
+                .iter()
+                .filter(|e| {
+                    e.get("message").and_then(|m| m.get("role")).and_then(|r| r.as_str()) == Some("toolResult")
+                })
+                .count();
+
+            serde_json::json!({
+                "turnId": turn_id,
+                "userContent": user_content,
+                "assistantContent": assistant_content,
+                "keySteps": [],
+                "toolCallCount": tool_count,
+                "tokens": {"input": 0, "output": 0},
+                "status": "completed",
+                "summary": serde_json::Value::Null,
+                "durationMs": serde_json::Value::Null,
+                "source": "index",
+            })
+        })
+        .collect();
+
+    Some(serde_json::json!({
+        "turns": turn_json,
+        "hasMore": has_more,
+        "totalCount": total_count,
+        "nextCursor": next_cursor,
+    }))
+}
+
 /// Host 级会话直读：不拉起 worker，纯磁盘读 JSONL 后用 message_retrieval 检索。
 /// JSONL 是 append-only（每条事件落盘一次），活跃 worker 写入中也安全——读到截至目前的完整条目。
 /// 响应形状与 worker 级 get_messages / list_turns 完全一致，UI 无需区分两条路径。
@@ -5710,6 +5913,20 @@ fn host_direct_session_read(
         .or_else(|| cmd.get("session").and_then(|v| v.as_str()))
         .ok_or_else(|| "missing 'session' param".to_string())?
         .to_string();
+    // ── B 线 fast path：FileIndex 索引检索（大文件下 O(page)）──
+    // 先 resolve 路径（不读全文），再走 fast_messages / fast_turns
+    if let Some(path) = resolve_session_path(&sid) {
+        let result = if kind == "turns" {
+            fast_turns(&path, &params)
+        } else {
+            fast_messages(&path, &params)
+        };
+        if let Some(data) = result {
+            return Ok(data);
+        }
+        // fast path 失败 → 走旧全量路径兜底
+    }
+
     let entries =
         load_session_entries(&sid).ok_or_else(|| format!("session not found on disk: {sid}"))?;
 
