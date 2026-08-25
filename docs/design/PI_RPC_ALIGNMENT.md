@@ -333,3 +333,16 @@ ion subscribe --session sess_xxx --extension memory
 3. **ion 补 Compaction 自动压缩** — 长对话刚需
 4. **ion 补多 Provider 协议** — 最大工程量
 5. **pi 那边根据 issue 讨论结果决定是否提 PR** — 等 maintainer 反馈
+
+
+## 附：2026-08-25 host 协议补全（ion 原生扩展，非 pi 对齐项）
+
+| 能力 | 命令 / 参数 | 说明 |
+|------|------------|------|
+| 新命令名 `--session` 路由 | `ion rpc --session X --method get_session_messages` | 并入 host 直读拦截（此前路由进 worker 报 Unknown command） |
+| 顶部直跳 | `get_messages {from:"head", limit:N}` | 返回最早 N 条 + `nextCursor`（after 游标续翻）；`RetrievalParams.from_head` |
+| 大纲零拉起 | `list_inputs` / `get_turn_detail` 带 session | host 直读磁盘（纯函数检索），实测 40ms 零 worker |
+| 单文件三基准 diff | `turn_file_diff {turnId, path, base}` | base=before（轮内，默认）/ prev（上一轮末）/ disk（当前磁盘） |
+| session 级订阅 | `subscribe {session}` | worker 未拉起挂起等待 60s 自动接上；worker 死亡自动重接（下发 `{"type":"resubscribed"}`）；不再需要"prompt 后重订"绕过 |
+
+CLI 验证见 `tests/host_read_ci.sh` E 组（20/20）。

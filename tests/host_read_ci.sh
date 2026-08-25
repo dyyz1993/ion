@@ -138,6 +138,34 @@ sleep 1
 AFTER2=$(worker_count)
 [ "$AFTER2" = "$WORKERS_BEFORE" ]; check $? "D5 状态查询零新增 worker (before=$WORKERS_BEFORE after=$AFTER2)"
 
+# ── E: 协议补全（2026-08-25）——新命令名 --session 路由 / from=head / 大纲直读 ──
+
+# E1: --session 标志 + 新命令名（此前路由进 worker 报 Unknown command）
+R=$("$ION_BIN" rpc --session "$SESS_FILE" --method get_session_messages --params '{}')
+OK=$(echo "$R" | jf '.success'); TC=$(echo "$R" | jf '.data.totalCount')
+[ "$OK" = "true" ] && [ "$TC" -gt 0 ]; check $? "E1 --session+新命令名 manager 级路由 (total=$TC)"
+
+# E2: from=head 顶部直跳——首条应为最早消息 u1
+R=$("$ION_BIN" rpc --method get_messages --params "{\"session\":\"$SESS_FILE\",\"limit\":1,\"from\":\"head\"}")
+FIRST_ID=$(echo "$R" | jf '.data.messages[0].id'); HM=$(echo "$R" | jf '.data.hasMore')
+[ "$FIRST_ID" = "u1" ] && [ "$HM" = "true" ]; check $? "E2 from=head 首条=u1 (id=$FIRST_ID hasMore=$HM)"
+
+# E3: list_inputs host 直读（此前会 auto-create worker）
+W_BEFORE=$(worker_count)
+R=$("$ION_BIN" rpc --session "$SESS_FILE" --method list_inputs --params '{}')
+OK=$(echo "$R" | jf '.success'); IC=$(echo "$R" | jf '.data.totalCount')
+[ "$OK" = "true" ] && [ "$IC" = "2" ]; check $? "E3 list_inputs 直读 (count=$IC)"
+
+# E4: get_turn_detail host 直读（turnId=首个 user entry）
+R=$("$ION_BIN" rpc --session "$SESS_FILE" --method get_turn_detail --params "{\"turnId\":\"u1\"}")
+OK=$(echo "$R" | jf '.success'); EC=$(echo "$R" | jf '.data.entries | length')
+[ "$OK" = "true" ] && [ "$EC" -ge 1 ]; check $? "E4 get_turn_detail 直读 (entries=$EC)"
+
+# E5: 上述查询零 worker 拉起
+sleep 1
+W_AFTER=$(worker_count)
+[ "$W_AFTER" = "$W_BEFORE" ]; check $? "E5 大纲查询零拉起 (before=$W_BEFORE after=$W_AFTER)"
+
 echo ""
 echo "═══ host_read CI: $PASS passed / $FAIL failed ═══"
 [ "$FAIL" -eq 0 ]
