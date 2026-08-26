@@ -4688,6 +4688,18 @@ async fn do_create_session(
         .get("provider")
         .and_then(|v| v.as_str())
         .map(String::from);
+    // 参数没指定 model → 查 SessionIndex（用户 set_model 过的会话，
+    // ensure_worker / auto-create 重建 worker 时应保持用户选的模型，
+    // 而不是重置为默认值——治"切 4.7 → 刷新 → 变回 5.2"）
+    if cfg.model.is_none() || cfg.model.as_deref() == Some("") {
+        let index = ion::session_index::SessionIndex::load();
+        if let Some(meta) = index.get(&session_id)
+            && !meta.model.is_empty()
+        {
+            cfg.model = Some(meta.model.clone());
+            cfg.provider = Some(meta.provider.clone());
+        }
+    }
     // Mark as Child relation so the worker uses an INDEPENDENT session file
     // (<session_id>.jsonl) instead of the shared session.jsonl. Without this,
     // every new session created via create_session reads/writes the same shared
