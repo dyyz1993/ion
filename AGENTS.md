@@ -184,6 +184,17 @@ docs/
 >
 > 参照 `tests/extension_fs_ci.sh`（ctx.fs 的命令行验证：起 host → `ion rpc extension_rpc fs_probe ...` → 断言）。
 
+> **🔴 修复后 RPC 即时验证原则（硬性要求）**
+>
+> **每个 bug 修复必须先用 `ion rpc` 命令行验证修复效果，再交付——不能只改代码让用户去 UI 里试。** 这意味着：
+>
+> - 修了 `set_model` → 立刻 `ion rpc --session X --method set_model --params '{"modelId":"new-model",...}'` 然后 `ion rpc --session X --method get_session_info` 确认 model 字段一致
+> - 修了审批基线 → 立刻 `ion rpc --session X --method review_pending` 确认 pending 数量正确
+> - 修了消息存储 → 立刻 `ion rpc --session X --method get_session_messages --params '{"limit":5}'` 确认消息内容完整
+> - **原则**：改了什么就用对应的 RPC 查什么，一条命令闭环验证。UI 只做最后验收，不做首次验证。
+>
+> 实例（2026-08-26 set_model 同步修复）：修前只改 worker 内存 → worker 空闲后 get_session_info 从索引合成返回旧模型（用户切 4.7 → agent 跑完变回 5.2）。修后加 `SessionIndex::set_model` 写入 → RPC 验证 set_model → get_session_info → index 三层一致 ✅。
+
 **Harness 优先原则**：先用 FauxProvider 写 harness 测试把闭环跑通（零 API 成本、确定性），验证通过后再补真实 case。
 
 **FauxProvider 的两种模式**：
