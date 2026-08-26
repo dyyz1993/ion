@@ -114,10 +114,12 @@ impl ApprovalManager {
     /// 旧数据（无 session_id）回退全局第一个，行为同旧版。
     fn session_baseline_tree_hash(&self) -> Option<String> {
         let steps = self.store.load_all_step_snapshots();
+        // 优先本会话的快照；找不到时返回 None（= 无基线 = 空树 = 0 pending）
+        // 而不是回退到共享存储最老的快照（那是几周前的干净状态，
+        // 会导致新会话弹出 708 个项目既有变更的待审——用户没改过任何文件）
         steps
             .iter()
             .find(|s| !self.storage.session_id.is_empty() && s.session_id == self.storage.session_id)
-            .or_else(|| steps.first())
             .map(|s| s.baseline_tree_hash.clone())
     }
 
