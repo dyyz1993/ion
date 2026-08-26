@@ -1,19 +1,41 @@
 # ION 项目状态
 
-> **状态：开发中** — 未上线，无需兼容旧数据。最近盘点：2026-08-06。
+> **状态：开发中** — 未上线，无需兼容旧数据。最近盘点：2026-08-25。
 >
 > 本文件是**当前快照**（功能清单 + 测试统计 + 路线图）。历史 commit 看git log`，详细设计看 `docs/design/`。
 
 ---
 
-## 一、规模快照（2026-08-06 实测）
+## 一、规模快照（2026-08-25 实测）
 
 | 维度 | 数值 |
 |------|------|
-| Rust 代码总行数 | **99,682**（src 82,912 + ion-provider ~5k + 其他） |
-| lib 测试 | **1013 passed / 2 failed**（2 个 hooks 测试逻辑缺陷，非产品 bug，待修） |
-| 文档 | 111 篇 .md |
+| Rust 代码总行数 | **~100,500**（src ~83,700 + ion-provider ~5k + file_index ~300 新增） |
+| lib 测试 | **984 passed / 0 failed**（含 file_index 3 新增；hooks 2 个旧失败已修复） |
+| 文档 | 112 篇 .md |
 | 设计文档 | `docs/design/` 40+ 篇 |
+
+### 2026-08-25 新增
+
+| 模块 | 内容 |
+|------|------|
+| **FileIndex**（`src/file_index.rs`） | 会话 JSONL 稀疏偏移索引：一次扫描建索引（偏移/len/type/id/parentId/role/220字预览/targetIds）+ Live 视图预计算消息下标序列 + append-only 增量 refresh + `read_at` 按需解析单行。基准 179MB/80K 行：**缓存命中 get_messages 5ms / head 4ms（vs 旧路径 1245ms → 250x 加速）**，峰值内存 12MB（vs 361MB → 30x 内存降） |
+| **ion-console**（`~/Project/study-rust/ion-console`） | zcode 风格 Web UI（Vite+React+TS+Tailwind v4+Lucide），Node 网关桥接 host Unix socket。侧栏项目分组+搜索+worker 状态点+⋮/右键菜单（复制名称/ID）+折叠图标轨；会话视图 host 直读（默认底部/before 翻页/from=head 顶部直跳/浮动回底 FAB）+每轮文件记录行+分型工具卡（bash 终端风/edit diff/write 代码块）+Markdown+步骤摘要折叠+乐观渲染+WS 实时流+生成中打断（Stop 按钮）；审查工作台（待审聚合+轮次大纲+随时批准/拒绝回滚+三基准 diff：轮内/上一轮/磁盘）；设置栏模型/权限/思考/上下文环形图。42 项 Playwright UI 测试 |
+| **协议四补全** | get_session_messages/list_session_turns 并入 `--session` 直读拦截；`get_messages` 新增 `from=head`；list_inputs/get_turn_detail host 直读（40ms 零拉起）；subscribe 改 session 级绑定（worker 未拉起挂起等待 60s 自动接上 + 死亡自动重接发 `resubscribed`） |
+| **turn_file_diff RPC** | 单 turn 单文件 diff，base=before/prev/disk 三种对比基准 |
+
+### 2026-08-25 修复的 10 个 bug
+
+1. SessionIndex upsert 整替换清零 meta（name/计数/created_at）→ 兜底保护
+2. register 复活不带原值 → merge_existing_meta（含 project 归属）
+3. save_worker_session 重放污染（历史以当前时间戳整段重写）→ 指纹防护
+4. write 相对路径裸文件名拼 `/.ion-tmp-` 写只读根 → resolve 到 cwd
+5. RPC auto-create 不传 project_path → 消息落错项目目录 → SessionIndex 兜底
+6. StepSnapshot 无 session 归属 → 审批 baseline 用项目史上第一个快照（705 文件根因）
+7. scanner 不忽略 Python 缓存目录 → .ruff_cache 等混入快照
+8. get_context_usage 空闲合成用累计 token_input（虚高）→ 改用最后一次 LLM usage.input
+9. context_window 查不到 → 三级查找 registry→provider/id→config.json
+10. subscribe 先于 worker 建立即失效 → session 级绑定
 
 ---
 
@@ -60,7 +82,9 @@
 - **HTML Export** — ION 自有单文件离线模板 + 会话元信息卡 + Flow Summary + tools 列表 + 完整可见事件 Timeline（17 种固定 Entry、25 种已识别内置 Custom、当前会话类型统计、运行时 Extension 开放类型、筛选/悬停/点击跳转）；真实消息、Compaction 与 parented File Snapshot 在正文/Timeline 一一对应；仅当隐藏正文超过 3 行时折叠，预览保留 3 行正文（`tests/export_ci.sh` 54/54）
 - **Apple Container 后端** — 真隔离 Linux VM，同端口并行
 - **A→B 自进化** — A 调度 B 改代码 + CI + 合并 + PR（14 脚本，24 agent 模板）
-- **Host 级会话直读** — `get_session_messages` / `list_session_turns`：host 纯磁盘读 JSONL（append-only 线性增长，冷读毫秒级），UI 浏览历史会话零 worker；旧命令名 `get_messages`/`list_turns` 带 session 自动拦截直读、不 auto-create worker；空闲会话状态合成——get_session_info/get_settings/get_queue/get_context_usage/get_active_tools 无 worker 时从 SessionIndex/全局配置合成响应、不 auto-create，有 worker 照旧转发（`tests/host_read_ci.sh` 15/15）
+- **Host 级会话直读** — `get_session_messages` / `list_session_turns`：host 纯磁盘读 JSONL（append-only 线性增长，冷读毫秒级），UI 浏览历史会话零 worker；旧命令名 `get_messages`/`list_turns` 带 session 自动拦截直读、不 auto-create worker；空闲会话状态合成——get_session_info/get_settings/get_queue/get_context_usage/get_active_tools 无 worker 时从 SessionIndex/全局配置合成响应、不 auto-create，有 worker 照旧转发
+- **FileIndex 长会话渲染** — 稀疏偏移索引 + Live 视图预计算 + `read_at` 按需解析 + O(1) 切片翻页。179MB 基准：get_messages **5ms**（vs 旧路径 1245ms → 250x）；峰值内存 12MB（vs 361MB → 30x）。`src/file_index.rs`
+- **ion-console** — 独立 Web UI 项目（`~/Project/study-rust/ion-console`，Vite+React+Tailwind+Lucide），Node 网关桥接 host。会话浏览/续聊/审查审批/文件记录/实时流/打断。42 项 Playwright UI 测试
 
 ---
 
@@ -82,24 +106,19 @@
 
 ---
 
-## 四、测试统计（2026-08-06 实测）
+## 四、测试统计（2026-08-25 实测）
 
 | 套件 | 数量 | 覆盖 |
 |------|------|------|
-| **lib tests** | **1013 passed / 2 failed** | 全部核心逻辑（含 2 个 hooks 测试逻辑缺陷，待修） |
+| **lib tests** | **984 passed / 0 failed** | 全部核心逻辑（含 file_index 3 新增） |
 | unit_rpc_test | 20 | RPC 协议 U1-U20 |
 | wasm_extension_tests | 24 | ABI、工具调用、热更新、4 维存储与 Plan 生命周期 |
 | extension_cli_ci | 16 | install/remove/list/create + 可构建脚手架 |
 | extension_fs_ci | 23 | ctx.fs、安全边界与 `extension_id` 存储隔离 |
 | rpc_event_push_ci | 18 | 用户触发的每条 RPC 推送 `rpc_response` 事件 + 权限变更 `permission_changed` 类型化事件 + 双终端实时同步 |
-| host_read_ci | 10 | Host 级会话直读：get_session_messages/list_session_turns 响应形状与 worker 级一致 + 只读拦截零 worker + 错误语义 |
+| host_read_ci | **20** | Host 级会话直读 + 协议四补全（E 组 5 新增：--session 路由/from=head/list_inputs/get_turn_detail/零拉起） |
+| ion-console UI | **38** | Playwright：侧栏/视图/折叠/面板/审批/记录行/viewer/FAB/复制/预启动（`npm run test:ui`） |
 | CI 脚本 | 30+ 个 `tests/*_ci.sh` | CLI 外部验证（MCP/hooks/extensions/snapshot/goal/memory 等） |
-
-**2 个失败测试详情**：
-- `hooks::extension::tests::test_has_hooks_returns_false_for_nonexistent_dir`
-- `hooks::extension::tests::test_new_preserves_project_dir_usable_for_has_hooks`
-- 根因：`has_hooks()` 实现合并全局 `~/.ion/hooks.json`，但测试假设只查 project_dir。**测试逻辑错误，非产品 bug**。
-- 修法：测试在临时 HOME 下跑（隔离全局 config），或改 `has_hooks` 语义只查 project_dir。
 
 ---
 
@@ -113,9 +132,12 @@
 **P5（包管理）**：✅ 完成（`ion extension install/remove/list`）
 
 **待办（无优先级）**：
-- 修 2 个 hooks 失败测试
+- ~~修 2 个 hooks 失败测试~~ ✅（lib 984/0 全绿）
 - scripts/ 目录归档（evolve 系列 14 个 → 留核心 3-4 个）
 - 105 个 TODO/FIXME 筛查（多数是测试 fixture，真技术债约 20-30 处）
+- 快照 store 按 git common dir hash 分裂（同会话散两个目录）
+- abort 对阻塞 LLM 请求无效（需 reqwest 超时）
+- SessionIndex messageCount 不可靠（大量为 0）
 
 ---
 
