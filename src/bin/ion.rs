@@ -4696,10 +4696,10 @@ async fn do_create_session(
             // 倒序找最后一个 model_change
             for e in entries.iter().rev() {
                 if e.get("type").and_then(|v| v.as_str()) == Some("model_change")
-                    && let Some(data) = e.get("data")
                 {
-                    let m = data.get("modelId").and_then(|v| v.as_str()).unwrap_or("");
-                    let p = data.get("provider").and_then(|v| v.as_str()).unwrap_or("");
+                    // append_session_entry 把 data 字段合并到顶层（不嵌套在 data 里）
+                    let m = e.get("modelId").and_then(|v| v.as_str()).unwrap_or("");
+                    let p = e.get("provider").and_then(|v| v.as_str()).unwrap_or("");
                     if !m.is_empty() {
                         cfg.model = Some(m.to_string());
                         cfg.provider = Some(p.to_string());
