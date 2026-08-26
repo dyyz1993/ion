@@ -387,8 +387,16 @@ impl SessionIndex {
         message_count: u32,
     ) {
         Self::patch_meta(id, |meta| {
-            meta.model = model.to_string();
-            meta.provider = provider.to_string();
+            // 只填空值——不覆盖 set_model 已写入的值。
+            // SessionIndexExtension 在构造时捕获 model（默认值），on_turn_end
+            // 每次调用都会跑这里，如果无条件覆盖会把用户 set_model 切的模型
+            // 冲回默认值（实测切 GLM-4.7 → agent 跑完变回 5.2）
+            if meta.model.is_empty() {
+                meta.model = model.to_string();
+            }
+            if meta.provider.is_empty() {
+                meta.provider = provider.to_string();
+            }
             meta.agent = agent.to_string();
             meta.message_count = message_count;
         });
