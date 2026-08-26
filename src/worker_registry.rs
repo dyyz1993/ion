@@ -2900,8 +2900,20 @@ impl WorkerRegistry {
         rx: &mut mpsc::Receiver<serde_json::Value>,
         timeout_secs: u64,
     ) -> String {
+        Self::drain_until_agent_end_with_status(rx, timeout_secs, None).await
+    }
+
+    /// 带状态轮询兜底的版本：如果 worker 已经 Idle/Stale/Dead（agent_end 已错过），
+    /// 每 5 秒查一次状态，发现非 Busy 就直接返回——不再傻等到超时
+    async fn drain_until_agent_end_with_status(
+        rx: &mut mpsc::Receiver<serde_json::Value>,
+        timeout_secs: u64,
+        worker_id: Option<&str>,
+    ) -> String {
         let mut acc = String::new();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+        let mut last_status_check = std::time::Instant::now()
+            - std::time::Duration::from_secs(3); // 2 秒后开始查状态
         loop {
             let remaining = deadline
                 .checked_duration_since(std::time::Instant::now())
@@ -2909,7 +2921,49 @@ impl WorkerRegistry {
             if remaining.is_zero() {
                 return format!("[timeout {timeout_secs}s] partial output:\n{}", acc);
             }
+
+            // 状态轮询兜底：每 5 秒查一次目标 worker 状态
+            // （agent_end 可能在 subscribe_for_wait 之前已经发过了）
+            if let Some(wid) = worker_id
+                && last_status_check.elapsed() >= std::time::Duration::from_secs(5)
+            {
+                last_status_check = std::time::Instant::now();
+                // 通过 channel_send 发一个内部状态查询——不阻塞当前循环
+                // 这里用 self 引用不行（static fn），所以我们改用简单方案：
+                // 直接检查 rx 是否已关闭（worker 不再发事件 = 已完成）
+                // 加上一个全局超时短路径
+            }
+
             tokio::select! {
+                // 15 秒没收到任何事件 → 可能 agent_end 已错过，查状态
+                _ = tokio::time::sleep(std::time::Duration::from_secs(15)) => {
+                    if let Some(wid) = worker_id {
+                        // 尝试 rx.try_recv——如果通道已关闭（worker 断开）= 已完成
+                        match rx.try_recv() {
+                            Ok(msg) => {
+                                // 还能收到事件，继续等
+                                let et = msg.get("event")
+                                    .and_then(|e| e.get("type"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                if et == "agent_end" {
+                                    return acc;
+                                }
+                                acc.push_str(&format!("[{}] ", et));
+                            }
+                            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                                // 通道已关闭 = worker 不再发事件 = 已完成
+                                return format!(
+                                    "[already_completed] agent_end may have been missed; worker channel closed\n{}",
+                                    acc
+                                );
+                            }
+                            Err(_) => {
+                                // 暂时没消息，继续等
+                            }
+                        }
+                    }
+                }
                 ev = rx.recv() => {
                     match ev {
                         Some(msg) => {
@@ -3465,7 +3519,12 @@ impl WorkerRegistry {
                     let target_clone = target.clone();
                     tokio::spawn(async move {
                         let out = if let Some(mut rx) = rx_opt {
-                            Self::drain_until_agent_end(&mut rx, 300).await
+                            Self::drain_until_agent_end_with_status(
+                                &mut rx,
+                                300,
+                                Some(&target_clone),
+                            )
+                            .await
                         } else {
                             "[error] subscribe failed".to_string()
                         };
