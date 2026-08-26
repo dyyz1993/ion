@@ -1735,8 +1735,17 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     .unwrap_or(&provider);
                 model_id = new_model.to_string();
                 provider = new_provider.to_string();
-                // 同步到 SessionIndex（否则 worker 空闲后 get_session_info
-                // 从索引合成会返回旧模型——实测切 4.7 → agent 跑完变回 5.2）
+                // 权威记录：写 session JSONL（worker 重建时从这里读）
+                append_session_entry(
+                    &worker_cwd,
+                    &sid,
+                    "model_change",
+                    &serde_json::json!({
+                        "provider": provider,
+                        "modelId": model_id,
+                    }),
+                );
+                // 快速缓存：同步 SessionIndex（UI 列表 / O(1) 查询用）
                 crate::session_index::SessionIndex::set_model(&sid, &provider, &model_id);
                 // SettingsChanged 事件
                 crate::file_snapshot::approval::emit_public_event(

@@ -4688,16 +4688,35 @@ async fn do_create_session(
         .get("provider")
         .and_then(|v| v.as_str())
         .map(String::from);
-    // 参数没指定 model → 查 SessionIndex（用户 set_model 过的会话，
-    // ensure_worker / auto-create 重建 worker 时应保持用户选的模型，
-    // 而不是重置为默认值——治"切 4.7 → 刷新 → 变回 5.2"）
+    // 参数没指定 model → 从 session JSONL 读最后的 model_change（权威源），
+    // JSONL 没有 → fallback SessionIndex（快速缓存）
+    // 治"切 4.7 → 刷新/回收 → worker 重建变回默认 5.2"
     if cfg.model.is_none() || cfg.model.as_deref() == Some("") {
-        let index = ion::session_index::SessionIndex::load();
-        if let Some(meta) = index.get(&session_id)
-            && !meta.model.is_empty()
-        {
-            cfg.model = Some(meta.model.clone());
-            cfg.provider = Some(meta.provider.clone());
+        if let Some(entries) = load_session_entries(&session_id) {
+            // 倒序找最后一个 model_change
+            for e in entries.iter().rev() {
+                if e.get("type").and_then(|v| v.as_str()) == Some("model_change")
+                    && let Some(data) = e.get("data")
+                {
+                    let m = data.get("modelId").and_then(|v| v.as_str()).unwrap_or("");
+                    let p = data.get("provider").and_then(|v| v.as_str()).unwrap_or("");
+                    if !m.is_empty() {
+                        cfg.model = Some(m.to_string());
+                        cfg.provider = Some(p.to_string());
+                        break;
+                    }
+                }
+            }
+        }
+        // fallback：SessionIndex
+        if cfg.model.is_none() || cfg.model.as_deref() == Some("") {
+            let index = ion::session_index::SessionIndex::load();
+            if let Some(meta) = index.get(&session_id)
+                && !meta.model.is_empty()
+            {
+                cfg.model = Some(meta.model.clone());
+                cfg.provider = Some(meta.provider.clone());
+            }
         }
     }
     // Mark as Child relation so the worker uses an INDEPENDENT session file
