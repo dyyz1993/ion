@@ -26,3 +26,10 @@ output/
 
 # dashboard/web 是纯静态网关，无依赖，不需要 node_modules
 dashboard/web/node_modules/
+
+# 本地实验/原型（不属于 ion 内核）
+.playwright-mcp/
+codex-ui/
+ion-orbit-ui/
+plane.html
+snake.html
