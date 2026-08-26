@@ -6359,7 +6359,34 @@ async fn handle_manager_command_write(
         }
         // 对外 API：列出所有磁盘 session（带血缘字段，从 index 读）
         "list_all_sessions" => {
-            let index = ion::session_index::SessionIndex::load();
+            let mut index = ion::session_index::SessionIndex::load();
+            // 懒修复：messageCount=0 但有轮次的会话，用 FileIndex 快速重算
+            let mut healed = 0;
+            let ids_to_heal: Vec<String> = index
+                .sessions
+                .iter()
+                .filter(|(_, m)| m.message_count == 0 && m.turn_count > 0)
+                .map(|(id, _)| id.clone())
+                .collect();
+            for sid in ids_to_heal {
+                if let Some(path) = resolve_session_path(&sid)
+                    && let Some(idx) = get_file_index(&path)
+                {
+                    let real_count = idx.live_total as u32;
+                    if real_count > 0 {
+                        // 直接改内存实例（不用 patch_meta——它内部独立 load/save，
+                        // 会被外层 index.save() 用旧数据覆盖）
+                        if let Some(m) = index.sessions.get_mut(&sid) {
+                            m.message_count = real_count;
+                        }
+                        healed += 1;
+                    }
+                }
+            }
+            if healed > 0 {
+                index.save();
+                tracing::info!("[list_all_sessions] healed messageCount for {} sessions", healed);
+            }
             let sessions: Vec<_> = index
                 .sessions
                 .iter()
