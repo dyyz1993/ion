@@ -1735,6 +1735,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     .unwrap_or(&provider);
                 model_id = new_model.to_string();
                 provider = new_provider.to_string();
+                // 同步到 SessionIndex（否则 worker 空闲后 get_session_info
+                // 从索引合成会返回旧模型——实测切 4.7 → agent 跑完变回 5.2）
+                crate::session_index::SessionIndex::set_model(&sid, &provider, &model_id);
                 // SettingsChanged 事件
                 crate::file_snapshot::approval::emit_public_event(
                     "SettingsChanged",
