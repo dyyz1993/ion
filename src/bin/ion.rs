@@ -4688,7 +4688,7 @@ async fn do_create_session(
     // 同一 session（实测 31ms 两份 worker → 事件双倍推送）。已存在 ⇒ 直接复用；
     // 有人正在建 ⇒ 等它完成再复用；只有真正无人建时才往下走。
     eprintln!("[create_session] guard enter sid={session_id}");
-    for _ in 0..15 {
+    for _ in 0..50 {   // 10s 上限：冷启动 spawn 可能 >3s，3s 就回落会双开
         {
             let reg = registry.lock();
             let exists = reg.workers.values().any(|w| w.session_id == session_id);
@@ -4703,6 +4703,13 @@ async fn do_create_session(
             }
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // 等待兜底：占坑者可能已建成（慢 spawn）→ 复用而非自己也建一份
+        let reg = registry.lock();
+        if reg.workers.values().any(|w| w.session_id == session_id) {
+            drop(reg);
+            tracing::info!("[create_session] slow-spawn wait: reuse existing {session_id}");
+            return Ok(session_id);
+        }
     }
     // 确保退出时释放占坑（含错误路径）；存副本避免与结尾 move 冲突。
     // 用 'static 集合而非 registry 字段：registry.lock() 的临时 MutexGuard 非 Send，
