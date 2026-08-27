@@ -835,7 +835,9 @@ mod tests {
         // 写入的 ts_000001/ts_000002... 之前，否则 .last() 会误取 session
         // start 作为"最新"step（这是 Linux CI 上同秒写入导致 flaky 的根因）。
         let step = tree_store::StepSnapshot {
-            session_id: String::new(),
+            // 新语义（df2e5bb 按会话过滤基线）：快照必须归属当前 storage.session_id
+            // （"approval_test"）才参与基线解析；空串在新过滤条件下永不匹配
+            session_id: "approval_test".into(),
             turn_id: "ts_000000".into(),
             baseline_tree_hash: baseline_hash.clone(),
             snapshot_tree_hash: baseline_hash.clone(), // session start 无变更
@@ -884,7 +886,9 @@ mod tests {
 
         let seq = SEQ.fetch_add(1, Ordering::SeqCst);
         let step = tree_store::StepSnapshot {
-            session_id: String::new(),
+            // 新语义（df2e5bb 按会话过滤基线）：快照必须归属当前 storage.session_id
+            // （"approval_test"）才参与基线解析；空串在新过滤条件下永不匹配
+            session_id: "approval_test".into(),
             turn_id: format!("ts_{:06}", seq),
             baseline_tree_hash: baseline,
             snapshot_tree_hash: hash.clone(),
