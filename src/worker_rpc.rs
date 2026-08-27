@@ -7338,6 +7338,7 @@ fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
             saved_msg_count,
             msgs.len() - live_msg_count
         );
+
         // 重放保护：复活 worker 会把内存里 replay 的历史以当前时间戳整段重写
         // （实测 66 条污染，user/assistant ts 全变成保存时刻，树窗口全乱）。
         // 判定：尾巴首条 user 消息的文本已在磁盘上存在 → 视为重放，整段丢弃。
@@ -7408,6 +7409,67 @@ fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
     };
 
     if new_msgs.is_empty() {
+        return;
+    }
+
+    // 内容签名去重：磁盘上已有相同文本（前120字符）的 user/assistant → 跳过该条
+    // （治"同一消息反复落盘"：每发一条消息被重复写入 N 次，实测 11 条重复 user）
+    let disk_sigs: Vec<String> = all_entries
+        .iter()
+        .filter_map(|e| {
+            let m = e.get("message")?;
+            let c = if let Some(u) = m.get("User") {
+                u.get("content")
+            } else if let Some(a) = m.get("Assistant") {
+                a.get("content")
+            } else {
+                return None;
+            };
+            if let Some(t) = c.and_then(|v| v.as_str()) {
+                return Some(t.chars().take(120).collect::<String>());
+            }
+            c.and_then(|v| v.as_array()).and_then(|arr| {
+                arr.iter().find_map(|b| {
+                    b.get("Text")
+                        .and_then(|t| t.get("text"))
+                        .and_then(|t| t.as_str())
+                        .map(|t| t.chars().take(120).collect::<String>())
+                })
+            })
+        })
+        .collect();
+    let deduped: Vec<serde_json::Value> = new_msgs
+        .iter()
+        .filter(|m| {
+            let c = m.get("content");
+            let sig = if let Some(t) = c.and_then(|v| v.as_str()) {
+                Some(t.chars().take(120).collect::<String>())
+            } else {
+                c.and_then(|v| v.as_array()).and_then(|arr| {
+                    arr.iter().find_map(|b| {
+                        b.get("Text")
+                            .and_then(|t| t.get("text"))
+                            .and_then(|t| t.as_str())
+                            .map(|t| t.chars().take(120).collect::<String>())
+                    })
+                })
+            };
+            match sig {
+                Some(sig) if !sig.is_empty() && disk_sigs.contains(&sig) => {
+                    eprintln!(
+                        "[save-debug] DUPLICATE content skipped: {}",
+                        &sig[..sig.len().min(40)]
+                    );
+                    false
+                }
+                _ => true,
+            }
+        })
+        .cloned()
+        .collect();
+    let new_msgs = &deduped;
+    if new_msgs.is_empty() {
+        eprintln!("[save-debug] all new msgs are duplicates, skipping write");
         return;
     }
 
