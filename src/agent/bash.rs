@@ -717,13 +717,23 @@ impl BashManageTool {
                 if os_pid == 0 {
                     return serde_json::json!({"error": "no OS PID"});
                 }
-                // kill 整个进程组（负 PID = kill -- -$PGID）
+                // kill 整个进程组（负 PID）。
+                // ⚠️ 必须显式给信号（"-9 -PGID"）：BSD /bin/kill 会把裸的 "-75833"
+                // 解析成信号名 → 组杀恒败 → 兜底只杀了 sh、孙进程成孤儿继续跑
                 let pgid_arg = format!("-{}", os_pid);
-                let killed = std::process::Command::new("kill")
-                    .args([&pgid_arg])
+                let mut killed = std::process::Command::new("kill")
+                    .args(["-9", &pgid_arg])
                     .output()
                     .map(|o| o.status.success())
                     .unwrap_or(false);
+                if !killed {
+                    let opid = os_pid.to_string();
+                    killed = std::process::Command::new("kill")
+                        .args(["-9", &opid])
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false);
+                }
                 if killed {
                     let mut map = self.process_map.lock().await;
                     if let Some(info) = map.get_mut(&pid) {
@@ -1028,13 +1038,23 @@ impl Extension for BashExtension {
                 if os_pid == 0 {
                     return Ok(serde_json::json!({"error": "no OS PID"}));
                 }
-                // kill 整个进程组（负 PID = kill -- -$PGID）
+                // kill 整个进程组（负 PID）。
+                // ⚠️ 必须显式给信号（"-9 -PGID"）：BSD /bin/kill 会把裸的 "-75833"
+                // 解析成信号名 → 组杀恒败 → 兜底只杀了 sh、孙进程成孤儿继续跑
                 let pgid_arg = format!("-{}", os_pid);
-                let killed = std::process::Command::new("kill")
-                    .args([&pgid_arg])
+                let mut killed = std::process::Command::new("kill")
+                    .args(["-9", &pgid_arg])
                     .output()
                     .map(|o| o.status.success())
                     .unwrap_or(false);
+                if !killed {
+                    let opid = os_pid.to_string();
+                    killed = std::process::Command::new("kill")
+                        .args(["-9", &opid])
+                        .output()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false);
+                }
                 if killed {
                     let mut map = self.process_map.lock().await;
                     if let Some(info) = map.get_mut(&pid) {
