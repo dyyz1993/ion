@@ -47,6 +47,11 @@ const ABORT_THRESHOLD: u32 = 5;
 /// Max consecutive identical tool calls with errors before aborting.
 const ERROR_ABORT_THRESHOLD: u32 = 2;
 
+/// Max CUMULATIVE identical calls per run (non-consecutive counts too).
+/// 模型在重复调用间夹其他工具即可绕过连续口径——累计口径兜底
+/// （2026-08-27 实测：同一语法校验命令 9 分钟 21 次，每次夹别的调用不连续）。
+const CUMULATIVE_WARN_THRESHOLD: u32 = 8;
+
 /// Tool Loop Detector extension.
 pub struct ToolLoopDetector {
     /// Recent tool-call signatures (ring buffer, last 10).
@@ -55,6 +60,10 @@ pub struct ToolLoopDetector {
     consecutive: Arc<Mutex<u32>>,
     /// Current signature being tracked.
     current_sig: Arc<Mutex<Option<String>>>,
+    /// Cumulative per-run counts by signature（累计口径，跨非连续调用）。
+    cumulative: Arc<Mutex<std::collections::HashMap<String, u32>>>,
+    /// Whether the cumulative warning was already injected for a signature.
+    cumulative_warned: Arc<Mutex<std::collections::HashSet<String>>>,
     name: String,
 }
 
@@ -63,6 +72,8 @@ impl ToolLoopDetector {
         Self {
             history: Arc::new(Mutex::new(VecDeque::with_capacity(10))),
             consecutive: Arc::new(Mutex::new(0)),
+            cumulative: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            cumulative_warned: Arc::new(Mutex::new(std::collections::HashSet::new())),
             current_sig: Arc::new(Mutex::new(None)),
             name: "tool-loop-detector".into(),
         }
@@ -156,6 +167,30 @@ impl Extension for ToolLoopDetector {
         }
 
         let count = *consecutive;
+
+        // ── 累计口径：同签名（含非连续）≥ CUMULATIVE_WARN_THRESHOLD → 注入一次性提醒 ──
+        {
+            let mut cum = self.cumulative.lock().await;
+            let c = cum.entry(sig.clone()).or_insert(0);
+            *c += 1;
+            let cum_count = *c;
+            drop(cum);
+            if cum_count >= CUMULATIVE_WARN_THRESHOLD {
+                let mut warned = self.cumulative_warned.lock().await;
+                if !warned.contains(&sig) {
+                    warned.insert(sig.clone());
+                    tracing::warn!(
+                        "[loop-detector] CUMULATIVE: '{}' has run {} times this session (non-consecutive counts too). Suggest a different approach.",
+                        ctx.tool_name, cum_count
+                    );
+                    // 注入一次性工具错误提醒（不中止；模型收到后通常自行换策略）
+                    return Err(crate::agent::error::AgentError::Tool(format!(
+                        "Note: '{}' has already been called {} times in this session with the same arguments.                          If you are re-verifying unchanged state, rely on earlier results instead of re-running.",
+                        ctx.tool_name, cum_count
+                    )));
+                }
+            }
+        }
 
         if count >= ABORT_THRESHOLD {
             tracing::error!(
