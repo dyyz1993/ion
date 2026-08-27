@@ -22,7 +22,13 @@ pass(){ green "  ✅ $1"; ((PASS++)); }
 fail(){ red "  ❌ $1"; ((FAIL++)); }
 
 ION_BIN="$PROJECT_DIR/target/debug/ion"
-DB_PATH="$HOME/.ion/agent/global-memory.db"
+
+# ── 记忆库隔离（2026-08-27）：真实 LLM/蒸馏流程会把夹具写进全局记忆库，
+# 曾致用户真实库 663 条测试垃圾被迫全量归档。ION_HOME 重定向到临时目录，
+# db_path() 已支持该覆盖；独立 socket 确保起的是本脚本的隔离 host。
+export ION_HOME="${ION_HOME:-$(mktemp -d /tmp/ion-mem-home-XXXXXX)}"
+export ION_HOST_SOCKET="${ION_HOST_SOCKET:-/tmp/ion_mem_ci_$$.sock}"
+DB_PATH="$ION_HOME/agent/global-memory.db"   # 隔离（ION_HOME 已在上方导出）
 
 echo "══════════════════════════════════════════════════════"
 echo "  Memory V0.2 会话加工 CI — $(date)"

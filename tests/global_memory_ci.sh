@@ -24,29 +24,31 @@ fail(){ red "❌ FAIL: $1"; ((FAIL++)); }
 
 ION_BIN="$PROJECT_DIR/target/debug/ion"
 
+# ── 记忆库隔离（2026-08-27）：真实 LLM/蒸馏流程会把夹具写进全局记忆库，
+# 曾致用户真实库 663 条测试垃圾被迫全量归档。ION_HOME 重定向到临时目录，
+# db_path() 已支持该覆盖；独立 socket 确保起的是本脚本的隔离 host。
+export ION_HOME="${ION_HOME:-$(mktemp -d /tmp/ion-mem-home-XXXXXX)}"
+export ION_HOST_SOCKET="${ION_HOST_SOCKET:-/tmp/ion_mem_ci_$$.sock}"
+
 echo "── Phase 0: Build ──"
 cargo build --bin ion 2>&1 | tail -2
 
-# 清理旧数据
-rm -f ~/.ion/agent/global-memory.db
+# 清理旧数据（隔离 ION_HOME 路径，禁碰真实库——曾硬编码真实路径把用户库 rm 成 0 字节）
+MEM_DB="$ION_HOME/agent/global-memory.db"
+rm -f "$MEM_DB"
 
-# 如果已有 host 在跑，复用它；否则起新的
-if ! "$ION_BIN" rpc --method list_sessions 2>/dev/null | grep -q "sessions"; then
-    lsof -ti "${ION_HOST_SOCKET:-$HOME/.ion/host.sock}" 2>/dev/null | xargs kill 2>/dev/null; sleep 1
-    timeout 60 "$ION_BIN" serve >/tmp/mem-serve.log 2>&1 &
-    SERVE_PID=$!
-    sleep 4
-    echo "  (started new host PID=$SERVE_PID)"
-else
-    SERVE_PID=""
-    echo "  (reusing existing host)"
-fi
+# 隔离 socket 独立 → 必然无 host，自起隔离 host（不能复用外面的：它连的是真实库）
+lsof -ti "$ION_HOST_SOCKET" 2>/dev/null | xargs kill 2>/dev/null; sleep 1
+timeout 60 "$ION_BIN" serve >/tmp/mem-serve.log 2>&1 &
+SERVE_PID=$!
+sleep 4
+echo "  (started isolated host PID=$SERVE_PID, ION_HOME=$ION_HOME)"
 
 echo ""
 echo "── Group A: 单例生命周期 ──"
 
-# A1: DB 创建（on_singleton_init 触发）
-if [ -f ~/.ion/agent/global-memory.db ]; then
+# A1: DB 创建（on_singleton_init 触发；隔离路径）
+if [ -f "$MEM_DB" ]; then
     pass "A1 global-memory.db 创建（on_singleton_init）"
 else
     fail "A1 global-memory.db 创建"

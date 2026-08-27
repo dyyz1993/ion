@@ -356,7 +356,15 @@ impl GlobalMemoryStore {
     }
 
     /// 获取全局记忆库路径
+    /// ⚠️ 支持 ION_HOME 覆盖（对齐 paths.rs 约定）：真实 LLM 的 memory e2e/evolve
+    /// 测试必须设 ION_HOME=临时目录隔离，否则会污染用户真实记忆库
+    /// （实测 2026-08-27：663 条测试夹具写进真实库，被迫全量归档清理）。
     pub fn db_path() -> PathBuf {
+        if let Ok(ion_home) = std::env::var("ION_HOME")
+            && !ion_home.is_empty()
+        {
+            return PathBuf::from(ion_home).join("agent").join("global-memory.db");
+        }
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| ".".into());
@@ -366,10 +374,18 @@ impl GlobalMemoryStore {
     /// 从 V0.1 JSON 文件自动迁移到 SQLite。
     /// 扫描所有 project-data/*/memory/outlines/*.json，导入到全局库。
     /// 只在 DB 空时执行（避免重复导入）。
+    /// ⚠️ 空的判定必须含归档行：list() 只回活跃行，全归档的库会被误判空
+    /// → 每次 restart 从 V0.1 JSON 重复导回 711 条测试夹具（2026-08-27 实测）。
     pub fn migrate_from_v01(&self) -> Result<usize, String> {
-        // 如果 DB 已有数据，跳过
-        if !self.list(None)?.is_empty() {
-            tracing::info!("[global-memory] db has data, skip migration");
+        // 如果 DB 已有任何行（含归档），跳过
+        let total_rows: i64 = self
+            .conn
+            .lock()
+            .map_err(|e| e.to_string())?
+            .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if total_rows > 0 {
+            tracing::info!("[global-memory] db has {total_rows} rows (incl archived), skip migration");
             return Ok(0);
         }
         let home = std::env::var("HOME")
