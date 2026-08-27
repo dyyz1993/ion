@@ -33,3 +33,4 @@ codex-ui/
 ion-orbit-ui/
 plane.html
 snake.html
+tests/*.png
