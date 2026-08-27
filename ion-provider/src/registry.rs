@@ -239,6 +239,19 @@ impl ModelRegistry {
                                         }
                                         headers = Some(extra);
                                     }
+                                    // 模型能力位（["text"] / ["text","image"]）——
+                                    // ⚠️ 必须读 models.json 的 input 字段：视觉判定
+                                    // （transform_messages 按 input 含 "image" 决定保留还是
+                                    // 占位替换）全靠它；曾硬编码 ["text"] 导致视觉全废
+                                    let input: Vec<String> = m
+                                        .get("input")
+                                        .and_then(|v| v.as_array())
+                                        .map(|a| {
+                                            a.iter()
+                                                .filter_map(|x| x.as_str().map(String::from))
+                                                .collect()
+                                        })
+                                        .unwrap_or_else(|| vec!["text".into()]);
                                     self.register(Model {
                                         id: id.to_string(),
                                         name,
@@ -246,7 +259,7 @@ impl ModelRegistry {
                                         provider: provider_name.clone(),
                                         base_url: base_url.clone(),
                                         reasoning,
-                                        input: vec!["text".into()],
+                                        input,
                                         cost: Cost {
                                             input: cost_input,
                                             output: cost_output,

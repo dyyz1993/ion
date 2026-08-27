@@ -34,7 +34,9 @@ pub struct ThinkingContent {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImageContent {
-    pub data: String,      // base64
+    pub data: String, // base64
+    // pi 对齐：RPC 参数用 camelCase mimeType，内部统一 mime_type
+    #[serde(alias = "mimeType")]
     pub mime_type: String, // "image/jpeg" | "image/png"
 }
 

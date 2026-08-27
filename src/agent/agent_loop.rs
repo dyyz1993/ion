@@ -841,6 +841,15 @@ impl Agent {
     }
 
     pub async fn run(&mut self, prompt: impl Into<String>) -> AgentResult<()> {
+        self.run_with_images(prompt, Vec::new()).await
+    }
+
+    /// pi 对齐：prompt(input, images)——图片作为额外 ContentBlock 拼进 user 消息
+    pub async fn run_with_images(
+        &mut self,
+        prompt: impl Into<String>,
+        images: Vec<ion_provider::ImageContent>,
+    ) -> AgentResult<()> {
         self.running = true;
         self.stopped
             .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -888,12 +897,15 @@ impl Agent {
             if input_ctx.handled {
                 return Ok(());
             }
+            // 文本块 + 可选图片块（视觉输入，pi 对齐 prompt(input, images)）
+            let mut content: Vec<ContentBlock> = vec![ContentBlock::Text(TextContent {
+                text: input_ctx.text,
+                text_signature: None,
+            })];
+            content.extend(images.into_iter().map(ContentBlock::Image));
             self.messages.push(Message::User(UserMessage {
                 role: "user".into(),
-                content: vec![ContentBlock::Text(TextContent {
-                    text: input_ctx.text,
-                    text_signature: None,
-                })],
+                content,
                 timestamp: now_ms(),
                 source: ion_provider::types::MessageSource::Prompt,
             }));

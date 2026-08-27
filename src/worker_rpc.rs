@@ -1735,6 +1735,18 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     .unwrap_or(&provider);
                 model_id = new_model.to_string();
                 provider = new_provider.to_string();
+                // 运行时生效：按新 id 重解析完整 Model（含 input 视觉能力位/上下文窗口），
+                // 替换 agent.model——曾只改局部变量+持久层，agent.model 仍是启动时的旧
+                // Model，切到视觉模型后图片照样被占位符替换（transform 按 agent.model.input 判定）
+                match model_reg.find_model(&model_id).cloned() {
+                    Some(m) => agent.set_model(m),
+                    None => {
+                        let mut m = agent.model().clone();
+                        m.id = model_id.clone();
+                        m.provider = provider.clone();
+                        agent.set_model(m);
+                    }
+                }
                 // 权威记录：写 session JSONL（worker 重建时从这里读）
                 append_session_entry(
                     &worker_cwd,
@@ -1897,14 +1909,27 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     }
                 }
 
+                // 视觉输入（pi 对齐 prompt(input, images)：base64 图拼进 user 消息）
+                let images: Vec<ion_provider::ImageContent> = params
+                    .get("images")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| serde_json::from_value(x.clone()).ok())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
                 let mut skip = false;
                 if agent.is_running() && pbehavior == "steer" {
+                    let mut content = vec![ContentBlock::Text(TextContent {
+                        text: text.clone(),
+                        text_signature: None,
+                    })];
+                    content.extend(images.iter().cloned().map(ContentBlock::Image));
                     agent.steer(Message::User(UserMessage {
                         role: "user".into(),
-                        content: vec![ContentBlock::Text(TextContent {
-                            text: text.clone(),
-                            text_signature: None,
-                        })],
+                        content,
                         timestamp: now_ms(),
                         source: ion_provider::types::MessageSource::Steer,
                     }));
@@ -1915,12 +1940,14 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     );
                     skip = true;
                 } else if agent.is_running() && pbehavior == "followUp" {
+                    let mut content = vec![ContentBlock::Text(TextContent {
+                        text: text.clone(),
+                        text_signature: None,
+                    })];
+                    content.extend(images.iter().cloned().map(ContentBlock::Image));
                     agent.follow_up(Message::User(UserMessage {
                         role: "user".into(),
-                        content: vec![ContentBlock::Text(TextContent {
-                            text: text.clone(),
-                            text_signature: None,
-                        })],
+                        content,
                         timestamp: now_ms(),
                         source: ion_provider::types::MessageSource::FollowUp,
                     }));
@@ -1961,7 +1988,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         std::collections::VecDeque::new(),
                     ));
                     let run_result = {
-                        let mut run_fut = std::pin::pin!(agent.run(&text));
+                        let mut run_fut = std::pin::pin!(agent.run_with_images(&text, images.clone()));
                         loop {
                             tokio::select! {
                                 result = &mut run_fut => {
@@ -2216,13 +2243,15 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                                 behavior => {
                                                     let is_fu = behavior == "followUp";
                                                     if !ptext.is_empty() {
+                                                        let mut content = vec![ContentBlock::Text(TextContent {
+                                                            text: ptext,
+                                                            text_signature: None,
+                                                        })];
+                                                        content.extend(images.iter().cloned().map(ContentBlock::Image));
                                                         let _ = follow_up_tx.send((
                                                             Message::User(UserMessage {
                                                                 role: "user".into(),
-                                                                content: vec![ContentBlock::Text(TextContent {
-                                                                    text: ptext,
-                                                                    text_signature: None,
-                                                                })],
+                                                                content,
                                                                 timestamp: now_ms(),
                                                                 source: if is_fu {
                                                                     ion_provider::types::MessageSource::FollowUp
