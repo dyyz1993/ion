@@ -4306,6 +4306,15 @@ async fn read_worker_stdout(
                     .unwrap_or("");
 
                 match ev_type {
+                    // worker 初始化完成（扩展/工具注册就绪，agent 尚未跑任何 turn）：
+                    // 创建时预设的 Busy 在此解除为 Idle——否则无 run 的 worker 永远
+                    // 卡 Busy，get_messages 等 status 键控路径全部误拒（2026-08-27）
+                    "worker_ready" => {
+                        let mut reg = registry.lock();
+                        if let Some(record) = reg.workers.get_mut(&worker_id) {
+                            record.set_status(WorkerStatus::Idle);
+                        }
+                    }
                     "agent_end" => {
                         let mut reg = registry.lock();
                         if let Some(record) = reg.workers.get_mut(&worker_id) {

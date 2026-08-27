@@ -1271,6 +1271,17 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         }
     }
 
+    // 初始化完成信号：host stdout-reader 收到后把创建时预设的 Busy 解除为 Idle。
+    // 若缺失，无 run 的 worker 永远卡 Busy → get_session_messages 等被 status
+    // 键控的路径全部误拒（2026-08-27 gateway bootstrap busy-empty 空白根因）
+    println!(
+        "{}",
+        serde_json::json!({
+            "type": "event",
+            "event": {"type": "worker_ready"}
+        })
+    );
+
     while let Some(cmd) = stdin_rx.recv().await {
         let id = cmd
             .get("id")
@@ -2002,7 +2013,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                     let bg_params = bg_cmd.get("params").cloned().unwrap_or(serde_json::Value::Null);
                                     match bg_method.as_str() {
                                         // 只读磁盘的 RPC → 照常处理(agent.run 期间安全)
-                                        "list_turns" => {
+                                        "list_turns" | "list_session_turns" => {
                                             let full_content = bg_params.get("full_content").and_then(|v| v.as_bool()).unwrap_or(false);
                                             let limit = bg_params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(50);
                                             let entries: Vec<serde_json::Value> = crate::message_retrieval::load_entries_cached(&worker_cwd);
@@ -2026,7 +2037,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                                 "nextCursor": result.next_cursor,
                                             }));
                                         }
-                                        "get_messages" => {
+                                        // get_session_messages/list_session_turns 是同名旧命令的新名（host 直读拦截
+// 之外，带 --session 顶层转发的路径会落到这里）——必须同样放行，否则 Busy 状态
+// 下被 _ 兜底拒绝（2026-08-27：gateway bootstrap busy-empty 空白的根因）
+                                        "get_messages" | "get_session_messages" => {
                                             let view_str = bg_params.get("view").and_then(|v| v.as_str()).unwrap_or("live");
                                             let view = match view_str {
                                                 "since_compaction" => crate::message_retrieval::View::SinceCompaction,

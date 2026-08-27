@@ -4777,6 +4777,14 @@ async fn do_create_session(
         .and_then(|v| v.as_str())
         .map(String::from)
         .or_else(|| source.get("cwd").and_then(|v| v.as_str()).map(String::from))
+        // ⚠️ 复活必须回到原会话目录：网关/异目录调用不带 cwd 时，若落到调用方
+        // cwd 会生成空 <sid>.jsonl 副本 + 索引被指过去 → 历史直读解析到空文件，
+        // 会话"丢历史"（2026-08-27 实测 sess_5241fc3c 50 条 → 0）
+        .or_else(|| {
+            ion::session_index::SessionIndex::load()
+                .get(&session_id)
+                .and_then(|m| m.project.clone())
+        })
         .or_else(|| {
             std::env::current_dir()
                 .ok()
