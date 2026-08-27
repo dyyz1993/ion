@@ -4661,6 +4661,13 @@ async fn cmd_serve_status() {
 /// - `initial_prompt`（可选）
 ///
 /// 成功返回 session_id。
+/// do_create_session 的创建中集合（'static，独立于 registry 以保证 guard Send）
+fn creating_sessions_slot() -> &'static parking_lot::Mutex<std::collections::HashSet<String>> {
+    static SLOT: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    SLOT.get_or_init(|| parking_lot::Mutex::new(std::collections::HashSet::new()))
+}
+
 async fn do_create_session(
     registry: &std::sync::Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>>,
     source: &serde_json::Value,
@@ -4676,6 +4683,39 @@ async fn do_create_session(
         .and_then(|v| v.as_str())
         .map(String::from)
         .unwrap_or_else(|| format!("sess_{}", &uuid::Uuid::new_v4().to_string()[..8]));
+
+    // ── 幂等守卫（2026-08-27）：pump 复活与 bootstrap 自动建会在毫秒级竞态双开
+    // 同一 session（实测 31ms 两份 worker → 事件双倍推送）。已存在 ⇒ 直接复用；
+    // 有人正在建 ⇒ 等它完成再复用；只有真正无人建时才往下走。
+    eprintln!("[create_session] guard enter sid={session_id}");
+    for _ in 0..15 {
+        {
+            let reg = registry.lock();
+            let exists = reg.workers.values().any(|w| w.session_id == session_id);
+            if exists { eprintln!("[create_session] reuse existing {session_id}"); }
+            let occupied = !creating_sessions_slot().lock().insert(session_id.clone());
+            if exists {
+                tracing::info!("[create_session] reuse existing worker for {session_id}");
+                return Ok(session_id);
+            }
+            if !occupied {
+                break; // 抢到创建权
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    // 确保退出时释放占坑（含错误路径）；存副本避免与结尾 move 冲突。
+    // 用 'static 集合而非 registry 字段：registry.lock() 的临时 MutexGuard 非 Send，
+    // 会随 guard 跨 await 污染整个 future（E0505/'*mut ()' not Send）
+    let guard_sid: &'static str = Box::leak(session_id.clone().into_boxed_str());
+    struct CreatingGuard(&'static parking_lot::Mutex<std::collections::HashSet<String>>, &'static str);
+    impl Drop for CreatingGuard {
+        fn drop(&mut self) {
+            self.0.lock().remove(self.1);
+        }
+    }
+    let _guard = CreatingGuard(creating_sessions_slot(), guard_sid);
+
     let mut cfg = WorkerCreateConfig::default();
     cfg.session = Some(session_id.clone());
     cfg.agent = Some(agent);
