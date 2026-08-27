@@ -1532,7 +1532,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 );
             }
 
-            "get_messages" => {
+            // get_session_messages/list_session_turns：host 直读之外、带 --session
+            // 顶层转发的路径（网关 bootstrap 用）落在这里——空闲 worker 也必须
+            // 能从磁盘答历史，否则刷新进来空白（2026-08-28 用户实测）
+            "get_messages" | "get_session_messages" => {
                 // 解析分页参数
                 let view_str = params
                     .get("view")
@@ -1608,7 +1611,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 );
             }
 
-            "list_turns" => {
+            "list_turns" | "list_session_turns" => {
                 let full_content = params
                     .get("full_content")
                     .and_then(|v| v.as_bool())
