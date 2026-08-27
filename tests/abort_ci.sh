@@ -74,8 +74,14 @@ cleanup() {
     rm -f "$SOCK" 2>/dev/null
     [ -n "$TMP_PROJ_DIR" ] && [ -d "$TMP_PROJ_DIR" ] && rm -rf "$TMP_PROJ_DIR"
     # 清理测试可能留下的进程
-    pkill -f "sleep 30" 2>/dev/null
-    pkill -f "sleep 60" 2>/dev/null
+    # 只清我们自己的测试 sleep（跳过编辑器/grep 等包含 "sleep 30" 字样的进程）
+    # 仅终止本会话测试产生的 sleep（先快照再逐 PID 复核，TERM 而非 KILL）
+    for pid in $(pgrep -U "$UID" -fx "sleep 30" 2>/dev/null); do
+        [ "$(ps -p "$pid" -o command= 2>/dev/null)" = "sleep 30" ] && builtin kill "$pid" 2>/dev/null || true
+    done
+    for pid in $(pgrep -U "$UID" -fx "sleep 60" 2>/dev/null); do
+        [ "$(ps -p "$pid" -o command= 2>/dev/null)" = "sleep 60" ] && builtin kill "$pid" 2>/dev/null || true
+    done
     if [ -n "$CONFIG_BACKUP" ] && [ -f "$CONFIG_BACKUP" ]; then
         mv "$CONFIG_BACKUP" "$CONFIG_FILE"
     fi
@@ -175,7 +181,7 @@ else
     # 注意：用 PID 精确检测，不用 pgrep（并行 CI 环境下 pgrep 会检测到其他 CI 的 sleep）
     sleep 1  # 给 OS 一点时间清理
     # 检测我们自己的 host 进程树里是否还有 sleep 30
-    OUR_SLEEP=$(pgrep -f "sleep 30" 2>/dev/null | while read pid; do
+    OUR_SLEEP=$(pgrep -U "$UID" -fx "sleep 30" 2>/dev/null | while read pid; do
         # 检查这个 sleep 的父进程链是否属于我们的 host
         ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
         if [ -n "$ppid" ] && kill -0 "$HOST_PID" 2>/dev/null; then
@@ -224,7 +230,7 @@ os.execvp('sh', ['sh', '-c', 'sleep 33 & sleep 33 & sleep 33 & wait'])
 sleep 1
 
 # 数当前测试产生的进程树（用 sleep 33 精确匹配）
-BEFORE_TREE=$(pgrep -f "sleep 33" 2>/dev/null | wc -l | tr -d ' ')
+BEFORE_TREE=$(pgrep -U "$UID" -fx "sleep 33" 2>/dev/null | wc -l | tr -d ' ')
 echo "  [debug] 父 PID=$PARENT_PID, sleep 33 进程数=$BEFORE_TREE"
 
 # 用 ion 等价的 kill_process_tree：先 SIGTERM 整个进程组，2s 后 SIGKILL
@@ -234,7 +240,7 @@ kill -KILL -$PARENT_PID 2>/dev/null
 sleep 1
 
 # 数残留（应该全清）
-AFTER_TREE=$(pgrep -f "sleep 33" 2>/dev/null | wc -l | tr -d ' ')
+AFTER_TREE=$(pgrep -U "$UID" -fx "sleep 33" 2>/dev/null | wc -l | tr -d ' ')
 if [ "${AFTER_TREE:-0}" -eq 0 ]; then
     pass "B1: kill -TERM/KILL -<pgid> 杀掉整个进程树（$BEFORE_TREE → 0）"
 else
@@ -242,7 +248,9 @@ else
 fi
 
 # 清理保险
-pkill -f "sleep 33" 2>/dev/null
+for pid in $(pgrep -U "$UID" -fx "sleep 33" 2>/dev/null); do
+    [ "$(ps -p "$pid" -o command= 2>/dev/null)" = "sleep 33" ] && builtin kill "$pid" 2>/dev/null || true
+done
 echo ""
 
 # ── Group C: HTTP abort 时延（修复 D）──

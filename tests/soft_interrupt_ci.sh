@@ -55,7 +55,9 @@ HOST_PID=""
 cleanup() {
     [ -n "$HOST_PID" ] && kill -9 "$HOST_PID" 2>/dev/null
     rm -f "$SOCK"
-    pkill -f "sleep 30" 2>/dev/null
+    for pid in $(pgrep -U "$UID" -fx "sleep 30" 2>/dev/null); do
+        [ "$(ps -p "$pid" -o command= 2>/dev/null)" = "sleep 30" ] && builtin kill "$pid" 2>/dev/null || true
+    done
     if [ -n "$CONFIG_BACKUP" ] && [ -f "$CONFIG_BACKUP" ]; then
         mv "$CONFIG_BACKUP" "$CONFIG_FILE"
     fi
@@ -121,7 +123,7 @@ fi
 
 # A2: 进程清理
 sleep 1
-LEFT=$(pgrep -f "sleep 30" 2>/dev/null | wc -l | tr -d ' ')
+LEFT=$(pgrep -U "$UID" -fx "sleep 30" 2>/dev/null | wc -l | tr -d ' ')
 if [ "${LEFT:-0}" -lt 2 ]; then
     pass "A2: bash sleep 30 已清理（残留=$$\{LEFT\}）"
 else

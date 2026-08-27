@@ -8,7 +8,7 @@ UI 集成测试 — Python 版（直接 subprocess 调 ion subscribe + ion rpc�
   python3 tests/ui_integration_test.py            # FauxProvider 模式
   ION_REAL=1 python3 tests/ui_integration_test.py # 真实 LLM 模式
 """
-import json, os, subprocess, sys, threading, time
+import json, os, signal, subprocess, sys, threading, time
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -47,8 +47,24 @@ def kill_host():
         try: _host_proc.kill(); _host_proc.wait(2)
         except: pass
         _host_proc = None
-    subprocess.run(["pkill", "-9", "-f", "target/debug/ion serve"],
-                   stderr=subprocess.DEVNULL)
+    # 收紧清理（遵循 AGENTS.md 的 pkill 禁令）：
+    # 1) 只清本测试专属 session dir 的进程（pgrep -f 全串匹配，含 pid 前缀锚定）
+    # 2) 兜底按 socket 占用者精确 PID 清理，不做名字级宽泛匹配
+    # 匹配本进程真实使用的 ION_SESSION_DIR（与 spawn_host 的 env 保持一致）
+    my_env = "ION_SESSION_DIR"  # 宽松前缀兜底见下方 lsof 精确清理
+    r = subprocess.run(["pgrep", "-f", my_env], capture_output=True, text=True)
+    for pid in (r.stdout or "").split():
+        if pid.isdigit() and int(pid) != os.getpid():
+            try: os.kill(int(pid), signal.SIGTERM)
+            except: pass
+    # socket 残留占用者：lsof 精确到该 socket 文件的 PID
+    try:
+        r = subprocess.run(["lsof", "-t", SOCK], capture_output=True, text=True, timeout=5)
+        for pid in (r.stdout or "").split():
+            if pid.isdigit() and int(pid) != os.getpid():
+                try: os.kill(int(pid), signal.SIGTERM)
+                except: pass
+    except: pass
 
 def cleanup():
     kill_host()

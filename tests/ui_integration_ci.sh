@@ -127,8 +127,13 @@ cleanup() {
         mv "$HOME/.pi/agent/models.json.bak_ui_test" "$HOME/.pi/agent/models.json" 2>/dev/null || true
     fi
     # 清理测试文件 + 任何残留的 sleep 30/10（仅匹配我们自己的测试 prompt）
-    pkill -9 -f "sleep 30" 2>/dev/null || true
-    pkill -9 -f "sleep 10" 2>/dev/null || true
+    for pid in $(pgrep -U "$UID" -fx "sleep 30" 2>/dev/null); do
+        [ "$(ps -p "$pid" -o command= 2>/dev/null)" = "sleep 30" ] && builtin kill "$pid" 2>/dev/null || true
+    done
+    for pid in $(pgrep -U "$UID" -fx "sleep 10" 2>/dev/null); do
+        [ "$(ps -p "$pid" -o command= 2>/dev/null)" = "sleep 10" ] && builtin kill "$pid" 2>/dev/null || true
+    done
+# 说明：fx = 完全匹配 "sleep 10" 命令行本身，不会波及任何其他进程
     rm -f /tmp/ui_test_*.txt /tmp/evt_ui_*.log /tmp/ion_ui_*.log /tmp/ion_ui_watchdog_*.log 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
@@ -279,7 +284,7 @@ if [ -x "$PROJECT_DIR/scripts/watchdog.sh" ] || [ -f "$PROJECT_DIR/scripts/watch
             if [ -f "$HOST_PID_FILE" ]; then
                 HOST_PID=$(cat "$HOST_PID_FILE" 2>/dev/null || echo "")
             fi
-            [ -z "$HOST_PID" ] && HOST_PID=$(pgrep -f "target/debug/ion serve" | head -1)
+            [ -z "$HOST_PID" ] && HOST_PID=$(pgrep -U "$UID" -fx "target/debug/ion serve" | head -1)
             WATCHDOG_OK=1
             break
         fi
@@ -363,13 +368,15 @@ fi
 sleep 2
 # 精确匹配：必须是 sleep 30（agent 在 bash 工具里跑的）
 # 过滤掉测试脚本自己 spawn 的 timeout 30 subscribe 之类
-SLEEP_COUNT=$(pgrep -f "^sleep 30$" 2>/dev/null | wc -l | tr -d ' ')
+SLEEP_COUNT=$(pgrep -U "$UID" -fx "sleep 30" 2>/dev/null | wc -l | tr -d ' ')
 if [ "${SLEEP_COUNT:-0}" -eq 0 ]; then
     pass "B2 (B): bash sleep 30 进程已清理（kill_process_tree 生效）"
 else
     fail "B2 (B): 仍有 $SLEEP_COUNT 个 sleep 30 残留"
     # 强制清理，避免污染后续
-    pkill -9 -f "^sleep 30$" 2>/dev/null || true
+    for pid in $(pgrep -U "$UID" -fx "sleep 30" 2>/dev/null); do
+        [ "$(ps -p "$pid" -o command= 2>/dev/null)" = "sleep 30" ] && builtin kill "$pid" 2>/dev/null || true
+    done
 fi
 
 # B3: HTTP 流式期间 abort < 2s + 无新 delta（修复 D）
@@ -462,7 +469,10 @@ for i in $(seq 1 60); do
 done
 kill -9 "$SUB_PID" 2>/dev/null || true
 # 兜底清理 sleep 10
-pkill -9 -f "^sleep 10$" 2>/dev/null || true
+for pid in $(pgrep -U "$UID" -fx "sleep 10" 2>/dev/null); do
+    [ "$(ps -p "$pid" -o command= 2>/dev/null)" = "sleep 10" ] && builtin kill "$pid" 2>/dev/null || true
+done
+# 说明：fx = 完全匹配 "sleep 10" 命令行本身，不会波及任何其他进程
 
 # C2: write 后立刻读 → 内容完整（修复 E 原子写）
 # 该测试需要 agent 真的调 write 工具。FauxProvider 注入确定的 write tool_call，
