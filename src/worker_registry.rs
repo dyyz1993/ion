@@ -1407,23 +1407,26 @@ impl WorkerRegistry {
                         "params": serde_json::json!({"text": prompt_text})
                     })
                 );
-                // 持短锁：take stdin + 标记 Busy
-                let stdin_opt = {
+                // 竞态安全取 stdin（撞车时短暂重试，避免 initial prompt 静默丢失）
+                let stdin_opt = match WorkerRegistry::acquire_stdin(
+                    &prompt_registry,
+                    &wid_for_prompt,
+                    std::time::Duration::from_secs(5),
+                )
+                .await
+                {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        tracing::warn!("[{wid_for_prompt}] acquire stdin for initial_prompt: {e}");
+                        None
+                    }
+                };
+                {
                     let mut reg = prompt_registry.lock();
-                    let stdin = match reg.workers.get_mut(&wid_for_prompt) {
-                        Some(record) => {
-                            record.stdin.take()
-                        }
-                        None => {
-                            tracing::warn!("[{wid_for_prompt}] not found for initial_prompt");
-                            return;
-                        }
-                    };
                     if let Some(record) = reg.workers.get_mut(&wid_for_prompt) {
                         record.set_status(WorkerStatus::Busy);
                     }
-                    stdin
-                }; // lock dropped
+                }
                 // 不持锁写 stdin（带 2s timeout，buffer 满不阻塞锁）
                 if let Some(mut stdin) = stdin_opt {
                     use tokio::io::AsyncWriteExt;
@@ -2537,6 +2540,36 @@ impl WorkerRegistry {
         }
     }
 
+    /// 竞态安全地取走 worker 的 stdin（有界等待）。
+    ///
+    /// stdin 是写互斥资源：旧实现在并发 send 撞车时 take 到 None 会**静默跳过写入**，
+    /// 命令进了黑洞（pending oneshot 已注册，但命令从未写进 worker stdin，
+    /// 永远等不到响应 → 网关侧 15s 超时，worker 全程健康）。
+    /// 写窗口是亚毫秒级单行 flush，重试几毫秒内必归还；超时则报错而非黑洞。
+    pub async fn acquire_stdin(
+        registry: &Arc<Mutex<Self>>,
+        worker_id: &str,
+        wait: std::time::Duration,
+    ) -> Result<tokio::process::ChildStdin, String> {
+        let deadline = std::time::Instant::now() + wait;
+        loop {
+            let taken = {
+                let mut reg = registry.lock();
+                match reg.workers.get_mut(worker_id) {
+                    Some(record) => record.stdin.take(),
+                    None => return Err(format!("worker not found: {worker_id}")),
+                }
+            }; // lock dropped
+            if let Some(stdin) = taken {
+                return Ok(stdin);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(format!("worker {worker_id} busy: stdin held by another send"));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+    }
+
     /// 线程安全的 send_to_worker：短暂持锁写 stdin + 注册 oneshot，然后放锁等响应。
     /// reader task 需要在锁外才能匹配 pending response，避免死锁。
     ///
@@ -2549,7 +2582,7 @@ impl WorkerRegistry {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
-        // Phase 1: 短锁 take stdin + 标记 Busy + 构造 req_id/line
+        // Phase 1: 构造 req_id/line，竞态安全地取 stdin（并发撞车时短暂重试而非静默跳过）
         let req_id = Uuid::new_v4().to_string()[..8].to_string();
         let line = serde_json::json!({
             "id": req_id,
@@ -2558,19 +2591,16 @@ impl WorkerRegistry {
         })
         .to_string();
         let write_line = format!("{line}\n");
-        let stdin_opt = {
+        let mut stdin = Self::acquire_stdin(registry, worker_id, std::time::Duration::from_secs(5)).await?;
+        // 标记 Busy（短锁）
+        {
             let mut reg = registry.lock();
-            let stdin = match reg.workers.get_mut(worker_id) {
-                Some(record) => record.stdin.take(),
-                None => return Err(format!("worker not found: {worker_id}")),
-            };
             if let Some(record) = reg.workers.get_mut(worker_id) {
                 record.set_status(WorkerStatus::Busy);
             }
-            stdin
-        }; // lock dropped
+        }
         // Phase 2: write stdin（不持锁）
-        if let Some(mut stdin) = stdin_opt {
+        {
             use tokio::io::AsyncWriteExt;
             let result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
                 stdin.write_all(write_line.as_bytes()).await?;
@@ -2799,11 +2829,24 @@ impl WorkerRegistry {
         };
         let sub_ids: Vec<String> = self.channels.get(channel).cloned().unwrap_or_default();
         // take stdins（sync，&mut self 借用在此 block 内结束）
+        // ⚠️ 竞态修复：stdin 可能正被并发 send 持有（take==None），旧实现直接跳过 = 消息静默丢失。
+        // 同步上下文用短自旋等待归还（写窗口亚毫秒级，50×1ms 上限）。
         let mut stdins: Vec<(String, tokio::process::ChildStdin)> = Vec::new();
         for sub_id in &sub_ids {
-            if let Some(record) = self.workers.get_mut(sub_id) {
-                if let Some(stdin) = record.stdin.take() {
-                    stdins.push((sub_id.clone(), stdin));
+            for attempt in 0..50 {
+                let taken = self.workers.get_mut(sub_id).and_then(|r| r.stdin.take());
+                match taken {
+                    Some(stdin) => {
+                        stdins.push((sub_id.clone(), stdin));
+                        break;
+                    }
+                    None => {
+                        if attempt == 49 {
+                            tracing::warn!("[channel_send] {sub_id}: stdin held by another send, msg dropped");
+                        } else {
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        }
+                    }
                 }
             }
         }
@@ -2856,15 +2899,13 @@ impl WorkerRegistry {
             reg.channel_send_prepare(channel, from, msg)
         };
         // Phase 2: take stdins（短锁，sync）
+        // ⚠️ 竞态修复：stdin 可能正被并发 send 持有（take==None），旧实现直接跳过 = 消息静默丢失。
+        // 异步上下文用 acquire_stdin 有界重试（写窗口亚毫秒级）。
         let mut stdins: Vec<(String, tokio::process::ChildStdin)> = Vec::new();
-        {
-            let mut reg = registry.lock();
-            for sub_id in &sub_ids {
-                if let Some(record) = reg.workers.get_mut(sub_id) {
-                    if let Some(stdin) = record.stdin.take() {
-                        stdins.push((sub_id.clone(), stdin));
-                    }
-                }
+        for sub_id in &sub_ids {
+            match Self::acquire_stdin(registry, sub_id, std::time::Duration::from_millis(500)).await {
+                Ok(stdin) => stdins.push((sub_id.clone(), stdin)),
+                Err(e) => tracing::warn!("[channel_send_arc] {sub_id}: {e}"),
             }
         }
         // Phase 3: write stdin（不持锁，async）
