@@ -2190,6 +2190,60 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                             }
                                             output_response(&bg_id, "follow_up", &serde_json::json!({"status":"queued","queue":"followUp"}));
                                         }
+                                        // prompt 运行中到达：按 behavior 活递——
+                                        // ⚠️ 不能走 pending_steer_queue（只在 run 结束后 drain →
+                                        // 注入已退出的 run，outer_loop 永远看不到，消息黑洞）。
+                                        // 直接写 agent 的 follow_up 通道：outer_loop 在每轮
+                                        // inner_loop 结束后 drain 该通道续跑下一轮
+                                        //（followUp → follow_up_queue → 新 turn；steer → steering 队列）。
+                                        "prompt" => {
+                                            let ptext = bg_params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                            let default_behavior = std::env::var("ION_PROMPT_BEHAVIOR")
+                                                .ok()
+                                                .filter(|s| matches!(s.as_str(), "interrupt" | "steer" | "followUp"))
+                                                .unwrap_or_else(|| "steer".to_string());
+                                            let pbehavior = bg_params
+                                                .get("behavior")
+                                                .or_else(|| bg_params.get("streamingBehavior"))
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or(&default_behavior);
+                                            match pbehavior {
+                                                "interrupt" => {
+                                                    stopped_handle.store(true, std::sync::atomic::Ordering::SeqCst);
+                                                    let _ = pause_tx_clone.send(true);
+                                                    output_response(&bg_id, "prompt", &serde_json::json!({"status":"interrupted"}));
+                                                }
+                                                behavior => {
+                                                    let is_fu = behavior == "followUp";
+                                                    if !ptext.is_empty() {
+                                                        let _ = follow_up_tx.send((
+                                                            Message::User(UserMessage {
+                                                                role: "user".into(),
+                                                                content: vec![ContentBlock::Text(TextContent {
+                                                                    text: ptext,
+                                                                    text_signature: None,
+                                                                })],
+                                                                timestamp: now_ms(),
+                                                                source: if is_fu {
+                                                                    ion_provider::types::MessageSource::FollowUp
+                                                                } else {
+                                                                    ion_provider::types::MessageSource::Steer
+                                                                },
+                                                            }),
+                                                            if is_fu { DeliverAs::FollowUp } else { DeliverAs::Steer },
+                                                        ));
+                                                    }
+                                                    output_response(
+                                                        &bg_id,
+                                                        "prompt",
+                                                        &serde_json::json!({
+                                                            "status":"queued",
+                                                            "queue": if is_fu { "followUp" } else { "steering" },
+                                                        }),
+                                                    );
+                                                }
+                                            }
+                                        }
                                         // prompt / 其他写类 → 返回 busy(agent 正在跑)
                                         _ => {
                                             output_response(&bg_id, &bg_method, &serde_json::json!({
