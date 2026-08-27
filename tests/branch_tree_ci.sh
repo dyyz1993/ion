@@ -92,6 +92,11 @@ N=$("$ION_BIN" rpc --method get_messages --params "{\"session\":\"$SID\"}" | jf 
 R=$("$ION_BIN" rpc --session "$SID" --method get_branches)
 [ "$(echo "$R" | jf '.data.main.current')" = "true" ]; check $? "D2 main.current=true (on trunk)"
 
+# D3 get_context_usage 磁盘回落：worker 内存为空时从会话文件估算（复活 worker 场景）
+R=$("$ION_BIN" rpc --session "$SID" --method get_context_usage --params '{}')
+MC=$(echo "$R" | jf '.data.messageCount')
+[ "$(echo "$R" | jf '.success')" = "true" ] && [ "$MC" -ge 4 ] && [ "$MC" -le 8 ]; check $? "D3 context usage disk fallback (messageCount=$MC in 4..8)"
+
 # E1 错误：缺 turnId
 R=$("$ION_BIN" rpc --session "$SID" --method fork --params '{}')
 [ "$(echo "$R" | jf '.success')" = "false" ] \

@@ -46,6 +46,14 @@ struct RawHead<'a> {
     target_ids: Option<&'a RawValue>,
     #[serde(borrow)]
     summary: Option<&'a str>,
+    /// leaf_pointer 的 leafId（Live 视点解析依赖；丢弃会导致 leaf 过滤失效走全量）
+    #[serde(rename = "leafId", borrow)]
+    leaf_id: Option<&'a str>,
+    /// label 的 targetId + label（named_branches / make_checkout 依赖）
+    #[serde(rename = "targetId", borrow)]
+    target_id: Option<&'a str>,
+    #[serde(borrow)]
+    label: Option<&'a str>,
 }
 
 fn head220(s: &str) -> String {
@@ -250,6 +258,10 @@ impl FileIndex {
         }
         self.file_len = new_len;
         self.mtime = meta.modified().ok();
+        // ⚠️ 必须重算 live 视点：append 可能带来 leaf_pointer（fork/checkout 落盘），
+        // 不重算则 live_message_idxs 停留在旧的全量序列 → fast path 绕过 leaf 过滤
+        // （实测 2026-08-25：checkout 后 get_messages 仍返回主干全量）。纯内存 O(n)，可接受。
+        self.precompute_live_view();
         true
     }
 
@@ -334,6 +346,17 @@ impl FileIndex {
         }
         if let Some(s) = &head.summary {
             meta["summary"] = serde_json::json!(s);
+        }
+        // 会话树字段透传：leafId / targetId / label（apply_view_filter 的 Live
+        // 视点与 named_branches 都在 metas 上工作，缺字段 = leaf 过滤失效）
+        if let Some(l) = &raw.leaf_id {
+            meta["leafId"] = serde_json::json!(l);
+        }
+        if let Some(t) = &raw.target_id {
+            meta["targetId"] = serde_json::json!(t);
+        }
+        if let Some(l) = &raw.label {
+            meta["label"] = serde_json::json!(l);
         }
         if !head.id.is_empty() {
             self.id_to_idx.insert(head.id.clone(), self.heads.len());

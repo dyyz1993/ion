@@ -3005,11 +3005,51 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         _ => None,
                     })
                     .unwrap_or((ctx_chars / 4) as u64);
+                // 复活 worker（重启后未跑新轮次）内存为空 → 回落磁盘估算：
+                // 统计会话文件活跃分支路径（有 leaf_pointer 时）或全部 message 的字符量。
+                // 否则 UI 刷新后水位显示 0% 误导（实测 2026-08-25）。
+                let (estimated_tokens, message_count) = if msgs.is_empty() {
+                    let entries = crate::message_retrieval::load_entries_cached(&worker_cwd);
+                    let path_ids: Option<std::collections::HashSet<String>> =
+                        crate::session_tree::resolve_current_leaf(&entries).map(|leaf| {
+                            let path = crate::session_tree::get_branch_path(&entries, &leaf);
+                            path.iter()
+                                .filter_map(|e| e.get("id").and_then(|v| v.as_str().map(String::from)))
+                                .collect()
+                        });
+                    let on_path: Vec<&serde_json::Value> = entries
+                        .iter()
+                        .filter(|e| {
+                            e.get("type").and_then(|v| v.as_str()) == Some("message")
+                                && path_ids
+                                    .as_ref()
+                                    .map(|ids| {
+                                        e.get("id")
+                                            .and_then(|v| v.as_str())
+                                            .map(|id| ids.contains(id))
+                                            .unwrap_or(false)
+                                    })
+                                    .unwrap_or(true)
+                        })
+                        .collect();
+                    let chars: usize = on_path
+                        .iter()
+                        .filter_map(|e| {
+                            e.get("message")
+                                .and_then(|m| m.get("content"))
+                                .and_then(|c| c.as_str())
+                                .map(|s| s.len())
+                        })
+                        .sum();
+                    ((chars / 4) as u64, on_path.len())
+                } else {
+                    (estimated_tokens, msgs.len())
+                };
                 output_response(
                     &id,
                     "get_context_usage",
                     &serde_json::json!({
-                        "messageCount": msgs.len(),
+                        "messageCount": message_count,
                         "estimatedTokens": estimated_tokens,
                         "contextWindow": context_window,
                         "usagePercent": if context_window > 0 { (estimated_tokens * 100 / context_window as u64) as u32 } else { 0 },
