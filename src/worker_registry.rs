@@ -157,6 +157,10 @@ pub struct WorkerRecord {
     pub channels: Vec<String>,
     pub parent: Option<String>,
     pub children: Vec<String>,
+    /// 异步委派完成通知：结束一轮真实工作（agent_end）时通知父 worker。
+    /// 仅 spawn_worker(wait=false) 且有 parent 的子 worker 为 true——
+    /// 同步等待（wait=true）的父已通过 await 拿到结果，再通知就重复。
+    pub notify_parent: bool,
     pub started_at: i64,
     pub last_heartbeat: i64,
     /// Worker 进入当前状态的时间戳（用于 Busy 超时判断、Stale 时间 GC）。
@@ -847,6 +851,8 @@ impl WorkerRegistry {
             channels: config.channels.clone().unwrap_or_default(),
             parent: config.parent.clone(),
             children: Vec::new(),
+            // 异步委派（wait=false）且有父 → agent_end 时通知父（同步父已 await 到结果）
+            notify_parent: config.parent.is_some() && config.wait == Some(false),
             started_at: now_ms(),
             last_heartbeat: now_ms(),
             status_since: now_ms(),
@@ -1079,6 +1085,8 @@ impl WorkerRegistry {
                             }
                             // ⚠️ 用独立 block 把 reg（parking_lot guard，不是 Send）的作用域限制在
                             // 同步代码段内——block 结束 reg 必然 drop，不会跨下面的 bus.lock().await。
+                            // 异步委派完成通知目标：agent_end 时填 (parent_wid, child_wid)
+                            let mut notify_target: Option<(String, String)> = None;
                             let (bus_clone, session_id_for_bus, need_overview_broadcast) = {
                                 let mut reg = sub_registry.lock();
                                 // 拿 EventBus 句柄（如果有），用于把 worker 事件广播到全局订阅者。
@@ -1129,6 +1137,16 @@ impl WorkerRegistry {
                                     if let Some(record) = reg.workers.get_mut(&sub_wid) {
                                         record.set_status(WorkerStatus::Idle);
                                     }
+                                    // 异步委派完成通知：仅 agent_end（abort 不通知），
+                                    // 且该子 worker 标记 notify_parent（wait=false 有父）
+                                    if ev_type == "agent_end" {
+                                        notify_target = reg
+                                            .workers
+                                            .get(&sub_wid)
+                                            .filter(|r| r.notify_parent)
+                                            .and_then(|r| r.parent.clone())
+                                            .map(|p| (p, sub_wid.clone()));
+                                    }
                                     need_overview_broadcast = true;
                                 } else if ev_type == "error" {
                                     // agent.run() 返回 Err 时 worker 发 error 事件（而非 agent_end）。
@@ -1177,6 +1195,75 @@ impl WorkerRegistry {
                                 tokio::spawn(async move {
                                     let mut r = rc.lock();
                                     r.broadcast_overview();
+                                });
+                            }
+                            // 异步委派完成通知：读子 worker 的最后回复，以 prompt 注入父
+                            // （父忙 → followUp 排队下一轮取用；父闲 → 唤醒开新一轮继续编排）。
+                            // 同步委派（wait=true）不走到这里——父已通过 await 拿到结果。
+                            if let Some((parent_wid, child_wid)) = notify_target
+                                && std::env::var("ION_CHILD_NOTIFY").ok().as_deref() != Some("0")
+                            {
+                                let rc = Arc::clone(&sub_registry);
+                                tokio::spawn(async move {
+// 子已 idle，RPC 立即返回最后一条 assistant 文本
+                                    let last = WorkerRegistry::send_async(
+                                        &rc,
+                                        &child_wid,
+                                        "get_last_assistant_text",
+                                        serde_json::json!({}),
+                                    )
+                                    .await
+                                    .ok()
+                                    .and_then(|v| v.as_str().map(String::from))
+                                    .unwrap_or_default();
+                                    let summary: String = last.chars().take(800).collect();
+                                    let summary = if summary.is_empty() {
+                                        "（无文本输出）".to_string()
+                                    } else {
+                                        summary
+                                    };
+                                    let notify = format!(
+                                        "【子任务完成】worker {} 已结束其任务。\n\n任务结果（最后回复）：\n{}",
+                                        child_wid, summary
+                                    );
+                                    // 父已死（被清理）就别注入了
+                                    // ⚠️ parent 字段存的是调用者的 session id（_from_worker），
+                                    // workers 表按 worker id 索引——先解析再检查/发送
+                                    let parent_wid = {
+                                        let reg = rc.lock();
+                                        reg.workers
+                                            .get(&parent_wid)
+                                            .map(|r| r.worker_id.clone())
+                                            .or_else(|| {
+                                                reg.workers
+                                                    .values()
+                                                    .find(|w| w.session_id == parent_wid)
+                                                    .map(|w| w.worker_id.clone())
+                                            })
+                                    };
+                                    let Some(parent_wid) = parent_wid else {
+                                        return;
+                                    };
+                                    let parent_alive = {
+                                        let reg = rc.lock();
+                                        reg.workers
+                                            .get(&parent_wid)
+                                            .map(|r| r.status != WorkerStatus::Dead)
+                                            .unwrap_or(false)
+                                    };
+                                    if !parent_alive {
+                                        return;
+                                    }
+                                    let _ = WorkerRegistry::send_async(
+                                        &rc,
+                                        &parent_wid,
+                                        "prompt",
+                                        serde_json::json!({
+                                            "text": notify,
+                                            "behavior": "followUp"
+                                        }),
+                                    )
+                                    .await;
                                 });
                             }
                             // 把 worker 事件广播到全局 EventBus，让 subscribe_all（无 session/extension）
@@ -1534,6 +1621,8 @@ impl WorkerRegistry {
             channels: config.channels.clone().unwrap_or_default(),
             parent: config.parent.clone(),
             children: Vec::new(),
+            // 异步委派（wait=false）且有父 → agent_end 时通知父（同步父已 await 到结果）
+            notify_parent: config.parent.is_some() && config.wait == Some(false),
             started_at: now_ms(),
             last_heartbeat: now_ms(),
             status_since: now_ms(),
@@ -1721,6 +1810,8 @@ impl WorkerRegistry {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
                             // ⚠️ 用独立 block 把 reg 作用域限制在同步代码段（parking_lot guard 不是 Send）。
+                            // 异步委派完成通知目标（泵2）：(parent_wid, child_wid, 末条输出预览)
+                            let mut notify_target: Option<(String, String, String)> = None;
                             let (bus_clone2, session_id_for_bus2, need_overview_broadcast) = {
                                 let mut reg = sub_registry.lock();
                                 let bus_clone2 = reg.event_bus.clone();
@@ -1760,6 +1851,30 @@ impl WorkerRegistry {
                                     && let Some(record) = reg.workers.get_mut(&sub_wid)
                                 {
                                     record.set_status(WorkerStatus::Idle);
+                                    if ev_type == "agent_end" {
+                                        // 末条输出预览取 latest_output 环形缓冲：
+                                        // spawn 子 worker 的会话不持久化对话（get_last RPC 读不到），
+                                        // 且 agent_end 瞬间就读内存也有竞态——泵里有锁时取最可靠
+                                        let preview = reg.workers.get(&sub_wid).map(|r| {
+                                            let joined = r
+                                                .latest_output
+                                                .iter()
+                                                .rev()
+                                                .take(3)
+                                                .rev()
+                                                .cloned()
+                                                .collect::<Vec<_>>()
+                                                .join("");
+                                            let t: String = joined.chars().take(400).collect();
+                                            t
+                                        }).unwrap_or_default();
+                                        notify_target = reg
+                                            .workers
+                                            .get(&sub_wid)
+                                            .filter(|r| r.notify_parent)
+                                            .and_then(|r| r.parent.clone())
+                                            .map(|p| (p, sub_wid.clone(), preview));
+                                    }
                                     need_overview_broadcast = true;
                                 }
                                 // agent.run() 返回 Err 时的兜底：error 事件也转 Idle，避免永久卡 Busy
@@ -1804,6 +1919,60 @@ impl WorkerRegistry {
                                     let mut r = rc.lock();
                                     r.broadcast_overview();
                                 });
+                            }
+                            // 异步委派完成通知（泵2，逻辑同泵1）
+                            if let Some((parent_wid, child_wid, preview)) = notify_target
+                                && std::env::var("ION_CHILD_NOTIFY").ok().as_deref() != Some("0")
+                            {
+                                let rc = Arc::clone(&sub_registry);
+                                tokio::spawn(async move {
+                                    let summary = if preview.is_empty() {
+                                        "（无文本输出）".to_string()
+                                    } else {
+                                        preview
+                                    };
+                                    let notify = format!(
+                                        "【子任务完成】worker {} 已结束其任务。\n\n任务结果（最后回复）：\n{}",
+                                        child_wid, summary
+                                    );
+                                    // ⚠️ parent 字段存的是 session id（_from_worker），workers 表
+                                    // 按 worker id 索引——先解析再检查/发送（曾查错键误判父已死）
+                                    let parent_wid_resolved = {
+                                        let reg = rc.lock();
+                                        reg.workers
+                                            .get(&parent_wid)
+                                            .map(|r| r.worker_id.clone())
+                                            .or_else(|| {
+                                                reg.workers
+                                                    .values()
+                                                    .find(|w| w.session_id == parent_wid)
+                                                    .map(|w| w.worker_id.clone())
+                                            })
+                                    };
+                                    let Some(parent_wid) = parent_wid_resolved else {
+                                        return;
+                                    };
+                                    let parent_alive = {
+                                        let reg = rc.lock();
+                                        reg.workers
+                                            .get(&parent_wid)
+                                            .map(|r| r.status != WorkerStatus::Dead)
+                                            .unwrap_or(false)
+                                    };
+                                    if !parent_alive {
+                                        return;
+                                    }
+                                    let sent = WorkerRegistry::send_async(
+                                        &rc,
+                                        &parent_wid,
+                                        "prompt",
+                                        serde_json::json!({
+                                            "text": notify,
+                                            "behavior": "followUp"
+                                        }),
+                                    )
+                                    .await;
+});
                             }
                             // 同 reader #1：广播 worker 事件到全局 EventBus，让 subscribe_all 也能收到
                             if let Some(bus) = bus_clone2
@@ -2396,6 +2565,7 @@ impl WorkerRegistry {
             max_turns: None,
             hook_depth: None,
             system_prompt_override: None,
+        wait: None,
         };
         // ⚠️ parking_lot: create_worker 持 &mut self + .await（spawn 等），
         // 不能持锁调用。改用 prepare + register 两阶段。
@@ -4527,6 +4697,11 @@ pub struct WorkerCreateConfig {
     /// Peer 模式下，汇报指令段会被追加到这个 prompt 末尾。
     #[serde(default)]
     pub initial_prompt: Option<String>,
+    /// spawn_worker 的同步/异步模式（bridge 的 wait 字段 serde 直通）。
+    /// true=同步（父阻塞收结果，completion 通知多余）；false=异步（父需要
+    /// agent_end 完成通知唤醒继续编排——见 stdout 泵 notify_parent 逻辑）。
+    #[serde(default)]
+    pub wait: Option<bool>,
     /// 子 Worker 的 MCP 跳过模式：
     /// - None / ""  → 不跳过（入口 Worker 持有全部 MCP 连接）
     /// - "1"        → 跳过全部 MCP（完全跳过）

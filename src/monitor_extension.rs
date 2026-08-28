@@ -900,6 +900,7 @@ impl Extension for MonitorExtension {
                                         max_turns: None,
                                         hook_depth: Some(0),
                                         system_prompt_override: None,
+                                    wait: None,
                                     };
                                     let info_result = match WorkerRegistry::prepare_worker_spawn(&cfg).await {
                                         Ok(prepared) => reg_for_spawn.lock().register_prepared_worker(prepared, &cfg, &reg_for_spawn_clone),
