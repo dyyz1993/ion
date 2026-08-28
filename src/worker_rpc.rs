@@ -437,7 +437,12 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(5),
-        max_retries: 30,
+        // LLM 失败重试次数（每次尝试自身有 180-300s 超时上限，8 provider 均有）。
+        // 30 次是为 zai 代理的 429 风暴兜底；代理长时间故障时可调小加快失败
+        max_retries: std::env::var("ION_LLM_MAX_RETRIES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30),
         retry_base_delay_ms: 1000,
         enable_compact: true,
         compact_config: CompactConfig::default(),

@@ -1148,6 +1148,24 @@ impl WorkerRegistry {
                                         record.set_status(WorkerStatus::Idle);
                                     }
                                     need_overview_broadcast = true;
+                                } else if ev_type == "extension_event" {
+                                    // SettingsChanged → 同步 record，让 /api/workers 的
+                                    // model 字段显示活值（曾只写 JSONL/索引，列表一直显示出生模型）
+                                    let ev = msg.get("event");
+                                    if ev.and_then(|e| e.get("customType")).and_then(|v| v.as_str())
+                                        == Some("SettingsChanged")
+                                    {
+                                        let data = ev.and_then(|e| e.get("data"));
+                                        let key = data.and_then(|d| d.get("key")).and_then(|v| v.as_str());
+                                        if key == Some("model") {
+                                            if let (Some(record), Some(v)) = (
+                                                reg.workers.get_mut(&sub_wid),
+                                                data.and_then(|d| d.get("value")).and_then(|v| v.as_str()),
+                                            ) {
+                                                record.model = v.to_string();
+                                            }
+                                        }
+                                    }
                                 }
                                 // reg 在 block 结束时自动 drop（parking_lot guard 不是 Send，
                                 // 不能跨 await 持有）。
@@ -1759,6 +1777,24 @@ impl WorkerRegistry {
                                     && let Some(record) = reg.workers.get_mut(&sub_wid)
                                 {
                                     record.set_status(WorkerStatus::Busy);
+                                }
+                                // SettingsChanged → 同步 record.model（与上一条 pump 路径同源，
+                                // 让 /api/workers 显示切模型后的活值）
+                                if ev_type == "extension_event" {
+                                    let ev = msg.get("event");
+                                    let data = ev.and_then(|e| e.get("data"));
+                                    if ev.and_then(|e| e.get("customType")).and_then(|v| v.as_str())
+                                        == Some("SettingsChanged")
+                                        && data.and_then(|d| d.get("key")).and_then(|v| v.as_str())
+                                            == Some("model")
+                                    {
+                                        if let (Some(record), Some(v)) = (
+                                            reg.workers.get_mut(&sub_wid),
+                                            data.and_then(|d| d.get("value")).and_then(|v| v.as_str()),
+                                        ) {
+                                            record.model = v.to_string();
+                                        }
+                                    }
                                 }
                                 (bus_clone2, session_id_for_bus2, need_overview_broadcast)
                             };
@@ -2517,7 +2553,11 @@ impl WorkerRegistry {
                 }
             }
         }
-        record.set_status(WorkerStatus::Busy);
+        // 仅工作类命令标 Busy（同 send_async：元数据轮询不改变状态显示）
+        const WORK_METHODS: [&str; 3] = ["prompt", "steer", "abort"];
+        if WORK_METHODS.contains(&method) {
+            record.set_status(WorkerStatus::Busy);
+        }
         Ok(req_id)
     }
 
@@ -2596,7 +2636,13 @@ impl WorkerRegistry {
         {
             let mut reg = registry.lock();
             if let Some(record) = reg.workers.get_mut(worker_id) {
-                record.set_status(WorkerStatus::Busy);
+                // ⚠️ 仅工作类命令标 Busy：UI 每 30s 轮询 get_session_info 等
+                // 元数据 RPC 若也标 Busy，状态点永远显示"忙碌"（agent_end 复位
+                // 后又被下一轮轮询刷回），排查时无法分辨谁在真干活。
+                const WORK_METHODS: [&str; 3] = ["prompt", "steer", "abort"];
+                if WORK_METHODS.contains(&method) {
+                    record.set_status(WorkerStatus::Busy);
+                }
             }
         }
         // Phase 2: write stdin（不持锁）
