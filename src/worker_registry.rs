@@ -260,7 +260,13 @@ impl WorkerRecord {
     /// 统一的状态变更入口：同步更新 status 和 status_since，并在转 Dead 时记录 died_at。
     /// 所有状态变更都应走这里，保证 status_since / died_at 不被遗忘。
     /// 注意：Dead 是终态，一旦 Dead 不再被覆盖（避免 GC 期间被误改回其他状态）。
+    /// 幂等：相同状态重复 set 直接跳过——否则 status_since 被重置，heartbeat 的
+    /// "Busy 超时"判断永远无法满足（LLM auto_retry 每轮发 agent_start → 泵重复
+    /// set Busy → 重试挂死的 worker 变成永生僵尸，2026-08-29 实测 26 只）。
     pub fn set_status(&mut self, new_status: WorkerStatus) {
+        if self.status == new_status {
+            return;
+        }
         if self.status != WorkerStatus::Dead && new_status == WorkerStatus::Dead {
             self.died_at = Some(now_ms());
         }

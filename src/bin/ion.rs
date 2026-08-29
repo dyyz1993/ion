@@ -5598,6 +5598,18 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                             record.set_status(ion::worker_registry::WorkerStatus::Dead);
                             changed = true;
                         }
+                        // 双保险：即便 status_since 被某条路径重置，只要 30 分钟
+                        // 没有任何输出活动（text/tool/心跳）也按僵死回收——
+                        // 真实在跑的任务必有流式产出持续刷新 last_heartbeat。
+                        else if now - record.last_heartbeat > 1_800_000 {
+                            tracing::warn!(
+                                "[heartbeat] worker {} Busy 但 {}s 无任何活动, marking Dead",
+                                record.worker_id,
+                                (now - record.last_heartbeat) / 1000
+                            );
+                            record.set_status(ion::worker_registry::WorkerStatus::Dead);
+                            changed = true;
+                        }
                     }
                     _ => {}
                 }
