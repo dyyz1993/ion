@@ -165,6 +165,11 @@ impl SessionIndex {
                 let _ = lock.lock_exclusive(); // 阻塞至拿到；进程退出自动释放
                 let mut idx = Self::load();
                 let out = f(&mut idx);
+                // 墓碑上限：防长期无限增长。超过 512 全清——能触发复活的
+                // stale writer（被删会话的 worker 收尾统计）在这个量级下早已消亡
+                if idx.removed_sessions.len() > 512 {
+                    idx.removed_sessions.clear();
+                }
                 idx.save();
                 let _ = lock.unlock();
                 let _ = lock.sync_all();
