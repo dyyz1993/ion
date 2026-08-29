@@ -4881,7 +4881,7 @@ async fn do_get_session_snapshot(
 }
 
 async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_workers: usize) {
-    use ion::worker_registry::WorkerRegistry;
+    use ion::worker_registry::{WorkerRegistry, WorkerStatus};
     use std::sync::Arc;
     use parking_lot::Mutex;
 
@@ -6602,7 +6602,56 @@ async fn handle_manager_command_write(
                 })).collect::<Vec<_>>(),
             }))
         }
-        // 对外 API：创建 session（自动 spawn worker，返回 session_id）
+        // 对外 API：删除 session（kill 关联 worker + 索引移除 + JSONL 删除）
+        "session_remove" => {
+            let params = cmd.get("params").cloned().unwrap_or_default();
+            let sid = params
+                .get("session_id")
+                .or_else(|| params.get("session"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if sid.is_empty() {
+                return Err("missing session_id".into());
+            }
+            // 先 kill 该会话的所有 worker（不删 worktree/分支——删会话≠删代码）。
+            // 忙碌 worker 直接终止：session_remove 语义就是"这个会话不要了"。
+            let mut killed_workers = 0;
+            {
+                let mut reg = registry.lock();
+                let targets: Vec<String> = reg
+                    .workers
+                    .values()
+                    .filter(|w| w.session_id == sid)
+                    .map(|w| w.worker_id.clone())
+                    .collect();
+                for wid in targets {
+                    if reg.kill_worker_inner(&wid, false, false).is_ok() {
+                        killed_workers += 1;
+                    }
+                }
+            }
+            // 索引移除
+            ion::session_index::SessionIndex::load().remove(&sid);
+            // JSONL 文件删除（所有项目目录下同名文件）
+            let mut removed_files = 0;
+            let sessions_root = ion::paths::root().join("agent/sessions");
+            if let Ok(read) = std::fs::read_dir(&sessions_root) {
+                for proj in read.flatten() {
+                    let target = proj.path().join(format!("{sid}.jsonl"));
+                    if target.exists() {
+                        let _ = std::fs::remove_file(&target);
+                        removed_files += 1;
+                    }
+                }
+            }
+            Ok(serde_json::json!({
+                "session": sid,
+                "killed_workers": killed_workers,
+                "removed_files": removed_files,
+                "status": "removed",
+            }))
+        }
         "create_session" => {
             // 兼容嵌套格式（RPC client）和扁平（stdin）
             let source = if cmd.get("params").map(|v| v.is_object()).unwrap_or(false) {
