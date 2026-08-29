@@ -76,14 +76,14 @@ pub struct WorkspaceSession {
 impl WorkspaceSession {
     /// 写入/更新索引中的工作空间字段（创建路径调用，status=ready）。
     pub fn upsert_index(&self) {
-        let mut idx = crate::session_index::SessionIndex::load();
-        idx.update_workspace(
-            &self.session_id,
-            Some(&self.branch),
-            Some(&self.workspace_path),
-            Some(self.status.as_str()),
-        );
-        idx.save();
+        crate::session_index::SessionIndex::write_txn(|idx| {
+            idx.update_workspace(
+                &self.session_id,
+                Some(&self.branch),
+                Some(&self.workspace_path),
+                Some(self.status.as_str()),
+            );
+        });
     }
 
     /// 从索引恢复（快照/刷新恢复路径调用）。索引无记录（非工作空间会话）返回 None。
@@ -122,9 +122,9 @@ impl WorkspaceSession {
 
     /// 更新状态到索引（关闭/失败路径调用）。
     pub fn set_status_index(session_id: &str, status: WorkspaceStatus) {
-        let mut idx = crate::session_index::SessionIndex::load();
-        idx.update_workspace(session_id, None, None, Some(status.as_str()));
-        idx.save();
+        crate::session_index::SessionIndex::write_txn(|idx| {
+            idx.update_workspace(session_id, None, None, Some(status.as_str()));
+        });
     }
 }
 

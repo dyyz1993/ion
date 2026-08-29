@@ -115,15 +115,14 @@ pub fn run_gc(config: &SessionGcConfig, active_cwd: &str) {
     }
 
     // Sync index: remove entries for deleted sessions.
+    // 写事务 + 墓碑：GC 删除同样不能被迟到的 patch 复活。
     if !deleted_sids.is_empty() {
-        let mut index = SessionIndex::load();
-        let before = index.len();
-        for sid in &deleted_sids {
-            index.remove(sid);
-        }
-        if index.len() != before {
-            index.save();
-        }
+        SessionIndex::write_txn(|index| {
+            for sid in &deleted_sids {
+                index.sessions.remove(sid);
+                index.removed_sessions.insert(sid.clone());
+            }
+        });
     }
 
     if total_deleted > 0 {

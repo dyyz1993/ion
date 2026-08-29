@@ -951,8 +951,11 @@ impl WorkerRegistry {
             } else {
                 (None, None)
             };
-            let mut idx = SessionIndex::load();
-            let meta = merge_existing_meta(
+            // 创建路径走写事务（防与并发 remove/patch 的旧快照写回互踩）；
+            // 之后的 set_tier_models 等是独立事务，勿并入（flock 嵌套自锁）
+            SessionIndex::write_txn(|idx| {
+                idx.removed_sessions.remove(&session_id);
+                let meta = merge_existing_meta(
                 &idx,
                 &session_id,
                 SessionMeta {
@@ -992,8 +995,8 @@ impl WorkerRegistry {
                     security_profile: None,
                 },
             );
-            idx.upsert(&session_id, meta);
-            idx.save();
+                idx.upsert(&session_id, meta);
+            });
             // 写 tier_models + security_profile 快照（创建时从全局 config 读）
             let cfg = crate::config::IonConfig::load();
             let tm = serde_json::to_value(&cfg.tier_models).unwrap_or(serde_json::Value::Null);
@@ -1704,8 +1707,11 @@ impl WorkerRegistry {
             } else {
                 (None, None)
             };
-            let mut idx = SessionIndex::load();
-            let meta = merge_existing_meta(
+            // 创建路径走写事务（防与并发 remove/patch 的旧快照写回互踩）；
+            // 之后的 set_tier_models 等是独立事务，勿并入（flock 嵌套自锁）
+            SessionIndex::write_txn(|idx| {
+                idx.removed_sessions.remove(&session_id);
+                let meta = merge_existing_meta(
                 &idx,
                 &session_id,
                 SessionMeta {
@@ -1745,8 +1751,8 @@ impl WorkerRegistry {
                     security_profile: None,
                 },
             );
-            idx.upsert(&session_id, meta);
-            idx.save();
+                idx.upsert(&session_id, meta);
+            });
             // tier_models + security_profile 快照
             let cfg = crate::config::IonConfig::load();
             let tm = serde_json::to_value(&cfg.tier_models).unwrap_or(serde_json::Value::Null);

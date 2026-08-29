@@ -124,6 +124,12 @@ impl SessionIndex {
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct SessionIndex {
     pub sessions: HashMap<String, SessionMeta>,
+    /// 墓碑：被 session_remove 显式删除的 sid。patch 类更新（patch_meta/
+    /// increment_turn_stats）看到墓碑直接跳过——否则 worker 退出前的收尾
+    /// 统计会把刚删的条目重建出来（2026-08-29 实测复活的根因之一）。
+    /// 显式 create（update）会清掉墓碑。
+    #[serde(default, skip_serializing_if = "std::collections::HashSet::is_empty")]
+    pub removed_sessions: std::collections::HashSet<String>,
 }
 
 impl SessionIndex {
@@ -137,18 +143,50 @@ impl SessionIndex {
             .join("sessions.index.json")
     }
 
+    fn lock_path() -> PathBuf {
+        Self::path().with_extension("json.lock")
+    }
+
+    /// 跨进程写事务：持排它 flock 期间 load→mutate→save。
+    /// 索引的写者分布在 host 与各 worker 进程（patch_meta/on_turn_end 等），
+    /// 各自独立 load→modify→save 会 last-write-wins 覆盖彼此——事务化后
+    /// 串行执行，读到的必然是最新状态。锁文件创建失败时退化为无锁路径保功能。
+    pub fn write_txn<F, R>(f: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        use fs2::FileExt;
+        let lp = Self::lock_path();
+        if let Some(parent) = lp.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match std::fs::File::create(&lp) {
+            Ok(lock) => {
+                let _ = lock.lock_exclusive(); // 阻塞至拿到；进程退出自动释放
+                let mut idx = Self::load();
+                let out = f(&mut idx);
+                idx.save();
+                let _ = lock.unlock();
+                let _ = lock.sync_all();
+                out
+            }
+            Err(_) => {
+                let mut idx = Self::load();
+                let out = f(&mut idx);
+                idx.save();
+                out
+            }
+        }
+    }
+
     pub fn load() -> Self {
         let path = Self::path();
         if !path.exists() {
-            return Self {
-                sessions: HashMap::new(),
-            };
+            return Self::default();
         }
         match std::fs::read_to_string(&path) {
             Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-            Err(_) => Self {
-                sessions: HashMap::new(),
-            },
+            Err(_) => Self::default(),
         }
     }
 
@@ -183,8 +221,26 @@ impl SessionIndex {
 
     /// Remove a session entry. Used by session GC after a session file is deleted.
     /// Returns true if the entry existed and was removed.
+    /// ⚠️ 只改内存不落盘——持久化删除走 [`Self::remove_persist`]（带墓碑防复活）。
     pub fn remove(&mut self, id: &str) -> bool {
         self.sessions.remove(id).is_some()
+    }
+
+    /// 持久化删除（写事务 + 墓碑）。session_remove / GC 用这个——
+    /// 此前 host 直接 `load().remove(&sid)` 是空操作（没 save），
+    /// 且 patch_meta 的"不在索引则重建"会把条目救活。
+    pub fn remove_persist(id: &str) -> bool {
+        let mut existed = false;
+        Self::write_txn(|idx| {
+            existed = idx.sessions.remove(id).is_some();
+            idx.removed_sessions.insert(id.to_string());
+        });
+        existed
+    }
+
+    /// 该会话是否被显式删除（墓碑）。patch 类更新据此跳过防复活。
+    pub fn is_removed(&self, id: &str) -> bool {
+        self.removed_sessions.contains(id)
     }
 
     /// 查直接子会话（反向索引，O(n) 单次内存扫描，不持久化）。
@@ -369,9 +425,11 @@ impl SessionIndex {
             message_count,
             turn_count,
         );
-        let mut index = Self::load();
-        index.upsert(id, meta);
-        index.save();
+        Self::write_txn(|index| {
+            // 显式 create 清墓碑——同名 sid 重新创建是合法生命周期
+            index.removed_sessions.remove(id);
+            index.upsert(id, meta.clone());
+        });
     }
 
     /// Synchronize fields that describe the current persisted message tree.
@@ -409,69 +467,74 @@ impl SessionIndex {
     where
         F: FnOnce(&mut SessionMeta),
     {
-        let mut index = Self::load();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
-
-        // 若 session 不在 index，先建一个最小条目（worker 通过 manager 跑时
-        // 没有 ion CLI 的 update 调用路径，所以这里要兜底）
-        if !index.sessions.contains_key(id) {
-            let cwd = std::env::current_dir()
-                .ok()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let project_name = std::path::Path::new(&cwd)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            index.sessions.insert(
-                id.to_string(),
-                SessionMeta {
-                    name: None,
-                    first_name: None,
-                    project: Some(cwd),
-                    project_name: Some(project_name),
-                    worktree: false,
-                    branch: None,
-                    workspace_path: None,
-                    workspace_status: None,
-                    model: String::new(),
-                    agent: "default".to_string(),
-                    provider: String::new(),
-                    token_input: 0,
-                    token_output: 0,
-                    token_cache_read: 0,
-                    token_cache_write: 0,
-                    user_prompt_count: 0,
-                    llm_request_count: 0,
-                    total_duration_ms: 0,
-                    compress_count: 0,
-                    message_count: 0,
-                    turn_count: 0,
-                    created_at: now,
-                    updated_at: now,
-                    error_count: 0,
-                    last_thinking_level: None,
-                    last_active_tools: None,
-                    last_entry_id: None,
-                    parent_session: None,
-                    parent_type: None,
-                    initial_cwd: None,
-                    last_cwd: None,
-                    extra_cwds: Vec::new(),
-                    tier_models: None,
-                    security_profile: None,
-                },
-            );
+        // 墓碑守卫：被显式删除的会话不重建（worker 退出前的收尾统计、
+        // 迟到的 turn patch 都会走到这里）
+        if Self::load().is_removed(id) {
+            return;
         }
+        Self::write_txn(|index| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
 
-        if let Some(meta) = index.sessions.get_mut(id) {
-            patch_fn(meta);
-            meta.updated_at = now;
-            index.save();
-        }
+            // 若 session 不在 index，先建一个最小条目（worker 通过 manager 跑时
+            // 没有 ion CLI 的 update 调用路径，所以这里要兜底）
+            if !index.sessions.contains_key(id) {
+                let cwd = std::env::current_dir()
+                    .ok()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let project_name = std::path::Path::new(&cwd)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                index.sessions.insert(
+                    id.to_string(),
+                    SessionMeta {
+                        name: None,
+                        first_name: None,
+                        project: Some(cwd),
+                        project_name: Some(project_name),
+                        worktree: false,
+                        branch: None,
+                        workspace_path: None,
+                        workspace_status: None,
+                        model: String::new(),
+                        agent: "default".to_string(),
+                        provider: String::new(),
+                        token_input: 0,
+                        token_output: 0,
+                        token_cache_read: 0,
+                        token_cache_write: 0,
+                        user_prompt_count: 0,
+                        llm_request_count: 0,
+                        total_duration_ms: 0,
+                        compress_count: 0,
+                        message_count: 0,
+                        turn_count: 0,
+                        created_at: now,
+                        updated_at: now,
+                        error_count: 0,
+                        last_thinking_level: None,
+                        last_active_tools: None,
+                        last_entry_id: None,
+                        parent_session: None,
+                        parent_type: None,
+                        initial_cwd: None,
+                        last_cwd: None,
+                        extra_cwds: Vec::new(),
+                        tier_models: None,
+                        security_profile: None,
+                    },
+                );
+            }
+
+            if let Some(meta) = index.sessions.get_mut(id) {
+                patch_fn(meta);
+                meta.updated_at = now;
+            }
+        });
     }
 
     /// Convenience: update session name (from append_session_name RPC).
@@ -693,7 +756,7 @@ mod tests {
         let idx = SessionIndex::default();
         let mut sessions = idx.sessions.clone();
         sessions.insert("root".into(), make_meta(None));
-        let idx2 = SessionIndex { sessions };
+        let idx2 = SessionIndex { sessions, removed_sessions: Default::default() };
         let root = idx2.get("root").unwrap();
         assert!(root.parent_session.is_none());
     }
@@ -702,7 +765,7 @@ mod tests {
     fn test_forked_session_has_parent() {
         let mut sessions = std::collections::HashMap::new();
         sessions.insert("fork".into(), make_meta(Some("parent_sess")));
-        let idx = SessionIndex { sessions };
+        let idx = SessionIndex { sessions, removed_sessions: Default::default() };
         let fork = idx.get("fork").unwrap();
         assert_eq!(fork.parent_session.as_deref(), Some("parent_sess"));
         assert_eq!(fork.parent_type.as_deref(), Some("fork"));
