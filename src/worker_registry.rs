@@ -4222,6 +4222,37 @@ impl WorkerRegistry {
         self.gc_workers(max_age_secs)
     }
 
+    /// 空闲配额：Idle worker 数超过 max_idle 时，按最老优先回收（从表中移除），
+    /// 返回被回收的 workerId。Busy/其他状态永不动——正在干活的不杀。
+    /// worker 是可丢弃资源（历史在 JSONL，选中会话时 ensure_worker 秒拉起），
+    /// 长会话列表下闲置 worker 只占内存，超配额直接清。
+    pub fn enforce_idle_quota(&mut self, max_idle: usize) -> Vec<String> {
+        let mut idles: Vec<(String, i64)> = self
+            .workers
+            .iter()
+            .filter(|(_, w)| w.status == WorkerStatus::Idle)
+            .map(|(id, w)| (id.clone(), w.status_since))
+            .collect();
+        if idles.len() <= max_idle {
+            return Vec::new();
+        }
+        // 最老优先（status_since 最小 = 进入 Idle 最早）
+        idles.sort_by_key(|(_, since)| *since);
+        let excess = idles.len() - max_idle;
+        let victims: Vec<String> = idles
+            .into_iter()
+            .take(excess)
+            .map(|(id, _)| id)
+            .collect();
+        for id in &victims {
+            self.workers.remove(id);
+            for subs in self.channels.values_mut() {
+                subs.retain(|s| s != id);
+            }
+        }
+        victims
+    }
+
     // ── Singleton management（host 级单例扩展，引用计数）──
 
     /// 注册一个单例扩展。如果 key 已存在，返回 false（不重复创建）。
@@ -5023,6 +5054,75 @@ mod tests {
         assert!(reg.workers.is_empty());
         assert!(reg.entry_worker_id.is_none());
     }
+
+    /// 空闲配额：Idle 超上限按最老优先回收；Busy 永不回收。
+    #[test]
+    fn test_enforce_idle_quota() {
+        let mut reg = WorkerRegistry::new();
+        let mk = |id: &str, status: WorkerStatus, since: i64| {
+            // 直接构造最小 record（不走 spawn），只填配额逻辑用到的字段
+            let mut w = WorkerRecord {
+                worker_id: id.to_string(),
+                session_id: id.to_string(),
+                project: "p".into(),
+                project_path: "/tmp".into(),
+                model: "m".into(),
+                agent: "build".into(),
+                status: WorkerStatus::Idle,
+                channels: vec!["main".into()],
+                parent: None,
+                children: Vec::new(),
+                notify_parent: false,
+                started_at: 0,
+                last_heartbeat: 0,
+                status_since: since,
+                died_at: None,
+                child_process: None,
+                stdin: None,
+                pending: Default::default(),
+                event_subscribers: Vec::new(),
+                parent_event_tx: None,
+                ready_tx: None,
+                stdout_rx: None,
+                response_rx: None,
+                worktree: None,
+                latest_output: Default::default(),
+                log_short: None,
+                model_size: None,
+                exit_code: None,
+                exit_reason: None,
+                stderr_path: None,
+                event_history: Default::default(),
+                event_history_cap: 200,
+            };
+            w.status = status;
+            w
+        };
+        // 12 个 Idle（status_since 递增 = 新旧不一）+ 2 个 Busy
+        for i in 0..12 {
+            let mut w = mk(&format!("idle{i}"), WorkerStatus::Idle, i);
+            w.status_since = i as i64;
+            reg.workers.insert(format!("idle{i}"), w);
+        }
+        for i in 0..2 {
+            let w = mk(&format!("busy{i}"), WorkerStatus::Busy, 100);
+            reg.workers.insert(format!("busy{i}"), w);
+        }
+        let victims = reg.enforce_idle_quota(8);
+        // 12-8=4 个最老的被回收：idle0..idle3
+        assert_eq!(victims.len(), 4);
+        for i in 0..4 {
+            assert!(victims.contains(&format!("idle{i}")), "victims 含 idle{i}");
+            assert!(!reg.workers.contains_key(&format!("idle{i}")));
+        }
+        assert_eq!(reg.workers.values().filter(|w| w.status == WorkerStatus::Idle).count(), 8);
+        // Busy 永不被动
+        assert!(reg.workers.contains_key("busy0"));
+        assert!(reg.workers.contains_key("busy1"));
+        // 池子没超配额时零回收
+        assert!(reg.enforce_idle_quota(8).is_empty());
+    }
+
 
     /// Default WorkerCreateConfig should leave all optional fields as None.
     #[test]

@@ -5621,6 +5621,21 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                 tracing::info!("[gc] reaped {} dead/stale workers", reaped);
                 changed = true;
             }
+            // 空闲配额：Idle worker 池超过上限时按最老优先回收。
+            // worker 是可丢弃资源（历史在 JSONL，选中会话 ensure_worker 秒拉起）。
+            // 上限可用 ION_MAX_IDLE_WORKERS 覆盖，默认 8。
+            let max_idle = std::env::var("ION_MAX_IDLE_WORKERS")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(8);
+            let victims = reg.enforce_idle_quota(max_idle);
+            if !victims.is_empty() {
+                tracing::info!(
+                    "[idle-quota] reaped {} idle workers (pool > {max_idle})",
+                    victims.len()
+                );
+                changed = true;
+            }
             if changed {
                 reg.broadcast_overview();
             }
@@ -5727,25 +5742,33 @@ async fn handle_manager_command(
             Ok(serde_json::json!({"sessions": sessions}))
         }
         "list_workers" => {
-            let workers: Vec<_> = {
-                let reg = registry.lock();
-                reg.list_workers()
-                    .iter()
-                    .map(|w| {
-                        serde_json::json!({
-                            "workerId": w.worker_id,
-                            "sessionId": w.session_id,
-                            "project": w.project,
-                            "status": format!("{}", w.status),
-                            "model": w.model,
-                            "agent": w.agent,
-                            "parent": w.parent,
-                            "channels": w.channels,
-                        })
+            let reg = registry.lock();
+            let workers: Vec<_> = reg
+                .list_workers()
+                .iter()
+                .map(|w| {
+                    serde_json::json!({
+                        "workerId": w.worker_id,
+                        "sessionId": w.session_id,
+                        "project": w.project,
+                        "status": format!("{}", w.status),
+                        "model": w.model,
+                        "agent": w.agent,
+                        "parent": w.parent,
+                        "channels": w.channels,
                     })
-                    .collect()
-            };
-            Ok(serde_json::json!({"workers": workers}))
+                })
+                .collect();
+            // 状态汇总（一眼看出健康度：Busy/Idle/僵尸各多少）
+            let mut by_status: std::collections::BTreeMap<String, u32> = Default::default();
+            for w in reg.workers.values() {
+                *by_status.entry(format!("{}", w.status)).or_default() += 1;
+            }
+            Ok(serde_json::json!({
+                "workers": workers,
+                "total": workers.len(),
+                "byStatus": by_status,
+            }))
         }
         // Host 级会话直读：纯磁盘读 JSONL，不拉起 worker（UI 浏览历史会话用，毫秒级）
         "get_session_messages" => host_direct_session_read(&cmd, "messages"),
@@ -6446,7 +6469,16 @@ async fn handle_manager_command_write(
                     })
                 })
                 .collect();
-            Ok(serde_json::json!({"workers": workers}))
+            // 状态汇总（一眼看出健康度：Busy/Idle/僵尸各多少）
+            let mut by_status: std::collections::BTreeMap<String, u32> = Default::default();
+            for w in reg.workers.values() {
+                *by_status.entry(format!("{}", w.status)).or_default() += 1;
+            }
+            Ok(serde_json::json!({
+                "workers": workers,
+                "total": workers.len(),
+                "byStatus": by_status,
+            }))
         }
         // 对外 API：列 sessions（不暴露 worker_id）
         "list_sessions" => {
