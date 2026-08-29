@@ -4793,6 +4793,11 @@ async fn do_create_session(
                 .ok()
                 .map(|p| p.to_string_lossy().to_string())
         });
+    // 显式指定的项目目录不存在 → 自动创建（"在任意文件夹新建会话"：
+    // 新路径是合法输入；回退 cwd 的路径必然已存在，create_dir_all 无副作用）
+    if let Some(ref pp) = cfg.project_path {
+        let _ = std::fs::create_dir_all(pp);
+    }
     cfg.channels = Some(vec!["main".to_string()]);
     cfg.initial_prompt = source
         .get("initial_prompt")
