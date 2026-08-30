@@ -147,7 +147,16 @@ pub fn total_tokens(messages: &[Message]) -> usize {
 }
 
 pub fn needs_compact(messages: &[Message], config: &CompactConfig) -> bool {
-    total_tokens(messages) > config.threshold
+    let total = total_tokens(messages);
+    if config.context_window > 0 {
+        // 窗口已知：按窗口比例触发（对齐 compact_batched 快/慢路径的 70% 语义）。
+        // 此前只比固定 threshold=32k——1M 窗口模型在 ~3% 就压缩（2026-08-29
+        // 实测 10 万 token/10% 显示占用时已压缩过一次）；小窗口模型反而会在
+        // 溢出后才触发。窗口相对值优先，固定阈值仅在窗口未知时兜底。
+        total > (config.context_window as usize * 70) / 100
+    } else {
+        total > config.threshold
+    }
 }
 
 /// Estimate total token count of a message list using a rough heuristic:
@@ -934,6 +943,32 @@ mod tests {
             ..Default::default()
         };
         assert!(needs_compact(&msgs, &cfg));
+    }
+
+    #[test]
+    fn needs_compact_window_relative_big_window() {
+        // 1M 窗口：10 万 token（10%）不该压缩；75 万（>70%）才压
+        let cfg = CompactConfig {
+            threshold: 32000, // 旧固定阈值——大窗口下不能用它早压
+            context_window: 1_000_000,
+            ..Default::default()
+        };
+        let mid = vec![make_user_msg(&"x".repeat(100_000 * 4))]; // ~100k tokens
+        assert!(!needs_compact(&mid, &cfg), "1M 窗口 10% 不应压缩");
+        let huge = vec![make_user_msg(&"x".repeat(750_000 * 4))]; // ~750k tokens
+        assert!(needs_compact(&huge, &cfg), "1M 窗口超 70% 应压缩");
+    }
+
+    #[test]
+    fn needs_compact_window_relative_small_window() {
+        // 16k 窗口：70%=11.2k，固定 32k 永远够不着（会先溢出）——窗口相对值救命
+        let cfg = CompactConfig {
+            threshold: 32000,
+            context_window: 16_000,
+            ..Default::default()
+        };
+        let msgs = vec![make_user_msg(&"x".repeat(12_000 * 4))]; // ~12k tokens
+        assert!(needs_compact(&msgs, &cfg), "16k 窗口 75% 应压缩（旧固定 32k 会漏）");
     }
 
     #[test]
