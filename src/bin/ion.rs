@@ -6235,7 +6235,11 @@ fn host_idle_session_read(
                 .ok_or_else(|| format!("session not found: {sid}"))?;
             let (ctx_window, max_tokens) = {
                 // 三级查找：registry(models.json) → provider/id → config.json providers
-                let reg = ion_provider::registry::ModelRegistry::new();
+                // ⚠️ 必须 register_builtins（它才加载 models.json）——此前漏掉，
+                // 空注册表查啥都 None，空闲会话全部掉进 config.json 的过时
+                // context_window（实测 glm-5.2 显示 128k，权威源其实 1M）
+                let mut reg = ion_provider::registry::ModelRegistry::new();
+                reg.register_builtins();
                 let with_provider = if meta.provider.is_empty() {
                     None
                 } else {
