@@ -5344,7 +5344,19 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                             .find(|w| w.session_id == *sid)
                                             .map(|w| w.worker_id.clone())
                                     };
-                                    if let Some(wid) = wid_opt {
+                                    // ⚠️ Stale/Dead worker 不能转发：发给死进程=客户端永久
+                                    // timeout（2026-08-30 实测页面模型下拉/状态全挂）。
+                                    // 落回 handle_manager_command（idle 合成/auto-create 自愈）。
+                                    let wid_alive = {
+                                        let inner_reg = reg.lock();
+                                        wid_opt.as_deref().is_some_and(|wid| {
+                                            inner_reg.workers.get(wid).map(|w| {
+                                                !matches!(w.status, ion::worker_registry::WorkerStatus::Stale | ion::worker_registry::WorkerStatus::Dead)
+                                            }).unwrap_or(false)
+                                        })
+                                    };
+                                    if wid_alive {
+                                    if let Some(wid) = &wid_opt {
                                         // subscribe（短锁，同步）
                                         let _ = { reg.lock().subscribe(&wid) };
                                         // send_async 自管锁 + await oneshot
@@ -5370,13 +5382,14 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                             }
                                         }
                                         return;
-                                    } else {
-                                        // session 不存在？让 handle_manager_command 处理
-                                        let resp = handle_manager_command(&reg, cmd).await;
-                                        let _ = write_half
-                                            .write_all(format!("{resp}\n").as_bytes())
-                                            .await;
-                                    }
+                                    } }
+                                    // Stale/Dead 或无 worker → manager 统一处理
+                                    // （auto-create 拉新 worker / idle 合成自愈）
+                                    let resp = handle_manager_command(&reg, cmd).await;
+                                    let _ = write_half
+                                        .write_all(format!("{resp}\n").as_bytes())
+                                        .await;
+                                    let _ = write_half.flush().await;
                                 } else {
                                     // 3. Manager 级命令：直接执行，不等
                                     let resp = handle_manager_command(&reg, cmd).await;
@@ -6207,6 +6220,20 @@ fn host_idle_session_read(
         .ok_or_else(|| "missing 'session' param".to_string())?
         .to_string();
     match method {
+        // 模型注册表是全局数据（~/.ion+~/.pi models.json），host 直答
+        "get_available_models" => {
+            let mut reg = ion_provider::registry::ModelRegistry::new();
+            reg.register_builtins();
+            let models: Vec<_> = reg
+                .list_models()
+                .iter()
+                .map(|m| serde_json::json!({
+                    "id": m.id, "name": m.name, "provider": m.provider,
+                    "reasoning": m.reasoning, "contextWindow": m.context_window,
+                }))
+                .collect();
+            Ok(serde_json::json!(models))
+        }
         // 与 worker 级一致：读全局配置并脱敏 api_key（空闲会话的 settings 不依赖 worker 状态）
         "get_settings" => {
             let cfg = ion::config::IonConfig::load();
@@ -6970,6 +6997,20 @@ async fn handle_manager_command_write(
             }
         }
         _ => {
+            // 模型注册表是全局数据：无条件直答（带不带 session 都不需要 worker）
+            if method == "get_available_models" {
+                let mut reg = ion_provider::registry::ModelRegistry::new();
+                reg.register_builtins();
+                let models: Vec<_> = reg
+                    .list_models()
+                    .iter()
+                    .map(|m| serde_json::json!({
+                        "id": m.id, "name": m.name, "provider": m.provider,
+                        "reasoning": m.reasoning, "contextWindow": m.context_window,
+                    }))
+                    .collect();
+                return Ok(serde_json::json!(models));
+            }
             // 只读命令（get_messages / list_turns）走磁盘直读，不 auto-create worker——
             // 读历史会话不应该拉起一个进程（首次冷启动几百 ms + 24MB 常驻）。
             // JSONL append-only 保证读到截至目前的完整内容。session 兼容顶层和 params 两种位置。
@@ -7055,6 +7096,7 @@ async fn handle_manager_command_write(
                     | "get_queue"
                     | "get_context_usage"
                     | "get_active_tools"
+                    | "get_available_models"   // registry 全局数据，无需 worker（worker 卡死曾致下拉永久'加载中'）
             ) {
                 let p = cmd.get("params");
                 let sid = cmd
@@ -7065,9 +7107,15 @@ async fn handle_manager_command_write(
                         p.and_then(|p| p.get("session_id")).and_then(|v| v.as_str())
                     });
                 if let Some(sid) = sid {
+                    // ⚠️ 只算活 worker：Stale/Dead 转发=发给死进程=永久 timeout
+                    // （2026-08-30 实测：Stale worker 使 get_session_info 卡 30s+，
+                    //  页面模型下拉/状态全挂；Stale 应走 idle 合成自愈）
                     let has_live = {
                         let reg = registry.lock();
-                        reg.workers.values().any(|w| w.session_id == sid)
+                        reg.workers.values().any(|w| {
+                            w.session_id == sid
+                                && !matches!(w.status, ion::worker_registry::WorkerStatus::Stale | ion::worker_registry::WorkerStatus::Dead)
+                        })
                     };
                     if !has_live {
                         return host_idle_session_read(&cmd, method);
