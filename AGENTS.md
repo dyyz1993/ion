@@ -899,6 +899,16 @@ cargo clean             # 全删（下次全量编译）
 rm -rf target/debug/    # 只删 debug（保留 release）
 ```
 
+> **🔴 清理前必须先停常驻 host**
+>
+> `ion serve` 按 `current_exe()` 绝对路径 spawn worker。target 被清后，运行中的
+> host 靠已加载的内存映像继续服务（看起来一切正常），但**新建任何会话都会
+> `spawn ENOENT`**（binary 路径已失效）——2026-08-31 实测事故：外部 cargo clean
+> 后 host 无声残废，所有 create_session/prompt 失败，全量重编 9 分钟才恢复。
+>
+> 正确顺序：`kill host → cargo clean → cargo build → 起 host`。
+> 诊断口诀：spawn 全 ENOENT 时先 `ls target/debug/ion` 再查别的。
+
 ## 环境配置
 
 ```bash
