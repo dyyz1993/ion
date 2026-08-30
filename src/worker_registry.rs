@@ -904,7 +904,11 @@ impl WorkerRegistry {
             worker_id: worker_id.clone(),
             session_id: session_id.clone(),
             project: project_name_clone,
-            status: WorkerStatus::Busy, // 创建时设 Busy（马上要开始干活，避免 idle 检测误杀）
+            // 出生 Idle（而非 Busy）：预启动（ensure_worker 刷新页面）并不在跑任务，
+            // 出生 Busy 会让 UI 误显示"运行中"——用户每次刷新都再造一个假 Busy
+            // （2026-08-29 实测"刷新后经常卡在运行中"）。真任务由 prompt/agent_start
+            // 立刻转 Busy；防误杀由 heartbeat 的 30min 无活动双保险兜底。
+            status: WorkerStatus::Idle,
             model: record.model.clone(),
             agent: record.agent.clone(),
             channels: record.channels.clone(),
@@ -1626,7 +1630,8 @@ impl WorkerRegistry {
             project_path: project_path.clone(),
             model: model.clone(),
             agent: agent_name.clone(),
-            status: WorkerStatus::Busy,
+            // 出生 Idle（同 register_prepared_worker：预启动≠在跑，真任务立刻转 Busy）
+            status: WorkerStatus::Idle,
             channels: config.channels.clone().unwrap_or_default(),
             parent: config.parent.clone(),
             children: Vec::new(),
@@ -1676,7 +1681,7 @@ impl WorkerRegistry {
             worker_id: worker_id.clone(),
             session_id: session_id.clone(),
             project: project_name.clone(),
-            status: WorkerStatus::Busy,
+            status: WorkerStatus::Idle, // 与 record 出生状态一致
             model: model.clone(),
             agent: agent_name.clone(),
             channels: record.channels.clone(),
