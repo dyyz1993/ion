@@ -242,7 +242,7 @@ grep -rn "ION_PROJECT_ROOT" src/
 - 4 个新单元测试验证（`git_project_root_returns_main_repo` / `git_project_root_worktree_shares_main` / `project_key_git_worktree_consistency` / `project_root_for_config_env_and_cwd_fallback`）
 - **2026-07-12 算法升级**：`project_key_git` 内部从 `--absolute-git-dir` + 手动裁剪 `/worktrees/` 改为 `--git-common-dir`（git 官方共享目录，不依赖路径字符串约定）+ `canonicalize` 归一。新增辅助函数 `main_git_dir(cwd) -> Option<String>`。
 
-**遗留**：project-data / WASM project data 的 `encode_path`（cwd hash）尚未改成 `project_key_git`。这些通过缺口 #2 的 `config_root` 回源已部分缓解（Memory 现在用 config_root），但彻底统一需后续把 `project_data_dir` 的 key 源也切换。
+**遗留**：✅ 已完成——`project_data_dir` 已切换到 `project_key_git`（`paths.rs`，磁盘上 project-data 目录为 16 位 git-key 格式）。worktree 的扩展项目级数据与主仓库共享。
 
 ### 缺口 #4：settings.json 全局路径不一致（LOW）— ✅ 已修复
 

@@ -4933,14 +4933,32 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
     let listener = match tokio::net::UnixListener::bind(&sock_path) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!(
-                "❌ Failed to bind Unix socket at {}: {e}",
-                sock_path.display()
-            );
-            return;
+            // 死链自清重试：gateway 自愈等场景下，新 host 可能在旧 sock 文件
+            // 还没被清掉时启动（上一个 host 已死但文件残留）→ bind 失败。
+            // 探测确认无人监听后删除重试一次。
+            let probe = std::os::unix::net::UnixStream::connect(&sock_path);
+            if probe.is_err() {
+                eprintln!(
+                    "⚠️ sock 文件存在但无人监听（死链），清理后重试: {}",
+                    sock_path.display()
+                );
+                let _ = std::fs::remove_file(&sock_path);
+                match tokio::net::UnixListener::bind(&sock_path) {
+                    Ok(l) => l,
+                    Err(e2) => {
+                        eprintln!("❌ 重试仍失败: {e2}");
+                        return;
+                    }
+                }
+            } else {
+                eprintln!(
+                    "❌ Failed to bind Unix socket at {}: {e}（有活 host 在监听）",
+                    sock_path.display()
+                );
+                return;
+            }
         }
-    };
-    // 写 PID 文件
+    }; // 写 PID 文件
     let pid_path = ion::paths::host_pid_path();
     let _ = std::fs::write(&pid_path, std::process::id().to_string());
     eprintln!("🔌 Host listening on Unix socket: {}", sock_path.display());
