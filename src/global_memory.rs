@@ -295,13 +295,13 @@ impl GlobalMemoryStore {
         let mut stats = ConsolidationStats::default();
 
         // 1. 去重：内容完全相同的记忆，保留 importance 最高的，其余 archived
-        let dupes: Vec<(String, usize)> = {
+        // （纯副作用块：UPDATE 计数进 stats.deduplicated，无需收集明细）
+        {
             let mut stmt = conn.prepare(
                 "SELECT content FROM entries WHERE archived=0 GROUP BY content HAVING COUNT(*) > 1"
             ).map_err(|e| format!("prepare dupes: {}", e))?;
             let rows = stmt.query_map([], |row| row.get::<_, String>(0))
                 .map_err(|e| format!("query dupes: {}", e))?;
-            let mut dups = Vec::new();
             for r in rows {
                 let content = r.map_err(|e| format!("row: {}", e))?;
                 // 找这个 content 里 importance 最高的 id
@@ -316,11 +316,9 @@ impl GlobalMemoryStore {
                         rusqlite::params![content, keep_id],
                     ).map_err(|e| format!("dedup update: {}", e))?;
                     stats.deduplicated += changed;
-                    dups.push((keep_id, changed));
                 }
             }
-            dups
-        };
+        }
 
         // 2. 归档：importance=0 且超过 30 天的 → archived=1
         let thirty_days_ago = std::time::SystemTime::now()

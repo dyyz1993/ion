@@ -1827,59 +1827,46 @@ async fn cmd_run(
     // McpManager 用 Arc 持有但不在启动时 connect_all()。
     // McpTool::execute 内部会检查连接状态，未连接时自动触发 connect。
     let mcp_config = ion::config::IonConfig::load().mcp_servers;
-    let mcp_manager: Option<std::sync::Arc<ion::mcp::McpManager>> =
-        if !mcp_config.is_empty() && !eff.no_extensions {
-            let mgr = std::sync::Arc::new(ion::mcp::McpManager::new(mcp_config));
-            tracing::info!(
-                "[mcp] {} server(s) configured (LAZY — will connect on first tool use)",
-                mgr.server_count()
-            );
-            // 注册 MCP 工具为「占位」—— McpTool::execute 内部负责 lazy connect
-            // 先注册已知的工具名（从配置解析），实际连接在第一次调用时发生
-            // 为了不改 McpTool 签名，我们在后台 spawn 一个非阻塞的 connect：
-            // 用短超时（10s 而不是 30s），失败不阻塞主流程
-            let mgr_clone = std::sync::Arc::clone(&mgr);
-            tokio::spawn(async move {
-                tracing::info!("[mcp] background connect starting (non-blocking)...");
-                let _ = tokio::time::timeout(
-                    std::time::Duration::from_secs(10), // ★ 10s 而不是 30s
-                    mgr_clone.connect_all(),
-                )
-                .await;
-                tracing::info!(
-                    "[mcp] background connect done: {} connected",
-                    mgr_clone.connected_count().await
-                );
-            });
-            // 不等 MCP 连接完成就继续 — agent 可以用内置工具先跑
-            // MCP 工具会在后台连接完成后可用（或第一次调用时触发连接）
-            // 给一点时间让后台连接（500ms — 足够本地 npx 启动，不够也不阻塞）
-            let _ = tokio::time::timeout(std::time::Duration::from_millis(500), async {
-                // 等 MCP 工具注册（非阻塞，超时就继续）
-                let tools_list = mgr.all_discovered_tools().await;
-                for tool in &tools_list {
-                    // 无法注册到已 move 的 tools — 这里只是探测
-                }
-            })
+    if !mcp_config.is_empty() && !eff.no_extensions {
+        let mgr = std::sync::Arc::new(ion::mcp::McpManager::new(mcp_config));
+        tracing::info!(
+            "[mcp] {} server(s) configured (LAZY — will connect on first tool use)",
+            mgr.server_count()
+        );
+        // 注册 MCP 工具为「占位」—— McpTool::execute 内部负责 lazy connect
+        // 先注册已知的工具名（从配置解析），实际连接在第一次调用时发生
+        // 为了不改 McpTool 签名，我们在后台 spawn 一个非阻塞的 connect：
+        // 用短超时（10s 而不是 30s），失败不阻塞主流程
+        let mgr_clone = std::sync::Arc::clone(&mgr);
+        tokio::spawn(async move {
+            tracing::info!("[mcp] background connect starting (non-blocking)...");
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(10), // ★ 10s 而不是 30s
+                mgr_clone.connect_all(),
+            )
             .await;
-            // 直接尝试注册已发现的 MCP 工具（可能为空，如果 MCP 还没连上）
-            let mcp_tools = mgr.all_discovered_tools().await;
-            for tool in &mcp_tools {
-                tools.register(Box::new(ion::mcp::tool::McpTool::new(
-                    tool,
-                    std::sync::Arc::clone(&mgr),
-                )));
-            }
-            if !mcp_tools.is_empty() {
-                tracing::info!("[mcp] {} tools registered", mcp_tools.len());
-            } else {
-                tracing::info!("[mcp] no tools yet (will connect in background)");
-            }
-            mgr.spawn_reconnect_monitor();
-            Some(mgr)
+            tracing::info!(
+                "[mcp] background connect done: {} connected",
+                mgr_clone.connected_count().await
+            );
+        });
+        // 不等 MCP 连接完成就继续 — agent 可以用内置工具先跑
+        // MCP 工具会在后台连接完成后可用（或第一次调用时触发连接）
+        // 直接尝试注册已发现的 MCP 工具（可能为空，如果 MCP 还没连上）
+        let mcp_tools = mgr.all_discovered_tools().await;
+        for tool in &mcp_tools {
+            tools.register(Box::new(ion::mcp::tool::McpTool::new(
+                tool,
+                std::sync::Arc::clone(&mgr),
+            )));
+        }
+        if !mcp_tools.is_empty() {
+            tracing::info!("[mcp] {} tools registered", mcp_tools.len());
         } else {
-            None
-        };
+            tracing::info!("[mcp] no tools yet (will connect in background)");
+        }
+        mgr.spawn_reconnect_monitor();
+    }
 
     // Check if plan tools are loaded (before tools is moved into Agent)
     let has_plan_tools = tools.get("plan_enter").is_some();
@@ -4886,7 +4873,7 @@ async fn do_get_session_snapshot(
 }
 
 async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_workers: usize) {
-    use ion::worker_registry::{WorkerRegistry, WorkerStatus};
+    use ion::worker_registry::WorkerRegistry;
     use std::sync::Arc;
     use parking_lot::Mutex;
 
@@ -5642,7 +5629,6 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                             changed = true;
                         }
                     }
-                    _ => {}
                 }
             }
             // 定期 GC：清理 Dead 全部 + Stale 超 10 分钟的。每 tick（30s）调一次，
@@ -6020,10 +6006,7 @@ fn fast_turns(
     let idx = get_file_index(path)?;
     let metas: &[serde_json::Value] = &idx.metas;
 
-    let full_content = params
-        .get("full_content")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    // turn 概览只含预览（fast 层不做正文展开；full_content 参数保留给 slow 层 get_turn_detail）
     let limit = params
         .get("limit")
         .and_then(|v| v.as_u64())
@@ -6501,7 +6484,7 @@ async fn handle_manager_command_write(
             }
         }
         "list_workers" => {
-            let mut reg = registry.lock();
+            let reg = registry.lock();
             let workers: Vec<_> = reg
                 .list_workers()
                 .iter()
@@ -6531,7 +6514,7 @@ async fn handle_manager_command_write(
         }
         // 对外 API：列 sessions（不暴露 worker_id）
         "list_sessions" => {
-            let mut reg = registry.lock();
+            let reg = registry.lock();
             let sessions: Vec<_> = reg.workers.values().map(|w| serde_json::json!({
                 "session_id": w.session_id,
                 "agent": w.agent,

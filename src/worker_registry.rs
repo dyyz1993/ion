@@ -1979,7 +1979,8 @@ impl WorkerRegistry {
                                     if !parent_alive {
                                         return;
                                     }
-                                    let sent = WorkerRegistry::send_async(
+                                    // fire-and-forget：通知发出即完成，投递结果不阻塞事件泵
+                                    let _ = WorkerRegistry::send_async(
                                         &rc,
                                         &parent_wid,
                                         "prompt",
@@ -2462,9 +2463,10 @@ impl WorkerRegistry {
                                 }),
                             );
                         }
+                        // worktree 存在 → 看是否删分支；不存在 → 无可删，视为保留
                         let branch_preserved = wt_info
                             .as_ref()
-                            .map(|w| !delete_branch)
+                            .map(|_| !delete_branch)
                             .unwrap_or(true);
                         // 双路推送：EventBus（ui 订阅者）+ 父会话实例流（subscribe --session 父）
                         let payload = serde_json::json!({
@@ -3186,8 +3188,6 @@ impl WorkerRegistry {
     ) -> String {
         let mut acc = String::new();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
-        let mut last_status_check = std::time::Instant::now()
-            - std::time::Duration::from_secs(3); // 2 秒后开始查状态
         loop {
             let remaining = deadline
                 .checked_duration_since(std::time::Instant::now())
@@ -3196,22 +3196,13 @@ impl WorkerRegistry {
                 return format!("[timeout {timeout_secs}s] partial output:\n{}", acc);
             }
 
-            // 状态轮询兜底：每 5 秒查一次目标 worker 状态
-            // （agent_end 可能在 subscribe_for_wait 之前已经发过了）
-            if let Some(wid) = worker_id
-                && last_status_check.elapsed() >= std::time::Duration::from_secs(5)
-            {
-                last_status_check = std::time::Instant::now();
-                // 通过 channel_send 发一个内部状态查询——不阻塞当前循环
-                // 这里用 self 引用不行（static fn），所以我们改用简单方案：
-                // 直接检查 rx 是否已关闭（worker 不再发事件 = 已完成）
-                // 加上一个全局超时短路径
-            }
+            // （状态轮询兜底已由下方 tokio::select! 的 15s sleep 臂实现：
+            //   rx 关闭/agent_end 检测 + 全局超时短路径，此处无需重复轮询）
 
             tokio::select! {
                 // 15 秒没收到任何事件 → 可能 agent_end 已错过，查状态
                 _ = tokio::time::sleep(std::time::Duration::from_secs(15)) => {
-                    if let Some(wid) = worker_id {
+                    if let Some(_wid) = worker_id {
                         // 尝试 rx.try_recv——如果通道已关闭（worker 断开）= 已完成
                         match rx.try_recv() {
                             Ok(msg) => {

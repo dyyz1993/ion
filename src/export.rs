@@ -265,8 +265,9 @@ pub fn export_session_rich(
     let agent_name = header.get("agent").and_then(|v| v.as_str());
 
     // Load agent config to get tools + system prompt
+    // 延迟初始化（if/else 两路各赋值一次，编译器保证覆盖；初始 None 从未被读）
+    let system_prompt: Option<String>;
     let mut tools: Option<Vec<ExportToolInfo>> = None;
-    let mut system_prompt: Option<String> = None;
 
     if let Some(name) = agent_name
         && let Some(agent_cfg) = crate::agent_config::find_agent(name)

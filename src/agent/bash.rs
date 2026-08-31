@@ -574,9 +574,8 @@ impl BashManageTool {
             }
             "inspect" => {
                 let pid = parse_pid(params);
-                let tail = params.get("tail").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(2000) as usize;
+                // tail/offset/limit 参数已废弃（output_preview 移除）：输出预览统一走
+                // head/tailLines 头尾行档，inspect 结果不返回原始大段输出
                 let head_lines = params.get("head").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
                 let tail_lines = params
                     .get("tailLines")
@@ -588,26 +587,8 @@ impl BashManageTool {
                         let output = &info.output;
                         let output_bytes = output.len();
 
-                        // ── output_preview（保留向后兼容，支持 tail/offset 模式）──
-                        let preview = if tail > 0 && output_bytes > tail {
-                            format!(
-                                "...[truncated {} bytes]\n{}",
-                                output_bytes - tail,
-                                &output[output_bytes.saturating_sub(tail)..]
-                            )
-                        } else if offset < output_bytes {
-                            let end = (offset + limit).min(output_bytes);
-                            let snippet = &output[offset..end];
-                            if offset > 0 {
-                                format!("[offset {offset}]\n{snippet}")
-                            } else {
-                                snippet.to_string()
-                            }
-                        } else {
-                            String::new()
-                        };
-
                         // ── 头尾行预览（用户期望：头几行 + 尾几行 + 中间截断标记）──
+                        // （旧 output_preview 字段已废弃：JSON 只消费 head/tail/truncated）
                         let all_lines: Vec<&str> = output.lines().collect();
                         let total_lines = all_lines.len();
                         let (output_head, output_tail, output_truncated) =
@@ -899,9 +880,7 @@ impl Extension for BashExtension {
             }
             "inspect" => {
                 let pid = parse_pid(&params);
-                let tail = params.get("tail").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(2000) as usize;
+                // tail/offset/limit 参数已废弃（output_preview 移除）
                 let head_lines = params.get("head").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
                 let tail_lines = params
                     .get("tailLines")
@@ -913,26 +892,7 @@ impl Extension for BashExtension {
                         let output = &info.output;
                         let output_bytes = output.len();
 
-                        // ── output_preview（保留向后兼容）──
-                        let preview = if tail > 0 && output_bytes > tail {
-                            format!(
-                                "...[truncated {} bytes]\n{}",
-                                output_bytes - tail,
-                                &output[output_bytes.saturating_sub(tail)..]
-                            )
-                        } else if offset < output_bytes {
-                            let end = (offset + limit).min(output_bytes);
-                            let snippet = &output[offset..end];
-                            if offset > 0 {
-                                format!("[offset {offset}]\n{snippet}")
-                            } else {
-                                snippet.to_string()
-                            }
-                        } else {
-                            String::new()
-                        };
-
-                        // ── 头尾行预览 ──
+                        // ── 头尾行预览 ──（旧 output_preview 字段已废弃）
                         let all_lines: Vec<&str> = output.lines().collect();
                         let total_lines = all_lines.len();
                         let (output_head, output_tail, output_truncated) =

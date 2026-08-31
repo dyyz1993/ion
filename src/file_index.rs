@@ -128,9 +128,7 @@ fn message_head(raw: &RawValue) -> (Option<&'static str>, Option<String>, Option
         #[serde(borrow)]
         #[serde(rename = "Assistant")]
         assistant: Option<MsgInner<'a>>,
-        #[serde(borrow)]
-        #[serde(rename = "ToolResult")]
-        tool_result: Option<MsgInner<'a>>,
+        // ToolResult 行无需预览（工具结果不在会话列表展示），未声明字段被 serde 忽略
     }
     let Ok(parsed) = serde_json::from_str::<MsgEnum>(s) else {
         return (Some(variant), None, None);
@@ -385,9 +383,6 @@ impl FileIndex {
 mod tests {
     use super::*;
 
-    fn write_tmp(lines: &[String]) -> (std::path::PathBuf, std::path::PathBuf) {
-        write_tmp_named(lines, "s.jsonl")
-    }
     fn write_tmp_named(lines: &[String], name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("ion-fidx-{:?}-{}", std::process::id(), name));
         std::fs::create_dir_all(&dir).unwrap();

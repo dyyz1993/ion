@@ -16,7 +16,7 @@ use crate::agent::compact::CompactConfig;
 use crate::agent::tool::{
     AwaitWorkerTool, BashTool, BranchSessionTool, CalculatorTool, ChannelSendTool, EchoTool,
     EditTool, FindTool, GlobalMemorySaveTool, GlobalMemorySearchTool, GrepTool, KillWorkerTool,
-    LsTool, ReadTool, ResumeWorkerTool, SendToWorkerTool, SkillTool, SpawnWorkerTool, ToolRegistry,
+    LsTool, ReadTool, ResumeWorkerTool, SendToWorkerTool, SpawnWorkerTool, ToolRegistry,
     WriteTool,
 };
 use crate::session_jsonl;
@@ -392,34 +392,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         store: memory_store.clone(),
     }));
 
-    // ── Skill 工具（让 LLM 按需加载 skill）──
-    // 扫描三个位置：
-    // 1. ~/.ion/agent/skills/（ION 全局）
-    // 2. <config_root>/.ion/skills/（项目级）
-    // 3. ~/.agents/skills/（全局 skill 库，111 个）
-    let agents_skills = std::env::var("HOME")
-        .ok()
-        .map(|h| std::path::PathBuf::from(h).join(".agents").join("skills"))
-        .unwrap_or_else(|| std::path::PathBuf::from("~/.agents/skills"));
-    let skill_dirs = vec![
-        crate::paths::skills_dir(),
-        crate::paths::project_skills_dir(&config_root),
-        agents_skills,
-    ];
     // ★ 不注册 SkillTool 给 LLM（用户：'禁止提供 skill list 的能力给到 LLM，
-    // 因为默认都注入到系统提示词'）。Skill 大纲已在 system prompt 里展示。
-    // skill_dirs 仍然保留（供 system prompt 注入大纲用），只是不暴露 tool。
+    // 因为默认都注入到系统提示词'）。Skill 大纲由 system prompt 构建时独立扫描。
 
     // 加载 API key
-    let api_key = crate::auth::AuthStorage::resolve_api_key(None, &provider);
-    if api_key.is_none() {
-        // Hardcoded fallback for testing
-        let key = std::env::var("ION_API_KEY").unwrap_or_else(|_| {
-            "sk-sniMbFE0l8wIGsTAsbfERSGrvcrBv97iBfDuppzN99kg5Wp2a2dMYxntMFBN9lEg".into()
-        });
-        let _ = key; // Will be set below
-    }
-    let api_key = api_key
+    let api_key = crate::auth::AuthStorage::resolve_api_key(None, &provider)
         .or_else(|| std::env::var("ION_API_KEY").ok())
         .unwrap_or_else(|| {
             "sk-sniMbFE0l8wIGsTAsbfERSGrvcrBv97iBfDuppzN99kg5Wp2a2dMYxntMFBN9lEg".into()

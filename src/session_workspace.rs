@@ -10,8 +10,6 @@
 //! 落盘的生命周期状态是 creating / ready / closed / failed。
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 /// 工作空间会话状态。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
