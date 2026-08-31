@@ -395,12 +395,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     // ★ 不注册 SkillTool 给 LLM（用户：'禁止提供 skill list 的能力给到 LLM，
     // 因为默认都注入到系统提示词'）。Skill 大纲由 system prompt 构建时独立扫描。
 
-    // 加载 API key
+    // 加载 API key：auth.json → ION_API_KEY → 空（未配置时由 provider 返回 401，
+    // 错误信息可见；禁止硬编码密钥——2026-09 密钥曾在公开仓历史中泄露的教训）
     let api_key = crate::auth::AuthStorage::resolve_api_key(None, &provider)
         .or_else(|| std::env::var("ION_API_KEY").ok())
-        .unwrap_or_else(|| {
-            "sk-sniMbFE0l8wIGsTAsbfERSGrvcrBv97iBfDuppzN99kg5Wp2a2dMYxntMFBN9lEg".into()
-        });
+        .unwrap_or_default();
 
     let config = AgentConfig {
         // max_turns：优先读 ION_MAX_TURNS 环境变量（补丁 1：hooks/扩展 spawn 子 Worker 时限定步数）

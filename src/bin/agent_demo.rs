@@ -12,10 +12,16 @@ use tracing_subscriber::EnvFilter;
 /// Demo: inner Agent Loop with real LLM calls.
 ///
 /// Usage:
-///   cargo run --bin agent-demo
+///   ION_API_KEY=sk-xxx cargo run --bin agent-demo
 const API_BASE: &str = "https://opencode.ai/zen/go/v1";
-const API_KEY: &str = "sk-sniMbFE0l8wIGsTAsbfERSGrvcrBv97iBfDuppzN99kg5Wp2a2dMYxntMFBN9lEg";
 const MODEL_ID: &str = "deepseek-v4-flash";
+
+fn resolve_api_key() -> String {
+    std::env::var("ION_API_KEY").unwrap_or_else(|_| {
+        eprintln!("⚠ 缺少 API key：请设置 ION_API_KEY 环境变量（密钥不入库）");
+        std::process::exit(1);
+    })
+}
 
 fn build_registry_and_model() -> (Arc<ApiRegistry>, Model) {
     let mut registry = ApiRegistry::new();
@@ -168,7 +174,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 max_batches: 10,
                 context_window: 128000,
             },
-            api_key: Some(API_KEY.into()),
+            api_key: Some(resolve_api_key()),
             response_format: None,
             thinking: None,
             compact_model_id: None,
