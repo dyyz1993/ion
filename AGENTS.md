@@ -540,6 +540,7 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/design/GOAL_SUPERVISOR.md](./docs/design/GOAL_SUPERVISOR.md) | **Goal Supervisor** — 证据驱动的目标闭环（on_gate_check + 6 道防线 + 日志 + 进化系统）+ A→B 任务规格 (B1 已完成) |
 | [docs/design/DEV_SERVER_DETECTOR.md](./docs/design/DEV_SERVER_DETECTOR.md) | **Dev Server Detector** — bash 启动 dev server 时自动检测端口（stdout 扫描 + 探活兜底）+ on_system_prompt 注入 `<dev_servers>` XML（待定） |
 | [docs/design/SESSION_WORKSPACE_CHAT.md](./docs/design/SESSION_WORKSPACE_CHAT.md) | **Session Workspace Chat** — 会话内创建独立 worktree 子会话：create/close/get_session_snapshot RPC + workspace_session_* 事件 + HTML 原型（内核闭环已完成，`tests/session_workspace_ci.sh` 26/26） |
+| [docs/design/INPUT_ORIGIN.md](./docs/design/INPUT_ORIGIN.md) | **INPUT_ORIGIN 输入来源标识** — prompt params.origin（user/monitor/system/peer）贯穿 agent 循环：InputContext.origin 暴露给扩展 on_input 钩子 + 非 user 落 custom(input_origin) 条目；monitor spawn/异步通知/缺省回落全覆盖（开发中，内核闭环 8/8） |
 
 ### 使用指南（docs/guides/）
 

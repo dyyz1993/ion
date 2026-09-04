@@ -25,6 +25,9 @@ pub struct TurnContext {
 pub struct InputContext {
     pub text: String,
     pub handled: bool,
+    /// 输入来源标识（INPUT_ORIGIN）：user（缺省）/ monitor / system / peer。
+    /// 由 prompt params.origin 或 spawn initial_origin 设置，供扩展差异化处理。
+    pub origin: String,
 }
 
 #[derive(Clone, Debug)]

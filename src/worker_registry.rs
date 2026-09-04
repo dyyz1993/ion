@@ -1273,7 +1273,8 @@ impl WorkerRegistry {
                                         "prompt",
                                         serde_json::json!({
                                             "text": notify,
-                                            "behavior": "followUp"
+                                            "behavior": "followUp",
+                                            "origin": "system"
                                         }),
                                     )
                                     .await;
@@ -1510,19 +1511,25 @@ impl WorkerRegistry {
         if let Some(prompt_text) = effective_prompt {
             let wid_for_prompt = worker_id.clone();
             let prompt_registry = Arc::clone(registry_arc);
+            let config_input_origin = config.input_origin.clone();
             tokio::spawn(async move {
                 // 等子进程 ready（不持锁，不阻塞 reader task）
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 // ⚠️ parking_lot: send_command 持 &mut self + .await（stdin write），
                 // 不能持锁调用。改为：持锁 take 出 stdin + 标记 Busy，drop lock，
                 // 然后 write stdin，再 put back。
+                let input_origin_for_prompt =
+                    config_input_origin.clone().unwrap_or_else(|| "user".to_string());
                 let req_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
                 let write_line = format!(
                     "{}\n",
                     serde_json::json!({
                         "id": &req_id,
                         "method": "prompt",
-                        "params": serde_json::json!({"text": prompt_text})
+                        "params": serde_json::json!({
+                            "text": prompt_text,
+                            "origin": input_origin_for_prompt
+                        })
                     })
                 );
                 // 竞态安全取 stdin（撞车时短暂重试，避免 initial prompt 静默丢失）
@@ -1986,7 +1993,8 @@ impl WorkerRegistry {
                                         "prompt",
                                         serde_json::json!({
                                             "text": notify,
-                                            "behavior": "followUp"
+                                            "behavior": "followUp",
+                                            "origin": "system"
                                         }),
                                     )
                                     .await;
@@ -2158,19 +2166,25 @@ impl WorkerRegistry {
         if let Some(prompt_text) = effective_prompt {
             let wid_for_prompt = worker_id.clone();
             let prompt_registry = Arc::clone(registry_arc);
+            let config_input_origin = config.input_origin.clone();
             tokio::spawn(async move {
                 // 等子进程 ready（不持锁，不阻塞 reader task）
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 // ⚠️ parking_lot: send_command 持 &mut self + .await（stdin write），
                 // 不能持锁调用。改为：持锁 take 出 stdin + 标记 Busy，drop lock，
                 // 然后 write stdin，再 put back。
+                let input_origin_for_prompt =
+                    config_input_origin.clone().unwrap_or_else(|| "user".to_string());
                 let req_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
                 let write_line = format!(
                     "{}\n",
                     serde_json::json!({
                         "id": &req_id,
                         "method": "prompt",
-                        "params": serde_json::json!({"text": prompt_text})
+                        "params": serde_json::json!({
+                            "text": prompt_text,
+                            "origin": input_origin_for_prompt
+                        })
                     })
                 );
                 // 持短锁：take stdin + 标记 Busy
@@ -2578,6 +2592,7 @@ impl WorkerRegistry {
             report_channel: None,
             report_to: None,
             initial_prompt: None,
+            input_origin: None,
             skip_mcp: None,
             allowed_tools: None,
             disallowed_tools: None,
@@ -4736,6 +4751,10 @@ pub struct WorkerCreateConfig {
     /// Peer 模式下，汇报指令段会被追加到这个 prompt 末尾。
     #[serde(default)]
     pub initial_prompt: Option<String>,
+    /// 输入来源标识（INPUT_ORIGIN）：initial_prompt 注入时随 prompt params.origin 传递。
+    /// monitor spawn 填 Some("monitor")；缺省 None → 注入时不带（worker 侧回落 user）。
+    #[serde(default)]
+    pub input_origin: Option<String>,
     /// spawn_worker 的同步/异步模式（bridge 的 wait 字段 serde 直通）。
     /// true=同步（父阻塞收结果，completion 通知多余）；false=异步（父需要
     /// agent_end 完成通知唤醒继续编排——见 stdout 泵 notify_parent 逻辑）。

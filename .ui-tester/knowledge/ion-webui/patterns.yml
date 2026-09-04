@@ -1,0 +1,70 @@
+# Module: ion-webui — proven patterns
+# Verified: 2026-08-30 (v2 回归轮追加/修订, 保留 v1 历史)
+# Version: 2
+
+send_message_flow:
+  steps:
+    - action: fill
+      selector: "#input"
+    - action: click
+      selector: "#send"
+  verify: "user rows +1 且 input 清空 → 轮询 .row.agent 文本增长(流式)直至不含 '生成中'"
+  observed: "真实 LLM 首字 ~0.8-4s, 单轮 10-20s"
+
+switch_session_flow:
+  steps:
+    - action: click
+      selector: ".sitem (坐标点击) | #dash-overlay .wb-card[data-sid='<sid>']"
+  expected: "清场 → .switch-skel '⏳ 正在打开会话…'(worker 快时 <2s 一闪而过) → bootstrap 渲染历史 → syscard '已切换到会话 <sid>' 恰 1 条"
+  tip: "切换目标 worker 是 Stale 时 revive 最长 12s; sid 相同则 early-return 无任何反馈"
+  v2: "fix③已验证: 看板路径(上轮丢卡片的 T5 路径)确认卡稳定出现恰 1 条"
+
+toolcard_toggle:
+  default: "收起: .tc2-b inline display:none, chev ▸"
+  expand: "点 .tc2-h → .tc2-b display:'' + .toolcard.open + chev ▾ (.targs/.tresult 显示)"
+  tip: "刷新(bootstrap)后历史工具卡不重建 — bootstrap 只渲染 user/assistant 文本行; 测 toggle 必须先触发一次真实工具调用"
+  v2_bug: "⚠️ 长会话(滚动溢出)中 .toolcard 被 flex-shrink 压成 ~2px 细线(头部 32px 被 overflow:hidden 裁剪)→不可见不可点, 点击落空且 elementFromPoint 返回卡片本身。根因: #messages flex column(行333) + .toolcard overflow:hidden(行349) 使 automatic min-size 失效。复测须在新建空会话(短会话)进行, 短会话机制正常"
+  v2_click_tip: "点 .tc2-h 用 mouse click 坐标; 坐标必须在流式结束(scrollDown 停止)后现场测量, 流式期间布局持续位移会点空"
+
+theme_toggle:
+  dark_bg: "rgb(15, 15, 17)"
+  light_bg: "rgb(250, 250, 250)"
+  panels_dark: "#sessbar/#info-panel rgb(26,26,30), header rgba(26,26,30,0.9)"
+  panels_light: "#sessbar rgb(255,255,255)"
+  persist: "localStorage, 刷新保持"
+  v2: "深→浅→深往返复测通过"
+
+send_failure_test:
+  v2: "验证 fix①(错误文案非空白)的可复现方法"
+  trap: "❌ kill com.ion.gateway 不可行 — launchd KeepAlive <2s 重活(实测 kill -9 后 curl 立即 DOWN 但 2s 后新 PID 已 200), 发送常撞上复活后的网关变成真实 LLM 轮次"
+  method: "页面上下文 eval 装 fetch 桩拦截 /api/send 并 reject TypeError('Failed to fetch')(与真断网同错误), 点 #send 后断言 syscard '发送异常：Failed to fetch' 非空白 + 末条 user row 红框; 验完 eval 恢复 window.fetch"
+  server_error_path: "host 层错误走 '发送失败：'+(r.error || r.data.error || '未知错误'), 未知错误兜底也不再空白"
+
+console_error_baseline:
+  v1_noise: "修复前每次页面加载 6-12 条 unhandledrejection 'A network error occurred.'(无 stack)"  # 历史留档
+  v2_after_fix: "fix⑤(preventDefault 降级)后: 每次加载仍残余 1 条 prevented=false 的 DOMException 'A network error occurred.'(在页面监听器注册前的早期窗口泄漏), 不达 '控制台 0 条' 目标; 晚于注册的同类的拒约(合成验证)可被正确 preventDefault+console.warn '[fetch] startup race tolerated:'"
+  measure_v2: "addinitscript 挂收集器时必须 (a) if(!window.__x) 幂等守卫, 否则脚本多次执行自产 pageerror 噪音 (b) 读 e.defaultPrevented 要 setTimeout(0) 异步读, 同步读恒 false (c) 探针监听先于页面注册, 恰好可以量化泄漏"
+  anti_pattern: "addinitscript 里 const 顶层声明(wrapper fetch 等)会在脚本重执行时 'Identifier already declared' 污染收集结果"
+
+env_quirks:
+  xbrowser_chain_parser:
+    - "引号 chain 内 eval 的分号会被剥掉 → eval 单独跑或写成无分号单表达式"
+    - "-e 'click sel' 会被整串当 eval → -e 只放裸命令, 参数含空格的选择器用单独命令"
+  cdp_guard: "eval 里 el.click() 被拦 (isTrusted=false) → 用 mouse click x y / find text --action click"
+  console_cmd: "只在调用窗口(~5s)采样, 无历史 → 测启动期错误必须 addinitscript+刷新"
+  addinitscript: "需要 --script <str>; daemon 重启后丢失"
+  daemon_fragility: "xbrowser dist 被并发重建时 daemon ERR_MODULE_NOT_FOUND 崩溃并关闭自启浏览器 → 页面变 about:blank, 所有 JS 状态(收集器/基线)清零; 恢复=重新 goto"
+  gateway_keepalive: "com.ion.gateway/com.ion.host 由 launchd 托管, kill -9 后秒级复活(PID 变化); 做'服务宕机'类测试要么用页面内 fetch 桩, 要么接受窗口只有 ~2s 并先 kill 再立刻操作"
+  screenshot_path: "screenshot 输出路径易被终端换行截断, 以 output: 行完整 URL 为准读文件"
+
+# ── v3 追加 (2026-08-30 压测轮) ──
+stress_test_methodology:
+  injection_wipe_hazard: "注入 DOM 会被 bootstrap 重拉清掉(空会话 2.2s/3s 定时重拉恒命中) → 测量 eval 开头 stub: window.__bootstrapOrig=window.bootstrap; window.bootstrap=()=>Promise.resolve('stubbed'), 结尾还原 + goto 刷新恢复纯净堆"
+  single_eval_rule: "注入+滚动+采集必须合并进单个 async eval(eval 间 CLI 往返 ~1-12s 足够被清场); PerformanceObserver 挂 window 可跨 eval 存活"
+  longtask_attribution: "PerformanceObserver 条目异步迟到投递 — 注入长任务可能记入后续滚动窗口, 判读时对比 loopMs(≈最大 longtask 值即伪影)"
+  cdp_guard_extended: "dispatchEvent(new MouseEvent) 也被拦(fail-fast, eval 不执行) → 页面 .onclick= 赋值的 handler 可直接 tc.onclick() 直调; addEventListener 匿名闭包不可直调, 改调具名函数本体(openDashboard/closeDashboard/window.drawer/loaders)"
+  memory_caveat: "performance.memory 无 --expose-gc, minor GC 噪音 ±1MB, 注入前后 delta 仅作参考; 场景间必须 goto 刷新隔离堆"
+  real_session_notes: "/api/sessions 的 messages 字段=JSONL 全条目数(含 custom 等), 实际渲染行数=bootstrap 只渲染 user/assistant 文本行(41020 条目会话仅 21 行); bootstrap 不渲染工具卡 → 测 .tc2-h 需注入 1 张真实卡(测后 .remove() 还原)"
+  switch_decomposition: "切换耗时分冷(13.9s worker 复活)/温(7.5s)/热(2.0s)三档, 用 fetch 埋点(window.fetch 包装, 测后还原)归因: /api/session/switch + /api/bootstrap 串行为主体; 一次切换可见 2 次 /api/bootstrap(busy-poll 冗余)"
+  verdict_lines: "渲染<3s 全过(207ms/1781ms); 交互<500ms: 工具卡0.8-3.3ms/抽屉0.1ms/总览同步1ms 过, 切换热2s/冷13.9s 超; longtask≤5 过(最多3)"
+  found_slow_spots: "loadMcpExt 2217ms(get_mcp_servers 经 /rpc 走 worker 链路, 刚复活 worker 慢) / 总览数据 6.9s 尖峰(切换 poll 风暴并发期) / 注入超线性 4x量->8.6x耗时(scrollDown 每条读 scrollHeight 强制 layout)"

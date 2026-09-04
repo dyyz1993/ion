@@ -1,0 +1,61 @@
+# Module: ion-webui
+# Version: 2
+# Status: verified
+# Last verified: 2026-08-30 (回归轮: R1-R5 复测全部选择器冷启动有效)
+# URL: http://localhost:8790 (launchd: com.ion.gateway + com.ion.host)
+# v2 变更: sel_model/syscard 注释更新(fix①④已验证) + toolcard 长 会话压缩 bug 标注 + dashboard 属性选择器
+
+header:
+  logo_area: "#sid"                      # 会话 ID 显示在左上 logo 下方 (textContent = 完整 sid)
+  theme_toggle: "#theme-toggle"          # ☀️/🌙 主题切换按钮 (v2 复测: 深浅往返 OK)
+  dash_btn: "#dash-btn"                  # 📊 总览按钮
+  info_btn: "#info-btn"                  # ℹ️ 详情抽屉按钮 (桌面端右侧栏已默认展示同内容)
+  conn_text: "#conn-text"                # 状态条文本: "已连接 host" / "host 离线"
+
+boot:
+  overlay: "#overlay"                    # 启动 overlay, 加载完成后加 .hidden (computed display:none, 非内联 style)
+  ov_text: "#ov-text"                    # overlay 内文案 "正在连接 ion host…"
+
+sidebar:
+  sessbar: "#sessbar"                    # 左侧会话栏; 移动端抽屉态 class drawer-open
+  hamburger: "#hamburger"                # 移动端左抽屉开关
+  session_item: ".sitem"                 # 会话条目 (onclick=switchSession)
+  search: "#sess-search"
+  new_btn: "#btn-new-session"            # 新建会话 (v2: 用于构造"短会话"测试环境, 3s 内就绪)
+
+composer:
+  input: "#input"                        # textarea, Enter 直发/Shift+Enter 换行
+  send: "#send"                          # 运行中变暂停形态(abort); 文本含 "暂停" 可判断 running
+  sel_model: "#sel-model"                # 模型 select。v2 (fix④已验证): 加载中…(0-3s) → 13 选项; 失败重试时占位 "重试中…", 不再挂死 "加载失败"
+  sel_perm: "#sel-perm"
+  sel_think: "#sel-think"
+
+messages:
+  container: "#messages"                 # ⚠️ display:flex column + overflow-y:auto (行 333)
+  user_row: "#messages .row.user"        # 右侧气泡; 发送失败时加红框标记 (markLastUserFailed)
+  agent_row: "#messages .row.agent"      # 左侧气泡, 流式以 "生成中…" 结尾标记
+  syscard: "#messages .syscard"          # 系统卡。v2 (fix①已验证): "发送失败/发送异常：<原因非空白>" / "已切换到会话 X" / "会话已自动恢复（host 曾重启）"
+  toolcard: "#messages .toolcard"        # 工具卡 v2。⚠️ v2 新 bug: 长会话(内容溢出)中被 flex-shrink 压成 ~2px 细线, 头部被 overflow:hidden 裁剪→不可见不可点; 短会话正常 h≈34。修法建议 .toolcard{flex-shrink:0}
+  toolcard_head: "#messages .toolcard .tc2-h"   # 一行摘要 (图标+名称+摘要+✓耗时+▸); onclick 直接绑在此元素 (index.html ~1002)
+  toolcard_body: "#messages .toolcard .tc2-b"   # 详情, 收起时 inline display:none; 展开后含 .targs + .tresult
+  toolcard_chev: ".tc2-chev"             # ▸ 收起 / ▾ 展开 (.toolcard.open 时 rotate 90deg)
+  empty_state: ".tc-empty-state"         # "开始你的第一个任务" 欢迎块 (仅无历史消息时存在, 有历史会话冷加载查不到属正常)
+
+dashboard:
+  overlay: "#dash-overlay"               # .open 时显示
+  worker_card: "#dash-overlay .wb-card"  # data-sid=完整会话id; 点击=closeDashboard+switchSession(data-sid)
+  worker_card_by_sid: "#dash-overlay .wb-card[data-sid='<sid>']"  # v2 已验证: 可直接属性选择器点指定卡片
+  worker_sid_label: ".wb-sid"            # 显示 sessionId.slice(0,14) — 截断展示, 完整 id 在 data-sid/title
+
+info_panel:
+  panel: "#info-panel"
+  refreshers: ["#qp-refresh", "#perm-refresh", "#wf-refresh", "#mcp-refresh", "#mem-refresh"]
+  mem_search: "#mem-search"
+  workflow_next_tag: ".wf-next-tag"      # 工作流 Next 高亮 (rgb(124,58,237))
+  drawer_mask: "#drawer-mask"            # 移动端抽屉遮罩 (.hidden 控制)
+
+api:
+  bootstrap: "GET /api/bootstrap"        # 刷新恢复唯一入口, 返回 messages+inflight+state
+  send: "POST /api/send {text,msg_id,origin}"   # 失败时顶层 error 或 data.error (fix①)
+  switch_session: "POST /api/session/switch {session_id}"
+  rpc_proxy: "POST /rpc {method,params}  (→ host.sock JSONL)"

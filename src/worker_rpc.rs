@@ -1915,6 +1915,34 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     })
                     .unwrap_or_default();
 
+                // 输入来源标识（INPUT_ORIGIN，docs/design/INPUT_ORIGIN.md）：
+                // prompt params.origin（user 缺省 / monitor / system / peer，非法值回落 user）。
+                // 赋给 agent.input_origin 供 on_input 钩子经 InputContext.origin 读取；
+                // 非 user 时落一条 custom 条目（旁路留痕，不进 LLM 上下文）。
+                let origin_raw = params
+                    .get("origin")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("user");
+                let input_origin = match origin_raw {
+                    "monitor" | "system" | "peer" => origin_raw.to_string(),
+                    _ => "user".to_string(),
+                };
+                agent.input_origin = input_origin.clone();
+                if input_origin != "user" {
+                    if let Some((entry_id, _parent)) = crate::session_jsonl::append_custom_entry(
+                        &worker_cwd,
+                        "input_origin",
+                        serde_json::json!({
+                            "origin": input_origin,
+                            "behavior": pbehavior,
+                            "textPreview": text.chars().take(80).collect::<String>(),
+                            "ts": now_ms(),
+                        }),
+                    ) {
+                        tracing::info!("[origin] {input_origin} logged as custom entry {entry_id}");
+                    }
+                }
+
                 let mut skip = false;
                 if agent.is_running() && pbehavior == "steer" {
                     let mut content = vec![ContentBlock::Text(TextContent {

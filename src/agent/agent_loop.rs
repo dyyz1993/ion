@@ -115,6 +115,9 @@ pub struct Agent {
     pause_tx: watch::Sender<bool>,
     pause_rx: watch::Receiver<bool>,
     running: bool,
+    /// 输入来源标识（INPUT_ORIGIN）：每次 run 由 prompt params.origin 赋值，缺省 "user"。
+    /// 经 InputContext.origin 暴露给扩展 on_input 钩子；非 user 时随输入落 custom 条目。
+    pub input_origin: String,
     /// 对齐 pi abort：设 true 后 check_pause 返回 Aborted 错误，终止 run()
     stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// soft interrupt 信号（对齐 pi interruptController）：
@@ -177,6 +180,7 @@ impl Agent {
             pause_tx,
             pause_rx,
             running: false,
+            input_origin: "user".to_string(),
             stopped: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             interrupted: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             http_cancel: std::sync::Mutex::new(None),
@@ -892,6 +896,7 @@ impl Agent {
             let mut input_ctx = super::extension::InputContext {
                 text: prompt.into(),
                 handled: false,
+                origin: self.input_origin.clone(),
             };
             self.extensions.on_input(&mut input_ctx).await?;
             if input_ctx.handled {

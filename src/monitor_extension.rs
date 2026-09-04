@@ -739,6 +739,7 @@ impl Extension for MonitorExtension {
                                 let cfg = crate::worker_registry::WorkerCreateConfig {
                                     agent: Some(agent_for_spawn.clone()),
                                     initial_prompt: Some(prompt_for_spawn.clone()),
+                                    input_origin: Some("monitor".into()),
                                     relation: Some(crate::worker_registry::WorkerRelation::System),
                                     hook_depth: Some(0),
                                     ..Default::default()
@@ -830,6 +831,7 @@ impl Extension for MonitorExtension {
                                 let cfg = crate::worker_registry::WorkerCreateConfig {
                                     agent: Some(agent_for_spawn.clone()),
                                     initial_prompt: Some(to_send.clone()),
+                                    input_origin: Some("monitor".into()),
                                     relation: Some(crate::worker_registry::WorkerRelation::System),
                                     hook_depth: Some(0),
                                     ..Default::default()
@@ -894,6 +896,7 @@ impl Extension for MonitorExtension {
                                         report_channel: None,
                                         report_to: None,
                                         initial_prompt: Some(prompt_for_spawn),
+                                        input_origin: Some("monitor".into()),
                                         skip_mcp: None,
                                         allowed_tools: None,
                                         disallowed_tools: None,
