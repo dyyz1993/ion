@@ -70,35 +70,127 @@ agent_loop run_with_images：InputContext { text, handled, origin } → on_input
 - **hook 拒绝工具**：PreToolUse handler 读 turn origin（需把 origin 暴露给 hook 引擎——后续小改）
 - **隐藏工具**：agent loop per-turn 工具过滤（后续迭代）
 
-## 3. CLI 验证（Group A）
+## 3. CLI 验证（实测数据，2026-09-04）
 
-### A1 带 origin 的 prompt 落 custom 条目
+### 3.0 RPC 接口规格
+
+**命令：**
 
 ```bash
-ion rpc --session <sid> --method prompt \
-  --params '{"text":"hello","origin":"monitor"}'
-# 然后查会话 JSONL 尾部：
-tail -5 ~/.ion/agent/sessions/<cwd_hash>/<sid>.jsonl | grep input_origin
+ion rpc --session <sid> --method prompt --params '{"text":"...","origin":"monitor"}'
 ```
 
-**验证点**：
-- ✅ 存在 `{"type":"custom","customType":"input_origin","data":{"origin":"monitor",...}}`
+**请求参数表：**
+
+| 字段 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `text` | string | 必填 | 用户提示词 |
+| `origin` | string | `"user"` | 输入来源标识：`user` / `monitor` / `system` / `peer`；非法值回落 `user` |
+| `behavior` | string | `"steer"` | 投递行为（既有字段，与 origin 正交） |
+| `images` | array | `[]` | 视觉输入（既有字段） |
+
+**响应 JSON（成功，空闲新轮）：**
+
+```json
+{"command":"prompt","data":null,"id":"rpc-client","success":true,"type":"response"}
+```
+
+**响应 JSON（忙时入队 steering）：**
+
+```json
+{"command":"prompt","data":{"queue":"steering","status":"queued"},"id":"rpc-client","success":true,"type":"response"}
+```
+
+### A 组：origin=monitor 落盘 + 正常应答
+
+**步骤 1 — 创建会话：**
+
+```bash
+ion rpc --method create_session --params '{"session_id":"sess_origin_doc","cwd":"/tmp/ion-origin-doc"}'
+```
+
+真实响应：
+
+```json
+{"data":{"agent":"build","session_id":"sess_origin_doc_17351","status":"created"},"id":"rpc-client","success":true,"type":"response"}
+```
+
+**步骤 2 — 发送带 origin 的提示词：**
+
+```bash
+ion rpc --session sess_origin_doc_17351 --method prompt \
+  --params '{"text":"doc demo round","origin":"monitor"}'
+```
+
+真实响应：
+
+```json
+{"command":"prompt","data":null,"id":"rpc-client","success":true,"type":"response"}
+```
+
+**步骤 3 — 查会话 JSONL 的留痕条目：**
+
+```bash
+grep "input_origin" ~/.ion/agent/sessions/<cwd_hash>/sess_origin_doc_17351.jsonl
+```
+
+实测落盘条目（真实原文）：
+
+```json
+{"customType":"input_origin","data":{"behavior":"steer","origin":"monitor","textPreview":"doc demo round","ts":1788497179639},"id":"82362f28","parentId":"sess_origin_doc_17351","timestamp":"2026-09-04T04:46:19.639Z","type":"custom"}
+```
+
+验证点：
+- ✅ `type:"custom"` + `customType:"input_origin"`（旁路条目，不进 LLM 上下文）
+- ✅ `data.origin:"monitor"`；`data.behavior` 记录实际投递行为；`data.textPreview` 前 80 字符留痕
+
+**步骤 4 — 确认消息流正常（get_messages）：**
+
+```bash
+ion rpc --session sess_origin_doc_17351 --method get_messages --params '{"limit":10}'
+```
+
+实测该轮 `messages` 含 `User("doc demo round")` 与 Assistant 应答——origin 纯旁路，对话内容零变化。
+
+验证点：
 - ✅ agent 正常应答（origin 不影响主流程）
 
-### A2 缺省 origin 不落盘
+### B 组：缺省 origin 不落盘
 
 ```bash
-ion rpc --session <sid> --method prompt --params '{"text":"hi"}'
-tail -5 <jsonl> | grep input_origin   # 应无新增
+ion rpc --session sess_origin_doc_17351 --method prompt --params '{"text":"plain user round"}'
+# 响应 success:true
+grep -c "input_origin" ~/.ion/agent/sessions/<cwd_hash>/sess_origin_doc_17351.jsonl
 ```
 
-### A3 异步通知带 system
+实测：条目数**保持 1**（A 组写入的那条，本轮未新增）。
 
-触发一次子 worker 完成通知后，父会话 JSONL 出现 `input_origin` 且 `origin=system`。
+验证点：
+- ✅ `user` 是常态，不落留痕条目（JSONL 零噪音）
+
+### C 组：非法 origin 回落 user
+
+```bash
+ion rpc --session sess_origin_doc_17351 --method prompt --params '{"text":"bad origin round","origin":"hacker"}'
+# 响应 success:true（忙时 {"status":"queued"}，宽容接受不拒绝）
+grep -c "input_origin" ~/.ion/agent/sessions/<cwd_hash>/sess_origin_doc_17351.jsonl
+```
+
+实测：条目数**保持 1**。
+
+验证点：
+- ✅ 非法值回落 `user`，消息本身不被拒绝
 
 ### 自动化
 
-`tests/origin_ci.sh`：起 host → create_session → A1/A2 → 断言 → 清理。harness 测试（FauxProvider + 测试扩展断言 `InputContext.origin`）见 `cargo test --lib input_origin`。
+- `tests/origin_ci.sh`：起 host → create_session → A/B/C 三组 → 断言（实测 **8 ok / 0 FAIL**）
+- `cargo test --test input_origin_harness`：FauxProvider harness——断言 `on_input` 钩子依次读到 `user`（缺省）与 `monitor`（显式），且 monitor 轮在钩子内改写提示词生效（`[定时任务]` 前缀写入 user 消息）
+
+### 调试提示
+
+- 留痕条目只在 `origin ≠ "user"` 时落盘；查不到先确认发送时带了 `origin` 参数
+- `data.behavior` 显示该次输入的实际投递行为；忙时发送响应为 `{"status":"queued"}`
+- 钩子侧：扩展在 `on_input` 里读 `ctx.origin`；harness 测试展示完整读法
 
 ## 4. 兼容性
 
