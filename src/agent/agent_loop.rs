@@ -118,6 +118,9 @@ pub struct Agent {
     /// 输入来源标识（INPUT_ORIGIN）：每次 run 由 prompt params.origin 赋值，缺省 "user"。
     /// 经 InputContext.origin 暴露给扩展 on_input 钩子；非 user 时随输入落 custom 条目。
     pub input_origin: String,
+    /// INPUT_ORIGIN 消费侧①：origin → 隐藏工具名列表（schema 级过滤，LLM 看不到）。
+    /// 每次 provider 请求构建 tool_defs 时按本轮 origin 剔除；不改动注册表。
+    pub origin_hide_tools: std::collections::HashMap<String, Vec<String>>,
     /// 对齐 pi abort：设 true 后 check_pause 返回 Aborted 错误，终止 run()
     stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// soft interrupt 信号（对齐 pi interruptController）：
@@ -181,6 +184,7 @@ impl Agent {
             pause_rx,
             running: false,
             input_origin: "user".to_string(),
+            origin_hide_tools: std::collections::HashMap::new(),
             stopped: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             interrupted: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             http_cancel: std::sync::Mutex::new(None),
@@ -393,6 +397,14 @@ impl Agent {
     pub fn set_bg_pending(&mut self, pending: std::sync::Arc<std::sync::atomic::AtomicUsize>) {
         self.bg_pending = pending;
     }
+    /// 配置按 origin 隐藏的工具（INPUT_ORIGIN 消费侧①，schema 级过滤）
+    pub fn set_origin_hide_tools(
+        &mut self,
+        hide: std::collections::HashMap<String, Vec<String>>,
+    ) {
+        self.origin_hide_tools = hide;
+    }
+
     pub fn set_follow_up_rx(
         &mut self,
         rx: tokio::sync::mpsc::UnboundedReceiver<(Message, DeliverAs)>,
@@ -855,6 +867,9 @@ impl Agent {
         images: Vec<ion_provider::ImageContent>,
     ) -> AgentResult<()> {
         self.running = true;
+        // INPUT_ORIGIN 消费侧：本轮来源写入 runner 共享槽
+        // （before_tool_call 等无 ctx 钩子经 current_origin() 读取）
+        self.extensions.set_current_origin(&self.input_origin);
         self.stopped
             .store(false, std::sync::atomic::Ordering::SeqCst);
         // turn_index 是 agent loop 内部计数器（每次 run 从 0 开始，用于 max_turns 限制）
@@ -1271,7 +1286,22 @@ impl Agent {
             // 就把 skill tool result 的内容替换成简短占位符。
             // 保留最近一次 skill 加载的完整内容（当前 turn 可能还需要）。
             let messages_snapshot = unload_consumed_skills(&self.messages, turn as usize);
-            let tool_defs: Vec<_> = self.tools.tool_defs().to_vec();
+            // INPUT_ORIGIN 消费侧①：按本轮 origin 隐藏配置的工具（schema 级，
+            // LLM 看不到就不会调用；不 retain 注册表，下轮 origin 变化自然恢复）
+            let hidden: Vec<&String> = if self.input_origin == "user" {
+                Vec::new()
+            } else {
+                self.origin_hide_tools
+                    .get(&self.input_origin)
+                    .map(|v| v.iter().collect())
+                    .unwrap_or_default()
+            };
+            let tool_defs: Vec<_> = self
+                .tools
+                .tool_defs()
+                .into_iter()
+                .filter(|d| !hidden.iter().any(|h| *h == &d.name))
+                .collect();
 
             // 跨 provider 消息规范化：当对话历史混合多个 provider 的消息时，
             // 降级 thinking block / 规范化 tool call ID / 补合成孤儿 tool result

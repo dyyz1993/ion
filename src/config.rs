@@ -45,6 +45,16 @@ pub struct IonConfig {
     #[serde(default)]
     pub extensions: HashMap<String, ExtensionConfig>,
 
+    /// INPUT_ORIGIN 消费侧：按输入来源禁用工具（origin_gate 扩展读取）。
+    /// key = origin（monitor/system/peer；user 不允许配置），value = 工具名列表。
+    /// 例：{"monitor": ["spawn_worker", "write"]}
+    #[serde(default)]
+    pub origin_tools: std::collections::HashMap<String, Vec<String>>,
+    /// INPUT_ORIGIN 消费侧①：按来源从 LLM 工具列表隐藏（schema 级，LLM 看不到）。
+    /// 隐藏即拒（隐藏工具被幻觉调用时也拒绝执行）。user 不允许配置。
+    #[serde(default)]
+    pub origin_hide_tools: std::collections::HashMap<String, Vec<String>>,
+
     /// Model tier aliases (fast/pro/max → provider/model-id)
     /// 用户可以用 --model fast 代替 --model deepseek/deepseek-v4-flash
     #[serde(default = "default_tier_models")]
@@ -918,6 +928,8 @@ impl Default for IonConfig {
             provider_api_keys: HashMap::new(),
             providers: HashMap::new(),
             extensions: HashMap::new(),
+            origin_tools: HashMap::new(),
+            origin_hide_tools: HashMap::new(),
             tier_models: default_tier_models(),
             security_mode: None,
             mcp_servers: HashMap::new(),

@@ -240,6 +240,17 @@ pub trait Extension: Send + Sync {
     async fn before_tool_call(&self, _call: &mut ToolCall) -> AgentResult<()> {
         Ok(())
     }
+
+    /// before_tool_call 的 origin 感知变体（INPUT_ORIGIN 消费侧）：
+    /// runner 分发时传入本轮输入来源，扩展无需自行查询共享槽。
+    /// 默认实现转发到 before_tool_call（无 origin 需求的扩展零改动）。
+    async fn before_tool_call_with_origin(
+        &self,
+        call: &mut ToolCall,
+        _origin: &str,
+    ) -> AgentResult<()> {
+        self.before_tool_call(call).await
+    }
     async fn after_tool_call(&self, _call: &ToolCall, _result: &mut ToolResult) -> AgentResult<()> {
         Ok(())
     }
@@ -714,6 +725,9 @@ pub struct ExtensionRunner {
     runtime_flags: std::sync::Mutex<
         std::collections::HashMap<String, std::collections::HashMap<String, serde_json::Value>>,
     >,
+    /// 当前 run 的输入来源（INPUT_ORIGIN 消费侧）：Agent 每次 run 写入，
+    /// 扩展经 current_origin() 在 before_tool_call 等无 ctx 钩子里读取。
+    current_origin: std::sync::Arc<std::sync::RwLock<String>>,
 }
 
 impl Default for ExtensionRunner {
@@ -724,6 +738,7 @@ impl Default for ExtensionRunner {
 
 impl ExtensionRunner {
     pub fn new() -> Self {
+        // current_origin 默认 "user"；字段初始化见下方 Self{...}
         Self {
             extensions: Vec::new(),
             permission_engine: None,
@@ -731,6 +746,7 @@ impl ExtensionRunner {
             fs: None,
             storage: None,
             runtime_flags: std::sync::Mutex::new(std::collections::HashMap::new()),
+            current_origin: std::sync::Arc::new(std::sync::RwLock::new("user".to_string())),
         }
     }
 
@@ -776,6 +792,27 @@ impl ExtensionRunner {
             cwd: s.cwd_dir(extension_id),
             session: s.session_dir(extension_id),
         })
+    }
+
+    /// Agent 每次 run 时同步本轮 origin（与 Agent.origin_slot 同源）
+    pub fn set_current_origin(&self, origin: &str) {
+        if let Ok(mut slot) = self.current_origin.write() {
+            *slot = origin.to_string();
+        }
+    }
+
+    /// 共享槽的 Arc（Agent 持有同一份，保证两处读写同一状态）
+    pub fn current_origin_arc(&self) -> std::sync::Arc<std::sync::RwLock<String>> {
+        std::sync::Arc::clone(&self.current_origin)
+    }
+
+    /// 当前轮的输入来源（"user" / "monitor" / "system" / "peer"）——
+    /// 供 before_tool_call 等拿不到 InputContext 的钩子做按来源控制
+    pub fn current_origin(&self) -> String {
+        self.current_origin
+            .read()
+            .map(|s| s.clone())
+            .unwrap_or_else(|_| "user".to_string())
     }
 
     pub fn register(&mut self, ext: Box<dyn Extension>) {
@@ -1063,8 +1100,9 @@ impl ExtensionRunner {
         Ok(())
     }
     pub async fn before_tool_call(&self, call: &mut ToolCall) -> AgentResult<()> {
+        let origin = self.current_origin();
         for ext in &self.extensions {
-            ext.before_tool_call(call).await?;
+            ext.before_tool_call_with_origin(call, &origin).await?;
         }
         Ok(())
     }

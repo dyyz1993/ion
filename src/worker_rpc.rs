@@ -769,6 +769,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     .with_session_cwd(Some(worker_cwd.clone()))
     .with_session_id(Some(sid.clone()));
 
+    // INPUT_ORIGIN 消费侧①：按 origin 隐藏工具（schema 级）
+    agent.set_origin_hide_tools(ion_cfg.origin_hide_tools.clone());
+
     // LSP tool registration deferred to inside extension block
 
     // 应用初始 agent 的工具限制（必须在 Agent 构造后调用）
@@ -959,6 +962,14 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             ext_reg.register(Box::new(perm_ext));
         } else {
             tracing::info!("[extension] permission disabled by config");
+        }
+
+        // OriginGate（INPUT_ORIGIN 消费侧：按输入来源禁用工具）
+        if ion_cfg.is_extension_enabled("origin_gate") {
+            let gate = crate::agent::origin_gate::OriginGate::from_config(&ion_cfg);
+            ext_reg.register(Box::new(gate));
+        } else {
+            tracing::info!("[extension] origin_gate disabled by config");
         }
 
         // Context Index Extension（上下文索引 + 快照折叠）

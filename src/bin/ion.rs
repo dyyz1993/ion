@@ -2208,7 +2208,17 @@ async fn cmd_run(
         tracing::info!("[extension] lsp registered (cmd_run, auto-trigger on write/edit)");
     }
 
+    // ── OriginGate（cmd_run 路径，对齐 worker_rpc：INPUT_ORIGIN 按来源禁用工具）──
+    if cmd_run_ion_cfg.is_extension_enabled("origin_gate") {
+        let gate = ion::agent::origin_gate::OriginGate::from_config(&cmd_run_ion_cfg);
+        ext_reg.register(Box::new(gate));
+        tracing::info!("[extension] origin_gate registered (cmd_run)");
+    }
+
     agent = agent.with_extensions(ext_reg);
+
+    // INPUT_ORIGIN 消费侧①：按 origin 隐藏工具（cmd_run 路径，对齐 worker_rpc）
+    agent.set_origin_hide_tools(cmd_run_ion_cfg.origin_hide_tools.clone());
     // 把 follow_up_rx 注入 agent（cmd_run_follow_up_rx 在前面 BashExtension 注册时创建）。
     // 让 outer_loop 能 drain background bash 完成通知，对齐 worker_rpc 路径。
     agent.set_follow_up_rx(cmd_run_follow_up_rx);

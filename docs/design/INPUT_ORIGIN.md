@@ -1,6 +1,6 @@
 # INPUT_ORIGIN — 输入来源标识（user / monitor / system）
 
-> **状态：开发中** — origin 贯穿（入口→钩子→落盘）本期实现；per-turn 工具过滤等消费侧为后续。
+> **状态：已实现（内核闭环）** — origin 贯穿 + 四诉求消费侧全部落地：④ 改写提示词（on_input）、②③ 按 origin 拒绝工具（OriginGate）、① 按 origin 隐藏工具（schema 级过滤，隐藏即拒）。
 
 ## 1. 背景与问题
 
@@ -64,11 +64,25 @@ agent_loop run_with_images：InputContext { text, handled, origin } → on_input
 
 **不改动**：steer/followUp/interrupt 忙时臂（它们复用 prompt params，若带 origin 同样会被 #3 处理并落盘；MessageSource 照旧标投递行为）。
 
-### 2.4 消费侧（本期不实现，接口已就绪）
+### 2.4 消费侧（已实现）
 
-- **扩展改写提示词**：`on_input` 里 `if ctx.origin == "monitor" { ctx.text = ... }`
-- **hook 拒绝工具**：PreToolUse handler 读 turn origin（需把 origin 暴露给 hook 引擎——后续小改）
-- **隐藏工具**：agent loop per-turn 工具过滤（后续迭代）
+**配置总览（config.json，全局或项目级深度合并）**：
+
+```json
+{
+  "extensions": { "origin_gate": { "enabled": true } },
+  "origin_tools":     { "monitor": ["spawn_worker", "write"] },
+  "origin_hide_tools": { "monitor": ["write"] }
+}
+```
+
+| 诉求 | 机制 | 验证 |
+|------|------|------|
+| ④ 修改提示词 | `on_input` 读 `ctx.origin` 改写 `ctx.text` | input_origin_harness（`[定时任务]` 前缀落 user 消息） |
+| ③② 拒绝执行/结果不可达 | **OriginGate 扩展**（`origin_tools` 配置）：`before_tool_call_with_origin`（Extension trait 新钩子，runner 分发时传本轮 origin）拒绝 → 错误 ToolResult → agent 继续 | origin_gate 单元 4 + harness（user 执行 1 次/monitor 0 次/拒绝条目）+ 端到端（同一 faux 脚本：monitor 轮 write 被拒、user 轮正常写入） |
+| ① 隐藏工具 | **schema 级过滤**（`origin_hide_tools` 配置）：agent_loop 构建 provider 请求的 tool_defs 时按本轮 origin 剔除（不动注册表，下轮恢复）；**隐藏即拒**（幻觉调用也被 OriginGate 拒） | origin_hide_harness（Factory 捕获 Context.tools：monitor 轮无 hide_me、user 轮有） |
+
+**规则**：`user` 不允许配置（防误锁用户轮）；非法 origin 回落 user；OriginGate 默认 enabled。
 
 ## 3. CLI 验证（实测数据，2026-09-04）
 
@@ -185,6 +199,8 @@ grep -c "input_origin" ~/.ion/agent/sessions/<cwd_hash>/sess_origin_doc_17351.js
 
 - `tests/origin_ci.sh`：起 host → create_session → A/B/C 三组 → 断言（实测 **8 ok / 0 FAIL**）
 - `cargo test --test input_origin_harness`：FauxProvider harness——断言 `on_input` 钩子依次读到 `user`（缺省）与 `monitor`（显式），且 monitor 轮在钩子内改写提示词生效（`[定时任务]` 前缀写入 user 消息）
+- `cargo test --test origin_gate_harness`：user 轮工具执行 1 次 / monitor 轮同一工具被拒 0 次 / 拒绝转错误 ToolResult 且 agent 不中断
+- `cargo test --test origin_hide_harness`：Factory 捕获 provider 请求——monitor 轮 tools 列表不含被隐藏工具，user 轮含
 
 ### 调试提示
 

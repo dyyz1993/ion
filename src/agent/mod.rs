@@ -7,6 +7,7 @@ pub mod error;
 pub mod extension;
 pub mod memory;
 pub mod messages;
+pub mod origin_gate;
 pub mod permission_extension;
 pub mod plan_extension;
 pub mod plan_tool;
