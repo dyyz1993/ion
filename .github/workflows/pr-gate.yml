@@ -59,4 +59,7 @@ jobs:
         run: bash tests/session_entries_ci.sh
 
       - name: Integration tests (Rust)
-        run: cargo test --tests 2>&1 || echo "(some tests may need manager)"
+        # Failures must fail the gate. If a test genuinely needs a live
+        # manager/environment, mark it #[ignore] with a reason in the test
+        # itself — never swallow the exit code here.
+        run: cargo test --tests

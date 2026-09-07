@@ -35,15 +35,32 @@ ok()  { echo "  [PASS] $1"; P=$((P+1)); }
 bad() { echo "  [FAIL] $1"; F=$((F+1)); }
 
 # --- Fake project: runner + aggregator copied from the CURRENT repo state ---
-mkdir -p "$FP/scripts" "$FP/tests" "$FP/target/debug" "$FP/.ion/monitors" "$FP/docs"
+# Since T03 the runner runs a REAL cargo preflight, so the fake project must
+# be a real (tiny) cargo package with a buildable `ion` bin target.
+mkdir -p "$FP/scripts" "$FP/tests" "$FP/target/debug" "$FP/.ion/monitors" "$FP/docs" "$FP/src/bin"
 cp "$PROJECT_DIR/scripts/run_ci_matrix_parallel.sh" "$FP/scripts/"
 cp "$PROJECT_DIR/scripts/aggregate_ci_results.sh" "$FP/scripts/"
-printf '#!/bin/sh\nexit 0\n' > "$FP/target/debug/ion"
-chmod +x "$FP/target/debug/ion"
-: > "$FP/Cargo.toml"
+cat > "$FP/Cargo.toml" <<'EOF'
+[package]
+name = "fakeproj"
+version = "0.1.0"
+edition = "2018"
+
+[[bin]]
+name = "ion"
+path = "src/bin/ion.rs"
+EOF
+printf 'fn main() {}\n' > "$FP/src/bin/ion.rs"
+printf 'pub fn hello() {}\n' > "$FP/src/lib.rs"
+# No Cargo.lock in the fake project -> preflight must not use --locked here;
+# PREFLIGHT_SET keeps the baseline minimal (this suite tests SCHEDULING;
+# cargo honesty has its own suite: tests/ci_trust_gates_ci.sh).
+PREFLIGHT_SET="cargo build --bin ion"
 printf '# user monitor config -- must survive matrix runs\nschedule=* * * * *\n' \
     > "$FP/.ion/monitors/SENTINEL.cfg"
 MON_BEFORE=$(cksum "$FP/.ion/monitors/SENTINEL.cfg" | awk '{print $1}')
+(cd "$FP" && cargo build --bin ion) > "$SB/setup-build.log" 2>&1 \
+    || { echo "  [FAIL] setup: fake project build error"; cat "$SB/setup-build.log"; exit 1; }
 
 # Fake test scripts: log sub-second timestamps via python3 time.time()
 # (portable; avoids GNU-only `date +%N`).
@@ -70,7 +87,8 @@ capture_root() {
 
 # --- Run 1: all PASS --------------------------------------------------------
 INVOKE_LOG="$SB/invoke1.log" \
-    bash "$FP/scripts/run_ci_matrix_parallel.sh" > "$SB/run1.out" 2>&1
+PREFLIGHT_CMDS="$PREFLIGHT_SET" \
+        bash "$FP/scripts/run_ci_matrix_parallel.sh" > "$SB/run1.out" 2>&1
 RC1=$?
 RUN1=$(capture_root "$SB/run1.out")
 [ -n "$RUN1" ] && RUN_ROOTS="$RUN_ROOTS $RUN1"
@@ -151,7 +169,8 @@ fi
 
 # --- Run 2: per-run isolation + earlier artifacts survive -------------------
 INVOKE_LOG="$SB/invoke2.log" \
-    bash "$FP/scripts/run_ci_matrix_parallel.sh" > "$SB/run2.out" 2>&1
+PREFLIGHT_CMDS="$PREFLIGHT_SET" \
+        bash "$FP/scripts/run_ci_matrix_parallel.sh" > "$SB/run2.out" 2>&1
 RC2=$?
 RUN2=$(capture_root "$SB/run2.out")
 [ -n "$RUN2" ] && RUN_ROOTS="$RUN_ROOTS $RUN2"
@@ -171,6 +190,7 @@ fi
 # --- Run 3: any failure propagates ------------------------------------------
 INVOKE_LOG="$SB/invoke3.log" \
 FAKE_RC=7 \
+PREFLIGHT_CMDS="$PREFLIGHT_SET" \
     bash "$FP/scripts/run_ci_matrix_parallel.sh" > "$SB/run3.out" 2>&1
 RC3=$?
 RUN3=$(capture_root "$SB/run3.out")

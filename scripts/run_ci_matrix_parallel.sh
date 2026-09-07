@@ -58,7 +58,7 @@ if [ -d .ion/monitors ] && [ -n "$(ls -A .ion/monitors 2>/dev/null)" ]; then
     echo "  ℹ️  source .ion/monitors/ non-empty — left untouched (scripts run in isolated work dirs)"
 fi
 
-# ─── Per-run isolation root + cargo shim ──────────────────────────────────
+# ─── Per-run isolation root + trusted cargo baseline (preflight) ──────────
 # Every run gets its own directory tree so two concurrent matrix runs (or a
 # crashed leftover) cannot clobber each other via shared /tmp/ci-* names.
 RUN_ROOT="${CI_RUN_ROOT:-/tmp/ci-matrix-$(date +%Y%m%d-%H%M%S)-$$}"
@@ -67,21 +67,84 @@ CI_RESULTS_DIR="$RUN_ROOT/results"
 mkdir -p "$CI_BIN_DIR" "$CI_RESULTS_DIR" "$RUN_ROOT/out"
 echo "  Run root: $RUN_ROOT"
 export RUN_ROOT CI_BIN_DIR CI_RESULTS_DIR
+# Machine-local pointer for CI artifact upload (best effort; see ci.yml).
+echo "$RUN_ROOT" > /tmp/ci-matrix-latest
 
+# ─── Preflight: run the REAL cargo baseline once, stamp the tree ───────────
+# Every later build/check/clippy/fmt claim by scripts is backed by this real
+# run at a frozen tree fingerprint. The per-script shim no-ops those
+# subcommands ONLY while the stamp still matches; any source change or a
+# missing stamp falls through to real cargo. cargo test is ALWAYS real
+# (preflight warms the shared target dir). No fabricated output anywhere.
+# A failing preflight aborts the whole matrix run — a broken build must not
+# produce a green-looking report.
+PREFLIGHT_TIMEOUT="${PREFLIGHT_TIMEOUT:-1800}"
+PREFLIGHT_LOG="$RUN_ROOT/preflight.log"
+STAMP_FILE="$RUN_ROOT/cargo-stamp"
+# PREFLIGHT_CMDS is overridable for sandbox tests only; CI never overrides it.
+PREFLIGHT_CMDS="${PREFLIGHT_CMDS:-cargo build --bin ion --locked;cargo clippy --lib -- -D warnings;cargo fmt -- --check;cargo test --lib --locked;cargo test -p ion-provider --locked}"
+
+tree_fingerprint() {
+    { git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null
+      git -C "$PROJECT_DIR" status --porcelain 2>/dev/null | shasum
+    } | shasum | cut -d' ' -f1
+}
+
+echo "[Preflight] real cargo baseline (per-cmd timeout ${PREFLIGHT_TIMEOUT}s, log: $PREFLIGHT_LOG)"
+pf_fail=0
+while IFS= read -r pf_cmd; do
+    [ -n "$pf_cmd" ] || continue
+    echo "  -- $pf_cmd"
+    if ! timeout "$PREFLIGHT_TIMEOUT" bash -c "$pf_cmd" >> "$PREFLIGHT_LOG" 2>&1; then
+        echo "  ❌ preflight FAILED: $pf_cmd — aborting matrix (log: $PREFLIGHT_LOG)"
+        pf_fail=1
+        break
+    fi
+done < <(echo "$PREFLIGHT_CMDS" | tr ';' '\n')
+if [ "$pf_fail" -ne 0 ]; then
+    exit 1
+fi
+{
+    echo "fingerprint=$(tree_fingerprint)"
+    if [ -f "$PROJECT_DIR/target/debug/ion" ]; then
+        echo "ion_sha=$(shasum "$PROJECT_DIR/target/debug/ion" | cut -d' ' -f1)"
+    else
+        echo "ion_sha=none"
+    fi
+    echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+} > "$STAMP_FILE"
+echo "  ✅ preflight passed (fingerprint $(tree_fingerprint))"
+
+# ─── Honest cargo shim ─────────────────────────────────────────────────────
 REAL_CARGO=$(command -v cargo 2>/dev/null || echo /usr/local/cargo/bin/cargo)
 cat > "$CI_BIN_DIR/cargo" <<SHIM
 #!/usr/bin/env bash
-# Skip cargo subcommands that trigger compilation (binary already built).
-# cargo build / check / clippy → no-op (return success)
-# cargo run --bin ion → run prebuilt binary directly
-# cargo test → run from real project dir with pre-built cache
+# Honest cargo shim — NEVER fabricates output:
+# - build/check/clippy/fmt: no-op ONLY while the preflight stamp's tree
+#   fingerprint matches (real cargo already validated this exact tree);
+#   any mismatch or missing stamp falls through to real cargo.
+# - test: ALWAYS real cargo (preflight warmed the shared target dir).
+# - run --bin ion: exec the prebuilt binary the preflight just built.
+REAL_CARGO='$REAL_CARGO'
+PROJECT_DIR='$PROJECT_DIR'
+STAMP_FILE='$RUN_ROOT/cargo-stamp'
+_fp() {
+    { git -C "\$PROJECT_DIR" rev-parse HEAD 2>/dev/null
+      git -C "\$PROJECT_DIR" status --porcelain 2>/dev/null | shasum
+    } | shasum | cut -d' ' -f1
+}
+_stamp_fp() { grep '^fingerprint=' "\$STAMP_FILE" 2>/dev/null | cut -d= -f2; }
 case "\$1" in
     build|check|clippy|fmt)
-        exit 0
+        if [ -n "\$(_stamp_fp)" ] && [ "\$(_fp)" = "\$(_stamp_fp)" ]; then
+            echo "    (cargo shim: \$1 validated by preflight at same tree)"
+            exit 0
+        fi
+        exec "\$REAL_CARGO" "\$@"
         ;;
     run)
         if echo "\$@" | grep -q -- "--bin ion"; then
-            BIN="\$(pwd)/target/debug/ion"
+            BIN="\$PROJECT_DIR/target/debug/ion"
             if [ -x "\$BIN" ]; then
                 local_args=""; found=0
                 for arg in "\$@"; do
@@ -91,21 +154,10 @@ case "\$1" in
                 eval "exec \"\$BIN\" \$local_args"
             fi
         fi
-        ;;
-    test)
-        # For goal_* tests: run real tests (they're fast and test names matter)
-        if echo "\$@" | grep -q "goal_"; then
-            REAL_DIR=\$(readlink -f "\$(pwd)/Cargo.toml" 2>/dev/null | xargs dirname 2>/dev/null)
-            [ -n "\$REAL_DIR" ] && cd "\$REAL_DIR"
-            exec $REAL_CARGO "\$@"
-        fi
-        # For all other tests: fake output (avoids 3min test binary recompile)
-        echo "test result: ok. 900 passed; 0 failed; 0 ignored"
-        echo "1 passed"
-        exit 0
+        exec "\$REAL_CARGO" "\$@"
         ;;
 esac
-exec $REAL_CARGO "\$@"
+exec "\$REAL_CARGO" "\$@"
 SHIM
 chmod +x "$CI_BIN_DIR/cargo"
 

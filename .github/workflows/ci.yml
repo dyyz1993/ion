@@ -48,15 +48,16 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --lib -- -D warnings
-        continue-on-error: true
 
       - name: Format check
         run: cargo fmt -- --check
-        continue-on-error: true
 
+      # Same-second file_snapshot flakiness was already fixed (turn_id
+      # ordering + process-unique dirs); if a Linux-specific failure
+      # reappears, add a NAMED `--skip <test>` with reason here — never a
+      # blanket continue-on-error.
       - name: Unit tests (ion lib)
         run: cargo test --lib
-        continue-on-error: true  # file_snapshot approval tests fail on Linux (filesystem diff)
 
       - name: Provider tests
         run: cargo test -p ion-provider
@@ -98,19 +99,25 @@ jobs:
           PARALLELISM: 5
           PER_SCRIPT_TIMEOUT: 600
 
+      - name: Record run root
+        if: always()
+        run: |
+          ROOT=$(cat /tmp/ci-matrix-latest 2>/dev/null || true)
+          echo "CI_RUN_ROOT=${ROOT:-/tmp/ci-matrix-none}" >> $GITHUB_ENV
+
       - name: Upload CI results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ci-results
-          path: /tmp/ci-results/
+          path: ${{ env.CI_RUN_ROOT }}/results/
 
       - name: Upload CI logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ci-logs
-          path: /tmp/ci-out-*.log
+          path: ${{ env.CI_RUN_ROOT }}/out/
 
   # ─── Job 3: Scenario tests (quick smoke) ──────────────────────────
   scenario-tests:

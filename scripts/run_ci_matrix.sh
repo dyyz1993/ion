@@ -54,9 +54,16 @@ if [ ! -x "$ION_BIN" ]; then
     exit 1
 fi
 
-# Clean prior results
-rm -f /tmp/ci-result-*.jsonl /tmp/ci-out-*.log /tmp/ci-status-* 2>/dev/null
-mkdir -p /tmp/ci-results
+# Per-run isolation root: results/home/bin/out live under a unique dir so
+# concurrent or leftover runs cannot clobber each other, and stale results
+# from previous runs can never leak into this run's report (the aggregator
+# validates against manifest.txt).
+RUN_ROOT="${CI_RUN_ROOT:-/tmp/ci-matrix-$(date +%Y%m%d-%H%M%S)-$$}"
+CI_RESULTS_DIR="$RUN_ROOT/results"
+CI_BIN_DIR="$RUN_ROOT/bin"
+CI_OUT_DIR="$RUN_ROOT/out"
+mkdir -p "$CI_RESULTS_DIR" "$CI_BIN_DIR" "$CI_OUT_DIR"
+echo "  Run root: $RUN_ROOT"
 
 # ─── Step 1: Gather + partition CI scripts ─────────────────────────────────
 # macOS bash 3.2 has no mapfile; use a portable while-read loop.
@@ -86,7 +93,7 @@ for s in "${ALL_SCRIPTS[@]}"; do
         echo "  SKIP (env-dep): $s"
         # Pre-mark as skipped in the results
         echo "{\"script\":\"$s\",\"status\":\"SKIP\",\"reason\":\"env-dependent\",\"exit_code\":-1,\"duration_s\":0}" \
-            >> /tmp/ci-results/skipped.jsonl
+            >> "$CI_RESULTS_DIR/skipped.jsonl"
     fi
 done
 
@@ -94,6 +101,10 @@ TOTAL=${#FILTERED[@]}
 echo ""
 echo "  Total scripts:   $TOTAL (skipped: ${#SKIP_LIST[@]})"
 echo ""
+
+# Manifest: every discovered script; the aggregator fails the run if any
+# scheduled script produced no result.
+printf '%s\n' "${ALL_SCRIPTS[@]}" > "$CI_RESULTS_DIR/manifest.txt"
 
 if [ "$TOTAL" -eq 0 ]; then
     echo "❌ No CI scripts found in tests/"
@@ -120,7 +131,7 @@ done
 echo ""
 
 # ─── Step 2: Prepare worktrees ─────────────────────────────────────────────
-WORKTREE_ROOT="/tmp/ion-ci-wt"
+WORKTREE_ROOT="$RUN_ROOT/worktrees"
 rm -rf "$WORKTREE_ROOT" 2>/dev/null
 mkdir -p "$WORKTREE_ROOT"
 git worktree prune 2>/dev/null
@@ -135,27 +146,33 @@ git worktree prune 2>/dev/null
 # from 3+ minutes to ~10 seconds.
 REAL_CARGO=$(command -v cargo 2>/dev/null || echo /usr/local/cargo/bin/cargo)
 echo "  Real cargo: $REAL_CARGO"
-mkdir -p /tmp/ci-bin
-cat > /tmp/ci-bin/cargo <<SHIM
+cat > "$CI_BIN_DIR/cargo" <<SHIM
 #!/usr/bin/env bash
-# Cargo shim: skip 'cargo build' (binary already built), pass through everything else.
-if [ "\$1" = "build" ]; then
-    echo "    (cargo shim: skipping build — using prebuilt binary)"
+# Honest cargo shim: 'cargo build' no-ops ONLY while the prebuilt binary
+# this run launched with still exists (SHA recorded in results/ion.sha);
+# otherwise it falls through to real cargo. Everything else is always real.
+REAL_CARGO='$REAL_CARGO'
+PROJECT_DIR='$PROJECT_DIR'
+if [ "\$1" = "build" ] && [ -x "\$PROJECT_DIR/target/debug/ion" ]; then
+    echo "    (cargo shim: build skipped — prebuilt ion present, see results/ion.sha)"
     exit 0
 fi
-exec $REAL_CARGO "\$@"
+exec "\$REAL_CARGO" "\$@"
 SHIM
-chmod +x /tmp/ci-bin/cargo
+chmod +x "$CI_BIN_DIR/cargo"
+# Record the prebuilt artifact identity (预编译产物记录 SHA).
+[ -f "$PROJECT_DIR/target/debug/ion" ] && \
+    shasum "$PROJECT_DIR/target/debug/ion" > "$CI_RESULTS_DIR/ion.sha"
 
 for ((i=1; i<=PARALLELISM; i++)); do
-    HOME_DIR="/tmp/ci-home-$i"
+    HOME_DIR="$RUN_ROOT/home-$i"
     rm -rf "$HOME_DIR"
     mkdir -p "$HOME_DIR/.ion/agent" "$HOME_DIR/bin"
     # Symlink rust toolchain dirs (read-only is fine)
     [ -d "$HOME/.rustup" ] && ln -s "$HOME/.rustup" "$HOME_DIR/.rustup"
     [ -d "$HOME/.cargo" ] && ln -s "$HOME/.cargo" "$HOME_DIR/.cargo"
     # Put cargo shim in each worker's PATH
-    ln -sf /tmp/ci-bin/cargo "$HOME_DIR/bin/cargo"
+    ln -sf "$CI_BIN_DIR/cargo" "$HOME_DIR/bin/cargo"
 done
 
 # ─── Step 3: Build the coordinator prompt ──────────────────────────────────
@@ -174,13 +191,14 @@ Finally, write a one-line summary: 'CI MATRIX DONE: <pass_count> pass / <fail_co
 
 IMPORTANT:
 - Spawn all 5 workers BEFORE awaiting any of them (that's what makes it parallel).
-- Each worker writes its results to /tmp/ci-results/batch-N.jsonl (one JSON per script).
+- Each worker writes its results to ${CI_RESULTS_DIR}/batch-N.jsonl (one JSON per script).
 - Workers MUST run scripts with 'timeout ${PER_SCRIPT_TIMEOUT}s bash <script>'.
 - If a worker's bash command exits non-zero, that's a FAIL — record it, don't retry.
 - Do NOT edit or write any files yourself. You only orchestrate.
-- Each worker has a 'cargo' shim in PATH that no-ops 'cargo build' (binary already built).
-  Workers should NOT pass CARGO_TARGET_DIR — they share the host's prebuilt target/.
-- Each worker uses HOME=/tmp/ci-home-<N> to avoid ~/.ion collisions.
+- Each worker has a 'cargo' shim in PATH that no-ops 'cargo build' only while
+  the prebuilt ion binary exists. Workers should NOT pass CARGO_TARGET_DIR —
+  they share the host's prebuilt target/.
+- Each worker uses HOME=${RUN_ROOT}/home-<N> to avoid ~/.ion collisions.
 "
 
 for ((i=0; i<PARALLELISM; i++)); do
@@ -192,12 +210,12 @@ for ((i=0; i<PARALLELISM; i++)); do
 Run these scripts SEQUENTIALLY in your worktree, writing a JSON result for each:
 $SCRIPTS
 
-For each script, write a line to /tmp/ci-results/batch-${BATCH_NUM}.jsonl:
-  {\"script\":\"<name>\",\"status\":\"PASS\"|\"FAIL\",\"exit_code\":<N>,\"duration_s\":<N>,\"log_path\":\"/tmp/ci-out-${BATCH_NUM}-<name>.log\"}
+For each script, write a line to ${CI_RESULTS_DIR}/batch-${BATCH_NUM}.jsonl:
+  {\"script\":\"<name>\",\"status\":\"PASS\"|\"FAIL\",\"exit_code\":<N>,\"duration_s\":<N>,\"log_path\":\"${CI_OUT_DIR}/batch-${BATCH_NUM}-<name>.log\"}
 
-Capture stdout+stderr to /tmp/ci-out-${BATCH_NUM}-<basename>.log.
+Capture stdout+stderr to ${CI_OUT_DIR}/batch-${BATCH_NUM}-<basename>.log.
 Use EXACTLY this command form (PATH includes the cargo shim, HOME isolates ~/.ion):
-  HOME=/tmp/ci-home-${BATCH_NUM} PATH=/tmp/ci-home-${BATCH_NUM}/bin:/tmp/ci-bin:/usr/local/bin:/usr/bin:/bin timeout ${PER_SCRIPT_TIMEOUT}s bash <script> > <log> 2>&1
+  HOME=${RUN_ROOT}/home-${BATCH_NUM} PATH=${RUN_ROOT}/home-${BATCH_NUM}/bin:${CI_BIN_DIR}:/usr/local/bin:/usr/bin:/bin timeout ${PER_SCRIPT_TIMEOUT}s bash <script> > <log> 2>&1
 "
 done
 
@@ -211,10 +229,10 @@ ION_WORKTREE_ROOT="$WORKTREE_ROOT" \
 ION_HOST_TIMEOUT="$HOST_TIMEOUT" \
 ION_HOST_IDLE_GRACE=600 \
 RUST_LOG=info \
-PATH="/tmp/ci-bin:$PATH" \
+PATH="$CI_BIN_DIR:$PATH" \
 timeout $((HOST_TIMEOUT + 300)) \
 "$ION_BIN" --host --agent ci_runner_coordinator "$PROMPT" \
-    2>&1 | tee /tmp/ci-matrix-host.log
+    2>&1 | tee "$RUN_ROOT/host.log"
 
 HOST_EXIT=$?
 echo ""
@@ -227,12 +245,19 @@ echo "  Phase 1 complete — aggregating results"
 echo "════════════════════════════════════════════════════════════════"
 echo ""
 
+AGG_RC=1
 if [ -x "$PROJECT_DIR/scripts/aggregate_ci_results.sh" ]; then
-    bash "$PROJECT_DIR/scripts/aggregate_ci_results.sh"
+    RESULTS_DIR="$CI_RESULTS_DIR" \
+    MANIFEST_FILE="$CI_RESULTS_DIR/manifest.txt" \
+    REPORT_PATH="${REPORT_PATH:-$PROJECT_DIR/docs/testing/CI_MATRIX_REPORT.md}" \
+        bash "$PROJECT_DIR/scripts/aggregate_ci_results.sh"
+    AGG_RC=$?
 else
-    echo "⚠️  aggregate_ci_results.sh not found; raw results in /tmp/ci-results/"
-    ls -la /tmp/ci-results/ 2>/dev/null
+    echo "⚠️  aggregate_ci_results.sh not found; raw results in $CI_RESULTS_DIR/"
+    ls -la "$CI_RESULTS_DIR/" 2>/dev/null
 fi
 
 echo ""
 echo "Report: docs/testing/CI_MATRIX_REPORT.md"
+echo "Run artifacts kept in: $RUN_ROOT"
+exit "$AGG_RC"
