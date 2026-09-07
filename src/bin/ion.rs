@@ -6595,6 +6595,39 @@ async fn handle_manager_command_write(
             }
             Ok(serde_json::json!({"sessions": sessions, "totalCount": total}))
         }
+        // 对外 API：索引持久化体检（T06）——磁盘直读解析 + 最近 issue + 隔离文件清单。
+        // 跨进程真值：直接重新解析磁盘文件，不依赖任何进程的内存态。
+        "get_index_health" => {
+            let path = ion::session_index::SessionIndex::path();
+            let (parse_ok, entries, err) = match std::fs::read_to_string(&path) {
+                Ok(content) => match serde_json::from_str::<ion::session_index::SessionIndex>(&content)
+                {
+                    Ok(idx) => (true, Some(idx.sessions.len()), None),
+                    Err(e) => (false, None, Some(e.to_string())),
+                },
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (true, Some(0), None),
+                Err(e) => (false, None, Some(e.to_string())),
+            };
+            let quarantined: Vec<String> = path
+                .parent()
+                .and_then(|d| std::fs::read_dir(d).ok())
+                .map(|rd| {
+                    rd.filter_map(|e| e.ok())
+                        .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(serde_json::json!({
+                "path": path.display().to_string(),
+                "parse_ok": parse_ok,
+                "entries": entries,
+                "error": err,
+                // 本 host 进程视角的最近持久化问题；worker 侧 issue 在其 stderr 日志
+                "last_issue": ion::session_index::SessionIndex::last_issue(),
+                "quarantined_files": quarantined,
+            }))
+        }
         // 对外 API：搜索 session（标题匹配 + 可选内容搜索）
         // params: { query: string, searchContent?: bool, limit?: number }
         "search_sessions" => {

@@ -132,6 +132,46 @@ pub struct SessionIndex {
     pub removed_sessions: std::collections::HashSet<String>,
 }
 
+/// 索引持久化问题（T06：让静默失败可见）。记录到 stderr 日志 +
+/// 进程内 last_issue（`get_index_health` RPC 可拉取）。
+#[derive(Debug, Clone)]
+pub enum IndexPersistIssue {
+    /// 锁文件创建失败，写事务退化为无锁路径（仍执行，但已失去跨进程串行保证）
+    LockDegraded(String),
+    /// tmp 写入或 rename 失败（磁盘满/权限等）——本次更新未落盘
+    SaveFailed(String),
+    /// 索引文件损坏/不可读，已隔离保全（refused=true 表示隔离失败，本次写被跳过）
+    QuarantinedCorrupt { backup: String, reason: String, refused: bool },
+}
+
+impl std::fmt::Display for IndexPersistIssue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IndexPersistIssue::LockDegraded(e) => {
+                write!(f, "lock degraded (no cross-process serialization): {e}")
+            }
+            IndexPersistIssue::SaveFailed(e) => write!(f, "save failed (update NOT persisted): {e}"),
+            IndexPersistIssue::QuarantinedCorrupt { backup, reason, refused } => {
+                if *refused {
+                    write!(f, "index corrupt/unreadable ({reason}); quarantine FAILED at {backup} — write skipped, existing file untouched")
+                } else {
+                    write!(f, "index corrupt/unreadable ({reason}); quarantined to {backup}, rebuilding fresh")
+                }
+            }
+        }
+    }
+}
+
+static LAST_ISSUE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn record_issue(issue: &IndexPersistIssue) {
+    // stderr：进入 host/worker 日志流，运维可 grep
+    eprintln!("[session-index] PERSIST ISSUE: {issue}");
+    if let Ok(mut slot) = LAST_ISSUE.lock() {
+        *slot = Some(issue.to_string());
+    }
+}
+
 impl SessionIndex {
     pub fn path() -> PathBuf {
         let home = std::env::var("HOME")
@@ -147,10 +187,20 @@ impl SessionIndex {
         Self::path().with_extension("json.lock")
     }
 
+    /// 最近一次持久化问题（本进程视角；worker 侧 issue 另见其 stderr）。
+    /// 只读不消费——健康检查可反复拉取。
+    pub fn last_issue() -> Option<String> {
+        LAST_ISSUE.lock().ok().and_then(|s| s.clone())
+    }
+
     /// 跨进程写事务：持排它 flock 期间 load→mutate→save。
     /// 索引的写者分布在 host 与各 worker 进程（patch_meta/on_turn_end 等），
     /// 各自独立 load→modify→save 会 last-write-wins 覆盖彼此——事务化后
-    /// 串行执行，读到的必然是最新状态。锁文件创建失败时退化为无锁路径保功能。
+    /// 串行执行，读到的必然是最新状态。
+    ///
+    /// T06 可见性：锁创建失败仍降级执行但记录 LockDegraded；索引损坏时
+    /// 先隔离保全再重建（绝不以默认空索引直接覆盖）；save 失败记录
+    /// SaveFailed。三种问题都可经 `get_index_health` RPC 观察到。
     pub fn write_txn<F, R>(f: F) -> R
     where
         F: FnOnce(&mut Self) -> R,
@@ -163,51 +213,119 @@ impl SessionIndex {
         match std::fs::File::create(&lp) {
             Ok(lock) => {
                 let _ = lock.lock_exclusive(); // 阻塞至拿到；进程退出自动释放
-                let mut idx = Self::load();
+                let (mut idx, may_save) = Self::load_for_write();
                 let out = f(&mut idx);
                 // 墓碑上限：防长期无限增长。超过 512 全清——能触发复活的
                 // stale writer（被删会话的 worker 收尾统计）在这个量级下早已消亡
                 if idx.removed_sessions.len() > 512 {
                     idx.removed_sessions.clear();
                 }
-                idx.save();
+                if may_save {
+                    idx.save();
+                }
                 let _ = lock.unlock();
                 let _ = lock.sync_all();
                 out
             }
-            Err(_) => {
-                let mut idx = Self::load();
+            Err(e) => {
+                record_issue(&IndexPersistIssue::LockDegraded(e.to_string()));
+                let (mut idx, may_save) = Self::load_for_write();
                 let out = f(&mut idx);
-                idx.save();
+                if may_save {
+                    idx.save();
+                }
                 out
             }
+        }
+    }
+
+    /// 损坏的索引文件隔离到同目录 `<name>.corrupt-<secs>-<pid>`。
+    fn quarantine(path: &std::path::Path) -> std::io::Result<PathBuf> {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let backup = path.with_extension(format!("json.corrupt-{ts}-{}", std::process::id()));
+        std::fs::rename(path, &backup)?;
+        Ok(backup)
+    }
+
+    /// 写路径专用 load：损坏/不可读的索引先隔离保全再从空索引重建。
+    /// 隔离失败（rename 也不行）时返回 may_save=false——宁可跳过本次写，
+    /// 也不让默认空索引覆盖现场。返回 (index, may_save)。
+    fn load_for_write() -> (Self, bool) {
+        let path = Self::path();
+        let bad = |reason: String| -> (Self, bool) {
+            match Self::quarantine(&path) {
+                Ok(backup) => {
+                    record_issue(&IndexPersistIssue::QuarantinedCorrupt {
+                        backup: backup.display().to_string(),
+                        reason,
+                        refused: false,
+                    });
+                    (Self::default(), true)
+                }
+                Err(qe) => {
+                    record_issue(&IndexPersistIssue::QuarantinedCorrupt {
+                        backup: format!("{} (quarantine failed: {qe})", path.display()),
+                        reason,
+                        refused: true,
+                    });
+                    (Self::default(), false)
+                }
+            }
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(content) => match serde_json::from_str(&content) {
+                Ok(idx) => (idx, true),
+                Err(e) => bad(e.to_string()),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Self::default(), true),
+            Err(e) => bad(e.to_string()),
         }
     }
 
     pub fn load() -> Self {
         let path = Self::path();
-        if !path.exists() {
-            return Self::default();
-        }
         match std::fs::read_to_string(&path) {
-            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+            Ok(content) => serde_json::from_str(&content).unwrap_or_else(|e| {
+                // 读路径不改动文件；损坏对读者表现为空 + 显式记录
+                record_issue(&IndexPersistIssue::QuarantinedCorrupt {
+                    backup: String::new(),
+                    reason: format!("read-side corrupt view: {e}"),
+                    refused: false,
+                });
+                Self::default()
+            }),
             Err(_) => Self::default(),
         }
     }
 
-    pub fn save(&self) {
+    /// 持久化（原子写：tmp + rename）。T06：失败显式记录并返回 false，
+    /// 不再静默吞掉——调用方与 get_index_health 均可观察。
+    pub fn save(&self) -> bool {
         let path = Self::path();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(content) = serde_json::to_string_pretty(self) {
-            // 原子写：先写 .tmp 再 rename，防多 worker 进程并发写导致 last-write-wins 丢更新。
-            // rename 在同一文件系统内是原子的（POSIX 保证），.tmp 和目标在同目录确保同 FS。
-            let tmp = path.with_extension("json.tmp");
-            if std::fs::write(&tmp, &content).is_ok() {
-                let _ = std::fs::rename(&tmp, &path);
+        let content = match serde_json::to_string_pretty(self) {
+            Ok(c) => c,
+            Err(e) => {
+                record_issue(&IndexPersistIssue::SaveFailed(format!("serialize: {e}")));
+                return false;
             }
+        };
+        let tmp = path.with_extension("json.tmp");
+        if let Err(e) = std::fs::write(&tmp, &content) {
+            record_issue(&IndexPersistIssue::SaveFailed(format!("write tmp {tmp:?}: {e}")));
+            return false;
         }
+        if let Err(e) = std::fs::rename(&tmp, &path) {
+            record_issue(&IndexPersistIssue::SaveFailed(format!("rename {tmp:?} -> {path:?}: {e}")));
+            let _ = std::fs::remove_file(&tmp);
+            return false;
+        }
+        true
     }
 
     pub fn get(&self, id: &str) -> Option<&SessionMeta> {
