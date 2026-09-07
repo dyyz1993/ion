@@ -115,7 +115,7 @@ fn resolve_export_active_leaf(entries: &[Value]) -> Option<String> {
             .filter(|entry| is_message_entry(entry))
             .filter_map(entry_id)
             .filter(|id| is_descendant_of_entry(&entries_by_id, id, target))
-            .last();
+            .next_back();
         return latest_message.or(Some(target)).map(str::to_string);
     }
 
@@ -124,7 +124,7 @@ fn resolve_export_active_leaf(entries: &[Value]) -> Option<String> {
         .skip(pointer_index + 1)
         .filter(|entry| is_message_entry(entry))
         .filter_map(entry_id)
-        .last()
+        .next_back()
         .map(str::to_string)
 }
 
@@ -1342,8 +1342,8 @@ document.addEventListener('DOMContentLoaded', function() {
         &format!("<title>{}</title>", escape_html_text(&session_name)),
     );
     html = html.replace("{{SESSION_DATA}}", &session_data_b64);
-    html = html.replace("{{MARKED_JS}}", &marked_js);
-    html = html.replace("{{HIGHLIGHT_JS}}", &highlight_js);
+    html = html.replace("{{MARKED_JS}}", marked_js);
+    html = html.replace("{{HIGHLIGHT_JS}}", highlight_js);
     html = html.replace("{{JS}}", &js);
     // pi 的模板依赖一组主题变量。ION 之前把占位符替换成空串，导致大量
     // `var(--text)` / `var(--border)` 声明失效，只能靠浏览器默认值兜底。

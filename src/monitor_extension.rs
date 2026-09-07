@@ -28,32 +28,22 @@ use tokio::sync::Mutex;
 //   - ChannelNotify : push rendered prompt to the `main` channel for an
 //                     already-running coordinator/developer to pick up
 //   - EventOnly     : emit a `monitor_triggered` event but spawn nothing
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MonitorMode {
+    #[default]
     SerialSkip,
     SerialQueue,
     Concurrent,
 }
 
-impl Default for MonitorMode {
-    fn default() -> Self {
-        MonitorMode::SerialSkip
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerMode {
+    #[default]
     AutoSpawn,
     ChannelNotify,
     EventOnly,
-}
-
-impl Default for TriggerMode {
-    fn default() -> Self {
-        TriggerMode::AutoSpawn
-    }
 }
 
 /// A single monitor definition (from .ion/monitors/*.json or added via RPC).
@@ -455,7 +445,7 @@ impl Extension for MonitorExtension {
         let global_monitors = crate::paths::root().join("monitors");
 
         let mut loaded = Vec::new();
-        loaded.extend(Self::load_from_dir(&project_monitors));
+        loaded.extend(Self::load_from_dir(project_monitors));
         loaded.extend(Self::load_from_dir(&global_monitors));
 
         tracing::info!("[monitor] loaded {} monitor definition(s)", loaded.len());
@@ -615,8 +605,8 @@ impl Extension for MonitorExtension {
                         "output_bytes": output.len(),
                         "output": &output,
                         "agent": &agent,
-                        "mode": serde_json::to_value(&mode).unwrap_or_default(),
-                        "trigger_mode": serde_json::to_value(&trigger_mode).unwrap_or_default(),
+                        "mode": serde_json::to_value(mode).unwrap_or_default(),
+                        "trigger_mode": serde_json::to_value(trigger_mode).unwrap_or_default(),
                     }), &reg).await;
 
                     // Increment trigger count

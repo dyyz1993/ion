@@ -463,7 +463,6 @@ async fn probe_ports_sync(config: &DevServerDetectorConfig) -> Vec<u16> {
     let mut handles = Vec::new();
 
     for &port in &config.probe_ports {
-        let port = port as u16;
         handles.push(tokio::spawn(async move {
             let addr = format!("127.0.0.1:{port}");
             match tokio::time::timeout(timeout, TcpStream::connect(&addr)).await {

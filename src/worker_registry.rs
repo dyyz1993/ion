@@ -966,7 +966,7 @@ impl WorkerRegistry {
             SessionIndex::write_txn(|idx| {
                 idx.removed_sessions.remove(&session_id);
                 let meta = merge_existing_meta(
-                &idx,
+                idx,
                 &session_id,
                 SessionMeta {
                     name: Some(session_id.clone()),
@@ -1730,7 +1730,7 @@ impl WorkerRegistry {
             SessionIndex::write_txn(|idx| {
                 idx.removed_sessions.remove(&session_id);
                 let meta = merge_existing_meta(
-                &idx,
+                idx,
                 &session_id,
                 SessionMeta {
                     name: Some(session_id.clone()),

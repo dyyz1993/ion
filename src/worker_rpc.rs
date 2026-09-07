@@ -224,7 +224,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     }
 
     // config.json 里的 provider base_url 也需要覆盖 builtin model 的直连 URL。
-    if let Some(ref cfg_provider) = crate::config::IonConfig::load().providers.get(&provider) {
+    if let Some(cfg_provider) = crate::config::IonConfig::load().providers.get(&provider) {
         if !cfg_provider.base_url.is_empty() {
             model.base_url = cfg_provider.base_url.clone();
         }
@@ -4480,7 +4480,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             file_snaps
                                 .iter()
                                 .filter(|s| s.timestamp.as_str() < target_ts)
-                                .last()
+                                .next_back()
                                 .and_then(|p| p.after_hash.as_ref())
                                 .and_then(|h| store.objects().read_object_text(h))
                         }
@@ -7538,13 +7538,10 @@ fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
         .iter()
         .filter_map(|e| {
             let m = e.get("message")?;
-            let c = if let Some(u) = m.get("User") {
-                u.get("content")
-            } else if let Some(a) = m.get("Assistant") {
-                a.get("content")
-            } else {
-                return None;
-            };
+            let c = m
+                .get("User")
+                .and_then(|u| u.get("content"))
+                .or_else(|| m.get("Assistant").and_then(|a| a.get("content")));
             if let Some(t) = c.and_then(|v| v.as_str()) {
                 return Some(t.chars().take(120).collect::<String>());
             }

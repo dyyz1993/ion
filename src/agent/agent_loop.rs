@@ -1300,7 +1300,7 @@ impl Agent {
                 .tools
                 .tool_defs()
                 .into_iter()
-                .filter(|d| !hidden.iter().any(|h| *h == &d.name))
+                .filter(|d| !hidden.contains(&&d.name))
                 .collect();
 
             // 跨 provider 消息规范化：当对话历史混合多个 provider 的消息时，

@@ -963,7 +963,7 @@ impl Extension for LspExtension {
     ) -> AgentResult<serde_json::Value> {
         match method {
             "check" => {
-                let diags = self.do_check().await.map_err(|e| AgentError::Tool(e))?;
+                let diags = self.do_check().await.map_err(AgentError::Tool)?;
                 Ok(serde_json::json!({
                     "count": diags.len(),
                     "has_errors": diags.iter().any(|d| d.severity == "error"),
@@ -1051,7 +1051,7 @@ impl Tool for LspCheckTool {
             Arc::clone(&self.has_errors),
         );
 
-        let diags = ext.do_check().await.map_err(|e| AgentError::Tool(e))?;
+        let diags = ext.do_check().await.map_err(AgentError::Tool)?;
         Ok(LspExtension::format_diagnostics_text(&diags))
     }
 }
