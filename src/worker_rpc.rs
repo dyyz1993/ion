@@ -374,6 +374,17 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default()
         });
+
+    // ── T05 Goal 中断恢复：回放会话 JSONL 最后一条 goal_state ──
+    // worker 重启/同会话恢复后目标、迭代数、起始时间连续（截止时间由
+    // started_at + config 推导，天然一致）。shared_goal 在上文创建，此处回填。
+    if let Some(g) = crate::goal_supervisor_extension::restore_goal_state(&worker_cwd) {
+        eprintln!(
+            "[goal] restored goal {} (status={:?}, iteration={})",
+            g.goal_id, g.status, g.iteration_count
+        );
+        *shared_goal.lock().unwrap() = Some(g);
+    }
     let config_root = crate::paths::project_root_for_config()
         .to_string_lossy()
         .to_string();

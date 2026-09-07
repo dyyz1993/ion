@@ -252,6 +252,48 @@ impl Default for GoalSupervisorConfig {
 /// `plan_extension.rs` / `plan_tool.rs`.
 pub type SharedGoalState = Arc<Mutex<Option<GoalState>>>;
 
+// ---------------------------------------------------------------------------
+// T05 中断恢复：完整轨迹进会话 JSONL（custom(goal_state)），小摘要进 SessionIndex。
+// 不新增任何 sidecar 文件；journal 失败不阻断目标主流程（stderr 留痕）。
+// ---------------------------------------------------------------------------
+
+/// 把 GoalState 全量快照追加进会话 JSONL，并把小摘要写进 SessionIndex。
+pub fn persist_goal_state(state: &GoalState) {
+    persist_goal_state_with_deadline(state, None)
+}
+
+/// 同上，附带硬截止（epoch ms，由持有 config 的扩展侧推导；工具侧传 None）。
+pub fn persist_goal_state_with_deadline(state: &GoalState, deadline_ms: Option<i64>) {
+    let cwd = std::env::current_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .to_string_lossy()
+        .to_string();
+    let data = serde_json::to_value(state).unwrap_or(serde_json::Value::Null);
+    if crate::session_jsonl::append_custom_entry(&cwd, "goal_state", data).is_none() {
+        eprintln!("[goal] journal: no session file under cwd — goal not journaled");
+    }
+    // 索引小摘要（UI 列表 / 跨客户端一致）；会话 id 取 session 文件名 <sid>.jsonl
+    let sid = crate::session_jsonl::resolve_session_file(&cwd)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if !sid.is_empty() {
+        let status = format!("{:?}", state.status);
+        crate::session_index::SessionIndex::patch_meta(&sid, |m| {
+            m.goal_status = Some(status.clone());
+            if let Some(d) = deadline_ms {
+                m.goal_deadline_ms = Some(d);
+            }
+        });
+    }
+}
+
+/// 回放会话 JSONL 最后一条 goal_state（worker 重启/同会话恢复入口）。
+pub fn restore_goal_state(cwd: &str) -> Option<GoalState> {
+    crate::session_jsonl::read_last_custom_entry(cwd, "goal_state")
+        .and_then(|data| serde_json::from_value(data).ok())
+}
+
 // ===========================================================================
 // GoalSupervisorExtension — AgentExtension (Stage C will wire up on_agent_end)
 // ===========================================================================
@@ -509,6 +551,7 @@ impl GoalSupervisorExtension {
             state.iteration_count += 1;
             state.last_action_plan = action_plan;
         }
+        self.journal_snapshot();
     }
 
     /// Set the goal status (Running / Complete / Exhausted / Blocked / Cancelled).
@@ -517,6 +560,22 @@ impl GoalSupervisorExtension {
             && let Some(state) = guard.as_mut()
         {
             state.status = status;
+        }
+        self.journal_snapshot();
+    }
+
+    /// T05：把当前目标快照落会话 JSONL + 索引（含由 config 推导的硬截止）。
+    fn journal_snapshot(&self) {
+        if let Ok(guard) = self.state.lock()
+            && let Some(state) = guard.as_ref()
+        {
+            let deadline = state
+                .started_at
+                .trim_start_matches("epoch:")
+                .parse::<i64>()
+                .ok()
+                .map(|secs| secs * 1000 + self.config.max_total_duration_min as i64 * 60_000);
+            persist_goal_state_with_deadline(state, deadline);
         }
     }
 
@@ -1488,6 +1547,13 @@ impl Tool for GoalSetTool {
             prev
         };
 
+        // T05：目标快照落会话 JSONL + 索引摘要（锁已释放；工具侧无 config，deadline 传 None）
+        if let Ok(guard) = self.state.lock()
+            && let Some(g) = guard.as_ref()
+        {
+            persist_goal_state(g);
+        }
+
         let confirmation = {
             // Compute check count before building JSON (json! macro can't host expression blocks).
             let check_count = {
@@ -1603,6 +1669,11 @@ impl Tool for GoalRefineTool {
         state.checks.extend(checks_add);
 
         // Note: iteration_count, started_at, total_cost_usd, last_action_plan preserved.
+        // T05：refine 后快照落盘（在 guard 仍在作用域内取不可变快照）
+        {
+            let snapshot = state.clone();
+            persist_goal_state(&snapshot);
+        }
         let check_names: Vec<&str> = state.checks.iter().map(|c| c.name.as_str()).collect();
         Ok(format!(
             "Goal refined. Objective: \"{}\". Checks: [{}]. Progress preserved (iteration_count={}).",

@@ -89,6 +89,13 @@ pub struct SessionMeta {
     /// 工作空间生命周期（ready/closed/failed；关闭时更新）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_status: Option<String>,
+    /// Goal Supervisor 摘要（T05）：目标生命周期状态（Running/Complete/Exhausted/…）。
+    /// 权威轨迹在会话 JSONL 的 custom(goal_state) 条目；此处只放 UI 列表热字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_status: Option<String>,
+    /// Goal 硬截止（epoch ms；started_at + max_total_duration_min 推导）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_deadline_ms: Option<i64>,
 }
 
 impl SessionIndex {
@@ -508,6 +515,8 @@ impl SessionIndex {
             branch,
             workspace_path: existing.as_ref().and_then(|e| e.workspace_path.clone()),
             workspace_status: existing.as_ref().and_then(|e| e.workspace_status.clone()),
+            goal_status: existing.as_ref().and_then(|e| e.goal_status.clone()),
+            goal_deadline_ms: existing.as_ref().and_then(|e| e.goal_deadline_ms),
             model: model.to_string(),
             agent: agent.to_string(),
             provider: provider.to_string(),
@@ -641,6 +650,8 @@ impl SessionIndex {
                         branch: None,
                         workspace_path: None,
                         workspace_status: None,
+                        goal_status: None,
+                        goal_deadline_ms: None,
                         model: String::new(),
                         agent: "default".to_string(),
                         provider: String::new(),
@@ -826,6 +837,8 @@ mod tests {
             worktree: false,
             workspace_path: None,
             workspace_status: None,
+            goal_status: None,
+            goal_deadline_ms: None,
             branch: None,
             model: "test".into(),
             agent: "default".into(),

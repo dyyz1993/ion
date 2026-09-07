@@ -857,6 +857,26 @@ pub fn append_custom_entry(
     Some((entry_id, parent_id))
 }
 
+/// 倒序扫描会话 JSONL，返回最后一条指定 customType 的 custom 条目 data。
+/// T05 Goal 中断恢复用：恢复 = 回放最后一条 goal_state 快照。
+pub fn read_last_custom_entry(cwd: &str, custom_type: &str) -> Option<serde_json::Value> {
+    let path = resolve_session_file(cwd);
+    let content = std::fs::read_to_string(path).ok()?;
+    for line in content.lines().rev() {
+        // 快速预过滤：不含 customType 的行直接跳过，避免大文件逐行反序列化
+        if !line.contains(custom_type) {
+            continue;
+        }
+        let v: serde_json::Value = serde_json::from_str(line).ok()?;
+        if v.get("type").and_then(|x| x.as_str()) == Some("custom")
+            && v.get("customType").and_then(|x| x.as_str()) == Some(custom_type)
+        {
+            return v.get("data").cloned();
+        }
+    }
+    None
+}
+
 /// 追加一条 leaf_pointer entry（移动光标到 leaf_id）。
 pub fn append_leaf_pointer(cwd: &str, leaf_id: Option<&str>) {
     let entry = serde_json::json!({
