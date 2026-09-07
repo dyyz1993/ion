@@ -18,6 +18,16 @@
 #   bash scripts/run_ci_matrix_parallel.sh
 #   PARALLELISM=3 bash scripts/run_ci_matrix_parallel.sh
 #
+# Isolation & gating:
+#   - Every run gets a private root dir (default /tmp/ci-matrix-<ts>-<pid>/,
+#     override with CI_RUN_ROOT): bin/ results/ out/ home/ work/. Concurrent
+#     or leftover runs cannot clobber each other.
+#   - The SOURCE project's .ion/monitors/ is never touched; each script runs
+#     in its own work dir with an empty .ion/monitors.
+#   - results/manifest.txt lists every scheduled script; the aggregator
+#     (aggregate_ci_results.sh) fails the run on FAIL / missing / malformed
+#     records, and this runner propagates that exit code.
+#
 set -o pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -40,18 +50,26 @@ echo ""
 # ─── Pre-flight ────────────────────────────────────────────────────────────
 [ -x "$ION_BIN" ] || { echo "❌ build ion first"; exit 1; }
 
-# Clean up leftover monitor configs from previous test runs.
-# These get created by monitor_ci.sh and similar tests; if present, every
-# `ion serve` spawned by other tests will pick them up and start spawning
-# workers every 3s, which holds the registry lock and blocks all RPC.
-# This is the #1 cause of "create_session failed" / "host not responding".
-rm -rf .ion/monitors 2>/dev/null
-echo "  ✅ cleaned .ion/monitors/"
+# The source .ion/monitors/ is deliberately LEFT UNTOUCHED — it may hold the
+# user's real monitor configs. Scripts run inside per-script work dirs below,
+# each with its own empty .ion/monitors, so leftover configs cannot poison
+# this run and this run cannot poison the user's configs.
+if [ -d .ion/monitors ] && [ -n "$(ls -A .ion/monitors 2>/dev/null)" ]; then
+    echo "  ℹ️  source .ion/monitors/ non-empty — left untouched (scripts run in isolated work dirs)"
+fi
 
-# ─── Prepare cargo shim + per-worker HOME ─────────────────────────────────
+# ─── Per-run isolation root + cargo shim ──────────────────────────────────
+# Every run gets its own directory tree so two concurrent matrix runs (or a
+# crashed leftover) cannot clobber each other via shared /tmp/ci-* names.
+RUN_ROOT="${CI_RUN_ROOT:-/tmp/ci-matrix-$(date +%Y%m%d-%H%M%S)-$$}"
+CI_BIN_DIR="$RUN_ROOT/bin"
+CI_RESULTS_DIR="$RUN_ROOT/results"
+mkdir -p "$CI_BIN_DIR" "$CI_RESULTS_DIR" "$RUN_ROOT/out"
+echo "  Run root: $RUN_ROOT"
+export RUN_ROOT CI_BIN_DIR CI_RESULTS_DIR
+
 REAL_CARGO=$(command -v cargo 2>/dev/null || echo /usr/local/cargo/bin/cargo)
-mkdir -p /tmp/ci-bin
-cat > /tmp/ci-bin/cargo <<SHIM
+cat > "$CI_BIN_DIR/cargo" <<SHIM
 #!/usr/bin/env bash
 # Skip cargo subcommands that trigger compilation (binary already built).
 # cargo build / check / clippy → no-op (return success)
@@ -89,11 +107,9 @@ case "\$1" in
 esac
 exec $REAL_CARGO "\$@"
 SHIM
-chmod +x /tmp/ci-bin/cargo
+chmod +x "$CI_BIN_DIR/cargo"
 
-# Clean prior state
-rm -rf /tmp/ci-results /tmp/ci-out-*.log 2>/dev/null
-mkdir -p /tmp/ci-results
+# results/ lives under this run's private root; nothing to clean globally.
 
 # ─── Gather + filter scripts ──────────────────────────────────────────────
 ALL_SCRIPTS=$(ls tests/*_ci.sh tests/scenario2_ci.sh tests/team_e2e.sh 2>/dev/null | sort -u)
@@ -121,7 +137,7 @@ for s in $ALL_SCRIPTS; do
         FILTERED="$FILTERED $s"
     else
         SKIPPED="$SKIPPED $s"
-        echo "{\"script\":\"$s\",\"status\":\"SKIP\",\"reason\":\"env-dependent\",\"exit_code\":-1,\"duration_s\":0}" >> /tmp/ci-results/skipped.jsonl
+        echo "{\"script\":\"$s\",\"status\":\"SKIP\",\"reason\":\"env-dependent\",\"exit_code\":-1,\"duration_s\":0}" >> "$CI_RESULTS_DIR/skipped.jsonl"
     fi
 done
 
@@ -130,15 +146,19 @@ SKIP_CNT=$(echo "$SKIPPED" | wc -w | tr -d ' ')
 echo "  Total scripts: $TOTAL (skipped: $SKIP_CNT)"
 echo ""
 
+# Manifest: every discovered script (run or skipped). The aggregator uses it
+# to fail the run when a scheduled script produced no result.
+echo "$ALL_SCRIPTS" | tr ' ' '\n' | grep -v '^$' > "$CI_RESULTS_DIR/manifest.txt"
+
 # ─── Worker function (called by xargs) ────────────────────────────────────
 run_one_script() {
     local script="$1"
     local bn=$(basename "$script" .sh)
-    local worker_id=$(echo "$script" | md5sum | cut -c1-8)
-    local home_dir="/tmp/ci-home-$worker_id"
-    local work_dir="/tmp/ci-work-$worker_id"
-    local log="/tmp/ci-out-$bn.log"
-    local result_file="/tmp/ci-results/$bn.jsonl"
+    local worker_id="$bn"   # basename is unique per run; no md5sum dependency
+    local home_dir="$RUN_ROOT/home/$worker_id"
+    local work_dir="$RUN_ROOT/work/$worker_id"
+    local log="$RUN_ROOT/out/$bn.log"
+    local result_file="$CI_RESULTS_DIR/$bn.jsonl"
 
     # Per-script isolated HOME
     rm -rf "$home_dir" "$work_dir"
@@ -169,9 +189,9 @@ run_one_script() {
     mkdir -p "$work_dir/.ion"
     if [ -d "$PROJECT_DIR/.ion" ]; then
         for item in "$PROJECT_DIR/.ion"/*; do
-            bn=$(basename "$item")
-            if [ "$bn" != "monitors" ]; then
-                ln -sfn "$item" "$work_dir/.ion/$bn"
+            item_bn=$(basename "$item")
+            if [ "$item_bn" != "monitors" ]; then
+                ln -sfn "$item" "$work_dir/.ion/$item_bn"
             fi
         done
     fi
@@ -192,7 +212,7 @@ run_one_script() {
     (
         cd "$work_dir"
         HOME="$home_dir" \
-        PATH="/tmp/ci-bin:$PATH" \
+        PATH="$CI_BIN_DIR:$PATH" \
         CARGO_TARGET_DIR="$PROJECT_DIR/target" \
         ION_FAUX_REPEAT=1 \
         timeout "$PER_SCRIPT_TIMEOUT" bash "$script_in_workdir"
@@ -235,9 +255,10 @@ SERIAL_CNT=$(echo "$SERIAL_SCRIPTS" | wc -w | tr -d ' ')
 PARALLEL_CNT=$(echo "$PARALLEL_SCRIPTS" | wc -w | tr -d ' ')
 
 echo "[Step] Phase 1: Running $PARALLEL_CNT scripts in parallel (xargs -P $PARALLELISM)..."
+# NOTE: only PARALLEL_SCRIPTS here. The old second pass over FILTERED ran
+# every parallel script twice and pulled serial-only scripts into the
+# parallel batch (three executions total for serial scripts).
 echo "$PARALLEL_SCRIPTS" | tr ' ' '\n' | grep -v '^$' | \
-    xargs -P "$PARALLELISM" -I {} bash -c 'run_one_script "$@"' _ {} 2>&1 | grep -v "command not found\|setValueFor\|valueForKey"
-echo "$FILTERED" | tr ' ' '\n' | grep -v '^$' | \
     xargs -P "$PARALLELISM" -I {} bash -c 'run_one_script "$@"' _ {} 2>&1 | grep -v "command not found\|setValueFor\|valueForKey"
 
 # ─── Phase 2: Serial (long-running serve CIs) ──────────────────────────────
@@ -256,7 +277,17 @@ echo "  Phase 1 complete — aggregating results"
 echo "════════════════════════════════════════════════════════════════"
 echo ""
 
-# Merge all per-script jsonl into one
-cat /tmp/ci-results/*.jsonl > /tmp/ci-results/all.jsonl 2>/dev/null
-
-bash "$PROJECT_DIR/scripts/aggregate_ci_results.sh" 2>&1 | grep -v "command not found\|setValueFor\|valueForKey"
+# Aggregate + gate: the aggregator reads this run's results/, validates
+# against manifest.txt, and exits non-zero on FAIL / missing / malformed.
+# The runner propagates that exit code (a failing matrix can no longer
+# "succeed" here). No merged all.jsonl inside results/ — the aggregator
+# reads the per-script files directly (and skips files named all.jsonl).
+RESULTS_DIR="$CI_RESULTS_DIR" \
+MANIFEST_FILE="$CI_RESULTS_DIR/manifest.txt" \
+REPORT_PATH="${REPORT_PATH:-$PROJECT_DIR/docs/testing/CI_MATRIX_REPORT.md}" \
+    bash "$PROJECT_DIR/scripts/aggregate_ci_results.sh" 2>&1 \
+    | grep -v "command not found\|setValueFor\|valueForKey"
+AGG_RC=${PIPESTATUS[0]}
+echo ""
+echo "Run artifacts kept in: $RUN_ROOT"
+exit "$AGG_RC"
