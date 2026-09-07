@@ -24,11 +24,8 @@ struct HomeGuard {
 impl HomeGuard {
     fn new(tag: &str) -> Self {
         let original = std::env::var("HOME").unwrap_or_default();
-        let sandbox = std::env::temp_dir().join(format!(
-            "ion-idx-fault-{}-{}",
-            tag,
-            std::process::id()
-        ));
+        let sandbox =
+            std::env::temp_dir().join(format!("ion-idx-fault-{}-{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&sandbox);
         std::fs::create_dir_all(sandbox.join(".ion/agent")).unwrap();
         unsafe { std::env::set_var("HOME", &sandbox) };
@@ -47,10 +44,7 @@ impl HomeGuard {
 impl Drop for HomeGuard {
     fn drop(&mut self) {
         // 恢复目录权限再删，避免只读沙箱残留
-        let _ = std::fs::set_permissions(
-            self.sandbox.join(".ion/agent"),
-            mode(0o755),
-        );
+        let _ = std::fs::set_permissions(self.sandbox.join(".ion/agent"), mode(0o755));
         let _ = std::fs::remove_dir_all(&self.sandbox);
         unsafe { std::env::set_var("HOME", &self.original) };
     }
@@ -133,7 +127,10 @@ fn index_persist_faults_are_visible_and_safe() {
         );
         // 新索引可解析且包含本次 upsert
         let idx = SessionIndex::load();
-        assert!(idx.get("sess_f1").is_some(), "F1: fresh index has the new session");
+        assert!(
+            idx.get("sess_f1").is_some(),
+            "F1: fresh index has the new session"
+        );
     }
 
     // ─── F2：索引目录只读 → save 失败被记录 ───
@@ -144,8 +141,7 @@ fn index_persist_faults_are_visible_and_safe() {
         let pre = SessionIndex::last_issue().unwrap_or_default();
         assert!(!pre.contains("save failed"), "F2 precondition: {pre}");
         let dir = g.index_path().parent().unwrap().to_path_buf();
-        std::fs::set_permissions(&dir, mode(0o555))
-            .unwrap();
+        std::fs::set_permissions(&dir, mode(0o555)).unwrap();
         upsert_txn("sess_f2_blocked");
         let issue = SessionIndex::last_issue().expect("F2: save failure must be recorded");
         assert!(
@@ -153,8 +149,7 @@ fn index_persist_faults_are_visible_and_safe() {
             "F2 issue text: {issue}"
         );
         // 恢复权限后验证：被阻塞那条未落盘（可见性测试，不是数据丢失测试）
-        std::fs::set_permissions(&dir, mode(0o755))
-            .unwrap();
+        std::fs::set_permissions(&dir, mode(0o755)).unwrap();
         let idx = SessionIndex::load();
         assert!(idx.get("sess_f2_base").is_some());
     }
@@ -169,7 +164,10 @@ fn index_persist_faults_are_visible_and_safe() {
         assert!(issue.contains("lock degraded"), "F3 issue text: {issue}");
         // 降级路径仍完成写
         let idx = SessionIndex::load();
-        assert!(idx.get("sess_f3").is_some(), "F3: degraded path still persists");
+        assert!(
+            idx.get("sess_f3").is_some(),
+            "F3: degraded path still persists"
+        );
         std::fs::remove_dir_all(&lock_dir).unwrap();
     }
 
@@ -177,14 +175,13 @@ fn index_persist_faults_are_visible_and_safe() {
     {
         let g = HomeGuard::new("f4");
         g.write_index_raw("{\"sessions\":{},\"removed_sessions\":[]}");
-        std::fs::set_permissions(
-            g.index_path(),
-            mode(0o000),
-        )
-        .unwrap();
+        std::fs::set_permissions(g.index_path(), mode(0o000)).unwrap();
         upsert_txn("sess_f4");
         let issue = SessionIndex::last_issue().expect("F4: unreadable index must be recorded");
-        assert!(issue.contains("corrupt/unreadable"), "F4 issue text: {issue}");
+        assert!(
+            issue.contains("corrupt/unreadable"),
+            "F4 issue text: {issue}"
+        );
         assert!(
             !issue.contains("quarantine FAILED"),
             "F4: quarantine should succeed (writable dir)"
@@ -227,10 +224,15 @@ fn index_persist_faults_are_visible_and_safe() {
                 }
             }
         }
-        assert!(missing.is_empty(), "F5: {} updates lost: {:?}", missing.len(), {
-            let mut m = missing.clone();
-            m.truncate(5);
-            m
-        });
+        assert!(
+            missing.is_empty(),
+            "F5: {} updates lost: {:?}",
+            missing.len(),
+            {
+                let mut m = missing.clone();
+                m.truncate(5);
+                m
+            }
+        );
     }
 }

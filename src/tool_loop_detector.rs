@@ -113,7 +113,11 @@ impl ToolLoopDetector {
             _ => {
                 // For other tools, use tool name + truncated args
                 let args_str = args.to_string();
-                let truncated = if args_str.len() > 100 { &args_str[..100] } else { &args_str };
+                let truncated = if args_str.len() > 100 {
+                    &args_str[..100]
+                } else {
+                    &args_str
+                };
                 format!("{tool_name}:{truncated}")
             }
         }
@@ -136,7 +140,11 @@ fn normalize_bash_command(cmd: &str) -> String {
         "pwd" => "pwd".to_string(),
         _ => {
             // For other commands, truncate to 50 chars (enough to detect identical repeats)
-            if trimmed.len() > 50 { trimmed[..50].to_string() } else { trimmed.to_string() }
+            if trimmed.len() > 50 {
+                trimmed[..50].to_string()
+            } else {
+                trimmed.to_string()
+            }
         }
     }
 }
@@ -181,7 +189,8 @@ impl Extension for ToolLoopDetector {
                     warned.insert(sig.clone());
                     tracing::warn!(
                         "[loop-detector] CUMULATIVE: '{}' has run {} times this session (non-consecutive counts too). Suggest a different approach.",
-                        ctx.tool_name, cum_count
+                        ctx.tool_name,
+                        cum_count
                     );
                     // 注入一次性工具错误提醒（不中止；模型收到后通常自行换策略）
                     return Err(crate::agent::error::AgentError::Tool(format!(
@@ -195,7 +204,8 @@ impl Extension for ToolLoopDetector {
         if count >= ABORT_THRESHOLD {
             tracing::error!(
                 "[loop-detector] ABORT: '{}' repeated {} times consecutively. Breaking loop.",
-                ctx.tool_name, count
+                ctx.tool_name,
+                count
             );
             // Return error to abort this tool call
             return Err(crate::agent::error::AgentError::Tool(format!(
@@ -209,7 +219,8 @@ impl Extension for ToolLoopDetector {
         if count >= WARN_THRESHOLD {
             tracing::warn!(
                 "[loop-detector] WARN: '{}' repeated {} times. Next repeat will abort.",
-                ctx.tool_name, count
+                ctx.tool_name,
+                count
             );
         }
 
@@ -240,7 +251,8 @@ impl Extension for ToolLoopDetector {
             if err_count >= ERROR_ABORT_THRESHOLD {
                 tracing::error!(
                     "[loop-detector] ERROR_ABORT: '{}' failed {} times with same args. Breaking.",
-                    ctx.tool_name, err_count
+                    ctx.tool_name,
+                    err_count
                 );
             }
         }
@@ -254,19 +266,35 @@ mod tests {
 
     #[test]
     fn test_compute_signature_read() {
-        let sig1 = ToolLoopDetector::compute_signature("read", &serde_json::json!({"file_path": "src/lib.rs"}));
-        let sig2 = ToolLoopDetector::compute_signature("read", &serde_json::json!({"file_path": "src/lib.rs", "offset": 10}));
+        let sig1 = ToolLoopDetector::compute_signature(
+            "read",
+            &serde_json::json!({"file_path": "src/lib.rs"}),
+        );
+        let sig2 = ToolLoopDetector::compute_signature(
+            "read",
+            &serde_json::json!({"file_path": "src/lib.rs", "offset": 10}),
+        );
         assert_eq!(sig1, sig2); // Same file = same signature (offset ignored)
-        let sig3 = ToolLoopDetector::compute_signature("read", &serde_json::json!({"file_path": "src/main.rs"}));
+        let sig3 = ToolLoopDetector::compute_signature(
+            "read",
+            &serde_json::json!({"file_path": "src/main.rs"}),
+        );
         assert_ne!(sig1, sig3); // Different file = different signature
     }
 
     #[test]
     fn test_compute_signature_bash() {
-        let sig1 = ToolLoopDetector::compute_signature("bash", &serde_json::json!({"command": "echo hello"}));
-        let sig2 = ToolLoopDetector::compute_signature("bash", &serde_json::json!({"command": "echo world"}));
+        let sig1 = ToolLoopDetector::compute_signature(
+            "bash",
+            &serde_json::json!({"command": "echo hello"}),
+        );
+        let sig2 = ToolLoopDetector::compute_signature(
+            "bash",
+            &serde_json::json!({"command": "echo world"}),
+        );
         assert_eq!(sig1, sig2); // Both echo = same signature (normalized)
-        let sig3 = ToolLoopDetector::compute_signature("bash", &serde_json::json!({"command": "ls -la"}));
+        let sig3 =
+            ToolLoopDetector::compute_signature("bash", &serde_json::json!({"command": "ls -la"}));
         assert_ne!(sig1, sig3);
     }
 
@@ -292,8 +320,14 @@ mod tests {
 
     #[test]
     fn test_write_same_file() {
-        let sig1 = ToolLoopDetector::compute_signature("write", &serde_json::json!({"file_path": "src/a.rs", "content": "old"}));
-        let sig2 = ToolLoopDetector::compute_signature("write", &serde_json::json!({"file_path": "src/a.rs", "content": "new"}));
+        let sig1 = ToolLoopDetector::compute_signature(
+            "write",
+            &serde_json::json!({"file_path": "src/a.rs", "content": "old"}),
+        );
+        let sig2 = ToolLoopDetector::compute_signature(
+            "write",
+            &serde_json::json!({"file_path": "src/a.rs", "content": "new"}),
+        );
         assert_eq!(sig1, sig2); // Same file = same signature (content ignored)
     }
 }

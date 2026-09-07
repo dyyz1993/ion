@@ -213,7 +213,10 @@ mod tests {
     fn test_load_single_agents_md_at_root() {
         let root = temp_dir("single");
         write(&root.join(".git"), "");
-        write(&root.join("AGENTS.md"), "# Rules\nUse extension not plugin.");
+        write(
+            &root.join("AGENTS.md"),
+            "# Rules\nUse extension not plugin.",
+        );
         let ext = ContextFilesExtension::with_project_dir(root.clone());
         let files = ext.load_context_files();
         assert_eq!(files.len(), 1);
@@ -387,7 +390,10 @@ mod tests {
         assert_eq!(files.len(), 1, "空文件也加载");
         assert!(files[0].content.is_empty());
         let block = ContextFilesExtension::format_context_block(&files);
-        assert!(block.contains("--- project context ---"), "空文件也有段落头");
+        assert!(
+            block.contains("--- project context ---"),
+            "空文件也有段落头"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -414,7 +420,10 @@ mod tests {
         let ext = ContextFilesExtension::with_project_dir(root.clone());
         let files = ext.load_context_files();
         assert_eq!(files.len(), 1, "同目录只取第一个命中");
-        assert!(files[0].content.contains("claude wins"), "CLAUDE 优先于 GEMINI");
+        assert!(
+            files[0].content.contains("claude wins"),
+            "CLAUDE 优先于 GEMINI"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -485,9 +494,13 @@ mod tests {
         write(&root.join("AGENTS.md"), &big);
         let ext = ContextFilesExtension::with_project_dir(root.clone());
         let files = ext.load_context_files();
-        unsafe { std::env::set_var("ION_CONTEXT_FILES_MAX_CHARS", "50000"); }
+        unsafe {
+            std::env::set_var("ION_CONTEXT_FILES_MAX_CHARS", "50000");
+        }
         let block = ContextFilesExtension::format_context_block(&files);
-        unsafe { std::env::remove_var("ION_CONTEXT_FILES_MAX_CHARS"); }
+        unsafe {
+            std::env::remove_var("ION_CONTEXT_FILES_MAX_CHARS");
+        }
         assert!(!block.contains("truncated"), "大预算不截断");
         assert!(block.contains(&"A".repeat(100)), "内容完整");
         let _ = fs::remove_dir_all(&root);
@@ -504,9 +517,13 @@ mod tests {
         let ext = ContextFilesExtension::with_project_dir(sub);
         let files = ext.load_context_files();
         assert_eq!(files.len(), 2);
-        unsafe { std::env::set_var("ION_CONTEXT_FILES_MAX_CHARS", "500"); }
+        unsafe {
+            std::env::set_var("ION_CONTEXT_FILES_MAX_CHARS", "500");
+        }
         let block = ContextFilesExtension::format_context_block(&files);
-        unsafe { std::env::remove_var("ION_CONTEXT_FILES_MAX_CHARS"); }
+        unsafe {
+            std::env::remove_var("ION_CONTEXT_FILES_MAX_CHARS");
+        }
         assert!(block.contains("truncated"), "总预算 500 时第二个文件被截断");
         let _ = fs::remove_dir_all(&root);
     }

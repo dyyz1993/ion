@@ -208,8 +208,7 @@ pub fn retrieve_messages(entries: &[Value], params: &RetrievalParams) -> Retriev
     let total_count = messages_only.len();
 
     // 6. 分页
-    let (page, next_cursor, has_more, page_info) =
-        apply_pagination(
+    let (page, next_cursor, has_more, page_info) = apply_pagination(
         &messages_only,
         &params.after,
         &params.before,

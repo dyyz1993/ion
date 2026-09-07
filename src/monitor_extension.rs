@@ -81,12 +81,24 @@ pub struct MonitorDef {
     pub cooldown_secs: u64,
 }
 
-fn default_interval() -> u64 { 300 }
-fn default_agent() -> String { "developer".into() }
-fn default_prompt() -> String { "Monitor triggered:\n{output}".into() }
-fn default_enabled() -> bool { true }
-fn default_max_concurrent() -> u32 { 3 }
-fn default_cooldown() -> u64 { 60 }
+fn default_interval() -> u64 {
+    300
+}
+fn default_agent() -> String {
+    "developer".into()
+}
+fn default_prompt() -> String {
+    "Monitor triggered:\n{output}".into()
+}
+fn default_enabled() -> bool {
+    true
+}
+fn default_max_concurrent() -> u32 {
+    3
+}
+fn default_cooldown() -> u64 {
+    60
+}
 
 /// Default queue capacity for serial_queue mode (overflow protection).
 pub const MONITOR_QUEUE_CAPACITY: usize = 10;
@@ -95,15 +107,13 @@ pub const MONITOR_QUEUE_CAPACITY: usize = 10;
 /// This guards against path traversal (e.g. "../../etc/cron.d/evil").
 fn validate_name(name: &str) -> Result<(), String> {
     if name.is_empty() || name.len() > 32 {
-        return Err(format!(
-            "name length must be 1-32, got {}",
-            name.len()
-        ));
+        return Err(format!("name length must be 1-32, got {}", name.len()));
     }
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-        return Err(format!(
-            "name may only contain [a-zA-Z0-9_-], got '{name}'"
-        ));
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(format!("name may only contain [a-zA-Z0-9_-], got '{name}'"));
     }
     Ok(())
 }
@@ -200,12 +210,13 @@ impl MonitorExtension {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(json) =
-            serde_json::to_string_pretty(&serde_json::json!({ "active": active }))
-        {
+        if let Ok(json) = serde_json::to_string_pretty(&serde_json::json!({ "active": active })) {
             let _ = std::fs::write(&path, json);
         } else {
-            tracing::warn!("[monitor] failed to serialize active pipelines for {:?}", path);
+            tracing::warn!(
+                "[monitor] failed to serialize active pipelines for {:?}",
+                path
+            );
         }
     }
 
@@ -219,13 +230,16 @@ impl MonitorExtension {
                     if let Ok(content) = std::fs::read_to_string(&path) {
                         match serde_json::from_str::<MonitorDef>(&content) {
                             Ok(def) => {
-                                tracing::info!("[monitor] loaded: {} from {}", def.name, path.display());
+                                tracing::info!(
+                                    "[monitor] loaded: {} from {}",
+                                    def.name,
+                                    path.display()
+                                );
                                 result.push(def);
                             }
-                            Err(e) => tracing::warn!(
-                                "[monitor] failed to parse {}: {e}",
-                                path.display()
-                            ),
+                            Err(e) => {
+                                tracing::warn!("[monitor] failed to parse {}: {e}", path.display())
+                            }
                         }
                     }
                 }
@@ -292,12 +306,20 @@ impl MonitorExtension {
     /// errors rather than panics.
     fn parse_def(params: &serde_json::Value) -> MonitorDef {
         MonitorDef {
-            name: params.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            name: params
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
             interval_secs: params
                 .get("interval_secs")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(default_interval()),
-            script: params.get("script").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            script: params
+                .get("script")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
             agent: params
                 .get("agent")
                 .and_then(|v| v.as_str())
@@ -308,7 +330,10 @@ impl MonitorExtension {
                 .and_then(|v| v.as_str())
                 .unwrap_or(&default_prompt())
                 .to_string(),
-            enabled: params.get("enabled").and_then(|v| v.as_bool()).unwrap_or(default_enabled()),
+            enabled: params
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(default_enabled()),
             mode: Self::parse_mode(params.get("mode")),
             trigger_mode: Self::parse_trigger_mode(params.get("trigger_mode")),
             max_concurrent: params
@@ -326,15 +351,13 @@ impl MonitorExtension {
     /// Decode `mode` from a JSON value using the snake_case rename.
     /// Falls back to the default (SerialSkip) on missing/invalid input.
     fn parse_mode(v: Option<&serde_json::Value>) -> MonitorMode {
-        serde_json::from_value(v.cloned().unwrap_or(serde_json::Value::Null))
-            .unwrap_or_default()
+        serde_json::from_value(v.cloned().unwrap_or(serde_json::Value::Null)).unwrap_or_default()
     }
 
     /// Decode `trigger_mode` from a JSON value using the snake_case rename.
     /// Falls back to the default (AutoSpawn) on missing/invalid input.
     fn parse_trigger_mode(v: Option<&serde_json::Value>) -> TriggerMode {
-        serde_json::from_value(v.cloned().unwrap_or(serde_json::Value::Null))
-            .unwrap_or_default()
+        serde_json::from_value(v.cloned().unwrap_or(serde_json::Value::Null)).unwrap_or_default()
     }
 
     /// Run a script capturing stdout, stderr, exit status separately.
@@ -350,7 +373,12 @@ impl MonitorExtension {
                 let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
                 let exit_ok = output.status.success();
                 let exit_code = output.status.code().unwrap_or(-1);
-                ScriptRun { stdout, stderr, exit_ok, exit_code }
+                ScriptRun {
+                    stdout,
+                    stderr,
+                    exit_ok,
+                    exit_code,
+                }
             }
             Err(e) => ScriptRun {
                 stdout: String::new(),
@@ -434,10 +462,16 @@ struct ScriptRun {
 
 #[async_trait::async_trait]
 impl Extension for MonitorExtension {
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 
-    fn is_singleton(&self) -> bool { true }
-    fn singleton_key(&self) -> &str { "monitor" }
+    fn is_singleton(&self) -> bool {
+        true
+    }
+    fn singleton_key(&self) -> &str {
+        "monitor"
+    }
 
     async fn on_singleton_init(&self) -> AgentResult<()> {
         // Load monitor definitions from project .ion/monitors/
@@ -489,48 +523,48 @@ impl Extension for MonitorExtension {
             let max_concurrent = def.max_concurrent;
             let cooldown_secs = def.cooldown_secs;
             // v2: per-monitor runtime state (queue, active counter, last trigger time)
-            let pending_queue = Arc::new(Mutex::new(
-                std::collections::VecDeque::<String>::new()
-            ));
+            let pending_queue = Arc::new(Mutex::new(std::collections::VecDeque::<String>::new()));
             let active_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
             // Initialize last_trigger far in the past so the first tick can fire.
             let last_trigger = Arc::new(Mutex::new(
                 std::time::Instant::now()
                     .checked_sub(std::time::Duration::from_secs(cooldown_secs.max(1) + 1))
-                    .unwrap_or_else(std::time::Instant::now)
+                    .unwrap_or_else(std::time::Instant::now),
             ));
 
             // Initialize status
             {
                 let mut s = stats.lock().await;
-                s.insert(name.clone(), MonitorStatus {
-                    name: name.clone(),
-                    enabled: true,
-                    last_run: None,
-                    last_result: "starting".into(),
-                    trigger_count: 0,
-                    // v2 status fields
-                    skip_count: 0,
-                    queue_length: 0,
-                    active_workers: 0,
-                    last_error: None,
-                    consecutive_failures: 0,
-                    last_spawned_worker: None,
-                });
+                s.insert(
+                    name.clone(),
+                    MonitorStatus {
+                        name: name.clone(),
+                        enabled: true,
+                        last_run: None,
+                        last_result: "starting".into(),
+                        trigger_count: 0,
+                        // v2 status fields
+                        skip_count: 0,
+                        queue_length: 0,
+                        active_workers: 0,
+                        last_error: None,
+                        consecutive_failures: 0,
+                        last_spawned_worker: None,
+                    },
+                );
             }
 
             tracing::info!(
                 "[monitor] starting '{}' (interval={}s, agent={})",
-                name, interval, agent
+                name,
+                interval,
+                agent
             );
 
             tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(
-                    tokio::time::Duration::from_secs(interval.max(1))
-                );
-                ticker.set_missed_tick_behavior(
-                    tokio::time::MissedTickBehavior::Skip
-                );
+                let mut ticker =
+                    tokio::time::interval(tokio::time::Duration::from_secs(interval.max(1)));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
                 loop {
                     ticker.tick().await;
@@ -558,7 +592,8 @@ impl Extension for MonitorExtension {
                                     status.last_result = "auto_disabled".into();
                                     tracing::warn!(
                                         "[monitor] '{}' auto-disabled after {} consecutive failures",
-                                        name, status.consecutive_failures
+                                        name,
+                                        status.consecutive_failures
                                     );
                                 }
                             } else {
@@ -573,9 +608,14 @@ impl Extension for MonitorExtension {
                     }
 
                     if !success {
-                        Self::emit_event("monitor_script_failed", serde_json::json!({
-                            "name": &name, "stderr": &output
-                        }), &reg).await;
+                        Self::emit_event(
+                            "monitor_script_failed",
+                            serde_json::json!({
+                                "name": &name, "stderr": &output
+                            }),
+                            &reg,
+                        )
+                        .await;
                         continue;
                     }
 
@@ -588,9 +628,14 @@ impl Extension for MonitorExtension {
                     {
                         let last = *last_trigger.lock().await;
                         if last.elapsed() < std::time::Duration::from_secs(cooldown_secs) {
-                            Self::emit_event("monitor_cooldown", serde_json::json!({
-                                "name": &name, "cooldown_secs": cooldown_secs
-                            }), &reg).await;
+                            Self::emit_event(
+                                "monitor_cooldown",
+                                serde_json::json!({
+                                    "name": &name, "cooldown_secs": cooldown_secs
+                                }),
+                                &reg,
+                            )
+                            .await;
                             let mut s = stats.lock().await;
                             if let Some(status) = s.get_mut(&name) {
                                 status.last_result = "cooldown".into();
@@ -600,14 +645,19 @@ impl Extension for MonitorExtension {
                     }
 
                     // Event detected — emit monitor_triggered (the canonical event)
-                    Self::emit_event("monitor_triggered", serde_json::json!({
-                        "name": &name,
-                        "output_bytes": output.len(),
-                        "output": &output,
-                        "agent": &agent,
-                        "mode": serde_json::to_value(mode).unwrap_or_default(),
-                        "trigger_mode": serde_json::to_value(trigger_mode).unwrap_or_default(),
-                    }), &reg).await;
+                    Self::emit_event(
+                        "monitor_triggered",
+                        serde_json::json!({
+                            "name": &name,
+                            "output_bytes": output.len(),
+                            "output": &output,
+                            "agent": &agent,
+                            "mode": serde_json::to_value(mode).unwrap_or_default(),
+                            "trigger_mode": serde_json::to_value(trigger_mode).unwrap_or_default(),
+                        }),
+                        &reg,
+                    )
+                    .await;
 
                     // Increment trigger count
                     {
@@ -624,9 +674,14 @@ impl Extension for MonitorExtension {
                     match trigger_mode {
                         TriggerMode::EventOnly => {
                             // Only emit; never spawn a worker.
-                            Self::emit_event("monitor_event_only", serde_json::json!({
-                                "name": &name
-                            }), &reg).await;
+                            Self::emit_event(
+                                "monitor_event_only",
+                                serde_json::json!({
+                                    "name": &name
+                                }),
+                                &reg,
+                            )
+                            .await;
                             {
                                 let mut s = stats.lock().await;
                                 if let Some(status) = s.get_mut(&name) {
@@ -654,14 +709,25 @@ impl Extension for MonitorExtension {
                                     "main",
                                     &format!("monitor:{name}"),
                                     serde_json::json!({ "text": prompt }),
-                                ).await;
-                                Self::emit_event("monitor_channel_notify", serde_json::json!({
-                                    "name": &name, "channel": "main"
-                                }), &reg).await;
+                                )
+                                .await;
+                                Self::emit_event(
+                                    "monitor_channel_notify",
+                                    serde_json::json!({
+                                        "name": &name, "channel": "main"
+                                    }),
+                                    &reg,
+                                )
+                                .await;
                             } else {
-                                Self::emit_event("monitor_no_subscriber", serde_json::json!({
-                                    "name": &name, "fallback": "event_only"
-                                }), &reg).await;
+                                Self::emit_event(
+                                    "monitor_no_subscriber",
+                                    serde_json::json!({
+                                        "name": &name, "fallback": "event_only"
+                                    }),
+                                    &reg,
+                                )
+                                .await;
                             }
                             {
                                 let mut s = stats.lock().await;
@@ -704,10 +770,15 @@ impl Extension for MonitorExtension {
 
                             if prev_worker_alive {
                                 // Previous worker still running -> skip this tick.
-                                Self::emit_event("monitor_skipped", serde_json::json!({
-                                    "name": &name, "mode": "serial_skip",
-                                    "reason": "previous_worker_running"
-                                }), &reg).await;
+                                Self::emit_event(
+                                    "monitor_skipped",
+                                    serde_json::json!({
+                                        "name": &name, "mode": "serial_skip",
+                                        "reason": "previous_worker_running"
+                                    }),
+                                    &reg,
+                                )
+                                .await;
                                 let mut s = stats.lock().await;
                                 if let Some(status) = s.get_mut(&name) {
                                     status.skip_count += 1;
@@ -736,16 +807,25 @@ impl Extension for MonitorExtension {
                                 };
                                 let spawn_result = WorkerRegistry::prepare_worker_spawn(&cfg).await;
                                 let info_result = match spawn_result {
-                                    Ok(prepared) => reg_for_spawn.lock().register_prepared_worker(prepared, &cfg, &reg_for_spawn_clone),
+                                    Ok(prepared) => reg_for_spawn.lock().register_prepared_worker(
+                                        prepared,
+                                        &cfg,
+                                        &reg_for_spawn_clone,
+                                    ),
                                     Err(e) => Err(e),
                                 };
                                 match info_result {
                                     Ok(info) => {
-                                        Self::emit_event("monitor_spawned", serde_json::json!({
-                                            "name": &monitor_name_for_spawn,
-                                            "worker_id": &info.worker_id,
-                                            "mode": "serial_skip"
-                                        }), &reg_for_spawn).await;
+                                        Self::emit_event(
+                                            "monitor_spawned",
+                                            serde_json::json!({
+                                                "name": &monitor_name_for_spawn,
+                                                "worker_id": &info.worker_id,
+                                                "mode": "serial_skip"
+                                            }),
+                                            &reg_for_spawn,
+                                        )
+                                        .await;
                                         let mut s = stats_for_spawn.lock().await;
                                         if let Some(st) = s.get_mut(&monitor_name_for_spawn) {
                                             st.last_spawned_worker = Some(info.worker_id.clone());
@@ -766,8 +846,13 @@ impl Extension for MonitorExtension {
                                 if let Some(st) = s_guard.get(&name) {
                                     if let Some(ref wid) = st.last_spawned_worker {
                                         let reg_guard = reg.lock();
-                                        reg_guard.workers.get(wid)
-                                            .map(|w| w.status == crate::worker_registry::WorkerStatus::Busy)
+                                        reg_guard
+                                            .workers
+                                            .get(wid)
+                                            .map(|w| {
+                                                w.status
+                                                    == crate::worker_registry::WorkerStatus::Busy
+                                            })
                                             .unwrap_or(false)
                                     } else {
                                         false
@@ -782,10 +867,15 @@ impl Extension for MonitorExtension {
                                 let mut q = pending_queue.lock().await;
                                 if q.len() >= MONITOR_QUEUE_CAPACITY {
                                     let dropped = q.pop_front();
-                                    Self::emit_event("monitor_queue_overflow", serde_json::json!({
-                                        "name": &name, "capacity": MONITOR_QUEUE_CAPACITY,
-                                        "dropped": dropped
-                                    }), &reg).await;
+                                    Self::emit_event(
+                                        "monitor_queue_overflow",
+                                        serde_json::json!({
+                                            "name": &name, "capacity": MONITOR_QUEUE_CAPACITY,
+                                            "dropped": dropped
+                                        }),
+                                        &reg,
+                                    )
+                                    .await;
                                     let mut s = stats.lock().await;
                                     if let Some(status) = s.get_mut(&name) {
                                         status.last_result = "queue_overflow".into();
@@ -828,16 +918,25 @@ impl Extension for MonitorExtension {
                                 };
                                 let spawn_result = WorkerRegistry::prepare_worker_spawn(&cfg).await;
                                 let info_result = match spawn_result {
-                                    Ok(prepared) => reg_for_spawn.lock().register_prepared_worker(prepared, &cfg, &reg_for_spawn_clone),
+                                    Ok(prepared) => reg_for_spawn.lock().register_prepared_worker(
+                                        prepared,
+                                        &cfg,
+                                        &reg_for_spawn_clone,
+                                    ),
                                     Err(e) => Err(e),
                                 };
                                 match info_result {
                                     Ok(info) => {
-                                        Self::emit_event("monitor_spawned", serde_json::json!({
-                                            "name": &monitor_name_for_spawn,
-                                            "worker_id": &info.worker_id,
-                                            "mode": "serial_queue"
-                                        }), &reg_for_spawn).await;
+                                        Self::emit_event(
+                                            "monitor_spawned",
+                                            serde_json::json!({
+                                                "name": &monitor_name_for_spawn,
+                                                "worker_id": &info.worker_id,
+                                                "mode": "serial_queue"
+                                            }),
+                                            &reg_for_spawn,
+                                        )
+                                        .await;
                                         let mut s = stats_for_spawn.lock().await;
                                         if let Some(st) = s.get_mut(&monitor_name_for_spawn) {
                                             st.last_spawned_worker = Some(info.worker_id.clone());
@@ -851,9 +950,7 @@ impl Extension for MonitorExtension {
                             });
                         }
                         MonitorMode::Concurrent => {
-                            let active = active_count.load(
-                                std::sync::atomic::Ordering::Relaxed
-                            );
+                            let active = active_count.load(std::sync::atomic::Ordering::Relaxed);
                             if active < max_concurrent {
                                 let ac = Arc::clone(&active_count);
                                 let ac_name = name.clone();
@@ -879,7 +976,9 @@ impl Extension for MonitorExtension {
                                         session: None,
                                         project_path: None,
                                         worktree: None,
-                                        relation: Some(crate::worker_registry::WorkerRelation::System),
+                                        relation: Some(
+                                            crate::worker_registry::WorkerRelation::System,
+                                        ),
                                         channels: None,
                                         parent: None,
                                         creator: None,
@@ -893,27 +992,46 @@ impl Extension for MonitorExtension {
                                         max_turns: None,
                                         hook_depth: Some(0),
                                         system_prompt_override: None,
-                                    wait: None,
+                                        wait: None,
                                     };
-                                    let info_result = match WorkerRegistry::prepare_worker_spawn(&cfg).await {
-                                        Ok(prepared) => reg_for_spawn.lock().register_prepared_worker(prepared, &cfg, &reg_for_spawn_clone),
-                                        Err(e) => Err(e),
-                                    };
+                                    let info_result =
+                                        match WorkerRegistry::prepare_worker_spawn(&cfg).await {
+                                            Ok(prepared) => {
+                                                reg_for_spawn.lock().register_prepared_worker(
+                                                    prepared,
+                                                    &cfg,
+                                                    &reg_for_spawn_clone,
+                                                )
+                                            }
+                                            Err(e) => Err(e),
+                                        };
                                     match info_result {
-                                        Ok(info) => Self::emit_event("monitor_spawned", serde_json::json!({
-                                            "name": &ac_name,
-                                            "worker_id": &info.worker_id,
-                                            "mode": "concurrent"
-                                        }), &reg_for_spawn).await,
+                                        Ok(info) => {
+                                            Self::emit_event(
+                                                "monitor_spawned",
+                                                serde_json::json!({
+                                                    "name": &ac_name,
+                                                    "worker_id": &info.worker_id,
+                                                    "mode": "concurrent"
+                                                }),
+                                                &reg_for_spawn,
+                                            )
+                                            .await
+                                        }
                                         Err(e) => tracing::error!(
                                             "[monitor] failed to create worker: {e}"
                                         ),
                                     }
                                 });
                             } else {
-                                Self::emit_event("monitor_throttled", serde_json::json!({
-                                    "name": &name, "active": active, "max": max_concurrent
-                                }), &reg).await;
+                                Self::emit_event(
+                                    "monitor_throttled",
+                                    serde_json::json!({
+                                        "name": &name, "active": active, "max": max_concurrent
+                                    }),
+                                    &reg,
+                                )
+                                .await;
                                 let mut s = stats.lock().await;
                                 if let Some(status) = s.get_mut(&name) {
                                     status.skip_count += 1;
@@ -1038,7 +1156,9 @@ impl Extension for MonitorExtension {
                 // Dry-run: only need script + prompt_template, do NOT require name/interval
                 // (caller is just checking what the script would output)
                 let script = params.get("script").and_then(|v| v.as_str()).unwrap_or("");
-                let prompt_template = params.get("prompt_template").and_then(|v| v.as_str())
+                let prompt_template = params
+                    .get("prompt_template")
+                    .and_then(|v| v.as_str())
                     .unwrap_or("Monitor triggered:\n{output}");
 
                 if script.trim().is_empty() {
@@ -1051,8 +1171,12 @@ impl Extension for MonitorExtension {
 
                 // bash -n syntax check
                 let syntax_ok = std::process::Command::new("bash")
-                    .arg("-n").arg("-c").arg(script).status()
-                    .map(|s| s.success()).unwrap_or(false);
+                    .arg("-n")
+                    .arg("-c")
+                    .arg(script)
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
                 if !syntax_ok {
                     return Ok(serde_json::json!({
                         "valid": true,
@@ -1125,15 +1249,30 @@ impl Extension for MonitorExtension {
             // mark_active: record that monitor/key is being processed and persist.
             // params: { monitor, key, worker_id?, stage? }
             "mark_active" => {
-                let monitor = params.get("monitor").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let key = params.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let monitor = params
+                    .get("monitor")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let key = params
+                    .get("key")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if monitor.is_empty() || key.is_empty() {
                     return Err(AgentError::Tool(
                         "mark_active requires non-empty 'monitor' and 'key'".into(),
                     ));
                 }
-                let worker_id = params.get("worker_id").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let stage = params.get("stage").and_then(|v| v.as_str()).unwrap_or("developer").to_string();
+                let worker_id = params
+                    .get("worker_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let stage = params
+                    .get("stage")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("developer")
+                    .to_string();
                 let started_at = chrono_or_systime();
 
                 let mut active = self.active_pipelines.lock().await;
@@ -1147,7 +1286,12 @@ impl Extension for MonitorExtension {
                         p.worker_id = worker_id.clone().or_else(|| p.worker_id.clone());
                         p.stage = stage.clone();
                         p.started_at = started_at.clone();
-                        (true, p.worker_id.clone(), p.stage.clone(), p.started_at.clone())
+                        (
+                            true,
+                            p.worker_id.clone(),
+                            p.stage.clone(),
+                            p.started_at.clone(),
+                        )
                     }
                     None => {
                         let pipeline = ActivePipeline {
@@ -1183,8 +1327,16 @@ impl Extension for MonitorExtension {
             // release_active: remove monitor/key from the active list and persist.
             // params: { monitor, key }
             "release_active" => {
-                let monitor = params.get("monitor").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let key = params.get("key").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let monitor = params
+                    .get("monitor")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let key = params
+                    .get("key")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if monitor.is_empty() || key.is_empty() {
                     return Err(AgentError::Tool(
                         "release_active requires non-empty 'monitor' and 'key'".into(),
@@ -1210,9 +1362,7 @@ impl Extension for MonitorExtension {
                 let monitor = params.get("monitor").and_then(|v| v.as_str()).unwrap_or("");
                 let key = params.get("key").and_then(|v| v.as_str()).unwrap_or("");
                 let active = self.active_pipelines.lock().await;
-                let is_active = active
-                    .iter()
-                    .any(|p| p.monitor == monitor && p.key == key);
+                let is_active = active.iter().any(|p| p.monitor == monitor && p.key == key);
                 Ok(serde_json::json!({
                     "active": is_active,
                     "monitor": monitor,
@@ -1229,7 +1379,7 @@ impl Extension for MonitorExtension {
                 }))
             }
 
-            _ => Err(AgentError::Tool(format!("unknown method: {method}")))
+            _ => Err(AgentError::Tool(format!("unknown method: {method}"))),
         }
     }
 }
@@ -1262,7 +1412,8 @@ impl ActiveGuard {
 
 impl Drop for ActiveGuard {
     fn drop(&mut self) {
-        self.count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        self.count
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         tracing::info!(
             "[monitor] '{}' active worker done, count now {}",
             self.name,

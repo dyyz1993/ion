@@ -1483,10 +1483,16 @@ impl Tool for SpawnWorkerTool {
         let wait = args.get("wait").and_then(|v| v.as_bool()).unwrap_or(true);
         let worktree = args.get("worktree").and_then(|v| v.as_bool());
         // worktree 命名/基准（可选）：LLM 可指定分支名与切出基准
-        let worktree_branch = args.get("branch").and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty()).map(String::from);
-        let worktree_base = args.get("base").and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty()).map(String::from);
+        let worktree_branch = args
+            .get("branch")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+        let worktree_base = args
+            .get("base")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
         // 可选 model/provider：让 LLM 能给不同 worker 指定不同模型
         let model = args.get("model").and_then(|v| v.as_str()).map(String::from);
         let provider = args

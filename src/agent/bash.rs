@@ -288,9 +288,7 @@ impl Tool for BashRunTool {
                 use std::os::unix::process::CommandExt;
                 std_cmd.process_group(0);
             }
-            let child = match tokio::process::Command::from(std_cmd)
-                .spawn()
-            {
+            let child = match tokio::process::Command::from(std_cmd).spawn() {
                 Ok(c) => c,
                 Err(e) => {
                     let mut map = self.process_map.lock().await;

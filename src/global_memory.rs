@@ -5,7 +5,7 @@
 //!
 //! 设计文档：docs/design/MEMORY_AGENT.md
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -120,7 +120,11 @@ impl GlobalMemoryStore {
     ///
     /// 先用 FTS5 MATCH（英文/分词语言效果好），如果结果为空则用 LIKE 模糊匹配
     /// （中文场景 fallback，因为 FTS5 默认 tokenizer 对中文不友好）。
-    pub fn search(&self, query: &str, project: Option<&str>) -> Result<Vec<GlobalMemoryEntry>, String> {
+    pub fn search(
+        &self,
+        query: &str,
+        project: Option<&str>,
+    ) -> Result<Vec<GlobalMemoryEntry>, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
 
         // 1. 先用 FTS5 MATCH
@@ -135,13 +139,17 @@ impl GlobalMemoryStore {
              WHERE entries_fts MATCH ?1 AND e.archived = 0
              ORDER BY e.importance DESC, e.updated_at DESC"
         };
-        let mut stmt = conn.prepare(fts_sql).map_err(|e| format!("prepare fts: {}", e))?;
+        let mut stmt = conn
+            .prepare(fts_sql)
+            .map_err(|e| format!("prepare fts: {}", e))?;
         let fts_rows = if let Some(p) = project {
-            stmt.query_map(params![query, p], map_entry).map_err(|e| format!("query fts: {}", e))?
+            stmt.query_map(params![query, p], map_entry)
+                .map_err(|e| format!("query fts: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| format!("row fts: {}", e))?
         } else {
-            stmt.query_map(params![query], map_entry).map_err(|e| format!("query fts: {}", e))?
+            stmt.query_map(params![query], map_entry)
+                .map_err(|e| format!("query fts: {}", e))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| format!("row fts: {}", e))?
         };
@@ -156,24 +164,32 @@ impl GlobalMemoryStore {
         //    先按空格/标点拆词，再把连续中文段按 2 字滑动窗口拆（中文无空格分词）
         let mut words: Vec<String> = Vec::new();
         for part in query.split(|c: char| c.is_whitespace() || "，。、！？".contains(c)) {
-            if part.is_empty() { continue; }
+            if part.is_empty() {
+                continue;
+            }
             // 检查是否含中文字符
             let has_cjk = part.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
             if has_cjk && part.chars().count() > 2 {
                 // 连续中文：2 字滑动窗口（bigram）
                 let chars: Vec<char> = part.chars().collect();
                 for i in 0..chars.len().saturating_sub(1) {
-                    words.push(chars[i..i+2].iter().collect());
+                    words.push(chars[i..i + 2].iter().collect());
                 }
             } else {
                 words.push(part.to_string());
             }
         }
-        let words: Vec<&str> = if words.is_empty() { vec![query] } else { words.iter().map(|s| s.as_str()).collect() };
+        let words: Vec<&str> = if words.is_empty() {
+            vec![query]
+        } else {
+            words.iter().map(|s| s.as_str()).collect()
+        };
 
         let mut like_rows = Vec::new();
         for word in &words {
-            if word.len() < 2 { continue; }  // 跳过单字（噪音太大）
+            if word.len() < 2 {
+                continue;
+            } // 跳过单字（噪音太大）
             let like_pattern = format!("%{}%", word);
             let like_sql = if project.is_some() {
                 "SELECT id, project, content, category, tags, importance, archived, created_at, updated_at
@@ -182,13 +198,19 @@ impl GlobalMemoryStore {
                 "SELECT id, project, content, category, tags, importance, archived, created_at, updated_at
                  FROM entries WHERE archived = 0 AND (content LIKE ?1 OR category LIKE ?1 OR tags LIKE ?1)"
             };
-            let mut stmt2 = conn.prepare(like_sql).map_err(|e| format!("prepare like: {}", e))?;
+            let mut stmt2 = conn
+                .prepare(like_sql)
+                .map_err(|e| format!("prepare like: {}", e))?;
             let rows = if let Some(p) = project {
-                stmt2.query_map(params![like_pattern, p], map_entry).map_err(|e| format!("query like: {}", e))?
+                stmt2
+                    .query_map(params![like_pattern, p], map_entry)
+                    .map_err(|e| format!("query like: {}", e))?
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| format!("row like: {}", e))?
             } else {
-                stmt2.query_map(params![like_pattern], map_entry).map_err(|e| format!("query like: {}", e))?
+                stmt2
+                    .query_map(params![like_pattern], map_entry)
+                    .map_err(|e| format!("query like: {}", e))?
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| format!("row like: {}", e))?
             };
@@ -197,7 +219,11 @@ impl GlobalMemoryStore {
         // 去重（同一条可能被多个词命中）+ 按 importance 排序
         let mut seen = std::collections::HashSet::new();
         like_rows.retain(|e| seen.insert(e.id.clone()));
-        like_rows.sort_by(|a, b| b.importance.cmp(&a.importance).then(b.updated_at.cmp(&a.updated_at)));
+        like_rows.sort_by(|a, b| {
+            b.importance
+                .cmp(&a.importance)
+                .then(b.updated_at.cmp(&a.updated_at))
+        });
         Ok(like_rows)
     }
 
@@ -220,29 +246,36 @@ impl GlobalMemoryStore {
     /// 批量清空（测试用，DELETE + 清 FTS5 索引 + 清 outlines）
     pub fn clear_all(&self) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        conn.execute("DELETE FROM entries", []).map_err(|e| format!("clear entries: {}", e))?;
-        conn.execute("DELETE FROM entries_fts", []).map_err(|e| format!("clear fts: {}", e))?;
-        conn.execute("DELETE FROM outlines", []).map_err(|e| format!("clear outlines: {}", e))?;
+        conn.execute("DELETE FROM entries", [])
+            .map_err(|e| format!("clear entries: {}", e))?;
+        conn.execute("DELETE FROM entries_fts", [])
+            .map_err(|e| format!("clear fts: {}", e))?;
+        conn.execute("DELETE FROM outlines", [])
+            .map_err(|e| format!("clear outlines: {}", e))?;
         Ok(())
     }
 
     /// 活跃条目数
     pub fn count(&self) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM entries WHERE archived=0", [], |row| row.get(0)
-        ).unwrap_or(0);
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entries WHERE archived=0", [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0);
         Ok(count)
     }
 
     /// 检查是否已有相同 content 的活跃记忆（去重用）
     pub fn has_content(&self, content: &str) -> Result<bool, String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {}", e))?;
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM entries WHERE content = ?1 AND archived = 0",
-            params![content],
-            |row| row.get(0),
-        ).unwrap_or(0);
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entries WHERE content = ?1 AND archived = 0",
+                params![content],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
         Ok(count > 0)
     }
 
@@ -258,11 +291,15 @@ impl GlobalMemoryStore {
         };
         let mut stmt = conn.prepare(sql).map_err(|e| format!("prepare: {}", e))?;
         let rows = if let Some(p) = project {
-            stmt.query_map(params![p], map_entry).map_err(|e| format!("query: {}", e))?
-                .collect::<Result<Vec<_>, _>>().map_err(|e| format!("row: {}", e))?
+            stmt.query_map(params![p], map_entry)
+                .map_err(|e| format!("query: {}", e))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("row: {}", e))?
         } else {
-            stmt.query_map([], map_entry).map_err(|e| format!("query: {}", e))?
-                .collect::<Result<Vec<_>, _>>().map_err(|e| format!("row: {}", e))?
+            stmt.query_map([], map_entry)
+                .map_err(|e| format!("query: {}", e))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("row: {}", e))?
         };
         Ok(rows)
     }
@@ -273,15 +310,17 @@ impl GlobalMemoryStore {
         let mut stmt = conn.prepare(
             "SELECT id, summary, project, entry_count, updated_at FROM outlines ORDER BY entry_count DESC"
         ).map_err(|e| format!("prepare: {}", e))?;
-        let rows = stmt.query_map([], |row| {
-            Ok(OutlineEntry {
-                id: row.get(0)?,
-                summary: row.get(1)?,
-                project: row.get(2)?,
-                entry_count: row.get(3)?,
-                updated_at: row.get(4)?,
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(OutlineEntry {
+                    id: row.get(0)?,
+                    summary: row.get(1)?,
+                    project: row.get(2)?,
+                    entry_count: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
             })
-        }).map_err(|e| format!("query: {}", e))?;
+            .map_err(|e| format!("query: {}", e))?;
         let mut result = Vec::new();
         for r in rows {
             result.push(r.map_err(|e| format!("row: {}", e))?);
@@ -300,7 +339,8 @@ impl GlobalMemoryStore {
             let mut stmt = conn.prepare(
                 "SELECT content FROM entries WHERE archived=0 GROUP BY content HAVING COUNT(*) > 1"
             ).map_err(|e| format!("prepare dupes: {}", e))?;
-            let rows = stmt.query_map([], |row| row.get::<_, String>(0))
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))
                 .map_err(|e| format!("query dupes: {}", e))?;
             for r in rows {
                 let content = r.map_err(|e| format!("row: {}", e))?;
@@ -331,7 +371,8 @@ impl GlobalMemoryStore {
         ).map_err(|e| format!("archive update: {}", e))?;
 
         // 3. 更新大纲索引（outlines 表）
-        conn.execute("DELETE FROM outlines", []).map_err(|e| format!("clear outlines: {}", e))?;
+        conn.execute("DELETE FROM outlines", [])
+            .map_err(|e| format!("clear outlines: {}", e))?;
         conn.execute(
             "INSERT INTO outlines (id, summary, project, entry_count, updated_at)
              SELECT
@@ -343,12 +384,15 @@ impl GlobalMemoryStore {
              FROM entries WHERE archived = 0
              GROUP BY project",
             [],
-        ).map_err(|e| format!("update outlines: {}", e))?;
+        )
+        .map_err(|e| format!("update outlines: {}", e))?;
 
         // 统计剩余活跃条数
-        stats.total = conn.query_row(
-            "SELECT COUNT(*) FROM entries WHERE archived=0", [], |row| row.get(0)
-        ).unwrap_or(0);
+        stats.total = conn
+            .query_row("SELECT COUNT(*) FROM entries WHERE archived=0", [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0);
 
         Ok(stats)
     }
@@ -361,12 +405,17 @@ impl GlobalMemoryStore {
         if let Ok(ion_home) = std::env::var("ION_HOME")
             && !ion_home.is_empty()
         {
-            return PathBuf::from(ion_home).join("agent").join("global-memory.db");
+            return PathBuf::from(ion_home)
+                .join("agent")
+                .join("global-memory.db");
         }
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| ".".into());
-        PathBuf::from(home).join(".ion").join("agent").join("global-memory.db")
+        PathBuf::from(home)
+            .join(".ion")
+            .join("agent")
+            .join("global-memory.db")
     }
 
     /// 从 V0.1 JSON 文件自动迁移到 SQLite。
@@ -383,30 +432,55 @@ impl GlobalMemoryStore {
             .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))
             .map_err(|e| e.to_string())?;
         if total_rows > 0 {
-            tracing::info!("[global-memory] db has {total_rows} rows (incl archived), skip migration");
+            tracing::info!(
+                "[global-memory] db has {total_rows} rows (incl archived), skip migration"
+            );
             return Ok(0);
         }
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| ".".into());
-        let project_data_root = PathBuf::from(&home).join(".ion").join("agent").join("project-data");
+        let project_data_root = PathBuf::from(&home)
+            .join(".ion")
+            .join("agent")
+            .join("project-data");
         if !project_data_root.exists() {
             tracing::info!("[global-memory] no project-data dir, skip migration");
             return Ok(0);
         }
         let mut count = 0;
         // 遍历每个项目目录
-        for project_dir in std::fs::read_dir(&project_data_root).map_err(|e| format!("read project-data: {}", e))? {
-            let project_dir = match project_dir { Ok(d) => d, Err(_) => continue };
+        for project_dir in std::fs::read_dir(&project_data_root)
+            .map_err(|e| format!("read project-data: {}", e))?
+        {
+            let project_dir = match project_dir {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
             let memory_dir = project_dir.path().join("memory").join("outlines");
-            if !memory_dir.exists() { continue; }
+            if !memory_dir.exists() {
+                continue;
+            }
             // 从目录名提取项目名（格式：--hash--name--）
             let dir_name = project_dir.file_name().to_string_lossy().to_string();
-            let project_name = dir_name.split("--").last().unwrap_or("unknown").trim_end_matches("--").to_string();
-            let project_name = if project_name.is_empty() { "unknown".into() } else { project_name };
+            let project_name = dir_name
+                .split("--")
+                .last()
+                .unwrap_or("unknown")
+                .trim_end_matches("--")
+                .to_string();
+            let project_name = if project_name.is_empty() {
+                "unknown".into()
+            } else {
+                project_name
+            };
 
             // 遍历每个 outline 文件
-            for outline_file in std::fs::read_dir(&memory_dir).into_iter().flatten().flatten() {
+            for outline_file in std::fs::read_dir(&memory_dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
                 let content = match std::fs::read_to_string(outline_file.path()) {
                     Ok(c) => c,
                     Err(_) => continue,
@@ -416,13 +490,37 @@ impl GlobalMemoryStore {
                     Err(_) => continue,
                 };
                 for entry in entries {
-                    let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let mem_content = entry.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let category = entry.get("category").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let id = entry
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let mem_content = entry
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let category = entry
+                        .get("category")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     let tags_arr = entry.get("tags").and_then(|v| v.as_array());
-                    let tags = tags_arr.map(|a| a.iter().filter_map(|t| t.as_str()).collect::<Vec<_>>().join(",")).unwrap_or_default();
-                    let archived = entry.get("archived").and_then(|v| v.as_bool()).unwrap_or(false);
-                    if mem_content.is_empty() || archived { continue; }
+                    let tags = tags_arr
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|t| t.as_str())
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        })
+                        .unwrap_or_default();
+                    let archived = entry
+                        .get("archived")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    if mem_content.is_empty() || archived {
+                        continue;
+                    }
                     // 导入
                     if let Err(e) = self.save(&mem_content, &category, &tags, &project_name, 5) {
                         tracing::warn!("[global-memory] migrate entry {} failed: {}", id, e);
@@ -487,7 +585,15 @@ mod tests {
     #[test]
     fn test_save_and_fts_search() {
         let store = test_store();
-        let id = store.save("用户偏好 Rust 的 async/await", "preference", "rust,async", "project-a", 8).unwrap();
+        let id = store
+            .save(
+                "用户偏好 Rust 的 async/await",
+                "preference",
+                "rust,async",
+                "project-a",
+                8,
+            )
+            .unwrap();
         assert!(id.starts_with("gmem_"));
 
         // FTS5 搜索 "rust"
@@ -500,8 +606,18 @@ mod tests {
     #[test]
     fn test_cross_project_search() {
         let store = test_store();
-        store.save("project uses typescript", "preference", "ts", "project-a", 5).unwrap();
-        store.save("project uses python", "preference", "py", "project-b", 5).unwrap();
+        store
+            .save(
+                "project uses typescript",
+                "preference",
+                "ts",
+                "project-a",
+                5,
+            )
+            .unwrap();
+        store
+            .save("project uses python", "preference", "py", "project-b", 5)
+            .unwrap();
 
         // 全局搜索（不指定 project）
         let results = store.search("project", None).unwrap();
@@ -516,9 +632,15 @@ mod tests {
     #[test]
     fn test_importance_ranking() {
         let store = test_store();
-        store.save("low importance note", "note", "test", "p", 2).unwrap();
-        store.save("high importance note", "note", "test", "p", 10).unwrap();
-        store.save("medium importance note", "note", "test", "p", 5).unwrap();
+        store
+            .save("low importance note", "note", "test", "p", 2)
+            .unwrap();
+        store
+            .save("high importance note", "note", "test", "p", 10)
+            .unwrap();
+        store
+            .save("medium importance note", "note", "test", "p", 5)
+            .unwrap();
 
         let results = store.search("note", None).unwrap();
         assert_eq!(results.len(), 3);
@@ -531,7 +653,9 @@ mod tests {
     #[test]
     fn test_soft_delete() {
         let store = test_store();
-        let id = store.save("entry to delete", "note", "test", "p", 5).unwrap();
+        let id = store
+            .save("entry to delete", "note", "test", "p", 5)
+            .unwrap();
         // 搜索能找到
         assert_eq!(store.search("delete", None).unwrap().len(), 1);
         // 软删除

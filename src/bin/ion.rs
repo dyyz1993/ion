@@ -1644,8 +1644,7 @@ async fn cmd_run(
     )));
 
     // Runtime-loadable WASM Extension registry (also used by worker RPC).
-    let wasm_ext_registry =
-        std::sync::Arc::new(ion::wasm_extension::WasmExtensionRegistry::new());
+    let wasm_ext_registry = std::sync::Arc::new(ion::wasm_extension::WasmExtensionRegistry::new());
     let mut loaded_wasm_paths: Vec<String> = Vec::new();
 
     // Auto-discover WASM Extensions before processing explicit --extension paths.
@@ -1669,19 +1668,20 @@ async fn cmd_run(
                         let canonical =
                             std::fs::canonicalize(&path).unwrap_or_else(|_| path.to_path_buf());
                         let canonical_str = canonical.to_string_lossy().to_string();
-                        let extension_id = ion::wasm_extension::extension_id_from_path(&canonical_str);
+                        let extension_id =
+                            ion::wasm_extension::extension_id_from_path(&canonical_str);
                         match wasm_ext_registry.add(&canonical_str) {
                             Ok(tool_defs) => {
                                 loaded_wasm_paths.push(canonical_str.clone());
                                 for td in &tool_defs {
                                     tools.register(Box::new(
                                         ion::wasm_extension::WasmToolAdapter {
-                                        name: td.name.clone(),
-                                        description: td.description.clone(),
-                                        parameters: td.parameters.clone(),
-                                        extension_path: canonical_str.clone(),
-                                        extension_id: extension_id.clone(),
-                                        registry: wasm_ext_registry.clone(),
+                                            name: td.name.clone(),
+                                            description: td.description.clone(),
+                                            parameters: td.parameters.clone(),
+                                            extension_path: canonical_str.clone(),
+                                            extension_id: extension_id.clone(),
+                                            registry: wasm_ext_registry.clone(),
                                         },
                                     ));
                                     tracing::info!(
@@ -2067,7 +2067,9 @@ async fn cmd_run(
 
     // ── 注册 ContextFilesExtension（加载 AGENTS.md/CLAUDE.md，--no-context-files 关闭）
     if !ion::context_files_extension::ContextFilesExtension::is_disabled_by_env() {
-        ext_reg.register(Box::new(ion::context_files_extension::ContextFilesExtension::new()));
+        ext_reg.register(Box::new(
+            ion::context_files_extension::ContextFilesExtension::new(),
+        ));
     }
 
     // ── 注册 HookExtension（扫描 .ion/hooks.json，command/http/prompt/agent handler
@@ -2076,11 +2078,11 @@ async fn cmd_run(
     if ion::hooks::extension::HookExtension::has_hooks(&hooks_project_dir) {
         ext_reg.register(Box::new(ion::hooks::extension::HookExtension::new(
             hooks_project_dir,
-            None,                               // runtime — 场景 1 无 host 引擎，agent handler 不可用
+            None, // runtime — 场景 1 无 host 引擎，agent handler 不可用
             Some(std::sync::Arc::clone(&registry_for_ext)), // prompt handler 调 LLM 用
-            Some(model_for_ext.clone()),        // prompt handler 用当前会话模型
-            None,                               // manager_bridge — 场景 1 无 MCP 转发
-            None,                               // follow_up_tx — 场景 1 无 follow_up 通道
+            Some(model_for_ext.clone()), // prompt handler 用当前会话模型
+            None, // manager_bridge — 场景 1 无 MCP 转发
+            None, // follow_up_tx — 场景 1 无 follow_up 通道
         )));
         tracing::info!("[extension] HookExtension registered (hooks.json detected)");
     }
@@ -4192,8 +4194,8 @@ async fn cmd_extension(action: ExtensionAction) {
 
 async fn cmd_submit(eff: &EffectiveConfig, message: &str, _workers: usize, _max_workers: usize) {
     use ion::worker_registry::{WorkerCreateConfig, WorkerRegistry};
-    use std::sync::Arc;
     use parking_lot::Mutex;
+    use std::sync::Arc;
 
     let registry = Arc::new(Mutex::new(WorkerRegistry::new()));
     registry.lock().set_self_ref(&registry);
@@ -4376,7 +4378,9 @@ async fn main() {
 
     // --no-context-files → env var (cmd_run + spawned workers both read it)
     if cli.no_context_files {
-        unsafe { std::env::set_var("ION_NO_CONTEXT_FILES", "1"); }
+        unsafe {
+            std::env::set_var("ION_NO_CONTEXT_FILES", "1");
+        }
     }
 
     let mut eff = resolve_effective(&cli);
@@ -4685,11 +4689,14 @@ async fn do_create_session(
     // 同一 session（实测 31ms 两份 worker → 事件双倍推送）。已存在 ⇒ 直接复用；
     // 有人正在建 ⇒ 等它完成再复用；只有真正无人建时才往下走。
     eprintln!("[create_session] guard enter sid={session_id}");
-    for _ in 0..50 {   // 10s 上限：冷启动 spawn 可能 >3s，3s 就回落会双开
+    for _ in 0..50 {
+        // 10s 上限：冷启动 spawn 可能 >3s，3s 就回落会双开
         {
             let reg = registry.lock();
             let exists = reg.workers.values().any(|w| w.session_id == session_id);
-            if exists { eprintln!("[create_session] reuse existing {session_id}"); }
+            if exists {
+                eprintln!("[create_session] reuse existing {session_id}");
+            }
             let occupied = !creating_sessions_slot().lock().insert(session_id.clone());
             if exists {
                 tracing::info!("[create_session] reuse existing worker for {session_id}");
@@ -4712,7 +4719,10 @@ async fn do_create_session(
     // 用 'static 集合而非 registry 字段：registry.lock() 的临时 MutexGuard 非 Send，
     // 会随 guard 跨 await 污染整个 future（E0505/'*mut ()' not Send）
     let guard_sid: &'static str = Box::leak(session_id.clone().into_boxed_str());
-    struct CreatingGuard(&'static parking_lot::Mutex<std::collections::HashSet<String>>, &'static str);
+    struct CreatingGuard(
+        &'static parking_lot::Mutex<std::collections::HashSet<String>>,
+        &'static str,
+    );
     impl Drop for CreatingGuard {
         fn drop(&mut self) {
             self.0.lock().remove(self.1);
@@ -4739,8 +4749,7 @@ async fn do_create_session(
         if let Some(entries) = load_session_entries(&session_id) {
             // 倒序找最后一个 model_change
             for e in entries.iter().rev() {
-                if e.get("type").and_then(|v| v.as_str()) == Some("model_change")
-                {
+                if e.get("type").and_then(|v| v.as_str()) == Some("model_change") {
                     // append_session_entry 把 data 字段合并到顶层（不嵌套在 data 里）
                     let m = e.get("modelId").and_then(|v| v.as_str()).unwrap_or("");
                     let p = e.get("provider").and_then(|v| v.as_str()).unwrap_or("");
@@ -4813,7 +4822,6 @@ async fn do_create_session(
 
 /// `get_session_snapshot`：刷新/重连恢复用（设计文档 §3.2）。
 
-
 /// `get_session_snapshot`：刷新/重连恢复用（设计文档 §3.2）。
 /// 元数据 + workspace 信息 + worker 运行态 + 最近消息，一个接口拿全。
 async fn do_get_session_snapshot(
@@ -4829,19 +4837,28 @@ async fn do_get_session_snapshot(
         .ok_or("session_id is required")?;
 
     // worker 运行态（null = 不在运行）
-    let worker = registry.lock().workers.values().find(|w| w.session_id == session_id).map(|w| {
-        serde_json::json!({
-            "workerId": w.worker_id,
-            "status": format!("{:?}", w.status).to_lowercase(),
-        })
-    });
+    let worker = registry
+        .lock()
+        .workers
+        .values()
+        .find(|w| w.session_id == session_id)
+        .map(|w| {
+            serde_json::json!({
+                "workerId": w.worker_id,
+                "status": format!("{:?}", w.status).to_lowercase(),
+            })
+        });
 
     // workspace 元数据（含运行态合并：worker Busy → running / Idle → idle）
     let mut workspace = ion::session_workspace::WorkspaceSession::from_index(session_id);
     if let (Some(ws), Some(w)) = (&mut workspace, &worker) {
         let busy = w["status"] == "busy";
         if ws.status == WorkspaceStatus::Ready {
-            ws.status = if busy { WorkspaceStatus::Running } else { WorkspaceStatus::Idle };
+            ws.status = if busy {
+                WorkspaceStatus::Running
+            } else {
+                WorkspaceStatus::Idle
+            };
         }
     }
 
@@ -4884,8 +4901,8 @@ async fn do_get_session_snapshot(
 
 async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_workers: usize) {
     use ion::worker_registry::WorkerRegistry;
-    use std::sync::Arc;
     use parking_lot::Mutex;
+    use std::sync::Arc;
 
     let registry = Arc::new(Mutex::new(WorkerRegistry::new()));
     registry.lock().set_self_ref(&registry);
@@ -5012,8 +5029,11 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                 eprintln!("🌱 Default session ready: {sid}");
                 // SessionListChanged 事件
                 let mut bus = default_session_event_bus.lock().await;
-                bus.broadcast_raw("host", "SessionListChanged",
-                    serde_json::json!({"action": "created", "sessionId": sid}));
+                bus.broadcast_raw(
+                    "host",
+                    "SessionListChanged",
+                    serde_json::json!({"action": "created", "sessionId": sid}),
+                );
             }
             Err(e) => eprintln!("⚠️  Default session 创建失败（后续 RPC 会按需创建）: {e}"),
         }
@@ -5084,12 +5104,11 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                         //    此前"订阅先于 worker 建立即失效"，UI 只能 prompt 后重订绕过
                                         // ② worker 死亡/GC 后 rx 结束，自动重接新 worker（10s），
                                         //    不行才断开让客户端退避重连
-                                        let replay_n = cmd
-                                            .get("replay")
-                                            .and_then(|v| v.as_u64())
-                                            .unwrap_or(0)
-                                            as usize;
-                                        let first = attach_session_sub(&reg, sid, replay_n, 120).await;
+                                        let replay_n =
+                                            cmd.get("replay").and_then(|v| v.as_u64()).unwrap_or(0)
+                                                as usize;
+                                        let first =
+                                            attach_session_sub(&reg, sid, replay_n, 120).await;
                                         match first {
                                             Some((mut rx, replay_events)) => {
                                                 let ack = serde_json::json!({
@@ -5124,7 +5143,9 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                                             "event": msg.get("event").cloned().unwrap_or(msg),
                                                         });
                                                         if write_half
-                                                            .write_all(format!("{out}\n").as_bytes())
+                                                            .write_all(
+                                                                format!("{out}\n").as_bytes(),
+                                                            )
                                                             .await
                                                             .is_err()
                                                         {
@@ -5139,7 +5160,8 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                                     let _ = write_half
                                                         .write_all(format!("{notice}\n").as_bytes())
                                                         .await;
-                                                    match attach_session_sub(&reg, sid, 0, 20).await {
+                                                    match attach_session_sub(&reg, sid, 0, 20).await
+                                                    {
                                                         Some((rx2, _)) => rx = rx2,
                                                         None => break,
                                                     }
@@ -5371,39 +5393,42 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                         })
                                     };
                                     if wid_alive {
-                                    if let Some(wid) = &wid_opt {
-                                        // subscribe（短锁，同步）
-                                        let _ = { reg.lock().subscribe(&wid) };
-                                        // send_async 自管锁 + await oneshot
-                                        let params = cmd.get("params").cloned().unwrap_or_default();
-                                        match ion::worker_registry::WorkerRegistry::send_async(
-                                            &reg, &wid, &method, params,
-                                        ).await {
-                                            Ok(resp) => {
-                                                let mut r = resp.clone();
-                                                if let Some(id) = cmd.get("id") {
-                                                    r["id"] = id.clone();
+                                        if let Some(wid) = &wid_opt {
+                                            // subscribe（短锁，同步）
+                                            let _ = { reg.lock().subscribe(&wid) };
+                                            // send_async 自管锁 + await oneshot
+                                            let params =
+                                                cmd.get("params").cloned().unwrap_or_default();
+                                            match ion::worker_registry::WorkerRegistry::send_async(
+                                                &reg, &wid, &method, params,
+                                            )
+                                            .await
+                                            {
+                                                Ok(resp) => {
+                                                    let mut r = resp.clone();
+                                                    if let Some(id) = cmd.get("id") {
+                                                        r["id"] = id.clone();
+                                                    }
+                                                    let _ = write_half
+                                                        .write_all(format!("{r}\n").as_bytes())
+                                                        .await;
+                                                    let _ = write_half.flush().await;
                                                 }
-                                                let _ = write_half
-                                                    .write_all(format!("{r}\n").as_bytes())
-                                                    .await;
-                                                let _ = write_half.flush().await;
+                                                Err(e) => {
+                                                    let resp = serde_json::json!({"type":"response","id":cmd.get("id"),"success":false,"error":e});
+                                                    let _ = write_half
+                                                        .write_all(format!("{resp}\n").as_bytes())
+                                                        .await;
+                                                }
                                             }
-                                            Err(e) => {
-                                                let resp = serde_json::json!({"type":"response","id":cmd.get("id"),"success":false,"error":e});
-                                                let _ = write_half
-                                                    .write_all(format!("{resp}\n").as_bytes())
-                                                    .await;
-                                            }
+                                            return;
                                         }
-                                        return;
-                                    } }
+                                    }
                                     // Stale/Dead 或无 worker → manager 统一处理
                                     // （auto-create 拉新 worker / idle 合成自愈）
                                     let resp = handle_manager_command(&reg, cmd).await;
-                                    let _ = write_half
-                                        .write_all(format!("{resp}\n").as_bytes())
-                                        .await;
+                                    let _ =
+                                        write_half.write_all(format!("{resp}\n").as_bytes()).await;
                                     let _ = write_half.flush().await;
                                 } else {
                                     // 3. Manager 级命令：直接执行，不等
@@ -5518,20 +5543,25 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                         println!("{}", out);
                     } else {
                         let inner_ev = msg.get("event").cloned().unwrap_or(msg.clone());
-                        let inner_type = inner_ev.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        let inner_type =
+                            inner_ev.get("type").and_then(|v| v.as_str()).unwrap_or("");
                         // 广播 worker 原始事件到全局 EventBus，让 subscribe（无参数）也能收到
                         // text_delta / agent_start / agent_end / tool_execution_* 等流式输出。
                         // 之前只 println 到 serve stdout，全局订阅收不到。对齐 pi 行为。
                         if matches!(
                             inner_type,
-                            "text_delta" | "agent_start" | "agent_end" | "agent_stopped"
-                                | "tool_execution_start" | "tool_execution_end"
-                                | "tool_call" | "tool_call_delta"
+                            "text_delta"
+                                | "agent_start"
+                                | "agent_end"
+                                | "agent_stopped"
+                                | "tool_execution_start"
+                                | "tool_execution_end"
+                                | "tool_call"
+                                | "tool_call_delta"
                         ) {
-                            let mut ev_obj = ion::event_bus::ExtensionEvent::new(
-                                "worker", inner_type,
-                            )
-                            .with_data(inner_ev.clone());
+                            let mut ev_obj =
+                                ion::event_bus::ExtensionEvent::new("worker", inner_type)
+                                    .with_data(inner_ev.clone());
                             if !session_id.is_empty() {
                                 ev_obj = ev_obj.with_session(session_id);
                             }
@@ -5816,7 +5846,6 @@ async fn handle_manager_command(
     resp
 }
 
-
 /// session 级订阅挂接：等 worker 出现（wait_polls × 500ms）并 subscribe。
 /// 返回 None = 超时未出现。锁在每轮短持，不跨 await。
 async fn attach_session_sub(
@@ -5850,15 +5879,17 @@ async fn attach_session_sub(
     None
 }
 
-
 // ── B 线 fast path：FileIndex 缓存 + 路径解析（不读全文） ──
 static FILE_INDEX_CACHE: std::sync::OnceLock<
-    parking_lot::Mutex<std::collections::HashMap<std::path::PathBuf, Arc<ion::file_index::FileIndex>>>,
+    parking_lot::Mutex<
+        std::collections::HashMap<std::path::PathBuf, Arc<ion::file_index::FileIndex>>,
+    >,
 > = std::sync::OnceLock::new();
 
 /// 获取（或增量刷新）指定路径的 FileIndex；失败返回 None
 fn get_file_index(path: &std::path::Path) -> Option<Arc<ion::file_index::FileIndex>> {
-    let cache = FILE_INDEX_CACHE.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+    let cache =
+        FILE_INDEX_CACHE.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
     let mut guard = cache.lock();
     if let Some(idx) = guard.get(path) {
         // 文件没变（len+mtime 相同）→ 直接命中缓存
@@ -5899,24 +5930,29 @@ fn resolve_session_path(sid: &str) -> Option<std::path::PathBuf> {
 }
 
 /// fast_messages：索引层过滤+分页，只对返回页 read_at 解析
-fn fast_messages(
-    path: &std::path::Path,
-    params: &serde_json::Value,
-) -> Option<serde_json::Value> {
+fn fast_messages(path: &std::path::Path, params: &serde_json::Value) -> Option<serde_json::Value> {
     let idx = get_file_index(path)?;
     let metas: &[serde_json::Value] = &idx.metas;
 
     // 参数
-    let view = match params.get("view").and_then(|v| v.as_str()).unwrap_or("live") {
+    let view = match params
+        .get("view")
+        .and_then(|v| v.as_str())
+        .unwrap_or("live")
+    {
         "since_compaction" => ion::message_retrieval::View::SinceCompaction,
         "full" => ion::message_retrieval::View::Full,
-        s if s.starts_with("branch:") => {
-            ion::message_retrieval::View::Branch(s[7..].to_string())
-        }
+        s if s.starts_with("branch:") => ion::message_retrieval::View::Branch(s[7..].to_string()),
         _ => ion::message_retrieval::View::Live,
     };
-    let after = params.get("after").and_then(|v| v.as_str()).map(String::from);
-    let before = params.get("before").and_then(|v| v.as_str()).map(String::from);
+    let after = params
+        .get("after")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let before = params
+        .get("before")
+        .and_then(|v| v.as_str())
+        .map(String::from);
     let limit = params
         .get("limit")
         .and_then(|v| v.as_u64())
@@ -5930,9 +5966,8 @@ fn fast_messages(
 
     // ── O(1) 快速路径：Live 视图（默认）+ 无游标过滤的简单分页 → 预计算索引直接切片 ──
     // 只有 view=Live 且无 after/before/custom 时才走（覆盖 UI 打开/翻页/head 的 90%+ 场景）
-    let is_live_simple = matches!(view, ion::message_retrieval::View::Live)
-        && after.is_none()
-        && before.is_none();
+    let is_live_simple =
+        matches!(view, ion::message_retrieval::View::Live) && after.is_none() && before.is_none();
     if is_live_simple {
         let idxs = &idx.live_message_idxs;
         let total = idxs.len();
@@ -5943,20 +5978,24 @@ fn fast_messages(
         } else {
             (total.saturating_sub(limit), total)
         };
-        let has_more = if from_head {
-            total > end
-        } else {
-            start > 0
-        };
+        let has_more = if from_head { total > end } else { start > 0 };
         let messages: Vec<serde_json::Value> = idxs[start..end]
             .iter()
             .filter_map(|&i| idx.parse_entry(i))
             .collect();
         let next_cursor = if has_more {
             if from_head {
-                messages.last()?.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())
+                messages
+                    .last()?
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
             } else {
-                messages.first()?.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())
+                messages
+                    .first()?
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
             }
         } else {
             None
@@ -6009,10 +6048,7 @@ fn fast_messages(
 }
 
 /// fast_turns：索引层 turn 分组 + 概览（仅 User/Assistant 预览），返回页按需解析
-fn fast_turns(
-    path: &std::path::Path,
-    params: &serde_json::Value,
-) -> Option<serde_json::Value> {
+fn fast_turns(path: &std::path::Path, params: &serde_json::Value) -> Option<serde_json::Value> {
     let idx = get_file_index(path)?;
     let metas: &[serde_json::Value] = &idx.metas;
 
@@ -6052,18 +6088,27 @@ fn fast_turns(
             // 概览：从索引 heads 直接取（不用全量解析）
             let user_content = group
                 .first()
-                .and_then(|e| idx.id_to_idx.get(e.get("id").and_then(|v| v.as_str()).unwrap_or("")))
+                .and_then(|e| {
+                    idx.id_to_idx
+                        .get(e.get("id").and_then(|v| v.as_str()).unwrap_or(""))
+                })
                 .and_then(|&i| idx.heads[i].user_head.clone())
                 .unwrap_or_default();
             let assistant_content = group
                 .last()
-                .and_then(|e| idx.id_to_idx.get(e.get("id").and_then(|v| v.as_str()).unwrap_or("")))
+                .and_then(|e| {
+                    idx.id_to_idx
+                        .get(e.get("id").and_then(|v| v.as_str()).unwrap_or(""))
+                })
                 .and_then(|&i| idx.heads[i].asst_head.clone())
                 .unwrap_or_default();
             let tool_count = group
                 .iter()
                 .filter(|e| {
-                    e.get("message").and_then(|m| m.get("role")).and_then(|r| r.as_str()) == Some("toolResult")
+                    e.get("message")
+                        .and_then(|m| m.get("role"))
+                        .and_then(|r| r.as_str())
+                        == Some("toolResult")
                 })
                 .count();
 
@@ -6158,7 +6203,11 @@ fn host_direct_session_read(
             }))
         }
         _ => {
-            let view = match params.get("view").and_then(|v| v.as_str()).unwrap_or("live") {
+            let view = match params
+                .get("view")
+                .and_then(|v| v.as_str())
+                .unwrap_or("live")
+            {
                 "since_compaction" => ion::message_retrieval::View::SinceCompaction,
                 "full" => ion::message_retrieval::View::Full,
                 s if s.starts_with("branch:") => {
@@ -6238,10 +6287,12 @@ fn host_idle_session_read(
             let models: Vec<_> = reg
                 .list_models()
                 .iter()
-                .map(|m| serde_json::json!({
-                    "id": m.id, "name": m.name, "provider": m.provider,
-                    "reasoning": m.reasoning, "contextWindow": m.context_window,
-                }))
+                .map(|m| {
+                    serde_json::json!({
+                        "id": m.id, "name": m.name, "provider": m.provider,
+                        "reasoning": m.reasoning, "contextWindow": m.context_window,
+                    })
+                })
                 .collect();
             Ok(serde_json::json!(models))
         }
@@ -6439,9 +6490,8 @@ async fn handle_manager_command_write(
                     obj.insert("initial_prompt".to_string(), serde_json::Value::String(msg));
                 }
             }
-            let mut cfg: WorkerCreateConfig =
-                serde_json::from_value(cfg_source.clone())
-                    .map_err(|e| format!("invalid create_worker params: {e}"))?;
+            let mut cfg: WorkerCreateConfig = serde_json::from_value(cfg_source.clone())
+                .map_err(|e| format!("invalid create_worker params: {e}"))?;
             // 支持从 params 显式传 session（重建 worker 时保留 SID）
             if cfg.session.is_none() {
                 cfg.session = cfg_source
@@ -6473,7 +6523,10 @@ async fn handle_manager_command_write(
                             "worktree_branch": w.branch,
                         })
                     });
-                    match registry.lock().register_prepared_worker(prepared, &cfg, &registry) {
+                    match registry
+                        .lock()
+                        .register_prepared_worker(prepared, &cfg, &registry)
+                    {
                         Ok(info) => {
                             let mut data = serde_json::json!({
                                 "workerId": info.worker_id,
@@ -6482,8 +6535,14 @@ async fn handle_manager_command_write(
                             if let Some(ws) = ws_meta
                                 && let Some(obj) = data.as_object_mut()
                             {
-                                obj.insert("worktree_path".to_string(), ws["worktree_path"].clone());
-                                obj.insert("worktree_branch".to_string(), ws["worktree_branch"].clone());
+                                obj.insert(
+                                    "worktree_path".to_string(),
+                                    ws["worktree_path"].clone(),
+                                );
+                                obj.insert(
+                                    "worktree_branch".to_string(),
+                                    ws["worktree_branch"].clone(),
+                                );
                             }
                             Ok(data)
                         }
@@ -6541,57 +6600,59 @@ async fn handle_manager_command_write(
         "list_all_sessions" => {
             // heal 路径走写事务：独立 load→save 会与并发的 remove/patch 竞态
             // （旧快照写回复活已删条目）
-            let (sessions, healed, total) =
-                ion::session_index::SessionIndex::write_txn(|index| {
-                    // 懒修复：messageCount=0 但有轮次的会话，用 FileIndex 快速重算
-                    let mut healed = 0;
-                    let ids_to_heal: Vec<String> = index
-                        .sessions
-                        .iter()
-                        .filter(|(_, m)| m.message_count == 0 && m.turn_count > 0)
-                        .map(|(id, _)| id.clone())
-                        .collect();
-                    for sid in ids_to_heal {
-                        if let Some(path) = resolve_session_path(&sid)
-                            && let Some(idx) = get_file_index(&path)
-                        {
-                            let real_count = idx.live_total as u32;
-                            if real_count > 0 {
-                                // 直接改内存实例（不用 patch_meta——它内部独立
-                                // load/save，会在事务内重入死锁）
-                                if let Some(m) = index.sessions.get_mut(&sid) {
-                                    m.message_count = real_count;
-                                }
-                                healed += 1;
+            let (sessions, healed, total) = ion::session_index::SessionIndex::write_txn(|index| {
+                // 懒修复：messageCount=0 但有轮次的会话，用 FileIndex 快速重算
+                let mut healed = 0;
+                let ids_to_heal: Vec<String> = index
+                    .sessions
+                    .iter()
+                    .filter(|(_, m)| m.message_count == 0 && m.turn_count > 0)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                for sid in ids_to_heal {
+                    if let Some(path) = resolve_session_path(&sid)
+                        && let Some(idx) = get_file_index(&path)
+                    {
+                        let real_count = idx.live_total as u32;
+                        if real_count > 0 {
+                            // 直接改内存实例（不用 patch_meta——它内部独立
+                            // load/save，会在事务内重入死锁）
+                            if let Some(m) = index.sessions.get_mut(&sid) {
+                                m.message_count = real_count;
                             }
+                            healed += 1;
                         }
                     }
-                    let sessions: Vec<_> = index
-                        .sessions
-                        .iter()
-                        .map(|(id, m)| {
-                            serde_json::json!({
-                                "id": id,
-                                "name": m.name,
-                                "firstMessage": m.first_name,
-                                "model": m.model,
-                                "messageCount": m.message_count,
-                                "turnCount": m.turn_count,
-                                "updatedAt": m.updated_at,
-                                "project": m.project,
-                                "lastEntryId": m.last_entry_id,
-                                "parentSession": m.parent_session,
-                                "parentType": m.parent_type,
-                                "hasChildren": index.has_children(id),
-                                "childCount": index.child_count(id),
-                            })
+                }
+                let sessions: Vec<_> = index
+                    .sessions
+                    .iter()
+                    .map(|(id, m)| {
+                        serde_json::json!({
+                            "id": id,
+                            "name": m.name,
+                            "firstMessage": m.first_name,
+                            "model": m.model,
+                            "messageCount": m.message_count,
+                            "turnCount": m.turn_count,
+                            "updatedAt": m.updated_at,
+                            "project": m.project,
+                            "lastEntryId": m.last_entry_id,
+                            "parentSession": m.parent_session,
+                            "parentType": m.parent_type,
+                            "hasChildren": index.has_children(id),
+                            "childCount": index.child_count(id),
                         })
-                        .collect();
-                    let total = sessions.len();
-                    (sessions, healed, total)
-                });
+                    })
+                    .collect();
+                let total = sessions.len();
+                (sessions, healed, total)
+            });
             if healed > 0 {
-                tracing::info!("[list_all_sessions] healed messageCount for {} sessions", healed);
+                tracing::info!(
+                    "[list_all_sessions] healed messageCount for {} sessions",
+                    healed
+                );
             }
             Ok(serde_json::json!({"sessions": sessions, "totalCount": total}))
         }
@@ -6600,11 +6661,12 @@ async fn handle_manager_command_write(
         "get_index_health" => {
             let path = ion::session_index::SessionIndex::path();
             let (parse_ok, entries, err) = match std::fs::read_to_string(&path) {
-                Ok(content) => match serde_json::from_str::<ion::session_index::SessionIndex>(&content)
-                {
-                    Ok(idx) => (true, Some(idx.sessions.len()), None),
-                    Err(e) => (false, None, Some(e.to_string())),
-                },
+                Ok(content) => {
+                    match serde_json::from_str::<ion::session_index::SessionIndex>(&content) {
+                        Ok(idx) => (true, Some(idx.sessions.len()), None),
+                        Err(e) => (false, None, Some(e.to_string())),
+                    }
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => (true, Some(0), None),
                 Err(e) => (false, None, Some(e.to_string())),
             };
@@ -6636,16 +6698,34 @@ async fn handle_manager_command_write(
             } else {
                 cmd.clone()
             };
-            let query = source.get("query").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
-            let search_content = source.get("searchContent").and_then(|v| v.as_bool()).unwrap_or(false);
+            let query = source
+                .get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let search_content = source
+                .get("searchContent")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let limit = source.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-            if query.is_empty() { return Err("missing 'query'".to_string()); }
+            if query.is_empty() {
+                return Err("missing 'query'".to_string());
+            }
             let index = ion::session_index::SessionIndex::load();
             let mut results: Vec<serde_json::Value> = Vec::new();
             for (id, meta) in &index.sessions {
-                let title_match = meta.name.as_ref().map_or(false, |n| n.to_lowercase().contains(&query))
-                    || meta.first_name.as_ref().map_or(false, |n| n.to_lowercase().contains(&query))
-                    || meta.project.as_ref().map_or(false, |p| p.to_lowercase().contains(&query));
+                let title_match = meta
+                    .name
+                    .as_ref()
+                    .map_or(false, |n| n.to_lowercase().contains(&query))
+                    || meta
+                        .first_name
+                        .as_ref()
+                        .map_or(false, |n| n.to_lowercase().contains(&query))
+                    || meta
+                        .project
+                        .as_ref()
+                        .map_or(false, |p| p.to_lowercase().contains(&query));
                 let mut content_matches: Vec<String> = Vec::new();
                 let mut total_hits = 0u64;
                 if search_content {
@@ -6660,9 +6740,11 @@ async fn handle_manager_command_write(
                                         if line.to_lowercase().contains(&query) {
                                             total_hits += 1;
                                             if content_matches.len() < 3 {
-                                                if let Some(pos) = line.to_lowercase().find(&query) {
+                                                if let Some(pos) = line.to_lowercase().find(&query)
+                                                {
                                                     let s = pos.saturating_sub(30);
-                                                    let e = (pos + query.len() + 30).min(line.len());
+                                                    let e =
+                                                        (pos + query.len() + 30).min(line.len());
                                                     content_matches.push(line[s..e].to_string());
                                                 }
                                             }
@@ -6670,7 +6752,9 @@ async fn handle_manager_command_write(
                                     }
                                 }
                             }
-                            if total_hits > 0 { break; }
+                            if total_hits > 0 {
+                                break;
+                            }
                         }
                     }
                 }
@@ -6685,7 +6769,9 @@ async fn handle_manager_command_write(
                         "matchType": if title_match {"title"} else {"content"},
                         "contentHits": total_hits, "snippets": content_matches,
                     }));
-                    if results.len() >= limit { break; }
+                    if results.len() >= limit {
+                        break;
+                    }
                 }
             }
             results.sort_by(|a, b| {
@@ -6695,15 +6781,19 @@ async fn handle_manager_command_write(
                     .then(b["contentHits"].as_u64().cmp(&a["contentHits"].as_u64()))
                     .then(b["updatedAt"].as_u64().cmp(&a["updatedAt"].as_u64()))
             });
-            Ok(serde_json::json!({"results": results, "totalMatches": results.len(), "query": query, "searchContent": search_content}))
+            Ok(
+                serde_json::json!({"results": results, "totalMatches": results.len(), "query": query, "searchContent": search_content}),
+            )
         }
         // 对外 API：跨会话 Token 用量统计（从 SessionIndex 聚合）
         "token_usage_summary" => {
             let index = ion::session_index::SessionIndex::load();
             let mut total_input: u64 = 0;
             let mut total_output: u64 = 0;
-            let mut by_model: std::collections::HashMap<String, (u64, u64)> = std::collections::HashMap::new();
-            let mut by_project: std::collections::HashMap<String, (u64, u64)> = std::collections::HashMap::new();
+            let mut by_model: std::collections::HashMap<String, (u64, u64)> =
+                std::collections::HashMap::new();
+            let mut by_project: std::collections::HashMap<String, (u64, u64)> =
+                std::collections::HashMap::new();
             let mut session_count = 0u64;
             for (_id, m) in &index.sessions {
                 session_count += 1;
@@ -6713,10 +6803,12 @@ async fn handle_manager_command_write(
                 let mo = m.token_output;
                 let model_key = m.model.clone();
                 let e = by_model.entry(model_key).or_insert((0, 0));
-                e.0 += mi; e.1 += mo;
+                e.0 += mi;
+                e.1 += mo;
                 let proj = m.project.clone().unwrap_or_else(|| "unknown".to_string());
                 let e2 = by_project.entry(proj).or_insert((0, 0));
-                e2.0 += mi; e2.1 += mo;
+                e2.0 += mi;
+                e2.1 += mo;
             }
             Ok(serde_json::json!({
                 "sessions": session_count,
@@ -6814,7 +6906,11 @@ async fn handle_manager_command_write(
             do_get_session_snapshot(&registry, &source).await
         }
         "send" | "send_to_session" => {
-            let session = cmd.get("session").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let session = cmd
+                .get("session")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let rpc_method = cmd
                 .get("rpc_method")
                 .and_then(|v| v.as_str())
@@ -6830,7 +6926,10 @@ async fn handle_manager_command_write(
             }; // reg dropped here
             if exists {
                 ion::worker_registry::WorkerRegistry::send_to_session(
-                    &registry, &session, &rpc_method, params,
+                    &registry,
+                    &session,
+                    &rpc_method,
+                    params,
                 )
                 .await
             } else {
@@ -6847,7 +6946,10 @@ async fn handle_manager_command_write(
                     Ok(_) => {
                         // 创建后立即转发原请求（关联函数，内部自己 lock）
                         ion::worker_registry::WorkerRegistry::send_to_session(
-                            &registry, &session, &rpc_method, params,
+                            &registry,
+                            &session,
+                            &rpc_method,
+                            params,
                         )
                         .await
                     }
@@ -6856,7 +6958,11 @@ async fn handle_manager_command_write(
             }
         }
         "send_to_worker" => {
-            let worker_id = cmd.get("workerId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let worker_id = cmd
+                .get("workerId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let rpc_method = cmd
                 .get("rpc_method")
                 .and_then(|v| v.as_str())
@@ -6865,7 +6971,10 @@ async fn handle_manager_command_write(
             let params = cmd.get("params").cloned().unwrap_or(serde_json::json!({}));
             // ⚠️ parking_lot: send_command 持 &mut self + .await，改用 send_async（自管锁）。
             ion::worker_registry::WorkerRegistry::send_async(
-                registry, &worker_id, &rpc_method, params,
+                registry,
+                &worker_id,
+                &rpc_method,
+                params,
             )
             .await
             .map(|_| serde_json::json!({"queued": true}))
@@ -6922,7 +7031,8 @@ async fn handle_manager_command_write(
                 .to_string();
             let msg = cmd.get("msg").cloned().unwrap_or(serde_json::json!({}));
             // ⚠️ parking_lot: channel_send_arc 自管锁。
-            ion::worker_registry::WorkerRegistry::channel_send_arc(registry, &channel, &from, msg).await;
+            ion::worker_registry::WorkerRegistry::channel_send_arc(registry, &channel, &from, msg)
+                .await;
             Ok(serde_json::json!({"sent": true}))
         }
         "channel_subscribe" => {
@@ -7048,10 +7158,12 @@ async fn handle_manager_command_write(
                 let models: Vec<_> = reg
                     .list_models()
                     .iter()
-                    .map(|m| serde_json::json!({
-                        "id": m.id, "name": m.name, "provider": m.provider,
-                        "reasoning": m.reasoning, "contextWindow": m.context_window,
-                    }))
+                    .map(|m| {
+                        serde_json::json!({
+                            "id": m.id, "name": m.name, "provider": m.provider,
+                            "reasoning": m.reasoning, "contextWindow": m.context_window,
+                        })
+                    })
                     .collect();
                 return Ok(serde_json::json!(models));
             }
@@ -7085,15 +7197,15 @@ async fn handle_manager_command_write(
                     .get("session")
                     .and_then(|v| v.as_str())
                     .or_else(|| p.and_then(|p| p.get("session")).and_then(|v| v.as_str()))
-                    .or_else(|| {
-                        p.and_then(|p| p.get("session_id")).and_then(|v| v.as_str())
-                    })
+                    .or_else(|| p.and_then(|p| p.get("session_id")).and_then(|v| v.as_str()))
                     .map(|s| s.to_string());
                 if let Some(sid) = sid {
                     if let Some(entries) = load_session_entries(&sid) {
                         if method == "list_inputs" {
-                            let r =
-                                ion::message_retrieval::retrieve_inputs(&entries, &Default::default());
+                            let r = ion::message_retrieval::retrieve_inputs(
+                                &entries,
+                                &Default::default(),
+                            );
                             let inputs: Vec<_> = r
                                 .inputs
                                 .iter()
@@ -7106,8 +7218,10 @@ async fn handle_manager_command_write(
                                 "totalCount": r.total_count, "nextCursor": r.next_cursor,
                             }));
                         }
-                        let turn_id =
-                            p.and_then(|p| p.get("turnId")).and_then(|v| v.as_str()).unwrap_or("");
+                        let turn_id = p
+                            .and_then(|p| p.get("turnId"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
                         return match ion::message_retrieval::retrieve_turn_detail(
                             &entries,
                             turn_id,
@@ -7125,7 +7239,9 @@ async fn handle_manager_command_write(
                                     "source": d.overview.source,
                                 },
                             })),
-                            None => Ok(serde_json::json!({"error": "turn not found", "turnId": turn_id})),
+                            None => Ok(
+                                serde_json::json!({"error": "turn not found", "turnId": turn_id}),
+                            ),
                         };
                     }
                     return Err(format!("session not found on disk: {sid}"));
@@ -7140,16 +7256,14 @@ async fn handle_manager_command_write(
                     | "get_queue"
                     | "get_context_usage"
                     | "get_active_tools"
-                    | "get_available_models"   // registry 全局数据，无需 worker（worker 卡死曾致下拉永久'加载中'）
+                    | "get_available_models" // registry 全局数据，无需 worker（worker 卡死曾致下拉永久'加载中'）
             ) {
                 let p = cmd.get("params");
                 let sid = cmd
                     .get("session")
                     .and_then(|v| v.as_str())
                     .or_else(|| p.and_then(|p| p.get("session")).and_then(|v| v.as_str()))
-                    .or_else(|| {
-                        p.and_then(|p| p.get("session_id")).and_then(|v| v.as_str())
-                    });
+                    .or_else(|| p.and_then(|p| p.get("session_id")).and_then(|v| v.as_str()));
                 if let Some(sid) = sid {
                     // ⚠️ 只算活 worker：Stale/Dead 转发=发给死进程=永久 timeout
                     // （2026-08-30 实测：Stale worker 使 get_session_info 卡 30s+，
@@ -7158,7 +7272,11 @@ async fn handle_manager_command_write(
                         let reg = registry.lock();
                         reg.workers.values().any(|w| {
                             w.session_id == sid
-                                && !matches!(w.status, ion::worker_registry::WorkerStatus::Stale | ion::worker_registry::WorkerStatus::Dead)
+                                && !matches!(
+                                    w.status,
+                                    ion::worker_registry::WorkerStatus::Stale
+                                        | ion::worker_registry::WorkerStatus::Dead
+                                )
                         })
                     };
                     if !has_live {
@@ -7252,8 +7370,8 @@ async fn handle_manager_command_write(
 
 async fn cmd_host(user_message: &str, agent_name: Option<&str>, export_path: Option<&str>) {
     use ion::worker_registry::{WorkerCreateConfig, WorkerRegistry};
-    use std::sync::Arc;
     use parking_lot::Mutex;
+    use std::sync::Arc;
 
     let ion_cfg = ion::config::IonConfig::load();
     let model = ion_cfg
@@ -7416,7 +7534,10 @@ async fn cmd_host(user_message: &str, agent_name: Option<&str>, export_path: Opt
 
         // ⚠️ create_worker 持 &mut self + .await → 改用 prepare + register 两阶段。
         match ion::worker_registry::WorkerRegistry::prepare_worker_spawn(&cfg).await {
-            Ok(prepared) => match registry.lock().register_prepared_worker(prepared, &cfg, &registry) {
+            Ok(prepared) => match registry
+                .lock()
+                .register_prepared_worker(prepared, &cfg, &registry)
+            {
                 Ok(info) => {
                     eprintln!("[host] spawned {} ({})", &info.worker_id[..12], agent);
                     info

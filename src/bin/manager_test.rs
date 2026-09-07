@@ -1,6 +1,6 @@
 use ion::worker_registry::{WorkerCreateConfig, WorkerRegistry};
-use std::sync::Arc;
 use parking_lot::Mutex;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
@@ -57,8 +57,13 @@ async fn main() {
     // 查结果
     {
         match WorkerRegistry::send_async(
-            &registry, &wid, "get_last_assistant_text", serde_json::json!({}),
-        ).await {
+            &registry,
+            &wid,
+            "get_last_assistant_text",
+            serde_json::json!({}),
+        )
+        .await
+        {
             Ok(r) => tracing::info!(
                 "✅ 结果: {}",
                 r.get("data").and_then(|v| v.as_str()).unwrap_or("(empty)")

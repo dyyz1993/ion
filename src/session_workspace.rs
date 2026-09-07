@@ -98,7 +98,10 @@ impl WorkspaceSession {
             workspace_path: meta.workspace_path.clone().unwrap_or_default(),
             branch: meta.branch.clone().unwrap_or_default(),
             base_ref: None,
-            title: meta.name.clone().unwrap_or_else(|| meta.project_name.clone().unwrap_or_default()),
+            title: meta
+                .name
+                .clone()
+                .unwrap_or_else(|| meta.project_name.clone().unwrap_or_default()),
             status: meta
                 .workspace_status
                 .as_deref()

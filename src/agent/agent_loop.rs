@@ -398,10 +398,7 @@ impl Agent {
         self.bg_pending = pending;
     }
     /// 配置按 origin 隐藏的工具（INPUT_ORIGIN 消费侧①，schema 级过滤）
-    pub fn set_origin_hide_tools(
-        &mut self,
-        hide: std::collections::HashMap<String, Vec<String>>,
-    ) {
+    pub fn set_origin_hide_tools(&mut self, hide: std::collections::HashMap<String, Vec<String>>) {
         self.origin_hide_tools = hide;
     }
 

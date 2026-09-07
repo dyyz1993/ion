@@ -2345,7 +2345,10 @@ mod tests {
         // ① project_path 必须透传当前 Worker 的 cwd，
         //    否则 Manager 回退 host cwd（子项目错位 + 非 git 目录被自动 git init）
         let captured = bridge.captured.lock().unwrap().clone().unwrap();
-        let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+        let cwd = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         assert_eq!(
             captured.get("project_path").and_then(|v| v.as_str()),
             Some(cwd.as_str()),
@@ -2360,10 +2363,7 @@ mod tests {
 
         // ② 响应必须解析出 Manager 带回的 worktree 元数据
         assert_eq!(resp.worktree_path.as_deref(), Some("/tmp/wt/x"));
-        assert_eq!(
-            resp.worktree_branch.as_deref(),
-            Some("ion-worker-deadbeef")
-        );
+        assert_eq!(resp.worktree_branch.as_deref(), Some("ion-worker-deadbeef"));
         assert_eq!(resp.status, "first_turn_completed");
     }
 

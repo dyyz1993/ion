@@ -1378,14 +1378,12 @@ impl WasmExtensionRegistry {
     /// Look up the Extension name for a canonical module path.
     pub fn get_extension_id(&self, canonical_path: &str) -> Option<String> {
         let map = self.extensions.read().ok()?;
-        map.get(canonical_path).map(|entry| entry.extension_id.clone())
+        map.get(canonical_path)
+            .map(|entry| entry.extension_id.clone())
     }
 
     /// Look up a loaded Extension instance by its canonical module path.
-    pub fn get_extension(
-        &self,
-        canonical_path: &str,
-    ) -> Option<Arc<Mutex<WasmExtensionInstance>>> {
+    pub fn get_extension(&self, canonical_path: &str) -> Option<Arc<Mutex<WasmExtensionInstance>>> {
         let map = self.extensions.read().ok()?;
         map.get(canonical_path).map(|entry| entry.extension.clone())
     }

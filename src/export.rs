@@ -876,8 +876,14 @@ fn export_session_internal(
             .cloned()
     };
     // 提取 token 统计（在 session_index_meta 被 move 之前）
-    let total_token_input = session_index_meta.as_ref().map(|m| m.token_input).unwrap_or(0);
-    let total_token_output = session_index_meta.as_ref().map(|m| m.token_output).unwrap_or(0);
+    let total_token_input = session_index_meta
+        .as_ref()
+        .map(|m| m.token_input)
+        .unwrap_or(0);
+    let total_token_output = session_index_meta
+        .as_ref()
+        .map(|m| m.token_output)
+        .unwrap_or(0);
     let session_name = all_raw_entries
         .iter()
         .rev()

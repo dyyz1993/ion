@@ -102,10 +102,7 @@ async fn monitor_round_denies_tool_user_round_executes() {
 
     let mut extensions = ExtensionRunner::new();
     let mut deny_map = HashMap::new();
-    deny_map.insert(
-        "monitor".to_string(),
-        vec!["origin_probe".to_string()],
-    );
+    deny_map.insert("monitor".to_string(), vec!["origin_probe".to_string()]);
     extensions.register(Box::new(ion::agent::origin_gate::OriginGate::from_map(
         deny_map,
     )));

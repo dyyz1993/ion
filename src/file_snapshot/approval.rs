@@ -119,7 +119,9 @@ impl ApprovalManager {
         // 会导致新会话弹出 708 个项目既有变更的待审——用户没改过任何文件）
         steps
             .iter()
-            .find(|s| !self.storage.session_id.is_empty() && s.session_id == self.storage.session_id)
+            .find(|s| {
+                !self.storage.session_id.is_empty() && s.session_id == self.storage.session_id
+            })
             .map(|s| s.baseline_tree_hash.clone())
     }
 
@@ -172,8 +174,10 @@ impl ApprovalManager {
                 && let Some(ref h) = appr.approved_tree_hash
             {
                 if !anchor_trees.contains_key(h) {
-                    anchor_trees
-                        .insert(h.clone(), tree_store::read_tree(objects, h).unwrap_or_default());
+                    anchor_trees.insert(
+                        h.clone(),
+                        tree_store::read_tree(objects, h).unwrap_or_default(),
+                    );
                 }
                 anchor_trees.get(h).expect("just inserted")
             } else {
@@ -309,7 +313,8 @@ impl ApprovalManager {
         approvals.insert(path.to_string(), approval.clone());
         drop(approvals);
         drop(ever_approved);
-        self.approval_gen.fetch_add(1, std::sync::atomic::Ordering::Release);
+        self.approval_gen
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
 
         // 持久化到 session.jsonl
         self.persist_approval(&approval);
@@ -376,7 +381,8 @@ impl ApprovalManager {
         let mut approvals = self.approvals.lock().unwrap();
         approvals.insert(path.to_string(), approval.clone());
         drop(approvals);
-        self.approval_gen.fetch_add(1, std::sync::atomic::Ordering::Release);
+        self.approval_gen
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
 
         // 持久化到 session.jsonl
         self.persist_approval(&approval);
@@ -461,21 +467,19 @@ impl ApprovalManager {
         let pending = self.compute_pending();
         let p = pending.iter().find(|p| p.path == path)?;
         // deleted 条目在 pending 列表里不带内容（避免缓存整块旧文件），按需读一次
-        let (old, new) = if p.status == "deleted"
-            && p.old_content.is_none()
-            && p.new_content.is_none()
-        {
-            let approvals = self.approvals.lock().unwrap();
-            let baseline_hash = self.baseline_for_path(path, &approvals);
-            drop(approvals);
-            let content = baseline_hash
-                .and_then(|h| tree_store::read_tree(self.store.objects(), &h))
-                .and_then(|t| t.get(path).cloned())
-                .and_then(|blob| self.store.objects().read_object_text(&blob));
-            (content, None)
-        } else {
-            (p.old_content.clone(), p.new_content.clone())
-        };
+        let (old, new) =
+            if p.status == "deleted" && p.old_content.is_none() && p.new_content.is_none() {
+                let approvals = self.approvals.lock().unwrap();
+                let baseline_hash = self.baseline_for_path(path, &approvals);
+                drop(approvals);
+                let content = baseline_hash
+                    .and_then(|h| tree_store::read_tree(self.store.objects(), &h))
+                    .and_then(|t| t.get(path).cloned())
+                    .and_then(|blob| self.store.objects().read_object_text(&blob));
+                (content, None)
+            } else {
+                (p.old_content.clone(), p.new_content.clone())
+            };
         let diff = match (&old, &new) {
             (Some(b), Some(a)) => super::diff::unified_diff(b, a, path),
             (None, Some(a)) => format!("+++ new file\n{}", a),
@@ -535,7 +539,8 @@ impl ApprovalManager {
         }
         // 推送 ApprovalReset 事件（UI 收到后刷新审批状态）
         if !reset_paths.is_empty() {
-            self.approval_gen.fetch_add(1, std::sync::atomic::Ordering::Release);
+            self.approval_gen
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
             emit_approval_event(
                 "ApprovalReset",
                 &serde_json::json!({
@@ -561,9 +566,7 @@ impl ApprovalManager {
             let is_approval_entry = entry.get("type").and_then(|v| v.as_str())
                 == Some("file-approval")
                 || entry.get("customType").and_then(|v| v.as_str()) == Some("file-approval");
-            if is_approval_entry
-                && let Some(data) = entry.get("data")
-            {
+            if is_approval_entry && let Some(data) = entry.get("data") {
                 let path = data.get("path").and_then(|v| v.as_str()).unwrap_or("");
                 let status_str = data
                     .get("status")
@@ -596,7 +599,8 @@ impl ApprovalManager {
                 );
             }
         }
-        self.approval_gen.fetch_add(1, std::sync::atomic::Ordering::Release);
+        self.approval_gen
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
     }
 
     /// 暴露 step-snapshot 给 Extension 用（re-approval 重置）
@@ -1148,7 +1152,10 @@ mod tests {
         mgr.check_re_approval(&["a.rs".into()]);
 
         let pending = mgr.compute_pending();
-        let a = pending.iter().find(|p| p.path == "a.rs").expect("a.rs 应回 pending");
+        let a = pending
+            .iter()
+            .find(|p| p.path == "a.rs")
+            .expect("a.rs 应回 pending");
         assert_eq!(
             a.old_content,
             Some("v1".to_string()),
@@ -1180,7 +1187,10 @@ mod tests {
         mgr.check_re_approval(&["a.rs".into()]);
 
         let pending = mgr.compute_pending();
-        let a = pending.iter().find(|p| p.path == "a.rs").expect("a.rs 应回 pending");
+        let a = pending
+            .iter()
+            .find(|p| p.path == "a.rs")
+            .expect("a.rs 应回 pending");
         assert_eq!(
             a.old_content,
             Some("v2".to_string()),
@@ -1197,15 +1207,29 @@ mod tests {
         let (work_dir, store, mgr) = setup();
 
         // session 起点
-        write_current_tree(&store, &work_dir, &[("a.rs", "original"), ("b.rs", "stable")]);
+        write_current_tree(
+            &store,
+            &work_dir,
+            &[("a.rs", "original"), ("b.rs", "stable")],
+        );
         // a.rs 改动，从未审批
-        write_current_tree(&store, &work_dir, &[("a.rs", "changed"), ("b.rs", "stable")]);
+        write_current_tree(
+            &store,
+            &work_dir,
+            &[("a.rs", "changed"), ("b.rs", "stable")],
+        );
 
         let pending = mgr.compute_pending();
-        let a = pending.iter().find(|p| p.path == "a.rs").expect("a.rs 应 pending");
+        let a = pending
+            .iter()
+            .find(|p| p.path == "a.rs")
+            .expect("a.rs 应 pending");
         assert_eq!(a.old_content, Some("original".to_string()));
         assert_eq!(a.new_content, Some("changed".to_string()));
-        assert!(pending.iter().find(|p| p.path == "b.rs").is_none(), "b.rs 没变不应 pending");
+        assert!(
+            pending.iter().find(|p| p.path == "b.rs").is_none(),
+            "b.rs 没变不应 pending"
+        );
 
         std::fs::remove_dir_all(work_dir.parent().unwrap()).ok();
     }
@@ -1220,11 +1244,19 @@ mod tests {
         let files: Vec<String> = (0..n).map(|i| format!("f{i}.rs")).collect();
 
         let snap = |contents: &[(String, String)]| {
-            let refs: Vec<(&str, &str)> = contents.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+            let refs: Vec<(&str, &str)> = contents
+                .iter()
+                .map(|(a, b)| (a.as_str(), b.as_str()))
+                .collect();
             write_current_tree(&store, &work_dir, &refs);
         };
         // session 起点
-        snap(&files.iter().map(|f| (f.clone(), "init".to_string())).collect::<Vec<_>>());
+        snap(
+            &files
+                .iter()
+                .map(|f| (f.clone(), "init".to_string()))
+                .collect::<Vec<_>>(),
+        );
 
         let start = std::time::Instant::now();
         for round in 0..4 {
@@ -1238,11 +1270,13 @@ mod tests {
                     .map(|(i, f)| (f.clone(), format!("r{round}p{parity}-{i}")))
                     .collect();
                 snap(&modified);
-                let changed: Vec<String> =
-                    modified.iter().map(|(f, _)| f.clone()).collect();
+                let changed: Vec<String> = modified.iter().map(|(f, _)| f.clone()).collect();
                 mgr.check_re_approval(&changed);
                 let results = mgr.approve_all();
-                assert!(results.iter().all(|r| r.is_ok()), "第 {round} 轮 parity{parity} 批准应全部成功");
+                assert!(
+                    results.iter().all(|r| r.is_ok()),
+                    "第 {round} 轮 parity{parity} 批准应全部成功"
+                );
             }
             // 全部批准后 pending 应为空；查询两次（第二次命中缓存）
             assert!(mgr.compute_pending().is_empty());
@@ -1272,7 +1306,12 @@ mod tests {
             let refs: Vec<(&str, &str)> = files
                 .iter()
                 .enumerate()
-                .map(|(i, f)| (f.as_str(), Box::leak(format!("{round}-{i}-{body}").into_boxed_str()) as &str))
+                .map(|(i, f)| {
+                    (
+                        f.as_str(),
+                        Box::leak(format!("{round}-{i}-{body}").into_boxed_str()) as &str,
+                    )
+                })
                 .collect();
             write_current_tree(&store, &work_dir, &refs)
         };
@@ -1283,7 +1322,10 @@ mod tests {
         let results = mgr.approve_all();
         let t_approve = t0.elapsed();
         assert!(results.iter().all(|r| r.is_ok()));
-        assert!(mgr.compute_pending().is_empty(), "全部批准后 pending 应为空");
+        assert!(
+            mgr.compute_pending().is_empty(),
+            "全部批准后 pending 应为空"
+        );
 
         // ── 阶段2：冷算耗时（改动一半文件 → 审批代数变化 → 缓存失效）──
         snap(1);
@@ -1300,12 +1342,17 @@ mod tests {
         let t_warm = t2.elapsed();
 
         // ── 空间：pending 缓存实际持有的数据量（路径+diff统计+新旧内容+结构）──
-        let cached_bytes: usize = pending.iter().map(|p| {
-            p.path.len() + p.status.len() + p.diff_stat.len()
-                + p.old_content.as_ref().map_or(0, |s| s.len())
-                + p.new_content.as_ref().map_or(0, |s| s.len())
-                + std::mem::size_of::<PendingFile>()
-        }).sum();
+        let cached_bytes: usize = pending
+            .iter()
+            .map(|p| {
+                p.path.len()
+                    + p.status.len()
+                    + p.diff_stat.len()
+                    + p.old_content.as_ref().map_or(0, |s| s.len())
+                    + p.new_content.as_ref().map_or(0, |s| s.len())
+                    + std::mem::size_of::<PendingFile>()
+            })
+            .sum();
         // 磁盘上当前内容总量（=每个待审文件的新内容）
         let raw_bytes: usize = pending.len() * (2_048 + 16);
 
@@ -1313,13 +1360,25 @@ mod tests {
         println!("│ 批量审批（含持久化写盘） : {t_approve:?}");
         println!("│ compute_pending 冷算     : {t_cold:?}");
         println!("│ compute_pending 缓存命中 : {t_warm:?}");
-        println!("│ pending 缓存空间         : {} bytes（{n}/2 文件，当前内容 {} bytes）", cached_bytes, raw_bytes);
+        println!(
+            "│ pending 缓存空间         : {} bytes（{n}/2 文件，当前内容 {} bytes）",
+            cached_bytes, raw_bytes
+        );
         println!("└─");
 
         // 宽松上界（实测的 10-50 倍；退化成 O(文件×快照全量读) 时会爆到分钟级）
-        assert!(t_approve < std::time::Duration::from_secs(5), "批量审批 {t_approve:?} 疑似退化");
-        assert!(t_cold < std::time::Duration::from_secs(2), "冷算 {t_cold:?} 疑似退化");
-        assert!(t_warm < std::time::Duration::from_millis(200), "缓存命中 {t_warm:?} 疑似未命中");
+        assert!(
+            t_approve < std::time::Duration::from_secs(5),
+            "批量审批 {t_approve:?} 疑似退化"
+        );
+        assert!(
+            t_cold < std::time::Duration::from_secs(2),
+            "冷算 {t_cold:?} 疑似退化"
+        );
+        assert!(
+            t_warm < std::time::Duration::from_millis(200),
+            "缓存命中 {t_warm:?} 疑似未命中"
+        );
         // 空间上界：缓存 ≈ 新旧两份内容 + 元数据，不允许出现重复膨胀
         assert!(
             cached_bytes <= raw_bytes * 2 + pending.len() * 1024,

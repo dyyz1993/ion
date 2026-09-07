@@ -968,7 +968,10 @@ mod tests {
             ..Default::default()
         };
         let msgs = vec![make_user_msg(&"x".repeat(12_000 * 4))]; // ~12k tokens
-        assert!(needs_compact(&msgs, &cfg), "16k 窗口 75% 应压缩（旧固定 32k 会漏）");
+        assert!(
+            needs_compact(&msgs, &cfg),
+            "16k 窗口 75% 应压缩（旧固定 32k 会漏）"
+        );
     }
 
     #[test]

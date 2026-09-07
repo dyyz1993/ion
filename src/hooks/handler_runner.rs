@@ -315,18 +315,22 @@ async fn run_prompt(
     );
     let context = ion_provider::types::Context {
         system_prompt: Some(system),
-        messages: vec![ion_provider::types::Message::User(ion_provider::types::UserMessage {
-            role: "user".into(),
-            content: vec![ion_provider::types::ContentBlock::Text(ion_provider::types::TextContent {
-                text: "请根据上述规则判断，输出决策 JSON。".into(),
-                text_signature: None,
-            })],
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0),
-            source: ion_provider::types::MessageSource::Prompt,
-        })],
+        messages: vec![ion_provider::types::Message::User(
+            ion_provider::types::UserMessage {
+                role: "user".into(),
+                content: vec![ion_provider::types::ContentBlock::Text(
+                    ion_provider::types::TextContent {
+                        text: "请根据上述规则判断，输出决策 JSON。".into(),
+                        text_signature: None,
+                    },
+                )],
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0),
+                source: ion_provider::types::MessageSource::Prompt,
+            },
+        )],
         tools: None,
     };
 
@@ -439,7 +443,12 @@ async fn run_agent(
             outcome.handler_type = Some("agent".into());
             outcome.agent_name = Some(handler.agent.clone().unwrap_or_else(|| "default".into()));
             // model：handler 显式配了就用它，否则标注继承会话模型
-            outcome.model = Some(handler.model.clone().unwrap_or_else(|| "(session default)".into()));
+            outcome.model = Some(
+                handler
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| "(session default)".into()),
+            );
             if !output.is_empty() {
                 outcome.agent_reasoning = Some(output);
             }

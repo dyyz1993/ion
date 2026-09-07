@@ -72,9 +72,7 @@ async fn input_origin_flows_to_on_input_hook() {
 
     let seen = Arc::new(Mutex::new(Vec::new()));
     let mut extensions = ExtensionRunner::new();
-    extensions.register(Box::new(OriginProbe {
-        seen: seen.clone(),
-    }));
+    extensions.register(Box::new(OriginProbe { seen: seen.clone() }));
 
     let config = AgentConfig {
         max_turns: Some(5),
@@ -130,7 +128,10 @@ async fn input_origin_flows_to_on_input_hook() {
     );
     // user 轮（第一轮）不带前缀
     assert!(
-        user_texts.first().map(|t| !t.starts_with("[定时任务]")).unwrap_or(false),
+        user_texts
+            .first()
+            .map(|t| !t.starts_with("[定时任务]"))
+            .unwrap_or(false),
         "user 轮不应被改写: {:?}",
         user_texts
     );

@@ -44,7 +44,10 @@ impl OriginGate {
             if k == "user" {
                 continue;
             }
-            deny_map.entry(k.clone()).or_default().extend(list.iter().cloned());
+            deny_map
+                .entry(k.clone())
+                .or_default()
+                .extend(list.iter().cloned());
         }
         if !deny_map.is_empty() {
             tracing::info!("[origin_gate] loaded rules: {:?}", deny_map);
@@ -106,7 +109,9 @@ mod tests {
         let gate = OriginGate::from_map(map);
 
         let mut call = tool_call("spawn_worker");
-        let res = gate.before_tool_call_with_origin(&mut call, "monitor").await;
+        let res = gate
+            .before_tool_call_with_origin(&mut call, "monitor")
+            .await;
         assert!(res.is_err(), "monitor 轮 spawn_worker 应被拒");
     }
 
@@ -117,7 +122,9 @@ mod tests {
         let gate = OriginGate::from_map(map);
 
         let mut call = tool_call("read");
-        let res = gate.before_tool_call_with_origin(&mut call, "monitor").await;
+        let res = gate
+            .before_tool_call_with_origin(&mut call, "monitor")
+            .await;
         assert!(res.is_ok(), "monitor 轮 read 不在禁用列表应放行");
     }
 

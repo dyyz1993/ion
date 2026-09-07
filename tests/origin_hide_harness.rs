@@ -96,14 +96,8 @@ async fn monitor_round_hides_tool_from_provider_request() {
         retry_on_no_tool_use: 0,
         ..Default::default()
     };
-    let mut agent = Agent::new(
-        Arc::new(registry),
-        faux_model(),
-        None,
-        tools,
-        config,
-    )
-    .with_extensions(ExtensionRunner::new());
+    let mut agent = Agent::new(Arc::new(registry), faux_model(), None, tools, config)
+        .with_extensions(ExtensionRunner::new());
     agent.set_origin_hide_tools(hide);
 
     // user 轮：两个工具都在

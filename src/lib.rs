@@ -60,6 +60,7 @@ pub mod types;
 
 pub mod context_files_extension;
 pub mod context_reclaimer;
+pub mod file_index;
 pub mod file_snapshot;
 pub mod file_time_guard;
 pub mod hooks;
@@ -77,7 +78,6 @@ pub mod runtime;
 pub mod session;
 pub mod session_gc;
 pub mod session_index;
-pub mod file_index;
 pub mod session_jsonl;
 pub mod session_tree;
 pub mod session_workspace;

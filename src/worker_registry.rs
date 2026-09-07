@@ -98,9 +98,9 @@ fn find_ion_binary() -> String {
     }
     "ion-worker".to_string() // last resort: rely on PATH
 }
+use parking_lot::Mutex;
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::{mpsc, oneshot};
-use parking_lot::Mutex;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -530,15 +530,13 @@ impl WorkerRegistry {
         }
 
         // ── Spawn child process (SLOW: fork+exec, 50-200ms) ──
-        let mut child = child_cmd
-            .spawn()
-            .map_err(|e| {
-                // 回滚：worktree 已建但子进程起不来 → 清掉半成品（分支保留）
-                if let Some(wt) = &worktree_info {
-                    let _ = remove_worktree(&wt.path, &wt.source_repo);
-                }
-                format!("failed to spawn worker: {e}")
-            })?;
+        let mut child = child_cmd.spawn().map_err(|e| {
+            // 回滚：worktree 已建但子进程起不来 → 清掉半成品（分支保留）
+            if let Some(wt) = &worktree_info {
+                let _ = remove_worktree(&wt.path, &wt.source_repo);
+            }
+            format!("failed to spawn worker: {e}")
+        })?;
 
         let stdin = child.stdin.take().ok_or("no stdin")?;
         let stdout = child.stdout.take().ok_or("no stdout")?;
@@ -802,15 +800,13 @@ impl WorkerRegistry {
             child_cmd.env("ION_FORK_CHILD", "1");
         }
 
-        let mut child = child_cmd
-            .spawn()
-            .map_err(|e| {
-                // 回滚：worktree 已建但子进程起不来 → 清掉半成品（分支保留）
-                if let Some(wt) = &worktree_info {
-                    let _ = remove_worktree(&wt.path, &wt.source_repo);
-                }
-                format!("failed to spawn worker: {e}")
-            })?;
+        let mut child = child_cmd.spawn().map_err(|e| {
+            // 回滚：worktree 已建但子进程起不来 → 清掉半成品（分支保留）
+            if let Some(wt) = &worktree_info {
+                let _ = remove_worktree(&wt.path, &wt.source_repo);
+            }
+            format!("failed to spawn worker: {e}")
+        })?;
 
         let stdin = child.stdin.take().ok_or("no stdin")?;
         let stdout = child.stdout.take().ok_or("no stdout")?;
@@ -966,45 +962,45 @@ impl WorkerRegistry {
             SessionIndex::write_txn(|idx| {
                 idx.removed_sessions.remove(&session_id);
                 let meta = merge_existing_meta(
-                idx,
-                &session_id,
-                SessionMeta {
-                    name: Some(session_id.clone()),
-                    first_name: Some(session_id.clone()),
-                    project: Some(worktree_path.clone()),
-                    project_name: Some(project_name.clone()),
-                    worktree: config.worktree.is_some(),
-                    branch: worktree_branch_snapshot.clone(),
-                    workspace_path: worktree_path_snapshot.clone(),
-                    workspace_status: worktree_info_present.then(|| "ready".to_string()),
-                    model: model.clone(),
-                    agent: agent_name.clone(),
-                    provider: provider.clone(),
-                    token_input: 0,
-                    token_output: 0,
-                    token_cache_read: 0,
-                    token_cache_write: 0,
-                    user_prompt_count: 0,
-                    llm_request_count: 0,
-                    total_duration_ms: 0,
-                    compress_count: 0,
-                    message_count: 0,
-                    turn_count: 0,
-                    created_at: now,
-                    updated_at: now,
-                    error_count: 0,
-                    last_thinking_level: None,
-                    last_active_tools: None,
-                    last_entry_id: None,
-                    parent_session: parent_sid,
-                    parent_type: parent_rel,
-                    initial_cwd: Some(worktree_path.clone()),
-                    last_cwd: Some(worktree_path.clone()),
-                    extra_cwds: Vec::new(),
-                    tier_models: None,
-                    security_profile: None,
-                },
-            );
+                    idx,
+                    &session_id,
+                    SessionMeta {
+                        name: Some(session_id.clone()),
+                        first_name: Some(session_id.clone()),
+                        project: Some(worktree_path.clone()),
+                        project_name: Some(project_name.clone()),
+                        worktree: config.worktree.is_some(),
+                        branch: worktree_branch_snapshot.clone(),
+                        workspace_path: worktree_path_snapshot.clone(),
+                        workspace_status: worktree_info_present.then(|| "ready".to_string()),
+                        model: model.clone(),
+                        agent: agent_name.clone(),
+                        provider: provider.clone(),
+                        token_input: 0,
+                        token_output: 0,
+                        token_cache_read: 0,
+                        token_cache_write: 0,
+                        user_prompt_count: 0,
+                        llm_request_count: 0,
+                        total_duration_ms: 0,
+                        compress_count: 0,
+                        message_count: 0,
+                        turn_count: 0,
+                        created_at: now,
+                        updated_at: now,
+                        error_count: 0,
+                        last_thinking_level: None,
+                        last_active_tools: None,
+                        last_entry_id: None,
+                        parent_session: parent_sid,
+                        parent_type: parent_rel,
+                        initial_cwd: Some(worktree_path.clone()),
+                        last_cwd: Some(worktree_path.clone()),
+                        extra_cwds: Vec::new(),
+                        tier_models: None,
+                        security_profile: None,
+                    },
+                );
                 idx.upsert(&session_id, meta);
             });
             // 写 tier_models + security_profile 快照（创建时从全局 config 读）
@@ -1183,15 +1179,20 @@ impl WorkerRegistry {
                                     // SettingsChanged → 同步 record，让 /api/workers 的
                                     // model 字段显示活值（曾只写 JSONL/索引，列表一直显示出生模型）
                                     let ev = msg.get("event");
-                                    if ev.and_then(|e| e.get("customType")).and_then(|v| v.as_str())
+                                    if ev
+                                        .and_then(|e| e.get("customType"))
+                                        .and_then(|v| v.as_str())
                                         == Some("SettingsChanged")
                                     {
                                         let data = ev.and_then(|e| e.get("data"));
-                                        let key = data.and_then(|d| d.get("key")).and_then(|v| v.as_str());
+                                        let key = data
+                                            .and_then(|d| d.get("key"))
+                                            .and_then(|v| v.as_str());
                                         if key == Some("model") {
                                             if let (Some(record), Some(v)) = (
                                                 reg.workers.get_mut(&sub_wid),
-                                                data.and_then(|d| d.get("value")).and_then(|v| v.as_str()),
+                                                data.and_then(|d| d.get("value"))
+                                                    .and_then(|v| v.as_str()),
                                             ) {
                                                 record.model = v.to_string();
                                             }
@@ -1218,7 +1219,7 @@ impl WorkerRegistry {
                             {
                                 let rc = Arc::clone(&sub_registry);
                                 tokio::spawn(async move {
-// 子已 idle，RPC 立即返回最后一条 assistant 文本
+                                    // 子已 idle，RPC 立即返回最后一条 assistant 文本
                                     let last = WorkerRegistry::send_async(
                                         &rc,
                                         &child_wid,
@@ -1289,15 +1290,20 @@ impl WorkerRegistry {
                             if let Some(bus) = bus_clone
                                 && matches!(
                                     ev_type,
-                                    "text_delta" | "agent_start" | "agent_end" | "agent_stopped"
-                                        | "tool_execution_start" | "tool_execution_end"
-                                        | "tool_call" | "tool_call_delta" | "rpc_response"
+                                    "text_delta"
+                                        | "agent_start"
+                                        | "agent_end"
+                                        | "agent_stopped"
+                                        | "tool_execution_start"
+                                        | "tool_execution_end"
+                                        | "tool_call"
+                                        | "tool_call_delta"
+                                        | "rpc_response"
                                 )
                             {
-                                let mut event = crate::event_bus::ExtensionEvent::new(
-                                    "worker", ev_type,
-                                )
-                                .with_data(msg.clone());
+                                let mut event =
+                                    crate::event_bus::ExtensionEvent::new("worker", ev_type)
+                                        .with_data(msg.clone());
                                 if !session_id_for_bus.is_empty() {
                                     event = event.with_session(&session_id_for_bus);
                                 }
@@ -1385,7 +1391,8 @@ impl WorkerRegistry {
                                         Some(format!("exit={}", exit_code.unwrap_or(-1)));
                                 }
                             } else {
-                                record.exit_reason = Some(format!("exit={}", exit_code.unwrap_or(-1)));
+                                record.exit_reason =
+                                    Some(format!("exit={}", exit_code.unwrap_or(-1)));
                             }
                             (
                                 record.parent.clone(),
@@ -1518,8 +1525,9 @@ impl WorkerRegistry {
                 // ⚠️ parking_lot: send_command 持 &mut self + .await（stdin write），
                 // 不能持锁调用。改为：持锁 take 出 stdin + 标记 Busy，drop lock，
                 // 然后 write stdin，再 put back。
-                let input_origin_for_prompt =
-                    config_input_origin.clone().unwrap_or_else(|| "user".to_string());
+                let input_origin_for_prompt = config_input_origin
+                    .clone()
+                    .unwrap_or_else(|| "user".to_string());
                 let req_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
                 let write_line = format!(
                     "{}\n",
@@ -1730,45 +1738,45 @@ impl WorkerRegistry {
             SessionIndex::write_txn(|idx| {
                 idx.removed_sessions.remove(&session_id);
                 let meta = merge_existing_meta(
-                idx,
-                &session_id,
-                SessionMeta {
-                    name: Some(session_id.clone()),
-                    first_name: Some(session_id.clone()),
-                    project: Some(worktree_path.clone()),
-                    project_name: Some(project_name.clone()),
-                    worktree: config.worktree.is_some(),
-                    branch: ws_info.as_ref().map(|w| w.branch.clone()),
-                    workspace_path: ws_info.as_ref().map(|w| w.path.clone()),
-                    workspace_status: ws_info.as_ref().map(|_| "ready".to_string()),
-                    model: model.clone(),
-                    agent: agent_name.clone(),
-                    provider: provider.clone(),
-                    token_input: 0,
-                    token_output: 0,
-                    token_cache_read: 0,
-                    token_cache_write: 0,
-                    user_prompt_count: 0,
-                    llm_request_count: 0,
-                    total_duration_ms: 0,
-                    compress_count: 0,
-                    message_count: 0,
-                    turn_count: 0,
-                    created_at: now,
-                    updated_at: now,
-                    error_count: 0,
-                    last_thinking_level: None,
-                    last_active_tools: None,
-                    last_entry_id: None,
-                    parent_session: parent_sid,
-                    parent_type: parent_rel,
-                    initial_cwd: Some(worktree_path.clone()),
-                    last_cwd: Some(worktree_path.clone()),
-                    extra_cwds: Vec::new(),
-                    tier_models: None,
-                    security_profile: None,
-                },
-            );
+                    idx,
+                    &session_id,
+                    SessionMeta {
+                        name: Some(session_id.clone()),
+                        first_name: Some(session_id.clone()),
+                        project: Some(worktree_path.clone()),
+                        project_name: Some(project_name.clone()),
+                        worktree: config.worktree.is_some(),
+                        branch: ws_info.as_ref().map(|w| w.branch.clone()),
+                        workspace_path: ws_info.as_ref().map(|w| w.path.clone()),
+                        workspace_status: ws_info.as_ref().map(|_| "ready".to_string()),
+                        model: model.clone(),
+                        agent: agent_name.clone(),
+                        provider: provider.clone(),
+                        token_input: 0,
+                        token_output: 0,
+                        token_cache_read: 0,
+                        token_cache_write: 0,
+                        user_prompt_count: 0,
+                        llm_request_count: 0,
+                        total_duration_ms: 0,
+                        compress_count: 0,
+                        message_count: 0,
+                        turn_count: 0,
+                        created_at: now,
+                        updated_at: now,
+                        error_count: 0,
+                        last_thinking_level: None,
+                        last_active_tools: None,
+                        last_entry_id: None,
+                        parent_session: parent_sid,
+                        parent_type: parent_rel,
+                        initial_cwd: Some(worktree_path.clone()),
+                        last_cwd: Some(worktree_path.clone()),
+                        extra_cwds: Vec::new(),
+                        tier_models: None,
+                        security_profile: None,
+                    },
+                );
                 idx.upsert(&session_id, meta);
             });
             // tier_models + security_profile 快照
@@ -1879,19 +1887,23 @@ impl WorkerRegistry {
                                         // 末条输出预览取 latest_output 环形缓冲：
                                         // spawn 子 worker 的会话不持久化对话（get_last RPC 读不到），
                                         // 且 agent_end 瞬间就读内存也有竞态——泵里有锁时取最可靠
-                                        let preview = reg.workers.get(&sub_wid).map(|r| {
-                                            let joined = r
-                                                .latest_output
-                                                .iter()
-                                                .rev()
-                                                .take(3)
-                                                .rev()
-                                                .cloned()
-                                                .collect::<Vec<_>>()
-                                                .join("");
-                                            let t: String = joined.chars().take(400).collect();
-                                            t
-                                        }).unwrap_or_default();
+                                        let preview = reg
+                                            .workers
+                                            .get(&sub_wid)
+                                            .map(|r| {
+                                                let joined = r
+                                                    .latest_output
+                                                    .iter()
+                                                    .rev()
+                                                    .take(3)
+                                                    .rev()
+                                                    .cloned()
+                                                    .collect::<Vec<_>>()
+                                                    .join("");
+                                                let t: String = joined.chars().take(400).collect();
+                                                t
+                                            })
+                                            .unwrap_or_default();
                                         notify_target = reg
                                             .workers
                                             .get(&sub_wid)
@@ -1922,14 +1934,17 @@ impl WorkerRegistry {
                                 if ev_type == "extension_event" {
                                     let ev = msg.get("event");
                                     let data = ev.and_then(|e| e.get("data"));
-                                    if ev.and_then(|e| e.get("customType")).and_then(|v| v.as_str())
+                                    if ev
+                                        .and_then(|e| e.get("customType"))
+                                        .and_then(|v| v.as_str())
                                         == Some("SettingsChanged")
                                         && data.and_then(|d| d.get("key")).and_then(|v| v.as_str())
                                             == Some("model")
                                     {
                                         if let (Some(record), Some(v)) = (
                                             reg.workers.get_mut(&sub_wid),
-                                            data.and_then(|d| d.get("value")).and_then(|v| v.as_str()),
+                                            data.and_then(|d| d.get("value"))
+                                                .and_then(|v| v.as_str()),
                                         ) {
                                             record.model = v.to_string();
                                         }
@@ -1998,21 +2013,25 @@ impl WorkerRegistry {
                                         }),
                                     )
                                     .await;
-});
+                                });
                             }
                             // 同 reader #1：广播 worker 事件到全局 EventBus，让 subscribe_all 也能收到
                             if let Some(bus) = bus_clone2
                                 && matches!(
                                     ev_type,
-                                    "text_delta" | "agent_start" | "agent_end" | "agent_stopped"
-                                        | "tool_execution_start" | "tool_execution_end"
-                                        | "tool_call" | "tool_call_delta"
+                                    "text_delta"
+                                        | "agent_start"
+                                        | "agent_end"
+                                        | "agent_stopped"
+                                        | "tool_execution_start"
+                                        | "tool_execution_end"
+                                        | "tool_call"
+                                        | "tool_call_delta"
                                 )
                             {
-                                let mut event = crate::event_bus::ExtensionEvent::new(
-                                    "worker", ev_type,
-                                )
-                                .with_data(msg.clone());
+                                let mut event =
+                                    crate::event_bus::ExtensionEvent::new("worker", ev_type)
+                                        .with_data(msg.clone());
                                 if !session_id_for_bus2.is_empty() {
                                     event = event.with_session(&session_id_for_bus2);
                                 }
@@ -2085,7 +2104,8 @@ impl WorkerRegistry {
                                     Some(format!("exit={}", exit_code.unwrap_or(-1)))
                                 };
                             } else {
-                                record.exit_reason = Some(format!("exit={}", exit_code.unwrap_or(-1)));
+                                record.exit_reason =
+                                    Some(format!("exit={}", exit_code.unwrap_or(-1)));
                             }
                         }
                     }
@@ -2122,7 +2142,9 @@ impl WorkerRegistry {
             if let Some((parent_id, payload)) = pending_parent_notify {
                 let tx_opt = {
                     let reg = sub_registry.lock();
-                    reg.workers.get(&parent_id).and_then(|p| p.parent_event_tx.clone())
+                    reg.workers
+                        .get(&parent_id)
+                        .and_then(|p| p.parent_event_tx.clone())
                 };
                 if let Some(tx) = tx_opt {
                     let _ = tx.send(payload).await;
@@ -2173,8 +2195,9 @@ impl WorkerRegistry {
                 // ⚠️ parking_lot: send_command 持 &mut self + .await（stdin write），
                 // 不能持锁调用。改为：持锁 take 出 stdin + 标记 Busy，drop lock，
                 // 然后 write stdin，再 put back。
-                let input_origin_for_prompt =
-                    config_input_origin.clone().unwrap_or_else(|| "user".to_string());
+                let input_origin_for_prompt = config_input_origin
+                    .clone()
+                    .unwrap_or_else(|| "user".to_string());
                 let req_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
                 let write_line = format!(
                     "{}\n",
@@ -2275,13 +2298,11 @@ impl WorkerRegistry {
             // 原则另一半：完整可还原细节以 custom entry 留痕进**父会话** JSONL
             // （创建是父时间线的事件且父文件必然存在；子会话文件此刻尚未由 worker 创建）
             // 注意：WorkerRecord.project 是项目名不是路径——父 cwd 只从 SessionIndex 取（真路径）
-            let parent_cwd = parent_sid
-                .as_ref()
-                .and_then(|ps| {
-                    crate::session_index::SessionIndex::load()
-                        .get(ps)
-                        .and_then(|m| m.project.clone())
-                });
+            let parent_cwd = parent_sid.as_ref().and_then(|ps| {
+                crate::session_index::SessionIndex::load()
+                    .get(ps)
+                    .and_then(|m| m.project.clone())
+            });
             if let (Some(pc), Some(ps)) = (&parent_cwd, &parent_sid) {
                 // register 时刻父会话文件可能尚未写 header（worker 异步初始化）→ 延迟重试追加
                 let file = crate::paths::session_jsonl_path_by_id(pc, ps);
@@ -2328,11 +2349,7 @@ impl WorkerRegistry {
                     },
                 });
                 let _ = self.push_session_event(&psid, evt);
-                self.broadcast_ui_event(
-                    "workspace_session_created",
-                    payload,
-                    Some(&psid),
-                );
+                self.broadcast_ui_event("workspace_session_created", payload, Some(&psid));
             }
         }
         self.broadcast_overview();
@@ -2439,9 +2456,7 @@ impl WorkerRegistry {
             self.broadcast_overview();
 
             // Clean up worktree directory if present (branch preserved)
-            if cleanup_worktree
-                && let Some(ref wt) = wt_info
-            {
+            if cleanup_worktree && let Some(ref wt) = wt_info {
                 let _ = remove_worktree(&wt.path, &wt.source_repo);
                 // 分支删除仅在与目录清理同时请求时生效（目录留着时分支被 checkout 无法删）
                 if delete_branch {
@@ -2452,7 +2467,9 @@ impl WorkerRegistry {
             }
             // workspace 会话关闭：落盘 closed + 广播（store 无记录则跳过——非 workspace 的普通 kill 不受影响）
             if wt_info.is_some() {
-                if let Some(mut ws) = crate::session_workspace::WorkspaceSession::from_index(&killed_session) {
+                if let Some(mut ws) =
+                    crate::session_workspace::WorkspaceSession::from_index(&killed_session)
+                {
                     if ws.status != crate::session_workspace::WorkspaceStatus::Closed {
                         ws.status = crate::session_workspace::WorkspaceStatus::Closed;
                         let _ = ws.upsert_index();
@@ -2461,10 +2478,8 @@ impl WorkerRegistry {
                             .get(&ws.parent_session_id)
                             .and_then(|m| m.project.clone());
                         if let Some(pc) = parent_cwd {
-                            let pfile = crate::paths::session_jsonl_path_by_id(
-                                &pc,
-                                &ws.parent_session_id,
-                            );
+                            let pfile =
+                                crate::paths::session_jsonl_path_by_id(&pc, &ws.parent_session_id);
                             let _ = crate::session_jsonl::append_custom_entry_to_file(
                                 &pfile,
                                 "workspace_session",
@@ -2478,10 +2493,8 @@ impl WorkerRegistry {
                             );
                         }
                         // worktree 存在 → 看是否删分支；不存在 → 无可删，视为保留
-                        let branch_preserved = wt_info
-                            .as_ref()
-                            .map(|_| !delete_branch)
-                            .unwrap_or(true);
+                        let branch_preserved =
+                            wt_info.as_ref().map(|_| !delete_branch).unwrap_or(true);
                         // 双路推送：EventBus（ui 订阅者）+ 父会话实例流（subscribe --session 父）
                         let payload = serde_json::json!({
                             "sessionId": killed_session,
@@ -2599,7 +2612,7 @@ impl WorkerRegistry {
             max_turns: None,
             hook_depth: None,
             system_prompt_override: None,
-        wait: None,
+            wait: None,
         };
         // ⚠️ parking_lot: create_worker 持 &mut self + .await（spawn 等），
         // 不能持锁调用。改用 prepare + register 两阶段。
@@ -2808,7 +2821,9 @@ impl WorkerRegistry {
                 return Ok(stdin);
             }
             if std::time::Instant::now() >= deadline {
-                return Err(format!("worker {worker_id} busy: stdin held by another send"));
+                return Err(format!(
+                    "worker {worker_id} busy: stdin held by another send"
+                ));
             }
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         }
@@ -2835,7 +2850,8 @@ impl WorkerRegistry {
         })
         .to_string();
         let write_line = format!("{line}\n");
-        let mut stdin = Self::acquire_stdin(registry, worker_id, std::time::Duration::from_secs(5)).await?;
+        let mut stdin =
+            Self::acquire_stdin(registry, worker_id, std::time::Duration::from_secs(5)).await?;
         // 标记 Busy（短锁）
         {
             let mut reg = registry.lock();
@@ -3092,7 +3108,9 @@ impl WorkerRegistry {
                     }
                     None => {
                         if attempt == 49 {
-                            tracing::warn!("[channel_send] {sub_id}: stdin held by another send, msg dropped");
+                            tracing::warn!(
+                                "[channel_send] {sub_id}: stdin held by another send, msg dropped"
+                            );
                         } else {
                             std::thread::sleep(std::time::Duration::from_millis(1));
                         }
@@ -3153,7 +3171,8 @@ impl WorkerRegistry {
         // 异步上下文用 acquire_stdin 有界重试（写窗口亚毫秒级）。
         let mut stdins: Vec<(String, tokio::process::ChildStdin)> = Vec::new();
         for sub_id in &sub_ids {
-            match Self::acquire_stdin(registry, sub_id, std::time::Duration::from_millis(500)).await {
+            match Self::acquire_stdin(registry, sub_id, std::time::Duration::from_millis(500)).await
+            {
                 Ok(stdin) => stdins.push((sub_id.clone(), stdin)),
                 Err(e) => tracing::warn!("[channel_send_arc] {sub_id}: {e}"),
             }
@@ -3397,7 +3416,8 @@ impl WorkerRegistry {
                             // 统一：worktree 子会话同样持久化 + 发 workspace_session_created 事件，
                             // 让"输入框一句话"也能驱动卡片/侧栏（SESSION_WORKSPACE_CHAT §2.3）
                             // register 持短锁
-                            let info_result = self.register_prepared_worker(prepared, &config, registry_arc);
+                            let info_result =
+                                self.register_prepared_worker(prepared, &config, registry_arc);
                             match info_result {
                                 Ok(info) => {
                                     let child_id = info.worker_id.clone();
@@ -3410,22 +3430,28 @@ impl WorkerRegistry {
                                             && let Some(obj) =
                                                 v.get_mut("data").and_then(|d| d.as_object_mut())
                                         {
-                                            obj.insert("worktree_path".to_string(), ws["worktree_path"].clone());
-                                            obj.insert("worktree_branch".to_string(), ws["worktree_branch"].clone());
+                                            obj.insert(
+                                                "worktree_path".to_string(),
+                                                ws["worktree_path"].clone(),
+                                            );
+                                            obj.insert(
+                                                "worktree_branch".to_string(),
+                                                ws["worktree_branch"].clone(),
+                                            );
                                         }
                                         v
                                     };
 
-                            match (relation, wait) {
-                                (WorkerRelation::Child, true) => {
-                                    // ── child + wait：subscribe（持 lock）后立即返回响应占位，
-                                    //    真正的等待放到 wait_then_respond task 里 ──
-                                    let rx_opt = self.subscribe_for_wait(&child_id).ok();
-                                    // 先给 caller 一个 "running" 响应避免它死等？不，caller 期望 wait=true 时
-                                    // 响应里带 first_turn_output。所以不能立即响应。
-                                    // 改为：用 wait_then_respond 内部命令延迟响应。
-                                    let tx = self.manager_cmd_tx.clone();
-                                    let _ = tx.send(serde_json::json!({
+                                    match (relation, wait) {
+                                        (WorkerRelation::Child, true) => {
+                                            // ── child + wait：subscribe（持 lock）后立即返回响应占位，
+                                            //    真正的等待放到 wait_then_respond task 里 ──
+                                            let rx_opt = self.subscribe_for_wait(&child_id).ok();
+                                            // 先给 caller 一个 "running" 响应避免它死等？不，caller 期望 wait=true 时
+                                            // 响应里带 first_turn_output。所以不能立即响应。
+                                            // 改为：用 wait_then_respond 内部命令延迟响应。
+                                            let tx = self.manager_cmd_tx.clone();
+                                            let _ = tx.send(serde_json::json!({
                                         "command": "wait_then_respond",
                                         "params": {
                                             "target_worker": creator_id,
@@ -3442,84 +3468,84 @@ impl WorkerRegistry {
                                                 .and_then(|w| w.get("worktree_branch")).cloned(),
                                         }
                                     }));
-                                    // 注意：rx_opt 不能跨 await 边界传给 task（lifetime），
-                                    // 所以 wait_then_respond 重新 subscribe（subscribe 多次 OK，
-                                    // 每个 subscriber 都能收到事件）。
-                                }
-                                (WorkerRelation::Child, false) => {
-                                    self.write_manager_response(
-                                        &from_worker,
-                                        with_ws(serde_json::json!({
-                                            "_reply_to": reply_to,
-                                            "success": true,
-                                            "data": {
-                                                "worker_id": child_id,
-                                                "session_id": session_id,
-                                                "relation": "child",
-                                                "status": "running_in_background",
-                                            }
-                                        })),
-                                    )
-                                    .await;
-                                }
-                                (WorkerRelation::Peer, _) => {
-                                    // ── peer：立即返回 + 后台 follow_up ──
-                                    self.write_manager_response(
-                                        &from_worker,
-                                        with_ws(serde_json::json!({
-                                            "_reply_to": reply_to,
-                                            "success": true,
-                                            "data": {
-                                                "worker_id": child_id,
-                                                "session_id": session_id,
-                                                "relation": "peer",
-                                                "status": "running_in_background",
-                                                "report_channel": report_channel.clone(),
-                                            }
-                                        })),
-                                    )
-                                    .await;
-                                    let tx = self.manager_cmd_tx.clone();
-                                    let _ = tx.send(serde_json::json!({
-                                        "command": "peer_follow_up",
-                                        "params": {
-                                            "peer_id": child_id,
-                                            "creator_id": creator_id,
-                                            "report_channel": report_channel,
+                                            // 注意：rx_opt 不能跨 await 边界传给 task（lifetime），
+                                            // 所以 wait_then_respond 重新 subscribe（subscribe 多次 OK，
+                                            // 每个 subscriber 都能收到事件）。
                                         }
-                                    }));
+                                        (WorkerRelation::Child, false) => {
+                                            self.write_manager_response(
+                                                &from_worker,
+                                                with_ws(serde_json::json!({
+                                                    "_reply_to": reply_to,
+                                                    "success": true,
+                                                    "data": {
+                                                        "worker_id": child_id,
+                                                        "session_id": session_id,
+                                                        "relation": "child",
+                                                        "status": "running_in_background",
+                                                    }
+                                                })),
+                                            )
+                                            .await;
+                                        }
+                                        (WorkerRelation::Peer, _) => {
+                                            // ── peer：立即返回 + 后台 follow_up ──
+                                            self.write_manager_response(
+                                                &from_worker,
+                                                with_ws(serde_json::json!({
+                                                    "_reply_to": reply_to,
+                                                    "success": true,
+                                                    "data": {
+                                                        "worker_id": child_id,
+                                                        "session_id": session_id,
+                                                        "relation": "peer",
+                                                        "status": "running_in_background",
+                                                        "report_channel": report_channel.clone(),
+                                                    }
+                                                })),
+                                            )
+                                            .await;
+                                            let tx = self.manager_cmd_tx.clone();
+                                            let _ = tx.send(serde_json::json!({
+                                                "command": "peer_follow_up",
+                                                "params": {
+                                                    "peer_id": child_id,
+                                                    "creator_id": creator_id,
+                                                    "report_channel": report_channel,
+                                                }
+                                            }));
+                                        }
+                                        (WorkerRelation::System, _) => {
+                                            // ── system：host 创建的系统级 Worker（如 memory-agent），无 creator ──
+                                            // 立即返回 worker_id，不注入汇报指令，不 follow_up
+                                            self.write_manager_response(
+                                                &from_worker,
+                                                with_ws(serde_json::json!({
+                                                    "_reply_to": reply_to,
+                                                    "success": true,
+                                                    "data": {
+                                                        "worker_id": child_id,
+                                                        "session_id": session_id,
+                                                        "relation": "system",
+                                                        "status": "running_in_background",
+                                                    }
+                                                })),
+                                            )
+                                            .await;
+                                        }
+                                    }
                                 }
-                                (WorkerRelation::System, _) => {
-                                    // ── system：host 创建的系统级 Worker（如 memory-agent），无 creator ──
-                                    // 立即返回 worker_id，不注入汇报指令，不 follow_up
+                                Err(e) => {
                                     self.write_manager_response(
                                         &from_worker,
-                                        with_ws(serde_json::json!({
+                                        serde_json::json!({
                                             "_reply_to": reply_to,
-                                            "success": true,
-                                            "data": {
-                                                "worker_id": child_id,
-                                                "session_id": session_id,
-                                                "relation": "system",
-                                                "status": "running_in_background",
-                                            }
-                                        })),
+                                            "success": false,
+                                            "error": format!("register failed: {e}"),
+                                        }),
                                     )
                                     .await;
                                 }
-                            }
-                        }
-                        Err(e) => {
-                            self.write_manager_response(
-                                &from_worker,
-                                serde_json::json!({
-                                    "_reply_to": reply_to,
-                                    "success": false,
-                                    "error": format!("register failed: {e}"),
-                                }),
-                            )
-                            .await;
-                        }
                             }
                         }
                         Err(e) => {
@@ -4101,7 +4127,9 @@ impl WorkerRegistry {
         data: serde_json::Value,
         session: Option<&str>,
     ) {
-        let Some(bus) = self.event_bus.clone() else { return };
+        let Some(bus) = self.event_bus.clone() else {
+            return;
+        };
         let mut ev = crate::event_bus::ExtensionEvent::new("session", custom_type).with_data(data);
         if let Some(s) = session {
             ev = ev.with_session(s);
@@ -4250,11 +4278,7 @@ impl WorkerRegistry {
         // 最老优先（status_since 最小 = 进入 Idle 最早）
         idles.sort_by_key(|(_, since)| *since);
         let excess = idles.len() - max_idle;
-        let victims: Vec<String> = idles
-            .into_iter()
-            .take(excess)
-            .map(|(id, _)| id)
-            .collect();
+        let victims: Vec<String> = idles.into_iter().take(excess).map(|(id, _)| id).collect();
         for id in &victims {
             self.workers.remove(id);
             for subs in self.channels.values_mut() {
@@ -4428,7 +4452,10 @@ impl WorkerRegistry {
     ///
     /// 这是为 parking_lot::Mutex（guard 不是 Send，不能跨 await 持有）准备的：
     /// 把原本持锁 await 的 singleton_user_join 拆成 sync（改 users 集合）+ async（调 callback）。
-    pub fn singleton_user_join_sync(&mut self, worker_id: &str) -> Vec<Arc<dyn crate::agent::extension::Extension>> {
+    pub fn singleton_user_join_sync(
+        &mut self,
+        worker_id: &str,
+    ) -> Vec<Arc<dyn crate::agent::extension::Extension>> {
         let mut to_call = Vec::new();
         let keys: Vec<String> = self.singletons.keys().cloned().collect();
         for key in keys {
@@ -4445,7 +4472,10 @@ impl WorkerRegistry {
     pub fn singleton_user_leave_sync(
         &mut self,
         worker_id: &str,
-    ) -> (Vec<Arc<dyn crate::agent::extension::Extension>>, Vec<Arc<dyn crate::agent::extension::Extension>>) {
+    ) -> (
+        Vec<Arc<dyn crate::agent::extension::Extension>>,
+        Vec<Arc<dyn crate::agent::extension::Extension>>,
+    ) {
         let mut leave_calls = Vec::new();
         let mut last_gone_calls = Vec::new();
         let keys: Vec<String> = self.singletons.keys().cloned().collect();
@@ -4671,10 +4701,15 @@ async fn read_worker_stdout(
                 tracing::info!("[{worker_id}] create_worker request");
             }
             "channel_send" => {
-                let channel = msg.get("channel").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let channel = msg
+                    .get("channel")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let channel_msg = msg.get("msg").cloned().unwrap_or(serde_json::Value::Null);
                 // ⚠️ parking_lot: channel_send_arc 自管锁，不在持 guard 状态下 await。
-                WorkerRegistry::channel_send_arc(&registry, &channel, &worker_id, channel_msg).await;
+                WorkerRegistry::channel_send_arc(&registry, &channel, &worker_id, channel_msg)
+                    .await;
             }
 
             // Ready signal
@@ -5130,14 +5165,19 @@ mod tests {
             assert!(victims.contains(&format!("idle{i}")), "victims 含 idle{i}");
             assert!(!reg.workers.contains_key(&format!("idle{i}")));
         }
-        assert_eq!(reg.workers.values().filter(|w| w.status == WorkerStatus::Idle).count(), 8);
+        assert_eq!(
+            reg.workers
+                .values()
+                .filter(|w| w.status == WorkerStatus::Idle)
+                .count(),
+            8
+        );
         // Busy 永不被动
         assert!(reg.workers.contains_key("busy0"));
         assert!(reg.workers.contains_key("busy1"));
         // 池子没超配额时零回收
         assert!(reg.enforce_idle_quota(8).is_empty());
     }
-
 
     /// Default WorkerCreateConfig should leave all optional fields as None.
     #[test]

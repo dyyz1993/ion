@@ -157,7 +157,10 @@ impl Extension for GlobalMemoryExtension {
                 }
             }
             Err(e) => {
-                tracing::error!("[global-memory] failed to prepare memory-agent spawn: {}", e);
+                tracing::error!(
+                    "[global-memory] failed to prepare memory-agent spawn: {}",
+                    e
+                );
                 // 不报错（memory-agent 是可选增强，spawn 失败不应阻断 host 启动）
             }
         }
@@ -229,7 +232,9 @@ impl Extension for GlobalMemoryExtension {
                 let results = store.list(project).map_err(AgentError::Tool)?;
                 let total = results.len();
                 let entries: Vec<_> = results.into_iter().take(limit).collect();
-                Ok(serde_json::json!({"entries": serialize_entries(&entries), "totalCount": total, "returned": entries.len()}))
+                Ok(
+                    serde_json::json!({"entries": serialize_entries(&entries), "totalCount": total, "returned": entries.len()}),
+                )
             }
 
             "forget" => {

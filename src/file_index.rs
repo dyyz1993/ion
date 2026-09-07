@@ -427,8 +427,10 @@ mod tests {
         let mut idx = FileIndex::build(&p).unwrap();
         assert_eq!(idx.total_lines(), 1);
         // append 两行
-        let l2 = r#"{"type":"message","id":"u1","message":{"User":{"content":"第二个","role":"user"}}}"#;
-        let l3 = r#"{"type":"message","id":"u2","message":{"User":{"content":"第三个","role":"user"}}}"#;
+        let l2 =
+            r#"{"type":"message","id":"u1","message":{"User":{"content":"第二个","role":"user"}}}"#;
+        let l3 =
+            r#"{"type":"message","id":"u2","message":{"User":{"content":"第三个","role":"user"}}}"#;
         std::fs::write(&p, format!("{l1}\n{l2}\n{l3}\n")).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(10));
         assert!(idx.refresh());

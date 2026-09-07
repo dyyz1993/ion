@@ -141,7 +141,11 @@ pub enum IndexPersistIssue {
     /// tmp 写入或 rename 失败（磁盘满/权限等）——本次更新未落盘
     SaveFailed(String),
     /// 索引文件损坏/不可读，已隔离保全（refused=true 表示隔离失败，本次写被跳过）
-    QuarantinedCorrupt { backup: String, reason: String, refused: bool },
+    QuarantinedCorrupt {
+        backup: String,
+        reason: String,
+        refused: bool,
+    },
 }
 
 impl std::fmt::Display for IndexPersistIssue {
@@ -150,12 +154,24 @@ impl std::fmt::Display for IndexPersistIssue {
             IndexPersistIssue::LockDegraded(e) => {
                 write!(f, "lock degraded (no cross-process serialization): {e}")
             }
-            IndexPersistIssue::SaveFailed(e) => write!(f, "save failed (update NOT persisted): {e}"),
-            IndexPersistIssue::QuarantinedCorrupt { backup, reason, refused } => {
+            IndexPersistIssue::SaveFailed(e) => {
+                write!(f, "save failed (update NOT persisted): {e}")
+            }
+            IndexPersistIssue::QuarantinedCorrupt {
+                backup,
+                reason,
+                refused,
+            } => {
                 if *refused {
-                    write!(f, "index corrupt/unreadable ({reason}); quarantine FAILED at {backup} — write skipped, existing file untouched")
+                    write!(
+                        f,
+                        "index corrupt/unreadable ({reason}); quarantine FAILED at {backup} — write skipped, existing file untouched"
+                    )
                 } else {
-                    write!(f, "index corrupt/unreadable ({reason}); quarantined to {backup}, rebuilding fresh")
+                    write!(
+                        f,
+                        "index corrupt/unreadable ({reason}); quarantined to {backup}, rebuilding fresh"
+                    )
                 }
             }
         }
@@ -317,11 +333,15 @@ impl SessionIndex {
         };
         let tmp = path.with_extension("json.tmp");
         if let Err(e) = std::fs::write(&tmp, &content) {
-            record_issue(&IndexPersistIssue::SaveFailed(format!("write tmp {tmp:?}: {e}")));
+            record_issue(&IndexPersistIssue::SaveFailed(format!(
+                "write tmp {tmp:?}: {e}"
+            )));
             return false;
         }
         if let Err(e) = std::fs::rename(&tmp, &path) {
-            record_issue(&IndexPersistIssue::SaveFailed(format!("rename {tmp:?} -> {path:?}: {e}")));
+            record_issue(&IndexPersistIssue::SaveFailed(format!(
+                "rename {tmp:?} -> {path:?}: {e}"
+            )));
             let _ = std::fs::remove_file(&tmp);
             return false;
         }
@@ -397,9 +417,7 @@ impl SessionIndex {
     /// 调用方仍应尽量部分更新（update_workspace / patch_meta / increment_*）。
     pub fn upsert(&mut self, id: &str, mut meta: SessionMeta) {
         if let Some(old) = self.sessions.get(id) {
-            if old.name.as_deref().is_some_and(|n| n != id)
-                && meta.name.as_deref() == Some(id)
-            {
+            if old.name.as_deref().is_some_and(|n| n != id) && meta.name.as_deref() == Some(id) {
                 meta.name = old.name.clone();
                 if meta.first_name.is_none() {
                     meta.first_name = old.first_name.clone();
@@ -879,7 +897,10 @@ mod tests {
         let idx = SessionIndex::default();
         let mut sessions = idx.sessions.clone();
         sessions.insert("root".into(), make_meta(None));
-        let idx2 = SessionIndex { sessions, removed_sessions: Default::default() };
+        let idx2 = SessionIndex {
+            sessions,
+            removed_sessions: Default::default(),
+        };
         let root = idx2.get("root").unwrap();
         assert!(root.parent_session.is_none());
     }
@@ -888,7 +909,10 @@ mod tests {
     fn test_forked_session_has_parent() {
         let mut sessions = std::collections::HashMap::new();
         sessions.insert("fork".into(), make_meta(Some("parent_sess")));
-        let idx = SessionIndex { sessions, removed_sessions: Default::default() };
+        let idx = SessionIndex {
+            sessions,
+            removed_sessions: Default::default(),
+        };
         let fork = idx.get("fork").unwrap();
         assert_eq!(fork.parent_session.as_deref(), Some("parent_sess"));
         assert_eq!(fork.parent_type.as_deref(), Some("fork"));

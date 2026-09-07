@@ -16,8 +16,7 @@ use crate::agent::compact::CompactConfig;
 use crate::agent::tool::{
     AwaitWorkerTool, BashTool, BranchSessionTool, CalculatorTool, ChannelSendTool, EchoTool,
     EditTool, FindTool, GlobalMemorySaveTool, GlobalMemorySearchTool, GrepTool, KillWorkerTool,
-    LsTool, ReadTool, ResumeWorkerTool, SendToWorkerTool, SpawnWorkerTool, ToolRegistry,
-    WriteTool,
+    LsTool, ReadTool, ResumeWorkerTool, SendToWorkerTool, SpawnWorkerTool, ToolRegistry, WriteTool,
 };
 use crate::session_jsonl;
 use crate::wasm_extension::{WasmExtensionRegistry, WasmToolAdapter};
@@ -473,7 +472,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         let canonical_str = std::fs::canonicalize(&path)
                             .map(|p| p.to_string_lossy().to_string())
                             .unwrap_or_else(|_| path.to_string_lossy().to_string());
-                        let extension_id = crate::wasm_extension::extension_id_from_path(&canonical_str);
+                        let extension_id =
+                            crate::wasm_extension::extension_id_from_path(&canonical_str);
                         match wasm_ext_registry.add(&canonical_str) {
                             Ok(tool_defs) => {
                                 for td in &tool_defs {
@@ -2022,304 +2022,305 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         std::collections::VecDeque::new(),
                     ));
                     let run_result = {
-                        let mut run_fut = std::pin::pin!(agent.run_with_images(&text, images.clone()));
+                        let mut run_fut =
+                            std::pin::pin!(agent.run_with_images(&text, images.clone()));
                         loop {
                             tokio::select! {
-                                result = &mut run_fut => {
-                                    break result;
-                                }
-                                Some(bg_cmd) = stdin_rx.recv() => {
-                                    let bg_id = bg_cmd.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                    let bg_method = bg_cmd.get("method").and_then(|v| v.as_str())
-                                        .or_else(|| bg_cmd.get("type").and_then(|v| v.as_str()))
-                                        .unwrap_or("").to_string();
-                                    let bg_params = bg_cmd.get("params").cloned().unwrap_or(serde_json::Value::Null);
-                                    match bg_method.as_str() {
-                                        // 只读磁盘的 RPC → 照常处理(agent.run 期间安全)
-                                        "list_turns" | "list_session_turns" => {
-                                            let full_content = bg_params.get("full_content").and_then(|v| v.as_bool()).unwrap_or(false);
-                                            let limit = bg_params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(50);
-                                            let entries: Vec<serde_json::Value> = crate::message_retrieval::load_entries_cached(&worker_cwd);
-                                            let rp = crate::message_retrieval::RetrievalParams { limit, ..Default::default() };
-                                            let result = crate::message_retrieval::retrieve_turns(&entries, &rp, full_content);
-                                            output_response(&bg_id, "list_turns", &serde_json::json!({
-                                                "turns": result.turns.iter().map(|t| serde_json::json!({
-                                                    "turnId": t.turn_id,
-                                                    "userContent": t.user_content,
-                                                    "assistantContent": t.assistant_content,
-                                                    "keySteps": t.key_steps,
-                                                    "toolCallCount": t.tool_call_count,
-                                                    "tokens": {"input": t.tokens_input, "output": t.tokens_output},
-                                                    "status": t.status,
-                                                    "summary": t.summary,
-                                                    "durationMs": t.duration_ms,
-                                                    "source": t.source,
-                                                })).collect::<Vec<_>>(),
-                                                "hasMore": result.has_more,
-                                                "totalCount": result.total_count,
-                                                "nextCursor": result.next_cursor,
-                                            }));
-                                        }
-                                        // get_session_messages/list_session_turns 是同名旧命令的新名（host 直读拦截
-// 之外，带 --session 顶层转发的路径会落到这里）——必须同样放行，否则 Busy 状态
-// 下被 _ 兜底拒绝（2026-08-27：gateway bootstrap busy-empty 空白的根因）
-                                        "get_messages" | "get_session_messages" => {
-                                            let view_str = bg_params.get("view").and_then(|v| v.as_str()).unwrap_or("live");
-                                            let view = match view_str {
-                                                "since_compaction" => crate::message_retrieval::View::SinceCompaction,
-                                                "full" => crate::message_retrieval::View::Full,
-                                                s if s.starts_with("branch:") => crate::message_retrieval::View::Branch(s[7..].to_string()),
-                                                _ => crate::message_retrieval::View::Live,
-                                            };
-                                            let limit = bg_params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(0);
-                                            let after = bg_params.get("after").and_then(|v| v.as_str()).map(String::from);
-                                            let before = bg_params.get("before").and_then(|v| v.as_str()).map(String::from);
-                                            let complete_turn = bg_params.get("complete_turn").and_then(|v| v.as_bool()).unwrap_or(false);
-                                            let inc_custom = bg_params.get("include_custom").and_then(|v| v.as_str()).unwrap_or("none");
-                                            let include_custom = match inc_custom {
-                                                "display_only" => crate::message_retrieval::CustomFilter::DisplayOnly,
-                                                "all" => crate::message_retrieval::CustomFilter::All,
-                                                _ => crate::message_retrieval::CustomFilter::None,
-                                            };
-                                            let entries: Vec<serde_json::Value> = crate::message_retrieval::load_entries_cached(&worker_cwd);
-                                            let rp = crate::message_retrieval::RetrievalParams {
-                                                view, after, before, limit,
-                                                from_head: params.get("from").and_then(|v| v.as_str()).map(|v| v == "head").unwrap_or(false),
-                                                complete_turn, include_custom,
-                                            };
-                                            let result = crate::message_retrieval::retrieve_messages(&entries, &rp);
-                                            output_response(&bg_id, "get_messages", &serde_json::json!({
-                                                "messages": result.messages,
-                                                "hasMore": result.has_more,
-                                                "totalCount": result.total_count,
-                                                "nextCursor": result.next_cursor,
-                                                "view": view_str,
-                                            }));
-                                        }
-                                        "list_inputs" => {
-                                            let entries: Vec<serde_json::Value> = crate::message_retrieval::load_entries_cached(&worker_cwd);
-                                            let rp = crate::message_retrieval::RetrievalParams::default();
-                                            let result = crate::message_retrieval::retrieve_inputs(&entries, &rp);
-                                            output_response(&bg_id, "list_inputs", &serde_json::json!({
-                                                "inputs": result.inputs.iter().map(|i| serde_json::json!({
-                                                    "turnId": i.turn_id, "entryId": i.entry_id, "text": i.text,
-                                                })).collect::<Vec<_>>(),
-                                                "hasMore": result.has_more, "totalCount": result.total_count,
-                                                "nextCursor": result.next_cursor,
-                                            }));
-                                        }
-                                        "get_turn_detail" => {
-                                            let turn_id = bg_params.get("turnId").and_then(|v| v.as_str()).unwrap_or("");
-                                            let entries: Vec<serde_json::Value> = crate::message_retrieval::load_entries_cached(&worker_cwd);
-                                            match crate::message_retrieval::retrieve_turn_detail(&entries, turn_id, &crate::message_retrieval::CustomFilter::None) {
-                                                Some(detail) => output_response(&bg_id, "get_turn_detail", &serde_json::json!({
-                                                    "turnId": detail.turn_id,
-                                                    "entries": detail.entries,
-                                                    "overview": {
-                                                        "userContent": detail.overview.user_content,
-                                                        "assistantContent": detail.overview.assistant_content,
-                                                        "keySteps": detail.overview.key_steps,
-                                                        "toolCallCount": detail.overview.tool_call_count,
-                                                        "tokens": {"input": detail.overview.tokens_input, "output": detail.overview.tokens_output},
-                                                        "status": detail.overview.status,
-                                                        "durationMs": detail.overview.duration_ms,
-                                                        "source": detail.overview.source,
-                                                    }
-                                                })),
-                                                None => output_response(&bg_id, "get_turn_detail", &serde_json::json!({"error": "turn not found", "turnId": turn_id})),
-                                            }
-                                        }
-                                        // review_pending → agent.run 期间也能查审批队列
-                                        // （compute_pending 是纯内存计算 + 磁盘读，不碰 agent）
-                                        "review_pending" => {
-                                            let result = if let Some(ref mgr) = approval_mgr {
-                                                let pending = mgr.compute_pending();
-                                                serde_json::json!({
-                                                    "pending": pending.iter().map(|p| serde_json::json!({
-                                                        "path": p.path,
-                                                        "status": format!("{:?}", p.status).to_lowercase(),
-                                                        "diffStat": p.diff_stat,
-                                                    })).collect::<Vec<_>>(),
-                                                    "summary": {"total": pending.len()},
-                                                })
-                                            } else {
-                                                serde_json::json!({"pending": [], "summary": {"total": 0}})
-                                            };
-                                            output_response(&bg_id, "review_pending", &result);
-                                        }
-                                        // 单文件 diff（与 review_pending 同源，复用其缓存）
-                                        "review_file_diff" => {
-                                            let path = bg_params.get("path").and_then(|v| v.as_str()).unwrap_or("");
-                                            let result = if let Some(ref mgr) = approval_mgr {
-                                                mgr.file_diff(path).unwrap_or(serde_json::json!({
-                                                    "error": "file not in pending list", "path": path,
-                                                }))
-                                            } else {
-                                                serde_json::json!({"error": "approval not enabled"})
-                                            };
-                                            output_response(&bg_id, "review_file_diff", &result);
-                                        }
-                                        // 单 turn 变更摘要（只读磁盘，安全）；
-                                        // turnId 省略 → 本 session 最新 ts_ turn
-                                        "turn_changes" => {
-                                            let turn_id_param = bg_params.get("turnId").and_then(|v| v.as_str()).unwrap_or("");
-                                            let result = if let Some(ref store) = snapshot_store {
-                                                let all_snaps = store.load_all_tool_snapshots();
-                                                let mine: Vec<&crate::file_snapshot::ToolSnapshot> =
-                                                    all_snaps.iter().filter(|s| s.session_id == sid).collect();
-                                                let turn_id = if turn_id_param.is_empty() {
-                                                    mine.iter().max_by(|a, b| a.timestamp.cmp(&b.timestamp)).map(|s| s.turn_id.clone())
-                                                } else { Some(turn_id_param.to_string()) };
-                                                match turn_id {
-                                                    None => serde_json::json!({"turnId": null, "files": [],
-                                                        "summary": {"files": 0, "added": 0, "removed": 0}}),
-                                                    Some(tid) => {
-                                                        use std::collections::HashMap;
-                                                        let mut grouped: HashMap<String, Vec<&crate::file_snapshot::ToolSnapshot>> = HashMap::new();
-                                                        for s in &mine {
-                                                            if s.turn_id == tid { grouped.entry(s.path.clone()).or_default().push(s); }
+                                                            result = &mut run_fut => {
+                                                                break result;
+                                                            }
+                                                            Some(bg_cmd) = stdin_rx.recv() => {
+                                                                let bg_id = bg_cmd.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                                                let bg_method = bg_cmd.get("method").and_then(|v| v.as_str())
+                                                                    .or_else(|| bg_cmd.get("type").and_then(|v| v.as_str()))
+                                                                    .unwrap_or("").to_string();
+                                                                let bg_params = bg_cmd.get("params").cloned().unwrap_or(serde_json::Value::Null);
+                                                                match bg_method.as_str() {
+                                                                    // 只读磁盘的 RPC → 照常处理(agent.run 期间安全)
+                                                                    "list_turns" | "list_session_turns" => {
+                                                                        let full_content = bg_params.get("full_content").and_then(|v| v.as_bool()).unwrap_or(false);
+                                                                        let limit = bg_params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(50);
+                                                                        let entries: Vec<serde_json::Value> = crate::message_retrieval::load_entries_cached(&worker_cwd);
+                                                                        let rp = crate::message_retrieval::RetrievalParams { limit, ..Default::default() };
+                                                                        let result = crate::message_retrieval::retrieve_turns(&entries, &rp, full_content);
+                                                                        output_response(&bg_id, "list_turns", &serde_json::json!({
+                                                                            "turns": result.turns.iter().map(|t| serde_json::json!({
+                                                                                "turnId": t.turn_id,
+                                                                                "userContent": t.user_content,
+                                                                                "assistantContent": t.assistant_content,
+                                                                                "keySteps": t.key_steps,
+                                                                                "toolCallCount": t.tool_call_count,
+                                                                                "tokens": {"input": t.tokens_input, "output": t.tokens_output},
+                                                                                "status": t.status,
+                                                                                "summary": t.summary,
+                                                                                "durationMs": t.duration_ms,
+                                                                                "source": t.source,
+                                                                            })).collect::<Vec<_>>(),
+                                                                            "hasMore": result.has_more,
+                                                                            "totalCount": result.total_count,
+                                                                            "nextCursor": result.next_cursor,
+                                                                        }));
+                                                                    }
+                                                                    // get_session_messages/list_session_turns 是同名旧命令的新名（host 直读拦截
+                            // 之外，带 --session 顶层转发的路径会落到这里）——必须同样放行，否则 Busy 状态
+                            // 下被 _ 兜底拒绝（2026-08-27：gateway bootstrap busy-empty 空白的根因）
+                                                                    "get_messages" | "get_session_messages" => {
+                                                                        let view_str = bg_params.get("view").and_then(|v| v.as_str()).unwrap_or("live");
+                                                                        let view = match view_str {
+                                                                            "since_compaction" => crate::message_retrieval::View::SinceCompaction,
+                                                                            "full" => crate::message_retrieval::View::Full,
+                                                                            s if s.starts_with("branch:") => crate::message_retrieval::View::Branch(s[7..].to_string()),
+                                                                            _ => crate::message_retrieval::View::Live,
+                                                                        };
+                                                                        let limit = bg_params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(0);
+                                                                        let after = bg_params.get("after").and_then(|v| v.as_str()).map(String::from);
+                                                                        let before = bg_params.get("before").and_then(|v| v.as_str()).map(String::from);
+                                                                        let complete_turn = bg_params.get("complete_turn").and_then(|v| v.as_bool()).unwrap_or(false);
+                                                                        let inc_custom = bg_params.get("include_custom").and_then(|v| v.as_str()).unwrap_or("none");
+                                                                        let include_custom = match inc_custom {
+                                                                            "display_only" => crate::message_retrieval::CustomFilter::DisplayOnly,
+                                                                            "all" => crate::message_retrieval::CustomFilter::All,
+                                                                            _ => crate::message_retrieval::CustomFilter::None,
+                                                                        };
+                                                                        let entries: Vec<serde_json::Value> = crate::message_retrieval::load_entries_cached(&worker_cwd);
+                                                                        let rp = crate::message_retrieval::RetrievalParams {
+                                                                            view, after, before, limit,
+                                                                            from_head: params.get("from").and_then(|v| v.as_str()).map(|v| v == "head").unwrap_or(false),
+                                                                            complete_turn, include_custom,
+                                                                        };
+                                                                        let result = crate::message_retrieval::retrieve_messages(&entries, &rp);
+                                                                        output_response(&bg_id, "get_messages", &serde_json::json!({
+                                                                            "messages": result.messages,
+                                                                            "hasMore": result.has_more,
+                                                                            "totalCount": result.total_count,
+                                                                            "nextCursor": result.next_cursor,
+                                                                            "view": view_str,
+                                                                        }));
+                                                                    }
+                                                                    "list_inputs" => {
+                                                                        let entries: Vec<serde_json::Value> = crate::message_retrieval::load_entries_cached(&worker_cwd);
+                                                                        let rp = crate::message_retrieval::RetrievalParams::default();
+                                                                        let result = crate::message_retrieval::retrieve_inputs(&entries, &rp);
+                                                                        output_response(&bg_id, "list_inputs", &serde_json::json!({
+                                                                            "inputs": result.inputs.iter().map(|i| serde_json::json!({
+                                                                                "turnId": i.turn_id, "entryId": i.entry_id, "text": i.text,
+                                                                            })).collect::<Vec<_>>(),
+                                                                            "hasMore": result.has_more, "totalCount": result.total_count,
+                                                                            "nextCursor": result.next_cursor,
+                                                                        }));
+                                                                    }
+                                                                    "get_turn_detail" => {
+                                                                        let turn_id = bg_params.get("turnId").and_then(|v| v.as_str()).unwrap_or("");
+                                                                        let entries: Vec<serde_json::Value> = crate::message_retrieval::load_entries_cached(&worker_cwd);
+                                                                        match crate::message_retrieval::retrieve_turn_detail(&entries, turn_id, &crate::message_retrieval::CustomFilter::None) {
+                                                                            Some(detail) => output_response(&bg_id, "get_turn_detail", &serde_json::json!({
+                                                                                "turnId": detail.turn_id,
+                                                                                "entries": detail.entries,
+                                                                                "overview": {
+                                                                                    "userContent": detail.overview.user_content,
+                                                                                    "assistantContent": detail.overview.assistant_content,
+                                                                                    "keySteps": detail.overview.key_steps,
+                                                                                    "toolCallCount": detail.overview.tool_call_count,
+                                                                                    "tokens": {"input": detail.overview.tokens_input, "output": detail.overview.tokens_output},
+                                                                                    "status": detail.overview.status,
+                                                                                    "durationMs": detail.overview.duration_ms,
+                                                                                    "source": detail.overview.source,
+                                                                                }
+                                                                            })),
+                                                                            None => output_response(&bg_id, "get_turn_detail", &serde_json::json!({"error": "turn not found", "turnId": turn_id})),
+                                                                        }
+                                                                    }
+                                                                    // review_pending → agent.run 期间也能查审批队列
+                                                                    // （compute_pending 是纯内存计算 + 磁盘读，不碰 agent）
+                                                                    "review_pending" => {
+                                                                        let result = if let Some(ref mgr) = approval_mgr {
+                                                                            let pending = mgr.compute_pending();
+                                                                            serde_json::json!({
+                                                                                "pending": pending.iter().map(|p| serde_json::json!({
+                                                                                    "path": p.path,
+                                                                                    "status": format!("{:?}", p.status).to_lowercase(),
+                                                                                    "diffStat": p.diff_stat,
+                                                                                })).collect::<Vec<_>>(),
+                                                                                "summary": {"total": pending.len()},
+                                                                            })
+                                                                        } else {
+                                                                            serde_json::json!({"pending": [], "summary": {"total": 0}})
+                                                                        };
+                                                                        output_response(&bg_id, "review_pending", &result);
+                                                                    }
+                                                                    // 单文件 diff（与 review_pending 同源，复用其缓存）
+                                                                    "review_file_diff" => {
+                                                                        let path = bg_params.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                                                                        let result = if let Some(ref mgr) = approval_mgr {
+                                                                            mgr.file_diff(path).unwrap_or(serde_json::json!({
+                                                                                "error": "file not in pending list", "path": path,
+                                                                            }))
+                                                                        } else {
+                                                                            serde_json::json!({"error": "approval not enabled"})
+                                                                        };
+                                                                        output_response(&bg_id, "review_file_diff", &result);
+                                                                    }
+                                                                    // 单 turn 变更摘要（只读磁盘，安全）；
+                                                                    // turnId 省略 → 本 session 最新 ts_ turn
+                                                                    "turn_changes" => {
+                                                                        let turn_id_param = bg_params.get("turnId").and_then(|v| v.as_str()).unwrap_or("");
+                                                                        let result = if let Some(ref store) = snapshot_store {
+                                                                            let all_snaps = store.load_all_tool_snapshots();
+                                                                            let mine: Vec<&crate::file_snapshot::ToolSnapshot> =
+                                                                                all_snaps.iter().filter(|s| s.session_id == sid).collect();
+                                                                            let turn_id = if turn_id_param.is_empty() {
+                                                                                mine.iter().max_by(|a, b| a.timestamp.cmp(&b.timestamp)).map(|s| s.turn_id.clone())
+                                                                            } else { Some(turn_id_param.to_string()) };
+                                                                            match turn_id {
+                                                                                None => serde_json::json!({"turnId": null, "files": [],
+                                                                                    "summary": {"files": 0, "added": 0, "removed": 0}}),
+                                                                                Some(tid) => {
+                                                                                    use std::collections::HashMap;
+                                                                                    let mut grouped: HashMap<String, Vec<&crate::file_snapshot::ToolSnapshot>> = HashMap::new();
+                                                                                    for s in &mine {
+                                                                                        if s.turn_id == tid { grouped.entry(s.path.clone()).or_default().push(s); }
+                                                                                    }
+                                                                                    let mut files = Vec::new();
+                                                                                    let (mut ta, mut tr) = (0usize, 0usize);
+                                                                                    for (path, group) in &grouped {
+                                                                                        let first = group.first().unwrap();
+                                                                                        let last = group.last().unwrap();
+                                                                                        let before = first.before_hash.as_ref().and_then(|h| store.objects().read_object_text(h));
+                                                                                        let after = last.after_hash.as_ref().and_then(|h| store.objects().read_object_text(h));
+                                                                                        let (status, added, removed) = match (&before, &after) {
+                                                                                            (Some(b), Some(a)) => { let (ad, rm) = crate::file_snapshot::count_changes(b, a); ("modified", ad, rm) }
+                                                                                            (None, Some(a)) => ("added", a.lines().count(), 0),
+                                                                                            (Some(b), None) => ("deleted", 0, b.lines().count()),
+                                                                                            _ => ("modified", 0, 0),
+                                                                                        };
+                                                                                        ta += added; tr += removed;
+                                                                                        files.push(serde_json::json!({"path": path, "status": status, "added": added, "removed": removed}));
+                                                                                    }
+                                                                                    serde_json::json!({"turnId": tid, "files": files,
+                                                                                        "summary": {"files": grouped.len(), "added": ta, "removed": tr}})
+                                                                                }
+                                                                            }
+                                                                        } else {
+                                                                            serde_json::json!({"error": "file-snapshot not enabled"})
+                                                                        };
+                                                                        output_response(&bg_id, "turn_changes", &result);
+                                                                    }
+                                                                    // get_session_info / get_state → agent.run 期间不能读 messages(&mut 冲突)
+                                                                    // 返回简化版(只有 model/provider/is_running)
+                                                                    "get_session_info" | "get_state" => {
+                                                                        output_response(&bg_id, "get_session_info", &serde_json::json!({
+                                                                            "session_id": sid,
+                                                                            "model": model_id, "provider": provider,
+                                                                            "is_running": true,  // agent.run 期间一定 running
+                                                                            "is_stopped": stopped_handle.load(std::sync::atomic::Ordering::SeqCst),
+                                                                            "message_count": null,  // agent.run 期间不能读
+                                                                            "note": "agent is running, use list_turns for disk data",
+                                                                        }));
+                                                                    }
+                                                                    // abort → 通过外部句柄中断(不用 agent.stop(),避免 borrow 冲突)
+                                                                    // 设 stopped=true(AtomicBool)+ 发 pause 信号唤醒 check_pause
+                                                                    "abort" => {
+                                                                        stopped_handle.store(true, std::sync::atomic::Ordering::SeqCst);
+                                                                        let _ = pause_tx_clone.send(true);
+                                                                        output_response(&bg_id, "abort", &serde_json::Value::Null);
+                                                                    }
+                                                                    // steer/follow_up → 缓存到外部 queue,run 结束后 drain 进 agent
+                                                                    "steer" => {
+                                                                        let steer_text = bg_params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                                                        if !steer_text.is_empty() {
+                                                                            pending_steer_queue.lock().await.push_back((
+                                                                                ion_provider::types::MessageSource::Steer,
+                                                                                Message::User(UserMessage {
+                                                                                    role: "user".into(),
+                                                                                    content: vec![ContentBlock::Text(TextContent { text: steer_text, text_signature: None })],
+                                                                                    timestamp: now_ms(),
+                                                                                    source: ion_provider::types::MessageSource::Steer,
+                                                                                }),
+                                                                            ));
+                                                                        }
+                                                                        output_response(&bg_id, "steer", &serde_json::json!({"status":"queued","queue":"steering"}));
+                                                                    }
+                                                                    "follow_up" => {
+                                                                        let fu_text = bg_params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                                                        if !fu_text.is_empty() {
+                                                                            pending_steer_queue.lock().await.push_back((
+                                                                                ion_provider::types::MessageSource::FollowUp,
+                                                                                Message::User(UserMessage {
+                                                                                    role: "user".into(),
+                                                                                    content: vec![ContentBlock::Text(TextContent { text: fu_text, text_signature: None })],
+                                                                                    timestamp: now_ms(),
+                                                                                    source: ion_provider::types::MessageSource::FollowUp,
+                                                                                }),
+                                                                            ));
+                                                                        }
+                                                                        output_response(&bg_id, "follow_up", &serde_json::json!({"status":"queued","queue":"followUp"}));
+                                                                    }
+                                                                    // prompt 运行中到达：按 behavior 活递——
+                                                                    // ⚠️ 不能走 pending_steer_queue（只在 run 结束后 drain →
+                                                                    // 注入已退出的 run，outer_loop 永远看不到，消息黑洞）。
+                                                                    // 直接写 agent 的 follow_up 通道：outer_loop 在每轮
+                                                                    // inner_loop 结束后 drain 该通道续跑下一轮
+                                                                    //（followUp → follow_up_queue → 新 turn；steer → steering 队列）。
+                                                                    "prompt" => {
+                                                                        let ptext = bg_params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                                                        let default_behavior = std::env::var("ION_PROMPT_BEHAVIOR")
+                                                                            .ok()
+                                                                            .filter(|s| matches!(s.as_str(), "interrupt" | "steer" | "followUp"))
+                                                                            .unwrap_or_else(|| "steer".to_string());
+                                                                        let pbehavior = bg_params
+                                                                            .get("behavior")
+                                                                            .or_else(|| bg_params.get("streamingBehavior"))
+                                                                            .and_then(|v| v.as_str())
+                                                                            .unwrap_or(&default_behavior);
+                                                                        match pbehavior {
+                                                                            "interrupt" => {
+                                                                                stopped_handle.store(true, std::sync::atomic::Ordering::SeqCst);
+                                                                                let _ = pause_tx_clone.send(true);
+                                                                                output_response(&bg_id, "prompt", &serde_json::json!({"status":"interrupted"}));
+                                                                            }
+                                                                            behavior => {
+                                                                                let is_fu = behavior == "followUp";
+                                                                                if !ptext.is_empty() {
+                                                                                    let mut content = vec![ContentBlock::Text(TextContent {
+                                                                                        text: ptext,
+                                                                                        text_signature: None,
+                                                                                    })];
+                                                                                    content.extend(images.iter().cloned().map(ContentBlock::Image));
+                                                                                    let _ = follow_up_tx.send((
+                                                                                        Message::User(UserMessage {
+                                                                                            role: "user".into(),
+                                                                                            content,
+                                                                                            timestamp: now_ms(),
+                                                                                            source: if is_fu {
+                                                                                                ion_provider::types::MessageSource::FollowUp
+                                                                                            } else {
+                                                                                                ion_provider::types::MessageSource::Steer
+                                                                                            },
+                                                                                        }),
+                                                                                        if is_fu { DeliverAs::FollowUp } else { DeliverAs::Steer },
+                                                                                    ));
+                                                                                }
+                                                                                output_response(
+                                                                                    &bg_id,
+                                                                                    "prompt",
+                                                                                    &serde_json::json!({
+                                                                                        "status":"queued",
+                                                                                        "queue": if is_fu { "followUp" } else { "steering" },
+                                                                                    }),
+                                                                                );
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    // prompt / 其他写类 → 返回 busy(agent 正在跑)
+                                                                    _ => {
+                                                                        output_response(&bg_id, &bg_method, &serde_json::json!({
+                                                                            "error": "agent is running, please wait",
+                                                                            "status": "busy",
+                                                                        }));
+                                                                    }
+                                                                }
+                                                            }
                                                         }
-                                                        let mut files = Vec::new();
-                                                        let (mut ta, mut tr) = (0usize, 0usize);
-                                                        for (path, group) in &grouped {
-                                                            let first = group.first().unwrap();
-                                                            let last = group.last().unwrap();
-                                                            let before = first.before_hash.as_ref().and_then(|h| store.objects().read_object_text(h));
-                                                            let after = last.after_hash.as_ref().and_then(|h| store.objects().read_object_text(h));
-                                                            let (status, added, removed) = match (&before, &after) {
-                                                                (Some(b), Some(a)) => { let (ad, rm) = crate::file_snapshot::count_changes(b, a); ("modified", ad, rm) }
-                                                                (None, Some(a)) => ("added", a.lines().count(), 0),
-                                                                (Some(b), None) => ("deleted", 0, b.lines().count()),
-                                                                _ => ("modified", 0, 0),
-                                                            };
-                                                            ta += added; tr += removed;
-                                                            files.push(serde_json::json!({"path": path, "status": status, "added": added, "removed": removed}));
-                                                        }
-                                                        serde_json::json!({"turnId": tid, "files": files,
-                                                            "summary": {"files": grouped.len(), "added": ta, "removed": tr}})
-                                                    }
-                                                }
-                                            } else {
-                                                serde_json::json!({"error": "file-snapshot not enabled"})
-                                            };
-                                            output_response(&bg_id, "turn_changes", &result);
-                                        }
-                                        // get_session_info / get_state → agent.run 期间不能读 messages(&mut 冲突)
-                                        // 返回简化版(只有 model/provider/is_running)
-                                        "get_session_info" | "get_state" => {
-                                            output_response(&bg_id, "get_session_info", &serde_json::json!({
-                                                "session_id": sid,
-                                                "model": model_id, "provider": provider,
-                                                "is_running": true,  // agent.run 期间一定 running
-                                                "is_stopped": stopped_handle.load(std::sync::atomic::Ordering::SeqCst),
-                                                "message_count": null,  // agent.run 期间不能读
-                                                "note": "agent is running, use list_turns for disk data",
-                                            }));
-                                        }
-                                        // abort → 通过外部句柄中断(不用 agent.stop(),避免 borrow 冲突)
-                                        // 设 stopped=true(AtomicBool)+ 发 pause 信号唤醒 check_pause
-                                        "abort" => {
-                                            stopped_handle.store(true, std::sync::atomic::Ordering::SeqCst);
-                                            let _ = pause_tx_clone.send(true);
-                                            output_response(&bg_id, "abort", &serde_json::Value::Null);
-                                        }
-                                        // steer/follow_up → 缓存到外部 queue,run 结束后 drain 进 agent
-                                        "steer" => {
-                                            let steer_text = bg_params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                            if !steer_text.is_empty() {
-                                                pending_steer_queue.lock().await.push_back((
-                                                    ion_provider::types::MessageSource::Steer,
-                                                    Message::User(UserMessage {
-                                                        role: "user".into(),
-                                                        content: vec![ContentBlock::Text(TextContent { text: steer_text, text_signature: None })],
-                                                        timestamp: now_ms(),
-                                                        source: ion_provider::types::MessageSource::Steer,
-                                                    }),
-                                                ));
-                                            }
-                                            output_response(&bg_id, "steer", &serde_json::json!({"status":"queued","queue":"steering"}));
-                                        }
-                                        "follow_up" => {
-                                            let fu_text = bg_params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                            if !fu_text.is_empty() {
-                                                pending_steer_queue.lock().await.push_back((
-                                                    ion_provider::types::MessageSource::FollowUp,
-                                                    Message::User(UserMessage {
-                                                        role: "user".into(),
-                                                        content: vec![ContentBlock::Text(TextContent { text: fu_text, text_signature: None })],
-                                                        timestamp: now_ms(),
-                                                        source: ion_provider::types::MessageSource::FollowUp,
-                                                    }),
-                                                ));
-                                            }
-                                            output_response(&bg_id, "follow_up", &serde_json::json!({"status":"queued","queue":"followUp"}));
-                                        }
-                                        // prompt 运行中到达：按 behavior 活递——
-                                        // ⚠️ 不能走 pending_steer_queue（只在 run 结束后 drain →
-                                        // 注入已退出的 run，outer_loop 永远看不到，消息黑洞）。
-                                        // 直接写 agent 的 follow_up 通道：outer_loop 在每轮
-                                        // inner_loop 结束后 drain 该通道续跑下一轮
-                                        //（followUp → follow_up_queue → 新 turn；steer → steering 队列）。
-                                        "prompt" => {
-                                            let ptext = bg_params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                            let default_behavior = std::env::var("ION_PROMPT_BEHAVIOR")
-                                                .ok()
-                                                .filter(|s| matches!(s.as_str(), "interrupt" | "steer" | "followUp"))
-                                                .unwrap_or_else(|| "steer".to_string());
-                                            let pbehavior = bg_params
-                                                .get("behavior")
-                                                .or_else(|| bg_params.get("streamingBehavior"))
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or(&default_behavior);
-                                            match pbehavior {
-                                                "interrupt" => {
-                                                    stopped_handle.store(true, std::sync::atomic::Ordering::SeqCst);
-                                                    let _ = pause_tx_clone.send(true);
-                                                    output_response(&bg_id, "prompt", &serde_json::json!({"status":"interrupted"}));
-                                                }
-                                                behavior => {
-                                                    let is_fu = behavior == "followUp";
-                                                    if !ptext.is_empty() {
-                                                        let mut content = vec![ContentBlock::Text(TextContent {
-                                                            text: ptext,
-                                                            text_signature: None,
-                                                        })];
-                                                        content.extend(images.iter().cloned().map(ContentBlock::Image));
-                                                        let _ = follow_up_tx.send((
-                                                            Message::User(UserMessage {
-                                                                role: "user".into(),
-                                                                content,
-                                                                timestamp: now_ms(),
-                                                                source: if is_fu {
-                                                                    ion_provider::types::MessageSource::FollowUp
-                                                                } else {
-                                                                    ion_provider::types::MessageSource::Steer
-                                                                },
-                                                            }),
-                                                            if is_fu { DeliverAs::FollowUp } else { DeliverAs::Steer },
-                                                        ));
-                                                    }
-                                                    output_response(
-                                                        &bg_id,
-                                                        "prompt",
-                                                        &serde_json::json!({
-                                                            "status":"queued",
-                                                            "queue": if is_fu { "followUp" } else { "steering" },
-                                                        }),
-                                                    );
-                                                }
-                                            }
-                                        }
-                                        // prompt / 其他写类 → 返回 busy(agent 正在跑)
-                                        _ => {
-                                            output_response(&bg_id, &bg_method, &serde_json::json!({
-                                                "error": "agent is running, please wait",
-                                                "status": "busy",
-                                            }));
-                                        }
-                                    }
-                                }
-                            }
                         }
                     };
                     match run_result {
@@ -2377,42 +2378,39 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     // 只在有活跃后台 watcher 时才 graceful drain——否则每轮
                     // prompt 结束都白等 60s（worker busy 不复位、RPC 超时的直接
                     // 原因；同 outer_loop 的 BACKGROUND_WAIT_TIMEOUT 修复）
-                    let drained_msgs = if agent
-                        .bg_pending
-                        .load(std::sync::atomic::Ordering::SeqCst)
-                        > 0
-                    {
-                        let drain_ms = std::env::var("ION_GRACEFUL_DRAIN_MS")
-                            .ok()
-                            .and_then(|s| s.parse::<u64>().ok())
-                            .unwrap_or(60_000);
-                        agent.graceful_drain_follow_ups(drain_ms, 50).await
-                    } else {
-                        Vec::new()
-                    };
+                    let drained_msgs =
+                        if agent.bg_pending.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+                            let drain_ms = std::env::var("ION_GRACEFUL_DRAIN_MS")
+                                .ok()
+                                .and_then(|s| s.parse::<u64>().ok())
+                                .unwrap_or(60_000);
+                            agent.graceful_drain_follow_ups(drain_ms, 50).await
+                        } else {
+                            Vec::new()
+                        };
                     for msg in &drained_msgs {
-                            // ★ 用消息自带的 timestamp（进程完成时间），而非写入时间。
-                            // 之前用 timestamp_iso() 导致所有 drained 消息的时间戳都是
-                            // "写入时间"（agent.run 返回后），而不是进程真正完成的时间。
-                            let msg_ts = match msg {
-                                ion_provider::Message::Custom(c) => c.timestamp,
-                                _ => 0,
-                            };
-                            let ts_iso = if msg_ts > 0 {
-                                session_jsonl::timestamp_iso_from_ms(msg_ts)
-                            } else {
-                                session_jsonl::timestamp_iso()
-                            };
-                            let entry = serde_json::json!({
-                                "id": session_jsonl::generate_id(),
-                                "parentId": sid,
-                                "timestamp": ts_iso,
-                                "type": "message",
-                                "message": msg,
-                            });
-                            session_jsonl::append_raw_entry(&worker_cwd, &entry);
-                            agent.push_message(msg.clone());
-                        }
+                        // ★ 用消息自带的 timestamp（进程完成时间），而非写入时间。
+                        // 之前用 timestamp_iso() 导致所有 drained 消息的时间戳都是
+                        // "写入时间"（agent.run 返回后），而不是进程真正完成的时间。
+                        let msg_ts = match msg {
+                            ion_provider::Message::Custom(c) => c.timestamp,
+                            _ => 0,
+                        };
+                        let ts_iso = if msg_ts > 0 {
+                            session_jsonl::timestamp_iso_from_ms(msg_ts)
+                        } else {
+                            session_jsonl::timestamp_iso()
+                        };
+                        let entry = serde_json::json!({
+                            "id": session_jsonl::generate_id(),
+                            "parentId": sid,
+                            "timestamp": ts_iso,
+                            "type": "message",
+                            "message": msg,
+                        });
+                        session_jsonl::append_raw_entry(&worker_cwd, &entry);
+                        agent.push_message(msg.clone());
+                    }
                     if !drained_msgs.is_empty() {
                         tracing::info!(
                             "[graceful-drain] captured {} follow_up messages after agent.run()",
@@ -3134,7 +3132,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         crate::session_tree::resolve_current_leaf(&entries).map(|leaf| {
                             let path = crate::session_tree::get_branch_path(&entries, &leaf);
                             path.iter()
-                                .filter_map(|e| e.get("id").and_then(|v| v.as_str().map(String::from)))
+                                .filter_map(|e| {
+                                    e.get("id").and_then(|v| v.as_str().map(String::from))
+                                })
                                 .collect()
                         });
                     let on_path: Vec<&serde_json::Value> = entries
@@ -3491,7 +3491,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 // 用闭包收 Result 再统一 output。
                 let resp = (|| -> Result<serde_json::Value, String> {
                     let turn_id = params.get("turnId").and_then(|v| v.as_u64());
-                    let name = params.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let name = params
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
                     let Some(turn_id) = turn_id else {
                         return Err("missing param: turnId (number)".into());
                     };
@@ -3507,10 +3510,12 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         .filter(|s| !s.is_empty())
                         .ok_or_else(|| format!("turn {} not found in session entries", turn_id))?;
                     let label = name.unwrap_or_else(|| {
-                        format!("branch-{}", crate::session_tree::named_branches(&entries).len() + 1)
+                        format!(
+                            "branch-{}",
+                            crate::session_tree::named_branches(&entries).len() + 1
+                        )
                     });
-                    let new_entries =
-                        crate::session_tree::make_branch(&from_id, Some(&label))?;
+                    let new_entries = crate::session_tree::make_branch(&from_id, Some(&label))?;
                     for ne in &new_entries {
                         crate::session_jsonl::append_raw_entry(&worker_cwd, ne);
                     }
@@ -3624,7 +3629,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             .iter()
                             .rev()
                             .find(|e| e.get("type").and_then(|v| v.as_str()) == Some("message"))
-                            .and_then(|e| e.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                            .and_then(|e| {
+                                e.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())
+                            })
                             .ok_or("no message entries: nothing to check out")?;
                         crate::session_tree::make_branch(&main_tip, None)?
                     } else {
@@ -3987,7 +3994,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             "success": true, "data": output,
                         }),
                     ),
-                    Err(e) => output_error_response(&id, "permission_store_decision", &format!("permission_store_decision: {e}")),
+                    Err(e) => output_error_response(
+                        &id,
+                        "permission_store_decision",
+                        &format!("permission_store_decision: {e}"),
+                    ),
                 }
             }
             "permission_list_stored" => {
@@ -4002,7 +4013,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             "success": true, "data": output,
                         }),
                     ),
-                    Err(e) => output_error_response(&id, "permission_list_stored", &format!("permission_list_stored: {e}")),
+                    Err(e) => output_error_response(
+                        &id,
+                        "permission_list_stored",
+                        &format!("permission_list_stored: {e}"),
+                    ),
                 }
             }
             "permission_remove_stored" => {
@@ -4017,7 +4032,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             "success": true, "data": output,
                         }),
                     ),
-                    Err(e) => output_error_response(&id, "permission_remove_stored", &format!("permission_remove_stored: {e}")),
+                    Err(e) => output_error_response(
+                        &id,
+                        "permission_remove_stored",
+                        &format!("permission_remove_stored: {e}"),
+                    ),
                 }
             }
             "permission_clear_stored" => {
@@ -4032,7 +4051,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             "success": true, "data": output,
                         }),
                     ),
-                    Err(e) => output_error_response(&id, "permission_clear_stored", &format!("permission_clear_stored: {e}")),
+                    Err(e) => output_error_response(
+                        &id,
+                        "permission_clear_stored",
+                        &format!("permission_clear_stored: {e}"),
+                    ),
                 }
             }
             "set_auto_retry" => {
@@ -4134,7 +4157,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             "method": rpc_method, "output": output,
                         }),
                     ),
-                    Err(e) => output_error_response(&id, "extension_rpc", &format!("extension_rpc {rpc_method}: {e}")),
+                    Err(e) => output_error_response(
+                        &id,
+                        "extension_rpc",
+                        &format!("extension_rpc {rpc_method}: {e}"),
+                    ),
                 }
             }
             "call_tool" => {
@@ -4161,7 +4188,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             "tool": tool_name, "output": result,
                         }),
                     ),
-                    Err(e) => output_error_response(&id, "call_tool", &format!("call_tool {tool_name}: {e}")),
+                    Err(e) => output_error_response(
+                        &id,
+                        "call_tool",
+                        &format!("call_tool {tool_name}: {e}"),
+                    ),
                 }
             }
             "drain_follow_ups" => {
@@ -4447,7 +4478,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             "turn_file_diff" => {
                 let turn_id = params.get("turnId").and_then(|v| v.as_str()).unwrap_or("");
                 let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
-                let base = params.get("base").and_then(|v| v.as_str()).unwrap_or("before");
+                let base = params
+                    .get("base")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("before");
                 if turn_id.is_empty() || path.is_empty() {
                     output_response(
                         &id,
@@ -4476,7 +4510,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                     let before = match base {
                         "prev" => {
                             // 上一轮末：目标轮首条时间戳之前、该文件的最后一个 after
-                            let target_ts = group.first().map(|f| f.timestamp.as_str()).unwrap_or("");
+                            let target_ts =
+                                group.first().map(|f| f.timestamp.as_str()).unwrap_or("");
                             file_snaps
                                 .iter()
                                 .filter(|s| s.timestamp.as_str() < target_ts)
@@ -4490,9 +4525,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                             let abs = if p.is_absolute() {
                                 p.to_path_buf()
                             } else {
-                                std::env::current_dir()
-                                    .unwrap_or_default()
-                                    .join(p)
+                                std::env::current_dir().unwrap_or_default().join(p)
                             };
                             std::fs::read_to_string(abs).ok()
                         }
@@ -4538,10 +4571,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 if let Some(ref store) = snapshot_store {
                     let all_snaps = store.load_all_tool_snapshots();
                     // store 按项目共享（聚合了所有 session），先过滤本 session
-                    let mine: Vec<&crate::file_snapshot::ToolSnapshot> = all_snaps
-                        .iter()
-                        .filter(|s| s.session_id == sid)
-                        .collect();
+                    let mine: Vec<&crate::file_snapshot::ToolSnapshot> =
+                        all_snaps.iter().filter(|s| s.session_id == sid).collect();
                     let turn_id = if turn_id_param.is_empty() {
                         mine.iter()
                             .max_by(|a, b| a.timestamp.cmp(&b.timestamp))
@@ -4985,7 +5016,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             "review_reject_all" => {
                 if let Some(ref mgr) = approval_mgr {
                     let results = mgr.reject_all();
-                    let ok_results: Vec<_> = results.iter().filter_map(|r| r.as_ref().ok()).collect();
+                    let ok_results: Vec<_> =
+                        results.iter().filter_map(|r| r.as_ref().ok()).collect();
                     let ok_count = ok_results.len();
                     let err_count = results.len() - ok_count;
 
@@ -5543,7 +5575,8 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
                 match wasm_ext_registry.add(&canonical_str) {
                     Ok(tool_defs) => {
-                        let extension_id = crate::wasm_extension::extension_id_from_path(&canonical_str);
+                        let extension_id =
+                            crate::wasm_extension::extension_id_from_path(&canonical_str);
                         for td in &tool_defs {
                             agent.register_tool(Box::new(WasmToolAdapter {
                                 name: td.name.clone(),
@@ -5794,8 +5827,14 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             }
             "append_entry" => {
                 // 统一追加入口 — 对齐 pi 的 appendCustomEntry/appendCustomMessage
-                let entry_type = params.get("type").and_then(|v| v.as_str()).unwrap_or("custom");
-                let inject_to_llm = params.get("injectToLlm").and_then(|v| v.as_bool()).unwrap_or(false);
+                let entry_type = params
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("custom");
+                let inject_to_llm = params
+                    .get("injectToLlm")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
                 // 根据 type 构建对应格式的 entry_data
                 let entry_data = match entry_type {
@@ -5824,13 +5863,19 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 // 如果 injectToLlm=true，同时推入 live messages（对齐 pi 的 custom_message 语义）
                 let mut injected = false;
                 if inject_to_llm && entry_type == "custom_message" {
-                    let ctype = params.get("customType").and_then(|v| v.as_str()).unwrap_or("");
+                    let ctype = params
+                        .get("customType")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     let content_text = params.get("content").and_then(|v| v.as_str()).unwrap_or("");
                     agent.push_message(Message::Custom(CustomMessage {
                         role: "custom".into(),
                         custom_type: ctype.into(),
                         content: CustomContent::Text(content_text.into()),
-                        display: params.get("display").and_then(|v| v.as_bool()).unwrap_or(true),
+                        display: params
+                            .get("display")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(true),
                         details: params.get("details").cloned(),
                         timestamp: now_ms(),
                     }));

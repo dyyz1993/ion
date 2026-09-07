@@ -150,7 +150,7 @@ impl Extension for AutoSessionTitle {
 
         let user_text = match first_user_msg {
             Some(t) => t,
-            None => return Ok(()),  // 没有 user message，等下一轮
+            None => return Ok(()), // 没有 user message，等下一轮
         };
 
         // 标记 done（防止重复触发）
@@ -188,9 +188,7 @@ impl Extension for AutoSessionTitle {
                     .ok()
                     .and_then(|s| serde_json::from_str(&s).ok())
                     .unwrap_or_default();
-            let session_key = session_id
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string());
+            let session_key = session_id.clone().unwrap_or_else(|| "unknown".to_string());
             titles.insert(session_key, title.clone());
             if let Ok(json) = serde_json::to_string_pretty(&titles) {
                 let _ = std::fs::write(&titles_path, json);

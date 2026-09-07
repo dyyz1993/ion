@@ -20,7 +20,6 @@ fn build_hello_extension() -> String {
     build_wasm_extension("extensions/hello-extension", "hello_extension.wasm")
 }
 
-
 fn build_wasm_extension(pkg_dir: &str, wasm_file: &str) -> String {
     use std::sync::Once;
 
@@ -72,13 +71,7 @@ fn build_wasm_extension(pkg_dir: &str, wasm_file: &str) -> String {
 fn do_build(manifest_dir: &std::path::Path, pkg_dir: &str) {
     let pkg_path = manifest_dir.join(pkg_dir);
     let output = std::process::Command::new("cargo")
-        .args([
-            "build",
-            "--target",
-            "wasm32-wasip1",
-            "--release",
-            "-q",
-        ])
+        .args(["build", "--target", "wasm32-wasip1", "--release", "-q"])
         .current_dir(&pkg_path)
         .output()
         .unwrap_or_else(|e| panic!("failed to build {pkg_dir}: {e}"));
@@ -116,8 +109,9 @@ fn hello_extension_loads_and_registers_tool() {
 #[test]
 fn todo_extension_loads_and_registers_tools() {
     let wasm_path = build_todo_extension();
-    let extension = ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
-        .expect("todo-extension should load");
+    let extension =
+        ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
+            .expect("todo-extension should load");
 
     let names: Vec<&str> = extension.tools.iter().map(|t| t.name.as_str()).collect();
     assert!(names.contains(&"todo_add"), "should register todo_add");
@@ -134,8 +128,9 @@ fn todo_extension_loads_and_registers_tools() {
 #[test]
 fn todo_extension_create_and_list() {
     let wasm_path = build_todo_extension();
-    let mut extension = ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
-        .expect("todo-extension should load");
+    let mut extension =
+        ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
+            .expect("todo-extension should load");
 
     // Create a task
     let result = extension
@@ -156,8 +151,9 @@ fn todo_extension_create_and_list() {
 #[test]
 fn todo_extension_update_status() {
     let wasm_path = build_todo_extension();
-    let mut extension = ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
-        .expect("todo-extension should load");
+    let mut extension =
+        ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
+            .expect("todo-extension should load");
 
     // Create a task
     let result = extension
@@ -175,8 +171,9 @@ fn todo_extension_update_status() {
 #[test]
 fn todo_extension_nonexistent_item() {
     let wasm_path = build_todo_extension();
-    let mut extension = ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
-        .expect("todo-extension should load");
+    let mut extension =
+        ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
+            .expect("todo-extension should load");
 
     // Try to done a non-existent item (extension returns status "done" even for nonexistent)
     let result = extension
@@ -192,8 +189,9 @@ fn todo_extension_nonexistent_item() {
 #[test]
 fn todo_extension_edge_empty_array() {
     let wasm_path = build_todo_extension();
-    let mut extension = ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
-        .expect("todo-extension should load");
+    let mut extension =
+        ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
+            .expect("todo-extension should load");
 
     // Clean with no tasks should be ok
     let result = extension
@@ -208,8 +206,9 @@ fn todo_extension_edge_empty_array() {
 #[test]
 fn todo_extension_edge_large_list() {
     let wasm_path = build_todo_extension();
-    let mut extension = ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
-        .expect("todo-extension should load");
+    let mut extension =
+        ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
+            .expect("todo-extension should load");
 
     // Add a task
     extension
@@ -230,8 +229,9 @@ fn todo_extension_edge_large_list() {
 #[test]
 fn todo_extension_edge_special_chars() {
     let wasm_path = build_todo_extension();
-    let mut extension = ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
-        .expect("todo-extension should load");
+    let mut extension =
+        ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
+            .expect("todo-extension should load");
 
     let result = extension
         .execute_tool("todo_add", r#"{"text":"hello <world> & 'rust'"}"#)
@@ -245,8 +245,9 @@ fn todo_extension_edge_special_chars() {
 #[test]
 fn todo_extension_edge_invalid_status() {
     let wasm_path = build_todo_extension();
-    let mut extension = ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
-        .expect("todo-extension should load");
+    let mut extension =
+        ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
+            .expect("todo-extension should load");
 
     // Schema validation should reject invalid status
     // (extension_execute_tool returns what the extension returns)
@@ -259,8 +260,9 @@ fn todo_extension_edge_invalid_status() {
 #[test]
 fn todo_extension_edge_update_empty_list() {
     let wasm_path = build_todo_extension();
-    let mut extension = ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
-        .expect("todo-extension should load");
+    let mut extension =
+        ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
+            .expect("todo-extension should load");
 
     // Clean on empty should be fine
     let result = extension
@@ -470,7 +472,11 @@ fn extension_registry_add_list_remove() {
 
     // P2: list → should include the loaded extension
     let extensions = registry.list();
-    assert_eq!(extensions.len(), 1, "list should contain the loaded extension");
+    assert_eq!(
+        extensions.len(),
+        1,
+        "list should contain the loaded extension"
+    );
     let p = &extensions[0];
     assert!(
         p.path.ends_with("todo_extension.wasm"),
@@ -493,7 +499,11 @@ fn extension_registry_add_list_remove() {
     let tool_defs2 = registry
         .add(&wasm_path)
         .expect("re‑add after remove should work");
-    assert_eq!(tool_defs2.len(), 5, "re‑added extension should register tools");
+    assert_eq!(
+        tool_defs2.len(),
+        5,
+        "re‑added extension should register tools"
+    );
     assert_eq!(
         registry.list().len(),
         1,
@@ -546,7 +556,11 @@ fn extension_registry_add_same_path_twice_is_reload() {
 
     // list should still have exactly 1 entry
     let extensions = registry.list();
-    assert_eq!(extensions.len(), 1, "second add should replace, not duplicate");
+    assert_eq!(
+        extensions.len(),
+        1,
+        "second add should replace, not duplicate"
+    );
 }
 
 #[test]
@@ -555,7 +569,6 @@ fn extension_registry_remove_nonexistent_returns_error() {
     let result = registry.remove("/nonexistent/path.wasm");
     assert!(result.is_err(), "remove of nonexistent path should fail");
 }
-
 
 // ---------------------------------------------------------------------------
 // Extension data dimensions — paths, context injection, extension_id derivation
@@ -631,8 +644,9 @@ fn extension_data_dimension_paths_are_correct() {
 #[test]
 fn extension_context_injected_into_store() {
     let wasm_path = build_todo_extension();
-    let mut extension = ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
-        .expect("todo-extension should load");
+    let mut extension =
+        ion::wasm_extension::WasmExtensionInstance::load(std::path::Path::new(&wasm_path))
+            .expect("todo-extension should load");
 
     let ctx = ion::wasm_extension::Context {
         session_id: "sess-test".into(),
@@ -722,6 +736,9 @@ fn extension_make_exec_context_merges_registry_ctx_with_extension_id() {
 
     let exec_ctx = ion::wasm_extension::make_exec_context(&reg_ctx, "my-ext");
     assert_eq!(exec_ctx.session_id, "sess-1");
-    assert_eq!(exec_ctx.extension_id, "my-ext", "extension_id should be overridden");
+    assert_eq!(
+        exec_ctx.extension_id, "my-ext",
+        "extension_id should be overridden"
+    );
     assert_eq!(exec_ctx.cwd, "/proj");
 }
