@@ -19,6 +19,9 @@ fn sample_goal(iteration_count: u32, status: GoalStatus) -> GoalState {
         iteration_count,
         started_at: "epoch:1788810000".into(),
         total_cost_usd: 0.25,
+        last_seen_tokens: Some((100, 200)),
+        budget_valid: true,
+        cost_basis: Some("faux in=1.0/1M out=2.0/1M".into()),
         last_action_plan: Some("fix aggregator".into()),
         recent_tools: vec![("edit".into(), "scripts/aggregate_ci_results.sh".into())],
         goal_plan: GoalPlan::default(),
@@ -59,10 +62,10 @@ fn goal_state_roundtrips_and_restores_last() {
     );
     assert_eq!(restored.total_cost_usd, g1.total_cost_usd, "R1 cost");
     assert_eq!(restored.recent_tools.len(), 1, "R1 recent_tools");
-    assert_eq!(
-        restored.iteration_count, 7,
-        "R2 must restore the LAST snapshot"
-    );
+    assert_eq!(restored.iteration_count, 7, "R2 must restore the LAST snapshot");
+    assert_eq!(restored.last_seen_tokens, Some((100, 200)), "R2 T04 last_seen_tokens");
+    assert!(restored.budget_valid, "R2 T04 budget_valid");
+    assert!(restored.cost_basis.is_some(), "R2 T04 cost_basis");
     assert!(
         matches!(restored.status, GoalStatus::Exhausted),
         "R2 status from last snapshot"
