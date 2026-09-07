@@ -326,12 +326,12 @@ RPC 场景可从既有 `tests/host_read_ci.sh`、`tests/branch_tree_ci.sh`、`te
 - **固定开始 / 截止**：2026-09-08 03:48:30 CST ／ **2026-09-09 03:48:30 CST（UTC+8 = 2026-09-08T19:48:30Z）——不可重置**
 - **监督任务**：ZCode cron `automation-cf70ffcf-934d-46c5-8d83-51186290dd6f`（`*/10 * * * *`，enabled，停止 = CronDelete 该 ID）；唤醒留痕于 `~/.ion/tmp/ion24/run-002/supervisor-heartbeats.log`；不操作 Codex 侧 ion-24
 - **锁与判活**：`~/.ion/tmp/ion24/lock/`（owner + heartbeat）；判活 = cmd_pid 存活 或 心跳 <30min（长命令按登记的 expected_done 判）
-- **状态（常更）**：RUNNING — T03/T03b/T03c/T06 已完成，领取 T07｜最后更新 2026-09-08 04:19 CST（UTC 20:19Z）
-- **本轮已完成**：① 现场核验 + T01/T02 复跑绿 ② **T03**（`42df79d`）：workflows 吞错清零 + 真 preflight/stamp/诚实 shim + 旧 runner 隔离（rpc 私有 socket），`ci_trust_gates_ci.sh` 21/21+1SKIP×2 ③ **T06**（`6ea28fd`）：索引损坏隔离保全不覆盖 + save/锁降级显式记录 + `get_index_health` RPC；故障注入 5 场景 + CLI 5/5 + lib 991/0 ④ **T03b**（`27ff9d8`）：19 个存量 clippy lint 清零 ⑤ **T03c**（`bed97f0`）：全仓 fmt（332 块漂移清偿）。全部验证证据在 `run-002/`（t03-trust-gates.log、t06-cli.log 等）
-- **当前任务（常更）**：领取 T07（文档按当前可执行入口校准）
-- **下一步动作（常更）**：README 删 ion-worker 构建入口 → 核对 SELF_EVOLUTION §8 的 archive 脚本路径 → STATUS.md 基线日期/SHA 标注。验收：文档中不再有失效入口，旧报告与当前基线区分
+- **状态（常更）**：RUNNING — T03/T03b/T03c/T06/T07 已完成（8f8fbff/7746a0e），T05 实施中｜最后更新 2026-09-08 04:30 CST（UTC 20:30Z）
+- **本轮已完成**：① 现场核验+T01/T02 复跑绿 ② **T03**（42df79d）workflows+诚实 shim+旧 runner 隔离，21/21×2 ③ **T06**（6ea28fd）索引隔离保全+get_index_health，5 场景+CLI 5/5+lib 991/0 ④ **T03b**（27ff9d8）clippy 19→0 ⑤ **T03c**（bed97f0）fmt 332 块→0 ⑥ **T07**（8f8fbff+7746a0e）README/DEPLOY_ARCH 删 ion-worker 入口、§8 归档标注、STATUS 基线换新（e9cb669：1169 提交/106,200 行/991 测试）。证据在 `run-002/`
+- **当前任务（常更）**：**T05 Goal 中断恢复**——运行时缺口确认：`SharedGoalState` 在 worker_rpc.rs:344 初始化为 None，worker 重启即丢目标；goal-runs sidecar 属 evolver 脚本层（goal_evolver.rs 只读），非运行时状态
+- **下一步动作（常更）**：T05 实施四步：(1) GoalSetTool/Refine 与每次 gate 迭代后 `session_jsonl::append_custom_entry` 落 `custom(goal_state)`（data=GoalState 全量，含 deadline/iterations/status）；(2) worker 启动时回放会话 JSONL 最后一条 goal_state 恢复 SharedGoalState（读法：FileIndex 或倒序扫描）；(3) SessionMeta 加 `goal_status: Option<String>`+`goal_deadline: Option<i64>`（四步 checklist：serde default→构造点→set 时顺便 upsert→existing 带回）；(4) 验证：单测（fixture JSONL→restore 断言）+ CLI 脚本（goal_set→kill worker→重连→goal_get 一致）+ lib 回归。⚠️ goal_evolver.rs 的 goal-runs 读取是脚本层设计，本卡不动它（另立卡评估 evolver 落位）
 - **长命令登记（常更）**：（无进行中长命令）
-- **未提交改动**：无（docs 更新随本条提交）
-- **尝试次数/阻塞**：T03/T06 均一次通过（0/2 配额）；无阻塞。**监督任务实测**：派发正常（runCount≥2、nextRun 可见）但被唤醒者未写心跳日志行——恢复兜底的行为遵循度存疑，主循环为主力（详见 run-002/supervisor-heartbeats.log）
-- **本轮测试记录（常更）**：ci_trust_gates 21/21×2、session_index_fault 5 场景、session_index_health CLI 5/5×2、lib 991/0×3、clippy 0 错、fmt 0 漂移（03:47–04:19 CST）
+- **未提交改动**：无
+- **尝试次数/阻塞**：T03/T06/T07 均 0/2 配额一次通过；T05 第 1 次尝试（侦察已完成）。监督任务派发正常（runCount≥2）但被唤醒者未写心跳行——已知限制
+- **本轮测试记录（常更）**：ci_trust_gates 21/21×2、session_index_fault 5 场景、CLI 5/5×2、lib 991/0×3、clippy 0、fmt 0（03:47–04:30 CST）
 - **模型用量/费用**：unknown（会话内无法查询自身用量；未调用任何外部付费 LLM API；ION 侧全用脚本/FauxProvider）
