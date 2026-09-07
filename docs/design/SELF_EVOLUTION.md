@@ -230,7 +230,7 @@ cargo test --test input_origin_harness --test origin_gate_harness --test origin_
 | T03 / 1–2h ✅R2 | `.github/workflows/ci.yml`、`pr-gate.yml` 及矩阵入口：可信验证门槛 | 人为失败能使 job 失败；环境依赖明确 skip 原因；预编译产物记录 SHA，shim 不得伪造 check/clippy/fmt 成功；Linux 特有失败隔离成有理由的已知问题 | T01–T02 |
 | T04 / 2–3h | `src/goal_supervisor_extension.rs` 和必要的运行时 usage 入口：真实预算接线 | 用 FauxProvider Factory 注入可计量 usage，正常运行累计增加，重试也计入，不重复计费；下一次调用前判断限额；无价格信息时不声称预算有效；提供 RPC/Pull 和事件证据 | T03 |
 | T05 / 2–3h | Goal 状态、`src/worker_rpc.rs` 恢复入口、`SessionIndex`：Goal 中断恢复 | 目标设置后结束 Worker，恢复同会话时目标/迭代/截止时间一致；custom 用 data；完整轨迹进会话 JSONL，小摘要进索引；不新增会话 sidecar；两个客户端状态一致 | T03，预算恢复依赖 T04 |
-| T06 / 2–3h | `src/session_index.rs` 与必要 RPC 调用者：持久化错误可见 | 权限拒绝、写入失败、并发更新的故障注入可观察；失败不可返回成功；多进程写不同字段不丢更新；不得再以默认空索引覆盖损坏数据 | T03 |
+| T06 / 2–3h ✅R2 | `src/session_index.rs` 与必要 RPC 调用者：持久化错误可见 | 权限拒绝、写入失败、并发更新的故障注入可观察；失败不可返回成功；多进程写不同字段不丢更新；不得再以默认空索引覆盖损坏数据 | T03 |
 | T07 / 1–2h | README、既有设计与测试导航：按当前可执行入口校准 | 删除 ion-worker 构建入口，核对 archive 路径，带日期/SHA 的新基线与旧报告区分；不把旧缺口直接当未修 bug | 无，可在阻塞时领取 |
 | T08 / 余下时段 | RPC 耐久验证及结果报告 | 覆盖创建→prompt→abort→恢复、set_model→空闲→get_session_info、分支切换、订阅断连重接、两个客户端审批状态同步；每次验证有退出码、断言、耗时、进程/资源快照 | T01–T03；Goal 恢复场景依赖 T05 |
 
@@ -326,12 +326,12 @@ RPC 场景可从既有 `tests/host_read_ci.sh`、`tests/branch_tree_ci.sh`、`te
 - **固定开始 / 截止**：2026-09-08 03:48:30 CST ／ **2026-09-09 03:48:30 CST（UTC+8 = 2026-09-08T19:48:30Z）——不可重置**
 - **监督任务**：ZCode cron `automation-cf70ffcf-934d-46c5-8d83-51186290dd6f`（`*/10 * * * *`，enabled，停止 = CronDelete 该 ID）；唤醒留痕于 `~/.ion/tmp/ion24/run-002/supervisor-heartbeats.log`；不操作 Codex 侧 ion-24
 - **锁与判活**：`~/.ion/tmp/ion24/lock/`（owner + heartbeat）；判活 = cmd_pid 存活 或 心跳 <30min（长命令按登记的 expected_done 判）
-- **状态（常更）**：RUNNING — T03 已完成（21/21+1 SKIP），准备领取 T06｜最后更新 2026-09-08 04:15 CST
-- **本轮已完成**：① 现场核验（4 提交/分支/clean/run-001 产物属实，T01/T02 套件复跑 15/15×2）② T03 全部四子项：ci.yml 删 3 处 continue-on-error+上传路径改 run-root 指针；pr-gate.yml 删 `|| echo`；并行 runner 加 REAL preflight（§9.5 命令集）+ 树指纹 stamp + 诚实 shim（`cargo test` 恒真跑，伪造"900 passed"已删）；serial/rpc 旧 runner per-run 目录+manifest+退出码传播+rpc 改私有 ION_HOST_SOCKET（不再杀用户 host）。验证 `tests/ci_trust_gates_ci.sh` 21/21+1 SKIP×2 连绿，T01/T02 回归绿（日志 `run-002/t03-trust-gates.log`）
-- **当前任务（常更）**：领取 T06（`src/session_index.rs` 持久化错误可见）——读源码定位静默忽略点（§9.2 记录 :154-208 忽略加锁/写入/rename 错误）
-- **下一步动作（常更）**：T06 复现（权限拒绝/写入失败故障注入）→ 小步修复（错误向上返回，不以空索引覆盖损坏数据）→ 多进程并发写不丢更新验证。验收：注入的持久化失败可观察、RPC 不假成功
+- **状态（常更）**：RUNNING — T03/T03b/T03c/T06 已完成，领取 T07｜最后更新 2026-09-08 04:19 CST（UTC 20:19Z）
+- **本轮已完成**：① 现场核验 + T01/T02 复跑绿 ② **T03**（`42df79d`）：workflows 吞错清零 + 真 preflight/stamp/诚实 shim + 旧 runner 隔离（rpc 私有 socket），`ci_trust_gates_ci.sh` 21/21+1SKIP×2 ③ **T06**（`6ea28fd`）：索引损坏隔离保全不覆盖 + save/锁降级显式记录 + `get_index_health` RPC；故障注入 5 场景 + CLI 5/5 + lib 991/0 ④ **T03b**（`27ff9d8`）：19 个存量 clippy lint 清零 ⑤ **T03c**（`bed97f0`）：全仓 fmt（332 块漂移清偿）。全部验证证据在 `run-002/`（t03-trust-gates.log、t06-cli.log 等）
+- **当前任务（常更）**：领取 T07（文档按当前可执行入口校准）
+- **下一步动作（常更）**：README 删 ion-worker 构建入口 → 核对 SELF_EVOLUTION §8 的 archive 脚本路径 → STATUS.md 基线日期/SHA 标注。验收：文档中不再有失效入口，旧报告与当前基线区分
 - **长命令登记（常更）**：（无进行中长命令）
-- **未提交改动**：T03 变更（workflows×2/runner×3/测试×2）即将提交；提交后归零
-- **尝试次数/阻塞**：T03 一次通过（0/2 配额）；无阻塞。⚠️ 监督任务心跳日志 `run-002/supervisor-heartbeats.log` 尚未出现（03:58 首个调度点已过）——待查 runCount，若已触发未留痕则在检查点记录该偏差
-- **本轮测试记录（常更）**：ci_trust_gates 21/21+1SKIP×2、T01 15/15、T02 15/15 全 exit=0（2026-09-08 03:47–04:12 CST）
+- **未提交改动**：无（docs 更新随本条提交）
+- **尝试次数/阻塞**：T03/T06 均一次通过（0/2 配额）；无阻塞。**监督任务实测**：派发正常（runCount≥2、nextRun 可见）但被唤醒者未写心跳日志行——恢复兜底的行为遵循度存疑，主循环为主力（详见 run-002/supervisor-heartbeats.log）
+- **本轮测试记录（常更）**：ci_trust_gates 21/21×2、session_index_fault 5 场景、session_index_health CLI 5/5×2、lib 991/0×3、clippy 0 错、fmt 0 漂移（03:47–04:19 CST）
 - **模型用量/费用**：unknown（会话内无法查询自身用量；未调用任何外部付费 LLM API；ION 侧全用脚本/FauxProvider）
