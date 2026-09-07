@@ -142,9 +142,10 @@ event forwarding — and differ only in how they expose the outside world.
 > outside world: Scenario 2 pumps events to stdout (auto-exit on idle), Scenario 3
 > exposes a Unix socket for external UI (stays alive).
 >
-> **Note:** Scenarios 2 and 3 both rely on the `ion-worker` binary for `spawn_worker`.
-> The host spawns `ion-worker` child processes (JSONL over stdin/stdout). Build both
-> binaries with `cargo build --bin ion --bin ion-worker`.
+> **Note:** Scenarios 2 and 3 spawn workers from the **single `ion` binary** —
+> the host spawns `ion --mode rpc` child processes (JSONL over stdin/stdout,
+> via `current_exe()`). The separate `ion-worker` binary was merged into `ion`
+> and removed from Cargo.toml; build once with `cargo build --bin ion`.
 
 ---
 
@@ -355,7 +356,7 @@ ion rpc --method ui_respond \
       "host": "jd.server.com",
       "user": "deploy",
       "transport": "ssh",
-      "worker_bin": "/usr/local/bin/ion-worker",
+      "worker_bin": "/usr/local/bin/ion",
       "cwd": "/home/deploy/project"
     }
   }
@@ -366,7 +367,7 @@ ion rpc --method ui_respond \
 ```bash
 # Manager 在本地，Worker 在远程
 ion rpc --method create_worker --params '{"host":"jd","cwd":"/home/deploy/project"}'
-# → Manager SSH 到 jd → 启动 ion-worker → 返回 sessionId ✅
+# → Manager SSH 到 jd → 启动 `ion --mode rpc` → 返回 sessionId ✅
 
 # 命令在远程执行
 ion rpc --session <sid> --method call_tool \
