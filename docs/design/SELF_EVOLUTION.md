@@ -221,12 +221,12 @@ cargo test --test input_origin_harness --test origin_gate_harness --test origin_
 
 ### 9.5 可领取任务卡
 
-以下是待实施任务，不代表本轮已完成。时长为单人工作槽位估算，超时就交接，不保证第一天全部修完。
+以下是待实施任务，不代表本轮已完成。时长为单人工作槽位估算，超时就交接，不保证第一天全部修完。**T01/T02 已在第 1 轮完成（见 §9.9）。**
 
 | ID / 槽位 | 文件范围与具体交付 | 验收条件 | 依赖 |
 |---|---|---|---|
-| T01 / 1–2h | `scripts/aggregate_ci_results.sh`：失败向上返回；显式输入清单与结果去重规则 | 注入 PASS 返回 0；FAIL、缺失、畸形记录返回非 0；同名多次运行保留 attempt 信息；不能由后一次通过抹掉历史失败 | 无 |
-| T02 / 1–2h | `scripts/run_ci_matrix_parallel.sh`：删除重复调度，分离并行与串行；隔离运行目录和监控配置 | 用无 LLM 的假脚本记录启动次数/并发度：每项恰好一次、串行组最大并发 1；源 `.ion/monitors` 原样保留；不同 run 不共享输出 | T01 |
+| T01 / 1–2h ✅R1 | `scripts/aggregate_ci_results.sh`：失败向上返回；显式输入清单与结果去重规则 | 注入 PASS 返回 0；FAIL、缺失、畸形记录返回非 0；同名多次运行保留 attempt 信息；不能由后一次通过抹掉历史失败 | 无 |
+| T02 / 1–2h ✅R1 | `scripts/run_ci_matrix_parallel.sh`：删除重复调度，分离并行与串行；隔离运行目录和监控配置 | 用无 LLM 的假脚本记录启动次数/并发度：每项恰好一次、串行组最大并发 1；源 `.ion/monitors` 原样保留；不同 run 不共享输出 | T01 |
 | T03 / 1–2h | `.github/workflows/ci.yml`、`pr-gate.yml` 及矩阵入口：可信验证门槛 | 人为失败能使 job 失败；环境依赖明确 skip 原因；预编译产物记录 SHA，shim 不得伪造 check/clippy/fmt 成功；Linux 特有失败隔离成有理由的已知问题 | T01–T02 |
 | T04 / 2–3h | `src/goal_supervisor_extension.rs` 和必要的运行时 usage 入口：真实预算接线 | 用 FauxProvider Factory 注入可计量 usage，正常运行累计增加，重试也计入，不重复计费；下一次调用前判断限额；无价格信息时不声称预算有效；提供 RPC/Pull 和事件证据 | T03 |
 | T05 / 2–3h | Goal 状态、`src/worker_rpc.rs` 恢复入口、`SessionIndex`：Goal 中断恢复 | 目标设置后结束 Worker，恢复同会话时目标/迭代/截止时间一致；custom 用 data；完整轨迹进会话 JSONL，小摘要进索引；不新增会话 sidecar；两个客户端状态一致 | T03，预算恢复依赖 T04 |
@@ -280,3 +280,39 @@ RPC 场景可从既有 `tests/host_read_ci.sh`、`tests/branch_tree_ci.sh`、`te
 用户可先切换此任务的执行模型再启用；若希望每轮都由明确指定的模型独立运行，应改为绑定 ION 项目的独立定时任务，并暂停本草案以免重复。当前未创建额外执行任务，也未启动 ION 的真实模型循环。
 
 到期暂停目前是自动化提示词中的执行约定，尚未实现操作系统级硬截止。因此 T01–T03 的执行基础应包含进程超时与截止时间校验，通过后再宣称具备无人值守保护。只有发生新失败、完成、需用户处理或到期汇总时通知，无变化保持安静。
+
+> **第 1 轮实测勘误（2026-09-08）**：当前 workspace 的自动化列表为空——`ion-24` 不在这里（可能建在另一 workspace 或已被删）。启用前必须先确认其归属；这条差异本身也说明「自动化提示词约定」不等于系统级保证。
+
+### 9.9 第 1 轮执行记录（2026-09-08，T01+T02）
+
+执行者：直接会话（非定时唤醒）。按 §9.7 交接字段记录：
+
+| 字段 | 内容 |
+|---|---|
+| run / attempt | run-001；T01、T02 各 1 次修复通过（未用满两次配额） |
+| 任务 ID | T01、T02 |
+| 开始 / 结束 | 2026-09-07T18:37:33Z – 18:47Z（本地 2026-09-08 02:37–02:47） |
+| 基线 SHA | `c0f2901`（工作区原有 round-0 文档改动，已作为 `e217f8d` 原样提交） |
+| 候选 SHA | `219f7fd`（分支 `codex/ion24-t01-t02`，master 未动，未推送） |
+| 文件列表 | `scripts/aggregate_ci_results.sh`（重写）、`scripts/run_ci_matrix_parallel.sh`（11 处定点修改）、`tests/aggregate_ci_fault_ci.sh`（新增）、`tests/ci_matrix_schedule_ci.sh`（新增）、本记录 |
+| 测试命令 | `bash tests/aggregate_ci_fault_ci.sh`；`bash tests/ci_matrix_schedule_ci.sh`；`bash -n` ×4 |
+| 退出码 | 全部 0（T01 套件 15/15 ×2 次；T02 套件 15/15 ×3 次） |
+| 有效断言数 | 30（15+15，故障注入 + 假项目调度注入） |
+| 耗时 | T01 套件 ~2s/次；T02 套件 ~12s/次（内含 3 轮假矩阵运行） |
+| 日志位置 | `~/.ion/tmp/ion24/run-001/`（t01-repro/、t01-fault-injection.log、t02-schedule.log） |
+| 资源快照 | 未启动 host/worker，零 cargo 编译，无进程残留；沙箱随 trap 自清 |
+| 成本 | 0（未调用任何付费模型；全部分析修复在当前会话完成） |
+| 失败分类 | 目标系统修复 0 次失败；测试脚本自伤 2 次（bash 3.2 多字节粘名、结果文件名笔误），当场修复 |
+| 下一步 | T03（workflows + cargo shim 可信化）→ T04/T05/T06 择一；全量矩阵实跑放在 T03 之后用新 runner |
+
+**T01 修复语义**：汇总器退出码 0=全 PASS/SKIP、1=任一 FAIL attempt、2=manifest 缺失/多出、3=畸形记录、4=无输入；attempts 全保留（报告含 FAIL→PASS 重试历史表），`all.jsonl` 不重复计数；无 manifest 时跳过缺失检查（兼容 `run_ci_matrix.sh` / `run_ci_matrix_rpc.sh` 旧调用方，默认路径 `/tmp/ci-results` 不变）。
+
+**T02 修复语义**：删除 Phase 1 对全量 `FILTERED` 的第二次 xargs（并行脚本不再跑两遍、串行脚本不再跑三遍）；每运行独立 `RUN_ROOT=/tmp/ci-matrix-<ts>-<pid>`（bin/results/out/home/work）；源 `.ion/monitors` 不再 `rm -rf`（改为不触碰 + 提示）；输出 `manifest.txt` 供汇总器校验；runner 退出码 = 汇总器退出码（假成功链路切断）；worker id 由 `md5sum` 改为脚本 basename（去 GNU 依赖）；修复 `bn` 变量在 `.ion` 符号链接循环中被遮蔽的隐患。
+
+**附带发现（下轮须知）**：
+
+1. `ion-24` 不在当前 workspace（见 §9.8 勘误）——两处 cron 归属问题在启用前必须人工确认。
+2. **bash 3.2.57 陷阱**：双引号内 `$var` 紧邻多字节字符（如全角括号）会把字节 ≥0x80 粘进变量名 → `unbound variable`。新测试脚本已全 ASCII；后续写 bash 时 `$var` 邻接非 ASCII 必须写成 `${var}`。
+3. 串行 runner（`run_ci_matrix.sh` / `run_ci_matrix_rpc.sh`）现也继承汇总器的非零退出（行为升级，本轮未端到端实跑）；二者仍共享 `/tmp/ci-results` 且 rpc 版开头 `rm -rf` 它——同款隔离缺陷未修，建议并入 T03 或另开卡。
+4. cargo shim 伪造 build/check/clippy/fmt/test 成功**未动**（T03 范围）；在 T03 完成前，矩阵报告中的 cargo 类 PASS 不可作为编译/测试证据。
+5. 本机 `timeout`/`md5sum` 来自 `/usr/local/bin`（coreutils）；runner 已无 md5sum 依赖，`timeout` 仍必需。

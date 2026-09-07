@@ -792,6 +792,8 @@ ion --mode rpc           → 内部 Worker 子进程 (JSONL over stdin/stdout)
 
 > **2026-09-08 规划交接（待执行）**：项目抽样审查、已复现的 CI 假成功问题、T01–T08 队列及 24 小时执行方案已合并到 [SELF_EVOLUTION.md §9](./docs/design/SELF_EVOLUTION.md#9-2026-09-08-项目审查与-24-小时执行计划)。本轮只完成分析与计划，未实施功能修复；定时任务 `ion-24` 已创建并暂停，待选执行模型。新增测试数量为 0；已有输入来源 Harness 抽查 3/3 通过，不代表全量验收。
 
+> **2026-09-08 第 1 轮执行（T01/T02 完成）**：CI 汇总器假成功与矩阵重复调度/隔离缺陷已修——退出码 0/1/2/3/4 语义 + manifest 校验 + attempts 保留（后次 PASS 不抹前次 FAIL）；去重调度 + 每运行独立目录 + 源 `.ion/monitors` 不再删除 + 失败向上传播。故障注入 30/30 全绿（`tests/aggregate_ci_fault_ci.sh` 15 + `tests/ci_matrix_schedule_ci.sh` 15），分支 `codex/ion24-t01-t02`（master 未动，未推送）。⚠️ 自动化 `ion-24` 实测不在当前 workspace（自动化列表为空），启用前先确认归属。详见 [SELF_EVOLUTION.md §9.9](./docs/design/SELF_EVOLUTION.md)。
+
 > **完整状态快照**（功能清单 + 测试统计 + 路线图 + A→B 教程）已外移到 [docs/STATUS.md](./docs/STATUS.md)。
 >
 > 快速概览（2026-08-08 实测）：

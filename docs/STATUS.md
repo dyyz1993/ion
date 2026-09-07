@@ -131,6 +131,7 @@
 | host_read_ci | **20** | Host 级会话直读 + 协议四补全（E 组 5 新增：--session 路由/from=head/list_inputs/get_turn_detail/零拉起） |
 | ion-console UI | **38** | Playwright：侧栏/视图/折叠/面板/审批/记录行/viewer/FAB/复制/预启动（`npm run test:ui`） |
 | CI 脚本 | 30+ 个 `tests/*_ci.sh` | CLI 外部验证（MCP/hooks/extensions/snapshot/goal/memory 等） |
+| CI 基础设施注入（2026-09-08） | 30 断言（15+15） | 汇总器退出码/manifest/attempts 语义 + 矩阵恰好一次/串行并发 1/monitors 不动/失败传播（`aggregate_ci_fault_ci` + `ci_matrix_schedule_ci`，无需 LLM/cargo） |
 
 ---
 
