@@ -794,6 +794,8 @@ ion --mode rpc           → 内部 Worker 子进程 (JSONL over stdin/stdout)
 
 > **2026-09-08 第 1 轮执行（T01/T02 完成）**：CI 汇总器假成功与矩阵重复调度/隔离缺陷已修——退出码 0/1/2/3/4 语义 + manifest 校验 + attempts 保留（后次 PASS 不抹前次 FAIL）；去重调度 + 每运行独立目录 + 源 `.ion/monitors` 不再删除 + 失败向上传播。故障注入 30/30 全绿（`tests/aggregate_ci_fault_ci.sh` 15 + `tests/ci_matrix_schedule_ci.sh` 15），分支 `codex/ion24-t01-t02`（master 未动，未推送）。⚠️ 自动化 `ion-24` 实测不在当前 workspace（自动化列表为空），启用前先确认归属。详见 [SELF_EVOLUTION.md §9.9](./docs/design/SELF_EVOLUTION.md)。
 
+> **2026-09-08 连续执行 run-002（T03 完成，进行中）**：24 小时连续执行窗口已开启（截止 2026-09-09 03:48 CST，检查点在 [SELF_EVOLUTION.md §9.10](./docs/design/SELF_EVOLUTION.md)）。T03 已完成（commit `42df79d`）：workflows 不再吞错（continue-on-error/`|| echo` 清零）、并行 runner 真 cargo preflight + 树指纹 stamp + 诚实 shim（伪造 "900 passed" 删除）、serial/rpc 旧 runner per-run 隔离 + rpc 改私有 socket 不再杀用户 host。`tests/ci_trust_gates_ci.sh` 21/21+1 SKIP×2。下一卡 T06。
+
 > **完整状态快照**（功能清单 + 测试统计 + 路线图 + A→B 教程）已外移到 [docs/STATUS.md](./docs/STATUS.md)。
 >
 > 快速概览（2026-08-08 实测）：

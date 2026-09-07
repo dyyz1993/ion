@@ -227,7 +227,7 @@ cargo test --test input_origin_harness --test origin_gate_harness --test origin_
 |---|---|---|---|
 | T01 / 1–2h ✅R1 | `scripts/aggregate_ci_results.sh`：失败向上返回；显式输入清单与结果去重规则 | 注入 PASS 返回 0；FAIL、缺失、畸形记录返回非 0；同名多次运行保留 attempt 信息；不能由后一次通过抹掉历史失败 | 无 |
 | T02 / 1–2h ✅R1 | `scripts/run_ci_matrix_parallel.sh`：删除重复调度，分离并行与串行；隔离运行目录和监控配置 | 用无 LLM 的假脚本记录启动次数/并发度：每项恰好一次、串行组最大并发 1；源 `.ion/monitors` 原样保留；不同 run 不共享输出 | T01 |
-| T03 / 1–2h | `.github/workflows/ci.yml`、`pr-gate.yml` 及矩阵入口：可信验证门槛 | 人为失败能使 job 失败；环境依赖明确 skip 原因；预编译产物记录 SHA，shim 不得伪造 check/clippy/fmt 成功；Linux 特有失败隔离成有理由的已知问题 | T01–T02 |
+| T03 / 1–2h ✅R2 | `.github/workflows/ci.yml`、`pr-gate.yml` 及矩阵入口：可信验证门槛 | 人为失败能使 job 失败；环境依赖明确 skip 原因；预编译产物记录 SHA，shim 不得伪造 check/clippy/fmt 成功；Linux 特有失败隔离成有理由的已知问题 | T01–T02 |
 | T04 / 2–3h | `src/goal_supervisor_extension.rs` 和必要的运行时 usage 入口：真实预算接线 | 用 FauxProvider Factory 注入可计量 usage，正常运行累计增加，重试也计入，不重复计费；下一次调用前判断限额；无价格信息时不声称预算有效；提供 RPC/Pull 和事件证据 | T03 |
 | T05 / 2–3h | Goal 状态、`src/worker_rpc.rs` 恢复入口、`SessionIndex`：Goal 中断恢复 | 目标设置后结束 Worker，恢复同会话时目标/迭代/截止时间一致；custom 用 data；完整轨迹进会话 JSONL，小摘要进索引；不新增会话 sidecar；两个客户端状态一致 | T03，预算恢复依赖 T04 |
 | T06 / 2–3h | `src/session_index.rs` 与必要 RPC 调用者：持久化错误可见 | 权限拒绝、写入失败、并发更新的故障注入可观察；失败不可返回成功；多进程写不同字段不丢更新；不得再以默认空索引覆盖损坏数据 | T03 |
@@ -316,3 +316,22 @@ RPC 场景可从既有 `tests/host_read_ci.sh`、`tests/branch_tree_ci.sh`、`te
 3. 串行 runner（`run_ci_matrix.sh` / `run_ci_matrix_rpc.sh`）现也继承汇总器的非零退出（行为升级，本轮未端到端实跑）；二者仍共享 `/tmp/ci-results` 且 rpc 版开头 `rm -rf` 它——同款隔离缺陷未修，建议并入 T03 或另开卡。
 4. cargo shim 伪造 build/check/clippy/fmt/test 成功**未动**（T03 范围）；在 T03 完成前，矩阵报告中的 cargo 类 PASS 不可作为编译/测试证据。
 5. 本机 `timeout`/`md5sum` 来自 `/usr/local/bin`（coreutils）；runner 已无 md5sum 依赖，`timeout` 仍必需。
+
+### 9.10 当前检查点（连续执行·ion24-run-002）
+
+> **本节是连续执行的权威检查点**，由主执行者在每个里程碑原位更新（开始任务前/长命令前/验证后/提交前后/切换任务前）。监督任务（每 10 分钟）只读本节与锁，不写入本节。**固定截止时间在任何重启、唤醒、上下文压缩后都不得重置。** 日志正文放 `~/.ion/tmp/ion24/run-002/`，本节只留结论与证据路径。本节是开发交接记录，不是 ION 产品会话状态存储；改 ION 会话派生状态仍遵守 SessionIndex/JSONL 落位原则。
+
+- **运行标识**：ion24-run-002
+- **工作副本**：`/Users/xuyingzhou/Project/study-rust/ion`，分支 `codex/ion24-t01-t02`，起点 SHA `1d519b4`（工作区 clean）
+- **固定开始 / 截止**：2026-09-08 03:48:30 CST ／ **2026-09-09 03:48:30 CST（UTC+8 = 2026-09-08T19:48:30Z）——不可重置**
+- **监督任务**：ZCode cron `automation-cf70ffcf-934d-46c5-8d83-51186290dd6f`（`*/10 * * * *`，enabled，停止 = CronDelete 该 ID）；唤醒留痕于 `~/.ion/tmp/ion24/run-002/supervisor-heartbeats.log`；不操作 Codex 侧 ion-24
+- **锁与判活**：`~/.ion/tmp/ion24/lock/`（owner + heartbeat）；判活 = cmd_pid 存活 或 心跳 <30min（长命令按登记的 expected_done 判）
+- **状态（常更）**：RUNNING — T03 已完成（21/21+1 SKIP），准备领取 T06｜最后更新 2026-09-08 04:15 CST
+- **本轮已完成**：① 现场核验（4 提交/分支/clean/run-001 产物属实，T01/T02 套件复跑 15/15×2）② T03 全部四子项：ci.yml 删 3 处 continue-on-error+上传路径改 run-root 指针；pr-gate.yml 删 `|| echo`；并行 runner 加 REAL preflight（§9.5 命令集）+ 树指纹 stamp + 诚实 shim（`cargo test` 恒真跑，伪造"900 passed"已删）；serial/rpc 旧 runner per-run 目录+manifest+退出码传播+rpc 改私有 ION_HOST_SOCKET（不再杀用户 host）。验证 `tests/ci_trust_gates_ci.sh` 21/21+1 SKIP×2 连绿，T01/T02 回归绿（日志 `run-002/t03-trust-gates.log`）
+- **当前任务（常更）**：领取 T06（`src/session_index.rs` 持久化错误可见）——读源码定位静默忽略点（§9.2 记录 :154-208 忽略加锁/写入/rename 错误）
+- **下一步动作（常更）**：T06 复现（权限拒绝/写入失败故障注入）→ 小步修复（错误向上返回，不以空索引覆盖损坏数据）→ 多进程并发写不丢更新验证。验收：注入的持久化失败可观察、RPC 不假成功
+- **长命令登记（常更）**：（无进行中长命令）
+- **未提交改动**：T03 变更（workflows×2/runner×3/测试×2）即将提交；提交后归零
+- **尝试次数/阻塞**：T03 一次通过（0/2 配额）；无阻塞。⚠️ 监督任务心跳日志 `run-002/supervisor-heartbeats.log` 尚未出现（03:58 首个调度点已过）——待查 runCount，若已触发未留痕则在检查点记录该偏差
+- **本轮测试记录（常更）**：ci_trust_gates 21/21+1SKIP×2、T01 15/15、T02 15/15 全 exit=0（2026-09-08 03:47–04:12 CST）
+- **模型用量/费用**：unknown（会话内无法查询自身用量；未调用任何外部付费 LLM API；ION 侧全用脚本/FauxProvider）

@@ -132,6 +132,7 @@
 | ion-console UI | **38** | Playwright：侧栏/视图/折叠/面板/审批/记录行/viewer/FAB/复制/预启动（`npm run test:ui`） |
 | CI 脚本 | 30+ 个 `tests/*_ci.sh` | CLI 外部验证（MCP/hooks/extensions/snapshot/goal/memory 等） |
 | CI 基础设施注入（2026-09-08） | 30 断言（15+15） | 汇总器退出码/manifest/attempts 语义 + 矩阵恰好一次/串行并发 1/monitors 不动/失败传播（`aggregate_ci_fault_ci` + `ci_matrix_schedule_ci`，无需 LLM/cargo） |
+| CI 可信门槛注入（2026-09-08 T03） | 21 断言 + 1 SKIP | workflows 不吞错 + preflight/stamp/诚实 shim（cargo test 恒真跑）+ 旧 runner 隔离/私有 socket（`ci_trust_gates_ci`，含迷你真 cargo 工程） |
 
 ---
 
