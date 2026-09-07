@@ -1,6 +1,8 @@
 # Self-Evolution — A→B Architecture Overview
 
-> **Status: Production.** Battle-tested end-to-end. This is the definitive design document.
+> **状态：开发中** — 既有 A→B 链路已有实现；24 小时无人值守闭环尚未验收。2026-09-08 审查、证据及执行队列见第 9 节。
+
+> 第 1–8 节保留既有设计背景，其中自动合并、历史脚本路径和验证声明不作为本轮执行授权。第 9 节是本轮交接依据。
 
 ---
 
@@ -171,3 +173,110 @@ The PR body is auto-generated with verification proof (gate results, test count,
 | `examples/agents/developer.md` | B's agent definition |
 | `examples/agents/reviewer.md` | Code review agent |
 | `src/command_guard.rs` | Host-side mutation blockade |
+
+## 9. 2026-09-08 项目审查与 24 小时执行计划
+
+### 9.1 结论与范围
+
+ION 已具备 Agent 循环、独立 Worker、会话树、RPC、事件广播、WASM Extension、Monitor、Goal Supervisor 和自进化脚本。下一阶段建议先把这些能力组成可靠的工作流，优先完成「接任务 → 隔离修改 → 外部验证 → 中断恢复 → 交付证据」。暂缓继续堆叠工具和大范围重构。
+
+本次为规划与抽样审查，基线提交 `c0f2901`，开始时工作区干净。统计到 75 个 `tests/*_ci.sh`、26 个 Rust 集成测试文件；数量不等于有效覆盖率。未运行全部测试、真实 LLM 或 24 小时耐久测试，也未查询远端 CI 状态及分支保护规则。
+
+本轮仅修改计划文档与导航，未实施产品修复。按 DESIGN_TEMPLATE 检查了已有文档，因此将计划合并到本文件。
+
+### 9.2 已确认问题与待验证风险
+
+| 优先级 | 发现 | 当前证据 | 影响 |
+|---|---|---|---|
+| P0 | 汇总报告有 FAIL，进程仍返回成功 | `scripts/aggregate_ci_results.sh` 结尾只输出统计；本次隔离注入 `FAIL / exit=42`，实际汇总器退出码为 `0` | 定时任务和 CI 可误判成功 |
+| P0 | CI 矩阵重复执行且破坏串行分类 | `scripts/run_ci_matrix_parallel.sh:238–241` 先执行 PARALLEL_SCRIPTS，随后又执行完整 FILTERED；后面再执行 SERIAL_SCRIPTS | 每个测试被执行两次，串行测试也进入并行批次，增加耗时与互相干扰 |
+| P0 | 验证链路绕过错误 | `.github/workflows/ci.yml` 的 lint/fmt/lib test 使用 `continue-on-error`；`pr-gate.yml:62` 用 `|| echo` 吞集成测试错误；矩阵 cargo shim 对 build/check/clippy/fmt 直接返回 0 | 必须区分已验证、复用已验证产物、未执行，不能统一记 PASS |
+| P0 | 运行隔离不完整 | 矩阵启动时删除源工作区 `.ion/monitors`，多个运行共享 `/tmp/ci-*` 名称 | 可能影响用户监控配置，批次结果也会互相覆盖 |
+| P1 | Goal 费用防线缺少累计入口 | `goal_supervisor_extension.rs` 创建目标时费用置 0，`check_guards` 比较费用上限；检索生产源码未发现此字段的累加写入 | 不能把该字段视为真实消费硬上限；现有测试只人工填入费用后测比较逻辑 |
+| P1 | Goal 重启恢复与存储约定不闭合 | `worker_rpc.rs:344` 初始化目标为 None；目标执行过程另写 `goal-runs/<session>/iterations.jsonl` 和 `final-report.json`，未发现启动重放 Goal 的入口 | 长时间任务重启后连续性需要验证；会话派生轨迹应回归会话 JSONL，摘要进 SessionIndex |
+| P1 | 索引持久化失败不可见 | `session_index.rs:154–208` 忽略加锁/写入/rename 错误，锁文件打开失败时走无锁更新 | 磁盘满或权限错误时可能出现 RPC 成功但重启后丢状态；故障注入尚未执行 |
+| P2 | 文档与执行入口过时 | README 仍要求构建已删除的 ion-worker；SELF_EVOLUTION 引用部分已移入 scripts/archive 的脚本；旧矩阵报告日期为 2026-07-29 | 小模型照文档工作容易走错入口；旧统计不能当当前质量证据 |
+
+另一个需要控制的维护成本是 `src/worker_rpc.rs` 已有 7,993 行。但应先锁定 RPC 行为测试，再按职责拆分；第一天不安排大规模拆文件。
+
+旧 `scripts/evolve_tasks.sh` 主要是 getter、计数函数和随机数工具等任务，不是当前用户链路的缺陷队列。`auto_evolve_local.sh` 默认自动合并，仅以 lib 测试等作为门槛，缺少每项功能的 RPC 闭环。本轮不直接复用它开始改代码。
+
+### 9.3 本次实际验证
+
+```bash
+cargo test --test input_origin_harness --test origin_gate_harness --test origin_hide_harness --offline
+```
+
+结果：3 passed / 0 failed，包含输入来源传入钩子、monitor 来源拒绝工具、从 Provider 请求隐藏工具。编译约 40 秒，出现 1 个测试文件 unused import 警告。本次通过只覆盖这三项行为。
+
+另在独立临时目录复制汇总脚本，仅替换其输入和输出路径，注入一条失败记录：报告显示 `PASS=0 / FAIL=1`，脚本退出码仍为 `0`。没有运行会删除 `.ion/monitors` 的完整矩阵，没有触碰用户 host。
+
+### 9.4 执行模型与成本规则
+
+1. 测试枚举、执行、超时、统计和去重由程序完成，正常通过时无需额外 LLM 分析。
+2. 每次唤醒只读上一轮摘要、当前任务涉及的文件和失败日志。默认一个执行者、一个修复任务，不用模型协调一批仅仅运行命令的执行者。
+3. 可选执行方式：用户指定 `gpt-5.4-mini` 承接独立定时工作；或 ION 已有模型配置承接。当前没有核验各账户额度或 API 报价，不承诺具体金额。
+4. 未选模型时保持自动化暂停；不得自动回退到当前高成本模型。真实 Provider 测试未获明确金额/调用次数预算前只编写受控 case，不调用付费模型。
+5. 每题最多两次修复尝试；复杂的并发/存储/权限问题留下复现和最小方案，由用户决定是否升级模型。费用未知时记录 unknown，不能记为 0。
+
+### 9.5 可领取任务卡
+
+以下是待实施任务，不代表本轮已完成。时长为单人工作槽位估算，超时就交接，不保证第一天全部修完。
+
+| ID / 槽位 | 文件范围与具体交付 | 验收条件 | 依赖 |
+|---|---|---|---|
+| T01 / 1–2h | `scripts/aggregate_ci_results.sh`：失败向上返回；显式输入清单与结果去重规则 | 注入 PASS 返回 0；FAIL、缺失、畸形记录返回非 0；同名多次运行保留 attempt 信息；不能由后一次通过抹掉历史失败 | 无 |
+| T02 / 1–2h | `scripts/run_ci_matrix_parallel.sh`：删除重复调度，分离并行与串行；隔离运行目录和监控配置 | 用无 LLM 的假脚本记录启动次数/并发度：每项恰好一次、串行组最大并发 1；源 `.ion/monitors` 原样保留；不同 run 不共享输出 | T01 |
+| T03 / 1–2h | `.github/workflows/ci.yml`、`pr-gate.yml` 及矩阵入口：可信验证门槛 | 人为失败能使 job 失败；环境依赖明确 skip 原因；预编译产物记录 SHA，shim 不得伪造 check/clippy/fmt 成功；Linux 特有失败隔离成有理由的已知问题 | T01–T02 |
+| T04 / 2–3h | `src/goal_supervisor_extension.rs` 和必要的运行时 usage 入口：真实预算接线 | 用 FauxProvider Factory 注入可计量 usage，正常运行累计增加，重试也计入，不重复计费；下一次调用前判断限额；无价格信息时不声称预算有效；提供 RPC/Pull 和事件证据 | T03 |
+| T05 / 2–3h | Goal 状态、`src/worker_rpc.rs` 恢复入口、`SessionIndex`：Goal 中断恢复 | 目标设置后结束 Worker，恢复同会话时目标/迭代/截止时间一致；custom 用 data；完整轨迹进会话 JSONL，小摘要进索引；不新增会话 sidecar；两个客户端状态一致 | T03，预算恢复依赖 T04 |
+| T06 / 2–3h | `src/session_index.rs` 与必要 RPC 调用者：持久化错误可见 | 权限拒绝、写入失败、并发更新的故障注入可观察；失败不可返回成功；多进程写不同字段不丢更新；不得再以默认空索引覆盖损坏数据 | T03 |
+| T07 / 1–2h | README、既有设计与测试导航：按当前可执行入口校准 | 删除 ion-worker 构建入口，核对 archive 路径，带日期/SHA 的新基线与旧报告区分；不把旧缺口直接当未修 bug | 无，可在阻塞时领取 |
+| T08 / 余下时段 | RPC 耐久验证及结果报告 | 覆盖创建→prompt→abort→恢复、set_model→空闲→get_session_info、分支切换、订阅断连重接、两个客户端审批状态同步；每次验证有退出码、断言、耗时、进程/资源快照 | T01–T03；Goal 恢复场景依赖 T05 |
+
+每张代码任务卡还必须满足 AGENTS.md：先 Harness；有动态分支时用 FauxProvider Factory；修复后立即用对应 `ion rpc` 查结果；补 `#[ignore]` + `ION_E2E=1` 真实 case；更新已有设计文档、CLI 验证说明、测试脚本和 AGENTS.md 统计。脚本/CI 本身的改动以故障注入验证其退出码与调度行为，不为凑数量添加无关 Agent 测试。
+
+测试起点（执行者应先审查脚本的清理动作，再在独立环境运行）：
+
+```bash
+cargo build --bin ion --locked
+cargo test --lib --locked
+cargo test -p ion-provider --locked
+cargo test --test input_origin_harness --test origin_gate_harness --test origin_hide_harness --locked
+cargo clippy --lib -- -D warnings
+cargo fmt -- --check
+```
+
+RPC 场景可从既有 `tests/host_read_ci.sh`、`tests/branch_tree_ci.sh`、`tests/session_workspace_ci.sh`、`tests/abort_ci.sh`、`tests/origin_ci.sh` 开始。不要把它们未隔离地直接全量运行。Host 用独立 `ION_HOST_SOCKET`，会话和配置使用本轮私有目录；结束只清理自己启动的 PID。
+
+### 9.6 24 小时时间安排
+
+| 相对时间 | 工作 | 继续条件 |
+|---|---|---|
+| 0–2h | 记录 SHA、环境、基线失败；建立唯一运行目录、锁、进程超时和结果清单，领取 T01 | 不影响用户环境；失败可向上传递 |
+| 2–6h | T02–T03，复验错误注入与调度；冻结第一套可信测试集 | 测试只执行一次，真实失败使整轮失败 |
+| 6–12h | 在 T04/T05/T06 中按复现影响选 1–2 项小修复；每项单独验证 | 每次改动有 Harness + RPC 证据；未完成就保存阻塞原因 |
+| 12–22h | T08 连续耐久窗口，穿插已定位的小修复；修改后重新记录该版本的耐久起点 | 连续两轮同类基础设施失败停止修改；不盲目换题 |
+| 22–24h | 冻结修改，最后回归，汇总 diff/失败/耗时/实际成本/后续队列 | 完成最终报告，暂停自动化 |
+
+这里是「覆盖 24 小时的验证与修复窗口」，不是声称同一版本已经连续压测 24 小时。若要求后者，先冻结通过基线的提交，再另外开完整 24 小时耐久窗口；期间任何代码改动都重置该版本计时。
+
+每小时唤醒一次、每批最长 40 分钟，其余时间用于退出、清理和留出余量。长任务必须在进程层有 timeout/终止处理，不能仅靠提示词。首次实际启用时记录固定截止时间；机器休眠或应用离线时不能保证按时执行，报告必须列出缺测窗口，不补造运行记录。
+
+### 9.7 循环与交接协议
+
+每轮固定为：读上轮证据 → 检查截止时间/预算/独占锁 → 选择一个任务 → 验证复现 → 小步修改 → Harness → RPC → 记录 → 释放锁。锁已占用则跳过，不另开一批；同一错误最多两次修复，连续两批基础设施失败则暂停。
+
+代码只在专用 `codex/` 分支和独立工作副本修改。第一轮记录主工作区的干净/脏状态；不覆盖用户改动，不自动合并/推送/发布，不清理用户 `target/` 或常驻 host。旧脚本的自动合并开关不能代替这些约束。
+
+每轮交接必须包含：run/attempt、任务 ID、开始与结束时间、基线和候选 SHA、文件列表、测试命令、退出码、有效断言数、耗时、日志位置、资源快照、成本或 unknown、失败分类、下一步。结果区分 PASS / FAIL / SKIP / TIMEOUT / NOT_RUN。
+
+验证日志属于本次测试运行产物，可放独立运行目录；ION 会话的目标、预算、模型等派生状态仍只能使用 SessionIndex 或会话 JSONL，不通过报告文件反向维护权威状态。
+
+### 9.8 已安排的自动化与启用条件
+
+已创建 Codex 自动化 **ION 24 小时验证与小步修复（待选执行模型）**，ID `ion-24`，每小时检查，当前 **PAUSED**。它绑定当前任务，尚未开始计时，也没有切换当前模型。
+
+用户可先切换此任务的执行模型再启用；若希望每轮都由明确指定的模型独立运行，应改为绑定 ION 项目的独立定时任务，并暂停本草案以免重复。当前未创建额外执行任务，也未启动 ION 的真实模型循环。
+
+到期暂停目前是自动化提示词中的执行约定，尚未实现操作系统级硬截止。因此 T01–T03 的执行基础应包含进程超时与截止时间校验，通过后再宣称具备无人值守保护。只有发生新失败、完成、需用户处理或到期汇总时通知，无变化保持安静。
