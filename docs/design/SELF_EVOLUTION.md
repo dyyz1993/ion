@@ -228,7 +228,7 @@ cargo test --test input_origin_harness --test origin_gate_harness --test origin_
 | T01 / 1–2h ✅R1 | `scripts/aggregate_ci_results.sh`：失败向上返回；显式输入清单与结果去重规则 | 注入 PASS 返回 0；FAIL、缺失、畸形记录返回非 0；同名多次运行保留 attempt 信息；不能由后一次通过抹掉历史失败 | 无 |
 | T02 / 1–2h ✅R1 | `scripts/run_ci_matrix_parallel.sh`：删除重复调度，分离并行与串行；隔离运行目录和监控配置 | 用无 LLM 的假脚本记录启动次数/并发度：每项恰好一次、串行组最大并发 1；源 `.ion/monitors` 原样保留；不同 run 不共享输出 | T01 |
 | T03 / 1–2h ✅R2 | `.github/workflows/ci.yml`、`pr-gate.yml` 及矩阵入口：可信验证门槛 | 人为失败能使 job 失败；环境依赖明确 skip 原因；预编译产物记录 SHA，shim 不得伪造 check/clippy/fmt 成功；Linux 特有失败隔离成有理由的已知问题 | T01–T02 |
-| T04 / 2–3h | `src/goal_supervisor_extension.rs` 和必要的运行时 usage 入口：真实预算接线 | 用 FauxProvider Factory 注入可计量 usage，正常运行累计增加，重试也计入，不重复计费；下一次调用前判断限额；无价格信息时不声称预算有效；提供 RPC/Pull 和事件证据 | T03 |
+| T04 / 2–3h ✅R2 | `src/goal_supervisor_extension.rs` 和必要的运行时 usage 入口：真实预算接线 | 用 FauxProvider Factory 注入可计量 usage，正常运行累计增加，重试也计入，不重复计费；下一次调用前判断限额；无价格信息时不声称预算有效；提供 RPC/Pull 和事件证据 | T03 |
 | T05 / 2–3h | Goal 状态、`src/worker_rpc.rs` 恢复入口、`SessionIndex`：Goal 中断恢复 | 目标设置后结束 Worker，恢复同会话时目标/迭代/截止时间一致；custom 用 data；完整轨迹进会话 JSONL，小摘要进索引；不新增会话 sidecar；两个客户端状态一致 | T03，预算恢复依赖 T04 |
 | T06 / 2–3h ✅R2 | `src/session_index.rs` 与必要 RPC 调用者：持久化错误可见 | 权限拒绝、写入失败、并发更新的故障注入可观察；失败不可返回成功；多进程写不同字段不丢更新；不得再以默认空索引覆盖损坏数据 | T03 |
 | T07 / 1–2h | README、既有设计与测试导航：按当前可执行入口校准 | 删除 ion-worker 构建入口，核对 archive 路径，带日期/SHA 的新基线与旧报告区分；不把旧缺口直接当未修 bug | 无，可在阻塞时领取 |
@@ -326,10 +326,10 @@ RPC 场景可从既有 `tests/host_read_ci.sh`、`tests/branch_tree_ci.sh`、`te
 - **固定开始 / 截止**：2026-09-08 03:48:30 CST ／ **2026-09-09 03:48:30 CST（UTC+8 = 2026-09-08T19:48:30Z）——不可重置**
 - **监督任务**：ZCode cron `automation-cf70ffcf-934d-46c5-8d83-51186290dd6f`（`*/10 * * * *`，enabled，停止 = CronDelete 该 ID）；唤醒留痕于 `~/.ion/tmp/ion24/run-002/supervisor-heartbeats.log`；不操作 Codex 侧 ion-24
 - **锁与判活**：`~/.ion/tmp/ion24/lock/`（owner + heartbeat）；判活 = cmd_pid 存活 或 心跳 <30min（长命令按登记的 expected_done 判）
-- **状态（常更）**：RUNNING — 监督者已接管（心跳超 30min 触发）｜T04 实施中｜最后更新 2026-09-08 05:05 CST（UTC 21:05Z）
-- **本轮已完成**：T01/T02（R1）+ **T03**（42df79d）+ **T03b**（27ff9d8 clippy 19→0）+ **T03c**（bed97f0 fmt 332→0）+ **T06**（6ea28fd 索引隔离保全+get_index_health）+ **T07**（8f8fbff/7746a0e 文档校准+基线 e9cb669）+ **T05**（goal 恢复：JSONL journal+回放+索引摘要）。测试总账：lib 991/0、clippy 0、fmt 0、新集成测试 3 个（fault/trust/restore）+CLI 脚本 2 个全绿。证据 run-002/
-- **当前任务（常更）**：T04 费用接线——方案：SessionIndex token 差分×模型单价（Cost.input/output per 1M），on_gate_check 内 check_guards 之前结算；GoalState 加 token_baseline/last_seen_tokens/budget_valid/cost_basis；无单价或单价全零→budget_valid=false 且跳过 max_cost 判定
-- **下一步动作（常更）**：查扩展构造点（registry 可达性）/write_final_report 是否写 sidecar/faux usage 支持 → 实施 → 单测（HOME 沙箱索引注入 token）+ FauxProvider Factory 端到端 → lib 回归+clippy/fmt → 提交
+- **状态（常更）**：RUNNING — 监督者接管轮完成 T04（七卡全部完成），队列剩 T08｜最后更新 2026-09-08 05:30 CST（UTC 21:30Z）
+- **本轮已完成**：T01/T02（R1）+T03（42df79d）+T03b（27ff9d8）+T03c（bed97f0）+T06（6ea28fd）+T07（8f8fbff/7746a0e）+T05（af4350c）+ **T04（25e41cb：goal 费用真实接线——token 差分×单价/budget_valid/cost_basis/goal_set 记依据/worker 注入单价；goal_cost_ci 6 断言组+goal_restore_ci 扩 T04 字段往返+fault_ci 补字段修复）**；⚠️ 21:00Z 监督者接管（心跳超 30min），接管轮完成 T04。测试总账：lib 991/0、四集成套件全绿、clippy/fmt 清零。证据 run-002/
+- **当前任务（常更）**：空闲（T04 已交付：25e41cb+c88c775+a2d0bb7，监督接管轮）
+- **下一步动作（常更）**：领取 T08（RPC 耐久验证窗口：创建→prompt→abort→恢复、set_model→空闲→get_session_info、分支切换、订阅断连重接、双客户端审批同步；含 T05 的 goal_set→kill→重连 E2E）。用独立 ION_HOST_SOCKET+私有 HOME，每场景记录退出码/断言/耗时/进程快照
 - **长命令登记（常更）**：（无进行中长命令）
 - **未提交改动**：无
 - **尝试次数/阻塞**：T03/T06/T07 均 0/2 配额一次通过；T05 第 1 次尝试（侦察已完成）。监督任务派发正常（runCount≥2）但被唤醒者未写心跳行——已知限制
