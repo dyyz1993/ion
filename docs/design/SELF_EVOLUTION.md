@@ -164,8 +164,8 @@ The PR body is auto-generated with verification proof (gate results, test count,
 |------|------|
 | `scripts/evolve.sh` | Bootstrap: worktree + container + compile |
 | `scripts/evolve_self.sh` | Serial batch orchestrator |
-| `scripts/evolve_concurrent.sh` | Concurrent (N parallel B workers) |
-| `scripts/evolve_native.sh` | Native (coordinator + spawn_worker) |
+| `scripts/archive/evolve_concurrent.sh`（已归档） | Concurrent (N parallel B workers) |
+| `scripts/archive/evolve_native.sh`（已归档） | Native (coordinator + spawn_worker) |
 | `scripts/evolve_pr.sh` | GitHub PR flow |
 | `scripts/init-evolve-container.sh` | Standalone container init |
 | `scripts/Dockerfile.evolve` | Rust toolchain image |

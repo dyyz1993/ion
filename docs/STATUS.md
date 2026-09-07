@@ -18,13 +18,14 @@
 
 ---
 
-## 一、规模快照（2026-08-25 实测）
+## 一、规模快照（2026-09-08 实测，基线 `e9cb669` / 分支 `codex/ion24-t01-t02`；旧基线见 git 历史）
 
 | 维度 | 数值 |
 |------|------|
-| Rust 代码总行数 | **~100,500**（src ~83,700 + ion-provider ~5k + file_index ~300 新增） |
-| lib 测试 | **984 passed / 0 failed**（含 file_index 3 新增；hooks 2 个旧失败已修复） |
-| 文档 | 112 篇 .md |
+| 提交数 | **1169** |
+| Rust 代码总行数 | **~106,200**（src + ion-provider，wc 实测） |
+| lib 测试 | **991 passed / 0 failed**（同基线：clippy 0 错 / fmt 0 漂移） |
+| 文档 | 276 篇 .md |
 | 设计文档 | `docs/design/` 40+ 篇 |
 
 ### 2026-08-25 新增
@@ -118,11 +119,11 @@
 
 ---
 
-## 四、测试统计（2026-08-25 实测）
+## 四、测试统计（2026-09-08 实测，基线 `e9cb669`；旧值见 git 历史）
 
 | 套件 | 数量 | 覆盖 |
 |------|------|------|
-| **lib tests** | **984 passed / 0 failed** | 全部核心逻辑（含 file_index 3 新增） |
+| **lib tests** | **991 passed / 0 failed** | 全部核心逻辑（session_index 故障注入 5 场景为独立集成测试） |
 | unit_rpc_test | 20 | RPC 协议 U1-U20 |
 | wasm_extension_tests | 24 | ABI、工具调用、热更新、4 维存储与 Plan 生命周期 |
 | extension_cli_ci | 16 | install/remove/list/create + 可构建脚手架 |

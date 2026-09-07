@@ -98,8 +98,9 @@ to the same long-lived orchestration core. Supports runtime permission managemen
 git clone https://github.com/dyyz1993/ion.git
 cd ion
 
-# Build both binaries (ion CLI + ion-worker subprocess)
-cargo build --bin ion --bin ion-worker
+# Build the single ion binary (worker mode is built in via `--mode rpc`;
+# ion-worker was merged into ion and removed from Cargo.toml)
+cargo build --bin ion
 
 # Verify installation
 ./target/debug/ion --version
