@@ -199,7 +199,19 @@ pub struct GoalState {
     /// When the goal was started (epoch seconds, "epoch:NNN" format).
     pub started_at: String,
     /// Cumulative estimated cost across all iterations, in USD.
+    /// T04：由 sync_cost_from_index 按 SessionIndex token 差分 × 单价真实累计。
     pub total_cost_usd: f64,
+    /// T04：最近一次结算看到的会话累计 token（input, output）。首次结算 = 基线
+    /// （不计费）；之后单调差分计费——重试也是真实 LLM 调用故计入，差分天然防重复计费。
+    #[serde(default)]
+    pub last_seen_tokens: Option<(u64, u64)>,
+    /// 预算是否有效（有可用单价且接线成立）。false 时 max_cost 防线不执行，
+    /// 对外不声称预算可控。
+    #[serde(default)]
+    pub budget_valid: bool,
+    /// 计费依据（证据）："model in=X/1M out=Y/1M"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_basis: Option<String>,
     /// The last action plan proposed by the agent (for repetition detection).
     pub last_action_plan: Option<String>,
     /// Recent tool calls for drift monitoring (Task 4): (tool_name, target_file_or_cmd_summary).
@@ -309,6 +321,16 @@ pub struct GoalSupervisorExtension {
     pub config: GoalSupervisorConfig,
     /// Session id this supervisor instance is bound to (for logging/RPC).
     pub session_id: Option<String>,
+    /// T04：模型单价快照（USD/1M tokens）。缺省或单价全零 → budget_valid=false。
+    pub pricing: Option<GoalPricing>,
+}
+
+/// 模型单价快照（USD / 1M tokens），worker 启动时从当前模型 Cost 取。
+#[derive(Clone, Debug)]
+pub struct GoalPricing {
+    pub model_id: String,
+    pub input_per_1m: f64,
+    pub output_per_1m: f64,
 }
 
 impl GoalSupervisorExtension {
@@ -318,7 +340,23 @@ impl GoalSupervisorExtension {
             state: Arc::new(Mutex::new(None)),
             config: GoalSupervisorConfig::default(),
             session_id: None,
+            pricing: None,
         }
+    }
+
+    /// T04：注入模型单价（USD/1M tokens）。
+    pub fn with_pricing(
+        mut self,
+        model_id: impl Into<String>,
+        input_per_1m: f64,
+        output_per_1m: f64,
+    ) -> Self {
+        self.pricing = Some(GoalPricing {
+            model_id: model_id.into(),
+            input_per_1m,
+            output_per_1m,
+        });
+        self
     }
 
     /// Attach a specific session id (e.g. read from disk on startup).
@@ -525,8 +563,9 @@ impl GoalSupervisorExtension {
             return Some("max_duration".into());
         }
 
-        // 6. max_total_cost
-        if state.total_cost_usd >= self.config.max_total_cost_usd {
+        // 6. max_total_cost —— 仅在预算有效（有单价且已接线）时执行；
+        //    无单价则不声称预算可控，也不误杀（budget_valid=false）
+        if state.budget_valid && state.total_cost_usd >= self.config.max_total_cost_usd {
             return Some("max_cost".into());
         }
 
@@ -562,6 +601,44 @@ impl GoalSupervisorExtension {
             state.status = status;
         }
         self.journal_snapshot();
+    }
+
+    /// T04：从 SessionIndex 结算自上次 gate 以来新增的 token 费用。
+    /// 单调差分 × 单价；重试也是真实 LLM 调用（token 已进索引）故计入；
+    /// 差分防重复计费；索引回落（重启/GC）时差分为 0 不倒扣。
+    /// 无单价或单价全零 → budget_valid=false（不声称预算有效，max_cost 不执行）。
+    pub fn sync_cost_from_index(&self) {
+        let sid = match self.session_id.as_deref() {
+            Some(s) => s.to_string(),
+            None => return,
+        };
+        let idx = crate::session_index::SessionIndex::load();
+        let Some(meta) = idx.get(&sid) else { return };
+        let (tok_in, tok_out) = (meta.token_input, meta.token_output);
+        let pricing_known = self
+            .pricing
+            .as_ref()
+            .is_some_and(|p| p.input_per_1m > 0.0 || p.output_per_1m > 0.0);
+        if let Ok(mut guard) = self.state.lock()
+            && let Some(state) = guard.as_mut()
+        {
+            state.budget_valid = state.budget_valid && pricing_known;
+            // 首次结算 = 基线（不计费）
+            let last = state.last_seen_tokens.unwrap_or((tok_in, tok_out));
+            let d_in = tok_in.saturating_sub(last.0);
+            let d_out = tok_out.saturating_sub(last.1);
+            if pricing_known && let Some(p) = self.pricing.as_ref() {
+                state.total_cost_usd += d_in as f64 / 1_000_000.0 * p.input_per_1m
+                    + d_out as f64 / 1_000_000.0 * p.output_per_1m;
+                if state.cost_basis.is_none() {
+                    state.cost_basis = Some(format!(
+                        "{} in={:.4}/1M out={:.4}/1M",
+                        p.model_id, p.input_per_1m, p.output_per_1m
+                    ));
+                }
+            }
+            state.last_seen_tokens = Some((tok_in, tok_out));
+        }
     }
 
     /// T05：把当前目标快照落会话 JSONL + 索引（含由 config 推导的硬截止）。
@@ -1285,6 +1362,9 @@ impl Extension for GoalSupervisorExtension {
             return Ok(GateDecision::Allow);
         }
 
+        // T04：先结算本周期真实费用（token 差分 × 单价），guards 与 journal 随后生效
+        self.sync_cost_from_index();
+
         tracing::info!(
             "[goal-supervisor] on_gate_check (turn={}, msgs={}): running checks",
             ctx.turn_index,
@@ -1522,6 +1602,17 @@ impl Tool for GoalSetTool {
 
         let goal_id = uuid::Uuid::new_v4().to_string();
         let started_at = now_epoch_string();
+        // T04：goal_set 时即记录计费依据；无单价 → budget_valid=false（不声称预算有效）
+        let pricing_known = self
+            .model
+            .as_ref()
+            .is_some_and(|m| m.cost.input > 0.0 || m.cost.output > 0.0);
+        let cost_basis = self.model.as_ref().map(|m| {
+            format!(
+                "{} in={:.4}/1M out={:.4}/1M",
+                m.id, m.cost.input, m.cost.output
+            )
+        });
 
         let new_state = GoalState {
             goal_id: goal_id.clone(),
@@ -1531,6 +1622,9 @@ impl Tool for GoalSetTool {
             iteration_count: 0,
             started_at: started_at.clone(),
             total_cost_usd: 0.0,
+            last_seen_tokens: None,
+            budget_valid: pricing_known,
+            cost_basis,
             last_action_plan: None,
             recent_tools: vec![],
             goal_plan,
@@ -1899,6 +1993,9 @@ mod tests {
                 iteration_count: 2,
                 started_at: format!("epoch:{}", now_epoch_ms() / 1000),
                 total_cost_usd: 0.0,
+                last_seen_tokens: None,
+                budget_valid: false,
+                cost_basis: None,
                 last_action_plan: None,
                 recent_tools: vec![],
                 goal_plan: GoalPlan::default(),
@@ -1922,6 +2019,9 @@ mod tests {
             iteration_count: 3,
             started_at: "epoch:100".into(),
             total_cost_usd: 0.5,
+            last_seen_tokens: None,
+            budget_valid: false,
+            cost_basis: None,
             last_action_plan: None,
             recent_tools: vec![],
             goal_plan: GoalPlan::default(),
@@ -1967,6 +2067,9 @@ mod tests {
             iteration_count: 2,
             started_at: "epoch:100".into(),
             total_cost_usd: 0.1,
+            last_seen_tokens: None,
+            budget_valid: false,
+            cost_basis: None,
             last_action_plan: None,
             recent_tools: vec![],
             goal_plan: GoalPlan::default(),
@@ -1990,6 +2093,9 @@ mod tests {
             iteration_count: 1,
             started_at: "epoch:100".into(),
             total_cost_usd: 0.0,
+            last_seen_tokens: None,
+            budget_valid: false,
+            cost_basis: None,
             last_action_plan: None,
             recent_tools: vec![],
             goal_plan: GoalPlan::default(),
@@ -2418,6 +2524,9 @@ mod tests {
                 iteration_count: 0,
                 started_at: "epoch:0".into(),
                 total_cost_usd: 0.0,
+                last_seen_tokens: None,
+                budget_valid: false,
+                cost_basis: None,
                 last_action_plan: None,
                 recent_tools: vec![],
                 goal_plan: GoalPlan::default(),
@@ -2429,6 +2538,7 @@ mod tests {
         let ext = GoalSupervisorExtension {
             state: shared,
             config: GoalSupervisorConfig::default(),
+            pricing: None,
             session_id: None,
         };
         let results = ext.run_all_checks().await.expect("all checks run");
@@ -2482,6 +2592,9 @@ mod tests {
                 iteration_count: 3,
                 started_at: format!("epoch:{}", now_epoch_ms() / 1000),
                 total_cost_usd: 0.0,
+                last_seen_tokens: None,
+                budget_valid: false,
+                cost_basis: None,
                 last_action_plan: None,
                 recent_tools: vec![],
                 goal_plan: GoalPlan::default(),
@@ -2512,6 +2625,9 @@ mod tests {
                 iteration_count: 0,
                 started_at: old,
                 total_cost_usd: 0.0,
+                last_seen_tokens: None,
+                budget_valid: false,
+                cost_basis: None,
                 last_action_plan: None,
                 recent_tools: vec![],
                 goal_plan: GoalPlan::default(),
@@ -2537,6 +2653,10 @@ mod tests {
                 iteration_count: 0,
                 started_at: format!("epoch:{}", now_epoch_ms() / 1000),
                 total_cost_usd: 1.5,
+                last_seen_tokens: None,
+                // T04：max_cost 守卫仅在预算有效时执行——本测试正是测该守卫
+                budget_valid: true,
+                cost_basis: Some("test in=1.0/1M out=1.0/1M".into()),
                 last_action_plan: None,
                 recent_tools: vec![],
                 goal_plan: GoalPlan::default(),
@@ -2564,6 +2684,9 @@ mod tests {
                 iteration_count: 1,
                 started_at: format!("epoch:{}", now_epoch_ms() / 1000),
                 total_cost_usd: 0.0,
+                last_seen_tokens: None,
+                budget_valid: false,
+                cost_basis: None,
                 last_action_plan: Some(plan.into()),
                 recent_tools: vec![],
                 goal_plan: GoalPlan::default(),
@@ -2587,6 +2710,9 @@ mod tests {
                 iteration_count: 0,
                 started_at: format!("epoch:{}", now_epoch_ms() / 1000),
                 total_cost_usd: 0.0,
+                last_seen_tokens: None,
+                budget_valid: false,
+                cost_basis: None,
                 last_action_plan: Some("first attempt plan alpha".into()),
                 recent_tools: vec![],
                 goal_plan: GoalPlan::default(),
@@ -2614,6 +2740,9 @@ mod tests {
                 iteration_count: 1,
                 started_at: format!("epoch:{}", now_epoch_ms() / 1000),
                 total_cost_usd: 0.0,
+                last_seen_tokens: None,
+                budget_valid: false,
+                cost_basis: None,
                 last_action_plan: None,
                 recent_tools: vec![],
                 goal_plan: GoalPlan::default(),
@@ -2708,6 +2837,9 @@ mod tests {
                 iteration_count: 0,
                 started_at: format!("epoch:{}", now_epoch_ms() / 1000),
                 total_cost_usd: 0.0,
+                last_seen_tokens: None,
+                budget_valid: false,
+                cost_basis: None,
                 last_action_plan: None,
                 recent_tools: vec![],
                 goal_plan: GoalPlan::default(),
@@ -2816,6 +2948,9 @@ mod tests {
                 iteration_count: 2, // already at the cap
                 started_at: format!("epoch:{}", now_epoch_ms() / 1000),
                 total_cost_usd: 0.0,
+                last_seen_tokens: None,
+                budget_valid: false,
+                cost_basis: None,
                 last_action_plan: None,
                 recent_tools: vec![],
                 goal_plan: GoalPlan::default(),
