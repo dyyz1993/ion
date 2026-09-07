@@ -326,10 +326,10 @@ RPC 场景可从既有 `tests/host_read_ci.sh`、`tests/branch_tree_ci.sh`、`te
 - **固定开始 / 截止**：2026-09-08 03:48:30 CST ／ **2026-09-09 03:48:30 CST（UTC+8 = 2026-09-08T19:48:30Z）——不可重置**
 - **监督任务**：ZCode cron `automation-cf70ffcf-934d-46c5-8d83-51186290dd6f`（`*/10 * * * *`，enabled，停止 = CronDelete 该 ID）；唤醒留痕于 `~/.ion/tmp/ion24/run-002/supervisor-heartbeats.log`；不操作 Codex 侧 ion-24
 - **锁与判活**：`~/.ion/tmp/ion24/lock/`（owner + heartbeat）；判活 = cmd_pid 存活 或 心跳 <30min（长命令按登记的 expected_done 判）
-- **状态（常更）**：RUNNING — T03/T03b/T03c/T06/T07/T05 已完成（六卡），下一卡 T04｜最后更新 2026-09-08 04:50 CST（UTC 20:50Z）
+- **状态（常更）**：RUNNING — 监督者已接管（心跳超 30min 触发）｜T04 实施中｜最后更新 2026-09-08 05:05 CST（UTC 21:05Z）
 - **本轮已完成**：T01/T02（R1）+ **T03**（42df79d）+ **T03b**（27ff9d8 clippy 19→0）+ **T03c**（bed97f0 fmt 332→0）+ **T06**（6ea28fd 索引隔离保全+get_index_health）+ **T07**（8f8fbff/7746a0e 文档校准+基线 e9cb669）+ **T05**（goal 恢复：JSONL journal+回放+索引摘要）。测试总账：lib 991/0、clippy 0、fmt 0、新集成测试 3 个（fault/trust/restore）+CLI 脚本 2 个全绿。证据 run-002/
-- **当前任务（常更）**：空闲（六卡已收尾，全部提交）
-- **下一步动作（常更）**：领取 T04（goal 费用真实接线：找到 runtime usage 入口→FauxProvider Factory 注入可计量 usage→累计/限额/重试计费→RPC+事件证据）。T05 的 worker 级 E2E（goal_set→kill→重连）并入 T08 场景
+- **当前任务（常更）**：T04 费用接线——方案：SessionIndex token 差分×模型单价（Cost.input/output per 1M），on_gate_check 内 check_guards 之前结算；GoalState 加 token_baseline/last_seen_tokens/budget_valid/cost_basis；无单价或单价全零→budget_valid=false 且跳过 max_cost 判定
+- **下一步动作（常更）**：查扩展构造点（registry 可达性）/write_final_report 是否写 sidecar/faux usage 支持 → 实施 → 单测（HOME 沙箱索引注入 token）+ FauxProvider Factory 端到端 → lib 回归+clippy/fmt → 提交
 - **长命令登记（常更）**：（无进行中长命令）
 - **未提交改动**：无
 - **尝试次数/阻塞**：T03/T06/T07 均 0/2 配额一次通过；T05 第 1 次尝试（侦察已完成）。监督任务派发正常（runCount≥2）但被唤醒者未写心跳行——已知限制

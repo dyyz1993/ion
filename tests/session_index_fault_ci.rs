@@ -93,6 +93,8 @@ fn crate_test_meta() -> ion::session_index::SessionMeta {
         security_profile: None,
         workspace_path: None,
         workspace_status: None,
+        goal_status: None,
+        goal_deadline_ms: None,
     }
 }
 

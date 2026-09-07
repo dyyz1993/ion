@@ -62,8 +62,15 @@ fn goal_state_roundtrips_and_restores_last() {
     );
     assert_eq!(restored.total_cost_usd, g1.total_cost_usd, "R1 cost");
     assert_eq!(restored.recent_tools.len(), 1, "R1 recent_tools");
-    assert_eq!(restored.iteration_count, 7, "R2 must restore the LAST snapshot");
-    assert_eq!(restored.last_seen_tokens, Some((100, 200)), "R2 T04 last_seen_tokens");
+    assert_eq!(
+        restored.iteration_count, 7,
+        "R2 must restore the LAST snapshot"
+    );
+    assert_eq!(
+        restored.last_seen_tokens,
+        Some((100, 200)),
+        "R2 T04 last_seen_tokens"
+    );
     assert!(restored.budget_valid, "R2 T04 budget_valid");
     assert!(restored.cost_basis.is_some(), "R2 T04 cost_basis");
     assert!(
