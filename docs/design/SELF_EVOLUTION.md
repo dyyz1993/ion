@@ -326,10 +326,10 @@ RPC 场景可从既有 `tests/host_read_ci.sh`、`tests/branch_tree_ci.sh`、`te
 - **固定开始 / 截止**：2026-09-08 03:48:30 CST ／ **2026-09-09 03:48:30 CST（UTC+8 = 2026-09-08T19:48:30Z）——不可重置**
 - **监督任务**：ZCode cron `automation-cf70ffcf-934d-46c5-8d83-51186290dd6f`（`*/10 * * * *`，enabled，停止 = CronDelete 该 ID）；唤醒留痕于 `~/.ion/tmp/ion24/run-002/supervisor-heartbeats.log`；不操作 Codex 侧 ion-24
 - **锁与判活**：`~/.ion/tmp/ion24/lock/`（owner + heartbeat）；判活 = cmd_pid 存活 或 心跳 <30min（长命令按登记的 expected_done 判）
-- **状态（常更）**：RUNNING — 八卡交付；T08 窗口累计 15 周期全绿｜最后更新 2026-09-08 08:31 CST（UTC 00:31Z）
+- **状态（常更）**：MONITORED-WAIT — 八卡全部交付；2026-09-08 08:45 CST 用户质询后决策：**停止接管复跑**（r2-r6 对未变更二进制零新信息，违反 §9.6），监督降频为每小时纯查活（不复跑/不接管开发/仅异常标记+到期收尾）｜最后更新 2026-09-08 08:46 CST（UTC 00:46Z）
 - **本轮已完成**：T01/T02（R1）+T03（42df79d）+T03b（27ff9d8）+T03c（bed97f0）+T06（6ea28fd）+T07（8f8fbff/7746a0e）+T05（af4350c）+ **T04（25e41cb：goal 费用真实接线——token 差分×单价/budget_valid/cost_basis/goal_set 记依据/worker 注入单价；goal_cost_ci 6 断言组+goal_restore_ci 扩 T04 字段往返+fault_ci 补字段修复）**；⚠️ 21:00Z 监督者接管（心跳超 30min），接管轮完成 T04。测试总账：lib 991/0、四集成套件全绿、clippy/fmt 清零。证据 run-002/
 - **当前任务（常更）**：空闲（接管#2 轮交付 T08 阶段 1：harness+首轮 3 周期全绿）
-- **下一步动作（常更）**：T08 窗口延续——后续唤醒用 `CYCLES=3 bash tests/rpc_durability_ci.sh <run-002/t08-durability-rN>` 复跑并记录漂移（RSS/耗时/失败率）；临近截止（剩 <2h）时冻结、清点、最终报告并 CronDelete 监督任务
+- **下一步动作（常更）**：等待用户——review/合并分支 `codex/ion24-t01-t02`（25 提交）或指示新的修复项；到期（2026-09-09 03:48 CST）由监督任务自动写最终检查点并自删。遗留债清单：goal-runs sidecar 迁移、serial/rpc runner 真实 LLM E2E、Codex 侧 ion-24 归属确认
 - **长命令登记（常更）**：（无进行中长命令）
 - **未提交改动**：无
 - **尝试次数/阻塞**：T03/T06/T07 均 0/2 配额一次通过；T05 第 1 次尝试（侦察已完成）。监督任务派发正常（runCount≥2）但被唤醒者未写心跳行——已知限制
