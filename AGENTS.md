@@ -599,6 +599,7 @@ ion rpc --session sess_xxx --method get_flags \
 | `extensions/stock-extension/` | WASM Extension 示例 |
 | `examples/agents/` | Agent 模板（wf/orchestrator/coordinator/developer/merger/reviewer/publisher） |
 | `examples/workflows/` | Workflow YAML 示例（delivery.wf.yaml） |
+| `skills/` | **Agent Skills**（开放标准 SKILL.md 布局）：code-review / scheduler / goal-parsing，外部 agent 可 `npx skills add dyyz1993/ion` 一键安装；ION 自身放 `~/.ion/agent/skills/`（全局）或 `<project>/.ion/skills/`（项目级） |
 | `src/session_tree.rs` | Session Tree 核心数据层（leaf 指针/树构建/branch/rollback/checkout） |
 | `src/storage_context.rs` | **StorageContext**：统一存储路径访问（5 维 + worktree 透明），所有扩展用它拿路径（[约定](./docs/design/CONFIG_DIMENSIONS.md#9-storagecontext)） |
 | `src/file_snapshot/` | File Snapshot 双路快照（object_store/scanner/snapshot/diff/gc，[详情](./docs/design/FILE_SNAPSHOT.md)） |
