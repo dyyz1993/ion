@@ -216,6 +216,20 @@ See [Extension development workflow](docs/guides/EXTENSION_WORKFLOW.md) for the 
 
 ## Next Steps
 
+### Install Agent Skills (works with any agent CLI)
+
+ION ships reusable skills in the open [Agent Skills](https://agentskills.io) format
+(`skills/<name>/SKILL.md`). Install them into Claude Code, Codex, OpenCode, Cursor, etc.:
+
+```bash
+npx skills add dyyz1993/ion                        # interactive picker
+npx skills add dyyz1993/ion --skill code-review -y # pick one, no prompts
+```
+
+Shipped skills: `code-review` · `scheduler` · `goal-parsing` — browsable at
+[dyyz1993.github.io/ion](https://dyyz1993.github.io/ion/). For ION itself, drop them
+into `~/.ion/agent/skills/` (global) or `<project>/.ion/skills/` (per project).
+
 ### Try different agents
 ```bash
 # Explore codebase (read-only)
