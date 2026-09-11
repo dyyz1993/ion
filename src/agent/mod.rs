@@ -5,6 +5,7 @@ pub mod compact;
 pub mod context_index;
 pub mod error;
 pub mod extension;
+pub mod host_tools;
 pub mod memory;
 pub mod messages;
 pub mod origin_gate;

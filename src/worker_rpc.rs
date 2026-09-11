@@ -611,6 +611,20 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     let manager_bridge: Arc<ManagerBridge> =
         Arc::new(ManagerBridge::new(sid.clone(), stdout.clone()));
 
+    // ── Host Tools（REMOTE_WORKER M4）：通道化宿主访问，仅 bridge 模式注册。
+    // 经 ManagerBridge 同步往返（host_call → grants 授权 → 执行 → 审计）。
+    if crate::agent::provider_bridge::is_enabled() {
+        tools.register(Box::new(crate::agent::host_tools::HostReadTool(
+            std::sync::Arc::clone(&manager_bridge),
+        )));
+        tools.register(Box::new(crate::agent::host_tools::HostWriteTool(
+            std::sync::Arc::clone(&manager_bridge),
+        )));
+        tools.register(Box::new(crate::agent::host_tools::HostFetchTool(
+            std::sync::Arc::clone(&manager_bridge),
+        )));
+    }
+
     // ── 根据配置选择 Runtime ──
     // 用 Arc 保存，这样 HookExtension 能 clone 一份（agent handler 需要 runtime 来 spawn 子 Worker）
     let worker_rt: Arc<dyn crate::runtime::Runtime> = {

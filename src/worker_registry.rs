@@ -3676,6 +3676,48 @@ impl WorkerRegistry {
                         }
                     }
                 }
+                // ── M4 动词表：通道化宿主访问（grants → 执行 → 审计） ──
+                "host_call" => {
+                    let verb = params.get("verb").and_then(|v| v.as_str()).unwrap_or("");
+                    let args = params.get("args").cloned().unwrap_or_default();
+                    let result = self.verb_gate_execute(&from_worker, verb, &args).await;
+                    let (ok, data_or_err) = match result {
+                        Ok(d) => (true, d),
+                        Err(e) => (false, serde_json::Value::String(e)),
+                    };
+                    // 审计：无论成败都留痕（host_call custom 条目，落该 worker 的 Mac 会话文件）
+                    {
+                        let w = self.workers.get(&from_worker).or_else(|| {
+                            self.workers.values().find(|w| w.session_id == from_worker)
+                        });
+                        if let Some(w) = w
+                            && !w.session_id.is_empty()
+                        {
+                            let sid = w.session_id.clone();
+                            let path =
+                                crate::paths::session_jsonl_path_by_id(&w.project_path, &sid);
+                            let _ = crate::session_jsonl::append_custom_entry_to_file(
+                                &path,
+                                "host_call",
+                                serde_json::json!({
+                                    "verb": verb,
+                                    "args_summary": {
+                                        "path": args.get("path").and_then(|v| v.as_str()).map(|s| s.chars().take(120).collect::<String>()),
+                                        "url": args.get("url").and_then(|v| v.as_str()),
+                                    },
+                                    "allowed": ok,
+                                    "from_worker": from_worker,
+                                }),
+                            );
+                        }
+                    }
+                    let resp = if ok {
+                        serde_json::json!({"_reply_to": reply_to, "success": true, "data": data_or_err})
+                    } else {
+                        serde_json::json!({"_reply_to": reply_to, "success": false, "error": data_or_err})
+                    };
+                    self.write_manager_response(&from_worker, resp).await;
+                }
                 // ── M3 会话回流：远程 worker 的 session header/entry 落 Mac ──
                 "session_entry" => {
                     let mut sid = params
@@ -4508,6 +4550,149 @@ impl WorkerRegistry {
     /// Write a response JSON line to a worker's stdin.
     /// Resolves worker by worker_id first, then by session_id.
     /// （ManagerBridge 的 _from_worker 传的是 session_id，但 registry 按 worker_id 索引）
+    /// M4 VerbGate：校验 grants → 执行动词 → 返回 data（或 Err=拒绝/失败原因）。
+    /// 授权查找链：worker 的 host 名 → IonConfig remote_workers.<name>.grants。
+    /// 默认全拒；审批 UI 集成是 v2（见设计文档开放问题 2）。
+    async fn verb_gate_execute(
+        &mut self,
+        from_worker: &str,
+        verb: &str,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        use crate::config::grant_path_matches;
+        let (host_name, grants) = {
+            // from_worker 可能是 worker_id 或 session_id（ManagerBridge 传后者）
+            let w = self
+                .workers
+                .get(from_worker)
+                .or_else(|| self.workers.values().find(|w| w.session_id == from_worker));
+            let Some(w) = w else {
+                return Err("verb_denied: worker not found".into());
+            };
+            let host = w.host.clone().unwrap_or_default();
+            let grants = if host.is_empty() {
+                None
+            } else {
+                crate::config::IonConfig::load()
+                    .remote_workers
+                    .and_then(|m| m.get(&host).cloned())
+                    .and_then(|h| h.grants)
+            };
+            (host, grants)
+        };
+        if host_name.is_empty() {
+            return Err("verb_denied: host tools only for remote workers".into());
+        }
+        let grants = grants.unwrap_or_default();
+
+        match verb {
+            "fs.read" => {
+                let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                if path.is_empty() {
+                    return Err("fs.read: missing path".into());
+                }
+                // canonicalize 防路径穿越（/a/b/../../etc 经内核解析后比对——
+                // 纯 glob 前缀会被 ../ 骗过，安全评审 P0#2 的执行端落地）
+                let path = std::fs::canonicalize(path)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .map_err(|e| format!("fs.read: {e}"))?;
+                if !grant_path_matches(&grants.fs_read, &path) {
+                    return Err(format!(
+                        "verb_denied: fs.read '{path}' not in grants.fs_read (remote_workers.{host_name}.grants)"
+                    ));
+                }
+                let meta = std::fs::metadata(&path).map_err(|e| format!("fs.read: {e}"))?;
+                const MAX_READ: u64 = 2 * 1024 * 1024;
+                if meta.len() > MAX_READ {
+                    return Err(format!(
+                        "fs.read: file {} bytes exceeds 2MB cap",
+                        meta.len()
+                    ));
+                }
+                let content =
+                    std::fs::read_to_string(&path).map_err(|e| format!("fs.read: {e}"))?;
+                Ok(serde_json::json!({"content": content}))
+            }
+            "fs.write" => {
+                let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                if raw_path.is_empty() {
+                    return Err("fs.write: missing path".into());
+                }
+                // 目标可能不存在（新建）：canonicalize 父目录再拼文件名
+                let pp = std::path::Path::new(raw_path);
+                let canon_parent = pp
+                    .parent()
+                    .map(|d| std::fs::canonicalize(d).map(|p| p.to_string_lossy().to_string()))
+                    .transpose()
+                    .map_err(|e| format!("fs.write: {e}"))?
+                    .unwrap_or_default();
+                let path = match pp.file_name().and_then(|f| f.to_str()) {
+                    Some(f) => format!("{canon_parent}/{f}"),
+                    None => raw_path.to_string(),
+                };
+                if !grant_path_matches(&grants.fs_write, &path) {
+                    return Err(format!(
+                        "verb_denied: fs.write '{path}' not in grants.fs_write (remote_workers.{host_name}.grants)"
+                    ));
+                }
+                if content.len() > 2 * 1024 * 1024 {
+                    return Err("fs.write: content exceeds 2MB cap".into());
+                }
+                if let Some(parent) = std::path::Path::new(&path).parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                std::fs::write(path, content).map_err(|e| format!("fs.write: {e}"))?;
+                Ok(serde_json::json!({"bytes": content.len()}))
+            }
+            "http.fetch" => {
+                let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                let max_bytes = args
+                    .get("max_bytes")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1_048_576)
+                    .min(10 * 1024 * 1024);
+                let domain = url
+                    .split("://")
+                    .nth(1)
+                    .and_then(|rest| rest.split('/').next())
+                    .unwrap_or("");
+                if !grants.http_fetch.iter().any(|d| d == &domain) {
+                    return Err(format!(
+                        "verb_denied: http.fetch domain '{domain}' not in grants.http_fetch"
+                    ));
+                }
+                let client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(30))
+                    .build()
+                    .map_err(|e| format!("http.fetch: {e}"))?;
+                let resp = client
+                    .get(url)
+                    .send()
+                    .await
+                    .map_err(|e| format!("http.fetch: {e}"))?;
+                let status = resp.status().as_u16();
+                let mut body = String::new();
+                use futures_util::StreamExt;
+                let mut stream = resp.bytes_stream();
+                let mut limited = 0usize;
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk.map_err(|e| format!("http.fetch: {e}"))?;
+                    limited += chunk.len();
+                    if limited > max_bytes as usize {
+                        body.push_str("...[truncated]");
+                        break;
+                    }
+                    body.push_str(&String::from_utf8_lossy(&chunk));
+                }
+                Ok(serde_json::json!({"status": status, "body": body}))
+            }
+            _ => Err(format!(
+                "verb_denied: unknown verb '{verb}' (closed set: fs.read/fs.write/http.fetch)"
+            )),
+        }
+    }
+
     /// 同步写一行到 worker stdin（try_write 重试循环，绝不跨 await 持锁）。
     /// 桥接转发任务（tokio::spawn，需 Send）专用——parking_lot guard 非 Send。
     /// 缓冲满时 2ms 自旋重试，5s 上限后放弃该行（warn）。
@@ -5595,6 +5780,7 @@ mod tests {
             assets: None,
             refresh: None,
             refresh_dest: None,
+            grants: None,
         }
     }
 

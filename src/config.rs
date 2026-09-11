@@ -160,6 +160,38 @@ pub struct RemoteWorkerHost {
     /// 支持 ~/.ssh/config 别名（如 "win38"）。缺省回退 user@hostname。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh_dest: Option<String>,
+    /// 宿主访问授权（M4 动词表）：默认全拒。通道化宿主访问——远端 worker 的
+    /// host_read/host_write/host_fetch 工具经 Manager 执行 + 审计。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grants: Option<RemoteWorkerGrants>,
+}
+
+/// 动词授权（remote_workers.<name>.grants）。全部默认空 = 全拒。
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct RemoteWorkerGrants {
+    /// fs.read 允许的路径（glob：`/prefix/**` = 前缀匹配，其余精确匹配）
+    #[serde(default)]
+    pub fs_read: Vec<String>,
+    /// fs.write 允许的路径（同上；谨慎授予）
+    #[serde(default)]
+    pub fs_write: Vec<String>,
+    /// http.fetch 允许的域名（精确匹配，如 "api.github.com"）
+    #[serde(default)]
+    pub http_fetch: Vec<String>,
+}
+
+/// glob 匹配（v1 简化语义）：`/a/b/**` 匹配 /a/b 下任意路径；无 ** = 精确。
+pub fn grant_path_matches(patterns: &[String], path: &str) -> bool {
+    for p in patterns {
+        if let Some(prefix) = p.strip_suffix("/**") {
+            if path.starts_with(prefix) {
+                return true;
+            }
+        } else if p == path {
+            return true;
+        }
+    }
+    false
 }
 
 /// 资产包内容策略（remote_workers.<name>.assets）。
@@ -1331,6 +1363,52 @@ pub fn default_model_for_provider(provider: &str) -> &'static str {
 #[cfg(test)]
 mod merge_tests {
     use super::*;
+
+    // ── M4 动词表：grant glob 匹配语义 ──────────────────────────────────────
+
+    #[test]
+    fn test_grant_path_matches() {
+        let g = crate::config::RemoteWorkerGrants {
+            fs_read: vec!["/Users/me/proj/**".into(), "/exact/file.txt".into()],
+            fs_write: vec![],
+            http_fetch: vec!["api.github.com".into()],
+        };
+        // ** 前缀匹配
+        assert!(grant_path_matches(&g.fs_read, "/Users/me/proj/a.txt"));
+        assert!(grant_path_matches(
+            &g.fs_read,
+            "/Users/me/proj/deep/nested/b.rs"
+        ));
+        // 前缀不完整匹配（/Users/me/proX 不算）
+        assert!(!grant_path_matches(&g.fs_read, "/Users/me/proX/hack"));
+        // 精确匹配
+        assert!(grant_path_matches(&g.fs_read, "/exact/file.txt"));
+        assert!(!grant_path_matches(&g.fs_read, "/exact/file.txt.bak"));
+        // 空 = 全拒
+        assert!(!grant_path_matches(&g.fs_write, "/anything"));
+        // 路径穿越的纯 glob 语义：../ 形式仍命中前缀（glob 只看字符串）——
+        // 真实防线在 verb_gate_execute 的 canonicalize（内核解析后比对），
+        // 这里断言其"会命中"以固化语义，防止有人误以为 glob 层防穿越。
+        assert!(
+            grant_path_matches(&g.fs_read, "/Users/me/proj/../../etc/passwd"),
+            "plain glob DOES match traversal strings; canonicalize is the real defense"
+        );
+    }
+
+    #[test]
+    fn test_remote_worker_grants_parse() {
+        let json = r#"{"remote_workers": {"w": {"hostname": "h",
+            "grants": {"fs_read": ["/p/**"], "http_fetch": ["x.com"]}}}}"#;
+        let cfg: IonConfig = serde_json::from_str(json).unwrap();
+        let g = cfg.remote_worker_host("w").unwrap().grants.unwrap();
+        assert_eq!(g.fs_read, vec!["/p/**".to_string()]);
+        assert!(g.fs_write.is_empty());
+        assert_eq!(g.http_fetch, vec!["x.com".to_string()]);
+        // 无 grants 字段 = 全拒（Option::unwrap_or_default）
+        let cfg2: IonConfig =
+            serde_json::from_str(r#"{"remote_workers": {"w2": {"hostname": "h"}}}"#).unwrap();
+        assert!(cfg2.remote_worker_host("w2").unwrap().grants.is_none());
+    }
 
     // ── Remote Worker M1：remote_workers 解析 + env 覆盖语义 ──────────────────
 
