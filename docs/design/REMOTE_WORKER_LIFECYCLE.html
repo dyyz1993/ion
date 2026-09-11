@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ION 三种用法生命周期 — 本地 vs 远程沙箱 vs 独立节点</title>
+<style>
+  :root {
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2129; --border:#30363d;
+    --text:#e6edf3; --muted:#8b949e;
+    --green:#3fb950; --green-bg:rgba(63,185,80,.12); --green-bd:rgba(63,185,80,.45);
+    --red:#f85149; --red-bg:rgba(248,81,73,.10); --red-bd:rgba(248,81,73,.45);
+    --blue:#58a6ff; --blue-bg:rgba(88,166,255,.12); --blue-bd:rgba(88,166,255,.45);
+    --purple:#bc8cff; --purple-bg:rgba(188,140,255,.12); --purple-bd:rgba(188,140,255,.45);
+    --amber:#d29922; --amber-bg:rgba(210,153,34,.12); --amber-bd:rgba(210,153,34,.45);
+    --cyan:#39c5cf;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;padding:36px 20px;line-height:1.55}
+  .wrap{max-width:1150px;margin:0 auto}
+  h1{font-size:24px;margin-bottom:6px}
+  h2{font-size:19px;margin:34px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+  h3{font-size:15px;margin:18px 0 8px}
+  .sub{color:var(--muted);font-size:14px;margin-bottom:26px}
+  p.note{font-size:13px;color:var(--muted);margin-bottom:18px}
+  code{background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:1px 6px;font-size:12.5px;font-family:ui-monospace,Menlo,monospace;color:#a5d6ff}
+  pre{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:12px 14px;font-size:12.5px;overflow-x:auto;font-family:ui-monospace,Menlo,monospace;color:#c9d1d9;margin:8px 0}
+
+  /* 三选一卡片 */
+  .modes{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:10px}
+  .mode{border:1px solid var(--border);border-radius:12px;padding:16px;background:var(--panel)}
+  .mode h3{margin-top:0}
+  .mode .cmd{font-family:ui-monospace,Menlo,monospace;font-size:12px;background:var(--bg);border-radius:6px;padding:6px 8px;margin:8px 0;color:#a5d6ff}
+  .mode table{width:100%;font-size:12px;border-collapse:collapse}
+  .mode td{padding:3px 0;border-top:1px dashed var(--border)}
+  .mode td:first-child{color:var(--muted);width:52px}
+  .mA{border-top:3px solid var(--blue)} .mB{border-top:3px solid var(--green)} .mC{border-top:3px solid var(--purple)}
+  .mA h3{color:var(--blue)} .mB h3{color:var(--green)} .mC h3{color:var(--purple)}
+
+  /* 生命周期泳道 */
+  .flow{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin:14px 0}
+  .flow .head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px}
+  .flow .head b{font-size:15px}
+  .flow .head .cmd{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#a5d6ff}
+  .steps{display:flex;flex-direction:column;gap:0}
+  .step{display:flex;gap:12px;align-items:flex-start;padding:7px 0;position:relative}
+  .step .no{flex:0 0 26px;height:26px;border-radius:50%;background:var(--panel2);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:var(--blue)}
+  .step .body{flex:1;font-size:13px}
+  .step .body .where{font-size:11px;padding:1px 8px;border-radius:10px;margin-right:8px;font-weight:600}
+  .w-mac{background:var(--blue-bg);color:var(--blue);border:1px solid var(--blue-bd)}
+  .w-win{background:var(--green-bg);color:var(--green);border:1px solid var(--green-bd)}
+  .step .body .d{color:var(--muted);font-size:12.5px;margin-top:2px}
+  .step.risk .no{border-color:var(--red-bd);color:var(--red)}
+  .step.risk .body .t{color:var(--red)}
+  .step.safe .no{border-color:var(--green-bd);color:var(--green)}
+  .step.safe .body .t{color:var(--green)}
+  .divider{border-top:1px dashed var(--border);margin:10px 0}
+
+  /* 问答卡 */
+  .qa{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:14px 0}
+  .qacard{border:1px solid var(--border);border-radius:10px;padding:14px 16px;background:var(--panel)}
+  .qacard .q{font-size:13.5px;font-weight:600;margin-bottom:8px}
+  .qacard .a{font-size:13px}
+  .qacard .a b.no{color:var(--green)} .qacard .a b.yes{color:var(--red)}
+  .qacard .a .extra{color:var(--muted);font-size:12px;margin-top:6px}
+
+  .tag{display:inline-block;font-size:11px;padding:1px 8px;border-radius:10px;margin-left:6px;vertical-align:1px}
+  .tag.g{background:var(--green-bg);color:var(--green);border:1px solid var(--green-bd)}
+  .tag.r{background:var(--red-bg);color:var(--red);border:1px solid var(--red-bd)}
+  .tag.a{background:var(--amber-bg);color:var(--amber);border:1px solid var(--amber-bd)}
+  .footnote{margin-top:20px;font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>三种用法生命周期 — 本地 / 远程沙箱 / 独立节点</h1>
+  <div class="sub">一次任务从下发到结束，每一步"发生在哪、谁能碰到什么、恶意代码能做到哪一步"</div>
+
+  <!-- ═══════════ 选型总览 ═══════════ -->
+  <h2>① 三种用法怎么选</h2>
+  <div class="modes">
+    <div class="mode mA">
+      <h3>A 本地会话（默认）</h3>
+      <div class="cmd">ion "任务"</div>
+      <table>
+        <tr><td>大脑</td><td>Mac</td></tr>
+        <tr><td>手脚</td><td>Mac</td></tr>
+        <tr><td>Key</td><td>Mac</td></tr>
+        <tr><td>会话</td><td>Mac</td></tr>
+        <tr><td>风险</td><td style="color:var(--red)">全部落在 Mac</td></tr>
+      </table>
+      <div style="font-size:12px;color:var(--muted);margin-top:8px">日常可信工作：改自己的代码、查资料。已有两道 P0 防线（hooks 信任门 + 配置写保护）。</div>
+    </div>
+    <div class="mode mB">
+      <h3>B 远程沙箱（客户端模式）</h3>
+      <div class="cmd">agent 调 spawn_worker(host="win38")</div>
+      <table>
+        <tr><td>大脑</td><td>win38（worker 整体搬家）</td></tr>
+        <tr><td>手脚</td><td>win38</td></tr>
+        <tr><td>Key</td><td><b style="color:var(--green)">无（经 Mac 桥接）</b></td></tr>
+        <tr><td>会话</td><td>Mac（实时回流）</td></tr>
+        <tr><td>风险</td><td style="color:var(--green)">困在 win38 沙箱里</td></tr>
+      </table>
+      <div style="font-size:12px;color:var(--muted);margin-top:8px">不可信仓库分析、重编译、重活。打穿了也只是 win38。</div>
+    </div>
+    <div class="mode mC">
+      <h3>C 独立节点（服务端模式）</h3>
+      <div class="cmd">ion38 "任务"（SSH 直达 win38）</div>
+      <table>
+        <tr><td>大脑</td><td>win38</td></tr>
+        <tr><td>手脚</td><td>win38</td></tr>
+        <tr><td>Key</td><td>win38（你自己的代理 URL）</td></tr>
+        <tr><td>会话</td><td>win38</td></tr>
+        <tr><td>风险</td><td style="color:var(--amber)">独立核算，与 Mac 无关</td></tr>
+      </table>
+      <div style="font-size:12px;color:var(--muted);margin-top:8px">无人值守定时任务、Mac 关机也要跑的活。WOL 唤醒 + 开机自愈。</div>
+    </div>
+  </div>
+
+  <!-- ═══════════ 生命周期 A ═══════════ -->
+  <h2>② 生命周期 A：本地会话（日常默认）</h2>
+  <div class="flow">
+    <div class="head"><b>全部发生在 Mac</b><span class="cmd">ion "帮我改这个 bug"</span></div>
+    <div class="steps">
+      <div class="step"><div class="no">1</div><div class="body"><span class="where w-mac">Mac</span>Manager 在本机 spawn worker 进程<span class="d">会话文件落在 Mac ~/.ion/</span></div></div>
+      <div class="step"><div class="no">2</div><div class="body"><span class="where w-mac">Mac</span>agent 循环启动 → 用 Mac 的 key 直接调 LLM<span class="d">GLM 思考 → 返回工具调用计划</span></div></div>
+      <div class="step"><div class="no">3</div><div class="body"><span class="where w-mac">Mac</span>工具执行：read / write / bash / grep 全部落在本机磁盘<span class="d">受保护路径检查（config.json 等写不进去 ✅）+ CommandGuard 拦高危命令</span></div></div>
+      <div class="step risk"><div class="no">⚠</div><div class="body"><span class="t">风险点（诚实声明）</span>
+        <div class="d">① 恶意仓库的 build.rs 会在 Mac 上跑（LSP cargo check 触发）② bash 命令字符串可绕过检查 ③ hooks 已有信任门 ✅（项目级默认不加载）④ 配置写保护 ✅（[Protected] 拒绝）<br>
+        <b style="color:var(--text)">结论：A 模式 = 全权限。可信工作用它没问题；不可信任务 → 用 B</b></div></div></div>
+      <div class="step"><div class="no">4</div><div class="body"><span class="where w-mac">Mac</span>会话完整记录（含所有工具结果）→ 结束<span class="d">JSONL 只追加，可回放可审计</span></div></div>
+    </div>
+  </div>
+
+  <!-- ═══════════ 生命周期 B ═══════════ -->
+  <h2>② 生命周期 B：远程沙箱（不可信任务 / 重活）</h2>
+  <div class="flow">
+    <div class="head"><b>大脑和手脚整体搬到 win38，Mac 只出"门厅"</b><span class="cmd">agent 自主调 spawn_worker(host="win38", task="分析这个仓库")</span></div>
+    <div class="steps">
+      <div class="step"><div class="no">1</div><div class="body"><span class="where w-mac">Mac</span>Manager 收到 spawn 请求 → refresh 自愈：经 22 管理通道拉起 WSL sshd + 刷新端口转发<span class="d">每次 spawn 前执行——VM 停机/IP 漂移自动修复（已实测两次重启零干预）</span></div></div>
+      <div class="step safe"><div class="no">2</div><div class="body"><span class="where w-win">win38</span>资产包下发：Mac 的 skills/agents 打包推送（<b>便携性 lint 剔除含宿主路径的文件</b>）；远端项目级 hooks.json <b>不加载</b>（供应链免疫）<span class="d">声明式同步：远端 = 本次下发的精确镜像</span></div></div>
+      <div class="step"><div class="no">3</div><div class="body"><span class="where w-win">win38</span>SSH 拉起远端 worker（强制 fork 模式，独立会话文件）→ agent 循环在 win38 诞生<span class="d">Mac 上没有这个进程——它不存在于你的本机</span></div></div>
+      <div class="step safe"><div class="no">4</div><div class="body"><span class="where w-win">win38</span><b>零 key LLM 桥接</b>：需要调 LLM 时发 llm_request → Mac 用真 key 代发 → 流式回传<span class="d">win38 的 key 可以是假的（实测摘除后照常出答案 "42"）——被打穿也偷不到钥匙</span></div></div>
+      <div class="step"><div class="no">5</div><div class="body"><span class="where w-win">win38</span>工具执行：read / bash / grep 全在 win38 磁盘；后台进程也是 win38 的子进程<span class="d">Mac 路径对它不存在——两个文件系统互不可见（这是隔离的根基，不是缺陷）</span></div></div>
+      <div class="step safe"><div class="no">6</div><div class="body"><span class="where w-win">win38</span>会话双写：远端照写本地副本 + 每条 entry 实时镜像回 Mac 落盘<span class="d">打穿/销毁/重装 win38 都不丢历史；UI 在 Mac 直读 ✅</span></div></div>
+      <div class="step safe"><div class="no">7</div><div class="body"><span class="where w-mac">Mac</span>想读 Mac 文件 / 经 Mac 出网？→ <b>封闭动词表</b>：fs.read / fs.write / http.fetch<span class="d">grants 默认全拒 → ask_on_deny 转人工审批（RPC verb_review 放行）→ 每次调用审计留痕；<b>永远没有 host.bash 动词</b></span></div></div>
+      <div class="step"><div class="no">8</div><div class="body"><span class="where w-win">win38</span>任务完成 / SSH 断线 = worker 死亡 → 远端临时目录清理<span class="d">Mac 侧只剩会话历史；kill / 断线都不影响 Mac 任何东西</span></div></div>
+    </div>
+  </div>
+
+  <!-- ═══════════ 生命周期 C ═══════════ -->
+  <h2>② 生命周期 C：独立节点（无人值守）</h2>
+  <div class="flow">
+    <div class="head"><b>win38 是一台自治机器，Mac 关机它照跑</b><span class="cmd">win38-on → ion38 "定时检查 xx 并汇报"</span></div>
+    <div class="steps">
+      <div class="step"><div class="no">1</div><div class="body"><span class="where w-win">win38</span>机器关着？→ <b>win38-on</b> 发 WOL 魔术包唤醒（实测 23 秒）→ SSH/服务自动就绪（约 2 分钟）<span class="d">开机计划任务自动拉起 ion serve + WSL 网关，零人工干预（实测两轮重启）</span></div></div>
+      <div class="step"><div class="no">2</div><div class="body"><span class="where w-win">win38</span>win38 自己的 ion serve 接单：agent / 工具 / 会话 / 定时任务 全部自治<span class="d">用它自己的 config + 你自己的代理 URL 调 LLM（Mac 不参与）</span></div></div>
+      <div class="step"><div class="no">3</div><div class="body"><span class="where w-win">win38</span>用完：<b>win38-off</b> 远程关机<span class="d">省电；下次要再唤醒即可</span></div></div>
+      <div class="step risk"><div class="no">⚠</div><div class="body"><span class="t">风险点</span><div class="d">它持有你代理的 URL（可烧你代理的底层额度——但 URL 管理权在你手里，随时可在代理侧封禁）。已被 SSH 密码登录已关闭 ✅，只认 Mac 公钥。</div></div></div>
+    </div>
+  </div>
+
+  <!-- ═══════════ 可能性问答 ═══════════ -->
+  <h2>③ "有没有这种可能"——恶意代码能做到哪一步</h2>
+  <p class="note">前提：你让 agent 分析一个恶意仓库，它执行了里面的恶意代码。逐个回答"会不会影响到……"。</p>
+  <div class="qa">
+    <div class="qacard">
+      <div class="q">B 模式下，它能删除我 Mac 上的文件吗？</div>
+      <div class="a"><b class="no">不能。</b>两个文件系统互不可见：win38 上不存在 /Users/ 路径，Mac 上不存在它的沙箱路径。唯一跨机通道是封闭动词表（fs.read/fs.write 默认全拒 + 审批），且<b>没有 "在 Mac 执行命令" 这个动词</b>。<div class="extra">例外：你主动授权 fs.write 某个 Mac 路径 + 审批放行——那是你点头的，且每次留审计。</div></div>
+    </div>
+    <div class="qacard">
+      <div class="q">B 模式下，它能偷走我的 LLM key 吗？</div>
+      <div class="a"><b class="no">不能。</b>桥接模式下 worker 的 config 里没有 key（实测摘成假值照常工作）。它调 LLM 的唯一方式是请求 Mac 代发。真 key 从未离开 Mac。<div class="extra">C 模式（ion38）下 win38 持有你代理的 URL——但那是你自己的代理，随时可在代理侧封禁/限流。</div></div>
+    </div>
+    <div class="qacard">
+      <div class="q">B 模式下，它能反过来攻击我的 Mac 吗？</div>
+      <div class="a"><b class="no">没有现成通道。</b>不能 SSH 回 Mac（没有你的钥匙）、不能写 Mac 文件（无动词）、出网只能走白名单域名。它能"看见"的只有：任务给它的数据 + 白名单内的网络。<div class="extra">残余面：烧 token（有预算封顶）；同网段扫描 NAS（内网设备照常设防即可）。</div></div>
+    </div>
+    <div class="qacard">
+      <div class="q">A 模式（本地）下呢？</div>
+      <div class="a"><b class="yes">能——这就是 A 模式的本质。</b>本地 = agent 有 Mac 全权限。已堵：hooks 供应链（信任门）✅、配置改写（写保护）✅。仍可绕：bash 字符串（echo x > 文件）。<div class="extra"><b style="color:var(--text)">结论：不可信的东西，别用 A 模式跑——用 B。</b>这正是 B 存在的意义。</div></div>
+    </div>
+    <div class="qacard">
+      <div class="q">LLM 提供商（zai）能看到我的数据吗？</div>
+      <div class="a"><b class="yes">会话内容都会发给它</b>——这是任何 AI 工具的固有属性，三种模式相同（B 模式经 Mac 桥接发出，路径多一跳但终点相同）。<div class="extra">所以秘密本身别放进会话；工具读到的敏感文件内容也会进上下文——verb 审批就是最后一道闸。</div></div>
+    </div>
+    <div class="qacard">
+      <div class="q">它能让我的 Mac 服务挂掉吗（比如杀 ion serve）？</div>
+      <div class="a"><b class="no">不能。</b>B 模式的 worker 是 win38 里的进程，够不着 Mac 的进程表。反向才需要警惕：你 Mac 上杀远端 worker 随便杀，不影响本机。<div class="extra">最坏情况：烧 token + 消耗 win38 资源 → kill worker / win38-off 随时止损。</div></div>
+    </div>
+  </div>
+
+  <!-- ═══════════ 实操卡 ═══════════ -->
+  <h2>④ 实操命令卡</h2>
+  <pre>
+# ── A 本地（日常）──
+ion "帮我改这个 bug"
+
+# ── B 远程沙箱（不可信 / 重活）──
+# 让 agent 自己派（推荐——它会按需给 win38 分配子任务）：
+ion "在远程沙箱里分析 /tmp/这个仓库 有没有安全问题，spawn_worker 时用 host=win38"
+# 或手动指定：
+ion rpc --method create_worker --params '{"host":"win38","agent":"build","initial_prompt":"..."}'
+
+# ── C 独立节点 ──
+win38-on                      # 唤醒（关机状态时，约 2 分钟自动就绪）
+ion38 "检查 xx 服务状态"      # 直接指挥 win38 上的 ion
+win38-off                     # 用完关机</pre>
+
+  <div class="footnote">
+    实测锚点：零 key 桥接（win38 key 摘除后答出 "42"）· 会话回流 UI 直读 · 越权 verb_denied + 审计 · 重启零干预恢复 ×2 · WOL 23s 唤醒 ·
+    源码：worker_registry.rs（spawn）· provider_bridge.rs（桥接）· host_tools.rs（动词）· hooks/mod.rs（信任门）· protected_paths.rs（写保护）
+  </div>
+</div>
+</body>
+</html>
