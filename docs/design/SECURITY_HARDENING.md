@@ -29,6 +29,16 @@
 - 单测：protected_paths（basic/traversal/extras）+ hooks 信任门判定矩阵 + load_fresh skip/allow + grants glob/解析 —— lib 1014/0
 - 真机：本地会话注入诱导写 `~/.ion/config.json` → `[Protected]` 拒绝 + config 完好（default_provider 未变）✅
 
+## ③ 执行端 SSH 关闭密码登录（运维项）
+
+- Windows sshd_config 追加 `PasswordAuthentication no`（原行是注释默认 yes），计划任务
+  `sshd-restart` 独立重启 sshd（防改配置时 SSH 会话中断导致 net start 未执行）
+- 验证三断言：公钥登录 ✅ / 密码认证被拒（Permission denied: publickey,keyboard-interactive）✅ /
+  WSL 2222 直连通道不受影响 ✅；serve/gateway 任务不受影响 ✅
+- 保底流程（本次实操模式，可复用）：备份 sshd_config → 建开机自动还原任务（还原备份+重启
+  sshd）→ 改配置 → 重启 → 验证 → **删保底任务**（不删会在每次开机撤销加固）
+- WSL 内 sshd（2222）root 已是 prohibit-password；backup: `sshd_config.bak-prehardening`
+
 ## 已知边界（诚实声明）
 
 - bash 命令字符串内的路径不可靠解析（`echo x > config.json` 类）——CommandGuard 字符串匹配可绕过（官方文档已声明）；根本对策是不可信任务用 remote/container 后端（REMOTE_WORKER.md）
