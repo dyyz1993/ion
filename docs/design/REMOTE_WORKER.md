@@ -381,3 +381,25 @@ grep host_call ~/.ion/agent/sessions/**/<sid>.jsonl | head
 - LiteLLM / OpenRouter（AI Gateway）—— 中心化 key + 虚拟 key 思路（桥接的 provider 侧替身）
 - MCP consent / 对象能力模型（no ambient authority）—— 封闭动词表
 - 自托管 n8n / JupyterHub —— 服务端模式
+
+---
+
+## 10. Mission D 多智能体编排压测记录（2026-09-11）
+
+在 win38 上验证多级编排：Mac 派 coordinator（host=win38）→ coordinator 自主 spawn 2 个并行子 Worker。
+
+### 验证通过
+
+- coordinator 自主任务拆分（saas 多租户 + ecommerce 电商，差异最大的两个形态）
+- spawn_worker 参数传递（host=win38 传播到子 Worker、developer 角色选择、任务书含 registry 提示）
+- 子 Worker 进程在 win38 落地（SSH 中继 spawn 可用）
+
+### 发现的边界（待内核修复）
+
+1. **子 Worker spawn 可靠性**：第二个 create_worker 在 Manager 侧 320s 超时（Manager 拥塞时 SSH spawn 排队阻塞）
+2. **初始 prompt 注入丢失**：spawn 成功的子 Worker 0 工具调用空转——多级中转下注入链路不可靠
+3. **SSH 掉线杀 worker**：~90s 网络瞬断即杀死 worker（ServerAliveCountMax=10 已缓解至 ~5min，但长任务仍会中招）
+
+### 结论
+
+多智能体编排**模式验证可行**（coordinator 自主拆分+并行派发 ✓），但长任务可靠化需要 **mission-supervisor 内核特性**（worker 死亡检测 → 自动重派 + 断点续作提示词生成）。已立项（见 §8 路线图 M5）。
