@@ -243,7 +243,7 @@ pub enum Message {
 // Context
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Context {
     pub system_prompt: Option<String>,
     pub messages: Vec<Message>,
@@ -371,7 +371,7 @@ impl std::fmt::Display for StopReason {
 // StreamEvent — the protocol between Provider and Consumer
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum StreamEvent {
     Start {
         partial: AssistantMessage,
@@ -432,7 +432,7 @@ pub enum StreamEvent {
 // StreamOptions
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StreamOptions {
     pub max_tokens: Option<u64>,
     pub api_key: Option<String>,

@@ -169,6 +169,14 @@ impl HooksConfig {
         }
 
         // 项目级配置（合并）
+        // REMOTE_WORKER 安全门：远程 worker 不加载项目级 hooks（供应链 P0 克星——
+        // 恶意仓库自带的 .ion/hooks.json 在远端执行端不生效，只认 Manager 下发）
+        if std::env::var("ION_NO_PROJECT_HOOKS")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+        {
+            return merged;
+        }
         if let Some(proj) = project_dir {
             let proj_path = proj.join(".ion").join("hooks.json");
             if proj_path.exists()

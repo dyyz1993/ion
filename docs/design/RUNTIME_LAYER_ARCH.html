@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ION Runtime 层架构图 — 统一副作用执行面</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel2: #1c2129;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --green: #3fb950;
+    --green-bg: rgba(63,185,80,.12);
+    --green-border: rgba(63,185,80,.45);
+    --red: #f85149;
+    --red-bg: rgba(248,81,73,.10);
+    --red-border: rgba(248,81,73,.45);
+    --blue: #58a6ff;
+    --blue-bg: rgba(88,166,255,.12);
+    --blue-border: rgba(88,166,255,.45);
+    --purple: #bc8cff;
+    --purple-bg: rgba(188,140,255,.12);
+    --purple-border: rgba(188,140,255,.45);
+    --amber: #d29922;
+    --amber-bg: rgba(210,153,34,.12);
+    --amber-border: rgba(210,153,34,.45);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    padding: 40px 24px; line-height: 1.55;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 24px; margin-bottom: 6px; }
+  .subtitle { color: var(--muted); font-size: 14px; margin-bottom: 8px; }
+  .verified { color: var(--green); font-size: 13px; margin-bottom: 28px; }
+  .verified code { color: var(--amber); font-size: 12px; }
+
+  /* ── 分层容器 ── */
+  .layer {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px 20px; margin-bottom: 0;
+    position: relative;
+  }
+  .layer-tag {
+    position: absolute; top: -11px; left: 18px;
+    background: var(--bg); padding: 0 10px;
+    font-size: 13px; font-weight: 600; color: var(--blue);
+    letter-spacing: .5px;
+  }
+  .layer-desc { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
+
+  /* 箭头连接带 */
+  .connector {
+    display: flex; justify-content: center; gap: 120px;
+    padding: 2px 0; margin: 0;
+  }
+  .connector .arrow {
+    display: flex; flex-direction: column; align-items: center;
+    color: var(--green); font-size: 11px;
+  }
+  .connector .line { width: 2px; height: 18px; background: var(--green-border); }
+  .connector .head {
+    width: 0; height: 0; border-left: 6px solid transparent;
+    border-right: 6px solid transparent; border-top: 8px solid var(--green);
+  }
+  .connector.bypass { gap: 40px; }
+  .connector.bypass .line { background: var(--red-border); }
+  .connector.bypass .head { border-top-color: var(--red); }
+  .connector.bypass .arrow { color: var(--red); }
+  .connector .arrow span { margin: 1px 0; }
+
+  /* ── 芯片/节点 ── */
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    border-radius: 8px; padding: 6px 12px; font-size: 13px;
+    border: 1px solid var(--border); background: var(--panel2);
+  }
+  .chip b { font-size: 13px; }
+  .chip .m { display: block; font-size: 11px; color: var(--muted); font-family: ui-monospace, Menlo, monospace; }
+  .chip.green  { border-color: var(--green-border); background: var(--green-bg); }
+  .chip.red    { border-color: var(--red-border);  background: var(--red-bg); }
+  .chip.blue   { border-color: var(--blue-border); background: var(--blue-bg); }
+  .chip.purple { border-color: var(--purple-border); background: var(--purple-bg); }
+  .chip.amber  { border-color: var(--amber-border); background: var(--amber-bg); }
+
+  .row { display: flex; gap: 16px; flex-wrap: wrap; }
+  .col { flex: 1; min-width: 300px; }
+  .col-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+  .col-title.small { font-size: 12px; color: var(--muted); font-weight: 500; }
+
+  /* 核心层高亮框 */
+  .core-layer { border-color: var(--green-border); border-width: 1.5px; }
+  .core-layer .layer-tag { color: var(--green); }
+
+  /* 后端卡 */
+  .backends { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .backend {
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 14px; background: var(--panel2); text-align: center;
+  }
+  .backend .name { font-weight: 700; font-size: 14px; }
+  .backend .sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .backend.remote { border-color: var(--purple-border); background: var(--purple-bg); }
+  .backend.remote .name { color: var(--purple); }
+
+  /* 配置面板 */
+  .config {
+    margin-top: 22px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px 20px;
+  }
+  .config h3 { font-size: 14px; margin-bottom: 10px; color: var(--amber); }
+  .config pre {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px; font-size: 12.5px; overflow-x: auto;
+    font-family: ui-monospace, Menlo, monospace; color: #c9d1d9;
+  }
+  .config .kw { color: var(--blue); }
+  .config .str { color: #a5d6ff; }
+  .config .cmt { color: #6e7681; }
+
+  /* 图例 */
+  .legend {
+    display: flex; gap: 20px; flex-wrap: wrap; margin-top: 22px;
+    font-size: 12.5px; color: var(--muted); align-items: center;
+  }
+  .legend .dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+
+  .footnote { margin-top: 18px; font-size: 12px; color: var(--muted); }
+  .footnote code { color: var(--amber); font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>ION「Runtime 层」— 统一副作用执行面</h1>
+  <div class="subtitle">大脑永远本地 · 手脚可整体切换 · 副作用逐调用路由</div>
+  <div class="verified">✅ 2026-09-10 源码逐点查证 + 真机实测（bash/read/write 路由 win38 与 NAS 均已验证）</div>
+
+  <!-- ═══ 使用者层 ═══ -->
+  <div class="layer">
+    <div class="layer-tag">① 调用方（谁产生副作用）</div>
+    <div class="row">
+      <div class="col">
+        <div class="col-title">🧠 Agent Loop — 大脑（永远本地，不随层切换）</div>
+        <div class="layer-desc">LLM 循环 / 工具决策 / 扩展钩子编排。切后端只改变「手脚落在哪」，不改变大脑位置。</div>
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div class="col">
+        <div class="col-title" style="color:var(--green)">核心工具（全部经过 Runtime 层 ✅）</div>
+        <div class="chips">
+          <span class="chip green"><b>bash</b><span class="m">rt.execute_command</span></span>
+          <span class="chip green"><b>read</b><span class="m">rt.read_file</span></span>
+          <span class="chip green"><b>write</b><span class="m">rt.write_file</span></span>
+          <span class="chip green"><b>edit</b><span class="m">rt.read_file + write</span></span>
+          <span class="chip green"><b>grep</b><span class="m">rt.execute_command(rg)</span></span>
+          <span class="chip green"><b>find</b><span class="m">rt.execute_command(find)</span></span>
+          <span class="chip green"><b>ls</b><span class="m">rt.execute_command(ls)</span></span>
+        </div>
+      </div>
+      <div class="col">
+        <div class="col-title" style="color:var(--green)">扩展 Extension — ctx.fs（经过 Runtime 层 ✅）</div>
+        <div class="chips">
+          <span class="chip green"><b>内置 Rust 扩展</b><span class="m">registry.filesystem() → ctx.fs</span></span>
+          <span class="chip green"><b>WASM 扩展</b><span class="m">host_read_file / host_list_dir → 同一 ctx.fs</span></span>
+          <span class="chip blue"><b>4 级数据目录</b><span class="m">global/project/cwd/session 隔离</span></span>
+        </div>
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <div class="col">
+        <div class="col-title" style="color:var(--red)">绕层直通（强制本机，切层不随行 ⛔）</div>
+        <div class="chips">
+          <span class="chip red"><b>bash 后台进程</b><span class="m">tokio 直 spawn（bash.rs:289）</span></span>
+          <span class="chip red"><b>LSP 诊断</b><span class="m">自己 sh 跑 cargo/tsc（lsp_extension.rs:452）</span></span>
+          <span class="chip red"><b>Monitor 扩展</b><span class="m">std::process 直跑 sh（monitor:253）</span></span>
+          <span class="chip red"><b>spawn_worker 编排</b><span class="m">worker=host 本地子进程</span></span>
+          <span class="chip red"><b>会话 JSONL / 索引</b><span class="m">host 数据，本来就该本地</span></span>
+        </div>
+      </div>
+      <div class="col">
+        <div class="col-title" style="color:var(--muted)">外部体系（与层无关）</div>
+        <div class="chips">
+          <span class="chip"><b>MCP 工具</b><span class="m">在哪执行 = MCP server 在哪</span></span>
+          <span class="chip"><b>场景 5 远程 worker</b><span class="m">设计有、未实现（源码零命中）</span></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 连接带 -->
+  <div class="connector">
+    <div class="arrow"><div class="line"></div><span>副作用（命令 + 文件）</span><div class="head"></div></div>
+    <div class="arrow"><div class="line"></div><span>白名单内文件访问</span><div class="head"></div></div>
+  </div>
+  <div class="connector bypass" style="margin-top:14px">
+    <div class="arrow"><div class="line"></div><span>绕过层 · 永远落在本机</span><div class="head"></div></div>
+  </div>
+
+  <!-- ═══ Runtime 层 ═══ -->
+  <div class="layer core-layer">
+    <div class="layer-tag">② Runtime 层 — 可整体切换的「手脚」</div>
+    <div class="row">
+      <div class="col">
+        <div class="col-title" style="color:var(--green)">FileSystemCapability（ctx.fs 门面）</div>
+        <div class="layer-desc">
+          <code>RuntimeFileSystem</code> 持有 <code>Arc&lt;dyn Runtime&gt;</code>，
+          所有扩展文件读写委托 Runtime 路由；外加 <b>allowed_roots 白名单</b> + safe_join 防 <code>../</code> 逃逸。
+        </div>
+        <div class="chips">
+          <span class="chip green">read_file</span>
+          <span class="chip green">write_file</span>
+          <span class="chip green">list_dir</span>
+          <span class="chip green">path_exists</span>
+          <span class="chip green">glob</span>
+        </div>
+      </div>
+      <div class="col">
+        <div class="col-title" style="color:var(--green)">Runtime trait + BackendRegistry（路由器）</div>
+        <div class="layer-desc">
+          每次调用逐条决策去哪个后端：先查 <b>routes</b>（命令前缀 / 路径 glob 命中）→ 未命中走 <b>default</b>。
+          worker spawn 时读配置，改配置新会话即生效（host 无需重启）。
+        </div>
+        <div class="chips">
+          <span class="chip green">execute_command</span>
+          <span class="chip green">read_file / write_file / edit_file / rm</span>
+          <span class="chip red">spawn_process<span class="m">Remote 后端不支持（返回 Err）</span></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 连接带 -->
+  <div class="connector">
+    <div class="arrow"><div class="line"></div><span>逐调用路由（default + routes）</span><div class="head"></div></div>
+  </div>
+
+  <!-- ═══ 后端层 ═══ -->
+  <div class="layer">
+    <div class="layer-tag">③ Backend — 四种可切换环境</div>
+    <div class="backends">
+      <div class="backend">
+        <div class="name">local</div>
+        <div class="sub">直接执行<br>LocalRuntime</div>
+      </div>
+      <div class="backend">
+        <div class="name">sandbox</div>
+        <div class="sub">权限过滤包装<br>readonly / workspace / full</div>
+      </div>
+      <div class="backend remote">
+        <div class="name">remote ★</div>
+        <div class="sub">SSH 转发<br>文件操作假设 POSIX 对端</div>
+      </div>
+      <div class="backend">
+        <div class="name">container</div>
+        <div class="sub">apple / docker / podman<br>完全隔离</div>
+      </div>
+    </div>
+    <div class="layer-desc" style="margin-top:12px">
+      ⚠️ 已实测的 remote 语义边界：命令前缀<b>不剥离</b>（整条原样发远程）· 本地 cwd <b>不转发</b>（远端跑在远端 HOME）·
+      Windows cmd 对端文件工具必挂（cat/heredoc POSIX 假设）· 后台进程不支持。
+    </div>
+  </div>
+
+  <!-- 配置示例 -->
+  <div class="config">
+    <h3>切换方式 = 改配置（三种粒度）</h3>
+<pre>
+<span class="cmt">// ~/.ion/config.json → runtime 段</span>
+{
+  <span class="kw">"backends"</span>: {
+    <span class="str">"win38"</span>:  { <span class="kw">"type"</span>: <span class="str">"remote"</span>, <span class="kw">"hostname"</span>: <span class="str">"win38"</span>, <span class="kw">"user"</span>: <span class="str">"sshuser"</span>, <span class="kw">"port"</span>: 22 },
+    <span class="str">"nas"</span>:    { <span class="kw">"type"</span>: <span class="str">"remote"</span>, <span class="kw">"hostname"</span>: <span class="str">"192.168.0.103"</span>, <span class="kw">"user"</span>: <span class="str">"root"</span> }
+  },
+  <span class="kw">"default"</span>: <span class="str">"local"</span>,                    <span class="cmt">// ① 全局默认（可整体切 remote）</span>
+  <span class="kw">"routes"</span>: [                              <span class="cmt">// ② 按命令前缀分流</span>
+    { <span class="kw">"tool"</span>: <span class="str">"bash"</span>, <span class="kw">"command"</span>: <span class="str">"ffmpeg-hevc *"</span>, <span class="kw">"target"</span>: <span class="str">"win38"</span> },
+    { <span class="kw">"tool"</span>: <span class="str">"write"</span>, <span class="kw">"path"</span>: <span class="str">"/private/tmp/*"</span>, <span class="kw">"target"</span>: <span class="str">"nas"</span> }  <span class="cmt">// ③ 按路径 glob 分流</span>
+  ]
+}</pre>
+  </div>
+
+  <!-- 图例 -->
+  <div class="legend">
+    <span><span class="dot" style="background:var(--green)"></span>经过 Runtime 层（随切换走）</span>
+    <span><span class="dot" style="background:var(--red)"></span>绕层强制本地（不随切换）</span>
+    <span><span class="dot" style="background:var(--purple)"></span>remote 后端（SSH，win38 实测 ✅）</span>
+    <span><span class="dot" style="background:var(--blue)"></span>配套机制</span>
+  </div>
+
+  <div class="footnote">
+    源码锚点：<code>runtime.rs:1508</code> RemoteRuntime · <code>backend_registry.rs:94</code> BackendRegistry ·
+    <code>extension.rs:410</code> FileSystemCapability（注释明言"走 Runtime 路由，本地/沙箱/远程透明"）·
+    <code>tool.rs:28</code> 工具统一签名 <code>execute(args, rt)</code> · <code>agent_loop.rs:841</code> 注入点 ·
+    <code>wasm_extension.rs:43</code> host_read_file 复用 ctx.fs
+  </div>
+
+</div>
+</body>
+</html>

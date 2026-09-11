@@ -1870,6 +1870,7 @@ impl Tool for GoalDiagnoseTool {
             system_prompt_override: None,
             model: None,
             provider: None,
+            host: None,
         };
 
         match rt.spawn_worker(req).await {

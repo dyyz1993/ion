@@ -986,6 +986,7 @@ impl Extension for MonitorExtension {
                                         report_to: None,
                                         initial_prompt: Some(prompt_for_spawn),
                                         input_origin: Some("monitor".into()),
+                                        host: None,
                                         skip_mcp: None,
                                         allowed_tools: None,
                                         disallowed_tools: None,

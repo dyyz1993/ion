@@ -111,6 +111,9 @@ impl ToolRegistry {
         self.register(Box::new(EditTool));
         self.register(Box::new(CalculatorTool));
         self.register(Box::new(EchoTool));
+        // Browser fetch — SPA/CSR 感知抓取（内核直 spawn 独立 browser 二进制，
+        // 不走 bash；见 src/browser_fetch.rs）
+        self.register(Box::new(crate::browser_fetch::FetchTool));
         // Git tools        // Orchestration tools (multi-worker)
         self.register(Box::new(SpawnWorkerTool));
         self.register(Box::new(SendToWorkerTool));
@@ -1429,6 +1432,10 @@ impl Tool for SpawnWorkerTool {
                     "type": "string",
                     "description": "Provider name (e.g. 'opencode', 'zhipuai'). Required when model is set to a non-default provider."
                 },
+                "host": {
+                    "type": "string",
+                    "description": "Remote executor name from config remote_workers (e.g. 'win38'). When set, the ENTIRE worker (agent loop, tools, file edits, background processes) runs on that remote machine via SSH — use for untrusted/sandboxed analysis or heavy compute. The local machine stays untouched."
+                },
                 "wait": {
                     "type": "boolean",
                     "default": true,
@@ -1499,6 +1506,12 @@ impl Tool for SpawnWorkerTool {
             .get("provider")
             .and_then(|v| v.as_str())
             .map(String::from);
+        // 远程执行端（REMOTE_WORKER.md 客户端模式）：整个 worker 搬到远端机器跑
+        let host = args
+            .get("host")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
 
         let relation = match relation_str {
             "peer" => crate::runtime::SpawnRelation::Peer,
@@ -1519,6 +1532,7 @@ impl Tool for SpawnWorkerTool {
             system_prompt_override: None, // 普通 spawn_worker 不覆盖
             model,
             provider,
+            host,
         };
 
         let resp = rt.spawn_worker(req).await.map_err(AgentError::Tool)?;
@@ -2246,6 +2260,7 @@ impl Tool for SkillTool {
                 system_prompt_override: Some(system_prompt),
                 model: None,
                 provider: None,
+                host: None,
             };
 
             let resp = match rt.spawn_worker(req).await {

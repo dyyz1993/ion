@@ -60,6 +60,92 @@ fn merge_existing_meta(
 
 /// Result of `prepare_worker_spawn` — contains spawned child process + all data
 /// needed to register the worker in the registry (under lock, fast).
+/// POSIX sh 单引号转义（与 RemoteRuntime 的 ssh_cmd 同款策略）。
+/// 单引号内的内容不做任何展开，唯一特殊字符 ' 本身用 '\'' 断开重拼。
+fn sh_quote_remote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// 构造远程 worker 的 ssh 命令行（argv 形式，argv[0] = "ssh"）。
+///
+/// 远端命令形状：`cd <cwd> && export K=V; …; exec <worker_bin> --mode rpc …`
+/// - env 经 export 传递（ssh 无法直接注入远端环境）
+/// - exec 让 ion 顶替远端 shell，SSH 断线时信号直达 worker 进程
+/// - ServerAliveInterval 防 NAT/闲置断连导致远端 worker 误死
+/// 纯函数：不执行，只构造——单测覆盖引用/空格/换行等边界。
+fn build_remote_worker_argv(
+    host: &crate::config::RemoteWorkerHost,
+    cmd_args: &[String],
+    envs: &[(String, String)],
+) -> Vec<String> {
+    let mut argv: Vec<String> = vec!["ssh".into()];
+    if let Some(p) = host.port
+        && p != 22
+    {
+        argv.push("-p".into());
+        argv.push(p.to_string());
+    }
+    if !host.key.is_empty() {
+        argv.push("-i".into());
+        argv.push(host.key.clone());
+    }
+    // 首连自动接受 host key（TOFU）：无人值守 spawn 不能卡交互确认
+    argv.push("-o".into());
+    argv.push("StrictHostKeyChecking=accept-new".into());
+    argv.push("-o".into());
+    argv.push("ServerAliveInterval=30".into());
+    let dest = if host.user.is_empty() {
+        host.hostname.clone()
+    } else {
+        format!("{}@{}", host.user, host.hostname)
+    };
+    argv.push(dest);
+
+    let bin = if host.worker_bin.is_empty() {
+        "/usr/local/bin/ion".to_string()
+    } else {
+        host.worker_bin.clone()
+    };
+    let mut rc = String::new();
+    if !host.cwd.trim().is_empty() {
+        rc.push_str("cd ");
+        rc.push_str(&sh_quote_remote(host.cwd.trim()));
+        rc.push_str(" && ");
+    }
+    for (k, v) in envs {
+        rc.push_str("export ");
+        rc.push_str(k);
+        rc.push('=');
+        rc.push_str(&sh_quote_remote(v));
+        rc.push_str("; ");
+    }
+    rc.push_str("exec ");
+    rc.push_str(&sh_quote_remote(&bin));
+    for a in cmd_args {
+        rc.push(' ');
+        rc.push_str(&sh_quote_remote(a));
+    }
+
+    if host.wrapper.is_empty() {
+        // 纯 Linux 执行端：远端登录 shell 直接解析脚本（单引号安全）
+        argv.push(rc);
+    } else {
+        // Windows/WSL 等中间 shell 执行端：脚本整体 base64 转运。
+        // ssh 把 argv 以空格拼接后交给远端默认 shell（cmd.exe）——单引号/管道/
+        // $ 都会被误解析；base64 字符集（A-Za-z0-9+/=）对 cmd 与 sh 双侧无特殊
+        // 含义，双引号内管道对 cmd 是字面量，经 wrapper 进入 Linux 侧后还原执行。
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(rc.as_bytes());
+        for w in host.wrapper.split_whitespace() {
+            argv.push(w.to_string());
+        }
+        argv.push("/bin/sh".into());
+        argv.push("-c".into());
+        argv.push(format!("\"echo {b64} | base64 -d | sh\""));
+    }
+    argv
+}
+
 pub struct PreparedSpawn {
     pub child: tokio::process::Child,
     pub stdin: tokio::process::ChildStdin,
@@ -74,6 +160,8 @@ pub struct PreparedSpawn {
     pub model: String,
     pub provider: String,
     pub agent_name: String,
+    /// 远程执行端名（Some = 经 SSH 拉起的远端 worker，见 REMOTE_WORKER.md）
+    pub host: Option<String>,
 }
 
 /// Find the ion binary path (for spawning child workers).
@@ -157,6 +245,8 @@ pub struct WorkerRecord {
     pub channels: Vec<String>,
     pub parent: Option<String>,
     pub children: Vec<String>,
+    /// 远程执行端名（None = 本地；Some = 经 SSH 拉起的远端 worker）
+    pub host: Option<String>,
     /// 异步委派完成通知：结束一轮真实工作（agent_end）时通知父 worker。
     /// 仅 spawn_worker(wait=false) 且有 parent 的子 worker 为 true——
     /// 同步等待（wait=true）的父已通过 await 拿到结果，再通知就重复。
@@ -364,6 +454,29 @@ impl WorkerRegistry {
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
+        // ── Remote Worker（客户端模式，REMOTE_WORKER.md D10）：host 命中配置时整个 worker 搬到远端 ──
+        // 先于 worktree 解析：remote + worktree 直接拒绝（远端不适用本地 worktree 语义）
+        let remote_host: Option<(String, crate::config::RemoteWorkerHost)> =
+            match config.host.as_deref() {
+                Some(name) if !name.is_empty() => {
+                    if config.worktree.is_some() {
+                        return Err(
+                            "worktree isolation is not supported for remote workers (M1)".into(),
+                        );
+                    }
+                    let host_cfg = crate::config::IonConfig::load()
+                        .remote_worker_host(name)
+                        .ok_or_else(|| {
+                            format!(
+                                "unknown remote worker host '{name}' — define it in config.json \
+                                 remote_workers or ION_REMOTE_WORKERS env"
+                            )
+                        })?;
+                    Some((name.to_string(), host_cfg))
+                }
+                _ => None,
+            };
+
         // ── Worktree creation (SLOW: git init/add/commit, 1-3s) ──
         // ⚠️ 用 tokio::process::Command（异步），避免阻塞 tokio runtime。
         // 之前用 std::process::Command::output() 是同步阻塞，会卡住整个 runtime，
@@ -450,47 +563,55 @@ impl WorkerRegistry {
             cmd_args.push(agent_name.clone());
         }
 
-        // ── Find ion binary ──
-        let binary = find_ion_binary();
-
-        let mut child_cmd = tokio::process::Command::new(&binary);
-        child_cmd
-            .args(&cmd_args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .current_dir(&worktree_path);
-
-        // ── Set env vars (same as original create_worker) ──
-        child_cmd.env("ION_PROJECT_ROOT", &project_path);
-        child_cmd.env("ION_WORKER_CWD", &worktree_path);
+        // ── Collect child env vars（本地/远程共用同一份收集，保证语义一致）──
+        let mut child_envs: Vec<(String, String)> = Vec::new();
+        // 远程执行端连接级环境变量（remote_workers.<name>.env）——对本地 worker 无意义
+        if let Some((_, ref host_cfg)) = remote_host {
+            for (k, v) in &host_cfg.env {
+                child_envs.push((k.clone(), v.clone()));
+            }
+            // 零 key 桥接（M2）+ 会话回流（M3）+ 远端项目级 hooks 禁用（供应链防线）
+            if host_cfg.llm_bridge {
+                child_envs.push(("ION_PROVIDER_BRIDGE".into(), "1".into()));
+                child_envs.push(("ION_SESSION_STREAM".into(), "1".into()));
+                child_envs.push(("ION_NO_PROJECT_HOOKS".into(), "1".into()));
+            }
+        }
+        if remote_host.is_none() {
+            // 路径命名空间 = 执行侧（REMOTE_WORKER.md D7）：Mac 本地路径不转发远端
+            child_envs.push(("ION_PROJECT_ROOT".into(), project_path.clone()));
+            child_envs.push(("ION_WORKER_CWD".into(), worktree_path.clone()));
+        }
         // ★ 传 model/provider 到子进程（否则 worker 用 config 默认值，不是 create_session 指定的）
         if let Some(ref m) = config.model {
-            child_cmd.env("ION_SESSION_MODEL", m);
+            child_envs.push(("ION_SESSION_MODEL".into(), m.clone()));
         }
         if let Some(ref p) = config.provider {
-            child_cmd.env("ION_SESSION_PROVIDER", p);
+            child_envs.push(("ION_SESSION_PROVIDER".into(), p.clone()));
         }
         if let Some(ref mode) = config.skip_mcp
             && !mode.is_empty()
         {
-            child_cmd.env("ION_SKIP_MCP", mode);
+            child_envs.push(("ION_SKIP_MCP".into(), mode.clone()));
         }
         if let Some(ref tools) = config.allowed_tools
             && !tools.is_empty()
         {
-            child_cmd.env("ION_ALLOWED_TOOLS", tools.join(","));
+            child_envs.push(("ION_ALLOWED_TOOLS".into(), tools.join(",")));
         }
         if let Some(ref tools) = config.disallowed_tools
             && !tools.is_empty()
         {
-            child_cmd.env("ION_DISALLOWED_TOOLS", tools.join(","));
+            child_envs.push(("ION_DISALLOWED_TOOLS".into(), tools.join(",")));
         }
         if let Some(turns) = config.max_turns {
-            child_cmd.env("ION_MAX_TURNS", turns.to_string());
+            child_envs.push(("ION_MAX_TURNS".into(), turns.to_string()));
         }
-        if let Ok(rt_override) = std::env::var("ION_RUNTIME_OVERRIDE") {
-            child_cmd.env("ION_RUNTIME_OVERRIDE", &rt_override);
+        if remote_host.is_none() {
+            // runtime override 引用主控端的后端路由配置，对远端 worker 无意义
+            if let Ok(rt_override) = std::env::var("ION_RUNTIME_OVERRIDE") {
+                child_envs.push(("ION_RUNTIME_OVERRIDE".into(), rt_override));
+            }
         }
         for var in &[
             "ION_FAUX_SCRIPT",
@@ -500,36 +621,190 @@ impl WorkerRegistry {
             "ION_GRACEFUL_DRAIN_MS",
         ] {
             if let Ok(val) = std::env::var(var) {
-                child_cmd.env(var, &val);
+                child_envs.push(((*var).into(), val));
             }
         }
         for var in &["ION_RECORD", "ION_RECORD_OVERWRITE"] {
             if let Ok(val) = std::env::var(var) {
-                child_cmd.env(var, &val);
+                child_envs.push(((*var).into(), val));
             }
         }
         if let Some(depth) = config.hook_depth {
-            child_cmd.env("ION_HOOK_DEPTH", depth.to_string());
+            child_envs.push(("ION_HOOK_DEPTH".into(), depth.to_string()));
         }
         if let Some(ref sp) = config.system_prompt_override {
-            child_cmd.env("ION_SYSTEM_PROMPT", sp);
+            child_envs.push(("ION_SYSTEM_PROMPT".into(), sp.clone()));
         }
         let relation_str = match config.relation {
             Some(WorkerRelation::System) => "system",
             Some(WorkerRelation::Peer) => "peer",
             _ => "child",
         };
-        child_cmd.env("ION_SPAWN_RELATION", relation_str);
+        child_envs.push(("ION_SPAWN_RELATION".into(), relation_str.into()));
         if config.system_prompt_override.is_some() {
-            child_cmd.env("ION_SPAWNED_BY", "skill_fork");
+            child_envs.push(("ION_SPAWNED_BY".into(), "skill_fork".into()));
         } else if config.relation == Some(WorkerRelation::System) {
-            child_cmd.env("ION_SPAWNED_BY", "singleton_init");
+            child_envs.push(("ION_SPAWNED_BY".into(), "singleton_init".into()));
         }
         if config.uses_independent_session_file() {
-            child_cmd.env("ION_FORK_CHILD", "1");
+            child_envs.push(("ION_FORK_CHILD".into(), "1".into()));
         }
 
-        // ── Spawn child process (SLOW: fork+exec, 50-200ms) ──
+        // ── spawn 前自愈：VM 生命周期漂移（IP 变/sshd 丢失）经管理通道(22)修复 ──
+        // 例：win38 的 refresh="wsl -d ion -u root -- bash /mnt/c/ion-setup/gateway.sh"
+        //（刷新 Windows portproxy 到当前 WSL IP + 拉起 WSL sshd）。失败仅 warn——
+        // 若环境本来就健康（IP 没变），跳过也无碍。
+        if let Some((_, host_cfg)) = &remote_host
+            && let Some(refresh_cmd) = &host_cfg.refresh
+        {
+            // 管理通道 dest：refresh_dest 优先（WSL 执行端两通道凭据不同），
+            // 缺省回退 worker 通道的 user@hostname（纯 Linux 执行端通常同凭据）
+            let dest = host_cfg.refresh_dest.clone().unwrap_or_else(|| {
+                if host_cfg.user.is_empty() {
+                    host_cfg.hostname.clone()
+                } else {
+                    format!("{}@{}", host_cfg.user, host_cfg.hostname)
+                }
+            });
+            let mut argv = vec![
+                "ssh".to_string(),
+                "-o".into(),
+                "ConnectTimeout=8".into(),
+                "-o".into(),
+                "BatchMode=yes".into(),
+                "-o".into(),
+                "StrictHostKeyChecking=accept-new".into(),
+            ];
+            if !host_cfg.key.is_empty() {
+                argv.push("-i".into());
+                argv.push(host_cfg.key.clone());
+            }
+            argv.push(dest);
+            argv.push(refresh_cmd.clone());
+            match tokio::process::Command::new(&argv[0])
+                .args(&argv[1..])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .output()
+                .await
+            {
+                Ok(o) if o.status.success() => {
+                    tracing::info!("[remote-worker] refresh ok");
+                }
+                Ok(o) => tracing::warn!(
+                    "[remote-worker] refresh failed (continuing): {}",
+                    String::from_utf8_lossy(&o.stderr)
+                        .chars()
+                        .take(150)
+                        .collect::<String>()
+                ),
+                Err(e) => tracing::warn!("[remote-worker] refresh spawn error: {e}"),
+            }
+        }
+
+        // ── M3 资产包：spawn 前把 Mac 的 skills/agents 部署到远端全局目录 ──
+        // tar 管道经 ssh 一次传输（远端 ~/.ion/agent/{skills,agents}，worker 加载零改动）。
+        // 资产是公开文本（无密钥），部署幂等；失败降级为 warn（远端用既有资产跑）。
+        if let Some((_, host_cfg)) = &remote_host
+            && let Some(assets) = &host_cfg.assets
+        {
+            let agent_dir = crate::paths::agent_dir();
+            let mut tar_args: Vec<String> = vec!["--exclude=.DS_Store".into()];
+            let skills_dir = agent_dir.join("skills");
+            if skills_dir.exists() {
+                if assets.skills.is_empty() {
+                    tar_args.push("skills".into());
+                } else {
+                    for name in &assets.skills {
+                        tar_args.push("--include".into());
+                        tar_args.push(format!("skills/{name}"));
+                    }
+                    tar_args.push("--include".into());
+                    tar_args.push("skills".into());
+                }
+            }
+            if assets.agents {
+                tar_args.push("agents".into());
+            }
+            if tar_args.len() > 1 {
+                let dest = if host_cfg.user.is_empty() {
+                    host_cfg.hostname.clone()
+                } else {
+                    format!("{}@{}", host_cfg.user, host_cfg.hostname)
+                };
+                let mut ssh_base = vec!["ssh".to_string()];
+                if let Some(pt) = host_cfg.port
+                    && pt != 22
+                {
+                    ssh_base.push("-p".into());
+                    ssh_base.push(pt.to_string());
+                }
+                if !host_cfg.key.is_empty() {
+                    ssh_base.push("-i".into());
+                    ssh_base.push(host_cfg.key.clone());
+                }
+                let remote_cmd =
+                    "mkdir -p ~/.ion/agent/skills ~/.ion/agent/agents && tar xzf - -C ~/.ion/agent";
+                let shell = format!(
+                    "cd {} && tar czf - {} | {} {} '{}'",
+                    agent_dir.to_string_lossy(),
+                    tar_args[1..].join(" "),
+                    ssh_base.join(" "),
+                    dest,
+                    remote_cmd
+                );
+                let out = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&shell)
+                    .output();
+                match out {
+                    Ok(o) if o.status.success() => {
+                        tracing::info!(
+                            "[remote-worker] assets deployed ({} bytes stderr)",
+                            o.stderr.len()
+                        );
+                    }
+                    Ok(o) => {
+                        tracing::warn!(
+                            "[remote-worker] assets deploy failed: {}",
+                            String::from_utf8_lossy(&o.stderr)
+                                .chars()
+                                .take(200)
+                                .collect::<String>()
+                        );
+                    }
+                    Err(e) => tracing::warn!("[remote-worker] assets deploy spawn error: {e}"),
+                }
+            }
+        }
+
+        // ── Spawn child process (SLOW: fork+exec / ssh 建连, 50ms-2s) ──
+        let mut child_cmd = if let Some((host_name, host_cfg)) = &remote_host {
+            // 远程执行端：ssh <dest> 'cd …; export …; exec ion --mode rpc …'
+            // stdio 管道语义与本地完全一致 → 注册/事件泵/死亡检测零改动
+            let argv = build_remote_worker_argv(host_cfg, &cmd_args, &child_envs);
+            tracing::info!("[remote-worker] spawn on '{host_name}': {:?}", argv);
+            let mut c = tokio::process::Command::new(&argv[0]);
+            c.args(&argv[1..])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            c
+        } else {
+            let binary = find_ion_binary();
+            let mut c = tokio::process::Command::new(&binary);
+            c.args(&cmd_args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .current_dir(&worktree_path);
+            for (k, v) in &child_envs {
+                c.env(k, v);
+            }
+            c
+        };
+
         let mut child = child_cmd.spawn().map_err(|e| {
             // 回滚：worktree 已建但子进程起不来 → 清掉半成品（分支保留）
             if let Some(wt) = &worktree_info {
@@ -556,6 +831,7 @@ impl WorkerRegistry {
             model,
             provider,
             agent_name,
+            host: config.host.clone(),
         })
     }
 
@@ -853,6 +1129,7 @@ impl WorkerRegistry {
             channels: config.channels.clone().unwrap_or_default(),
             parent: config.parent.clone(),
             children: Vec::new(),
+            host: config.host.clone(),
             // 异步委派（wait=false）且有父 → agent_end 时通知父（同步父已 await 到结果）
             notify_parent: config.parent.is_some() && config.wait == Some(false),
             started_at: now_ms(),
@@ -910,6 +1187,7 @@ impl WorkerRegistry {
             channels: record.channels.clone(),
             parent: record.parent.clone(),
             children: Vec::new(),
+            host: record.host.clone(),
         };
 
         // Create channels for stdout reader → send_command consumer
@@ -1652,6 +1930,7 @@ impl WorkerRegistry {
             channels: config.channels.clone().unwrap_or_default(),
             parent: config.parent.clone(),
             children: Vec::new(),
+            host: spawn.host.clone(),
             // 异步委派（wait=false）且有父 → agent_end 时通知父（同步父已 await 到结果）
             notify_parent: config.parent.is_some() && config.wait == Some(false),
             started_at: now_ms(),
@@ -1704,6 +1983,7 @@ impl WorkerRegistry {
             channels: record.channels.clone(),
             parent: record.parent.clone(),
             children: Vec::new(),
+            host: record.host.clone(),
         };
 
         // stdout channel
@@ -2373,6 +2653,7 @@ impl WorkerRegistry {
                 channels: w.channels.clone(),
                 parent: w.parent.clone(),
                 children: w.children.clone(),
+                host: w.host.clone(),
             })
             .collect()
     }
@@ -2610,6 +2891,7 @@ impl WorkerRegistry {
             report_to: None,
             initial_prompt: None,
             input_origin: None,
+            host: None,
             skip_mcp: None,
             allowed_tools: None,
             disallowed_tools: None,
@@ -3331,6 +3613,160 @@ impl WorkerRegistry {
                 .to_string();
 
             match command.as_str() {
+                // ── Provider Bridge（REMOTE_WORKER M2）：远程 worker 的 LLM 请求代发 ──
+                "llm_request" => {
+                    let id = params
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let model_id = params
+                        .get("model_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let provider = params
+                        .get("provider")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let context = serde_json::from_value::<ion_provider::types::Context>(
+                        params
+                            .get("context")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null),
+                    );
+                    let options = params
+                        .get("options")
+                        .filter(|v| !v.is_null())
+                        .cloned()
+                        .and_then(|v| {
+                            serde_json::from_value::<ion_provider::types::StreamOptions>(v).ok()
+                        });
+                    if id.is_empty() {
+                        tracing::warn!("[bridge] llm_request missing id from {from_worker}");
+                        continue;
+                    }
+                    match context {
+                        Ok(ctx) => {
+                            let wid = from_worker.clone();
+                            let rid = id.clone();
+                            let reg_arc = registry_arc.clone();
+                            tokio::spawn(async move {
+                                bridge_serve_llm_request(
+                                    reg_arc, wid, rid, provider, model_id, ctx, options,
+                                )
+                                .await;
+                            });
+                        }
+                        Err(e) => {
+                            // 坏请求也要收尾：回一个 Error 终帧，worker 侧不悬挂
+                            let _ = e;
+                            let resp = bridge_chunk_json(
+                                &id,
+                                &serde_json::to_value(&ion_provider::types::StreamEvent::Error {
+                                    reason: ion_provider::types::StopReason::Error,
+                                    message: bridge_error_message(&format!(
+                                        "bad llm_request context: {e}"
+                                    )),
+                                })
+                                .unwrap_or_default(),
+                            );
+                            self.write_manager_response(&from_worker, resp).await;
+                        }
+                    }
+                }
+                // ── M3 会话回流：远程 worker 的 session header/entry 落 Mac ──
+                "session_entry" => {
+                    let mut sid = params
+                        .get("sid")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let kind = params
+                        .get("kind")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("entry");
+                    let payload = params
+                        .get("payload")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                    if payload.is_null() {
+                        continue;
+                    }
+                    // sid 空时兜底：header 的 payload.id 或 registry 里 from_worker 的 session
+                    if sid.is_empty() {
+                        if kind == "header"
+                            && let Some(id) = payload.get("id").and_then(|v| v.as_str())
+                        {
+                            sid = id.to_string();
+                        } else if let Some(w) = self.workers.get(&from_worker) {
+                            sid = w.session_id.clone();
+                        }
+                    }
+                    if sid.is_empty() {
+                        continue;
+                    }
+                    // 落盘目录按该 worker 在 registry 里的 project_path（Mac 侧路径）
+                    let cwd = self
+                        .workers
+                        .get(&from_worker)
+                        .or_else(|| self.workers.values().find(|w| w.session_id == sid))
+                        .map(|w| w.project_path.clone())
+                        .unwrap_or_else(|| {
+                            std::env::current_dir()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .unwrap_or_default()
+                        });
+                    let path = crate::paths::session_jsonl_path_by_id(&cwd, &sid);
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    use std::io::Write;
+                    let line = serde_json::to_string(&payload).unwrap_or_default();
+                    if kind == "header" {
+                        // header 幂等：文件已存在且首行是 session 头则跳过（防重连重复）
+                        let exists_valid = std::fs::read_to_string(&path)
+                            .ok()
+                            .and_then(|c| c.lines().next().map(|l| l.to_string()))
+                            .and_then(|l| serde_json::from_str::<serde_json::Value>(&l).ok())
+                            .and_then(|v| {
+                                v.get("type")
+                                    .and_then(|t| t.as_str())
+                                    .map(|s| s == "session")
+                            })
+                            .unwrap_or(false);
+                        if !exists_valid {
+                            if let Ok(mut f) = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(&path)
+                            {
+                                let _ = f.write_all(format!("{line}\n").as_bytes());
+                            }
+                        }
+                    } else if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                    {
+                        let needs_nl = std::fs::metadata(&path)
+                            .map(|m| m.len() > 0)
+                            .unwrap_or(false);
+                        let payload_line = if needs_nl { format!("\n{line}") } else { line };
+                        let _ = f.write_all(payload_line.as_bytes());
+                    }
+                    crate::message_retrieval::invalidate_cache(&cwd);
+                }
+                "llm_cancel" => {
+                    let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    if !id.is_empty()
+                        && let Some(token) = bridge_cancels().lock().unwrap().remove(id)
+                    {
+                        token.cancel();
+                        tracing::info!("[bridge] cancelled upstream llm stream {id}");
+                    }
+                }
                 "create_worker" => {
                     // 字段兼容：用户常把 initial_prompt 写成 message，后者会被 serde 静默
                     // 忽略（WorkerCreateConfig 没有该字段），导致 worker 创建了但不执行任务。
@@ -4072,6 +4508,59 @@ impl WorkerRegistry {
     /// Write a response JSON line to a worker's stdin.
     /// Resolves worker by worker_id first, then by session_id.
     /// （ManagerBridge 的 _from_worker 传的是 session_id，但 registry 按 worker_id 索引）
+    /// 同步写一行到 worker stdin（try_write 重试循环，绝不跨 await 持锁）。
+    /// 桥接转发任务（tokio::spawn，需 Send）专用——parking_lot guard 非 Send。
+    /// 缓冲满时 2ms 自旋重试，5s 上限后放弃该行（warn）。
+    fn write_line_to_worker_sync(&mut self, worker_or_session: &str, line: &str) -> bool {
+        use tokio::io::AsyncWriteExt;
+        let target = if self.workers.contains_key(worker_or_session) {
+            Some(worker_or_session.to_string())
+        } else {
+            self.workers
+                .iter()
+                .find(|(_, w)| w.session_id == worker_or_session)
+                .map(|(id, _)| id.clone())
+        };
+        let Some(wid) = target else {
+            tracing::warn!("[bridge] write target not found: {worker_or_session}");
+            return false;
+        };
+        let mut buf = line.as_bytes();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !buf.is_empty() {
+            if std::time::Instant::now() > deadline {
+                tracing::warn!(
+                    "[bridge] worker stdin blocked >5s, dropping {} bytes",
+                    buf.len()
+                );
+                return false;
+            }
+            let Some(record) = self.workers.get_mut(&wid) else {
+                return false;
+            };
+            let Some(stdin) = record.stdin.as_mut() else {
+                return false;
+            };
+            // 同步 poll（noop waker）：Pending = 管道缓冲满，睡 2ms 重试
+            use std::task::{Poll, Waker};
+            use tokio::io::AsyncWrite as _;
+            let mut cx = std::task::Context::from_waker(Waker::noop());
+            match std::pin::Pin::new(&mut *stdin).poll_write(&mut cx, buf) {
+                Poll::Ready(Ok(0)) => {}
+                Poll::Ready(Ok(n)) => buf = &buf[n..],
+                Poll::Pending => {}
+                Poll::Ready(Err(e)) => {
+                    tracing::warn!("[bridge] stdin write error: {e}");
+                    return false;
+                }
+            }
+            if !buf.is_empty() {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+        true
+    }
+
     async fn write_manager_response(&mut self, worker_or_session: &str, resp: serde_json::Value) {
         use tokio::io::AsyncWriteExt;
         let line = format!("{}\n", serde_json::to_string(&resp).unwrap_or_default());
@@ -4805,6 +5294,13 @@ pub struct WorkerCreateConfig {
     /// - "stdio"    → 只跳过 stdio，HTTP 照连（方案 B：HTTP 天然多客户端）
     #[serde(default)]
     pub skip_mcp: Option<String>,
+    /// 远程执行端名（remote_workers.<name>，见 docs/design/REMOTE_WORKER.md 客户端模式）。
+    /// Some 时 Manager 改为 `ssh <host> ion --mode rpc` 拉起远端 worker，
+    /// 整个 worker（agent 循环/hooks/LSP/后台进程）运行在远端机器。
+    /// M1 过渡形态：远端 worker 用远端自己的 config（key 在远端）；
+    /// M2 桥接落地后远端零 key。
+    #[serde(default)]
+    pub host: Option<String>,
     // ── 补丁 1 新增（HOOKS_AND_OUTLINE_SYNC）：让扩展 spawn 的子 Worker 也能限定工具/步数 ──
     /// 允许的工具白名单（None = 继承全部）。通过 ION_ALLOWED_TOOLS 环境变量传给子进程。
     #[serde(default)]
@@ -4854,6 +5350,9 @@ pub struct WorkerInfo {
     pub channels: Vec<String>,
     pub parent: Option<String>,
     pub children: Vec<String>,
+    /// 远程执行端名（None = 本地 worker；Some("win38") = SSH 拉起的远端 worker）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -5073,6 +5572,154 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
+    // ── Remote Worker M1：SSH 命令构造（纯函数，不真执行）─────────────────────
+
+    fn rh(
+        user: &str,
+        hostname: &str,
+        port: Option<u16>,
+        key: &str,
+        bin: &str,
+        cwd: &str,
+    ) -> crate::config::RemoteWorkerHost {
+        crate::config::RemoteWorkerHost {
+            user: user.into(),
+            hostname: hostname.into(),
+            port,
+            key: key.into(),
+            worker_bin: bin.into(),
+            cwd: cwd.into(),
+            wrapper: String::new(),
+            env: Default::default(),
+            llm_bridge: false,
+            assets: None,
+            refresh: None,
+            refresh_dest: None,
+        }
+    }
+
+    #[test]
+    fn test_remote_worker_argv_basic() {
+        let host = rh(
+            "sshuser",
+            "win38",
+            None,
+            "",
+            "/usr/local/bin/ion",
+            "/root/ws",
+        );
+        let args = vec!["--mode".to_string(), "rpc".to_string()];
+        let envs = vec![("ION_SPAWN_RELATION".to_string(), "child".to_string())];
+        let argv = build_remote_worker_argv(&host, &args, &envs);
+        assert_eq!(argv[0], "ssh");
+        assert!(argv.contains(&"sshuser@win38".to_string()));
+        assert!(argv.contains(&"StrictHostKeyChecking=accept-new".to_string()));
+        assert!(argv.contains(&"ServerAliveInterval=30".to_string()));
+        let rc = argv.last().unwrap();
+        assert!(
+            rc.starts_with(
+                "cd '/root/ws' && export ION_SPAWN_RELATION='child'; \
+                 exec '/usr/local/bin/ion' '--mode' 'rpc'"
+            ),
+            "remote cmd = {rc}"
+        );
+    }
+
+    #[test]
+    fn test_remote_worker_argv_port_key_defaults() {
+        // 空 user → dest=hostname；非 22 端口加 -p；key 加 -i；空 bin/cwd 用默认
+        let host = rh("", "192.168.0.38", Some(2222), "~/.ssh/id_ed25519", "", "");
+        let argv = build_remote_worker_argv(&host, &[], &[]);
+        assert!(argv.contains(&"-p".to_string()) && argv.contains(&"2222".to_string()));
+        assert!(
+            argv.contains(&"-i".to_string()) && argv.contains(&"~/.ssh/id_ed25519".to_string())
+        );
+        assert!(argv.contains(&"192.168.0.38".to_string()));
+        assert!(!argv.contains(&"sshuser".to_string()));
+        let rc = argv.last().unwrap();
+        assert!(rc.starts_with("exec '/usr/local/bin/ion'"), "rc = {rc}");
+        // 22 端口不加 -p（交给 ~/.ssh/config）
+        let host22 = rh("u", "h", Some(22), "", "", "");
+        let argv22 = build_remote_worker_argv(&host22, &[], &[]);
+        assert!(!argv22.contains(&"-p".to_string()));
+    }
+
+    /// 转义正确性的终极验证：把构造出的远端命令交给真实 /bin/sh 执行，
+    /// export 的值必须逐字节还原（覆盖单引号/双引号/换行/$/反引号/&/反斜杠）。
+    /// 这是防 shell 注入的回归闸门——任何人改 sh_quote_remote 都会在此翻车。
+    #[test]
+    fn test_remote_worker_argv_sh_roundtrip() {
+        let val = "line1\nit's \"quoted\" & $HOME `cmd` \\path";
+        let host = rh("u", "h", None, "", "", "");
+        let envs = vec![("TEST_V".to_string(), val.to_string())];
+        let argv = build_remote_worker_argv(&host, &[], &envs);
+        let rc = argv.last().unwrap();
+        // 把 exec ion 替换成回显，模拟远端 shell 对 export 的解释
+        let echo = rc.replace("exec '/usr/local/bin/ion'", "printf %s \"$TEST_V\"");
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&echo)
+            .output()
+            .expect("sh should run");
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout), val);
+    }
+
+    /// wrapper 模式（Windows/WSL 执行端）：脚本走 base64 转运。
+    /// 验证：① wrapper 词原样插入 ② 传输段无单引号/裸管道（cmd.exe 安全）
+    /// ③ base64 解码后逐字节等于原脚本（真实 /bin/sh 还原执行）。
+    #[test]
+    fn test_remote_worker_argv_wrapper_b64_transport() {
+        let mut host = rh(
+            "sshuser",
+            "win38",
+            None,
+            "",
+            "/usr/local/bin/ion",
+            "/root/ws",
+        );
+        host.wrapper = "wsl -d ion --".into();
+        let args = vec!["--mode".to_string(), "rpc".to_string()];
+        let envs = vec![("ION_SPAWN_RELATION".to_string(), "child".to_string())];
+        let argv = build_remote_worker_argv(&host, &args, &envs);
+        let joined = argv.join(" ");
+        // wrapper 词原样出现在 dest 之后
+        let dest_pos = joined.find("sshuser@win38").unwrap();
+        let wrapper_pos = joined.find("wsl -d ion --").unwrap();
+        assert!(wrapper_pos > dest_pos);
+        // 传输段：双引号包裹 + base64 + 管道，绝无单引号
+        let transport = argv.last().unwrap();
+        assert!(transport.starts_with("\"echo ") && transport.ends_with("| sh\""));
+        assert!(
+            !transport.contains('\''),
+            "cmd.exe unsafe single quote: {transport}"
+        );
+        // base64 解码 == 原脚本，并交给真实 /bin/sh 验证可执行
+        use base64::Engine as _;
+        let b64: String = transport
+            .trim_matches('"')
+            .strip_prefix("echo ")
+            .and_then(|s| s.split_whitespace().next())
+            .unwrap()
+            .to_string();
+        let script = String::from_utf8(
+            base64::engine::general_purpose::STANDARD
+                .decode(b64.as_bytes())
+                .expect("valid b64"),
+        )
+        .unwrap();
+        assert!(script.starts_with("cd '/root/ws' && export ION_SPAWN_RELATION='child'; exec"));
+        // 用真实 sh 模拟 WSL 侧还原执行（exec 换成回显防真的拉起 ion）
+        let echoed = script.replace("exec '/usr/local/bin/ion'", "printf OK");
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&echoed)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "OK");
+    }
+
     /// WorkerStatus Display should render the variant name (via Debug).
     #[test]
     fn test_worker_status_display() {
@@ -5126,6 +5773,7 @@ mod tests {
                 channels: vec!["main".into()],
                 parent: None,
                 children: Vec::new(),
+                host: None,
                 notify_parent: false,
                 started_at: 0,
                 last_heartbeat: 0,
@@ -5231,6 +5879,7 @@ mod tests {
             channels: vec!["main".to_string()],
             parent: None,
             children: vec![],
+            host: None,
         };
 
         let json = serde_json::to_value(&info).expect("WorkerInfo should serialize");
@@ -5269,6 +5918,7 @@ mod tests {
             channels: vec!["c1".to_string(), "c2".to_string()],
             parent: Some("w-parent".to_string()),
             children: vec!["child-1".to_string()],
+            host: Some("win38".to_string()),
         };
 
         let json = serde_json::to_string(&info).expect("serialize");
@@ -5375,4 +6025,226 @@ mod tests {
         let r = randish();
         let _ = r; // value is opaque; just ensure it does not panic
     }
+}
+
+// ---------------------------------------------------------------------------
+// Provider Bridge（REMOTE_WORKER M2）— Manager 侧：远程 worker LLM 请求代发
+// ---------------------------------------------------------------------------
+
+/// Manager 的 ApiRegistry（惰性单例，register_builtins；key 在 provider 调用时
+/// 从 Manager 本机 auth/config 解析——真 key 永不出主控端）。
+fn bridge_api_registry() -> &'static ion_provider::registry::ApiRegistry {
+    static R: std::sync::OnceLock<ion_provider::registry::ApiRegistry> = std::sync::OnceLock::new();
+    R.get_or_init(|| {
+        let mut r = ion_provider::registry::ApiRegistry::new();
+        r.register_builtins();
+        // harness/CI：Manager 侧也支持 faux（ION_FAUX_* 存在时桥接走确定性桩）
+        let faux_script = std::env::var("ION_FAUX_SCRIPT").ok();
+        let faux_reply = std::env::var("ION_FAUX_REPLY").ok();
+        if faux_script.is_some() || faux_reply.is_some() {
+            let faux = ion_provider::faux::register_faux(&mut r);
+            let responses = if let Some(path) = &faux_script {
+                match ion_provider::faux::load_script(std::path::Path::new(path)) {
+                    Ok(rs) => rs,
+                    Err(_) => vec![ion_provider::faux::FauxResponseStep::Static(
+                        ion_provider::faux::faux_assistant_message(
+                            ion_provider::faux::FauxContent::Text("faux-script-load-failed".into()),
+                            ion_provider::faux::FauxMessageOptions::default(),
+                        ),
+                    )],
+                }
+            } else {
+                vec![ion_provider::faux::FauxResponseStep::Static(
+                    ion_provider::faux::faux_assistant_message(
+                        ion_provider::faux::FauxContent::Text(faux_reply.unwrap_or_default()),
+                        ion_provider::faux::FauxMessageOptions::default(),
+                    ),
+                )]
+            };
+            faux.set_responses(responses);
+        }
+        r
+    })
+}
+
+/// 活跃桥接流的上游取消令牌（llm_cancel 按 request_id 取消）。
+fn bridge_cancels()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>
+{
+    static C: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>,
+    > = std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn bridge_chunk_json(id: &str, ev: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"method": "llm_chunk", "params": {"id": id, "ev": ev}})
+}
+
+fn bridge_error_message(msg: &str) -> ion_provider::types::AssistantMessage {
+    ion_provider::types::AssistantMessage {
+        role: "assistant".into(),
+        content: vec![],
+        api: String::new(),
+        provider: String::new(),
+        model: String::new(),
+        response_model: None,
+        response_id: None,
+        usage: Default::default(),
+        stop_reason: ion_provider::types::StopReason::Error,
+        error_message: Some(msg.to_string()),
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64,
+    }
+}
+
+/// D4：Manager 只信自己的配置解析模型。worker 上报的仅 (provider, model_id)。
+/// base_url/兼容层全部来自 Manager 本机（config providers / builtin registry）。
+fn bridge_resolve_model(
+    provider: &str,
+    model_id: &str,
+) -> Result<ion_provider::types::Model, String> {
+    let mut model_reg = ion_provider::registry::ModelRegistry::new();
+    model_reg.register_builtins();
+    let mut model = model_reg.find_model(model_id).cloned();
+    // builtin 没有且 config 定义了该 provider → 按用户 provider 构造（与 worker_rpc 同构）
+    if model.is_none() {
+        let cfg = crate::config::IonConfig::load();
+        if let Some(p) = cfg.providers.get(provider) {
+            model = Some(ion_provider::types::Model {
+                id: model_id.to_string(),
+                name: model_id.to_string(),
+                api: p.api.clone(),
+                provider: provider.to_string(),
+                base_url: p.base_url.clone(),
+                reasoning: p
+                    .models
+                    .iter()
+                    .any(|m| m.id == model_id && m.reasoning.unwrap_or(false)),
+                input: vec!["text".into()],
+                cost: Default::default(),
+                context_window: 128000,
+                max_tokens: 8192,
+                compat: None,
+                headers: None,
+            });
+        }
+    }
+    let Some(mut model) = model else {
+        return Err(format!(
+            "model '{model_id}' (provider '{provider}') not resolvable on manager"
+        ));
+    };
+    // Manager 本机的 base_url 覆盖优先（auth.json > config.json），对齐 worker_rpc
+    let auth = crate::auth::AuthStorage::load();
+    if let Some(u) = auth.provider_base_urls.get(provider)
+        && !u.is_empty()
+    {
+        model.base_url = u.clone();
+    } else if let Some(p) = crate::config::IonConfig::load().providers.get(provider)
+        && !p.base_url.is_empty()
+    {
+        model.base_url = p.base_url.clone();
+    }
+    Ok(model)
+}
+
+/// 服务一个桥接 LLM 请求：用 Manager 的 provider（真 key）发起，流式回写 worker。
+/// 终态（Done/Error 事件）本身作为最后一帧转发，worker 侧据此完成 result。
+async fn bridge_serve_llm_request(
+    registry_arc: std::sync::Arc<Mutex<WorkerRegistry>>,
+    from_worker: String,
+    id: String,
+    provider: String,
+    model_id: String,
+    context: ion_provider::types::Context,
+    options: Option<ion_provider::types::StreamOptions>,
+) {
+    let model = match bridge_resolve_model(&provider, &model_id) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("[bridge] {e}");
+            let ev = serde_json::to_value(&ion_provider::types::StreamEvent::Error {
+                reason: ion_provider::types::StopReason::Error,
+                message: bridge_error_message(&e),
+            })
+            .unwrap_or_default();
+            let line = format!("{}\n", bridge_chunk_json(&id, &ev));
+            registry_arc
+                .lock()
+                .write_line_to_worker_sync(&from_worker, &line);
+            return;
+        }
+    };
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    bridge_cancels()
+        .lock()
+        .unwrap()
+        .insert(id.clone(), cancel.clone());
+
+    tracing::info!(
+        "[bridge] serving {id}: model={}/{} base_url={} api={}",
+        model.provider,
+        model.id,
+        &model.base_url[..model.base_url.len().min(50)],
+        model.api
+    );
+    let stream_result = ion_provider::registry::stream(
+        bridge_api_registry(),
+        &model,
+        &context,
+        options.as_ref(),
+        Some(cancel),
+    )
+    .await;
+
+    match stream_result {
+        Ok(mut es) => {
+            let mut final_event: Option<serde_json::Value> = None;
+            while let Some(ev) = es.recv().await {
+                let wire = serde_json::to_value(&ev).unwrap_or_default();
+                let is_final = matches!(
+                    ev,
+                    ion_provider::types::StreamEvent::Done { .. }
+                        | ion_provider::types::StreamEvent::Error { .. }
+                );
+                if is_final {
+                    final_event = Some(wire.clone());
+                }
+                let line = format!("{}\n", bridge_chunk_json(&id, &wire));
+                registry_arc
+                    .lock()
+                    .write_line_to_worker_sync(&from_worker, &line);
+            }
+            // 兜底：流结束但没看到终帧（异常路径）→ 合成 Error 终帧防 worker 悬挂
+            if final_event.is_none() {
+                let ev = serde_json::to_value(&ion_provider::types::StreamEvent::Error {
+                    reason: ion_provider::types::StopReason::Error,
+                    message: bridge_error_message(
+                        "manager bridge stream ended without final event",
+                    ),
+                })
+                .unwrap_or_default();
+                let line = format!("{}\n", bridge_chunk_json(&id, &ev));
+                registry_arc
+                    .lock()
+                    .write_line_to_worker_sync(&from_worker, &line);
+            }
+        }
+        Err(e) => {
+            let ev = serde_json::to_value(&ion_provider::types::StreamEvent::Error {
+                reason: ion_provider::types::StopReason::Error,
+                message: bridge_error_message(&format!("manager provider error: {e}")),
+            })
+            .unwrap_or_default();
+            let line = format!("{}\n", bridge_chunk_json(&id, &ev));
+            registry_arc
+                .lock()
+                .write_line_to_worker_sync(&from_worker, &line);
+        }
+    }
+    bridge_cancels().lock().unwrap().remove(&id);
 }

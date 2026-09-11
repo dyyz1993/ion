@@ -35,6 +35,15 @@ static SESSION_FILE_PATH: std::sync::Mutex<Option<std::path::PathBuf>> =
 /// 全局：当前 Worker 的 session_id + cwd。
 /// on_before_tool_execute 钩子用（它拿不到 sid/cwd，只能从全局读）。
 static SESSION_SID: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// 当前 worker 的 session id（provider bridge 等模块跨文件读）。
+pub fn current_session_id() -> String {
+    SESSION_SID
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_default()
+}
 static SESSION_CWD: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 use ion_provider::registry::{ApiRegistry, ProviderFactory};
 use ion_provider::types::*;
@@ -172,6 +181,16 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         };
         faux.set_responses(responses);
         eprintln!("[faux] enabled: {} responses queued", faux.pending_count());
+    }
+
+    // ── Provider Bridge（REMOTE_WORKER M2）：远程 worker 零 key。
+    // 所有 LLM 调用经 stdout 转发 Manager 代发，流式响应由主循环 llm_chunk 臂路由回来。
+    // bridge 显式开启时优先于 faux——这同时让 CI 能测桥接全链路
+    //（host 带 ION_FAUX_REPLY + ION_PROVIDER_BRIDGE=1：worker 走桥接，
+    //  Manager 侧桥接 registry 注册 faux 确定性应答）。
+    if crate::agent::provider_bridge::is_enabled() {
+        crate::agent::provider_bridge::install(&mut registry);
+        eprintln!("[bridge] provider bridge enabled: LLM calls relay via manager");
     }
 
     let mut model_reg = ion_provider::registry::ModelRegistry::new();
@@ -322,6 +341,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     tools.register(Box::new(EditTool));
     tools.register(Box::new(CalculatorTool));
     tools.register(Box::new(EchoTool));
+    // Browser fetch — SPA/CSR 感知抓取（内核直 spawn 独立 browser 二进制，
+    // 不走 bash；见 src/browser_fetch.rs）
+    tools.register(Box::new(crate::browser_fetch::FetchTool));
     // ── 内置 plan 工具（plan_enter/exit/add/list/done/approve）──
     // 不依赖 WASM plan-extension（已删除，跟内置 PlanExtension 工具名冲突）。
     //
@@ -538,6 +560,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     // 存 sid + cwd 到全局，on_before_tool_execute 钩子用
     {
         *SESSION_SID.lock().unwrap() = Some(sid.clone());
+        // M3 会话回流：无条件注册镜像归属（是否真发由 mirror_send 的
+        // ION_SESSION_STREAM 开关决定——两开关解耦，避免条件遗漏导致 sid 空）
+        crate::session_jsonl::set_mirror_session(&sid);
         *SESSION_CWD.lock().unwrap() = Some(worker_cwd.clone());
     }
     // 设 session header 的 agent/model/provider（export.rs banner 显示用）
@@ -1306,6 +1331,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
 
         // 分发命令
         match method.as_str() {
+            // ── Provider Bridge（M2）：Manager 代发的 LLM 流式分片路由到 pending 流 ──
+            "llm_chunk" => {
+                crate::agent::provider_bridge::route_chunk(&params);
+            }
             // ── Health check & restart notification (watchdog dual-version switching) ──
             // These two handlers enable zero-downtime self-evolution. See
             // scripts/watchdog.sh: watchdog polls /tmp/.ion-evolve-restart and
@@ -2049,6 +2078,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                                                                     .unwrap_or("").to_string();
                                                                 let bg_params = bg_cmd.get("params").cloned().unwrap_or(serde_json::Value::Null);
                                                                 match bg_method.as_str() {
+                                                                    // ── Provider Bridge（M2）：LLM 流式分片必须 agent.run 期间实时路由
+                                                                    //（主循环的 llm_chunk 臂只在 idle 时生效——bridge 请求恰恰发生在 run 中）──
+                                                                    "llm_chunk" => {
+                                                                        crate::agent::provider_bridge::route_chunk(&bg_params);
+                                                                    }
                                                                     // 只读磁盘的 RPC → 照常处理(agent.run 期间安全)
                                                                     "list_turns" | "list_session_turns" => {
                                                                         let full_content = bg_params.get("full_content").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -7488,6 +7522,10 @@ fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
             // 文件之前不存在，写 header
             if existing_lines.is_empty() {
                 let _ = writeln!(f, "{header_line}");
+                // M3 会话回流：header 镜像
+                if let Ok(hv) = serde_json::from_str::<serde_json::Value>(&header_line) {
+                    session_jsonl::mirror_public_send("header", &hv);
+                }
             }
         }
         // 全新会话：leaf 就是 session id（resolve_current_leaf 此时返回 None，
@@ -7677,6 +7715,11 @@ fn save_worker_session(sid: &str, cwd: &str, msgs: &[serde_json::Value]) {
                 format!("{}\n", json)
             };
             let _ = f.write_all(payload.as_bytes());
+            // M3 会话回流：message entry 镜像（save_worker_session 是主消息
+            // 持久化路径——agent.run 整轮结束后一次性落盘，不走 append_raw_entry）
+            if let Ok(ev) = serde_json::from_str::<serde_json::Value>(&json) {
+                session_jsonl::mirror_public_send("entry", &ev);
+            }
             parent_id = entry_id;
         }
     }

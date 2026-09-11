@@ -68,6 +68,16 @@ impl ApiRegistry {
         self.providers.insert(api.to_string(), provider);
     }
 
+    /// 用工厂产出的 provider 实例替换全部已注册 api（REMOTE_WORKER M2 桥接模式：
+    /// BridgeProvider 接管一切 LLM 调用，经 stdio 转发给 Manager 代发）。
+    /// 传工厂而非实例：map 持有各自独立的 Box（无 Clone 约束，不侵入 trait）。
+    pub fn override_all_with(&mut self, make: impl Fn() -> Box<dyn ApiProvider>) {
+        let keys: Vec<String> = self.providers.keys().cloned().collect();
+        for k in keys {
+            self.providers.insert(k, make());
+        }
+    }
+
     pub fn get(&self, api: &str) -> Option<&dyn ApiProvider> {
         self.providers.get(api).map(|p| p.as_ref())
     }

@@ -541,6 +541,8 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/design/DEV_SERVER_DETECTOR.md](./docs/design/DEV_SERVER_DETECTOR.md) | **Dev Server Detector** — bash 启动 dev server 时自动检测端口（stdout 扫描 + 探活兜底）+ on_system_prompt 注入 `<dev_servers>` XML（待定） |
 | [docs/design/SESSION_WORKSPACE_CHAT.md](./docs/design/SESSION_WORKSPACE_CHAT.md) | **Session Workspace Chat** — 会话内创建独立 worktree 子会话：create/close/get_session_snapshot RPC + workspace_session_* 事件 + HTML 原型（内核闭环已完成，`tests/session_workspace_ci.sh` 26/26） |
 | [docs/design/INPUT_ORIGIN.md](./docs/design/INPUT_ORIGIN.md) | **INPUT_ORIGIN 输入来源标识** — prompt params.origin（user/monitor/system/peer）贯穿 agent 循环：InputContext.origin 暴露给扩展 on_input 钩子 + 非 user 落 custom(input_origin) 条目；monitor spawn/异步通知/缺省回落全覆盖（已实现：OriginGate 拒绝 + schema 级隐藏 + on_input 改写，lib 991/0 + 三 harness） |
+| [docs/design/BROWSER_FETCH_TOOL.md](./docs/design/BROWSER_FETCH_TOOL.md) | **Browser Fetch 工具** — SPA/CSR 感知网页抓取：内核直 spawn 独立 browser 二进制（~/Project/study-rust/browser，进程边界不合并代码）+ 超时双保险（上游 60s 预算 + ION 硬超时）+ warnings 壳页信号透传 + max_length 截断 + config `fetch.path`/`allow_urls` 白名单（已实现：lib 单测 8 + harness 2 + `tests/browser_fetch_ci.sh` 12/12 + ION_E2E 真实外网 1） |
+| [docs/design/REMOTE_WORKER.md](./docs/design/REMOTE_WORKER.md) | **Remote Worker 远程执行端** — 双模式（客户端=SSH spawn 整体搬家 + 零 key LLM 桥接 + 会话回流 Mac + 资产包下发 + 封闭动词表通道化宿主访问 / 服务端=win38 serve 已上线）；10 条决策记录 + 协议字段表 + 安全模型（红蓝对抗评审）+ M1-M4 路线（设计定稿待实现） |
 
 ### 使用指南（docs/guides/）
 
@@ -612,6 +614,7 @@ ion rpc --session sess_xxx --method get_flags \
 | `src/goal_supervisor_extension.rs` | GoalSupervisorExtension（证据驱动目标闭环：on_gate_check + 6 道防线 + 日志，[详情](./docs/design/GOAL_SUPERVISOR.md)） |
 | `src/goal_evolver.rs` | Goal Evolver（日志分析进化：3 维度分析 + Issue 计划 + run_once，[详情](./docs/design/GOAL_SUPERVISOR.md §8)） |
 | `src/lsp_extension.rs` | LSP Extension（多语言诊断：cargo check / tsc / go vet / py_compile / HTML 标签匹配） |
+| `src/browser_fetch.rs` | **Browser Fetch 工具**（SPA/CSR 感知抓取：直 spawn browser 二进制 + 超时双保险 + warnings 透传 + url 白名单，[详情](./docs/design/BROWSER_FETCH_TOOL.md)） |
 | `src/tool_loop_detector.rs` | Tool Loop Detector（防 LLM 重复调同一工具死循环） |
 | `src/auto_session_title.rs` | Auto Session Title（首轮启发式标题生成） |
 | `src/rules_engine.rs` | **Rules Engine**（项目规则注入：`.ion/rules/*.md` frontmatter glob 匹配 → on_system_prompt 注入 XML） |

@@ -93,6 +93,125 @@ pub struct IonConfig {
     /// ```
     #[serde(default)]
     pub skills: SkillsConfig,
+
+    /// fetch 工具（SPA/CSR 感知抓取，spawn 独立 browser 二进制）配置。
+    /// 详见 src/browser_fetch.rs 与 docs/design/BROWSER_FETCH_TOOL.md
+    #[serde(default)]
+    pub fetch: FetchConfig,
+
+    /// Remote Worker 执行端配置（客户端模式，见 docs/design/REMOTE_WORKER.md）。
+    /// key/会话在 Mac 主控端；这里只描述如何 SSH 拉起远端 worker。
+    /// 支持 env `ION_REMOTE_WORKERS`（JSON 同构）覆盖，便于测试与临时指定。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_workers: Option<HashMap<String, RemoteWorkerHost>>,
+}
+
+/// 远程执行端主机描述（remote_workers.<name>）。
+///
+/// 与 runtime.remote.hosts（副作用路由的 SSH 后端）是两个不同特性：
+/// 这里是"整个 worker 进程搬到远端"（客户端模式）。
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct RemoteWorkerHost {
+    /// SSH 用户名（空 = 用 hostname 原样，交给 ~/.ssh/config 解析）
+    #[serde(default)]
+    pub user: String,
+    /// 主机名或 ~/.ssh/config 别名（如 "win38"）
+    pub hostname: String,
+    /// SSH 端口（None/22 = 不加 -p）
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// 私钥路径（空 = 默认 agent/config）
+    #[serde(default)]
+    pub key: String,
+    /// 远端 ion 二进制路径（空 = /usr/local/bin/ion）
+    #[serde(default)]
+    pub worker_bin: String,
+    /// 远端工作目录（空 = 远端登录默认目录）
+    #[serde(default)]
+    pub cwd: String,
+    /// 远端命令包装前缀（按空白切词，原样插入在 /bin/sh 之前）。
+    /// Windows+WSL 执行端必填，如 `"wsl -d ion --"`——ssh 落在 Windows cmd，
+    /// 一切 Linux 路径/命令必须经它进入 WSL。此模式下脚本走 base64 转运，
+    /// 免疫 cmd/bash 双层引号解析。纯 Linux 执行端留空。
+    #[serde(default)]
+    pub wrapper: String,
+    /// 随 worker 进程下发的环境变量（export K=V）。
+    /// 典型用途：代理（https_proxy 指回主控端出口）、locale。
+    /// 路径命名空间 = 执行侧（D7）：值里的路径按远端语义解析。
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    /// 零 key LLM 桥接（M2）：true 时 Manager 注入 ION_PROVIDER_BRIDGE=1，
+    /// 远端 worker 的一切 LLM 调用经 Manager 代发（远端无需任何 key）。
+    /// 默认 false（M1 过渡形态：远端用自己 config 的 key）。
+    #[serde(default)]
+    pub llm_bridge: bool,
+    /// 资产包（M3）：spawn 前把 Mac 的 skills/agents 部署到远端全局目录
+    ///（~/.ion/agent/{skills,agents}——worker 加载逻辑零改动）。
+    /// None = 不下发；Some(AssetsConfig) 按白名单/开关下发。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assets: Option<RemoteWorkerAssets>,
+    /// spawn 前自愈命令（经默认 22 端口在远端默认 shell 执行）。
+    /// WSL 执行端必填：VM 每次生命周期变化都换 IP + sshd(tmpfs) 消失，
+    /// 每次拉 worker 前跑 gateway 刷新 portproxy/拉起 sshd，换取 100% 可达。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh: Option<String>,
+    /// 管理通道（22）的 ssh 目标——与 worker 通道（user/hostname/port）分离：
+    /// WSL 执行端 worker 走 2222 直连 WSL（root），管理通道走 Windows sshd（sshuser）。
+    /// 支持 ~/.ssh/config 别名（如 "win38"）。缺省回退 user@hostname。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_dest: Option<String>,
+}
+
+/// 资产包内容策略（remote_workers.<name>.assets）。
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct RemoteWorkerAssets {
+    /// skills 白名单（按文件/目录名匹配 ~/.ion/agent/skills/ 下条目）。
+    /// 空数组 = 下发全部 skills。
+    #[serde(default)]
+    pub skills: Vec<String>,
+    /// 是否下发 agents（~/.ion/agent/agents/*.md）。默认 true。
+    #[serde(default = "default_true")]
+    pub agents: bool,
+}
+
+impl IonConfig {
+    /// 解析 remote_workers 里的一台执行端。
+    /// 优先级：env `ION_REMOTE_WORKERS`（JSON map）> config 文件。
+    /// 环境变量里不存在的名字不会被 config 文件兜底（env 是完整替换语义，便于测试隔离）。
+    pub fn remote_worker_host(&self, name: &str) -> Option<RemoteWorkerHost> {
+        if let Ok(env_json) = std::env::var("ION_REMOTE_WORKERS")
+            && !env_json.trim().is_empty()
+        {
+            if let Ok(m) = serde_json::from_str::<HashMap<String, RemoteWorkerHost>>(&env_json) {
+                return m.get(name).cloned();
+            }
+        }
+        self.remote_workers
+            .as_ref()
+            .and_then(|m| m.get(name).cloned())
+    }
+}
+
+/// fetch 工具配置（`~/.ion/config.json` 的 `fetch` 段）。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, Default)]
+pub struct FetchConfig {
+    /// browser 二进制路径。查找顺序：ION_BROWSER_PATH env > 此处 > PATH 里的
+    /// `browser` > `~/.ion/bin/browser`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+
+    /// 默认上游预算（毫秒），LLM 未传 timeout_ms 时使用。默认 75000
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_timeout_ms: Option<u64>,
+
+    /// 内容截断上限（字符），LLM 未传 max_length 时使用。默认 50000
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<usize>,
+
+    /// URL 白名单（`*`/`?` 通配，匹配完整 URL；空 = 允许全部）。
+    /// 例：`["https://*.example.com/*"]`。整体开关用 Agent 工具黑名单。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow_urls: Vec<String>,
 }
 
 /// Skill blacklist configuration.
@@ -932,11 +1051,13 @@ impl Default for IonConfig {
             origin_hide_tools: HashMap::new(),
             tier_models: default_tier_models(),
             security_mode: None,
+            remote_workers: None,
             mcp_servers: HashMap::new(),
             mcp: None,
             runtime: RuntimeConfig::default(),
             session: SessionConfig::default(),
             skills: SkillsConfig::default(),
+            fetch: FetchConfig::default(),
         }
     }
 }
@@ -1210,6 +1331,39 @@ pub fn default_model_for_provider(provider: &str) -> &'static str {
 #[cfg(test)]
 mod merge_tests {
     use super::*;
+
+    // ── Remote Worker M1：remote_workers 解析 + env 覆盖语义 ──────────────────
+
+    #[test]
+    fn test_remote_workers_parse_and_env_override() {
+        let json = r#"{"remote_workers": {"win38": {"hostname": "win38", "user": "sshuser",
+            "worker_bin": "/usr/local/bin/ion", "cwd": "/root/ws"}}}"#;
+        let cfg: IonConfig = serde_json::from_str(json).unwrap();
+        let h = cfg.remote_worker_host("win38").expect("win38 should parse");
+        assert_eq!(h.hostname, "win38");
+        assert_eq!(h.user, "sshuser");
+        assert_eq!(h.worker_bin, "/usr/local/bin/ion");
+        assert!(cfg.remote_worker_host("nas").is_none());
+
+        // env ION_REMOTE_WORKERS = 完整替换语义（便于测试隔离与临时指定）
+        // SAFETY: edition 2024 要求 set_var 走 unsafe。本测试是进程内唯一读写
+        // ION_REMOTE_WORKERS 的地方，且读写都在同一线程同步完成，无并发风险。
+        unsafe {
+            std::env::set_var(
+                "ION_REMOTE_WORKERS",
+                r#"{"nas38": {"hostname": "192.168.0.103", "user": "root"}}"#,
+            );
+        }
+        assert!(
+            cfg.remote_worker_host("win38").is_none(),
+            "env override should fully replace config file entries"
+        );
+        let nas = cfg.remote_worker_host("nas38").expect("nas38 from env");
+        assert_eq!(nas.hostname, "192.168.0.103");
+        assert_eq!(nas.worker_bin, "", "default empty bin");
+        // SAFETY 同上：仅本测试消费该变量
+        unsafe { std::env::remove_var("ION_REMOTE_WORKERS") };
+    }
 
     /// 构造一个带各种字段的全局 config 作为合并基准
     fn global_config() -> IonConfig {

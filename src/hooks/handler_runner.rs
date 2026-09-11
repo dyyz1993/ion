@@ -429,6 +429,7 @@ async fn run_agent(
         system_prompt_override: None,
         model: None,
         provider: None,
+        host: None,
     };
 
     let timeout = handler.timeout.unwrap_or(300) as u64;

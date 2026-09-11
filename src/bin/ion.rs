@@ -1094,6 +1094,9 @@ fn build_tools(eff: &EffectiveConfig) -> (ToolRegistry, Option<Vec<std::path::Pa
         tools.register(Box::new(EditTool));
         tools.register(Box::new(CalculatorTool));
         tools.register(Box::new(EchoTool));
+        // Browser fetch — SPA/CSR 感知抓取（内核直 spawn 独立 browser 二进制，
+        // 不走 bash；见 src/browser_fetch.rs）
+        tools.register(Box::new(ion::browser_fetch::FetchTool));
         // ── 内置 plan 工具（plan_enter/exit/add/list/done）──
         // 不依赖 WASM plan-extension（已删除，跟内置 PlanExtension 工具名冲突）。
         // 这 5 个工具共享一个 PlanExtension 实例。PlanExtension 的 mode 切换钩子
@@ -5813,6 +5816,8 @@ async fn handle_manager_command(
                         "agent": w.agent,
                         "parent": w.parent,
                         "channels": w.channels,
+                        // 远程执行端（REMOTE_WORKER.md）：None=本地，Some=SSH 拉起的远端 worker
+                        "host": w.host,
                     })
                 })
                 .collect();
@@ -6567,6 +6572,8 @@ async fn handle_manager_command_write(
                         "agent": w.agent,
                         "parent": w.parent,
                         "channels": w.channels,
+                        // 远程执行端（REMOTE_WORKER.md）：None=本地，Some=SSH 拉起的远端 worker
+                        "host": w.host,
                     })
                 })
                 .collect();
@@ -8729,6 +8736,10 @@ mod tests {
                     extra_cwds: Vec::new(),
                     tier_models: None,
                     security_profile: None,
+                    goal_deadline_ms: None,
+                    goal_status: None,
+                    workspace_path: None,
+                    workspace_status: None,
                 },
             );
         }

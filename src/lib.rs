@@ -39,6 +39,7 @@ pub mod agent_config;
 pub mod auth;
 pub mod auto_session_title;
 pub mod backend_registry;
+pub mod browser_fetch;
 pub mod command_guard;
 pub mod config;
 pub mod dev_server_detector;

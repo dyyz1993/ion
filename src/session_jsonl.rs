@@ -683,6 +683,10 @@ pub fn ensure_session_header(cwd: &str, sid: &str) -> bool {
         {
             let _ = f.write_all(format!("{}\n", json).as_bytes());
         }
+        // M3 会话回流：新建 header 镜像给 Manager（Mac 侧据此建文件头）
+        if let Ok(hv) = serde_json::from_str::<serde_json::Value>(&json) {
+            mirror_send("header", &hv);
+        }
         return true;
     }
 
@@ -759,6 +763,49 @@ pub fn read_session_env_tuple() -> (Option<String>, Option<String>, Option<Strin
     )
 }
 
+// ── 会话镜像回流（REMOTE_WORKER M3）────────────────────────────────────
+// 远程 worker 照写本地 JSONL 的同时，把每条 entry/header 镜像发给 Manager 落 Mac。
+// 双写（而非只流不写）：worker 全部现有逻辑零改动风险，断线时远端还有副本。
+// 开关：ION_SESSION_STREAM=1（Manager 在 llm_bridge=true 时注入）。
+
+fn session_stream_enabled() -> bool {
+    std::env::var("ION_SESSION_STREAM")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+}
+
+static MIRROR_SID: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// worker 启动时注册当前 sid（镜像消息携带归属）。
+pub fn set_mirror_session(sid: &str) {
+    *MIRROR_SID.lock().unwrap() = Some(sid.to_string());
+}
+
+fn mirror_output(msg: &serde_json::Value) {
+    use std::io::Write;
+    let line = serde_json::to_string(msg).unwrap_or_default();
+    let mut stdout = std::io::stdout().lock();
+    let _ = writeln!(stdout, "{line}");
+    let _ = stdout.flush();
+}
+
+/// 公开版：worker_rpc 的 save_worker_session（主消息持久化路径）也镜像。
+pub fn mirror_public_send(kind: &str, payload: &serde_json::Value) {
+    mirror_send(kind, payload);
+}
+
+fn mirror_send(kind: &str, payload: &serde_json::Value) {
+    if !session_stream_enabled() {
+        return;
+    }
+    let sid = MIRROR_SID.lock().unwrap().clone().unwrap_or_default();
+    mirror_output(&serde_json::json!({
+        "type": "manager_command",
+        "command": "session_entry",
+        "params": {"kind": kind, "sid": sid, "payload": payload},
+    }));
+}
+
 pub fn append_raw_entry(cwd: &str, entry: &serde_json::Value) {
     let path = resolve_session_file(cwd);
     if let Some(parent) = path.parent() {
@@ -781,6 +828,8 @@ pub fn append_raw_entry(cwd: &str, entry: &serde_json::Value) {
         let _ = f.write_all(payload.as_bytes());
     }
     crate::message_retrieval::invalidate_cache(cwd);
+    // M3 会话回流：条目镜像给 Manager（远端照写，Mac 落盘）
+    mirror_send("entry", entry);
 }
 
 /// 追加一个不进入 LLM context 的 custom entry，并让它成为当前 leaf。

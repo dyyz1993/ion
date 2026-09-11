@@ -7,9 +7,9 @@
 //! S3: Channel 100 条消息广播
 //! S4: 快速创建/销毁 20 个 Worker
 
+use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 
 use ion::agent::tool::Tool;
 use ion::worker_registry::{WorkerCreateConfig, WorkerRegistry, WorktreeConfig};
@@ -40,7 +40,7 @@ fn create_registry() -> Arc<Mutex<WorkerRegistry>> {
 #[tokio::test]
 async fn e02_multi_project_concurrent() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     // Create two workers in different projects
     let tmp_a = std::env::temp_dir().join("ion_e2_a").join("proj-alpha");
@@ -82,7 +82,7 @@ async fn e02_multi_project_concurrent() {
     )
     .await
     .unwrap();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     drop(reg);
     let r2 = WorkerRegistry::send_async(
         &registry,
@@ -92,7 +92,7 @@ async fn e02_multi_project_concurrent() {
     )
     .await
     .unwrap();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     assert_eq!(r1["success"], true, "A should respond");
     assert_eq!(r2["success"], true, "B should respond");
 
@@ -124,7 +124,7 @@ async fn e04_session_recovery() {
     let info;
     let session_id;
     {
-        let mut reg = registry.lock().await;
+        let mut reg = registry.lock();
         info = reg
             .create_worker(
                 WorkerCreateConfig {
@@ -147,7 +147,7 @@ async fn e04_session_recovery() {
         )
         .await
         .unwrap();
-        let mut reg = registry.lock().await;
+        let mut reg = registry.lock();
         assert_eq!(resp["success"], true);
         assert_eq!(resp["data"]["session_id"], session_id);
 
@@ -156,7 +156,7 @@ async fn e04_session_recovery() {
 
     // Lock scope 2: recreate with same session
     {
-        let mut reg = registry.lock().await;
+        let mut reg = registry.lock();
         let info2 = reg
             .create_worker(
                 WorkerCreateConfig {
@@ -178,7 +178,7 @@ async fn e04_session_recovery() {
         )
         .await
         .unwrap();
-        let mut reg = registry.lock().await;
+        let mut reg = registry.lock();
         assert_eq!(resp["success"], true, "recreated worker should respond");
 
         // Session ID should match
@@ -205,7 +205,7 @@ async fn s01_ten_workers_concurrent() {
 
     // Create 10 workers
     let workers: Vec<_> = {
-        let mut reg = registry.lock().await;
+        let mut reg = registry.lock();
         let mut workers = Vec::new();
         for i in 0..10 {
             let info = reg
@@ -250,7 +250,7 @@ async fn s01_ten_workers_concurrent() {
     assert_eq!(unique_ids.len(), 10, "all workers should have unique IDs");
 
     // Cleanup
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     for w in &workers {
         let _ = reg.kill_worker(&w.worker_id);
     }
@@ -265,7 +265,7 @@ async fn s02_fifty_rounds_single_worker() {
     let registry = create_registry();
 
     let wid = {
-        let mut reg = registry.lock().await;
+        let mut reg = registry.lock();
         reg.create_worker(
             WorkerCreateConfig {
                 session: Some("s2-fifty".into()),
@@ -307,7 +307,7 @@ async fn s02_fifty_rounds_single_worker() {
     .unwrap();
     assert_eq!(final_resp["success"], true);
 
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     let _ = reg.kill_worker(&wid);
 }
 
@@ -318,7 +318,7 @@ async fn s02_fifty_rounds_single_worker() {
 #[tokio::test]
 async fn s03_channel_100_messages() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     // Create 3 subscribers on "broadcast" channel
     let mut subs = Vec::new();
@@ -398,7 +398,7 @@ async fn s04_rapid_create_destroy_20() {
     for i in 0..20 {
         // Create (持锁创建)
         let info = {
-            let mut reg = registry.lock().await;
+            let mut reg = registry.lock();
             reg.create_worker(
                 WorkerCreateConfig {
                     session: Some(format!("s4-rapid-{i}")),
@@ -420,7 +420,7 @@ async fn s04_rapid_create_destroy_20() {
 
         // Destroy every 5 workers to keep count manageable
         if created.len() >= 5 {
-            let mut reg = registry.lock().await;
+            let mut reg = registry.lock();
             for w in created.drain(..) {
                 reg.kill_worker(&w.worker_id).ok();
             }
@@ -431,7 +431,7 @@ async fn s04_rapid_create_destroy_20() {
     }
 
     // Final cleanup
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     for w in created {
         let _ = reg.kill_worker(&w.worker_id);
     }
@@ -448,7 +448,7 @@ async fn s04_rapid_create_destroy_20() {
 #[tokio::test]
 async fn e01_code_review_pipeline() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     // Step 1: Create coordinator (parent) worker
     let coord = reg
@@ -480,7 +480,7 @@ async fn e01_code_review_pipeline() {
     )
     .await
     .expect("coordinator should accept create_worker");
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     // Verify coordinator returned a pending response
     assert_eq!(resp["success"], true, "coordinator should respond");
@@ -497,7 +497,7 @@ async fn e01_code_review_pipeline() {
         }
         drop(reg);
         tokio::time::sleep(Duration::from_millis(200)).await;
-        reg = registry.lock().await;
+        reg = registry.lock();
     }
 
     // Step 4: Verify child worker was created by the Manager
@@ -537,7 +537,7 @@ async fn e01_code_review_pipeline() {
         serde_json::json!({"text": "Review the auth module"}),
     )
     .await;
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     assert!(prompt_resp.is_ok(), "reviewer should accept prompt");
 
     // Step 6: Cleanup
@@ -552,7 +552,7 @@ async fn e01_code_review_pipeline() {
 #[tokio::test]
 async fn e01b_worker_channel_send() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     // Create a subscriber on "alerts" channel
     let sub = reg
@@ -592,7 +592,7 @@ async fn e01b_worker_channel_send() {
     )
     .await
     .expect("sender should accept channel_send");
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     assert_eq!(resp["success"], true);
 
     // Process queued manager command
@@ -619,7 +619,7 @@ async fn e01b_worker_channel_send() {
 #[ignore]
 async fn rt01_retry_on_timeout() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let info = reg
         .create_worker(
@@ -783,7 +783,7 @@ async fn rt04_retry_succeeds_after_failures() {
 #[ignore]
 async fn rt05_send_to_worker_retry_failing() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let info = reg
         .create_worker(
@@ -831,7 +831,7 @@ async fn rt05_send_to_worker_retry_failing() {
 #[tokio::test]
 async fn bash01_execute_works() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let info = reg
         .create_worker(
@@ -854,7 +854,7 @@ async fn bash01_execute_works() {
     )
     .await
     .unwrap();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     assert_eq!(resp["success"], true, "bash should succeed");
     assert_eq!(resp["data"]["exitCode"], 0, "exit code 0");
     assert!(
@@ -875,7 +875,7 @@ async fn bash01_execute_works() {
     )
     .await
     .unwrap();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     assert_eq!(resp2["success"], true);
     let pwd = resp2["data"]["stdout"].as_str().unwrap_or("");
     assert!(!pwd.is_empty(), "pwd should output something");
@@ -894,7 +894,7 @@ async fn bash01_execute_works() {
 #[tokio::test]
 async fn bash02_error_exit_code() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let info = reg
         .create_worker(
@@ -916,7 +916,7 @@ async fn bash02_error_exit_code() {
     )
     .await
     .unwrap();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     assert_eq!(resp["success"], true);
     assert_eq!(resp["data"]["exitCode"], 42, "should have exit code 42");
 
@@ -932,7 +932,7 @@ async fn bash03_worktree_cwd() {
     let repo = setup_temp_repo_for_bash("bash03");
     let repo_str = repo.to_string_lossy().to_string();
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let info = reg
         .create_worker(
@@ -961,7 +961,7 @@ async fn bash03_worktree_cwd() {
     )
     .await
     .unwrap();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     assert_eq!(resp["success"], true);
     let pwd = resp["data"]["stdout"].as_str().unwrap_or("").trim();
     assert!(
@@ -974,7 +974,7 @@ async fn bash03_worktree_cwd() {
     let resp2 = WorkerRegistry::send_async(&registry, &info.worker_id, "bash",
         serde_json::json!({"command": "echo 'worktree test content' > bash_worktree_test.txt && cat bash_worktree_test.txt"})
     ).await.unwrap();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     assert_eq!(resp2["success"], true);
     assert!(
         resp2["data"]["output"]
@@ -1250,7 +1250,7 @@ async fn runtime02_bash_goes_through_guard() {
 async fn runtime03_agent_uses_runtime() {
     // 验证 Agent 默认使用 LocalRuntime
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     let info = reg
         .create_worker(
             WorkerCreateConfig {
@@ -1272,7 +1272,7 @@ async fn runtime03_agent_uses_runtime() {
     )
     .await
     .unwrap();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     assert_eq!(resp["success"], true);
     let output = resp["data"]["output"].as_str().unwrap_or("");
     assert!(

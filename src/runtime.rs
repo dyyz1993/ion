@@ -294,6 +294,9 @@ pub struct SpawnWorkerRequest {
     /// 可选：覆盖子 Worker 的 provider。
     /// None = 继承父 Worker 的 provider。
     pub provider: Option<String>,
+    /// 可选：远程执行端名（remote_workers.<name>，REMOTE_WORKER.md 客户端模式）。
+    /// Some 时整个 worker 经 SSH 拉到远端机器跑（hooks/LSP/后台进程全部远端）。
+    pub host: Option<String>,
 }
 
 impl SpawnWorkerRequest {
@@ -482,6 +485,8 @@ impl<R: Runtime + 'static> Runtime for WorkerRuntime<R> {
             // 可选 model/provider：让不同 worker 用不同模型
             "model": req.model,
             "provider": req.provider,
+            // 远程执行端（REMOTE_WORKER.md 客户端模式）：Some 时 Manager 走 SSH 拉起
+            "host": req.host,
             // 方案 C：所有 Worker 都通过 bridge 代理，不需要 skip_mcp
             // project_path：透传当前 Worker 的项目目录，避免 Manager 回退到 host cwd
             // （否则子 worker 项目落在 host 工作目录；非 git 目录还会触发自动 git init）
@@ -2264,6 +2269,7 @@ mod tests {
             system_prompt_override: None,
             model: None,
             provider: None,
+            host: None,
         };
         assert!(peer_req.is_peer());
 
@@ -2281,6 +2287,7 @@ mod tests {
             system_prompt_override: None,
             model: None,
             provider: None,
+            host: None,
         };
         assert!(!child_req.is_peer());
     }
@@ -2338,6 +2345,7 @@ mod tests {
                 system_prompt_override: None,
                 model: None,
                 provider: None,
+                host: None,
             })
             .await
             .expect("spawn_worker should succeed");
@@ -2397,6 +2405,7 @@ mod tests {
                 system_prompt_override: None,
                 model: None,
                 provider: None,
+                host: None,
             })
             .await
             .expect("spawn_worker should succeed");
