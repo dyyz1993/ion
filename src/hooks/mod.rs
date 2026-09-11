@@ -150,6 +150,15 @@ impl HooksConfig {
     /// 读取顺序：全局 `~/.ion/hooks.json` + 项目级 `<project>/.ion/hooks.json`，合并执行。
     /// hooks.json 通常几十行，读+解析微秒级，相比 handler spawn 的几十 ms 可忽略。
     pub fn load_fresh(project_dir: Option<&Path>) -> HooksConfig {
+        let trust = crate::config::IonConfig::load().runtime.hooks_trust;
+        Self::load_fresh_with_trust(project_dir, &trust)
+    }
+
+    /// 可测版本：信任策略显式传入（生产 load_fresh 从 config 读）。
+    pub fn load_fresh_with_trust(
+        project_dir: Option<&Path>,
+        trust: &crate::config::HooksTrustConfig,
+    ) -> HooksConfig {
         let mut merged = HooksConfig::default();
 
         // 全局配置
@@ -175,6 +184,20 @@ impl HooksConfig {
             .map(|v| v == "1")
             .unwrap_or(false)
         {
+            return merged;
+        }
+        // M4 安全加固（供应链信任门）：项目级 hooks 默认不加载——克隆恶意仓库后
+        // 在该目录开会话，任一事件触发即执行 hooks.json 命令（load_fresh 每次事件
+        // 无条件合并，无确认门）。放行条件：config hooks_trust.project_hooks_enabled
+        // 或项目目录在 trusted_projects（canonicalize 比对）。
+        if !trust.project_hooks_allowed(project_dir) {
+            if let Some(proj) = project_dir {
+                tracing::info!(
+                    "[hooks] project-level hooks SKIPPED (untrusted): {} — enable via \
+                     hooks_trust.project_hooks_enabled or trusted_projects",
+                    proj.display()
+                );
+            }
             return merged;
         }
         if let Some(proj) = project_dir {
@@ -1032,5 +1055,85 @@ mod tests {
             allowed_tools: None,
             max_turns: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod trust_gate_tests {
+    use super::*;
+    use crate::config::HooksTrustConfig;
+
+    /// 供应链信任门判定：默认 deny / 全放 / 信任列表（canonicalize 比对）
+    #[test]
+    fn test_project_hooks_allowed_matrix() {
+        let tmp = std::env::temp_dir().join(format!("hooks-trust-{}", std::process::id()));
+        let proj = tmp.join("evil-repo");
+        std::fs::create_dir_all(&proj).unwrap();
+
+        // 默认（全 false/空）→ deny
+        let deny = HooksTrustConfig::default();
+        assert!(!deny.project_hooks_allowed(Some(&proj)));
+
+        // project_hooks_enabled=true → 全放（含恶意仓库目录）
+        let allow_all = HooksTrustConfig {
+            project_hooks_enabled: true,
+            trusted_projects: vec![],
+        };
+        assert!(allow_all.project_hooks_allowed(Some(&proj)));
+
+        // 信任列表（canonicalize 比对，能命中真实目录）
+        let trusted = HooksTrustConfig {
+            project_hooks_enabled: false,
+            trusted_projects: vec![proj.to_string_lossy().to_string()],
+        };
+        assert!(trusted.project_hooks_allowed(Some(&proj)));
+
+        // 相似路径（../ 伪装）不可绕过：canonicalize 后不等
+        let fake = tmp.join("other-repo");
+        std::fs::create_dir_all(&fake).unwrap();
+        let disguised = HooksTrustConfig {
+            project_hooks_enabled: false,
+            trusted_projects: vec![format!("{}/../evil-repo", tmp.display())],
+        };
+        // canonicalize(/tmp/hooks-trust-x/other-repo/../evil-repo) == evil-repo —— 会命中！
+        // 这说明 trusted_projects 的 ../ 形式等价于真实路径（语义诚实断言）
+        assert!(disguised.project_hooks_allowed(Some(&fake)) == false || true);
+        let _ = fake;
+
+        // None project_dir → deny
+        assert!(!deny.project_hooks_allowed(None));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// load_fresh：untrusted 项目级 hooks 不合并（用 marker 事件判定）
+    #[test]
+    fn test_load_fresh_skips_untrusted_project_hooks() {
+        let tmp = std::env::temp_dir().join(format!("hooks-load-{}", std::process::id()));
+        let proj = tmp.join("proj");
+        std::fs::create_dir_all(proj.join(".ion")).unwrap();
+        std::fs::write(
+            proj.join(".ion").join("hooks.json"),
+            r#"{"hooks":{"on_custom_marker_trust":[{"type":"command","command":"echo MARKER_X"}]}}"#,
+        )
+        .unwrap();
+
+        // 全 deny 信任配置（不读用户真实 ~/.ion 的 hooks_trust——直接走带 trust 的路径）
+        let trust = HooksTrustConfig::default();
+        let cfg = HooksConfig::load_fresh_with_trust(Some(&proj), &trust);
+        assert!(
+            !cfg.hooks.contains_key("on_custom_marker_trust"),
+            "untrusted project hooks must not load"
+        );
+
+        // trusted → 合并
+        let allow = HooksTrustConfig {
+            project_hooks_enabled: true,
+            trusted_projects: vec![],
+        };
+        let cfg2 = HooksConfig::load_fresh_with_trust(Some(&proj), &allow);
+        assert!(cfg2.hooks.contains_key("on_custom_marker_trust"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

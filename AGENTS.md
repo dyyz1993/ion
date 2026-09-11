@@ -543,6 +543,7 @@ ion rpc --session sess_xxx --method get_flags \
 | [docs/design/INPUT_ORIGIN.md](./docs/design/INPUT_ORIGIN.md) | **INPUT_ORIGIN 输入来源标识** — prompt params.origin（user/monitor/system/peer）贯穿 agent 循环：InputContext.origin 暴露给扩展 on_input 钩子 + 非 user 落 custom(input_origin) 条目；monitor spawn/异步通知/缺省回落全覆盖（已实现：OriginGate 拒绝 + schema 级隐藏 + on_input 改写，lib 991/0 + 三 harness） |
 | [docs/design/BROWSER_FETCH_TOOL.md](./docs/design/BROWSER_FETCH_TOOL.md) | **Browser Fetch 工具** — SPA/CSR 感知网页抓取：内核直 spawn 独立 browser 二进制（~/Project/study-rust/browser，进程边界不合并代码）+ 超时双保险（上游 60s 预算 + ION 硬超时）+ warnings 壳页信号透传 + max_length 截断 + config `fetch.path`/`allow_urls` 白名单（已实现：lib 单测 8 + harness 2 + `tests/browser_fetch_ci.sh` 12/12 + ION_E2E 真实外网 1） |
 | [docs/design/REMOTE_WORKER.md](./docs/design/REMOTE_WORKER.md) | **Remote Worker 远程执行端** — 双模式（客户端=SSH spawn 整体搬家 + 零 key LLM 桥接 + 会话回流 Mac + 资产包便携性 lint/声明式同步 + 封闭动词表通道化宿主访问 + 审批流 / 服务端=win38 serve 已上线）；**M1-M4.5 全部完成并真机验证**（零 key "42"、会话回流 UI 直读、越权拒/审计、审批放行），commit 54cee34..24ede17 + 5e4e2cf，`tests/remote_worker_ci.sh` 10/0，lib 1010/0 |
+| [docs/design/SECURITY_HARDENING.md](./docs/design/SECURITY_HARDENING.md) | **安全加固 — 本地默认态 P0**（红蓝对抗评审落地）：受保护路径集（~/.ion config/auth/hooks/settings 写保护，canonicalize+词法规范化，先于权限引擎不可绕过）+ hooks 供应链信任门（项目级 hooks.json 默认不加载，trusted_projects 放行）；真机验证注入写 config 被拒 ✅，lib 1014/0 |
 
 ### 使用指南（docs/guides/）
 

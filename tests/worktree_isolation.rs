@@ -2,9 +2,9 @@
 //!
 //! project_path 可选，默认 current_dir()。测试传 project_path 为了并行隔离。
 
+use parking_lot::Mutex;
 use std::process::Command;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use ion::worker_registry::{WorkerCreateConfig, WorkerRegistry, WorktreeConfig};
 
@@ -84,7 +84,7 @@ async fn wt01_worktree_creates_isolated_cwd() {
     let repo = setup_temp_repo("wt01");
     let repo_str = repo.to_string_lossy().to_string();
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let info = reg
         .create_worker(
@@ -125,7 +125,7 @@ async fn wt02_reclaim_cleans_worktree_preserves_branch() {
     let repo = setup_temp_repo("wt02");
     let repo_str = repo.to_string_lossy().to_string();
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let info = reg
         .create_worker(
@@ -169,7 +169,7 @@ async fn wt03_parallel_workers_isolated() {
     let repo = setup_temp_repo("wt03");
     let repo_str = repo.to_string_lossy().to_string();
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let a = reg
         .create_worker(
@@ -230,7 +230,7 @@ async fn wt03_parallel_workers_isolated() {
         serde_json::Value::Null,
     )
     .await;
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     drop(reg);
     let r2 = WorkerRegistry::send_async(
         &registry,
@@ -239,7 +239,7 @@ async fn wt03_parallel_workers_isolated() {
         serde_json::Value::Null,
     )
     .await;
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     assert!(r1.is_ok() && r2.is_ok());
 
     reg.reclaim(&a.worker_id).unwrap();
@@ -254,7 +254,7 @@ async fn wt04_kill_cleans_worktree() {
     let repo = setup_temp_repo("wt04");
     let repo_str = repo.to_string_lossy().to_string();
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let info = reg
         .create_worker(
@@ -294,7 +294,7 @@ async fn wt04_kill_cleans_worktree() {
 async fn wt05_no_worktree_default_behavior() {
     let _repo = setup_temp_repo("wt05");
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     let info = reg
         .create_worker(
             WorkerCreateConfig {
@@ -318,7 +318,7 @@ async fn wt05_no_worktree_default_behavior() {
         .await
         .is_ok()
     );
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     reg.kill_worker(&info.worker_id).unwrap();
 }
 
@@ -328,7 +328,7 @@ async fn wt06_concurrent_development() {
     let repo = setup_temp_repo("wt06");
     let repo_str = repo.to_string_lossy().to_string();
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     // 创建 5 个隔离 Worker
     let n = 5;

@@ -58,6 +58,12 @@
 - **资产包 v1**：spawn 前 tar 管道部署 Mac skills/agents 到远端 `~/.ion/agent/`（worker 加载零改动）；`assets:{skills 白名单,agents}`；失败降级
 - **远端项目级 hooks 禁用**：ION_NO_PROJECT_HOOKS=1（llm_bridge 注入）→ hooks loader 跳过项目级——hooks 供应链 P0 的执行端克星
 - **WSL 执行端可靠性三件套**：serve 保活 VM（VM 空闲停机会灭 sshd/IP）+ `refresh` spawn 前自愈（经 22 管理通道跑 gateway：起 sshd+刷 portproxy）+ `refresh_dest` 双通道凭据（22=Windows/sshuser vs 2222=WSL/root）
+### M3 收尾（2026-09-11，commit 5e4e2cf，已 push）
+
+- 便携性 lint 落地：资产含 /Users/ 或 C:/Users/ → 打包前剔除 + warn（单测覆盖相对路径/${ION_ASSETS_DIR} 放行）
+- 声明式同步：远端 skills/agents = 本次下发集合精确镜像（rm -rf + tar xzf）——只增不删会让 lint 剔除的旧资产残留
+- 🔴 assets tar_args 拼接 off-by-one（[1..] 丢掉首个 --exclude 旗标）；remote_workers 两测试 ION_REMOTE_WORKERS env 竞态 → 共享锁串行化（3×1010/0）
+
 ### M3 回流三修（2026-09-11，commit a6d46be）
 
 - 🔴 远端 worker **强制 fork 模式**（ION_FORK_CHILD=1）：非 fork 写共享 session.jsonl（每 cwd 一个），旧 header 挡新 sid 的 header 创建 → 回流文件 header id 与文件名错位。fork = 独立 <sid>.jsonl，与镜像模型对齐

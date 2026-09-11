@@ -296,6 +296,40 @@ fn default_true() -> bool {
     true
 }
 
+/// hooks 供应链信任门配置（M4 安全加固）。
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct HooksTrustConfig {
+    /// 项目级 `.ion/hooks.json` 是否加载。默认 false（deny）——
+    /// 供应链向量：克隆恶意仓库后在该目录开会话，任一事件触发即执行
+    /// hooks.json 里的命令。用户自己的项目需要 hooks 时：
+    /// 设 true（全放）或把项目目录加入 trusted_projects。
+    #[serde(default)]
+    pub project_hooks_enabled: bool,
+    /// 显式信任的项目目录（canonicalize 比对）。project_hooks_enabled=false 时
+    /// 这些目录的项目级 hooks 照常加载。
+    #[serde(default)]
+    pub trusted_projects: Vec<String>,
+}
+
+impl HooksTrustConfig {
+    /// 判定某项目目录的项目级 hooks 是否允许加载。
+    /// canonicalize 比对（防 `..`/符号链接伪装）。
+    pub fn project_hooks_allowed(&self, project_dir: Option<&std::path::Path>) -> bool {
+        if self.project_hooks_enabled {
+            return true;
+        }
+        let Some(dir) = project_dir else { return false };
+        let Ok(canon) = std::fs::canonicalize(dir) else {
+            return false;
+        };
+        self.trusted_projects.iter().any(|t| {
+            std::fs::canonicalize(t)
+                .map(|ct| ct == canon)
+                .unwrap_or(false)
+        })
+    }
+}
+
 /// 默认 tier aliases（对齐 pi DEFAULT_TIER_ALIASES）
 fn default_tier_models() -> HashMap<String, String> {
     let mut m = HashMap::new();
@@ -402,6 +436,16 @@ pub struct RuntimeConfig {
     /// CommandGuard configuration
     #[serde(default)]
     pub command_guard: CommandGuardConfig,
+    /// 受保护路径追加项（M4 安全加固）：默认集（~/.ion 的 config/auth/hooks/
+    /// settings/path-permissions.json + agent/models.json）之外，用户可追加
+    /// 需要写保护的其他路径。默认集不可关闭（安全评审 P0）。
+    #[serde(default)]
+    pub protected_paths_extra: Vec<String>,
+    /// hooks 供应链信任门（M4 安全加固）：项目级 `.ion/hooks.json` 默认**不加载**
+    /// （克隆恶意仓库 + 开会话 + 事件触发 = 任意命令执行的供应链向量）。
+    /// 全局 `~/.ion/hooks.json` 不受影响。显式信任的项目目录见 trusted_projects。
+    #[serde(default)]
+    pub hooks_trust: HooksTrustConfig,
 }
 
 fn default_runtime_mode() -> String {
@@ -418,6 +462,8 @@ impl Default for RuntimeConfig {
             sandbox: SandboxConfig::default(),
             routes: Vec::new(),
             command_guard: CommandGuardConfig::default(),
+            protected_paths_extra: Vec::new(),
+            hooks_trust: HooksTrustConfig::default(),
         }
     }
 }

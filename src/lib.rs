@@ -72,6 +72,7 @@ pub mod message_retrieval;
 pub mod monitor_extension;
 pub mod paths;
 pub mod pool;
+pub mod protected_paths;
 pub mod queue;
 pub mod retry;
 pub mod rules_engine;

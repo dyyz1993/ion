@@ -1336,6 +1336,16 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
     }
 
     async fn read_file(&self, path: &str) -> Result<String, String> {
+        // ── 受保护路径（安全评审 P0）：无条件、先于权限引擎、不可审批绕过 ──
+        // auth.json/config.json 读取会把 key/base_url 送进 LLM 上下文（外泄面）
+        let extras = crate::config::IonConfig::load()
+            .runtime
+            .protected_paths_extra;
+        if crate::protected_paths::is_protected(&crate::paths::root(), &extras, path) {
+            return Err(format!(
+                "[Protected] {path} 是受保护的配置文件（防 prompt injection 改写/外泄），                 请在 agent 之外用编辑器或 ion config set 修改"
+            ));
+        }
         if let Some(ref engine) = self.permission_engine {
             match engine.check(path, crate::kernel::Action::Read) {
                 crate::kernel::PermissionResult::Allow => {}
@@ -1353,6 +1363,16 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
     }
 
     async fn write_file(&self, path: &str, content: &str) -> Result<(), String> {
+        // ── 受保护路径（安全评审 P0）：config base_url 持久 MITM / key 窃取的
+        //    主向量堵点。无条件检查，deny 不被 stored-decision 覆盖 ──
+        let extras = crate::config::IonConfig::load()
+            .runtime
+            .protected_paths_extra;
+        if crate::protected_paths::is_protected(&crate::paths::root(), &extras, path) {
+            return Err(format!(
+                "[Protected] {path} 是受保护的配置文件（防 prompt injection 改写），                 请在 agent 之外用编辑器或 ion config set 修改"
+            ));
+        }
         if let Some(ref engine) = self.permission_engine {
             match engine.check(path, crate::kernel::Action::Write) {
                 crate::kernel::PermissionResult::Allow => {}
@@ -1370,6 +1390,13 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
     }
 
     async fn edit_file(&self, path: &str, old: &str, new: &str) -> Result<(), String> {
+        // ── 受保护路径（安全评审 P0）：同 write_file ──
+        let extras = crate::config::IonConfig::load()
+            .runtime
+            .protected_paths_extra;
+        if crate::protected_paths::is_protected(&crate::paths::root(), &extras, path) {
+            return Err(format!("[Protected] {path} 受保护，agent 不可编辑"));
+        }
         if let Some(ref engine) = self.permission_engine {
             match engine.check(path, crate::kernel::Action::Edit) {
                 crate::kernel::PermissionResult::Allow => {}
@@ -1408,6 +1435,13 @@ impl<R: Runtime + Send + Sync> Runtime for SecuredRuntime<R> {
     }
 
     async fn remove_file(&self, path: &str) -> Result<(), String> {
+        // ── 受保护路径（安全评审 P0）：删 hooks.json/path-permissions = 拆防御 ──
+        let extras = crate::config::IonConfig::load()
+            .runtime
+            .protected_paths_extra;
+        if crate::protected_paths::is_protected(&crate::paths::root(), &extras, path) {
+            return Err(format!("[Protected] {path} 受保护，agent 不可删除"));
+        }
         if let Some(ref engine) = self.permission_engine {
             match engine.check(path, crate::kernel::Action::Delete) {
                 crate::kernel::PermissionResult::Allow => {}

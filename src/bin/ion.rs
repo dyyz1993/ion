@@ -8723,6 +8723,7 @@ mod tests {
         // 注册到 SessionIndex
         let mut idx = ion::session_index::SessionIndex {
             sessions: std::collections::HashMap::new(),
+            removed_sessions: Default::default(),
         };
         for sid in [main_sid, child_sid] {
             idx.sessions.insert(

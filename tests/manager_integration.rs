@@ -3,9 +3,9 @@
 //! 这些测试使用 WorkerRegistry 直接操作 Manager，
 //! 通过 in-process 方式创建 Worker 子进程，验证生命周期。
 
+use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 
 use ion::worker_registry::{WorkerCreateConfig, WorkerRegistry};
 use std::path::PathBuf;
@@ -38,7 +38,7 @@ fn create_registry() -> Arc<Mutex<WorkerRegistry>> {
 /// auto-start tests). Must be awaited-locked from a tokio context.
 async fn create_registry_with_self_ref() -> Arc<Mutex<WorkerRegistry>> {
     let arc = create_registry();
-    arc.lock().await.set_self_ref(&arc);
+    arc.lock().set_self_ref(&arc);
     arc
 }
 
@@ -49,7 +49,7 @@ async fn create_registry_with_self_ref() -> Arc<Mutex<WorkerRegistry>> {
 #[tokio::test]
 async fn i01_manager_starts_with_zero_workers() {
     let registry = create_registry();
-    let reg = registry.lock().await;
+    let reg = registry.lock();
     let workers = reg.list_workers();
     assert_eq!(workers.len(), 0, "fresh manager should have 0 workers");
     let projects = reg.list_projects();
@@ -63,7 +63,7 @@ async fn i01_manager_starts_with_zero_workers() {
 #[tokio::test]
 async fn i02_create_worker_returns_info() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let info = reg
         .create_worker(
@@ -115,7 +115,7 @@ async fn i02_create_worker_returns_info() {
 #[tokio::test]
 async fn i03_list_workers_shows_all() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     for i in 0..3 {
         reg.create_worker(
@@ -150,7 +150,7 @@ async fn i03_list_workers_shows_all() {
 #[tokio::test]
 async fn i04_list_projects() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     // Create temp directories so spawn doesn't fail
     let tmp_a = std::env::temp_dir().join("ion_test_i04_a").join("proj-a");
@@ -206,7 +206,7 @@ async fn i04_list_projects() {
 #[tokio::test]
 async fn i05_send_command_to_worker() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let info = reg
         .create_worker(
@@ -229,7 +229,7 @@ async fn i05_send_command_to_worker() {
     )
     .await
     .expect("send_to_worker should succeed");
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     // Verify response format
     assert_eq!(response["type"], "response", "should be a response");
@@ -248,7 +248,7 @@ async fn i05_send_command_to_worker() {
 #[tokio::test]
 async fn i06_worker_events_forwarded() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let info = reg
         .create_worker(
@@ -300,7 +300,7 @@ async fn i06_worker_events_forwarded() {
     assert!(event_count > 0, "should have received events");
 
     // Re-acquire lock only for cleanup
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     let _ = reg.kill_worker(&info.worker_id);
 }
 
@@ -311,7 +311,7 @@ async fn i06_worker_events_forwarded() {
 #[tokio::test]
 async fn i07_kill_worker_removes_it() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let info = reg
         .create_worker(
@@ -342,7 +342,7 @@ async fn i07_kill_worker_removes_it() {
 #[tokio::test]
 async fn i08_recreate_worker_with_same_session() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     // Note: auto-respawn by session ID requires the Manager-level
     // send_to_session which isn't in WorkerRegistry directly.
@@ -369,7 +369,7 @@ async fn i08_recreate_worker_with_same_session() {
     )
     .await
     .expect("command before kill");
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     assert_eq!(resp["success"], true);
 
     // Kill
@@ -402,7 +402,7 @@ async fn i08_recreate_worker_with_same_session() {
     )
     .await
     .expect("command after re-create");
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     assert_eq!(resp2["success"], true);
 
     let _ = reg.kill_worker(&info2.worker_id);
@@ -416,7 +416,7 @@ async fn i08_recreate_worker_with_same_session() {
 async fn i05b_multi_worker_concurrent() {
     let registry = create_registry();
     let wid_list: Vec<String> = {
-        let mut reg = registry.lock().await;
+        let mut reg = registry.lock();
         let mut workers = Vec::new();
         for i in 0..3 {
             let info = reg
@@ -445,7 +445,7 @@ async fn i05b_multi_worker_concurrent() {
     }
 
     // Cleanup
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     for wid in &wid_list {
         let _ = reg.kill_worker(wid);
     }
@@ -462,7 +462,7 @@ async fn i05b_multi_worker_concurrent() {
 #[tokio::test]
 async fn i09_peer_to_peer_message() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     // Create two peers (no parent)
     let a = reg
@@ -496,7 +496,7 @@ async fn i09_peer_to_peer_message() {
     )
     .await
     .expect("A→B send should work");
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     assert_eq!(resp["success"], true, "B should respond to A");
     assert!(
         resp["data"]["session_id"].is_string(),
@@ -514,7 +514,7 @@ async fn i09_peer_to_peer_message() {
 #[tokio::test]
 async fn i10_parent_to_child_message() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     // Create parent A
     let parent = reg
@@ -557,7 +557,7 @@ async fn i10_parent_to_child_message() {
     )
     .await
     .expect("parent→child send should work");
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     assert_eq!(resp["success"], true);
 
     let _ = reg.kill_worker(&parent.worker_id);
@@ -572,7 +572,7 @@ async fn i10_parent_to_child_message() {
 #[ignore = "drain_events disabled - reader task now forwards directly"]
 async fn i11_child_event_back_to_parent() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     // Create parent A with event subscription
     let parent = reg
@@ -611,7 +611,7 @@ async fn i11_child_event_back_to_parent() {
         serde_json::json!({"text": "Hello from child"}),
     )
     .await;
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     // Drain events from child to forward them
     reg.drain_events(&child.worker_id, 3000).await;
@@ -650,7 +650,7 @@ async fn i11_child_event_back_to_parent() {
 #[tokio::test]
 async fn i12_pull_worker_state() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let a = reg
         .create_worker(
@@ -683,7 +683,7 @@ async fn i12_pull_worker_state() {
     )
     .await
     .expect("A should be able to get B's state");
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     assert_eq!(resp["success"], true);
     assert!(
@@ -706,7 +706,7 @@ async fn i12_pull_worker_state() {
 #[tokio::test]
 async fn i13_list_child_workers() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let parent = reg
         .create_worker(
@@ -774,7 +774,7 @@ async fn i13_list_child_workers() {
 #[tokio::test]
 async fn i14_kill_child_worker() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let parent = reg
         .create_worker(
@@ -827,7 +827,7 @@ async fn i14_kill_child_worker() {
 #[tokio::test]
 async fn i15_worker_self_shutdown() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let parent = reg
         .create_worker(
@@ -864,7 +864,7 @@ async fn i15_worker_self_shutdown() {
         serde_json::Value::Null,
     )
     .await;
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     assert!(resp.is_ok(), "shutdown command should be accepted");
 
     // Give time for the child to process shutdown and forward events
@@ -896,7 +896,7 @@ async fn i15_worker_self_shutdown() {
         serde_json::Value::Null,
     )
     .await;
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     assert!(resp2.is_ok(), "parent should still be alive");
 
     let _ = reg.kill_worker(&parent.worker_id);
@@ -909,7 +909,7 @@ async fn i15_worker_self_shutdown() {
 #[tokio::test]
 async fn i16_channel_broadcast() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     // Create workers A and B subscribed to "review" channel
     let a = reg
@@ -1003,7 +1003,7 @@ async fn i16_channel_broadcast() {
 #[tokio::test]
 async fn i17_channel_unsubscribe() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let a = reg
         .create_worker(
@@ -1063,7 +1063,7 @@ async fn i17_channel_unsubscribe() {
 #[tokio::test]
 async fn i18_multi_channel() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     // A subscribes to both "review" and "deploy"
     let a = reg
@@ -1127,7 +1127,6 @@ async fn i19_session_auto_start() {
     // Verify worker was created for this session
     let auto_worker_id = registry
         .lock()
-        .await
         .find_by_session("i19-auto-session")
         .map(|w| w.worker_id.clone());
     assert!(
@@ -1153,7 +1152,7 @@ async fn i19_session_auto_start() {
 
     // Cleanup: kill the auto-started worker
     if let Some(wid) = auto_worker_id {
-        let _ = registry.lock().await.kill_worker(&wid);
+        let _ = registry.lock().kill_worker(&wid);
     }
 }
 
@@ -1167,7 +1166,7 @@ async fn i20_session_lookup_auto_start() {
 
     // Initially no worker for this session
     {
-        let reg = registry.lock().await;
+        let reg = registry.lock();
         let not_found = reg.find_by_session("i20-new-session");
         assert!(not_found.is_none(), "should not exist before creation");
     }
@@ -1186,14 +1185,13 @@ async fn i20_session_lookup_auto_start() {
     // Now it should exist
     let auto_id = registry
         .lock()
-        .await
         .find_by_session("i20-new-session")
         .map(|w| w.worker_id.clone());
     assert!(auto_id.is_some(), "worker should exist after auto-start");
 
     // Cleanup
     if let Some(wid) = auto_id {
-        let _ = registry.lock().await.kill_worker(&wid);
+        let _ = registry.lock().kill_worker(&wid);
     }
 }
 
@@ -1209,7 +1207,7 @@ async fn i20_session_lookup_auto_start() {
 #[ignore = "requires real LLM API"]
 async fn i21_subscribe_worker_events() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let info = reg
         .create_worker(
@@ -1244,7 +1242,7 @@ async fn i21_subscribe_worker_events() {
         }
         // 持锁 drain（短暂），然后释放锁
         {
-            let mut reg = registry.lock().await;
+            let mut reg = registry.lock();
             reg.drain_events(&info.worker_id, 200).await;
         }
         // 不持锁 recv — reader task 能拿锁转发 event
@@ -1274,7 +1272,7 @@ async fn i21_subscribe_worker_events() {
     assert!(saw_text_delta, "should receive text_delta");
     assert!(saw_agent_end, "should receive agent_end");
 
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     let _ = reg.kill_worker(&info.worker_id);
 }
 
@@ -1286,7 +1284,7 @@ async fn i21_subscribe_worker_events() {
 #[ignore = "requires real LLM API"]
 async fn i22_event_ordering() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let info = reg
         .create_worker(
@@ -1319,7 +1317,7 @@ async fn i22_event_ordering() {
             break;
         }
         {
-            let mut reg = registry.lock().await;
+            let mut reg = registry.lock();
             reg.drain_events(&info.worker_id, 200).await;
         }
         match tokio::time::timeout(Duration::from_millis(1000), events.recv()).await {
@@ -1351,7 +1349,7 @@ async fn i22_event_ordering() {
         assert!(sp < ep, "agent_start before agent_end");
     }
 
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     let _ = reg.kill_worker(&info.worker_id);
 }
 
@@ -1362,7 +1360,7 @@ async fn i22_event_ordering() {
 #[tokio::test]
 async fn i23_worker_created_event() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let mut global_events = reg.subscribe_global();
     let info = reg
@@ -1404,7 +1402,7 @@ async fn i23_worker_created_event() {
 #[tokio::test]
 async fn i24_project_changed_event() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let mut global_events = reg.subscribe_global();
 
@@ -1469,7 +1467,7 @@ async fn i24_project_changed_event() {
 #[tokio::test]
 async fn i25_session_in_created_event() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let mut global_events = reg.subscribe_global();
     let info = reg
@@ -1512,7 +1510,7 @@ async fn i25_session_in_created_event() {
 #[tokio::test]
 async fn i29_global_overview() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let a = reg
         .create_worker(
@@ -1568,7 +1566,7 @@ async fn i29_global_overview() {
 #[tokio::test]
 async fn i30_multiple_subscriptions() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let a = reg
         .create_worker(
@@ -1615,7 +1613,7 @@ async fn i30_multiple_subscriptions() {
             break;
         }
         {
-            let mut reg = registry.lock().await;
+            let mut reg = registry.lock();
             reg.drain_events(&a.worker_id, 100).await;
             reg.drain_events(&b.worker_id, 100).await;
         }
@@ -1643,7 +1641,7 @@ async fn i30_multiple_subscriptions() {
     assert!(ac > 0, "A should receive events");
     assert!(bc > 0, "B should receive events");
 
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     let _ = reg.kill_worker(&a.worker_id);
     let _ = reg.kill_worker(&b.worker_id);
 }
@@ -1655,7 +1653,7 @@ async fn i30_multiple_subscriptions() {
 #[tokio::test]
 async fn i31_session_history() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let info = reg
         .create_worker(
@@ -1677,7 +1675,7 @@ async fn i31_session_history() {
     )
     .await
     .unwrap();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     assert_eq!(resp["success"], true);
     // 消息拉取改造后 get_messages 返回 {messages: [...], hasMore, totalCount, ...}
     assert!(
@@ -1699,7 +1697,7 @@ async fn i31_session_history() {
 #[tokio::test]
 async fn i32_export_session() {
     let registry = create_registry();
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
 
     let info = reg
         .create_worker(
@@ -1720,7 +1718,7 @@ async fn i32_export_session() {
         serde_json::json!({"path": "/tmp/ion_test_export.html"}),
     )
     .await;
-    let mut reg = registry.lock().await;
+    let mut reg = registry.lock();
     // export_html may fail if template files missing — that's acceptable
     // The key test is that it doesn't crash the worker
     assert!(resp.is_ok(), "export_html should not crash worker");
