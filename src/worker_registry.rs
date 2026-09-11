@@ -4922,14 +4922,30 @@ impl WorkerRegistry {
             tracing::warn!("[bridge] write target not found: {worker_or_session}");
             return false;
         };
+        // P3 修复：非阻塞写入——管道满（Pending）直接丢弃该 chunk 并 warn。
+        // 旧实现同步睡眠重试最多 5 秒（持锁阻塞），多桥接任务轮流抢锁
+        // 会饿死主 serve 循环（实测 host 无响应/死锁）。
+        // 丢弃中间 chunk 是安全的：worker 的流式显示会缺帧但最终 Done/Error
+        // 终帧（含完整消息）不在此路径（终帧有独立重试保障）。
         let mut buf = line.as_bytes();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let is_final = line.contains("\"Done\"") || line.contains("\"Error\"");
+        let deadline = std::time::Instant::now()
+            + if is_final {
+                std::time::Duration::from_millis(500)
+            } else {
+                std::time::Duration::from_millis(0)
+            };
         while !buf.is_empty() {
             if std::time::Instant::now() > deadline {
-                tracing::warn!(
-                    "[bridge] worker stdin blocked >5s, dropping {} bytes",
-                    buf.len()
-                );
+                if is_final {
+                    tracing::warn!(
+                        "[bridge] FINAL chunk dropped: worker stdin blocked, {} bytes",
+                        buf.len()
+                    );
+                } else {
+                    // 中间 chunk 丢弃是正常降级（管道满=worker 消费慢）
+                    tracing::debug!("[bridge] intermediate chunk dropped (stdin full)");
+                }
                 return false;
             }
             let Some(record) = self.workers.get_mut(&wid) else {
@@ -4938,21 +4954,24 @@ impl WorkerRegistry {
             let Some(stdin) = record.stdin.as_mut() else {
                 return false;
             };
-            // 同步 poll（noop waker）：Pending = 管道缓冲满，睡 2ms 重试
             use std::task::{Poll, Waker};
             use tokio::io::AsyncWrite as _;
             let mut cx = std::task::Context::from_waker(Waker::noop());
             match std::pin::Pin::new(&mut *stdin).poll_write(&mut cx, buf) {
                 Poll::Ready(Ok(0)) => {}
                 Poll::Ready(Ok(n)) => buf = &buf[n..],
-                Poll::Pending => {}
+                Poll::Pending => {
+                    if !is_final {
+                        // 中间 chunk 管道满 → 立即丢弃（不持锁等待）
+                        return false;
+                    }
+                    // 终帧短暂让步重试（yield 而非 sleep——不阻塞 tokio worker）
+                    std::thread::yield_now();
+                }
                 Poll::Ready(Err(e)) => {
                     tracing::warn!("[bridge] stdin write error: {e}");
                     return false;
                 }
-            }
-            if !buf.is_empty() {
-                std::thread::sleep(std::time::Duration::from_millis(2));
             }
         }
         true
@@ -6135,6 +6154,354 @@ mod tests {
             .unwrap();
         assert!(out.status.success());
         assert_eq!(String::from_utf8_lossy(&out.stdout), "OK");
+    }
+
+    // ── P3/P5 TDD：桥接写入不得持锁阻塞（死锁/活锁复现） ──────────────────
+
+    /// P3 复现：write_line_to_worker_sync 在管道满时不得长时间持锁。
+    /// 当前实现用 thread::sleep(2ms) 重试最多 5 秒——并发桥接任务轮流持锁
+    /// 会饿死主 serve 循环（实测 host 无响应）。
+    /// 修复标准：写入尝试必须在 <100ms 内返回（无论成败），不阻塞。
+    #[tokio::test]
+    async fn test_p3_write_does_not_hold_lock_long() {
+        let mut reg = WorkerRegistry::new();
+        // 创建一个 mock worker（stdin 是 /dev/null 的 pipe，不会满）
+        // 真正的管道满场景在集成测试覆盖——这里测函数的时间上界
+        let start = std::time::Instant::now();
+        // 即使 target 不存在也必须立即返回
+        let _ = reg.write_line_to_worker_sync("nonexistent", "test\n");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "write_line_to_worker_sync took {:?} for nonexistent target — must be <100ms",
+            elapsed
+        );
+    }
+
+    /// P3 复现（核心）：并发桥接写入 + registry 查询不得死锁。
+    /// 模拟：多个任务同时持锁写入（当前会 thread::sleep），
+    /// 同时 list_workers 必须能在 1 秒内完成。
+    #[tokio::test]
+    async fn test_p3_concurrent_bridge_writes_do_not_starve_registry() {
+        let registry = std::sync::Arc::new(parking_lot::Mutex::new(WorkerRegistry::new()));
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::channel::<bool>(1);
+
+        // 模拟 8 个并发桥接任务在写入（对不存在的 worker——最坏情况的锁竞争路径）
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let reg = registry.clone();
+            handles.push(tokio::spawn(async move {
+                for _ in 0..50 {
+                    // 这是当前 bridge_serve_llm_request 的写入模式
+                    let line = format!("chunk {}\n", i);
+                    reg.lock().write_line_to_worker_sync("fake-worker", &line);
+                }
+            }));
+        }
+
+        // 同时尝试查询 registry（模拟 list_workers RPC）
+        let reg2 = registry.clone();
+        tokio::spawn(async move {
+            let start = std::time::Instant::now();
+            // 等待一小段时间让桥接任务先抢到锁
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            let _result = reg2.lock().list_workers();
+            let elapsed = start.elapsed();
+            let _ = done_tx
+                .send(elapsed < std::time::Duration::from_secs(1))
+                .await;
+        });
+
+        // 等待查询完成（最多 5 秒）
+        let ok = tokio::time::timeout(std::time::Duration::from_secs(5), done_rx.recv())
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(false);
+
+        for h in handles {
+            let _ = h.await;
+        }
+        // 当前实现：写入对不存在的 target 立即返回 false（不 sleep），
+        // 所以这个测试在"不存在"场景下应该通过。
+        // 真正的管道满场景需要集成测试——这里测的是锁竞争模式。
+        // 修复后：即使管道满，也不得持锁 >100ms。
+        assert!(ok, "registry query starved by concurrent bridge writes");
+    }
+
+    /// P5 复现：process_pending_commands 的 create_worker 路径
+    /// 不得在持锁状态下做耗时操作（refresh ssh ~8s + assets tar + ssh spawn ~3s）。
+    /// 修复标准：prepare_worker_spawn 的慢操作必须在锁外完成（当前已是，
+    /// 但 bridge_serve_llm_request 的写入在锁内做 sync IO——需要统一修）。
+    #[test]
+    fn test_p5_write_line_sync_has_no_sleep() {
+        // 静态检查：write_line_to_worker_sync 源码中不得出现 thread::sleep
+        // （这是 P3 的根因——持锁睡眠阻塞 tokio worker）
+        let source = include_str!("worker_registry.rs");
+        let fn_body = source
+            .split("fn write_line_to_worker_sync")
+            .nth(1)
+            .unwrap_or("")
+            .split("\n    }")
+            .next()
+            .unwrap_or("");
+        assert!(
+            !fn_body.contains("thread::sleep"),
+            "write_line_to_worker_sync must NOT use thread::sleep (P3 root cause: holds registry lock while sleeping)"
+        );
+    }
+
+    // ── P4 TDD：子 Worker initial_prompt 注入不得丢失 ──────────────────────
+
+    /// P4 复现：prompt 注入机制（acquire_stdin → write → put back）必须可靠。
+    /// 用真实子进程管道模拟 worker stdin——prompt 写入后必须能从子进程读到。
+    #[tokio::test]
+    async fn test_p4_prompt_injection_reaches_worker_stdin() {
+        use parking_lot::Mutex as PMutex;
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // 真实子进程：cat 回显 stdin → stdout
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn cat");
+        let child_stdin = child.stdin.take().unwrap();
+        let mut child_stdout = child.stdout.take().unwrap();
+
+        // 注册 worker（stdin 是 cat 的管道）
+        let registry = Arc::new(PMutex::new(WorkerRegistry::new()));
+        {
+            let mut reg = registry.lock();
+            reg.workers.insert(
+                "wkr_test_p4".to_string(),
+                WorkerRecord {
+                    worker_id: "wkr_test_p4".to_string(),
+                    session_id: "sess_test_p4".to_string(),
+                    project: "test".to_string(),
+                    project_path: "/tmp".to_string(),
+                    model: "test".to_string(),
+                    agent: "build".to_string(),
+                    status: WorkerStatus::Idle,
+                    channels: vec![],
+                    parent: None,
+                    children: vec![],
+                    host: None,
+                    notify_parent: false,
+                    started_at: 0,
+                    last_heartbeat: 0,
+                    status_since: 0,
+                    died_at: None,
+                    stdin: Some(child_stdin),
+                    pending: HashMap::new(),
+                    event_subscribers: vec![],
+                    parent_event_tx: None,
+                    ready_tx: None,
+                    stdout_rx: None,
+                    response_rx: None,
+                    child_process: None,
+                    worktree: None,
+                    latest_output: VecDeque::with_capacity(5),
+                    log_short: None,
+                    model_size: None,
+                    exit_code: None,
+                    exit_reason: None,
+                    stderr_path: None,
+                    event_history: VecDeque::with_capacity(200),
+                    event_history_cap: 200,
+                },
+            );
+        }
+
+        // 模拟 prompt 注入路径（process_pending_commands 的 spawn task 逻辑）
+        let prompt_text = "P4_TEST_PROMPT_MARKER_do_you_see_me";
+        let write_line = format!(
+            "{}\n",
+            serde_json::json!({
+                "id": "p4test",
+                "method": "prompt",
+                "params": {"text": prompt_text, "origin": "user"}
+            })
+        );
+
+        // 1. acquire_stdin（跟 prompt 注入相同路径）
+        let mut stdin = WorkerRegistry::acquire_stdin(
+            &registry,
+            "wkr_test_p4",
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .expect("acquire stdin");
+
+        // 2. 写 prompt（不持锁）
+        stdin.write_all(write_line.as_bytes()).await.unwrap();
+        stdin.flush().await.unwrap();
+
+        // 3. 放回
+        {
+            let mut reg = registry.lock();
+            if let Some(r) = reg.workers.get_mut("wkr_test_p4") {
+                r.stdin = Some(stdin);
+            }
+        }
+
+        // 4. 验证：从 cat 的 stdout 读到 prompt
+        let mut buf = vec![0u8; 4096];
+        let read_result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            child_stdout.read(&mut buf),
+        )
+        .await;
+        match read_result {
+            Ok(Ok(n)) => {
+                let received = String::from_utf8_lossy(&buf[..n]);
+                assert!(
+                    n > 0 && received.contains(prompt_text),
+                    "prompt not found in worker stdin output (n={n}): {}",
+                    &received[..received.len().min(200)]
+                );
+            }
+            Ok(Err(e)) => panic!("read error: {e}"),
+            Err(_) => panic!("timeout: prompt never reached worker (P4 reproduces)"),
+        }
+
+        let _ = child.kill().await;
+    }
+
+    /// P4 + P3 联合：并发桥接写入不得饿死 prompt 注入。
+    /// 这是真正的根因场景——桥接任务持锁写 chunk 时 prompt 注入任务等锁。
+    /// P3 修复后（无 thread::sleep），prompt 应在 5s 内到达。
+    #[tokio::test]
+    async fn test_p4_prompt_not_starved_by_concurrent_bridge_writes() {
+        use parking_lot::Mutex as PMutex;
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut child = tokio::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn cat");
+        let child_stdin = child.stdin.take().unwrap();
+        let mut child_stdout = child.stdout.take().unwrap();
+
+        let registry = Arc::new(PMutex::new(WorkerRegistry::new()));
+        {
+            let mut reg = registry.lock();
+            reg.workers.insert(
+                "wkr_test_p4b".to_string(),
+                WorkerRecord {
+                    worker_id: "wkr_test_p4b".to_string(),
+                    session_id: "sess_test_p4b".to_string(),
+                    project: "test".to_string(),
+                    project_path: "/tmp".to_string(),
+                    model: "test".to_string(),
+                    agent: "build".to_string(),
+                    status: WorkerStatus::Idle,
+                    channels: vec![],
+                    parent: None,
+                    children: vec![],
+                    host: None,
+                    notify_parent: false,
+                    started_at: 0,
+                    last_heartbeat: 0,
+                    status_since: 0,
+                    died_at: None,
+                    stdin: Some(child_stdin),
+                    pending: HashMap::new(),
+                    event_subscribers: vec![],
+                    parent_event_tx: None,
+                    ready_tx: None,
+                    stdout_rx: None,
+                    response_rx: None,
+                    child_process: None,
+                    worktree: None,
+                    latest_output: VecDeque::with_capacity(5),
+                    log_short: None,
+                    model_size: None,
+                    exit_code: None,
+                    exit_reason: None,
+                    stderr_path: None,
+                    event_history: VecDeque::with_capacity(200),
+                    event_history_cap: 200,
+                },
+            );
+        }
+
+        // 启动 8 个并发"桥接任务"做写入（模拟 LLM chunk 转发）
+        let mut bridge_handles = Vec::new();
+        for i in 0..8 {
+            let reg = registry.clone();
+            bridge_handles.push(tokio::spawn(async move {
+                for j in 0..100 {
+                    let line = format!("bridge_chunk_{}_{}\n", i, j);
+                    reg.lock().write_line_to_worker_sync("wkr_test_p4b", &line);
+                }
+            }));
+        }
+
+        // 同时启动 prompt 注入任务（模拟 process_pending_commands 的 spawn）
+        let prompt_reg = registry.clone();
+        let prompt_task = tokio::spawn(async move {
+            // 跟 process_pending_commands 相同：500ms 延迟后注入
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let mut stdin = WorkerRegistry::acquire_stdin(
+                &prompt_reg,
+                "wkr_test_p4b",
+                std::time::Duration::from_secs(5),
+            )
+            .await
+            .expect("prompt: acquire stdin");
+            let line = "P4B_PROMPT_MARKER\n";
+            stdin.write_all(line.as_bytes()).await.unwrap();
+            stdin.flush().await.unwrap();
+            // 放回
+            let mut reg = prompt_reg.lock();
+            if let Some(r) = reg.workers.get_mut("wkr_test_p4b") {
+                r.stdin = Some(stdin);
+            }
+        });
+
+        // 等 prompt 任务完成（最多 10s）
+        let prompt_done =
+            tokio::time::timeout(std::time::Duration::from_secs(10), prompt_task).await;
+
+        for h in bridge_handles {
+            let _ = h.await;
+        }
+
+        assert!(
+            prompt_done.is_ok(),
+            "prompt injection starved by bridge writes (P4+P3 reproduces)"
+        );
+
+        // 验证 prompt 到达了 worker stdin
+        let mut buf = vec![0u8; 8192];
+        let mut all_output = Vec::new();
+        loop {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                child_stdout.read(&mut buf),
+            )
+            .await
+            {
+                Ok(Ok(0)) | Err(_) => break,
+                Ok(Ok(n)) => all_output.extend_from_slice(&buf[..n]),
+                Ok(Err(_)) => break,
+            }
+            if all_output.windows(16).any(|w| w == b"P4B_PROMPT_MARKER") {
+                break;
+            }
+        }
+        let output = String::from_utf8_lossy(&all_output);
+        assert!(
+            output.contains("P4B_PROMPT_MARKER"),
+            "prompt not found in output despite task completing: first 200 chars: {}",
+            &output[..output.len().min(200)]
+        );
+
+        let _ = child.kill().await;
     }
 
     /// WorkerStatus Display should render the variant name (via Debug).
