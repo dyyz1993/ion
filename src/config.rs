@@ -178,6 +178,9 @@ pub struct RemoteWorkerGrants {
     /// http.fetch 允许的域名（精确匹配，如 "api.github.com"）
     #[serde(default)]
     pub http_fetch: Vec<String>,
+    /// grants 拒绝时转人工审批（而非硬拒绝）。审批经 verb_review RPC。
+    #[serde(default)]
+    pub ask_on_deny: bool,
 }
 
 /// glob 匹配（v1 简化语义）：`/a/b/**` 匹配 /a/b 下任意路径；无 ** = 精确。

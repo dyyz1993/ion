@@ -5832,6 +5832,30 @@ async fn handle_manager_command(
                 "byStatus": by_status,
             }))
         }
+        // ── M4.5 VerbGate 审批 RPC ──
+        "verb_review" => {
+            let request_id = cmd
+                .get("params")
+                .and_then(|p| p.get("requestId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let approve = cmd
+                .get("params")
+                .and_then(|p| p.get("approve"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            if request_id.is_empty() {
+                Err("missing params.requestId".to_string())
+            } else if ion::worker_registry::verb_review(&request_id, approve) {
+                Ok(serde_json::json!({"requestId": request_id, "approved": approve}))
+            } else {
+                Err(format!("verb approval not found: {request_id}"))
+            }
+        }
+        "verb_pending" => Ok(serde_json::json!({
+            "pending": ion::worker_registry::verb_pending_list()
+        })),
         // Host 级会话直读：纯磁盘读 JSONL，不拉起 worker（UI 浏览历史会话用，毫秒级）
         "get_session_messages" => host_direct_session_read(&cmd, "messages"),
         "list_session_turns" => host_direct_session_read(&cmd, "turns"),

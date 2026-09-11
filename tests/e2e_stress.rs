@@ -538,7 +538,11 @@ async fn e01_code_review_pipeline() {
     )
     .await;
     let mut reg = registry.lock();
-    assert!(prompt_resp.is_ok(), "reviewer prompt failed: {:?}", prompt_resp.err());
+    assert!(
+        prompt_resp.is_ok(),
+        "reviewer prompt failed: {:?}",
+        prompt_resp.err()
+    );
 
     // Step 6: Cleanup
     let _ = reg.kill_worker(&coord_id);

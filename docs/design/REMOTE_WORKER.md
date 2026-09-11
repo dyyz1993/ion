@@ -58,6 +58,13 @@
 - **资产包 v1**：spawn 前 tar 管道部署 Mac skills/agents 到远端 `~/.ion/agent/`（worker 加载零改动）；`assets:{skills 白名单,agents}`；失败降级
 - **远端项目级 hooks 禁用**：ION_NO_PROJECT_HOOKS=1（llm_bridge 注入）→ hooks loader 跳过项目级——hooks 供应链 P0 的执行端克星
 - **WSL 执行端可靠性三件套**：serve 保活 VM（VM 空闲停机会灭 sshd/IP）+ `refresh` spawn 前自愈（经 22 管理通道跑 gateway：起 sshd+刷 portproxy）+ `refresh_dest` 双通道凭据（22=Windows/sshuser vs 2222=WSL/root）
+### M3 回流三修（2026-09-11，commit a6d46be）
+
+- 🔴 远端 worker **强制 fork 模式**（ION_FORK_CHILD=1）：非 fork 写共享 session.jsonl（每 cwd 一个），旧 header 挡新 sid 的 header 创建 → 回流文件 header id 与文件名错位。fork = 独立 <sid>.jsonl，与镜像模型对齐
+- mirror 归属注册前移到 sid 解析处（部分路径 header 镜像带空 sid）
+- CI env 时序：ION_REMOTE_WORKERS 必须 host 启动前 export（host env 运行中不可变）
+- tests/remote_worker_ci.sh 10/0（A6 + B3 + C1）
+
 ### M4 实现补充（2026-09-11）
 
 - worker 侧工具：host_read/host_write/host_fetch（host_tools.rs，仅 bridge 模式注册，持 ManagerBridge 句柄同步往返）；经 ManagerBridge `_reply_to` 机制天然同步

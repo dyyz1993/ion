@@ -3679,7 +3679,7 @@ impl WorkerRegistry {
                         }
                     }
                 }
-                // ── M4 动词表：通道化宿主访问（grants → 执行 → 审计） ──
+                // ── M4 动词表：通道化宿主访问（grants → 执行 → 审计；deny 可转审批） ──
                 "host_call" => {
                     let verb = params.get("verb").and_then(|v| v.as_str()).unwrap_or("");
                     let args = params.get("args").cloned().unwrap_or_default();
@@ -3687,6 +3687,140 @@ impl WorkerRegistry {
                     let (ok, data_or_err) = match result {
                         Ok(d) => (true, d),
                         Err(e) => (false, serde_json::Value::String(e)),
+                    };
+                    // deny 且 ask_on_deny → 转人工审批（不持锁：全局 store + spawn 等待）
+                    let ask_on_deny = {
+                        let w = self.workers.get(&from_worker).or_else(|| {
+                            self.workers.values().find(|w| w.session_id == from_worker)
+                        });
+                        w.and_then(|w| {
+                            w.host.as_ref().and_then(|h| {
+                                crate::config::IonConfig::load()
+                                    .remote_workers
+                                    .and_then(|m| m.get(h).cloned())
+                                    .and_then(|hc| hc.grants)
+                                    .map(|g| g.ask_on_deny)
+                            })
+                        })
+                        .unwrap_or(false)
+                    };
+                    if !ok
+                        && ask_on_deny
+                        && data_or_err
+                            .as_str()
+                            .unwrap_or("")
+                            .starts_with("verb_denied")
+                    {
+                        // 解析 worker 上下文（sid/project/host/grants）
+                        let ctx = self
+                            .workers
+                            .get(&from_worker)
+                            .or_else(|| self.workers.values().find(|w| w.session_id == from_worker))
+                            .and_then(|w| {
+                                let host = w.host.clone()?;
+                                let hc = crate::config::IonConfig::load()
+                                    .remote_workers?
+                                    .get(&host)?
+                                    .clone();
+                                Some((w.session_id.clone(), w.project_path.clone(), hc))
+                            });
+                        if let Some((sid, project_path, host_cfg)) = ctx {
+                            let grants = host_cfg.grants.clone().unwrap_or_default();
+                            let req_id = format!("vapp_{}", &uuid::Uuid::new_v4().to_string()[..8]);
+                            let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+                            verb_approvals_global().lock().unwrap().insert(
+                                req_id.clone(),
+                                VerbApprovalReq {
+                                    worker_session: sid.clone(),
+                                    project_path: project_path.clone(),
+                                    grants: grants.clone(),
+                                    verb: verb.to_string(),
+                                    args: args.clone(),
+                                    tx: Some(tx),
+                                    created_at: std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_millis()
+                                        as i64,
+                                },
+                            );
+                            // UI/CLI 可见事件
+                            self.broadcast_ui_event(
+                                "verb_approval",
+                                serde_json::json!({
+                                    "requestId": req_id, "verb": verb,
+                                    "args": args, "session": sid,
+                                    "hint": "ion rpc --method verb_review --params '{\"requestId\":\""
+                                        .to_string() + &req_id + "\",...\"}' (approve=true)",
+                                }),
+                                Some(&sid),
+                            );
+                            let reg_arc = registry_arc.clone();
+                            let wid = from_worker.clone();
+                            let verb_o = verb.to_string();
+                            let args_o = args.clone();
+                            tokio::spawn(async move {
+                                let approved = match tokio::time::timeout(
+                                    std::time::Duration::from_secs(300),
+                                    rx,
+                                )
+                                .await
+                                {
+                                    Ok(Ok(v)) => v,
+                                    _ => false, // 超时/通道关闭 = 拒绝
+                                };
+                                let (ok2, data_or_err2) = if approved {
+                                    match verb_o.as_str() {
+                                        "http.fetch" => match bridge_http_fetch(&args_o).await {
+                                            Ok(v) => (true, v),
+                                            Err(e) => (false, serde_json::Value::String(e)),
+                                        },
+                                        _ => {
+                                            match execute_verb_checked(&grants, &verb_o, &args_o) {
+                                                Ok(v) => (true, v),
+                                                Err(e) => (false, serde_json::Value::String(e)),
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    (
+                                        false,
+                                        serde_json::Value::String(
+                                            "verb_denied: approval rejected/timeout".into(),
+                                        ),
+                                    )
+                                };
+                                // 审计（approved 路径也留痕）
+                                let sid2 = sid.clone();
+                                let path2 =
+                                    crate::paths::session_jsonl_path_by_id(&project_path, &sid2);
+                                let _ = crate::session_jsonl::append_custom_entry_to_file(
+                                    &path2,
+                                    "host_call",
+                                    serde_json::json!({
+                                        "verb": verb_o,
+                                        "args_summary": {
+                                            "path": args_o.get("path").and_then(|v| v.as_str()).map(|s| s.chars().take(120).collect::<String>()),
+                                            "url": args_o.get("url").and_then(|v| v.as_str()),
+                                        },
+                                        "allowed": ok2,
+                                        "approval": req_id,
+                                        "from_worker": wid,
+                                    }),
+                                );
+                                let resp = if ok2 {
+                                    serde_json::json!({"_reply_to": reply_to, "success": true, "data": data_or_err2})
+                                } else {
+                                    serde_json::json!({"_reply_to": reply_to, "success": false, "error": data_or_err2})
+                                };
+                                let line = format!(
+                                    "{}\n",
+                                    serde_json::to_string(&resp).unwrap_or_default()
+                                );
+                                reg_arc.lock().write_line_to_worker_sync(&wid, &line);
+                            });
+                            continue; // 本条命令已转审批任务，直接处理下一条
+                        }
                     };
                     // 审计：无论成败都留痕（host_call custom 条目，落该 worker 的 Mac 会话文件）
                     {
@@ -6436,4 +6570,143 @@ async fn bridge_serve_llm_request(
         }
     }
     bridge_cancels().lock().unwrap().remove(&id);
+}
+
+// ---------------------------------------------------------------------------
+// VerbGate 审批（M4.5）— grants 拒绝可转人工审批（ask_on_deny）
+// ---------------------------------------------------------------------------
+
+/// 一条待审批的 verb 调用。
+pub struct VerbApprovalReq {
+    pub worker_session: String,
+    pub project_path: String,
+    pub grants: crate::config::RemoteWorkerGrants,
+    pub verb: String,
+    pub args: serde_json::Value,
+    pub tx: Option<oneshot::Sender<bool>>,
+    pub created_at: i64,
+}
+
+fn verb_approvals_global()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, VerbApprovalReq>> {
+    static V: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, VerbApprovalReq>>,
+    > = std::sync::OnceLock::new();
+    V.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 审批 RPC 后端：approve/reject 一条 pending verb 请求。返回 false = id 不存在。
+pub fn verb_review(request_id: &str, approve: bool) -> bool {
+    let Some(mut req) = verb_approvals_global().lock().unwrap().remove(request_id) else {
+        return false;
+    };
+    if let Some(tx) = req.tx.take() {
+        let _ = tx.send(approve);
+    }
+    true
+}
+
+/// 列出 pending verb 审批（RPC verb_pending 用）。
+pub fn verb_pending_list() -> Vec<serde_json::Value> {
+    verb_approvals_global()
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(id, r)| {
+            serde_json::json!({
+                "requestId": id,
+                "session": r.worker_session,
+                "verb": r.verb,
+                "args": r.args,
+                "ageMs": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as i64 - r.created_at,
+            })
+        })
+        .collect()
+}
+
+/// 纯执行器（无 registry 依赖）：grants 已校验通过后落地动词。
+/// 供 verb_gate 快路径与审批放行后的 spawn 任务共用。
+fn execute_verb_checked(
+    grants: &crate::config::RemoteWorkerGrants,
+    verb: &str,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    match verb {
+        "fs.read" => {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if path.is_empty() {
+                return Err("fs.read: missing path".into());
+            }
+            let meta = std::fs::metadata(path).map_err(|e| format!("fs.read: {e}"))?;
+            const MAX_READ: u64 = 2 * 1024 * 1024;
+            if meta.len() > MAX_READ {
+                return Err(format!(
+                    "fs.read: file {} bytes exceeds 2MB cap",
+                    meta.len()
+                ));
+            }
+            let content = std::fs::read_to_string(path).map_err(|e| format!("fs.read: {e}"))?;
+            Ok(serde_json::json!({"content": content}))
+        }
+        "fs.write" => {
+            let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            if content.len() > 2 * 1024 * 1024 {
+                return Err("fs.write: content exceeds 2MB cap".into());
+            }
+            if let Some(parent) =
+                std::path::Path::new(args.get("path").and_then(|v| v.as_str()).unwrap_or("/"))
+                    .parent()
+            {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            std::fs::write(
+                args.get("path").and_then(|v| v.as_str()).unwrap_or(""),
+                content,
+            )
+            .map_err(|e| format!("fs.write: {e}"))?;
+            Ok(serde_json::json!({"bytes": content.len()}))
+        }
+        "http.fetch" => {
+            /* 由调用方处理（需 async），此函数不含 http */
+            Err("http.fetch must be executed async".into())
+        }
+        _ => Err(format!("unknown verb '{verb}'")),
+    }
+}
+
+/// http.fetch 的 async 执行（审批放行路径用；域名白名单已在审批环节人工确认）。
+async fn bridge_http_fetch(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
+    let max_bytes = args
+        .get("max_bytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1_048_576)
+        .min(10 * 1024 * 1024);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("http.fetch: {e}"))?;
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("http.fetch: {e}"))?;
+    let status = resp.status().as_u16();
+    let mut body = String::new();
+    use futures_util::StreamExt;
+    let mut stream = resp.bytes_stream();
+    let mut limited = 0usize;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("http.fetch: {e}"))?;
+        limited += chunk.len();
+        if limited > max_bytes as usize {
+            body.push_str("...[truncated]");
+            break;
+        }
+        body.push_str(&String::from_utf8_lossy(&chunk));
+    }
+    Ok(serde_json::json!({"status": status, "body": body}))
 }
