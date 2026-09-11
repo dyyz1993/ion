@@ -60,6 +60,43 @@ fn merge_existing_meta(
 
 /// Result of `prepare_worker_spawn` — contains spawned child process + all data
 /// needed to register the worker in the registry (under lock, fast).
+/// 递归列出 dir 下所有文件的相对路径（M3 资产包枚举）。
+fn list_files_relative(dir: &std::path::Path) -> Vec<String> {
+    fn walk(dir: &std::path::Path, prefix: &str, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let rel = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            if e.path().is_dir() {
+                walk(&e.path(), &rel, out);
+            } else {
+                out.push(rel);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, "", &mut out);
+    out
+}
+
+/// 便携性 lint（REMOTE_WORKER D7）：资产内容含宿主绝对路径 → 返回剔除理由。
+/// 这类路径在远端必然失效，且会诱导 agent 去试宿主路径（沙箱语义污染）。
+fn lint_portability(content: &str) -> Option<&'static str> {
+    if content.contains("/Users/") {
+        return Some("contains macOS absolute path (/Users/)");
+    }
+    if content.contains("C:\\Users\\") || content.contains("C:/Users/") {
+        return Some("contains Windows absolute path (C:/Users/)");
+    }
+    None
+}
+
 /// POSIX sh 单引号转义（与 RemoteRuntime 的 ssh_cmd 同款策略）。
 /// 单引号内的内容不做任何展开，唯一特殊字符 ' 本身用 '\'' 断开重拼。
 fn sh_quote_remote(s: &str) -> String {
@@ -713,24 +750,51 @@ impl WorkerRegistry {
             && let Some(assets) = &host_cfg.assets
         {
             let agent_dir = crate::paths::agent_dir();
-            let mut tar_args: Vec<String> = vec!["--exclude=.DS_Store".into()];
-            let skills_dir = agent_dir.join("skills");
-            if skills_dir.exists() {
-                if assets.skills.is_empty() {
-                    tar_args.push("skills".into());
-                } else {
-                    for name in &assets.skills {
-                        tar_args.push("--include".into());
-                        tar_args.push(format!("skills/{name}"));
+            // M3 便携性 lint（D7）：含 Mac 绝对路径（/Users/、C:\Users\）的资产
+            // 在远端必然失效，可能诱导 agent 乱试宿主路径——打包前剔除并 warn。
+            let mut excludes: Vec<String> = vec![".DS_Store".into()];
+            for (top, allow_all) in [("skills", true), ("agents", assets.agents)] {
+                let dir = agent_dir.join(top);
+                if !dir.exists() || !allow_all {
+                    continue;
+                }
+                for rel in list_files_relative(&dir) {
+                    let rel_path = format!("{top}/{rel}");
+                    if !assets.skills.is_empty()
+                        && top == "skills"
+                        && !assets
+                            .skills
+                            .iter()
+                            .any(|w| rel_path.starts_with(&format!("skills/{w}")))
+                    {
+                        excludes.push(rel_path); // 白名单外 → 打包时排除
+                        continue;
                     }
-                    tar_args.push("--include".into());
-                    tar_args.push("skills".into());
+                    if let Ok(content) = std::fs::read_to_string(dir.join(&rel)) {
+                        if let Some(reason) = lint_portability(&content) {
+                            excludes.push(rel_path.clone());
+                            tracing::warn!(
+                                "[remote-worker] asset excluded ({}): {rel_path}",
+                                reason
+                            );
+                        }
+                    }
                 }
             }
-            if assets.agents {
-                tar_args.push("agents".into());
+            let mut tar_args: Vec<String> = excludes
+                .iter()
+                .flat_map(|e| vec!["--exclude".into(), e.clone()])
+                .collect();
+            let mut has_items = false;
+            if agent_dir.join("skills").exists() {
+                tar_args.push("skills".into());
+                has_items = true;
             }
-            if tar_args.len() > 1 {
+            if assets.agents && agent_dir.join("agents").exists() {
+                tar_args.push("agents".into());
+                has_items = true;
+            }
+            if has_items {
                 let dest = if host_cfg.user.is_empty() {
                     host_cfg.hostname.clone()
                 } else {
@@ -747,16 +811,20 @@ impl WorkerRegistry {
                     ssh_base.push("-i".into());
                     ssh_base.push(host_cfg.key.clone());
                 }
-                let remote_cmd =
-                    "mkdir -p ~/.ion/agent/skills ~/.ion/agent/agents && tar xzf - -C ~/.ion/agent";
+                // 声明式同步（ConfigMap 语义）：远端 skills/agents = 本次下发集合的精确镜像。
+                // 只增不删会让上次部署的旧资产（可能已被 lint 剔除）残留远端。
+                let remote_cmd = "rm -rf ~/.ion/agent/skills ~/.ion/agent/agents && \
+                    mkdir -p ~/.ion/agent/skills ~/.ion/agent/agents && \
+                    tar xzf - -C ~/.ion/agent";
                 let shell = format!(
                     "cd {} && tar czf - {} | {} {} '{}'",
                     agent_dir.to_string_lossy(),
-                    tar_args[1..].join(" "),
+                    tar_args.join(" "),
                     ssh_base.join(" "),
                     dest,
                     remote_cmd
                 );
+                tracing::info!("[remote-worker] assets sync: {shell}");
                 let out = std::process::Command::new("sh")
                     .arg("-c")
                     .arg(&shell)
@@ -5965,6 +6033,25 @@ mod tests {
         let host22 = rh("u", "h", Some(22), "", "", "");
         let argv22 = build_remote_worker_argv(&host22, &[], &[]);
         assert!(!argv22.contains(&"-p".to_string()));
+    }
+
+    #[test]
+    fn test_lint_portability() {
+        // Mac 绝对路径 → 剔除
+        assert_eq!(
+            lint_portability("read /Users/xuyingzhou/notes.md for context"),
+            Some("contains macOS absolute path (/Users/)")
+        );
+        // Windows 路径两种写法都拦
+        assert!(lint_portability("see C:\\Users\\me\\file").is_some());
+        assert!(lint_portability("see C:/Users/me/file").is_some());
+        // 正常内容与相对路径放行
+        assert_eq!(
+            lint_portability("use relative path ./data and ${ION_ASSETS_DIR}"),
+            None
+        );
+        // 纯文本含 "Users" 一词不误伤（必须有 /Users/ 完整形式）
+        assert_eq!(lint_portability("all Users must comply"), None);
     }
 
     /// 转义正确性的终极验证：把构造出的远端命令交给真实 /bin/sh 执行，

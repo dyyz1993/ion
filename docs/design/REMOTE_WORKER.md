@@ -1,6 +1,6 @@
 # REMOTE_WORKER 远程执行端设计文档
 
-> **状态：M1-M4 全部完成（2026-09-11：M1 SSH spawn ✅；M2 零 key 桥接 "42" ✅；M3 会话回流+资产包+hooks 禁用 ✅；M4 VerbGate 动词表真机验证 ✅——授权读取/越权拒绝/审计留痕三断言全过），commit 54cee34+44895e2。** 设计经与用户多轮收敛 + 红蓝对抗安全评审。本文档是客户端模式的唯一设计入口；服务端模式已上线（win38）。
+> **状态：M1-M4.5 全部完成（2026-09-11：M1 SSH spawn ✅；M2 零 key 桥接 "42" ✅；M3 会话回流+资产包+hooks 禁用 ✅；M4 VerbGate ✅；M4.5 审批流 ✅——grants 拒绝可转人工审批，RPC 自审批真机验证），commit 54cee34+44895e2+24ede17。** 设计经与用户多轮收敛 + 红蓝对抗安全评审。本文档是客户端模式的唯一设计入口；服务端模式已上线（win38）。
 
 ### M1 实现补充（2026-09-10）
 
@@ -71,6 +71,13 @@
 - Manager 侧：verb_gate_execute（grants 默认全拒 → **canonicalize 防路径穿越**（实测 /etc/passwd → /private/etc/passwd 后比对）→ 限额执行 → 审计）。审批 UI 集成留 v2（开放问题 2）
 - 🔴 from_worker 双查坑在 verb_gate 与审计两处重犯（session_id↔worker_id）——新增 Manager 命令处理时 from_worker 一律双查
 - grants 语义：`/prefix/**` 前缀匹配 + 精确匹配；纯 glob 会命中 `../` 字符串（单测诚实断言），真实防线是 canonicalize
+
+### M4.5 审批流（2026-09-11，commit 24ede17）
+
+- `grants.ask_on_deny: true`：动词被 grants 拒绝时转人工审批（默认 false=硬拒绝）
+- 流：请求入全局 pending store（vapp_*）→ 广播 verb_approval 事件 → `ion rpc --method verb_review --params '{"requestId":"vapp_x","approve":true}'` → 放行执行（http.fetch 走 async）→ 审计 allowed:true + approval id；300s 超时=拒绝
+- 新 RPC：verb_review / verb_pending（列出待审批：requestId/verb/args/session/ageMs）
+- 等待不持 registry 锁（全局 store + spawn 任务 + oneshot）——parking_lot 跨 await 禁忌的另一种解法
 - 🔴 二进制特性自检必须行为测试（grep 字符串假阴性：LLVM 拆分字面量）；远端构建脚本 ~/ion-remote-tools/rw-build.sh 固化（tar 源码→touch 强制重编→行为自检→install）
 
 ---
