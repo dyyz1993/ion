@@ -131,6 +131,10 @@ fn build_remote_worker_argv(
     argv.push("StrictHostKeyChecking=accept-new".into());
     argv.push("-o".into());
     argv.push("ServerAliveInterval=30".into());
+    // 容忍最长 ~5 分钟的网络瞬断（30s × 10 次才判死）——长任务任务中途
+    // WiFi 抖一下就杀掉远端 worker 的代价太高
+    argv.push("-o".into());
+    argv.push("ServerAliveCountMax=10".into());
     let dest = if host.user.is_empty() {
         host.hostname.clone()
     } else {
@@ -615,6 +619,9 @@ impl WorkerRegistry {
                 child_envs.push(("ION_PROVIDER_BRIDGE".into(), "1".into()));
                 child_envs.push(("ION_SESSION_STREAM".into(), "1".into()));
                 child_envs.push(("ION_NO_PROJECT_HOOKS".into(), "1".into()));
+                // GLM-5.2 等推理模型复杂任务首 token 可超 120s（worker 默认空闲
+                // 超时会误杀桥接流）——桥接 worker 放宽到 10 分钟
+                child_envs.push(("ION_LLM_IDLE_TIMEOUT_MS".into(), "600000".into()));
             }
         }
         if remote_host.is_none() {

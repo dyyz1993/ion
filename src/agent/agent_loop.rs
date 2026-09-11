@@ -1969,6 +1969,10 @@ impl Agent {
         context: &Context,
         options: &StreamOptions,
     ) -> AgentResult<(StopReason, Vec<StreamEvent>)> {
+        let idle_limit_ms: u128 = std::env::var("ION_LLM_IDLE_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u128>().ok())
+            .unwrap_or(120_000);
         let mut last_error = None;
         for attempt in 0..=self.config.max_retries {
             self.check_pause().await?;
@@ -2048,10 +2052,12 @@ impl Agent {
                                 // 代理僵死）。无此兜底时 recv() 永不返回，worker 卡
                                 // Busy 且 agent_end 不发。收到 chunk 即复位计时。
                                 idle_ms += 200;
-                                if idle_ms >= 120_000 {
+                                // 空闲超时可配（REMOTE_WORKER M2：桥接模式下 GLM-5.2
+                                // 推理期首 token 可超 120s——远程 worker 注入大值）
+                                if idle_ms >= idle_limit_ms {
                                     tracing::error!(
-                                        "[timeout] LLM 流空闲 {}s，判定上游挂死，中断本轮",
-                                        idle_ms / 1000
+                                        "[timeout] LLM 流空闲 {}s（上限 {}s），判定上游挂死，中断本轮",
+                                        idle_ms / 1000, idle_limit_ms / 1000
                                     );
                                     final_reason = StopReason::Error;
                                     break;
