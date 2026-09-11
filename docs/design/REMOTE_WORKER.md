@@ -1,6 +1,6 @@
 # REMOTE_WORKER 远程执行端设计文档
 
-> **状态：开发中 — M1+M2+M3 已完成（2026-09-11：M1 SSH spawn ✅；M2 零 key 桥接 "42" ✅；M3 会话回流+资产包+远端 hooks 禁用 ✅——远端会话 UI 直读完整对话），M4 待实现。** 设计经与用户多轮收敛 + 红蓝对抗安全评审。本文档是客户端模式的唯一设计入口；服务端模式已上线（win38）。
+> **状态：M1-M4 全部完成（2026-09-11：M1 SSH spawn ✅；M2 零 key 桥接 "42" ✅；M3 会话回流+资产包+hooks 禁用 ✅；M4 VerbGate 动词表真机验证 ✅——授权读取/越权拒绝/审计留痕三断言全过），commit 54cee34+44895e2。** 设计经与用户多轮收敛 + 红蓝对抗安全评审。本文档是客户端模式的唯一设计入口；服务端模式已上线（win38）。
 
 ### M1 实现补充（2026-09-10）
 
@@ -42,7 +42,7 @@
 | M1 | SSH spawn 适配器 | ✅ | `tests/remote_worker_ci.sh` Group A 6/6 + 重启零干预 ×2 |
 | M2 | LLM 桥接全链路 | ✅ | lib 1007/0（3 桥接单测）+ 真机零 key "42"（usage 9398 回传）|
 | M3 | 会话回流 + 资产包 | ✅ | 真机：Mac `<sid>.jsonl` + UI 直读对话；远端 skills 部署实证 |
-| M4 | 动词表（fs/http） | 🔧 | harness ACL 用例 + Group D |
+| M4 | 动词表（fs/http） | ✅ | 真机：授权读 Cargo.toml + 越权拒 ~/.ssh//etc/passwd + 审计 host_call 条目 |
 
 ### M2 实现补充（2026-09-11）
 
@@ -58,6 +58,12 @@
 - **资产包 v1**：spawn 前 tar 管道部署 Mac skills/agents 到远端 `~/.ion/agent/`（worker 加载零改动）；`assets:{skills 白名单,agents}`；失败降级
 - **远端项目级 hooks 禁用**：ION_NO_PROJECT_HOOKS=1（llm_bridge 注入）→ hooks loader 跳过项目级——hooks 供应链 P0 的执行端克星
 - **WSL 执行端可靠性三件套**：serve 保活 VM（VM 空闲停机会灭 sshd/IP）+ `refresh` spawn 前自愈（经 22 管理通道跑 gateway：起 sshd+刷 portproxy）+ `refresh_dest` 双通道凭据（22=Windows/sshuser vs 2222=WSL/root）
+### M4 实现补充（2026-09-11）
+
+- worker 侧工具：host_read/host_write/host_fetch（host_tools.rs，仅 bridge 模式注册，持 ManagerBridge 句柄同步往返）；经 ManagerBridge `_reply_to` 机制天然同步
+- Manager 侧：verb_gate_execute（grants 默认全拒 → **canonicalize 防路径穿越**（实测 /etc/passwd → /private/etc/passwd 后比对）→ 限额执行 → 审计）。审批 UI 集成留 v2（开放问题 2）
+- 🔴 from_worker 双查坑在 verb_gate 与审计两处重犯（session_id↔worker_id）——新增 Manager 命令处理时 from_worker 一律双查
+- grants 语义：`/prefix/**` 前缀匹配 + 精确匹配；纯 glob 会命中 `../` 字符串（单测诚实断言），真实防线是 canonicalize
 - 🔴 二进制特性自检必须行为测试（grep 字符串假阴性：LLVM 拆分字面量）；远端构建脚本 ~/ion-remote-tools/rw-build.sh 固化（tar 源码→touch 强制重编→行为自检→install）
 
 ---

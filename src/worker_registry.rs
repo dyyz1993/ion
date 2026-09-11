@@ -567,6 +567,9 @@ impl WorkerRegistry {
         let mut child_envs: Vec<(String, String)> = Vec::new();
         // 远程执行端连接级环境变量（remote_workers.<name>.env）——对本地 worker 无意义
         if let Some((_, ref host_cfg)) = remote_host {
+            // 远程 worker 强制 fork 模式（独立 <sid>.jsonl）：远端非 fork 写共享
+            // session.jsonl，与"每 sid 回流 Mac"的镜像模型冲突（旧 header 挡新 sid）
+            child_envs.push(("ION_FORK_CHILD".into(), "1".into()));
             for (k, v) in &host_cfg.env {
                 child_envs.push((k.clone(), v.clone()));
             }

@@ -768,7 +768,7 @@ pub fn read_session_env_tuple() -> (Option<String>, Option<String>, Option<Strin
 // 双写（而非只流不写）：worker 全部现有逻辑零改动风险，断线时远端还有副本。
 // 开关：ION_SESSION_STREAM=1（Manager 在 llm_bridge=true 时注入）。
 
-fn session_stream_enabled() -> bool {
+pub fn session_stream_enabled() -> bool {
     std::env::var("ION_SESSION_STREAM")
         .map(|v| v == "1")
         .unwrap_or(false)

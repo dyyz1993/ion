@@ -156,6 +156,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     let initial_agent = initial_agent;
 
     let sid = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    // M3 会话回流：镜像归属必须在任何 session I/O（ensure_session_header 等）之前注册，
+    // 否则首个 header 镜像带空 sid 出去，Manager 兜底落错文件名。
+    crate::session_jsonl::set_mirror_session(&sid);
 
     // 初始化 Provider + Model + Tools + Agent
     let mut registry = ApiRegistry::new();
@@ -560,9 +563,7 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
     // 存 sid + cwd 到全局，on_before_tool_execute 钩子用
     {
         *SESSION_SID.lock().unwrap() = Some(sid.clone());
-        // M3 会话回流：无条件注册镜像归属（是否真发由 mirror_send 的
-        // ION_SESSION_STREAM 开关决定——两开关解耦，避免条件遗漏导致 sid 空）
-        crate::session_jsonl::set_mirror_session(&sid);
+        // （mirror 归属已在 sid 解析处注册——见函数开头）
         *SESSION_CWD.lock().unwrap() = Some(worker_cwd.clone());
     }
     // 设 session header 的 agent/model/provider（export.rs banner 显示用）
@@ -7316,6 +7317,12 @@ fn ensure_fork_session_header(path: &std::path::Path, cwd: &str, sid: &str) {
         .open(path)
     {
         let _ = f.write_all(format!("{json}\n").as_bytes());
+    }
+    // M3 会话回流：fork header 镜像（远程 worker 走 fork 模式，per-sid 文件）
+    if crate::session_jsonl::session_stream_enabled()
+        && let Ok(hv) = serde_json::from_str::<serde_json::Value>(&json)
+    {
+        crate::session_jsonl::mirror_public_send("header", &hv);
     }
 
     // fork 子 Worker：把 system_prompt（含 skill 内容）作为 custom entry 写到第二行

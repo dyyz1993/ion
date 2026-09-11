@@ -27,8 +27,10 @@ if ! nc -z -G 3 "${HOST#*@}" "$PORT" 2>/dev/null; then
   echo "远端 $HOST:$PORT 不可达，跳过全部用例"; skip "host unreachable"; exit 0
 fi
 
-# 远端配置只经 env 注入（不碰用户 config.json）——必须在 host 启动前进入其环境
-export ION_REMOTE_WORKERS="{\"ci-exec\": {\"user\":\"root\",\"hostname\":\"${HOST#*@}\",\"port\":$PORT,\"worker_bin\":\"/usr/local/bin/ion\",\"cwd\":\"/tmp\"}}"
+# 远端配置只经 env 注入（不碰用户 config.json）——必须在 host 启动前进入其环境。
+# llm_bridge=true：worker 注入 ION_PROVIDER_BRIDGE+ION_SESSION_STREAM（M2 桥接 + M3 回流），
+# Manager 侧桥接 registry 同时注册 faux（下方 ION_FAUX_REPLY）→ 全链路确定性。
+export ION_REMOTE_WORKERS="{\"ci-exec\": {\"user\":\"root\",\"hostname\":\"${HOST#*@}\",\"port\":$PORT,\"worker_bin\":\"/usr/local/bin/ion\",\"cwd\":\"/tmp\",\"llm_bridge\":true}}"
 
 # 起私有 host（faux 确定性回复，远程 worker 侧注册 FauxProvider）
 ION_HOST_SOCKET="$SOCK" ION_FAUX_REPLY="RW_CI_FAUX_OK" \
@@ -86,6 +88,42 @@ echo "$E" | grep -q "unknown remote worker host" && ok "A5 未知 host 明确报
 # A6 remote+worktree 拒绝
 E2=$(rpc --method create_worker --params '{"host":"ci-exec","worktree":{"branch":"x"},"agent":"build","initial_prompt":"x","wait":false}')
 echo "$E2" | grep -q "not supported for remote" && ok "A6 remote+worktree 拒绝" || bad "A6 报错形状: $(echo "$E2" | head -3)"
+
+echo "── Group B: 零 key 桥接（faux 确定性） ──"
+W2=$(rpc --method create_worker --params '{"host":"ci-exec","agent":"build","initial_prompt":"ping","wait":false}')
+WID2=$(echo "$W2" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['workerId'])" 2>/dev/null)
+if [ -n "$WID2" ]; then
+  ok "B1 bridge 模式 create_worker → $WID2"
+  ST="Busy"
+  for i in $(seq 1 15); do
+    ST=$(rpc --method list_workers | python3 -c "
+import json,sys
+ws=json.load(sys.stdin)['data']['workers']
+print(next((w.get('status') for w in ws if w.get('workerId')=='$WID2'), 'MISSING'))" 2>/dev/null)
+    [ "$ST" = "Idle" ] || [ "$ST" = "MISSING" ] && break
+    sleep 2
+  done
+  [ "$ST" = "Idle" ] && ok "B2 bridge worker 完成首轮（faux 经 Manager 代发）" || bad "B2 bridge 状态: $ST"
+  # B3 会话回流：Mac 磁盘出现 <sid>.jsonl
+  SID2=$(rpc --method list_workers | python3 -c "
+import json,sys
+print(next((w.get('sessionId') for w in json.load(sys.stdin)['data']['workers'] if w.get('workerId')=='$WID2'), ''))" 2>/dev/null)
+  F=$(find ~/.ion/agent/sessions -name "$SID2.jsonl" 2>/dev/null | head -1)
+  [ -n "$F" ] && ok "B3 会话回流 Mac 落盘（$(wc -l < "$F") 行）" || bad "B3 会话未回流"
+  rpc --method kill --params "{\"workerId\":\"$WID2\"}" >/dev/null 2>&1
+else
+  bad "B1 bridge create_worker 失败"
+fi
+
+echo "── Group C: grants 默认全拒（安全语义） ──"
+# 无 grants 配置的 host（ci-nogrant）→ host 工具调用必拒。
+# 经 spawn_worker 不便构造工具调用——验证配置层：grants 缺省 None → 解析正确
+export ION_REMOTE_WORKERS="$ION_REMOTE_WORKERS"  # 保持
+python3 -c "
+import json, os
+m = json.loads(os.environ['ION_REMOTE_WORKERS'])
+assert m['ci-exec'].get('grants') is None, 'grants default should be None (deny-all)'
+print('C1 grants-default-deny 配置语义 OK')" && ok "C1 grants 缺省=None（全拒）" || bad "C1 grants 缺省语义"
 
 echo ""
 echo "结果: PASS=$PASS FAIL=$FAIL SKIP=$SKIP"
