@@ -149,6 +149,21 @@ ion rpc --method create_worker --params '{"host":"win38","agent":"build","initia
 | `src/worker_registry.rs:1876` | prompt 注入 spawn task（P4 的执行路径）|
 | `src/worker_registry.rs` tests | 5 个 TDD 测试（test_p3/p4/p5）|
 
+## 补丁 2（2026-09-12 部署验证后追加）
+
+补丁 1（删 thread::sleep）不够——parking_lot 非公平锁下，桥接任务的
+`lock→write→release→lock→write` 紧密循环仍然饿死主 serve 循环
+（真机验证：修复后 host 仍不响应 list_workers，栈取样同 deadlock）。
+
+**补丁 2**：`bridge_serve_llm_request` 的流式循环中，每个 chunk 写完后
+`tokio::time::sleep(1ms).await`——异步让出调度窗口（不阻塞线程），
+给主 serve 循环获取锁的机会。
+
+**真机验证（2026-09-12，Mission D 17 分钟运行）**：
+- host 在 3 个并发 worker + 多 LLM 流式响应期间持续响应 ✅
+- 子 Worker 收到任务书并执行（demo-saas 28MB 依赖安装完成）✅
+- spawn 无超时（两个子 Worker 均成功启动）✅
+
 ## 已知限制
 
 - 终帧（Done/Error）仍可能在管道持续满 500ms 后丢弃——极端场景，实际未观察到

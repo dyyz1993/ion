@@ -7002,6 +7002,10 @@ async fn bridge_serve_llm_request(
                 registry_arc
                     .lock()
                     .write_line_to_worker_sync(&from_worker, &line);
+                // P3 补丁 2：parking_lot 非公平锁——紧密 lock-release 循环
+                // 会饿死等锁的主 serve 循环（实测 list_workers 无响应）。
+                // 每个 chunk 写完后让出 1ms 调度窗口（async sleep 不阻塞线程）。
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
             // 兜底：流结束但没看到终帧（异常路径）→ 合成 Error 终帧防 worker 悬挂
             if final_event.is_none() {
