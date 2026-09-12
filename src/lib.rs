@@ -81,6 +81,7 @@ pub mod session;
 pub mod session_gc;
 pub mod session_index;
 pub mod session_jsonl;
+pub mod sandbox_pool;
 pub mod session_tree;
 pub mod session_workspace;
 pub mod storage_context;
