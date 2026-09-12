@@ -11,7 +11,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 /// 沙盒健康状态。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SandboxHealth {
     /// 未探测过（含 wrapper 端点——本期不探测）
     Unknown,
@@ -24,7 +25,7 @@ pub enum SandboxHealth {
 }
 
 /// 单台沙盒的状态快照。
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct SandboxStatus {
     /// 配置名（remote_workers 的 key）
     pub name: String,
@@ -67,6 +68,36 @@ impl SandboxPool {
                     name.clone(),
                     SandboxStatus {
                         name: name.clone(),
+                        dest,
+                        health: SandboxHealth::Unknown,
+                        version: None,
+                        worker_count: 0,
+                        last_probe: None,
+                    },
+                );
+            }
+        }
+        // env 注入（ION_REMOTE_WORKERS）合并——env 优先（对齐 remote_worker_host 的解析顺序）
+        if let Ok(env_json) = std::env::var("ION_REMOTE_WORKERS")
+            && !env_json.trim().is_empty()
+            && let Ok(m) =
+                serde_json::from_str::<HashMap<String, crate::config::RemoteWorkerHost>>(&env_json)
+        {
+            for (name, host) in m {
+                let user = if host.user.is_empty() {
+                    host.hostname.clone()
+                } else {
+                    format!("{}@{}", host.user, host.hostname)
+                };
+                let dest = match host.port {
+                    Some(p) if p != 22 => format!("{}:{}", user, p),
+                    _ => user,
+                };
+                hosts.insert(name.clone(), host.clone());
+                statuses.insert(
+                    name.clone(),
+                    SandboxStatus {
+                        name,
                         dest,
                         health: SandboxHealth::Unknown,
                         version: None,
@@ -134,7 +165,14 @@ impl SandboxPool {
         if !cfg.key.is_empty() {
             cmd.arg("-i").arg(&cfg.key);
         }
-        cmd.arg(&st.dest);
+        // ssh 目标必须 user@hostname（端口走 -p）——st.dest 是展示串，含 ":port" 会被
+        // ssh 当主机名解析（scp 语法）导致永远 Unreachable（2026-09-13 实测踩坑）
+        let ssh_dest = if cfg.user.is_empty() {
+            cfg.hostname.clone()
+        } else {
+            format!("{}@{}", cfg.user, cfg.hostname)
+        };
+        cmd.arg(ssh_dest);
         let bin = if cfg.worker_bin.is_empty() {
             "/usr/local/bin/ion"
         } else {
@@ -190,7 +228,25 @@ impl SandboxPool {
             .map(|s| s.name.as_str())
     }
 
+    /// 顺序探测池内全部沙盒（auto 选点前调用；每台 5s 超时上限）。
+    pub async fn probe_all(&mut self) {
+        let names: Vec<String> = self.statuses.keys().cloned().collect();
+        for n in names {
+            self.probe(&n).await;
+        }
+    }
+
     /// 全部沙盒状态快照。
+    /// 池内是否存在该沙盒（probe 前置校验用）
+    pub fn contains(&self, name: &str) -> bool {
+        self.statuses.contains_key(name)
+    }
+
+    /// 可变状态访问（host 侧注入 worker_count 等运行时数据）
+    pub fn statuses_mut(&mut self) -> impl Iterator<Item = &mut SandboxStatus> {
+        self.statuses.values_mut()
+    }
+
     pub fn statuses(&self) -> Vec<&SandboxStatus> {
         let mut v: Vec<&SandboxStatus> = self.statuses.values().collect();
         v.sort_by(|a, b| a.name.cmp(&b.name));

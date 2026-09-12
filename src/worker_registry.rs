@@ -507,6 +507,29 @@ impl WorkerRegistry {
         // 先于 worktree 解析：remote + worktree 直接拒绝（远端不适用本地 worktree 语义）
         let remote_host: Option<(String, crate::config::RemoteWorkerHost)> =
             match config.host.as_deref() {
+                // SANDBOX_POOL.md §3.2：auto = 全池探测后按健康选点（Phase 1 负载计数恒 0）
+                Some("auto") => {
+                    if config.worktree.is_some() {
+                        return Err(
+                            "worktree isolation is not supported for remote workers (M1)".into(),
+                        );
+                    }
+                    let cfg = crate::config::IonConfig::load();
+                    let mut pool = crate::sandbox_pool::SandboxPool::from_config(&cfg);
+                    pool.probe_all().await;
+                    let picked = pool
+                        .pick_healthy(&[])
+                        .ok_or_else(|| {
+                            "no healthy sandbox — all remote_workers unreachable or version \
+                             mismatch (see rpc sandbox_probe)"
+                                .to_string()
+                        })?
+                        .to_string();
+                    let host_cfg = crate::config::IonConfig::load()
+                        .remote_worker_host(&picked)
+                        .ok_or_else(|| format!("unknown remote worker host '{picked}'"))?;
+                    Some((picked, host_cfg))
+                }
                 Some(name) if !name.is_empty() => {
                     if config.worktree.is_some() {
                         return Err(
@@ -917,7 +940,10 @@ impl WorkerRegistry {
             model,
             provider,
             agent_name,
-            host: config.host.clone(),
+            host: remote_host
+                .as_ref()
+                .map(|(n, _)| n.clone())
+                .or_else(|| config.host.clone()),
         })
     }
 

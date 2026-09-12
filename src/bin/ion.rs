@@ -5828,6 +5828,48 @@ async fn handle_manager_command(
     //
     // Write commands acquire the lock inside their own branch as needed.
     let result: Result<serde_json::Value, String> = match method {
+        // ── 沙盒池（SANDBOX_POOL.md §3.2）：统一视图 + 单点体检 ──
+        "list_sandboxes" => {
+            let cfg = ion::config::IonConfig::load();
+            let mut pool = ion::sandbox_pool::SandboxPool::from_config(&cfg);
+            let mut counts: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            {
+                let reg = registry.lock();
+                for w in reg.workers.values() {
+                    if let Some(h) = &w.host {
+                        *counts.entry(h.clone()).or_insert(0) += 1;
+                    }
+                }
+            }
+            for st in pool.statuses_mut() {
+                st.worker_count = counts.get(&st.name).copied().unwrap_or(0);
+            }
+            let sandboxes: Vec<&ion::sandbox_pool::SandboxStatus> = pool.statuses();
+            Ok(serde_json::json!({ "sandboxes": sandboxes }))
+        }
+        "sandbox_probe" => {
+            let name = cmd
+                .get("params")
+                .and_then(|p| p.get("name"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            match name {
+                None => Err("missing 'name' param".to_string()),
+                Some(name) => {
+                    let cfg = ion::config::IonConfig::load();
+                    let mut pool = ion::sandbox_pool::SandboxPool::from_config(&cfg);
+                    if !pool.contains(&name) {
+                        Err(format!(
+                            "unknown sandbox '{name}' — define it in remote_workers"
+                        ))
+                    } else {
+                        let st = pool.probe(&name).await;
+                        Ok(serde_json::json!({ "sandbox": st }))
+                    }
+                }
+            }
+        }
         // ── Fast read paths (short lock, snapshot then release) ──
         "list_sessions" => {
             let sessions: Vec<_> = {
