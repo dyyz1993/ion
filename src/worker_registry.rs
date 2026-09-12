@@ -172,9 +172,17 @@ fn build_remote_worker_argv(
         argv.push(rc);
     } else {
         // Windows/WSL 等中间 shell 执行端：脚本整体 base64 转运。
-        // ssh 把 argv 以空格拼接后交给远端默认 shell（cmd.exe）——单引号/管道/
-        // $ 都会被误解析；base64 字符集（A-Za-z0-9+/=）对 cmd 与 sh 双侧无特殊
-        // 含义，双引号内管道对 cmd 是字面量，经 wrapper 进入 Linux 侧后还原执行。
+        // ssh 把 argv 以空格拼接后交给远端默认 shell（cmd.exe）——单引号/管道
+        // 会被误解析；base64 字符集（A-Za-z0-9+/=）对 cmd 与 sh 双侧无特殊含义，
+        // 双引号内管道对 cmd 是字面量。
+        //
+        // 🔴 载荷形状必须是 `$(echo B64 | base64 -d)`（命令替换，解码结果成为
+        // /bin/sh -c 的参数），绝不能写成 `echo B64 | base64 -d | sh`（解码后
+        // 的 sh 从管道读脚本）：后者的尾 sh stdin 是 base64 的输出管道，exec ion
+        // 继承的也是它——ssh 转发来的真实 stdin 被管道偷走，worker 启动后主循环
+        // 立即读到 EOF 优雅退出（2026-09-12 win38 Windows 端点真机踩坑：
+        // worker_ready 后 ~2s 静默死亡，无 stderr）。命令替换在 cmd 层是字面量
+        // （cmd 无 $() 语义），在任一 sh 层展开都等价，且不触碰 fd0。
         use base64::Engine as _;
         let b64 = base64::engine::general_purpose::STANDARD.encode(rc.as_bytes());
         for w in host.wrapper.split_whitespace() {
@@ -182,7 +190,7 @@ fn build_remote_worker_argv(
         }
         argv.push("/bin/sh".into());
         argv.push("-c".into());
-        argv.push(format!("\"echo {b64} | base64 -d | sh\""));
+        argv.push(format!("\"$(echo {b64} | base64 -d)\""));
     }
     argv
 }
@@ -6142,7 +6150,9 @@ mod tests {
 
     /// wrapper 模式（Windows/WSL 执行端）：脚本走 base64 转运。
     /// 验证：① wrapper 词原样插入 ② 传输段无单引号/裸管道（cmd.exe 安全）
-    /// ③ base64 解码后逐字节等于原脚本（真实 /bin/sh 还原执行）。
+    /// ③ base64 解码后逐字节等于原脚本（真实 /bin/sh 还原执行）
+    /// ④ 载荷形状必须是命令替换——exec 后 fd0 仍是原始 stdin（防回归：
+    ///    `| sh` 管道形状会偷走 stdin，worker 启动即 EOF 退出）。
     #[test]
     fn test_remote_worker_argv_wrapper_b64_transport() {
         let mut host = rh(
@@ -6162,18 +6172,25 @@ mod tests {
         let dest_pos = joined.find("sshuser@win38").unwrap();
         let wrapper_pos = joined.find("wsl -d ion --").unwrap();
         assert!(wrapper_pos > dest_pos);
-        // 传输段：双引号包裹 + base64 + 管道，绝无单引号
+        // 传输段：双引号包裹 + 命令替换载荷（不是 `| sh` 管道），绝无单引号
         let transport = argv.last().unwrap();
-        assert!(transport.starts_with("\"echo ") && transport.ends_with("| sh\""));
+        assert!(
+            transport.starts_with("\"$(echo ") && transport.ends_with(")\""),
+            "unexpected transport: {transport}"
+        );
         assert!(
             !transport.contains('\''),
             "cmd.exe unsafe single quote: {transport}"
+        );
+        assert!(
+            !transport.contains("| sh"),
+            "pipe-to-sh payload steals stdin (worker exits on instant EOF)"
         );
         // base64 解码 == 原脚本，并交给真实 /bin/sh 验证可执行
         use base64::Engine as _;
         let b64: String = transport
             .trim_matches('"')
-            .strip_prefix("echo ")
+            .strip_prefix("$(echo ")
             .and_then(|s| s.split_whitespace().next())
             .unwrap()
             .to_string();
@@ -6193,6 +6210,31 @@ mod tests {
             .unwrap();
         assert!(out.status.success());
         assert_eq!(String::from_utf8_lossy(&out.stdout), "OK");
+    }
+
+    /// stdin 保真性质测试：transport 载荷经真实 sh 解析后，最终进程的 fd0
+    /// 必须仍是原始 stdin——这是 `$(...)` 载荷相对 `| sh` 载荷的本质区别。
+    /// 模拟：worker_bin 换成 cat，喂入原始 stdin，断言 cat 原样回读；
+    /// 若载荷是 `| sh` 管道形状，cat 继承的是 base64 输出管道（EOF）→ 输出为空。
+    #[test]
+    fn test_remote_worker_argv_wrapper_preserves_stdin() {
+        let mut host = rh("u", "h", None, "", "/bin/cat", "/tmp");
+        host.wrapper = "wsl -d ion --".into();
+        let argv = build_remote_worker_argv(&host, &[], &[]);
+        let transport = argv.last().unwrap();
+        // 模拟远端：原始 stdin → sh -c <transport>（$() 在 sh 层展开为解码脚本）
+        let line = format!("printf HELLO_STDIN | sh -c {transport}");
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&line)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "HELLO_STDIN",
+            "transport payload stole fd0 (old `| sh` shape regression)"
+        );
     }
 
     // ── P3/P5 TDD：桥接写入不得持锁阻塞（死锁/活锁复现） ──────────────────

@@ -2,10 +2,10 @@
 
 > **状态：M1-M4.5 全部完成（2026-09-11：M1 SSH spawn ✅；M2 零 key 桥接 "42" ✅；M3 会话回流+资产包+hooks 禁用 ✅；M4 VerbGate ✅；M4.5 审批流 ✅——grants 拒绝可转人工审批，RPC 自审批真机验证），commit 54cee34+44895e2+24ede17。** 设计经与用户多轮收敛 + 红蓝对抗安全评审。本文档是客户端模式的唯一设计入口；服务端模式已上线（win38）。
 
-### M1 实现补充（2026-09-10）
+### M1 实现补充（2026-09-10；2026-09-12 修正 wrapper 诊断并修复）
 
-- `RemoteWorkerHost` 实际字段比原设计多两个：`wrapper`（Windows+WSL 执行端的前缀，如 `wsl -d ion --`，此模式下脚本走 **base64 转运**免疫 cmd/bash 双层引号）与 `env`（连接级环境变量，如代理指回主控端）
-- **win38 实际走"WSL 原生 sshd + Windows portproxy 2222 直连"**（wrapper 留作通用 Windows 执行端能力）：实测发现 `ssh → cmd.exe → wsl.exe` 链路的 stdin 中继**首次写入即 EOF**（远程 worker 收到 Manager 首个回复就优雅退出），WSL 内装 sshd + `netsh portproxy` 直连 Linux 后 stdio 全程原生。portproxy 由开机任务 `ion-wsl-gateway` 自动刷新（WSL IP 动态）
+- `RemoteWorkerHost` 实际字段比原设计多两个：`wrapper`（Windows+WSL 执行端的前缀，如 `wsl -d ion -u root`，此模式下脚本走 **base64 命令替换转运**——`"$(echo <b64> | base64 -d)"` 作为 `/bin/sh -c` 参数，免疫 cmd/bash 双层引号且不触碰 fd0）与 `env`（连接级环境变量，如代理指回主控端）
+- **win38 生产走"WSL 原生 sshd + Windows portproxy 2222 直连"**。历史注记（2026-09-12 修正）：wrapper 路径曾被判"`ssh → cmd.exe → wsl.exe` 链路 stdin 中继首次写入即 EOF"而弃用——**该诊断有误**。真因是旧载荷形状 `echo <b64> | base64 -d | sh`：尾 sh 从 base64 管道读脚本，`exec ion` 继承的 fd0 是这条已 EOF 的管道而非 ssh 转发的真实 stdin，worker_ready 后 ~2s 主循环读到 EOF 优雅退出（无 stderr、无崩溃、时序恒定）。修复（同日）：载荷改为命令替换 `"$(echo <b64> | base64 -d)"`，解码脚本成为 `-c` 参数，fd0 全程原样保留；经同一 Windows 链路真机验证全通（命令应答 / agent 全程 / 会话回流 Mac 落盘）。单测 `test_remote_worker_argv_wrapper_preserves_stdin` 锁死该性质（旧载荷形状下必红），CI `tests/remote_worker_ci.sh` **Group W** 覆盖 Windows 端点穿透（`RW_WIN_HOST/PORT/USER/WRAPPER` 可覆盖，默认 win38:22 + `wsl -d ion -u root`，不可达自动 SKIP）。portproxy 由开机任务 `ion-wsl-gateway` 自动刷新（WSL IP 动态）
 - 验证：lib 1003/0 + 单测 5（含真实 /bin/sh 转义往返闸门）+ `tests/remote_worker_ci.sh` 6/6（faux 零 LLM 成本）+ 两轮重启零干预验收 + **真 LLM 端到端 "24"**（2026-09-11 版本对齐后）
 - 🔴 **版本对齐铁律（实测教训）**：remote_workers 的 `worker_bin` 必须与 Manager **同源同版本**——远端旧版（0.4.0）worker 与新版 Manager 的 spawn 协议存在 provider 构造差异，表现为 worker 必 401 CreditsError 而同机直跑 `-p` 正常（四格对照锁定）。win38 现已部署 WSL 本地编译的同版本二进制（旧版备份 `ion-0.4.0.bak`）；后续版本升级需同步重编远端或经资产包分发（M3）
 

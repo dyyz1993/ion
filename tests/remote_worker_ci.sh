@@ -30,7 +30,26 @@ fi
 # 远端配置只经 env 注入（不碰用户 config.json）——必须在 host 启动前进入其环境。
 # llm_bridge=true：worker 注入 ION_PROVIDER_BRIDGE+ION_SESSION_STREAM（M2 桥接 + M3 回流），
 # Manager 侧桥接 registry 同时注册 faux（下方 ION_FAUX_REPLY）→ 全链路确定性。
-export ION_REMOTE_WORKERS="{\"ci-exec\": {\"user\":\"root\",\"hostname\":\"${HOST#*@}\",\"port\":$PORT,\"worker_bin\":\"/usr/local/bin/ion\",\"cwd\":\"/tmp\",\"llm_bridge\":true}}"
+# Windows 端点（wrapper 模式，Group W）：RW_WIN_HOST/RW_WIN_PORT/RW_WIN_USER/RW_WIN_WRAPPER
+# 可覆盖；可达时自动注入 ci-win 条目，不可达整组 SKIP。
+WIN_HOST="${RW_WIN_HOST:-${HOST#*@}}"
+WIN_PORT="${RW_WIN_PORT:-22}"
+WIN_OK=0
+nc -z -G 3 "$WIN_HOST" "$WIN_PORT" 2>/dev/null && WIN_OK=1
+RW_JSON="{\"ci-exec\": {\"user\":\"root\",\"hostname\":\"${HOST#*@}\",\"port\":$PORT,\"worker_bin\":\"/usr/local/bin/ion\",\"cwd\":\"/tmp\",\"llm_bridge\":true}}"
+if [ "$WIN_OK" = 1 ]; then
+  RW_JSON=$(RW_BASE="$RW_JSON" WIN_HOST="$WIN_HOST" WIN_PORT="$WIN_PORT" \
+    WIN_USER="${RW_WIN_USER:-sshuser}" WIN_WRAPPER="${RW_WIN_WRAPPER:-wsl -d ion -u root}" \
+    python3 -c "
+import json, os
+m = json.loads(os.environ['RW_BASE'])
+m['ci-win'] = {'user': os.environ['WIN_USER'], 'hostname': os.environ['WIN_HOST'],
+               'port': int(os.environ['WIN_PORT']), 'key': os.path.expanduser('~/.ssh/id_ed25519'),
+               'worker_bin': '/usr/local/bin/ion', 'cwd': '/tmp',
+               'wrapper': os.environ['WIN_WRAPPER'], 'llm_bridge': True}
+print(json.dumps(m))")
+fi
+export ION_REMOTE_WORKERS="$RW_JSON"
 
 # 起私有 host（faux 确定性回复，远程 worker 侧注册 FauxProvider）
 ION_HOST_SOCKET="$SOCK" ION_FAUX_REPLY="RW_CI_FAUX_OK" \
@@ -124,6 +143,43 @@ import json, os
 m = json.loads(os.environ['ION_REMOTE_WORKERS'])
 assert m['ci-exec'].get('grants') is None, 'grants default should be None (deny-all)'
 print('C1 grants-default-deny 配置语义 OK')" && ok "C1 grants 缺省=None（全拒）" || bad "C1 grants 缺省语义"
+
+echo "── Group W: Windows 端点穿透（wrapper：cmd.exe → wsl → base64 转运）──"
+if [ "$WIN_OK" = 1 ]; then
+  W3=$(rpc --method create_worker --params '{"host":"ci-win","agent":"build","initial_prompt":"ping","wait":false}')
+  WID3=$(echo "$W3" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['workerId'])" 2>/dev/null)
+  if [ -n "$WID3" ]; then
+    ok "W1 create_worker(host=ci-win) → $WID3"
+    # W2 完成转 Idle —— stdin 保真回归锚点：wrapper 载荷若退化为
+    # `echo B64 | base64 -d | sh`（脚本经管道喂给 sh），worker 的 fd0 被
+    # base64 管道偷走，worker_ready 后 ~2s 内 EOF 静默退出，永远到不了 Idle。
+    ST3="Busy"
+    for i in $(seq 1 20); do
+      ST3=$(rpc --method list_workers | python3 -c "
+import json,sys
+ws=json.load(sys.stdin)['data']['workers']
+print(next((w.get('status') for w in ws if w.get('workerId')=='$WID3'), 'MISSING'))" 2>/dev/null)
+      { [ "$ST3" = "Idle" ] || [ "$ST3" = "MISSING" ]; } && break
+      sleep 2
+    done
+    [ "$ST3" = "Idle" ] && ok "W2 Windows 链路首轮完成转 Idle（stdin 保真）" || bad "W2 状态: $ST3"
+    # W3 会话回流 Mac 落盘（sessionId 取自 create 响应——Idle 后 worker 可能
+    # 秒退被清，list_workers 重查会落空；回流流式落盘可能略滞后于 Idle，重试等待）
+    SID3=$(echo "$W3" | python3 -c "import json,sys; print(json.load(sys.stdin)['data'].get('sessionId',''))" 2>/dev/null)
+    F3=""
+    for i in $(seq 1 10); do
+      F3=$(find ~/.ion/agent/sessions -name "$SID3.jsonl" 2>/dev/null | head -1)
+      [ -n "$F3" ] && break
+      sleep 1
+    done
+    [ -n "$F3" ] && ok "W3 会话回流 Mac 落盘（$(wc -l < "$F3" | tr -d ' ') 行）" || bad "W3 会话未回流（sid=$SID3）"
+    rpc --method kill --params "{\"workerId\":\"$WID3\"}" >/dev/null 2>&1
+  else
+    bad "W1 create_worker(ci-win) 失败: $(echo "$W3" | head -3)"
+  fi
+else
+  skip "W Windows 端点不可达（${WIN_HOST}:${WIN_PORT}）"
+fi
 
 echo ""
 echo "结果: PASS=$PASS FAIL=$FAIL SKIP=$SKIP"
