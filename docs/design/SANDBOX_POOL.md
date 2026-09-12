@@ -1,6 +1,6 @@
 # SANDBOX_POOL 沙盒池 — 无状态远程执行端的统一管理
 
-> **状态：开发中** — Phase 1-2 开工（2026-09-13）。目标：远程服务无状态、会话统一在 Mac 管理、任意沙盒即派即跑。
+> **状态：Phase 1 已实现（2026-09-13，commit 0c7a26e）** — sandbox_pool 模块 + list_sandboxes / sandbox_probe / host=auto 三 RPC 真机验证通过；五步试炼 `tests/sandbox_stateless_ci.sh` 8/0。Phase 2 跨沙盒重派、Phase 3 UI 面板待开工。目标：远程服务无状态、会话统一在 Mac 管理、任意沙盒即派即跑。
 
 ## 0. 一句话
 
