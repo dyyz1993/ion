@@ -2512,6 +2512,14 @@ impl WorkerRegistry {
             // ── AUTO-RECOVERY：spawn 替补 worker（锁外异步） ──
             if let Some((prompt, host)) = auto_respawn {
                 tracing::info!("[auto-recovery] respawning on {host}");
+                {
+                    let reg = sub_registry.lock();
+                    reg.broadcast_ui_event(
+                        "auto_recovered",
+                        serde_json::json!({"trigger": "stdout_eof", "host": host}),
+                        None,
+                    );
+                }
                 let reg_ar = sub_registry.clone();
                 tokio::spawn(async move {
                     let cfg = WorkerCreateConfig {
@@ -5061,7 +5069,7 @@ impl WorkerRegistry {
     /// 接不接收、怎么消费是接收方的事。
     /// register/kill 是同步上下文且 EventBus 是 tokio Mutex：
     /// 用 Handle::try_current + spawn；无 runtime（单元测试）时静默跳过。
-    fn broadcast_ui_event(
+    pub fn broadcast_ui_event(
         &self,
         custom_type: &str,
         data: serde_json::Value,
@@ -7334,7 +7342,7 @@ async fn bridge_http_fetch(args: &serde_json::Value) -> Result<serde_json::Value
 // AUTO-RECOVERY — 远程 worker 异常死亡自动重派（断点续作）
 // ---------------------------------------------------------------------------
 
-fn try_auto_respawn(record: &WorkerRecord, exit_code: Option<i32>) -> Option<(String, String)> {
+pub fn try_auto_respawn(record: &WorkerRecord, exit_code: Option<i32>) -> Option<(String, String)> {
     let is_remote = record.host.is_some();
     let died_unexpectedly = exit_code != Some(0);
     tracing::info!(
@@ -7454,17 +7462,61 @@ fn generate_resume_prompt(session_path: &std::path::Path) -> Option<String> {
     if user_task.is_empty() {
         return None;
     }
+
+    // 修复 3：收集最后 N 轮完整对话（而非只有摘要）
+    let mut recent_turns: Vec<String> = Vec::new();
+    for line in lines.iter().rev() {
+        if recent_turns.len() >= 6 {
+            break;
+        }
+        let Ok(d) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if d.get("type") != Some(&serde_json::json!("message")) {
+            continue;
+        }
+        let Some(msg) = d.get("message") else {
+            continue;
+        };
+        let role = if msg.get("User").is_some() {
+            "用户"
+        } else if msg.get("Assistant").is_some() {
+            "AI"
+        } else {
+            continue;
+        };
+        let content = msg.get("User").or_else(|| msg.get("Assistant")).unwrap();
+        let mut parts = Vec::new();
+        if let Some(arr) = content.get("content").and_then(|c| c.as_array()) {
+            for c in arr {
+                if let Some(t) = c
+                    .get("Text")
+                    .and_then(|t| t.get("text"))
+                    .and_then(|t| t.as_str())
+                {
+                    if !t.trim().is_empty() {
+                        parts.push(t.chars().take(200).collect());
+                    }
+                }
+                if let Some(tc) = c.get("ToolCall") {
+                    let name = tc.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+                    parts.push(format!("[调用了工具 {name}]"));
+                }
+            }
+        } else if let Some(t) = content.get("content").and_then(|c| c.as_str()) {
+            parts.push(t.chars().take(200).collect());
+        }
+        if !parts.is_empty() {
+            recent_turns.push(format!("[{role}] {}", parts.join(" | ")));
+        }
+    }
+    recent_turns.reverse();
+    let transcript = if recent_turns.is_empty() {
+        format!("- 最后说了：{last_text}\n- 最后用了工具：{last_tool}")
+    } else {
+        recent_turns.join("\n")
+    };
     Some(format!(
-        "【自动恢复：你之前的 Worker 在执行此任务时意外中断，你是从断点续作的新 Worker】\n\n原始任务：{user_task}\n\n中断前最后状态：\n{}{}请检查工作目录现状（之前的进度可能部分保留），从断点继续。不要重头开始。（自动恢复，最多 3 次）",
-        if last_text.is_empty() {
-            String::new()
-        } else {
-            format!("- 最后说了：{last_text}\n")
-        },
-        if last_tool.is_empty() {
-            String::new()
-        } else {
-            format!("- 最后用了工具：{last_tool}\n")
-        },
+        "【自动恢复：你之前的 Worker 在执行此任务时意外中断，你是从断点续作的新 Worker】\n\n原始任务：{user_task}\n\n中断前的对话上下文（从旧到新）：\n{transcript}\n\n请检查工作目录现状（之前的进度可能部分保留），从断点继续。不要重头开始。（自动恢复，最多 3 次）",
     ))
 }

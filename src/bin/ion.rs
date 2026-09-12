@@ -5632,6 +5632,7 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                 .unwrap_or_default()
                 .as_millis() as i64;
             let mut changed = false;
+            let mut heartbeat_respawns: Vec<(String, String, String, String)> = Vec::new();
             for record in reg.workers.values_mut() {
                 match record.status {
                     ion::worker_registry::WorkerStatus::Dead
@@ -5656,6 +5657,20 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                 record.worker_id,
                                 (now - record.status_since) / 1000
                             );
+                            // SSH 僵尸修复：收集 auto-recovery 信息（循环外处理避免借用冲突）
+                            if record.host.is_some() {
+                                let exit_code = None;
+                                if let Some((prompt, host)) =
+                                    ion::worker_registry::try_auto_respawn(record, exit_code)
+                                {
+                                    heartbeat_respawns.push((
+                                        prompt,
+                                        host,
+                                        record.worker_id.clone(),
+                                        record.session_id.clone(),
+                                    ));
+                                }
+                            }
                             record.set_status(ion::worker_registry::WorkerStatus::Dead);
                             changed = true;
                         }
@@ -5674,6 +5689,40 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                     }
                 }
             }
+            // ── SSH 僵尸修复：处理心跳超时收集的 auto-recovery ──
+            for (prompt, host, orig_wid, orig_sid) in heartbeat_respawns {
+                tracing::info!(
+                    "[auto-recovery] heartbeat timeout → respawning on {host} (was {orig_wid})"
+                );
+                reg.broadcast_ui_event(
+                    "auto_recovered",
+                    serde_json::json!({
+                        "originalWorker": orig_wid,
+                        "originalSession": orig_sid,
+                        "host": host,
+                        "trigger": "heartbeat_timeout",
+                    }),
+                    Some(&orig_sid),
+                );
+                let reg_ar = hb_registry.clone();
+                tokio::spawn(async move {
+                    let cfg = ion::worker_registry::WorkerCreateConfig {
+                        host: Some(host),
+                        agent: Some("build".into()),
+                        initial_prompt: Some(prompt),
+                        ..Default::default()
+                    };
+                    match ion::worker_registry::WorkerRegistry::prepare_worker_spawn(&cfg).await {
+                        Ok(prepared) => {
+                            let mut r = reg_ar.lock();
+                            let _ = r.register_prepared_worker(prepared, &cfg, &reg_ar.clone());
+                            tracing::info!("[auto-recovery] heartbeat respawn complete");
+                        }
+                        Err(e) => tracing::warn!("[auto-recovery] heartbeat respawn failed: {e}"),
+                    }
+                });
+            }
+
             // 定期 GC：清理 Dead 全部 + Stale 超 10 分钟的。每 tick（30s）调一次，
             // 不再依赖 monitor extension 或 stale_count > 5 阈值。
             let reaped = reg.gc_workers(600);
