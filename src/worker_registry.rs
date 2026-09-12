@@ -1690,7 +1690,6 @@ impl WorkerRegistry {
             tracing::warn!("[{wid}] stdout closed, cleaning up");
             // ⚠️ parking_lot: 整个 exit cleanup 包在独立 block 内，确保 reg（guard，不是 Send）
             // 在 block 结束时必然 drop，不会跨下面的 singleton callback await。
-            let auto_respawn;
             {
                 let mut reg = sub_registry.lock();
                 // 先读 exit code
@@ -1705,11 +1704,6 @@ impl WorkerRegistry {
                 }
 
                 // ── AUTO-RECOVERY：远程 worker 异常死亡 → 收集重派信息 ──
-                auto_respawn = reg
-                    .workers
-                    .get(&sub_wid)
-                    .and_then(|r| try_auto_respawn(r, exit_code));
-
                 // exit_code == 0/None → 正常退出，清理（同现状）
                 // exit_code != 0 → 崩溃，标 Dead + 保留 + 通知父
                 if exit_code == Some(0) || exit_code.is_none() {
@@ -1806,29 +1800,7 @@ impl WorkerRegistry {
                 reg.broadcast_overview();
             } // reg dropped here — lock released
 
-            // ── AUTO-RECOVERY：spawn 替补 worker（锁外异步，不阻塞清理） ──
-            if let Some((prompt, host)) = auto_respawn {
-                tracing::info!("[auto-recovery] respawning on {host}");
-                let reg2 = sub_registry.clone();
-                tokio::spawn(async move {
-                    let cfg = WorkerCreateConfig {
-                        host: Some(host),
-                        agent: Some("build".into()),
-                        initial_prompt: Some(prompt),
-                        ..Default::default()
-                    };
-                    match WorkerRegistry::prepare_worker_spawn(&cfg).await {
-                        Ok(prepared) => {
-                            let mut r = reg2.lock();
-                            let _ = r.register_prepared_worker(prepared, &cfg, &reg2.clone());
-                            tracing::info!("[auto-recovery] respawn complete");
-                        }
-                        Err(e) => tracing::warn!("[auto-recovery] respawn failed: {e}"),
-                    }
-                });
-            }
-
-            // 通知单例扩展：这个 Worker 不再使用它们（引用计数-1）
+            //             // 通知单例扩展（引用计数-1）
             // ⚠️ parking_lot: 用 sync 版本收集 instances，drop lock 后再调 callbacks（不持锁 await）
             let (leave_calls, last_gone_calls) = {
                 let mut reg2 = sub_registry.lock();
@@ -2453,6 +2425,7 @@ impl WorkerRegistry {
             // ⚠️ parking_lot: 整个 exit cleanup 包在独立 block 内（guard 不是 Send）。
             // 收集需要在 drop lock 后 await 的 parent_event_tx + crash payload，
             // block 结束后（lock 释放）再 .send().await。
+            let auto_respawn;
             let pending_parent_notify: Option<(String, serde_json::Value)> = {
                 let mut reg = sub_registry.lock();
                 let exit_code = reg
@@ -2464,6 +2437,11 @@ impl WorkerRegistry {
                 if let Some(record) = reg.workers.get_mut(&sub_wid) {
                     record.exit_code = exit_code;
                 }
+                // ── AUTO-RECOVERY：远程 worker 异常死亡 → 收集重派信息 ──
+                auto_respawn = reg
+                    .workers
+                    .get(&sub_wid)
+                    .and_then(|r| try_auto_respawn(r, exit_code));
                 let mut notify = None;
                 if exit_code == Some(0) || exit_code.is_none() {
                     if let Some(mut record) = reg.workers.remove(&sub_wid) {
@@ -2530,6 +2508,29 @@ impl WorkerRegistry {
                 }
                 notify
             }; // reg dropped here — lock released
+
+            // ── AUTO-RECOVERY：spawn 替补 worker（锁外异步） ──
+            if let Some((prompt, host)) = auto_respawn {
+                tracing::info!("[auto-recovery] respawning on {host}");
+                let reg_ar = sub_registry.clone();
+                tokio::spawn(async move {
+                    let cfg = WorkerCreateConfig {
+                        host: Some(host),
+                        agent: Some("build".into()),
+                        initial_prompt: Some(prompt),
+                        ..Default::default()
+                    };
+                    match WorkerRegistry::prepare_worker_spawn(&cfg).await {
+                        Ok(prepared) => {
+                            let mut r = reg_ar.lock();
+                            let _ = r.register_prepared_worker(prepared, &cfg, &reg_ar.clone());
+                            tracing::info!("[auto-recovery] respawn complete");
+                        }
+                        Err(e) => tracing::warn!("[auto-recovery] respawn failed: {e}"),
+                    }
+                });
+            }
+
             // drop lock 后再 await send（避免跨 await 持有 parking_lot guard）
             if let Some((parent_id, payload)) = pending_parent_notify {
                 let tx_opt = {
@@ -7336,6 +7337,14 @@ async fn bridge_http_fetch(args: &serde_json::Value) -> Result<serde_json::Value
 fn try_auto_respawn(record: &WorkerRecord, exit_code: Option<i32>) -> Option<(String, String)> {
     let is_remote = record.host.is_some();
     let died_unexpectedly = exit_code != Some(0);
+    tracing::info!(
+        "[auto-recovery] check: host={:?} exit={:?} remote={} unexpected={} sid={}",
+        record.host,
+        exit_code,
+        is_remote,
+        died_unexpectedly,
+        &record.session_id[..record.session_id.len().min(12)]
+    );
     let respawns = auto_respawn_counts()
         .lock()
         .unwrap()
@@ -7384,8 +7393,22 @@ fn generate_resume_prompt(session_path: &std::path::Path) -> Option<String> {
 
         if user_task.is_empty() {
             if let Some(u) = msg.get("User") {
-                if let Some(c) = u.get("content").and_then(|c| c.as_str()) {
-                    user_task = c.chars().take(300).collect();
+                if let Some(content) = u.get("content") {
+                    // 两种格式：纯字符串（本地）或数组 [{"Text":{"text":"..."}}]（M3 回流）
+                    if let Some(s) = content.as_str() {
+                        user_task = s.chars().take(300).collect();
+                    } else if let Some(arr) = content.as_array() {
+                        for c in arr {
+                            if let Some(t) = c
+                                .get("Text")
+                                .and_then(|t| t.get("text"))
+                                .and_then(|t| t.as_str())
+                            {
+                                user_task = t.chars().take(300).collect();
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }
