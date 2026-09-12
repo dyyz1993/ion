@@ -1690,6 +1690,7 @@ impl WorkerRegistry {
             tracing::warn!("[{wid}] stdout closed, cleaning up");
             // ⚠️ parking_lot: 整个 exit cleanup 包在独立 block 内，确保 reg（guard，不是 Send）
             // 在 block 结束时必然 drop，不会跨下面的 singleton callback await。
+            let auto_respawn;
             {
                 let mut reg = sub_registry.lock();
                 // 先读 exit code
@@ -1702,6 +1703,12 @@ impl WorkerRegistry {
                 if let Some(record) = reg.workers.get_mut(&sub_wid) {
                     record.exit_code = exit_code;
                 }
+
+                // ── AUTO-RECOVERY：远程 worker 异常死亡 → 收集重派信息 ──
+                auto_respawn = reg
+                    .workers
+                    .get(&sub_wid)
+                    .and_then(|r| try_auto_respawn(r, exit_code));
 
                 // exit_code == 0/None → 正常退出，清理（同现状）
                 // exit_code != 0 → 崩溃，标 Dead + 保留 + 通知父
@@ -1798,6 +1805,29 @@ impl WorkerRegistry {
                 }
                 reg.broadcast_overview();
             } // reg dropped here — lock released
+
+            // ── AUTO-RECOVERY：spawn 替补 worker（锁外异步，不阻塞清理） ──
+            if let Some((prompt, host)) = auto_respawn {
+                tracing::info!("[auto-recovery] respawning on {host}");
+                let reg2 = sub_registry.clone();
+                tokio::spawn(async move {
+                    let cfg = WorkerCreateConfig {
+                        host: Some(host),
+                        agent: Some("build".into()),
+                        initial_prompt: Some(prompt),
+                        ..Default::default()
+                    };
+                    match WorkerRegistry::prepare_worker_spawn(&cfg).await {
+                        Ok(prepared) => {
+                            let mut r = reg2.lock();
+                            let _ = r.register_prepared_worker(prepared, &cfg, &reg2.clone());
+                            tracing::info!("[auto-recovery] respawn complete");
+                        }
+                        Err(e) => tracing::warn!("[auto-recovery] respawn failed: {e}"),
+                    }
+                });
+            }
+
             // 通知单例扩展：这个 Worker 不再使用它们（引用计数-1）
             // ⚠️ parking_lot: 用 sync 版本收集 instances，drop lock 后再调 callbacks（不持锁 await）
             let (leave_calls, last_gone_calls) = {
@@ -6504,6 +6534,129 @@ mod tests {
         let _ = child.kill().await;
     }
 
+    // ── AUTO-RECOVERY TDD ────────────────────────────────────────────────
+
+    #[test]
+    fn test_auto_recovery_resume_prompt_from_session() {
+        let tmp = std::env::temp_dir().join(format!("ar-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let f = tmp.join("sess.jsonl");
+        // 模拟一个有内容的会话文件
+        let lines = vec![
+            r#"{"type":"session","id":"s1","agent":"build"}"#,
+            r#"{"type":"message","message":{"User":{"content":"创建一个 hello.txt 文件","role":"user"}}}"#,
+            r#"{"type":"message","message":{"Assistant":{"content":[{"ToolCall":{"name":"bash","arguments":{"command":"echo hello > /tmp/hello.txt"}}}],"role":"assistant"}}}"#,
+            r#"{"type":"message","message":{"Assistant":{"content":[{"Text":{"text":"文件已创建，接下来验证内容"}}],"role":"assistant"}}}"#,
+        ];
+        std::fs::write(&f, lines.join("\n")).unwrap();
+
+        let prompt = generate_resume_prompt(&f);
+        assert!(prompt.is_some(), "should generate resume prompt");
+        let p = prompt.unwrap();
+        assert!(p.contains("hello.txt"), "should mention original task");
+        assert!(p.contains("bash"), "should mention last tool");
+        assert!(p.contains("文件已创建"), "should mention last status");
+        assert!(p.contains("自动恢复"), "should be marked as auto-recovery");
+        assert!(p.contains("不要重头开始"), "should instruct to continue");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_auto_recovery_skips_local_workers() {
+        let record = WorkerRecord {
+            worker_id: "w1".into(),
+            session_id: "s1".into(),
+            project: "p".into(),
+            project_path: "/tmp".into(),
+            model: "m".into(),
+            agent: "build".into(),
+            status: WorkerStatus::Idle,
+            channels: vec![],
+            parent: None,
+            children: vec![],
+            host: None, // 本地 worker
+            notify_parent: false,
+            started_at: 0,
+            last_heartbeat: 0,
+            status_since: 0,
+            died_at: None,
+            stdin: None,
+            pending: Default::default(),
+            event_subscribers: vec![],
+            parent_event_tx: None,
+            ready_tx: None,
+            stdout_rx: None,
+            response_rx: None,
+            child_process: None,
+            worktree: None,
+            latest_output: VecDeque::new(),
+            log_short: None,
+            model_size: None,
+            exit_code: None,
+            exit_reason: None,
+            stderr_path: None,
+            event_history: VecDeque::new(),
+            event_history_cap: 1,
+        };
+        assert!(
+            try_auto_respawn(&record, Some(1)).is_none(),
+            "local worker should not respawn"
+        );
+    }
+
+    #[test]
+    fn test_auto_recovery_skips_normal_exit() {
+        let record = WorkerRecord {
+            host: Some("win38".into()), // 远程
+            session_id: "s2".into(),
+            project_path: "/tmp".into(),
+            ..make_minimal_record("w2", "s2")
+        };
+        assert!(
+            try_auto_respawn(&record, Some(0)).is_none(),
+            "normal exit should not respawn"
+        );
+    }
+
+    fn make_minimal_record(wid: &str, sid: &str) -> WorkerRecord {
+        WorkerRecord {
+            worker_id: wid.into(),
+            session_id: sid.into(),
+            project: "p".into(),
+            project_path: "/tmp".into(),
+            model: "m".into(),
+            agent: "build".into(),
+            status: WorkerStatus::Dead,
+            channels: vec![],
+            parent: None,
+            children: vec![],
+            host: None,
+            notify_parent: false,
+            started_at: 0,
+            last_heartbeat: 0,
+            status_since: 0,
+            died_at: None,
+            stdin: None,
+            pending: Default::default(),
+            event_subscribers: vec![],
+            parent_event_tx: None,
+            ready_tx: None,
+            stdout_rx: None,
+            response_rx: None,
+            child_process: None,
+            worktree: None,
+            latest_output: VecDeque::new(),
+            log_short: None,
+            model_size: None,
+            exit_code: None,
+            exit_reason: None,
+            stderr_path: None,
+            event_history: VecDeque::new(),
+            event_history_cap: 1,
+        }
+    }
+
     /// WorkerStatus Display should render the variant name (via Debug).
     #[test]
     fn test_worker_status_display() {
@@ -7174,4 +7327,121 @@ async fn bridge_http_fetch(args: &serde_json::Value) -> Result<serde_json::Value
         body.push_str(&String::from_utf8_lossy(&chunk));
     }
     Ok(serde_json::json!({"status": status, "body": body}))
+}
+
+// ---------------------------------------------------------------------------
+// AUTO-RECOVERY — 远程 worker 异常死亡自动重派（断点续作）
+// ---------------------------------------------------------------------------
+
+fn try_auto_respawn(record: &WorkerRecord, exit_code: Option<i32>) -> Option<(String, String)> {
+    let is_remote = record.host.is_some();
+    let died_unexpectedly = exit_code != Some(0);
+    let respawns = auto_respawn_counts()
+        .lock()
+        .unwrap()
+        .get(&record.session_id)
+        .copied()
+        .unwrap_or(0);
+    if !is_remote || !died_unexpectedly || respawns >= 3 || record.session_id.is_empty() {
+        return None;
+    }
+    let path = crate::paths::session_jsonl_path_by_id(&record.project_path, &record.session_id);
+    let prompt = generate_resume_prompt(&path)?;
+    auto_respawn_counts()
+        .lock()
+        .unwrap()
+        .insert(record.session_id.clone(), respawns + 1);
+    Some((prompt, record.host.clone().unwrap_or_default()))
+}
+
+fn auto_respawn_counts() -> &'static std::sync::Mutex<std::collections::HashMap<String, u32>> {
+    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u32>>> =
+        std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn generate_resume_prompt(session_path: &std::path::Path) -> Option<String> {
+    let content = std::fs::read_to_string(session_path).ok()?;
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    if lines.len() < 3 {
+        return None;
+    }
+
+    let mut last_text = String::new();
+    let mut last_tool = String::new();
+    let mut user_task = String::new();
+
+    for line in lines.iter().rev() {
+        let Ok(d) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if d.get("type") != Some(&serde_json::json!("message")) {
+            continue;
+        }
+        let Some(msg) = d.get("message") else {
+            continue;
+        };
+
+        if user_task.is_empty() {
+            if let Some(u) = msg.get("User") {
+                if let Some(c) = u.get("content").and_then(|c| c.as_str()) {
+                    user_task = c.chars().take(300).collect();
+                }
+            }
+        }
+        if last_tool.is_empty() {
+            if let Some(a) = msg.get("Assistant") {
+                if let Some(arr) = a.get("content").and_then(|c| c.as_array()) {
+                    for c in arr.iter().rev() {
+                        if let Some(tc) = c.get("ToolCall") {
+                            last_tool = tc
+                                .get("name")
+                                .and_then(|n| n.as_str())
+                                .unwrap_or("?")
+                                .to_string();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if last_text.is_empty() {
+            if let Some(a) = msg.get("Assistant") {
+                if let Some(arr) = a.get("content").and_then(|c| c.as_array()) {
+                    for c in arr.iter().rev() {
+                        if let Some(t) = c
+                            .get("Text")
+                            .and_then(|t| t.get("text"))
+                            .and_then(|t| t.as_str())
+                        {
+                            if !t.trim().is_empty() {
+                                last_text = t.chars().take(400).collect();
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !user_task.is_empty() && (!last_text.is_empty() || !last_tool.is_empty()) {
+            break;
+        }
+    }
+
+    if user_task.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "【自动恢复：你之前的 Worker 在执行此任务时意外中断，你是从断点续作的新 Worker】\n\n原始任务：{user_task}\n\n中断前最后状态：\n{}{}请检查工作目录现状（之前的进度可能部分保留），从断点继续。不要重头开始。（自动恢复，最多 3 次）",
+        if last_text.is_empty() {
+            String::new()
+        } else {
+            format!("- 最后说了：{last_text}\n")
+        },
+        if last_tool.is_empty() {
+            String::new()
+        } else {
+            format!("- 最后用了工具：{last_tool}\n")
+        },
+    ))
 }
