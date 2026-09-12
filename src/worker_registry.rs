@@ -6639,6 +6639,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// 客户端模式回流副本 fallback：record.project_path 是远端路径（Mac 上不存在），
+    /// 会话副本在 sessions_root 的另一目录下——必须能解析到（三连死零重派回归锚点）。
+    #[test]
+    fn test_resolve_session_file_with_reflow_finds_reflected_copy() {
+        let root = std::env::temp_dir().join(format!("ar-reflow-{}", std::process::id()));
+        let mgr_dir = root.join("--hash--ion--"); // 模拟 Manager 侧 project 目录
+        std::fs::create_dir_all(&mgr_dir).unwrap();
+        let sid = "sess-reflow-test";
+        std::fs::write(
+            mgr_dir.join(format!("{sid}.jsonl")),
+            r#"{"type":"session","id":"x"}
+{"type":"message","message":{"User":{"content":"任务A","role":"user"}}}"#,
+        )
+        .unwrap();
+
+        // 远端路径解析不到 → fallback 扫到回流副本
+        let found = resolve_session_file_with_reflow(&root, "/remote/nonexistent", sid);
+        assert!(found.is_some(), "must find reflowed copy under root");
+        assert!(found.unwrap().ends_with(format!("{sid}.jsonl")));
+
+        // 副本也不存在 → None（primary 优先级由实现顺序保证：primary.exists() 先查）
+        assert!(
+            resolve_session_file_with_reflow(&root, "/remote/nonexistent", "no-such-sid").is_none()
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn test_auto_recovery_skips_local_workers() {
         let record = WorkerRecord {
@@ -7430,7 +7458,13 @@ pub fn try_auto_respawn(record: &WorkerRecord, exit_code: Option<i32>) -> Option
     if !is_remote || !died_unexpectedly || respawns >= 3 || record.session_id.is_empty() {
         return None;
     }
-    let path = crate::paths::session_jsonl_path_by_id(&record.project_path, &record.session_id);
+    // 客户端模式：record.project_path 是远端路径，回流副本在 Manager 侧——两处都找
+    let sessions_root = crate::paths::sessions_dir();
+    let path = resolve_session_file_with_reflow(
+        &sessions_root,
+        &record.project_path,
+        &record.session_id,
+    )?;
     let prompt = generate_resume_prompt(&path)?;
     auto_respawn_counts()
         .lock()
@@ -7443,6 +7477,34 @@ fn auto_respawn_counts() -> &'static std::sync::Mutex<std::collections::HashMap<
     static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u32>>> =
         std::sync::OnceLock::new();
     C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 会话文件解析（带回流副本 fallback）：
+/// ① 优先 `session_jsonl_path_by_id(project_path, sid)`（同 project 直落）
+/// ② 找不到时扫 `sessions_root/*/<sid>.jsonl`——客户端模式下会话回流到
+///    Manager 侧 project 目录，而 record.project_path 是远端路径（如
+///    /root/work/ion-web-a），在 Mac 上永远解析不到（2026-09-13 三连死
+///    worker 零重派的根因）。root 参数化供测试注入。
+fn resolve_session_file_with_reflow(
+    sessions_root: &std::path::Path,
+    project_path: &str,
+    session_id: &str,
+) -> Option<std::path::PathBuf> {
+    let primary = crate::paths::session_jsonl_path_by_id(project_path, session_id);
+    if primary.exists() {
+        return Some(primary);
+    }
+    let name = format!("{session_id}.jsonl");
+    let Ok(rd) = std::fs::read_dir(sessions_root) else {
+        return None;
+    };
+    for entry in rd.flatten() {
+        let p = entry.path().join(&name);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
 }
 
 fn generate_resume_prompt(session_path: &std::path::Path) -> Option<String> {
