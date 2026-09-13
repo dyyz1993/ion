@@ -17,6 +17,11 @@ pub struct AgentConfig {
     pub max_outer_iterations: u64,
     pub max_retries: u32,
     pub retry_base_delay_ms: u64,
+    /// LLM 重试总时间预算（毫秒，0=禁用）。超预算立即放弃而非继续重试——
+    /// 30 次×退避可耗 5-10 分钟，超过 heartbeat 600s 判死线时 worker 永远
+    /// 等不到自然失败（2026-09-13 worker 6 实录：33 次请求 0 完成，空转到判死）。
+    /// 正确语义：预算内快速失败 → agent_end(error) → AUTO-RECOVERY 接手。
+    pub retry_budget_ms: u64,
     pub enable_compact: bool,
     pub compact_config: CompactConfig,
     pub api_key: Option<String>,
@@ -38,6 +43,7 @@ impl Default for AgentConfig {
             max_turns: None,
             max_outer_iterations: 5,
             max_retries: 10,
+            retry_budget_ms: 240_000,
             retry_base_delay_ms: 2000,
             enable_compact: true,
             compact_config: CompactConfig::default(),
@@ -1973,9 +1979,28 @@ impl Agent {
             .ok()
             .and_then(|v| v.parse::<u128>().ok())
             .unwrap_or(120_000);
-        let mut last_error = None;
+        // 重试总预算：超时说明上游处于坏窗口（同 context 重试大概率仍失败），
+        // 与其耗满 max_retries 空转到 heartbeat 判死，不如快速失败让上层接手。
+        let retry_started = std::time::Instant::now();
+        let mut last_error: Option<ion_provider::error::ProviderError> = None;
         for attempt in 0..=self.config.max_retries {
             self.check_pause().await?;
+            if self.config.retry_budget_ms > 0
+                && retry_started.elapsed().as_millis() as u64 >= self.config.retry_budget_ms
+            {
+                tracing::warn!(
+                    "[llm] retry budget ({}ms) exhausted after {attempt} attempts, giving up                      (agent_end error → AUTO-RECOVERY takes over)",
+                    self.config.retry_budget_ms
+                );
+                let detail = last_error
+                    .as_ref()
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "unknown error".into());
+                return Err(crate::agent::error::AgentError::Provider(format!(
+                    "retry budget {}ms exhausted after {attempt} attempts: {detail}",
+                    self.config.retry_budget_ms
+                )));
+            }
 
             // Hook: before_provider_request
             self.extensions

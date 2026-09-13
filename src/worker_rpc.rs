@@ -455,6 +455,11 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
             .and_then(|s| s.parse().ok())
             .unwrap_or(30),
         retry_base_delay_ms: 1000,
+        // LLM 重试总预算：默认 240s（超 heartbeat 600s 判死前快速失败，交 AUTO-RECOVERY）
+        retry_budget_ms: std::env::var("ION_LLM_RETRY_BUDGET_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(240_000),
         enable_compact: true,
         compact_config: CompactConfig::default(),
         api_key: Some(api_key.clone()),
