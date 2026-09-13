@@ -1062,6 +1062,10 @@ fn build_agent_config(eff: &EffectiveConfig) -> AgentConfig {
         max_outer_iterations: 3,
         max_retries: 2,
         retry_base_delay_ms: 1000,
+        retry_budget_ms: std::env::var("ION_LLM_RETRY_BUDGET_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(240_000),
         enable_compact: true,
         compact_config: CompactConfig::default(),
         api_key: eff.api_key.clone(),
