@@ -39,6 +39,434 @@ fn pending_ui() -> &'static Mutex<HashMap<String, oneshot::Sender<String>>> {
 }
 
 // ---------------------------------------------------------------------------
+// Subscribe 协议升级：epoch 栅栏 + 快照先行 + 协议版本握手 + 审批同源绑定
+//
+// 设计（详见 docs/design/SUBSCRIBE_PROTOCOL.md）：
+//   1. epoch：host 维护 per-session epoch（u64，首次挂接=1），worker 重派/重绑
+//      该 session 时 +1。subscribe ack 携带当前 epoch，转发事件盖 epoch 章；
+//      epoch 推进后旧 epoch 订阅收一条 `stale_route` 并停止转发（连接关闭）。
+//   2. snapshot：subscribe 建立后先推一条 customType:"snapshot" 的完整快照
+//      （worker 状态 / session 信息含 model / pending 审批列表），再转发实时增量。
+//   3. hello：客户端可发 {"method":"hello"} → {"protocolVersion":1}；不发完全兼容。
+//   4. ui_respond 同源绑定：只有同一连接先 subscribe(ui:true) 才允许应答。
+// 实现走现有 JSON 行协议（Unix socket），不引入新传输层。
+// ---------------------------------------------------------------------------
+
+/// 协议版本（hello 握手返回值）
+pub const PROTOCOL_VERSION: u64 = 1;
+
+/// hello 握手响应行（不消费连接，客户端可继续 subscribe / rpc）
+fn hello_reply(id: Option<&serde_json::Value>) -> serde_json::Value {
+    serde_json::json!({
+        "type": "response",
+        "id": id,
+        "success": true,
+        "data": {"protocolVersion": PROTOCOL_VERSION},
+    })
+}
+
+/// ui_respond 同源校验：ui_origin=false（本连接未先 subscribe ui:true）→ 拒绝理由
+fn ui_respond_origin_error(ui_origin: bool) -> Option<String> {
+    if ui_origin {
+        None
+    } else {
+        Some(
+            "ui_respond rejected: requires a prior subscribe {ui:true} on the same connection"
+                .to_string(),
+        )
+    }
+}
+
+/// 解析并应答一个 ui_respond 请求（同源校验由调用方负责）：
+/// 从 pending_ui 取走 sender → 回复 → 广播 AskResolved → 回写响应 JSON。
+async fn respond_to_ui_request(
+    cmd: &serde_json::Value,
+    write_half: &mut tokio::net::unix::OwnedWriteHalf,
+    ev_bus: &Arc<tokio::sync::Mutex<ion::event_bus::ExtensionEventBus>>,
+) {
+    use tokio::io::AsyncWriteExt;
+    let request_id = cmd
+        .get("params")
+        .and_then(|p| p.get("request_id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let response = cmd
+        .get("params")
+        .and_then(|p| p.get("response"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("deny")
+        .to_string();
+    // 取出发送者，立即释放锁
+    let sender = { pending_ui().lock().unwrap().remove(&request_id) };
+    if let Some(tx) = sender {
+        let _ = tx.send(response.clone());
+        // 推 AskResolved 到 UI 事件通道（锁已释放）
+        let resolved = ExtensionEvent::new_ui("AskResolved", &request_id, &response).with_data(
+            serde_json::json!({"response": response, "resolved_by": "ui_stream"}),
+        );
+        let mut bus = ev_bus.lock().await;
+        bus.broadcast(&resolved);
+        drop(bus);
+        let resp = serde_json::json!({"type":"response","id":cmd.get("id"),"success":true,"data":{"request_id":request_id,"response":response}});
+        let _ = write_half
+            .write_all(format!("{resp}\n").as_bytes())
+            .await;
+    } else {
+        let resp = serde_json::json!({"type":"response","id":cmd.get("id"),"success":false,"error":"request not found or already expired"});
+        let _ = write_half
+            .write_all(format!("{resp}\n").as_bytes())
+            .await;
+    }
+    let _ = write_half.flush().await;
+}
+
+/// per-session epoch 栅栏表（host 级全局：router 退出重建后 epoch 不回退）
+#[derive(Default)]
+struct SessionEpochTable {
+    map: HashMap<String, u64>,
+}
+
+impl SessionEpochTable {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// 当前 epoch（首次见到该 session = 1）
+    fn current(&mut self, sid: &str) -> u64 {
+        *self.map.entry(sid.to_string()).or_insert(1)
+    }
+
+    /// 推进 epoch（worker 重派/重绑该 session 时调用），返回新 epoch
+    fn advance(&mut self, sid: &str) -> u64 {
+        let e = self.map.entry(sid.to_string()).or_insert(1);
+        *e += 1;
+        *e
+    }
+}
+
+/// host 级 epoch 表（跨 router 生命周期持久：kill 后 session 重建，epoch 单调递增）
+static SESSION_EPOCHS: OnceLock<Mutex<SessionEpochTable>> = OnceLock::new();
+fn session_epochs() -> &'static Mutex<SessionEpochTable> {
+    SESSION_EPOCHS.get_or_init(|| Mutex::new(SessionEpochTable::new()))
+}
+
+/// 快照 worker 侧原料（从 registry 短锁提取；独立 struct 便于单元测试组装）
+struct SnapshotWorker {
+    worker_id: String,
+    status: String,
+    model: String,
+    agent: String,
+}
+
+/// 快照 session 侧原料（SessionIndex 直读；独立 struct 便于单元测试组装）
+struct SnapshotSession<'a> {
+    session_id: &'a str,
+    model: Option<String>,
+    provider: Option<String>,
+    name: Option<String>,
+}
+
+/// 组装 snapshot 的 data 部分（worker 状态 + session 信息 + pending 审批列表）
+fn build_snapshot_data(
+    worker: Option<&SnapshotWorker>,
+    session: &SnapshotSession<'_>,
+    pending: &[String],
+) -> serde_json::Value {
+    let worker_json = match worker {
+        Some(w) => serde_json::json!({
+            "workerId": w.worker_id,
+            "status": w.status,
+            "model": w.model,
+            "agent": w.agent,
+        }),
+        None => serde_json::Value::Null,
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    serde_json::json!({
+        "worker": worker_json,
+        "session": {
+            "sessionId": session.session_id,
+            "model": session.model,
+            "provider": session.provider,
+            "name": session.name,
+        },
+        "pendingApprovals": {
+            "count": pending.len(),
+            "requests": pending,
+        },
+        "generatedAt": now_ms,
+    })
+}
+
+/// snapshot 事件信封：instance_event 外壳 + customType:"snapshot"（快照先于一切增量）
+fn snapshot_event(sid: &str, epoch: u64, data: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "type": "instance_event",
+        "session": sid,
+        "epoch": epoch,
+        "snapshot": true,
+        "event": {
+            "type": "extension_event",
+            "extension": "host",
+            "customType": "snapshot",
+            "visibility": "ui_only",
+            "session": sid,
+            "data": data,
+        },
+    })
+}
+
+/// epoch 盖章的转发信封（与旧 instance_event 形状兼容，仅多 epoch 字段）
+fn stamp_instance_event(sid: &str, epoch: u64, msg: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "type": "instance_event",
+        "session": sid,
+        "epoch": epoch,
+        "event": msg.get("event").cloned().unwrap_or(msg),
+    })
+}
+
+/// 旧 epoch 订阅者收到的一次性作废通知（收到即停止转发，连接关闭）
+fn stale_route_event(sid: &str, epoch: u64, current_epoch: u64) -> serde_json::Value {
+    serde_json::json!({
+        "type": "stale_route",
+        "customType": "stale_route",
+        "session": sid,
+        "epoch": epoch,
+        "currentEpoch": current_epoch,
+    })
+}
+
+/// SessionRouter 命令：目前只有 Subscribe（连接侧 → 路由任务）
+enum RouterCmd {
+    Subscribe {
+        replay: usize,
+        reply:
+            oneshot::Sender<Result<(tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>, serde_json::Value), String>>,
+    },
+}
+
+/// per-session 事件路由任务：epoch 栅栏 + 快照先行 + 多连接订阅的统一重绑点。
+/// 每个 session 至多一个 router（ROUTERS 表懒创建）；worker 死亡时由 router
+/// 统一推进 epoch、给旧 epoch 客户端发 stale_route、再重绑新 worker。
+struct SessionRouter {
+    sid: String,
+    /// 路由表身份 id（退出时仅在表里仍是自己这条 router 才自摘除）
+    id: u64,
+    reg: Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>>,
+    cmd_rx: tokio::sync::mpsc::UnboundedReceiver<RouterCmd>,
+    // epoch 表已上移 host 级全局（session_epochs()）
+    /// 当前挂接的 worker 事件流（None = 待挂接/重绑中）
+    rx: Option<tokio::sync::mpsc::Receiver<serde_json::Value>>,
+    /// conn_id → (订阅时 epoch, 下行信道)
+    clients: HashMap<u64, (u64, tokio::sync::mpsc::UnboundedSender<serde_json::Value>)>,
+    next_conn: u64,
+}
+
+/// router 身份发号器
+fn next_router_id() -> u64 {
+    static N: OnceLock<std::sync::atomic::AtomicU64> = OnceLock::new();
+    N.get_or_init(std::sync::atomic::AtomicU64::default)
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+impl SessionRouter {
+    fn spawn(
+        sid: String,
+        reg: Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>>,
+    ) -> (u64, tokio::sync::mpsc::UnboundedSender<RouterCmd>) {
+        let (tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let router = SessionRouter {
+            sid,
+            id: next_router_id(),
+            reg,
+            cmd_rx,
+            rx: None,
+            clients: HashMap::new(),
+            next_conn: 0,
+        };
+        let id = router.id;
+        tokio::spawn(router.run());
+        (id, tx)
+    }
+
+    async fn run(mut self) {
+        loop {
+            tokio::select! {
+                cmd = self.cmd_rx.recv() => match cmd {
+                    Some(RouterCmd::Subscribe { replay, reply }) => {
+                        self.handle_subscribe(replay, reply).await;
+                    }
+                    None => break,
+                },
+                ev = async {
+                    match self.rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => match ev {
+                    Some(msg) => self.fan_out(msg),
+                    // rx 结束 = worker 死亡/被 GC → epoch 推进 + 旧订阅作废 + 重绑
+                    None => {
+                        self.rx = None;
+                        let new_epoch = session_epochs().lock().unwrap().advance(&self.sid);
+                        for (_, (ep, tx)) in self.clients.drain() {
+                            let _ = tx.send(stale_route_event(&self.sid, ep, new_epoch));
+                        }
+                        match attach_session_sub(&self.reg, &self.sid, 0, 20).await {
+                            Some((rx, _)) => self.rx = Some(rx),
+                            // 会话已无 worker：旧订阅已收到 stale_route，路由退出
+                            None => break,
+                        }
+                    }
+                },
+            }
+        }
+        // 从路由表移除自己（仅当表里仍是自己这条 router，防误删新 router）
+        let mut map = routers().lock().unwrap();
+        if map.get(&self.sid).map(|(id, _)| *id) == Some(self.id) {
+            map.remove(&self.sid);
+        }
+    }
+
+    /// 新订阅：确保已挂接 → 注册客户端 → ack（含 epoch）→ snapshot → replay → 实时增量
+    async fn handle_subscribe(
+        &mut self,
+        replay: usize,
+        reply: oneshot::Sender<
+            Result<(tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>, serde_json::Value), String>,
+        >,
+    ) {
+        let replay_events = if self.rx.is_none() {
+            match attach_session_sub(&self.reg, &self.sid, replay, 120).await {
+                Some((rx, events)) => {
+                    self.rx = Some(rx);
+                    events
+                }
+                None => {
+                    let _ = reply.send(Err("no worker for session within 60s".to_string()));
+                    return;
+                }
+            }
+        } else {
+            // router 已挂接（无法补历史），replay 仅在首次挂接时生效
+            Vec::new()
+        };
+        let epoch = session_epochs().lock().unwrap().current(&self.sid);
+        let conn = self.next_conn;
+        self.next_conn += 1;
+        let (tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
+        self.clients.insert(conn, (epoch, tx.clone()));
+        // 快照先行（水合纪律）：snapshot 严格先于 replay / 实时增量
+        let snap = snapshot_event(&self.sid, epoch, self.build_snapshot());
+        let _ = tx.send(snap);
+        // replay（历史事件，标 replayed:true）在 snapshot 之后、实时增量之前
+        for evt in &replay_events {
+            let mut out = stamp_instance_event(
+                &self.sid,
+                epoch,
+                evt.get("event").cloned().unwrap_or_else(|| evt.clone()),
+            );
+            out["replayed"] = serde_json::json!(true);
+            let _ = tx.send(out);
+        }
+        let ack = serde_json::json!({
+            "type": "subscribed",
+            "session": self.sid,
+            "stream": "instance",
+            "epoch": epoch,
+            "replayed": replay_events.len(),
+        });
+        let _ = reply.send(Ok((out_rx, ack)));
+    }
+
+    /// worker 事件扇出：盖 epoch 章后发给所有当前 epoch 的订阅者
+    fn fan_out(&mut self, msg: serde_json::Value) {
+        let epoch = session_epochs().lock().unwrap().current(&self.sid);
+        let envelope = stamp_instance_event(&self.sid, epoch, msg);
+        self.clients
+            .retain(|_, (_, tx)| tx.send(envelope.clone()).is_ok());
+    }
+
+    /// 组装快照数据：registry（worker 状态/model）+ SessionIndex（provider/name）
+    /// + pending_ui（待审批列表）——全部 host 侧现成来源，不拉起 worker。
+    fn build_snapshot(&self) -> serde_json::Value {
+        let worker = {
+            let inner = self.reg.lock();
+            inner.workers.values().find(|w| w.session_id == self.sid).map(|w| SnapshotWorker {
+                worker_id: w.worker_id.clone(),
+                status: w.status.to_string(),
+                model: w.model.clone(),
+                agent: w.agent.clone(),
+            })
+        };
+        let (model, provider, name) = {
+            let idx = ion::session_index::SessionIndex::load();
+            match idx.sessions.get(&self.sid) {
+                Some(m) => (Some(m.model.clone()), Some(m.provider.clone()), m.name.clone()),
+                None => (None, None, None),
+            }
+        };
+        let pending: Vec<String> = pending_ui().lock().unwrap().keys().cloned().collect();
+        build_snapshot_data(
+            worker.as_ref(),
+            &SnapshotSession {
+                session_id: &self.sid,
+                model,
+                provider,
+                name,
+            },
+            &pending,
+        )
+    }
+}
+
+/// SessionRouter 表：sid → 命令信道（懒创建；router 退出时自摘除）
+/// SessionRouter 表：sid → (router 身份 id, 命令信道)（懒创建；router 退出时自摘除）
+type RouterTable = HashMap<String, (u64, tokio::sync::mpsc::UnboundedSender<RouterCmd>)>;
+static ROUTERS: OnceLock<Mutex<RouterTable>> = OnceLock::new();
+fn routers() -> &'static Mutex<RouterTable> {
+    ROUTERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// subscribe(session) 的路由入口：复用或创建该 session 的 router，
+/// 返回（下行事件信道, subscribed ack）。
+async fn subscribe_session_routed(
+    reg: &Arc<parking_lot::Mutex<ion::worker_registry::WorkerRegistry>>,
+    sid: &str,
+    replay: usize,
+) -> Result<
+    (
+        tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+        serde_json::Value,
+    ),
+    String,
+> {
+    let tx = {
+        let mut map = routers().lock().unwrap();
+        match map.get(sid) {
+            Some((_, tx)) => tx.clone(),
+            None => {
+                let (id, tx) = SessionRouter::spawn(sid.to_string(), Arc::clone(reg));
+                map.insert(sid.to_string(), (id, tx.clone()));
+                tx
+            }
+        }
+    };
+    let (rtx, rrx) = oneshot::channel();
+    tx.send(RouterCmd::Subscribe { replay, reply: rtx })
+        .map_err(|_| "session router is gone".to_string())?;
+    match rrx.await {
+        Ok(r) => r,
+        Err(_) => Err("session router dropped the subscribe request".to_string()),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CLI arguments
 // ---------------------------------------------------------------------------
 
@@ -5063,11 +5491,23 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                     tokio::spawn(async move {
                         let (read_half, mut write_half) = stream.into_split();
                         let mut reader = BufReader::new(read_half);
-                        let mut line = String::new();
-                        let read_result = reader.read_line(&mut line).await;
-                        if read_result.is_ok() {
+                        // 同源绑定标记：本连接是否已 subscribe(ui:true)（ui_respond 准入）
+                        let mut ui_origin = false;
+                        // 连接级命令循环：hello 握手后连接保持，可继续 subscribe/rpc；
+                        // subscribe / ui_respond / subscribe_overview / rpc 各路径自行 return。
+                        loop {
+                            let mut line = String::new();
+                            let n = match reader.read_line(&mut line).await {
+                                Ok(n) => n,
+                                Err(_) => return,
+                            };
+                            if n == 0 {
+                                return; // EOF：客户端关闭
+                            }
                             let line = line.trim().to_string();
-                            if !line.is_empty() {
+                            if line.is_empty() {
+                                continue;
+                            }
                                 let cmd: serde_json::Value = match serde_json::from_str(&line) {
                                     Ok(v) => v,
                                     Err(e) => {
@@ -5091,6 +5531,18 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                     .and_then(|v| v.as_str())
                                     .map(|s| s.to_string());
 
+                                // ── 协议版本握手（可选）：hello → {"protocolVersion":1} ──
+                                // 不消费连接：回包后 continue，客户端可继续 subscribe / rpc。
+                                // 旧客户端不发 hello 完全不受影响。
+                                if method == "hello" {
+                                    let resp = hello_reply(cmd.get("id"));
+                                    let _ = write_half
+                                        .write_all(format!("{resp}\n").as_bytes())
+                                        .await;
+                                    let _ = write_half.flush().await;
+                                    continue;
+                                }
+
                                 // ── Stream mode: subscribe ──
                                 if method == "subscribe" {
                                     let extension =
@@ -5103,81 +5555,46 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                     if extension.is_empty() && session.is_some() {
                                         // ── Instance subscribe：订阅 worker 原始事件流 ──
                                         // 无 --extension 有 --session → 收 text_delta / agent_start / agent_end 等
-                                        let sid = session.as_ref().unwrap();
-                                        // ⚠️ parking_lot: 把 inner_reg 限制在独立 block 内，
-                                        // block 结束 guard 必然 drop，不跨下面的 write_all .await。
-                                        // ── session 级订阅（D 修复）：订阅按 session 绑定而非 worker 实例 ──
-                                        // ① worker 未拉起时挂起等待（60s）而非直接报错——
-                                        //    此前"订阅先于 worker 建立即失效"，UI 只能 prompt 后重订绕过
-                                        // ② worker 死亡/GC 后 rx 结束，自动重接新 worker（10s），
-                                        //    不行才断开让客户端退避重连
+                                        // 协议升级：走 SessionRouter（per-session 路由任务）——
+                                        //   ① ack 携带 epoch；事件信封盖 epoch 章
+                                        //   ② 快照先于增量：先推 customType:"snapshot" 再转发实时事件
+                                        //   ③ worker 重派/重绑 → epoch+1，旧 epoch 订阅收一条
+                                        //      stale_route 后停止转发（连接关闭），客户端凭新 epoch 重订
+                                        //   ④ worker 未拉起时挂起等待（60s）而非直接报错（保留 D 修复语义）
+                                        let sid = session.as_ref().unwrap().clone();
                                         let replay_n =
                                             cmd.get("replay").and_then(|v| v.as_u64()).unwrap_or(0)
                                                 as usize;
-                                        let first =
-                                            attach_session_sub(&reg, sid, replay_n, 120).await;
-                                        match first {
-                                            Some((mut rx, replay_events)) => {
-                                                let ack = serde_json::json!({
-                                                    "type":"subscribed","session":sid,
-                                                    "stream":"instance","replayed":replay_events.len()
-                                                });
+                                        match subscribe_session_routed(&reg, &sid, replay_n).await {
+                                            Ok((mut client_rx, ack)) => {
                                                 let _ = write_half
                                                     .write_all(format!("{ack}\n").as_bytes())
                                                     .await;
-                                                for evt in &replay_events {
-                                                    let out = serde_json::json!({
-                                                        "type": "instance_event",
-                                                        "session": sid,
-                                                        "event": evt.get("event").cloned().unwrap_or(evt.clone()),
-                                                        "replayed": true,
-                                                    });
-                                                    if write_half
-                                                        .write_all(format!("{out}\n").as_bytes())
-                                                        .await
-                                                        .is_err()
-                                                    {
-                                                        return;
-                                                    }
-                                                }
                                                 let _ = write_half.flush().await;
+                                                // 转发：snapshot（已先行）→ replay（如有）→ 实时增量
+                                                // → stale_route（epoch 推进，一次性）→ 信道关闭
                                                 loop {
-                                                    // 转发实时事件直到 rx 结束
-                                                    while let Some(msg) = rx.recv().await {
-                                                        let out = serde_json::json!({
-                                                            "type": "instance_event",
-                                                            "session": sid,
-                                                            "event": msg.get("event").cloned().unwrap_or(msg),
-                                                        });
-                                                        if write_half
-                                                            .write_all(
-                                                                format!("{out}\n").as_bytes(),
-                                                            )
-                                                            .await
-                                                            .is_err()
-                                                        {
-                                                            return;
+                                                    match client_rx.recv().await {
+                                                        Some(msg) => {
+                                                            if write_half
+                                                                .write_all(
+                                                                    format!("{msg}\n").as_bytes(),
+                                                                )
+                                                                .await
+                                                                .is_err()
+                                                            {
+                                                                return;
+                                                            }
+                                                            let _ = write_half.flush().await;
                                                         }
-                                                        let _ = write_half.flush().await;
-                                                    }
-                                                    // rx 结束：worker 死亡/被 GC → 重接新 worker（session 级）
-                                                    let notice = serde_json::json!({
-                                                        "type": "resubscribed", "session": sid
-                                                    });
-                                                    let _ = write_half
-                                                        .write_all(format!("{notice}\n").as_bytes())
-                                                        .await;
-                                                    match attach_session_sub(&reg, sid, 0, 20).await
-                                                    {
-                                                        Some((rx2, _)) => rx = rx2,
-                                                        None => break,
+                                                        None => break, // 路由退出（旧订阅已作废）
                                                     }
                                                 }
                                             }
-                                            None => {
+                                            Err(e) => {
                                                 let resp = serde_json::json!({
                                                     "type":"error",
-                                                    "error":"no worker for session within 60s"
+                                                    "error":e
                                                 });
                                                 let _ = write_half
                                                     .write_all(format!("{resp}\n").as_bytes())
@@ -5191,6 +5608,9 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                     let is_ui =
                                         cmd.get("ui").and_then(|v| v.as_bool()).unwrap_or(false);
                                     if is_ui {
+                                        // 同源绑定：标记本连接已 subscribe(ui:true)，
+                                        // 之后本连接上的 ui_respond 才被允许（审批同源）
+                                        ui_origin = true;
                                         let mut bus = ev_bus.lock().await;
                                         let mut rx = bus.subscribe_ui();
                                         drop(bus);
@@ -5200,29 +5620,117 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                             .write_all(format!("{ack}\n").as_bytes())
                                             .await;
                                         let _ = write_half.flush().await;
-                                        loop {
-                                            match rx.recv().await {
-                                                Some(event) => {
-                                                    let msg = serde_json::json!({
-                                                        "type": "ui_event",
-                                                        "ui_type": event.custom_type,
-                                                        "extension": event.extension,
-                                                        "session": event.session,
-                                                        "data": event.data,
-                                                        "route": event.route,
-                                                    });
-                                                    if write_half
-                                                        .write_all(format!("{msg}\n").as_bytes())
-                                                        .await
-                                                        .is_err()
-                                                    {
-                                                        break;
+                                        // 并发读命令：UI 事件持续转发的同时，本连接可继续发
+                                        // ui_respond（同源应答）/ hello（握手）。
+                                        let (cmd_tx, mut cmd_rx) =
+                                            tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+                                        let reader_task = tokio::spawn(async move {
+                                            let mut r = reader;
+                                            let mut l = String::new();
+                                            loop {
+                                                l.clear();
+                                                match r.read_line(&mut l).await {
+                                                    Ok(0) | Err(_) => break,
+                                                    Ok(_) => {
+                                                        if let Ok(v) =
+                                                            serde_json::from_str::<serde_json::Value>(
+                                                                l.trim(),
+                                                            )
+                                                        {
+                                                            if cmd_tx.send(v).is_err() {
+                                                                break;
+                                                            }
+                                                        }
                                                     }
-                                                    let _ = write_half.flush().await;
                                                 }
-                                                None => break,
+                                            }
+                                        });
+                                        loop {
+                                            tokio::select! {
+                                                ev = rx.recv() => {
+                                                    match ev {
+                                                        Some(event) => {
+                                                            let msg = serde_json::json!({
+                                                                "type": "ui_event",
+                                                                "ui_type": event.custom_type,
+                                                                "extension": event.extension,
+                                                                "session": event.session,
+                                                                "data": event.data,
+                                                                "route": event.route,
+                                                            });
+                                                            if write_half
+                                                                .write_all(format!("{msg}\n").as_bytes())
+                                                                .await
+                                                                .is_err()
+                                                            {
+                                                                break;
+                                                            }
+                                                            let _ = write_half.flush().await;
+                                                        }
+                                                        None => break,
+                                                    }
+                                                }
+                                                c = cmd_rx.recv() => {
+                                                    match c {
+                                                        Some(cc) => {
+                                                            let m = cc
+                                                                .get("method")
+                                                                .and_then(|v| v.as_str())
+                                                                .unwrap_or("");
+                                                            match m {
+                                                                // 同一连接已 subscribe(ui:true)
+                                                                // → 显式过同源闸（纵深防御）
+                                                                "ui_respond" => {
+                                                                    if ui_respond_origin_error(
+                                                                        ui_origin,
+                                                                    )
+                                                                    .is_none()
+                                                                    {
+                                                                        respond_to_ui_request(
+                                                                            &cc,
+                                                                            &mut write_half,
+                                                                            &ev_bus,
+                                                                        )
+                                                                        .await;
+                                                                    }
+                                                                }
+                                                                "hello" => {
+                                                                    let resp =
+                                                                        hello_reply(cc.get("id"));
+                                                                    let _ = write_half
+                                                                        .write_all(
+                                                                            format!("{resp}\n")
+                                                                                .as_bytes(),
+                                                                        )
+                                                                        .await;
+                                                                    let _ =
+                                                                        write_half.flush().await;
+                                                                }
+                                                                _ => {
+                                                                    let resp = serde_json::json!({
+                                                                        "type":"response",
+                                                                        "id":cc.get("id"),
+                                                                        "success":false,
+                                                                        "error":"method not supported on ui stream"
+                                                                    });
+                                                                    let _ = write_half
+                                                                        .write_all(
+                                                                            format!("{resp}\n")
+                                                                                .as_bytes(),
+                                                                        )
+                                                                        .await;
+                                                                    let _ =
+                                                                        write_half.flush().await;
+                                                                }
+                                                            }
+                                                        }
+                                                        // 命令读取结束 = 客户端关闭连接
+                                                        None => break,
+                                                    }
+                                                }
                                             }
                                         }
+                                        reader_task.abort();
                                         return;
                                     }
 
@@ -5282,42 +5790,21 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                 }
 
                                 // ── UI respond: 回复 Ask/Confirm/Prompt ──
+                                // 同源绑定（安全修复）：只有同一连接先 subscribe(ui:true)
+                                // 才允许 ui_respond；独立连接（如 ion rpc 直调）一律拒绝。
                                 if method == "ui_respond" {
-                                    let request_id = cmd
-                                        .get("params")
-                                        .and_then(|p| p.get("request_id"))
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    let response = cmd
-                                        .get("params")
-                                        .and_then(|p| p.get("response"))
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("deny")
-                                        .to_string();
-                                    // 取出发送者，立即释放锁
-                                    let sender = {
-                                        let mut map = pending_ui().lock().unwrap();
-                                        map.remove(&request_id)
-                                    };
-                                    if let Some(tx) = sender {
-                                        let _ = tx.send(response.clone());
-                                        // 推 AskResolved 到 UI 事件通道（锁已释放）
-                                        let resolved = ExtensionEvent::new_ui("AskResolved", &request_id, &response)
-                                            .with_data(serde_json::json!({"response": response, "resolved_by": "cli"}));
-                                        let mut bus = ev_bus.lock().await;
-                                        bus.broadcast(&resolved);
-                                        drop(bus);
-                                        let resp = serde_json::json!({"type":"response","id":cmd.get("id"),"success":true,"data":{"request_id":request_id,"response":response}});
+                                    if let Some(err) = ui_respond_origin_error(ui_origin) {
+                                        let resp = serde_json::json!({
+                                            "type":"response","id":cmd.get("id"),
+                                            "success":false,"error":err
+                                        });
                                         let _ = write_half
                                             .write_all(format!("{resp}\n").as_bytes())
                                             .await;
-                                    } else {
-                                        let resp = serde_json::json!({"type":"response","id":cmd.get("id"),"success":false,"error":"request not found or already expired"});
-                                        let _ = write_half
-                                            .write_all(format!("{resp}\n").as_bytes())
-                                            .await;
+                                        let _ = write_half.flush().await;
+                                        return;
                                     }
+                                    respond_to_ui_request(&cmd, &mut write_half, &ev_bus).await;
                                     return;
                                 }
 
@@ -5444,10 +5931,11 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                                         write_half.write_all(format!("{resp}\n").as_bytes()).await;
                                     let _ = write_half.flush().await;
                                 }
+                                // RPC 模式保持一问一答：响应写完即断开（旧行为不变）
+                                return;
                             }
-                        }
-                        // 不 flush/close — stream drop 时自动关
-                    });
+                            // 不 flush/close — stream drop 时自动关
+                        });
                 }
                 Err(e) => {
                     eprintln!("[socket] accept error: {e}");
@@ -9109,4 +9597,168 @@ fn epoch_days_to_ymd(days: i64) -> (i64, u32, u32) {
         }
     }
     (year, month, day)
+}
+
+// ---------------------------------------------------------------------------
+// Subscribe 协议升级单元测试（epoch / snapshot / hello / 同源绑定）
+// 运行：cargo test --bin ion subscribe_protocol -- --test-threads=2
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod subscribe_protocol_tests {
+    use super::*;
+
+    // ── epoch 栅栏 ──
+
+    #[test]
+    fn epoch_first_seen_is_one() {
+        let mut t = SessionEpochTable::new();
+        assert_eq!(t.current("sess_a"), 1);
+        // current 幂等：多次读取不推进
+        assert_eq!(t.current("sess_a"), 1);
+    }
+
+    #[test]
+    fn epoch_advance_increments() {
+        let mut t = SessionEpochTable::new();
+        assert_eq!(t.current("sess_a"), 1);
+        assert_eq!(t.advance("sess_a"), 2);
+        assert_eq!(t.advance("sess_a"), 3);
+        // advance 后 current 跟随
+        assert_eq!(t.current("sess_a"), 3);
+    }
+
+    #[test]
+    fn epoch_sessions_are_independent() {
+        let mut t = SessionEpochTable::new();
+        assert_eq!(t.advance("sess_a"), 2);
+        assert_eq!(t.advance("sess_b"), 2);
+        assert_eq!(t.current("sess_a"), 2);
+        assert_eq!(t.current("sess_b"), 2);
+        assert_eq!(t.advance("sess_a"), 3);
+        assert_eq!(t.current("sess_b"), 2);
+    }
+
+    #[test]
+    fn stale_route_event_carries_old_and_new_epoch() {
+        let ev = stale_route_event("sess_a", 1, 2);
+        assert_eq!(ev["type"], "stale_route");
+        assert_eq!(ev["customType"], "stale_route");
+        assert_eq!(ev["session"], "sess_a");
+        assert_eq!(ev["epoch"], 1);
+        assert_eq!(ev["currentEpoch"], 2);
+    }
+
+    // ── snapshot 组装 ──
+
+    #[test]
+    fn snapshot_data_contains_worker_session_pending() {
+        let worker = SnapshotWorker {
+            worker_id: "w-1".into(),
+            status: "Busy".into(),
+            model: "glm-5.2".into(),
+            agent: "build".into(),
+        };
+        let session = SnapshotSession {
+            session_id: "sess_x",
+            model: Some("glm-5.2".into()),
+            provider: Some("zai".into()),
+            name: Some("demo".into()),
+        };
+        let pending = vec!["req-1".to_string(), "req-2".to_string()];
+        let data = build_snapshot_data(Some(&worker), &session, &pending);
+        assert_eq!(data["worker"]["workerId"], "w-1");
+        assert_eq!(data["worker"]["status"], "Busy");
+        assert_eq!(data["worker"]["model"], "glm-5.2");
+        assert_eq!(data["worker"]["agent"], "build");
+        assert_eq!(data["session"]["sessionId"], "sess_x");
+        assert_eq!(data["session"]["model"], "glm-5.2");
+        assert_eq!(data["session"]["provider"], "zai");
+        assert_eq!(data["session"]["name"], "demo");
+        assert_eq!(data["pendingApprovals"]["count"], 2);
+        assert_eq!(data["pendingApprovals"]["requests"][0], "req-1");
+        assert!(data["generatedAt"].is_u64());
+    }
+
+    #[test]
+    fn snapshot_data_without_worker_is_null_worker() {
+        let session = SnapshotSession {
+            session_id: "sess_y",
+            model: None,
+            provider: None,
+            name: None,
+        };
+        let data = build_snapshot_data(None, &session, &[]);
+        assert!(data["worker"].is_null());
+        assert_eq!(data["session"]["sessionId"], "sess_y");
+        assert!(data["session"]["model"].is_null());
+        assert_eq!(data["pendingApprovals"]["count"], 0);
+        assert!(data["pendingApprovals"]["requests"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn snapshot_event_envelope_has_customtype_snapshot_before_live() {
+        let data = serde_json::json!({"session": {"sessionId": "s"}});
+        let ev = snapshot_event("s", 3, data);
+        // instance_event 外壳 + epoch 盖章
+        assert_eq!(ev["type"], "instance_event");
+        assert_eq!(ev["session"], "s");
+        assert_eq!(ev["epoch"], 3);
+        assert_eq!(ev["snapshot"], true);
+        // customType:"snapshot"（水合纪律：客户端凭它识别快照帧）
+        assert_eq!(ev["event"]["type"], "extension_event");
+        assert_eq!(ev["event"]["extension"], "host");
+        assert_eq!(ev["event"]["customType"], "snapshot");
+        assert_eq!(ev["event"]["visibility"], "ui_only");
+        assert_eq!(ev["event"]["data"]["session"]["sessionId"], "s");
+    }
+
+    #[test]
+    fn stamp_instance_event_keeps_event_and_adds_epoch() {
+        let msg = serde_json::json!({"type":"event","event":{"type":"text_delta","delta":"hi"}});
+        let out = stamp_instance_event("s", 7, msg);
+        assert_eq!(out["type"], "instance_event");
+        assert_eq!(out["epoch"], 7);
+        assert_eq!(out["event"]["type"], "text_delta");
+        assert_eq!(out["event"]["delta"], "hi");
+        // 无 event 键的裸消息：整体放进 event
+        let bare = serde_json::json!({"type":"agent_start"});
+        let out2 = stamp_instance_event("s", 7, bare);
+        assert_eq!(out2["event"]["type"], "agent_start");
+    }
+
+    // ── hello 握手 ──
+
+    #[test]
+    fn hello_reply_returns_protocol_version() {
+        let resp = hello_reply(Some(&serde_json::json!("h1")));
+        assert_eq!(resp["type"], "response");
+        assert_eq!(resp["id"], "h1");
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["data"]["protocolVersion"], PROTOCOL_VERSION);
+        assert_eq!(resp["data"]["protocolVersion"], 1);
+    }
+
+    #[test]
+    fn hello_reply_tolerates_missing_id() {
+        let resp = hello_reply(None);
+        assert_eq!(resp["success"], true);
+        assert!(resp["id"].is_null());
+        assert_eq!(resp["data"]["protocolVersion"], 1);
+    }
+
+    // ── ui_respond 同源绑定 ──
+
+    #[test]
+    fn ui_respond_rejected_without_prior_ui_subscribe() {
+        let err = ui_respond_origin_error(false);
+        assert!(err.is_some());
+        let msg = err.unwrap();
+        assert!(msg.contains("ui_respond rejected"), "错误信息要可诊断: {msg}");
+        assert!(msg.contains("same connection"), "错误信息要点明同源要求: {msg}");
+    }
+
+    #[test]
+    fn ui_respond_allowed_after_ui_subscribe_on_same_connection() {
+        assert!(ui_respond_origin_error(true).is_none());
+    }
 }
