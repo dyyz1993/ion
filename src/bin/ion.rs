@@ -5652,14 +5652,17 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                         }
                     }
                     ion::worker_registry::WorkerStatus::Busy => {
-                        // Busy 超过 10 分钟视为僵死（agent_end 丢失 / agent.run panic / error 事件漏处理）。
-                        // 10 分钟足够覆盖正常长任务（coordinator 等 5 分钟 developer 仍留余量），
-                        // 但能兜住"永久卡 Busy"的死锁。转 Dead 后由 gc_workers 清理。
-                        if now - record.status_since > 600_000 {
+                        // Busy 且静默超过 10 分钟视为僵死（agent_end 丢失 / 流挂死 / error 漏处理）。
+                        // ⚠️ 判据必须是 last_heartbeat（最后产出时间）而非 status_since：
+                        // status_since 只在进入 Busy 时写一次，用它会把"产出正常的长寿 run"
+                        // 在开跑 10 分钟时无差别处决（remote worker 接力开发实测踩坑：
+                        // 每根棒都在 spawn+600s 整点猝死）。产出会持续刷新 last_heartbeat，
+                        // 真挂死的流则静默——两种场景用这一个判据即可区分。
+                        if now - record.last_heartbeat > 600_000 {
                             tracing::warn!(
-                                "[heartbeat] worker {} Busy for >{}s, marking Dead (agent_end lost?)",
+                                "[heartbeat] worker {} Busy 且静默 >{}s, marking Dead (agent_end lost?)",
                                 record.worker_id,
-                                (now - record.status_since) / 1000
+                                (now - record.last_heartbeat) / 1000
                             );
                             // SSH 僵尸修复：收集 auto-recovery 信息（循环外处理避免借用冲突）
                             if record.host.is_some() {
@@ -5678,18 +5681,8 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                             record.set_status(ion::worker_registry::WorkerStatus::Dead);
                             changed = true;
                         }
-                        // 双保险：即便 status_since 被某条路径重置，只要 30 分钟
-                        // 没有任何输出活动（text/tool/心跳）也按僵死回收——
-                        // 真实在跑的任务必有流式产出持续刷新 last_heartbeat。
-                        else if now - record.last_heartbeat > 1_800_000 {
-                            tracing::warn!(
-                                "[heartbeat] worker {} Busy 但 {}s 无任何活动, marking Dead",
-                                record.worker_id,
-                                (now - record.last_heartbeat) / 1000
-                            );
-                            record.set_status(ion::worker_registry::WorkerStatus::Dead);
-                            changed = true;
-                        }
+                        // （原 30 分钟 last_heartbeat 双保险已并入上一判据——判据改为
+                        // last_heartbeat 后，静默 10 分钟即触发，30 分钟分支不可达。）
                     }
                 }
             }
@@ -5714,6 +5707,9 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                         host: Some(host),
                         agent: Some("build".into()),
                         initial_prompt: Some(prompt),
+                        // 默认 20 turns 会让 heartbeat 重派 worker 几分钟烧完预算（与
+                        // worker_registry.rs stdout-EOF 重派路径同一问题，两处必须一致）
+                        max_turns: Some(200),
                         ..Default::default()
                     };
                     match ion::worker_registry::WorkerRegistry::prepare_worker_spawn(&cfg).await {

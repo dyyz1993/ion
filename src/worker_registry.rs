@@ -2560,6 +2560,8 @@ impl WorkerRegistry {
                         host: Some(host),
                         agent: Some("build".into()),
                         initial_prompt: Some(prompt),
+                        // 默认 20 turns 会让重派 worker 几分钟就烧完预算（探索期一轮一个工具调用）
+                        max_turns: Some(200),
                         ..Default::default()
                     };
                     match WorkerRegistry::prepare_worker_spawn(&cfg).await {
@@ -7466,6 +7468,14 @@ pub fn try_auto_respawn(record: &WorkerRecord, exit_code: Option<i32>) -> Option
         &record.session_id,
     )?;
     let prompt = generate_resume_prompt(&path)?;
+    // 短命循环对策：前棒往往把时间耗在重复勘察上（读完就死，下一棒再读一遍）。
+    // 续作提示词追加通用指令——先认领 git 半成品、直接动手，别从头再读一遍代码库。
+    let prompt = format!(
+        "{prompt}\n\n---\n## 接力纪律（内核注入）\n\
+         1. 先 `git status --short` + `git log --oneline -3`：有前棒半成品就直接补完并 commit，不要重新勘察。\n\
+         2. 树干净则按前棒的最后动作继续，优先动手改文件，避免大范围重复读码。\n\
+         3. 每完成一小块立即 commit——你随时可能被重派，commit 是唯一的遗产。"
+    );
     auto_respawn_counts()
         .lock()
         .unwrap()
