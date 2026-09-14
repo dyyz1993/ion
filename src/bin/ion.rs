@@ -5626,7 +5626,21 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
     // ── Background task 4: heartbeat stale detection ──
     let hb_registry = Arc::clone(&registry);
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        // W1：tick 周期与判死阈值可用环境变量覆盖（CI 调小做命令行验证；
+        // 生产走默认 30s / 180s / 600s，行为与旧硬编码一致）
+        let tick_secs: u64 = std::env::var("ION_HEARTBEAT_TICK_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30);
+        let idle_stale_ms: i64 = std::env::var("ION_HEARTBEAT_IDLE_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(ion::worker_registry::HEARTBEAT_IDLE_STALE_MS);
+        let busy_dead_ms: i64 = std::env::var("ION_HEARTBEAT_BUSY_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(ion::worker_registry::HEARTBEAT_BUSY_DEAD_MS);
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(tick_secs));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
@@ -5635,55 +5649,62 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as i64;
+            // 功能3：本地 auto-respawn 开关（默认 false，不改变既有行为）
+            let allow_local_respawn = ion::config::IonConfig::load().runtime.auto_respawn_local;
             let mut changed = false;
             let mut heartbeat_respawns: Vec<(String, String, String, String)> = Vec::new();
             for record in reg.workers.values_mut() {
-                match record.status {
-                    ion::worker_registry::WorkerStatus::Dead
-                    | ion::worker_registry::WorkerStatus::Stale => {
-                        // 终态/僵尸，由后面 gc_workers 按时间清理，这里跳过
+                // 判死决策统一走 heartbeat_decision_with（纯函数，worker_registry.rs）：
+                // Idle 静默 > idle_stale_ms → Stale；Busy 静默 > busy_dead_ms → Dead；
+                // Dead/Stale 终态不动（由后面 gc_workers 按时间清理）。
+                // ⚠️ 判据必须是 last_heartbeat（最后产出时间）而非 status_since：
+                // status_since 只在进入 Busy 时写一次，用它会把"产出正常的长寿 run"
+                // 在开跑 10 分钟时无差别处决（remote worker 接力开发实测踩坑：
+                // 每根棒都在 spawn+600s 整点猝死）。产出会持续刷新 last_heartbeat
+                //（W1 Bug1 修复后任何 stdout 事件都刷，工具期/思考期不再停格），
+                // 真挂死的流则静默——两种场景用这一个判据即可区分。
+                match ion::worker_registry::heartbeat_decision_with(
+                    &record.status,
+                    record.last_heartbeat,
+                    now,
+                    idle_stale_ms,
+                    busy_dead_ms,
+                ) {
+                    None => {}
+                    Some(ion::worker_registry::WorkerStatus::Stale) => {
+                        tracing::info!(
+                            "[heartbeat] worker {} Idle 且静默 >{}s, marking Stale",
+                            record.worker_id,
+                            (now - record.last_heartbeat) / 1000
+                        );
+                        record.set_status(ion::worker_registry::WorkerStatus::Stale);
+                        changed = true;
                     }
-                    ion::worker_registry::WorkerStatus::Idle => {
-                        // Idle 超过 180s 无心跳 → Stale。
-                        // 注意：Busy 不在此列（coordinator 等长任务不能误杀），Busy 有单独超时见下。
-                        if now - record.last_heartbeat > 180_000 {
-                            record.set_status(ion::worker_registry::WorkerStatus::Stale);
-                            changed = true;
+                    Some(ion::worker_registry::WorkerStatus::Dead) => {
+                        tracing::warn!(
+                            "[heartbeat] worker {} Busy 且静默 >{}s, marking Dead (agent_end lost?)",
+                            record.worker_id,
+                            (now - record.last_heartbeat) / 1000
+                        );
+                        // SSH 僵尸修复：收集 auto-recovery 信息（循环外处理避免借用冲突）。
+                        // 远程 worker 既有语义不变；本地由 runtime.auto_respawn_local
+                        // 门控（默认 false → 本地永不因心跳超时重派，与旧代码一致）。
+                        if let Some((prompt, host)) = ion::worker_registry::try_auto_respawn_gated(
+                            record,
+                            None,
+                            allow_local_respawn,
+                        ) {
+                            heartbeat_respawns.push((
+                                prompt,
+                                host,
+                                record.worker_id.clone(),
+                                record.session_id.clone(),
+                            ));
                         }
+                        record.set_status(ion::worker_registry::WorkerStatus::Dead);
+                        changed = true;
                     }
-                    ion::worker_registry::WorkerStatus::Busy => {
-                        // Busy 且静默超过 10 分钟视为僵死（agent_end 丢失 / 流挂死 / error 漏处理）。
-                        // ⚠️ 判据必须是 last_heartbeat（最后产出时间）而非 status_since：
-                        // status_since 只在进入 Busy 时写一次，用它会把"产出正常的长寿 run"
-                        // 在开跑 10 分钟时无差别处决（remote worker 接力开发实测踩坑：
-                        // 每根棒都在 spawn+600s 整点猝死）。产出会持续刷新 last_heartbeat，
-                        // 真挂死的流则静默——两种场景用这一个判据即可区分。
-                        if now - record.last_heartbeat > 600_000 {
-                            tracing::warn!(
-                                "[heartbeat] worker {} Busy 且静默 >{}s, marking Dead (agent_end lost?)",
-                                record.worker_id,
-                                (now - record.last_heartbeat) / 1000
-                            );
-                            // SSH 僵尸修复：收集 auto-recovery 信息（循环外处理避免借用冲突）
-                            if record.host.is_some() {
-                                let exit_code = None;
-                                if let Some((prompt, host)) =
-                                    ion::worker_registry::try_auto_respawn(record, exit_code)
-                                {
-                                    heartbeat_respawns.push((
-                                        prompt,
-                                        host,
-                                        record.worker_id.clone(),
-                                        record.session_id.clone(),
-                                    ));
-                                }
-                            }
-                            record.set_status(ion::worker_registry::WorkerStatus::Dead);
-                            changed = true;
-                        }
-                        // （原 30 分钟 last_heartbeat 双保险已并入上一判据——判据改为
-                        // last_heartbeat 后，静默 10 分钟即触发，30 分钟分支不可达。）
-                    }
+                    Some(_) => {}
                 }
             }
             // ── SSH 僵尸修复：处理心跳超时收集的 auto-recovery ──

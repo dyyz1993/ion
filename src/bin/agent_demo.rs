@@ -165,6 +165,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             max_outer_iterations: 3,
             max_retries: 2,
             retry_base_delay_ms: 1000,
+            retry_budget_ms: 240_000,
             enable_compact: true,
             compact_config: CompactConfig {
                 threshold: 32000,
