@@ -796,23 +796,13 @@ impl Runtime for AppleContainerRuntime {
         }
     }
     async fn write_file(&self, path: &str, content: &str) -> Result<(), String> {
-        let esc = content.replace('\'', "'\\''");
-        let (_, err, code) = self
-            .exec_in_container(
-                &format!(
-                    "mkdir -p $(dirname {}) && cat > {} << 'IONEOF'\n{}\nIONEOF",
-                    sh_quote(path),
-                    sh_quote(path),
-                    esc
-                ),
-                30,
-            )
-            .await?;
-        if code != 0 {
-            Err(format!("write: {err}"))
-        } else {
-            Ok(())
-        }
+        // W5 修复：内容 base64 转运（原 heredoc 拼接可被内容中的 IONEOF 行注入 RCE）。
+        // 容器 guest 为 Linux（POSIX 工具 base64 -d / printf / dirname 均可用）。
+        crate::runtime::run_write_file_commands(path, content, |cmd| {
+            let this = self;
+            async move { this.exec_in_container(&cmd, 30).await }
+        })
+        .await
     }
     async fn edit_file(&self, path: &str, old: &str, new: &str) -> Result<(), String> {
         let content = self.read_file(path).await?;

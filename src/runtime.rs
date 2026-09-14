@@ -1638,22 +1638,12 @@ impl<R: Runtime + 'static> Runtime for RemoteRuntime<R> {
         }
     }
     async fn write_file(&self, path: &str, content: &str) -> Result<(), String> {
-        let e = content.replace('\'', "'\\''");
-        let (_, s, c) = self
-            .inner
-            .execute_command(
-                &self.ssh_cmd(&format!(
-                    "cat > {} << 'IONEOF'\n{e}\nIONEOF",
-                    sh_quote(path)
-                )),
-                30,
-            )
-            .await?;
-        if c != 0 {
-            Err(format!("remote write: {s}"))
-        } else {
-            Ok(())
-        }
+        // W5 修复：内容 base64 转运（原 heredoc 拼接可被内容中的 IONEOF 行注入 RCE）
+        run_write_file_commands(path, content, |cmd| {
+            let ssh = self.ssh_cmd(&cmd);
+            async move { self.inner.execute_command(&ssh, 30).await }
+        })
+        .await
     }
     async fn edit_file(&self, path: &str, old: &str, new: &str) -> Result<(), String> {
         let c = self.read_file(path).await?;
@@ -1775,6 +1765,74 @@ impl<R: Runtime + 'static> Runtime for RemoteRuntime<R> {
 /// 远端 shell 参数安全引用 — 防止注入
 pub fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+// ---------------------------------------------------------------------------
+// W5: shell 注入安全的远端写文件（RemoteRuntime 与容器后端共用）
+// ---------------------------------------------------------------------------
+
+/// 单条命令携带的 base64 字符数上限。
+/// 取 4 的倍数（base64 块边界），且远小于 Linux 单参数 128KB (MAX_ARG_STRLEN)
+/// 与整体 ARG_MAX 限制，保证任何单条命令都能通过 ssh + sh 解析执行。
+const WRITE_FILE_CHUNK_B64: usize = 32 * 1024;
+
+/// 内容整体 base64 编码后按 4 的倍数切块。
+/// 除最后一块外不含 padding（`=`），每块可独立解码、按序拼接即还原原文。
+fn base64_chunks(content: &str) -> Vec<String> {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(content.as_bytes());
+    if b64.is_empty() {
+        return vec![String::new()];
+    }
+    b64.as_bytes()
+        .chunks(WRITE_FILE_CHUNK_B64)
+        .map(|c| String::from_utf8_lossy(c).into_owned())
+        .collect()
+}
+
+/// 构造 shell 安全的"远端/容器内写文件"命令序列（两个后端共用）。
+///
+/// **修复 W5 RCE**：旧实现用 `cat > p << 'IONEOF'\n{content}\nIONEOF` heredoc
+/// 拼接原文，内容中任何一行恰为 `IONEOF` 即提前终止 heredoc，其后所有行被
+/// 远端 shell 当命令执行。新实现中内容只以 base64 字母表（`[A-Za-z0-9+/=]`）
+/// 出现在单引号 printf 参数里——不进 shell 语法，无法逃逸。
+///
+/// - 超大内容按块拆多条命令：首条 `>` 截断写，后续 `>>` 追加，单条命令
+///   不超 exec 参数上限；顺序执行，任一条非零退出即失败。
+/// - 目标环境假设 POSIX 工具 `base64 -d` / `printf` / `dirname`（Linux/WSL
+///   远端与 Apple Container Linux guest 均具备；不假设 Windows cmd）。
+/// - 空内容 → 单条 `printf '%s' '' | base64 -d > p`，落盘空文件。
+pub(crate) fn build_write_file_commands(path: &str, content: &str) -> Vec<String> {
+    let p = sh_quote(path);
+    base64_chunks(content)
+        .into_iter()
+        .enumerate()
+        .map(|(i, chunk)| {
+            let redirect = if i == 0 { ">" } else { ">>" };
+            let q = sh_quote(&chunk);
+            format!("mkdir -p \"$(dirname {p})\" && printf '%s' {q} | base64 -d {redirect} {p}")
+        })
+        .collect()
+}
+
+/// 依序执行 [`build_write_file_commands`] 生成的命令，任一失败即中止并报错。
+/// `exec` 为各后端的命令执行通道（ssh / 容器 exec）。
+pub(crate) async fn run_write_file_commands<F, Fut>(
+    path: &str,
+    content: &str,
+    exec: F,
+) -> Result<(), String>
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<(String, String, i32), String>>,
+{
+    for cmd in build_write_file_commands(path, content) {
+        let (_, stderr, code) = exec(cmd).await?;
+        if code != 0 {
+            return Err(format!("remote write: {stderr}"));
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2456,5 +2514,326 @@ mod tests {
         // Manager 没带回元数据时响应保持 None
         assert!(resp.worktree_path.is_none());
         assert!(resp.worktree_branch.is_none());
+    }
+
+    // ═══ W5: 远端/容器 write_file heredoc 注入 RCE 修复（TDD）═══
+    //
+    // 漏洞：旧 write_file 用 `cat > p << 'IONEOF'\n{content}\nIONEOF` 拼命令，
+    // 内容中若有一行恰为 `IONEOF`，heredoc 提前终止，其后所有行被远端 shell
+    // 当命令执行（RCE）。
+    //
+    // 测试策略：全部本地模拟"远端 shell 语义"——不 ssh、不碰真实 ~/.ion。
+    // FakeRemoteShell 剥掉 ssh 包装后把远端命令交给本地 `sh -c`，与真实
+    // 远端 shell 的解析行为逐字节等价。
+
+    /// 攻击载荷：文件内容夹一行 heredoc 结束符 + 后续 shell 命令
+    const W5_MALICIOUS: &str = "safe-line-one\nIONEOF\ntouch pwned_marker\necho pwned > pwned2.txt\nsafe-line-three\n";
+
+    fn w5_tmp_dir(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let d = std::env::temp_dir().join(format!(
+            "ion_w5_{}_{}_{}",
+            tag,
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn assert_no_rce(dir: &std::path::Path) {
+        assert!(
+            !dir.join("pwned_marker").exists(),
+            "RCE: heredoc 提前终止，攻击者的 `touch pwned_marker` 被执行"
+        );
+        assert!(
+            !dir.join("pwned2.txt").exists(),
+            "RCE: 攻击者的重定向 `echo pwned > pwned2.txt` 被执行"
+        );
+    }
+
+    /// 剥掉 ssh 包装：`ssh u@h '<remote>'` → `<remote>`。
+    /// 精确逆转 ssh_cmd 的 `'\''` 转义，等价本地 shell 解析外层引号后的结果。
+    fn strip_ssh_wrap(cmd: &str) -> String {
+        let start = cmd.find('\'').expect("ssh cmd 应含外层开引号");
+        let end = cmd.rfind('\'').expect("ssh cmd 应含外层闭引号");
+        assert!(end > start, "ssh 包装格式错误");
+        cmd[start + 1..end].replace("'\\''", "'")
+    }
+
+    /// 模拟远端执行机：收到的命令串交给本地 sh 解析执行（cwd = 模拟机目录）。
+    struct FakeRemoteShell {
+        dir: PathBuf,
+    }
+
+    #[async_trait]
+    impl Runtime for FakeRemoteShell {
+        async fn execute_command(
+            &self,
+            command: &str,
+            timeout_secs: u64,
+        ) -> Result<(String, String, i32), String> {
+            let remote = strip_ssh_wrap(command);
+            let out = tokio::time::timeout(
+                std::time::Duration::from_secs(timeout_secs),
+                tokio::process::Command::new("sh")
+                    .args(["-c", &remote])
+                    .current_dir(&self.dir)
+                    .output(),
+            )
+            .await
+            .map_err(|_| "timeout".to_string())?
+            .map_err(|e| format!("spawn: {e}"))?;
+            Ok((
+                String::from_utf8_lossy(&out.stdout).to_string(),
+                String::from_utf8_lossy(&out.stderr).to_string(),
+                out.status.code().unwrap_or(-1),
+            ))
+        }
+        async fn read_file(&self, path: &str) -> Result<String, String> {
+            std::fs::read_to_string(path).map_err(|e| e.to_string())
+        }
+        async fn write_file(&self, path: &str, content: &str) -> Result<(), String> {
+            std::fs::write(path, content).map_err(|e| e.to_string())
+        }
+        async fn edit_file(&self, path: &str, old: &str, new: &str) -> Result<(), String> {
+            let c = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+            std::fs::write(path, c.replace(old, new)).map_err(|e| e.to_string())
+        }
+        async fn path_exists(&self, path: &str) -> bool {
+            PathBuf::from(path).exists()
+        }
+        async fn list_dir(&self, path: &str) -> Result<Vec<String>, String> {
+            Ok(std::fs::read_dir(path)
+                .map_err(|e| e.to_string())?
+                .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+                .collect())
+        }
+        async fn remove_file(&self, path: &str) -> Result<(), String> {
+            std::fs::remove_file(path).map_err(|e| e.to_string())
+        }
+        async fn grep_search(&self, _p: &str, _d: &str) -> Result<Vec<String>, String> {
+            Ok(vec![])
+        }
+        async fn find_files(&self, _p: &str, _n: &str) -> Result<Vec<String>, String> {
+            Ok(vec![])
+        }
+        async fn file_info(&self, _p: &str) -> Result<Vec<FileEntry>, String> {
+            Ok(vec![])
+        }
+        fn runtime_type(&self) -> String {
+            "fake-remote".into()
+        }
+    }
+
+    /// TDD 红：RemoteRuntime::write_file（生产代码路径）必须把内容原样落盘，
+    /// 内容里的 IONEOF 行不得终止 heredoc、更不得把后续行当命令执行。
+    #[tokio::test]
+    async fn remote_write_file_blocks_heredoc_injection() {
+        let dir = w5_tmp_dir("remote_heredoc");
+        let target = dir.join("victim.txt");
+        let remote = RemoteRuntime::new(
+            FakeRemoteShell { dir: dir.clone() },
+            "u",
+            "h",
+            22,
+            "",
+            "",
+        );
+
+        let res = remote
+            .write_file(&target.to_string_lossy(), W5_MALICIOUS)
+            .await;
+        assert!(
+            res.is_ok(),
+            "write_file 应成功（旧行为会因注入命令 exit 127 而失败）: {res:?}"
+        );
+        assert_no_rce(&dir);
+        let written = std::fs::read_to_string(&target).unwrap();
+        assert_eq!(
+            written, W5_MALICIOUS,
+            "落盘内容必须与原文逐字节一致"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 绿（容器同模式）：走生产 helper `build_write_file_commands` 生成的命令，
+    /// 本地 sh 模拟容器 guest（Linux POSIX shell 语义逐字节等价）执行。
+    #[tokio::test]
+    async fn container_write_file_blocks_heredoc_injection() {
+        let dir = w5_tmp_dir("container_heredoc");
+        let target = dir.join("sub").join("victim.txt");
+        let tp = target.to_string_lossy().to_string();
+        let cmds = crate::runtime::build_write_file_commands(&tp, W5_MALICIOUS);
+        assert!(!cmds.is_empty());
+        for cmd in &cmds {
+            let out = tokio::process::Command::new("sh")
+                .args(["-c", cmd])
+                .current_dir(&dir)
+                .output()
+                .await
+                .unwrap();
+            assert_eq!(
+                out.status.code(),
+                Some(0),
+                "容器写入命令应成功: {cmd} → {:?}",
+                out
+            );
+        }
+        assert_no_rce(&dir);
+        let written = std::fs::read_to_string(&target).unwrap();
+        assert_eq!(written, W5_MALICIOUS, "容器内落盘内容必须与原文一致");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 边界：反引号 / $() / 单双引号 / 反斜杠 / UTF-8 多字节（中文+emoji）
+    /// 全部原样落盘，任何一段都不得被 shell 解释执行。
+    #[tokio::test]
+    async fn remote_write_file_shell_metachars_and_utf8() {
+        let dir = w5_tmp_dir("remote_meta");
+        let target = dir.join("meta.txt");
+        let content = "中文注释保持原样\nemoji: 🦀✅\nbacktick: `touch bt_marker`\ncmdsub: $(touch cmdsub_marker)\nquotes: 'single' \"double\" \\backslash\n";
+        let remote = RemoteRuntime::new(FakeRemoteShell { dir: dir.clone() }, "u", "h", 22, "", "");
+
+        remote
+            .write_file(&target.to_string_lossy(), content)
+            .await
+            .expect("含 shell 元字符的内容应写入成功");
+
+        assert!(!dir.join("bt_marker").exists(), "反引号命令被执行（RCE）");
+        assert!(
+            !dir.join("cmdsub_marker").exists(),
+            "$() 命令被执行（RCE）"
+        );
+        let written = std::fs::read_to_string(&target).unwrap();
+        assert_eq!(written, content, "元字符内容必须逐字节落盘");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 边界：空内容 → 空文件；超大内容 → 分段命令（首条 `>` 其余 `>>`）
+    /// 按序执行后逐字节还原。
+    #[tokio::test]
+    async fn remote_write_file_empty_and_large_chunked() {
+        // 空内容
+        let dir = w5_tmp_dir("remote_empty");
+        let target = dir.join("empty.txt");
+        let remote = RemoteRuntime::new(FakeRemoteShell { dir: dir.clone() }, "u", "h", 22, "", "");
+        remote
+            .write_file(&target.to_string_lossy(), "")
+            .await
+            .expect("空内容写入应成功");
+        assert_eq!(
+            std::fs::read(&target).unwrap().len(),
+            0,
+            "空内容应落盘空文件"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // 超大内容：约 202KB → base64 约 270KB → 9 段（每段 32KB b64）
+        let dir = w5_tmp_dir("remote_large");
+        let target = dir.join("large.txt");
+        let mut content = String::with_capacity(210_000);
+        for i in 0..200_000u32 {
+            content.push((b'a' + (i % 26) as u8) as char);
+            if i % 80 == 79 {
+                content.push('\n');
+            }
+        }
+        let tp = target.to_string_lossy().to_string();
+        let cmds = crate::runtime::build_write_file_commands(&tp, &content);
+        assert!(
+            cmds.len() >= 3,
+            "超大内容应拆成多条分段命令，实际 {} 条",
+            cmds.len()
+        );
+
+        let remote = RemoteRuntime::new(FakeRemoteShell { dir: dir.clone() }, "u", "h", 22, "", "");
+        remote
+            .write_file(&tp, &content)
+            .await
+            .expect("超大内容写入应成功");
+
+        let written = std::fs::read(&target).unwrap();
+        assert_eq!(
+            written,
+            content.as_bytes(),
+            "分段写入后必须与原文逐字节一致"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// helper 契约（纯单元）：无 heredoc；首段截断/后续追加；base64 参数
+    /// 只含安全字母表（shell 惰性）；除末段外无 padding、块长 4 的倍数。
+    /// （用 #[tokio::test]：本模块 `use tokio::test;` 使裸 #[test] 被解析为
+    ///   tokio 宏，要求 async fn）
+    #[tokio::test]
+    async fn write_file_commands_contract() {
+        // 单段路径
+        let cmds = crate::runtime::build_write_file_commands("/tmp/x/y.txt", W5_MALICIOUS);
+        assert_eq!(cmds.len(), 1);
+        assert!(cmds[0].contains("| base64 -d > "), "{}", cmds[0]);
+        assert!(cmds[0].starts_with("mkdir -p \"$(dirname '/tmp/x/y.txt')\""));
+        assert!(!cmds[0].contains("IONEOF"), "修复后不得再出现 heredoc");
+
+        // 分段路径
+        let big = "A".repeat(200_000);
+        let cmds = crate::runtime::build_write_file_commands("/tmp/x/y.txt", &big);
+        assert!(cmds.len() >= 3);
+        assert!(cmds[0].contains("| base64 -d > "));
+        for c in &cmds[1..] {
+            assert!(c.contains("| base64 -d >> "), "非首段必须是追加: {c}");
+        }
+
+        // 每个 printf 的 base64 参数只含 [A-Za-z0-9+/=]，shell 惰性；
+        // 拼接整体可解码还原（本地 base64 -d 验证解码语义）
+        let mut joined = String::new();
+        for c in &cmds {
+            let marker = "printf '%s' '";
+            let start = c.find(marker).expect("每条命令都应有 printf 段") + marker.len();
+            let rest = &c[start..];
+            let end = rest.find('\'').expect("printf 参数应有闭合引号");
+            let chunk = &rest[..end];
+            assert!(
+                chunk
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'='),
+                "base64 参数含非法字符: {chunk:?}"
+            );
+            assert_eq!(
+                chunk.len() % 4,
+                0,
+                "块长必须是 4 的倍数（独立可解码前提）: {}",
+                chunk.len()
+            );
+            joined.push_str(chunk);
+        }
+        // 除末段外无 padding
+        for c in &cmds[..cmds.len() - 1] {
+            let marker = "printf '%s' '";
+            let start = c.find(marker).unwrap() + marker.len();
+            let rest = &c[start..];
+            let chunk = &rest[..rest.find('\'').unwrap()];
+            assert!(!chunk.contains('='), "非末段不得含 padding");
+        }
+
+        // 拼接后整体可解码还原
+        let out = std::process::Command::new("sh")
+            .args(["-c", &format!("printf '%s' '{joined}' | base64 -d")])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "拼接块应可整体解码");
+        assert_eq!(out.stdout, big.into_bytes(), "解码结果必须与原文一致");
+
+        // 空内容 → 单条命令，printf 参数为空串
+        let cmds = crate::runtime::build_write_file_commands("/tmp/x/e.txt", "");
+        assert_eq!(cmds.len(), 1);
+        assert!(
+            cmds[0].contains("printf '%s' '' | base64 -d > "),
+            "{}",
+            cmds[0]
+        );
     }
 }
