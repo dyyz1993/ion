@@ -312,14 +312,12 @@ pub struct HooksTrustConfig {
 }
 
 impl HooksTrustConfig {
-    /// 判定某项目目录的项目级 hooks 是否允许加载。
-    /// canonicalize 比对（防 `..`/符号链接伪装）。
-    pub fn project_hooks_allowed(&self, project_dir: Option<&std::path::Path>) -> bool {
-        if self.project_hooks_enabled {
-            return true;
-        }
-        let Some(dir) = project_dir else { return false };
-        let Ok(canon) = std::fs::canonicalize(dir) else {
+    /// 判定某项目目录是否在显式信任列表（canonicalize 比对，防 `..`/符号链接伪装）。
+    ///
+    /// 共享判定：hooks 供应链信任门（`project_hooks_allowed`）与项目级
+    /// `.wasm` 扩展发现（worker_rpc.rs `discover_wasm_extensions`）都用它。
+    pub fn project_dir_trusted(&self, project_dir: &std::path::Path) -> bool {
+        let Ok(canon) = std::fs::canonicalize(project_dir) else {
             return false;
         };
         self.trusted_projects.iter().any(|t| {
@@ -327,6 +325,16 @@ impl HooksTrustConfig {
                 .map(|ct| ct == canon)
                 .unwrap_or(false)
         })
+    }
+
+    /// 判定某项目目录的项目级 hooks 是否允许加载。
+    /// canonicalize 比对（防 `..`/符号链接伪装）。
+    pub fn project_hooks_allowed(&self, project_dir: Option<&std::path::Path>) -> bool {
+        if self.project_hooks_enabled {
+            return true;
+        }
+        let Some(dir) = project_dir else { return false };
+        self.project_dir_trusted(dir)
     }
 }
 
@@ -2050,5 +2058,82 @@ mod merge_tests {
         ] {
             assert!(nested.servers.contains_key(*name), "server '{name}' 应存在");
         }
+    }
+}
+
+/// 项目目录信任判定（hooks 信任门与项目级 .wasm 扩展发现共用）。
+#[cfg(test)]
+mod trust_pred_tests {
+    use super::*;
+
+    #[test]
+    fn test_project_dir_trusted_matrix() {
+        let tmp = std::env::temp_dir().join(format!(
+            "ion-trust-pred-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let proj = tmp.join("my-repo");
+        std::fs::create_dir_all(&proj).unwrap();
+
+        // 默认（空 trusted_projects）→ 不信任
+        assert!(!HooksTrustConfig::default().project_dir_trusted(&proj));
+
+        // 信任列表命中（直接写法）
+        let trusted = HooksTrustConfig {
+            project_hooks_enabled: false,
+            trusted_projects: vec![proj.to_string_lossy().to_string()],
+        };
+        assert!(trusted.project_dir_trusted(&proj));
+
+        // `..` 写法等价真实路径：proj/../my-repo 词法解析后指向 proj 本身
+        //（canonicalize 比对两侧，symlink/.. 不产生偏差）
+        let dotdot = HooksTrustConfig {
+            project_hooks_enabled: false,
+            trusted_projects: vec![format!("{}/../my-repo", proj.display())],
+        };
+        assert!(dotdot.project_dir_trusted(&proj));
+
+        // 兄弟目录不在信任列表 → 不信任
+        let other = tmp.join("other-repo");
+        std::fs::create_dir_all(&other).unwrap();
+        assert!(!trusted.project_dir_trusted(&other));
+
+        // 目录不存在（canonicalize 失败）→ 不信任
+        assert!(!trusted.project_dir_trusted(&tmp.join("not-exist")));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// project_hooks_allowed 行为保持不变（project_hooks_enabled 全放 /
+    /// trusted_projects 精确放行 / None project_dir deny）。
+    #[test]
+    fn test_project_hooks_allowed_unchanged_after_refactor() {
+        let tmp = std::env::temp_dir().join(format!(
+            "ion-trust-pred-2-{}",
+            std::process::id()
+        ));
+        let proj = tmp.join("repo");
+        std::fs::create_dir_all(&proj).unwrap();
+
+        assert!(!HooksTrustConfig::default().project_hooks_allowed(Some(&proj)));
+        assert!(!HooksTrustConfig::default().project_hooks_allowed(None));
+
+        let enabled = HooksTrustConfig {
+            project_hooks_enabled: true,
+            trusted_projects: vec![],
+        };
+        assert!(enabled.project_hooks_allowed(Some(&proj)));
+
+        let trusted = HooksTrustConfig {
+            project_hooks_enabled: false,
+            trusted_projects: vec![proj.to_string_lossy().to_string()],
+        };
+        assert!(trusted.project_hooks_allowed(Some(&proj)));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

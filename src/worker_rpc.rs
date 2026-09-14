@@ -498,48 +498,26 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
         let config_root = crate::paths::project_root_for_config()
             .to_string_lossy()
             .to_string();
-        let extensions_dirs: Vec<std::path::PathBuf> = vec![
-            crate::paths::extensions_dir(),
-            crate::paths::project_extensions_dir(&config_root),
-        ];
-        for dir in &extensions_dirs {
-            if !dir.exists() {
-                continue;
+        // 项目级 .wasm 供应链信任门：与 hooks 信任门共用 trusted_projects 判定。
+        // 全局目录 ~/.ion/agent/extensions/ 是 ion extension install 显式安装，不受门限制。
+        let wasm_trust = crate::config::IonConfig::load().runtime.hooks_trust;
+        for discovered in discover_wasm_extensions(
+            &crate::paths::extensions_dir(),
+            std::path::Path::new(&config_root),
+            &wasm_trust,
+            &wasm_ext_registry,
+        ) {
+            for td in &discovered.tool_defs {
+                tools.register(Box::new(WasmToolAdapter {
+                    name: td.name.clone(),
+                    description: td.description.clone(),
+                    parameters: td.parameters.clone(),
+                    extension_path: discovered.canonical_path.clone(),
+                    extension_id: discovered.extension_id.clone(),
+                    registry: wasm_ext_registry.clone(),
+                }));
             }
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().map(|e| e == "wasm").unwrap_or(false) {
-                        let canonical_str = std::fs::canonicalize(&path)
-                            .map(|p| p.to_string_lossy().to_string())
-                            .unwrap_or_else(|_| path.to_string_lossy().to_string());
-                        let extension_id =
-                            crate::wasm_extension::extension_id_from_path(&canonical_str);
-                        match wasm_ext_registry.add(&canonical_str) {
-                            Ok(tool_defs) => {
-                                for td in &tool_defs {
-                                    tools.register(Box::new(WasmToolAdapter {
-                                        name: td.name.clone(),
-                                        description: td.description.clone(),
-                                        parameters: td.parameters.clone(),
-                                        extension_path: canonical_str.clone(),
-                                        extension_id: extension_id.clone(),
-                                        registry: wasm_ext_registry.clone(),
-                                    }));
-                                    tracing::info!(
-                                        "[wasm] auto-discovered {extension_id}: {}",
-                                        td.name
-                                    );
-                                }
-                                loaded_wasm_paths.push(canonical_str);
-                            }
-                            Err(e) => {
-                                tracing::warn!("[wasm] failed to load {}: {e}", path.display());
-                            }
-                        }
-                    }
-                }
-            }
+            loaded_wasm_paths.push(discovered.canonical_path);
         }
     }
 
@@ -7861,6 +7839,166 @@ impl ion_provider::registry::ApiProvider for ArcFauxProvider {
         cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> ion_provider::error::ProviderResult<ion_provider::event_stream::EventStream> {
         self.0.stream(model, context, options, cancel).await
+    }
+}
+
+/// 单个自动发现的 WASM 扩展（实例化成功）。
+pub(crate) struct DiscoveredWasmExt {
+    pub canonical_path: String,
+    pub extension_id: String,
+    pub tool_defs: Vec<crate::wasm_extension::ToolDef>,
+}
+
+/// WASM Extension 自动发现：扫描全局 + 项目级 .wasm 并实例化到 registry。
+///
+/// 返回成功加载的扩展列表（调用方据此注册 WasmToolAdapter）。
+/// `global_dir` / `project_root` 由调用方显式传入（可测试，不读真实 HOME）；
+/// `trust` 是项目级供应链信任门配置（与 hooks 信任门共用 trusted_projects 判定）。
+///
+/// 供应链信任门（对齐 hooks 信任门，M4 安全加固）：
+/// - 全局目录 `~/.ion/agent/extensions/` 是用户显式安装（`ion extension install`），
+///   **不受门限制**；
+/// - 项目级 `{project_root}/.ion/extensions/` 是仓库自带文件（克隆恶意仓库即中招），
+///   要求项目根在 config `runtime.hooks_trust.trusted_projects`，否则跳过并记 WARN。
+pub(crate) fn discover_wasm_extensions(
+    global_dir: &std::path::Path,
+    project_root: &std::path::Path,
+    trust: &crate::config::HooksTrustConfig,
+    registry: &WasmExtensionRegistry,
+) -> Vec<DiscoveredWasmExt> {
+    let mut discovered = Vec::new();
+    let project_dir = crate::paths::project_extensions_dir(&project_root.to_string_lossy());
+    // (目录, 是否受项目级信任门约束)
+    let extensions_dirs: Vec<(std::path::PathBuf, bool)> =
+        vec![(global_dir.to_path_buf(), false), (project_dir, true)];
+    for (dir, gated) in &extensions_dirs {
+        if *gated && !trust.project_dir_trusted(project_root) {
+            tracing::warn!(
+                "[wasm] project extensions SKIPPED (untrusted project): {} — 把项目根目录加入 \
+                 ~/.ion/config.json 的 runtime.hooks_trust.trusted_projects 后重启即可加载项目级 .wasm 扩展",
+                dir.display()
+            );
+            continue;
+        }
+        if !dir.exists() {
+            continue;
+        }
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map(|e| e == "wasm").unwrap_or(false) {
+                    let canonical_str = std::fs::canonicalize(&path)
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| path.to_string_lossy().to_string());
+                    let extension_id =
+                        crate::wasm_extension::extension_id_from_path(&canonical_str);
+                    match registry.add(&canonical_str) {
+                        Ok(tool_defs) => {
+                            for td in &tool_defs {
+                                tracing::info!(
+                                    "[wasm] auto-discovered {extension_id}: {}",
+                                    td.name
+                                );
+                            }
+                            discovered.push(DiscoveredWasmExt {
+                                canonical_path: canonical_str,
+                                extension_id,
+                                tool_defs,
+                            });
+                        }
+                        Err(e) => {
+                            tracing::warn!("[wasm] failed to load {}: {e}", path.display());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    discovered
+}
+
+#[cfg(test)]
+mod wasm_extension_gate_tests {
+    use super::*;
+    use crate::config::HooksTrustConfig;
+
+    /// 供应链信任门复现（项目级 .wasm 自动加载无信任门）：
+    /// ① 未信任项目下的 .wasm 不被自动加载；
+    /// ② 项目根加入 trusted_projects 后正常加载（实例化 + 工具定义）。
+    /// 全局目录不受门限制（本测试用空全局目录占位，不触碰真实 ~/.ion）。
+    #[test]
+    fn test_project_wasm_gate_untrusted_skips_trusted_loads() {
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/extensions/file-time-guard/file_time_guard.wasm"
+        );
+        if !std::path::Path::new(fixture).exists() {
+            // .wasm 由扩展构建流程产出；缺失时跳过（构建产物不在 checkout 的环境）
+            return;
+        }
+        let tmp = std::env::temp_dir().join(format!(
+            "ion-wasm-gate-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let proj = tmp.join("evil-repo");
+        let proj_ext = proj.join(".ion").join("extensions");
+        std::fs::create_dir_all(&proj_ext).unwrap();
+        std::fs::copy(fixture, proj_ext.join("file_time_guard.wasm")).unwrap();
+        // 空的全局目录占位（不读真实 ~/.ion/agent/extensions）
+        let global = tmp.join("global-ext");
+        std::fs::create_dir_all(&global).unwrap();
+
+        // ① 默认配置（无信任）→ 项目级 .wasm 不被加载
+        {
+            let registry = WasmExtensionRegistry::new();
+            let got = discover_wasm_extensions(
+                &global,
+                &proj,
+                &HooksTrustConfig::default(),
+                &registry,
+            );
+            assert!(
+                got.is_empty(),
+                "untrusted project .wasm must NOT be auto-loaded, got: {:?}",
+                got.iter().map(|d| &d.canonical_path).collect::<Vec<_>>()
+            );
+            assert!(
+                registry.list().is_empty(),
+                "registry must stay empty for untrusted project"
+            );
+        }
+
+        // ② 项目根加入 trusted_projects → 正常加载
+        {
+            let trust = HooksTrustConfig {
+                project_hooks_enabled: false,
+                trusted_projects: vec![proj.to_string_lossy().to_string()],
+            };
+            let registry = WasmExtensionRegistry::new();
+            let got = discover_wasm_extensions(&global, &proj, &trust, &registry);
+            assert_eq!(
+                got.len(),
+                1,
+                "trusted project .wasm must load, got: {:?}",
+                got.iter().map(|d| &d.canonical_path).collect::<Vec<_>>()
+            );
+            assert_eq!(got[0].extension_id, "file_time_guard");
+            // "加载成功"的判据：registry.add() 返回 Ok（实例化进 registry）。
+            // file_time_guard 是 hook 型扩展（无工具导出），tool_defs 为空属正常。
+            let listed = registry.list();
+            assert_eq!(listed.len(), 1);
+            assert!(
+                listed[0].path.ends_with("file_time_guard.wasm"),
+                "registry should hold the loaded project wasm: {:?}",
+                listed[0].path
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
 

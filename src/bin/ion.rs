@@ -1537,6 +1537,21 @@ async fn cmd_workflow_run(path: &str, set: &[String]) {
 // --mode rpc 入口已迁移到 src/worker_rpc.rs（合并自原 ion-worker 二进制）。
 // 单二进制方案：ion --mode rpc 由 lib 内的 ion::worker_rpc::run_worker_rpc 处理。
 
+/// 场景 1（`ion "..."` 直接执行）ctx.fs 的 Runtime 后端。
+///
+/// 与 worker 模式（worker_rpc.rs 经 BackendRegistry→每后端 SecuredRuntime）保持一致：
+/// 套 SecuredRuntime（SecurityProfile::default() = Standard），让受保护路径
+/// （~/.ion 的 config/auth/hooks/settings/path-permissions.json + agent/models.json）
+/// 的读/写/编辑/删除检查在场景 1 同样生效——否则任一扩展
+/// host_write_file("~/.ion/config.json") 直接得手（安全加固 P0 在场景 1 形同虚设）。
+/// allowed_roots 语义不变（仍由 RuntimeFileSystem 白名单把守）。
+fn build_scene1_fs_runtime() -> std::sync::Arc<dyn ion::runtime::Runtime> {
+    std::sync::Arc::new(
+        ion::runtime::SecuredRuntime::new(ion::runtime::LocalRuntime::new())
+            .with_profile(ion::kernel::SecurityProfile::default()),
+    )
+}
+
 async fn cmd_run(
     eff: &EffectiveConfig,
     message: &str,
@@ -2025,11 +2040,10 @@ async fn cmd_run(
     ext_reg.register(Box::new(CmdRunSessionPersistenceExtension::new(session_id)));
 
     // ── 注入 ctx.fs 统一文件访问能力（RuntimeFileSystem）──
-    // 场景 1（直接执行）：用 LocalRuntime（本地 fs）+ allowed_roots 白名单。
-    // 内置扩展通过 registry.filesystem() 拿到，WASM 扩展通过 host_read_file 拿到。
+    // 场景 1（直接执行）：与 worker 模式一致走 SecuredRuntime（受保护路径检查生效）
+    // + allowed_roots 白名单。内置扩展通过 registry.filesystem() 拿到，WASM 扩展通过 host_read_file 拿到。
     {
-        let fs_rt: std::sync::Arc<dyn ion::runtime::Runtime> =
-            std::sync::Arc::new(ion::runtime::LocalRuntime::new());
+        let fs_rt: std::sync::Arc<dyn ion::runtime::Runtime> = build_scene1_fs_runtime();
         let fs_allowed_roots = ion::agent::extension::RuntimeFileSystem::default_allowed_roots(
             std::path::Path::new(&cwd),
         );
@@ -8773,6 +8787,11 @@ mod tests {
     #[test]
     fn load_session_raw_content_falls_through_to_by_id_path() {
         use std::fs;
+        // HOME env 操作互斥：本测试 set_var("HOME")，与 scene1_fs_gate_tests 的
+        // HOME 隔离测试并行会竞态——统一走同一把锁（--test-threads>1 必需）。
+        let _env = scene1_fs_gate_tests::SCENE1_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // 临时 HOME，隔离 SessionIndex
         let tmp = std::env::temp_dir().join(format!(
             "ion-test-{}-{}",
@@ -9109,4 +9128,110 @@ fn epoch_days_to_ymd(days: i64) -> (i64, u32, u32) {
         }
     }
     (year, month, day)
+}
+
+/// 场景 1 ctx.fs 安全基线（复现测试）：受保护路径写/读必须被拒，项目内路径照常。
+#[cfg(test)]
+mod scene1_fs_gate_tests {
+    use super::*;
+    use ion::agent::extension::FileSystemCapability;
+
+    /// HOME 操作互斥（set_var 全进程生效，--test-threads>1 时防并发污染）。
+    /// 其他操作 HOME 的测试也必须取这把锁。
+    pub(crate) static SCENE1_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// HOME 隔离守卫：构造时切到私有 HOME，drop 时恢复（不触碰真实 ~/.ion）
+    struct HomeGuard {
+        prev: Option<String>,
+    }
+    impl HomeGuard {
+        fn set(home: &std::path::Path) -> Self {
+            let prev = std::env::var("HOME").ok();
+            unsafe {
+                std::env::set_var("HOME", home);
+            }
+            Self { prev }
+        }
+    }
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match self.prev.take() {
+                    Some(h) => std::env::set_var("HOME", h),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
+        }
+    }
+
+    /// 场景 1 构造的扩展 fs：~/.ion/config.json 写/读被拒（protected_paths 生效），
+    /// 项目内路径读写正常（不破坏场景 1 正常扩展能力）。
+    #[test]
+    fn test_scene1_fs_blocks_protected_paths_allows_project_files() {
+        let _lock = SCENE1_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "ion-scene1-fs-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let home = tmp.join("home");
+        let proj = tmp.join("proj");
+        std::fs::create_dir_all(home.join(".ion")).unwrap();
+        std::fs::create_dir_all(&proj).unwrap();
+        // 预置受保护文件（真实内容，防被改写）
+        let config_json = home.join(".ion").join("config.json");
+        std::fs::write(&config_json, "{}").unwrap();
+
+        let _home = HomeGuard::set(&home);
+
+        // 与 cmd_run 场景 1 相同的构造：build_scene1_fs_runtime + default_allowed_roots
+        let fs = ion::agent::extension::RuntimeFileSystem::new(
+            build_scene1_fs_runtime(),
+            ion::agent::extension::RuntimeFileSystem::default_allowed_roots(&proj),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        // ① 受保护路径：写被拒（~/.ion 在 allowed_roots 里也必须挡住——P0 修复点）
+        let w = rt.block_on(fs.write_file(
+            &config_json.to_string_lossy(),
+            "{\"hijacked\":true}",
+        ));
+        assert!(
+            w.is_err(),
+            "scene1 ctx.fs write to ~/.ion/config.json must be denied, got: {:?}",
+            w
+        );
+        assert_eq!(
+            std::fs::read_to_string(&config_json).unwrap(),
+            "{}",
+            "protected file content must be untouched"
+        );
+
+        // ② 受保护路径：读被拒（防 base_url/key 外泄进 LLM 上下文）
+        let r = rt.block_on(fs.read_file(&config_json.to_string_lossy()));
+        assert!(
+            r.is_err(),
+            "scene1 ctx.fs read of ~/.ion/config.json must be denied, got: {:?}",
+            r
+        );
+
+        // ③ 项目内路径：写/读照常（场景 1 正常扩展能力不受影响）
+        let note = proj.join("note.txt");
+        rt.block_on(fs.write_file(&note.to_string_lossy(), "hello"))
+            .expect("project write must work in scene1");
+        let content = rt
+            .block_on(fs.read_file(&note.to_string_lossy()))
+            .expect("project read must work in scene1");
+        assert_eq!(content, "hello");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
