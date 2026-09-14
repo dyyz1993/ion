@@ -2460,6 +2460,7 @@ impl WorkerRegistry {
             // 收集需要在 drop lock 后 await 的 parent_event_tx + crash payload，
             // block 结束后（lock 释放）再 .send().await。
             let auto_respawn;
+            let respawn_ctx: Option<(String, String)>;
             let pending_parent_notify: Option<(String, serde_json::Value)> = {
                 let mut reg = sub_registry.lock();
                 let exit_code = reg
@@ -2472,6 +2473,12 @@ impl WorkerRegistry {
                     record.exit_code = exit_code;
                 }
                 // ── AUTO-RECOVERY：远程 worker 异常死亡 → 收集重派信息 ──
+                // W6 Bug3: 同时带出原 record 的 agent + session_id，重派配置继承
+                // 原 agent + 会话当前 model（respawn_inherit_from_session）
+                respawn_ctx = reg
+                    .workers
+                    .get(&sub_wid)
+                    .map(|r| (r.agent.clone(), r.session_id.clone()));
                 auto_respawn = reg
                     .workers
                     .get(&sub_wid)
@@ -2556,9 +2563,16 @@ impl WorkerRegistry {
                 }
                 let reg_ar = sub_registry.clone();
                 tokio::spawn(async move {
+                    // W6 Bug3: 重派配置继承原 record 的 agent + 会话当前 model/provider
+                    //（SessionIndex），找不到回落默认——不再硬编码 "build"
+                    let (inherit_agent, inherit_model, inherit_provider) = respawn_ctx
+                        .map(|(agent, sid)| respawn_inherit_from_session(&sid, &agent))
+                        .unwrap_or((None, None, None));
                     let cfg = WorkerCreateConfig {
                         host: Some(host),
-                        agent: Some("build".into()),
+                        agent: inherit_agent,
+                        model: inherit_model,
+                        provider: inherit_provider,
                         initial_prompt: Some(prompt),
                         // 默认 20 turns 会让重派 worker 几分钟就烧完预算（探索期一轮一个工具调用）
                         max_turns: Some(200),
@@ -7069,6 +7083,219 @@ mod tests {
         let r = randish();
         let _ = r; // value is opaque; just ensure it does not panic
     }
+
+    // --- W6 Bug2: generate_resume_prompt 只认真实用户输入 ---
+    //
+    // 修复前：user_task 取"倒序最后一条 User 消息"，但 channel_send 注入和
+    // followUp 完成通知都以 User 身份落会话（source=followUp），monitor 发起的
+    // prompt（origin=monitor）也是 User 身份——respawn 重派时任务卡被注入内容
+    // 劫持。修复后：排除 source=steer/followUp/interrupt 的注入消息 + 按
+    // input_origin 留痕时序关联排除非 user 发起的输入。
+
+    fn w6_session_line(id: &str, v: serde_json::Value) -> String {
+        let mut obj = serde_json::json!({
+            "type": "placeholder",
+            "id": id,
+            "parentId": null,
+            "timestamp": "2026-09-15T00:00:00Z",
+        });
+        if let (Some(dst), Some(src)) = (obj.as_object_mut(), v.as_object()) {
+            for (k, val) in src {
+                dst.insert(k.clone(), val.clone());
+            }
+        }
+        obj.to_string()
+    }
+
+    fn w6_header_line() -> String {
+        serde_json::json!({
+            "type": "session", "version": 3, "id": "w6sess",
+            "timestamp": "2026-09-15T00:00:00Z", "cwd": "/tmp"
+        })
+        .to_string()
+    }
+
+    fn w6_user_line(id: &str, text: &str, source: &str) -> String {
+        w6_session_line(
+            id,
+            serde_json::json!({
+                "type": "message",
+                "message": {"User": {
+                    "role": "user",
+                    "content": [{"Text": {"text": text}}],
+                    "timestamp": 1,
+                    "source": source,
+                }}
+            }),
+        )
+    }
+
+    fn w6_assistant_line(id: &str, text: &str) -> String {
+        w6_session_line(
+            id,
+            serde_json::json!({
+                "type": "message",
+                "message": {"Assistant": {
+                    "role": "assistant",
+                    "content": [{"Text": {"text": text}}],
+                }}
+            }),
+        )
+    }
+
+    fn w6_origin_line(id: &str, origin: &str, preview: &str) -> String {
+        w6_session_line(
+            id,
+            serde_json::json!({
+                "type": "custom",
+                "customType": "input_origin",
+                "data": {"origin": origin, "behavior": "prompt", "textPreview": preview, "ts": 1}
+            }),
+        )
+    }
+
+    fn w6_write_session(name: &str, lines: &[String]) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("ion_w6_resume_{}_{}", name, std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("sess.jsonl");
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        path
+    }
+
+    /// 提取任务卡"原始任务："行（transcript 部分本来就含注入消息，只验 user_task）
+    fn w6_task_line(prompt: &str) -> &str {
+        prompt
+            .lines()
+            .find(|l| l.starts_with("原始任务："))
+            .expect("task card must contain 原始任务 line")
+    }
+
+    #[test]
+    fn test_resume_prompt_skips_followup_injection() {
+        // 真实用户消息 + 更晚的 channel_send/followUp 注入消息 → 任务卡必须取真实消息
+        let path = w6_write_session(
+            "followup",
+            &[
+                w6_header_line(),
+                w6_user_line("m1", "fix the login bug in auth module", "prompt"),
+                w6_assistant_line("a1", "ok, reading auth module"),
+                // 注入：异步委派完成通知 / channel_send 都以 User+followUp 落盘
+                w6_user_line("m2", "[channel #main from abc123] build passed, CI green", "followUp"),
+                w6_assistant_line("a2", "noted"),
+            ],
+        );
+        let prompt = generate_resume_prompt(&path).expect("resume prompt must be generated");
+        let task = w6_task_line(&prompt);
+        assert!(
+            task.contains("fix the login bug"),
+            "user_task must be the real user message, got: {task}"
+        );
+        assert!(
+            !task.contains("CI green"),
+            "injected followUp message must not hijack the task card, got: {task}"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn test_resume_prompt_skips_monitor_origin_message() {
+        // monitor 发起的 prompt（origin=monitor 留痕）也不是真实用户输入
+        let path = w6_write_session(
+            "monitor",
+            &[
+                w6_header_line(),
+                w6_user_line("m1", "write the release notes for v2", "prompt"),
+                w6_assistant_line("a1", "done"),
+                w6_origin_line("c1", "monitor", "nightly run the checks"),
+                w6_user_line("m2", "nightly run the checks and report status", "prompt"),
+                w6_assistant_line("a2", "running checks"),
+            ],
+        );
+        let prompt = generate_resume_prompt(&path).expect("resume prompt must be generated");
+        let task = w6_task_line(&prompt);
+        assert!(
+            task.contains("write the release notes"),
+            "monitor-originated input must be skipped, got: {task}"
+        );
+        assert!(
+            !task.contains("nightly run"),
+            "monitor-originated text must not become the task card, got: {task}"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn test_resume_prompt_takes_latest_real_user_message() {
+        // 回归：正常会话仍取最后一条真实用户消息
+        let path = w6_write_session(
+            "normal",
+            &[
+                w6_header_line(),
+                w6_user_line("m1", "old task: scaffold the project", "prompt"),
+                w6_assistant_line("a1", "ok"),
+                w6_user_line("m2", "new task: refactor the parser module", "prompt"),
+                w6_assistant_line("a2", "working on it"),
+            ],
+        );
+        let prompt = generate_resume_prompt(&path).expect("resume prompt must be generated");
+        assert!(
+            prompt.contains("refactor the parser"),
+            "latest real user message must be the task, got: {prompt}"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn test_resume_prompt_all_real_when_only_prompt_source() {
+        // 全部都是真实用户消息（source=prompt、无 origin 留痕）→ 不误杀
+        let path = w6_write_session(
+            "allreal",
+            &[
+                w6_header_line(),
+                w6_user_line("m1", "task A: init repo", "prompt"),
+                w6_assistant_line("a1", "done"),
+                w6_user_line("m2", "task B: add tests for snapshot module", "prompt"),
+                w6_assistant_line("a2", "ok"),
+            ],
+        );
+        let prompt = generate_resume_prompt(&path).expect("resume prompt must be generated");
+        assert!(
+            prompt.contains("add tests for snapshot"),
+            "real user messages must not be filtered out, got: {prompt}"
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    // --- W6 Bug3: respawn 配置继承原 agent + 会话当前 model ---
+
+    #[test]
+    fn test_respawn_inherit_fields_takes_record_agent_and_index_model() {
+        // 非 build agent + set_model 过的会话 → 继承，不回落 "build"/全局默认
+        let (agent, model, provider) =
+            respawn_inherit_fields("reviewer", Some(("glm-5.2".into(), "zai".into())));
+        assert_eq!(agent.as_deref(), Some("reviewer"), "agent must inherit record value");
+        assert_eq!(model.as_deref(), Some("glm-5.2"), "model must inherit index value");
+        assert_eq!(provider.as_deref(), Some("zai"));
+    }
+
+    #[test]
+    fn test_respawn_inherit_fields_falls_back_when_missing() {
+        // index 无记录 → model/provider 回落 None（走全局默认），agent 仍继承 record
+        let (agent, model, provider) = respawn_inherit_fields("developer", None);
+        assert_eq!(agent.as_deref(), Some("developer"));
+        assert!(model.is_none(), "missing index model must fall back to None");
+        assert!(provider.is_none());
+
+        // index model 为空字符串（异常数据）→ 同样回落
+        let (_, model, provider) = respawn_inherit_fields("dev", Some((String::new(), "zai".into())));
+        assert!(model.is_none());
+        assert!(provider.is_none());
+
+        // record agent 为空 → 回落 None（默认 agent）
+        let (agent, _, _) = respawn_inherit_fields("", Some(("m".into(), "p".into())));
+        assert!(agent.is_none(), "empty record agent must fall back to None");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -7489,6 +7716,54 @@ fn auto_respawn_counts() -> &'static std::sync::Mutex<std::collections::HashMap<
     C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
+/// W6 Bug3: respawn 继承决策（纯函数，供测试）。
+/// agent 继承 record 原值（不是硬编码 "build"）；model/provider 继承会话当前值
+/// （SessionIndex 的 model/provider 字段，set_model 时同步更新）。
+/// 任一缺失/为空回落 None（走全局默认 / 默认 agent），与旧行为兼容。
+pub fn respawn_inherit_fields(
+    record_agent: &str,
+    index_model: Option<(String, String)>, // (model, provider)
+) -> (Option<String>, Option<String>, Option<String>) {
+    let agent = if record_agent.trim().is_empty() {
+        None
+    } else {
+        Some(record_agent.to_string())
+    };
+    match index_model {
+        Some((model, provider)) if !model.trim().is_empty() => {
+            (agent, Some(model), Some(provider))
+        }
+        _ => (agent, None, None),
+    }
+}
+
+/// W6 Bug3: respawn 继承组装——从 SessionIndex 恢复会话当前 model/provider，
+/// agent 用 record 原值。stdout-EOF 重派路径用（record 在手，agent 权威）。
+pub fn respawn_inherit_from_session(
+    session_id: &str,
+    record_agent: &str,
+) -> (Option<String>, Option<String>, Option<String>) {
+    let index_model = crate::session_index::SessionIndex::load()
+        .get(session_id)
+        .map(|m| (m.model.clone(), m.provider.clone()));
+    respawn_inherit_fields(record_agent, index_model)
+}
+
+/// W6 Bug3: respawn 继承组装（纯 SessionIndex 版）——agent 与 model/provider 都
+/// 从会话索引恢复（set_agent / set_model 均同步写入索引）。heartbeat 判死路径用：
+/// record 不在 cfg 构造作用域内且收集点在禁改区，只能靠 orig_sid 查索引。
+pub fn respawn_inherit_from_index(
+    session_id: &str,
+) -> (Option<String>, Option<String>, Option<String>) {
+    let idx = crate::session_index::SessionIndex::load();
+    match idx.get(session_id) {
+        Some(meta) => {
+            respawn_inherit_fields(&meta.agent, Some((meta.model.clone(), meta.provider.clone())))
+        }
+        None => (None, None, None),
+    }
+}
+
 /// 会话文件解析（带回流副本 fallback）：
 /// ① 优先 `session_jsonl_path_by_id(project_path, sid)`（同 project 直落）
 /// ② 找不到时扫 `sessions_root/*/<sid>.jsonl`——客户端模式下会话回流到
@@ -7517,6 +7792,49 @@ fn resolve_session_file_with_reflow(
     None
 }
 
+/// W6 Bug2: 预扫描会话文件中的 input_origin custom 条目。
+/// prompt RPC 对 origin != "user" 的输入（monitor/system/peer）会先落一条
+/// `{"type":"custom","customType":"input_origin","data":{origin,textPreview,...}}`
+/// 留痕（worker_rpc.rs prompt 臂）；User 消息本身不带 origin 标记，重放时按
+/// 行序时序关联还原。返回 (行号, origin, textPreview) 列表。
+fn collect_input_origin_marks(lines: &[&str]) -> Vec<(usize, String, String)> {
+    lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, line)| {
+            let d = serde_json::from_str::<serde_json::Value>(line).ok()?;
+            if d.get("type") != Some(&serde_json::json!("custom")) {
+                return None;
+            }
+            if d.get("customType") != Some(&serde_json::json!("input_origin")) {
+                return None;
+            }
+            let data = d.get("data")?;
+            let origin = data.get("origin")?.as_str()?.to_string();
+            let preview = data.get("textPreview")?.as_str()?.to_string();
+            Some((i, origin, preview))
+        })
+        .collect()
+}
+
+/// W6 Bug2: 判断某条 User 消息是否由非 user 来源发起（monitor/system/peer）。
+/// 取位于它之前、离它最近的 input_origin 标记；无标记或 origin == "user" → 真实
+/// 用户；textPreview（留痕时 prompt 文本前 80 字符截断）不是消息文本前缀 →
+/// 保守视为真实用户（宁可漏排除，不可把真实任务当注入跳过）。
+fn origin_injects_message(
+    line_idx: usize,
+    text: &str,
+    marks: &[(usize, String, String)],
+) -> bool {
+    let Some((_, origin, preview)) = marks.iter().rev().find(|(i, _, _)| *i < line_idx) else {
+        return false;
+    };
+    if origin == "user" {
+        return false;
+    }
+    text.starts_with(preview.as_str())
+}
+
 fn generate_resume_prompt(session_path: &std::path::Path) -> Option<String> {
     let content = std::fs::read_to_string(session_path).ok()?;
     let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -7528,7 +7846,12 @@ fn generate_resume_prompt(session_path: &std::path::Path) -> Option<String> {
     let mut last_tool = String::new();
     let mut user_task = String::new();
 
-    for line in lines.iter().rev() {
+    // W6 Bug2: 预扫描 input_origin custom 条目（prompt params.origin != user 的留痕，
+    // docs/design/INPUT_ORIGIN.md）。origin 只落在 custom 条目、User 消息本身不带标记，
+    // 重放时按行序时序关联还原（标记在消息之前、离它最近 + textPreview 文本匹配）。
+    let origin_marks = collect_input_origin_marks(&lines);
+
+    for (line_idx, line) in lines.iter().enumerate().rev() {
         let Ok(d) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
@@ -7541,21 +7864,30 @@ fn generate_resume_prompt(session_path: &std::path::Path) -> Option<String> {
 
         if user_task.is_empty() {
             if let Some(u) = msg.get("User") {
-                if let Some(content) = u.get("content") {
-                    // 两种格式：纯字符串（本地）或数组 [{"Text":{"text":"..."}}]（M3 回流）
-                    if let Some(s) = content.as_str() {
-                        user_task = s.chars().take(300).collect();
-                    } else if let Some(arr) = content.as_array() {
-                        for c in arr {
-                            if let Some(t) = c
-                                .get("Text")
-                                .and_then(|t| t.get("text"))
-                                .and_then(|t| t.as_str())
-                            {
-                                user_task = t.chars().take(300).collect();
-                                break;
-                            }
-                        }
+                // W6 Bug2: 只认真实用户输入——
+                // 1) source 为 steer/followUp/interrupt 的是注入消息（channel_send /
+                //    followUp 完成通知 / 插队），MessageSource camelCase 序列化；
+                //    缺失视为真实输入（旧数据 / M3 回流条目无 source）。
+                // 2) source=prompt 但命中 input_origin 标记（origin=monitor/system/peer
+                //    且 textPreview 匹配）的也不是真实用户。
+                let source = u.get("source").and_then(|s| s.as_str()).unwrap_or("prompt");
+                let text_opt = if let Some(s) = u.get("content").and_then(|c| c.as_str()) {
+                    Some(s.to_string())
+                } else if let Some(arr) = u.get("content").and_then(|c| c.as_array()) {
+                    arr.iter().find_map(|c| {
+                        c.get("Text")
+                            .and_then(|t| t.get("text"))
+                            .and_then(|t| t.as_str())
+                            .map(String::from)
+                    })
+                } else {
+                    None
+                };
+                if let Some(text) = text_opt {
+                    let injected = matches!(source, "steer" | "followUp" | "interrupt")
+                        || origin_injects_message(line_idx, &text, &origin_marks);
+                    if !injected {
+                        user_task = text.chars().take(300).collect();
                     }
                 }
             }
