@@ -5468,55 +5468,10 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                 output_response(&id, "follow_up", &serde_json::Value::Null);
             }
             "abort_bash" => {
-                // 通过 process_map 找到 pid 并 kill
+                // 通过 process_map 找到 pid 并 kill（逻辑抽到 abort_bash_response 便于单测）
                 let bid = params.get("bid").and_then(|v| v.as_str()).unwrap_or("");
-                if bid.is_empty() {
-                    output_response(
-                        &id,
-                        "abort_bash",
-                        &serde_json::json!({"error": "missing 'bid' parameter"}),
-                    );
-                } else if let Some(ref pm) = process_map {
-                    let map = pm.blocking_lock();
-                    if let Some(info) = map.get(bid) {
-                        let pid = info.os_pid;
-                        let cmd = info.command.clone();
-                        drop(map);
-                        // 发 kill 信号（用 kill 命令，避免加 libc 依赖）
-                        let kill_result = std::process::Command::new("kill")
-                            .arg("-TERM")
-                            .arg(pid.to_string())
-                            .output()
-                            .map(|o| o.status.success())
-                            .unwrap_or(false);
-                        output_response(
-                            &id,
-                            "abort_bash",
-                            &serde_json::json!({
-                                "bid": bid,
-                                "pid": pid,
-                                "command": cmd,
-                                "signal": "SIGTERM",
-                                "success": kill_result,
-                            }),
-                        );
-                    } else {
-                        output_response(
-                            &id,
-                            "abort_bash",
-                            &serde_json::json!({
-                                "error": format!("process '{}' not found", bid),
-                                "available": map.keys().cloned().collect::<Vec<_>>(),
-                            }),
-                        );
-                    }
-                } else {
-                    output_response(
-                        &id,
-                        "abort_bash",
-                        &serde_json::json!({"error": "bash extension not enabled"}),
-                    );
-                }
+                let data = abort_bash_response(process_map.as_ref(), bid).await;
+                output_response(&id, "abort_bash", &data);
             }
             "register_remote_tool" => {
                 let name = params
@@ -7058,6 +7013,51 @@ fn output_response(id: &str, command: &str, data: &serde_json::Value) {
 fn output_error_response(id: &str, command: &str, error: &str) {
     output(&ion_protocol::worker_response::error(id, command, error));
     emit_rpc_response_event(id, command, false, Some(error));
+}
+
+/// abort_bash 响应 data 的唯一构造点（从主循环抽出，便于单测）。
+///
+/// 锁语义：`process_map` 是 BashExtension 后台进程表（tokio::sync::Mutex），
+/// 与后台执行路径共享；本函数运行在 worker 主循环（async 上下文）内，
+/// 必须用 `lock().await` —— `blocking_lock()` 在 runtime 线程上直接 panic
+/// （"Cannot block the current thread from within a runtime"，exit 101 杀死 worker，
+/// P0-1 修复）。临界区保持纯同步小段：clone 字段后立刻 drop 守卫，
+/// 不跨 await、不持锁 kill，与 BashExtension 的 lock().await 用法对齐。
+async fn abort_bash_response(
+    process_map: Option<&crate::agent::bash::ProcessMap>,
+    bid: &str,
+) -> serde_json::Value {
+    if bid.is_empty() {
+        return serde_json::json!({"error": "missing 'bid' parameter"});
+    }
+    let Some(pm) = process_map else {
+        return serde_json::json!({"error": "bash extension not enabled"});
+    };
+    let map = pm.lock().await;
+    if let Some(info) = map.get(bid) {
+        let pid = info.os_pid;
+        let cmd = info.command.clone();
+        drop(map);
+        // 发 kill 信号（用 kill 命令，避免加 libc 依赖）
+        let kill_result = std::process::Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        serde_json::json!({
+            "bid": bid,
+            "pid": pid,
+            "command": cmd,
+            "signal": "SIGTERM",
+            "success": kill_result,
+        })
+    } else {
+        serde_json::json!({
+            "error": format!("process '{}' not found", bid),
+            "available": map.keys().cloned().collect::<Vec<_>>(),
+        })
+    }
 }
 
 /// review_pending 响应 data 的唯一构造点（Bug3 形状统一）。
@@ -8958,4 +8958,85 @@ mod tests {
             }
             other => panic!("期望 Line，实际 {other:?}"),
         }    }
+}
+
+/// abort_bash（P0-1）handler 逻辑单测。
+/// 锁即 BashExtension 后台进程表（tokio::sync::Mutex，与后台执行路径共享），
+/// 测试用最小状态（Arc<Mutex<HashMap>> + 真实 sleep 子进程）直调 handler。
+#[cfg(test)]
+mod abort_bash_tests {
+    use super::*;
+    use crate::agent::bash::{ProcessInfo, ProcessMap};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn make_info(bid: &str, pid: u32, cmd: &str) -> ProcessInfo {
+        ProcessInfo {
+            bid: bid.into(),
+            os_pid: pid,
+            command: cmd.into(),
+            description: "test".into(),
+            status: "running".into(),
+            exit_code: None,
+            output: String::new(),
+            background: true,
+            started_at: 0,
+            elapsed_secs: 0,
+        }
+    }
+
+    /// P0-1 复现：abort_bash 在 tokio runtime 上下文里处理（真实 worker 主循环即如此）。
+    /// 修复前 blocking_lock() 在 runtime 线程上直接 panic
+    /// "Cannot block the current thread from within a runtime"（exit 101，一发 RPC 杀死 worker）。
+    #[tokio::test]
+    async fn test_abort_bash_kills_running_background_process() {
+        // 真实后台进程：sleep 30（精确清理：持有 child 句柄，kill 后 wait 回收）
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id();
+        let map: ProcessMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        map.lock()
+            .await
+            .insert("0000000a".into(), make_info("0000000a", pid, "sleep 30"));
+
+        let resp = abort_bash_response(Some(&map), "0000000a").await;
+
+        assert_eq!(resp["bid"], "0000000a");
+        assert_eq!(resp["pid"], pid);
+        assert_eq!(resp["signal"], "SIGTERM");
+        assert_eq!(resp["success"], true, "kill -TERM 应成功: {resp}");
+        // 精确回收：子进程应已死于 SIGTERM（非 0 退出）
+        let status = child.wait().expect("wait child");
+        assert!(!status.success());
+    }
+
+    #[tokio::test]
+    async fn test_abort_bash_unknown_bid_lists_available() {
+        let map: ProcessMap = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        map.lock()
+            .await
+            .insert("0000000b".into(), make_info("0000000b", u32::MAX - 1, "noop"));
+
+        let resp = abort_bash_response(Some(&map), "nope").await;
+
+        assert_eq!(resp["error"], "process 'nope' not found");
+        assert_eq!(resp["available"][0], "0000000b");
+    }
+
+    #[tokio::test]
+    async fn test_abort_bash_missing_bid() {
+        // 空 bid 优先于 map 存在性检查（保持既有行为顺序）
+        let resp = abort_bash_response(None, "").await;
+        assert_eq!(resp["error"], "missing 'bid' parameter");
+    }
+
+    #[tokio::test]
+    async fn test_abort_bash_bash_extension_not_enabled() {
+        let resp = abort_bash_response(None, "0000000a").await;
+        assert_eq!(resp["error"], "bash extension not enabled");
+    }
 }
