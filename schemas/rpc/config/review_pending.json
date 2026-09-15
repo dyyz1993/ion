@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "schemas/rpc/config/review_pending.json",
   "title": "RPC review_pending response",
-  "description": "列出待审文件（只回摘要：path/status/diffStat，不含内容，大 diff 走 review_file_diff）。⚠️ 双路径形状分裂：空闲路径 summary 含 total/added/modified/deleted；agent.run 期间经只读 bg 通道 summary 只有 total（status 带字面引号）。file-snapshot 未启用 → data.error='approval not enabled'。 ION worker RPC 响应信封：{id, type:'response', command, success, data|error}。success=true → data；success=false → error（output_error_response）。",
+  "description": "列出待审文件（只回摘要：path/status/diffStat，不含内容，大 diff 走 review_file_diff）。G2 Bug3 形状统一：空闲路径与 agent.run 期间只读 bg 通道共用同一构造（review_pending_data），summary 恒为 total/added/modified/deleted 四字段，status 恒为干净的 added/modified/deleted（无字面引号）。file-snapshot 未启用 → data.error='approval not enabled (requires file-snapshot)'。 ION worker RPC 响应信封：{id, type:'response', command, success, data|error}。success=true → data；success=false → error（output_error_response）。",
   "type": "object",
   "required": [
     "id",
@@ -50,10 +50,7 @@
                         "enum": [
                           "added",
                           "modified",
-                          "deleted",
-                          "\"added\"",
-                          "\"modified\"",
-                          "\"deleted\""
+                          "deleted"
                         ]
                       },
                       "diffStat": {
@@ -85,7 +82,10 @@
                     }
                   },
                   "required": [
-                    "total"
+                    "total",
+                    "added",
+                    "modified",
+                    "deleted"
                   ]
                 }
               },

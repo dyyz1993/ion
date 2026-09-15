@@ -186,8 +186,8 @@ fn static_fixtures_pass_schemas() {
         "data": {"tool": "write", "output": {"ok": true}}
     }));
 
-    // review_pending 双路径形状：空闲路径（全 summary）+ agent.run 期间 bg 路径
-    // （只有 total；status 带字面引号 —— format!("{:?}") 序列化 String 的历史怪癖）
+    // review_pending 双路径形状统一（G2 Bug3）：空闲路径与 agent.run 期间 bg 路径
+    // 共用同一构造 —— summary 四字段齐全、status 干净无引号。
     let (_, rp) = load_schema("review_pending");
     assert_valid(&rp, "review_pending(idle path)", &json!({
         "id": "20", "type": "response", "command": "review_pending", "success": true,
@@ -196,8 +196,24 @@ fn static_fixtures_pass_schemas() {
     }));
     assert_valid(&rp, "review_pending(during-run bg path)", &json!({
         "id": "21", "type": "response", "command": "review_pending", "success": true,
+        "data": {"pending": [{"path": "a.rs", "status": "added", "diffStat": "+5"}],
+                 "summary": {"total": 1, "added": 1, "modified": 0, "deleted": 0}}
+    }));
+    assert_valid(&rp, "review_pending(empty)", &json!({
+        "id": "22", "type": "response", "command": "review_pending", "success": true,
+        "data": {"pending": [], "summary": {"total": 0, "added": 0, "modified": 0, "deleted": 0}}
+    }));
+    // 🔴 契约锁定：历史怪癖（format!("{:?}") 序列化 String 的字面引号 status）
+    // 修复后必须被 schema 拒绝
+    assert_invalid(&rp, "review_pending(quoted status)", &json!({
+        "id": "23", "type": "response", "command": "review_pending", "success": true,
         "data": {"pending": [{"path": "a.rs", "status": "\"added\"", "diffStat": "+5"}],
-                 "summary": {"total": 1}}
+                 "summary": {"total": 1, "added": 1, "modified": 0, "deleted": 0}}
+    }));
+    // 🔴 契约锁定：summary 缺字段（旧 bg 路径只有 total）必须被拒绝
+    assert_invalid(&rp, "review_pending(total-only summary)", &json!({
+        "id": "24", "type": "response", "command": "review_pending", "success": true,
+        "data": {"pending": [], "summary": {"total": 0}}
     }));
 }
 
@@ -646,13 +662,9 @@ fn dynamic_snapshot_approval_schemas() {
     std::fs::create_dir_all(&proj).expect("create proj");
     let session = format!("s4_snap_{}", rand_hex());
 
-    // faux 脚本：warmup（纯 text，建立 session-start baseline 树）→
-    // turn2 写 c（tool_call + 收尾 text）→ turn3 写 e。
-    // b/d 由 call_tool 直调写入（不建 tool 快照，由下一轮 turn-end 扫描收编）。
     // faux 脚本：4 轮，每轮一个 tool_call write + 收尾 text。
-    // ⚠️ 实测约束：审批 baseline 在每次 prompt 开始时重建（FileSnapshotExtension
-    // on_session_start 无 once-guard），所以只有「turn 期间」写的文件才会进 pending——
-    // 全部走脚本化 write，不依赖 call_tool 的写入进 diff。
+    // （G2 Bug4 修复后 baseline 每会话只建一次：call_tool 直调写入在下一轮
+    // turn-end 进 diff/pending，dynamic 断言见下方 y.txt 链路。）
     let mut faux = String::new();
     for (name, content) in [
         ("b.txt", "bravo line"),
@@ -681,7 +693,7 @@ fn dynamic_snapshot_approval_schemas() {
     );
 
     // call_tool 直调 write（本地 write 工具参数是 file_path）——schema 校验：output 是转义字符串。
-    // z.txt 会进首轮 baseline，不影响 pending 断言。
+    // z.txt 在首轮 prompt 之前写入，进首轮 baseline，不影响 pending 断言。
     w.check("call_tool", "call_tool",
             json!({"tool": "write",
                    "args": {"file_path": proj.join("z.txt").to_string_lossy(),
@@ -695,6 +707,24 @@ fn dynamic_snapshot_approval_schemas() {
     assert!(serde_json::to_string(&pending).unwrap().contains("b.txt"),
         "review_pending 应含 b.txt: {pending}");
 
+    // 🔴 G2 Bug3：summary 四字段 + status 无字面引号（响应级断言）
+    let pdata = &pending["data"];
+    for field in ["total", "added", "modified", "deleted"] {
+        assert!(pdata["summary"].get(field).is_some(),
+            "review_pending summary.{field} 缺失: {pending}");
+    }
+    for f in pdata["pending"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+        let s = f["status"].as_str().unwrap_or("");
+        assert!(!s.contains('"'), "status 带字面引号: {pending}");
+    }
+
+    // 🔴 G2 Bug4 链路：call_tool 直调写入（prompt 间隙）必须进审批 pending
+    //（修复前：下一次 prompt 的 on_session_start 重建 baseline 把它吸收掉）
+    w.check("call_tool", "call_tool",
+            json!({"tool": "write",
+                   "args": {"file_path": proj.join("y.txt").to_string_lossy(),
+                            "content": "yankee\n"}}));
+
     w.check("review_file_diff", "review_file_diff", json!({"path": "b.txt"}));
     w.check("review_approve", "review_approve", json!({"path": "b.txt"}));
 
@@ -703,8 +733,14 @@ fn dynamic_snapshot_approval_schemas() {
     assert!(serde_json::to_string(&approved).unwrap().contains("b.txt"),
         "approved 过滤应含 b.txt: {approved}");
 
-    // turn 2：写 c → reject c（回滚，c 消失）
+    // turn 2：写 c → pending 应含 {c} + call_tool 直调的 {y}
     w.prompt_turn("go");
+    let pending2 = w.check("review_pending", "review_pending", json!({}));
+    let p2s = serde_json::to_string(&pending2).unwrap();
+    assert!(p2s.contains("y.txt"),
+        "G2 Bug4: call_tool 直调写入 y.txt 必须进 pending（不被下一轮 baseline 吸收）: {pending2}");
+    assert!(p2s.contains("c.txt"), "review_pending 应含 c.txt: {pending2}");
+
     w.check("review_reject", "review_reject", json!({"path": "c.txt"}));
     assert!(!proj.join("c.txt").exists(), "reject 后 c.txt 应回滚消失");
 
