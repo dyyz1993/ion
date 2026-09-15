@@ -89,12 +89,22 @@ subscribe(session) 建立后，host 在**任何 replay/实时增量之前**先�
 
 ```
 → {"id":"h1","method":"hello"}
-← {"type":"response","id":"h1","success":true,"data":{"protocolVersion":1}}
+← {"type":"response","id":"h1","success":true,
+   "data":{"protocolVersion":1,"hostId":"3f2b8c6a-1d4e-4f50-9a1b-2c3d4e5f6078"}}
 ```
 
 - hello **不消费连接**：回包后连接保持，客户端可继续 subscribe / ui_respond / RPC。
 - 不发 hello 的旧客户端行为完全不变（CLI `ion rpc` / `ion subscribe` 零改动照常工作）。
-- 版本常量：`PROTOCOL_VERSION = 1`（`src/bin/ion.rs`）。
+- 版本常量：`PROTOCOL_VERSION = 1`（ion-protocol crate）。
+- **hostId（P0.3，对标 pi `ServerHello.serverId`）**：host 进程的**逻辑实例身份**。
+  进程首次被问到时生成规范小写 UUIDv4（`ion_protocol::host_id()`，`/dev/urandom`
+  随机源 + 时间/pid LCG 兜底），**内存态 OnceLock、不落盘**（按存储落位原则
+  "宁可丢也不建新文件"）——重启即换新身份；同一 host 进程内跨连接稳定。
+- **客户端 pin 校验（可选）**：环境变量 `ION_EXPECT_HOST_ID=<uuid>` 设置时，`ion rpc`
+  客户端在发正式请求**之前**先在同一条连接上发 hello 比对 `data.hostId`——不匹配
+  （或缺字段）则报错断开（exit 1），防止连到陈旧 socket（旧 host 未死净 / 重启窗口）
+  背后的"错误 host"。不设置则零开销、行为不变。`ion rpc --method hello` 的响应本身
+  就含 hostId，用于采集当前值写入 `ION_EXPECT_HOST_ID`。
 
 ### 1.4 审批同源绑定
 
@@ -113,7 +123,7 @@ subscribe(session) 建立后，host 在**任何 replay/实时增量之前**先�
 
 | 方法 | 方向 | 请求示例 | 响应/帧 |
 |------|------|---------|---------|
-| `hello` | C→S（可选，可反复） | `{"id":"h1","method":"hello"}` | `{"type":"response",...,"data":{"protocolVersion":1}}` |
+| `hello` | C→S（可选，可反复） | `{"id":"h1","method":"hello"}` | `{"type":"response",...,"data":{"protocolVersion":1,"hostId":"<uuid-v4>"}}` |
 | `subscribe`（session） | C→S | `{"id":"s1","method":"subscribe","session":"sess_x","replay":3}` | ack（带 epoch）→ snapshot 帧 → replay 帧（`replayed:true`）→ 实时 `instance_event`（带 epoch）→（重绑时）`stale_route` → 断开 |
 | `subscribe`（ui） | C→S | `{"id":"u2","method":"subscribe","ui":true}` | `{"type":"subscribed","stream":"ui"}` → `ui_event` 流；同连接可发 `ui_respond`/`hello` |
 | `subscribe`（extension/全部） | C→S | `{"method":"subscribe","extension":"memory"}` | 行为不变（未纳入 epoch 栅栏范围） |
@@ -129,7 +139,7 @@ subscribe(session) 建立后，host 在**任何 replay/实时增量之前**先�
 
 ### Group A: hello 握手
 
-#### A1 握手返回版本
+#### A1 握手返回版本 + hostId
 ```bash
 python3 - << 'PY'
 import socket, json
@@ -140,7 +150,20 @@ PY
 ```
 **验证点：**
 - ✅ `data.protocolVersion == 1`
+- ✅ `data.hostId` 是规范小写 UUIDv4（36 位，version 位 4，variant 位 8/9/a/b）
 - ✅ 连接保持：随后发 subscribe 仍能收到 ack
+
+#### A2 hostId 稳定与重启换新（pin 语义）
+```bash
+ion rpc --method hello | jq -r '.data.hostId'   # 采集当前 hostId → ION_EXPECT_HOST_ID
+ION_EXPECT_HOST_ID=<旧值> ion rpc --method list_sessions   # host 未重启 → 正常
+# kill host → ion serve 重启后：
+ION_EXPECT_HOST_ID=<旧值> ion rpc --method list_sessions   # → pin 不匹配报错断开（exit 1）
+```
+**验证点：**
+- ✅ 同一 host 进程内多次 hello（含跨连接）hostId 相同
+- ✅ host 重启后 hostId 变化；`ION_EXPECT_HOST_ID` 指向旧值时客户端报 "hostId pin 不匹配" 并断开
+- ✅ 不设 `ION_EXPECT_HOST_ID` 时行为与旧版完全一致
 
 ### Group B: 快照先行 + epoch
 
@@ -187,7 +210,8 @@ ion rpc --method create_worker --params '{"relation":"child","project_path":"/tm
 | `snapshot_data_contains_worker_session_pending` / `snapshot_data_without_worker_is_null_worker` | 快照组装 |
 | `snapshot_event_envelope_has_customtype_snapshot_before_live` | 快照信封（customType/epoch） |
 | `stamp_instance_event_keeps_event_and_adds_epoch` | 转发帧盖章 |
-| `hello_reply_returns_protocol_version` / `hello_reply_tolerates_missing_id` | hello 握手 |
+| `hello_reply_returns_protocol_version` / `hello_reply_tolerates_missing_id` / `host_id_stable_within_process_and_canonical` | hello 握手 + hostId（bin 侧） |
+| `hello_reply_shape` / `hello_reply_carries_host_id` / `generate_host_id_is_canonical_lowercase_uuid_v4` 等（ion-protocol crate） | 信封形状 + hostId 生成纪律 + `sanitize_error` 脱敏 |
 | `ui_respond_rejected_without_prior_ui_subscribe` / `ui_respond_allowed_after_ui_subscribe_on_same_connection` | 同源绑定 |
 
 ## 5. 已知边界与风险
@@ -196,3 +220,5 @@ ion rpc --method create_worker --params '{"relation":"child","project_path":"/tm
 2. **router 首挂 60s 等待是串行点**：该 session 的首个 subscribe 触发挂接期间，同 session 的其他 subscribe 命令排队（旧行为是各连接并行等）。实际影响小（挂接完成后秒级放行）。
 3. **epoch 是 host 进程内状态**：host 重启后从 1 重新计数（不持久化——按存储落位原则，宁可丢也不建新文件）。客户端不应跨 host 重启比较 epoch。
 4. **pendingApprovals 是 host 级 UI 请求**：worker 侧 review 类待审批不在此列（需 worker RPC，快照组装不做同步 RPC 调用）。
+5. **hostId 与 epoch 同理是进程内存态**（不落盘）：host 重启后 hostId 必然变化——`ION_EXPECT_HOST_ID` pin 到旧值在重启后失败是**预期行为**（防连错正是它的职责），客户端需重新 hello 采集新值。
+6. **错误响应统一脱敏**（P0.2，ion-protocol `sanitize_error` 收口）：所有 RPC 错误 `error` 字段经 panic/backtrace 细节收敛（固定文案 `internal error (details redacted)`）+ home 路径 `~` 化 + 500 字符截断；公共错误文案（Unknown command / session not found on disk / verb / 审批类）原样保留。

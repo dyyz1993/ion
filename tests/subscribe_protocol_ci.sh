@@ -5,9 +5,12 @@
 #   G1 快照先行：subscribe 后先收 customType:"snapshot" 快照帧（含 epoch），再收实时增量
 #   G2 epoch 栅栏：worker 重派（kill 后 session 重建）→ 旧 epoch 订阅收一条 stale_route 并断开；
 #      新订阅 epoch 递增
-#   G3 hello 握手：{"method":"hello"} → protocolVersion:1；hello 后同一连接可继续 subscribe
+#   G3 hello 握手：{"method":"hello"} → protocolVersion:1 + hostId（逻辑实例身份）；
+#      hello 后同一连接可继续 subscribe；hostId 跨连接稳定、host 重启即换
 #   G4 审批同源绑定：未 subscribe(ui) 的连接 ui_respond 被拒；同连接 ui subscribe 后放行
 #   G5 旧客户端兼容：不发 hello 的 ion rpc / ion subscribe 行为不变
+#   G6 hostId 重启换新：host 重启后 hello 的 hostId 变化；CLI ION_EXPECT_HOST_ID pin 旧值被拒、
+#      pin 新值放行
 #
 # 隔离铁律：私有 HOME + 私有 ION_HOST_SOCKET + 私有 ION_SESSION_DIR，绝不碰真实 ~/.ion；
 # 只 kill 自己启动的精确 PID。
@@ -244,6 +247,16 @@ if [ "$(evjson "$H2" '.data.protocolVersion')" = "1" ] && [ "$(evjson "$A3" '.ty
     pass "G3.2 hello 后同连接 subscribe 正常（ack + 后续快照帧）"
 else fail "G3.2 hello+subscribe 同连接（h2=$H2 a3=${A3}）"; fi
 
+# G3.3/G3.4 hostId：hello 携带逻辑实例身份（规范 UUIDv4），跨连接稳定
+HOST_ID1=$(evjson "$H1" '.data.hostId')
+if printf '%s' "$HOST_ID1" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'; then
+    pass "G3.3 hello 携带 hostId（规范小写 UUIDv4）"
+else fail "G3.3 hostId 缺失或非规范 UUIDv4（got: ${HOST_ID1}）"; fi
+H9_LINE=$(sock_send_read "$ION_HOST_SOCKET" '{"id":"h9","method":"hello"}' 4 2 | head -1)
+if [ "$(evjson "$H9_LINE" '.data.hostId')" = "$HOST_ID1" ]; then
+    pass "G3.4 跨连接 hostId 稳定（同一 host 进程，pin 校验前提）"
+else fail "G3.4 hostId 漂移（got: $(evjson "$H9_LINE" '.data.hostId') vs ${HOST_ID1}）"; fi
+
 echo
 echo "=== G4 审批同源绑定：未订阅连接 ui_respond 拒绝；同连接 ui subscribe 后放行 ==="
 DENY_OUT=$(sock_send_read "$ION_HOST_SOCKET" '{"id":"u1","method":"ui_respond","params":{"request_id":"nonexistent","response":"allow"}}' 4 2)
@@ -304,6 +317,39 @@ timeout 5 "$ION_BIN" subscribe --session "$SID" > "$CLI_SUB" 2>&1
 if grep -q '"subscribed"' "$CLI_SUB" && grep -q '"snapshot"' "$CLI_SUB"; then
     pass "G5.3 ion subscribe CLI 照常工作并增量打印 epoch/snapshot 帧"
 else fail "G5.3 ion subscribe CLI（$(head -c 200 "$CLI_SUB")）"; fi
+
+echo
+echo "=== G6 hostId 重启换新：host 重启后 hostId 变化（逻辑实例身份不落盘）+ CLI pin 拒绝旧值 ==="
+kill "$HOST_PID" 2>/dev/null
+wait "$HOST_PID" 2>/dev/null
+"$ION_BIN" serve >> "$TEST_DIR/host.log" 2>&1 &
+HOST_PID=$!
+HOST_READY2=0
+for _ in $(seq 1 20); do
+    sleep 1
+    if rpc list_sessions 2>/dev/null | grep -q "sessions"; then HOST_READY2=1; break; fi
+done
+if [ "$HOST_READY2" -eq 1 ]; then
+    pass "G6.1 host 重启成功（新 PID=${HOST_PID}）"
+else fail "G6.1 host 重启失败"; tail -5 "$TEST_DIR/host.log" | sed 's/^/     /'; fi
+H10_LINE=$(sock_send_read "$ION_HOST_SOCKET" '{"id":"h10","method":"hello"}' 4 2 | head -1)
+HOST_ID2=$(evjson "$H10_LINE" '.data.hostId')
+if [ -n "$HOST_ID2" ] && [ "$HOST_ID2" != "$HOST_ID1" ]; then
+    pass "G6.2 重启后 hostId 变化（${HOST_ID1:0:8}… → ${HOST_ID2:0:8}…）"
+else fail "G6.2 重启后 hostId（got: ${HOST_ID2}, old: ${HOST_ID1}）"; fi
+# CLI pin：ION_EXPECT_HOST_ID 指向旧 hostId → 客户端报错断开（exit 非 0）
+PIN_LOG="$TEST_DIR/g6_pin.log"
+ION_EXPECT_HOST_ID="$HOST_ID1" timeout 30 "$ION_BIN" rpc --method list_sessions > "$PIN_LOG" 2>&1
+PIN_RC=$?
+if [ "$PIN_RC" -ne 0 ] && grep -q "hostId pin" "$PIN_LOG"; then
+    pass "G6.3 CLI pin 拒绝旧 hostId（报错断开，exit=${PIN_RC}）"
+else fail "G6.3 CLI pin 行为异常（exit=$PIN_RC: $(head -c 200 "$PIN_LOG")）"; fi
+# pin 匹配新 hostId → 正常工作
+PIN2_RC=0
+ION_EXPECT_HOST_ID="$HOST_ID2" rpc list_sessions > /dev/null 2>&1 || PIN2_RC=$?
+if [ "$PIN2_RC" -eq 0 ]; then
+    pass "G6.4 CLI pin 匹配新 hostId → 正常工作"
+else fail "G6.4 CLI pin 匹配新 hostId 失败（exit=${PIN2_RC}）"; fi
 
 echo
 echo "=========================================="

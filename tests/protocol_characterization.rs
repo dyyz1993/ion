@@ -8,6 +8,7 @@
 //! - 事件外壳：`{"type":"event","event":{...}}`（worker_ready / rpc_response）
 //! - 解析失败帧：`{"type":"error","error":{"message":"invalid JSON: ..."}}`
 //! - 请求信封（CLI `ion rpc` 形状）：`{"id","method","params","session"?}`
+//! - host 级 hello 握手：`data.protocolVersion` + `data.hostId`（逻辑实例身份）
 //!
 //! 隔离纪律：私有 HOME + ION_SESSION_DIR + ION_HOST_SOCKET，绝不触碰真实 ~/.ion。
 //! 子进程用精确 PID 清理（drop stdin → wait → kill），绝不 pkill。
@@ -140,6 +141,102 @@ fn shutdown(mut child: Child) {
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// 起一个隔离环境的 host（`ion serve`），返回（child, socket 路径）。
+/// 隔离三件套：私有 HOME / ION_HOST_SOCKET / ION_SESSION_DIR，绝不触碰真实 ~/.ion。
+fn spawn_host() -> (Child, std::path::PathBuf, std::path::PathBuf) {
+    let tmp = std::env::temp_dir().join(format!(
+        "ion-proto-char-host-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let home = tmp.join("home");
+    let sessions = tmp.join("sessions");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&sessions).unwrap();
+    let sock = tmp.join("host.sock");
+
+    let child = Command::new(env!("CARGO_BIN_EXE_ion"))
+        .arg("serve")
+        .env("HOME", &home)
+        .env("ION_SESSION_DIR", &sessions)
+        .env("ION_HOST_SOCKET", &sock)
+        .current_dir(&tmp)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn ion serve");
+
+    // 等 socket 就绪（30s 上限）
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if std::os::unix::net::UnixStream::connect(&sock).is_ok() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "host socket 30s 未就绪");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    (child, sock, tmp)
+}
+
+/// 单连接 hello 往返：发送请求行，读首帧 JSON（跳过空行/非 JSON）。
+fn hello_roundtrip(sock: &std::path::Path, id: &str) -> serde_json::Value {
+    use std::io::{BufRead, BufReader, Write};
+    let mut stream = std::os::unix::net::UnixStream::connect(sock).expect("connect host sock");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("set timeout");
+    writeln!(stream, r#"{{"id":"{id}","method":"hello"}}"#).expect("send hello");
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = reader.read_line(&mut line).expect("read hello reply");
+        assert!(n > 0, "host 在 hello 响应前关闭了连接");
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+            return v;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 特征 7：host 级 hello 握手 —— protocolVersion:1 + hostId（逻辑实例身份，
+// 规范小写 UUIDv4；同一 host 进程跨连接稳定；host 不落盘，重启即换）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn host_hello_carries_protocol_version_and_stable_host_id() {
+    let (child, sock, tmp) = spawn_host();
+    let r1 = hello_roundtrip(&sock, "h1");
+    assert_eq!(r1["type"], "response", "hello 响应信封: {r1}");
+    assert_eq!(r1["id"], "h1");
+    assert_eq!(r1["success"], true);
+    assert_eq!(r1["data"]["protocolVersion"], 1);
+    let host_id = r1["data"]["hostId"].as_str().expect("data.hostId 存在");
+    assert_eq!(host_id.len(), 36, "hostId 是 UUID 形状: {host_id}");
+    for (i, part) in host_id.split('-').enumerate() {
+        match i {
+            0 => assert_eq!(part.len(), 8),
+            1 | 2 | 3 => assert_eq!(part.len(), 4),
+            4 => assert_eq!(part.len(), 12),
+            _ => panic!("UUID 段数异常: {host_id}"),
+        }
+    }
+    assert!(host_id.chars().all(|c| c == '-' || c.is_ascii_lowercase() || c.is_ascii_digit()),
+        "hostId 全小写 hex: {host_id}");
+    assert_eq!(&host_id[14..15], "4", "UUIDv4 version 位: {host_id}");
+    assert!(matches!(&host_id[19..20], "8" | "9" | "a" | "b"), "UUIDv4 variant 位: {host_id}");
+
+    // 新连接再次 hello：同一 host 进程 hostId 稳定（pin 校验的前提）
+    let r2 = hello_roundtrip(&sock, "h2");
+    assert_eq!(r2["data"]["hostId"].as_str().expect("hostId2"), host_id);
+
+    shutdown(child);
+    let _ = std::fs::remove_dir_all(&tmp);
 }
 
 // ---------------------------------------------------------------------------

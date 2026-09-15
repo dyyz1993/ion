@@ -196,12 +196,15 @@ fn hello_request_and_response_validate() {
     let req = &schema["properties"]["request"];
     let resp = &schema["properties"]["response"];
     let vreq = json!({"id":"h1","method":"hello"});
-    let vresp = json!({"type":"response","id":"h1","success":true,"data":{"protocolVersion":1}});
+    let vresp = json!({"type":"response","id":"h1","success":true,
+        "data":{"protocolVersion":1,"hostId":"3f2b8c6a-1d4e-4f50-9a1b-2c3d4e5f6078"}});
     assert!(Validator::new(req).expect("c").is_valid(&vreq));
     assert!(Validator::new(resp).expect("c").is_valid(&vresp));
-    // 负例：版本错 / method 错
-    assert!(!Validator::new(resp).expect("c").is_valid(&json!({"type":"response","id":"h1","success":true,"data":{"protocolVersion":2}})));
+    // 负例：版本错 / method 错 / 缺 hostId / hostId 非规范 UUIDv4
+    assert!(!Validator::new(resp).expect("c").is_valid(&json!({"type":"response","id":"h1","success":true,"data":{"protocolVersion":2,"hostId":"3f2b8c6a-1d4e-4f50-9a1b-2c3d4e5f6078"}})));
     assert!(!Validator::new(req).expect("c").is_valid(&json!({"id":"h1","method":"hello2"})));
+    assert!(!Validator::new(resp).expect("c").is_valid(&json!({"type":"response","id":"h1","success":true,"data":{"protocolVersion":1}})));
+    assert!(!Validator::new(resp).expect("c").is_valid(&json!({"type":"response","id":"h1","success":true,"data":{"protocolVersion":1,"hostId":"NOT-A-UUID"}})));
 }
 
 #[test]
@@ -655,16 +658,22 @@ fn live_host_protocol_frames_match_schemas() {
     let snap_schema = compile("events/snapshot_frame.json");
     let inst_schema = compile("events/instance_event.json");
 
-    // ── 1. hello 握手 ──
+    // ── 1. hello 握手（含 hostId 逻辑实例身份）──
+    let hello_schema = jsonschema::validator_for(&read_schema("hello.json")["properties"]["response"])
+        .expect("c");
     let hello_frames = host.rpc(r#"{"id":"h1","method":"hello"}"#, 2, Duration::from_secs(5));
     assert_eq!(hello_frames.len(), 1, "hello 应恰回一帧");
     let hresp = &hello_frames[0];
-    // hello 响应子形状：用 read_schema 取子 schema 编译
-    validate_or_panic(
-        &jsonschema::validator_for(&read_schema("hello.json")["properties"]["response"])
-            .expect("c"),
-        hresp,
-        "hello.response",
+    validate_or_panic(&hello_schema, hresp, "hello.response");
+    let host_id1 = hresp["data"]["hostId"].as_str().expect("data.hostId").to_string();
+    assert_eq!(host_id1.len(), 36, "hostId 是规范 UUIDv4: {host_id1}");
+    // 第二次 hello（新连接）：同一 host 进程 hostId 稳定
+    let hello2 = host.rpc(r#"{"id":"h2","method":"hello"}"#, 2, Duration::from_secs(5));
+    validate_or_panic(&hello_schema, &hello2[0], "hello2.response");
+    assert_eq!(
+        hello2[0]["data"]["hostId"].as_str().expect("hostId2"),
+        host_id1,
+        "同一 host 进程内 hostId 稳定"
     );
 
     // ── 2. create_worker（faux）拿 session ──

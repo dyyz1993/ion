@@ -62,6 +62,121 @@ pub const TYPE_STALE_ROUTE: &str = "stale_route";
 pub const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
+// 错误脱敏 + 有界（P0.2，对标 pi server.ts:512-521 + codec.ts:34-37）
+// ---------------------------------------------------------------------------
+
+/// 错误消息的最大字符数（对标 pi `boundedErrorMessage` 的 500 字符上限）。
+pub const MAX_ERROR_CHARS: usize = 500;
+
+/// 含 panic/backtrace 细节的错误收敛后的固定文案（对标 pi 的
+/// "Internal server error"——内部细节不过协议边界）。
+pub const REDACTED_INTERNAL_ERROR: &str = "internal error (details redacted)";
+
+/// 错误消息脱敏 + 截断：线协议错误通道的统一出口（本 crate 内所有 `error`
+/// 字段构造点都经此处理）。
+///
+/// 规则（按序）：
+/// 1. 含 panic/backtrace 细节（"panicked at" / "stack backtrace" /
+///    "RUST_BACKTRACE"）→ 整条收敛为 [`REDACTED_INTERNAL_ERROR`]；
+/// 2. 绝对 home 路径（`$HOME` 展开）→ 替换为 `~`
+///    （`/Users/me/.ion/...` → `~/.ion/...`，可诊断但不泄漏 home）；
+/// 3. 超过 [`MAX_ERROR_CHARS`] 字符 → 按 char 截断（防 UTF-8 撕裂）。
+///
+/// **公共错误语义不受影响**：不含 home 路径、无 panic 细节且长度合规的错误
+/// （"Unknown command"、"session not found on disk: <sid>"、verb/审批类文案）
+/// 原样通过；脱敏幂等，重复调用无副作用。
+pub fn sanitize_error(msg: &str) -> String {
+    sanitize_error_with(msg, std::env::var("HOME").ok().as_deref())
+}
+
+/// [`sanitize_error`] 的依赖注入变体（home 由调用方给定；测试用，避免改动
+/// 进程级环境变量）。
+pub fn sanitize_error_with(msg: &str, home: Option<&str>) -> String {
+    // 1. panic/backtrace 细节 → 整条收敛为固定文案（原始细节只进日志，不过线协议）
+    if msg.contains("panicked at")
+        || msg.contains("stack backtrace")
+        || msg.contains("RUST_BACKTRACE")
+    {
+        return REDACTED_INTERNAL_ERROR.to_string();
+    }
+    // 2. 绝对 home 路径 → ~（尾斜杠归一，防双斜杠；空 home / 根目录跳过）
+    let replaced = match home {
+        Some(h) => {
+            let h = h.trim_end_matches('/');
+            if h.is_empty() || h == "/" {
+                msg.to_string()
+            } else {
+                msg.replace(h, "~")
+            }
+        }
+        None => msg.to_string(),
+    };
+    // 3. 有界：按 char 截断（多字节安全）
+    if replaced.chars().count() > MAX_ERROR_CHARS {
+        replaced.chars().take(MAX_ERROR_CHARS).collect()
+    } else {
+        replaced
+    }
+}
+
+// ---------------------------------------------------------------------------
+// host 逻辑实例身份（P0.3，对标 pi protocol.ts:65-69 ServerHello.serverId）
+// ---------------------------------------------------------------------------
+
+/// 取当前 host 进程的逻辑实例身份（进程内 `OnceLock`，首次访问生成，
+/// **不落盘**——按存储落位原则"宁可丢也不建新文件"，重启即换新身份）。
+pub fn host_id() -> &'static str {
+    static HOST_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HOST_ID.get_or_init(generate_host_id)
+}
+
+/// 生成规范小写 UUIDv4（对标 pi `ServerId` 的规范形式）。
+///
+/// 随机源：`/dev/urandom`（macOS/Linux）；取不到时以时间纳秒 + pid + 进程内
+/// 计数器混合的 LCG 兜底——身份只要求"进程间不同 + 重启即变 + 进程内多次
+/// 生成互不相同"，不要求密码学强度。
+pub fn generate_host_id() -> String {
+    static FALLBACK_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut bytes = [0u8; 16];
+    if !fill_random(&mut bytes) {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        let pid = u64::from(std::process::id());
+        let seq = FALLBACK_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut state = nanos
+            ^ (pid << 32)
+            ^ seq.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ (&bytes as *const _ as u64);
+        for b in bytes.iter_mut() {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            *b = (state >> 33) as u8;
+        }
+    }
+    // 规范 UUIDv4 位域：version 4 + variant 10xx
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let h: Vec<String> = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!(
+        "{}{}{}{}-{}{}-{}{}-{}{}-{}{}{}{}{}{}",
+        h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8], h[9], h[10], h[11], h[12], h[13],
+        h[14], h[15]
+    )
+}
+
+/// 从 `/dev/urandom` 填充随机字节；失败（无该设备/读不满）返回 false。
+fn fill_random(buf: &mut [u8]) -> bool {
+    use std::io::Read;
+    match std::fs::File::open("/dev/urandom") {
+        Ok(mut f) => f.read_exact(buf).is_ok(),
+        Err(_) => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 请求信封（C→S / host→worker stdin）
 // ---------------------------------------------------------------------------
 
@@ -152,9 +267,9 @@ impl Request {
 /// worker 响应信封：`{"id","type":"response","command","success","data"|"error"}`。
 ///
 /// worker 侧响应**必须带 `command`**（回显方法名）；成功带 `data`，失败带
-/// `error`（字符串），两者互斥。
+/// `error`（字符串），两者互斥。错误经 [`sanitize_error`] 脱敏 + 有界（P0.2）。
 pub mod worker_response {
-    use super::{TYPE_RESPONSE, json};
+    use super::{TYPE_RESPONSE, json, sanitize_error};
 
     pub fn success(id: &str, command: &str, data: &serde_json::Value) -> serde_json::Value {
         json!({
@@ -172,7 +287,7 @@ pub mod worker_response {
             "type": TYPE_RESPONSE,
             "command": command,
             "success": false,
-            "error": error,
+            "error": sanitize_error(error),
         })
     }
 }
@@ -180,16 +295,16 @@ pub mod worker_response {
 /// host 响应信封：`{"type":"response","id","success","data"|"error"}`。
 ///
 /// host 响应**不带 `command`**（与 worker 信封的历史差异，保持不变）；`id`
-/// 透传请求的 id（解析失败时为 `null`）。
+/// 透传请求的 id（解析失败时为 `null`）。错误经 [`sanitize_error`] 脱敏 + 有界。
 pub mod host_response {
-    use super::{TYPE_RESPONSE, Value, json};
+    use super::{TYPE_RESPONSE, Value, json, sanitize_error};
 
     pub fn success(id: Value, data: Value) -> Value {
         json!({"type": TYPE_RESPONSE, "id": id, "success": true, "data": data})
     }
 
     pub fn error(id: Value, error: impl Into<String>) -> Value {
-        json!({"type": TYPE_RESPONSE, "id": id, "success": false, "error": error.into()})
+        json!({"type": TYPE_RESPONSE, "id": id, "success": false, "error": sanitize_error(&error.into())})
     }
 
     /// 解析失败兜底：id 为 null 的失败响应。
@@ -198,7 +313,7 @@ pub mod host_response {
             "type": TYPE_RESPONSE,
             "id": Value::Null,
             "success": false,
-            "error": format!("invalid JSON: {error}"),
+            "error": sanitize_error(&format!("invalid JSON: {error}")),
         })
     }
 }
@@ -259,7 +374,9 @@ pub fn rpc_response_event(
         "timestamp": now_ms(),
     });
     if let Some(err) = error {
-        event["error"] = serde_json::Value::String(err.chars().take(200).collect());
+        // 先脱敏再截 200——事件摘要同样不泄漏 home/panic 细节
+        let sanitized = sanitize_error(err);
+        event["error"] = serde_json::Value::String(sanitized.chars().take(200).collect());
     }
     event_shell(event)
 }
@@ -278,15 +395,20 @@ fn now_ms() -> u64 {
 // 这里只有帧的形状。
 // ---------------------------------------------------------------------------
 
-/// `hello` 握手响应：`{"type":"response","id","success":true,"data":{"protocolVersion":1}}`。
+/// `hello` 握手响应：
+/// `{"type":"response","id","success":true,"data":{"protocolVersion":1,"hostId":"<uuid-v4>"}}`。
+///
+/// `hostId` 是 host 进程的逻辑实例身份（[`host_id`] 生成，内存态不落盘，重启即变）
+/// ——对标 pi `ServerHello.serverId`（protocol.ts:65-69）：客户端可 pin 校验，
+/// 防止连到陈旧 socket 背后的"错误 host"。
 ///
 /// 不消费连接——客户端可继续 subscribe / rpc；不发 hello 的旧客户端完全兼容。
-pub fn hello_reply(id: Option<&Value>) -> Value {
+pub fn hello_reply(id: Option<&Value>, host_id: &str) -> Value {
     json!({
         "type": TYPE_RESPONSE,
         "id": id,
         "success": true,
-        "data": {"protocolVersion": PROTOCOL_VERSION},
+        "data": {"protocolVersion": PROTOCOL_VERSION, "hostId": host_id},
     })
 }
 
@@ -432,8 +554,9 @@ pub fn overview_snapshot_frame(snapshot: Value) -> Value {
 }
 
 /// 订阅流错误帧：`{"type":"error","error":...}`（无 id，非 RPC 响应）。
+/// 错误同样经 [`sanitize_error`] 脱敏 + 有界（订阅端与 RPC 端同一脱敏纪律）。
 pub fn stream_error_frame(error: impl Into<String>) -> Value {
-    json!({"type": "error", "error": error.into()})
+    json!({"type": "error", "error": sanitize_error(&error.into())})
 }
 
 /// 行长超限错误帧（[`MAX_LINE_BYTES`] 防滥用的拒绝回执）。
@@ -603,12 +726,13 @@ mod tests {
 
     #[test]
     fn hello_reply_shape() {
-        let v = hello_reply(Some(&json!("h1")));
+        let v = hello_reply(Some(&json!("h1")), host_id());
         assert_eq!(v["type"], "response");
         assert_eq!(v["id"], "h1");
         assert_eq!(v["success"], true);
         assert_eq!(v["data"]["protocolVersion"], PROTOCOL_VERSION);
-        let v2 = hello_reply(None);
+        assert_eq!(v["data"]["hostId"], host_id(), "hello 响应带 hostId");
+        let v2 = hello_reply(None, host_id());
         assert!(v2["id"].is_null());
     }
 
@@ -758,5 +882,176 @@ mod tests {
         assert!(!line.contains(": "), "紧凑序列化不该有 pretty 分隔: {line}");
         // 往返一致
         assert_eq!(parse_line(&line).unwrap(), v);
+    }
+
+    // ── 错误脱敏 + 有界（P0.2）──
+
+    #[test]
+    fn sanitize_truncates_to_max_chars_on_char_boundary() {
+        let home = "/Users/someone";
+        // 替换 home（14 chars → 1 char）后仍远超 500：1 + 11 + 600 = 612 chars
+        let msg = format!("{home}/workspace/{}", "错".repeat(600));
+        let out = sanitize_error_with(&msg, Some(home));
+        assert_eq!(out.chars().count(), MAX_ERROR_CHARS);
+        // 不含 NUL/替换符——按 char 截断不产生 U+FFFD
+        assert!(!out.contains('\u{FFFD}'), "char 截断不撕裂 UTF-8: {out}");
+        // ASCII 同样截断
+        let ascii = "z".repeat(600);
+        assert_eq!(
+            sanitize_error_with(&ascii, Some(home)).chars().count(),
+            MAX_ERROR_CHARS
+        );
+    }
+
+    #[test]
+    fn sanitize_replaces_home_path_with_tilde() {
+        let out = sanitize_error_with(
+            "failed to read /Users/someone/.ion/config.json: not found",
+            Some("/Users/someone"),
+        );
+        assert_eq!(out, "failed to read ~/.ion/config.json: not found");
+    }
+
+    #[test]
+    fn sanitize_handles_home_without_leading_content_and_trailing_slash() {
+        // home 带尾斜杠时不产生双斜杠
+        let out = sanitize_error_with("bad path /Users/someone/x", Some("/Users/someone/"));
+        assert_eq!(out, "bad path ~/x");
+        // home 为空串 / 根：不替换
+        assert_eq!(sanitize_error_with("/etc/hosts", Some("")), "/etc/hosts");
+        assert_eq!(sanitize_error_with("/etc/hosts", Some("/")), "/etc/hosts");
+        // 无 HOME 环境变量：原样
+        assert_eq!(sanitize_error_with("/Users/x/y", None), "/Users/x/y");
+    }
+
+    #[test]
+    fn sanitize_collapses_panic_and_backtrace_details() {
+        for raw in [
+            "panicked at ion-protocol/src/lib.rs:99:9:\nexplicit panic",
+            "thread 'main' panicked at src/x.rs:1:1:\nboom\nstack backtrace:\n  0: ...",
+            "note: run with RUST_BACKTRACE=1 for a backtrace",
+        ] {
+            let out = sanitize_error_with(raw, Some("/Users/someone"));
+            assert_eq!(out, REDACTED_INTERNAL_ERROR, "panic 细节要收敛: {raw}");
+            // 收敛后的文案本身不含原始路径/堆栈
+            assert!(!out.contains("src/"));
+        }
+    }
+
+    #[test]
+    fn sanitize_preserves_public_error_semantics() {
+        // 公共错误语义不许破坏：Unknown command / session not found / verb / 审批
+        let public_errors = [
+            "Unknown command: definitely_not_a_real_method".to_string(),
+            "session not found on disk: sess_abc123".to_string(),
+            "verb approval not found: vr-1".to_string(),
+            "missing params.requestId".to_string(),
+            "ui_respond rejected: requires a prior subscribe {ui:true} on the same connection"
+                .to_string(),
+            "request not found or already expired".to_string(),
+            "invalid JSON: expected value at line 1 column 3".to_string(),
+        ];
+        for msg in public_errors {
+            assert_eq!(
+                sanitize_error_with(&msg, Some("/Users/someone")),
+                msg,
+                "公共错误文案必须原样通过: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_is_idempotent() {
+        let raw = format!("error at /Users/someone/x: {}", "长".repeat(600));
+        let once = sanitize_error_with(&raw, Some("/Users/someone"));
+        let twice = sanitize_error_with(&once, Some("/Users/someone"));
+        assert_eq!(once, twice, "脱敏必须幂等");
+    }
+
+    #[test]
+    fn error_constructors_sanitize_error_field() {
+        // panic 细节经 worker/host 响应构造器都收敛
+        let w = worker_response::error("1", "m", "panicked at src/x.rs:1:1:\nboom");
+        assert_eq!(w["error"], REDACTED_INTERNAL_ERROR);
+        let h = host_response::error(json!("1"), "panicked at src/x.rs:1:1:\nboom");
+        assert_eq!(h["error"], REDACTED_INTERNAL_ERROR);
+        let s = stream_error_frame("stack backtrace:\n  0: internal");
+        assert_eq!(s["error"], REDACTED_INTERNAL_ERROR);
+        let ij = host_response::invalid_json("panicked at x");
+        assert_eq!(ij["error"], REDACTED_INTERNAL_ERROR);
+        // 超长经构造器截断到 500
+        let long = "y".repeat(600);
+        let w2 = worker_response::error("1", "m", &long);
+        assert_eq!(w2["error"].as_str().unwrap().chars().count(), MAX_ERROR_CHARS);
+        // home 路径经构造器脱敏（用真实 HOME 断言"不含"，环境无关）
+        if let Ok(home) = std::env::var("HOME") {
+            let home = home.trim_end_matches('/');
+            if !home.is_empty() {
+                let h2 = host_response::error(json!("1"), format!("{home}/.ion/secret file"));
+                assert!(
+                    !h2["error"].as_str().unwrap().contains(home),
+                    "构造器不得泄漏 home 路径: {}",
+                    h2["error"]
+                );
+            }
+        }
+        // rpc_response 事件的 error 摘要同样脱敏
+        let ev = rpc_response_event("s", "1", "m", false, Some("panicked at src/x"));
+        assert_eq!(ev["event"]["error"], REDACTED_INTERNAL_ERROR);
+    }
+
+    // ── host 逻辑实例身份（P0.3）──
+
+    #[test]
+    fn generate_host_id_is_canonical_lowercase_uuid_v4() {
+        for _ in 0..32 {
+            let id = generate_host_id();
+            assert_eq!(id.len(), 36, "UUID 长度 36: {id}");
+            let bytes = id.as_bytes();
+            for (i, b) in bytes.iter().enumerate() {
+                match i {
+                    8 | 13 | 18 | 23 => assert_eq!(*b, b'-', "连字符位置 {i}: {id}"),
+                    _ => assert!(b.is_ascii_hexdigit() && !b.is_ascii_uppercase(), "小写 hex @ {i}: {id}"),
+                }
+            }
+            // version 位 = 4，variant 位 ∈ {8,9,a,b}（规范 UUIDv4，对齐 pi ServerId）
+            assert_eq!(&id[14..15], "4", "version 位必须是 4: {id}");
+            assert!(
+                matches!(&id[19..20], "8" | "9" | "a" | "b"),
+                "variant 位必须是 8/9/a/b: {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn generate_host_id_is_unique_across_calls() {
+        // 兜底随机源也必须保证"进程内多次生成互不相同"
+        let a = generate_host_id();
+        let b = generate_host_id();
+        assert_ne!(a, b, "两次生成不应相同: {a} vs {b}");
+    }
+
+    #[test]
+    fn host_id_is_stable_within_process() {
+        assert_eq!(host_id(), host_id(), "进程内 hostId 稳定");
+        let canonical = generate_host_id();
+        assert_eq!(host_id().len(), canonical.len());
+    }
+
+    #[test]
+    fn hello_reply_carries_host_id() {
+        let v = hello_reply(Some(&json!("h1")), "3f2b8c6a-1d4e-4f50-9a1b-2c3d4e5f6078");
+        assert_eq!(v["type"], "response");
+        assert_eq!(v["id"], "h1");
+        assert_eq!(v["success"], true);
+        assert_eq!(v["data"]["protocolVersion"], PROTOCOL_VERSION);
+        assert_eq!(
+            v["data"]["hostId"],
+            "3f2b8c6a-1d4e-4f50-9a1b-2c3d4e5f6078",
+            "hello 响应必须携带 hostId（逻辑实例身份）"
+        );
+        let v2 = hello_reply(None, "x");
+        assert!(v2["id"].is_null());
+        assert_eq!(v2["data"]["hostId"], "x");
     }
 }
