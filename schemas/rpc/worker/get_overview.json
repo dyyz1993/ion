@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.get_overview",
+  "description": "host 级全景快照：workers（含退出码/退出原因/最新输出）+ projects + 汇总数 + sessions（含 created_by）。无 params。来源：bin/ion.rs handle_manager_command_write 'get_overview' → worker_registry.rs get_overview()。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "无参数"
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "workers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "worker_id": { "type": "string" },
+              "session_id": { "type": "string" },
+              "project": { "type": "string" },
+              "status": { "enum": ["idle", "busy", "dead", "stale"], "description": "⚠️ 与 list_workers/list_sessions 的大小写不同：get_overview 直接 serde 序列化 WorkerStatus（snake_case 小写），而 list 系走 Display（首字母大写 Idle/Busy/Dead/Stale）——实测确认的形状坑" },
+              "exit_code": { "type": ["integer", "null"], "description": "0=正常退出，非 0=异常，null=未退出" },
+              "exit_reason": { "type": ["string", "null"] },
+              "model": { "type": "string" },
+              "agent": { "type": "string" },
+              "channels": { "type": "array", "items": { "type": "string" } },
+              "parent": { "type": ["string", "null"] },
+              "children": { "type": "array", "items": { "type": "string" } },
+              "latest_output": { "type": "array", "items": { "type": "string" } },
+              "log_short": { "type": ["string", "null"] },
+              "model_size": { "type": ["string", "null"] },
+              "started_at": { "type": "integer" }
+            },
+            "required": ["worker_id", "session_id", "project", "status", "exit_code", "exit_reason", "model", "agent", "channels", "parent", "children", "latest_output", "log_short", "model_size", "started_at"]
+          }
+        },
+        "projects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "path": { "type": "string" },
+              "worker_count": { "type": "integer", "minimum": 0 }
+            },
+            "required": ["name", "path", "worker_count"]
+          }
+        },
+        "total_workers": { "type": "integer", "minimum": 0, "description": "不含 Dead" },
+        "total_projects": { "type": "integer", "minimum": 0 },
+        "total_stale": { "type": "integer", "minimum": 0 },
+        "total_dead": { "type": "integer", "minimum": 0 },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "session_id": { "type": "string" },
+              "worker_id": { "type": "string" },
+              "project": { "type": "string" },
+              "created_by": { "type": ["string", "null"] }
+            },
+            "required": ["session_id", "worker_id", "project", "created_by"]
+          }
+        }
+      },
+      "required": ["workers", "projects", "total_workers", "total_projects", "total_stale", "total_dead", "sessions"]
+    },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.send_to_worker",
+  "title": "RPC send_to_worker",
+  "description": "按 worker_id 转发 RPC。⚠️ 形状坑：handler 从【顶层】读 workerId / rpc_method / params（不是 params 里）。data = {queued:true}（异步排队，不等待 worker 执行结果）。worker 侧还有同名 bridge 臂（--session 路由到 worker 进程时）回 {status:'pending', message}。来源：bin/ion.rs handle_manager_command_write 'send_to_worker'。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "透传给 worker 的内层 params"
+    },
+    "data": {
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "host 级：已排队",
+          "properties": {
+            "queued": { "const": true }
+          },
+          "required": ["queued"]
+        },
+        {
+          "type": "object",
+          "description": "worker 侧 bridge 转发（--session 路由时）",
+          "properties": {
+            "status": { "const": "pending" },
+            "message": { "type": "string" }
+          },
+          "required": ["status", "message"]
+        }
+      ]
+    },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "description": "典型错误：worker not found / 空 workerId",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}

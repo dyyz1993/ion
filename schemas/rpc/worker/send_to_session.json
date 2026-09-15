@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.send_to_session",
+  "title": "RPC send_to_session（别名 send）",
+  "description": "按 session 转发一条 RPC 给对应 worker（不存在则 auto-create 再转发），data = worker 对 rpc_method 的原样响应（任意 JSON，形状由内层 method 决定）。⚠️ 形状坑：handler 从【顶层】字段读 session / rpc_method（不是 params 里），params 原样透传给 worker。顶层 method 兜底会让 rpc_method 落成 'send_to_session' 本身（worker 回 Unknown command），所以跨层调用必须显式带顶层 rpc_method。data 不定形 → 这里只约束信封，data 放行任意 JSON。来源：bin/ion.rs handle_manager_command_write 'send' | 'send_to_session'。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "透传给 worker 的内层 params（任意 JSON 对象）"
+    },
+    "data": {
+      "description": "worker 对 rpc_method 的原样响应（任意 JSON）"
+    },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "description": "典型错误：auto-create 失败 / session 为空",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}

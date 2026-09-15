@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.get_agents",
+  "title": "RPC get_agents（worker 级）",
+  "description": "列出所有内置 + 自定义 agent 定义。成功 data 是【裸数组】（不是包一层对象）。无 params。来源：src/worker_rpc.rs 分发 'get_agents' 臂 ← agent_config::builtin_agents()。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "无参数"
+    },
+    "data": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "color": { "type": "string" },
+          "tier": { "type": ["string", "null"], "description": "模型档位（max/pro/fast 等）；自定义 agent 可为 null（实测 examples/improver 即 null）" },
+          "source": { "type": "string", "description": "builtin / 项目 .ion/agents/ 来源标识" }
+        },
+        "required": ["name", "description", "color", "tier", "source"]
+      }
+    },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}

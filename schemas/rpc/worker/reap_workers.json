@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.reap_workers",
+  "title": "RPC reap_workers（别名 gc_workers）",
+  "description": "手动清理 Dead + 超时 Stale worker，返回清理数量。maxAgeSecs 控制 Stale 的清理年龄阈值（默认 600s = 10 分钟）；Dead 一律清（按 died_at 判断）。来源：bin/ion.rs handle_manager_command_write 'reap_workers' | 'gc_workers'。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "maxAgeSecs": { "type": "integer", "minimum": 0, "default": 600 }
+      }
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "reaped": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["reaped"]
+    },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}

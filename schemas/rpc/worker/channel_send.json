@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.channel_send",
+  "title": "RPC channel_send",
+  "description": "向频道广播消息（群聊）。⚠️ 形状坑：host handler 从【顶层】读 channel / from / msg——RPC client 发 params 嵌套时 channel/from/msg 会落到默认值（channel='main', from='manager'），这是当前的已知怪癖，schema 两个位置都放行并如实标注。msg 是任意 JSON（fanout 到频道内每个 worker 的 channel_msg）。worker 侧还有同名 bridge 臂（--session 路由时）回 {status:'pending', message}。来源：bin/ion.rs handle_manager_command_write 'channel_send'。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "channel": { "type": "string", "default": "main" },
+        "from": { "type": "string", "default": "manager", "description": "发送者标识（worker_id 或 manager）" },
+        "msg": { "description": "任意 JSON（通常 {text: ...}）" }
+      }
+    },
+    "data": {
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "host 级：已广播",
+          "properties": {
+            "sent": { "const": true }
+          },
+          "required": ["sent"]
+        },
+        {
+          "type": "object",
+          "description": "worker 侧 bridge 转发（--session 路由时）",
+          "properties": {
+            "status": { "const": "pending" },
+            "message": { "type": "string" }
+          },
+          "required": ["status", "message"]
+        }
+      ]
+    },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}

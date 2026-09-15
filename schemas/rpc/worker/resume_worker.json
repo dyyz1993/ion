@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.resume_worker",
+  "title": "RPC resume_worker（worker→Manager bridge）",
+  "description": "向已完成的子 worker 续发一轮并同步收结果。bridge 命令（LLM 工具 resume_worker 的 RPC 底座）：worker 发 {target, text} → Manager 向目标转发 prompt 并 drain 到 agent_end（300s 上限）→ deliver_response 回 {target, response_output}。来源：src/worker_registry.rs manager 命令 'resume_worker' 臂。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "target": { "type": "string", "description": "目标 worker_id" },
+        "text": { "type": "string", "description": "续发的 prompt 文本" }
+      },
+      "required": ["target", "text"]
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "target": { "type": "string" },
+        "response_output": { "type": "string", "description": "子 worker 本轮聚合输出；订阅失败时为 '[error] subscribe failed'" }
+      },
+      "required": ["target", "response_output"]
+    },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "description": "典型错误：send_command 目标不存在",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}

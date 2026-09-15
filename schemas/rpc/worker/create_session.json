@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.create_session",
+  "title": "RPC create_session",
+  "description": "为会话创建（或幂等复用）一个 worker。内部走 do_create_session：毫秒级竞态双开守卫 + model 从 JSONL/索引恢复。params 兼容嵌套（RPC client）与扁平（stdin）两种格式。来源：bin/ion.rs handle_manager_command_write 'create_session' + do_create_session()。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "session_id": { "type": "string", "description": "缺省自动生成 sess_{uuid8}" },
+        "agent": { "type": "string", "default": "build" },
+        "model": { "type": "string" },
+        "provider": { "type": "string" },
+        "project_path": { "type": "string", "description": "项目目录；不存在自动创建；缺省回落索引里的 project → 进程 cwd" },
+        "cwd": { "type": "string", "description": "project_path 别名" },
+        "initial_prompt": { "type": "string", "description": "创建后注入的首条 prompt" }
+      }
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "session_id": { "type": "string" },
+        "agent": { "type": "string", "description": "回显请求里的 agent（缺省 'build'）" },
+        "status": { "const": "created" }
+      },
+      "required": ["session_id", "agent", "status"]
+    },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}

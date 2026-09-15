@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.list_workers",
+  "title": "RPC list_workers",
+  "description": "列出 host 上所有 worker（含内部 worker_id）+ 状态汇总。读路径短锁快照，create_worker 不会阻塞它。无 params。来源：bin/ion.rs handle_manager_command（读侧）与 handle_manager_command_write 各有一份相同实现。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "无参数"
+    },
+    "workerSummary": {
+      "type": "object",
+      "properties": {
+        "workerId": { "type": "string", "pattern": "^wkr_" },
+        "sessionId": { "type": "string" },
+        "project": { "type": "string" },
+        "status": { "enum": ["Idle", "Busy", "Dead", "Stale"], "description": "WorkerStatus Display（Rust Debug 派生：首字母大写）。Paused/Spawning 变体已删除" },
+        "model": { "type": "string" },
+        "agent": { "type": "string" },
+        "parent": { "type": ["string", "null"] },
+        "channels": { "type": "array", "items": { "type": "string" } },
+        "host": { "type": ["string", "null"], "description": "远程执行端名；null=本地 worker" }
+      },
+      "required": ["workerId", "sessionId", "project", "status", "model", "agent", "parent", "channels", "host"]
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "workers": { "type": "array", "items": { "$ref": "#/$defs/workerSummary" } },
+        "total": { "type": "integer", "minimum": 0, "description": "= workers.length" },
+        "byStatus": {
+          "type": "object",
+          "description": "状态 → 数量（BTreeMap，键为 Idle/Busy/Dead/Stale）",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "required": ["workers", "total", "byStatus"]
+    },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}

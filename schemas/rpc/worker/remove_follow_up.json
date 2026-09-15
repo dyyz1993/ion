@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ion.rpc.worker.remove_follow_up",
+  "title": "RPC remove_follow_up（worker 级）",
+  "description": "删除 follow_up 队列第 index 条；同时广播 QueueChanged{action:'remove'} 事件。来源：src/worker_rpc.rs 分发 'remove_follow_up' 臂。",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "params": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "index": { "type": "integer", "minimum": 0, "default": 0 }
+      }
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "removed": { "type": "boolean", "description": "该索引是否存在并被删" },
+        "follow_up_queue": { "type": "integer", "minimum": 0, "description": "删除后队列剩余长度" }
+      },
+      "required": ["removed", "follow_up_queue"]
+    },
+    "success": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": true },
+        "data": { "$ref": "#/$defs/data" },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "data"]
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "id": {},
+        "type": { "const": "response" },
+        "command": { "type": "string" },
+        "success": { "const": false },
+        "error": { "type": "string", "minLength": 1 },
+        "session": { "type": "string" }
+      },
+      "required": ["type", "success", "error"]
+    }
+  }
+}
