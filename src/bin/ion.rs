@@ -4009,9 +4009,11 @@ fn load_session_entries(sid: &str) -> Option<Vec<serde_json::Value>> {
 
 /// 读取 session 文件原始内容
 fn load_session_raw_content(sid: &str) -> Option<String> {
-    // 尝试直接路径
+    // 尝试直接路径——⚠️ 必须与 resolve_session_path 同约束：canonicalize 后
+    // 落在 sessions_dir 内（防任意路径读取 / symlink 逃逸），否则拒绝。
     if sid.contains('/') || sid.ends_with(".jsonl") {
-        return std::fs::read_to_string(sid).ok();
+        let confined = path_confined_to(std::path::Path::new(sid), &ion::paths::sessions_dir())?;
+        return std::fs::read_to_string(confined).ok();
     }
     let index = ion::session_index::SessionIndex::load();
     let meta = index.get(sid)?;
@@ -5350,6 +5352,35 @@ async fn do_get_session_snapshot(
     }))
 }
 
+// ── host socket 对等凭据校验（P0 安全加固）──
+// Unix socket 的文件权限不拦同机其他用户的进程——不校验 peercred 时，
+// 机器上任意进程连上 host.sock 即可发全部 RPC。accept 后必须校验对端 uid。
+
+/// 当前进程的有效 uid（geteuid）。直接 extern 声明，避免引入 libc crate（同 paths.rs）。
+fn current_euid() -> u32 {
+    #[cfg(unix)]
+    unsafe {
+        unsafe extern "C" {
+            fn geteuid() -> u32;
+        }
+        geteuid()
+    }
+    #[cfg(not(unix))]
+    {
+        0
+    }
+}
+
+/// 判定 socket 对端是否允许连接：必须取到对端凭据且 uid == 本进程 euid。
+/// 取不到凭据（peer_cred 失败）→ fail closed 拒绝。
+/// macOS 内部走 getpeereid、Linux 走 SO_PEERCRED（tokio peer_cred 已封装）。
+fn socket_peer_allowed(peer_uid: Option<u32>) -> bool {
+    match peer_uid {
+        Some(uid) => uid == current_euid(),
+        None => false,
+    }
+}
+
 async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_workers: usize) {
     use ion::worker_registry::WorkerRegistry;
     use parking_lot::Mutex;
@@ -5502,6 +5533,17 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
+                    // ── peercred 同 uid 校验（P0）──
+                    // 对端 uid != 本进程 euid（或取不到凭据）→ 立即断开，不进入处理。
+                    let peer_uid = stream.peer_cred().ok().map(|c| c.uid());
+                    if !socket_peer_allowed(peer_uid) {
+                        eprintln!(
+                            "⚠️ [security] host socket: connection rejected (peer_uid={peer_uid:?}, expected euid={})",
+                            current_euid()
+                        );
+                        drop(stream);
+                        continue;
+                    }
                     let reg = Arc::clone(&sock_registry);
                     let ev_bus = Arc::clone(&sock_event_bus);
                     tokio::spawn(async move {
@@ -6463,11 +6505,7 @@ async fn handle_manager_command(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let approve = cmd
-                .get("params")
-                .and_then(|p| p.get("approve"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
+            let approve = verb_review_approve_param(&cmd);
             if request_id.is_empty() {
                 Err("missing params.requestId".to_string())
             } else if ion::worker_registry::verb_review(&request_id, approve) {
@@ -6564,11 +6602,40 @@ fn get_file_index(path: &std::path::Path) -> Option<Arc<ion::file_index::FileInd
     }
 }
 
+/// 路径分支安全校验：canonicalize 后必须落在允许目录内。
+/// 返回 canonical 后的路径（可直接读）；越界 / 不存在 / 允许目录缺失 → None。
+/// canonicalize 同时解析符号链接 → 目录内 symlink 指向目录外的"逃逸"也会被拒绝。
+fn path_confined_to(
+    p: &std::path::Path,
+    allowed_dir: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let canonical = p.canonicalize().ok()?;
+    let dir_canonical = allowed_dir.canonicalize().ok()?;
+    if canonical.starts_with(&dir_canonical) {
+        Some(canonical)
+    } else {
+        eprintln!(
+            "⚠️ [security] session path outside sessions dir rejected: {}",
+            p.display()
+        );
+        None
+    }
+}
+
+/// verb_review RPC 的 approve 参数。缺省 = false：放行审批必须显式 approve:true，
+/// 不允许"没说就是同意"（远程动词审批的 fail-closed 默认）。
+fn verb_review_approve_param(cmd: &serde_json::Value) -> bool {
+    cmd.get("params")
+        .and_then(|p| p.get("approve"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
 /// sid → 会话 JSONL 文件路径（不读全文——用 header 前几行校验）
 fn resolve_session_path(sid: &str) -> Option<std::path::PathBuf> {
     if sid.contains('/') || sid.ends_with(".jsonl") {
         let p = std::path::PathBuf::from(sid);
-        return p.exists().then_some(p);
+        return path_confined_to(&p, &ion::paths::sessions_dir());
     }
     let index = ion::session_index::SessionIndex::load();
     let meta = index.get(sid)?;
@@ -8986,6 +9053,151 @@ async fn launch_dashboard() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ══ 安全加固：host socket 三项（peercred / 会话路径约束 / verb_review 缺省）══
+
+    // ── peercred：判定函数 ──
+    #[test]
+    fn socket_peer_allowed_same_uid_true() {
+        assert!(socket_peer_allowed(Some(current_euid())));
+    }
+
+    #[test]
+    fn socket_peer_allowed_different_uid_false() {
+        // euid+1 越过 root 的 wrap 风险可忽略（root=0 时 0+1=1 也非本 uid）
+        let other = current_euid().wrapping_add(1);
+        assert!(!socket_peer_allowed(Some(other)));
+    }
+
+    #[test]
+    fn socket_peer_allowed_missing_cred_false() {
+        // 取不到对端凭据 → fail closed
+        assert!(!socket_peer_allowed(None));
+    }
+
+    // ── peercred：真实 Unix socket 上同 uid 连接能取到 uid（机制回归）──
+    #[tokio::test]
+    async fn unix_socket_same_uid_peer_cred_works() {
+        let dir = std::env::temp_dir().join(format!(
+            "ion-sock-sec-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock_path = dir.join("t.sock");
+        let listener = tokio::net::UnixListener::bind(&sock_path).unwrap();
+        let handle = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            stream
+                .peer_cred()
+                .ok()
+                .map(|c| c.uid() == current_euid())
+                .unwrap_or(false)
+        });
+        let _client = tokio::net::UnixStream::connect(&sock_path).await.unwrap();
+        let same_uid = handle.await.unwrap();
+        let _ = std::fs::remove_file(&sock_path);
+        let _ = std::fs::remove_dir(&dir);
+        assert!(same_uid, "同 uid 连接应能取得对端 uid 且等于本进程 euid");
+    }
+
+    // ── 会话路径约束：path_confined_to ──
+    fn tmp_session_fixture() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ion-path-sec-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(dir.join("sessions")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn path_confined_allows_file_inside_dir() {
+        let dir = tmp_session_fixture();
+        let file = dir.join("sessions").join("sess.jsonl");
+        std::fs::write(&file, "{}\n").unwrap();
+        let got = path_confined_to(&file, &dir.join("sessions"));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(got.is_some(), "sessions_dir 内的会话文件必须放行");
+    }
+
+    #[test]
+    fn path_confined_rejects_file_outside_dir() {
+        let dir = tmp_session_fixture();
+        // 模拟 /etc/xxx.jsonl 任意路径读取（用 tmp 目录外的一个真实存在文件）
+        let outside = std::env::temp_dir().join(format!(
+            "ion-path-sec-outside-{}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(&outside, "secret\n").unwrap();
+        let got = path_confined_to(&outside, &dir.join("sessions"));
+        let _ = std::fs::remove_file(&outside);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(got.is_none(), "sessions_dir 外的文件必须拒绝（任意路径读取）");
+    }
+
+    #[test]
+    fn path_confined_rejects_symlink_escape() {
+        let dir = tmp_session_fixture();
+        // 目录内 symlink 指向目录外文件 → canonicalize 解析后越界 → 拒绝
+        let outside = std::env::temp_dir().join(format!(
+            "ion-path-sec-escape-{}.jsonl",
+            std::process::id()
+        ));
+        std::fs::write(&outside, "secret\n").unwrap();
+        #[cfg(unix)]
+        {
+            let link = dir.join("sessions").join("innocent.jsonl");
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            let got = path_confined_to(&link, &dir.join("sessions"));
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::remove_file(&outside);
+            assert!(got.is_none(), "目录内 symlink 指向外部文件必须拒绝（逃逸）");
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::remove_file(&outside);
+        }
+    }
+
+    #[test]
+    fn path_confined_rejects_missing_file() {
+        let dir = tmp_session_fixture();
+        let missing = dir.join("sessions").join("nope.jsonl");
+        let got = path_confined_to(&missing, &dir.join("sessions"));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(got.is_none(), "不存在的文件应返回 None");
+    }
+
+    // ── verb_review：approve 缺省必须为 false（fail-closed）──
+    #[test]
+    fn verb_review_approve_defaults_to_false() {
+        // 复现：缺省调用（不带 approve 参数）此前等价 approve:true → 远程动词被静默放行
+        let cmd = serde_json::json!({"method":"verb_review","params":{"requestId":"vapp_x"}});
+        assert!(
+            !verb_review_approve_param(&cmd),
+            "缺省 approve 必须是 false：放行要显式 approve:true"
+        );
+    }
+
+    #[test]
+    fn verb_review_approve_explicit_values() {
+        let yes = serde_json::json!({"params":{"approve":true}});
+        let no = serde_json::json!({"params":{"approve":false}});
+        let non_bool = serde_json::json!({"params":{"approve":"yes"}});
+        assert!(verb_review_approve_param(&yes));
+        assert!(!verb_review_approve_param(&no));
+        // 非 bool 值拿不到 bool → 走缺省 false
+        assert!(!verb_review_approve_param(&non_bool));
+    }
 
     // ── -p / --print ──
     #[test]
