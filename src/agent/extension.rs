@@ -172,6 +172,11 @@ pub trait Extension: Send + Sync {
     async fn on_auto_retry_end(&self, _success: bool, _attempt: u32) -> AgentResult<()> {
         Ok(())
     }
+    /// 模型自动降级（LLM 永久性错误 401/402/403/配额 → tier_models 候选档）。
+    /// from/to 为 "provider/model"；reason 为触发降级的原始错误（截断）。
+    async fn on_model_fallback(&self, _from: &str, _to: &str, _reason: &str) -> AgentResult<()> {
+        Ok(())
+    }
 
     // ── Streaming (8) ──
     async fn on_message_start(&self, _role: &str, _content: &str) -> AgentResult<()> {
@@ -1008,6 +1013,12 @@ impl ExtensionRunner {
     pub async fn on_auto_retry_end(&self, success: bool, attempt: u32) -> AgentResult<()> {
         for ext in &self.extensions {
             ext.on_auto_retry_end(success, attempt).await?;
+        }
+        Ok(())
+    }
+    pub async fn on_model_fallback(&self, from: &str, to: &str, reason: &str) -> AgentResult<()> {
+        for ext in &self.extensions {
+            ext.on_model_fallback(from, to, reason).await?;
         }
         Ok(())
     }

@@ -35,6 +35,10 @@ pub struct AgentConfig {
     pub retry_on_no_tool_use: u32,
     /// 高级重试配置（可选，覆盖上面的简单配置）
     pub retry_config: Option<crate::retry::RetryConfig>,
+    /// LLM 永久性错误（401/402/403/配额）自动降级候选模型（按优先级排序）。
+    /// 由 worker 按 `runtime.auto_fallback_tier` + tier_models 解析注入；为空 =
+    /// 禁用降级（保持现状报死）。降级只对永久错误触发，瞬时错误仍走既有重试。
+    pub fallback_models: Vec<Model>,
 }
 
 impl Default for AgentConfig {
@@ -53,6 +57,7 @@ impl Default for AgentConfig {
             compact_model_id: None,
             retry_on_no_tool_use: 0,
             retry_config: None,
+            fallback_models: Vec::new(),
         }
     }
 }
@@ -154,6 +159,9 @@ pub struct Agent {
     extra_cwds: std::sync::Mutex<Vec<String>>,
     /// 溢出恢复已尝试次数（达 MAX_OVERFLOW_ROUNDS 后放弃，对齐 pi）
     overflow_recovery_attempts: u32,
+    /// 已尝试过的降级模型 key（"provider/model"）——永久错误降级用。
+    /// 不随 run 重置：一旦某档永久失败，不再切回（防翻转）。
+    fallback_tried: Vec<String>,
     /// 软删除状态：被软删的 entry ID 集合（快速查询）
     deleted_entry_ids: std::collections::HashSet<String>,
     /// 软压缩状态：被折叠的 entry ID → 替换后的 BranchSummary 摘要
@@ -201,6 +209,7 @@ impl Agent {
             session_id: None,
             extra_cwds: std::sync::Mutex::new(Vec::new()),
             overflow_recovery_attempts: 0,
+            fallback_tried: Vec::new(),
             deleted_entry_ids: std::collections::HashSet::new(),
             summarized_entry_ids: std::collections::HashMap::new(),
         }
@@ -722,6 +731,59 @@ impl Agent {
     /// 设置最大重试次数（set_auto_retry 用）
     pub fn set_max_retries(&mut self, max: u32) {
         self.config.max_retries = max;
+    }
+
+    /// 生效的重试配置：优先显式 retry_config，否则由 max_retries/retry_base_delay_ms
+    /// 合成（空补全重试与 Err 重试分支共用，避免两处漂移）。
+    fn effective_retry_config(&self) -> crate::retry::RetryConfig {
+        self.config.retry_config.clone().unwrap_or_else(|| {
+            crate::retry::RetryConfig {
+                max_retries: self.config.max_retries,
+                initial_delay: Duration::from_millis(self.config.retry_base_delay_ms),
+                ..Default::default()
+            }
+        })
+    }
+
+    /// 注入永久性错误降级候选模型（worker 按 `runtime.auto_fallback_tier` +
+    /// tier_models 解析后调用；按优先级排序，已排除当前模型）。
+    pub fn set_fallback_models(&mut self, models: Vec<Model>) {
+        self.config.fallback_models = models;
+    }
+
+    /// LLM 永久性错误自动降级（tier_models fallback）。
+    ///
+    /// 触发条件：错误被 `retry::is_permanent_llm_error` 分类为永久（401/402/403/
+    /// 配额语义——同一模型重试无意义，即时判定 = 该模型的"重试耗尽"），且
+    /// `fallback_models` 存在与当前模型不同、尚未试过的候选档。
+    ///
+    /// 行为：set_model 切到候选档 + 发 ModelFallback 事件（from/to/reason）+
+    /// 记入 tried 集合（不随 run 重置，防翻转），调用方应继续当前任务（重试流）。
+    /// 全部候选耗尽返回 false，调用方按既有路径报死。
+    async fn try_tier_fallback(&mut self, err_str: &str) -> bool {
+        let current_key = format!("{}/{}", self.model.provider, self.model.id);
+        let candidate = self
+            .config
+            .fallback_models
+            .iter()
+            .find(|m| {
+                let key = format!("{}/{}", m.provider, m.id);
+                key != current_key && !self.fallback_tried.contains(&key)
+            })
+            .cloned();
+        let Some(next) = candidate else {
+            return false;
+        };
+        let from = current_key;
+        let to = format!("{}/{}", next.provider, next.id);
+        self.fallback_tried.push(to.clone());
+        self.model = next;
+        let reason: String = err_str.chars().take(300).collect();
+        tracing::warn!(
+            "[tier-fallback] permanent LLM error, switching {from} → {to}: {reason:.120}"
+        );
+        self.extensions.on_model_fallback(&from, &to, &reason).await.ok();
+        true
     }
 
     /// 读取最大重试次数
@@ -2021,23 +2083,27 @@ impl Agent {
                     *guard = Some(cancel_token.clone());
                 }
             }
-            let stream_fut = registry::stream(
-                &self.registry,
-                &self.model,
-                context,
-                Some(options),
-                Some(cancel_token),
-            );
-            tokio::pin!(stream_fut);
-            let stream_result = loop {
-                tokio::select! {
-                    r = &mut stream_fut => break r,
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {
-                        if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
-                            tracing::info!("[abort] HTTP 请求期间检测到 stopped");
-                            return Ok((StopReason::Aborted, Vec::new()));
+            // stream_fut 借用 &self.registry / &self.model——包在块内，块结束时
+            // 借用即结束，后面的永久错误 tier 降级（&mut self）才能借用检查通过。
+            let stream_result = {
+                let stream_fut = registry::stream(
+                    &self.registry,
+                    &self.model,
+                    context,
+                    Some(options),
+                    Some(cancel_token),
+                );
+                tokio::pin!(stream_fut);
+                loop {
+                    tokio::select! {
+                        r = &mut stream_fut => break r,
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {
+                            if self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                                tracing::info!("[abort] HTTP 请求期间检测到 stopped");
+                                return Ok((StopReason::Aborted, Vec::new()));
+                            }
+                            // 继续 select!(stream_fut 保留,不重新发 HTTP)
                         }
-                        // 继续 select!(stream_fut 保留,不重新发 HTTP)
                     }
                 }
             };
@@ -2173,6 +2239,48 @@ impl Agent {
                     } else if prev_was_thinking {
                         self.extensions.on_thinking_end("").await?;
                     }
+
+                    // ── 空补全检测（治"幻影 turn"）──
+                    // zai 等网关偶发返回空 content 的补全：HTTP 成功、stop_reason 正常，
+                    // 但无 text/thinking/tool_calls。当正常 turn 接受会烧掉一个 turn
+                    // （turn 计数+1 而会话条目+0）。这里把空补全转成可重试协议错误，
+                    // 走与 Err 分支相同的 attempt/预算/退避通路重试，不进 inner_loop。
+                    // 判定条件（防误伤）见 ion_provider::is_empty_completion：
+                    // 纯 tool_call、thinking-only、Error/Aborted 都不算空补全。
+                    if let Some(done_msg) = collected.iter().rev().find_map(|e| match e {
+                        StreamEvent::Done { message, .. } => Some(message.clone()),
+                        _ => None,
+                    }) && ion_provider::is_empty_completion(&final_reason, &done_msg)
+                    {
+                        let retry_cfg = self.effective_retry_config();
+                        if attempt >= retry_cfg.max_retries {
+                            self.extensions
+                                .on_auto_retry_end(false, attempt + 1)
+                                .await?;
+                            return Err(AgentError::Provider(format!(
+                                "[empty-completion] provider returned an empty completion \
+                                 (no text/thinking/tool calls) after {} attempts",
+                                attempt + 1
+                            )));
+                        }
+                        let delay = crate::retry::backoff_duration(attempt, &retry_cfg);
+                        tracing::warn!(
+                            "[empty-completion] attempt {}/{} returned empty completion \
+                             — retrying in {:?}",
+                            attempt + 1,
+                            retry_cfg.max_retries + 1,
+                            delay
+                        );
+                        self.extensions
+                            .on_auto_retry_start(attempt + 1, retry_cfg.max_retries + 1)
+                            .await?;
+                        last_error = Some(ion_provider::error::ProviderError::Stream(
+                            "empty completion (no text/thinking/tool calls)".into(),
+                        ));
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+
                     return Ok((final_reason, collected));
                 }
                 Err(e) => {
@@ -2204,14 +2312,22 @@ impl Agent {
 
                     // 使用 RetryConfig（如果有）或回退到简单配置
                     let err_str = e.to_string();
-                    let fallback_cfg = crate::retry::RetryConfig {
-                        max_retries: self.config.max_retries,
-                        initial_delay: Duration::from_millis(self.config.retry_base_delay_ms),
-                        ..Default::default()
-                    };
-                    let retry_cfg = self.config.retry_config.as_ref().unwrap_or(&fallback_cfg);
+                    let retry_cfg = self.effective_retry_config();
 
-                    match crate::retry::should_retry(&err_str, attempt, retry_cfg) {
+                    // ── 永久性错误 → tier 降级（runtime.auto_fallback_tier）──
+                    // 401/402/403/配额语义：同一模型重试无意义（should_retry 会立即
+                    // AbortPermanent，等于该模型"重试已耗尽"）。有可用候选档时切
+                    // 模型 + 发 ModelFallback 事件 + 继续当前任务；无候选档保持现状
+                    // 走既有报死路径。瞬时错误不进这里（不提前降级）。
+                    // 上下文溢出已在上面的 overflow 分支提前返回，不会到达此处。
+                    if crate::retry::is_permanent_llm_error(&err_str)
+                        && self.try_tier_fallback(&err_str).await
+                    {
+                        last_error = Some(e);
+                        continue;
+                    }
+
+                    match crate::retry::should_retry(&err_str, attempt, &retry_cfg) {
                         crate::retry::RetryDecision::AbortPermanent => {
                             self.extensions
                                 .on_auto_retry_end(false, attempt + 1)
@@ -2254,7 +2370,7 @@ impl Agent {
                                 let secs = (5u64 * 2u64.pow(attempt)).min(60);
                                 Duration::from_secs(secs)
                             } else {
-                                crate::retry::backoff_duration(attempt, retry_cfg)
+                                crate::retry::backoff_duration(attempt, &retry_cfg)
                             };
                             tracing::warn!(
                                 "[retry] attempt {}/{} failed: {e:.80} — retrying in {:?}",
