@@ -1234,7 +1234,9 @@ fn read_piped_stdin() -> Option<String> {
 async fn cmd_config_show() {
     let cfg = IonConfig::load();
     println!("Config file: {}", IonConfig::path().display());
-    println!("{}", serde_json::to_string_pretty(&cfg).unwrap());
+    // 统一脱敏出口：终端/日志/CI 常见导出口，明文 key 不回显
+    // （api_key 存在与否仍可见：配置了显示 "***"，未配置为 null）
+    println!("{}", serde_json::to_string_pretty(&cfg.redacted_value()).unwrap());
 
     // 运行时默认值（不在 config.json 里，硬编码在代码中）
     let retry = ion::retry::RetryConfig::default();
@@ -6430,14 +6432,11 @@ fn host_idle_session_read(
                 .collect();
             Ok(serde_json::json!(models))
         }
-        // 与 worker 级一致：读全局配置并脱敏 api_key（空闲会话的 settings 不依赖 worker 状态）
+        // 与 worker 级一致：读全局配置并走统一脱敏出口（空闲会话的 settings
+        // 不依赖 worker 状态；不只顶层 api_key，全部密钥位打码）
         "get_settings" => {
             let cfg = ion::config::IonConfig::load();
-            let mut cfg_json = serde_json::to_value(&cfg).unwrap_or_default();
-            if cfg_json.get("api_key").is_some_and(|v| !v.is_null()) {
-                cfg_json["api_key"] = serde_json::json!("***");
-            }
-            Ok(cfg_json)
+            Ok(cfg.redacted_value())
         }
         "get_queue" => Ok(serde_json::json!({
             "steering": [], "followUp": [], "steeringCount": 0, "followUpCount": 0,
@@ -8945,6 +8944,84 @@ mod tests {
         // 未识别的颜色名 → 默认（不 panic）
         assert_eq!(color_ansi(&Some("hotpink".into())), "\x1b[0m");
         assert_eq!(color_ansi(&Some("rainbow".into())), "\x1b[0m");
+    }
+
+    // ── host 级 get_settings 密钥脱敏（W4 key masking 回归）──
+
+    #[test]
+    fn host_idle_get_settings_masks_all_secret_locations() {
+        // 隔离：HOME 指向临时目录，IonConfig::load() 只读到我们埋好假密钥的
+        // config.json，绝不触碰真实 ~/.ion。
+        let tmp = std::env::temp_dir().join(format!(
+            "ion_host_gs_{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .subsec_nanos()
+        ));
+        let ion_dir = tmp.join(".ion");
+        std::fs::create_dir_all(&ion_dir).unwrap();
+        std::fs::write(
+            ion_dir.join("config.json"),
+            r#"{
+  "api_key": "sk-top-HOSTRED1",
+  "provider_api_keys": { "zai": "pk-HOSTRED2" },
+  "providers": {
+    "zai": {
+      "name": "zai", "api": "openai-completions",
+      "base_url": "https://api.zai.example/v4",
+      "api_key": "prov-HOSTRED3",
+      "headers": { "Authorization": "Bearer hdr-HOSTRED4" },
+      "models": [{ "id": "glm-5.2" }]
+    }
+  },
+  "mcp_servers": {
+    "github": { "command": "npx", "env": { "GITHUB_TOKEN": "env-HOSTRED5" } }
+  }
+}"#,
+        )
+        .unwrap();
+
+        // SAFETY: edition 2024 要求 set_var 走 unsafe。本二进制测试模块只有
+        // CLI 参数解析测试，无其他测试消费 HOME；改写→调用→恢复全在本线程
+        // 同步完成。
+        let old_home = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &tmp) };
+        let result = host_idle_session_read(
+            &serde_json::json!({ "session": "sess_host_gs_redact" }),
+            "get_settings",
+        );
+        // 无论断言成败都先恢复 HOME（避免污染后续测试）
+        match old_home {
+            Some(h) => unsafe { std::env::set_var("HOME", h) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+
+        let out = result.expect("host get_settings should succeed");
+        let raw = serde_json::to_string(&out).unwrap();
+
+        // 响应里 grep 不到任何明文密钥
+        for secret in [
+            "sk-top-HOSTRED1",
+            "pk-HOSTRED2",
+            "prov-HOSTRED3",
+            "hdr-HOSTRED4",
+            "env-HOSTRED5",
+        ] {
+            assert!(!raw.contains(secret), "host get_settings 明文泄漏: {secret}\n{raw}");
+        }
+
+        // 各密钥位 = "***"，非密钥字段不误伤
+        assert_eq!(out["api_key"], "***", "顶层 api_key");
+        assert_eq!(out["provider_api_keys"]["zai"], "***");
+        assert_eq!(out["providers"]["zai"]["api_key"], "***");
+        assert_eq!(out["providers"]["zai"]["headers"]["Authorization"], "***");
+        assert_eq!(out["mcp_servers"]["github"]["env"]["GITHUB_TOKEN"], "***");
+        assert_eq!(
+            out["providers"]["zai"]["base_url"], "https://api.zai.example/v4",
+            "base_url 不误伤"
+        );
+        assert_eq!(out["mcp_servers"]["github"]["command"], "npx", "command 不误伤");
     }
 }
 

@@ -1385,6 +1385,95 @@ impl IonConfig {
         // Delegate to AuthStorage which has the full priority chain
         crate::auth::AuthStorage::resolve_api_key(cli_key, provider)
     }
+
+    /// 序列化为 JSON 并递归脱敏全部密钥位（统一出口）。
+    ///
+    /// get_settings（worker / host）及任何需要把 IonConfig 回传给外部的路径
+    /// **必须**走这里；禁止直接 `serde_json::to_value(&cfg)` —— 那会把
+    /// `provider_api_keys`、`providers.*.api_key`、`providers.*.headers`、
+    /// `model_overrides.*.api_key`、`mcp_servers.*.env/headers` 等明文密钥
+    /// 整体泄漏给调用方。
+    ///
+    /// 脱敏格式与既有顶层 api_key 行为一致：统一 `"***"`（不保留前缀指纹）。
+    pub fn redacted_value(&self) -> serde_json::Value {
+        let mut v = serde_json::to_value(self).unwrap_or_default();
+        redact_json_secrets(&mut v);
+        v
+    }
+}
+
+/// 键名是否命中机密词表（小写后**精确匹配**——不做子串，避免
+/// `tokenizer` / `max_tokens` 这类相近命名误伤）。
+fn is_secret_key_name(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "api_key"
+            | "api-key"
+            | "apikey"
+            | "x-api-key"
+            | "token"
+            | "access_token"
+            | "refresh_token"
+            | "auth_token"
+            | "session_token"
+            | "secret"
+            | "client_secret"
+            | "password"
+            | "passwd"
+            | "authorization"
+    )
+}
+
+/// 递归脱敏 JSON 树里的全部密钥位。三层规则：
+///
+/// 1. **结构化整表打码**：`env` / `headers` / `provider_api_keys` 容器内的
+///    每个值一律视为机密（键名保留，便于辨认配了什么）——MCP server 的
+///    env 里可能有 `HOME` 这种看着无害的字段，但值泄露同样危险，宁枉勿纵。
+/// 2. **叶名兜底**：任意深度的键名精确命中机密词表（api_key/token/secret/
+///    password/authorization 等）即打码其值。
+/// 3. **纵深防御**：`mcp.servers.*`（zcode 嵌套格式）等任意嵌套结构随递归
+///    自然覆盖。
+///
+/// 仅打码字符串值；`null` / 数字 / bool 保持原样（不伪造 `"***"`）。
+pub(crate) fn redact_json_secrets(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map.iter_mut() {
+                // 规则 1：整表打码容器（值全机密，键名保留）
+                if matches!(key.as_str(), "env" | "headers" | "provider_api_keys") {
+                    if let Some(inner) = value.as_object_mut() {
+                        for (_, iv) in inner.iter_mut() {
+                            redact_secret_leaf(iv);
+                        }
+                        continue;
+                    }
+                }
+                // 规则 2：键名精确命中机密词表
+                if is_secret_key_name(key) {
+                    redact_secret_leaf(value);
+                    continue;
+                }
+                // 规则 3：其余结构递归下钻
+                redact_json_secrets(value);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items.iter_mut() {
+                redact_json_secrets(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 打码单个机密位：字符串 → `"***"`；容器则继续按整树规则下钻；
+/// `null` / 数字 / bool 保持原样。
+fn redact_secret_leaf(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::String(_) => *v = serde_json::Value::String("***".into()),
+        serde_json::Value::Object(_) | serde_json::Value::Array(_) => redact_json_secrets(v),
+        _ => {}
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2136,4 +2225,220 @@ mod trust_pred_tests {
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
+}
+
+// ---------------------------------------------------------------------------
+// 密钥脱敏（redacted_value / redact_json_secrets）—— get_settings 统一出口
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod redact_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// 构造一个各层都埋了明文密钥的 config（密钥串带 SECRET 标记，便于断言）。
+    fn secret_laden_config() -> IonConfig {
+        let mut cfg = IonConfig::default();
+        cfg.default_provider = Some("zai".into());
+        cfg.default_model = Some("glm-5.2".into());
+        // ① 顶层 api_key
+        cfg.api_key = Some("sk-top-SECRET1".into());
+        // ② provider_api_keys 映射
+        cfg.provider_api_keys.insert("zai".into(), "pk-zai-SECRET2".into());
+        cfg.provider_api_keys
+            .insert("opencode".into(), "pk-oc-SECRET3".into());
+        // ③ providers.*.{api_key, headers, model_overrides.*.api_key}
+        let mut headers = HashMap::new();
+        headers.insert("Authorization".into(), "Bearer hdr-auth-SECRET5".into());
+        let mut overrides = HashMap::new();
+        overrides.insert(
+            "glm-5.2".into(),
+            ModelOverride {
+                base_url: Some("https://override.example/v1".into()),
+                api_key: Some("ovr-SECRET6".into()),
+            },
+        );
+        cfg.providers.insert(
+            "zai".into(),
+            CustomProvider {
+                name: "zai".into(),
+                api: "openai-completions".into(),
+                base_url: "https://api.zai.example/v4".into(),
+                api_key: Some("prov-zai-SECRET4".into()),
+                headers: Some(headers),
+                models: vec![CustomModel {
+                    id: "glm-5.2".into(),
+                    name: Some("GLM-5.2".into()),
+                    reasoning: Some(true),
+                    context_window: Some(128_000),
+                    max_tokens: Some(8192),
+                    cost: None,
+                }],
+                model_overrides: Some(overrides),
+            },
+        );
+        // ④ mcp_servers.*.{env, headers}
+        let mut env = HashMap::new();
+        env.insert("GITHUB_TOKEN".into(), "env-token-SECRET7".into());
+        env.insert("HOME".into(), "/Users/someone".into());
+        cfg.mcp_servers.insert(
+            "github".into(),
+            McpServerConfig::Stdio {
+                command: "npx".into(),
+                args: vec!["-y".into(), "@modelcontextprotocol/server-github".into()],
+                env,
+                cwd: None,
+                enabled: None,
+                disabled: false,
+            },
+        );
+        let mut http_headers = HashMap::new();
+        http_headers
+            .insert("Authorization".into(), "Bearer mcp-hdr-SECRET8".into());
+        cfg.mcp_servers.insert(
+            "remote".into(),
+            McpServerConfig::Http {
+                kind: "streamable-http".into(),
+                url: "https://mcp.example/sse".into(),
+                headers: http_headers,
+                enabled: None,
+                disabled: false,
+            },
+        );
+        cfg
+    }
+
+    /// 各层密钥全部打码，无任何明文泄漏；非密钥字段原样保留。
+    #[test]
+    fn redacted_value_masks_all_secret_locations() {
+        let cfg = secret_laden_config();
+        let out = cfg.redacted_value();
+        let s = serde_json::to_string(&out).unwrap();
+
+        // 任何 SECRET 标记的明文都不得出现在输出里
+        for secret in [
+            "sk-top-SECRET1",
+            "pk-zai-SECRET2",
+            "pk-oc-SECRET3",
+            "prov-zai-SECRET4",
+            "hdr-auth-SECRET5",
+            "ovr-SECRET6",
+            "env-token-SECRET7",
+            "mcp-hdr-SECRET8",
+        ] {
+            assert!(!s.contains(secret), "明文密钥泄漏: {secret}\n{s}");
+        }
+
+        // 密钥位 = "***"（与既有顶层 api_key 脱敏格式一致）
+        assert_eq!(out["api_key"], "***", "顶层 api_key");
+        assert_eq!(out["provider_api_keys"]["zai"], "***", "provider_api_keys");
+        assert_eq!(
+            out["provider_api_keys"]["opencode"], "***",
+            "provider_api_keys 第二项"
+        );
+        assert_eq!(out["providers"]["zai"]["api_key"], "***", "provider api_key");
+        assert_eq!(
+            out["providers"]["zai"]["headers"]["Authorization"], "***",
+            "provider headers"
+        );
+        assert_eq!(
+            out["providers"]["zai"]["model_overrides"]["glm-5.2"]["api_key"], "***",
+            "model_overrides api_key"
+        );
+        assert_eq!(
+            out["mcp_servers"]["github"]["env"]["GITHUB_TOKEN"], "***",
+            "mcp stdio env"
+        );
+        assert_eq!(
+            out["mcp_servers"]["remote"]["headers"]["Authorization"], "***",
+            "mcp http headers"
+        );
+
+        // env 整表打码（值一律视为机密），但键名保留
+        let env = out["mcp_servers"]["github"]["env"].as_object().unwrap();
+        assert_eq!(env["HOME"], "***", "env 值整表打码");
+        assert!(
+            env.keys().any(|k| k == "GITHUB_TOKEN"),
+            "env 键名保留（便于辨认配了什么）"
+        );
+
+        // 非密钥字段原样保留（脱敏不误伤）
+        assert_eq!(
+            out["providers"]["zai"]["base_url"], "https://api.zai.example/v4",
+            "base_url 不受影响"
+        );
+        assert_eq!(
+            out["providers"]["zai"]["model_overrides"]["glm-5.2"]["base_url"],
+            "https://override.example/v1",
+            "override base_url 不受影响"
+        );
+        assert_eq!(out["default_model"], "glm-5.2");
+        // 默认 fast tier 来自 default_tier_models()（前任误写成 opencode/ 前缀）
+        assert_eq!(out["tier_models"]["fast"], "deepseek/deepseek-v4-flash");
+        assert_eq!(
+            out["mcp_servers"]["github"]["command"], "npx",
+            "mcp command 不受影响"
+        );
+        assert_eq!(
+            out["mcp_servers"]["remote"]["url"], "https://mcp.example/sse",
+            "mcp url 不受影响"
+        );
+    }
+
+    /// api_key 为 None（未配置）时保持 null，不伪造 "***"。
+    #[test]
+    fn redacted_value_keeps_null_when_api_key_absent() {
+        let cfg = IonConfig::default();
+        let out = cfg.redacted_value();
+        assert!(out["api_key"].is_null(), "未配置的 api_key 保持 null");
+    }
+
+    /// 叶名兜底规则：键名精确命中 token/secret/password 类即打码；
+    /// 相近命名（max_tokens）与值内容（含敏感词的普通字段）不误伤。
+    #[test]
+    fn redact_json_secrets_key_name_rule() {
+        let mut v: serde_json::Value = serde_json::json!({
+            "deep": {
+                "token": "tok-SECRET9",
+                "api-key": "dash-SECRET10",
+                "max_tokens": 4096,
+                "tokenizer": "tiktoken",
+                "note": "password manager 的说明文字",
+                "nested_more": { "secret": "sec-SECRET11" },
+            }
+        });
+        redact_json_secrets(&mut v);
+        let s = serde_json::to_string(&v).unwrap();
+        for secret in ["tok-SECRET9", "dash-SECRET10", "sec-SECRET11"] {
+            assert!(!s.contains(secret), "叶名规则未打码: {secret}\n{s}");
+        }
+        assert_eq!(v["deep"]["token"], "***");
+        assert_eq!(v["deep"]["api-key"], "***");
+        assert_eq!(v["deep"]["nested_more"]["secret"], "***");
+        // 不误伤
+        assert_eq!(v["deep"]["max_tokens"], 4096, "max_tokens 不是密钥");
+        assert_eq!(v["deep"]["tokenizer"], "tiktoken", "tokenizer 不是密钥");
+        assert_eq!(
+            v["deep"]["note"], "password manager 的说明文字",
+            "按键名（非值内容）判断，普通字段不误伤"
+        );
+    }
+
+    /// 纵深防御：zcode 嵌套格式 `mcp.servers.*`（load 合并后一般为空，
+    /// 但规则表覆盖以防空 merge 语义变化时泄漏）。
+    #[test]
+    fn redact_json_secrets_covers_nested_mcp_wrapper() {
+        let mut v: serde_json::Value = serde_json::json!({
+            "mcp": {
+                "servers": {
+                    "x": {
+                        "command": "npx",
+                        "env": { "API_TOKEN": "nested-SECRET12" }
+                    }
+                }
+            }
+        });
+        redact_json_secrets(&mut v);
+        assert_eq!(v["mcp"]["servers"]["x"]["env"]["API_TOKEN"], "***");
+        assert_eq!(v["mcp"]["servers"]["x"]["command"], "npx");    }
 }

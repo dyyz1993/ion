@@ -2739,11 +2739,9 @@ pub async fn run_worker_rpc(args: WorkerRpcArgs) {
                         &serde_json::json!({ "key": k, "value": val }),
                     );
                 } else {
-                    let mut cfg_json = serde_json::to_value(&cfg).unwrap_or_default();
-                    if cfg_json.get("api_key").is_some() {
-                        cfg_json["api_key"] =
-                            serde_json::json!(if cfg.api_key.is_some() { "***" } else { "" });
-                    }
+                    // 统一脱敏出口：provider_api_keys / providers.*.api_key /
+                    // headers / mcp env 等全部密钥位打码，不只顶层 api_key
+                    let cfg_json = cfg.redacted_value();
                     output_response(&id, "get_settings", &cfg_json);
                 }
             }
