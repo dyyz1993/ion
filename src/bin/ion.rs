@@ -5467,6 +5467,23 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
     let _ = std::fs::write(&pid_path, std::process::id().to_string());
     eprintln!("🔌 Host listening on Unix socket: {}", sock_path.display());
 
+    // ── 索引逆向对账（GC 只删不补的单向缺口）：启动时扫磁盘 JSONL，把索引
+    // 缺失的会话从 header 行重建回 sessions.index.json。幂等（零差异不落盘）、
+    // 只补缺不删多（删除仍归 GC）、尊重墓碑（removed_sessions 不重建）。
+    // 后台线程执行，不阻塞 socket accept loop。
+    {
+        std::thread::spawn(|| {
+            let dir = ion::paths::sessions_dir();
+            let r = ion::session_gc::reconcile_missing(&dir);
+            if r.rebuilt > 0 || r.skipped_tombstoned > 0 {
+                eprintln!(
+                    "[session-reconcile] rebuilt={} tombstoned_skipped={} disk_files={} unreadable={}",
+                    r.rebuilt, r.skipped_tombstoned, r.disk_files, r.unreadable
+                );
+            }
+        });
+    }
+
     // ── Host 级 MCP 管理器（方案 C：host 持有连接，所有 Worker 代理调用）──
     // 放 socket bind 之后异步连，不阻塞 host 启动（CI 并发友好）。
     {
