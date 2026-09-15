@@ -254,6 +254,31 @@ impl SandboxPool {
     }
 }
 
+/// auto-respawn 的沙盒故障转移决策结果。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FailoverDecision {
+    /// 原 host 不在池内（本地 worker / 显式指定但未定义的 host）→ 保持原 host
+    NotPoolMember,
+    /// 池成员：探测后选出健康节点（可能是原 host 自身——心跳误杀且沙盒实际存活）
+    Failover { to: String },
+    /// 池成员但无任何健康节点 → 回落原 host（保持可重派性），调用方应 WARN
+    NoHealthyFallback,
+}
+
+/// auto-respawn 故障转移决策（纯函数，供 mock 池单测）：
+/// 原 host 是沙盒池成员（含 "auto"）时，按池内健康状态重新选点——
+/// 治「worker 死亡重派硬编码回 record.host（原病沙盒）」：沙盒死了重派=送死。
+/// 非 `auto` 且不在池内 → 不做 failover（零开销，保持既有行为）。
+pub fn failover_decision(pool: &SandboxPool, original_host: &str) -> FailoverDecision {
+    if original_host != "auto" && !pool.contains(original_host) {
+        return FailoverDecision::NotPoolMember;
+    }
+    match pool.pick_healthy(&[]) {
+        Some(picked) => FailoverDecision::Failover { to: picked.to_string() },
+        None => FailoverDecision::NoHealthyFallback,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,6 +383,79 @@ mod tests {
             make_status("c", SandboxHealth::VersionMismatch, 0),
         ]);
         assert_eq!(pool.pick_healthy(&[]), None);
+    }
+
+    // ── auto-respawn 沙盒故障转移（fix4/h5-sandbox-failover）──
+
+    #[test]
+    fn failover_moves_to_healthy_node_when_original_dead() {
+        // 重派场景：原 host（病沙盒）Unreachable，池里还有一台活的 → 必须换到活节点，
+        // 不能固定回 record.host（原行为 = 沙盒死了重派 = 送死）。
+        let pool = pool_of(vec![
+            make_status("dead_node", SandboxHealth::Unreachable, 0),
+            make_status("alive_node", SandboxHealth::Reachable, 2),
+        ]);
+        assert_eq!(
+            failover_decision(&pool, "dead_node"),
+            FailoverDecision::Failover {
+                to: "alive_node".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn failover_treats_auto_as_pool_member() {
+        // host=="auto"（出生即 auto 的 record 兜底）也应参与池选点
+        let pool = pool_of(vec![
+            make_status("a", SandboxHealth::Unreachable, 0),
+            make_status("b", SandboxHealth::Reachable, 0),
+        ]);
+        assert_eq!(
+            failover_decision(&pool, "auto"),
+            FailoverDecision::Failover { to: "b".to_string() }
+        );
+    }
+
+    #[test]
+    fn failover_falls_back_to_original_when_pool_all_dead() {
+        // 池内无健康节点 → 回落原 host（保持可重派性），并让调用方 WARN
+        let pool = pool_of(vec![
+            make_status("a", SandboxHealth::Unreachable, 0),
+            make_status("b", SandboxHealth::VersionMismatch, 0),
+            make_status("c", SandboxHealth::Unknown, 0),
+        ]);
+        assert_eq!(
+            failover_decision(&pool, "a"),
+            FailoverDecision::NoHealthyFallback
+        );
+    }
+
+    #[test]
+    fn failover_skips_non_pool_member() {
+        // 非池成员（显式 host 但不在 remote_workers / 本地 None→""）→ 不做 failover
+        let pool = pool_of(vec![make_status(
+            "other",
+            SandboxHealth::Reachable,
+            0,
+        )]);
+        assert_eq!(
+            failover_decision(&pool, "some-explicit-host"),
+            FailoverDecision::NotPoolMember
+        );
+        assert_eq!(failover_decision(&pool, ""), FailoverDecision::NotPoolMember);
+    }
+
+    #[test]
+    fn failover_allows_healthy_original_still_picked() {
+        // 原 host 探测后仍然健康（心跳误杀场景）：允许重新选中它（负载均摊可能选回）
+        let pool = pool_of(vec![
+            make_status("orig", SandboxHealth::Reachable, 0),
+            make_status("busy", SandboxHealth::Reachable, 5),
+        ]);
+        assert_eq!(
+            failover_decision(&pool, "orig"),
+            FailoverDecision::Failover { to: "orig".to_string() }
+        );
     }
 
     #[test]

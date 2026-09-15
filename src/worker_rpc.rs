@@ -8702,6 +8702,7 @@ mod tests {
                 deleted: vec![],
             },
             timestamp: crate::session_jsonl::timestamp_iso(),
+            seq: 0,
         };
         store.save_step_snapshot(&baseline_step);
 
@@ -8720,6 +8721,7 @@ mod tests {
                 deleted: vec![],
             },
             timestamp: crate::session_jsonl::timestamp_iso(),
+            seq: 0,
         };
         store.save_step_snapshot(&turn_step);
 

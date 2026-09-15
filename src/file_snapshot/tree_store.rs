@@ -133,6 +133,13 @@ pub struct StepSnapshot {
     pub diff: TreeDiff,
     /// 时间戳
     pub timestamp: String,
+    /// 写入序号（写入时由 SnapshotStore 分配的单调递增数）。
+    /// 同毫秒写入时 (timestamp, turn_id) 排序不稳定（turn_id 字典序 ≠ 写入顺序，
+    /// current_tree_hash 可能取到陈旧快照）——seq 保证按真实写入顺序定序。
+    /// 向后兼容：旧 step 文件无此字段 → serde default 0 → 退化为旧 (timestamp,
+    /// turn_id) 行为（fix4/h5-sandbox-failover 任务2）。
+    #[serde(default)]
+    pub seq: u64,
 }
 
 #[cfg(test)]

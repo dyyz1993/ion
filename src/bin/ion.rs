@@ -6282,18 +6282,26 @@ async fn cmd_serve_start(_cli: &Cli, _port: u16, _max_workers: usize, _min_worke
                 tracing::info!(
                     "[auto-recovery] heartbeat timeout → respawning on {host} (was {orig_wid})"
                 );
-                reg.broadcast_ui_event(
-                    "auto_recovered",
-                    serde_json::json!({
-                        "originalWorker": orig_wid,
-                        "originalSession": orig_sid,
-                        "host": host,
-                        "trigger": "heartbeat_timeout",
-                    }),
-                    Some(&orig_sid),
-                );
                 let reg_ar = hb_registry.clone();
                 tokio::spawn(async move {
+                    // fix4/h5-sandbox-failover：原 host 是沙盒池成员时重选健康节点
+                    //（不再固定回原病沙盒）；非池成员零开销原样返回。事件在决策后发，
+                    // 携带最终 host + failover 信息（mode/from/to/poolSize）。
+                    let (host, failover) =
+                        ion::worker_registry::respawn_host_failover(&host).await;
+                    {
+                        let reg = reg_ar.lock();
+                        let mut ev = serde_json::json!({
+                            "originalWorker": orig_wid,
+                            "originalSession": orig_sid,
+                            "host": host,
+                            "trigger": "heartbeat_timeout",
+                        });
+                        if let Some(f) = failover {
+                            ev["failover"] = f;
+                        }
+                        reg.broadcast_ui_event("auto_recovered", ev, Some(&orig_sid));
+                    }
                     // W6 Bug3: 重派配置继承原会话的 agent + 当前 model/provider
                     //（SessionIndex；set_agent/set_model 均同步写入索引），找不到回落
                     // 默认——不再硬编码 "build"

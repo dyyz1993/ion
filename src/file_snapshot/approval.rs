@@ -852,6 +852,7 @@ mod tests {
                 deleted: vec![],
             },
             timestamp: crate::session_jsonl::timestamp_iso(),
+            seq: 0,
         };
         store.save_step_snapshot(&step);
 
@@ -899,6 +900,7 @@ mod tests {
             snapshot_tree_hash: hash.clone(),
             diff,
             timestamp: crate::session_jsonl::timestamp_iso(),
+            seq: 0,
         };
         store.save_step_snapshot(&step);
         hash

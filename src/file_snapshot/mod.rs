@@ -199,6 +199,7 @@ impl Extension for FileSnapshotExtension {
                     deleted: vec![],
                 },
                 timestamp: crate::session_jsonl::timestamp_iso(),
+                seq: 0,
             };
             self.store.save_step_snapshot(&step);
         }
@@ -261,6 +262,7 @@ impl Extension for FileSnapshotExtension {
                     snapshot_tree_hash: current_tree_hash.clone(),
                     diff,
                     timestamp: crate::session_jsonl::timestamp_iso(),
+                    seq: 0,
                 };
                 // 与 pi 一致：文件状态是消息树中的 parented custom entry。
                 // 它不进入 LLM context，但 export / timeline / rollback 都能看到并定位。
